@@ -4,7 +4,6 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/ngnl47/gobricks/anno"
 	"github.com/ngnl47/gobricks/meta"
 	"github.com/ngnl47/gobricks/storage"
 )
@@ -40,8 +39,8 @@ func TestStorageResolveRejectsInvalidSchema(t *testing.T) {
 	spec.Redis.IDField = "missing"
 
 	_, err := storage.ResolveMeta([]meta.TypeSpec{spec}, storageMetaTypes(t))
-	if !errors.Is(err, anno.ErrUnknownField) {
-		t.Fatalf("expected anno.ErrUnknownField, got %v", err)
+	if !errors.Is(err, meta.ErrUnknownField) {
+		t.Fatalf("expected meta.ErrUnknownField, got %v", err)
 	}
 }
 

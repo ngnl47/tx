@@ -5,8 +5,7 @@ import (
 	"sync"
 )
 
-// Registry stores type metadata during initialization and becomes immutable
-// after Freeze.
+// Registry 在初始化阶段保存类型元数据，并在 Freeze 后变为不可变。
 type Registry struct {
 	mu     sync.RWMutex
 	frozen bool

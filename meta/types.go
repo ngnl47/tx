@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// TypeRef identifies a Go type independently from runtime reflection.
+// TypeRef 在不依赖运行时反射的情况下标识一个 Go 类型。
 type TypeRef struct {
 	ImportPath string
 	Package    string
@@ -41,7 +41,7 @@ func (ref TypeRef) key() string {
 	return ref.normalized().FullName
 }
 
-// Field describes a Go struct field and the alias used by external metadata.
+// Field 描述 Go 结构体字段及外部元数据使用的字段别名。
 type Field struct {
 	Name     string
 	Alias    string
@@ -49,20 +49,20 @@ type Field struct {
 	Exported bool
 }
 
-// Method describes a Go method discovered for a type.
+// Method 描述从类型上扫描到的 Go 方法。
 type Method struct {
 	Name     string
 	Exported bool
 }
 
-// Type contains structural metadata for a Go type.
+// Type 保存 Go 类型的结构元数据。
 type Type struct {
 	Ref     TypeRef
 	Fields  []Field
 	Methods []Method
 }
 
-// TypeSpec is the registered metadata unit for a type.
+// TypeSpec 是按类型注册的元数据单元。
 type TypeSpec struct {
 	Type    Type
 	Storage StorageSpec

@@ -187,7 +187,7 @@ func TestSubscribeAsync(t *testing.T) {
 
 	time.Sleep(10 * time.Millisecond)
 
-	// todo race detected during execution of test
+	// TODO: 测试执行时会检测到竞态，后续需要单独修复。
 	//if numResults != 2 {
 	//	t.Fail()
 	//}

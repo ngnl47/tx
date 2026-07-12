@@ -17,7 +17,7 @@ func TestAnnoNormalizeAndValidate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseTypeDoc returned error: %v", err)
 	}
-	spec, err := anno.Normalize(directives)
+	spec, err := meta.Normalize(directives)
 	if err != nil {
 		t.Fatalf("Normalize returned error: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestAnnoNormalizeAndValidate(t *testing.T) {
 		},
 	}}
 	spec.Type = astType.Type
-	if err := anno.Validate(spec, astType); err != nil {
+	if err := meta.Validate(spec, astType); err != nil {
 		t.Fatalf("Validate returned error: %v", err)
 	}
 	if spec.Storage.Mode != meta.StorageModeFusion || !spec.Redis.OmitEmpty || !spec.Mongo.Sharding.Enabled {
@@ -48,8 +48,8 @@ func TestAnnoValidateRejectsUnknownField(t *testing.T) {
 		Fields: []meta.Field{{Name: "RoleID", Alias: "roleId"}},
 	}}
 
-	err := anno.Validate(spec, astType)
-	if !errors.Is(err, anno.ErrUnknownField) {
+	err := meta.Validate(spec, astType)
+	if !errors.Is(err, meta.ErrUnknownField) {
 		t.Fatalf("expected ErrUnknownField, got %v", err)
 	}
 }

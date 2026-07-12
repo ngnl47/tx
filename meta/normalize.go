@@ -1,20 +1,36 @@
-package anno
+package meta
 
 import (
 	"fmt"
 	"strconv"
 	"time"
 
-	"github.com/ngnl47/gobricks/meta"
+	"github.com/ngnl47/gobricks/anno"
 )
 
-func Normalize(directives []Directive) (meta.TypeSpec, error) {
-	spec := meta.TypeSpec{Fields: map[string]meta.FieldSpec{}}
+// Normalize 将内置存储注解指令转换为 TypeSpec。
+//
+// 该函数只解释 storage 体系的内置指令："storage"、"redis" 和
+// "mongodb"。其他业务自定义注解应由其所属模块从 astscan.PackageSet 中自行消费。
+//
+// 输入示例：
+//
+//	@storage -> Params{"mode":"fusion"}
+//	@redis   -> Params{"routeBy":"roleId", "idField":"roleId"}
+//
+// 输出示例：
+//
+//	TypeSpec{
+//		Storage: StorageSpec{Mode: StorageModeFusion},
+//		Redis:   &RedisSpec{IDField: "roleId", Route: ...},
+//	}
+func Normalize(directives []anno.Directive) (TypeSpec, error) {
+	spec := TypeSpec{Fields: map[string]FieldSpec{}}
 	for _, directive := range directives {
-		if directive.Scope == ScopeField {
+		if directive.Scope == anno.ScopeField {
 			field, err := normalizeFieldDirective(directive)
 			if err != nil {
-				return meta.TypeSpec{}, err
+				return TypeSpec{}, err
 			}
 			current := spec.Fields[directive.Field]
 			if field.Redis != nil {
@@ -30,53 +46,53 @@ func Normalize(directives []Directive) (meta.TypeSpec, error) {
 		case "storage":
 			storage, err := normalizeStorage(directive)
 			if err != nil {
-				return meta.TypeSpec{}, err
+				return TypeSpec{}, err
 			}
 			spec.Storage = storage
 		case "redis":
 			redis, err := normalizeRedis(directive)
 			if err != nil {
-				return meta.TypeSpec{}, err
+				return TypeSpec{}, err
 			}
 			spec.Redis = &redis
 		case "mongodb":
 			mongo, err := normalizeMongo(directive)
 			if err != nil {
-				return meta.TypeSpec{}, err
+				return TypeSpec{}, err
 			}
 			spec.Mongo = &mongo
 		default:
-			return meta.TypeSpec{}, fmt.Errorf("%w: %s", ErrUnknownTag, directive.Name)
+			return TypeSpec{}, fmt.Errorf("%w: %s", ErrUnknownTag, directive.Name)
 		}
 	}
-	if spec.Storage.Mode == meta.StorageModeFusion {
-		spec.Fusion = &meta.FusionSpec{}
+	if spec.Storage.Mode == StorageModeFusion {
+		spec.Fusion = &FusionSpec{}
 	}
 	return spec, nil
 }
 
-func normalizeStorage(d Directive) (meta.StorageSpec, error) {
-	var out meta.StorageSpec
+func normalizeStorage(d anno.Directive) (StorageSpec, error) {
+	var out StorageSpec
 	for key, value := range d.Params {
 		switch key {
 		case "mode":
-			out.Mode = meta.StorageMode(value)
+			out.Mode = StorageMode(value)
 		case "delaySaveTime", "saveTime", "delaySave":
-			out.DelaySave = meta.Duration{Duration: parseDuration(value)}
+			out.DelaySave = Duration{Duration: parseDuration(value)}
 		case "delayDelTime", "delTime", "delayDelete":
-			out.DelayDelete = meta.Duration{Duration: parseDuration(value)}
+			out.DelayDelete = Duration{Duration: parseDuration(value)}
 		default:
-			return meta.StorageSpec{}, fmt.Errorf("%w: storage.%s", ErrUnknownParam, key)
+			return StorageSpec{}, fmt.Errorf("%w: storage.%s", ErrUnknownParam, key)
 		}
 	}
-	if out.Mode != meta.StorageModeRedis && out.Mode != meta.StorageModeMongo && out.Mode != meta.StorageModeFusion {
-		return meta.StorageSpec{}, fmt.Errorf("%w: storage.mode %q", ErrUnsupportedMode, out.Mode)
+	if out.Mode != StorageModeRedis && out.Mode != StorageModeMongo && out.Mode != StorageModeFusion {
+		return StorageSpec{}, fmt.Errorf("%w: storage.mode %q", ErrUnsupportedMode, out.Mode)
 	}
 	return out, nil
 }
 
-func normalizeRedis(d Directive) (meta.RedisSpec, error) {
-	var out meta.RedisSpec
+func normalizeRedis(d anno.Directive) (RedisSpec, error) {
+	var out RedisSpec
 	for key, value := range d.Params {
 		switch key {
 		case "routeType", "shardType", "config":
@@ -89,8 +105,10 @@ func normalizeRedis(d Directive) (meta.RedisSpec, error) {
 			out.Key = value
 		case "storeType":
 			out.StoreType = value
+		case "omitempty":
+			out.OmitEmpty = parseBool(value)
 		default:
-			return meta.RedisSpec{}, fmt.Errorf("%w: redis.%s", ErrUnknownParam, key)
+			return RedisSpec{}, fmt.Errorf("%w: redis.%s", ErrUnknownParam, key)
 		}
 	}
 	for flag := range d.Flags {
@@ -98,14 +116,14 @@ func normalizeRedis(d Directive) (meta.RedisSpec, error) {
 		case "omitempty":
 			out.OmitEmpty = true
 		default:
-			return meta.RedisSpec{}, fmt.Errorf("%w: redis.%s", ErrUnknownParam, flag)
+			return RedisSpec{}, fmt.Errorf("%w: redis.%s", ErrUnknownParam, flag)
 		}
 	}
 	return out, nil
 }
 
-func normalizeMongo(d Directive) (meta.MongoSpec, error) {
-	var out meta.MongoSpec
+func normalizeMongo(d anno.Directive) (MongoSpec, error) {
+	var out MongoSpec
 	for key, value := range d.Params {
 		switch key {
 		case "routeType", "shardType", "config":
@@ -116,8 +134,10 @@ func normalizeMongo(d Directive) (meta.MongoSpec, error) {
 			out.IDField = value
 		case "collection", "c", "col":
 			out.Collection = value
+		case "enableSharding":
+			out.Sharding.Enabled = parseBool(value)
 		default:
-			return meta.MongoSpec{}, fmt.Errorf("%w: mongodb.%s", ErrUnknownParam, key)
+			return MongoSpec{}, fmt.Errorf("%w: mongodb.%s", ErrUnknownParam, key)
 		}
 	}
 	for flag := range d.Flags {
@@ -125,23 +145,27 @@ func normalizeMongo(d Directive) (meta.MongoSpec, error) {
 		case "enableSharding":
 			out.Sharding.Enabled = true
 		default:
-			return meta.MongoSpec{}, fmt.Errorf("%w: mongodb.%s", ErrUnknownParam, flag)
+			return MongoSpec{}, fmt.Errorf("%w: mongodb.%s", ErrUnknownParam, flag)
 		}
 	}
 	return out, nil
 }
 
-func normalizeFieldDirective(d Directive) (meta.FieldSpec, error) {
-	var out meta.FieldSpec
+func normalizeFieldDirective(d anno.Directive) (FieldSpec, error) {
+	var out FieldSpec
 	switch d.Name {
 	case "redis":
-		field := &meta.RedisFieldSpec{}
+		field := &RedisFieldSpec{}
 		for key, value := range d.Params {
 			switch key {
 			case "subKey":
 				field.SubKey = value
+			case "ignore":
+				field.Ignore = parseBool(value)
+			case "fullUpdate":
+				field.FullUpdate = parseBool(value)
 			default:
-				return meta.FieldSpec{}, fmt.Errorf("%w: redis.%s", ErrUnknownParam, key)
+				return FieldSpec{}, fmt.Errorf("%w: redis.%s", ErrUnknownParam, key)
 			}
 		}
 		for flag := range d.Flags {
@@ -151,13 +175,13 @@ func normalizeFieldDirective(d Directive) (meta.FieldSpec, error) {
 			case "fullUpdate":
 				field.FullUpdate = true
 			default:
-				return meta.FieldSpec{}, fmt.Errorf("%w: redis.%s", ErrUnknownParam, flag)
+				return FieldSpec{}, fmt.Errorf("%w: redis.%s", ErrUnknownParam, flag)
 			}
 		}
 		out.Redis = field
 	case "mongodb":
-		field := &meta.MongoFieldSpec{}
-		index := meta.IndexSpec{}
+		field := &MongoFieldSpec{}
+		index := IndexSpec{}
 		hasIndex := false
 		for key, value := range d.Params {
 			switch key {
@@ -170,8 +194,15 @@ func normalizeFieldDirective(d Directive) (meta.FieldSpec, error) {
 			case "expire", "expireAfter":
 				index.ExpireAfter = value
 				hasIndex = true
+			case "ignore":
+				field.Ignore = parseBool(value)
+			case "index":
+				hasIndex = hasIndex || parseBool(value)
+			case "unique":
+				index.Unique = parseBool(value)
+				hasIndex = hasIndex || index.Unique
 			default:
-				return meta.FieldSpec{}, fmt.Errorf("%w: mongodb.%s", ErrUnknownParam, key)
+				return FieldSpec{}, fmt.Errorf("%w: mongodb.%s", ErrUnknownParam, key)
 			}
 		}
 		for flag := range d.Flags {
@@ -184,7 +215,7 @@ func normalizeFieldDirective(d Directive) (meta.FieldSpec, error) {
 				index.Unique = true
 				hasIndex = true
 			default:
-				return meta.FieldSpec{}, fmt.Errorf("%w: mongodb.%s", ErrUnknownParam, flag)
+				return FieldSpec{}, fmt.Errorf("%w: mongodb.%s", ErrUnknownParam, flag)
 			}
 		}
 		if hasIndex {
@@ -192,7 +223,7 @@ func normalizeFieldDirective(d Directive) (meta.FieldSpec, error) {
 		}
 		out.Mongo = field
 	default:
-		return meta.FieldSpec{}, fmt.Errorf("%w: %s", ErrUnknownTag, d.Name)
+		return FieldSpec{}, fmt.Errorf("%w: %s", ErrUnknownTag, d.Name)
 	}
 	return out, nil
 }
@@ -206,4 +237,12 @@ func parseDuration(value string) time.Duration {
 		return 0
 	}
 	return dur
+}
+
+func parseBool(value string) bool {
+	if value == "" {
+		return true
+	}
+	parsed, err := strconv.ParseBool(value)
+	return err == nil && parsed
 }

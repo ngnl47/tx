@@ -1,12 +1,13 @@
-package anno
+package meta
 
-import (
-	"fmt"
+import "fmt"
 
-	"github.com/ngnl47/gobricks/meta"
-)
-
-func Validate(spec meta.TypeSpec, astType meta.TypeSpec) error {
+// Validate 根据扫描得到的 Go 类型元数据校验内置存储元数据。
+//
+// 它会检查 storage mode 所需配置是否齐全，并确认 id/route 字段引用的是
+// astType 中存在的字段别名。例如结构体中不存在 alias 为 roleId 的字段时，
+// `idField:"roleId"` 会在这里报错。
+func Validate(spec TypeSpec, astType TypeSpec) error {
 	aliases := map[string]struct{}{}
 	for _, field := range astType.Type.Fields {
 		if field.Alias != "" {
@@ -14,15 +15,15 @@ func Validate(spec meta.TypeSpec, astType meta.TypeSpec) error {
 		}
 	}
 	switch spec.Storage.Mode {
-	case meta.StorageModeRedis:
+	case StorageModeRedis:
 		if spec.Redis == nil {
 			return fmt.Errorf("%w: redis", ErrMissingConfig)
 		}
-	case meta.StorageModeMongo:
+	case StorageModeMongo:
 		if spec.Mongo == nil {
 			return fmt.Errorf("%w: mongodb", ErrMissingConfig)
 		}
-	case meta.StorageModeFusion:
+	case StorageModeFusion:
 		if spec.Redis == nil || spec.Mongo == nil {
 			return fmt.Errorf("%w: fusion requires redis and mongodb", ErrMissingConfig)
 		}

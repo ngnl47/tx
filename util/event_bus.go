@@ -6,7 +6,7 @@ import (
 	"sync"
 )
 
-// BusSubscriber defines subscription-related bus behavior
+// BusSubscriber 定义事件总线的订阅相关行为。
 type BusSubscriber interface {
 	Subscribe(topic string, fn interface{}) error
 	SubscribeAsync(topic string, fn interface{}, transactional bool) error
@@ -15,25 +15,25 @@ type BusSubscriber interface {
 	Unsubscribe(topic string, handler interface{}) error
 }
 
-// BusPublisher defines publishing-related bus behavior
+// BusPublisher 定义事件总线的发布相关行为。
 type BusPublisher interface {
 	Publish(topic string, args ...interface{})
 }
 
-// BusController defines bus control behavior (checking handler's presence, synchronization)
+// BusController 定义事件总线的控制行为，例如检查回调是否存在和等待同步。
 type BusController interface {
 	HasCallback(topic string) bool
 	WaitAsync()
 }
 
-// Bus englobes global (subscribe, publish, control) bus behavior
+// Bus 聚合订阅、发布和控制行为。
 type Bus interface {
 	BusController
 	BusSubscriber
 	BusPublisher
 }
 
-// EventBus - box for handlers and callbacks.
+// EventBus 保存事件处理器和回调。
 type EventBus struct {
 	handlers map[string][]*eventHandler
 	mu       sync.RWMutex
@@ -45,11 +45,11 @@ type eventHandler struct {
 	flagOnce      bool
 	async         bool
 	transactional bool
-	once          sync.Once // SubscribeOnce(Async): user callback runs at most once
-	sync.Mutex              // transactional async: serialize callbacks for this subscription
+	once          sync.Once // SubscribeOnce(Async)：用户回调最多执行一次。
+	sync.Mutex              // transactional async：串行化该订阅的回调。
 }
 
-// NewEventBus returns new EventBus with empty handlers.
+// NewEventBus 创建一个不含任何处理器的新 EventBus。
 func NewEventBus() Bus {
 	b := &EventBus{
 		handlers: make(map[string][]*eventHandler),
@@ -57,7 +57,7 @@ func NewEventBus() Bus {
 	return Bus(b)
 }
 
-// doSubscribe handles the subscription logic and is utilized by the public Subscribe functions
+// doSubscribe 处理订阅逻辑，供公开 Subscribe 方法复用。
 func (bus *EventBus) doSubscribe(topic string, fn interface{}, handler *eventHandler) error {
 	bus.mu.Lock()
 	defer bus.mu.Unlock()
@@ -68,16 +68,15 @@ func (bus *EventBus) doSubscribe(topic string, fn interface{}, handler *eventHan
 	return nil
 }
 
-// Subscribe subscribes to a topic.
-// Returns error if `fn` is not a function.
+// Subscribe 订阅指定 topic。
+// 如果 fn 不是函数则返回错误。
 func (bus *EventBus) Subscribe(topic string, fn interface{}) error {
 	return bus.doSubscribe(topic, fn, &eventHandler{callBack: reflect.ValueOf(fn)})
 }
 
-// SubscribeAsync subscribes to a topic with an asynchronous callback
-// Transactional determines whether subsequent callbacks for a topic are
-// run serially (true) or concurrently (false)
-// Returns error if `fn` is not a function.
+// SubscribeAsync 以异步回调订阅指定 topic。
+// transactional 决定同一 topic 的后续回调是串行执行（true）还是并发执行（false）。
+// 如果 fn 不是函数则返回错误。
 func (bus *EventBus) SubscribeAsync(topic string, fn interface{}, transactional bool) error {
 	return bus.doSubscribe(topic, fn, &eventHandler{
 		callBack:      reflect.ValueOf(fn),
@@ -86,8 +85,8 @@ func (bus *EventBus) SubscribeAsync(topic string, fn interface{}, transactional 
 	})
 }
 
-// SubscribeOnce subscribes to a topic once. Handler will be removed after executing.
-// Returns error if `fn` is not a function.
+// SubscribeOnce 只订阅指定 topic 一次，处理器执行后会被移除。
+// 如果 fn 不是函数则返回错误。
 func (bus *EventBus) SubscribeOnce(topic string, fn interface{}) error {
 	return bus.doSubscribe(topic, fn, &eventHandler{
 		callBack: reflect.ValueOf(fn),
@@ -95,9 +94,8 @@ func (bus *EventBus) SubscribeOnce(topic string, fn interface{}) error {
 	})
 }
 
-// SubscribeOnceAsync subscribes to a topic once with an asynchronous callback
-// Handler will be removed after executing.
-// Returns error if `fn` is not a function.
+// SubscribeOnceAsync 以异步回调只订阅指定 topic 一次。
+// 处理器执行后会被移除。如果 fn 不是函数则返回错误。
 func (bus *EventBus) SubscribeOnceAsync(topic string, fn interface{}) error {
 	return bus.doSubscribe(topic, fn, &eventHandler{
 		callBack: reflect.ValueOf(fn),
@@ -106,7 +104,7 @@ func (bus *EventBus) SubscribeOnceAsync(topic string, fn interface{}) error {
 	})
 }
 
-// HasCallback returns true if exists any callback subscribed to the topic.
+// HasCallback 判断指定 topic 是否存在已订阅回调。
 func (bus *EventBus) HasCallback(topic string) bool {
 	bus.mu.RLock()
 	defer bus.mu.RUnlock()
@@ -114,8 +112,8 @@ func (bus *EventBus) HasCallback(topic string) bool {
 	return ok && len(h) > 0
 }
 
-// Unsubscribe removes callback defined for a topic.
-// Returns error if there are no callbacks subscribed to the topic.
+// Unsubscribe 移除指定 topic 上的回调。
+// 如果该 topic 没有已订阅回调则返回错误。
 func (bus *EventBus) Unsubscribe(topic string, handler interface{}) error {
 	bus.mu.Lock()
 	defer bus.mu.Unlock()
@@ -126,11 +124,11 @@ func (bus *EventBus) Unsubscribe(topic string, handler interface{}) error {
 	return fmt.Errorf("topic %s doesn't exist", topic)
 }
 
-// Publish executes callback defined for a topic. Any additional argument will be transferred to the callback.
+// Publish 执行指定 topic 上的回调，并把额外参数传给回调函数。
 //
-// Handlers are resolved under a short read lock (snapshot); callbacks run without holding the bus lock,
-// so concurrent Publish and slow handlers do not block other topics. Unsubscribe may race with Publish:
-// a handler removed after the snapshot was taken can still be invoked once.
+// 处理器会在短暂读锁内解析成快照；回调执行时不持有总线锁，因此并发 Publish
+// 和慢回调不会阻塞其他 topic。Unsubscribe 可能与 Publish 竞争：快照创建后
+// 被移除的处理器仍可能再执行一次。
 func (bus *EventBus) Publish(topic string, args ...interface{}) {
 	bus.mu.RLock()
 	handlers, ok := bus.handlers[topic]
@@ -145,8 +143,8 @@ func (bus *EventBus) Publish(topic string, args ...interface{}) {
 		if handler.async {
 			bus.wg.Add(1)
 			if handler.transactional {
-				// Serialize sequential Publish to the same transactional subscriber:
-				// lock on the publisher goroutine before starting the worker (matches legacy EventBus).
+				// 对同一个 transactional 订阅者串行化连续 Publish：
+				// 启动 worker 前在发布 goroutine 上加锁，以匹配旧 EventBus 行为。
 				handler.Lock()
 				go bus.runTransactionalAsync(handler, topic, args...)
 				continue
@@ -187,7 +185,7 @@ func (bus *EventBus) doPublishAsync(handler *eventHandler, topic string, args ..
 	bus.doPublish(handler, topic, args...)
 }
 
-// runTransactionalAsync runs after publisher acquired handler.Lock().
+// runTransactionalAsync 在发布方获取 handler.Lock() 后运行。
 func (bus *EventBus) runTransactionalAsync(handler *eventHandler, topic string, args ...interface{}) {
 	defer bus.wg.Done()
 	defer handler.Unlock()
@@ -203,7 +201,8 @@ func (bus *EventBus) runTransactionalAsync(handler *eventHandler, topic string, 
 	bus.doPublish(handler, topic, args...)
 }
 
-// removeHandlerIfPresent removes h from bus.handlers[topic]. Caller must hold bus.mu (write lock).
+// removeHandlerIfPresent 从 bus.handlers[topic] 中移除 h。
+// 调用方必须持有 bus.mu 写锁。
 func (bus *EventBus) removeHandlerIfPresent(topic string, h *eventHandler) {
 	slice, ok := bus.handlers[topic]
 	if !ok {
@@ -258,7 +257,7 @@ func (bus *EventBus) setUpPublish(callback *eventHandler, args ...interface{}) [
 	return passedArguments
 }
 
-// WaitAsync waits for all async callbacks to complete
+// WaitAsync 等待所有异步回调执行完成。
 func (bus *EventBus) WaitAsync() {
 	bus.wg.Wait()
 }

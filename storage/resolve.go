@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"github.com/ngnl47/gobricks/anno"
 	"github.com/ngnl47/gobricks/meta"
 )
 
@@ -16,7 +15,7 @@ func ResolveMeta(specs []meta.TypeSpec, types TypeLookup) (*Registry, error) {
 			if astType, ok := types.Lookup(meta.TypeRef{FullName: spec.Type.Ref.FullName}); ok {
 				spec.Type = astType.Type
 			}
-			if err := anno.Validate(spec, spec); err != nil {
+			if err := meta.Validate(spec, spec); err != nil {
 				return nil, err
 			}
 			cfg := TypeConfig{

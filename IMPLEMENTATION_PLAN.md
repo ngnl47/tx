@@ -166,8 +166,8 @@ types:
 - `anno.ParseTypeTagLine(text string) (*anno.Directive, error)`
 - `anno.ParseTypeDoc(comments []string) ([]anno.Directive, error)`
 - `anno.ParseStructTag(tag reflect.StructTag, scope anno.Scope) ([]anno.Directive, error)`
-- `anno.Normalize(directives []anno.Directive) (*meta.TypeSpec, error)`
-- `anno.Validate(spec, astType) error`
+- `meta.Normalize(directives []anno.Directive) (meta.TypeSpec, error)`
+- `meta.Validate(spec, astType) error`
 - 强类型配置：
   - `StorageSpec`
   - `RedisSpec`
