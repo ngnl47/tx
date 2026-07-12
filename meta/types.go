@@ -1,0 +1,199 @@
+package meta
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+)
+
+// TypeRef identifies a Go type independently from runtime reflection.
+type TypeRef struct {
+	ImportPath string
+	Package    string
+	Name       string
+	FullName   string
+}
+
+func (ref TypeRef) normalized() TypeRef {
+	ref.ImportPath = strings.TrimSpace(ref.ImportPath)
+	ref.Package = strings.TrimSpace(ref.Package)
+	ref.Name = strings.TrimSpace(ref.Name)
+	ref.FullName = strings.TrimSpace(ref.FullName)
+	if ref.FullName == "" {
+		ref.FullName = ref.defaultFullName()
+	}
+	return ref
+}
+
+func (ref TypeRef) defaultFullName() string {
+	switch {
+	case ref.ImportPath != "" && ref.Name != "":
+		return ref.ImportPath + "." + ref.Name
+	case ref.Package != "" && ref.Name != "":
+		return ref.Package + "." + ref.Name
+	default:
+		return ref.Name
+	}
+}
+
+func (ref TypeRef) key() string {
+	return ref.normalized().FullName
+}
+
+// Field describes a Go struct field and the alias used by external metadata.
+type Field struct {
+	Name     string
+	Alias    string
+	Type     string
+	Exported bool
+}
+
+// Method describes a Go method discovered for a type.
+type Method struct {
+	Name     string
+	Exported bool
+}
+
+// Type contains structural metadata for a Go type.
+type Type struct {
+	Ref     TypeRef
+	Fields  []Field
+	Methods []Method
+}
+
+// TypeSpec is the registered metadata unit for a type.
+type TypeSpec struct {
+	Type    Type
+	Storage StorageSpec
+	Redis   *RedisSpec
+	Mongo   *MongoSpec
+	Fusion  *FusionSpec
+	Fields  map[string]FieldSpec
+}
+
+func cloneTypeSpec(spec TypeSpec) TypeSpec {
+	spec.Type.Ref = spec.Type.Ref.normalized()
+	spec.Type.Fields = append([]Field(nil), spec.Type.Fields...)
+	spec.Type.Methods = append([]Method(nil), spec.Type.Methods...)
+	if spec.Redis != nil {
+		redis := *spec.Redis
+		spec.Redis = &redis
+	}
+	if spec.Mongo != nil {
+		mongo := *spec.Mongo
+		spec.Mongo = &mongo
+	}
+	if spec.Fusion != nil {
+		fusion := *spec.Fusion
+		spec.Fusion = &fusion
+	}
+	if spec.Fields != nil {
+		fields := make(map[string]FieldSpec, len(spec.Fields))
+		for name, field := range spec.Fields {
+			if field.Redis != nil {
+				redis := *field.Redis
+				field.Redis = &redis
+			}
+			if field.Mongo != nil {
+				mongo := *field.Mongo
+				mongo.Indexes = append([]IndexSpec(nil), field.Mongo.Indexes...)
+				field.Mongo = &mongo
+			}
+			fields[name] = field
+		}
+		spec.Fields = fields
+	}
+	return spec
+}
+
+type StorageMode string
+
+const (
+	StorageModeRedis  StorageMode = "redis"
+	StorageModeMongo  StorageMode = "mongo"
+	StorageModeFusion StorageMode = "fusion"
+)
+
+type StorageSpec struct {
+	Mode        StorageMode `json:"mode"`
+	DelaySave   Duration    `json:"delaySave,omitempty"`
+	DelayDelete Duration    `json:"delayDelete,omitempty"`
+}
+
+type RedisSpec struct {
+	Route     RouteSpec `json:"route"`
+	IDField   string    `json:"idField"`
+	Key       string    `json:"key,omitempty"`
+	OmitEmpty bool      `json:"omitEmpty,omitempty"`
+	StoreType string    `json:"storeType,omitempty"`
+}
+
+type MongoSpec struct {
+	Route      RouteSpec    `json:"route"`
+	IDField    string       `json:"idField"`
+	Collection string       `json:"collection"`
+	Sharding   ShardingSpec `json:"sharding,omitempty"`
+}
+
+type FusionSpec struct{}
+
+type RouteSpec struct {
+	Type string `json:"type"`
+	By   string `json:"by"`
+}
+
+type ShardingSpec struct {
+	Enabled bool `json:"enabled,omitempty"`
+}
+
+type FieldSpec struct {
+	Redis *RedisFieldSpec `json:"redis,omitempty"`
+	Mongo *MongoFieldSpec `json:"mongo,omitempty"`
+}
+
+type RedisFieldSpec struct {
+	SubKey     string `json:"subKey,omitempty"`
+	Ignore     bool   `json:"ignore,omitempty"`
+	FullUpdate bool   `json:"fullUpdate,omitempty"`
+}
+
+type MongoFieldSpec struct {
+	Ignore  bool        `json:"ignore,omitempty"`
+	Indexes []IndexSpec `json:"indexes,omitempty"`
+}
+
+type IndexSpec struct {
+	Unique      bool   `json:"unique,omitempty"`
+	Order       string `json:"order,omitempty"`
+	Weight      int    `json:"weight,omitempty"`
+	ExpireAfter string `json:"expireAfter,omitempty"`
+}
+
+type Duration struct {
+	time.Duration
+}
+
+func (d Duration) MarshalJSON() ([]byte, error) {
+	if d.Duration == 0 {
+		return []byte(`""`), nil
+	}
+	return json.Marshal(d.String())
+}
+
+func (d *Duration) UnmarshalJSON(data []byte) error {
+	var raw string
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if raw == "" {
+		d.Duration = 0
+		return nil
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil {
+		return fmt.Errorf("meta: parse duration %q: %w", raw, err)
+	}
+	d.Duration = parsed
+	return nil
+}
