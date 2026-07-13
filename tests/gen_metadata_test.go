@@ -12,9 +12,9 @@ func TestGenLoadTagsAndScanRendersStableMetadataSnapshot(t *testing.T) {
 	root := writeTempModule(t, map[string]string{
 		"data/role.go": `package data
 
-// @storage:"mode:fusion,delaySaveTime:600s,delayDelTime:24h"
-// @redis:"routeType:role,routeBy:serverId,idField:roleId,key:role,omitempty"
-// @mongodb:"routeType:role,routeBy:serverId,idField:roleId,collection:roles,enableSharding"
+// @storage:` + "`mode:\"fusion\" delaySaveTime:\"600s\" delayDelTime:\"24h\"`" + `
+// @redis:` + "`routeType:\"role\" routeBy:\"serverId\" idField:\"roleId\" key:\"role\" omitempty:\"true\"`" + `
+// @mongodb:` + "`routeType:\"role\" routeBy:\"serverId\" idField:\"roleId\" collection:\"roles\" enableSharding:\"true\"`" + `
 type Role struct {
 	RoleID int64 ` + "`alias:\"roleId\"`" + `
 	ServerID int64 ` + "`alias:\"serverId\"`" + `

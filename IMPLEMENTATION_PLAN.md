@@ -7,7 +7,7 @@
 - 使用 Go 注释作为元数据主入口，保持类型定义和存储定义靠近。
 - 使用 Go AST 读取 Go 类型结构和注释，建立注释元数据与 Go 类型之间的绑定关系。
 - 支持从 Mandarin 旧注解迁移到新的 Gobricks 语义；语法形态尽量沿用 `// @name:"k:v,flag"`，降低迁移成本。
-- 独立 schema 文件作为可选导入/导出格式，用于迁移、审计、批量生成和工具链集成，不作为日常手写入口。
+- 不支持独立 schema 文件；存储元数据只来自 Go 注释、struct tag 和 AST 扫描结果。
 - 运行时元数据只允许初始化期注册；不支持隐式运行时追加 tag。
 - `fusion` 作为公开存储模式名；旧 `redisDelayMongoDB` 只作为迁移器识别的 legacy alias。
 - Redis key 默认使用 `shardBy` 作为 Redis Cluster hash tag。
@@ -20,11 +20,10 @@
 
 ```text
 gobricks/
-  meta/             # 元数据模型、registry、annotation/schema loader 输出模型
+  meta/             # 元数据模型、registry、annotation 输出模型
   anno/             # Go 注释中的 type-level tag 解析、规范化、校验
-  schema/           # 可选 schema 文件 codec，用于导入/导出和工具链
   astscan/          # Go AST 扫描器，提取 package/type/field/method/comment 信息
-  migrate/          # Mandarin legacy tag 到 Gobricks metadata/schema 的迁移器
+  migrate/          # Mandarin legacy tag 到 Gobricks metadata 的迁移器
   storage/          # 存储抽象：Store mode、route、key、options、runtime metadata
   storage/redis/    # Redis key builder、route resolver、后续 Redis adapter
   storage/mongo/    # Mongo collection/index/sharding metadata、后续 Mongo adapter
@@ -70,53 +69,20 @@ RoleId int64 `mongodb:"index,unique"`
 - Redis hash tag 默认使用 `routeBy` 指向的字段，不再暴露旧库全局 `UseShardByInKey=false` 兼容行为。
 - 旧字段名如 `routeBy`、`idField` 可以保留为 canonical 写法；也可以在后续版本引入更短别名，但第一版以降低迁移成本为优先。
 
-## Optional Schema Direction
+## Schema Direction
 
-独立 schema 文件不是日常手写入口，而是可选导入/导出格式。它应表达“类型绑定”和“存储语义”，不表达 Go 语法细节。
+独立 schema 文件不再作为支持范围。第一版只维护一条元数据链路：
 
-建议第一版可以先不实现完整 schema codec；若实现，使用 YAML 或 JSON。YAML 对人工审阅友好；JSON 对机器迁移稳定。内部模型必须与文件格式解耦。
-
-可选 schema 草案：
-
-```yaml
-version: 1
-types:
-  evo-data/data.GDRole:
-    storage:
-      mode: fusion
-      delaySave: 600s
-      delayDelete: 24h
-    redis:
-      route:
-        type: role
-        by: roleId
-      id: roleId
-      key: role
-      omitEmpty: true
-      storeType: string
-    mongo:
-      route:
-        type: role
-        by: roleId
-      id: roleId
-      collection: roles
-      sharding:
-        enabled: true
-    fields:
-      items:
-        redis:
-          subKey: items
-      roleId:
-        mongo:
-          indexes:
-            - unique: true
+```text
+Go 注释 / struct tag -> anno -> astscan -> meta -> storage/gen
 ```
 
-可选 schema 设计原则：
+设计原则：
 
-- schema loader 输出同一套强类型模型，不把 map/string 结构泄漏到 runtime。
-- schema 与注释是同一语义模型的不同编码；二者冲突时第一版建议直接报错，不做隐式合并。
-- schema codec 用于迁移、审计、批量生成、跨语言或外部工具集成。
+- 不提供 YAML/JSON schema loader。
+- 不提供 schema 导入、导出或冲突合并。
+- 迁移器直接输出 `meta.TypeSpec`，不再经过中间 schema 文档格式。
+- 外部工具若需要消费元数据，应基于后续 generator 输出，而不是手写 schema 文件。
 
 ## Phase 1: Metadata Core
 
@@ -235,7 +201,7 @@ types:
 
 ## Phase 4: Mandarin Legacy Migrator
 
-目标：把 Mandarin 旧注解规范化为新的 Gobricks 语义，并可选导出 schema 文件。
+目标：把 Mandarin 旧注解规范化为新的 Gobricks `meta.TypeSpec` 语义。
 
 输入形式：
 
@@ -254,7 +220,7 @@ types:
 - 将 `redisDelayMongoDB` 规范化为 `mode:fusion`。
 - 保留 `routeType`/`routeBy`/`idField` 作为第一版 canonical 字段名，避免无意义迁移成本。
 - 保留 `omitempty`、`enableSharding` 等 flag 形态。
-- 可选输出 schema 文件，用于审计或工具链集成。
+- 直接输出 `meta.TypeSpec` 和 migration report。
 
 验收：
 
@@ -272,7 +238,7 @@ types:
 
 ## Phase 5: Runtime Storage Metadata
 
-目标：把 type-level 注释 tag、field-level struct tag、可选 schema 和 AST type 信息组合成运行时可用的 storage metadata。
+目标：把 type-level 注释 tag、field-level struct tag 和 AST type 信息组合成运行时可用的 storage metadata。
 
 建议实现：
 
@@ -372,34 +338,7 @@ type DelayTaskBackend interface {
 - `tests/gen_metadata_test.go`
 - 使用 snapshot 字符串断言核心字段，不引入大体量 golden 文件。
 
-## Phase 8: Optional Schema Codec
-
-目标：提供 Gobricks metadata 的 YAML/JSON 导入导出，服务迁移、审计和外部工具链。
-
-建议实现：
-
-- `schema.Export(specs []meta.TypeSpec) ([]byte, error)`
-- `schema.Import(data []byte) ([]meta.TypeSpec, error)`
-- `schema.CheckConflicts(annotationSpecs, schemaSpecs []meta.TypeSpec) error`
-
-关键行为：
-
-- schema codec 输出/读取同一套 `meta.TypeSpec`，不另建一套 runtime 模型。
-- schema 与 Go 注释同时存在且冲突时，第一版直接报错。
-- schema 不作为日常手写入口；生成器默认读取 Go 注释。
-
-验收：
-
-- 注释解析得到的 metadata 可以导出为 schema。
-- schema 可以导入回等价 metadata。
-- 冲突检测错误可定位到 type/field/property。
-
-测试：
-
-- `tests/schema_codec_test.go`
-- `tests/schema_conflict_test.go`
-
-## Phase 9: Storage Adapter Implementation
+## Phase 8: Storage Adapter Implementation
 
 目标：在 metadata 稳定后再实现 Redis/Mongo/Fusion 真实读写。
 
@@ -424,7 +363,7 @@ type DelayTaskBackend interface {
 执行规则：
 
 - 所有 `*_test.go` 只放在 `/Users/a47/workspace/gobricks/tests`。
-- 包目录如 `meta/`、`schema/`、`storage/` 不放测试文件。
+- 包目录如 `meta/`、`storage/` 不放测试文件。
 - 测试 package 统一使用 `package tests`。
 - 测试通过 public API 驱动，避免为了测试暴露内部实现。
 - 临时输入文件用 `t.TempDir()` 生成。
@@ -492,27 +431,12 @@ type DelayTaskBackend interface {
 
 - 输入带 type-level 注释 tag 和 field-level struct tag 的 Go package，输出可测试、稳定的生成模型。
 
-### M6: Optional Schema Codec
-
-交付：
-
-- `schema`
-- Gobricks metadata 的 YAML/JSON 导入导出。
-
-完成标准：
-
-- 注释/struct tag 元数据可以导出为 schema。
-- schema 可以导入为同一套 `meta.TypeSpec`。
-- schema 与注释冲突时第一版报错，不做隐式合并。
-
 ## Open Design Details
 
 这些不是阻塞项，可以在 M1 期间定稿：
 
 - 是否支持除 `// @name:"..."` 之外的块状 doc 风格，还是后续补。
 - `mode:fusion` 等新值是否由迁移器自动改写，还是只在报告中提示。
-- 可选 schema 文件扩展名：建议 `.gobricks.yaml` 或 `gobricks.schema.yaml`。
-- 多 schema 文件合并规则：建议按显式 include 顺序，重复 type 报错。
 - type ref 表达方式：建议 `import/path.TypeName`，避免 package name 冲突。
 - field alias 是否允许 type-level 注释 tag 或 field-level struct tag 显式覆盖 AST 推导 alias。
 - migration CLI 名称：建议后续放在 `cmd/gobricks`，但第一阶段可先做 library API。

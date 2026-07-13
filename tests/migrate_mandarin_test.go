@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ngnl47/gobricks/meta"
 	"github.com/ngnl47/gobricks/migrate"
-	"github.com/ngnl47/gobricks/schema"
 )
 
 func TestMigrateMandarinLegacyTags(t *testing.T) {
@@ -22,16 +22,16 @@ type GDRole struct {
 `,
 	})
 
-	doc, report, err := migrate.MandarinDir(root + "/data")
+	specs, report, err := migrate.MandarinDir(root + "/data")
 	if err != nil {
 		t.Fatalf("MandarinDir returned error: %v", err)
 	}
 
-	spec := doc.Types["example.com/project/data.GDRole"]
+	spec := findMigratedSpec(t, specs, "example.com/project/data.GDRole")
 	if report.MigratedTypes != 1 {
 		t.Fatalf("migrated types = %d", report.MigratedTypes)
 	}
-	if spec.Storage.Mode != schema.StorageModeFusion {
+	if spec.Storage.Mode != meta.StorageModeFusion {
 		t.Fatalf("storage mode = %q", spec.Storage.Mode)
 	}
 	if spec.Storage.DelaySave.Duration != 10*time.Minute {
@@ -43,13 +43,13 @@ type GDRole struct {
 	if spec.Redis.Route.Type != "role" || spec.Redis.Route.By != "roleId" {
 		t.Fatalf("redis route = %#v", spec.Redis.Route)
 	}
-	if spec.Redis.ID != "roleId" || spec.Redis.Key != "role" || !spec.Redis.OmitEmpty {
+	if spec.Redis.IDField != "roleId" || spec.Redis.Key != "role" || !spec.Redis.OmitEmpty {
 		t.Fatalf("redis spec = %#v", spec.Redis)
 	}
 	if spec.Mongo.Route.Type != "role" || spec.Mongo.Route.By != "roleId" {
 		t.Fatalf("mongo route = %#v", spec.Mongo.Route)
 	}
-	if spec.Mongo.ID != "roleId" || spec.Mongo.Collection != "roles" || !spec.Mongo.Sharding.Enabled {
+	if spec.Mongo.IDField != "roleId" || spec.Mongo.Collection != "roles" || !spec.Mongo.Sharding.Enabled {
 		t.Fatalf("mongo spec = %#v", spec.Mongo)
 	}
 	if spec.Fields["items"].Redis.SubKey != "items" {
@@ -85,4 +85,15 @@ type Bad struct {
 	if report.MissingFields[0].Field != "missing" {
 		t.Fatalf("missing field = %#v", report.MissingFields[0])
 	}
+}
+
+func findMigratedSpec(t *testing.T, specs []meta.TypeSpec, fullName string) meta.TypeSpec {
+	t.Helper()
+	for _, spec := range specs {
+		if spec.Type.Ref.FullName == fullName {
+			return spec
+		}
+	}
+	t.Fatalf("missing migrated spec %s in %#v", fullName, specs)
+	return meta.TypeSpec{}
 }

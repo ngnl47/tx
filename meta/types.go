@@ -119,6 +119,7 @@ type StorageSpec struct {
 	Mode        StorageMode `json:"mode"`
 	DelaySave   Duration    `json:"delaySave,omitempty"`
 	DelayDelete Duration    `json:"delayDelete,omitempty"`
+	MemoryCache Duration    `json:"memoryCache,omitempty"`
 }
 
 type RedisSpec struct {
@@ -130,10 +131,11 @@ type RedisSpec struct {
 }
 
 type MongoSpec struct {
-	Route      RouteSpec    `json:"route"`
-	IDField    string       `json:"idField"`
-	Collection string       `json:"collection"`
-	Sharding   ShardingSpec `json:"sharding,omitempty"`
+	Route            RouteSpec    `json:"route"`
+	IDField          string       `json:"idField"`
+	Collection       string       `json:"collection"`
+	Sharding         ShardingSpec `json:"sharding,omitempty"`
+	UseMongoObjectID bool         `json:"useMongoObjectID,omitempty"`
 }
 
 type FusionSpec struct{}

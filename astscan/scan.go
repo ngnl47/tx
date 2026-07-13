@@ -217,7 +217,7 @@ func isStorageDirective(directive anno.Directive) bool {
 }
 
 func hasStorageMetadata(spec meta.TypeSpec) bool {
-	return spec.Storage.Mode != "" || spec.Redis != nil || spec.Mongo != nil || len(spec.Fields) > 0
+	return spec.Storage.Mode != "" || spec.Redis != nil || spec.Mongo != nil
 }
 
 type metadataFieldInfo struct {

@@ -10,9 +10,9 @@ import (
 
 func TestAnnoNormalizeAndValidate(t *testing.T) {
 	directives, err := anno.ParseTypeDoc([]string{
-		`// @storage:"mode:fusion,delaySaveTime:600s,delayDelTime:24h"`,
-		`// @redis:"routeType:role,routeBy:roleId,idField:roleId,key:role,omitempty"`,
-		`// @mongodb:"routeType:role,routeBy:roleId,idField:roleId,collection:roles,enableSharding"`,
+		`// @storage:` + "`mode:\"fusion\" delaySaveTime:\"600s\" delayDelTime:\"24h\"`",
+		`// @redis:` + "`routeType:\"role\" routeBy:\"roleId\" idField:\"roleId\" key:\"role\" omitempty:\"true\"`",
+		`// @mongodb:` + "`routeType:\"role\" routeBy:\"roleId\" idField:\"roleId\" collection:\"roles\" enableSharding:\"true\"`",
 	})
 	if err != nil {
 		t.Fatalf("ParseTypeDoc returned error: %v", err)

@@ -11,7 +11,7 @@ import (
 // 它使用 BuiltinDefinitions，因此接受如下存储相关写法：
 //
 //	// @storage:`mode:"fusion" delaySaveTime:"600s"`
-//	// @redis:"routeType:role,routeBy:roleId,idField:roleId,key:role"
+//	// @redis:`routeType:"role" routeBy:"roleId" idField:"roleId" key:"role"`
 func ParseTypeTagLine(text string) (Directive, error) {
 	return ParseTypeTagLineWithDefinitions(text, BuiltinDefinitions())
 }
@@ -20,11 +20,9 @@ func ParseTypeTagLine(text string) (Directive, error) {
 //
 // 支持的内容形式：
 //
-//	// @custom:`owner:"roleId" ttl:"600"`     // struct-tag 风格
-//	// @custom:"owner:roleId,ttl:600,enabled" // 紧凑旧风格
+//	// @custom:`owner:"roleId" ttl:"600"`
 //
-// 解析结果刻意保持非强类型：两个示例都会生成字符串参数，紧凑语法里的裸选项
-// 会放入 Directive.Flags。
+// 解析结果刻意保持非强类型，struct tag 中的所有字段值都会生成字符串参数。
 func ParseTypeTagLineWithDefinitions(text string, defs Definitions) (Directive, error) {
 	defs = defs.WithBuiltinsIfEmpty()
 	text = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(text), "//"))
@@ -43,7 +41,10 @@ func ParseTypeTagLineWithDefinitions(text string, defs Definitions) (Directive, 
 	if strings.HasPrefix(content, "`") && strings.HasSuffix(content, "`") {
 		content = strings.Trim(content, "`")
 	} else {
-		content = strings.Trim(content, `"`)
+		return Directive{}, fmt.Errorf("anno: type directive %s must use struct tag syntax", name)
+	}
+	if content != "" && !strings.Contains(content, `:"`) {
+		return Directive{}, fmt.Errorf("anno: type directive %s must contain struct tag fields", name)
 	}
 	return parseContent(name, ScopeType, content), nil
 }

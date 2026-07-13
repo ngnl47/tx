@@ -17,9 +17,9 @@ type Base struct {
 	BaseID int64 ` + "`json:\"baseId\"`" + `
 }
 
-// @storage:"mode:fusion,delaySaveTime:600s,delayDelTime:24h"
-// @redis:"routeType:role,routeBy:roleId,idField:roleId,key:role,omitempty"
-// @mongodb:"routeType:role,routeBy:roleId,idField:roleId,collection:roles,enableSharding"
+// @storage:` + "`mode:\"fusion\" delaySaveTime:\"600s\" delayDelTime:\"24h\"`" + `
+// @redis:` + "`routeType:\"role\" routeBy:\"roleId\" idField:\"roleId\" key:\"role\" omitempty:\"true\"`" + `
+// @mongodb:` + "`routeType:\"role\" routeBy:\"roleId\" idField:\"roleId\" collection:\"roles\" enableSharding:\"true\"`" + `
 type Role struct {
 	Base
 	RoleID int64 ` + "`alias:\"roleId\" json:\"role_id\" bson:\"role_id\"`" + `

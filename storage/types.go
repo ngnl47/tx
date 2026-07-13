@@ -1,7 +1,5 @@
 package storage
 
-import "github.com/ngnl47/gobricks/schema"
-
 type Mode string
 
 const (
@@ -11,12 +9,13 @@ const (
 )
 
 type TypeConfig struct {
-	TypeName string                 `json:"typeName"`
-	Mode     Mode                   `json:"mode"`
-	Redis    *RedisConfig           `json:"redis,omitempty"`
-	Mongo    *MongoConfig           `json:"mongo,omitempty"`
-	Fusion   *FusionConfig          `json:"fusion,omitempty"`
-	Fields   map[string]FieldConfig `json:"fields,omitempty"`
+	TypeName    string                 `json:"typeName"`
+	Mode        Mode                   `json:"mode"`
+	MemoryCache string                 `json:"memoryCache,omitempty"`
+	Redis       *RedisConfig           `json:"redis,omitempty"`
+	Mongo       *MongoConfig           `json:"mongo,omitempty"`
+	Fusion      *FusionConfig          `json:"fusion,omitempty"`
+	Fields      map[string]FieldConfig `json:"fields,omitempty"`
 }
 
 type RouteConfig struct {
@@ -33,10 +32,11 @@ type RedisConfig struct {
 }
 
 type MongoConfig struct {
-	Route      RouteConfig    `json:"route"`
-	ID         string         `json:"id"`
-	Collection string         `json:"collection"`
-	Sharding   ShardingConfig `json:"sharding,omitempty"`
+	Route            RouteConfig    `json:"route"`
+	ID               string         `json:"id"`
+	Collection       string         `json:"collection"`
+	Sharding         ShardingConfig `json:"sharding,omitempty"`
+	UseMongoObjectID bool           `json:"useMongoObjectID,omitempty"`
 }
 
 type FusionConfig struct{}
@@ -66,8 +66,4 @@ type IndexConfig struct {
 	Order       string `json:"order,omitempty"`
 	Weight      int    `json:"weight,omitempty"`
 	ExpireAfter string `json:"expireAfter,omitempty"`
-}
-
-func modeFromSchema(mode schema.StorageMode) Mode {
-	return Mode(mode)
 }

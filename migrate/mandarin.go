@@ -17,10 +17,10 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/ngnl47/gobricks/schema"
+	"github.com/ngnl47/gobricks/meta"
 )
 
-func MandarinDir(root string) (*schema.Document, Report, error) {
+func MandarinDir(root string) ([]meta.TypeSpec, Report, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, Report{}, fmt.Errorf("migrate: read dir %s: %w", root, err)
@@ -36,14 +36,11 @@ func MandarinDir(root string) (*schema.Document, Report, error) {
 	return MandarinFiles(files)
 }
 
-func MandarinFiles(files []string) (*schema.Document, Report, error) {
-	doc := &schema.Document{
-		Version: 1,
-		Types:   map[string]schema.TypeSpec{},
-	}
+func MandarinFiles(files []string) ([]meta.TypeSpec, Report, error) {
+	var specs []meta.TypeSpec
 	var report Report
 	if len(files) == 0 {
-		return doc, report, nil
+		return specs, report, nil
 	}
 
 	fset := token.NewFileSet()
@@ -77,25 +74,32 @@ func MandarinFiles(files []string) (*schema.Document, Report, error) {
 				}
 				spec, migrated := migrateType(fset, fullName, docGroup, structType, &report)
 				if migrated {
-					doc.Types[fullName] = spec
+					specs = append(specs, spec)
 					report.MigratedTypes++
 				}
 			}
 		}
 	}
-	return doc, report, nil
+	return specs, report, nil
 }
 
-func migrateType(fset *token.FileSet, fullName string, docGroup *ast.CommentGroup, structType *ast.StructType, report *Report) (schema.TypeSpec, bool) {
+func migrateType(fset *token.FileSet, fullName string, docGroup *ast.CommentGroup, structType *ast.StructType, report *Report) (meta.TypeSpec, bool) {
 	comments := legacyComments(docGroup)
 	if len(comments) == 0 {
-		return schema.TypeSpec{}, false
+		return meta.TypeSpec{}, false
 	}
-	spec := schema.TypeSpec{Fields: map[string]schema.FieldSpec{}}
+	spec := meta.TypeSpec{
+		Type:   meta.Type{Ref: meta.TypeRef{FullName: fullName}},
+		Fields: map[string]meta.FieldSpec{},
+	}
 	fieldAliases := map[string]struct{}{}
 	for _, field := range structType.Fields.List {
 		for _, info := range fieldInfos(fset, field) {
 			fieldAliases[info.alias] = struct{}{}
+			spec.Type.Fields = append(spec.Type.Fields, meta.Field{
+				Name:  info.name,
+				Alias: info.alias,
+			})
 			fieldSpec, ok := migrateField(info.tag)
 			if ok {
 				spec.Fields[info.alias] = fieldSpec
@@ -147,22 +151,22 @@ func legacyComments(group *ast.CommentGroup) []legacyComment {
 	return out
 }
 
-func migrateStorage(typeName, content string, report *Report) schema.StorageSpec {
-	var out schema.StorageSpec
+func migrateStorage(typeName, content string, report *Report) meta.StorageSpec {
+	var out meta.StorageSpec
 	for _, param := range parseParams(content) {
 		switch param.key {
 		case "mode":
 			if param.value == "redisDelayMongoDB" {
-				out.Mode = schema.StorageModeFusion
+				out.Mode = meta.StorageModeFusion
 				report.LegacyAliases = append(report.LegacyAliases, typeName+" storage.mode redisDelayMongoDB")
 				continue
 			}
-			out.Mode = schema.StorageMode(param.value)
+			out.Mode = meta.StorageMode(param.value)
 		case "delaySaveTime", "saveTime":
-			out.DelaySave = schema.Duration{Duration: parseLegacyDuration(param.value)}
+			out.DelaySave = meta.Duration{Duration: parseLegacyDuration(param.value)}
 			report.LegacyAliases = append(report.LegacyAliases, typeName+" storage."+param.key)
 		case "delayDelTime", "delTime":
-			out.DelayDelete = schema.Duration{Duration: parseLegacyDuration(param.value)}
+			out.DelayDelete = meta.Duration{Duration: parseLegacyDuration(param.value)}
 			report.LegacyAliases = append(report.LegacyAliases, typeName+" storage."+param.key)
 		default:
 			report.UnknownParams = append(report.UnknownParams, Diagnostic{Type: typeName, Property: "storage." + param.key})
@@ -171,8 +175,8 @@ func migrateStorage(typeName, content string, report *Report) schema.StorageSpec
 	return out
 }
 
-func migrateRedis(typeName, content string, report *Report) schema.RedisSpec {
-	var out schema.RedisSpec
+func migrateRedis(typeName, content string, report *Report) meta.RedisSpec {
+	var out meta.RedisSpec
 	for _, param := range parseParams(content) {
 		switch param.key {
 		case "routeType", "shardType", "config":
@@ -182,7 +186,7 @@ func migrateRedis(typeName, content string, report *Report) schema.RedisSpec {
 			out.Route.By = param.value
 			report.LegacyAliases = append(report.LegacyAliases, typeName+" redis."+param.key)
 		case "idField", "id":
-			out.ID = param.value
+			out.IDField = param.value
 			report.LegacyAliases = append(report.LegacyAliases, typeName+" redis."+param.key)
 		case "key":
 			out.Key = param.value
@@ -197,8 +201,8 @@ func migrateRedis(typeName, content string, report *Report) schema.RedisSpec {
 	return out
 }
 
-func migrateMongo(typeName, content string, report *Report) schema.MongoSpec {
-	var out schema.MongoSpec
+func migrateMongo(typeName, content string, report *Report) meta.MongoSpec {
+	var out meta.MongoSpec
 	for _, param := range parseParams(content) {
 		switch param.key {
 		case "routeType", "shardType", "config":
@@ -208,7 +212,7 @@ func migrateMongo(typeName, content string, report *Report) schema.MongoSpec {
 			out.Route.By = param.value
 			report.LegacyAliases = append(report.LegacyAliases, typeName+" mongo."+param.key)
 		case "idField", "id":
-			out.ID = param.value
+			out.IDField = param.value
 			report.LegacyAliases = append(report.LegacyAliases, typeName+" mongo."+param.key)
 		case "collection", "c", "col":
 			out.Collection = param.value
@@ -291,11 +295,11 @@ func fieldInfos(fset *token.FileSet, field *ast.Field) []fieldInfo {
 	return infos
 }
 
-func migrateField(tag reflect.StructTag) (schema.FieldSpec, bool) {
-	var out schema.FieldSpec
+func migrateField(tag reflect.StructTag) (meta.FieldSpec, bool) {
+	var out meta.FieldSpec
 	ok := false
 	if redisTag := tag.Get("redis"); redisTag != "" {
-		field := schema.RedisFieldSpec{}
+		field := meta.RedisFieldSpec{}
 		for _, param := range parseParams(redisTag) {
 			switch param.key {
 			case "subKey":
@@ -310,8 +314,8 @@ func migrateField(tag reflect.StructTag) (schema.FieldSpec, bool) {
 		ok = true
 	}
 	if mongoTag := tag.Get("mongodb"); mongoTag != "" {
-		field := schema.MongoFieldSpec{}
-		index := schema.IndexSpec{}
+		field := meta.MongoFieldSpec{}
+		index := meta.IndexSpec{}
 		hasIndex := false
 		for _, param := range parseParams(mongoTag) {
 			switch param.key {
@@ -342,7 +346,7 @@ func migrateField(tag reflect.StructTag) (schema.FieldSpec, bool) {
 	return out, ok
 }
 
-func checkFields(typeName string, spec schema.TypeSpec, aliases map[string]struct{}, report *Report) {
+func checkFields(typeName string, spec meta.TypeSpec, aliases map[string]struct{}, report *Report) {
 	check := func(property, field string) {
 		if field == "" {
 			return
@@ -353,11 +357,11 @@ func checkFields(typeName string, spec schema.TypeSpec, aliases map[string]struc
 		report.MissingFields = append(report.MissingFields, Diagnostic{Type: typeName, Field: field, Property: property})
 	}
 	if spec.Redis != nil {
-		check("redis.id", spec.Redis.ID)
+		check("redis.id", spec.Redis.IDField)
 		check("redis.route.by", spec.Redis.Route.By)
 	}
 	if spec.Mongo != nil {
-		check("mongo.id", spec.Mongo.ID)
+		check("mongo.id", spec.Mongo.IDField)
 		check("mongo.route.by", spec.Mongo.Route.By)
 	}
 }

@@ -19,9 +19,13 @@ func ResolveMeta(specs []meta.TypeSpec, types TypeLookup) (*Registry, error) {
 				return nil, err
 			}
 			cfg := TypeConfig{
-				TypeName: spec.Type.Ref.FullName,
-				Mode:     Mode(spec.Storage.Mode),
-				Fields:   resolveMetaFields(spec.Fields),
+				TypeName:    spec.Type.Ref.FullName,
+				Mode:        Mode(spec.Storage.Mode),
+				MemoryCache: spec.Storage.MemoryCache.String(),
+				Fields:      resolveMetaFields(spec.Fields),
+			}
+			if spec.Storage.MemoryCache.Duration == 0 {
+				cfg.MemoryCache = ""
 			}
 			if spec.Redis != nil {
 				cfg.Redis = &RedisConfig{
@@ -34,10 +38,11 @@ func ResolveMeta(specs []meta.TypeSpec, types TypeLookup) (*Registry, error) {
 			}
 			if spec.Mongo != nil {
 				cfg.Mongo = &MongoConfig{
-					Route:      RouteConfig{Type: spec.Mongo.Route.Type, By: spec.Mongo.Route.By},
-					ID:         spec.Mongo.IDField,
-					Collection: spec.Mongo.Collection,
-					Sharding:   ShardingConfig{Enabled: spec.Mongo.Sharding.Enabled},
+					Route:            RouteConfig{Type: spec.Mongo.Route.Type, By: spec.Mongo.Route.By},
+					ID:               spec.Mongo.IDField,
+					Collection:       spec.Mongo.Collection,
+					Sharding:         ShardingConfig{Enabled: spec.Mongo.Sharding.Enabled},
+					UseMongoObjectID: spec.Mongo.UseMongoObjectID,
 				}
 			}
 			if spec.Fusion != nil || spec.Storage.Mode == meta.StorageModeFusion {
@@ -53,7 +58,7 @@ func ResolveMeta(specs []meta.TypeSpec, types TypeLookup) (*Registry, error) {
 }
 
 func hasMetaStorage(spec meta.TypeSpec) bool {
-	return spec.Storage.Mode != "" || spec.Redis != nil || spec.Mongo != nil || len(spec.Fields) > 0
+	return spec.Storage.Mode != "" || spec.Redis != nil || spec.Mongo != nil
 }
 
 func resolveMetaFields(fields map[string]meta.FieldSpec) map[string]FieldConfig {

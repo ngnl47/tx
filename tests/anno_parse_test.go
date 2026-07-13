@@ -8,22 +8,22 @@ import (
 )
 
 func TestAnnoParseTypeTagLine(t *testing.T) {
-	directive, err := anno.ParseTypeTagLine(`// @redis:"routeType:role,routeBy:roleId,idField:roleId,key:role,omitempty"`)
+	directive, err := anno.ParseTypeTagLine("// @redis:`routeType:\"role\" routeBy:\"roleId\" idField:\"roleId\" key:\"role\" omitempty:\"true\"`")
 	if err != nil {
 		t.Fatalf("ParseTypeTagLine returned error: %v", err)
 	}
 	if directive.Name != "redis" || directive.Scope != anno.ScopeType {
 		t.Fatalf("directive = %#v", directive)
 	}
-	if directive.Params["routeBy"] != "roleId" || !directive.Flags["omitempty"] {
+	if directive.Params["routeBy"] != "roleId" || directive.Params["omitempty"] != "true" {
 		t.Fatalf("params=%#v flags=%#v", directive.Params, directive.Flags)
 	}
 }
 
 func TestAnnoParseTypeDocAndStructTag(t *testing.T) {
 	typeDirectives, err := anno.ParseTypeDoc([]string{
-		`// @storage:"mode:fusion,delaySaveTime:600s,delayDelTime:24h"`,
-		`// @mongodb:"routeType:role,routeBy:roleId,idField:roleId,collection:roles,enableSharding"`,
+		"// @storage:`mode:\"fusion\" delaySaveTime:\"600s\" delayDelTime:\"24h\"`",
+		"// @mongodb:`routeType:\"role\" routeBy:\"roleId\" idField:\"roleId\" collection:\"roles\" enableSharding:\"true\"`",
 	})
 	if err != nil {
 		t.Fatalf("ParseTypeDoc returned error: %v", err)
@@ -44,5 +44,19 @@ func TestAnnoParseRejectsUnknownTag(t *testing.T) {
 	_, err := anno.ParseTypeTagLine(`// @unknown:"x:y"`)
 	if err == nil {
 		t.Fatal("expected unknown tag error")
+	}
+}
+
+func TestAnnoParseRejectsLegacyTypeTagSyntax(t *testing.T) {
+	_, err := anno.ParseTypeTagLine(`// @redis:"routeType:role,routeBy:roleId"`)
+	if err == nil {
+		t.Fatal("expected legacy type tag syntax error")
+	}
+}
+
+func TestAnnoParseRejectsBareTypeTagValue(t *testing.T) {
+	_, err := anno.ParseTypeTagLine("// @redis:`routeType:role`")
+	if err == nil {
+		t.Fatal("expected bare type tag value error")
 	}
 }

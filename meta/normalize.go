@@ -81,6 +81,8 @@ func normalizeStorage(d anno.Directive) (StorageSpec, error) {
 			out.DelaySave = Duration{Duration: parseDuration(value)}
 		case "delayDelTime", "delTime", "delayDelete":
 			out.DelayDelete = Duration{Duration: parseDuration(value)}
+		case "memoryCache":
+			out.MemoryCache = Duration{Duration: parseDuration(value)}
 		default:
 			return StorageSpec{}, fmt.Errorf("%w: storage.%s", ErrUnknownParam, key)
 		}
@@ -136,6 +138,8 @@ func normalizeMongo(d anno.Directive) (MongoSpec, error) {
 			out.Collection = value
 		case "enableSharding":
 			out.Sharding.Enabled = parseBool(value)
+		case "useMongoObjectID":
+			out.UseMongoObjectID = parseBool(value)
 		default:
 			return MongoSpec{}, fmt.Errorf("%w: mongodb.%s", ErrUnknownParam, key)
 		}
@@ -144,6 +148,8 @@ func normalizeMongo(d anno.Directive) (MongoSpec, error) {
 		switch flag {
 		case "enableSharding":
 			out.Sharding.Enabled = true
+		case "useMongoObjectID":
+			out.UseMongoObjectID = true
 		default:
 			return MongoSpec{}, fmt.Errorf("%w: mongodb.%s", ErrUnknownParam, flag)
 		}

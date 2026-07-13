@@ -3,52 +3,42 @@ package tests
 import (
 	"errors"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/ngnl47/gobricks/anno"
 	"github.com/ngnl47/gobricks/astscan"
 )
 
-type customTypeTag struct {
-	Owner string
-	TTL   int
-}
-
-type customFieldTag struct {
-	Name string
-}
+type genDataTag struct{}
+type genEnumTag struct{}
+type customExportTag struct{}
+type ignoreClientTag struct{}
+type commentTag struct{}
+type enumTag struct{}
 
 func TestASTScanUsesCallerProvidedAnnotationDefinitions(t *testing.T) {
-	root := writeTempModule(t, map[string]string{
-		"data/item.go": `package data
-
-// @custom:` + "`owner:\"roleId\" ttl:\"600\"`" + `
-type Item struct {
-	RoleID int64 ` + "`alias:\"roleId\" customField:\"name:owner\"`" + `
-}
-`,
-	})
-
-	set, err := astscan.ScanDir(filepath.Join(root, "data"), astscan.Options{
-		Annotations: anno.Definitions{
-			anno.TypeTag[customTypeTag]("custom"),
-			anno.FieldTag[customFieldTag]("customField"),
-		},
+	set, err := astscan.ScanDir(filepath.Join(repoRoot(t), "data"), astscan.Options{
+		Annotations: dataAnnotationDefinitions(),
 	})
 	if err != nil {
 		t.Fatalf("ScanDir returned error: %v", err)
 	}
 
-	typeDirectives := set.TypeAnnotations("example.com/project/data.Item")
-	if len(typeDirectives) != 1 {
-		t.Fatalf("type directives = %#v", typeDirectives)
+	typeDirectives := set.TypeAnnotations("github.com/ngnl47/gobricks/data.GDRole")
+	if !hasDirective(typeDirectives, "customExport", "true") {
+		t.Fatalf("GDRole type directives = %#v", typeDirectives)
 	}
-	if typeDirectives[0].Name != "custom" || typeDirectives[0].Params["ttl"] != "600" {
-		t.Fatalf("type directive = %#v", typeDirectives[0])
+	if !hasDirective(typeDirectives, "comment", "角色") {
+		t.Fatalf("GDRole type directives = %#v", typeDirectives)
 	}
-	fieldDirectives := set.FieldAnnotations("example.com/project/data.Item", "roleId")
-	if len(fieldDirectives) != 1 || fieldDirectives[0].Name != "customField" {
-		t.Fatalf("field directives = %#v", fieldDirectives)
+
+	fieldDirectives := set.FieldAnnotations("github.com/ngnl47/gobricks/data.GDRole", "items")
+	if !hasFieldDirective(fieldDirectives, "comment", "拥有物品") {
+		t.Fatalf("GDRole.Items field directives = %#v", fieldDirectives)
+	}
+	if !hasDirectiveParam(fieldDirectives, "redis", "subKey", "items") {
+		t.Fatalf("GDRole.Items field directives = %#v", fieldDirectives)
 	}
 }
 
@@ -65,7 +55,7 @@ type Item struct {
 
 	_, err := astscan.ScanDir(filepath.Join(root, "data"), astscan.Options{
 		Annotations: anno.Definitions{
-			anno.TypeTag[customTypeTag]("other"),
+			anno.TypeTag[genDataTag]("other"),
 		},
 	})
 	if !errors.Is(err, anno.ErrUnknownTag) {
@@ -76,7 +66,10 @@ type Item struct {
 func TestAnnoParseTypeTagLineSupportsStructTagSyntax(t *testing.T) {
 	directive, err := anno.ParseTypeTagLineWithDefinitions(
 		`// @custom:`+"`owner:\"roleId\" ttl:\"600\"`",
-		anno.Definitions{anno.TypeTag[customTypeTag]("custom")},
+		anno.Definitions{anno.TypeTag[struct {
+			Owner string
+			TTL   int
+		}]("custom")},
 	)
 	if err != nil {
 		t.Fatalf("ParseTypeTagLineWithDefinitions returned error: %v", err)
@@ -84,4 +77,56 @@ func TestAnnoParseTypeTagLineSupportsStructTagSyntax(t *testing.T) {
 	if directive.Params["owner"] != "roleId" || directive.Params["ttl"] != "600" {
 		t.Fatalf("directive = %#v", directive)
 	}
+}
+
+func dataAnnotationDefinitions() anno.Definitions {
+	defs := anno.BuiltinDefinitions()
+	defs = append(defs,
+		anno.TypeTag[genDataTag]("genData"),
+		anno.TypeTag[genEnumTag]("genEnum"),
+		anno.TypeTag[customExportTag]("customExport"),
+		anno.FieldTag[customExportTag]("customExport"),
+		anno.TypeTag[ignoreClientTag]("ignoreClient"),
+		anno.FieldTag[ignoreClientTag]("ignoreClient"),
+		anno.TypeTag[commentTag]("comment"),
+		anno.FieldTag[commentTag]("comment"),
+		anno.FieldTag[enumTag]("enum"),
+	)
+	return defs
+}
+
+func hasDirective(directives []anno.Directive, name, value string) bool {
+	for _, directive := range directives {
+		if directive.Name == name && directive.Params["value"] == value {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDirectiveParam(directives []anno.Directive, name, key, value string) bool {
+	for _, directive := range directives {
+		if directive.Name == name && directive.Params[key] == value {
+			return true
+		}
+	}
+	return false
+}
+
+func hasFieldDirective(directives []anno.Directive, name, value string) bool {
+	for _, directive := range directives {
+		if directive.Name == name && (directive.Params["value"] == value || directive.Flags[value]) {
+			return true
+		}
+	}
+	return false
+}
+
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	return filepath.Dir(filepath.Dir(file))
 }
