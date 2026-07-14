@@ -1,7 +1,7 @@
 package storage
 
 import (
-	"github.com/ngnl47/gobricks/meta"
+	"github.com/ngnl47/tx/meta"
 )
 
 type TypeLookup interface {

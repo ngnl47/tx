@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ngnl47/gobricks/meta"
+	"github.com/ngnl47/tx/meta"
 )
 
 func TestMetaRegistryRegistersAndLooksUpType(t *testing.T) {

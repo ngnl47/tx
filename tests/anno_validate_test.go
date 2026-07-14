@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/ngnl47/gobricks/anno"
-	"github.com/ngnl47/gobricks/meta"
+	"github.com/ngnl47/tx/anno"
+	"github.com/ngnl47/tx/meta"
 )
 
 func TestAnnoNormalizeAndValidate(t *testing.T) {

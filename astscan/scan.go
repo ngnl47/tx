@@ -15,8 +15,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/ngnl47/gobricks/anno"
-	"github.com/ngnl47/gobricks/meta"
+	"github.com/ngnl47/tx/anno"
+	"github.com/ngnl47/tx/meta"
 )
 
 // ScanDir 扫描 root 目录下的所有非测试 Go 文件。

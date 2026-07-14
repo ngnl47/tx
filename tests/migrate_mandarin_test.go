@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ngnl47/gobricks/meta"
-	"github.com/ngnl47/gobricks/migrate"
+	"github.com/ngnl47/tx/meta"
+	"github.com/ngnl47/tx/migrate"
 )
 
 func TestMigrateMandarinLegacyTags(t *testing.T) {

@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ngnl47/gobricks/astscan"
-	"github.com/ngnl47/gobricks/meta"
+	"github.com/ngnl47/tx/astscan"
+	"github.com/ngnl47/tx/meta"
 )
 
 func TestASTScanDirExtractsStructFieldsAliasesAndMethods(t *testing.T) {

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ngnl47/gobricks/storage/task"
-	"github.com/ngnl47/gobricks/storage/task/memory"
+	"github.com/ngnl47/tx/storage/task"
+	"github.com/ngnl47/tx/storage/task/memory"
 )
 
 func TestMemoryDelayTaskBackendClaimsDueTasksInOrder(t *testing.T) {

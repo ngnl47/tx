@@ -1,8 +1,8 @@
 package astscan
 
 import (
-	"github.com/ngnl47/gobricks/anno"
-	"github.com/ngnl47/gobricks/meta"
+	"github.com/ngnl47/tx/anno"
+	"github.com/ngnl47/tx/meta"
 )
 
 // Options 控制 Go 文件的扫描方式。

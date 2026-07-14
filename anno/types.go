@@ -55,7 +55,7 @@ func FieldTag[T any](name string) Definition {
 	return Definition{Name: name, Scope: ScopeField, Type: reflect.TypeOf(zero)}
 }
 
-// BuiltinDefinitions 返回 gobricks 内置的存储相关注解定义。
+// BuiltinDefinitions 返回 tx 内置的存储相关注解定义。
 // 解析或扫描 API 收到空 Definitions 时会使用该集合，以兼容默认存储元数据扫描。
 func BuiltinDefinitions() Definitions {
 	return Definitions{

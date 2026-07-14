@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/ngnl47/gobricks/meta"
-	"github.com/ngnl47/gobricks/storage"
+	"github.com/ngnl47/tx/meta"
+	"github.com/ngnl47/tx/storage"
 )
 
 func TestStorageResolveBuildsFrozenRegistry(t *testing.T) {

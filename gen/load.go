@@ -3,9 +3,9 @@ package gen
 import (
 	"fmt"
 
-	"github.com/ngnl47/gobricks/astscan"
-	"github.com/ngnl47/gobricks/meta"
-	"github.com/ngnl47/gobricks/storage"
+	"github.com/ngnl47/tx/astscan"
+	"github.com/ngnl47/tx/meta"
+	"github.com/ngnl47/tx/storage"
 )
 
 func LoadTagsAndScan(sourceDir string) (*Model, error) {

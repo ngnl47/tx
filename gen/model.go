@@ -3,8 +3,8 @@ package gen
 import (
 	"encoding/json"
 
-	"github.com/ngnl47/gobricks/meta"
-	"github.com/ngnl47/gobricks/storage"
+	"github.com/ngnl47/tx/meta"
+	"github.com/ngnl47/tx/storage"
 )
 
 type Model struct {

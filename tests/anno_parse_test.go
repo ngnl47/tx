@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/ngnl47/gobricks/anno"
+	"github.com/ngnl47/tx/anno"
 )
 
 func TestAnnoParseTypeTagLine(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ngnl47/gobricks/util"
+	"github.com/ngnl47/tx/util"
 )
 
 func TestNew(t *testing.T) {

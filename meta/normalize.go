@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/ngnl47/gobricks/anno"
+	"github.com/ngnl47/tx/anno"
 )
 
 // Normalize 将内置存储注解指令转换为 TypeSpec。

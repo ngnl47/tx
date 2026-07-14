@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ngnl47/gobricks/storage/task"
+	"github.com/ngnl47/tx/storage/task"
 )
 
 type Backend struct {

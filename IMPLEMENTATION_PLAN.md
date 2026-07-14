@@ -1,12 +1,12 @@
-# Gobricks storage metadata implementation plan
+# Tx storage metadata implementation plan
 
-本文是 `github.com/ngnl47/gobricks` 中重写 Mandarin tag storage chain 的实施计划。
+本文是 `github.com/ngnl47/tx` 中重写 Mandarin tag storage chain 的实施计划。
 
 目标不是兼容式修补 Mandarin，而是把旧链路抽象成一个新的 Go module 能力：
 
 - 使用 Go 注释作为元数据主入口，保持类型定义和存储定义靠近。
 - 使用 Go AST 读取 Go 类型结构和注释，建立注释元数据与 Go 类型之间的绑定关系。
-- 支持从 Mandarin 旧注解迁移到新的 Gobricks 语义；语法形态尽量沿用 `// @name:"k:v,flag"`，降低迁移成本。
+- 支持从 Mandarin 旧注解迁移到新的 Tx 语义；语法形态尽量沿用 `// @name:"k:v,flag"`，降低迁移成本。
 - 不支持独立 schema 文件；存储元数据只来自 Go 注释、struct tag 和 AST 扫描结果。
 - 运行时元数据只允许初始化期注册；不支持隐式运行时追加 tag。
 - `fusion` 作为公开存储模式名；旧 `redisDelayMongoDB` 只作为迁移器识别的 legacy alias。
@@ -19,11 +19,11 @@
 建议新增包结构：
 
 ```text
-gobricks/
+tx/
   meta/             # 元数据模型、registry、annotation 输出模型
   anno/             # Go 注释中的 type-level tag 解析、规范化、校验
   astscan/          # Go AST 扫描器，提取 package/type/field/method/comment 信息
-  migrate/          # Mandarin legacy tag 到 Gobricks metadata 的迁移器
+  migrate/          # Mandarin legacy tag 到 Tx metadata 的迁移器
   storage/          # 存储抽象：Store mode、route、key、options、runtime metadata
   storage/redis/    # Redis key builder、route resolver、后续 Redis adapter
   storage/mongo/    # Mongo collection/index/sharding metadata、后续 Mongo adapter
@@ -201,7 +201,7 @@ Go 注释 / struct tag -> anno -> astscan -> meta -> storage/gen
 
 ## Phase 4: Mandarin Legacy Migrator
 
-目标：把 Mandarin 旧注解规范化为新的 Gobricks `meta.TypeSpec` 语义。
+目标：把 Mandarin 旧注解规范化为新的 Tx `meta.TypeSpec` 语义。
 
 输入形式：
 
@@ -362,7 +362,7 @@ type DelayTaskBackend interface {
 
 执行规则：
 
-- 所有 `*_test.go` 只放在 `/Users/a47/workspace/gobricks/tests`。
+- 所有 `*_test.go` 只放在 `/Users/a47/workspace/tx/tests`。
 - 包目录如 `meta/`、`storage/` 不放测试文件。
 - 测试 package 统一使用 `package tests`。
 - 测试通过 public API 驱动，避免为了测试暴露内部实现。
@@ -389,7 +389,7 @@ type DelayTaskBackend interface {
 交付：
 
 - `migrate`
-- Mandarin legacy 注解规范化到新 Gobricks 语义。
+- Mandarin legacy 注解规范化到新 Tx 语义。
 
 完成标准：
 
@@ -439,4 +439,4 @@ type DelayTaskBackend interface {
 - `mode:fusion` 等新值是否由迁移器自动改写，还是只在报告中提示。
 - type ref 表达方式：建议 `import/path.TypeName`，避免 package name 冲突。
 - field alias 是否允许 type-level 注释 tag 或 field-level struct tag 显式覆盖 AST 推导 alias。
-- migration CLI 名称：建议后续放在 `cmd/gobricks`，但第一阶段可先做 library API。
+- migration CLI 名称：建议后续放在 `cmd/tx`，但第一阶段可先做 library API。

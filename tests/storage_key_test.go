@@ -3,7 +3,7 @@ package tests
 import (
 	"testing"
 
-	"github.com/ngnl47/gobricks/storage"
+	"github.com/ngnl47/tx/storage"
 )
 
 func TestRedisKeyUsesShardByAsHashTagWhenDifferentFromID(t *testing.T) {

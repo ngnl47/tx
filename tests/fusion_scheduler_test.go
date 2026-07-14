@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ngnl47/gobricks/storage/fusion"
-	"github.com/ngnl47/gobricks/storage/task"
-	"github.com/ngnl47/gobricks/storage/task/memory"
+	"github.com/ngnl47/tx/storage/fusion"
+	"github.com/ngnl47/tx/storage/task"
+	"github.com/ngnl47/tx/storage/task/memory"
 )
 
 func TestFusionSchedulerEnqueuesThroughDelayTaskBackend(t *testing.T) {

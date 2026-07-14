@@ -17,7 +17,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/ngnl47/gobricks/meta"
+	"github.com/ngnl47/tx/meta"
 )
 
 func MandarinDir(root string) ([]meta.TypeSpec, Report, error) {

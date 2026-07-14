@@ -6,8 +6,8 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/ngnl47/gobricks/anno"
-	"github.com/ngnl47/gobricks/astscan"
+	"github.com/ngnl47/tx/anno"
+	"github.com/ngnl47/tx/astscan"
 )
 
 type genDataTag struct{}
@@ -18,14 +18,14 @@ type commentTag struct{}
 type enumTag struct{}
 
 func TestASTScanUsesCallerProvidedAnnotationDefinitions(t *testing.T) {
-	set, err := astscan.ScanDir(filepath.Join(repoRoot(t), "data"), astscan.Options{
+	set, err := astscan.ScanDir(filepath.Join(repoRoot(t), "data", "data"), astscan.Options{
 		Annotations: dataAnnotationDefinitions(),
 	})
 	if err != nil {
 		t.Fatalf("ScanDir returned error: %v", err)
 	}
 
-	typeDirectives := set.TypeAnnotations("github.com/ngnl47/gobricks/data.GDRole")
+	typeDirectives := set.TypeAnnotations("github.com/ngnl47/tx/data/data.GDRole")
 	if !hasDirective(typeDirectives, "customExport", "true") {
 		t.Fatalf("GDRole type directives = %#v", typeDirectives)
 	}
@@ -33,7 +33,7 @@ func TestASTScanUsesCallerProvidedAnnotationDefinitions(t *testing.T) {
 		t.Fatalf("GDRole type directives = %#v", typeDirectives)
 	}
 
-	fieldDirectives := set.FieldAnnotations("github.com/ngnl47/gobricks/data.GDRole", "items")
+	fieldDirectives := set.FieldAnnotations("github.com/ngnl47/tx/data/data.GDRole", "items")
 	if !hasFieldDirective(fieldDirectives, "comment", "拥有物品") {
 		t.Fatalf("GDRole.Items field directives = %#v", fieldDirectives)
 	}

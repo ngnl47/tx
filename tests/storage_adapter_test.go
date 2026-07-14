@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/ngnl47/gobricks/storage"
-	"github.com/ngnl47/gobricks/storage/fusion"
+	"github.com/ngnl47/tx/storage"
+	"github.com/ngnl47/tx/storage/fusion"
 )
 
 func TestFusionAdapterWritesPrimaryThenSecondary(t *testing.T) {

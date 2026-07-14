@@ -3,7 +3,7 @@ package fusion
 import (
 	"context"
 
-	"github.com/ngnl47/gobricks/storage"
+	"github.com/ngnl47/tx/storage"
 )
 
 type Adapter struct {

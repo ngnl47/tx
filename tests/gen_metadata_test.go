@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ngnl47/gobricks/gen"
+	"github.com/ngnl47/tx/gen"
 )
 
 func TestGenLoadTagsAndScanRendersStableMetadataSnapshot(t *testing.T) {
