@@ -14,9 +14,29 @@ func (t *Tracker) Touch(path Path, value any) error {
 	return t.changes.Add(FieldChange{Path: path, Kind: KindSet, Value: value})
 }
 
+// TouchField 标记结构体静态字段发生普通 set 变更。
+func (t *Tracker) TouchField(field FieldID, value any) error {
+	return t.TouchFieldPath(field, nil, value)
+}
+
+// TouchFieldPath 标记结构体静态字段内部的动态路径发生普通 set 变更。
+func (t *Tracker) TouchFieldPath(field FieldID, tail Path, value any) error {
+	return t.changes.Add(FieldChange{Field: field, Path: tail, Kind: KindSet, Value: value})
+}
+
 // UnTouch 取消字段变更标记。
 func (t *Tracker) UnTouch(path Path) {
 	t.changes.Remove(path)
+}
+
+// UnTouchField 取消结构体静态字段的变更标记。
+func (t *Tracker) UnTouchField(field FieldID) {
+	t.UnTouchFieldPath(field, nil)
+}
+
+// UnTouchFieldPath 取消结构体静态字段内部动态路径的变更标记。
+func (t *Tracker) UnTouchFieldPath(field FieldID, tail Path) {
+	t.changes.RemoveField(field, tail)
 }
 
 // Replace 标记字段发生整体替换。
@@ -24,9 +44,19 @@ func (t *Tracker) Replace(path Path, value any) error {
 	return t.changes.Add(FieldChange{Path: path, Kind: KindReplace, Value: value})
 }
 
+// ReplaceFieldPath 标记结构体静态字段或其内部动态路径发生整体替换。
+func (t *Tracker) ReplaceFieldPath(field FieldID, tail Path, value any) error {
+	return t.changes.Add(FieldChange{Field: field, Path: tail, Kind: KindReplace, Value: value})
+}
+
 // Unset 标记字段应从持久化文档中删除。
 func (t *Tracker) Unset(path Path) error {
 	return t.changes.Add(FieldChange{Path: path, Kind: KindUnset})
+}
+
+// UnsetFieldPath 标记结构体静态字段或其内部动态路径应从持久化文档中删除。
+func (t *Tracker) UnsetFieldPath(field FieldID, tail Path) error {
+	return t.changes.Add(FieldChange{Field: field, Path: tail, Kind: KindUnset})
 }
 
 // AllTouch 标记整个对象需要全量落地。

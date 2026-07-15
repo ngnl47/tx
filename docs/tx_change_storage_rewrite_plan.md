@@ -16,6 +16,7 @@
 - Generated business code may import `github.com/ngnl47/tx`, but must not import `github.com/ngnl47/txgen`.
 - Do not preserve Mandarin compatibility APIs such as `Mark`, `MarkInRoot`, and `ReMarkInRoot` unless a later migration task explicitly requires them.
 - Use one new change model: `change.Tracker`, `change.ChangeSet`, and generated `*Store` wrappers.
+- ChangeSet 的热路径使用字段编号记录变更目标：运行时提供 `change.FieldID` 和 `change.FieldResolver`，`txgen` 生成字段编号常量和字段名解析器。`Path` 只保留为兼容入口和 map/slice 等动态尾路径，避免在常规字段变更中反复保存完整字符串路径。
 - Redis and MongoDB drivers are external adapters; change detection remains owned by `tx/change`.
 - Tests for `tx` stay under `/Users/a47/workspace/tx/tests`.
 - Tests for scaffold generation stay under `/Users/a47/workspace/txgen/tests`.
@@ -96,20 +97,37 @@ This means the next work starts from metadata already available from templates. 
   - `const KindSet Kind = "set"`
   - `const KindUnset Kind = "unset"`
   - `const KindReplace Kind = "replace"`
+  - `type FieldID uint16`
+  - `const FieldNone FieldID = 0`
+  - `type FieldResolver interface { FieldName(FieldID) string }`
   - `type Path []string`
   - `func (p Path) String() string`
-  - `type FieldChange struct { Path Path; Kind Kind; Value any }`
+  - `type FieldChange struct { Field FieldID; Path Path; Kind Kind; Value any }`
+  - `func (c FieldChange) FullPath(resolver FieldResolver) Path`
   - `type ChangeSet struct { changes []FieldChange }`
   - `func (s *ChangeSet) Add(change FieldChange) error`
+  - `func (s *ChangeSet) RemoveField(field FieldID, tail Path)`
   - `func (s ChangeSet) Changes() []FieldChange`
   - `func (s ChangeSet) Empty() bool`
   - `type Tracker struct { changes ChangeSet; allDirty bool }`
   - `func (t *Tracker) Touch(path Path, value any) error`
+  - `func (t *Tracker) TouchField(field FieldID, value any) error`
+  - `func (t *Tracker) TouchFieldPath(field FieldID, tail Path, value any) error`
   - `func (t *Tracker) UnTouch(path Path)`
+  - `func (t *Tracker) UnTouchField(field FieldID)`
+  - `func (t *Tracker) UnTouchFieldPath(field FieldID, tail Path)`
   - `func (t *Tracker) Replace(path Path, value any) error`
+  - `func (t *Tracker) ReplaceFieldPath(field FieldID, tail Path, value any) error`
+  - `func (t *Tracker) UnsetFieldPath(field FieldID, tail Path) error`
   - `func (t *Tracker) AllTouch()`
   - `func (t *Tracker) AllUnTouch()`
   - `func (t *Tracker) Changes() ChangeSet`
+
+**FieldID 约定：**
+- `FieldNone` 表示未使用字段编号，兼容手写 `Path` 的调用方式。
+- `txgen` 生成的字段编号从 `1` 开始；如果内部需要 bitset，可以在生成代码里自行把 `FieldID - 1` 映射为 bit 位。
+- 普通字段变更只记录 `FieldID`，例如 `Field: fieldGDRoleName`；复合字段内的动态成员只在 `Path` 中记录尾路径，例如 `Field: fieldGDRoleItems, Path: Path{"1001", "quantity"}`。
+- 落地前由 resolver 把 `FieldID` 解析为字段别名，再与尾路径拼成完整路径，例如 `items.1001.quantity`。
 - Consumes: none.
 
 - [ ] **Step 1: Write failing tests for path, touch, replace, and clear**

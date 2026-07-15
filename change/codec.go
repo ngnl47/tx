@@ -40,17 +40,30 @@ func (s ChangeSet) Filter(filter Filter) ChangeSet {
 }
 
 // Document 把 ChangeSet 转成 Set/Unset 两段文档。
+//
+// 该方法只解析完整 Path；如果 ChangeSet 使用 FieldID，请调用
+// DocumentWithResolver。
 func (s ChangeSet) Document() Document {
+	return s.DocumentWithResolver(nil)
+}
+
+// DocumentWithResolver 把 ChangeSet 转成 Set/Unset 两段文档，并用 resolver
+// 把 FieldID 解析为字段别名。
+func (s ChangeSet) DocumentWithResolver(resolver FieldResolver) Document {
 	doc := Document{
 		Set:   map[string]any{},
 		Unset: map[string]struct{}{},
 	}
 	for _, fieldChange := range s.Changes() {
+		path := fieldChange.FullPath(resolver)
+		if len(path) == 0 {
+			continue
+		}
 		switch fieldChange.Kind {
 		case KindSet, KindReplace:
-			doc.Set[fieldChange.Path.String()] = fieldChange.Value
+			doc.Set[path.String()] = fieldChange.Value
 		case KindUnset:
-			doc.Unset[fieldChange.Path.String()] = struct{}{}
+			doc.Unset[path.String()] = struct{}{}
 		}
 	}
 	return doc

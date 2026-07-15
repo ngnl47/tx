@@ -44,3 +44,27 @@ func TestMongoAdapterAppliesUpdateByID(t *testing.T) {
 		t.Fatalf("update = %#v", updater.update)
 	}
 }
+
+func TestMongoAdapterAppliesFieldIDChangesWithResolver(t *testing.T) {
+	updater := &recordingMongoUpdater{}
+	adapter := txmongo.NewAdapterWithResolver(updater, testFieldResolver{3: "items"})
+	spec := meta.TypeSpec{
+		Mongo: &meta.MongoSpec{Collection: "roles"},
+	}
+	var set change.ChangeSet
+	_ = set.Add(change.FieldChange{
+		Field: change.FieldID(3),
+		Path:  change.Path{"1001", "quantity"},
+		Kind:  change.KindSet,
+		Value: int64(9),
+	})
+
+	err := adapter.ApplyChanges(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set)
+	if err != nil {
+		t.Fatalf("ApplyChanges returned error: %v", err)
+	}
+	setDoc := updater.update["$set"].(map[string]any)
+	if setDoc["items.1001.quantity"] != int64(9) {
+		t.Fatalf("update = %#v", updater.update)
+	}
+}

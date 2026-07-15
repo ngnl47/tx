@@ -14,6 +14,25 @@ const (
 	KindReplace Kind = "replace"
 )
 
+// FieldID 是由 txgen 为结构体字段生成的稳定编号。
+//
+// 普通字段变更只需要记录 FieldID，避免在热路径上反复保存字段名字符串；
+// map、slice 等动态成员继续用 Path 保存字段内部的尾路径。
+type FieldID uint16
+
+const (
+	// FieldNone 表示未使用字段编号，此时 FieldChange 通过 Path 表示完整目标。
+	FieldNone FieldID = 0
+)
+
+// FieldResolver 把 FieldID 解析为字段持久化别名。
+//
+// 生成代码通常为每个 GD* 类型提供一个 resolver。例如字段编号 2 解析为
+// "name"，再和尾路径 Path{"1001"} 组合成 "name.1001"。
+type FieldResolver interface {
+	FieldName(FieldID) string
+}
+
 // Path 是从根对象到变更字段的别名路径。
 //
 // 例如角色名字段是 Path{"name"}，物品数量可以表示为
@@ -39,32 +58,60 @@ func (p Path) Equal(other Path) bool {
 }
 
 // FieldChange 记录一次字段变更。
+//
+// Field 优先表示结构体静态字段；Path 在 Field 为 FieldNone 时表示完整路径，
+// 在 Field 非零时表示字段内部的动态尾路径。
 type FieldChange struct {
+	Field FieldID
 	Path  Path
 	Kind  Kind
 	Value any
 }
 
+// FullPath 返回适配器落地时使用的完整字段路径。
+//
+// 示例：
+//   - Field=2，resolver(2)="name"，Path 为空，结果为 Path{"name"}。
+//   - Field=3，resolver(3)="items"，Path={"1001"}，结果为 Path{"items", "1001"}。
+//   - Field=FieldNone 时直接返回 Path 的拷贝，用于兼容手写完整路径。
+func (c FieldChange) FullPath(resolver FieldResolver) Path {
+	if c.Field == FieldNone {
+		return append(Path(nil), c.Path...)
+	}
+	if resolver == nil {
+		return nil
+	}
+	name := resolver.FieldName(c.Field)
+	if name == "" {
+		return nil
+	}
+	out := make(Path, 0, 1+len(c.Path))
+	out = append(out, name)
+	out = append(out, c.Path...)
+	return out
+}
+
 // ChangeSet 是一次保存周期内的字段变更集合。
 //
-// 同一路径重复写入时，后一次变更覆盖前一次变更，符合 Store setter
-// 多次调用后只关心最终落地值的需求。
+// 同一目标重复写入时，后一次变更覆盖前一次变更，符合 Store setter 多次
+// 调用后只关心最终落地值的需求。目标可以是 FieldID，也可以是完整 Path。
 type ChangeSet struct {
 	changes []FieldChange
 }
 
 // Add 加入或覆盖一条字段变更。
 func (s *ChangeSet) Add(change FieldChange) error {
-	if len(change.Path) == 0 {
+	if change.Field == FieldNone && len(change.Path) == 0 {
 		return ErrEmptyPath
 	}
 	copied := FieldChange{
+		Field: change.Field,
 		Path:  append(Path(nil), change.Path...),
 		Kind:  change.Kind,
 		Value: change.Value,
 	}
 	for i, existing := range s.changes {
-		if existing.Path.Equal(copied.Path) {
+		if sameTarget(existing, copied) {
 			s.changes[i] = copied
 			return nil
 		}
@@ -75,8 +122,17 @@ func (s *ChangeSet) Add(change FieldChange) error {
 
 // Remove 移除指定路径上的变更记录。
 func (s *ChangeSet) Remove(path Path) {
+	s.remove(FieldNone, path)
+}
+
+// RemoveField 移除指定字段编号和尾路径上的变更记录。
+func (s *ChangeSet) RemoveField(field FieldID, tail Path) {
+	s.remove(field, tail)
+}
+
+func (s *ChangeSet) remove(field FieldID, path Path) {
 	for i, change := range s.changes {
-		if change.Path.Equal(path) {
+		if sameTarget(change, FieldChange{Field: field, Path: path}) {
 			s.changes = append(s.changes[:i], s.changes[i+1:]...)
 			return
 		}
@@ -93,4 +149,8 @@ func (s ChangeSet) Changes() []FieldChange {
 // Empty 判断集合中是否没有字段级变更。
 func (s ChangeSet) Empty() bool {
 	return len(s.changes) == 0
+}
+
+func sameTarget(left FieldChange, right FieldChange) bool {
+	return left.Field == right.Field && left.Path.Equal(right.Path)
 }

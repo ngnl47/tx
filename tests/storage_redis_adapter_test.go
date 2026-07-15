@@ -52,3 +52,26 @@ func TestRedisAdapterAppliesHashChangesWithRecordID(t *testing.T) {
 		t.Fatalf("deletes = %#v", client.deletes)
 	}
 }
+
+func TestRedisAdapterAppliesFieldIDChangesWithResolver(t *testing.T) {
+	client := &recordingRedisHashClient{}
+	adapter := txredis.NewAdapterWithResolver(client, testFieldResolver{3: "items"})
+	spec := meta.TypeSpec{
+		Redis: &meta.RedisSpec{Key: "role"},
+	}
+	var set change.ChangeSet
+	_ = set.Add(change.FieldChange{
+		Field: change.FieldID(3),
+		Path:  change.Path{"1001", "quantity"},
+		Kind:  change.KindSet,
+		Value: int64(9),
+	})
+
+	err := adapter.ApplyChanges(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set)
+	if err != nil {
+		t.Fatalf("ApplyChanges returned error: %v", err)
+	}
+	if client.sets["role:1001:items"]["1001.quantity"] != int64(9) {
+		t.Fatalf("sets = %#v", client.sets)
+	}
+}

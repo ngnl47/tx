@@ -17,7 +17,8 @@ type Updater interface {
 
 // Adapter 把 ChangeSet 应用到 MongoDB 更新文档。
 type Adapter struct {
-	updater Updater
+	updater  Updater
+	resolver change.FieldResolver
 }
 
 // NewAdapter 创建 Mongo ChangeSet 适配器。
@@ -25,12 +26,17 @@ func NewAdapter(updater Updater) *Adapter {
 	return &Adapter{updater: updater}
 }
 
+// NewAdapterWithResolver 创建带字段编号解析器的 Mongo ChangeSet 适配器。
+func NewAdapterWithResolver(updater Updater, resolver change.FieldResolver) *Adapter {
+	return &Adapter{updater: updater, resolver: resolver}
+}
+
 // ApplyChanges 根据 Mongo 元数据和记录 ID 执行更新。
 func (a *Adapter) ApplyChanges(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, set change.ChangeSet) error {
 	if a.updater == nil || set.Empty() {
 		return nil
 	}
-	update := BuildUpdateDocument(set)
+	update := BuildUpdateDocumentWithResolver(set, a.resolver)
 	if len(update) == 0 {
 		return nil
 	}

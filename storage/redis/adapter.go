@@ -20,12 +20,18 @@ type HashClient interface {
 
 // Adapter 把 ChangeSet 应用到 Redis hash。
 type Adapter struct {
-	client HashClient
+	client   HashClient
+	resolver change.FieldResolver
 }
 
 // NewAdapter 创建 Redis ChangeSet 适配器。
 func NewAdapter(client HashClient) *Adapter {
 	return &Adapter{client: client}
+}
+
+// NewAdapterWithResolver 创建带字段编号解析器的 Redis ChangeSet 适配器。
+func NewAdapterWithResolver(client HashClient, resolver change.FieldResolver) *Adapter {
+	return &Adapter{client: client, resolver: resolver}
 }
 
 // ApplyChanges 根据 Redis 元数据和记录 ID 写入 hash 变更。
@@ -34,12 +40,12 @@ func (a *Adapter) ApplyChanges(ctx context.Context, spec meta.TypeSpec, key stor
 		return nil
 	}
 	prefix := redisKeyPrefix(spec, key)
-	for hash, fields := range BuildHashChanges(set) {
+	for hash, fields := range BuildHashChangesWithResolver(set, a.resolver) {
 		if err := a.client.HSet(ctx, prefix+":"+hash, fields); err != nil {
 			return err
 		}
 	}
-	for hash, fields := range BuildHashDeletes(set) {
+	for hash, fields := range BuildHashDeletesWithResolver(set, a.resolver) {
 		if err := a.client.HDel(ctx, prefix+":"+hash, fields); err != nil {
 			return err
 		}
