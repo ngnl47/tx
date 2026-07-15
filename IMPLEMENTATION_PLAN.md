@@ -313,25 +313,15 @@ type DelayTaskBackend interface {
 
 ## Phase 7: Code Generation Integration
 
-目标：将注释/struct tag + AST metadata 输出给后续代码生成。
+目标：代码生成职责迁移到独立的 `txgen` 工程，`tx` 只保留运行时库、注解扫描、元数据归一化和存储基础能力。
 
-第一版不急着生成完整 Store，可以先提供稳定中间产物：
-
-- `gen.Model`
-- `gen.LoadTagsAndScan(...)`
-- `gen.RenderMetadata(...)`
-
-后续再生成：
-
-- typed config constants
-- Redis key helper
-- Mongo filter helper
-- Store skeleton
+不再在 `tx` 中保留 `gen.Model`、`gen.LoadTagsAndScan(...)`、`gen.RenderMetadata(...)` 这类中间快照导出 API。后续 Store 生成、Redis key helper、Mongo filter helper、字段编号 resolver 等生成逻辑都在 `txgen` 中实现和测试。
 
 验收：
 
-- 给定 Go package 中的 type-level 注释 tag 和 field-level struct tag，生成稳定 JSON snapshot。
-- snapshot 可用于后续 Store generator。
+- `tx` 中没有 `gen` 包。
+- 生成侧集成测试迁移到 `txgen/tests`。
+- 生成产物仅依赖 `github.com/ngnl47/tx` 的运行时 API。
 
 测试：
 
