@@ -3,6 +3,7 @@ package tests
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/ngnl47/tx/meta"
 	"github.com/ngnl47/tx/storage"
@@ -23,6 +24,9 @@ func TestStorageResolveBuildsFrozenRegistry(t *testing.T) {
 	}
 	if cfg.Redis.Route.By != "roleId" || cfg.Mongo.Route.By != "roleId" {
 		t.Fatalf("routes = %#v %#v", cfg.Redis.Route, cfg.Mongo.Route)
+	}
+	if cfg.DelaySave != "10m0s" || cfg.DelayDelete != "24h0m0s" {
+		t.Fatalf("delay config = save %q delete %q", cfg.DelaySave, cfg.DelayDelete)
 	}
 	if cfg.Fields["items"].Redis.SubKey != "items" {
 		t.Fatalf("items field config = %#v", cfg.Fields["items"])
@@ -46,8 +50,12 @@ func TestStorageResolveRejectsInvalidSchema(t *testing.T) {
 
 func storageMetaSpec() meta.TypeSpec {
 	return meta.TypeSpec{
-		Type:    meta.Type{Ref: meta.TypeRef{FullName: "example.com/project/data.Role"}},
-		Storage: meta.StorageSpec{Mode: meta.StorageModeFusion},
+		Type: meta.Type{Ref: meta.TypeRef{FullName: "example.com/project/data.Role"}},
+		Storage: meta.StorageSpec{
+			Mode:        meta.StorageModeFusion,
+			DelaySave:   meta.Duration{Duration: 10 * time.Minute},
+			DelayDelete: meta.Duration{Duration: 24 * time.Hour},
+		},
 		Redis: &meta.RedisSpec{
 			Route:   meta.RouteSpec{Type: "role", By: "roleId"},
 			IDField: "roleId",

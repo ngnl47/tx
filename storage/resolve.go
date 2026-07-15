@@ -21,8 +21,16 @@ func ResolveMeta(specs []meta.TypeSpec, types TypeLookup) (*Registry, error) {
 			cfg := TypeConfig{
 				TypeName:    spec.Type.Ref.FullName,
 				Mode:        Mode(spec.Storage.Mode),
+				DelaySave:   spec.Storage.DelaySave.String(),
+				DelayDelete: spec.Storage.DelayDelete.String(),
 				MemoryCache: spec.Storage.MemoryCache.String(),
 				Fields:      resolveMetaFields(spec.Fields),
+			}
+			if spec.Storage.DelaySave.Duration == 0 {
+				cfg.DelaySave = ""
+			}
+			if spec.Storage.DelayDelete.Duration == 0 {
+				cfg.DelayDelete = ""
 			}
 			if spec.Storage.MemoryCache.Duration == 0 {
 				cfg.MemoryCache = ""

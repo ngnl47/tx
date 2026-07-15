@@ -11,6 +11,8 @@ const (
 type TypeConfig struct {
 	TypeName    string                 `json:"typeName"`
 	Mode        Mode                   `json:"mode"`
+	DelaySave   string                 `json:"delaySave,omitempty"`
+	DelayDelete string                 `json:"delayDelete,omitempty"`
 	MemoryCache string                 `json:"memoryCache,omitempty"`
 	Redis       *RedisConfig           `json:"redis,omitempty"`
 	Mongo       *MongoConfig           `json:"mongo,omitempty"`
