@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/ngnl47/tx/change"
+	"github.com/ngnl47/tx/meta"
 	"github.com/ngnl47/tx/storage"
 	"github.com/ngnl47/tx/storage/mongo"
 	"github.com/ngnl47/tx/storage/redis"
@@ -25,7 +26,7 @@ func TestChangeSetToDocumentWithResolverUsesFieldID(t *testing.T) {
 	}
 }
 
-func TestRedisHashChangesWithResolverUsesFieldIDAndTailPath(t *testing.T) {
+func TestRedisDocumentPatchesWithResolverUsesFieldIDAndTailPath(t *testing.T) {
 	var set change.ChangeSet
 	if err := set.Add(change.FieldChange{
 		Field: change.FieldID(3),
@@ -36,13 +37,13 @@ func TestRedisHashChangesWithResolverUsesFieldIDAndTailPath(t *testing.T) {
 		t.Fatalf("Add returned error: %v", err)
 	}
 
-	hashes := redis.BuildHashChangesWithResolver(set, testFieldResolver{3: "items"})
-	if hashes["items"]["1001.quantity"] != int64(9) {
-		t.Fatalf("hashes = %#v, want items[1001.quantity]=9", hashes)
+	patches := redis.BuildDocumentPatchesWithResolver(redisFieldIDSpec(), set, testFieldResolver{3: "items"})
+	if patches["items"].Set[0].Path.String() != "items.1001.quantity" || patches["items"].Set[0].Value != int64(9) {
+		t.Fatalf("patches = %#v, want items.1001.quantity=9", patches)
 	}
 }
 
-func TestRedisHashDeletesWithResolverUsesFieldIDAndTailPath(t *testing.T) {
+func TestRedisDocumentPatchesWithResolverUsesFieldIDUnsetTailPath(t *testing.T) {
 	var set change.ChangeSet
 	if err := set.Add(change.FieldChange{
 		Field: change.FieldID(3),
@@ -52,9 +53,9 @@ func TestRedisHashDeletesWithResolverUsesFieldIDAndTailPath(t *testing.T) {
 		t.Fatalf("Add returned error: %v", err)
 	}
 
-	deletes := redis.BuildHashDeletesWithResolver(set, testFieldResolver{3: "items"})
-	if len(deletes["items"]) != 1 || deletes["items"][0] != "1001" {
-		t.Fatalf("deletes = %#v, want items[1001]", deletes)
+	patches := redis.BuildDocumentPatchesWithResolver(redisFieldIDSpec(), set, testFieldResolver{3: "items"})
+	if len(patches["items"].Unset) != 1 || patches["items"].Unset[0].String() != "items.1001" {
+		t.Fatalf("patches = %#v, want unset items.1001", patches)
 	}
 }
 
@@ -73,5 +74,13 @@ func TestMongoUpdateDocumentWithResolverUsesFieldIDAndTailPath(t *testing.T) {
 	setDoc := update["$set"].(map[string]any)
 	if setDoc["items.1001.quantity"] != int64(9) {
 		t.Fatalf("update = %#v, want $set items.1001.quantity=9", update)
+	}
+}
+
+func redisFieldIDSpec() meta.TypeSpec {
+	return meta.TypeSpec{
+		Fields: map[string]meta.FieldSpec{
+			"items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+		},
 	}
 }

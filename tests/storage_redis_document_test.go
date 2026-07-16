@@ -4,35 +4,44 @@ import (
 	"testing"
 
 	"github.com/ngnl47/tx/change"
+	"github.com/ngnl47/tx/meta"
 	txredis "github.com/ngnl47/tx/storage/redis"
 )
 
-func TestRedisBuildHashChangesGroupsByTopLevelPath(t *testing.T) {
+func TestRedisBuildDocumentPatchesGroupsSubKeyPath(t *testing.T) {
 	var set change.ChangeSet
 	_ = set.Add(change.FieldChange{Path: change.Path{"items", "1", "quantity"}, Kind: change.KindSet, Value: int64(5)})
 
-	hashes := txredis.BuildHashChanges(set)
-	if hashes["items"]["1.quantity"] != int64(5) {
-		t.Fatalf("hashes = %#v", hashes)
+	patches := txredis.BuildDocumentPatches(redisPatchSpec(), set)
+	if patches["items"].Set[0].Path.String() != "items.1.quantity" || patches["items"].Set[0].Value != int64(5) {
+		t.Fatalf("patches = %#v", patches)
 	}
 }
 
-func TestRedisBuildHashChangesKeepsTopLevelScalar(t *testing.T) {
+func TestRedisBuildDocumentPatchesKeepsTopLevelScalarInMainKey(t *testing.T) {
 	var set change.ChangeSet
 	_ = set.Add(change.FieldChange{Path: change.Path{"name"}, Kind: change.KindSet, Value: "alice"})
 
-	hashes := txredis.BuildHashChanges(set)
-	if hashes["name"]["name"] != "alice" {
-		t.Fatalf("hashes = %#v", hashes)
+	patches := txredis.BuildDocumentPatches(redisPatchSpec(), set)
+	if patches[""].Set[0].Path.String() != "name" || patches[""].Set[0].Value != "alice" {
+		t.Fatalf("patches = %#v", patches)
 	}
 }
 
-func TestRedisBuildHashDeletesGroupsUnsetChanges(t *testing.T) {
+func TestRedisBuildDocumentPatchesGroupsUnsetChanges(t *testing.T) {
 	var set change.ChangeSet
 	_ = set.Add(change.FieldChange{Path: change.Path{"items", "1", "quantity"}, Kind: change.KindUnset})
 
-	deletes := txredis.BuildHashDeletes(set)
-	if len(deletes["items"]) != 1 || deletes["items"][0] != "1.quantity" {
-		t.Fatalf("deletes = %#v", deletes)
+	patches := txredis.BuildDocumentPatches(redisPatchSpec(), set)
+	if len(patches["items"].Unset) != 1 || patches["items"].Unset[0].String() != "items.1.quantity" {
+		t.Fatalf("patches = %#v", patches)
+	}
+}
+
+func redisPatchSpec() meta.TypeSpec {
+	return meta.TypeSpec{
+		Fields: map[string]meta.FieldSpec{
+			"items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+		},
 	}
 }

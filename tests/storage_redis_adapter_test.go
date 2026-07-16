@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/ngnl47/tx/change"
@@ -10,54 +11,78 @@ import (
 	txredis "github.com/ngnl47/tx/storage/redis"
 )
 
-type recordingRedisHashClient struct {
-	sets    map[string]map[string]any
-	deletes map[string][]string
+type recordingRedisStringClient struct {
+	values map[string]string
 }
 
-func (c *recordingRedisHashClient) HSet(_ context.Context, key string, fields map[string]any) error {
-	if c.sets == nil {
-		c.sets = map[string]map[string]any{}
+func (c *recordingRedisStringClient) Get(_ context.Context, key string) (string, bool, error) {
+	if c.values == nil {
+		return "", false, nil
 	}
-	c.sets[key] = fields
+	value, ok := c.values[key]
+	return value, ok, nil
+}
+
+func (c *recordingRedisStringClient) Set(_ context.Context, key string, value string) error {
+	if c.values == nil {
+		c.values = map[string]string{}
+	}
+	c.values[key] = value
 	return nil
 }
 
-func (c *recordingRedisHashClient) HDel(_ context.Context, key string, fields []string) error {
-	if c.deletes == nil {
-		c.deletes = map[string][]string{}
-	}
-	c.deletes[key] = fields
-	return nil
-}
-
-func TestRedisAdapterAppliesHashChangesWithRecordID(t *testing.T) {
-	client := &recordingRedisHashClient{}
+func TestRedisAdapterAppliesStringDocumentsWithRecordID(t *testing.T) {
+	client := &recordingRedisStringClient{}
 	adapter := txredis.NewAdapter(client)
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{Key: "role"},
+		Fields: map[string]meta.FieldSpec{
+			"items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+		},
 	}
 	var set change.ChangeSet
 	_ = set.Add(change.FieldChange{Path: change.Path{"name"}, Kind: change.KindSet, Value: "alice"})
-	_ = set.Add(change.FieldChange{Path: change.Path{"items", "1"}, Kind: change.KindUnset})
+	_ = set.Add(change.FieldChange{Path: change.Path{"headImg"}, Kind: change.KindUnset})
+	_ = set.Add(change.FieldChange{Path: change.Path{"items", "1001", "quantity"}, Kind: change.KindSet, Value: int64(3)})
+	_ = set.Add(change.FieldChange{Path: change.Path{"items", "1001", "quality"}, Kind: change.KindUnset})
+
+	client.values = map[string]string{
+		"role:1001":       `{"name":"old","headImg":"old"}`,
+		"role:1001:items": `{"items":{"1001":{"quantity":1,"quality":2}}}`,
+	}
 
 	err := adapter.ApplyChanges(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set)
 	if err != nil {
 		t.Fatalf("ApplyChanges returned error: %v", err)
 	}
-	if client.sets["role:1001:name"]["name"] != "alice" {
-		t.Fatalf("sets = %#v", client.sets)
+
+	mainDoc := decodeJSONDocument(t, client.values["role:1001"])
+	if mainDoc["name"] != "alice" {
+		t.Fatalf("main doc = %#v", mainDoc)
 	}
-	if len(client.deletes["role:1001:items"]) != 1 || client.deletes["role:1001:items"][0] != "1" {
-		t.Fatalf("deletes = %#v", client.deletes)
+	if _, exists := mainDoc["headImg"]; exists {
+		t.Fatalf("main doc still contains headImg: %#v", mainDoc)
+	}
+
+	itemsDoc := decodeJSONDocument(t, client.values["role:1001:items"])
+	items := itemsDoc["items"].(map[string]any)
+	item := items["1001"].(map[string]any)
+	if item["quantity"] != float64(3) {
+		t.Fatalf("items doc = %#v", itemsDoc)
+	}
+	if _, exists := item["quality"]; exists {
+		t.Fatalf("items doc still contains quality: %#v", itemsDoc)
 	}
 }
 
 func TestRedisAdapterAppliesFieldIDChangesWithResolver(t *testing.T) {
-	client := &recordingRedisHashClient{}
+	client := &recordingRedisStringClient{}
 	adapter := txredis.NewAdapterWithResolver(client, testFieldResolver{3: "items"})
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{Key: "role"},
+		Fields: map[string]meta.FieldSpec{
+			"items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+		},
 	}
 	var set change.ChangeSet
 	_ = set.Add(change.FieldChange{
@@ -71,7 +96,19 @@ func TestRedisAdapterAppliesFieldIDChangesWithResolver(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyChanges returned error: %v", err)
 	}
-	if client.sets["role:1001:items"]["1001.quantity"] != int64(9) {
-		t.Fatalf("sets = %#v", client.sets)
+	itemsDoc := decodeJSONDocument(t, client.values["role:1001:items"])
+	items := itemsDoc["items"].(map[string]any)
+	item := items["1001"].(map[string]any)
+	if item["quantity"] != float64(9) {
+		t.Fatalf("items doc = %#v", itemsDoc)
 	}
+}
+
+func decodeJSONDocument(t *testing.T, body string) map[string]any {
+	t.Helper()
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(body), &doc); err != nil {
+		t.Fatalf("json.Unmarshal(%q) returned error: %v", body, err)
+	}
+	return doc
 }

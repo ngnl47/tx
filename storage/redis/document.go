@@ -1,66 +1,111 @@
-// Package redis 提供 ChangeSet 到 Redis 写入模型的转换。
+// Package redis 提供 ChangeSet 到 Redis string JSON 写入模型的转换。
 package redis
 
 import (
-	"strings"
-
 	"github.com/ngnl47/tx/change"
+	"github.com/ngnl47/tx/meta"
 )
 
-// BuildHashChanges 按顶层路径把字段变更分组成 Redis hash 写入。
-//
-// 示例：
-// Path{"items", "1", "quantity"} 会变成 hash "items" 下的字段
-// "1.quantity"。这对应 Mandarin 中 redis subKey 拆分后的局部落地模型。
-func BuildHashChanges(set change.ChangeSet) map[string]map[string]any {
-	return BuildHashChangesWithResolver(set, nil)
+// DocumentPatch 描述一次 Redis JSON 文档 patch。
+type DocumentPatch struct {
+	Set   []PathValue
+	Unset []change.Path
 }
 
-// BuildHashChangesWithResolver 按顶层路径把字段变更分组成 Redis hash 写入，
-// 并用 resolver 把 FieldID 解析为字段别名。
-func BuildHashChangesWithResolver(set change.ChangeSet, resolver change.FieldResolver) map[string]map[string]any {
-	out := map[string]map[string]any{}
+// PathValue 描述 JSON 文档内一个路径和值。
+type PathValue struct {
+	Path  change.Path
+	Value any
+}
+
+// BuildDocumentPatches 按 Mandarin string/subKey 模型把字段变更分组成 Redis
+// JSON 文档 patch。返回 map 的 key 是 Redis key 后缀：空字符串表示主 key，
+// 非空字符串表示 mainKey:<suffix>。
+func BuildDocumentPatches(spec meta.TypeSpec, set change.ChangeSet) map[string]DocumentPatch {
+	return BuildDocumentPatchesWithResolver(spec, set, nil)
+}
+
+// BuildDocumentPatchesWithResolver 按 Mandarin string/subKey 模型把字段变更
+// 分组成 Redis JSON 文档 patch，并用 resolver 把 FieldID 解析为字段别名。
+func BuildDocumentPatchesWithResolver(spec meta.TypeSpec, set change.ChangeSet, resolver change.FieldResolver) map[string]DocumentPatch {
+	out := map[string]DocumentPatch{}
 	for _, fieldChange := range set.Changes() {
 		path := fieldChange.FullPath(resolver)
-		if fieldChange.Kind == change.KindUnset || len(path) == 0 {
+		if len(path) == 0 {
 			continue
 		}
-		hash := path[0]
-		field := strings.Join(path[1:], ".")
-		if field == "" {
-			field = hash
+		suffix, ignore := redisDocumentSuffix(spec, path[0])
+		if ignore {
+			continue
 		}
-		if out[hash] == nil {
-			out[hash] = map[string]any{}
+		patch := out[suffix]
+		switch fieldChange.Kind {
+		case change.KindUnset:
+			patch.Unset = append(patch.Unset, path)
+		default:
+			patch.Set = append(patch.Set, PathValue{Path: path, Value: fieldChange.Value})
 		}
-		out[hash][field] = fieldChange.Value
+		out[suffix] = patch
 	}
 	return out
 }
 
-// BuildHashDeletes 按顶层路径把 unset 变更分组成 Redis hash 删除操作。
-//
-// 示例：Path{"items", "1", "quantity"} 会变成 hash "items" 下 HDEL
-// 字段 "1.quantity"。
-func BuildHashDeletes(set change.ChangeSet) map[string][]string {
-	return BuildHashDeletesWithResolver(set, nil)
+// ApplyDocumentPatch 把 patch 合并进 JSON 文档。
+func ApplyDocumentPatch(doc map[string]any, patch DocumentPatch) {
+	for _, item := range patch.Set {
+		setPathValue(doc, item.Path, item.Value)
+	}
+	for _, path := range patch.Unset {
+		unsetPathValue(doc, path)
+	}
 }
 
-// BuildHashDeletesWithResolver 按顶层路径把 unset 变更分组成 Redis hash 删除
-// 操作，并用 resolver 把 FieldID 解析为字段别名。
-func BuildHashDeletesWithResolver(set change.ChangeSet, resolver change.FieldResolver) map[string][]string {
-	out := map[string][]string{}
-	for _, fieldChange := range set.Changes() {
-		path := fieldChange.FullPath(resolver)
-		if fieldChange.Kind != change.KindUnset || len(path) == 0 {
-			continue
-		}
-		hash := path[0]
-		field := strings.Join(path[1:], ".")
-		if field == "" {
-			field = hash
-		}
-		out[hash] = append(out[hash], field)
+func redisDocumentSuffix(spec meta.TypeSpec, field string) (string, bool) {
+	fieldSpec, ok := spec.Fields[field]
+	if !ok || fieldSpec.Redis == nil {
+		return "", false
 	}
-	return out
+	if fieldSpec.Redis.Ignore {
+		return "", true
+	}
+	return fieldSpec.Redis.SubKey, false
+}
+
+func setPathValue(doc map[string]any, path change.Path, value any) {
+	if len(path) == 0 {
+		return
+	}
+	if len(path) == 1 {
+		doc[path[0]] = value
+		return
+	}
+	current := doc
+	for _, elem := range path[:len(path)-1] {
+		next, ok := current[elem].(map[string]any)
+		if !ok {
+			next = map[string]any{}
+			current[elem] = next
+		}
+		current = next
+	}
+	current[path[len(path)-1]] = value
+}
+
+func unsetPathValue(doc map[string]any, path change.Path) {
+	if len(path) == 0 {
+		return
+	}
+	if len(path) == 1 {
+		delete(doc, path[0])
+		return
+	}
+	current := doc
+	for _, elem := range path[:len(path)-1] {
+		next, ok := current[elem].(map[string]any)
+		if !ok {
+			return
+		}
+		current = next
+	}
+	delete(current, path[len(path)-1])
 }
