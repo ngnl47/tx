@@ -14,6 +14,7 @@ import (
 type DocumentPatch struct {
 	Set   []PathValue
 	Unset []change.Path
+	Mode  string
 }
 
 // PathValue 描述 JSON 文档内一个路径和值。
@@ -43,11 +44,17 @@ func BuildDocumentPatchesWithResolver(spec meta.TypeSpec, set change.ChangeSet, 
 			continue
 		}
 		patch := out[suffix]
+		if patch.Mode == "" {
+			patch.Mode = "0"
+		}
 		switch fieldChange.Kind {
 		case change.KindUnset:
 			patch.Unset = append(patch.Unset, path)
 		default:
 			patch.Set = append(patch.Set, PathValue{Path: path, Value: fieldChange.Value})
+			if fieldChange.Kind == change.KindReplace && redisFullUpdateField(spec, path[0]) && suffix != "" && len(path) == 1 {
+				patch.Mode = "1"
+			}
 		}
 		out[suffix] = patch
 	}
@@ -89,6 +96,11 @@ func redisDocumentSuffix(spec meta.TypeSpec, field string) (string, bool) {
 		return "", true
 	}
 	return fieldSpec.Redis.SubKey, false
+}
+
+func redisFullUpdateField(spec meta.TypeSpec, field string) bool {
+	fieldSpec, ok := spec.Fields[field]
+	return ok && fieldSpec.Redis != nil && fieldSpec.Redis.FullUpdate
 }
 
 func redisReadKeys(spec meta.TypeSpec, prefix string, fields []string) []string {

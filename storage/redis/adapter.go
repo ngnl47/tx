@@ -66,7 +66,11 @@ func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 		if err != nil {
 			return err
 		}
-		args = append(args, suffix, body, "0")
+		mode := patch.Mode
+		if mode == "" {
+			mode = "0"
+		}
+		args = append(args, suffix, body, mode)
 	}
 	upsert := "0"
 	if options.Upsert {
