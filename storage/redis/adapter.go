@@ -26,10 +26,7 @@ type BatchClient interface {
 }
 
 // ApplyOptions 控制 Redis 变更写入脚本的尾部参数。
-type ApplyOptions struct {
-	Upsert bool
-	TTL    int64
-}
+type ApplyOptions = storage.ApplyOptions
 
 // LoadOptions 控制 Redis 批量读取行为。
 type LoadOptions struct {

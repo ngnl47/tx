@@ -14,6 +14,17 @@ type ChangeApplier interface {
 	ApplyChanges(context.Context, meta.TypeSpec, RecordKey, change.ChangeSet) error
 }
 
+// ApplyOptions 描述变更落地时可选的通用写入语义。
+type ApplyOptions struct {
+	Upsert bool
+	TTL    int64
+}
+
+// ChangeApplierWithOptions 定义支持通用写入选项的变更落地适配器。
+type ChangeApplierWithOptions interface {
+	ApplyChangesWithOptions(context.Context, meta.TypeSpec, RecordKey, change.ChangeSet, ApplyOptions) error
+}
+
 // ChangeDocument 是以点分隔字段路径为 key 的通用变更文档。
 type ChangeDocument map[string]any
 
