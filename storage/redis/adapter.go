@@ -24,6 +24,11 @@ type BatchClient interface {
 	MGet(context.Context, ...string) ([]string, error)
 }
 
+// ApplyOptions 控制 Redis 变更写入脚本的尾部参数。
+type ApplyOptions struct {
+	Upsert bool
+}
+
 // Adapter 把 ChangeSet 应用到 Redis string JSON 文档。
 type Adapter struct {
 	client   ScriptClient
@@ -43,6 +48,11 @@ func NewAdapterWithResolver(client ScriptClient, resolver change.FieldResolver) 
 // ApplyChanges 根据 Redis 元数据和记录 ID 写入 string JSON
 // 变更。非 subKey 字段写入主 key；subKey 字段写入 mainKey:subKey。
 func (a *Adapter) ApplyChanges(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, set change.ChangeSet) error {
+	return a.ApplyChangesWithOptions(ctx, spec, key, set, ApplyOptions{Upsert: true})
+}
+
+// ApplyChangesWithOptions 根据指定选项写入 Redis string JSON 变更。
+func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, set change.ChangeSet, options ApplyOptions) error {
 	if a.client == nil || set.Empty() {
 		return nil
 	}
@@ -56,10 +66,17 @@ func (a *Adapter) ApplyChanges(ctx context.Context, spec meta.TypeSpec, key stor
 		}
 		args = append(args, suffix, body, "0")
 	}
-	args = append(args, "1", "0")
-	_, err := a.client.Eval(ctx, updateDocumentScript, []string{prefix}, args...)
+	upsert := "0"
+	if options.Upsert {
+		upsert = "1"
+	}
+	args = append(args, upsert, "0")
+	result, err := a.client.Eval(ctx, updateDocumentScript, []string{prefix}, args...)
 	if err != nil {
 		return fmt.Errorf("redis: apply changes %s: %w", prefix, err)
+	}
+	if result == "ne" {
+		return fmt.Errorf("redis: apply changes %s: %w", prefix, storage.ErrNotExists)
 	}
 	return nil
 }

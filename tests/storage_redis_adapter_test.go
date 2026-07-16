@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/ngnl47/tx/change"
@@ -93,6 +94,39 @@ func TestRedisAdapterAppliesChangesWithSingleLuaEval(t *testing.T) {
 	}
 	if call.args[len(call.args)-2] != "1" || call.args[len(call.args)-1] != "0" {
 		t.Fatalf("eval tail args = %#v, want upsert=1 ttlMode=0", call.args[len(call.args)-2:])
+	}
+}
+
+func TestRedisAdapterApplyChangesWithOptionsDisablesUpsert(t *testing.T) {
+	client := &recordingRedisStringClient{}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
+	var set change.ChangeSet
+	_ = set.Add(change.FieldChange{Path: change.Path{"name"}, Kind: change.KindSet, Value: "alice"})
+
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set, txredis.ApplyOptions{})
+	if err != nil {
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
+	}
+	if len(client.evals) != 1 {
+		t.Fatalf("eval calls = %#v, want exactly one", client.evals)
+	}
+	args := client.evals[0].args
+	if args[len(args)-2] != "0" {
+		t.Fatalf("upsert arg = %#v, want 0; args=%#v", args[len(args)-2], args)
+	}
+}
+
+func TestRedisAdapterApplyChangesWithOptionsReturnsNotExists(t *testing.T) {
+	client := &recordingRedisStringClient{evalResult: "ne", hasResult: true}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
+	var set change.ChangeSet
+	_ = set.Add(change.FieldChange{Path: change.Path{"name"}, Kind: change.KindSet, Value: "alice"})
+
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set, txredis.ApplyOptions{})
+	if !errors.Is(err, storage.ErrNotExists) {
+		t.Fatalf("ApplyChangesWithOptions err = %v, want ErrNotExists", err)
 	}
 }
 
