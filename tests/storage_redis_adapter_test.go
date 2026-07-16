@@ -117,6 +117,29 @@ func TestRedisAdapterApplyChangesWithOptionsDisablesUpsert(t *testing.T) {
 	}
 }
 
+func TestRedisAdapterApplyChangesWithOptionsPassesTTL(t *testing.T) {
+	client := &recordingRedisStringClient{}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
+	var set change.ChangeSet
+	_ = set.Add(change.FieldChange{Path: change.Path{"name"}, Kind: change.KindSet, Value: "alice"})
+
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set, txredis.ApplyOptions{
+		Upsert: true,
+		TTL:    120,
+	})
+	if err != nil {
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
+	}
+	if len(client.evals) != 1 {
+		t.Fatalf("eval calls = %#v, want exactly one", client.evals)
+	}
+	args := client.evals[0].args
+	if args[len(args)-1] != "120" {
+		t.Fatalf("ttl arg = %#v, want 120; args=%#v", args[len(args)-1], args)
+	}
+}
+
 func TestRedisAdapterApplyChangesWithOptionsReturnsNotExists(t *testing.T) {
 	client := &recordingRedisStringClient{evalResult: "ne", hasResult: true}
 	adapter := txredis.NewAdapter(client)

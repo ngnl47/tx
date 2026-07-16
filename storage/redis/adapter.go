@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/meta"
@@ -27,6 +28,7 @@ type BatchClient interface {
 // ApplyOptions 控制 Redis 变更写入脚本的尾部参数。
 type ApplyOptions struct {
 	Upsert bool
+	TTL    int64
 }
 
 // Adapter 把 ChangeSet 应用到 Redis string JSON 文档。
@@ -70,7 +72,7 @@ func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 	if options.Upsert {
 		upsert = "1"
 	}
-	args = append(args, upsert, "0")
+	args = append(args, upsert, strconv.FormatInt(options.TTL, 10))
 	result, err := a.client.Eval(ctx, updateDocumentScript, []string{prefix}, args...)
 	if err != nil {
 		return fmt.Errorf("redis: apply changes %s: %w", prefix, err)
