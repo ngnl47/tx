@@ -4,6 +4,7 @@ package redis
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/meta"
@@ -88,6 +89,84 @@ func redisDocumentSuffix(spec meta.TypeSpec, field string) (string, bool) {
 		return "", true
 	}
 	return fieldSpec.Redis.SubKey, false
+}
+
+func redisReadKeys(spec meta.TypeSpec, prefix string, fields []string) []string {
+	keys := []string{prefix}
+	includeMain := len(fields) == 0
+	subKeys := map[string]struct{}{}
+	if len(fields) == 0 {
+		for field, fieldSpec := range spec.Fields {
+			if field == "" || fieldSpec.Redis == nil || fieldSpec.Redis.Ignore || fieldSpec.Redis.SubKey == "" {
+				continue
+			}
+			subKeys[fieldSpec.Redis.SubKey] = struct{}{}
+		}
+	} else {
+		for _, field := range fields {
+			suffix, ignore := redisDocumentSuffix(spec, field)
+			if ignore {
+				continue
+			}
+			if suffix == "" {
+				includeMain = true
+				continue
+			}
+			subKeys[suffix] = struct{}{}
+		}
+	}
+	if includeMain {
+		keys = append(keys, prefix)
+	}
+	suffixes := make([]string, 0, len(subKeys))
+	for suffix := range subKeys {
+		suffixes = append(suffixes, suffix)
+	}
+	sort.Strings(suffixes)
+	for _, suffix := range suffixes {
+		keys = append(keys, prefix+":"+suffix)
+	}
+	return keys
+}
+
+type redisBatchPlan struct {
+	includeMain bool
+	subKeys     []string
+}
+
+func (p redisBatchPlan) step() int {
+	return 1 + len(p.subKeys)
+}
+
+func redisBatchReadPlan(spec meta.TypeSpec, fields []string) redisBatchPlan {
+	includeMain := len(fields) == 0
+	subKeys := map[string]struct{}{}
+	if len(fields) == 0 {
+		for field, fieldSpec := range spec.Fields {
+			if field == "" || fieldSpec.Redis == nil || fieldSpec.Redis.Ignore || fieldSpec.Redis.SubKey == "" {
+				continue
+			}
+			subKeys[fieldSpec.Redis.SubKey] = struct{}{}
+		}
+	} else {
+		for _, field := range fields {
+			suffix, ignore := redisDocumentSuffix(spec, field)
+			if ignore {
+				continue
+			}
+			if suffix == "" {
+				includeMain = true
+				continue
+			}
+			subKeys[suffix] = struct{}{}
+		}
+	}
+	suffixes := make([]string, 0, len(subKeys))
+	for suffix := range subKeys {
+		suffixes = append(suffixes, suffix)
+	}
+	sort.Strings(suffixes)
+	return redisBatchPlan{includeMain: includeMain, subKeys: suffixes}
 }
 
 func setPathValue(doc map[string]any, path change.Path, value any) {
