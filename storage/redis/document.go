@@ -12,9 +12,11 @@ import (
 
 // DocumentPatch 描述一次 Redis JSON 文档 patch。
 type DocumentPatch struct {
-	Set   []PathValue
-	Unset []change.Path
-	Mode  string
+	Set        []PathValue
+	Unset      []change.Path
+	Mode       string
+	fullUpdate bool
+	diffUpdate bool
 }
 
 // PathValue 描述 JSON 文档内一个路径和值。
@@ -50,10 +52,21 @@ func BuildDocumentPatchesWithResolver(spec meta.TypeSpec, set change.ChangeSet, 
 		switch fieldChange.Kind {
 		case change.KindUnset:
 			patch.Unset = append(patch.Unset, path)
+			patch.diffUpdate = true
 		default:
 			patch.Set = append(patch.Set, PathValue{Path: path, Value: fieldChange.Value})
 			if fieldChange.Kind == change.KindReplace && redisFullUpdateField(spec, path[0]) && suffix != "" && len(path) == 1 {
-				patch.Mode = "1"
+				patch.fullUpdate = true
+				if patch.diffUpdate {
+					patch.Mode = "2"
+				} else {
+					patch.Mode = "1"
+				}
+			} else {
+				patch.diffUpdate = true
+				if patch.fullUpdate {
+					patch.Mode = "2"
+				}
 			}
 		}
 		out[suffix] = patch

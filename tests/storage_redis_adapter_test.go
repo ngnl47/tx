@@ -265,6 +265,51 @@ func TestRedisAdapterUsesFullUpdateModeForWholeSubKeyReplace(t *testing.T) {
 	}
 }
 
+func TestRedisAdapterUsesPartialFullUpdateModeWhenSubKeyHasFullAndDiffChanges(t *testing.T) {
+	client := &recordingRedisStringClient{}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{
+		Redis: &meta.RedisSpec{Key: "role"},
+		Fields: map[string]meta.FieldSpec{
+			"items": {Redis: &meta.RedisFieldSpec{SubKey: "bag", FullUpdate: true}},
+			"equip": {Redis: &meta.RedisFieldSpec{SubKey: "bag"}},
+		},
+	}
+	var set change.ChangeSet
+	_ = set.Add(change.FieldChange{
+		Path:  change.Path{"items"},
+		Kind:  change.KindReplace,
+		Value: map[string]any{"1001": map[string]any{"quantity": int64(3)}},
+	})
+	_ = set.Add(change.FieldChange{
+		Path:  change.Path{"equip", "weapon"},
+		Kind:  change.KindSet,
+		Value: "sword",
+	})
+
+	err := adapter.ApplyChanges(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set)
+	if err != nil {
+		t.Fatalf("ApplyChanges returned error: %v", err)
+	}
+	if len(client.evals) != 1 {
+		t.Fatalf("eval calls = %#v, want exactly one", client.evals)
+	}
+	args := client.evals[0].args
+	if len(args) != 5 {
+		t.Fatalf("eval args = %#v, want one suffix/document/mode triple plus tail", args)
+	}
+	if args[0] != "bag" {
+		t.Fatalf("suffix = %#v, want bag; args=%#v", args[0], args)
+	}
+	if args[2] != "2" {
+		t.Fatalf("mode = %#v, want 2; args=%#v", args[2], args)
+	}
+	doc := decodeJSONDocument(t, args[1].(string))
+	if doc["equip"].(map[string]any)["weapon"] != "sword" {
+		t.Fatalf("partial full update doc = %#v", doc)
+	}
+}
+
 func TestRedisAdapterLoadsStringDocumentWithSubKeys(t *testing.T) {
 	client := &recordingRedisStringClient{
 		evalResult: `{"roleId":1001,"name":"alice","items":{"1001":{"quantity":3}}}`,
