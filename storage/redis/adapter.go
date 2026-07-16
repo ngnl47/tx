@@ -31,6 +31,11 @@ type ApplyOptions struct {
 	TTL    int64
 }
 
+// LoadOptions 控制 Redis 批量读取行为。
+type LoadOptions struct {
+	BatchSize int
+}
+
 // Adapter 把 ChangeSet 应用到 Redis string JSON 文档。
 type Adapter struct {
 	client   ScriptClient
@@ -117,6 +122,11 @@ func (a *Adapter) LoadDocument(ctx context.Context, spec meta.TypeSpec, key stor
 
 // LoadDocuments 批量读取并合并 Redis string JSON 文档。
 func (a *Adapter) LoadDocuments(ctx context.Context, spec meta.TypeSpec, records []storage.RecordKey, fields ...string) ([]map[string]any, []bool, error) {
+	return a.LoadDocumentsWithOptions(ctx, spec, records, LoadOptions{}, fields...)
+}
+
+// LoadDocumentsWithOptions 按指定选项批量读取并合并 Redis string JSON 文档。
+func (a *Adapter) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSpec, records []storage.RecordKey, options LoadOptions, fields ...string) ([]map[string]any, []bool, error) {
 	docs := make([]map[string]any, len(records))
 	exists := make([]bool, len(records))
 	if len(records) == 0 {
@@ -127,41 +137,51 @@ func (a *Adapter) LoadDocuments(ctx context.Context, spec meta.TypeSpec, records
 		return nil, nil, fmt.Errorf("redis: client does not support MGet")
 	}
 	plan := redisBatchReadPlan(spec, fields)
-	keys := make([]string, 0, len(records)*plan.step())
-	for _, record := range records {
-		prefix := redisKeyPrefix(spec, record)
-		keys = append(keys, prefix)
-		for _, suffix := range plan.subKeys {
-			keys = append(keys, prefix+":"+suffix)
-		}
+	batchSize := options.BatchSize
+	if batchSize <= 0 || batchSize > len(records) {
+		batchSize = len(records)
 	}
-	values, err := client.MGet(ctx, keys...)
-	if err != nil {
-		return nil, nil, fmt.Errorf("redis: load documents: %w", err)
-	}
-	if len(values) != len(keys) {
-		return nil, nil, fmt.Errorf("redis: load documents returned %d values for %d keys", len(values), len(keys))
-	}
-	step := plan.step()
-	for i := range records {
-		start := i * step
-		if values[start] == "" {
-			continue
+	for start := 0; start < len(records); start += batchSize {
+		end := start + batchSize
+		if end > len(records) {
+			end = len(records)
 		}
-		exists[i] = true
-		parts := make([]string, 0, step)
-		if plan.includeMain {
-			parts = append(parts, values[start])
+		keys := make([]string, 0, (end-start)*plan.step())
+		for _, record := range records[start:end] {
+			prefix := redisKeyPrefix(spec, record)
+			keys = append(keys, prefix)
+			for _, suffix := range plan.subKeys {
+				keys = append(keys, prefix+":"+suffix)
+			}
 		}
-		for j := 1; j < step; j++ {
-			parts = append(parts, values[start+j])
-		}
-		body := joinDocumentBodies(parts)
-		doc, err := decodeDocument(body)
+		values, err := client.MGet(ctx, keys...)
 		if err != nil {
-			return nil, nil, fmt.Errorf("redis: decode document %s: %w", redisKeyPrefix(spec, records[i]), err)
+			return nil, nil, fmt.Errorf("redis: load documents: %w", err)
 		}
-		docs[i] = doc
+		if len(values) != len(keys) {
+			return nil, nil, fmt.Errorf("redis: load documents returned %d values for %d keys", len(values), len(keys))
+		}
+		step := plan.step()
+		for i := start; i < end; i++ {
+			valueStart := (i - start) * step
+			if values[valueStart] == "" {
+				continue
+			}
+			exists[i] = true
+			parts := make([]string, 0, step)
+			if plan.includeMain {
+				parts = append(parts, values[valueStart])
+			}
+			for j := 1; j < step; j++ {
+				parts = append(parts, values[valueStart+j])
+			}
+			body := joinDocumentBodies(parts)
+			doc, err := decodeDocument(body)
+			if err != nil {
+				return nil, nil, fmt.Errorf("redis: decode document %s: %w", redisKeyPrefix(spec, records[i]), err)
+			}
+			docs[i] = doc
+		}
 	}
 	return docs, exists, nil
 }
@@ -171,7 +191,7 @@ func redisKeyPrefix(spec meta.TypeSpec, key storage.RecordKey) string {
 	if spec.Redis != nil && spec.Redis.Key != "" {
 		base = spec.Redis.Key
 	}
-	return fmt.Sprintf("%s:%v", base, key.ID)
+	return fmt.Sprintf("%s:{%v}", base, key.ID)
 }
 
 func decodeDocument(body string) (map[string]any, error) {

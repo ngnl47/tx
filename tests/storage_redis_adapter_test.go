@@ -13,12 +13,13 @@ import (
 )
 
 type recordingRedisStringClient struct {
-	values     map[string]string
-	evals      []redisEvalCall
-	mgets      [][]string
-	mgetValues []string
-	evalResult string
-	hasResult  bool
+	values      map[string]string
+	evals       []redisEvalCall
+	mgets       [][]string
+	mgetValues  []string
+	mgetBatches [][]string
+	evalResult  string
+	hasResult   bool
 }
 
 type redisEvalCall struct {
@@ -57,6 +58,11 @@ func (c *recordingRedisStringClient) Eval(_ context.Context, script string, keys
 
 func (c *recordingRedisStringClient) MGet(_ context.Context, keys ...string) ([]string, error) {
 	c.mgets = append(c.mgets, append([]string(nil), keys...))
+	if len(c.mgetBatches) > 0 {
+		out := append([]string(nil), c.mgetBatches[0]...)
+		c.mgetBatches = c.mgetBatches[1:]
+		return out, nil
+	}
 	return append([]string(nil), c.mgetValues...), nil
 }
 
@@ -86,8 +92,8 @@ func TestRedisAdapterAppliesChangesWithSingleLuaEval(t *testing.T) {
 		t.Fatalf("eval calls = %#v, want exactly one", client.evals)
 	}
 	call := client.evals[0]
-	if len(call.keys) != 1 || call.keys[0] != "role:1001" {
-		t.Fatalf("eval keys = %#v, want role:1001", call.keys)
+	if len(call.keys) != 1 || call.keys[0] != "role:{1001}" {
+		t.Fatalf("eval keys = %#v, want role:{1001}", call.keys)
 	}
 	if len(call.args) != 8 {
 		t.Fatalf("eval args = %#v, want two suffix/document/mode triples plus upsert and ttlMode", call.args)
@@ -371,7 +377,7 @@ func TestRedisAdapterLoadsStringDocumentWithSubKeys(t *testing.T) {
 	if len(client.evals) != 1 {
 		t.Fatalf("eval calls = %#v, want exactly one", client.evals)
 	}
-	if got, want := client.evals[0].keys, []string{"role:1001", "role:1001", "role:1001:items"}; !sameStrings(got, want) {
+	if got, want := client.evals[0].keys, []string{"role:{1001}", "role:{1001}", "role:{1001}:items"}; !sameStrings(got, want) {
 		t.Fatalf("eval keys = %#v, want %#v", got, want)
 	}
 	if doc["name"] != "alice" {
@@ -429,7 +435,7 @@ func TestRedisAdapterLoadsStringDocumentsWithSubKeys(t *testing.T) {
 	if len(client.mgets) != 1 {
 		t.Fatalf("mget calls = %#v, want exactly one", client.mgets)
 	}
-	if got, want := client.mgets[0], []string{"role:1001", "role:1001:items", "role:1002", "role:1002:items"}; !sameStrings(got, want) {
+	if got, want := client.mgets[0], []string{"role:{1001}", "role:{1001}:items", "role:{1002}", "role:{1002}:items"}; !sameStrings(got, want) {
 		t.Fatalf("mget keys = %#v, want %#v", got, want)
 	}
 	if got, want := exists, []bool{true, false}; !sameBools(got, want) {
@@ -445,6 +451,59 @@ func TestRedisAdapterLoadsStringDocumentsWithSubKeys(t *testing.T) {
 	item := items["1001"].(map[string]any)
 	if item["quantity"] != json.Number("3") {
 		t.Fatalf("loaded items = %#v", items)
+	}
+}
+
+func TestRedisAdapterLoadDocumentsWithOptionsChunksMGet(t *testing.T) {
+	client := &recordingRedisStringClient{
+		mgetBatches: [][]string{
+			{
+				`{"roleId":1001,"name":"alice"}`,
+				`{"items":{"1001":{"quantity":3}}}`,
+				`{"roleId":1002,"name":"bob"}`,
+				`{"items":{"1001":{"quantity":4}}}`,
+			},
+			{
+				`{"roleId":1003,"name":"carl"}`,
+				`{"items":{"1001":{"quantity":5}}}`,
+			},
+		},
+	}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{
+		Redis: &meta.RedisSpec{Key: "role"},
+		Fields: map[string]meta.FieldSpec{
+			"items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+		},
+	}
+
+	docs, exists, err := adapter.LoadDocumentsWithOptions(context.Background(), spec, []storage.RecordKey{
+		{ID: int64(1001)},
+		{ID: int64(1002)},
+		{ID: int64(1003)},
+	}, txredis.LoadOptions{BatchSize: 2})
+	if err != nil {
+		t.Fatalf("LoadDocumentsWithOptions returned error: %v", err)
+	}
+	if len(client.mgets) != 2 {
+		t.Fatalf("mget calls = %#v, want two calls", client.mgets)
+	}
+	if got, want := client.mgets[0], []string{"role:{1001}", "role:{1001}:items", "role:{1002}", "role:{1002}:items"}; !sameStrings(got, want) {
+		t.Fatalf("first mget keys = %#v, want %#v", got, want)
+	}
+	if got, want := client.mgets[1], []string{"role:{1003}", "role:{1003}:items"}; !sameStrings(got, want) {
+		t.Fatalf("second mget keys = %#v, want %#v", got, want)
+	}
+	if got, want := exists, []bool{true, true, true}; !sameBools(got, want) {
+		t.Fatalf("exists = %#v, want %#v", got, want)
+	}
+	if docs[2]["name"] != "carl" {
+		t.Fatalf("docs[2] = %#v", docs[2])
+	}
+	items := docs[2]["items"].(map[string]any)
+	item := items["1001"].(map[string]any)
+	if item["quantity"] != json.Number("5") {
+		t.Fatalf("docs[2] items = %#v", items)
 	}
 }
 
