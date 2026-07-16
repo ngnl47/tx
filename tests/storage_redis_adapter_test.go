@@ -140,6 +140,44 @@ func TestRedisAdapterApplyChangesWithOptionsPassesTTL(t *testing.T) {
 	}
 }
 
+func TestRedisAdapterApplyChangesWithOptionsAddsTTLOnlySubKeys(t *testing.T) {
+	client := &recordingRedisStringClient{}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{
+		Redis: &meta.RedisSpec{Key: "role"},
+		Fields: map[string]meta.FieldSpec{
+			"items":  {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+			"heroes": {Redis: &meta.RedisFieldSpec{SubKey: "heroes"}},
+		},
+	}
+	var set change.ChangeSet
+	_ = set.Add(change.FieldChange{Path: change.Path{"name"}, Kind: change.KindSet, Value: "alice"})
+
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set, txredis.ApplyOptions{
+		Upsert: true,
+		TTL:    120,
+	})
+	if err != nil {
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
+	}
+	if len(client.evals) != 1 {
+		t.Fatalf("eval calls = %#v, want exactly one", client.evals)
+	}
+	triples := evalTriples(t, client.evals[0].args)
+	if triples[""].mode != "0" {
+		t.Fatalf("main mode = %#v, want 0; triples=%#v", triples[""].mode, triples)
+	}
+	for _, suffix := range []string{"heroes", "items"} {
+		triple, ok := triples[suffix]
+		if !ok {
+			t.Fatalf("missing ttl-only suffix %q in %#v", suffix, triples)
+		}
+		if triple.body != "" || triple.mode != "-1" {
+			t.Fatalf("ttl-only triple %q = %#v, want empty body mode -1", suffix, triple)
+		}
+	}
+}
+
 func TestRedisAdapterApplyChangesWithOptionsReturnsNotExists(t *testing.T) {
 	client := &recordingRedisStringClient{evalResult: "ne", hasResult: true}
 	adapter := txredis.NewAdapter(client)
@@ -435,6 +473,35 @@ func evalPatchDocuments(t *testing.T, client *recordingRedisStringClient) map[st
 		patches[suffix] = decodeJSONDocument(t, body)
 	}
 	return patches
+}
+
+type redisEvalTriple struct {
+	body string
+	mode string
+}
+
+func evalTriples(t *testing.T, args []any) map[string]redisEvalTriple {
+	t.Helper()
+	if len(args) < 2 || (len(args)-2)%3 != 0 {
+		t.Fatalf("eval args = %#v, want suffix/document/mode triples plus tail", args)
+	}
+	triples := map[string]redisEvalTriple{}
+	for i := 0; i < len(args)-2; i += 3 {
+		suffix, ok := args[i].(string)
+		if !ok {
+			t.Fatalf("eval arg %d = %#v, want suffix string", i, args[i])
+		}
+		body, ok := args[i+1].(string)
+		if !ok {
+			t.Fatalf("eval arg %d = %#v, want document string", i+1, args[i+1])
+		}
+		mode, ok := args[i+2].(string)
+		if !ok {
+			t.Fatalf("eval arg %d = %#v, want mode string", i+2, args[i+2])
+		}
+		triples[suffix] = redisEvalTriple{body: body, mode: mode}
+	}
+	return triples
 }
 
 func decodeJSONDocument(t *testing.T, body string) map[string]any {

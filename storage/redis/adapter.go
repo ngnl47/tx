@@ -60,15 +60,22 @@ func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 	}
 	prefix := redisKeyPrefix(spec, key)
 	patches := BuildDocumentPatchesWithResolver(spec, set, a.resolver)
+	if options.TTL != 0 {
+		ensureTTLOnlyPatches(spec, patches)
+	}
 	args := make([]any, 0, len(patches)*3+2)
 	for suffix, patch := range patches {
-		body, err := EncodeDocumentPatch(patch)
-		if err != nil {
-			return err
-		}
 		mode := patch.Mode
 		if mode == "" {
 			mode = "0"
+		}
+		body := ""
+		if mode != "-1" {
+			encoded, err := EncodeDocumentPatch(patch)
+			if err != nil {
+				return err
+			}
+			body = encoded
 		}
 		args = append(args, suffix, body, mode)
 	}

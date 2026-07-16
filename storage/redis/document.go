@@ -116,6 +116,33 @@ func redisFullUpdateField(spec meta.TypeSpec, field string) bool {
 	return ok && fieldSpec.Redis != nil && fieldSpec.Redis.FullUpdate
 }
 
+func ensureTTLOnlyPatches(spec meta.TypeSpec, patches map[string]DocumentPatch) {
+	if _, ok := patches[""]; !ok {
+		patches[""] = DocumentPatch{Mode: "-1"}
+	}
+	for _, suffix := range redisSubKeySuffixes(spec) {
+		if _, ok := patches[suffix]; !ok {
+			patches[suffix] = DocumentPatch{Mode: "-1"}
+		}
+	}
+}
+
+func redisSubKeySuffixes(spec meta.TypeSpec) []string {
+	subKeys := map[string]struct{}{}
+	for field, fieldSpec := range spec.Fields {
+		if field == "" || fieldSpec.Redis == nil || fieldSpec.Redis.Ignore || fieldSpec.Redis.SubKey == "" {
+			continue
+		}
+		subKeys[fieldSpec.Redis.SubKey] = struct{}{}
+	}
+	suffixes := make([]string, 0, len(subKeys))
+	for suffix := range subKeys {
+		suffixes = append(suffixes, suffix)
+	}
+	sort.Strings(suffixes)
+	return suffixes
+}
+
 func redisReadKeys(spec meta.TypeSpec, prefix string, fields []string) []string {
 	keys := []string{prefix}
 	includeMain := len(fields) == 0
