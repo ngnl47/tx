@@ -46,19 +46,12 @@ if ttlMode == 0 then
   end
 end
 
-local function is_array(t)
-  local max = 0
-  local count = 0
-  for k, _ in pairs(t) do
-    if type(k) ~= "number" then
-      return false
-    end
-    if k > max then
-      max = k
-    end
-    count = count + 1
+local function get_type(v)
+  local t = type(v)
+  if t == "table" and (v.__arr ~= nil or v[1] ~= nil) then
+    return "array"
   end
-  return max == count
+  return t
 end
 
 local function is_empty_table(v)
@@ -72,7 +65,7 @@ local function merge(old, patch)
   for k, v in pairs(patch) do
     if v == cjson.null then
       old[k] = nil
-    elseif type(v) == "table" and not is_array(v) and type(old[k]) == "table" and not is_array(old[k]) then
+    elseif get_type(v) == "table" and get_type(old[k]) == "table" then
       merge(old[k], v)
       if is_empty_table(old[k]) then
         old[k] = nil

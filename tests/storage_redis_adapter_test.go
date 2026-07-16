@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/ngnl47/tx/change"
@@ -125,6 +126,32 @@ func TestRedisAdapterUsesShardKeyAsHashTagWhenRouteByDiffersFromID(t *testing.T)
 	}
 	if got, want := client.evals[0].keys, []string{"role:{7}:1001"}; !sameStrings(got, want) {
 		t.Fatalf("eval keys = %#v, want %#v", got, want)
+	}
+}
+
+func TestRedisAdapterLuaUsesCompatibleArrayDetection(t *testing.T) {
+	client := &recordingRedisStringClient{}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
+	var set change.ChangeSet
+	_ = set.Add(change.FieldChange{Path: change.Path{"tags"}, Kind: change.KindSet, Value: []string{"a"}})
+
+	err := adapter.ApplyChanges(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set)
+	if err != nil {
+		t.Fatalf("ApplyChanges returned error: %v", err)
+	}
+	if len(client.evals) != 1 {
+		t.Fatalf("eval calls = %#v, want exactly one", client.evals)
+	}
+	script := client.evals[0].script
+	for _, want := range []string{
+		"local function get_type(v)",
+		"if t == \"table\" and (v.__arr ~= nil or v[1] ~= nil) then",
+		"return \"array\"",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("eval script does not contain %q:\n%s", want, script)
+		}
 	}
 }
 
