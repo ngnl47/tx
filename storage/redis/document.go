@@ -2,6 +2,9 @@
 package redis
 
 import (
+	"encoding/json"
+	"fmt"
+
 	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/meta"
 )
@@ -18,14 +21,14 @@ type PathValue struct {
 	Value any
 }
 
-// BuildDocumentPatches 按 Mandarin string/subKey 模型把字段变更分组成 Redis
+// BuildDocumentPatches 按 string/subKey 模型把字段变更分组成 Redis
 // JSON 文档 patch。返回 map 的 key 是 Redis key 后缀：空字符串表示主 key，
 // 非空字符串表示 mainKey:<suffix>。
 func BuildDocumentPatches(spec meta.TypeSpec, set change.ChangeSet) map[string]DocumentPatch {
 	return BuildDocumentPatchesWithResolver(spec, set, nil)
 }
 
-// BuildDocumentPatchesWithResolver 按 Mandarin string/subKey 模型把字段变更
+// BuildDocumentPatchesWithResolver 按 string/subKey 模型把字段变更
 // 分组成 Redis JSON 文档 patch，并用 resolver 把 FieldID 解析为字段别名。
 func BuildDocumentPatchesWithResolver(spec meta.TypeSpec, set change.ChangeSet, resolver change.FieldResolver) map[string]DocumentPatch {
 	out := map[string]DocumentPatch{}
@@ -58,6 +61,22 @@ func ApplyDocumentPatch(doc map[string]any, patch DocumentPatch) {
 	for _, path := range patch.Unset {
 		unsetPathValue(doc, path)
 	}
+}
+
+// EncodeDocumentPatch 把 patch 编码成 Lua merge 脚本可消费的 JSON 文档。
+func EncodeDocumentPatch(patch DocumentPatch) (string, error) {
+	doc := map[string]any{}
+	for _, item := range patch.Set {
+		setPathValue(doc, item.Path, item.Value)
+	}
+	for _, path := range patch.Unset {
+		setPathValue(doc, path, nil)
+	}
+	body, err := json.Marshal(doc)
+	if err != nil {
+		return "", fmt.Errorf("redis: marshal patch: %w", err)
+	}
+	return string(body), nil
 }
 
 func redisDocumentSuffix(spec meta.TypeSpec, field string) (string, bool) {

@@ -8,7 +8,7 @@ import (
 	"github.com/ngnl47/tx/migrate"
 )
 
-func TestMigrateMandarinLegacyTags(t *testing.T) {
+func TestMigrateLegacyTags(t *testing.T) {
 	root := writeTempModule(t, map[string]string{
 		"data/role.go": `package data
 
@@ -22,9 +22,9 @@ type GDRole struct {
 `,
 	})
 
-	specs, report, err := migrate.MandarinDir(root + "/data")
+	specs, report, err := migrate.LegacyDir(root + "/data")
 	if err != nil {
-		t.Fatalf("MandarinDir returned error: %v", err)
+		t.Fatalf("LegacyDir returned error: %v", err)
 	}
 
 	spec := findMigratedSpec(t, specs, "example.com/project/data.GDRole")
@@ -63,7 +63,7 @@ type GDRole struct {
 	}
 }
 
-func TestMigrateMandarinReportsMissingFields(t *testing.T) {
+func TestMigrateLegacyReportsMissingFields(t *testing.T) {
 	root := writeTempModule(t, map[string]string{
 		"data/bad.go": `package data
 
@@ -75,9 +75,9 @@ type Bad struct {
 `,
 	})
 
-	_, report, err := migrate.MandarinDir(root + "/data")
+	_, report, err := migrate.LegacyDir(root + "/data")
 	if err != nil {
-		t.Fatalf("MandarinDir returned error: %v", err)
+		t.Fatalf("LegacyDir returned error: %v", err)
 	}
 	if len(report.MissingFields) != 1 {
 		t.Fatalf("missing fields = %#v", report.MissingFields)

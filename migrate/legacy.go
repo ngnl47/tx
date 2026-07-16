@@ -20,7 +20,7 @@ import (
 	"github.com/ngnl47/tx/meta"
 )
 
-func MandarinDir(root string) ([]meta.TypeSpec, Report, error) {
+func LegacyDir(root string) ([]meta.TypeSpec, Report, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, Report{}, fmt.Errorf("migrate: read dir %s: %w", root, err)
@@ -33,10 +33,10 @@ func MandarinDir(root string) ([]meta.TypeSpec, Report, error) {
 		files = append(files, filepath.Join(root, entry.Name()))
 	}
 	sort.Strings(files)
-	return MandarinFiles(files)
+	return LegacyFiles(files)
 }
 
-func MandarinFiles(files []string) ([]meta.TypeSpec, Report, error) {
+func LegacyFiles(files []string) ([]meta.TypeSpec, Report, error) {
 	var specs []meta.TypeSpec
 	var report Report
 	if len(files) == 0 {

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a clean replacement for Mandarin data generation, change tracking, and redis/mongo/fusion persistence while keeping runtime infrastructure in `tx` and generator/integration fixtures in `txgen`.
+**Goal:** Build a clean replacement for legacy framework data generation, change tracking, and redis/mongo/fusion persistence while keeping runtime infrastructure in `tx` and generator/integration fixtures in `txgen`.
 
 **Architecture:** `tx` owns stable runtime libraries: annotation metadata, change tracking, and storage adapters. `txgen` owns code generation: it scans `input`, emits generated Go code into `output`, and verifies generated code against real scaffold templates. Generated business code imports `github.com/ngnl47/tx` at runtime and does not import `txgen`.
 
@@ -14,7 +14,7 @@
 - Generator logic and scaffold integration tests belong in `/Users/a47/workspace/txgen`.
 - `txgen/input` is read-only fixture input during tests; generated files are written to `txgen/output`.
 - Generated business code may import `github.com/ngnl47/tx`, but must not import `github.com/ngnl47/txgen`.
-- Do not preserve Mandarin compatibility APIs such as `Mark`, `MarkInRoot`, and `ReMarkInRoot` unless a later migration task explicitly requires them.
+- Do not preserve legacy framework compatibility APIs such as `Mark`, `MarkInRoot`, and `ReMarkInRoot` unless a later migration task explicitly requires them.
 - Use one new change model: `change.Tracker`, `change.ChangeSet`, and generated `*Store` wrappers.
 - ChangeSet 的热路径使用字段编号记录变更目标：运行时提供 `change.FieldID` 和 `change.FieldResolver`，`txgen` 生成字段编号常量和字段名解析器。`Path` 只保留为兼容入口和 map/slice 等动态尾路径，避免在常规字段变更中反复保存完整字符串路径。
 - Redis and MongoDB drivers are external adapters; change detection remains owned by `tx/change`.
@@ -1445,20 +1445,20 @@ Expected: PASS.
 ## Task 10: Document The New Runtime/Generator Boundary
 
 **Files:**
-- Modify: `/Users/a47/workspace/tx/docs/mandarin_generation_workflow.md`
+- Modify: `/Users/a47/workspace/tx/docs/legacy_generation_workflow.md`
 - Create: `/Users/a47/workspace/txgen/README.md`
 
 **Interfaces:**
 - Produces human-readable boundary docs.
 
-- [ ] **Step 1: Update Mandarin workflow doc**
+- [ ] **Step 1: Update legacy framework workflow doc**
 
-Append this section to `docs/mandarin_generation_workflow.md`:
+Append this section to `docs/legacy_generation_workflow.md`:
 
 ```markdown
 ## Tx 重写边界
 
-Tx 重写不复刻 Mandarin 历史上并存的 `Mark`、`MarkInRoot`、`StoreRoot` 多套变更接口。
+Tx 重写不复刻 legacy framework 历史上并存的 `Mark`、`MarkInRoot`、`StoreRoot` 多套变更接口。
 
 新的边界是：
 
@@ -1525,4 +1525,4 @@ Expected:
 - Keep each task independently testable.
 - Do not add Redis/Mongo network integration tests in the first pass; use document builders and fake queues.
 - Add real Redis/Mongo integration tests only after adapters are stable and test containers or local services are explicitly configured.
-- Do not add compatibility wrappers for Mandarin deprecated APIs during these tasks.
+- Do not add compatibility wrappers for legacy framework deprecated APIs during these tasks.

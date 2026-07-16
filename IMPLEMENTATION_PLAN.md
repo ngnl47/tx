@@ -1,12 +1,12 @@
 # Tx storage metadata implementation plan
 
-本文是 `github.com/ngnl47/tx` 中重写 Mandarin tag storage chain 的实施计划。
+本文是 `github.com/ngnl47/tx` 中重写 legacy framework tag storage chain 的实施计划。
 
-目标不是兼容式修补 Mandarin，而是把旧链路抽象成一个新的 Go module 能力：
+目标不是兼容式修补 legacy framework，而是把旧链路抽象成一个新的 Go module 能力：
 
 - 使用 Go 注释作为元数据主入口，保持类型定义和存储定义靠近。
 - 使用 Go AST 读取 Go 类型结构和注释，建立注释元数据与 Go 类型之间的绑定关系。
-- 支持从 Mandarin 旧注解迁移到新的 Tx 语义；语法形态尽量沿用 `// @name:"k:v,flag"`，降低迁移成本。
+- 支持从 legacy framework 旧注解迁移到新的 Tx 语义；语法形态尽量沿用 `// @name:"k:v,flag"`，降低迁移成本。
 - 不支持独立 schema 文件；存储元数据只来自 Go 注释、struct tag 和 AST 扫描结果。
 - 运行时元数据只允许初始化期注册；不支持隐式运行时追加 tag。
 - `fusion` 作为公开存储模式名；旧 `redisDelayMongoDB` 只作为迁移器识别的 legacy alias。
@@ -23,7 +23,7 @@ tx/
   meta/             # 元数据模型、registry、annotation 输出模型
   anno/             # Go 注释中的 type-level tag 解析、规范化、校验
   astscan/          # Go AST 扫描器，提取 package/type/field/method/comment 信息
-  migrate/          # Mandarin legacy tag 到 Tx metadata 的迁移器
+  migrate/          # legacy framework legacy tag 到 Tx metadata 的迁移器
   storage/          # 存储抽象：Store mode、route、key、options、runtime metadata
   storage/redis/    # Redis key builder、route resolver、后续 Redis adapter
   storage/mongo/    # Mongo collection/index/sharding metadata、后续 Mongo adapter
@@ -37,7 +37,7 @@ tx/
 
 ## Annotation Direction
 
-主入口放在 Go 注释中，并由 Go AST 绑定到准确的 type/field 节点。语法形态保留 Mandarin 风格的 `// @name:"k:v,flag"`，这样 struct 级注释 tag 与 field 级 Go struct tag 使用同一种参数格式。
+主入口放在 Go 注释中，并由 Go AST 绑定到准确的 type/field 节点。语法形态保留 legacy framework 风格的 `// @name:"k:v,flag"`，这样 struct 级注释 tag 与 field 级 Go struct tag 使用同一种参数格式。
 
 第一版建议支持：
 
@@ -62,7 +62,7 @@ RoleId int64 `mongodb:"index,unique"`
 - 使用 `// @<tagName>:"<content>"` 前缀，保持与 Go `reflect.StructTag` 相近的写法。
 - type-level tag 第一版支持：`storage`、`redis`、`mongodb`。
 - field-level tag 继续读取原生 struct tag，第一版支持：`redis`、`mongodb`。
-- 参数继续使用 `key:value` 和 flag 混合格式，延续 Mandarin 的紧凑写法。
+- 参数继续使用 `key:value` 和 flag 混合格式，延续 legacy framework 的紧凑写法。
 - parser 只负责理解单条 tag 内容；注释和 struct/field 的绑定必须由 Go AST 完成。
 - 新语义使用 `mode:fusion`；旧 `mode:redisDelayMongoDB` 只作为迁移/兼容 alias 识别。
 - 时间字段使用 Go duration 风格字符串：`600s`、`10m`、`24h`。
@@ -199,9 +199,9 @@ Go 注释 / struct tag -> anno -> astscan -> meta -> storage/gen
 - `tests/astscan_test.go`
 - 使用 `t.TempDir()` 创建临时 Go module 或临时 package 文件。
 
-## Phase 4: Mandarin Legacy Migrator
+## Phase 4: legacy framework Legacy Migrator
 
-目标：把 Mandarin 旧注解规范化为新的 Tx `meta.TypeSpec` 语义。
+目标：把 legacy framework 旧注解规范化为新的 Tx `meta.TypeSpec` 语义。
 
 输入形式：
 
@@ -233,7 +233,7 @@ Go 注释 / struct tag -> anno -> astscan -> meta -> storage/gen
 
 测试：
 
-- `tests/migrate_mandarin_test.go`
+- `tests/migrate_legacy_test.go`
 - 覆盖 storage/redis/mongodb 三类注解和字段 tag。
 
 ## Phase 5: Runtime Storage Metadata
@@ -379,7 +379,7 @@ type DelayTaskBackend interface {
 交付：
 
 - `migrate`
-- Mandarin legacy 注解规范化到新 Tx 语义。
+- legacy framework legacy 注解规范化到新 Tx 语义。
 
 完成标准：
 

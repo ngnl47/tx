@@ -2,7 +2,6 @@ package redis
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/ngnl47/tx/change"
@@ -10,72 +9,52 @@ import (
 	"github.com/ngnl47/tx/storage"
 )
 
-// StringClient 是 Mandarin 风格 Redis string JSON 写入所需的最小接口。
+// ScriptClient 是 Redis Lua 写入所需的最小接口。
 //
-// go-redis 适配层后续只需要把 Get/Set 转成这里的签名即可，runtime
-// 基建不直接依赖具体驱动。Get 返回第二个 bool 表示 key 是否存在。
-type StringClient interface {
-	Get(context.Context, string) (string, bool, error)
-	Set(context.Context, string, string) error
+// go-redis 适配层后续只需要把 Eval 转成这里的签名即可，runtime
+// 基建不直接依赖具体驱动。
+type ScriptClient interface {
+	Eval(context.Context, string, []string, ...any) (string, error)
 }
 
 // Adapter 把 ChangeSet 应用到 Redis string JSON 文档。
 type Adapter struct {
-	client   StringClient
+	client   ScriptClient
 	resolver change.FieldResolver
 }
 
 // NewAdapter 创建 Redis ChangeSet 适配器。
-func NewAdapter(client StringClient) *Adapter {
+func NewAdapter(client ScriptClient) *Adapter {
 	return &Adapter{client: client}
 }
 
 // NewAdapterWithResolver 创建带字段编号解析器的 Redis ChangeSet 适配器。
-func NewAdapterWithResolver(client StringClient, resolver change.FieldResolver) *Adapter {
+func NewAdapterWithResolver(client ScriptClient, resolver change.FieldResolver) *Adapter {
 	return &Adapter{client: client, resolver: resolver}
 }
 
-// ApplyChanges 根据 Redis 元数据和记录 ID 写入 Mandarin 风格 string JSON
+// ApplyChanges 根据 Redis 元数据和记录 ID 写入 string JSON
 // 变更。非 subKey 字段写入主 key；subKey 字段写入 mainKey:subKey。
 func (a *Adapter) ApplyChanges(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, set change.ChangeSet) error {
 	if a.client == nil || set.Empty() {
 		return nil
 	}
 	prefix := redisKeyPrefix(spec, key)
-	for suffix, patch := range BuildDocumentPatchesWithResolver(spec, set, a.resolver) {
-		redisKey := prefix
-		if suffix != "" {
-			redisKey = prefix + ":" + suffix
-		}
-		doc, err := a.loadDocument(ctx, redisKey)
+	patches := BuildDocumentPatchesWithResolver(spec, set, a.resolver)
+	args := make([]any, 0, len(patches)*3+2)
+	for suffix, patch := range patches {
+		body, err := EncodeDocumentPatch(patch)
 		if err != nil {
 			return err
 		}
-		ApplyDocumentPatch(doc, patch)
-		body, err := json.Marshal(doc)
-		if err != nil {
-			return fmt.Errorf("redis: marshal document %s: %w", redisKey, err)
-		}
-		if err := a.client.Set(ctx, redisKey, string(body)); err != nil {
-			return err
-		}
+		args = append(args, suffix, body, "0")
+	}
+	args = append(args, "1", "0")
+	_, err := a.client.Eval(ctx, updateDocumentScript, []string{prefix}, args...)
+	if err != nil {
+		return fmt.Errorf("redis: apply changes %s: %w", prefix, err)
 	}
 	return nil
-}
-
-func (a *Adapter) loadDocument(ctx context.Context, key string) (map[string]any, error) {
-	body, exists, err := a.client.Get(ctx, key)
-	if err != nil {
-		return nil, err
-	}
-	if !exists || body == "" {
-		return map[string]any{}, nil
-	}
-	doc := map[string]any{}
-	if err := json.Unmarshal([]byte(body), &doc); err != nil {
-		return nil, fmt.Errorf("redis: unmarshal document %s: %w", key, err)
-	}
-	return doc, nil
 }
 
 func redisKeyPrefix(spec meta.TypeSpec, key storage.RecordKey) string {

@@ -1,6 +1,6 @@
-# Mandarin 脚手架生成流程分析
+# legacy framework 脚手架生成流程分析
 
-本文记录 `evo-server/data/run.sh` 触发的 Mandarin/datagen 脚手架生成流程。后续重写 Mandarin 相关能力时，以这里拆出的阶段和产物为功能清单。
+本文记录 `evo-server/data/run.sh` 触发的 legacy framework/datagen 脚手架生成流程。后续重写 legacy framework 相关能力时，以这里拆出的阶段和产物为功能清单。
 
 ## 入口
 
@@ -35,8 +35,8 @@ go generate
 - `data/room/data/*.go`、`data/room/cmd/*.go`：房间模块数据和协议。
 - `data/custom/*.go`：本地自定义 tag 定义和自定义 TS 生成器。
 - `data/gm/customtag/tag_def.go`：GM 权限 tag 定义。
-- Mandarin/datagen 内置 tag：通过 `mandarin/v3/tags.Register()` 和 `datagen/v3/tags.Register()` 注册。
-- Mandarin datadef 外部模型：`leaderboard`、`oim`、`omail`、`opay` 等通过 `common.Import()` 导入。
+- legacy framework/datagen 内置 tag：通过 `legacy/v3/tags.Register()` 和 `datagen/v3/tags.Register()` 注册。
+- legacy framework datadef 外部模型：`leaderboard`、`oim`、`omail`、`opay` 等通过 `common.Import()` 导入。
 
 模板文件中常见注解能力包括：
 
@@ -81,7 +81,7 @@ gentag.GenTagsEx("evo-data", []string{"./data", "./cmd"}, "./tags/tags.go")
 执行顺序：
 
 1. `common.Import()`
-   - 注册 Mandarin 内置 tags。
+   - 注册 legacy framework 内置 tags。
    - 注册 datagen 内置 tags。
    - 执行 `data/tags.Register()`。
    - 导入 `leaderboard`、`oim`、`omail`、`opay` 外部 datadef。
@@ -183,7 +183,7 @@ v31.GenGoConfig{
   - 字段 setter。
   - 生成给客户端的 BON body，结合 `GetChangedForClientFilter` 过滤字段。
 
-这些能力是 Mandarin 当前“增量同步”和“字段脏标记”的核心。
+这些能力是 legacy framework 当前“增量同步”和“字段脏标记”的核心。
 
 ### 服务端 tags 追加能力
 
@@ -332,11 +332,11 @@ v31.GenTsConfig{
 
 - 生成后的 Go 类型保留 storage/redis/mongodb 注解。
 - `*Store.go` 为数据对象生成字段级 dirty tracking 与增量输出。
-- Redis/Mongo 真实读写辅助由 Mandarin storage runtime 和生成 Store 共同承担。
+- Redis/Mongo 真实读写辅助由 legacy framework storage runtime 和生成 Store 共同承担。
 
 ## 后续重写功能清单
 
-为了逐步替换 Mandarin 库，可以按以下顺序重写：
+为了逐步替换 legacy framework 库，可以按以下顺序重写：
 
 1. 注解定义与解析
    - type-level struct tag 注解。
@@ -350,7 +350,7 @@ v31.GenTsConfig{
    - 字段 alias 规则。
 
 3. tags.go 生成替代
-   - 旧 Mandarin 通过 `reflectex.TypeInfoOfObj` 和 `AddTag` 恢复运行时元数据。
+   - 旧 legacy framework 通过 `reflectex.TypeInfoOfObj` 和 `AddTag` 恢复运行时元数据。
    - 新实现可以直接输出静态 metadata 或 registry 初始化代码。
 
 4. 类型分组
