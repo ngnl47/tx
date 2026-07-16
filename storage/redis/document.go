@@ -4,11 +4,14 @@ package redis
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 
 	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/meta"
 )
+
+const maxLuaJSONSafeInteger uint64 = 1<<53 - 1
 
 // DocumentPatch 描述一次 Redis JSON 文档 patch。
 type DocumentPatch struct {
@@ -88,6 +91,9 @@ func ApplyDocumentPatch(doc map[string]any, patch DocumentPatch) {
 func EncodeDocumentPatch(patch DocumentPatch) (string, error) {
 	doc := map[string]any{}
 	for _, item := range patch.Set {
+		if err := validateLuaJSONValue(item.Value); err != nil {
+			return "", err
+		}
 		setPathValue(doc, item.Path, item.Value)
 	}
 	for _, path := range patch.Unset {
@@ -98,6 +104,72 @@ func EncodeDocumentPatch(patch DocumentPatch) (string, error) {
 		return "", fmt.Errorf("redis: marshal patch: %w", err)
 	}
 	return string(body), nil
+}
+
+func validateLuaJSONValue(value any) error {
+	return validateLuaJSONValueAt(reflect.ValueOf(value), "")
+}
+
+func validateLuaJSONValueAt(value reflect.Value, path string) error {
+	if !value.IsValid() {
+		return nil
+	}
+	for value.Kind() == reflect.Interface || value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return nil
+		}
+		value = value.Elem()
+	}
+	switch value.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		n := value.Int()
+		if n > int64(maxLuaJSONSafeInteger) || n < -int64(maxLuaJSONSafeInteger) {
+			return fmt.Errorf("redis: unsafe integer for Lua JSON at %s: %d", valuePath(path), n)
+		}
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		n := value.Uint()
+		if n > maxLuaJSONSafeInteger {
+			return fmt.Errorf("redis: unsafe integer for Lua JSON at %s: %d", valuePath(path), n)
+		}
+	case reflect.Map:
+		for _, key := range value.MapKeys() {
+			childPath := appendValuePath(path, fmt.Sprint(key.Interface()))
+			if err := validateLuaJSONValueAt(value.MapIndex(key), childPath); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < value.Len(); i++ {
+			if err := validateLuaJSONValueAt(value.Index(i), appendValuePath(path, fmt.Sprint(i))); err != nil {
+				return err
+			}
+		}
+	case reflect.Struct:
+		for i := 0; i < value.NumField(); i++ {
+			field := value.Type().Field(i)
+			if field.PkgPath != "" {
+				continue
+			}
+			if err := validateLuaJSONValueAt(value.Field(i), appendValuePath(path, field.Name)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func valuePath(path string) string {
+	if path == "" {
+		return "<root>"
+	}
+	return path
+}
+
+func appendValuePath(path string, elem string) string {
+	if path == "" {
+		return elem
+	}
+	return path + "." + elem
 }
 
 func redisDocumentSuffix(spec meta.TypeSpec, field string) (string, bool) {

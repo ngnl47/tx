@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/ngnl47/tx/change"
@@ -35,6 +36,27 @@ func TestRedisBuildDocumentPatchesGroupsUnsetChanges(t *testing.T) {
 	patches := txredis.BuildDocumentPatches(redisPatchSpec(), set)
 	if len(patches["items"].Unset) != 1 || patches["items"].Unset[0].String() != "items.1.quantity" {
 		t.Fatalf("patches = %#v", patches)
+	}
+}
+
+func TestRedisEncodeDocumentPatchAllowsSafeIntegers(t *testing.T) {
+	_, err := txredis.EncodeDocumentPatch(txredis.DocumentPatch{
+		Set: []txredis.PathValue{{Path: change.Path{"roleId"}, Value: int64(1<<53 - 1)}},
+	})
+	if err != nil {
+		t.Fatalf("EncodeDocumentPatch returned error: %v", err)
+	}
+}
+
+func TestRedisEncodeDocumentPatchRejectsUnsafeIntegers(t *testing.T) {
+	_, err := txredis.EncodeDocumentPatch(txredis.DocumentPatch{
+		Set: []txredis.PathValue{{Path: change.Path{"roleId"}, Value: int64(1 << 53)}},
+	})
+	if err == nil {
+		t.Fatal("EncodeDocumentPatch returned nil error, want unsafe integer error")
+	}
+	if !strings.Contains(err.Error(), "unsafe integer") {
+		t.Fatalf("EncodeDocumentPatch error = %v, want unsafe integer", err)
 	}
 }
 
