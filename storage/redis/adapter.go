@@ -191,6 +191,9 @@ func redisKeyPrefix(spec meta.TypeSpec, key storage.RecordKey) string {
 	if spec.Redis != nil && spec.Redis.Key != "" {
 		base = spec.Redis.Key
 	}
+	if spec.Redis != nil && spec.Redis.Route.By != "" && spec.Redis.IDField != "" && spec.Redis.Route.By != spec.Redis.IDField && key.ShardKey != nil {
+		return fmt.Sprintf("%s:{%v}:%v", base, key.ShardKey, key.ID)
+	}
 	return fmt.Sprintf("%s:{%v}", base, key.ID)
 }
 

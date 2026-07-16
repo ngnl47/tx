@@ -103,6 +103,31 @@ func TestRedisAdapterAppliesChangesWithSingleLuaEval(t *testing.T) {
 	}
 }
 
+func TestRedisAdapterUsesShardKeyAsHashTagWhenRouteByDiffersFromID(t *testing.T) {
+	client := &recordingRedisStringClient{}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{
+		Redis: &meta.RedisSpec{
+			Key:     "role",
+			IDField: "roleId",
+			Route:   meta.RouteSpec{By: "serverId"},
+		},
+	}
+	var set change.ChangeSet
+	_ = set.Add(change.FieldChange{Path: change.Path{"name"}, Kind: change.KindSet, Value: "alice"})
+
+	err := adapter.ApplyChanges(context.Background(), spec, storage.RecordKey{ID: int64(1001), ShardKey: int64(7)}, set)
+	if err != nil {
+		t.Fatalf("ApplyChanges returned error: %v", err)
+	}
+	if len(client.evals) != 1 {
+		t.Fatalf("eval calls = %#v, want exactly one", client.evals)
+	}
+	if got, want := client.evals[0].keys, []string{"role:{7}:1001"}; !sameStrings(got, want) {
+		t.Fatalf("eval keys = %#v, want %#v", got, want)
+	}
+}
+
 func TestRedisAdapterApplyChangesWithOptionsDisablesUpsert(t *testing.T) {
 	client := &recordingRedisStringClient{}
 	adapter := txredis.NewAdapter(client)
