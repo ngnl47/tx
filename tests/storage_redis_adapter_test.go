@@ -29,6 +29,11 @@ type redisEvalCall struct {
 	args   []any
 }
 
+type recordingRedisEvalOnlyClient struct {
+	results []string
+	evals   []redisEvalCall
+}
+
 func (c *recordingRedisStringClient) Get(_ context.Context, key string) (string, bool, error) {
 	if c.values == nil {
 		return "", false, nil
@@ -65,6 +70,20 @@ func (c *recordingRedisStringClient) MGet(_ context.Context, keys ...string) ([]
 		return out, nil
 	}
 	return append([]string(nil), c.mgetValues...), nil
+}
+
+func (c *recordingRedisEvalOnlyClient) Eval(_ context.Context, script string, keys []string, args ...any) (string, error) {
+	c.evals = append(c.evals, redisEvalCall{
+		script: script,
+		keys:   append([]string(nil), keys...),
+		args:   append([]any(nil), args...),
+	})
+	if len(c.results) == 0 {
+		return "", nil
+	}
+	result := c.results[0]
+	c.results = c.results[1:]
+	return result, nil
 }
 
 func TestRedisAdapterAppliesChangesWithSingleLuaEval(t *testing.T) {
@@ -520,6 +539,53 @@ func TestRedisAdapterLoadsStringDocumentsWithSubKeys(t *testing.T) {
 	}
 	if got, want := client.mgets[0], []string{"role:{1001}", "role:{1001}:items", "role:{1002}", "role:{1002}:items"}; !sameStrings(got, want) {
 		t.Fatalf("mget keys = %#v, want %#v", got, want)
+	}
+	if got, want := exists, []bool{true, false}; !sameBools(got, want) {
+		t.Fatalf("exists = %#v, want %#v", got, want)
+	}
+	if docs[1] != nil {
+		t.Fatalf("docs[1] = %#v, want nil", docs[1])
+	}
+	if docs[0]["name"] != "alice" {
+		t.Fatalf("docs[0] = %#v", docs[0])
+	}
+	items := docs[0]["items"].(map[string]any)
+	item := items["1001"].(map[string]any)
+	if item["quantity"] != json.Number("3") {
+		t.Fatalf("loaded items = %#v", items)
+	}
+}
+
+func TestRedisAdapterLoadDocumentsFallsBackToEval(t *testing.T) {
+	client := &recordingRedisEvalOnlyClient{
+		results: []string{
+			`{"roleId":1001,"name":"alice","items":{"1001":{"quantity":3}}}`,
+			"",
+		},
+	}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{
+		Redis: &meta.RedisSpec{Key: "role"},
+		Fields: map[string]meta.FieldSpec{
+			"items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+		},
+	}
+
+	docs, exists, err := adapter.LoadDocuments(context.Background(), spec, []storage.RecordKey{
+		{ID: int64(1001)},
+		{ID: int64(1002)},
+	})
+	if err != nil {
+		t.Fatalf("LoadDocuments returned error: %v", err)
+	}
+	if len(client.evals) != 2 {
+		t.Fatalf("eval calls = %#v, want two calls", client.evals)
+	}
+	if got, want := client.evals[0].keys, []string{"role:{1001}", "role:{1001}", "role:{1001}:items"}; !sameStrings(got, want) {
+		t.Fatalf("first eval keys = %#v, want %#v", got, want)
+	}
+	if got, want := client.evals[1].keys, []string{"role:{1002}", "role:{1002}", "role:{1002}:items"}; !sameStrings(got, want) {
+		t.Fatalf("second eval keys = %#v, want %#v", got, want)
 	}
 	if got, want := exists, []bool{true, false}; !sameBools(got, want) {
 		t.Fatalf("exists = %#v, want %#v", got, want)

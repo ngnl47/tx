@@ -138,7 +138,7 @@ func (a *Adapter) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSp
 	}
 	client, ok := a.client.(BatchClient)
 	if !ok {
-		return nil, nil, fmt.Errorf("redis: client does not support MGet")
+		return a.loadDocumentsByEval(ctx, spec, records, fields...)
 	}
 	plan := redisBatchReadPlan(spec, fields)
 	batchSize := options.BatchSize
@@ -186,6 +186,20 @@ func (a *Adapter) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSp
 			}
 			docs[i] = doc
 		}
+	}
+	return docs, exists, nil
+}
+
+func (a *Adapter) loadDocumentsByEval(ctx context.Context, spec meta.TypeSpec, records []storage.RecordKey, fields ...string) ([]map[string]any, []bool, error) {
+	docs := make([]map[string]any, len(records))
+	exists := make([]bool, len(records))
+	for i, record := range records {
+		doc, found, err := a.LoadDocument(ctx, spec, record, fields...)
+		if err != nil {
+			return nil, nil, err
+		}
+		docs[i] = doc
+		exists[i] = found
 	}
 	return docs, exists, nil
 }
