@@ -1226,8 +1226,8 @@ Expected: PASS.
   - `type DelayedOperationKind string`
   - `type DelayedOperation struct { Kind DelayedOperationKind; Type meta.TypeRef; ID any; Changes change.ChangeSet; RunAfter time.Duration }`
   - `type DelayQueue interface { Enqueue(context.Context, DelayedOperation) error }`
-  - `type Strategy struct { Redis storage.ChangeApplier; MongoQueue DelayQueue }`
-  - `func (s Strategy) ApplyChanges(context.Context, meta.TypeSpec, any, change.ChangeSet) error`
+  - `type Strategy struct { Redis storage.ChangeApplierWithOptions; MongoQueue DelayQueue }`
+  - `func (s Strategy) ApplyChangesWithOptions(context.Context, meta.TypeSpec, storage.RecordKey, change.ChangeSet, storage.ApplyOptions) error`
 
 - [ ] **Step 1: Write fusion strategy test**
 
@@ -1243,6 +1243,7 @@ import (
 
 	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/meta"
+	"github.com/ngnl47/tx/storage"
 	"github.com/ngnl47/tx/storage/fusion"
 )
 
@@ -1265,8 +1266,9 @@ func TestFusionStrategyEnqueuesMongoSave(t *testing.T) {
 	var set change.ChangeSet
 	_ = set.Add(change.FieldChange{Path: change.Path{"name"}, Kind: change.KindSet, Value: "alice"})
 
-	if err := strategy.ApplyChanges(context.Background(), spec, int64(1001), set); err != nil {
-		t.Fatalf("ApplyChanges returned error: %v", err)
+	key := storage.RecordKey{TypeName: spec.Type.Ref.FullName, ID: int64(1001)}
+	if err := strategy.ApplyChangesWithOptions(context.Background(), spec, key, set, storage.ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
 	}
 	if len(queue.ops) != 1 {
 		t.Fatalf("queued ops = %#v", queue.ops)
@@ -1326,13 +1328,13 @@ import (
 )
 
 type Strategy struct {
-	Redis      storage.ChangeApplier
+	Redis      storage.ChangeApplierWithOptions
 	MongoQueue DelayQueue
 }
 
-func (s Strategy) ApplyChanges(ctx context.Context, spec meta.TypeSpec, id any, set change.ChangeSet) error {
+func (s Strategy) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, set change.ChangeSet, options storage.ApplyOptions) error {
 	if s.Redis != nil {
-		if err := s.Redis.ApplyChanges(ctx, spec, set); err != nil {
+		if err := s.Redis.ApplyChangesWithOptions(ctx, spec, key, set, options); err != nil {
 			return err
 		}
 	}
@@ -1342,7 +1344,7 @@ func (s Strategy) ApplyChanges(ctx context.Context, spec meta.TypeSpec, id any, 
 	return s.MongoQueue.Enqueue(ctx, DelayedOperation{
 		Kind:     DelayedSave,
 		Type:     spec.Type.Ref,
-		ID:       id,
+		ID:       key.ID,
 		Changes:  set,
 		RunAfter: spec.Storage.DelaySaveTime,
 	})

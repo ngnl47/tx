@@ -21,20 +21,11 @@ func (q *recordingQueue) Enqueue(_ context.Context, op fusion.DelayedOperation) 
 }
 
 type recordingApplier struct {
-	calls      int
 	optionRuns int
 	spec       meta.TypeSpec
 	key        storage.RecordKey
 	set        change.ChangeSet
 	options    storage.ApplyOptions
-}
-
-func (a *recordingApplier) ApplyChanges(_ context.Context, spec meta.TypeSpec, key storage.RecordKey, set change.ChangeSet) error {
-	a.calls++
-	a.spec = spec
-	a.key = key
-	a.set = set
-	return nil
 }
 
 func (a *recordingApplier) ApplyChangesWithOptions(_ context.Context, spec meta.TypeSpec, key storage.RecordKey, set change.ChangeSet, options storage.ApplyOptions) error {
@@ -57,9 +48,10 @@ func TestFusionStrategyEnqueuesMongoSave(t *testing.T) {
 	}
 	var set change.ChangeSet
 	_ = set.Add(change.FieldChange{Path: change.Path{"name"}, Kind: change.KindSet, Value: "alice"})
+	key := storage.RecordKey{TypeName: spec.Type.Ref.FullName, ID: int64(1001)}
 
-	if err := strategy.ApplyChanges(context.Background(), spec, int64(1001), set); err != nil {
-		t.Fatalf("ApplyChanges returned error: %v", err)
+	if err := strategy.ApplyChangesWithOptions(context.Background(), spec, key, set, storage.ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
 	}
 	if len(queue.ops) != 1 {
 		t.Fatalf("queued ops = %#v", queue.ops)
@@ -79,9 +71,10 @@ func TestFusionStrategyAppliesRedisBeforeQueue(t *testing.T) {
 	}
 	var set change.ChangeSet
 	_ = set.Add(change.FieldChange{Path: change.Path{"name"}, Kind: change.KindSet, Value: "alice"})
+	key := storage.RecordKey{TypeName: spec.Type.Ref.FullName, ID: int64(1001)}
 
-	if err := strategy.ApplyChanges(context.Background(), spec, int64(1001), set); err != nil {
-		t.Fatalf("ApplyChanges returned error: %v", err)
+	if err := strategy.ApplyChangesWithOptions(context.Background(), spec, key, set, storage.ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
 	}
 	if redis.optionRuns != 1 {
 		t.Fatalf("redis option calls = %d, want 1", redis.optionRuns)
@@ -130,9 +123,10 @@ func TestFusionStrategyPassesOptionsOnlyToRedis(t *testing.T) {
 func TestFusionStrategySkipsEmptyChangeSet(t *testing.T) {
 	queue := &recordingQueue{}
 	strategy := fusion.Strategy{MongoQueue: queue}
+	key := storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)}
 
-	if err := strategy.ApplyChanges(context.Background(), meta.TypeSpec{}, int64(1001), change.ChangeSet{}); err != nil {
-		t.Fatalf("ApplyChanges returned error: %v", err)
+	if err := strategy.ApplyChangesWithOptions(context.Background(), meta.TypeSpec{}, key, change.ChangeSet{}, storage.ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
 	}
 	if len(queue.ops) != 0 {
 		t.Fatalf("queued ops = %#v, want empty", queue.ops)

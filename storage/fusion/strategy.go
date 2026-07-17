@@ -18,14 +18,6 @@ type Strategy struct {
 	MongoQueue DelayQueue
 }
 
-// ApplyChanges 应用一次对象变更。
-func (s Strategy) ApplyChanges(ctx context.Context, spec meta.TypeSpec, id any, set change.ChangeSet) error {
-	return s.ApplyChangesWithOptions(ctx, spec, storage.RecordKey{
-		TypeName: spec.Type.Ref.FullName,
-		ID:       id,
-	}, set, storage.ApplyOptions{})
-}
-
 // ApplyChangesWithOptions 应用一次对象变更，并把写入选项限定传递给 Redis。
 func (s Strategy) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, set change.ChangeSet, options storage.ApplyOptions) error {
 	if set.Empty() {
