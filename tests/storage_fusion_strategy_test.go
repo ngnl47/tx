@@ -85,6 +85,7 @@ func (l *recordingDocumentLoader) LoadDocuments(_ context.Context, spec meta.Typ
 
 type recordingRedisStore struct {
 	recordingApplier
+	recordingDeleteApplier
 	recordingDocumentLoader
 }
 
@@ -212,6 +213,32 @@ func TestFusionStrategyEnqueuesMongoDelete(t *testing.T) {
 	}
 }
 
+func TestFusionStrategyDeleteUsesRedisApplierWhenDeleterIsUnset(t *testing.T) {
+	queue := &recordingQueue{}
+	redis := &recordingRedisStore{}
+	strategy := fusion.Strategy{Redis: redis, MongoQueue: queue}
+	spec := meta.TypeSpec{
+		Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
+		Storage: meta.StorageSpec{
+			DelayDelete: meta.Duration{Duration: 24 * time.Hour},
+		},
+	}
+	key := storage.RecordKey{ID: int64(1001)}
+
+	if err := strategy.ApplyDelete(context.Background(), spec, key); err != nil {
+		t.Fatalf("ApplyDelete returned error: %v", err)
+	}
+	if redis.recordingDeleteApplier.calls != 1 {
+		t.Fatalf("redis delete calls = %d, want 1", redis.recordingDeleteApplier.calls)
+	}
+	if redis.recordingDeleteApplier.key.ID != key.ID {
+		t.Fatalf("redis delete key = %#v, want %#v", redis.recordingDeleteApplier.key, key)
+	}
+	if len(queue.ops) != 1 {
+		t.Fatalf("queued ops = %#v, want one delete op", queue.ops)
+	}
+}
+
 func TestFusionStrategyLoadDocumentUsesRedisFirst(t *testing.T) {
 	redis := &recordingDocumentLoader{doc: map[string]any{"name": "hot"}, exists: true}
 	mongo := &recordingDocumentLoader{doc: map[string]any{"name": "cold"}, exists: true}
@@ -252,8 +279,8 @@ func TestFusionStrategyLoadDocumentUsesRedisApplierWhenLoaderIsUnset(t *testing.
 	if !exists || doc["name"] != "hot" {
 		t.Fatalf("LoadDocument = %#v, %v; want Redis document", doc, exists)
 	}
-	if redis.calls != 1 {
-		t.Fatalf("redis loader calls = %d, want 1", redis.calls)
+	if redis.recordingDocumentLoader.calls != 1 {
+		t.Fatalf("redis loader calls = %d, want 1", redis.recordingDocumentLoader.calls)
 	}
 }
 

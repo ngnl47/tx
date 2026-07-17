@@ -58,8 +58,8 @@ func (s Strategy) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 // RedisDeleter 存在时会先删除热数据；MongoQueue 存在时会把持久化删除延迟
 // 到 delayDelete 配置之后执行。
 func (s Strategy) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
-	if s.RedisDeleter != nil {
-		if err := s.RedisDeleter.ApplyDelete(ctx, spec, key); err != nil {
+	if redisDeleter := s.redisDeleter(); redisDeleter != nil {
+		if err := redisDeleter.ApplyDelete(ctx, spec, key); err != nil {
 			return err
 		}
 	}
@@ -161,4 +161,12 @@ func (s Strategy) redisLoader() DocumentLoader {
 	}
 	loader, _ := s.Redis.(DocumentLoader)
 	return loader
+}
+
+func (s Strategy) redisDeleter() storage.DeleteApplier {
+	if s.RedisDeleter != nil {
+		return s.RedisDeleter
+	}
+	deleter, _ := s.Redis.(storage.DeleteApplier)
+	return deleter
 }
