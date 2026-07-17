@@ -71,14 +71,27 @@ func (a *Adapter) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []
 		return docs, exists, nil
 	}
 	finder, ok := a.client.(BatchFinder)
+	if ok {
+		ids := make([]any, len(keys))
+		for i, key := range keys {
+			ids[i] = key.ID
+		}
+		return finder.FindManyByID(ctx, mongoCollection(spec), ids, fields...)
+	}
+	singleFinder, ok := a.client.(Finder)
 	if !ok {
-		return nil, nil, nil
+		return docs, exists, nil
 	}
-	ids := make([]any, len(keys))
+	collection := mongoCollection(spec)
 	for i, key := range keys {
-		ids[i] = key.ID
+		doc, found, err := singleFinder.FindByID(ctx, collection, key.ID, fields...)
+		if err != nil {
+			return nil, nil, err
+		}
+		docs[i] = doc
+		exists[i] = found
 	}
-	return finder.FindManyByID(ctx, mongoCollection(spec), ids, fields...)
+	return docs, exists, nil
 }
 
 func mongoCollection(spec meta.TypeSpec) string {

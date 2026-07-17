@@ -25,6 +25,13 @@ type recordingMongoUpdater struct {
 	manyExists     []bool
 }
 
+type recordingMongoFinder struct {
+	collection string
+	ids        []any
+	fields     []string
+	docs       map[any]map[string]any
+}
+
 func (u *recordingMongoUpdater) UpdateByID(_ context.Context, collection string, id any, update map[string]any) error {
 	u.collection = collection
 	u.id = id
@@ -44,6 +51,14 @@ func (u *recordingMongoUpdater) FindManyByID(_ context.Context, collection strin
 	u.manyIDs = append([]any(nil), ids...)
 	u.manyFields = append([]string(nil), fields...)
 	return u.manyDocs, u.manyExists, nil
+}
+
+func (f *recordingMongoFinder) FindByID(_ context.Context, collection string, id any, fields ...string) (map[string]any, bool, error) {
+	f.collection = collection
+	f.ids = append(f.ids, id)
+	f.fields = append([]string(nil), fields...)
+	doc, exists := f.docs[id]
+	return doc, exists, nil
 }
 
 func TestMongoAdapterAppliesUpdateByID(t *testing.T) {
@@ -120,6 +135,39 @@ func TestMongoAdapterLoadDocumentsPassesProjection(t *testing.T) {
 	}
 	if len(client.manyFields) != 1 || client.manyFields[0] != "name" {
 		t.Fatalf("fields = %#v, want [name]", client.manyFields)
+	}
+	if len(docs) != 2 || docs[0]["name"] != "alice" || docs[1] != nil {
+		t.Fatalf("docs = %#v", docs)
+	}
+	if len(exists) != 2 || !exists[0] || exists[1] {
+		t.Fatalf("exists = %#v", exists)
+	}
+}
+
+func TestMongoAdapterLoadDocumentsFallsBackToFindByID(t *testing.T) {
+	client := &recordingMongoFinder{
+		docs: map[any]map[string]any{
+			int64(1001): {"name": "alice"},
+		},
+	}
+	adapter := txmongo.NewAdapter(client)
+	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}
+
+	docs, exists, err := adapter.LoadDocuments(context.Background(), spec, []storage.RecordKey{
+		{ID: int64(1001)},
+		{ID: int64(1002)},
+	}, "name")
+	if err != nil {
+		t.Fatalf("LoadDocuments returned error: %v", err)
+	}
+	if client.collection != "roles" {
+		t.Fatalf("collection = %q, want roles", client.collection)
+	}
+	if len(client.ids) != 2 || client.ids[0] != int64(1001) || client.ids[1] != int64(1002) {
+		t.Fatalf("ids = %#v, want [1001 1002]", client.ids)
+	}
+	if len(client.fields) != 1 || client.fields[0] != "name" {
+		t.Fatalf("fields = %#v, want [name]", client.fields)
 	}
 	if len(docs) != 2 || docs[0]["name"] != "alice" || docs[1] != nil {
 		t.Fatalf("docs = %#v", docs)
