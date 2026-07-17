@@ -7,13 +7,6 @@ import (
 	"github.com/ngnl47/tx/meta"
 )
 
-// ChangeApplier 定义消费 ChangeSet 的落库适配器。
-//
-// Redis、Mongo、Fusion 都实现这个接口后，生成 Store 无需关心具体后端。
-type ChangeApplier interface {
-	ApplyChanges(context.Context, meta.TypeSpec, RecordKey, change.ChangeSet) error
-}
-
 // ApplyOptions 描述变更落地时可选的通用写入语义。
 type ApplyOptions struct {
 	Upsert bool

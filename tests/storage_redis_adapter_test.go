@@ -85,7 +85,7 @@ func TestRedisAdapterAppliesChangesWithSingleLuaEval(t *testing.T) {
 		Value: int64(9),
 	})
 
-	err := adapter.ApplyChanges(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set)
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set, txredis.ApplyOptions{Upsert: true})
 	if err != nil {
 		t.Fatalf("ApplyChanges returned error: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestRedisAdapterUsesShardKeyAsHashTagWhenRouteByDiffersFromID(t *testing.T)
 	var set change.ChangeSet
 	_ = set.Add(change.FieldChange{Path: change.Path{"name"}, Kind: change.KindSet, Value: "alice"})
 
-	err := adapter.ApplyChanges(context.Background(), spec, storage.RecordKey{ID: int64(1001), ShardKey: int64(7)}, set)
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001), ShardKey: int64(7)}, set, txredis.ApplyOptions{Upsert: true})
 	if err != nil {
 		t.Fatalf("ApplyChanges returned error: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestRedisAdapterLuaUsesCompatibleArrayDetection(t *testing.T) {
 	var set change.ChangeSet
 	_ = set.Add(change.FieldChange{Path: change.Path{"tags"}, Kind: change.KindSet, Value: []string{"a"}})
 
-	err := adapter.ApplyChanges(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set)
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set, txredis.ApplyOptions{Upsert: true})
 	if err != nil {
 		t.Fatalf("ApplyChanges returned error: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestRedisAdapterAppliesStringDocumentsWithRecordID(t *testing.T) {
 	_ = set.Add(change.FieldChange{Path: change.Path{"items", "1001", "quantity"}, Kind: change.KindSet, Value: int64(3)})
 	_ = set.Add(change.FieldChange{Path: change.Path{"items", "1001", "quality"}, Kind: change.KindUnset})
 
-	err := adapter.ApplyChanges(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set)
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set, txredis.ApplyOptions{Upsert: true})
 	if err != nil {
 		t.Fatalf("ApplyChanges returned error: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestRedisAdapterAppliesFieldIDChangesWithResolver(t *testing.T) {
 		Value: int64(9),
 	})
 
-	err := adapter.ApplyChanges(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set)
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set, txredis.ApplyOptions{Upsert: true})
 	if err != nil {
 		t.Fatalf("ApplyChanges returned error: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestRedisAdapterUsesFullUpdateModeForWholeSubKeyReplace(t *testing.T) {
 		Value: map[string]any{"1001": map[string]any{"quantity": int64(3)}},
 	})
 
-	err := adapter.ApplyChanges(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set)
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set, txredis.ApplyOptions{Upsert: true})
 	if err != nil {
 		t.Fatalf("ApplyChanges returned error: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestRedisAdapterUsesPartialFullUpdateModeWhenSubKeyHasFullAndDiffChanges(t 
 		Value: "sword",
 	})
 
-	err := adapter.ApplyChanges(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set)
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set, txredis.ApplyOptions{Upsert: true})
 	if err != nil {
 		t.Fatalf("ApplyChanges returned error: %v", err)
 	}

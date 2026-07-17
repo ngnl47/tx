@@ -32,7 +32,7 @@ func TestMongoAdapterAppliesUpdateByID(t *testing.T) {
 	var set change.ChangeSet
 	_ = set.Add(change.FieldChange{Path: change.Path{"name"}, Kind: change.KindSet, Value: "alice"})
 
-	err := adapter.ApplyChanges(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set)
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set, storage.ApplyOptions{})
 	if err != nil {
 		t.Fatalf("ApplyChanges returned error: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestMongoAdapterAppliesFieldIDChangesWithResolver(t *testing.T) {
 		Value: int64(9),
 	})
 
-	err := adapter.ApplyChanges(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set)
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set, storage.ApplyOptions{})
 	if err != nil {
 		t.Fatalf("ApplyChanges returned error: %v", err)
 	}

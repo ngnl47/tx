@@ -49,12 +49,6 @@ func NewAdapterWithResolver(client ScriptClient, resolver change.FieldResolver) 
 	return &Adapter{client: client, resolver: resolver}
 }
 
-// ApplyChanges 根据 Redis 元数据和记录 ID 写入 string JSON
-// 变更。非 subKey 字段写入主 key；subKey 字段写入 mainKey:subKey。
-func (a *Adapter) ApplyChanges(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, set change.ChangeSet) error {
-	return a.ApplyChangesWithOptions(ctx, spec, key, set, ApplyOptions{Upsert: true})
-}
-
 // ApplyChangesWithOptions 根据指定选项写入 Redis string JSON 变更。
 func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, set change.ChangeSet, options ApplyOptions) error {
 	if a.client == nil || set.Empty() {

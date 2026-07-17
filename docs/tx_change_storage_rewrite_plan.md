@@ -372,7 +372,8 @@ Expected: PASS.
   - `change.ChangeSet`
   - `meta.TypeSpec`
 - Produces:
-  - `type ChangeApplier interface { ApplyChanges(context.Context, meta.TypeSpec, change.ChangeSet) error }`
+  - `type ApplyOptions struct { Upsert bool; TTL int64 }`
+  - `type ChangeApplierWithOptions interface { ApplyChangesWithOptions(context.Context, meta.TypeSpec, storage.RecordKey, change.ChangeSet, storage.ApplyOptions) error }`
   - `type ChangeDocument map[string]any`
   - `func ChangeSetToDocument(change.ChangeSet) ChangeDocument`
 
@@ -428,8 +429,13 @@ import (
 	"github.com/ngnl47/tx/meta"
 )
 
-type ChangeApplier interface {
-	ApplyChanges(context.Context, meta.TypeSpec, change.ChangeSet) error
+type ApplyOptions struct {
+	Upsert bool
+	TTL    int64
+}
+
+type ChangeApplierWithOptions interface {
+	ApplyChangesWithOptions(context.Context, meta.TypeSpec, RecordKey, change.ChangeSet, ApplyOptions) error
 }
 
 type ChangeDocument map[string]any

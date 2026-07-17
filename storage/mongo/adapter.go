@@ -31,8 +31,8 @@ func NewAdapterWithResolver(updater Updater, resolver change.FieldResolver) *Ada
 	return &Adapter{updater: updater, resolver: resolver}
 }
 
-// ApplyChanges 根据 Mongo 元数据和记录 ID 执行更新。
-func (a *Adapter) ApplyChanges(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, set change.ChangeSet) error {
+// ApplyChangesWithOptions 根据 Mongo 元数据和记录 ID 执行更新。
+func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, set change.ChangeSet, _ storage.ApplyOptions) error {
 	if a.updater == nil || set.Empty() {
 		return nil
 	}
