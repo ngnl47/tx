@@ -50,6 +50,39 @@ func (a *recordingDeleteApplier) ApplyDelete(_ context.Context, spec meta.TypeSp
 	return nil
 }
 
+type recordingDocumentLoader struct {
+	doc        map[string]any
+	exists     bool
+	docs       []map[string]any
+	existsMany []bool
+	calls      int
+	manyCalls  int
+	spec       meta.TypeSpec
+	key        storage.RecordKey
+	keys       []storage.RecordKey
+	fields     []string
+}
+
+func (l *recordingDocumentLoader) LoadDocument(_ context.Context, spec meta.TypeSpec, key storage.RecordKey, fields ...string) (map[string]any, bool, error) {
+	l.calls++
+	l.spec = spec
+	l.key = key
+	l.fields = append([]string(nil), fields...)
+	return l.doc, l.exists, nil
+}
+
+func (l *recordingDocumentLoader) LoadDocuments(_ context.Context, spec meta.TypeSpec, keys []storage.RecordKey, fields ...string) ([]map[string]any, []bool, error) {
+	l.manyCalls++
+	l.spec = spec
+	l.keys = append([]storage.RecordKey(nil), keys...)
+	l.fields = append([]string(nil), fields...)
+	docs := make([]map[string]any, len(keys))
+	exists := make([]bool, len(keys))
+	copy(docs, l.docs)
+	copy(exists, l.existsMany)
+	return docs, exists, nil
+}
+
 func TestFusionStrategyEnqueuesMongoSave(t *testing.T) {
 	queue := &recordingQueue{}
 	strategy := fusion.Strategy{MongoQueue: queue}
@@ -171,5 +204,83 @@ func TestFusionStrategyEnqueuesMongoDelete(t *testing.T) {
 	}
 	if queue.ops[0].Kind != fusion.DelayedDelete || queue.ops[0].RunAfter != 24*time.Hour {
 		t.Fatalf("queued op = %#v", queue.ops[0])
+	}
+}
+
+func TestFusionStrategyLoadDocumentUsesRedisFirst(t *testing.T) {
+	redis := &recordingDocumentLoader{doc: map[string]any{"name": "hot"}, exists: true}
+	mongo := &recordingDocumentLoader{doc: map[string]any{"name": "cold"}, exists: true}
+	strategy := fusion.Strategy{RedisLoader: redis, MongoLoader: mongo}
+	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
+	key := storage.RecordKey{ID: int64(1001)}
+
+	doc, exists, err := strategy.LoadDocument(context.Background(), spec, key, "name")
+	if err != nil {
+		t.Fatalf("LoadDocument returned error: %v", err)
+	}
+	if !exists || doc["name"] != "hot" {
+		t.Fatalf("LoadDocument = %#v, %v; want Redis document", doc, exists)
+	}
+	if redis.calls != 1 || mongo.calls != 0 {
+		t.Fatalf("loader calls redis=%d mongo=%d, want redis only", redis.calls, mongo.calls)
+	}
+	if len(redis.fields) != 1 || redis.fields[0] != "name" {
+		t.Fatalf("redis fields = %#v, want name", redis.fields)
+	}
+}
+
+func TestFusionStrategyLoadDocumentFallsBackToMongo(t *testing.T) {
+	redis := &recordingDocumentLoader{}
+	mongo := &recordingDocumentLoader{doc: map[string]any{"name": "cold"}, exists: true}
+	strategy := fusion.Strategy{RedisLoader: redis, MongoLoader: mongo}
+	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
+	key := storage.RecordKey{ID: int64(1001)}
+
+	doc, exists, err := strategy.LoadDocument(context.Background(), spec, key, "name")
+	if err != nil {
+		t.Fatalf("LoadDocument returned error: %v", err)
+	}
+	if !exists || doc["name"] != "cold" {
+		t.Fatalf("LoadDocument = %#v, %v; want Mongo document", doc, exists)
+	}
+	if redis.calls != 1 || mongo.calls != 1 {
+		t.Fatalf("loader calls redis=%d mongo=%d, want both loaders", redis.calls, mongo.calls)
+	}
+}
+
+func TestFusionStrategyLoadDocumentsFallsBackMissingRowsToMongo(t *testing.T) {
+	keys := []storage.RecordKey{{ID: int64(1001)}, {ID: int64(1002)}, {ID: int64(1003)}}
+	redis := &recordingDocumentLoader{
+		docs:       []map[string]any{{"name": "hot-1"}, nil, {"name": "hot-3"}},
+		existsMany: []bool{true, false, true},
+	}
+	mongo := &recordingDocumentLoader{
+		docs:       []map[string]any{{"name": "cold-2"}},
+		existsMany: []bool{true},
+	}
+	strategy := fusion.Strategy{RedisLoader: redis, MongoLoader: mongo}
+	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
+
+	docs, exists, err := strategy.LoadDocuments(context.Background(), spec, keys, "name")
+	if err != nil {
+		t.Fatalf("LoadDocuments returned error: %v", err)
+	}
+	if len(docs) != 3 || len(exists) != 3 {
+		t.Fatalf("LoadDocuments returned docs=%d exists=%d, want 3", len(docs), len(exists))
+	}
+	if !exists[0] || docs[0]["name"] != "hot-1" {
+		t.Fatalf("docs[0] = %#v exists=%v, want Redis row", docs[0], exists[0])
+	}
+	if !exists[1] || docs[1]["name"] != "cold-2" {
+		t.Fatalf("docs[1] = %#v exists=%v, want Mongo fallback row", docs[1], exists[1])
+	}
+	if !exists[2] || docs[2]["name"] != "hot-3" {
+		t.Fatalf("docs[2] = %#v exists=%v, want Redis row", docs[2], exists[2])
+	}
+	if redis.manyCalls != 1 || mongo.manyCalls != 1 {
+		t.Fatalf("loader calls redis=%d mongo=%d, want one batch call each", redis.manyCalls, mongo.manyCalls)
+	}
+	if len(mongo.keys) != 1 || mongo.keys[0].ID != int64(1002) {
+		t.Fatalf("mongo fallback keys = %#v, want only missing key", mongo.keys)
 	}
 }
