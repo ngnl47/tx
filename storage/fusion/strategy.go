@@ -13,22 +13,26 @@ import (
 // Redis 适配器负责即时写入热数据；MongoQueue 负责把持久化保存推迟到
 // delaySave 配置之后执行。
 type Strategy struct {
-	Redis      storage.ChangeApplier
+	Redis      storage.ChangeApplierWithOptions
 	RedisStore storage.StoreAdapter
 	MongoQueue DelayQueue
 }
 
 // ApplyChanges 应用一次对象变更。
 func (s Strategy) ApplyChanges(ctx context.Context, spec meta.TypeSpec, id any, set change.ChangeSet) error {
+	return s.ApplyChangesWithOptions(ctx, spec, storage.RecordKey{
+		TypeName: spec.Type.Ref.FullName,
+		ID:       id,
+	}, set, storage.ApplyOptions{})
+}
+
+// ApplyChangesWithOptions 应用一次对象变更，并把写入选项限定传递给 Redis。
+func (s Strategy) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, set change.ChangeSet, options storage.ApplyOptions) error {
 	if set.Empty() {
 		return nil
 	}
-	key := storage.RecordKey{
-		TypeName: spec.Type.Ref.FullName,
-		ID:       id,
-	}
 	if s.Redis != nil {
-		if err := s.Redis.ApplyChanges(ctx, spec, key, set); err != nil {
+		if err := s.Redis.ApplyChangesWithOptions(ctx, spec, key, set, options); err != nil {
 			return err
 		}
 	}
@@ -38,7 +42,7 @@ func (s Strategy) ApplyChanges(ctx context.Context, spec meta.TypeSpec, id any, 
 	return s.MongoQueue.Enqueue(ctx, DelayedOperation{
 		Kind:     DelayedSave,
 		Type:     spec.Type.Ref,
-		ID:       id,
+		ID:       key.ID,
 		Changes:  set,
 		RunAfter: spec.Storage.DelaySave.Duration,
 	})
