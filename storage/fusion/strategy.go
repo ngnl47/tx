@@ -101,7 +101,8 @@ func (s Strategy) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []
 
 	missingIndexes := make([]int, 0, len(keys))
 	missingKeys := make([]storage.RecordKey, 0, len(keys))
-	if redisBatch, ok := s.redisLoader().(BatchDocumentLoader); ok {
+	redisLoader := s.redisLoader()
+	if redisBatch, ok := redisLoader.(BatchDocumentLoader); ok {
 		redisDocs, redisExists, err := redisBatch.LoadDocuments(ctx, spec, keys, fields...)
 		if err != nil {
 			return nil, nil, err
@@ -119,9 +120,8 @@ func (s Strategy) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []
 			missingKeys = append(missingKeys, keys[i])
 		}
 	} else {
-		for i, key := range keys {
-			missingIndexes = append(missingIndexes, i)
-			missingKeys = append(missingKeys, key)
+		if err := s.loadRedisDocumentsOneByOne(ctx, spec, keys, redisLoader, docs, exists, &missingIndexes, &missingKeys, fields...); err != nil {
+			return nil, nil, err
 		}
 	}
 
@@ -153,6 +153,28 @@ func (s Strategy) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []
 		exists[idx] = mongoExists[pos]
 	}
 	return docs, exists, nil
+}
+
+func (s Strategy) loadRedisDocumentsOneByOne(ctx context.Context, spec meta.TypeSpec, keys []storage.RecordKey, loader DocumentLoader, docs []map[string]any, exists []bool, missingIndexes *[]int, missingKeys *[]storage.RecordKey, fields ...string) error {
+	for i, key := range keys {
+		if loader == nil {
+			*missingIndexes = append(*missingIndexes, i)
+			*missingKeys = append(*missingKeys, key)
+			continue
+		}
+		doc, found, err := loader.LoadDocument(ctx, spec, key, fields...)
+		if err != nil {
+			return err
+		}
+		if found {
+			docs[i] = doc
+			exists[i] = true
+			continue
+		}
+		*missingIndexes = append(*missingIndexes, i)
+		*missingKeys = append(*missingKeys, key)
+	}
+	return nil
 }
 
 func (s Strategy) redisLoader() DocumentLoader {

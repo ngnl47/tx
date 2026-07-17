@@ -63,6 +63,13 @@ type recordingDocumentLoader struct {
 	fields     []string
 }
 
+type recordingSingleDocumentLoader struct {
+	docs   map[any]map[string]any
+	calls  int
+	keys   []storage.RecordKey
+	fields []string
+}
+
 func (l *recordingDocumentLoader) LoadDocument(_ context.Context, spec meta.TypeSpec, key storage.RecordKey, fields ...string) (map[string]any, bool, error) {
 	l.calls++
 	l.spec = spec
@@ -81,6 +88,14 @@ func (l *recordingDocumentLoader) LoadDocuments(_ context.Context, spec meta.Typ
 	copy(docs, l.docs)
 	copy(exists, l.existsMany)
 	return docs, exists, nil
+}
+
+func (l *recordingSingleDocumentLoader) LoadDocument(_ context.Context, _ meta.TypeSpec, key storage.RecordKey, fields ...string) (map[string]any, bool, error) {
+	l.calls++
+	l.keys = append(l.keys, key)
+	l.fields = append([]string(nil), fields...)
+	doc, exists := l.docs[key.ID]
+	return doc, exists, nil
 }
 
 type recordingRedisStore struct {
@@ -334,6 +349,42 @@ func TestFusionStrategyLoadDocumentsFallsBackMissingRowsToMongo(t *testing.T) {
 	}
 	if redis.manyCalls != 1 || mongo.manyCalls != 1 {
 		t.Fatalf("loader calls redis=%d mongo=%d, want one batch call each", redis.manyCalls, mongo.manyCalls)
+	}
+	if len(mongo.keys) != 1 || mongo.keys[0].ID != int64(1002) {
+		t.Fatalf("mongo fallback keys = %#v, want only missing key", mongo.keys)
+	}
+}
+
+func TestFusionStrategyLoadDocumentsUsesSingleRedisLoaderBeforeMongo(t *testing.T) {
+	keys := []storage.RecordKey{{ID: int64(1001)}, {ID: int64(1002)}, {ID: int64(1003)}}
+	redis := &recordingSingleDocumentLoader{
+		docs: map[any]map[string]any{
+			int64(1001): {"name": "hot-1"},
+			int64(1003): {"name": "hot-3"},
+		},
+	}
+	mongo := &recordingDocumentLoader{
+		docs:       []map[string]any{{"name": "cold-2"}},
+		existsMany: []bool{true},
+	}
+	strategy := fusion.Strategy{RedisLoader: redis, MongoLoader: mongo}
+	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
+
+	docs, exists, err := strategy.LoadDocuments(context.Background(), spec, keys, "name")
+	if err != nil {
+		t.Fatalf("LoadDocuments returned error: %v", err)
+	}
+	if !exists[0] || docs[0]["name"] != "hot-1" {
+		t.Fatalf("docs[0] = %#v exists=%v, want Redis row", docs[0], exists[0])
+	}
+	if !exists[1] || docs[1]["name"] != "cold-2" {
+		t.Fatalf("docs[1] = %#v exists=%v, want Mongo fallback row", docs[1], exists[1])
+	}
+	if !exists[2] || docs[2]["name"] != "hot-3" {
+		t.Fatalf("docs[2] = %#v exists=%v, want Redis row", docs[2], exists[2])
+	}
+	if redis.calls != 3 {
+		t.Fatalf("redis single calls = %d, want 3", redis.calls)
 	}
 	if len(mongo.keys) != 1 || mongo.keys[0].ID != int64(1002) {
 		t.Fatalf("mongo fallback keys = %#v, want only missing key", mongo.keys)
