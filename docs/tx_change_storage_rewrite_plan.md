@@ -1375,6 +1375,54 @@ Expected: PASS.
 
 ---
 
+## Task 8.5: Add Durable Fusion Delay Task Runtime
+
+**Files:**
+- Create: `/Users/a47/workspace/tx/lifecycle/context.go`
+- Create: `/Users/a47/workspace/tx/storage/task/redis`
+- Modify: `/Users/a47/workspace/tx/storage/fusion/scheduler.go`
+- Test: `/Users/a47/workspace/tx/tests/lifecycle_context_test.go`
+- Test: `/Users/a47/workspace/tx/tests/task_backend_redis_test.go`
+- Test: `/Users/a47/workspace/tx/tests/fusion_scheduler_test.go`
+
+**Interfaces:**
+- Consumes:
+  - `storage/task.DelayTaskBackend`
+  - `storage/task.DelayTask`
+  - `storage/fusion.Scheduler`
+- Produces:
+  - lifecycle context that cancels and waits for active background workers.
+  - Redis-backed delayed task backend using due-time, content, leased/busy, complete, retry, and timeout-recovery state.
+  - Fusion scheduler/worker that can flush delayed MongoDB save/delete tasks and wait during graceful shutdown.
+
+**Design notes:**
+- `storage/task/memory` remains a local/test backend only.
+- The production target is Redis-backed delayed work to match the reference flow already used by the source system.
+- Redis Lua scripts should own atomic enqueue, claim, complete, retry, and leased-timeout recovery transitions.
+- A separate durable stream such as Kafka is not part of the current implementation unless Redis-backed delayed work proves insufficient.
+
+- [ ] **Step 1: Add lifecycle context tests and runtime package**
+
+Validate that a cancellable context waits for its own worker `WaitGroup`, and that a child context can add work to a parent `WaitGroup`.
+
+- [ ] **Step 2: Add Redis delayed task backend tests**
+
+Validate enqueue idempotency, due-time claim order, leased state, complete removal, retry reschedule, and leased-timeout recovery.
+
+- [ ] **Step 3: Implement Redis delayed task backend with embedded Lua scripts**
+
+Use Redis sorted sets and hashes for task due index, payload, and leased/busy state. Keep the public backend behind the existing `storage/task.DelayTaskBackend` interface.
+
+- [ ] **Step 4: Wire Fusion scheduler worker to lifecycle context**
+
+Workers should claim due tasks, apply Mongo save/delete, complete successful leases, retry failed leases, and wait for active work during graceful shutdown.
+
+- [ ] **Step 5: Run runtime and integration verification**
+
+Run `tx` tests first, then update `txgen` integration coverage only where generated fusion flow needs to observe the durable backend.
+
+---
+
 ## Task 9: Add Metadata Validation For Persistence
 
 **Files:**

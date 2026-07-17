@@ -298,17 +298,23 @@ type DelayTaskBackend interface {
 第一版实现：
 
 - `storage/task/memory`: 内存 backend，只用于测试和本地开发。
-- 后续可增加 Redis backend、SQL backend、消息队列 backend。
+- `lifecycle`: 提供可取消、可等待后台 worker 完成的运行时上下文，供 Fusion 延迟回写和其他后台组件在服务关停时等待活跃任务结束。
+- `storage/task/redis`: Redis 持久化 delayed task backend，使用 sorted-set/hash 记录任务内容、到期时间、busy lease、完成与重试状态，并通过 Lua 保证 claim/complete/retry 的原子性。
+- 后续可增加 SQL backend、消息队列 backend；当前优先贴合生产参考流程，不引入 Kafka 等新的持久化队列依赖。
 
 验收：
 
 - Fusion 只依赖接口，不依赖具体 Redis task 实现。
 - memory backend 支持按 due time claim。
 - 同一任务可定义幂等 key。
+- Redis backend 支持任务进程重启后的持久化保留与 leased 超时恢复。
+- Fusion 后台 worker 使用 lifecycle 上下文，在优雅关停时等待已 claim 的 Mongo 回写任务完成。
 
 测试：
 
 - `tests/task_backend_memory_test.go`
+- `tests/task_backend_redis_test.go`
+- `tests/lifecycle_context_test.go`
 - `tests/fusion_scheduler_test.go`
 
 ## Phase 7: Code Generation Integration
