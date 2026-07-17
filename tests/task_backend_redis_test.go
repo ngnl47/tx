@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"sort"
 	"strconv"
 	"strings"
@@ -120,76 +121,120 @@ func TestRedisDelayTaskBackendRecoversExpiredLeases(t *testing.T) {
 	}
 }
 
+func TestRedisDelayTaskBackendUsesBucketHashTagKeys(t *testing.T) {
+	ctx := context.Background()
+	client := newFakeTaskRedis()
+	backend := taskredis.NewBackend(client, taskredis.Options{Prefix: "tx:test", BucketCount: 8, LeaseTimeout: time.Minute})
+	now := time.Unix(100, 0)
+	item := task.DelayTask{Type: "role", ID: "1", Action: "save", DueAt: now}
+
+	if err := backend.Enqueue(ctx, item); err != nil {
+		t.Fatalf("Enqueue returned error: %v", err)
+	}
+
+	bucket := testBucketFor(item.IdempotencyKey(), 8)
+	prefix := fmt.Sprintf("tx:test:{%d}", bucket)
+	want := []string{
+		prefix + ":due",
+		prefix + ":payload",
+		prefix + ":busy",
+		prefix + ":token",
+		prefix + ":attempts",
+	}
+	if fmt.Sprint(client.lastKeys) != fmt.Sprint(want) {
+		t.Fatalf("keys = %#v, want %#v", client.lastKeys, want)
+	}
+}
+
 type fakeTaskRedis struct {
+	queues   map[string]*fakeTaskRedisQueue
+	seq      int
+	lastKeys []string
+}
+
+type fakeTaskRedisQueue struct {
 	payload  map[string]string
 	due      map[string]int64
 	busy     map[string]int64
 	token    map[string]string
 	attempts map[string]int
-	seq      int
 }
 
 func newFakeTaskRedis() *fakeTaskRedis {
 	return &fakeTaskRedis{
-		payload:  map[string]string{},
-		due:      map[string]int64{},
-		busy:     map[string]int64{},
-		token:    map[string]string{},
-		attempts: map[string]int{},
+		queues: map[string]*fakeTaskRedisQueue{},
 	}
 }
 
-func (r *fakeTaskRedis) Eval(_ context.Context, script string, _ []string, args ...any) (string, error) {
+func (r *fakeTaskRedis) Eval(_ context.Context, script string, keys []string, args ...any) (string, error) {
+	r.lastKeys = append([]string(nil), keys...)
+	queue := r.queue(keys)
 	switch {
 	case strings.Contains(script, "tx_task_enqueue"):
-		return r.enqueue(args...)
+		return r.enqueue(queue, args...)
 	case strings.Contains(script, "tx_task_claim"):
-		return r.claim(args...)
+		return r.claim(queue, args...)
 	case strings.Contains(script, "tx_task_complete"):
-		return r.complete(args...)
+		return r.complete(queue, args...)
 	case strings.Contains(script, "tx_task_retry"):
-		return r.retry(args...)
+		return r.retry(queue, args...)
 	default:
 		return "", fmt.Errorf("unknown script")
 	}
 }
 
-func (r *fakeTaskRedis) enqueue(args ...any) (string, error) {
+func (r *fakeTaskRedis) queue(keys []string) *fakeTaskRedisQueue {
+	key := keys[0]
+	queue := r.queues[key]
+	if queue == nil {
+		queue = &fakeTaskRedisQueue{
+			payload:  map[string]string{},
+			due:      map[string]int64{},
+			busy:     map[string]int64{},
+			token:    map[string]string{},
+			attempts: map[string]int{},
+		}
+		r.queues[key] = queue
+	}
+	return queue
+}
+
+func (r *fakeTaskRedis) enqueue(queue *fakeTaskRedisQueue, args ...any) (string, error) {
 	key := fmt.Sprint(args[0])
 	score := mustInt64(args[1])
 	body := fmt.Sprint(args[2])
-	r.payload[key] = body
-	if _, ok := r.busy[key]; !ok {
-		r.due[key] = score
+	queue.payload[key] = body
+	if _, ok := queue.busy[key]; !ok {
+		queue.due[key] = score
 	}
 	return "ok", nil
 }
 
-func (r *fakeTaskRedis) claim(args ...any) (string, error) {
+func (r *fakeTaskRedis) claim(queue *fakeTaskRedisQueue, args ...any) (string, error) {
 	now := mustInt64(args[0])
 	limit := int(mustInt64(args[1]))
 	leaseUntil := mustInt64(args[2])
 	tokenPrefix := fmt.Sprint(args[3])
 
-	for key, until := range r.busy {
+	for key, until := range queue.busy {
 		if until <= now {
-			delete(r.busy, key)
-			delete(r.token, key)
-			r.due[key] = now
+			delete(queue.busy, key)
+			delete(queue.token, key)
+			queue.due[key] = now
 		}
 	}
 
-	keys := make([]string, 0, len(r.due))
-	for key, due := range r.due {
+	keys := make([]string, 0, len(queue.due))
+	for key, due := range queue.due {
 		if due <= now {
 			keys = append(keys, key)
 		}
 	}
 	sort.Slice(keys, func(i, j int) bool {
-		if r.due[keys[i]] == r.due[keys[j]] {
+		if queue.due[keys[i]] == queue.due[keys[j]] {
 			return keys[i] < keys[j]
 		}
-		return r.due[keys[i]] < r.due[keys[j]]
+		return queue.due[keys[i]] < queue.due[keys[j]]
 	})
 	if len(keys) > limit {
 		keys = keys[:limit]
@@ -202,47 +247,47 @@ func (r *fakeTaskRedis) claim(args ...any) (string, error) {
 	}
 	out := make([]leaseJSON, 0, len(keys))
 	for _, key := range keys {
-		body := r.payload[key]
+		body := queue.payload[key]
 		if body == "" {
-			delete(r.due, key)
+			delete(queue.due, key)
 			continue
 		}
 		r.seq++
 		token := fmt.Sprintf("%s-%d", tokenPrefix, r.seq)
-		r.attempts[key]++
-		delete(r.due, key)
-		r.busy[key] = leaseUntil
-		r.token[key] = token
-		out = append(out, leaseJSON{Body: body, Token: token, Attempts: r.attempts[key]})
+		queue.attempts[key]++
+		delete(queue.due, key)
+		queue.busy[key] = leaseUntil
+		queue.token[key] = token
+		out = append(out, leaseJSON{Body: body, Token: token, Attempts: queue.attempts[key]})
 	}
 	encoded, err := json.Marshal(out)
 	return string(encoded), err
 }
 
-func (r *fakeTaskRedis) complete(args ...any) (string, error) {
+func (r *fakeTaskRedis) complete(queue *fakeTaskRedisQueue, args ...any) (string, error) {
 	key := fmt.Sprint(args[0])
 	token := fmt.Sprint(args[1])
-	if r.token[key] != token {
+	if queue.token[key] != token {
 		return "stale", nil
 	}
-	delete(r.payload, key)
-	delete(r.due, key)
-	delete(r.busy, key)
-	delete(r.token, key)
-	delete(r.attempts, key)
+	delete(queue.payload, key)
+	delete(queue.due, key)
+	delete(queue.busy, key)
+	delete(queue.token, key)
+	delete(queue.attempts, key)
 	return "ok", nil
 }
 
-func (r *fakeTaskRedis) retry(args ...any) (string, error) {
+func (r *fakeTaskRedis) retry(queue *fakeTaskRedisQueue, args ...any) (string, error) {
 	key := fmt.Sprint(args[0])
 	token := fmt.Sprint(args[1])
 	next := mustInt64(args[2])
-	if r.token[key] != token {
+	if queue.token[key] != token {
 		return "stale", nil
 	}
-	delete(r.busy, key)
-	delete(r.token, key)
-	r.due[key] = next
+	delete(queue.busy, key)
+	delete(queue.token, key)
+	queue.due[key] = next
 	return "ok", nil
 }
 
@@ -261,4 +306,10 @@ func mustInt64(value any) int64 {
 	default:
 		panic(fmt.Sprintf("unexpected int64 value %T", value))
 	}
+}
+
+func testBucketFor(key string, bucketCount int) int {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(key))
+	return int(h.Sum32() % uint32(bucketCount))
 }

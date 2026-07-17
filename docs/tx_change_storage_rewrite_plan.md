@@ -1399,6 +1399,14 @@ Expected: PASS.
 - `storage/task/memory` remains a local/test backend only.
 - The production target is Redis-backed delayed work to match the reference flow already used by the source system.
 - Redis Lua scripts should own atomic enqueue, claim, complete, retry, and leased-timeout recovery transitions.
+- Redis delayed task keys must be bucketed by task id. Each bucket uses its own hash tag, for example
+  `tx:task:{0}:due` and `tx:task:{0}:payload`, so Redis Cluster accepts each bucket's multi-key Lua
+  scripts while task load can spread across slots.
+- The delayed task backend is designed for multiple service instances consuming the same Redis queue:
+  claim moves due tasks into leased/busy state with a token, complete/retry must present the token,
+  and timed-out leases can be claimed again by any instance.
+- The queue provides at-least-once delivery, not exactly-once delivery. Fusion Mongo write-back must
+  therefore be idempotent before enabling production background workers.
 - A separate durable stream such as Kafka is not part of the current implementation unless Redis-backed delayed work proves insufficient.
 
 - [ ] **Step 1: Add lifecycle context tests and runtime package**
@@ -1408,6 +1416,7 @@ Validate that a cancellable context waits for its own worker `WaitGroup`, and th
 - [ ] **Step 2: Add Redis delayed task backend tests**
 
 Validate enqueue idempotency, due-time claim order, leased state, complete removal, retry reschedule, and leased-timeout recovery.
+Also validate that generated Redis keys use bucketed hash tags for Redis Cluster.
 
 - [ ] **Step 3: Implement Redis delayed task backend with embedded Lua scripts**
 

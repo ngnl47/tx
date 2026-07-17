@@ -300,6 +300,8 @@ type DelayTaskBackend interface {
 - `storage/task/memory`: 内存 backend，只用于测试和本地开发。
 - `lifecycle`: 提供可取消、可等待后台 worker 完成的运行时上下文，供 Fusion 延迟回写和其他后台组件在服务关停时等待活跃任务结束。
 - `storage/task/redis`: Redis 持久化 delayed task backend，使用 sorted-set/hash 记录任务内容、到期时间、busy lease、完成与重试状态，并通过 Lua 保证 claim/complete/retry 的原子性。
+- Redis delayed task keys 必须按任务 id 分桶，每个 bucket 使用独立 hash tag，例如 `tx:task:{0}:due`、`tx:task:{0}:payload`，保证单次 Lua 脚本访问的 due/payload/busy/token/attempts key 落在同一个 Redis Cluster slot，同时避免所有任务集中到一个 slot。
+- Redis delayed task backend 面向多服务实例并发消费：claim/complete/retry 通过 lease token 隔离，但整体语义是 at-least-once，后续 Fusion Mongo 回写必须按幂等方式设计。
 - 后续可增加 SQL backend、消息队列 backend；当前优先贴合生产参考流程，不引入 Kafka 等新的持久化队列依赖。
 
 验收：
@@ -308,6 +310,9 @@ type DelayTaskBackend interface {
 - memory backend 支持按 due time claim。
 - 同一任务可定义幂等 key。
 - Redis backend 支持任务进程重启后的持久化保留与 leased 超时恢复。
+- Redis backend 在 Redis Cluster 下不会因为 Lua 多 key 跨 slot 失败。
+- Redis backend 按 bucket 分散队列 key，claim worker 会轮询 bucket 消费。
+- 多个服务实例同时消费时，同一任务同一时刻只能被一个 lease 持有；lease 超时后允许重新领取。
 - Fusion 后台 worker 使用 lifecycle 上下文，在优雅关停时等待已 claim 的 Mongo 回写任务完成。
 
 测试：
