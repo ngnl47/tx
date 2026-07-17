@@ -6,7 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/lifecycle"
+	"github.com/ngnl47/tx/meta"
+	"github.com/ngnl47/tx/storage"
 	"github.com/ngnl47/tx/storage/fusion"
 	"github.com/ngnl47/tx/storage/task"
 	"github.com/ngnl47/tx/storage/task/memory"
@@ -35,6 +38,43 @@ func TestFusionSchedulerEnqueuesThroughDelayTaskBackend(t *testing.T) {
 	}
 	if len(leases) != 1 || leases[0].Task.ID != "1" {
 		t.Fatalf("leases = %#v", leases)
+	}
+}
+
+func TestFusionTaskQueueEnqueuesDelayTaskBackend(t *testing.T) {
+	ctx := context.Background()
+	backend := memory.NewBackend()
+	now := time.Unix(100, 0)
+	queue := fusion.NewTaskQueueWithOptions(backend, fusion.TaskQueueOptions{Now: func() time.Time {
+		return now
+	}})
+	var set change.ChangeSet
+	_ = set.Add(change.FieldChange{Path: change.Path{"name"}, Kind: change.KindSet, Value: "alice"})
+
+	err := queue.Enqueue(ctx, fusion.DelayedOperation{
+		Kind:     fusion.DelayedSave,
+		Type:     meta.TypeRef{Package: "data", Name: "GDRole"},
+		Key:      storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001), ShardKey: int64(7)},
+		Changes:  set,
+		RunAfter: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("Enqueue returned error: %v", err)
+	}
+
+	leases, err := backend.ClaimDue(ctx, now.Add(time.Minute), 10)
+	if err != nil {
+		t.Fatalf("ClaimDue returned error: %v", err)
+	}
+	if len(leases) != 1 {
+		t.Fatalf("leases = %#v, want one", leases)
+	}
+	got := leases[0].Task
+	if got.Type != "data.GDRole" || got.ID != "1001" || got.ShardKey != "7" || got.Action != string(fusion.DelayedSave) {
+		t.Fatalf("delay task = %#v", got)
+	}
+	if !got.DueAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("due at = %s, want %s", got.DueAt, now.Add(time.Minute))
 	}
 }
 

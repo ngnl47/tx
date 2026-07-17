@@ -47,6 +47,7 @@ func (s Strategy) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 	return s.MongoQueue.Enqueue(ctx, DelayedOperation{
 		Kind:     DelayedSave,
 		Type:     spec.Type.Ref,
+		Key:      key,
 		ID:       key.ID,
 		Changes:  set,
 		RunAfter: spec.Storage.DelaySave.Duration,
@@ -69,6 +70,7 @@ func (s Strategy) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key stora
 	return s.MongoQueue.Enqueue(ctx, DelayedOperation{
 		Kind:     DelayedDelete,
 		Type:     spec.Type.Ref,
+		Key:      key,
 		ID:       key.ID,
 		RunAfter: spec.Storage.DelayDelete.Duration,
 	})

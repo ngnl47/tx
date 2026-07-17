@@ -162,7 +162,7 @@ func TestFusionStrategyPassesOptionsOnlyToRedis(t *testing.T) {
 		Type:    meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
 		Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Second}},
 	}
-	key := storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)}
+	key := storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001), ShardKey: int64(7)}
 	var set change.ChangeSet
 	_ = set.Add(change.FieldChange{Path: change.Path{"name"}, Kind: change.KindSet, Value: "alice"})
 
@@ -182,8 +182,8 @@ func TestFusionStrategyPassesOptionsOnlyToRedis(t *testing.T) {
 	if len(queue.ops) != 1 {
 		t.Fatalf("queued ops = %#v, want one save op", queue.ops)
 	}
-	if queue.ops[0].ID != key.ID || queue.ops[0].RunAfter != time.Second {
-		t.Fatalf("queued op = %#v, want ID and delay only", queue.ops[0])
+	if queue.ops[0].ID != key.ID || queue.ops[0].Key != key || queue.ops[0].RunAfter != time.Second {
+		t.Fatalf("queued op = %#v, want record key and delay", queue.ops[0])
 	}
 }
 
@@ -238,7 +238,7 @@ func TestFusionStrategyDeleteUsesRedisApplierWhenDeleterIsUnset(t *testing.T) {
 			DelayDelete: meta.Duration{Duration: 24 * time.Hour},
 		},
 	}
-	key := storage.RecordKey{ID: int64(1001)}
+	key := storage.RecordKey{ID: int64(1001), ShardKey: int64(7)}
 
 	if err := strategy.ApplyDelete(context.Background(), spec, key); err != nil {
 		t.Fatalf("ApplyDelete returned error: %v", err)
@@ -251,6 +251,9 @@ func TestFusionStrategyDeleteUsesRedisApplierWhenDeleterIsUnset(t *testing.T) {
 	}
 	if len(queue.ops) != 1 {
 		t.Fatalf("queued ops = %#v, want one delete op", queue.ops)
+	}
+	if queue.ops[0].Key != key {
+		t.Fatalf("queued key = %#v, want %#v", queue.ops[0].Key, key)
 	}
 }
 
