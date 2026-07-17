@@ -37,6 +37,19 @@ func (a *recordingApplier) ApplyChangesWithOptions(_ context.Context, spec meta.
 	return nil
 }
 
+type recordingDeleteApplier struct {
+	calls int
+	spec  meta.TypeSpec
+	key   storage.RecordKey
+}
+
+func (a *recordingDeleteApplier) ApplyDelete(_ context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
+	a.calls++
+	a.spec = spec
+	a.key = key
+	return nil
+}
+
 func TestFusionStrategyEnqueuesMongoSave(t *testing.T) {
 	queue := &recordingQueue{}
 	strategy := fusion.Strategy{MongoQueue: queue}
@@ -135,7 +148,8 @@ func TestFusionStrategySkipsEmptyChangeSet(t *testing.T) {
 
 func TestFusionStrategyEnqueuesMongoDelete(t *testing.T) {
 	queue := &recordingQueue{}
-	strategy := fusion.Strategy{MongoQueue: queue}
+	redisDelete := &recordingDeleteApplier{}
+	strategy := fusion.Strategy{RedisDeleter: redisDelete, MongoQueue: queue}
 	spec := meta.TypeSpec{
 		Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
 		Storage: meta.StorageSpec{
@@ -145,6 +159,12 @@ func TestFusionStrategyEnqueuesMongoDelete(t *testing.T) {
 
 	if err := strategy.ApplyDelete(context.Background(), spec, storage.RecordKey{ID: int64(1001)}); err != nil {
 		t.Fatalf("ApplyDelete returned error: %v", err)
+	}
+	if redisDelete.calls != 1 {
+		t.Fatalf("redis delete calls = %d, want 1", redisDelete.calls)
+	}
+	if redisDelete.key.ID != int64(1001) {
+		t.Fatalf("redis delete key = %#v, want ID=1001", redisDelete.key)
 	}
 	if len(queue.ops) != 1 {
 		t.Fatalf("queued ops = %#v", queue.ops)

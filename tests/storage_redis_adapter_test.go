@@ -249,6 +249,37 @@ func TestRedisAdapterApplyChangesWithOptionsReturnsNotExists(t *testing.T) {
 	}
 }
 
+func TestRedisAdapterApplyDeleteDeletesMainSubKeysAndVersion(t *testing.T) {
+	client := &recordingRedisStringClient{}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{
+		Type:  meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
+		Redis: &meta.RedisSpec{Key: "role"},
+		Fields: map[string]meta.FieldSpec{
+			"items":  {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+			"heroes": {Redis: &meta.RedisFieldSpec{SubKey: "heroes"}},
+		},
+	}
+
+	err := adapter.ApplyDelete(context.Background(), spec, storage.RecordKey{ID: int64(1001)})
+	if err != nil {
+		t.Fatalf("ApplyDelete returned error: %v", err)
+	}
+	if len(client.evals) != 1 {
+		t.Fatalf("eval calls = %#v, want one", client.evals)
+	}
+	want := []string{"role:{1001}", "role:{1001}:heroes", "role:{1001}:items", "role:{1001}@v"}
+	if got := client.evals[0].keys; !sameStrings(got, want) {
+		t.Fatalf("delete keys = %#v, want %#v", got, want)
+	}
+	if len(client.evals[0].args) != 0 {
+		t.Fatalf("delete args = %#v, want empty", client.evals[0].args)
+	}
+	if !strings.Contains(client.evals[0].script, "redis.call(\"del\"") {
+		t.Fatalf("delete script = %q, want del command", client.evals[0].script)
+	}
+}
+
 func TestRedisAdapterAppliesStringDocumentsWithRecordID(t *testing.T) {
 	client := &recordingRedisStringClient{}
 	adapter := txredis.NewAdapter(client)

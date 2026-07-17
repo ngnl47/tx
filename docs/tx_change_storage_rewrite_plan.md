@@ -374,6 +374,7 @@ Expected: PASS.
 - Produces:
   - `type ApplyOptions struct { Upsert bool; TTL int64 }`
   - `type ChangeApplierWithOptions interface { ApplyChangesWithOptions(context.Context, meta.TypeSpec, storage.RecordKey, change.ChangeSet, storage.ApplyOptions) error }`
+  - `type DeleteApplier interface { ApplyDelete(context.Context, meta.TypeSpec, storage.RecordKey) error }`
   - `type ChangeDocument map[string]any`
   - `func ChangeSetToDocument(change.ChangeSet) ChangeDocument`
 
@@ -436,6 +437,10 @@ type ApplyOptions struct {
 
 type ChangeApplierWithOptions interface {
 	ApplyChangesWithOptions(context.Context, meta.TypeSpec, RecordKey, change.ChangeSet, ApplyOptions) error
+}
+
+type DeleteApplier interface {
+	ApplyDelete(context.Context, meta.TypeSpec, RecordKey) error
 }
 
 type ChangeDocument map[string]any

@@ -90,6 +90,19 @@ func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 	return nil
 }
 
+// ApplyDelete 删除 Redis string JSON 主文档、subKey 文档和版本键。
+func (a *Adapter) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
+	if a.client == nil {
+		return nil
+	}
+	prefix := redisKeyPrefix(spec, key)
+	keys := redisDeleteKeys(spec, prefix)
+	if _, err := a.client.Eval(ctx, deleteDocumentScript, keys); err != nil {
+		return fmt.Errorf("redis: delete document %s: %w", prefix, err)
+	}
+	return nil
+}
+
 // LoadDocument 读取并合并 Redis string JSON 主文档和 subKey 文档。
 func (a *Adapter) LoadDocument(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, fields ...string) (map[string]any, bool, error) {
 	if a.client == nil {
@@ -186,6 +199,15 @@ func redisKeyPrefix(spec meta.TypeSpec, key storage.RecordKey) string {
 		return fmt.Sprintf("%s:{%v}:%v", base, key.ShardKey, key.ID)
 	}
 	return fmt.Sprintf("%s:{%v}", base, key.ID)
+}
+
+func redisDeleteKeys(spec meta.TypeSpec, prefix string) []string {
+	keys := []string{prefix}
+	for _, suffix := range redisSubKeySuffixes(spec) {
+		keys = append(keys, prefix+":"+suffix)
+	}
+	keys = append(keys, prefix+"@v")
+	return keys
 }
 
 func decodeDocument(body string) (map[string]any, error) {

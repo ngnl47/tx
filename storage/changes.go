@@ -18,6 +18,11 @@ type ChangeApplierWithOptions interface {
 	ApplyChangesWithOptions(context.Context, meta.TypeSpec, RecordKey, change.ChangeSet, ApplyOptions) error
 }
 
+// DeleteApplier 定义按元数据和记录键删除存储记录的适配器。
+type DeleteApplier interface {
+	ApplyDelete(context.Context, meta.TypeSpec, RecordKey) error
+}
+
 // ChangeDocument 是以点分隔字段路径为 key 的通用变更文档。
 type ChangeDocument map[string]any
 
