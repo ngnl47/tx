@@ -76,8 +76,8 @@ func (s Strategy) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key stora
 
 // LoadDocument 优先从 Redis 读取，未命中时回源 Mongo。
 func (s Strategy) LoadDocument(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, fields ...string) (map[string]any, bool, error) {
-	if s.RedisLoader != nil {
-		doc, exists, err := s.RedisLoader.LoadDocument(ctx, spec, key, fields...)
+	if redisLoader := s.redisLoader(); redisLoader != nil {
+		doc, exists, err := redisLoader.LoadDocument(ctx, spec, key, fields...)
 		if err != nil {
 			return nil, false, err
 		}
@@ -101,7 +101,7 @@ func (s Strategy) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []
 
 	missingIndexes := make([]int, 0, len(keys))
 	missingKeys := make([]storage.RecordKey, 0, len(keys))
-	if redisBatch, ok := s.RedisLoader.(BatchDocumentLoader); ok {
+	if redisBatch, ok := s.redisLoader().(BatchDocumentLoader); ok {
 		redisDocs, redisExists, err := redisBatch.LoadDocuments(ctx, spec, keys, fields...)
 		if err != nil {
 			return nil, nil, err
@@ -153,4 +153,12 @@ func (s Strategy) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []
 		exists[idx] = mongoExists[pos]
 	}
 	return docs, exists, nil
+}
+
+func (s Strategy) redisLoader() DocumentLoader {
+	if s.RedisLoader != nil {
+		return s.RedisLoader
+	}
+	loader, _ := s.Redis.(DocumentLoader)
+	return loader
 }

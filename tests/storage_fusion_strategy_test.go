@@ -83,6 +83,11 @@ func (l *recordingDocumentLoader) LoadDocuments(_ context.Context, spec meta.Typ
 	return docs, exists, nil
 }
 
+type recordingRedisStore struct {
+	recordingApplier
+	recordingDocumentLoader
+}
+
 func TestFusionStrategyEnqueuesMongoSave(t *testing.T) {
 	queue := &recordingQueue{}
 	strategy := fusion.Strategy{MongoQueue: queue}
@@ -229,6 +234,29 @@ func TestFusionStrategyLoadDocumentUsesRedisFirst(t *testing.T) {
 	}
 }
 
+func TestFusionStrategyLoadDocumentUsesRedisApplierWhenLoaderIsUnset(t *testing.T) {
+	redis := &recordingRedisStore{
+		recordingDocumentLoader: recordingDocumentLoader{
+			doc:    map[string]any{"name": "hot"},
+			exists: true,
+		},
+	}
+	strategy := fusion.Strategy{Redis: redis}
+	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
+	key := storage.RecordKey{ID: int64(1001)}
+
+	doc, exists, err := strategy.LoadDocument(context.Background(), spec, key, "name")
+	if err != nil {
+		t.Fatalf("LoadDocument returned error: %v", err)
+	}
+	if !exists || doc["name"] != "hot" {
+		t.Fatalf("LoadDocument = %#v, %v; want Redis document", doc, exists)
+	}
+	if redis.calls != 1 {
+		t.Fatalf("redis loader calls = %d, want 1", redis.calls)
+	}
+}
+
 func TestFusionStrategyLoadDocumentFallsBackToMongo(t *testing.T) {
 	redis := &recordingDocumentLoader{}
 	mongo := &recordingDocumentLoader{doc: map[string]any{"name": "cold"}, exists: true}
@@ -282,5 +310,31 @@ func TestFusionStrategyLoadDocumentsFallsBackMissingRowsToMongo(t *testing.T) {
 	}
 	if len(mongo.keys) != 1 || mongo.keys[0].ID != int64(1002) {
 		t.Fatalf("mongo fallback keys = %#v, want only missing key", mongo.keys)
+	}
+}
+
+func TestFusionStrategyLoadDocumentsUsesRedisApplierWhenLoaderIsUnset(t *testing.T) {
+	keys := []storage.RecordKey{{ID: int64(1001)}, {ID: int64(1002)}}
+	redis := &recordingRedisStore{
+		recordingDocumentLoader: recordingDocumentLoader{
+			docs:       []map[string]any{{"name": "hot-1"}, {"name": "hot-2"}},
+			existsMany: []bool{true, true},
+		},
+	}
+	strategy := fusion.Strategy{Redis: redis}
+	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
+
+	docs, exists, err := strategy.LoadDocuments(context.Background(), spec, keys, "name")
+	if err != nil {
+		t.Fatalf("LoadDocuments returned error: %v", err)
+	}
+	if len(docs) != 2 || len(exists) != 2 {
+		t.Fatalf("LoadDocuments lengths docs=%d exists=%d, want 2", len(docs), len(exists))
+	}
+	if !exists[0] || docs[0]["name"] != "hot-1" || !exists[1] || docs[1]["name"] != "hot-2" {
+		t.Fatalf("LoadDocuments = %#v exists=%#v, want Redis rows", docs, exists)
+	}
+	if redis.manyCalls != 1 {
+		t.Fatalf("redis batch calls = %d, want 1", redis.manyCalls)
 	}
 }
