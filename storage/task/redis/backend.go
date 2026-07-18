@@ -14,12 +14,6 @@ import (
 	"github.com/ngnl47/tx/storage/task"
 )
 
-const (
-	defaultPrefix       = "tx:task"
-	defaultBucketCount  = 64
-	defaultLeaseTimeout = 30 * time.Second
-)
-
 type ScriptClient interface {
 	Eval(context.Context, string, []string, ...any) (string, error)
 }
@@ -71,9 +65,12 @@ func (b *Backend) Enqueue(ctx context.Context, item task.DelayTask) error {
 	if err != nil {
 		return fmt.Errorf("redis task: encode %s: %w", item.IdempotencyKey(), err)
 	}
-	_, err = b.client.Eval(ctx, enqueueScript, b.keysForTask(item), item.IdempotencyKey(), unixMillis(item.DueAt), string(body))
+	result, err := b.client.Eval(ctx, enqueueScript, b.keysForTask(item), item.IdempotencyKey(), unixMillis(item.DueAt), string(body))
 	if err != nil {
 		return fmt.Errorf("redis task: enqueue %s: %w", item.IdempotencyKey(), err)
+	}
+	if result == scriptResultLeased || result == scriptResultOK {
+		return nil
 	}
 	return nil
 }
@@ -131,8 +128,12 @@ func (b *Backend) Complete(ctx context.Context, lease task.DelayTaskLease) error
 	if b.client == nil {
 		return nil
 	}
-	if _, err := b.client.Eval(ctx, completeScript, b.keysForTask(lease.Task), lease.Task.IdempotencyKey(), lease.Token); err != nil {
+	result, err := b.client.Eval(ctx, completeScript, b.keysForTask(lease.Task), lease.Task.IdempotencyKey(), lease.Token)
+	if err != nil {
 		return fmt.Errorf("redis task: complete %s: %w", lease.Task.IdempotencyKey(), err)
+	}
+	if result == scriptResultStale || result == scriptResultOK {
+		return nil
 	}
 	return nil
 }
@@ -145,8 +146,12 @@ func (b *Backend) Retry(ctx context.Context, lease task.DelayTaskLease, next tim
 		return nil
 	}
 	_ = reason
-	if _, err := b.client.Eval(ctx, retryScript, b.keysForTask(lease.Task), lease.Task.IdempotencyKey(), lease.Token, unixMillis(next)); err != nil {
+	result, err := b.client.Eval(ctx, retryScript, b.keysForTask(lease.Task), lease.Task.IdempotencyKey(), lease.Token, unixMillis(next))
+	if err != nil {
 		return fmt.Errorf("redis task: retry %s: %w", lease.Task.IdempotencyKey(), err)
+	}
+	if result == scriptResultStale || result == scriptResultOK {
+		return nil
 	}
 	return nil
 }
