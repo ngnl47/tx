@@ -34,7 +34,20 @@ func TestFusionDelayTaskHandlerSavesRedisDocumentToMongo(t *testing.T) {
 	if err := registry.RegisterType(spec); err != nil {
 		t.Fatalf("RegisterType returned error: %v", err)
 	}
-	redis := &recordingDocumentLoader{doc: map[string]any{"roleId": int64(1001), "name": "alice"}, exists: true}
+	redis := &recordingDocumentLoader{
+		doc: map[string]any{
+			"roleId":  int64(1001),
+			"name":    "alice",
+			"headImg": nil,
+			"items": map[string]any{
+				"1001": map[string]any{
+					"quantity": int64(3),
+					"quality":  nil,
+				},
+			},
+		},
+		exists: true,
+	}
 	mongo := &recordingDocumentReplacer{}
 	handler := fusion.NewDelayTaskHandler(registry, redis, mongo, nil)
 
@@ -55,6 +68,14 @@ func TestFusionDelayTaskHandlerSavesRedisDocumentToMongo(t *testing.T) {
 	}
 	if mongo.spec.Mongo.Collection != "roles" || mongo.doc["name"] != "alice" {
 		t.Fatalf("mongo spec/doc = %#v %#v", mongo.spec, mongo.doc)
+	}
+	if _, exists := mongo.doc["headImg"]; exists {
+		t.Fatalf("mongo doc kept nil headImg: %#v", mongo.doc)
+	}
+	items := mongo.doc["items"].(map[string]any)
+	item1001 := items["1001"].(map[string]any)
+	if _, exists := item1001["quality"]; exists {
+		t.Fatalf("mongo doc kept nil nested quality: %#v", mongo.doc)
 	}
 }
 

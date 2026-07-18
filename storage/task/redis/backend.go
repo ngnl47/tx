@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"sort"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -104,8 +105,8 @@ func (b *Backend) ClaimDue(ctx context.Context, now time.Time, limit int) ([]tas
 		if body == "" {
 			continue
 		}
-		var rows []leaseRow
-		if err := json.Unmarshal([]byte(body), &rows); err != nil {
+		rows, err := decodeLeaseRows(body)
+		if err != nil {
 			return nil, fmt.Errorf("redis task: decode leases: %w", err)
 		}
 		for _, row := range rows {
@@ -173,6 +174,35 @@ type leaseRow struct {
 	Body     string `json:"body"`
 	Token    string `json:"token"`
 	Attempts int    `json:"attempts"`
+}
+
+func decodeLeaseRows(body string) ([]leaseRow, error) {
+	var rows []leaseRow
+	if err := json.Unmarshal([]byte(body), &rows); err == nil {
+		return rows, nil
+	}
+
+	var keyed map[string]leaseRow
+	if err := json.Unmarshal([]byte(body), &keyed); err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(keyed))
+	for key := range keyed {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		left, leftErr := strconv.Atoi(keys[i])
+		right, rightErr := strconv.Atoi(keys[j])
+		if leftErr == nil && rightErr == nil {
+			return left < right
+		}
+		return keys[i] < keys[j]
+	})
+	rows = make([]leaseRow, 0, len(keys))
+	for _, key := range keys {
+		rows = append(rows, keyed[key])
+	}
+	return rows, nil
 }
 
 func unixMillis(t time.Time) int64 {

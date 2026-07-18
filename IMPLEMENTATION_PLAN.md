@@ -304,6 +304,9 @@ type DelayTaskBackend interface {
 - Redis delayed task backend 面向多服务实例并发消费：claim/complete/retry 通过 lease token 隔离，但整体语义是 at-least-once，后续 Fusion Mongo 回写必须按幂等方式设计。
 - `storage/fusion.TaskQueue` 负责把 Fusion 延迟保存/删除 operation 转换为 `storage/task.DelayTask`，保留 record id、route/shard key、action 和 due time。
 - `storage/fusion.StorageTaskHandler` 负责消费 delayed task：保存任务从 Redis 读取完整热数据并 replace 到 Mongo，删除任务调用 Mongo delete；这与生产参考流程的“延迟任务只携带定位信息，回写时读取 Redis 当前数据”保持一致。
+- Fusion 延迟保存已通过真实 Redis/Mongo 集成路径验证：Redis 同步写入热数据，Redis delayed task backend 入队，Scheduler claim 到期任务，StorageTaskHandler 读取 Redis 热数据并整文档 replace Mongo。
+- StorageTaskHandler 在 Mongo replace 前会递归移除 Redis 文档中的 nil 删除标记，避免已删除字段以 Mongo `null` 形式重新落库。
+- 延迟删除的最终语义仍需确认：当前 runtime 有 delete applier 合约，但生产启用后台删除 worker 前，需要决定是否允许物理删除 Mongo 文档，或统一转为业务删除 flag。
 - 后续可增加 SQL backend、消息队列 backend；当前优先贴合生产参考流程，不引入 Kafka 等新的持久化队列依赖。
 
 验收：
@@ -316,6 +319,7 @@ type DelayTaskBackend interface {
 - Redis backend 按 bucket 分散队列 key，claim worker 会轮询 bucket 消费。
 - 多个服务实例同时消费时，同一任务同一时刻只能被一个 lease 持有；lease 超时后允许重新领取。
 - Fusion 后台 worker 使用 lifecycle 上下文，在优雅关停时等待已 claim 的 Mongo 回写任务完成。
+- Fusion delayed save worker 可把 Redis 热数据回写到 Mongo，并且不会把删除标记落成 Mongo null 字段。
 
 测试：
 

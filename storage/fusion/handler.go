@@ -67,7 +67,7 @@ func (h *StorageTaskHandler) handleSave(ctx context.Context, spec meta.TypeSpec,
 	if !exists {
 		return nil
 	}
-	return h.mongoReplace.ReplaceDocument(ctx, spec, key, doc)
+	return h.mongoReplace.ReplaceDocument(ctx, spec, key, compactDocument(doc))
 }
 
 func (h *StorageTaskHandler) handleDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
@@ -82,4 +82,30 @@ func (h *StorageTaskHandler) lookup(typeName string) (meta.TypeSpec, bool) {
 		return meta.TypeSpec{}, false
 	}
 	return h.types.Lookup(meta.TypeRef{FullName: typeName})
+}
+
+func compactDocument(doc map[string]any) map[string]any {
+	out := make(map[string]any, len(doc))
+	for key, value := range doc {
+		if value == nil {
+			continue
+		}
+		out[key] = compactValue(value)
+	}
+	return out
+}
+
+func compactValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return compactDocument(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = compactValue(item)
+		}
+		return out
+	default:
+		return value
+	}
 }
