@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -108,8 +109,8 @@ func (b *Backend) ClaimDue(ctx context.Context, now time.Time, limit int) ([]tas
 			return nil, fmt.Errorf("redis task: decode leases: %w", err)
 		}
 		for _, row := range rows {
-			var item task.DelayTask
-			if err := json.Unmarshal([]byte(row.Body), &item); err != nil {
+			item, err := decodeDelayTask(row.Body)
+			if err != nil {
 				return nil, fmt.Errorf("redis task: decode task lease: %w", err)
 			}
 			leases = append(leases, task.DelayTaskLease{
@@ -176,6 +177,32 @@ type leaseRow struct {
 
 func unixMillis(t time.Time) int64 {
 	return t.UnixNano() / int64(time.Millisecond)
+}
+
+func decodeDelayTask(body string) (task.DelayTask, error) {
+	decoder := json.NewDecoder(bytes.NewBufferString(body))
+	decoder.UseNumber()
+	var item task.DelayTask
+	if err := decoder.Decode(&item); err != nil {
+		return task.DelayTask{}, err
+	}
+	item.ID = normalizeJSONNumber(item.ID)
+	item.ShardKey = normalizeJSONNumber(item.ShardKey)
+	return item, nil
+}
+
+func normalizeJSONNumber(value any) any {
+	number, ok := value.(json.Number)
+	if !ok {
+		return value
+	}
+	if i, err := number.Int64(); err == nil {
+		return i
+	}
+	if f, err := number.Float64(); err == nil {
+		return f
+	}
+	return string(number)
 }
 
 func stringHashCode(value string) uint32 {

@@ -15,6 +15,16 @@ type Updater interface {
 	UpdateByID(context.Context, string, any, map[string]any) error
 }
 
+// Replacer 是 MongoDB 按 ID 整文档替换所需的最小接口。
+type Replacer interface {
+	ReplaceByID(context.Context, string, any, map[string]any) error
+}
+
+// Deleter 是 MongoDB 按 ID 删除所需的最小接口。
+type Deleter interface {
+	DeleteByID(context.Context, string, any) error
+}
+
 // Finder 是 MongoDB 按 ID 读取所需的最小接口。
 type Finder interface {
 	FindByID(context.Context, string, any, ...string) (map[string]any, bool, error)
@@ -52,6 +62,24 @@ func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 		return nil
 	}
 	return updater.UpdateByID(ctx, mongoCollection(spec), key.ID, update)
+}
+
+// ReplaceDocument 按记录键替换一条 Mongo 文档。
+func (a *Adapter) ReplaceDocument(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any) error {
+	replacer, ok := a.client.(Replacer)
+	if !ok || doc == nil {
+		return nil
+	}
+	return replacer.ReplaceByID(ctx, mongoCollection(spec), key.ID, doc)
+}
+
+// ApplyDelete 按记录键删除一条 Mongo 文档。
+func (a *Adapter) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
+	deleter, ok := a.client.(Deleter)
+	if !ok {
+		return nil
+	}
+	return deleter.DeleteByID(ctx, mongoCollection(spec), key.ID)
 }
 
 // LoadDocument 按记录键读取单条 Mongo 文档。

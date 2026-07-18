@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -70,7 +71,7 @@ func TestFusionTaskQueueEnqueuesDelayTaskBackend(t *testing.T) {
 		t.Fatalf("leases = %#v, want one", leases)
 	}
 	got := leases[0].Task
-	if got.Type != "data.GDRole" || got.ID != "1001" || got.ShardKey != "7" || got.Action != string(fusion.DelayedSave) {
+	if got.Type != "data.GDRole" || got.ID != int64(1001) || got.ShardKey != int64(7) || got.Action != string(fusion.DelayedSave) {
 		t.Fatalf("delay task = %#v", got)
 	}
 	if !got.DueAt.Equal(now.Add(time.Minute)) {
@@ -86,7 +87,7 @@ func TestFusionSchedulerRunOnceCompletesSuccessfulTask(t *testing.T) {
 	scheduler := fusion.NewSchedulerWithOptions(backend, fusion.SchedulerOptions{
 		BatchSize: 10,
 		Handler: fusion.DelayTaskHandlerFunc(func(_ context.Context, item task.DelayTask) error {
-			handled = append(handled, item.ID)
+			handled = append(handled, fmt.Sprint(item.ID))
 			return nil
 		}),
 	})

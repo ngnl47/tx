@@ -2,7 +2,6 @@ package fusion
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/ngnl47/tx/change"
@@ -64,8 +63,8 @@ func (q *TaskQueue) Enqueue(ctx context.Context, op DelayedOperation) error {
 	}
 	return q.backend.Enqueue(ctx, task.DelayTask{
 		Type:      delayedTaskType(op.Type),
-		ID:        delayedTaskValue(op.Key.ID),
-		ShardKey:  delayedTaskValue(op.Key.ShardKey),
+		ID:        op.Key.ID,
+		ShardKey:  op.Key.ShardKey,
 		KeySuffix: op.KeySuffix,
 		Action:    string(op.Kind),
 		DueAt:     q.now().Add(op.RunAfter),
@@ -83,11 +82,4 @@ func delayedTaskType(ref meta.TypeRef) string {
 	default:
 		return ref.Name
 	}
-}
-
-func delayedTaskValue(value any) string {
-	if value == nil {
-		return ""
-	}
-	return fmt.Sprint(value)
 }

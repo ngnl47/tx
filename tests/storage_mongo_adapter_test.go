@@ -14,6 +14,8 @@ type recordingMongoUpdater struct {
 	collection string
 	id         any
 	update     map[string]any
+	replace    map[string]any
+	deleted    bool
 	fields     []string
 	doc        map[string]any
 	exists     bool
@@ -36,6 +38,20 @@ func (u *recordingMongoUpdater) UpdateByID(_ context.Context, collection string,
 	u.collection = collection
 	u.id = id
 	u.update = update
+	return nil
+}
+
+func (u *recordingMongoUpdater) ReplaceByID(_ context.Context, collection string, id any, doc map[string]any) error {
+	u.collection = collection
+	u.id = id
+	u.replace = doc
+	return nil
+}
+
+func (u *recordingMongoUpdater) DeleteByID(_ context.Context, collection string, id any) error {
+	u.collection = collection
+	u.id = id
+	u.deleted = true
 	return nil
 }
 
@@ -80,6 +96,38 @@ func TestMongoAdapterAppliesUpdateByID(t *testing.T) {
 	setDoc := updater.update["$set"].(map[string]any)
 	if setDoc["name"] != "alice" {
 		t.Fatalf("update = %#v", updater.update)
+	}
+}
+
+func TestMongoAdapterReplacesDocumentByID(t *testing.T) {
+	client := &recordingMongoUpdater{}
+	adapter := txmongo.NewAdapter(client)
+	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}
+	doc := map[string]any{"roleId": int64(1001), "name": "alice"}
+
+	err := adapter.ReplaceDocument(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, doc)
+	if err != nil {
+		t.Fatalf("ReplaceDocument returned error: %v", err)
+	}
+	if client.collection != "roles" || client.id != int64(1001) {
+		t.Fatalf("collection/id = %q/%v", client.collection, client.id)
+	}
+	if client.replace["name"] != "alice" {
+		t.Fatalf("replace = %#v", client.replace)
+	}
+}
+
+func TestMongoAdapterDeletesDocumentByID(t *testing.T) {
+	client := &recordingMongoUpdater{}
+	adapter := txmongo.NewAdapter(client)
+	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}
+
+	err := adapter.ApplyDelete(context.Background(), spec, storage.RecordKey{ID: int64(1001)})
+	if err != nil {
+		t.Fatalf("ApplyDelete returned error: %v", err)
+	}
+	if client.collection != "roles" || client.id != int64(1001) || !client.deleted {
+		t.Fatalf("delete collection/id/deleted = %q/%v/%v", client.collection, client.id, client.deleted)
 	}
 }
 

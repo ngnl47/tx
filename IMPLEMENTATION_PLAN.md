@@ -303,6 +303,7 @@ type DelayTaskBackend interface {
 - Redis delayed task keys 必须按任务 id 分桶，每个 bucket 使用独立 hash tag，例如 `tx:task:{0}:due`、`tx:task:{0}:payload`，保证单次 Lua 脚本访问的 due/payload/busy/token/attempts key 落在同一个 Redis Cluster slot，同时避免所有任务集中到一个 slot。
 - Redis delayed task backend 面向多服务实例并发消费：claim/complete/retry 通过 lease token 隔离，但整体语义是 at-least-once，后续 Fusion Mongo 回写必须按幂等方式设计。
 - `storage/fusion.TaskQueue` 负责把 Fusion 延迟保存/删除 operation 转换为 `storage/task.DelayTask`，保留 record id、route/shard key、action 和 due time。
+- `storage/fusion.StorageTaskHandler` 负责消费 delayed task：保存任务从 Redis 读取完整热数据并 replace 到 Mongo，删除任务调用 Mongo delete；这与生产参考流程的“延迟任务只携带定位信息，回写时读取 Redis 当前数据”保持一致。
 - 后续可增加 SQL backend、消息队列 backend；当前优先贴合生产参考流程，不引入 Kafka 等新的持久化队列依赖。
 
 验收：

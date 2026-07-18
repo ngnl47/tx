@@ -2,20 +2,21 @@ package task
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
 type DelayTask struct {
 	Type      string
-	ID        string
-	ShardKey  string
+	ID        any
+	ShardKey  any
 	KeySuffix string
 	Action    string
 	DueAt     time.Time
 }
 
 func (t DelayTask) IdempotencyKey() string {
-	key := t.Type + ":" + t.ID + ":" + t.ShardKey + ":" + t.Action
+	key := t.Type + ":" + fmt.Sprint(t.ID) + ":" + fmt.Sprint(t.ShardKey) + ":" + t.Action
 	if t.KeySuffix != "" {
 		key += ":" + t.KeySuffix
 	}
