@@ -17,7 +17,7 @@ const maxLuaJSONSafeInteger uint64 = 1<<53 - 1
 type DocumentPatch struct {
 	Set        []PathValue
 	Unset      []change.Path
-	Mode       string
+	Mode       documentPatchMode
 	fullUpdate bool
 	diffUpdate bool
 }
@@ -50,7 +50,7 @@ func BuildDocumentPatchesWithResolver(spec meta.TypeSpec, set change.ChangeSet, 
 		}
 		patch := out[suffix]
 		if patch.Mode == "" {
-			patch.Mode = "0"
+			patch.Mode = documentPatchModeMerge
 		}
 		switch fieldChange.Kind {
 		case change.KindUnset:
@@ -61,14 +61,14 @@ func BuildDocumentPatchesWithResolver(spec meta.TypeSpec, set change.ChangeSet, 
 			if fieldChange.Kind == change.KindReplace && redisFullUpdateField(spec, path[0]) && suffix != "" && len(path) == 1 {
 				patch.fullUpdate = true
 				if patch.diffUpdate {
-					patch.Mode = "2"
+					patch.Mode = documentPatchModePartialReplace
 				} else {
-					patch.Mode = "1"
+					patch.Mode = documentPatchModeReplace
 				}
 			} else {
 				patch.diffUpdate = true
 				if patch.fullUpdate {
-					patch.Mode = "2"
+					patch.Mode = documentPatchModePartialReplace
 				}
 			}
 		}
@@ -190,11 +190,11 @@ func redisFullUpdateField(spec meta.TypeSpec, field string) bool {
 
 func ensureTTLOnlyPatches(spec meta.TypeSpec, patches map[string]DocumentPatch) {
 	if _, ok := patches[""]; !ok {
-		patches[""] = DocumentPatch{Mode: "-1"}
+		patches[""] = DocumentPatch{Mode: documentPatchModeTTLOnly}
 	}
 	for _, suffix := range redisSubKeySuffixes(spec) {
 		if _, ok := patches[suffix]; !ok {
-			patches[suffix] = DocumentPatch{Mode: "-1"}
+			patches[suffix] = DocumentPatch{Mode: documentPatchModeTTLOnly}
 		}
 	}
 }

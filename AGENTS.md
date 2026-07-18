@@ -65,6 +65,17 @@
 
 清晰的成功标准可以支持独立推进。模糊标准，例如“让它能用”，需要先澄清。
 
+
+## 5. 其他
+- 每完成一步，如果我要求生成变更提交日志内容时，生成符合 Angular 规范的中文 Commit Message。格式如下：
+```text
+<type>[optional scope]: <description>
+// 空行
+[optional body]
+// 空行
+[optional footer(s)]
+```
+
 ---
 
 **这些准则生效的表现：**diff 中不必要的变更减少，因过度设计导致的返工减少，澄清问题发生在实现前而不是出错后。

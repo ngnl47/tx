@@ -63,28 +63,28 @@ func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 	for suffix, patch := range patches {
 		mode := patch.Mode
 		if mode == "" {
-			mode = "0"
+			mode = documentPatchModeMerge
 		}
 		body := ""
-		if mode != "-1" {
+		if mode != documentPatchModeTTLOnly {
 			encoded, err := EncodeDocumentPatch(patch)
 			if err != nil {
 				return err
 			}
 			body = encoded
 		}
-		args = append(args, suffix, body, mode)
+		args = append(args, suffix, body, string(mode))
 	}
-	upsert := "0"
+	upsert := scriptFlagFalse
 	if options.Upsert {
-		upsert = "1"
+		upsert = scriptFlagTrue
 	}
 	args = append(args, upsert, strconv.FormatInt(options.TTL, 10))
 	result, err := a.client.Eval(ctx, updateDocumentScript, []string{prefix}, args...)
 	if err != nil {
 		return fmt.Errorf("redis: apply changes %s: %w", prefix, err)
 	}
-	if result == "ne" {
+	if result == scriptResultNotExists {
 		return fmt.Errorf("redis: apply changes %s: %w", prefix, storage.ErrNotExists)
 	}
 	return nil

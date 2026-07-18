@@ -1,15 +1,20 @@
 redis.replicate_commands()
+local FLAG_TRUE = "1"
+local RESULT_NOT_EXISTS = "ne"
+local PATCH_MODE_REPLACE = "1"
+local PATCH_MODE_PARTIAL_REPLACE = "2"
+local PATCH_MODE_TTL_ONLY = "-1"
 local key = KEYS[1]
 local arg_len = #ARGV
 if arg_len <= 2 then
   return "ok"
 end
-local upsert = ARGV[arg_len - 1] == "1"
+local upsert = ARGV[arg_len - 1] == FLAG_TRUE
 
 if not upsert then
   local exists = redis.call("exists", key)
   if exists == 0 then
-    return "ne"
+    return RESULT_NOT_EXISTS
   end
 end
 
@@ -84,9 +89,9 @@ for i = 1, arg_len - 2, 3 do
     full_key = key .. ":" .. suffix
   end
 
-  if mode == "1" then
+  if mode == PATCH_MODE_REPLACE then
     save[full_key] = body
-  elseif mode == "2" then
+  elseif mode == PATCH_MODE_PARTIAL_REPLACE then
     local old = load(full_key)
     local patch = cjson.decode(body)
     for k, v in pairs(patch) do
@@ -96,7 +101,7 @@ for i = 1, arg_len - 2, 3 do
         old[k] = v
       end
     end
-  elseif mode == "-1" then
+  elseif mode == PATCH_MODE_TTL_ONLY then
     save[full_key] = ""
   else
     local old = load(full_key)
