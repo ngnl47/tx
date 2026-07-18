@@ -110,11 +110,20 @@ func (s *ChangeSet) Add(change FieldChange) error {
 		Kind:  change.Kind,
 		Value: change.Value,
 	}
+	if parentFieldTargetExists(s.changes, copied) {
+		return nil
+	}
 	for i, existing := range s.changes {
 		if sameTarget(existing, copied) {
 			s.changes[i] = copied
+			if isParentFieldTarget(copied) {
+				s.removeChildFieldTargets(copied.Field)
+			}
 			return nil
 		}
+	}
+	if isParentFieldTarget(copied) {
+		s.removeChildFieldTargets(copied.Field)
 	}
 	s.changes = append(s.changes, copied)
 	return nil
@@ -149,6 +158,36 @@ func (s ChangeSet) Changes() []FieldChange {
 // Empty 判断集合中是否没有字段级变更。
 func (s ChangeSet) Empty() bool {
 	return len(s.changes) == 0
+}
+
+func (s *ChangeSet) removeChildFieldTargets(field FieldID) {
+	if field == FieldNone {
+		return
+	}
+	out := s.changes[:0]
+	for _, change := range s.changes {
+		if change.Field == field && len(change.Path) > 0 {
+			continue
+		}
+		out = append(out, change)
+	}
+	s.changes = out
+}
+
+func parentFieldTargetExists(changes []FieldChange, change FieldChange) bool {
+	if change.Field == FieldNone || len(change.Path) == 0 {
+		return false
+	}
+	for _, existing := range changes {
+		if existing.Field == change.Field && len(existing.Path) == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func isParentFieldTarget(change FieldChange) bool {
+	return change.Field != FieldNone && len(change.Path) == 0
 }
 
 func sameTarget(left FieldChange, right FieldChange) bool {

@@ -41,6 +41,8 @@ Key int64 `json:"k"`
 - `UnsetFieldPath` 记录 unset。
 - `FieldChange.FullPath(resolver)` 将字段编号和子路径拼成完整 alias path。
 
+同一保存周期内，顶层字段变更会覆盖同字段下已有或后续追加的子路径变更。例如先记录 `items.1001.quantity`，再记录 `items` 整字段 dirty，最终 `ChangeSet` 只保留 `items`。这用于避免大集合字段在整字段保存时继续保留大量 key 级 path 记录。
+
 生成代码应传入生成的 `FieldResolver`，避免运行时反射字段名。
 
 ## Redis 存储模型
