@@ -28,6 +28,7 @@ type Strategy struct {
 	RedisDeleter storage.DeleteApplier
 	RedisLoader  DocumentLoader
 	MongoLoader  DocumentLoader
+	MongoDeleter storage.DeleteApplier
 	MongoQueue   DelayQueue
 }
 
@@ -56,24 +57,18 @@ func (s Strategy) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 
 // ApplyDelete 应用一次对象删除。
 //
-// RedisDeleter 存在时会先删除热数据；MongoQueue 存在时会把持久化删除延迟
-// 到 delayDelete 配置之后执行。
+// RedisDeleter 存在时会先删除热数据；MongoDeleter 存在时会立即删除持久化数据。
+// storage.delayDelTime 只表示 Redis 热数据 TTL，不参与 Mongo 删除延迟。
 func (s Strategy) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
 	if redisDeleter := s.redisDeleter(); redisDeleter != nil {
 		if err := redisDeleter.ApplyDelete(ctx, spec, key); err != nil {
 			return err
 		}
 	}
-	if s.MongoQueue == nil {
-		return nil
+	if s.MongoDeleter != nil {
+		return s.MongoDeleter.ApplyDelete(ctx, spec, key)
 	}
-	return s.MongoQueue.Enqueue(ctx, DelayedOperation{
-		Kind:     DelayedDelete,
-		Type:     spec.Type.Ref,
-		Key:      key,
-		ID:       key.ID,
-		RunAfter: spec.Storage.DelayDelete.Duration,
-	})
+	return nil
 }
 
 // LoadDocument 优先从 Redis 读取，未命中时回源 Mongo。

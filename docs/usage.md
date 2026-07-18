@@ -98,7 +98,7 @@ Mongo adapter 当前支持：
 - `LoadDocument`：按 ID 读取单条文档，可带 projection 字段。
 - `LoadDocuments`：按 ID 批量读取并保持返回顺序。
 - `ReplaceDocument`：整文档替换，供 Fusion 延迟保存回写使用。
-- `ApplyDelete`：物理删除接口已存在，但生产语义仍需确认。
+- `ApplyDelete`：显式物理删除接口，由业务代码决定是否调用。
 
 Mongo TTL index 的字段级 `expireAfter` 会删除整条文档，不是删除单个字段。生成阶段应限制同一类型最多一个 TTL 字段。
 
@@ -116,11 +116,15 @@ Fusion 策略的当前保存路径：
 
 延迟任务队列使用 bucket hash tag，支持多个服务实例并发消费。语义是 at-least-once，Mongo 回写必须保持幂等。
 
+Fusion 显式删除不会进入延迟队列。删除路径应先删除 Redis 热数据，再立即删除 Mongo 文档；如果只绕过 Fusion 删除 Mongo，而 Redis 热数据和延迟保存任务仍存在，后续保存任务可能按 Redis 当前数据重新写回 Mongo。
+
 ## TTL 与删除
 
-Redis 数据 TTL 使用 storage 注解中的 delay delete 时间作为默认值；写入后会续期。显式传入 `ApplyOptions.TTL` 时，以显式值为准。
+`delaySaveTime` 表示 Redis 热数据变更后，经过多久触发一次 Mongo 回写。Fusion 延迟保存队列使用这个时间。
 
-Mongo 文档默认不因 storage delay delete 自动过期。Mongo 删除策略仍未最终确认：当前 runtime 有物理删除接口，但生产启用后台删除 worker 前，需要决定是否统一改成业务删除 flag。
+`delayDelTime` 表示 Redis 热数据 TTL，用于释放长时间不活跃记录的热备数据；写入后会续期。显式传入 `ApplyOptions.TTL` 时，以显式值为准。
+
+`delayDelTime` 不代表 Mongo 删除延迟，也不会触发 Mongo 删除。业务是否执行 Mongo 物理删除，仍由显式 delete 接口和业务代码决定。
 
 ## 测试
 

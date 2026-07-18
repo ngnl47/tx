@@ -21,15 +21,13 @@ type StorageTaskHandler struct {
 	types        TypeRegistry
 	redisLoader  DocumentLoader
 	mongoReplace DocumentReplacer
-	mongoDelete  storage.DeleteApplier
 }
 
-func NewDelayTaskHandler(types TypeRegistry, redisLoader DocumentLoader, mongoReplace DocumentReplacer, mongoDelete storage.DeleteApplier) *StorageTaskHandler {
+func NewDelayTaskHandler(types TypeRegistry, redisLoader DocumentLoader, mongoReplace DocumentReplacer) *StorageTaskHandler {
 	return &StorageTaskHandler{
 		types:        types,
 		redisLoader:  redisLoader,
 		mongoReplace: mongoReplace,
-		mongoDelete:  mongoDelete,
 	}
 }
 
@@ -49,8 +47,8 @@ func (h *StorageTaskHandler) HandleDelayTask(ctx context.Context, item task.Dela
 	switch DelayedOperationKind(item.Action) {
 	case DelayedSave:
 		return h.handleSave(ctx, spec, key)
-	case DelayedDelete:
-		return h.handleDelete(ctx, spec, key)
+	case delayedDelete:
+		return nil
 	default:
 		return fmt.Errorf("fusion: unknown delayed task action %q", item.Action)
 	}
@@ -68,13 +66,6 @@ func (h *StorageTaskHandler) handleSave(ctx context.Context, spec meta.TypeSpec,
 		return nil
 	}
 	return h.mongoReplace.ReplaceDocument(ctx, spec, key, compactDocument(doc))
-}
-
-func (h *StorageTaskHandler) handleDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
-	if h.mongoDelete == nil {
-		return nil
-	}
-	return h.mongoDelete.ApplyDelete(ctx, spec, key)
 }
 
 func (h *StorageTaskHandler) lookup(typeName string) (meta.TypeSpec, bool) {

@@ -16,11 +16,12 @@ type DelayedOperationKind string
 const (
 	// DelayedSave 表示延迟保存 MongoDB 持久化数据。
 	DelayedSave DelayedOperationKind = "save"
-	// DelayedDelete 表示延迟删除 MongoDB 持久化数据。
-	DelayedDelete DelayedOperationKind = "delete"
+
+	// delayedDelete 表示历史队列中可能残留的删除动作；新代码不再投递。
+	delayedDelete DelayedOperationKind = "delete"
 )
 
-// DelayedOperation 是 fusion 模式写入 MongoDB 前的队列任务。
+// DelayedOperation 是 fusion 模式写入 MongoDB 前的延迟保存任务。
 type DelayedOperation struct {
 	Kind      DelayedOperationKind
 	Type      meta.TypeRef
@@ -31,7 +32,7 @@ type DelayedOperation struct {
 	KeySuffix string
 }
 
-// DelayQueue 定义 fusion 模式使用的延迟保存/删除队列。
+// DelayQueue 定义 fusion 模式使用的延迟保存队列。
 type DelayQueue interface {
 	Enqueue(context.Context, DelayedOperation) error
 }
