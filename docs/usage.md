@@ -143,6 +143,7 @@ Mongo adapter 当前支持：
 - `LoadDocuments`：按 ID 批量读取并保持返回顺序。
 - `ReplaceDocument`：整文档替换，供 Fusion 延迟保存回写使用。
 - `ApplyDelete`：显式物理删除接口，由业务代码决定是否调用。
+- `mongo.Cluster`：按 `routeType` 和 `storage.RecordKey.ShardKey` 路由到具体 Mongo adapter；批量读取会按 shard 分组并按输入顺序还原结果。
 
 Mongo TTL index 的字段级 `expireAfter` 会删除整条文档，不是删除单个字段。生成阶段应限制同一类型最多一个 TTL 字段。
 

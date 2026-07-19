@@ -34,6 +34,16 @@ type recordingMongoFinder struct {
 	docs       map[any]map[string]any
 }
 
+type recordingMongoRouter struct {
+	calls []recordingMongoRouteCall
+	names map[any]string
+}
+
+type recordingMongoRouteCall struct {
+	routeType string
+	shardKey  any
+}
+
 func (u *recordingMongoUpdater) UpdateByID(_ context.Context, collection string, id any, update map[string]any) error {
 	u.collection = collection
 	u.id = id
@@ -75,6 +85,15 @@ func (f *recordingMongoFinder) FindByID(_ context.Context, collection string, id
 	f.fields = append([]string(nil), fields...)
 	doc, exists := f.docs[id]
 	return doc, exists, nil
+}
+
+func (r *recordingMongoRouter) RouteMongo(_ context.Context, routeType string, shardKey any) (string, error) {
+	r.calls = append(r.calls, recordingMongoRouteCall{routeType: routeType, shardKey: shardKey})
+	name, ok := r.names[shardKey]
+	if !ok {
+		return "", nil
+	}
+	return name, nil
 }
 
 func TestMongoAdapterAppliesUpdateByID(t *testing.T) {
@@ -246,5 +265,85 @@ func TestMongoAdapterAppliesFieldIDChangesWithResolver(t *testing.T) {
 	setDoc := updater.update["$set"].(map[string]any)
 	if setDoc["items.1001.quantity"] != int64(9) {
 		t.Fatalf("update = %#v", updater.update)
+	}
+}
+
+func TestMongoClusterRoutesSingleWriteByShardKey(t *testing.T) {
+	roleShard := &recordingMongoUpdater{}
+	userShard := &recordingMongoUpdater{}
+	router := &recordingMongoRouter{names: map[any]string{
+		int64(7): "role-shard",
+	}}
+	cluster := txmongo.NewCluster(router, map[string]any{
+		"role-shard": roleShard,
+		"user-shard": userShard,
+	})
+	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{
+		Route:      meta.RouteSpec{Type: "role"},
+		Collection: "roles",
+	}}
+	var set change.ChangeSet
+	_ = set.Add(change.FieldChange{Path: change.Path{"name"}, Kind: change.KindSet, Value: "alice"})
+
+	err := cluster.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001), ShardKey: int64(7)}, set, storage.ApplyOptions{})
+	if err != nil {
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
+	}
+	if len(router.calls) != 1 || router.calls[0].routeType != "role" || router.calls[0].shardKey != int64(7) {
+		t.Fatalf("router calls = %#v, want role shard key 7", router.calls)
+	}
+	if roleShard.collection != "roles" || roleShard.id != int64(1001) {
+		t.Fatalf("role shard collection/id = %q/%v", roleShard.collection, roleShard.id)
+	}
+	if userShard.update != nil {
+		t.Fatalf("unexpected user shard update = %#v", userShard.update)
+	}
+}
+
+func TestMongoClusterBatchLoadsByShardGroupAndRestoresOrder(t *testing.T) {
+	shardA := &recordingMongoUpdater{
+		manyDocs: []map[string]any{
+			{"name": "alice"},
+			{"name": "carol"},
+		},
+		manyExists: []bool{true, true},
+	}
+	shardB := &recordingMongoUpdater{
+		manyDocs:   []map[string]any{nil},
+		manyExists: []bool{false},
+	}
+	router := &recordingMongoRouter{names: map[any]string{
+		int64(7): "a",
+		int64(8): "b",
+	}}
+	cluster := txmongo.NewCluster(router, map[string]any{
+		"a": shardA,
+		"b": shardB,
+	})
+	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{
+		Route:      meta.RouteSpec{Type: "role"},
+		Collection: "roles",
+	}}
+	keys := []storage.RecordKey{
+		{ID: int64(1001), ShardKey: int64(7)},
+		{ID: int64(1002), ShardKey: int64(8)},
+		{ID: int64(1003), ShardKey: int64(7)},
+	}
+
+	docs, exists, err := cluster.LoadDocuments(context.Background(), spec, keys, "name")
+	if err != nil {
+		t.Fatalf("LoadDocuments returned error: %v", err)
+	}
+	if len(docs) != 3 || len(exists) != 3 {
+		t.Fatalf("LoadDocuments lengths docs=%d exists=%d, want 3", len(docs), len(exists))
+	}
+	if !exists[0] || docs[0]["name"] != "alice" || exists[1] || docs[1] != nil || !exists[2] || docs[2]["name"] != "carol" {
+		t.Fatalf("docs=%#v exists=%#v, want original order", docs, exists)
+	}
+	if len(shardA.manyIDs) != 2 || shardA.manyIDs[0] != int64(1001) || shardA.manyIDs[1] != int64(1003) {
+		t.Fatalf("shard A ids = %#v, want [1001 1003]", shardA.manyIDs)
+	}
+	if len(shardB.manyIDs) != 1 || shardB.manyIDs[0] != int64(1002) {
+		t.Fatalf("shard B ids = %#v, want [1002]", shardB.manyIDs)
 	}
 }

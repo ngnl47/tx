@@ -307,7 +307,7 @@ type DelayTaskBackend interface {
 - `storage/fusion.StorageTaskHandler` 负责消费 delayed task：保存任务从 Redis 读取完整热数据并 replace 到 Mongo；延迟任务只携带定位信息，回写时读取 Redis 当前数据。
 - Fusion 显式删除不进入延迟队列：运行时先删除 Redis 热数据，再通过显式 Mongo deleter 立即删除 Mongo 文档；如果业务绕过 Fusion 只删除 Mongo，未过期 Redis 热数据仍可能被延迟保存任务重新写回 Mongo。
 - Fusion 延迟保存已通过真实 Redis/Mongo 集成路径验证：Redis 同步写入热数据，Redis delayed task backend 入队，Scheduler claim 到期任务，StorageTaskHandler 读取 Redis 热数据并整文档 replace Mongo。
-- 当前 Mongo adapter 只覆盖最小单适配器闭环；后续需要补 Mongo route/cluster adapter，按 routeType 和 RecordKey.ShardKey 路由单条读写，并在批量读写时按 Mongo shard 分组。
+- Mongo runtime 已提供最小 route/cluster adapter，按 routeType 和 RecordKey.ShardKey 路由单条读写，并在批量读取时按 Mongo shard 分组后还原输入顺序；后续真实 driver 接入时继续沿用该边界。
 - StorageTaskHandler 在 Mongo replace 前会递归移除 Redis 文档中的 nil 删除标记，避免已删除字段以 Mongo `null` 形式重新落库。
 - `delaySaveTime` 表示 Redis 热数据变更后，经过多久触发一次 Mongo 回写；`delayDelTime` 表示 Redis 热数据 TTL，用于释放长时间不活跃记录的热备数据，不代表 Mongo 删除延迟。
 - 后续可增加 SQL backend、消息队列 backend；当前优先贴合生产参考流程，不引入 Kafka 等新的持久化队列依赖。
