@@ -333,6 +333,25 @@ func TestFusionStrategyLoadDocumentFallsBackToMongo(t *testing.T) {
 	}
 }
 
+func TestFusionStrategyLoadDocumentDoesNotBackfillRedis(t *testing.T) {
+	redis := &recordingRedisStore{}
+	mongo := &recordingDocumentLoader{doc: map[string]any{"name": "cold"}, exists: true}
+	strategy := fusion.Strategy{Redis: redis, MongoLoader: mongo}
+	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
+	key := storage.RecordKey{ID: int64(1001)}
+
+	doc, exists, err := strategy.LoadDocument(context.Background(), spec, key, "name")
+	if err != nil {
+		t.Fatalf("LoadDocument returned error: %v", err)
+	}
+	if !exists || doc["name"] != "cold" {
+		t.Fatalf("LoadDocument = %#v, %v; want Mongo document", doc, exists)
+	}
+	if redis.recordingApplier.optionRuns != 0 {
+		t.Fatalf("redis backfill ApplyChangesWithOptions calls = %d, want 0", redis.recordingApplier.optionRuns)
+	}
+}
+
 func TestFusionStrategyLoadDocumentsFallsBackMissingRowsToMongo(t *testing.T) {
 	keys := []storage.RecordKey{{ID: int64(1001)}, {ID: int64(1002)}, {ID: int64(1003)}}
 	redis := &recordingDocumentLoader{
@@ -367,6 +386,33 @@ func TestFusionStrategyLoadDocumentsFallsBackMissingRowsToMongo(t *testing.T) {
 	}
 	if len(mongo.keys) != 1 || mongo.keys[0].ID != int64(1002) {
 		t.Fatalf("mongo fallback keys = %#v, want only missing key", mongo.keys)
+	}
+}
+
+func TestFusionStrategyLoadDocumentsDoesNotBackfillRedis(t *testing.T) {
+	keys := []storage.RecordKey{{ID: int64(1001)}, {ID: int64(1002)}}
+	redis := &recordingRedisStore{
+		recordingDocumentLoader: recordingDocumentLoader{
+			docs:       []map[string]any{nil, nil},
+			existsMany: []bool{false, false},
+		},
+	}
+	mongo := &recordingDocumentLoader{
+		docs:       []map[string]any{{"name": "cold-1"}, {"name": "cold-2"}},
+		existsMany: []bool{true, true},
+	}
+	strategy := fusion.Strategy{Redis: redis, MongoLoader: mongo}
+	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
+
+	docs, exists, err := strategy.LoadDocuments(context.Background(), spec, keys, "name")
+	if err != nil {
+		t.Fatalf("LoadDocuments returned error: %v", err)
+	}
+	if !exists[0] || docs[0]["name"] != "cold-1" || !exists[1] || docs[1]["name"] != "cold-2" {
+		t.Fatalf("LoadDocuments = %#v exists=%#v, want Mongo fallback rows", docs, exists)
+	}
+	if redis.recordingApplier.optionRuns != 0 {
+		t.Fatalf("redis backfill ApplyChangesWithOptions calls = %d, want 0", redis.recordingApplier.optionRuns)
 	}
 }
 
