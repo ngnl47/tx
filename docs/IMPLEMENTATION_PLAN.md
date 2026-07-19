@@ -302,6 +302,7 @@ type DelayTaskBackend interface {
 - `storage/task/redis`: Redis 持久化 delayed task backend，使用 sorted-set/hash 记录任务内容、到期时间、busy lease、完成与重试状态，并通过 Lua 保证 claim/complete/retry 的原子性。
 - Redis delayed task keys 必须按任务 id 分桶，每个 bucket 使用独立 hash tag，例如 `tx:task:{0}:due`、`tx:task:{0}:payload`，保证单次 Lua 脚本访问的 due/payload/busy/token/attempts key 落在同一个 Redis Cluster slot，同时避免所有任务集中到一个 slot。
 - Redis delayed task backend 面向多服务实例并发消费：claim/complete/retry 通过 lease token 隔离，但整体语义是 at-least-once，后续 Fusion Mongo 回写必须按幂等方式设计。
+- `log`: 基于标准库 `log/slog` 提供最小 logger 注入入口，默认使用 `slog.Default()`；已提供 `Debug/Info/Warn/Error` 和 Context 版本的包级快捷方法，并提供 `NewLogger(name)` 轻量命名 logger 代理；Fusion Scheduler 失败重试时输出结构化错误日志，失败原因不进入 Redis 队列状态。
 - `storage/fusion.TaskQueue` 负责把 Fusion 延迟保存 operation 转换为 `storage/task.DelayTask`，保留 record id、route/shard key、action 和 due time。
 - `storage/fusion.StorageTaskHandler` 负责消费 delayed task：保存任务从 Redis 读取完整热数据并 replace 到 Mongo；延迟任务只携带定位信息，回写时读取 Redis 当前数据。
 - Fusion 显式删除不进入延迟队列：运行时先删除 Redis 热数据，再通过显式 Mongo deleter 立即删除 Mongo 文档；如果业务绕过 Fusion 只删除 Mongo，未过期 Redis 热数据仍可能被延迟保存任务重新写回 Mongo。
@@ -309,6 +310,7 @@ type DelayTaskBackend interface {
 - StorageTaskHandler 在 Mongo replace 前会递归移除 Redis 文档中的 nil 删除标记，避免已删除字段以 Mongo `null` 形式重新落库。
 - `delaySaveTime` 表示 Redis 热数据变更后，经过多久触发一次 Mongo 回写；`delayDelTime` 表示 Redis 热数据 TTL，用于释放长时间不活跃记录的热备数据，不代表 Mongo 删除延迟。
 - 后续可增加 SQL backend、消息队列 backend；当前优先贴合生产参考流程，不引入 Kafka 等新的持久化队列依赖。
+- 日志基建后续专题：在 txgen 脚手架主链路跑通后，提前讨论并实施项目级 logger 管理策略，包括业务项目统一定义 logger 枚举或包级变量、logger 名称规范、日志级别配置、handler 初始化、Provider/Factory 是否需要引入，以及是否需要自动推导包名或模块名以减少手写 logger 名称。
 
 验收：
 

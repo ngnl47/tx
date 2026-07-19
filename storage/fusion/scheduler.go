@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	txlog "github.com/ngnl47/tx/log"
 	"github.com/ngnl47/tx/storage/task"
 )
 
@@ -105,6 +106,14 @@ func (s *Scheduler) RunOnce(ctx context.Context, now time.Time) (int, error) {
 			if retryErr := s.backend.Retry(ctx, lease, now.Add(s.retryDelay), err); retryErr != nil {
 				return len(leases), retryErr
 			}
+			txlog.ErrorContext(ctx, "delay task failed, retry scheduled",
+				"taskType", lease.Task.Type,
+				"taskID", lease.Task.ID,
+				"action", lease.Task.Action,
+				"attempts", lease.Attempts,
+				"retryAt", now.Add(s.retryDelay),
+				"err", err,
+			)
 			continue
 		}
 		if err := s.backend.Complete(ctx, lease); err != nil {

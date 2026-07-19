@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/lifecycle"
+	txlog "github.com/ngnl47/tx/log"
 	"github.com/ngnl47/tx/meta"
 	"github.com/ngnl47/tx/storage"
 	"github.com/ngnl47/tx/storage/fusion"
@@ -115,6 +117,9 @@ func TestFusionSchedulerRunOnceRetriesFailedTask(t *testing.T) {
 	ctx := context.Background()
 	backend := memory.NewBackend()
 	now := time.Unix(100, 0)
+	handler := &recordingSlogHandler{}
+	txlog.SetDefault(slog.New(handler))
+	defer txlog.SetDefault(nil)
 	scheduler := fusion.NewSchedulerWithOptions(backend, fusion.SchedulerOptions{
 		BatchSize:  10,
 		RetryDelay: time.Minute,
@@ -142,6 +147,18 @@ func TestFusionSchedulerRunOnceRetriesFailedTask(t *testing.T) {
 	}
 	if len(leases) != 1 || leases[0].Attempts != 2 {
 		t.Fatalf("leases after retry delay = %#v, want attempts 2", leases)
+	}
+	if len(handler.records) != 1 {
+		t.Fatalf("log records = %#v, want one retry error", handler.records)
+	}
+	record := handler.records[0]
+	if record.Level != slog.LevelError || record.Message != "delay task failed, retry scheduled" {
+		t.Fatalf("log record = %#v", record)
+	}
+	if !recordHasStringAttr(record, "taskType", "role") ||
+		!recordHasStringAttr(record, "taskID", "1") ||
+		!recordHasStringAttr(record, "err", "temporary") {
+		t.Fatalf("log attrs = %#v", recordAttrs(record))
 	}
 }
 

@@ -13,6 +13,50 @@
 
 生成代码依赖 `tx`，`tx` 不依赖生成器工程。
 
+## 日志
+
+`tx/log` 基于标准库 `log/slog` 提供最小 logger 注入入口：
+
+```go
+func SetDefault(logger *slog.Logger)
+func Default() *slog.Logger
+
+func Debug(msg string, args ...any)
+func Info(msg string, args ...any)
+func Warn(msg string, args ...any)
+func Error(msg string, args ...any)
+
+func DebugContext(ctx context.Context, msg string, args ...any)
+func InfoContext(ctx context.Context, msg string, args ...any)
+func WarnContext(ctx context.Context, msg string, args ...any)
+func ErrorContext(ctx context.Context, msg string, args ...any)
+```
+
+默认返回 `slog.Default()`；传入 `nil` 会恢复默认 logger。实际项目可在启动期调用 `log.SetDefault(logger)` 注入自己的 `slog.Logger`，并通过 `slog.Handler` 对接文件日志、云日志或第三方日志实现。
+
+默认调用方式：
+
+```go
+log.Error(
+    "delay task failed, retry scheduled",
+    "taskType", task.Type,
+    "taskID", task.ID,
+    "action", task.Action,
+    "attempts", attempts,
+    "err", err,
+)
+```
+
+需要按功能派生日志时，可以在项目中显式定义包级变量：
+
+```go
+var RoleLog = log.NewLogger("role")
+
+RoleLog.Error("role save failed", "roleId", roleID, "err", err)
+```
+
+`NewLogger` 返回轻量代理，每次输出时从当前 default logger 派生，避免包级变量早于项目日志初始化时绑定到旧 logger。
+
 ## 元数据与字段别名
 
 字段别名用于生成 JSON/BSON/Msgpack tag，也用于 `ChangeSet` 路径、Redis 文档字段名和 Mongo 字段名。
@@ -115,6 +159,7 @@ Fusion 策略的当前保存路径：
 7. 任务成功后通过 Lua complete 删除该任务在 Redis 队列中的状态。
 
 延迟任务队列使用 bucket hash tag，支持多个服务实例并发消费。语义是 at-least-once，Mongo 回写必须保持幂等。
+任务失败重试时，Scheduler 会输出结构化错误日志；失败原因不写入 Redis 任务状态，避免错误字符串占用队列内存。
 
 Fusion 显式删除不会进入延迟队列。删除路径应先删除 Redis 热数据，再立即删除 Mongo 文档；如果只绕过 Fusion 删除 Mongo，而 Redis 热数据和延迟保存任务仍存在，后续保存任务可能按 Redis 当前数据重新写回 Mongo。
 
