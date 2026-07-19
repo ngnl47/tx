@@ -54,8 +54,15 @@ func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 	if a.client == nil || set.Empty() {
 		return nil
 	}
-	prefix := redisKeyPrefix(spec, key)
 	patches := BuildDocumentPatchesWithResolver(spec, set, a.resolver)
+	return a.applyDocumentPatchesWithOptions(ctx, spec, key, patches, options)
+}
+
+func (a *Adapter) applyDocumentPatchesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, patches map[string]DocumentPatch, options ApplyOptions) error {
+	if a.client == nil {
+		return nil
+	}
+	prefix := redisKeyPrefix(spec, key)
 	if options.TTL != 0 {
 		ensureTTLOnlyPatches(spec, patches)
 	}
@@ -88,6 +95,20 @@ func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 		return fmt.Errorf("redis: apply changes %s: %w", prefix, storage.ErrNotExists)
 	}
 	return nil
+}
+
+// ReplaceDocumentWithOptions 按 Redis string JSON 文档模型全量替换一条热数据。
+func (a *Adapter) ReplaceDocumentWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any, options ApplyOptions) error {
+	if doc == nil {
+		return nil
+	}
+	options.Upsert = true
+	return a.applyDocumentPatchesWithOptions(ctx, spec, key, buildReplaceDocumentPatches(spec, doc), options)
+}
+
+// ReplaceDocument 按 Redis string JSON 文档模型全量替换一条热数据。
+func (a *Adapter) ReplaceDocument(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any) error {
+	return a.ReplaceDocumentWithOptions(ctx, spec, key, doc, ApplyOptions{Upsert: true})
 }
 
 // ApplyDelete 删除 Redis string JSON 主文档、subKey 文档和版本键。

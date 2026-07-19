@@ -19,17 +19,26 @@ type BatchDocumentLoader interface {
 	LoadDocuments(context.Context, meta.TypeSpec, []storage.RecordKey, ...string) ([]map[string]any, []bool, error)
 }
 
+type DocumentReplacerWithOptions interface {
+	ReplaceDocumentWithOptions(context.Context, meta.TypeSpec, storage.RecordKey, map[string]any, storage.ApplyOptions) error
+}
+
+type LoadOptions struct {
+	DontLoadToRedis bool
+}
+
 // Strategy 实现 fusion 模式的变更落地策略。
 //
 // Redis 适配器负责即时写入热数据；MongoQueue 负责把持久化保存推迟到
 // delaySave 配置之后执行。
 type Strategy struct {
-	Redis        storage.ChangeApplierWithOptions
-	RedisDeleter storage.DeleteApplier
-	RedisLoader  DocumentLoader
-	MongoLoader  DocumentLoader
-	MongoDeleter storage.DeleteApplier
-	MongoQueue   DelayQueue
+	Redis         storage.ChangeApplierWithOptions
+	RedisDeleter  storage.DeleteApplier
+	RedisLoader   DocumentLoader
+	RedisReplacer any
+	MongoLoader   DocumentLoader
+	MongoDeleter  storage.DeleteApplier
+	MongoQueue    DelayQueue
 }
 
 // ApplyChangesWithOptions 应用一次对象变更，并把写入选项限定传递给 Redis。
@@ -73,6 +82,10 @@ func (s Strategy) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key stora
 
 // LoadDocument 优先从 Redis 读取，未命中时回源 Mongo。
 func (s Strategy) LoadDocument(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, fields ...string) (map[string]any, bool, error) {
+	return s.LoadDocumentWithOptions(ctx, spec, key, LoadOptions{}, fields...)
+}
+
+func (s Strategy) LoadDocumentWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, options LoadOptions, fields ...string) (map[string]any, bool, error) {
 	if redisLoader := s.redisLoader(); redisLoader != nil {
 		doc, exists, err := redisLoader.LoadDocument(ctx, spec, key, fields...)
 		if err != nil {
@@ -85,11 +98,25 @@ func (s Strategy) LoadDocument(ctx context.Context, spec meta.TypeSpec, key stor
 	if s.MongoLoader == nil {
 		return nil, false, nil
 	}
-	return s.MongoLoader.LoadDocument(ctx, spec, key, fields...)
+	if options.DontLoadToRedis {
+		return s.MongoLoader.LoadDocument(ctx, spec, key, fields...)
+	}
+	doc, exists, err := s.MongoLoader.LoadDocument(ctx, spec, key)
+	if err != nil || !exists {
+		return doc, exists, err
+	}
+	if err := s.backfillRedis(ctx, spec, key, doc); err != nil {
+		return nil, false, err
+	}
+	return projectDocument(doc, fields), true, nil
 }
 
 // LoadDocuments 批量读取文档，Redis 缺失的行再批量回源 Mongo。
 func (s Strategy) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []storage.RecordKey, fields ...string) ([]map[string]any, []bool, error) {
+	return s.LoadDocumentsWithOptions(ctx, spec, keys, LoadOptions{}, fields...)
+}
+
+func (s Strategy) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSpec, keys []storage.RecordKey, options LoadOptions, fields ...string) ([]map[string]any, []bool, error) {
 	docs := make([]map[string]any, len(keys))
 	exists := make([]bool, len(keys))
 	if len(keys) == 0 {
@@ -125,6 +152,16 @@ func (s Strategy) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []
 	if len(missingKeys) == 0 || s.MongoLoader == nil {
 		return docs, exists, nil
 	}
+	if options.DontLoadToRedis {
+		return s.loadMongoMissingDocuments(ctx, spec, missingIndexes, missingKeys, docs, exists, fields...)
+	}
+	if err := s.loadMongoMissingDocumentsAndBackfillRedis(ctx, spec, missingIndexes, missingKeys, docs, exists, fields...); err != nil {
+		return nil, nil, err
+	}
+	return docs, exists, nil
+}
+
+func (s Strategy) loadMongoMissingDocuments(ctx context.Context, spec meta.TypeSpec, missingIndexes []int, missingKeys []storage.RecordKey, docs []map[string]any, exists []bool, fields ...string) ([]map[string]any, []bool, error) {
 	mongoBatch, ok := s.MongoLoader.(BatchDocumentLoader)
 	if !ok {
 		for pos, key := range missingKeys {
@@ -150,6 +187,71 @@ func (s Strategy) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []
 		exists[idx] = mongoExists[pos]
 	}
 	return docs, exists, nil
+}
+
+func (s Strategy) loadMongoMissingDocumentsAndBackfillRedis(ctx context.Context, spec meta.TypeSpec, missingIndexes []int, missingKeys []storage.RecordKey, docs []map[string]any, exists []bool, fields ...string) error {
+	fullDocs, fullExists, err := s.loadFullMongoDocuments(ctx, spec, missingKeys)
+	if err != nil {
+		return err
+	}
+	for pos, idx := range missingIndexes {
+		exists[idx] = fullExists[pos]
+		if !fullExists[pos] {
+			continue
+		}
+		if err := s.backfillRedis(ctx, spec, missingKeys[pos], fullDocs[pos]); err != nil {
+			return err
+		}
+		docs[idx] = projectDocument(fullDocs[pos], fields)
+	}
+	return nil
+}
+
+func (s Strategy) loadFullMongoDocuments(ctx context.Context, spec meta.TypeSpec, keys []storage.RecordKey) ([]map[string]any, []bool, error) {
+	mongoBatch, ok := s.MongoLoader.(BatchDocumentLoader)
+	if ok {
+		docs, exists, err := mongoBatch.LoadDocuments(ctx, spec, keys)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(docs) != len(keys) || len(exists) != len(keys) {
+			return nil, nil, fmt.Errorf("fusion: mongo batch loader returned docs=%d exists=%d for %d keys", len(docs), len(exists), len(keys))
+		}
+		return docs, exists, nil
+	}
+	docs := make([]map[string]any, len(keys))
+	exists := make([]bool, len(keys))
+	for i, key := range keys {
+		doc, found, err := s.MongoLoader.LoadDocument(ctx, spec, key)
+		if err != nil {
+			return nil, nil, err
+		}
+		docs[i] = doc
+		exists[i] = found
+	}
+	return docs, exists, nil
+}
+
+func (s Strategy) backfillRedis(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any) error {
+	if doc == nil {
+		return nil
+	}
+	replacer := s.redisReplacerWithOptions()
+	if replacer == nil {
+		if s.redisReplacer() != nil {
+			return fmt.Errorf("fusion: redis backfill requires ReplaceDocumentWithOptions to set delayDelTime TTL")
+		}
+		return nil
+	}
+	ttl := int64(spec.Storage.DelayDelete.Duration.Seconds())
+	if ttl <= 0 {
+		return fmt.Errorf("fusion: storage delayDelTime must be greater than 0 for redis backfill")
+	}
+	options := storage.ApplyOptions{
+		Upsert: true,
+		TTL:    ttl,
+	}
+	return replacer.ReplaceDocumentWithOptions(ctx, spec, key, doc, options)
 }
 
 func (s Strategy) loadRedisDocumentsOneByOne(ctx context.Context, spec meta.TypeSpec, keys []storage.RecordKey, loader DocumentLoader, docs []map[string]any, exists []bool, missingIndexes *[]int, missingKeys *[]storage.RecordKey, fields ...string) error {
@@ -182,10 +284,39 @@ func (s Strategy) redisLoader() DocumentLoader {
 	return loader
 }
 
+func (s Strategy) redisReplacerWithOptions() DocumentReplacerWithOptions {
+	if replacer, ok := s.RedisReplacer.(DocumentReplacerWithOptions); ok {
+		return replacer
+	}
+	replacer, _ := s.Redis.(DocumentReplacerWithOptions)
+	return replacer
+}
+
+func (s Strategy) redisReplacer() DocumentReplacer {
+	if replacer, ok := s.RedisReplacer.(DocumentReplacer); ok {
+		return replacer
+	}
+	replacer, _ := s.Redis.(DocumentReplacer)
+	return replacer
+}
+
 func (s Strategy) redisDeleter() storage.DeleteApplier {
 	if s.RedisDeleter != nil {
 		return s.RedisDeleter
 	}
 	deleter, _ := s.Redis.(storage.DeleteApplier)
 	return deleter
+}
+
+func projectDocument(doc map[string]any, fields []string) map[string]any {
+	if len(fields) == 0 || doc == nil {
+		return doc
+	}
+	out := make(map[string]any, len(fields))
+	for _, field := range fields {
+		if value, ok := doc[field]; ok {
+			out[field] = value
+		}
+	}
+	return out
 }

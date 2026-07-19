@@ -123,6 +123,42 @@ func TestRedisAdapterAppliesChangesWithSingleLuaEval(t *testing.T) {
 	}
 }
 
+func TestRedisAdapterReplaceDocumentWithOptionsUsesFullReplaceAndTTL(t *testing.T) {
+	client := &recordingRedisStringClient{}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{
+		Redis: &meta.RedisSpec{Key: "role"},
+		Fields: map[string]meta.FieldSpec{
+			"items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+		},
+	}
+
+	err := adapter.ReplaceDocumentWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, map[string]any{
+		"name":  "alice",
+		"items": map[string]any{"1001": map[string]any{"quantity": int64(9)}},
+	}, txredis.ApplyOptions{TTL: 3600})
+	if err != nil {
+		t.Fatalf("ReplaceDocumentWithOptions returned error: %v", err)
+	}
+	if len(client.evals) != 1 {
+		t.Fatalf("eval calls = %#v, want exactly one", client.evals)
+	}
+	call := client.evals[0]
+	if len(call.keys) != 1 || call.keys[0] != "role:{1001}" {
+		t.Fatalf("eval keys = %#v, want role:{1001}", call.keys)
+	}
+	if len(call.args) != 8 || call.args[len(call.args)-2] != "1" || call.args[len(call.args)-1] != "3600" {
+		t.Fatalf("eval args = %#v, want upsert true and ttl 3600", call.args)
+	}
+	triples := evalTriples(t, call.args)
+	if triples[""].mode != "1" || !strings.Contains(triples[""].body, `"name":"alice"`) {
+		t.Fatalf("main triple = %#v, want full replacement with name", triples[""])
+	}
+	if triples["items"].mode != "1" || !strings.Contains(triples["items"].body, `"items"`) {
+		t.Fatalf("items triple = %#v, want full replacement with items", triples["items"])
+	}
+}
+
 func TestRedisAdapterUsesShardKeyAsHashTagWhenRouteByDiffersFromID(t *testing.T) {
 	client := &recordingRedisStringClient{}
 	adapter := txredis.NewAdapter(client)

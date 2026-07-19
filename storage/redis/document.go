@@ -77,6 +77,21 @@ func BuildDocumentPatchesWithResolver(spec meta.TypeSpec, set change.ChangeSet, 
 	return out
 }
 
+func buildReplaceDocumentPatches(spec meta.TypeSpec, doc map[string]any) map[string]DocumentPatch {
+	out := map[string]DocumentPatch{}
+	for field, value := range doc {
+		suffix, ignore := redisDocumentSuffix(spec, field)
+		if ignore {
+			continue
+		}
+		patch := out[suffix]
+		patch.Mode = documentPatchModeReplace
+		patch.Set = append(patch.Set, PathValue{Path: change.Path{field}, Value: value})
+		out[suffix] = patch
+	}
+	return out
+}
+
 // ApplyDocumentPatch 把 patch 合并进 JSON 文档。
 func ApplyDocumentPatch(doc map[string]any, patch DocumentPatch) {
 	for _, item := range patch.Set {

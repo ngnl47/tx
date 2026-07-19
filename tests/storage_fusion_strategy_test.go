@@ -63,6 +63,14 @@ type recordingDocumentLoader struct {
 	fields     []string
 }
 
+type recordingDocumentReplacerWithOptions struct {
+	calls   int
+	spec    meta.TypeSpec
+	key     storage.RecordKey
+	doc     map[string]any
+	options storage.ApplyOptions
+}
+
 type recordingSingleDocumentLoader struct {
 	docs   map[any]map[string]any
 	calls  int
@@ -96,6 +104,15 @@ func (l *recordingSingleDocumentLoader) LoadDocument(_ context.Context, _ meta.T
 	l.fields = append([]string(nil), fields...)
 	doc, exists := l.docs[key.ID]
 	return doc, exists, nil
+}
+
+func (r *recordingDocumentReplacerWithOptions) ReplaceDocumentWithOptions(_ context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any, options storage.ApplyOptions) error {
+	r.calls++
+	r.spec = spec
+	r.key = key
+	r.doc = doc
+	r.options = options
+	return nil
 }
 
 type recordingRedisStore struct {
@@ -314,11 +331,15 @@ func TestFusionStrategyLoadDocumentUsesRedisApplierWhenLoaderIsUnset(t *testing.
 	}
 }
 
-func TestFusionStrategyLoadDocumentFallsBackToMongo(t *testing.T) {
+func TestFusionStrategyLoadDocumentBackfillsRedisFromFullMongoFallback(t *testing.T) {
 	redis := &recordingDocumentLoader{}
-	mongo := &recordingDocumentLoader{doc: map[string]any{"name": "cold"}, exists: true}
-	strategy := fusion.Strategy{RedisLoader: redis, MongoLoader: mongo}
-	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
+	mongo := &recordingDocumentLoader{doc: map[string]any{"roleId": int64(1001), "name": "cold", "power": int64(9)}, exists: true}
+	replacer := &recordingDocumentReplacerWithOptions{}
+	strategy := fusion.Strategy{RedisLoader: redis, RedisReplacer: replacer, MongoLoader: mongo}
+	spec := meta.TypeSpec{
+		Type:    meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
+		Storage: meta.StorageSpec{DelayDelete: meta.Duration{Duration: time.Hour}},
+	}
 	key := storage.RecordKey{ID: int64(1001)}
 
 	doc, exists, err := strategy.LoadDocument(context.Background(), spec, key, "name")
@@ -331,16 +352,23 @@ func TestFusionStrategyLoadDocumentFallsBackToMongo(t *testing.T) {
 	if redis.calls != 1 || mongo.calls != 1 {
 		t.Fatalf("loader calls redis=%d mongo=%d, want both loaders", redis.calls, mongo.calls)
 	}
+	if len(mongo.fields) != 0 {
+		t.Fatalf("mongo fallback fields = %#v, want full document load", mongo.fields)
+	}
+	if replacer.calls != 1 || replacer.doc["power"] != int64(9) || replacer.options.TTL != int64(time.Hour/time.Second) {
+		t.Fatalf("redis backfill calls/doc/options = %d/%#v/%#v", replacer.calls, replacer.doc, replacer.options)
+	}
 }
 
-func TestFusionStrategyLoadDocumentDoesNotBackfillRedis(t *testing.T) {
+func TestFusionStrategyLoadDocumentWithNoBackfillOptionDoesNotBackfillRedis(t *testing.T) {
 	redis := &recordingRedisStore{}
 	mongo := &recordingDocumentLoader{doc: map[string]any{"name": "cold"}, exists: true}
-	strategy := fusion.Strategy{Redis: redis, MongoLoader: mongo}
+	replacer := &recordingDocumentReplacerWithOptions{}
+	strategy := fusion.Strategy{Redis: redis, RedisReplacer: replacer, MongoLoader: mongo}
 	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
 	key := storage.RecordKey{ID: int64(1001)}
 
-	doc, exists, err := strategy.LoadDocument(context.Background(), spec, key, "name")
+	doc, exists, err := strategy.LoadDocumentWithOptions(context.Background(), spec, key, fusion.LoadOptions{DontLoadToRedis: true}, "name")
 	if err != nil {
 		t.Fatalf("LoadDocument returned error: %v", err)
 	}
@@ -349,6 +377,31 @@ func TestFusionStrategyLoadDocumentDoesNotBackfillRedis(t *testing.T) {
 	}
 	if redis.recordingApplier.optionRuns != 0 {
 		t.Fatalf("redis backfill ApplyChangesWithOptions calls = %d, want 0", redis.recordingApplier.optionRuns)
+	}
+	if replacer.calls != 0 {
+		t.Fatalf("redis backfill ReplaceDocumentWithOptions calls = %d, want 0", replacer.calls)
+	}
+	if len(mongo.fields) != 1 || mongo.fields[0] != "name" {
+		t.Fatalf("mongo no-backfill fields = %#v, want projection", mongo.fields)
+	}
+}
+
+func TestFusionStrategyLoadDocumentRequiresDelayDeleteForRedisBackfill(t *testing.T) {
+	redis := &recordingDocumentLoader{}
+	mongo := &recordingDocumentLoader{doc: map[string]any{"name": "cold"}, exists: true}
+	replacer := &recordingDocumentReplacerWithOptions{}
+	strategy := fusion.Strategy{RedisLoader: redis, RedisReplacer: replacer, MongoLoader: mongo}
+	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
+
+	_, exists, err := strategy.LoadDocument(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "name")
+	if err == nil {
+		t.Fatal("LoadDocument returned nil error, want missing delayDelTime error")
+	}
+	if exists {
+		t.Fatal("LoadDocument exists = true, want false on missing delayDelTime")
+	}
+	if replacer.calls != 0 {
+		t.Fatalf("redis backfill calls = %d, want 0", replacer.calls)
 	}
 }
 
@@ -389,7 +442,44 @@ func TestFusionStrategyLoadDocumentsFallsBackMissingRowsToMongo(t *testing.T) {
 	}
 }
 
-func TestFusionStrategyLoadDocumentsDoesNotBackfillRedis(t *testing.T) {
+func TestFusionStrategyLoadDocumentsBackfillsRedisFromFullMongoFallback(t *testing.T) {
+	keys := []storage.RecordKey{{ID: int64(1001)}, {ID: int64(1002)}}
+	redis := &recordingRedisStore{
+		recordingDocumentLoader: recordingDocumentLoader{
+			docs:       []map[string]any{nil, nil},
+			existsMany: []bool{false, false},
+		},
+	}
+	mongo := &recordingDocumentLoader{
+		docs:       []map[string]any{{"name": "cold-1", "power": int64(1)}, {"name": "cold-2", "power": int64(2)}},
+		existsMany: []bool{true, true},
+	}
+	replacer := &recordingDocumentReplacerWithOptions{}
+	strategy := fusion.Strategy{Redis: redis, RedisReplacer: replacer, MongoLoader: mongo}
+	spec := meta.TypeSpec{
+		Type:    meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
+		Storage: meta.StorageSpec{DelayDelete: meta.Duration{Duration: time.Hour}},
+	}
+
+	docs, exists, err := strategy.LoadDocuments(context.Background(), spec, keys, "name")
+	if err != nil {
+		t.Fatalf("LoadDocuments returned error: %v", err)
+	}
+	if !exists[0] || docs[0]["name"] != "cold-1" || !exists[1] || docs[1]["name"] != "cold-2" {
+		t.Fatalf("LoadDocuments = %#v exists=%#v, want Mongo fallback rows", docs, exists)
+	}
+	if redis.recordingApplier.optionRuns != 0 {
+		t.Fatalf("redis backfill ApplyChangesWithOptions calls = %d, want 0", redis.recordingApplier.optionRuns)
+	}
+	if len(mongo.fields) != 0 {
+		t.Fatalf("mongo fallback fields = %#v, want full document load", mongo.fields)
+	}
+	if replacer.calls != 2 || replacer.options.TTL != int64(time.Hour/time.Second) {
+		t.Fatalf("redis backfill calls/options = %d/%#v", replacer.calls, replacer.options)
+	}
+}
+
+func TestFusionStrategyLoadDocumentsWithNoBackfillOptionDoesNotBackfillRedis(t *testing.T) {
 	keys := []storage.RecordKey{{ID: int64(1001)}, {ID: int64(1002)}}
 	redis := &recordingRedisStore{
 		recordingDocumentLoader: recordingDocumentLoader{
@@ -401,18 +491,22 @@ func TestFusionStrategyLoadDocumentsDoesNotBackfillRedis(t *testing.T) {
 		docs:       []map[string]any{{"name": "cold-1"}, {"name": "cold-2"}},
 		existsMany: []bool{true, true},
 	}
-	strategy := fusion.Strategy{Redis: redis, MongoLoader: mongo}
+	replacer := &recordingDocumentReplacerWithOptions{}
+	strategy := fusion.Strategy{Redis: redis, RedisReplacer: replacer, MongoLoader: mongo}
 	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
 
-	docs, exists, err := strategy.LoadDocuments(context.Background(), spec, keys, "name")
+	docs, exists, err := strategy.LoadDocumentsWithOptions(context.Background(), spec, keys, fusion.LoadOptions{DontLoadToRedis: true}, "name")
 	if err != nil {
 		t.Fatalf("LoadDocuments returned error: %v", err)
 	}
 	if !exists[0] || docs[0]["name"] != "cold-1" || !exists[1] || docs[1]["name"] != "cold-2" {
 		t.Fatalf("LoadDocuments = %#v exists=%#v, want Mongo fallback rows", docs, exists)
 	}
-	if redis.recordingApplier.optionRuns != 0 {
-		t.Fatalf("redis backfill ApplyChangesWithOptions calls = %d, want 0", redis.recordingApplier.optionRuns)
+	if replacer.calls != 0 {
+		t.Fatalf("redis backfill ReplaceDocumentWithOptions calls = %d, want 0", replacer.calls)
+	}
+	if len(mongo.fields) != 1 || mongo.fields[0] != "name" {
+		t.Fatalf("mongo no-backfill fields = %#v, want projection", mongo.fields)
 	}
 }
 
