@@ -1,0 +1,119 @@
+package config
+
+import (
+	"fmt"
+
+	"gopkg.in/yaml.v3"
+)
+
+// RouteTableConfig 表示 redis.yml 或 mongodb.yml 中的 routeType 路由表。
+type RouteTableConfig struct {
+	Routes map[string]RouteTarget `yaml:",inline" json:"routes"`
+}
+
+// RouteTarget 表示一个 routeType 的路由目标，支持标量、字符串数组和规则数组。
+type RouteTarget struct {
+	Rules []RouteRule `json:"rules"`
+}
+
+// RouteRule 描述一个 routeBy 区间内可用的 endpoint 列表。
+type RouteRule struct {
+	Min    int64    `yaml:"min" json:"min"`
+	Max    int64    `yaml:"max" json:"max"`
+	Shards []string `yaml:"shards" json:"shards"`
+}
+
+func NewRouteTableConfig(routes map[string]RouteTarget) RouteTableConfig {
+	copied := make(map[string]RouteTarget, len(routes))
+	for routeType, target := range routes {
+		copied[routeType] = target.clone()
+	}
+	return RouteTableConfig{Routes: copied}
+}
+
+func (c *RouteTableConfig) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("storage config: route table must be a mapping")
+	}
+	routes := make(map[string]RouteTarget, len(value.Content)/2)
+	for i := 0; i < len(value.Content); i += 2 {
+		key := value.Content[i]
+		val := value.Content[i+1]
+		var target RouteTarget
+		if err := target.UnmarshalYAML(val); err != nil {
+			return fmt.Errorf("storage config: route %q: %w", key.Value, err)
+		}
+		routes[key.Value] = target
+	}
+	c.Routes = routes
+	return nil
+}
+
+func (t *RouteTarget) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		var endpoint string
+		if err := value.Decode(&endpoint); err != nil {
+			return err
+		}
+		if endpoint == "" {
+			return fmt.Errorf("endpoint is empty")
+		}
+		t.Rules = []RouteRule{{Min: 1, Shards: []string{endpoint}}}
+		return nil
+	case yaml.SequenceNode:
+		return t.unmarshalSequence(value)
+	default:
+		return fmt.Errorf("unsupported route target kind %d", value.Kind)
+	}
+}
+
+func (t *RouteTarget) unmarshalSequence(value *yaml.Node) error {
+	if len(value.Content) == 0 {
+		return fmt.Errorf("route target sequence is empty")
+	}
+	if value.Content[0].Kind == yaml.ScalarNode {
+		shards := make([]string, 0, len(value.Content))
+		for _, item := range value.Content {
+			if item.Kind != yaml.ScalarNode {
+				return fmt.Errorf("endpoint sequence cannot mix scalar and rule items")
+			}
+			var endpoint string
+			if err := item.Decode(&endpoint); err != nil {
+				return err
+			}
+			if endpoint == "" {
+				return fmt.Errorf("endpoint is empty")
+			}
+			shards = append(shards, endpoint)
+		}
+		t.Rules = []RouteRule{{Min: 1, Shards: shards}}
+		return nil
+	}
+
+	rules := make([]RouteRule, 0, len(value.Content))
+	for _, item := range value.Content {
+		if item.Kind != yaml.MappingNode {
+			return fmt.Errorf("rule sequence cannot mix rule and scalar items")
+		}
+		var rule RouteRule
+		if err := item.Decode(&rule); err != nil {
+			return err
+		}
+		rules = append(rules, rule)
+	}
+	t.Rules = rules
+	return nil
+}
+
+func (t RouteTarget) clone() RouteTarget {
+	rules := make([]RouteRule, len(t.Rules))
+	for i, rule := range t.Rules {
+		rules[i] = RouteRule{
+			Min:    rule.Min,
+			Max:    rule.Max,
+			Shards: append([]string(nil), rule.Shards...),
+		}
+	}
+	return RouteTarget{Rules: rules}
+}

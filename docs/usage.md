@@ -157,6 +157,35 @@ router := storage.NewRouteTable(map[string][]storage.RouteRule{
 - 多 shard 规则用 `routeBy % len(shards)` 选择 endpoint。
 - 单 shard 规则允许字符串主键，用于全局表或单分片表。
 
+`storage/config.RouteTableConfig` 用于承接项目 yml 解析后的 Redis/Mongo 路由配置。项目负责读取文件和处理 include，随后把 yml 反序列化到该类型：
+
+```yaml
+main: "redis://main"
+role:
+  - min: 1
+    shards:
+      - "redis://role-a"
+      - "redis://role-b"
+rank:
+  - "redis://rank-a"
+  - "redis://rank-b"
+```
+
+支持的 routeType 值形态：
+
+- 标量 endpoint：归一化为单 shard 规则。
+- endpoint 数组：归一化为一个多 shard 规则。
+- 规则数组：保留 `min/max/shards` 区间规则。
+
+配置对象可直接构造运行时路由表：
+
+```go
+table, err := redisConfig.RouteTable()
+endpoints := redisConfig.Endpoints()
+```
+
+`Endpoints()` 返回配置中出现过的 endpoint URI 集合；当前 key 和 value 都是 URI，运行时装配可按 URI 创建并复用客户端。
+
 ## Redis Route/Cluster Adapter
 
 `redis.Cluster` 按 `routeType` 和 `storage.RecordKey.ShardKey` 路由到具体 Redis adapter。

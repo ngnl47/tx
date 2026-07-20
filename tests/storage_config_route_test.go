@@ -1,0 +1,113 @@
+package tests
+
+import (
+	"context"
+	"reflect"
+	"testing"
+
+	storageconfig "github.com/ngnl47/tx/storage/config"
+	"gopkg.in/yaml.v3"
+)
+
+func TestStorageConfigRouteTableFromYAMLShapes(t *testing.T) {
+	var cfg storageconfig.RouteTableConfig
+	err := yaml.Unmarshal([]byte(`
+main: "redis://main"
+match:
+  - "redis://match-a"
+  - "redis://match-b"
+role:
+  - min: 1
+    max: 9
+    shards:
+      - "redis://role-a"
+      - "redis://role-b"
+  - min: 10
+    shards:
+      - "redis://role-c"
+`), &cfg)
+	if err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	endpoints := cfg.Endpoints()
+	wantEndpoints := map[string]string{
+		"redis://main":    "redis://main",
+		"redis://match-a": "redis://match-a",
+		"redis://match-b": "redis://match-b",
+		"redis://role-a":  "redis://role-a",
+		"redis://role-b":  "redis://role-b",
+		"redis://role-c":  "redis://role-c",
+	}
+	if !reflect.DeepEqual(endpoints, wantEndpoints) {
+		t.Fatalf("Endpoints = %#v, want %#v", endpoints, wantEndpoints)
+	}
+
+	table, err := cfg.RouteTable()
+	if err != nil {
+		t.Fatalf("RouteTable returned error: %v", err)
+	}
+	tests := []struct {
+		routeType string
+		shardKey  any
+		want      string
+	}{
+		{routeType: "main", shardKey: "global-id", want: "redis://main"},
+		{routeType: "match", shardKey: int64(1), want: "redis://match-b"},
+		{routeType: "match", shardKey: int64(2), want: "redis://match-a"},
+		{routeType: "role", shardKey: int64(3), want: "redis://role-b"},
+		{routeType: "role", shardKey: int64(11), want: "redis://role-c"},
+	}
+	for _, tt := range tests {
+		got, err := table.Route(context.Background(), tt.routeType, tt.shardKey)
+		if err != nil {
+			t.Fatalf("Route(%s,%v) returned error: %v", tt.routeType, tt.shardKey, err)
+		}
+		if got != tt.want {
+			t.Fatalf("Route(%s,%v) = %q, want %q", tt.routeType, tt.shardKey, got, tt.want)
+		}
+	}
+}
+
+func TestStorageConfigRouteTableRejectsInvalidRules(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  storageconfig.RouteTableConfig
+	}{
+		{
+			name: "empty shards",
+			cfg: storageconfig.RouteTableConfig{
+				Routes: map[string]storageconfig.RouteTarget{
+					"role": {Rules: []storageconfig.RouteRule{{Min: 1}}},
+				},
+			},
+		},
+		{
+			name: "max smaller than min",
+			cfg: storageconfig.RouteTableConfig{
+				Routes: map[string]storageconfig.RouteTarget{
+					"role": {Rules: []storageconfig.RouteRule{{Min: 10, Max: 9, Shards: []string{"redis://role"}}}},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if table, err := tt.cfg.RouteTable(); err == nil {
+				t.Fatalf("RouteTable = %#v, want error", table)
+			}
+		})
+	}
+}
+
+func TestStorageConfigRouteTableRejectsInvalidYAMLShape(t *testing.T) {
+	var cfg storageconfig.RouteTableConfig
+	err := yaml.Unmarshal([]byte(`
+role:
+  enabled: true
+`), &cfg)
+	if err == nil {
+		t.Fatalf("Unmarshal returned nil error, want invalid route shape error")
+	}
+}
