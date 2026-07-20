@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/meta"
@@ -30,7 +31,8 @@ type ApplyOptions = storage.ApplyOptions
 
 // LoadOptions 控制 Redis 批量读取行为。
 type LoadOptions struct {
-	BatchSize int
+	BatchSize   int
+	ClusterSafe bool
 }
 
 // Adapter 把 ChangeSet 应用到 Redis string JSON 文档。
@@ -162,6 +164,9 @@ func (a *Adapter) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSp
 		return a.loadDocumentsByEval(ctx, spec, records, fields...)
 	}
 	plan := redisBatchReadPlan(spec, fields)
+	if options.ClusterSafe {
+		return a.loadDocumentsByHashTagMGet(ctx, spec, records, options, plan)
+	}
 	batchSize := options.BatchSize
 	if batchSize <= 0 || batchSize > len(records) {
 		batchSize = len(records)
@@ -211,6 +216,66 @@ func (a *Adapter) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSp
 	return docs, exists, nil
 }
 
+func (a *Adapter) loadDocumentsByHashTagMGet(ctx context.Context, spec meta.TypeSpec, records []storage.RecordKey, options LoadOptions, plan redisBatchPlan) ([]map[string]any, []bool, error) {
+	docs := make([]map[string]any, len(records))
+	exists := make([]bool, len(records))
+	client := a.client.(BatchClient)
+	groups := make(map[string][]int)
+	for i, record := range records {
+		prefix := redisKeyPrefix(spec, record)
+		groups[redisKeyHashTag(prefix)] = append(groups[redisKeyHashTag(prefix)], i)
+	}
+	for _, indexes := range groups {
+		batchSize := options.BatchSize
+		if batchSize <= 0 || batchSize > len(indexes) {
+			batchSize = len(indexes)
+		}
+		for start := 0; start < len(indexes); start += batchSize {
+			end := start + batchSize
+			if end > len(indexes) {
+				end = len(indexes)
+			}
+			keys := make([]string, 0, (end-start)*plan.step())
+			for _, index := range indexes[start:end] {
+				prefix := redisKeyPrefix(spec, records[index])
+				keys = append(keys, prefix)
+				for _, suffix := range plan.subKeys {
+					keys = append(keys, prefix+":"+suffix)
+				}
+			}
+			values, err := client.MGet(ctx, keys...)
+			if err != nil {
+				return nil, nil, fmt.Errorf("redis: load documents: %w", err)
+			}
+			if len(values) != len(keys) {
+				return nil, nil, fmt.Errorf("redis: load documents returned %d values for %d keys", len(values), len(keys))
+			}
+			step := plan.step()
+			for groupOffset, index := range indexes[start:end] {
+				valueStart := groupOffset * step
+				if values[valueStart] == "" {
+					continue
+				}
+				exists[index] = true
+				parts := make([]string, 0, step)
+				if plan.includeMain {
+					parts = append(parts, values[valueStart])
+				}
+				for j := 1; j < step; j++ {
+					parts = append(parts, values[valueStart+j])
+				}
+				body := joinDocumentBodies(parts)
+				doc, err := decodeDocument(body)
+				if err != nil {
+					return nil, nil, fmt.Errorf("redis: decode document %s: %w", redisKeyPrefix(spec, records[index]), err)
+				}
+				docs[index] = doc
+			}
+		}
+	}
+	return docs, exists, nil
+}
+
 func (a *Adapter) loadDocumentsByEval(ctx context.Context, spec meta.TypeSpec, records []storage.RecordKey, fields ...string) ([]map[string]any, []bool, error) {
 	docs := make([]map[string]any, len(records))
 	exists := make([]bool, len(records))
@@ -234,6 +299,18 @@ func redisKeyPrefix(spec meta.TypeSpec, key storage.RecordKey) string {
 		return fmt.Sprintf("%s:{%v}:%v", base, key.ShardKey, key.ID)
 	}
 	return fmt.Sprintf("%s:{%v}", base, key.ID)
+}
+
+func redisKeyHashTag(key string) string {
+	start := strings.IndexByte(key, '{')
+	if start < 0 {
+		return key
+	}
+	end := strings.IndexByte(key[start+1:], '}')
+	if end < 0 || end == 0 {
+		return key
+	}
+	return key[start+1 : start+1+end]
 }
 
 func redisDeleteKeys(spec meta.TypeSpec, prefix string) []string {

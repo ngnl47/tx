@@ -74,6 +74,13 @@ func (c *recordingRedisStringClient) Eval(_ context.Context, script string, keys
 
 func (c *recordingRedisStringClient) MGet(_ context.Context, keys ...string) ([]string, error) {
 	c.mgets = append(c.mgets, append([]string(nil), keys...))
+	if c.values != nil {
+		out := make([]string, len(keys))
+		for i, key := range keys {
+			out[i] = c.values[key]
+		}
+		return out, nil
+	}
 	if len(c.mgetBatches) > 0 {
 		out := append([]string(nil), c.mgetBatches[0]...)
 		c.mgetBatches = c.mgetBatches[1:]
@@ -794,6 +801,53 @@ func TestRedisClusterBatchLoadsByShardGroupAndRestoresOrder(t *testing.T) {
 	}
 }
 
+func TestRedisClusterBatchLoadClusterSafeGroupsByHashTag(t *testing.T) {
+	shard := &recordingRedisStringClient{
+		values: map[string]string{
+			"role:{7}:1001":       `{"roleId":1001,"name":"alice"}`,
+			"role:{7}:1001:items": `{"items":{"1001":{"quantity":3}}}`,
+			"role:{8}:1002":       `{"roleId":1002,"name":"bob"}`,
+			"role:{8}:1002:items": `{"items":{"1001":{"quantity":4}}}`,
+			"role:{7}:1003":       `{"roleId":1003,"name":"carol"}`,
+			"role:{7}:1003:items": `{"items":{"1001":{"quantity":5}}}`,
+		},
+	}
+	router := &recordingRedisRouter{names: map[any]string{
+		int64(7): "role",
+		int64(8): "role",
+	}}
+	cluster := txredis.NewCluster(router, map[string]any{"role": shard})
+	spec := meta.TypeSpec{
+		Redis: &meta.RedisSpec{
+			Key:     "role",
+			IDField: "roleId",
+			Route:   meta.RouteSpec{Type: "role", By: "serverId"},
+		},
+		Fields: map[string]meta.FieldSpec{
+			"items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+		},
+	}
+	keys := []storage.RecordKey{
+		{ID: int64(1001), ShardKey: int64(7)},
+		{ID: int64(1002), ShardKey: int64(8)},
+		{ID: int64(1003), ShardKey: int64(7)},
+	}
+
+	docs, exists, err := cluster.LoadDocumentsWithOptions(context.Background(), spec, keys, txredis.LoadOptions{ClusterSafe: true})
+	if err != nil {
+		t.Fatalf("LoadDocumentsWithOptions returned error: %v", err)
+	}
+	if !exists[0] || docs[0]["name"] != "alice" || !exists[1] || docs[1]["name"] != "bob" || !exists[2] || docs[2]["name"] != "carol" {
+		t.Fatalf("docs=%#v exists=%#v, want original order", docs, exists)
+	}
+	if !hasMGetCall(shard.mgets, []string{"role:{7}:1001", "role:{7}:1001:items", "role:{7}:1003", "role:{7}:1003:items"}) {
+		t.Fatalf("mgets = %#v, want hash tag 7 grouped call", shard.mgets)
+	}
+	if !hasMGetCall(shard.mgets, []string{"role:{8}:1002", "role:{8}:1002:items"}) {
+		t.Fatalf("mgets = %#v, want hash tag 8 grouped call", shard.mgets)
+	}
+}
+
 func evalPatchDocuments(t *testing.T, client *recordingRedisStringClient) map[string]map[string]any {
 	t.Helper()
 	if len(client.evals) != 1 {
@@ -900,4 +954,13 @@ func sameBools(got []bool, want []bool) bool {
 		}
 	}
 	return true
+}
+
+func hasMGetCall(calls [][]string, want []string) bool {
+	for _, call := range calls {
+		if sameStrings(call, want) {
+			return true
+		}
+	}
+	return false
 }
