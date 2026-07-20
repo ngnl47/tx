@@ -134,6 +134,29 @@ type RecordKey struct {
 - `ShardKey` 来自 `routeBy`，仅在 `routeBy != idField` 时需要。
 - 批量读取必须保证每条记录携带正确路由字段，才能构造正确 `RecordKey`、Redis endpoint 和 hash tag。
 
+## RouteTable
+
+`storage.RouteTable` 是 Redis 和 Mongo 共用的运行时路由表，可同时作为 `redis.Cluster` 和 `mongo.Cluster` 的 router 使用。
+
+```go
+router := storage.NewRouteTable(map[string][]storage.RouteRule{
+    "role": {
+        {Min: 1, Max: 999999, Shards: []string{"role-a", "role-b"}},
+        {Min: 1000000, Shards: []string{"role-c"}},
+    },
+    "global": {
+        {Shards: []string{"main"}},
+    },
+})
+```
+
+路由规则：
+
+- 先按 `routeType` 找到规则列表。
+- 再按 `shardKey` 命中 `min/max` 区间；`min <= 0` 视为 `1`，`max <= 0` 视为无限大。
+- 多 shard 规则用 `routeBy % len(shards)` 选择 endpoint。
+- 单 shard 规则允许字符串主键，用于全局表或单分片表。
+
 ## Redis Route/Cluster Adapter
 
 `redis.Cluster` 按 `routeType` 和 `storage.RecordKey.ShardKey` 路由到具体 Redis adapter。
