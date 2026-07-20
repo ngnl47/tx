@@ -69,6 +69,38 @@ role:
 	}
 }
 
+func TestStorageConfigRouteTableSupportsYAMLAnchors(t *testing.T) {
+	var cfg struct {
+		Routes storageconfig.RouteTableConfig `yaml:"routes"`
+	}
+	err := yaml.Unmarshal([]byte(`
+endpoint: &role "redis://role"
+routes:
+  role:
+    - min: 1
+      shards:
+        - *role
+`), &cfg)
+	if err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	endpoints := cfg.Routes.Endpoints()
+	if endpoints["redis://role"] != "redis://role" {
+		t.Fatalf("Endpoints = %#v, want redis://role", endpoints)
+	}
+	table, err := cfg.Routes.RouteTable()
+	if err != nil {
+		t.Fatalf("RouteTable returned error: %v", err)
+	}
+	got, err := table.Route(context.Background(), "role", int64(1))
+	if err != nil {
+		t.Fatalf("Route returned error: %v", err)
+	}
+	if got != "redis://role" {
+		t.Fatalf("Route = %q, want redis://role", got)
+	}
+}
+
 func TestStorageConfigRouteTableRejectsInvalidRules(t *testing.T) {
 	tests := []struct {
 		name string

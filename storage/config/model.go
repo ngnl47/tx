@@ -51,7 +51,7 @@ func (c *RouteTableConfig) UnmarshalYAML(value *yaml.Node) error {
 
 func (t *RouteTarget) UnmarshalYAML(value *yaml.Node) error {
 	switch value.Kind {
-	case yaml.ScalarNode:
+	case yaml.ScalarNode, yaml.AliasNode:
 		var endpoint string
 		if err := value.Decode(&endpoint); err != nil {
 			return err
@@ -72,10 +72,10 @@ func (t *RouteTarget) unmarshalSequence(value *yaml.Node) error {
 	if len(value.Content) == 0 {
 		return fmt.Errorf("route target sequence is empty")
 	}
-	if value.Content[0].Kind == yaml.ScalarNode {
+	if isEndpointNode(value.Content[0]) {
 		shards := make([]string, 0, len(value.Content))
 		for _, item := range value.Content {
-			if item.Kind != yaml.ScalarNode {
+			if !isEndpointNode(item) {
 				return fmt.Errorf("endpoint sequence cannot mix scalar and rule items")
 			}
 			var endpoint string
@@ -104,6 +104,10 @@ func (t *RouteTarget) unmarshalSequence(value *yaml.Node) error {
 	}
 	t.Rules = rules
 	return nil
+}
+
+func isEndpointNode(value *yaml.Node) bool {
+	return value.Kind == yaml.ScalarNode || value.Kind == yaml.AliasNode
 }
 
 func (t RouteTarget) clone() RouteTarget {
