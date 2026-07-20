@@ -132,7 +132,21 @@ type RecordKey struct {
 
 - `ID` 来自 `idField`。
 - `ShardKey` 来自 `routeBy`，仅在 `routeBy != idField` 时需要。
-- Redis Cluster 批量读取必须保证每条记录携带正确路由字段，避免跨槽问题。
+- 批量读取必须保证每条记录携带正确路由字段，才能构造正确 `RecordKey`、Redis endpoint 和 hash tag。
+
+## Redis Route/Cluster Adapter
+
+`redis.Cluster` 按 `routeType` 和 `storage.RecordKey.ShardKey` 路由到具体 Redis adapter。
+
+- 单条写入、替换、删除和读取会先选择 endpoint，再调用对应 adapter。
+- 批量读取会先按 endpoint 分组，每个 endpoint 内仍使用客户端层原生 `MGET` 读取 main/subKey keys，然后按输入顺序还原结果。
+- 默认策略贴合云 Redis 代理能力，不在 endpoint 内继续按 slot 拆分；本地原生 Redis Cluster 的 cluster-safe debug 模式后续再补。
+
+不同 Redis 环境下的批量读取策略：
+
+- Redis 单节点：直接使用客户端层原生 `MGET`。
+- 云 Redis 代理或云集群 endpoint：默认直接使用客户端层原生 `MGET`，由云代理负责跨 slot 分发和结果聚合。
+- 本地原生 Redis Cluster 或直连 cluster 节点：后续通过显式 cluster-safe debug 模式按 hash tag/slot 分组后多次 `MGET`；当前默认路径不做该拆分。
 
 ## Mongo 存储模型
 

@@ -34,6 +34,16 @@ type recordingRedisEvalOnlyClient struct {
 	evals   []redisEvalCall
 }
 
+type recordingRedisRouter struct {
+	names map[any]string
+	calls []recordingRedisRouteCall
+}
+
+type recordingRedisRouteCall struct {
+	routeType string
+	shardKey  any
+}
+
 func (c *recordingRedisStringClient) Get(_ context.Context, key string) (string, bool, error) {
 	if c.values == nil {
 		return "", false, nil
@@ -84,6 +94,11 @@ func (c *recordingRedisEvalOnlyClient) Eval(_ context.Context, script string, ke
 	result := c.results[0]
 	c.results = c.results[1:]
 	return result, nil
+}
+
+func (r *recordingRedisRouter) RouteRedis(_ context.Context, routeType string, shardKey any) (string, error) {
+	r.calls = append(r.calls, recordingRedisRouteCall{routeType: routeType, shardKey: shardKey})
+	return r.names[shardKey], nil
 }
 
 func TestRedisAdapterAppliesChangesWithSingleLuaEval(t *testing.T) {
@@ -689,6 +704,93 @@ func TestRedisAdapterLoadDocumentsWithOptionsChunksMGet(t *testing.T) {
 	item := items["1001"].(map[string]any)
 	if item["quantity"] != json.Number("5") {
 		t.Fatalf("docs[2] items = %#v", items)
+	}
+}
+
+func TestRedisClusterRoutesSingleWriteByShardKey(t *testing.T) {
+	roleShard := &recordingRedisStringClient{}
+	userShard := &recordingRedisStringClient{}
+	router := &recordingRedisRouter{names: map[any]string{
+		int64(7): "role-shard",
+	}}
+	cluster := txredis.NewCluster(router, map[string]any{
+		"role-shard": roleShard,
+		"user-shard": userShard,
+	})
+	spec := meta.TypeSpec{Redis: &meta.RedisSpec{
+		Key:     "role",
+		IDField: "roleId",
+		Route:   meta.RouteSpec{Type: "role", By: "serverId"},
+	}}
+	var set change.ChangeSet
+	_ = set.Add(change.FieldChange{Path: change.Path{"name"}, Kind: change.KindSet, Value: "alice"})
+
+	err := cluster.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001), ShardKey: int64(7)}, set, txredis.ApplyOptions{Upsert: true})
+	if err != nil {
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
+	}
+	if len(router.calls) != 1 || router.calls[0].routeType != "role" || router.calls[0].shardKey != int64(7) {
+		t.Fatalf("router calls = %#v, want role shard key 7", router.calls)
+	}
+	if len(roleShard.evals) != 1 || !sameStrings(roleShard.evals[0].keys, []string{"role:{7}:1001"}) {
+		t.Fatalf("role shard evals = %#v, want one write for role:{7}:1001", roleShard.evals)
+	}
+	if len(userShard.evals) != 0 {
+		t.Fatalf("unexpected user shard evals = %#v", userShard.evals)
+	}
+}
+
+func TestRedisClusterBatchLoadsByShardGroupAndRestoresOrder(t *testing.T) {
+	shardA := &recordingRedisStringClient{
+		mgetValues: []string{
+			`{"roleId":1001,"name":"alice"}`,
+			`{"items":{"1001":{"quantity":3}}}`,
+			`{"roleId":1003,"name":"carol"}`,
+			`{"items":{"1001":{"quantity":5}}}`,
+		},
+	}
+	shardB := &recordingRedisStringClient{
+		mgetValues: []string{"", ""},
+	}
+	router := &recordingRedisRouter{names: map[any]string{
+		int64(7): "a",
+		int64(8): "b",
+	}}
+	cluster := txredis.NewCluster(router, map[string]any{
+		"a": shardA,
+		"b": shardB,
+	})
+	spec := meta.TypeSpec{
+		Redis: &meta.RedisSpec{
+			Key:     "role",
+			IDField: "roleId",
+			Route:   meta.RouteSpec{Type: "role", By: "serverId"},
+		},
+		Fields: map[string]meta.FieldSpec{
+			"items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+		},
+	}
+	keys := []storage.RecordKey{
+		{ID: int64(1001), ShardKey: int64(7)},
+		{ID: int64(1002), ShardKey: int64(8)},
+		{ID: int64(1003), ShardKey: int64(7)},
+	}
+
+	docs, exists, err := cluster.LoadDocuments(context.Background(), spec, keys)
+	if err != nil {
+		t.Fatalf("LoadDocuments returned error: %v", err)
+	}
+	if len(docs) != 3 || len(exists) != 3 {
+		t.Fatalf("LoadDocuments lengths docs=%d exists=%d, want 3", len(docs), len(exists))
+	}
+	if !exists[0] || docs[0]["name"] != "alice" || exists[1] || docs[1] != nil || !exists[2] || docs[2]["name"] != "carol" {
+		t.Fatalf("docs=%#v exists=%#v, want original order", docs, exists)
+	}
+	if len(shardA.mgets) != 1 || !sameStrings(shardA.mgets[0], []string{"role:{7}:1001", "role:{7}:1001:items", "role:{7}:1003", "role:{7}:1003:items"}) {
+		t.Fatalf("shard A mgets = %#v, want one endpoint-level MGET", shardA.mgets)
+	}
+	if len(shardB.mgets) != 1 || !sameStrings(shardB.mgets[0], []string{"role:{8}:1002", "role:{8}:1002:items"}) {
+		t.Fatalf("shard B mgets = %#v, want one endpoint-level MGET", shardB.mgets)
 	}
 }
 
