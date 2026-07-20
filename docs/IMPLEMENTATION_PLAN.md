@@ -309,6 +309,10 @@ type DelayTaskBackend interface {
 - Fusion 延迟保存已通过真实 Redis/Mongo 集成路径验证：Redis 同步写入热数据，Redis delayed task backend 入队，Scheduler claim 到期任务，StorageTaskHandler 读取 Redis 热数据并整文档 replace Mongo。
 - Fusion 读取默认在 Redis miss 后从 Mongo 全量加载并回填 Redis 热数据，回填路径运行时要求 `delayDelTime` 大于 0；显式 `DontLoadToRedis` 选项才允许直接读 Mongo 且不回填；部分字段读取主要按 Redis main/subKey key 粒度减少热数据读取。
 - Mongo runtime 已提供最小 route/cluster adapter，按 routeType 和 RecordKey.ShardKey 路由单条读写，并在批量读取时按 Mongo shard 分组后还原输入顺序；后续真实 driver 接入时继续沿用该边界。
+- Redis runtime 后续需要补齐与 Mongo 对等的 route/cluster adapter：先按 routeType 和 RecordKey.ShardKey 路由到具体 Redis endpoint/adapter，再在每个 endpoint 内执行批量读取并还原输入顺序。
+- Redis 批量读取默认贴合生产云存储代理能力：同一个 Redis endpoint 内允许直接批量读取多条不同 hash tag 的记录，由云代理负责跨 slot 分发和结果聚合，避免把生产热路径退化为多次 IO。
+- Redis 批量读取应使用客户端层原生 `MGET` 展平 main/subKey key 后读取，再在 Go 侧按固定步长合并文档；不要把跨记录批量读取包进 Lua。云代理能识别 `MGET` 的所有参数都是 key，但不能可靠分析自定义 Lua 中哪些 `ARGV` 是 key，也不能安全拆分一个需要原子执行的脚本。
+- 本地原生 Redis Cluster 或直连节点只作为研发 debug 兼容路径：后续增加显式可选的 cluster-safe 模式，按 hash tag/slot 分组后多次读取，保证本地集群可复现和排查跨槽问题，但不作为生产默认策略。
 - StorageTaskHandler 在 Mongo replace 前会递归移除 Redis 文档中的 nil 删除标记，避免已删除字段以 Mongo `null` 形式重新落库。
 - `delaySaveTime` 表示 Redis 热数据变更后，经过多久触发一次 Mongo 回写；`delayDelTime` 表示 Redis 热数据 TTL，用于释放长时间不活跃记录的热备数据，不代表 Mongo 删除延迟。
 - 后续可增加 SQL backend、消息队列 backend；当前优先贴合生产参考流程，不引入 Kafka 等新的持久化队列依赖。
@@ -321,6 +325,8 @@ type DelayTaskBackend interface {
 - 同一任务可定义幂等 key。
 - Redis backend 支持任务进程重启后的持久化保留与 leased 超时恢复。
 - Redis backend 在 Redis Cluster 下不会因为 Lua 多 key 跨 slot 失败。
+- Redis route/cluster adapter 能按 routeType 和 RecordKey.ShardKey 分组到 Redis endpoint；默认批量读取不在 endpoint 内继续拆 slot，本地 debug 模式才按 hash tag/slot 拆分。
+- 有 subKey 的批量读取仍然使用客户端 `MGET`：每条记录展开为 main key 加需要的 subKey key，返回后按输入记录顺序和每条记录 key 数合并。
 - Redis backend 按 bucket 分散队列 key，claim worker 会轮询 bucket 消费。
 - 多个服务实例同时消费时，同一任务同一时刻只能被一个 lease 持有；lease 超时后允许重新领取。
 - Fusion 后台 worker 使用 lifecycle 上下文，在优雅关停时等待已 claim 的 Mongo 回写任务完成。
