@@ -164,7 +164,7 @@ func TestSubscribeAsyncTransactional(t *testing.T) {
 }
 
 func TestSubscribeAsync(t *testing.T) {
-	results := make(chan int)
+	results := make(chan int, 2)
 
 	bus := util.NewEventBus()
 	bus.SubscribeAsync("topic", func(a int, out chan<- int) {
@@ -174,23 +174,16 @@ func TestSubscribeAsync(t *testing.T) {
 	bus.Publish("topic", 1, results)
 	bus.Publish("topic", 2, results)
 
-	numResults := 0
-
-	go func() {
-		for _ = range results {
-			numResults++
-		}
-	}()
-
 	bus.WaitAsync()
-	println(2)
+	close(results)
 
-	time.Sleep(10 * time.Millisecond)
-
-	// TODO: 测试执行时会检测到竞态，后续需要单独修复。
-	//if numResults != 2 {
-	//	t.Fail()
-	//}
+	numResults := 0
+	for range results {
+		numResults++
+	}
+	if numResults != 2 {
+		t.Fail()
+	}
 }
 
 func TestConcurrentPublishDifferentTopics(t *testing.T) {
