@@ -132,6 +132,9 @@ func (a *Adapter) LoadDocument(ctx context.Context, spec meta.TypeSpec, key stor
 	}
 	prefix := redisKeyPrefix(spec, key)
 	keys := redisReadKeys(spec, prefix, fields)
+	if len(keys) == 0 {
+		return nil, false, nil
+	}
 	body, err := a.client.Eval(ctx, findDocumentScript, keys)
 	if err != nil {
 		return nil, false, fmt.Errorf("redis: load document %s: %w", prefix, err)
@@ -178,10 +181,15 @@ func (a *Adapter) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSp
 		keys := make([]string, 0, (end-start)*plan.step())
 		for _, record := range records[start:end] {
 			prefix := redisKeyPrefix(spec, record)
-			keys = append(keys, prefix)
+			if plan.includeMain {
+				keys = append(keys, prefix)
+			}
 			for _, suffix := range plan.subKeys {
 				keys = append(keys, prefix+":"+suffix)
 			}
+		}
+		if len(keys) == 0 {
+			continue
 		}
 		values, err := client.MGet(ctx, keys...)
 		if err != nil {
@@ -193,17 +201,19 @@ func (a *Adapter) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSp
 		step := plan.step()
 		for i := start; i < end; i++ {
 			valueStart := (i - start) * step
-			if values[valueStart] == "" {
+			parts := make([]string, 0, step)
+			valueOffset := valueStart
+			if plan.includeMain {
+				parts = append(parts, values[valueOffset])
+				valueOffset++
+			}
+			for j := range plan.subKeys {
+				parts = append(parts, values[valueOffset+j])
+			}
+			if !hasDocumentPart(parts) {
 				continue
 			}
 			exists[i] = true
-			parts := make([]string, 0, step)
-			if plan.includeMain {
-				parts = append(parts, values[valueStart])
-			}
-			for j := 1; j < step; j++ {
-				parts = append(parts, values[valueStart+j])
-			}
 			body := joinDocumentBodies(parts)
 			doc, err := decodeDocument(body)
 			if err != nil {
@@ -237,10 +247,15 @@ func (a *Adapter) loadDocumentsByHashTagMGet(ctx context.Context, spec meta.Type
 			keys := make([]string, 0, (end-start)*plan.step())
 			for _, index := range indexes[start:end] {
 				prefix := redisKeyPrefix(spec, records[index])
-				keys = append(keys, prefix)
+				if plan.includeMain {
+					keys = append(keys, prefix)
+				}
 				for _, suffix := range plan.subKeys {
 					keys = append(keys, prefix+":"+suffix)
 				}
+			}
+			if len(keys) == 0 {
+				continue
 			}
 			values, err := client.MGet(ctx, keys...)
 			if err != nil {
@@ -252,17 +267,19 @@ func (a *Adapter) loadDocumentsByHashTagMGet(ctx context.Context, spec meta.Type
 			step := plan.step()
 			for groupOffset, index := range indexes[start:end] {
 				valueStart := groupOffset * step
-				if values[valueStart] == "" {
+				parts := make([]string, 0, step)
+				valueOffset := valueStart
+				if plan.includeMain {
+					parts = append(parts, values[valueOffset])
+					valueOffset++
+				}
+				for j := range plan.subKeys {
+					parts = append(parts, values[valueOffset+j])
+				}
+				if !hasDocumentPart(parts) {
 					continue
 				}
 				exists[index] = true
-				parts := make([]string, 0, step)
-				if plan.includeMain {
-					parts = append(parts, values[valueStart])
-				}
-				for j := 1; j < step; j++ {
-					parts = append(parts, values[valueStart+j])
-				}
 				body := joinDocumentBodies(parts)
 				doc, err := decodeDocument(body)
 				if err != nil {
@@ -287,6 +304,15 @@ func (a *Adapter) loadDocumentsByEval(ctx context.Context, spec meta.TypeSpec, r
 		exists[i] = found
 	}
 	return docs, exists, nil
+}
+
+func hasDocumentPart(parts []string) bool {
+	for _, part := range parts {
+		if part != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func redisKeyPrefix(spec meta.TypeSpec, key storage.RecordKey) string {

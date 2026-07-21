@@ -231,7 +231,7 @@ func redisSubKeySuffixes(spec meta.TypeSpec) []string {
 }
 
 func redisReadKeys(spec meta.TypeSpec, prefix string, fields []string) []string {
-	keys := []string{prefix}
+	keys := []string{}
 	includeMain := len(fields) == 0
 	subKeys := map[string]struct{}{}
 	if len(fields) == 0 {
@@ -274,7 +274,10 @@ type redisBatchPlan struct {
 }
 
 func (p redisBatchPlan) step() int {
-	return 1 + len(p.subKeys)
+	if p.includeMain {
+		return 1 + len(p.subKeys)
+	}
+	return len(p.subKeys)
 }
 
 func redisBatchReadPlan(spec meta.TypeSpec, fields []string) redisBatchPlan {

@@ -537,11 +537,41 @@ func TestRedisAdapterLoadsStringDocumentWithSubKeys(t *testing.T) {
 	if len(client.evals) != 1 {
 		t.Fatalf("eval calls = %#v, want exactly one", client.evals)
 	}
-	if got, want := client.evals[0].keys, []string{"role:{1001}", "role:{1001}", "role:{1001}:items"}; !sameStrings(got, want) {
+	if got, want := client.evals[0].keys, []string{"role:{1001}", "role:{1001}:items"}; !sameStrings(got, want) {
 		t.Fatalf("eval keys = %#v, want %#v", got, want)
 	}
 	if doc["name"] != "alice" {
 		t.Fatalf("loaded doc = %#v", doc)
+	}
+	items := doc["items"].(map[string]any)
+	item := items["1001"].(map[string]any)
+	if item["quantity"] != json.Number("3") {
+		t.Fatalf("loaded items = %#v", items)
+	}
+}
+
+func TestRedisAdapterLoadDocumentReadsSubKeyOnly(t *testing.T) {
+	client := &recordingRedisStringClient{
+		evalResult: `{"items":{"1001":{"quantity":3}}}`,
+		hasResult:  true,
+	}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{
+		Redis: &meta.RedisSpec{Key: "role"},
+		Fields: map[string]meta.FieldSpec{
+			"items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+		},
+	}
+
+	doc, exists, err := adapter.LoadDocument(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "items")
+	if err != nil {
+		t.Fatalf("LoadDocument returned error: %v", err)
+	}
+	if !exists {
+		t.Fatal("LoadDocument exists = false, want true")
+	}
+	if got, want := client.evals[0].keys, []string{"role:{1001}:items"}; !sameStrings(got, want) {
+		t.Fatalf("eval keys = %#v, want %#v", got, want)
 	}
 	items := doc["items"].(map[string]any)
 	item := items["1001"].(map[string]any)
@@ -565,6 +595,41 @@ func TestRedisAdapterLoadDocumentMissing(t *testing.T) {
 	}
 	if doc != nil {
 		t.Fatalf("LoadDocument doc = %#v, want nil", doc)
+	}
+}
+
+func TestRedisAdapterLoadDocumentsReadsSubKeyOnly(t *testing.T) {
+	client := &recordingRedisStringClient{
+		mgetValues: []string{
+			`{"items":{"1001":{"quantity":3}}}`,
+			"",
+		},
+	}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{
+		Redis: &meta.RedisSpec{Key: "role"},
+		Fields: map[string]meta.FieldSpec{
+			"items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+		},
+	}
+
+	docs, exists, err := adapter.LoadDocuments(context.Background(), spec, []storage.RecordKey{
+		{ID: int64(1001)},
+		{ID: int64(1002)},
+	}, "items")
+	if err != nil {
+		t.Fatalf("LoadDocuments returned error: %v", err)
+	}
+	if got, want := client.mgets[0], []string{"role:{1001}:items", "role:{1002}:items"}; !sameStrings(got, want) {
+		t.Fatalf("mget keys = %#v, want %#v", got, want)
+	}
+	if got, want := exists, []bool{true, false}; !sameBools(got, want) {
+		t.Fatalf("exists = %#v, want %#v", got, want)
+	}
+	items := docs[0]["items"].(map[string]any)
+	item := items["1001"].(map[string]any)
+	if item["quantity"] != json.Number("3") {
+		t.Fatalf("loaded items = %#v", items)
 	}
 }
 
@@ -639,10 +704,10 @@ func TestRedisAdapterLoadDocumentsFallsBackToEval(t *testing.T) {
 	if len(client.evals) != 2 {
 		t.Fatalf("eval calls = %#v, want two calls", client.evals)
 	}
-	if got, want := client.evals[0].keys, []string{"role:{1001}", "role:{1001}", "role:{1001}:items"}; !sameStrings(got, want) {
+	if got, want := client.evals[0].keys, []string{"role:{1001}", "role:{1001}:items"}; !sameStrings(got, want) {
 		t.Fatalf("first eval keys = %#v, want %#v", got, want)
 	}
-	if got, want := client.evals[1].keys, []string{"role:{1002}", "role:{1002}", "role:{1002}:items"}; !sameStrings(got, want) {
+	if got, want := client.evals[1].keys, []string{"role:{1002}", "role:{1002}:items"}; !sameStrings(got, want) {
 		t.Fatalf("second eval keys = %#v, want %#v", got, want)
 	}
 	if got, want := exists, []bool{true, false}; !sameBools(got, want) {
