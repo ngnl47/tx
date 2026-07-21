@@ -259,7 +259,7 @@ Fusion 策略的当前保存路径：
 
 延迟任务队列使用 bucket hash tag，支持多个服务实例并发消费。语义是 at-least-once，Mongo 回写必须保持幂等。
 任务失败重试时，Scheduler 会输出结构化错误日志；失败原因不写入 Redis 任务状态，避免错误字符串占用队列内存。
-Fusion delayed task queue 和 handler 都只接受保存 action；delete 或其他未知 action 会返回错误。删除必须走显式删除接口，不进入延迟队列。
+Fusion delayed task queue 和 handler 都只接受保存 action；delete 或其他未知 action 会返回错误。入队时必须带有明确的类型和记录 ID，避免无效任务进入 Redis 队列。删除必须走显式删除接口，不进入延迟队列。
 
 Fusion 读取会先查 Redis，未命中时回源 Mongo。默认回源会从 Mongo 全量读取文档，写回 Redis 热数据并使用 `delayDelTime` 续期，然后按请求字段返回结果；该路径要求 `delayDelTime` 必须大于 0，避免生成没有 TTL 的 Redis 热数据。显式使用 `LoadOptions.DontLoadToRedis` 时，才直接从 Mongo 按请求字段读取且不回填 Redis，适合低频只读场景。
 

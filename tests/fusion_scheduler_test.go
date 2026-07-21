@@ -104,6 +104,50 @@ func TestFusionTaskQueueRejectsNonSaveOperation(t *testing.T) {
 	}
 }
 
+func TestFusionTaskQueueRejectsMissingRecordLocator(t *testing.T) {
+	ctx := context.Background()
+	backend := memory.NewBackend()
+	queue := fusion.NewTaskQueue(backend)
+
+	for _, tt := range []struct {
+		name string
+		op   fusion.DelayedOperation
+		want string
+	}{
+		{
+			name: "missing type",
+			op: fusion.DelayedOperation{
+				Kind: fusion.DelayedSave,
+				Key:  storage.RecordKey{ID: int64(1001)},
+			},
+			want: "missing delayed operation type",
+		},
+		{
+			name: "missing id",
+			op: fusion.DelayedOperation{
+				Kind: fusion.DelayedSave,
+				Type: meta.TypeRef{Package: "data", Name: "GDRole"},
+			},
+			want: "missing delayed operation record id",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := queue.Enqueue(ctx, tt.op)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Enqueue error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+
+	leases, err := backend.ClaimDue(ctx, time.Now().Add(time.Hour), 10)
+	if err != nil {
+		t.Fatalf("ClaimDue returned error: %v", err)
+	}
+	if len(leases) != 0 {
+		t.Fatalf("leases = %#v, want no queued task", leases)
+	}
+}
+
 func TestFusionSchedulerRunOnceCompletesSuccessfulTask(t *testing.T) {
 	ctx := context.Background()
 	backend := memory.NewBackend()

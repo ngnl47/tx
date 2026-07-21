@@ -63,8 +63,15 @@ func (q *TaskQueue) Enqueue(ctx context.Context, op DelayedOperation) error {
 	if op.Kind != DelayedSave {
 		return fmt.Errorf("fusion: unknown delayed operation kind %q", op.Kind)
 	}
+	taskType := delayedTaskType(op.Type)
+	if taskType == "" {
+		return fmt.Errorf("fusion: missing delayed operation type")
+	}
+	if op.Key.ID == nil {
+		return fmt.Errorf("fusion: missing delayed operation record id")
+	}
 	return q.backend.Enqueue(ctx, task.DelayTask{
-		Type:      delayedTaskType(op.Type),
+		Type:      taskType,
 		ID:        op.Key.ID,
 		ShardKey:  op.Key.ShardKey,
 		KeySuffix: op.KeySuffix,
