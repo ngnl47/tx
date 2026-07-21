@@ -13,6 +13,24 @@
 
 生成代码依赖 `tx`，`tx` 不依赖生成器工程。
 
+## 类型注解
+
+type 级注解支持 marker 和带参数两种形态。无参数时，下面两种写法等价：
+
+```go
+// @genData
+// @genData:``
+```
+
+带参数时，参数统一写在反引号内，使用 Go struct tag 语法：
+
+```go
+// @storage:`mode:"fusion" delaySaveTime:"600" delayDelTime:"86400"`
+// @genEnum:`gcgc:"true" gcvo:"true"`
+```
+
+解析后会统一得到 `anno.Directive`。marker 注解的 `Params` 和 `Flags` 为空；带参数注解的键值会进入 `Params`。
+
 ## 日志
 
 `tx/log` 基于标准库 `log/slog` 提供最小 logger 注入入口：

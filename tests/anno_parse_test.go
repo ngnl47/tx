@@ -20,8 +20,29 @@ func TestAnnoParseTypeTagLine(t *testing.T) {
 	}
 }
 
+func TestAnnoParseTypeMarkerTagLine(t *testing.T) {
+	for _, line := range []string{
+		"// @storage",
+		"// @storage:``",
+	} {
+		t.Run(line, func(t *testing.T) {
+			directive, err := anno.ParseTypeTagLine(line)
+			if err != nil {
+				t.Fatalf("ParseTypeTagLine returned error: %v", err)
+			}
+			if directive.Name != "storage" || directive.Scope != anno.ScopeType {
+				t.Fatalf("directive = %#v", directive)
+			}
+			if len(directive.Params) != 0 || len(directive.Flags) != 0 {
+				t.Fatalf("params=%#v flags=%#v", directive.Params, directive.Flags)
+			}
+		})
+	}
+}
+
 func TestAnnoParseTypeDocAndStructTag(t *testing.T) {
 	typeDirectives, err := anno.ParseTypeDoc([]string{
+		"// @storage",
 		"// @storage:`mode:\"fusion\" delaySaveTime:\"600s\" delayDelTime:\"24h\"`",
 		"// @mongodb:`routeType:\"role\" routeBy:\"roleId\" idField:\"roleId\" collection:\"roles\" enableSharding:\"true\"`",
 	})
@@ -32,7 +53,7 @@ func TestAnnoParseTypeDocAndStructTag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseStructTag returned error: %v", err)
 	}
-	if len(typeDirectives) != 2 || len(fieldDirectives) != 2 {
+	if len(typeDirectives) != 3 || len(fieldDirectives) != 2 {
 		t.Fatalf("type=%#v field=%#v", typeDirectives, fieldDirectives)
 	}
 	if fieldDirectives[0].Params["subKey"] != "items" {

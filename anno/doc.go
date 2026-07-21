@@ -5,6 +5,8 @@
 //
 // type 级注解以整行形式写在结构体注释区：
 //
+//	// @custom
+//	// @custom:``
 //	// @custom:`owner:"roleId" ttl:"600"`
 //	type Item struct {}
 //

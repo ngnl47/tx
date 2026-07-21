@@ -20,6 +20,8 @@ func ParseTypeTagLine(text string) (Directive, error) {
 //
 // 支持的内容形式：
 //
+//	// @custom
+//	// @custom:``
 //	// @custom:`owner:"roleId" ttl:"600"`
 //
 // 解析结果刻意保持非强类型，struct tag 中的所有字段值都会生成字符串参数。
@@ -30,12 +32,12 @@ func ParseTypeTagLineWithDefinitions(text string, defs Definitions) (Directive, 
 		return Directive{}, fmt.Errorf("anno: not a directive: %q", text)
 	}
 	name, rest, ok := strings.Cut(strings.TrimPrefix(text, "@"), ":")
-	if !ok {
-		return Directive{}, fmt.Errorf("anno: malformed directive: %q", text)
-	}
 	name = strings.TrimSpace(name)
 	if !defs.Has(name, ScopeType) {
 		return Directive{}, fmt.Errorf("%w: %s", ErrUnknownTag, name)
+	}
+	if !ok {
+		return parseContent(name, ScopeType, ""), nil
 	}
 	content := strings.TrimSpace(rest)
 	if strings.HasPrefix(content, "`") && strings.HasSuffix(content, "`") {
