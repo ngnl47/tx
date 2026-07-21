@@ -102,7 +102,7 @@ func TestFusionDelayTaskHandlerSkipsMissingRedisDocument(t *testing.T) {
 	}
 }
 
-func TestFusionDelayTaskHandlerIgnoresDeleteTask(t *testing.T) {
+func TestFusionDelayTaskHandlerRejectsDeleteTask(t *testing.T) {
 	registry := meta.NewRegistry()
 	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Package: "data", Name: "GDRole"}}}
 	if err := registry.RegisterType(spec); err != nil {
@@ -116,7 +116,7 @@ func TestFusionDelayTaskHandlerIgnoresDeleteTask(t *testing.T) {
 		ShardKey: int64(7),
 		Action:   "delete",
 	})
-	if err != nil {
-		t.Fatalf("HandleDelayTask returned error: %v", err)
+	if err == nil {
+		t.Fatal("HandleDelayTask returned nil error, want unknown action error")
 	}
 }

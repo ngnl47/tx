@@ -47,8 +47,6 @@ func (h *StorageTaskHandler) HandleDelayTask(ctx context.Context, item task.Dela
 	switch DelayedOperationKind(item.Action) {
 	case DelayedSave:
 		return h.handleSave(ctx, spec, key)
-	case delayedDelete:
-		return nil
 	default:
 		return fmt.Errorf("fusion: unknown delayed task action %q", item.Action)
 	}

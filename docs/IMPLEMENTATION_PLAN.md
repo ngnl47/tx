@@ -304,7 +304,7 @@ type DelayTaskBackend interface {
 - Redis delayed task backend 面向多服务实例并发消费：claim/complete/retry 通过 lease token 隔离，但整体语义是 at-least-once，后续 Fusion Mongo 回写必须按幂等方式设计。
 - `log`: 基于标准库 `log/slog` 提供最小 logger 注入入口，默认使用 `slog.Default()`；已提供 `Debug/Info/Warn/Error` 和 Context 版本的包级快捷方法，并提供 `NewLogger(name)` 轻量命名 logger 代理；Fusion Scheduler 失败重试时输出结构化错误日志，失败原因不进入 Redis 队列状态。
 - `storage/fusion.TaskQueue` 负责把 Fusion 延迟保存 operation 转换为 `storage/task.DelayTask`，保留 record id、route/shard key、action 和 due time。
-- `storage/fusion.StorageTaskHandler` 负责消费 delayed task：保存任务从 Redis 读取完整热数据并 replace 到 Mongo；延迟任务只携带定位信息，回写时读取 Redis 当前数据。
+- `storage/fusion.StorageTaskHandler` 负责消费 delayed task：只接受保存任务，从 Redis 读取完整热数据并 replace 到 Mongo；延迟任务只携带定位信息，回写时读取 Redis 当前数据，其他 action 会直接返回错误。
 - Fusion 显式删除不进入延迟队列：运行时先删除 Redis 热数据，再通过显式 Mongo deleter 立即删除 Mongo 文档；如果业务绕过 Fusion 只删除 Mongo，未过期 Redis 热数据仍可能被延迟保存任务重新写回 Mongo。
 - Fusion 延迟保存已通过真实 Redis/Mongo 集成路径验证：Redis 同步写入热数据，Redis delayed task backend 入队，Scheduler claim 到期任务，StorageTaskHandler 读取 Redis 热数据并整文档 replace Mongo。
 - Fusion 读取默认在 Redis miss 后从 Mongo 全量加载并回填 Redis 热数据，回填路径运行时要求 `delayDelTime` 大于 0；显式 `DontLoadToRedis` 选项才允许直接读 Mongo 且不回填；部分字段读取主要按 Redis main/subKey key 粒度减少热数据读取。
@@ -336,6 +336,7 @@ type DelayTaskBackend interface {
 - Fusion 后台 worker 使用 lifecycle 上下文，在优雅关停时等待已 claim 的 Mongo 回写任务完成。
 - Fusion delayed save worker 可把 Redis 热数据回写到 Mongo，并且不会把删除标记落成 Mongo null 字段。
 - Fusion delete 不产生 Mongo 延迟删除任务，显式删除调用会删除 Redis 热数据并立即删除 Mongo 文档。
+- Fusion delayed task handler 只接受保存 action，delete 或其他未知 action 都不会被静默吞掉。
 
 测试：
 

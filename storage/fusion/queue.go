@@ -16,9 +16,6 @@ type DelayedOperationKind string
 const (
 	// DelayedSave 表示延迟保存 MongoDB 持久化数据。
 	DelayedSave DelayedOperationKind = "save"
-
-	// delayedDelete 表示历史队列中可能残留的删除动作；新代码不再投递。
-	delayedDelete DelayedOperationKind = "delete"
 )
 
 // DelayedOperation 是 fusion 模式写入 MongoDB 前的延迟保存任务。
