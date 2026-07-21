@@ -2,11 +2,14 @@ package mongodriver
 
 import (
 	"context"
+	"errors"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
+
+var errMongoDatabaseNotConfigured = errors.New("mongo database is not configured")
 
 // Database 将官方 MongoDB driver 的 Database 适配为 tx Mongo runtime 使用的最小接口。
 type Database struct {
@@ -18,6 +21,9 @@ func NewDatabase(db *mongo.Database) Database {
 }
 
 func (d Database) UpdateByID(ctx context.Context, collection string, id any, update map[string]any) error {
+	if d.db == nil {
+		return errMongoDatabaseNotConfigured
+	}
 	_, err := d.db.Collection(collection).UpdateByID(
 		ctx,
 		id,
@@ -28,6 +34,9 @@ func (d Database) UpdateByID(ctx context.Context, collection string, id any, upd
 }
 
 func (d Database) ReplaceByID(ctx context.Context, collection string, id any, doc map[string]any) error {
+	if d.db == nil {
+		return errMongoDatabaseNotConfigured
+	}
 	_, err := d.db.Collection(collection).ReplaceOne(
 		ctx,
 		bson.M{"_id": id},
@@ -38,11 +47,17 @@ func (d Database) ReplaceByID(ctx context.Context, collection string, id any, do
 }
 
 func (d Database) DeleteByID(ctx context.Context, collection string, id any) error {
+	if d.db == nil {
+		return errMongoDatabaseNotConfigured
+	}
 	_, err := d.db.Collection(collection).DeleteOne(ctx, bson.M{"_id": id})
 	return err
 }
 
 func (d Database) FindByID(ctx context.Context, collection string, id any, fields ...string) (map[string]any, bool, error) {
+	if d.db == nil {
+		return nil, false, errMongoDatabaseNotConfigured
+	}
 	var doc map[string]any
 	err := d.db.Collection(collection).FindOne(ctx, bson.M{"_id": id}, options.FindOne().SetProjection(projection(fields...))).Decode(&doc)
 	if err == mongo.ErrNoDocuments {
@@ -59,6 +74,9 @@ func (d Database) FindManyByID(ctx context.Context, collection string, ids []any
 	exists := make([]bool, len(ids))
 	if len(ids) == 0 {
 		return docs, exists, nil
+	}
+	if d.db == nil {
+		return nil, nil, errMongoDatabaseNotConfigured
 	}
 	cursor, err := d.db.Collection(collection).Find(ctx, bson.M{"_id": bson.M{"$in": ids}}, options.Find().SetProjection(projection(fields...)))
 	if err != nil {

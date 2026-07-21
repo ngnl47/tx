@@ -15,8 +15,7 @@ import (
 
 // ScriptClient 是 Redis Lua 写入所需的最小接口。
 //
-// go-redis 适配层后续只需要把 Eval 转成这里的签名即可，runtime
-// 基建不直接依赖具体驱动。
+// runtime 基建不直接依赖具体驱动；官方 go-redis 适配见 storage/redis/goredis。
 type ScriptClient interface {
 	Eval(context.Context, string, []string, ...any) (string, error)
 }

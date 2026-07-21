@@ -10,7 +10,7 @@ import (
 
 // Updater 是 MongoDB 按 ID 更新所需的最小接口。
 //
-// 官方 MongoDB driver 适配层后续只需要把 UpdateByID 转成这里的签名即可。
+// runtime 基建不直接依赖具体驱动；官方 MongoDB driver 适配见 storage/mongo/mongodriver。
 type Updater interface {
 	UpdateByID(context.Context, string, any, map[string]any) error
 }
