@@ -82,6 +82,35 @@ func TestFusionTaskQueueEnqueuesDelayTaskBackend(t *testing.T) {
 	}
 }
 
+func TestFusionTaskQueueUsesRecordKeyTypeNameWhenTypeRefMissing(t *testing.T) {
+	ctx := context.Background()
+	backend := memory.NewBackend()
+	now := time.Unix(100, 0)
+	queue := fusion.NewTaskQueueWithOptions(backend, fusion.TaskQueueOptions{Now: func() time.Time {
+		return now
+	}})
+
+	err := queue.Enqueue(ctx, fusion.DelayedOperation{
+		Kind:     fusion.DelayedSave,
+		Key:      storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001), ShardKey: int64(7)},
+		RunAfter: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("Enqueue returned error: %v", err)
+	}
+
+	leases, err := backend.ClaimDue(ctx, now.Add(time.Minute), 10)
+	if err != nil {
+		t.Fatalf("ClaimDue returned error: %v", err)
+	}
+	if len(leases) != 1 {
+		t.Fatalf("leases = %#v, want one", leases)
+	}
+	if got := leases[0].Task; got.Type != "data.GDRole" || got.ID != int64(1001) || got.ShardKey != int64(7) {
+		t.Fatalf("delay task = %#v, want type and key from RecordKey", got)
+	}
+}
+
 func TestFusionTaskQueueRejectsNonSaveOperation(t *testing.T) {
 	ctx := context.Background()
 	backend := memory.NewBackend()

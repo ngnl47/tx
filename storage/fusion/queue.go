@@ -63,7 +63,7 @@ func (q *TaskQueue) Enqueue(ctx context.Context, op DelayedOperation) error {
 	if op.Kind != DelayedSave {
 		return fmt.Errorf("fusion: unknown delayed operation kind %q", op.Kind)
 	}
-	taskType := delayedTaskType(op.Type)
+	taskType := delayedOperationType(op)
 	if taskType == "" {
 		return fmt.Errorf("fusion: missing delayed operation type")
 	}
@@ -78,6 +78,13 @@ func (q *TaskQueue) Enqueue(ctx context.Context, op DelayedOperation) error {
 		Action:    string(op.Kind),
 		DueAt:     q.now().Add(op.RunAfter),
 	})
+}
+
+func delayedOperationType(op DelayedOperation) string {
+	if typ := delayedTaskType(op.Type); typ != "" {
+		return typ
+	}
+	return op.Key.TypeName
 }
 
 func delayedTaskType(ref meta.TypeRef) string {
