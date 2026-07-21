@@ -2,6 +2,7 @@ package fusion
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/ngnl47/tx/change"
@@ -58,6 +59,9 @@ func NewTaskQueueWithOptions(backend task.DelayTaskBackend, options TaskQueueOpt
 func (q *TaskQueue) Enqueue(ctx context.Context, op DelayedOperation) error {
 	if q == nil || q.backend == nil {
 		return nil
+	}
+	if op.Kind != DelayedSave {
+		return fmt.Errorf("fusion: unknown delayed operation kind %q", op.Kind)
 	}
 	return q.backend.Enqueue(ctx, task.DelayTask{
 		Type:      delayedTaskType(op.Type),

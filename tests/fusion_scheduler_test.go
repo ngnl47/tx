@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -78,6 +79,28 @@ func TestFusionTaskQueueEnqueuesDelayTaskBackend(t *testing.T) {
 	}
 	if !got.DueAt.Equal(now.Add(time.Minute)) {
 		t.Fatalf("due at = %s, want %s", got.DueAt, now.Add(time.Minute))
+	}
+}
+
+func TestFusionTaskQueueRejectsNonSaveOperation(t *testing.T) {
+	ctx := context.Background()
+	backend := memory.NewBackend()
+	queue := fusion.NewTaskQueue(backend)
+
+	err := queue.Enqueue(ctx, fusion.DelayedOperation{
+		Kind: "delete",
+		Type: meta.TypeRef{Package: "data", Name: "GDRole"},
+		Key:  storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unknown delayed operation kind") {
+		t.Fatalf("Enqueue error = %v, want unknown kind error", err)
+	}
+	leases, err := backend.ClaimDue(ctx, time.Now().Add(time.Hour), 10)
+	if err != nil {
+		t.Fatalf("ClaimDue returned error: %v", err)
+	}
+	if len(leases) != 0 {
+		t.Fatalf("leases = %#v, want no queued task", leases)
 	}
 }
 
