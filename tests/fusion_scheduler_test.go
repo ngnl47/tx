@@ -59,7 +59,6 @@ func TestFusionTaskQueueEnqueuesDelayTaskBackend(t *testing.T) {
 		Kind:     fusion.DelayedSave,
 		Type:     meta.TypeRef{Package: "data", Name: "GDRole"},
 		Key:      storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001), ShardKey: int64(7)},
-		Changes:  set,
 		RunAfter: time.Minute,
 	})
 	if err != nil {

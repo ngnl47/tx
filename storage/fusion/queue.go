@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/meta"
 	"github.com/ngnl47/tx/storage"
 	"github.com/ngnl47/tx/storage/task"
@@ -24,8 +23,6 @@ type DelayedOperation struct {
 	Kind      DelayedOperationKind
 	Type      meta.TypeRef
 	Key       storage.RecordKey
-	ID        any
-	Changes   change.ChangeSet
 	RunAfter  time.Duration
 	KeySuffix string
 }

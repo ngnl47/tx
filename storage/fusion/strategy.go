@@ -58,8 +58,6 @@ func (s Strategy) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 		Kind:     DelayedSave,
 		Type:     spec.Type.Ref,
 		Key:      key,
-		ID:       key.ID,
-		Changes:  set,
 		RunAfter: spec.Storage.DelaySave.Duration,
 	})
 }

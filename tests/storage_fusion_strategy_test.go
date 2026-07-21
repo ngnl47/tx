@@ -199,7 +199,7 @@ func TestFusionStrategyPassesOptionsOnlyToRedis(t *testing.T) {
 	if len(queue.ops) != 1 {
 		t.Fatalf("queued ops = %#v, want one save op", queue.ops)
 	}
-	if queue.ops[0].ID != key.ID || queue.ops[0].Key != key || queue.ops[0].RunAfter != time.Second {
+	if queue.ops[0].Key != key || queue.ops[0].RunAfter != time.Second {
 		t.Fatalf("queued op = %#v, want record key and delay", queue.ops[0])
 	}
 }
