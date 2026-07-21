@@ -20,11 +20,10 @@ const (
 
 // DelayedOperation 是 fusion 模式写入 MongoDB 前的延迟保存任务。
 type DelayedOperation struct {
-	Kind      DelayedOperationKind
-	Type      meta.TypeRef
-	Key       storage.RecordKey
-	RunAfter  time.Duration
-	KeySuffix string
+	Kind     DelayedOperationKind
+	Type     meta.TypeRef
+	Key      storage.RecordKey
+	RunAfter time.Duration
 }
 
 // DelayQueue 定义 fusion 模式使用的延迟保存队列。
@@ -68,12 +67,11 @@ func (q *TaskQueue) Enqueue(ctx context.Context, op DelayedOperation) error {
 		return fmt.Errorf("fusion: missing delayed operation record id")
 	}
 	return q.backend.Enqueue(ctx, task.DelayTask{
-		Type:      taskType,
-		ID:        op.Key.ID,
-		ShardKey:  op.Key.ShardKey,
-		KeySuffix: op.KeySuffix,
-		Action:    string(op.Kind),
-		DueAt:     q.now().Add(op.RunAfter),
+		Type:     taskType,
+		ID:       op.Key.ID,
+		ShardKey: op.Key.ShardKey,
+		Action:   string(op.Kind),
+		DueAt:    q.now().Add(op.RunAfter),
 	})
 }
 
