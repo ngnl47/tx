@@ -206,6 +206,18 @@ endpoints := redisConfig.Endpoints()
 
 `Endpoints()` 返回配置中出现过的 endpoint URI 集合；当前 key 和 value 都是 URI，运行时装配可按 URI 创建并复用客户端。
 
+tx 提供官方 driver 的薄适配层，业务工程仍负责读取本地配置、创建具体 client，再传给 tx runtime：
+
+```go
+redisClient := txgoredis.NewClient(goRedisClient)
+mongoDB := txmongodriver.NewDatabase(mongoDriverDatabase)
+```
+
+对应 import 路径：
+
+- `github.com/ngnl47/tx/storage/redis/goredis`
+- `github.com/ngnl47/tx/storage/mongo/mongodriver`
+
 ## Redis Route/Cluster Adapter
 
 `redis.Cluster` 按 `routeType` 和 `storage.RecordKey.ShardKey` 路由到具体 Redis adapter。
