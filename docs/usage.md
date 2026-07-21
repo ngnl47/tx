@@ -148,6 +148,8 @@ type RecordKey struct {
 }
 ```
 
+存储定位只作用于当前被读写的根对象。一个带存储元数据的数据类型如果被嵌套在其他对象字段中，运行时会把它当作普通内联文档处理，不会因为子类型也可独立存储而自动生成或访问子记录。
+
 - `ID` 来自 `idField`。
 - `ShardKey` 来自 `routeBy`，仅在 `routeBy != idField` 时需要。
 - 批量读取必须保证每条记录携带正确路由字段，才能构造正确 `RecordKey`、Redis endpoint 和 hash tag。
