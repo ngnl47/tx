@@ -29,7 +29,7 @@ type ChangeDocument map[string]any
 // ChangeSetToDocument 把字段变更集合转换成通用文档。
 //
 // 示例：Path{"items", "1", "quantity"} 会变成
-// "items.1.quantity"，便于后续转换为 Mongo `$set` 或 Redis hash 字段。
+// "items.1.quantity"，便于后续转换为 Mongo `$set` 或 Redis JSON 文档 patch。
 func ChangeSetToDocument(set change.ChangeSet) ChangeDocument {
 	return ChangeSetToDocumentWithResolver(set, nil)
 }

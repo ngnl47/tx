@@ -111,6 +111,10 @@ Key int64 `json:"k"`
 
 Redis 使用 string JSON 文档模型。
 
+当前主线选择普通 Redis string 存储 JSON 文档，并通过 Lua 在写入时合并或替换文档。RedisJSON/ReJSON
+可以作为后续可选 backend 单独评估，但不是当前默认路径；引入前需要确认目标云 Redis、测试环境和
+Redis Cluster 行为都支持对应 JSON 命令。
+
 主 key 保存没有 `subKey` 的字段：
 
 ```text
