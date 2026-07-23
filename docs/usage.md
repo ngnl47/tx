@@ -29,6 +29,15 @@ type 级注解支持 marker 和带参数两种形态。无参数时，下面两�
 // @genEnum:`gcgc:"true" gcvo:"true"`
 ```
 
+`comment` 是约定的单值注解，可以直接使用 quoted value：
+
+```go
+// @comment:`"角色"`
+// @comment:`""`
+```
+
+解析后会写入 `Params["value"]`。除 `comment` 这类单值注解外，带参数的 type 注解仍使用 Go struct tag 语法。
+
 解析后会统一得到 `anno.Directive`。marker 注解的 `Params` 和 `Flags` 为空；带参数注解的键值会进入 `Params`。
 
 ## 日志
