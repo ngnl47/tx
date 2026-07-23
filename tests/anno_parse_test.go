@@ -40,17 +40,17 @@ func TestAnnoParseTypeMarkerTagLine(t *testing.T) {
 	}
 }
 
-func TestAnnoParseCommentSingleValueTagLine(t *testing.T) {
-	type commentTag struct{}
+func TestAnnoParseTypeSingleValueTagLine(t *testing.T) {
+	type customTag struct{}
 
 	directive, err := anno.ParseTypeTagLineWithDefinitions(
-		"// @comment:`\"角色\"`",
-		anno.Definitions{anno.TypeTag[commentTag]("comment")},
+		"// @custom:`\"角色\"`",
+		anno.Definitions{anno.TypeTag[customTag]("custom")},
 	)
 	if err != nil {
 		t.Fatalf("ParseTypeTagLineWithDefinitions returned error: %v", err)
 	}
-	if directive.Name != "comment" || directive.Scope != anno.ScopeType {
+	if directive.Name != "custom" || directive.Scope != anno.ScopeType {
 		t.Fatalf("directive = %#v", directive)
 	}
 	if directive.Params["value"] != "角色" {

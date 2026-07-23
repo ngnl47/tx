@@ -22,21 +22,19 @@ type 级注解支持 marker 和带参数两种形态。无参数时，下面两�
 // @genData:``
 ```
 
-带参数时，参数统一写在反引号内，使用 Go struct tag 语法：
-
-```go
-// @storage:`mode:"fusion" delaySaveTime:"600" delayDelTime:"86400"`
-// @genEnum:`gcgc:"true" gcvo:"true"`
-```
-
-`comment` 是约定的单值注解，可以直接使用 quoted value：
+带参数时，参数统一写在反引号内。单值写法会默认映射到 `value` 参数：
 
 ```go
 // @comment:`"角色"`
 // @comment:`""`
 ```
 
-解析后会写入 `Params["value"]`。除 `comment` 这类单值注解外，带参数的 type 注解仍使用 Go struct tag 语法。
+上面两行会分别解析为 `Params["value"] = "角色"` 和 `Params["value"] = ""`。多参数写法使用 Go struct tag 语法：
+
+```go
+// @storage:`mode:"fusion" delaySaveTime:"600" delayDelTime:"86400"`
+// @genEnum:`gcgc:"true" gcvo:"true"`
+```
 
 解析后会统一得到 `anno.Directive`。marker 注解的 `Params` 和 `Flags` 为空；带参数注解的键值会进入 `Params`。
 

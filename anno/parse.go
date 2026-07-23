@@ -23,9 +23,11 @@ func ParseTypeTagLine(text string) (Directive, error) {
 //
 //	// @custom
 //	// @custom:``
+//	// @custom:`"single-value"`
 //	// @custom:`owner:"roleId" ttl:"600"`
 //
-// 解析结果刻意保持非强类型，struct tag 中的所有字段值都会生成字符串参数。
+// 解析结果刻意保持非强类型。quoted single value 会写入 Params["value"]；
+// struct tag 中的所有字段值都会生成字符串参数。
 func ParseTypeTagLineWithDefinitions(text string, defs Definitions) (Directive, error) {
 	defs = defs.WithBuiltinsIfEmpty()
 	text = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(text), "//"))
@@ -47,16 +49,13 @@ func ParseTypeTagLineWithDefinitions(text string, defs Definitions) (Directive, 
 		return Directive{}, fmt.Errorf("anno: type directive %s must use struct tag syntax", name)
 	}
 	if content != "" && !strings.Contains(content, `:"`) {
-		if name == "comment" {
-			value, err := strconv.Unquote(content)
-			if err != nil {
-				return Directive{}, fmt.Errorf("anno: type directive %s must use quoted single value", name)
-			}
-			directive := parseContent(name, ScopeType, "")
-			directive.Params["value"] = value
-			return directive, nil
+		value, err := strconv.Unquote(content)
+		if err != nil {
+			return Directive{}, fmt.Errorf("anno: type directive %s must use quoted single value or struct tag fields", name)
 		}
-		return Directive{}, fmt.Errorf("anno: type directive %s must contain struct tag fields", name)
+		directive := parseContent(name, ScopeType, "")
+		directive.Params["value"] = value
+		return directive, nil
 	}
 	return parseContent(name, ScopeType, content), nil
 }
