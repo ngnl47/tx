@@ -38,6 +38,50 @@ type 级注解支持 marker 和带参数两种形态。无参数时，下面两�
 
 解析后会统一得到 `anno.Directive`。marker 注解的 `Params` 和 `Flags` 为空；带参数注解的键值会进入 `Params`。
 
+### field tag 解析规则
+
+field 级注解来自 Go struct tag，外层遵循 Go 原生 struct tag 规则：
+
+```go
+RoleId int64 `comment:"角色编号" json:"roleId,omitempty" redis:"subKey:items"`
+```
+
+- 外层 tag 项之间用空格分隔。
+- 每项是 `key:"value"` 形式。
+- value 必须是双引号包起来的字符串。
+- `anno.ParseStructTag` 会先通过 Go 标准库读取已注册注解名对应的 value，再解释该 value。
+
+内置 storage 相关 field tag 的 value 使用紧凑语法：
+
+```go
+redis:"subKey:items,fullUpdate"
+mongodb:"index,unique,expireAfter:0"
+```
+
+- 逗号 `,` 分隔多个片段。
+- `key:value` 表示参数，进入 `Params[key] = value`。
+- 没有冒号的片段表示 flag，进入 `Flags[flag] = true`。
+- 片段两边空格会被裁剪，空片段会跳过。
+- field tag 的单值不会自动映射到 `Params["value"]`；type 注解的单值规则只作用于 type 级注解。
+
+字段别名类 tag 不属于内置注解解析结果，由 AST 扫描直接读取：
+
+```text
+alias tag > json tag > lower-camel Go 字段名
+```
+
+`json:"roleId,omitempty"` 只取逗号前的 `roleId` 作为 alias。
+
+### 内置注解字段
+
+| 位置 | 注解 | 可用字段或值 | 说明 |
+| --- | --- | --- | --- |
+| type | `@storage` | `mode`、`delaySaveTime`、`saveTime`、`delaySave`、`delayDelTime`、`delTime`、`delayDelete`、`memoryCache` | 存储模式和时间策略。`mode` 支持 `redis`、`mongo`、`fusion`。纯数字时间按秒解析，也支持 Go duration，例如 `10m`。 |
+| type | `@redis` | `routeType`、`shardType`、`config`、`routeBy`、`shardBy`、`idField`、`id`、`key`、`storeType`、`omitempty` | Redis 根对象配置。`routeType/shardType/config` 等价；`routeBy/shardBy` 等价；`idField/id` 等价。`omitempty` 可写为参数或 flag。 |
+| type | `@mongodb` | `routeType`、`shardType`、`config`、`routeBy`、`shardBy`、`idField`、`id`、`collection`、`c`、`col`、`enableSharding`、`useMongoObjectID` | Mongo 根对象配置。`collection/c/col` 等价。`enableSharding`、`useMongoObjectID` 可写为参数或 flag。 |
+| field | `redis` | `subKey`、`ignore`、`fullUpdate` | 字段级 Redis 配置。`ignore`、`fullUpdate` 可写为 flag 或布尔参数。 |
+| field | `mongodb` | `index`、`unique`、`ignore`、`order`、`indexType`、`weight`、`expire`、`expireAfter` | 字段级 Mongo 配置。`index`、`unique`、`ignore` 可写为 flag 或布尔参数；`expire/expireAfter` 表示 Mongo TTL 索引，命中后删除整条文档。 |
+
 ## 日志
 
 `tx/log` 基于标准库 `log/slog` 提供最小 logger 注入入口：

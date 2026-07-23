@@ -58,6 +58,28 @@ func TestAnnoParseTypeSingleValueTagLine(t *testing.T) {
 	}
 }
 
+func TestAnnoParseFieldTagDoesNotUseTypeSingleValueRule(t *testing.T) {
+	type customFieldTag struct{}
+
+	directives, err := anno.ParseStructTagWithDefinitions(
+		reflect.StructTag(`custom:"quoted"`),
+		anno.ScopeField,
+		anno.Definitions{anno.FieldTag[customFieldTag]("custom")},
+	)
+	if err != nil {
+		t.Fatalf("ParseStructTagWithDefinitions returned error: %v", err)
+	}
+	if len(directives) != 1 {
+		t.Fatalf("directives=%#v", directives)
+	}
+	if _, ok := directives[0].Params["value"]; ok {
+		t.Fatalf("field tag unexpectedly mapped single value to Params[value]: %#v", directives[0])
+	}
+	if !directives[0].Flags["quoted"] {
+		t.Fatalf("field tag should keep compact flag semantics: %#v", directives[0])
+	}
+}
+
 func TestAnnoParseTypeDocAndStructTag(t *testing.T) {
 	typeDirectives, err := anno.ParseTypeDoc([]string{
 		"// @storage",
