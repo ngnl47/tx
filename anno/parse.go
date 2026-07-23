@@ -3,6 +3,7 @@ package anno
 import (
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 )
 
@@ -46,6 +47,15 @@ func ParseTypeTagLineWithDefinitions(text string, defs Definitions) (Directive, 
 		return Directive{}, fmt.Errorf("anno: type directive %s must use struct tag syntax", name)
 	}
 	if content != "" && !strings.Contains(content, `:"`) {
+		if name == "comment" {
+			value, err := strconv.Unquote(content)
+			if err != nil {
+				return Directive{}, fmt.Errorf("anno: type directive %s must use quoted single value", name)
+			}
+			directive := parseContent(name, ScopeType, "")
+			directive.Params["value"] = value
+			return directive, nil
+		}
 		return Directive{}, fmt.Errorf("anno: type directive %s must contain struct tag fields", name)
 	}
 	return parseContent(name, ScopeType, content), nil
