@@ -3,6 +3,7 @@ package tests
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ngnl47/tx/astscan"
@@ -89,6 +90,25 @@ type UserProfile struct {
 		t.Fatal("UserProfile type was not scanned")
 	}
 	assertField(t, spec, "UserID", "userID", "string", true)
+}
+
+func TestASTScanRejectsIgnoredJSONTagWithOptions(t *testing.T) {
+	root := writeTempModule(t, map[string]string{
+		"data/role.go": `package data
+
+type Role struct {
+	Internal string ` + "`json:\"-,omitempty\"`" + `
+}
+`,
+	})
+
+	_, err := astscan.ScanDir(filepath.Join(root, "data"), astscan.Options{})
+	if err == nil {
+		t.Fatal("ScanDir returned nil error, want ignored json tag options rejection")
+	}
+	if got := err.Error(); !strings.Contains(got, `json:"-" must not declare options`) {
+		t.Fatalf("ScanDir error = %v, want ignored json tag options rejection", err)
+	}
 }
 
 func assertField(t *testing.T, spec meta.TypeSpec, name, alias, typ string, exported bool) {

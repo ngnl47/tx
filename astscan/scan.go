@@ -105,6 +105,9 @@ func ScanFiles(files []string, opts Options) (*PackageSet, error) {
 				if docGroup == nil {
 					docGroup = gen.Doc
 				}
+				if err := validateStructTags(structType); err != nil {
+					return nil, fmt.Errorf("astscan: scan tags for %s: %w", ref.FullName, err)
+				}
 				storageSpec, directives, fields, err := scanMetadata(fset, docGroup, structType, defs)
 				if err != nil {
 					return nil, fmt.Errorf("astscan: scan metadata for %s: %w", ref.FullName, err)
@@ -218,6 +221,30 @@ func isStorageDirective(directive anno.Directive) bool {
 
 func hasStorageMetadata(spec meta.TypeSpec) bool {
 	return spec.Storage.Mode != "" || spec.Redis != nil || spec.Mongo != nil
+}
+
+func validateStructTags(structType *ast.StructType) error {
+	for _, field := range structType.Fields.List {
+		tag := ""
+		if field.Tag != nil {
+			tag = strings.Trim(field.Tag.Value, "`")
+		}
+		if err := validateIgnoredJSONTag(reflect.StructTag(tag)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateIgnoredJSONTag(tag reflect.StructTag) error {
+	name, rest, hasOptions := strings.Cut(tag.Get("json"), ",")
+	if name != "-" || !hasOptions {
+		return nil
+	}
+	if rest == "" {
+		return fmt.Errorf("json:\"-\" must not declare options")
+	}
+	return fmt.Errorf("json:\"-\" must not declare options: %s", rest)
 }
 
 type metadataFieldInfo struct {
