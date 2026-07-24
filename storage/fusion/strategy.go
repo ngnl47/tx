@@ -9,20 +9,6 @@ import (
 	"github.com/ngnl47/tx/storage"
 )
 
-// DocumentLoader 是生成 Store 读取单条文档所需的最小接口。
-type DocumentLoader interface {
-	LoadDocument(context.Context, meta.TypeSpec, storage.RecordKey, ...string) (map[string]any, bool, error)
-}
-
-// BatchDocumentLoader 是生成 Store 批量读取文档所需的最小接口。
-type BatchDocumentLoader interface {
-	LoadDocuments(context.Context, meta.TypeSpec, []storage.RecordKey, ...string) ([]map[string]any, []bool, error)
-}
-
-type DocumentReplacerWithOptions interface {
-	ReplaceDocumentWithOptions(context.Context, meta.TypeSpec, storage.RecordKey, map[string]any, storage.ApplyOptions) error
-}
-
 type LoadOptions struct {
 	DontLoadToRedis bool
 }
@@ -34,9 +20,9 @@ type LoadOptions struct {
 type Strategy struct {
 	Redis         storage.ChangeApplierWithOptions
 	RedisDeleter  storage.DeleteApplier
-	RedisLoader   DocumentLoader
+	RedisLoader   storage.DocumentLoader
 	RedisReplacer any
-	MongoLoader   DocumentLoader
+	MongoLoader   storage.DocumentLoader
 	MongoDeleter  storage.DeleteApplier
 	MongoQueue    DelayQueue
 }
@@ -124,7 +110,7 @@ func (s Strategy) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSp
 	missingIndexes := make([]int, 0, len(keys))
 	missingKeys := make([]storage.RecordKey, 0, len(keys))
 	redisLoader := s.redisLoader()
-	if redisBatch, ok := redisLoader.(BatchDocumentLoader); ok {
+	if redisBatch, ok := redisLoader.(storage.BatchDocumentLoader); ok {
 		redisDocs, redisExists, err := redisBatch.LoadDocuments(ctx, spec, keys, fields...)
 		if err != nil {
 			return nil, nil, err
@@ -160,7 +146,7 @@ func (s Strategy) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSp
 }
 
 func (s Strategy) loadMongoMissingDocuments(ctx context.Context, spec meta.TypeSpec, missingIndexes []int, missingKeys []storage.RecordKey, docs []map[string]any, exists []bool, fields ...string) ([]map[string]any, []bool, error) {
-	mongoBatch, ok := s.MongoLoader.(BatchDocumentLoader)
+	mongoBatch, ok := s.MongoLoader.(storage.BatchDocumentLoader)
 	if !ok {
 		for pos, key := range missingKeys {
 			doc, found, err := s.MongoLoader.LoadDocument(ctx, spec, key, fields...)
@@ -206,7 +192,7 @@ func (s Strategy) loadMongoMissingDocumentsAndBackfillRedis(ctx context.Context,
 }
 
 func (s Strategy) loadFullMongoDocuments(ctx context.Context, spec meta.TypeSpec, keys []storage.RecordKey) ([]map[string]any, []bool, error) {
-	mongoBatch, ok := s.MongoLoader.(BatchDocumentLoader)
+	mongoBatch, ok := s.MongoLoader.(storage.BatchDocumentLoader)
 	if ok {
 		docs, exists, err := mongoBatch.LoadDocuments(ctx, spec, keys)
 		if err != nil {
@@ -252,7 +238,7 @@ func (s Strategy) backfillRedis(ctx context.Context, spec meta.TypeSpec, key sto
 	return replacer.ReplaceDocumentWithOptions(ctx, spec, key, doc, options)
 }
 
-func (s Strategy) loadRedisDocumentsOneByOne(ctx context.Context, spec meta.TypeSpec, keys []storage.RecordKey, loader DocumentLoader, docs []map[string]any, exists []bool, missingIndexes *[]int, missingKeys *[]storage.RecordKey, fields ...string) error {
+func (s Strategy) loadRedisDocumentsOneByOne(ctx context.Context, spec meta.TypeSpec, keys []storage.RecordKey, loader storage.DocumentLoader, docs []map[string]any, exists []bool, missingIndexes *[]int, missingKeys *[]storage.RecordKey, fields ...string) error {
 	for i, key := range keys {
 		if loader == nil {
 			*missingIndexes = append(*missingIndexes, i)
@@ -274,27 +260,27 @@ func (s Strategy) loadRedisDocumentsOneByOne(ctx context.Context, spec meta.Type
 	return nil
 }
 
-func (s Strategy) redisLoader() DocumentLoader {
+func (s Strategy) redisLoader() storage.DocumentLoader {
 	if s.RedisLoader != nil {
 		return s.RedisLoader
 	}
-	loader, _ := s.Redis.(DocumentLoader)
+	loader, _ := s.Redis.(storage.DocumentLoader)
 	return loader
 }
 
-func (s Strategy) redisReplacerWithOptions() DocumentReplacerWithOptions {
-	if replacer, ok := s.RedisReplacer.(DocumentReplacerWithOptions); ok {
+func (s Strategy) redisReplacerWithOptions() storage.DocumentReplacerWithOptions {
+	if replacer, ok := s.RedisReplacer.(storage.DocumentReplacerWithOptions); ok {
 		return replacer
 	}
-	replacer, _ := s.Redis.(DocumentReplacerWithOptions)
+	replacer, _ := s.Redis.(storage.DocumentReplacerWithOptions)
 	return replacer
 }
 
-func (s Strategy) redisReplacer() DocumentReplacer {
-	if replacer, ok := s.RedisReplacer.(DocumentReplacer); ok {
+func (s Strategy) redisReplacer() storage.DocumentReplacer {
+	if replacer, ok := s.RedisReplacer.(storage.DocumentReplacer); ok {
 		return replacer
 	}
-	replacer, _ := s.Redis.(DocumentReplacer)
+	replacer, _ := s.Redis.(storage.DocumentReplacer)
 	return replacer
 }
 

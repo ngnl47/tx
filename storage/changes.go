@@ -18,6 +18,26 @@ type ChangeApplierWithOptions interface {
 	ApplyChangesWithOptions(context.Context, meta.TypeSpec, RecordKey, change.ChangeSet, ApplyOptions) error
 }
 
+// DocumentLoader 定义按记录键读取单条文档的适配器。
+type DocumentLoader interface {
+	LoadDocument(context.Context, meta.TypeSpec, RecordKey, ...string) (map[string]any, bool, error)
+}
+
+// BatchDocumentLoader 定义按记录键批量读取文档的适配器。
+type BatchDocumentLoader interface {
+	LoadDocuments(context.Context, meta.TypeSpec, []RecordKey, ...string) ([]map[string]any, []bool, error)
+}
+
+// DocumentReplacerWithOptions 定义按记录键整文档替换且支持写入选项的适配器。
+type DocumentReplacerWithOptions interface {
+	ReplaceDocumentWithOptions(context.Context, meta.TypeSpec, RecordKey, map[string]any, ApplyOptions) error
+}
+
+// DocumentReplacer 定义按记录键整文档替换的适配器。
+type DocumentReplacer interface {
+	ReplaceDocument(context.Context, meta.TypeSpec, RecordKey, map[string]any) error
+}
+
 // DeleteApplier 定义按元数据和记录键删除存储记录的适配器。
 type DeleteApplier interface {
 	ApplyDelete(context.Context, meta.TypeSpec, RecordKey) error

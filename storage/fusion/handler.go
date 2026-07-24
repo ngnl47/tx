@@ -13,17 +13,13 @@ type TypeRegistry interface {
 	Lookup(meta.TypeRef) (meta.TypeSpec, bool)
 }
 
-type DocumentReplacer interface {
-	ReplaceDocument(context.Context, meta.TypeSpec, storage.RecordKey, map[string]any) error
-}
-
 type StorageTaskHandler struct {
 	types        TypeRegistry
-	redisLoader  DocumentLoader
-	mongoReplace DocumentReplacer
+	redisLoader  storage.DocumentLoader
+	mongoReplace storage.DocumentReplacer
 }
 
-func NewDelayTaskHandler(types TypeRegistry, redisLoader DocumentLoader, mongoReplace DocumentReplacer) *StorageTaskHandler {
+func NewDelayTaskHandler(types TypeRegistry, redisLoader storage.DocumentLoader, mongoReplace storage.DocumentReplacer) *StorageTaskHandler {
 	return &StorageTaskHandler{
 		types:        types,
 		redisLoader:  redisLoader,

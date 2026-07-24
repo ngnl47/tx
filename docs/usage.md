@@ -322,6 +322,18 @@ Mongo adapter 通过统一 filter 抽象调用底层 client：默认 filter 是 
 
 Mongo TTL index 的字段级 `expireAfter` 会删除整条文档，不是删除单个字段。生成阶段应限制同一类型最多一个 TTL 字段。
 
+## 通用文档接口
+
+`tx/storage` 提供 Redis、Mongo、Fusion 和生成代码共用的文档接口：
+
+- `DocumentLoader`：按 `TypeSpec + RecordKey` 读取单条文档。
+- `BatchDocumentLoader`：按 `TypeSpec + []RecordKey` 批量读取文档。
+- `DocumentReplacer`：按 `TypeSpec + RecordKey` 整文档替换。
+- `DocumentReplacerWithOptions`：整文档替换并接收 `ApplyOptions`，用于需要 TTL/upsert 等写入语义的路径。
+
+这些接口是 Store 读取、Fusion 回源、Redis 热数据回填和延迟保存回写的共同边界。具体后端仍负责把
+`RecordKey` 转成自己的底层定位方式，例如 Redis key/hash tag 或 Mongo filter。
+
 ## Fusion 流程
 
 Fusion 策略的当前保存路径：
