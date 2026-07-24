@@ -19,12 +19,16 @@ type recordingMongoUpdater struct {
 	fields     []string
 	doc        map[string]any
 	exists     bool
+	field      string
+	value      any
 
 	manyCollection string
 	manyIDs        []any
 	manyFields     []string
 	manyDocs       []map[string]any
 	manyExists     []bool
+	manyField      string
+	manyValues     []any
 }
 
 type recordingMongoFinder struct {
@@ -79,6 +83,46 @@ func (u *recordingMongoUpdater) FindManyByID(_ context.Context, collection strin
 	return u.manyDocs, u.manyExists, nil
 }
 
+func (u *recordingMongoUpdater) UpdateByField(_ context.Context, collection string, field string, value any, update map[string]any) error {
+	u.collection = collection
+	u.field = field
+	u.value = value
+	u.update = update
+	return nil
+}
+
+func (u *recordingMongoUpdater) ReplaceByField(_ context.Context, collection string, field string, value any, doc map[string]any) error {
+	u.collection = collection
+	u.field = field
+	u.value = value
+	u.replace = doc
+	return nil
+}
+
+func (u *recordingMongoUpdater) DeleteByField(_ context.Context, collection string, field string, value any) error {
+	u.collection = collection
+	u.field = field
+	u.value = value
+	u.deleted = true
+	return nil
+}
+
+func (u *recordingMongoUpdater) FindByField(_ context.Context, collection string, field string, value any, fields ...string) (map[string]any, bool, error) {
+	u.collection = collection
+	u.field = field
+	u.value = value
+	u.fields = append([]string(nil), fields...)
+	return u.doc, u.exists, nil
+}
+
+func (u *recordingMongoUpdater) FindManyByField(_ context.Context, collection string, field string, values []any, fields ...string) ([]map[string]any, []bool, error) {
+	u.manyCollection = collection
+	u.manyField = field
+	u.manyValues = append([]any(nil), values...)
+	u.manyFields = append([]string(nil), fields...)
+	return u.manyDocs, u.manyExists, nil
+}
+
 func (f *recordingMongoFinder) FindByID(_ context.Context, collection string, id any, fields ...string) (map[string]any, bool, error) {
 	f.collection = collection
 	f.ids = append(f.ids, id)
@@ -115,6 +159,74 @@ func TestMongoAdapterAppliesUpdateByID(t *testing.T) {
 	setDoc := updater.update["$set"].(map[string]any)
 	if setDoc["name"] != "alice" {
 		t.Fatalf("update = %#v", updater.update)
+	}
+}
+
+func TestMongoAdapterUsesBusinessIDFieldWhenMongoObjectIDEnabled(t *testing.T) {
+	client := &recordingMongoUpdater{
+		doc:    map[string]any{"roleId": int64(1001), "name": "alice"},
+		exists: true,
+		manyDocs: []map[string]any{
+			{"roleId": int64(1001), "name": "alice"},
+			nil,
+		},
+		manyExists: []bool{true, false},
+	}
+	adapter := txmongo.NewAdapter(client)
+	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{
+		Collection:       "roles",
+		IDField:          "roleId",
+		UseMongoObjectID: true,
+	}}
+	key := storage.RecordKey{ID: int64(1001)}
+	var set change.ChangeSet
+	_ = set.Add(change.FieldChange{Path: change.Path{"name"}, Kind: change.KindSet, Value: "alice"})
+
+	if err := adapter.ApplyChangesWithOptions(context.Background(), spec, key, set, storage.ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
+	}
+	if client.collection != "roles" || client.field != "roleId" || client.value != int64(1001) {
+		t.Fatalf("update target = collection %q field %q value %v", client.collection, client.field, client.value)
+	}
+	if client.id != nil {
+		t.Fatalf("UpdateByID was used with id %v, want business field filter", client.id)
+	}
+
+	if err := adapter.ReplaceDocument(context.Background(), spec, key, map[string]any{"roleId": int64(1001), "name": "bob"}); err != nil {
+		t.Fatalf("ReplaceDocument returned error: %v", err)
+	}
+	if client.field != "roleId" || client.value != int64(1001) || client.replace["name"] != "bob" {
+		t.Fatalf("replace target field/value/doc = %q/%v/%#v", client.field, client.value, client.replace)
+	}
+
+	if _, exists, err := adapter.LoadDocument(context.Background(), spec, key, "name"); err != nil {
+		t.Fatalf("LoadDocument returned error: %v", err)
+	} else if !exists {
+		t.Fatal("LoadDocument exists = false, want true")
+	}
+	if client.field != "roleId" || client.value != int64(1001) || len(client.fields) != 1 || client.fields[0] != "name" {
+		t.Fatalf("load target field/value/fields = %q/%v/%#v", client.field, client.value, client.fields)
+	}
+
+	docs, exists, err := adapter.LoadDocuments(context.Background(), spec, []storage.RecordKey{
+		{ID: int64(1001)},
+		{ID: int64(1002)},
+	}, "name")
+	if err != nil {
+		t.Fatalf("LoadDocuments returned error: %v", err)
+	}
+	if client.manyField != "roleId" || len(client.manyValues) != 2 || client.manyValues[0] != int64(1001) || client.manyValues[1] != int64(1002) {
+		t.Fatalf("batch target field/values = %q/%#v", client.manyField, client.manyValues)
+	}
+	if len(docs) != 2 || docs[0]["name"] != "alice" || docs[1] != nil || len(exists) != 2 || !exists[0] || exists[1] {
+		t.Fatalf("batch docs=%#v exists=%#v", docs, exists)
+	}
+
+	if err := adapter.ApplyDelete(context.Background(), spec, key); err != nil {
+		t.Fatalf("ApplyDelete returned error: %v", err)
+	}
+	if client.field != "roleId" || client.value != int64(1001) || !client.deleted {
+		t.Fatalf("delete target field/value/deleted = %q/%v/%v", client.field, client.value, client.deleted)
 	}
 }
 

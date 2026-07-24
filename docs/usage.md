@@ -82,6 +82,11 @@ alias tag > json tag > lower-camel Go 字段名
 | field | `redis` | `subKey`、`ignore`、`fullUpdate` | 字段级 Redis 配置。`ignore`、`fullUpdate` 可写为 flag 或布尔参数。 |
 | field | `mongodb` | `index`、`unique`、`ignore`、`order`、`indexType`、`weight`、`expire`、`expireAfter` | 字段级 Mongo 配置。`index`、`unique`、`ignore` 可写为 flag 或布尔参数；`expire/expireAfter` 表示 Mongo TTL 索引，命中后删除整条文档。 |
 
+`@mongodb` 默认按 Mongo `_id` 过滤文档，适合把业务 `idField` 写入 `_id` 的数据。开启
+`useMongoObjectID` 后，Mongo 保留驱动或数据库自己的 `_id`，tx runtime 的查询、更新、替换、
+删除会改为按 `idField` 指定的业务字段过滤，例如 `{roleId: 1001}`。这只影响 Mongo 过滤条件，
+不改变 ChangeSet 字段 alias，也不要求业务结构把字段命名成 `_id`。
+
 ## 日志
 
 `tx/log` 基于标准库 `log/slog` 提供最小 logger 注入入口：
