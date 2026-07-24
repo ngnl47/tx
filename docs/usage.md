@@ -87,6 +87,19 @@ alias tag > json tag > lower-camel Go 字段名
 删除会改为按 `idField` 指定的业务字段过滤，例如 `{roleId: 1001}`。这只影响 Mongo 过滤条件，
 不改变 ChangeSet 字段 alias，也不要求业务结构把字段命名成 `_id`。
 
+以 `RoleId = 1001`、`Name = "alice"` 为例，常见组合如下：
+
+| 配置组合 | Mongo 文档结构 | runtime 过滤条件 | 说明 |
+| --- | --- | --- | --- |
+| 默认，业务字段正常保存为 `roleId` | `{"_id": 1001, "roleId": 1001, "name": "alice"}` | `{_id: 1001}` | 可用，但 `_id` 和业务字段会同时存在且值相同。 |
+| 默认，业务字段绑定到 `bson:"_id"` | `{"_id": 1001, "name": "alice"}` | `{_id: 1001}` | Mongo 物理主键直接使用业务 ID。 |
+| 开启 `useMongoObjectID`，业务字段正常保存为 `roleId` | `{"_id": ObjectID, "roleId": 1001, "name": "alice"}` | `{roleId: 1001}` | Mongo `_id` 和业务 ID 分离，这是保留 Mongo ObjectID 时的推荐形态。 |
+| 开启 `useMongoObjectID`，但业务字段绑定到 `bson:"_id"` | `{"_id": 1001, "name": "alice"}` | `{roleId: 1001}` | 冲突形态：runtime 会按 `roleId` 查，但文档没有 `roleId`。 |
+
+因此，`bson:"_id"` 是 Mongo 序列化层的字段绑定；`mongodb.idField` 是 tx 存储框架层的业务记录身份。
+两者可以配合，但不能互相替代。开启 `useMongoObjectID` 时，业务 ID 必须作为普通字段保留在 Mongo
+文档中，不能再把同一个字段绑定到 `_id`。
+
 ## 日志
 
 `tx/log` 基于标准库 `log/slog` 提供最小 logger 注入入口：
