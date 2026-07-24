@@ -310,11 +310,15 @@ mongoDB := txmongodriver.NewDatabase(mongoDriverDatabase)
 Mongo adapter 当前支持：
 
 - `ApplyChangesWithOptions`：将 `ChangeSet` 转成 Mongo update 文档。
-- `LoadDocument`：按 ID 读取单条文档，可带 projection 字段。
-- `LoadDocuments`：按 ID 批量读取并保持返回顺序。
+- `LoadDocument`：按记录键读取单条文档，可带 projection 字段。
+- `LoadDocuments`：按记录键批量读取并保持返回顺序。
 - `ReplaceDocument`：整文档替换，供 Fusion 延迟保存回写使用。
 - `ApplyDelete`：显式物理删除接口，由业务代码决定是否调用。
 - `mongo.Cluster`：按 `routeType` 和 `storage.RecordKey.ShardKey` 路由到具体 Mongo adapter；批量读取会按 shard 分组并按输入顺序还原结果。
+
+Mongo adapter 通过统一 filter 抽象调用底层 client：默认 filter 是 `{_id: id}`，开启
+`useMongoObjectID` 时 filter 是 `{idField: id}`。Mongo update 会遵守 `storage.ApplyOptions.Upsert`：
+生成 Store 的 Insert/Replace 路径会启用 upsert，Update 路径会关闭 upsert，避免普通更新意外创建缺失文档。
 
 Mongo TTL index 的字段级 `expireAfter` 会删除整条文档，不是删除单个字段。生成阶段应限制同一类型最多一个 TTL 字段。
 

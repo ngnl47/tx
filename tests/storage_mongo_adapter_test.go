@@ -12,28 +12,25 @@ import (
 
 type recordingMongoUpdater struct {
 	collection string
-	id         any
+	filter     txmongo.Filter
 	update     map[string]any
 	replace    map[string]any
 	deleted    bool
 	fields     []string
 	doc        map[string]any
 	exists     bool
-	field      string
-	value      any
+	upsert     bool
 
 	manyCollection string
-	manyIDs        []any
+	manyFilter     txmongo.ValuesFilter
 	manyFields     []string
 	manyDocs       []map[string]any
 	manyExists     []bool
-	manyField      string
-	manyValues     []any
 }
 
 type recordingMongoFinder struct {
 	collection string
-	ids        []any
+	filters    []txmongo.Filter
 	fields     []string
 	docs       map[any]map[string]any
 }
@@ -48,86 +45,47 @@ type recordingMongoRouteCall struct {
 	shardKey  any
 }
 
-func (u *recordingMongoUpdater) UpdateByID(_ context.Context, collection string, id any, update map[string]any) error {
+func (u *recordingMongoUpdater) UpdateOne(_ context.Context, collection string, filter txmongo.Filter, update map[string]any, options storage.ApplyOptions) error {
 	u.collection = collection
-	u.id = id
+	u.filter = filter
 	u.update = update
+	u.upsert = options.Upsert
 	return nil
 }
 
-func (u *recordingMongoUpdater) ReplaceByID(_ context.Context, collection string, id any, doc map[string]any) error {
+func (u *recordingMongoUpdater) ReplaceOne(_ context.Context, collection string, filter txmongo.Filter, doc map[string]any) error {
 	u.collection = collection
-	u.id = id
+	u.filter = filter
 	u.replace = doc
 	return nil
 }
 
-func (u *recordingMongoUpdater) DeleteByID(_ context.Context, collection string, id any) error {
+func (u *recordingMongoUpdater) DeleteOne(_ context.Context, collection string, filter txmongo.Filter) error {
 	u.collection = collection
-	u.id = id
+	u.filter = filter
 	u.deleted = true
 	return nil
 }
 
-func (u *recordingMongoUpdater) FindByID(_ context.Context, collection string, id any, fields ...string) (map[string]any, bool, error) {
+func (u *recordingMongoUpdater) FindOne(_ context.Context, collection string, filter txmongo.Filter, fields ...string) (map[string]any, bool, error) {
 	u.collection = collection
-	u.id = id
+	u.filter = filter
 	u.fields = append([]string(nil), fields...)
 	return u.doc, u.exists, nil
 }
 
-func (u *recordingMongoUpdater) FindManyByID(_ context.Context, collection string, ids []any, fields ...string) ([]map[string]any, []bool, error) {
+func (u *recordingMongoUpdater) FindMany(_ context.Context, collection string, filter txmongo.ValuesFilter, fields ...string) ([]map[string]any, []bool, error) {
 	u.manyCollection = collection
-	u.manyIDs = append([]any(nil), ids...)
+	u.manyFilter = txmongo.ValuesFilter{Field: filter.Field, Values: append([]any(nil), filter.Values...)}
 	u.manyFields = append([]string(nil), fields...)
 	return u.manyDocs, u.manyExists, nil
 }
 
-func (u *recordingMongoUpdater) UpdateByField(_ context.Context, collection string, field string, value any, update map[string]any) error {
-	u.collection = collection
-	u.field = field
-	u.value = value
-	u.update = update
-	return nil
-}
-
-func (u *recordingMongoUpdater) ReplaceByField(_ context.Context, collection string, field string, value any, doc map[string]any) error {
-	u.collection = collection
-	u.field = field
-	u.value = value
-	u.replace = doc
-	return nil
-}
-
-func (u *recordingMongoUpdater) DeleteByField(_ context.Context, collection string, field string, value any) error {
-	u.collection = collection
-	u.field = field
-	u.value = value
-	u.deleted = true
-	return nil
-}
-
-func (u *recordingMongoUpdater) FindByField(_ context.Context, collection string, field string, value any, fields ...string) (map[string]any, bool, error) {
-	u.collection = collection
-	u.field = field
-	u.value = value
-	u.fields = append([]string(nil), fields...)
-	return u.doc, u.exists, nil
-}
-
-func (u *recordingMongoUpdater) FindManyByField(_ context.Context, collection string, field string, values []any, fields ...string) ([]map[string]any, []bool, error) {
-	u.manyCollection = collection
-	u.manyField = field
-	u.manyValues = append([]any(nil), values...)
-	u.manyFields = append([]string(nil), fields...)
-	return u.manyDocs, u.manyExists, nil
-}
-
-func (f *recordingMongoFinder) FindByID(_ context.Context, collection string, id any, fields ...string) (map[string]any, bool, error) {
+func (f *recordingMongoFinder) FindOne(_ context.Context, collection string, filter txmongo.Filter, fields ...string) (map[string]any, bool, error) {
 	f.collection = collection
-	f.ids = append(f.ids, id)
+	f.filters = append(f.filters, filter)
 	f.fields = append([]string(nil), fields...)
-	doc, exists := f.docs[id]
+	doc, exists := f.docs[filter.Value]
 	return doc, exists, nil
 }
 
@@ -140,7 +98,7 @@ func (r *recordingMongoRouter) RouteMongo(_ context.Context, routeType string, s
 	return name, nil
 }
 
-func TestMongoAdapterAppliesUpdateByID(t *testing.T) {
+func TestMongoAdapterAppliesUpdateByDefaultIDFilter(t *testing.T) {
 	updater := &recordingMongoUpdater{}
 	adapter := txmongo.NewAdapter(updater)
 	spec := meta.TypeSpec{
@@ -153,12 +111,61 @@ func TestMongoAdapterAppliesUpdateByID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyChanges returned error: %v", err)
 	}
-	if updater.collection != "roles" || updater.id != int64(1001) {
-		t.Fatalf("collection/id = %q/%v", updater.collection, updater.id)
+	if updater.collection != "roles" || updater.filter.Field != "_id" || updater.filter.Value != int64(1001) {
+		t.Fatalf("collection/filter = %q/%#v", updater.collection, updater.filter)
 	}
 	setDoc := updater.update["$set"].(map[string]any)
 	if setDoc["name"] != "alice" {
 		t.Fatalf("update = %#v", updater.update)
+	}
+}
+
+func TestMongoAdapterPassesUpsertOptionToUpdate(t *testing.T) {
+	updater := &recordingMongoUpdater{}
+	adapter := txmongo.NewAdapter(updater)
+	spec := meta.TypeSpec{
+		Mongo: &meta.MongoSpec{Collection: "roles"},
+	}
+	var set change.ChangeSet
+	_ = set.Add(change.FieldChange{Path: change.Path{"name"}, Kind: change.KindSet, Value: "alice"})
+
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set, storage.ApplyOptions{Upsert: false})
+	if err != nil {
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
+	}
+	if updater.upsert {
+		t.Fatal("upsert = true, want false for update path")
+	}
+
+	err = adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set, storage.ApplyOptions{Upsert: true})
+	if err != nil {
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
+	}
+	if !updater.upsert {
+		t.Fatal("upsert = false, want true for insert/replace path")
+	}
+}
+
+func TestMongoAdapterPassesUpsertOptionToBusinessIDFieldUpdate(t *testing.T) {
+	updater := &recordingMongoUpdater{}
+	adapter := txmongo.NewAdapter(updater)
+	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{
+		Collection:       "roles",
+		IDField:          "roleId",
+		UseMongoObjectID: true,
+	}}
+	var set change.ChangeSet
+	_ = set.Add(change.FieldChange{Path: change.Path{"name"}, Kind: change.KindSet, Value: "alice"})
+
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set, storage.ApplyOptions{Upsert: false})
+	if err != nil {
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
+	}
+	if updater.filter.Field != "roleId" || updater.filter.Value != int64(1001) {
+		t.Fatalf("filter = %#v, want roleId/1001", updater.filter)
+	}
+	if updater.upsert {
+		t.Fatal("upsert = true, want false for update path")
 	}
 }
 
@@ -185,18 +192,15 @@ func TestMongoAdapterUsesBusinessIDFieldWhenMongoObjectIDEnabled(t *testing.T) {
 	if err := adapter.ApplyChangesWithOptions(context.Background(), spec, key, set, storage.ApplyOptions{}); err != nil {
 		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
 	}
-	if client.collection != "roles" || client.field != "roleId" || client.value != int64(1001) {
-		t.Fatalf("update target = collection %q field %q value %v", client.collection, client.field, client.value)
-	}
-	if client.id != nil {
-		t.Fatalf("UpdateByID was used with id %v, want business field filter", client.id)
+	if client.collection != "roles" || client.filter.Field != "roleId" || client.filter.Value != int64(1001) {
+		t.Fatalf("update target = collection %q filter %#v", client.collection, client.filter)
 	}
 
 	if err := adapter.ReplaceDocument(context.Background(), spec, key, map[string]any{"roleId": int64(1001), "name": "bob"}); err != nil {
 		t.Fatalf("ReplaceDocument returned error: %v", err)
 	}
-	if client.field != "roleId" || client.value != int64(1001) || client.replace["name"] != "bob" {
-		t.Fatalf("replace target field/value/doc = %q/%v/%#v", client.field, client.value, client.replace)
+	if client.filter.Field != "roleId" || client.filter.Value != int64(1001) || client.replace["name"] != "bob" {
+		t.Fatalf("replace target filter/doc = %#v/%#v", client.filter, client.replace)
 	}
 
 	if _, exists, err := adapter.LoadDocument(context.Background(), spec, key, "name"); err != nil {
@@ -204,8 +208,8 @@ func TestMongoAdapterUsesBusinessIDFieldWhenMongoObjectIDEnabled(t *testing.T) {
 	} else if !exists {
 		t.Fatal("LoadDocument exists = false, want true")
 	}
-	if client.field != "roleId" || client.value != int64(1001) || len(client.fields) != 1 || client.fields[0] != "name" {
-		t.Fatalf("load target field/value/fields = %q/%v/%#v", client.field, client.value, client.fields)
+	if client.filter.Field != "roleId" || client.filter.Value != int64(1001) || len(client.fields) != 1 || client.fields[0] != "name" {
+		t.Fatalf("load target filter/fields = %#v/%#v", client.filter, client.fields)
 	}
 
 	docs, exists, err := adapter.LoadDocuments(context.Background(), spec, []storage.RecordKey{
@@ -215,8 +219,8 @@ func TestMongoAdapterUsesBusinessIDFieldWhenMongoObjectIDEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadDocuments returned error: %v", err)
 	}
-	if client.manyField != "roleId" || len(client.manyValues) != 2 || client.manyValues[0] != int64(1001) || client.manyValues[1] != int64(1002) {
-		t.Fatalf("batch target field/values = %q/%#v", client.manyField, client.manyValues)
+	if client.manyFilter.Field != "roleId" || len(client.manyFilter.Values) != 2 || client.manyFilter.Values[0] != int64(1001) || client.manyFilter.Values[1] != int64(1002) {
+		t.Fatalf("batch target filter = %#v", client.manyFilter)
 	}
 	if len(docs) != 2 || docs[0]["name"] != "alice" || docs[1] != nil || len(exists) != 2 || !exists[0] || exists[1] {
 		t.Fatalf("batch docs=%#v exists=%#v", docs, exists)
@@ -225,12 +229,12 @@ func TestMongoAdapterUsesBusinessIDFieldWhenMongoObjectIDEnabled(t *testing.T) {
 	if err := adapter.ApplyDelete(context.Background(), spec, key); err != nil {
 		t.Fatalf("ApplyDelete returned error: %v", err)
 	}
-	if client.field != "roleId" || client.value != int64(1001) || !client.deleted {
-		t.Fatalf("delete target field/value/deleted = %q/%v/%v", client.field, client.value, client.deleted)
+	if client.filter.Field != "roleId" || client.filter.Value != int64(1001) || !client.deleted {
+		t.Fatalf("delete target filter/deleted = %#v/%v", client.filter, client.deleted)
 	}
 }
 
-func TestMongoAdapterReplacesDocumentByID(t *testing.T) {
+func TestMongoAdapterReplacesDocumentByDefaultIDFilter(t *testing.T) {
 	client := &recordingMongoUpdater{}
 	adapter := txmongo.NewAdapter(client)
 	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}
@@ -240,15 +244,15 @@ func TestMongoAdapterReplacesDocumentByID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReplaceDocument returned error: %v", err)
 	}
-	if client.collection != "roles" || client.id != int64(1001) {
-		t.Fatalf("collection/id = %q/%v", client.collection, client.id)
+	if client.collection != "roles" || client.filter.Field != "_id" || client.filter.Value != int64(1001) {
+		t.Fatalf("collection/filter = %q/%#v", client.collection, client.filter)
 	}
 	if client.replace["name"] != "alice" {
 		t.Fatalf("replace = %#v", client.replace)
 	}
 }
 
-func TestMongoAdapterDeletesDocumentByID(t *testing.T) {
+func TestMongoAdapterDeletesDocumentByDefaultIDFilter(t *testing.T) {
 	client := &recordingMongoUpdater{}
 	adapter := txmongo.NewAdapter(client)
 	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}
@@ -257,8 +261,8 @@ func TestMongoAdapterDeletesDocumentByID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyDelete returned error: %v", err)
 	}
-	if client.collection != "roles" || client.id != int64(1001) || !client.deleted {
-		t.Fatalf("delete collection/id/deleted = %q/%v/%v", client.collection, client.id, client.deleted)
+	if client.collection != "roles" || client.filter.Field != "_id" || client.filter.Value != int64(1001) || !client.deleted {
+		t.Fatalf("delete collection/filter/deleted = %q/%#v/%v", client.collection, client.filter, client.deleted)
 	}
 }
 
@@ -277,8 +281,8 @@ func TestMongoAdapterLoadDocumentPassesProjection(t *testing.T) {
 	if !exists {
 		t.Fatal("LoadDocument exists = false, want true")
 	}
-	if client.collection != "roles" || client.id != int64(1001) {
-		t.Fatalf("collection/id = %q/%v", client.collection, client.id)
+	if client.collection != "roles" || client.filter.Field != "_id" || client.filter.Value != int64(1001) {
+		t.Fatalf("collection/filter = %q/%#v", client.collection, client.filter)
 	}
 	if len(client.fields) != 2 || client.fields[0] != "name" || client.fields[1] != "roleId" {
 		t.Fatalf("fields = %#v, want [name roleId]", client.fields)
@@ -309,8 +313,8 @@ func TestMongoAdapterLoadDocumentsPassesProjection(t *testing.T) {
 	if client.manyCollection != "roles" {
 		t.Fatalf("collection = %q, want roles", client.manyCollection)
 	}
-	if len(client.manyIDs) != 2 || client.manyIDs[0] != int64(1001) || client.manyIDs[1] != int64(1002) {
-		t.Fatalf("ids = %#v, want [1001 1002]", client.manyIDs)
+	if client.manyFilter.Field != "_id" || len(client.manyFilter.Values) != 2 || client.manyFilter.Values[0] != int64(1001) || client.manyFilter.Values[1] != int64(1002) {
+		t.Fatalf("filter = %#v, want _id [1001 1002]", client.manyFilter)
 	}
 	if len(client.manyFields) != 1 || client.manyFields[0] != "name" {
 		t.Fatalf("fields = %#v, want [name]", client.manyFields)
@@ -323,7 +327,7 @@ func TestMongoAdapterLoadDocumentsPassesProjection(t *testing.T) {
 	}
 }
 
-func TestMongoAdapterLoadDocumentsFallsBackToFindByID(t *testing.T) {
+func TestMongoAdapterLoadDocumentsFallsBackToFindOne(t *testing.T) {
 	client := &recordingMongoFinder{
 		docs: map[any]map[string]any{
 			int64(1001): {"name": "alice"},
@@ -342,8 +346,8 @@ func TestMongoAdapterLoadDocumentsFallsBackToFindByID(t *testing.T) {
 	if client.collection != "roles" {
 		t.Fatalf("collection = %q, want roles", client.collection)
 	}
-	if len(client.ids) != 2 || client.ids[0] != int64(1001) || client.ids[1] != int64(1002) {
-		t.Fatalf("ids = %#v, want [1001 1002]", client.ids)
+	if len(client.filters) != 2 || client.filters[0].Field != "_id" || client.filters[0].Value != int64(1001) || client.filters[1].Field != "_id" || client.filters[1].Value != int64(1002) {
+		t.Fatalf("filters = %#v, want _id [1001 1002]", client.filters)
 	}
 	if len(client.fields) != 1 || client.fields[0] != "name" {
 		t.Fatalf("fields = %#v, want [name]", client.fields)
@@ -404,8 +408,8 @@ func TestMongoClusterRoutesSingleWriteByShardKey(t *testing.T) {
 	if len(router.calls) != 1 || router.calls[0].routeType != "role" || router.calls[0].shardKey != int64(7) {
 		t.Fatalf("router calls = %#v, want role shard key 7", router.calls)
 	}
-	if roleShard.collection != "roles" || roleShard.id != int64(1001) {
-		t.Fatalf("role shard collection/id = %q/%v", roleShard.collection, roleShard.id)
+	if roleShard.collection != "roles" || roleShard.filter.Field != "_id" || roleShard.filter.Value != int64(1001) {
+		t.Fatalf("role shard collection/filter = %q/%#v", roleShard.collection, roleShard.filter)
 	}
 	if userShard.update != nil {
 		t.Fatalf("unexpected user shard update = %#v", userShard.update)
@@ -452,10 +456,10 @@ func TestMongoClusterBatchLoadsByShardGroupAndRestoresOrder(t *testing.T) {
 	if !exists[0] || docs[0]["name"] != "alice" || exists[1] || docs[1] != nil || !exists[2] || docs[2]["name"] != "carol" {
 		t.Fatalf("docs=%#v exists=%#v, want original order", docs, exists)
 	}
-	if len(shardA.manyIDs) != 2 || shardA.manyIDs[0] != int64(1001) || shardA.manyIDs[1] != int64(1003) {
-		t.Fatalf("shard A ids = %#v, want [1001 1003]", shardA.manyIDs)
+	if shardA.manyFilter.Field != "_id" || len(shardA.manyFilter.Values) != 2 || shardA.manyFilter.Values[0] != int64(1001) || shardA.manyFilter.Values[1] != int64(1003) {
+		t.Fatalf("shard A filter = %#v, want _id [1001 1003]", shardA.manyFilter)
 	}
-	if len(shardB.manyIDs) != 1 || shardB.manyIDs[0] != int64(1002) {
-		t.Fatalf("shard B ids = %#v, want [1002]", shardB.manyIDs)
+	if shardB.manyFilter.Field != "_id" || len(shardB.manyFilter.Values) != 1 || shardB.manyFilter.Values[0] != int64(1002) {
+		t.Fatalf("shard B filter = %#v, want _id [1002]", shardB.manyFilter)
 	}
 }
