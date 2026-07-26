@@ -13,8 +13,8 @@ type ApplyOptions struct {
 	TTL    int64
 }
 
-// ChangeApplierWithOptions 定义支持通用写入选项的变更落地适配器。
-type ChangeApplierWithOptions interface {
+// ChangeApplier 定义支持通用写入选项的变更落地适配器。
+type ChangeApplier interface {
 	ApplyChangesWithOptions(context.Context, meta.TypeSpec, RecordKey, change.ChangeSet, ApplyOptions) error
 }
 

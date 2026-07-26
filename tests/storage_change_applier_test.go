@@ -11,8 +11,8 @@ import (
 	txredis "github.com/ngnl47/tx/storage/redis"
 )
 
-func TestRedisAdapterImplementsChangeApplierWithOptions(t *testing.T) {
-	var _ storage.ChangeApplierWithOptions = (*txredis.Adapter)(nil)
+func TestRedisAdapterImplementsChangeApplier(t *testing.T) {
+	var _ storage.ChangeApplier = (*txredis.Adapter)(nil)
 }
 
 func TestRedisUsesStorageApplyOptionsDirectly(t *testing.T) {

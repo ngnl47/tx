@@ -18,7 +18,7 @@ type LoadOptions struct {
 // Redis 适配器负责即时写入热数据；MongoQueue 负责把持久化保存推迟到
 // delaySave 配置之后执行。
 type Strategy struct {
-	Redis         storage.ChangeApplierWithOptions
+	Redis         storage.ChangeApplier
 	RedisDeleter  storage.DeleteApplier
 	RedisLoader   storage.DocumentLoader
 	RedisReplacer any
