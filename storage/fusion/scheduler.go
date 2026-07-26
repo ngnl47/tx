@@ -79,6 +79,9 @@ func NewSchedulerWithOptions(backend task.DelayTaskBackend, options SchedulerOpt
 }
 
 func (s *Scheduler) Schedule(ctx context.Context, item task.DelayTask) error {
+	if s == nil || s.backend == nil {
+		return nil
+	}
 	return s.backend.Enqueue(ctx, item)
 }
 

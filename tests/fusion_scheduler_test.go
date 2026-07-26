@@ -45,6 +45,17 @@ func TestFusionSchedulerEnqueuesThroughDelayTaskBackend(t *testing.T) {
 	}
 }
 
+func TestFusionSchedulerScheduleIsNilSafe(t *testing.T) {
+	ctx := context.Background()
+
+	if err := (*fusion.Scheduler)(nil).Schedule(ctx, task.DelayTask{Type: "role", ID: "1", Action: "save"}); err != nil {
+		t.Fatalf("nil Scheduler Schedule returned error: %v", err)
+	}
+	if err := fusion.NewScheduler(nil).Schedule(ctx, task.DelayTask{Type: "role", ID: "1", Action: "save"}); err != nil {
+		t.Fatalf("nil backend Scheduler Schedule returned error: %v", err)
+	}
+}
+
 func TestFusionTaskQueueEnqueuesDelayTaskBackend(t *testing.T) {
 	ctx := context.Background()
 	backend := memory.NewBackend()
