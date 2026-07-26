@@ -127,8 +127,11 @@ func (s *Scheduler) run(ctx context.Context) {
 	ticker := time.NewTicker(s.pollInterval)
 	defer ticker.Stop()
 	for {
-		if _, err := s.RunOnce(ctx, s.now()); err != nil && ctx.Err() != nil {
-			return
+		if _, err := s.RunOnce(ctx, s.now()); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			txlog.ErrorContext(ctx, "delay task scheduler failed", "err", err)
 		}
 		select {
 		case <-ctx.Done():

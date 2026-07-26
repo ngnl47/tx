@@ -257,6 +257,44 @@ func TestFusionSchedulerRunOnceRetriesFailedTask(t *testing.T) {
 	}
 }
 
+func TestFusionSchedulerStartLogsRunOnceError(t *testing.T) {
+	backend := &failingDelayTaskBackend{
+		err:     errors.New("claim failed"),
+		claimed: make(chan struct{}),
+	}
+	handler := &recordingSlogHandler{}
+	txlog.SetDefault(slog.New(handler))
+	defer txlog.SetDefault(nil)
+
+	ctx := lifecycle.NewWaitGroupContext(context.Background())
+	scheduler := fusion.NewSchedulerWithOptions(backend, fusion.SchedulerOptions{
+		PollInterval: time.Hour,
+	})
+
+	scheduler.Start(ctx)
+	assertClosed(t, backend.claimed, "scheduler did not attempt to claim due tasks")
+
+	deadline := time.After(time.Second)
+	for len(handler.records) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("scheduler did not log RunOnce error")
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	ctx.Cancel()
+	ctx.WaitDoneAndWaitGroupWait()
+
+	record := handler.records[0]
+	if record.Level != slog.LevelError || record.Message != "delay task scheduler failed" {
+		t.Fatalf("log record = %#v, want scheduler error", record)
+	}
+	if !recordHasStringAttr(record, "err", "claim failed") {
+		t.Fatalf("log attrs = %#v, want claim failed", recordAttrs(record))
+	}
+}
+
 func TestFusionSchedulerStartUsesLifecycleWaitGroup(t *testing.T) {
 	backend := memory.NewBackend()
 	now := time.Unix(100, 0)
@@ -292,4 +330,30 @@ func TestFusionSchedulerStartUsesLifecycleWaitGroup(t *testing.T) {
 
 	close(release)
 	assertClosed(t, done, "scheduler lifecycle wait did not return after active handler completed")
+}
+
+type failingDelayTaskBackend struct {
+	err     error
+	claimed chan struct{}
+	closed  bool
+}
+
+func (b *failingDelayTaskBackend) Enqueue(context.Context, task.DelayTask) error {
+	return nil
+}
+
+func (b *failingDelayTaskBackend) ClaimDue(context.Context, time.Time, int) ([]task.DelayTaskLease, error) {
+	if !b.closed {
+		close(b.claimed)
+		b.closed = true
+	}
+	return nil, b.err
+}
+
+func (b *failingDelayTaskBackend) Complete(context.Context, task.DelayTaskLease) error {
+	return nil
+}
+
+func (b *failingDelayTaskBackend) Retry(context.Context, task.DelayTaskLease, time.Time, error) error {
+	return nil
 }
