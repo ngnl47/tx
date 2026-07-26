@@ -80,27 +80,26 @@ alias tag；或 json/bson/msgpack tag；否则使用 lower-camel Go 字段名
 | --- | --- | --- | --- |
 | type | `@storage` | `mode`、`delaySaveTime`、`saveTime`、`delaySave`、`delayDelTime`、`delTime`、`delayDelete`、`memoryCache` | 存储模式和时间策略。`mode` 支持 `redis`、`mongo`、`fusion`。纯数字时间按秒解析，也支持 Go duration，例如 `10m`。 |
 | type | `@redis` | `routeType`、`shardType`、`config`、`routeBy`、`shardBy`、`idField`、`id`、`key`、`storeType`、`omitempty` | Redis 根对象配置。`routeType/shardType/config` 等价；`routeBy/shardBy` 等价；`idField/id` 等价。`omitempty` 可写为参数或 flag。 |
-| type | `@mongodb` | `routeType`、`shardType`、`config`、`routeBy`、`shardBy`、`idField`、`id`、`collection`、`c`、`col`、`enableSharding`、`useMongoObjectID` | Mongo 根对象配置。`collection/c/col` 等价。`enableSharding`、`useMongoObjectID` 可写为参数或 flag。 |
+| type | `@mongodb` | `routeType`、`shardType`、`config`、`routeBy`、`shardBy`、`idField`、`id`、`collection`、`c`、`col`、`enableSharding` | Mongo 根对象配置。`collection/c/col` 等价。`enableSharding` 可写为参数或 flag。 |
 | field | `redis` | `subKey`、`ignore`、`fullUpdate` | 字段级 Redis 配置。`ignore`、`fullUpdate` 可写为 flag 或布尔参数。 |
 | field | `mongodb` | `index`、`unique`、`ignore`、`order`、`indexType`、`weight`、`expire`、`expireAfter` | 字段级 Mongo 配置。`index`、`unique`、`ignore` 可写为 flag 或布尔参数；`expire/expireAfter` 表示 Mongo TTL 索引，命中后删除整条文档。 |
 
-`@mongodb` 默认按 Mongo `_id` 过滤文档，适合把业务 `idField` 写入 `_id` 的数据。开启
-`useMongoObjectID` 后，Mongo 保留驱动或数据库自己的 `_id`，tx runtime 的查询、更新、替换、
-删除会改为按 `idField` 指定的业务字段过滤，例如 `{roleId: 1001}`。这只影响 Mongo 过滤条件，
-不改变 ChangeSet 字段 alias，也不要求业务结构把字段命名成 `_id`。
+`@mongodb.idField` 使用 Go 字段名，tx runtime 会通过该字段的 `bson` tag 得到 Mongo 过滤字段。
+业务 `idField` 可以直接绑定到 Mongo `_id`，也可以作为普通 BSON 字段保存。
 
 以 `RoleId = 1001`、`Name = "alice"` 为例，常见组合如下：
 
 | 配置组合 | Mongo 文档结构 | runtime 过滤条件 | 说明 |
 | --- | --- | --- | --- |
-| 默认，业务字段正常保存为 `roleId` | `{"_id": 1001, "roleId": 1001, "name": "alice"}` | `{_id: 1001}` | 可用，但 `_id` 和业务字段会同时存在且值相同。 |
-| 默认，业务字段绑定到 `bson:"_id"` | `{"_id": 1001, "name": "alice"}` | `{_id: 1001}` | Mongo 物理主键直接使用业务 ID。 |
-| 开启 `useMongoObjectID`，业务字段正常保存为 `roleId` | `{"_id": ObjectID, "roleId": 1001, "name": "alice"}` | `{roleId: 1001}` | Mongo `_id` 和业务 ID 分离，这是保留 Mongo ObjectID 时的推荐形态。 |
-| 开启 `useMongoObjectID`，但业务字段绑定到 `bson:"_id"` | `{"_id": 1001, "name": "alice"}` | `{roleId: 1001}` | 冲突形态：runtime 会按 `roleId` 查，但文档没有 `roleId`。 |
+| `idField:"RoleId"`，字段写 `bson:"_id"` | `{"_id": 1001, "name": "alice"}` | `{_id: 1001}` | Mongo 物理主键直接使用业务 ID。 |
+| `idField:"RoleId"`，字段写 `bson:"roleId"` 或缺省生成 `bson:"roleId"` | `{"_id": ObjectID, "roleId": 1001, "name": "alice"}` | `{roleId: 1001}` | Mongo `_id` 和业务 ID 分离，runtime 按业务字段查。 |
 
 因此，`bson:"_id"` 是 Mongo 序列化层的字段绑定；`mongodb.idField` 是 tx 存储框架层的业务记录身份。
-两者可以配合，但不能互相替代。开启 `useMongoObjectID` 时，业务 ID 必须作为普通字段保留在 Mongo
-文档中，不能再把同一个字段绑定到 `_id`。
+两者配合后由 runtime 统一推导过滤字段，不再需要额外开关。
+
+txgen 会在生成阶段校验 `bson:"_id"` 的归属：同一 data 类型最多只能有一个字段声明
+`bson:"_id"`；如果存在，该字段必须是 `mongodb.idField` 指向的 Go 字段。`routeBy` 只负责
+路由取值，不决定 Mongo 物理主键字段。
 
 ## 日志
 
@@ -343,8 +342,8 @@ Mongo adapter 当前支持：
 - `ApplyDelete`：显式物理删除接口，由业务代码决定是否调用。
 - `mongo.Cluster`：按 `routeType` 和 `storage.RecordKey.ShardKey` 路由到具体 Mongo adapter；批量读取会按 shard 分组并按输入顺序还原结果。
 
-Mongo adapter 通过统一 filter 抽象调用底层 client：默认 filter 是 `{_id: id}`，开启
-`useMongoObjectID` 时 filter 是 `{idField: id}`。Mongo update 会遵守 `storage.ApplyOptions.Upsert`：
+Mongo adapter 通过统一 filter 抽象调用底层 client：默认 filter 是 `{_id: id}`；配置
+`idField` 时 filter 字段由 `spec.BSONName(idField)` 推导。Mongo update 会遵守 `storage.ApplyOptions.Upsert`：
 生成 Store 的 Insert/Replace 路径会启用 upsert，Update 路径会关闭 upsert，避免普通更新意外创建缺失文档。
 
 Mongo TTL index 的字段级 `expireAfter` 会删除整条文档，不是删除单个字段。生成阶段应限制同一类型最多一个 TTL 字段。

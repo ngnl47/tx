@@ -46,11 +46,10 @@ func ResolveMeta(specs []meta.TypeSpec, types TypeLookup) (*Registry, error) {
 			}
 			if spec.Mongo != nil {
 				cfg.Mongo = &MongoConfig{
-					Route:            RouteConfig{Type: spec.Mongo.Route.Type, By: spec.Mongo.Route.By},
-					ID:               spec.Mongo.IDField,
-					Collection:       spec.Mongo.Collection,
-					Sharding:         ShardingConfig{Enabled: spec.Mongo.Sharding.Enabled},
-					UseMongoObjectID: spec.Mongo.UseMongoObjectID,
+					Route:      RouteConfig{Type: spec.Mongo.Route.Type, By: spec.Mongo.Route.By},
+					ID:         spec.Mongo.IDField,
+					Collection: spec.Mongo.Collection,
+					Sharding:   ShardingConfig{Enabled: spec.Mongo.Sharding.Enabled},
 				}
 			}
 			if spec.Fusion != nil || spec.Storage.Mode == meta.StorageModeFusion {

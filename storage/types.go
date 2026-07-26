@@ -34,11 +34,10 @@ type RedisConfig struct {
 }
 
 type MongoConfig struct {
-	Route            RouteConfig    `json:"route"`
-	ID               string         `json:"id"`
-	Collection       string         `json:"collection"`
-	Sharding         ShardingConfig `json:"sharding,omitempty"`
-	UseMongoObjectID bool           `json:"useMongoObjectID,omitempty"`
+	Route      RouteConfig    `json:"route"`
+	ID         string         `json:"id"`
+	Collection string         `json:"collection"`
+	Sharding   ShardingConfig `json:"sharding,omitempty"`
 }
 
 type FusionConfig struct{}

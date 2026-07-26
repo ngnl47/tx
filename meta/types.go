@@ -177,11 +177,10 @@ type RedisSpec struct {
 }
 
 type MongoSpec struct {
-	Route            RouteSpec    `json:"route"`
-	IDField          string       `json:"idField"`
-	Collection       string       `json:"collection"`
-	Sharding         ShardingSpec `json:"sharding,omitempty"`
-	UseMongoObjectID bool         `json:"useMongoObjectID,omitempty"`
+	Route      RouteSpec    `json:"route"`
+	IDField    string       `json:"idField"`
+	Collection string       `json:"collection"`
+	Sharding   ShardingSpec `json:"sharding,omitempty"`
 }
 
 type FusionSpec struct{}

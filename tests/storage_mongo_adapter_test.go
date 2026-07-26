@@ -258,9 +258,8 @@ func TestMongoAdapterPassesUpsertOptionToBusinessIDFieldUpdate(t *testing.T) {
 	updater := &recordingMongoUpdater{}
 	adapter := txmongo.NewAdapter(updater)
 	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{
-		Collection:       "roles",
-		IDField:          "roleId",
-		UseMongoObjectID: true,
+		Collection: "roles",
+		IDField:    "roleId",
 	}}
 	var set change.ChangeSet
 	_ = set.Add(change.FieldChange{Path: change.Path{"name"}, Kind: change.KindSet, Value: "alice"})
@@ -277,7 +276,7 @@ func TestMongoAdapterPassesUpsertOptionToBusinessIDFieldUpdate(t *testing.T) {
 	}
 }
 
-func TestMongoAdapterUsesBusinessIDFieldWhenMongoObjectIDEnabled(t *testing.T) {
+func TestMongoAdapterUsesBusinessIDFieldWhenConfigured(t *testing.T) {
 	client := &recordingMongoUpdater{
 		doc:    map[string]any{"roleId": int64(1001), "name": "alice"},
 		exists: true,
@@ -289,9 +288,8 @@ func TestMongoAdapterUsesBusinessIDFieldWhenMongoObjectIDEnabled(t *testing.T) {
 	}
 	adapter := txmongo.NewAdapter(client)
 	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{
-		Collection:       "roles",
-		IDField:          "roleId",
-		UseMongoObjectID: true,
+		Collection: "roles",
+		IDField:    "roleId",
 	}}
 	key := storage.RecordKey{ID: int64(1001)}
 	var set change.ChangeSet
