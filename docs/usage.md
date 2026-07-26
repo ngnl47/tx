@@ -298,6 +298,7 @@ mongoDB := txmongodriver.NewDatabase(mongoDriverDatabase)
 - 单条写入、替换、删除和读取会先选择 endpoint，再调用对应 adapter。
 - 批量读取会先按 endpoint 分组，每个 endpoint 内仍使用客户端层原生 `MGET` 读取 main/subKey keys，然后按输入顺序还原结果。
 - 默认策略贴合云 Redis 代理能力，不在 endpoint 内继续按 slot 拆分；本地原生 Redis Cluster 可显式打开 `LoadOptions.ClusterSafe` 调试模式。
+- 写入和整文档替换直接接收 `storage.ApplyOptions`，不再暴露 Redis 专用 `ApplyOptions` 别名；`redis.LoadOptions` 仍是 Redis 批量读取的专用选项。
 
 不同 Redis 环境下的批量读取策略：
 
@@ -329,7 +330,7 @@ Mongo TTL index 的字段级 `expireAfter` 会删除整条文档，不是删除�
 - `DocumentLoader`：按 `TypeSpec + RecordKey` 读取单条文档。
 - `BatchDocumentLoader`：按 `TypeSpec + []RecordKey` 批量读取文档。
 - `DocumentReplacer`：按 `TypeSpec + RecordKey` 整文档替换。
-- `DocumentReplacerWithOptions`：整文档替换并接收 `ApplyOptions`，用于需要 TTL/upsert 等写入语义的路径。
+- `DocumentReplacerWithOptions`：整文档替换并接收 `storage.ApplyOptions`，用于需要 TTL/upsert 等写入语义的路径。
 
 这些接口是 Store 读取、Fusion 回源、Redis 热数据回填和延迟保存回写的共同边界。具体后端仍负责把
 `RecordKey` 转成自己的底层定位方式，例如 Redis key/hash tag 或 Mongo filter。

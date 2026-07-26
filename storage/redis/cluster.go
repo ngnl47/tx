@@ -47,7 +47,7 @@ func NewClusterWithResolver(router Router, shards map[string]any, resolver chang
 	return cluster
 }
 
-func (c *Cluster) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, set change.ChangeSet, options ApplyOptions) error {
+func (c *Cluster) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, set change.ChangeSet, options storage.ApplyOptions) error {
 	adapter, err := c.adapterFor(ctx, spec, key)
 	if err != nil {
 		return err
@@ -55,7 +55,7 @@ func (c *Cluster) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 	return adapter.ApplyChangesWithOptions(ctx, spec, key, set, options)
 }
 
-func (c *Cluster) ReplaceDocumentWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any, options ApplyOptions) error {
+func (c *Cluster) ReplaceDocumentWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any, options storage.ApplyOptions) error {
 	adapter, err := c.adapterFor(ctx, spec, key)
 	if err != nil {
 		return err
@@ -64,7 +64,7 @@ func (c *Cluster) ReplaceDocumentWithOptions(ctx context.Context, spec meta.Type
 }
 
 func (c *Cluster) ReplaceDocument(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any) error {
-	return c.ReplaceDocumentWithOptions(ctx, spec, key, doc, ApplyOptions{Upsert: true})
+	return c.ReplaceDocumentWithOptions(ctx, spec, key, doc, storage.ApplyOptions{Upsert: true})
 }
 
 func (c *Cluster) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {

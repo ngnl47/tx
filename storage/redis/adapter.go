@@ -25,9 +25,6 @@ type BatchClient interface {
 	MGet(context.Context, ...string) ([]string, error)
 }
 
-// ApplyOptions 控制 Redis 变更写入脚本的尾部参数。
-type ApplyOptions = storage.ApplyOptions
-
 // LoadOptions 控制 Redis 批量读取行为。
 type LoadOptions struct {
 	BatchSize   int
@@ -51,7 +48,7 @@ func NewAdapterWithResolver(client ScriptClient, resolver change.FieldResolver) 
 }
 
 // ApplyChangesWithOptions 根据指定选项写入 Redis string JSON 变更。
-func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, set change.ChangeSet, options ApplyOptions) error {
+func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, set change.ChangeSet, options storage.ApplyOptions) error {
 	if a.client == nil || set.Empty() {
 		return nil
 	}
@@ -59,7 +56,7 @@ func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 	return a.applyDocumentPatchesWithOptions(ctx, spec, key, patches, options)
 }
 
-func (a *Adapter) applyDocumentPatchesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, patches map[string]DocumentPatch, options ApplyOptions) error {
+func (a *Adapter) applyDocumentPatchesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, patches map[string]DocumentPatch, options storage.ApplyOptions) error {
 	if a.client == nil {
 		return nil
 	}
@@ -99,7 +96,7 @@ func (a *Adapter) applyDocumentPatchesWithOptions(ctx context.Context, spec meta
 }
 
 // ReplaceDocumentWithOptions 按 Redis string JSON 文档模型全量替换一条热数据。
-func (a *Adapter) ReplaceDocumentWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any, options ApplyOptions) error {
+func (a *Adapter) ReplaceDocumentWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any, options storage.ApplyOptions) error {
 	if doc == nil {
 		return nil
 	}
@@ -109,7 +106,7 @@ func (a *Adapter) ReplaceDocumentWithOptions(ctx context.Context, spec meta.Type
 
 // ReplaceDocument 按 Redis string JSON 文档模型全量替换一条热数据。
 func (a *Adapter) ReplaceDocument(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any) error {
-	return a.ReplaceDocumentWithOptions(ctx, spec, key, doc, ApplyOptions{Upsert: true})
+	return a.ReplaceDocumentWithOptions(ctx, spec, key, doc, storage.ApplyOptions{Upsert: true})
 }
 
 // ApplyDelete 删除 Redis string JSON 主文档、subKey 文档和版本键。
