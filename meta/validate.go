@@ -13,9 +13,6 @@ func Validate(spec TypeSpec, astType TypeSpec) error {
 		if field.Name != "" {
 			fields[field.Name] = struct{}{}
 		}
-		if field.Alias != "" {
-			fields[field.Alias] = struct{}{}
-		}
 	}
 	switch spec.Storage.Mode {
 	case StorageModeRedis:

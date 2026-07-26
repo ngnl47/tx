@@ -64,15 +64,11 @@ mongodb:"index,unique,expireAfter:0"
 - 片段两边空格会被裁剪，空片段会跳过。
 - field tag 的单值不会自动映射到 `Params["value"]`；type 注解的单值规则只作用于 type 级注解。
 
-字段别名类 tag 不属于内置注解解析结果，由 AST 扫描直接读取：
-
-```text
-alias tag；或 json/bson/msgpack tag；否则使用 lower-camel Go 字段名
-```
-
-`json:"roleId,omitempty"`、`bson:"roleId,omitempty"` 或 `msgpack:"roleId,omitempty"` 都只取逗号前的
-`roleId` 作为统一 alias。脚手架输入中 `alias` 不能和 `json/bson/msgpack` 混用；如果
-`json`、`bson`、`msgpack` 多个 tag 同时声明字段名，字段名必须一致。
+字段名类 tag 不属于内置注解解析结果，由 AST 扫描直接读取。Go 字段名是框架内部字段身份；
+`json`、`bson`、`msgpack` 分别决定对应后端的物理字段名。`alias` 只是输入侧语法糖，如果写了
+`alias:"rid"`，会同时作为 JSON、BSON、Msgpack、Redis 的默认字段名；写了 `alias` 的字段不能再写
+`json`、`bson` 或 `msgpack`。不写 `alias` 时，各后端 tag 可以各自命名，例如
+`json:"roleId,omitempty" bson:"_id,omitempty" msgpack:"roleId,omitempty"`。
 
 ### 内置注解字段
 
@@ -159,35 +155,30 @@ RoleLog.Error("role save failed", "roleId", roleID, "err", err)
 每次输出时都会读取当前 `Default()`，再附加 `logger=<name>` 属性派生一次日志调用，避免包级变量早于项目日志初始化时绑定到旧 logger。
 因此，项目启动后调用 `log.SetDefault(logger)`，此前已经声明的 `RoleLog` 也会使用新的 default logger。
 
-## 元数据与字段别名
+## 元数据与字段名
 
-字段别名用于生成 JSON/BSON/Msgpack tag，也用于 `ChangeSet` 路径、Redis 文档字段名和 Mongo 字段名。
-
-当前 AST 扫描别名优先级：
-
-```text
-alias tag > json/bson/msgpack tag > lower-camel Go 字段名
-```
+`meta.TypeSpec` 使用 Go 字段名作为内部字段身份；`TypeSpec.Fields` 的 key、`idField`、`routeBy`、
+`LoadFields()` 入参和 `ChangeDocument()` 默认输出都使用 Go 字段名。`meta.Field` 同时保存
+`JSONName`、`BSONName`、`MsgpackName`、`RedisName`，运行时适配器在靠近具体后端时再转换字段名。
 
 例如：
 
 ```go
-Key int64 `json:"k"`
+RoleId int64 `json:"roleId,omitempty" bson:"_id,omitempty" msgpack:"roleId,omitempty"`
 ```
 
-会把字段 alias 解析为 `k`。序列化后使用 `{"k":...}`，反序列化时 Go 标准库会根据 `json` tag 回填到 `Key` 字段。
-如果没有 `alias` 和 `json`，但写了 `bson:"k"` 或 `msgpack:"k"`，同样会把统一字段 alias 解析为 `k`。
-当 `json`、`bson`、`msgpack` 同时声明字段名时，脚手架侧要求这些名称一致，避免同一字段在运行时路径和序列化路径上分裂。
+Store 内部变更文档使用 `RoleId`；Redis 写入时使用 `roleId`；Mongo filter/update 使用 `_id`；
+cmd Provider 下行 body 使用 JSON 名 `roleId`。
 
 ## ChangeSet
 
-`change.Tracker` 记录字段级变更，字段可以通过编号解析为 alias：
+`change.Tracker` 记录字段级变更，字段可以通过编号解析为字段路径：
 
 - `TouchField` 记录普通 set。
 - `TouchFieldPath` 记录子路径 set。
 - `ReplaceFieldPath` 记录整体或子路径 replace。
 - `UnsetFieldPath` 记录 unset。
-- `FieldChange.FullPath(resolver)` 将字段编号和子路径拼成完整 alias path。
+- `FieldChange.FullPath(resolver)` 将字段编号和子路径拼成完整 path。
 
 同一保存周期内，父级变更会覆盖同目标下已有或后续追加的子路径变更。通过字段编号记录时，例如先记录
 `TouchFieldPath(fieldItems, Path{"1001", "quantity"})`，再记录 `TouchField(fieldItems, items)`，最终
