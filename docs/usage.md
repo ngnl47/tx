@@ -119,6 +119,18 @@ func DebugContext(ctx context.Context, msg string, args ...any)
 func InfoContext(ctx context.Context, msg string, args ...any)
 func WarnContext(ctx context.Context, msg string, args ...any)
 func ErrorContext(ctx context.Context, msg string, args ...any)
+
+func NewLogger(name string) Logger
+
+func (l Logger) Debug(msg string, args ...any)
+func (l Logger) Info(msg string, args ...any)
+func (l Logger) Warn(msg string, args ...any)
+func (l Logger) Error(msg string, args ...any)
+
+func (l Logger) DebugContext(ctx context.Context, msg string, args ...any)
+func (l Logger) InfoContext(ctx context.Context, msg string, args ...any)
+func (l Logger) WarnContext(ctx context.Context, msg string, args ...any)
+func (l Logger) ErrorContext(ctx context.Context, msg string, args ...any)
 ```
 
 默认返回 `slog.Default()`；传入 `nil` 会恢复默认 logger。实际项目可在启动期调用 `log.SetDefault(logger)` 注入自己的 `slog.Logger`，并通过 `slog.Handler` 对接文件日志、云日志或第三方日志实现。
