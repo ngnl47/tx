@@ -68,7 +68,10 @@ func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 	if set.Empty() {
 		return nil
 	}
-	update := BuildUpdateDocumentWithResolver(set, a.resolver)
+	update, err := BuildUpdateDocumentWithSpecAndResolver(spec, set, a.resolver)
+	if err != nil {
+		return err
+	}
 	if len(update) == 0 {
 		return nil
 	}
@@ -106,7 +109,7 @@ func (a *Adapter) LoadDocument(ctx context.Context, spec meta.TypeSpec, key stor
 	if !ok {
 		return nil, false, nil
 	}
-	return finder.FindOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), fields...)
+	return finder.FindOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), mongoProjectionFields(spec, fields)...)
 }
 
 // LoadDocuments 按记录键批量读取 Mongo 文档。
@@ -117,16 +120,17 @@ func (a *Adapter) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []
 		return docs, exists, nil
 	}
 	collection := mongoCollection(spec)
+	projection := mongoProjectionFields(spec, fields)
 	finder, ok := a.client.(BatchFinder)
 	if ok {
-		return finder.FindMany(ctx, collection, mongoRecordValuesFilter(spec, keys), fields...)
+		return finder.FindMany(ctx, collection, mongoRecordValuesFilter(spec, keys), projection...)
 	}
 	singleFinder, ok := a.client.(Finder)
 	if !ok {
 		return docs, exists, nil
 	}
 	for i, key := range keys {
-		doc, found, err := singleFinder.FindOne(ctx, collection, mongoRecordFilter(spec, key), fields...)
+		doc, found, err := singleFinder.FindOne(ctx, collection, mongoRecordFilter(spec, key), projection...)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -156,8 +160,8 @@ func mongoRecordValuesFilter(spec meta.TypeSpec, keys []storage.RecordKey) Value
 }
 
 func mongoRecordFilterField(spec meta.TypeSpec) string {
-	if spec.Mongo != nil && spec.Mongo.UseMongoObjectID && spec.Mongo.IDField != "" {
-		return spec.Mongo.IDField
+	if spec.Mongo != nil && spec.Mongo.IDField != "" {
+		return spec.BSONName(spec.Mongo.IDField)
 	}
 	return "_id"
 }

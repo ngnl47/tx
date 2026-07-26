@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/ngnl47/tx/change"
@@ -117,6 +118,113 @@ func TestMongoAdapterAppliesUpdateByDefaultIDFilter(t *testing.T) {
 	setDoc := updater.update["$set"].(map[string]any)
 	if setDoc["name"] != "alice" {
 		t.Fatalf("update = %#v", updater.update)
+	}
+}
+
+func TestMongoAdapterMapsUpdatePathToBSONName(t *testing.T) {
+	updater := &recordingMongoUpdater{}
+	adapter := txmongo.NewAdapter(updater)
+	spec := meta.TypeSpec{
+		Type: meta.Type{
+			Fields: []meta.Field{{
+				Name:     "Power",
+				BSONName: "p",
+			}},
+		},
+		Mongo: &meta.MongoSpec{Collection: "roles"},
+	}
+	var set change.ChangeSet
+	_ = set.Add(change.FieldChange{Path: change.Path{"Power"}, Kind: change.KindSet, Value: int64(9)})
+
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set, storage.ApplyOptions{})
+	if err != nil {
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
+	}
+	setDoc := updater.update["$set"].(map[string]any)
+	if setDoc["p"] != int64(9) {
+		t.Fatalf("update = %#v, want $set p=9", updater.update)
+	}
+	if _, exists := setDoc["Power"]; exists {
+		t.Fatalf("update = %#v, should not use Go field name", updater.update)
+	}
+}
+
+func TestMongoAdapterUsesBSONIDFieldForFilter(t *testing.T) {
+	updater := &recordingMongoUpdater{}
+	adapter := txmongo.NewAdapter(updater)
+	spec := meta.TypeSpec{
+		Type: meta.Type{
+			Fields: []meta.Field{{
+				Name:     "RoleId",
+				BSONName: "_id",
+			}},
+		},
+		Mongo: &meta.MongoSpec{Collection: "roles", IDField: "RoleId"},
+	}
+	var set change.ChangeSet
+	_ = set.Add(change.FieldChange{Path: change.Path{"Name"}, Kind: change.KindSet, Value: "alice"})
+
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set, storage.ApplyOptions{})
+	if err != nil {
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
+	}
+	if updater.filter.Field != "_id" || updater.filter.Value != int64(1001) {
+		t.Fatalf("filter = %#v, want _id/1001", updater.filter)
+	}
+}
+
+func TestMongoAdapterMapsProjectionToBSONName(t *testing.T) {
+	client := &recordingMongoUpdater{
+		doc:    map[string]any{"p": int64(9)},
+		exists: true,
+	}
+	adapter := txmongo.NewAdapter(client)
+	spec := meta.TypeSpec{
+		Type: meta.Type{
+			Fields: []meta.Field{{
+				Name:     "Power",
+				BSONName: "p",
+			}},
+		},
+		Mongo: &meta.MongoSpec{Collection: "roles"},
+	}
+
+	_, exists, err := adapter.LoadDocument(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "Power")
+	if err != nil {
+		t.Fatalf("LoadDocument returned error: %v", err)
+	}
+	if !exists {
+		t.Fatal("LoadDocument exists = false, want true")
+	}
+	if len(client.fields) != 1 || client.fields[0] != "p" {
+		t.Fatalf("fields = %#v, want [p]", client.fields)
+	}
+}
+
+func TestMongoAdapterRejectsIDFieldUpdate(t *testing.T) {
+	updater := &recordingMongoUpdater{}
+	adapter := txmongo.NewAdapter(updater)
+	spec := meta.TypeSpec{
+		Type: meta.Type{
+			Fields: []meta.Field{{
+				Name:     "RoleId",
+				BSONName: "_id",
+			}},
+		},
+		Mongo: &meta.MongoSpec{Collection: "roles", IDField: "RoleId"},
+	}
+	var set change.ChangeSet
+	_ = set.Add(change.FieldChange{Path: change.Path{"RoleId"}, Kind: change.KindSet, Value: int64(1002)})
+
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set, storage.ApplyOptions{})
+	if err == nil {
+		t.Fatal("ApplyChangesWithOptions returned nil error, want immutable _id error")
+	}
+	if !strings.Contains(err.Error(), "RoleId") || !strings.Contains(err.Error(), "_id") {
+		t.Fatalf("error = %v, want field context", err)
+	}
+	if updater.update != nil {
+		t.Fatalf("update was sent despite immutable _id error: %#v", updater.update)
 	}
 }
 

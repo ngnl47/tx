@@ -1,7 +1,12 @@
 // Package mongo 提供 ChangeSet 到 MongoDB 更新文档的转换。
 package mongo
 
-import "github.com/ngnl47/tx/change"
+import (
+	"fmt"
+
+	"github.com/ngnl47/tx/change"
+	"github.com/ngnl47/tx/meta"
+)
 
 // BuildUpdateDocument 把字段变更转换成 MongoDB update document。
 //
@@ -14,14 +19,39 @@ func BuildUpdateDocument(set change.ChangeSet) map[string]any {
 // BuildUpdateDocumentWithResolver 把字段变更转换成 MongoDB update document，
 // 并用 resolver 把 FieldID 解析为字段别名。
 func BuildUpdateDocumentWithResolver(set change.ChangeSet, resolver change.FieldResolver) map[string]any {
-	doc := set.DocumentWithResolver(resolver)
+	update, _ := buildUpdateDocument(set, resolver, nil)
+	return update
+}
+
+// BuildUpdateDocumentWithSpecAndResolver 把字段变更转换成 MongoDB update document，
+// 并按 TypeSpec 将 Go 字段名转换为 BSON 字段名。
+func BuildUpdateDocumentWithSpecAndResolver(spec meta.TypeSpec, set change.ChangeSet, resolver change.FieldResolver) (map[string]any, error) {
+	return buildUpdateDocument(set, resolver, func(path change.Path) (change.Path, error) {
+		return mongoPath(spec, path)
+	})
+}
+
+func buildUpdateDocument(set change.ChangeSet, resolver change.FieldResolver, mapPath func(change.Path) (change.Path, error)) (map[string]any, error) {
 	setDoc := map[string]any{}
 	unsetDoc := map[string]any{}
-	for path, value := range doc.Set {
-		setDoc[path] = value
-	}
-	for path := range doc.Unset {
-		unsetDoc[path] = ""
+	for _, fieldChange := range set.Changes() {
+		path := fieldChange.FullPath(resolver)
+		if len(path) == 0 {
+			continue
+		}
+		if mapPath != nil {
+			mapped, err := mapPath(path)
+			if err != nil {
+				return nil, err
+			}
+			path = mapped
+		}
+		switch fieldChange.Kind {
+		case change.KindSet, change.KindReplace:
+			setDoc[path.String()] = fieldChange.Value
+		case change.KindUnset:
+			unsetDoc[path.String()] = ""
+		}
 	}
 	update := map[string]any{}
 	if len(setDoc) > 0 {
@@ -30,5 +60,30 @@ func BuildUpdateDocumentWithResolver(set change.ChangeSet, resolver change.Field
 	if len(unsetDoc) > 0 {
 		update["$unset"] = unsetDoc
 	}
-	return update
+	return update, nil
+}
+
+func mongoPath(spec meta.TypeSpec, path change.Path) (change.Path, error) {
+	if len(path) == 0 {
+		return nil, nil
+	}
+	out := append(change.Path(nil), path...)
+	goField := out[0]
+	bsonName := spec.BSONName(goField)
+	if bsonName == "_id" {
+		return nil, fmt.Errorf("mongo: cannot update immutable _id field %s", goField)
+	}
+	out[0] = bsonName
+	return out, nil
+}
+
+func mongoProjectionFields(spec meta.TypeSpec, fields []string) []string {
+	if len(fields) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		out = append(out, spec.BSONName(field))
+	}
+	return out
 }
