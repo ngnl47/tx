@@ -67,10 +67,12 @@ mongodb:"index,unique,expireAfter:0"
 字段别名类 tag 不属于内置注解解析结果，由 AST 扫描直接读取：
 
 ```text
-alias tag > json tag > lower-camel Go 字段名
+alias tag；或 json/bson/msgpack tag；否则使用 lower-camel Go 字段名
 ```
 
-`json:"roleId,omitempty"` 只取逗号前的 `roleId` 作为 alias。
+`json:"roleId,omitempty"`、`bson:"roleId,omitempty"` 或 `msgpack:"roleId,omitempty"` 都只取逗号前的
+`roleId` 作为统一 alias。脚手架输入中 `alias` 不能和 `json/bson/msgpack` 混用；如果
+`json`、`bson`、`msgpack` 多个 tag 同时声明字段名，字段名必须一致。
 
 ### 内置注解字段
 
