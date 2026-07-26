@@ -120,3 +120,20 @@ func TestFusionDelayTaskHandlerRejectsDeleteTask(t *testing.T) {
 		t.Fatal("HandleDelayTask returned nil error, want unknown action error")
 	}
 }
+
+func TestFusionDelayTaskHandlerRejectsMissingRecordID(t *testing.T) {
+	registry := meta.NewRegistry()
+	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Package: "data", Name: "GDRole"}}}
+	if err := registry.RegisterType(spec); err != nil {
+		t.Fatalf("RegisterType returned error: %v", err)
+	}
+	handler := fusion.NewDelayTaskHandler(registry, nil, nil)
+
+	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
+		Type:   "data.GDRole",
+		Action: string(fusion.DelayedSave),
+	})
+	if err == nil {
+		t.Fatal("HandleDelayTask returned nil error, want missing record id error")
+	}
+}
