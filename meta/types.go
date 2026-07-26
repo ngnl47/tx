@@ -41,13 +41,17 @@ func (ref TypeRef) key() string {
 	return ref.normalized().FullName
 }
 
-// Field 描述 Go 结构体字段及外部元数据使用的字段别名。
+// Field 描述 Go 结构体字段及各后端使用的字段名。
 type Field struct {
-	Name     string
-	Alias    string
-	Type     string
-	Exported bool
-	Embedded bool
+	Name        string
+	Alias       string
+	JSONName    string
+	BSONName    string
+	MsgpackName string
+	RedisName   string
+	Type        string
+	Exported    bool
+	Embedded    bool
 }
 
 // Method 描述从类型上扫描到的 Go 方法。
@@ -71,6 +75,47 @@ type TypeSpec struct {
 	Mongo   *MongoSpec
 	Fusion  *FusionSpec
 	Fields  map[string]FieldSpec
+}
+
+func (spec TypeSpec) FieldByName(name string) (Field, bool) {
+	for _, field := range spec.Type.Fields {
+		if field.Name == name {
+			return field, true
+		}
+	}
+	return Field{}, false
+}
+
+func (spec TypeSpec) JSONName(name string) string {
+	field, ok := spec.FieldByName(name)
+	if !ok || field.JSONName == "" {
+		return name
+	}
+	return field.JSONName
+}
+
+func (spec TypeSpec) BSONName(name string) string {
+	field, ok := spec.FieldByName(name)
+	if !ok || field.BSONName == "" {
+		return name
+	}
+	return field.BSONName
+}
+
+func (spec TypeSpec) MsgpackName(name string) string {
+	field, ok := spec.FieldByName(name)
+	if !ok || field.MsgpackName == "" {
+		return name
+	}
+	return field.MsgpackName
+}
+
+func (spec TypeSpec) RedisName(name string) string {
+	field, ok := spec.FieldByName(name)
+	if !ok || field.RedisName == "" {
+		return spec.JSONName(name)
+	}
+	return field.RedisName
 }
 
 func cloneTypeSpec(spec TypeSpec) TypeSpec {

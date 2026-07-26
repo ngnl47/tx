@@ -19,11 +19,11 @@ type Base struct {
 }
 
 // @storage:` + "`mode:\"fusion\" delaySaveTime:\"600s\" delayDelTime:\"24h\"`" + `
-// @redis:` + "`routeType:\"role\" routeBy:\"roleId\" idField:\"roleId\" key:\"role\" omitempty:\"true\"`" + `
-// @mongodb:` + "`routeType:\"role\" routeBy:\"roleId\" idField:\"roleId\" collection:\"roles\" enableSharding:\"true\"`" + `
+// @redis:` + "`routeType:\"role\" routeBy:\"RoleID\" idField:\"RoleID\" key:\"role\" omitempty:\"true\"`" + `
+// @mongodb:` + "`routeType:\"role\" routeBy:\"RoleID\" idField:\"RoleID\" collection:\"roles\" enableSharding:\"true\"`" + `
 type Role struct {
 	Base
-	RoleID int64 ` + "`alias:\"roleId\" json:\"role_id\" bson:\"role_id\"`" + `
+	RoleID int64 ` + "`json:\"roleId\" bson:\"_id\" msgpack:\"roleId\"`" + `
 	Name string ` + "`json:\"name,omitempty\"`" + `
 	OwnerID int64 ` + "`bson:\"owner_id\"`" + `
 	privateNote string
@@ -49,23 +49,23 @@ func (r *Role) hidden() {}
 	if spec.Type.Ref.ImportPath != "example.com/project/data" {
 		t.Fatalf("import path = %q", spec.Type.Ref.ImportPath)
 	}
-	assertField(t, spec, "Base", "base", "Base", true)
+	assertField(t, spec, "Base", "base", "base", "base", "Base", true)
 	assertEmbeddedField(t, spec, "Base", true)
-	assertField(t, spec, "RoleID", "roleId", "int64", true)
-	assertField(t, spec, "Name", "name", "string", true)
-	assertField(t, spec, "OwnerID", "owner_id", "int64", true)
-	assertField(t, spec, "privateNote", "privateNote", "string", false)
-	assertField(t, spec, "Items", "items", "[]string", true)
+	assertField(t, spec, "RoleID", "roleId", "_id", "roleId", "int64", true)
+	assertField(t, spec, "Name", "name", "name", "name", "string", true)
+	assertField(t, spec, "OwnerID", "ownerID", "owner_id", "ownerID", "int64", true)
+	assertField(t, spec, "privateNote", "privateNote", "privateNote", "privateNote", "string", false)
+	assertField(t, spec, "Items", "items", "items", "items", "[]string", true)
 	assertNoField(t, spec, "Ignored")
 
 	assertMethod(t, spec, "Reset", true)
 	assertMethod(t, spec, "PublicValue", true)
 	assertMethod(t, spec, "hidden", false)
-	if spec.Storage.Mode != "fusion" || spec.Redis.IDField != "roleId" || spec.Mongo.Collection != "roles" {
+	if spec.Storage.Mode != "fusion" || spec.Redis.IDField != "RoleID" || spec.Mongo.Collection != "roles" {
 		t.Fatalf("metadata = %#v", spec)
 	}
-	if spec.Fields["items"].Redis.SubKey != "items" || !spec.Fields["items"].Mongo.Indexes[0].Unique {
-		t.Fatalf("field metadata = %#v", spec.Fields["items"])
+	if spec.Fields["Items"].Redis.SubKey != "items" || !spec.Fields["Items"].Mongo.Indexes[0].Unique {
+		t.Fatalf("field metadata = %#v", spec.Fields["Items"])
 	}
 }
 
@@ -90,7 +90,7 @@ type UserProfile struct {
 	if !ok {
 		t.Fatal("UserProfile type was not scanned")
 	}
-	assertField(t, spec, "UserID", "userID", "string", true)
+	assertField(t, spec, "UserID", "userID", "userID", "userID", "string", true)
 }
 
 func TestASTScanRejectsIgnoredJSONTagWithOptions(t *testing.T) {
@@ -112,11 +112,11 @@ type Role struct {
 	}
 }
 
-func assertField(t *testing.T, spec meta.TypeSpec, name, alias, typ string, exported bool) {
+func assertField(t *testing.T, spec meta.TypeSpec, name, jsonName, bsonName, msgpackName, typ string, exported bool) {
 	t.Helper()
 	for _, field := range spec.Type.Fields {
 		if field.Name == name {
-			if field.Alias != alias || field.Type != typ || field.Exported != exported {
+			if field.JSONName != jsonName || field.BSONName != bsonName || field.MsgpackName != msgpackName || field.Type != typ || field.Exported != exported {
 				t.Fatalf("field %s = %#v", name, field)
 			}
 			return

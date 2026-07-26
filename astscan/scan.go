@@ -185,10 +185,16 @@ func scanMetadata(fset *token.FileSet, doc *ast.CommentGroup, structType *ast.St
 		}
 		for _, info := range fieldInfosForMetadata(fset, field) {
 			for _, directive := range fieldDirectives {
-				directive.Field = info.alias
-				fieldDirectiveMap[info.alias] = append(fieldDirectiveMap[info.alias], directive)
-				if isStorageDirective(directive) {
-					storageDirectives = append(storageDirectives, directive)
+				nameDirective := directive
+				nameDirective.Field = info.name
+				fieldDirectiveMap[info.name] = append(fieldDirectiveMap[info.name], nameDirective)
+				if info.alias != "" && info.alias != info.name {
+					aliasDirective := directive
+					aliasDirective.Field = info.alias
+					fieldDirectiveMap[info.alias] = append(fieldDirectiveMap[info.alias], aliasDirective)
+				}
+				if isStorageDirective(nameDirective) {
+					storageDirectives = append(storageDirectives, nameDirective)
 				}
 			}
 		}
@@ -248,6 +254,7 @@ func validateIgnoredJSONTag(tag reflect.StructTag) error {
 }
 
 type metadataFieldInfo struct {
+	name  string
 	alias string
 }
 
@@ -262,15 +269,14 @@ func fieldInfosForMetadata(fset *token.FileSet, field *ast.Field) []metadataFiel
 		if name == "" {
 			return nil
 		}
-		return []metadataFieldInfo{{alias: aliasForField(name, tag)}}
+		return []metadataFieldInfo{{name: name, alias: aliasForField(name, tag)}}
 	}
 	infos := make([]metadataFieldInfo, 0, len(field.Names))
 	for _, name := range field.Names {
-		alias := aliasForField(name.Name, tag)
-		if alias == "-" {
+		if fieldIgnored(tag) {
 			continue
 		}
-		infos = append(infos, metadataFieldInfo{alias: alias})
+		infos = append(infos, metadataFieldInfo{name: name.Name, alias: aliasForField(name.Name, tag)})
 	}
 	return infos
 }
@@ -290,25 +296,32 @@ func scanFields(fset *token.FileSet, structType *ast.StructType) []meta.Field {
 				continue
 			}
 			fields = append(fields, meta.Field{
-				Name:     name,
-				Alias:    aliasForField(name, tag),
-				Type:     fieldType,
-				Exported: ast.IsExported(name),
-				Embedded: true,
+				Name:        name,
+				Alias:       aliasForField(name, tag),
+				JSONName:    jsonNameForField(name, tag),
+				BSONName:    bsonNameForField(name, tag),
+				MsgpackName: msgpackNameForField(name, tag),
+				RedisName:   redisNameForField(name, tag),
+				Type:        fieldType,
+				Exported:    ast.IsExported(name),
+				Embedded:    true,
 			})
 			continue
 		}
 
 		for _, name := range field.Names {
-			alias := aliasForField(name.Name, tag)
-			if alias == "-" {
+			if fieldIgnored(tag) {
 				continue
 			}
 			fields = append(fields, meta.Field{
-				Name:     name.Name,
-				Alias:    alias,
-				Type:     fieldType,
-				Exported: name.IsExported(),
+				Name:        name.Name,
+				Alias:       aliasForField(name.Name, tag),
+				JSONName:    jsonNameForField(name.Name, tag),
+				BSONName:    bsonNameForField(name.Name, tag),
+				MsgpackName: msgpackNameForField(name.Name, tag),
+				RedisName:   redisNameForField(name.Name, tag),
+				Type:        fieldType,
+				Exported:    name.IsExported(),
 			})
 		}
 	}
@@ -316,17 +329,53 @@ func scanFields(fset *token.FileSet, structType *ast.StructType) []meta.Field {
 }
 
 func aliasForField(name, tag string) string {
+	return defaultBackendName(name, tag)
+}
+
+func defaultBackendName(name, tag string) string {
 	structTag := reflect.StructTag(tag)
-	for _, key := range []string{"alias", "json", "bson", "msgpack"} {
-		value := tagName(structTag.Get(key))
-		if value != "" {
-			return value
-		}
-		if value == "-" {
-			return "-"
-		}
+	if value := tagName(structTag.Get("alias")); value != "" {
+		return value
 	}
 	return lowerCamel(name)
+}
+
+func jsonNameForField(name, tag string) string {
+	structTag := reflect.StructTag(tag)
+	if value := tagName(structTag.Get("json")); value != "" {
+		return value
+	}
+	return defaultBackendName(name, tag)
+}
+
+func bsonNameForField(name, tag string) string {
+	structTag := reflect.StructTag(tag)
+	if value := tagName(structTag.Get("bson")); value != "" {
+		return value
+	}
+	return defaultBackendName(name, tag)
+}
+
+func msgpackNameForField(name, tag string) string {
+	structTag := reflect.StructTag(tag)
+	if value := tagName(structTag.Get("msgpack")); value != "" {
+		return value
+	}
+	return defaultBackendName(name, tag)
+}
+
+func redisNameForField(name, tag string) string {
+	return jsonNameForField(name, tag)
+}
+
+func fieldIgnored(tag string) bool {
+	structTag := reflect.StructTag(tag)
+	for _, key := range []string{"alias", "json", "bson", "msgpack"} {
+		if tagName(structTag.Get(key)) == "-" {
+			return true
+		}
+	}
+	return false
 }
 
 func tagName(value string) string {

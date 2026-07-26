@@ -22,14 +22,14 @@ func TestStorageResolveBuildsFrozenRegistry(t *testing.T) {
 	if cfg.Mode != storage.ModeFusion {
 		t.Fatalf("mode = %q", cfg.Mode)
 	}
-	if cfg.Redis.Route.By != "roleId" || cfg.Mongo.Route.By != "roleId" {
+	if cfg.Redis.Route.By != "RoleID" || cfg.Mongo.Route.By != "RoleID" {
 		t.Fatalf("routes = %#v %#v", cfg.Redis.Route, cfg.Mongo.Route)
 	}
 	if cfg.DelaySave != "10m0s" || cfg.DelayDelete != "24h0m0s" {
 		t.Fatalf("delay config = save %q delete %q", cfg.DelaySave, cfg.DelayDelete)
 	}
-	if cfg.Fields["items"].Redis.SubKey != "items" {
-		t.Fatalf("items field config = %#v", cfg.Fields["items"])
+	if cfg.Fields["Items"].Redis.SubKey != "items" {
+		t.Fatalf("items field config = %#v", cfg.Fields["Items"])
 	}
 
 	err = reg.Register("example.com/project/data.Other", storage.TypeConfig{})
@@ -57,21 +57,21 @@ func storageMetaSpec() meta.TypeSpec {
 			DelayDelete: meta.Duration{Duration: 24 * time.Hour},
 		},
 		Redis: &meta.RedisSpec{
-			Route:   meta.RouteSpec{Type: "role", By: "roleId"},
-			IDField: "roleId",
+			Route:   meta.RouteSpec{Type: "role", By: "RoleID"},
+			IDField: "RoleID",
 			Key:     "role",
 		},
 		Mongo: &meta.MongoSpec{
-			Route:      meta.RouteSpec{Type: "role", By: "roleId"},
-			IDField:    "roleId",
+			Route:      meta.RouteSpec{Type: "role", By: "RoleID"},
+			IDField:    "RoleID",
 			Collection: "roles",
 			Sharding:   meta.ShardingSpec{Enabled: true},
 		},
 		Fields: map[string]meta.FieldSpec{
-			"items": {
+			"Items": {
 				Redis: &meta.RedisFieldSpec{SubKey: "items"},
 			},
-			"roleId": {
+			"RoleID": {
 				Mongo: &meta.MongoFieldSpec{Indexes: []meta.IndexSpec{{Unique: true}}},
 			},
 		},
@@ -85,8 +85,8 @@ func storageMetaTypes(t *testing.T) *meta.Registry {
 		Type: meta.Type{
 			Ref: meta.TypeRef{ImportPath: "example.com/project/data", Package: "data", Name: "Role"},
 			Fields: []meta.Field{
-				{Name: "RoleID", Alias: "roleId", Type: "int64", Exported: true},
-				{Name: "Items", Alias: "items", Type: "[]Item", Exported: true},
+				{Name: "RoleID", JSONName: "roleId", BSONName: "roleId", MsgpackName: "roleId", RedisName: "roleId", Type: "int64", Exported: true},
+				{Name: "Items", JSONName: "items", BSONName: "items", MsgpackName: "items", RedisName: "items", Type: "[]Item", Exported: true},
 			},
 		},
 	})

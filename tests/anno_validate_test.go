@@ -11,8 +11,8 @@ import (
 func TestAnnoNormalizeAndValidate(t *testing.T) {
 	directives, err := anno.ParseTypeDoc([]string{
 		`// @storage:` + "`mode:\"fusion\" delaySaveTime:\"600s\" delayDelTime:\"24h\"`",
-		`// @redis:` + "`routeType:\"role\" routeBy:\"roleId\" idField:\"roleId\" key:\"role\" omitempty:\"true\"`",
-		`// @mongodb:` + "`routeType:\"role\" routeBy:\"roleId\" idField:\"roleId\" collection:\"roles\" enableSharding:\"true\"`",
+		`// @redis:` + "`routeType:\"role\" routeBy:\"RoleID\" idField:\"RoleID\" key:\"role\" omitempty:\"true\"`",
+		`// @mongodb:` + "`routeType:\"role\" routeBy:\"RoleID\" idField:\"RoleID\" collection:\"roles\" enableSharding:\"true\"`",
 	})
 	if err != nil {
 		t.Fatalf("ParseTypeDoc returned error: %v", err)
@@ -24,8 +24,8 @@ func TestAnnoNormalizeAndValidate(t *testing.T) {
 	astType := meta.TypeSpec{Type: meta.Type{
 		Ref: meta.TypeRef{FullName: "example.com/project/data.Role"},
 		Fields: []meta.Field{
-			{Name: "RoleID", Alias: "roleId"},
-			{Name: "Items", Alias: "items"},
+			{Name: "RoleID", JSONName: "roleId"},
+			{Name: "Items", JSONName: "items"},
 		},
 	}}
 	spec.Type = astType.Type
@@ -41,11 +41,11 @@ func TestAnnoValidateRejectsUnknownField(t *testing.T) {
 	spec := meta.TypeSpec{
 		Type:    meta.Type{Ref: meta.TypeRef{FullName: "example.com/project/data.Role"}},
 		Storage: meta.StorageSpec{Mode: meta.StorageModeRedis},
-		Redis:   &meta.RedisSpec{IDField: "missing", Route: meta.RouteSpec{Type: "role", By: "roleId"}, Key: "role"},
+		Redis:   &meta.RedisSpec{IDField: "missing", Route: meta.RouteSpec{Type: "role", By: "RoleID"}, Key: "role"},
 	}
 	astType := meta.TypeSpec{Type: meta.Type{
 		Ref:    meta.TypeRef{FullName: "example.com/project/data.Role"},
-		Fields: []meta.Field{{Name: "RoleID", Alias: "roleId"}},
+		Fields: []meta.Field{{Name: "RoleID", JSONName: "roleId"}},
 	}}
 
 	err := meta.Validate(spec, astType)
