@@ -301,7 +301,7 @@ type DelayTaskBackend interface {
 - `lifecycle`: 提供可取消、可等待后台 worker 完成的运行时上下文，供 Fusion 延迟回写和其他后台组件在服务关停时等待活跃任务结束。
 - `storage/task/redis`: Redis 持久化 delayed task backend，使用 sorted-set/hash 记录任务内容、到期时间、busy lease、完成与重试状态，并通过 Lua 保证 claim/complete/retry 的原子性。
 - Redis delayed task keys 必须按任务 id 分桶，每个 bucket 使用独立 hash tag，例如 `tx:task:{0}:due`、`tx:task:{0}:payload`，保证单次 Lua 脚本访问的 due/payload/busy/token/attempts key 落在同一个 Redis Cluster slot，同时避免所有任务集中到一个 slot。
-- Redis delayed task backend 面向多服务实例并发消费：claim/complete/retry 通过 lease token 隔离，但整体语义是 at-least-once，后续 Fusion Mongo 回写必须按幂等方式设计。
+- Redis delayed task backend 面向多服务实例并发消费：claim/complete/retry 通过 lease token 隔离，但整体语义是 at-least-once，后续 Fusion Mongo 回写必须按存储幂等方式设计。
 - `log`: 基于标准库 `log/slog` 提供最小 logger 注入入口，默认使用 `slog.Default()`；已提供 `Debug/Info/Warn/Error` 和 Context 版本的包级快捷方法，并提供 `NewLogger(name)` 轻量命名 logger 代理；Fusion Scheduler 失败重试时输出结构化错误日志，失败原因不进入 Redis 队列状态。
 - `storage/fusion.TaskQueue` 负责把 Fusion 延迟保存 operation 转换为 `storage/task.DelayTask`，只保留 record id、route/shard key、action 和 due time；任务类型优先来自 `DelayedOperation.Type`，为空时使用 `RecordKey.TypeName`；Fusion 层不暴露额外 suffix，同一记录的延迟保存按 locator 合并为一条任务；入队时只接受保存 action，并要求类型和 record id 非空，避免无效任务进入 Redis 队列。延迟保存任务不携带 ChangeSet，回写时重新读取 Redis 当前热数据。
 - `storage/fusion.StorageTaskHandler` 负责消费 delayed task：只接受保存任务，从 Redis 读取完整热数据并 replace 到 Mongo；延迟任务只携带定位信息，回写时读取 Redis 当前数据，其他 action 会直接返回错误。

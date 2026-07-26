@@ -359,11 +359,15 @@ Fusion 策略的当前保存路径：
 6. Handler 清理 nil 删除标记后 replace Mongo 文档。
 7. 任务成功后通过 Lua complete 删除该任务在 Redis 队列中的状态。
 
-延迟任务队列使用 bucket hash tag，支持多个服务实例并发消费。语义是 at-least-once，Mongo 回写必须保持幂等。
+延迟任务队列使用 bucket hash tag，支持多个服务实例并发消费。语义是 at-least-once，Mongo 回写必须保持存储幂等。
 任务失败重试时，Scheduler 会输出结构化错误日志；失败原因不写入 Redis 任务状态，避免错误字符串占用队列内存。
 Scheduler 循环中的 claim、complete、retry 等 backend 错误也会输出结构化错误日志；服务关闭导致的 context 结束不会额外记录错误。
 Fusion delayed task queue 和 handler 都只接受保存 action；delete 或其他未知 action 会返回错误。入队时必须带有明确的类型和记录 ID，避免无效任务进入 Redis 队列；handler 消费端也会拒绝缺少记录 ID 的任务，防止手工写入或遗留异常任务落到存储层。任务类型优先来自 `DelayedOperation.Type`，为空时使用 `DelayedOperation.Key.TypeName`。Fusion 延迟保存按类型、记录 ID、route/shard key 和 action 生成一条合并任务，不暴露额外 suffix，避免同一记录产生多条重复保存任务。延迟保存任务不携带 ChangeSet，回写时重新读取 Redis 当前热数据。删除必须走显式删除接口，不进入延迟队列。
 Scheduler 的 `Start`、`RunOnce` 和 `Schedule` 在自身或 backend 未配置时都是 no-op，便于本地测试或按环境关闭后台回写组件；生产环境仍应配置 Redis delayed task backend。
+
+生产环境的延迟回写 handler 只负责存储同步。由于任务可能因为网络抖动、进程重启或租约恢复被再次执行，Mongo 回写路径应按“同一记录的当前 Redis 热文档 replace 到 Mongo”设计为存储幂等操作。比如同一条 `GDRole` save 任务执行两次，结果应只是 Mongo 中 `roleId=1001` 的文档被相同或更新后的热数据覆盖两次；队列中不保存 `GDRole` 的中间态快照，也不按每次字段变更生成事件日志。
+
+运维侧应关注 Scheduler 错误日志、重试次数和队列积压时间。如果某类任务持续失败，优先排查对应类型的 Redis 热文档是否能正常反序列化、Mongo 路由/过滤条件是否正确、以及目标集合是否可写。队列中的失败原因不会写入 Redis 状态；需要更完整的告警和指标时，应通过项目自己的日志、监控或后续可插拔 observer 接入。
 
 Fusion 读取会先查 Redis，未命中时回源 Mongo。默认回源会从 Mongo 全量读取文档，写回 Redis 热数据并使用 `delayDelTime` 续期，然后按请求字段返回结果；该路径要求 `delayDelTime` 必须大于 0，避免生成没有 TTL 的 Redis 热数据。显式使用 `LoadOptions.DontLoadToRedis` 时，才直接从 Mongo 按请求字段读取且不回填 Redis，适合低频只读场景。
 
