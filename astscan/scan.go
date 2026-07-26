@@ -294,6 +294,7 @@ func scanFields(fset *token.FileSet, structType *ast.StructType) []meta.Field {
 				Alias:    aliasForField(name, tag),
 				Type:     fieldType,
 				Exported: ast.IsExported(name),
+				Embedded: true,
 			})
 			continue
 		}

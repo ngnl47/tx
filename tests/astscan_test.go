@@ -50,6 +50,7 @@ func (r *Role) hidden() {}
 		t.Fatalf("import path = %q", spec.Type.Ref.ImportPath)
 	}
 	assertField(t, spec, "Base", "base", "Base", true)
+	assertEmbeddedField(t, spec, "Base", true)
 	assertField(t, spec, "RoleID", "roleId", "int64", true)
 	assertField(t, spec, "Name", "name", "string", true)
 	assertField(t, spec, "OwnerID", "owner_id", "int64", true)
@@ -117,6 +118,19 @@ func assertField(t *testing.T, spec meta.TypeSpec, name, alias, typ string, expo
 		if field.Name == name {
 			if field.Alias != alias || field.Type != typ || field.Exported != exported {
 				t.Fatalf("field %s = %#v", name, field)
+			}
+			return
+		}
+	}
+	t.Fatalf("field %s not found in %#v", name, spec.Type.Fields)
+}
+
+func assertEmbeddedField(t *testing.T, spec meta.TypeSpec, name string, embedded bool) {
+	t.Helper()
+	for _, field := range spec.Type.Fields {
+		if field.Name == name {
+			if field.Embedded != embedded {
+				t.Fatalf("field %s embedded = %v, want %v", name, field.Embedded, embedded)
 			}
 			return
 		}

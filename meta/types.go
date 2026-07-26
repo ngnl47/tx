@@ -47,6 +47,7 @@ type Field struct {
 	Alias    string
 	Type     string
 	Exported bool
+	Embedded bool
 }
 
 // Method 描述从类型上扫描到的 Go 方法。
