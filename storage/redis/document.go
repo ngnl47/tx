@@ -44,10 +44,12 @@ func BuildDocumentPatchesWithResolver(spec meta.TypeSpec, set change.ChangeSet, 
 		if len(path) == 0 {
 			continue
 		}
-		suffix, ignore := redisDocumentSuffix(spec, path[0])
+		goField := path[0]
+		suffix, ignore := redisDocumentSuffix(spec, goField)
 		if ignore {
 			continue
 		}
+		path = redisPath(spec, path)
 		patch := out[suffix]
 		if patch.Mode == "" {
 			patch.Mode = documentPatchModeMerge
@@ -58,7 +60,7 @@ func BuildDocumentPatchesWithResolver(spec meta.TypeSpec, set change.ChangeSet, 
 			patch.diffUpdate = true
 		default:
 			patch.Set = append(patch.Set, PathValue{Path: path, Value: fieldChange.Value})
-			if fieldChange.Kind == change.KindReplace && redisFullUpdateField(spec, path[0]) && suffix != "" && len(path) == 1 {
+			if fieldChange.Kind == change.KindReplace && redisFullUpdateField(spec, goField) && suffix != "" && len(path) == 1 {
 				patch.fullUpdate = true
 				if patch.diffUpdate {
 					patch.Mode = documentPatchModePartialReplace
@@ -86,9 +88,18 @@ func buildReplaceDocumentPatches(spec meta.TypeSpec, doc map[string]any) map[str
 		}
 		patch := out[suffix]
 		patch.Mode = documentPatchModeReplace
-		patch.Set = append(patch.Set, PathValue{Path: change.Path{field}, Value: value})
+		patch.Set = append(patch.Set, PathValue{Path: redisPath(spec, change.Path{field}), Value: value})
 		out[suffix] = patch
 	}
+	return out
+}
+
+func redisPath(spec meta.TypeSpec, path change.Path) change.Path {
+	if len(path) == 0 {
+		return nil
+	}
+	out := append(change.Path(nil), path...)
+	out[0] = spec.RedisName(path[0])
 	return out
 }
 
