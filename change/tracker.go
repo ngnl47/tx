@@ -62,6 +62,7 @@ func (t *Tracker) UnsetFieldPath(field FieldID, tail Path) error {
 // AllTouch 标记整个对象需要全量落地。
 func (t *Tracker) AllTouch() {
 	t.allDirty = true
+	t.changes = ChangeSet{}
 }
 
 // AllUnTouch 清空全量和字段级变更标记。

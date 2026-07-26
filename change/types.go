@@ -113,17 +113,26 @@ func (s *ChangeSet) Add(change FieldChange) error {
 	if parentFieldTargetExists(s.changes, copied) {
 		return nil
 	}
+	if parentPathTargetExists(s.changes, copied) {
+		return nil
+	}
 	for i, existing := range s.changes {
 		if sameTarget(existing, copied) {
 			s.changes[i] = copied
 			if isParentFieldTarget(copied) {
 				s.removeChildFieldTargets(copied.Field)
 			}
+			if isPathTarget(copied) {
+				s.removeChildPathTargets(copied.Path)
+			}
 			return nil
 		}
 	}
 	if isParentFieldTarget(copied) {
 		s.removeChildFieldTargets(copied.Field)
+	}
+	if isPathTarget(copied) {
+		s.removeChildPathTargets(copied.Path)
 	}
 	s.changes = append(s.changes, copied)
 	return nil
@@ -161,12 +170,20 @@ func (s ChangeSet) Empty() bool {
 }
 
 func (s *ChangeSet) removeChildFieldTargets(field FieldID) {
-	if field == FieldNone {
-		return
-	}
 	out := s.changes[:0]
 	for _, change := range s.changes {
 		if change.Field == field && len(change.Path) > 0 {
+			continue
+		}
+		out = append(out, change)
+	}
+	s.changes = out
+}
+
+func (s *ChangeSet) removeChildPathTargets(path Path) {
+	out := s.changes[:0]
+	for _, change := range s.changes {
+		if change.Field == FieldNone && pathParentOf(path, change.Path) {
 			continue
 		}
 		out = append(out, change)
@@ -188,6 +205,34 @@ func parentFieldTargetExists(changes []FieldChange, change FieldChange) bool {
 
 func isParentFieldTarget(change FieldChange) bool {
 	return change.Field != FieldNone && len(change.Path) == 0
+}
+
+func isPathTarget(change FieldChange) bool {
+	return change.Field == FieldNone && len(change.Path) > 0
+}
+
+func parentPathTargetExists(changes []FieldChange, change FieldChange) bool {
+	if change.Field != FieldNone || len(change.Path) == 0 {
+		return false
+	}
+	for _, existing := range changes {
+		if existing.Field == FieldNone && pathParentOf(existing.Path, change.Path) {
+			return true
+		}
+	}
+	return false
+}
+
+func pathParentOf(parent Path, child Path) bool {
+	if len(parent) == 0 || len(parent) >= len(child) {
+		return false
+	}
+	for i := range parent {
+		if parent[i] != child[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func sameTarget(left FieldChange, right FieldChange) bool {

@@ -114,3 +114,23 @@ func TestTrackerChildPathChangeDoesNotExpandDirtyParentField(t *testing.T) {
 		t.Fatalf("change target = %#v, want parent field target", changes[0])
 	}
 }
+
+func TestTrackerRepeatedParentFieldChangeReplacesValue(t *testing.T) {
+	var tracker change.Tracker
+
+	if err := tracker.TouchField(change.FieldID(3), map[int64]int64{1001: 3}); err != nil {
+		t.Fatalf("TouchField returned error: %v", err)
+	}
+	if err := tracker.TouchField(change.FieldID(3), map[int64]int64{1002: 4}); err != nil {
+		t.Fatalf("TouchField returned error: %v", err)
+	}
+
+	changes := tracker.Changes().Changes()
+	if len(changes) != 1 {
+		t.Fatalf("changes len = %d, want one parent field: %#v", len(changes), changes)
+	}
+	values, ok := changes[0].Value.(map[int64]int64)
+	if !ok || values[1002] != 4 {
+		t.Fatalf("change value = %#v, want replacement map", changes[0].Value)
+	}
+}

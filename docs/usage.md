@@ -174,7 +174,15 @@ Key int64 `json:"k"`
 - `UnsetFieldPath` 记录 unset。
 - `FieldChange.FullPath(resolver)` 将字段编号和子路径拼成完整 alias path。
 
-同一保存周期内，顶层字段变更会覆盖同字段下已有或后续追加的子路径变更。例如先记录 `items.1001.quantity`，再记录 `items` 整字段 dirty，最终 `ChangeSet` 只保留 `items`。这用于避免大集合字段在整字段保存时继续保留大量 key 级 path 记录。
+同一保存周期内，父级变更会覆盖同目标下已有或后续追加的子路径变更。通过字段编号记录时，例如先记录
+`TouchFieldPath(fieldItems, Path{"1001", "quantity"})`，再记录 `TouchField(fieldItems, items)`，最终
+`ChangeSet` 只保留 `items` 整字段。通过完整路径记录时同理，例如先记录
+`Touch(Path{"items", "1001", "quantity"}, 3)`，再记录 `Touch(Path{"items"}, items)`，最终也只保留
+`items`。这用于避免大集合字段在整字段保存时继续保留大量 key 级 path 记录。
+
+`AllTouch()` 表示整对象需要全量落地，会直接清空已有字段级 `ChangeSet`。例如已经记录了
+`items.1001.quantity`、`name` 等部分标脏后再执行 `AllTouch()`，后续只需要根据 `AllDirty()` 走全量保存，
+不再保留这些局部变更。
 
 生成代码应传入生成的 `FieldResolver`，避免运行时反射字段名。
 
