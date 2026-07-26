@@ -151,7 +151,7 @@ RoleLog.Error("role save failed", "roleId", roleID, "err", err)
 当前 AST 扫描别名优先级：
 
 ```text
-alias tag > json tag > lower-camel Go 字段名
+alias tag > json/bson/msgpack tag > lower-camel Go 字段名
 ```
 
 例如：
@@ -161,6 +161,8 @@ Key int64 `json:"k"`
 ```
 
 会把字段 alias 解析为 `k`。序列化后使用 `{"k":...}`，反序列化时 Go 标准库会根据 `json` tag 回填到 `Key` 字段。
+如果没有 `alias` 和 `json`，但写了 `bson:"k"` 或 `msgpack:"k"`，同样会把统一字段 alias 解析为 `k`。
+当 `json`、`bson`、`msgpack` 同时声明字段名时，脚手架侧要求这些名称一致，避免同一字段在运行时路径和序列化路径上分裂。
 
 ## ChangeSet
 

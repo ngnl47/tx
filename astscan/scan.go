@@ -48,7 +48,7 @@ func ScanDir(root string, opts Options) (*PackageSet, error) {
 //     `// @custom:`owner:"roleId" ttl:"600"`.
 //  3. 对每个字段，读取类似 `customField:"name:owner"` 的 struct tag。
 //  4. 将 field 指令绑定到解析后的字段别名
-//     （优先级：`alias` tag > `json` tag > Go 字段名 lower-camel）。
+//     （优先级：`alias` tag > `json`/`bson`/`msgpack` tag > Go 字段名 lower-camel）。
 //  5. 将所有指令保存到 PackageSet，同时把内置 storage 指令转换到
 //     meta.TypeSpec，供后续 storage/gen 代码消费。
 func ScanFiles(files []string, opts Options) (*PackageSet, error) {
@@ -316,7 +316,7 @@ func scanFields(fset *token.FileSet, structType *ast.StructType) []meta.Field {
 
 func aliasForField(name, tag string) string {
 	structTag := reflect.StructTag(tag)
-	for _, key := range []string{"alias", "json"} {
+	for _, key := range []string{"alias", "json", "bson", "msgpack"} {
 		value := tagName(structTag.Get(key))
 		if value != "" {
 			return value

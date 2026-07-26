@@ -52,7 +52,7 @@ func (r *Role) hidden() {}
 	assertField(t, spec, "Base", "base", "Base", true)
 	assertField(t, spec, "RoleID", "roleId", "int64", true)
 	assertField(t, spec, "Name", "name", "string", true)
-	assertField(t, spec, "OwnerID", "ownerID", "int64", true)
+	assertField(t, spec, "OwnerID", "owner_id", "int64", true)
 	assertField(t, spec, "privateNote", "privateNote", "string", false)
 	assertField(t, spec, "Items", "items", "[]string", true)
 	assertNoField(t, spec, "Ignored")
