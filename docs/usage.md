@@ -156,7 +156,9 @@ var RoleLog = log.NewLogger("role")
 RoleLog.Error("role save failed", "roleId", roleID, "err", err)
 ```
 
-`NewLogger` 返回轻量代理，每次输出时从当前 default logger 派生，避免包级变量早于项目日志初始化时绑定到旧 logger。
+`NewLogger` 返回轻量代理，不是固定绑定的 `*slog.Logger`。代理值本身可以作为包级变量复用；
+每次输出时都会读取当前 `Default()`，再附加 `logger=<name>` 属性派生一次日志调用，避免包级变量早于项目日志初始化时绑定到旧 logger。
+因此，项目启动后调用 `log.SetDefault(logger)`，此前已经声明的 `RoleLog` 也会使用新的 default logger。
 
 ## 元数据与字段别名
 
