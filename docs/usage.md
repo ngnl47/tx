@@ -43,7 +43,7 @@ type 级注解支持 marker 和带参数两种形态。无参数时，下面两�
 field 级注解来自 Go struct tag，外层遵循 Go 原生 struct tag 规则：
 
 ```go
-RoleId int64 `comment:"角色编号" json:"roleId,omitempty" redis:"subKey:items"`
+Items map[int32]*GDItem `comment:"拥有物品" json:"items,omitempty" redis:"subKey:items"`
 ```
 
 - 外层 tag 项之间用空格分隔。
@@ -191,6 +191,12 @@ cmd Provider 下行 body 使用 Msgpack 名 `roleId`。
 不再保留这些局部变更。
 
 生成代码应传入生成的 `FieldResolver`，避免运行时反射字段名。
+
+变更落地和下行投影不会对整个数据对象做全量 `json.Marshal`、`bson.Marshal` 或
+`msgpack.Marshal`。`ChangeSet` 只遍历本保存周期内的脏字段，通过生成的 resolver 或
+`TypeSpec` 转成目标后端字段名，再生成局部 patch/update document。若某个脏字段本身是
+map、slice 或 struct 指针，具体字段值在最终编码时仍会交给对应 JSON/BSON/Msgpack 编码器展开。
+完整对象读取、回源或整文档替换路径才会依赖序列化库按 tag 映射字段。
 
 ## Redis 存储模型
 
