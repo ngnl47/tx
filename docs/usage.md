@@ -70,15 +70,129 @@ mongodb:"index,unique,expireAfter:0"
 `json`、`bson` 或 `msgpack`。不写 `alias` 时，各后端 tag 可以各自命名，例如
 `json:"roleId,omitempty" bson:"_id,omitempty" msgpack:"roleId,omitempty"`。
 
-### 内置注解字段
+### type 注解字段表
 
-| 位置 | 注解 | 可用字段或值 | 说明 |
+| 注解 | 字段 | 必填 | 取值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `@storage` | `mode` | 是 | `redis`、`mongo`、`fusion` | 选择存储模式。`redis` 只写 Redis；`mongo` 只写 Mongo；`fusion` 使用 Redis 热数据加 Mongo 延迟回写。 |
+| `@storage` | `delaySaveTime` | fusion 建议必填 | 秒数字符串或 Go duration | Redis 热数据变更后，经过多久进入 Mongo 回写。别名：`saveTime`、`delaySave`。 |
+| `@storage` | `delayDelTime` | Redis/Fusion 热数据建议必填 | 秒数字符串、Go duration 或 `-1` | Redis 热数据 TTL。写入后会续期；不表示 Mongo 删除延迟。别名：`delTime`、`delayDelete`。 |
+| `@storage` | `memoryCache` | 否 | 秒数字符串或 Go duration | 预留本地内存缓存时间配置，当前 runtime 不把它作为核心路径。 |
+| `@redis` | `routeType` | 是 | 字符串 | 路由配置名，用来在 yml 路由表中选择 Redis endpoint。别名：`shardType`、`config`。 |
+| `@redis` | `routeBy` | 是 | Go 字段名 | 路由字段，决定 Redis endpoint 与 Redis Cluster hash tag。别名：`shardBy`。 |
+| `@redis` | `idField` | 是 | Go 字段名 | 业务记录主键字段，用于生成记录 key。别名：`id`。 |
+| `@redis` | `key` | 是 | 字符串 | Redis key 前缀，例如 `role`，最终 key 类似 `role:{1001}`。 |
+| `@redis` | `storeType` | 否 | 字符串 | 预留存储类型标记。 |
+| `@redis` | `omitempty` | 否 | flag 或布尔字符串 | 空文档写入策略标记。 |
+| `@mongodb` | `routeType` | 是 | 字符串 | 路由配置名，用来在 yml 路由表中选择 Mongo endpoint。别名：`shardType`、`config`。 |
+| `@mongodb` | `routeBy` | 是 | Go 字段名 | 路由字段，决定 Mongo endpoint。别名：`shardBy`。 |
+| `@mongodb` | `idField` | 是 | Go 字段名 | 业务记录主键字段；runtime 会通过该字段的 `bson` tag 推导 Mongo filter 字段。别名：`id`。 |
+| `@mongodb` | `collection` | 是 | 字符串 | Mongo collection 名称。别名：`c`、`col`。 |
+| `@mongodb` | `enableSharding` | 否 | flag 或布尔字符串 | 标记该 collection 开启分片语义；当前主要进入元数据。 |
+
+常见 type 注解组合：
+
+```go
+// 只存 Redis，适合纯热数据或可丢弃缓存。
+// @storage:`mode:"redis" delayDelTime:"2592000"`
+// @redis:`routeType:"war" routeBy:"RoleId" idField:"ID" key:"legion_war_record"`
+type GDLegionWarRecord struct {
+	ID     int64 `json:"id" bson:"id" msgpack:"id"`
+	RoleId int64 `json:"roleId" bson:"roleId" msgpack:"roleId"`
+}
+```
+
+```go
+// 只存 Mongo，适合不需要 Redis 热数据的记录。
+// @storage:`mode:"mongo"`
+// @mongodb:`routeType:"friend" routeBy:"RoleId" idField:"RoleId" collection:"friend_records"`
+type GDFriendRecord struct {
+	RoleId int64 `json:"roleId" bson:"roleId" msgpack:"roleId"`
+	Name   string `json:"name" bson:"name" msgpack:"name"`
+}
+```
+
+```go
+// Fusion：Redis 保存热数据，Mongo 延迟回写。
+// @storage:`mode:"fusion" delaySaveTime:"600" delayDelTime:"86400"`
+// @redis:`routeType:"role" routeBy:"RoleId" idField:"RoleId" key:"role"`
+// @mongodb:`routeType:"role" routeBy:"RoleId" idField:"RoleId" collection:"roles"`
+type GDRole struct {
+	RoleId int64  `json:"roleId" bson:"_id" msgpack:"roleId"`
+	Name   string `json:"name" bson:"name" msgpack:"name"`
+}
+```
+
+### field tag 字段表
+
+| tag | 字段或 flag | 取值 | 说明 |
 | --- | --- | --- | --- |
-| type | `@storage` | `mode`、`delaySaveTime`、`saveTime`、`delaySave`、`delayDelTime`、`delTime`、`delayDelete`、`memoryCache` | 存储模式和时间策略。`mode` 支持 `redis`、`mongo`、`fusion`。纯数字时间按秒解析，也支持 Go duration，例如 `10m`。 |
-| type | `@redis` | `routeType`、`shardType`、`config`、`routeBy`、`shardBy`、`idField`、`id`、`key`、`storeType`、`omitempty` | Redis 根对象配置。`routeType/shardType/config` 等价；`routeBy/shardBy` 等价；`idField/id` 等价。`omitempty` 可写为参数或 flag。 |
-| type | `@mongodb` | `routeType`、`shardType`、`config`、`routeBy`、`shardBy`、`idField`、`id`、`collection`、`c`、`col`、`enableSharding` | Mongo 根对象配置。`collection/c/col` 等价。`enableSharding` 可写为参数或 flag。 |
-| field | `redis` | `subKey`、`ignore`、`fullUpdate` | 字段级 Redis 配置。`ignore`、`fullUpdate` 可写为 flag 或布尔参数。 |
-| field | `mongodb` | `index`、`unique`、`ignore`、`order`、`indexType`、`weight`、`expire`、`expireAfter` | 字段级 Mongo 配置。`index`、`unique`、`ignore` 可写为 flag 或布尔参数；`expire/expireAfter` 表示 Mongo TTL 索引，命中后删除整条文档。 |
+| `comment` | 单值 | 任意字符串 | 字段说明，只作为元数据和生成代码注释使用。 |
+| `json` | 字段名 | 字符串或 `-` | JSON 字段名。`-` 表示 JSON 忽略该字段。 |
+| `json` | 选项 | `omitempty`、`string` 等 Go JSON 选项 | 必须写在字段名之后，例如 `json:"name,omitempty"`。`json:",omitempty"` 属于歧义写法，生成器会拒绝。 |
+| `bson` | 字段名 | 字符串、`_id` 或 `-` | BSON 字段名。`_id` 表示绑定 Mongo 文档主键；`-` 表示 BSON 忽略该字段。 |
+| `bson` | 选项 | Mongo Go Driver 支持的选项 | 例如 `omitempty`、`inline`。匿名嵌入结构在 JSON 下默认内联，BSON/Msgpack 如果需要内联需显式配置。 |
+| `msgpack` | 字段名 | 字符串或 `-` | Msgpack 字段名，cmd Provider 下行变更文档使用该名称。 |
+| `msgpack` | 选项 | Msgpack 编码器支持的选项 | 例如 `omitempty`、`inline`。 |
+| `alias` | 单值 | 字符串 | 输入侧语法糖：同时作为 JSON、BSON、Msgpack、Redis 的默认字段名。不能和 `json`、`bson`、`msgpack` 混用。 |
+| `redis` | `subKey` | 字符串 | 将该字段从 Redis 主文档拆到独立 key，例如 `role:{1001}:items`。 |
+| `redis` | `ignore` | flag 或布尔字符串 | Redis 文档忽略该字段。 |
+| `redis` | `fullUpdate` | flag 或布尔字符串 | 标记该字段按整字段更新，适合集合字段避免 key 级 path 膨胀。 |
+| `mongodb` | `index` | flag 或布尔字符串 | 为该字段生成 Mongo 索引元数据。 |
+| `mongodb` | `unique` | flag 或布尔字符串 | 索引唯一约束，通常和 `index` 一起使用。 |
+| `mongodb` | `ignore` | flag 或布尔字符串 | Mongo 文档忽略该字段。 |
+| `mongodb` | `order` | `asc`、`desc` 或数字字符串 | 索引方向。 |
+| `mongodb` | `indexType` | 字符串 | 索引类型，例如文本索引等。 |
+| `mongodb` | `weight` | 数字字符串 | 文本索引权重。 |
+| `mongodb` | `expireAfter` | 秒数字符串 | Mongo TTL 索引过期时间；命中后删除整条文档，不是删除单个字段。别名：`expire`。 |
+
+常见 field tag 组合：
+
+```go
+// 普通字段：三个后端字段名一致。
+Name string `comment:"名字" json:"name,omitempty" bson:"name,omitempty" msgpack:"name,omitempty"`
+```
+
+```go
+// 业务主键直接绑定 Mongo _id。
+RoleId int64 `comment:"角色ID" json:"roleId" bson:"_id" msgpack:"roleId"`
+```
+
+```go
+// Redis 大字段拆分 subKey，避免普通字段变更时重写大集合。
+Items map[int32]*GDItem `comment:"物品" json:"items,omitempty" bson:"items,omitempty" msgpack:"items,omitempty" redis:"subKey:items,fullUpdate"`
+```
+
+```go
+// Mongo 索引字段。
+Name string `comment:"名字" json:"name" bson:"name" msgpack:"name" mongodb:"index"`
+```
+
+```go
+// Mongo TTL 字段。注意：TTL 到期删除整条 Mongo 文档。
+ExpireAt int64 `comment:"过期时间" json:"expireAt" bson:"expireAt" msgpack:"expireAt" mongodb:"index,expireAfter:0"`
+```
+
+```go
+// 输入侧 alias 语法糖，等价于同时使用 roleId 作为 json/bson/msgpack 字段名。
+RoleId int64 `comment:"角色ID" alias:"roleId"`
+```
+
+非法或不推荐写法：
+
+```go
+// 非法：alias 不能和 json/bson/msgpack 混用。
+RoleId int64 `alias:"rid" json:"roleId"`
+
+// 非法：json 选项前必须显式写字段名。
+Name string `json:",omitempty"`
+
+// 非法：json 选项列表不能有空片段。
+Name string `json:"name,omitempty,"`
+
+// 非法：Store 类型是框架运行时类型，不能作为输入结构字段。
+Role *GDRoleStore `json:"role"`
+```
 
 `@mongodb.idField` 使用 Go 字段名，tx runtime 会通过该字段的 `bson` tag 得到 Mongo 过滤字段。
 业务 `idField` 可以直接绑定到 Mongo `_id`，也可以作为普通 BSON 字段保存。
@@ -253,6 +367,10 @@ type RecordKey struct {
 
 `storage.RouteTable` 是 Redis 和 Mongo 共用的运行时路由表，可同时作为 `redis.Cluster` 和 `mongo.Cluster` 的 router 使用。
 
+### 直接用代码构造
+
+小型测试或没有配置文件时，可以直接写 Go 代码：
+
 ```go
 router := storage.NewRouteTable(map[string][]storage.RouteRule{
     "role": {
@@ -272,6 +390,16 @@ router := storage.NewRouteTable(map[string][]storage.RouteRule{
 - 多 shard 规则用 `routeBy % len(shards)` 选择 endpoint。
 - 单 shard 规则允许字符串主键，用于全局表或单分片表。
 
+以上配置表示：
+
+| routeType | shardKey | endpoint |
+| --- | --- | --- |
+| `role` | `1001` | `role-b`，因为 `1001 % 2 = 1` |
+| `role` | `1000000` | `role-c` |
+| `global` | `"season"` | `main` |
+
+### 从 yml 配置构造
+
 `storage/config.RouteTableConfig` 用于承接项目 yml 解析后的 Redis/Mongo 路由配置。项目负责读取文件和处理 include，随后把 yml 反序列化到该类型：
 
 ```yaml
@@ -284,19 +412,35 @@ role:
 rank:
   - "redis://rank-a"
   - "redis://rank-b"
+arena:
+  - min: 1
+    max: 999999
+    shards:
+      - "redis://arena-a"
+      - "redis://arena-b"
+  - min: 1000000
+    shards:
+      - "redis://arena-c"
 ```
 
 支持的 routeType 值形态：
 
-- 标量 endpoint：归一化为单 shard 规则。
-- endpoint 数组：归一化为一个多 shard 规则。
-- 规则数组：保留 `min/max/shards` 区间规则。
+- 标量 endpoint：归一化为单 shard 规则，例如 `main: "redis://main"`。
+- endpoint 数组：归一化为一个多 shard 规则，例如 `rank: ["redis://rank-a", "redis://rank-b"]`。
+- 规则数组：保留 `min/max/shards` 区间规则，例如上面的 `arena`。
 
 配置对象可直接构造运行时路由表：
 
 ```go
-table, err := redisConfig.RouteTable()
-endpoints := redisConfig.Endpoints()
+var redisRoutes config.RouteTableConfig
+if err := yaml.Unmarshal(body, &redisRoutes); err != nil {
+	return err
+}
+table, err := redisRoutes.RouteTable()
+if err != nil {
+	return err
+}
+endpoints := redisRoutes.Endpoints()
 ```
 
 `Endpoints()` 返回配置中出现过的 endpoint URI 集合；当前 key 和 value 都是 URI，运行时装配可按 URI 创建并复用客户端。
@@ -327,6 +471,113 @@ mongoDB := txmongodriver.NewDatabase(mongoDriverDatabase)
 - Redis 单节点：直接使用客户端层原生 `MGET`。
 - 云 Redis 代理或云集群 endpoint：默认直接使用客户端层原生 `MGET`，由云代理负责跨 slot 分发和结果聚合。
 - 本地原生 Redis Cluster 或直连 cluster 节点：显式设置 `LoadOptions.ClusterSafe: true` 后，运行时会按 hash tag 分组后多次 `MGET`；当前默认路径不做该拆分。
+
+### 场景一：本地单节点 Redis
+
+yml 可以只写一个 endpoint：
+
+```yaml
+role: "redis://127.0.0.1:6379/15"
+global: "redis://127.0.0.1:6379/15"
+```
+
+初始化时把所有 endpoint 映射到同一个 go-redis client 即可：
+
+```go
+routeTable, err := redisRoutes.RouteTable()
+if err != nil {
+	return err
+}
+
+client := redis.NewClient(&redis.Options{
+	Addr: "127.0.0.1:6379",
+	DB:   15,
+})
+
+redisCluster := txredis.NewCluster(routeTable, map[string]any{
+	"redis://127.0.0.1:6379/15": txgoredis.NewClient(client),
+})
+```
+
+批量读取时不需要特殊选项：
+
+```go
+docs, exists, err := redisCluster.LoadDocuments(ctx, GDRoleTypeSpec(), keys)
+```
+
+### 场景二：云 Redis 代理或云集群 endpoint
+
+生产环境通常会把一个 endpoint 暴露为云代理地址。yml 可以按业务 routeType 配置多个云 endpoint：
+
+```yaml
+role:
+  - "redis://role-cache-a.example.com:6379"
+  - "redis://role-cache-b.example.com:6379"
+rank: "redis://rank-cache.example.com:6379"
+```
+
+初始化时每个 endpoint 创建一个 go-redis client，并交给 `redis.Cluster`：
+
+```go
+routeTable, err := redisRoutes.RouteTable()
+if err != nil {
+	return err
+}
+
+shards := map[string]any{}
+for endpoint := range redisRoutes.Endpoints() {
+	opt, err := redis.ParseURL(endpoint)
+	if err != nil {
+		return err
+	}
+	shards[endpoint] = txgoredis.NewClient(redis.NewClient(opt))
+}
+
+redisCluster := txredis.NewCluster(routeTable, shards)
+```
+
+默认批量读取会先按 endpoint 分组，再在每个 endpoint 内使用原生 `MGET`。云代理能识别 `MGET` 的参数都是 key，
+可以在代理层完成跨 slot 分发和聚合。不要把跨记录批量读取包进自定义 Lua：云代理不能可靠判断 Lua 的
+`ARGV` 中哪些值是 key，也不能安全拆分一个要求原子执行的脚本。
+
+### 场景三：本地原生 Redis Cluster 或直连节点
+
+本地 debug 如果直连原生 Redis Cluster 节点，普通跨 slot `MGET` 可能报错。此时仍使用同一份 yml，但批量读取时显式打开
+`ClusterSafe`：
+
+```go
+docs, exists, err := redisCluster.LoadDocumentsWithOptions(
+	ctx,
+	GDRoleTypeSpec(),
+	keys,
+	txredis.LoadOptions{ClusterSafe: true},
+)
+```
+
+`ClusterSafe` 会在 endpoint 内继续按 hash tag 分组，多次执行 `MGET` 后按输入顺序还原结果。它适合本地原生 Redis Cluster
+和问题排查；生产云 Redis 默认不需要打开，避免不必要的客户端侧拆分。
+
+### routeBy、idField 和 hash tag
+
+`idField` 表示业务主键，`routeBy` 表示路由字段。两者相同时，`RecordKey.ID` 就足够生成 Redis key：
+
+```text
+// @redis:`routeType:"role" routeBy:"RoleId" idField:"RoleId" key:"role"`
+// roleId = 1001
+role:{1001}
+role:{1001}:items
+```
+
+两者不同时，生成代码需要把 `routeBy` 字段也放进 `RecordKey.ShardKey`，让主文档和 subKey 使用同一个 hash tag：
+
+```text
+// @redis:`routeType:"arena" routeBy:"RoleId" idField:"ID" key:"arena"`
+// id = 90001, roleId = 1001
+arena:{1001}:90001
+arena:{1001}:90001:members
+```
+
+这样同一条记录的 main key、subKey key 和版本 key 能落到同一个 Redis Cluster slot；批量读取多条记录时，不同记录仍可能落到不同 slot。
 
 ## Mongo 存储模型
 
