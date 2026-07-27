@@ -168,7 +168,7 @@ RoleId int64 `json:"roleId,omitempty" bson:"_id,omitempty" msgpack:"roleId,omite
 ```
 
 Store 内部变更文档使用 `RoleId`；Redis 写入时使用 `roleId`；Mongo filter/update 使用 `_id`；
-cmd Provider 下行 body 使用 JSON 名 `roleId`。
+cmd Provider 下行 body 使用 Msgpack 名 `roleId`。
 
 ## ChangeSet
 
