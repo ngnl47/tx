@@ -6,10 +6,10 @@
 
 - 使用 Go 注释作为元数据主入口，保持类型定义和存储定义靠近。
 - 使用 Go AST 读取 Go 类型结构和注释，建立注释元数据与 Go 类型之间的绑定关系。
-- 支持从 legacy framework 旧注解迁移到新的 Tx 语义；语法形态尽量沿用 `// @name:"k:v,flag"`，降低迁移成本。
+- 语法形态沿用紧凑注解写法；当前不保留旧注解迁移器，输入侧统一使用新 Tx 语义。
 - 不支持独立 schema 文件；存储元数据只来自 Go 注释、struct tag 和 AST 扫描结果。
 - 运行时元数据只允许初始化期注册；不支持隐式运行时追加 tag。
-- `fusion` 作为公开存储模式名；旧 `redisDelayMongoDB` 只作为迁移器识别的 legacy alias。
+- `fusion` 作为公开存储模式名；旧 `redisDelayMongoDB` 不再作为运行时或生成器输入。
 - Redis key 默认使用 `shardBy` 作为 Redis Cluster hash tag。
 - Fusion 延迟任务抽象成可替换任务后端。
 - 测试用例只放在 `tests/` 目录下。
@@ -23,7 +23,6 @@ tx/
   meta/             # 元数据模型、registry、annotation 输出模型
   anno/             # Go 注释中的 type-level tag 解析、规范化、校验
   astscan/          # Go AST 扫描器，提取 package/type/field/method/comment 信息
-  migrate/          # legacy framework legacy tag 到 Tx metadata 的迁移器
   storage/          # 存储抽象：Store mode、route、key、options、runtime metadata
   storage/redis/    # Redis key builder、route resolver、后续 Redis adapter
   storage/mongo/    # Mongo collection/index/sharding metadata、后续 Mongo adapter
@@ -64,7 +63,7 @@ RoleId int64 `mongodb:"index,unique"`
 - field-level tag 继续读取原生 struct tag，第一版支持：`redis`、`mongodb`。
 - 参数继续使用 `key:value` 和 flag 混合格式，延续 legacy framework 的紧凑写法。
 - parser 只负责理解单条 tag 内容；注释和 struct/field 的绑定必须由 Go AST 完成。
-- 新语义使用 `mode:fusion`；旧 `mode:redisDelayMongoDB` 只作为迁移/兼容 alias 识别。
+- 新语义使用 `mode:fusion`；旧 `mode:redisDelayMongoDB` 不再支持。
 - 时间字段使用 Go duration 风格字符串：`600s`、`10m`、`24h`。
 - Redis hash tag 默认使用 `routeBy` 指向的字段，不再暴露旧库全局 `UseShardByInKey=false` 兼容行为。
 - 旧字段名如 `routeBy`、`idField` 可以保留为 canonical 写法；也可以在后续版本引入更短别名，但第一版以降低迁移成本为优先。
@@ -81,7 +80,6 @@ Go 注释 / struct tag -> anno -> astscan -> meta -> storage/gen
 
 - 不提供 YAML/JSON schema loader。
 - 不提供 schema 导入、导出或冲突合并。
-- 迁移器直接输出 `meta.TypeSpec`，不再经过中间 schema 文档格式。
 - 外部工具若需要消费元数据，应基于后续 generator 输出，而不是手写 schema 文件。
 
 ## Phase 1: Metadata Core
@@ -199,42 +197,16 @@ Go 注释 / struct tag -> anno -> astscan -> meta -> storage/gen
 - `tests/astscan_test.go`
 - 使用 `t.TempDir()` 创建临时 Go module 或临时 package 文件。
 
-## Phase 4: legacy framework Legacy Migrator
+## Phase 4: Legacy Migrator Removed
 
-目标：把 legacy framework 旧注解规范化为新的 Tx `meta.TypeSpec` 语义。
+结论：`tx` 和 `txgen` 是全新项目，不承担旧注解兼容职责。此前的 `migrate` 包属于项目初期过渡产物，已从 runtime 中移除。
 
-输入形式：
+当前约束：
 
-- Go 源码目录。
-- 旧注解样式：
-  - `// @storage:"mode:redisDelayMongoDB,delaySaveTime:600,delayDelTime:86400"`
-  - `// @redis:"routeType:role,routeBy:roleId,idField:roleId,key:role,omitempty"`
-  - `// @mongodb:"routeType:role,routeBy:roleId,idField:roleId,collection:roles,enableSharding"`
-  - 字段 tag：`redis:"subKey:items"`、`mongodb:"index,unique"` 等。
-
-实现策略：
-
-- 用 Go AST 定位 struct 和字段。
-- 从 `Doc` 注释组中读取 legacy `@storage` / `@redis` / `@mongodb`。
-- 字段上的 struct tag 仍可用于迁移输入，且保持为 field-level 主入口。
-- 将 `redisDelayMongoDB` 规范化为 `mode:fusion`。
-- 保留 `routeType`/`routeBy`/`idField` 作为第一版 canonical 字段名，避免无意义迁移成本。
-- 保留 `omitempty`、`enableSharding` 等 flag 形态。
-- 直接输出 `meta.TypeSpec` 和 migration report。
-
-验收：
-
-- 对 `GDRole` 示例能生成语义等价的规范化 metadata。
-- migration report 包含：
-  - 成功迁移的类型数
-  - 未识别参数
-  - 字段缺失
-  - legacy alias 使用情况
-
-测试：
-
-- `tests/migrate_legacy_test.go`
-- 覆盖 storage/redis/mongodb 三类注解和字段 tag。
+- 输入侧统一使用新的 Tx 注解语义。
+- 不支持 `mode:redisDelayMongoDB` 等旧模式别名。
+- 不保留迁移报告、迁移 API 或旧注解测试。
+- 如后续确实需要迁移工具，应作为独立工具工程实现，不放入 `tx` runtime。
 
 ## Phase 5: Runtime Storage Metadata
 
@@ -410,17 +382,16 @@ type DelayTaskBackend interface {
 
 - 能从 type-level 注释 tag、field-level struct tag 和 Go AST 得到稳定 type metadata。
 
-### M2: Legacy Migration
+### M2: Legacy Migration Removed
 
 交付：
 
-- `migrate`
-- legacy framework legacy 注解规范化到新 Tx 语义。
+- 不再交付 `migrate` 包。
+- 旧注解迁移能力不属于当前 `tx` runtime 边界。
 
 完成标准：
 
-- 能迁移 `GDRole` 风格注解。
-- 输出 migration report。
+- 当前输入和测试均使用新 Tx 注解语义。
 
 ### M3: Runtime Metadata
 
@@ -462,7 +433,5 @@ type DelayTaskBackend interface {
 这些不是阻塞项，可以在 M1 期间定稿：
 
 - 是否支持除 `// @name:"..."` 之外的块状 doc 风格，还是后续补。
-- `mode:fusion` 等新值是否由迁移器自动改写，还是只在报告中提示。
 - type ref 表达方式：建议 `import/path.TypeName`，避免 package name 冲突。
 - field alias 是否允许 type-level 注释 tag 或 field-level struct tag 显式覆盖 AST 推导 alias。
-- migration CLI 名称：建议后续放在 `cmd/tx`，但第一阶段可先做 library API。
