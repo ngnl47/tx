@@ -508,7 +508,7 @@ role.Store().AllTouch()
 `ClearChanges()` 或 Store 的 `AllUnTouch()` 用于保存成功、加载完成或主动放弃本轮修改后清空脏标记：
 
 ```go
-if err := role.Store().ApplyUpdate(ctx, writer); err != nil {
+if err := role.Store().ApplyUpdate(ctx, fusionStore); err != nil {
 	return err
 }
 role.ClearChanges()
@@ -547,6 +547,8 @@ Redis 使用 string JSON 文档模型。
 可以作为后续可选 backend 单独评估，但不是当前默认路径；引入前需要确认目标云 Redis、测试环境和
 Redis Cluster 行为都支持对应 JSON 命令。
 
+### key 结构
+
 主 key 保存没有 `subKey` 的字段：
 
 ```text
@@ -572,6 +574,99 @@ role:{id}:items
 arena:{roleId}:id
 ```
 
+### 写入流程
+
+生成 Store 会把业务变更转成 `ChangeSet`，再交给 Redis adapter：
+
+```go
+role := data.NewGDRole()
+role.SetRoleId(470001)
+role.SetName("alice")
+role.SetPower(47)
+
+err := role.Store().ApplyInsert(ctx, redisCluster)
+```
+
+`ApplyInsert` 会强制 `Upsert=true`，适合新建或首次缓存。Redis adapter 收到变更后会：
+
+1. 根据 `TypeSpec` 和 `RecordKey` 生成 Redis key 前缀，例如 `role:{470001}`。
+2. 根据字段的 `redis:"subKey:..."` 把变更拆到 main 文档或 subKey 文档。
+3. 把每个文档的 patch 编码成 JSON 字符串。
+4. 调用 Lua 脚本，在 Redis 内部读取旧 JSON、`cjson.decode`、merge/replace、`cjson.encode` 后写回。
+5. 按 `ApplyOptions.TTL` 设置或续期 Redis 热数据。
+
+更新已有记录使用 `ApplyUpdate`：
+
+```go
+role.SetName("bob")
+
+err := role.Store().ApplyUpdate(ctx, redisCluster)
+```
+
+`ApplyUpdate` 会强制 `Upsert=false`。如果 Redis 中不存在该记录，Redis adapter 会返回
+`storage.ErrNotExists`，避免普通更新意外创建新热数据。
+
+整字段替换使用 `Replace*` 或 `ApplyReplace`：
+
+```go
+role.ReplaceItems(map[int32]*data.GDItem{
+	1001: &data.GDItem{ItemId: 1001, Quantity: 3},
+})
+
+err := role.Store().ApplyReplace(ctx, redisCluster)
+```
+
+`ApplyReplace` 会强制 `Upsert=true`，适合全量刷新一条记录的当前状态。Fusion 回源 Mongo 后回填 Redis 也会走整文档替换。
+
+### TTL
+
+生成 Store 会把 `@storage.delayDelTime` 作为 Redis 默认 TTL：
+
+```go
+// @storage:`mode:"fusion" delaySaveTime:"600" delayDelTime:"86400"`
+```
+
+上面配置表示 Redis 热数据默认 86400 秒过期。写入时如果调用方没有显式传 `ApplyOptions.TTL`，生成代码会自动填入该值。
+显式 TTL 会覆盖默认值：
+
+```go
+err := role.Store().ApplyUpdateWithOptions(ctx, redisCluster, storage.ApplyOptions{
+	TTL: 3600,
+})
+```
+
+如果 `TTL > 0`，Redis 使用该 TTL 写入或续期；如果 `TTL == 0`，生成 Store 会补默认 TTL；如果底层直接调用 runtime 且没有生成 Store 补默认值，
+则需要调用方自己明确 TTL 策略。Fusion 从 Mongo 回填 Redis 时要求 `delayDelTime > 0`，避免生成没有过期时间的热数据。
+
+### 读取流程
+
+单条读取：
+
+```go
+role, exists, err := data.LoadGDRole(ctx, redisCluster, data.GDRoleRecordKey(470001))
+```
+
+只读取部分字段：
+
+```go
+role, exists, err := data.LoadGDRoleFields(ctx, redisCluster, data.GDRoleRecordKey(470001), "Name", "Power")
+```
+
+如果只请求 subKey 字段，例如 `Items`，Redis 可以只读取对应 subKey 文档：
+
+```go
+role, exists, err := data.LoadGDRoleFields(ctx, redisCluster, data.GDRoleRecordKey(470001), "Items")
+```
+
+批量读取：
+
+```go
+stores, exists, err := data.LoadGDRoleStoresByID(ctx, redisCluster, []int64{1001, 1002, 1003})
+```
+
+如果类型的 `routeBy != idField`，生成器不会生成简单的 `Load*ByID(ids)`，因为仅有 id 无法构造 Redis endpoint 和 hash tag。
+这类类型需要业务传入包含 routeBy 的 `RecordKey` 列表，或使用生成器后续提供的 route-aware helper。
+
 ## RecordKey
 
 `storage.RecordKey` 描述一条记录的存储定位：
@@ -589,6 +684,38 @@ type RecordKey struct {
 - `ID` 来自 `idField`。
 - `ShardKey` 来自 `routeBy`，仅在 `routeBy != idField` 时需要。
 - 批量读取必须保证每条记录携带正确路由字段，才能构造正确 `RecordKey`、Redis endpoint 和 hash tag。
+
+常见情况一：`routeBy == idField`。
+
+```go
+// @redis:`routeType:"role" routeBy:"RoleId" idField:"RoleId" key:"role"`
+key := data.GDRoleRecordKey(470001)
+```
+
+对应：
+
+```go
+storage.RecordKey{
+	TypeName: "github.com/example/game/gen/data.GDRole",
+	ID:       int64(470001),
+}
+```
+
+常见情况二：`routeBy != idField`。
+
+```go
+// @redis:`routeType:"arena" routeBy:"RoleId" idField:"ID" key:"arena"`
+key := storage.RecordKey{
+	TypeName: data.GDArenaRecordTypeSpec().Type.Ref.FullName,
+	ID:       int64(90001),
+	ShardKey: int64(470001),
+}
+```
+
+这里 `ID=90001` 是记录主键，`ShardKey=470001` 用于选择 Redis/Mongo endpoint 和生成 Redis hash tag。
+
+读取部分字段时，生成代码会自动补充 `idField`；当 `routeBy != idField` 时也会补充 `routeBy`。这样即使业务只请求
+`Name`，加载回来的对象仍然保留后续保存所需的记录定位信息。
 
 ## RouteTable
 
@@ -823,6 +950,113 @@ Mongo adapter 通过统一 filter 抽象调用底层 client：默认 filter 是 
 
 Mongo TTL index 的字段级 `expireAfter` 会删除整条文档，不是删除单个字段。生成阶段应限制同一类型最多一个 TTL 字段。
 
+### Mongo filter 和字段名
+
+`@mongodb.idField` 使用 Go 字段名，runtime 会通过该字段的 `bson` tag 推导 Mongo filter 字段：
+
+```go
+// @mongodb:`routeType:"role" routeBy:"RoleId" idField:"RoleId" collection:"roles"`
+type GDRole struct {
+	RoleId int64  `json:"roleId" bson:"_id" msgpack:"roleId"`
+	Name   string `json:"name" bson:"name" msgpack:"name"`
+}
+```
+
+读取、更新或删除 `RoleId=470001` 时，Mongo filter 是：
+
+```go
+bson.M{"_id": int64(470001)}
+```
+
+如果字段写的是 `bson:"roleId"`：
+
+```go
+RoleId int64 `json:"roleId" bson:"roleId" msgpack:"roleId"`
+```
+
+Mongo filter 会变成：
+
+```go
+bson.M{"roleId": int64(470001)}
+```
+
+因此，`bson:"_id"` 表示“这个 Go 字段绑定 Mongo 物理主键”；`idField:"RoleId"` 表示“tx 用这个 Go 字段作为业务记录身份”。
+两者可以配合，也可以分离。
+
+### 写入示例
+
+插入或全量替换时，生成 Store 会启用 upsert：
+
+```go
+role := data.NewGDRole()
+role.SetRoleId(470001)
+role.SetName("alice")
+
+err := role.Store().ApplyInsert(ctx, mongoCluster)
+```
+
+普通更新会关闭 upsert：
+
+```go
+role.SetName("bob")
+
+err := role.Store().ApplyUpdate(ctx, mongoCluster)
+```
+
+如果 Mongo 中没有对应记录，普通更新不会新建文档。需要明确创建或替换时使用 `ApplyInsert` 或 `ApplyReplace`。
+
+字段删除会转成 Mongo `$unset`：
+
+```go
+role.UnsetName()
+
+err := role.Store().ApplyUpdate(ctx, mongoCluster)
+```
+
+对应 Mongo update 语义接近：
+
+```go
+bson.M{
+	"$unset": bson.M{"name": ""},
+}
+```
+
+### 读取示例
+
+完整读取：
+
+```go
+role, exists, err := data.LoadGDRole(ctx, mongoCluster, data.GDRoleRecordKey(470001))
+```
+
+部分字段读取：
+
+```go
+role, exists, err := data.LoadGDRoleFields(ctx, mongoCluster, data.GDRoleRecordKey(470001), "Name", "Power")
+```
+
+传入字段使用 Go 字段名，runtime 会转换为 Mongo projection 字段名。上例中 Mongo projection 使用 `name` 和 `power`。
+生成代码会自动补充 `idField`，避免部分读取后的对象缺少记录键。
+
+批量读取：
+
+```go
+stores, exists, err := data.LoadGDRoleStoresByID(ctx, mongoCluster, []int64{1001, 1002, 1003})
+```
+
+`mongo.Cluster` 会先按 routeType 和 shardKey 分组，再在每个 Mongo endpoint 内使用 `$in` 查询，最后按输入顺序还原结果。
+
+### Mongo TTL 索引
+
+字段级 `mongodb:"index,expireAfter:0"` 表示创建 Mongo TTL 索引。TTL 到期后 Mongo 删除的是整条文档：
+
+```go
+ExpireAt int64 `json:"expireAt" bson:"expireAt" msgpack:"expireAt" mongodb:"index,expireAfter:0"`
+```
+
+这通常用于临时房间、临时任务等可物理过期的数据。不要把它理解成“删除 ExpireAt 字段”。同一类型多个 TTL 字段会产生歧义，
+生成阶段应直接拒绝。
+
 ## 通用文档接口
 
 `tx/storage` 提供 Redis、Mongo、Fusion 和生成代码共用的文档接口：
@@ -834,6 +1068,27 @@ Mongo TTL index 的字段级 `expireAfter` 会删除整条文档，不是删除�
 
 这些接口是 Store 读取、Fusion 回源、Redis 热数据回填和延迟保存回写的共同边界。具体后端仍负责把
 `RecordKey` 转成自己的底层定位方式，例如 Redis key/hash tag 或 Mongo filter。
+
+业务侧通常不需要自己实现这些接口；只需要把 Redis/Mongo/Fusion adapter 传给生成方法：
+
+```go
+role, exists, err := data.LoadGDRole(ctx, fusionStrategy, data.GDRoleRecordKey(470001))
+err = role.Store().ApplyUpdate(ctx, fusionStrategy)
+```
+
+需要写测试时，可以用内存假实现，只实现最小接口：
+
+```go
+type fakeLoader struct {
+	doc map[string]any
+}
+
+func (f fakeLoader) LoadDocument(context.Context, meta.TypeSpec, storage.RecordKey, ...string) (map[string]any, bool, error) {
+	return f.doc, f.doc != nil, nil
+}
+```
+
+这样生成 Store 的加载逻辑可以在不启动 Redis/Mongo 的情况下单测。
 
 ## Fusion 流程
 
@@ -863,6 +1118,109 @@ Fusion 读取会先查 Redis，未命中时回源 Mongo。默认回源会从 Mon
 
 Fusion 显式删除不会进入延迟队列。删除路径应先删除 Redis 热数据，再立即删除 Mongo 文档；如果只绕过 Fusion 删除 Mongo，而 Redis 热数据和延迟保存任务仍存在，后续保存任务可能按 Redis 当前数据重新写回 Mongo。
 
+### Fusion 初始化示例
+
+Fusion 需要三类组件：
+
+- Redis：同步热数据读写。
+- Mongo：未命中回源、延迟回写和显式删除。
+- DelayQueue：把“这条记录稍后保存到 Mongo”写入延迟任务队列。
+
+示例：
+
+```go
+fusionStore := fusion.Strategy{
+	Redis:         redisCluster,
+	RedisLoader:   redisCluster,
+	RedisDeleter:  redisCluster,
+	RedisReplacer: redisCluster,
+	MongoLoader:   mongoCluster,
+	MongoDeleter:  mongoCluster,
+	MongoQueue:    delayQueue,
+}
+```
+
+业务写入：
+
+```go
+role.SetName("bob")
+
+err := role.Store().ApplyUpdate(ctx, fusionStore)
+```
+
+执行后：
+
+1. Redis 立即写入热数据。
+2. DelayQueue 记录一条保存任务，任务到期时间来自 `delaySaveTime`。
+3. 本次调用不等待 Mongo 立即写入。
+
+### 延迟回写任务
+
+延迟任务不保存业务对象快照，也不保存 `ChangeSet`。任务只保存记录定位信息：
+
+```text
+type = GDRole
+id = 470001
+shardKey = 470001
+action = save
+due = now + delaySaveTime
+```
+
+Scheduler 到期 claim 任务后，`StorageTaskHandler` 会重新读取 Redis 当前热数据，再整文档 replace 到 Mongo。
+这意味着 10 分钟内同一条 `GDRole` 修改多次，Mongo 回写只需要使用 Redis 中的最新状态。
+
+### 多实例消费
+
+Redis delayed task backend 使用 ZSet/hash 保存 due、payload、busy、token、attempts 等状态，并通过 Lua 保证
+claim/complete/retry 的原子性。多个服务实例可以同时跑 Scheduler：
+
+```text
+server-a claim bucket 1 中的一批任务
+server-b claim bucket 2 中的一批任务
+server-c claim bucket 1 中租约过期后可恢复的任务
+```
+
+整体语义是 at-least-once：同一任务可能因为网络失败、进程重启或租约恢复被再次执行。因此 Mongo 回写必须是幂等的。
+当前设计是“按记录键把 Redis 当前热文档 replace 到 Mongo”，重复执行只会覆盖同一条记录，不应产生额外业务副作用。
+
+### 读取和回填
+
+默认读取顺序：
+
+1. 先读 Redis。
+2. Redis 命中，直接返回。
+3. Redis 未命中，读 Mongo 完整文档。
+4. 将 Mongo 完整文档写回 Redis，并使用 `delayDelTime` 作为 Redis TTL。
+5. 按请求字段返回给调用方。
+
+代码示例：
+
+```go
+role, exists, err := data.LoadGDRole(ctx, fusionStore, data.GDRoleRecordKey(470001))
+```
+
+部分字段读取：
+
+```go
+role, exists, err := data.LoadGDRoleFields(ctx, fusionStore, data.GDRoleRecordKey(470001), "Name", "Power")
+```
+
+即使只请求 `Name` 和 `Power`，Redis miss 后默认也会从 Mongo 读取完整文档并回填 Redis。这样 Redis 继续承担热数据缓存职责。
+
+如果明确是低频只读，不希望回填 Redis，可以使用 runtime option：
+
+```go
+doc, exists, err := fusionStore.LoadDocumentWithOptions(
+	ctx,
+	data.GDRoleTypeSpec(),
+	data.GDRoleRecordKey(470001),
+	fusion.LoadOptions{DontLoadToRedis: true},
+	"Name",
+)
+```
+
+这个路径只从 Mongo 读取请求字段，不写 Redis。
+
 ## TTL 与删除
 
 `delaySaveTime` 表示 Redis 热数据变更后，经过多久触发一次 Mongo 回写。Fusion 延迟保存队列使用这个时间。
@@ -870,6 +1228,43 @@ Fusion 显式删除不会进入延迟队列。删除路径应先删除 Redis 热
 `delayDelTime` 表示 Redis 热数据 TTL，用于释放长时间不活跃记录的热备数据；写入后会续期。显式传入 `ApplyOptions.TTL` 时，以显式值为准。Fusion 默认 Mongo 回源并回填 Redis 时必须配置该值。
 
 `delayDelTime` 不代表 Mongo 删除延迟，也不会触发 Mongo 删除。业务是否执行 Mongo 物理删除，仍由显式 delete 接口和业务代码决定。
+
+常见配置：
+
+```go
+// @storage:`mode:"fusion" delaySaveTime:"600" delayDelTime:"86400"`
+```
+
+含义：
+
+| 字段 | 含义 |
+| --- | --- |
+| `delaySaveTime:"600"` | Redis 热数据变更后，约 10 分钟触发一次 Mongo 回写。 |
+| `delayDelTime:"86400"` | Redis 热数据写入后 24 小时过期；再次写入会续期。 |
+
+如果玩家持续在线且频繁修改，Redis 热数据会不断续期；Mongo 回写按延迟任务节奏合并。玩家长时间不活跃后，Redis key 到期释放内存；
+再次加载时从 Mongo 读取完整数据并重新缓存到 Redis。
+
+显式删除：
+
+```go
+err := role.Store().ApplyDelete(ctx, fusionStore)
+```
+
+Fusion 删除会：
+
+1. 删除 Redis 主文档、subKey 文档和版本键。
+2. 立即删除 Mongo 文档。
+3. 不写入延迟保存队列。
+
+如果业务希望“逻辑删除”，推荐在业务数据里定义字段：
+
+```go
+role.SetDeleted(true)
+err := role.Store().ApplyUpdate(ctx, fusionStore)
+```
+
+框架不会替业务决定逻辑删除字段，也不会把 `delayDelTime` 解释成 Mongo 删除时间。
 
 ## 测试
 
