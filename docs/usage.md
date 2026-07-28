@@ -286,25 +286,252 @@ cmd Provider 下行 body 使用 Msgpack 名 `roleId`。
 
 ## ChangeSet
 
-`change.Tracker` 记录字段级变更，字段可以通过编号解析为字段路径：
+`ChangeSet` 表示一次保存周期内“哪些字段需要被落地或下发”。业务代码通常不直接操作
+`change.Tracker`，而是通过生成的 `GD*` 代理方法或 `GD*Store` 方法标脏。
 
-- `TouchField` 记录普通 set。
-- `TouchFieldPath` 记录子路径 set。
-- `ReplaceFieldPath` 记录整体或子路径 replace。
-- `UnsetFieldPath` 记录 unset。
-- `FieldChange.FullPath(resolver)` 将字段编号和子路径拼成完整 path。
+### 常用业务写法
 
-同一保存周期内，父级变更会覆盖同目标下已有或后续追加的子路径变更。通过字段编号记录时，例如先记录
-`TouchFieldPath(fieldItems, Path{"1001", "quantity"})`，再记录 `TouchField(fieldItems, items)`，最终
-`ChangeSet` 只保留 `items` 整字段。通过完整路径记录时同理，例如先记录
-`Touch(Path{"items", "1001", "quantity"}, 3)`，再记录 `Touch(Path{"items"}, items)`，最终也只保留
-`items`。这用于避免大集合字段在整字段保存时继续保留大量 key 级 path 记录。
+最常见的写法是直接操作数据对象。`GD*` 会懒加载自己的 Store，并代理到 Store setter：
 
-`AllTouch()` 表示整对象需要全量落地，会直接清空已有字段级 `ChangeSet`。例如已经记录了
-`items.1001.quantity`、`name` 等部分标脏后再执行 `AllTouch()`，后续只需要根据 `AllDirty()` 走全量保存，
-不再保留这些局部变更。
+```go
+role := data.NewGDRole()
+role.SetRoleId(1001)
+role.SetName("alice")
+role.SetPower(470001)
 
-生成代码应传入生成的 `FieldResolver`，避免运行时反射字段名。
+doc := role.ChangeDocument()
+```
+
+这时 `ChangeDocument()` 使用 Go 字段名输出后端无关文档：
+
+```go
+change.Document{
+	Set: map[string]any{
+		"RoleId": int64(1001),
+		"Name":   "alice",
+		"Power":  int64(470001),
+	},
+	Unset: map[string]struct{}{},
+}
+```
+
+如果用于 cmd 下行，生成代码会走 Msgpack 字段名：
+
+```go
+body := role.MsgpackChangeDocument()
+```
+
+例如 `HeadImg` 的 tag 是 `msgpack:"hi,omitempty"`，那么下行变更文档里使用 `hi`，不是 Go 字段名
+`HeadImg`。
+
+### Set、Touch、Replace、Unset
+
+生成 Store 每个字段通常会有四类方法：
+
+| 方法 | 是否修改内存字段 | ChangeSet 语义 | 常见用途 |
+| --- | --- | --- | --- |
+| `SetName(value)` | 是 | set | 日常业务修改字段。 |
+| `TouchName()` | 否 | set 当前内存值 | 字段值已经被业务直接改过，需要补标脏；或 viewStore 只想把当前字段加入下行。 |
+| `ReplaceItems(value)` | 是 | replace | 整体替换 map/slice/struct 指针字段。 |
+| `UnsetName()` | 是，设置为 Go 零值 | unset | 从 Redis/Mongo 文档中移除字段。 |
+
+日常业务优先使用 `Set*`：
+
+```go
+role.SetName("bob")
+role.SetPower(role.GetPower() + 100)
+```
+
+如果业务直接修改了字段，需要手动 `Touch*` 补标脏：
+
+```go
+role.Name = "bob"
+role.TouchName()
+```
+
+如果只想把字段加入下行变更，但不想污染主 Store，可以创建 viewStore：
+
+```go
+view := role.NewViewStore()
+view.TouchName()
+view.TouchPower()
+
+body := view.MsgpackChangeDocument()
+```
+
+这适合广播或响应中“额外携带一些未修改字段”的场景。主对象的落库 Store 不会因此多出脏字段。
+
+### 零值和删除
+
+`Set*` 设置零值表示“把字段写成零值”，不是删除字段：
+
+```go
+role.SetName("")
+role.SetPower(0)
+```
+
+对应变更文档：
+
+```go
+change.Document{
+	Set: map[string]any{
+		"Name":  "",
+		"Power": int64(0),
+	},
+}
+```
+
+落到 Redis/Mongo 后，字段仍然存在，只是值为 `""` 或 `0`。这和 `omitempty` 不冲突：`omitempty`
+主要影响完整对象序列化时是否省略零值；`ChangeSet` 的 set 语义会明确保留这次设置的零值。
+
+如果业务语义是“从持久化文档里删除这个字段”，使用 `Unset*`：
+
+```go
+role.UnsetName()
+```
+
+对应变更文档：
+
+```go
+change.Document{
+	Set:   map[string]any{},
+	Unset: map[string]struct{}{"Name": {}},
+}
+```
+
+Redis 写入时会把 patch 中该字段设为 JSON null，由 Lua merge 删除字段；Mongo 写入时会转成 `$unset`。
+
+### 集合字段和路径标脏
+
+集合字段可以整字段标脏，也可以标记内部路径。第一版推荐业务上优先整字段标脏，降低编码心智负担：
+
+```go
+role.Store().UpdateItems(func(items map[int32]*data.GDItem) {
+	item := items[1001]
+	if item == nil {
+		item = &data.GDItem{ItemId: 1001}
+		items[1001] = item
+	}
+	item.Quantity += 3
+})
+```
+
+`UpdateItems(fn)` 会在 map 为 nil 时先初始化 map，执行闭包后记录整字段 `Items`。后续 Redis 中如果
+`Items` 配置了 `redis:"subKey:items"`，只会更新
+`role:{1001}:items` 这个 subKey 文档，不会重写主文档。
+
+也可以手动修改后补 `TouchItems()`：
+
+```go
+role.Items[1001].Quantity += 3
+role.TouchItems()
+```
+
+路径级标脏适合框架内部或少数非常明确的局部更新场景：
+
+```go
+role.TouchItemsPath(change.Path{"1001", "quantity"}, int64(3))
+```
+
+对应路径是：
+
+```text
+Items.1001.quantity
+```
+
+如果手动使用路径级标脏，业务需要自己保证 map key 存在、值类型正确、路径和最终文档结构一致。否则代码看起来省 IO，
+但很容易把复杂度转移到业务层。
+
+### 覆盖规则
+
+`ChangeSet` 同一目标多次写入时，只保留最后一次：
+
+```go
+role.SetName("alice")
+role.SetName("bob")
+```
+
+最终只记录：
+
+```go
+Set["Name"] = "bob"
+```
+
+父路径会覆盖子路径，避免大集合 path 爆炸：
+
+```go
+role.TouchItemsPath(change.Path{"1001", "quantity"}, int64(3))
+role.TouchItems()
+```
+
+最终只保留整字段：
+
+```text
+Items
+```
+
+反过来，如果已经标记了整字段，再追加子路径，子路径会被忽略：
+
+```go
+role.TouchItems()
+role.TouchItemsPath(change.Path{"1001", "quantity"}, int64(3))
+```
+
+最终仍然只保留：
+
+```text
+Items
+```
+
+完整路径 API 也遵守相同规则：
+
+```go
+var tracker change.Tracker
+_ = tracker.Touch(change.Path{"items", "1001", "quantity"}, int64(3))
+_ = tracker.Touch(change.Path{"items"}, items)
+```
+
+最终只保留 `items`。
+
+### AllTouch 和 ClearChanges
+
+`AllTouch()` 表示整对象需要全量落地。它会清空已有字段级 `ChangeSet`：
+
+```go
+role.SetName("bob")
+role.TouchItemsPath(change.Path{"1001", "quantity"}, int64(3))
+role.Store().AllTouch()
+```
+
+执行后不再保留 `Name` 或 `Items.1001.quantity` 这些局部记录。后续保存路径应根据 `AllDirty()` 走整文档替换。
+
+`ClearChanges()` 或 Store 的 `AllUnTouch()` 用于保存成功、加载完成或主动放弃本轮修改后清空脏标记：
+
+```go
+if err := role.Store().ApplyUpdate(ctx, writer); err != nil {
+	return err
+}
+role.ClearChanges()
+```
+
+生成的加载方法在成功读取后会自动清空脏标记，避免“刚加载出来的数据”被误认为需要保存。
+
+### ChangeSet 到后端文档
+
+`change.Tracker` 底层记录的是：
+
+- `KindSet`：设置字段值。
+- `KindReplace`：整体替换字段值，常用于 map、slice、struct 指针。
+- `KindUnset`：删除字段。
+- `FieldID`：生成代码提供的稳定字段编号，避免热路径反复保存字段名字符串。
+- `Path`：字段内部的动态尾路径，例如 map key 或嵌套字段名。
+
+生成代码会传入 `FieldResolver`，把字段编号解析为字段名：
+
+```text
+FieldID(fieldGDRoleName) + Path{} -> Name
+FieldID(fieldGDRoleItems) + Path{"1001", "quantity"} -> Items.1001.quantity
+```
 
 变更落地和下行投影不会对整个数据对象做全量 `json.Marshal`、`bson.Marshal` 或
 `msgpack.Marshal`。`ChangeSet` 只遍历本保存周期内的脏字段，通过生成的 resolver 或
