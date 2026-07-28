@@ -950,6 +950,91 @@ Mongo adapter 通过统一 filter 抽象调用底层 client：默认 filter 是 
 
 Mongo TTL index 的字段级 `expireAfter` 会删除整条文档，不是删除单个字段。生成阶段应限制同一类型最多一个 TTL 字段。
 
+### Mongo 配置与装配示例
+
+Mongo 和 Redis 共用 `storage/config.RouteTableConfig` 这套 routeType 配置结构。最简单的本地配置可以把多个 routeType 指向同一个 Mongo endpoint：
+
+```yaml
+main: "mongodb://127.0.0.1:27017/txgame"
+role: "mongodb://127.0.0.1:27017/txgame"
+rank: "mongodb://127.0.0.1:27017/txgame"
+```
+
+如果生产环境按业务或 routeBy 区间拆分多个 Mongo endpoint，可以写成规则数组：
+
+```yaml
+role:
+  - min: 1
+    max: 999999
+    shards:
+      - "mongodb://role-a.example.com:27017/game"
+      - "mongodb://role-b.example.com:27017/game"
+  - min: 1000000
+    shards:
+      - "mongodb://role-c.example.com:27017/game"
+arena:
+  - "mongodb://arena-a.example.com:27017/game"
+  - "mongodb://arena-b.example.com:27017/game"
+```
+
+启动时由业务工程读取 yml，创建官方 MongoDB driver client，再交给 tx 的薄适配层：
+
+```go
+var mongoRoutes storageconfig.RouteTableConfig
+if err := yaml.Unmarshal(body, &mongoRoutes); err != nil {
+	return err
+}
+
+routeTable, err := mongoRoutes.RouteTable()
+if err != nil {
+	return err
+}
+
+shards := map[string]any{}
+for endpoint := range mongoRoutes.Endpoints() {
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(endpoint))
+	if err != nil {
+		return err
+	}
+	dbName := databaseNameFromURI(endpoint)
+	shards[endpoint] = txmongodriver.NewDatabase(client.Database(dbName))
+}
+
+mongoCluster := txmongo.NewCluster(routeTable, shards)
+```
+
+对应 import 路径：
+
+```go
+import (
+	"github.com/ngnl47/tx/storage"
+	storageconfig "github.com/ngnl47/tx/storage/config"
+	txmongo "github.com/ngnl47/tx/storage/mongo"
+	txmongodriver "github.com/ngnl47/tx/storage/mongo/mongodriver"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+	"gopkg.in/yaml.v3"
+)
+```
+
+上面示例中的 `databaseNameFromURI` 由业务工程实现，用来从项目配置或 URI path 中决定 database 名称。tx runtime 不读取工程 yml，也不持有具体 Mongo client 生命周期；业务工程应在服务关闭时断开官方 driver client。
+
+批量读取时，`mongo.Cluster` 会先按 `routeType` 和 `RecordKey.ShardKey` 找到 endpoint，再对每个 endpoint 发起一批 Mongo 查询，最后按输入顺序还原：
+
+```go
+stores, exists, err := data.LoadGDRoleStoresByID(ctx, mongoCluster, []int64{1001, 1002, 1003})
+```
+
+如果某个类型 `routeBy != idField`，生成的 `ByID` 批量 helper 会被跳过。业务需要显式构造带 route 字段的 `RecordKey`，保证每条记录能路由到正确 Mongo endpoint：
+
+```go
+keys := []storage.RecordKey{
+	data.GDArenaRecordRecordKey(90001, 1001),
+	data.GDArenaRecordRecordKey(90002, 1002),
+}
+stores, exists, err := data.LoadGDArenaRecordStores(ctx, mongoCluster, keys)
+```
+
 ### Mongo filter 和字段名
 
 `@mongodb.idField` 使用 Go 字段名，runtime 会通过该字段的 `bson` tag 推导 Mongo filter 字段：
