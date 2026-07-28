@@ -13,6 +13,93 @@
 
 生成代码依赖 `tx`，`tx` 不依赖生成器工程。
 
+## 快速接入流程
+
+业务工程通常按下面顺序接入运行时：
+
+1. 由生成工程输出 `server/gen/data` 和 `server/gen/cmd`。
+2. 业务服务读取本地 yml，解析 Redis/Mongo routeType 路由表。
+3. 业务服务创建 go-redis、MongoDB driver client，并用 tx 的薄适配层包装。
+4. 用 Redis/Mongo cluster adapter 组装 Fusion strategy。
+5. 将 Fusion strategy 注册给生成包的默认 reader。
+6. handler 使用生成数据对象代理修改字段，并显式调用 `ApplyInsert`、`ApplyUpdate`、`ApplyReplace` 或 `ApplyDelete`。
+7. 后台 Scheduler 消费 Redis 延迟任务，把 Redis 热数据回写 Mongo。
+
+一个简化的启动伪代码如下：
+
+```go
+func BootstrapStorage(ctx context.Context, cfg AppConfig) (*fusion.Strategy, error) {
+	redisCluster, err := buildRedisCluster(ctx, cfg.Storage.Redis)
+	if err != nil {
+		return nil, err
+	}
+	mongoCluster, err := buildMongoCluster(ctx, cfg.Storage.MongoDB)
+	if err != nil {
+		return nil, err
+	}
+	delayQueue, err := buildRedisDelayQueue(ctx, cfg.Storage.Redis)
+	if err != nil {
+		return nil, err
+	}
+
+	store := &fusion.Strategy{
+		Redis:         redisCluster,
+		RedisLoader:   redisCluster,
+		RedisDeleter:  redisCluster,
+		RedisReplacer: redisCluster,
+		MongoLoader:   mongoCluster,
+		MongoDeleter:  mongoCluster,
+		MongoQueue:    delayQueue,
+	}
+
+	data.RegisterStorageRuntime(runtimeReaders{
+		redis:  redisCluster,
+		mongo:  mongoCluster,
+		fusion: store,
+	})
+	return store, nil
+}
+```
+
+`runtimeReaders` 是业务工程自己的小适配结构，只需要满足生成包里的 `StorageRuntime` 接口：
+
+```go
+type runtimeReaders struct {
+	redis  storage.DocumentLoader
+	mongo  storage.DocumentLoader
+	fusion storage.DocumentLoader
+}
+
+func (r runtimeReaders) RedisReader() data.DefaultReader  { return r.redis }
+func (r runtimeReaders) MongoReader() data.DefaultReader  { return r.mongo }
+func (r runtimeReaders) FusionReader() data.DefaultReader { return r.fusion }
+```
+
+如果 reader 同时实现 `storage.BatchDocumentLoader`，生成包会把它注册成默认批量 reader。Redis/Mongo/Fusion 的 cluster adapter 均实现批量读取接口。
+
+handler 中常见写法：
+
+```go
+func RenameRole(ctx context.Context, store *fusion.Strategy, roleID int64, name string) error {
+	role, exists, err := data.FindGDRoleByID(ctx, roleID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return storage.ErrNotExists
+	}
+
+	role.SetName(name)
+	if err := role.Store().ApplyUpdate(ctx, store); err != nil {
+		return err
+	}
+	role.ClearChanges()
+	return nil
+}
+```
+
+读取走默认 reader，写入仍显式传入 runtime。这样业务代码能清楚看到哪些操作会落地，避免“修改内存对象后自动保存”的隐式副作用。
+
 ## 类型注解
 
 type 级注解支持 marker 和带参数两种形态。无参数时，下面两种写法等价：
@@ -1356,3 +1443,43 @@ err := role.Store().ApplyUpdate(ctx, fusionStore)
 ```bash
 env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp /Users/a47/sdk/go1.25.6/bin/go test ./... -count=1
 ```
+
+## 排查清单
+
+### 读取不到数据
+
+- 确认生成包已经调用 `RegisterStorageRuntime` 或对应的 `SetDefault*Reader`。
+- 确认 `@storage.mode` 与实际注册的 reader 匹配；Fusion 类型默认读 Fusion reader，Redis 类型默认读 Redis reader，Mongo 类型默认读 Mongo reader。
+- 确认 `idField` 和 `routeBy` 使用 Go 字段名，例如 `RoleId`，不是 `roleId`、`_id` 或 msgpack 名。
+- 如果 `routeBy != idField`，确认调用的是带 route 字段参数的 helper，或手动构造了带 `ShardKey` 的 `RecordKey`。
+- Fusion 从 Mongo 回填 Redis 时要求 `delayDelTime` 大于 0；如果缺失，默认回填路径会失败。
+- 部分读取传入的是 Go 字段名或生成常量，例如 `data.GDRoleFieldName`，不是 JSON/BSON/Msgpack 字段名。
+
+### Redis 中没有热数据
+
+- Redis mode 或 Fusion mode 写入后才会产生 Redis 热数据；Mongo-only 类型不会写 Redis。
+- Fusion 读取 Mongo 后默认会回填 Redis，但 `LoadOptions.DontLoadToRedis` 会关闭回填。
+- 检查 Redis routeType 是否能在 yml 路由表中找到 endpoint。
+- 检查 `RecordKey.ShardKey` 是否正确；`routeBy != idField` 时缺少 ShardKey 会导致路由或 hash tag 不符合预期。
+- 检查 `delayDelTime`，Redis key 可能已经按 TTL 过期。
+
+### Mongo 没有立即更新
+
+- Fusion 写入路径先同步写 Redis，再通过延迟任务回写 Mongo；这不是立即写 Mongo。
+- `delaySaveTime` 决定保存任务到期时间，同一条记录在延迟窗口内多次修改会合并为读取 Redis 当前热文档后 replace Mongo。
+- 确认 Redis delayed task backend 和 Scheduler 已在服务中启动。
+- 确认 Scheduler 日志没有持续 claim、retry、complete 错误。
+- 如果业务绕过 Fusion 直接删 Mongo，而 Redis 热数据和延迟保存任务还在，后续回写可能重新写入 Mongo。
+
+### 更新没有字段变化
+
+- 直接字段赋值不会标脏，例如 `role.Name = "bob"` 只改内存，不会进入 `ChangeSet`。
+- 使用生成代理方法：`role.SetName("bob")`、`role.TouchItems()`、`role.UpdateItems(...)`。
+- 如果业务先细粒度 touch path，再 `TouchItems()` 或 `AllTouch()`，顶层 dirty 会覆盖并清理更细的 path 记录。
+- 保存成功后如果继续复用对象，调用 `ClearChanges()` 或 Store 的 `AllUnTouch()` 清掉本轮 tracker。
+
+### 批量读取报 Redis cross-slot
+
+- 默认批量读取面向单节点或云 Redis 代理 endpoint，直接使用原生 `MGET`。
+- 本地原生 Redis Cluster 或直连 cluster 节点调试时，使用 `redis.LoadOptions{ClusterSafe: true}`。
+- 不要把跨记录批量读取包进 Lua；Lua 脚本的 `KEYS` 必须在同一个 slot，云代理也不能可靠拆分自定义脚本。
