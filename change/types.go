@@ -164,6 +164,11 @@ func (s ChangeSet) Changes() []FieldChange {
 	return out
 }
 
+// Clone 返回一份可独立修改的变更集合副本。
+func (s ChangeSet) Clone() ChangeSet {
+	return ChangeSet{changes: s.Changes()}
+}
+
 // Empty 判断集合中是否没有字段级变更。
 func (s ChangeSet) Empty() bool {
 	return len(s.changes) == 0

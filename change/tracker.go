@@ -80,3 +80,11 @@ func (t *Tracker) AllDirty() bool {
 func (t *Tracker) Changes() ChangeSet {
 	return t.changes
 }
+
+// Clone 返回一份可独立修改的脏标记记录器副本。
+func (t Tracker) Clone() Tracker {
+	return Tracker{
+		changes:  t.changes.Clone(),
+		allDirty: t.allDirty,
+	}
+}

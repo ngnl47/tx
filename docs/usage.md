@@ -429,6 +429,36 @@ role.SetName("bob")
 role.SetPower(role.GetPower() + 100)
 ```
 
+生成代码同时支持两条持久化主线。休闲游戏的无状态请求可以使用快照 diff：
+
+```go
+if err := role.BeginChange(); err != nil {
+	return err
+}
+
+role.Name = "bob"
+role.Items[1001].Quantity = 7
+
+if err := role.SaveChange(ctx, fusionDB); err != nil {
+	return err
+}
+```
+
+高频有状态对象优先使用 Store 拦截式标脏：
+
+```go
+role.SetName("bob")
+role.ItemsStore().Set(1001, &data.GDItem{ItemId: 1001, Quantity: 7})
+
+view := role.Store().View() // 保存前复制一份下行视图
+
+if err := role.SaveStore(ctx, fusionDB); err != nil {
+	return err
+}
+```
+
+`BeginChange/SaveChange` 和 `Store/SaveStore` 在同一个变更周期内互斥；`NewViewStore()` 与 `store.View()` 只用于下行/广播视图，不参与持久化模式。
+
 如果业务直接修改了字段，需要手动 `Touch*` 补标脏：
 
 ```go
