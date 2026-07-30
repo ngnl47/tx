@@ -656,6 +656,56 @@ FieldID(fieldGDRoleItems) + Path{"1001", "quantity"} -> Items.1001.quantity
 map、slice 或 struct 指针，具体字段值在最终编码时仍会交给对应 JSON/BSON/Msgpack 编码器展开。
 完整对象读取、回源或整文档替换路径才会依赖序列化库按 tag 映射字段。
 
+### Change Document 压缩
+
+少数高频有状态场景可能会先在内存里累积多份 `change.Document`，再批量写入存储。比如战场对象一帧内多次修改
+`Hp`、`Pos`、`State`，如果每份变更都立即写入，会放大 IO；如果直接丢弃中间态，又容易破坏删除或父子路径语义。
+
+`change.MergeDocuments(base, next)` 提供保守合并原语：能无歧义表达最终结果时返回合并文档，不能安全表达时返回
+`ok=false`。常见可合并示例：
+
+```go
+doc, ok := change.MergeDocuments(
+	change.Document{Set: map[string]any{"Name": "old"}},
+	change.Document{Set: map[string]any{"Name": "new"}},
+)
+// ok == true，最终只保留 Set["Name"] = "new"
+```
+
+嵌套文档也会在两边都是文档时递归合并：
+
+```go
+doc, ok := change.MergeDocuments(
+	change.Document{Set: map[string]any{"Battle": map[string]any{"Hp": int64(10)}}},
+	change.Document{Set: map[string]any{"Battle": map[string]any{"Mp": int64(5)}}},
+)
+// doc.Set["Battle"] == map[string]any{"Hp": int64(10), "Mp": int64(5)}
+```
+
+如果前一份文档把父路径写成标量，后一份又更新子路径，合并会失败：
+
+```go
+_, ok := change.MergeDocuments(
+	change.Document{Set: map[string]any{"Battle": int64(1)}},
+	change.Document{Set: map[string]any{"Battle.Hp": int64(10)}},
+)
+// ok == false，需要调用方分成两次写入，避免把顺序语义压错。
+```
+
+队列场景使用 `change.CompactDocuments` 更方便：
+
+```go
+docs := change.CompactDocuments([]change.Document{
+	{Set: map[string]any{"Name": "old"}},
+	{Set: map[string]any{"Name": "new"}},
+	{Set: map[string]any{"Battle": int64(1)}},
+	{Set: map[string]any{"Battle.Hp": int64(10)}},
+})
+```
+
+上面会得到两段结果：第一段包含 `Name=new` 和 `Battle=1`，第二段从 `Battle.Hp=10` 开始。也就是说，
+压缩会尽力减少写入次数，但不会跨越不安全边界。
+
 ## Redis 存储模型
 
 Redis 使用 string JSON 文档模型。
