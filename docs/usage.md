@@ -22,7 +22,7 @@
 3. 业务服务创建 go-redis、MongoDB driver client，并用 tx 的薄适配层包装。
 4. 用 Redis/Mongo cluster adapter 组装 Fusion strategy。
 5. 将 Fusion strategy 注册给生成包的默认 reader。
-6. handler 使用生成数据对象代理修改字段，并显式调用 `ApplyInsert`、`ApplyUpdate`、`ApplyReplace` 或 `ApplyDelete`。
+6. handler 选择一条持久化主线：`BeginChange/SaveChange` 用于直接字段修改，`Store/SaveStore` 用于 setter/Store 拦截式标脏。
 7. 后台 Scheduler 消费 Redis 延迟任务，把 Redis 热数据回写 Mongo。
 
 一个简化的启动伪代码如下：
@@ -90,15 +90,17 @@ func RenameRole(ctx context.Context, store *fusion.Strategy, roleID int64, name 
 	}
 
 	role.SetName(name)
-	if err := role.Store().ApplyUpdate(ctx, store); err != nil {
+	if err := role.SaveStore(ctx, store); err != nil {
 		return err
 	}
-	role.ClearChanges()
 	return nil
 }
 ```
 
 读取走默认 reader，写入仍显式传入 runtime。这样业务代码能清楚看到哪些操作会落地，避免“修改内存对象后自动保存”的隐式副作用。
+上例使用 `SaveStore`，表示保存数据对象当前主 Store 中记录的变更，并在保存成功后清空本轮脏标记。
+如果业务需要显式持有 Store，例如高频对象在内存中维护变更队列、定时合并后再落地，也可以直接使用
+`role.Store().ApplyUpdate(ctx, store)` 这类 Store 写入入口，并由调用方决定何时 `ClearChanges()` 或重新累计下一轮变更。
 
 ## 类型注解
 
@@ -622,14 +624,29 @@ role.Store().AllTouch()
 
 执行后不再保留 `Name` 或 `Items.1001.quantity` 这些局部记录。后续保存路径应根据 `AllDirty()` 走整文档替换。
 
-`ClearChanges()` 或 Store 的 `AllUnTouch()` 用于保存成功、加载完成或主动放弃本轮修改后清空脏标记：
+`ClearChanges()` 或 Store 的 `AllUnTouch()` 用于加载完成、主动放弃本轮修改，或显式 Store 写入成功后手动清空脏标记。
+普通请求链路可以使用 `SaveStore` 自动清理：
 
 ```go
-if err := role.Store().ApplyUpdate(ctx, fusionStore); err != nil {
+if err := role.SaveStore(ctx, fusionStore); err != nil {
+	return err
+}
+```
+
+高频对象也可以显式持有 Store，把多次修改合并到同一个 tracker，定时或达到阈值后写入：
+
+```go
+store := role.Store()
+store.IncPower(10)
+store.ItemsStore().Set(1001, &data.GDItem{ItemId: 1001, Quantity: 7})
+
+if err := store.ApplyUpdate(ctx, fusionStore); err != nil {
 	return err
 }
 role.ClearChanges()
 ```
+
+这种写法适合 SLG/MMO 战斗、沙盘状态等有状态高频对象；关键是由业务循环明确控制“累计多久、何时保存、保存成功后何时清理”。
 
 生成的加载方法在成功读取后会自动清空脏标记，避免“刚加载出来的数据”被误认为需要保存。
 
@@ -660,6 +677,9 @@ map、slice 或 struct 指针，具体字段值在最终编码时仍会交给对
 
 少数高频有状态场景可能会先在内存里累积多份 `change.Document`，再批量写入存储。比如战场对象一帧内多次修改
 `Hp`、`Pos`、`State`，如果每份变更都立即写入，会放大 IO；如果直接丢弃中间态，又容易破坏删除或父子路径语义。
+这里的 document 可以来自快照 diff 路线，也可以来自 Store dirty 路线：前者是 `BeginChange` 后对比对象得到一轮 diff，
+后者是 `Store().ChangeDocument()` 得到一轮显式标脏 diff。`CompactDocuments` 处理的是多轮 diff 文档的压缩，
+不属于某一个具体保存 API。
 
 `change.MergeDocuments(base, next)` 提供保守合并原语：能无歧义表达最终结果时返回合并文档，不能安全表达时返回
 `ok=false`。常见可合并示例：
@@ -705,6 +725,61 @@ docs := change.CompactDocuments([]change.Document{
 
 上面会得到两段结果：第一段包含 `Name=new` 和 `Battle=1`，第二段从 `Battle.Hp=10` 开始。也就是说，
 压缩会尽力减少写入次数，但不会跨越不安全边界。
+
+一个内存延迟保存队列可以这样组织：
+
+```go
+type rolePatchWriter interface {
+	ApplyRolePatches(ctx context.Context, roleID int64, docs []change.Document) error
+}
+
+type roleDelaySaveQueue struct {
+	roleID int64
+	docs   []change.Document
+}
+
+func (q *roleDelaySaveQueue) PushDocument(doc change.Document) {
+	q.docs = append(q.docs, doc)
+}
+
+func (q *roleDelaySaveQueue) Flush(ctx context.Context, writer rolePatchWriter) error {
+	if len(q.docs) == 0 {
+		return nil
+	}
+	compacted := change.CompactDocuments(q.docs)
+	if err := writer.ApplyRolePatches(ctx, q.roleID, compacted); err != nil {
+		return err
+	}
+	q.docs = q.docs[:0]
+	return nil
+}
+```
+
+Store 路线可以把每轮显式脏标记转成 document 入队：
+
+```go
+store := role.Store()
+store.IncPower(10)
+store.ItemsStore().Set(1001, &data.GDItem{ItemId: 1001, Quantity: 7})
+
+queue.PushDocument(store.ChangeDocument())
+store.ClearChanges()
+```
+
+快照 diff 路线也可以把一轮 diff 结果转成 document 后入队。具体捕获方式应由业务队列决定，例如封装一个
+`SaveChangeToQueue(role)`，在内部完成 `BeginChange` 后的 diff、`ChangeDocument` 生成和 snapshot 清理。
+关键点是：入队的是“某一轮已经确定的 diff 文档”，flush 时再做跨轮压缩。
+
+```go
+if err := queue.Flush(ctx, battlefieldPatchWriter); err != nil {
+	return err
+}
+```
+
+这个例子里的 `rolePatchWriter` 是业务高频队列自己的写入器：它可以把 compact 后的 `change.Document`
+转换成 Redis/Mongo 的局部 patch，也可以合并进战斗服自己的内存落盘格式。当前通用 `storage.ChangeApplier`
+仍然接收 `change.ChangeSet`，不直接接收 `change.Document`；因此不要把上面的队列写入器误解为现有
+Fusion 延迟回写入口。Fusion 默认延迟回写仍是“队列只保存记录定位信息，到期后读取 Redis 最新热数据并整文档写回 Mongo”。
 
 ## Redis 存储模型
 
