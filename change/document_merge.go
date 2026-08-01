@@ -10,7 +10,7 @@ import "strings"
 func MergeDocuments(base Document, next Document) (merged Document, ok bool) {
 	out := cloneDocument(base)
 	for path, value := range next.Set {
-		if hasUnsetParent(out.Unset, path) {
+		if hasClearParent(out.Clear, path) {
 			return Document{}, false
 		}
 		value = cloneDocumentValue(value)
@@ -20,7 +20,7 @@ func MergeDocuments(base Document, next Document) (merged Document, ok bool) {
 				return Document{}, false
 			}
 			out.Set[path] = mergedValue
-			removeCoveredUnsets(out.Unset, path)
+			removeCoveredClears(out.Clear, path)
 			continue
 		}
 		if parent, tail, exists := nearestSetParent(out.Set, path); exists {
@@ -29,26 +29,26 @@ func MergeDocuments(base Document, next Document) (merged Document, ok bool) {
 				return Document{}, false
 			}
 			out.Set[parent] = parentValue
-			removeCoveredUnsets(out.Unset, path)
+			removeCoveredClears(out.Clear, path)
 			continue
 		}
 		removeCoveredSets(out.Set, path)
-		removeCoveredUnsets(out.Unset, path)
+		removeCoveredClears(out.Clear, path)
 		out.Set[path] = value
 	}
-	for path := range next.Unset {
+	for path := range next.Clear {
 		if parent, tail, exists := nearestSetParent(out.Set, path); exists {
-			parentValue, canMerge := unsetDocumentChild(out.Set[parent], tail)
+			parentValue, canMerge := clearDocumentChild(out.Set[parent], tail)
 			if !canMerge {
 				return Document{}, false
 			}
 			out.Set[parent] = parentValue
-			removeCoveredUnsets(out.Unset, path)
+			removeCoveredClears(out.Clear, path)
 			continue
 		}
 		removeCoveredSets(out.Set, path)
-		removeCoveredUnsets(out.Unset, path)
-		out.Unset[path] = struct{}{}
+		removeCoveredClears(out.Clear, path)
+		out.Clear[path] = struct{}{}
 	}
 	return out, true
 }
@@ -77,13 +77,13 @@ func CompactDocuments(docs []Document) []Document {
 func cloneDocument(doc Document) Document {
 	out := Document{
 		Set:   map[string]any{},
-		Unset: map[string]struct{}{},
+		Clear: map[string]struct{}{},
 	}
 	for path, value := range doc.Set {
 		out.Set[path] = cloneDocumentValue(value)
 	}
-	for path := range doc.Unset {
-		out.Unset[path] = struct{}{}
+	for path := range doc.Clear {
+		out.Clear[path] = struct{}{}
 	}
 	return out
 }
@@ -169,7 +169,7 @@ func setDocumentChild(root any, tail []string, value any) (any, bool) {
 	return out, true
 }
 
-func unsetDocumentChild(root any, tail []string) (any, bool) {
+func clearDocumentChild(root any, tail []string) (any, bool) {
 	rootMap, ok := root.(map[string]any)
 	if !ok {
 		return nil, false
@@ -207,8 +207,8 @@ func nearestSetParent(set map[string]any, path string) (parent string, tail []st
 	return parent, strings.Split(strings.TrimPrefix(path, parent+"."), "."), true
 }
 
-func hasUnsetParent(unset map[string]struct{}, path string) bool {
-	for candidate := range unset {
+func hasClearParent(clear map[string]struct{}, path string) bool {
+	for candidate := range clear {
 		if isParentPath(candidate, path) {
 			return true
 		}
@@ -224,10 +224,10 @@ func removeCoveredSets(set map[string]any, path string) {
 	}
 }
 
-func removeCoveredUnsets(unset map[string]struct{}, path string) {
-	for candidate := range unset {
+func removeCoveredClears(clear map[string]struct{}, path string) {
+	for candidate := range clear {
 		if candidate == path || isParentPath(path, candidate) {
-			delete(unset, candidate)
+			delete(clear, candidate)
 		}
 	}
 }

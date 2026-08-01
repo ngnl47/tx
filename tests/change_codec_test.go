@@ -24,13 +24,13 @@ func TestChangeSetFilterKeepsMatchingChanges(t *testing.T) {
 func TestChangeSetDocumentSplitsSetAndUnset(t *testing.T) {
 	var set change.ChangeSet
 	_ = set.Add(change.FieldChange{Path: change.Path{"name"}, Kind: change.KindSet, Value: "alice"})
-	_ = set.Add(change.FieldChange{Path: change.Path{"deletedAt"}, Kind: change.KindUnset})
+	_ = set.Add(change.FieldChange{Path: change.Path{"deletedAt"}, Kind: change.KindClear})
 
 	doc := set.Document()
 	if doc.Set["name"] != "alice" {
 		t.Fatalf("set doc = %#v", doc.Set)
 	}
-	if _, ok := doc.Unset["deletedAt"]; !ok {
-		t.Fatalf("unset doc = %#v", doc.Unset)
+	if _, ok := doc.Clear["deletedAt"]; !ok {
+		t.Fatalf("clear doc = %#v", doc.Clear)
 	}
 }

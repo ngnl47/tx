@@ -61,10 +61,10 @@ func TestMergeDocumentsParentSetOverridesChildChanges(t *testing.T) {
 	}
 }
 
-func TestMergeDocumentsUnsetClearsCoveredSets(t *testing.T) {
+func TestMergeDocumentsClearRemovesCoveredSets(t *testing.T) {
 	merged, ok := change.MergeDocuments(
 		change.Document{Set: map[string]any{"items.1001.quantity": int64(3)}},
-		change.Document{Unset: map[string]struct{}{"items": {}}},
+		change.Document{Clear: map[string]struct{}{"items": {}}},
 	)
 	if !ok {
 		t.Fatal("MergeDocuments returned ok=false")
@@ -72,14 +72,14 @@ func TestMergeDocumentsUnsetClearsCoveredSets(t *testing.T) {
 	if len(merged.Set) != 0 {
 		t.Fatalf("set doc = %#v", merged.Set)
 	}
-	if _, ok := merged.Unset["items"]; !ok {
-		t.Fatalf("unset doc = %#v", merged.Unset)
+	if _, ok := merged.Clear["items"]; !ok {
+		t.Fatalf("clear doc = %#v", merged.Clear)
 	}
 }
 
-func TestMergeDocumentsRejectsSetBelowUnsetParent(t *testing.T) {
+func TestMergeDocumentsRejectsSetBelowClearParent(t *testing.T) {
 	_, ok := change.MergeDocuments(
-		change.Document{Unset: map[string]struct{}{"items": {}}},
+		change.Document{Clear: map[string]struct{}{"items": {}}},
 		change.Document{Set: map[string]any{"items.1001.quantity": int64(3)}},
 	)
 	if ok {

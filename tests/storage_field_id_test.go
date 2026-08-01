@@ -43,19 +43,19 @@ func TestRedisDocumentPatchesWithResolverUsesFieldIDAndTailPath(t *testing.T) {
 	}
 }
 
-func TestRedisDocumentPatchesWithResolverUsesFieldIDUnsetTailPath(t *testing.T) {
+func TestRedisDocumentPatchesWithResolverUsesFieldIDClearTailPath(t *testing.T) {
 	var set change.ChangeSet
 	if err := set.Add(change.FieldChange{
 		Field: change.FieldID(3),
 		Path:  change.Path{"1001"},
-		Kind:  change.KindUnset,
+		Kind:  change.KindClear,
 	}); err != nil {
 		t.Fatalf("Add returned error: %v", err)
 	}
 
 	patches := redis.BuildDocumentPatchesWithResolver(redisFieldIDSpec(), set, testFieldResolver{3: "items"})
-	if len(patches["items"].Unset) != 1 || patches["items"].Unset[0].String() != "items.1001" {
-		t.Fatalf("patches = %#v, want unset items.1001", patches)
+	if len(patches["items"].Clear) != 1 || patches["items"].Clear[0].String() != "items.1001" {
+		t.Fatalf("patches = %#v, want clear items.1001", patches)
 	}
 }
 

@@ -16,7 +16,7 @@ const maxLuaJSONSafeInteger uint64 = 1<<53 - 1
 // DocumentPatch 描述一次 Redis JSON 文档 patch。
 type DocumentPatch struct {
 	Set        []PathValue
-	Unset      []change.Path
+	Clear      []change.Path
 	Mode       documentPatchMode
 	fullUpdate bool
 	diffUpdate bool
@@ -55,8 +55,8 @@ func BuildDocumentPatchesWithResolver(spec meta.TypeSpec, set change.ChangeSet, 
 			patch.Mode = documentPatchModeMerge
 		}
 		switch fieldChange.Kind {
-		case change.KindUnset:
-			patch.Unset = append(patch.Unset, path)
+		case change.KindClear:
+			patch.Clear = append(patch.Clear, path)
 			patch.diffUpdate = true
 		default:
 			patch.Set = append(patch.Set, PathValue{Path: path, Value: fieldChange.Value})
@@ -108,8 +108,8 @@ func ApplyDocumentPatch(doc map[string]any, patch DocumentPatch) {
 	for _, item := range patch.Set {
 		setPathValue(doc, item.Path, item.Value)
 	}
-	for _, path := range patch.Unset {
-		unsetPathValue(doc, path)
+	for _, path := range patch.Clear {
+		clearPathValue(doc, path)
 	}
 }
 
@@ -122,7 +122,7 @@ func EncodeDocumentPatch(patch DocumentPatch) (string, error) {
 		}
 		setPathValue(doc, item.Path, item.Value)
 	}
-	for _, path := range patch.Unset {
+	for _, path := range patch.Clear {
 		setPathValue(doc, path, nil)
 	}
 	body, err := json.Marshal(doc)
@@ -342,7 +342,7 @@ func setPathValue(doc map[string]any, path change.Path, value any) {
 	current[path[len(path)-1]] = value
 }
 
-func unsetPathValue(doc map[string]any, path change.Path) {
+func clearPathValue(doc map[string]any, path change.Path) {
 	if len(path) == 0 {
 		return
 	}

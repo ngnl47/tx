@@ -18,11 +18,11 @@ func (f FilterFunc) Keep(change FieldChange) bool {
 
 // Document 是 ChangeSet 的后端无关文档形式。
 //
-// Set 对应字段设置或整体替换；Unset 对应字段删除。Mongo 适配器可以直接
-// 转成 `$set/$unset`，Redis 适配器可以据此拆分 HSET/HDEL。
+// Set 对应字段设置或整体替换；Clear 对应字段清空。Mongo 适配器会把
+// Clear 转成 `$unset`，Redis 适配器会把 Clear 转成 JSON 字段移除。
 type Document struct {
 	Set   map[string]any
-	Unset map[string]struct{}
+	Clear map[string]struct{}
 }
 
 // Filter 返回只包含过滤器保留项的新 ChangeSet。
@@ -39,7 +39,7 @@ func (s ChangeSet) Filter(filter Filter) ChangeSet {
 	return out
 }
 
-// Document 把 ChangeSet 转成 Set/Unset 两段文档。
+// Document 把 ChangeSet 转成 Set/Clear 两段文档。
 //
 // 该方法只解析完整 Path；如果 ChangeSet 使用 FieldID，请调用
 // DocumentWithResolver。
@@ -47,12 +47,12 @@ func (s ChangeSet) Document() Document {
 	return s.DocumentWithResolver(nil)
 }
 
-// DocumentWithResolver 把 ChangeSet 转成 Set/Unset 两段文档，并用 resolver
+// DocumentWithResolver 把 ChangeSet 转成 Set/Clear 两段文档，并用 resolver
 // 把 FieldID 解析为字段别名。
 func (s ChangeSet) DocumentWithResolver(resolver FieldResolver) Document {
 	doc := Document{
 		Set:   map[string]any{},
-		Unset: map[string]struct{}{},
+		Clear: map[string]struct{}{},
 	}
 	for _, fieldChange := range s.Changes() {
 		path := fieldChange.FullPath(resolver)
@@ -62,8 +62,8 @@ func (s ChangeSet) DocumentWithResolver(resolver FieldResolver) Document {
 		switch fieldChange.Kind {
 		case KindSet, KindReplace:
 			doc.Set[path.String()] = fieldChange.Value
-		case KindUnset:
-			doc.Unset[path.String()] = struct{}{}
+		case KindClear:
+			doc.Clear[path.String()] = struct{}{}
 		}
 	}
 	return doc

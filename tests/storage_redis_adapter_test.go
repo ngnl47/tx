@@ -368,9 +368,9 @@ func TestRedisAdapterAppliesStringDocumentsWithRecordID(t *testing.T) {
 	}
 	var set change.ChangeSet
 	_ = set.Add(change.FieldChange{Path: change.Path{"name"}, Kind: change.KindSet, Value: "alice"})
-	_ = set.Add(change.FieldChange{Path: change.Path{"headImg"}, Kind: change.KindUnset})
+	_ = set.Add(change.FieldChange{Path: change.Path{"headImg"}, Kind: change.KindClear})
 	_ = set.Add(change.FieldChange{Path: change.Path{"items", "1001", "quantity"}, Kind: change.KindSet, Value: int64(3)})
-	_ = set.Add(change.FieldChange{Path: change.Path{"items", "1001", "quality"}, Kind: change.KindUnset})
+	_ = set.Add(change.FieldChange{Path: change.Path{"items", "1001", "quality"}, Kind: change.KindClear})
 
 	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, set, storage.ApplyOptions{Upsert: true})
 	if err != nil {

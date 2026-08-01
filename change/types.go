@@ -8,8 +8,8 @@ type Kind string
 const (
 	// KindSet 表示把字段设置为 Value。
 	KindSet Kind = "set"
-	// KindUnset 表示删除字段或把字段从持久化文档中移除。
-	KindUnset Kind = "unset"
+	// KindClear 表示清空字段或把字段从持久化文档中移除。
+	KindClear Kind = "clear"
 	// KindReplace 表示字段整体替换，常用于 map、slice、struct 指针等复合值。
 	KindReplace Kind = "replace"
 )

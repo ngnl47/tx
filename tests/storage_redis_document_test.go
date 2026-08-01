@@ -29,12 +29,12 @@ func TestRedisBuildDocumentPatchesKeepsTopLevelScalarInMainKey(t *testing.T) {
 	}
 }
 
-func TestRedisBuildDocumentPatchesGroupsUnsetChanges(t *testing.T) {
+func TestRedisBuildDocumentPatchesGroupsClearChanges(t *testing.T) {
 	var set change.ChangeSet
-	_ = set.Add(change.FieldChange{Path: change.Path{"items", "1", "quantity"}, Kind: change.KindUnset})
+	_ = set.Add(change.FieldChange{Path: change.Path{"items", "1", "quantity"}, Kind: change.KindClear})
 
 	patches := txredis.BuildDocumentPatches(redisPatchSpec(), set)
-	if len(patches["items"].Unset) != 1 || patches["items"].Unset[0].String() != "items.1.quantity" {
+	if len(patches["items"].Clear) != 1 || patches["items"].Clear[0].String() != "items.1.quantity" {
 		t.Fatalf("patches = %#v", patches)
 	}
 }

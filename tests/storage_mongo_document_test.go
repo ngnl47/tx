@@ -18,13 +18,13 @@ func TestMongoBuildUpdateDocumentUsesSet(t *testing.T) {
 	}
 }
 
-func TestMongoBuildUpdateDocumentUsesUnset(t *testing.T) {
+func TestMongoBuildUpdateDocumentUsesClear(t *testing.T) {
 	var set change.ChangeSet
-	_ = set.Add(change.FieldChange{Path: change.Path{"deletedAt"}, Kind: change.KindUnset})
+	_ = set.Add(change.FieldChange{Path: change.Path{"deletedAt"}, Kind: change.KindClear})
 
 	update := txmongo.BuildUpdateDocument(set)
-	unsetDoc := update["$unset"].(map[string]any)
-	if unsetDoc["deletedAt"] != "" {
+	clearDoc := update["$unset"].(map[string]any)
+	if clearDoc["deletedAt"] != "" {
 		t.Fatalf("update = %#v", update)
 	}
 }

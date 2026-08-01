@@ -49,14 +49,14 @@ func (t *Tracker) ReplaceFieldPath(field FieldID, tail Path, value any) error {
 	return t.changes.Add(FieldChange{Field: field, Path: tail, Kind: KindReplace, Value: value})
 }
 
-// Unset 标记字段应从持久化文档中删除。
-func (t *Tracker) Unset(path Path) error {
-	return t.changes.Add(FieldChange{Path: path, Kind: KindUnset})
+// Clear 标记字段应被清空，并从持久化文档中移除。
+func (t *Tracker) Clear(path Path) error {
+	return t.changes.Add(FieldChange{Path: path, Kind: KindClear})
 }
 
-// UnsetFieldPath 标记结构体静态字段或其内部动态路径应从持久化文档中删除。
-func (t *Tracker) UnsetFieldPath(field FieldID, tail Path) error {
-	return t.changes.Add(FieldChange{Field: field, Path: tail, Kind: KindUnset})
+// ClearFieldPath 标记结构体静态字段或其内部动态路径应被清空，并从持久化文档中移除。
+func (t *Tracker) ClearFieldPath(field FieldID, tail Path) error {
+	return t.changes.Add(FieldChange{Field: field, Path: tail, Kind: KindClear})
 }
 
 // AllTouch 标记整个对象需要全量落地。

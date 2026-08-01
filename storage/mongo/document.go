@@ -10,7 +10,7 @@ import (
 
 // BuildUpdateDocument 把字段变更转换成 MongoDB update document。
 //
-// KindSet 和 KindReplace 进入 `$set`，KindUnset 进入 `$unset`。
+// KindSet 和 KindReplace 进入 `$set`，KindClear 进入 `$unset`。
 // 返回值使用 map 以避免在 runtime 基建阶段引入 MongoDB driver 类型。
 func BuildUpdateDocument(set change.ChangeSet) map[string]any {
 	return BuildUpdateDocumentWithResolver(set, nil)
@@ -33,7 +33,7 @@ func BuildUpdateDocumentWithSpecAndResolver(spec meta.TypeSpec, set change.Chang
 
 func buildUpdateDocument(set change.ChangeSet, resolver change.FieldResolver, mapPath func(change.Path) (change.Path, error)) (map[string]any, error) {
 	setDoc := map[string]any{}
-	unsetDoc := map[string]any{}
+	clearDoc := map[string]any{}
 	for _, fieldChange := range set.Changes() {
 		path := fieldChange.FullPath(resolver)
 		if len(path) == 0 {
@@ -49,16 +49,16 @@ func buildUpdateDocument(set change.ChangeSet, resolver change.FieldResolver, ma
 		switch fieldChange.Kind {
 		case change.KindSet, change.KindReplace:
 			setDoc[path.String()] = fieldChange.Value
-		case change.KindUnset:
-			unsetDoc[path.String()] = ""
+		case change.KindClear:
+			clearDoc[path.String()] = ""
 		}
 	}
 	update := map[string]any{}
 	if len(setDoc) > 0 {
 		update["$set"] = setDoc
 	}
-	if len(unsetDoc) > 0 {
-		update["$unset"] = unsetDoc
+	if len(clearDoc) > 0 {
+		update["$unset"] = clearDoc
 	}
 	return update, nil
 }

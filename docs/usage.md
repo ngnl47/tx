@@ -400,7 +400,7 @@ change.Document{
 		"Name":   "alice",
 		"Power":  int64(470001),
 	},
-	Unset: map[string]struct{}{},
+	Clear: map[string]struct{}{},
 }
 ```
 
@@ -413,7 +413,7 @@ body := role.MsgpackChangeDocument()
 例如 `HeadImg` 的 tag 是 `msgpack:"hi,omitempty"`，那么下行变更文档里使用 `hi`，不是 Go 字段名
 `HeadImg`。
 
-### Set、Touch、Replace、Unset
+### Set、Touch、Replace、Clear
 
 生成 Store 每个字段通常会有四类方法：
 
@@ -422,7 +422,7 @@ body := role.MsgpackChangeDocument()
 | `SetName(value)` | 是 | set | 日常业务修改字段。 |
 | `TouchName()` | 否 | set 当前内存值 | 字段值已经被业务直接改过，需要补标脏；或 viewStore 只想把当前字段加入下行。 |
 | `ReplaceItems(value)` | 是 | replace | 整体替换 map/slice/struct 指针字段。 |
-| `UnsetName()` | 是，设置为 Go 零值 | unset | 从 Redis/Mongo 文档中移除字段。 |
+| `ClearName()` | 是，设置为 Go 零值 | clear | 从 Redis/Mongo 文档中移除字段。 |
 
 日常业务优先使用 `Set*`：
 
@@ -503,10 +503,10 @@ change.Document{
 落到 Redis/Mongo 后，字段仍然存在，只是值为 `""` 或 `0`。这和 `omitempty` 不冲突：`omitempty`
 主要影响完整对象序列化时是否省略零值；`ChangeSet` 的 set 语义会明确保留这次设置的零值。
 
-如果业务语义是“从持久化文档里删除这个字段”，使用 `Unset*`：
+如果业务语义是“清空字段并从持久化文档里移除这个字段”，使用 `Clear*`：
 
 ```go
-role.UnsetName()
+role.ClearName()
 ```
 
 对应变更文档：
@@ -514,7 +514,7 @@ role.UnsetName()
 ```go
 change.Document{
 	Set:   map[string]any{},
-	Unset: map[string]struct{}{"Name": {}},
+	Clear: map[string]struct{}{"Name": {}},
 }
 ```
 
@@ -656,7 +656,7 @@ role.ClearChanges()
 
 - `KindSet`：设置字段值。
 - `KindReplace`：整体替换字段值，常用于 map、slice、struct 指针。
-- `KindUnset`：删除字段。
+- `KindClear`：清空字段，存储适配器会映射为字段移除语义。
 - `FieldID`：生成代码提供的稳定字段编号，避免热路径反复保存字段名字符串。
 - `Path`：字段内部的动态尾路径，例如 map key 或嵌套字段名。
 
@@ -1335,7 +1335,7 @@ err := role.Store().ApplyUpdate(ctx, mongoCluster)
 字段删除会转成 Mongo `$unset`：
 
 ```go
-role.UnsetName()
+role.ClearName()
 
 err := role.Store().ApplyUpdate(ctx, mongoCluster)
 ```
