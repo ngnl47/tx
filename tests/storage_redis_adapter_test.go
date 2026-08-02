@@ -400,6 +400,23 @@ func TestRedisAdapterApplyDeleteWithRevisionReportsChangedRevision(t *testing.T)
 	}
 }
 
+func TestRedisAdapterReadRecordRevisionUsesVersionKey(t *testing.T) {
+	client := &recordingRedisStringClient{evalResult: "7", hasResult: true}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
+
+	revision, err := adapter.ReadRecordRevision(context.Background(), spec, storage.RecordKey{ID: int64(1001)})
+	if err != nil {
+		t.Fatalf("ReadRecordRevision returned error: %v", err)
+	}
+	if revision != "7" {
+		t.Fatalf("revision = %q, want 7", revision)
+	}
+	if got, want := client.evals[0].keys, []string{"role:{1001}@v"}; !sameStrings(got, want) {
+		t.Fatalf("revision keys = %#v, want %#v", got, want)
+	}
+}
+
 func TestRedisAdapterLockRecordUsesMainKeyHashTag(t *testing.T) {
 	client := &recordingRedisStringClient{}
 	adapter := txredis.NewAdapter(client)
@@ -923,6 +940,37 @@ func TestRedisClusterRoutesRecordLockByShardKey(t *testing.T) {
 	}
 	if len(roleShard.evals) != 1 || !sameStrings(roleShard.evals[0].keys, []string{"role:{7}:1001@lock"}) {
 		t.Fatalf("role shard evals = %#v, want one lock for role:{7}:1001@lock", roleShard.evals)
+	}
+	if len(userShard.evals) != 0 {
+		t.Fatalf("unexpected user shard evals = %#v", userShard.evals)
+	}
+}
+
+func TestRedisClusterRoutesRecordRevisionByShardKey(t *testing.T) {
+	roleShard := &recordingRedisStringClient{evalResult: "9", hasResult: true}
+	userShard := &recordingRedisStringClient{}
+	router := &recordingRedisRouter{names: map[any]string{
+		int64(7): "role-shard",
+	}}
+	cluster := txredis.NewCluster(router, map[string]any{
+		"role-shard": roleShard,
+		"user-shard": userShard,
+	})
+	spec := meta.TypeSpec{Redis: &meta.RedisSpec{
+		Key:     "role",
+		IDField: "roleId",
+		Route:   meta.RouteSpec{Type: "role", By: "serverId"},
+	}}
+
+	revision, err := cluster.ReadRecordRevision(context.Background(), spec, storage.RecordKey{ID: int64(1001), ShardKey: int64(7)})
+	if err != nil {
+		t.Fatalf("ReadRecordRevision returned error: %v", err)
+	}
+	if revision != "9" {
+		t.Fatalf("revision = %q, want 9", revision)
+	}
+	if len(roleShard.evals) != 1 || !sameStrings(roleShard.evals[0].keys, []string{"role:{7}:1001@v"}) {
+		t.Fatalf("role shard evals = %#v, want one read for role:{7}:1001@v", roleShard.evals)
 	}
 	if len(userShard.evals) != 0 {
 		t.Fatalf("unexpected user shard evals = %#v", userShard.evals)

@@ -1475,10 +1475,13 @@ Fusion 策略的当前保存路径：
 延迟任务队列使用 bucket hash tag，支持多个服务实例并发消费。语义是 at-least-once，Mongo 回写必须保持存储幂等。
 任务失败重试时，Scheduler 会输出结构化错误日志；失败原因不写入 Redis 任务状态，避免错误字符串占用队列内存。
 Scheduler 循环中的 claim、complete、retry 等 backend 错误也会输出结构化错误日志；服务关闭导致的 context 结束不会额外记录错误。
-Fusion delayed task queue 和 handler 都只接受保存 action；delete 或其他未知 action 会返回错误。入队时必须带有明确的类型和记录 ID，避免无效任务进入 Redis 队列；handler 消费端也会拒绝缺少记录 ID 的任务，防止手工写入或遗留异常任务落到存储层。任务类型优先来自 `DelayedOperation.Type`，为空时使用 `DelayedOperation.Key.TypeName`。Fusion 延迟保存按类型、记录 ID、route/shard key 和 action 生成一条合并任务，不暴露额外 suffix，避免同一记录产生多条重复保存任务。延迟保存任务不携带 ChangeSet，回写时重新读取 Redis 当前热数据。删除必须走显式删除接口，不进入延迟队列。
+Fusion delayed task queue 接受保存 action 和 Redis 热数据延迟删除 action；其他未知 action 会返回错误。入队时必须带有明确的类型和记录 ID，避免无效任务进入 Redis 队列；handler 消费端也会拒绝缺少记录 ID 的任务，防止手工写入或遗留异常任务落到存储层。任务类型优先来自 `DelayedOperation.Type`，为空时使用 `DelayedOperation.Key.TypeName`。Fusion 延迟保存按类型、记录 ID、route/shard key 和 action 生成一条合并任务，不暴露额外 suffix，避免同一记录产生多条重复保存任务。延迟保存任务不携带 ChangeSet，回写时重新读取 Redis 当前热数据。显式删除仍走显式删除接口，不进入延迟队列。
 Scheduler 的 `Start`、`RunOnce` 和 `Schedule` 在自身或 backend 未配置时都是 no-op，便于本地测试或按环境关闭后台回写组件；生产环境仍应配置 Redis delayed task backend。
 
 生产环境的延迟回写 handler 只负责存储同步。由于任务可能因为网络抖动、进程重启或租约恢复被再次执行，Mongo 回写路径应按“同一记录的当前 Redis 热文档 replace 到 Mongo”设计为存储幂等操作。比如同一条 `GDRole` save 任务执行两次，结果应只是 Mongo 中 `roleId=1001` 的文档被相同或更新后的热数据覆盖两次；队列中不保存 `GDRole` 的中间态快照，也不按每次字段变更生成事件日志。
+
+Redis 热数据延迟删除任务也是存储同步的一部分：handler 执行时读取当前 `@v`，再读取 Redis 热文档并回写 Mongo，最后带着读取到的 revision 删除 Redis。如果回写 Mongo 期间这条记录又发生新写入，`@v` 会变化，Lua 删除会拒绝删除，handler 会重新排一条延迟删除任务。
+handler 会在这个流程外层持有同一条记录的 Redis 锁，避免多个服务实例同时执行同一条记录的回写/删除窗口。
 
 运维侧应关注 Scheduler 错误日志、重试次数和队列积压时间。如果某类任务持续失败，优先排查对应类型的 Redis 热文档是否能正常反序列化、Mongo 路由/过滤条件是否正确、以及目标集合是否可写。队列中的失败原因不会写入 Redis 状态；需要更完整的告警和指标时，应通过项目自己的日志、监控或后续可插拔 observer 接入。
 
@@ -1523,7 +1526,8 @@ err := role.Store().ApplyUpdate(ctx, fusionStore)
 
 1. Redis 立即写入热数据。
 2. DelayQueue 记录一条保存任务，任务到期时间来自 `delaySaveTime`。
-3. 本次调用不等待 Mongo 立即写入。
+3. 如果配置了 `delayDelTime > 0`，DelayQueue 还会记录一条 Redis 热数据延迟删除任务，到期时间为 `delaySaveTime + delayDelTime`。
+4. 本次调用不等待 Mongo 立即写入。
 
 ### 延迟回写任务
 
@@ -1539,6 +1543,18 @@ due = now + delaySaveTime
 
 Scheduler 到期 claim 任务后，`StorageTaskHandler` 会重新读取 Redis 当前热数据，再整文档 replace 到 Mongo。
 这意味着 10 分钟内同一条 `GDRole` 修改多次，Mongo 回写只需要使用 Redis 中的最新状态。
+
+如果配置了 `delayDelTime`，写入时还会额外排一条 Redis 热数据延迟删除任务：
+
+```text
+type = GDRole
+id = 470001
+shardKey = 470001
+action = delete
+due = now + delaySaveTime + delayDelTime
+```
+
+删除任务到期后，handler 会先把 Redis 当前热数据回写 Mongo，再按 `<mainKey>@v` 比对删除 Redis。比如 `role:{470001}@v` 在任务开始时是 `5`，Mongo 回写期间业务又调用 `role.SetName("new")` 导致 `@v` 变成 `6`，删除 Lua 会返回当前版本 `6`，handler 不会删除 Redis，而是重新排一条 `delete` 任务。
 
 ### 多实例消费
 
@@ -1627,7 +1643,7 @@ doc, exists, err := fusionStore.LoadDocumentWithOptions(
 err := role.Store().ApplyDelete(ctx, fusionStore)
 ```
 
-Fusion 删除会：
+Fusion 显式删除会：
 
 1. 删除 Redis 主文档、subKey 文档和版本键。
 2. 立即删除 Mongo 文档。

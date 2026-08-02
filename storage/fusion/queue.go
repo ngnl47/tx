@@ -16,6 +16,8 @@ type DelayedOperationKind string
 const (
 	// DelayedSave 表示延迟保存 MongoDB 持久化数据。
 	DelayedSave DelayedOperationKind = "save"
+	// DelayedDelete 表示延迟删除 Redis 热数据。
+	DelayedDelete DelayedOperationKind = "delete"
 )
 
 // DelayedOperation 是 fusion 模式写入 MongoDB 前的延迟保存任务。
@@ -56,7 +58,7 @@ func (q *TaskQueue) Enqueue(ctx context.Context, op DelayedOperation) error {
 	if q == nil || q.backend == nil {
 		return nil
 	}
-	if op.Kind != DelayedSave {
+	if op.Kind != DelayedSave && op.Kind != DelayedDelete {
 		return fmt.Errorf("fusion: unknown delayed operation kind %q", op.Kind)
 	}
 	taskType := delayedOperationType(op)

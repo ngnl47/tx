@@ -91,6 +91,14 @@ func (c *Cluster) ApplyDeleteWithRevision(ctx context.Context, spec meta.TypeSpe
 	return adapter.ApplyDeleteWithRevision(ctx, spec, key, expectedRevision)
 }
 
+func (c *Cluster) ReadRecordRevision(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) (string, error) {
+	adapter, err := c.adapterFor(ctx, spec, key)
+	if err != nil {
+		return "", err
+	}
+	return adapter.ReadRecordRevision(ctx, spec, key)
+}
+
 func (c *Cluster) LockRecord(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, options storage.LockOptions) (storage.RecordLock, error) {
 	adapter, err := c.adapterFor(ctx, spec, key)
 	if err != nil {

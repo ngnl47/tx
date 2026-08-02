@@ -121,13 +121,43 @@ func TestFusionTaskQueueUsesRecordKeyTypeNameWhenTypeRefMissing(t *testing.T) {
 	}
 }
 
-func TestFusionTaskQueueRejectsNonSaveOperation(t *testing.T) {
+func TestFusionTaskQueueEnqueuesDelayedDelete(t *testing.T) {
+	ctx := context.Background()
+	backend := memory.NewBackend()
+	now := time.Unix(100, 0)
+	queue := fusion.NewTaskQueueWithOptions(backend, fusion.TaskQueueOptions{Now: func() time.Time {
+		return now
+	}})
+
+	err := queue.Enqueue(ctx, fusion.DelayedOperation{
+		Kind:     fusion.DelayedDelete,
+		Key:      storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001), ShardKey: int64(7)},
+		RunAfter: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("Enqueue returned error: %v", err)
+	}
+
+	leases, err := backend.ClaimDue(ctx, now.Add(time.Hour), 10)
+	if err != nil {
+		t.Fatalf("ClaimDue returned error: %v", err)
+	}
+	if len(leases) != 1 {
+		t.Fatalf("leases = %#v, want one", leases)
+	}
+	got := leases[0].Task
+	if got.Type != "data.GDRole" || got.ID != int64(1001) || got.ShardKey != int64(7) || got.Action != string(fusion.DelayedDelete) {
+		t.Fatalf("delay task = %#v", got)
+	}
+}
+
+func TestFusionTaskQueueRejectsUnknownOperation(t *testing.T) {
 	ctx := context.Background()
 	backend := memory.NewBackend()
 	queue := fusion.NewTaskQueue(backend)
 
 	err := queue.Enqueue(ctx, fusion.DelayedOperation{
-		Kind: "delete",
+		Kind: "compact",
 		Type: meta.TypeRef{Package: "data", Name: "GDRole"},
 		Key:  storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)},
 	})

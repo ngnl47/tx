@@ -9,6 +9,7 @@ var (
 	deleteDocumentScript = mustReadLuaScript("scripts/delete_document.lua")
 	findDocumentScript   = mustReadLuaScript("scripts/find_document.lua")
 	lockRecordScript     = mustReadLuaScript("scripts/lock_record.lua")
+	readRevisionScript   = mustReadLuaScript("scripts/read_revision.lua")
 	unlockRecordScript   = mustReadLuaScript("scripts/unlock_record.lua")
 	updateDocumentScript = mustReadLuaScript("scripts/update_document.lua")
 )

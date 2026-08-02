@@ -179,6 +179,37 @@ func TestFusionStrategyEnqueuesMongoSave(t *testing.T) {
 	}
 }
 
+func TestFusionStrategyEnqueuesDelayedRedisDeleteAfterSaveWindow(t *testing.T) {
+	queue := &recordingQueue{}
+	strategy := fusion.Strategy{MongoQueue: queue}
+	spec := meta.TypeSpec{
+		Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
+		Storage: meta.StorageSpec{
+			DelaySave:   meta.Duration{Duration: 10 * time.Minute},
+			DelayDelete: meta.Duration{Duration: 24 * time.Hour},
+		},
+	}
+	var set change.ChangeSet
+	_ = set.Add(change.FieldChange{Path: change.Path{"name"}, Kind: change.KindSet, Value: "alice"})
+	key := storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001), ShardKey: int64(7)}
+
+	if err := strategy.ApplyChangesWithOptions(context.Background(), spec, key, set, storage.ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
+	}
+	if len(queue.ops) != 2 {
+		t.Fatalf("queued ops = %#v, want save and delayed delete", queue.ops)
+	}
+	if queue.ops[0].Kind != fusion.DelayedSave || queue.ops[0].RunAfter != 10*time.Minute {
+		t.Fatalf("save op = %#v, want 10 minute save", queue.ops[0])
+	}
+	if queue.ops[1].Kind != fusion.DelayedDelete || queue.ops[1].RunAfter != 24*time.Hour+10*time.Minute {
+		t.Fatalf("delete op = %#v, want delaySave + delayDel", queue.ops[1])
+	}
+	if queue.ops[1].Key != key {
+		t.Fatalf("delete key = %#v, want %#v", queue.ops[1].Key, key)
+	}
+}
+
 func TestFusionStrategyAppliesRedisBeforeQueue(t *testing.T) {
 	queue := &recordingQueue{}
 	redis := &recordingApplier{}

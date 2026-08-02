@@ -70,6 +70,11 @@ type RevisionDeleteApplier interface {
 	ApplyDeleteWithRevision(context.Context, meta.TypeSpec, RecordKey, string) (bool, string, error)
 }
 
+// RecordRevisionReader 定义读取存储记录生命周期版本的适配器。
+type RecordRevisionReader interface {
+	ReadRecordRevision(context.Context, meta.TypeSpec, RecordKey) (string, error)
+}
+
 // ChangeDocument 是以点分隔字段路径为 key 的通用变更文档。
 type ChangeDocument map[string]any
 

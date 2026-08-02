@@ -160,6 +160,19 @@ func (a *Adapter) ApplyDeleteWithRevision(ctx context.Context, spec meta.TypeSpe
 	return false, result, nil
 }
 
+// ReadRecordRevision 读取 Redis 热数据生命周期版本。
+func (a *Adapter) ReadRecordRevision(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) (string, error) {
+	if a.client == nil {
+		return "", nil
+	}
+	prefix := redisKeyPrefix(spec, key)
+	result, err := a.client.Eval(ctx, readRevisionScript, []string{prefix + "@v"})
+	if err != nil {
+		return "", fmt.Errorf("redis: read record revision %s: %w", prefix, err)
+	}
+	return result, nil
+}
+
 func (a *Adapter) LockRecord(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, options storage.LockOptions) (storage.RecordLock, error) {
 	if a.client == nil {
 		return nil, fmt.Errorf("redis: lock client is nil")

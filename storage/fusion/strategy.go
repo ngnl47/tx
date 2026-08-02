@@ -49,12 +49,7 @@ func (s Strategy) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 	if s.MongoQueue == nil {
 		return nil
 	}
-	return s.MongoQueue.Enqueue(ctx, DelayedOperation{
-		Kind:     DelayedSave,
-		Type:     spec.Type.Ref,
-		Key:      key,
-		RunAfter: spec.Storage.DelaySave.Duration,
-	})
+	return s.enqueueDelayedWrites(ctx, spec, key)
 }
 
 // ApplyDeltasWithOptions 应用一次 Delta 变更，并把写入选项限定传递给 Redis。
@@ -72,12 +67,7 @@ func (s Strategy) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec
 	if s.MongoQueue == nil {
 		return nil
 	}
-	return s.MongoQueue.Enqueue(ctx, DelayedOperation{
-		Kind:     DelayedSave,
-		Type:     spec.Type.Ref,
-		Key:      key,
-		RunAfter: spec.Storage.DelaySave.Duration,
-	})
+	return s.enqueueDelayedWrites(ctx, spec, key)
 }
 
 // ApplyDelete 应用一次对象删除。
@@ -312,6 +302,29 @@ func (s Strategy) redisDeleter() storage.DeleteApplier {
 	return deleter
 }
 
+func (s Strategy) enqueueDelayedWrites(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
+	if s.MongoQueue == nil {
+		return nil
+	}
+	if err := s.MongoQueue.Enqueue(ctx, DelayedOperation{
+		Kind:     DelayedSave,
+		Type:     spec.Type.Ref,
+		Key:      key,
+		RunAfter: spec.Storage.DelaySave.Duration,
+	}); err != nil {
+		return err
+	}
+	if spec.Storage.DelayDelete.Duration <= 0 {
+		return nil
+	}
+	return s.MongoQueue.Enqueue(ctx, DelayedOperation{
+		Kind:     DelayedDelete,
+		Type:     spec.Type.Ref,
+		Key:      key,
+		RunAfter: delayedDeleteAfter(spec),
+	})
+}
+
 func (s Strategy) redisLocker() storage.RecordLocker {
 	if s.RedisLocker != nil {
 		return s.RedisLocker
@@ -332,6 +345,14 @@ func (s Strategy) loadLockWait() time.Duration {
 		return s.LoadLockWait
 	}
 	return defaultLoadLockWait
+}
+
+func delayedDeleteAfter(spec meta.TypeSpec) time.Duration {
+	runAfter := spec.Storage.DelayDelete.Duration
+	if spec.Storage.DelaySave.Duration > 0 {
+		runAfter += spec.Storage.DelaySave.Duration
+	}
+	return runAfter
 }
 
 func projectDocument(doc map[string]any, fields []string) map[string]any {
