@@ -3,10 +3,13 @@ package redis
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/meta"
@@ -23,6 +26,12 @@ type ScriptClient interface {
 // BatchClient 是 Redis 批量 string 读取所需的最小接口。
 type BatchClient interface {
 	MGet(context.Context, ...string) ([]string, error)
+}
+
+type recordLock struct {
+	client ScriptClient
+	key    string
+	token  string
 }
 
 // LoadOptions 控制 Redis 批量读取行为。
@@ -130,6 +139,66 @@ func (a *Adapter) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key stora
 	keys := redisDeleteKeys(spec, prefix)
 	if _, err := a.client.Eval(ctx, deleteDocumentScript, keys); err != nil {
 		return fmt.Errorf("redis: delete document %s: %w", prefix, err)
+	}
+	return nil
+}
+
+// ApplyDeleteWithRevision 仅当 Redis 生命周期版本仍为 expectedRevision 时删除热数据。
+func (a *Adapter) ApplyDeleteWithRevision(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, expectedRevision string) (bool, string, error) {
+	if a.client == nil {
+		return true, "", nil
+	}
+	prefix := redisKeyPrefix(spec, key)
+	keys := redisDeleteKeys(spec, prefix)
+	result, err := a.client.Eval(ctx, deleteDocumentScript, keys, expectedRevision)
+	if err != nil {
+		return false, "", fmt.Errorf("redis: delete document %s: %w", prefix, err)
+	}
+	if result == scriptResultOK {
+		return true, "", nil
+	}
+	return false, result, nil
+}
+
+func (a *Adapter) LockRecord(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, options storage.LockOptions) (storage.RecordLock, error) {
+	if a.client == nil {
+		return nil, fmt.Errorf("redis: lock client is nil")
+	}
+	ttl := options.TTL
+	if ttl <= 0 {
+		return nil, fmt.Errorf("redis: lock ttl must be greater than 0")
+	}
+	wait := options.Wait
+	lockKey := redisKeyPrefix(spec, key) + "@lock"
+	token := newLockToken()
+	deadline := time.Now().Add(wait)
+	for {
+		result, err := a.client.Eval(ctx, lockRecordScript, []string{lockKey}, token, ttl.Milliseconds())
+		if err != nil {
+			return nil, fmt.Errorf("redis: lock record %s: %w", lockKey, err)
+		}
+		if result == scriptResultOK {
+			return &recordLock{client: a.client, key: lockKey, token: token}, nil
+		}
+		if wait <= 0 || time.Now().After(deadline) {
+			return nil, fmt.Errorf("redis: lock timeout %s", lockKey)
+		}
+		timer := time.NewTimer(50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (l *recordLock) Unlock(ctx context.Context) error {
+	if l == nil || l.client == nil {
+		return nil
+	}
+	if _, err := l.client.Eval(ctx, unlockRecordScript, []string{l.key}, l.token); err != nil {
+		return fmt.Errorf("redis: unlock record %s: %w", l.key, err)
 	}
 	return nil
 }
@@ -345,6 +414,14 @@ func redisKeyHashTag(key string) string {
 		return key
 	}
 	return key[start+1 : start+1+end]
+}
+
+func newLockToken() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return hex.EncodeToString(b[:])
+	}
+	return strconv.FormatInt(time.Now().UnixNano(), 10)
 }
 
 func redisDeleteKeys(spec meta.TypeSpec, prefix string) []string {

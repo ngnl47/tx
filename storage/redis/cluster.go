@@ -83,6 +83,22 @@ func (c *Cluster) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key stora
 	return adapter.ApplyDelete(ctx, spec, key)
 }
 
+func (c *Cluster) ApplyDeleteWithRevision(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, expectedRevision string) (bool, string, error) {
+	adapter, err := c.adapterFor(ctx, spec, key)
+	if err != nil {
+		return false, "", err
+	}
+	return adapter.ApplyDeleteWithRevision(ctx, spec, key, expectedRevision)
+}
+
+func (c *Cluster) LockRecord(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, options storage.LockOptions) (storage.RecordLock, error) {
+	adapter, err := c.adapterFor(ctx, spec, key)
+	if err != nil {
+		return nil, err
+	}
+	return adapter.LockRecord(ctx, spec, key, options)
+}
+
 func (c *Cluster) LoadDocument(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, fields ...string) (map[string]any, bool, error) {
 	adapter, err := c.adapterFor(ctx, spec, key)
 	if err != nil {

@@ -8,6 +8,8 @@ var luaScripts embed.FS
 var (
 	deleteDocumentScript = mustReadLuaScript("scripts/delete_document.lua")
 	findDocumentScript   = mustReadLuaScript("scripts/find_document.lua")
+	lockRecordScript     = mustReadLuaScript("scripts/lock_record.lua")
+	unlockRecordScript   = mustReadLuaScript("scripts/unlock_record.lua")
 	updateDocumentScript = mustReadLuaScript("scripts/update_document.lua")
 )
 

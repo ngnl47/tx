@@ -1482,7 +1482,7 @@ Scheduler 的 `Start`、`RunOnce` 和 `Schedule` 在自身或 backend 未配置�
 
 运维侧应关注 Scheduler 错误日志、重试次数和队列积压时间。如果某类任务持续失败，优先排查对应类型的 Redis 热文档是否能正常反序列化、Mongo 路由/过滤条件是否正确、以及目标集合是否可写。队列中的失败原因不会写入 Redis 状态；需要更完整的告警和指标时，应通过项目自己的日志、监控或后续可插拔 observer 接入。
 
-Fusion 读取会先查 Redis，未命中时回源 Mongo。默认回源会从 Mongo 全量读取文档，写回 Redis 热数据并使用 `delayDelTime` 续期，然后按请求字段返回结果；该路径要求 `delayDelTime` 必须大于 0，避免生成没有 TTL 的 Redis 热数据。显式使用 `LoadOptions.DontLoadToRedis` 时，才直接从 Mongo 按请求字段读取且不回填 Redis，适合低频只读场景。
+Fusion 读取会先查 Redis，未命中时回源 Mongo。默认回源会先获取记录级 Redis 锁，并在锁内再次读取 Redis：如果第二次读取命中，直接返回 Redis 热数据；只有第二次仍未命中时，才从 Mongo 全量读取文档，写回 Redis 热数据并使用 `delayDelTime` 续期，然后按请求字段返回结果。该路径要求 `delayDelTime` 必须大于 0，避免生成没有 TTL 的 Redis 热数据。显式使用 `LoadOptions.DontLoadToRedis` 时，才直接从 Mongo 按请求字段读取且不回填 Redis，适合低频只读场景。
 
 部分字段读取的优化主要发生在 Redis 热数据层：运行时按 main/subKey key 粒度减少 Redis 读取，随后按字段过滤返回文档；Redis 和 Mongo 中保存的仍是全量数据。只请求 subKey 字段时，Redis 可以只读取对应 subKey 文档，不要求主文档同时命中。
 
@@ -1504,6 +1504,7 @@ fusionStore := fusion.Strategy{
 	RedisLoader:   redisCluster,
 	RedisDeleter:  redisCluster,
 	RedisReplacer: redisCluster,
+	RedisLocker:   redisCluster,
 	MongoLoader:   mongoCluster,
 	MongoDeleter:  mongoCluster,
 	MongoQueue:    delayQueue,
@@ -1559,9 +1560,12 @@ server-c claim bucket 1 中租约过期后可恢复的任务
 
 1. 先读 Redis。
 2. Redis 命中，直接返回。
-3. Redis 未命中，读 Mongo 完整文档。
-4. 将 Mongo 完整文档写回 Redis，并使用 `delayDelTime` 作为 Redis TTL。
-5. 按请求字段返回给调用方。
+3. Redis 未命中，获取记录级 Redis 锁。
+4. 锁内再次读 Redis。
+5. 第二次 Redis 命中，直接返回。
+6. 第二次 Redis 仍未命中，读 Mongo 完整文档。
+7. 将 Mongo 完整文档写回 Redis，并使用 `delayDelTime` 作为 Redis TTL。
+8. 按请求字段返回给调用方。
 
 代码示例：
 
@@ -1576,6 +1580,8 @@ role, exists, err := data.LoadGDRoleFields(ctx, fusionStore, data.GDRoleRecordKe
 ```
 
 即使只请求 `Name` 和 `Power`，Redis miss 后默认也会从 Mongo 读取完整文档并回填 Redis。这样 Redis 继续承担热数据缓存职责。
+
+这个锁用于保护并发回填。例如 `game-a` 和 `game-b` 同时读取 `role:{1001}` 未命中；`game-a` 先拿到锁、从 Mongo 读取并回填 Redis；`game-b` 随后拿到锁时会先二次读取 Redis，发现已经有热数据，于是不会再用自己稍后读到的 Mongo 快照覆盖 Redis。
 
 如果明确是低频只读，不希望回填 Redis，可以使用 runtime option：
 
@@ -1626,6 +1632,17 @@ Fusion 删除会：
 1. 删除 Redis 主文档、subKey 文档和版本键。
 2. 立即删除 Mongo 文档。
 3. 不写入延迟保存队列。
+
+Redis 热数据还维护一个生命周期版本键 `<mainKey>@v`，例如 `role:{1001}@v`。这个键不是业务字段，也不会写入 Mongo；它只用于 Redis 热数据过期/删除窗口的并发保护。运行时的带版本删除原语会在 Lua 中先比对 `@v`，只有版本一致才删除 main/subKey/version key；如果版本已变化，说明这条热数据发生过新写入，删除方应跳过本次删除并稍后重试。所有附属 key 都从 mainKey 派生：
+
+| Redis key | 示例 | 用途 |
+| --- | --- | --- |
+| mainKey | `role:{1001}` | Redis 主文档。 |
+| subKey | `role:{1001}:items` | 字段级 `redis:"subKey:items"` 拆出的子文档。 |
+| version | `role:{1001}@v` | Redis 热数据生命周期版本。 |
+| lock | `role:{1001}@lock` | Redis miss 回填时的记录级锁。 |
+
+这些 key 共享 `{1001}` 这个 hash tag；当 `routeBy != idField` 时也会共享 routeBy 生成的 hash tag，例如 `arena_record:{470001}:90001`、`arena_record:{470001}:90001@v` 和 `arena_record:{470001}:90001@lock`。
 
 如果业务希望“逻辑删除”，推荐在业务数据里定义字段：
 

@@ -13,5 +13,6 @@ const (
 	scriptFlagFalse = "0"
 	scriptFlagTrue  = "1"
 
+	scriptResultOK        = "ok"
 	scriptResultNotExists = "ne"
 )

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/meta"
@@ -354,6 +355,88 @@ func TestRedisAdapterApplyDeleteDeletesMainSubKeysAndVersion(t *testing.T) {
 	}
 	if !strings.Contains(client.evals[0].script, "redis.call(\"del\"") {
 		t.Fatalf("delete script = %q, want del command", client.evals[0].script)
+	}
+}
+
+func TestRedisAdapterApplyDeleteWithRevisionUsesVersionKeyCompare(t *testing.T) {
+	client := &recordingRedisStringClient{}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{
+		Redis: &meta.RedisSpec{Key: "role"},
+		Fields: map[string]meta.FieldSpec{
+			"items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+		},
+	}
+
+	deleted, current, err := adapter.ApplyDeleteWithRevision(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "5")
+	if err != nil {
+		t.Fatalf("ApplyDeleteWithRevision returned error: %v", err)
+	}
+	if !deleted || current != "" {
+		t.Fatalf("ApplyDeleteWithRevision deleted/current = %v/%q, want deleted", deleted, current)
+	}
+	if got, want := client.evals[0].keys, []string{"role:{1001}", "role:{1001}:items", "role:{1001}@v"}; !sameStrings(got, want) {
+		t.Fatalf("delete keys = %#v, want %#v", got, want)
+	}
+	if got, want := client.evals[0].args, []any{"5"}; len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("delete args = %#v, want %#v", got, want)
+	}
+	if !strings.Contains(client.evals[0].script, "ARGV[1]") || !strings.Contains(client.evals[0].script, "get") {
+		t.Fatalf("delete script = %q, want revision compare", client.evals[0].script)
+	}
+}
+
+func TestRedisAdapterApplyDeleteWithRevisionReportsChangedRevision(t *testing.T) {
+	client := &recordingRedisStringClient{evalResult: "6", hasResult: true}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
+
+	deleted, current, err := adapter.ApplyDeleteWithRevision(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "5")
+	if err != nil {
+		t.Fatalf("ApplyDeleteWithRevision returned error: %v", err)
+	}
+	if deleted || current != "6" {
+		t.Fatalf("ApplyDeleteWithRevision deleted/current = %v/%q, want changed revision 6", deleted, current)
+	}
+}
+
+func TestRedisAdapterLockRecordUsesMainKeyHashTag(t *testing.T) {
+	client := &recordingRedisStringClient{}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{
+		Redis: &meta.RedisSpec{
+			Key:     "arena_record",
+			Route:   meta.RouteSpec{By: "RoleId"},
+			IDField: "Id",
+		},
+	}
+	key := storage.RecordKey{ID: int64(90001), ShardKey: int64(470001)}
+
+	lock, err := adapter.LockRecord(context.Background(), spec, key, storage.LockOptions{TTL: 10 * time.Second, Wait: time.Millisecond})
+	if err != nil {
+		t.Fatalf("LockRecord returned error: %v", err)
+	}
+	if lock == nil {
+		t.Fatal("LockRecord returned nil lock")
+	}
+	if len(client.evals) != 1 {
+		t.Fatalf("eval calls = %#v, want one lock call", client.evals)
+	}
+	if got, want := client.evals[0].keys, []string{"arena_record:{470001}:90001@lock"}; !sameStrings(got, want) {
+		t.Fatalf("lock keys = %#v, want %#v", got, want)
+	}
+	if len(client.evals[0].args) != 2 || client.evals[0].args[1] != int64(10000) {
+		t.Fatalf("lock args = %#v, want token and ttl millis", client.evals[0].args)
+	}
+
+	if err := lock.Unlock(context.Background()); err != nil {
+		t.Fatalf("Unlock returned error: %v", err)
+	}
+	if len(client.evals) != 2 {
+		t.Fatalf("eval calls = %#v, want lock and unlock", client.evals)
+	}
+	if got, want := client.evals[1].keys, []string{"arena_record:{470001}:90001@lock"}; !sameStrings(got, want) {
+		t.Fatalf("unlock keys = %#v, want %#v", got, want)
 	}
 }
 
@@ -806,6 +889,40 @@ func TestRedisClusterRoutesSingleWriteByShardKey(t *testing.T) {
 	}
 	if len(roleShard.evals) != 1 || !sameStrings(roleShard.evals[0].keys, []string{"role:{7}:1001"}) {
 		t.Fatalf("role shard evals = %#v, want one write for role:{7}:1001", roleShard.evals)
+	}
+	if len(userShard.evals) != 0 {
+		t.Fatalf("unexpected user shard evals = %#v", userShard.evals)
+	}
+}
+
+func TestRedisClusterRoutesRecordLockByShardKey(t *testing.T) {
+	roleShard := &recordingRedisStringClient{}
+	userShard := &recordingRedisStringClient{}
+	router := &recordingRedisRouter{names: map[any]string{
+		int64(7): "role-shard",
+	}}
+	cluster := txredis.NewCluster(router, map[string]any{
+		"role-shard": roleShard,
+		"user-shard": userShard,
+	})
+	spec := meta.TypeSpec{Redis: &meta.RedisSpec{
+		Key:     "role",
+		IDField: "roleId",
+		Route:   meta.RouteSpec{Type: "role", By: "serverId"},
+	}}
+
+	lock, err := cluster.LockRecord(context.Background(), spec, storage.RecordKey{ID: int64(1001), ShardKey: int64(7)}, storage.LockOptions{TTL: time.Second, Wait: time.Millisecond})
+	if err != nil {
+		t.Fatalf("LockRecord returned error: %v", err)
+	}
+	if lock == nil {
+		t.Fatal("LockRecord returned nil lock")
+	}
+	if len(router.calls) != 1 || router.calls[0].routeType != "role" || router.calls[0].shardKey != int64(7) {
+		t.Fatalf("router calls = %#v, want role shard key 7", router.calls)
+	}
+	if len(roleShard.evals) != 1 || !sameStrings(roleShard.evals[0].keys, []string{"role:{7}:1001@lock"}) {
+		t.Fatalf("role shard evals = %#v, want one lock for role:{7}:1001@lock", roleShard.evals)
 	}
 	if len(userShard.evals) != 0 {
 		t.Fatalf("unexpected user shard evals = %#v", userShard.evals)
