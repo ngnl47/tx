@@ -1,5 +1,7 @@
 package change
 
+import "strconv"
+
 const MaxDeltaDepth = 4
 
 // KeyKind 描述 Delta 路径节点上的集合 key 类型。
@@ -30,6 +32,27 @@ type PathNode struct {
 type DeltaPath struct {
 	Nodes [MaxDeltaDepth]PathNode
 	Depth uint8
+}
+
+// FullPath 按指定字段名体系把 DeltaPath 转换为字符串路径。
+func (p DeltaPath) FullPath(resolver FieldNameResolver, backend NameBackend) Path {
+	if p.Depth == 0 || resolver == nil {
+		return nil
+	}
+	out := make(Path, 0, int(p.Depth)*2)
+	for i := 0; i < int(p.Depth); i++ {
+		node := p.Nodes[i]
+		if node.Field == FieldNone {
+			return nil
+		}
+		name := resolver.FieldName(node.Field, backend)
+		if name == "" {
+			return nil
+		}
+		out = append(out, name)
+		out = node.Key.appendPath(out)
+	}
+	return out
 }
 
 // Equal 判断两条 Delta 路径是否完全相同。
@@ -89,6 +112,21 @@ func (k PathKey) Equal(other PathKey) bool {
 		return k.Str == other.Str
 	default:
 		return false
+	}
+}
+
+func (k PathKey) appendPath(path Path) Path {
+	switch k.Kind {
+	case KeyNone:
+		return path
+	case KeyInt:
+		return append(path, strconv.FormatInt(k.Int, 10))
+	case KeyUint:
+		return append(path, strconv.FormatUint(k.Uint, 10))
+	case KeyString:
+		return append(path, k.Str)
+	default:
+		return path
 	}
 }
 

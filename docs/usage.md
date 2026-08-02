@@ -429,9 +429,10 @@ body := role.MsgpackChangeDocument()
 例如 `HeadImg` 的 tag 是 `msgpack:"hi,omitempty"`，那么下行变更文档里使用 `hi`，不是 Go 字段名
 `HeadImg`。
 
-生成 Store 当前会同时保留旧 `ChangeSet` 和新 `DeltaSet` 两条记录。`Changes()` 仍服务现有
-Redis/Mongo/Fusion 写入链路；`Deltas()` 返回压缩后的 `change.DeltaSet`，供后续 Delta Provider
-直接消费。
+生成 Store 当前会同时保留旧 `ChangeSet` 和新 `DeltaSet` 两条记录。`Deltas()` 返回压缩后的
+`change.DeltaSet`；如果传入的存储适配器实现了 `storage.DeltaApplier`，生成的 `ApplyInsert`、
+`ApplyUpdate`、`ApplyReplace` 会优先走 Delta 直连入口。旧 `ChangeSet` 仍作为未迁移适配器的
+兜底路径。
 
 ```go
 role := data.NewGDRole()
@@ -452,6 +453,19 @@ deltas := role.Store().Deltas()
 | `TouchName()` | 否 | set 当前内存值 | 字段值已经被业务直接改过，需要补标脏；或 viewStore 只想把当前字段加入下行。 |
 | `ReplaceItems(value)` | 是 | replace | 整体替换 map/slice/struct 指针字段。 |
 | `ClearName()` | 是，设置为 Go 零值 | clear | 从 Redis/Mongo 文档中移除字段。 |
+
+在 Delta 路径里，普通字段清零和集合清空会被区分：
+
+```go
+role.ClearHeadImg()
+// 普通字段：DeltaSet HeadImg = ""，表示把字段写成 Go 零值。
+
+role.TasksStore().Clear()
+// map/slice：DeltaClear Tasks，表示容器仍存在，但内容为空。
+```
+
+如果业务确实需要删除 map key 或 Mongo 字段，后续集合 Store 会使用 `DeltaDelete` 表达，例如
+`Items[1001]` 被删除时，对 Mongo 边界可转换为 `$unset: {"items.1001": ""}`。
 
 日常业务优先使用 `Set*`：
 
@@ -847,7 +861,7 @@ arena:{roleId}:id
 
 ### 写入流程
 
-生成 Store 会把业务变更转成 `ChangeSet`，再交给 Redis adapter：
+生成 Store 会把业务变更转成 `DeltaSet`，并优先交给实现了 `storage.DeltaApplier` 的 Redis adapter：
 
 ```go
 role := data.NewGDRole()
@@ -858,10 +872,10 @@ role.SetPower(47)
 err := role.Store().ApplyInsert(ctx, redisCluster)
 ```
 
-`ApplyInsert` 会强制 `Upsert=true`，适合新建或首次缓存。Redis adapter 收到变更后会：
+`ApplyInsert` 会强制 `Upsert=true`，适合新建或首次缓存。Redis adapter 收到 Delta 变更后会：
 
 1. 根据 `TypeSpec` 和 `RecordKey` 生成 Redis key 前缀，例如 `role:{470001}`。
-2. 根据字段的 `redis:"subKey:..."` 把变更拆到 main 文档或 subKey 文档。
+2. 根据字段的 Go 字段名定位 `redis:"subKey:..."`，再用 JSON 字段名写入 main 文档或 subKey 文档。
 3. 把每个文档的 patch 编码成 JSON 字符串。
 4. 调用 Lua 脚本，在 Redis 内部读取旧 JSON、`cjson.decode`、merge/replace、`cjson.encode` 后写回。
 5. 按 `ApplyOptions.TTL` 设置或续期 Redis 热数据。

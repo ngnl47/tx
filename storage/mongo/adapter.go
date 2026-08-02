@@ -47,7 +47,7 @@ type BatchFinder interface {
 	FindMany(context.Context, string, ValuesFilter, ...string) ([]map[string]any, []bool, error)
 }
 
-// Adapter 把 ChangeSet 应用到 MongoDB 更新文档。
+// Adapter 把变更集合应用到 MongoDB 更新文档。
 type Adapter struct {
 	client   any
 	resolver change.FieldResolver
@@ -69,6 +69,25 @@ func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 		return nil
 	}
 	update, err := BuildUpdateDocumentWithSpecAndResolver(spec, set, a.resolver)
+	if err != nil {
+		return err
+	}
+	if len(update) == 0 {
+		return nil
+	}
+	updater, ok := a.client.(Updater)
+	if !ok {
+		return nil
+	}
+	return updater.UpdateOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), update, options)
+}
+
+// ApplyDeltasWithOptions 根据 Mongo 元数据和记录 ID 执行 Delta 更新。
+func (a *Adapter) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, deltas change.DeltaSet, resolver change.FieldNameResolver, options storage.ApplyOptions) error {
+	if len(deltas) == 0 {
+		return nil
+	}
+	update, err := BuildUpdateDocumentWithDeltas(spec, deltas, resolver)
 	if err != nil {
 		return err
 	}

@@ -56,6 +56,18 @@ func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 	return a.applyDocumentPatchesWithOptions(ctx, spec, key, patches, options)
 }
 
+// ApplyDeltasWithOptions 根据指定选项写入 Redis string JSON Delta 变更。
+func (a *Adapter) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, deltas change.DeltaSet, resolver change.FieldNameResolver, options storage.ApplyOptions) error {
+	if a.client == nil || len(deltas) == 0 {
+		return nil
+	}
+	patches := BuildDocumentPatchesWithDeltas(spec, deltas, resolver)
+	if len(patches) == 0 {
+		return nil
+	}
+	return a.applyDocumentPatchesWithOptions(ctx, spec, key, patches, options)
+}
+
 func (a *Adapter) applyDocumentPatchesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, patches map[string]DocumentPatch, options storage.ApplyOptions) error {
 	if a.client == nil {
 		return nil

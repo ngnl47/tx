@@ -1,4 +1,4 @@
-// Package redis 提供 ChangeSet 到 Redis string JSON 写入模型的转换。
+// Package redis 提供变更集合到 Redis string JSON 写入模型的转换。
 package redis
 
 import (
@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 
 	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/meta"
@@ -61,6 +62,56 @@ func BuildDocumentPatchesWithResolver(spec meta.TypeSpec, set change.ChangeSet, 
 		default:
 			patch.Set = append(patch.Set, PathValue{Path: path, Value: fieldChange.Value})
 			if fieldChange.Kind == change.KindReplace && redisFullUpdateField(spec, goField) && suffix != "" && len(path) == 1 {
+				patch.fullUpdate = true
+				if patch.diffUpdate {
+					patch.Mode = documentPatchModePartialReplace
+				} else {
+					patch.Mode = documentPatchModeReplace
+				}
+			} else {
+				patch.diffUpdate = true
+				if patch.fullUpdate {
+					patch.Mode = documentPatchModePartialReplace
+				}
+			}
+		}
+		out[suffix] = patch
+	}
+	return out
+}
+
+// BuildDocumentPatchesWithDeltas 按 Redis string/subKey 模型把 DeltaSet
+// 分组成 JSON 文档 patch。Redis 边界当前选择 JSON 字段名。
+func BuildDocumentPatchesWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, resolver change.FieldNameResolver) map[string]DocumentPatch {
+	out := map[string]DocumentPatch{}
+	for _, delta := range deltas.Compact() {
+		goPath := delta.Path.FullPath(resolver, change.NameBackendGo)
+		if len(goPath) == 0 {
+			continue
+		}
+		jsonPath := delta.Path.FullPath(resolver, change.NameBackendJSON)
+		if len(jsonPath) == 0 {
+			continue
+		}
+		goField := goPath[0]
+		suffix, ignore := redisDocumentSuffix(spec, goField)
+		if ignore {
+			continue
+		}
+		patch := out[suffix]
+		if patch.Mode == "" {
+			patch.Mode = documentPatchModeMerge
+		}
+		switch delta.Kind {
+		case change.DeltaClear:
+			patch.Set = append(patch.Set, PathValue{Path: jsonPath, Value: emptyDocumentValue(spec, goField)})
+			patch.diffUpdate = true
+		case change.DeltaDelete:
+			patch.Clear = append(patch.Clear, jsonPath)
+			patch.diffUpdate = true
+		default:
+			patch.Set = append(patch.Set, PathValue{Path: jsonPath, Value: delta.Value})
+			if redisFullUpdateField(spec, goField) && suffix != "" && len(jsonPath) == 1 {
 				patch.fullUpdate = true
 				if patch.diffUpdate {
 					patch.Mode = documentPatchModePartialReplace
@@ -212,6 +263,19 @@ func redisDocumentSuffix(spec meta.TypeSpec, field string) (string, bool) {
 func redisFullUpdateField(spec meta.TypeSpec, field string) bool {
 	fieldSpec, ok := spec.Fields[field]
 	return ok && fieldSpec.Redis != nil && fieldSpec.Redis.FullUpdate
+}
+
+func emptyDocumentValue(spec meta.TypeSpec, field string) any {
+	fieldSpec, ok := spec.FieldByName(field)
+	if !ok {
+		return map[string]any{}
+	}
+	switch {
+	case strings.HasPrefix(fieldSpec.Type, "[]"), strings.HasPrefix(fieldSpec.Type, "["):
+		return []any{}
+	default:
+		return map[string]any{}
+	}
 }
 
 func ensureTTLOnlyPatches(spec meta.TypeSpec, patches map[string]DocumentPatch) {

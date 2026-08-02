@@ -39,6 +39,29 @@ func TestRedisBuildDocumentPatchesGroupsClearChanges(t *testing.T) {
 	}
 }
 
+func TestRedisBuildDocumentPatchesWithDeltasUsesJSONNames(t *testing.T) {
+	deltas := change.DeltaSet{
+		{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet, Value: "alice"},
+		{Path: deltaPath(fieldNode(deltaFieldItems)), Kind: change.DeltaClear},
+	}
+	resolver := testFieldNameResolver{
+		change.NameBackendGo:   {deltaFieldName: "Name", deltaFieldItems: "Items"},
+		change.NameBackendJSON: {deltaFieldName: "roleName", deltaFieldItems: "items"},
+	}
+
+	patches := txredis.BuildDocumentPatchesWithDeltas(redisPatchSpec(), deltas, resolver)
+
+	if patches[""].Set[0].Path.String() != "roleName" || patches[""].Set[0].Value != "alice" {
+		t.Fatalf("main patch = %#v", patches[""])
+	}
+	if patches["items"].Set[0].Path.String() != "items" {
+		t.Fatalf("items patch path = %q, want items", patches["items"].Set[0].Path.String())
+	}
+	if _, ok := patches["items"].Set[0].Value.(map[string]any); !ok {
+		t.Fatalf("items clear value = %#v, want empty document", patches["items"].Set[0].Value)
+	}
+}
+
 func TestRedisEncodeDocumentPatchAllowsSafeIntegers(t *testing.T) {
 	_, err := txredis.EncodeDocumentPatch(txredis.DocumentPatch{
 		Set: []txredis.PathValue{{Path: change.Path{"roleId"}, Value: int64(1<<53 - 1)}},
@@ -64,6 +87,7 @@ func redisPatchSpec() meta.TypeSpec {
 	return meta.TypeSpec{
 		Fields: map[string]meta.FieldSpec{
 			"items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+			"Items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
 		},
 	}
 }

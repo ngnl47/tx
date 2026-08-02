@@ -48,6 +48,29 @@ func (s Strategy) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 	})
 }
 
+// ApplyDeltasWithOptions 应用一次 Delta 变更，并把写入选项限定传递给 Redis。
+func (s Strategy) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, deltas change.DeltaSet, resolver change.FieldNameResolver, options storage.ApplyOptions) error {
+	if len(deltas) == 0 {
+		return nil
+	}
+	if deltaRedis, ok := s.Redis.(storage.DeltaApplier); ok && deltaRedis != nil {
+		if err := deltaRedis.ApplyDeltasWithOptions(ctx, spec, key, deltas, resolver, options); err != nil {
+			return err
+		}
+	} else if s.Redis != nil {
+		return fmt.Errorf("fusion: redis applier does not support DeltaSet")
+	}
+	if s.MongoQueue == nil {
+		return nil
+	}
+	return s.MongoQueue.Enqueue(ctx, DelayedOperation{
+		Kind:     DelayedSave,
+		Type:     spec.Type.Ref,
+		Key:      key,
+		RunAfter: spec.Storage.DelaySave.Duration,
+	})
+}
+
 // ApplyDelete 应用一次对象删除。
 //
 // RedisDeleter 存在时会先删除热数据；MongoDeleter 存在时会立即删除持久化数据。

@@ -55,6 +55,34 @@ func TestFieldNameResolverUsesBackend(t *testing.T) {
 	}
 }
 
+func TestDeltaPathFullPathUsesBackend(t *testing.T) {
+	resolver := testFieldNameResolver{
+		change.NameBackendGo:   {2: "Items", 3: "Quantity"},
+		change.NameBackendBSON: {2: "items", 3: "q"},
+	}
+	path := deltaPath(intKeyNode(2, 1001), fieldNode(3))
+
+	if got := path.FullPath(resolver, change.NameBackendGo).String(); got != "Items.1001.Quantity" {
+		t.Fatalf("Go path = %q, want Items.1001.Quantity", got)
+	}
+	if got := path.FullPath(resolver, change.NameBackendBSON).String(); got != "items.1001.q" {
+		t.Fatalf("BSON path = %q, want items.1001.q", got)
+	}
+}
+
+func TestFieldNameResolverFunc(t *testing.T) {
+	resolver := change.FieldNameResolverFunc(func(field change.FieldID, backend change.NameBackend) string {
+		if field == 1 && backend == change.NameBackendJSON {
+			return "roleId"
+		}
+		return ""
+	})
+
+	if got := resolver.FieldName(1, change.NameBackendJSON); got != "roleId" {
+		t.Fatalf("FieldNameResolverFunc returned %q, want roleId", got)
+	}
+}
+
 func TestFieldChangeFullPathAppendsDynamicTail(t *testing.T) {
 	fieldChange := change.FieldChange{
 		Field: change.FieldID(3),

@@ -55,6 +55,14 @@ func (c *Cluster) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 	return adapter.ApplyChangesWithOptions(ctx, spec, key, set, options)
 }
 
+func (c *Cluster) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, deltas change.DeltaSet, resolver change.FieldNameResolver, options storage.ApplyOptions) error {
+	adapter, err := c.adapterFor(ctx, spec, key)
+	if err != nil {
+		return err
+	}
+	return adapter.ApplyDeltasWithOptions(ctx, spec, key, deltas, resolver, options)
+}
+
 func (c *Cluster) ReplaceDocumentWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any, options storage.ApplyOptions) error {
 	adapter, err := c.adapterFor(ctx, spec, key)
 	if err != nil {
