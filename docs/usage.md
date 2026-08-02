@@ -8,7 +8,7 @@
 
 - 解析和保存类型元数据。
 - 追踪字段级变更。
-- 将 `ChangeSet` 落地到 Redis、Mongo 或 Fusion 策略。
+- 将生成 Store 的 `DeltaSet` 落地到 Redis、Mongo 或 Fusion 策略。
 - 提供 Redis 延迟任务 backend 和 Fusion 后台回写所需组件。
 
 生成代码依赖 `tx`，`tx` 不依赖生成器工程。
@@ -458,7 +458,7 @@ doc := role.Store().Deltas().DocumentWithResolver(
 
 生成 Store 每个字段通常会有四类方法：
 
-| 方法 | 是否修改内存字段 | ChangeSet 语义 | 常见用途 |
+| 方法 | 是否修改内存字段 | Delta 语义 | 常见用途 |
 | --- | --- | --- | --- |
 | `SetName(value)` | 是 | set | 日常业务修改字段。 |
 | `TouchName()` | 否 | set 当前内存值 | 字段值已经被业务直接改过，需要补标脏；或 viewStore 只想把当前字段加入下行。 |
@@ -555,7 +555,7 @@ change.Document{
 ```
 
 落到 Redis/Mongo 后，字段仍然存在，只是值为 `""` 或 `0`。这和 `omitempty` 不冲突：`omitempty`
-主要影响完整对象序列化时是否省略零值；`ChangeSet` 的 set 语义会明确保留这次设置的零值。
+主要影响完整对象序列化时是否省略零值；生成 Store 的 Delta set 语义会明确保留这次设置的零值。
 
 如果业务语义是“清空字段并从持久化文档里移除这个字段”，使用 `Clear*`：
 
@@ -600,24 +600,11 @@ role.Items[1001].Quantity += 3
 role.TouchItems()
 ```
 
-路径级标脏适合框架内部或少数非常明确的局部更新场景：
-
-```go
-role.TouchItemsPath(change.Path{"1001", "quantity"}, int64(3))
-```
-
-对应路径是：
-
-```text
-Items.1001.quantity
-```
-
-如果手动使用路径级标脏，业务需要自己保证 map key 存在、值类型正确、路径和最终文档结构一致。否则代码看起来省 IO，
-但很容易把复杂度转移到业务层。
+当前生成代码不会暴露字符串 path 级标脏 API。集合字段先按整字段 dirty 处理，后续集合 wrapper 完成后再由生成代码负责 key/index 级 Delta，业务侧仍应优先使用强类型方法。
 
 ### 覆盖规则
 
-`ChangeSet` 同一目标多次写入时，只保留最后一次：
+`DeltaSet` 同一目标多次写入时，只保留最后一次：
 
 ```go
 role.SetName("alice")
@@ -630,53 +617,26 @@ role.SetName("bob")
 Set["Name"] = "bob"
 ```
 
-父路径会覆盖子路径，避免大集合 path 爆炸：
+父路径和子路径的覆盖规则由 `DeltaSet.Compact()` 负责。当前生成集合 Store 先记录整字段：
 
 ```go
-role.TouchItemsPath(change.Path{"1001", "quantity"}, int64(3))
+role.ItemsStore().Set(1001, &data.GDItem{ItemId: 1001, Quantity: 3})
 role.TouchItems()
 ```
 
-最终只保留整字段：
-
-```text
-Items
-```
-
-反过来，如果已经标记了整字段，再追加子路径，子路径会被忽略：
-
-```go
-role.TouchItems()
-role.TouchItemsPath(change.Path{"1001", "quantity"}, int64(3))
-```
-
-最终仍然只保留：
-
-```text
-Items
-```
-
-完整路径 API 也遵守相同规则：
-
-```go
-var tracker change.Tracker
-_ = tracker.Touch(change.Path{"items", "1001", "quantity"}, int64(3))
-_ = tracker.Touch(change.Path{"items"}, items)
-```
-
-最终只保留 `items`。
+最终只需要保留 `Items` 这个根字段。后续 key/index 级集合 Delta 实现后，Compact 仍会保证整字段写覆盖更细的子路径。
 
 ### AllTouch 和 ClearChanges
 
-`AllTouch()` 表示整对象需要全量落地。它会清空已有字段级 `ChangeSet`：
+`AllTouch()` 表示整对象需要全量落地。它会清空已有字段级 `DeltaSet`：
 
 ```go
 role.SetName("bob")
-role.TouchItemsPath(change.Path{"1001", "quantity"}, int64(3))
+role.ItemsStore().Set(1001, &data.GDItem{ItemId: 1001, Quantity: 3})
 role.Store().AllTouch()
 ```
 
-执行后不再保留 `Name` 或 `Items.1001.quantity` 这些局部记录。后续保存路径应根据 `AllDirty()` 走整文档替换。
+执行后不再保留 `Name` 或集合字段的局部记录。后续保存路径应根据 `AllDirty()` 走整文档替换。
 
 `ClearChanges()` 或 Store 的 `AllUnTouch()` 用于加载完成、主动放弃本轮修改，或显式 Store 写入成功后手动清空脏标记。
 普通请求链路可以使用 `SaveStore` 自动清理：
@@ -704,25 +664,25 @@ role.ClearChanges()
 
 生成的加载方法在成功读取后会自动清空脏标记，避免“刚加载出来的数据”被误认为需要保存。
 
-### ChangeSet 到后端文档
+### DeltaSet 到后端文档
 
-`change.Tracker` 底层记录的是：
+生成 Store 的主路径记录的是 `change.DeltaSet`：
 
-- `KindSet`：设置字段值。
-- `KindReplace`：整体替换字段值，常用于 map、slice、struct 指针。
-- `KindClear`：清空字段，存储适配器会映射为字段移除语义。
+- `DeltaKindSet`：设置字段值，普通字段和集合整字段替换都使用这个语义。
+- `DeltaDelete`：删除字段或集合元素，当前主要由生成的 `Clear<Field>` 使用。
+- `DeltaClear`：清空集合容器，保留字段但写为空 map/slice。
 - `FieldID`：生成代码提供的稳定字段编号，避免热路径反复保存字段名字符串。
-- `Path`：字段内部的动态尾路径，例如 map key 或嵌套字段名。
+- `DeltaPath`：字段路径。当前生成集合 Store 先记录根字段，后续集合 wrapper 会在这里表达 key/index 级路径。
 
 生成代码会传入 `FieldResolver`，把字段编号解析为字段名：
 
 ```text
-FieldID(fieldGDRoleName) + Path{} -> Name
-FieldID(fieldGDRoleItems) + Path{"1001", "quantity"} -> Items.1001.quantity
+DeltaPath{FieldID(fieldGDRoleName)} -> Name
+DeltaPath{FieldID(fieldGDRoleItems)} -> Items
 ```
 
 变更落地和下行投影不会对整个数据对象做全量 `json.Marshal`、`bson.Marshal` 或
-`msgpack.Marshal`。`ChangeSet` 或 `DeltaSet` 只遍历本保存周期内的脏字段，通过生成的 resolver 或
+`msgpack.Marshal`。`DeltaSet` 只遍历本保存周期内的脏字段，通过生成的 resolver 或
 `TypeSpec` 转成目标后端字段名，再生成局部 patch/update document。若某个脏字段本身是
 map、slice 或 struct 指针，具体字段值在最终编码时仍会交给对应 JSON/BSON/Msgpack 编码器展开。
 完整对象读取、回源或整文档替换路径才会依赖序列化库按 tag 映射字段。
@@ -831,9 +791,9 @@ if err := queue.Flush(ctx, battlefieldPatchWriter); err != nil {
 ```
 
 这个例子里的 `rolePatchWriter` 是业务高频队列自己的写入器：它可以把 compact 后的 `change.Document`
-转换成 Redis/Mongo 的局部 patch，也可以合并进战斗服自己的内存落盘格式。当前通用 `storage.ChangeApplier`
-仍然接收 `change.ChangeSet`，不直接接收 `change.Document`；因此不要把上面的队列写入器误解为现有
-Fusion 延迟回写入口。Fusion 默认延迟回写仍是“队列只保存记录定位信息，到期后读取 Redis 最新热数据并整文档写回 Mongo”。
+转换成 Redis/Mongo 的局部 patch，也可以合并进战斗服自己的内存落盘格式。生成 Store 的常规保存入口使用
+`change.DeltaSet` 和 `storage.DeltaApplier`；因此不要把上面的队列写入器误解为 Fusion 延迟回写入口。
+Fusion 默认延迟回写仍是“队列只保存记录定位信息，到期后读取 Redis 最新热数据并整文档写回 Mongo”。
 
 ## Redis 存储模型
 
@@ -1233,7 +1193,7 @@ arena:{1001}:90001:members
 
 Mongo adapter 当前支持：
 
-- `ApplyChangesWithOptions`：将 `ChangeSet` 转成 Mongo update 文档。
+- `ApplyDeltasWithOptions`：将生成 Store 的 `DeltaSet` 转成 Mongo update 文档。
 - `LoadDocument`：按记录键读取单条文档，可带 projection 字段。
 - `LoadDocuments`：按记录键批量读取并保持返回顺序。
 - `ReplaceDocument`：整文档替换，供 Fusion 延迟保存回写使用。
@@ -1475,7 +1435,7 @@ func (f fakeLoader) LoadDocument(context.Context, meta.TypeSpec, storage.RecordK
 
 Fusion 策略的当前保存路径：
 
-1. 业务变更生成 `ChangeSet`。
+1. 业务变更生成 `DeltaSet`。
 2. Redis 同步写入热数据。
 3. Redis delayed task backend 写入延迟保存任务。
 4. Scheduler 到期 claim 任务。
@@ -1715,10 +1675,10 @@ env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp /Users/a47/sdk/go1.25
 
 ### 更新没有字段变化
 
-- 直接字段赋值不会标脏，例如 `role.Name = "bob"` 只改内存，不会进入 `ChangeSet`。
+- 直接字段赋值不会标脏，例如 `role.Name = "bob"` 只改内存，不会进入 Store dirty。
 - 使用生成代理方法：`role.SetName("bob")`、`role.TouchItems()`、`role.UpdateItems(...)`。
-- 如果业务先细粒度 touch path，再 `TouchItems()` 或 `AllTouch()`，顶层 dirty 会覆盖并清理更细的 path 记录。
-- 保存成功后如果继续复用对象，调用 `ClearChanges()` 或 Store 的 `AllUnTouch()` 清掉本轮 tracker。
+- 如果后续集合 wrapper 生成了 key/index 级 Delta，再调用 `TouchItems()` 或 `AllTouch()` 时，顶层 dirty 会覆盖并清理更细的路径记录。
+- 保存成功后如果继续复用对象，调用 `ClearChanges()` 或 Store 的 `AllUnTouch()` 清掉本轮 dirty。
 
 ### 批量读取报 Redis cross-slot
 
