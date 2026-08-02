@@ -25,6 +25,36 @@ func TestFieldChangeFullPathUsesResolver(t *testing.T) {
 	}
 }
 
+type testFieldNameResolver map[change.NameBackend]map[change.FieldID]string
+
+func (r testFieldNameResolver) FieldName(field change.FieldID, backend change.NameBackend) string {
+	return r[backend][field]
+}
+
+func TestFieldNameResolverUsesBackend(t *testing.T) {
+	resolver := testFieldNameResolver{
+		change.NameBackendGo:      {1: "RoleId"},
+		change.NameBackendJSON:    {1: "roleId"},
+		change.NameBackendBSON:    {1: "_id"},
+		change.NameBackendMsgpack: {1: "rid"},
+	}
+
+	tests := []struct {
+		backend change.NameBackend
+		want    string
+	}{
+		{change.NameBackendGo, "RoleId"},
+		{change.NameBackendJSON, "roleId"},
+		{change.NameBackendBSON, "_id"},
+		{change.NameBackendMsgpack, "rid"},
+	}
+	for _, tt := range tests {
+		if got := resolver.FieldName(1, tt.backend); got != tt.want {
+			t.Fatalf("FieldName backend %q = %q, want %q", tt.backend, got, tt.want)
+		}
+	}
+}
+
 func TestFieldChangeFullPathAppendsDynamicTail(t *testing.T) {
 	fieldChange := change.FieldChange{
 		Field: change.FieldID(3),

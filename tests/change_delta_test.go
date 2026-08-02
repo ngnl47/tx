@@ -167,3 +167,35 @@ func TestDeltaSetCompactDoesNotMergeChildAfterClear(t *testing.T) {
 		t.Fatalf("compacted len = %d, want 2 because generated Store owns clear-plus-set upgrade: %#v", len(compacted), compacted)
 	}
 }
+
+func TestDeltaSetRemoveFieldRemovesFieldAndChildren(t *testing.T) {
+	deltas := change.DeltaSet{
+		{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet, Value: "alice"},
+		{Path: deltaPath(intKeyNode(deltaFieldItems, 1001), fieldNode(deltaFieldQty)), Kind: change.DeltaKindSet, Value: int64(7)},
+		{Path: deltaPath(fieldNode(deltaFieldQty)), Kind: change.DeltaKindSet, Value: int64(1)},
+	}
+
+	deltas = deltas.RemoveField(deltaFieldItems)
+
+	if len(deltas) != 2 {
+		t.Fatalf("deltas len = %d, want 2: %#v", len(deltas), deltas)
+	}
+	for _, delta := range deltas {
+		if delta.Path.Depth > 0 && delta.Path.Nodes[0].Field == deltaFieldItems {
+			t.Fatalf("items delta was not removed: %#v", deltas)
+		}
+	}
+}
+
+func TestDeltaSetCloneDoesNotShareSliceHeader(t *testing.T) {
+	deltas := change.DeltaSet{
+		{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet, Value: "alice"},
+	}
+
+	cloned := deltas.Clone()
+	cloned[0].Value = "bob"
+
+	if deltas[0].Value != "alice" {
+		t.Fatalf("source value = %#v, want alice", deltas[0].Value)
+	}
+}

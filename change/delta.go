@@ -111,6 +111,35 @@ type DeltaEntry struct {
 // DeltaSet 是按发生顺序追加的一组 DeltaEntry。
 type DeltaSet []DeltaEntry
 
+// Clone 返回一份可独立修改的 DeltaSet 切片副本。
+func (ds DeltaSet) Clone() DeltaSet {
+	if len(ds) == 0 {
+		return nil
+	}
+	out := make(DeltaSet, len(ds))
+	copy(out, ds)
+	return out
+}
+
+// RemoveField 移除指定根字段及其子路径上的 DeltaEntry。
+func (ds DeltaSet) RemoveField(field FieldID) DeltaSet {
+	if len(ds) == 0 {
+		return ds
+	}
+	write := 0
+	for read := 0; read < len(ds); read++ {
+		if ds[read].Path.Depth > 0 && ds[read].Path.Nodes[0].Field == field {
+			continue
+		}
+		if write != read {
+			ds[write] = ds[read]
+		}
+		write++
+	}
+	clear(ds[write:])
+	return ds[:write]
+}
+
 // Compact 原地压缩确定冗余的 DeltaEntry。
 //
 // 该方法只做不需要外部状态即可确定正确的压缩：同路径保留后者，后来的

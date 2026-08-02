@@ -33,6 +33,24 @@ type FieldResolver interface {
 	FieldName(FieldID) string
 }
 
+// NameBackend 表示字段名要面向的序列化或存储边界。
+type NameBackend string
+
+const (
+	NameBackendGo      NameBackend = "go"
+	NameBackendJSON    NameBackend = "json"
+	NameBackendBSON    NameBackend = "bson"
+	NameBackendMsgpack NameBackend = "msgpack"
+)
+
+// FieldNameResolver 按后端把 FieldID 解析为字段名。
+//
+// FieldID 只在单个生成类型内部稳定，不能放进全局字段名表。生成代码应该
+// 为每个类型提供自己的字段名函数或 resolver。
+type FieldNameResolver interface {
+	FieldName(FieldID, NameBackend) string
+}
+
 // Path 是从根对象到变更字段的别名路径。
 //
 // 例如角色名字段是 Path{"name"}，物品数量可以表示为
