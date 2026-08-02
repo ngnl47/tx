@@ -83,11 +83,11 @@ func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 }
 
 // ApplyDeltasWithOptions 根据 Mongo 元数据和记录 ID 执行 Delta 更新。
-func (a *Adapter) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, deltas change.DeltaSet, resolver change.FieldNameResolver, options storage.ApplyOptions) error {
+func (a *Adapter) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, deltas change.DeltaSet, resolver change.FieldNameResolver, values change.DeltaValueResolver, options storage.ApplyOptions) error {
 	if len(deltas) == 0 {
 		return nil
 	}
-	update, err := BuildUpdateDocumentWithDeltas(spec, deltas, resolver)
+	update, err := BuildUpdateDocumentWithDeltas(spec, deltas, resolver, values)
 	if err != nil {
 		return err
 	}

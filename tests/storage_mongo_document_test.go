@@ -39,7 +39,7 @@ func TestMongoBuildUpdateDocumentReturnsEmptyForNoChanges(t *testing.T) {
 
 func TestMongoBuildUpdateDocumentWithDeltasUsesBSONNames(t *testing.T) {
 	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet, Value: "alice"},
+		{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet},
 		{Path: deltaPath(fieldNode(deltaFieldItems)), Kind: change.DeltaClear},
 	}
 	resolver := testFieldNameResolver{
@@ -55,7 +55,7 @@ func TestMongoBuildUpdateDocumentWithDeltasUsesBSONNames(t *testing.T) {
 		},
 	}
 
-	update, err := txmongo.BuildUpdateDocumentWithDeltas(spec, deltas, resolver)
+	update, err := txmongo.BuildUpdateDocumentWithDeltas(spec, deltas, resolver, testDeltaValueResolver{deltaFieldName: "alice"})
 	if err != nil {
 		t.Fatalf("BuildUpdateDocumentWithDeltas returned error: %v", err)
 	}
@@ -70,14 +70,14 @@ func TestMongoBuildUpdateDocumentWithDeltasUsesBSONNames(t *testing.T) {
 
 func TestMongoBuildUpdateDocumentWithDeltasRejectsImmutableID(t *testing.T) {
 	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet, Value: int64(1001)},
+		{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet},
 	}
 	resolver := testFieldNameResolver{
 		change.NameBackendGo:   {deltaFieldName: "RoleId"},
 		change.NameBackendBSON: {deltaFieldName: "_id"},
 	}
 
-	_, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver)
+	_, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver, testDeltaValueResolver{deltaFieldName: int64(1001)})
 	if err == nil {
 		t.Fatal("BuildUpdateDocumentWithDeltas returned nil error, want immutable _id error")
 	}

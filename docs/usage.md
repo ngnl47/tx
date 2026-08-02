@@ -391,8 +391,9 @@ data.GDRoleFieldName(field, change.NameBackendMsgpack) // "roleId"
 
 ## ChangeSet
 
-`ChangeSet` 表示一次保存周期内“哪些字段需要被落地或下发”。业务代码通常不直接操作
-`change.Tracker`，而是通过生成的 `GD*` 代理方法或 `GD*Store` 方法标脏。
+`ChangeSet` 表示一次保存周期内“哪些字段需要被落地或下发”。生成 Store 当前处于迁移期，
+会同步记录旧 `ChangeSet` 和新 `DeltaSet`。业务代码通常不直接操作 `change.Tracker`，而是通过
+生成的 `GD*` 代理方法或 `GD*Store` 方法标脏。
 
 ### 常用业务写法
 
@@ -420,7 +421,7 @@ change.Document{
 }
 ```
 
-如果用于 cmd 下行，生成代码会走 Msgpack 字段名：
+如果用于 cmd 下行，生成代码会把 Store 里的 `DeltaSet` 转成 Msgpack 字段名文档：
 
 ```go
 body := role.MsgpackChangeDocument()
@@ -429,10 +430,9 @@ body := role.MsgpackChangeDocument()
 例如 `HeadImg` 的 tag 是 `msgpack:"hi,omitempty"`，那么下行变更文档里使用 `hi`，不是 Go 字段名
 `HeadImg`。
 
-生成 Store 当前会同时保留旧 `ChangeSet` 和新 `DeltaSet` 两条记录。`Deltas()` 返回压缩后的
-`change.DeltaSet`；如果传入的存储适配器实现了 `storage.DeltaApplier`，生成的 `ApplyInsert`、
-`ApplyUpdate`、`ApplyReplace` 会优先走 Delta 直连入口。旧 `ChangeSet` 仍作为未迁移适配器的
-兜底路径。
+`Deltas()` 返回压缩后的 `change.DeltaSet`；如果传入的存储适配器实现了 `storage.DeltaApplier`，
+生成的 `ApplyInsert`、`ApplyUpdate`、`ApplyReplace` 会优先走 Delta 直连入口。旧 `ChangeSet`
+仍作为未迁移适配器的兜底路径。
 
 ```go
 role := data.NewGDRole()
@@ -441,6 +441,18 @@ role.SetName("bob")
 
 deltas := role.Store().Deltas()
 // 只保留最后一次 Name = "bob" 的 DeltaSet 记录。
+```
+
+`DeltaSet` 也可以在边界转成 `change.Document`。转换会先复制再压缩，不会污染 Store 里原始的
+变更队列：
+
+```go
+doc := role.Store().Deltas().DocumentWithResolver(
+	change.FieldNameResolverFunc(data.GDRoleFieldName),
+	change.NameBackendMsgpack,
+	role.Store(),
+)
+// 如果 HeadImg 的 msgpack 字段名是 hi，则 doc.Set["hi"] 是当前头像值。
 ```
 
 ### Set、Touch、Replace、Clear
@@ -458,7 +470,7 @@ deltas := role.Store().Deltas()
 
 ```go
 role.ClearHeadImg()
-// 普通字段：DeltaSet HeadImg = ""，表示把字段写成 Go 零值。
+// 普通字段：DeltaSet 只记录 HeadImg 需要写入；边界从 Store 当前值读取到 Go 零值。
 
 role.TasksStore().Clear()
 // map/slice：DeltaClear Tasks，表示容器仍存在，但内容为空。
@@ -711,7 +723,7 @@ FieldID(fieldGDRoleItems) + Path{"1001", "quantity"} -> Items.1001.quantity
 ```
 
 变更落地和下行投影不会对整个数据对象做全量 `json.Marshal`、`bson.Marshal` 或
-`msgpack.Marshal`。`ChangeSet` 只遍历本保存周期内的脏字段，通过生成的 resolver 或
+`msgpack.Marshal`。`ChangeSet` 或 `DeltaSet` 只遍历本保存周期内的脏字段，通过生成的 resolver 或
 `TypeSpec` 转成目标后端字段名，再生成局部 patch/update document。若某个脏字段本身是
 map、slice 或 struct 指针，具体字段值在最终编码时仍会交给对应 JSON/BSON/Msgpack 编码器展开。
 完整对象读取、回源或整文档替换路径才会依赖序列化库按 tag 映射字段。

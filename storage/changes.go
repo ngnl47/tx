@@ -21,7 +21,7 @@ type ChangeApplier interface {
 
 // DeltaApplier 定义支持 DeltaSet 直连落地的适配器。
 type DeltaApplier interface {
-	ApplyDeltasWithOptions(context.Context, meta.TypeSpec, RecordKey, change.DeltaSet, change.FieldNameResolver, ApplyOptions) error
+	ApplyDeltasWithOptions(context.Context, meta.TypeSpec, RecordKey, change.DeltaSet, change.FieldNameResolver, change.DeltaValueResolver, ApplyOptions) error
 }
 
 // DocumentLoader 定义按记录键读取单条文档的适配器。

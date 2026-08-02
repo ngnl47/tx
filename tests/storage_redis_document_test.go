@@ -41,7 +41,7 @@ func TestRedisBuildDocumentPatchesGroupsClearChanges(t *testing.T) {
 
 func TestRedisBuildDocumentPatchesWithDeltasUsesJSONNames(t *testing.T) {
 	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet, Value: "alice"},
+		{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet},
 		{Path: deltaPath(fieldNode(deltaFieldItems)), Kind: change.DeltaClear},
 	}
 	resolver := testFieldNameResolver{
@@ -49,7 +49,7 @@ func TestRedisBuildDocumentPatchesWithDeltasUsesJSONNames(t *testing.T) {
 		change.NameBackendJSON: {deltaFieldName: "roleName", deltaFieldItems: "items"},
 	}
 
-	patches := txredis.BuildDocumentPatchesWithDeltas(redisPatchSpec(), deltas, resolver)
+	patches := txredis.BuildDocumentPatchesWithDeltas(redisPatchSpec(), deltas, resolver, testDeltaValueResolver{deltaFieldName: "alice"})
 
 	if patches[""].Set[0].Path.String() != "roleName" || patches[""].Set[0].Value != "alice" {
 		t.Fatalf("main patch = %#v", patches[""])

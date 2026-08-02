@@ -141,9 +141,8 @@ const (
 
 // DeltaEntry 是一条扁平紧凑的字段级变更记录。
 type DeltaEntry struct {
-	Path  DeltaPath
-	Kind  DeltaKind
-	Value any
+	Path DeltaPath
+	Kind DeltaKind
 }
 
 // DeltaSet 是按发生顺序追加的一组 DeltaEntry。

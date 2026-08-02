@@ -82,7 +82,7 @@ func BuildDocumentPatchesWithResolver(spec meta.TypeSpec, set change.ChangeSet, 
 
 // BuildDocumentPatchesWithDeltas 按 Redis string/subKey 模型把 DeltaSet
 // 分组成 JSON 文档 patch。Redis 边界当前选择 JSON 字段名。
-func BuildDocumentPatchesWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, resolver change.FieldNameResolver) map[string]DocumentPatch {
+func BuildDocumentPatchesWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, resolver change.FieldNameResolver, values change.DeltaValueResolver) map[string]DocumentPatch {
 	out := map[string]DocumentPatch{}
 	for _, delta := range deltas.Compact() {
 		goPath := delta.Path.FullPath(resolver, change.NameBackendGo)
@@ -110,7 +110,27 @@ func BuildDocumentPatchesWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, 
 			patch.Clear = append(patch.Clear, jsonPath)
 			patch.diffUpdate = true
 		default:
-			patch.Set = append(patch.Set, PathValue{Path: jsonPath, Value: delta.Value})
+			if values != nil {
+				resolved, ok := values.DeltaValue(delta.Path)
+				if ok {
+					patch.Set = append(patch.Set, PathValue{Path: jsonPath, Value: resolved})
+					if redisFullUpdateField(spec, goField) && suffix != "" && len(jsonPath) == 1 {
+						patch.fullUpdate = true
+						if patch.diffUpdate {
+							patch.Mode = documentPatchModePartialReplace
+						} else {
+							patch.Mode = documentPatchModeReplace
+						}
+					} else {
+						patch.diffUpdate = true
+						if patch.fullUpdate {
+							patch.Mode = documentPatchModePartialReplace
+						}
+					}
+					break
+				}
+			}
+			patch.Set = append(patch.Set, PathValue{Path: jsonPath, Value: nil})
 			if redisFullUpdateField(spec, goField) && suffix != "" && len(jsonPath) == 1 {
 				patch.fullUpdate = true
 				if patch.diffUpdate {
