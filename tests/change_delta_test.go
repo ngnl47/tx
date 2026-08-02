@@ -193,3 +193,26 @@ func TestDeltaSetCloneDoesNotShareSliceHeader(t *testing.T) {
 		t.Fatalf("source kind = %v, want DeltaKindSet", deltas[0].Kind)
 	}
 }
+
+func TestDeltaPathJoinAppendsChildPath(t *testing.T) {
+	parent := deltaPath(intKeyNode(deltaFieldItems, 1001))
+	child := deltaPath(fieldNode(deltaFieldQty))
+
+	joined, ok := change.JoinDeltaPath(parent, child)
+
+	if !ok {
+		t.Fatal("JoinDeltaPath returned ok=false, want true")
+	}
+	if !joined.Equal(deltaPath(intKeyNode(deltaFieldItems, 1001), fieldNode(deltaFieldQty))) {
+		t.Fatalf("joined path = %#v, want Items[1001].Quantity", joined)
+	}
+}
+
+func TestDeltaPathJoinReportsOverflow(t *testing.T) {
+	parent := deltaPath(fieldNode(1), fieldNode(2), fieldNode(3))
+	child := deltaPath(fieldNode(4), fieldNode(5))
+
+	if _, ok := change.JoinDeltaPath(parent, child); ok {
+		t.Fatal("JoinDeltaPath returned ok=true, want overflow")
+	}
+}

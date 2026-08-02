@@ -34,6 +34,24 @@ type DeltaPath struct {
 	Depth uint8
 }
 
+// JoinDeltaPath 把子路径追加到父路径后。返回 ok=false 表示超过 MaxDeltaDepth。
+func JoinDeltaPath(parent, child DeltaPath) (DeltaPath, bool) {
+	if parent.Depth == 0 {
+		return child, child.Depth <= MaxDeltaDepth
+	}
+	if child.Depth == 0 {
+		return parent, parent.Depth <= MaxDeltaDepth
+	}
+	depth := int(parent.Depth) + int(child.Depth)
+	if depth > MaxDeltaDepth {
+		return DeltaPath{}, false
+	}
+	out := parent
+	copy(out.Nodes[parent.Depth:], child.Nodes[:child.Depth])
+	out.Depth = uint8(depth)
+	return out, true
+}
+
 // FullPath 按指定字段名体系把 DeltaPath 转换为字符串路径。
 func (p DeltaPath) FullPath(resolver FieldNameResolver, backend NameBackend) Path {
 	if p.Depth == 0 || resolver == nil {
@@ -46,6 +64,9 @@ func (p DeltaPath) FullPath(resolver FieldNameResolver, backend NameBackend) Pat
 			return nil
 		}
 		name := resolver.FieldName(node.Field, backend)
+		if pathResolver, ok := resolver.(DeltaPathFieldNameResolver); ok {
+			name = pathResolver.DeltaPathFieldName(p, i, backend)
+		}
 		if name == "" {
 			return nil
 		}

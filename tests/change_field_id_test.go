@@ -22,6 +22,25 @@ func (r testDeltaValueResolver) DeltaValue(path change.DeltaPath) (any, bool) {
 	return value, ok
 }
 
+type testNestedFieldNameResolver struct{}
+
+func (testNestedFieldNameResolver) FieldName(field change.FieldID, backend change.NameBackend) string {
+	if field == 2 {
+		return "items"
+	}
+	return ""
+}
+
+func (testNestedFieldNameResolver) DeltaPathFieldName(path change.DeltaPath, index int, backend change.NameBackend) string {
+	if index == 0 && path.Nodes[index].Field == 2 {
+		return "items"
+	}
+	if index == 1 && path.Nodes[0].Field == 2 && path.Nodes[index].Field == 2 {
+		return "quantity"
+	}
+	return ""
+}
+
 func TestFieldNameResolverUsesBackend(t *testing.T) {
 	resolver := testFieldNameResolver{
 		change.NameBackendGo:      {1: "RoleId"},
@@ -58,6 +77,14 @@ func TestDeltaPathFullPathUsesBackend(t *testing.T) {
 	}
 	if got := path.FullPath(resolver, change.NameBackendBSON).String(); got != "items.1001.q" {
 		t.Fatalf("BSON path = %q, want items.1001.q", got)
+	}
+}
+
+func TestDeltaPathFullPathCanResolveNestedTypeFields(t *testing.T) {
+	path := deltaPath(intKeyNode(2, 1001), fieldNode(2))
+
+	if got := path.FullPath(testNestedFieldNameResolver{}, change.NameBackendGo).String(); got != "items.1001.quantity" {
+		t.Fatalf("nested path = %q, want items.1001.quantity", got)
 	}
 }
 

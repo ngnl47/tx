@@ -1362,6 +1362,17 @@ bson.M{
 }
 ```
 
+map key 级 Delta 会转换为 Mongo dot path。例如 `Items[1001]` 会写成类似 `items.1001`。
+如果 `map[string]` 的 key 为空字符串，或包含 `.` / `$`，runtime 不会转义或改写业务 key，而是在 Mongo 边界降级为整 map 字段写回：
+
+```go
+role.LabelsStore().Set("foo.bar", 7)
+
+err := role.Store().ApplyUpdate(ctx, mongoCluster)
+```
+
+对应 Mongo update 会写 `labels` 的完整当前 map，而不是写 `labels.foo.bar`。这样 Mongo 中保存的 key 仍然是业务可读的 `foo.bar`。
+
 ### 读取示例
 
 完整读取：

@@ -28,6 +28,14 @@ type FieldNameResolver interface {
 	FieldName(FieldID, NameBackend) string
 }
 
+// DeltaPathFieldNameResolver 可按完整 DeltaPath 和节点位置解析字段名。
+//
+// 嵌套 DeltaPath 中的 FieldID 只在对应节点的数据类型内部稳定。生成 Store
+// 知道父字段指向的子类型时，可以实现该接口，为子节点切换到子类型字段名。
+type DeltaPathFieldNameResolver interface {
+	DeltaPathFieldName(DeltaPath, int, NameBackend) string
+}
+
 // FieldNameResolverFunc 允许用生成的函数直接实现 FieldNameResolver。
 type FieldNameResolverFunc func(FieldID, NameBackend) string
 

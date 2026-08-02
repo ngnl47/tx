@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/ngnl47/tx/change"
@@ -51,5 +52,41 @@ func TestMongoBuildUpdateDocumentWithDeltasRejectsImmutableID(t *testing.T) {
 	_, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver, testDeltaValueResolver{deltaFieldName: int64(1001)})
 	if err == nil {
 		t.Fatal("BuildUpdateDocumentWithDeltas returned nil error, want immutable _id error")
+	}
+}
+
+func TestMongoBuildUpdateDocumentWithDeltasDowngradesUnsafeStringMapKey(t *testing.T) {
+	const fieldLabels change.FieldID = 9
+	deltas := change.DeltaSet{
+		{
+			Path: deltaPath(change.PathNode{
+				Field: fieldLabels,
+				Key:   change.PathKey{Kind: change.KeyString, Str: "foo.bar"},
+			}),
+			Kind: change.DeltaKindSet,
+		},
+	}
+	resolver := testFieldNameResolver{
+		change.NameBackendGo:   {fieldLabels: "Labels"},
+		change.NameBackendBSON: {fieldLabels: "labels"},
+	}
+	fullLabels := map[string]int{"foo.bar": 7}
+	values := change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
+		if path.Equal(deltaPath(fieldNode(fieldLabels))) {
+			return fullLabels, true
+		}
+		return nil, false
+	})
+
+	update, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver, values)
+	if err != nil {
+		t.Fatalf("BuildUpdateDocumentWithDeltas returned error: %v", err)
+	}
+	setDoc := update["$set"].(map[string]any)
+	if got := setDoc["labels"]; !reflect.DeepEqual(got, fullLabels) {
+		t.Fatalf("labels fallback = %#v, want full map; update=%#v", got, update)
+	}
+	if _, exists := setDoc["labels.foo.bar"]; exists {
+		t.Fatalf("unsafe key produced dotted Mongo path: %#v", update)
 	}
 }

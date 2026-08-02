@@ -3,6 +3,7 @@ package mongo
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/meta"
@@ -14,16 +15,33 @@ func BuildUpdateDocumentWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, r
 	setDoc := map[string]any{}
 	unsetDoc := map[string]any{}
 	for _, delta := range deltas.Compact() {
-		goPath := delta.Path.FullPath(resolver, change.NameBackendGo)
+		valuePath := delta.Path
+		unsafeStringKey := false
+		if fallbackPath, fallback := fallbackMongoUnsafeStringKeyPath(delta.Path); fallback {
+			valuePath = fallbackPath
+			unsafeStringKey = true
+		}
+		goPath := valuePath.FullPath(resolver, change.NameBackendGo)
 		if len(goPath) == 0 {
 			continue
 		}
-		bsonPath := delta.Path.FullPath(resolver, change.NameBackendBSON)
+		bsonPath := valuePath.FullPath(resolver, change.NameBackendBSON)
 		if len(bsonPath) == 0 {
 			continue
 		}
 		if bsonPath[0] == "_id" {
 			return nil, fmt.Errorf("mongo: cannot update immutable _id field %s", goPath[0])
+		}
+		if unsafeStringKey {
+			if values != nil {
+				resolved, ok := values.DeltaValue(valuePath)
+				if ok {
+					setDoc[bsonPath.String()] = resolved
+					continue
+				}
+			}
+			setDoc[bsonPath.String()] = nil
+			continue
 		}
 		switch delta.Kind {
 		case change.DeltaDelete:
@@ -49,6 +67,26 @@ func BuildUpdateDocumentWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, r
 		update["$unset"] = unsetDoc
 	}
 	return update, nil
+}
+
+func fallbackMongoUnsafeStringKeyPath(path change.DeltaPath) (change.DeltaPath, bool) {
+	if path.Depth == 0 {
+		return change.DeltaPath{}, false
+	}
+	for i := 0; i < int(path.Depth); i++ {
+		key := path.Nodes[i].Key
+		if key.Kind == change.KeyString && unsafeMongoPathKey(key.Str) {
+			return change.DeltaPath{
+				Nodes: [change.MaxDeltaDepth]change.PathNode{{Field: path.Nodes[0].Field}},
+				Depth: 1,
+			}, true
+		}
+	}
+	return change.DeltaPath{}, false
+}
+
+func unsafeMongoPathKey(key string) bool {
+	return key == "" || strings.ContainsAny(key, ".$")
 }
 
 func emptyMongoValue(spec meta.TypeSpec, field string) any {
