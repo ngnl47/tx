@@ -40,29 +40,14 @@ type LoadOptions struct {
 	ClusterSafe bool
 }
 
-// Adapter 把 ChangeSet 应用到 Redis string JSON 文档。
+// Adapter 把 DeltaSet 应用到 Redis string JSON 文档。
 type Adapter struct {
-	client   ScriptClient
-	resolver change.FieldResolver
+	client ScriptClient
 }
 
-// NewAdapter 创建 Redis ChangeSet 适配器。
+// NewAdapter 创建 Redis DeltaSet 适配器。
 func NewAdapter(client ScriptClient) *Adapter {
 	return &Adapter{client: client}
-}
-
-// NewAdapterWithResolver 创建带字段编号解析器的 Redis ChangeSet 适配器。
-func NewAdapterWithResolver(client ScriptClient, resolver change.FieldResolver) *Adapter {
-	return &Adapter{client: client, resolver: resolver}
-}
-
-// ApplyChangesWithOptions 根据指定选项写入 Redis string JSON 变更。
-func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, set change.ChangeSet, options storage.ApplyOptions) error {
-	if a.client == nil || set.Empty() {
-		return nil
-	}
-	patches := BuildDocumentPatchesWithResolver(spec, set, a.resolver)
-	return a.applyDocumentPatchesWithOptions(ctx, spec, key, patches, options)
 }
 
 // ApplyDeltasWithOptions 根据指定选项写入 Redis string JSON Delta 变更。

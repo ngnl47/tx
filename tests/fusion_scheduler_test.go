@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/lifecycle"
 	txlog "github.com/ngnl47/tx/log"
 	"github.com/ngnl47/tx/meta"
@@ -63,9 +62,6 @@ func TestFusionTaskQueueEnqueuesDelayTaskBackend(t *testing.T) {
 	queue := fusion.NewTaskQueueWithOptions(backend, fusion.TaskQueueOptions{Now: func() time.Time {
 		return now
 	}})
-	var set change.ChangeSet
-	_ = set.Add(change.FieldChange{Path: change.Path{"name"}, Kind: change.KindSet, Value: "alice"})
-
 	err := queue.Enqueue(ctx, fusion.DelayedOperation{
 		Kind:     fusion.DelayedSave,
 		Type:     meta.TypeRef{Package: "data", Name: "GDRole"},

@@ -19,16 +19,13 @@ func TestRedisPatchMapsGoFieldNameToRedisName(t *testing.T) {
 		}}},
 		Fields: map[string]meta.FieldSpec{"Power": {}},
 	}
-	var set change.ChangeSet
-	if err := set.Add(change.FieldChange{
-		Field: change.FieldID(1),
-		Kind:  change.KindSet,
-		Value: int64(100),
-	}); err != nil {
-		t.Fatalf("Add returned error: %v", err)
-	}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(1)), Kind: change.DeltaKindSet}}
+	resolver := testNamedBackendResolver(map[change.NameBackend]map[change.FieldID]string{
+		change.NameBackendGo:   {1: "Power"},
+		change.NameBackendJSON: {1: "p"},
+	})
 
-	patches := redis.BuildDocumentPatchesWithResolver(spec, set, testFieldResolver{1: "Power"})
+	patches := redis.BuildDocumentPatchesWithDeltas(spec, deltas, resolver, testDeltaValueResolver{1: int64(100)})
 	patch := patches[""]
 	if len(patch.Set) != 1 {
 		t.Fatalf("patch.Set length = %d, want 1", len(patch.Set))
@@ -51,17 +48,18 @@ func TestRedisPatchUsesSubKeyAndRedisName(t *testing.T) {
 			"Items": {Redis: &meta.RedisFieldSpec{SubKey: "bag"}},
 		},
 	}
-	var set change.ChangeSet
-	if err := set.Add(change.FieldChange{
-		Field: change.FieldID(1),
-		Path:  change.Path{"1001", "quantity"},
-		Kind:  change.KindSet,
-		Value: int64(9),
-	}); err != nil {
-		t.Fatalf("Add returned error: %v", err)
-	}
+	deltas := change.DeltaSet{{Path: deltaPath(intKeyNode(1, 1001), fieldNode(2)), Kind: change.DeltaKindSet}}
+	resolver := testNamedBackendResolver(map[change.NameBackend]map[change.FieldID]string{
+		change.NameBackendGo:   {1: "Items", 2: "Quantity"},
+		change.NameBackendJSON: {1: "it", 2: "quantity"},
+	})
 
-	patches := redis.BuildDocumentPatchesWithResolver(spec, set, testFieldResolver{1: "Items"})
+	patches := redis.BuildDocumentPatchesWithDeltas(spec, deltas, resolver, change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
+		if path.Equal(deltaPath(intKeyNode(1, 1001), fieldNode(2))) {
+			return int64(9), true
+		}
+		return nil, false
+	}))
 	patch := patches["bag"]
 	if len(patch.Set) != 1 {
 		t.Fatalf("patch.Set length = %d, want 1", len(patch.Set))

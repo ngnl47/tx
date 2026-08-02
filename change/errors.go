@@ -3,9 +3,6 @@ package change
 
 import "errors"
 
-// ErrEmptyPath 表示一次变更没有提供字段路径。
-var ErrEmptyPath = errors.New("change: empty path")
-
 // ErrModeConflict 表示同一个数据对象的变更周期内混用了两种持久化模式。
 var ErrModeConflict = errors.New("change: mode conflict")
 

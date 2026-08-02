@@ -1,4 +1,4 @@
-// Package redis 提供变更集合到 Redis string JSON 写入模型的转换。
+// Package redis 提供 DeltaSet 到 Redis string JSON 写入模型的转换。
 package redis
 
 import (
@@ -27,57 +27,6 @@ type DocumentPatch struct {
 type PathValue struct {
 	Path  change.Path
 	Value any
-}
-
-// BuildDocumentPatches 按 string/subKey 模型把字段变更分组成 Redis
-// JSON 文档 patch。返回 map 的 key 是 Redis key 后缀：空字符串表示主 key，
-// 非空字符串表示 mainKey:<suffix>。
-func BuildDocumentPatches(spec meta.TypeSpec, set change.ChangeSet) map[string]DocumentPatch {
-	return BuildDocumentPatchesWithResolver(spec, set, nil)
-}
-
-// BuildDocumentPatchesWithResolver 按 string/subKey 模型把字段变更
-// 分组成 Redis JSON 文档 patch，并用 resolver 把 FieldID 解析为字段别名。
-func BuildDocumentPatchesWithResolver(spec meta.TypeSpec, set change.ChangeSet, resolver change.FieldResolver) map[string]DocumentPatch {
-	out := map[string]DocumentPatch{}
-	for _, fieldChange := range set.Changes() {
-		path := fieldChange.FullPath(resolver)
-		if len(path) == 0 {
-			continue
-		}
-		goField := path[0]
-		suffix, ignore := redisDocumentSuffix(spec, goField)
-		if ignore {
-			continue
-		}
-		path = redisPath(spec, path)
-		patch := out[suffix]
-		if patch.Mode == "" {
-			patch.Mode = documentPatchModeMerge
-		}
-		switch fieldChange.Kind {
-		case change.KindClear:
-			patch.Clear = append(patch.Clear, path)
-			patch.diffUpdate = true
-		default:
-			patch.Set = append(patch.Set, PathValue{Path: path, Value: fieldChange.Value})
-			if fieldChange.Kind == change.KindReplace && redisFullUpdateField(spec, goField) && suffix != "" && len(path) == 1 {
-				patch.fullUpdate = true
-				if patch.diffUpdate {
-					patch.Mode = documentPatchModePartialReplace
-				} else {
-					patch.Mode = documentPatchModeReplace
-				}
-			} else {
-				patch.diffUpdate = true
-				if patch.fullUpdate {
-					patch.Mode = documentPatchModePartialReplace
-				}
-			}
-		}
-		out[suffix] = patch
-	}
-	return out
 }
 
 // BuildDocumentPatchesWithDeltas 按 Redis string/subKey 模型把 DeltaSet

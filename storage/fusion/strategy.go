@@ -24,7 +24,7 @@ type LoadOptions struct {
 // Redis 适配器负责即时写入热数据；MongoQueue 负责把持久化保存推迟到
 // delaySave 配置之后执行。
 type Strategy struct {
-	Redis         storage.ChangeApplier
+	Redis         storage.DeltaApplier
 	RedisDeleter  storage.DeleteApplier
 	RedisLoader   storage.DocumentLoader
 	RedisReplacer any
@@ -36,33 +36,15 @@ type Strategy struct {
 	LoadLockWait  time.Duration
 }
 
-// ApplyChangesWithOptions 应用一次对象变更，并把写入选项限定传递给 Redis。
-func (s Strategy) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, set change.ChangeSet, options storage.ApplyOptions) error {
-	if set.Empty() {
-		return nil
-	}
-	if s.Redis != nil {
-		if err := s.Redis.ApplyChangesWithOptions(ctx, spec, key, set, options); err != nil {
-			return err
-		}
-	}
-	if s.MongoQueue == nil {
-		return nil
-	}
-	return s.enqueueDelayedWrites(ctx, spec, key)
-}
-
 // ApplyDeltasWithOptions 应用一次 Delta 变更，并把写入选项限定传递给 Redis。
 func (s Strategy) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, deltas change.DeltaSet, resolver change.FieldNameResolver, values change.DeltaValueResolver, options storage.ApplyOptions) error {
 	if len(deltas) == 0 {
 		return nil
 	}
-	if deltaRedis, ok := s.Redis.(storage.DeltaApplier); ok && deltaRedis != nil {
-		if err := deltaRedis.ApplyDeltasWithOptions(ctx, spec, key, deltas, resolver, values, options); err != nil {
+	if s.Redis != nil {
+		if err := s.Redis.ApplyDeltasWithOptions(ctx, spec, key, deltas, resolver, values, options); err != nil {
 			return err
 		}
-	} else if s.Redis != nil {
-		return fmt.Errorf("fusion: redis applier does not support DeltaSet")
 	}
 	if s.MongoQueue == nil {
 		return nil

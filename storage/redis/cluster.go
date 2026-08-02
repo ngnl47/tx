@@ -23,36 +23,21 @@ func (f RouterFunc) RouteRedis(ctx context.Context, routeType string, shardKey a
 
 // Cluster 把 Redis 操作按 routeType 和 RecordKey.ShardKey 路由到具体端点 Adapter。
 type Cluster struct {
-	router   Router
-	shards   map[string]*Adapter
-	resolver change.FieldResolver
+	router Router
+	shards map[string]*Adapter
 }
 
 // NewCluster 创建 Redis route/cluster 适配器。
 func NewCluster(router Router, shards map[string]any) *Cluster {
-	return NewClusterWithResolver(router, shards, nil)
-}
-
-// NewClusterWithResolver 创建带字段编号解析器的 Redis route/cluster 适配器。
-func NewClusterWithResolver(router Router, shards map[string]any, resolver change.FieldResolver) *Cluster {
 	cluster := &Cluster{
-		router:   router,
-		shards:   make(map[string]*Adapter, len(shards)),
-		resolver: resolver,
+		router: router,
+		shards: make(map[string]*Adapter, len(shards)),
 	}
 	for name, client := range shards {
 		scriptClient, _ := client.(ScriptClient)
-		cluster.shards[name] = NewAdapterWithResolver(scriptClient, resolver)
+		cluster.shards[name] = NewAdapter(scriptClient)
 	}
 	return cluster
-}
-
-func (c *Cluster) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, set change.ChangeSet, options storage.ApplyOptions) error {
-	adapter, err := c.adapterFor(ctx, spec, key)
-	if err != nil {
-		return err
-	}
-	return adapter.ApplyChangesWithOptions(ctx, spec, key, set, options)
 }
 
 func (c *Cluster) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, deltas change.DeltaSet, resolver change.FieldNameResolver, values change.DeltaValueResolver, options storage.ApplyOptions) error {

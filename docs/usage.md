@@ -389,11 +389,11 @@ data.GDRoleFieldName(field, change.NameBackendBSON)    // "_id"
 data.GDRoleFieldName(field, change.NameBackendMsgpack) // "roleId"
 ```
 
-## ChangeSet 和 DeltaSet
+## DeltaSet
 
 生成 Store 的保存主路径使用 `DeltaSet`。`DeltaSet` 只表示一次保存周期内“哪些字段需要被落地或下发”，
 不保存字段值；Redis、Mongo、Fusion 或下行 Provider 在输出边界通过生成 Store 读取当前 `GD*` 对象里的最终值。
-`ChangeSet` 是运行时保留的通用文档转换结构，业务代码通常不直接操作 `change.Tracker`。
+运行时不保留字符串路径变更集合；业务代码也不直接维护脏字段容器。
 
 ### 常用业务写法
 
@@ -669,12 +669,12 @@ role.ClearChanges()
 生成 Store 的主路径记录的是 `change.DeltaSet`：
 
 - `DeltaKindSet`：设置字段值，普通字段和集合整字段替换都使用这个语义。
-- `DeltaDelete`：删除字段或集合元素，当前主要由生成的 `Clear<Field>` 使用。
+- `DeltaDelete`：删除字段或集合元素，Mongo 边界会转成 `$unset`，Redis 边界会从 JSON 文档移除该路径。
 - `DeltaClear`：清空集合容器，保留字段但写为空 map/slice。
 - `FieldID`：生成代码提供的稳定字段编号，避免热路径反复保存字段名字符串。
 - `DeltaPath`：字段路径。当前生成集合 Store 先记录根字段，后续集合 wrapper 会在这里表达 key/index 级路径。
 
-生成代码会传入 `FieldResolver`，把字段编号解析为字段名：
+生成代码会传入字段名 resolver，把字段编号解析为字段名：
 
 ```text
 DeltaPath{FieldID(fieldGDRoleName)} -> Name
@@ -1446,7 +1446,7 @@ Fusion 策略的当前保存路径：
 延迟任务队列使用 bucket hash tag，支持多个服务实例并发消费。语义是 at-least-once，Mongo 回写必须保持存储幂等。
 任务失败重试时，Scheduler 会输出结构化错误日志；失败原因不写入 Redis 任务状态，避免错误字符串占用队列内存。
 Scheduler 循环中的 claim、complete、retry 等 backend 错误也会输出结构化错误日志；服务关闭导致的 context 结束不会额外记录错误。
-Fusion delayed task queue 接受保存 action 和 Redis 热数据延迟删除 action；其他未知 action 会返回错误。入队时必须带有明确的类型和记录 ID，避免无效任务进入 Redis 队列；handler 消费端也会拒绝缺少记录 ID 的任务，防止手工写入或遗留异常任务落到存储层。任务类型优先来自 `DelayedOperation.Type`，为空时使用 `DelayedOperation.Key.TypeName`。Fusion 延迟保存按类型、记录 ID、route/shard key 和 action 生成一条合并任务，不暴露额外 suffix，避免同一记录产生多条重复保存任务。延迟保存任务不携带 ChangeSet，回写时重新读取 Redis 当前热数据。显式删除仍走显式删除接口，不进入延迟队列。
+Fusion delayed task queue 接受保存 action 和 Redis 热数据延迟删除 action；其他未知 action 会返回错误。入队时必须带有明确的类型和记录 ID，避免无效任务进入 Redis 队列；handler 消费端也会拒绝缺少记录 ID 的任务，防止手工写入或遗留异常任务落到存储层。任务类型优先来自 `DelayedOperation.Type`，为空时使用 `DelayedOperation.Key.TypeName`。Fusion 延迟保存按类型、记录 ID、route/shard key 和 action 生成一条合并任务，不暴露额外 suffix，避免同一记录产生多条重复保存任务。延迟保存任务不携带业务对象或字段变更日志，回写时重新读取 Redis 当前热数据。显式删除仍走显式删除接口，不进入延迟队列。
 Scheduler 的 `Start`、`RunOnce` 和 `Schedule` 在自身或 backend 未配置时都是 no-op，便于本地测试或按环境关闭后台回写组件；生产环境仍应配置 Redis delayed task backend。
 
 生产环境的延迟回写 handler 只负责存储同步。由于任务可能因为网络抖动、进程重启或租约恢复被再次执行，Mongo 回写路径应按“同一记录的当前 Redis 热文档 replace 到 Mongo”设计为存储幂等操作。比如同一条 `GDRole` save 任务执行两次，结果应只是 Mongo 中 `roleId=1001` 的文档被相同或更新后的热数据覆盖两次；队列中不保存 `GDRole` 的中间态快照，也不按每次字段变更生成事件日志。
@@ -1502,7 +1502,7 @@ err := role.Store().ApplyUpdate(ctx, fusionStore)
 
 ### 延迟回写任务
 
-延迟任务不保存业务对象快照，也不保存 `ChangeSet`。任务只保存记录定位信息：
+延迟任务不保存业务对象快照，也不保存字段变更日志。任务只保存记录定位信息：
 
 ```text
 type = GDRole
