@@ -355,7 +355,7 @@ RoleLog.Error("role save failed", "roleId", roleID, "err", err)
 ```
 
 `NewLogger` 返回轻量代理，不是固定绑定的 `*slog.Logger`。代理值本身可以作为包级变量复用；
-每次输出时都会读取当前 `Default()`，再附加 `logger=<name>` 属性派生一次日志调用，避免包级变量早于项目日志初始化时绑定到旧 logger。
+每次输出时都会读取当前 `Default()`，再附加 `logger=<name>` 属性派生一次日志调用，避免包级变量早于项目日志初始化时绑定到初始化前的 logger。
 因此，项目启动后调用 `log.SetDefault(logger)`，此前已经声明的 `RoleLog` 也会使用新的 default logger。
 
 ## 元数据与字段名
@@ -389,11 +389,11 @@ data.GDRoleFieldName(field, change.NameBackendBSON)    // "_id"
 data.GDRoleFieldName(field, change.NameBackendMsgpack) // "roleId"
 ```
 
-## ChangeSet
+## ChangeSet 和 DeltaSet
 
-`ChangeSet` 表示一次保存周期内“哪些字段需要被落地或下发”。生成 Store 当前处于迁移期，
-会同步记录旧 `ChangeSet` 和新 `DeltaSet`。业务代码通常不直接操作 `change.Tracker`，而是通过
-生成的 `GD*` 代理方法或 `GD*Store` 方法标脏。
+生成 Store 的保存主路径使用 `DeltaSet`。`DeltaSet` 只表示一次保存周期内“哪些字段需要被落地或下发”，
+不保存字段值；Redis、Mongo、Fusion 或下行 Provider 在输出边界通过生成 Store 读取当前 `GD*` 对象里的最终值。
+`ChangeSet` 是运行时保留的通用文档转换结构，业务代码通常不直接操作 `change.Tracker`。
 
 ### 常用业务写法
 
@@ -430,9 +430,8 @@ body := role.MsgpackChangeDocument()
 例如 `HeadImg` 的 tag 是 `msgpack:"hi,omitempty"`，那么下行变更文档里使用 `hi`，不是 Go 字段名
 `HeadImg`。
 
-`Deltas()` 返回压缩后的 `change.DeltaSet`；如果传入的存储适配器实现了 `storage.DeltaApplier`，
-生成的 `ApplyInsert`、`ApplyUpdate`、`ApplyReplace` 会优先走 Delta 直连入口。旧 `ChangeSet`
-仍作为未迁移适配器的兜底路径。
+`Deltas()` 返回压缩后的 `change.DeltaSet`。生成的 `ApplyInsert`、`ApplyUpdate`、`ApplyReplace`
+接收 `storage.DeltaApplier`，并直接走 Delta 落地入口。
 
 ```go
 role := data.NewGDRole()
@@ -440,7 +439,7 @@ role.SetName("alice")
 role.SetName("bob")
 
 deltas := role.Store().Deltas()
-// 只保留最后一次 Name = "bob" 的 DeltaSet 记录。
+// 只保留 Name 字段被 Set 的 Delta 记录；值不保存在 DeltaEntry 中。
 ```
 
 `DeltaSet` 也可以在边界转成 `change.Document`。转换会先复制再压缩，不会污染 Store 里原始的
@@ -889,7 +888,7 @@ err := role.Store().ApplyInsert(ctx, redisCluster)
 1. 根据 `TypeSpec` 和 `RecordKey` 生成 Redis key 前缀，例如 `role:{470001}`。
 2. 根据字段的 Go 字段名定位 `redis:"subKey:..."`，再用 JSON 字段名写入 main 文档或 subKey 文档。
 3. 把每个文档的 patch 编码成 JSON 字符串。
-4. 调用 Lua 脚本，在 Redis 内部读取旧 JSON、`cjson.decode`、merge/replace、`cjson.encode` 后写回。
+4. 调用 Lua 脚本，在 Redis 内部读取已有 JSON、`cjson.decode`、merge/replace、`cjson.encode` 后写回。
 5. 按 `ApplyOptions.TTL` 设置或续期 Redis 热数据。
 
 更新已有记录使用 `ApplyUpdate`：

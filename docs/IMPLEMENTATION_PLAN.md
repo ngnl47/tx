@@ -1,22 +1,22 @@
 # Tx storage metadata implementation plan
 
-本文是 `github.com/ngnl47/tx` 中重写 legacy framework tag storage chain 的实施计划。
+本文是 `github.com/ngnl47/tx` 存储元数据与运行时能力的实施计划。
 
-目标不是兼容式修补 legacy framework，而是把旧链路抽象成一个新的 Go module 能力：
+目标是提供一套独立、稳定、可由 `txgen` 生成代码消费的 Go runtime 能力：
 
 - 使用 Go 注释作为元数据主入口，保持类型定义和存储定义靠近。
 - 使用 Go AST 读取 Go 类型结构和注释，建立注释元数据与 Go 类型之间的绑定关系。
-- 语法形态沿用紧凑注解写法；当前不保留旧注解迁移器，输入侧统一使用新 Tx 语义。
+- 语法形态使用紧凑注解写法，输入侧统一使用 Tx 语义。
 - 不支持独立 schema 文件；存储元数据只来自 Go 注释、struct tag 和 AST 扫描结果。
 - 运行时元数据只允许初始化期注册；不支持隐式运行时追加 tag。
-- `fusion` 作为公开存储模式名；旧 `redisDelayMongoDB` 不再作为运行时或生成器输入。
+- `fusion` 作为 Redis 热数据与 Mongo 冷数据组合模式名。
 - Redis key 默认使用 `shardBy` 作为 Redis Cluster hash tag。
 - Fusion 延迟任务抽象成可替换任务后端。
 - 测试用例只放在 `tests/` 目录下。
 
 ## Module Layout
 
-建议新增包结构：
+当前包结构方向：
 
 ```text
 tx/
@@ -28,22 +28,21 @@ tx/
   storage/mongo/    # Mongo collection/index/sharding metadata、后续 Mongo adapter
   storage/fusion/   # Fusion 策略与延迟任务抽象
   storage/task/     # Delay task backend interface 和内存实现
-  gen/              # 代码生成入口或生成辅助
   tests/            # 所有测试文件，仅此目录下生成 *_test.go
 ```
 
-当前仓库已有 `gen/`、`tag/`、`util/`、`tests/`。新实现可逐步新增上面的包；如后续确认 `tag/` 可承载注释 tag 相关能力，也可以把 `anno/` 合并进去，但建议第一版先保持边界清晰。
+当前实现以 `anno`、`astscan`、`meta`、`storage`、`change`、`util` 和 `tests` 为主要边界；代码生成职责放在独立的 `txgen` 工程。
 
 ## Annotation Direction
 
-主入口放在 Go 注释中，并由 Go AST 绑定到准确的 type/field 节点。语法形态保留 legacy framework 风格的 `// @name:"k:v,flag"`，这样 struct 级注释 tag 与 field 级 Go struct tag 使用同一种参数格式。
+主入口放在 Go 注释中，并由 Go AST 绑定到准确的 type/field 节点。type 级注释 tag 与 field 级 Go struct tag 都使用反引号承载参数。
 
 第一版建议支持：
 
 ```go
-// @storage:"mode:fusion,delaySaveTime:600s,delayDelTime:24h"
-// @redis:"routeType:role,routeBy:roleId,idField:roleId,key:role,omitempty"
-// @mongodb:"routeType:role,routeBy:roleId,idField:roleId,collection:roles,enableSharding"
+// @storage:`mode:"fusion" delaySaveTime:"600s" delayDelTime:"24h"`
+// @redis:`routeType:"role" routeBy:"RoleId" idField:"RoleId" key:"role"`
+// @mongodb:`routeType:"role" routeBy:"RoleId" idField:"RoleId" collection:"roles" enableSharding:"true"`
 type GDRole struct {
     RoleId int64 `json:"roleId" mongodb:"index,unique"`
 }
@@ -58,15 +57,14 @@ RoleId int64 `mongodb:"index,unique"`
 
 注释语法设计原则：
 
-- 使用 `// @<tagName>:"<content>"` 前缀，保持与 Go `reflect.StructTag` 相近的写法。
+- 使用 `// @<tagName>:` 后跟可选反引号参数，保持与 Go `reflect.StructTag` 相近的写法。
 - type-level tag 第一版支持：`storage`、`redis`、`mongodb`。
 - field-level tag 继续读取原生 struct tag，第一版支持：`redis`、`mongodb`。
-- 参数继续使用 `key:value` 和 flag 混合格式，延续 legacy framework 的紧凑写法。
+- 参数使用 struct tag 风格的 `key:"value"` 形式。
 - parser 只负责理解单条 tag 内容；注释和 struct/field 的绑定必须由 Go AST 完成。
-- 新语义使用 `mode:fusion`；旧 `mode:redisDelayMongoDB` 不再支持。
 - 时间字段使用 Go duration 风格字符串：`600s`、`10m`、`24h`。
-- Redis hash tag 默认使用 `routeBy` 指向的字段，不再暴露旧库全局 `UseShardByInKey=false` 兼容行为。
-- 旧字段名如 `routeBy`、`idField` 可以保留为 canonical 写法；也可以在后续版本引入更短别名，但第一版以降低迁移成本为优先。
+- Redis hash tag 默认使用 `routeBy` 指向的字段。
+- `routeBy`、`idField` 是当前 canonical 写法。
 
 ## Schema Direction
 
@@ -165,7 +163,7 @@ Go 注释 / struct tag -> anno -> astscan -> meta -> storage/gen
 
 ## Phase 3: Go AST Scanner
 
-目标：替换旧 `gentag` 的文本扫描，用 Go AST 提取 Go 类型结构并把注释 tag 绑定到准确节点。
+目标：使用 Go AST 提取 Go 类型结构并把注释 tag 绑定到准确节点。
 
 建议实现：
 
@@ -197,16 +195,14 @@ Go 注释 / struct tag -> anno -> astscan -> meta -> storage/gen
 - `tests/astscan_test.go`
 - 使用 `t.TempDir()` 创建临时 Go module 或临时 package 文件。
 
-## Phase 4: Legacy Migrator Removed
+## Phase 4: Annotation Boundary
 
-结论：`tx` 和 `txgen` 是全新项目，不承担旧注解兼容职责。此前的 `migrate` 包属于项目初期过渡产物，已从 runtime 中移除。
+结论：`tx` 只维护当前注解语义，迁移工具不属于 runtime 边界。
 
 当前约束：
 
 - 输入侧统一使用新的 Tx 注解语义。
-- 不支持 `mode:redisDelayMongoDB` 等旧模式别名。
-- 不保留迁移报告、迁移 API 或旧注解测试。
-- 如后续确实需要迁移工具，应作为独立工具工程实现，不放入 `tx` runtime。
+- 如后续确实需要外部迁移工具，应作为独立工具工程实现，不放入 `tx` runtime。
 
 ## Phase 5: Runtime Storage Metadata
 
@@ -279,7 +275,7 @@ type DelayTaskBackend interface {
 - `storage/fusion.StorageTaskHandler` 负责消费 delayed task：保存任务从 Redis 读取完整热数据并 replace 到 Mongo；Redis 热数据延迟删除任务会读取 `<mainKey>@v`、保存 Redis 当前热文档到 Mongo，然后仅在版本未变化时删除 Redis main/subKey/version key，版本变化时重新排队。
 - Fusion 显式删除不进入延迟队列：运行时先删除 Redis 热数据，再通过显式 Mongo deleter 立即删除 Mongo 文档；如果业务绕过 Fusion 只删除 Mongo，未过期 Redis 热数据仍可能被延迟保存任务重新写回 Mongo。
 - Fusion 延迟保存已通过真实 Redis/Mongo 集成路径验证：Redis 同步写入热数据，Redis delayed task backend 入队，Scheduler claim 到期任务，StorageTaskHandler 读取 Redis 热数据并整文档 replace Mongo。
-- Fusion 读取默认在 Redis miss 后从 Mongo 全量加载并回填 Redis 热数据，回填路径运行时要求 `delayDelTime` 大于 0；回填前会获取记录级 Redis 锁并二次读取 Redis，防止并发 miss 时旧 Mongo 快照覆盖新的 Redis 热数据；显式 `DontLoadToRedis` 选项才允许直接读 Mongo 且不回填；部分字段读取主要按 Redis main/subKey key 粒度减少热数据读取，只请求 subKey 字段时不强依赖主文档命中。
+- Fusion 读取默认在 Redis miss 后从 Mongo 全量加载并回填 Redis 热数据，回填路径运行时要求 `delayDelTime` 大于 0；回填前会获取记录级 Redis 锁并二次读取 Redis，防止并发 miss 时 Mongo 快照覆盖新的 Redis 热数据；显式 `DontLoadToRedis` 选项才允许直接读 Mongo 且不回填；部分字段读取主要按 Redis main/subKey key 粒度减少热数据读取，只请求 subKey 字段时不强依赖主文档命中。
 - Redis 热数据生命周期版本键 `<mainKey>@v` 已作为运行时原语实现并接入 Fusion 延迟删除 handler：Redis delete 可带 expected revision 比对，只在版本未变化时删除 main/subKey/version key。该版本只用于 Redis 热数据过期/删除窗口的并发保护，不是业务字段，也不是 Mongo 文档字段。
 - Mongo runtime 已提供最小 route/cluster adapter，按 routeType 和 RecordKey.ShardKey 路由单条读写，并在批量读取时按 Mongo shard 分组后还原输入顺序；`storage/mongo/mongodriver` 提供官方 MongoDB driver 的薄适配层。
 - Redis runtime 已提供与 Mongo 对等的最小 route/cluster adapter：先按 routeType 和 RecordKey.ShardKey 路由到具体 Redis endpoint/adapter，再在每个 endpoint 内执行批量读取并还原输入顺序；`storage/redis/goredis` 提供 go-redis 的薄适配层。
@@ -325,7 +321,7 @@ type DelayTaskBackend interface {
 
 目标：代码生成职责迁移到独立的 `txgen` 工程，`tx` 只保留运行时库、注解扫描、元数据归一化和存储基础能力。
 
-不再在 `tx` 中保留 `gen.Model`、`gen.LoadTagsAndScan(...)`、`gen.RenderMetadata(...)` 这类中间快照导出 API。后续 Store 生成、Redis key helper、Mongo filter helper、字段编号 resolver 等生成逻辑都在 `txgen` 中实现和测试。
+Store 生成、Redis key helper、Mongo filter helper、字段编号 resolver 等生成逻辑都在 `txgen` 中实现和测试。
 
 验收：
 
@@ -384,12 +380,12 @@ type DelayTaskBackend interface {
 
 - 能从 type-level 注释 tag、field-level struct tag 和 Go AST 得到稳定 type metadata。
 
-### M2: Legacy Migration Removed
+### M2: Annotation Boundary
 
 交付：
 
-- 不再交付 `migrate` 包。
-- 旧注解迁移能力不属于当前 `tx` runtime 边界。
+- runtime 只维护当前 Tx 注解语义。
+- 外部迁移工具不属于当前 `tx` runtime 边界。
 
 完成标准：
 
