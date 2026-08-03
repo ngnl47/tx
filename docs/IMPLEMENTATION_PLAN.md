@@ -35,7 +35,7 @@
 - Store 拦截路径和 snapshot diff 路径同时存在，但同一变更周期互斥。`ModeStore` 用于 setter/Store wrapper 标脏，`ModeSnapshot` 用于 `BeginChange/SaveChange`。
 - `BeginChange()` 必须在业务直接修改字段之前调用；`SaveChange()` 成功后清理 snapshot 和本轮 dirty，失败时保留可重试状态。
 - Store 路径适合高频对象和大集合字段；保存前可用 `store.View()` 复制下行视图，避免保存成功清理 dirty 后丢失广播字段。
-- 当前集合策略：map wrapper 支持 key 级 dirty 和生成对象指针子字段冒泡；slice wrapper 支持稳定 index 级 dirty，`[]*GD...` 元素可通过 `GetAt/SetAt` 绑定子 Store 并冒泡子字段；`Append`、`RemoveAt`、`Replace`、`Clear` 这类长度或整体语义变化仍按整字段处理。
+- 当前集合策略：map wrapper 支持 key 级 dirty 和生成对象指针子字段冒泡；slice wrapper 支持稳定 index 级 dirty，`[]*GD...` 元素可通过 `GetAt/SetAt` 绑定子 Store 并冒泡子字段；`InsertAt`、`Append`、`RemoveAt`、`Replace`、`Clear` 这类长度或整体语义变化仍按整字段处理。
 - 字段名体系本体是 `go/json/bson/msgpack`。Redis 当前选择 JSON 名，Mongo 当前选择 BSON 名，cmd Provider 当前选择 Msgpack 名；`alias` 只是输入侧语法糖。
 - Fusion 是 Redis 热数据加 Mongo 冷数据。Redis main/subKey 都使用 string JSON 文档；RedisJSON/ReJSON 仅作为后续可选 backend，不是当前默认路径。
 - `delaySaveTime` 表示 Redis 热数据变更后多久回写一次 Mongo；`delayDelTime` 表示 Redis 热数据 TTL 和自动续期时间，不表示 Mongo 删除延迟。
@@ -50,7 +50,7 @@
 
 当前后续实施优先级：
 
-1. 继续完善集合 Store：补齐 map/slice wrapper 的强类型 API、整字段吸收规则和更完整测试矩阵；当前 map 的 `Get`、`GetOrNew`、`Range`、`Set`、`Replace` 以及 slice 的 `GetAt`、`Range`、`SetAt`、`Append`、`Replace` 都会绑定生成对象子 Store，集合根/元素的 `Set` 已使用覆盖语义，超深递归已按 `MaxDeltaDepth` 降级到最近祖先整体替换。`Delete`、`Set` 覆盖、`Replace`、`SetAt`、`RemoveAt` 已会解除被移出生成对象的父路径绑定，防止旧指针向已删除 key 或过期 slice index 冒泡 dirty。
+1. 继续完善集合 Store：补齐 map/slice wrapper 的强类型 API、整字段吸收规则和更完整测试矩阵；当前 map 的 `Get`、`GetOrNew`、`Range`、`Set`、`Replace` 以及 slice 的 `GetAt`、`Range`、`SetAt`、`InsertAt`、`Append`、`Replace` 都会绑定生成对象子 Store，集合根/元素的 `Set` 已使用覆盖语义，超深递归已按 `MaxDeltaDepth` 降级到最近祖先整体替换。`Delete`、`Set` 覆盖、`Replace`、`SetAt`、`RemoveAt`、`InsertAt` 已会解除被移出生成对象的父路径绑定，防止旧指针向已删除 key 或过期 slice index 冒泡 dirty。
 2. 评估 Fusion 批量混合命中的回源组织方式：当前单记录回填已通过记录锁、二次 Redis 读取和真实并发集成测试保证正确性；后续如为减少 Mongo I/O 调整为批量回源，必须保持这一正确性边界。
 3. 补齐使用文档和 txgame 示例：每个新增行为都要给业务代码例子，并说明边界输出会使用哪套字段名。
 4. 持续清理不再作为主线的字符串路径变更代码、过渡接口和旧测试，只保留必要历史 benchmark 结论。
