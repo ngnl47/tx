@@ -605,6 +605,19 @@ body := view.MsgpackChangeDocument()
 
 这适合广播或响应中“额外携带一些未修改字段”的场景。主对象的落库 Store 不会因此多出脏字段。
 
+普通字段为生成数据对象指针时，通过生成 getter 取得子对象会建立到父 Store 的路径绑定；随后调用子对象自己的 setter，会产生父对象的嵌套 delta：
+
+```go
+role.SetDailyTask(&data.GDDailyTask{Active: 1})
+role.ClearChanges()
+
+task := role.GetDailyTask()
+task.SetActive(2)
+// ChangeDocument(): Set["DailyTask.Active"] = int64(2)
+```
+
+`SetDailyTask` 覆盖或 `ClearDailyTask` 清空字段时，会解除旧指针的绑定。旧对象后续 setter 不会再写入父对象；需要修改当前对象时，重新调用 `GetDailyTask()`。直接写 `role.DailyTask` 属于快照 diff 或手动 `TouchDailyTask()` 路径，不会自动建立 Store 父路径。
+
 ### 零值和删除
 
 `Set*` 设置零值表示“把字段写成零值”，不是删除字段：
