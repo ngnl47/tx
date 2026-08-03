@@ -475,7 +475,7 @@ role.TasksStore().Clear()
 // map/slice：DeltaClear Tasks，表示容器仍存在，但内容为空。
 ```
 
-如果业务确实需要删除 map key 或 Mongo 字段，后续集合 Store 会使用 `DeltaDelete` 表达，例如
+如果业务确实需要删除 map key 或 Mongo 字段，集合 Store 会使用 `DeltaDelete` 表达，例如
 `Items[1001]` 被删除时，对 Mongo 边界可转换为 `$unset: {"items.1001": ""}`。
 
 日常业务优先使用 `Set*`：
@@ -576,7 +576,7 @@ Redis 写入时会把 patch 中该字段设为 JSON null，由 Lua merge 删除�
 
 ### 集合字段和路径标脏
 
-集合字段可以整字段标脏，也可以标记内部路径。第一版推荐业务上优先整字段标脏，降低编码心智负担：
+集合字段可以整字段标脏，也可以通过生成 Store wrapper 标记内部路径。低频业务可以整字段标脏，降低编码心智负担：
 
 ```go
 role.Store().UpdateItems(func(items map[int32]*data.GDItem) {
@@ -593,14 +593,35 @@ role.Store().UpdateItems(func(items map[int32]*data.GDItem) {
 `Items` 配置了 `redis:"subKey:items"`，只会更新
 `role:{1001}:items` 这个 subKey 文档，不会重写主文档。
 
-也可以手动修改后补 `TouchItems()`：
+也可以手动修改后补 `TouchItems()`，同样是整字段语义：
 
 ```go
 role.Items[1001].Quantity += 3
 role.TouchItems()
 ```
 
-当前生成代码不会暴露字符串 path 级标脏 API。集合字段先按整字段 dirty 处理，后续集合 wrapper 完成后再由生成代码负责 key/index 级 Delta，业务侧仍应优先使用强类型方法。
+热点集合路径建议使用生成的集合 Store wrapper。map 的 `Set`、`Update`、`Delete`、`Touch(key)` 会记录 key 级 dirty；如果 map value 是生成数据对象指针，子对象 setter 可以继续向父路径冒泡：
+
+```go
+role.ItemsStore().Set(1001, &data.GDItem{ItemId: 1001, Quantity: 3})
+// 变更文档：Set["Items.1001"] = 当前 item
+
+item, _ := role.ItemsStore().Get(1001)
+item.SetQuantity(7)
+// 变更文档：Set["Items.1001.Quantity"] = 7
+```
+
+slice 的 `SetAt`、`UpdateAt`、`TouchAt` 会在长度和顺序不变时记录 index 级 dirty：
+
+```go
+role.TagsStore().UpdateAt(0, func(tag string) string {
+	return tag + "_new"
+})
+// 变更文档：Set["Tags.0"] = "old_new"
+```
+
+`Append`、`RemoveAt`、`Clear`、`Replace` 会改变长度、顺序或整体语义，因此仍然记录整字段 dirty。
+生成代码不会暴露字符串 path 级标脏 API，业务侧应使用强类型方法。
 
 ### 覆盖规则
 
@@ -617,14 +638,14 @@ role.SetName("bob")
 Set["Name"] = "bob"
 ```
 
-父路径和子路径的覆盖规则由 `DeltaSet.Compact()` 负责。当前生成集合 Store 先记录整字段：
+父路径和子路径的覆盖规则由 Store 和 `DeltaSet.Compact()` 共同负责。例如：
 
 ```go
 role.ItemsStore().Set(1001, &data.GDItem{ItemId: 1001, Quantity: 3})
 role.TouchItems()
 ```
 
-最终只需要保留 `Items` 这个根字段。后续 key/index 级集合 Delta 实现后，Compact 仍会保证整字段写覆盖更细的子路径。
+最终只需要保留 `Items` 这个根字段；整字段写会覆盖并清理更细的 key/index 子路径。
 
 ### AllTouch 和 ClearChanges
 
@@ -672,7 +693,7 @@ role.ClearChanges()
 - `DeltaDelete`：删除字段或集合元素，Mongo 边界会转成 `$unset`，Redis 边界会从 JSON 文档移除该路径。
 - `DeltaClear`：清空集合容器，保留字段但写为空 map/slice。
 - `FieldID`：生成代码提供的稳定字段编号，避免热路径反复保存字段名字符串。
-- `DeltaPath`：字段路径。当前生成集合 Store 先记录根字段，后续集合 wrapper 会在这里表达 key/index 级路径。
+- `DeltaPath`：字段路径。生成集合 Store 会在这里表达 map key、slice index 和生成对象子字段路径。
 
 生成代码会传入字段名 resolver，把字段编号解析为字段名：
 
@@ -1688,7 +1709,7 @@ env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp /Users/a47/sdk/go1.25
 
 - 直接字段赋值不会标脏，例如 `role.Name = "bob"` 只改内存，不会进入 Store dirty。
 - 使用生成代理方法：`role.SetName("bob")`、`role.TouchItems()`、`role.UpdateItems(...)`。
-- 如果后续集合 wrapper 生成了 key/index 级 Delta，再调用 `TouchItems()` 或 `AllTouch()` 时，顶层 dirty 会覆盖并清理更细的路径记录。
+- 如果已经通过集合 wrapper 生成了 key/index 级 Delta，再调用 `TouchItems()` 或 `AllTouch()` 时，顶层 dirty 会覆盖并清理更细的路径记录。
 - 保存成功后如果继续复用对象，调用 `ClearChanges()` 或 Store 的 `AllUnTouch()` 清掉本轮 dirty。
 
 ### 批量读取报 Redis cross-slot
