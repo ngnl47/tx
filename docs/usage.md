@@ -22,7 +22,7 @@
 3. 业务服务创建 go-redis、MongoDB driver client，并用 tx 的薄适配层包装。
 4. 用 Redis/Mongo cluster adapter 组装 Fusion strategy。
 5. 将 Fusion strategy 注册给生成包的默认 reader。
-6. handler 选择一条持久化主线：`BeginChange/SaveChange` 用于直接字段修改，`Store/SaveStore` 用于 setter/Store 拦截式标脏。
+6. handler 选择一条持久化主线：`BeginChange/SaveChange` 用于直接字段修改，`Store + storage.Save` 用于 setter/Store 拦截式标脏。
 7. 后台 Scheduler 消费 Redis 延迟任务，把 Redis 热数据回写 Mongo。
 
 一个简化的启动伪代码如下：
@@ -80,7 +80,7 @@ func (r runtimeReaders) FusionReader() data.DefaultReader { return r.fusion }
 handler 中常见写法：
 
 ```go
-func RenameRole(ctx context.Context, store *fusion.Strategy, roleID int64, name string) error {
+func RenameRole(ctx context.Context, roleID int64, name string) error {
 	role, exists, err := data.FindGDRoleByID(ctx, roleID)
 	if err != nil {
 		return err
@@ -90,17 +90,17 @@ func RenameRole(ctx context.Context, store *fusion.Strategy, roleID int64, name 
 	}
 
 	role.SetName(name)
-	if err := role.SaveStore(ctx, store); err != nil {
+	if err := db.Save(role); err != nil {
 		return err
 	}
 	return nil
 }
 ```
 
-读取走默认 reader，写入仍显式传入 runtime。这样业务代码能清楚看到哪些操作会落地，避免“修改内存对象后自动保存”的隐式副作用。
-上例使用 `SaveStore`，表示保存数据对象当前主 Store 中记录的变更，并在保存成功后清空本轮脏标记。
+读取走默认 reader，写入走项目侧 facade。这样业务代码能清楚看到哪些操作会落地，避免“修改内存对象后自动保存”的隐式副作用。
+上例使用 `db.Save(role)`，表示保存数据对象当前主 Store 中记录的变更，并在保存成功后清空本轮脏标记。业务 facade 接收数据对象，内部再取 `role.Store()`，避免 handler 直接接触框架 Store。
 如果业务需要显式持有 Store，例如高频对象在内存中维护变更队列、定时合并后再落地，也可以直接使用
-`role.Store().ApplyUpdate(ctx, store)` 这类 Store 写入入口，并由调用方决定何时 `ClearChanges()` 或重新累计下一轮变更。
+`storage.Save(ctx, writer, role.Store())` 这类框架层写入入口，并由调用方决定何时保存或重新累计下一轮变更。
 
 ## 类型注解
 
@@ -432,8 +432,8 @@ body := role.MsgpackChangeDocument()
 例如 `HeadImg` 的 tag 是 `msgpack:"hi,omitempty"`，那么下行变更文档里使用 `hi`，不是 Go 字段名
 `HeadImg`。
 
-`Deltas()` 返回压缩后的 `change.DeltaSet`。生成的 `ApplyInsert`、`ApplyUpdate`、`ApplyReplace`
-接收 `storage.DeltaApplier`，并直接走 Delta 落地入口。
+`Deltas()` 返回压缩后的 `change.DeltaSet`。生成 Store 只负责提供 `TypeSpec`、`RecordKey`、
+`DeltaSet`、字段名解析器和值解析器；真正落库由 `tx/storage` 的通用 `Create` / `Save` 执行。
 
 ```go
 role := data.NewGDRole()
@@ -510,12 +510,12 @@ role.ItemsStore().Set(1001, &data.GDItem{ItemId: 1001, Quantity: 7})
 
 view := role.Store().View() // 保存前复制一份下行视图
 
-if err := role.SaveStore(ctx, fusionDB); err != nil {
+if err := storage.Save(ctx, fusionDB, role.Store()); err != nil {
 	return err
 }
 ```
 
-`BeginChange/SaveChange` 和 `Store/SaveStore` 在同一个变更周期内互斥；`NewViewStore()` 与 `store.View()` 只用于下行/广播视图，不参与持久化模式。
+`BeginChange/SaveChange` 和 Store 写入模式在同一个变更周期内互斥；`NewViewStore()` 与 `store.View()` 只用于下行/广播视图，不参与持久化模式。业务项目通常会再包装一层 facade，例如 `db.Save(role)`，避免 handler 直接传入 `ctx`、writer 或 Store。
 
 如果业务直接修改了字段，需要手动 `Touch*` 补标脏：
 
@@ -664,10 +664,10 @@ role.Store().AllTouch()
 执行后不再保留 `Name` 或集合字段的局部记录。后续保存路径应根据 `AllDirty()` 走整文档替换。
 
 `ClearChanges()` 或 Store 的 `AllUnTouch()` 用于加载完成、主动放弃本轮修改，或显式 Store 写入成功后手动清空脏标记。
-普通请求链路可以使用 `SaveStore` 自动清理：
+普通请求链路建议使用项目 facade 自动清理：
 
 ```go
-if err := role.SaveStore(ctx, fusionStore); err != nil {
+if err := db.Save(role); err != nil {
 	return err
 }
 ```
@@ -679,13 +679,12 @@ store := role.Store()
 store.IncPower(10)
 store.ItemsStore().Set(1001, &data.GDItem{ItemId: 1001, Quantity: 7})
 
-if err := store.ApplyUpdate(ctx, fusionStore); err != nil {
+if err := storage.Save(ctx, fusionStore, store); err != nil {
 	return err
 }
-role.ClearChanges()
 ```
 
-这种写法适合 SLG/MMO 战斗、沙盘状态等有状态高频对象；关键是由业务循环明确控制“累计多久、何时保存、保存成功后何时清理”。
+这种写法适合 SLG/MMO 战斗、沙盘状态等有状态高频对象；关键是由业务循环明确控制“累计多久、何时保存”。保存成功后 Store 会自动清理 dirty；如果需要先广播或排队合并，可以在保存前复制 `store.View()` 或 `store.Deltas()`。
 
 生成的加载方法在成功读取后会自动清空脏标记，避免“刚加载出来的数据”被误认为需要保存。
 
@@ -864,11 +863,15 @@ role := data.NewGDRole()
 role.SetRoleId(470001)
 role.SetName("alice")
 role.SetPower(47)
-
-err := role.Store().ApplyInsert(ctx, redisCluster)
 ```
 
-`ApplyInsert` 会强制 `Upsert=true`，适合新建或首次缓存。Redis adapter 收到 Delta 变更后会：
+如果是新建或首次缓存，框架层使用 `storage.Create`：
+
+```go
+err := storage.Create(ctx, redisCluster, role.Store())
+```
+
+Redis adapter 收到 Delta 变更后会：
 
 1. 根据 `TypeSpec` 和 `RecordKey` 生成 Redis key 前缀，例如 `role:{470001}`。
 2. 根据字段的 Go 字段名定位 `redis:"subKey:..."`，再用 JSON 字段名写入 main 文档或 subKey 文档。
@@ -876,28 +879,28 @@ err := role.Store().ApplyInsert(ctx, redisCluster)
 4. 调用 Lua 脚本，在 Redis 内部读取已有 JSON、`cjson.decode`、merge/replace、`cjson.encode` 后写回。
 5. 按 `ApplyOptions.TTL` 设置或续期 Redis 热数据。
 
-更新已有记录使用 `ApplyUpdate`：
+更新已有记录使用 `storage.Save`：
 
 ```go
 role.SetName("bob")
 
-err := role.Store().ApplyUpdate(ctx, redisCluster)
+err := storage.Save(ctx, redisCluster, role.Store())
 ```
 
-`ApplyUpdate` 会强制 `Upsert=false`。如果 Redis 中不存在该记录，Redis adapter 会返回
+`storage.Save` 强制 `Upsert=false`。如果 Redis 中不存在该记录，Redis adapter 会返回
 `storage.ErrNotExists`，避免普通更新意外创建新热数据。
 
-整字段替换使用 `Replace*` 或 `ApplyReplace`：
+整字段替换使用 `Replace*`，保存入口仍是 `storage.Save`：
 
 ```go
 role.ReplaceItems(map[int32]*data.GDItem{
 	1001: &data.GDItem{ItemId: 1001, Quantity: 3},
 })
 
-err := role.Store().ApplyReplace(ctx, redisCluster)
+err := storage.Save(ctx, redisCluster, role.Store())
 ```
 
-`ApplyReplace` 会强制 `Upsert=true`，适合全量刷新一条记录的当前状态。Fusion 回源 Mongo 后回填 Redis 也会走整文档替换。
+如果这次整字段替换同时允许创建记录，使用 `storage.Create` 表达。Fusion 回源 Mongo 后回填 Redis 也会走整文档写入。
 
 ### TTL
 
@@ -911,7 +914,7 @@ err := role.Store().ApplyReplace(ctx, redisCluster)
 显式 TTL 会覆盖默认值：
 
 ```go
-err := role.Store().ApplyUpdateWithOptions(ctx, redisCluster, storage.ApplyOptions{
+err := storage.SaveWithOptions(ctx, redisCluster, role.Store(), storage.ApplyOptions{
 	TTL: 3600,
 })
 ```
@@ -1351,32 +1354,32 @@ bson.M{"roleId": int64(470001)}
 
 ### 写入示例
 
-插入或全量替换时，生成 Store 会启用 upsert：
+新建或首次缓存时，调用方显式启用 upsert：
 
 ```go
 role := data.NewGDRole()
 role.SetRoleId(470001)
 role.SetName("alice")
 
-err := role.Store().ApplyInsert(ctx, mongoCluster)
+err := storage.Create(ctx, mongoCluster, role.Store())
 ```
 
-普通更新会关闭 upsert：
+普通保存默认关闭 upsert：
 
 ```go
 role.SetName("bob")
 
-err := role.Store().ApplyUpdate(ctx, mongoCluster)
+err := storage.Save(ctx, mongoCluster, role.Store())
 ```
 
-如果 Mongo 中没有对应记录，普通更新不会新建文档。需要明确创建或替换时使用 `ApplyInsert` 或 `ApplyReplace`。
+如果 Mongo 中没有对应记录，普通保存不会新建文档。需要明确创建时使用 `storage.Create`。
 
 字段删除会转成 Mongo `$unset`：
 
 ```go
 role.ClearName()
 
-err := role.Store().ApplyUpdate(ctx, mongoCluster)
+err := storage.Save(ctx, mongoCluster, role.Store())
 ```
 
 对应 Mongo update 语义接近：
@@ -1393,7 +1396,7 @@ map key 级 Delta 会转换为 Mongo dot path。例如 `Items[1001]` 会写成�
 ```go
 role.LabelsStore().Set("foo.bar", 7)
 
-err := role.Store().ApplyUpdate(ctx, mongoCluster)
+err := storage.Save(ctx, mongoCluster, role.Store())
 ```
 
 对应 Mongo update 会写 `labels` 的完整当前 map，而不是写 `labels.foo.bar`。这样 Mongo 中保存的 key 仍然是业务可读的 `foo.bar`。
@@ -1446,11 +1449,11 @@ ExpireAt int64 `json:"expireAt" bson:"expireAt" msgpack:"expireAt" mongodb:"inde
 这些接口是 Store 读取、Fusion 回源、Redis 热数据回填和延迟保存回写的共同边界。具体后端仍负责把
 `RecordKey` 转成自己的底层定位方式，例如 Redis key/hash tag 或 Mongo filter。
 
-业务侧通常不需要自己实现这些接口；只需要把 Redis/Mongo/Fusion adapter 传给生成方法：
+框架层可以把 Redis/Mongo/Fusion adapter 传给 `storage.Create/Save`；业务侧更推荐使用项目 facade：
 
 ```go
 role, exists, err := data.LoadGDRole(ctx, fusionStrategy, data.GDRoleRecordKey(470001))
-err = role.Store().ApplyUpdate(ctx, fusionStrategy)
+err = storage.Save(ctx, fusionStrategy, role.Store())
 ```
 
 需要写测试时，可以用内存假实现，只实现最小接口：
@@ -1526,7 +1529,7 @@ fusionStore := fusion.Strategy{
 ```go
 role.SetName("bob")
 
-err := role.Store().ApplyUpdate(ctx, fusionStore)
+err := storage.Save(ctx, fusionStore, role.Store())
 ```
 
 执行后：
@@ -1671,7 +1674,7 @@ Redis 热数据还维护一个生命周期版本键 `<mainKey>@v`，例如 `role
 
 ```go
 role.SetDeleted(true)
-err := role.Store().ApplyUpdate(ctx, fusionStore)
+err := db.Save(role)
 ```
 
 框架不会替业务决定逻辑删除字段，也不会把 `delayDelTime` 解释成 Mongo 删除时间。
