@@ -49,13 +49,12 @@
 
 当前后续实施优先级：
 
-1. 继续完善集合 Store：补齐 map/slice wrapper 的强类型 API、子对象生命周期上下文和整字段吸收规则；当前集合根/元素的 `Set` 已使用覆盖语义，超深递归已按 `MaxDeltaDepth` 降级到最近祖先整体替换。
+1. 继续完善集合 Store：补齐 map/slice wrapper 的强类型 API、剩余子对象生命周期上下文和整字段吸收规则；当前 map 的 `Get`、`GetOrNew`、`Range` 以及 slice 的 `GetAt` 都会绑定生成对象子 Store，集合根/元素的 `Set` 已使用覆盖语义，超深递归已按 `MaxDeltaDepth` 降级到最近祖先整体替换。
 2. 继续收敛存储 facade：生成代码不直接暴露业务层保存函数，项目侧 `db.Save(role)` 包装框架层 `storage.Save`。
-3. 补齐 Redis 热数据版本键在延迟删除重试和真实过期窗口中的并发保护集成测试。
-4. 强化 Fusion 并发回源：Redis miss 后 Mongo 回填 Redis 的锁、二次读取、TTL 校验和批量读取混合命中策略。
-5. 补齐使用文档和 txgame 示例：每个新增行为都要给业务代码例子，并说明边界输出会使用哪套字段名。
-6. 持续清理不再作为主线的字符串路径变更代码、过渡接口和旧测试，只保留必要历史 benchmark 结论。
-7. 日志基建后续专题：确定业务项目 logger 枚举或包级变量、名称规范、级别配置和 tx/log 的最小扩展点。
+3. 评估 Fusion 批量混合命中的回源组织方式：当前单记录回填已通过记录锁、二次 Redis 读取和真实并发集成测试保证正确性；后续如为减少 Mongo I/O 调整为批量回源，必须保持这一正确性边界。
+4. 补齐使用文档和 txgame 示例：每个新增行为都要给业务代码例子，并说明边界输出会使用哪套字段名。
+5. 持续清理不再作为主线的字符串路径变更代码、过渡接口和旧测试，只保留必要历史 benchmark 结论。
+6. 日志基建后续专题：确定业务项目 logger 枚举或包级变量、名称规范、级别配置和 tx/log 的最小扩展点。
 
 ## Module Layout
 
@@ -326,6 +325,8 @@ type DelayTaskBackend interface {
 - Fusion 延迟保存已通过真实 Redis/Mongo 集成路径验证：Redis 同步写入热数据，Redis delayed task backend 入队，Scheduler claim 到期任务，StorageTaskHandler 读取 Redis 热数据并整文档 replace Mongo。
 - Fusion 读取默认在 Redis miss 后从 Mongo 全量加载并回填 Redis 热数据，回填路径运行时要求 `delayDelTime` 大于 0；回填前会获取记录级 Redis 锁并二次读取 Redis，防止并发 miss 时 Mongo 快照覆盖新的 Redis 热数据；显式 `DontLoadToRedis` 选项才允许直接读 Mongo 且不回填；部分字段读取主要按 Redis main/subKey key 粒度减少热数据读取，只请求 subKey 字段时不强依赖主文档命中。
 - Redis 热数据生命周期版本键 `<mainKey>@v` 已作为运行时原语实现并接入 Fusion 延迟删除 handler：Redis delete 可带 expected revision 比对，只在版本未变化时删除 main/subKey/version key。每次 Redis 热写都会递增版本键，并让它与 main/subKey 使用同一有效 TTL 续期；持久化热数据则同步持久化版本键。该版本只用于 Redis 热数据过期/删除窗口的并发保护，不是业务字段，也不是 Mongo 文档字段。
+- `txgame` 已用真实 Redis/Mongo 验证两个版本键窗口：热写的 main/subKey/version key 会共同自然过期；延迟删除在 Mongo 回写期间遇到 Redis 新写时，条件删除会失败、保留新热数据并重新排队删除任务。
+- `txgame` 已用真实 Redis/Mongo 验证并发 Redis miss 回填：两个请求同时在 Redis miss 后竞争同一记录锁，只有一个请求回源 Mongo；另一个请求在锁内二次读取到已回填的 Redis 文档，不会以第二份 Mongo 快照覆盖热数据。
 - Mongo runtime 已提供最小 route/cluster adapter，按 routeType 和 RecordKey.ShardKey 路由单条读写，并在批量读取时按 Mongo shard 分组后还原输入顺序；`storage/mongo/mongodriver` 提供官方 MongoDB driver 的薄适配层。
 - Redis runtime 已提供与 Mongo 对等的最小 route/cluster adapter：先按 routeType 和 RecordKey.ShardKey 路由到具体 Redis endpoint/adapter，再在每个 endpoint 内执行批量读取并还原输入顺序；`storage/redis/goredis` 提供 go-redis 的薄适配层。
 - Redis 写入和整文档替换 API 直接使用 `storage.ApplyOptions`，不再保留 Redis 包内的 `ApplyOptions` 类型别名；`redis.LoadOptions` 仅表达 Redis 批量读取专用选项。
