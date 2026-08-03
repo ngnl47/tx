@@ -32,6 +32,11 @@ type DeltaStore interface {
 	ClearDeltas()
 }
 
+// StoreProvider 描述能暴露生成 Store 的数据对象。
+type StoreProvider[S DeltaStore] interface {
+	Store() S
+}
+
 // Create 全字段创建一条记录。创建语义强制 Upsert=true，成功后清理 Store 变更。
 func Create(ctx context.Context, applier DeltaApplier, store DeltaStore) error {
 	return CreateWithOptions(ctx, applier, store, ApplyOptions{})

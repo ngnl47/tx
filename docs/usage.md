@@ -99,6 +99,14 @@ func RenameRole(ctx context.Context, roleID int64, name string) error {
 
 读取走默认 reader，写入走项目侧 facade。这样业务代码能清楚看到哪些操作会落地，避免“修改内存对象后自动保存”的隐式副作用。
 上例使用 `db.Save(role)`，表示保存数据对象当前主 Store 中记录的变更，并在保存成功后清空本轮脏标记。业务 facade 接收数据对象，内部再取 `role.Store()`，避免 handler 直接接触框架 Store。
+这类 facade 可以使用 `storage.StoreProvider[S]` 作为泛型约束，不需要反射或 `any`：
+
+```go
+func Save[S storage.DeltaStore](value storage.StoreProvider[S]) error {
+	return storage.Save(ctx, writer, value.Store())
+}
+```
+
 如果业务需要显式持有 Store，例如高频对象在内存中维护变更队列、定时合并后再落地，也可以直接使用
 `storage.Save(ctx, writer, role.Store())` 这类框架层写入入口，并由调用方决定何时保存或重新累计下一轮变更。
 
