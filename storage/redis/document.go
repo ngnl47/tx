@@ -17,16 +17,24 @@ const maxLuaJSONSafeInteger uint64 = 1<<53 - 1
 // DocumentPatch 描述一次 Redis JSON 文档 patch。
 type DocumentPatch struct {
 	Set        []PathValue
+	Replace    []PathValue
 	Clear      []change.Path
 	Mode       documentPatchMode
 	fullUpdate bool
 	diffUpdate bool
+	operations []documentPatchOperation
 }
 
 // PathValue 描述 JSON 文档内一个路径和值。
 type PathValue struct {
 	Path  change.Path
 	Value any
+}
+
+type documentPatchOperation struct {
+	Kind  string      `json:"kind"`
+	Path  change.Path `json:"path"`
+	Value any         `json:"value"`
 }
 
 // BuildDocumentPatchesWithDeltas 按 Redis string/subKey 模型把 DeltaSet
@@ -53,50 +61,62 @@ func BuildDocumentPatchesWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, 
 		}
 		switch delta.Kind {
 		case change.DeltaClear:
-			patch.Set = append(patch.Set, PathValue{Path: jsonPath, Value: emptyDocumentValue(spec, goField)})
+			patch = appendDocumentPatchSet(patch, jsonPath, emptyDocumentValue(spec, goField), "clear")
 			patch.diffUpdate = true
 		case change.DeltaDelete:
 			patch.Clear = append(patch.Clear, jsonPath)
+			patch.operations = append(patch.operations, documentPatchOperation{Kind: "delete", Path: jsonPath})
 			patch.diffUpdate = true
-		default:
-			if values != nil {
-				resolved, ok := values.DeltaValue(delta.Path)
-				if ok {
-					patch.Set = append(patch.Set, PathValue{Path: jsonPath, Value: resolved})
-					if redisFullUpdateField(spec, goField) && suffix != "" && len(jsonPath) == 1 {
-						patch.fullUpdate = true
-						if patch.diffUpdate {
-							patch.Mode = documentPatchModePartialReplace
-						} else {
-							patch.Mode = documentPatchModeReplace
-						}
-					} else {
-						patch.diffUpdate = true
-						if patch.fullUpdate {
-							patch.Mode = documentPatchModePartialReplace
-						}
-					}
-					break
-				}
-			}
-			patch.Set = append(patch.Set, PathValue{Path: jsonPath, Value: nil})
+		case change.DeltaKindReplace:
+			value := resolveDeltaValue(values, delta.Path)
 			if redisFullUpdateField(spec, goField) && suffix != "" && len(jsonPath) == 1 {
-				patch.fullUpdate = true
-				if patch.diffUpdate {
-					patch.Mode = documentPatchModePartialReplace
-				} else {
-					patch.Mode = documentPatchModeReplace
-				}
+				patch = appendDocumentPatchValue(patch, jsonPath, value, goField, suffix, spec)
 			} else {
-				patch.diffUpdate = true
-				if patch.fullUpdate {
-					patch.Mode = documentPatchModePartialReplace
-				}
+				patch.Replace = append(patch.Replace, PathValue{Path: jsonPath, Value: value})
+				patch.operations = append(patch.operations, documentPatchOperation{Kind: "replace", Path: jsonPath, Value: value})
+				patch.Mode = documentPatchModeOperations
 			}
+		default:
+			patch = appendDocumentPatchValue(patch, jsonPath, resolveDeltaValue(values, delta.Path), goField, suffix, spec)
 		}
 		out[suffix] = patch
 	}
 	return out
+}
+
+func resolveDeltaValue(values change.DeltaValueResolver, path change.DeltaPath) any {
+	if values == nil {
+		return nil
+	}
+	value, _ := values.DeltaValue(path)
+	return value
+}
+
+func appendDocumentPatchSet(patch DocumentPatch, path change.Path, value any, kind string) DocumentPatch {
+	patch.Set = append(patch.Set, PathValue{Path: path, Value: value})
+	patch.operations = append(patch.operations, documentPatchOperation{Kind: kind, Path: path, Value: value})
+	return patch
+}
+
+func appendDocumentPatchValue(patch DocumentPatch, path change.Path, value any, field, suffix string, spec meta.TypeSpec) DocumentPatch {
+	patch = appendDocumentPatchSet(patch, path, value, "set")
+	if patch.Mode == documentPatchModeOperations {
+		return patch
+	}
+	if redisFullUpdateField(spec, field) && suffix != "" && len(path) == 1 {
+		patch.fullUpdate = true
+		if patch.diffUpdate {
+			patch.Mode = documentPatchModePartialReplace
+		} else {
+			patch.Mode = documentPatchModeReplace
+		}
+		return patch
+	}
+	patch.diffUpdate = true
+	if patch.fullUpdate {
+		patch.Mode = documentPatchModePartialReplace
+	}
+	return patch
 }
 
 func buildReplaceDocumentPatches(spec meta.TypeSpec, doc map[string]any) map[string]DocumentPatch {
@@ -128,6 +148,9 @@ func ApplyDocumentPatch(doc map[string]any, patch DocumentPatch) {
 	for _, item := range patch.Set {
 		setPathValue(doc, item.Path, item.Value)
 	}
+	for _, item := range patch.Replace {
+		setPathValue(doc, item.Path, item.Value)
+	}
 	for _, path := range patch.Clear {
 		clearPathValue(doc, path)
 	}
@@ -135,6 +158,9 @@ func ApplyDocumentPatch(doc map[string]any, patch DocumentPatch) {
 
 // EncodeDocumentPatch 把 patch 编码成 Lua merge 脚本可消费的 JSON 文档。
 func EncodeDocumentPatch(patch DocumentPatch) (string, error) {
+	if patch.Mode == documentPatchModeOperations {
+		return encodeDocumentPatchOperations(patch.operations)
+	}
 	doc := map[string]any{}
 	for _, item := range patch.Set {
 		if err := validateLuaJSONValue(item.Value); err != nil {
@@ -148,6 +174,24 @@ func EncodeDocumentPatch(patch DocumentPatch) (string, error) {
 	body, err := json.Marshal(doc)
 	if err != nil {
 		return "", fmt.Errorf("redis: marshal patch: %w", err)
+	}
+	return string(body), nil
+}
+
+func encodeDocumentPatchOperations(operations []documentPatchOperation) (string, error) {
+	for _, operation := range operations {
+		if operation.Kind == "delete" {
+			continue
+		}
+		if err := validateLuaJSONValue(operation.Value); err != nil {
+			return "", err
+		}
+	}
+	body, err := json.Marshal(struct {
+		Operations []documentPatchOperation `json:"operations"`
+	}{Operations: operations})
+	if err != nil {
+		return "", fmt.Errorf("redis: marshal path operations: %w", err)
 	}
 	return string(body), nil
 }

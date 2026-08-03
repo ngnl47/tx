@@ -254,7 +254,7 @@ type GDRole struct {
 | `alias` | 单值 | 字符串 | 输入侧语法糖：同时作为 JSON、BSON、Msgpack、Redis 的默认字段名。不能和 `json`、`bson`、`msgpack` 混用。 |
 | `redis` | `subKey` | 字符串 | 将该字段从 Redis 主文档拆到独立 key，例如 `role:{1001}:items`。 |
 | `redis` | `ignore` | flag 或布尔字符串 | Redis 文档忽略该字段。 |
-| `redis` | `fullUpdate` | flag 或布尔字符串 | 标记该字段按整字段更新，适合集合字段避免 key 级 path 膨胀。 |
+| `redis` | `fullUpdate` | flag 或布尔字符串 | Redis 写入策略：该字段位于 `subKey` 时可直接替换独立 Redis 文档，避免 Lua 读取并合并整个文档。它不改变字段 `Set` 或集合 wrapper `Replace` 的业务覆盖语义。 |
 | `mongodb` | `index` | flag 或布尔字符串 | 为该字段生成 Mongo 索引元数据。 |
 | `mongodb` | `unique` | flag 或布尔字符串 | 索引唯一约束，通常和 `index` 一起使用。 |
 | `mongodb` | `ignore` | flag 或布尔字符串 | Mongo 文档忽略该字段。 |
@@ -463,6 +463,27 @@ body := role.MsgpackChangeDocument()
 `Deltas()` 返回压缩后的 `change.DeltaSet`。生成 Store 只负责提供 `TypeSpec`、`RecordKey`、
 `DeltaSet`、字段名解析器和值解析器；真正落库由 `tx/storage` 的通用 `Create` / `Save` 执行。
 
+### 集合递归深度预算
+
+`change.MaxDeltaDepth` 当前为 `4`，它是集合子对象路径的真实递归预算，而不是仅用于存储的数组长度。
+map key 或 slice index 与所属字段合并为一个路径节点，因此下面这条路径正好占用四层：
+
+```text
+Role.Items[1001].Attrs["atk"].Buffs[2].Modifiers[7]
+```
+
+Store setter 冒泡和 `BeginChange/SaveChange` 快照 diff 都使用同一预算。若业务继续修改第五层，框架会立即停止
+向下追踪，并把最近可解析祖先改为整体覆盖，保证最终数据正确且避免无意义的深层遍历。例如：
+
+```go
+// 第五层的 Value 不再生成 Items.1001.Attrs.atk.Buffs.2.Modifiers.7.Value。
+// 改为整体覆盖 Items.1001.Attrs.atk.Buffs.2.Modifiers.7 当前对象。
+buff.SetValue(9)
+```
+
+该数据类型首次发生这种降级时会输出一次结构化警告。它不是业务错误，也不会 panic；警告用于提示这条路径的
+持久化写放大已经超过当前的精细追踪预算。
+
 ```go
 role := data.NewGDRole()
 role.SetName("alice")
@@ -490,16 +511,18 @@ doc := role.Store().Deltas().DocumentWithResolver(
 
 | 方法 | 是否修改内存字段 | Delta 语义 | 常见用途 |
 | --- | --- | --- | --- |
-| `SetName(value)` | 是 | set | 日常业务修改字段。 |
+| `SetName(value)` | 是 | set | 日常修改标量字段。 |
+| `SetItems(value)` | 是 | replace | 覆盖 map/slice/struct 指针字段，不保留旧值中未出现的字段。 |
+| `ItemsStore().Set(key, value)` / `DressStore().SetAt(index, value)` | 是 | replace | 覆盖一个 map/slice 元素，不保留该旧元素中未出现的字段。 |
 | `TouchName()` | 否 | set 当前内存值 | 字段值已经被业务直接改过，需要补标脏；或 viewStore 只想把当前字段加入下行。 |
-| `ReplaceItems(value)` | 是 | replace | 整体替换 map/slice/struct 指针字段。 |
-| `ClearName()` | 是，设置为 Go 零值 | clear | 从 Redis/Mongo 文档中移除字段。 |
+| `ClearName()` | 是，设置为 Go 零值 | set 零值 | 保留字段并写入 Go 零值，例如字符串写入 `""`。 |
 
 在 Delta 路径里，普通字段清零和集合清空会被区分：
 
 ```go
 role.ClearHeadImg()
 // 普通字段：DeltaSet 只记录 HeadImg 需要写入；边界从 Store 当前值读取到 Go 零值。
+// Redis/Mongo 中会保留 headImg 字段，值为 ""。
 
 role.TasksStore().Clear()
 // map/slice：DeltaClear Tasks，表示容器仍存在，但内容为空。
@@ -605,7 +628,7 @@ change.Document{
 落到 Redis/Mongo 后，字段仍然存在，只是值为 `""` 或 `0`。这和 `omitempty` 不冲突：`omitempty`
 主要影响完整对象序列化时是否省略零值；生成 Store 的 Delta set 语义会明确保留这次设置的零值。
 
-如果业务语义是“清空字段并从持久化文档里移除这个字段”，使用 `Clear*`：
+`Clear*` 不删除普通字段，而是写入其 Go 零值：
 
 ```go
 role.ClearName()
@@ -614,13 +637,10 @@ role.ClearName()
 对应变更文档：
 
 ```go
-change.Document{
-	Set:   map[string]any{},
-	Clear: map[string]struct{}{"Name": {}},
-}
+change.Document{Set: map[string]any{"Name": ""}}
 ```
 
-Redis 写入时会把 patch 中该字段设为 JSON null，由 Lua merge 删除字段；Mongo 写入时会转成 `$unset`。
+要删除 map 中某个元素，使用集合 wrapper 的 `Delete(key)`；它会生成 `DeltaDelete`，Redis 移除 JSON 路径，Mongo 转成 `$unset`。
 
 ### 集合字段和路径标脏
 
@@ -752,7 +772,8 @@ if err := storage.Save(ctx, fusionStore, store); err != nil {
 
 生成 Store 的主路径记录的是 `change.DeltaSet`：
 
-- `DeltaKindSet`：设置字段值，普通字段和集合整字段替换都使用这个语义。
+- `DeltaKindSet`：设置标量字段值，或修改已存在集合元素的子字段。
+- `DeltaKindReplace`：覆盖集合、结构体指针或集合元素的当前值。它保留到 Redis 边界，Lua 按路径直接赋值，不走递归 merge，因此旧对象的遗漏字段不会残留。
 - `DeltaDelete`：删除字段或集合元素，Mongo 边界会转成 `$unset`，Redis 边界会从 JSON 文档移除该路径。
 - `DeltaClear`：清空集合容器，保留字段但写为空 map/slice。
 - `FieldID`：生成代码提供的稳定字段编号，避免热路径反复保存字段名字符串。
@@ -936,8 +957,9 @@ Redis adapter 收到 Delta 变更后会：
 1. 根据 `TypeSpec` 和 `RecordKey` 生成 Redis key 前缀，例如 `role:{470001}`。
 2. 根据字段的 Go 字段名定位 `redis:"subKey:..."`，再用 JSON 字段名写入 main 文档或 subKey 文档。
 3. 把每个文档的 patch 编码成 JSON 字符串。
-4. 调用 Lua 脚本，在 Redis 内部读取已有 JSON、`cjson.decode`、merge/replace、`cjson.encode` 后写回。
+4. 调用 Lua 脚本：普通局部 `DeltaKindSet` 使用 merge；`DeltaKindReplace` 使用有序路径操作直接覆盖目标路径；两者都会在 Redis 内部 `cjson.decode` 后再编码写回。
 5. 按 `ApplyOptions.TTL` 设置或续期 Redis 热数据。
+6. 递增 `<mainKey>@v` 版本键，并让它与 main/subKey 使用同一有效 TTL；持久化热数据时版本键也会持久化。
 
 更新已有记录使用 `storage.Save`：
 
@@ -950,14 +972,24 @@ err := storage.Save(ctx, redisCluster, role.Store())
 `storage.Save` 强制 `Upsert=false`。如果 Redis 中不存在该记录，Redis adapter 会返回
 `storage.ErrNotExists`，避免普通更新意外创建新热数据。
 
-整字段替换使用 `Replace*`，保存入口仍是 `storage.Save`：
+整字段替换使用字段 `Set*`，保存入口仍是 `storage.Save`：
 
 ```go
-role.ReplaceItems(map[int32]*data.GDItem{
+role.SetItems(map[int32]*data.GDItem{
 	1001: &data.GDItem{ItemId: 1001, Quantity: 3},
 })
 
 err := storage.Save(ctx, redisCluster, role.Store())
+```
+
+同样地，`ItemsStore().Set` 覆盖单个元素，而不是合并旧元素：
+
+```go
+// Redis 原值：{"items":{"1001":{"quantity":1,"quality":9}}}
+role.ItemsStore().Set(1001, &data.GDItem{ItemId: 1001, Quantity: 3})
+err := storage.Save(ctx, redisCluster, role.Store())
+// Redis 结果：{"items":{"1001":{"itemId":1001,"quantity":3}}}
+// quality 不会残留。
 ```
 
 如果这次整字段替换同时允许创建记录，使用 `storage.Create` 表达。Fusion 回源 Mongo 后回填 Redis 也会走整文档写入。
@@ -1434,10 +1466,10 @@ err := storage.Save(ctx, mongoCluster, role.Store())
 
 如果 Mongo 中没有对应记录，普通保存不会新建文档。需要明确创建时使用 `storage.Create`。
 
-字段删除会转成 Mongo `$unset`：
+集合元素删除会转成 Mongo `$unset`：
 
 ```go
-role.ClearName()
+role.ItemsStore().Delete(1001)
 
 err := storage.Save(ctx, mongoCluster, role.Store())
 ```
@@ -1446,7 +1478,7 @@ err := storage.Save(ctx, mongoCluster, role.Store())
 
 ```go
 bson.M{
-	"$unset": bson.M{"name": ""},
+	"$unset": bson.M{"items.1001": ""},
 }
 ```
 
@@ -1719,7 +1751,7 @@ Fusion 显式删除会：
 2. 立即删除 Mongo 文档。
 3. 不写入延迟保存队列。
 
-Redis 热数据还维护一个生命周期版本键 `<mainKey>@v`，例如 `role:{1001}@v`。这个键不是业务字段，也不会写入 Mongo；它只用于 Redis 热数据过期/删除窗口的并发保护。运行时的带版本删除原语会在 Lua 中先比对 `@v`，只有版本一致才删除 main/subKey/version key；如果版本已变化，说明这条热数据发生过新写入，删除方应跳过本次删除并稍后重试。所有附属 key 都从 mainKey 派生：
+Redis 热数据还维护一个生命周期版本键 `<mainKey>@v`，例如 `role:{1001}@v`。这个键不是业务字段，也不会写入 Mongo；它只用于 Redis 热数据过期/删除窗口的并发保护。每次热写都会递增它，并使用与 main/subKey 相同的有效 TTL；热数据持久化时它也会持久化，因此不会在热数据仍有效时提前失去删除窗口保护。运行时的带版本删除原语会在 Lua 中先比对 `@v`，只有版本一致才删除 main/subKey/version key；如果版本已变化，说明这条热数据发生过新写入，删除方应跳过本次删除并稍后重试。所有附属 key 都从 mainKey 派生：
 
 | Redis key | 示例 | 用途 |
 | --- | --- | --- |

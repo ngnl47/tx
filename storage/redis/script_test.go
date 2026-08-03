@@ -34,10 +34,30 @@ func TestUpdateLuaScriptNamesProtocolValues(t *testing.T) {
 		"local RESULT_NOT_EXISTS = \"ne\"",
 		"local PATCH_MODE_REPLACE = \"1\"",
 		"local PATCH_MODE_PARTIAL_REPLACE = \"2\"",
+		"local PATCH_MODE_OPERATIONS = \"3\"",
 		"local PATCH_MODE_TTL_ONLY = \"-1\"",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("update script missing protocol constant %q", want)
 		}
+	}
+}
+
+func TestUpdateLuaScriptKeepsVersionKeyLifecycleInSync(t *testing.T) {
+	updateBody, err := luaScripts.ReadFile("scripts/update_document.lua")
+	if err != nil {
+		t.Fatalf("ReadFile update script returned error: %v", err)
+	}
+	text := string(updateBody)
+	for _, want := range []string{
+		"redis.call(\"expire\", vkey, ttl)",
+		"redis.call(\"persist\", vkey)",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("update script does not synchronize version key lifecycle: missing %q", want)
+		}
+	}
+	if strings.Contains(text, "redis.call(\"expire\", vkey, 60)") {
+		t.Fatalf("update script must not use a fixed version key ttl")
 	}
 }

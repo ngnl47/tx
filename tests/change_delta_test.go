@@ -216,3 +216,18 @@ func TestDeltaPathJoinReportsOverflow(t *testing.T) {
 		t.Fatal("JoinDeltaPath returned ok=true, want overflow")
 	}
 }
+
+func TestDeltaPathJoinLimitedKeepsNearestAncestor(t *testing.T) {
+	parent := deltaPath(fieldNode(1), fieldNode(2))
+	child := deltaPath(fieldNode(3), fieldNode(4), fieldNode(5))
+
+	joined, complete := change.JoinDeltaPathLimited(parent, child)
+
+	if complete {
+		t.Fatal("JoinDeltaPathLimited complete = true, want overflow")
+	}
+	want := deltaPath(fieldNode(1), fieldNode(2), fieldNode(3), fieldNode(4))
+	if !joined.Equal(want) {
+		t.Fatalf("limited path = %#v, want %#v", joined, want)
+	}
+}

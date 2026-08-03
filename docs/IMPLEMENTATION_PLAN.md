@@ -28,7 +28,8 @@
 - `DeltaEntry` 当前只保存 `Path` 和 `Kind`，不持有字段值；生成 Store 会在输出边界按 DeltaPath 读取当前值。后续如需性能优化，只做局部 fast path，不提前引入自研 value 编码。
 - 字符串路径只在输出边界生成，例如 `ChangeDocument()`、Redis JSON patch、Mongo update document 和 cmd Provider body。
 - `DeltaSet.Compact()` 只做路径上可确定的压缩：同路径后写覆盖先写，后发生的祖先写清理更早子路径；较早祖先不会吞掉较晚子路径，因为 runtime 不读取当前对象，无法证明祖先值已包含后续修改。不做需要外部生命周期上下文的新建删除抵消。
-- `MaxDeltaDepth` 当前按 4 层设计。超深路径不能 panic；应降级到最近安全祖先整字段写，并通过日志或生成期提示保持可观测。
+- `DeltaKindSet` 用于标记当前字段值；`DeltaKindReplace` 用于集合、结构体指针和集合元素的覆盖赋值。`SetItems(value)`、`ItemsStore().Set(key, value)`、`SetAt(index, value)` 都遵循 Go 赋值语义：持久化时不保留旧值中未出现的字段；对子对象的 setter 才保留局部 `DeltaKindSet` 路径。
+- `MaxDeltaDepth` 是 Store 冒泡和 snapshot diff 共用的真实递归预算，当前为 4 层 `PathNode`。即将超过预算时必须立刻停止向下比较或传播，将最近可解析祖先标为 `DeltaKindReplace`；不能 panic，也不能继续做无效深层 diff。每个生成数据类型通过 `sync.Once` 输出一次告警，提示该类型发生了深度降级。
 - `map[string]` 的 key 如果为空字符串、包含 `.` 或 `$`，Mongo 边界不转义 key，而是降级整字段写，保证数据库中保留业务真实 key。
 - Store 拦截路径和 snapshot diff 路径同时存在，但同一变更周期互斥。`ModeStore` 用于 setter/Store wrapper 标脏，`ModeSnapshot` 用于 `BeginChange/SaveChange`。
 - `BeginChange()` 必须在业务直接修改字段之前调用；`SaveChange()` 成功后清理 snapshot 和本轮 dirty，失败时保留可重试状态。
@@ -39,7 +40,7 @@
 - `delaySaveTime` 表示 Redis 热数据变更后多久回写一次 Mongo；`delayDelTime` 表示 Redis 热数据 TTL 和自动续期时间，不表示 Mongo 删除延迟。
 - Fusion 延迟任务队列只保存记录定位信息；到期后读取 Redis 当前最新热数据，整文档 replace 到 Mongo。队列不保存中间态业务对象或本轮字段 diff。
 - 从 Mongo 回填 Redis 必须具备 `delayDelTime > 0` 的热数据 TTL；并发 miss 回填要通过 Redis 锁和二次读取避免旧 Mongo 快照覆盖新 Redis 热数据。
-- Redis `<mainKey>@v` 是热数据生命周期版本键，只用于 Redis 删除/过期窗口并发保护，不是业务字段，也不是 Mongo 字段；版本键和 main/subKey 必须使用同一 hash tag。
+- Redis `<mainKey>@v` 是热数据生命周期版本键，只用于 Redis 删除/过期窗口并发保护，不是业务字段，也不是 Mongo 字段；版本键和 main/subKey 必须使用同一 hash tag，并在每次热写时使用同一有效 TTL 续期或同步转为持久化。
 - Redis 批量读取默认按生产云代理能力走 endpoint 内原生 `MGET`；本地原生 Redis Cluster debug 才显式打开 `LoadOptions.ClusterSafe` 按 hash tag 分组多次读取。
 - Mongo 不内置业务删除策略。物理删除接口存在，但是否调用由业务决定；TTL 索引是 Mongo 自身按字段值删除整条文档的能力，生成阶段限制同一类型最多一个 TTL 字段。
 - 后续如发现中间过渡结构、废弃测试或过时文档描述，应持续瘦身；保留稳定决策，不保留已经放弃的实现路线。
@@ -48,9 +49,9 @@
 
 当前后续实施优先级：
 
-1. 继续完善集合 Store：补齐 map/slice wrapper 的强类型 API、子对象生命周期上下文、整字段吸收规则和边界降级提示。
+1. 继续完善集合 Store：补齐 map/slice wrapper 的强类型 API、子对象生命周期上下文和整字段吸收规则；当前集合根/元素的 `Set` 已使用覆盖语义，超深递归已按 `MaxDeltaDepth` 降级到最近祖先整体替换。
 2. 继续收敛存储 facade：生成代码不直接暴露业务层保存函数，项目侧 `db.Save(role)` 包装框架层 `storage.Save`。
-3. 推进 Redis 热数据版本键完整接入：写入续期、延迟删除、main/subKey/version key 的 hash tag 一致性和集成测试。
+3. 补齐 Redis 热数据版本键在延迟删除重试和真实过期窗口中的并发保护集成测试。
 4. 强化 Fusion 并发回源：Redis miss 后 Mongo 回填 Redis 的锁、二次读取、TTL 校验和批量读取混合命中策略。
 5. 补齐使用文档和 txgame 示例：每个新增行为都要给业务代码例子，并说明边界输出会使用哪套字段名。
 6. 持续清理不再作为主线的字符串路径变更代码、过渡接口和旧测试，只保留必要历史 benchmark 结论。
@@ -324,7 +325,7 @@ type DelayTaskBackend interface {
 - Fusion 显式删除不进入延迟队列：运行时先删除 Redis 热数据，再通过显式 Mongo deleter 立即删除 Mongo 文档；如果业务绕过 Fusion 只删除 Mongo，未过期 Redis 热数据仍可能被延迟保存任务重新写回 Mongo。
 - Fusion 延迟保存已通过真实 Redis/Mongo 集成路径验证：Redis 同步写入热数据，Redis delayed task backend 入队，Scheduler claim 到期任务，StorageTaskHandler 读取 Redis 热数据并整文档 replace Mongo。
 - Fusion 读取默认在 Redis miss 后从 Mongo 全量加载并回填 Redis 热数据，回填路径运行时要求 `delayDelTime` 大于 0；回填前会获取记录级 Redis 锁并二次读取 Redis，防止并发 miss 时 Mongo 快照覆盖新的 Redis 热数据；显式 `DontLoadToRedis` 选项才允许直接读 Mongo 且不回填；部分字段读取主要按 Redis main/subKey key 粒度减少热数据读取，只请求 subKey 字段时不强依赖主文档命中。
-- Redis 热数据生命周期版本键 `<mainKey>@v` 已作为运行时原语实现并接入 Fusion 延迟删除 handler：Redis delete 可带 expected revision 比对，只在版本未变化时删除 main/subKey/version key。该版本只用于 Redis 热数据过期/删除窗口的并发保护，不是业务字段，也不是 Mongo 文档字段。
+- Redis 热数据生命周期版本键 `<mainKey>@v` 已作为运行时原语实现并接入 Fusion 延迟删除 handler：Redis delete 可带 expected revision 比对，只在版本未变化时删除 main/subKey/version key。每次 Redis 热写都会递增版本键，并让它与 main/subKey 使用同一有效 TTL 续期；持久化热数据则同步持久化版本键。该版本只用于 Redis 热数据过期/删除窗口的并发保护，不是业务字段，也不是 Mongo 文档字段。
 - Mongo runtime 已提供最小 route/cluster adapter，按 routeType 和 RecordKey.ShardKey 路由单条读写，并在批量读取时按 Mongo shard 分组后还原输入顺序；`storage/mongo/mongodriver` 提供官方 MongoDB driver 的薄适配层。
 - Redis runtime 已提供与 Mongo 对等的最小 route/cluster adapter：先按 routeType 和 RecordKey.ShardKey 路由到具体 Redis endpoint/adapter，再在每个 endpoint 内执行批量读取并还原输入顺序；`storage/redis/goredis` 提供 go-redis 的薄适配层。
 - Redis 写入和整文档替换 API 直接使用 `storage.ApplyOptions`，不再保留 Redis 包内的 `ApplyOptions` 类型别名；`redis.LoadOptions` 仅表达 Redis 批量读取专用选项。

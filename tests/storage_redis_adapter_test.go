@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -546,6 +547,50 @@ func TestRedisAdapterAppliesFieldIDChangesWithResolver(t *testing.T) {
 	}
 }
 
+func TestRedisAdapterUsesPathReplaceModeForCollectionElement(t *testing.T) {
+	client := &recordingRedisStringClient{}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{
+		Redis: &meta.RedisSpec{Key: "role"},
+		Fields: map[string]meta.FieldSpec{
+			"Items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+		},
+	}
+	deltas := change.DeltaSet{{
+		Path: deltaPath(intKeyNode(deltaFieldItems, 1001)),
+		Kind: change.DeltaKindReplace,
+	}}
+	resolver := testNamedBackendResolver(map[change.NameBackend]map[change.FieldID]string{
+		change.NameBackendGo:   deltaTestGoNames(),
+		change.NameBackendJSON: deltaTestJSONNames(),
+	})
+	values := testDeltaValues(map[string]any{
+		"Items.1001": map[string]any{"itemId": int64(1001), "quantity": int64(3)},
+	})
+
+	if err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, resolver, values, storage.ApplyOptions{Upsert: true}); err != nil {
+		t.Fatalf("ApplyDeltasWithOptions returned error: %v", err)
+	}
+	if len(client.evals) != 1 {
+		t.Fatalf("eval calls = %#v, want exactly one", client.evals)
+	}
+	args := client.evals[0].args
+	if args[2] != "3" {
+		t.Fatalf("mode = %#v, want path replace mode 3; args=%#v", args[2], args)
+	}
+	operations := decodeJSONDocument(t, args[1].(string))["operations"].([]any)
+	if len(operations) != 1 {
+		t.Fatalf("operations = %#v, want one replace operation", operations)
+	}
+	op := operations[0].(map[string]any)
+	if op["kind"] != "replace" {
+		t.Fatalf("operation kind = %#v, want replace", op["kind"])
+	}
+	if got := op["path"]; !reflect.DeepEqual(got, []any{"items", "1001"}) {
+		t.Fatalf("operation path = %#v, want [items 1001]", got)
+	}
+}
+
 func TestRedisAdapterUsesFullUpdateModeForWholeSubKeyReplace(t *testing.T) {
 	client := &recordingRedisStringClient{}
 	adapter := txredis.NewAdapter(client)
@@ -555,7 +600,7 @@ func TestRedisAdapterUsesFullUpdateModeForWholeSubKeyReplace(t *testing.T) {
 			"Items": {Redis: &meta.RedisFieldSpec{SubKey: "items", FullUpdate: true}},
 		},
 	}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldItems)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldItems)), Kind: change.DeltaKindReplace}}
 	resolver := testNamedBackendResolver(map[change.NameBackend]map[change.FieldID]string{
 		change.NameBackendGo:   deltaTestGoNames(),
 		change.NameBackendJSON: deltaTestJSONNames(),

@@ -36,20 +36,31 @@ type DeltaPath struct {
 
 // JoinDeltaPath 把子路径追加到父路径后。返回 ok=false 表示超过 MaxDeltaDepth。
 func JoinDeltaPath(parent, child DeltaPath) (DeltaPath, bool) {
-	if parent.Depth == 0 {
-		return child, child.Depth <= MaxDeltaDepth
-	}
-	if child.Depth == 0 {
-		return parent, parent.Depth <= MaxDeltaDepth
-	}
-	depth := int(parent.Depth) + int(child.Depth)
-	if depth > MaxDeltaDepth {
+	out, complete := JoinDeltaPathLimited(parent, child)
+	if !complete {
 		return DeltaPath{}, false
 	}
-	out := parent
-	copy(out.Nodes[parent.Depth:], child.Nodes[:child.Depth])
-	out.Depth = uint8(depth)
 	return out, true
+}
+
+// JoinDeltaPathLimited 把子路径追加到父路径，并保留不超过 MaxDeltaDepth 的最近祖先路径。
+// complete=false 表示原始路径超过上限；返回路径仍可用于一次安全的整体替换。
+func JoinDeltaPathLimited(parent, child DeltaPath) (out DeltaPath, complete bool) {
+	depth := int(parent.Depth) + int(child.Depth)
+	complete = depth <= MaxDeltaDepth
+	remaining := MaxDeltaDepth
+	if parent.Depth > 0 {
+		count := min(int(parent.Depth), remaining)
+		copy(out.Nodes[:count], parent.Nodes[:count])
+		out.Depth = uint8(count)
+		remaining -= count
+	}
+	if child.Depth > 0 && remaining > 0 {
+		count := min(int(child.Depth), remaining)
+		copy(out.Nodes[out.Depth:int(out.Depth)+count], child.Nodes[:count])
+		out.Depth += uint8(count)
+	}
+	return out, complete
 }
 
 // FullPath 按指定字段名体系把 DeltaPath 转换为字符串路径。
@@ -156,6 +167,8 @@ type DeltaKind uint8
 
 const (
 	DeltaKindSet DeltaKind = iota + 1
+	// DeltaKindReplace 覆盖路径当前值，不保留旧对象中的未出现字段。
+	DeltaKindReplace
 	DeltaDelete
 	DeltaClear
 )

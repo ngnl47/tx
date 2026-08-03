@@ -6,6 +6,7 @@ const (
 	documentPatchModeMerge          documentPatchMode = "0"
 	documentPatchModeReplace        documentPatchMode = "1"
 	documentPatchModePartialReplace documentPatchMode = "2"
+	documentPatchModeOperations     documentPatchMode = "3"
 	documentPatchModeTTLOnly        documentPatchMode = "-1"
 )
 
