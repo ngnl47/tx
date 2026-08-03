@@ -50,7 +50,7 @@
 
 当前后续实施优先级：
 
-1. 继续完善集合 Store：补齐 map/slice wrapper 的强类型 API、剩余子对象生命周期上下文和整字段吸收规则；当前 map 的 `Get`、`GetOrNew`、`Range` 以及 slice 的 `GetAt`、`Range` 都会绑定生成对象子 Store，集合根/元素的 `Set` 已使用覆盖语义，超深递归已按 `MaxDeltaDepth` 降级到最近祖先整体替换。
+1. 继续完善集合 Store：补齐 map/slice wrapper 的强类型 API、整字段吸收规则和更完整测试矩阵；当前 map 的 `Get`、`GetOrNew`、`Range`、`Set`、`Replace` 以及 slice 的 `GetAt`、`Range`、`SetAt`、`Append`、`Replace` 都会绑定生成对象子 Store，集合根/元素的 `Set` 已使用覆盖语义，超深递归已按 `MaxDeltaDepth` 降级到最近祖先整体替换。`Delete`、`Set` 覆盖、`Replace`、`SetAt`、`RemoveAt` 已会解除被移出生成对象的父路径绑定，防止旧指针向已删除 key 或过期 slice index 冒泡 dirty。
 2. 评估 Fusion 批量混合命中的回源组织方式：当前单记录回填已通过记录锁、二次 Redis 读取和真实并发集成测试保证正确性；后续如为减少 Mongo I/O 调整为批量回源，必须保持这一正确性边界。
 3. 补齐使用文档和 txgame 示例：每个新增行为都要给业务代码例子，并说明边界输出会使用哪套字段名。
 4. 持续清理不再作为主线的字符串路径变更代码、过渡接口和旧测试，只保留必要历史 benchmark 结论。
@@ -487,7 +487,7 @@ Store 生成、Redis key helper、Mongo filter helper、字段编号 resolver �
 
 完成标准：
 
-- 部分已完成。后续继续完善集合 wrapper 的生命周期上下文、整字段吸收、危险 key 降级提示和更完整测试矩阵。
+- 部分已完成。集合元素被删除、覆盖或因 slice 位移后会解除旧子 Store 的父路径绑定；后续继续完善集合 wrapper 的整字段吸收、危险 key 降级提示和更完整测试矩阵。
 
 ## Open Design Details
 
