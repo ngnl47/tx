@@ -23,6 +23,7 @@
 - `GD*` 是纯数据对象；`GD*Store` 是同一个 `GD*` 指针上的装饰对象，保存 dirty、loaded、mode、view 等运行时状态，不保存第二份业务数据。
 - 业务输入模型和协议字段不能直接声明生成的 `*Store` 类型；Store 只用于框架持久化和 Provider 投影输入。
 - 业务 facade 和框架 API 分层。handler 推荐写 `db.Save(role)`；facade 内部再取 `role.Store()` 并调用 `storage.Save`。
+- `txgame/server/internal/db` 已提供泛型 `db.Save(role)` facade：它使用服务启动时装配的根 context 与 writer，并只在 facade 内部获取生成数据对象的 Store。
 - 通用 `db.Create` facade 不作为当前目标。新建对象、默认字段初始化、初始资源发放属于业务流程；框架层保留 `storage.Create` 表达 upsert/首次缓存语义。
 - 当前标脏主线是 `change.DeltaSet`。热路径只保存 `FieldID`、map key、slice index 和 `DeltaKind`，不常驻拼接字符串路径。
 - `DeltaEntry` 当前只保存 `Path` 和 `Kind`，不持有字段值；生成 Store 会在输出边界按 DeltaPath 读取当前值。后续如需性能优化，只做局部 fast path，不提前引入自研 value 编码。
@@ -49,12 +50,11 @@
 
 当前后续实施优先级：
 
-1. 继续完善集合 Store：补齐 map/slice wrapper 的强类型 API、剩余子对象生命周期上下文和整字段吸收规则；当前 map 的 `Get`、`GetOrNew`、`Range` 以及 slice 的 `GetAt` 都会绑定生成对象子 Store，集合根/元素的 `Set` 已使用覆盖语义，超深递归已按 `MaxDeltaDepth` 降级到最近祖先整体替换。
-2. 继续收敛存储 facade：生成代码不直接暴露业务层保存函数，项目侧 `db.Save(role)` 包装框架层 `storage.Save`。
-3. 评估 Fusion 批量混合命中的回源组织方式：当前单记录回填已通过记录锁、二次 Redis 读取和真实并发集成测试保证正确性；后续如为减少 Mongo I/O 调整为批量回源，必须保持这一正确性边界。
-4. 补齐使用文档和 txgame 示例：每个新增行为都要给业务代码例子，并说明边界输出会使用哪套字段名。
-5. 持续清理不再作为主线的字符串路径变更代码、过渡接口和旧测试，只保留必要历史 benchmark 结论。
-6. 日志基建后续专题：确定业务项目 logger 枚举或包级变量、名称规范、级别配置和 tx/log 的最小扩展点。
+1. 继续完善集合 Store：补齐 map/slice wrapper 的强类型 API、剩余子对象生命周期上下文和整字段吸收规则；当前 map 的 `Get`、`GetOrNew`、`Range` 以及 slice 的 `GetAt`、`Range` 都会绑定生成对象子 Store，集合根/元素的 `Set` 已使用覆盖语义，超深递归已按 `MaxDeltaDepth` 降级到最近祖先整体替换。
+2. 评估 Fusion 批量混合命中的回源组织方式：当前单记录回填已通过记录锁、二次 Redis 读取和真实并发集成测试保证正确性；后续如为减少 Mongo I/O 调整为批量回源，必须保持这一正确性边界。
+3. 补齐使用文档和 txgame 示例：每个新增行为都要给业务代码例子，并说明边界输出会使用哪套字段名。
+4. 持续清理不再作为主线的字符串路径变更代码、过渡接口和旧测试，只保留必要历史 benchmark 结论。
+5. 日志基建后续专题：确定业务项目 logger 枚举或包级变量、名称规范、级别配置和 tx/log 的最小扩展点。
 
 ## Module Layout
 
