@@ -394,6 +394,8 @@ data.GDRoleFieldName(field, change.NameBackendMsgpack) // "roleId"
 生成 Store 的保存主路径使用 `DeltaSet`。`DeltaSet` 只表示一次保存周期内“哪些字段需要被落地或下发”，
 不保存字段值；Redis、Mongo、Fusion 或下行 Provider 在输出边界通过生成 Store 读取当前 `GD*` 对象里的最终值。
 运行时不保留字符串路径变更集合；业务代码也不直接维护脏字段容器。
+例如输出文档里的 `"Items.1001.Quantity"` 或 `"Tags.0"` 只是边界层为了 Redis/Mongo/Provider 生成的可读路径；
+`DeltaSet` 内部保存的是字段编号、map key 或 slice index 组成的结构化路径，不会在热路径上常驻这些拼接字符串。
 
 ### 常用业务写法
 
@@ -619,6 +621,8 @@ role.TagsStore().UpdateAt(0, func(tag string) string {
 })
 // 变更文档：Set["Tags.0"] = "old_new"
 ```
+
+这里的 `"Tags.0"` 是输出边界文档 key，不是 Store 内部 dirty 结构。Store 内部仍是 `DeltaEntry{Path: Tags + index 0}`。
 
 `Append`、`RemoveAt`、`Clear`、`Replace` 会改变长度、顺序或整体语义，因此仍然记录整字段 dirty。
 生成代码不会暴露字符串 path 级标脏 API，业务侧应使用强类型方法。
