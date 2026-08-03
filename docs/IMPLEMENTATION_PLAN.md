@@ -25,9 +25,9 @@
 - 业务 facade 和框架 API 分层。handler 推荐写 `db.Save(role)`；facade 内部再取 `role.Store()` 并调用 `storage.Save`。
 - 通用 `db.Create` facade 不作为当前目标。新建对象、默认字段初始化、初始资源发放属于业务流程；框架层保留 `storage.Create` 表达 upsert/首次缓存语义。
 - 当前标脏主线是 `change.DeltaSet`。热路径只保存 `FieldID`、map key、slice index 和 `DeltaKind`，不常驻拼接字符串路径。
-- `DeltaEntry` 第一版保留 `Value any` 边界，避免过早自研 value 编码；后续如需性能优化，只做局部 fast path。
+- `DeltaEntry` 当前只保存 `Path` 和 `Kind`，不持有字段值；生成 Store 会在输出边界按 DeltaPath 读取当前值。后续如需性能优化，只做局部 fast path，不提前引入自研 value 编码。
 - 字符串路径只在输出边界生成，例如 `ChangeDocument()`、Redis JSON patch、Mongo update document 和 cmd Provider body。
-- `DeltaSet.Compact()` 只做路径上可确定的压缩：同路径后写覆盖先写，祖先整字段写覆盖子路径，后发生的祖先写清理旧子路径；不做需要外部生命周期上下文的新建删除抵消。
+- `DeltaSet.Compact()` 只做路径上可确定的压缩：同路径后写覆盖先写，后发生的祖先写清理更早子路径；较早祖先不会吞掉较晚子路径，因为 runtime 不读取当前对象，无法证明祖先值已包含后续修改。不做需要外部生命周期上下文的新建删除抵消。
 - `MaxDeltaDepth` 当前按 4 层设计。超深路径不能 panic；应降级到最近安全祖先整字段写，并通过日志或生成期提示保持可观测。
 - `map[string]` 的 key 如果为空字符串、包含 `.` 或 `$`，Mongo 边界不转义 key，而是降级整字段写，保证数据库中保留业务真实 key。
 - Store 拦截路径和 snapshot diff 路径同时存在，但同一变更周期互斥。`ModeStore` 用于 setter/Store wrapper 标脏，`ModeSnapshot` 用于 `BeginChange/SaveChange`。

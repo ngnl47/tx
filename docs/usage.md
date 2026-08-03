@@ -530,6 +530,24 @@ if err := role.SaveChange(ctx, fusionDB); err != nil {
 }
 ```
 
+`[]*GD...` 中已有元素也会递归比较生成数据对象的子字段，不会因为使用了直接字段赋值就退化为整元素写：
+
+```go
+role.Dress = []*data.GDDressItem{{Id: 7, Expire: 100}}
+
+if err := role.BeginChange(); err != nil {
+	return err
+}
+role.Dress[0].Expire = 200
+
+if err := role.SaveChange(ctx, fusionDB); err != nil {
+	return err
+}
+// 输出边界：Set["Dress.0.Expire"] = int64(200)
+```
+
+若元素本身被替换为另一个对象、设为 `nil`，或者 slice 长度和顺序变化，框架会保守地写对应整元素或整个 slice，避免 index 语义漂移。
+
 高频有状态对象优先使用 Store 拦截式标脏：
 
 ```go
