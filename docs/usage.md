@@ -2,6 +2,26 @@
 
 本文记录 `github.com/ngnl47/tx` 当前已实现并验证的运行时能力。手册会随实现持续维护；仍未决策的行为会明确标注。
 
+## 核心决策快照
+
+本节用于后续模型或新同事快速对齐当前方案，具体 API 示例以后文为准。
+
+- `tx` 是 runtime 基础库，只提供元数据、变更追踪、存储抽象、Redis/Mongo/Fusion adapter、延迟任务、生命周期和日志能力。
+- 生成代码由 `txgen` 负责；`tx` 不反向依赖生成器，也不读取项目工程的 yml。
+- 项目工程负责读取 yml、创建 Redis/Mongo client、组装 route table 和 runtime，再把 reader/writer 注册给生成包。
+- `GD*` 是业务数据对象；`GD*Store` 是同一份 `GD*` 数据上的变更装饰器，保存 dirty、loaded、mode、view 等状态，不保存第二份完整业务数据。
+- Store 不是协议字段类型，输入模型和 cmd 请求/响应都不应声明 `*GD*Store` 字段。需要投影下行时，通过 Provider 的 `Set*Store` / `Set*Stores` 传入 viewStore。
+- 业务 handler 推荐使用项目 facade，例如 `db.Save(role)`；显式 `storage.Save(ctx, writer, role.Store())` 属于框架层、测试层或高频对象循环控制入口。
+- 创建对象的业务流程不由通用 `db.Create` facade 代理。业务负责初始化 `GD*` 字段；框架层 `storage.Create` 只表达 upsert/首次缓存写入语义。
+- 当前标脏主线是 `change.DeltaSet`。内部保存字段编号和强类型 key/index；`"Items.1001.Quantity"` 这类字符串只在输出边界临时生成。
+- Store 拦截模式和 snapshot diff 模式都保留，且同一变更周期互斥。高频大集合优先 Store wrapper；低频请求可使用 `BeginChange/SaveChange` 允许直接改 public field。
+- `DeltaSet` 不保存字段值；Redis、Mongo、Fusion 和 Provider 在边界通过生成 Store 读取当前 `GD*` 最终值。
+- `map[string]` 的危险 key 在 Mongo update 边界降级整字段写，不做私有转义，保证数据库中仍能直观看到业务 key。
+- Redis 当前使用 string JSON main/subKey 文档。带 `redis:"subKey:..."` 的字段拆独立 key；main 文档仍是根记录热数据的一部分。
+- Fusion 延迟保存队列只保存记录定位，到期后读取 Redis 当前热数据并整文档写回 Mongo；它不是保存每一轮字段 diff 的队列。
+- `delaySaveTime` 是 Redis 热数据回写 Mongo 的延迟；`delayDelTime` 是 Redis 热数据 TTL，不表示 Mongo 删除。
+- Redis 批量读取生产默认依赖云代理或单节点的原生 `MGET`；本地原生 Redis Cluster debug 才显式开启 `LoadOptions.ClusterSafe` 按 hash tag 分组。
+
 ## 定位
 
 `tx` 是运行时基础库，负责：
@@ -630,7 +650,21 @@ role.TagsStore().UpdateAt(0, func(tag string) string {
 // 变更文档：Set["Tags.0"] = "old_new"
 ```
 
-这里的 `"Tags.0"` 是输出边界文档 key，不是 Store 内部 dirty 结构。Store 内部仍是 `DeltaEntry{Path: Tags + index 0}`。
+如果 slice 元素是生成数据对象指针，`GetAt` 和 `SetAt` 会把子 Store 绑定到父 slice 的 index 路径：
+
+```go
+role.Dress = []*data.GDDressItem{{Id: 7, Expire: 100}}
+
+item, ok := role.DressStore().GetAt(0)
+if ok {
+	item.SetExpire(200)
+}
+// 变更文档：Set["Dress.0.Expire"] = 200
+```
+
+`Append`、`RemoveAt`、`Replace`、`Clear` 这类改变长度、顺序或整体语义的操作仍会记录整字段 dirty；如果同一轮里已经存在整字段 dirty，后续子字段 dirty 会被吸收。
+
+这里的 `"Tags.0"` 和 `"Dress.0.Expire"` 都是输出边界文档 key，不是 Store 内部 dirty 结构。Store 内部仍是 `DeltaEntry{Path: Tags + index 0}` 或 `DeltaEntry{Path: Dress + index 0 + Expire}`。
 
 `Append`、`RemoveAt`、`Clear`、`Replace` 会改变长度、顺序或整体语义，因此仍然记录整字段 dirty。
 生成代码不会暴露字符串 path 级标脏 API，业务侧应使用强类型方法。

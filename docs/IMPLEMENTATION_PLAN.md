@@ -14,6 +14,48 @@
 - Fusion 延迟任务抽象成可替换任务后端。
 - 测试用例只放在 `tests/` 目录下。
 
+## Current Stable Decisions
+
+后续实现、代码审查和模型切换后接力均以本节为准；如果代码、使用手册和本节冲突，先停下来核对，不要按记忆继续改。
+
+- `tx` 是 runtime 基础库，不依赖 `txgen`；`txgen` 生成的代码只依赖 `github.com/ngnl47/tx`。
+- `txgen` 负责生成 `GD*.go`、`GD*Store.go`、cmd、字段名函数、字段编号和类型元数据；业务模板和集成样例放在 `txgame`。
+- `GD*` 是纯数据对象；`GD*Store` 是同一个 `GD*` 指针上的装饰对象，保存 dirty、loaded、mode、view 等运行时状态，不保存第二份业务数据。
+- 业务输入模型和协议字段不能直接声明生成的 `*Store` 类型；Store 只用于框架持久化和 Provider 投影输入。
+- 业务 facade 和框架 API 分层。handler 推荐写 `db.Save(role)`；facade 内部再取 `role.Store()` 并调用 `storage.Save`。
+- 通用 `db.Create` facade 不作为当前目标。新建对象、默认字段初始化、初始资源发放属于业务流程；框架层保留 `storage.Create` 表达 upsert/首次缓存语义。
+- 当前标脏主线是 `change.DeltaSet`。热路径只保存 `FieldID`、map key、slice index 和 `DeltaKind`，不常驻拼接字符串路径。
+- `DeltaEntry` 第一版保留 `Value any` 边界，避免过早自研 value 编码；后续如需性能优化，只做局部 fast path。
+- 字符串路径只在输出边界生成，例如 `ChangeDocument()`、Redis JSON patch、Mongo update document 和 cmd Provider body。
+- `DeltaSet.Compact()` 只做路径上可确定的压缩：同路径后写覆盖先写，祖先整字段写覆盖子路径，后发生的祖先写清理旧子路径；不做需要外部生命周期上下文的新建删除抵消。
+- `MaxDeltaDepth` 当前按 4 层设计。超深路径不能 panic；应降级到最近安全祖先整字段写，并通过日志或生成期提示保持可观测。
+- `map[string]` 的 key 如果为空字符串、包含 `.` 或 `$`，Mongo 边界不转义 key，而是降级整字段写，保证数据库中保留业务真实 key。
+- Store 拦截路径和 snapshot diff 路径同时存在，但同一变更周期互斥。`ModeStore` 用于 setter/Store wrapper 标脏，`ModeSnapshot` 用于 `BeginChange/SaveChange`。
+- `BeginChange()` 必须在业务直接修改字段之前调用；`SaveChange()` 成功后清理 snapshot 和本轮 dirty，失败时保留可重试状态。
+- Store 路径适合高频对象和大集合字段；保存前可用 `store.View()` 复制下行视图，避免保存成功清理 dirty 后丢失广播字段。
+- 当前集合策略：map wrapper 支持 key 级 dirty 和生成对象指针子字段冒泡；slice wrapper 支持稳定 index 级 dirty，`[]*GD...` 元素可通过 `GetAt/SetAt` 绑定子 Store 并冒泡子字段；`Append`、`RemoveAt`、`Replace`、`Clear` 这类长度或整体语义变化仍按整字段处理。
+- 字段名体系本体是 `go/json/bson/msgpack`。Redis 当前选择 JSON 名，Mongo 当前选择 BSON 名，cmd Provider 当前选择 Msgpack 名；`alias` 只是输入侧语法糖。
+- Fusion 是 Redis 热数据加 Mongo 冷数据。Redis main/subKey 都使用 string JSON 文档；RedisJSON/ReJSON 仅作为后续可选 backend，不是当前默认路径。
+- `delaySaveTime` 表示 Redis 热数据变更后多久回写一次 Mongo；`delayDelTime` 表示 Redis 热数据 TTL 和自动续期时间，不表示 Mongo 删除延迟。
+- Fusion 延迟任务队列只保存记录定位信息；到期后读取 Redis 当前最新热数据，整文档 replace 到 Mongo。队列不保存中间态业务对象或本轮字段 diff。
+- 从 Mongo 回填 Redis 必须具备 `delayDelTime > 0` 的热数据 TTL；并发 miss 回填要通过 Redis 锁和二次读取避免旧 Mongo 快照覆盖新 Redis 热数据。
+- Redis `<mainKey>@v` 是热数据生命周期版本键，只用于 Redis 删除/过期窗口并发保护，不是业务字段，也不是 Mongo 字段；版本键和 main/subKey 必须使用同一 hash tag。
+- Redis 批量读取默认按生产云代理能力走 endpoint 内原生 `MGET`；本地原生 Redis Cluster debug 才显式打开 `LoadOptions.ClusterSafe` 按 hash tag 分组多次读取。
+- Mongo 不内置业务删除策略。物理删除接口存在，但是否调用由业务决定；TTL 索引是 Mongo 自身按字段值删除整条文档的能力，生成阶段限制同一类型最多一个 TTL 字段。
+- 后续如发现中间过渡结构、废弃测试或过时文档描述，应持续瘦身；保留稳定决策，不保留已经放弃的实现路线。
+
+## Next Work Items
+
+当前后续实施优先级：
+
+1. 继续完善集合 Store：补齐 map/slice wrapper 的强类型 API、子对象生命周期上下文、整字段吸收规则和边界降级提示。
+2. 继续收敛存储 facade：生成代码不直接暴露业务层保存函数，项目侧 `db.Save(role)` 包装框架层 `storage.Save`。
+3. 推进 Redis 热数据版本键完整接入：写入续期、延迟删除、main/subKey/version key 的 hash tag 一致性和集成测试。
+4. 强化 Fusion 并发回源：Redis miss 后 Mongo 回填 Redis 的锁、二次读取、TTL 校验和批量读取混合命中策略。
+5. 补齐使用文档和 txgame 示例：每个新增行为都要给业务代码例子，并说明边界输出会使用哪套字段名。
+6. 持续清理不再作为主线的字符串路径变更代码、过渡接口和旧测试，只保留必要历史 benchmark 结论。
+7. 日志基建后续专题：确定业务项目 logger 枚举或包级变量、名称规范、级别配置和 tx/log 的最小扩展点。
+
 ## Module Layout
 
 当前包结构方向：
@@ -23,11 +65,16 @@ tx/
   meta/             # 元数据模型、registry、annotation 输出模型
   anno/             # Go 注释中的 type-level tag 解析、规范化、校验
   astscan/          # Go AST 扫描器，提取 package/type/field/method/comment 信息
+  change/           # DeltaSet、DeltaPath、变更文档和变更模式
+  lifecycle/        # 可取消、可等待后台任务结束的运行时上下文
+  log/              # 基于 slog 的最小日志门面
   storage/          # 存储抽象：Store mode、route、key、options、runtime metadata
+  storage/config/   # 项目 yml 路由配置的强类型承接模型
   storage/redis/    # Redis key builder、route resolver、后续 Redis adapter
   storage/mongo/    # Mongo collection/index/sharding metadata、后续 Mongo adapter
   storage/fusion/   # Fusion 策略与延迟任务抽象
   storage/task/     # Delay task backend interface 和内存实现
+  util/             # 小型通用工具
   tests/            # 所有测试文件，仅此目录下生成 *_test.go
 ```
 
@@ -174,13 +221,14 @@ Go 注释 / struct tag -> anno -> astscan -> meta -> storage/gen
   - struct type
   - exported/unexported field
   - embedded field
-  - field tags: `json`、`bson`、`alias`
+  - field tags: `json`、`bson`、`msgpack`、`alias`
   - method receiver 和 method 名
   - type doc comment 中的 `// @storage` / `// @redis` / `// @mongodb`
   - field struct tag 中的 `redis` / `mongodb`
-- alias 规则第一版建议：
-  - 显式 tag field name 优先。
-  - Go field alias 推导：`alias` tag > `json` tag > lower-camel Go field name。
+- 字段名规则：
+  - Go 字段名是框架内部字段身份。
+  - `alias` 只是输入侧语法糖；写了 `alias` 时不能再写 `json`、`bson` 或 `msgpack`。
+  - 不写 `alias` 时，`json`、`bson`、`msgpack` 三套字段名各自独立；缺省按 lower-camel Go 字段名推导。
 
 验收：
 
@@ -331,26 +379,26 @@ Store 生成、Redis key helper、Mongo filter helper、字段编号 resolver �
 
 测试：
 
-- `tests/gen_metadata_test.go`
-- 使用 snapshot 字符串断言核心字段，不引入大体量 golden 文件。
+- 生成侧测试放在 `txgen/tests`。
+- `tx` 只保留 runtime、annotation、metadata 和 adapter 相关测试。
 
 ## Phase 8: Storage Adapter Implementation
 
-目标：在 metadata 稳定后再实现 Redis/Mongo/Fusion 真实读写。
+状态：Redis、Mongo 和 Fusion 的最小真实读写链路已经建立，后续不再把 adapter 视为“待开始”的方向。
 
-建议顺序：
+当前能力：
 
-1. Redis key builder 和 interface，不引入外部 Redis client。
-2. Mongo filter/index metadata，不引入外部 Mongo client。
-3. 定义最小 DB adapter interface。
-4. 引入可选 adapter 包实现真实 Redis/Mongo。
-5. Fusion 使用 adapter + task backend 组合。
+- Redis adapter 支持 string JSON main/subKey 文档、Lua merge/replace、TTL 续期、批量读取和可选 `ClusterSafe`。
+- Mongo adapter 支持 load、batch load、delta update、replace、delete、route cluster 和官方 driver 薄适配层。
+- Fusion strategy 支持 Redis 热写、Mongo miss 回源、Redis 回填、延迟保存任务入队、后台 scheduler 和 Redis 到 Mongo 整文档回写。
+- `storage/config.RouteTableConfig` 支持项目 yml 路由配置归一化；项目负责读取 yml 和创建 driver client。
 
-原因：
+后续重点：
 
-- 新库先把元数据和生成链路做稳。
-- 避免一开始被具体 Redis/Mongo client 依赖和集成测试拖住。
-- 可以让 tests 目录里的单元测试保持纯内存。
+- Redis 热数据版本键 `<mainKey>@v` 在更多写入/删除窗口中的并发保护测试。
+- Fusion 并发 miss 回源的批量场景补充验证。
+- Redis/Mongo/Fusion adapter 围绕 `DeltaSet` 继续瘦身，清理不再需要的过渡接口。
+- SQL 或其他 backend 只作为未来扩展，不进入当前主线。
 
 ## Testing Policy
 
@@ -363,7 +411,7 @@ Store 生成、Redis key helper、Mongo filter helper、字段编号 resolver �
 - 测试 package 统一使用 `package tests`。
 - 测试通过 public API 驱动，避免为了测试暴露内部实现。
 - 临时输入文件用 `t.TempDir()` 生成。
-- 不依赖外部 Redis/MongoDB；真实 adapter 的集成测试另行确认后再做。
+- `tx` 单元测试默认不依赖外部 Redis/MongoDB；真实 Redis/Mongo/Fusion 集成验证放在 `txgame/server/tests/integration`。
 
 ## Milestones
 
@@ -378,7 +426,7 @@ Store 生成、Redis key helper、Mongo filter helper、字段编号 resolver �
 
 完成标准：
 
-- 能从 type-level 注释 tag、field-level struct tag 和 Go AST 得到稳定 type metadata。
+- 已完成。能从 type-level 注释 tag、field-level struct tag 和 Go AST 得到稳定 type metadata。
 
 ### M2: Annotation Boundary
 
@@ -389,7 +437,7 @@ Store 生成、Redis key helper、Mongo filter helper、字段编号 resolver �
 
 完成标准：
 
-- 当前输入和测试均使用新 Tx 注解语义。
+- 已完成。当前输入和测试均使用 Tx 注解语义。
 
 ### M3: Runtime Metadata
 
@@ -401,7 +449,7 @@ Store 生成、Redis key helper、Mongo filter helper、字段编号 resolver �
 
 完成标准：
 
-- 不连接外部 DB 即可验证 runtime metadata。
+- 已完成。不连接外部 DB 即可验证 runtime metadata。
 
 ### M4: Fusion Task Abstraction
 
@@ -413,23 +461,37 @@ Store 生成、Redis key helper、Mongo filter helper、字段编号 resolver �
 
 完成标准：
 
-- Fusion 延迟任务不依赖 Redis ZSet + Lua。
+- 已完成接口抽象；当前同时具备 memory backend 和 Redis 持久化 backend。Redis backend 使用 ZSet/hash + Lua 作为一种实现，但 Fusion 只依赖 `DelayTaskBackend` 接口。
 
-### M5: Generator Bridge
+### M5: Generator Boundary
 
 交付：
 
-- `gen` metadata output
-- 可供后续 Store generator 消费的中间模型。
+- `tx` 内不保留生成包。
+- `txgen` 输出 `GD*.go`、`GD*Store.go`、cmd 和类型注册表。
 
 完成标准：
 
-- 输入带 type-level 注释 tag 和 field-level struct tag 的 Go package，输出可测试、稳定的生成模型。
+- 已完成基础边界。生成产物只依赖 `github.com/ngnl47/tx`。
+
+### M6: DeltaSet And Collection Store
+
+交付：
+
+- `change.DeltaSet` 主线。
+- Store 模式和 snapshot diff 模式互斥。
+- map wrapper key 级 dirty 和生成对象指针子字段冒泡。
+- slice wrapper 稳定 index 级 dirty 和 `[]*GD...` 子字段冒泡。
+
+完成标准：
+
+- 部分已完成。后续继续完善集合 wrapper 的生命周期上下文、整字段吸收、危险 key 降级提示和更完整测试矩阵。
 
 ## Open Design Details
 
-这些不是阻塞项，可以在 M1 期间定稿：
+当前仍需单独讨论或逐步验证的点：
 
-- 是否支持除 `// @name:"..."` 之外的块状 doc 风格，还是后续补。
-- type ref 表达方式：建议 `import/path.TypeName`，避免 package name 冲突。
-- field alias 是否允许 type-level 注释 tag 或 field-level struct tag 显式覆盖 AST 推导 alias。
+- 是否需要字段级 snapshot 入口，用 benchmark 判断，不能凭感觉提前加 API。
+- map/slice wrapper 是否引入更强的可观察容器；如果引入，应保持强类型、低分配、与 `DeltaSet` 直连。
+- 日志基建是否需要项目级 logger registry、名称枚举或自动包名推导。
+- RedisJSON/ReJSON 是否作为可选 backend 引入，需先确认目标 Redis 环境和收益。
