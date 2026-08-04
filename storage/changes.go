@@ -32,6 +32,12 @@ type DeltaStore interface {
 	ClearDeltas()
 }
 
+// ReadOnlyDeltaStore 标记只可用于投影或下行、不可持久化的 Store。
+// 生成的 viewStore 实现该接口；普通 Store 无需额外实现。
+type ReadOnlyDeltaStore interface {
+	IsViewStore() bool
+}
+
 // StoreProvider 描述能暴露生成 Store 的数据对象。
 type StoreProvider[S DeltaStore] interface {
 	Store() S
@@ -49,6 +55,9 @@ func CreateWithOptions(ctx context.Context, applier DeltaApplier, store DeltaSto
 	}
 	if isNilDeltaStore(store) {
 		return ErrNilDeltaStore
+	}
+	if isReadOnlyDeltaStore(store) {
+		return ErrReadOnlyStore
 	}
 	store.AllTouch()
 	options = mergeApplyOptions(store.DefaultApplyOptions(), options)
@@ -72,6 +81,9 @@ func SaveWithOptions(ctx context.Context, applier DeltaApplier, store DeltaStore
 	}
 	if isNilDeltaStore(store) {
 		return ErrNilDeltaStore
+	}
+	if isReadOnlyDeltaStore(store) {
+		return ErrReadOnlyStore
 	}
 	options = mergeApplyOptions(store.DefaultApplyOptions(), options)
 	options.Upsert = false
@@ -101,6 +113,11 @@ func isNilDeltaStore(store DeltaStore) bool {
 	default:
 		return false
 	}
+}
+
+func isReadOnlyDeltaStore(store DeltaStore) bool {
+	readOnly, ok := store.(ReadOnlyDeltaStore)
+	return ok && readOnly.IsViewStore()
 }
 
 // DocumentLoader 定义按记录键读取单条文档的适配器。

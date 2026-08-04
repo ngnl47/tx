@@ -9,7 +9,8 @@
 - `tx` 是 runtime 基础库，只提供元数据、变更追踪、存储抽象、Redis/Mongo/Fusion adapter、延迟任务、生命周期和日志能力。
 - 生成代码由 `txgen` 负责；`tx` 不反向依赖生成器，也不读取项目工程的 yml。
 - 项目工程负责读取 yml、创建 Redis/Mongo client、组装 route table 和 runtime，再把 reader/writer 注册给生成包。
-- `GD*` 是业务数据对象；`GD*Store` 是同一份 `GD*` 数据上的变更装饰器，保存 dirty、loaded、mode、view 等状态，不保存第二份完整业务数据。
+- `GD*` 是业务数据对象；`GD*Store` 是独立、可组合的变更追踪结构，绑定同一份 `GD*` 数据后才具备读值、修改和投影意义，不保存第二份完整业务数据。
+- `GD*` 可懒持有默认主 Store，方便使用 `role.SetName(...)` 等代理方法；Store 本身可独立创建、绑定、组合和复制，不以某个 `GD*` 的身份为唯一归属。
 - Store 不是协议字段类型，输入模型和 cmd 请求/响应都不应声明 `*GD*Store` 字段。需要投影下行时，通过 Provider 的 `Set*Store` / `Set*Stores` 传入 viewStore。
 - 业务 handler 推荐使用项目 facade，例如 `db.Save(role)`；显式 `storage.Save(ctx, writer, role.Store())` 属于框架层、测试层或高频对象循环控制入口。
 - 创建对象的业务流程不由通用 `db.Create` facade 代理。业务负责初始化 `GD*` 字段；框架层 `storage.Create` 只表达 upsert/首次缓存写入语义。
@@ -463,6 +464,96 @@ body := role.MsgpackChangeDocument()
 `Deltas()` 返回压缩后的 `change.DeltaSet`。生成 Store 只负责提供 `TypeSpec`、`RecordKey`、
 `DeltaSet`、字段名解析器和值解析器；真正落库由 `tx/storage` 的通用 `Create` / `Save` 执行。
 
+### Store 树、共享引用与 viewStore
+
+`GD*Store` 不复制业务数据，而是绑定一个 `GD*` 引用并保存该路径上的字段选择和变更状态。父 Store
+按需持有直接指针、map key、slice index 的子 Store，最终在 `Deltas()` 或 `ChangeDocument()` 边界递归投影：
+
+```text
+GDRoleStore
+└── ItemsStore
+    └── key 1001 -> GDItemStore{Value: role.Items[1001]}
+```
+
+同一份业务数据可以出现在多条路径，不需要复制对象：
+
+```go
+gift := &data.GDItem{ItemId: 1001, Quantity: 1}
+
+roleA.ItemsStore().Set(1001, gift)
+roleB.ItemsStore().Set(1001, gift)
+```
+
+两个角色各自拥有 `Items[1001]` 的 Store 节点，保存时各自产生持久化变更；但它们共享同一个 `gift` 数据指针。
+框架不会维护共享对象的全局反向引用，所以后续更新必须说明具体持久化路径：
+
+```go
+for _, role := range guildRoles {
+	item, ok := role.ItemsStore().Get(1001)
+	if ok {
+		item.SetQuantity(2)
+	}
+}
+```
+
+不要期待 `gift.Store().SetQuantity(2)` 自动把变更扩散到所有引用它的角色；独立 `gift.Store()` 只描述
+`gift` 自己作为根对象时的变更，不具备“我属于哪些角色”的业务上下文。
+
+`viewStore` 与主 Store 使用同一种状态树和 Delta 投影逻辑，但用途是只读下行投影：主 Store 可以修改数据并保存；
+viewStore 只选择需要下行的字段，不参与持久化。生成代码会保护 viewStore 的修改 API，错误调用 `Set`、`Update`、
+`Delete` 等方法会立即报错，避免把视图误当成业务写入器。
+
+```go
+// 主 Store：修改数据。
+item, _ := role.ItemsStore().Get(1001)
+item.SetQuantity(2)
+
+// viewStore：只选择下行内容。
+view := role.Store().View()
+viewItem, _ := view.ItemsStore().Get(1001)
+viewItem.TouchItemId()
+viewItem.TouchQuantity()
+
+body := view.MsgpackChangeDocument()
+```
+
+`NewViewStore()` 从空选择状态开始；`store.View()` 深复制当前 Store 的字段、集合和子 Store 状态，继续引用同一份
+`GD*` 数据。它不会复制业务数据，也不能用 Go 赋值直接复制 Store，因为内部 map 和子 Store 必须递归复制。
+
+viewStore 是“选择哪些字段”的副本，不是“创建瞬间的数据快照”。生成文档时会读取当前 `GD*` 值并重新校验每条路径：
+
+```go
+view := role.Store().View()
+viewDress, _ := view.DressStore().GetAt(0)
+viewDress.TouchExpire()
+
+role.DressStore().RemoveAt(0) // slice 结构已变化
+
+doc := view.ChangeDocument()
+// 不输出不可靠的 Dress.0.Expire。
+// 降级输出 Dress 的当前完整 slice。
+```
+
+直接指针替换或清空、map key 删除或指向新对象、slice 长度变化、插入、删除、换位或 index 指向新对象，都会触发
+最近安全祖先的整字段输出。这样不会产生失效的 map key 或 slice index 路径。
+
+如果 map 的 key 类型不能表达为 `change.PathKey`（例如业务 enum 或结构体 key），生成器仍会提供该 key 的子 Store，
+但导出时保守替换整个 map 字段。这样不会生成无法被 Redis/Mongo 正确定位的伪路径。
+
+如果下行内容必须严格固定为某个时刻的值，应在完成字段选择后立即物化文档或协议 body，而不是把 viewStore 留到后续继续使用：
+
+```go
+role.SetPower(100)
+
+view := role.Store().View()
+view.TouchName()
+view.TouchPower()
+body := view.MsgpackChangeDocument() // 此刻物化，后续 role 修改不会改变 body。
+
+role.SetPower(200)
+send(body)
+```
+
 ### 集合递归深度预算
 
 `change.MaxDeltaDepth` 当前为 `4`，它是集合子对象路径的真实递归预算，而不是仅用于存储的数组长度。
@@ -472,7 +563,7 @@ map key 或 slice index 与所属字段合并为一个路径节点，因此下�
 Role.Items[1001].Attrs["atk"].Buffs[2].Modifiers[7]
 ```
 
-Store setter 冒泡和 `BeginChange/SaveChange` 快照 diff 都使用同一预算。若业务继续修改第五层，框架会立即停止
+Store 树投影和 `BeginChange/SaveChange` 快照 diff 都使用同一预算。若业务继续修改第五层，框架会立即停止
 向下追踪，并把最近可解析祖先改为整体覆盖，保证最终数据正确且避免无意义的深层遍历。例如：
 
 ```go
@@ -605,18 +696,18 @@ body := view.MsgpackChangeDocument()
 
 这适合广播或响应中“额外携带一些未修改字段”的场景。主对象的落库 Store 不会因此多出脏字段。
 
-普通字段为生成数据对象指针时，通过生成 getter 取得子对象会建立到父 Store 的路径绑定；随后调用子对象自己的 setter，会产生父对象的嵌套 delta：
+普通字段为生成数据对象指针时，应通过父 Store 取得路径上下文中的子 Store；子 Store 的字段修改会在边界投影为父对象的嵌套 delta：
 
 ```go
 role.SetDailyTask(&data.GDDailyTask{Active: 1})
 role.ClearChanges()
 
-task := role.GetDailyTask()
+task := role.DailyTaskStore()
 task.SetActive(2)
 // ChangeDocument(): Set["DailyTask.Active"] = int64(2)
 ```
 
-`SetDailyTask` 覆盖或 `ClearDailyTask` 清空字段时，会解除旧指针的绑定。旧对象后续 setter 不会再写入父对象；需要修改当前对象时，重新调用 `GetDailyTask()`。直接写 `role.DailyTask` 属于快照 diff 或手动 `TouchDailyTask()` 路径，不会自动建立 Store 父路径。
+`SetDailyTask` 覆盖或 `ClearDailyTask` 清空字段时，父 Store 会替换或移除自己的子 Store 节点。旧对象没有父回调，因此旧对象后续的独立 Store 修改不会污染角色 Store。直接写 `role.DailyTask` 属于快照 diff 或手动 `TouchDailyTask()` 路径，不会自动产生嵌套 Store 变更。
 
 ### 零值和删除
 
@@ -681,7 +772,7 @@ role.Items[1001].Quantity += 3
 role.TouchItems()
 ```
 
-热点集合路径建议使用生成的集合 Store wrapper。map 的 `Set`、`Update`、`Delete`、`Touch(key)` 会记录 key 级 dirty；如果 map value 是生成数据对象指针，子对象 setter 可以继续向父路径冒泡：
+热点集合路径建议使用生成的集合 Store wrapper。map 的 `Set`、`Update`、`Delete`、`Touch(key)` 会记录 key 级状态；如果 map value 是生成数据对象指针，`Get(key)` 返回该 key 路径专属的子 Store：
 
 ```go
 role.ItemsStore().Set(1001, &data.GDItem{ItemId: 1001, Quantity: 3})
@@ -701,7 +792,7 @@ role.TagsStore().UpdateAt(0, func(tag string) string {
 // 变更文档：Set["Tags.0"] = "old_new"
 ```
 
-如果 slice 元素是生成数据对象指针，`GetAt` 和 `SetAt` 会把子 Store 绑定到父 slice 的 index 路径：
+如果 slice 元素是生成数据对象指针，`GetAt` 返回父 slice 的 index 路径专属子 Store：
 
 ```go
 role.Dress = []*data.GDDressItem{{Id: 7, Expire: 100}}
@@ -756,7 +847,7 @@ role.Store().AllTouch()
 
 执行后不再保留 `Name` 或集合字段的局部记录。后续保存路径应根据 `AllDirty()` 走整文档替换。
 
-`ClearChanges()` 或 Store 的 `AllUnTouch()` 用于加载完成、主动放弃本轮修改，或显式 Store 写入成功后手动清空脏标记。
+`ClearChanges()` 或 Store 的 `AllUnTouch()` 用于加载完成、主动放弃本轮修改，或显式 Store 写入成功后手动清空脏标记。它会递归清理整棵 Store 树的字段、集合和子节点状态。
 普通请求链路建议使用项目 facade 自动清理：
 
 ```go

@@ -20,7 +20,12 @@
 
 - `tx` 是 runtime 基础库，不依赖 `txgen`；`txgen` 生成的代码只依赖 `github.com/ngnl47/tx`。
 - `txgen` 负责生成 `GD*.go`、`GD*Store.go`、cmd、字段名函数、字段编号和类型元数据；业务模板和集成样例放在 `txgame`。
-- `GD*` 是纯数据对象；`GD*Store` 是同一个 `GD*` 指针上的装饰对象，保存 dirty、loaded、mode、view 等运行时状态，不保存第二份业务数据。
+- `GD*` 是纯数据对象；`GD*Store` 是独立、完整、可组合的变更追踪结构，绑定 `GD*` 后才具备读值、修改和投影意义。Store 只持有业务数据引用，不保存第二份业务数据。
+- `GD*` 可以懒持有默认主 Store，作为 `role.SetName(...)` 这类代理入口；Store 本身不依附于某个 `GD*` 实例，可单独创建、绑定、组合和复制。
+- Store 树按持久化路径组织：父 Store 持有复合字段、map key 或 slice index 对应的子 Store；子 Store 不向 `GD*` 写入父回调或父路径。`DeltaSet` 只在保存或下行边界从整棵 Store 树投影产生。
+- 同一个 `*GD...` 可以出现在多个根对象、集合字段或集合 key 中。每条路径拥有独立 Store 节点和 dirty 状态，业务数据引用可以共享；框架不维护全局反向引用表，也不自动把一次路径内修改扩散到其他引用位置。
+- `store.View()` 深复制 Store 的字段状态、集合状态和子 Store 树，浅复制绑定的 `GD*` 引用；不得直接复制含 map 或子 Store 指针的 Store 结构。主 Store 与 viewStore 的内部结构一致，但 viewStore 是只读投影模式：允许读取、`Touch/UnTouch` 和生成文档，不允许修改数据或持久化。
+- viewStore 是字段选择状态的副本，不是业务数据快照。`ChangeDocument()` 在边界重新读取当前 `GD*` 值并校验指针、map key、slice index 路径；结构漂移时必须提升为最近安全祖先的整字段写，不能输出已失效的 key/index 路径。需要时刻快照时，业务必须在变更后的下一步立即物化 `ChangeDocument()` 或协议 body。
 - 业务输入模型和协议字段不能直接声明生成的 `*Store` 类型；Store 只用于框架持久化和 Provider 投影输入。
 - 业务 facade 和框架 API 分层。handler 推荐写 `db.Save(role)`；facade 内部再取 `role.Store()` 并调用 `storage.Save`。
 - `txgame/server/internal/db` 已提供泛型 `db.Save(role)` facade：它使用服务启动时装配的根 context 与 writer，并只在 facade 内部获取生成数据对象的 Store。
@@ -30,12 +35,12 @@
 - 字符串路径只在输出边界生成，例如 `ChangeDocument()`、Redis JSON patch、Mongo update document 和 cmd Provider body。
 - `DeltaSet.Compact()` 只做路径上可确定的压缩：同路径后写覆盖先写，后发生的祖先写清理更早子路径；较早祖先不会吞掉较晚子路径，因为 runtime 不读取当前对象，无法证明祖先值已包含后续修改。不做需要外部生命周期上下文的新建删除抵消。
 - `DeltaKindSet` 用于标记当前字段值；`DeltaKindReplace` 用于集合、结构体指针和集合元素的覆盖赋值。`SetItems(value)`、`ItemsStore().Set(key, value)`、`SetAt(index, value)` 都遵循 Go 赋值语义：持久化时不保留旧值中未出现的字段；对子对象的 setter 才保留局部 `DeltaKindSet` 路径。
-- `MaxDeltaDepth` 是 Store 冒泡和 snapshot diff 共用的真实递归预算，当前为 4 层 `PathNode`。即将超过预算时必须立刻停止向下比较或传播，将最近可解析祖先标为 `DeltaKindReplace`；不能 panic，也不能继续做无效深层 diff。每个生成数据类型通过 `sync.Once` 输出一次告警，提示该类型发生了深度降级。
+- `MaxDeltaDepth` 是 Store 树投影和 snapshot diff 共用的真实递归预算，当前为 4 层 `PathNode`。即将超过预算时必须立刻停止向下比较或投影，将最近可解析祖先标为 `DeltaKindReplace`；不能 panic，也不能继续做无效深层 diff。每个生成数据类型通过 `sync.Once` 输出一次告警，提示该类型发生了深度降级。
 - `map[string]` 的 key 如果为空字符串、包含 `.` 或 `$`，Mongo 边界不转义 key，而是降级整字段写，保证数据库中保留业务真实 key。
 - Store 拦截路径和 snapshot diff 路径同时存在，但同一变更周期互斥。`ModeStore` 用于 setter/Store wrapper 标脏，`ModeSnapshot` 用于 `BeginChange/SaveChange`。
 - `BeginChange()` 必须在业务直接修改字段之前调用；`SaveChange()` 成功后清理 snapshot 和本轮 dirty，失败时保留可重试状态。
-- Store 路径适合高频对象和大集合字段；保存前可用 `store.View()` 复制下行视图，避免保存成功清理 dirty 后丢失广播字段。
-- 当前集合策略：map wrapper 支持 key 级 dirty 和生成对象指针子字段冒泡；slice wrapper 支持稳定 index 级 dirty，`[]*GD...` 元素可通过 `GetAt/SetAt` 绑定子 Store 并冒泡子字段；`InsertAt`、`Append`、`RemoveAt`、`Replace`、`Clear` 这类长度或整体语义变化仍按整字段处理。
+- Store 路径适合高频对象和大集合字段；保存前可用 `store.View()` 复制下行选择状态，或立即物化下行文档，避免保存成功清理 dirty 后丢失广播字段。
+- 当前集合策略：map wrapper 支持 key 级状态和生成对象指针子 Store；slice wrapper 支持稳定 index 级状态和 `[]*GD...` 元素子 Store。`InsertAt`、`Append`、`RemoveAt`、`Replace`、`Clear` 这类长度或整体语义变化按整字段处理；viewStore 发现 map/slice 结构漂移时同样整字段降级。
 - 字段名体系本体是 `go/json/bson/msgpack`。Redis 当前选择 JSON 名，Mongo 当前选择 BSON 名，cmd Provider 当前选择 Msgpack 名；`alias` 只是输入侧语法糖。
 - Fusion 是 Redis 热数据加 Mongo 冷数据。Redis main/subKey 都使用 string JSON 文档；RedisJSON/ReJSON 仅作为后续可选 backend，不是当前默认路径。
 - `delaySaveTime` 表示 Redis 热数据变更后多久回写一次 Mongo；`delayDelTime` 表示 Redis 热数据 TTL 和自动续期时间，不表示 Mongo 删除延迟。
@@ -50,11 +55,12 @@
 
 当前后续实施优先级：
 
-1. 继续完善生成对象嵌套与集合 Store：普通 `*GD...` 字段已通过生成 getter/setter/update 建立子 Store 父路径绑定，并在覆盖或清空时解除旧指针，子 setter 可形成 `DailyTask.Active` 这类嵌套 delta。map 的 `Get`、`GetOrNew`、`Range`、`Set`、`Replace` 以及 slice 的 `GetAt`、`Range`、`SetAt`、`InsertAt`、`Append`、`Replace` 也会绑定生成对象子 Store，集合根/元素的 `Set` 已使用覆盖语义，超深递归已按 `MaxDeltaDepth` 降级到最近祖先整体替换。后续补齐 map/slice wrapper 的强类型 API、整字段吸收规则和更完整测试矩阵；`Delete`、`Set` 覆盖、`Replace`、`SetAt`、`RemoveAt`、`InsertAt` 已会解除被移出生成对象的父路径绑定，防止旧指针向已删除 key 或过期 slice index 冒泡 dirty。
-2. 评估 Fusion 批量混合命中的回源组织方式：当前单记录回填已通过记录锁、二次 Redis 读取和真实并发集成测试保证正确性；后续如为减少 Mongo I/O 调整为批量回源，必须保持这一正确性边界。
-3. 补齐使用文档和 txgame 示例：每个新增行为都要给业务代码例子，并说明边界输出会使用哪套字段名。
-4. 持续清理不再作为主线的字符串路径变更代码、过渡接口和旧测试，只保留必要历史 benchmark 结论。
-5. 日志基建后续专题：确定业务项目 logger 枚举或包级变量、名称规范、级别配置和 tx/log 的最小扩展点。
+1. 完成生成 Store 的路径树重构：不再向子 `GD*` 写父回调/路径；父 Store 懒持有直接指针、map key、slice index 的子 Store，`Deltas()` 在边界递归投影并压缩。viewStore 复制状态树、浅复制 GD 引用，写接口和持久化入口都会拒绝它。生成器测试已覆盖共享引用、主/view 隔离、结构漂移整字段降级与深度降级。
+2. 为不支持结构化 key 的 `map[K]*GD...` 明确保守策略：仍生成路径子 Store 供业务修改；导出时整 map 字段替换，不能伪造 key 级路径。后续应补充 txgame 的代表性行为测试。
+3. 评估 Fusion 批量混合命中的回源组织方式：当前单记录回填已通过记录锁、二次 Redis 读取和真实并发集成测试保证正确性；后续如为减少 Mongo I/O 调整为批量回源，必须保持这一正确性边界。
+4. 补齐 txgame 使用示例：每个新增行为都要给业务代码例子，并说明边界输出会使用哪套字段名。
+5. 持续清理不再作为主线的字符串路径变更代码、过渡接口和旧测试，只保留必要历史 benchmark 结论。
+6. 日志基建后续专题：确定业务项目 logger 枚举或包级变量、名称规范、级别配置和 tx/log 的最小扩展点。
 
 ## Module Layout
 
@@ -482,12 +488,14 @@ Store 生成、Redis key helper、Mongo filter helper、字段编号 resolver �
 
 - `change.DeltaSet` 主线。
 - Store 模式和 snapshot diff 模式互斥。
-- map wrapper key 级 dirty 和生成对象指针子字段冒泡。
-- slice wrapper 稳定 index 级 dirty 和 `[]*GD...` 子字段冒泡。
+- Store 树按直接字段、map key、slice index 懒创建路径子节点。
+- map wrapper key 级状态与生成对象指针子 Store。
+- slice wrapper 稳定 index 级状态与 `[]*GD...` 子 Store。
+- 主 Store 与 viewStore 使用同一追踪结构；viewStore 在边界校验路径，结构漂移时整字段降级。
 
 完成标准：
 
-- 部分已完成。集合元素被删除、覆盖或因 slice 位移后会解除旧子 Store 的父路径绑定；后续继续完善集合 wrapper 的整字段吸收、危险 key 降级提示和更完整测试矩阵。
+- `DeltaSet`、确定性 Compact、危险 string key 降级、snapshot diff 与路径 Store 树已完成。当前生成 Store 在导出边界递归收集路径子 Store；共享引用按路径隔离，viewStore 会重新校验结构漂移并拒绝写入/持久化。
 
 ## Open Design Details
 

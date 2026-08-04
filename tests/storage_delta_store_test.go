@@ -33,6 +33,7 @@ type testDeltaStore struct {
 	key        storage.RecordKey
 	deltas     change.DeltaSet
 	defaults   storage.ApplyOptions
+	view       bool
 	allTouched int
 	cleared    int
 }
@@ -47,6 +48,7 @@ func (s *testDeltaStore) DeltaValueResolver() change.DeltaValueResolver {
 	return change.DeltaValueResolverFunc(func(change.DeltaPath) (any, bool) { return nil, false })
 }
 func (s *testDeltaStore) DefaultApplyOptions() storage.ApplyOptions { return s.defaults }
+func (s *testDeltaStore) IsViewStore() bool                       { return s.view }
 func (s *testDeltaStore) AllTouch() {
 	s.allTouched++
 	s.deltas = change.DeltaSet{{Path: testStorageDeltaPath(1), Kind: change.DeltaKindSet}}
@@ -120,6 +122,21 @@ func TestStorageSaveFailureKeepsDeltas(t *testing.T) {
 	}
 	if store.cleared != 0 {
 		t.Fatalf("ClearDeltas calls after failure = %d, want 0", store.cleared)
+	}
+}
+
+func TestStorageRejectsViewStore(t *testing.T) {
+	store := &testDeltaStore{view: true}
+	applier := &recordingDeltaStoreApplier{}
+
+	if err := storage.Save(context.Background(), applier, store); !errors.Is(err, storage.ErrReadOnlyStore) {
+		t.Fatalf("Save err = %v, want ErrReadOnlyStore", err)
+	}
+	if err := storage.Create(context.Background(), applier, store); !errors.Is(err, storage.ErrReadOnlyStore) {
+		t.Fatalf("Create err = %v, want ErrReadOnlyStore", err)
+	}
+	if applier.hasOptions || store.allTouched != 0 || store.cleared != 0 {
+		t.Fatalf("view Store reached persistence path: applier=%#v store=%#v", applier, store)
 	}
 }
 
