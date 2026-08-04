@@ -56,12 +56,17 @@
 
 当前后续实施优先级：
 
-1. 完成生成 Store 的路径树重构：不再向子 `GD*` 写父回调/路径；父 Store 懒持有直接指针、map key、slice index 的子 Store，`Deltas()` 在边界递归投影并压缩。viewStore 复制状态树、浅复制 GD 引用，写接口和持久化入口都会拒绝它。生成器测试已覆盖共享引用、主/view 隔离、结构漂移整字段降级与深度降级。
-2. 完成为不支持结构化 key 的 `map[K]*GD...` 明确保守策略：仍生成路径子 Store 供业务修改；导出时整 map 字段替换，不能伪造 key 级路径。已由 txgame 的 `map[EMDressType]*GDDress` 覆盖真实输入回归测试。
-3. Fusion 批量混合命中已采用正确性优先的回源规则：先批量读取 Redis；需要回填 Redis 的 miss 逐条进入记录锁、二次 Redis 读取、Mongo 全文读取与带 TTL 回填，不能以旧的批量 Mongo 结果直接覆盖热数据。`DontLoadToRedis` 才允许保留 Mongo 批量投影读取；后续如优化 Mongo I/O，必须保持这一正确性边界。
-4. 补齐 txgame 使用示例：每个新增行为都要给业务代码例子，并说明边界输出会使用哪套字段名。
-5. 持续清理不再作为主线的字符串路径变更代码、过渡接口和旧测试，只保留必要历史 benchmark 结论。
-6. 日志基建后续专题：确定业务项目 logger 枚举或包级变量、名称规范、级别配置和 tx/log 的最小扩展点。
+已完成基线：
+
+- 生成 Store 已使用父 Store 路径树组织直接指针、map key 和 slice index 子 Store；`Deltas()` 在边界递归投影并压缩，viewStore 会复制状态树且禁止写入、持久化。
+- `map[K]*GD...` 遇到不能表达为 `PathKey` 的 key 类型时，仍可通过子 Store 修改数据，但导出时保守替换整 map；`txgame` 已覆盖枚举 key 的真实输入回归。
+- Fusion 批量混合命中先批量读取 Redis；每个需要回填的 miss 都进入记录锁、二次 Redis 读取、Mongo 全文读取与带 TTL 回填，不能以旧 Mongo 快照覆盖新热数据。
+
+1. 保持 `txgame` 集成验证与生成 Store 行为同步：新增集合、指针、存储边界行为时，补业务侧代码示例及真实 Redis/Mongo 回归。
+2. 持续收紧 Redis/Mongo/Fusion adapter 的失败契约：未知脚本协议结果、路径类型冲突和路由错误必须显式返回错误，不能静默成功或做运行时数据修复。
+3. 持续清理不再作为主线的字符串路径变更代码、过渡接口和旧测试，只保留必要历史 benchmark 结论。
+4. 日志基建后续专题：确定业务项目 logger 枚举或包级变量、名称规范、级别配置和 tx/log 的最小扩展点。
+5. RedisJSON/ReJSON 仅作为未来可选 backend 单独评估；SQL、消息队列等其他 backend 也不进入当前主线。
 
 ## Module Layout
 

@@ -341,6 +341,21 @@ func TestRedisAdapterApplyDeltasWithOptionsReturnsPathTypeMismatch(t *testing.T)
 	}
 }
 
+func TestRedisAdapterApplyDeltasWithOptionsRejectsUnknownScriptResult(t *testing.T) {
+	client := &recordingRedisStringClient{evalResult: "unexpected", hasResult: true}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+
+	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendJSON, deltaTestJSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
+	if err == nil {
+		t.Fatal("ApplyDeltasWithOptions error = nil, want unknown script result error")
+	}
+	if !strings.Contains(err.Error(), "unexpected script result") || !strings.Contains(err.Error(), "unexpected") {
+		t.Fatalf("ApplyDeltasWithOptions error = %v, want unknown result details", err)
+	}
+}
+
 func TestRedisAdapterApplyDeleteDeletesMainSubKeysAndVersion(t *testing.T) {
 	client := &recordingRedisStringClient{}
 	adapter := txredis.NewAdapter(client)
