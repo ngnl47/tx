@@ -174,6 +174,10 @@ func (s Strategy) loadMongoMissingDocuments(ctx context.Context, spec meta.TypeS
 }
 
 func (s Strategy) loadMissingDocumentsWithProtectedBackfill(ctx context.Context, spec meta.TypeSpec, missingIndexes []int, missingKeys []storage.RecordKey, docs []map[string]any, exists []bool, fields ...string) error {
+	mongoBatch, ok := s.MongoLoader.(storage.BatchDocumentLoader)
+	if ok {
+		return s.loadMissingDocumentsWithBatchBackfill(ctx, spec, missingIndexes, missingKeys, docs, exists, mongoBatch, fields...)
+	}
 	for pos, idx := range missingIndexes {
 		doc, found, err := s.loadMongoDocumentAndBackfillRedis(ctx, spec, missingKeys[pos], fields...)
 		if err != nil {
@@ -183,6 +187,69 @@ func (s Strategy) loadMissingDocumentsWithProtectedBackfill(ctx context.Context,
 		exists[idx] = found
 	}
 	return nil
+}
+
+func (s Strategy) loadMissingDocumentsWithBatchBackfill(ctx context.Context, spec meta.TypeSpec, missingIndexes []int, missingKeys []storage.RecordKey, docs []map[string]any, exists []bool, mongo storage.BatchDocumentLoader, fields ...string) error {
+	mongoDocs, mongoExists, err := mongo.LoadDocuments(ctx, spec, missingKeys)
+	if err != nil {
+		return err
+	}
+	if len(mongoDocs) != len(missingKeys) || len(mongoExists) != len(missingKeys) {
+		return fmt.Errorf("fusion: mongo batch loader returned docs=%d exists=%d for %d keys", len(mongoDocs), len(mongoExists), len(missingKeys))
+	}
+	for pos, idx := range missingIndexes {
+		doc, found, err := s.backfillMongoDocumentAfterRedisCheck(ctx, spec, missingKeys[pos], mongoDocs[pos], mongoExists[pos], fields...)
+		if err != nil {
+			return err
+		}
+		docs[idx] = doc
+		exists[idx] = found
+	}
+	return nil
+}
+
+func (s Strategy) backfillMongoDocumentAfterRedisCheck(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, mongoDocument map[string]any, mongoExists bool, fields ...string) (map[string]any, bool, error) {
+	replacer := s.redisReplacerWithOptions()
+	if replacer == nil {
+		return nil, false, fmt.Errorf("fusion: redis backfill requires ReplaceDocumentWithOptions to set delayDelTime TTL")
+	}
+	locker := s.redisLocker()
+	if locker == nil {
+		return nil, false, fmt.Errorf("fusion: redis backfill requires record lock")
+	}
+	lock, err := locker.LockRecord(ctx, spec, key, storage.LockOptions{TTL: s.loadLockTTL(), Wait: s.loadLockWait()})
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = lock.Unlock(ctx) }()
+
+	if redisLoader := s.redisLoader(); redisLoader != nil {
+		doc, exists, err := redisLoader.LoadDocument(ctx, spec, key, fields...)
+		if err != nil {
+			return nil, false, err
+		}
+		if exists {
+			return doc, true, nil
+		}
+	}
+	if !mongoExists {
+		return nil, false, nil
+	}
+	if mongoDocument == nil {
+		return nil, false, fmt.Errorf("fusion: mongo batch loader returned an existing document without data")
+	}
+	ttl := int64(spec.Storage.DelayDelete.Duration.Seconds())
+	if ttl <= 0 {
+		return nil, false, fmt.Errorf("fusion: storage delayDelTime must be greater than 0 for redis backfill")
+	}
+	options := storage.ApplyOptions{
+		Upsert: true,
+		TTL:    ttl,
+	}
+	if err := replacer.ReplaceDocumentWithOptions(ctx, spec, key, mongoDocument, options); err != nil {
+		return nil, false, err
+	}
+	return projectDocument(spec, mongoDocument, fields), true, nil
 }
 
 func (s Strategy) loadMongoDocumentAndBackfillRedis(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, fields ...string) (map[string]any, bool, error) {

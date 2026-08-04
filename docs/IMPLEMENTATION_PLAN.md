@@ -61,7 +61,7 @@
 
 - 生成 Store 已使用父 Store 路径树组织直接指针、map key 和 slice index 子 Store；`Deltas()` 在边界递归投影并压缩，viewStore 会复制状态树且禁止写入、持久化。
 - `map[K]*GD...` 遇到不能表达为 `PathKey` 的 key 类型时，仍可通过子 Store 修改数据，但导出时保守替换整 map；`txgame` 已覆盖枚举 key 的真实输入回归。
-- Fusion 批量混合命中先批量读取 Redis；每个需要回填的 miss 都进入记录锁、二次 Redis 读取、Mongo 全文读取与带 TTL 回填，不能以旧 Mongo 快照覆盖新热数据。
+- Fusion 批量混合命中先批量读取 Redis；Mongo reader 支持批量读取时，所有 miss 只做一次 Mongo 全文批量读取，再逐条进入记录锁、二次 Redis 读取与带 TTL 回填。锁内命中 Redis 时直接返回新热数据，不能以旧 Mongo 候选覆盖它。
 
 1. 保持 `txgame` 集成验证与生成 Store 行为同步：新增集合、指针、存储边界行为时，补业务侧代码示例及真实 Redis/Mongo 回归。
 2. 持续收紧 Redis/Mongo/Fusion adapter 的失败契约：未知脚本协议结果、路径类型冲突和路由错误必须显式返回错误，不能静默成功或做运行时数据修复。
@@ -412,7 +412,7 @@ Store 生成、Redis key helper、Mongo filter helper、字段编号 resolver �
 后续重点：
 
 - Redis 热数据版本键 `<mainKey>@v` 在更多写入/删除窗口中的并发保护测试。
-- Fusion 并发 miss 回源的批量场景补充验证。
+- Fusion 并发 miss 回源的批量真实 Redis/Mongo 场景补充验证。
 - Redis/Mongo/Fusion adapter 围绕 `DeltaSet` 继续瘦身，清理不再需要的过渡接口。
 - SQL 或其他 backend 只作为未来扩展，不进入当前主线。
 

@@ -129,6 +129,9 @@ func (a *Adapter) LoadDocument(ctx context.Context, spec meta.TypeSpec, key stor
 	if err != nil || !exists {
 		return document, exists, err
 	}
+	if document == nil {
+		return nil, false, fmt.Errorf("mongo: finder returned an existing document without data")
+	}
 	canonical, err := canonicalDocumentFromBSON(spec, document, fields)
 	if err != nil {
 		return nil, false, err
@@ -151,9 +154,15 @@ func (a *Adapter) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []
 		if err != nil {
 			return nil, nil, err
 		}
+		if len(documents) != len(keys) || len(exists) != len(keys) {
+			return nil, nil, fmt.Errorf("mongo: batch finder returned documents=%d exists=%d for keys=%d", len(documents), len(exists), len(keys))
+		}
 		for i, found := range exists {
 			if !found {
 				continue
+			}
+			if documents[i] == nil {
+				return nil, nil, fmt.Errorf("mongo: batch finder returned an existing document without data at index %d", i)
 			}
 			canonical, err := canonicalDocumentFromBSON(spec, documents[i], fields)
 			if err != nil {
@@ -173,6 +182,9 @@ func (a *Adapter) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []
 			return nil, nil, err
 		}
 		if found {
+			if doc == nil {
+				return nil, nil, fmt.Errorf("mongo: finder returned an existing document without data at index %d", i)
+			}
 			doc, err = canonicalDocumentFromBSON(spec, doc, fields)
 			if err != nil {
 				return nil, nil, err

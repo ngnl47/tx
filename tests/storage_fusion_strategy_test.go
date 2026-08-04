@@ -579,9 +579,11 @@ func TestFusionStrategyLoadDocumentsBackfillsRedisFromFullMongoFallback(t *testi
 			existsMany: []bool{false, false},
 		},
 	}
-	mongo := &recordingDocumentLoader{
-		doc:    map[string]any{"name": "cold", "power": int64(2)},
-		exists: true,
+	mongo := &recordingSingleDocumentLoader{
+		docs: map[any]map[string]any{
+			int64(1001): {"name": "cold", "power": int64(2)},
+			int64(1002): {"name": "cold", "power": int64(2)},
+		},
 	}
 	replacer := &recordingDocumentReplacerWithOptions{}
 	locker := &recordingRecordLocker{}
@@ -601,11 +603,51 @@ func TestFusionStrategyLoadDocumentsBackfillsRedisFromFullMongoFallback(t *testi
 	if redis.recordingApplier.optionRuns != 0 {
 		t.Fatalf("redis backfill ApplyDeltasWithOptions calls = %d, want 0", redis.recordingApplier.optionRuns)
 	}
-	if mongo.manyCalls != 0 || mongo.calls != 2 {
-		t.Fatalf("mongo calls single/batch = %d/%d, want protected single-record fallback", mongo.calls, mongo.manyCalls)
+	if mongo.calls != 2 {
+		t.Fatalf("mongo single calls = %d, want protected single-record fallback", mongo.calls)
 	}
 	if len(mongo.fields) != 0 {
 		t.Fatalf("mongo fallback fields = %#v, want full document load", mongo.fields)
+	}
+	if locker.calls != 2 || replacer.calls != 2 || replacer.options.TTL != int64(time.Hour/time.Second) {
+		t.Fatalf("lock/backfill calls/options = %d/%d/%#v", locker.calls, replacer.calls, replacer.options)
+	}
+}
+
+func TestFusionStrategyLoadDocumentsBatchBackfillsFromMongo(t *testing.T) {
+	keys := []storage.RecordKey{{ID: int64(1001)}, {ID: int64(1002)}}
+	redis := &recordingRedisStore{
+		recordingDocumentLoader: recordingDocumentLoader{
+			docs:       []map[string]any{nil, nil},
+			existsMany: []bool{false, false},
+		},
+	}
+	mongo := &recordingDocumentLoader{
+		doc:        map[string]any{"name": "single-fallback"},
+		exists:     true,
+		docs:       []map[string]any{{"name": "cold-1", "power": int64(1)}, {"name": "cold-2", "power": int64(2)}},
+		existsMany: []bool{true, true},
+	}
+	replacer := &recordingDocumentReplacerWithOptions{}
+	locker := &recordingRecordLocker{}
+	strategy := fusion.Strategy{Redis: redis, RedisReplacer: replacer, RedisLocker: locker, MongoLoader: mongo}
+	spec := meta.TypeSpec{
+		Type:    meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
+		Storage: meta.StorageSpec{DelayDelete: meta.Duration{Duration: time.Hour}},
+	}
+
+	docs, exists, err := strategy.LoadDocuments(context.Background(), spec, keys, "name")
+	if err != nil {
+		t.Fatalf("LoadDocuments returned error: %v", err)
+	}
+	if !exists[0] || docs[0]["name"] != "cold-1" || !exists[1] || docs[1]["name"] != "cold-2" {
+		t.Fatalf("LoadDocuments = %#v exists=%#v, want batch Mongo fallback rows", docs, exists)
+	}
+	if mongo.manyCalls != 1 || mongo.calls != 0 {
+		t.Fatalf("mongo calls batch/single = %d/%d, want one full batch fallback", mongo.manyCalls, mongo.calls)
+	}
+	if len(mongo.fields) != 0 {
+		t.Fatalf("mongo batch fallback fields = %#v, want full document load", mongo.fields)
 	}
 	if locker.calls != 2 || replacer.calls != 2 || replacer.options.TTL != int64(time.Hour/time.Second) {
 		t.Fatalf("lock/backfill calls/options = %d/%d/%#v", locker.calls, replacer.calls, replacer.options)
@@ -640,8 +682,8 @@ func TestFusionStrategyLoadDocumentsDoubleChecksRedisUnderLockBeforeMongoBackfil
 	if locker.calls != 1 {
 		t.Fatalf("lock calls = %d, want one", locker.calls)
 	}
-	if mongo.calls != 0 || mongo.manyCalls != 0 || replacer.calls != 0 {
-		t.Fatalf("mongo/replacer calls = %d/%d/%d, want no Mongo load or backfill", mongo.calls, mongo.manyCalls, replacer.calls)
+	if mongo.calls != 0 || mongo.manyCalls != 1 || replacer.calls != 0 {
+		t.Fatalf("mongo/replacer calls = %d/%d/%d, want one candidate batch load and no backfill", mongo.calls, mongo.manyCalls, replacer.calls)
 	}
 }
 

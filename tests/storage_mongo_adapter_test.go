@@ -325,6 +325,58 @@ func TestMongoAdapterConvertsWholeDocumentsBetweenJSONAndBSON(t *testing.T) {
 	}
 }
 
+func TestMongoAdapterRejectsMalformedBatchFinderResult(t *testing.T) {
+	client := &recordingMongoUpdater{
+		manyDocs:   []map[string]any{{"_id": int64(1001), "p": int64(9)}},
+		manyExists: nil,
+	}
+	adapter := txmongo.NewAdapter(client)
+	spec := mongoDocumentSpec()
+	keys := []storage.RecordKey{{ID: int64(1001)}}
+
+	_, _, err := adapter.LoadDocuments(context.Background(), spec, keys)
+	if err == nil {
+		t.Fatal("LoadDocuments returned nil error for malformed batch result")
+	}
+	if !strings.Contains(err.Error(), "documents=1") || !strings.Contains(err.Error(), "exists=0") || !strings.Contains(err.Error(), "keys=1") {
+		t.Fatalf("LoadDocuments error = %v, want malformed batch result context", err)
+	}
+}
+
+func TestMongoAdapterRejectsMissingDocumentForExistingResult(t *testing.T) {
+	client := &recordingMongoUpdater{exists: true}
+	adapter := txmongo.NewAdapter(client)
+	spec := mongoDocumentSpec()
+	key := storage.RecordKey{ID: int64(1001)}
+
+	_, exists, err := adapter.LoadDocument(context.Background(), spec, key)
+	if err == nil {
+		t.Fatal("LoadDocument returned nil error for an existing nil document")
+	}
+	if exists {
+		t.Fatal("LoadDocument exists = true, want false for an invalid existing result")
+	}
+	if !strings.Contains(err.Error(), "existing document") {
+		t.Fatalf("LoadDocument error = %v, want existing document context", err)
+	}
+}
+
+func TestMongoAdapterRejectsMissingBatchDocumentForExistingResult(t *testing.T) {
+	client := &recordingMongoUpdater{
+		manyDocs:   []map[string]any{nil},
+		manyExists: []bool{true},
+	}
+	adapter := txmongo.NewAdapter(client)
+
+	_, _, err := adapter.LoadDocuments(context.Background(), mongoDocumentSpec(), []storage.RecordKey{{ID: int64(1001)}})
+	if err == nil {
+		t.Fatal("LoadDocuments returned nil error for an existing nil document")
+	}
+	if !strings.Contains(err.Error(), "existing document") || !strings.Contains(err.Error(), "index 0") {
+		t.Fatalf("LoadDocuments error = %v, want existing document and index context", err)
+	}
+}
+
 func TestMongoAdapterRejectsDocumentOperationWithoutGeneratedFactory(t *testing.T) {
 	client := &recordingMongoUpdater{
 		doc:    map[string]any{"name": "alice"},
