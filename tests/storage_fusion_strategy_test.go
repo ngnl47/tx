@@ -582,6 +582,39 @@ func TestFusionStrategyLoadDocumentsBackfillsRedisFromFullMongoFallback(t *testi
 	}
 }
 
+func TestFusionStrategyLoadDocumentsDoubleChecksRedisUnderLockBeforeMongoBackfill(t *testing.T) {
+	keys := []storage.RecordKey{{ID: int64(1001)}}
+	redis := &recordingDocumentLoader{
+		doc:    map[string]any{"name": "hot-after-lock", "power": int64(8)},
+		exists: true,
+	}
+	mongo := &recordingDocumentLoader{doc: map[string]any{"name": "cold"}, exists: true}
+	replacer := &recordingDocumentReplacerWithOptions{}
+	locker := &recordingRecordLocker{}
+	strategy := fusion.Strategy{RedisLoader: redis, RedisReplacer: replacer, RedisLocker: locker, MongoLoader: mongo}
+	spec := meta.TypeSpec{
+		Type:    meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
+		Storage: meta.StorageSpec{DelayDelete: meta.Duration{Duration: time.Hour}},
+	}
+
+	docs, exists, err := strategy.LoadDocuments(context.Background(), spec, keys, "name")
+	if err != nil {
+		t.Fatalf("LoadDocuments returned error: %v", err)
+	}
+	if !exists[0] || docs[0]["name"] != "hot-after-lock" {
+		t.Fatalf("LoadDocuments = %#v exists=%#v, want Redis row from lock double-check", docs, exists)
+	}
+	if redis.manyCalls != 1 || redis.calls != 1 {
+		t.Fatalf("redis calls batch/single = %d/%d, want initial batch read and lock double-check", redis.manyCalls, redis.calls)
+	}
+	if locker.calls != 1 {
+		t.Fatalf("lock calls = %d, want one", locker.calls)
+	}
+	if mongo.calls != 0 || mongo.manyCalls != 0 || replacer.calls != 0 {
+		t.Fatalf("mongo/replacer calls = %d/%d/%d, want no Mongo load or backfill", mongo.calls, mongo.manyCalls, replacer.calls)
+	}
+}
+
 func TestFusionStrategyLoadDocumentsWithNoBackfillOptionDoesNotBackfillRedis(t *testing.T) {
 	keys := []storage.RecordKey{{ID: int64(1001)}, {ID: int64(1002)}}
 	redis := &recordingRedisStore{
