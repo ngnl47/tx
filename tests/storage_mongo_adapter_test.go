@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -117,6 +118,38 @@ func TestMongoAdapterAppliesUpdateByDefaultIDFilter(t *testing.T) {
 	setDoc := updater.update["$set"].(map[string]any)
 	if setDoc["name"] != "alice" {
 		t.Fatalf("update = %#v", updater.update)
+	}
+}
+
+func TestMongoAdapterRejectsMissingClientCapability(t *testing.T) {
+	adapter := txmongo.NewAdapter(struct{}{})
+	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}
+	key := storage.RecordKey{ID: int64(1001)}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+
+	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, key, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
+	assertMongoUnsupportedClient(t, err, "Updater")
+
+	err = adapter.ReplaceDocument(context.Background(), spec, key, map[string]any{"name": "alice"})
+	assertMongoUnsupportedClient(t, err, "Replacer")
+
+	err = adapter.ApplyDelete(context.Background(), spec, key)
+	assertMongoUnsupportedClient(t, err, "Deleter")
+
+	_, _, err = adapter.LoadDocument(context.Background(), spec, key)
+	assertMongoUnsupportedClient(t, err, "Finder")
+
+	_, _, err = adapter.LoadDocuments(context.Background(), spec, []storage.RecordKey{key})
+	assertMongoUnsupportedClient(t, err, "BatchFinder or Finder")
+}
+
+func assertMongoUnsupportedClient(t *testing.T, err error, capability string) {
+	t.Helper()
+	if !errors.Is(err, txmongo.ErrUnsupportedClient) {
+		t.Fatalf("error = %v, want ErrUnsupportedClient", err)
+	}
+	if !strings.Contains(err.Error(), capability) {
+		t.Fatalf("error = %v, want capability %q", err, capability)
 	}
 }
 

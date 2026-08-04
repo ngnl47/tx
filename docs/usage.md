@@ -1454,6 +1454,16 @@ Mongo adapter 当前支持：
 - `ApplyDelete`：显式物理删除接口，由业务代码决定是否调用。
 - `mongo.Cluster`：按 `routeType` 和 `storage.RecordKey.ShardKey` 路由到具体 Mongo adapter；批量读取会按 shard 分组并按输入顺序还原结果。
 
+项目装配时应传入同时实现所需读写能力的官方 driver 薄适配，而不是直接传任意对象：
+
+```go
+database := txmongodriver.NewDatabase(mongoDB)
+adapter := txmongo.NewAdapter(database)
+```
+
+adapter 在真正执行读、写、替换或删除时会检查对应能力。装配对象缺少 `Updater`、`Finder`、`Replacer` 或
+`Deleter` 时返回 `mongo.ErrUnsupportedClient`，不会伪装成空写入或“记录不存在”。
+
 Mongo adapter 通过统一 filter 抽象调用底层 client：默认 filter 是 `{_id: id}`；配置
 `idField` 时 filter 字段由 `spec.BSONName(idField)` 推导。Mongo update 会遵守 `storage.ApplyOptions.Upsert`：
 生成 Store 的 Insert/Replace 路径会启用 upsert，Update 路径会关闭 upsert，避免普通更新意外创建缺失文档。

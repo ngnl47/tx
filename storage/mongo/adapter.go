@@ -2,6 +2,7 @@ package mongo
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/meta"
@@ -71,7 +72,7 @@ func (a *Adapter) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec
 	}
 	updater, ok := a.client.(Updater)
 	if !ok {
-		return nil
+		return unsupportedClientError("Updater")
 	}
 	return updater.UpdateOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), update, options)
 }
@@ -83,7 +84,7 @@ func (a *Adapter) ReplaceDocument(ctx context.Context, spec meta.TypeSpec, key s
 	}
 	replacer, ok := a.client.(Replacer)
 	if !ok {
-		return nil
+		return unsupportedClientError("Replacer")
 	}
 	return replacer.ReplaceOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), doc)
 }
@@ -92,7 +93,7 @@ func (a *Adapter) ReplaceDocument(ctx context.Context, spec meta.TypeSpec, key s
 func (a *Adapter) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
 	deleter, ok := a.client.(Deleter)
 	if !ok {
-		return nil
+		return unsupportedClientError("Deleter")
 	}
 	return deleter.DeleteOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key))
 }
@@ -101,7 +102,7 @@ func (a *Adapter) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key stora
 func (a *Adapter) LoadDocument(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, fields ...string) (map[string]any, bool, error) {
 	finder, ok := a.client.(Finder)
 	if !ok {
-		return nil, false, nil
+		return nil, false, unsupportedClientError("Finder")
 	}
 	return finder.FindOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), mongoProjectionFields(spec, fields)...)
 }
@@ -121,7 +122,7 @@ func (a *Adapter) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []
 	}
 	singleFinder, ok := a.client.(Finder)
 	if !ok {
-		return docs, exists, nil
+		return nil, nil, unsupportedClientError("BatchFinder or Finder")
 	}
 	for i, key := range keys {
 		doc, found, err := singleFinder.FindOne(ctx, collection, mongoRecordFilter(spec, key), projection...)
@@ -132,6 +133,10 @@ func (a *Adapter) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []
 		exists[i] = found
 	}
 	return docs, exists, nil
+}
+
+func unsupportedClientError(capability string) error {
+	return fmt.Errorf("mongo: adapter client does not implement %s: %w", capability, ErrUnsupportedClient)
 }
 
 func mongoCollection(spec meta.TypeSpec) string {
