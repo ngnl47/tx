@@ -69,12 +69,13 @@ type Type struct {
 
 // TypeSpec 是按类型注册的元数据单元。
 type TypeSpec struct {
-	Type    Type
-	Storage StorageSpec
-	Redis   *RedisSpec
-	Mongo   *MongoSpec
-	Fusion  *FusionSpec
-	Fields  map[string]FieldSpec
+	Type            Type
+	DocumentFactory func() any
+	Storage         StorageSpec
+	Redis           *RedisSpec
+	Mongo           *MongoSpec
+	Fusion          *FusionSpec
+	Fields          map[string]FieldSpec
 }
 
 func (spec TypeSpec) FieldByName(name string) (Field, bool) {

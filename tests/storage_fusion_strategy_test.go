@@ -425,6 +425,36 @@ func TestFusionStrategyLoadDocumentBackfillsRedisFromFullMongoFallback(t *testin
 	}
 }
 
+func TestFusionStrategyProjectsCanonicalDocumentWithJSONFieldName(t *testing.T) {
+	redis := &recordingDocumentLoader{}
+	mongo := &recordingDocumentLoader{doc: map[string]any{"roleId": int64(1001), "name": "cold", "power": int64(9)}, exists: true}
+	replacer := &recordingDocumentReplacerWithOptions{}
+	locker := &recordingRecordLocker{}
+	strategy := fusion.Strategy{RedisLoader: redis, RedisReplacer: replacer, RedisLocker: locker, MongoLoader: mongo}
+	spec := meta.TypeSpec{
+		Type: meta.Type{
+			Ref: meta.TypeRef{Name: "GDRole"},
+			Fields: []meta.Field{
+				{Name: "RoleId", JSONName: "roleId"},
+				{Name: "Name", JSONName: "name"},
+				{Name: "Power", JSONName: "power"},
+			},
+		},
+		Storage: meta.StorageSpec{DelayDelete: meta.Duration{Duration: time.Hour}},
+	}
+
+	doc, exists, err := strategy.LoadDocument(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "Name")
+	if err != nil {
+		t.Fatalf("LoadDocument returned error: %v", err)
+	}
+	if !exists || len(doc) != 1 || doc["name"] != "cold" {
+		t.Fatalf("LoadDocument = %#v, want canonical JSON projection {name:cold}", doc)
+	}
+	if _, exists := doc["Name"]; exists {
+		t.Fatalf("LoadDocument must not return Go field name: %#v", doc)
+	}
+}
+
 func TestFusionStrategyLoadDocumentDoubleChecksRedisUnderLockBeforeMongoBackfill(t *testing.T) {
 	redis := &recordingDocumentLoader{
 		docs:       []map[string]any{nil, {"name": "hot-after-lock", "power": int64(8)}},

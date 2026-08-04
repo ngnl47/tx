@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -45,6 +46,33 @@ type recordingMongoRouter struct {
 type recordingMongoRouteCall struct {
 	routeType string
 	shardKey  any
+}
+
+type mongoDocumentRole struct {
+	RoleID int64             `json:"roleId" bson:"_id"`
+	Power  int64             `json:"power" bson:"p"`
+	Rank   mongoDocumentRank `json:"rank" bson:"rank"`
+}
+
+type mongoDocumentRank struct {
+	Level int64 `json:"level" bson:"lv"`
+}
+
+func mongoDocumentSpec() meta.TypeSpec {
+	return meta.TypeSpec{
+		Type: meta.Type{Fields: []meta.Field{
+			{Name: "RoleID", JSONName: "roleId", BSONName: "_id"},
+			{Name: "Power", JSONName: "power", BSONName: "p"},
+			{Name: "Rank", JSONName: "rank", BSONName: "rank"},
+		}},
+		DocumentFactory: func() any { return new(mongoDocumentRole) },
+		Mongo:           &meta.MongoSpec{Collection: "roles", IDField: "RoleID"},
+	}
+}
+
+func mongoMapDocumentFactory() any {
+	value := map[string]any{}
+	return &value
 }
 
 func (u *recordingMongoUpdater) UpdateOne(_ context.Context, collection string, filter txmongo.Filter, update map[string]any, options storage.ApplyOptions) error {
@@ -123,7 +151,7 @@ func TestMongoAdapterAppliesUpdateByDefaultIDFilter(t *testing.T) {
 
 func TestMongoAdapterRejectsMissingClientCapability(t *testing.T) {
 	adapter := txmongo.NewAdapter(struct{}{})
-	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}
+	spec := meta.TypeSpec{DocumentFactory: mongoMapDocumentFactory, Mongo: &meta.MongoSpec{Collection: "roles"}}
 	key := storage.RecordKey{ID: int64(1001)}
 	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
 
@@ -223,10 +251,12 @@ func TestMongoAdapterMapsProjectionToBSONName(t *testing.T) {
 		Type: meta.Type{
 			Fields: []meta.Field{{
 				Name:     "Power",
+				JSONName: "power",
 				BSONName: "p",
 			}},
 		},
-		Mongo: &meta.MongoSpec{Collection: "roles"},
+		DocumentFactory: mongoMapDocumentFactory,
+		Mongo:           &meta.MongoSpec{Collection: "roles"},
 	}
 
 	_, exists, err := adapter.LoadDocument(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "Power")
@@ -238,6 +268,79 @@ func TestMongoAdapterMapsProjectionToBSONName(t *testing.T) {
 	}
 	if len(client.fields) != 1 || client.fields[0] != "p" {
 		t.Fatalf("fields = %#v, want [p]", client.fields)
+	}
+}
+
+func TestMongoAdapterConvertsWholeDocumentsBetweenJSONAndBSON(t *testing.T) {
+	client := &recordingMongoUpdater{
+		doc: map[string]any{
+			"_id": int64(1001),
+			"p":   int64(9),
+			"rank": map[string]any{
+				"lv": int64(4),
+			},
+		},
+		exists: true,
+	}
+	adapter := txmongo.NewAdapter(client)
+	spec := mongoDocumentSpec()
+
+	input := map[string]any{
+		"roleId": int64(1001),
+		"power":  int64(9),
+		"rank": map[string]any{
+			"level": int64(4),
+		},
+	}
+	if err := adapter.ReplaceDocument(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, input); err != nil {
+		t.Fatalf("ReplaceDocument returned error: %v", err)
+	}
+	if client.replace["_id"] != int64(1001) || client.replace["p"] != int64(9) {
+		t.Fatalf("mongo document = %#v, want BSON field names", client.replace)
+	}
+	if _, ok := client.replace["roleId"]; ok {
+		t.Fatalf("mongo document must not retain JSON roleId: %#v", client.replace)
+	}
+	rank, ok := client.replace["rank"].(map[string]any)
+	if !ok || rank["lv"] != int64(4) {
+		t.Fatalf("nested mongo document = %#v, want rank.lv=4", client.replace["rank"])
+	}
+
+	doc, exists, err := adapter.LoadDocument(context.Background(), spec, storage.RecordKey{ID: int64(1001)})
+	if err != nil {
+		t.Fatalf("LoadDocument returned error: %v", err)
+	}
+	if !exists {
+		t.Fatal("LoadDocument exists = false, want true")
+	}
+	if doc["roleId"] != json.Number("1001") || doc["power"] != json.Number("9") {
+		t.Fatalf("canonical document = %#v, want JSON field names", doc)
+	}
+	if _, ok := doc["_id"]; ok {
+		t.Fatalf("canonical document must not retain BSON _id: %#v", doc)
+	}
+	loadedRank, ok := doc["rank"].(map[string]any)
+	if !ok || loadedRank["level"] != json.Number("4") {
+		t.Fatalf("nested canonical document = %#v, want rank.level=4", doc["rank"])
+	}
+}
+
+func TestMongoAdapterRejectsDocumentOperationWithoutGeneratedFactory(t *testing.T) {
+	client := &recordingMongoUpdater{
+		doc:    map[string]any{"name": "alice"},
+		exists: true,
+	}
+	adapter := txmongo.NewAdapter(client)
+	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{FullName: "data.GDRole"}}, Mongo: &meta.MongoSpec{Collection: "roles"}}
+	key := storage.RecordKey{ID: int64(1001)}
+
+	err := adapter.ReplaceDocument(context.Background(), spec, key, map[string]any{"name": "alice"})
+	if err == nil || !strings.Contains(err.Error(), "missing generated document factory") {
+		t.Fatalf("ReplaceDocument error = %v, want missing generated document factory", err)
+	}
+	_, _, err = adapter.LoadDocument(context.Background(), spec, key)
+	if err == nil || !strings.Contains(err.Error(), "missing generated document factory") {
+		t.Fatalf("LoadDocument error = %v, want missing generated document factory", err)
 	}
 }
 
@@ -274,6 +377,55 @@ func TestMongoAdapterRejectsIDFieldUpdate(t *testing.T) {
 	}
 	if updater.update != nil {
 		t.Fatalf("update was sent despite immutable _id error: %#v", updater.update)
+	}
+}
+
+func TestMongoAdapterUpsertSkipsImmutableIDDelta(t *testing.T) {
+	updater := &recordingMongoUpdater{}
+	adapter := txmongo.NewAdapter(updater)
+	spec := meta.TypeSpec{
+		Type: meta.Type{Fields: []meta.Field{
+			{Name: "RoleId", BSONName: "_id"},
+			{Name: "Name", BSONName: "name"},
+		}},
+		Mongo: &meta.MongoSpec{Collection: "roles", IDField: "RoleId"},
+	}
+	const (
+		mongoFieldRoleID change.FieldID = 5
+		mongoFieldName   change.FieldID = 6
+	)
+	deltas := change.DeltaSet{
+		{Path: deltaPath(fieldNode(mongoFieldRoleID)), Kind: change.DeltaKindSet},
+		{Path: deltaPath(fieldNode(mongoFieldName)), Kind: change.DeltaKindSet},
+	}
+	resolver := testNamedBackendResolver(map[change.NameBackend]map[change.FieldID]string{
+		change.NameBackendGo:   {mongoFieldRoleID: "RoleId", mongoFieldName: "Name"},
+		change.NameBackendBSON: {mongoFieldRoleID: "_id", mongoFieldName: "name"},
+	})
+	values := change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
+		switch path.Nodes[0].Field {
+		case mongoFieldRoleID:
+			return int64(1001), true
+		case mongoFieldName:
+			return "alice", true
+		default:
+			return nil, false
+		}
+	})
+
+	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, resolver, values, storage.ApplyOptions{Upsert: true})
+	if err != nil {
+		t.Fatalf("ApplyDeltasWithOptions returned error: %v", err)
+	}
+	if !updater.upsert {
+		t.Fatal("upsert = false, want true")
+	}
+	setDoc := updater.update["$set"].(map[string]any)
+	if setDoc["name"] != "alice" {
+		t.Fatalf("update = %#v, want name", updater.update)
+	}
+	if _, exists := setDoc["_id"]; exists {
+		t.Fatalf("upsert update must not contain immutable _id: %#v", updater.update)
 	}
 }
 
@@ -334,10 +486,13 @@ func TestMongoAdapterUsesBusinessIDFieldWhenConfigured(t *testing.T) {
 		manyExists: []bool{true, false},
 	}
 	adapter := txmongo.NewAdapter(client)
-	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{
-		Collection: "roles",
-		IDField:    "roleId",
-	}}
+	spec := meta.TypeSpec{
+		DocumentFactory: mongoMapDocumentFactory,
+		Mongo: &meta.MongoSpec{
+			Collection: "roles",
+			IDField:    "roleId",
+		},
+	}
 	key := storage.RecordKey{ID: int64(1001)}
 	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
 
@@ -389,7 +544,7 @@ func TestMongoAdapterUsesBusinessIDFieldWhenConfigured(t *testing.T) {
 func TestMongoAdapterReplacesDocumentByDefaultIDFilter(t *testing.T) {
 	client := &recordingMongoUpdater{}
 	adapter := txmongo.NewAdapter(client)
-	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}
+	spec := meta.TypeSpec{DocumentFactory: mongoMapDocumentFactory, Mongo: &meta.MongoSpec{Collection: "roles"}}
 	doc := map[string]any{"roleId": int64(1001), "name": "alice"}
 
 	err := adapter.ReplaceDocument(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, doc)
@@ -424,7 +579,7 @@ func TestMongoAdapterLoadDocumentPassesProjection(t *testing.T) {
 		exists: true,
 	}
 	adapter := txmongo.NewAdapter(client)
-	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}
+	spec := meta.TypeSpec{DocumentFactory: mongoMapDocumentFactory, Mongo: &meta.MongoSpec{Collection: "roles"}}
 
 	doc, exists, err := adapter.LoadDocument(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "name", "roleId")
 	if err != nil {
@@ -453,7 +608,7 @@ func TestMongoAdapterLoadDocumentsPassesProjection(t *testing.T) {
 		manyExists: []bool{true, false},
 	}
 	adapter := txmongo.NewAdapter(client)
-	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}
+	spec := meta.TypeSpec{DocumentFactory: mongoMapDocumentFactory, Mongo: &meta.MongoSpec{Collection: "roles"}}
 
 	docs, exists, err := adapter.LoadDocuments(context.Background(), spec, []storage.RecordKey{
 		{ID: int64(1001)},
@@ -486,7 +641,7 @@ func TestMongoAdapterLoadDocumentsFallsBackToFindOne(t *testing.T) {
 		},
 	}
 	adapter := txmongo.NewAdapter(client)
-	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}
+	spec := meta.TypeSpec{DocumentFactory: mongoMapDocumentFactory, Mongo: &meta.MongoSpec{Collection: "roles"}}
 
 	docs, exists, err := adapter.LoadDocuments(context.Background(), spec, []storage.RecordKey{
 		{ID: int64(1001)},
@@ -586,10 +741,13 @@ func TestMongoClusterBatchLoadsByShardGroupAndRestoresOrder(t *testing.T) {
 		"a": shardA,
 		"b": shardB,
 	})
-	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{
-		Route:      meta.RouteSpec{Type: "role"},
-		Collection: "roles",
-	}}
+	spec := meta.TypeSpec{
+		DocumentFactory: mongoMapDocumentFactory,
+		Mongo: &meta.MongoSpec{
+			Route:      meta.RouteSpec{Type: "role"},
+			Collection: "roles",
+		},
+	}
 	keys := []storage.RecordKey{
 		{ID: int64(1001), ShardKey: int64(7)},
 		{ID: int64(1002), ShardKey: int64(8)},

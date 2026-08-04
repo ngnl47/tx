@@ -63,6 +63,9 @@ func (a *Adapter) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec
 	if len(deltas) == 0 {
 		return nil
 	}
+	if options.Upsert {
+		deltas = withoutUpsertIDDelta(deltas, resolver)
+	}
 	update, err := BuildUpdateDocumentWithDeltas(spec, deltas, resolver, values)
 	if err != nil {
 		return err
@@ -77,6 +80,20 @@ func (a *Adapter) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec
 	return updater.UpdateOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), update, options)
 }
 
+// withoutUpsertIDDelta 移除首次创建时由等值 filter 自动提供的 Mongo _id。
+// 常规更新仍由 BuildUpdateDocumentWithDeltas 拒绝修改 _id。
+func withoutUpsertIDDelta(deltas change.DeltaSet, resolver change.FieldNameResolver) change.DeltaSet {
+	out := make(change.DeltaSet, 0, len(deltas))
+	for _, delta := range deltas {
+		bsonPath := delta.Path.FullPath(resolver, change.NameBackendBSON)
+		if len(bsonPath) == 1 && bsonPath[0] == "_id" && (delta.Kind == change.DeltaKindSet || delta.Kind == change.DeltaKindReplace) {
+			continue
+		}
+		out = append(out, delta)
+	}
+	return out
+}
+
 // ReplaceDocument 按记录键替换一条 Mongo 文档。
 func (a *Adapter) ReplaceDocument(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any) error {
 	if doc == nil {
@@ -86,7 +103,11 @@ func (a *Adapter) ReplaceDocument(ctx context.Context, spec meta.TypeSpec, key s
 	if !ok {
 		return unsupportedClientError("Replacer")
 	}
-	return replacer.ReplaceOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), doc)
+	bsonDocument, err := bsonDocumentFromCanonical(spec, doc)
+	if err != nil {
+		return err
+	}
+	return replacer.ReplaceOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), bsonDocument)
 }
 
 // ApplyDelete 按记录键删除一条 Mongo 文档。
@@ -104,7 +125,15 @@ func (a *Adapter) LoadDocument(ctx context.Context, spec meta.TypeSpec, key stor
 	if !ok {
 		return nil, false, unsupportedClientError("Finder")
 	}
-	return finder.FindOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), mongoProjectionFields(spec, fields)...)
+	document, exists, err := finder.FindOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), mongoProjectionFields(spec, fields)...)
+	if err != nil || !exists {
+		return document, exists, err
+	}
+	canonical, err := canonicalDocumentFromBSON(spec, document, fields)
+	if err != nil {
+		return nil, false, err
+	}
+	return canonical, true, nil
 }
 
 // LoadDocuments 按记录键批量读取 Mongo 文档。
@@ -118,7 +147,21 @@ func (a *Adapter) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []
 	projection := mongoProjectionFields(spec, fields)
 	finder, ok := a.client.(BatchFinder)
 	if ok {
-		return finder.FindMany(ctx, collection, mongoRecordValuesFilter(spec, keys), projection...)
+		documents, exists, err := finder.FindMany(ctx, collection, mongoRecordValuesFilter(spec, keys), projection...)
+		if err != nil {
+			return nil, nil, err
+		}
+		for i, found := range exists {
+			if !found {
+				continue
+			}
+			canonical, err := canonicalDocumentFromBSON(spec, documents[i], fields)
+			if err != nil {
+				return nil, nil, err
+			}
+			documents[i] = canonical
+		}
+		return documents, exists, nil
 	}
 	singleFinder, ok := a.client.(Finder)
 	if !ok {
@@ -128,6 +171,12 @@ func (a *Adapter) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []
 		doc, found, err := singleFinder.FindOne(ctx, collection, mongoRecordFilter(spec, key), projection...)
 		if err != nil {
 			return nil, nil, err
+		}
+		if found {
+			doc, err = canonicalDocumentFromBSON(spec, doc, fields)
+			if err != nil {
+				return nil, nil, err
+			}
 		}
 		docs[i] = doc
 		exists[i] = found

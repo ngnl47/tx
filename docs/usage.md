@@ -1692,6 +1692,33 @@ ExpireAt int64 `json:"expireAt" bson:"expireAt" msgpack:"expireAt" mongodb:"inde
 - `DocumentReplacer`：按 `TypeSpec + RecordKey` 整文档替换。
 - `DocumentReplacerWithOptions`：整文档替换并接收 `storage.ApplyOptions`，用于需要 TTL/upsert 等写入语义的路径。
 
+这些接口传递的 `map[string]any` 统一使用 **JSON 字段名**，不是某个具体数据库的原始文档。生成的
+`TypeSpec` 会提供 `DocumentFactory`；Mongo adapter 用它把公共文档物化为 GD 对象，再由 `bson` tag
+写入或读回 Mongo。因此 Fusion 可以直接把 Mongo 回源结果回填 Redis，不会把 Mongo 的 `_id` 或缩写字段名
+写进 Redis。
+
+```go
+// 输入定义：JSON、BSON 字段名不同。
+type GDRole struct {
+	RoleId int64 `json:"roleId,omitempty" bson:"_id,omitempty"`
+	Power  int64 `json:"power,omitempty" bson:"p,omitempty"`
+}
+
+// 任何 DocumentLoader 的返回值都使用 JSON 名。
+doc, exists, err := mongoAdapter.LoadDocument(ctx, data.GDRoleTypeSpec(), key)
+// doc == map[string]any{"roleId": json.Number("1001"), "power": json.Number("47")}
+
+// 传给 Mongo replacer 仍写为 BSON 名：{_id: 1001, p: 47}。
+err = mongoAdapter.ReplaceDocument(ctx, data.GDRoleTypeSpec(), key, doc)
+```
+
+`LoadFields` 的入参始终是 Go 字段名，例如 `"Name"`；公共文档返回键仍是 JSON 名 `"name"`。
+Redis 的部分读取按 main/subKey 的 key 粒度优化：当请求字段位于 main 文档中时，读取结果可以包含同一 main
+文档内的其他字段。Mongo 通过 projection 通常只返回请求字段和记录键。
+
+完整文档经过 `omitempty` 编码时，零值字段可能在 Mongo 或 Fusion 回填后的 Redis 文档中不存在；生成的 GD
+对象解码后仍得到对应 Go 零值。不要把“物理文档必须出现所有零值字段”当作存储契约。
+
 这些接口是 Store 读取、Fusion 回源、Redis 热数据回填和延迟保存回写的共同边界。具体后端仍负责把
 `RecordKey` 转成自己的底层定位方式，例如 Redis key/hash tag 或 Mongo filter。
 

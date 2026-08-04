@@ -227,7 +227,7 @@ func (s Strategy) loadMongoDocumentAndBackfillRedis(ctx context.Context, spec me
 	if err := replacer.ReplaceDocumentWithOptions(ctx, spec, key, doc, options); err != nil {
 		return nil, false, err
 	}
-	return projectDocument(doc, fields), true, nil
+	return projectDocument(spec, doc, fields), true, nil
 }
 
 func (s Strategy) loadRedisDocumentsOneByOne(ctx context.Context, spec meta.TypeSpec, keys []storage.RecordKey, loader storage.DocumentLoader, docs []map[string]any, exists []bool, missingIndexes *[]int, missingKeys *[]storage.RecordKey, fields ...string) error {
@@ -337,14 +337,15 @@ func delayedDeleteAfter(spec meta.TypeSpec) time.Duration {
 	return runAfter
 }
 
-func projectDocument(doc map[string]any, fields []string) map[string]any {
+func projectDocument(spec meta.TypeSpec, doc map[string]any, fields []string) map[string]any {
 	if len(fields) == 0 || doc == nil {
 		return doc
 	}
 	out := make(map[string]any, len(fields))
 	for _, field := range fields {
-		if value, ok := doc[field]; ok {
-			out[field] = value
+		name := spec.JSONName(field)
+		if value, ok := doc[name]; ok {
+			out[name] = value
 		}
 	}
 	return out
