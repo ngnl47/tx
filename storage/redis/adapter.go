@@ -128,8 +128,12 @@ func (a *Adapter) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key stora
 	}
 	prefix := redisKeyPrefix(spec, key)
 	keys := redisDeleteKeys(spec, prefix)
-	if _, err := a.client.Eval(ctx, deleteDocumentScript, keys); err != nil {
+	result, err := a.client.Eval(ctx, deleteDocumentScript, keys)
+	if err != nil {
 		return fmt.Errorf("redis: delete document %s: %w", prefix, err)
+	}
+	if result != scriptResultOK {
+		return fmt.Errorf("redis: delete document %s: unexpected script result %q", prefix, result)
 	}
 	return nil
 }
@@ -184,6 +188,9 @@ func (a *Adapter) LockRecord(ctx context.Context, spec meta.TypeSpec, key storag
 		if result == scriptResultOK {
 			return &recordLock{client: a.client, key: lockKey, token: token}, nil
 		}
+		if result != scriptResultBusy {
+			return nil, fmt.Errorf("redis: lock record %s: unexpected script result %q", lockKey, result)
+		}
 		if wait <= 0 || time.Now().After(deadline) {
 			return nil, fmt.Errorf("redis: lock timeout %s", lockKey)
 		}
@@ -201,8 +208,12 @@ func (l *recordLock) Unlock(ctx context.Context) error {
 	if l == nil || l.client == nil {
 		return nil
 	}
-	if _, err := l.client.Eval(ctx, unlockRecordScript, []string{l.key}, l.token); err != nil {
+	result, err := l.client.Eval(ctx, unlockRecordScript, []string{l.key}, l.token)
+	if err != nil {
 		return fmt.Errorf("redis: unlock record %s: %w", l.key, err)
+	}
+	if result != scriptResultOK && result != scriptResultStale {
+		return fmt.Errorf("redis: unlock record %s: unexpected script result %q", l.key, result)
 	}
 	return nil
 }

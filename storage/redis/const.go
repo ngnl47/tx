@@ -15,6 +15,8 @@ const (
 	scriptFlagTrue  = "1"
 
 	scriptResultOK               = "ok"
+	scriptResultBusy             = "busy"
+	scriptResultStale            = "stale"
 	scriptResultNotExists        = "ne"
 	scriptResultPathTypeMismatch = "pt"
 )

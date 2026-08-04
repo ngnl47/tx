@@ -22,6 +22,8 @@ type recordingRedisStringClient struct {
 	mgetValues  []string
 	mgetBatches [][]string
 	evalResult  string
+	evalResults []string
+	evalIndex   int
 	hasResult   bool
 }
 
@@ -70,6 +72,11 @@ func (c *recordingRedisStringClient) Eval(_ context.Context, script string, keys
 	})
 	if c.hasResult {
 		return c.evalResult, nil
+	}
+	if c.evalIndex < len(c.evalResults) {
+		result := c.evalResults[c.evalIndex]
+		c.evalIndex++
+		return result, nil
 	}
 	return "ok", nil
 }
@@ -387,6 +394,20 @@ func TestRedisAdapterApplyDeleteDeletesMainSubKeysAndVersion(t *testing.T) {
 	}
 }
 
+func TestRedisAdapterApplyDeleteRejectsUnknownScriptResult(t *testing.T) {
+	client := &recordingRedisStringClient{evalResult: "unexpected", hasResult: true}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
+
+	err := adapter.ApplyDelete(context.Background(), spec, storage.RecordKey{ID: int64(1001)})
+	if err == nil {
+		t.Fatal("ApplyDelete error = nil, want unknown script result error")
+	}
+	if !strings.Contains(err.Error(), "unexpected script result") || !strings.Contains(err.Error(), "unexpected") {
+		t.Fatalf("ApplyDelete error = %v, want unknown result details", err)
+	}
+}
+
 func TestRedisAdapterApplyDeleteWithRevisionUsesVersionKeyCompare(t *testing.T) {
 	client := &recordingRedisStringClient{}
 	adapter := txredis.NewAdapter(client)
@@ -483,6 +504,38 @@ func TestRedisAdapterLockRecordUsesMainKeyHashTag(t *testing.T) {
 	}
 	if got, want := client.evals[1].keys, []string{"arena_record:{470001}:90001@lock"}; !sameStrings(got, want) {
 		t.Fatalf("unlock keys = %#v, want %#v", got, want)
+	}
+}
+
+func TestRedisAdapterLockRecordRejectsUnknownScriptResult(t *testing.T) {
+	client := &recordingRedisStringClient{evalResult: "unexpected", hasResult: true}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
+
+	_, err := adapter.LockRecord(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, storage.LockOptions{TTL: time.Second})
+	if err == nil {
+		t.Fatal("LockRecord error = nil, want unknown script result error")
+	}
+	if !strings.Contains(err.Error(), "unexpected script result") || !strings.Contains(err.Error(), "unexpected") {
+		t.Fatalf("LockRecord error = %v, want unknown result details", err)
+	}
+}
+
+func TestRedisRecordLockUnlockRejectsUnknownScriptResult(t *testing.T) {
+	client := &recordingRedisStringClient{evalResults: []string{"ok", "unexpected"}}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
+
+	lock, err := adapter.LockRecord(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, storage.LockOptions{TTL: time.Second})
+	if err != nil {
+		t.Fatalf("LockRecord returned error: %v", err)
+	}
+	err = lock.Unlock(context.Background())
+	if err == nil {
+		t.Fatal("Unlock error = nil, want unknown script result error")
+	}
+	if !strings.Contains(err.Error(), "unexpected script result") || !strings.Contains(err.Error(), "unexpected") {
+		t.Fatalf("Unlock error = %v, want unknown result details", err)
 	}
 }
 
