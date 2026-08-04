@@ -709,6 +709,25 @@ task.SetActive(2)
 
 `SetDailyTask` 覆盖或 `ClearDailyTask` 清空字段时，父 Store 会替换或移除自己的子 Store 节点。旧对象没有父回调，因此旧对象后续的独立 Store 修改不会污染角色 Store。直接写 `role.DailyTask` 属于快照 diff 或手动 `TouchDailyTask()` 路径，不会自动产生嵌套 Store 变更。
 
+### 单机事务
+
+为类型声明 `@transaction` 后，生成代码提供稳定锁键和 Store 事务目标。事务只回滚 Store 受控 API 的修改，不处理跨进程锁、Redis/Mongo 分布式事务或裸字段赋值：
+
+```go
+store := role.Store()
+err := transaction.Run(ctx, transaction.Targets(store.TransactionTarget()), func(tx *transaction.Tx) error {
+	store.SetName("alice")
+	item, ok := store.ItemsStore().Get(1001)
+	if ok {
+		item.SetQuantity(item.GetQuantity() + 1)
+	}
+	store.DressStore().Append(&data.GDDressItem{Id: 7, Expire: 100})
+	return nil
+})
+```
+
+回调返回错误或 panic 时，字段值、map/slice 结构、子 Store delta 都会恢复到进入事务前的状态。未进入 `transaction.Run` 的普通 Store 修改不会建立 undo log，也不会复制旧集合。
+
 ### 零值和删除
 
 `Set*` 设置零值表示“把字段写成零值”，不是删除字段：
@@ -751,17 +770,12 @@ change.Document{Set: map[string]any{"Name": ""}}
 集合字段可以整字段标脏，也可以通过生成 Store wrapper 标记内部路径。低频业务可以整字段标脏，降低编码心智负担：
 
 ```go
-role.Store().UpdateItems(func(items map[int32]*data.GDItem) {
-	item := items[1001]
-	if item == nil {
-		item = &data.GDItem{ItemId: 1001}
-		items[1001] = item
-	}
-	item.Quantity += 3
+role.SetItems(map[int32]*data.GDItem{
+	1001: {ItemId: 1001, Quantity: 3},
 })
 ```
 
-`UpdateItems(fn)` 会在 map 为 nil 时先初始化 map，执行闭包后记录整字段 `Items`。后续 Redis 中如果
+`SetItems(value)` 用 Go 赋值语义整体覆盖 map，并记录整字段 `Items`。后续 Redis 中如果
 `Items` 配置了 `redis:"subKey:items"`，只会更新
 `role:{1001}:items` 这个 subKey 文档，不会重写主文档。
 
@@ -772,7 +786,7 @@ role.Items[1001].Quantity += 3
 role.TouchItems()
 ```
 
-热点集合路径建议使用生成的集合 Store wrapper。map 的 `Set`、`Update`、`Delete`、`Touch(key)` 会记录 key 级状态；如果 map value 是生成数据对象指针，`Get(key)` 返回该 key 路径专属的子 Store：
+热点集合路径建议使用生成的集合 Store wrapper。map 的 `Set`、`Delete`、`Touch(key)` 会记录 key 级状态；如果 map value 是生成数据对象指针，`Get(key)` 返回该 key 路径专属的子 Store：
 
 ```go
 role.ItemsStore().Set(1001, &data.GDItem{ItemId: 1001, Quantity: 3})
@@ -783,12 +797,10 @@ item.SetQuantity(7)
 // 变更文档：Set["Items.1001.Quantity"] = 7
 ```
 
-slice 的 `SetAt`、`UpdateAt`、`TouchAt` 会在长度和顺序不变时记录 index 级 dirty：
+slice 的 `SetAt`、`TouchAt` 会在长度和顺序不变时记录 index 级 dirty：
 
 ```go
-role.TagsStore().UpdateAt(0, func(tag string) string {
-	return tag + "_new"
-})
+role.TagsStore().SetAt(0, "old_new")
 // 变更文档：Set["Tags.0"] = "old_new"
 ```
 
@@ -1988,7 +2000,7 @@ env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp /Users/a47/sdk/go1.25
 ### 更新没有字段变化
 
 - 直接字段赋值不会标脏，例如 `role.Name = "bob"` 只改内存，不会进入 Store dirty。
-- 使用生成代理方法：`role.SetName("bob")`、`role.TouchItems()`、`role.UpdateItems(...)`。
+- 使用生成代理方法：`role.SetName("bob")`、`role.SetItems(...)`、`role.TouchItems()`。
 - 如果已经通过集合 wrapper 生成了 key/index 级 Delta，再调用 `TouchItems()` 或 `AllTouch()` 时，顶层 dirty 会覆盖并清理更细的路径记录。
 - 保存成功后如果继续复用对象，调用 `ClearChanges()` 或 Store 的 `AllUnTouch()` 清掉本轮 dirty。
 
