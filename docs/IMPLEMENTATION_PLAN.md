@@ -31,8 +31,11 @@
 - `txgame/server/internal/db` 已提供泛型 `db.Save(role)` facade：它使用服务启动时装配的根 context 与 writer，并只在 facade 内部获取生成数据对象的 Store。
 - 通用 `db.Create` facade 不作为当前目标。新建对象、默认字段初始化、初始资源发放属于业务流程；框架层保留 `storage.Create` 表达 upsert/首次缓存语义。
 - 后续单机事务能力放在可选的 `tx/modules/transaction`，`tx` 核心和普通 Store 路径不依赖该模块。没有进入 `transaction.Run(...)` 时，不创建 undo log、不记录旧值，也不增加事务运行时开销。
-- `@transaction` 是生成期类型能力声明，不是常驻事务开关。它独立于 `storage` 注解，为持久化 GD 或纯内存 GD 生成统一的本机锁键和事务目标；`scope` 是一致性域分类，`keyField` 是域内对象键。
+- `@transaction` 是生成期类型能力声明，不是常驻事务开关。它独立于 `storage` 注解，为持久化 GD 或纯内存 GD 生成统一的本机锁键；Store 受控 undo 完备后，再由 Store 侧生成事务目标。`scope` 是一致性域分类，`keyField` 是域内对象键。
 - `transaction.Run(...)` 只处理单机内存事务：对输入目标的锁键去重、规范化排序、获取本机锁，并在回调期间临时绑定 undo recorder。它不解决分布式锁、跨实例一致性或 Redis/Mongo 分布式事务。
+- 可复用事务逻辑使用 `Procedure`：根 `transaction.Call(ctx, procedure)` 在锁定完整目标集后执行；事务内只能通过 `tx.Call(child)` 调用子 Procedure，并建立 savepoint。子 Procedure 的目标必须是根事务已持有锁键的子集；发现新目标时返回包含 `A -> B` 调用路径的明确错误，不等待形成死锁。直接嵌套 `transaction.Run` 不是业务 API，应直接拒绝。
+- 根 Procedure 需要在进入事务前声明自身及子 Procedure 的完整锁键并集。若锁键依赖查询结果，先做只读预取，再按完整键集加锁并重新校验；不支持事务运行中动态扩张锁集。
+- 需要在根事务提交后开启独立事务时，通过 `AfterCommit` 调度新的 `Procedure`，不与父事务共享原子性或锁。
 - 单机事务只保证经 Store 受控 API 发生的修改可回滚；裸字段赋值和 snapshot diff 不参与事务回滚。undo log 属于一次事务的临时状态，不写入 GD，也不作为 Store 的长期业务数据。
 - 事务目标应由生成代码在 Store 侧提供，避免污染 GD 的纯数据职责。事务成功后的存储写入、消息发送或后续业务动作通过 `AfterCommit` 等机制调度；这表示内存事务已提交，不等价于 Mongo 已可靠落盘。
 - 当前标脏主线是 `change.DeltaSet`。热路径只保存 `FieldID`、map key、slice index 和 `DeltaKind`，不常驻拼接字符串路径。
@@ -73,7 +76,7 @@
 3. 持续清理不再作为主线的字符串路径变更代码、过渡接口和旧测试，只保留必要历史 benchmark 结论。
 4. 日志基建后续专题：确定业务项目 logger 枚举或包级变量、名称规范、级别配置和 tx/log 的最小扩展点。
 5. RedisJSON/ReJSON 仅作为未来可选 backend 单独评估；SQL、消息队列等其他 backend 也不进入当前主线。
-6. 在 GD Store、集合包装和 Delta 投影主线稳定后，实现可选的 `tx/modules/transaction`：生成 `@transaction` 的锁键/事务目标；以 context 传递事务；锁键全序排序；Store 受控操作的 undo log；嵌套 savepoint；`AfterCommit`/`AfterRollback` 回调。第一版不处理分布式锁、跨实例事务或持久化层 ACID。
+6. 在 GD Store、集合包装和 Delta 投影主线稳定后，完善可选的 `tx/modules/transaction`：`@transaction` 已生成锁键；后续由 Store 侧生成事务目标，并为受控操作登记 undo log；`Procedure`/`tx.Call` 已约束锁集和输出嵌套路径；继续完善 `AfterCommit`/`AfterRollback` 与真实业务 Store 回归。第一版不处理分布式锁、跨实例事务或持久化层 ACID。
 7. 在单机事务边界稳定后，评估可选 `tx/modules/actor`。actor 负责业务一致性域的单实例串行执行；事务模块只负责该实例内的多对象锁定、回滚和提交，两者不反向依赖。
 
 ## Module Layout
