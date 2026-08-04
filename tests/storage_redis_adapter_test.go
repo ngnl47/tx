@@ -326,6 +326,21 @@ func TestRedisAdapterApplyDeltasWithOptionsReturnsNotExists(t *testing.T) {
 	}
 }
 
+func TestRedisAdapterApplyDeltasWithOptionsReturnsPathTypeMismatch(t *testing.T) {
+	client := &recordingRedisStringClient{evalResult: "pt:dailyTask", hasResult: true}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+
+	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendJSON, deltaTestJSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
+	if !errors.Is(err, storage.ErrPathTypeMismatch) {
+		t.Fatalf("ApplyDeltasWithOptions err = %v, want ErrPathTypeMismatch", err)
+	}
+	if !strings.Contains(err.Error(), "dailyTask") {
+		t.Fatalf("ApplyDeltasWithOptions err = %v, want path", err)
+	}
+}
+
 func TestRedisAdapterApplyDeleteDeletesMainSubKeysAndVersion(t *testing.T) {
 	client := &recordingRedisStringClient{}
 	adapter := txredis.NewAdapter(client)

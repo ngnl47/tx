@@ -1,6 +1,7 @@
 redis.replicate_commands()
 local FLAG_TRUE = "1"
 local RESULT_NOT_EXISTS = "ne"
+local RESULT_PATH_TYPE_MISMATCH = "pt"
 local PATCH_MODE_REPLACE = "1"
 local PATCH_MODE_PARTIAL_REPLACE = "2"
 local PATCH_MODE_OPERATIONS = "3"
@@ -43,27 +44,51 @@ local function is_empty_table(v)
   return next(v) == nil
 end
 
-local function merge(old, patch)
+local function is_object(v)
+  return get_type(v) == "table"
+end
+
+local function path_type_mismatch(path)
+  return RESULT_PATH_TYPE_MISMATCH .. ":" .. path
+end
+
+local function merge(old, patch, prefix)
   for k, v in pairs(patch) do
+    local path = tostring(k)
+    if prefix ~= "" then
+      path = prefix .. "." .. path
+    end
     if v == cjson.null then
       old[k] = nil
-    elseif get_type(v) == "table" and get_type(old[k]) == "table" then
-      merge(old[k], v)
-      if is_empty_table(old[k]) then
-        old[k] = nil
+    elseif is_object(v) then
+      if old[k] == nil then
+        old[k] = v
+      elseif is_object(old[k]) then
+        local ok, mismatch_path = merge(old[k], v, path)
+        if not ok then
+          return false, mismatch_path
+        end
+        if is_empty_table(old[k]) then
+          old[k] = nil
+        end
+      else
+        return false, path
       end
     else
       old[k] = v
     end
   end
+  return true
 end
 
 local function set_path(object, path, value)
   local target = object
   for index = 1, #path - 1 do
     local key = path[index]
-    if type(target[key]) ~= "table" then
+    if target[key] == nil then
       target[key] = {}
+    elseif not is_object(target[key]) then
+      return false, table.concat(path, ".", 1, index)
     end
     target = target[key]
   end
@@ -73,17 +98,23 @@ local function set_path(object, path, value)
   else
     target[key] = value
   end
+  return true
 end
 
 local function delete_path(object, path)
   local target = object
   for index = 1, #path - 1 do
-    target = target[path[index]]
-    if type(target) ~= "table" then
-      return
+    local key = path[index]
+    if target[key] == nil then
+      return true
     end
+    if not is_object(target[key]) then
+      return false, table.concat(path, ".", 1, index)
+    end
+    target = target[key]
   end
   target[path[#path]] = nil
+  return true
 end
 
 local loaded = {}
@@ -92,21 +123,21 @@ local save = {}
 local function load(full_key)
   local obj = loaded[full_key]
   if obj ~= nil then
-    return obj
+    return obj, true
   end
   local raw = redis.call("get", full_key)
   if raw == false then
     obj = {}
   else
     local ok, decoded = pcall(cjson.decode, raw)
-    if ok and type(decoded) == "table" then
+    if ok and is_object(decoded) then
       obj = decoded
     else
-      obj = {}
+      return nil, false
     end
   end
   loaded[full_key] = obj
-  return obj
+  return obj, true
 end
 
 for i = 1, arg_len - 2, 3 do
@@ -121,7 +152,10 @@ for i = 1, arg_len - 2, 3 do
   if mode == PATCH_MODE_REPLACE then
     save[full_key] = body
   elseif mode == PATCH_MODE_PARTIAL_REPLACE then
-    local old = load(full_key)
+    local old, ok = load(full_key)
+    if not ok then
+      return path_type_mismatch("$")
+    end
     local patch = cjson.decode(body)
     for k, v in pairs(patch) do
       if v == cjson.null then
@@ -131,21 +165,36 @@ for i = 1, arg_len - 2, 3 do
       end
     end
   elseif mode == PATCH_MODE_OPERATIONS then
-    local old = load(full_key)
+    local old, ok = load(full_key)
+    if not ok then
+      return path_type_mismatch("$")
+    end
     local operations = cjson.decode(body).operations or {}
     for _, operation in ipairs(operations) do
       if operation.kind == "delete" then
-        delete_path(old, operation.path)
+        local deleted, mismatch_path = delete_path(old, operation.path)
+        if not deleted then
+          return path_type_mismatch(mismatch_path)
+        end
       else
-        set_path(old, operation.path, operation.value)
+        local updated, mismatch_path = set_path(old, operation.path, operation.value)
+        if not updated then
+          return path_type_mismatch(mismatch_path)
+        end
       end
     end
   elseif mode == PATCH_MODE_TTL_ONLY then
     save[full_key] = ""
   else
-    local old = load(full_key)
+    local old, ok = load(full_key)
+    if not ok then
+      return path_type_mismatch("$")
+    end
     local patch = cjson.decode(body)
-    merge(old, patch)
+    local merged, mismatch_path = merge(old, patch, "")
+    if not merged then
+      return path_type_mismatch(mismatch_path)
+    end
   end
 end
 

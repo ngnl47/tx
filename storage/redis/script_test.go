@@ -32,6 +32,7 @@ func TestUpdateLuaScriptNamesProtocolValues(t *testing.T) {
 	for _, want := range []string{
 		"local FLAG_TRUE = \"1\"",
 		"local RESULT_NOT_EXISTS = \"ne\"",
+		"local RESULT_PATH_TYPE_MISMATCH = \"pt\"",
 		"local PATCH_MODE_REPLACE = \"1\"",
 		"local PATCH_MODE_PARTIAL_REPLACE = \"2\"",
 		"local PATCH_MODE_OPERATIONS = \"3\"",
@@ -39,6 +40,24 @@ func TestUpdateLuaScriptNamesProtocolValues(t *testing.T) {
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("update script missing protocol constant %q", want)
+		}
+	}
+}
+
+func TestUpdateLuaScriptRejectsExistingNonObjectPathNodes(t *testing.T) {
+	updateBody, err := luaScripts.ReadFile("scripts/update_document.lua")
+	if err != nil {
+		t.Fatalf("ReadFile update script returned error: %v", err)
+	}
+	text := string(updateBody)
+	for _, want := range []string{
+		"local function is_object(v)",
+		"return RESULT_PATH_TYPE_MISMATCH .. \":\" .. path",
+		"local merged, mismatch_path = merge(old, patch, \"\")",
+		"local updated, mismatch_path = set_path(old, operation.path, operation.value)",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("update script does not reject path type mismatch: missing %q", want)
 		}
 	}
 }

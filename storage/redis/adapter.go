@@ -98,6 +98,9 @@ func (a *Adapter) applyDocumentPatchesWithOptions(ctx context.Context, spec meta
 	if result == scriptResultNotExists {
 		return fmt.Errorf("redis: apply changes %s: %w", prefix, storage.ErrNotExists)
 	}
+	if path, ok := strings.CutPrefix(result, scriptResultPathTypeMismatch+":"); ok {
+		return fmt.Errorf("redis: apply changes %s at %s: %w", prefix, path, storage.ErrPathTypeMismatch)
+	}
 	return nil
 }
 

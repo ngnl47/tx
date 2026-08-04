@@ -1076,6 +1076,36 @@ err := storage.Save(ctx, redisCluster, role.Store())
 `storage.Save` 强制 `Upsert=false`。如果 Redis 中不存在该记录，Redis adapter 会返回
 `storage.ErrNotExists`，避免普通更新意外创建新热数据。
 
+### 局部路径的类型约束
+
+Lua 只会为**缺失**的对象父节点创建 `{}`；已经存在的父节点必须是 JSON object。遇到 `null`、数字、
+字符串或数组等错误类型时，adapter 返回可用 `errors.Is` 判断的 `storage.ErrPathTypeMismatch`，并保持 Redis
+原文档不变。运行时不会把错误数据悄悄改写成对象，因为这会掩盖上游模型或数据迁移问题。
+
+```go
+// Redis 初始值：{"roleId":1001}
+role.SetRankInfo(&data.GDRankInfo{})
+role.ClearChanges()
+role.RankInfoStore().SetLevel(7)
+err := storage.Save(ctx, redisCluster, role.Store())
+// 成功，结果包含："rankInfo":{"level":7}
+
+// Redis 初始值：{"roleId":1001,"rankInfo":7}
+role.ClearChanges()
+role.RankInfoStore().SetLevel(8)
+err = storage.Save(ctx, redisCluster, role.Store())
+// errors.Is(err, storage.ErrPathTypeMismatch) == true
+// Redis 仍保持 "rankInfo":7。
+```
+
+需要有意重建整个复杂字段时，使用字段级 `Set*`，让它生成 `DeltaKindReplace` 覆盖目标字段，而不是尝试
+从错误类型的父节点继续局部写入：
+
+```go
+role.SetRankInfo(&data.GDRankInfo{Level: 8})
+err := storage.Save(ctx, redisCluster, role.Store())
+```
+
 整字段替换使用字段 `Set*`，保存入口仍是 `storage.Save`：
 
 ```go
