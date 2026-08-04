@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -52,7 +53,7 @@ func NewAdapter(client ScriptClient) *Adapter {
 
 // ApplyDeltasWithOptions 根据指定选项写入 Redis string JSON Delta 变更。
 func (a *Adapter) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, deltas change.DeltaSet, resolver change.FieldNameResolver, values change.DeltaValueResolver, options storage.ApplyOptions) error {
-	if a.client == nil || len(deltas) == 0 {
+	if len(deltas) == 0 {
 		return nil
 	}
 	patches := BuildDocumentPatchesWithDeltas(spec, deltas, resolver, values)
@@ -63,8 +64,9 @@ func (a *Adapter) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec
 }
 
 func (a *Adapter) applyDocumentPatchesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, patches map[string]DocumentPatch, options storage.ApplyOptions) error {
-	if a.client == nil {
-		return nil
+	client, err := a.scriptClient()
+	if err != nil {
+		return err
 	}
 	prefix := redisKeyPrefix(spec, key)
 	if options.TTL != 0 {
@@ -91,7 +93,7 @@ func (a *Adapter) applyDocumentPatchesWithOptions(ctx context.Context, spec meta
 		upsert = scriptFlagTrue
 	}
 	args = append(args, upsert, strconv.FormatInt(options.TTL, 10))
-	result, err := a.client.Eval(ctx, updateDocumentScript, []string{prefix}, args...)
+	result, err := client.Eval(ctx, updateDocumentScript, []string{prefix}, args...)
 	if err != nil {
 		return fmt.Errorf("redis: apply changes %s: %w", prefix, err)
 	}
@@ -123,12 +125,13 @@ func (a *Adapter) ReplaceDocument(ctx context.Context, spec meta.TypeSpec, key s
 
 // ApplyDelete 删除 Redis string JSON 主文档、subKey 文档和版本键。
 func (a *Adapter) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
-	if a.client == nil {
-		return nil
+	client, err := a.scriptClient()
+	if err != nil {
+		return err
 	}
 	prefix := redisKeyPrefix(spec, key)
 	keys := redisDeleteKeys(spec, prefix)
-	result, err := a.client.Eval(ctx, deleteDocumentScript, keys)
+	result, err := client.Eval(ctx, deleteDocumentScript, keys)
 	if err != nil {
 		return fmt.Errorf("redis: delete document %s: %w", prefix, err)
 	}
@@ -140,12 +143,13 @@ func (a *Adapter) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key stora
 
 // ApplyDeleteWithRevision 仅当 Redis 生命周期版本仍为 expectedRevision 时删除热数据。
 func (a *Adapter) ApplyDeleteWithRevision(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, expectedRevision string) (bool, string, error) {
-	if a.client == nil {
-		return true, "", nil
+	client, err := a.scriptClient()
+	if err != nil {
+		return false, "", err
 	}
 	prefix := redisKeyPrefix(spec, key)
 	keys := redisDeleteKeys(spec, prefix)
-	result, err := a.client.Eval(ctx, deleteDocumentScript, keys, expectedRevision)
+	result, err := client.Eval(ctx, deleteDocumentScript, keys, expectedRevision)
 	if err != nil {
 		return false, "", fmt.Errorf("redis: delete document %s: %w", prefix, err)
 	}
@@ -157,11 +161,12 @@ func (a *Adapter) ApplyDeleteWithRevision(ctx context.Context, spec meta.TypeSpe
 
 // ReadRecordRevision 读取 Redis 热数据生命周期版本。
 func (a *Adapter) ReadRecordRevision(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) (string, error) {
-	if a.client == nil {
-		return "", nil
+	client, err := a.scriptClient()
+	if err != nil {
+		return "", err
 	}
 	prefix := redisKeyPrefix(spec, key)
-	result, err := a.client.Eval(ctx, readRevisionScript, []string{prefix + "@v"})
+	result, err := client.Eval(ctx, readRevisionScript, []string{prefix + "@v"})
 	if err != nil {
 		return "", fmt.Errorf("redis: read record revision %s: %w", prefix, err)
 	}
@@ -169,8 +174,9 @@ func (a *Adapter) ReadRecordRevision(ctx context.Context, spec meta.TypeSpec, ke
 }
 
 func (a *Adapter) LockRecord(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, options storage.LockOptions) (storage.RecordLock, error) {
-	if a.client == nil {
-		return nil, fmt.Errorf("redis: lock client is nil")
+	client, err := a.scriptClient()
+	if err != nil {
+		return nil, err
 	}
 	ttl := options.TTL
 	if ttl <= 0 {
@@ -181,12 +187,12 @@ func (a *Adapter) LockRecord(ctx context.Context, spec meta.TypeSpec, key storag
 	token := newLockToken()
 	deadline := time.Now().Add(wait)
 	for {
-		result, err := a.client.Eval(ctx, lockRecordScript, []string{lockKey}, token, ttl.Milliseconds())
+		result, err := client.Eval(ctx, lockRecordScript, []string{lockKey}, token, ttl.Milliseconds())
 		if err != nil {
 			return nil, fmt.Errorf("redis: lock record %s: %w", lockKey, err)
 		}
 		if result == scriptResultOK {
-			return &recordLock{client: a.client, key: lockKey, token: token}, nil
+			return &recordLock{client: client, key: lockKey, token: token}, nil
 		}
 		if result != scriptResultBusy {
 			return nil, fmt.Errorf("redis: lock record %s: unexpected script result %q", lockKey, result)
@@ -220,15 +226,16 @@ func (l *recordLock) Unlock(ctx context.Context) error {
 
 // LoadDocument 读取并合并 Redis string JSON 主文档和 subKey 文档。
 func (a *Adapter) LoadDocument(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, fields ...string) (map[string]any, bool, error) {
-	if a.client == nil {
-		return nil, false, nil
+	client, err := a.scriptClient()
+	if err != nil {
+		return nil, false, err
 	}
 	prefix := redisKeyPrefix(spec, key)
 	keys := redisReadKeys(spec, prefix, fields)
 	if len(keys) == 0 {
 		return nil, false, nil
 	}
-	body, err := a.client.Eval(ctx, findDocumentScript, keys)
+	body, err := client.Eval(ctx, findDocumentScript, keys)
 	if err != nil {
 		return nil, false, fmt.Errorf("redis: load document %s: %w", prefix, err)
 	}
@@ -254,7 +261,11 @@ func (a *Adapter) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSp
 	if len(records) == 0 {
 		return docs, exists, nil
 	}
-	client, ok := a.client.(BatchClient)
+	scriptClient, err := a.scriptClient()
+	if err != nil {
+		return nil, nil, err
+	}
+	client, ok := scriptClient.(BatchClient)
 	if !ok {
 		return a.loadDocumentsByEval(ctx, spec, records, fields...)
 	}
@@ -321,7 +332,14 @@ func (a *Adapter) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSp
 func (a *Adapter) loadDocumentsByHashTagMGet(ctx context.Context, spec meta.TypeSpec, records []storage.RecordKey, options LoadOptions, plan redisBatchPlan) ([]map[string]any, []bool, error) {
 	docs := make([]map[string]any, len(records))
 	exists := make([]bool, len(records))
-	client := a.client.(BatchClient)
+	scriptClient, err := a.scriptClient()
+	if err != nil {
+		return nil, nil, err
+	}
+	client, ok := scriptClient.(BatchClient)
+	if !ok {
+		return nil, nil, fmt.Errorf("redis: cluster-safe batch load requires BatchClient")
+	}
 	groups := make(map[string][]int)
 	for i, record := range records {
 		prefix := redisKeyPrefix(spec, record)
@@ -383,6 +401,26 @@ func (a *Adapter) loadDocumentsByHashTagMGet(ctx context.Context, spec meta.Type
 		}
 	}
 	return docs, exists, nil
+}
+
+func (a *Adapter) scriptClient() (ScriptClient, error) {
+	if a == nil || isNilScriptClient(a.client) {
+		return nil, ErrClientNotConfigured
+	}
+	return a.client, nil
+}
+
+func isNilScriptClient(client ScriptClient) bool {
+	if client == nil {
+		return true
+	}
+	value := reflect.ValueOf(client)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func (a *Adapter) loadDocumentsByEval(ctx context.Context, spec meta.TypeSpec, records []storage.RecordKey, fields ...string) ([]map[string]any, []bool, error) {

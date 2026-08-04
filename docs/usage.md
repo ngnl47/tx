@@ -1358,7 +1358,7 @@ client := redis.NewClient(&redis.Options{
 	DB:   15,
 })
 
-redisCluster := txredis.NewCluster(routeTable, map[string]any{
+redisCluster := txredis.NewCluster(routeTable, map[string]txredis.ScriptClient{
 	"redis://127.0.0.1:6379/15": txgoredis.NewClient(client),
 })
 ```
@@ -1388,7 +1388,7 @@ if err != nil {
 	return err
 }
 
-shards := map[string]any{}
+shards := map[string]txredis.ScriptClient{}
 for endpoint := range redisRoutes.Endpoints() {
 	opt, err := redis.ParseURL(endpoint)
 	if err != nil {
@@ -1398,6 +1398,16 @@ for endpoint := range redisRoutes.Endpoints() {
 }
 
 redisCluster := txredis.NewCluster(routeTable, shards)
+```
+
+`NewCluster` 的 shard 映射使用 `txredis.ScriptClient` 强类型约束，不能把任意对象塞入 Redis endpoint。若实际读写时
+adapter 没有可用 client（包括接口中包装了 nil 指针），会返回 `txredis.ErrClientNotConfigured`；空 `DeltaSet` 或空批量读取
+仍是正常 no-op，不会因为未装配 client 失败。
+
+```go
+adapter := txredis.NewAdapter(nil)
+err := adapter.ApplyDelete(ctx, GDRoleTypeSpec(), data.GDRoleRecordKey(1001))
+// errors.Is(err, txredis.ErrClientNotConfigured) == true
 ```
 
 默认批量读取会先按 endpoint 分组，再在每个 endpoint 内使用原生 `MGET`。云代理能识别 `MGET` 的参数都是 key，

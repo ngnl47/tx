@@ -402,7 +402,7 @@ Store 生成、Redis key helper、Mongo filter helper、字段编号 resolver �
 
 当前能力：
 
-- Redis adapter 支持 string JSON main/subKey 文档、Lua merge/replace、TTL 续期、批量读取和可选 `ClusterSafe`。
+- Redis adapter 支持 string JSON main/subKey 文档、Lua merge/replace、TTL 续期、批量读取和可选 `ClusterSafe`；`redis.Cluster` 的 shard 映射使用 `ScriptClient` 强类型约束，实际 I/O 遇到未装配 client 会返回 `redis.ErrClientNotConfigured`，不再静默 no-op。
 - Mongo adapter 支持 load、batch load、delta update、replace、delete、route cluster 和官方 driver 薄适配层。
 - Fusion strategy 支持 Redis 热写、Mongo miss 回源、Redis 回填、延迟保存任务入队、后台 scheduler 和 Redis 到 Mongo 整文档回写。
 - `storage/config.RouteTableConfig` 支持项目 yml 路由配置归一化；项目负责读取 yml 和创建 driver client。

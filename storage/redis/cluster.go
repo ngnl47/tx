@@ -28,14 +28,13 @@ type Cluster struct {
 }
 
 // NewCluster 创建 Redis route/cluster 适配器。
-func NewCluster(router Router, shards map[string]any) *Cluster {
+func NewCluster(router Router, shards map[string]ScriptClient) *Cluster {
 	cluster := &Cluster{
 		router: router,
 		shards: make(map[string]*Adapter, len(shards)),
 	}
 	for name, client := range shards {
-		scriptClient, _ := client.(ScriptClient)
-		cluster.shards[name] = NewAdapter(scriptClient)
+		cluster.shards[name] = NewAdapter(client)
 	}
 	return cluster
 }

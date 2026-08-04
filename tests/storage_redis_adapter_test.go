@@ -158,6 +158,49 @@ func TestRedisAdapterAppliesChangesWithSingleLuaEval(t *testing.T) {
 	}
 }
 
+func TestRedisAdapterRejectsNilClientForDocumentOperations(t *testing.T) {
+	adapter := txredis.NewAdapter(nil)
+	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
+	key := storage.RecordKey{ID: int64(1001)}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+
+	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, key, deltas, testBackendResolver(change.NameBackendJSON, deltaTestJSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
+	assertRedisClientNotConfigured(t, err)
+
+	err = adapter.ApplyDelete(context.Background(), spec, key)
+	assertRedisClientNotConfigured(t, err)
+
+	_, _, err = adapter.LoadDocument(context.Background(), spec, key)
+	assertRedisClientNotConfigured(t, err)
+
+	_, _, err = adapter.LoadDocuments(context.Background(), spec, []storage.RecordKey{key})
+	assertRedisClientNotConfigured(t, err)
+
+	err = adapter.ReplaceDocumentWithOptions(context.Background(), spec, key, map[string]any{"name": "alice"}, storage.ApplyOptions{})
+	assertRedisClientNotConfigured(t, err)
+
+	_, _, err = adapter.ApplyDeleteWithRevision(context.Background(), spec, key, "1")
+	assertRedisClientNotConfigured(t, err)
+
+	_, err = adapter.ReadRecordRevision(context.Background(), spec, key)
+	assertRedisClientNotConfigured(t, err)
+
+	_, err = adapter.LockRecord(context.Background(), spec, key, storage.LockOptions{TTL: time.Second})
+	assertRedisClientNotConfigured(t, err)
+
+	var typedNil *recordingRedisStringClient
+	typedNilAdapter := txredis.NewAdapter(typedNil)
+	err = typedNilAdapter.ApplyDelete(context.Background(), spec, key)
+	assertRedisClientNotConfigured(t, err)
+}
+
+func assertRedisClientNotConfigured(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, txredis.ErrClientNotConfigured) {
+		t.Fatalf("error = %v, want ErrClientNotConfigured", err)
+	}
+}
+
 func TestRedisAdapterReplaceDocumentWithOptionsUsesFullReplaceAndTTL(t *testing.T) {
 	client := &recordingRedisStringClient{}
 	adapter := txredis.NewAdapter(client)
@@ -1048,7 +1091,7 @@ func TestRedisClusterRoutesSingleWriteByShardKey(t *testing.T) {
 	router := &recordingRedisRouter{names: map[any]string{
 		int64(7): "role-shard",
 	}}
-	cluster := txredis.NewCluster(router, map[string]any{
+	cluster := txredis.NewCluster(router, map[string]txredis.ScriptClient{
 		"role-shard": roleShard,
 		"user-shard": userShard,
 	})
@@ -1080,7 +1123,7 @@ func TestRedisClusterRoutesRecordLockByShardKey(t *testing.T) {
 	router := &recordingRedisRouter{names: map[any]string{
 		int64(7): "role-shard",
 	}}
-	cluster := txredis.NewCluster(router, map[string]any{
+	cluster := txredis.NewCluster(router, map[string]txredis.ScriptClient{
 		"role-shard": roleShard,
 		"user-shard": userShard,
 	})
@@ -1114,7 +1157,7 @@ func TestRedisClusterRoutesRecordRevisionByShardKey(t *testing.T) {
 	router := &recordingRedisRouter{names: map[any]string{
 		int64(7): "role-shard",
 	}}
-	cluster := txredis.NewCluster(router, map[string]any{
+	cluster := txredis.NewCluster(router, map[string]txredis.ScriptClient{
 		"role-shard": roleShard,
 		"user-shard": userShard,
 	})
@@ -1155,7 +1198,7 @@ func TestRedisClusterBatchLoadsByShardGroupAndRestoresOrder(t *testing.T) {
 		int64(7): "a",
 		int64(8): "b",
 	}}
-	cluster := txredis.NewCluster(router, map[string]any{
+	cluster := txredis.NewCluster(router, map[string]txredis.ScriptClient{
 		"a": shardA,
 		"b": shardB,
 	})
@@ -1208,7 +1251,7 @@ func TestRedisClusterBatchLoadClusterSafeGroupsByHashTag(t *testing.T) {
 		int64(7): "role",
 		int64(8): "role",
 	}}
-	cluster := txredis.NewCluster(router, map[string]any{"role": shard})
+	cluster := txredis.NewCluster(router, map[string]txredis.ScriptClient{"role": shard})
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{
 			Key:     "role",
