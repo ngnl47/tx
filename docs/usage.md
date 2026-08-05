@@ -728,7 +728,7 @@ task.SetActive(2)
 
 回调返回错误或 panic 时，字段值、map/slice 结构、子 Store delta 都会恢复到进入事务前的状态。未进入 `txn.Run` 的普通 Store 修改不会建立 undo log，也不会复制旧集合。
 
-事务要求进入前的目标 Store 没有遗留 delta。开发、测试或灰度环境可通过项目配置打开运行时检查；检查在完整锁集获取后、业务回调开始前执行，发现事务外修改时会释放锁并返回错误：
+直接使用 `txn.Run` 或 `txn.Call` 的临时事务要求进入前的目标 Store 没有遗留 delta。开发、测试或灰度环境可通过项目配置打开运行时检查；检查在完整锁集获取后、业务回调开始前执行，发现事务外修改时会释放锁并返回错误：
 
 ```go
 txn.Configure(txn.Config{
@@ -743,6 +743,8 @@ err := txn.Run(ctx, txn.Locks(role), process)
 ```
 
 项目应在启动时把自己的 yml 配置转换为这项配置；`tx` 不读取项目文件。生产环境通常保持默认 `false`，避免每个事务入口递归投影整棵 Store 树。开启后应先保存或 `ClearDeltas()` 处理事务外已有的 Store 变更，再进入事务；不要把事务外修改混入本次提交边界。
+
+常驻内存实体由 `state.Manager` 管理时，前一轮事务的 delta 会刻意保留到下一次 Flush，因此必须使用 `manager.Call`。它会在内部允许已有 delta，普通业务代码不要直接调用 `txn.CallWithOptions`。
 
 锁等待通过调用方的 `context.Context` 统一控制。获取完整锁集之前发生超时或取消时，框架会释放本次已获取的锁，且不会执行回调：
 
@@ -791,12 +793,6 @@ func (p *PGuildContribution) Process(tx *txn.Tx) error {
 	if err := tx.Call(&PGrantReward{Role: p.Role}); err != nil {
 		return err
 	}
-	tx.AfterCommit(func(context.Context) error {
-		return db.Save(p.Guild)
-	})
-	tx.AfterCommit(func(context.Context) error {
-		return db.Save(p.Role)
-	})
 	return nil
 }
 
@@ -813,10 +809,60 @@ func (p *PGrantReward) Process(*txn.Tx) error {
 	return nil
 }
 
-err := txn.Call(ctx, &PGuildContribution{Guild: guild, Role: role})
+err := manager.Call(ctx, &PGuildContribution{Guild: guild, Role: role})
 ```
 
-`txn.Tx` 只表示本次已持锁的运行环境，负责 undo、savepoint、子过程调用和提交/回滚回调；它不是业务数据，也不是 `context.Context`。事务内通过生成的 `GD*` 代理方法或显式 Store 修改数据，两者都会走同一受控 Store 路径并登记 undo。`AfterCommit` 在锁释放、undo 解绑后执行，适合调用 `db.Save`、发送下行事件或投递后续任务；这些回调不与内存事务构成原子提交。回调失败时，内存修改不会回滚，`txn.Call` 会返回该错误，未清理的 Store delta 可由业务重试持久化，不能直接重跑整段业务过程。过程返回错误时，`AfterCommit` 不会执行；可用 `AfterRollback` 做指标记录、临时资源释放等不应持久化的数据清理。
+`txn.Tx` 只表示本次已持锁的运行环境，负责 undo、savepoint、子过程调用和提交/回滚回调；它不是业务数据，也不是 `context.Context`。事务内通过生成的 `GD*` 代理方法或显式 Store 修改数据，两者都会走同一受控 Store 路径并登记 undo。过程成功只表示内存修改已提交，不等价于 Redis 或 Mongo 已写入；`AfterCommit` 在锁释放、undo 解绑后按注册顺序执行，任一回调失败会停止后续回调，但不会回滚内存修改。过程返回错误时，`AfterCommit` 不会执行；可用 `AfterRollback` 做指标记录、临时资源释放等不应持久化的数据清理。
+
+事务中可通过 `tx.DirtyTargets()` 取得本次经受控 Store API 修改、且当前仍有 delta 的根目标。结果按锁顺序返回；被 savepoint 回滚或随后 `UnTouch` 清空的 Store 不会出现。它供 `state.Manager` 登记落盘目标，普通业务循环不需要调用：
+
+```go
+func (p *PUpdateRole) Process(tx *txn.Tx) error {
+	p.Role.SetPower(p.Role.Power + 10)
+	return nil
+}
+```
+
+### 有状态落盘调度
+
+`state.Manager` 用于实体长期驻留内存的服务。事务成功后它只按锁键登记对应 Store；多个事务持续修改同一对象时，Store 保留路径 delta，下一次 Flush 才把当前值物化为一次 Fusion 写入。
+
+```go
+manager := state.NewManager(fusion)
+
+if err := manager.Call(ctx, &PGuildContribution{Guild: guild, Role: role}); err != nil {
+	return err
+}
+
+// 尚未发生 Redis/Mongo I/O；role、guild 的 Store 仍保留本轮及此前未 Flush 的 delta。
+if err := manager.Flush(ctx); err != nil {
+	return err // delta 保留，下一次 Flush 可重试
+}
+```
+
+`Flush` 会为每个实体取得与 `Procedure` 相同的本机锁，在锁内执行 `Deltas -> Compact -> storage.Save`，成功后才清理 delta。这样并发 Procedure 不会在 Flush 读取 `GD*` 当前值时修改同一个对象：
+
+```text
+事务 1：role.SetGold(100)
+事务 2：role.SetGold(120)
+Flush：  只写 role.Gold = 120
+```
+
+服务启动后应将定时循环纳入自己的优雅关停 context。直接使用 runtime 时，关闭阶段必须另建一个不受运行 context 取消影响、且有明确截止时间的 context，完成最后刷盘：
+
+```go
+go manager.Run(serviceCtx, 10*time.Second)
+
+// 先由服务全局 WaitGroupContext 等待已经进入的业务任务结束，再执行。
+// shutdownCtx 不能直接复用已经取消的 serviceCtx。
+shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(serviceCtx), 30*time.Second)
+defer cancel()
+if err := manager.Shutdown(shutdownCtx, 10*time.Second); err != nil {
+	return err
+}
+```
+
+`Run` 遇到单次写入错误会记录错误并保留目标，下一轮继续重试。`Shutdown` 则在 `shutdownCtx` 有效期内立即 Flush 并按重试间隔继续尝试；截止时间到达时会返回错误和剩余待刷数量。该超时只约束内存 Store 到 Redis 的最终刷盘，不等待 Fusion 的 Redis 延迟队列回写 Mongo。第一版不把 `DeltaSet`、Store 或 GD 指针交给 Actor 外的异步写队列；如未来需要解除 Flush 的 I/O 持锁时间，应在锁内物化不可变写入批次，并补齐顺序确认与失败重试语义。
 
 ### 零值和删除
 

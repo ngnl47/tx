@@ -26,6 +26,22 @@ func (store *transactionDirtyStore) Deltas() change.DeltaSet {
 	return store.deltas
 }
 
+func (store *transactionDirtyStore) Set(value int) {
+	previousValue := store.value
+	previousDeltas := store.deltas.Clone()
+	if store.recorder != nil {
+		store.recorder.RecordUndo(func() {
+			store.value = previousValue
+			store.deltas = previousDeltas
+		})
+	}
+	store.value = value
+	store.deltas = append(store.deltas, change.DeltaEntry{
+		Path: change.DeltaPath{Nodes: [change.MaxDeltaDepth]change.PathNode{{Field: 1}}, Depth: 1},
+		Kind: change.DeltaKindSet,
+	})
+}
+
 type transactionTestLockable struct {
 	lock txn.LockTarget
 }
@@ -131,6 +147,35 @@ func TestTransactionDebugCheckIsDisabledByDefault(t *testing.T) {
 	}
 }
 
+func TestTransactionDirtyTargetsIncludesOnlyPendingModifiedStores(t *testing.T) {
+	first := &transactionDirtyStore{}
+	second := &transactionDirtyStore{}
+	firstLock := txn.NewLockTarget(txn.NewLockKey("role", 1001), first)
+	secondLock := txn.NewLockTarget(txn.NewLockKey("role", 1002), second)
+	var transaction *txn.Tx
+
+	err := txn.Run(context.Background(), []txn.LockTarget{secondLock, firstLock}, func(tx *txn.Tx) error {
+		transaction = tx
+		second.Set(2)
+		if err := tx.Do(func(*txn.Tx) error {
+			first.Set(1)
+			return errors.New("rollback first")
+		}); err == nil {
+			t.Fatal("Do returned nil error")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if transaction == nil {
+		t.Fatal("transaction was not captured")
+	}
+	if got := transaction.DirtyTargets(); !reflect.DeepEqual(got, []txn.LockTarget{secondLock}) {
+		t.Fatalf("DirtyTargets = %#v, want %#v", got, []txn.LockTarget{secondLock})
+	}
+}
+
 func TestTransactionDoRollsBackOnlyNestedSavepoint(t *testing.T) {
 	store := &transactionTestStore{value: 1}
 	err := txn.Run(context.Background(), []txn.LockTarget{
@@ -195,6 +240,29 @@ func TestTransactionRunsCallbacksAtExpectedBoundary(t *testing.T) {
 	}
 	if !reflect.DeepEqual(calls, []string{"rollback"}) {
 		t.Fatalf("rollback calls = %#v", calls)
+	}
+}
+
+func TestTransactionStopsAfterCommitCallbacksAfterFailure(t *testing.T) {
+	store := &transactionTestStore{}
+	called := false
+	err := txn.Run(context.Background(), []txn.LockTarget{
+		txn.NewLockTarget(txn.NewLockKey("role", 1001), store),
+	}, func(tx *txn.Tx) error {
+		tx.AfterCommit(func(context.Context) error {
+			return errors.New("commit failed")
+		})
+		tx.AfterCommit(func(context.Context) error {
+			called = true
+			return nil
+		})
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "commit failed") {
+		t.Fatalf("Run error = %v, want commit callback error", err)
+	}
+	if called {
+		t.Fatal("after-commit callback ran after previous callback failed")
 	}
 }
 

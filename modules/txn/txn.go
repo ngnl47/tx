@@ -107,11 +107,20 @@ type Procedure interface {
 	Process(*Tx) error
 }
 
+// CallOptions 描述根 Procedure 的执行选项。
+type CallOptions struct {
+	// AllowPendingDeltas 允许锁定对象在进入事务前已保留待落盘 delta。
+	// 有状态运行时会在多次事务之间合并 Store 脏状态，因此需要显式开启。
+	AllowPendingDeltas bool
+}
+
 // Tx 是一次正在执行的单机事务。
 type Tx struct {
 	ctx        context.Context
 	active     bool
 	locks      map[LockKey]change.UndoBindable
+	targets    []LockTarget
+	dirty      map[LockKey]struct{}
 	procedures []string
 
 	undos         []change.UndoFunc
@@ -142,6 +151,46 @@ func (tx *Tx) RecordUndo(undo change.UndoFunc) {
 		return
 	}
 	tx.undos = append(tx.undos, undo)
+}
+
+// DirtyTargets 返回本次事务经受控 Store 修改且当前仍有 delta 的根目标。
+//
+// 返回顺序与事务锁顺序一致。该结果适合业务 facade 在提交后选择持久化对象；
+// 它不包含未经事务 Store API 修改的裸字段变更。
+func (tx *Tx) DirtyTargets() []LockTarget {
+	if tx == nil || len(tx.dirty) == 0 {
+		return nil
+	}
+	targets := make([]LockTarget, 0, len(tx.dirty))
+	for _, target := range tx.targets {
+		if _, ok := tx.dirty[target.Key]; !ok {
+			continue
+		}
+		if store, ok := target.Store.(change.DeltaInspectable); ok && len(store.Deltas()) == 0 {
+			continue
+		}
+		targets = append(targets, target)
+	}
+	return targets
+}
+
+func (tx *Tx) markDirty(target LockTarget) {
+	if tx != nil {
+		tx.dirty[target.Key] = struct{}{}
+	}
+}
+
+type targetUndoRecorder struct {
+	tx     *Tx
+	target LockTarget
+}
+
+func (recorder targetUndoRecorder) RecordUndo(undo change.UndoFunc) {
+	if recorder.tx == nil || undo == nil {
+		return
+	}
+	recorder.tx.markDirty(recorder.target)
+	recorder.tx.RecordUndo(undo)
 }
 
 // Do 在当前事务内建立 savepoint。返回错误时只回滚该调用之后的修改，调用方可自行决定是否继续外层事务。
@@ -273,6 +322,10 @@ func sameStore(left, right change.UndoBindable) bool {
 
 // Run 按稳定锁顺序执行一次单机事务。只有传入锁对象绑定的 Store 会在回调期间绑定 undo recorder。
 func Run(ctx context.Context, locks []LockTarget, fn func(*Tx) error) (err error) {
+	return run(ctx, locks, fn, CallOptions{})
+}
+
+func run(ctx context.Context, locks []LockTarget, fn func(*Tx) error, options CallOptions) (err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -287,12 +340,18 @@ func Run(ctx context.Context, locks []LockTarget, fn func(*Tx) error) (err error
 	if err != nil {
 		return err
 	}
-	if err := validateCleanLockTargets(prepared); err != nil {
+	if err := validateCleanLockTargets(prepared, options); err != nil {
 		releaseLocks(heldLocks)
 		return err
 	}
 
-	tx := &Tx{ctx: context.WithValue(ctx, contextKey{}, (*Tx)(nil)), active: true, locks: make(map[LockKey]change.UndoBindable, len(prepared))}
+	tx := &Tx{
+		ctx:     context.WithValue(ctx, contextKey{}, (*Tx)(nil)),
+		active:  true,
+		locks:   make(map[LockKey]change.UndoBindable, len(prepared)),
+		targets: append([]LockTarget(nil), prepared...),
+		dirty:   make(map[LockKey]struct{}, len(prepared)),
+	}
 	tx.ctx = context.WithValue(ctx, contextKey{}, tx)
 	defer func() {
 		tx.active = false
@@ -313,7 +372,7 @@ func Run(ctx context.Context, locks []LockTarget, fn func(*Tx) error) (err error
 		tx.locks[lock.Key] = lock.Store
 	}
 	for _, lock := range prepared {
-		lock.Store.SetUndoRecorder(tx)
+		lock.Store.SetUndoRecorder(targetUndoRecorder{tx: tx, target: lock})
 	}
 	if fn != nil {
 		err = fn(tx)
@@ -342,8 +401,32 @@ func Run(ctx context.Context, locks []LockTarget, fn func(*Tx) error) (err error
 	return runAfterCommit(ctx, tx.afterCommit)
 }
 
-func validateCleanLockTargets(locks []LockTarget) error {
-	if !CurrentConfig().Debug.CheckCleanLockTargets {
+// WithLocks 在不创建事务、undo log 或回调的前提下持有一组本机锁执行 fn。
+// 它适合状态运行时在落盘前稳定读取并清理 Store 的当前脏状态。
+func WithLocks(ctx context.Context, locks []LockTarget, fn func(context.Context) error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := FromContext(ctx); ok {
+		return errors.New("transaction: WithLocks cannot run inside active transaction")
+	}
+	prepared, err := prepareLocks(locks)
+	if err != nil {
+		return err
+	}
+	heldLocks, err := acquireLocks(ctx, prepared)
+	if err != nil {
+		return err
+	}
+	defer releaseLocks(heldLocks)
+	if fn == nil {
+		return nil
+	}
+	return fn(ctx)
+}
+
+func validateCleanLockTargets(locks []LockTarget, options CallOptions) error {
+	if options.AllowPendingDeltas || !CurrentConfig().Debug.CheckCleanLockTargets {
 		return nil
 	}
 	for _, lock := range locks {
@@ -359,6 +442,11 @@ func validateCleanLockTargets(locks []LockTarget) error {
 // Call 使用 Procedure 声明的完整锁集创建根事务。
 // 已在事务内时必须改用 tx.Call，以避免动态扩张锁集。
 func Call(ctx context.Context, procedure Procedure) error {
+	return CallWithOptions(ctx, procedure, CallOptions{})
+}
+
+// CallWithOptions 使用 Procedure 声明的完整锁集创建根事务，并应用执行选项。
+func CallWithOptions(ctx context.Context, procedure Procedure, options CallOptions) error {
 	if procedure == nil {
 		return errors.New("transaction: nil procedure")
 	}
@@ -372,9 +460,9 @@ func Call(ctx context.Context, procedure Procedure) error {
 	if err != nil {
 		return fmt.Errorf("transaction: procedure %s locks: %w", procedureName(procedure), err)
 	}
-	return Run(ctx, locks, func(tx *Tx) error {
+	return run(ctx, locks, func(tx *Tx) error {
 		return tx.call(procedure)
-	})
+	}, options)
 }
 
 func prepareLocks(locks []LockTarget) ([]LockTarget, error) {
@@ -503,11 +591,10 @@ func (table *lockTable) release(key LockKey, entry *lockEntry) {
 }
 
 func runAfterCommit(ctx context.Context, callbacks []func(context.Context) error) error {
-	var errs []error
 	for _, callback := range callbacks {
 		if err := callback(ctx); err != nil {
-			errs = append(errs, err)
+			return err
 		}
 	}
-	return errors.Join(errs...)
+	return nil
 }

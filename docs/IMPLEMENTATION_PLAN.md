@@ -27,7 +27,7 @@
 - `store.View()` 深复制 Store 的字段状态、集合状态和子 Store 树，浅复制绑定的 `GD*` 引用；不得直接复制含 map 或子 Store 指针的 Store 结构。主 Store 与 viewStore 的内部结构一致，但 viewStore 是只读投影模式：允许读取、`Touch/UnTouch` 和生成文档，不允许修改数据或持久化。
 - viewStore 是字段选择状态的副本，不是业务数据快照。`ChangeDocument()` 在边界重新读取当前 `GD*` 值并校验指针、map key、slice index 路径；结构漂移时必须提升为最近安全祖先的整字段写，不能输出已失效的 key/index 路径。需要时刻快照时，业务必须在变更后的下一步立即物化 `ChangeDocument()` 或协议 body。
 - 业务输入模型和协议字段不能直接声明生成的 `*Store` 类型；Store 只用于框架持久化和 Provider 投影输入。
-- 业务 facade 和框架 API 分层。handler 推荐写 `db.Save(role)`；facade 内部再取 `role.Store()` 并调用 `storage.Save`。
+- 业务 facade 和框架 API 分层。无状态 handler 推荐写 `db.Save(role)`；有状态服务的写业务通过项目侧 `state.Call(ctx, procedure)` 进入 `state.Manager`，由 Manager 在后续 Flush 内部取得 Store 并调用 `storage.Save`。
 - `txgame/server/internal/db` 已提供泛型 `db.Save(role)` facade：它使用服务启动时装配的根 context 与 writer，并只在 facade 内部获取生成数据对象的 Store。
 - 通用 `db.Create` facade 不作为当前目标。新建对象、默认字段初始化、初始资源发放属于业务流程；框架层保留 `storage.Create` 表达 upsert/首次缓存语义。
 - 后续单机事务能力放在可选的 `tx/modules/txn`，`tx` 核心和普通 Store 路径不依赖该模块。没有进入 `txn.Run(...)` 时，不创建 undo log、不记录旧值，也不增加事务运行时开销。
@@ -40,6 +40,8 @@
 - 需要在根事务提交后开启独立事务时，通过 `AfterCommit` 调度新的 `Procedure`，不与父事务共享原子性或锁。
 - 单机事务只保证经 Store 受控 API 发生的修改可回滚；裸字段赋值和 snapshot diff 不参与事务回滚。undo log 属于一次事务的临时状态，不写入 GD，也不作为 Store 的长期业务数据。
 - 事务锁对象由生成代码在 GD 与 Store 侧提供：业务通过 `txn.Locks(guild, role)` 收集，GD 的 `LockTarget()` 只代理默认 Store，不复制业务数据。字段 setter、map/slice 的 `Set/Delete/Replace` 和生成对象子 Store setter 在事务内登记 undo；事务成功后的存储写入、消息发送或后续业务动作通过 `AfterCommit` 等机制调度；这表示内存事务已提交，不等价于 Mongo 已可靠落盘。
+- 可选 `modules/state.Manager` 服务于有状态运行时。它按 `LockKey` 聚合脏 Store；`manager.Call` 在事务成功后登记 `DirtyTargets`，不执行 I/O；`manager.Flush` 逐目标取得同一把本机锁，在锁内投影并压缩 DeltaSet 后调用 `storage.Save`，成功才清理 delta。Manager 不保存业务副本，不把 Store 或 DeltaSet 作为异步队列项。
+- 无状态服务不使用 `modules/state` 和 `modules/txn`：请求内临时加载 GD，直接由项目 facade 调用 `db.Save` 或 snapshot `SaveChange` 写 Fusion。启用有状态运行时后，所有写操作都必须通过 `Procedure + state.Manager`；读取不要求进入事务。
 - 当前标脏主线是 `change.DeltaSet`。热路径只保存 `FieldID`、map key、slice index 和 `DeltaKind`，不常驻拼接字符串路径。
 - `DeltaEntry` 当前只保存 `Path` 和 `Kind`，不持有字段值；生成 Store 会在输出边界按 DeltaPath 读取当前值。后续如需性能优化，只做局部 fast path，不提前引入自研 value 编码。
 - 字符串路径只在输出边界生成，例如 `ChangeDocument()`、Redis JSON patch、Mongo update document 和 cmd Provider body。
@@ -72,7 +74,7 @@
 - 生成 Store 已使用父 Store 路径树组织直接指针、map key 和 slice index 子 Store；`Deltas()` 在边界递归投影并压缩，viewStore 会复制状态树且禁止写入、持久化。
 - `map[K]*GD...` 遇到不能表达为 `PathKey` 的 key 类型时，仍可通过子 Store 修改数据，但导出时保守替换整 map；`txgame` 已覆盖枚举 key 的真实输入回归。
 - `txgame` 的 `GDRole`、`GDLegion` 已使用 `@transaction` 生成锁键与锁对象，并以 `PGuildContribution` 覆盖多对象锁序、生成 Store undo 和回滚后变更文档清理。
-- `txgame/server/internal/db` 已覆盖 `Procedure.AfterCommit -> db.Save(GD*)` 与 `AfterRollback`：持久化回调在锁释放后接收生成 Store 的 delta，成功后清理本轮 delta；回滚不会触发持久化，回调能观察到恢复后的数据。提交回调失败不回滚内存事务，留给业务重试持久化。`txgame` 的 `runtime.transaction.debug.checkCleanLockTargets` 已承接 `txn` 调试期事务入口校验。
+- `txn.Tx.DirtyTargets()` 已按锁顺序暴露本次经受控 Store API 修改且仍有 delta 的根目标；savepoint 回滚或清空 delta 的目标不会出现。`modules/state.Manager` 使用它在事务成功后登记落盘对象；`txgame/server/internal/state.Call(ctx, procedure)` 是有状态项目侧入口，`runtime.state.flushInterval` 控制生命周期内的定时 Flush，`runtime.state.shutdownFlushTimeout` 控制服务退出时的最终 Redis 刷盘窗口。生命周期先用服务全局 `WaitGroupContext` 等待已经进入的业务任务结束，再使用不受运行 context 取消影响的限时 context 进行最终刷盘；它不等待 Fusion 延迟队列回写 Mongo。`runtime.transaction.debug.checkCleanLockTargets` 仅用于临时、无历史 delta 的直接 `txn.Call`；Manager 会显式允许此前未 Flush 的 delta。
 - Fusion 批量混合命中先批量读取 Redis；Mongo reader 支持批量读取时，所有 miss 只做一次 Mongo 全文批量读取，再逐条进入记录锁、二次 Redis 读取与带 TTL 回填。锁内命中 Redis 时直接返回新热数据，不能以旧 Mongo 候选覆盖它。
 
 1. 保持 `txgame` 集成验证与生成 Store 行为同步：新增集合、指针、存储边界行为时，补业务侧代码示例及真实 Redis/Mongo 回归。
@@ -80,8 +82,8 @@
 3. 持续清理不再作为主线的字符串路径变更代码、过渡接口和旧测试，只保留必要历史 benchmark 结论。
 4. 日志基建后续专题：确定业务项目 logger 枚举或包级变量、名称规范、级别配置和 tx/log 的最小扩展点。
 5. RedisJSON/ReJSON 仅作为未来可选 backend 单独评估；SQL、消息队列等其他 backend 也不进入当前主线。
-6. 完善可选的 `tx/modules/txn`：`@transaction` 已生成 `LockKey()` 和 `LockTarget()`；受控字段、map、slice 与生成对象子 Store 已登记 undo，并覆盖事务失败后的回滚。事务锁使用按逻辑 Key 管理的本机锁表，按稳定顺序获取，并由 `context.Context` 提供锁等待超时；超时必须释放已获取锁且不得进入回调。`Procedure.Locks`/`tx.Call` 已约束锁集和输出嵌套路径；已覆盖提交后 `db.Save` 与回滚回调，后续仅在引入具体下行事件模块后补真实事件回归。第一版不处理分布式锁、跨实例事务或持久化层 ACID。
-7. 在单机事务边界稳定后，评估可选 `tx/modules/actor`。actor 负责业务一致性域的单实例串行执行；事务模块只负责该实例内的多对象锁定、回滚和提交，两者不反向依赖。
+6. 完善可选的 `tx/modules/txn` 与 `tx/modules/state`：`@transaction` 已生成 `LockKey()` 和 `LockTarget()`；受控字段、map、slice 与生成对象子 Store 已登记 undo，并覆盖事务失败后的回滚。事务锁使用按逻辑 Key 管理的本机锁表，按稳定顺序获取，并由 `context.Context` 提供锁等待超时；超时必须释放已获取锁且不得进入回调。`Procedure.Locks`/`tx.Call` 已约束锁集和输出嵌套路径；Manager 已覆盖事务后登记、持锁 Flush、失败重试，以及先等待全局 `WaitGroupContext` 再执行的最终限时刷盘。后续用真实 Redis/Mongo 压测决定是否需要不可变写入批次；第一版不处理分布式锁、跨实例事务或持久化层 ACID。
+7. 在状态运行时边界稳定后，评估可选 `tx/modules/actor` 与 RPC。actor 负责业务一致性域的单实例串行执行和跨进程路由；事务模块只负责该实例内的多对象锁定、回滚和提交，Manager 只负责当前进程的脏实体落盘，三者不反向依赖。
 
 ## Module Layout
 
@@ -101,8 +103,9 @@ tx/
   storage/mongo/    # Mongo collection/index/sharding metadata、后续 Mongo adapter
   storage/fusion/   # Fusion 策略与延迟任务抽象
   storage/task/     # Delay task backend interface 和内存实现
-  modules/txn/         # 后续可选：单机事务、savepoint、undo log 和 after-commit hook
-  modules/actor/    # 后续可选：业务一致性域的单实例串行执行
+  modules/txn/      # 可选：单机事务、savepoint、undo log 和 after-commit hook
+  modules/state/    # 可选：有状态实体脏数据聚合与定时 Flush
+  modules/actor/    # 后续可选：业务一致性域的单实例串行执行与 RPC 路由
   util/             # 小型通用工具
   tests/            # 所有测试文件，仅此目录下生成 *_test.go
 ```
