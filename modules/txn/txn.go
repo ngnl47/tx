@@ -287,6 +287,10 @@ func Run(ctx context.Context, locks []LockTarget, fn func(*Tx) error) (err error
 	if err != nil {
 		return err
 	}
+	if err := validateCleanLockTargets(prepared); err != nil {
+		releaseLocks(heldLocks)
+		return err
+	}
 
 	tx := &Tx{ctx: context.WithValue(ctx, contextKey{}, (*Tx)(nil)), active: true, locks: make(map[LockKey]change.UndoBindable, len(prepared))}
 	tx.ctx = context.WithValue(ctx, contextKey{}, tx)
@@ -336,6 +340,20 @@ func Run(ctx context.Context, locks []LockTarget, fn func(*Tx) error) (err error
 	releaseLocks(heldLocks)
 	tx.active = false
 	return runAfterCommit(ctx, tx.afterCommit)
+}
+
+func validateCleanLockTargets(locks []LockTarget) error {
+	if !CurrentConfig().Debug.CheckCleanLockTargets {
+		return nil
+	}
+	for _, lock := range locks {
+		store, ok := lock.Store.(change.DeltaInspectable)
+		if !ok || len(store.Deltas()) == 0 {
+			continue
+		}
+		return fmt.Errorf("transaction: lock target %s has pending deltas before transaction", lock.Key.String())
+	}
+	return nil
 }
 
 // Call 使用 Procedure 声明的完整锁集创建根事务。

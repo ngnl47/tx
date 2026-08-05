@@ -728,6 +728,22 @@ task.SetActive(2)
 
 回调返回错误或 panic 时，字段值、map/slice 结构、子 Store delta 都会恢复到进入事务前的状态。未进入 `txn.Run` 的普通 Store 修改不会建立 undo log，也不会复制旧集合。
 
+事务要求进入前的目标 Store 没有遗留 delta。开发、测试或灰度环境可通过项目配置打开运行时检查；检查在完整锁集获取后、业务回调开始前执行，发现事务外修改时会释放锁并返回错误：
+
+```go
+txn.Configure(txn.Config{
+	Debug: txn.DebugConfig{
+		CheckCleanLockTargets: true,
+	},
+})
+
+role.SetName("outside-transaction")
+err := txn.Run(ctx, txn.Locks(role), process)
+// err: transaction: lock target role:1001 has pending deltas before transaction
+```
+
+项目应在启动时把自己的 yml 配置转换为这项配置；`tx` 不读取项目文件。生产环境通常保持默认 `false`，避免每个事务入口递归投影整棵 Store 树。开启后应先保存或 `ClearDeltas()` 处理事务外已有的 Store 变更，再进入事务；不要把事务外修改混入本次提交边界。
+
 锁等待通过调用方的 `context.Context` 统一控制。获取完整锁集之前发生超时或取消时，框架会释放本次已获取的锁，且不会执行回调：
 
 ```go
@@ -772,7 +788,16 @@ func (p *PGuildContribution) Locks(context.Context) ([]txn.LockTarget, error) {
 
 func (p *PGuildContribution) Process(tx *txn.Tx) error {
 	p.Guild.SetExp(p.Guild.Exp + 10)
-	return tx.Call(&PGrantReward{Role: p.Role})
+	if err := tx.Call(&PGrantReward{Role: p.Role}); err != nil {
+		return err
+	}
+	tx.AfterCommit(func(context.Context) error {
+		return db.Save(p.Guild)
+	})
+	tx.AfterCommit(func(context.Context) error {
+		return db.Save(p.Role)
+	})
+	return nil
 }
 
 type PGrantReward struct {
@@ -791,7 +816,7 @@ func (p *PGrantReward) Process(*txn.Tx) error {
 err := txn.Call(ctx, &PGuildContribution{Guild: guild, Role: role})
 ```
 
-`txn.Tx` 只表示本次已持锁的运行环境，负责 undo、savepoint、子过程调用和提交/回滚回调；它不是业务数据，也不是 `context.Context`。事务内通过生成的 `GD*` 代理方法或显式 Store 修改数据，两者都会走同一受控 Store 路径并登记 undo。
+`txn.Tx` 只表示本次已持锁的运行环境，负责 undo、savepoint、子过程调用和提交/回滚回调；它不是业务数据，也不是 `context.Context`。事务内通过生成的 `GD*` 代理方法或显式 Store 修改数据，两者都会走同一受控 Store 路径并登记 undo。`AfterCommit` 在锁释放、undo 解绑后执行，适合调用 `db.Save`、发送下行事件或投递后续任务；这些回调不与内存事务构成原子提交。回调失败时，内存修改不会回滚，`txn.Call` 会返回该错误，未清理的 Store delta 可由业务重试持久化，不能直接重跑整段业务过程。过程返回错误时，`AfterCommit` 不会执行；可用 `AfterRollback` 做指标记录、临时资源释放等不应持久化的数据清理。
 
 ### 零值和删除
 

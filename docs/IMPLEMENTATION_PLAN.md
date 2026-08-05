@@ -34,6 +34,7 @@
 - `@transaction` 是生成期类型能力声明，不是常驻事务开关。它独立于 `storage` 注解，为持久化 GD 或纯内存 GD 生成统一的本机 `LockKey()` 和 `LockTarget()`；`scope` 是一致性域分类，`keyField` 是域内对象键，`order` 是可选的非负锁层级，默认 `0` 且较小值先获取。
 - 固定锁集使用 `txn.Locks(guild, role)`；前置查询后需要循环收集锁时使用 `txn.NewLockSet().Add(...).Build()`。两者只负责收集，重复锁、顺序、完整性和超时仍由 `txn.Run` 统一处理。
 - `txn.Run(...)` 只处理单机内存事务：对输入锁对象的锁键去重、按逻辑 Key 全序获取本机锁，并在回调期间临时绑定 undo recorder。锁获取受传入 `context.Context` 控制；超时或取消时释放本次已获取锁，回调不会开始执行。它不解决分布式锁、跨实例一致性或 Redis/Mongo 分布式事务。
+- `txn.Config.Debug.CheckCleanLockTargets` 是可选调试期检查。默认关闭；开启后，事务在获取全部锁后检查每个可检查根 Store 是否已有 delta，若有则释放锁并拒绝进入回调，防止事务外 Store 修改混入本次提交边界。项目负责从自己的 yml 配置转换并调用 `txn.Configure`。
 - 可复用事务逻辑使用 `Procedure`：根 `txn.Call(ctx, procedure)` 在锁定完整目标集后执行；事务内只能通过 `tx.Call(child)` 调用子 Procedure，并建立 savepoint。子 Procedure 的目标必须是根事务已持有锁键的子集；发现新目标时返回包含 `A -> B` 调用路径的明确错误，不等待形成死锁。直接嵌套 `txn.Run` 不是业务 API，应直接拒绝。
 - 根 Procedure 需要在进入事务前声明自身及子 Procedure 的完整锁键并集。若锁键依赖查询结果，先做只读预取，再按完整键集加锁并重新校验；不支持事务运行中动态扩张锁集。
 - 需要在根事务提交后开启独立事务时，通过 `AfterCommit` 调度新的 `Procedure`，不与父事务共享原子性或锁。
@@ -71,6 +72,7 @@
 - 生成 Store 已使用父 Store 路径树组织直接指针、map key 和 slice index 子 Store；`Deltas()` 在边界递归投影并压缩，viewStore 会复制状态树且禁止写入、持久化。
 - `map[K]*GD...` 遇到不能表达为 `PathKey` 的 key 类型时，仍可通过子 Store 修改数据，但导出时保守替换整 map；`txgame` 已覆盖枚举 key 的真实输入回归。
 - `txgame` 的 `GDRole`、`GDLegion` 已使用 `@transaction` 生成锁键与锁对象，并以 `PGuildContribution` 覆盖多对象锁序、生成 Store undo 和回滚后变更文档清理。
+- `txgame/server/internal/db` 已覆盖 `Procedure.AfterCommit -> db.Save(GD*)` 与 `AfterRollback`：持久化回调在锁释放后接收生成 Store 的 delta，成功后清理本轮 delta；回滚不会触发持久化，回调能观察到恢复后的数据。提交回调失败不回滚内存事务，留给业务重试持久化。`txgame` 的 `runtime.transaction.debug.checkCleanLockTargets` 已承接 `txn` 调试期事务入口校验。
 - Fusion 批量混合命中先批量读取 Redis；Mongo reader 支持批量读取时，所有 miss 只做一次 Mongo 全文批量读取，再逐条进入记录锁、二次 Redis 读取与带 TTL 回填。锁内命中 Redis 时直接返回新热数据，不能以旧 Mongo 候选覆盖它。
 
 1. 保持 `txgame` 集成验证与生成 Store 行为同步：新增集合、指针、存储边界行为时，补业务侧代码示例及真实 Redis/Mongo 回归。
@@ -78,7 +80,7 @@
 3. 持续清理不再作为主线的字符串路径变更代码、过渡接口和旧测试，只保留必要历史 benchmark 结论。
 4. 日志基建后续专题：确定业务项目 logger 枚举或包级变量、名称规范、级别配置和 tx/log 的最小扩展点。
 5. RedisJSON/ReJSON 仅作为未来可选 backend 单独评估；SQL、消息队列等其他 backend 也不进入当前主线。
-6. 完善可选的 `tx/modules/txn`：`@transaction` 已生成 `LockKey()` 和 `LockTarget()`；受控字段、map、slice 与生成对象子 Store 已登记 undo，并覆盖事务失败后的回滚。事务锁使用按逻辑 Key 管理的本机锁表，按稳定顺序获取，并由 `context.Context` 提供锁等待超时；超时必须释放已获取锁且不得进入回调。`Procedure.Locks`/`tx.Call` 已约束锁集和输出嵌套路径；继续补充 `AfterCommit`/`AfterRollback` 与事务提交后的持久化、下行事件真实业务回归。第一版不处理分布式锁、跨实例事务或持久化层 ACID。
+6. 完善可选的 `tx/modules/txn`：`@transaction` 已生成 `LockKey()` 和 `LockTarget()`；受控字段、map、slice 与生成对象子 Store 已登记 undo，并覆盖事务失败后的回滚。事务锁使用按逻辑 Key 管理的本机锁表，按稳定顺序获取，并由 `context.Context` 提供锁等待超时；超时必须释放已获取锁且不得进入回调。`Procedure.Locks`/`tx.Call` 已约束锁集和输出嵌套路径；已覆盖提交后 `db.Save` 与回滚回调，后续仅在引入具体下行事件模块后补真实事件回归。第一版不处理分布式锁、跨实例事务或持久化层 ACID。
 7. 在单机事务边界稳定后，评估可选 `tx/modules/actor`。actor 负责业务一致性域的单实例串行执行；事务模块只负责该实例内的多对象锁定、回滚和提交，两者不反向依赖。
 
 ## Module Layout

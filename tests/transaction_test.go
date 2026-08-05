@@ -17,6 +17,15 @@ type transactionTestStore struct {
 	value    int
 }
 
+type transactionDirtyStore struct {
+	transactionTestStore
+	deltas change.DeltaSet
+}
+
+func (store *transactionDirtyStore) Deltas() change.DeltaSet {
+	return store.deltas
+}
+
 type transactionTestLockable struct {
 	lock txn.LockTarget
 }
@@ -68,6 +77,57 @@ func TestTransactionRunRollsBackAndUnbindsStore(t *testing.T) {
 	}
 	if store.recorder != nil {
 		t.Fatal("store recorder remains bound after rollback")
+	}
+}
+
+func TestTransactionDebugCheckRejectsPendingDeltasAtEntry(t *testing.T) {
+	previousConfig := txn.CurrentConfig()
+	t.Cleanup(func() { txn.Configure(previousConfig) })
+	txn.Configure(txn.Config{Debug: txn.DebugConfig{CheckCleanLockTargets: true}})
+
+	store := &transactionDirtyStore{deltas: change.DeltaSet{{
+		Path: change.DeltaPath{Nodes: [change.MaxDeltaDepth]change.PathNode{{Field: 1}}, Depth: 1},
+		Kind: change.DeltaKindSet,
+	}}}
+	called := false
+	err := txn.Run(context.Background(), []txn.LockTarget{
+		txn.NewLockTarget(txn.NewLockKey("role", 1001), store),
+	}, func(*txn.Tx) error {
+		called = true
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "role:1001") || !strings.Contains(err.Error(), "pending deltas") {
+		t.Fatalf("Run error = %v, want pending delta validation error", err)
+	}
+	if called {
+		t.Fatal("transaction callback ran with pending deltas")
+	}
+	if store.recorder != nil {
+		t.Fatal("store recorder bound after pending delta validation failed")
+	}
+}
+
+func TestTransactionDebugCheckIsDisabledByDefault(t *testing.T) {
+	previousConfig := txn.CurrentConfig()
+	t.Cleanup(func() { txn.Configure(previousConfig) })
+	txn.Configure(txn.Config{})
+
+	store := &transactionDirtyStore{deltas: change.DeltaSet{{
+		Path: change.DeltaPath{Nodes: [change.MaxDeltaDepth]change.PathNode{{Field: 1}}, Depth: 1},
+		Kind: change.DeltaKindSet,
+	}}}
+	called := false
+	err := txn.Run(context.Background(), []txn.LockTarget{
+		txn.NewLockTarget(txn.NewLockKey("role", 1001), store),
+	}, func(*txn.Tx) error {
+		called = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Run returned error with debug check disabled: %v", err)
+	}
+	if !called {
+		t.Fatal("transaction callback did not run with debug check disabled")
 	}
 }
 
