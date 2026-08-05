@@ -30,14 +30,15 @@
 - 业务 facade 和框架 API 分层。handler 推荐写 `db.Save(role)`；facade 内部再取 `role.Store()` 并调用 `storage.Save`。
 - `txgame/server/internal/db` 已提供泛型 `db.Save(role)` facade：它使用服务启动时装配的根 context 与 writer，并只在 facade 内部获取生成数据对象的 Store。
 - 通用 `db.Create` facade 不作为当前目标。新建对象、默认字段初始化、初始资源发放属于业务流程；框架层保留 `storage.Create` 表达 upsert/首次缓存语义。
-- 后续单机事务能力放在可选的 `tx/modules/transaction`，`tx` 核心和普通 Store 路径不依赖该模块。没有进入 `transaction.Run(...)` 时，不创建 undo log、不记录旧值，也不增加事务运行时开销。
-- `@transaction` 是生成期类型能力声明，不是常驻事务开关。它独立于 `storage` 注解，为持久化 GD 或纯内存 GD 生成统一的本机锁键和 `Store.TransactionTarget()`；`scope` 是一致性域分类，`keyField` 是域内对象键。
-- `transaction.Run(...)` 只处理单机内存事务：对输入目标的锁键去重、规范化排序、获取本机锁，并在回调期间临时绑定 undo recorder。它不解决分布式锁、跨实例一致性或 Redis/Mongo 分布式事务。
-- 可复用事务逻辑使用 `Procedure`：根 `transaction.Call(ctx, procedure)` 在锁定完整目标集后执行；事务内只能通过 `tx.Call(child)` 调用子 Procedure，并建立 savepoint。子 Procedure 的目标必须是根事务已持有锁键的子集；发现新目标时返回包含 `A -> B` 调用路径的明确错误，不等待形成死锁。直接嵌套 `transaction.Run` 不是业务 API，应直接拒绝。
+- 后续单机事务能力放在可选的 `tx/modules/txn`，`tx` 核心和普通 Store 路径不依赖该模块。没有进入 `txn.Run(...)` 时，不创建 undo log、不记录旧值，也不增加事务运行时开销。
+- `@transaction` 是生成期类型能力声明，不是常驻事务开关。它独立于 `storage` 注解，为持久化 GD 或纯内存 GD 生成统一的本机 `LockKey()` 和 `LockTarget()`；`scope` 是一致性域分类，`keyField` 是域内对象键，`order` 是可选的非负锁层级，默认 `0` 且较小值先获取。
+- 固定锁集使用 `txn.Locks(guild, role)`；前置查询后需要循环收集锁时使用 `txn.NewLockSet().Add(...).Build()`。两者只负责收集，重复锁、顺序、完整性和超时仍由 `txn.Run` 统一处理。
+- `txn.Run(...)` 只处理单机内存事务：对输入锁对象的锁键去重、按逻辑 Key 全序获取本机锁，并在回调期间临时绑定 undo recorder。锁获取受传入 `context.Context` 控制；超时或取消时释放本次已获取锁，回调不会开始执行。它不解决分布式锁、跨实例一致性或 Redis/Mongo 分布式事务。
+- 可复用事务逻辑使用 `Procedure`：根 `txn.Call(ctx, procedure)` 在锁定完整目标集后执行；事务内只能通过 `tx.Call(child)` 调用子 Procedure，并建立 savepoint。子 Procedure 的目标必须是根事务已持有锁键的子集；发现新目标时返回包含 `A -> B` 调用路径的明确错误，不等待形成死锁。直接嵌套 `txn.Run` 不是业务 API，应直接拒绝。
 - 根 Procedure 需要在进入事务前声明自身及子 Procedure 的完整锁键并集。若锁键依赖查询结果，先做只读预取，再按完整键集加锁并重新校验；不支持事务运行中动态扩张锁集。
 - 需要在根事务提交后开启独立事务时，通过 `AfterCommit` 调度新的 `Procedure`，不与父事务共享原子性或锁。
 - 单机事务只保证经 Store 受控 API 发生的修改可回滚；裸字段赋值和 snapshot diff 不参与事务回滚。undo log 属于一次事务的临时状态，不写入 GD，也不作为 Store 的长期业务数据。
-- 事务目标由生成代码在 Store 侧提供，避免污染 GD 的纯数据职责。字段 setter、map/slice 的 `Set/Delete/Replace` 和生成对象子 Store setter 在事务内登记 undo；事务成功后的存储写入、消息发送或后续业务动作通过 `AfterCommit` 等机制调度；这表示内存事务已提交，不等价于 Mongo 已可靠落盘。
+- 事务锁对象由生成代码在 GD 与 Store 侧提供：业务通过 `txn.Locks(guild, role)` 收集，GD 的 `LockTarget()` 只代理默认 Store，不复制业务数据。字段 setter、map/slice 的 `Set/Delete/Replace` 和生成对象子 Store setter 在事务内登记 undo；事务成功后的存储写入、消息发送或后续业务动作通过 `AfterCommit` 等机制调度；这表示内存事务已提交，不等价于 Mongo 已可靠落盘。
 - 当前标脏主线是 `change.DeltaSet`。热路径只保存 `FieldID`、map key、slice index 和 `DeltaKind`，不常驻拼接字符串路径。
 - `DeltaEntry` 当前只保存 `Path` 和 `Kind`，不持有字段值；生成 Store 会在输出边界按 DeltaPath 读取当前值。后续如需性能优化，只做局部 fast path，不提前引入自研 value 编码。
 - 字符串路径只在输出边界生成，例如 `ChangeDocument()`、Redis JSON patch、Mongo update document 和 cmd Provider body。
@@ -76,7 +77,7 @@
 3. 持续清理不再作为主线的字符串路径变更代码、过渡接口和旧测试，只保留必要历史 benchmark 结论。
 4. 日志基建后续专题：确定业务项目 logger 枚举或包级变量、名称规范、级别配置和 tx/log 的最小扩展点。
 5. RedisJSON/ReJSON 仅作为未来可选 backend 单独评估；SQL、消息队列等其他 backend 也不进入当前主线。
-6. 完善可选的 `tx/modules/transaction`：`@transaction` 已生成锁键和 Store 事务目标；受控字段、map、slice 与生成对象子 Store 已登记 undo，并覆盖事务失败后的回滚。`Procedure`/`tx.Call` 已约束锁集和输出嵌套路径；继续补充 `AfterCommit`/`AfterRollback` 与真实业务 Store 回归。第一版不处理分布式锁、跨实例事务或持久化层 ACID。
+6. 完善可选的 `tx/modules/txn`：`@transaction` 已生成 `LockKey()` 和 `LockTarget()`；受控字段、map、slice 与生成对象子 Store 已登记 undo，并覆盖事务失败后的回滚。事务锁使用按逻辑 Key 管理的本机锁表，按稳定顺序获取，并由 `context.Context` 提供锁等待超时；超时必须释放已获取锁且不得进入回调。`Procedure.Locks`/`tx.Call` 已约束锁集和输出嵌套路径；继续补充 `AfterCommit`/`AfterRollback` 与真实业务 Store 回归。第一版不处理分布式锁、跨实例事务或持久化层 ACID。
 7. 在单机事务边界稳定后，评估可选 `tx/modules/actor`。actor 负责业务一致性域的单实例串行执行；事务模块只负责该实例内的多对象锁定、回滚和提交，两者不反向依赖。
 
 ## Module Layout
@@ -97,7 +98,7 @@ tx/
   storage/mongo/    # Mongo collection/index/sharding metadata、后续 Mongo adapter
   storage/fusion/   # Fusion 策略与延迟任务抽象
   storage/task/     # Delay task backend interface 和内存实现
-  modules/transaction/ # 后续可选：单机事务、savepoint、undo log 和 after-commit hook
+  modules/txn/         # 后续可选：单机事务、savepoint、undo log 和 after-commit hook
   modules/actor/    # 后续可选：业务一致性域的单实例串行执行
   util/             # 小型通用工具
   tests/            # 所有测试文件，仅此目录下生成 *_test.go
@@ -115,7 +116,7 @@ tx/
 // @storage:`mode:"fusion" delaySaveTime:"600s" delayDelTime:"24h"`
 // @redis:`routeType:"role" routeBy:"RoleId" idField:"RoleId" key:"role"`
 // @mongodb:`routeType:"role" routeBy:"RoleId" idField:"RoleId" collection:"roles" enableSharding:"true"`
-// @transaction:`scope:"role" keyField:"RoleId"`
+// @transaction:`scope:"role" keyField:"RoleId" order:"20"`
 type GDRole struct {
     RoleId int64 `json:"roleId" mongodb:"index,unique"`
 }
@@ -138,7 +139,7 @@ RoleId int64 `mongodb:"index,unique"`
 - 时间字段使用 Go duration 风格字符串：`600s`、`10m`、`24h`。
 - Redis hash tag 默认使用 `routeBy` 指向的字段。
 - `routeBy`、`idField` 是当前 canonical 写法。
-- `transaction` 与 `storage` 相互独立。存在 `transaction` 注解时表示生成锁键和事务目标；`scope` 必填，`keyField` 必须绑定当前类型的基础字段。纯内存类型也可以只使用 `transaction`。
+- `transaction` 与 `storage` 相互独立。存在 `transaction` 注解时表示生成 `LockKey()` 和 `LockTarget()`；`scope` 必填，`keyField` 必须绑定当前类型的基础字段，`order` 可选且必须是非负整数。纯内存类型也可以只使用 `transaction`。
 
 ## Schema Direction
 

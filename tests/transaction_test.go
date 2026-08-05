@@ -6,14 +6,23 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ngnl47/tx/change"
-	"github.com/ngnl47/tx/modules/transaction"
+	"github.com/ngnl47/tx/modules/txn"
 )
 
 type transactionTestStore struct {
 	recorder change.UndoRecorder
 	value    int
+}
+
+type transactionTestLockable struct {
+	lock txn.LockTarget
+}
+
+func (value transactionTestLockable) LockTarget() txn.LockTarget {
+	return value.lock
 }
 
 func (store *transactionTestStore) SetUndoRecorder(recorder change.UndoRecorder) {
@@ -28,11 +37,26 @@ func (store *transactionTestStore) Set(value int) {
 	store.value = value
 }
 
+func TestLocksAndLockSetCollectLockables(t *testing.T) {
+	firstStore := &transactionTestStore{}
+	secondStore := &transactionTestStore{}
+	first := transactionTestLockable{lock: txn.NewOrderedLockTarget(10, txn.NewLockKey("guild", 7), firstStore)}
+	second := transactionTestLockable{lock: txn.NewOrderedLockTarget(20, txn.NewLockKey("role", 1001), secondStore)}
+	want := []txn.LockTarget{first.lock, second.lock}
+
+	if got := txn.Locks(first, second); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Locks = %#v, want %#v", got, want)
+	}
+	if got := txn.NewLockSet().Add(first).Add(second).Build(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("LockSet.Build = %#v, want %#v", got, want)
+	}
+}
+
 func TestTransactionRunRollsBackAndUnbindsStore(t *testing.T) {
 	store := &transactionTestStore{value: 1}
-	err := transaction.Run(context.Background(), transaction.Targets(
-		transaction.NewTarget(transaction.NewKey("role", 1001), store),
-	), func(tx *transaction.Tx) error {
+	err := txn.Run(context.Background(), []txn.LockTarget{
+		txn.NewLockTarget(txn.NewLockKey("role", 1001), store),
+	}, func(tx *txn.Tx) error {
 		store.Set(2)
 		return errors.New("rollback")
 	})
@@ -49,11 +73,11 @@ func TestTransactionRunRollsBackAndUnbindsStore(t *testing.T) {
 
 func TestTransactionDoRollsBackOnlyNestedSavepoint(t *testing.T) {
 	store := &transactionTestStore{value: 1}
-	err := transaction.Run(context.Background(), transaction.Targets(
-		transaction.NewTarget(transaction.NewKey("role", 1001), store),
-	), func(tx *transaction.Tx) error {
+	err := txn.Run(context.Background(), []txn.LockTarget{
+		txn.NewLockTarget(txn.NewLockKey("role", 1001), store),
+	}, func(tx *txn.Tx) error {
 		store.Set(2)
-		if err := tx.Do(func(tx *transaction.Tx) error {
+		if err := tx.Do(func(tx *txn.Tx) error {
 			store.Set(3)
 			return errors.New("nested rollback")
 		}); err == nil {
@@ -75,9 +99,9 @@ func TestTransactionDoRollsBackOnlyNestedSavepoint(t *testing.T) {
 func TestTransactionRunsCallbacksAtExpectedBoundary(t *testing.T) {
 	store := &transactionTestStore{}
 	var calls []string
-	err := transaction.Run(context.Background(), transaction.Targets(
-		transaction.NewTarget(transaction.NewKey("role", 1001), store),
-	), func(tx *transaction.Tx) error {
+	err := txn.Run(context.Background(), []txn.LockTarget{
+		txn.NewLockTarget(txn.NewLockKey("role", 1001), store),
+	}, func(tx *txn.Tx) error {
 		tx.AfterCommit(func(context.Context) error {
 			if store.recorder != nil {
 				t.Fatal("store recorder remains bound while running after-commit callback")
@@ -95,9 +119,9 @@ func TestTransactionRunsCallbacksAtExpectedBoundary(t *testing.T) {
 	}
 
 	calls = nil
-	err = transaction.Run(context.Background(), transaction.Targets(
-		transaction.NewTarget(transaction.NewKey("role", 1001), store),
-	), func(tx *transaction.Tx) error {
+	err = txn.Run(context.Background(), []txn.LockTarget{
+		txn.NewLockTarget(txn.NewLockKey("role", 1001), store),
+	}, func(tx *txn.Tx) error {
 		tx.AfterRollback(func(context.Context) {
 			if store.recorder != nil {
 				t.Fatal("store recorder remains bound while running after-rollback callback")
@@ -115,30 +139,30 @@ func TestTransactionRunsCallbacksAtExpectedBoundary(t *testing.T) {
 }
 
 type transactionChildProcedure struct {
-	target transaction.Target
-	store  *transactionTestStore
+	lock  txn.LockTarget
+	store *transactionTestStore
 }
 
-func (procedure transactionChildProcedure) Targets(context.Context) ([]transaction.Target, error) {
-	return transaction.Targets(procedure.target), nil
+func (procedure transactionChildProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
+	return []txn.LockTarget{procedure.lock}, nil
 }
 
-func (procedure transactionChildProcedure) Process(tx *transaction.Tx) error {
+func (procedure transactionChildProcedure) Process(tx *txn.Tx) error {
 	procedure.store.Set(3)
 	return errors.New("child rollback")
 }
 
 type transactionParentProcedure struct {
-	target transaction.Target
-	store  *transactionTestStore
-	child  transaction.Procedure
+	lock  txn.LockTarget
+	store *transactionTestStore
+	child txn.Procedure
 }
 
-func (procedure transactionParentProcedure) Targets(context.Context) ([]transaction.Target, error) {
-	return transaction.Targets(procedure.target), nil
+func (procedure transactionParentProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
+	return []txn.LockTarget{procedure.lock}, nil
 }
 
-func (procedure transactionParentProcedure) Process(tx *transaction.Tx) error {
+func (procedure transactionParentProcedure) Process(tx *txn.Tx) error {
 	procedure.store.Set(2)
 	if err := tx.Call(procedure.child); err == nil {
 		return errors.New("child procedure returned nil error")
@@ -151,13 +175,13 @@ func (procedure transactionParentProcedure) Process(tx *transaction.Tx) error {
 
 func TestTransactionCallReusesRootTargetsAndRollsBackChildSavepoint(t *testing.T) {
 	store := &transactionTestStore{value: 1}
-	target := transaction.NewTarget(transaction.NewKey("role", 1001), store)
+	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
 	procedure := transactionParentProcedure{
-		target: target,
-		store:  store,
-		child:  transactionChildProcedure{target: target, store: store},
+		lock:  lock,
+		store: store,
+		child: transactionChildProcedure{lock: lock, store: store},
 	}
-	if err := transaction.Call(context.Background(), procedure); err != nil {
+	if err := txn.Call(context.Background(), procedure); err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
 	if store.value != 2 {
@@ -165,57 +189,57 @@ func TestTransactionCallReusesRootTargetsAndRollsBackChildSavepoint(t *testing.T
 	}
 }
 
-type transactionNewTargetProcedure struct {
-	target transaction.Target
+type transactionNewLockProcedure struct {
+	lock txn.LockTarget
 }
 
-func (procedure transactionNewTargetProcedure) Targets(context.Context) ([]transaction.Target, error) {
-	return transaction.Targets(procedure.target), nil
+func (procedure transactionNewLockProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
+	return []txn.LockTarget{procedure.lock}, nil
 }
 
-func (transactionNewTargetProcedure) Process(*transaction.Tx) error {
+func (transactionNewLockProcedure) Process(*txn.Tx) error {
 	return nil
 }
 
-type transactionCallsNewTargetProcedure struct {
-	target transaction.Target
-	child  transaction.Procedure
+type transactionCallsNewLockProcedure struct {
+	lock  txn.LockTarget
+	child txn.Procedure
 }
 
-func (procedure transactionCallsNewTargetProcedure) Targets(context.Context) ([]transaction.Target, error) {
-	return transaction.Targets(procedure.target), nil
+func (procedure transactionCallsNewLockProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
+	return []txn.LockTarget{procedure.lock}, nil
 }
 
-func (procedure transactionCallsNewTargetProcedure) Process(tx *transaction.Tx) error {
+func (procedure transactionCallsNewLockProcedure) Process(tx *txn.Tx) error {
 	return tx.Call(procedure.child)
 }
 
-func TestTransactionCallRejectsChildProcedureWithNewTarget(t *testing.T) {
+func TestTransactionCallRejectsChildProcedureWithNewLock(t *testing.T) {
 	first := &transactionTestStore{}
 	second := &transactionTestStore{}
-	parent := transactionCallsNewTargetProcedure{
-		target: transaction.NewTarget(transaction.NewKey("role", 1001), first),
-		child: transactionNewTargetProcedure{
-			target: transaction.NewTarget(transaction.NewKey("role", 1002), second),
+	parent := transactionCallsNewLockProcedure{
+		lock: txn.NewLockTarget(txn.NewLockKey("role", 1001), first),
+		child: transactionNewLockProcedure{
+			lock: txn.NewLockTarget(txn.NewLockKey("role", 1002), second),
 		},
 	}
-	err := transaction.Call(context.Background(), parent)
-	if err == nil || !strings.Contains(err.Error(), "transactionCallsNewTargetProcedure -> transactionNewTargetProcedure") || !strings.Contains(err.Error(), "role:1002") {
-		t.Fatalf("Call error = %v, want procedure trace and new target", err)
+	err := txn.Call(context.Background(), parent)
+	if err == nil || !strings.Contains(err.Error(), "transactionCallsNewLockProcedure -> transactionNewLockProcedure") || !strings.Contains(err.Error(), "role:1002") {
+		t.Fatalf("Call error = %v, want procedure trace and new lock", err)
 	}
 }
 
 func TestTransactionCallRejectsChildProcedureWithDifferentStoreForHeldKey(t *testing.T) {
 	rootStore := &transactionTestStore{}
 	childStore := &transactionTestStore{}
-	key := transaction.NewKey("role", 1001)
-	parent := transactionCallsNewTargetProcedure{
-		target: transaction.NewTarget(key, rootStore),
-		child: transactionNewTargetProcedure{
-			target: transaction.NewTarget(key, childStore),
+	key := txn.NewLockKey("role", 1001)
+	parent := transactionCallsNewLockProcedure{
+		lock: txn.NewLockTarget(key, rootStore),
+		child: transactionNewLockProcedure{
+			lock: txn.NewLockTarget(key, childStore),
 		},
 	}
-	err := transaction.Call(context.Background(), parent)
+	err := txn.Call(context.Background(), parent)
 	if err == nil || !strings.Contains(err.Error(), "different Store") || !strings.Contains(err.Error(), "role:1001") {
 		t.Fatalf("Call error = %v, want different Store error", err)
 	}
@@ -223,13 +247,113 @@ func TestTransactionCallRejectsChildProcedureWithDifferentStoreForHeldKey(t *tes
 
 func TestTransactionRunRejectsNestedRun(t *testing.T) {
 	store := &transactionTestStore{}
-	target := transaction.NewTarget(transaction.NewKey("role", 1001), store)
-	err := transaction.Run(context.Background(), transaction.Targets(target), func(tx *transaction.Tx) error {
-		return transaction.Run(tx.Context(), transaction.Targets(target), func(*transaction.Tx) error {
+	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
+	err := txn.Run(context.Background(), []txn.LockTarget{lock}, func(tx *txn.Tx) error {
+		return txn.Run(tx.Context(), []txn.LockTarget{lock}, func(*txn.Tx) error {
 			return nil
 		})
 	})
 	if err == nil || !strings.Contains(err.Error(), "nested Run is not allowed") {
 		t.Fatalf("nested Run error = %v, want rejected error", err)
+	}
+}
+
+func TestTransactionRunReturnsContextDeadlineBeforeCallback(t *testing.T) {
+	store := &transactionTestStore{}
+	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- txn.Run(context.Background(), []txn.LockTarget{lock}, func(*txn.Tx) error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	called := false
+	err := txn.Run(ctx, []txn.LockTarget{lock}, func(*txn.Tx) error {
+		called = true
+		return nil
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Run error = %v, want context deadline exceeded", err)
+	}
+	if !strings.Contains(err.Error(), "role:1001") {
+		t.Fatalf("Run error = %v, want blocked lock key", err)
+	}
+	if called {
+		t.Fatal("transaction callback ran after lock wait timed out")
+	}
+
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("holder Run returned error: %v", err)
+	}
+}
+
+func TestTransactionRunTimeoutReleasesPreviouslyAcquiredTargets(t *testing.T) {
+	first := &transactionTestStore{}
+	second := &transactionTestStore{}
+	firstLock := txn.NewLockTarget(txn.NewLockKey("role", 1001), first)
+	secondLock := txn.NewLockTarget(txn.NewLockKey("role", 1002), second)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- txn.Run(context.Background(), []txn.LockTarget{secondLock}, func(*txn.Tx) error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	err := txn.Run(ctx, []txn.LockTarget{firstLock, secondLock}, func(*txn.Tx) error {
+		t.Fatal("transaction callback ran before every lock was acquired")
+		return nil
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Run error = %v, want context deadline exceeded", err)
+	}
+
+	available := make(chan error, 1)
+	go func() {
+		available <- txn.Run(context.Background(), []txn.LockTarget{firstLock}, func(*txn.Tx) error {
+			return nil
+		})
+	}()
+	select {
+	case err := <-available:
+		if err != nil {
+			t.Fatalf("Run on released target returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first target remained locked after later target timed out")
+	}
+
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("holder Run returned error: %v", err)
+	}
+}
+
+func TestTransactionRunRejectsDuplicateKeyWithDifferentOrder(t *testing.T) {
+	store := &transactionTestStore{}
+	key := txn.NewLockKey("role", 1001)
+	err := txn.Run(context.Background(), []txn.LockTarget{
+		txn.NewOrderedLockTarget(10, key, store),
+		txn.NewOrderedLockTarget(20, key, store),
+	}, func(*txn.Tx) error {
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "different lock orders") {
+		t.Fatalf("Run error = %v, want duplicate lock order error", err)
 	}
 }

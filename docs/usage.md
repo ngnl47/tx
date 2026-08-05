@@ -711,11 +711,11 @@ task.SetActive(2)
 
 ### 单机事务
 
-为类型声明 `@transaction` 后，生成代码提供稳定锁键和 Store 事务目标。事务只回滚 Store 受控 API 的修改，不处理跨进程锁、Redis/Mongo 分布式事务或裸字段赋值：
+为类型声明 `@transaction` 后，生成代码提供稳定 `LockKey()` 与 `LockTarget()`。业务传入 GD 数据对象即可，事务只回滚 Store 受控 API 的修改，不处理跨进程锁、Redis/Mongo 分布式事务或裸字段赋值：
 
 ```go
-store := role.Store()
-err := transaction.Run(ctx, transaction.Targets(store.TransactionTarget()), func(tx *transaction.Tx) error {
+	err := txn.Run(ctx, txn.Locks(role), func(tx *txn.Tx) error {
+	store := role.Store()
 	store.SetName("alice")
 	item, ok := store.ItemsStore().Get(1001)
 	if ok {
@@ -726,7 +726,37 @@ err := transaction.Run(ctx, transaction.Targets(store.TransactionTarget()), func
 })
 ```
 
-回调返回错误或 panic 时，字段值、map/slice 结构、子 Store delta 都会恢复到进入事务前的状态。未进入 `transaction.Run` 的普通 Store 修改不会建立 undo log，也不会复制旧集合。
+回调返回错误或 panic 时，字段值、map/slice 结构、子 Store delta 都会恢复到进入事务前的状态。未进入 `txn.Run` 的普通 Store 修改不会建立 undo log，也不会复制旧集合。
+
+锁等待通过调用方的 `context.Context` 统一控制。获取完整锁集之前发生超时或取消时，框架会释放本次已获取的锁，且不会执行回调：
+
+```go
+ctx, cancel := context.WithTimeout(rootCtx, 200*time.Millisecond)
+defer cancel()
+
+err := txn.Run(ctx, targets, func(tx *txn.Tx) error {
+    // 只有所有 LockTarget 都已锁定后才会进入这里。
+    return update(tx)
+})
+if errors.Is(err, context.DeadlineExceeded) {
+    // 返回给调用方重试、排队或降级。
+}
+```
+
+多个目标按 `LockTarget.Order`、`LockKey.Scope`、`LockKey.Value` 的稳定顺序获取锁。生成的 `LockTarget()` 默认 order 为 `0`；需要区分锁层级时，可由 `@transaction` 生成不同的 order，例如军团为 `10`、角色为 `20`。同一逻辑 Key 不得以不同 order 重复声明。
+
+前置查询后需要动态收集锁时使用 `LockSet`。Builder 不在收集阶段自行去重或加锁，最终仍交给 `Run` 统一校验：
+
+```go
+locks := txn.NewLockSet().Add(guild)
+for _, member := range members {
+    locks.Add(member)
+}
+
+err := txn.Run(ctx, locks.Build(), func(tx *txn.Tx) error {
+    return updateGuildMembers(tx)
+})
+```
 
 ### 零值和删除
 
