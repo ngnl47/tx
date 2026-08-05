@@ -734,7 +734,7 @@ task.SetActive(2)
 ctx, cancel := context.WithTimeout(rootCtx, 200*time.Millisecond)
 defer cancel()
 
-err := txn.Run(ctx, targets, func(tx *txn.Tx) error {
+err := txn.Run(ctx, locks, func(tx *txn.Tx) error {
     // 只有所有 LockTarget 都已锁定后才会进入这里。
     return update(tx)
 })
@@ -754,9 +754,44 @@ for _, member := range members {
 }
 
 err := txn.Run(ctx, locks.Build(), func(tx *txn.Tx) error {
-    return updateGuildMembers(tx)
+	return updateGuildMembers(tx)
 })
 ```
+
+需要复用一段带锁业务逻辑时，定义 `Procedure` 并按项目约定使用 `P` 前缀。根过程通过 `txn.Call` 获取完整锁集；子过程通过当前 `tx.Call` 同步执行，只能声明根过程已经持有的锁：
+
+```go
+type PGuildContribution struct {
+	Guild *data.GDLegion
+	Role  *data.GDRole
+}
+
+func (p *PGuildContribution) Locks(context.Context) ([]txn.LockTarget, error) {
+	return txn.Locks(p.Guild, p.Role), nil
+}
+
+func (p *PGuildContribution) Process(tx *txn.Tx) error {
+	p.Guild.SetExp(p.Guild.Exp + 10)
+	return tx.Call(&PGrantReward{Role: p.Role})
+}
+
+type PGrantReward struct {
+	Role *data.GDRole
+}
+
+func (p *PGrantReward) Locks(context.Context) ([]txn.LockTarget, error) {
+	return txn.Locks(p.Role), nil
+}
+
+func (p *PGrantReward) Process(*txn.Tx) error {
+	p.Role.SetPower(p.Role.Power + 10)
+	return nil
+}
+
+err := txn.Call(ctx, &PGuildContribution{Guild: guild, Role: role})
+```
+
+`txn.Tx` 只表示本次已持锁的运行环境，负责 undo、savepoint、子过程调用和提交/回滚回调；它不是业务数据，也不是 `context.Context`。事务内通过生成的 `GD*` 代理方法或显式 Store 修改数据，两者都会走同一受控 Store 路径并登记 undo。
 
 ### 零值和删除
 
