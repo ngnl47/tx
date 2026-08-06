@@ -171,6 +171,14 @@ func TestMongoAdapterRejectsMissingClientCapability(t *testing.T) {
 	assertMongoUnsupportedClient(t, err, "BatchFinder or Finder")
 }
 
+func TestMongoAdapterRejectsNilReplacementDocument(t *testing.T) {
+	adapter := txmongo.NewAdapter(&recordingMongoUpdater{})
+	err := adapter.ReplaceDocument(context.Background(), mongoDocumentSpec(), storage.RecordKey{ID: int64(1001)}, nil)
+	if !errors.Is(err, storage.ErrNilDocument) {
+		t.Fatalf("ReplaceDocument error = %v, want ErrNilDocument", err)
+	}
+}
+
 func assertMongoUnsupportedClient(t *testing.T, err error, capability string) {
 	t.Helper()
 	if !errors.Is(err, txmongo.ErrUnsupportedClient) {

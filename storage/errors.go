@@ -8,5 +8,6 @@ var (
 	ErrPathTypeMismatch = errors.New("storage: document path type mismatch")
 	ErrNilDeltaApplier  = errors.New("storage: change applier is nil")
 	ErrNilDeltaStore    = errors.New("storage: delta store is nil")
+	ErrNilDocument      = errors.New("storage: document is nil")
 	ErrReadOnlyStore    = errors.New("storage: view store cannot be persisted")
 )

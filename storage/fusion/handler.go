@@ -127,8 +127,11 @@ func (h *StorageTaskHandler) handleDelete(ctx context.Context, spec meta.TypeSpe
 }
 
 func (h *StorageTaskHandler) requeueDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
-	if isNilFusionDependency(h.delayQueue) || spec.Storage.DelayDelete.Duration < 0 {
+	if spec.Storage.DelayDelete.Duration <= 0 {
 		return nil
+	}
+	if isNilFusionDependency(h.delayQueue) {
+		return fmt.Errorf("%w: delayed delete requeue requires delay queue", ErrDelayTaskDependenciesNotConfigured)
 	}
 	return h.delayQueue.Enqueue(ctx, DelayedOperation{
 		Kind:     DelayedDelete,

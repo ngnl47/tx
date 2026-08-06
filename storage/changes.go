@@ -176,11 +176,13 @@ func ValidateDocumentResults(documents []map[string]any, exists []bool) error {
 }
 
 // DocumentReplacerWithOptions 定义按记录键整文档替换且支持写入选项的适配器。
+// document 必须非 nil；空 map 表示合法的空 JSON 对象。
 type DocumentReplacerWithOptions interface {
 	ReplaceDocumentWithOptions(context.Context, meta.TypeSpec, RecordKey, map[string]any, ApplyOptions) error
 }
 
 // DocumentReplacer 定义按记录键整文档替换的适配器。
+// document 必须非 nil；空 map 表示合法的空 JSON 对象。
 type DocumentReplacer interface {
 	ReplaceDocument(context.Context, meta.TypeSpec, RecordKey, map[string]any) error
 }

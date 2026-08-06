@@ -97,7 +97,7 @@ func withoutUpsertIDDelta(deltas change.DeltaSet, resolver change.FieldNameResol
 // ReplaceDocument 按记录键替换一条 Mongo 文档。
 func (a *Adapter) ReplaceDocument(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any) error {
 	if doc == nil {
-		return nil
+		return storage.ErrNilDocument
 	}
 	replacer, ok := a.client.(Replacer)
 	if !ok {

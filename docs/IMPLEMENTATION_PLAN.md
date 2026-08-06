@@ -48,6 +48,7 @@
 - Redis/Mongo 写入边界要求 `DeltaValueResolver` 能解析每条 Set/Replace delta 的当前值；`(nil, true)` 是合法业务空值，`(_, false)` 必须显式返回错误并保留 delta，不能静默写成 `null`。
 - 所有外部协议返回值都必须在 adapter 中显式枚举：仅已定义的成功、冲突或未命中状态可继续处理；空值、未知值和不完整结构一律返回错误，不能以 `nil` 兜底或跳过异常片段。
 - `storage.DocumentLoader` 的结果必须一致：`exists=true` 对应非 `nil` 文档，`exists=false` 对应 `nil` 文档；批量结果逐项遵守同一契约。adapter 或外部实现返回矛盾组合时立即失败，不能被误当作未命中继续回源。
+- `storage.DocumentReplacer` 的输入文档必须非 `nil`；空 map 代表合法空对象，`nil` 返回 `storage.ErrNilDocument`，不允许以 no-op 伪造写入成功。延迟删除需要重排而队列未装配时同样返回错误，保留任务重试机会。
 - 涉及 DeltaSet、集合递归、批量读取、Redis/Mongo 写入或状态刷盘等热点路径的结构与算法调整，必须先补可复现 benchmark，并记录对象规模、嵌套深度、delta 密度、耗时与分配结果；只有数据证明收益覆盖复杂度时才引入优化，避免凭直觉堆砌机制。
 - 字符串路径只在输出边界生成，例如 `ChangeDocument()`、Redis JSON patch、Mongo update document 和 cmd Provider body。
 - `DeltaSet.Compact()` 只做路径上可确定的压缩：同路径后写覆盖先写，后发生的祖先写清理更早子路径；较早祖先不会吞掉较晚子路径，因为 runtime 不读取当前对象，无法证明祖先值已包含后续修改。不做需要外部生命周期上下文的新建删除抵消。

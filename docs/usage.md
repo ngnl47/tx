@@ -20,6 +20,7 @@
 - 存储边界必须解析到当前字段值：`DeltaValue(path)` 返回 `(nil, true)` 表示业务要写入空值；返回 `(_, false)` 则保存失败并保留 delta，绝不把解析失败静默写成 `null`。Fusion 延迟回写会原样保留这类业务空值；字段删除必须使用 `DeltaDelete` / `Document.Clear`，不能把 map 中的 `nil` 当删除标记。
 - 外部协议的返回值必须有明确语义：只有已定义的成功、冲突或未命中值可以继续处理；未知 Lua 返回值、损坏 Redis JSON、空锁或其他不完整响应都会返回错误，绝不默认成功或静默丢弃。
 - `DocumentLoader` 的单条结果必须成对一致：`exists == true` 时文档非 `nil`，`exists == false` 时文档必须为 `nil`；批量读取逐项遵守同一规则。自定义 adapter 返回矛盾组合会被 runtime 拒绝，不会被当成缓存未命中继续回源。
+- `DocumentReplacer` 的文档也必须非 `nil`：空 map 是合法的空 JSON 对象，`nil` 没有明确写入语义并返回 `storage.ErrNilDocument`；不能把它当作成功的空操作。
 - `map[string]` 的危险 key 在 Mongo update 边界降级整字段写，不做私有转义，保证数据库中仍能直观看到业务 key。
 - Redis 当前使用 string JSON main/subKey 文档。带 `redis:"subKey:..."` 的字段拆独立 key；main 文档仍是根记录热数据的一部分。
 - Fusion 延迟保存队列只保存记录定位，到期后读取 Redis 当前热数据并整文档写回 Mongo；它不是保存每一轮字段 diff 的队列。
@@ -1774,6 +1775,8 @@ ExpireAt int64 `json:"expireAt" bson:"expireAt" msgpack:"expireAt" mongodb:"inde
 - `BatchDocumentLoader`：按 `TypeSpec + []RecordKey` 批量读取文档。
 - `DocumentReplacer`：按 `TypeSpec + RecordKey` 整文档替换。
 - `DocumentReplacerWithOptions`：整文档替换并接收 `storage.ApplyOptions`，用于需要 TTL/upsert 等写入语义的路径。
+
+延迟删除发现 Redis 生命周期版本已变化时，必须重新入队；若此时延迟队列未装配，handler 返回依赖错误而不是确认旧任务，避免后续自动清理任务丢失。
 
 这些接口传递的 `map[string]any` 统一使用 **JSON 字段名**，不是某个具体数据库的原始文档。生成的
 `TypeSpec` 会提供 `DocumentFactory`；Mongo adapter 用它把公共文档物化为 GD 对象，再由 `bson` tag

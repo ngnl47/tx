@@ -237,6 +237,20 @@ func TestRedisAdapterReplaceDocumentWithOptionsUsesFullReplaceAndTTL(t *testing.
 	}
 }
 
+func TestRedisAdapterRejectsNilReplacementDocument(t *testing.T) {
+	adapter := txredis.NewAdapter(&recordingRedisStringClient{})
+	err := adapter.ReplaceDocumentWithOptions(
+		context.Background(),
+		meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}},
+		storage.RecordKey{ID: int64(1001)},
+		nil,
+		storage.ApplyOptions{},
+	)
+	if !errors.Is(err, storage.ErrNilDocument) {
+		t.Fatalf("ReplaceDocumentWithOptions error = %v, want ErrNilDocument", err)
+	}
+}
+
 func TestRedisAdapterUsesShardKeyAsHashTagWhenRouteByDiffersFromID(t *testing.T) {
 	client := &recordingRedisStringClient{}
 	adapter := txredis.NewAdapter(client)

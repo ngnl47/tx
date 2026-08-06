@@ -116,7 +116,7 @@ func (a *Adapter) applyDocumentPatchesWithOptions(ctx context.Context, spec meta
 // ReplaceDocumentWithOptions 按 Redis string JSON 文档模型全量替换一条热数据。
 func (a *Adapter) ReplaceDocumentWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any, options storage.ApplyOptions) error {
 	if doc == nil {
-		return nil
+		return storage.ErrNilDocument
 	}
 	options.Upsert = true
 	return a.applyDocumentPatchesWithOptions(ctx, spec, key, buildReplaceDocumentPatches(spec, doc), options)
