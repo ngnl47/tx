@@ -493,6 +493,37 @@ func TestRedisAdapterApplyDeleteWithRevisionReportsChangedRevision(t *testing.T)
 	}
 }
 
+func TestRedisAdapterApplyDeleteWithRevisionRejectsInvalidRevisionProtocol(t *testing.T) {
+	client := &recordingRedisStringClient{evalResult: "unexpected", hasResult: true}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
+
+	deleted, current, err := adapter.ApplyDeleteWithRevision(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "5")
+	if err == nil {
+		t.Fatal("ApplyDeleteWithRevision error = nil, want invalid revision protocol error")
+	}
+	if deleted || current != "" {
+		t.Fatalf("ApplyDeleteWithRevision deleted/current = %v/%q, want no delete result on protocol error", deleted, current)
+	}
+	if !strings.Contains(err.Error(), "unexpected script result") || !strings.Contains(err.Error(), "unexpected") {
+		t.Fatalf("ApplyDeleteWithRevision error = %v, want unknown result details", err)
+	}
+}
+
+func TestRedisAdapterApplyDeleteWithRevisionRejectsMissingExpectedRevision(t *testing.T) {
+	client := &recordingRedisStringClient{}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
+
+	_, _, err := adapter.ApplyDeleteWithRevision(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "")
+	if err == nil || !strings.Contains(err.Error(), "missing record revision") {
+		t.Fatalf("ApplyDeleteWithRevision error = %v, want missing record revision", err)
+	}
+	if len(client.evals) != 0 {
+		t.Fatalf("eval calls = %#v, want no unconditional delete", client.evals)
+	}
+}
+
 func TestRedisAdapterReadRecordRevisionUsesVersionKey(t *testing.T) {
 	client := &recordingRedisStringClient{evalResult: "7", hasResult: true}
 	adapter := txredis.NewAdapter(client)
@@ -507,6 +538,21 @@ func TestRedisAdapterReadRecordRevisionUsesVersionKey(t *testing.T) {
 	}
 	if got, want := client.evals[0].keys, []string{"role:{1001}@v"}; !sameStrings(got, want) {
 		t.Fatalf("revision keys = %#v, want %#v", got, want)
+	}
+}
+
+func TestRedisAdapterReadRecordRevisionRejectsMissingOrInvalidRevision(t *testing.T) {
+	for _, result := range []string{"", "unexpected"} {
+		t.Run(result, func(t *testing.T) {
+			client := &recordingRedisStringClient{evalResult: result, hasResult: true}
+			adapter := txredis.NewAdapter(client)
+			spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
+
+			_, err := adapter.ReadRecordRevision(context.Background(), spec, storage.RecordKey{ID: int64(1001)})
+			if err == nil || !strings.Contains(err.Error(), "invalid record revision") {
+				t.Fatalf("ReadRecordRevision error = %v, want invalid record revision", err)
+			}
+		})
 	}
 }
 

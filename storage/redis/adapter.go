@@ -151,6 +151,9 @@ func (a *Adapter) ApplyDeleteWithRevision(ctx context.Context, spec meta.TypeSpe
 		return false, "", err
 	}
 	prefix := redisKeyPrefix(spec, key)
+	if !isRecordRevision(expectedRevision) {
+		return false, "", fmt.Errorf("redis: delete document %s: missing record revision", prefix)
+	}
 	keys := redisDeleteKeys(spec, prefix)
 	result, err := client.Eval(ctx, deleteDocumentScript, keys, expectedRevision)
 	if err != nil {
@@ -159,7 +162,10 @@ func (a *Adapter) ApplyDeleteWithRevision(ctx context.Context, spec meta.TypeSpe
 	if result == scriptResultOK {
 		return true, "", nil
 	}
-	return false, result, nil
+	if isRecordRevision(result) {
+		return false, result, nil
+	}
+	return false, "", fmt.Errorf("redis: delete document %s: unexpected script result %q", prefix, result)
 }
 
 // ReadRecordRevision 读取 Redis 热数据生命周期版本。
@@ -173,7 +179,22 @@ func (a *Adapter) ReadRecordRevision(ctx context.Context, spec meta.TypeSpec, ke
 	if err != nil {
 		return "", fmt.Errorf("redis: read record revision %s: %w", prefix, err)
 	}
+	if !isRecordRevision(result) {
+		return "", fmt.Errorf("redis: read record revision %s: invalid record revision %q", prefix, result)
+	}
 	return result, nil
+}
+
+func isRecordRevision(value string) bool {
+	if len(value) == 0 || value[0] == '0' {
+		return false
+	}
+	for i := range value {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *Adapter) LockRecord(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, options storage.LockOptions) (storage.RecordLock, error) {
