@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"reflect"
 	"strconv"
 	"strings"
@@ -235,8 +236,11 @@ func (a *Adapter) LockRecord(ctx context.Context, spec meta.TypeSpec, key storag
 }
 
 func (l *recordLock) Unlock(ctx context.Context) error {
-	if l == nil || l.client == nil {
-		return nil
+	if l == nil {
+		return fmt.Errorf("redis: record lock is nil")
+	}
+	if isNilScriptClient(l.client) {
+		return ErrClientNotConfigured
 	}
 	result, err := l.client.Eval(ctx, unlockRecordScript, []string{l.key}, l.token)
 	if err != nil {
@@ -342,8 +346,7 @@ func (a *Adapter) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSp
 				continue
 			}
 			exists[i] = true
-			body := joinDocumentBodies(parts)
-			doc, err := decodeDocument(body)
+			doc, err := joinDocumentBodies(parts)
 			if err != nil {
 				return nil, nil, fmt.Errorf("redis: decode document %s: %w", redisKeyPrefix(spec, records[i]), err)
 			}
@@ -415,8 +418,7 @@ func (a *Adapter) loadDocumentsByHashTagMGet(ctx context.Context, spec meta.Type
 					continue
 				}
 				exists[index] = true
-				body := joinDocumentBodies(parts)
-				doc, err := decodeDocument(body)
+				doc, err := joinDocumentBodies(parts)
 				if err != nil {
 					return nil, nil, fmt.Errorf("redis: decode document %s: %w", redisKeyPrefix(spec, records[index]), err)
 				}
@@ -517,20 +519,31 @@ func decodeDocument(body string) (map[string]any, error) {
 	if err := decoder.Decode(&doc); err != nil {
 		return nil, err
 	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("invalid JSON document: multiple values")
+		}
+		return nil, fmt.Errorf("invalid JSON document: %w", err)
+	}
+	if doc == nil {
+		return nil, fmt.Errorf("expected JSON object")
+	}
 	return doc, nil
 }
 
-func joinDocumentBodies(parts []string) string {
-	body := "{}"
+func joinDocumentBodies(parts []string) (map[string]any, error) {
+	body := make(map[string]any)
 	for _, part := range parts {
-		if len(part) < 2 || part[0] != '{' || part[len(part)-1] != '}' {
+		if part == "" {
 			continue
 		}
-		if body == "{}" {
-			body = part
-			continue
+		doc, err := decodeDocument(part)
+		if err != nil {
+			return nil, err
 		}
-		body = body[:len(body)-1] + "," + part[1:]
+		for key, value := range doc {
+			body[key] = value
+		}
 	}
-	return body
+	return body, nil
 }

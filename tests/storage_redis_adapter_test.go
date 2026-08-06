@@ -950,6 +950,22 @@ func TestRedisAdapterLoadDocumentMissing(t *testing.T) {
 	}
 }
 
+func TestRedisAdapterLoadDocumentRejectsNonObjectOrTrailingJSON(t *testing.T) {
+	for _, body := range []string{`null`, `[]`, `{"name":"alice"}{"name":"bob"}`} {
+		t.Run(body, func(t *testing.T) {
+			client := &recordingRedisStringClient{evalResult: body, hasResult: true}
+			adapter := txredis.NewAdapter(client)
+
+			_, exists, err := adapter.LoadDocument(context.Background(), meta.TypeSpec{
+				Redis: &meta.RedisSpec{Key: "role"},
+			}, storage.RecordKey{ID: int64(1001)})
+			if err == nil || exists {
+				t.Fatalf("LoadDocument exists/error = %v/%v, want false/non-nil", exists, err)
+			}
+		})
+	}
+}
+
 func TestRedisAdapterLoadDocumentsReadsSubKeyOnly(t *testing.T) {
 	client := &recordingRedisStringClient{
 		mgetValues: []string{
@@ -982,6 +998,27 @@ func TestRedisAdapterLoadDocumentsReadsSubKeyOnly(t *testing.T) {
 	item := items["1001"].(map[string]any)
 	if item["quantity"] != json.Number("3") {
 		t.Fatalf("loaded items = %#v", items)
+	}
+}
+
+func TestRedisAdapterLoadDocumentsRejectsMalformedDocumentPart(t *testing.T) {
+	client := &recordingRedisStringClient{
+		mgetValues: []string{
+			`{"roleId":1001,"name":"alice"}`,
+			`null`,
+		},
+	}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{
+		Redis: &meta.RedisSpec{Key: "role"},
+		Fields: map[string]meta.FieldSpec{
+			"items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+		},
+	}
+
+	_, _, err := adapter.LoadDocuments(context.Background(), spec, []storage.RecordKey{{ID: int64(1001)}})
+	if err == nil || !strings.Contains(err.Error(), "expected JSON object") {
+		t.Fatalf("LoadDocuments error = %v, want malformed document part error", err)
 	}
 }
 

@@ -18,6 +18,7 @@
 - Store 拦截模式和 snapshot diff 模式都保留，且同一变更周期互斥。高频大集合优先 Store wrapper；低频请求可使用 `BeginChange/SaveChange` 允许直接改 public field。
 - `DeltaSet` 不保存字段值；Redis、Mongo、Fusion 和 Provider 在边界通过生成 Store 读取当前 `GD*` 最终值。
 - 存储边界必须解析到当前字段值：`DeltaValue(path)` 返回 `(nil, true)` 表示业务要写入空值；返回 `(_, false)` 则保存失败并保留 delta，绝不把解析失败静默写成 `null`。Fusion 延迟回写会原样保留这类业务空值；字段删除必须使用 `DeltaDelete` / `Document.Clear`，不能把 map 中的 `nil` 当删除标记。
+- 外部协议的返回值必须有明确语义：只有已定义的成功、冲突或未命中值可以继续处理；未知 Lua 返回值、损坏 Redis JSON、空锁或其他不完整响应都会返回错误，绝不默认成功或静默丢弃。
 - `map[string]` 的危险 key 在 Mongo update 边界降级整字段写，不做私有转义，保证数据库中仍能直观看到业务 key。
 - Redis 当前使用 string JSON main/subKey 文档。带 `redis:"subKey:..."` 的字段拆独立 key；main 文档仍是根记录热数据的一部分。
 - Fusion 延迟保存队列只保存记录定位，到期后读取 Redis 当前热数据并整文档写回 Mongo；它不是保存每一轮字段 diff 的队列。
