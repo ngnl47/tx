@@ -75,7 +75,7 @@ func (b *Backend) Enqueue(ctx context.Context, item task.DelayTask) error {
 	if result == scriptResultLeased || result == scriptResultOK {
 		return nil
 	}
-	return nil
+	return fmt.Errorf("redis task: enqueue %s: unexpected script result %q", item.IdempotencyKey(), result)
 }
 
 func (b *Backend) ClaimDue(ctx context.Context, now time.Time, limit int) ([]task.DelayTaskLease, error) {
@@ -141,7 +141,7 @@ func (b *Backend) Complete(ctx context.Context, lease task.DelayTaskLease) error
 	if result == scriptResultStale || result == scriptResultOK {
 		return nil
 	}
-	return nil
+	return fmt.Errorf("redis task: complete %s: unexpected script result %q", lease.Task.IdempotencyKey(), result)
 }
 
 func (b *Backend) Retry(ctx context.Context, lease task.DelayTaskLease, next time.Time, reason error) error {
@@ -159,7 +159,7 @@ func (b *Backend) Retry(ctx context.Context, lease task.DelayTaskLease, next tim
 	if result == scriptResultStale || result == scriptResultOK {
 		return nil
 	}
-	return nil
+	return fmt.Errorf("redis task: retry %s: unexpected script result %q", lease.Task.IdempotencyKey(), result)
 }
 
 func (b *Backend) keysForTask(item task.DelayTask) []string {

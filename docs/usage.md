@@ -129,6 +129,17 @@ func Save[S storage.DeltaStore](value storage.StoreProvider[S]) error {
 }
 ```
 
+`storage.Save` 只有在整个写入策略成功后才会清理 Store delta。以 Fusion 为例，Redis 热写和延迟任务入队是两步操作；如果 Redis 已写但入队失败，`Save` 会返回错误，原 delta 仍留在 Store 中，下一次调用可以安全重试并再次登记任务：
+
+```go
+if err := storage.Save(ctx, fusionStore, role.Store()); err != nil {
+	// role.Store() 仍保留本轮 delta；不能把这次请求当成已完成持久化。
+	return err
+}
+```
+
+有状态服务由 `state.Manager.Flush` 保留失败目标并在下一轮重试；无状态服务的 facade 应把错误交给请求重试或业务失败处理。该路径不承诺 Redis 写入与跨组件任务入队的分布式原子性。
+
 如果业务需要显式持有 Store，例如高频对象在内存中维护变更队列、定时合并后再落地，也可以直接使用
 `storage.Save(ctx, writer, role.Store())` 这类框架层写入入口，并由调用方决定何时保存或重新累计下一轮变更。
 

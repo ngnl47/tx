@@ -14,11 +14,12 @@ import (
 
 type recordingQueue struct {
 	ops []fusion.DelayedOperation
+	err error
 }
 
 func (q *recordingQueue) Enqueue(_ context.Context, op fusion.DelayedOperation) error {
 	q.ops = append(q.ops, op)
-	return nil
+	return q.err
 }
 
 type recordingApplier struct {
@@ -337,6 +338,42 @@ func TestFusionStrategyAppliesRedisBeforeQueue(t *testing.T) {
 	}
 	if len(queue.ops) != 1 {
 		t.Fatalf("queued ops = %#v", queue.ops)
+	}
+}
+
+func TestFusionStrategyQueueFailureKeepsStoreDeltasForRetry(t *testing.T) {
+	queueErr := errors.New("delay queue unavailable")
+	queue := &recordingQueue{err: queueErr}
+	redis := &recordingApplier{}
+	strategy := fusion.Strategy{Redis: redis, MongoQueue: queue}
+	store := &testDeltaStore{
+		spec: meta.TypeSpec{
+			Type:    meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
+			Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Second}},
+		},
+		key:    storage.RecordKey{ID: int64(1001)},
+		deltas: change.DeltaSet{{Path: testStorageDeltaPath(2), Kind: change.DeltaKindSet}},
+	}
+
+	if err := storage.Save(context.Background(), strategy, store); !errors.Is(err, queueErr) {
+		t.Fatalf("first Save error = %v, want queue error", err)
+	}
+	if store.cleared != 0 || len(store.deltas) != 1 {
+		t.Fatalf("store after failed enqueue = cleared:%d deltas:%#v, want retained delta", store.cleared, store.deltas)
+	}
+	if redis.optionRuns != 1 || len(queue.ops) != 1 {
+		t.Fatalf("first save calls = redis:%d queue:%d, want 1/1", redis.optionRuns, len(queue.ops))
+	}
+
+	queue.err = nil
+	if err := storage.Save(context.Background(), strategy, store); err != nil {
+		t.Fatalf("retry Save returned error: %v", err)
+	}
+	if store.cleared != 1 || len(store.deltas) != 0 {
+		t.Fatalf("store after retry = cleared:%d deltas:%#v, want cleared", store.cleared, store.deltas)
+	}
+	if redis.optionRuns != 2 || len(queue.ops) != 2 {
+		t.Fatalf("retry calls = redis:%d queue:%d, want 2/2", redis.optionRuns, len(queue.ops))
 	}
 }
 

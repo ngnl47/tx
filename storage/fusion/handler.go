@@ -47,7 +47,7 @@ func NewDelayTaskHandlerWithOptions(types TypeRegistry, redisLoader storage.Docu
 }
 
 func (h *StorageTaskHandler) HandleDelayTask(ctx context.Context, item task.DelayTask) error {
-	if h == nil {
+	if h == nil || isNilFusionDependency(h.types) {
 		return ErrDelayTaskDependenciesNotConfigured
 	}
 	spec, ok := h.lookup(item.Type)
@@ -73,7 +73,7 @@ func (h *StorageTaskHandler) HandleDelayTask(ctx context.Context, item task.Dela
 }
 
 func (h *StorageTaskHandler) handleSave(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
-	if h.redisLoader == nil || h.mongoReplace == nil {
+	if isNilFusionDependency(h.redisLoader) || isNilFusionDependency(h.mongoReplace) {
 		return fmt.Errorf("%w: delayed save requires redis loader and mongo replacer", ErrDelayTaskDependenciesNotConfigured)
 	}
 	doc, exists, err := h.redisLoader.LoadDocument(ctx, spec, key)
@@ -87,12 +87,15 @@ func (h *StorageTaskHandler) handleSave(ctx context.Context, spec meta.TypeSpec,
 }
 
 func (h *StorageTaskHandler) handleDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
-	if h.redisLoader == nil || h.mongoReplace == nil || h.redisRevisionReader == nil || h.redisRevisionDelete == nil || h.redisLocker == nil {
+	if isNilFusionDependency(h.redisLoader) || isNilFusionDependency(h.mongoReplace) || isNilFusionDependency(h.redisRevisionReader) || isNilFusionDependency(h.redisRevisionDelete) || isNilFusionDependency(h.redisLocker) {
 		return fmt.Errorf("%w: delayed delete requires redis loader, mongo replacer, revision reader, revision deleter and record locker", ErrDelayTaskDependenciesNotConfigured)
 	}
 	lock, err := h.redisLocker.LockRecord(ctx, spec, key, storage.LockOptions{TTL: defaultLoadLockTTL, Wait: defaultLoadLockWait})
 	if err != nil {
 		return err
+	}
+	if isNilFusionDependency(lock) {
+		return fmt.Errorf("%w: delayed delete received nil record lock", ErrDelayTaskDependenciesNotConfigured)
 	}
 	defer func() { _ = lock.Unlock(ctx) }()
 
@@ -115,7 +118,7 @@ func (h *StorageTaskHandler) handleDelete(ctx context.Context, spec meta.TypeSpe
 }
 
 func (h *StorageTaskHandler) requeueDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
-	if h.delayQueue == nil || spec.Storage.DelayDelete.Duration < 0 {
+	if isNilFusionDependency(h.delayQueue) || spec.Storage.DelayDelete.Duration < 0 {
 		return nil
 	}
 	return h.delayQueue.Enqueue(ctx, DelayedOperation{
@@ -127,7 +130,7 @@ func (h *StorageTaskHandler) requeueDelete(ctx context.Context, spec meta.TypeSp
 }
 
 func (h *StorageTaskHandler) lookup(typeName string) (meta.TypeSpec, bool) {
-	if h.types == nil {
+	if isNilFusionDependency(h.types) {
 		return meta.TypeSpec{}, false
 	}
 	return h.types.Lookup(meta.TypeRef{FullName: typeName})

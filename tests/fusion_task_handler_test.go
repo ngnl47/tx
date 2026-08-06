@@ -263,3 +263,37 @@ func TestFusionDelayTaskHandlerRejectsMissingSaveDependencies(t *testing.T) {
 		t.Fatalf("HandleDelayTask error = %v, want ErrDelayTaskDependenciesNotConfigured", err)
 	}
 }
+
+func TestFusionDelayTaskHandlerRejectsTypedNilDependencies(t *testing.T) {
+	registry := meta.NewRegistry()
+	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Package: "data", Name: "GDRole"}}}
+	if err := registry.RegisterType(spec); err != nil {
+		t.Fatalf("RegisterType returned error: %v", err)
+	}
+	var redis *recordingDocumentLoader
+	var mongo *recordingDocumentReplacer
+	handler := fusion.NewDelayTaskHandler(registry, redis, mongo)
+
+	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
+		Type:   "data.GDRole",
+		ID:     int64(1001),
+		Action: string(fusion.DelayedSave),
+	})
+	if !errors.Is(err, fusion.ErrDelayTaskDependenciesNotConfigured) {
+		t.Fatalf("typed nil dependencies error = %v, want ErrDelayTaskDependenciesNotConfigured", err)
+	}
+}
+
+func TestFusionDelayTaskHandlerRejectsTypedNilRegistry(t *testing.T) {
+	var registry *meta.Registry
+	handler := fusion.NewDelayTaskHandler(registry, &recordingDocumentLoader{}, &recordingDocumentReplacer{})
+
+	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
+		Type:   "data.GDRole",
+		ID:     int64(1001),
+		Action: string(fusion.DelayedSave),
+	})
+	if !errors.Is(err, fusion.ErrDelayTaskDependenciesNotConfigured) {
+		t.Fatalf("typed nil registry error = %v, want ErrDelayTaskDependenciesNotConfigured", err)
+	}
+}

@@ -34,6 +34,28 @@ func TestRedisTaskBackendRejectsMissingClient(t *testing.T) {
 	}
 }
 
+func TestRedisDelayTaskBackendRejectsUnknownScriptResults(t *testing.T) {
+	backend := taskredis.NewBackend(scriptedTaskRedis{result: "unexpected"}, taskredis.Options{})
+	item := task.DelayTask{Type: "role", ID: int64(1001), Action: "save"}
+	lease := task.DelayTaskLease{Task: item, Token: "token"}
+
+	for _, tt := range []struct {
+		name string
+		run  func() error
+	}{
+		{name: "enqueue", run: func() error { return backend.Enqueue(context.Background(), item) }},
+		{name: "complete", run: func() error { return backend.Complete(context.Background(), lease) }},
+		{name: "retry", run: func() error { return backend.Retry(context.Background(), lease, time.Now(), errors.New("retry")) }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.run()
+			if err == nil || !strings.Contains(err.Error(), "unexpected script result") || !strings.Contains(err.Error(), "unexpected") {
+				t.Fatalf("error = %v, want unexpected script result", err)
+			}
+		})
+	}
+}
+
 func TestRedisDelayTaskBackendClaimsAndCompletesDueTasks(t *testing.T) {
 	ctx := context.Background()
 	client := newFakeTaskRedis()
@@ -190,6 +212,15 @@ type fakeTaskRedis struct {
 	queues   map[string]*fakeTaskRedisQueue
 	seq      int
 	lastKeys []string
+}
+
+type scriptedTaskRedis struct {
+	result string
+	err    error
+}
+
+func (r scriptedTaskRedis) Eval(context.Context, string, []string, ...any) (string, error) {
+	return r.result, r.err
 }
 
 type fakeTaskRedisQueue struct {
