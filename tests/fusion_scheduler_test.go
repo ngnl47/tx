@@ -55,6 +55,36 @@ func TestFusionSchedulerScheduleRejectsMissingBackend(t *testing.T) {
 	}
 }
 
+func TestFusionSchedulerStartIgnoresTypedNilContext(t *testing.T) {
+	var ctx *lifecycle.WaitGroupContext
+	scheduler := fusion.NewScheduler(memory.NewBackend())
+
+	scheduler.Start(ctx)
+}
+
+func TestFusionDelayTaskComponentsRejectTypedNilBackend(t *testing.T) {
+	ctx := context.Background()
+	item := task.DelayTask{Type: "role", ID: "1", Action: "save"}
+	var backend *memory.Backend
+
+	queue := fusion.NewTaskQueue(backend)
+	if err := queue.Enqueue(ctx, fusion.DelayedOperation{
+		Kind: fusion.DelayedSave,
+		Type: meta.TypeRef{Package: "data", Name: "GDRole"},
+		Key:  storage.RecordKey{ID: "1"},
+	}); !errors.Is(err, fusion.ErrTaskBackendNotConfigured) {
+		t.Fatalf("typed nil backend TaskQueue error = %v, want ErrTaskBackendNotConfigured", err)
+	}
+
+	scheduler := fusion.NewScheduler(backend)
+	if err := scheduler.Schedule(ctx, item); !errors.Is(err, fusion.ErrTaskBackendNotConfigured) {
+		t.Fatalf("typed nil backend Schedule error = %v, want ErrTaskBackendNotConfigured", err)
+	}
+	if _, err := scheduler.RunOnce(ctx, time.Now()); !errors.Is(err, fusion.ErrTaskBackendNotConfigured) {
+		t.Fatalf("typed nil backend RunOnce error = %v, want ErrTaskBackendNotConfigured", err)
+	}
+}
+
 func TestFusionSchedulerRetriesTaskWhenHandlerIsMissing(t *testing.T) {
 	backend := memory.NewBackend()
 	scheduler := fusion.NewScheduler(backend)
@@ -71,6 +101,30 @@ func TestFusionSchedulerRetriesTaskWhenHandlerIsMissing(t *testing.T) {
 		t.Fatalf("ClaimDue returned error: %v", err)
 	}
 	if len(leases) != 1 {
+		t.Fatalf("leases = %#v, want one retried task", leases)
+	}
+}
+
+func TestFusionSchedulerRetriesTaskWhenHandlerIsTypedNil(t *testing.T) {
+	backend := memory.NewBackend()
+	now := time.Unix(100, 0)
+	var handler fusion.DelayTaskHandlerFunc
+	scheduler := fusion.NewSchedulerWithOptions(backend, fusion.SchedulerOptions{
+		RetryDelay: time.Second,
+		Handler:    handler,
+	})
+	if err := backend.Enqueue(context.Background(), task.DelayTask{Type: "role", ID: "1", Action: "save", DueAt: now}); err != nil {
+		t.Fatalf("Enqueue returned error: %v", err)
+	}
+
+	if _, err := scheduler.RunOnce(context.Background(), now); err != nil {
+		t.Fatalf("RunOnce returned error: %v", err)
+	}
+	leases, err := backend.ClaimDue(context.Background(), now.Add(time.Second), 1)
+	if err != nil {
+		t.Fatalf("ClaimDue returned error: %v", err)
+	}
+	if len(leases) != 1 || leases[0].Task.ID != "1" {
 		t.Fatalf("leases = %#v, want one retried task", leases)
 	}
 }

@@ -226,6 +226,32 @@ func TestFusionStrategyRejectsMissingWriteDependencies(t *testing.T) {
 	}
 }
 
+func TestFusionStrategyRejectsTypedNilWriteDependencies(t *testing.T) {
+	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	key := storage.RecordKey{TypeName: spec.Type.Ref.FullName, ID: int64(1001)}
+
+	t.Run("redis", func(t *testing.T) {
+		var redis *recordingApplier
+		strategy := fusion.Strategy{Redis: redis, MongoQueue: &recordingQueue{}}
+
+		err := strategy.ApplyDeltasWithOptions(context.Background(), spec, key, deltas, testFieldNameResolver{}, testDeltaValueResolver{}, storage.ApplyOptions{})
+		if !errors.Is(err, fusion.ErrRedisNotConfigured) {
+			t.Fatalf("ApplyDeltasWithOptions error = %v, want ErrRedisNotConfigured", err)
+		}
+	})
+
+	t.Run("queue", func(t *testing.T) {
+		var queue *recordingQueue
+		strategy := fusion.Strategy{Redis: &recordingApplier{}, MongoQueue: queue}
+
+		err := strategy.ApplyDeltasWithOptions(context.Background(), spec, key, deltas, testFieldNameResolver{}, testDeltaValueResolver{}, storage.ApplyOptions{})
+		if !errors.Is(err, fusion.ErrMongoQueueNotConfigured) {
+			t.Fatalf("ApplyDeltasWithOptions error = %v, want ErrMongoQueueNotConfigured", err)
+		}
+	})
+}
+
 func TestFusionStrategyValidatesCompleteRuntimeDependencies(t *testing.T) {
 	redis := &recordingRedisStore{}
 	strategy := fusion.Strategy{

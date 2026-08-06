@@ -79,14 +79,14 @@ func NewSchedulerWithOptions(backend task.DelayTaskBackend, options SchedulerOpt
 }
 
 func (s *Scheduler) Schedule(ctx context.Context, item task.DelayTask) error {
-	if s == nil || s.backend == nil {
+	if s == nil || isNilFusionDependency(s.backend) {
 		return ErrTaskBackendNotConfigured
 	}
 	return s.backend.Enqueue(ctx, item)
 }
 
 func (s *Scheduler) Start(ctx waitGroupContext) {
-	if s == nil || s.backend == nil || ctx == nil {
+	if s == nil || isNilFusionDependency(s.backend) || isNilFusionDependency(ctx) {
 		return
 	}
 	ctx.WaitGroupAdd(1)
@@ -97,7 +97,7 @@ func (s *Scheduler) Start(ctx waitGroupContext) {
 }
 
 func (s *Scheduler) RunOnce(ctx context.Context, now time.Time) (int, error) {
-	if s == nil || s.backend == nil {
+	if s == nil || isNilFusionDependency(s.backend) {
 		return 0, ErrTaskBackendNotConfigured
 	}
 	leases, err := s.backend.ClaimDue(ctx, now, s.batchSize)
@@ -145,7 +145,7 @@ func (s *Scheduler) run(ctx context.Context) {
 }
 
 func (s *Scheduler) handle(ctx context.Context, item task.DelayTask) error {
-	if s.handler == nil {
+	if isNilFusionDependency(s.handler) {
 		return ErrTaskHandlerNotConfigured
 	}
 	return s.handler.HandleDelayTask(ctx, item)
