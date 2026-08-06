@@ -362,7 +362,8 @@ func TestFusionStrategySkipsEmptyDeltaSet(t *testing.T) {
 func TestFusionStrategyDeleteDoesNotUseDelayDeleteAsMongoQueueDelay(t *testing.T) {
 	queue := &recordingQueue{}
 	redisDelete := &recordingDeleteApplier{}
-	strategy := fusion.Strategy{RedisDeleter: redisDelete, MongoQueue: queue}
+	mongoDelete := &recordingDeleteApplier{}
+	strategy := fusion.Strategy{RedisDeleter: redisDelete, MongoDeleter: mongoDelete, MongoQueue: queue}
 	spec := meta.TypeSpec{
 		Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
 		Storage: meta.StorageSpec{
@@ -379,9 +380,43 @@ func TestFusionStrategyDeleteDoesNotUseDelayDeleteAsMongoQueueDelay(t *testing.T
 	if redisDelete.key.ID != int64(1001) {
 		t.Fatalf("redis delete key = %#v, want ID=1001", redisDelete.key)
 	}
+	if mongoDelete.calls != 1 {
+		t.Fatalf("mongo delete calls = %d, want 1", mongoDelete.calls)
+	}
 	if len(queue.ops) != 0 {
 		t.Fatalf("queued ops = %#v, want no Mongo delete queue from delayDelTime", queue.ops)
 	}
+}
+
+func TestFusionStrategyDeleteRejectsIncompleteDependenciesBeforeAnyDelete(t *testing.T) {
+	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
+	key := storage.RecordKey{ID: int64(1001)}
+
+	t.Run("missing redis deleter", func(t *testing.T) {
+		mongoDelete := &recordingDeleteApplier{}
+		strategy := fusion.Strategy{MongoDeleter: mongoDelete}
+
+		err := strategy.ApplyDelete(context.Background(), spec, key)
+		if !errors.Is(err, fusion.ErrStrategyDependenciesNotConfigured) {
+			t.Fatalf("ApplyDelete error = %v, want ErrStrategyDependenciesNotConfigured", err)
+		}
+		if mongoDelete.calls != 0 {
+			t.Fatalf("mongo delete calls = %d, want 0", mongoDelete.calls)
+		}
+	})
+
+	t.Run("missing mongo deleter", func(t *testing.T) {
+		redisDelete := &recordingDeleteApplier{}
+		strategy := fusion.Strategy{RedisDeleter: redisDelete}
+
+		err := strategy.ApplyDelete(context.Background(), spec, key)
+		if !errors.Is(err, fusion.ErrStrategyDependenciesNotConfigured) {
+			t.Fatalf("ApplyDelete error = %v, want ErrStrategyDependenciesNotConfigured", err)
+		}
+		if redisDelete.calls != 0 {
+			t.Fatalf("redis delete calls = %d, want 0", redisDelete.calls)
+		}
+	})
 }
 
 func TestFusionStrategyDeleteUsesExplicitMongoDeleter(t *testing.T) {
@@ -403,9 +438,9 @@ func TestFusionStrategyDeleteUsesExplicitMongoDeleter(t *testing.T) {
 }
 
 func TestFusionStrategyDeleteUsesRedisApplierWhenDeleterIsUnset(t *testing.T) {
-	queue := &recordingQueue{}
 	redis := &recordingRedisStore{}
-	strategy := fusion.Strategy{Redis: redis, MongoQueue: queue}
+	mongoDelete := &recordingDeleteApplier{}
+	strategy := fusion.Strategy{Redis: redis, MongoDeleter: mongoDelete}
 	spec := meta.TypeSpec{
 		Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
 		Storage: meta.StorageSpec{
@@ -423,8 +458,8 @@ func TestFusionStrategyDeleteUsesRedisApplierWhenDeleterIsUnset(t *testing.T) {
 	if redis.recordingDeleteApplier.key.ID != key.ID {
 		t.Fatalf("redis delete key = %#v, want %#v", redis.recordingDeleteApplier.key, key)
 	}
-	if len(queue.ops) != 0 {
-		t.Fatalf("queued ops = %#v, want no Mongo delete queue from delayDelTime", queue.ops)
+	if mongoDelete.calls != 1 || mongoDelete.key != key {
+		t.Fatalf("mongo delete calls/key = %d/%#v, want explicit delete for %#v", mongoDelete.calls, mongoDelete.key, key)
 	}
 }
 

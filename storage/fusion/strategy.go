@@ -91,18 +91,18 @@ func (s Strategy) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec
 
 // ApplyDelete 应用一次对象删除。
 //
-// RedisDeleter 存在时会先删除热数据；MongoDeleter 存在时会立即删除持久化数据。
-// storage.delayDelTime 只表示 Redis 热数据 TTL，不参与 Mongo 删除延迟。
+// 删除要求 Redis 与 Mongo 删除器均已装配。Redis 会先删除热数据，随后 Mongo
+// 立即删除持久化数据。storage.delayDelTime 只表示 Redis 热数据 TTL，不参与 Mongo
+// 删除延迟。
 func (s Strategy) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
-	if redisDeleter := s.redisDeleter(); redisDeleter != nil {
-		if err := redisDeleter.ApplyDelete(ctx, spec, key); err != nil {
-			return err
-		}
+	redisDeleter, mongoDeleter, err := s.deleteDependencies()
+	if err != nil {
+		return err
 	}
-	if s.MongoDeleter != nil {
-		return s.MongoDeleter.ApplyDelete(ctx, spec, key)
+	if err := redisDeleter.ApplyDelete(ctx, spec, key); err != nil {
+		return err
 	}
-	return nil
+	return mongoDeleter.ApplyDelete(ctx, spec, key)
 }
 
 // LoadDocument 优先从 Redis 读取，未命中时回源 Mongo。
@@ -193,6 +193,17 @@ func (s Strategy) readDependencies() (storage.DocumentLoader, error) {
 		return nil, fmt.Errorf("%w: mongo document loader", ErrStrategyDependenciesNotConfigured)
 	}
 	return redisLoader, nil
+}
+
+func (s Strategy) deleteDependencies() (storage.DeleteApplier, storage.DeleteApplier, error) {
+	redisDeleter := s.redisDeleter()
+	if isNilFusionDependency(redisDeleter) {
+		return nil, nil, fmt.Errorf("%w: redis deleter", ErrStrategyDependenciesNotConfigured)
+	}
+	if isNilFusionDependency(s.MongoDeleter) {
+		return nil, nil, fmt.Errorf("%w: mongo deleter", ErrStrategyDependenciesNotConfigured)
+	}
+	return redisDeleter, s.MongoDeleter, nil
 }
 
 func isNilFusionDependency(value any) bool {

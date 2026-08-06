@@ -50,7 +50,8 @@
 - 字符串路径只在输出边界生成，例如 `ChangeDocument()`、Redis JSON patch、Mongo update document 和 cmd Provider body。
 - `DeltaSet.Compact()` 只做路径上可确定的压缩：同路径后写覆盖先写，后发生的祖先写清理更早子路径；较早祖先不会吞掉较晚子路径，因为 runtime 不读取当前对象，无法证明祖先值已包含后续修改。不做需要外部生命周期上下文的新建删除抵消。
 - `DeltaSet.Compact()` 对不超过 128 条的常见变更保持原地、零分配扫描；更大的互不相交路径集使用小型哈希索引查询完整路径和严格祖先，哈希碰撞必须再经完整 `DeltaPath.Equal` 确认。后发生根字段覆盖子路径的批次仍走原地扫描，避免为已能线性收敛的整字段覆盖引入索引分配；阈值或算法调整前后都必须复跑 `BenchmarkDeltaSetCompact`。
-- Fusion 是完整装配的存储策略，不保留半成品 no-op 兼容路径：运行时必须同时具备 Redis delta/document/load-lock/delete 能力、Mongo load/delete 能力和延迟队列；`Strategy.Validate` 负责汇总校验，业务工程启动时必须在 Redis/Mongo endpoint 探活后调用它，任一依赖或连接不可用即失败退出。运行后发生 Mongo 短暂通信故障时，Redis 热写和延迟任务仍保留，worker 通过 at-least-once 重试等待 Mongo 恢复；任何需要 Mongo 回源的读取必须原样返回通信错误，不能伪装成记录不存在。
+- Fusion 是完整装配的存储策略，不保留半成品 no-op 兼容路径：运行时必须同时具备 Redis delta/document/load-lock/delete 能力、Mongo load/delete 能力和延迟队列；`Strategy.Validate` 负责汇总校验，业务工程启动时必须在 Redis/Mongo endpoint 探活后调用它，任一依赖或连接不可用即失败退出。运行期不在每次 Fusion 调用前额外 Ping 两端，而是由实际访问的后端返回真实错误：Redis 热命中可直接返回，不依赖 Mongo；Redis miss 回源 Mongo 时 Mongo 通信错误必须原样返回，不能伪装成记录不存在；热写成功写入 Redis 并入队后不等待 Mongo，Mongo 短暂不可达时既有任务保留，由 worker 的 at-least-once 重试在恢复后回写。
+- Fusion 显式删除要求 Redis 与 Mongo 删除器均已装配，并在任何删除 I/O 前完成检查；缺少任一组件时返回 `ErrStrategyDependenciesNotConfigured`，不删除 Redis 热数据或 Mongo 文档。完整装配后仍按 Redis、Mongo 的顺序执行，运行时连接错误原样返回给调用方。
 - `DeltaKindSet` 用于标记当前字段值；`DeltaKindReplace` 用于集合、结构体指针和集合元素的覆盖赋值。`SetItems(value)`、`ItemsStore().Set(key, value)`、`SetAt(index, value)` 都遵循 Go 赋值语义：持久化时不保留旧值中未出现的字段；对子对象的 setter 才保留局部 `DeltaKindSet` 路径。
 - `MaxDeltaDepth` 是 Store 树投影和 snapshot diff 共用的真实递归预算，当前为 4 层 `PathNode`。即将超过预算时必须立刻停止向下比较或投影，将最近可解析祖先标为 `DeltaKindReplace`；不能 panic，也不能继续做无效深层 diff。每个生成数据类型通过 `sync.Once` 输出一次告警，提示该类型发生了深度降级。
 - `map[string]` 的 key 如果为空字符串、包含 `.` 或 `$`，Mongo 边界不转义 key，而是降级整字段写，保证数据库中保留业务真实 key。

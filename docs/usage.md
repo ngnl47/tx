@@ -1829,7 +1829,19 @@ Fusion 策略的当前保存路径：
 任务失败重试时，Scheduler 会输出结构化错误日志；失败原因不写入 Redis 任务状态，避免错误字符串占用队列内存。
 Scheduler 循环中的 claim、complete、retry 等 backend 错误也会输出结构化错误日志；服务关闭导致的 context 结束不会额外记录错误。
 Fusion delayed task queue 接受保存 action 和 Redis 热数据延迟删除 action；其他未知 action 会返回错误。入队时必须带有明确的类型和记录 ID，避免无效任务进入 Redis 队列；handler 消费端也会拒绝缺少记录 ID 的任务，防止手工写入或遗留异常任务落到存储层。任务类型优先来自 `DelayedOperation.Type`，为空时使用 `DelayedOperation.Key.TypeName`。Fusion 延迟保存按类型、记录 ID、route/shard key 和 action 生成一条合并任务，不暴露额外 suffix，避免同一记录产生多条重复保存任务。延迟保存任务不携带业务对象或字段变更日志，回写时重新读取 Redis 当前热数据。显式删除仍走显式删除接口，不进入延迟队列。
-Fusion 保存路径要求 Redis delta applier 与延迟队列都已装配；延迟任务执行还要求 handler、Redis 文档读取、Mongo replace 和删除任务所需的 revision/lock 组件完整可用。`Strategy.Validate()` 会汇总检查 Redis delta/document/load-lock/delete、Mongo load/delete 和延迟队列；项目启动阶段必须在 Redis/Mongo 探活后调用它。`txgame/server` 的 `NewStorage` 已执行这两步，任一依赖或连接不可达即启动失败。运行后 Mongo 短暂不可达时，Redis 热写和延迟任务会保留，worker 通过重试等待恢复；Fusion 读取不会把 Mongo 通信错误或缺失依赖伪装成记录不存在。
+Fusion 保存路径要求 Redis delta applier 与延迟队列都已装配；延迟任务执行还要求 handler、Redis 文档读取、Mongo replace 和删除任务所需的 revision/lock 组件完整可用。`Strategy.Validate()` 会汇总检查 Redis delta/document/load-lock/delete、Mongo load/delete 和延迟队列；项目启动阶段必须在 Redis/Mongo 探活后调用它。`txgame/server` 的 `NewStorage` 已执行这两步，任一依赖或连接不可达即启动失败。
+
+运行期不为每次 Fusion 调用额外 Ping Redis 与 Mongo，实际读写命令就是对应后端的可用性探针。Redis 热命中只访问 Redis，即使 Mongo 暂时不可达也可以返回热数据；Redis miss、`DontLoadToRedis` 直读或延迟回写实际访问 Mongo 时，Mongo 通信错误会原样返回或由 Scheduler 重试，绝不伪装成记录不存在。Fusion 热写只在 Redis 同步写入与延迟任务入队成功后返回，不等待 Mongo；因此 Mongo 暂时不可达不会丢弃已经写入 Redis 的热数据或已存在的延迟任务，恢复后 worker 会继续把 Redis 当前文档回写 Mongo。
+
+例如 Mongo 临时不可达时：
+
+```go
+role.SetName("new-name")
+err := storage.Save(ctx, fusionStore, role.Store()) // Redis 写入和任务入队成功。
+
+role, exists, err := data.LoadGDRole(ctx, fusionStore, data.GDRoleRecordKey(1001))
+// Redis 命中时仍可读取；只有 Redis miss 需要回源 Mongo 时才返回 Mongo 错误。
+```
 
 生产环境的延迟回写 handler 只负责存储同步。由于任务可能因为网络抖动、进程重启或租约恢复被再次执行，Mongo 回写路径应按“同一记录的当前 Redis 热文档 replace 到 Mongo”设计为存储幂等操作。比如同一条 `GDRole` save 任务执行两次，结果应只是 Mongo 中 `roleId=1001` 的文档被相同或更新后的热数据覆盖两次；队列中不保存 `GDRole` 的中间态快照，也不按每次字段变更生成事件日志。
 
@@ -1838,11 +1850,11 @@ handler 会在这个流程外层持有同一条记录的 Redis 锁，避免多�
 
 运维侧应关注 Scheduler 错误日志、重试次数和队列积压时间。如果某类任务持续失败，优先排查对应类型的 Redis 热文档是否能正常反序列化、Mongo 路由/过滤条件是否正确、以及目标集合是否可写。队列中的失败原因不会写入 Redis 状态；需要更完整的告警和指标时，应通过项目自己的日志、监控或后续可插拔 observer 接入。
 
-Fusion 读取会先查 Redis，未命中时回源 Mongo。单条回源会先获取记录级 Redis 锁，并在锁内再次读取 Redis：如果第二次读取命中，直接返回 Redis 热数据；只有第二次仍未命中时，才从 Mongo 全量读取文档，写回 Redis 热数据并使用 `delayDelTime` 续期，然后按请求字段返回结果。批量读取先合并第一次 Redis 查询；当 Mongo reader 支持批量读取时，所有 miss 会先通过一次 Mongo 全文批量读取取得候选文档，再逐条获取记录锁并二次读取 Redis。锁内已经被其他请求回填的记录直接返回最新 Redis 文档，仍未命中时才写入该条候选 Mongo 文档；因此批量回源不会用旧候选覆盖另一条回填完成后的热数据。该路径要求 `delayDelTime` 必须大于 0，避免生成没有 TTL 的 Redis 热数据。显式使用 `LoadOptions.DontLoadToRedis` 时，才直接从 Mongo 按请求字段读取且不回填 Redis，适合低频只读场景。
+Fusion 读取会先查 Redis，未命中时才回源 Mongo；Redis 命中不会额外探测 Mongo。单条回源会先获取记录级 Redis 锁，并在锁内再次读取 Redis：如果第二次读取命中，直接返回 Redis 热数据；只有第二次仍未命中时，才从 Mongo 全量读取文档，写回 Redis 热数据并使用 `delayDelTime` 续期，然后按请求字段返回结果。批量读取先合并第一次 Redis 查询；当 Mongo reader 支持批量读取时，所有 miss 会先通过一次 Mongo 全文批量读取取得候选文档，再逐条获取记录锁并二次读取 Redis。锁内已经被其他请求回填的记录直接返回最新 Redis 文档，仍未命中时才写入该条候选 Mongo 文档；因此批量回源不会用旧候选覆盖另一条回填完成后的热数据。该路径要求 `delayDelTime` 必须大于 0，避免生成没有 TTL 的 Redis 热数据。显式使用 `LoadOptions.DontLoadToRedis` 时，才直接从 Mongo 按请求字段读取且不回填 Redis，适合低频只读场景。
 
 部分字段读取的优化主要发生在 Redis 热数据层：运行时按 main/subKey key 粒度减少 Redis 读取，随后按字段过滤返回文档；Redis 和 Mongo 中保存的仍是全量数据。只请求 subKey 字段时，Redis 可以只读取对应 subKey 文档，不要求主文档同时命中。
 
-Fusion 显式删除不会进入延迟队列。删除路径应先删除 Redis 热数据，再立即删除 Mongo 文档；如果只绕过 Fusion 删除 Mongo，而 Redis 热数据和延迟保存任务仍存在，后续保存任务可能按 Redis 当前数据重新写回 Mongo。
+Fusion 显式删除不会进入延迟队列。删除路径会先确认 Redis 与 Mongo 删除器均已装配；缺少任一组件时返回 `fusion.ErrStrategyDependenciesNotConfigured`，且不会删除任何一侧。检查通过后先删除 Redis 热数据，再立即删除 Mongo 文档；如果只绕过 Fusion 删除 Mongo，而 Redis 热数据和延迟保存任务仍存在，后续保存任务可能按 Redis 当前数据重新写回 Mongo。
 
 ### Fusion 初始化示例
 
