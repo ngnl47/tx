@@ -26,6 +26,10 @@ func TestTypeSpecBackendFieldNames(t *testing.T) {
 	if !ok {
 		t.Fatal("FieldByName(RoleId) returned false")
 	}
+	field, ok = spec.FieldByJSONName("roleId")
+	if !ok || field.Name != "RoleId" {
+		t.Fatalf("FieldByJSONName(roleId) = %#v, %v", field, ok)
+	}
 	if field.BSONName != "_id" {
 		t.Fatalf("BSONName = %q, want _id", field.BSONName)
 	}

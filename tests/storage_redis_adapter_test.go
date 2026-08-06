@@ -253,6 +253,91 @@ func TestRedisAdapterReplaceDocumentWithOptionsUsesFullReplaceAndTTL(t *testing.
 	}
 }
 
+func TestRedisAdapterReplaceDocumentKeepsEmptyMainDocumentForSubKeyOnlyData(t *testing.T) {
+	client := &recordingRedisStringClient{}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{
+		Redis: &meta.RedisSpec{Key: "role"},
+		Fields: map[string]meta.FieldSpec{
+			"items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+		},
+	}
+	err := adapter.ReplaceDocumentWithOptions(
+		context.Background(),
+		spec,
+		storage.RecordKey{ID: int64(1001)},
+		map[string]any{"items": map[string]any{"1001": map[string]any{"quantity": int64(9)}}},
+		storage.ApplyOptions{},
+	)
+	if err != nil {
+		t.Fatalf("ReplaceDocumentWithOptions returned error: %v", err)
+	}
+	triples := evalTriples(t, client.evals[0].args)
+	main, ok := triples[""]
+	if !ok || main.mode != "4" || main.body != "{}" {
+		t.Fatalf("main replacement = %#v, want empty root document", main)
+	}
+	if _, ok := triples["items"]; !ok {
+		t.Fatalf("replace triples = %#v, want items subKey", triples)
+	}
+}
+
+func TestRedisAdapterReplaceDocumentClearsOmittedSubKey(t *testing.T) {
+	client := &recordingRedisStringClient{}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{
+		Redis: &meta.RedisSpec{Key: "role"},
+		Fields: map[string]meta.FieldSpec{
+			"name":  {},
+			"items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+		},
+	}
+	err := adapter.ReplaceDocumentWithOptions(
+		context.Background(),
+		spec,
+		storage.RecordKey{ID: int64(1001)},
+		map[string]any{"name": "alice"},
+		storage.ApplyOptions{},
+	)
+	if err != nil {
+		t.Fatalf("ReplaceDocumentWithOptions returned error: %v", err)
+	}
+	triples := evalTriples(t, client.evals[0].args)
+	items, ok := triples["items"]
+	if !ok || items.mode != "1" || items.body != "{}" {
+		t.Fatalf("items replacement = %#v, want stale subKey deletion", items)
+	}
+}
+
+func TestRedisAdapterReplaceDocumentRoutesCanonicalJSONNameToSubKey(t *testing.T) {
+	client := &recordingRedisStringClient{}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{
+		Redis: &meta.RedisSpec{Key: "role"},
+		Type: meta.Type{Fields: []meta.Field{
+			{Name: "Items", JSONName: "items", RedisName: "bag"},
+		}},
+		Fields: map[string]meta.FieldSpec{
+			"Items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+		},
+	}
+	err := adapter.ReplaceDocumentWithOptions(
+		context.Background(),
+		spec,
+		storage.RecordKey{ID: int64(1001)},
+		map[string]any{"items": map[string]any{"1001": map[string]any{"quantity": int64(9)}}},
+		storage.ApplyOptions{},
+	)
+	if err != nil {
+		t.Fatalf("ReplaceDocumentWithOptions returned error: %v", err)
+	}
+	triples := evalTriples(t, client.evals[0].args)
+	items, ok := triples["items"]
+	if !ok || !strings.Contains(items.body, `"bag"`) {
+		t.Fatalf("items replacement = %#v, want canonical JSON field routed to Redis subKey", items)
+	}
+}
+
 func TestRedisAdapterRejectsNilReplacementDocument(t *testing.T) {
 	adapter := txredis.NewAdapter(&recordingRedisStringClient{})
 	err := adapter.ReplaceDocumentWithOptions(

@@ -66,6 +66,7 @@
 - 字段名体系本体是 `go/json/bson/msgpack`。Redis 当前选择 JSON 名，Mongo 当前选择 BSON 名，cmd Provider 当前选择 Msgpack 名；`alias` 只是输入侧语法糖。
 - `storage.DocumentLoader` 和 `DocumentReplacer` 的公共文档契约统一使用 JSON 字段名。Redis 原样读写该文档；Mongo adapter 在完整文档读取与替换边界通过 `TypeSpec.DocumentFactory` 物化生成类型，再按 BSON tag 转换。Fusion 只传递公共 JSON 文档，不直接搬运 Mongo 的 BSON map。
 - Fusion 是 Redis 热数据加 Mongo 冷数据。Redis main/subKey 都使用 string JSON 文档；RedisJSON/ReJSON 仅作为后续可选 backend，不是当前默认路径。
+- Redis 整文档替换在文档只包含 subKey 或为空时仍写入 main `{}`，保持 main key 作为热记录存在标记；不能因字段拆分形成只有 subKey、没有根记录的状态。
 - Redis 局部 patch 只会创建缺失的 JSON object 父节点；已有父节点为 `null`、标量或数组时返回 `storage.ErrPathTypeMismatch`，不做静默类型修复。业务若要有意重建复杂字段，必须走字段级 `Set*` 的 `DeltaKindReplace` 覆盖。
 - `delaySaveTime` 表示 Redis 热数据变更后多久回写一次 Mongo；`delayDelTime` 表示 Redis 热数据 TTL 和自动续期时间，不表示 Mongo 删除延迟。
 - Fusion 延迟任务队列只保存记录定位信息；到期后读取 Redis 当前最新热数据，整文档 replace 到 Mongo。队列不保存中间态业务对象或本轮字段 diff。
@@ -402,7 +403,7 @@ Store 生成、Redis key helper、Mongo filter helper、字段编号 resolver �
 
 当前能力：
 
-- Redis adapter 支持 string JSON main/subKey 文档、Lua merge/replace、TTL 续期、批量读取和可选 `ClusterSafe`；`redis.Cluster` 的 shard 映射使用 `ScriptClient` 强类型约束，实际 I/O 遇到未装配 client 会返回 `redis.ErrClientNotConfigured`，不再静默 no-op。
+- Redis adapter 支持 string JSON main/subKey 文档、Lua merge/replace、TTL 续期、批量读取和可选 `ClusterSafe`；完整替换会保留空 main 文档并删除新文档未包含的已知 subKey，避免陈旧子文档回流；`redis.Cluster` 的 shard 映射使用 `ScriptClient` 强类型约束，实际 I/O 遇到未装配 client 会返回 `redis.ErrClientNotConfigured`，不再静默 no-op。
 - Mongo adapter 支持 load、batch load、delta update、replace、delete、route cluster 和官方 driver 薄适配层。
 - Fusion strategy 支持 Redis 热写、Mongo miss 回源、Redis 回填、延迟保存任务入队、后台 scheduler 和 Redis 到 Mongo 整文档回写。
 - Mongo JSON/BSON 整文档转换已接入生成 `TypeSpec`：不同 JSON/BSON 字段名、Mongo `_id`、嵌套 struct/map/slice 均通过类型对象中转；真实 Redis/Mongo 集成测试已覆盖 Fusion 回填、延迟回写和生成 reader。

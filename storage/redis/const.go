@@ -7,6 +7,7 @@ const (
 	documentPatchModeReplace        documentPatchMode = "1"
 	documentPatchModePartialReplace documentPatchMode = "2"
 	documentPatchModeOperations     documentPatchMode = "3"
+	documentPatchModeKeepEmpty      documentPatchMode = "4"
 	documentPatchModeTTLOnly        documentPatchMode = "-1"
 )
 

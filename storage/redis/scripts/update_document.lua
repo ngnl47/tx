@@ -5,6 +5,7 @@ local RESULT_PATH_TYPE_MISMATCH = "pt"
 local PATCH_MODE_REPLACE = "1"
 local PATCH_MODE_PARTIAL_REPLACE = "2"
 local PATCH_MODE_OPERATIONS = "3"
+local PATCH_MODE_KEEP_EMPTY = "4"
 local PATCH_MODE_TTL_ONLY = "-1"
 local key = KEYS[1]
 local arg_len = #ARGV
@@ -119,6 +120,7 @@ end
 
 local loaded = {}
 local save = {}
+local keep_empty = {}
 
 local function load(full_key)
   local obj = loaded[full_key]
@@ -151,6 +153,9 @@ for i = 1, arg_len - 2, 3 do
 
   if mode == PATCH_MODE_REPLACE then
     save[full_key] = body
+  elseif mode == PATCH_MODE_KEEP_EMPTY then
+    save[full_key] = body
+    keep_empty[full_key] = true
   elseif mode == PATCH_MODE_PARTIAL_REPLACE then
     local old, ok = load(full_key)
     if not ok then
@@ -211,7 +216,7 @@ for k, v in pairs(save) do
     elseif ttlMode < 0 then
       redis.call("persist", k)
     end
-  elseif v == "{}" then
+  elseif v == "{}" and not keep_empty[k] then
     redis.call("del", k)
   else
     if ttl > 0 then

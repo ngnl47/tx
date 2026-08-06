@@ -24,6 +24,7 @@
 - 非空 `DeltaSet` 在 Redis patch 或 Mongo update 边界若不能生成任何有效写入，返回 `storage.ErrNoEffectiveDeltas`；调用方保留 Store delta 以便定位输入或重试，不能把无效路径当成已保存。
 - `map[string]` 的危险 key 在 Mongo update 边界降级整字段写，不做私有转义，保证数据库中仍能直观看到业务 key。
 - Redis 当前使用 string JSON main/subKey 文档。带 `redis:"subKey:..."` 的字段拆独立 key；main 文档仍是根记录热数据的一部分。
+- 整文档替换或 Mongo 回填即使只包含 subKey 字段，也会在 Redis 中保留 main 文档 `{}`；main key 始终作为 Redis 热记录存在标记，不能因字段拆分而缺失。完整替换时，新的文档未包含的已知 subKey 会一并删除，不能让旧子文档回流。
 - Fusion 延迟保存队列只保存记录定位，到期后读取 Redis 当前热数据并整文档写回 Mongo；它不是保存每一轮字段 diff 的队列。
 - `delaySaveTime` 是 Redis 热数据回写 Mongo 的延迟；`delayDelTime` 是 Redis 热数据 TTL，不表示 Mongo 删除。
 - Redis 批量读取生产默认依赖云代理或单节点的原生 `MGET`；本地原生 Redis Cluster debug 才显式开启 `LoadOptions.ClusterSafe` 按 hash tag 分组。

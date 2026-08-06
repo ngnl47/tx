@@ -36,10 +36,28 @@ func TestUpdateLuaScriptNamesProtocolValues(t *testing.T) {
 		"local PATCH_MODE_REPLACE = \"1\"",
 		"local PATCH_MODE_PARTIAL_REPLACE = \"2\"",
 		"local PATCH_MODE_OPERATIONS = \"3\"",
+		"local PATCH_MODE_KEEP_EMPTY = \"4\"",
 		"local PATCH_MODE_TTL_ONLY = \"-1\"",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("update script missing protocol constant %q", want)
+		}
+	}
+}
+
+func TestUpdateLuaScriptKeepsExplicitEmptyDocuments(t *testing.T) {
+	updateBody, err := luaScripts.ReadFile("scripts/update_document.lua")
+	if err != nil {
+		t.Fatalf("ReadFile update script returned error: %v", err)
+	}
+	text := string(updateBody)
+	for _, want := range []string{
+		"local keep_empty = {}",
+		"keep_empty[full_key] = true",
+		"elseif v == \"{}\" and not keep_empty[k] then",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("update script does not preserve explicit empty document: missing %q", want)
 		}
 	}
 }

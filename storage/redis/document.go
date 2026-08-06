@@ -132,16 +132,35 @@ func appendDocumentPatchValue(patch DocumentPatch, path change.Path, value any, 
 func buildReplaceDocumentPatches(spec meta.TypeSpec, doc map[string]any) map[string]DocumentPatch {
 	out := map[string]DocumentPatch{}
 	for field, value := range doc {
-		suffix, ignore := redisDocumentSuffix(spec, field)
+		goField := redisGoFieldForCanonicalName(spec, field)
+		suffix, ignore := redisDocumentSuffix(spec, goField)
 		if ignore {
 			continue
 		}
 		patch := out[suffix]
 		patch.Mode = documentPatchModeReplace
-		patch.Set = append(patch.Set, PathValue{Path: redisPath(spec, change.Path{field}), Value: value})
+		patch.Set = append(patch.Set, PathValue{Path: redisPath(spec, change.Path{goField}), Value: value})
 		out[suffix] = patch
 	}
+	if _, ok := out[""]; !ok {
+		// 主文档是 Redis 热记录的存在标记；即使业务字段都拆到 subKey，也要保留空对象。
+		out[""] = DocumentPatch{Mode: documentPatchModeKeepEmpty}
+	}
+	for _, suffix := range redisSubKeySuffixes(spec) {
+		if _, ok := out[suffix]; !ok {
+			// 完整替换未包含的已知 subKey 必须删除，避免旧子文档在后续读取时回流。
+			out[suffix] = DocumentPatch{Mode: documentPatchModeReplace}
+		}
+	}
 	return out
+}
+
+func redisGoFieldForCanonicalName(spec meta.TypeSpec, name string) string {
+	field, ok := spec.FieldByJSONName(name)
+	if !ok {
+		return name
+	}
+	return field.Name
 }
 
 func redisPath(spec meta.TypeSpec, path change.Path) change.Path {

@@ -87,6 +87,16 @@ func (spec TypeSpec) FieldByName(name string) (Field, bool) {
 	return Field{}, false
 }
 
+// FieldByJSONName 按公共 JSON 文档字段名查找 Go 字段元数据。
+func (spec TypeSpec) FieldByJSONName(name string) (Field, bool) {
+	for _, field := range spec.Type.Fields {
+		if field.JSONName == name {
+			return field, true
+		}
+	}
+	return Field{}, false
+}
+
 func (spec TypeSpec) JSONName(name string) string {
 	field, ok := spec.FieldByName(name)
 	if !ok || field.JSONName == "" {
