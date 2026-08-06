@@ -3,6 +3,7 @@ package mongodriver
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -81,7 +82,7 @@ func (d Database) FindMany(ctx context.Context, collection string, filter txmong
 	if d.db == nil {
 		return nil, nil, errMongoDatabaseNotConfigured
 	}
-	cursor, err := d.db.Collection(collection).Find(ctx, bson.M{filter.Field: bson.M{"$in": filter.Values}}, options.Find().SetProjection(projection(fields...)))
+	cursor, err := d.db.Collection(collection).Find(ctx, bson.M{filter.Field: bson.M{"$in": filter.Values}}, options.Find().SetProjection(projectionWithRequiredField(fields, filter.Field)))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -96,7 +97,15 @@ func (d Database) FindMany(ctx context.Context, collection string, filter txmong
 		if err := cursor.Decode(&doc); err != nil {
 			return nil, nil, err
 		}
-		for _, index := range positions[doc[filter.Field]] {
+		value, ok := doc[filter.Field]
+		if !ok {
+			return nil, nil, fmt.Errorf("mongo: batch document is missing filter field %q", filter.Field)
+		}
+		indexes, ok := positions[value]
+		if !ok {
+			return nil, nil, fmt.Errorf("mongo: batch document returned unexpected filter value %v for field %q", value, filter.Field)
+		}
+		for _, index := range indexes {
 			docs[index] = doc
 			exists[index] = true
 		}
@@ -116,4 +125,15 @@ func projection(fields ...string) bson.M {
 		out[field] = 1
 	}
 	return out
+}
+
+func projectionWithRequiredField(fields []string, required string) bson.M {
+	if len(fields) == 0 {
+		return nil
+	}
+	projection := projection(fields...)
+	if required != "" {
+		projection[required] = 1
+	}
+	return projection
 }

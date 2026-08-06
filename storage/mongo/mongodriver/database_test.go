@@ -28,3 +28,21 @@ func TestDatabaseReturnsErrorWhenMongoDatabaseMissing(t *testing.T) {
 		t.Fatalf("FindMany error = %v, want missing database error", err)
 	}
 }
+
+func TestProjectionWithRequiredFieldIncludesFilterField(t *testing.T) {
+	fields := []string{"name"}
+	projection := projectionWithRequiredField(fields, "roleId")
+
+	if len(projection) != 2 || projection["name"] != 1 || projection["roleId"] != 1 {
+		t.Fatalf("projection = %#v, want name and roleId", projection)
+	}
+	if len(fields) != 1 || fields[0] != "name" {
+		t.Fatalf("fields = %#v, want original caller fields unchanged", fields)
+	}
+}
+
+func TestProjectionWithRequiredFieldKeepsFullDocumentProjectionUnset(t *testing.T) {
+	if projection := projectionWithRequiredField(nil, "roleId"); projection != nil {
+		t.Fatalf("projection = %#v, want nil for full document", projection)
+	}
+}
