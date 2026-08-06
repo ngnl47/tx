@@ -96,6 +96,44 @@ func TestDeltaSetCompactKeepsLaterChildAfterEarlierAncestor(t *testing.T) {
 	}
 }
 
+func TestDeltaSetCompactKeepsSameDepthWildcardAndKeyedPaths(t *testing.T) {
+	deltas := change.DeltaSet{
+		{
+			Path: deltaPath(intKeyNode(deltaFieldItems, 1001), fieldNode(deltaFieldQty)),
+			Kind: change.DeltaKindSet,
+		},
+		{
+			Path: deltaPath(fieldNode(deltaFieldItems), fieldNode(deltaFieldQty)),
+			Kind: change.DeltaKindSet,
+		},
+	}
+
+	compacted := deltas.Compact()
+
+	if len(compacted) != 2 {
+		t.Fatalf("compacted len = %d, want 2 because same-depth wildcard path is not an ancestor: %#v", len(compacted), compacted)
+	}
+}
+
+func TestDeltaSetCompactLaterWildcardAncestorRemovesKeyedChild(t *testing.T) {
+	deltas := change.DeltaSet{
+		{
+			Path: deltaPath(intKeyNode(deltaFieldItems, 1001), fieldNode(deltaFieldQty)),
+			Kind: change.DeltaKindSet,
+		},
+		{
+			Path: deltaPath(fieldNode(deltaFieldItems)),
+			Kind: change.DeltaKindReplace,
+		},
+	}
+
+	compacted := deltas.Compact()
+
+	if len(compacted) != 1 || compacted[0].Kind != change.DeltaKindReplace {
+		t.Fatalf("compacted = %#v, want later Items replacement only", compacted)
+	}
+}
+
 func TestDeltaSetCompactKeepsSetAfterDeleteOnSamePath(t *testing.T) {
 	deltas := change.DeltaSet{
 		{

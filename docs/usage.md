@@ -426,6 +426,31 @@ data.GDRoleFieldName(field, change.NameBackendMsgpack) // "roleId"
 例如输出文档里的 `"Items.1001.Quantity"` 或 `"Tags.0"` 只是边界层为了 Redis/Mongo/Provider 生成的可读路径；
 `DeltaSet` 内部保存的是字段编号、map key 或 slice index 组成的结构化路径，不会在热路径上常驻这些拼接字符串。
 
+### 性能基线
+
+涉及 `DeltaSet`、集合递归、批量读取、Redis/Mongo 写入或状态刷盘的热点路径改动前后，都应在同一台机器、同一 Go 版本下运行 benchmark，并同时查看耗时和分配次数。不要用不同机器的绝对 ns/op 数值作结论。
+
+`tx` 提供 `Compact()` 的隔离基线，分别覆盖重复普通字段、256 个 map 子字段和 256 个子路径后整字段覆盖：
+
+```sh
+cd /Users/a47/workspace/tx
+env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp \
+  /Users/a47/sdk/go1.25.6/bin/go test ./tests -run '^$' \
+  -bench '^BenchmarkDeltaSetCompact$' -benchmem -count=5
+```
+
+`txgen` 还提供生成 Store 的端到端基线，用来比较 snapshot diff 与 Store 路径，以及字段名投影：
+
+```sh
+cd /Users/a47/workspace/txgen
+env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp \
+  /Users/a47/sdk/go1.25.6/bin/go test ./tests -run '^$' \
+  -bench '^(BenchmarkGeneratedPersistenceModes|BenchmarkFieldNameDocument)$' \
+  -benchmem -count=5
+```
+
+例如将 `Compact()` 的实现从双层路径比较改成索引结构前，先记录 `MapItemPaths256` 与 `AncestorReplace256` 的基线；改动后只有在这两类负载的耗时或分配确有收益，并且没有牺牲 `RepeatedField64` 的常见路径时，才引入更复杂的结构。
+
 ### 常用业务写法
 
 最常见的写法是直接操作数据对象。`GD*` 会懒加载自己的 Store，并代理到 Store setter：

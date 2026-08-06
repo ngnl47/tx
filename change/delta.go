@@ -4,6 +4,8 @@ import "strconv"
 
 const MaxDeltaDepth = 4
 
+const compactIndexedThreshold = 128
+
 // KeyKind 描述 Delta 路径节点上的集合 key 类型。
 type KeyKind uint8
 
@@ -220,6 +222,13 @@ func (ds DeltaSet) Compact() DeltaSet {
 	if len(ds) <= 1 {
 		return ds
 	}
+	if len(ds) <= compactIndexedThreshold || ds.hasLaterRootAncestor() {
+		return ds.compactQuadratic()
+	}
+	return ds.compactIndexed()
+}
+
+func (ds DeltaSet) compactQuadratic() DeltaSet {
 	for i := len(ds) - 1; i > 0; i-- {
 		if ds[i].Path.Depth == 0 {
 			continue
@@ -233,6 +242,114 @@ func (ds DeltaSet) Compact() DeltaSet {
 			}
 		}
 	}
+	return compactDeltaEntries(ds)
+}
+
+// compactIndexed 对较大的 DeltaSet 建立后发生路径索引。路径最大深度固定为 4，
+// 因此每条旧路径只需查询自身和不超过 15 个可能祖先，不再两两比较全部条目。
+func (ds DeltaSet) compactIndexed() DeltaSet {
+	laterPaths := make(map[uint64]int, len(ds))
+	next := make([]int, len(ds))
+	for i := len(ds) - 1; i >= 0; i-- {
+		path := ds[i].Path
+		if path.Depth == 0 {
+			continue
+		}
+		if compactPathCoveredByLater(path, ds, laterPaths, next) {
+			ds[i].Path.Depth = 0
+			continue
+		}
+		hash := compactPathHash(path)
+		next[i] = laterPaths[hash]
+		laterPaths[hash] = i + 1
+	}
+	return compactDeltaEntries(ds)
+}
+
+func (ds DeltaSet) hasLaterRootAncestor() bool {
+	for i := 1; i < len(ds); i++ {
+		path := ds[i].Path
+		if path.Depth != 1 || path.Nodes[0].Key.Kind != KeyNone {
+			continue
+		}
+		for j := 0; j < i; j++ {
+			if path.PrefixOf(ds[j].Path) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func compactPathCoveredByLater(path DeltaPath, deltas DeltaSet, laterPaths map[uint64]int, next []int) bool {
+	depth := int(path.Depth)
+	if compactPathExists(path, deltas, laterPaths, next) {
+		return true
+	}
+	for prefixDepth := 1; prefixDepth < depth; prefixDepth++ {
+		for wildcardMask := 0; wildcardMask < 1<<prefixDepth; wildcardMask++ {
+			candidate := compactPathPrefix(path, prefixDepth, wildcardMask)
+			if compactPathExists(candidate, deltas, laterPaths, next) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func compactPathExists(path DeltaPath, deltas DeltaSet, laterPaths map[uint64]int, next []int) bool {
+	for index := laterPaths[compactPathHash(path)]; index != 0; index = next[index-1] {
+		if deltas[index-1].Path.Equal(path) {
+			return true
+		}
+	}
+	return false
+}
+
+// compactPathPrefix 只复制有效路径节点；wildcardMask 的位置会把集合 key
+// 归一化为 KeyNone，用于匹配严格祖先路径的“任意集合元素”语义。
+func compactPathPrefix(path DeltaPath, depth int, wildcardMask int) DeltaPath {
+	key := DeltaPath{Depth: uint8(depth)}
+	for i := 0; i < depth; i++ {
+		node := path.Nodes[i]
+		if wildcardMask&(1<<i) != 0 {
+			node.Key = PathKey{}
+		}
+		key.Nodes[i] = node
+	}
+	return key
+}
+
+func compactPathHash(path DeltaPath) uint64 {
+	const (
+		offset uint64 = 1469598103934665603
+		prime  uint64 = 1099511628211
+	)
+	hash := offset
+	mix := func(value uint64) {
+		hash ^= value
+		hash *= prime
+	}
+	mix(uint64(path.Depth))
+	for i := 0; i < int(path.Depth); i++ {
+		node := path.Nodes[i]
+		mix(uint64(node.Field))
+		mix(uint64(node.Key.Kind))
+		switch node.Key.Kind {
+		case KeyInt:
+			mix(uint64(node.Key.Int))
+		case KeyUint:
+			mix(node.Key.Uint)
+		case KeyString:
+			for j := 0; j < len(node.Key.Str); j++ {
+				mix(uint64(node.Key.Str[j]))
+			}
+		}
+	}
+	return hash
+}
+
+func compactDeltaEntries(ds DeltaSet) DeltaSet {
 	write := 0
 	for read := 0; read < len(ds); read++ {
 		if ds[read].Path.Depth == 0 {
