@@ -56,7 +56,10 @@ func (a *Adapter) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec
 	if len(deltas) == 0 {
 		return nil
 	}
-	patches := BuildDocumentPatchesWithDeltas(spec, deltas, resolver, values)
+	patches, err := BuildDocumentPatchesWithDeltas(spec, deltas, resolver, values)
+	if err != nil {
+		return err
+	}
 	if len(patches) == 0 {
 		return nil
 	}

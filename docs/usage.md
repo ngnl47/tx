@@ -17,6 +17,7 @@
 - 当前标脏主线是 `change.DeltaSet`。内部保存字段编号和强类型 key/index；`"Items.1001.Quantity"` 这类字符串只在输出边界临时生成。
 - Store 拦截模式和 snapshot diff 模式都保留，且同一变更周期互斥。高频大集合优先 Store wrapper；低频请求可使用 `BeginChange/SaveChange` 允许直接改 public field。
 - `DeltaSet` 不保存字段值；Redis、Mongo、Fusion 和 Provider 在边界通过生成 Store 读取当前 `GD*` 最终值。
+- 存储边界必须解析到当前字段值：`DeltaValue(path)` 返回 `(nil, true)` 表示业务要写入空值；返回 `(_, false)` 则保存失败并保留 delta，绝不把解析失败静默写成 `null`。
 - `map[string]` 的危险 key 在 Mongo update 边界降级整字段写，不做私有转义，保证数据库中仍能直观看到业务 key。
 - Redis 当前使用 string JSON main/subKey 文档。带 `redis:"subKey:..."` 的字段拆独立 key；main 文档仍是根记录热数据的一部分。
 - Fusion 延迟保存队列只保存记录定位，到期后读取 Redis 当前热数据并整文档写回 Mongo；它不是保存每一轮字段 diff 的队列。
@@ -1821,6 +1822,8 @@ err := storage.Save(ctx, mongoCluster, role.Store())
 ```
 
 对应 Mongo update 会写 `labels` 的完整当前 map，而不是写 `labels.foo.bar`。这样 Mongo 中保存的 key 仍然是业务可读的 `foo.bar`。
+如果此时生成 Store 无法读取 `Labels` 的完整当前值，保存会直接返回错误；不会以 `null` 替代整张 map。
+同一轮内即使还修改了 `Labels["safe"]`，Mongo 也只写一次完整 `labels`，避免 `$set` 同时出现 `labels` 与 `labels.safe` 的父子路径冲突。
 
 ### 读取示例
 

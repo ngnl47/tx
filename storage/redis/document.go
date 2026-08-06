@@ -39,7 +39,7 @@ type documentPatchOperation struct {
 
 // BuildDocumentPatchesWithDeltas 按 Redis string/subKey 模型把 DeltaSet
 // 分组成 JSON 文档 patch。Redis 边界当前选择 JSON 字段名。
-func BuildDocumentPatchesWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, resolver change.FieldNameResolver, values change.DeltaValueResolver) map[string]DocumentPatch {
+func BuildDocumentPatchesWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, resolver change.FieldNameResolver, values change.DeltaValueResolver) (map[string]DocumentPatch, error) {
 	out := map[string]DocumentPatch{}
 	for _, delta := range deltas.Compact() {
 		goPath := delta.Path.FullPath(resolver, change.NameBackendGo)
@@ -68,7 +68,10 @@ func BuildDocumentPatchesWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, 
 			patch.operations = append(patch.operations, documentPatchOperation{Kind: "delete", Path: jsonPath})
 			patch.diffUpdate = true
 		case change.DeltaKindReplace:
-			value := resolveDeltaValue(values, delta.Path)
+			value, err := resolveDeltaValue(values, delta.Path, jsonPath)
+			if err != nil {
+				return nil, err
+			}
 			if redisFullUpdateField(spec, goField) && suffix != "" && len(jsonPath) == 1 {
 				patch = appendDocumentPatchValue(patch, jsonPath, value, goField, suffix, spec)
 			} else {
@@ -77,19 +80,26 @@ func BuildDocumentPatchesWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, 
 				patch.Mode = documentPatchModeOperations
 			}
 		default:
-			patch = appendDocumentPatchValue(patch, jsonPath, resolveDeltaValue(values, delta.Path), goField, suffix, spec)
+			value, err := resolveDeltaValue(values, delta.Path, jsonPath)
+			if err != nil {
+				return nil, err
+			}
+			patch = appendDocumentPatchValue(patch, jsonPath, value, goField, suffix, spec)
 		}
 		out[suffix] = patch
 	}
-	return out
+	return out, nil
 }
 
-func resolveDeltaValue(values change.DeltaValueResolver, path change.DeltaPath) any {
+func resolveDeltaValue(values change.DeltaValueResolver, path change.DeltaPath, display change.Path) (any, error) {
 	if values == nil {
-		return nil
+		return nil, fmt.Errorf("redis: cannot resolve current value for path %s", display)
 	}
-	value, _ := values.DeltaValue(path)
-	return value
+	value, ok := values.DeltaValue(path)
+	if !ok {
+		return nil, fmt.Errorf("redis: cannot resolve current value for path %s", display)
+	}
+	return value, nil
 }
 
 func appendDocumentPatchSet(patch DocumentPatch, path change.Path, value any, kind string) DocumentPatch {

@@ -19,7 +19,10 @@ func TestRedisBuildDocumentPatchesWithDeltasUsesJSONNames(t *testing.T) {
 		change.NameBackendJSON: {deltaFieldName: "roleName", deltaFieldItems: "items"},
 	}
 
-	patches := txredis.BuildDocumentPatchesWithDeltas(redisPatchSpec(), deltas, resolver, testDeltaValueResolver{deltaFieldName: "alice"})
+	patches, err := txredis.BuildDocumentPatchesWithDeltas(redisPatchSpec(), deltas, resolver, testDeltaValueResolver{deltaFieldName: "alice"})
+	if err != nil {
+		t.Fatalf("BuildDocumentPatchesWithDeltas returned error: %v", err)
+	}
 
 	if patches[""].Set[0].Path.String() != "roleName" || patches[""].Set[0].Value != "alice" {
 		t.Fatalf("main patch = %#v", patches[""])
@@ -29,6 +32,35 @@ func TestRedisBuildDocumentPatchesWithDeltasUsesJSONNames(t *testing.T) {
 	}
 	if _, ok := patches["items"].Set[0].Value.(map[string]any); !ok {
 		t.Fatalf("items clear value = %#v, want empty document", patches["items"].Set[0].Value)
+	}
+}
+
+func TestRedisBuildDocumentPatchesWithDeltasRejectsMissingCurrentValue(t *testing.T) {
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	resolver := testFieldNameResolver{
+		change.NameBackendGo:   {deltaFieldName: "Name"},
+		change.NameBackendJSON: {deltaFieldName: "name"},
+	}
+	_, err := txredis.BuildDocumentPatchesWithDeltas(redisPatchSpec(), deltas, resolver, nil)
+	if err == nil || !strings.Contains(err.Error(), "name") {
+		t.Fatalf("BuildDocumentPatchesWithDeltas error = %v, want unresolved name error", err)
+	}
+}
+
+func TestRedisBuildDocumentPatchesWithDeltasAllowsResolvedNilValue(t *testing.T) {
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	resolver := testFieldNameResolver{
+		change.NameBackendGo:   {deltaFieldName: "Name"},
+		change.NameBackendJSON: {deltaFieldName: "name"},
+	}
+	patches, err := txredis.BuildDocumentPatchesWithDeltas(redisPatchSpec(), deltas, resolver, change.DeltaValueResolverFunc(func(change.DeltaPath) (any, bool) {
+		return nil, true
+	}))
+	if err != nil {
+		t.Fatalf("BuildDocumentPatchesWithDeltas returned error: %v", err)
+	}
+	if got := patches[""].Set[0].Value; got != nil {
+		t.Fatalf("patch value = %#v, want nil", got)
 	}
 }
 

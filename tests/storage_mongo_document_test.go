@@ -2,6 +2,7 @@ package tests
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ngnl47/tx/change"
@@ -55,6 +56,35 @@ func TestMongoBuildUpdateDocumentWithDeltasRejectsImmutableID(t *testing.T) {
 	}
 }
 
+func TestMongoBuildUpdateDocumentWithDeltasRejectsMissingCurrentValue(t *testing.T) {
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	resolver := testFieldNameResolver{
+		change.NameBackendGo:   {deltaFieldName: "Name"},
+		change.NameBackendBSON: {deltaFieldName: "name"},
+	}
+	_, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver, nil)
+	if err == nil || !strings.Contains(err.Error(), "name") {
+		t.Fatalf("BuildUpdateDocumentWithDeltas error = %v, want unresolved name error", err)
+	}
+}
+
+func TestMongoBuildUpdateDocumentWithDeltasAllowsResolvedNilValue(t *testing.T) {
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	resolver := testFieldNameResolver{
+		change.NameBackendGo:   {deltaFieldName: "Name"},
+		change.NameBackendBSON: {deltaFieldName: "name"},
+	}
+	update, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver, change.DeltaValueResolverFunc(func(change.DeltaPath) (any, bool) {
+		return nil, true
+	}))
+	if err != nil {
+		t.Fatalf("BuildUpdateDocumentWithDeltas returned error: %v", err)
+	}
+	if got := update["$set"].(map[string]any)["name"]; got != nil {
+		t.Fatalf("update value = %#v, want nil", got)
+	}
+}
+
 func TestMongoBuildUpdateDocumentWithDeltasDowngradesUnsafeStringMapKey(t *testing.T) {
 	const fieldLabels change.FieldID = 9
 	deltas := change.DeltaSet{
@@ -88,5 +118,79 @@ func TestMongoBuildUpdateDocumentWithDeltasDowngradesUnsafeStringMapKey(t *testi
 	}
 	if _, exists := setDoc["labels.foo.bar"]; exists {
 		t.Fatalf("unsafe key produced dotted Mongo path: %#v", update)
+	}
+}
+
+func TestMongoBuildUpdateDocumentWithDeltasKeepsSafeAncestorForNestedUnsafeStringMapKey(t *testing.T) {
+	const (
+		fieldItems change.FieldID = iota + 20
+		fieldLabels
+		fieldValue
+	)
+	deltas := change.DeltaSet{
+		{
+			Path: deltaPath(
+				change.PathNode{Field: fieldItems, Key: change.PathKey{Kind: change.KeyInt, Int: 1001}},
+				change.PathNode{Field: fieldLabels, Key: change.PathKey{Kind: change.KeyString, Str: "safe"}},
+				change.PathNode{Field: fieldValue},
+			),
+			Kind: change.DeltaKindSet,
+		},
+		{
+			Path: deltaPath(
+				change.PathNode{Field: fieldItems, Key: change.PathKey{Kind: change.KeyInt, Int: 1001}},
+				change.PathNode{Field: fieldLabels, Key: change.PathKey{Kind: change.KeyString, Str: "foo.bar"}},
+				change.PathNode{Field: fieldValue},
+			),
+			Kind: change.DeltaKindSet,
+		},
+	}
+	resolver := testFieldNameResolver{
+		change.NameBackendGo: {
+			fieldItems: "Items", fieldLabels: "Labels", fieldValue: "Value",
+		},
+		change.NameBackendBSON: {
+			fieldItems: "items", fieldLabels: "labels", fieldValue: "value",
+		},
+	}
+	fullLabels := map[string]map[string]int{
+		"foo.bar": {"value": 7},
+		"safe":    {"value": 9},
+	}
+	values := change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
+		want := deltaPath(
+			change.PathNode{Field: fieldItems, Key: change.PathKey{Kind: change.KeyInt, Int: 1001}},
+			change.PathNode{Field: fieldLabels},
+		)
+		if path.Equal(want) {
+			return fullLabels, true
+		}
+		safePath := deltaPath(
+			change.PathNode{Field: fieldItems, Key: change.PathKey{Kind: change.KeyInt, Int: 1001}},
+			change.PathNode{Field: fieldLabels, Key: change.PathKey{Kind: change.KeyString, Str: "safe"}},
+			change.PathNode{Field: fieldValue},
+		)
+		if path.Equal(safePath) {
+			return int64(9), true
+		}
+		return nil, false
+	})
+
+	update, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver, values)
+	if err != nil {
+		t.Fatalf("BuildUpdateDocumentWithDeltas returned error: %v", err)
+	}
+	setDoc := update["$set"].(map[string]any)
+	if got := setDoc["items.1001.labels"]; !reflect.DeepEqual(got, fullLabels) {
+		t.Fatalf("nested labels fallback = %#v, want full map; update=%#v", got, update)
+	}
+	if _, exists := setDoc["items"]; exists {
+		t.Fatalf("nested unsafe key replaced root field: %#v", update)
+	}
+	if _, exists := setDoc["items.1001.labels.foo.bar.value"]; exists {
+		t.Fatalf("unsafe key produced dotted Mongo path: %#v", update)
+	}
+	if _, exists := setDoc["items.1001.labels.safe.value"]; exists {
+		t.Fatalf("whole map fallback must remove sibling child updates: %#v", update)
 	}
 }

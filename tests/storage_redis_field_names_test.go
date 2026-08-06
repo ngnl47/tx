@@ -25,7 +25,10 @@ func TestRedisPatchMapsGoFieldNameToRedisName(t *testing.T) {
 		change.NameBackendJSON: {1: "p"},
 	})
 
-	patches := redis.BuildDocumentPatchesWithDeltas(spec, deltas, resolver, testDeltaValueResolver{1: int64(100)})
+	patches, err := redis.BuildDocumentPatchesWithDeltas(spec, deltas, resolver, testDeltaValueResolver{1: int64(100)})
+	if err != nil {
+		t.Fatalf("BuildDocumentPatchesWithDeltas returned error: %v", err)
+	}
 	patch := patches[""]
 	if len(patch.Set) != 1 {
 		t.Fatalf("patch.Set length = %d, want 1", len(patch.Set))
@@ -54,12 +57,15 @@ func TestRedisPatchUsesSubKeyAndRedisName(t *testing.T) {
 		change.NameBackendJSON: {1: "it", 2: "quantity"},
 	})
 
-	patches := redis.BuildDocumentPatchesWithDeltas(spec, deltas, resolver, change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
+	patches, err := redis.BuildDocumentPatchesWithDeltas(spec, deltas, resolver, change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
 		if path.Equal(deltaPath(intKeyNode(1, 1001), fieldNode(2))) {
 			return int64(9), true
 		}
 		return nil, false
 	}))
+	if err != nil {
+		t.Fatalf("BuildDocumentPatchesWithDeltas returned error: %v", err)
+	}
 	patch := patches["bag"]
 	if len(patch.Set) != 1 {
 		t.Fatalf("patch.Set length = %d, want 1", len(patch.Set))
