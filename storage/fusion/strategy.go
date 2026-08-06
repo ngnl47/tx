@@ -116,7 +116,7 @@ func (s Strategy) LoadDocumentWithOptions(ctx context.Context, spec meta.TypeSpe
 	if err != nil {
 		return nil, false, err
 	}
-	doc, exists, err := redisLoader.LoadDocument(ctx, spec, key, fields...)
+	doc, exists, err := loadFusionDocument(ctx, redisLoader, "redis document loader", spec, key, fields...)
 	if err != nil {
 		return nil, false, err
 	}
@@ -124,7 +124,7 @@ func (s Strategy) LoadDocumentWithOptions(ctx context.Context, spec meta.TypeSpe
 		return doc, true, nil
 	}
 	if options.DontLoadToRedis {
-		return s.MongoLoader.LoadDocument(ctx, spec, key, fields...)
+		return loadFusionDocument(ctx, s.MongoLoader, "mongo document loader", spec, key, fields...)
 	}
 	return s.loadMongoDocumentAndBackfillRedis(ctx, spec, key, fields...)
 }
@@ -152,8 +152,8 @@ func (s Strategy) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSp
 		if err != nil {
 			return nil, nil, err
 		}
-		if len(redisDocs) != len(keys) || len(redisExists) != len(keys) {
-			return nil, nil, fmt.Errorf("fusion: redis batch loader returned docs=%d exists=%d for %d keys", len(redisDocs), len(redisExists), len(keys))
+		if err := validateFusionDocumentResults("redis batch loader", redisDocs, redisExists, len(keys)); err != nil {
+			return nil, nil, err
 		}
 		copy(docs, redisDocs)
 		copy(exists, redisExists)
@@ -224,7 +224,7 @@ func (s Strategy) loadMongoMissingDocuments(ctx context.Context, spec meta.TypeS
 	mongoBatch, ok := s.MongoLoader.(storage.BatchDocumentLoader)
 	if !ok {
 		for pos, key := range missingKeys {
-			doc, found, err := s.MongoLoader.LoadDocument(ctx, spec, key, fields...)
+			doc, found, err := loadFusionDocument(ctx, s.MongoLoader, "mongo document loader", spec, key, fields...)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -238,8 +238,8 @@ func (s Strategy) loadMongoMissingDocuments(ctx context.Context, spec meta.TypeS
 	if err != nil {
 		return nil, nil, err
 	}
-	if len(mongoDocs) != len(missingKeys) || len(mongoExists) != len(missingKeys) {
-		return nil, nil, fmt.Errorf("fusion: mongo batch loader returned docs=%d exists=%d for %d keys", len(mongoDocs), len(mongoExists), len(missingKeys))
+	if err := validateFusionDocumentResults("mongo batch loader", mongoDocs, mongoExists, len(missingKeys)); err != nil {
+		return nil, nil, err
 	}
 	for pos, idx := range missingIndexes {
 		docs[idx] = mongoDocs[pos]
@@ -269,8 +269,8 @@ func (s Strategy) loadMissingDocumentsWithBatchBackfill(ctx context.Context, spe
 	if err != nil {
 		return err
 	}
-	if len(mongoDocs) != len(missingKeys) || len(mongoExists) != len(missingKeys) {
-		return fmt.Errorf("fusion: mongo batch loader returned docs=%d exists=%d for %d keys", len(mongoDocs), len(mongoExists), len(missingKeys))
+	if err := validateFusionDocumentResults("mongo batch loader", mongoDocs, mongoExists, len(missingKeys)); err != nil {
+		return err
 	}
 	for pos, idx := range missingIndexes {
 		doc, found, err := s.backfillMongoDocumentAfterRedisCheck(ctx, spec, missingKeys[pos], mongoDocs[pos], mongoExists[pos], fields...)
@@ -302,7 +302,7 @@ func (s Strategy) backfillMongoDocumentAfterRedisCheck(ctx context.Context, spec
 	defer func() { releaseRecordLock(ctx, lock, &err) }()
 
 	if redisLoader := s.redisLoader(); !isNilFusionDependency(redisLoader) {
-		document, exists, err = redisLoader.LoadDocument(ctx, spec, key, fields...)
+		document, exists, err = loadFusionDocument(ctx, redisLoader, "redis document loader", spec, key, fields...)
 		if err != nil {
 			return nil, false, err
 		}
@@ -310,11 +310,11 @@ func (s Strategy) backfillMongoDocumentAfterRedisCheck(ctx context.Context, spec
 			return document, true, nil
 		}
 	}
+	if err := storage.ValidateDocumentResult(mongoDocument, mongoExists); err != nil {
+		return nil, false, fmt.Errorf("fusion: mongo batch loader: %w", err)
+	}
 	if !mongoExists {
 		return nil, false, nil
-	}
-	if mongoDocument == nil {
-		return nil, false, fmt.Errorf("fusion: mongo batch loader returned an existing document without data")
 	}
 	ttl := int64(spec.Storage.DelayDelete.Duration.Seconds())
 	if ttl <= 0 {
@@ -336,7 +336,7 @@ func (s Strategy) loadMongoDocumentAndBackfillRedis(ctx context.Context, spec me
 		if !isNilFusionDependency(s.redisReplacer()) {
 			return nil, false, fmt.Errorf("fusion: redis backfill requires ReplaceDocumentWithOptions to set delayDelTime TTL")
 		}
-		return s.MongoLoader.LoadDocument(ctx, spec, key, fields...)
+		return loadFusionDocument(ctx, s.MongoLoader, "mongo document loader", spec, key, fields...)
 	}
 	locker := s.redisLocker()
 	if isNilFusionDependency(locker) {
@@ -352,7 +352,7 @@ func (s Strategy) loadMongoDocumentAndBackfillRedis(ctx context.Context, spec me
 	defer func() { releaseRecordLock(ctx, lock, &err) }()
 
 	if redisLoader := s.redisLoader(); !isNilFusionDependency(redisLoader) {
-		document, exists, err = redisLoader.LoadDocument(ctx, spec, key, fields...)
+		document, exists, err = loadFusionDocument(ctx, redisLoader, "redis document loader", spec, key, fields...)
 		if err != nil {
 			return nil, false, err
 		}
@@ -364,7 +364,7 @@ func (s Strategy) loadMongoDocumentAndBackfillRedis(ctx context.Context, spec me
 	if ttl <= 0 {
 		return nil, false, fmt.Errorf("fusion: storage delayDelTime must be greater than 0 for redis backfill")
 	}
-	document, exists, err = s.MongoLoader.LoadDocument(ctx, spec, key)
+	document, exists, err = loadFusionDocument(ctx, s.MongoLoader, "mongo document loader", spec, key)
 	if err != nil || !exists {
 		return document, exists, err
 	}
@@ -396,7 +396,7 @@ func (s Strategy) loadRedisDocumentsOneByOne(ctx context.Context, spec meta.Type
 			*missingKeys = append(*missingKeys, key)
 			continue
 		}
-		doc, found, err := loader.LoadDocument(ctx, spec, key, fields...)
+		doc, found, err := loadFusionDocument(ctx, loader, "redis document loader", spec, key, fields...)
 		if err != nil {
 			return err
 		}
@@ -420,6 +420,27 @@ func (s Strategy) redisLoader() storage.DocumentLoader {
 		return nil
 	}
 	return loader
+}
+
+func loadFusionDocument(ctx context.Context, loader storage.DocumentLoader, source string, spec meta.TypeSpec, key storage.RecordKey, fields ...string) (map[string]any, bool, error) {
+	document, exists, err := loader.LoadDocument(ctx, spec, key, fields...)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := storage.ValidateDocumentResult(document, exists); err != nil {
+		return nil, false, fmt.Errorf("fusion: %s: %w", source, err)
+	}
+	return document, exists, nil
+}
+
+func validateFusionDocumentResults(source string, documents []map[string]any, exists []bool, expected int) error {
+	if len(documents) != expected || len(exists) != expected {
+		return fmt.Errorf("fusion: %s returned docs=%d exists=%d for %d keys", source, len(documents), len(exists), expected)
+	}
+	if err := storage.ValidateDocumentResults(documents, exists); err != nil {
+		return fmt.Errorf("fusion: %s: %w", source, err)
+	}
+	return nil
 }
 
 func (s Strategy) redisReplacerWithOptions() storage.DocumentReplacerWithOptions {

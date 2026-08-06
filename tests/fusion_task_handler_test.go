@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -129,6 +130,29 @@ func TestFusionDelayTaskHandlerSkipsMissingRedisDocument(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("HandleDelayTask returned error: %v", err)
+	}
+	if mongo.calls != 0 {
+		t.Fatalf("mongo calls = %d, want 0", mongo.calls)
+	}
+}
+
+func TestFusionDelayTaskHandlerRejectsInconsistentRedisDocument(t *testing.T) {
+	registry := meta.NewRegistry()
+	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Package: "data", Name: "GDRole"}}}
+	if err := registry.RegisterType(spec); err != nil {
+		t.Fatalf("RegisterType returned error: %v", err)
+	}
+	redis := &recordingDocumentLoader{doc: map[string]any{"name": "unexpected"}}
+	mongo := &recordingDocumentReplacer{}
+	handler := fusion.NewDelayTaskHandler(registry, redis, mongo)
+
+	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
+		Type:   "data.GDRole",
+		ID:     int64(1001),
+		Action: string(fusion.DelayedSave),
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing document with data") {
+		t.Fatalf("HandleDelayTask error = %v, want inconsistent document error", err)
 	}
 	if mongo.calls != 0 {
 		t.Fatalf("mongo calls = %d, want 0", mongo.calls)

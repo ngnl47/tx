@@ -361,6 +361,22 @@ func TestMongoAdapterRejectsMissingDocumentForExistingResult(t *testing.T) {
 	}
 }
 
+func TestMongoAdapterRejectsDataForMissingResult(t *testing.T) {
+	client := &recordingMongoUpdater{doc: map[string]any{"p": int64(9)}}
+	adapter := txmongo.NewAdapter(client)
+
+	_, exists, err := adapter.LoadDocument(context.Background(), mongoDocumentSpec(), storage.RecordKey{ID: int64(1001)})
+	if err == nil {
+		t.Fatal("LoadDocument returned nil error for missing result with data")
+	}
+	if exists {
+		t.Fatal("LoadDocument exists = true, want false for an invalid missing result")
+	}
+	if !strings.Contains(err.Error(), "missing document with data") {
+		t.Fatalf("LoadDocument error = %v, want missing document context", err)
+	}
+}
+
 func TestMongoAdapterRejectsMissingBatchDocumentForExistingResult(t *testing.T) {
 	client := &recordingMongoUpdater{
 		manyDocs:   []map[string]any{nil},
@@ -374,6 +390,22 @@ func TestMongoAdapterRejectsMissingBatchDocumentForExistingResult(t *testing.T) 
 	}
 	if !strings.Contains(err.Error(), "existing document") || !strings.Contains(err.Error(), "index 0") {
 		t.Fatalf("LoadDocuments error = %v, want existing document and index context", err)
+	}
+}
+
+func TestMongoAdapterRejectsBatchDataForMissingResult(t *testing.T) {
+	client := &recordingMongoUpdater{
+		manyDocs:   []map[string]any{{"p": int64(9)}},
+		manyExists: []bool{false},
+	}
+	adapter := txmongo.NewAdapter(client)
+
+	_, _, err := adapter.LoadDocuments(context.Background(), mongoDocumentSpec(), []storage.RecordKey{{ID: int64(1001)}})
+	if err == nil {
+		t.Fatal("LoadDocuments returned nil error for missing batch result with data")
+	}
+	if !strings.Contains(err.Error(), "missing document with data") {
+		t.Fatalf("LoadDocuments error = %v, want missing document context", err)
 	}
 }
 

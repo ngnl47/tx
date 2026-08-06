@@ -19,6 +19,7 @@
 - `DeltaSet` 不保存字段值；Redis、Mongo、Fusion 和 Provider 在边界通过生成 Store 读取当前 `GD*` 最终值。
 - 存储边界必须解析到当前字段值：`DeltaValue(path)` 返回 `(nil, true)` 表示业务要写入空值；返回 `(_, false)` 则保存失败并保留 delta，绝不把解析失败静默写成 `null`。Fusion 延迟回写会原样保留这类业务空值；字段删除必须使用 `DeltaDelete` / `Document.Clear`，不能把 map 中的 `nil` 当删除标记。
 - 外部协议的返回值必须有明确语义：只有已定义的成功、冲突或未命中值可以继续处理；未知 Lua 返回值、损坏 Redis JSON、空锁或其他不完整响应都会返回错误，绝不默认成功或静默丢弃。
+- `DocumentLoader` 的单条结果必须成对一致：`exists == true` 时文档非 `nil`，`exists == false` 时文档必须为 `nil`；批量读取逐项遵守同一规则。自定义 adapter 返回矛盾组合会被 runtime 拒绝，不会被当成缓存未命中继续回源。
 - `map[string]` 的危险 key 在 Mongo update 边界降级整字段写，不做私有转义，保证数据库中仍能直观看到业务 key。
 - Redis 当前使用 string JSON main/subKey 文档。带 `redis:"subKey:..."` 的字段拆独立 key；main 文档仍是根记录热数据的一部分。
 - Fusion 延迟保存队列只保存记录定位，到期后读取 Redis 当前热数据并整文档写回 Mongo；它不是保存每一轮字段 diff 的队列。
@@ -1800,6 +1801,12 @@ Redis 的部分读取按 main/subKey 的 key 粒度优化：当请求字段位�
 
 完整文档经过 `omitempty` 编码时，零值字段可能在 Mongo 或 Fusion 回填后的 Redis 文档中不存在；生成的 GD
 对象解码后仍得到对应 Go 零值。不要把“物理文档必须出现所有零值字段”当作存储契约。
+
+### GD 字段演进约定
+
+持久化 GD 的字段只新增，不删除、不改名、不改变 Go 类型，也不改变 `json`、`bson`、`msgpack` 字段名。需要
+迁移时，输入定义保留旧字段并用注释标记废弃，由业务在加载或写入流程中完成迁移；框架不自动迁移，也不校验
+历史文档是否缺少新增字段。旧文档缺少新增字段时，Go 解码结果自然为该字段的零值。
 
 这些接口是 Store 读取、Fusion 回源、Redis 热数据回填和延迟保存回写的共同边界。具体后端仍负责把
 `RecordKey` 转成自己的底层定位方式，例如 Redis key/hash tag 或 Mongo filter。

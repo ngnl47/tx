@@ -126,11 +126,14 @@ func (a *Adapter) LoadDocument(ctx context.Context, spec meta.TypeSpec, key stor
 		return nil, false, unsupportedClientError("Finder")
 	}
 	document, exists, err := finder.FindOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), mongoProjectionFields(spec, fields)...)
-	if err != nil || !exists {
-		return document, exists, err
+	if err != nil {
+		return nil, false, err
 	}
-	if document == nil {
-		return nil, false, fmt.Errorf("mongo: finder returned an existing document without data")
+	if err := storage.ValidateDocumentResult(document, exists); err != nil {
+		return nil, false, fmt.Errorf("mongo: finder: %w", err)
+	}
+	if !exists {
+		return nil, false, nil
 	}
 	canonical, err := canonicalDocumentFromBSON(spec, document, fields)
 	if err != nil {
@@ -157,12 +160,12 @@ func (a *Adapter) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []
 		if len(documents) != len(keys) || len(exists) != len(keys) {
 			return nil, nil, fmt.Errorf("mongo: batch finder returned documents=%d exists=%d for keys=%d", len(documents), len(exists), len(keys))
 		}
+		if err := storage.ValidateDocumentResults(documents, exists); err != nil {
+			return nil, nil, fmt.Errorf("mongo: batch finder: %w", err)
+		}
 		for i, found := range exists {
 			if !found {
 				continue
-			}
-			if documents[i] == nil {
-				return nil, nil, fmt.Errorf("mongo: batch finder returned an existing document without data at index %d", i)
 			}
 			canonical, err := canonicalDocumentFromBSON(spec, documents[i], fields)
 			if err != nil {
@@ -181,10 +184,10 @@ func (a *Adapter) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []
 		if err != nil {
 			return nil, nil, err
 		}
+		if err := storage.ValidateDocumentResult(doc, found); err != nil {
+			return nil, nil, fmt.Errorf("mongo: finder result at index %d: %w", i, err)
+		}
 		if found {
-			if doc == nil {
-				return nil, nil, fmt.Errorf("mongo: finder returned an existing document without data at index %d", i)
-			}
 			doc, err = canonicalDocumentFromBSON(spec, doc, fields)
 			if err != nil {
 				return nil, nil, err

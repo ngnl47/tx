@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"time"
 
@@ -138,13 +139,40 @@ func isReadOnlyDeltaStore(store DeltaStore) bool {
 }
 
 // DocumentLoader 定义按记录键读取单条文档的适配器。
+//
+// 返回值必须满足：exists=true 时 document 非 nil；exists=false 时 document 为 nil。
 type DocumentLoader interface {
 	LoadDocument(context.Context, meta.TypeSpec, RecordKey, ...string) (map[string]any, bool, error)
 }
 
 // BatchDocumentLoader 定义按记录键批量读取文档的适配器。
+// 每个 documents[i] 与 exists[i] 都遵循 DocumentLoader 的结果约束。
 type BatchDocumentLoader interface {
 	LoadDocuments(context.Context, meta.TypeSpec, []RecordKey, ...string) ([]map[string]any, []bool, error)
+}
+
+// ValidateDocumentResult 校验 DocumentLoader 的单条结果是否满足接口约束。
+func ValidateDocumentResult(document map[string]any, exists bool) error {
+	if exists && document == nil {
+		return fmt.Errorf("storage: document loader returned existing document without data")
+	}
+	if !exists && document != nil {
+		return fmt.Errorf("storage: document loader returned missing document with data")
+	}
+	return nil
+}
+
+// ValidateDocumentResults 校验 BatchDocumentLoader 的批量结果是否满足接口约束。
+func ValidateDocumentResults(documents []map[string]any, exists []bool) error {
+	if len(documents) != len(exists) {
+		return fmt.Errorf("storage: document loader returned documents=%d exists=%d", len(documents), len(exists))
+	}
+	for i, found := range exists {
+		if err := ValidateDocumentResult(documents[i], found); err != nil {
+			return fmt.Errorf("storage: document loader result at index %d: %w", i, err)
+		}
+	}
+	return nil
 }
 
 // DocumentReplacerWithOptions 定义按记录键整文档替换且支持写入选项的适配器。

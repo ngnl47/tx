@@ -585,6 +585,50 @@ func TestFusionStrategyLoadDocumentUsesRedisApplierWhenLoaderIsUnset(t *testing.
 	}
 }
 
+func TestFusionStrategyLoadDocumentRejectsInconsistentRedisLoaderResult(t *testing.T) {
+	strategy := fusion.Strategy{
+		RedisLoader: &recordingDocumentLoader{doc: map[string]any{"name": "unexpected"}},
+		MongoLoader: &recordingDocumentLoader{},
+	}
+
+	_, _, err := strategy.LoadDocument(context.Background(), meta.TypeSpec{}, storage.RecordKey{ID: int64(1001)})
+	if err == nil || !strings.Contains(err.Error(), "missing document with data") {
+		t.Fatalf("LoadDocument error = %v, want inconsistent Redis loader result", err)
+	}
+}
+
+func TestFusionStrategyLoadDocumentRejectsInconsistentMongoLoaderResult(t *testing.T) {
+	strategy := fusion.Strategy{
+		RedisLoader: &recordingDocumentLoader{},
+		MongoLoader: &recordingDocumentLoader{doc: map[string]any{"name": "unexpected"}},
+	}
+
+	_, _, err := strategy.LoadDocumentWithOptions(
+		context.Background(),
+		meta.TypeSpec{},
+		storage.RecordKey{ID: int64(1001)},
+		fusion.LoadOptions{DontLoadToRedis: true},
+	)
+	if err == nil || !strings.Contains(err.Error(), "missing document with data") {
+		t.Fatalf("LoadDocumentWithOptions error = %v, want inconsistent Mongo loader result", err)
+	}
+}
+
+func TestFusionStrategyLoadDocumentsRejectsInconsistentRedisBatchResult(t *testing.T) {
+	strategy := fusion.Strategy{
+		RedisLoader: &recordingDocumentLoader{
+			docs:       []map[string]any{{"name": "unexpected"}},
+			existsMany: []bool{false},
+		},
+		MongoLoader: &recordingDocumentLoader{},
+	}
+
+	_, _, err := strategy.LoadDocuments(context.Background(), meta.TypeSpec{}, []storage.RecordKey{{ID: int64(1001)}})
+	if err == nil || !strings.Contains(err.Error(), "missing document with data") {
+		t.Fatalf("LoadDocuments error = %v, want inconsistent Redis batch result", err)
+	}
+}
+
 func TestFusionStrategyLoadDocumentBackfillsRedisFromFullMongoFallback(t *testing.T) {
 	redis := &recordingDocumentLoader{}
 	mongo := &recordingDocumentLoader{doc: map[string]any{"roleId": int64(1001), "name": "cold", "power": int64(9)}, exists: true}
