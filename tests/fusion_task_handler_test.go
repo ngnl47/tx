@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -101,13 +102,13 @@ func TestFusionDelayTaskHandlerSavesRedisDocumentToMongo(t *testing.T) {
 	if mongo.spec.Mongo.Collection != "roles" || mongo.doc["name"] != "alice" {
 		t.Fatalf("mongo spec/doc = %#v %#v", mongo.spec, mongo.doc)
 	}
-	if _, exists := mongo.doc["headImg"]; exists {
-		t.Fatalf("mongo doc kept nil headImg: %#v", mongo.doc)
+	if value, exists := mongo.doc["headImg"]; !exists || value != nil {
+		t.Fatalf("mongo doc headImg = %#v, want explicit nil", mongo.doc)
 	}
 	items := mongo.doc["items"].(map[string]any)
 	item1001 := items["1001"].(map[string]any)
-	if _, exists := item1001["quality"]; exists {
-		t.Fatalf("mongo doc kept nil nested quality: %#v", mongo.doc)
+	if value, exists := item1001["quality"]; !exists || value != nil {
+		t.Fatalf("mongo doc nested quality = %#v, want explicit nil", mongo.doc)
 	}
 }
 
@@ -242,5 +243,23 @@ func TestFusionDelayTaskHandlerRejectsMissingRecordID(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("HandleDelayTask returned nil error, want missing record id error")
+	}
+}
+
+func TestFusionDelayTaskHandlerRejectsMissingSaveDependencies(t *testing.T) {
+	registry := meta.NewRegistry()
+	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Package: "data", Name: "GDRole"}}}
+	if err := registry.RegisterType(spec); err != nil {
+		t.Fatalf("RegisterType returned error: %v", err)
+	}
+	handler := fusion.NewDelayTaskHandler(registry, nil, nil)
+
+	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
+		Type:   "data.GDRole",
+		ID:     int64(1001),
+		Action: string(fusion.DelayedSave),
+	})
+	if !errors.Is(err, fusion.ErrDelayTaskDependenciesNotConfigured) {
+		t.Fatalf("HandleDelayTask error = %v, want ErrDelayTaskDependenciesNotConfigured", err)
 	}
 }

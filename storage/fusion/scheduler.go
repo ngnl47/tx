@@ -80,7 +80,7 @@ func NewSchedulerWithOptions(backend task.DelayTaskBackend, options SchedulerOpt
 
 func (s *Scheduler) Schedule(ctx context.Context, item task.DelayTask) error {
 	if s == nil || s.backend == nil {
-		return nil
+		return ErrTaskBackendNotConfigured
 	}
 	return s.backend.Enqueue(ctx, item)
 }
@@ -98,7 +98,7 @@ func (s *Scheduler) Start(ctx waitGroupContext) {
 
 func (s *Scheduler) RunOnce(ctx context.Context, now time.Time) (int, error) {
 	if s == nil || s.backend == nil {
-		return 0, nil
+		return 0, ErrTaskBackendNotConfigured
 	}
 	leases, err := s.backend.ClaimDue(ctx, now, s.batchSize)
 	if err != nil {
@@ -146,7 +146,7 @@ func (s *Scheduler) run(ctx context.Context) {
 
 func (s *Scheduler) handle(ctx context.Context, item task.DelayTask) error {
 	if s.handler == nil {
-		return nil
+		return ErrTaskHandlerNotConfigured
 	}
 	return s.handler.HandleDelayTask(ctx, item)
 }

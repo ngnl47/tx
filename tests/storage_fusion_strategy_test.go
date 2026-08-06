@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -157,7 +158,8 @@ type recordingRedisStore struct {
 
 func TestFusionStrategyEnqueuesMongoSave(t *testing.T) {
 	queue := &recordingQueue{}
-	strategy := fusion.Strategy{MongoQueue: queue}
+	redis := &recordingApplier{}
+	strategy := fusion.Strategy{Redis: redis, MongoQueue: queue}
 	spec := meta.TypeSpec{
 		Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
 		Storage: meta.StorageSpec{
@@ -173,6 +175,9 @@ func TestFusionStrategyEnqueuesMongoSave(t *testing.T) {
 	if len(queue.ops) != 1 {
 		t.Fatalf("queued ops = %#v", queue.ops)
 	}
+	if redis.optionRuns != 1 {
+		t.Fatalf("redis runs = %d, want 1", redis.optionRuns)
+	}
 	if queue.ops[0].RunAfter != 600*time.Second {
 		t.Fatalf("RunAfter = %s", queue.ops[0].RunAfter)
 	}
@@ -180,7 +185,7 @@ func TestFusionStrategyEnqueuesMongoSave(t *testing.T) {
 
 func TestFusionStrategyEnqueuesDelayedRedisDeleteAfterSaveWindow(t *testing.T) {
 	queue := &recordingQueue{}
-	strategy := fusion.Strategy{MongoQueue: queue}
+	strategy := fusion.Strategy{Redis: &recordingApplier{}, MongoQueue: queue}
 	spec := meta.TypeSpec{
 		Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
 		Storage: meta.StorageSpec{
@@ -205,6 +210,19 @@ func TestFusionStrategyEnqueuesDelayedRedisDeleteAfterSaveWindow(t *testing.T) {
 	}
 	if queue.ops[1].Key != key {
 		t.Fatalf("delete key = %#v, want %#v", queue.ops[1].Key, key)
+	}
+}
+
+func TestFusionStrategyRejectsMissingWriteDependencies(t *testing.T) {
+	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	key := storage.RecordKey{TypeName: spec.Type.Ref.FullName, ID: int64(1001)}
+
+	if err := (fusion.Strategy{MongoQueue: &recordingQueue{}}).ApplyDeltasWithOptions(context.Background(), spec, key, deltas, testFieldNameResolver{}, testDeltaValueResolver{}, storage.ApplyOptions{}); !errors.Is(err, fusion.ErrRedisNotConfigured) {
+		t.Fatalf("missing Redis error = %v, want ErrRedisNotConfigured", err)
+	}
+	if err := (fusion.Strategy{Redis: &recordingApplier{}}).ApplyDeltasWithOptions(context.Background(), spec, key, deltas, testFieldNameResolver{}, testDeltaValueResolver{}, storage.ApplyOptions{}); !errors.Is(err, fusion.ErrMongoQueueNotConfigured) {
+		t.Fatalf("missing MongoQueue error = %v, want ErrMongoQueueNotConfigured", err)
 	}
 }
 

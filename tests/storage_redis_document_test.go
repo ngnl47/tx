@@ -64,6 +64,23 @@ func TestRedisBuildDocumentPatchesWithDeltasAllowsResolvedNilValue(t *testing.T)
 	}
 }
 
+func TestRedisBuildDocumentPatchesWithDeltasDoesNotMutateSource(t *testing.T) {
+	deltas := change.DeltaSet{
+		{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet},
+		{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet},
+	}
+	resolver := testFieldNameResolver{
+		change.NameBackendGo:   {deltaFieldName: "Name"},
+		change.NameBackendJSON: {deltaFieldName: "name"},
+	}
+	if _, err := txredis.BuildDocumentPatchesWithDeltas(redisPatchSpec(), deltas, resolver, testDeltaValueResolver{deltaFieldName: "alice"}); err != nil {
+		t.Fatalf("BuildDocumentPatchesWithDeltas returned error: %v", err)
+	}
+	if len(deltas) != 2 || deltas[0].Path.Depth == 0 {
+		t.Fatalf("source deltas mutated: %#v", deltas)
+	}
+}
+
 func TestRedisEncodeDocumentPatchAllowsSafeIntegers(t *testing.T) {
 	_, err := txredis.EncodeDocumentPatch(txredis.DocumentPatch{
 		Set: []txredis.PathValue{{Path: change.Path{"roleId"}, Value: int64(1<<53 - 1)}},

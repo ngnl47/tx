@@ -41,7 +41,7 @@ type documentPatchOperation struct {
 // 分组成 JSON 文档 patch。Redis 边界当前选择 JSON 字段名。
 func BuildDocumentPatchesWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, resolver change.FieldNameResolver, values change.DeltaValueResolver) (map[string]DocumentPatch, error) {
 	out := map[string]DocumentPatch{}
-	for _, delta := range deltas.Compact() {
+	for _, delta := range deltas.Clone().Compact() {
 		goPath := delta.Path.FullPath(resolver, change.NameBackendGo)
 		if len(goPath) == 0 {
 			continue

@@ -53,7 +53,7 @@ func BuildUpdateDocumentWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, r
 // normalizeMongoDeltas 在 Mongo update 边界消除不可表达的 string key 路径。
 // 整体替换会读取该 map 的最终值，因此同一 map 下的其他子路径无需再写入。
 func normalizeMongoDeltas(deltas change.DeltaSet) change.DeltaSet {
-	compacted := deltas.Compact()
+	compacted := deltas.Clone().Compact()
 	fallbacks := make([]change.DeltaPath, 0)
 	for _, delta := range compacted {
 		fallback, ok := fallbackMongoUnsafeStringKeyPath(delta.Path)

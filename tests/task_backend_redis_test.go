@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"sort"
@@ -14,6 +15,24 @@ import (
 	"github.com/ngnl47/tx/storage/task"
 	taskredis "github.com/ngnl47/tx/storage/task/redis"
 )
+
+func TestRedisTaskBackendRejectsMissingClient(t *testing.T) {
+	backend := taskredis.NewBackend(nil, taskredis.Options{})
+	item := task.DelayTask{Type: "data.GDRole", ID: int64(1001), Action: "save"}
+	if err := backend.Enqueue(context.Background(), item); !errors.Is(err, taskredis.ErrClientNotConfigured) {
+		t.Fatalf("Enqueue error = %v, want ErrClientNotConfigured", err)
+	}
+	if _, err := backend.ClaimDue(context.Background(), time.Now(), 1); !errors.Is(err, taskredis.ErrClientNotConfigured) {
+		t.Fatalf("ClaimDue error = %v, want ErrClientNotConfigured", err)
+	}
+	lease := task.DelayTaskLease{Task: item}
+	if err := backend.Complete(context.Background(), lease); !errors.Is(err, taskredis.ErrClientNotConfigured) {
+		t.Fatalf("Complete error = %v, want ErrClientNotConfigured", err)
+	}
+	if err := backend.Retry(context.Background(), lease, time.Now(), errors.New("retry")); !errors.Is(err, taskredis.ErrClientNotConfigured) {
+		t.Fatalf("Retry error = %v, want ErrClientNotConfigured", err)
+	}
+}
 
 func TestRedisDelayTaskBackendClaimsAndCompletesDueTasks(t *testing.T) {
 	ctx := context.Background()

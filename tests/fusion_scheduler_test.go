@@ -44,14 +44,34 @@ func TestFusionSchedulerEnqueuesThroughDelayTaskBackend(t *testing.T) {
 	}
 }
 
-func TestFusionSchedulerScheduleIsNilSafe(t *testing.T) {
+func TestFusionSchedulerScheduleRejectsMissingBackend(t *testing.T) {
 	ctx := context.Background()
 
-	if err := (*fusion.Scheduler)(nil).Schedule(ctx, task.DelayTask{Type: "role", ID: "1", Action: "save"}); err != nil {
-		t.Fatalf("nil Scheduler Schedule returned error: %v", err)
+	if err := (*fusion.Scheduler)(nil).Schedule(ctx, task.DelayTask{Type: "role", ID: "1", Action: "save"}); !errors.Is(err, fusion.ErrTaskBackendNotConfigured) {
+		t.Fatalf("nil Scheduler Schedule error = %v, want ErrTaskBackendNotConfigured", err)
 	}
-	if err := fusion.NewScheduler(nil).Schedule(ctx, task.DelayTask{Type: "role", ID: "1", Action: "save"}); err != nil {
-		t.Fatalf("nil backend Scheduler Schedule returned error: %v", err)
+	if err := fusion.NewScheduler(nil).Schedule(ctx, task.DelayTask{Type: "role", ID: "1", Action: "save"}); !errors.Is(err, fusion.ErrTaskBackendNotConfigured) {
+		t.Fatalf("nil backend Scheduler Schedule error = %v, want ErrTaskBackendNotConfigured", err)
+	}
+}
+
+func TestFusionSchedulerRetriesTaskWhenHandlerIsMissing(t *testing.T) {
+	backend := memory.NewBackend()
+	scheduler := fusion.NewScheduler(backend)
+	now := time.Unix(100, 0)
+	if err := backend.Enqueue(context.Background(), task.DelayTask{Type: "role", ID: "1", Action: "save", DueAt: now}); err != nil {
+		t.Fatalf("Enqueue returned error: %v", err)
+	}
+
+	if _, err := scheduler.RunOnce(context.Background(), now); err != nil {
+		t.Fatalf("RunOnce returned error: %v", err)
+	}
+	leases, err := backend.ClaimDue(context.Background(), now.Add(time.Second), 1)
+	if err != nil {
+		t.Fatalf("ClaimDue returned error: %v", err)
+	}
+	if len(leases) != 1 {
+		t.Fatalf("leases = %#v, want one retried task", leases)
 	}
 }
 

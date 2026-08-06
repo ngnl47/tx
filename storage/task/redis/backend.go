@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"sort"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/ngnl47/tx/storage/task"
 )
+
+var ErrClientNotConfigured = errors.New("redis task: client is not configured")
 
 type ScriptClient interface {
 	Eval(context.Context, string, []string, ...any) (string, error)
@@ -58,8 +61,8 @@ func (b *Backend) Enqueue(ctx context.Context, item task.DelayTask) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if b.client == nil {
-		return nil
+	if b == nil || b.client == nil {
+		return ErrClientNotConfigured
 	}
 	body, err := json.Marshal(item)
 	if err != nil {
@@ -79,7 +82,10 @@ func (b *Backend) ClaimDue(ctx context.Context, now time.Time, limit int) ([]tas
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if b.client == nil || limit <= 0 {
+	if b == nil || b.client == nil {
+		return nil, ErrClientNotConfigured
+	}
+	if limit <= 0 {
 		return nil, nil
 	}
 	leases := make([]task.DelayTaskLease, 0, limit)
@@ -125,8 +131,8 @@ func (b *Backend) Complete(ctx context.Context, lease task.DelayTaskLease) error
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if b.client == nil {
-		return nil
+	if b == nil || b.client == nil {
+		return ErrClientNotConfigured
 	}
 	result, err := b.client.Eval(ctx, completeScript, b.keysForTask(lease.Task), lease.Task.IdempotencyKey(), lease.Token)
 	if err != nil {
@@ -142,8 +148,8 @@ func (b *Backend) Retry(ctx context.Context, lease task.DelayTaskLease, next tim
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if b.client == nil {
-		return nil
+	if b == nil || b.client == nil {
+		return ErrClientNotConfigured
 	}
 	_ = reason
 	result, err := b.client.Eval(ctx, retryScript, b.keysForTask(lease.Task), lease.Task.IdempotencyKey(), lease.Token, unixMillis(next))

@@ -48,7 +48,7 @@ func NewDelayTaskHandlerWithOptions(types TypeRegistry, redisLoader storage.Docu
 
 func (h *StorageTaskHandler) HandleDelayTask(ctx context.Context, item task.DelayTask) error {
 	if h == nil {
-		return nil
+		return ErrDelayTaskDependenciesNotConfigured
 	}
 	spec, ok := h.lookup(item.Type)
 	if !ok {
@@ -74,7 +74,7 @@ func (h *StorageTaskHandler) HandleDelayTask(ctx context.Context, item task.Dela
 
 func (h *StorageTaskHandler) handleSave(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
 	if h.redisLoader == nil || h.mongoReplace == nil {
-		return nil
+		return fmt.Errorf("%w: delayed save requires redis loader and mongo replacer", ErrDelayTaskDependenciesNotConfigured)
 	}
 	doc, exists, err := h.redisLoader.LoadDocument(ctx, spec, key)
 	if err != nil {
@@ -83,12 +83,12 @@ func (h *StorageTaskHandler) handleSave(ctx context.Context, spec meta.TypeSpec,
 	if !exists {
 		return nil
 	}
-	return h.mongoReplace.ReplaceDocument(ctx, spec, key, compactDocument(doc))
+	return h.mongoReplace.ReplaceDocument(ctx, spec, key, doc)
 }
 
 func (h *StorageTaskHandler) handleDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
 	if h.redisLoader == nil || h.mongoReplace == nil || h.redisRevisionReader == nil || h.redisRevisionDelete == nil || h.redisLocker == nil {
-		return nil
+		return fmt.Errorf("%w: delayed delete requires redis loader, mongo replacer, revision reader, revision deleter and record locker", ErrDelayTaskDependenciesNotConfigured)
 	}
 	lock, err := h.redisLocker.LockRecord(ctx, spec, key, storage.LockOptions{TTL: defaultLoadLockTTL, Wait: defaultLoadLockWait})
 	if err != nil {
@@ -104,7 +104,7 @@ func (h *StorageTaskHandler) handleDelete(ctx context.Context, spec meta.TypeSpe
 	if err != nil || !exists {
 		return err
 	}
-	if err := h.mongoReplace.ReplaceDocument(ctx, spec, key, compactDocument(doc)); err != nil {
+	if err := h.mongoReplace.ReplaceDocument(ctx, spec, key, doc); err != nil {
 		return err
 	}
 	deleted, _, err := h.redisRevisionDelete.ApplyDeleteWithRevision(ctx, spec, key, revision)
@@ -131,30 +131,4 @@ func (h *StorageTaskHandler) lookup(typeName string) (meta.TypeSpec, bool) {
 		return meta.TypeSpec{}, false
 	}
 	return h.types.Lookup(meta.TypeRef{FullName: typeName})
-}
-
-func compactDocument(doc map[string]any) map[string]any {
-	out := make(map[string]any, len(doc))
-	for key, value := range doc {
-		if value == nil {
-			continue
-		}
-		out[key] = compactValue(value)
-	}
-	return out
-}
-
-func compactValue(value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		return compactDocument(typed)
-	case []any:
-		out := make([]any, len(typed))
-		for i, item := range typed {
-			out[i] = compactValue(item)
-		}
-		return out
-	default:
-		return value
-	}
 }

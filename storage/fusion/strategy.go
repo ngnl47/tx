@@ -41,13 +41,14 @@ func (s Strategy) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec
 	if len(deltas) == 0 {
 		return nil
 	}
-	if s.Redis != nil {
-		if err := s.Redis.ApplyDeltasWithOptions(ctx, spec, key, deltas, resolver, values, options); err != nil {
-			return err
-		}
+	if s.Redis == nil {
+		return ErrRedisNotConfigured
 	}
 	if s.MongoQueue == nil {
-		return nil
+		return ErrMongoQueueNotConfigured
+	}
+	if err := s.Redis.ApplyDeltasWithOptions(ctx, spec, key, deltas, resolver, values, options); err != nil {
+		return err
 	}
 	return s.enqueueDelayedWrites(ctx, spec, key)
 }
@@ -353,7 +354,7 @@ func (s Strategy) redisDeleter() storage.DeleteApplier {
 
 func (s Strategy) enqueueDelayedWrites(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
 	if s.MongoQueue == nil {
-		return nil
+		return ErrMongoQueueNotConfigured
 	}
 	if err := s.MongoQueue.Enqueue(ctx, DelayedOperation{
 		Kind:     DelayedSave,

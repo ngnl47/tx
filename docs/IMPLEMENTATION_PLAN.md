@@ -50,6 +50,7 @@
 - 字符串路径只在输出边界生成，例如 `ChangeDocument()`、Redis JSON patch、Mongo update document 和 cmd Provider body。
 - `DeltaSet.Compact()` 只做路径上可确定的压缩：同路径后写覆盖先写，后发生的祖先写清理更早子路径；较早祖先不会吞掉较晚子路径，因为 runtime 不读取当前对象，无法证明祖先值已包含后续修改。不做需要外部生命周期上下文的新建删除抵消。
 - `DeltaSet.Compact()` 对不超过 128 条的常见变更保持原地、零分配扫描；更大的互不相交路径集使用小型哈希索引查询完整路径和严格祖先，哈希碰撞必须再经完整 `DeltaPath.Equal` 确认。后发生根字段覆盖子路径的批次仍走原地扫描，避免为已能线性收敛的整字段覆盖引入索引分配；阈值或算法调整前后都必须复跑 `BenchmarkDeltaSetCompact`。
+- Fusion 是完整装配的存储策略，不保留半成品 no-op 兼容路径：同步写入需要 Redis delta applier，延迟回写需要 queue，任务消费需要完整 handler 依赖。业务工程启动时应对配置中的 Redis/Mongo endpoint 主动探活，连接不可达即失败退出。
 - `DeltaKindSet` 用于标记当前字段值；`DeltaKindReplace` 用于集合、结构体指针和集合元素的覆盖赋值。`SetItems(value)`、`ItemsStore().Set(key, value)`、`SetAt(index, value)` 都遵循 Go 赋值语义：持久化时不保留旧值中未出现的字段；对子对象的 setter 才保留局部 `DeltaKindSet` 路径。
 - `MaxDeltaDepth` 是 Store 树投影和 snapshot diff 共用的真实递归预算，当前为 4 层 `PathNode`。即将超过预算时必须立刻停止向下比较或投影，将最近可解析祖先标为 `DeltaKindReplace`；不能 panic，也不能继续做无效深层 diff。每个生成数据类型通过 `sync.Once` 输出一次告警，提示该类型发生了深度降级。
 - `map[string]` 的 key 如果为空字符串、包含 `.` 或 `$`，Mongo 边界不转义 key，而是降级整字段写，保证数据库中保留业务真实 key。
@@ -292,41 +293,6 @@ Go 注释 / struct tag -> anno -> astscan -> meta -> storage/gen
 - 输入侧统一使用新的 Tx 注解语义。
 - 如后续确实需要外部迁移工具，应作为独立工具工程实现，不放入 `tx` runtime。
 
-## Phase 5: Runtime Storage Metadata
-
-目标：把 type-level 注释 tag、field-level struct tag 和 AST type 信息组合成运行时可用的 storage metadata。
-
-建议实现：
-
-- `storage.TypeConfig`
-  - `StorageMode`
-  - `Redis *RedisConfig`
-  - `Mongo *MongoConfig`
-  - `Fusion *FusionConfig`
-  - `Fields map[string]FieldConfig`
-- `storage.Resolve(specs, packageSet) (*storage.Registry, error)`
-- `storage.Registry` freeze 后用于 runtime。
-
-关键行为：
-
-- `mode=fusion` 要求 redis/mongo 均存在。
-- Redis key builder 默认：`namespace:key:{shardBy}:id` 当 `id != shardBy`。
-- Redis key builder 当 `id == shardBy`：`namespace:key:{id}`。
-- Mongo filter 默认：`{idField: id}`；若 sharding enabled 且 `id != shardBy`，补 `shardBy`。
-- 生成 route resolver，不依赖反射临时推导。
-
-验收：
-
-- 给定 type config，能生成 Redis key。
-- 给定 type config，能生成 Mongo collection/filter/index metadata。
-- 所有 runtime metadata 初始化后不可变。
-
-测试：
-
-- `tests/storage_key_test.go`
-- `tests/storage_mongo_filter_test.go`
-- `tests/storage_resolve_test.go`
-
 ## Phase 6: Delay Task Backend Abstraction
 
 目标：Fusion 不绑定 Redis ZSet + Lua，抽象可替换任务后端。
@@ -375,7 +341,7 @@ type DelayTaskBackend interface {
 - Redis 批量读取默认贴合生产云存储代理能力：同一个 Redis endpoint 内允许直接批量读取多条不同 hash tag 的记录，由云代理负责跨 slot 分发和结果聚合，避免把生产热路径退化为多次 IO。
 - Redis 批量读取应使用客户端层原生 `MGET` 展平 main/subKey key 后读取，再在 Go 侧按固定步长合并文档；不要把跨记录批量读取包进 Lua。云代理能识别 `MGET` 的所有参数都是 key，但不能可靠分析自定义 Lua 中哪些 `ARGV` 是 key，也不能安全拆分一个需要原子执行的脚本。
 - 本地原生 Redis Cluster 或直连节点只作为研发 debug 兼容路径：已提供显式可选的 `LoadOptions.ClusterSafe` 模式，按 hash tag 分组后多次读取，保证本地集群可复现和排查跨槽问题，但不作为生产默认策略。
-- StorageTaskHandler 在 Mongo replace 前会递归移除 Redis 文档中的 nil 删除标记，避免已删除字段以 Mongo `null` 形式重新落库。
+- StorageTaskHandler 把 Redis 当前 JSON 文档原样 replace 到 Mongo；业务 `null` 是合法数据，必须保留。字段删除只由 `DeltaDelete` / `Document.Clear` 表达，不能再用 map 中的 `nil` 兼作删除标记。
 - `delaySaveTime` 表示 Redis 热数据变更后，经过多久触发一次 Mongo 回写；`delayDelTime` 表示 Redis 热数据 TTL，用于释放长时间不活跃记录的热备数据，不代表 Mongo 删除延迟。
 - `change.Mode` 已作为生成代码的持久化模式边界：`ModeSnapshot` 用于原生字段修改后的快照 diff 持久化，`ModeStore` 用于生成 Store 的拦截式脏标记持久化；两者在同一变更周期内互斥。当前快照 diff 由 txgen 生成代码实现，tx 只提供共用模式枚举和错误。
 - RedisJSON/ReJSON 可作为后续可选 Redis backend 单独评估：当前主线仍保持 Redis string JSON main/subKey 文档模型，后续只有在确认目标云 Redis、本地测试环境、Redis Cluster 行为和 JSON path 局部读写收益后再引入。
@@ -396,7 +362,7 @@ type DelayTaskBackend interface {
 - Redis backend 按 bucket 分散队列 key，claim worker 会轮询 bucket 消费。
 - 多个服务实例同时消费时，同一任务同一时刻只能被一个 lease 持有；lease 超时后允许重新领取。
 - Fusion 后台 worker 使用 lifecycle 上下文，在优雅关停时等待已 claim 的 Mongo 回写任务完成。
-- Fusion delayed save worker 可把 Redis 热数据回写到 Mongo，并且不会把删除标记落成 Mongo null 字段。
+- Fusion delayed save worker 可把 Redis 热数据回写到 Mongo，并保留文档中的业务空值。
 - Fusion delete 不产生 Mongo 延迟删除任务，显式删除调用会删除 Redis 热数据并立即删除 Mongo 文档。
 - Fusion delayed task handler 只接受保存 action，delete 或其他未知 action 都不会被静默吞掉。
 

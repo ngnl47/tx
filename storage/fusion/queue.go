@@ -56,7 +56,7 @@ func NewTaskQueueWithOptions(backend task.DelayTaskBackend, options TaskQueueOpt
 
 func (q *TaskQueue) Enqueue(ctx context.Context, op DelayedOperation) error {
 	if q == nil || q.backend == nil {
-		return nil
+		return ErrTaskBackendNotConfigured
 	}
 	if op.Kind != DelayedSave && op.Kind != DelayedDelete {
 		return fmt.Errorf("fusion: unknown delayed operation kind %q", op.Kind)

@@ -17,7 +17,7 @@
 - 当前标脏主线是 `change.DeltaSet`。内部保存字段编号和强类型 key/index；`"Items.1001.Quantity"` 这类字符串只在输出边界临时生成。
 - Store 拦截模式和 snapshot diff 模式都保留，且同一变更周期互斥。高频大集合优先 Store wrapper；低频请求可使用 `BeginChange/SaveChange` 允许直接改 public field。
 - `DeltaSet` 不保存字段值；Redis、Mongo、Fusion 和 Provider 在边界通过生成 Store 读取当前 `GD*` 最终值。
-- 存储边界必须解析到当前字段值：`DeltaValue(path)` 返回 `(nil, true)` 表示业务要写入空值；返回 `(_, false)` 则保存失败并保留 delta，绝不把解析失败静默写成 `null`。
+- 存储边界必须解析到当前字段值：`DeltaValue(path)` 返回 `(nil, true)` 表示业务要写入空值；返回 `(_, false)` 则保存失败并保留 delta，绝不把解析失败静默写成 `null`。Fusion 延迟回写会原样保留这类业务空值；字段删除必须使用 `DeltaDelete` / `Document.Clear`，不能把 map 中的 `nil` 当删除标记。
 - `map[string]` 的危险 key 在 Mongo update 边界降级整字段写，不做私有转义，保证数据库中仍能直观看到业务 key。
 - Redis 当前使用 string JSON main/subKey 文档。带 `redis:"subKey:..."` 的字段拆独立 key；main 文档仍是根记录热数据的一部分。
 - Fusion 延迟保存队列只保存记录定位，到期后读取 Redis 当前热数据并整文档写回 Mongo；它不是保存每一轮字段 diff 的队列。
@@ -1072,114 +1072,6 @@ DeltaPath{FieldID(fieldGDRoleItems)} -> Items
 map、slice 或 struct 指针，具体字段值在最终编码时仍会交给对应 JSON/BSON/Msgpack 编码器展开。
 完整对象读取、回源或整文档替换路径才会依赖序列化库按 tag 映射字段。
 
-### Change Document 压缩
-
-少数高频有状态场景可能会先在内存里累积多份 `change.Document`，再批量写入存储。比如战场对象一帧内多次修改
-`Hp`、`Pos`、`State`，如果每份变更都立即写入，会放大 IO；如果直接丢弃中间态，又容易破坏删除或父子路径语义。
-这里的 document 可以来自快照 diff 路线，也可以来自 Store dirty 路线：前者是 `BeginChange` 后对比对象得到一轮 diff，
-后者是 `Store().ChangeDocument()` 得到一轮显式标脏 diff。`CompactDocuments` 处理的是多轮 diff 文档的压缩，
-不属于某一个具体保存 API。
-
-`change.MergeDocuments(base, next)` 提供保守合并原语：能无歧义表达最终结果时返回合并文档，不能安全表达时返回
-`ok=false`。常见可合并示例：
-
-```go
-doc, ok := change.MergeDocuments(
-	change.Document{Set: map[string]any{"Name": "old"}},
-	change.Document{Set: map[string]any{"Name": "new"}},
-)
-// ok == true，最终只保留 Set["Name"] = "new"
-```
-
-嵌套文档也会在两边都是文档时递归合并：
-
-```go
-doc, ok := change.MergeDocuments(
-	change.Document{Set: map[string]any{"Battle": map[string]any{"Hp": int64(10)}}},
-	change.Document{Set: map[string]any{"Battle": map[string]any{"Mp": int64(5)}}},
-)
-// doc.Set["Battle"] == map[string]any{"Hp": int64(10), "Mp": int64(5)}
-```
-
-如果前一份文档把父路径写成标量，后一份又更新子路径，合并会失败：
-
-```go
-_, ok := change.MergeDocuments(
-	change.Document{Set: map[string]any{"Battle": int64(1)}},
-	change.Document{Set: map[string]any{"Battle.Hp": int64(10)}},
-)
-// ok == false，需要调用方分成两次写入，避免把顺序语义压错。
-```
-
-队列场景使用 `change.CompactDocuments` 更方便：
-
-```go
-docs := change.CompactDocuments([]change.Document{
-	{Set: map[string]any{"Name": "old"}},
-	{Set: map[string]any{"Name": "new"}},
-	{Set: map[string]any{"Battle": int64(1)}},
-	{Set: map[string]any{"Battle.Hp": int64(10)}},
-})
-```
-
-上面会得到两段结果：第一段包含 `Name=new` 和 `Battle=1`，第二段从 `Battle.Hp=10` 开始。也就是说，
-压缩会尽力减少写入次数，但不会跨越不安全边界。
-
-一个内存延迟保存队列可以这样组织：
-
-```go
-type rolePatchWriter interface {
-	ApplyRolePatches(ctx context.Context, roleID int64, docs []change.Document) error
-}
-
-type roleDelaySaveQueue struct {
-	roleID int64
-	docs   []change.Document
-}
-
-func (q *roleDelaySaveQueue) PushDocument(doc change.Document) {
-	q.docs = append(q.docs, doc)
-}
-
-func (q *roleDelaySaveQueue) Flush(ctx context.Context, writer rolePatchWriter) error {
-	if len(q.docs) == 0 {
-		return nil
-	}
-	compacted := change.CompactDocuments(q.docs)
-	if err := writer.ApplyRolePatches(ctx, q.roleID, compacted); err != nil {
-		return err
-	}
-	q.docs = q.docs[:0]
-	return nil
-}
-```
-
-Store 路线可以把每轮显式脏标记转成 document 入队：
-
-```go
-store := role.Store()
-store.IncPower(10)
-store.ItemsStore().Set(1001, &data.GDItem{ItemId: 1001, Quantity: 7})
-
-queue.PushDocument(store.ChangeDocument())
-store.ClearChanges()
-```
-
-快照 diff 路线也可以把一轮 diff 结果转成 document 后入队。具体捕获方式应由业务队列决定，例如封装一个
-`SaveChangeToQueue(role)`，在内部完成 `BeginChange` 后的 diff、`ChangeDocument` 生成和 snapshot 清理。
-关键点是：入队的是“某一轮已经确定的 diff 文档”，flush 时再做跨轮压缩。
-
-```go
-if err := queue.Flush(ctx, battlefieldPatchWriter); err != nil {
-	return err
-}
-```
-
-这个例子里的 `rolePatchWriter` 是业务高频队列自己的写入器：它可以把 compact 后的 `change.Document`
-转换成 Redis/Mongo 的局部 patch，也可以合并进战斗服自己的内存落盘格式。生成 Store 的常规保存入口使用
-`change.DeltaSet` 和 `storage.DeltaApplier`；因此不要把上面的队列写入器误解为 Fusion 延迟回写入口。
-Fusion 默认延迟回写仍是“队列只保存记录定位信息，到期后读取 Redis 最新热数据并整文档写回 Mongo”。
-
 ## Redis 存储模型
 
 Redis 使用 string JSON 文档模型。
@@ -1930,14 +1822,14 @@ Fusion 策略的当前保存路径：
 3. Redis delayed task backend 写入延迟保存任务。
 4. Scheduler 到期 claim 任务。
 5. StorageTaskHandler 根据任务定位重新读取 Redis 热文档。
-6. Handler 清理 nil 删除标记后 replace Mongo 文档。
+6. Handler 将 Redis 当前完整文档 replace 到 Mongo。
 7. 任务成功后通过 Lua complete 删除该任务在 Redis 队列中的状态。
 
 延迟任务队列使用 bucket hash tag，支持多个服务实例并发消费。语义是 at-least-once，Mongo 回写必须保持存储幂等。
 任务失败重试时，Scheduler 会输出结构化错误日志；失败原因不写入 Redis 任务状态，避免错误字符串占用队列内存。
 Scheduler 循环中的 claim、complete、retry 等 backend 错误也会输出结构化错误日志；服务关闭导致的 context 结束不会额外记录错误。
 Fusion delayed task queue 接受保存 action 和 Redis 热数据延迟删除 action；其他未知 action 会返回错误。入队时必须带有明确的类型和记录 ID，避免无效任务进入 Redis 队列；handler 消费端也会拒绝缺少记录 ID 的任务，防止手工写入或遗留异常任务落到存储层。任务类型优先来自 `DelayedOperation.Type`，为空时使用 `DelayedOperation.Key.TypeName`。Fusion 延迟保存按类型、记录 ID、route/shard key 和 action 生成一条合并任务，不暴露额外 suffix，避免同一记录产生多条重复保存任务。延迟保存任务不携带业务对象或字段变更日志，回写时重新读取 Redis 当前热数据。显式删除仍走显式删除接口，不进入延迟队列。
-Scheduler 的 `Start`、`RunOnce` 和 `Schedule` 在自身或 backend 未配置时都是 no-op，便于本地测试或按环境关闭后台回写组件；生产环境仍应配置 Redis delayed task backend。
+Fusion 保存路径要求 Redis delta applier 与延迟队列都已装配；延迟任务执行还要求 handler、Redis 文档读取、Mongo replace 和删除任务所需的 revision/lock 组件完整可用。`Schedule`、`RunOnce`、队列入队或 handler 缺少这些依赖时会返回配置错误，任务不会被 complete。项目启动阶段应主动探活 Redis/Mongo；`txgame/server` 的 `NewStorage` 已在组装 route table 后对每个 endpoint 执行 ping，任一连接不可达即启动失败。
 
 生产环境的延迟回写 handler 只负责存储同步。由于任务可能因为网络抖动、进程重启或租约恢复被再次执行，Mongo 回写路径应按“同一记录的当前 Redis 热文档 replace 到 Mongo”设计为存储幂等操作。比如同一条 `GDRole` save 任务执行两次，结果应只是 Mongo 中 `roleId=1001` 的文档被相同或更新后的热数据覆盖两次；队列中不保存 `GDRole` 的中间态快照，也不按每次字段变更生成事件日志。
 

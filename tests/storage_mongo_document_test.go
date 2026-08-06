@@ -85,6 +85,23 @@ func TestMongoBuildUpdateDocumentWithDeltasAllowsResolvedNilValue(t *testing.T) 
 	}
 }
 
+func TestMongoBuildUpdateDocumentWithDeltasDoesNotMutateSource(t *testing.T) {
+	deltas := change.DeltaSet{
+		{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet},
+		{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet},
+	}
+	resolver := testFieldNameResolver{
+		change.NameBackendGo:   {deltaFieldName: "Name"},
+		change.NameBackendBSON: {deltaFieldName: "name"},
+	}
+	if _, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver, testDeltaValueResolver{deltaFieldName: "alice"}); err != nil {
+		t.Fatalf("BuildUpdateDocumentWithDeltas returned error: %v", err)
+	}
+	if len(deltas) != 2 || deltas[0].Path.Depth == 0 {
+		t.Fatalf("source deltas mutated: %#v", deltas)
+	}
+}
+
 func TestMongoBuildUpdateDocumentWithDeltasDowngradesUnsafeStringMapKey(t *testing.T) {
 	const fieldLabels change.FieldID = 9
 	deltas := change.DeltaSet{
