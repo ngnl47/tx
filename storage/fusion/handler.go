@@ -86,7 +86,7 @@ func (h *StorageTaskHandler) handleSave(ctx context.Context, spec meta.TypeSpec,
 	return h.mongoReplace.ReplaceDocument(ctx, spec, key, doc)
 }
 
-func (h *StorageTaskHandler) handleDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
+func (h *StorageTaskHandler) handleDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) (err error) {
 	if isNilFusionDependency(h.redisLoader) || isNilFusionDependency(h.mongoReplace) || isNilFusionDependency(h.redisRevisionReader) || isNilFusionDependency(h.redisRevisionDelete) || isNilFusionDependency(h.redisLocker) {
 		return fmt.Errorf("%w: delayed delete requires redis loader, mongo replacer, revision reader, revision deleter and record locker", ErrDelayTaskDependenciesNotConfigured)
 	}
@@ -97,7 +97,7 @@ func (h *StorageTaskHandler) handleDelete(ctx context.Context, spec meta.TypeSpe
 	if isNilFusionDependency(lock) {
 		return fmt.Errorf("%w: delayed delete received nil record lock", ErrDelayTaskDependenciesNotConfigured)
 	}
-	defer func() { _ = lock.Unlock(ctx) }()
+	defer func() { releaseRecordLock(ctx, lock, &err) }()
 
 	revision, err := h.redisRevisionReader.ReadRecordRevision(ctx, spec, key)
 	if err != nil {

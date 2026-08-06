@@ -183,6 +183,37 @@ func TestFusionDelayTaskHandlerDeletesRedisAfterSavingCurrentDocument(t *testing
 	}
 }
 
+func TestFusionDelayTaskHandlerReturnsRecordUnlockError(t *testing.T) {
+	unlockErr := errors.New("unlock failed")
+	registry := meta.NewRegistry()
+	spec := meta.TypeSpec{
+		Type:    meta.Type{Ref: meta.TypeRef{Package: "data", Name: "GDRole"}},
+		Storage: meta.StorageSpec{DelayDelete: meta.Duration{Duration: time.Hour}},
+	}
+	if err := registry.RegisterType(spec); err != nil {
+		t.Fatalf("RegisterType returned error: %v", err)
+	}
+	handler := fusion.NewDelayTaskHandlerWithOptions(
+		registry,
+		&recordingDocumentLoader{doc: map[string]any{"roleId": int64(1001)}, exists: true},
+		&recordingDocumentReplacer{},
+		fusion.DelayTaskHandlerOptions{
+			RedisRevisionReader: &recordingRevisionReader{revision: "5"},
+			RedisRevisionDelete: &recordingRevisionDeleteApplier{deleted: true},
+			RedisLocker:         &recordingRecordLocker{lock: &recordingRecordLock{unlockErr: unlockErr}},
+		},
+	)
+
+	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
+		Type:   "data.GDRole",
+		ID:     int64(1001),
+		Action: string(fusion.DelayedDelete),
+	})
+	if !errors.Is(err, unlockErr) {
+		t.Fatalf("HandleDelayTask error = %v, want unlock error", err)
+	}
+}
+
 func TestFusionDelayTaskHandlerRequeuesDelayedDeleteWhenRevisionChanged(t *testing.T) {
 	registry := meta.NewRegistry()
 	spec := meta.TypeSpec{

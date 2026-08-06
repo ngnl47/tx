@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -78,10 +79,14 @@ type recordingRecordLocker struct {
 	spec    meta.TypeSpec
 	key     storage.RecordKey
 	options storage.LockOptions
+	lock    storage.RecordLock
+	err     error
+	nilLock bool
 }
 
 type recordingRecordLock struct {
-	unlocks int
+	unlocks   int
+	unlockErr error
 }
 
 type recordingSingleDocumentLoader struct {
@@ -143,12 +148,21 @@ func (l *recordingRecordLocker) LockRecord(_ context.Context, spec meta.TypeSpec
 	l.spec = spec
 	l.key = key
 	l.options = options
+	if l.err != nil {
+		return nil, l.err
+	}
+	if l.nilLock {
+		return nil, nil
+	}
+	if l.lock != nil {
+		return l.lock, nil
+	}
 	return &recordingRecordLock{}, nil
 }
 
 func (l *recordingRecordLock) Unlock(context.Context) error {
 	l.unlocks++
-	return nil
+	return l.unlockErr
 }
 
 type recordingRedisStore struct {
@@ -604,6 +618,46 @@ func TestFusionStrategyLoadDocumentBackfillsRedisFromFullMongoFallback(t *testin
 	}
 }
 
+func TestFusionStrategyLoadDocumentReturnsRecordUnlockError(t *testing.T) {
+	unlockErr := errors.New("unlock failed")
+	redis := &recordingDocumentLoader{}
+	mongo := &recordingDocumentLoader{doc: map[string]any{"name": "cold"}, exists: true}
+	locker := &recordingRecordLocker{lock: &recordingRecordLock{unlockErr: unlockErr}}
+	strategy := fusion.Strategy{
+		RedisLoader:   redis,
+		RedisReplacer: &recordingDocumentReplacerWithOptions{},
+		RedisLocker:   locker,
+		MongoLoader:   mongo,
+	}
+	spec := meta.TypeSpec{
+		Type:    meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
+		Storage: meta.StorageSpec{DelayDelete: meta.Duration{Duration: time.Hour}},
+	}
+
+	_, _, err := strategy.LoadDocument(context.Background(), spec, storage.RecordKey{ID: int64(1001)})
+	if !errors.Is(err, unlockErr) {
+		t.Fatalf("LoadDocument error = %v, want unlock error", err)
+	}
+}
+
+func TestFusionStrategyLoadDocumentRejectsNilRecordLock(t *testing.T) {
+	strategy := fusion.Strategy{
+		RedisLoader:   &recordingDocumentLoader{},
+		RedisReplacer: &recordingDocumentReplacerWithOptions{},
+		RedisLocker:   &recordingRecordLocker{nilLock: true},
+		MongoLoader:   &recordingDocumentLoader{doc: map[string]any{"name": "cold"}, exists: true},
+	}
+	spec := meta.TypeSpec{
+		Type:    meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
+		Storage: meta.StorageSpec{DelayDelete: meta.Duration{Duration: time.Hour}},
+	}
+
+	_, _, err := strategy.LoadDocument(context.Background(), spec, storage.RecordKey{ID: int64(1001)})
+	if err == nil || !strings.Contains(err.Error(), "nil record lock") {
+		t.Fatalf("LoadDocument error = %v, want nil record lock error", err)
+	}
+}
+
 func TestFusionStrategyProjectsCanonicalDocumentWithJSONFieldName(t *testing.T) {
 	redis := &recordingDocumentLoader{}
 	mongo := &recordingDocumentLoader{doc: map[string]any{"roleId": int64(1001), "name": "cold", "power": int64(9)}, exists: true}
@@ -747,6 +801,28 @@ func TestFusionStrategyLoadDocumentsFallsBackMissingRowsToMongo(t *testing.T) {
 	}
 	if len(mongo.keys) != 1 || mongo.keys[0].ID != int64(1002) {
 		t.Fatalf("mongo fallback keys = %#v, want only missing key", mongo.keys)
+	}
+}
+
+func TestFusionStrategyLoadDocumentsReturnsRecordUnlockError(t *testing.T) {
+	unlockErr := errors.New("unlock failed")
+	redis := &recordingDocumentLoader{docs: []map[string]any{nil}, existsMany: []bool{false}}
+	mongo := &recordingDocumentLoader{docs: []map[string]any{{"name": "cold"}}, existsMany: []bool{true}}
+	locker := &recordingRecordLocker{lock: &recordingRecordLock{unlockErr: unlockErr}}
+	strategy := fusion.Strategy{
+		RedisLoader:   redis,
+		RedisReplacer: &recordingDocumentReplacerWithOptions{},
+		RedisLocker:   locker,
+		MongoLoader:   mongo,
+	}
+	spec := meta.TypeSpec{
+		Type:    meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
+		Storage: meta.StorageSpec{DelayDelete: meta.Duration{Duration: time.Hour}},
+	}
+
+	_, _, err := strategy.LoadDocuments(context.Background(), spec, []storage.RecordKey{{ID: int64(1001)}})
+	if !errors.Is(err, unlockErr) {
+		t.Fatalf("LoadDocuments error = %v, want unlock error", err)
 	}
 }
 

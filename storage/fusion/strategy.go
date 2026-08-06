@@ -2,6 +2,7 @@ package fusion
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -282,7 +283,7 @@ func (s Strategy) loadMissingDocumentsWithBatchBackfill(ctx context.Context, spe
 	return nil
 }
 
-func (s Strategy) backfillMongoDocumentAfterRedisCheck(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, mongoDocument map[string]any, mongoExists bool, fields ...string) (map[string]any, bool, error) {
+func (s Strategy) backfillMongoDocumentAfterRedisCheck(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, mongoDocument map[string]any, mongoExists bool, fields ...string) (document map[string]any, exists bool, err error) {
 	replacer := s.redisReplacerWithOptions()
 	if isNilFusionDependency(replacer) {
 		return nil, false, fmt.Errorf("fusion: redis backfill requires ReplaceDocumentWithOptions to set delayDelTime TTL")
@@ -295,15 +296,18 @@ func (s Strategy) backfillMongoDocumentAfterRedisCheck(ctx context.Context, spec
 	if err != nil {
 		return nil, false, err
 	}
-	defer func() { _ = lock.Unlock(ctx) }()
+	if isNilFusionDependency(lock) {
+		return nil, false, fmt.Errorf("%w: redis backfill received nil record lock", ErrStrategyDependenciesNotConfigured)
+	}
+	defer func() { releaseRecordLock(ctx, lock, &err) }()
 
 	if redisLoader := s.redisLoader(); !isNilFusionDependency(redisLoader) {
-		doc, exists, err := redisLoader.LoadDocument(ctx, spec, key, fields...)
+		document, exists, err = redisLoader.LoadDocument(ctx, spec, key, fields...)
 		if err != nil {
 			return nil, false, err
 		}
 		if exists {
-			return doc, true, nil
+			return document, true, nil
 		}
 	}
 	if !mongoExists {
@@ -326,7 +330,7 @@ func (s Strategy) backfillMongoDocumentAfterRedisCheck(ctx context.Context, spec
 	return projectDocument(spec, mongoDocument, fields), true, nil
 }
 
-func (s Strategy) loadMongoDocumentAndBackfillRedis(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, fields ...string) (map[string]any, bool, error) {
+func (s Strategy) loadMongoDocumentAndBackfillRedis(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, fields ...string) (document map[string]any, exists bool, err error) {
 	replacer := s.redisReplacerWithOptions()
 	if isNilFusionDependency(replacer) {
 		if !isNilFusionDependency(s.redisReplacer()) {
@@ -342,33 +346,47 @@ func (s Strategy) loadMongoDocumentAndBackfillRedis(ctx context.Context, spec me
 	if err != nil {
 		return nil, false, err
 	}
-	defer func() { _ = lock.Unlock(ctx) }()
+	if isNilFusionDependency(lock) {
+		return nil, false, fmt.Errorf("%w: redis backfill received nil record lock", ErrStrategyDependenciesNotConfigured)
+	}
+	defer func() { releaseRecordLock(ctx, lock, &err) }()
 
 	if redisLoader := s.redisLoader(); !isNilFusionDependency(redisLoader) {
-		doc, exists, err := redisLoader.LoadDocument(ctx, spec, key, fields...)
+		document, exists, err = redisLoader.LoadDocument(ctx, spec, key, fields...)
 		if err != nil {
 			return nil, false, err
 		}
 		if exists {
-			return doc, true, nil
+			return document, true, nil
 		}
 	}
 	ttl := int64(spec.Storage.DelayDelete.Duration.Seconds())
 	if ttl <= 0 {
 		return nil, false, fmt.Errorf("fusion: storage delayDelTime must be greater than 0 for redis backfill")
 	}
-	doc, exists, err := s.MongoLoader.LoadDocument(ctx, spec, key)
+	document, exists, err = s.MongoLoader.LoadDocument(ctx, spec, key)
 	if err != nil || !exists {
-		return doc, exists, err
+		return document, exists, err
 	}
 	options := storage.ApplyOptions{
 		Upsert: true,
 		TTL:    ttl,
 	}
-	if err := replacer.ReplaceDocumentWithOptions(ctx, spec, key, doc, options); err != nil {
+	if err := replacer.ReplaceDocumentWithOptions(ctx, spec, key, document, options); err != nil {
 		return nil, false, err
 	}
-	return projectDocument(spec, doc, fields), true, nil
+	return projectDocument(spec, document, fields), true, nil
+}
+
+func releaseRecordLock(ctx context.Context, lock storage.RecordLock, result *error) {
+	if unlockErr := lock.Unlock(ctx); unlockErr != nil {
+		unlockErr = fmt.Errorf("fusion: unlock record lock: %w", unlockErr)
+		if *result == nil {
+			*result = unlockErr
+			return
+		}
+		*result = errors.Join(*result, unlockErr)
+	}
 }
 
 func (s Strategy) loadRedisDocumentsOneByOne(ctx context.Context, spec meta.TypeSpec, keys []storage.RecordKey, loader storage.DocumentLoader, docs []map[string]any, exists []bool, missingIndexes *[]int, missingKeys *[]storage.RecordKey, fields ...string) error {
