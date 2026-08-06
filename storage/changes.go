@@ -76,6 +76,20 @@ func Save(ctx context.Context, applier DeltaApplier, store DeltaStore) error {
 
 // SaveWithOptions 保存 Store 当前记录的 DeltaSet，并允许框架调用方覆盖 TTL 等写入选项。
 func SaveWithOptions(ctx context.Context, applier DeltaApplier, store DeltaStore, options ApplyOptions) error {
+	if isNilDeltaStore(store) {
+		return ErrNilDeltaStore
+	}
+	return SaveDeltasWithOptions(ctx, applier, store, store.Deltas(), options)
+}
+
+// SaveDeltas 保存已投影的 DeltaSet。它供状态调度等框架内部路径复用同一份
+// 投影结果，避免在一次落盘中重复调用 Store.Deltas。空 DeltaSet 不触发 I/O。
+func SaveDeltas(ctx context.Context, applier DeltaApplier, store DeltaStore, deltas change.DeltaSet) error {
+	return SaveDeltasWithOptions(ctx, applier, store, deltas, ApplyOptions{})
+}
+
+// SaveDeltasWithOptions 保存已投影的 DeltaSet，并允许框架调用方覆盖 TTL 等写入选项。
+func SaveDeltasWithOptions(ctx context.Context, applier DeltaApplier, store DeltaStore, deltas change.DeltaSet, options ApplyOptions) error {
 	if applier == nil {
 		return ErrNilDeltaApplier
 	}
@@ -85,9 +99,12 @@ func SaveWithOptions(ctx context.Context, applier DeltaApplier, store DeltaStore
 	if isReadOnlyDeltaStore(store) {
 		return ErrReadOnlyStore
 	}
+	if len(deltas) == 0 {
+		return nil
+	}
 	options = mergeApplyOptions(store.DefaultApplyOptions(), options)
 	options.Upsert = false
-	if err := applier.ApplyDeltasWithOptions(ctx, store.TypeSpec(), store.RecordKey(), store.Deltas(), store.FieldNameResolver(), store.DeltaValueResolver(), options); err != nil {
+	if err := applier.ApplyDeltasWithOptions(ctx, store.TypeSpec(), store.RecordKey(), deltas, store.FieldNameResolver(), store.DeltaValueResolver(), options); err != nil {
 		return err
 	}
 	store.ClearDeltas()

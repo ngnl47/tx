@@ -48,7 +48,7 @@ func (s *testDeltaStore) DeltaValueResolver() change.DeltaValueResolver {
 	return change.DeltaValueResolverFunc(func(change.DeltaPath) (any, bool) { return nil, false })
 }
 func (s *testDeltaStore) DefaultApplyOptions() storage.ApplyOptions { return s.defaults }
-func (s *testDeltaStore) IsViewStore() bool                       { return s.view }
+func (s *testDeltaStore) IsViewStore() bool                         { return s.view }
 func (s *testDeltaStore) AllTouch() {
 	s.allTouched++
 	s.deltas = change.DeltaSet{{Path: testStorageDeltaPath(1), Kind: change.DeltaKindSet}}
@@ -122,6 +122,33 @@ func TestStorageSaveFailureKeepsDeltas(t *testing.T) {
 	}
 	if store.cleared != 0 {
 		t.Fatalf("ClearDeltas calls after failure = %d, want 0", store.cleared)
+	}
+}
+
+func TestStorageSaveDeltasUsesProvidedProjectionAndSkipsEmptySet(t *testing.T) {
+	delta := change.DeltaEntry{Path: testStorageDeltaPath(2), Kind: change.DeltaKindSet}
+	store := &testDeltaStore{
+		deltas: change.DeltaSet{{Path: testStorageDeltaPath(1), Kind: change.DeltaKindSet}},
+	}
+	applier := &recordingDeltaStoreApplier{}
+
+	if err := storage.SaveDeltas(context.Background(), applier, store, change.DeltaSet{delta}); err != nil {
+		t.Fatalf("SaveDeltas returned error: %v", err)
+	}
+	if len(applier.deltas) != 1 || !applier.deltas[0].Path.Equal(delta.Path) {
+		t.Fatalf("applied deltas = %#v, want supplied projection", applier.deltas)
+	}
+	if store.cleared != 1 {
+		t.Fatalf("ClearDeltas calls = %d, want 1", store.cleared)
+	}
+
+	store.cleared = 0
+	applier.hasOptions = false
+	if err := storage.SaveDeltas(context.Background(), applier, store, nil); err != nil {
+		t.Fatalf("SaveDeltas empty set returned error: %v", err)
+	}
+	if applier.hasOptions || store.cleared != 0 {
+		t.Fatalf("empty set reached persistence path: applier=%#v store=%#v", applier, store)
 	}
 }
 

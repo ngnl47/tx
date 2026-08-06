@@ -40,7 +40,8 @@
 - 需要在根事务提交后开启独立事务时，通过 `AfterCommit` 调度新的 `Procedure`，不与父事务共享原子性或锁。
 - 单机事务只保证经 Store 受控 API 发生的修改可回滚；裸字段赋值和 snapshot diff 不参与事务回滚。undo log 属于一次事务的临时状态，不写入 GD，也不作为 Store 的长期业务数据。
 - 事务锁对象由生成代码在 GD 与 Store 侧提供：业务通过 `txn.Locks(guild, role)` 收集，GD 的 `LockTarget()` 只代理默认 Store，不复制业务数据。字段 setter、map/slice 的 `Set/Delete/Replace` 和生成对象子 Store setter 在事务内登记 undo；事务成功后的存储写入、消息发送或后续业务动作通过 `AfterCommit` 等机制调度；这表示内存事务已提交，不等价于 Mongo 已可靠落盘。
-- 可选 `modules/state.Manager` 服务于有状态运行时。它按 `LockKey` 聚合脏 Store；`manager.Call` 在事务成功后登记 `DirtyTargets`，不执行 I/O；`manager.Flush` 逐目标取得同一把本机锁，在锁内投影并压缩 DeltaSet 后调用 `storage.Save`，成功才清理 delta。Manager 不保存业务副本，不把 Store 或 DeltaSet 作为异步队列项。
+- 可选 `modules/state.Manager` 服务于有状态运行时。它按 `LockKey` 聚合脏 Store；`manager.Call` 在事务成功后登记 `DirtyTargets`，不执行 I/O；`manager.Flush` 逐目标取得同一把本机锁，只投影一次 DeltaSet 并复用该结果调用 `storage.SaveDeltas`，成功才清理 delta。Manager 不保存业务副本，不把 Store 或 DeltaSet 作为异步队列项。
+- 有状态运行时的 Store dirty 状态是按路径覆盖的集合，不会因同一路径重复修改无限追加；但未成功 Flush 前的不同集合 key/index 会持续累积。`map[K]*GD...` 和 `[]*GD...` 会缓存已访问元素的子 Store，但另行维护 dirty 子路径索引，投影与清理不再遍历全部缓存子 Store。当前不设隐式容量上限或 setter 内强制刷盘，存储持续失败且业务持续新增不同路径时仍可能造成内存压力。
 - 无状态服务不使用 `modules/state` 和 `modules/txn`：请求内临时加载 GD，直接由项目 facade 调用 `db.Save` 或 snapshot `SaveChange` 写 Fusion。启用有状态运行时后，所有写操作都必须通过 `Procedure + state.Manager`；读取不要求进入事务。
 - 当前标脏主线是 `change.DeltaSet`。热路径只保存 `FieldID`、map key、slice index 和 `DeltaKind`，不常驻拼接字符串路径。
 - `DeltaEntry` 当前只保存 `Path` 和 `Kind`，不持有字段值；生成 Store 会在输出边界按 DeltaPath 读取当前值。后续如需性能优化，只做局部 fast path，不提前引入自研 value 编码。
@@ -86,7 +87,8 @@
 4. 日志基建后续专题：确定业务项目 logger 枚举或包级变量、名称规范、级别配置和 tx/log 的最小扩展点。
 5. RedisJSON/ReJSON 仅作为未来可选 backend 单独评估；SQL、消息队列等其他 backend 也不进入当前主线。
 6. 完善可选的 `tx/modules/txn` 与 `tx/modules/state`：`@transaction` 已生成 `LockKey()` 和 `LockTarget()`；受控字段、map、slice 与生成对象子 Store 已登记 undo，并覆盖事务失败后的回滚。事务锁使用按逻辑 Key 管理的本机锁表，按稳定顺序获取，并由 `context.Context` 提供锁等待超时；超时必须释放已获取锁且不得进入回调。`Procedure.Locks`/`tx.Call` 已约束锁集和输出嵌套路径；Manager 已覆盖事务后登记、持锁 Flush、失败重试，以及先等待全局 `WaitGroupContext` 再执行的最终限时刷盘。后续用真实 Redis/Mongo 压测决定是否需要不可变写入批次；第一版不处理分布式锁、跨实例事务或持久化层 ACID。
-7. 在状态运行时边界稳定后，评估可选 `tx/modules/actor` 与 RPC。actor 负责业务一致性域的单实例串行执行和跨进程路由；事务模块只负责该实例内的多对象锁定、回滚和提交，Manager 只负责当前进程的脏实体落盘，三者不反向依赖。
+7. 有状态脏数据容量保护：已补“固定路径重复修改”“大量不同 map/slice 路径”“成功 Flush”“持续失败 Flush”与 clean cached 子 Store 的基准/回归。固定路径不会累积 Delta；1024 个干净缓存 map 子节点投影已从全量扫描收敛为只检查 dirty 索引。后续应以真实对象规模、集合基数、Flush 周期和失败持续时间决定 Manager 高水位、失败背压/降级与 clean 子 Store 剪枝；不得在生成 setter 中隐式 I/O 或强制 Flush，避免破坏 Procedure 的锁边界、undo 与批量合并。
+8. 在状态运行时边界稳定后，评估可选 `tx/modules/actor` 与 RPC。actor 负责业务一致性域的单实例串行执行和跨进程路由；事务模块只负责该实例内的多对象锁定、回滚和提交，Manager 只负责当前进程的脏实体落盘，三者不反向依赖。
 
 ## Module Layout
 

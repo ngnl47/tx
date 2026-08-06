@@ -14,8 +14,9 @@ import (
 )
 
 type stateTestStore struct {
-	recorder change.UndoRecorder
-	deltas   change.DeltaSet
+	recorder   change.UndoRecorder
+	deltas     change.DeltaSet
+	deltaReads int
 }
 
 func (store *stateTestStore) SetUndoRecorder(recorder change.UndoRecorder) {
@@ -42,6 +43,7 @@ func (store *stateTestStore) RecordKey() storage.RecordKey {
 }
 
 func (store *stateTestStore) Deltas() change.DeltaSet {
+	store.deltaReads++
 	return store.deltas
 }
 
@@ -95,12 +97,16 @@ func TestStateManagerDefersTransactionStoreUntilFlush(t *testing.T) {
 	if len(store.Deltas()) != 1 {
 		t.Fatalf("store deltas = %#v, want pending change", store.Deltas())
 	}
+	store.deltaReads = 0
 
 	if err := manager.Flush(context.Background()); err != nil {
 		t.Fatalf("Flush returned error: %v", err)
 	}
 	if !writer.hasOptions || len(writer.deltas) != 1 {
 		t.Fatalf("writer state = %#v, want one persisted delta", writer)
+	}
+	if store.deltaReads != 1 {
+		t.Fatalf("Flush Deltas calls = %d, want 1", store.deltaReads)
 	}
 	if manager.Pending() != 0 || len(store.Deltas()) != 0 {
 		t.Fatalf("flush left pending=%d deltas=%#v", manager.Pending(), store.Deltas())

@@ -185,11 +185,12 @@ func (manager *Manager) flushTarget(ctx context.Context, entry targetEntry) erro
 			manager.forget(entry)
 			return nil
 		}
-		if len(store.Deltas()) == 0 {
+		deltas := store.Deltas()
+		if len(deltas) == 0 {
 			manager.forget(entry)
 			return nil
 		}
-		if err := storage.Save(ctx, manager.writer, store); err != nil {
+		if err := storage.SaveDeltas(ctx, manager.writer, store, deltas); err != nil {
 			return err
 		}
 		manager.forget(entry)

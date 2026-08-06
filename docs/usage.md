@@ -865,7 +865,7 @@ if err := manager.Flush(ctx); err != nil {
 }
 ```
 
-`Flush` 会为每个实体取得与 `Procedure` 相同的本机锁，在锁内执行 `Deltas -> Compact -> storage.Save`，成功后才清理 delta。这样并发 Procedure 不会在 Flush 读取 `GD*` 当前值时修改同一个对象：
+`Flush` 会为每个实体取得与 `Procedure` 相同的本机锁，在锁内执行一次 `Deltas -> Compact`，并将这份投影交给框架写入入口，成功后才清理 delta。这样并发 Procedure 不会在 Flush 读取 `GD*` 当前值时修改同一个对象：
 
 ```text
 事务 1：role.SetGold(100)
@@ -888,6 +888,8 @@ if err := manager.Shutdown(shutdownCtx, 10*time.Second); err != nil {
 ```
 
 `Run` 遇到单次写入错误会记录错误并保留目标，下一轮继续重试。`Shutdown` 则在 `shutdownCtx` 有效期内立即 Flush 并按重试间隔继续尝试；截止时间到达时会返回错误和剩余待刷数量。该超时只约束内存 Store 到 Redis 的最终刷盘，不等待 Fusion 的 Redis 延迟队列回写 Mongo。第一版不把 `DeltaSet`、Store 或 GD 指针交给 Actor 外的异步写队列；如未来需要解除 Flush 的 I/O 持锁时间，应在锁内物化不可变写入批次，并补齐顺序确认与失败重试语义。
+
+同一路径的重复写入不会无限增加 dirty 条目。例如连续修改 `role.Items[1001].Quantity`，最终只保留 `Items.1001.Quantity` 的最新状态；但持续新增不同 key 会持续增加路径数量。生成的 map/slice Store 会缓存读取过的子 Store 以保持路径身份，不过投影和清理只遍历实际变脏的子路径，不会扫描全部缓存元素。不要在 setter 内加入隐式 Flush 或 I/O；由 `Manager` 的调度周期和业务侧反压策略决定何时落盘。
 
 ### 零值和删除
 
