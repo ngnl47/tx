@@ -75,6 +75,7 @@
 - `map[K]*GD...` 遇到不能表达为 `PathKey` 的 key 类型时，仍可通过子 Store 修改数据，但导出时保守替换整 map；`txgame` 已覆盖枚举 key 的真实输入回归。
 - `txgame` 的 `GDRole`、`GDLegion` 已使用 `@transaction` 生成锁键与锁对象，并以 `PGuildContribution` 覆盖多对象锁序、生成 Store undo 和回滚后变更文档清理。
 - `txn.Tx.DirtyTargets()` 已按锁顺序暴露本次经受控 Store API 修改且仍有 delta 的根目标；savepoint 回滚或清空 delta 的目标不会出现。`modules/state.Manager` 使用它在事务成功后登记落盘对象；`txgame/server/internal/state.Call(ctx, procedure)` 是有状态项目侧入口，`runtime.state.flushInterval` 控制生命周期内的定时 Flush，`runtime.state.shutdownFlushTimeout` 控制服务退出时的最终 Redis 刷盘窗口。生命周期先用服务全局 `WaitGroupContext` 等待已经进入的业务任务结束，再使用不受运行 context 取消影响的限时 context 进行最终刷盘；它不等待 Fusion 延迟队列回写 Mongo。`runtime.transaction.debug.checkCleanLockTargets` 仅用于临时、无历史 delta 的直接 `txn.Call`；Manager 会显式允许此前未 Flush 的 delta。
+- `txgame` 已以真实 Redis、Redis 延迟任务和 Mongo 覆盖 `state.Manager`：`Procedure` 成功后 Redis 尚无记录，`Flush` 后热数据出现并清理 Store delta，延迟任务消费后 Mongo 获得相同最终文档。生命周期会把最终 Flush 错误返回给项目宿主，不静默吞掉超时或失败。
 - Fusion 批量混合命中先批量读取 Redis；Mongo reader 支持批量读取时，所有 miss 只做一次 Mongo 全文批量读取，再逐条进入记录锁、二次 Redis 读取与带 TTL 回填。锁内命中 Redis 时直接返回新热数据，不能以旧 Mongo 候选覆盖它。
 
 1. 保持 `txgame` 集成验证与生成 Store 行为同步：新增集合、指针、存储边界行为时，补业务侧代码示例及真实 Redis/Mongo 回归。
