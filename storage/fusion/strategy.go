@@ -3,6 +3,8 @@ package fusion
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"strings"
 	"time"
 
 	"github.com/ngnl47/tx/change"
@@ -34,6 +36,40 @@ type Strategy struct {
 	MongoQueue    DelayQueue
 	LoadLockTTL   time.Duration
 	LoadLockWait  time.Duration
+}
+
+// Validate 校验 Fusion 运行时的完整装配。项目启动时必须调用该方法，避免缺失
+// Redis/Mongo/延迟队列组件的半装配实例进入业务服务。
+func (s Strategy) Validate() error {
+	missing := make([]string, 0, 8)
+	if isNilFusionDependency(s.Redis) {
+		missing = append(missing, "redis delta applier")
+	}
+	if isNilFusionDependency(s.redisLoader()) {
+		missing = append(missing, "redis document loader")
+	}
+	if isNilFusionDependency(s.redisDeleter()) {
+		missing = append(missing, "redis deleter")
+	}
+	if isNilFusionDependency(s.redisReplacerWithOptions()) {
+		missing = append(missing, "redis document replacer")
+	}
+	if isNilFusionDependency(s.redisLocker()) {
+		missing = append(missing, "redis record locker")
+	}
+	if isNilFusionDependency(s.MongoLoader) {
+		missing = append(missing, "mongo document loader")
+	}
+	if isNilFusionDependency(s.MongoDeleter) {
+		missing = append(missing, "mongo deleter")
+	}
+	if isNilFusionDependency(s.MongoQueue) {
+		missing = append(missing, "mongo delayed queue")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("%w: %s", ErrStrategyDependenciesNotConfigured, strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 // ApplyDeltasWithOptions 应用一次 Delta 变更，并把写入选项限定传递给 Redis。
@@ -75,17 +111,16 @@ func (s Strategy) LoadDocument(ctx context.Context, spec meta.TypeSpec, key stor
 }
 
 func (s Strategy) LoadDocumentWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, options LoadOptions, fields ...string) (map[string]any, bool, error) {
-	if redisLoader := s.redisLoader(); redisLoader != nil {
-		doc, exists, err := redisLoader.LoadDocument(ctx, spec, key, fields...)
-		if err != nil {
-			return nil, false, err
-		}
-		if exists {
-			return doc, true, nil
-		}
+	redisLoader, err := s.readDependencies()
+	if err != nil {
+		return nil, false, err
 	}
-	if s.MongoLoader == nil {
-		return nil, false, nil
+	doc, exists, err := redisLoader.LoadDocument(ctx, spec, key, fields...)
+	if err != nil {
+		return nil, false, err
+	}
+	if exists {
+		return doc, true, nil
 	}
 	if options.DontLoadToRedis {
 		return s.MongoLoader.LoadDocument(ctx, spec, key, fields...)
@@ -105,9 +140,12 @@ func (s Strategy) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSp
 		return docs, exists, nil
 	}
 
+	redisLoader, err := s.readDependencies()
+	if err != nil {
+		return nil, nil, err
+	}
 	missingIndexes := make([]int, 0, len(keys))
 	missingKeys := make([]storage.RecordKey, 0, len(keys))
-	redisLoader := s.redisLoader()
 	if redisBatch, ok := redisLoader.(storage.BatchDocumentLoader); ok {
 		redisDocs, redisExists, err := redisBatch.LoadDocuments(ctx, spec, keys, fields...)
 		if err != nil {
@@ -131,7 +169,7 @@ func (s Strategy) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSp
 		}
 	}
 
-	if len(missingKeys) == 0 || s.MongoLoader == nil {
+	if len(missingKeys) == 0 {
 		return docs, exists, nil
 	}
 	if options.DontLoadToRedis {
@@ -144,6 +182,30 @@ func (s Strategy) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSp
 		return nil, nil, err
 	}
 	return docs, exists, nil
+}
+
+func (s Strategy) readDependencies() (storage.DocumentLoader, error) {
+	redisLoader := s.redisLoader()
+	if isNilFusionDependency(redisLoader) {
+		return nil, fmt.Errorf("%w: redis document loader", ErrStrategyDependenciesNotConfigured)
+	}
+	if isNilFusionDependency(s.MongoLoader) {
+		return nil, fmt.Errorf("%w: mongo document loader", ErrStrategyDependenciesNotConfigured)
+	}
+	return redisLoader, nil
+}
+
+func isNilFusionDependency(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 func (s Strategy) loadMongoMissingDocuments(ctx context.Context, spec meta.TypeSpec, missingIndexes []int, missingKeys []storage.RecordKey, docs []map[string]any, exists []bool, fields ...string) ([]map[string]any, []bool, error) {

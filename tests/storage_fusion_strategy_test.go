@@ -226,6 +226,69 @@ func TestFusionStrategyRejectsMissingWriteDependencies(t *testing.T) {
 	}
 }
 
+func TestFusionStrategyValidatesCompleteRuntimeDependencies(t *testing.T) {
+	redis := &recordingRedisStore{}
+	strategy := fusion.Strategy{
+		Redis:         redis,
+		RedisLoader:   redis,
+		RedisDeleter:  redis,
+		RedisReplacer: &recordingDocumentReplacerWithOptions{},
+		RedisLocker:   &recordingRecordLocker{},
+		MongoLoader:   &recordingDocumentLoader{},
+		MongoDeleter:  &recordingDeleteApplier{},
+		MongoQueue:    &recordingQueue{},
+	}
+	validator, ok := any(strategy).(interface{ Validate() error })
+	if !ok {
+		t.Fatal("fusion strategy does not expose runtime dependency validation")
+	}
+	if err := validator.Validate(); err != nil {
+		t.Fatalf("Validate returned error: %v", err)
+	}
+}
+
+func TestFusionStrategyRejectsMissingRedisLoader(t *testing.T) {
+	strategy := fusion.Strategy{
+		MongoLoader: &recordingDocumentLoader{doc: map[string]any{"name": "mongo"}, exists: true},
+	}
+
+	_, exists, err := strategy.LoadDocument(context.Background(), meta.TypeSpec{}, storage.RecordKey{ID: int64(1001)})
+	if err == nil {
+		t.Fatal("LoadDocument error = nil, want missing Redis loader error")
+	}
+	if exists {
+		t.Fatal("LoadDocument exists = true, want no fallback read with incomplete Fusion runtime")
+	}
+}
+
+func TestFusionStrategyRejectsMissingMongoLoaderAfterRedisMiss(t *testing.T) {
+	strategy := fusion.Strategy{
+		RedisLoader: &recordingDocumentLoader{exists: false},
+	}
+
+	_, exists, err := strategy.LoadDocument(context.Background(), meta.TypeSpec{}, storage.RecordKey{ID: int64(1001)})
+	if err == nil {
+		t.Fatal("LoadDocument error = nil, want missing Mongo loader error")
+	}
+	if exists {
+		t.Fatal("LoadDocument exists = true, want no result with incomplete Fusion runtime")
+	}
+}
+
+func TestFusionStrategyRejectsMissingMongoLoaderForBatchRedisMiss(t *testing.T) {
+	strategy := fusion.Strategy{
+		RedisLoader: &recordingDocumentLoader{existsMany: []bool{true, false}, docs: []map[string]any{{"name": "redis"}, nil}},
+	}
+
+	_, exists, err := strategy.LoadDocuments(context.Background(), meta.TypeSpec{}, []storage.RecordKey{{ID: int64(1001)}, {ID: int64(1002)}})
+	if err == nil {
+		t.Fatal("LoadDocuments error = nil, want missing Mongo loader error")
+	}
+	if exists != nil {
+		t.Fatalf("LoadDocuments exists = %#v, want no partial result with incomplete Fusion runtime", exists)
+	}
+}
+
 func TestFusionStrategyAppliesRedisBeforeQueue(t *testing.T) {
 	queue := &recordingQueue{}
 	redis := &recordingApplier{}
@@ -394,7 +457,7 @@ func TestFusionStrategyLoadDocumentUsesRedisApplierWhenLoaderIsUnset(t *testing.
 			exists: true,
 		},
 	}
-	strategy := fusion.Strategy{Redis: redis}
+	strategy := fusion.Strategy{Redis: redis, MongoLoader: &recordingDocumentLoader{}}
 	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
 	key := storage.RecordKey{ID: int64(1001)}
 
@@ -780,7 +843,7 @@ func TestFusionStrategyLoadDocumentsUsesRedisApplierWhenLoaderIsUnset(t *testing
 			existsMany: []bool{true, true},
 		},
 	}
-	strategy := fusion.Strategy{Redis: redis}
+	strategy := fusion.Strategy{Redis: redis, MongoLoader: &recordingDocumentLoader{}}
 	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
 
 	docs, exists, err := strategy.LoadDocuments(context.Background(), spec, keys, "name")
