@@ -194,6 +194,22 @@ func TestRedisAdapterRejectsNilClientForDocumentOperations(t *testing.T) {
 	assertRedisClientNotConfigured(t, err)
 }
 
+func TestRedisAdapterRejectsDeltaSetWithoutEffectivePatch(t *testing.T) {
+	adapter := txredis.NewAdapter(&recordingRedisStringClient{})
+	err := adapter.ApplyDeltasWithOptions(
+		context.Background(),
+		meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}},
+		storage.RecordKey{ID: int64(1001)},
+		change.DeltaSet{{Kind: change.DeltaKindSet}},
+		testBackendResolver(change.NameBackendJSON, deltaTestJSONNames()),
+		testDeltaValues(nil),
+		storage.ApplyOptions{},
+	)
+	if !errors.Is(err, storage.ErrNoEffectiveDeltas) {
+		t.Fatalf("ApplyDeltasWithOptions error = %v, want ErrNoEffectiveDeltas", err)
+	}
+}
+
 func assertRedisClientNotConfigured(t *testing.T, err error) {
 	t.Helper()
 	if !errors.Is(err, txredis.ErrClientNotConfigured) {

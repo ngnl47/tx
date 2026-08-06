@@ -171,6 +171,22 @@ func TestMongoAdapterRejectsMissingClientCapability(t *testing.T) {
 	assertMongoUnsupportedClient(t, err, "BatchFinder or Finder")
 }
 
+func TestMongoAdapterRejectsDeltaSetWithoutEffectiveUpdate(t *testing.T) {
+	adapter := txmongo.NewAdapter(&recordingMongoUpdater{})
+	err := adapter.ApplyDeltasWithOptions(
+		context.Background(),
+		meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}},
+		storage.RecordKey{ID: int64(1001)},
+		change.DeltaSet{{Kind: change.DeltaKindSet}},
+		testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()),
+		testDeltaValues(nil),
+		storage.ApplyOptions{},
+	)
+	if !errors.Is(err, storage.ErrNoEffectiveDeltas) {
+		t.Fatalf("ApplyDeltasWithOptions error = %v, want ErrNoEffectiveDeltas", err)
+	}
+}
+
 func TestMongoAdapterRejectsNilReplacementDocument(t *testing.T) {
 	adapter := txmongo.NewAdapter(&recordingMongoUpdater{})
 	err := adapter.ReplaceDocument(context.Background(), mongoDocumentSpec(), storage.RecordKey{ID: int64(1001)}, nil)
@@ -518,6 +534,35 @@ func TestMongoAdapterUpsertSkipsImmutableIDDelta(t *testing.T) {
 	}
 	if _, exists := setDoc["_id"]; exists {
 		t.Fatalf("upsert update must not contain immutable _id: %#v", updater.update)
+	}
+}
+
+func TestMongoAdapterRejectsUpsertWithOnlyImmutableIDDelta(t *testing.T) {
+	updater := &recordingMongoUpdater{}
+	adapter := txmongo.NewAdapter(updater)
+	spec := meta.TypeSpec{
+		Type:  meta.Type{Fields: []meta.Field{{Name: "RoleId", BSONName: "_id"}}},
+		Mongo: &meta.MongoSpec{Collection: "roles", IDField: "RoleId"},
+	}
+	const mongoFieldRoleID change.FieldID = 5
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(mongoFieldRoleID)), Kind: change.DeltaKindSet}}
+	resolver := testNamedBackendResolver(map[change.NameBackend]map[change.FieldID]string{
+		change.NameBackendGo:   {mongoFieldRoleID: "RoleId"},
+		change.NameBackendBSON: {mongoFieldRoleID: "_id"},
+	})
+	values := change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
+		if path.Equal(deltaPath(fieldNode(mongoFieldRoleID))) {
+			return int64(1001), true
+		}
+		return nil, false
+	})
+
+	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, resolver, values, storage.ApplyOptions{Upsert: true})
+	if err == nil || !strings.Contains(err.Error(), "no mutable deltas") {
+		t.Fatalf("ApplyDeltasWithOptions error = %v, want empty upsert error", err)
+	}
+	if updater.update != nil {
+		t.Fatalf("UpdateOne was called for invalid empty upsert: %#v", updater.update)
 	}
 }
 

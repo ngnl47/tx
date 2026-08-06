@@ -71,7 +71,10 @@ func (a *Adapter) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec
 		return err
 	}
 	if len(update) == 0 {
-		return nil
+		if options.Upsert {
+			return fmt.Errorf("mongo: upsert has no mutable deltas after excluding immutable record id")
+		}
+		return storage.ErrNoEffectiveDeltas
 	}
 	updater, ok := a.client.(Updater)
 	if !ok {

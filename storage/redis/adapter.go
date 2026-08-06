@@ -62,7 +62,7 @@ func (a *Adapter) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec
 		return err
 	}
 	if len(patches) == 0 {
-		return nil
+		return storage.ErrNoEffectiveDeltas
 	}
 	return a.applyDocumentPatchesWithOptions(ctx, spec, key, patches, options)
 }
