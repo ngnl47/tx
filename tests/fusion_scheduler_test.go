@@ -55,11 +55,20 @@ func TestFusionSchedulerScheduleRejectsMissingBackend(t *testing.T) {
 	}
 }
 
-func TestFusionSchedulerStartIgnoresTypedNilContext(t *testing.T) {
+func TestFusionSchedulerStartRejectsTypedNilContext(t *testing.T) {
 	var ctx *lifecycle.WaitGroupContext
 	scheduler := fusion.NewScheduler(memory.NewBackend())
 
-	scheduler.Start(ctx)
+	if err := scheduler.Start(ctx); !errors.Is(err, fusion.ErrSchedulerContextNotConfigured) {
+		t.Fatalf("Start error = %v, want ErrSchedulerContextNotConfigured", err)
+	}
+}
+
+func TestFusionSchedulerStartRejectsMissingBackend(t *testing.T) {
+	ctx := lifecycle.NewWaitGroupContext(context.Background())
+	if err := fusion.NewScheduler(nil).Start(ctx); !errors.Is(err, fusion.ErrTaskBackendNotConfigured) {
+		t.Fatalf("Start error = %v, want ErrTaskBackendNotConfigured", err)
+	}
 }
 
 func TestFusionDelayTaskComponentsRejectTypedNilBackend(t *testing.T) {

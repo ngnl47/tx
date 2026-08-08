@@ -5,6 +5,7 @@ import "errors"
 var (
 	ErrTaskBackendNotConfigured           = errors.New("fusion: delayed task backend is not configured")
 	ErrTaskHandlerNotConfigured           = errors.New("fusion: delayed task handler is not configured")
+	ErrSchedulerContextNotConfigured      = errors.New("fusion: scheduler lifecycle context is not configured")
 	ErrDelayTaskDependenciesNotConfigured = errors.New("fusion: delayed task dependencies are not configured")
 	ErrStrategyDependenciesNotConfigured  = errors.New("fusion: strategy dependencies are not configured")
 	ErrRedisNotConfigured                 = errors.New("fusion: redis delta applier is not configured")

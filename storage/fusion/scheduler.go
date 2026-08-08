@@ -85,15 +85,21 @@ func (s *Scheduler) Schedule(ctx context.Context, item task.DelayTask) error {
 	return s.backend.Enqueue(ctx, item)
 }
 
-func (s *Scheduler) Start(ctx waitGroupContext) {
-	if s == nil || isNilFusionDependency(s.backend) || isNilFusionDependency(ctx) {
-		return
+// Start 使用生命周期上下文启动后台消费循环。启动依赖缺失时返回错误，避免调用方
+// 误以为延迟回写已经运行。
+func (s *Scheduler) Start(ctx waitGroupContext) error {
+	if s == nil || isNilFusionDependency(s.backend) {
+		return ErrTaskBackendNotConfigured
+	}
+	if isNilFusionDependency(ctx) {
+		return ErrSchedulerContextNotConfigured
 	}
 	ctx.WaitGroupAdd(1)
 	go func() {
 		defer ctx.WaitGroupDone()
 		s.run(ctx)
 	}()
+	return nil
 }
 
 func (s *Scheduler) RunOnce(ctx context.Context, now time.Time) (int, error) {

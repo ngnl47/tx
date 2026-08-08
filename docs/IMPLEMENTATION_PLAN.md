@@ -368,7 +368,7 @@ type DelayTaskBackend interface {
 - 有 subKey 的批量读取仍然使用客户端 `MGET`：每条记录展开为 main key 加需要的 subKey key，返回后按输入记录顺序和每条记录 key 数合并。
 - Redis backend 按 bucket 分散队列 key，claim worker 会轮询 bucket 消费。
 - 多个服务实例同时消费时，同一任务同一时刻只能被一个 lease 持有；lease 超时后允许重新领取。
-- Fusion 后台 worker 使用 lifecycle 上下文，在优雅关停时等待已 claim 的 Mongo 回写任务完成。
+- Fusion 后台 worker 使用 lifecycle 上下文，在优雅关停时等待已 claim 的 Mongo 回写任务完成；`Scheduler.Start` 在 backend 或生命周期上下文缺失时返回错误，项目启动入口必须处理该错误，不能静默跳过 worker。
 - Fusion delayed save worker 可把 Redis 热数据回写到 Mongo，并保留文档中的业务空值。
 - Fusion delete 不产生 Mongo 延迟删除任务，显式删除调用会删除 Redis 热数据并立即删除 Mongo 文档。
 - Fusion delayed task handler 只接受保存 action，delete 或其他未知 action 都不会被静默吞掉。
