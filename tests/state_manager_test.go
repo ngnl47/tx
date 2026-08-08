@@ -156,6 +156,22 @@ func TestStateManagerRetainsDirtyStoreWhenFlushFails(t *testing.T) {
 	}
 }
 
+func TestStateManagerRetainsDirtyStoreWhenWriterIsTypedNil(t *testing.T) {
+	var writer *recordingDeltaStoreApplier
+	store := &stateTestStore{}
+	store.Set()
+	manager := state.NewManager(writer)
+	manager.MarkDirty(txn.NewLockTarget(txn.NewLockKey("role", 1001), store))
+
+	err := manager.Flush(context.Background())
+	if !errors.Is(err, storage.ErrNilDeltaApplier) {
+		t.Fatalf("Flush error = %v, want ErrNilDeltaApplier", err)
+	}
+	if manager.Pending() != 1 || len(store.Deltas()) != 1 {
+		t.Fatalf("typed nil writer lost state: pending=%d deltas=%#v", manager.Pending(), store.Deltas())
+	}
+}
+
 type blockingStateWriter struct {
 	started chan struct{}
 	release chan struct{}

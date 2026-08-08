@@ -125,6 +125,24 @@ func TestStorageSaveFailureKeepsDeltas(t *testing.T) {
 	}
 }
 
+func TestStorageRejectsTypedNilDeltaApplier(t *testing.T) {
+	var applier *recordingDeltaStoreApplier
+	store := &testDeltaStore{deltas: change.DeltaSet{{Path: testStorageDeltaPath(2), Kind: change.DeltaKindSet}}}
+
+	if err := storage.Save(context.Background(), applier, store); !errors.Is(err, storage.ErrNilDeltaApplier) {
+		t.Fatalf("Save error = %v, want ErrNilDeltaApplier", err)
+	}
+	if store.cleared != 0 {
+		t.Fatalf("ClearDeltas calls = %d, want 0", store.cleared)
+	}
+	if err := storage.Create(context.Background(), applier, store); !errors.Is(err, storage.ErrNilDeltaApplier) {
+		t.Fatalf("Create error = %v, want ErrNilDeltaApplier", err)
+	}
+	if store.allTouched != 0 {
+		t.Fatalf("AllTouch calls = %d, want 0", store.allTouched)
+	}
+}
+
 func TestStorageSaveDeltasUsesProvidedProjectionAndSkipsEmptySet(t *testing.T) {
 	delta := change.DeltaEntry{Path: testStorageDeltaPath(2), Kind: change.DeltaKindSet}
 	store := &testDeltaStore{

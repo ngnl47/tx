@@ -51,7 +51,7 @@ func Create(ctx context.Context, applier DeltaApplier, store DeltaStore) error {
 
 // CreateWithOptions 全字段创建一条记录，并允许框架调用方覆盖 TTL 等写入选项。
 func CreateWithOptions(ctx context.Context, applier DeltaApplier, store DeltaStore, options ApplyOptions) error {
-	if applier == nil {
+	if isNilDeltaApplier(applier) {
 		return ErrNilDeltaApplier
 	}
 	if isNilDeltaStore(store) {
@@ -91,7 +91,7 @@ func SaveDeltas(ctx context.Context, applier DeltaApplier, store DeltaStore, del
 
 // SaveDeltasWithOptions 保存已投影的 DeltaSet，并允许框架调用方覆盖 TTL 等写入选项。
 func SaveDeltasWithOptions(ctx context.Context, applier DeltaApplier, store DeltaStore, deltas change.DeltaSet, options ApplyOptions) error {
-	if applier == nil {
+	if isNilDeltaApplier(applier) {
 		return ErrNilDeltaApplier
 	}
 	if isNilDeltaStore(store) {
@@ -125,6 +125,19 @@ func isNilDeltaStore(store DeltaStore) bool {
 		return true
 	}
 	value := reflect.ValueOf(store)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
+func isNilDeltaApplier(applier DeltaApplier) bool {
+	if applier == nil {
+		return true
+	}
+	value := reflect.ValueOf(applier)
 	switch value.Kind() {
 	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
 		return value.IsNil()
