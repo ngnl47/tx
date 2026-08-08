@@ -23,19 +23,39 @@ type ValuesFilter struct {
 	Values []any
 }
 
+// UpdateResult 描述 MongoDB 单文档更新结果。
+//
+// MatchedCount 为匹配到的记录数；UpsertedCount 为本次创建的记录数。
+// ModifiedCount 不进入该抽象：把字段写成当前已有值仍是一次成功更新。
+type UpdateResult struct {
+	MatchedCount  int64
+	UpsertedCount int64
+}
+
+// ReplaceResult 描述 MongoDB 单文档整文档替换结果。
+type ReplaceResult struct {
+	MatchedCount  int64
+	UpsertedCount int64
+}
+
+// DeleteResult 描述 MongoDB 单文档删除结果。
+type DeleteResult struct {
+	DeletedCount int64
+}
+
 // Updater 是 MongoDB 更新所需的最小接口。
 type Updater interface {
-	UpdateOne(context.Context, string, Filter, map[string]any, storage.ApplyOptions) error
+	UpdateOne(context.Context, string, Filter, map[string]any, storage.ApplyOptions) (UpdateResult, error)
 }
 
 // Replacer 是 MongoDB 整文档替换所需的最小接口。
 type Replacer interface {
-	ReplaceOne(context.Context, string, Filter, map[string]any) error
+	ReplaceOne(context.Context, string, Filter, map[string]any) (ReplaceResult, error)
 }
 
 // Deleter 是 MongoDB 删除所需的最小接口。
 type Deleter interface {
-	DeleteOne(context.Context, string, Filter) error
+	DeleteOne(context.Context, string, Filter) (DeleteResult, error)
 }
 
 // Finder 是 MongoDB 读取所需的最小接口。
@@ -80,7 +100,11 @@ func (a *Adapter) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec
 	if !ok {
 		return unsupportedClientError("Updater")
 	}
-	return updater.UpdateOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), update, options)
+	result, err := updater.UpdateOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), update, options)
+	if err != nil {
+		return err
+	}
+	return validateUpdateResult(result, options.Upsert)
 }
 
 // withoutUpsertIDDelta 移除首次创建时由等值 filter 自动提供的 Mongo _id。
@@ -110,7 +134,17 @@ func (a *Adapter) ReplaceDocument(ctx context.Context, spec meta.TypeSpec, key s
 	if err != nil {
 		return err
 	}
-	return replacer.ReplaceOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), bsonDocument)
+	result, err := replacer.ReplaceOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), bsonDocument)
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount == 1 && result.UpsertedCount == 0 {
+		return nil
+	}
+	if result.MatchedCount == 0 && result.UpsertedCount == 1 {
+		return nil
+	}
+	return fmt.Errorf("mongo: unexpected replace result matched=%d upserted=%d", result.MatchedCount, result.UpsertedCount)
 }
 
 // ApplyDelete 按记录键删除一条 Mongo 文档。
@@ -119,7 +153,27 @@ func (a *Adapter) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key stora
 	if !ok {
 		return unsupportedClientError("Deleter")
 	}
-	return deleter.DeleteOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key))
+	result, err := deleter.DeleteOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key))
+	if err != nil {
+		return err
+	}
+	if result.DeletedCount == 0 || result.DeletedCount == 1 {
+		return nil
+	}
+	return fmt.Errorf("mongo: unexpected delete result deleted=%d", result.DeletedCount)
+}
+
+func validateUpdateResult(result UpdateResult, upsert bool) error {
+	if result.MatchedCount == 1 && result.UpsertedCount == 0 {
+		return nil
+	}
+	if upsert && result.MatchedCount == 0 && result.UpsertedCount == 1 {
+		return nil
+	}
+	if !upsert && result.MatchedCount == 0 && result.UpsertedCount == 0 {
+		return storage.ErrNotExists
+	}
+	return fmt.Errorf("mongo: unexpected update result matched=%d upserted=%d upsert=%t", result.MatchedCount, result.UpsertedCount, upsert)
 }
 
 // LoadDocument 按记录键读取单条 Mongo 文档。

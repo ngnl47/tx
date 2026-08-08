@@ -24,38 +24,47 @@ func NewDatabase(db *mongo.Database) Database {
 	return Database{db: db}
 }
 
-func (d Database) UpdateOne(ctx context.Context, collection string, filter txmongo.Filter, update map[string]any, applyOptions storage.ApplyOptions) error {
+func (d Database) UpdateOne(ctx context.Context, collection string, filter txmongo.Filter, update map[string]any, applyOptions storage.ApplyOptions) (txmongo.UpdateResult, error) {
 	if d.db == nil {
-		return errMongoDatabaseNotConfigured
+		return txmongo.UpdateResult{}, errMongoDatabaseNotConfigured
 	}
-	_, err := d.db.Collection(collection).UpdateOne(
+	result, err := d.db.Collection(collection).UpdateOne(
 		ctx,
 		bson.M{filter.Field: filter.Value},
 		update,
 		options.Update().SetUpsert(applyOptions.Upsert),
 	)
-	return err
+	if err != nil {
+		return txmongo.UpdateResult{}, err
+	}
+	return txmongo.UpdateResult{MatchedCount: result.MatchedCount, UpsertedCount: result.UpsertedCount}, nil
 }
 
-func (d Database) ReplaceOne(ctx context.Context, collection string, filter txmongo.Filter, doc map[string]any) error {
+func (d Database) ReplaceOne(ctx context.Context, collection string, filter txmongo.Filter, doc map[string]any) (txmongo.ReplaceResult, error) {
 	if d.db == nil {
-		return errMongoDatabaseNotConfigured
+		return txmongo.ReplaceResult{}, errMongoDatabaseNotConfigured
 	}
-	_, err := d.db.Collection(collection).ReplaceOne(
+	result, err := d.db.Collection(collection).ReplaceOne(
 		ctx,
 		bson.M{filter.Field: filter.Value},
 		doc,
 		options.Replace().SetUpsert(true),
 	)
-	return err
+	if err != nil {
+		return txmongo.ReplaceResult{}, err
+	}
+	return txmongo.ReplaceResult{MatchedCount: result.MatchedCount, UpsertedCount: result.UpsertedCount}, nil
 }
 
-func (d Database) DeleteOne(ctx context.Context, collection string, filter txmongo.Filter) error {
+func (d Database) DeleteOne(ctx context.Context, collection string, filter txmongo.Filter) (txmongo.DeleteResult, error) {
 	if d.db == nil {
-		return errMongoDatabaseNotConfigured
+		return txmongo.DeleteResult{}, errMongoDatabaseNotConfigured
 	}
-	_, err := d.db.Collection(collection).DeleteOne(ctx, bson.M{filter.Field: filter.Value})
-	return err
+	result, err := d.db.Collection(collection).DeleteOne(ctx, bson.M{filter.Field: filter.Value})
+	if err != nil {
+		return txmongo.DeleteResult{}, err
+	}
+	return txmongo.DeleteResult{DeletedCount: result.DeletedCount}, nil
 }
 
 func (d Database) FindOne(ctx context.Context, collection string, filter txmongo.Filter, fields ...string) (map[string]any, bool, error) {

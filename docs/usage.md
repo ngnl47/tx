@@ -1703,6 +1703,9 @@ err := storage.Save(ctx, mongoCluster, role.Store())
 ```
 
 如果 Mongo 中没有对应记录，普通保存不会新建文档。需要明确创建时使用 `storage.Create`。
+Mongo adapter 会校验单文档写入结果：普通 `Save` 未匹配记录时返回 `storage.ErrNotExists`，并保留
+Store 当前 Delta 供业务定位或重试；`Create` 只接受“匹配已有记录”或“新建一条记录”两种结果。
+把字段写为当前已有值时，Mongo 的 `ModifiedCount` 可以为 `0`，这仍是合法成功。
 
 集合元素删除会转成 Mongo `$unset`：
 

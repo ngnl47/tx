@@ -14,15 +14,18 @@ import (
 )
 
 type recordingMongoUpdater struct {
-	collection string
-	filter     txmongo.Filter
-	update     map[string]any
-	replace    map[string]any
-	deleted    bool
-	fields     []string
-	doc        map[string]any
-	exists     bool
-	upsert     bool
+	collection    string
+	filter        txmongo.Filter
+	update        map[string]any
+	replace       map[string]any
+	deleted       bool
+	fields        []string
+	doc           map[string]any
+	exists        bool
+	upsert        bool
+	updateResult  *txmongo.UpdateResult
+	replaceResult *txmongo.ReplaceResult
+	deleteResult  *txmongo.DeleteResult
 
 	manyCollection string
 	manyFilter     txmongo.ValuesFilter
@@ -75,26 +78,35 @@ func mongoMapDocumentFactory() any {
 	return &value
 }
 
-func (u *recordingMongoUpdater) UpdateOne(_ context.Context, collection string, filter txmongo.Filter, update map[string]any, options storage.ApplyOptions) error {
+func (u *recordingMongoUpdater) UpdateOne(_ context.Context, collection string, filter txmongo.Filter, update map[string]any, options storage.ApplyOptions) (txmongo.UpdateResult, error) {
 	u.collection = collection
 	u.filter = filter
 	u.update = update
 	u.upsert = options.Upsert
-	return nil
+	if u.updateResult != nil {
+		return *u.updateResult, nil
+	}
+	return txmongo.UpdateResult{MatchedCount: 1}, nil
 }
 
-func (u *recordingMongoUpdater) ReplaceOne(_ context.Context, collection string, filter txmongo.Filter, doc map[string]any) error {
+func (u *recordingMongoUpdater) ReplaceOne(_ context.Context, collection string, filter txmongo.Filter, doc map[string]any) (txmongo.ReplaceResult, error) {
 	u.collection = collection
 	u.filter = filter
 	u.replace = doc
-	return nil
+	if u.replaceResult != nil {
+		return *u.replaceResult, nil
+	}
+	return txmongo.ReplaceResult{MatchedCount: 1}, nil
 }
 
-func (u *recordingMongoUpdater) DeleteOne(_ context.Context, collection string, filter txmongo.Filter) error {
+func (u *recordingMongoUpdater) DeleteOne(_ context.Context, collection string, filter txmongo.Filter) (txmongo.DeleteResult, error) {
 	u.collection = collection
 	u.filter = filter
 	u.deleted = true
-	return nil
+	if u.deleteResult != nil {
+		return *u.deleteResult, nil
+	}
+	return txmongo.DeleteResult{DeletedCount: 1}, nil
 }
 
 func (u *recordingMongoUpdater) FindOne(_ context.Context, collection string, filter txmongo.Filter, fields ...string) (map[string]any, bool, error) {
@@ -146,6 +158,66 @@ func TestMongoAdapterAppliesUpdateByDefaultIDFilter(t *testing.T) {
 	setDoc := updater.update["$set"].(map[string]any)
 	if setDoc["name"] != "alice" {
 		t.Fatalf("update = %#v", updater.update)
+	}
+}
+
+func TestMongoAdapterRejectsMissingRecordOnNonUpsertUpdate(t *testing.T) {
+	updater := &recordingMongoUpdater{updateResult: &txmongo.UpdateResult{}}
+	adapter := txmongo.NewAdapter(updater)
+	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+
+	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
+	if !errors.Is(err, storage.ErrNotExists) {
+		t.Fatalf("ApplyDeltasWithOptions error = %v, want ErrNotExists", err)
+	}
+}
+
+func TestMongoAdapterRejectsUnexpectedUpsertResult(t *testing.T) {
+	updater := &recordingMongoUpdater{updateResult: &txmongo.UpdateResult{MatchedCount: 1, UpsertedCount: 1}}
+	adapter := txmongo.NewAdapter(updater)
+	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+
+	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{Upsert: true})
+	if err == nil || !strings.Contains(err.Error(), "unexpected update result") {
+		t.Fatalf("ApplyDeltasWithOptions error = %v, want unexpected update result", err)
+	}
+}
+
+func TestMongoAdapterAcceptsUpsertedCreate(t *testing.T) {
+	updater := &recordingMongoUpdater{updateResult: &txmongo.UpdateResult{UpsertedCount: 1}}
+	adapter := txmongo.NewAdapter(updater)
+	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+
+	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{Upsert: true})
+	if err != nil {
+		t.Fatalf("ApplyDeltasWithOptions returned error: %v", err)
+	}
+}
+
+func TestMongoAdapterRejectsUnexpectedReplacementResult(t *testing.T) {
+	updater := &recordingMongoUpdater{replaceResult: &txmongo.ReplaceResult{}}
+	err := txmongo.NewAdapter(updater).ReplaceDocument(context.Background(), mongoDocumentSpec(), storage.RecordKey{ID: int64(1001)}, map[string]any{"roleId": int64(1001)})
+	if err == nil || !strings.Contains(err.Error(), "unexpected replace result") {
+		t.Fatalf("ReplaceDocument error = %v, want unexpected replace result", err)
+	}
+}
+
+func TestMongoAdapterAcceptsMissingDeleteAsIdempotent(t *testing.T) {
+	updater := &recordingMongoUpdater{deleteResult: &txmongo.DeleteResult{}}
+	err := txmongo.NewAdapter(updater).ApplyDelete(context.Background(), mongoDocumentSpec(), storage.RecordKey{ID: int64(1001)})
+	if err != nil {
+		t.Fatalf("ApplyDelete returned error for missing record: %v", err)
+	}
+}
+
+func TestMongoAdapterRejectsUnexpectedDeleteResult(t *testing.T) {
+	updater := &recordingMongoUpdater{deleteResult: &txmongo.DeleteResult{DeletedCount: 2}}
+	err := txmongo.NewAdapter(updater).ApplyDelete(context.Background(), mongoDocumentSpec(), storage.RecordKey{ID: int64(1001)})
+	if err == nil || !strings.Contains(err.Error(), "unexpected delete result") {
+		t.Fatalf("ApplyDelete error = %v, want unexpected delete result", err)
 	}
 }
 
