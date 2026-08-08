@@ -35,4 +35,7 @@ for i, taskKey in ipairs(taskKeys) do
 	end
 end
 
+if #result == 0 then
+	return "[]"
+end
 return cjson.encode(result)

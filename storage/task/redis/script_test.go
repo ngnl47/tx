@@ -23,4 +23,7 @@ func TestTaskLuaScriptsNameProtocolValues(t *testing.T) {
 	if !strings.Contains(enqueueScript, `local RESULT_LEASED = "leased"`) {
 		t.Fatal("enqueue script missing leased protocol constant")
 	}
+	if !strings.Contains(claimScript, `return "[]"`) {
+		t.Fatal("claim script must return an empty JSON array for an empty lease batch")
+	}
 }

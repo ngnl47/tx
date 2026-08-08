@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
-	"sort"
+	"reflect"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -61,7 +61,7 @@ func (b *Backend) Enqueue(ctx context.Context, item task.DelayTask) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if b == nil || b.client == nil {
+	if b == nil || isNilScriptClient(b.client) {
 		return ErrClientNotConfigured
 	}
 	body, err := json.Marshal(item)
@@ -82,7 +82,7 @@ func (b *Backend) ClaimDue(ctx context.Context, now time.Time, limit int) ([]tas
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if b == nil || b.client == nil {
+	if b == nil || isNilScriptClient(b.client) {
 		return nil, ErrClientNotConfigured
 	}
 	if limit <= 0 {
@@ -105,14 +105,14 @@ func (b *Backend) ClaimDue(ctx context.Context, now time.Time, limit int) ([]tas
 		if err != nil {
 			return nil, fmt.Errorf("redis task: claim due bucket %d: %w", bucket, err)
 		}
-		if body == "" {
-			continue
-		}
 		rows, err := decodeLeaseRows(body)
 		if err != nil {
 			return nil, fmt.Errorf("redis task: decode leases: %w", err)
 		}
 		for _, row := range rows {
+			if row.Token == "" || row.Attempts <= 0 {
+				return nil, fmt.Errorf("redis task: invalid task lease")
+			}
 			item, err := decodeDelayTask(row.Body)
 			if err != nil {
 				return nil, fmt.Errorf("redis task: decode task lease: %w", err)
@@ -131,7 +131,7 @@ func (b *Backend) Complete(ctx context.Context, lease task.DelayTaskLease) error
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if b == nil || b.client == nil {
+	if b == nil || isNilScriptClient(b.client) {
 		return ErrClientNotConfigured
 	}
 	result, err := b.client.Eval(ctx, completeScript, b.keysForTask(lease.Task), lease.Task.IdempotencyKey(), lease.Token)
@@ -148,7 +148,7 @@ func (b *Backend) Retry(ctx context.Context, lease task.DelayTaskLease, next tim
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if b == nil || b.client == nil {
+	if b == nil || isNilScriptClient(b.client) {
 		return ErrClientNotConfigured
 	}
 	_ = reason
@@ -188,30 +188,13 @@ type leaseRow struct {
 }
 
 func decodeLeaseRows(body string) ([]leaseRow, error) {
+	encoded := bytes.TrimSpace([]byte(body))
+	if len(encoded) == 0 || encoded[0] != '[' {
+		return nil, fmt.Errorf("expected JSON array")
+	}
 	var rows []leaseRow
-	if err := json.Unmarshal([]byte(body), &rows); err == nil {
-		return rows, nil
-	}
-
-	var keyed map[string]leaseRow
-	if err := json.Unmarshal([]byte(body), &keyed); err != nil {
+	if err := json.Unmarshal(encoded, &rows); err != nil {
 		return nil, err
-	}
-	keys := make([]string, 0, len(keyed))
-	for key := range keyed {
-		keys = append(keys, key)
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		left, leftErr := strconv.Atoi(keys[i])
-		right, rightErr := strconv.Atoi(keys[j])
-		if leftErr == nil && rightErr == nil {
-			return left < right
-		}
-		return keys[i] < keys[j]
-	})
-	rows = make([]leaseRow, 0, len(keys))
-	for _, key := range keys {
-		rows = append(rows, keyed[key])
 	}
 	return rows, nil
 }
@@ -244,6 +227,19 @@ func normalizeJSONNumber(value any) any {
 		return f
 	}
 	return string(number)
+}
+
+func isNilScriptClient(client ScriptClient) bool {
+	if client == nil {
+		return true
+	}
+	value := reflect.ValueOf(client)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func stringHashCode(value string) uint32 {

@@ -102,3 +102,28 @@ func TestMemoryDelayTaskBackendUsesIdempotencyKey(t *testing.T) {
 		t.Fatalf("leases = %#v", leases)
 	}
 }
+
+func TestMemoryDelayTaskBackendKeepsColonDelimitedLocatorsDistinct(t *testing.T) {
+	ctx := context.Background()
+	backend := memory.NewBackend()
+	now := time.Unix(100, 0)
+	first := task.DelayTask{Type: "data.GD:Role", ID: "1", ShardKey: "a", Action: "save", DueAt: now}
+	second := task.DelayTask{Type: "data.GD", ID: "Role:1", ShardKey: "a", Action: "save", DueAt: now}
+
+	if first.IdempotencyKey() == second.IdempotencyKey() {
+		t.Fatalf("idempotency keys collide: %q", first.IdempotencyKey())
+	}
+	for _, item := range []task.DelayTask{first, second} {
+		if err := backend.Enqueue(ctx, item); err != nil {
+			t.Fatalf("Enqueue returned error: %v", err)
+		}
+	}
+
+	leases, err := backend.ClaimDue(ctx, now, 10)
+	if err != nil {
+		t.Fatalf("ClaimDue returned error: %v", err)
+	}
+	if len(leases) != 2 {
+		t.Fatalf("leases = %#v, want two distinct tasks", leases)
+	}
+}

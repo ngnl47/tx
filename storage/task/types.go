@@ -3,6 +3,7 @@ package task
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -15,12 +16,19 @@ type DelayTask struct {
 	DueAt     time.Time
 }
 
+// IdempotencyKey 根据记录定位和动作生成无歧义的任务标识。
 func (t DelayTask) IdempotencyKey() string {
-	key := t.Type + ":" + fmt.Sprint(t.ID) + ":" + fmt.Sprint(t.ShardKey) + ":" + t.Action
+	parts := []string{t.Type, fmt.Sprint(t.ID), fmt.Sprint(t.ShardKey), t.Action}
 	if t.KeySuffix != "" {
-		key += ":" + t.KeySuffix
+		parts = append(parts, t.KeySuffix)
 	}
-	return key
+	key := make([]byte, 0, 32)
+	for _, part := range parts {
+		key = strconv.AppendInt(key, int64(len(part)), 10)
+		key = append(key, ':')
+		key = append(key, part...)
+	}
+	return string(key)
 }
 
 type DelayTaskLease struct {

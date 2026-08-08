@@ -34,6 +34,25 @@ func TestRedisTaskBackendRejectsMissingClient(t *testing.T) {
 	}
 }
 
+func TestRedisTaskBackendRejectsTypedNilClient(t *testing.T) {
+	var client *scriptedTaskRedis
+	backend := taskredis.NewBackend(client, taskredis.Options{})
+	item := task.DelayTask{Type: "data.GDRole", ID: int64(1001), Action: "save"}
+	if err := backend.Enqueue(context.Background(), item); !errors.Is(err, taskredis.ErrClientNotConfigured) {
+		t.Fatalf("Enqueue error = %v, want ErrClientNotConfigured", err)
+	}
+	if _, err := backend.ClaimDue(context.Background(), time.Now(), 1); !errors.Is(err, taskredis.ErrClientNotConfigured) {
+		t.Fatalf("ClaimDue error = %v, want ErrClientNotConfigured", err)
+	}
+	lease := task.DelayTaskLease{Task: item}
+	if err := backend.Complete(context.Background(), lease); !errors.Is(err, taskredis.ErrClientNotConfigured) {
+		t.Fatalf("Complete error = %v, want ErrClientNotConfigured", err)
+	}
+	if err := backend.Retry(context.Background(), lease, time.Now(), errors.New("retry")); !errors.Is(err, taskredis.ErrClientNotConfigured) {
+		t.Fatalf("Retry error = %v, want ErrClientNotConfigured", err)
+	}
+}
+
 func TestRedisDelayTaskBackendRejectsUnknownScriptResults(t *testing.T) {
 	backend := taskredis.NewBackend(scriptedTaskRedis{result: "unexpected"}, taskredis.Options{})
 	item := task.DelayTask{Type: "role", ID: int64(1001), Action: "save"}
@@ -51,6 +70,44 @@ func TestRedisDelayTaskBackendRejectsUnknownScriptResults(t *testing.T) {
 			err := tt.run()
 			if err == nil || !strings.Contains(err.Error(), "unexpected script result") || !strings.Contains(err.Error(), "unexpected") {
 				t.Fatalf("error = %v, want unexpected script result", err)
+			}
+		})
+	}
+}
+
+func TestRedisDelayTaskBackendClaimDueRejectsNonArrayResults(t *testing.T) {
+	for _, result := range []string{"", "null", "{}", "unexpected"} {
+		t.Run(fmt.Sprintf("%q", result), func(t *testing.T) {
+			backend := taskredis.NewBackend(scriptedTaskRedis{result: result}, taskredis.Options{})
+			_, err := backend.ClaimDue(context.Background(), time.Now(), 1)
+			if err == nil || !strings.Contains(err.Error(), "decode leases") {
+				t.Fatalf("ClaimDue error = %v, want decode leases error", err)
+			}
+		})
+	}
+}
+
+func TestRedisDelayTaskBackendClaimDueAcceptsEmptyArray(t *testing.T) {
+	backend := taskredis.NewBackend(scriptedTaskRedis{result: "[]"}, taskredis.Options{})
+	leases, err := backend.ClaimDue(context.Background(), time.Now(), 1)
+	if err != nil {
+		t.Fatalf("ClaimDue returned error: %v", err)
+	}
+	if len(leases) != 0 {
+		t.Fatalf("leases = %#v, want empty", leases)
+	}
+}
+
+func TestRedisDelayTaskBackendClaimDueRejectsIncompleteLeaseRows(t *testing.T) {
+	for _, result := range []string{
+		`[{"body":"{}","token":"","attempts":1}]`,
+		`[{"body":"{}","token":"lease","attempts":0}]`,
+	} {
+		t.Run(result, func(t *testing.T) {
+			backend := taskredis.NewBackend(scriptedTaskRedis{result: result}, taskredis.Options{})
+			_, err := backend.ClaimDue(context.Background(), time.Now(), 1)
+			if err == nil || !strings.Contains(err.Error(), "invalid task lease") {
+				t.Fatalf("ClaimDue error = %v, want invalid task lease error", err)
 			}
 		})
 	}
