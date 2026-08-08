@@ -71,7 +71,7 @@
 - Redis 整文档替换在文档只包含 subKey 或为空时仍写入 main `{}`，保持 main key 作为热记录存在标记；不能因字段拆分形成只有 subKey、没有根记录的状态。
 - Redis 局部 patch 只会创建缺失的 JSON object 父节点；已有 `null` 或标量父节点返回 `storage.ErrPathTypeMismatch`，不做静默类型修复。Lua 使用 cjson array metatable 保留空数组的 `[]` 语义。对已有数组，仅允许生成 Store 用稳定整数 index 进入并更新既有元素的子字段；不允许 Lua 扩容、插入、删除或修复数组。`InsertAt`、`Append`、`RemoveAt` 等长度变化仍由 Store 降级为字段级 `DeltaKindReplace` 覆盖。
 - `delaySaveTime` 表示 Redis 热数据变更后多久回写一次 Mongo；`delayDelTime` 表示 Redis 热数据 TTL 和自动续期时间，不表示 Mongo 删除延迟。
-- Fusion 延迟任务队列只保存记录定位信息；到期后读取 Redis 当前最新热数据，整文档 replace 到 Mongo。队列不保存中间态业务对象或本轮字段 diff。
+- Fusion 延迟任务队列只保存记录定位信息；到期后读取 Redis 当前最新热数据，整文档 replace 到 Mongo。队列不保存中间态业务对象或本轮字段 diff。Mongo 回写失败且 Redis 可用时，后续应使用基于 Redis 持久化 `Attempts` 的指数退避：配置初始延迟、乘数、最大延迟和有界 jitter，计算出的 `nextDue` 写回 Redis ZSet；达到最大延迟后持续以带 jitter 的最大周期重试，不限制次数或丢弃任务。若 Redis 不可用而无法写回重试时间，任务保持 busy lease，Redis 恢复并在 lease 到期后重新领取；运行时只返回 error，不 panic 或静默成功。
 - 从 Mongo 回填 Redis 必须具备 `delayDelTime > 0` 的热数据 TTL；并发 miss 回填要通过 Redis 锁和二次读取避免旧 Mongo 快照覆盖新 Redis 热数据。
 - Redis `<mainKey>@v` 是热数据生命周期版本键，只用于 Redis 删除/过期窗口并发保护，不是业务字段，也不是 Mongo 字段；版本键和 main/subKey 必须使用同一 hash tag，并在每次热写时使用同一有效 TTL 续期或同步转为持久化。版本值由 Redis `INCR` 生成，读取、条件删除和 Lua 返回值只接受正整数；缺失或非数字版本必须返回错误，不能退化为无条件删除。
 - Redis 批量读取默认按生产云代理能力走 endpoint 内原生 `MGET`；本地原生 Redis Cluster debug 才显式打开 `LoadOptions.ClusterSafe` 按 hash tag 分组多次读取。
@@ -98,8 +98,8 @@
 4. 日志基建后续专题：确定业务项目 logger 枚举或包级变量、名称规范、级别配置和 tx/log 的最小扩展点。
 5. RedisJSON/ReJSON 仅作为未来可选 backend 单独评估；SQL、消息队列等其他 backend 也不进入当前主线。
 6. 完善可选的 `tx/modules/txn` 与 `tx/modules/state`：`@transaction` 已生成 `LockKey()` 和 `LockTarget()`；受控字段、map、slice 与生成对象子 Store 已登记 undo，并覆盖事务失败后的回滚。事务锁使用按逻辑 Key 管理的本机锁表，按稳定顺序获取，并由 `context.Context` 提供锁等待超时；超时必须释放已获取锁且不得进入回调。`Procedure.Locks`/`tx.Call` 已约束锁集和输出嵌套路径；Manager 已覆盖事务后登记、持锁 Flush、失败重试，以及先等待全局 `WaitGroupContext` 再执行的最终限时刷盘。后续用真实 Redis/Mongo 压测决定是否需要不可变写入批次；第一版不处理分布式锁、跨实例事务或持久化层 ACID。
-7. 有状态脏数据容量保护：已补“固定路径重复修改”“大量不同 map/slice 路径”“成功 Flush”“持续失败 Flush”与 clean cached 子 Store 的基准/回归。固定路径不会累积 Delta；1024 个干净缓存 map 子节点投影已从全量扫描收敛为只检查 dirty 索引。后续应以真实对象规模、集合基数、Flush 周期和失败持续时间决定 Manager 高水位、失败背压/降级与 clean 子 Store 剪枝；不得在生成 setter 中隐式 I/O 或强制 Flush，避免破坏 Procedure 的锁边界、undo 与批量合并。
-8. 在状态运行时边界稳定后，评估可选 `tx/modules/actor` 与 RPC。actor 负责业务一致性域的单实例串行执行和跨进程路由；事务模块只负责该实例内的多对象锁定、回滚和提交，Manager 只负责当前进程的脏实体落盘，三者不反向依赖。
+7. 有状态脏数据容量保护：已补“固定路径重复修改”“大量不同 map/slice 路径”“成功 Flush”“持续失败 Flush”与 clean cached 子 Store 的基准/回归。固定路径不会累积 Delta；1024 个干净缓存 map 子节点投影已从全量扫描收敛为只检查 dirty 索引。后续只限制 Manager 待刷盘根对象数，不把单对象 dirty path 数作为业务可见的拒绝条件：容量满后仍允许修改已处于 pending 状态的根对象；会新增 pending 根对象的 Procedure 必须在业务回调前整体拒绝，不能部分执行。单个 root 对不同 map/slice key 的持续修改仍可能积累无界 Delta，因此 Store 需要内部 delta 数量或字节预算；超过预算时自动降级为整对象 Replace delta、释放旧 delta 容量并输出一次日志/指标，保证正确性和内存上界，代价是该次 Flush 写放大。不得在生成 setter 中隐式 I/O 或强制 Flush，避免破坏 Procedure 的锁边界、undo 与批量合并。
+8. 在状态运行时边界稳定后，评估可选 `tx/modules/actor` 与 RPC。actor 是独立的服务发现、跨进程路由和定向通知组件，可按业务 identity 路由玩家会话、战场实例或任意业务实体；它不代表 GD 数据对象，不依赖 GD、Store、DeltaSet、Fusion、事务或状态 Manager。事务模块只负责当前进程内的多对象锁定、回滚和提交，Manager 只负责当前进程的脏实体落盘；actor、事务和 Manager 只在业务项目编排层组合，不反向依赖。
 
 ## Module Layout
 
@@ -121,7 +121,7 @@ tx/
   storage/task/     # Delay task backend interface 和内存实现
   modules/txn/      # 可选：单机事务、savepoint、undo log 和 after-commit hook
   modules/state/    # 可选：有状态实体脏数据聚合与定时 Flush
-  modules/actor/    # 后续可选：业务一致性域的单实例串行执行与 RPC 路由
+  modules/actor/    # 后续可选：服务发现、跨进程定向通信与业务 identity 路由
   util/             # 小型通用工具
   tests/            # 所有测试文件，仅此目录下生成 *_test.go
 ```
