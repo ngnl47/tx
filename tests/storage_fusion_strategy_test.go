@@ -175,7 +175,7 @@ type recordingRedisStore struct {
 func TestFusionStrategyEnqueuesMongoSave(t *testing.T) {
 	queue := &recordingQueue{}
 	redis := &recordingApplier{}
-	strategy := fusion.Strategy{Redis: redis, MongoQueue: queue}
+	strategy := fusion.Strategy{Redis: redis, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue}
 	spec := meta.TypeSpec{
 		Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
 		Storage: meta.StorageSpec{
@@ -202,7 +202,7 @@ func TestFusionStrategyEnqueuesMongoSave(t *testing.T) {
 func TestFusionStrategyReturnsRedisTransportErrorWithoutEnqueue(t *testing.T) {
 	transportErr := errors.New("redis unavailable")
 	queue := &recordingQueue{}
-	strategy := fusion.Strategy{Redis: &recordingApplier{err: transportErr}, MongoQueue: queue}
+	strategy := fusion.Strategy{Redis: &recordingApplier{err: transportErr}, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue}
 	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
 	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
 
@@ -217,7 +217,7 @@ func TestFusionStrategyReturnsRedisTransportErrorWithoutEnqueue(t *testing.T) {
 
 func TestFusionStrategyEnqueuesDelayedRedisDeleteAfterSaveWindow(t *testing.T) {
 	queue := &recordingQueue{}
-	strategy := fusion.Strategy{Redis: &recordingApplier{}, MongoQueue: queue}
+	strategy := fusion.Strategy{Redis: &recordingApplier{}, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue}
 	spec := meta.TypeSpec{
 		Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
 		Storage: meta.StorageSpec{
@@ -255,6 +255,32 @@ func TestFusionStrategyRejectsMissingWriteDependencies(t *testing.T) {
 	}
 	if err := (fusion.Strategy{Redis: &recordingApplier{}}).ApplyDeltasWithOptions(context.Background(), spec, key, deltas, testFieldNameResolver{}, testDeltaValueResolver{}, storage.ApplyOptions{}); !errors.Is(err, fusion.ErrMongoQueueNotConfigured) {
 		t.Fatalf("missing MongoQueue error = %v, want ErrMongoQueueNotConfigured", err)
+	}
+}
+
+func TestFusionStrategyRejectsWriteWithoutMongoLoaderBeforeRedisWrite(t *testing.T) {
+	redis := &recordingApplier{}
+	strategy := fusion.Strategy{
+		Redis:      redis,
+		MongoQueue: &recordingQueue{},
+	}
+	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+
+	err := strategy.ApplyDeltasWithOptions(
+		context.Background(),
+		spec,
+		storage.RecordKey{TypeName: spec.Type.Ref.FullName, ID: int64(1001)},
+		deltas,
+		testFieldNameResolver{},
+		testDeltaValueResolver{},
+		storage.ApplyOptions{},
+	)
+	if !errors.Is(err, fusion.ErrStrategyDependenciesNotConfigured) {
+		t.Fatalf("ApplyDeltasWithOptions error = %v, want ErrStrategyDependenciesNotConfigured", err)
+	}
+	if redis.optionRuns != 0 {
+		t.Fatalf("redis writes = %d, want 0 before incomplete fusion configuration is rejected", redis.optionRuns)
 	}
 }
 
@@ -350,7 +376,7 @@ func TestFusionStrategyRejectsMissingMongoLoaderForBatchRedisMiss(t *testing.T) 
 func TestFusionStrategyAppliesRedisBeforeQueue(t *testing.T) {
 	queue := &recordingQueue{}
 	redis := &recordingApplier{}
-	strategy := fusion.Strategy{Redis: redis, MongoQueue: queue}
+	strategy := fusion.Strategy{Redis: redis, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue}
 	spec := meta.TypeSpec{
 		Type:    meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
 		Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Second}},
@@ -376,7 +402,7 @@ func TestFusionStrategyQueueFailureKeepsStoreDeltasForRetry(t *testing.T) {
 	queueErr := errors.New("delay queue unavailable")
 	queue := &recordingQueue{err: queueErr}
 	redis := &recordingApplier{}
-	strategy := fusion.Strategy{Redis: redis, MongoQueue: queue}
+	strategy := fusion.Strategy{Redis: redis, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue}
 	store := &testDeltaStore{
 		spec: meta.TypeSpec{
 			Type:    meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
@@ -411,7 +437,7 @@ func TestFusionStrategyQueueFailureKeepsStoreDeltasForRetry(t *testing.T) {
 func TestFusionStrategyPassesOptionsOnlyToRedis(t *testing.T) {
 	queue := &recordingQueue{}
 	redis := &recordingApplier{}
-	strategy := fusion.Strategy{Redis: redis, MongoQueue: queue}
+	strategy := fusion.Strategy{Redis: redis, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue}
 	spec := meta.TypeSpec{
 		Type:    meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
 		Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Second}},

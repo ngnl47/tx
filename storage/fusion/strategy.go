@@ -81,11 +81,8 @@ func (s Strategy) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec
 	if err := storage.ValidateRecordKey(spec, key); err != nil {
 		return err
 	}
-	if isNilFusionDependency(s.Redis) {
-		return ErrRedisNotConfigured
-	}
-	if isNilFusionDependency(s.MongoQueue) {
-		return ErrMongoQueueNotConfigured
+	if err := s.writeDependencies(); err != nil {
+		return err
 	}
 	if err := s.Redis.ApplyDeltasWithOptions(ctx, spec, key, deltas, resolver, values, options); err != nil {
 		return err
@@ -206,6 +203,19 @@ func (s Strategy) readDependencies() (storage.DocumentLoader, error) {
 		return nil, fmt.Errorf("%w: mongo document loader", ErrStrategyDependenciesNotConfigured)
 	}
 	return redisLoader, nil
+}
+
+func (s Strategy) writeDependencies() error {
+	if isNilFusionDependency(s.Redis) {
+		return ErrRedisNotConfigured
+	}
+	if isNilFusionDependency(s.MongoQueue) {
+		return ErrMongoQueueNotConfigured
+	}
+	if isNilFusionDependency(s.MongoLoader) {
+		return fmt.Errorf("%w: mongo document loader", ErrStrategyDependenciesNotConfigured)
+	}
+	return nil
 }
 
 func (s Strategy) deleteDependencies() (storage.DeleteApplier, storage.DeleteApplier, error) {
