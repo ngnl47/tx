@@ -116,6 +116,47 @@ func TestMongoBuildUpdateDocumentWithDeltasDoesNotMutateSource(t *testing.T) {
 	}
 }
 
+func TestMongoBuildUpdateDocumentWithDeltasUsesAncestorReplacementForLaterChild(t *testing.T) {
+	deltas := change.DeltaSet{
+		{Path: deltaPath(fieldNode(deltaFieldItems)), Kind: change.DeltaKindReplace},
+		{Path: deltaPath(intKeyNode(deltaFieldItems, 1001), fieldNode(deltaFieldQty)), Kind: change.DeltaDelete},
+	}
+	resolver := testFieldNameResolver{
+		change.NameBackendGo: {
+			deltaFieldItems: "Items",
+			deltaFieldQty:   "Quantity",
+		},
+		change.NameBackendBSON: {
+			deltaFieldItems: "items",
+			deltaFieldQty:   "quantity",
+		},
+	}
+	items := map[int64]map[string]int64{1002: {"quantity": 9}}
+	values := change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
+		if path.Equal(deltaPath(fieldNode(deltaFieldItems))) {
+			return items, true
+		}
+		return nil, false
+	})
+
+	update, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver, values)
+	if err != nil {
+		t.Fatalf("BuildUpdateDocumentWithDeltas returned error: %v", err)
+	}
+	setDoc := update["$set"].(map[string]any)
+	if got := setDoc["items"]; !reflect.DeepEqual(got, items) {
+		t.Fatalf("items replacement = %#v, want %#v", got, items)
+	}
+	if _, ok := setDoc["items.1001.quantity"]; ok {
+		t.Fatalf("update contains conflicting child set: %#v", update)
+	}
+	if unset, ok := update["$unset"].(map[string]any); ok {
+		if _, exists := unset["items.1001.quantity"]; exists {
+			t.Fatalf("update contains conflicting child unset: %#v", update)
+		}
+	}
+}
+
 func TestMongoBuildUpdateDocumentWithDeltasDowngradesUnsafeStringMapKey(t *testing.T) {
 	const fieldLabels change.FieldID = 9
 	deltas := change.DeltaSet{

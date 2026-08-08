@@ -41,6 +41,9 @@ func NewCluster(router Router, shards map[string]ScriptClient) *Cluster {
 }
 
 func (c *Cluster) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, deltas change.DeltaSet, resolver change.FieldNameResolver, values change.DeltaValueResolver, options storage.ApplyOptions) error {
+	if len(deltas) == 0 {
+		return nil
+	}
 	adapter, err := c.adapterFor(ctx, spec, key)
 	if err != nil {
 		return err

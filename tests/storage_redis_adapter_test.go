@@ -1349,6 +1349,23 @@ func TestRedisAdapterRejectsMissingDistinctRouteShardKey(t *testing.T) {
 	}
 }
 
+func TestRedisClusterSkipsEmptyDeltasWithoutRouting(t *testing.T) {
+	cluster := txredis.NewCluster(nil, nil)
+
+	err := cluster.ApplyDeltasWithOptions(
+		context.Background(),
+		meta.TypeSpec{},
+		storage.RecordKey{},
+		nil,
+		nil,
+		nil,
+		storage.ApplyOptions{},
+	)
+	if err != nil {
+		t.Fatalf("ApplyDeltasWithOptions returned error for empty deltas: %v", err)
+	}
+}
+
 func TestRedisClusterRejectsTypedNilRouter(t *testing.T) {
 	var router *recordingRedisRouter
 	cluster := txredis.NewCluster(router, map[string]txredis.ScriptClient{"role": &recordingRedisStringClient{}})

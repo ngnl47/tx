@@ -968,6 +968,23 @@ func TestMongoClusterRoutesSingleWriteByShardKey(t *testing.T) {
 	}
 }
 
+func TestMongoClusterSkipsEmptyDeltasWithoutRouting(t *testing.T) {
+	cluster := txmongo.NewCluster(nil, nil)
+
+	err := cluster.ApplyDeltasWithOptions(
+		context.Background(),
+		meta.TypeSpec{},
+		storage.RecordKey{},
+		nil,
+		nil,
+		nil,
+		storage.ApplyOptions{},
+	)
+	if err != nil {
+		t.Fatalf("ApplyDeltasWithOptions returned error for empty deltas: %v", err)
+	}
+}
+
 func TestMongoClusterRejectsMissingDistinctRouteShardKey(t *testing.T) {
 	router := &recordingMongoRouter{names: map[any]string{int64(1001): "role-shard"}}
 	cluster := txmongo.NewCluster(router, map[string]any{"role-shard": &recordingMongoUpdater{}})

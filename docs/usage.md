@@ -1753,6 +1753,17 @@ err := storage.Save(ctx, mongoCluster, role.Store())
 如果此时生成 Store 无法读取 `Labels` 的完整当前值，保存会直接返回错误；不会以 `null` 替代整张 map。
 同一轮内即使还修改了 `Labels["safe"]`，Mongo 也只写一次完整 `labels`，避免 `$set` 同时出现 `labels` 与 `labels.safe` 的父子路径冲突。
 
+同样地，若先整体覆盖集合、结构体指针或集合元素，随后又修改其子字段，Mongo 边界会以父路径的**最终当前值**做一次整路径替换，并移除后续子路径。例如：
+
+```go
+role.SetItems(map[int32]*data.GDItem{1002: {ItemId: 1002, Quantity: 9}})
+role.ItemsStore().Get(1002).SetQuantity(10)
+
+err := storage.Save(ctx, mongoCluster, role.Store())
+```
+
+最终只生成类似 `$set: {"items": <当前完整 Items>}` 的 update，不会在同一个 Mongo update 中同时写入 `items` 与 `items.1002.quantity`。
+
 ### 读取示例
 
 完整读取：

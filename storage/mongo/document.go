@@ -57,6 +57,7 @@ func BuildUpdateDocumentWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, r
 // 整体替换会读取该 map 的最终值，因此同一 map 下的其他子路径无需再写入。
 func normalizeMongoDeltas(deltas change.DeltaSet) change.DeltaSet {
 	compacted := deltas.Clone().Compact()
+	compacted = normalizeMongoAncestorWrites(compacted)
 	fallbacks := make([]change.DeltaPath, 0)
 	for _, delta := range compacted {
 		fallback, ok := fallbackMongoUnsafeStringKeyPath(delta.Path)
@@ -79,6 +80,48 @@ func normalizeMongoDeltas(deltas change.DeltaSet) change.DeltaSet {
 		out = append(out, change.DeltaEntry{Path: fallback, Kind: change.DeltaKindReplace})
 	}
 	return out.Compact()
+}
+
+// normalizeMongoAncestorWrites 处理 Compact 有意保留的“先祖先、后子路径”。
+// Mongo 同一个 update 不能同时写入父路径和子路径；而 Mongo 边界可读取 Store
+// 的最终值，因此保留祖先整值即可完整覆盖之后的子路径变更。
+func normalizeMongoAncestorWrites(deltas change.DeltaSet) change.DeltaSet {
+	if len(deltas) <= 1 {
+		return deltas
+	}
+	suppressed := make([]bool, len(deltas))
+	for parentIndex := range deltas {
+		parent := &deltas[parentIndex]
+		if parent.Path.Depth == 0 || parent.Kind == change.DeltaDelete {
+			continue
+		}
+		for childIndex := parentIndex + 1; childIndex < len(deltas); childIndex++ {
+			if suppressed[childIndex] || !parent.Path.PrefixOf(deltas[childIndex].Path) {
+				continue
+			}
+			parent.Kind = change.DeltaKindReplace
+			suppressed[childIndex] = true
+		}
+	}
+	if !containsSuppressedMongoDelta(suppressed) {
+		return deltas
+	}
+	out := make(change.DeltaSet, 0, len(deltas))
+	for index, delta := range deltas {
+		if !suppressed[index] {
+			out = append(out, delta)
+		}
+	}
+	return out
+}
+
+func containsSuppressedMongoDelta(suppressed []bool) bool {
+	for _, value := range suppressed {
+		if value {
+			return true
+		}
+	}
+	return false
 }
 
 func containsMongoFallbackPath(paths []change.DeltaPath, target change.DeltaPath) bool {
