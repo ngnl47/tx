@@ -30,7 +30,7 @@ type Strategy struct {
 	Redis         storage.DeltaApplier
 	RedisDeleter  storage.DeleteApplier
 	RedisLoader   storage.DocumentLoader
-	RedisReplacer any
+	RedisReplacer storage.DocumentReplacerWithOptions
 	RedisLocker   storage.RecordLocker
 	MongoLoader   storage.DocumentLoader
 	MongoDeleter  storage.DeleteApplier
@@ -435,8 +435,8 @@ func validateFusionDocumentResults(source string, documents []map[string]any, ex
 }
 
 func (s Strategy) redisReplacerWithOptions() storage.DocumentReplacerWithOptions {
-	if replacer, ok := s.RedisReplacer.(storage.DocumentReplacerWithOptions); ok && !isNilFusionDependency(replacer) {
-		return replacer
+	if !isNilFusionDependency(s.RedisReplacer) {
+		return s.RedisReplacer
 	}
 	replacer, _ := s.Redis.(storage.DocumentReplacerWithOptions)
 	if isNilFusionDependency(replacer) {
