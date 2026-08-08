@@ -34,6 +34,9 @@ func (b *Backend) Enqueue(ctx context.Context, item task.DelayTask) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := task.ValidateDelayTask(item); err != nil {
+		return err
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	key := item.IdempotencyKey()

@@ -98,6 +98,27 @@ func TestRedisDelayTaskBackendClaimDueAcceptsEmptyArray(t *testing.T) {
 	}
 }
 
+func TestRedisDelayTaskBackendRejectsIncompleteTask(t *testing.T) {
+	backend := taskredis.NewBackend(scriptedTaskRedis{result: "ok"}, taskredis.Options{})
+	for _, item := range []task.DelayTask{
+		{ID: "1", Action: "save"},
+		{Type: "role", Action: "save"},
+		{Type: "role", ID: "1"},
+		{Type: "role", ID: "", Action: "save"},
+	} {
+		if err := backend.Enqueue(context.Background(), item); err == nil {
+			t.Fatalf("Enqueue(%#v) error = nil, want invalid task error", item)
+		}
+	}
+}
+
+func TestRedisDelayTaskBackendClaimDueRejectsIncompleteTaskPayload(t *testing.T) {
+	backend := taskredis.NewBackend(scriptedTaskRedis{result: `[{"body":"{}","token":"lease","attempts":1}]`}, taskredis.Options{})
+	if _, err := backend.ClaimDue(context.Background(), time.Now(), 1); err == nil {
+		t.Fatal("ClaimDue error = nil, want invalid task error")
+	}
+}
+
 func TestRedisDelayTaskBackendClaimDueRejectsIncompleteLeaseRows(t *testing.T) {
 	for _, result := range []string{
 		`[{"body":"{}","token":"","attempts":1}]`,

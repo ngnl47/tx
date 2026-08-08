@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"reflect"
 	"strconv"
 	"sync/atomic"
@@ -59,6 +60,9 @@ func NewBackend(client ScriptClient, options Options) *Backend {
 
 func (b *Backend) Enqueue(ctx context.Context, item task.DelayTask) error {
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := task.ValidateDelayTask(item); err != nil {
 		return err
 	}
 	if b == nil || isNilScriptClient(b.client) {
@@ -210,8 +214,17 @@ func decodeDelayTask(body string) (task.DelayTask, error) {
 	if err := decoder.Decode(&item); err != nil {
 		return task.DelayTask{}, err
 	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return task.DelayTask{}, fmt.Errorf("multiple JSON values")
+		}
+		return task.DelayTask{}, fmt.Errorf("invalid trailing JSON: %w", err)
+	}
 	item.ID = normalizeJSONNumber(item.ID)
 	item.ShardKey = normalizeJSONNumber(item.ShardKey)
+	if err := task.ValidateDelayTask(item); err != nil {
+		return task.DelayTask{}, err
+	}
 	return item, nil
 }
 

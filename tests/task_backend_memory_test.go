@@ -127,3 +127,17 @@ func TestMemoryDelayTaskBackendKeepsColonDelimitedLocatorsDistinct(t *testing.T)
 		t.Fatalf("leases = %#v, want two distinct tasks", leases)
 	}
 }
+
+func TestMemoryDelayTaskBackendRejectsIncompleteTask(t *testing.T) {
+	backend := memory.NewBackend()
+	for _, item := range []task.DelayTask{
+		{ID: "1", Action: "save"},
+		{Type: "role", Action: "save"},
+		{Type: "role", ID: "1"},
+		{Type: "role", ID: "", Action: "save"},
+	} {
+		if err := backend.Enqueue(context.Background(), item); err == nil {
+			t.Fatalf("Enqueue(%#v) error = nil, want invalid task error", item)
+		}
+	}
+}
