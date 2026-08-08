@@ -2,6 +2,8 @@ package fusion
 
 import (
 	"context"
+	"math"
+	"math/rand/v2"
 	"time"
 
 	txlog "github.com/ngnl47/tx/log"
@@ -11,7 +13,10 @@ import (
 const (
 	defaultSchedulerBatchSize    = 100
 	defaultSchedulerPollInterval = time.Second
-	defaultSchedulerRetryDelay   = time.Second
+	defaultRetryInitialDelay     = time.Second
+	defaultRetryMultiplier       = 2
+	defaultRetryMaxDelay         = time.Minute
+	defaultRetryJitter           = 0.2
 )
 
 type DelayTaskHandler interface {
@@ -25,11 +30,15 @@ func (f DelayTaskHandlerFunc) HandleDelayTask(ctx context.Context, item task.Del
 }
 
 type SchedulerOptions struct {
-	BatchSize    int
-	PollInterval time.Duration
-	RetryDelay   time.Duration
-	Handler      DelayTaskHandler
-	Now          func() time.Time
+	BatchSize         int
+	PollInterval      time.Duration
+	RetryInitialDelay time.Duration
+	RetryMultiplier   float64
+	RetryMaxDelay     time.Duration
+	RetryJitter       float64
+	Handler           DelayTaskHandler
+	Now               func() time.Time
+	Random            func() float64
 }
 
 type waitGroupContext interface {
@@ -39,12 +48,16 @@ type waitGroupContext interface {
 }
 
 type Scheduler struct {
-	backend      task.DelayTaskBackend
-	batchSize    int
-	pollInterval time.Duration
-	retryDelay   time.Duration
-	handler      DelayTaskHandler
-	now          func() time.Time
+	backend           task.DelayTaskBackend
+	batchSize         int
+	pollInterval      time.Duration
+	retryInitialDelay time.Duration
+	retryMultiplier   float64
+	retryMaxDelay     time.Duration
+	retryJitter       float64
+	handler           DelayTaskHandler
+	now               func() time.Time
+	random            func() float64
 }
 
 func NewScheduler(backend task.DelayTaskBackend) *Scheduler {
@@ -60,21 +73,44 @@ func NewSchedulerWithOptions(backend task.DelayTaskBackend, options SchedulerOpt
 	if pollInterval <= 0 {
 		pollInterval = defaultSchedulerPollInterval
 	}
-	retryDelay := options.RetryDelay
-	if retryDelay <= 0 {
-		retryDelay = defaultSchedulerRetryDelay
+	retryInitialDelay := options.RetryInitialDelay
+	if retryInitialDelay <= 0 {
+		retryInitialDelay = defaultRetryInitialDelay
+	}
+	retryMultiplier := options.RetryMultiplier
+	if retryMultiplier <= 1 {
+		retryMultiplier = defaultRetryMultiplier
+	}
+	retryMaxDelay := options.RetryMaxDelay
+	if retryMaxDelay <= 0 {
+		retryMaxDelay = defaultRetryMaxDelay
+	}
+	if retryMaxDelay < retryInitialDelay {
+		retryMaxDelay = retryInitialDelay
+	}
+	retryJitter := options.RetryJitter
+	if retryJitter < 0 || retryJitter > 1 {
+		retryJitter = defaultRetryJitter
+	}
+	random := options.Random
+	if random == nil {
+		random = rand.Float64
 	}
 	now := options.Now
 	if now == nil {
 		now = time.Now
 	}
 	return &Scheduler{
-		backend:      backend,
-		batchSize:    batchSize,
-		pollInterval: pollInterval,
-		retryDelay:   retryDelay,
-		handler:      options.Handler,
-		now:          now,
+		backend:           backend,
+		batchSize:         batchSize,
+		pollInterval:      pollInterval,
+		retryInitialDelay: retryInitialDelay,
+		retryMultiplier:   retryMultiplier,
+		retryMaxDelay:     retryMaxDelay,
+		retryJitter:       retryJitter,
+		handler:           options.Handler,
+		now:               now,
+		random:            random,
 	}
 }
 
@@ -112,7 +148,8 @@ func (s *Scheduler) RunOnce(ctx context.Context, now time.Time) (int, error) {
 	}
 	for _, lease := range leases {
 		if err := s.handle(ctx, lease.Task); err != nil {
-			if retryErr := s.backend.Retry(ctx, lease, now.Add(s.retryDelay), err); retryErr != nil {
+			retryAt := now.Add(s.retryDelay(lease.Attempts))
+			if retryErr := s.backend.Retry(ctx, lease, retryAt, err); retryErr != nil {
 				return len(leases), retryErr
 			}
 			txlog.ErrorContext(ctx, "delay task failed, retry scheduled",
@@ -120,7 +157,7 @@ func (s *Scheduler) RunOnce(ctx context.Context, now time.Time) (int, error) {
 				"taskID", lease.Task.ID,
 				"action", lease.Task.Action,
 				"attempts", lease.Attempts,
-				"retryAt", now.Add(s.retryDelay),
+				"retryAt", retryAt,
 				"err", err,
 			)
 			continue
@@ -130,6 +167,29 @@ func (s *Scheduler) RunOnce(ctx context.Context, now time.Time) (int, error) {
 		}
 	}
 	return len(leases), nil
+}
+
+func (s *Scheduler) retryDelay(attempts int) time.Duration {
+	delay := s.retryInitialDelay
+	if attempts > 1 && delay < s.retryMaxDelay {
+		multiplier := math.Pow(s.retryMultiplier, float64(attempts-1))
+		if multiplier >= float64(s.retryMaxDelay)/float64(delay) {
+			delay = s.retryMaxDelay
+		} else {
+			delay = time.Duration(float64(delay) * multiplier)
+		}
+	}
+	if s.retryJitter == 0 {
+		return delay
+	}
+	jitter := time.Duration((s.random()*2 - 1) * s.retryJitter * float64(delay))
+	if delay+jitter <= 0 {
+		return time.Nanosecond
+	}
+	if delay+jitter > s.retryMaxDelay {
+		return s.retryMaxDelay
+	}
+	return delay + jitter
 }
 
 func (s *Scheduler) run(ctx context.Context) {

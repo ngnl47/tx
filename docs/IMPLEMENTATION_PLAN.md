@@ -41,7 +41,7 @@
 - 单机事务只保证经 Store 受控 API 发生的修改可回滚；裸字段赋值和 snapshot diff 不参与事务回滚。undo log 属于一次事务的临时状态，不写入 GD，也不作为 Store 的长期业务数据。
 - 事务锁对象由生成代码在 GD 与 Store 侧提供：业务通过 `txn.Locks(guild, role)` 收集，GD 的 `LockTarget()` 只代理默认 Store，不复制业务数据。字段 setter、map/slice 的 `Set/Delete/Replace` 和生成对象子 Store setter 在事务内登记 undo；事务成功后的存储写入、消息发送或后续业务动作通过 `AfterCommit` 等机制调度；这表示内存事务已提交，不等价于 Mongo 已可靠落盘。
 - 可选 `modules/state.Manager` 服务于有状态运行时。它按 `LockKey` 聚合脏 Store；`manager.Call` 在事务成功后登记 `DirtyTargets`，不执行 I/O；`manager.Flush` 逐目标取得同一把本机锁，只投影一次 DeltaSet 并复用该结果调用 `storage.SaveDeltas`，成功才清理 delta。Manager 不保存业务副本，不把 Store 或 DeltaSet 作为异步队列项。
-- 有状态运行时的 Store dirty 状态是按路径覆盖的集合，不会因同一路径重复修改无限追加；但未成功 Flush 前的不同集合 key/index 会持续累积。`map[K]*GD...` 和 `[]*GD...` 会缓存已访问元素的子 Store，但另行维护 dirty 子路径索引，投影与清理不再遍历全部缓存子 Store。当前不设隐式容量上限或 setter 内强制刷盘，存储持续失败且业务持续新增不同路径时仍可能造成内存压力。
+- 有状态运行时的 Store dirty 状态是按路径覆盖的集合，不会因同一路径重复修改无限追加；但未成功 Flush 前的不同集合 key/index 会持续累积。`map[K]*GD...` 和 `[]*GD...` 会缓存已访问元素的子 Store，但另行维护 dirty 子路径索引，投影与清理不再遍历全部缓存子 Store。`ManagerOptions.MaxPendingRoots` 限制待刷盘根对象数；满额时允许继续修改已 pending 的根对象，新增 root 的 Procedure 在业务回调前整体拒绝。单 root 的不同路径仍需要后续内部 delta 预算和整对象 Replace 降级，setter 内不得强制 Flush 或 I/O。
 - 无状态服务不使用 `modules/state` 和 `modules/txn`：请求内临时加载 GD，直接由项目 facade 调用 `db.Save` 或 snapshot `SaveChange` 写 Fusion。启用有状态运行时后，所有写操作都必须通过 `Procedure + state.Manager`；读取不要求进入事务。
 - 当前标脏主线是 `change.DeltaSet`。热路径只保存 `FieldID`、map key、slice index 和 `DeltaKind`，不常驻拼接字符串路径。
 - `DeltaEntry` 当前只保存 `Path` 和 `Kind`，不持有字段值；生成 Store 会在输出边界按 DeltaPath 读取当前值。后续如需性能优化，只做局部 fast path，不提前引入自研 value 编码。
@@ -71,7 +71,7 @@
 - Redis 整文档替换在文档只包含 subKey 或为空时仍写入 main `{}`，保持 main key 作为热记录存在标记；不能因字段拆分形成只有 subKey、没有根记录的状态。
 - Redis 局部 patch 只会创建缺失的 JSON object 父节点；已有 `null` 或标量父节点返回 `storage.ErrPathTypeMismatch`，不做静默类型修复。Lua 使用 cjson array metatable 保留空数组的 `[]` 语义。对已有数组，仅允许生成 Store 用稳定整数 index 进入并更新既有元素的子字段；不允许 Lua 扩容、插入、删除或修复数组。`InsertAt`、`Append`、`RemoveAt` 等长度变化仍由 Store 降级为字段级 `DeltaKindReplace` 覆盖。
 - `delaySaveTime` 表示 Redis 热数据变更后多久回写一次 Mongo；`delayDelTime` 表示 Redis 热数据 TTL 和自动续期时间，不表示 Mongo 删除延迟。
-- Fusion 延迟任务队列只保存记录定位信息；到期后读取 Redis 当前最新热数据，整文档 replace 到 Mongo。队列不保存中间态业务对象或本轮字段 diff。Mongo 回写失败且 Redis 可用时，后续应使用基于 Redis 持久化 `Attempts` 的指数退避：配置初始延迟、乘数、最大延迟和有界 jitter，计算出的 `nextDue` 写回 Redis ZSet；达到最大延迟后持续以带 jitter 的最大周期重试，不限制次数或丢弃任务。若 Redis 不可用而无法写回重试时间，任务保持 busy lease，Redis 恢复并在 lease 到期后重新领取；运行时只返回 error，不 panic 或静默成功。
+- Fusion 延迟任务队列只保存记录定位信息；到期后读取 Redis 当前最新热数据，整文档 replace 到 Mongo。队列不保存中间态业务对象或本轮字段 diff。Mongo 回写失败且 Redis 可用时，Scheduler 使用基于 Redis 持久化 `Attempts` 的指数退避：初始延迟、乘数、最大延迟和有界 jitter 计算出的 `nextDue` 写回 Redis ZSet；达到最大延迟后持续以带 jitter 的最大周期重试，不限制次数或丢弃任务。若 Redis 不可用而无法写回重试时间，任务保持 busy lease，Redis 恢复并在 lease 到期后重新领取；运行时只返回 error，不 panic 或静默成功。
 - 从 Mongo 回填 Redis 必须具备 `delayDelTime > 0` 的热数据 TTL；并发 miss 回填要通过 Redis 锁和二次读取避免旧 Mongo 快照覆盖新 Redis 热数据。
 - Redis `<mainKey>@v` 是热数据生命周期版本键，只用于 Redis 删除/过期窗口并发保护，不是业务字段，也不是 Mongo 字段；版本键和 main/subKey 必须使用同一 hash tag，并在每次热写时使用同一有效 TTL 续期或同步转为持久化。版本值由 Redis `INCR` 生成，读取、条件删除和 Lua 返回值只接受正整数；缺失或非数字版本必须返回错误，不能退化为无条件删除。
 - Redis 批量读取默认按生产云代理能力走 endpoint 内原生 `MGET`；本地原生 Redis Cluster debug 才显式打开 `LoadOptions.ClusterSafe` 按 hash tag 分组多次读取。
@@ -98,7 +98,7 @@
 4. 日志基建后续专题：确定业务项目 logger 枚举或包级变量、名称规范、级别配置和 tx/log 的最小扩展点。
 5. RedisJSON/ReJSON 仅作为未来可选 backend 单独评估；SQL、消息队列等其他 backend 也不进入当前主线。
 6. 完善可选的 `tx/modules/txn` 与 `tx/modules/state`：`@transaction` 已生成 `LockKey()` 和 `LockTarget()`；受控字段、map、slice 与生成对象子 Store 已登记 undo，并覆盖事务失败后的回滚。事务锁使用按逻辑 Key 管理的本机锁表，按稳定顺序获取，并由 `context.Context` 提供锁等待超时；超时必须释放已获取锁且不得进入回调。`Procedure.Locks`/`tx.Call` 已约束锁集和输出嵌套路径；Manager 已覆盖事务后登记、持锁 Flush、失败重试，以及先等待全局 `WaitGroupContext` 再执行的最终限时刷盘。后续用真实 Redis/Mongo 压测决定是否需要不可变写入批次；第一版不处理分布式锁、跨实例事务或持久化层 ACID。
-7. 有状态脏数据容量保护：已补“固定路径重复修改”“大量不同 map/slice 路径”“成功 Flush”“持续失败 Flush”与 clean cached 子 Store 的基准/回归。固定路径不会累积 Delta；1024 个干净缓存 map 子节点投影已从全量扫描收敛为只检查 dirty 索引。后续只限制 Manager 待刷盘根对象数，不把单对象 dirty path 数作为业务可见的拒绝条件：容量满后仍允许修改已处于 pending 状态的根对象；会新增 pending 根对象的 Procedure 必须在业务回调前整体拒绝，不能部分执行。单个 root 对不同 map/slice key 的持续修改仍可能积累无界 Delta，因此 Store 需要内部 delta 数量或字节预算；超过预算时自动降级为整对象 Replace delta、释放旧 delta 容量并输出一次日志/指标，保证正确性和内存上界，代价是该次 Flush 写放大。不得在生成 setter 中隐式 I/O 或强制 Flush，避免破坏 Procedure 的锁边界、undo 与批量合并。
+7. 有状态脏数据容量保护：已补“固定路径重复修改”“大量不同 map/slice 路径”“成功 Flush”“持续失败 Flush”与 clean cached 子 Store 的基准/回归，并实现 `ManagerOptions.MaxPendingRoots`。固定路径不会累积 Delta；1024 个干净缓存 map 子节点投影已从全量扫描收敛为只检查 dirty 索引。容量满后仍允许修改已处于 pending 状态的根对象；会新增 pending 根对象的 Procedure 在业务回调前整体拒绝，不能部分执行。后续为单个 root 增加内部 delta 数量或字节预算；超过预算时自动降级为整对象 Replace delta、释放旧 delta 容量并输出一次日志/指标，保证正确性和内存上界，代价是该次 Flush 写放大。不得在生成 setter 中隐式 I/O 或强制 Flush，避免破坏 Procedure 的锁边界、undo 与批量合并。
 8. 在状态运行时边界稳定后，评估可选 `tx/modules/actor` 与 RPC。actor 是独立的服务发现、跨进程路由和定向通知组件，可按业务 identity 路由玩家会话、战场实例或任意业务实体；它不代表 GD 数据对象，不依赖 GD、Store、DeltaSet、Fusion、事务或状态 Manager。事务模块只负责当前进程内的多对象锁定、回滚和提交，Manager 只负责当前进程的脏实体落盘；actor、事务和 Manager 只在业务项目编排层组合，不反向依赖。
 
 ## Module Layout

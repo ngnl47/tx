@@ -15,6 +15,14 @@ import (
 	"github.com/ngnl47/tx/storage"
 )
 
+var ErrPendingRootCapacity = errors.New("state: pending root capacity reached")
+
+// ManagerOptions 描述有状态脏数据调度的资源边界。
+type ManagerOptions struct {
+	// MaxPendingRoots 限制等待 Flush 的持久化根对象数。零表示不限制。
+	MaxPendingRoots int
+}
+
 // Manager 聚合当前进程内需要落盘的实体 Store。
 //
 // 它不保存业务数据副本，也不把 DeltaSet 作为异步消息传递。Flush 会取得与
@@ -22,10 +30,12 @@ import (
 type Manager struct {
 	writer storage.DeltaApplier
 
-	mu         sync.Mutex
-	generation uint64
-	targets    map[txn.LockKey]targetEntry
-	running    atomic.Bool
+	mu              sync.Mutex
+	generation      uint64
+	targets         map[txn.LockKey]targetEntry
+	reserved        map[txn.LockKey]int
+	maxPendingRoots int
+	running         atomic.Bool
 }
 
 type targetEntry struct {
@@ -35,9 +45,16 @@ type targetEntry struct {
 
 // NewManager 创建一个状态落盘调度器。writer 通常是已装配的 Fusion strategy。
 func NewManager(writer storage.DeltaApplier) *Manager {
+	return NewManagerWithOptions(writer, ManagerOptions{})
+}
+
+// NewManagerWithOptions 创建带资源边界的状态落盘调度器。
+func NewManagerWithOptions(writer storage.DeltaApplier, options ManagerOptions) *Manager {
 	return &Manager{
-		writer:  writer,
-		targets: make(map[txn.LockKey]targetEntry),
+		writer:          writer,
+		targets:         make(map[txn.LockKey]targetEntry),
+		reserved:        make(map[txn.LockKey]int),
+		maxPendingRoots: options.MaxPendingRoots,
 	}
 }
 
@@ -50,21 +67,34 @@ func (manager *Manager) Call(ctx context.Context, procedure txn.Procedure) error
 	if procedure == nil {
 		return errors.New("state: procedure is nil")
 	}
-	return txn.CallWithOptions(ctx, managedProcedure{manager: manager, procedure: procedure}, txn.CallOptions{
+	managed := &managedProcedure{manager: manager, procedure: procedure}
+	err := txn.CallWithOptions(ctx, managed, txn.CallOptions{
 		AllowPendingDeltas: true,
 	})
+	if err != nil {
+		managed.releaseReservation()
+	}
+	return err
 }
 
 // MarkDirty 登记可持久化的根 Store。相同锁键在同一 Manager 内只保留一个目标。
 // 纯内存目标不会进入落盘调度。
-func (manager *Manager) MarkDirty(targets ...txn.LockTarget) {
+func (manager *Manager) MarkDirty(targets ...txn.LockTarget) error {
 	if manager == nil {
-		return
+		return errors.New("state: manager is nil")
 	}
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
+	if !manager.hasCapacityLocked(targets) {
+		return ErrPendingRootCapacity
+	}
+	manager.markDirtyLocked(targets)
+	return nil
+}
+
+func (manager *Manager) markDirtyLocked(targets []txn.LockTarget) {
 	for _, target := range targets {
-		if _, ok := target.Store.(storage.DeltaStore); !ok || target.Key.Scope == "" || target.Key.Value == "" {
+		if !isPersistentTarget(target) {
 			continue
 		}
 		manager.generation++
@@ -161,20 +191,135 @@ func (manager *Manager) Shutdown(ctx context.Context, retryInterval time.Duratio
 }
 
 type managedProcedure struct {
-	manager   *Manager
-	procedure txn.Procedure
+	manager     *Manager
+	procedure   txn.Procedure
+	reservation *pendingReservation
 }
 
-func (procedure managedProcedure) Locks(ctx context.Context) ([]txn.LockTarget, error) {
-	return procedure.procedure.Locks(ctx)
+func (procedure *managedProcedure) Locks(ctx context.Context) ([]txn.LockTarget, error) {
+	targets, err := procedure.procedure.Locks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	reservation, err := procedure.manager.reserve(targets)
+	if err != nil {
+		return nil, err
+	}
+	procedure.reservation = reservation
+	return targets, nil
 }
 
-func (procedure managedProcedure) Process(tx *txn.Tx) error {
+func (procedure *managedProcedure) Process(tx *txn.Tx) error {
+	tx.AfterRollback(func(context.Context) {
+		procedure.releaseReservation()
+	})
 	tx.AfterCommit(func(context.Context) error {
-		procedure.manager.MarkDirty(tx.DirtyTargets()...)
+		procedure.manager.commitReservation(procedure.reservation, tx.DirtyTargets())
+		procedure.reservation = nil
 		return nil
 	})
 	return procedure.procedure.Process(tx)
+}
+
+func (procedure *managedProcedure) releaseReservation() {
+	if procedure == nil || procedure.reservation == nil {
+		return
+	}
+	procedure.manager.releaseReservation(procedure.reservation)
+	procedure.reservation = nil
+}
+
+type pendingReservation struct {
+	keys []txn.LockKey
+}
+
+func (manager *Manager) reserve(targets []txn.LockTarget) (*pendingReservation, error) {
+	if manager == nil {
+		return nil, errors.New("state: manager is nil")
+	}
+	keys := persistentTargetKeys(targets)
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if !manager.hasCapacityLocked(targets) {
+		return nil, ErrPendingRootCapacity
+	}
+	for _, key := range keys {
+		manager.reserved[key]++
+	}
+	return &pendingReservation{keys: keys}, nil
+}
+
+func (manager *Manager) releaseReservation(reservation *pendingReservation) {
+	if manager == nil || reservation == nil {
+		return
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	manager.releaseReservationLocked(reservation)
+}
+
+func (manager *Manager) commitReservation(reservation *pendingReservation, targets []txn.LockTarget) {
+	if manager == nil {
+		return
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	manager.releaseReservationLocked(reservation)
+	manager.markDirtyLocked(targets)
+}
+
+func (manager *Manager) releaseReservationLocked(reservation *pendingReservation) {
+	if reservation == nil {
+		return
+	}
+	for _, key := range reservation.keys {
+		if manager.reserved[key] <= 1 {
+			delete(manager.reserved, key)
+			continue
+		}
+		manager.reserved[key]--
+	}
+}
+
+func (manager *Manager) hasCapacityLocked(targets []txn.LockTarget) bool {
+	if manager.maxPendingRoots <= 0 {
+		return true
+	}
+	occupied := len(manager.targets)
+	for key := range manager.reserved {
+		if _, exists := manager.targets[key]; !exists {
+			occupied++
+		}
+	}
+	additional := 0
+	for _, key := range persistentTargetKeys(targets) {
+		if _, exists := manager.targets[key]; exists || manager.reserved[key] > 0 {
+			continue
+		}
+		additional++
+	}
+	return occupied+additional <= manager.maxPendingRoots
+}
+
+func persistentTargetKeys(targets []txn.LockTarget) []txn.LockKey {
+	keys := make([]txn.LockKey, 0, len(targets))
+	seen := make(map[txn.LockKey]struct{}, len(targets))
+	for _, target := range targets {
+		if !isPersistentTarget(target) {
+			continue
+		}
+		if _, exists := seen[target.Key]; exists {
+			continue
+		}
+		seen[target.Key] = struct{}{}
+		keys = append(keys, target.Key)
+	}
+	return keys
+}
+
+func isPersistentTarget(target txn.LockTarget) bool {
+	_, ok := target.Store.(storage.DeltaStore)
+	return ok && target.Key.Scope != "" && target.Key.Value != ""
 }
 
 func (manager *Manager) flushTarget(ctx context.Context, entry targetEntry) error {

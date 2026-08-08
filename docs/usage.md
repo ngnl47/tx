@@ -878,8 +878,12 @@ func (p *PUpdateRole) Process(tx *txn.Tx) error {
 
 `state.Manager` 用于实体长期驻留内存的服务。事务成功后它只按锁键登记对应 Store；多个事务持续修改同一对象时，Store 保留路径 delta，下一次 Flush 才把当前值物化为一次 Fusion 写入。
 
+这里的 `pending` 指“已发生受控修改、尚未成功 Flush 的持久化根对象”。`Manager.Pending()` 返回按 `LockKey` 去重后的这个数量，而不是内存中全部 `GD*` 的数量：同一个 `GDRole` 连续修改多次、或仅修改 `GDRole.Items[1001]` 等子字段，都只算一个 pending root；同一事务修改一个 `GDLegion` 和两个不同的 `GDRole`，则算三个。Flush 成功、Store delta 清理后，对应 root 才会移出 pending；未产生 delta 或纯内存对象不计入其中。
+
 ```go
-manager := state.NewManager(fusion)
+manager := state.NewManagerWithOptions(fusion, state.ManagerOptions{
+	MaxPendingRoots: 1000,
+})
 
 if err := manager.Call(ctx, &PGuildContribution{Guild: guild, Role: role}); err != nil {
 	return err
@@ -915,7 +919,7 @@ if err := manager.Shutdown(shutdownCtx, 10*time.Second); err != nil {
 
 `Run` 遇到单次写入错误会记录错误并保留目标，下一轮继续重试。`Shutdown` 则在 `shutdownCtx` 有效期内立即 Flush 并按重试间隔继续尝试；截止时间到达时会返回错误和剩余待刷数量。该超时只约束内存 Store 到 Redis 的最终刷盘，不等待 Fusion 的 Redis 延迟队列回写 Mongo。第一版不把 `DeltaSet`、Store 或 GD 指针交给 Actor 外的异步写队列；如未来需要解除 Flush 的 I/O 持锁时间，应在锁内物化不可变写入批次，并补齐顺序确认与失败重试语义。
 
-同一路径的重复写入不会无限增加 dirty 条目。例如连续修改 `role.Items[1001].Quantity`，最终只保留 `Items.1001.Quantity` 的最新状态；但持续新增不同 key 会持续增加路径数量。生成的 map/slice Store 会缓存读取过的子 Store 以保持路径身份，不过投影和清理只遍历实际变脏的子路径，不会扫描全部缓存元素。不要在 setter 内加入隐式 Flush 或 I/O；由 `Manager` 的调度周期和业务侧反压策略决定何时落盘。
+`MaxPendingRoots` 限制等待 Flush 的持久化根对象数量。容量满时，已 pending 的对象仍可继续在事务中修改；会引入新 root 的 `manager.Call` 在 `Procedure.Process` 前返回 `state.ErrPendingRootCapacity`，不会执行部分业务逻辑。设置为 `0` 表示不限制。当前同一路径的重复写入不会无限增加 dirty 条目，例如连续修改 `role.Items[1001].Quantity`，最终只保留 `Items.1001.Quantity` 的最新状态；但持续新增不同 key 仍会增加路径数量。生成的 map/slice Store 会缓存读取过的子 Store 以保持路径身份，不过投影和清理只遍历实际变脏的子路径，不会扫描全部缓存元素。不要在 setter 内加入隐式 Flush 或 I/O；由 `Manager` 的调度周期和业务侧反压策略决定何时落盘。
 
 ### 零值和删除
 
@@ -1890,7 +1894,7 @@ Fusion 策略的当前保存路径：
 7. 任务成功后通过 Lua complete 删除该任务在 Redis 队列中的状态。
 
 延迟任务队列使用 bucket hash tag，支持多个服务实例并发消费。语义是 at-least-once，Mongo 回写必须保持存储幂等。
-任务失败重试时，Scheduler 会输出结构化错误日志；失败原因不写入 Redis 任务状态，避免错误字符串占用队列内存。
+任务失败重试时，Scheduler 会输出结构化错误日志；失败原因不写入 Redis 任务状态，避免错误字符串占用队列内存。重试间隔由 lease 的持久化 `Attempts` 计算：`retryInitialDelay` 按 `retryMultiplier` 递增至 `retryMaxDelay`，并可施加不超过最大值的 `retryJitter`。达到上限后任务持续重试，不会因次数耗尽被丢弃。
 Scheduler 循环中的 claim、complete、retry 等 backend 错误也会输出结构化错误日志；服务关闭导致的 context 结束不会额外记录错误。
 Fusion delayed task queue 接受保存 action 和 Redis 热数据延迟删除 action；其他未知 action 会返回错误。入队任务与 `StorageTaskHandler` 消费入口都会统一校验 `Type`、`ID`、`Action`：空白类型/动作、nil ID 与空字符串 ID 都返回 `task.ErrInvalidDelayTask`，防止手工写入或遗留异常任务落到存储层。`Complete`、`Retry` 额外要求有效的 lease token 和正数尝试次数；格式完整但已过期的 lease 仍按幂等 no-op 处理。任务类型优先来自 `DelayedOperation.Type`，为空时使用 `DelayedOperation.Key.TypeName`。Fusion 延迟保存按类型、记录 ID、route/shard key 和 action 生成一条合并任务，不暴露额外 suffix，避免同一记录产生多条重复保存任务。延迟保存任务不携带业务对象或字段变更日志，回写时重新读取 Redis 当前热数据。显式删除仍走显式删除接口，不进入延迟队列。Redis claim 发现损坏或不完整的 payload 同样返回错误，不会把它当成可执行任务。
 Fusion 保存路径要求 Redis delta applier、Mongo document loader 与延迟队列都已装配；缺少其中任一项时，非空 Delta 会在 Redis I/O 前返回错误。延迟任务执行还要求 handler、Redis 文档读取、Mongo replace 和删除任务所需的 revision/lock 组件完整可用。`Strategy.Validate()` 会汇总检查 Redis delta/document/load-lock/delete、Mongo load/delete 和延迟队列；项目启动阶段必须在 Redis/Mongo 探活后调用它。`txgame/server` 的 `NewStorage` 已执行这两步，任一依赖或连接不可达即启动失败。`Scheduler.Start` 也返回 `error`，项目启动代码必须处理，不能在 worker 未运行时继续对外服务：

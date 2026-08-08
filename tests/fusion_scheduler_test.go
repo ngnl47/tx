@@ -119,8 +119,7 @@ func TestFusionSchedulerRetriesTaskWhenHandlerIsTypedNil(t *testing.T) {
 	now := time.Unix(100, 0)
 	var handler fusion.DelayTaskHandlerFunc
 	scheduler := fusion.NewSchedulerWithOptions(backend, fusion.SchedulerOptions{
-		RetryDelay: time.Second,
-		Handler:    handler,
+		Handler: handler,
 	})
 	if err := backend.Enqueue(context.Background(), task.DelayTask{Type: "role", ID: "1", Action: "save", DueAt: now}); err != nil {
 		t.Fatalf("Enqueue returned error: %v", err)
@@ -350,8 +349,9 @@ func TestFusionSchedulerRunOnceRetriesFailedTask(t *testing.T) {
 	txlog.SetDefault(slog.New(handler))
 	defer txlog.SetDefault(nil)
 	scheduler := fusion.NewSchedulerWithOptions(backend, fusion.SchedulerOptions{
-		BatchSize:  10,
-		RetryDelay: time.Minute,
+		BatchSize:         10,
+		RetryInitialDelay: time.Minute,
+		RetryMaxDelay:     time.Minute,
 		Handler: fusion.DelayTaskHandlerFunc(func(context.Context, task.DelayTask) error {
 			return errors.New("temporary")
 		}),
@@ -388,6 +388,36 @@ func TestFusionSchedulerRunOnceRetriesFailedTask(t *testing.T) {
 		!recordHasStringAttr(record, "taskID", "1") ||
 		!recordHasStringAttr(record, "err", "temporary") {
 		t.Fatalf("log attrs = %#v", recordAttrs(record))
+	}
+}
+
+func TestFusionSchedulerRetriesWithCappedExponentialDelay(t *testing.T) {
+	ctx := context.Background()
+	backend := memory.NewBackend()
+	now := time.Unix(100, 0)
+	scheduler := fusion.NewSchedulerWithOptions(backend, fusion.SchedulerOptions{
+		RetryInitialDelay: time.Second,
+		RetryMultiplier:   2,
+		RetryMaxDelay:     2 * time.Second,
+		Handler: fusion.DelayTaskHandlerFunc(func(context.Context, task.DelayTask) error {
+			return errors.New("temporary")
+		}),
+	})
+
+	if err := scheduler.Schedule(ctx, task.DelayTask{Type: "role", ID: "1", Action: "save", DueAt: now}); err != nil {
+		t.Fatalf("Schedule returned error: %v", err)
+	}
+	if _, err := scheduler.RunOnce(ctx, now); err != nil {
+		t.Fatalf("first RunOnce returned error: %v", err)
+	}
+	if _, err := scheduler.RunOnce(ctx, now.Add(time.Second)); err != nil {
+		t.Fatalf("second RunOnce returned error: %v", err)
+	}
+	if leases, err := backend.ClaimDue(ctx, now.Add(2*time.Second), 1); err != nil || len(leases) != 0 {
+		t.Fatalf("second retry leases before capped delay = %#v, %v; want none", leases, err)
+	}
+	if leases, err := backend.ClaimDue(ctx, now.Add(3*time.Second), 1); err != nil || len(leases) != 1 || leases[0].Attempts != 3 {
+		t.Fatalf("second retry leases = %#v, %v; want attempt 3 at capped delay", leases, err)
 	}
 }
 

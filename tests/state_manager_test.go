@@ -79,6 +79,16 @@ func (procedure stateTestProcedure) Process(*txn.Tx) error {
 	return nil
 }
 
+type observingStateTestProcedure struct {
+	stateTestProcedure
+	called *bool
+}
+
+func (procedure observingStateTestProcedure) Process(tx *txn.Tx) error {
+	*procedure.called = true
+	return procedure.stateTestProcedure.Process(tx)
+}
+
 func TestStateManagerDefersTransactionStoreUntilFlush(t *testing.T) {
 	store := &stateTestStore{}
 	writer := &recordingDeltaStoreApplier{}
@@ -129,6 +139,48 @@ func TestStateManagerAllowsAccumulatedDeltasWhenCleanTargetCheckIsEnabled(t *tes
 	}
 	if manager.Pending() != 1 || len(store.Deltas()) != 2 {
 		t.Fatalf("state manager lost accumulated deltas: pending=%d deltas=%#v", manager.Pending(), store.Deltas())
+	}
+}
+
+func TestStateManagerAllowsPendingRootWhenCapacityIsFull(t *testing.T) {
+	store := &stateTestStore{}
+	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
+	manager := state.NewManagerWithOptions(&recordingDeltaStoreApplier{}, state.ManagerOptions{MaxPendingRoots: 1})
+	if err := manager.MarkDirty(lock); err != nil {
+		t.Fatalf("MarkDirty returned error: %v", err)
+	}
+
+	if err := manager.Call(context.Background(), stateTestProcedure{lock: lock, store: store}); err != nil {
+		t.Fatalf("Call for pending root returned error: %v", err)
+	}
+	if manager.Pending() != 1 || len(store.Deltas()) != 1 {
+		t.Fatalf("pending root state = pending:%d deltas:%#v, want one accumulated delta", manager.Pending(), store.Deltas())
+	}
+}
+
+func TestStateManagerRejectsNewRootBeforeProcedureWhenCapacityIsFull(t *testing.T) {
+	first := &stateTestStore{}
+	firstLock := txn.NewLockTarget(txn.NewLockKey("role", 1001), first)
+	manager := state.NewManagerWithOptions(&recordingDeltaStoreApplier{}, state.ManagerOptions{MaxPendingRoots: 1})
+	if err := manager.MarkDirty(firstLock); err != nil {
+		t.Fatalf("MarkDirty returned error: %v", err)
+	}
+
+	second := &stateTestStore{}
+	secondLock := txn.NewLockTarget(txn.NewLockKey("role", 1002), second)
+	called := false
+	err := manager.Call(context.Background(), observingStateTestProcedure{
+		stateTestProcedure: stateTestProcedure{lock: secondLock, store: second},
+		called:             &called,
+	})
+	if !errors.Is(err, state.ErrPendingRootCapacity) {
+		t.Fatalf("Call error = %v, want ErrPendingRootCapacity", err)
+	}
+	if called || len(second.Deltas()) != 0 {
+		t.Fatalf("rejected procedure ran: called=%t deltas=%#v", called, second.Deltas())
+	}
+	if manager.Pending() != 1 {
+		t.Fatalf("Pending = %d, want original root only", manager.Pending())
 	}
 }
 
