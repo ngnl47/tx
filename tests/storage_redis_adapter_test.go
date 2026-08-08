@@ -987,12 +987,12 @@ func TestRedisAdapterUsesPartialFullUpdateModeWhenSubKeyHasFullAndDiffChanges(t 
 	if args[0] != "bag" {
 		t.Fatalf("suffix = %#v, want bag; args=%#v", args[0], args)
 	}
-	if args[2] != "2" {
-		t.Fatalf("mode = %#v, want 2; args=%#v", args[2], args)
+	if args[2] != "3" {
+		t.Fatalf("mode = %#v, want 3; args=%#v", args[2], args)
 	}
-	doc := decodeJSONDocument(t, args[1].(string))
+	doc := evalPatchDocuments(t, client)["bag"]
 	if doc["equip"].(map[string]any)["weapon"] != "sword" {
-		t.Fatalf("partial full update doc = %#v", doc)
+		t.Fatalf("operation update doc = %#v", doc)
 	}
 }
 
@@ -1545,12 +1545,63 @@ func evalPatchDocuments(t *testing.T, client *recordingRedisStringClient) map[st
 		if !ok {
 			t.Fatalf("eval arg %d = %#v, want document string", i+1, args[i+1])
 		}
-		if args[i+2] != "0" {
-			t.Fatalf("eval arg %d = %#v, want mode 0", i+2, args[i+2])
+		mode, ok := args[i+2].(string)
+		if !ok {
+			t.Fatalf("eval arg %d = %#v, want mode string", i+2, args[i+2])
 		}
-		patches[suffix] = decodeJSONDocument(t, body)
+		switch mode {
+		case "0":
+			patches[suffix] = decodeJSONDocument(t, body)
+		case "3":
+			patches[suffix] = applyOperationPatch(t, body)
+		default:
+			t.Fatalf("eval arg %d = %#v, want merge or operation mode", i+2, args[i+2])
+		}
 	}
 	return patches
+}
+
+func applyOperationPatch(t *testing.T, body string) map[string]any {
+	t.Helper()
+	patch := decodeJSONDocument(t, body)
+	operations, ok := patch["operations"].([]any)
+	if !ok {
+		t.Fatalf("operation patch = %#v, want operations", patch)
+	}
+	doc := map[string]any{}
+	for _, rawOperation := range operations {
+		operation, ok := rawOperation.(map[string]any)
+		if !ok {
+			t.Fatalf("operation = %#v, want object", rawOperation)
+		}
+		path, ok := operation["path"].([]any)
+		if !ok || len(path) == 0 {
+			t.Fatalf("operation path = %#v, want non-empty path", operation["path"])
+		}
+		target := doc
+		for _, rawSegment := range path[:len(path)-1] {
+			segment, ok := rawSegment.(string)
+			if !ok {
+				t.Fatalf("operation path segment = %#v, want string", rawSegment)
+			}
+			child, ok := target[segment].(map[string]any)
+			if !ok {
+				child = map[string]any{}
+				target[segment] = child
+			}
+			target = child
+		}
+		last, ok := path[len(path)-1].(string)
+		if !ok {
+			t.Fatalf("operation path final segment = %#v, want string", path[len(path)-1])
+		}
+		if operation["kind"] == "delete" {
+			delete(target, last)
+			continue
+		}
+		target[last] = operation["value"]
+	}
+	return doc
 }
 
 type redisEvalTriple struct {

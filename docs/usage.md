@@ -1145,7 +1145,7 @@ Redis adapter 收到 Delta 变更后会：
 1. 根据 `TypeSpec` 和 `RecordKey` 生成 Redis key 前缀，例如 `role:{470001}`。
 2. 根据字段的 Go 字段名定位 `redis:"subKey:..."`，再用 JSON 字段名写入 main 文档或 subKey 文档。
 3. 把每个文档的 patch 编码成 JSON 字符串。
-4. 调用 Lua 脚本：普通局部 `DeltaKindSet` 使用 merge；`DeltaKindReplace` 使用有序路径操作直接覆盖目标路径；两者都会在 Redis 内部 `cjson.decode` 后再编码写回。
+4. 调用 Lua 脚本：顶层简单 `DeltaKindSet` 使用 merge；嵌套路径和 `DeltaKindReplace` 使用有序路径操作直接覆盖目标路径；两者都会在 Redis 内部 `cjson.decode` 后再编码写回。
 5. 按 `ApplyOptions.TTL` 设置或续期 Redis 热数据。
 6. 递增 `<mainKey>@v` 版本键，并让它与 main/subKey 使用同一有效 TTL；持久化热数据时版本键也会持久化。
 
@@ -1162,9 +1162,24 @@ err := storage.Save(ctx, redisCluster, role.Store())
 
 ### 局部路径的类型约束
 
-Lua 只会为**缺失**的对象父节点创建 `{}`；已经存在的父节点必须是 JSON object。遇到 `null`、数字、
-字符串或数组等错误类型时，adapter 返回可用 `errors.Is` 判断的 `storage.ErrPathTypeMismatch`，并保持 Redis
-原文档不变。运行时不会把错误数据悄悄改写成对象，因为这会掩盖上游模型或数据迁移问题。
+Lua 只会为**缺失**的对象父节点创建 `{}`。已存在的 `null`、数字、字符串等非容器父节点会使 adapter 返回
+可用 `errors.Is` 判断的 `storage.ErrPathTypeMismatch`，Redis 原文档保持不变。运行时不会把错误数据悄悄改写成
+对象，因为这会掩盖上游模型或数据迁移问题。
+
+已有数组可以使用生成 Store 的稳定下标更新既有元素的子字段。例如 `queue` 当前为
+`[{"code":2001,"count":5}]` 时：
+
+```go
+item, _ := probe.QueueStore().GetAt(0)
+item.SetCount(8)
+
+err := storage.Save(ctx, redisCluster, probe.Store())
+// Redis 的 queue 子文档更新为：{"queue":[{"code":2001,"count":8}]}
+```
+
+Lua 不会为数组补空位、插入或删除元素。`Append`、`InsertAt`、`RemoveAt`、`Replace` 与 `Clear` 这类会改变
+长度或整体结构的操作由生成 Store 标记为整字段覆盖；数组下标不存在或路径段不是整数时返回
+`storage.ErrPathTypeMismatch`。
 
 ```go
 // Redis 初始值：{"roleId":1001}

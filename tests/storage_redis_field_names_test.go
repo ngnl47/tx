@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/ngnl47/tx/change"
@@ -72,5 +73,44 @@ func TestRedisPatchUsesSubKeyAndRedisName(t *testing.T) {
 	}
 	if got := patch.Set[0].Path.String(); got != "it.1001.quantity" {
 		t.Fatalf("Redis path = %q, want it.1001.quantity", got)
+	}
+}
+
+func TestRedisPatchUsesOperationsForSliceElementField(t *testing.T) {
+	spec := meta.TypeSpec{
+		Type: meta.Type{Fields: []meta.Field{{
+			Name:      "Queue",
+			JSONName:  "queue",
+			RedisName: "queue",
+			Type:      "[]*Item",
+			Exported:  true,
+		}}},
+		Fields: map[string]meta.FieldSpec{
+			"Queue": {Redis: &meta.RedisFieldSpec{SubKey: "queue"}},
+		},
+	}
+	delta := deltaPath(intKeyNode(1, 0), fieldNode(2))
+	resolver := testNamedBackendResolver(map[change.NameBackend]map[change.FieldID]string{
+		change.NameBackendGo:   {1: "Queue", 2: "Count"},
+		change.NameBackendJSON: {1: "queue", 2: "count"},
+	})
+
+	patches, err := redis.BuildDocumentPatchesWithDeltas(spec, change.DeltaSet{{Path: delta, Kind: change.DeltaKindSet}}, resolver, change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
+		if path.Equal(delta) {
+			return int64(8), true
+		}
+		return nil, false
+	}))
+	if err != nil {
+		t.Fatalf("BuildDocumentPatchesWithDeltas returned error: %v", err)
+	}
+	body, err := redis.EncodeDocumentPatch(patches["queue"])
+	if err != nil {
+		t.Fatalf("EncodeDocumentPatch returned error: %v", err)
+	}
+	for _, want := range []string{`"operations"`, `"path":["queue","0","count"]`, `"value":8`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("encoded slice patch = %s, want %s", body, want)
+		}
 	}
 }

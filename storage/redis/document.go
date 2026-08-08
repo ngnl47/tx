@@ -62,6 +62,11 @@ func BuildDocumentPatchesWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, 
 		if patch.Mode == "" {
 			patch.Mode = documentPatchModeMerge
 		}
+		// 深路径通过 operation 顺序执行。merge JSON 对象无法表达数组下标，
+		// 而 operation 可在已有数组内按稳定 index 定位元素。
+		if len(jsonPath) > 1 {
+			patch.Mode = documentPatchModeOperations
+		}
 		switch delta.Kind {
 		case change.DeltaClear:
 			patch = appendDocumentPatchSet(patch, jsonPath, emptyDocumentValue(spec, goField), "clear")

@@ -49,6 +49,48 @@ local function is_object(v)
   return get_type(v) == "table"
 end
 
+local function is_container(v)
+  local value_type = get_type(v)
+  return value_type == "table" or value_type == "array"
+end
+
+local function array_index(key)
+  if type(key) ~= "string" or not string.match(key, "^%d+$") then
+    return nil
+  end
+  return tonumber(key) + 1
+end
+
+local function path_value(target, key)
+  if get_type(target) == "array" then
+    local index = array_index(key)
+    if index == nil then
+      return nil, false
+    end
+    return target[index], true
+  end
+  if not is_object(target) then
+    return nil, false
+  end
+  return target[key], true
+end
+
+local function set_path_value(target, key, value)
+  if get_type(target) == "array" then
+    local index = array_index(key)
+    if index == nil or index > #target then
+      return false
+    end
+    target[index] = value
+    return true
+  end
+  if not is_object(target) then
+    return false
+  end
+  target[key] = value
+  return true
+end
+
 local function path_type_mismatch(path)
   return RESULT_PATH_TYPE_MISMATCH .. ":" .. path
 end
@@ -86,18 +128,24 @@ local function set_path(object, path, value)
   local target = object
   for index = 1, #path - 1 do
     local key = path[index]
-    if target[key] == nil then
-      target[key] = {}
-    elseif not is_object(target[key]) then
+    local child, readable = path_value(target, key)
+    if not readable then
       return false, table.concat(path, ".", 1, index)
     end
-    target = target[key]
+    if child == nil then
+      if not is_object(target) then
+        return false, table.concat(path, ".", 1, index)
+      end
+      target[key] = {}
+      child = target[key]
+    elseif not is_container(child) then
+      return false, table.concat(path, ".", 1, index)
+    end
+    target = child
   end
   local key = path[#path]
-  if value == cjson.null then
-    target[key] = nil
-  else
-    target[key] = value
+  if not set_path_value(target, key, value) then
+    return false, table.concat(path, ".")
   end
   return true
 end
@@ -106,13 +154,23 @@ local function delete_path(object, path)
   local target = object
   for index = 1, #path - 1 do
     local key = path[index]
-    if target[key] == nil then
-      return true
-    end
-    if not is_object(target[key]) then
+    local child, readable = path_value(target, key)
+    if not readable then
       return false, table.concat(path, ".", 1, index)
     end
-    target = target[key]
+    if child == nil then
+      return true
+    end
+    if not is_container(child) then
+      return false, table.concat(path, ".", 1, index)
+    end
+    target = child
+  end
+  if get_type(target) == "array" then
+    return false, table.concat(path, ".")
+  end
+  if not is_object(target) then
+    return false, table.concat(path, ".")
   end
   target[path[#path]] = nil
   return true
