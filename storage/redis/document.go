@@ -42,13 +42,16 @@ type documentPatchOperation struct {
 func BuildDocumentPatchesWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, resolver change.FieldNameResolver, values change.DeltaValueResolver) (map[string]DocumentPatch, error) {
 	out := map[string]DocumentPatch{}
 	for _, delta := range deltas.Clone().Compact() {
+		if delta.Path.Depth == 0 {
+			continue
+		}
 		goPath := delta.Path.FullPath(resolver, change.NameBackendGo)
 		if len(goPath) == 0 {
-			continue
+			return nil, fmt.Errorf("redis: cannot resolve Go field path for delta %#v", delta.Path)
 		}
 		jsonPath := delta.Path.FullPath(resolver, change.NameBackendJSON)
 		if len(jsonPath) == 0 {
-			continue
+			return nil, fmt.Errorf("redis: cannot resolve JSON field path for Go path %s", goPath)
 		}
 		goField := goPath[0]
 		suffix, ignore := redisDocumentSuffix(spec, goField)

@@ -68,6 +68,20 @@ func TestMongoBuildUpdateDocumentWithDeltasRejectsMissingCurrentValue(t *testing
 	}
 }
 
+func TestMongoBuildUpdateDocumentWithDeltasRejectsUnresolvedFieldPath(t *testing.T) {
+	const unknownField change.FieldID = 99
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(unknownField)), Kind: change.DeltaKindSet}}
+	resolver := testFieldNameResolver{
+		change.NameBackendGo:   {deltaFieldName: "Name"},
+		change.NameBackendBSON: {deltaFieldName: "name"},
+	}
+
+	_, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver, testDeltaValueResolver{unknownField: "alice"})
+	if err == nil || !strings.Contains(err.Error(), "field path") {
+		t.Fatalf("BuildUpdateDocumentWithDeltas error = %v, want unresolved field path error", err)
+	}
+}
+
 func TestMongoBuildUpdateDocumentWithDeltasAllowsResolvedNilValue(t *testing.T) {
 	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
 	resolver := testFieldNameResolver{

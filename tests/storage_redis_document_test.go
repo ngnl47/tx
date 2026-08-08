@@ -47,6 +47,20 @@ func TestRedisBuildDocumentPatchesWithDeltasRejectsMissingCurrentValue(t *testin
 	}
 }
 
+func TestRedisBuildDocumentPatchesWithDeltasRejectsUnresolvedFieldPath(t *testing.T) {
+	const unknownField change.FieldID = 99
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(unknownField)), Kind: change.DeltaKindSet}}
+	resolver := testFieldNameResolver{
+		change.NameBackendGo:   {deltaFieldName: "Name"},
+		change.NameBackendJSON: {deltaFieldName: "name"},
+	}
+
+	_, err := txredis.BuildDocumentPatchesWithDeltas(redisPatchSpec(), deltas, resolver, testDeltaValueResolver{unknownField: "alice"})
+	if err == nil || !strings.Contains(err.Error(), "field path") {
+		t.Fatalf("BuildDocumentPatchesWithDeltas error = %v, want unresolved field path error", err)
+	}
+}
+
 func TestRedisBuildDocumentPatchesWithDeltasAllowsResolvedNilValue(t *testing.T) {
 	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
 	resolver := testFieldNameResolver{

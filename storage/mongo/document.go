@@ -16,13 +16,16 @@ func BuildUpdateDocumentWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, r
 	unsetDoc := map[string]any{}
 	for _, delta := range normalizeMongoDeltas(deltas) {
 		valuePath := delta.Path
+		if valuePath.Depth == 0 {
+			continue
+		}
 		goPath := valuePath.FullPath(resolver, change.NameBackendGo)
 		if len(goPath) == 0 {
-			continue
+			return nil, fmt.Errorf("mongo: cannot resolve Go field path for delta %#v", valuePath)
 		}
 		bsonPath := valuePath.FullPath(resolver, change.NameBackendBSON)
 		if len(bsonPath) == 0 {
-			continue
+			return nil, fmt.Errorf("mongo: cannot resolve BSON field path for Go path %s", goPath)
 		}
 		if bsonPath[0] == "_id" {
 			return nil, fmt.Errorf("mongo: cannot update immutable _id field %s", goPath[0])

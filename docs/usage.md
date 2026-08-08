@@ -21,7 +21,7 @@
 - 外部协议的返回值必须有明确语义：只有已定义的成功、冲突或未命中值可以继续处理；未知 Lua 返回值、损坏 Redis JSON、空锁或其他不完整响应都会返回错误，绝不默认成功或静默丢弃。
 - `DocumentLoader` 的单条结果必须成对一致：`exists == true` 时文档非 `nil`，`exists == false` 时文档必须为 `nil`；批量读取逐项遵守同一规则。自定义 adapter 返回矛盾组合会被 runtime 拒绝，不会被当成缓存未命中继续回源。
 - `DocumentReplacer` 的文档也必须非 `nil`：空 map 是合法的空 JSON 对象，`nil` 没有明确写入语义并返回 `storage.ErrNilDocument`；不能把它当作成功的空操作。
-- 非空 `DeltaSet` 在 Redis patch 或 Mongo update 边界若不能生成任何有效写入，返回 `storage.ErrNoEffectiveDeltas`；调用方保留 Store delta 以便定位输入或重试，不能把无效路径当成已保存。
+- 非空 `DeltaSet` 在 Redis patch 或 Mongo update 边界若无法解析 Go/JSON/BSON 字段路径，会直接返回错误；若路径可解析但最终不能生成任何有效写入，则返回 `storage.ErrNoEffectiveDeltas`。两种失败都会保留 Store delta 以便定位输入或重试，不能把无效路径当成已保存。
 - `map[string]` 的危险 key 在 Mongo update 边界降级整字段写，不做私有转义，保证数据库中仍能直观看到业务 key。
 - Redis 当前使用 string JSON main/subKey 文档。带 `redis:"subKey:..."` 的字段拆独立 key；main 文档仍是根记录热数据的一部分。
 - 整文档替换或 Mongo 回填即使只包含 subKey 字段，也会在 Redis 中保留 main 文档 `{}`；main key 始终作为 Redis 热记录存在标记，不能因字段拆分而缺失。完整替换时，新的文档未包含的已知 subKey 会一并删除，不能让旧子文档回流。
