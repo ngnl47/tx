@@ -690,7 +690,7 @@ if err := role.BeginChange(); err != nil {
 role.Name = "bob"
 role.Items[1001].Quantity = 7
 
-if err := role.SaveChange(ctx, fusionDB); err != nil {
+if err := db.SaveChange(role); err != nil {
 	return err
 }
 ```
@@ -705,7 +705,7 @@ if err := role.BeginChange(); err != nil {
 }
 role.Dress[0].Expire = 200
 
-if err := role.SaveChange(ctx, fusionDB); err != nil {
+if err := db.SaveChange(role); err != nil {
 	return err
 }
 // 输出边界：Set["Dress.0.Expire"] = int64(200)
@@ -726,7 +726,7 @@ if err := storage.Save(ctx, fusionDB, role.Store()); err != nil {
 }
 ```
 
-`BeginChange/SaveChange` 和 Store 写入模式在同一个变更周期内互斥；`NewViewStore()` 与 `store.View()` 只用于下行/广播视图，不参与持久化模式。业务项目通常会再包装一层 facade，例如 `db.Save(role)`，避免 handler 直接传入 `ctx`、writer 或 Store。
+`BeginChange/SaveChange` 和 Store 写入模式在同一个变更周期内互斥；`NewViewStore()` 与 `store.View()` 只用于下行/广播视图，不参与持久化模式。业务项目通常会再包装一层 facade：Store 拦截路径使用 `db.Save(role)`，snapshot diff 路径使用 `db.SaveChange(role)`，避免 handler 直接传入 `ctx`、writer 或 Store，并保证两条路径都经过项目的存储健康闸门。
 
 如果业务直接修改了字段，需要手动 `Touch*` 补标脏：
 
@@ -924,7 +924,7 @@ if err := manager.Shutdown(shutdownCtx, 10*time.Second); err != nil {
 
 `MaxRootDeltaEntries` 限制单个 pending root 的细粒度 Delta 数量。Manager 只在 `Flush` 取得该对象锁、准备投影时检查，避免每次 `Procedure` 提交递归遍历整棵 Store 树；若数量超过预算，就清理树内的细粒度 dirty 状态，并按当前 `GD*` 值记录全部可更新顶层字段的 `Replace`，自动跳过 BSON `_id`。例如一轮持续修改 `role.Items[1..2000]` 时，预算为 `1024` 不会拒绝这次业务，而会把本次保存收敛为 `Name`、`Items` 等顶层字段的覆盖写，避免不同 key 长期累积。该收敛会记录一条 `state root deltas collapsed` 告警；它限制 dirty 路径，不限制 `GD*` 业务对象本身或干净子 Store 缓存的内存。
 
-`PendingMemorySoftLimit` 是进程 Heap 的软上限（字节）。Manager 按 `MemorySampleInterval` 读取 `HeapAlloc`；达到上限时，已有 pending root 仍可继续在事务中修改，但会引入新 root 的 `manager.Call` 在 `Procedure.Process` 前返回 `state.ErrPendingMemorySoftLimit`，不会执行部分业务逻辑。采样间隔为 `0` 时每次新增 root 预检都采样；内存阈值为 `0` 时禁用该保护。部署应通过 `GOMEMLIMIT` 约束整个 Go 进程，本项通常设置为低于 `GOMEMLIMIT` 的业务反压线。
+`PendingMemorySoftLimit` 是进程 Heap 告警阈值（字节）。Manager 按 `MemorySampleInterval` 读取 `HeapAlloc`；超过阈值只记录 `state pending memory threshold exceeded` 告警，不拒绝新 root，也不改变已提交事务。采样间隔为 `0` 时每次新增 root 预检都采样；内存阈值为 `0` 时禁用该观测。部署应通过 `GOMEMLIMIT` 约束整个 Go 进程；不能用进程级 Heap 采样作为拒绝业务请求的根因。
 
 `MaxPendingRoots` 是可选的数量硬保护。容量满时同样仅拒绝新 root，并返回 `state.ErrPendingRootCapacity`；设置为 `0` 表示不限制。当前同一路径的重复写入不会无限增加 dirty 条目，例如连续修改 `role.Items[1001].Quantity`，最终只保留 `Items.1001.Quantity` 的最新状态；但持续新增不同 key 仍会增加路径数量。生成的 map/slice Store 会缓存读取过的子 Store 以保持路径身份，不过投影和清理只遍历实际变脏的子路径，不会扫描全部缓存元素。不要在 setter 内加入隐式 Flush 或 I/O；由 `Manager` 的调度周期和业务侧反压策略决定何时落盘。
 

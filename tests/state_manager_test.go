@@ -233,7 +233,7 @@ func TestStateManagerCollapsesOverBudgetRootDeltasBeforeFlush(t *testing.T) {
 	}
 }
 
-func TestStateManagerMemorySoftLimitRejectsOnlyNewPendingRoots(t *testing.T) {
+func TestStateManagerMemorySoftLimitWarnsButAcceptsNewPendingRoots(t *testing.T) {
 	var heapBytes uint64
 	manager := state.NewManagerWithOptions(&recordingDeltaStoreApplier{}, state.ManagerOptions{
 		PendingMemorySoftLimit: 1,
@@ -253,15 +253,18 @@ func TestStateManagerMemorySoftLimitRejectsOnlyNewPendingRoots(t *testing.T) {
 
 	second := &stateTestStore{}
 	secondLock := txn.NewLockTarget(txn.NewLockKey("role", 1002), second)
-	err := manager.Call(context.Background(), observingStateTestProcedure{
+	called := new(bool)
+	if err := manager.Call(context.Background(), observingStateTestProcedure{
 		stateTestProcedure: stateTestProcedure{lock: secondLock, store: second},
-		called:             new(bool),
-	})
-	if !errors.Is(err, state.ErrPendingMemorySoftLimit) {
-		t.Fatalf("Call error = %v, want ErrPendingMemorySoftLimit", err)
+		called:             called,
+	}); err != nil {
+		t.Fatalf("Call for new pending root returned error: %v", err)
 	}
-	if manager.Pending() != 1 {
-		t.Fatalf("Pending = %d, want only existing root", manager.Pending())
+	if !*called {
+		t.Fatal("new pending root procedure was not called")
+	}
+	if manager.Pending() != 2 {
+		t.Fatalf("Pending = %d, want both roots", manager.Pending())
 	}
 }
 

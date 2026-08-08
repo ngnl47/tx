@@ -19,8 +19,6 @@ import (
 
 var ErrPendingRootCapacity = errors.New("state: pending root capacity reached")
 
-var ErrPendingMemorySoftLimit = errors.New("state: pending memory soft limit reached")
-
 // ManagerOptions 描述有状态脏数据调度的资源边界。
 type ManagerOptions struct {
 	// MaxPendingRoots 限制等待 Flush 的持久化根对象数。零表示不限制。
@@ -28,8 +26,8 @@ type ManagerOptions struct {
 	// MaxRootDeltaEntries 限制单个持久化根对象的细粒度 Delta 数量。超过后，
 	// Manager 会将该根 Store 收敛为顶层字段 Replace，零表示不限制。
 	MaxRootDeltaEntries int
-	// PendingMemorySoftLimit 是进程 Heap 的软上限（字节）。达到上限时，
-	// Manager 拒绝新的持久化根对象，但允许已有 pending 根继续合并变更。零表示不限制。
+	// PendingMemorySoftLimit 是进程 Heap 告警阈值（字节）。达到上限时，
+	// Manager 仅记录告警，不拒绝业务变更。零表示不观测。
 	PendingMemorySoftLimit uint64
 	// MemorySampleInterval 是 Heap 采样最小间隔。零表示每次新增根预检时采样。
 	MemorySampleInterval time.Duration
@@ -45,19 +43,20 @@ type ManagerOptions struct {
 type Manager struct {
 	writer storage.DeltaApplier
 
-	mu                   sync.Mutex
-	generation           uint64
-	targets              map[txn.LockKey]targetEntry
-	reserved             map[txn.LockKey]int
-	maxPendingRoots      int
-	maxRootDeltas        int
-	memorySoftLimit      uint64
-	memorySampleInterval time.Duration
-	heapBytes            func() uint64
-	memoryMu             sync.Mutex
-	lastMemoryAt         time.Time
-	lastHeapBytes        uint64
-	running              atomic.Bool
+	mu                    sync.Mutex
+	generation            uint64
+	targets               map[txn.LockKey]targetEntry
+	reserved              map[txn.LockKey]int
+	maxPendingRoots       int
+	maxRootDeltas         int
+	memorySoftLimit       uint64
+	memorySampleInterval  time.Duration
+	heapBytes             func() uint64
+	memoryMu              sync.Mutex
+	lastMemoryAt          time.Time
+	lastHeapBytes         uint64
+	memorySoftLimitWarned bool
+	running               atomic.Bool
 }
 
 type targetEntry struct {
@@ -335,8 +334,8 @@ func (manager *Manager) acceptTargetsLocked(targets []txn.LockTarget) error {
 	if !manager.hasCapacityLocked(targets) {
 		return ErrPendingRootCapacity
 	}
-	if manager.hasNewPersistentRootLocked(targets) && manager.memorySoftLimitReached() {
-		return ErrPendingMemorySoftLimit
+	if manager.hasNewPersistentRootLocked(targets) {
+		manager.warnMemorySoftLimitIfExceeded()
 	}
 	return nil
 }
@@ -351,18 +350,25 @@ func (manager *Manager) hasNewPersistentRootLocked(targets []txn.LockTarget) boo
 	return false
 }
 
-func (manager *Manager) memorySoftLimitReached() bool {
+func (manager *Manager) warnMemorySoftLimitIfExceeded() {
 	if manager.memorySoftLimit == 0 {
-		return false
+		return
 	}
 	now := time.Now()
 	manager.memoryMu.Lock()
-	defer manager.memoryMu.Unlock()
 	if manager.lastMemoryAt.IsZero() || manager.memorySampleInterval <= 0 || now.Sub(manager.lastMemoryAt) >= manager.memorySampleInterval {
 		manager.lastHeapBytes = manager.heapBytes()
 		manager.lastMemoryAt = now
 	}
-	return manager.lastHeapBytes >= manager.memorySoftLimit
+	exceeded := manager.lastHeapBytes >= manager.memorySoftLimit
+	shouldWarn := exceeded && !manager.memorySoftLimitWarned
+	manager.memorySoftLimitWarned = exceeded
+	heapBytes := manager.lastHeapBytes
+	limit := manager.memorySoftLimit
+	manager.memoryMu.Unlock()
+	if shouldWarn {
+		txlog.Warn("state pending memory threshold exceeded", "heapBytes", heapBytes, "threshold", limit)
+	}
 }
 
 func currentHeapBytes() uint64 {
