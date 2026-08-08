@@ -143,7 +143,7 @@ if err := storage.Save(ctx, fusionStore, role.Store()); err != nil {
 }
 ```
 
-有状态服务由 `state.Manager.Flush` 保留失败目标并在下一轮重试；无状态服务的 facade 应把错误交给请求重试或业务失败处理。该路径不承诺 Redis 写入与跨组件任务入队的分布式原子性。
+有状态服务由 `txn.Runtime.Flush` 保留失败目标并在下一轮重试；无状态服务的 facade 应把错误交给请求重试或业务失败处理。该路径不承诺 Redis 写入与跨组件任务入队的分布式原子性。
 
 如果业务需要显式持有 Store，例如高频对象在内存中维护变更队列、定时合并后再落地，也可以直接使用
 `storage.Save(ctx, writer, role.Store())` 这类框架层写入入口，并由调用方决定何时保存或重新累计下一轮变更。
@@ -795,7 +795,7 @@ err := txn.Run(ctx, txn.Locks(role), process)
 
 项目应在启动时把自己的 yml 配置转换为这项配置；`tx` 不读取项目文件。生产环境通常保持默认 `false`，避免每个事务入口递归投影整棵 Store 树。开启后应先保存或 `ClearDeltas()` 处理事务外已有的 Store 变更，再进入事务；不要把事务外修改混入本次提交边界。
 
-常驻内存实体由 `state.Manager` 管理时，前一轮事务的 delta 会刻意保留到下一次 Flush，因此必须使用 `manager.Call`。它会在内部允许已有 delta，普通业务代码不要直接调用 `txn.CallWithOptions`。
+常驻内存实体由 `txn.Runtime` 管理时，前一轮事务的 delta 会刻意保留到下一次 Flush，因此必须使用 `runtime.Call`。它会在内部允许已有 delta，普通业务代码不要直接调用 `txn.CallWithOptions`。
 
 锁等待通过调用方的 `context.Context` 统一控制。获取完整锁集之前发生超时或取消时，框架会释放本次已获取的锁，且不会执行回调：
 
@@ -860,12 +860,12 @@ func (p *PGrantReward) Process(*txn.Tx) error {
 	return nil
 }
 
-err := manager.Call(ctx, &PGuildContribution{Guild: guild, Role: role})
+err := runtime.Call(ctx, &PGuildContribution{Guild: guild, Role: role})
 ```
 
 `txn.Tx` 只表示本次已持锁的运行环境，负责 undo、savepoint、子过程调用和提交/回滚回调；它不是业务数据，也不是 `context.Context`。事务内通过生成的 `GD*` 代理方法或显式 Store 修改数据，两者都会走同一受控 Store 路径并登记 undo。过程成功只表示内存修改已提交，不等价于 Redis 或 Mongo 已写入；`AfterCommit` 在锁释放、undo 解绑后按注册顺序执行，任一回调失败会停止后续回调，但不会回滚内存修改。过程返回错误时，`AfterCommit` 不会执行；可用 `AfterRollback` 做指标记录、临时资源释放等不应持久化的数据清理。
 
-事务中可通过 `tx.DirtyTargets()` 取得本次经受控 Store API 修改、且当前仍有 delta 的根目标。结果按锁顺序返回；被 savepoint 回滚或随后 `UnTouch` 清空的 Store 不会出现。它供 `state.Manager` 登记落盘目标，普通业务循环不需要调用：
+事务中可通过 `tx.DirtyTargets()` 取得本次经受控 Store API 修改、且当前仍有 delta 的根目标。结果按锁顺序返回；被 savepoint 回滚或随后 `UnTouch` 清空的 Store 不会出现。它供 `txn.Runtime` 登记落盘目标，普通业务循环不需要调用：
 
 ```go
 func (p *PUpdateRole) Process(tx *txn.Tx) error {
@@ -876,24 +876,26 @@ func (p *PUpdateRole) Process(tx *txn.Tx) error {
 
 ### 有状态落盘调度
 
-`state.Manager` 用于实体长期驻留内存的服务。事务成功后它只按锁键登记对应 Store；多个事务持续修改同一对象时，Store 保留路径 delta，下一次 Flush 才把当前值物化为一次 Fusion 写入。
+`txn.Runtime` 是实体长期驻留内存服务中 Procedure 的标准搭档。事务成功后它只按锁键登记对应 Store；多个事务持续修改同一对象时，Store 保留路径 delta，下一次 Flush 才把当前值物化为一次 Fusion 写入。
 
-这里的 `pending` 指“已发生受控修改、尚未成功 Flush 的持久化根对象”。`Manager.Pending()` 返回按 `LockKey` 去重后的这个数量，而不是内存中全部 `GD*` 的数量：同一个 `GDRole` 连续修改多次、或仅修改 `GDRole.Items[1001]` 等子字段，都只算一个 pending root；同一事务修改一个 `GDLegion` 和两个不同的 `GDRole`，则算三个。Flush 成功、Store delta 清理后，对应 root 才会移出 pending；未产生 delta 或纯内存对象不计入其中。
+这里的 `pending` 指“已发生受控修改、尚未成功 Flush 的持久化根对象”。`Runtime.Pending()` 返回按 `LockKey` 去重后的这个数量，而不是内存中全部 `GD*` 的数量：同一个 `GDRole` 连续修改多次、或仅修改 `GDRole.Items[1001]` 等子字段，都只算一个 pending root；同一事务修改一个 `GDLegion` 和两个不同的 `GDRole`，则算三个。Flush 成功、Store delta 清理后，对应 root 才会移出 pending；未产生 delta 或纯内存对象不计入其中。
 
 ```go
-manager := state.NewManagerWithOptions(fusion, state.ManagerOptions{
-	MaxRootDeltaEntries:   1024,
+runtime := txn.NewRuntime(fusion, txn.RuntimeConfig{
+	FlushInterval:          10 * time.Second,
+	ShutdownFlushTimeout:   30 * time.Second,
+	MaxRootDeltaEntries:    1024,
 	PendingMemorySoftLimit: 512 << 20, // 512 MiB
-	MemorySampleInterval:  time.Second,
-	MaxPendingRoots:       0, // 可选的数量兜底
+	MemorySampleInterval:   time.Second,
+	MaxPendingRoots:        0, // 可选的数量兜底
 })
 
-if err := manager.Call(ctx, &PGuildContribution{Guild: guild, Role: role}); err != nil {
+if err := runtime.Call(ctx, &PGuildContribution{Guild: guild, Role: role}); err != nil {
 	return err
 }
 
 // 尚未发生 Redis/Mongo I/O；role、guild 的 Store 仍保留本轮及此前未 Flush 的 delta。
-if err := manager.Flush(ctx); err != nil {
+if err := runtime.Flush(ctx); err != nil {
 	return err // delta 保留，下一次 Flush 可重试
 }
 ```
@@ -906,27 +908,26 @@ if err := manager.Flush(ctx); err != nil {
 Flush：  只写 role.Gold = 120
 ```
 
-服务启动后应将定时循环纳入自己的优雅关停 context。直接使用 runtime 时，关闭阶段必须另建一个不受运行 context 取消影响、且有明确截止时间的 context，完成最后刷盘：
+服务启动后应将定时循环纳入自己的优雅关停 context。标准项目启动调用 `Runtime.Start(waitGroupContext)`；关闭阶段调用 `Runtime.Shutdown(context.WithoutCancel(serviceCtx))`，由 Runtime 使用配置的超时完成最后刷盘：
 
 ```go
-go manager.Run(serviceCtx, 10*time.Second)
+if err := runtime.Start(serviceCtx); err != nil {
+	return err
+}
 
 // 先由服务全局 WaitGroupContext 等待已经进入的业务任务结束，再执行。
-// shutdownCtx 不能直接复用已经取消的 serviceCtx。
-shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(serviceCtx), 30*time.Second)
-defer cancel()
-if err := manager.Shutdown(shutdownCtx, 10*time.Second); err != nil {
+if err := runtime.Shutdown(context.WithoutCancel(serviceCtx)); err != nil {
 	return err
 }
 ```
 
-`Run` 遇到单次写入错误会记录错误并保留目标，下一轮继续重试。`Shutdown` 则在 `shutdownCtx` 有效期内立即 Flush 并按重试间隔继续尝试；截止时间到达时会返回错误和剩余待刷数量。该超时只约束内存 Store 到 Redis 的最终刷盘，不等待 Fusion 的 Redis 延迟队列回写 Mongo。第一版不把 `DeltaSet`、Store 或 GD 指针交给 Actor 外的异步写队列；如未来需要解除 Flush 的 I/O 持锁时间，应在锁内物化不可变写入批次，并补齐顺序确认与失败重试语义。
+`Run` 遇到单次写入错误会记录错误并保留目标，下一轮继续重试。`Shutdown` 在 `ShutdownFlushTimeout` 有效期内立即 Flush 并按 `FlushInterval` 继续尝试；截止时间到达时会返回错误和剩余待刷数量。该超时只约束内存 Store 到 Redis 的最终刷盘，不等待 Fusion 的 Redis 延迟队列回写 Mongo。第一版不把 `DeltaSet`、Store 或 GD 指针交给 Actor 外的异步写队列；如未来需要解除 Flush 的 I/O 持锁时间，应在锁内物化不可变写入批次，并补齐顺序确认与失败重试语义。
 
-`MaxRootDeltaEntries` 限制单个 pending root 的细粒度 Delta 数量。Manager 只在 `Flush` 取得该对象锁、准备投影时检查，避免每次 `Procedure` 提交递归遍历整棵 Store 树；若数量超过预算，就清理树内的细粒度 dirty 状态，并按当前 `GD*` 值记录全部可更新顶层字段的 `Replace`，自动跳过 BSON `_id`。例如一轮持续修改 `role.Items[1..2000]` 时，预算为 `1024` 不会拒绝这次业务，而会把本次保存收敛为 `Name`、`Items` 等顶层字段的覆盖写，避免不同 key 长期累积。该收敛会记录一条 `state root deltas collapsed` 告警；它限制 dirty 路径，不限制 `GD*` 业务对象本身或干净子 Store 缓存的内存。
+`MaxRootDeltaEntries` 限制单个 pending root 的细粒度 Delta 数量。Runtime 只在 `Flush` 取得该对象锁、准备投影时检查，避免每次 `Procedure` 提交递归遍历整棵 Store 树；若数量超过预算，就清理树内的细粒度 dirty 状态，并按当前 `GD*` 值记录全部可更新顶层字段的 `Replace`，自动跳过 BSON `_id`。例如一轮持续修改 `role.Items[1..2000]` 时，预算为 `1024` 不会拒绝这次业务，而会把本次保存收敛为 `Name`、`Items` 等顶层字段的覆盖写，避免不同 key 长期累积。该收敛会记录一条 `txn runtime root deltas collapsed` 告警；它限制 dirty 路径，不限制 `GD*` 业务对象本身或干净子 Store 缓存的内存。
 
-`PendingMemorySoftLimit` 是进程 Heap 告警阈值（字节）。Manager 按 `MemorySampleInterval` 读取 `HeapAlloc`；超过阈值只记录 `state pending memory threshold exceeded` 告警，不拒绝新 root，也不改变已提交事务。采样间隔为 `0` 时每次新增 root 预检都采样；内存阈值为 `0` 时禁用该观测。部署应通过 `GOMEMLIMIT` 约束整个 Go 进程；不能用进程级 Heap 采样作为拒绝业务请求的根因。
+`PendingMemorySoftLimit` 是进程 Heap 告警阈值（字节）。Runtime 按 `MemorySampleInterval` 读取 `HeapAlloc`；超过阈值只记录 `txn runtime pending memory threshold exceeded` 告警，不拒绝新 root，也不改变已提交事务。采样间隔为 `0` 时每次新增 root 预检都采样；内存阈值为 `0` 时禁用该观测。部署应通过 `GOMEMLIMIT` 约束整个 Go 进程；不能用进程级 Heap 采样作为拒绝业务请求的根因。
 
-`MaxPendingRoots` 是可选的数量硬保护。容量满时同样仅拒绝新 root，并返回 `state.ErrPendingRootCapacity`；设置为 `0` 表示不限制。当前同一路径的重复写入不会无限增加 dirty 条目，例如连续修改 `role.Items[1001].Quantity`，最终只保留 `Items.1001.Quantity` 的最新状态；但持续新增不同 key 仍会增加路径数量。生成的 map/slice Store 会缓存读取过的子 Store 以保持路径身份，不过投影和清理只遍历实际变脏的子路径，不会扫描全部缓存元素。不要在 setter 内加入隐式 Flush 或 I/O；由 `Manager` 的调度周期和业务侧反压策略决定何时落盘。
+`MaxPendingRoots` 是可选的数量硬保护。容量满时同样仅拒绝新 root，并返回 `txn.ErrPendingRootCapacity`；设置为 `0` 表示不限制。当前同一路径的重复写入不会无限增加 dirty 条目，例如连续修改 `role.Items[1001].Quantity`，最终只保留 `Items.1001.Quantity` 的最新状态；但持续新增不同 key 仍会增加路径数量。生成的 map/slice Store 会缓存读取过的子 Store 以保持路径身份，不过投影和清理只遍历实际变脏的子路径，不会扫描全部缓存元素。不要在 setter 内加入隐式 Flush 或 I/O；由 Runtime 的调度周期和业务侧反压策略决定何时落盘。
 
 ### 零值和删除
 

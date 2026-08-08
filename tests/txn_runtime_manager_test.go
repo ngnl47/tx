@@ -8,27 +8,26 @@ import (
 
 	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/meta"
-	"github.com/ngnl47/tx/modules/state"
 	"github.com/ngnl47/tx/modules/txn"
 	"github.com/ngnl47/tx/storage"
 )
 
-type stateTestStore struct {
+type runtimeTestStore struct {
 	recorder   change.UndoRecorder
 	deltas     change.DeltaSet
 	deltaReads int
 	collapsed  int
 }
 
-func (store *stateTestStore) SetUndoRecorder(recorder change.UndoRecorder) {
+func (store *runtimeTestStore) SetUndoRecorder(recorder change.UndoRecorder) {
 	store.recorder = recorder
 }
 
-func (store *stateTestStore) Set() {
+func (store *runtimeTestStore) Set() {
 	store.SetField(1)
 }
 
-func (store *stateTestStore) SetField(field change.FieldID) {
+func (store *runtimeTestStore) SetField(field change.FieldID) {
 	previous := store.deltas.Clone()
 	if store.recorder != nil {
 		store.recorder.RecordUndo(func() { store.deltas = previous })
@@ -39,38 +38,38 @@ func (store *stateTestStore) SetField(field change.FieldID) {
 	})
 }
 
-func (store *stateTestStore) TypeSpec() meta.TypeSpec {
-	return meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{FullName: "StateTest"}}}
+func (store *runtimeTestStore) TypeSpec() meta.TypeSpec {
+	return meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{FullName: "RuntimeTest"}}}
 }
 
-func (store *stateTestStore) RecordKey() storage.RecordKey {
+func (store *runtimeTestStore) RecordKey() storage.RecordKey {
 	return storage.RecordKey{ID: int64(1001)}
 }
 
-func (store *stateTestStore) Deltas() change.DeltaSet {
+func (store *runtimeTestStore) Deltas() change.DeltaSet {
 	store.deltaReads++
 	return store.deltas
 }
 
-func (store *stateTestStore) FieldNameResolver() change.FieldNameResolver {
+func (store *runtimeTestStore) FieldNameResolver() change.FieldNameResolver {
 	return change.FieldNameResolverFunc(func(change.FieldID, change.NameBackend) string { return "field" })
 }
 
-func (store *stateTestStore) DeltaValueResolver() change.DeltaValueResolver {
+func (store *runtimeTestStore) DeltaValueResolver() change.DeltaValueResolver {
 	return change.DeltaValueResolverFunc(func(change.DeltaPath) (any, bool) { return "value", true })
 }
 
-func (store *stateTestStore) DefaultApplyOptions() storage.ApplyOptions {
+func (store *runtimeTestStore) DefaultApplyOptions() storage.ApplyOptions {
 	return storage.ApplyOptions{}
 }
 
-func (store *stateTestStore) AllTouch() {}
+func (store *runtimeTestStore) AllTouch() {}
 
-func (store *stateTestStore) ClearDeltas() {
+func (store *runtimeTestStore) ClearDeltas() {
 	store.deltas = nil
 }
 
-func (store *stateTestStore) CollapseDeltas() {
+func (store *runtimeTestStore) CollapseDeltas() {
 	store.collapsed++
 	store.deltas = change.DeltaSet{{
 		Path: testStorageDeltaPath(1),
@@ -78,47 +77,50 @@ func (store *stateTestStore) CollapseDeltas() {
 	}}
 }
 
-type stateTestProcedure struct {
+type runtimeTestProcedure struct {
 	lock  txn.LockTarget
-	store *stateTestStore
+	store *runtimeTestStore
 }
 
-func (procedure stateTestProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
+func (procedure runtimeTestProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
 	return []txn.LockTarget{procedure.lock}, nil
 }
 
-func (procedure stateTestProcedure) Process(*txn.Tx) error {
+func (procedure runtimeTestProcedure) Process(*txn.Tx) error {
 	procedure.store.Set()
 	return nil
 }
 
-type observingStateTestProcedure struct {
-	stateTestProcedure
+type observingRuntimeTestProcedure struct {
+	runtimeTestProcedure
 	called *bool
 }
 
-type multiFieldStateTestProcedure struct {
-	stateTestProcedure
+type multiFieldRuntimeTestProcedure struct {
+	runtimeTestProcedure
 }
 
-func (procedure multiFieldStateTestProcedure) Process(*txn.Tx) error {
+func (procedure multiFieldRuntimeTestProcedure) Process(*txn.Tx) error {
 	procedure.store.SetField(1)
 	procedure.store.SetField(2)
 	return nil
 }
 
-func (procedure observingStateTestProcedure) Process(tx *txn.Tx) error {
+func (procedure observingRuntimeTestProcedure) Process(tx *txn.Tx) error {
 	*procedure.called = true
-	return procedure.stateTestProcedure.Process(tx)
+	return procedure.runtimeTestProcedure.Process(tx)
 }
 
-func TestStateManagerDefersTransactionStoreUntilFlush(t *testing.T) {
-	store := &stateTestStore{}
+func TestTxnRuntimeDefersTransactionStoreUntilFlush(t *testing.T) {
+	store := &runtimeTestStore{}
 	writer := &recordingDeltaStoreApplier{}
-	manager := state.NewManager(writer)
+	manager := txn.NewRuntime(writer, txn.RuntimeConfig{
+		FlushInterval:        time.Millisecond,
+		ShutdownFlushTimeout: time.Second,
+	})
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
 
-	if err := manager.Call(context.Background(), stateTestProcedure{lock: lock, store: store}); err != nil {
+	if err := manager.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
 	if writer.hasOptions {
@@ -146,34 +148,34 @@ func TestStateManagerDefersTransactionStoreUntilFlush(t *testing.T) {
 	}
 }
 
-func TestStateManagerAllowsAccumulatedDeltasWhenCleanTargetCheckIsEnabled(t *testing.T) {
+func TestTxnRuntimeAllowsAccumulatedDeltasWhenCleanTargetCheckIsEnabled(t *testing.T) {
 	previous := txn.CurrentConfig()
 	t.Cleanup(func() { txn.Configure(previous) })
 	txn.Configure(txn.Config{Debug: txn.DebugConfig{CheckCleanLockTargets: true}})
 
-	store := &stateTestStore{}
+	store := &runtimeTestStore{}
 	store.Set()
-	manager := state.NewManager(&recordingDeltaStoreApplier{})
+	manager := txn.NewRuntime(&recordingDeltaStoreApplier{})
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
 	manager.MarkDirty(lock)
 
-	if err := manager.Call(context.Background(), stateTestProcedure{lock: lock, store: store}); err != nil {
+	if err := manager.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
 		t.Fatalf("Call returned error with accumulated deltas: %v", err)
 	}
 	if manager.Pending() != 1 || len(store.Deltas()) != 2 {
-		t.Fatalf("state manager lost accumulated deltas: pending=%d deltas=%#v", manager.Pending(), store.Deltas())
+		t.Fatalf("txn runtime lost accumulated deltas: pending=%d deltas=%#v", manager.Pending(), store.Deltas())
 	}
 }
 
-func TestStateManagerAllowsPendingRootWhenCapacityIsFull(t *testing.T) {
-	store := &stateTestStore{}
+func TestTxnRuntimeAllowsPendingRootWhenCapacityIsFull(t *testing.T) {
+	store := &runtimeTestStore{}
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
-	manager := state.NewManagerWithOptions(&recordingDeltaStoreApplier{}, state.ManagerOptions{MaxPendingRoots: 1})
+	manager := txn.NewRuntime(&recordingDeltaStoreApplier{}, txn.RuntimeConfig{MaxPendingRoots: 1})
 	if err := manager.MarkDirty(lock); err != nil {
 		t.Fatalf("MarkDirty returned error: %v", err)
 	}
 
-	if err := manager.Call(context.Background(), stateTestProcedure{lock: lock, store: store}); err != nil {
+	if err := manager.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
 		t.Fatalf("Call for pending root returned error: %v", err)
 	}
 	if manager.Pending() != 1 || len(store.Deltas()) != 1 {
@@ -181,22 +183,22 @@ func TestStateManagerAllowsPendingRootWhenCapacityIsFull(t *testing.T) {
 	}
 }
 
-func TestStateManagerRejectsNewRootBeforeProcedureWhenCapacityIsFull(t *testing.T) {
-	first := &stateTestStore{}
+func TestTxnRuntimeRejectsNewRootBeforeProcedureWhenCapacityIsFull(t *testing.T) {
+	first := &runtimeTestStore{}
 	firstLock := txn.NewLockTarget(txn.NewLockKey("role", 1001), first)
-	manager := state.NewManagerWithOptions(&recordingDeltaStoreApplier{}, state.ManagerOptions{MaxPendingRoots: 1})
+	manager := txn.NewRuntime(&recordingDeltaStoreApplier{}, txn.RuntimeConfig{MaxPendingRoots: 1})
 	if err := manager.MarkDirty(firstLock); err != nil {
 		t.Fatalf("MarkDirty returned error: %v", err)
 	}
 
-	second := &stateTestStore{}
+	second := &runtimeTestStore{}
 	secondLock := txn.NewLockTarget(txn.NewLockKey("role", 1002), second)
 	called := false
-	err := manager.Call(context.Background(), observingStateTestProcedure{
-		stateTestProcedure: stateTestProcedure{lock: secondLock, store: second},
-		called:             &called,
+	err := manager.Call(context.Background(), observingRuntimeTestProcedure{
+		runtimeTestProcedure: runtimeTestProcedure{lock: secondLock, store: second},
+		called:               &called,
 	})
-	if !errors.Is(err, state.ErrPendingRootCapacity) {
+	if !errors.Is(err, txn.ErrPendingRootCapacity) {
 		t.Fatalf("Call error = %v, want ErrPendingRootCapacity", err)
 	}
 	if called || len(second.Deltas()) != 0 {
@@ -207,15 +209,15 @@ func TestStateManagerRejectsNewRootBeforeProcedureWhenCapacityIsFull(t *testing.
 	}
 }
 
-func TestStateManagerCollapsesOverBudgetRootDeltasBeforeFlush(t *testing.T) {
-	store := &stateTestStore{}
+func TestTxnRuntimeCollapsesOverBudgetRootDeltasBeforeFlush(t *testing.T) {
+	store := &runtimeTestStore{}
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
-	manager := state.NewManagerWithOptions(&recordingDeltaStoreApplier{}, state.ManagerOptions{
+	manager := txn.NewRuntime(&recordingDeltaStoreApplier{}, txn.RuntimeConfig{
 		MaxRootDeltaEntries: 1,
 	})
 
-	if err := manager.Call(context.Background(), multiFieldStateTestProcedure{
-		stateTestProcedure: stateTestProcedure{lock: lock, store: store},
+	if err := manager.Call(context.Background(), multiFieldRuntimeTestProcedure{
+		runtimeTestProcedure: runtimeTestProcedure{lock: lock, store: store},
 	}); err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -233,30 +235,30 @@ func TestStateManagerCollapsesOverBudgetRootDeltasBeforeFlush(t *testing.T) {
 	}
 }
 
-func TestStateManagerMemorySoftLimitWarnsButAcceptsNewPendingRoots(t *testing.T) {
+func TestTxnRuntimeMemorySoftLimitWarnsButAcceptsNewPendingRoots(t *testing.T) {
 	var heapBytes uint64
-	manager := state.NewManagerWithOptions(&recordingDeltaStoreApplier{}, state.ManagerOptions{
+	manager := txn.NewRuntime(&recordingDeltaStoreApplier{}, txn.RuntimeConfig{
 		PendingMemorySoftLimit: 1,
 		HeapBytes:              func() uint64 { return heapBytes },
 	})
 
-	first := &stateTestStore{}
+	first := &runtimeTestStore{}
 	firstLock := txn.NewLockTarget(txn.NewLockKey("role", 1001), first)
 	if err := manager.MarkDirty(firstLock); err != nil {
 		t.Fatalf("MarkDirty returned error: %v", err)
 	}
 	heapBytes = 2
 
-	if err := manager.Call(context.Background(), stateTestProcedure{lock: firstLock, store: first}); err != nil {
+	if err := manager.Call(context.Background(), runtimeTestProcedure{lock: firstLock, store: first}); err != nil {
 		t.Fatalf("Call for existing pending root returned error: %v", err)
 	}
 
-	second := &stateTestStore{}
+	second := &runtimeTestStore{}
 	secondLock := txn.NewLockTarget(txn.NewLockKey("role", 1002), second)
 	called := new(bool)
-	if err := manager.Call(context.Background(), observingStateTestProcedure{
-		stateTestProcedure: stateTestProcedure{lock: secondLock, store: second},
-		called:             called,
+	if err := manager.Call(context.Background(), observingRuntimeTestProcedure{
+		runtimeTestProcedure: runtimeTestProcedure{lock: secondLock, store: second},
+		called:               called,
 	}); err != nil {
 		t.Fatalf("Call for new pending root returned error: %v", err)
 	}
@@ -268,11 +270,11 @@ func TestStateManagerMemorySoftLimitWarnsButAcceptsNewPendingRoots(t *testing.T)
 	}
 }
 
-func TestStateManagerRetainsDirtyStoreWhenFlushFails(t *testing.T) {
-	store := &stateTestStore{}
+func TestTxnRuntimeRetainsDirtyStoreWhenFlushFails(t *testing.T) {
+	store := &runtimeTestStore{}
 	store.Set()
 	writer := &recordingDeltaStoreApplier{err: errors.New("storage unavailable")}
-	manager := state.NewManager(writer)
+	manager := txn.NewRuntime(writer)
 	manager.MarkDirty(txn.NewLockTarget(txn.NewLockKey("role", 1001), store))
 
 	err := manager.Flush(context.Background())
@@ -292,11 +294,11 @@ func TestStateManagerRetainsDirtyStoreWhenFlushFails(t *testing.T) {
 	}
 }
 
-func TestStateManagerRetainsDirtyStoreWhenWriterIsTypedNil(t *testing.T) {
+func TestTxnRuntimeRetainsDirtyStoreWhenWriterIsTypedNil(t *testing.T) {
 	var writer *recordingDeltaStoreApplier
-	store := &stateTestStore{}
+	store := &runtimeTestStore{}
 	store.Set()
-	manager := state.NewManager(writer)
+	manager := txn.NewRuntime(writer)
 	manager.MarkDirty(txn.NewLockTarget(txn.NewLockKey("role", 1001), store))
 
 	err := manager.Flush(context.Background())
@@ -308,20 +310,20 @@ func TestStateManagerRetainsDirtyStoreWhenWriterIsTypedNil(t *testing.T) {
 	}
 }
 
-type blockingStateWriter struct {
+type blockingRuntimeWriter struct {
 	started chan struct{}
 	release chan struct{}
 }
 
-type scheduledStateWriter struct {
+type scheduledRuntimeWriter struct {
 	called chan struct{}
 }
 
-type retryingStateWriter struct {
+type retryingRuntimeWriter struct {
 	attempts int
 }
 
-func (writer *scheduledStateWriter) ApplyDeltasWithOptions(context.Context, meta.TypeSpec, storage.RecordKey, change.DeltaSet, change.FieldNameResolver, change.DeltaValueResolver, storage.ApplyOptions) error {
+func (writer *scheduledRuntimeWriter) ApplyDeltasWithOptions(context.Context, meta.TypeSpec, storage.RecordKey, change.DeltaSet, change.FieldNameResolver, change.DeltaValueResolver, storage.ApplyOptions) error {
 	select {
 	case writer.called <- struct{}{}:
 	default:
@@ -329,7 +331,7 @@ func (writer *scheduledStateWriter) ApplyDeltasWithOptions(context.Context, meta
 	return nil
 }
 
-func (writer *retryingStateWriter) ApplyDeltasWithOptions(context.Context, meta.TypeSpec, storage.RecordKey, change.DeltaSet, change.FieldNameResolver, change.DeltaValueResolver, storage.ApplyOptions) error {
+func (writer *retryingRuntimeWriter) ApplyDeltasWithOptions(context.Context, meta.TypeSpec, storage.RecordKey, change.DeltaSet, change.FieldNameResolver, change.DeltaValueResolver, storage.ApplyOptions) error {
 	writer.attempts++
 	if writer.attempts == 1 {
 		return errors.New("temporary storage failure")
@@ -337,17 +339,17 @@ func (writer *retryingStateWriter) ApplyDeltasWithOptions(context.Context, meta.
 	return nil
 }
 
-func (writer *blockingStateWriter) ApplyDeltasWithOptions(context.Context, meta.TypeSpec, storage.RecordKey, change.DeltaSet, change.FieldNameResolver, change.DeltaValueResolver, storage.ApplyOptions) error {
+func (writer *blockingRuntimeWriter) ApplyDeltasWithOptions(context.Context, meta.TypeSpec, storage.RecordKey, change.DeltaSet, change.FieldNameResolver, change.DeltaValueResolver, storage.ApplyOptions) error {
 	close(writer.started)
 	<-writer.release
 	return nil
 }
 
-func TestStateManagerFlushHoldsTransactionLockUntilStorageWriteFinishes(t *testing.T) {
-	store := &stateTestStore{}
+func TestTxnRuntimeFlushHoldsTransactionLockUntilStorageWriteFinishes(t *testing.T) {
+	store := &runtimeTestStore{}
 	store.Set()
-	writer := &blockingStateWriter{started: make(chan struct{}), release: make(chan struct{})}
-	manager := state.NewManager(writer)
+	writer := &blockingRuntimeWriter{started: make(chan struct{}), release: make(chan struct{})}
+	manager := txn.NewRuntime(writer)
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
 	manager.MarkDirty(lock)
 
@@ -366,7 +368,7 @@ func TestStateManagerFlushHoldsTransactionLockUntilStorageWriteFinishes(t *testi
 
 	select {
 	case <-transactionEntered:
-		t.Fatal("transaction entered while state flush held the same lock")
+		t.Fatal("transaction entered while txn runtime flush held the same lock")
 	case <-time.After(20 * time.Millisecond):
 	}
 
@@ -384,11 +386,11 @@ func TestStateManagerFlushHoldsTransactionLockUntilStorageWriteFinishes(t *testi
 	}
 }
 
-func TestStateManagerRunFlushesPendingStoresOnInterval(t *testing.T) {
-	store := &stateTestStore{}
+func TestTxnRuntimeRunFlushesPendingStoresOnInterval(t *testing.T) {
+	store := &runtimeTestStore{}
 	store.Set()
-	writer := &scheduledStateWriter{called: make(chan struct{}, 1)}
-	manager := state.NewManager(writer)
+	writer := &scheduledRuntimeWriter{called: make(chan struct{}, 1)}
+	manager := txn.NewRuntime(writer)
 	manager.MarkDirty(txn.NewLockTarget(txn.NewLockKey("role", 1001), store))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -409,16 +411,19 @@ func TestStateManagerRunFlushesPendingStoresOnInterval(t *testing.T) {
 	}
 }
 
-func TestStateManagerShutdownRetriesUntilPendingStoreIsFlushed(t *testing.T) {
-	store := &stateTestStore{}
+func TestTxnRuntimeShutdownRetriesUntilPendingStoreIsFlushed(t *testing.T) {
+	store := &runtimeTestStore{}
 	store.Set()
-	writer := &retryingStateWriter{}
-	manager := state.NewManager(writer)
+	writer := &retryingRuntimeWriter{}
+	manager := txn.NewRuntime(writer, txn.RuntimeConfig{
+		FlushInterval:        time.Millisecond,
+		ShutdownFlushTimeout: time.Second,
+	})
 	manager.MarkDirty(txn.NewLockTarget(txn.NewLockKey("role", 1001), store))
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := manager.Shutdown(ctx, time.Millisecond); err != nil {
+	if err := manager.Shutdown(ctx); err != nil {
 		t.Fatalf("Shutdown returned error: %v", err)
 	}
 	if writer.attempts != 2 {
