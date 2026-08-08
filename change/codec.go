@@ -1,5 +1,7 @@
 package change
 
+import "fmt"
+
 // Document 是 DeltaSet 的后端无关文档形式。
 //
 // Set 对应字段设置、整体替换或容器清空；Clear 对应字段删除。Mongo
@@ -23,7 +25,10 @@ func (f DeltaValueResolverFunc) DeltaValue(path DeltaPath) (any, bool) {
 }
 
 // DocumentWithResolver 把 DeltaSet 转成指定命名体系下的 Set/Clear 文档。
-func (ds DeltaSet) DocumentWithResolver(resolver FieldNameResolver, backend NameBackend, values DeltaValueResolver) Document {
+//
+// 每个 Set 或 Replace Delta 都必须能从 values 读取当前值。路径或值无法解析时
+// 返回错误，避免把未知状态伪造成 null 字段。
+func (ds DeltaSet) DocumentWithResolver(resolver FieldNameResolver, backend NameBackend, values DeltaValueResolver) (Document, error) {
 	doc := Document{
 		Set:   map[string]any{},
 		Clear: map[string]struct{}{},
@@ -31,7 +36,7 @@ func (ds DeltaSet) DocumentWithResolver(resolver FieldNameResolver, backend Name
 	for _, delta := range ds.Clone().Compact() {
 		path := delta.Path.FullPath(resolver, backend)
 		if len(path) == 0 {
-			continue
+			return Document{}, fmt.Errorf("change: cannot resolve %s field path for delta %#v", backend, delta.Path)
 		}
 		switch delta.Kind {
 		case DeltaDelete:
@@ -39,17 +44,17 @@ func (ds DeltaSet) DocumentWithResolver(resolver FieldNameResolver, backend Name
 		case DeltaClear:
 			doc.Set[path.String()] = emptyDeltaValue
 		default:
-			if values != nil {
-				resolved, ok := values.DeltaValue(delta.Path)
-				if ok {
-					doc.Set[path.String()] = resolved
-					continue
-				}
+			if values == nil {
+				return Document{}, fmt.Errorf("change: cannot resolve current value for path %s", path)
 			}
-			doc.Set[path.String()] = nil
+			resolved, ok := values.DeltaValue(delta.Path)
+			if !ok {
+				return Document{}, fmt.Errorf("change: cannot resolve current value for path %s", path)
+			}
+			doc.Set[path.String()] = resolved
 		}
 	}
-	return doc
+	return doc, nil
 }
 
 var emptyDeltaValue = map[string]any{}

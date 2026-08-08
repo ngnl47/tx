@@ -487,8 +487,14 @@ role.SetRoleId(1001)
 role.SetName("alice")
 role.SetPower(470001)
 
-doc := role.ChangeDocument()
+doc, err := role.ChangeDocument()
+if err != nil {
+	return err
+}
 ```
+
+`ChangeDocument()` 与 `MsgpackChangeDocument()` 都返回 `(change.Document, error)`。它们会在边界读取当前
+`GD*` 值并验证每条 delta 路径；解析失败时必须停止发送或保存，不能把字段伪造成 `null`。
 
 这时 `ChangeDocument()` 使用 Go 字段名输出后端无关文档：
 
@@ -506,7 +512,10 @@ change.Document{
 如果用于 cmd 下行，生成代码会把 Store 里的 `DeltaSet` 转成 Msgpack 字段名文档：
 
 ```go
-body := role.MsgpackChangeDocument()
+body, err := role.MsgpackChangeDocument()
+if err != nil {
+	return err
+}
 ```
 
 例如 `HeadImg` 的 tag 是 `msgpack:"hi,omitempty"`，那么下行变更文档里使用 `hi`，不是 Go 字段名
@@ -565,7 +574,10 @@ viewItem, _ := view.ItemsStore().Get(1001)
 viewItem.TouchItemId()
 viewItem.TouchQuantity()
 
-body := view.MsgpackChangeDocument()
+body, err := view.MsgpackChangeDocument()
+if err != nil {
+	return err
+}
 ```
 
 `NewViewStore()` 从空选择状态开始；`store.View()` 深复制当前 Store 的字段、集合和子 Store 状态，继续引用同一份
@@ -580,7 +592,10 @@ viewDress.TouchExpire()
 
 role.DressStore().RemoveAt(0) // slice 结构已变化
 
-doc := view.ChangeDocument()
+doc, err := view.ChangeDocument()
+if err != nil {
+	return err
+}
 // 不输出不可靠的 Dress.0.Expire。
 // 降级输出 Dress 的当前完整 slice。
 ```
@@ -599,7 +614,10 @@ role.SetPower(100)
 view := role.Store().View()
 view.TouchName()
 view.TouchPower()
-body := view.MsgpackChangeDocument() // 此刻物化，后续 role 修改不会改变 body。
+body, err := view.MsgpackChangeDocument() // 此刻物化，后续 role 修改不会改变 body。
+if err != nil {
+	return err
+}
 
 role.SetPower(200)
 send(body)
@@ -742,7 +760,10 @@ view := role.NewViewStore()
 view.TouchName()
 view.TouchPower()
 
-body := view.MsgpackChangeDocument()
+body, err := view.MsgpackChangeDocument()
+if err != nil {
+	return err
+}
 ```
 
 这适合广播或响应中“额外携带一些未修改字段”的场景。主对象的落库 Store 不会因此多出脏字段。

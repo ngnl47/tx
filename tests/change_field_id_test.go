@@ -104,7 +104,7 @@ func TestDeltaSetDocumentWithResolverUsesBackendNames(t *testing.T) {
 		{Path: deltaPath(fieldNode(3)), Kind: change.DeltaDelete},
 	}
 
-	doc := deltas.DocumentWithResolver(resolver, change.NameBackendMsgpack, change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
+	doc, err := deltas.DocumentWithResolver(resolver, change.NameBackendMsgpack, change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
 		if path.Depth == 1 && path.Nodes[0].Field == 1 {
 			return "bob", true
 		}
@@ -113,6 +113,9 @@ func TestDeltaSetDocumentWithResolverUsesBackendNames(t *testing.T) {
 		}
 		return nil, false
 	}))
+	if err != nil {
+		t.Fatalf("DocumentWithResolver returned error: %v", err)
+	}
 
 	if got := doc.Set["n"]; got != "bob" {
 		t.Fatalf("doc.Set[n] = %#v, want bob; doc=%#v", got, doc)
@@ -137,7 +140,9 @@ func TestDeltaSetDocumentWithResolverDoesNotMutateSourceDeltas(t *testing.T) {
 		{Path: deltaPath(fieldNode(1)), Kind: change.DeltaKindSet},
 	}
 
-	_ = deltas.DocumentWithResolver(resolver, change.NameBackendMsgpack, testDeltaValueResolver{1: "bob"})
+	if _, err := deltas.DocumentWithResolver(resolver, change.NameBackendMsgpack, testDeltaValueResolver{1: "bob"}); err != nil {
+		t.Fatalf("DocumentWithResolver returned error: %v", err)
+	}
 
 	if len(deltas) != 2 {
 		t.Fatalf("deltas len = %d, want 2", len(deltas))
@@ -157,10 +162,27 @@ func TestDeltaSetDocumentWithResolverReadsCurrentValueFromResolver(t *testing.T)
 		{Path: deltaPath(fieldNode(1)), Kind: change.DeltaKindSet},
 	}
 
-	doc := deltas.DocumentWithResolver(resolver, change.NameBackendMsgpack, testDeltaValueResolver{1: "current"})
+	doc, err := deltas.DocumentWithResolver(resolver, change.NameBackendMsgpack, testDeltaValueResolver{1: "current"})
+	if err != nil {
+		t.Fatalf("DocumentWithResolver returned error: %v", err)
+	}
 
 	if got := doc.Set["n"]; got != "current" {
 		t.Fatalf("doc.Set[n] = %#v, want current; doc=%#v", got, doc)
+	}
+}
+
+func TestDeltaSetDocumentWithResolverRejectsMissingCurrentValue(t *testing.T) {
+	resolver := testFieldNameResolver{
+		change.NameBackendMsgpack: {1: "n"},
+	}
+	deltas := change.DeltaSet{
+		{Path: deltaPath(fieldNode(1)), Kind: change.DeltaKindSet},
+	}
+
+	_, err := deltas.DocumentWithResolver(resolver, change.NameBackendMsgpack, nil)
+	if err == nil {
+		t.Fatal("DocumentWithResolver returned nil error for an unresolved delta value")
 	}
 }
 
