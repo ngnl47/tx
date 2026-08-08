@@ -30,8 +30,8 @@ type DelayTaskHandlerOptions struct {
 	DelayQueue          DelayQueue
 }
 
-func NewDelayTaskHandler(types TypeRegistry, redisLoader storage.DocumentLoader, mongoReplace storage.DocumentReplacer) *StorageTaskHandler {
-	return NewDelayTaskHandlerWithOptions(types, redisLoader, mongoReplace, DelayTaskHandlerOptions{})
+func NewDelayTaskHandler(types TypeRegistry, redisLoader storage.DocumentLoader, mongoReplace storage.DocumentReplacer, redisLocker storage.RecordLocker) *StorageTaskHandler {
+	return NewDelayTaskHandlerWithOptions(types, redisLoader, mongoReplace, DelayTaskHandlerOptions{RedisLocker: redisLocker})
 }
 
 func NewDelayTaskHandlerWithOptions(types TypeRegistry, redisLoader storage.DocumentLoader, mongoReplace storage.DocumentReplacer, options DelayTaskHandlerOptions) *StorageTaskHandler {
@@ -72,10 +72,18 @@ func (h *StorageTaskHandler) HandleDelayTask(ctx context.Context, item task.Dela
 	}
 }
 
-func (h *StorageTaskHandler) handleSave(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
-	if isNilFusionDependency(h.redisLoader) || isNilFusionDependency(h.mongoReplace) {
-		return fmt.Errorf("%w: delayed save requires redis loader and mongo replacer", ErrDelayTaskDependenciesNotConfigured)
+func (h *StorageTaskHandler) handleSave(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) (err error) {
+	if isNilFusionDependency(h.redisLoader) || isNilFusionDependency(h.mongoReplace) || isNilFusionDependency(h.redisLocker) {
+		return fmt.Errorf("%w: delayed save requires redis loader, mongo replacer and record locker", ErrDelayTaskDependenciesNotConfigured)
 	}
+	lock, err := h.redisLocker.LockRecord(ctx, spec, key, storage.LockOptions{TTL: defaultLoadLockTTL, Wait: defaultLoadLockWait})
+	if err != nil {
+		return err
+	}
+	if isNilFusionDependency(lock) {
+		return fmt.Errorf("%w: delayed save received nil record lock", ErrDelayTaskDependenciesNotConfigured)
+	}
+	defer func() { releaseRecordLock(ctx, lock, &err) }()
 	doc, exists, err := h.redisLoader.LoadDocument(ctx, spec, key)
 	if err != nil {
 		return err

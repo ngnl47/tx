@@ -95,14 +95,22 @@ func (s Strategy) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec
 // 删除要求 Redis 与 Mongo 删除器均已装配。Redis 会先删除热数据，随后 Mongo
 // 立即删除持久化数据。storage.delayDelTime 只表示 Redis 热数据 TTL，不参与 Mongo
 // 删除延迟。
-func (s Strategy) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
+func (s Strategy) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) (err error) {
 	if err := storage.ValidateRecordKey(spec, key); err != nil {
 		return err
 	}
-	redisDeleter, mongoDeleter, err := s.deleteDependencies()
+	redisDeleter, mongoDeleter, locker, err := s.deleteDependencies()
 	if err != nil {
 		return err
 	}
+	lock, err := locker.LockRecord(ctx, spec, key, storage.LockOptions{TTL: s.loadLockTTL(), Wait: s.loadLockWait()})
+	if err != nil {
+		return err
+	}
+	if isNilFusionDependency(lock) {
+		return fmt.Errorf("%w: redis delete received nil record lock", ErrStrategyDependenciesNotConfigured)
+	}
+	defer func() { releaseRecordLock(ctx, lock, &err) }()
 	if err := redisDeleter.ApplyDelete(ctx, spec, key); err != nil {
 		return err
 	}
@@ -218,15 +226,19 @@ func (s Strategy) writeDependencies() error {
 	return nil
 }
 
-func (s Strategy) deleteDependencies() (storage.DeleteApplier, storage.DeleteApplier, error) {
+func (s Strategy) deleteDependencies() (storage.DeleteApplier, storage.DeleteApplier, storage.RecordLocker, error) {
 	redisDeleter := s.redisDeleter()
 	if isNilFusionDependency(redisDeleter) {
-		return nil, nil, fmt.Errorf("%w: redis deleter", ErrStrategyDependenciesNotConfigured)
+		return nil, nil, nil, fmt.Errorf("%w: redis deleter", ErrStrategyDependenciesNotConfigured)
 	}
 	if isNilFusionDependency(s.MongoDeleter) {
-		return nil, nil, fmt.Errorf("%w: mongo deleter", ErrStrategyDependenciesNotConfigured)
+		return nil, nil, nil, fmt.Errorf("%w: mongo deleter", ErrStrategyDependenciesNotConfigured)
 	}
-	return redisDeleter, s.MongoDeleter, nil
+	locker := s.redisLocker()
+	if isNilFusionDependency(locker) {
+		return nil, nil, nil, fmt.Errorf("%w: redis record locker", ErrStrategyDependenciesNotConfigured)
+	}
+	return redisDeleter, s.MongoDeleter, locker, nil
 }
 
 func isNilFusionDependency(value any) bool {

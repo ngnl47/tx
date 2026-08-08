@@ -83,7 +83,9 @@ func TestFusionDelayTaskHandlerSavesRedisDocumentToMongo(t *testing.T) {
 		exists: true,
 	}
 	mongo := &recordingDocumentReplacer{}
-	handler := fusion.NewDelayTaskHandler(registry, redis, mongo)
+	lock := &recordingRecordLock{}
+	locker := &recordingRecordLocker{lock: lock}
+	handler := fusion.NewDelayTaskHandler(registry, redis, mongo, locker)
 
 	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
 		Type:     "data.GDRole",
@@ -100,6 +102,12 @@ func TestFusionDelayTaskHandlerSavesRedisDocumentToMongo(t *testing.T) {
 	if mongo.calls != 1 || mongo.key.ID != int64(1001) || mongo.key.ShardKey != int64(7) {
 		t.Fatalf("mongo call key = %#v calls=%d", mongo.key, mongo.calls)
 	}
+	if locker.calls != 1 {
+		t.Fatalf("redis lock calls = %d, want 1", locker.calls)
+	}
+	if lock.unlocks != 1 {
+		t.Fatalf("redis lock unlocks = %d, want 1", lock.unlocks)
+	}
 	if mongo.spec.Mongo.Collection != "roles" || mongo.doc["name"] != "alice" {
 		t.Fatalf("mongo spec/doc = %#v %#v", mongo.spec, mongo.doc)
 	}
@@ -113,6 +121,29 @@ func TestFusionDelayTaskHandlerSavesRedisDocumentToMongo(t *testing.T) {
 	}
 }
 
+func TestFusionDelayTaskHandlerRejectsSaveWithoutRecordLockBeforeRead(t *testing.T) {
+	registry := meta.NewRegistry()
+	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Package: "data", Name: "GDRole"}}}
+	if err := registry.RegisterType(spec); err != nil {
+		t.Fatalf("RegisterType returned error: %v", err)
+	}
+	redis := &recordingDocumentLoader{doc: map[string]any{"name": "alice"}, exists: true}
+	mongo := &recordingDocumentReplacer{}
+	handler := fusion.NewDelayTaskHandler(registry, redis, mongo, nil)
+
+	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
+		Type:   "data.GDRole",
+		ID:     int64(1001),
+		Action: string(fusion.DelayedSave),
+	})
+	if !errors.Is(err, fusion.ErrDelayTaskDependenciesNotConfigured) {
+		t.Fatalf("HandleDelayTask error = %v, want missing record lock error", err)
+	}
+	if redis.calls != 0 || mongo.calls != 0 {
+		t.Fatalf("redis/mongo calls = %d/%d, want 0/0", redis.calls, mongo.calls)
+	}
+}
+
 func TestFusionDelayTaskHandlerSkipsMissingRedisDocument(t *testing.T) {
 	registry := meta.NewRegistry()
 	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Package: "data", Name: "GDRole"}}}
@@ -121,7 +152,7 @@ func TestFusionDelayTaskHandlerSkipsMissingRedisDocument(t *testing.T) {
 	}
 	redis := &recordingDocumentLoader{}
 	mongo := &recordingDocumentReplacer{}
-	handler := fusion.NewDelayTaskHandler(registry, redis, mongo)
+	handler := fusion.NewDelayTaskHandler(registry, redis, mongo, &recordingRecordLocker{})
 
 	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
 		Type:   "data.GDRole",
@@ -144,7 +175,7 @@ func TestFusionDelayTaskHandlerRejectsInconsistentRedisDocument(t *testing.T) {
 	}
 	redis := &recordingDocumentLoader{doc: map[string]any{"name": "unexpected"}}
 	mongo := &recordingDocumentReplacer{}
-	handler := fusion.NewDelayTaskHandler(registry, redis, mongo)
+	handler := fusion.NewDelayTaskHandler(registry, redis, mongo, &recordingRecordLocker{})
 
 	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
 		Type:   "data.GDRole",
@@ -320,7 +351,7 @@ func TestFusionDelayTaskHandlerRejectsMissingRecordID(t *testing.T) {
 	if err := registry.RegisterType(spec); err != nil {
 		t.Fatalf("RegisterType returned error: %v", err)
 	}
-	handler := fusion.NewDelayTaskHandler(registry, nil, nil)
+	handler := fusion.NewDelayTaskHandler(registry, nil, nil, nil)
 
 	var typedNil *int64
 	for _, item := range []task.DelayTask{
@@ -343,7 +374,7 @@ func TestFusionDelayTaskHandlerRejectsMissingSaveDependencies(t *testing.T) {
 	if err := registry.RegisterType(spec); err != nil {
 		t.Fatalf("RegisterType returned error: %v", err)
 	}
-	handler := fusion.NewDelayTaskHandler(registry, nil, nil)
+	handler := fusion.NewDelayTaskHandler(registry, nil, nil, nil)
 
 	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
 		Type:   "data.GDRole",
@@ -363,7 +394,7 @@ func TestFusionDelayTaskHandlerRejectsTypedNilDependencies(t *testing.T) {
 	}
 	var redis *recordingDocumentLoader
 	var mongo *recordingDocumentReplacer
-	handler := fusion.NewDelayTaskHandler(registry, redis, mongo)
+	handler := fusion.NewDelayTaskHandler(registry, redis, mongo, &recordingRecordLocker{})
 
 	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
 		Type:   "data.GDRole",
@@ -377,7 +408,7 @@ func TestFusionDelayTaskHandlerRejectsTypedNilDependencies(t *testing.T) {
 
 func TestFusionDelayTaskHandlerRejectsTypedNilRegistry(t *testing.T) {
 	var registry *meta.Registry
-	handler := fusion.NewDelayTaskHandler(registry, &recordingDocumentLoader{}, &recordingDocumentReplacer{})
+	handler := fusion.NewDelayTaskHandler(registry, &recordingDocumentLoader{}, &recordingDocumentReplacer{}, &recordingRecordLocker{})
 
 	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
 		Type:   "data.GDRole",

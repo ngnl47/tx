@@ -466,6 +466,15 @@ env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp \
   -benchmem -count=5
 ```
 
+Fusion 的同步热写基线覆盖 Redis JSON patch 构建，以及 `delaySaveTime` / `delayDelTime` 对应的延迟任务入队；它不连接 Redis/Mongo，也不包含到期任务消费或显式删除的记录锁，因此可单独观察新增、更新的运行时 CPU 与分配开销：
+
+```sh
+cd /Users/a47/workspace/tx
+env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp \
+  /Users/a47/sdk/go1.25.6/bin/go test ./tests -run '^$' \
+  -bench '^BenchmarkFusionStrategyApplyDeltas$' -benchmem -count=5
+```
+
 例如将 `Compact()` 的实现从双层路径比较改成索引结构前，先记录 `MapItemPaths256` 与 `AncestorReplace256` 的基线；改动后只有在这两类负载的耗时或分配确有收益，并且没有牺牲 `RepeatedField64` 的常见路径时，才引入更复杂的结构。
 
 ### 常用业务写法
@@ -2081,9 +2090,12 @@ err := role.Store().ApplyDelete(ctx, fusionStore)
 
 Fusion 显式删除会：
 
-1. 删除 Redis 主文档、subKey 文档和版本键。
-2. 立即删除 Mongo 文档。
-3. 不写入延迟保存队列。
+1. 先取得该记录的 Redis 锁；延迟保存和延迟删除任务也使用同一把锁。
+2. 删除 Redis 主文档、subKey 文档和版本键。
+3. 立即删除 Mongo 文档。
+4. 不写入延迟保存队列。
+
+例如某个延迟保存任务已经到期时，显式删除会与它串行：保存先取得锁时，删除会在保存完成后删除 Mongo；删除先取得锁时，保存任务稍后读取 Redis 会发现记录不存在并跳过回写。因此不会出现“删除完成后再被旧热数据重新写回 Mongo”的交错。
 
 Redis 热数据还维护一个生命周期版本键 `<mainKey>@v`，例如 `role:{1001}@v`。这个键不是业务字段，也不会写入 Mongo；它只用于 Redis 热数据过期/删除窗口的并发保护。每次热写都会递增它，并使用与 main/subKey 相同的有效 TTL；热数据持久化时它也会持久化，因此不会在热数据仍有效时提前失去删除窗口保护。运行时的带版本删除原语会在 Lua 中先比对 `@v`，只有版本一致才删除 main/subKey/version key；如果版本已变化，说明这条热数据发生过新写入，删除方应跳过本次删除并稍后重试。所有附属 key 都从 mainKey 派生：
 
