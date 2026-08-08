@@ -17,6 +17,7 @@ type stateTestStore struct {
 	recorder   change.UndoRecorder
 	deltas     change.DeltaSet
 	deltaReads int
+	collapsed  int
 }
 
 func (store *stateTestStore) SetUndoRecorder(recorder change.UndoRecorder) {
@@ -24,12 +25,16 @@ func (store *stateTestStore) SetUndoRecorder(recorder change.UndoRecorder) {
 }
 
 func (store *stateTestStore) Set() {
+	store.SetField(1)
+}
+
+func (store *stateTestStore) SetField(field change.FieldID) {
 	previous := store.deltas.Clone()
 	if store.recorder != nil {
 		store.recorder.RecordUndo(func() { store.deltas = previous })
 	}
 	store.deltas = append(store.deltas, change.DeltaEntry{
-		Path: testStorageDeltaPath(1),
+		Path: testStorageDeltaPath(field),
 		Kind: change.DeltaKindSet,
 	})
 }
@@ -65,6 +70,14 @@ func (store *stateTestStore) ClearDeltas() {
 	store.deltas = nil
 }
 
+func (store *stateTestStore) CollapseDeltas() {
+	store.collapsed++
+	store.deltas = change.DeltaSet{{
+		Path: testStorageDeltaPath(1),
+		Kind: change.DeltaKindReplace,
+	}}
+}
+
 type stateTestProcedure struct {
 	lock  txn.LockTarget
 	store *stateTestStore
@@ -82,6 +95,16 @@ func (procedure stateTestProcedure) Process(*txn.Tx) error {
 type observingStateTestProcedure struct {
 	stateTestProcedure
 	called *bool
+}
+
+type multiFieldStateTestProcedure struct {
+	stateTestProcedure
+}
+
+func (procedure multiFieldStateTestProcedure) Process(*txn.Tx) error {
+	procedure.store.SetField(1)
+	procedure.store.SetField(2)
+	return nil
 }
 
 func (procedure observingStateTestProcedure) Process(tx *txn.Tx) error {
@@ -181,6 +204,64 @@ func TestStateManagerRejectsNewRootBeforeProcedureWhenCapacityIsFull(t *testing.
 	}
 	if manager.Pending() != 1 {
 		t.Fatalf("Pending = %d, want original root only", manager.Pending())
+	}
+}
+
+func TestStateManagerCollapsesOverBudgetRootDeltasBeforeFlush(t *testing.T) {
+	store := &stateTestStore{}
+	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
+	manager := state.NewManagerWithOptions(&recordingDeltaStoreApplier{}, state.ManagerOptions{
+		MaxRootDeltaEntries: 1,
+	})
+
+	if err := manager.Call(context.Background(), multiFieldStateTestProcedure{
+		stateTestProcedure: stateTestProcedure{lock: lock, store: store},
+	}); err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if store.collapsed != 0 {
+		t.Fatalf("CollapseDeltas calls before Flush = %d, want 0", store.collapsed)
+	}
+	if err := manager.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush returned error: %v", err)
+	}
+	if store.collapsed != 1 {
+		t.Fatalf("CollapseDeltas calls = %d, want 1", store.collapsed)
+	}
+	if manager.Pending() != 0 {
+		t.Fatalf("Pending = %d, want 0 after successful Flush", manager.Pending())
+	}
+}
+
+func TestStateManagerMemorySoftLimitRejectsOnlyNewPendingRoots(t *testing.T) {
+	var heapBytes uint64
+	manager := state.NewManagerWithOptions(&recordingDeltaStoreApplier{}, state.ManagerOptions{
+		PendingMemorySoftLimit: 1,
+		HeapBytes:              func() uint64 { return heapBytes },
+	})
+
+	first := &stateTestStore{}
+	firstLock := txn.NewLockTarget(txn.NewLockKey("role", 1001), first)
+	if err := manager.MarkDirty(firstLock); err != nil {
+		t.Fatalf("MarkDirty returned error: %v", err)
+	}
+	heapBytes = 2
+
+	if err := manager.Call(context.Background(), stateTestProcedure{lock: firstLock, store: first}); err != nil {
+		t.Fatalf("Call for existing pending root returned error: %v", err)
+	}
+
+	second := &stateTestStore{}
+	secondLock := txn.NewLockTarget(txn.NewLockKey("role", 1002), second)
+	err := manager.Call(context.Background(), observingStateTestProcedure{
+		stateTestProcedure: stateTestProcedure{lock: secondLock, store: second},
+		called:             new(bool),
+	})
+	if !errors.Is(err, state.ErrPendingMemorySoftLimit) {
+		t.Fatalf("Call error = %v, want ErrPendingMemorySoftLimit", err)
+	}
+	if manager.Pending() != 1 {
+		t.Fatalf("Pending = %d, want only existing root", manager.Pending())
 	}
 }
 

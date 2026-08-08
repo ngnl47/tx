@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/ngnl47/tx/change"
 	txlog "github.com/ngnl47/tx/log"
 	"github.com/ngnl47/tx/modules/txn"
 	"github.com/ngnl47/tx/storage"
@@ -17,10 +19,23 @@ import (
 
 var ErrPendingRootCapacity = errors.New("state: pending root capacity reached")
 
+var ErrPendingMemorySoftLimit = errors.New("state: pending memory soft limit reached")
+
 // ManagerOptions 描述有状态脏数据调度的资源边界。
 type ManagerOptions struct {
 	// MaxPendingRoots 限制等待 Flush 的持久化根对象数。零表示不限制。
 	MaxPendingRoots int
+	// MaxRootDeltaEntries 限制单个持久化根对象的细粒度 Delta 数量。超过后，
+	// Manager 会将该根 Store 收敛为顶层字段 Replace，零表示不限制。
+	MaxRootDeltaEntries int
+	// PendingMemorySoftLimit 是进程 Heap 的软上限（字节）。达到上限时，
+	// Manager 拒绝新的持久化根对象，但允许已有 pending 根继续合并变更。零表示不限制。
+	PendingMemorySoftLimit uint64
+	// MemorySampleInterval 是 Heap 采样最小间隔。零表示每次新增根预检时采样。
+	MemorySampleInterval time.Duration
+	// HeapBytes 用于读取当前进程 Heap 占用。默认读取 runtime.MemStats.HeapAlloc。
+	// 项目测试或自定义运行时观测可替换该函数。
+	HeapBytes func() uint64
 }
 
 // Manager 聚合当前进程内需要落盘的实体 Store。
@@ -30,12 +45,19 @@ type ManagerOptions struct {
 type Manager struct {
 	writer storage.DeltaApplier
 
-	mu              sync.Mutex
-	generation      uint64
-	targets         map[txn.LockKey]targetEntry
-	reserved        map[txn.LockKey]int
-	maxPendingRoots int
-	running         atomic.Bool
+	mu                   sync.Mutex
+	generation           uint64
+	targets              map[txn.LockKey]targetEntry
+	reserved             map[txn.LockKey]int
+	maxPendingRoots      int
+	maxRootDeltas        int
+	memorySoftLimit      uint64
+	memorySampleInterval time.Duration
+	heapBytes            func() uint64
+	memoryMu             sync.Mutex
+	lastMemoryAt         time.Time
+	lastHeapBytes        uint64
+	running              atomic.Bool
 }
 
 type targetEntry struct {
@@ -50,11 +72,19 @@ func NewManager(writer storage.DeltaApplier) *Manager {
 
 // NewManagerWithOptions 创建带资源边界的状态落盘调度器。
 func NewManagerWithOptions(writer storage.DeltaApplier, options ManagerOptions) *Manager {
+	heapBytes := options.HeapBytes
+	if heapBytes == nil {
+		heapBytes = currentHeapBytes
+	}
 	return &Manager{
-		writer:          writer,
-		targets:         make(map[txn.LockKey]targetEntry),
-		reserved:        make(map[txn.LockKey]int),
-		maxPendingRoots: options.MaxPendingRoots,
+		writer:               writer,
+		targets:              make(map[txn.LockKey]targetEntry),
+		reserved:             make(map[txn.LockKey]int),
+		maxPendingRoots:      options.MaxPendingRoots,
+		maxRootDeltas:        options.MaxRootDeltaEntries,
+		memorySoftLimit:      options.PendingMemorySoftLimit,
+		memorySampleInterval: options.MemorySampleInterval,
+		heapBytes:            heapBytes,
 	}
 }
 
@@ -85,8 +115,8 @@ func (manager *Manager) MarkDirty(targets ...txn.LockTarget) error {
 	}
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
-	if !manager.hasCapacityLocked(targets) {
-		return ErrPendingRootCapacity
+	if err := manager.acceptTargetsLocked(targets); err != nil {
+		return err
 	}
 	manager.markDirtyLocked(targets)
 	return nil
@@ -240,8 +270,8 @@ func (manager *Manager) reserve(targets []txn.LockTarget) (*pendingReservation, 
 	keys := persistentTargetKeys(targets)
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
-	if !manager.hasCapacityLocked(targets) {
-		return nil, ErrPendingRootCapacity
+	if err := manager.acceptTargetsLocked(targets); err != nil {
+		return nil, err
 	}
 	for _, key := range keys {
 		manager.reserved[key]++
@@ -301,6 +331,63 @@ func (manager *Manager) hasCapacityLocked(targets []txn.LockTarget) bool {
 	return occupied+additional <= manager.maxPendingRoots
 }
 
+func (manager *Manager) acceptTargetsLocked(targets []txn.LockTarget) error {
+	if !manager.hasCapacityLocked(targets) {
+		return ErrPendingRootCapacity
+	}
+	if manager.hasNewPersistentRootLocked(targets) && manager.memorySoftLimitReached() {
+		return ErrPendingMemorySoftLimit
+	}
+	return nil
+}
+
+func (manager *Manager) hasNewPersistentRootLocked(targets []txn.LockTarget) bool {
+	for _, key := range persistentTargetKeys(targets) {
+		if _, exists := manager.targets[key]; exists || manager.reserved[key] > 0 {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func (manager *Manager) memorySoftLimitReached() bool {
+	if manager.memorySoftLimit == 0 {
+		return false
+	}
+	now := time.Now()
+	manager.memoryMu.Lock()
+	defer manager.memoryMu.Unlock()
+	if manager.lastMemoryAt.IsZero() || manager.memorySampleInterval <= 0 || now.Sub(manager.lastMemoryAt) >= manager.memorySampleInterval {
+		manager.lastHeapBytes = manager.heapBytes()
+		manager.lastMemoryAt = now
+	}
+	return manager.lastHeapBytes >= manager.memorySoftLimit
+}
+
+func currentHeapBytes() uint64 {
+	var stats runtime.MemStats
+	runtime.ReadMemStats(&stats)
+	return stats.HeapAlloc
+}
+
+type deltaCollapser interface {
+	CollapseDeltas()
+}
+
+func (manager *Manager) enforceDeltaBudget(target txn.LockTarget, store storage.DeltaStore, deltas change.DeltaSet) change.DeltaSet {
+	if manager == nil || manager.maxRootDeltas <= 0 || len(deltas) <= manager.maxRootDeltas {
+		return deltas
+	}
+	collapser, ok := target.Store.(deltaCollapser)
+	if !ok {
+		return deltas
+	}
+	collapser.CollapseDeltas()
+	txlog.Warn("state root deltas collapsed", "scope", target.Key.Scope, "key", target.Key.Value, "budget", manager.maxRootDeltas)
+	return store.Deltas()
+}
+
 func persistentTargetKeys(targets []txn.LockTarget) []txn.LockKey {
 	keys := make([]txn.LockKey, 0, len(targets))
 	seen := make(map[txn.LockKey]struct{}, len(targets))
@@ -330,7 +417,7 @@ func (manager *Manager) flushTarget(ctx context.Context, entry targetEntry) erro
 			manager.forget(entry)
 			return nil
 		}
-		deltas := store.Deltas()
+		deltas := manager.enforceDeltaBudget(target, store, store.Deltas())
 		if len(deltas) == 0 {
 			manager.forget(entry)
 			return nil
