@@ -69,6 +69,7 @@ func TestUpdateLuaScriptRejectsExistingNonObjectPathNodes(t *testing.T) {
 	}
 	text := string(updateBody)
 	for _, want := range []string{
+		"cjson.decode_array_with_array_mt(true)",
 		"local function is_object(v)",
 		"return RESULT_PATH_TYPE_MISMATCH .. \":\" .. path",
 		"local merged, mismatch_path = merge(old, patch, \"\")",

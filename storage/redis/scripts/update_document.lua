@@ -1,4 +1,7 @@
 redis.replicate_commands()
+if type(cjson.decode_array_with_array_mt) == "function" then
+  cjson.decode_array_with_array_mt(true)
+end
 local FLAG_TRUE = "1"
 local RESULT_NOT_EXISTS = "ne"
 local RESULT_PATH_TYPE_MISMATCH = "pt"
@@ -32,7 +35,7 @@ end
 
 local function get_type(v)
   local t = type(v)
-  if t == "table" and (v.__arr ~= nil or v[1] ~= nil) then
+  if t == "table" and ((cjson.array_mt ~= nil and getmetatable(v) == cjson.array_mt) or v.__arr ~= nil or v[1] ~= nil) then
     return "array"
   end
   return t

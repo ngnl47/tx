@@ -1179,7 +1179,8 @@ err := storage.Save(ctx, redisCluster, probe.Store())
 
 Lua 不会为数组补空位、插入或删除元素。`Append`、`InsertAt`、`RemoveAt`、`Replace` 与 `Clear` 这类会改变
 长度或整体结构的操作由生成 Store 标记为整字段覆盖；数组下标不存在或路径段不是整数时返回
-`storage.ErrPathTypeMismatch`。
+`storage.ErrPathTypeMismatch`。其中 `Clear()` 会明确持久化为空 JSON 数组 `[]`，不会因 Lua 重编码退化为
+空对象 `{}`。
 
 ```go
 // Redis 初始值：{"roleId":1001}

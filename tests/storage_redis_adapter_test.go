@@ -406,8 +406,9 @@ func TestRedisAdapterLuaUsesCompatibleArrayDetection(t *testing.T) {
 	}
 	script := client.evals[0].script
 	for _, want := range []string{
+		"cjson.decode_array_with_array_mt(true)",
 		"local function get_type(v)",
-		"if t == \"table\" and (v.__arr ~= nil or v[1] ~= nil) then",
+		"getmetatable(v) == cjson.array_mt",
 		"return \"array\"",
 	} {
 		if !strings.Contains(script, want) {
