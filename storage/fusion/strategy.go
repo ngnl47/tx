@@ -176,8 +176,8 @@ func (s Strategy) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSp
 	if options.DontLoadToRedis {
 		return s.loadMongoMissingDocuments(ctx, spec, missingIndexes, missingKeys, docs, exists, fields...)
 	}
-	if s.redisReplacerWithOptions() == nil && s.redisReplacer() == nil {
-		return s.loadMongoMissingDocuments(ctx, spec, missingIndexes, missingKeys, docs, exists, fields...)
+	if err := s.requireRedisBackfillDependencies(); err != nil {
+		return nil, nil, err
 	}
 	if err := s.loadMissingDocumentsWithProtectedBackfill(ctx, spec, missingIndexes, missingKeys, docs, exists, fields...); err != nil {
 		return nil, nil, err
@@ -284,14 +284,11 @@ func (s Strategy) loadMissingDocumentsWithBatchBackfill(ctx context.Context, spe
 }
 
 func (s Strategy) backfillMongoDocumentAfterRedisCheck(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, mongoDocument map[string]any, mongoExists bool, fields ...string) (document map[string]any, exists bool, err error) {
+	if err := s.requireRedisBackfillDependencies(); err != nil {
+		return nil, false, err
+	}
 	replacer := s.redisReplacerWithOptions()
-	if isNilFusionDependency(replacer) {
-		return nil, false, fmt.Errorf("fusion: redis backfill requires ReplaceDocumentWithOptions to set delayDelTime TTL")
-	}
 	locker := s.redisLocker()
-	if isNilFusionDependency(locker) {
-		return nil, false, fmt.Errorf("fusion: redis backfill requires record lock")
-	}
 	lock, err := locker.LockRecord(ctx, spec, key, storage.LockOptions{TTL: s.loadLockTTL(), Wait: s.loadLockWait()})
 	if err != nil {
 		return nil, false, err
@@ -331,17 +328,11 @@ func (s Strategy) backfillMongoDocumentAfterRedisCheck(ctx context.Context, spec
 }
 
 func (s Strategy) loadMongoDocumentAndBackfillRedis(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, fields ...string) (document map[string]any, exists bool, err error) {
+	if err := s.requireRedisBackfillDependencies(); err != nil {
+		return nil, false, err
+	}
 	replacer := s.redisReplacerWithOptions()
-	if isNilFusionDependency(replacer) {
-		if !isNilFusionDependency(s.redisReplacer()) {
-			return nil, false, fmt.Errorf("fusion: redis backfill requires ReplaceDocumentWithOptions to set delayDelTime TTL")
-		}
-		return loadFusionDocument(ctx, s.MongoLoader, "mongo document loader", spec, key, fields...)
-	}
 	locker := s.redisLocker()
-	if isNilFusionDependency(locker) {
-		return nil, false, fmt.Errorf("fusion: redis backfill requires record lock")
-	}
 	lock, err := locker.LockRecord(ctx, spec, key, storage.LockOptions{TTL: s.loadLockTTL(), Wait: s.loadLockWait()})
 	if err != nil {
 		return nil, false, err
@@ -454,15 +445,14 @@ func (s Strategy) redisReplacerWithOptions() storage.DocumentReplacerWithOptions
 	return replacer
 }
 
-func (s Strategy) redisReplacer() storage.DocumentReplacer {
-	if replacer, ok := s.RedisReplacer.(storage.DocumentReplacer); ok && !isNilFusionDependency(replacer) {
-		return replacer
+func (s Strategy) requireRedisBackfillDependencies() error {
+	if isNilFusionDependency(s.redisReplacerWithOptions()) {
+		return fmt.Errorf("%w: redis document replacer with options", ErrStrategyDependenciesNotConfigured)
 	}
-	replacer, _ := s.Redis.(storage.DocumentReplacer)
-	if isNilFusionDependency(replacer) {
-		return nil
+	if isNilFusionDependency(s.redisLocker()) {
+		return fmt.Errorf("%w: redis record locker", ErrStrategyDependenciesNotConfigured)
 	}
-	return replacer
+	return nil
 }
 
 func (s Strategy) redisDeleter() storage.DeleteApplier {

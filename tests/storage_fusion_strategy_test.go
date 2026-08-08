@@ -614,6 +614,23 @@ func TestFusionStrategyLoadDocumentRejectsInconsistentMongoLoaderResult(t *testi
 	}
 }
 
+func TestFusionStrategyRejectsRedisMissWithoutBackfillDependencies(t *testing.T) {
+	redis := &recordingDocumentLoader{}
+	mongo := &recordingDocumentLoader{doc: map[string]any{"name": "cold"}, exists: true}
+	strategy := fusion.Strategy{RedisLoader: redis, MongoLoader: mongo}
+
+	_, exists, err := strategy.LoadDocument(context.Background(), meta.TypeSpec{}, storage.RecordKey{ID: int64(1001)})
+	if !errors.Is(err, fusion.ErrStrategyDependenciesNotConfigured) {
+		t.Fatalf("LoadDocument error = %v, want ErrStrategyDependenciesNotConfigured", err)
+	}
+	if exists {
+		t.Fatal("LoadDocument exists = true, want false when Redis backfill is unavailable")
+	}
+	if mongo.calls != 0 {
+		t.Fatalf("mongo calls = %d, want 0 before backfill dependencies are checked", mongo.calls)
+	}
+}
+
 func TestFusionStrategyLoadDocumentsRejectsInconsistentRedisBatchResult(t *testing.T) {
 	strategy := fusion.Strategy{
 		RedisLoader: &recordingDocumentLoader{
@@ -811,7 +828,7 @@ func TestFusionStrategyLoadDocumentRequiresDelayDeleteForRedisBackfill(t *testin
 	}
 }
 
-func TestFusionStrategyLoadDocumentsFallsBackMissingRowsToMongo(t *testing.T) {
+func TestFusionStrategyRejectsBatchRedisMissWithoutBackfillDependencies(t *testing.T) {
 	keys := []storage.RecordKey{{ID: int64(1001)}, {ID: int64(1002)}, {ID: int64(1003)}}
 	redis := &recordingDocumentLoader{
 		docs:       []map[string]any{{"name": "hot-1"}, nil, {"name": "hot-3"}},
@@ -824,27 +841,15 @@ func TestFusionStrategyLoadDocumentsFallsBackMissingRowsToMongo(t *testing.T) {
 	strategy := fusion.Strategy{RedisLoader: redis, MongoLoader: mongo}
 	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
 
-	docs, exists, err := strategy.LoadDocuments(context.Background(), spec, keys, "name")
-	if err != nil {
-		t.Fatalf("LoadDocuments returned error: %v", err)
+	_, _, err := strategy.LoadDocuments(context.Background(), spec, keys, "name")
+	if !errors.Is(err, fusion.ErrStrategyDependenciesNotConfigured) {
+		t.Fatalf("LoadDocuments error = %v, want ErrStrategyDependenciesNotConfigured", err)
 	}
-	if len(docs) != 3 || len(exists) != 3 {
-		t.Fatalf("LoadDocuments returned docs=%d exists=%d, want 3", len(docs), len(exists))
+	if redis.manyCalls != 1 {
+		t.Fatalf("redis batch calls = %d, want 1", redis.manyCalls)
 	}
-	if !exists[0] || docs[0]["name"] != "hot-1" {
-		t.Fatalf("docs[0] = %#v exists=%v, want Redis row", docs[0], exists[0])
-	}
-	if !exists[1] || docs[1]["name"] != "cold-2" {
-		t.Fatalf("docs[1] = %#v exists=%v, want Mongo fallback row", docs[1], exists[1])
-	}
-	if !exists[2] || docs[2]["name"] != "hot-3" {
-		t.Fatalf("docs[2] = %#v exists=%v, want Redis row", docs[2], exists[2])
-	}
-	if redis.manyCalls != 1 || mongo.manyCalls != 1 {
-		t.Fatalf("loader calls redis=%d mongo=%d, want one batch call each", redis.manyCalls, mongo.manyCalls)
-	}
-	if len(mongo.keys) != 1 || mongo.keys[0].ID != int64(1002) {
-		t.Fatalf("mongo fallback keys = %#v, want only missing key", mongo.keys)
+	if mongo.manyCalls != 0 {
+		t.Fatalf("mongo batch calls = %d, want 0 before backfill dependencies are checked", mongo.manyCalls)
 	}
 }
 
@@ -1029,8 +1034,13 @@ func TestFusionStrategyLoadDocumentsUsesSingleRedisLoaderBeforeMongo(t *testing.
 		docs:       []map[string]any{{"name": "cold-2"}},
 		existsMany: []bool{true},
 	}
-	strategy := fusion.Strategy{RedisLoader: redis, MongoLoader: mongo}
-	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
+	replacer := &recordingDocumentReplacerWithOptions{}
+	locker := &recordingRecordLocker{}
+	strategy := fusion.Strategy{RedisLoader: redis, RedisReplacer: replacer, RedisLocker: locker, MongoLoader: mongo}
+	spec := meta.TypeSpec{
+		Type:    meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
+		Storage: meta.StorageSpec{DelayDelete: meta.Duration{Duration: time.Hour}},
+	}
 
 	docs, exists, err := strategy.LoadDocuments(context.Background(), spec, keys, "name")
 	if err != nil {
@@ -1045,11 +1055,14 @@ func TestFusionStrategyLoadDocumentsUsesSingleRedisLoaderBeforeMongo(t *testing.
 	if !exists[2] || docs[2]["name"] != "hot-3" {
 		t.Fatalf("docs[2] = %#v exists=%v, want Redis row", docs[2], exists[2])
 	}
-	if redis.calls != 3 {
-		t.Fatalf("redis single calls = %d, want 3", redis.calls)
+	if redis.calls != 4 {
+		t.Fatalf("redis single calls = %d, want 4 with lock double-check", redis.calls)
 	}
 	if len(mongo.keys) != 1 || mongo.keys[0].ID != int64(1002) {
 		t.Fatalf("mongo fallback keys = %#v, want only missing key", mongo.keys)
+	}
+	if locker.calls != 1 || replacer.calls != 1 {
+		t.Fatalf("backfill lock/replacer calls = %d/%d, want 1/1", locker.calls, replacer.calls)
 	}
 }
 
