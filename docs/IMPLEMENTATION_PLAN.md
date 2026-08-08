@@ -428,6 +428,7 @@ Store 生成、Redis key helper、Mongo filter helper、字段编号 resolver �
 - 测试通过 public API 驱动，避免为了测试暴露内部实现。
 - 临时输入文件用 `t.TempDir()` 生成。
 - `tx` 单元测试默认不依赖外部 Redis/MongoDB；真实 Redis/Mongo/Fusion 集成验证放在 `txgame/server/tests/integration`。
+- `tx` runtime 单元测试可使用最小手写 `TypeSpec`、fake client 和构造 Delta，专注通用算法与故障分支；涉及脚手架字段名、Store、`DocumentFactory`、Redis main/subKey 或 Mongo BSON 映射的契约测试，必须在 `txgame` 使用实际 txgen 生成类型。`GDStorageProbe` 是该层的最小专用输入，覆盖 JSON/BSON 不同名称、Mongo `_id`、map/slice subKey。
 
 ## Milestones
 
