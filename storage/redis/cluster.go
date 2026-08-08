@@ -155,6 +155,9 @@ func (c *Cluster) adapterFor(ctx context.Context, spec meta.TypeSpec, key storag
 }
 
 func (c *Cluster) shardName(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) (string, error) {
+	if err := storage.ValidateRecordKey(spec, key); err != nil {
+		return "", err
+	}
 	if c == nil || isNilRouter(c.router) {
 		return "", fmt.Errorf("redis: router is not configured")
 	}

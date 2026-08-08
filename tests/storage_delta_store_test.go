@@ -113,6 +113,7 @@ func TestStorageSaveAppliesDirtyDeltasAndForcesNonUpsert(t *testing.T) {
 func TestStorageSaveFailureKeepsDeltas(t *testing.T) {
 	saveErr := errors.New("boom")
 	store := &testDeltaStore{
+		key:    storage.RecordKey{ID: int64(1001)},
 		deltas: change.DeltaSet{{Path: testStorageDeltaPath(2), Kind: change.DeltaKindSet}},
 	}
 	applier := &recordingDeltaStoreApplier{err: saveErr}
@@ -122,6 +123,21 @@ func TestStorageSaveFailureKeepsDeltas(t *testing.T) {
 	}
 	if store.cleared != 0 {
 		t.Fatalf("ClearDeltas calls after failure = %d, want 0", store.cleared)
+	}
+}
+
+func TestStorageSaveRejectsInvalidRecordKeyAndKeepsDeltas(t *testing.T) {
+	store := &testDeltaStore{
+		deltas: change.DeltaSet{{Path: testStorageDeltaPath(2), Kind: change.DeltaKindSet}},
+	}
+	applier := &recordingDeltaStoreApplier{}
+
+	err := storage.Save(context.Background(), applier, store)
+	if !errors.Is(err, storage.ErrInvalidRecordKey) {
+		t.Fatalf("Save error = %v, want ErrInvalidRecordKey", err)
+	}
+	if applier.hasOptions || store.cleared != 0 {
+		t.Fatalf("invalid key reached persistence path: applier=%#v store=%#v", applier, store)
 	}
 }
 
@@ -146,6 +162,7 @@ func TestStorageRejectsTypedNilDeltaApplier(t *testing.T) {
 func TestStorageSaveDeltasUsesProvidedProjectionAndSkipsEmptySet(t *testing.T) {
 	delta := change.DeltaEntry{Path: testStorageDeltaPath(2), Kind: change.DeltaKindSet}
 	store := &testDeltaStore{
+		key:    storage.RecordKey{ID: int64(1001)},
 		deltas: change.DeltaSet{{Path: testStorageDeltaPath(1), Kind: change.DeltaKindSet}},
 	}
 	applier := &recordingDeltaStoreApplier{}

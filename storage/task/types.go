@@ -10,7 +10,10 @@ import (
 	"time"
 )
 
-var ErrInvalidDelayTask = errors.New("task: invalid delayed task")
+var (
+	ErrInvalidDelayTask      = errors.New("task: invalid delayed task")
+	ErrInvalidDelayTaskLease = errors.New("task: invalid delayed task lease")
+)
 
 type DelayTask struct {
 	Type      string
@@ -71,6 +74,21 @@ type DelayTaskLease struct {
 	Task     DelayTask
 	Token    string
 	Attempts int
+}
+
+// ValidateDelayTaskLease 校验 Complete 与 Retry 使用的租约定位信息。
+// 已过期但格式完整的租约仍由后端按幂等 no-op 处理；这里仅拒绝无法定位的调用。
+func ValidateDelayTaskLease(lease DelayTaskLease) error {
+	if err := ValidateDelayTask(lease.Task); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidDelayTaskLease, err)
+	}
+	if strings.TrimSpace(lease.Token) == "" {
+		return fmt.Errorf("%w: missing token", ErrInvalidDelayTaskLease)
+	}
+	if lease.Attempts <= 0 {
+		return fmt.Errorf("%w: attempts must be greater than 0", ErrInvalidDelayTaskLease)
+	}
+	return nil
 }
 
 type DelayTaskBackend interface {

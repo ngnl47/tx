@@ -60,10 +60,14 @@ func CreateWithOptions(ctx context.Context, applier DeltaApplier, store DeltaSto
 	if isReadOnlyDeltaStore(store) {
 		return ErrReadOnlyStore
 	}
+	key := store.RecordKey()
+	if err := ValidateRecordKey(store.TypeSpec(), key); err != nil {
+		return err
+	}
 	store.AllTouch()
 	options = mergeApplyOptions(store.DefaultApplyOptions(), options)
 	options.Upsert = true
-	if err := applier.ApplyDeltasWithOptions(ctx, store.TypeSpec(), store.RecordKey(), store.Deltas(), store.FieldNameResolver(), store.DeltaValueResolver(), options); err != nil {
+	if err := applier.ApplyDeltasWithOptions(ctx, store.TypeSpec(), key, store.Deltas(), store.FieldNameResolver(), store.DeltaValueResolver(), options); err != nil {
 		return err
 	}
 	store.ClearDeltas()
@@ -103,9 +107,13 @@ func SaveDeltasWithOptions(ctx context.Context, applier DeltaApplier, store Delt
 	if len(deltas) == 0 {
 		return nil
 	}
+	key := store.RecordKey()
+	if err := ValidateRecordKey(store.TypeSpec(), key); err != nil {
+		return err
+	}
 	options = mergeApplyOptions(store.DefaultApplyOptions(), options)
 	options.Upsert = false
-	if err := applier.ApplyDeltasWithOptions(ctx, store.TypeSpec(), store.RecordKey(), deltas, store.FieldNameResolver(), store.DeltaValueResolver(), options); err != nil {
+	if err := applier.ApplyDeltasWithOptions(ctx, store.TypeSpec(), key, deltas, store.FieldNameResolver(), store.DeltaValueResolver(), options); err != nil {
 		return err
 	}
 	store.ClearDeltas()

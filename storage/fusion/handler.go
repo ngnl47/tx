@@ -47,15 +47,15 @@ func NewDelayTaskHandlerWithOptions(types TypeRegistry, redisLoader storage.Docu
 }
 
 func (h *StorageTaskHandler) HandleDelayTask(ctx context.Context, item task.DelayTask) error {
+	if err := task.ValidateDelayTask(item); err != nil {
+		return err
+	}
 	if h == nil || isNilFusionDependency(h.types) {
 		return ErrDelayTaskDependenciesNotConfigured
 	}
 	spec, ok := h.lookup(item.Type)
 	if !ok {
 		return fmt.Errorf("fusion: unknown delayed task type %q", item.Type)
-	}
-	if item.ID == nil {
-		return fmt.Errorf("fusion: missing delayed task record id")
 	}
 	key := storage.RecordKey{
 		TypeName: item.Type,

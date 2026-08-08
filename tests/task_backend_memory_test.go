@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -139,5 +140,40 @@ func TestMemoryDelayTaskBackendRejectsIncompleteTask(t *testing.T) {
 		if err := backend.Enqueue(context.Background(), item); err == nil {
 			t.Fatalf("Enqueue(%#v) error = nil, want invalid task error", item)
 		}
+	}
+}
+
+func TestMemoryDelayTaskBackendRejectsInvalidLease(t *testing.T) {
+	backend := memory.NewBackend()
+	for _, lease := range []task.DelayTaskLease{
+		{},
+		{Task: task.DelayTask{Type: "role", ID: "1", Action: "save"}},
+		{Task: task.DelayTask{Type: "role", ID: "1", Action: "save"}, Token: "lease", Attempts: 0},
+	} {
+		if err := backend.Complete(context.Background(), lease); !errors.Is(err, task.ErrInvalidDelayTaskLease) {
+			t.Fatalf("Complete(%#v) error = %v, want ErrInvalidDelayTaskLease", lease, err)
+		}
+		if err := backend.Retry(context.Background(), lease, time.Now(), context.Canceled); !errors.Is(err, task.ErrInvalidDelayTaskLease) {
+			t.Fatalf("Retry(%#v) error = %v, want ErrInvalidDelayTaskLease", lease, err)
+		}
+	}
+}
+
+func TestMemoryDelayTaskBackendRejectsNilReceiver(t *testing.T) {
+	var backend *memory.Backend
+	item := task.DelayTask{Type: "role", ID: "1", Action: "save"}
+	lease := task.DelayTaskLease{Task: item, Token: "lease", Attempts: 1}
+
+	if err := backend.Enqueue(context.Background(), item); !errors.Is(err, memory.ErrBackendNotConfigured) {
+		t.Fatalf("Enqueue error = %v, want ErrBackendNotConfigured", err)
+	}
+	if _, err := backend.ClaimDue(context.Background(), time.Now(), 1); !errors.Is(err, memory.ErrBackendNotConfigured) {
+		t.Fatalf("ClaimDue error = %v, want ErrBackendNotConfigured", err)
+	}
+	if err := backend.Complete(context.Background(), lease); !errors.Is(err, memory.ErrBackendNotConfigured) {
+		t.Fatalf("Complete error = %v, want ErrBackendNotConfigured", err)
+	}
+	if err := backend.Retry(context.Background(), lease, time.Now(), context.Canceled); !errors.Is(err, memory.ErrBackendNotConfigured) {
+		t.Fatalf("Retry error = %v, want ErrBackendNotConfigured", err)
 	}
 }

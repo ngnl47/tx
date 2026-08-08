@@ -1330,6 +1330,24 @@ func TestRedisClusterRoutesSingleWriteByShardKey(t *testing.T) {
 	}
 }
 
+func TestRedisAdapterRejectsMissingDistinctRouteShardKey(t *testing.T) {
+	client := &recordingRedisStringClient{}
+	adapter := txredis.NewAdapter(client)
+	spec := meta.TypeSpec{Redis: &meta.RedisSpec{
+		Key:     "role",
+		IDField: "roleId",
+		Route:   meta.RouteSpec{Type: "role", By: "serverId"},
+	}}
+
+	err := adapter.ReplaceDocument(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, map[string]any{"roleId": int64(1001)})
+	if !errors.Is(err, storage.ErrInvalidRecordKey) {
+		t.Fatalf("ReplaceDocument error = %v, want ErrInvalidRecordKey", err)
+	}
+	if len(client.evals) != 0 {
+		t.Fatalf("redis evals = %#v, want no I/O", client.evals)
+	}
+}
+
 func TestRedisClusterRejectsTypedNilRouter(t *testing.T) {
 	var router *recordingRedisRouter
 	cluster := txredis.NewCluster(router, map[string]txredis.ScriptClient{"role": &recordingRedisStringClient{}})

@@ -138,6 +138,9 @@ func (b *Backend) Complete(ctx context.Context, lease task.DelayTaskLease) error
 	if b == nil || isNilScriptClient(b.client) {
 		return ErrClientNotConfigured
 	}
+	if err := task.ValidateDelayTaskLease(lease); err != nil {
+		return err
+	}
 	result, err := b.client.Eval(ctx, completeScript, b.keysForTask(lease.Task), lease.Task.IdempotencyKey(), lease.Token)
 	if err != nil {
 		return fmt.Errorf("redis task: complete %s: %w", lease.Task.IdempotencyKey(), err)
@@ -154,6 +157,9 @@ func (b *Backend) Retry(ctx context.Context, lease task.DelayTaskLease, next tim
 	}
 	if b == nil || isNilScriptClient(b.client) {
 		return ErrClientNotConfigured
+	}
+	if err := task.ValidateDelayTaskLease(lease); err != nil {
+		return err
 	}
 	_ = reason
 	result, err := b.client.Eval(ctx, retryScript, b.keysForTask(lease.Task), lease.Task.IdempotencyKey(), lease.Token, unixMillis(next))

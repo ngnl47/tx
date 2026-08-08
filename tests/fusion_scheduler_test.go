@@ -256,11 +256,11 @@ func TestFusionTaskQueueRejectsMissingRecordLocator(t *testing.T) {
 	ctx := context.Background()
 	backend := memory.NewBackend()
 	queue := fusion.NewTaskQueue(backend)
+	var typedNil *int64
 
 	for _, tt := range []struct {
 		name string
 		op   fusion.DelayedOperation
-		want string
 	}{
 		{
 			name: "missing type",
@@ -268,7 +268,6 @@ func TestFusionTaskQueueRejectsMissingRecordLocator(t *testing.T) {
 				Kind: fusion.DelayedSave,
 				Key:  storage.RecordKey{ID: int64(1001)},
 			},
-			want: "missing delayed operation type",
 		},
 		{
 			name: "missing id",
@@ -276,13 +275,28 @@ func TestFusionTaskQueueRejectsMissingRecordLocator(t *testing.T) {
 				Kind: fusion.DelayedSave,
 				Type: meta.TypeRef{Package: "data", Name: "GDRole"},
 			},
-			want: "missing delayed operation record id",
+		},
+		{
+			name: "typed nil id",
+			op: fusion.DelayedOperation{
+				Kind: fusion.DelayedSave,
+				Type: meta.TypeRef{Package: "data", Name: "GDRole"},
+				Key:  storage.RecordKey{ID: typedNil},
+			},
+		},
+		{
+			name: "blank string id",
+			op: fusion.DelayedOperation{
+				Kind: fusion.DelayedSave,
+				Type: meta.TypeRef{Package: "data", Name: "GDRole"},
+				Key:  storage.RecordKey{ID: "  "},
+			},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			err := queue.Enqueue(ctx, tt.op)
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("Enqueue error = %v, want %q", err, tt.want)
+			if !errors.Is(err, task.ErrInvalidDelayTask) {
+				t.Fatalf("Enqueue error = %v, want ErrInvalidDelayTask", err)
 			}
 		})
 	}

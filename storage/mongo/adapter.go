@@ -84,6 +84,9 @@ func (a *Adapter) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec
 	if len(deltas) == 0 {
 		return nil
 	}
+	if err := storage.ValidateRecordKey(spec, key); err != nil {
+		return err
+	}
 	if options.Upsert {
 		deltas = withoutUpsertIDDelta(deltas, resolver)
 	}
@@ -131,6 +134,9 @@ func (a *Adapter) ReplaceDocument(ctx context.Context, spec meta.TypeSpec, key s
 	if doc == nil {
 		return storage.ErrNilDocument
 	}
+	if err := storage.ValidateRecordKey(spec, key); err != nil {
+		return err
+	}
 	client, err := a.clientFor("Replacer")
 	if err != nil {
 		return err
@@ -158,6 +164,9 @@ func (a *Adapter) ReplaceDocument(ctx context.Context, spec meta.TypeSpec, key s
 
 // ApplyDelete 按记录键删除一条 Mongo 文档。
 func (a *Adapter) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
+	if err := storage.ValidateRecordKey(spec, key); err != nil {
+		return err
+	}
 	client, err := a.clientFor("Deleter")
 	if err != nil {
 		return err
@@ -191,6 +200,9 @@ func validateUpdateResult(result UpdateResult, upsert bool) error {
 
 // LoadDocument 按记录键读取单条 Mongo 文档。
 func (a *Adapter) LoadDocument(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, fields ...string) (map[string]any, bool, error) {
+	if err := storage.ValidateRecordKey(spec, key); err != nil {
+		return nil, false, err
+	}
 	client, err := a.clientFor("Finder")
 	if err != nil {
 		return nil, false, err
@@ -222,6 +234,9 @@ func (a *Adapter) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []
 	exists := make([]bool, len(keys))
 	if len(keys) == 0 {
 		return docs, exists, nil
+	}
+	if err := storage.ValidateRecordKeys(spec, keys); err != nil {
+		return nil, nil, err
 	}
 	collection := mongoCollection(spec)
 	projection := mongoProjectionFields(spec, fields)

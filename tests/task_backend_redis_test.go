@@ -56,7 +56,7 @@ func TestRedisTaskBackendRejectsTypedNilClient(t *testing.T) {
 func TestRedisDelayTaskBackendRejectsUnknownScriptResults(t *testing.T) {
 	backend := taskredis.NewBackend(scriptedTaskRedis{result: "unexpected"}, taskredis.Options{})
 	item := task.DelayTask{Type: "role", ID: int64(1001), Action: "save"}
-	lease := task.DelayTaskLease{Task: item, Token: "token"}
+	lease := task.DelayTaskLease{Task: item, Token: "token", Attempts: 1}
 
 	for _, tt := range []struct {
 		name string
@@ -108,6 +108,22 @@ func TestRedisDelayTaskBackendRejectsIncompleteTask(t *testing.T) {
 	} {
 		if err := backend.Enqueue(context.Background(), item); err == nil {
 			t.Fatalf("Enqueue(%#v) error = nil, want invalid task error", item)
+		}
+	}
+}
+
+func TestRedisDelayTaskBackendRejectsInvalidLease(t *testing.T) {
+	backend := taskredis.NewBackend(scriptedTaskRedis{result: "ok"}, taskredis.Options{})
+	for _, lease := range []task.DelayTaskLease{
+		{},
+		{Task: task.DelayTask{Type: "role", ID: "1", Action: "save"}},
+		{Task: task.DelayTask{Type: "role", ID: "1", Action: "save"}, Token: "lease", Attempts: 0},
+	} {
+		if err := backend.Complete(context.Background(), lease); !errors.Is(err, task.ErrInvalidDelayTaskLease) {
+			t.Fatalf("Complete(%#v) error = %v, want ErrInvalidDelayTaskLease", lease, err)
+		}
+		if err := backend.Retry(context.Background(), lease, time.Now(), context.Canceled); !errors.Is(err, task.ErrInvalidDelayTaskLease) {
+			t.Fatalf("Retry(%#v) error = %v, want ErrInvalidDelayTaskLease", lease, err)
 		}
 	}
 }

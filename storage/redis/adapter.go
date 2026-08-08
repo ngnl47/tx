@@ -57,6 +57,9 @@ func (a *Adapter) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec
 	if len(deltas) == 0 {
 		return nil
 	}
+	if err := storage.ValidateRecordKey(spec, key); err != nil {
+		return err
+	}
 	patches, err := BuildDocumentPatchesWithDeltas(spec, deltas, resolver, values)
 	if err != nil {
 		return err
@@ -118,6 +121,9 @@ func (a *Adapter) ReplaceDocumentWithOptions(ctx context.Context, spec meta.Type
 	if doc == nil {
 		return storage.ErrNilDocument
 	}
+	if err := storage.ValidateRecordKey(spec, key); err != nil {
+		return err
+	}
 	options.Upsert = true
 	return a.applyDocumentPatchesWithOptions(ctx, spec, key, buildReplaceDocumentPatches(spec, doc), options)
 }
@@ -129,6 +135,9 @@ func (a *Adapter) ReplaceDocument(ctx context.Context, spec meta.TypeSpec, key s
 
 // ApplyDelete 删除 Redis string JSON 主文档、subKey 文档和版本键。
 func (a *Adapter) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
+	if err := storage.ValidateRecordKey(spec, key); err != nil {
+		return err
+	}
 	client, err := a.scriptClient()
 	if err != nil {
 		return err
@@ -147,6 +156,9 @@ func (a *Adapter) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key stora
 
 // ApplyDeleteWithRevision 仅当 Redis 生命周期版本仍为 expectedRevision 时删除热数据。
 func (a *Adapter) ApplyDeleteWithRevision(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, expectedRevision string) (bool, string, error) {
+	if err := storage.ValidateRecordKey(spec, key); err != nil {
+		return false, "", err
+	}
 	client, err := a.scriptClient()
 	if err != nil {
 		return false, "", err
@@ -171,6 +183,9 @@ func (a *Adapter) ApplyDeleteWithRevision(ctx context.Context, spec meta.TypeSpe
 
 // ReadRecordRevision 读取 Redis 热数据生命周期版本。
 func (a *Adapter) ReadRecordRevision(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) (string, error) {
+	if err := storage.ValidateRecordKey(spec, key); err != nil {
+		return "", err
+	}
 	client, err := a.scriptClient()
 	if err != nil {
 		return "", err
@@ -199,6 +214,9 @@ func isRecordRevision(value string) bool {
 }
 
 func (a *Adapter) LockRecord(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, options storage.LockOptions) (storage.RecordLock, error) {
+	if err := storage.ValidateRecordKey(spec, key); err != nil {
+		return nil, err
+	}
 	client, err := a.scriptClient()
 	if err != nil {
 		return nil, err
@@ -254,6 +272,9 @@ func (l *recordLock) Unlock(ctx context.Context) error {
 
 // LoadDocument 读取并合并 Redis string JSON 主文档和 subKey 文档。
 func (a *Adapter) LoadDocument(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, fields ...string) (map[string]any, bool, error) {
+	if err := storage.ValidateRecordKey(spec, key); err != nil {
+		return nil, false, err
+	}
 	client, err := a.scriptClient()
 	if err != nil {
 		return nil, false, err
@@ -288,6 +309,9 @@ func (a *Adapter) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSp
 	exists := make([]bool, len(records))
 	if len(records) == 0 {
 		return docs, exists, nil
+	}
+	if err := storage.ValidateRecordKeys(spec, records); err != nil {
+		return nil, nil, err
 	}
 	scriptClient, err := a.scriptClient()
 	if err != nil {

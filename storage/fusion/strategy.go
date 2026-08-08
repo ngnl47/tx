@@ -78,6 +78,9 @@ func (s Strategy) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec
 	if len(deltas) == 0 {
 		return nil
 	}
+	if err := storage.ValidateRecordKey(spec, key); err != nil {
+		return err
+	}
 	if isNilFusionDependency(s.Redis) {
 		return ErrRedisNotConfigured
 	}
@@ -96,6 +99,9 @@ func (s Strategy) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec
 // 立即删除持久化数据。storage.delayDelTime 只表示 Redis 热数据 TTL，不参与 Mongo
 // 删除延迟。
 func (s Strategy) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
+	if err := storage.ValidateRecordKey(spec, key); err != nil {
+		return err
+	}
 	redisDeleter, mongoDeleter, err := s.deleteDependencies()
 	if err != nil {
 		return err
@@ -112,6 +118,9 @@ func (s Strategy) LoadDocument(ctx context.Context, spec meta.TypeSpec, key stor
 }
 
 func (s Strategy) LoadDocumentWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, options LoadOptions, fields ...string) (map[string]any, bool, error) {
+	if err := storage.ValidateRecordKey(spec, key); err != nil {
+		return nil, false, err
+	}
 	redisLoader, err := s.readDependencies()
 	if err != nil {
 		return nil, false, err
@@ -139,6 +148,9 @@ func (s Strategy) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSp
 	exists := make([]bool, len(keys))
 	if len(keys) == 0 {
 		return docs, exists, nil
+	}
+	if err := storage.ValidateRecordKeys(spec, keys); err != nil {
+		return nil, nil, err
 	}
 
 	redisLoader, err := s.readDependencies()

@@ -968,6 +968,25 @@ func TestMongoClusterRoutesSingleWriteByShardKey(t *testing.T) {
 	}
 }
 
+func TestMongoClusterRejectsMissingDistinctRouteShardKey(t *testing.T) {
+	router := &recordingMongoRouter{names: map[any]string{int64(1001): "role-shard"}}
+	cluster := txmongo.NewCluster(router, map[string]any{"role-shard": &recordingMongoUpdater{}})
+	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{
+		IDField:    "roleId",
+		Route:      meta.RouteSpec{Type: "role", By: "serverId"},
+		Collection: "roles",
+	}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+
+	err := cluster.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
+	if !errors.Is(err, storage.ErrInvalidRecordKey) {
+		t.Fatalf("ApplyDeltasWithOptions error = %v, want ErrInvalidRecordKey", err)
+	}
+	if len(router.calls) != 0 {
+		t.Fatalf("router calls = %#v, want no routing", router.calls)
+	}
+}
+
 func TestMongoClusterRejectsTypedNilRouter(t *testing.T) {
 	var router *recordingMongoRouter
 	cluster := txmongo.NewCluster(router, map[string]any{"role": &recordingMongoUpdater{}})

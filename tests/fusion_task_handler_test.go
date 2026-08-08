@@ -322,12 +322,18 @@ func TestFusionDelayTaskHandlerRejectsMissingRecordID(t *testing.T) {
 	}
 	handler := fusion.NewDelayTaskHandler(registry, nil, nil)
 
-	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
-		Type:   "data.GDRole",
-		Action: string(fusion.DelayedSave),
-	})
-	if err == nil {
-		t.Fatal("HandleDelayTask returned nil error, want missing record id error")
+	var typedNil *int64
+	for _, item := range []task.DelayTask{
+		{Type: "data.GDRole", Action: string(fusion.DelayedSave)},
+		{Type: "data.GDRole", ID: typedNil, Action: string(fusion.DelayedSave)},
+		{Type: "data.GDRole", ID: "   ", Action: string(fusion.DelayedSave)},
+		{ID: int64(1001), Action: string(fusion.DelayedSave)},
+		{Type: "data.GDRole", ID: int64(1001)},
+	} {
+		err := handler.HandleDelayTask(context.Background(), item)
+		if !errors.Is(err, task.ErrInvalidDelayTask) {
+			t.Fatalf("HandleDelayTask(%#v) error = %v, want ErrInvalidDelayTask", item, err)
+		}
 	}
 }
 

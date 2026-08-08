@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -9,6 +10,8 @@ import (
 
 	"github.com/ngnl47/tx/storage/task"
 )
+
+var ErrBackendNotConfigured = errors.New("memory task: backend is not configured")
 
 type Backend struct {
 	mu      sync.Mutex
@@ -37,6 +40,9 @@ func (b *Backend) Enqueue(ctx context.Context, item task.DelayTask) error {
 	if err := task.ValidateDelayTask(item); err != nil {
 		return err
 	}
+	if b == nil {
+		return ErrBackendNotConfigured
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	key := item.IdempotencyKey()
@@ -55,6 +61,9 @@ func (b *Backend) Enqueue(ctx context.Context, item task.DelayTask) error {
 func (b *Backend) ClaimDue(ctx context.Context, now time.Time, limit int) ([]task.DelayTaskLease, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if b == nil {
+		return nil, ErrBackendNotConfigured
 	}
 	if limit <= 0 {
 		return nil, nil
@@ -101,6 +110,12 @@ func (b *Backend) Complete(ctx context.Context, lease task.DelayTaskLease) error
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if b == nil {
+		return ErrBackendNotConfigured
+	}
+	if err := task.ValidateDelayTaskLease(lease); err != nil {
+		return err
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	key := lease.Task.IdempotencyKey()
@@ -114,6 +129,12 @@ func (b *Backend) Complete(ctx context.Context, lease task.DelayTaskLease) error
 
 func (b *Backend) Retry(ctx context.Context, lease task.DelayTaskLease, next time.Time, reason error) error {
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if b == nil {
+		return ErrBackendNotConfigured
+	}
+	if err := task.ValidateDelayTaskLease(lease); err != nil {
 		return err
 	}
 	b.mu.Lock()
