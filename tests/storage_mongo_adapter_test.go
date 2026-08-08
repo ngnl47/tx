@@ -23,6 +23,7 @@ type recordingMongoUpdater struct {
 	doc           map[string]any
 	exists        bool
 	upsert        bool
+	updateErr     error
 	updateResult  *txmongo.UpdateResult
 	replaceResult *txmongo.ReplaceResult
 	deleteResult  *txmongo.DeleteResult
@@ -83,6 +84,9 @@ func (u *recordingMongoUpdater) UpdateOne(_ context.Context, collection string, 
 	u.filter = filter
 	u.update = update
 	u.upsert = options.Upsert
+	if u.updateErr != nil {
+		return txmongo.UpdateResult{}, u.updateErr
+	}
 	if u.updateResult != nil {
 		return *u.updateResult, nil
 	}
@@ -161,6 +165,17 @@ func TestMongoAdapterAppliesUpdateByDefaultIDFilter(t *testing.T) {
 	}
 }
 
+func TestMongoAdapterReturnsTransportError(t *testing.T) {
+	transportErr := errors.New("mongo unavailable")
+	adapter := txmongo.NewAdapter(&recordingMongoUpdater{updateErr: transportErr})
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+
+	err := adapter.ApplyDeltasWithOptions(context.Background(), meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
+	if !errors.Is(err, transportErr) {
+		t.Fatalf("ApplyDeltasWithOptions error = %v, want transport error", err)
+	}
+}
+
 func TestMongoAdapterRejectsMissingRecordOnNonUpsertUpdate(t *testing.T) {
 	updater := &recordingMongoUpdater{updateResult: &txmongo.UpdateResult{}}
 	adapter := txmongo.NewAdapter(updater)
@@ -231,6 +246,29 @@ func TestMongoAdapterRejectsMissingClientCapability(t *testing.T) {
 	assertMongoUnsupportedClient(t, err, "Updater")
 
 	err = adapter.ReplaceDocument(context.Background(), spec, key, map[string]any{"name": "alice"})
+	assertMongoUnsupportedClient(t, err, "Replacer")
+
+	err = adapter.ApplyDelete(context.Background(), spec, key)
+	assertMongoUnsupportedClient(t, err, "Deleter")
+
+	_, _, err = adapter.LoadDocument(context.Background(), spec, key)
+	assertMongoUnsupportedClient(t, err, "Finder")
+
+	_, _, err = adapter.LoadDocuments(context.Background(), spec, []storage.RecordKey{key})
+	assertMongoUnsupportedClient(t, err, "BatchFinder or Finder")
+}
+
+func TestMongoAdapterRejectsTypedNilClient(t *testing.T) {
+	var client *recordingMongoUpdater
+	adapter := txmongo.NewAdapter(client)
+	spec := mongoDocumentSpec()
+	key := storage.RecordKey{ID: int64(1001)}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+
+	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, key, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
+	assertMongoUnsupportedClient(t, err, "Updater")
+
+	err = adapter.ReplaceDocument(context.Background(), spec, key, map[string]any{"roleId": int64(1001)})
 	assertMongoUnsupportedClient(t, err, "Replacer")
 
 	err = adapter.ApplyDelete(context.Background(), spec, key)
@@ -927,6 +965,18 @@ func TestMongoClusterRoutesSingleWriteByShardKey(t *testing.T) {
 	}
 	if userShard.update != nil {
 		t.Fatalf("unexpected user shard update = %#v", userShard.update)
+	}
+}
+
+func TestMongoClusterRejectsTypedNilRouter(t *testing.T) {
+	var router *recordingMongoRouter
+	cluster := txmongo.NewCluster(router, map[string]any{"role": &recordingMongoUpdater{}})
+	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{Route: meta.RouteSpec{Type: "role"}, Collection: "roles"}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+
+	err := cluster.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
+	if err == nil || !strings.Contains(err.Error(), "router is not configured") {
+		t.Fatalf("ApplyDeltasWithOptions error = %v, want router configuration error", err)
 	}
 }
 

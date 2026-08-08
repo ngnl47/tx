@@ -25,6 +25,7 @@ type recordingRedisStringClient struct {
 	evalResults []string
 	evalIndex   int
 	hasResult   bool
+	evalErr     error
 }
 
 type redisEvalCall struct {
@@ -70,6 +71,9 @@ func (c *recordingRedisStringClient) Eval(_ context.Context, script string, keys
 		keys:   append([]string(nil), keys...),
 		args:   append([]any(nil), args...),
 	})
+	if c.evalErr != nil {
+		return "", c.evalErr
+	}
 	if c.hasResult {
 		return c.evalResult, nil
 	}
@@ -155,6 +159,17 @@ func TestRedisAdapterAppliesChangesWithSingleLuaEval(t *testing.T) {
 	}
 	if call.args[len(call.args)-2] != "1" || call.args[len(call.args)-1] != "0" {
 		t.Fatalf("eval tail args = %#v, want upsert=1 ttlMode=0", call.args[len(call.args)-2:])
+	}
+}
+
+func TestRedisAdapterReturnsTransportError(t *testing.T) {
+	transportErr := errors.New("redis unavailable")
+	adapter := txredis.NewAdapter(&recordingRedisStringClient{evalErr: transportErr})
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+
+	err := adapter.ApplyDeltasWithOptions(context.Background(), meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendJSON, deltaTestJSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{Upsert: true})
+	if !errors.Is(err, transportErr) {
+		t.Fatalf("ApplyDeltasWithOptions error = %v, want transport error", err)
 	}
 }
 
@@ -1312,6 +1327,18 @@ func TestRedisClusterRoutesSingleWriteByShardKey(t *testing.T) {
 	}
 	if len(userShard.evals) != 0 {
 		t.Fatalf("unexpected user shard evals = %#v", userShard.evals)
+	}
+}
+
+func TestRedisClusterRejectsTypedNilRouter(t *testing.T) {
+	var router *recordingRedisRouter
+	cluster := txredis.NewCluster(router, map[string]txredis.ScriptClient{"role": &recordingRedisStringClient{}})
+	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role", Route: meta.RouteSpec{Type: "role"}}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+
+	err := cluster.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendJSON, deltaTestJSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
+	if err == nil || !strings.Contains(err.Error(), "router is not configured") {
+		t.Fatalf("ApplyDeltasWithOptions error = %v, want router configuration error", err)
 	}
 }
 

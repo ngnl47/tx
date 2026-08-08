@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"fmt"
+	"reflect"
 
 	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/meta"
@@ -154,7 +155,7 @@ func (c *Cluster) adapterFor(ctx context.Context, spec meta.TypeSpec, key storag
 }
 
 func (c *Cluster) shardName(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) (string, error) {
-	if c == nil || c.router == nil {
+	if c == nil || isNilRouter(c.router) {
 		return "", fmt.Errorf("redis: router is not configured")
 	}
 	shard, err := c.router.RouteRedis(ctx, redisRouteType(spec), redisRecordShardKey(key))
@@ -165,6 +166,19 @@ func (c *Cluster) shardName(ctx context.Context, spec meta.TypeSpec, key storage
 		return "", fmt.Errorf("redis: route not found for routeType %q shardKey %v", redisRouteType(spec), redisRecordShardKey(key))
 	}
 	return shard, nil
+}
+
+func isNilRouter(router Router) bool {
+	if router == nil {
+		return true
+	}
+	value := reflect.ValueOf(router)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func redisRouteType(spec meta.TypeSpec) string {

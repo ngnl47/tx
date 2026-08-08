@@ -29,6 +29,7 @@ type recordingApplier struct {
 	key        storage.RecordKey
 	deltas     change.DeltaSet
 	options    storage.ApplyOptions
+	err        error
 }
 
 func (a *recordingApplier) ApplyDeltasWithOptions(_ context.Context, spec meta.TypeSpec, key storage.RecordKey, deltas change.DeltaSet, _ change.FieldNameResolver, _ change.DeltaValueResolver, options storage.ApplyOptions) error {
@@ -37,7 +38,7 @@ func (a *recordingApplier) ApplyDeltasWithOptions(_ context.Context, spec meta.T
 	a.key = key
 	a.deltas = deltas.Clone()
 	a.options = options
-	return nil
+	return a.err
 }
 
 type recordingDeleteApplier struct {
@@ -195,6 +196,22 @@ func TestFusionStrategyEnqueuesMongoSave(t *testing.T) {
 	}
 	if queue.ops[0].RunAfter != 600*time.Second {
 		t.Fatalf("RunAfter = %s", queue.ops[0].RunAfter)
+	}
+}
+
+func TestFusionStrategyReturnsRedisTransportErrorWithoutEnqueue(t *testing.T) {
+	transportErr := errors.New("redis unavailable")
+	queue := &recordingQueue{}
+	strategy := fusion.Strategy{Redis: &recordingApplier{err: transportErr}, MongoQueue: queue}
+	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+
+	err := strategy.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testFieldNameResolver{}, testDeltaValueResolver{}, storage.ApplyOptions{})
+	if !errors.Is(err, transportErr) {
+		t.Fatalf("ApplyDeltasWithOptions error = %v, want transport error", err)
+	}
+	if len(queue.ops) != 0 {
+		t.Fatalf("queue ops = %#v, want no delayed task after Redis failure", queue.ops)
 	}
 }
 

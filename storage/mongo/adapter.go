@@ -3,6 +3,7 @@ package mongo
 import (
 	"context"
 	"fmt"
+	"reflect"
 
 	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/meta"
@@ -96,7 +97,11 @@ func (a *Adapter) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec
 		}
 		return storage.ErrNoEffectiveDeltas
 	}
-	updater, ok := a.client.(Updater)
+	client, err := a.clientFor("Updater")
+	if err != nil {
+		return err
+	}
+	updater, ok := client.(Updater)
 	if !ok {
 		return unsupportedClientError("Updater")
 	}
@@ -126,7 +131,11 @@ func (a *Adapter) ReplaceDocument(ctx context.Context, spec meta.TypeSpec, key s
 	if doc == nil {
 		return storage.ErrNilDocument
 	}
-	replacer, ok := a.client.(Replacer)
+	client, err := a.clientFor("Replacer")
+	if err != nil {
+		return err
+	}
+	replacer, ok := client.(Replacer)
 	if !ok {
 		return unsupportedClientError("Replacer")
 	}
@@ -149,7 +158,11 @@ func (a *Adapter) ReplaceDocument(ctx context.Context, spec meta.TypeSpec, key s
 
 // ApplyDelete 按记录键删除一条 Mongo 文档。
 func (a *Adapter) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
-	deleter, ok := a.client.(Deleter)
+	client, err := a.clientFor("Deleter")
+	if err != nil {
+		return err
+	}
+	deleter, ok := client.(Deleter)
 	if !ok {
 		return unsupportedClientError("Deleter")
 	}
@@ -178,7 +191,11 @@ func validateUpdateResult(result UpdateResult, upsert bool) error {
 
 // LoadDocument 按记录键读取单条 Mongo 文档。
 func (a *Adapter) LoadDocument(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, fields ...string) (map[string]any, bool, error) {
-	finder, ok := a.client.(Finder)
+	client, err := a.clientFor("Finder")
+	if err != nil {
+		return nil, false, err
+	}
+	finder, ok := client.(Finder)
 	if !ok {
 		return nil, false, unsupportedClientError("Finder")
 	}
@@ -208,7 +225,11 @@ func (a *Adapter) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []
 	}
 	collection := mongoCollection(spec)
 	projection := mongoProjectionFields(spec, fields)
-	finder, ok := a.client.(BatchFinder)
+	client, err := a.clientFor("BatchFinder or Finder")
+	if err != nil {
+		return nil, nil, err
+	}
+	finder, ok := client.(BatchFinder)
 	if ok {
 		documents, exists, err := finder.FindMany(ctx, collection, mongoRecordValuesFilter(spec, keys), projection...)
 		if err != nil {
@@ -232,7 +253,7 @@ func (a *Adapter) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []
 		}
 		return documents, exists, nil
 	}
-	singleFinder, ok := a.client.(Finder)
+	singleFinder, ok := client.(Finder)
 	if !ok {
 		return nil, nil, unsupportedClientError("BatchFinder or Finder")
 	}
@@ -258,6 +279,26 @@ func (a *Adapter) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []
 
 func unsupportedClientError(capability string) error {
 	return fmt.Errorf("mongo: adapter client does not implement %s: %w", capability, ErrUnsupportedClient)
+}
+
+func (a *Adapter) clientFor(capability string) (any, error) {
+	if a == nil || isNilMongoClient(a.client) {
+		return nil, unsupportedClientError(capability)
+	}
+	return a.client, nil
+}
+
+func isNilMongoClient(client any) bool {
+	if client == nil {
+		return true
+	}
+	value := reflect.ValueOf(client)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func mongoCollection(spec meta.TypeSpec) string {
