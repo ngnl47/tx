@@ -256,8 +256,41 @@ delivery := &rpcpb.Delivery{
 }
 ```
 
-当前阶段 `Delivery` 只是传输契约；gRPC server/client、服务目录路由、重试、会话绑定和 Actor mailbox
-将在后续模块中实现。业务不应依赖生成的 `pb` 包来定义客户端 DTO。
+当前阶段 `Delivery` 只提供通用传输契约。服务目录解析和服务端 Receiver 桥接已经可用；gRPC 连接
+装配、重试、会话绑定和 Actor mailbox 将在后续模块中实现。业务不应依赖生成的 `pb` 包来定义客户端 DTO。
+
+服务进程创建 gRPC server 后，注册接收器即可得到已校验的业务 `Delivery`。Receiver 返回错误时，
+调用方会收到 gRPC 错误，框架不会把投递失败伪装为已接受：
+
+```go
+grpcServer := grpc.NewServer()
+err := rpc.RegisterDeliveryService(grpcServer, rpc.ReceiverFunc(
+    func(ctx context.Context, delivery rpc.Delivery) error {
+        return enqueueToMailbox(delivery)
+    },
+))
+if err != nil {
+    return err
+}
+```
+
+需要选择目标实例时，使用 `Resolve`。服务路由只返回 `running` 副本；会话和 Actor 的 owner 绑定尚未
+实现，因此当前必须先提供已经绑定好的 `InstanceID`，再按精确实例解析：
+
+```go
+instance, err := rpc.Resolve(directory, rpc.ServiceRoute("battle"))
+if err != nil {
+    return err
+}
+
+sessionRoute := rpc.Route{
+    Kind:       rpc.RouteSession,
+    InstanceID: "msgq-2",
+    RoleID:     470001,
+    SessionID:  99,
+}
+msgq, err := rpc.Resolve(directory, sessionRoute)
+```
 
 ### 生成 proto
 
