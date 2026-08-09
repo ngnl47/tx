@@ -256,8 +256,8 @@ delivery := &rpcpb.Delivery{
 }
 ```
 
-当前阶段 `Delivery` 只提供通用传输契约。服务目录解析和服务端 Receiver 桥接已经可用；gRPC 连接
-装配、重试、会话绑定和 Actor mailbox 将在后续模块中实现。业务不应依赖生成的 `pb` 包来定义客户端 DTO。
+当前阶段 `Delivery`、服务目录解析、服务端 Receiver 桥接、gRPC 连接复用和 Redis 会话绑定已经可用；
+投递重试与 Actor mailbox 仍属于后续模块。业务不应依赖生成的 `pb` 包来定义客户端 DTO。
 
 服务进程创建 gRPC server 后，注册接收器即可得到已校验的业务 `Delivery`。Receiver 返回错误时，
 调用方会收到 gRPC 错误，框架不会把投递失败伪装为已接受：
@@ -274,8 +274,8 @@ if err != nil {
 }
 ```
 
-需要选择目标实例时，使用 `Resolve`。服务路由只返回 `running` 副本；会话和 Actor 的 owner 绑定尚未
-实现，因此当前必须先提供已经绑定好的 `InstanceID`，再按精确实例解析：
+需要选择目标实例时，使用 `Resolve`。服务路由只返回 `running` 副本；已经知道实例 ID 的会话或 Actor
+路由会精确解析 `running/stopping` 实例：
 
 ```go
 instance, err := rpc.Resolve(directory, rpc.ServiceRoute("battle"))
@@ -290,6 +290,68 @@ sessionRoute := rpc.Route{
     SessionID:  99,
 }
 msgq, err := rpc.Resolve(directory, sessionRoute)
+```
+
+### Redis 会话绑定
+
+`RedisSessionStore` 维护 `roleID -> (sessionID, msgq instanceID)` 的短期绑定。业务登录成功后写入绑定；
+下行前由 `SessionRouter` 解析当前 owner，再把返回的精确路由交给 `Sender`。绑定 key 固定为
+`<prefix>:session:{<roleID>}`，花括号保证本地原生 Redis Cluster 下 Lua 始终只访问同一 slot。
+
+```go
+rawRedis := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379"})
+bindings, err := rpc.NewRedisSessionStore(goredis.NewClient(rawRedis), rpc.SessionRedisOptions{
+    Prefix: "txgame:local",
+    TTL:    48 * time.Hour,
+})
+if err != nil {
+    return err
+}
+sessions, err := rpc.NewSessionRouter(directory, bindings)
+if err != nil {
+    return err
+}
+
+// 登录到 msgq-2 后覆盖旧连接，并由业务决定是否通知旧实例排空。
+previous, replaced, err := bindings.Bind(ctx, rpc.SessionBinding{
+    RoleID:     470001,
+    SessionID:  99,
+    InstanceID: "msgq-2",
+})
+if err != nil {
+    return err
+}
+_ = previous
+_ = replaced
+
+// expectedSessionID 为 0 表示向当前连接发送；非零时可拦截陈旧请求。
+route, err := sessions.Resolve(ctx, 470001, 0)
+if err != nil {
+    return err // 离线、连接已替换或 owner 不可用均显式返回错误。
+}
+err = sender.Send(ctx, rpc.Delivery{
+    Route:       route,
+    MessageType: "Role_UpdateNotify",
+    CommandID:   8001,
+    Payload:     bonBody,
+})
+```
+
+`Bind` 以 Lua 原子覆盖并返回旧绑定。`Refresh` 与 `Unbind` 都先比较完整 `(roleID, sessionID, instanceID)`，
+只有仍匹配时才续期或删除，所以旧连接不会续期、解绑或覆盖新连接。`SessionRouter.Resolve` 先确认实例仍在
+目录中，再条件续期；实例已摘除时不会续期或删除 Redis 绑定，也不会随机退化到其他 `msgq` 副本。
+`expectedSessionID` 不匹配或条件续期失败会返回 `rpc.ErrSessionChanged`；不存在绑定返回
+`rpc.ErrSessionOffline`。
+
+本机或 CI 已启动 Redis 时可执行真实回归；未设置变量时该用例会跳过：
+
+```bash
+cd /Users/a47/workspace/tx
+TX_REDIS_ENDPOINT=127.0.0.1:6379 \
+env GOCACHE=/private/tmp/tx-go126-build GOTMPDIR=/private/tmp \
+GOMODCACHE=/private/tmp/tx-go-modcache GOTOOLCHAIN=local \
+/Users/a47/sdk/go1.26.5/bin/go test ./tests \
+  -run '^TestRedisSessionStoreIntegration$' -count=1
 ```
 
 发送端由 `GRPCDialer` 与 `Sender` 组成。Dialer 必须显式传入 TLS 或 `insecure` 凭证；tx 不会默认为

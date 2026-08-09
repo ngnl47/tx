@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	redis "github.com/redis/go-redis/v9"
@@ -52,7 +53,18 @@ func (c Client) Eval(ctx context.Context, script string, keys []string, args ...
 	if c.client == nil {
 		return "", errRedisClientNotConfigured
 	}
-	return c.client.Eval(ctx, script, keys, args...).Text()
+	value, err := c.client.Eval(ctx, script, keys, args...).Result()
+	if err != nil {
+		return "", err
+	}
+	switch value := value.(type) {
+	case string:
+		return value, nil
+	case int64:
+		return strconv.FormatInt(value, 10), nil
+	default:
+		return "", fmt.Errorf("redis eval returned %T", value)
+	}
 }
 
 func (c Client) MGet(ctx context.Context, keys ...string) ([]string, error) {
