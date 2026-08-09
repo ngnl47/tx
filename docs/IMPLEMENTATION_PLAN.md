@@ -20,6 +20,8 @@
 
 - `tx` 是 runtime 基础库，不依赖 `txgen`；`txgen` 生成的代码只依赖 `github.com/ngnl47/tx`。
 - 代码审计与瘦身遇到通用基础能力时，先评估维护活跃、语义契合、性能可验证且依赖边界清晰的成熟库；只有现成库无法满足业务语义、会扩大核心依赖面或基准证明不适合时才保留自研。引入前必须明确版本维护、许可证、可观测性、替换成本和最小封装边界，不能把业务模型或生成代码契约交给第三方。
+- `util` 是面向业务的可选工具包，不能因当前库工程未引用而删除。`EventBus` 保留反射订阅、同步/异步、一次订阅和 transactional async 语义；普通异步事件允许多协程并发执行，只有显式 transactional async 才按订阅者串行。它不参与 Fusion、事务或有状态运行时的顺序控制。`DelayQueue` 是单个业务场景的严格有序命令执行器：同到期任务按添加顺序、单 worker 执行并支持取消；它不承担 Redis 延迟任务、持久化回写或全局调度职责。后续分别评审成熟库，只有完整语义覆盖并通过基准与并发回归后才替换。
+- 本地 TTL 缓存不是当前 tx runtime 的需求，不能为了迁移工具而提前引入依赖；将来业务项目明确选择本地 entity/cache 层时，再单独评估成熟库与项目级装配方式。
 - `txgen` 负责生成 `GD*.go`、`GD*Store.go`、cmd、字段名函数、字段编号和类型元数据；业务模板和集成样例放在 `txgame`。
 - `GD*` 是纯数据对象；`GD*Store` 是独立、完整、可组合的变更追踪结构，绑定 `GD*` 后才具备读值、修改和投影意义。Store 只持有业务数据引用，不保存第二份业务数据。
 - `GD*` 可以懒持有默认主 Store，作为 `role.SetName(...)` 这类代理入口；Store 本身不依附于某个 `GD*` 实例，可单独创建、绑定、组合和复制。
@@ -104,7 +106,7 @@
 5. RedisJSON/ReJSON 仅作为未来可选 backend 单独评估；SQL、消息队列等其他 backend 也不进入当前主线。
 6. 完善可选的 `tx/modules/txn`：`@transaction` 已生成 `LockKey()` 和 `LockTarget()`；受控字段、map、slice 与生成对象子 Store 已登记 undo，并覆盖事务失败后的回滚。事务锁使用按逻辑 Key 管理的本机锁表，按稳定顺序获取，并由 `context.Context` 提供锁等待超时；超时必须释放已获取锁且不得进入回调。`Procedure.Locks`/`tx.Call` 已约束锁集和输出嵌套路径；`txn.Runtime` 已覆盖事务后登记、持锁 Flush、失败重试，以及先等待全局 `WaitGroupContext` 再执行的最终限时刷盘。后续用真实 Redis/Mongo 压测决定是否需要不可变写入批次；第一版不处理分布式锁、跨实例事务或持久化层 ACID。
 7. 有状态脏数据容量保护：已补“固定路径重复修改”“大量不同 map/slice 路径”“成功 Flush”“持续失败 Flush”与 clean cached 子 Store 的基准/回归，并实现 `txn.RuntimeConfig.MaxRootDeltaEntries`、`PendingMemorySoftLimit`、`MemorySampleInterval` 与可选 `MaxPendingRoots`。固定路径不会累积 Delta；1024 个干净缓存 map 子节点投影已从全量扫描收敛为只检查 dirty 索引。2026-08-08 在本机 i9-9880H 的 `BenchmarkGeneratedStoreDirtyRuntime` 中，1024 个不同 map key 的整次构造与投影约为 `40.5-44.1ms/op`、`1.57MiB/op`；失败 Flush 后保留同一批 1024 路径并重新投影约为 `0.88-1.24ms/op`、`1.48MiB/op`。因此预算检查只放在 Flush 的既有投影点，不额外加入每次事务提交热路径。单根 delta 超预算会收敛为顶层字段 `Replace`；进程 Heap 超过阈值只记录告警，业务写入可用性由项目级 Redis/Mongo 健康闸门决定。部署项目应通过 `GOMEMLIMIT` 约束进程整体 Heap，tx 只读取采样结果、不修改全局 runtime 内存限制。后续应以真实业务对象压测校准这三个阈值，并评估是否需要增加 byte 预算；不得在生成 setter 中隐式 I/O 或强制 Flush，避免破坏 Procedure 的锁边界、undo 与批量合并。
-8. 在状态运行时边界稳定后，评估可选 `tx/modules/actor` 与 RPC。actor 是独立的服务发现、跨进程路由和定向通知组件，可按业务 identity 路由玩家会话、战场实例或任意业务实体；它不代表 GD 数据对象，不依赖 GD、Store、DeltaSet、Fusion、事务或 `txn.Runtime`。事务模块只负责当前进程内的多对象锁定、回滚和提交，`txn.Runtime` 只负责当前进程的脏实体落盘；actor、事务和 Runtime 只在业务项目编排层组合，不反向依赖。
+8. 先设计并验证服务发现、RPC 传输契约、业务 identity 路由、定向通知、重试与可观测性，再评估可选 `tx/modules/actor`。actor 是从通信契约抽象出来的组件，可按业务 identity 路由玩家会话、战场实例或任意业务实体；它不代表 GD 数据对象，不依赖 GD、Store、DeltaSet、Fusion、事务或 `txn.Runtime`。事务模块只负责当前进程内的多对象锁定、回滚和提交，`txn.Runtime` 只负责当前进程的脏实体落盘；actor、事务和 Runtime 只在业务项目编排层组合，不反向依赖。
 
 ## Module Layout
 
@@ -125,7 +127,7 @@ tx/
   storage/fusion/   # Fusion 策略与延迟任务抽象
   storage/task/     # Delay task backend interface 和内存实现
   modules/txn/      # 可选：单机事务、savepoint、undo log 和 after-commit hook
-  modules/actor/    # 后续可选：服务发现、跨进程定向通信与业务 identity 路由
+  modules/actor/    # 后续可选：服务发现与 RPC 契约明确后再评估的跨进程定向通信
   util/             # 小型通用工具
   tests/            # 所有测试文件，仅此目录下生成 *_test.go
 ```
