@@ -72,8 +72,8 @@ func (c RouteTableConfig) Validate() error {
 				return fmt.Errorf("storage config: route %q rule %d max %d is smaller than min %d", routeType, i, max, min)
 			}
 			for j, shard := range rule.Shards {
-				if shard == "" {
-					return fmt.Errorf("storage config: route %q rule %d shard %d is empty", routeType, i, j)
+				if err := validateEndpoint(shard); err != nil {
+					return fmt.Errorf("storage config: route %q rule %d shard %d: %w", routeType, i, j, err)
 				}
 			}
 		}

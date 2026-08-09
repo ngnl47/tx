@@ -70,8 +70,8 @@ func (t *RouteTarget) UnmarshalYAML(value *yaml.Node) error {
 		if err := value.Decode(&endpoint); err != nil {
 			return err
 		}
-		if endpoint == "" {
-			return fmt.Errorf("endpoint is empty")
+		if err := validateEndpoint(endpoint); err != nil {
+			return err
 		}
 		t.Rules = []RouteRule{{Min: 1, Shards: []string{endpoint}}}
 		return nil
@@ -96,8 +96,8 @@ func (t *RouteTarget) unmarshalSequence(value *yaml.Node) error {
 			if err := item.Decode(&endpoint); err != nil {
 				return err
 			}
-			if endpoint == "" {
-				return fmt.Errorf("endpoint is empty")
+			if err := validateEndpoint(endpoint); err != nil {
+				return err
 			}
 			shards = append(shards, endpoint)
 		}
@@ -137,6 +137,16 @@ func validateRuleFields(value *yaml.Node) error {
 
 func isEndpointNode(value *yaml.Node) bool {
 	return value.Kind == yaml.ScalarNode || value.Kind == yaml.AliasNode
+}
+
+func validateEndpoint(endpoint string) error {
+	if strings.TrimSpace(endpoint) == "" {
+		return fmt.Errorf("endpoint must not be blank")
+	}
+	if endpoint != strings.TrimSpace(endpoint) {
+		return fmt.Errorf("endpoint %q must not contain surrounding whitespace", endpoint)
+	}
+	return nil
 }
 
 func (t RouteTarget) clone() RouteTarget {

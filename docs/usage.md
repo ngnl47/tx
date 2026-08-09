@@ -1440,13 +1440,16 @@ arena:
 
 规则对象只允许 `min`、`max`、`shards` 三个属性。未知属性（例如把 `shards` 写成 `shardz`）会在 yml
 解析时返回错误，不能带着拼写错误继续启动。routeType 名必须是非空、无首尾空白的标量，且同一张表中不能
-重复；因此下面的两种配置都会在解析期失败，而不会以后面的 `role` 覆盖前面的规则：
+重复。每个 endpoint 也必须非空且不含首尾空白；URI 的协议、地址和鉴权参数仍由项目适配层在创建 Redis/Mongo
+client 时解析。因此下面这些配置都会在解析期失败，而不会以后面的 `role` 覆盖前面的规则或把错误留到 client 装配：
 
 ```yaml
 role: redis://first
 role: redis://second
 
 " role ": redis://main
+
+rank: " redis://rank.example.com:6379 "
 ```
 
 配置对象可直接构造运行时路由表：

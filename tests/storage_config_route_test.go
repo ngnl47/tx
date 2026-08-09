@@ -208,3 +208,46 @@ role: redis://second
 		})
 	}
 }
+
+func TestStorageConfigRouteTableRejectsBlankEndpoints(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "blank scalar",
+			body: `
+role: " "
+`,
+		},
+		{
+			name: "surrounding whitespace scalar",
+			body: `
+role: " redis://role "
+`,
+		},
+		{
+			name: "blank sequence item",
+			body: `
+role:
+  - ""
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg storageconfig.RouteTableConfig
+			if err := yaml.Unmarshal([]byte(tt.body), &cfg); err == nil {
+				t.Fatal("Unmarshal returned nil error for an invalid endpoint")
+			}
+		})
+	}
+
+	cfg := storageconfig.RouteTableConfig{Routes: map[string]storageconfig.RouteTarget{
+		"role": {Rules: []storageconfig.RouteRule{{Min: 1, Shards: []string{" redis://role "}}}},
+	}}
+	if table, err := cfg.RouteTable(); err == nil {
+		t.Fatalf("RouteTable = %#v, want endpoint validation error", table)
+	}
+}
