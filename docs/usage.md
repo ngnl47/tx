@@ -1436,6 +1436,9 @@ arena:
 - endpoint 数组：归一化为一个多 shard 规则，例如 `rank: ["redis://rank-a", "redis://rank-b"]`。
 - 规则数组：保留 `min/max/shards` 区间规则，例如上面的 `arena`。
 
+规则对象只允许 `min`、`max`、`shards` 三个属性。未知属性（例如把 `shards` 写成 `shardz`）会在 yml
+解析时返回错误，不能带着拼写错误继续启动。
+
 配置对象可直接构造运行时路由表：
 
 ```go

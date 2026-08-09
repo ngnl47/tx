@@ -143,3 +143,16 @@ role:
 		t.Fatalf("Unmarshal returned nil error, want invalid route shape error")
 	}
 }
+
+func TestStorageConfigRouteTableRejectsUnknownRuleField(t *testing.T) {
+	var cfg storageconfig.RouteTableConfig
+	err := yaml.Unmarshal([]byte(`
+role:
+  - min: 1
+    shardz:
+      - "redis://role"
+`), &cfg)
+	if err == nil {
+		t.Fatal("Unmarshal returned nil error for an unknown route rule field")
+	}
+}

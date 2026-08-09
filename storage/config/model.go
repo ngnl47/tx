@@ -96,6 +96,9 @@ func (t *RouteTarget) unmarshalSequence(value *yaml.Node) error {
 		if item.Kind != yaml.MappingNode {
 			return fmt.Errorf("rule sequence cannot mix rule and scalar items")
 		}
+		if err := validateRuleFields(item); err != nil {
+			return err
+		}
 		var rule RouteRule
 		if err := item.Decode(&rule); err != nil {
 			return err
@@ -103,6 +106,18 @@ func (t *RouteTarget) unmarshalSequence(value *yaml.Node) error {
 		rules = append(rules, rule)
 	}
 	t.Rules = rules
+	return nil
+}
+
+func validateRuleFields(value *yaml.Node) error {
+	for i := 0; i < len(value.Content); i += 2 {
+		key := value.Content[i]
+		switch key.Value {
+		case "min", "max", "shards":
+		default:
+			return fmt.Errorf("unknown route rule field %q", key.Value)
+		}
+	}
 	return nil
 }
 

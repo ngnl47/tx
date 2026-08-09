@@ -48,6 +48,7 @@
 - Redis/Mongo 写入边界要求 `DeltaValueResolver` 能解析每条 Set/Replace delta 的当前值；`(nil, true)` 是合法业务空值，`(_, false)` 必须显式返回错误并保留 delta，不能静默写成 `null`。
 - 所有外部协议返回值都必须在 adapter 中显式枚举：仅已定义的成功、冲突或未命中状态可继续处理；空值、未知值和不完整结构一律返回错误，不能以 `nil` 兜底或跳过异常片段。
 - `storage.DocumentLoader` 的结果必须一致：`exists=true` 对应非 `nil` 文档，`exists=false` 对应 `nil` 文档；批量结果逐项遵守同一契约。adapter 或外部实现返回矛盾组合时立即失败，不能被误当作未命中继续回源。
+- 项目 yml 读取必须使用严格字段校验：`app/runtime/storage` 的未知节点或属性在解析阶段报错；Redis/Mongo 路由表的 routeType 名保持项目自定义，规则对象只允许 `min/max/shards`。YAML anchor 统一放入项目显式声明的 `aliases` 节点，不能依赖被静默忽略的根字段。
 - `storage.DocumentReplacer` 的输入文档必须非 `nil`；空 map 代表合法空对象，`nil` 返回 `storage.ErrNilDocument`，不允许以 no-op 伪造写入成功。延迟删除需要重排而队列未装配时同样返回错误，保留任务重试机会。
 - 所有实际存储 I/O、路由和锁操作必须先校验 `storage.RecordKey`：`ID` 不得为 nil、typed-nil 或空白字符串；当存储元数据声明 `routeBy != idField` 时，`ShardKey` 必填。缺失 `ShardKey` 返回 `storage.ErrInvalidRecordKey`，不得回退用 ID 选择 Redis/Mongo endpoint 或生成 Redis hash tag。
 - 非空 DeltaSet 经 Redis/Mongo 边界转换后必须至少产生一个有效 patch/update；否则返回 `storage.ErrNoEffectiveDeltas` 并保留 Store delta。Mongo upsert 仅剩不可变记录 ID 时同样失败，不能清理 dirty 后伪造已创建文档。
