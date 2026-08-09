@@ -163,7 +163,7 @@ func assertMethod(t *testing.T, spec meta.TypeSpec, name string, exported bool) 
 func writeTempModule(t *testing.T, files map[string]string) string {
 	t.Helper()
 	root := t.TempDir()
-	err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/project\n\ngo 1.25.6\n"), 0o600)
+	err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/project\n\ngo 1.26\n"), 0o600)
 	if err != nil {
 		t.Fatalf("WriteFile go.mod returned error: %v", err)
 	}

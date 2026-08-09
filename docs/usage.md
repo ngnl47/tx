@@ -150,6 +150,78 @@ if err := storage.Save(ctx, fusionStore, role.Store()); err != nil {
 如果业务需要显式持有 Store，例如高频对象在内存中维护变更队列、定时合并后再落地，也可以直接使用
 `storage.Save(ctx, writer, role.Store())` 这类框架层写入入口，并由调用方决定何时保存或重新累计下一轮变更。
 
+## 服务发现
+
+`modules/discovery` 是可选的 etcd 服务发现基础模块。tx 只接收已经解析完成的
+`EtcdConfig` 和启动期构造的 `Instance`，不读取项目 yml、环境变量，也不启动 RPC、Actor 或消息队列。
+
+项目启动时先用 lease 注册本进程。实例应先以 `starting` 注册，等全部服务模块可用后再
+切换 `running`；关闭时先切 `stopping`，让精确会话路由继续完成排空，再撤销租约：
+
+```go
+registry, err := discovery.NewEtcdRegistry(appCtx, discovery.EtcdConfig{
+    Endpoints: []string{"127.0.0.1:2379"},
+    Prefix:    "/txgame/local",
+    LeaseTTL:  10 * time.Second,
+})
+if err != nil {
+    return err
+}
+defer registry.Close()
+
+registration, err := registry.Register(appCtx, discovery.Instance{
+    ID:       "game-local-1",
+    Services: []string{"game"},
+    Endpoint: "127.0.0.1:9000",
+    Version:  "dev",
+    Status:   discovery.StatusStarting,
+})
+if err != nil {
+    return err
+}
+defer registration.Close(context.Background())
+
+if err := startModules(); err != nil {
+    return err
+}
+if err := registration.SetStatus(context.Background(), discovery.StatusRunning); err != nil {
+    return err
+}
+
+// 关闭顺序：先停止新服务路由，再排空本模块，最后删除实例记录。
+_ = registration.SetStatus(context.Background(), discovery.StatusStopping)
+_ = stopModules()
+return registration.Close(context.Background())
+```
+
+`Prefix` 会规范化为以 `/instances` 结尾的目录；例如 `/txgame/local` 最终写入
+`/txgame/local/instances/<instance-id>`。`LeaseTTL` 必须是至少一秒的整数秒，实例 ID
+不能包含 `/`。租约 keepalive 中断后 `registration.Done()` 会关闭，`registration.Err()`
+返回 `ErrEtcdLeaseLost`；宿主应把该状态视为当前实例已被摘除并停止接受新请求。
+
+需要消费全局实例目录时，使用 `Watch` 更新本地 `ServiceDirectory`。初始快照、任意 watch
+事件或事件内容不合法都会直接返回错误；调用方必须重启 watch 或把依赖它的服务标记为不可用，
+不能静默继续使用旧目录。
+
+```go
+directory := discovery.NewServiceDirectory()
+go func() {
+    if err := registry.Watch(appCtx, directory); err != nil && !errors.Is(err, context.Canceled) {
+        reportDiscoveryFailure(err)
+    }
+}()
+
+// 普通服务请求只选 running 实例，按稳定顺序轮转。
+battle, ok := directory.ResolveService("battle")
+
+// 会话等精确路由可继续解析 stopping 实例，用于连接排空。
+msgq, ok := directory.ResolveID("msgq-2")
+```
+
+当前目录只实现两类解析：`ResolveService` 是健康服务副本选择；`ResolveID` 是已知实例的精确
+路由。`roleId -> 实例` 绑定、Actor `(kind, identity)` owner、消息 Seq/Ack 和有界 mailbox
+属于后续 RPC/通信模块，不在服务发现包内。
+
 ## 类型注解
 
 type 级注解支持 marker 和带参数两种形态。无参数时，下面两种写法等价：
@@ -454,7 +526,7 @@ data.GDRoleFieldName(field, change.NameBackendMsgpack) // "roleId"
 ```sh
 cd /Users/a47/workspace/tx
 env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp \
-  /Users/a47/sdk/go1.25.6/bin/go test ./tests -run '^$' \
+  /Users/a47/sdk/go1.26.5/bin/go test ./tests -run '^$' \
   -bench '^BenchmarkDeltaSetCompact$' -benchmem -count=5
 ```
 
@@ -463,7 +535,7 @@ env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp \
 ```sh
 cd /Users/a47/workspace/txgen
 env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp \
-  /Users/a47/sdk/go1.25.6/bin/go test ./tests -run '^$' \
+  /Users/a47/sdk/go1.26.5/bin/go test ./tests -run '^$' \
   -bench '^(BenchmarkGeneratedPersistenceModes|BenchmarkFieldNameDocument)$' \
   -benchmem -count=5
 ```
@@ -473,7 +545,7 @@ Fusion 的同步热写基线覆盖 Redis JSON patch 构建，以及 `delaySaveTi
 ```sh
 cd /Users/a47/workspace/tx
 env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp \
-  /Users/a47/sdk/go1.25.6/bin/go test ./tests -run '^$' \
+  /Users/a47/sdk/go1.26.5/bin/go test ./tests -run '^$' \
   -bench '^BenchmarkFusionStrategyApplyDeltas$' -benchmem -count=5
 ```
 
@@ -2169,7 +2241,7 @@ err := db.Save(role)
 ## 测试
 
 ```bash
-env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp /Users/a47/sdk/go1.25.6/bin/go test ./... -count=1
+env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp /Users/a47/sdk/go1.26.5/bin/go test ./... -count=1
 ```
 
 ## 排查清单
