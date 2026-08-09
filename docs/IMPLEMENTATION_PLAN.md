@@ -22,6 +22,7 @@
 - 代码审计与瘦身遇到通用基础能力时，先评估维护活跃、语义契合、性能可验证且依赖边界清晰的成熟库；只有现成库无法满足业务语义、会扩大核心依赖面或基准证明不适合时才保留自研。引入前必须明确版本维护、许可证、可观测性、替换成本和最小封装边界，不能把业务模型或生成代码契约交给第三方。
 - `util` 是面向业务的可选工具包，不能因当前库工程未引用而删除。`EventBus` 保留反射订阅、同步/异步、一次订阅和 transactional async 语义；普通异步事件允许多协程并发执行，只有显式 transactional async 才按订阅者串行。它不参与 Fusion、事务或有状态运行时的顺序控制。`DelayQueue` 是单个业务场景的严格有序命令执行器：同到期任务按添加顺序、单 worker 执行并支持取消；它不承担 Redis 延迟任务、持久化回写或全局调度职责。后续分别评审成熟库，只有完整语义覆盖并通过基准与并发回归后才替换。
 - 本地 TTL 缓存不是当前 tx runtime 的需求，不能为了迁移工具而提前引入依赖；将来业务项目明确选择本地 entity/cache 层时，再单独评估成熟库与项目级装配方式。
+- `tx/log` 是基于 `log/slog` 的最小日志门面。项目启动时通过 `SetDefault` 注入 handler、级别和格式；业务项目按需定义 `var RoleLog = log.NewLogger("role")` 这类包级命名 logger。`NewLogger` 是延迟代理，后续替换 default logger 后仍使用新配置；tx 不维护项目级 logger registry、名称枚举或自动包名推导。
 - `txgen` 负责生成 `GD*.go`、`GD*Store.go`、cmd、字段名函数、字段编号和类型元数据；业务模板和集成样例放在 `txgame`。
 - `GD*` 是纯数据对象；`GD*Store` 是独立、完整、可组合的变更追踪结构，绑定 `GD*` 后才具备读值、修改和投影意义。Store 只持有业务数据引用，不保存第二份业务数据。
 - `GD*` 可以懒持有默认主 Store，作为 `role.SetName(...)` 这类代理入口；Store 本身不依附于某个 `GD*` 实例，可单独创建、绑定、组合和复制。
@@ -102,11 +103,10 @@
 1. 保持 `txgame` 集成验证与生成 Store 行为同步：新增集合、指针、存储边界行为时，补业务侧代码示例及真实 Redis/Mongo 回归。
 2. 持续收紧 Redis/Mongo/Fusion adapter 的失败契约：未知脚本协议结果、路径类型冲突和路由错误必须显式返回错误，不能静默成功或做运行时数据修复。
 3. 持续清理不再作为主线的字符串路径变更代码、过渡接口和旧测试，只保留必要历史 benchmark 结论。
-4. 日志基建后续专题：确定业务项目 logger 枚举或包级变量、名称规范、级别配置和 tx/log 的最小扩展点。
-5. RedisJSON/ReJSON 仅作为未来可选 backend 单独评估；SQL、消息队列等其他 backend 也不进入当前主线。
-6. 完善可选的 `tx/modules/txn`：`@transaction` 已生成 `LockKey()` 和 `LockTarget()`；受控字段、map、slice 与生成对象子 Store 已登记 undo，并覆盖事务失败后的回滚。事务锁使用按逻辑 Key 管理的本机锁表，按稳定顺序获取，并由 `context.Context` 提供锁等待超时；超时必须释放已获取锁且不得进入回调。`Procedure.Locks`/`tx.Call` 已约束锁集和输出嵌套路径；`txn.Runtime` 已覆盖事务后登记、持锁 Flush、失败重试，以及先等待全局 `WaitGroupContext` 再执行的最终限时刷盘。后续用真实 Redis/Mongo 压测决定是否需要不可变写入批次；第一版不处理分布式锁、跨实例事务或持久化层 ACID。
-7. 有状态脏数据容量保护：已补“固定路径重复修改”“大量不同 map/slice 路径”“成功 Flush”“持续失败 Flush”与 clean cached 子 Store 的基准/回归，并实现 `txn.RuntimeConfig.MaxRootDeltaEntries`、`PendingMemorySoftLimit`、`MemorySampleInterval` 与可选 `MaxPendingRoots`。固定路径不会累积 Delta；1024 个干净缓存 map 子节点投影已从全量扫描收敛为只检查 dirty 索引。2026-08-08 在本机 i9-9880H 的 `BenchmarkGeneratedStoreDirtyRuntime` 中，1024 个不同 map key 的整次构造与投影约为 `40.5-44.1ms/op`、`1.57MiB/op`；失败 Flush 后保留同一批 1024 路径并重新投影约为 `0.88-1.24ms/op`、`1.48MiB/op`。因此预算检查只放在 Flush 的既有投影点，不额外加入每次事务提交热路径。单根 delta 超预算会收敛为顶层字段 `Replace`；进程 Heap 超过阈值只记录告警，业务写入可用性由项目级 Redis/Mongo 健康闸门决定。部署项目应通过 `GOMEMLIMIT` 约束进程整体 Heap，tx 只读取采样结果、不修改全局 runtime 内存限制。后续应以真实业务对象压测校准这三个阈值，并评估是否需要增加 byte 预算；不得在生成 setter 中隐式 I/O 或强制 Flush，避免破坏 Procedure 的锁边界、undo 与批量合并。
-8. 先设计并验证服务发现、RPC 传输契约、业务 identity 路由、定向通知、重试与可观测性，再评估可选 `tx/modules/actor`。actor 是从通信契约抽象出来的组件，可按业务 identity 路由玩家会话、战场实例或任意业务实体；它不代表 GD 数据对象，不依赖 GD、Store、DeltaSet、Fusion、事务或 `txn.Runtime`。事务模块只负责当前进程内的多对象锁定、回滚和提交，`txn.Runtime` 只负责当前进程的脏实体落盘；actor、事务和 Runtime 只在业务项目编排层组合，不反向依赖。
+4. RedisJSON/ReJSON 仅作为未来可选 backend 单独评估；SQL、消息队列等其他 backend 也不进入当前主线。
+5. 完善可选的 `tx/modules/txn`：`@transaction` 已生成 `LockKey()` 和 `LockTarget()`；受控字段、map、slice 与生成对象子 Store 已登记 undo，并覆盖事务失败后的回滚。事务锁使用按逻辑 Key 管理的本机锁表，按稳定顺序获取，并由 `context.Context` 提供锁等待超时；超时必须释放已获取锁且不得进入回调。`Procedure.Locks`/`tx.Call` 已约束锁集和输出嵌套路径；`txn.Runtime` 已覆盖事务后登记、持锁 Flush、失败重试，以及先等待全局 `WaitGroupContext` 再执行的最终限时刷盘。后续用真实 Redis/Mongo 压测决定是否需要不可变写入批次；第一版不处理分布式锁、跨实例事务或持久化层 ACID。
+6. 有状态脏数据容量保护：已补“固定路径重复修改”“大量不同 map/slice 路径”“成功 Flush”“持续失败 Flush”与 clean cached 子 Store 的基准/回归，并实现 `txn.RuntimeConfig.MaxRootDeltaEntries`、`PendingMemorySoftLimit`、`MemorySampleInterval` 与可选 `MaxPendingRoots`。固定路径不会累积 Delta；1024 个干净缓存 map 子节点投影已从全量扫描收敛为只检查 dirty 索引。2026-08-08 在本机 i9-9880H 的 `BenchmarkGeneratedStoreDirtyRuntime` 中，1024 个不同 map key 的整次构造与投影约为 `40.5-44.1ms/op`、`1.57MiB/op`；失败 Flush 后保留同一批 1024 路径并重新投影约为 `0.88-1.24ms/op`、`1.48MiB/op`。因此预算检查只放在 Flush 的既有投影点，不额外加入每次事务提交热路径。单根 delta 超预算会收敛为顶层字段 `Replace`；进程 Heap 超过阈值只记录告警，业务写入可用性由项目级 Redis/Mongo 健康闸门决定。部署项目应通过 `GOMEMLIMIT` 约束进程整体 Heap，tx 只读取采样结果、不修改全局 runtime 内存限制。后续应以真实业务对象压测校准这三个阈值，并评估是否需要增加 byte 预算；不得在生成 setter 中隐式 I/O 或强制 Flush，避免破坏 Procedure 的锁边界、undo 与批量合并。
+7. 先设计并验证服务发现、RPC 传输契约、业务 identity 路由、定向通知、重试与可观测性，再评估可选 `tx/modules/actor`。actor 是从通信契约抽象出来的组件，可按业务 identity 路由玩家会话、战场实例或任意业务实体；它不代表 GD 数据对象，不依赖 GD、Store、DeltaSet、Fusion、事务或 `txn.Runtime`。事务模块只负责当前进程内的多对象锁定、回滚和提交，`txn.Runtime` 只负责当前进程的脏实体落盘；actor、事务和 Runtime 只在业务项目编排层组合，不反向依赖。
 
 ## Module Layout
 
@@ -361,7 +361,6 @@ type DelayTaskBackend interface {
 - `change.Mode` 已作为生成代码的持久化模式边界：`ModeSnapshot` 用于原生字段修改后的快照 diff 持久化，`ModeStore` 用于生成 Store 的拦截式脏标记持久化；两者在同一变更周期内互斥。当前快照 diff 由 txgen 生成代码实现，tx 只提供共用模式枚举和错误。
 - RedisJSON/ReJSON 可作为后续可选 Redis backend 单独评估：当前主线仍保持 Redis string JSON main/subKey 文档模型，后续只有在确认目标云 Redis、本地测试环境、Redis Cluster 行为和 JSON path 局部读写收益后再引入。
 - 后续可增加 SQL backend、消息队列 backend；当前优先贴合生产参考流程，不引入 Kafka 等新的持久化队列依赖。
-- 日志基建后续专题：在 txgen 脚手架主链路跑通后，提前讨论并实施项目级 logger 管理策略，包括业务项目统一定义 logger 枚举或包级变量、logger 名称规范、日志级别配置、handler 初始化、Provider/Factory 是否需要引入，以及是否需要自动推导包名或模块名以减少手写 logger 名称。
 
 验收：
 
@@ -520,5 +519,4 @@ Store 生成、Redis key helper、Mongo filter helper、字段编号 resolver �
 
 - 是否需要字段级 snapshot 入口，用 benchmark 判断，不能凭感觉提前加 API。
 - map/slice wrapper 是否引入更强的可观察容器；如果引入，应保持强类型、低分配、与 `DeltaSet` 直连。
-- 日志基建是否需要项目级 logger registry、名称枚举或自动包名推导。
 - RedisJSON/ReJSON 是否作为可选 backend 引入，需先确认目标 Redis 环境和收益。
