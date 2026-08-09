@@ -419,12 +419,74 @@ GOBIN="$HOME/go/bin" /Users/a47/sdk/go1.26.5/bin/go install \
 将 `protoc`、`protoc-gen-go` 和 `protoc-gen-go-grpc` 放入 `PATH` 后，也可以不设置 `PROTOC` 与
 `GO_BIN`。生成的 `modules/rpc/pb/*.pb.go` 属于版本化源文件，应与 `.proto` 一起提交。
 
-## Actor 与 msgq 规划
+## Actor Cluster 与 msgq
 
-内部跨进程业务通信将使用 `modules/actor`，它直接装配 `protoactor-go` 和官方 etcd Cluster Provider。
+`modules/actor` 已提供可选的 Actor Cluster 装配，直接使用 `protoactor-go` 与官方 etcd Cluster Provider。
 tx 不实现 Actor mailbox、调度、Remote PID、成员发现或重平衡；项目只将 yml 转换为模块配置，并用服务
-全局 `WaitGroupContext` 驱动启动与优雅停止。ProtoActor 内部使用 protobuf 信封，但业务 Payload 保持 BON
+全局 `WaitGroupContext` 编排启动与优雅停止。ProtoActor 内部使用 protobuf 信封，但业务 Payload 保持 BON
 字节，因此不会生成 protobuf 版 GD 或客户端 DTO。
+
+### Actor Cluster 装配
+
+项目读取 yml 后构造 `actor.Config`。`ClusterName`、etcd endpoint、prefix 和超时属于静态集群配置；实例
+监听地址属于部署运行时信息，建议由环境变量或容器注入。`Port: 0` 让底层 Remote 自动选择可用端口，并将实际
+地址发布给集群，适合本地调试和弹性实例。
+
+```go
+import (
+    "time"
+
+    protoactor "github.com/asynkron/protoactor-go/actor"
+    "github.com/asynkron/protoactor-go/cluster"
+    txactor "github.com/ngnl47/tx/modules/actor"
+)
+
+runtime, err := txactor.New(txactor.Config{
+    ClusterName: "game",
+    Host:        "10.0.1.21",
+    Port:        0,
+    Etcd: txactor.EtcdConfig{
+        Endpoints:   []string{"127.0.0.1:2379"},
+        Prefix:      "/txgame/actor",
+        DialTimeout: 2 * time.Second,
+    },
+}, cluster.NewKind("role", protoactor.PropsFromProducer(func() protoactor.Actor {
+    return &roleActor{}
+})))
+if err != nil {
+    return err
+}
+if err := runtime.Start(ctx); err != nil { // 启动期先检查 etcd，可达性失败直接返回错误。
+    return err
+}
+
+pid, err := runtime.VirtualPID("role", "470001")
+if err != nil {
+    return err
+}
+system, err := runtime.ActorSystem()
+if err != nil {
+    return err
+}
+result, err := system.Root.RequestFuture(pid, &RoleCommand{RoleID: 470001}, time.Second).Result()
+if err != nil {
+    return err
+}
+_ = result
+```
+
+上例的 `role` 是可恢复的 Virtual Actor。它的 `identity` 由集群根据成员视图路由，业务必须能在新节点上从
+Fusion 恢复状态。固定归属的内存权威对象不调用 `VirtualPID`，而是由业务维护实例地址并构造直连 PID：
+
+```go
+pid, err := txactor.FixedPID("battle-1.internal:12000", "battle-1001")
+```
+
+`FixedPID` 只验证地址并创建 Remote PID；它不查询实例目录、不迁移 Actor，也不提供分布式锁或事务。
+
+`Runtime.Start` 只加入集群，**不会**因 `ctx` 取消立即注销成员。宿主的正确顺序是先停止新业务、等待进入的
+Procedure、完成最终 Flush，再调用 `Runtime.Shutdown` 退出成员表。`txgame` 的 Lifecycle 已按这个顺序将
+事务最终 Flush 放在 Actor Shutdown 之前。真实 etcd 回归可通过 `TX_ETCD_ENDPOINT=127.0.0.1:2379` 启用。
 
 `msgq` 是客户端会话邮箱，不是所有业务 Actor 的中心中继。它维护在线 Session、下行 `sndQueue`、Seq/Ack、
 重连、Topic 和广播。客户端上行业务 Payload 由 Agent 在完成会话序号校验后直接投递 Player/Game Actor；
