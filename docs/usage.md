@@ -220,7 +220,7 @@ msgq, ok := directory.ResolveID("msgq-2")
 
 当前目录只实现两类解析：`ResolveService` 是健康服务副本选择；`ResolveID` 是已知实例的精确
 路由。`roleId -> 实例` 绑定、Actor `(kind, identity)` owner、消息 Seq/Ack 和有界 mailbox
-属于后续 RPC/通信模块，不在服务发现包内。
+属于 RPC/通信模块，不在服务发现包内。
 
 本机或 CI 已启动 etcd 时，可显式执行真实 lease/watch 回归；未设置环境变量时该集成用例会跳过，
 不会要求所有开发机安装 etcd：
@@ -231,6 +231,68 @@ TX_ETCD_ENDPOINT=127.0.0.1:2379 \
   /Users/a47/sdk/go1.26.5/bin/go test ./tests \
   -run '^TestEtcdRegistryLifecycleIntegration$' -count=1
 ```
+
+## 内部 RPC 协议
+
+`modules/rpc` 只定义进程间的定向投递信封，使用 gRPC 和 Protobuf 传输。它不替换客户端上下行
+协议，也不要求把 `GD*` 映射为 protobuf 消息。`Delivery.Payload` 始终是调用方已经编码完成的
+不透明字节，RPC 只读取 `Route` 决定投递目标。
+
+例如，会话下行由会话路由元数据定位目标 msgq 实例，原有协议体直接放入 `Payload`：
+
+```go
+delivery := &rpcpb.Delivery{
+    Route: &rpcpb.Route{
+        Kind:       rpcpb.RouteKind_ROUTE_KIND_SESSION,
+        Service:    "msgq",
+        InstanceId: "msgq-2",
+        RoleId:     470001,
+        SessionId:  99,
+    },
+    MessageType: "Role_UpdateNotify",
+    CommandId:   72001,
+    Payload:     encodedBody,
+}
+```
+
+当前阶段 `Delivery` 只是传输契约；gRPC server/client、服务目录路由、重试、会话绑定和 Actor mailbox
+将在后续模块中实现。业务不应依赖生成的 `pb` 包来定义客户端 DTO。
+
+### 生成 proto
+
+proto 源与生成脚本由 tx 维护。脚本按包名生成，发布流程可以只编译需要导出的 proto 包：
+
+```bash
+cd /Users/a47/workspace/tx
+
+# 查看可生成包。
+./cmd/protoc/run.sh --list
+
+# 仅生成内部 RPC 契约。
+PROTOC=/Users/a47/sdk/protoc-29.3/bin/protoc \
+GO_BIN=/Users/a47/sdk/go1.26.5/bin/go \
+./cmd/protoc/run.sh rpc
+
+# 生成全部已注册包。
+PROTOC=/Users/a47/sdk/protoc-29.3/bin/protoc \
+GO_BIN=/Users/a47/sdk/go1.26.5/bin/go \
+./cmd/protoc/run.sh --all
+```
+
+脚本需要以下外部工具，且不会自动下载或修改开发环境：
+
+```bash
+# 安装官方 Protocol Buffers 发行版后，将 protoc 路径传给脚本。
+# 当前生成产物使用 protoc 29.3。
+
+GOBIN="$HOME/go/bin" /Users/a47/sdk/go1.26.5/bin/go install \
+  google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+GOBIN="$HOME/go/bin" /Users/a47/sdk/go1.26.5/bin/go install \
+  google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+```
+
+将 `protoc`、`protoc-gen-go` 和 `protoc-gen-go-grpc` 放入 `PATH` 后，也可以不设置 `PROTOC` 与
+`GO_BIN`。生成的 `modules/rpc/pb/*.pb.go` 属于版本化源文件，应与 `.proto` 一起提交。
 
 ## 类型注解
 
