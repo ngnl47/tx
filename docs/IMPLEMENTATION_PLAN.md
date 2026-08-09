@@ -74,6 +74,7 @@
 - Store 路径适合高频对象和大集合字段；保存前可用 `store.View()` 复制下行选择状态，或立即物化下行文档，避免保存成功清理 dirty 后丢失广播字段。
 - 当前集合策略：map wrapper 支持 key 级状态和生成对象指针子 Store；slice wrapper 支持稳定 index 级状态和 `[]*GD...` 元素子 Store。`InsertAt`、`Append`、`RemoveAt`、`Replace`、`Clear` 这类长度或整体语义变化按整字段处理；viewStore 发现 map/slice 结构漂移时同样整字段降级。
 - 字段名体系本体是 `go/json/bson/msgpack`。Redis 当前选择 JSON 名，Mongo 当前选择 BSON 名，cmd Provider 当前选择 Msgpack 名；`alias` 只是输入侧语法糖。
+- 客户端上下行协议采用独立的 BON 二进制文档，不使用 Protobuf；WebSocket 传输层使用可协商的 permessage-deflate 压缩。内部 gRPC `Delivery.Payload` 原样承载 BON 字节，RPC 不解析或转换业务 body。会话字典和动态 key 压缩属于后续可选优化，必须先以真实消息体基准证明收益，再处理字典同步、重连重置和可观测性。
 - `storage.DocumentLoader` 和 `DocumentReplacer` 的公共文档契约统一使用 JSON 字段名。Redis 原样读写该文档；Mongo adapter 在完整文档读取与替换边界通过 `TypeSpec.DocumentFactory` 物化生成类型，再按 BSON tag 转换。Fusion 只传递公共 JSON 文档，不直接搬运 Mongo 的 BSON map。
 - Fusion 是 Redis 热数据加 Mongo 冷数据。Redis main/subKey 都使用 string JSON 文档；RedisJSON/ReJSON 仅作为后续可选 backend，不是当前默认路径。
 - Redis 整文档替换在文档只包含 subKey 或为空时仍写入 main `{}`，保持 main key 作为热记录存在标记；不能因字段拆分形成只有 subKey、没有根记录的状态。

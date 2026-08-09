@@ -235,8 +235,9 @@ TX_ETCD_ENDPOINT=127.0.0.1:2379 \
 ## 内部 RPC 协议
 
 `modules/rpc` 只定义进程间的定向投递信封，使用 gRPC 和 Protobuf 传输。它不替换客户端上下行
-协议，也不要求把 `GD*` 映射为 protobuf 消息。`Delivery.Payload` 始终是调用方已经编码完成的
-不透明字节，RPC 只读取 `Route` 决定投递目标。
+协议，也不要求把 `GD*` 映射为 protobuf 消息。客户端协议使用 BON 二进制文档；`Delivery.Payload`
+始终是调用方已经编码完成的 BON 字节，RPC 只读取 `Route` 决定投递目标。WebSocket 可协商
+permessage-deflate 压缩整个 BON 消息；会话字典或动态 key 压缩是后续经基准验证后才启用的优化。
 
 例如，会话下行由会话路由元数据定位目标 msgq 实例，原有协议体直接放入 `Payload`：
 
