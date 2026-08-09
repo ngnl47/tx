@@ -222,6 +222,16 @@ msgq, ok := directory.ResolveID("msgq-2")
 路由。`roleId -> 实例` 绑定、Actor `(kind, identity)` owner、消息 Seq/Ack 和有界 mailbox
 属于后续 RPC/通信模块，不在服务发现包内。
 
+本机或 CI 已启动 etcd 时，可显式执行真实 lease/watch 回归；未设置环境变量时该集成用例会跳过，
+不会要求所有开发机安装 etcd：
+
+```bash
+cd /Users/a47/workspace/tx
+TX_ETCD_ENDPOINT=127.0.0.1:2379 \
+  /Users/a47/sdk/go1.26.5/bin/go test ./tests \
+  -run '^TestEtcdRegistryLifecycleIntegration$' -count=1
+```
+
 ## 类型注解
 
 type 级注解支持 marker 和带参数两种形态。无参数时，下面两种写法等价：
