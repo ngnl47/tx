@@ -95,3 +95,125 @@ func TestRPCDeliveryServicePassesOpaquePayloadToReceiver(t *testing.T) {
 		t.Fatalf("received payload = %x, want %x", received.Payload, payload)
 	}
 }
+
+func TestRPCSenderResolvesDirectoryAndDelivers(t *testing.T) {
+	listener := bufconn.Listen(1024 * 1024)
+	server := grpc.NewServer()
+	defer server.Stop()
+
+	var received rpc.Delivery
+	if err := rpc.RegisterDeliveryService(server, rpc.ReceiverFunc(func(_ context.Context, delivery rpc.Delivery) error {
+		received = delivery
+		return nil
+	})); err != nil {
+		t.Fatalf("register delivery service: %v", err)
+	}
+	go func() {
+		_ = server.Serve(listener)
+	}()
+
+	directory := discovery.NewServiceDirectory()
+	if err := directory.Replace([]discovery.Instance{{
+		ID:       "battle-1",
+		Services: []string{"battle"},
+		Endpoint: "bufnet",
+		Status:   discovery.StatusRunning,
+	}}); err != nil {
+		t.Fatalf("replace directory: %v", err)
+	}
+
+	dialer, err := rpc.NewGRPCDialer(insecure.NewCredentials(),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	)
+	if err != nil {
+		t.Fatalf("new gRPC dialer: %v", err)
+	}
+	sender, err := rpc.NewSender(directory, dialer)
+	if err != nil {
+		t.Fatalf("new sender: %v", err)
+	}
+	defer sender.Close()
+
+	payload := []byte{0x81, 0xa2, 'h', 'p', 0x19, 0x63}
+	if err := sender.Send(context.Background(), rpc.Delivery{
+		Route:       rpc.ServiceRoute("battle"),
+		MessageType: "Battle_Notify",
+		CommandID:   8001,
+		Payload:     payload,
+	}); err != nil {
+		t.Fatalf("send delivery: %v", err)
+	}
+	if received.Route.Service != "battle" {
+		t.Fatalf("received service = %q, want battle", received.Route.Service)
+	}
+	if string(received.Payload) != string(payload) {
+		t.Fatalf("received payload = %x, want %x", received.Payload, payload)
+	}
+}
+
+func TestRPCSenderReusesEndpointConnection(t *testing.T) {
+	directory := discovery.NewServiceDirectory()
+	if err := directory.Replace([]discovery.Instance{{
+		ID:       "battle-1",
+		Services: []string{"battle"},
+		Endpoint: "127.0.0.1:9200",
+		Status:   discovery.StatusRunning,
+	}}); err != nil {
+		t.Fatalf("replace directory: %v", err)
+	}
+
+	connection := &recordingConnection{}
+	dialer := &recordingDialer{connection: connection}
+	sender, err := rpc.NewSender(directory, dialer)
+	if err != nil {
+		t.Fatalf("new sender: %v", err)
+	}
+
+	for range 2 {
+		if err := sender.Send(context.Background(), rpc.Delivery{
+			Route:       rpc.ServiceRoute("battle"),
+			MessageType: "Battle_Notify",
+		}); err != nil {
+			t.Fatalf("send delivery: %v", err)
+		}
+	}
+	if dialer.calls != 1 {
+		t.Fatalf("dial calls = %d, want 1", dialer.calls)
+	}
+	if len(connection.deliveries) != 2 {
+		t.Fatalf("deliveries = %d, want 2", len(connection.deliveries))
+	}
+	if err := sender.Close(); err != nil {
+		t.Fatalf("close sender: %v", err)
+	}
+	if connection.closeCalls != 1 {
+		t.Fatalf("connection close calls = %d, want 1", connection.closeCalls)
+	}
+}
+
+type recordingDialer struct {
+	calls      int
+	connection *recordingConnection
+}
+
+func (d *recordingDialer) Dial(context.Context, discovery.Instance) (rpc.Connection, error) {
+	d.calls++
+	return d.connection, nil
+}
+
+type recordingConnection struct {
+	deliveries []rpc.Delivery
+	closeCalls int
+}
+
+func (c *recordingConnection) Deliver(_ context.Context, delivery rpc.Delivery) error {
+	c.deliveries = append(c.deliveries, delivery)
+	return nil
+}
+
+func (c *recordingConnection) Close() error {
+	c.closeCalls++
+	return nil
+}

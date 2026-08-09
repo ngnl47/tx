@@ -292,6 +292,33 @@ sessionRoute := rpc.Route{
 msgq, err := rpc.Resolve(directory, sessionRoute)
 ```
 
+发送端由 `GRPCDialer` 与 `Sender` 组成。Dialer 必须显式传入 TLS 或 `insecure` 凭证；tx 不会默认为
+明文连接。当前部署范围是本地调试或云私网组件服务，项目应显式使用 `insecure`，并通过 VPC、安全组、
+端口白名单和不暴露公网端口保护 RPC endpoint。Sender 按 endpoint 缓存 gRPC 连接，服务进程关闭时必须调用
+`Close`：
+
+```go
+dialer, err := rpc.NewGRPCDialer(insecure.NewCredentials()) // 仅本地可信网络示例
+if err != nil {
+    return err
+}
+sender, err := rpc.NewSender(directory, dialer)
+if err != nil {
+    return err
+}
+defer sender.Close()
+
+err = sender.Send(ctx, rpc.Delivery{
+    Route:       rpc.ServiceRoute("battle"),
+    MessageType: "Battle_Notify",
+    CommandID:   8001,
+    Payload:     bonBody,
+})
+```
+
+TLS/mTLS 的 yml 装配、证书加载和轮换不属于当前范围；未来引入时不改变 `Sender` 或 `Delivery` 的业务调用。
+`Sender.Send` 会返回路由不可用、建连、传输或 Receiver 拒绝等错误，不会自动重试或静默丢弃消息。
+
 ### 生成 proto
 
 proto 源与生成脚本由 tx 维护。脚本按包名生成，发布流程可以只编译需要导出的 proto 包：
