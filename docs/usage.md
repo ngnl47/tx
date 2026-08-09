@@ -30,6 +30,9 @@
 - Fusion 延迟保存队列只保存记录定位，到期后读取 Redis 当前热数据并整文档写回 Mongo；它不是保存每一轮字段 diff 的队列。
 - `delaySaveTime` 是 Redis 热数据回写 Mongo 的延迟；`delayDelTime` 是 Redis 热数据 TTL，不表示 Mongo 删除。
 - Redis 批量读取生产默认依赖云代理或单节点的原生 `MGET`；本地原生 Redis Cluster debug 才显式开启 `LoadOptions.ClusterSafe` 按 hash tag 分组。
+- 内部跨进程业务通信的目标运行时是可选 `modules/actor`，基于 `protoactor-go` 和官方 etcd Cluster Provider；客户端协议仍使用 BON，不生成 protobuf 版 GD 或客户端 DTO。
+- `msgq` 是客户端会话邮箱：管理 Session、下行队列、Seq/Ack、重连、Topic 与广播。它不承担所有业务 Actor 的中心中继。
+- 无状态或可恢复实体使用可重平衡的 Virtual Actor；Battle、SLG 城市、MMO 场景等内存权威对象使用固定实例 Actor，业务维护实体归属，不允许因节点重启自动迁移。
 
 ## 定位
 
@@ -219,8 +222,8 @@ msgq, ok := directory.ResolveID("msgq-2")
 ```
 
 当前目录只实现两类解析：`ResolveService` 是健康服务副本选择；`ResolveID` 是已知实例的精确
-路由。`roleId -> 实例` 绑定、Actor `(kind, identity)` owner、消息 Seq/Ack 和有界 mailbox
-属于 RPC/通信模块，不在服务发现包内。
+路由。`roleId -> msgq 实例` 的会话绑定、消息 Seq/Ack 和有界下行邮箱属于 `msgq`；Virtual Actor
+的 `(kind, identity)` 路由属于 Actor Cluster；固定实例 Actor 的实体归属由业务维护，不在服务发现包内。
 
 本机或 CI 已启动 etcd 时，可显式执行真实 lease/watch 回归；未设置环境变量时该集成用例会跳过，
 不会要求所有开发机安装 etcd：
@@ -232,12 +235,11 @@ TX_ETCD_ENDPOINT=127.0.0.1:2379 \
   -run '^TestEtcdRegistryLifecycleIntegration$' -count=1
 ```
 
-## 内部 RPC 协议
+## 内部 RPC 协议（迁移期）
 
-`modules/rpc` 只定义进程间的定向投递信封，使用 gRPC 和 Protobuf 传输。它不替换客户端上下行
-协议，也不要求把 `GD*` 映射为 protobuf 消息。客户端协议使用 BON 二进制文档；`Delivery.Payload`
-始终是调用方已经编码完成的 BON 字节，RPC 只读取 `Route` 决定投递目标。WebSocket 可协商
-permessage-deflate 压缩整个 BON 消息；会话字典或动态 key 压缩是后续经基准验证后才启用的优化。
+`modules/rpc` 是当前已实现的迁移期内部投递代码。Actor 模块完成后会迁移调用点并删除该包，不为
+新增业务提供长期 API。它不替换客户端上下行协议，也不要求把 `GD*` 映射为 protobuf 消息；
+`Delivery.Payload` 始终是调用方已经编码完成的 BON 字节。
 
 例如，会话下行由会话路由元数据定位目标 msgq 实例，原有协议体直接放入 `Payload`：
 
@@ -416,6 +418,105 @@ GOBIN="$HOME/go/bin" /Users/a47/sdk/go1.26.5/bin/go install \
 
 将 `protoc`、`protoc-gen-go` 和 `protoc-gen-go-grpc` 放入 `PATH` 后，也可以不设置 `PROTOC` 与
 `GO_BIN`。生成的 `modules/rpc/pb/*.pb.go` 属于版本化源文件，应与 `.proto` 一起提交。
+
+## Actor 与 msgq 规划
+
+内部跨进程业务通信将使用 `modules/actor`，它直接装配 `protoactor-go` 和官方 etcd Cluster Provider。
+tx 不实现 Actor mailbox、调度、Remote PID、成员发现或重平衡；项目只将 yml 转换为模块配置，并用服务
+全局 `WaitGroupContext` 驱动启动与优雅停止。ProtoActor 内部使用 protobuf 信封，但业务 Payload 保持 BON
+字节，因此不会生成 protobuf 版 GD 或客户端 DTO。
+
+`msgq` 是客户端会话邮箱，不是所有业务 Actor 的中心中继。它维护在线 Session、下行 `sndQueue`、Seq/Ack、
+重连、Topic 和广播。客户端上行业务 Payload 由 Agent 在完成会话序号校验后直接投递 Player/Game Actor；
+任意业务 Actor 的下行数据投递到 `msgq`，再由 Agent 发送给客户端。
+
+### 当前参考链路
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as 客户端
+    participant A as Agent
+    participant M as msgq
+    participant G as game
+    participant S as Redis/Mongo
+
+    C->>A: 上行 Cmd（Seq、Ack、Payload）
+    A->>M: Rec(roleId, Seq, Ack)
+    M-->>A: 校验会话与序号
+    A->>G: CallToken(roleToken, Cmd Payload)
+    G->>S: 加载、修改、保存 GD 数据
+    S-->>G: 完成
+    G->>M: Pub(roleId, 下行 BON 数据)
+    M->>M: 写入角色 sndQueue
+    A->>M: Fetch(roleId, SessionId)
+    M-->>A: 返回下行数据
+    A-->>C: 下行协议包
+```
+
+上行业务 Payload 不经过 `msgq` 转发到 game；`msgq.Rec` 只负责会话、Seq 和 Ack。
+
+### 目标 Actor 链路
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as 客户端
+    participant A as Agent
+    participant M as msgq
+    participant P as Player/Game Actor
+    participant B as Battle/Room Actor
+    participant S as Redis/Mongo
+
+    C->>A: 上行 Cmd（Seq、Ack、Payload）
+    A->>M: Rec(roleId, Seq, Ack)
+    M-->>A: 校验会话与序号
+    A->>P: 投递业务 Actor 消息
+    P->>S: 加载、修改、保存 GD 数据
+    P->>B: ProtoActor 直投
+    B-->>P: 业务结果
+    P->>M: Pub(roleId, 下行 BON 数据)
+    M->>M: 写入角色 sndQueue
+    A->>M: Fetch(roleId, SessionId)
+    M-->>A: 返回下行数据
+    A-->>C: 下行协议包
+```
+
+业务 Actor 跨实例投递按需直达目标实例，不经过 `msgq`；`msgq` 只收敛客户端连接态与下行投递。
+
+### 两类 Actor
+
+可恢复实体使用 Cluster Virtual Actor，例如 Role、普通 Room 或无状态业务处理器。成员变化后，后续请求允许被
+重新路由，并从 Redis/Mongo 恢复：
+
+```text
+game1 下线 -> 后续 Role 请求路由到其他 game 实例 -> 从 Fusion 恢复
+```
+
+Battle、SLG 城市、MMO 场景等内存权威对象使用固定实例的本地 Actor 和 Remote PID 直连。业务维护
+`entityID -> instanceID` 归属；节点重启时默认暂停或返回业务错误，不得自动改派到其他节点：
+
+```text
+battle-1001 -> battle1
+battle1 重启 -> battle-1001 不迁移到 battle2
+battle1 恢复 -> battle-1001 仍由 battle1 恢复或接管
+```
+
+显式迁移必须执行保存快照、停止旧 Actor、更新归属和目标恢复。Actor 不代表 GD，不依赖 Store、DeltaSet、
+Fusion、`txn.Runtime` 或分布式事务；同一 Actor 内若要处理多个 GD 的单机一致性，仍使用 `Procedure`。
+
+### 滚动重启
+
+重启 `game1`、`game2` 不要求其他服务组停机，但必须先 Drain：
+
+```text
+停止新业务 -> 等待已进入的 Procedure -> 完成要求的最终 Flush
+-> 从成员表注销 -> 等待成员视图收敛 -> 停止进程
+```
+
+ProtoActor 的成员变更不会迁移业务内存状态；Virtual Actor 的业务状态必须可恢复。固定实例 Actor 的故障与迁移
+策略由业务维护。下行 msgq 实例崩溃时允许丢失尚未确认的内存消息，客户端重连和业务幂等负责恢复；内部命令
+若需要重试，必须自行定义 `CommandID` 与幂等契约，框架不盲目重试。
 
 ## 类型注解
 
