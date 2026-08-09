@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -39,11 +40,24 @@ func (c *RouteTableConfig) UnmarshalYAML(value *yaml.Node) error {
 	for i := 0; i < len(value.Content); i += 2 {
 		key := value.Content[i]
 		val := value.Content[i+1]
+		if key.Kind != yaml.ScalarNode {
+			return fmt.Errorf("storage config: route type must be a scalar")
+		}
+		routeType := key.Value
+		if strings.TrimSpace(routeType) == "" {
+			return fmt.Errorf("storage config: route type must not be blank")
+		}
+		if routeType != strings.TrimSpace(routeType) {
+			return fmt.Errorf("storage config: route type %q must not contain surrounding whitespace", routeType)
+		}
+		if _, exists := routes[routeType]; exists {
+			return fmt.Errorf("storage config: duplicate route type %q", routeType)
+		}
 		var target RouteTarget
 		if err := target.UnmarshalYAML(val); err != nil {
-			return fmt.Errorf("storage config: route %q: %w", key.Value, err)
+			return fmt.Errorf("storage config: route %q: %w", routeType, err)
 		}
-		routes[key.Value] = target
+		routes[routeType] = target
 	}
 	c.Routes = routes
 	return nil

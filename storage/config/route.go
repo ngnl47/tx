@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 
 	"github.com/ngnl47/tx/storage"
 )
@@ -51,6 +52,12 @@ func (c RouteTableConfig) Validate() error {
 	}
 	sort.Strings(routeTypes)
 	for _, routeType := range routeTypes {
+		if strings.TrimSpace(routeType) == "" {
+			return fmt.Errorf("storage config: route type must not be blank")
+		}
+		if routeType != strings.TrimSpace(routeType) {
+			return fmt.Errorf("storage config: route type %q must not contain surrounding whitespace", routeType)
+		}
 		target := c.Routes[routeType]
 		if len(target.Rules) == 0 {
 			return fmt.Errorf("storage config: route %q has no rules", routeType)

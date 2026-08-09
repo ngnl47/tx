@@ -122,6 +122,22 @@ func TestStorageConfigRouteTableRejectsInvalidRules(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "blank route type",
+			cfg: storageconfig.RouteTableConfig{
+				Routes: map[string]storageconfig.RouteTarget{
+					"": {Rules: []storageconfig.RouteRule{{Min: 1, Shards: []string{"redis://role"}}}},
+				},
+			},
+		},
+		{
+			name: "route type with surrounding whitespace",
+			cfg: storageconfig.RouteTableConfig{
+				Routes: map[string]storageconfig.RouteTarget{
+					" role ": {Rules: []storageconfig.RouteRule{{Min: 1, Shards: []string{"redis://role"}}}},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -154,5 +170,41 @@ role:
 `), &cfg)
 	if err == nil {
 		t.Fatal("Unmarshal returned nil error for an unknown route rule field")
+	}
+}
+
+func TestStorageConfigRouteTableRejectsInvalidRouteType(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "duplicate",
+			body: `
+role: redis://first
+role: redis://second
+`,
+		},
+		{
+			name: "blank",
+			body: `
+"": redis://main
+`,
+		},
+		{
+			name: "surrounding whitespace",
+			body: `
+" role ": redis://main
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg storageconfig.RouteTableConfig
+			if err := yaml.Unmarshal([]byte(tt.body), &cfg); err == nil {
+				t.Fatal("Unmarshal returned nil error for an invalid route type")
+			}
+		})
 	}
 }
