@@ -40,6 +40,9 @@ type documentPatchOperation struct {
 // BuildDocumentPatchesWithDeltas 按 Redis string/subKey 模型把 DeltaSet
 // 分组成 JSON 文档 patch。Redis 边界当前选择 JSON 字段名。
 func BuildDocumentPatchesWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, resolver change.FieldNameResolver, values change.DeltaValueResolver) (map[string]DocumentPatch, error) {
+	if err := deltas.ValidateKinds(); err != nil {
+		return nil, err
+	}
 	out := map[string]DocumentPatch{}
 	for _, delta := range deltas.Clone().Compact() {
 		if delta.Path.Depth == 0 {
@@ -87,7 +90,7 @@ func BuildDocumentPatchesWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, 
 				patch.operations = append(patch.operations, documentPatchOperation{Kind: "replace", Path: jsonPath, Value: value})
 				patch.Mode = documentPatchModeOperations
 			}
-		default:
+		case change.DeltaKindSet:
 			value, err := resolveDeltaValue(values, delta.Path, jsonPath)
 			if err != nil {
 				return nil, err

@@ -19,6 +19,8 @@
 - `DeltaSet` 不保存字段值；Redis、Mongo、Fusion 和 Provider 在边界通过生成 Store 读取当前 `GD*` 最终值。
 - 存储边界必须解析到当前字段值：`DeltaValue(path)` 返回 `(nil, true)` 表示业务要写入空值；返回 `(_, false)` 则保存失败并保留 delta，绝不把解析失败静默写成 `null`。Fusion 延迟回写会原样保留这类业务空值；字段删除必须使用 `DeltaDelete` / `Document.Clear`，不能把 map 中的 `nil` 当删除标记。
 - 外部协议的返回值必须有明确语义：只有已定义的成功、冲突或未命中值可以继续处理；未知 Lua 返回值、损坏 Redis JSON、空锁或其他不完整响应都会返回错误，绝不默认成功或静默丢弃。
+- `DeltaSet` 的 `Kind` 也属于严格协议：仅 `DeltaKindSet`、`DeltaKindReplace`、`DeltaDelete`、`DeltaClear` 可进入通用文档、Redis 或 Mongo 边界；边界会先调用 `ValidateKinds()`，再压缩或归一化，因此未知值即使随后被同路径更新覆盖也会返回错误，不能被当作普通写入。
+- `DeltaPath` 的 key 类型同样严格：只允许无 key、带符号整数、无符号整数或字符串 key；非法 key 类型会使路径解析失败，不能退化成父字段路径。
 - `DocumentLoader` 的单条结果必须成对一致：`exists == true` 时文档非 `nil`，`exists == false` 时文档必须为 `nil`；批量读取逐项遵守同一规则。自定义 adapter 返回矛盾组合会被 runtime 拒绝，不会被当成缓存未命中继续回源。
 - `DocumentReplacer` 的文档也必须非 `nil`：空 map 是合法的空 JSON 对象，`nil` 没有明确写入语义并返回 `storage.ErrNilDocument`；不能把它当作成功的空操作。
 - 非空 `DeltaSet` 在 Redis patch 或 Mongo update 边界若无法解析 Go/JSON/BSON 字段路径，会直接返回错误；若路径可解析但最终不能生成任何有效写入，则返回 `storage.ErrNoEffectiveDeltas`。两种失败都会保留 Store delta 以便定位输入或重试，不能把无效路径当成已保存。

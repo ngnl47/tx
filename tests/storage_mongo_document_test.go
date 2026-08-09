@@ -82,6 +82,19 @@ func TestMongoBuildUpdateDocumentWithDeltasRejectsUnresolvedFieldPath(t *testing
 	}
 }
 
+func TestMongoBuildUpdateDocumentWithDeltasRejectsUnknownDeltaKind(t *testing.T) {
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKind(99)}}
+	resolver := testFieldNameResolver{
+		change.NameBackendGo:   {deltaFieldName: "Name"},
+		change.NameBackendBSON: {deltaFieldName: "name"},
+	}
+
+	_, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver, testDeltaValueResolver{deltaFieldName: "alice"})
+	if err == nil || !strings.Contains(err.Error(), "unknown delta kind") {
+		t.Fatalf("BuildUpdateDocumentWithDeltas error = %v, want unknown delta kind error", err)
+	}
+}
+
 func TestMongoBuildUpdateDocumentWithDeltasAllowsResolvedNilValue(t *testing.T) {
 	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
 	resolver := testFieldNameResolver{

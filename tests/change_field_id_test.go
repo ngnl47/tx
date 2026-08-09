@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/ngnl47/tx/change"
@@ -85,6 +86,21 @@ func TestDeltaPathFullPathCanResolveNestedTypeFields(t *testing.T) {
 
 	if got := path.FullPath(testNestedFieldNameResolver{}, change.NameBackendGo).String(); got != "items.1001.quantity" {
 		t.Fatalf("nested path = %q, want items.1001.quantity", got)
+	}
+}
+
+func TestDeltaPathFullPathRejectsUnknownKeyKind(t *testing.T) {
+	path := change.DeltaPath{
+		Nodes: [change.MaxDeltaDepth]change.PathNode{{
+			Field: 1,
+			Key:   change.PathKey{Kind: change.KeyKind(99)},
+		}},
+		Depth: 1,
+	}
+	resolver := testFieldNameResolver{change.NameBackendGo: {1: "Name"}}
+
+	if got := path.FullPath(resolver, change.NameBackendGo); len(got) != 0 {
+		t.Fatalf("FullPath = %q, want unresolved path", got)
 	}
 }
 
@@ -183,6 +199,47 @@ func TestDeltaSetDocumentWithResolverRejectsMissingCurrentValue(t *testing.T) {
 	_, err := deltas.DocumentWithResolver(resolver, change.NameBackendMsgpack, nil)
 	if err == nil {
 		t.Fatal("DocumentWithResolver returned nil error for an unresolved delta value")
+	}
+}
+
+func TestDeltaSetDocumentWithResolverRejectsUnknownDeltaKind(t *testing.T) {
+	resolver := testFieldNameResolver{
+		change.NameBackendMsgpack: {1: "n"},
+	}
+	deltas := change.DeltaSet{
+		{Path: deltaPath(fieldNode(1)), Kind: change.DeltaKind(99)},
+		{Path: deltaPath(fieldNode(1)), Kind: change.DeltaKindSet},
+	}
+
+	_, err := deltas.DocumentWithResolver(resolver, change.NameBackendMsgpack, testDeltaValueResolver{1: "current"})
+	if err == nil || !strings.Contains(err.Error(), "unknown delta kind") {
+		t.Fatalf("DocumentWithResolver error = %v, want unknown delta kind error", err)
+	}
+}
+
+func TestDeltaKindValid(t *testing.T) {
+	for _, kind := range []change.DeltaKind{
+		change.DeltaKindSet,
+		change.DeltaKindReplace,
+		change.DeltaDelete,
+		change.DeltaClear,
+	} {
+		if !kind.Valid() {
+			t.Fatalf("DeltaKind(%d).Valid() = false, want true", kind)
+		}
+	}
+	if change.DeltaKind(99).Valid() {
+		t.Fatal("DeltaKind(99).Valid() = true, want false")
+	}
+}
+
+func TestDeltaSetValidateKindsSkipsCompactionTombstones(t *testing.T) {
+	deltas := change.DeltaSet{
+		{Kind: change.DeltaKind(99)},
+		{Path: deltaPath(fieldNode(1)), Kind: change.DeltaKindSet},
+	}
+	if err := deltas.ValidateKinds(); err != nil {
+		t.Fatalf("ValidateKinds returned error for empty path tombstone: %v", err)
 	}
 }
 

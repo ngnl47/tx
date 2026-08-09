@@ -29,6 +29,9 @@ func (f DeltaValueResolverFunc) DeltaValue(path DeltaPath) (any, bool) {
 // 每个 Set 或 Replace Delta 都必须能从 values 读取当前值。路径或值无法解析时
 // 返回错误，避免把未知状态伪造成 null 字段。
 func (ds DeltaSet) DocumentWithResolver(resolver FieldNameResolver, backend NameBackend, values DeltaValueResolver) (Document, error) {
+	if err := ds.ValidateKinds(); err != nil {
+		return Document{}, err
+	}
 	doc := Document{
 		Set:   map[string]any{},
 		Clear: map[string]struct{}{},
@@ -43,7 +46,7 @@ func (ds DeltaSet) DocumentWithResolver(resolver FieldNameResolver, backend Name
 			doc.Clear[path.String()] = struct{}{}
 		case DeltaClear:
 			doc.Set[path.String()] = emptyDeltaValue
-		default:
+		case DeltaKindSet, DeltaKindReplace:
 			if values == nil {
 				return Document{}, fmt.Errorf("change: cannot resolve current value for path %s", path)
 			}

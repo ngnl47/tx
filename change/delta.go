@@ -1,6 +1,9 @@
 package change
 
-import "strconv"
+import (
+	"fmt"
+	"strconv"
+)
 
 const MaxDeltaDepth = 4
 
@@ -85,6 +88,9 @@ func (p DeltaPath) FullPath(resolver FieldNameResolver, backend NameBackend) Pat
 		}
 		out = append(out, name)
 		out = node.Key.appendPath(out)
+		if out == nil {
+			return nil
+		}
 	}
 	return out
 }
@@ -160,7 +166,7 @@ func (k PathKey) appendPath(path Path) Path {
 	case KeyString:
 		return append(path, k.Str)
 	default:
-		return path
+		return nil
 	}
 }
 
@@ -175,6 +181,16 @@ const (
 	DeltaClear
 )
 
+// Valid 判断 kind 是否为已定义的 Delta 变更语义。
+func (kind DeltaKind) Valid() bool {
+	switch kind {
+	case DeltaKindSet, DeltaKindReplace, DeltaDelete, DeltaClear:
+		return true
+	default:
+		return false
+	}
+}
+
 // DeltaEntry 是一条扁平紧凑的字段级变更记录。
 type DeltaEntry struct {
 	Path DeltaPath
@@ -183,6 +199,19 @@ type DeltaEntry struct {
 
 // DeltaSet 是按发生顺序追加的一组 DeltaEntry。
 type DeltaSet []DeltaEntry
+
+// ValidateKinds 校验非空路径条目的变更语义。
+//
+// 必须在 Compact 或存储边界归一化前调用，避免未知 kind 被同路径覆盖或降级逻辑掩盖。
+func (ds DeltaSet) ValidateKinds() error {
+	for index, delta := range ds {
+		if delta.Path.Depth == 0 || delta.Kind.Valid() {
+			continue
+		}
+		return fmt.Errorf("change: unknown delta kind %d at index %d", delta.Kind, index)
+	}
+	return nil
+}
 
 // Clone 返回一份可独立修改的 DeltaSet 切片副本。
 func (ds DeltaSet) Clone() DeltaSet {

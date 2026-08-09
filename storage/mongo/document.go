@@ -12,6 +12,9 @@ import (
 // BuildUpdateDocumentWithDeltas 把 DeltaSet 转换成 MongoDB update document。
 // Mongo 边界当前选择 BSON 字段名。
 func BuildUpdateDocumentWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, resolver change.FieldNameResolver, values change.DeltaValueResolver) (map[string]any, error) {
+	if err := deltas.ValidateKinds(); err != nil {
+		return nil, err
+	}
 	setDoc := map[string]any{}
 	unsetDoc := map[string]any{}
 	for _, delta := range normalizeMongoDeltas(deltas) {
@@ -35,7 +38,7 @@ func BuildUpdateDocumentWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, r
 			unsetDoc[bsonPath.String()] = ""
 		case change.DeltaClear:
 			setDoc[bsonPath.String()] = emptyMongoValue(spec, goPath[0])
-		default:
+		case change.DeltaKindSet, change.DeltaKindReplace:
 			resolved, err := resolveMongoDeltaValue(values, delta.Path, bsonPath)
 			if err != nil {
 				return nil, err
