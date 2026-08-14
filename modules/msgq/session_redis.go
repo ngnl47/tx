@@ -145,12 +145,17 @@ func (s *RedisSessionStore) key(roleID int64) string {
 }
 
 type sessionRedisRecord struct {
-	InstanceID string `json:"instanceId"`
-	SessionID  int64  `json:"sessionId"`
+	InstanceID   string `json:"instanceId"`
+	SessionID    int64  `json:"sessionId"`
+	ConnectionID int64  `json:"connectionId"`
 }
 
 func encodeSessionBinding(binding SessionBinding) (string, error) {
-	encoded, err := json.Marshal(sessionRedisRecord{InstanceID: binding.InstanceID, SessionID: binding.SessionID})
+	encoded, err := json.Marshal(sessionRedisRecord{
+		InstanceID:   binding.InstanceID,
+		SessionID:    binding.SessionID,
+		ConnectionID: binding.ConnectionID,
+	})
 	if err != nil {
 		return "", err
 	}
@@ -162,7 +167,12 @@ func decodeSessionBinding(roleID int64, value string) (SessionBinding, error) {
 	if err := json.Unmarshal([]byte(value), &record); err != nil {
 		return SessionBinding{}, err
 	}
-	binding := SessionBinding{RoleID: roleID, SessionID: record.SessionID, InstanceID: record.InstanceID}
+	binding := SessionBinding{
+		RoleID:       roleID,
+		SessionID:    record.SessionID,
+		ConnectionID: record.ConnectionID,
+		InstanceID:   record.InstanceID,
+	}
 	if err := binding.Validate(); err != nil {
 		return SessionBinding{}, ErrSessionStoreResponse
 	}

@@ -26,7 +26,7 @@ func TestMsgQSessionRouterResolvesBoundInstance(t *testing.T) {
 	}
 
 	store := &sessionStoreFake{
-		binding: msgq.SessionBinding{RoleID: 470001, SessionID: 99, InstanceID: "msgq-2"},
+		binding: msgq.SessionBinding{RoleID: 470001, SessionID: 99, ConnectionID: 7, InstanceID: "msgq-2"},
 		found:   true,
 	}
 	router, err := msgq.NewSessionRouter(directory, store)
@@ -49,7 +49,7 @@ func TestMsgQSessionRouterResolvesBoundInstance(t *testing.T) {
 func TestMsgQSessionRouterRejectsStaleSessionWithoutRefreshing(t *testing.T) {
 	directory := rpcSessionDirectory(t, "msgq-2")
 	store := &sessionStoreFake{
-		binding: msgq.SessionBinding{RoleID: 470001, SessionID: 100, InstanceID: "msgq-2"},
+		binding: msgq.SessionBinding{RoleID: 470001, SessionID: 100, ConnectionID: 7, InstanceID: "msgq-2"},
 		found:   true,
 	}
 	router, err := msgq.NewSessionRouter(directory, store)
@@ -68,7 +68,7 @@ func TestMsgQSessionRouterRejectsStaleSessionWithoutRefreshing(t *testing.T) {
 
 func TestMsgQSessionRouterDoesNotRefreshUnavailableInstance(t *testing.T) {
 	store := &sessionStoreFake{
-		binding: msgq.SessionBinding{RoleID: 470001, SessionID: 99, InstanceID: "msgq-missing"},
+		binding: msgq.SessionBinding{RoleID: 470001, SessionID: 99, ConnectionID: 7, InstanceID: "msgq-missing"},
 		found:   true,
 	}
 	router, err := msgq.NewSessionRouter(discovery.NewServiceDirectory(), store)
@@ -96,7 +96,7 @@ func TestMsgQSessionRouterRejectsNonMsgQInstance(t *testing.T) {
 		t.Fatalf("replace directory: %v", err)
 	}
 	store := &sessionStoreFake{
-		binding: msgq.SessionBinding{RoleID: 470001, SessionID: 99, InstanceID: "game-1"},
+		binding: msgq.SessionBinding{RoleID: 470001, SessionID: 99, ConnectionID: 7, InstanceID: "game-1"},
 		found:   true,
 	}
 	router, err := msgq.NewSessionRouter(directory, store)
@@ -115,9 +115,9 @@ func TestMsgQSessionRouterRejectsNonMsgQInstance(t *testing.T) {
 
 func TestMsgQRedisSessionStoreUsesRoleHashTagAndConditionalOperations(t *testing.T) {
 	client := &sessionRedisClientFake{
-		getValue: `{"instanceId":"msgq-2","sessionId":99}`,
+		getValue: `{"instanceId":"msgq-2","sessionId":99,"connectionId":7}`,
 		evalResults: []string{
-			`{"instanceId":"msgq-1","sessionId":98}`,
+			`{"instanceId":"msgq-1","sessionId":98,"connectionId":6}`,
 			"1",
 			"1",
 		},
@@ -129,7 +129,7 @@ func TestMsgQRedisSessionStoreUsesRoleHashTagAndConditionalOperations(t *testing
 	if err != nil {
 		t.Fatalf("new redis session store: %v", err)
 	}
-	binding := msgq.SessionBinding{RoleID: 470001, SessionID: 99, InstanceID: "msgq-2"}
+	binding := msgq.SessionBinding{RoleID: 470001, SessionID: 99, ConnectionID: 7, InstanceID: "msgq-2"}
 
 	previous, replaced, err := store.Bind(context.Background(), binding)
 	if err != nil {
@@ -184,8 +184,8 @@ func TestMsgQRedisSessionStoreIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new redis session store: %v", err)
 	}
-	first := msgq.SessionBinding{RoleID: 470001, SessionID: 99, InstanceID: "msgq-1"}
-	second := msgq.SessionBinding{RoleID: 470001, SessionID: 100, InstanceID: "msgq-2"}
+	first := msgq.SessionBinding{RoleID: 470001, SessionID: 99, ConnectionID: 7, InstanceID: "msgq-1"}
+	second := msgq.SessionBinding{RoleID: 470001, SessionID: 100, ConnectionID: 8, InstanceID: "msgq-2"}
 
 	if previous, replaced, err := store.Bind(ctx, first); err != nil || replaced || previous != (msgq.SessionBinding{}) {
 		t.Fatalf("first bind previous = %#v, replaced = %t, err = %v", previous, replaced, err)

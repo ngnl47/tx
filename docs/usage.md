@@ -237,9 +237,9 @@ TX_ETCD_ENDPOINT=127.0.0.1:2379 \
 
 ## msgq 会话绑定
 
-`modules/msgq` 已负责 `roleID -> (sessionID, msgq instanceID)` 的短期绑定与精确 owner 解析；它不把下行
-payload 写入 Redis。Redis 只保存带 TTL 的绑定 key，真正的 Session、下行队列、Seq/Ack 和 Topic 仍属于后续
-msgq 进程内存邮箱。
+`modules/msgq` 负责 `roleID -> (sessionID, connectionID, msgq instanceID)` 的短期绑定与精确 owner 解析，也提供本进程内的
+`Server` 管理 Session、下行队列和 Seq/Ack。它不把下行 payload 写入 Redis；Redis 只保存带 TTL 的绑定 key，
+下行消息始终属于 msgq 实例内存，实例崩溃时未确认消息允许丢失。
 
 绑定 key 固定为 `<prefix>:session:{<roleID>}`，花括号保证本地原生 Redis Cluster 下 Lua 始终只访问同一 slot：
 
@@ -265,17 +265,20 @@ if err != nil {
     return err
 }
 
-// 登录到 msgq-2 后覆盖旧连接；业务可据 previous 通知旧连接排空。
-previous, replaced, err := bindings.Bind(ctx, msgq.SessionBinding{
-    RoleID:     470001,
-    SessionID:  99,
+mailbox, err := msgq.NewServer(msgq.ServerOptions{
     InstanceID: "msgq-2",
+    Store:      bindings,
+    MaxBacklog: 1024, // 必须为正数，按每个会话未确认下行消息数量限流。
 })
 if err != nil {
     return err
 }
-_ = previous
-_ = replaced
+
+header := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+_, err = mailbox.Init(ctx, msgq.InitRequest{Header: header})
+if err != nil {
+    return err
+}
 
 // expectedSessionID 为 0 表示接受当前连接；非零时拒绝陈旧连接。
 target, err := sessions.Resolve(ctx, 470001, 0)
@@ -285,9 +288,57 @@ if err != nil {
 _ = target.Instance.Endpoint
 ```
 
-`Bind` 以 Lua 原子覆盖并返回旧绑定。`Refresh` 与 `Unbind` 都先比较完整 `(roleID, sessionID, instanceID)`，
-所以旧连接不能续期、解绑或覆盖新连接。`SessionRouter.Resolve` 先确认实例仍在目录中，再条件续期；实例已摘除
-时不会续期或删除 Redis 绑定，也不会随机退化到其他 msgq 副本。
+`Server.Init` 内部通过 `Bind` 以 Lua 原子覆盖 owner；`Touch`、`Rec`、`Fetch`、`Confirm` 会条件 `Refresh`，
+`Close` 会条件 `Unbind`。binding 比较完整 `(roleID, sessionID, connectionID, instanceID)`，所以旧连接不能续期、
+解绑或确认新连接的下行消息。`SessionRouter.Resolve` 先确认实例仍在目录中，
+再条件续期；实例已摘除时不会续期或删除 Redis 绑定，也不会随机退化到其他 msgq 副本。
+
+### 进程内会话邮箱
+
+`Server` 是单个 msgq 实例的本地邮箱。跨实例业务发送前应先通过 `SessionRouter.Resolve` 找到 owner，再由后续的
+传输层调用对应实例；不要把 `Server` 当作全局消息队列。
+
+```go
+// Agent 收到客户端上行：Seq 必须连续；重复 Seq 幂等返回当前 ReceivedSeq。
+received, err := mailbox.Rec(ctx, msgq.RecRequest{
+    Header: header,
+    Seq:    12,
+    Ack:    41, // 同时确认客户端已经收到的下行消息。
+})
+if err != nil {
+    return err
+}
+_ = received.ReceivedSeq
+
+// 任意本地业务逻辑发布 BON 下行。只填写 RoleID 即投递给当前会话。
+published, err := mailbox.Pub(ctx, msgq.PubRequest{
+    Header:  msgq.SessionHeader{RoleID: 470001},
+    Message: bonBody,
+})
+if err != nil {
+    return err // 队列到达 MaxBacklog 时返回 msgq.ErrOutboundOverflow。
+}
+_ = published.Seq
+
+// Agent 以自身的连接 context 长轮询；ctx 超时或取消即结束本次 Fetch。
+outbound, err := mailbox.Fetch(ctx, msgq.FetchRequest{Header: header})
+if err != nil {
+    return err
+}
+writeProtocolPacket(outbound.Seq, outbound.Message)
+
+// 同一 SessionID 重连：重置发送游标并丢弃已经 Ack 的前缀，未确认消息会重发。
+nextHeader := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 8}
+_, err = mailbox.Init(ctx, msgq.InitRequest{Header: nextHeader, Restore: true, Ack: 41})
+if err != nil {
+    return err
+}
+```
+
+`Fetch` 不在持有会话锁时等待，因此同一会话的 `Pub` 不会被长轮询阻塞。每个 payload 在 `Pub` 时复制，
+`Fetch` 返回时再次复制，调用方可以复用或修改自己的 `[]byte` 而不会破坏未确认队列。`MaxBacklog` 按未确认消息
+数量计数，满时当前 `Pub` 返回 `ErrOutboundOverflow`，不会无限积压也不会静默丢弃消息。`FetchSome`、Topic、广播
+和空闲会话清理尚未提供。
 
 本机或 CI 已启动 Redis 时可执行真实回归；未设置变量时该用例会跳过：
 

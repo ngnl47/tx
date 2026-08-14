@@ -16,18 +16,24 @@ var (
 	ErrSessionOffline   = errors.New("msgq: session is offline")
 	ErrSessionChanged   = errors.New("msgq: session has changed")
 	ErrRouteUnavailable = errors.New("msgq: session instance is unavailable")
+	ErrServerNil        = errors.New("msgq: server is nil")
+	ErrInvalidServer    = errors.New("msgq: invalid server options")
+	ErrInvalidHeader    = errors.New("msgq: invalid session header")
+	ErrInboundSequence  = errors.New("msgq: inbound sequence is invalid")
+	ErrOutboundOverflow = errors.New("msgq: outbound queue is full")
 )
 
 // SessionBinding 记录一个角色会话当前归属的消息服务实例。
 type SessionBinding struct {
-	RoleID     int64
-	SessionID  int64
-	InstanceID string
+	RoleID       int64
+	SessionID    int64
+	ConnectionID int64
+	InstanceID   string
 }
 
 // Validate 校验绑定能否安全标识一个活动会话。
 func (b SessionBinding) Validate() error {
-	if b.RoleID <= 0 || b.SessionID <= 0 || !validValue(b.InstanceID) {
+	if b.RoleID <= 0 || b.SessionID <= 0 || b.ConnectionID <= 0 || !validValue(b.InstanceID) {
 		return ErrInvalidSession
 	}
 	return nil
