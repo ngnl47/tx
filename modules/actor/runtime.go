@@ -16,6 +16,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	txlog "github.com/ngnl47/tx/log"
+	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 )
 
 var (
@@ -41,7 +42,11 @@ func New(config Config, kinds ...*cluster.Kind) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Runtime{config: config, kinds: append([]*cluster.Kind(nil), kinds...)}, nil
+	configuredKinds, err := configureKinds(config, kinds)
+	if err != nil {
+		return nil, err
+	}
+	return &Runtime{config: config, kinds: configuredKinds}, nil
 }
 
 // Start 校验 etcd 可达性，并将当前进程启动为集群成员。停止由调用方在完成
@@ -206,4 +211,32 @@ func startMember(cluster *cluster.Cluster) (err error) {
 	}()
 	cluster.StartMember()
 	return nil
+}
+
+func configureKinds(config Config, kinds []*cluster.Kind) ([]*cluster.Kind, error) {
+	configured := make([]*cluster.Kind, len(kinds))
+	for index, kind := range kinds {
+		if kind == nil || strings.TrimSpace(kind.Kind) == "" || kind.Props == nil {
+			return nil, ErrInvalidConfig
+		}
+		props := kind.Props.Clone(
+			protoactor.WithMailbox(observedBoundedMailbox(config, kind.Kind)),
+			protoactor.WithReceiverMiddleware(confirmationReceiverMiddleware),
+		)
+		configured[index] = &cluster.Kind{
+			Kind:            kind.Kind,
+			Props:           props,
+			StrategyBuilder: kind.StrategyBuilder,
+		}
+	}
+	return configured, nil
+}
+
+func confirmationReceiverMiddleware(next protoactor.ReceiverFunc) protoactor.ReceiverFunc {
+	return func(ctx protoactor.ReceiverContext, envelope *protoactor.MessageEnvelope) {
+		if delivery, ok := envelope.Message.(*actorpb.Delivery); ok && delivery.GetRequireAcceptance() && envelope.Sender != nil {
+			ctx.ActorSystem().Root.Send(envelope.Sender, &actorpb.Acceptance{CommandId: delivery.GetCommandId()})
+		}
+		next(ctx, envelope)
+	}
 }

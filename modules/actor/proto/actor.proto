@@ -10,4 +10,10 @@ message Delivery {
   string message_type = 1;
   uint64 command_id = 2;
   bytes payload = 3;
+  bool require_acceptance = 4;
+}
+
+// Acceptance 表示目标 Actor 已从邮箱取出确认式投递，但不代表业务处理已经完成。
+message Acceptance {
+  uint64 command_id = 1;
 }

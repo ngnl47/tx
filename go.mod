@@ -3,6 +3,7 @@ module github.com/ngnl47/tx
 go 1.26
 
 require (
+	github.com/Workiva/go-datastructures v1.1.3
 	github.com/asynkron/protoactor-go v0.0.0-20240822202345-3c0e61ca19c9
 	github.com/redis/go-redis/v9 v9.17.3
 	go.etcd.io/etcd/api/v3 v3.7.1
@@ -14,7 +15,6 @@ require (
 )
 
 require (
-	github.com/Workiva/go-datastructures v1.1.3 // indirect
 	github.com/asynkron/gofun v0.0.0-20220329210725-34fed760f4c2 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

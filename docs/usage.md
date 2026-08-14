@@ -695,6 +695,35 @@ if err != nil {
 _ = result
 ```
 
+每个通过 `actor.New(config, kinds...)` 注册的 Cluster Kind 都使用有界用户邮箱。`Config.MailboxCapacity` 缺省为
+`1024`；满时不会阻塞 `Tell`，新消息被丢弃，并在**目标 Actor 所在服务实例**记录限频错误日志
+`actor mailbox overflow`。日志含 `cluster`、`host`、`kind`、`capacity` 和累计 `dropped`，可由日志中心告警。
+因此 `Tell` 只适合允许丢失或可由业务幂等恢复的通知：
+
+```go
+// 可丢的状态刷新通知：满邮箱时由目标实例记录错误日志。
+_ = runtime.Tell(pid, txactor.Delivery{MessageType: "battle.refresh", Payload: bonBody})
+```
+
+必须确认消息已被目标 Actor 从邮箱取出时，使用 `Confirm`。它会额外产生一条 `Acceptance` 回执，必须传入带
+deadline 的 context；成功只表示消息已交给目标 Actor，不表示其中的业务逻辑已执行成功：
+
+```go
+confirmCtx, cancel := context.WithTimeout(ctx, time.Second)
+defer cancel()
+
+if err := runtime.Confirm(confirmCtx, pid, txactor.Delivery{
+    MessageType: "role.rename",
+    CommandID:   470001,
+    Payload:     bonBody,
+}); err != nil {
+    return err // 可能是邮箱未接收、目标不可达或超时。
+}
+```
+
+确认式投递的目标 Actor 不应再对同一条消息调用 `ctx.Respond`，因为该响应位已由运行时的 `Acceptance` 占用。
+需要业务结果时应直接使用前面的 `RequestFuture`，由业务 Actor 负责返回其协议结果。
+
 业务 Actor 收到的是 `*actorpb.Delivery`，在业务边界转换回普通值对象即可。转换会复制 `Payload`，避免发送方或
 ProtoActor 内部复用缓冲区影响业务读取：
 

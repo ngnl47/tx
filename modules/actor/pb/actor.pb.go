@@ -24,12 +24,13 @@ const (
 // Delivery 是投递给 Actor 的内部消息，目标路由由 PID 承担。
 // Payload 是调用方持有的不透明 BON 字节序列。
 type Delivery struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	MessageType   string                 `protobuf:"bytes,1,opt,name=message_type,json=messageType,proto3" json:"message_type,omitempty"`
-	CommandId     uint64                 `protobuf:"varint,2,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
-	Payload       []byte                 `protobuf:"bytes,3,opt,name=payload,proto3" json:"payload,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	MessageType       string                 `protobuf:"bytes,1,opt,name=message_type,json=messageType,proto3" json:"message_type,omitempty"`
+	CommandId         uint64                 `protobuf:"varint,2,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	Payload           []byte                 `protobuf:"bytes,3,opt,name=payload,proto3" json:"payload,omitempty"`
+	RequireAcceptance bool                   `protobuf:"varint,4,opt,name=require_acceptance,json=requireAcceptance,proto3" json:"require_acceptance,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *Delivery) Reset() {
@@ -83,16 +84,73 @@ func (x *Delivery) GetPayload() []byte {
 	return nil
 }
 
+func (x *Delivery) GetRequireAcceptance() bool {
+	if x != nil {
+		return x.RequireAcceptance
+	}
+	return false
+}
+
+// Acceptance 表示目标 Actor 已从邮箱取出确认式投递，但不代表业务处理已经完成。
+type Acceptance struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CommandId     uint64                 `protobuf:"varint,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Acceptance) Reset() {
+	*x = Acceptance{}
+	mi := &file_modules_actor_proto_actor_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Acceptance) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Acceptance) ProtoMessage() {}
+
+func (x *Acceptance) ProtoReflect() protoreflect.Message {
+	mi := &file_modules_actor_proto_actor_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Acceptance.ProtoReflect.Descriptor instead.
+func (*Acceptance) Descriptor() ([]byte, []int) {
+	return file_modules_actor_proto_actor_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *Acceptance) GetCommandId() uint64 {
+	if x != nil {
+		return x.CommandId
+	}
+	return 0
+}
+
 var File_modules_actor_proto_actor_proto protoreflect.FileDescriptor
 
 const file_modules_actor_proto_actor_proto_rawDesc = "" +
 	"\n" +
-	"\x1fmodules/actor/proto/actor.proto\x12\vtx.actor.v1\"f\n" +
+	"\x1fmodules/actor/proto/actor.proto\x12\vtx.actor.v1\"\x95\x01\n" +
 	"\bDelivery\x12!\n" +
 	"\fmessage_type\x18\x01 \x01(\tR\vmessageType\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x02 \x01(\x04R\tcommandId\x12\x18\n" +
-	"\apayload\x18\x03 \x01(\fR\apayloadB/Z-github.com/ngnl47/tx/modules/actor/pb;actorpbb\x06proto3"
+	"\apayload\x18\x03 \x01(\fR\apayload\x12-\n" +
+	"\x12require_acceptance\x18\x04 \x01(\bR\x11requireAcceptance\"+\n" +
+	"\n" +
+	"Acceptance\x12\x1d\n" +
+	"\n" +
+	"command_id\x18\x01 \x01(\x04R\tcommandIdB/Z-github.com/ngnl47/tx/modules/actor/pb;actorpbb\x06proto3"
 
 var (
 	file_modules_actor_proto_actor_proto_rawDescOnce sync.Once
@@ -106,9 +164,10 @@ func file_modules_actor_proto_actor_proto_rawDescGZIP() []byte {
 	return file_modules_actor_proto_actor_proto_rawDescData
 }
 
-var file_modules_actor_proto_actor_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
+var file_modules_actor_proto_actor_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_modules_actor_proto_actor_proto_goTypes = []any{
-	(*Delivery)(nil), // 0: tx.actor.v1.Delivery
+	(*Delivery)(nil),   // 0: tx.actor.v1.Delivery
+	(*Acceptance)(nil), // 1: tx.actor.v1.Acceptance
 }
 var file_modules_actor_proto_actor_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
@@ -129,7 +188,7 @@ func file_modules_actor_proto_actor_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_modules_actor_proto_actor_proto_rawDesc), len(file_modules_actor_proto_actor_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   1,
+			NumMessages:   2,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

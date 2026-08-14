@@ -7,16 +7,20 @@ import (
 	"time"
 )
 
-const defaultEtcdPrefix = "/tx/actor"
+const (
+	defaultEtcdPrefix      = "/tx/actor"
+	DefaultMailboxCapacity = 1024
+)
 
 var ErrInvalidConfig = errors.New("actor: invalid config")
 
 // Config 描述一个 Actor Cluster 成员。项目代码负责解析配置文件后构造该值。
 type Config struct {
-	ClusterName string
-	Host        string
-	Port        int
-	Etcd        EtcdConfig
+	ClusterName     string
+	Host            string
+	Port            int
+	MailboxCapacity int
+	Etcd            EtcdConfig
 }
 
 // EtcdConfig 保存 Actor Cluster 的静态发现配置。
@@ -29,8 +33,11 @@ type EtcdConfig struct {
 func (c Config) Normalize() (Config, error) {
 	c.ClusterName = strings.TrimSpace(c.ClusterName)
 	c.Host = strings.TrimSpace(c.Host)
-	if c.ClusterName == "" || c.Host == "" || c.Port < 0 || c.Port > 65535 {
+	if c.ClusterName == "" || c.Host == "" || c.Port < 0 || c.Port > 65535 || c.MailboxCapacity < 0 {
 		return Config{}, ErrInvalidConfig
+	}
+	if c.MailboxCapacity == 0 {
+		c.MailboxCapacity = DefaultMailboxCapacity
 	}
 	etcd, err := c.Etcd.Normalize()
 	if err != nil {
