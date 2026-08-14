@@ -48,6 +48,15 @@ func NewGRPCDialer(transportCredentials credentials.TransportCredentials, option
 
 // Dial 打开到实例 endpoint 的 gRPC 连接。
 func (d *GRPCDialer) Dial(_ context.Context, instance discovery.Instance) (Connection, error) {
+	return d.dial(instance)
+}
+
+// DialSession 打开到实例 endpoint 的会话 gRPC 客户端。
+func (d *GRPCDialer) DialSession(_ context.Context, instance discovery.Instance) (SessionClient, error) {
+	return d.dial(instance)
+}
+
+func (d *GRPCDialer) dial(instance discovery.Instance) (*grpcConnection, error) {
 	if d == nil || d.credentials == nil {
 		return nil, ErrTransportCredentialsNil
 	}
@@ -84,8 +93,54 @@ func (c *grpcConnection) Pub(ctx context.Context, request PubRequest) (PubResult
 	return PubResult{Seq: response.GetSeq()}, nil
 }
 
+func (c *grpcConnection) Init(ctx context.Context, request InitRequest) (InitResult, error) {
+	response, err := c.client.Init(ctx, &msgqpb.InitRequest{Header: headerToProto(request.Header), Restore: request.Restore, Ack: request.Ack})
+	if err != nil {
+		return InitResult{}, mailboxClientError(err)
+	}
+	return InitResult{ReceivedSeq: response.GetReceivedSeq()}, nil
+}
+
+func (c *grpcConnection) Rec(ctx context.Context, request RecRequest) (RecResult, error) {
+	response, err := c.client.Rec(ctx, &msgqpb.RecRequest{Header: headerToProto(request.Header), Seq: request.Seq, Ack: request.Ack})
+	if err != nil {
+		return RecResult{}, mailboxClientError(err)
+	}
+	return RecResult{ReceivedSeq: response.GetReceivedSeq(), Ack: response.GetAck()}, nil
+}
+
+func (c *grpcConnection) FetchSome(ctx context.Context, request FetchSomeRequest) (FetchSomeResult, error) {
+	response, err := c.client.FetchSome(ctx, &msgqpb.FetchSomeRequest{Header: headerToProto(request.Header), Max: int32(request.Max)})
+	if err != nil {
+		return FetchSomeResult{}, mailboxClientError(err)
+	}
+	result := FetchSomeResult{Messages: make([]FetchResult, len(response.GetMessages()))}
+	for index, message := range response.GetMessages() {
+		result.Messages[index] = FetchResult{Seq: message.GetSeq(), Message: message.GetMessage()}
+	}
+	return result, nil
+}
+
+func (c *grpcConnection) Confirm(ctx context.Context, request ConfirmRequest) error {
+	_, err := c.client.Confirm(ctx, &msgqpb.ConfirmRequest{Header: headerToProto(request.Header), Ack: request.Ack})
+	return mailboxClientError(err)
+}
+
+func (c *grpcConnection) CloseSession(ctx context.Context, header SessionHeader) error {
+	_, err := c.client.Close(ctx, &msgqpb.CloseRequest{Header: headerToProto(header)})
+	return mailboxClientError(err)
+}
+
 func (c *grpcConnection) Close() error {
 	return c.connection.Close()
+}
+
+func headerToProto(header SessionHeader) *msgqpb.SessionHeader {
+	return &msgqpb.SessionHeader{
+		RoleId:       header.RoleID,
+		SessionId:    header.SessionID,
+		ConnectionId: header.ConnectionID,
+	}
 }
 
 // Sender 按当前会话 owner 路由下行消息，并复用每个 endpoint 的连接直到 Close。
