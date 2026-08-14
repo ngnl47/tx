@@ -132,6 +132,26 @@ func (r *Runtime) ActorSystem() (*protoactor.ActorSystem, error) {
 	return r.cluster.ActorSystem, nil
 }
 
+// Tell 将一条单向 Delivery 投递到 Virtual 或固定归属的 Actor PID。
+//
+// 返回 nil 仅表示本地 Runtime 已接受投递；远端业务处理结果、超时和重试由消息契约负责。
+// 需要显式响应时，调用方应通过 ActorSystem 使用 RequestFuture。
+func (r *Runtime) Tell(pid *protoactor.PID, delivery Delivery) error {
+	if pid == nil {
+		return ErrInvalidPID
+	}
+	system, err := r.ActorSystem()
+	if err != nil {
+		return err
+	}
+	message, err := delivery.ToProto()
+	if err != nil {
+		return err
+	}
+	system.Root.Send(pid, message)
+	return nil
+}
+
 // FixedPID 返回固定归属 Actor 的直连 Remote PID。实体归属由业务维护，不参与集群重平衡。
 func FixedPID(endpoint, actorID string) (*protoactor.PID, error) {
 	endpoint = strings.TrimSpace(endpoint)

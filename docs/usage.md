@@ -662,14 +662,28 @@ pid, err := runtime.VirtualPID("role", "470001")
 if err != nil {
     return err
 }
+if err := runtime.Tell(pid, txactor.Delivery{
+    MessageType: "role.rename",
+    CommandID:   470001,
+    Payload:     bonBody, // 调用方已编码的 BON 字节。
+}); err != nil {
+    return err
+}
+```
+
+`Tell` 是默认的单向投递入口：返回 `nil` 仅表示本地 Runtime 已接受这条消息，不表示远端 Actor 已完成业务处理。
+它不会自动重试；需要重试时，业务消息必须以 `CommandID` 自行定义幂等规则。确实需要同步结果时，再显式取得底层
+`ActorSystem` 并使用 `RequestFuture`：
+
+```go
 system, err := runtime.ActorSystem()
 if err != nil {
     return err
 }
 message, err := (txactor.Delivery{
-    MessageType: "role.rename",
-    CommandID:   470001,
-    Payload:     bonBody, // 调用方已编码的 BON 字节。
+    MessageType: "battle.resolve",
+    CommandID:   8001,
+    Payload:     bonRequest,
 }).ToProto()
 if err != nil {
     return err
