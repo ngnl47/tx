@@ -295,8 +295,8 @@ _ = target.Instance.Endpoint
 
 ### 进程内会话邮箱
 
-`Server` 是单个 msgq 实例的本地邮箱。跨实例业务发送前应先通过 `SessionRouter.Resolve` 找到 owner，再由后续的
-传输层调用对应实例；不要把 `Server` 当作全局消息队列。
+`Server` 是单个 msgq 实例的本地邮箱。跨实例业务发送前先通过 `SessionRouter.Resolve` 找到 owner，再调用其
+`Instance.Endpoint` 上的独立 `MailboxService`；不要把 `Server` 当作全局消息队列。
 
 ```go
 // Agent 收到客户端上行：Seq 必须连续；重复 Seq 幂等返回当前 ReceivedSeq。
@@ -418,7 +418,42 @@ if err := mailbox.Start(appContext); err != nil { // appContext 是 lifecycle.Wa
 服务关闭时取消 `appContext` 并等待 `WaitDoneAndWaitGroupWait()`，清理循环会自然退出。需要测试或由项目自定义调度时，
 可直接调用 `Reap(ctx, now)`。清理会先按完整 `(roleID, sessionID, connectionID, instanceID)` 条件解绑 Redis owner；Redis
 暂时不可用时 `Reap` 返回错误并记录日志，但仍删除本机过期会话，旧 owner 交由 Redis TTL 自动过期，避免本地内存因断线
-连接持续增长。跨实例邮箱传输尚未提供。
+连接持续增长。
+
+### msgq gRPC 传输
+
+`modules/msgq` 提供独立的 protobuf/gRPC `MailboxService`，不复用通用的 `modules/rpc`。连接侧可调用
+`Init`、`Rec`、`Fetch`、`FetchSome`、`Confirm`、`Touch`、Topic 和 `Close`；业务或其他服务可调用 `Pub`。
+所有 payload 都是已经编码完成的 BON `bytes`，服务不会解析或转换客户端协议体。
+
+```go
+grpcServer := grpc.NewServer()
+if err := msgq.RegisterMailboxService(grpcServer, mailbox); err != nil {
+    return err
+}
+go grpcServer.Serve(listener)
+
+conn, err := grpc.NewClient(target.Instance.Endpoint,
+    grpc.WithTransportCredentials(insecure.NewCredentials()), // 仅可信私网示例。
+)
+if err != nil {
+    return err
+}
+defer conn.Close()
+
+client := msgqpb.NewMailboxServiceClient(conn)
+_, err = client.Pub(ctx, &msgqpb.PubRequest{
+    Header:  &msgqpb.SessionHeader{RoleId: target.Binding.RoleID, SessionId: target.Binding.SessionID},
+    Message: bonBody,
+})
+if err != nil {
+    return err
+}
+```
+
+`Fetch` 是 unary 长轮询，调用方必须传递自己的超时或连接 context。运行时错误会转为明确的 gRPC status：无效请求为
+`InvalidArgument`，离线会话为 `NotFound`，旧连接为 `Aborted`，队列满为 `ResourceExhausted`；不会静默丢失或伪造投递成功。
+应用服务关闭时先停止 gRPC listener，未确认下行仍遵循 msgq 的内存语义。
 
 本机或 CI 已启动 Redis 时可执行真实回归；未设置变量时该用例会跳过：
 
@@ -516,7 +551,12 @@ cd /Users/a47/workspace/tx
 # 查看可生成包。
 ./cmd/protoc/run.sh --list
 
-# 仅生成内部 RPC 契约。
+# 仅生成 msgq 会话邮箱契约。
+PROTOC=/Users/a47/sdk/protoc-29.3/bin/protoc \
+GO_BIN=/Users/a47/sdk/go1.26.5/bin/go \
+./cmd/protoc/run.sh msgq
+
+# 仅生成通用内部 RPC 契约。
 PROTOC=/Users/a47/sdk/protoc-29.3/bin/protoc \
 GO_BIN=/Users/a47/sdk/go1.26.5/bin/go \
 ./cmd/protoc/run.sh rpc
@@ -545,7 +585,7 @@ GOBIN="$HOME/go/bin" /Users/a47/sdk/go1.26.5/bin/go install \
 ```
 
 将 `protoc`、`protoc-gen-go` 和 `protoc-gen-go-grpc` 放入 `PATH` 后，也可以不设置 `PROTOC` 与
-`GO_BIN`。生成的 `modules/actor/pb/*.pb.go` 与 `modules/rpc/pb/*.pb.go` 都属于版本化源文件，应与对应
+`GO_BIN`。生成的 `modules/actor/pb/*.pb.go`、`modules/msgq/pb/*.pb.go` 与 `modules/rpc/pb/*.pb.go` 都属于版本化源文件，应与对应
 `.proto` 一起提交。
 
 ## Actor Cluster 与 msgq

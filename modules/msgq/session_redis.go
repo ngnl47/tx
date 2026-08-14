@@ -41,6 +41,12 @@ type SessionRedisClient interface {
 	Eval(ctx context.Context, script string, keys []string, args ...any) (string, error)
 }
 
+// SessionRedisResolver 按角色选择会话绑定所在的 Redis 客户端。
+// 路由键固定为 RoleID，确保 Bind、Find、Refresh 和 Unbind 始终落到同一分片。
+type SessionRedisResolver interface {
+	ResolveSessionRedis(context.Context, int64) (SessionRedisClient, error)
+}
+
 // SessionRedisOptions 配置一个短期会话绑定命名空间。
 type SessionRedisOptions struct {
 	Prefix string
@@ -49,9 +55,9 @@ type SessionRedisOptions struct {
 
 // RedisSessionStore 在 Redis 中保存角色到实例的绑定。
 type RedisSessionStore struct {
-	client SessionRedisClient
-	prefix string
-	ttl    time.Duration
+	resolve func(context.Context, int64) (SessionRedisClient, error)
+	prefix  string
+	ttl     time.Duration
 }
 
 // NewRedisSessionStore 创建 Redis 会话绑定存储。
@@ -59,10 +65,22 @@ func NewRedisSessionStore(client SessionRedisClient, options SessionRedisOptions
 	if client == nil {
 		return nil, ErrSessionRedisClientNil
 	}
+	return newRedisSessionStore(func(context.Context, int64) (SessionRedisClient, error) { return client, nil }, options)
+}
+
+// NewRoutedRedisSessionStore 创建按角色路由 Redis 分片的会话绑定存储。
+func NewRoutedRedisSessionStore(resolver SessionRedisResolver, options SessionRedisOptions) (*RedisSessionStore, error) {
+	if resolver == nil {
+		return nil, ErrSessionRedisClientNil
+	}
+	return newRedisSessionStore(resolver.ResolveSessionRedis, options)
+}
+
+func newRedisSessionStore(resolve func(context.Context, int64) (SessionRedisClient, error), options SessionRedisOptions) (*RedisSessionStore, error) {
 	if options.Prefix == "" || options.Prefix != strings.TrimSpace(options.Prefix) || strings.ContainsAny(options.Prefix, "{}") || options.TTL <= 0 {
 		return nil, ErrInvalidSessionOptions
 	}
-	return &RedisSessionStore{client: client, prefix: options.Prefix, ttl: options.TTL}, nil
+	return &RedisSessionStore{resolve: resolve, prefix: options.Prefix, ttl: options.TTL}, nil
 }
 
 // Bind 设置当前绑定，并在覆盖时返回旧绑定。
@@ -74,7 +92,11 @@ func (s *RedisSessionStore) Bind(ctx context.Context, binding SessionBinding) (S
 	if err != nil {
 		return SessionBinding{}, false, err
 	}
-	previous, err := s.client.Eval(ctx, bindSessionScript, []string{s.key(binding.RoleID)}, encoded, s.ttl.Milliseconds())
+	client, err := s.client(ctx, binding.RoleID)
+	if err != nil {
+		return SessionBinding{}, false, err
+	}
+	previous, err := client.Eval(ctx, bindSessionScript, []string{s.key(binding.RoleID)}, encoded, s.ttl.Milliseconds())
 	if err != nil {
 		return SessionBinding{}, false, err
 	}
@@ -93,7 +115,11 @@ func (s *RedisSessionStore) Find(ctx context.Context, roleID int64) (SessionBind
 	if roleID <= 0 {
 		return SessionBinding{}, false, ErrInvalidSession
 	}
-	value, found, err := s.client.Get(ctx, s.key(roleID))
+	client, err := s.client(ctx, roleID)
+	if err != nil {
+		return SessionBinding{}, false, err
+	}
+	value, found, err := client.Get(ctx, s.key(roleID))
 	if err != nil || !found {
 		return SessionBinding{}, found, err
 	}
@@ -125,7 +151,11 @@ func (s *RedisSessionStore) Unbind(ctx context.Context, binding SessionBinding) 
 	if err != nil {
 		return false, err
 	}
-	result, err := s.client.Eval(ctx, unbindSessionScript, []string{s.key(binding.RoleID)}, encoded)
+	client, err := s.client(ctx, binding.RoleID)
+	if err != nil {
+		return false, err
+	}
+	result, err := client.Eval(ctx, unbindSessionScript, []string{s.key(binding.RoleID)}, encoded)
 	if err != nil {
 		return false, err
 	}
@@ -133,11 +163,29 @@ func (s *RedisSessionStore) Unbind(ctx context.Context, binding SessionBinding) 
 }
 
 func (s *RedisSessionStore) evalConditional(ctx context.Context, script string, binding SessionBinding, encoded string) (bool, error) {
-	result, err := s.client.Eval(ctx, script, []string{s.key(binding.RoleID)}, encoded, s.ttl.Milliseconds())
+	client, err := s.client(ctx, binding.RoleID)
+	if err != nil {
+		return false, err
+	}
+	result, err := client.Eval(ctx, script, []string{s.key(binding.RoleID)}, encoded, s.ttl.Milliseconds())
 	if err != nil {
 		return false, err
 	}
 	return conditionalResult(result)
+}
+
+func (s *RedisSessionStore) client(ctx context.Context, roleID int64) (SessionRedisClient, error) {
+	if s == nil || s.resolve == nil {
+		return nil, ErrSessionRedisClientNil
+	}
+	client, err := s.resolve(ctx, roleID)
+	if err != nil {
+		return nil, err
+	}
+	if client == nil {
+		return nil, ErrSessionRedisClientNil
+	}
+	return client, nil
 }
 
 func (s *RedisSessionStore) key(roleID int64) string {

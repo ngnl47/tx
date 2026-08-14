@@ -10,6 +10,7 @@ usage() {
 
 可生成包:
   actor  modules/actor/proto/actor.proto
+  msgq   modules/msgq/proto/msgq.proto
   rpc    modules/rpc/proto/rpc.proto
 
 示例:
@@ -29,12 +30,12 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
 fi
 
 if [[ "${1:-}" == "--list" ]]; then
-    printf '%s\n' actor rpc
+    printf '%s\n' actor msgq rpc
     exit 0
 fi
 
 if [[ $# -eq 0 || "${1:-}" == "--all" ]]; then
-    set -- actor rpc
+    set -- actor msgq rpc
 fi
 
 if [[ -n "${PROTOC:-}" ]]; then
@@ -68,6 +69,9 @@ for package_name in "$@"; do
     case "$package_name" in
         actor)
             proto_files+=("modules/actor/proto/actor.proto")
+            ;;
+        msgq)
+            proto_files+=("modules/msgq/proto/msgq.proto")
             ;;
         rpc)
             proto_files+=("modules/rpc/proto/rpc.proto")

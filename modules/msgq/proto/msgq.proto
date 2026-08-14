@@ -1,0 +1,112 @@
+syntax = "proto3";
+
+package tx.msgq.v1;
+
+option go_package = "github.com/ngnl47/tx/modules/msgq/pb;msgqpb";
+
+// SessionHeader identifies one concrete client connection.
+message SessionHeader {
+  int64 role_id = 1;
+  int64 session_id = 2;
+  int64 connection_id = 3;
+}
+
+message InitRequest {
+  SessionHeader header = 1;
+  bool restore = 2;
+  int64 ack = 3;
+}
+
+message InitResponse {
+  int64 received_seq = 1;
+}
+
+message RecRequest {
+  SessionHeader header = 1;
+  int64 seq = 2;
+  int64 ack = 3;
+}
+
+message RecResponse {
+  int64 received_seq = 1;
+  int64 ack = 2;
+}
+
+message PubRequest {
+  SessionHeader header = 1;
+  bytes message = 2;
+}
+
+message PubResponse {
+  int64 seq = 1;
+}
+
+message FetchRequest {
+  SessionHeader header = 1;
+}
+
+message FetchResponse {
+  int64 seq = 1;
+  bytes message = 2;
+}
+
+message FetchSomeRequest {
+  SessionHeader header = 1;
+  int32 max = 2;
+}
+
+message FetchSomeResponse {
+  repeated FetchResponse messages = 1;
+}
+
+message ConfirmRequest {
+  SessionHeader header = 1;
+  int64 ack = 2;
+}
+
+message TouchRequest {
+  SessionHeader header = 1;
+}
+
+message TopicRequest {
+  SessionHeader header = 1;
+  repeated string topics = 2;
+}
+
+message TopicsResponse {
+  repeated string topics = 1;
+}
+
+message BroadcastTopicRequest {
+  string topic = 1;
+  bytes message = 2;
+}
+
+message BroadcastTopicResponse {
+  int32 attempted = 1;
+  int32 delivered = 2;
+  int32 skipped = 3;
+  int32 overflowed = 4;
+}
+
+message CloseRequest {
+  SessionHeader header = 1;
+}
+
+message Empty {}
+
+// MailboxService is the dedicated msgq transport. Payload bytes remain BON data.
+service MailboxService {
+  rpc Init(InitRequest) returns (InitResponse);
+  rpc Rec(RecRequest) returns (RecResponse);
+  rpc Pub(PubRequest) returns (PubResponse);
+  rpc Fetch(FetchRequest) returns (FetchResponse);
+  rpc FetchSome(FetchSomeRequest) returns (FetchSomeResponse);
+  rpc Confirm(ConfirmRequest) returns (Empty);
+  rpc Touch(TouchRequest) returns (Empty);
+  rpc JoinTopics(TopicRequest) returns (Empty);
+  rpc LeaveTopics(TopicRequest) returns (Empty);
+  rpc Topics(TopicRequest) returns (TopicsResponse);
+  rpc BroadcastTopic(BroadcastTopicRequest) returns (BroadcastTopicResponse);
+  rpc Close(CloseRequest) returns (Empty);
+}

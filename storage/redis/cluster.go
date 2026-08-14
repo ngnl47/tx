@@ -24,20 +24,41 @@ func (f RouterFunc) RouteRedis(ctx context.Context, routeType string, shardKey a
 
 // Cluster 把 Redis 操作按 routeType 和 RecordKey.ShardKey 路由到具体端点 Adapter。
 type Cluster struct {
-	router Router
-	shards map[string]*Adapter
+	router  Router
+	shards  map[string]*Adapter
+	clients map[string]ScriptClient
 }
 
 // NewCluster 创建 Redis route/cluster 适配器。
 func NewCluster(router Router, shards map[string]ScriptClient) *Cluster {
 	cluster := &Cluster{
-		router: router,
-		shards: make(map[string]*Adapter, len(shards)),
+		router:  router,
+		shards:  make(map[string]*Adapter, len(shards)),
+		clients: make(map[string]ScriptClient, len(shards)),
 	}
 	for name, client := range shards {
 		cluster.shards[name] = NewAdapter(client)
+		cluster.clients[name] = client
 	}
 	return cluster
+}
+
+// ScriptClientFor 返回 routeType 和 shardKey 对应的原始脚本客户端。
+// 仅限项目基础设施需要复用已经装配的 Redis 连接时使用；业务数据读写仍应经过
+// Cluster 的类型化存储接口。
+func (c *Cluster) ScriptClientFor(ctx context.Context, routeType string, shardKey any) (ScriptClient, error) {
+	if c == nil || isNilRouter(c.router) {
+		return nil, fmt.Errorf("redis: router is not configured")
+	}
+	shard, err := c.router.RouteRedis(ctx, routeType, shardKey)
+	if err != nil {
+		return nil, err
+	}
+	client, ok := c.clients[shard]
+	if !ok || client == nil {
+		return nil, fmt.Errorf("redis: shard %q is not configured", shard)
+	}
+	return client, nil
 }
 
 func (c *Cluster) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, deltas change.DeltaSet, resolver change.FieldNameResolver, values change.DeltaValueResolver, options storage.ApplyOptions) error {

@@ -76,7 +76,7 @@
 - 字段名体系本体是 `go/json/bson/msgpack`。Redis 当前选择 JSON 名，Mongo 当前选择 BSON 名，cmd Provider 当前选择 Msgpack 名；`alias` 只是输入侧语法糖。
 - 客户端上下行协议采用独立的 BON 二进制文档，不使用 Protobuf；WebSocket 传输层使用可协商的 permessage-deflate 压缩。会话字典和动态 key 压缩属于后续可选优化，必须先以真实消息体基准证明收益，再处理字典同步、重连重置和可观测性。
 - 内部跨进程通信的目标运行时是可选的 `modules/actor`，直接使用 `protoactor-go` 及其官方 etcd Cluster Provider；tx 只负责项目 yml 装配、`WaitGroupContext` 生命周期和 BON 业务载荷适配，不自研 mailbox、调度器、远程 PID、成员发现或 Actor 重平衡。
-- `msgq` 是客户端会话邮箱模块名，负责 Session、下行 `sndQueue`、Seq/Ack、重连、Topic 和广播；它不承担所有业务 Actor 的中心中继。上行业务消息由 Agent 经过会话校验后直接投递目标 Player/Game Actor；任意业务 Actor 的下行消息投递到 `msgq`，再由 Agent 发给客户端。
+- `msgq` 是客户端会话邮箱模块名，负责 Session、下行 `sndQueue`、Seq/Ack、重连、Topic 和广播；它不承担所有业务 Actor 的中心中继。`modules/msgq` 已提供独立 protobuf/gRPC `MailboxService`，覆盖 Init、Rec、Pub、Fetch、FetchSome、Confirm、Touch、Topic 与 Close；它不复用 `modules/rpc`，payload 始终是 BON bytes。上行业务消息由 Agent 经过会话校验后直接投递目标 Player/Game Actor；任意业务 Actor 的下行消息投递到 `msgq`，再由 Agent 发给客户端。
 - Actor 分为两条互不混用的运行路径：可恢复实体使用 Cluster Virtual Actor，成员扩缩容后允许重新路由并从 Fusion 恢复；Battle、SLG 城市、MMO 场景等内存权威对象使用固定实例的本地 Actor 与 Remote PID 直连，业务维护 `entityID -> instanceID` 归属，不参与自动重平衡。固定归属 Actor 的迁移必须显式执行保存快照、停止旧实例、更新归属和目标恢复，节点短暂不可用时返回业务错误，不得静默改派。
 - 滚动重启必须先 Drain：停止新业务、等待已进入的 Procedure、完成要求的最终 Flush、从成员表注销并等待成员视图收敛，最后停止进程。ProtoActor 成员变化会停止不再属于本节点的 Virtual Actor；它不迁移业务内存状态，也不提供分布式事务、分布式锁、跨 Actor 回滚或 exactly-once 投递。
 - `storage.DocumentLoader` 和 `DocumentReplacer` 的公共文档契约统一使用 JSON 字段名。Redis 原样读写该文档；Mongo adapter 在完整文档读取与替换边界通过 `TypeSpec.DocumentFactory` 物化生成类型，再按 BSON tag 转换。Fusion 只传递公共 JSON 文档，不直接搬运 Mongo 的 BSON map。
