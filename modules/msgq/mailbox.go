@@ -2,6 +2,7 @@ package msgq
 
 import (
 	"context"
+	"sort"
 	"sync"
 )
 
@@ -14,6 +15,9 @@ type Server struct {
 
 	mu       sync.RWMutex
 	sessions map[int64]*mailboxSession
+
+	topicMu sync.RWMutex
+	topics  map[string]map[*mailboxSession]struct{}
 }
 
 // ServerOptions 配置会话邮箱服务。
@@ -78,6 +82,17 @@ type FetchResult struct {
 	Message []byte
 }
 
+// FetchSomeRequest 从当前会话批量读取尚未发送的下行消息。Max 为零时读取当前全部可发送消息。
+type FetchSomeRequest struct {
+	Header SessionHeader
+	Max    int
+}
+
+// FetchSomeResult 是一批保持发送顺序的下行消息。
+type FetchSomeResult struct {
+	Messages []FetchResult
+}
+
 // ConfirmRequest 确认客户端已收到指定序号及之前的所有下行消息。
 type ConfirmRequest struct {
 	Header SessionHeader
@@ -87,6 +102,31 @@ type ConfirmRequest struct {
 // TouchRequest 续期当前会话的 Redis 归属。
 type TouchRequest struct {
 	Header SessionHeader
+}
+
+// TopicRequest 对当前连接管理本机 topic 订阅。
+type TopicRequest struct {
+	Header SessionHeader
+	Topics []string
+}
+
+// TopicsResult 返回当前会话的 topic 快照，按字典序排列。
+type TopicsResult struct {
+	Topics []string
+}
+
+// BroadcastTopicRequest 向当前 msgq 实例内订阅 topic 的会话发送 BON 数据。
+type BroadcastTopicRequest struct {
+	Topic   string
+	Message []byte
+}
+
+// BroadcastTopicResult 说明一次本地广播的实际投递结果。
+type BroadcastTopicResult struct {
+	Attempted  int
+	Delivered  int
+	Skipped    int
+	Overflowed int
 }
 
 // NewServer 创建一个有界的进程内会话邮箱。
@@ -99,6 +139,7 @@ func NewServer(options ServerOptions) (*Server, error) {
 		store:      options.Store,
 		maxBacklog: options.MaxBacklog,
 		sessions:   make(map[int64]*mailboxSession),
+		topics:     make(map[string]map[*mailboxSession]struct{}),
 	}, nil
 }
 
@@ -214,6 +255,41 @@ func (s *Server) Fetch(ctx context.Context, request FetchRequest) (FetchResult, 
 	}
 }
 
+// FetchSome 返回当前可发送的一批消息；队列为空时等待 Pub 或 ctx 结束。
+func (s *Server) FetchSome(ctx context.Context, request FetchSomeRequest) (FetchSomeResult, error) {
+	if request.Max < 0 {
+		return FetchSomeResult{}, ErrInvalidHeader
+	}
+	for {
+		session, err := s.touch(ctx, request.Header)
+		if err != nil {
+			return FetchSomeResult{}, err
+		}
+		session.mu.Lock()
+		if err := session.requireConnection(request.Header); err != nil {
+			session.mu.Unlock()
+			return FetchSomeResult{}, err
+		}
+		entries := session.outbound.dequeueSome(request.Max)
+		if len(entries) > 0 {
+			messages := make([]FetchResult, len(entries))
+			for index, entry := range entries {
+				messages[index] = FetchResult{Seq: entry.seq, Message: cloneBytes(entry.message)}
+			}
+			session.mu.Unlock()
+			return FetchSomeResult{Messages: messages}, nil
+		}
+		notify := session.notify
+		session.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return FetchSomeResult{}, ctx.Err()
+		case <-notify:
+		}
+	}
+}
+
 // Confirm 释放指定 Ack 之前的下行消息。
 func (s *Server) Confirm(ctx context.Context, request ConfirmRequest) error {
 	if request.Ack < 0 {
@@ -241,6 +317,110 @@ func (s *Server) Touch(ctx context.Context, request TouchRequest) error {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	return session.requireConnection(request.Header)
+}
+
+// JoinTopics 将当前连接加入本机 topic 索引。
+func (s *Server) JoinTopics(ctx context.Context, request TopicRequest) error {
+	if err := validateTopics(request.Topics); err != nil {
+		return err
+	}
+	session, err := s.touch(ctx, request.Header)
+	if err != nil {
+		return err
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if err := session.requireConnection(request.Header); err != nil {
+		return err
+	}
+	for _, topic := range request.Topics {
+		if _, exists := session.topics[topic]; exists {
+			continue
+		}
+		session.topics[topic] = struct{}{}
+		s.addTopicLocked(session, topic)
+	}
+	return nil
+}
+
+// LeaveTopics 将当前连接移出本机 topic 索引。
+func (s *Server) LeaveTopics(ctx context.Context, request TopicRequest) error {
+	if err := validateTopics(request.Topics); err != nil {
+		return err
+	}
+	session, err := s.touch(ctx, request.Header)
+	if err != nil {
+		return err
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if err := session.requireConnection(request.Header); err != nil {
+		return err
+	}
+	for _, topic := range request.Topics {
+		if _, exists := session.topics[topic]; !exists {
+			continue
+		}
+		delete(session.topics, topic)
+		s.removeTopicLocked(session, topic)
+	}
+	return nil
+}
+
+// Topics 返回当前连接已加入的本机 topic 快照。
+func (s *Server) Topics(ctx context.Context, request TopicRequest) (TopicsResult, error) {
+	session, err := s.touch(ctx, request.Header)
+	if err != nil {
+		return TopicsResult{}, err
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if err := session.requireConnection(request.Header); err != nil {
+		return TopicsResult{}, err
+	}
+	topics := make([]string, 0, len(session.topics))
+	for topic := range session.topics {
+		topics = append(topics, topic)
+	}
+	sort.Strings(topics)
+	return TopicsResult{Topics: topics}, nil
+}
+
+// BroadcastTopic 向当前实例内订阅 topic 的会话广播。
+// 部分会话队列满时，已成功投递的会话不会回滚，返回值会保留完整统计并返回 ErrOutboundOverflow。
+func (s *Server) BroadcastTopic(ctx context.Context, request BroadcastTopicRequest) (BroadcastTopicResult, error) {
+	if s == nil {
+		return BroadcastTopicResult{}, ErrServerNil
+	}
+	if !validValue(request.Topic) {
+		return BroadcastTopicResult{}, ErrInvalidTopic
+	}
+	sessions := s.topicSnapshot(request.Topic)
+	result := BroadcastTopicResult{Attempted: len(sessions)}
+	for _, session := range sessions {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		session.mu.Lock()
+		if !session.active {
+			result.Skipped++
+			session.mu.Unlock()
+			continue
+		}
+		if session.outbound.len() >= s.maxBacklog {
+			result.Overflowed++
+			session.mu.Unlock()
+			continue
+		}
+		session.outbound.enqueue(request.Message)
+		session.signal()
+		result.Delivered++
+		session.mu.Unlock()
+	}
+	if result.Overflowed > 0 {
+		return result, ErrOutboundOverflow
+	}
+	return result, nil
 }
 
 // Close 删除当前会话。只有 Redis 仍保存完全相同 binding 时才会删除 owner。
@@ -300,6 +480,7 @@ func (s *Server) install(header SessionHeader) *mailboxSession {
 	if current != nil {
 		current.mu.Lock()
 		current.active = false
+		s.removeSessionTopicsLocked(current)
 		current.signal()
 		current.mu.Unlock()
 	}
@@ -326,7 +507,50 @@ func (s *Server) removeLocked(session *mailboxSession) {
 	}
 	s.mu.Unlock()
 	session.active = false
+	s.removeSessionTopicsLocked(session)
 	session.signal()
+}
+
+func (s *Server) addTopicLocked(session *mailboxSession, topic string) {
+	s.topicMu.Lock()
+	defer s.topicMu.Unlock()
+	sessions := s.topics[topic]
+	if sessions == nil {
+		sessions = make(map[*mailboxSession]struct{})
+		s.topics[topic] = sessions
+	}
+	sessions[session] = struct{}{}
+}
+
+func (s *Server) removeTopicLocked(session *mailboxSession, topic string) {
+	s.topicMu.Lock()
+	defer s.topicMu.Unlock()
+	sessions := s.topics[topic]
+	if sessions == nil {
+		return
+	}
+	delete(sessions, session)
+	if len(sessions) == 0 {
+		delete(s.topics, topic)
+	}
+}
+
+func (s *Server) removeSessionTopicsLocked(session *mailboxSession) {
+	for topic := range session.topics {
+		s.removeTopicLocked(session, topic)
+	}
+	clear(session.topics)
+}
+
+func (s *Server) topicSnapshot(topic string) []*mailboxSession {
+	s.topicMu.RLock()
+	defer s.topicMu.RUnlock()
+	sessions := s.topics[topic]
+	result := make([]*mailboxSession, 0, len(sessions))
+	for session := range sessions {
+		result = append(result, session)
+	}
+	return result
 }
 
 func (s *Server) touch(ctx context.Context, header SessionHeader) (*mailboxSession, error) {
@@ -377,6 +601,7 @@ type mailboxSession struct {
 	active       bool
 	notify       chan struct{}
 	outbound     outboundQueue
+	topics       map[string]struct{}
 	mu           sync.Mutex
 }
 
@@ -387,6 +612,7 @@ func newMailboxSession(header SessionHeader) *mailboxSession {
 		connectionID: header.ConnectionID,
 		active:       true,
 		notify:       make(chan struct{}, 1),
+		topics:       make(map[string]struct{}),
 	}
 }
 
@@ -433,6 +659,19 @@ func (q *outboundQueue) dequeue() (outboundEntry, bool) {
 	return entry, true
 }
 
+func (q *outboundQueue) dequeueSome(max int) []outboundEntry {
+	available := len(q.entries) - q.sent
+	if available <= 0 {
+		return nil
+	}
+	if max > 0 && available > max {
+		available = max
+	}
+	entries := q.entries[q.sent : q.sent+available]
+	q.sent += available
+	return entries
+}
+
 func (q *outboundQueue) resetSent() {
 	q.sent = 0
 }
@@ -462,4 +701,16 @@ func (q *outboundQueue) len() int {
 
 func cloneBytes(value []byte) []byte {
 	return append([]byte(nil), value...)
+}
+
+func validateTopics(topics []string) error {
+	if len(topics) == 0 {
+		return ErrInvalidTopic
+	}
+	for _, topic := range topics {
+		if !validValue(topic) {
+			return ErrInvalidTopic
+		}
+	}
+	return nil
 }

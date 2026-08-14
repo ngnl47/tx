@@ -337,8 +337,61 @@ if err != nil {
 
 `Fetch` 不在持有会话锁时等待，因此同一会话的 `Pub` 不会被长轮询阻塞。每个 payload 在 `Pub` 时复制，
 `Fetch` 返回时再次复制，调用方可以复用或修改自己的 `[]byte` 而不会破坏未确认队列。`MaxBacklog` 按未确认消息
-数量计数，满时当前 `Pub` 返回 `ErrOutboundOverflow`，不会无限积压也不会静默丢弃消息。`FetchSome`、Topic、广播
-和空闲会话清理尚未提供。
+数量计数，满时当前 `Pub` 返回 `ErrOutboundOverflow`，不会无限积压也不会静默丢弃消息。
+
+### 批量下行与本地 Topic
+
+`FetchSome` 与 `Fetch` 的确认语义完全相同：批量读取只前进发送游标，不会删除队列内容；客户端 Ack 后必须调用
+`Confirm`，消息才会从重连恢复队列释放。
+
+```go
+batch, err := mailbox.FetchSome(ctx, msgq.FetchSomeRequest{
+    Header: header,
+    Max:    32, // 0 表示取出当前所有可发送消息。
+})
+if err != nil {
+    return err
+}
+for _, message := range batch.Messages {
+    writeProtocolPacket(message.Seq, message.Message)
+}
+
+// 客户端实际收到整个批次后，再确认其中最大 Seq。
+if err := mailbox.Confirm(ctx, msgq.ConfirmRequest{Header: header, Ack: batch.Messages[len(batch.Messages)-1].Seq}); err != nil {
+    return err
+}
+```
+
+Topic 是 **单个 msgq 实例的内存索引**，适合该实例已经承载的会话分组，例如同一个在线军团分片。它不是 Redis
+Pub/Sub，也不自动跨 msgq 实例传播；全服或跨实例广播必须先由业务分发到各实例，再在各实例调用本地广播。
+
+```go
+import "errors"
+
+if err := mailbox.JoinTopics(ctx, msgq.TopicRequest{
+    Header: header,
+    Topics: []string{"guild:9", "world:1001"},
+}); err != nil {
+    return err
+}
+
+result, err := mailbox.BroadcastTopic(ctx, msgq.BroadcastTopicRequest{
+    Topic:   "guild:9",
+    Message: bonNotify,
+})
+if err != nil {
+    // 已投递的会话不会回滚。检查统计后决定是否记录、重试或触发业务重同步。
+    if errors.Is(err, msgq.ErrOutboundOverflow) {
+        reportSlowSessions(result.Overflowed, result.Skipped)
+    }
+    return err
+}
+_ = result.Delivered
+```
+
+`BroadcastTopicResult` 中 `Attempted` 是 topic 快照中的会话数，`Delivered` 是实际入队数，`Skipped` 表示快照后已关闭的
+会话，`Overflowed` 表示因 `MaxBacklog` 无法入队的会话数。广播出现积压返回 `ErrOutboundOverflow`，但结果保留已经
+成功投递的数量；框架不会伪造全量成功，也不会尝试回滚其他会话。空闲会话清理和跨实例邮箱传输尚未提供。
 
 本机或 CI 已启动 Redis 时可执行真实回归；未设置变量时该用例会跳过：
 

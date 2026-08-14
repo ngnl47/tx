@@ -21,6 +21,7 @@ var (
 	ErrInvalidHeader    = errors.New("msgq: invalid session header")
 	ErrInboundSequence  = errors.New("msgq: inbound sequence is invalid")
 	ErrOutboundOverflow = errors.New("msgq: outbound queue is full")
+	ErrInvalidTopic     = errors.New("msgq: invalid topic")
 )
 
 // SessionBinding 记录一个角色会话当前归属的消息服务实例。

@@ -128,6 +128,103 @@ func TestMsgQServerBoundsOutboundQueue(t *testing.T) {
 	}
 }
 
+func TestMsgQServerFetchSomeKeepsUnconfirmedSequence(t *testing.T) {
+	server, err := msgq.NewServer(msgq.ServerOptions{
+		InstanceID: "msgq-1",
+		Store:      newMailboxSessionStore(),
+		MaxBacklog: 4,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	header := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	defer server.Close(context.Background(), header)
+	for _, message := range []string{"one", "two", "three"} {
+		if _, err := server.Pub(context.Background(), msgq.PubRequest{
+			Header:  msgq.SessionHeader{RoleID: header.RoleID},
+			Message: []byte(message),
+		}); err != nil {
+			t.Fatalf("publish %q: %v", message, err)
+		}
+	}
+
+	batch, err := server.FetchSome(context.Background(), msgq.FetchSomeRequest{Header: header, Max: 2})
+	if err != nil {
+		t.Fatalf("fetch some: %v", err)
+	}
+	if len(batch.Messages) != 2 || batch.Messages[0].Seq != 1 || batch.Messages[1].Seq != 2 || string(batch.Messages[1].Message) != "two" {
+		t.Fatalf("batch = %#v", batch.Messages)
+	}
+	last, err := server.Fetch(context.Background(), msgq.FetchRequest{Header: header})
+	if err != nil || last.Seq != 3 || string(last.Message) != "three" {
+		t.Fatalf("last = %#v, %v", last, err)
+	}
+}
+
+func TestMsgQServerBroadcastTopicReportsPartialOverflow(t *testing.T) {
+	server, err := msgq.NewServer(msgq.ServerOptions{
+		InstanceID: "msgq-1",
+		Store:      newMailboxSessionStore(),
+		MaxBacklog: 1,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	first := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	second := msgq.SessionHeader{RoleID: 470002, SessionID: 100, ConnectionID: 8}
+	for _, header := range []msgq.SessionHeader{first, second} {
+		if _, err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
+			t.Fatalf("init %#v: %v", header, err)
+		}
+		defer server.Close(context.Background(), header)
+		if err := server.JoinTopics(context.Background(), msgq.TopicRequest{Header: header, Topics: []string{"guild:9"}}); err != nil {
+			t.Fatalf("join topic: %v", err)
+		}
+	}
+
+	firstBroadcast, err := server.BroadcastTopic(context.Background(), msgq.BroadcastTopicRequest{
+		Topic:   "guild:9",
+		Message: []byte("first"),
+	})
+	if err != nil || firstBroadcast.Attempted != 2 || firstBroadcast.Delivered != 2 || firstBroadcast.Overflowed != 0 {
+		t.Fatalf("first broadcast = %#v, %v", firstBroadcast, err)
+	}
+	secondBroadcast, err := server.BroadcastTopic(context.Background(), msgq.BroadcastTopicRequest{
+		Topic:   "guild:9",
+		Message: []byte("second"),
+	})
+	if !errors.Is(err, msgq.ErrOutboundOverflow) || secondBroadcast.Attempted != 2 || secondBroadcast.Delivered != 0 || secondBroadcast.Overflowed != 2 {
+		t.Fatalf("second broadcast = %#v, %v", secondBroadcast, err)
+	}
+
+	for _, header := range []msgq.SessionHeader{first, second} {
+		message, err := server.Fetch(context.Background(), msgq.FetchRequest{Header: header})
+		if err != nil || message.Seq != 1 || string(message.Message) != "first" {
+			t.Fatalf("fetch broadcast %#v = %#v, %v", header, message, err)
+		}
+		if err := server.Confirm(context.Background(), msgq.ConfirmRequest{Header: header, Ack: message.Seq}); err != nil {
+			t.Fatalf("confirm broadcast %#v: %v", header, err)
+		}
+	}
+	if err := server.LeaveTopics(context.Background(), msgq.TopicRequest{Header: second, Topics: []string{"guild:9"}}); err != nil {
+		t.Fatalf("leave topic: %v", err)
+	}
+	topics, err := server.Topics(context.Background(), msgq.TopicRequest{Header: second})
+	if err != nil || len(topics.Topics) != 0 {
+		t.Fatalf("topics after leave = %#v, %v", topics.Topics, err)
+	}
+	thirdBroadcast, err := server.BroadcastTopic(context.Background(), msgq.BroadcastTopicRequest{
+		Topic:   "guild:9",
+		Message: []byte("third"),
+	})
+	if err != nil || thirdBroadcast.Attempted != 1 || thirdBroadcast.Delivered != 1 {
+		t.Fatalf("third broadcast = %#v, %v", thirdBroadcast, err)
+	}
+}
+
 func TestMsgQServerRejectsOldConnectionCloseAfterRestore(t *testing.T) {
 	store := newMailboxSessionStore()
 	server, err := msgq.NewServer(msgq.ServerOptions{
