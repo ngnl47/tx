@@ -28,8 +28,6 @@ const (
 	RouteKind_ROUTE_KIND_UNSPECIFIED RouteKind = 0
 	RouteKind_ROUTE_KIND_SERVICE     RouteKind = 1
 	RouteKind_ROUTE_KIND_INSTANCE    RouteKind = 2
-	RouteKind_ROUTE_KIND_SESSION     RouteKind = 3
-	RouteKind_ROUTE_KIND_ACTOR       RouteKind = 4
 )
 
 // Enum value maps for RouteKind.
@@ -38,15 +36,11 @@ var (
 		0: "ROUTE_KIND_UNSPECIFIED",
 		1: "ROUTE_KIND_SERVICE",
 		2: "ROUTE_KIND_INSTANCE",
-		3: "ROUTE_KIND_SESSION",
-		4: "ROUTE_KIND_ACTOR",
 	}
 	RouteKind_value = map[string]int32{
 		"ROUTE_KIND_UNSPECIFIED": 0,
 		"ROUTE_KIND_SERVICE":     1,
 		"ROUTE_KIND_INSTANCE":    2,
-		"ROUTE_KIND_SESSION":     3,
-		"ROUTE_KIND_ACTOR":       4,
 	}
 )
 
@@ -83,10 +77,6 @@ type Route struct {
 	Kind          RouteKind              `protobuf:"varint,1,opt,name=kind,proto3,enum=tx.rpc.v1.RouteKind" json:"kind,omitempty"`
 	Service       string                 `protobuf:"bytes,2,opt,name=service,proto3" json:"service,omitempty"`
 	InstanceId    string                 `protobuf:"bytes,3,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
-	ActorKind     string                 `protobuf:"bytes,4,opt,name=actor_kind,json=actorKind,proto3" json:"actor_kind,omitempty"`
-	Identity      string                 `protobuf:"bytes,5,opt,name=identity,proto3" json:"identity,omitempty"`
-	RoleId        int64                  `protobuf:"varint,6,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`
-	SessionId     int64                  `protobuf:"varint,7,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -140,34 +130,6 @@ func (x *Route) GetInstanceId() string {
 		return x.InstanceId
 	}
 	return ""
-}
-
-func (x *Route) GetActorKind() string {
-	if x != nil {
-		return x.ActorKind
-	}
-	return ""
-}
-
-func (x *Route) GetIdentity() string {
-	if x != nil {
-		return x.Identity
-	}
-	return ""
-}
-
-func (x *Route) GetRoleId() int64 {
-	if x != nil {
-		return x.RoleId
-	}
-	return 0
-}
-
-func (x *Route) GetSessionId() int64 {
-	if x != nil {
-		return x.SessionId
-	}
-	return 0
 }
 
 // Delivery is a directed internal message. Payload uses the caller's codec.
@@ -295,18 +257,12 @@ var File_modules_rpc_proto_rpc_proto protoreflect.FileDescriptor
 
 const file_modules_rpc_proto_rpc_proto_rawDesc = "" +
 	"\n" +
-	"\x1bmodules/rpc/proto/rpc.proto\x12\ttx.rpc.v1\"\xdf\x01\n" +
+	"\x1bmodules/rpc/proto/rpc.proto\x12\ttx.rpc.v1\"l\n" +
 	"\x05Route\x12(\n" +
 	"\x04kind\x18\x01 \x01(\x0e2\x14.tx.rpc.v1.RouteKindR\x04kind\x12\x18\n" +
 	"\aservice\x18\x02 \x01(\tR\aservice\x12\x1f\n" +
 	"\vinstance_id\x18\x03 \x01(\tR\n" +
-	"instanceId\x12\x1d\n" +
-	"\n" +
-	"actor_kind\x18\x04 \x01(\tR\tactorKind\x12\x1a\n" +
-	"\bidentity\x18\x05 \x01(\tR\bidentity\x12\x17\n" +
-	"\arole_id\x18\x06 \x01(\x03R\x06roleId\x12\x1d\n" +
-	"\n" +
-	"session_id\x18\a \x01(\x03R\tsessionId\"\x8e\x01\n" +
+	"instanceId\"\x8e\x01\n" +
 	"\bDelivery\x12&\n" +
 	"\x05route\x18\x01 \x01(\v2\x10.tx.rpc.v1.RouteR\x05route\x12!\n" +
 	"\fmessage_type\x18\x02 \x01(\tR\vmessageType\x12\x1d\n" +
@@ -316,13 +272,11 @@ const file_modules_rpc_proto_rpc_proto_rawDesc = "" +
 	"\vDeliveryAck\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x1d\n" +
 	"\n" +
-	"error_code\x18\x02 \x01(\tR\terrorCode*\x86\x01\n" +
+	"error_code\x18\x02 \x01(\tR\terrorCode*X\n" +
 	"\tRouteKind\x12\x1a\n" +
 	"\x16ROUTE_KIND_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12ROUTE_KIND_SERVICE\x10\x01\x12\x17\n" +
-	"\x13ROUTE_KIND_INSTANCE\x10\x02\x12\x16\n" +
-	"\x12ROUTE_KIND_SESSION\x10\x03\x12\x14\n" +
-	"\x10ROUTE_KIND_ACTOR\x10\x042I\n" +
+	"\x13ROUTE_KIND_INSTANCE\x10\x022I\n" +
 	"\x0fDeliveryService\x126\n" +
 	"\aDeliver\x12\x13.tx.rpc.v1.Delivery\x1a\x16.tx.rpc.v1.DeliveryAckB+Z)github.com/ngnl47/tx/modules/rpc/pb;rpcpbb\x06proto3"
 

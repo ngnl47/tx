@@ -72,11 +72,8 @@ func TestRPCDeliveryServicePassesOpaquePayloadToReceiver(t *testing.T) {
 	payload := []byte{0x92, 0xa4, 'r', 'o', 'l', 'e', 0xcd, 0x03, 0xe9}
 	ack, err := rpcpb.NewDeliveryServiceClient(conn).Deliver(ctx, &rpcpb.Delivery{
 		Route: &rpcpb.Route{
-			Kind:       rpcpb.RouteKind_ROUTE_KIND_SESSION,
-			Service:    "msgq",
-			InstanceId: "msgq-2",
-			RoleId:     470001,
-			SessionId:  99,
+			Kind:       rpcpb.RouteKind_ROUTE_KIND_INSTANCE,
+			InstanceId: "battle-2",
 		},
 		MessageType: "Role_UpdateNotify",
 		CommandId:   72001,
@@ -88,7 +85,7 @@ func TestRPCDeliveryServicePassesOpaquePayloadToReceiver(t *testing.T) {
 	if !ack.GetAccepted() {
 		t.Fatalf("delivery rejected with code %q", ack.GetErrorCode())
 	}
-	if received.Route.Kind != rpc.RouteSession || received.Route.InstanceID != "msgq-2" {
+	if received.Route.Kind != rpc.RouteInstance || received.Route.InstanceID != "battle-2" {
 		t.Fatalf("received route = %#v", received.Route)
 	}
 	if string(received.Payload) != string(payload) {

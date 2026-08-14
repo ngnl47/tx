@@ -9,12 +9,12 @@ import (
 	"time"
 
 	"github.com/ngnl47/tx/modules/discovery"
-	"github.com/ngnl47/tx/modules/rpc"
+	"github.com/ngnl47/tx/modules/msgq"
 	"github.com/ngnl47/tx/storage/redis/goredis"
 	redis "github.com/redis/go-redis/v9"
 )
 
-func TestRPCSessionRouterResolvesBoundInstance(t *testing.T) {
+func TestMsgQSessionRouterResolvesBoundInstance(t *testing.T) {
 	directory := discovery.NewServiceDirectory()
 	if err := directory.Replace([]discovery.Instance{{
 		ID:       "msgq-2",
@@ -26,39 +26,39 @@ func TestRPCSessionRouterResolvesBoundInstance(t *testing.T) {
 	}
 
 	store := &sessionStoreFake{
-		binding: rpc.SessionBinding{RoleID: 470001, SessionID: 99, InstanceID: "msgq-2"},
+		binding: msgq.SessionBinding{RoleID: 470001, SessionID: 99, InstanceID: "msgq-2"},
 		found:   true,
 	}
-	router, err := rpc.NewSessionRouter(directory, store)
+	router, err := msgq.NewSessionRouter(directory, store)
 	if err != nil {
 		t.Fatalf("new session router: %v", err)
 	}
 
-	route, err := router.Resolve(context.Background(), 470001, 0)
+	target, err := router.Resolve(context.Background(), 470001, 0)
 	if err != nil {
 		t.Fatalf("resolve session: %v", err)
 	}
-	if route.Kind != rpc.RouteSession || route.InstanceID != "msgq-2" || route.RoleID != 470001 || route.SessionID != 99 {
-		t.Fatalf("route = %#v", route)
+	if target.Instance.ID != "msgq-2" || target.Binding.RoleID != 470001 || target.Binding.SessionID != 99 {
+		t.Fatalf("target = %#v", target)
 	}
 	if store.refreshCalls != 1 || store.refreshed != store.binding {
 		t.Fatalf("refresh calls = %d, binding = %#v", store.refreshCalls, store.refreshed)
 	}
 }
 
-func TestRPCSessionRouterRejectsStaleSessionWithoutRefreshing(t *testing.T) {
+func TestMsgQSessionRouterRejectsStaleSessionWithoutRefreshing(t *testing.T) {
 	directory := rpcSessionDirectory(t, "msgq-2")
 	store := &sessionStoreFake{
-		binding: rpc.SessionBinding{RoleID: 470001, SessionID: 100, InstanceID: "msgq-2"},
+		binding: msgq.SessionBinding{RoleID: 470001, SessionID: 100, InstanceID: "msgq-2"},
 		found:   true,
 	}
-	router, err := rpc.NewSessionRouter(directory, store)
+	router, err := msgq.NewSessionRouter(directory, store)
 	if err != nil {
 		t.Fatalf("new session router: %v", err)
 	}
 
 	_, err = router.Resolve(context.Background(), 470001, 99)
-	if !errors.Is(err, rpc.ErrSessionChanged) {
+	if !errors.Is(err, msgq.ErrSessionChanged) {
 		t.Fatalf("resolve error = %v, want session changed", err)
 	}
 	if store.refreshCalls != 0 {
@@ -66,18 +66,18 @@ func TestRPCSessionRouterRejectsStaleSessionWithoutRefreshing(t *testing.T) {
 	}
 }
 
-func TestRPCSessionRouterDoesNotRefreshUnavailableInstance(t *testing.T) {
+func TestMsgQSessionRouterDoesNotRefreshUnavailableInstance(t *testing.T) {
 	store := &sessionStoreFake{
-		binding: rpc.SessionBinding{RoleID: 470001, SessionID: 99, InstanceID: "msgq-missing"},
+		binding: msgq.SessionBinding{RoleID: 470001, SessionID: 99, InstanceID: "msgq-missing"},
 		found:   true,
 	}
-	router, err := rpc.NewSessionRouter(discovery.NewServiceDirectory(), store)
+	router, err := msgq.NewSessionRouter(discovery.NewServiceDirectory(), store)
 	if err != nil {
 		t.Fatalf("new session router: %v", err)
 	}
 
 	_, err = router.Resolve(context.Background(), 470001, 0)
-	if !errors.Is(err, rpc.ErrRouteUnavailable) {
+	if !errors.Is(err, msgq.ErrRouteUnavailable) {
 		t.Fatalf("resolve error = %v, want route unavailable", err)
 	}
 	if store.refreshCalls != 0 {
@@ -85,7 +85,35 @@ func TestRPCSessionRouterDoesNotRefreshUnavailableInstance(t *testing.T) {
 	}
 }
 
-func TestRedisSessionStoreUsesRoleHashTagAndConditionalOperations(t *testing.T) {
+func TestMsgQSessionRouterRejectsNonMsgQInstance(t *testing.T) {
+	directory := discovery.NewServiceDirectory()
+	if err := directory.Replace([]discovery.Instance{{
+		ID:       "game-1",
+		Services: []string{"game"},
+		Endpoint: "127.0.0.1:9201",
+		Status:   discovery.StatusRunning,
+	}}); err != nil {
+		t.Fatalf("replace directory: %v", err)
+	}
+	store := &sessionStoreFake{
+		binding: msgq.SessionBinding{RoleID: 470001, SessionID: 99, InstanceID: "game-1"},
+		found:   true,
+	}
+	router, err := msgq.NewSessionRouter(directory, store)
+	if err != nil {
+		t.Fatalf("new session router: %v", err)
+	}
+
+	_, err = router.Resolve(context.Background(), 470001, 0)
+	if !errors.Is(err, msgq.ErrRouteUnavailable) {
+		t.Fatalf("resolve error = %v, want route unavailable", err)
+	}
+	if store.refreshCalls != 0 {
+		t.Fatalf("refresh calls = %d, want 0", store.refreshCalls)
+	}
+}
+
+func TestMsgQRedisSessionStoreUsesRoleHashTagAndConditionalOperations(t *testing.T) {
 	client := &sessionRedisClientFake{
 		getValue: `{"instanceId":"msgq-2","sessionId":99}`,
 		evalResults: []string{
@@ -94,14 +122,14 @@ func TestRedisSessionStoreUsesRoleHashTagAndConditionalOperations(t *testing.T) 
 			"1",
 		},
 	}
-	store, err := rpc.NewRedisSessionStore(client, rpc.SessionRedisOptions{
+	store, err := msgq.NewRedisSessionStore(client, msgq.SessionRedisOptions{
 		Prefix: "tx:test:rpc",
 		TTL:    time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("new redis session store: %v", err)
 	}
-	binding := rpc.SessionBinding{RoleID: 470001, SessionID: 99, InstanceID: "msgq-2"}
+	binding := msgq.SessionBinding{RoleID: 470001, SessionID: 99, InstanceID: "msgq-2"}
 
 	previous, replaced, err := store.Bind(context.Background(), binding)
 	if err != nil {
@@ -134,7 +162,7 @@ func TestRedisSessionStoreUsesRoleHashTagAndConditionalOperations(t *testing.T) 
 	}
 }
 
-func TestRedisSessionStoreIntegration(t *testing.T) {
+func TestMsgQRedisSessionStoreIntegration(t *testing.T) {
 	endpoint := os.Getenv("TX_REDIS_ENDPOINT")
 	if endpoint == "" {
 		t.Skip("set TX_REDIS_ENDPOINT to run Redis session binding integration test")
@@ -149,17 +177,17 @@ func TestRedisSessionStoreIntegration(t *testing.T) {
 	prefix := fmt.Sprintf("tx:test:rpc-session:%d", time.Now().UnixNano())
 	key := prefix + ":session:{470001}"
 	defer raw.Del(ctx, key)
-	store, err := rpc.NewRedisSessionStore(goredis.NewClient(raw), rpc.SessionRedisOptions{
+	store, err := msgq.NewRedisSessionStore(goredis.NewClient(raw), msgq.SessionRedisOptions{
 		Prefix: prefix,
 		TTL:    time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("new redis session store: %v", err)
 	}
-	first := rpc.SessionBinding{RoleID: 470001, SessionID: 99, InstanceID: "msgq-1"}
-	second := rpc.SessionBinding{RoleID: 470001, SessionID: 100, InstanceID: "msgq-2"}
+	first := msgq.SessionBinding{RoleID: 470001, SessionID: 99, InstanceID: "msgq-1"}
+	second := msgq.SessionBinding{RoleID: 470001, SessionID: 100, InstanceID: "msgq-2"}
 
-	if previous, replaced, err := store.Bind(ctx, first); err != nil || replaced || previous != (rpc.SessionBinding{}) {
+	if previous, replaced, err := store.Bind(ctx, first); err != nil || replaced || previous != (msgq.SessionBinding{}) {
 		t.Fatalf("first bind previous = %#v, replaced = %t, err = %v", previous, replaced, err)
 	}
 	if previous, replaced, err := store.Bind(ctx, second); err != nil || !replaced || previous != first {
@@ -200,29 +228,29 @@ func rpcSessionDirectory(t *testing.T, instanceID string) *discovery.ServiceDire
 }
 
 type sessionStoreFake struct {
-	binding      rpc.SessionBinding
+	binding      msgq.SessionBinding
 	found        bool
 	findErr      error
 	refreshErr   error
 	refreshCalls int
-	refreshed    rpc.SessionBinding
+	refreshed    msgq.SessionBinding
 }
 
-func (s *sessionStoreFake) Bind(context.Context, rpc.SessionBinding) (rpc.SessionBinding, bool, error) {
-	return rpc.SessionBinding{}, false, errors.New("unexpected bind")
+func (s *sessionStoreFake) Bind(context.Context, msgq.SessionBinding) (msgq.SessionBinding, bool, error) {
+	return msgq.SessionBinding{}, false, errors.New("unexpected bind")
 }
 
-func (s *sessionStoreFake) Find(context.Context, int64) (rpc.SessionBinding, bool, error) {
+func (s *sessionStoreFake) Find(context.Context, int64) (msgq.SessionBinding, bool, error) {
 	return s.binding, s.found, s.findErr
 }
 
-func (s *sessionStoreFake) Refresh(_ context.Context, binding rpc.SessionBinding) (bool, error) {
+func (s *sessionStoreFake) Refresh(_ context.Context, binding msgq.SessionBinding) (bool, error) {
 	s.refreshCalls++
 	s.refreshed = binding
 	return true, s.refreshErr
 }
 
-func (s *sessionStoreFake) Unbind(context.Context, rpc.SessionBinding) (bool, error) {
+func (s *sessionStoreFake) Unbind(context.Context, msgq.SessionBinding) (bool, error) {
 	return false, errors.New("unexpected unbind")
 }
 

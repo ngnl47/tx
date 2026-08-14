@@ -9,10 +9,11 @@ usage() {
 用法: cmd/protoc/run.sh [--all|--list|包名...]
 
 可生成包:
+  actor  modules/actor/proto/actor.proto
   rpc    modules/rpc/proto/rpc.proto
 
 示例:
-  ./cmd/protoc/run.sh rpc
+  ./cmd/protoc/run.sh actor
   ./cmd/protoc/run.sh --all
 
 发布流程可只传入需要导出的包名，从而跳过其他 proto 包。
@@ -28,12 +29,12 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
 fi
 
 if [[ "${1:-}" == "--list" ]]; then
-    printf '%s\n' rpc
+    printf '%s\n' actor rpc
     exit 0
 fi
 
 if [[ $# -eq 0 || "${1:-}" == "--all" ]]; then
-    set -- rpc
+    set -- actor rpc
 fi
 
 if [[ -n "${PROTOC:-}" ]]; then
@@ -65,6 +66,9 @@ module_path="$($go_bin list -m -f '{{.Path}}')"
 proto_files=()
 for package_name in "$@"; do
     case "$package_name" in
+        actor)
+            proto_files+=("modules/actor/proto/actor.proto")
+            ;;
         rpc)
             proto_files+=("modules/rpc/proto/rpc.proto")
             ;;

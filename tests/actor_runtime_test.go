@@ -12,6 +12,8 @@ import (
 	"github.com/asynkron/protoactor-go/cluster"
 	"github.com/ngnl47/tx/lifecycle"
 	txactor "github.com/ngnl47/tx/modules/actor"
+	actorpb "github.com/ngnl47/tx/modules/actor/pb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 func TestActorConfigNormalize(t *testing.T) {
@@ -67,6 +69,39 @@ func TestActorRuntimeRejectsVirtualPIDBeforeStart(t *testing.T) {
 	}
 }
 
+func TestActorDeliveryRoundTripCopiesPayload(t *testing.T) {
+	delivery := txactor.Delivery{
+		MessageType: "role.rename",
+		CommandID:   470001,
+		Payload:     []byte{1, 2, 3},
+	}
+	message, err := delivery.ToProto()
+	if err != nil {
+		t.Fatalf("ToProto() error = %v", err)
+	}
+	delivery.Payload[0] = 9
+	if message.GetPayload()[0] != 1 {
+		t.Fatalf("proto payload = %v, want defensive copy", message.GetPayload())
+	}
+	decoded, err := txactor.DeliveryFromProto(message)
+	if err != nil {
+		t.Fatalf("DeliveryFromProto() error = %v", err)
+	}
+	message.Payload[1] = 8
+	if decoded.MessageType != "role.rename" || decoded.CommandID != 470001 || string(decoded.Payload) != string([]byte{1, 2, 3}) {
+		t.Fatalf("decoded delivery = %#v", decoded)
+	}
+}
+
+func TestActorDeliveryRejectsInvalidMessage(t *testing.T) {
+	if _, err := (txactor.Delivery{}).ToProto(); !errors.Is(err, txactor.ErrInvalidDelivery) {
+		t.Fatalf("ToProto() error = %v, want ErrInvalidDelivery", err)
+	}
+	if _, err := txactor.DeliveryFromProto(&actorpb.Delivery{MessageType: " role.rename"}); !errors.Is(err, txactor.ErrInvalidDelivery) {
+		t.Fatalf("DeliveryFromProto() error = %v, want ErrInvalidDelivery", err)
+	}
+}
+
 func TestActorRuntimeLifecycleIntegration(t *testing.T) {
 	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
 	if endpoint == "" {
@@ -107,19 +142,34 @@ func TestActorRuntimeLifecycleIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ActorSystem() error = %v", err)
 	}
-	response, err := system.Root.RequestFuture(pid, "ping", 5*time.Second).Result()
+	delivery, err := (txactor.Delivery{MessageType: "role.ping", Payload: []byte{7}}).ToProto()
+	if err != nil {
+		t.Fatalf("ToProto() error = %v", err)
+	}
+	response, err := system.Root.RequestFuture(pid, delivery, 5*time.Second).Result()
 	if err != nil {
 		t.Fatalf("RequestFuture() error = %v", err)
 	}
-	if response != "pong" {
-		t.Fatalf("response = %#v, want pong", response)
+	ack, ok := response.(*wrapperspb.StringValue)
+	if !ok || ack.GetValue() != "role.ping:7" {
+		t.Fatalf("response = %#v, want role.ping:7", response)
 	}
 }
 
 type actorEcho struct{}
 
 func (actorEcho) Receive(ctx protoactor.Context) {
-	if message, ok := ctx.Message().(string); ok && message == "ping" {
-		ctx.Respond("pong")
+	message, ok := ctx.Message().(*actorpb.Delivery)
+	if !ok {
+		return
 	}
+	delivery, err := txactor.DeliveryFromProto(message)
+	if err != nil {
+		return
+	}
+	payload := ""
+	if len(delivery.Payload) > 0 {
+		payload = fmt.Sprint(delivery.Payload[0])
+	}
+	ctx.Respond(wrapperspb.String(delivery.MessageType + ":" + payload))
 }

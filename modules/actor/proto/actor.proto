@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package tx.actor.v1;
+
+option go_package = "github.com/ngnl47/tx/modules/actor/pb;actorpb";
+
+// Delivery 是投递给 Actor 的内部消息，目标路由由 PID 承担。
+// Payload 是调用方持有的不透明 BON 字节序列。
+message Delivery {
+  string message_type = 1;
+  uint64 command_id = 2;
+  bytes payload = 3;
+}

@@ -1,16 +1,21 @@
-package rpc
+// Package msgq 提供客户端会话邮箱的路由与状态基础能力。
+package msgq
 
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/ngnl47/tx/modules/discovery"
 )
 
 var (
-	ErrSessionStoreNil = errors.New("rpc: session store is nil")
-	ErrSessionOffline  = errors.New("rpc: session is offline")
-	ErrSessionChanged  = errors.New("rpc: session has changed")
+	ErrDirectoryNil     = errors.New("msgq: service directory is nil")
+	ErrSessionStoreNil  = errors.New("msgq: session store is nil")
+	ErrInvalidSession   = errors.New("msgq: invalid session binding")
+	ErrSessionOffline   = errors.New("msgq: session is offline")
+	ErrSessionChanged   = errors.New("msgq: session has changed")
+	ErrRouteUnavailable = errors.New("msgq: session instance is unavailable")
 )
 
 // SessionBinding 记录一个角色会话当前归属的消息服务实例。
@@ -22,8 +27,8 @@ type SessionBinding struct {
 
 // Validate 校验绑定能否安全标识一个活动会话。
 func (b SessionBinding) Validate() error {
-	if b.RoleID <= 0 || b.SessionID <= 0 || !validRouteValue(b.InstanceID) {
-		return ErrInvalidRoute
+	if b.RoleID <= 0 || b.SessionID <= 0 || !validValue(b.InstanceID) {
+		return ErrInvalidSession
 	}
 	return nil
 }
@@ -34,6 +39,12 @@ type SessionStore interface {
 	Find(ctx context.Context, roleID int64) (binding SessionBinding, found bool, err error)
 	Refresh(ctx context.Context, binding SessionBinding) (refreshed bool, err error)
 	Unbind(ctx context.Context, binding SessionBinding) (removed bool, err error)
+}
+
+// SessionTarget 是一次会话投递所需的绑定和目标实例。
+type SessionTarget struct {
+	Binding  SessionBinding
+	Instance discovery.Instance
 }
 
 // SessionRouter 将角色会话解析为唯一的消息服务归属实例。
@@ -54,45 +65,50 @@ func NewSessionRouter(directory *discovery.ServiceDirectory, store SessionStore)
 }
 
 // Resolve 解析当前会话归属。expectedSessionID 为零时接受当前任意会话。
-func (r *SessionRouter) Resolve(ctx context.Context, roleID, expectedSessionID int64) (Route, error) {
+func (r *SessionRouter) Resolve(ctx context.Context, roleID, expectedSessionID int64) (SessionTarget, error) {
 	if r == nil || r.directory == nil {
-		return Route{}, ErrDirectoryNil
+		return SessionTarget{}, ErrDirectoryNil
 	}
 	if r.store == nil {
-		return Route{}, ErrSessionStoreNil
+		return SessionTarget{}, ErrSessionStoreNil
 	}
 	if roleID <= 0 || expectedSessionID < 0 {
-		return Route{}, ErrInvalidRoute
+		return SessionTarget{}, ErrInvalidSession
 	}
 
 	binding, found, err := r.store.Find(ctx, roleID)
 	if err != nil {
-		return Route{}, err
+		return SessionTarget{}, err
 	}
-	if !found {
-		return Route{}, ErrSessionOffline
-	}
-	if err := binding.Validate(); err != nil || binding.RoleID != roleID {
-		return Route{}, ErrSessionOffline
+	if !found || binding.Validate() != nil || binding.RoleID != roleID {
+		return SessionTarget{}, ErrSessionOffline
 	}
 	if expectedSessionID != 0 && binding.SessionID != expectedSessionID {
-		return Route{}, ErrSessionChanged
+		return SessionTarget{}, ErrSessionChanged
 	}
-	if _, err := Resolve(r.directory, InstanceRoute(binding.InstanceID)); err != nil {
-		return Route{}, err
+	instance, found := r.directory.ResolveID(binding.InstanceID)
+	if !found || !providesService(instance, "msgq") {
+		return SessionTarget{}, ErrRouteUnavailable
 	}
 	refreshed, err := r.store.Refresh(ctx, binding)
 	if err != nil {
-		return Route{}, err
+		return SessionTarget{}, err
 	}
 	if !refreshed {
-		return Route{}, ErrSessionChanged
+		return SessionTarget{}, ErrSessionChanged
 	}
+	return SessionTarget{Binding: binding, Instance: instance}, nil
+}
 
-	return Route{
-		Kind:       RouteSession,
-		InstanceID: binding.InstanceID,
-		RoleID:     binding.RoleID,
-		SessionID:  binding.SessionID,
-	}, nil
+func validValue(value string) bool {
+	return value != "" && value == strings.TrimSpace(value)
+}
+
+func providesService(instance discovery.Instance, service string) bool {
+	for _, value := range instance.Services {
+		if value == service {
+			return true
+		}
+	}
+	return false
 }

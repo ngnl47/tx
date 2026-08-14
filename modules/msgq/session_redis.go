@@ -1,4 +1,4 @@
-package rpc
+package msgq
 
 import (
 	"context"
@@ -10,9 +10,9 @@ import (
 )
 
 var (
-	ErrSessionRedisClientNil = errors.New("rpc: session redis client is nil")
-	ErrInvalidSessionOptions = errors.New("rpc: invalid session redis options")
-	ErrSessionStoreResponse  = errors.New("rpc: invalid session store response")
+	ErrSessionRedisClientNil = errors.New("msgq: session redis client is nil")
+	ErrInvalidSessionOptions = errors.New("msgq: invalid session redis options")
+	ErrSessionStoreResponse  = errors.New("msgq: invalid session store response")
 )
 
 const bindSessionScript = `
@@ -91,7 +91,7 @@ func (s *RedisSessionStore) Bind(ctx context.Context, binding SessionBinding) (S
 // Find 返回 roleID 的当前绑定。
 func (s *RedisSessionStore) Find(ctx context.Context, roleID int64) (SessionBinding, bool, error) {
 	if roleID <= 0 {
-		return SessionBinding{}, false, ErrInvalidRoute
+		return SessionBinding{}, false, ErrInvalidSession
 	}
 	value, found, err := s.client.Get(ctx, s.key(roleID))
 	if err != nil || !found {

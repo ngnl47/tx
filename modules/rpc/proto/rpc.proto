@@ -9,8 +9,6 @@ enum RouteKind {
   ROUTE_KIND_UNSPECIFIED = 0;
   ROUTE_KIND_SERVICE = 1;
   ROUTE_KIND_INSTANCE = 2;
-  ROUTE_KIND_SESSION = 3;
-  ROUTE_KIND_ACTOR = 4;
 }
 
 // Route contains transport-level routing metadata. Payload remains opaque.
@@ -18,10 +16,6 @@ message Route {
   RouteKind kind = 1;
   string service = 2;
   string instance_id = 3;
-  string actor_kind = 4;
-  string identity = 5;
-  int64 role_id = 6;
-  int64 session_id = 7;
 }
 
 // Delivery is a directed internal message. Payload uses the caller's codec.

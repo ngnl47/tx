@@ -235,22 +235,84 @@ TX_ETCD_ENDPOINT=127.0.0.1:2379 \
   -run '^TestEtcdRegistryLifecycleIntegration$' -count=1
 ```
 
-## 内部 RPC 协议（迁移期）
+## msgq 会话绑定
 
-`modules/rpc` 是当前已实现的迁移期内部投递代码。Actor 模块完成后会迁移调用点并删除该包，不为
-新增业务提供长期 API。它不替换客户端上下行协议，也不要求把 `GD*` 映射为 protobuf 消息；
+`modules/msgq` 已负责 `roleID -> (sessionID, msgq instanceID)` 的短期绑定与精确 owner 解析；它不把下行
+payload 写入 Redis。Redis 只保存带 TTL 的绑定 key，真正的 Session、下行队列、Seq/Ack 和 Topic 仍属于后续
+msgq 进程内存邮箱。
+
+绑定 key 固定为 `<prefix>:session:{<roleID>}`，花括号保证本地原生 Redis Cluster 下 Lua 始终只访问同一 slot：
+
+```go
+import (
+    "time"
+
+    "github.com/ngnl47/tx/modules/msgq"
+    "github.com/ngnl47/tx/storage/redis/goredis"
+    redis "github.com/redis/go-redis/v9"
+)
+
+rawRedis := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379"})
+bindings, err := msgq.NewRedisSessionStore(goredis.NewClient(rawRedis), msgq.SessionRedisOptions{
+    Prefix: "txgame:local",
+    TTL:    48 * time.Hour,
+})
+if err != nil {
+    return err
+}
+sessions, err := msgq.NewSessionRouter(directory, bindings)
+if err != nil {
+    return err
+}
+
+// 登录到 msgq-2 后覆盖旧连接；业务可据 previous 通知旧连接排空。
+previous, replaced, err := bindings.Bind(ctx, msgq.SessionBinding{
+    RoleID:     470001,
+    SessionID:  99,
+    InstanceID: "msgq-2",
+})
+if err != nil {
+    return err
+}
+_ = previous
+_ = replaced
+
+// expectedSessionID 为 0 表示接受当前连接；非零时拒绝陈旧连接。
+target, err := sessions.Resolve(ctx, 470001, 0)
+if err != nil {
+    return err // 离线、连接已替换或 owner 不可用均显式返回错误。
+}
+_ = target.Instance.Endpoint
+```
+
+`Bind` 以 Lua 原子覆盖并返回旧绑定。`Refresh` 与 `Unbind` 都先比较完整 `(roleID, sessionID, instanceID)`，
+所以旧连接不能续期、解绑或覆盖新连接。`SessionRouter.Resolve` 先确认实例仍在目录中，再条件续期；实例已摘除
+时不会续期或删除 Redis 绑定，也不会随机退化到其他 msgq 副本。
+
+本机或 CI 已启动 Redis 时可执行真实回归；未设置变量时该用例会跳过：
+
+```bash
+cd /Users/a47/workspace/tx
+TX_REDIS_ENDPOINT=127.0.0.1:6379 \
+env GOCACHE=/private/tmp/tx-go126-build GOTMPDIR=/private/tmp \
+GOMODCACHE=/private/tmp/tx-go-modcache GOTOOLCHAIN=local \
+/Users/a47/sdk/go1.26.5/bin/go test ./tests \
+  -run '^TestMsgQRedisSessionStoreIntegration$' -count=1
+```
+
+## 内部 gRPC 协议
+
+`modules/rpc` 是独立的进程间 gRPC 调用层，长期只负责 Service/Instance 两种目标的请求投递、服务端
+Receiver 桥接与连接复用。它不替换客户端上下行协议，也不要求把 `GD*` 映射为 protobuf 消息；
 `Delivery.Payload` 始终是调用方已经编码完成的 BON 字节。
 
-例如，会话下行由会话路由元数据定位目标 msgq 实例，原有协议体直接放入 `Payload`：
+例如，向指定 battle 实例投递时，将原有协议体直接放入 `Payload`：
 
 ```go
 delivery := &rpcpb.Delivery{
     Route: &rpcpb.Route{
-        Kind:       rpcpb.RouteKind_ROUTE_KIND_SESSION,
-        Service:    "msgq",
-        InstanceId: "msgq-2",
-        RoleId:     470001,
-        SessionId:  99,
+        Kind:       rpcpb.RouteKind_ROUTE_KIND_INSTANCE,
+        InstanceId: "battle-2",
     },
     MessageType: "Role_UpdateNotify",
     CommandId:   72001,
@@ -258,8 +320,8 @@ delivery := &rpcpb.Delivery{
 }
 ```
 
-当前阶段 `Delivery`、服务目录解析、服务端 Receiver 桥接、gRPC 连接复用和 Redis 会话绑定已经可用；
-投递重试与 Actor mailbox 仍属于后续模块。业务不应依赖生成的 `pb` 包来定义客户端 DTO。
+新增业务可以使用该包进行明确的服务/实例调用，但不应依赖生成的 `pb` 类型定义客户端 DTO。会话 owner 由
+`msgq.SessionRouter` 解析；Actor 消息由 `actor.VirtualPID` 或 `actor.FixedPID` 投递。
 
 服务进程创建 gRPC server 后，注册接收器即可得到已校验的业务 `Delivery`。Receiver 返回错误时，
 调用方会收到 gRPC 错误，框架不会把投递失败伪装为已接受：
@@ -276,84 +338,14 @@ if err != nil {
 }
 ```
 
-需要选择目标实例时，使用 `Resolve`。服务路由只返回 `running` 副本；已经知道实例 ID 的会话或 Actor
-路由会精确解析 `running/stopping` 实例：
+需要选择目标实例时，使用 `Resolve`。服务路由只返回 `running` 副本；已经知道实例 ID 的实例路由会精确
+解析 `running/stopping` 实例：
 
 ```go
 instance, err := rpc.Resolve(directory, rpc.ServiceRoute("battle"))
 if err != nil {
     return err
 }
-
-sessionRoute := rpc.Route{
-    Kind:       rpc.RouteSession,
-    InstanceID: "msgq-2",
-    RoleID:     470001,
-    SessionID:  99,
-}
-msgq, err := rpc.Resolve(directory, sessionRoute)
-```
-
-### Redis 会话绑定
-
-`RedisSessionStore` 维护 `roleID -> (sessionID, msgq instanceID)` 的短期绑定。业务登录成功后写入绑定；
-下行前由 `SessionRouter` 解析当前 owner，再把返回的精确路由交给 `Sender`。绑定 key 固定为
-`<prefix>:session:{<roleID>}`，花括号保证本地原生 Redis Cluster 下 Lua 始终只访问同一 slot。
-
-```go
-rawRedis := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379"})
-bindings, err := rpc.NewRedisSessionStore(goredis.NewClient(rawRedis), rpc.SessionRedisOptions{
-    Prefix: "txgame:local",
-    TTL:    48 * time.Hour,
-})
-if err != nil {
-    return err
-}
-sessions, err := rpc.NewSessionRouter(directory, bindings)
-if err != nil {
-    return err
-}
-
-// 登录到 msgq-2 后覆盖旧连接，并由业务决定是否通知旧实例排空。
-previous, replaced, err := bindings.Bind(ctx, rpc.SessionBinding{
-    RoleID:     470001,
-    SessionID:  99,
-    InstanceID: "msgq-2",
-})
-if err != nil {
-    return err
-}
-_ = previous
-_ = replaced
-
-// expectedSessionID 为 0 表示向当前连接发送；非零时可拦截陈旧请求。
-route, err := sessions.Resolve(ctx, 470001, 0)
-if err != nil {
-    return err // 离线、连接已替换或 owner 不可用均显式返回错误。
-}
-err = sender.Send(ctx, rpc.Delivery{
-    Route:       route,
-    MessageType: "Role_UpdateNotify",
-    CommandID:   8001,
-    Payload:     bonBody,
-})
-```
-
-`Bind` 以 Lua 原子覆盖并返回旧绑定。`Refresh` 与 `Unbind` 都先比较完整 `(roleID, sessionID, instanceID)`，
-只有仍匹配时才续期或删除，所以旧连接不会续期、解绑或覆盖新连接。`SessionRouter.Resolve` 先确认实例仍在
-目录中，再条件续期；实例已摘除时不会续期或删除 Redis 绑定，也不会随机退化到其他 `msgq` 副本。
-`expectedSessionID` 不匹配或条件续期失败会返回 `rpc.ErrSessionChanged`；不存在绑定返回
-`rpc.ErrSessionOffline`。
-
-本机或 CI 已启动 Redis 时可执行真实回归；未设置变量时该用例会跳过：
-
-```bash
-cd /Users/a47/workspace/tx
-TX_REDIS_ENDPOINT=127.0.0.1:6379 \
-env GOCACHE=/private/tmp/tx-go126-build GOTMPDIR=/private/tmp \
-GOMODCACHE=/private/tmp/tx-go-modcache GOTOOLCHAIN=local \
-/Users/a47/sdk/go1.26.5/bin/go test ./tests \
-  -run '^TestRedisSessionStoreIntegration$' -count=1
 ```
 
 发送端由 `GRPCDialer` 与 `Sender` 组成。Dialer 必须显式传入 TLS 或 `insecure` 凭证；tx 不会默认为
@@ -398,6 +390,11 @@ PROTOC=/Users/a47/sdk/protoc-29.3/bin/protoc \
 GO_BIN=/Users/a47/sdk/go1.26.5/bin/go \
 ./cmd/protoc/run.sh rpc
 
+# 仅生成 Actor 内部消息信封。
+PROTOC=/Users/a47/sdk/protoc-29.3/bin/protoc \
+GO_BIN=/Users/a47/sdk/go1.26.5/bin/go \
+./cmd/protoc/run.sh actor
+
 # 生成全部已注册包。
 PROTOC=/Users/a47/sdk/protoc-29.3/bin/protoc \
 GO_BIN=/Users/a47/sdk/go1.26.5/bin/go \
@@ -417,7 +414,8 @@ GOBIN="$HOME/go/bin" /Users/a47/sdk/go1.26.5/bin/go install \
 ```
 
 将 `protoc`、`protoc-gen-go` 和 `protoc-gen-go-grpc` 放入 `PATH` 后，也可以不设置 `PROTOC` 与
-`GO_BIN`。生成的 `modules/rpc/pb/*.pb.go` 属于版本化源文件，应与 `.proto` 一起提交。
+`GO_BIN`。生成的 `modules/actor/pb/*.pb.go` 与 `modules/rpc/pb/*.pb.go` 都属于版本化源文件，应与对应
+`.proto` 一起提交。
 
 ## Actor Cluster 与 msgq
 
@@ -439,6 +437,7 @@ import (
     protoactor "github.com/asynkron/protoactor-go/actor"
     "github.com/asynkron/protoactor-go/cluster"
     txactor "github.com/ngnl47/tx/modules/actor"
+    actorpb "github.com/ngnl47/tx/modules/actor/pb"
 )
 
 runtime, err := txactor.New(txactor.Config{
@@ -468,11 +467,34 @@ system, err := runtime.ActorSystem()
 if err != nil {
     return err
 }
-result, err := system.Root.RequestFuture(pid, &RoleCommand{RoleID: 470001}, time.Second).Result()
+message, err := (txactor.Delivery{
+    MessageType: "role.rename",
+    CommandID:   470001,
+    Payload:     bonBody, // 调用方已编码的 BON 字节。
+}).ToProto()
+if err != nil {
+    return err
+}
+result, err := system.Root.RequestFuture(pid, message, time.Second).Result()
 if err != nil {
     return err
 }
 _ = result
+```
+
+业务 Actor 收到的是 `*actorpb.Delivery`，在业务边界转换回普通值对象即可。转换会复制 `Payload`，避免发送方或
+ProtoActor 内部复用缓冲区影响业务读取：
+
+```go
+message, ok := ctx.Message().(*actorpb.Delivery)
+if !ok {
+    return
+}
+delivery, err := txactor.DeliveryFromProto(message)
+if err != nil {
+    return
+}
+// delivery.MessageType、delivery.CommandID 和 delivery.Payload 由业务处理。
 ```
 
 上例的 `role` 是可恢复的 Virtual Actor。它的 `identity` 由集群根据成员视图路由，业务必须能在新节点上从

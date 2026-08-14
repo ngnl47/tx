@@ -12,11 +12,8 @@ func TestRPCDeliveryKeepsRouteMetadataAndOpaquePayload(t *testing.T) {
 	payload := []byte{0x92, 0xa4, 'r', 'o', 'l', 'e', 0xcd, 0x03, 0xe9}
 	delivery := &rpcpb.Delivery{
 		Route: &rpcpb.Route{
-			Kind:       rpcpb.RouteKind_ROUTE_KIND_SESSION,
-			Service:    "msgq",
-			InstanceId: "msgq-2",
-			RoleId:     470001,
-			SessionId:  99,
+			Kind:       rpcpb.RouteKind_ROUTE_KIND_INSTANCE,
+			InstanceId: "battle-2",
 		},
 		MessageType: "Role_UpdateNotify",
 		CommandId:   72001,
@@ -33,11 +30,11 @@ func TestRPCDeliveryKeepsRouteMetadataAndOpaquePayload(t *testing.T) {
 		t.Fatalf("unmarshal delivery: %v", err)
 	}
 
-	if received.GetRoute().GetKind() != rpcpb.RouteKind_ROUTE_KIND_SESSION {
-		t.Fatalf("route kind = %v, want session", received.GetRoute().GetKind())
+	if received.GetRoute().GetKind() != rpcpb.RouteKind_ROUTE_KIND_INSTANCE {
+		t.Fatalf("route kind = %v, want instance", received.GetRoute().GetKind())
 	}
-	if received.GetRoute().GetInstanceId() != "msgq-2" {
-		t.Fatalf("instance id = %q, want msgq-2", received.GetRoute().GetInstanceId())
+	if received.GetRoute().GetInstanceId() != "battle-2" {
+		t.Fatalf("instance id = %q, want battle-2", received.GetRoute().GetInstanceId())
 	}
 	if !bytes.Equal(received.GetPayload(), payload) {
 		t.Fatalf("payload = %x, want %x", received.GetPayload(), payload)

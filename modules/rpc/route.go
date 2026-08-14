@@ -20,8 +20,6 @@ const (
 	RouteUnknown RouteKind = iota
 	RouteService
 	RouteInstance
-	RouteSession
-	RouteActor
 )
 
 // Route contains transport-level routing metadata.
@@ -29,10 +27,6 @@ type Route struct {
 	Kind       RouteKind
 	Service    string
 	InstanceID string
-	ActorKind  string
-	Identity   string
-	RoleID     int64
-	SessionID  int64
 }
 
 // ServiceRoute creates a route that selects a running service replica.
@@ -51,7 +45,7 @@ func (r Route) Validate() error {
 		if validRouteValue(r.Service) {
 			return nil
 		}
-	case RouteInstance, RouteSession, RouteActor:
+	case RouteInstance:
 		if validRouteValue(r.InstanceID) {
 			return nil
 		}

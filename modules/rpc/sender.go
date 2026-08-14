@@ -211,20 +211,12 @@ func routeToProto(route Route) (*rpcpb.Route, error) {
 	converted := &rpcpb.Route{
 		Service:    route.Service,
 		InstanceId: route.InstanceID,
-		ActorKind:  route.ActorKind,
-		Identity:   route.Identity,
-		RoleId:     route.RoleID,
-		SessionId:  route.SessionID,
 	}
 	switch route.Kind {
 	case RouteService:
 		converted.Kind = rpcpb.RouteKind_ROUTE_KIND_SERVICE
 	case RouteInstance:
 		converted.Kind = rpcpb.RouteKind_ROUTE_KIND_INSTANCE
-	case RouteSession:
-		converted.Kind = rpcpb.RouteKind_ROUTE_KIND_SESSION
-	case RouteActor:
-		converted.Kind = rpcpb.RouteKind_ROUTE_KIND_ACTOR
 	default:
 		return nil, ErrInvalidRoute
 	}
