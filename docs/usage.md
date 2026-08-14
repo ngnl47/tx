@@ -494,6 +494,79 @@ GOMODCACHE=/private/tmp/tx-go-modcache GOTOOLCHAIN=local \
   -run '^TestMsgQRedisSessionStoreIntegration$' -count=1
 ```
 
+## Agent 玩家接入
+
+`modules/agent` 是可选的玩家连接运行时，提供两种默认传输：TCP 使用 4 字节 big-endian 长度前缀加二进制帧，
+WebSocket 只接受 binary message。两种传输共用同一套 `Frame`、身份解析、Seq/Ack 和下行 Fetch 循环；业务 body
+始终是 BON bytes，不转换为 protobuf 或 JSON。
+
+Agent 不实现账号、JWT、游客登录或角色选择。项目必须在启动前提供 `IdentityResolver`，将握手中的不透明数据解析为
+逻辑 `RoleID` 和 `SessionID`；上游已经认证时，也可以直接解析可信 ticket：
+
+```go
+handlers := appagent.Handlers{
+    IdentityResolver: txagent.IdentityResolverFunc(func(ctx context.Context, req txagent.AuthRequest) (txagent.Identity, error) {
+        // 项目在这里校验 token，或解析登录服签发的可信 ticket。
+        return txagent.Identity{RoleID: 470001, SessionID: 99}, nil
+    }),
+    Dispatcher: txagent.DispatchFunc(func(ctx context.Context, req txagent.DispatchRequest) error {
+        // req.Payload 是已经编码好的 BON 业务 body。
+        // 项目在这里解码 Cmd，并投递本地服务或业务 Actor。
+        return nil
+    }),
+}
+if err := appagent.RegisterHandlers(handlers); err != nil {
+    return err
+}
+```
+
+一条连接的处理顺序固定如下：
+
+1. 客户端先发送 `FrameHandshake`，其中 `Payload` 交给 `IdentityResolver`，`Restore/Ack` 交给会话恢复。
+2. Agent 按 `RoleID` 取得当前 msgq owner 并调用 `Init`；同进程 msgq 时直接复用本地 `SessionClient`，分进程时按 Redis owner 和服务目录复用 gRPC 连接。
+3. 每个 `FrameBusiness` 先调用 `Rec(roleID, seq, ack)`。只有 `ReceivedSeq` 前进时才进入 `Dispatcher`，重复 Seq 不会重复分发。
+4. Agent 持续 `FetchSome` 下行队列，写出 `FrameOutbound`；客户端在后续上行帧携带 Ack，`Rec` 会确认对应下行消息。
+
+`Rec` 在业务分发之前前进上行 Seq。因此业务处理失败或进程在 `Rec` 之后崩溃时，该条上行不会被框架自动重放。
+普通游戏操作接受这个语义；不能重复执行的命令必须由项目在 BON body 中携带 `CommandID` 并实现幂等。
+
+`txgame` 的最小配置如下。启用 Agent 时至少配置一个监听地址，`maxFrameBytes` 和 `fetchBatch` 必须为正数；
+同时必须启用 `runtime.msgq`，因为 Agent 需要会话 binding 的 Redis 配置：
+
+```yaml
+runtime:
+  agent:
+    enabled: true
+    tcpListen: 0.0.0.0:9000
+    webSocketListen: 0.0.0.0:9001
+    maxFrameBytes: 1048576
+    fetchBatch: 16
+  msgq:
+    enabled: true
+    routeType: fusion
+    prefix: txgame:msgq
+    ttl: 48h
+    maxBacklog: 1024
+    offlineTimeout: 60s
+    sweepInterval: 2s
+```
+
+同一进程同时启动时，Agent 不建立额外的 gRPC 连接：
+
+```bash
+go run ./cmd/server -module=game,msgq,agent
+```
+
+接入层与会话邮箱分开部署时，只启动 Agent；它从 `ServiceDirectory` 选择 running msgq 实例，因此必须启用 discovery，
+并使 msgq 实例以自身 gRPC endpoint 注册到目录：
+
+```bash
+go run ./cmd/server -module=agent
+```
+
+Agent 停止时先关闭 TCP/WebSocket listener，停止接收新连接；WebSocket 主动断开，TCP Session 随服务根
+`WaitGroupContext` 取消退出。断线不会主动调用 `CloseSession`，会话由 `OfflineTimeout` 和重连 `Init` 管理。
+
 ## 内部 gRPC 协议
 
 `modules/rpc` 是独立的进程间 gRPC 调用层，长期只负责 Service/Instance 两种目标的请求投递、服务端

@@ -351,7 +351,7 @@ func RegisterHandlers(handlers Handlers) error
 func RegisteredHandlers() (Handlers, error)
 ```
 
-- [ ] **Step 1: 写失败配置和 Host 集成测试**
+- [x] **Step 1: 写失败配置和 Host 集成测试**
 
 在 `loader_test.go` 加入严格 yml 校验，在 `module_test.go` 用内存或本机 Redis SessionStore 和真实 TCP/WebSocket 回环覆盖：
 
@@ -373,7 +373,7 @@ func TestAgentModuleUsesDirectoryForRemoteMsgQ(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 运行 txgame 定向测试，确认配置和模块不存在**
+- [x] **Step 2: 运行 txgame 定向测试，确认配置和模块不存在**
 
 Run:
 
@@ -383,7 +383,7 @@ cd /Users/a47/workspace/txgame/server && env GOCACHE=/private/tmp/tx-go126-build
 
 Expected: FAIL，提示 `AgentSection` 或 `agentmodule` 不存在。
 
-- [ ] **Step 3: 实现项目装配**
+- [x] **Step 3: 实现项目装配**
 
 在 `runtime.agent` 启用时严格校验监听地址、帧大小和批量 Fetch 数。`internal/agent` 只保存项目注册的认证与分发回调，不实现账号或 Cmd；缺失回调时 `agent` 模块启动失败。
 
@@ -391,7 +391,7 @@ Expected: FAIL，提示 `AgentSection` 或 `agentmodule` 不存在。
 
 主入口仅在 `runtime.agent.enabled` 为真时注册 Agent Module，使 `-module=agent,msgq` 与 `-module=agent` 均可由 Host 正确选择；服务发现中公布的模块列表继续由实际选择结果生成。
 
-- [ ] **Step 4: 运行 txgame 集成与真实 Redis 回归**
+- [x] **Step 4: 运行 txgame 集成与真实 Redis 回归**
 
 Run:
 
@@ -401,7 +401,7 @@ cd /Users/a47/workspace/txgame/server && env TX_REDIS_ADDR=127.0.0.1:6379 GOCACH
 
 Expected: PASS；Redis 不可用时相关测试应明确 skip，非 skip 的装配失败应返回错误而不是 panic。
 
-- [ ] **Step 5: 提供提交信息**
+- [x] **Step 5: 提供提交信息**
 
 ```text
 feat(txgame): 装配可选 Agent 服务模块
@@ -422,7 +422,7 @@ feat(txgame): 装配可选 Agent 服务模块
 - Consumes: Tasks 1-4 的全部公开 API。
 - Produces: 可直接复制的 TCP/WebSocket Agent、认证回调、Dispatcher、同进程/分进程 yml 与模块启动示例。
 
-- [ ] **Step 1: 写文档示例断言或编译示例**
+- [x] **Step 1: 写文档示例断言或编译示例**
 
 为 usage 中的最小业务回调保留可编译片段：
 
@@ -440,11 +440,11 @@ handlers := appagent.Handlers{
 
 并在 txgame 集成测试中使用等价实现，防止文档与 API 漂移。
 
-- [ ] **Step 2: 补充文档**
+- [x] **Step 2: 补充文档**
 
 `tx/docs/usage.md` 说明：TCP 长度帧、WebSocket binary message、握手 token、Seq/Ack、`Rec` 即消费、下行确认、断线重连、msgq 同进程/跨进程、错误关闭与 `CommandID` 边界。`txgame/README.md` 给出 `runtime.agent` yml、环境变量、`-module=agent,msgq` 与分离部署示例。实施计划删除已完成项，只保留多路旁路适配器为后续扩展点。
 
-- [ ] **Step 3: 运行所有工程验证**
+- [x] **Step 3: 运行所有工程验证**
 
 Run:
 
@@ -458,7 +458,7 @@ git -C /Users/a47/workspace/txgame diff --check
 
 Expected: 全部 PASS，且无 whitespace error。
 
-- [ ] **Step 4: 提供提交信息**
+- [x] **Step 4: 提供提交信息**
 
 ```text
 docs(agent): 补充玩家接入与模块部署说明

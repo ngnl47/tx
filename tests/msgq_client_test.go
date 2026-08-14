@@ -126,6 +126,29 @@ func TestLocalSessionClientDelegatesMailboxCalls(t *testing.T) {
 	}
 }
 
+func TestFixedSessionClientRouterAlwaysReturnsSharedLocalClient(t *testing.T) {
+	client := &sessionClientFake{}
+	router, err := msgq.NewFixedSessionClientRouter(client)
+	if err != nil {
+		t.Fatalf("new fixed session client router: %v", err)
+	}
+	for range 2 {
+		got, err := router.Acquire(context.Background(), 470001)
+		if err != nil {
+			t.Fatalf("acquire fixed session client: %v", err)
+		}
+		if got != client {
+			t.Fatalf("client = %T %p, want shared %p", got, got, client)
+		}
+	}
+	if err := router.Close(); err != nil {
+		t.Fatalf("close fixed session client router: %v", err)
+	}
+	if client.closeCalls != 0 {
+		t.Fatalf("fixed router closed shared client %d times, want 0", client.closeCalls)
+	}
+}
+
 func TestGRPCSessionClientDelegatesMailboxCalls(t *testing.T) {
 	mailbox, err := msgq.NewServer(msgq.ServerOptions{
 		InstanceID: "msgq-remote",

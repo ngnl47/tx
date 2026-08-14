@@ -10,6 +10,7 @@ import (
 
 var (
 	ErrSessionClientDialerNil    = errors.New("msgq: session client dialer is nil")
+	ErrSessionClientNil          = errors.New("msgq: session client is nil")
 	ErrSessionClientRouterClosed = errors.New("msgq: session client router is closed")
 )
 
@@ -27,6 +28,34 @@ type SessionClient interface {
 type SessionClientDialer interface {
 	DialSession(context.Context, discovery.Instance) (SessionClient, error)
 }
+
+// FixedSessionClientRouter 将同进程的共享 SessionClient 适配为 Agent 会话路由器。
+// 它不拥有 client，因此 Close 不会关闭 msgq 服务本身。
+type FixedSessionClientRouter struct {
+	client SessionClient
+}
+
+// NewFixedSessionClientRouter 创建始终返回同一会话客户端的本地路由器。
+func NewFixedSessionClientRouter(client SessionClient) (*FixedSessionClientRouter, error) {
+	if client == nil {
+		return nil, ErrSessionClientNil
+	}
+	return &FixedSessionClientRouter{client: client}, nil
+}
+
+// Acquire 返回共享会话客户端。roleID 仍会校验，避免在接入层吞掉无效身份错误。
+func (r *FixedSessionClientRouter) Acquire(_ context.Context, roleID int64) (SessionClient, error) {
+	if r == nil || r.client == nil {
+		return nil, ErrSessionClientNil
+	}
+	if roleID <= 0 {
+		return nil, ErrInvalidSession
+	}
+	return r.client, nil
+}
+
+// Close 是无操作：客户端由 msgq 模块在 Host 关闭时统一停止。
+func (*FixedSessionClientRouter) Close() error { return nil }
 
 // NewLocalSessionClient 将进程内邮箱适配为 SessionClient。
 func NewLocalSessionClient(mailbox *Server) (SessionClient, error) {
