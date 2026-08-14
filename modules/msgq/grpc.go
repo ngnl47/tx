@@ -159,3 +159,30 @@ func mailboxStatusError(err error) error {
 		return status.Error(codes.Internal, fmt.Sprintf("msgq request failed: %v", err))
 	}
 }
+
+func mailboxClientError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	switch status.Code(err) {
+	case codes.Canceled:
+		return context.Canceled
+	case codes.DeadlineExceeded:
+		return context.DeadlineExceeded
+	case codes.InvalidArgument:
+		return fmt.Errorf("%w: %v", ErrInvalidHeader, err)
+	case codes.NotFound:
+		return fmt.Errorf("%w: %v", ErrSessionOffline, err)
+	case codes.Aborted:
+		return fmt.Errorf("%w: %v", ErrSessionChanged, err)
+	case codes.ResourceExhausted:
+		return fmt.Errorf("%w: %v", ErrOutboundOverflow, err)
+	case codes.Unavailable:
+		return fmt.Errorf("%w: %v", ErrRouteUnavailable, err)
+	default:
+		return err
+	}
+}

@@ -455,6 +455,34 @@ if err != nil {
 `InvalidArgument`，离线会话为 `NotFound`，旧连接为 `Aborted`，队列满为 `ResourceExhausted`；不会静默丢失或伪造投递成功。
 应用服务关闭时先停止 gRPC listener，未确认下行仍遵循 msgq 的内存语义。
 
+业务 Actor 或其他服务不应自行读取 `SessionBinding`、拼接 endpoint 或维护每个 msgq 实例的连接。使用 `Sender` 即可按
+`roleID` 解析 Redis owner、校验当前 `SessionID`，并按 endpoint 复用 gRPC 连接：
+
+```go
+router, err := msgq.NewSessionRouter(directory, sessionStore)
+if err != nil {
+    return err
+}
+dialer, err := msgq.NewGRPCDialer(insecure.NewCredentials()) // 仅可信私网示例。
+if err != nil {
+    return err
+}
+sender, err := msgq.NewSender(router, dialer)
+if err != nil {
+    return err
+}
+defer sender.Close()
+
+// 例如 Battle Actor 为角色 470001 发送一个已完成 BON 编码的下行包。
+if _, err := sender.Pub(ctx, 470001, bonNotify); err != nil {
+    // 离线、owner 改变、路由不可用、队列满或传输失败均明确返回错误。
+    return err
+}
+```
+
+`Sender` 不自动重试 `Pub`：连接异常时服务端是否已接受该消息无法确定，自动重发可能产生重复下行。调用方应按协议消息的
+幂等语义决定重试或重同步；关闭服务时必须调用 `Sender.Close()` 释放缓存连接。
+
 本机或 CI 已启动 Redis 时可执行真实回归；未设置变量时该用例会跳过：
 
 ```bash
