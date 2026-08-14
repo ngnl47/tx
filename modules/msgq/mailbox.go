@@ -2,8 +2,18 @@ package msgq
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
+	"sync/atomic"
+	"time"
+
+	txlog "github.com/ngnl47/tx/log"
+)
+
+const (
+	defaultOfflineTimeout = 60 * time.Second
+	defaultSweepInterval  = 2 * time.Second
 )
 
 // Server 在本进程维护客户端会话与未确认下行消息。
@@ -12,6 +22,9 @@ type Server struct {
 	instanceID string
 	store      SessionStore
 	maxBacklog int
+	offlineTTL time.Duration
+	sweepEvery time.Duration
+	reaping    atomic.Bool
 
 	mu       sync.RWMutex
 	sessions map[int64]*mailboxSession
@@ -22,9 +35,11 @@ type Server struct {
 
 // ServerOptions 配置会话邮箱服务。
 type ServerOptions struct {
-	InstanceID string
-	Store      SessionStore
-	MaxBacklog int
+	InstanceID     string
+	Store          SessionStore
+	MaxBacklog     int
+	OfflineTimeout time.Duration
+	SweepInterval  time.Duration
 }
 
 // SessionHeader 唯一标识一次客户端连接。
@@ -131,13 +146,21 @@ type BroadcastTopicResult struct {
 
 // NewServer 创建一个有界的进程内会话邮箱。
 func NewServer(options ServerOptions) (*Server, error) {
-	if !validValue(options.InstanceID) || options.Store == nil || options.MaxBacklog <= 0 {
+	if !validValue(options.InstanceID) || options.Store == nil || options.MaxBacklog <= 0 || options.OfflineTimeout < 0 || options.SweepInterval < 0 {
 		return nil, ErrInvalidServer
+	}
+	if options.OfflineTimeout == 0 {
+		options.OfflineTimeout = defaultOfflineTimeout
+	}
+	if options.SweepInterval == 0 {
+		options.SweepInterval = defaultSweepInterval
 	}
 	return &Server{
 		instanceID: options.InstanceID,
 		store:      options.Store,
 		maxBacklog: options.MaxBacklog,
+		offlineTTL: options.OfflineTimeout,
+		sweepEvery: options.SweepInterval,
 		sessions:   make(map[int64]*mailboxSession),
 		topics:     make(map[string]map[*mailboxSession]struct{}),
 	}, nil
@@ -168,6 +191,7 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 		return InitResult{}, ErrSessionChanged
 	}
 	session.connectionID = request.Header.ConnectionID
+	session.lastActivity = time.Now()
 	if request.Restore {
 		session.outbound.resetSent()
 		session.outbound.confirm(request.Ack)
@@ -467,6 +491,75 @@ func (s *Server) SessionCount() int {
 	return len(s.sessions)
 }
 
+// Reap 移除超过 OfflineTimeout 未产生客户端会话活动的本地 Session。
+// 即使 Redis 条件解绑失败，失活会话也会从本机移除，Redis TTL 会兜底清理旧 owner。
+func (s *Server) Reap(ctx context.Context, now time.Time) (int, error) {
+	if s == nil {
+		return 0, ErrServerNil
+	}
+	if ctx == nil {
+		return 0, ErrLifecycleNil
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	sessions := s.sessionSnapshot()
+	removed := 0
+	var errs []error
+	for _, session := range sessions {
+		session.mu.Lock()
+		if !session.active || now.Sub(session.lastActivity) < s.offlineTTL {
+			session.mu.Unlock()
+			continue
+		}
+		binding := SessionBinding{
+			RoleID:       session.roleID,
+			SessionID:    session.sessionID,
+			ConnectionID: session.connectionID,
+			InstanceID:   s.instanceID,
+		}
+		_, err := s.store.Unbind(ctx, binding)
+		s.removeLocked(session)
+		session.mu.Unlock()
+		removed++
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return removed, errors.Join(errs...)
+}
+
+// Start 将空闲会话清理循环绑定到服务的 WaitGroupContext。
+func (s *Server) Start(ctx waitGroupContext) error {
+	if s == nil {
+		return ErrServerNil
+	}
+	if ctx == nil {
+		return ErrLifecycleNil
+	}
+	if !s.reaping.CompareAndSwap(false, true) {
+		return ErrReaperRunning
+	}
+	ctx.WaitGroupAdd(1)
+	go func() {
+		defer ctx.WaitGroupDone()
+		defer s.reaping.Store(false)
+		ticker := time.NewTicker(s.sweepEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				if _, err := s.Reap(ctx, now); err != nil && ctx.Err() == nil {
+					txlog.ErrorContext(ctx, "msgq reap idle sessions failed", "err", err)
+				}
+			}
+		}
+	}()
+	return nil
+}
+
 func (s *Server) install(header SessionHeader) *mailboxSession {
 	s.mu.Lock()
 	current := s.sessions[header.RoleID]
@@ -492,6 +585,16 @@ func (s *Server) lookup(roleID int64) (*mailboxSession, bool) {
 	defer s.mu.RUnlock()
 	session, found := s.sessions[roleID]
 	return session, found
+}
+
+func (s *Server) sessionSnapshot() []*mailboxSession {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sessions := make([]*mailboxSession, 0, len(s.sessions))
+	for _, session := range s.sessions {
+		sessions = append(sessions, session)
+	}
+	return sessions
 }
 
 func (s *Server) remove(session *mailboxSession) {
@@ -583,6 +686,13 @@ func (s *Server) touch(ctx context.Context, header SessionHeader) (*mailboxSessi
 		s.remove(session)
 		return nil, ErrSessionChanged
 	}
+	session.mu.Lock()
+	if err := session.requireConnection(header); err != nil {
+		session.mu.Unlock()
+		return nil, err
+	}
+	session.lastActivity = time.Now()
+	session.mu.Unlock()
 	return session, nil
 }
 
@@ -599,6 +709,7 @@ type mailboxSession struct {
 	connectionID int64
 	receivedSeq  int64
 	active       bool
+	lastActivity time.Time
 	notify       chan struct{}
 	outbound     outboundQueue
 	topics       map[string]struct{}
@@ -611,6 +722,7 @@ func newMailboxSession(header SessionHeader) *mailboxSession {
 		sessionID:    header.SessionID,
 		connectionID: header.ConnectionID,
 		active:       true,
+		lastActivity: time.Now(),
 		notify:       make(chan struct{}, 1),
 		topics:       make(map[string]struct{}),
 	}
@@ -713,4 +825,10 @@ func validateTopics(topics []string) error {
 		}
 	}
 	return nil
+}
+
+type waitGroupContext interface {
+	context.Context
+	WaitGroupAdd(int)
+	WaitGroupDone()
 }

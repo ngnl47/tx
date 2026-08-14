@@ -22,6 +22,8 @@ var (
 	ErrInboundSequence  = errors.New("msgq: inbound sequence is invalid")
 	ErrOutboundOverflow = errors.New("msgq: outbound queue is full")
 	ErrInvalidTopic     = errors.New("msgq: invalid topic")
+	ErrLifecycleNil     = errors.New("msgq: lifecycle context is nil")
+	ErrReaperRunning    = errors.New("msgq: reaper is already running")
 )
 
 // SessionBinding 记录一个角色会话当前归属的消息服务实例。

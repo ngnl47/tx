@@ -391,7 +391,34 @@ _ = result.Delivered
 
 `BroadcastTopicResult` 中 `Attempted` 是 topic 快照中的会话数，`Delivered` 是实际入队数，`Skipped` 表示快照后已关闭的
 会话，`Overflowed` 表示因 `MaxBacklog` 无法入队的会话数。广播出现积压返回 `ErrOutboundOverflow`，但结果保留已经
-成功投递的数量；框架不会伪造全量成功，也不会尝试回滚其他会话。空闲会话清理和跨实例邮箱传输尚未提供。
+成功投递的数量；框架不会伪造全量成功，也不会尝试回滚其他会话。
+
+### 空闲会话清理
+
+`Server.Start` 使用服务全局 `WaitGroupContext` 启动后台清理循环。`OfflineTimeout` 是“最后一次客户端会话活动”到
+移除 Session 的时长，默认 `60s`；`SweepInterval` 是扫描间隔，默认 `2s`。只有 `Init`、`Rec`、`Fetch`、`Confirm` 和
+`Touch` 延长该活动时间；业务 `Pub` 不会让已经断开的会话常驻内存。
+
+```go
+mailbox, err := msgq.NewServer(msgq.ServerOptions{
+    InstanceID:     instanceID,
+    Store:          bindings,
+    MaxBacklog:     1024,
+    OfflineTimeout: 60 * time.Second,
+    SweepInterval:  2 * time.Second,
+})
+if err != nil {
+    return err
+}
+if err := mailbox.Start(appContext); err != nil { // appContext 是 lifecycle.WaitGroupContext。
+    return err
+}
+```
+
+服务关闭时取消 `appContext` 并等待 `WaitDoneAndWaitGroupWait()`，清理循环会自然退出。需要测试或由项目自定义调度时，
+可直接调用 `Reap(ctx, now)`。清理会先按完整 `(roleID, sessionID, connectionID, instanceID)` 条件解绑 Redis owner；Redis
+暂时不可用时 `Reap` 返回错误并记录日志，但仍删除本机过期会话，旧 owner 交由 Redis TTL 自动过期，避免本地内存因断线
+连接持续增长。跨实例邮箱传输尚未提供。
 
 本机或 CI 已启动 Redis 时可执行真实回归；未设置变量时该用例会跳过：
 

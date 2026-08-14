@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ngnl47/tx/lifecycle"
 	"github.com/ngnl47/tx/modules/msgq"
 	"github.com/ngnl47/tx/storage/redis/goredis"
 	redis "github.com/redis/go-redis/v9"
@@ -305,12 +306,71 @@ func TestMsgQServerRedisIntegration(t *testing.T) {
 	if err := server.Confirm(ctx, msgq.ConfirmRequest{Header: header, Ack: message.Seq}); err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
-	if err := server.Close(ctx, header); err != nil {
-		t.Fatalf("close: %v", err)
+	if removed, err := server.Reap(ctx, time.Now().Add(2*time.Minute)); err != nil || removed != 1 {
+		t.Fatalf("reap = %d, %v", removed, err)
 	}
 	if _, found, err := bindings.Find(ctx, header.RoleID); err != nil || found {
-		t.Fatalf("find owner after close = %t, %v", found, err)
+		t.Fatalf("find owner after reap = %t, %v", found, err)
 	}
+}
+
+func TestMsgQServerReapRemovesOfflineSessionAndBinding(t *testing.T) {
+	store := newMailboxSessionStore()
+	server, err := msgq.NewServer(msgq.ServerOptions{
+		InstanceID:     "msgq-1",
+		Store:          store,
+		MaxBacklog:     2,
+		OfflineTimeout: time.Second,
+		SweepInterval:  time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	header := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	removed, err := server.Reap(context.Background(), time.Now().Add(2*time.Second))
+	if err != nil || removed != 1 {
+		t.Fatalf("reap = %d, %v", removed, err)
+	}
+	if server.SessionCount() != 0 {
+		t.Fatalf("session count = %d, want 0", server.SessionCount())
+	}
+	if _, found, err := store.Find(context.Background(), header.RoleID); err != nil || found {
+		t.Fatalf("binding after reap = found %t, err %v", found, err)
+	}
+}
+
+func TestMsgQServerStartUsesLifecycleWorker(t *testing.T) {
+	server, err := msgq.NewServer(msgq.ServerOptions{
+		InstanceID:     "msgq-1",
+		Store:          newMailboxSessionStore(),
+		MaxBacklog:     2,
+		OfflineTimeout: time.Nanosecond,
+		SweepInterval:  time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	header := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	ctx := lifecycle.NewWaitGroupContext(context.Background())
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	deadline := time.After(time.Second)
+	for server.SessionCount() != 0 {
+		select {
+		case <-deadline:
+			t.Fatal("session was not reaped by lifecycle worker")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	ctx.Cancel()
+	ctx.WaitDoneAndWaitGroupWait()
 }
 
 type mailboxSessionStore struct {
