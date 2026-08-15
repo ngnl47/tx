@@ -567,6 +567,26 @@ go run ./cmd/server -module=agent
 Agent 停止时先关闭 TCP/WebSocket listener，停止接收新连接；WebSocket 主动断开，TCP Session 随服务根
 `WaitGroupContext` 取消退出。断线不会主动调用 `CloseSession`，会话由 `OfflineTimeout` 和重连 `Init` 管理。
 
+### TypeScript 客户端协议
+
+`tx` 不依赖 TypeScript 运行时。项目通过 `txgen` 从同一份 data/cmd 输入生成
+`/Users/a47/workspace/txclient/src/gen/data.ts`、`cmd.ts` 和 `schema.ts`；`txclient` 的 codec 负责 BON
+编解码。生成字段使用 Go `json` tag 名，例如 `RoleId` 对应 `roleId`。
+
+```ts
+import { encodeCommand } from "../src/protocol/codec.js";
+import { Schemas } from "../src/gen/schema.js";
+
+const bytes = encodeCommand("Role_RenameReq", {
+  roleId: 470001,
+  name: "new-name",
+}, Schemas);
+```
+
+这段 `bytes` 可以直接放进 Agent 的业务 Frame；Agent 仍保持不透明转发。Go 整数在 TypeScript 侧使用
+`number`，因此业务协议值必须在 `-9,007,199,254,740,991` 到 `9,007,199,254,740,991` 之间；超界编码或解码
+会返回错误，避免悄悄丢失精度。
+
 ## 内部 gRPC 协议
 
 `modules/rpc` 是独立的进程间 gRPC 调用层，长期只负责 Service/Instance 两种目标的请求投递、服务端
