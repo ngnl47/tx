@@ -120,12 +120,63 @@ func TestMsgQServerBoundsOutboundQueue(t *testing.T) {
 	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	defer server.Close(context.Background(), header)
 	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Message: []byte("one")}); err != nil {
 		t.Fatalf("publish one: %v", err)
 	}
 	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Message: []byte("two")}); !errors.Is(err, msgq.ErrOutboundOverflow) {
 		t.Fatalf("publish overflow error = %v, want outbound overflow", err)
+	}
+	if server.SessionCount() != 0 {
+		t.Fatalf("session count after overflow = %d, want 0", server.SessionCount())
+	}
+}
+
+func TestMsgQServerBoundsOutboundQueueBytes(t *testing.T) {
+	server, err := msgq.NewServer(msgq.ServerOptions{
+		InstanceID:      "msgq-1",
+		Store:           newMailboxSessionStore(),
+		MaxBacklog:      4,
+		MaxBacklogBytes: 3,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	header := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Message: []byte("123")}); err != nil {
+		t.Fatalf("publish first: %v", err)
+	}
+	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Message: []byte("4")}); !errors.Is(err, msgq.ErrOutboundOverflow) {
+		t.Fatalf("publish byte overflow error = %v, want outbound overflow", err)
+	}
+	if server.SessionCount() != 0 {
+		t.Fatalf("session count after byte overflow = %d, want 0", server.SessionCount())
+	}
+}
+
+func TestMsgQServerRejectsAcknowledgementBeyondSentOutbound(t *testing.T) {
+	server, err := msgq.NewServer(msgq.ServerOptions{InstanceID: "msgq-1", Store: newMailboxSessionStore(), MaxBacklog: 4})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	header := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Message: []byte("one")}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if err := server.Confirm(context.Background(), msgq.ConfirmRequest{Header: header, Ack: 1}); !errors.Is(err, msgq.ErrOutboundAcknowledgement) {
+		t.Fatalf("confirm before fetch error = %v, want invalid acknowledgement", err)
+	}
+	message, err := server.Fetch(context.Background(), msgq.FetchRequest{Header: header})
+	if err != nil || message.Seq != 1 {
+		t.Fatalf("fetch = %#v, %v", message, err)
+	}
+	if err := server.Confirm(context.Background(), msgq.ConfirmRequest{Header: header, Ack: 1}); err != nil {
+		t.Fatalf("confirm sent message: %v", err)
 	}
 }
 
@@ -200,29 +251,8 @@ func TestMsgQServerBroadcastTopicReportsPartialOverflow(t *testing.T) {
 	if !errors.Is(err, msgq.ErrOutboundOverflow) || secondBroadcast.Attempted != 2 || secondBroadcast.Delivered != 0 || secondBroadcast.Overflowed != 2 {
 		t.Fatalf("second broadcast = %#v, %v", secondBroadcast, err)
 	}
-
-	for _, header := range []msgq.SessionHeader{first, second} {
-		message, err := server.Fetch(context.Background(), msgq.FetchRequest{Header: header})
-		if err != nil || message.Seq != 1 || string(message.Message) != "first" {
-			t.Fatalf("fetch broadcast %#v = %#v, %v", header, message, err)
-		}
-		if err := server.Confirm(context.Background(), msgq.ConfirmRequest{Header: header, Ack: message.Seq}); err != nil {
-			t.Fatalf("confirm broadcast %#v: %v", header, err)
-		}
-	}
-	if err := server.LeaveTopics(context.Background(), msgq.TopicRequest{Header: second, Topics: []string{"guild:9"}}); err != nil {
-		t.Fatalf("leave topic: %v", err)
-	}
-	topics, err := server.Topics(context.Background(), msgq.TopicRequest{Header: second})
-	if err != nil || len(topics.Topics) != 0 {
-		t.Fatalf("topics after leave = %#v, %v", topics.Topics, err)
-	}
-	thirdBroadcast, err := server.BroadcastTopic(context.Background(), msgq.BroadcastTopicRequest{
-		Topic:   "guild:9",
-		Message: []byte("third"),
-	})
-	if err != nil || thirdBroadcast.Attempted != 1 || thirdBroadcast.Delivered != 1 {
-		t.Fatalf("third broadcast = %#v, %v", thirdBroadcast, err)
+	if server.SessionCount() != 0 {
+		t.Fatalf("session count after topic overflow = %d, want 0", server.SessionCount())
 	}
 }
 

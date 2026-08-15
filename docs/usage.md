@@ -266,9 +266,10 @@ if err != nil {
 }
 
 mailbox, err := msgq.NewServer(msgq.ServerOptions{
-    InstanceID: "msgq-2",
-    Store:      bindings,
-    MaxBacklog: 1024, // 必须为正数，按每个会话未确认下行消息数量限流。
+    InstanceID:      "msgq-2",
+    Store:           bindings,
+    MaxBacklog:      1024,    // 未确认下行条数上限。
+    MaxBacklogBytes: 8 << 20, // 未确认 payload 总字节数上限；零值使用 64 MiB 默认值。
 })
 if err != nil {
     return err
@@ -335,9 +336,15 @@ if err != nil {
 }
 ```
 
-`Fetch` 不在持有会话锁时等待，因此同一会话的 `Pub` 不会被长轮询阻塞。每个 payload 在 `Pub` 时复制，
-`Fetch` 返回时再次复制，调用方可以复用或修改自己的 `[]byte` 而不会破坏未确认队列。`MaxBacklog` 按未确认消息
-数量计数，满时当前 `Pub` 返回 `ErrOutboundOverflow`，不会无限积压也不会静默丢弃消息。
+`Fetch` 不在持有会话锁时等待，因此同一会话的 `Pub` 不会被长轮询阻塞。`Pub` 和 `BroadcastTopic` 成功后，传入的
+payload 所有权移交给 msgq：调用方不得再修改、`append`、复用或归还该 `[]byte`，直至对应消息被确认或会话关闭；
+`Fetch`/`FetchSome` 返回的 `Message` 同样只读。这样本地 topic 广播只保留一份已编码 BON 正文，多个会话条目共享它；
+跨进程 gRPC 调用会在传输边界自然得到独立字节副本。`MaxBacklog` 与 `MaxBacklogBytes` 分别限制未确认消息数量与
+payload 总字节数；任一上限触发时当前会话会被移除并返回
+`ErrOutboundOverflow`，避免持续不确认的客户端无限占用 msgq 内存。客户端重连后由业务重同步恢复状态。
+
+确认前缀后，msgq 会解除队列条目对 payload 的引用；确认全部积压时直接释放条目数组，部分确认时按低水位整理剩余
+条目，避免一次广播高峰长期保留过大的条目数组。正文不会在本地广播时按会话复制。
 
 ### 批量下行与本地 Topic
 
@@ -390,20 +397,22 @@ _ = result.Delivered
 ```
 
 `BroadcastTopicResult` 中 `Attempted` 是 topic 快照中的会话数，`Delivered` 是实际入队数，`Skipped` 表示快照后已关闭的
-会话，`Overflowed` 表示因 `MaxBacklog` 无法入队的会话数。广播出现积压返回 `ErrOutboundOverflow`，但结果保留已经
-成功投递的数量；框架不会伪造全量成功，也不会尝试回滚其他会话。
+会话，`Overflowed` 表示因条数或字节积压无法入队的会话数。广播出现积压返回 `ErrOutboundOverflow`，对应会话会被移除，
+但结果保留已经成功投递的数量；框架不会伪造全量成功，也不会尝试回滚其他会话。
 
 ### 空闲会话清理
 
 `Server.Start` 使用服务全局 `WaitGroupContext` 启动后台清理循环。`OfflineTimeout` 是“最后一次客户端会话活动”到
 移除 Session 的时长，默认 `60s`；`SweepInterval` 是扫描间隔，默认 `2s`。只有 `Init`、`Rec`、`Fetch`、`Confirm` 和
-`Touch` 延长该活动时间；业务 `Pub` 不会让已经断开的会话常驻内存。
+`Touch` 延长该活动时间；业务 `Pub` 不会让已经断开的会话常驻内存。即使客户端持续发送心跳，只要最早一条
+未确认下行已超过 `OfflineTimeout`，清理循环同样会移除会话，防止只收不确认的连接绕开积压保护。
 
 ```go
 mailbox, err := msgq.NewServer(msgq.ServerOptions{
     InstanceID:     instanceID,
     Store:          bindings,
     MaxBacklog:     1024,
+    MaxBacklogBytes: 8 << 20,
     OfflineTimeout: 60 * time.Second,
     SweepInterval:  2 * time.Second,
 })
@@ -520,6 +529,25 @@ if err := appagent.RegisterHandlers(handlers); err != nil {
 }
 ```
 
+项目需要使用生成 cmd 时，可先在项目层创建类型化 Dispatcher；解码仍发生在 Agent 之后：
+
+```go
+dispatcher, err := appagent.NewBONDispatcher(func(ctx context.Context, identity txagent.Identity, descriptor cmd.CmdDescriptor, value any) error {
+    switch request := value.(type) {
+    case *cmd.Role_RenameReq:
+        return HandleRename(ctx, identity.RoleID, request)
+    default:
+        return fmt.Errorf("unsupported command %s", descriptor.Name)
+    }
+})
+if err != nil {
+    return err
+}
+```
+
+这里的 `cmd.DecodeBONCommand` 由 `txgen` 生成：它校验命令名并返回对应 `*cmd.X` 类型。Agent 只负责 Frame、
+身份和 Seq/Ack，不依赖任何项目生成包。
+
 一条连接的处理顺序固定如下：
 
 1. 客户端先发送 `FrameHandshake`，其中 `Payload` 交给 `IdentityResolver`，`Restore/Ack` 交给会话恢复。
@@ -547,6 +575,7 @@ runtime:
     prefix: txgame:msgq
     ttl: 48h
     maxBacklog: 1024
+    maxBacklogBytes: 8388608
     offlineTimeout: 60s
     sweepInterval: 2s
 ```
@@ -586,6 +615,47 @@ const bytes = encodeCommand("Role_RenameReq", {
 这段 `bytes` 可以直接放进 Agent 的业务 Frame；Agent 仍保持不透明转发。Go 整数在 TypeScript 侧使用
 `number`，因此业务协议值必须在 `-9,007,199,254,740,991` 到 `9,007,199,254,740,991` 之间；超界编码或解码
 会返回错误，避免悄悄丢失精度。
+
+TypeScript 模板还提供与 `modules/agent.Frame` 对应的 `protocol/frame.ts`：WebSocket 使用原始 Frame bytes，
+TCP 在其外层加 4 字节 big-endian 长度；`TCPFrameDecoder` 能处理半包与粘包。两端都校验 Frame 版本、类型、
+Seq/Ack、恢复标记和最大长度，不能将非法帧交给业务 Dispatcher。
+
+### Frame 与下行 Ack
+
+Frame 固定使用 24 字节头：第 0 字节是版本，第 1 字节是类型，第 2 字节是握手恢复标记，`Seq` 位于第 4--11
+字节，`Ack` 位于第 12--19 字节，payload 长度位于第 20--23 字节，所有整数均为 big-endian。类型如下：
+
+| 类型 | Seq | Ack | Payload | 用途 |
+| --- | --- | --- | --- | --- |
+| `FrameHandshake` | `0` | 新连必须为 `0`；重连为已确认下行序号 | 登录 ticket | 建立或恢复会话 |
+| `FrameBusiness` | 严格递增正数 | 最近已处理的 `FrameOutbound.Seq` | BON 业务体 | 上行业务，同时确认下行 |
+| `FrameOutbound` | msgq 下行序号 | `0` | BON 业务体 | 服务端下行 |
+| `FrameAck` | `0` | 最近已处理的 `FrameOutbound.Seq` | 必须为空 | 客户端空闲期间仅做确认 |
+
+客户端收到 `FrameOutbound` 后应先完成 payload 的处理，再更新本地 `lastOutboundSeq`。下一条业务帧直接携带该值，
+无需额外 ACK 帧：
+
+```ts
+socket.send(encodeFrame({
+  kind: FrameKind.Business,
+  seq: nextBusinessSeq++,
+  ack: lastOutboundSeq,
+  restore: false,
+  payload: encodeCommand("Role_RenameReq", { roleId: 470001, name: "new-name" }, Schemas),
+}, maxFrameBytes));
+```
+
+客户端空闲但已经处理新的下行时，才发送空 payload 的 `FrameAck`：
+
+```ts
+import { createAckFrame, encodeFrame } from "../src/protocol/frame.js";
+
+socket.send(encodeFrame(createAckFrame(lastOutboundSeq), maxFrameBytes));
+```
+
+服务端只接受不倒退且不超过当前连接**已成功写出**的下行序号；超出范围的 Ack 会断开本次连接并保留未确认队列，
+不会错误清理未来消息。重连握手使用同一个最后确认号恢复未确认下行。客户端不得把“收到网络字节”当作已确认，
+必须在业务 payload 已被本地处理后才推进 Ack。
 
 ## 内部 gRPC 协议
 

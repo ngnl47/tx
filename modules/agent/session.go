@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"math"
+	"sync/atomic"
 
 	"github.com/ngnl47/tx/modules/msgq"
 )
@@ -91,9 +92,13 @@ func (s *Server) Serve(ctx context.Context, transport Transport) (serveErr error
 	}
 
 	sessionCtx, cancel := context.WithCancel(ctx)
+	var writtenOutbound atomic.Int64
+	if handshake.Restore {
+		writtenOutbound.Store(handshake.Ack)
+	}
 	writerResult := make(chan error, 1)
 	go func() {
-		writerResult <- s.writeOutbound(sessionCtx, client, header, transport)
+		writerResult <- s.writeOutbound(sessionCtx, client, header, transport, &writtenOutbound)
 		cancel()
 	}()
 	defer func() {
@@ -105,18 +110,33 @@ func (s *Server) Serve(ctx context.Context, transport Transport) (serveErr error
 	}()
 
 	receivedSeq := initialized.ReceivedSeq
+	confirmedOutbound := handshake.Ack
 	for {
 		frame, err := transport.Read(sessionCtx)
 		if err != nil {
 			return err
 		}
+		if frame.validAck() {
+			if err := validateAcknowledgement(frame.Ack, confirmedOutbound, writtenOutbound.Load()); err != nil {
+				return err
+			}
+			if err := client.Confirm(sessionCtx, msgq.ConfirmRequest{Header: header, Ack: frame.Ack}); err != nil {
+				return err
+			}
+			confirmedOutbound = frame.Ack
+			continue
+		}
 		if !frame.validBusiness() {
 			return ErrInvalidFrame
+		}
+		if err := validateAcknowledgement(frame.Ack, confirmedOutbound, writtenOutbound.Load()); err != nil {
+			return err
 		}
 		result, err := client.Rec(sessionCtx, msgq.RecRequest{Header: header, Seq: frame.Seq, Ack: frame.Ack})
 		if err != nil {
 			return err
 		}
+		confirmedOutbound = frame.Ack
 		if result.ReceivedSeq <= receivedSeq {
 			continue
 		}
@@ -127,18 +147,26 @@ func (s *Server) Serve(ctx context.Context, transport Transport) (serveErr error
 	}
 }
 
-func (s *Server) writeOutbound(ctx context.Context, client msgq.SessionClient, header msgq.SessionHeader, transport Transport) error {
+func (s *Server) writeOutbound(ctx context.Context, client msgq.SessionClient, header msgq.SessionHeader, transport Transport, written *atomic.Int64) error {
 	for {
 		batch, err := client.FetchSome(ctx, msgq.FetchSomeRequest{Header: header, Max: s.fetchBatch})
 		if err != nil {
 			return err
 		}
 		for _, message := range batch.Messages {
-			if err := transport.Write(ctx, Frame{Kind: FrameOutbound, Seq: message.Seq, Payload: cloneBytes(message.Message)}); err != nil {
+			if err := transport.Write(ctx, Frame{Kind: FrameOutbound, Seq: message.Seq, Payload: message.Message}); err != nil {
 				return err
 			}
+			written.Store(message.Seq)
 		}
 	}
+}
+
+func validateAcknowledgement(ack, confirmed, written int64) error {
+	if ack < confirmed || ack > written {
+		return ErrInvalidAcknowledgement
+	}
+	return nil
 }
 
 func randomConnectionID() (int64, error) {

@@ -143,7 +143,7 @@ func mailboxStatusError(err error) error {
 		return status.Error(codes.DeadlineExceeded, err.Error())
 	}
 	switch {
-	case errors.Is(err, ErrInvalidHeader), errors.Is(err, ErrInboundSequence), errors.Is(err, ErrInvalidTopic):
+	case errors.Is(err, ErrInvalidHeader), errors.Is(err, ErrInboundSequence), errors.Is(err, ErrOutboundAcknowledgement), errors.Is(err, ErrInvalidTopic):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, ErrSessionOffline):
 		return status.Error(codes.NotFound, err.Error())

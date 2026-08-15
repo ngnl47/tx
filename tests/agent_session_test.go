@@ -79,6 +79,74 @@ func TestAgentSessionFetchesOutboundAndConfirmsAckOnNextInbound(t *testing.T) {
 	}
 }
 
+func TestAgentSessionConfirmsAckWithoutBusinessFrame(t *testing.T) {
+	agent, transport, mailbox, dispatched := newAgentSessionFixture(t, nil)
+	result := make(chan error, 1)
+	go func() { result <- agent.Serve(context.Background(), transport) }()
+
+	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
+	waitForMailboxSession(t, mailbox)
+	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Message: []byte("bon-response")}); err != nil {
+		t.Fatalf("publish outbound: %v", err)
+	}
+	select {
+	case outbound := <-transport.writes:
+		if outbound.Kind != txagent.FrameOutbound || outbound.Seq != 1 {
+			t.Fatalf("outbound frame = %#v", outbound)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for outbound frame")
+	}
+
+	transport.reads <- txagent.Frame{Kind: txagent.FrameAck, Ack: 1}
+	select {
+	case request := <-dispatched:
+		t.Fatalf("ack frame dispatched = %#v", request)
+	case <-time.After(20 * time.Millisecond):
+	}
+	deadline, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := mailbox.FetchSome(deadline, msgq.FetchSomeRequest{Header: msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}, Max: 1})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("fetch after acknowledgement error = %v, want deadline exceeded", err)
+	}
+
+	transport.closeReads()
+	if err := <-result; !errors.Is(err, io.EOF) {
+		t.Fatalf("serve error = %v, want EOF", err)
+	}
+}
+
+func TestAgentSessionRejectsAcknowledgementBeyondWrittenOutbound(t *testing.T) {
+	agent, transport, mailbox, _ := newAgentSessionFixture(t, nil)
+	result := make(chan error, 1)
+	go func() { result <- agent.Serve(context.Background(), transport) }()
+
+	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
+	waitForMailboxSession(t, mailbox)
+	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Message: []byte("bon-response")}); err != nil {
+		t.Fatalf("publish outbound: %v", err)
+	}
+	select {
+	case <-transport.writes:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for outbound frame")
+	}
+	transport.reads <- txagent.Frame{Kind: txagent.FrameAck, Ack: 2}
+	if err := <-result; !errors.Is(err, txagent.ErrInvalidAcknowledgement) {
+		t.Fatalf("serve error = %v, want invalid acknowledgement", err)
+	}
+
+	restored := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 8}
+	if _, err := mailbox.Init(context.Background(), msgq.InitRequest{Header: restored, Restore: true}); err != nil {
+		t.Fatalf("restore after rejected acknowledgement: %v", err)
+	}
+	message, err := mailbox.Fetch(context.Background(), msgq.FetchRequest{Header: restored})
+	if err != nil || message.Seq != 1 {
+		t.Fatalf("fetch after rejected acknowledgement = %#v, %v", message, err)
+	}
+}
+
 func TestAgentSessionDoesNotDispatchDuplicateSequence(t *testing.T) {
 	agent, transport, _, dispatched := newAgentSessionFixture(t, nil)
 	result := make(chan error, 1)
@@ -160,6 +228,18 @@ func receiveDispatch(t *testing.T, dispatched <-chan txagent.DispatchRequest) tx
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for dispatch")
 		return txagent.DispatchRequest{}
+	}
+}
+
+func waitForMailboxSession(t *testing.T, mailbox *msgq.Server) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	for mailbox.SessionCount() != 1 {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for mailbox session")
+		case <-time.After(time.Millisecond):
+		}
 	}
 }
 

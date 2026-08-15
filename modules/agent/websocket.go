@@ -55,11 +55,24 @@ func (t *webSocketTransport) Write(ctx context.Context, frame Frame) error {
 	if t == nil || t.connection == nil {
 		return ErrTransportNil
 	}
-	encoded, err := EncodeFrame(frame, t.maxFrameBytes)
+	if _, err := validateFrame(frame, t.maxFrameBytes); err != nil {
+		return err
+	}
+	writer, err := t.connection.Writer(ctx, websocket.MessageBinary)
 	if err != nil {
 		return err
 	}
-	return t.connection.Write(ctx, websocket.MessageBinary, encoded)
+	var header [frameHeaderBytes]byte
+	encodeFrameHeader(header[:], frame)
+	if err := writeFull(writer, header[:]); err != nil {
+		_ = writer.Close()
+		return err
+	}
+	if err := writeFull(writer, frame.Payload); err != nil {
+		_ = writer.Close()
+		return err
+	}
+	return writer.Close()
 }
 
 func (t *webSocketTransport) Close() error {

@@ -12,19 +12,21 @@ import (
 )
 
 const (
-	defaultOfflineTimeout = 60 * time.Second
-	defaultSweepInterval  = 2 * time.Second
+	defaultOfflineTimeout  = 60 * time.Second
+	defaultSweepInterval   = 2 * time.Second
+	defaultMaxBacklogBytes = 64 * 1024 * 1024
 )
 
 // Server 在本进程维护客户端会话与未确认下行消息。
 // Redis 只保存角色到 msgq 实例的短期归属，不保存下行 payload。
 type Server struct {
-	instanceID string
-	store      SessionStore
-	maxBacklog int
-	offlineTTL time.Duration
-	sweepEvery time.Duration
-	reaping    atomic.Bool
+	instanceID      string
+	store           SessionStore
+	maxBacklog      int
+	maxBacklogBytes int
+	offlineTTL      time.Duration
+	sweepEvery      time.Duration
+	reaping         atomic.Bool
 
 	mu       sync.RWMutex
 	sessions map[int64]*mailboxSession
@@ -35,11 +37,13 @@ type Server struct {
 
 // ServerOptions 配置会话邮箱服务。
 type ServerOptions struct {
-	InstanceID     string
-	Store          SessionStore
-	MaxBacklog     int
-	OfflineTimeout time.Duration
-	SweepInterval  time.Duration
+	InstanceID string
+	Store      SessionStore
+	MaxBacklog int
+	// MaxBacklogBytes 限制每个会话中尚未确认 payload 的总字节数。零值使用安全默认值。
+	MaxBacklogBytes int
+	OfflineTimeout  time.Duration
+	SweepInterval   time.Duration
 }
 
 // SessionHeader 唯一标识一次客户端连接。
@@ -77,7 +81,8 @@ type RecResult struct {
 // PubRequest 向一个角色的当前会话发布下行 BON 数据。
 // Header 仅填写 RoleID 时表示投递给该角色当前会话；同时填写 SessionID 时会校验会话一致性。
 type PubRequest struct {
-	Header  SessionHeader
+	Header SessionHeader
+	// Message 在 Pub 成功后转交 msgq 只读持有，调用方不得修改、append、复用或归还该切片。
 	Message []byte
 }
 
@@ -93,7 +98,8 @@ type FetchRequest struct {
 
 // FetchResult 是一条待发送消息及其确认序号。
 type FetchResult struct {
-	Seq     int64
+	Seq int64
+	// Message 引用 msgq 当前持有的只读 payload，调用方不得修改、append、复用或归还该切片。
 	Message []byte
 }
 
@@ -132,7 +138,8 @@ type TopicsResult struct {
 
 // BroadcastTopicRequest 向当前 msgq 实例内订阅 topic 的会话发送 BON 数据。
 type BroadcastTopicRequest struct {
-	Topic   string
+	Topic string
+	// Message 在 BroadcastTopic 成功后转交 msgq 只读持有，多个会话可能共享同一引用。
 	Message []byte
 }
 
@@ -152,17 +159,24 @@ func NewServer(options ServerOptions) (*Server, error) {
 	if options.OfflineTimeout == 0 {
 		options.OfflineTimeout = defaultOfflineTimeout
 	}
+	if options.MaxBacklogBytes == 0 {
+		options.MaxBacklogBytes = defaultMaxBacklogBytes
+	}
+	if options.MaxBacklogBytes < 0 {
+		return nil, ErrInvalidServer
+	}
 	if options.SweepInterval == 0 {
 		options.SweepInterval = defaultSweepInterval
 	}
 	return &Server{
-		instanceID: options.InstanceID,
-		store:      options.Store,
-		maxBacklog: options.MaxBacklog,
-		offlineTTL: options.OfflineTimeout,
-		sweepEvery: options.SweepInterval,
-		sessions:   make(map[int64]*mailboxSession),
-		topics:     make(map[string]map[*mailboxSession]struct{}),
+		instanceID:      options.InstanceID,
+		store:           options.Store,
+		maxBacklog:      options.MaxBacklog,
+		maxBacklogBytes: options.MaxBacklogBytes,
+		offlineTTL:      options.OfflineTimeout,
+		sweepEvery:      options.SweepInterval,
+		sessions:        make(map[int64]*mailboxSession),
+		topics:          make(map[string]map[*mailboxSession]struct{}),
 	}, nil
 }
 
@@ -171,8 +185,18 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 	if s == nil {
 		return InitResult{}, ErrServerNil
 	}
-	if err := request.Header.validateConnection(); err != nil || request.Ack < 0 {
+	if err := request.Header.validateConnection(); err != nil || request.Ack < 0 || (!request.Restore && request.Ack != 0) {
 		return InitResult{}, ErrInvalidHeader
+	}
+	if request.Restore {
+		if current, found := s.lookup(request.Header.RoleID); found && current.sessionID == request.Header.SessionID {
+			current.mu.Lock()
+			valid := current.outbound.validateAck(request.Ack) == nil
+			current.mu.Unlock()
+			if !valid {
+				return InitResult{}, ErrOutboundAcknowledgement
+			}
+		}
 	}
 	binding := SessionBinding{
 		RoleID:       request.Header.RoleID,
@@ -194,7 +218,9 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 	session.lastActivity = time.Now()
 	if request.Restore {
 		session.outbound.resetSent()
-		session.outbound.confirm(request.Ack)
+		if err := session.outbound.confirm(request.Ack); err != nil {
+			return InitResult{}, err
+		}
 	}
 	session.signal()
 	return InitResult{ReceivedSeq: session.receivedSeq}, nil
@@ -214,18 +240,26 @@ func (s *Server) Rec(ctx context.Context, request RecRequest) (RecResult, error)
 	if err := session.requireConnection(request.Header); err != nil {
 		return RecResult{}, err
 	}
+	if err := session.outbound.validateAck(request.Ack); err != nil {
+		return RecResult{}, err
+	}
 	if request.Seq > session.receivedSeq+1 {
 		return RecResult{}, ErrInboundSequence
 	}
 	if request.Seq == session.receivedSeq+1 {
 		session.receivedSeq++
 	}
-	session.outbound.confirm(request.Ack)
+	if err := session.outbound.confirm(request.Ack); err != nil {
+		return RecResult{}, err
+	}
 	return RecResult{ReceivedSeq: session.receivedSeq, Ack: request.Ack}, nil
 }
 
-// Pub 将数据追加到当前会话的未确认下行队列。payload 会复制，调用方之后可安全复用原切片。
-func (s *Server) Pub(_ context.Context, request PubRequest) (PubResult, error) {
+// Pub 将数据追加到当前会话的未确认下行队列。
+//
+// Message 的所有权在调用成功后移交给 msgq：调用方不得再修改、append、复用或归还该切片，直到对应会话关闭或消息被确认。
+// 该约束使本地广播可以让多个会话共享同一份已序列化正文；跨进程 gRPC 调用在传输边界自然拥有独立字节副本。
+func (s *Server) Pub(ctx context.Context, request PubRequest) (PubResult, error) {
 	if s == nil {
 		return PubResult{}, ErrServerNil
 	}
@@ -237,18 +271,23 @@ func (s *Server) Pub(_ context.Context, request PubRequest) (PubResult, error) {
 		return PubResult{}, ErrSessionOffline
 	}
 	session.mu.Lock()
-	defer session.mu.Unlock()
 	if !session.active {
+		session.mu.Unlock()
 		return PubResult{}, ErrSessionOffline
 	}
 	if request.Header.SessionID != 0 && request.Header.SessionID != session.sessionID {
+		session.mu.Unlock()
 		return PubResult{}, ErrSessionChanged
 	}
-	if session.outbound.len() >= s.maxBacklog {
+	if session.outbound.exceeds(s.maxBacklog, s.maxBacklogBytes, request.Message) {
+		header := session.header()
+		session.mu.Unlock()
+		s.evict(ctx, session, header)
 		return PubResult{}, ErrOutboundOverflow
 	}
 	seq := session.outbound.enqueue(request.Message)
 	session.signal()
+	session.mu.Unlock()
 	return PubResult{Seq: seq}, nil
 }
 
@@ -266,7 +305,7 @@ func (s *Server) Fetch(ctx context.Context, request FetchRequest) (FetchResult, 
 		}
 		if entry, found := session.outbound.dequeue(); found {
 			session.mu.Unlock()
-			return FetchResult{Seq: entry.seq, Message: cloneBytes(entry.message)}, nil
+			return FetchResult{Seq: entry.seq, Message: entry.message}, nil
 		}
 		notify := session.notify
 		session.mu.Unlock()
@@ -298,7 +337,7 @@ func (s *Server) FetchSome(ctx context.Context, request FetchSomeRequest) (Fetch
 		if len(entries) > 0 {
 			messages := make([]FetchResult, len(entries))
 			for index, entry := range entries {
-				messages[index] = FetchResult{Seq: entry.seq, Message: cloneBytes(entry.message)}
+				messages[index] = FetchResult{Seq: entry.seq, Message: entry.message}
 			}
 			session.mu.Unlock()
 			return FetchSomeResult{Messages: messages}, nil
@@ -328,8 +367,7 @@ func (s *Server) Confirm(ctx context.Context, request ConfirmRequest) error {
 	if err := session.requireConnection(request.Header); err != nil {
 		return err
 	}
-	session.outbound.confirm(request.Ack)
-	return nil
+	return session.outbound.confirm(request.Ack)
 }
 
 // Touch 仅续期会话 owner，供连接空闲但仍保持在线时调用。
@@ -421,6 +459,7 @@ func (s *Server) BroadcastTopic(ctx context.Context, request BroadcastTopicReque
 	}
 	sessions := s.topicSnapshot(request.Topic)
 	result := BroadcastTopicResult{Attempted: len(sessions)}
+	overflowed := make([]*mailboxSession, 0)
 	for _, session := range sessions {
 		if err := ctx.Err(); err != nil {
 			return result, err
@@ -431,8 +470,9 @@ func (s *Server) BroadcastTopic(ctx context.Context, request BroadcastTopicReque
 			session.mu.Unlock()
 			continue
 		}
-		if session.outbound.len() >= s.maxBacklog {
+		if session.outbound.exceeds(s.maxBacklog, s.maxBacklogBytes, request.Message) {
 			result.Overflowed++
+			overflowed = append(overflowed, session)
 			session.mu.Unlock()
 			continue
 		}
@@ -440,6 +480,15 @@ func (s *Server) BroadcastTopic(ctx context.Context, request BroadcastTopicReque
 		session.signal()
 		result.Delivered++
 		session.mu.Unlock()
+	}
+	for _, session := range overflowed {
+		session.mu.Lock()
+		active := session.active
+		header := session.header()
+		session.mu.Unlock()
+		if active {
+			s.evict(ctx, session, header)
+		}
 	}
 	if result.Overflowed > 0 {
 		return result, ErrOutboundOverflow
@@ -508,7 +557,8 @@ func (s *Server) Reap(ctx context.Context, now time.Time) (int, error) {
 	var errs []error
 	for _, session := range sessions {
 		session.mu.Lock()
-		if !session.active || now.Sub(session.lastActivity) < s.offlineTTL {
+		expired := now.Sub(session.lastActivity) >= s.offlineTTL || session.outbound.expired(now, s.offlineTTL)
+		if !session.active || !expired {
 			session.mu.Unlock()
 			continue
 		}
@@ -612,6 +662,26 @@ func (s *Server) removeLocked(session *mailboxSession) {
 	session.active = false
 	s.removeSessionTopicsLocked(session)
 	session.signal()
+}
+
+func (s *Server) evict(ctx context.Context, session *mailboxSession, header SessionHeader) {
+	session.mu.Lock()
+	if !session.active || session.sessionID != header.SessionID || session.connectionID != header.ConnectionID {
+		session.mu.Unlock()
+		return
+	}
+	s.removeLocked(session)
+	session.mu.Unlock()
+	removed, err := s.store.Unbind(ctx, SessionBinding{
+		RoleID: header.RoleID, SessionID: header.SessionID, ConnectionID: header.ConnectionID, InstanceID: s.instanceID,
+	})
+	if err != nil {
+		txlog.ErrorContext(ctx, "msgq evict session unbind failed", "roleID", header.RoleID, "err", err)
+		return
+	}
+	if !removed {
+		txlog.ErrorContext(ctx, "msgq evict session binding changed", "roleID", header.RoleID)
+	}
 }
 
 func (s *Server) addTopicLocked(session *mailboxSession, topic string) {
@@ -745,20 +815,30 @@ func (s *mailboxSession) signal() {
 	}
 }
 
+func (s *mailboxSession) header() SessionHeader {
+	return SessionHeader{RoleID: s.roleID, SessionID: s.sessionID, ConnectionID: s.connectionID}
+}
+
 type outboundEntry struct {
-	seq     int64
-	message []byte
+	seq       int64
+	message   []byte
+	createdAt time.Time
 }
 
 type outboundQueue struct {
-	entries []outboundEntry
-	sent    int
-	nextSeq int64
+	entries      []outboundEntry
+	head         int
+	sent         int
+	nextSeq      int64
+	sentSeq      int64
+	confirmedSeq int64
+	bytes        int
 }
 
 func (q *outboundQueue) enqueue(message []byte) int64 {
 	q.nextSeq++
-	q.entries = append(q.entries, outboundEntry{seq: q.nextSeq, message: cloneBytes(message)})
+	q.entries = append(q.entries, outboundEntry{seq: q.nextSeq, message: message, createdAt: time.Now()})
+	q.bytes += len(message)
 	return q.nextSeq
 }
 
@@ -768,6 +848,7 @@ func (q *outboundQueue) dequeue() (outboundEntry, bool) {
 	}
 	entry := q.entries[q.sent]
 	q.sent++
+	q.sentSeq = entry.seq
 	return entry, true
 }
 
@@ -781,38 +862,71 @@ func (q *outboundQueue) dequeueSome(max int) []outboundEntry {
 	}
 	entries := q.entries[q.sent : q.sent+available]
 	q.sent += available
+	q.sentSeq = entries[len(entries)-1].seq
 	return entries
 }
 
 func (q *outboundQueue) resetSent() {
-	q.sent = 0
+	q.sent = q.head
 }
 
-func (q *outboundQueue) confirm(ack int64) {
-	cut := 0
+func (q *outboundQueue) validateAck(ack int64) error {
+	if ack < q.confirmedSeq || ack > q.sentSeq {
+		return ErrOutboundAcknowledgement
+	}
+	return nil
+}
+
+func (q *outboundQueue) confirm(ack int64) error {
+	if err := q.validateAck(ack); err != nil {
+		return err
+	}
+	q.confirmedSeq = ack
+	cut := q.head
 	for cut < len(q.entries) && q.entries[cut].seq <= ack {
+		q.bytes -= len(q.entries[cut].message)
+		q.entries[cut] = outboundEntry{}
 		cut++
 	}
-	if cut == 0 {
-		return
+	if cut == q.head {
+		return nil
 	}
-	copy(q.entries, q.entries[cut:])
-	for index := len(q.entries) - cut; index < len(q.entries); index++ {
-		q.entries[index] = outboundEntry{}
+	q.head = cut
+	if q.sent < q.head {
+		q.sent = q.head
 	}
-	q.entries = q.entries[:len(q.entries)-cut]
-	q.sent -= cut
-	if q.sent < 0 {
-		q.sent = 0
-	}
+	q.compactStorage()
+	return nil
 }
 
 func (q *outboundQueue) len() int {
-	return len(q.entries)
+	return len(q.entries) - q.head
 }
 
-func cloneBytes(value []byte) []byte {
-	return append([]byte(nil), value...)
+func (q *outboundQueue) exceeds(maxEntries, maxBytes int, message []byte) bool {
+	return q.len() >= maxEntries || len(message) > maxBytes-q.bytes
+}
+
+func (q *outboundQueue) expired(now time.Time, ttl time.Duration) bool {
+	return q.len() > 0 && now.Sub(q.entries[q.head].createdAt) >= ttl
+}
+
+func (q *outboundQueue) compactStorage() {
+	pending := q.len()
+	if pending == 0 {
+		q.entries = nil
+		q.head = 0
+		q.sent = 0
+		return
+	}
+	if q.head < 64 || q.head*2 < len(q.entries) {
+		return
+	}
+	entries := make([]outboundEntry, pending, pending*2)
+	copy(entries, q.entries[q.head:])
+	q.entries = entries
+	q.sent -= q.head
+	q.head = 0
 }
 
 func validateTopics(topics []string) error {

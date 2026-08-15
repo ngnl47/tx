@@ -9,16 +9,17 @@ import (
 )
 
 var (
-	ErrServerNil           = errors.New("agent: server is nil")
-	ErrTransportNil        = errors.New("agent: transport is nil")
-	ErrIdentityResolverNil = errors.New("agent: identity resolver is nil")
-	ErrDispatcherNil       = errors.New("agent: dispatcher is nil")
-	ErrSessionRouterNil    = errors.New("agent: session client router is nil")
-	ErrInvalidServer       = errors.New("agent: invalid server options")
-	ErrInvalidIdentity     = errors.New("agent: invalid identity")
-	ErrHandshakeRequired   = errors.New("agent: handshake is required")
-	ErrInvalidFrame        = errors.New("agent: invalid frame")
-	ErrFrameTooLarge       = errors.New("agent: frame is too large")
+	ErrServerNil              = errors.New("agent: server is nil")
+	ErrTransportNil           = errors.New("agent: transport is nil")
+	ErrIdentityResolverNil    = errors.New("agent: identity resolver is nil")
+	ErrDispatcherNil          = errors.New("agent: dispatcher is nil")
+	ErrSessionRouterNil       = errors.New("agent: session client router is nil")
+	ErrInvalidServer          = errors.New("agent: invalid server options")
+	ErrInvalidIdentity        = errors.New("agent: invalid identity")
+	ErrHandshakeRequired      = errors.New("agent: handshake is required")
+	ErrInvalidFrame           = errors.New("agent: invalid frame")
+	ErrInvalidAcknowledgement = errors.New("agent: invalid outbound acknowledgement")
+	ErrFrameTooLarge          = errors.New("agent: frame is too large")
 )
 
 // Identity 是项目解析后的逻辑玩家身份。

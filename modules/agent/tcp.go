@@ -104,19 +104,17 @@ func (t *tcpTransport) Write(ctx context.Context, frame Frame) error {
 	if t == nil || t.connection == nil {
 		return ErrTransportNil
 	}
-	encoded, err := EncodeFrame(frame, t.maxFrameBytes)
+	size, err := validateFrame(frame, t.maxFrameBytes)
 	if err != nil {
 		return err
 	}
 	stop := context.AfterFunc(ctx, func() { _ = t.connection.SetWriteDeadline(time.Now()) })
 	defer stop()
 	defer func() { _ = t.connection.SetWriteDeadline(time.Time{}) }()
-	var length [4]byte
-	binary.BigEndian.PutUint32(length[:], uint32(len(encoded)))
-	if err := writeFull(t.connection, length[:]); err != nil {
-		return err
-	}
-	return writeFull(t.connection, encoded)
+	var prefix [4 + frameHeaderBytes]byte
+	binary.BigEndian.PutUint32(prefix[:4], uint32(size))
+	encodeFrameHeader(prefix[4:], frame)
+	return writeBuffersFull(t.connection, net.Buffers{prefix[:], frame.Payload})
 }
 
 func (t *tcpTransport) Close() error {
@@ -137,6 +135,19 @@ func writeFull(writer io.Writer, data []byte) error {
 			return io.ErrShortWrite
 		}
 		data = data[written:]
+	}
+	return nil
+}
+
+func writeBuffersFull(writer io.Writer, buffers net.Buffers) error {
+	for len(buffers) > 0 {
+		written, err := buffers.WriteTo(writer)
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrShortWrite
+		}
 	}
 	return nil
 }
