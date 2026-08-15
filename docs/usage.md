@@ -1976,6 +1976,27 @@ if err := storage.Save(ctx, fusionStore, store); err != nil {
 - `FieldID`：生成代码提供的稳定字段编号，避免热路径反复保存字段名字符串。
 - `DeltaPath`：字段路径。生成集合 Store 会在这里表达 map key、slice index 和生成对象子字段路径。
 
+`DeltaClear` 的投影会保留集合类别，不能把空 slice 误发成空对象：
+
+```go
+role.ClearItems()
+role.ClearDress()
+
+doc, err := role.ChangeDocument()
+if err != nil {
+	return err
+}
+
+// map[int32]*data.GDItem{}
+items := doc.Set["Items"]
+// []*data.GDDressItem{}
+dress := doc.Set["Dress"]
+_ = items
+_ = dress
+```
+
+因此 JSON/Msgpack 编码后，map 和结构体字段使用空对象 `{}`，slice 使用空数组 `[]`；不会把清空列表误传成空对象。
+
 生成代码会传入字段名 resolver，把字段编号解析为字段名：
 
 ```text

@@ -434,7 +434,7 @@ Store 生成、Redis key helper、Mongo filter helper、字段编号 resolver �
 
 后续重点：
 
-- Redis 热数据版本键 `<mainKey>@v` 在更多写入/删除窗口中的并发保护测试。
+- Redis 热数据版本键 `<mainKey>@v` 已通过真实 Redis 覆盖旧 revision 条件删除与 Mongo 回写期间新热写两个窗口：旧删除不会清掉新文档，版本变化会保留热数据并重新排队删除任务。后续新增 Redis 生命周期写法时必须维持这两个回归场景。
 - Fusion 并发 miss 回源的单条与批量真实 Redis/Mongo 场景已验证：批量路径在两个请求都取得旧 Mongo 候选后写入新 Redis 热文档，锁内二次读取会返回并保留新热文档，不能用旧候选覆盖。
 - Redis/Mongo/Fusion adapter 围绕 `DeltaSet` 继续瘦身，清理不再需要的过渡接口。
 - SQL 或其他 backend 只作为未来扩展，不进入当前主线。

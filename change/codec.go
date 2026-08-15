@@ -1,6 +1,9 @@
 package change
 
-import "fmt"
+import (
+	"fmt"
+	"reflect"
+)
 
 // Document 是 DeltaSet 的后端无关文档形式。
 //
@@ -45,7 +48,11 @@ func (ds DeltaSet) DocumentWithResolver(resolver FieldNameResolver, backend Name
 		case DeltaDelete:
 			doc.Clear[path.String()] = struct{}{}
 		case DeltaClear:
-			doc.Set[path.String()] = emptyDeltaValue
+			value, err := emptyDeltaValueFor(values, delta.Path, path)
+			if err != nil {
+				return Document{}, err
+			}
+			doc.Set[path.String()] = value
 		case DeltaKindSet, DeltaKindReplace:
 			if values == nil {
 				return Document{}, fmt.Errorf("change: cannot resolve current value for path %s", path)
@@ -60,4 +67,26 @@ func (ds DeltaSet) DocumentWithResolver(resolver FieldNameResolver, backend Name
 	return doc, nil
 }
 
-var emptyDeltaValue = map[string]any{}
+func emptyDeltaValueFor(values DeltaValueResolver, path DeltaPath, display Path) (any, error) {
+	if values == nil {
+		return nil, fmt.Errorf("change: cannot resolve current value for path %s", display)
+	}
+	value, ok := values.DeltaValue(path)
+	if !ok {
+		return nil, fmt.Errorf("change: cannot resolve current value for path %s", display)
+	}
+	valueType := reflect.TypeOf(value)
+	if valueType == nil {
+		return map[string]any{}, nil
+	}
+	switch valueType.Kind() {
+	case reflect.Map:
+		return reflect.MakeMapWithSize(valueType, 0).Interface(), nil
+	case reflect.Slice:
+		return reflect.MakeSlice(valueType, 0, 0).Interface(), nil
+	case reflect.Array:
+		return reflect.Zero(valueType).Interface(), nil
+	default:
+		return map[string]any{}, nil
+	}
+}
