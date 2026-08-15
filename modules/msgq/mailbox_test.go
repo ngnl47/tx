@@ -2,7 +2,9 @@ package msgq
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 )
 
 func TestBroadcastTopicSharesImmutablePayload(t *testing.T) {
@@ -65,6 +67,102 @@ func TestOutboundQueueReleasesAcknowledgedStorage(t *testing.T) {
 	}
 	if queue.entries != nil || queue.head != 0 || queue.sent != 0 || queue.bytes != 0 {
 		t.Fatalf("queue retained acknowledged storage: %#v", queue)
+	}
+}
+
+func TestSlowSessionWithoutAcknowledgementHitsByteLimit(t *testing.T) {
+	server, err := NewServer(ServerOptions{
+		InstanceID:      "msgq-1",
+		Store:           &testSessionStore{},
+		MaxBacklog:      4,
+		MaxBacklogBytes: 8,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	header := SessionHeader{RoleID: 1, SessionID: 1, ConnectionID: 1}
+	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	for _, message := range [][]byte{[]byte("one!"), []byte("two!")} {
+		if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Message: message}); err != nil {
+			t.Fatalf("publish %q: %v", message, err)
+		}
+		if _, err := server.Fetch(context.Background(), FetchRequest{Header: header}); err != nil {
+			t.Fatalf("fetch %q: %v", message, err)
+		}
+	}
+	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Message: []byte("more")}); !errors.Is(err, ErrOutboundOverflow) {
+		t.Fatalf("publish after unacknowledged backlog error = %v, want %v", err, ErrOutboundOverflow)
+	}
+	if server.SessionCount() != 0 {
+		t.Fatalf("session count after overflow = %d, want 0", server.SessionCount())
+	}
+}
+
+func TestAcknowledgementReleasesOutboundByteBudget(t *testing.T) {
+	server, err := NewServer(ServerOptions{
+		InstanceID:      "msgq-1",
+		Store:           &testSessionStore{},
+		MaxBacklog:      2,
+		MaxBacklogBytes: 4,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	header := SessionHeader{RoleID: 1, SessionID: 1, ConnectionID: 1}
+	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Message: []byte("full")}); err != nil {
+		t.Fatalf("publish first: %v", err)
+	}
+	message, err := server.Fetch(context.Background(), FetchRequest{Header: header})
+	if err != nil {
+		t.Fatalf("fetch first: %v", err)
+	}
+	if err := server.Confirm(context.Background(), ConfirmRequest{Header: header, Ack: message.Seq}); err != nil {
+		t.Fatalf("confirm first: %v", err)
+	}
+	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Message: []byte("next")}); err != nil {
+		t.Fatalf("publish after acknowledgement: %v", err)
+	}
+}
+
+func TestSlowSessionExpiresDespiteClientActivity(t *testing.T) {
+	server, err := NewServer(ServerOptions{
+		InstanceID:     "msgq-1",
+		Store:          &testSessionStore{},
+		MaxBacklog:     2,
+		OfflineTimeout: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	header := SessionHeader{RoleID: 1, SessionID: 1, ConnectionID: 1}
+	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Message: []byte("pending")}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if _, err := server.Fetch(context.Background(), FetchRequest{Header: header}); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	session, found := server.lookup(header.RoleID)
+	if !found {
+		t.Fatal("session is missing")
+	}
+	session.mu.Lock()
+	session.lastActivity = time.Now()
+	session.outbound.entries[session.outbound.head].createdAt = time.Now().Add(-2 * time.Minute)
+	session.mu.Unlock()
+	removed, err := server.Reap(context.Background(), time.Now())
+	if err != nil || removed != 1 {
+		t.Fatalf("reap = %d, %v", removed, err)
+	}
+	if server.SessionCount() != 0 {
+		t.Fatalf("session count after stale unacknowledged message = %d, want 0", server.SessionCount())
 	}
 }
 
