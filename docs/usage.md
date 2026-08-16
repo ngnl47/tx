@@ -1048,17 +1048,24 @@ sequenceDiagram
 game1 下线 -> 后续 Role 请求路由到其他 game 实例 -> 从 Fusion 恢复
 ```
 
-Battle、SLG 城市、MMO 场景等内存权威对象使用固定实例的本地 Actor 和 Remote PID 直连。业务维护
-`entityID -> instanceID` 归属；节点重启时默认暂停或返回业务错误，不得自动改派到其他节点：
+Battle、SLG 城市、MMO 场景等内存权威对象使用固定逻辑槽位的本地 Actor 和 Remote PID 直连。业务维护
+`entityID -> logicalSlot -> runtimeInstance` 归属；节点重启时默认暂停或返回业务错误，不得自动改派到其他节点。SLG/MMO
+的同服、同战区玩家和场景应绑定同一逻辑槽位，不能把 ProtoActor Virtual Actor 的成员重平衡用于这条主状态链路：
 
 ```text
-battle-1001 -> battle1
-battle1 重启 -> battle-1001 不迁移到 battle2
-battle1 恢复 -> battle-1001 仍由 battle1 恢复或接管
+realm:1001 -> game-slot-1
+role:1001:470001 -> game-slot-1
+scene:1001:9001 -> game-slot-1
+
+game-slot-1 -> game-1@v42
+game-1@v42 重启 -> 不迁移到 game-2
+game-slot-1 -> game-1@v43
 ```
 
-显式迁移必须执行保存快照、停止旧 Actor、更新归属和目标恢复。Actor 不代表 GD，不依赖 Store、DeltaSet、
-Fusion、`txn.Runtime` 或分布式事务；同一 Actor 内若要处理多个 GD 的单机一致性，仍使用 `Procedure`。
+新 generation 接替同一逻辑槽位并不自动继承旧进程内存；没有显式快照交接时，实例短暂不可用后由请求触发按需恢复，
+客户端需重连或重试。先扩容只能保证新 generation 已启动和集群仍有容量，不能替代内存状态迁移。显式迁移必须执行
+保存快照、停止旧 Actor、更新归属和目标恢复。Actor 不代表 GD，不依赖 Store、DeltaSet、Fusion、`txn.Runtime` 或
+分布式事务；同一 Actor 内若要处理多个 GD 的单机一致性，仍使用 `Procedure`。
 
 ### 滚动重启
 
