@@ -122,6 +122,11 @@
 `Identity -> PID` 解析，桥接以 `agent.command` 原样投递 BON body；它不硬编码 role/room/battle kind，不把连接
 `Seq` 误作业务 `CommandID`，也不让 Agent 直接承载业务命令 handler。
 
+`txgame/internal/actor.CommandActor` 已提供项目侧消费端：它接收 `actor.Delivery`、以生成
+`cmd.DecodeBONCommand` 解码 BON body，并按命令名调用通过 `RegisterCommand` 注册的强类型 handler。该适配只在
+`txgame` 依赖生成 cmd，不把业务处理器、GD 或 Store 引入 `tx/modules/actor`；未知命令、解码失败或业务 handler
+返回错误只记录结构化日志，不应让 Actor 进程 panic。
+
 `msgq` 下行 payload 采用只读所有权移交：`Pub` 或 `BroadcastTopic` 成功后，调用方不得修改、append、复用或归还传入的 BON `[]byte`。本地广播的会话条目共享一份正文，跨进程 gRPC 在传输边界复制；确认前缀会解除正文引用，清空时释放条目数组，部分确认按低水位整理剩余条目。Agent 的 TCP 长度帧通过 scatter/gather 直接写长度、固定头和正文，WebSocket 以流式 writer 写固定头和正文，不在 tx 内拼接新的完整帧。
 
 Actor 单向投递已收敛为 `Runtime.Tell(pid, delivery)`：它仅表示本地 Runtime 接受投递，不确认远端处理完成，也不自动重试。需要同步响应时，业务显式通过 `ActorSystem().Root.RequestFuture` 处理。真实 etcd 集成回归覆盖 Virtual Actor 请求、`Tell` 投递与成员注销。

@@ -955,6 +955,31 @@ Procedure、完成最终 Flush，再调用 `Runtime.Shutdown` 退出成员表。
 重连、Topic 和广播。客户端上行业务 Payload 由 Agent 在完成会话序号校验后直接投递 Player/Game Actor；
 任意业务 Actor 的下行数据投递到 `msgq`，再由 Agent 发送给客户端。
 
+### 网状通信拓扑
+
+`etcd` 只供 ServiceDirectory 与 Actor Cluster 维护成员视图，不承载业务 Payload。Agent、Player/Game Actor、
+Battle/Room Actor 等节点在解析到目标 PID 后按需直连，因此服务间通信是网状拓扑；`msgq` 只处于客户端会话和
+下行投递链路，不是上行或 Actor 间消息的中继节点。
+
+```mermaid
+flowchart LR
+    C[客户端] --> A[Agent]
+    A -->|Rec: 会话、Seq、Ack| M[msgq]
+    A -->|BON Delivery| P[Player/Game Actor]
+    P -->|BON Delivery| B[Battle/Room Actor]
+    B -->|BON Delivery| P
+    P -->|Pub: 下行 BON| M
+    M -->|Fetch| A
+    A --> C
+    E[(etcd)] -.成员发现.-> A
+    E -.成员发现.-> P
+    E -.成员发现.-> B
+```
+
+同一个业务命令既可以来自 Agent，也可以来自另一个业务 Actor；两者都使用 `actor.Delivery` 传递 BON body，
+但只有客户端链路需要 Agent Frame、Session 与 Seq/Ack。业务 Actor 消费邮箱后，应把 Payload 解码为生成的
+`cmd` 类型，再交给项目注册的 handler；`GD*` 是数据状态，不是通用消息外壳，`GD*Store` 更不能作为协议字段。
+
 ### 当前参考链路
 
 ```mermaid
