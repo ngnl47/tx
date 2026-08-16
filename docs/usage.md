@@ -1067,14 +1067,65 @@ game-slot-1 -> game-1@v43
 保存快照、停止旧 Actor、更新归属和目标恢复。Actor 不代表 GD，不依赖 Store、DeltaSet、Fusion、`txn.Runtime` 或
 分布式事务；同一 Actor 内若要处理多个 GD 的单机一致性，仍使用 `Procedure`。
 
+### 固定逻辑槽位
+
+`EtcdRegistry.Slots()` 提供独立于实例 lease 的持久 `SlotStore`。实例下线不会删除槽位 assignment；首次分配使用
+`CreateSlot`，旧新 generation 交接必须使用带当前完整 assignment 的 `PromoteSlot`。后者同时校验 generation 连续递增
+并以 etcd `ModRevision` 做 Compare-And-Swap，过期发布流程不能覆盖已经完成的交接。
+
+业务决定 `SlotID` 的计算规则，框架不解析 GD、不推断同服/战区归属，也不创建业务 Actor。解析时通过 `SlotRouter`
+将持久 assignment 与当前成员目录组合，只有目标运行实例是 `running` 才能返回 endpoint；目标缺失、`draining` 或
+`stopping` 时返回 `ErrSlotRuntimeUnavailable`，绝不随机改派。
+
+```go
+slots := registry.Slots()
+current := discovery.SlotAssignment{
+	SlotID:            "game-slot-1",
+	RuntimeInstanceID: "game-1@v42@a",
+	Generation:        42,
+}
+if err := slots.CreateSlot(ctx, current); err != nil {
+	return err
+}
+
+router, err := discovery.NewSlotRouter(slots, directory)
+if err != nil {
+	return err
+}
+target, err := router.ResolveSlot(ctx, "game-slot-1")
+if err != nil {
+	return err // 目标不是 running 时明确失败
+}
+pid, err := actor.FixedPID(target.Instance.Endpoint, "scene-1001")
+if err != nil {
+	return err
+}
+
+next := discovery.SlotAssignment{
+	SlotID:            current.SlotID,
+	RuntimeInstanceID: "game-1@v43@b",
+	Generation:        43,
+}
+if err := router.PromoteSlot(ctx, current, next); err != nil {
+	return err
+}
+_ = pid
+```
+
+`SlotRouter` 只负责“稳定槽位 -> 当前可用 endpoint”的安全解析与交接前检查；发布控制面或业务必须在 Promote 前停止旧槽位
+的新命令准入、等待已进入的 Procedure、完成最终 Flush。`txgame` 未启用服务发现时 `app.Slots` 为 nil；依赖固定槽位的
+服务必须在启动时显式失败，不能退化为普通实例路由。
+
 ### 滚动重启
 
 重启 `game1`、`game2` 不要求其他服务组停机，但必须先 Drain。发布平台先启动新
 generation 并等待 `running`，再请求旧 generation 进入 `draining`：
 
 ```text
-新实例 Ready -> 旧实例 draining（停止新分配）-> 等待已进入的 Procedure
--> 完成要求的最终 Flush -> stopping -> 撤销成员 lease -> 停止进程
+新实例 starting 并完成依赖预检 -> 新实例 running -> 旧槽位停止新命令准入
+-> 等待已进入的 Procedure -> 完成要求的最终 Flush
+-> CAS Promote(slot, old generation, new generation) -> 新 generation 接收该槽位请求
+-> 旧实例 stopping -> 撤销成员 lease -> 停止进程
 ```
 
 ProtoActor 的成员变更不会迁移业务内存状态；Virtual Actor 的业务状态必须可恢复。固定实例 Actor 的故障与迁移
