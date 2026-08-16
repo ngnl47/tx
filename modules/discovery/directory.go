@@ -115,11 +115,26 @@ func (d *ServiceDirectory) ResolveService(service string) (Instance, bool) {
 		d.next[service]++
 		instance := instances[index]
 		if instance.Status == StatusRunning {
-			return instance, true
+			return cloneInstance(instance), true
 		}
 		_ = offset
 	}
 	return Instance{}, false
+}
+
+// RunningInstances 返回指定服务的全部 running 实例快照，保持实例 ID 的稳定排序。
+// 调用方可据此实现业务自己的随机、哈希或负载策略；目录不承担实体归属决策。
+func (d *ServiceDirectory) RunningInstances(service string) []Instance {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	instances := d.byService[service]
+	result := make([]Instance, 0, len(instances))
+	for _, instance := range instances {
+		if instance.Status == StatusRunning {
+			result = append(result, cloneInstance(instance))
+		}
+	}
+	return result
 }
 
 // ResolveID 为精确路由返回已知的 running 或 stopping 状态实例。
@@ -130,5 +145,10 @@ func (d *ServiceDirectory) ResolveID(id string) (Instance, bool) {
 	if !ok || (instance.Status != StatusRunning && instance.Status != StatusStopping) {
 		return Instance{}, false
 	}
-	return instance, true
+	return cloneInstance(instance), true
+}
+
+func cloneInstance(instance Instance) Instance {
+	instance.Services = append([]string(nil), instance.Services...)
+	return instance
 }

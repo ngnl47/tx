@@ -217,13 +217,22 @@ go func() {
 // 普通服务请求只选 running 实例，按稳定顺序轮转。
 battle, ok := directory.ResolveService("battle")
 
+// 业务需要自定义首次分配策略时，取得稳定排序的 running 候选快照。
+// 例如对局创建时按 roomID 选择实例；后续 roomID -> instanceID 的归属关系由业务维护。
+candidates := directory.RunningInstances("room")
+if len(candidates) == 0 {
+    return errors.New("no running room service")
+}
+roomOwner := candidates[uint64(roomID)%uint64(len(candidates))]
+
 // 会话等精确路由可继续解析 stopping 实例，用于连接排空。
 msgq, ok := directory.ResolveID("msgq-2")
 ```
 
-当前目录只实现两类解析：`ResolveService` 是健康服务副本选择；`ResolveID` 是已知实例的精确
-路由。`roleId -> msgq 实例` 的会话绑定、消息 Seq/Ack 和有界下行邮箱属于 `msgq`；Virtual Actor
-的 `(kind, identity)` 路由属于 Actor Cluster；固定实例 Actor 的实体归属由业务维护，不在服务发现包内。
+`ResolveService` 是健康服务副本的轮转选择；`RunningInstances` 返回稳定排序、与目录内部隔离的健康实例
+快照，供业务实现随机、哈希或负载策略；`ResolveID` 是已知实例的精确路由。`roleId -> msgq 实例` 的会话
+绑定、消息 Seq/Ack 和有界下行邮箱属于 `msgq`；Virtual Actor 的 `(kind, identity)` 路由属于 Actor Cluster；
+固定实例 Actor 的实体归属由业务维护，不在服务发现包内。
 
 本机或 CI 已启动 etcd 时，可显式执行真实 lease/watch 回归；未设置环境变量时该集成用例会跳过，
 不会要求所有开发机安装 etcd：
