@@ -81,6 +81,29 @@ func TestServiceDirectoryResolveIDKeepsStoppingInstanceForDrain(t *testing.T) {
 	}
 }
 
+func TestServiceDirectoryKeepsDrainingInstanceForExactDrain(t *testing.T) {
+	directory := discovery.NewServiceDirectory()
+	if err := directory.Replace([]discovery.Instance{{
+		ID:       "game-1@v42",
+		Services: []string{"game"},
+		Endpoint: "10.0.0.1:9000",
+		Status:   discovery.StatusDraining,
+	}}); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+
+	if _, ok := directory.ResolveService("game"); ok {
+		t.Fatal("ResolveService() selected draining instance")
+	}
+	instance, ok := directory.ResolveID("game-1@v42")
+	if !ok {
+		t.Fatal("ResolveID() returned no draining instance")
+	}
+	if instance.Status != discovery.StatusDraining {
+		t.Fatalf("ResolveID() status = %q, want draining", instance.Status)
+	}
+}
+
 func TestServiceDirectoryReplaceRemovesMissingInstance(t *testing.T) {
 	directory := discovery.NewServiceDirectory()
 	directory.Replace([]discovery.Instance{{

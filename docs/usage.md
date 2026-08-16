@@ -159,7 +159,8 @@ if err := storage.Save(ctx, fusionStore, role.Store()); err != nil {
 `EtcdConfig` 和启动期构造的 `Instance`，不读取项目 yml、环境变量，也不启动 RPC、Actor 或消息队列。
 
 项目启动时先用 lease 注册本进程。实例应先以 `starting` 注册，等全部服务模块可用后再
-切换 `running`；关闭时先切 `stopping`，让精确会话路由继续完成排空，再撤销租约：
+切换 `running`。滚动发布的排水阶段先切 `draining`，此时普通服务路由不再选择该实例，
+但已有会话、固定归属 Actor 等精确路由仍可抵达它；排水完成后切 `stopping`，最后撤销租约：
 
 ```go
 registry, err := discovery.NewEtcdRegistry(appCtx, discovery.EtcdConfig{
@@ -191,7 +192,11 @@ if err := registration.SetStatus(context.Background(), discovery.StatusRunning);
     return err
 }
 
-// 关闭顺序：先停止新服务路由，再排空本模块，最后删除实例记录。
+// 发布控制面请求排水后，实例自己声明 draining。
+_ = registration.SetStatus(context.Background(), discovery.StatusDraining)
+_ = waitProceduresAndFlush()
+
+// 进入最终关闭窗口。精确路由仍可见，直到 lease 被撤销。
 _ = registration.SetStatus(context.Background(), discovery.StatusStopping)
 _ = stopModules()
 return registration.Close(context.Background())
@@ -225,7 +230,7 @@ if len(candidates) == 0 {
 }
 roomOwner := candidates[uint64(roomID)%uint64(len(candidates))]
 
-// 会话等精确路由可继续解析 stopping 实例，用于连接排空。
+// 会话等精确路由可继续解析 draining/stopping 实例，用于连接排空。
 msgq, ok := directory.ResolveID("msgq-2")
 ```
 
@@ -715,7 +720,7 @@ if err != nil {
 ```
 
 需要选择目标实例时，使用 `Resolve`。服务路由只返回 `running` 副本；已经知道实例 ID 的实例路由会精确
-解析 `running/stopping` 实例：
+解析 `running/draining/stopping` 实例：
 
 ```go
 instance, err := rpc.Resolve(directory, rpc.ServiceRoute("battle"))
@@ -1057,11 +1062,12 @@ Fusion、`txn.Runtime` 或分布式事务；同一 Actor 内若要处理多个 G
 
 ### 滚动重启
 
-重启 `game1`、`game2` 不要求其他服务组停机，但必须先 Drain：
+重启 `game1`、`game2` 不要求其他服务组停机，但必须先 Drain。发布平台先启动新
+generation 并等待 `running`，再请求旧 generation 进入 `draining`：
 
 ```text
-停止新业务 -> 等待已进入的 Procedure -> 完成要求的最终 Flush
--> 从成员表注销 -> 等待成员视图收敛 -> 停止进程
+新实例 Ready -> 旧实例 draining（停止新分配）-> 等待已进入的 Procedure
+-> 完成要求的最终 Flush -> stopping -> 撤销成员 lease -> 停止进程
 ```
 
 ProtoActor 的成员变更不会迁移业务内存状态；Virtual Actor 的业务状态必须可恢复。固定实例 Actor 的故障与迁移

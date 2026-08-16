@@ -15,6 +15,7 @@ type Status string
 const (
 	StatusStarting Status = "starting"
 	StatusRunning  Status = "running"
+	StatusDraining Status = "draining"
 	StatusStopping Status = "stopping"
 )
 
@@ -49,7 +50,7 @@ func (i Instance) Validate() error {
 }
 
 func (s Status) Valid() bool {
-	return s == StatusStarting || s == StatusRunning || s == StatusStopping
+	return s == StatusStarting || s == StatusRunning || s == StatusDraining || s == StatusStopping
 }
 
 type ServiceDirectory struct {
@@ -137,12 +138,12 @@ func (d *ServiceDirectory) RunningInstances(service string) []Instance {
 	return result
 }
 
-// ResolveID 为精确路由返回已知的 running 或 stopping 状态实例。
+// ResolveID 为精确路由返回已知的 running、draining 或 stopping 状态实例。
 func (d *ServiceDirectory) ResolveID(id string) (Instance, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	instance, ok := d.byID[id]
-	if !ok || (instance.Status != StatusRunning && instance.Status != StatusStopping) {
+	if !ok || (instance.Status != StatusRunning && instance.Status != StatusDraining && instance.Status != StatusStopping) {
 		return Instance{}, false
 	}
 	return cloneInstance(instance), true
