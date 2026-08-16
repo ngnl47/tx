@@ -921,6 +921,23 @@ if err != nil {
 // delivery.MessageType、delivery.CommandID 和 delivery.Payload 由业务处理。
 ```
 
+项目将 Agent 与业务服务分进程部署时，可在项目层把经握手、Seq/Ack 校验后的 BON body 投递给 Actor。该适配属于
+项目装配，不要求 Agent 知道具体 `GD*` 或 cmd 类型：
+
+```go
+dispatcher, err := appagent.NewActorDispatcher(runtime,
+    appagent.ActorTargetResolverFunc(func(ctx context.Context, identity txagent.Identity) (*protoactor.PID, error) {
+        return runtime.VirtualPID("role", strconv.FormatInt(identity.RoleID, 10))
+    }),
+)
+if err != nil {
+    return err
+}
+```
+
+它投递 `MessageType: "agent.command"` 和原始 BON `Payload`。连接 `Seq` 只用于 Agent 重复帧抑制，不是业务
+`CommandID`；Actor 侧再通过生成的 `cmd.DecodeBONCommand` 解析 payload，并由具体命令自行定义幂等键。
+
 上例的 `role` 是可恢复的 Virtual Actor。它的 `identity` 由集群根据成员视图路由，业务必须能在新节点上从
 Fusion 恢复状态。固定归属的内存权威对象不调用 `VirtualPID`，而是由业务维护实例地址并构造直连 PID：
 
