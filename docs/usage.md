@@ -604,18 +604,28 @@ Agent 停止时先关闭 TCP/WebSocket listener，停止接收新连接；WebSoc
 和 Go 编解码字段名都是 `hi`，而不是 JSON 名 `headImg`。
 
 ```ts
-import { encodeCommand } from "../src/protocol/codec.js";
+import { decodeEnvelope, encodeCommand } from "../src/protocol/codec.js";
 import { Schemas } from "../src/gen/schema.js";
 
 const bytes = encodeCommand("Role_RenameReq", {
   roleId: 470001,
   name: "new-name",
 }, Schemas);
+
+const incoming = decodeEnvelope(bytes, Schemas);
+if (incoming.command === "Role_RenameReq") {
+  const request = incoming.body;
+  void request;
+}
 ```
 
 这段 `bytes` 可以直接放进 Agent 的业务 Frame；Agent 仍保持不透明转发。Go 整数在 TypeScript 侧使用
 `number`，因此业务协议值必须在 `-9,007,199,254,740,991` 到 `9,007,199,254,740,991` 之间；超界编码或解码
 会返回错误，避免悄悄丢失精度。
+
+下行处理通常预先不知道命令名，应使用 `decodeEnvelope(bytes, Schemas)` 从 `{ c, b }` 读取命令并按生成 schema
+解析 body；它会拒绝未知命令、无效信封和尾随字节。已知命令的固定处理点仍可使用 `decodeCommand(name, bytes, Schemas)`
+额外校验命令名。
 
 TypeScript 模板还提供与 `modules/agent.Frame` 对应的 `protocol/frame.ts`：WebSocket 使用原始 Frame bytes，
 TCP 在其外层加 4 字节 big-endian 长度；`TCPFrameDecoder` 能处理半包与粘包。两端都校验 Frame 版本、类型、
