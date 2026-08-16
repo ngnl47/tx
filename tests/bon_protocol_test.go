@@ -9,21 +9,21 @@ import (
 )
 
 type bonProtocolItem struct {
-	ID       int32     `json:"id"`
-	Quantity int64     `json:"quantity"`
-	ExpireAt time.Time `json:"expireAt"`
+	ID       int32     `json:"id" msgpack:"itemId"`
+	Quantity int64     `json:"quantity" msgpack:"qty"`
+	ExpireAt time.Time `json:"expireAt" msgpack:"expireAt"`
 }
 
 type bonProtocolRequest struct {
-	RoleID int64            `json:"roleId"`
-	Item   *bonProtocolItem `json:"item"`
-	Labels map[string]int32 `json:"labels"`
-	Scores map[int32]int64  `json:"scores"`
-	IDs    []uint64         `json:"ids"`
-	Raw    map[string]any   `json:"raw"`
+	RoleID int64            `json:"roleId" msgpack:"rid"`
+	Item   *bonProtocolItem `json:"item" msgpack:"item"`
+	Labels map[string]int32 `json:"labels" msgpack:"labels"`
+	Scores map[int32]int64  `json:"scores" msgpack:"scores"`
+	IDs    []uint64         `json:"ids" msgpack:"ids"`
+	Raw    map[string]any   `json:"raw" msgpack:"raw"`
 }
 
-func TestBONEnvelopeDecodesTypedJSONTaggedBody(t *testing.T) {
+func TestBONEnvelopeDecodesTypedMsgpackTaggedBody(t *testing.T) {
 	const command = "Role_AddItem"
 	want := bonProtocolRequest{
 		RoleID: 4_700_001,
@@ -56,7 +56,7 @@ func TestBONEnvelopeDecodesTypedJSONTaggedBody(t *testing.T) {
 
 func TestBONEnvelopeMatchesClientPrimitiveLayout(t *testing.T) {
 	payload, err := bon.MarshalEnvelope("Ping", struct {
-		ID int32 `json:"id"`
+		ID int32 `json:"id" msgpack:"pid"`
 	}{ID: 1})
 	if err != nil {
 		t.Fatalf("MarshalEnvelope returned error: %v", err)
@@ -67,7 +67,7 @@ func TestBONEnvelopeMatchesClientPrimitiveLayout(t *testing.T) {
 		5, 4, 80, 105, 110, 103,
 		5, 1, 98,
 		8, 1,
-		5, 2, 105, 100,
+		5, 3, 112, 105, 100,
 		1, 1, 0, 0, 0,
 	}
 	if !reflect.DeepEqual(payload, want) {

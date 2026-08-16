@@ -600,7 +600,8 @@ Agent 停止时先关闭 TCP/WebSocket listener，停止接收新连接；WebSoc
 
 `tx` 不依赖 TypeScript 运行时。项目通过 `txgen` 从同一份 data/cmd 输入生成
 `/Users/a47/workspace/txclient/src/gen/data.ts`、`cmd.ts` 和 `schema.ts`；`txclient` 的 codec 负责 BON
-编解码。生成字段使用 Go `json` tag 名，例如 `RoleId` 对应 `roleId`。
+编解码。BON 在 Go 侧和客户端侧都使用 `msgpack` tag 名，例如 `HeadImg` 使用 `msgpack:"hi"` 时，客户端字段名
+和 Go 编解码字段名都是 `hi`，而不是 JSON 名 `headImg`。
 
 ```ts
 import { encodeCommand } from "../src/protocol/codec.js";

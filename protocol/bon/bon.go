@@ -27,7 +27,7 @@ const (
 	typeStringRef byte = 99
 )
 
-// Marshal serializes a Go value using its json field tags.
+// Marshal serializes a Go value using its msgpack field tags.
 func Marshal(value any) ([]byte, error) {
 	writer := newWriter()
 	if err := writer.writeReflect(reflect.ValueOf(value)); err != nil {
@@ -91,7 +91,7 @@ func UnmarshalEnvelope(payload []byte) (command string, body any, err error) {
 	return command, body, nil
 }
 
-// DecodeValue maps a decoded BON value to target using json tags.
+// DecodeValue maps a decoded BON value to target using msgpack tags.
 func DecodeValue(value any, target any) error {
 	if target == nil {
 		return fmt.Errorf("bon: target is nil")
@@ -264,7 +264,7 @@ func collectStructFields(typeOf reflect.Type, prefix []int, meta *structMeta) {
 		if definition.PkgPath != "" {
 			continue
 		}
-		name, omitEmpty, ignored := jsonField(definition)
+		name, omitEmpty, ignored := msgpackField(definition)
 		if ignored {
 			continue
 		}
@@ -695,8 +695,8 @@ func assignValue(destination reflect.Value, source any) error {
 	return nil
 }
 
-func jsonField(field reflect.StructField) (name string, omitEmpty bool, ignored bool) {
-	tag := field.Tag.Get("json")
+func msgpackField(field reflect.StructField) (name string, omitEmpty bool, ignored bool) {
+	tag := field.Tag.Get("msgpack")
 	if tag == "-" {
 		return "", false, true
 	}
