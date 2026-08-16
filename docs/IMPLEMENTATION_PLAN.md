@@ -24,6 +24,7 @@
 - 本地 TTL 缓存不是当前 tx runtime 的需求，不能为了迁移工具而提前引入依赖；将来业务项目明确选择本地 entity/cache 层时，再单独评估成熟库与项目级装配方式。
 - `tx/log` 是基于 `log/slog` 的最小日志门面。项目启动时通过 `SetDefault` 注入 handler、级别和格式；业务项目按需定义 `var RoleLog = log.NewLogger("role")` 这类包级命名 logger。`NewLogger` 是延迟代理，后续替换 default logger 后仍使用新配置；tx 不维护项目级 logger registry、名称枚举或自动包名推导。
 - `txgen` 负责生成 `GD*.go`、`GD*Store.go`、cmd、字段名函数、字段编号和类型元数据；业务模板和集成样例放在 `txgame`。
+- `txgame` 的 `agent`、`msgq`、`game` 始终注册为可选服务；仅 `--services` 决定当前进程启动集合。YAML 只保存服务静态运行参数，未选服务不校验其专属参数，选中服务的配置错误必须启动失败。
 - `GD*` 是纯数据对象；`GD*Store` 是独立、完整、可组合的变更追踪结构，绑定 `GD*` 后才具备读值、修改和投影意义。Store 只持有业务数据引用，不保存第二份业务数据。
 - `GD*` 可以懒持有默认主 Store，作为 `role.SetName(...)` 这类代理入口；Store 本身不依附于某个 `GD*` 实例，可单独创建、绑定、组合和复制。
 - Store 树按持久化路径组织：父 Store 持有复合字段、map key 或 slice index 对应的子 Store；子 Store 不向 `GD*` 写入父回调或父路径。`DeltaSet` 只在保存或下行边界从整棵 Store 树投影产生。

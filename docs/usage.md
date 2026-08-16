@@ -558,19 +558,18 @@ if err != nil {
 `Rec` 在业务分发之前前进上行 Seq。因此业务处理失败或进程在 `Rec` 之后崩溃时，该条上行不会被框架自动重放。
 普通游戏操作接受这个语义；不能重复执行的命令必须由项目在 BON body 中携带 `CommandID` 并实现幂等。
 
-`txgame` 的最小配置如下。启用 Agent 时至少配置一个监听地址，`maxFrameBytes` 和 `fetchBatch` 必须为正数；
-同时必须启用 `runtime.msgq`，因为 Agent 需要会话 binding 的 Redis 配置：
+`txgame` 的最小配置如下。`agent` 被 `--services` 选中时至少配置一个监听地址，`maxFrameBytes` 和
+`fetchBatch` 必须为正数；`msgq` 的 Redis 会话 binding 参数也必须完整。服务选择只由 `--services` 决定，
+YAML 不使用 `enabled` 作为第二个启动开关：
 
 ```yaml
 runtime:
   agent:
-    enabled: true
     tcpListen: 0.0.0.0:9000
     webSocketListen: 0.0.0.0:9001
     maxFrameBytes: 1048576
     fetchBatch: 16
   msgq:
-    enabled: true
     routeType: fusion
     prefix: txgame:msgq
     ttl: 48h
@@ -583,14 +582,14 @@ runtime:
 同一进程同时启动时，Agent 不建立额外的 gRPC 连接：
 
 ```bash
-go run ./cmd/server -module=game,msgq,agent
+go run ./cmd/server --services=game,msgq,agent
 ```
 
 接入层与会话邮箱分开部署时，只启动 Agent；它从 `ServiceDirectory` 选择 running msgq 实例，因此必须启用 discovery，
 并使 msgq 实例以自身 gRPC endpoint 注册到目录：
 
 ```bash
-go run ./cmd/server -module=agent
+go run ./cmd/server --services=agent
 ```
 
 Agent 停止时先关闭 TCP/WebSocket listener，停止接收新连接；WebSocket 主动断开，TCP Session 随服务根
