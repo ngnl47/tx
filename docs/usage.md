@@ -1118,15 +1118,27 @@ _ = pid
 
 ### 滚动重启
 
-重启 `game1`、`game2` 不要求其他服务组停机，但必须先 Drain。发布平台先启动新
-generation 并等待 `running`，再请求旧 generation 进入 `draining`：
+重启 `game1`、`game2` 不要求其他服务组停机，但必须先 Drain。第一阶段只处理能够
+执行优雅关闭的发布：旧 generation 先进入 `draining`，停止该逻辑槽位的新命令准入；
+全局 `WaitGroupContext` 再等待已进入的业务与后台任务，完成最终 Flush，最后才将旧实例
+切为 `stopping` 并注销。固定槽位在这个窗口内不得改派到其他 game 实例，调用方只能等待
+或收到明确的重试错误。
 
 ```text
-新实例 starting 并完成依赖预检 -> 新实例 running -> 旧槽位停止新命令准入
--> 等待已进入的 Procedure -> 完成要求的最终 Flush
--> CAS Promote(slot, old generation, new generation) -> 新 generation 接收该槽位请求
--> 旧实例 stopping -> 撤销成员 lease -> 停止进程
+旧实例 draining -> 停止该槽位的新命令准入
+-> WaitGroupContext 等待已进入的 Procedure 与后台任务
+-> 完成要求的最终 Flush -> 旧实例 stopping -> 撤销成员 lease -> 停止进程
+-> 新实例启动并完成依赖预检 -> CAS Promote(slot, old generation, new generation)
+-> 新 generation 接收该槽位请求
 ```
+
+`LogicalSlotID` 不是服务发现按实例数量生成的编号。原生部署由启动参数或环境变量注入；
+Kubernetes 有状态服务应使用 StatefulSet 的 ordinal，例如 Pod `game-1` 注入
+`TXGAME_LOGICAL_SLOT=game-1`，每次 Pod 重建则以新的 UID 形成新的 `RuntimeInstanceID`。
+同一镜像复制出的普通 Deployment 副本不能共享写死的 SlotID。
+
+`WaitGroupContext` 只保证正常关闭路径。`SIGKILL`、OOM、机器故障和网络分区下的自动
+安全接管需要 Lease 与存储 fencing，这是后续独立能力，当前不能假定已经提供。
 
 ProtoActor 的成员变更不会迁移业务内存状态；Virtual Actor 的业务状态必须可恢复。固定实例 Actor 的故障与迁移
 策略由业务维护。下行 msgq 实例崩溃时允许丢失尚未确认的内存消息，客户端重连和业务幂等负责恢复；内部命令
