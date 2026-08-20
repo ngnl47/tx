@@ -16,6 +16,7 @@ const defaultFetchBatch = 1
 type Server struct {
 	identityResolver IdentityResolver
 	dispatcher       Dispatcher
+	admission        Admission
 	sessions         SessionClientRouter
 	connectionID     ConnectionIDGenerator
 	fetchBatch       int
@@ -44,6 +45,7 @@ func NewServer(options ServerOptions) (*Server, error) {
 	return &Server{
 		identityResolver: options.IdentityResolver,
 		dispatcher:       options.Dispatcher,
+		admission:        options.Admission,
 		sessions:         options.Sessions,
 		connectionID:     options.ConnectionID,
 		fetchBatch:       options.FetchBatch,
@@ -132,19 +134,32 @@ func (s *Server) Serve(ctx context.Context, transport Transport) (serveErr error
 		if err := validateAcknowledgement(frame.Ack, confirmedOutbound, writtenOutbound.Load()); err != nil {
 			return err
 		}
-		result, err := client.Rec(sessionCtx, msgq.RecRequest{Header: header, Seq: frame.Seq, Ack: frame.Ack})
-		if err != nil {
-			return err
-		}
-		confirmedOutbound = frame.Ack
-		if result.ReceivedSeq <= receivedSeq {
-			continue
-		}
-		receivedSeq = result.ReceivedSeq
-		if err := s.dispatcher.Dispatch(sessionCtx, DispatchRequest{Identity: identity, Seq: frame.Seq, Payload: cloneBytes(frame.Payload)}); err != nil {
+		if err := s.dispatchBusiness(sessionCtx, client, header, identity, frame, &receivedSeq, &confirmedOutbound); err != nil {
 			return err
 		}
 	}
+}
+
+func (s *Server) dispatchBusiness(ctx context.Context, client msgq.SessionClient, header msgq.SessionHeader, identity Identity, frame Frame, receivedSeq, confirmedOutbound *int64) error {
+	var done func()
+	if s.admission != nil {
+		var err error
+		done, err = s.admission.Enter()
+		if err != nil {
+			return err
+		}
+		defer done()
+	}
+	result, err := client.Rec(ctx, msgq.RecRequest{Header: header, Seq: frame.Seq, Ack: frame.Ack})
+	if err != nil {
+		return err
+	}
+	*confirmedOutbound = frame.Ack
+	if result.ReceivedSeq <= *receivedSeq {
+		return nil
+	}
+	*receivedSeq = result.ReceivedSeq
+	return s.dispatcher.Dispatch(ctx, DispatchRequest{Identity: identity, Seq: frame.Seq, Payload: cloneBytes(frame.Payload)})
 }
 
 func (s *Server) writeOutbound(ctx context.Context, client msgq.SessionClient, header msgq.SessionHeader, transport Transport, written *atomic.Int64) error {

@@ -43,8 +43,7 @@ type SchedulerOptions struct {
 
 type waitGroupContext interface {
 	context.Context
-	WaitGroupAdd(int)
-	WaitGroupDone()
+	Go(func(context.Context)) error
 }
 
 type Scheduler struct {
@@ -130,12 +129,9 @@ func (s *Scheduler) Start(ctx waitGroupContext) error {
 	if isNilFusionDependency(ctx) {
 		return ErrSchedulerContextNotConfigured
 	}
-	ctx.WaitGroupAdd(1)
-	go func() {
-		defer ctx.WaitGroupDone()
+	return ctx.Go(func(context.Context) {
 		s.run(ctx)
-	}()
-	return nil
+	})
 }
 
 func (s *Scheduler) RunOnce(ctx context.Context, now time.Time) (int, error) {

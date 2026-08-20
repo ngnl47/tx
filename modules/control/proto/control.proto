@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package tx.control.v1;
+
+option go_package = "github.com/ngnl47/tx/modules/control/pb;controlpb";
+
+enum LifecycleState {
+  LIFECYCLE_STATE_UNSPECIFIED = 0;
+  LIFECYCLE_STATE_RUNNING = 1;
+  LIFECYCLE_STATE_DRAINING = 2;
+  LIFECYCLE_STATE_DRAINED = 3;
+  LIFECYCLE_STATE_FAILED = 4;
+}
+
+message Empty {}
+
+message LifecycleStatus {
+  LifecycleState state = 1;
+  string error = 2;
+}
+
+service LifecycleService {
+  rpc Status(Empty) returns (LifecycleStatus);
+  rpc Drain(Empty) returns (LifecycleStatus);
+  rpc WaitDrained(Empty) returns (LifecycleStatus);
+}

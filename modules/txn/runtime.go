@@ -245,8 +245,7 @@ func (manager *Runtime) Shutdown(ctx context.Context) error {
 
 type waitGroupContext interface {
 	context.Context
-	WaitGroupAdd(int)
-	WaitGroupDone()
+	Go(func(context.Context)) error
 }
 
 // Start 将后台刷盘循环绑定到服务的 WaitGroupContext。
@@ -260,14 +259,11 @@ func (manager *Runtime) Start(ctx waitGroupContext) error {
 	if manager.config.FlushInterval <= 0 {
 		return errors.New("txn runtime: flush interval must be greater than 0")
 	}
-	ctx.WaitGroupAdd(1)
-	go func() {
-		defer ctx.WaitGroupDone()
+	return ctx.Go(func(context.Context) {
 		if err := manager.Run(ctx, manager.config.FlushInterval); err != nil {
 			txlog.ErrorContext(ctx, "txn runtime stopped", "err", err)
 		}
-	}()
-	return nil
+	})
 }
 
 type managedProcedure struct {

@@ -183,6 +183,50 @@ func TestAgentSessionDispatchFailureDoesNotRollbackAcceptedSequence(t *testing.T
 	}
 }
 
+func TestAgentSessionDoesNotAdvanceSequenceWhenAdmissionRejects(t *testing.T) {
+	store := newMailboxSessionStore()
+	mailbox, err := msgq.NewServer(msgq.ServerOptions{InstanceID: "msgq-local", Store: store, MaxBacklog: 4})
+	if err != nil {
+		t.Fatalf("new mailbox: %v", err)
+	}
+	client, err := msgq.NewLocalSessionClient(mailbox)
+	if err != nil {
+		t.Fatalf("new local client: %v", err)
+	}
+	router, err := msgq.NewFixedSessionClientRouter(client)
+	if err != nil {
+		t.Fatalf("new fixed router: %v", err)
+	}
+	drainErr := errors.New("agent is draining")
+	agent, err := txagent.NewServer(txagent.ServerOptions{
+		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (txagent.Identity, error) {
+			return txagent.Identity{RoleID: 470001, SessionID: 99}, nil
+		}),
+		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error {
+			t.Fatal("dispatcher must not run when admission rejects")
+			return nil
+		}),
+		Admission: txagent.AdmissionFunc(func() (func(), error) { return nil, drainErr }),
+		Sessions:  router,
+		ConnectionID: func() (int64, error) {
+			return 7, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("new agent: %v", err)
+	}
+	transport := newAgentTransport()
+	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
+	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, Payload: []byte("bon-request")}
+	if err := agent.Serve(context.Background(), transport); !errors.Is(err, drainErr) {
+		t.Fatalf("Serve error = %v, want admission error", err)
+	}
+
+	if _, err := mailbox.Rec(context.Background(), msgq.RecRequest{Header: msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}, Seq: 1}); err != nil {
+		t.Fatalf("rejected frame advanced sequence: %v", err)
+	}
+}
+
 func newAgentSessionFixture(t *testing.T, dispatchErr error) (*txagent.Server, *agentTransport, *msgq.Server, <-chan txagent.DispatchRequest) {
 	t.Helper()
 	store := newMailboxSessionStore()

@@ -81,7 +81,7 @@
 - `modules/agent` 已提供 TCP 长度帧和 WebSocket binary message 两种默认接入，并以项目注入的 `IdentityResolver` 和 `Dispatcher` 完成身份解析与 BON 业务分发；tx 不实现账号认证。Agent 在握手后按已有 session owner 优先、running msgq 兜底的规则选择本地或 gRPC `SessionClient`。同进程 `agent,msgq` 复用本地邮箱，不额外建 gRPC 连接；仅启动 agent 时必须经服务目录选择远端 msgq。上行 `Rec` 在业务 Dispatch 前推进 Seq，重复帧不重复分发；业务关键命令需要自带 `CommandID` 幂等。业务帧携带下行 Ack，空闲时使用无 payload 的 `FrameAck`；Ack 只能确认当前连接已成功写出的序号，越界或倒退会中止本次连接并保留未确认队列。断线不主动 Close Session，由 OfflineTimeout/重连 Init 管理。
 - `txgen` 已从同一份 data/cmd 输入导出 TypeScript `data.ts`、`cmd.ts` 和 BON schema 到 `txclient/src/gen`，并在 Go cmd 包生成 `DecodeBONCommand`/`EncodeBONCommand`。BON、客户端字段、cmd Provider 和 Store 下行变更投影统一使用 Go `msgpack` tag 名；`number` 只承载 JavaScript 安全整数范围内的 Go 整数。`tx/protocol/bon` 直接实现 BON 文档类型、7-bit 长度、小端数值和字符串引用；`txgame` 的 `NewBONDispatcher` 在 Agent 之后把 bytes 适配为生成 `*cmd.X`，Agent 本身继续只转发 bytes。TypeScript `decodeEnvelope` 从 `{ c, b }` 自动选择生成 schema，并拒绝未知命令、无效信封和尾随字节；已知命令才使用 `decodeCommand` 做额外命令名断言。`txclient/protocol/frame.ts` 已对齐 Agent Frame 版本、Seq/Ack 和 TCP 4 字节长度前缀，并提供半包/粘包解码；客户端不手写帧头。
 - Actor 分为两条互不混用的运行路径：可恢复实体使用 Cluster Virtual Actor，成员扩缩容后允许重新路由并从 Fusion 恢复；Battle、SLG 城市、MMO 场景等内存权威对象使用固定逻辑槽位的本地 Actor 与 Remote PID 直连，业务维护 `entityID -> logicalSlot -> runtimeInstance` 归属，不参与自动重平衡。SLG/MMO 的同服、同战区玩家与场景必须绑定同一逻辑槽位，例如 `realm:1001 -> game-slot-1`；`game-slot-1` 只在旧新 generation 间交接，不能因 `game-1@v42` 重启而改派到 `game-2`。固定归属 Actor 的迁移必须显式执行保存快照、停止旧实例、更新归属和目标恢复，节点短暂不可用时返回业务错误或由客户端重连，不得静默改派。
-- 滚动重启必须先 Drain：停止新业务、等待已进入的 Procedure、完成要求的最终 Flush、从成员表注销并等待成员视图收敛，最后停止进程。ProtoActor 成员变化会停止不再属于本节点的 Virtual Actor；它不迁移业务内存状态，也不提供分布式事务、分布式锁、跨 Actor 回滚或 exactly-once 投递。无状态服务可按先扩后缩发布；可恢复 Virtual Actor 必须限制恢复并发，避免成员变化后集中回源；固定 Scene/Battle 等内存权威 Actor 不自动迁移，应由业务选择自然结束、显式快照交接或客户端短暂重连。
+- 滚动重启必须先 Drain：服务目录切为 `draining`，网络入口封口并等待已经受理的 handler；之后才关闭服务资源、取消全局 `WaitGroupContext`、完成要求的最终 Flush、从成员表注销并等待成员视图收敛，最后停止进程。排水不读取或拒绝 `Procedure`、`db.Save`、`db.SaveChange` 或 Store；外部存储可用性仍由实际 I/O 错误和项目健康闸门决定。ProtoActor 成员变化会停止不再属于本节点的 Virtual Actor；它不迁移业务内存状态，也不提供分布式事务、分布式锁、跨 Actor 回滚或 exactly-once 投递。无状态服务可按先扩后缩发布；可恢复 Virtual Actor 必须限制恢复并发，避免成员变化后集中回源；固定 Scene/Battle 等内存权威 Actor 不自动迁移，应由业务选择自然结束、显式快照交接或客户端短暂重连。
 - `storage.DocumentLoader` 和 `DocumentReplacer` 的公共文档契约统一使用 JSON 字段名。Redis 原样读写该文档；Mongo adapter 在完整文档读取与替换边界通过 `TypeSpec.DocumentFactory` 物化生成类型，再按 BSON tag 转换。Fusion 只传递公共 JSON 文档，不直接搬运 Mongo 的 BSON map。
 - Fusion 是 Redis 热数据加 Mongo 冷数据。Redis main/subKey 都使用 string JSON 文档；RedisJSON/ReJSON 仅作为后续可选 backend，不是当前默认路径。
 - Redis 整文档替换在文档只包含 subKey 或为空时仍写入 main `{}`，保持 main key 作为热记录存在标记；不能因字段拆分形成只有 subKey、没有根记录的状态。
@@ -119,6 +119,8 @@
 
 `ServiceDirectory.RunningInstances(service)` 返回按实例 ID 稳定排序的 running 快照，并深复制 `Services` 切片；业务可据此实现随机、哈希或负载策略。目录不保存地图、GD 或 Actor 的归属关系。
 
+`modules/control` 已提供最小运维 gRPC：`Status`、`Drain`、`WaitDrained`。它只面向 `LifecycleController` 抽象；`txgame` 的 `DrainCoordinator` 将其适配为 discovery 状态更新和 `Host.Drain`，并可由 `--control-listen` 或 `TXGAME_CONTROL_LISTEN` 启用。`Drain` 不取消根 context、不拒绝 Procedure/DB/Store；它只封口服务入口并等待已受理 handler。发布平台在 `WaitDrained` 后发送正常终止信号，进程再关闭资源、取消 `WaitGroupContext`、最终 Flush 并撤销成员记录。后续只评估 `txctl`、认证、TLS/mTLS 和逻辑槽位 Promote 控制面，不改变这一职责边界。
+
 `txgame/internal/agent.NewFixedSlotTargetResolver` 已把项目提供的 `Identity -> SlotID/ActorID` 规则与 `SlotRouter` 组合；它只为 running 宿主构造 Remote PID，draining、stopping 或缺失宿主保留 `ErrSlotRuntimeUnavailable` 错误链，不替业务改派。
 
 `txgame/internal/agent.NewActorDispatcher` 已提供 Agent 到业务 Actor 的项目级桥接：项目只实现
@@ -155,6 +157,7 @@ tx/
   storage/fusion/   # Fusion 策略与延迟任务抽象
   storage/task/     # Delay task backend interface 和内存实现
   modules/discovery/ # 可选：etcd lease/watch 服务发现与进程实例目录
+  modules/control/   # 可选：运维排水控制 gRPC 契约
   modules/msgq/      # 可选：客户端会话 owner 与进程内下行邮箱
   modules/rpc/       # 可选：独立 Service/Instance gRPC 投递
   modules/txn/      # 可选：单机事务、savepoint、undo log 和 after-commit hook

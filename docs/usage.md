@@ -781,6 +781,11 @@ PROTOC=/Users/a47/sdk/protoc-29.3/bin/protoc \
 GO_BIN=/Users/a47/sdk/go1.26.5/bin/go \
 ./cmd/protoc/run.sh actor
 
+# 仅生成运维控制面契约。
+PROTOC=/Users/a47/sdk/protoc-29.3/bin/protoc \
+GO_BIN=/Users/a47/sdk/go1.26.5/bin/go \
+./cmd/protoc/run.sh control
+
 # 生成全部已注册包。
 PROTOC=/Users/a47/sdk/protoc-29.3/bin/protoc \
 GO_BIN=/Users/a47/sdk/go1.26.5/bin/go \
@@ -800,8 +805,50 @@ GOBIN="$HOME/go/bin" /Users/a47/sdk/go1.26.5/bin/go install \
 ```
 
 将 `protoc`、`protoc-gen-go` 和 `protoc-gen-go-grpc` 放入 `PATH` 后，也可以不设置 `PROTOC` 与
-`GO_BIN`。生成的 `modules/actor/pb/*.pb.go`、`modules/msgq/pb/*.pb.go` 与 `modules/rpc/pb/*.pb.go` 都属于版本化源文件，应与对应
+`GO_BIN`。生成的 `modules/actor/pb/*.pb.go`、`modules/control/pb/*.pb.go`、`modules/msgq/pb/*.pb.go` 与 `modules/rpc/pb/*.pb.go` 都属于版本化源文件，应与对应
 `.proto` 一起提交。
+
+## Lifecycle 与运维排水
+
+`lifecycle.WaitGroupContext` 是正常关闭的任务账本：`Go` 用于启动后台循环，`Enter` 用于登记已在当前 goroutine 中执行的工作。`Cancel` 后不再接受新任务，但仍会等待此前登记的任务；调用方不再直接操作 `sync.WaitGroup`。
+
+```go
+root := lifecycle.NewWaitGroupContext(context.Background())
+if err := root.Go(func(ctx context.Context) {
+    runPeriodicWorker(ctx)
+}); err != nil {
+    return err
+}
+
+ingress := lifecycle.NewIngress(root)
+done, err := ingress.Enter() // Agent/RPC 收到业务请求时登记。
+if err != nil {
+    return err
+}
+defer done()
+handleRequest()
+
+// 发布时先封口，等待已受理请求；最后才取消根 context。
+ingress.BeginDrain()
+ingress.Wait()
+root.Cancel()
+root.WaitDoneAndWaitGroupWait()
+```
+
+`Ingress` 只属于网络入口或 Actor/RPC 接收器，不能被 `Procedure`、`db.Save`、`db.SaveChange` 或 Store 读取。排水中已受理的业务必须继续完成；存储可用性仍只由 Redis/Mongo 的实际 I/O 错误和项目健康闸门决定。
+
+`modules/agent.Server` 在调用 `msgq.Rec` **之前**调用 `Admission.Enter()`。因此 Agent 排水后，后续业务帧会返回明确错误并结束本次连接，不会推进上行 `Seq` 或伪造“已受理”。
+
+`modules/control` 是独立的运维 gRPC 契约，仅有 `Status`、`Drain`、`WaitDrained`。项目只需适配 `control.LifecycleController`；控制面不依赖 GD、Store、Procedure、Redis 或 Mongo：
+
+```go
+grpcServer := grpc.NewServer()
+if err := control.RegisterLifecycleService(grpcServer, coordinator); err != nil {
+    return err
+}
+```
+
+`Drain` 只启动“目录标记为 `draining` + 入口封口”；`WaitDrained` 只等待已受理请求结束。最终资源关闭、根 context 取消、事务 Flush、Actor 与 discovery 注销仍由宿主负责。
 
 ## Actor Cluster 与 msgq
 
@@ -952,8 +999,8 @@ pid, err := txactor.FixedPID("battle-1.internal:12000", "battle-1001")
 
 `FixedPID` 只验证地址并创建 Remote PID；它不查询实例目录、不迁移 Actor，也不提供分布式锁或事务。
 
-`Runtime.Start` 只加入集群，**不会**因 `ctx` 取消立即注销成员。宿主的正确顺序是先停止新业务、等待进入的
-Procedure、完成最终 Flush，再调用 `Runtime.Shutdown` 退出成员表。`txgame` 的 Lifecycle 已按这个顺序将
+`Runtime.Start` 只加入集群，**不会**因 `ctx` 取消立即注销成员。宿主的正确顺序是先停止入口新业务、等待已受理的
+服务 handler、完成最终 Flush，再调用 `Runtime.Shutdown` 退出成员表。`txgame` 的 Lifecycle 已按这个顺序将
 事务最终 Flush 放在 Actor Shutdown 之前。真实 etcd 回归可通过 `TX_ETCD_ENDPOINT=127.0.0.1:2379` 启用。
 
 `msgq` 是客户端会话邮箱，不是所有业务 Actor 的中心中继。它维护在线 Session、下行 `sndQueue`、Seq/Ack、
@@ -1148,13 +1195,13 @@ _ = dispatcher
 
 重启 `game1`、`game2` 不要求其他服务组停机，但必须先 Drain。第一阶段只处理能够
 执行优雅关闭的发布：旧 generation 先进入 `draining`，停止该逻辑槽位的新命令准入；
-全局 `WaitGroupContext` 再等待已进入的业务与后台任务，完成最终 Flush，最后才将旧实例
+全局 `WaitGroupContext` 再等待已登记的后台任务，完成最终 Flush，最后才将旧实例
 切为 `stopping` 并注销。固定槽位在这个窗口内不得改派到其他 game 实例，调用方只能等待
 或收到明确的重试错误。
 
 ```text
 旧实例 draining -> 停止该槽位的新命令准入
--> WaitGroupContext 等待已进入的 Procedure 与后台任务
+-> WaitGroupContext 等待已登记的后台任务
 -> 完成要求的最终 Flush -> 旧实例 stopping -> 撤销成员 lease -> 停止进程
 -> 新实例启动并完成依赖预检 -> CAS Promote(slot, old generation, new generation)
 -> 新 generation 接收该槽位请求

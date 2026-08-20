@@ -590,9 +590,7 @@ func (s *Server) Start(ctx waitGroupContext) error {
 	if !s.reaping.CompareAndSwap(false, true) {
 		return ErrReaperRunning
 	}
-	ctx.WaitGroupAdd(1)
-	go func() {
-		defer ctx.WaitGroupDone()
+	return ctx.Go(func(context.Context) {
 		defer s.reaping.Store(false)
 		ticker := time.NewTicker(s.sweepEvery)
 		defer ticker.Stop()
@@ -606,8 +604,7 @@ func (s *Server) Start(ctx waitGroupContext) error {
 				}
 			}
 		}
-	}()
-	return nil
+	})
 }
 
 func (s *Server) install(header SessionHeader) *mailboxSession {
@@ -943,6 +940,5 @@ func validateTopics(topics []string) error {
 
 type waitGroupContext interface {
 	context.Context
-	WaitGroupAdd(int)
-	WaitGroupDone()
+	Go(func(context.Context)) error
 }

@@ -10,11 +10,12 @@ usage() {
 
 可生成包:
   actor  modules/actor/proto/actor.proto
+  control modules/control/proto/control.proto
   msgq   modules/msgq/proto/msgq.proto
   rpc    modules/rpc/proto/rpc.proto
 
 示例:
-  ./cmd/protoc/run.sh actor
+  ./cmd/protoc/run.sh actor control
   ./cmd/protoc/run.sh --all
 
 发布流程可只传入需要导出的包名，从而跳过其他 proto 包。
@@ -35,7 +36,7 @@ if [[ "${1:-}" == "--list" ]]; then
 fi
 
 if [[ $# -eq 0 || "${1:-}" == "--all" ]]; then
-    set -- actor msgq rpc
+    set -- actor control msgq rpc
 fi
 
 if [[ -n "${PROTOC:-}" ]]; then
@@ -69,6 +70,9 @@ for package_name in "$@"; do
     case "$package_name" in
         actor)
             proto_files+=("modules/actor/proto/actor.proto")
+            ;;
+        control)
+            proto_files+=("modules/control/proto/control.proto")
             ;;
         msgq)
             proto_files+=("modules/msgq/proto/msgq.proto")
