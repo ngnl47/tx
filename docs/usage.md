@@ -1116,6 +1116,34 @@ _ = pid
 的新命令准入、等待已进入的 Procedure、完成最终 Flush。`txgame` 未启用服务发现时 `app.Slots` 为 nil；依赖固定槽位的
 服务必须在启动时显式失败，不能退化为普通实例路由。
 
+`txgame/internal/agent` 的 `NewFixedSlotTargetResolver` 是 Agent 到固定 Actor 的项目侧组合器。业务只提供身份到
+`SlotID` 和 Actor 名称的规则；它复用 `SlotRouter`，因此目标处于 `draining`、`stopping` 或缺失时会保留
+`ErrSlotRuntimeUnavailable` 错误链，调用方用 `errors.Is` 判断，不能改派其他 game：
+
+```go
+router, err := discovery.NewSlotRouter(app.Slots, app.Directory)
+if err != nil {
+    return err
+}
+resolver, err := appagent.NewFixedSlotTargetResolver(
+    router,
+    appagent.SlotIDResolverFunc(func(ctx context.Context, identity txagent.Identity) (string, error) {
+        return realmSlot(identity.RoleID), nil // 项目决定同服/战区归属。
+    }),
+    appagent.ActorIDResolverFunc(func(_ context.Context, identity txagent.Identity, target discovery.SlotTarget) (string, error) {
+        return "role-" + strconv.FormatInt(identity.RoleID, 10), nil
+    }),
+)
+if err != nil {
+    return err
+}
+dispatcher, err := appagent.NewActorDispatcher(app.Actor, resolver)
+if err != nil {
+    return err
+}
+_ = dispatcher
+```
+
 ### 滚动重启
 
 重启 `game1`、`game2` 不要求其他服务组停机，但必须先 Drain。第一阶段只处理能够

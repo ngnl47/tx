@@ -119,6 +119,8 @@
 
 `ServiceDirectory.RunningInstances(service)` 返回按实例 ID 稳定排序的 running 快照，并深复制 `Services` 切片；业务可据此实现随机、哈希或负载策略。目录不保存地图、GD 或 Actor 的归属关系。
 
+`txgame/internal/agent.NewFixedSlotTargetResolver` 已把项目提供的 `Identity -> SlotID/ActorID` 规则与 `SlotRouter` 组合；它只为 running 宿主构造 Remote PID，draining、stopping 或缺失宿主保留 `ErrSlotRuntimeUnavailable` 错误链，不替业务改派。
+
 `txgame/internal/agent.NewActorDispatcher` 已提供 Agent 到业务 Actor 的项目级桥接：项目只实现
 `Identity -> PID` 解析，桥接以 `agent.command` 原样投递 BON body；它不硬编码 role/room/battle kind，不把连接
 `Seq` 误作业务 `CommandID`，也不让 Agent 直接承载业务命令 handler。
