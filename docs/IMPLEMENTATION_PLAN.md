@@ -119,7 +119,7 @@
 
 `ServiceDirectory.RunningInstances(service)` 返回按实例 ID 稳定排序的 running 快照，并深复制 `Services` 切片；业务可据此实现随机、哈希或负载策略。目录不保存地图、GD 或 Actor 的归属关系。
 
-`modules/control` 已提供最小运维 gRPC：`Status`、`Drain`、`WaitDrained`。它只面向 `LifecycleController` 抽象；`txgame` 的 `DrainCoordinator` 将其适配为 discovery 状态更新和 `Host.Drain`，并可由 `--control-listen` 或 `TXGAME_CONTROL_LISTEN` 启用。`Drain` 不取消根 context、不拒绝 Procedure/DB/Store；它只封口服务入口并等待已受理 handler。发布平台在 `WaitDrained` 后发送正常终止信号，进程再关闭资源、取消 `WaitGroupContext`、最终 Flush 并撤销成员记录。后续只评估 `txctl`、认证、TLS/mTLS 和逻辑槽位 Promote 控制面，不改变这一职责边界。
+`modules/control` 已提供最小运维 gRPC：`Status`、`Drain`、`WaitDrained`。它只面向 `LifecycleController` 抽象；`txgame` 的 `DrainCoordinator` 将其适配为 discovery 状态更新和 `Host.Drain`，并可由 `--control-listen` 或 `TXGAME_CONTROL_LISTEN` 启用。`Drain` 不取消根 context、不拒绝 Procedure/DB/Store；它只封口服务入口并等待已受理 handler。`cmd/txctl` 是对应的薄客户端，使用 `--endpoint` 调用现有 gRPC，并以 `status`、`drain`、`wait-drained` 供发布脚本串联；它不修改 etcd lease、成员状态或逻辑槽位 assignment。发布平台在 `WaitDrained` 后发送正常终止信号，进程再关闭资源、取消 `WaitGroupContext`、最终 Flush 并撤销成员记录。后续只评估认证、TLS/mTLS 和逻辑槽位 Promote 控制面，不改变这一职责边界。
 
 `txgame/internal/agent.NewFixedSlotTargetResolver` 已把项目提供的 `Identity -> SlotID/ActorID` 规则与 `SlotRouter` 组合；它只为 running 宿主构造 Remote PID，draining、stopping 或缺失宿主保留 `ErrSlotRuntimeUnavailable` 错误链，不替业务改派。
 

@@ -1246,6 +1246,29 @@ ProtoActor 的成员变更不会迁移业务内存状态；Virtual Actor 的业�
 策略由业务维护。下行 msgq 实例崩溃时允许丢失尚未确认的内存消息，客户端重连和业务幂等负责恢复；内部命令
 若需要重试，必须自行定义业务幂等键与幂等契约，框架不盲目重试。
 
+### 运维控制命令
+
+可选控制 gRPC 已有对应的 `txctl` 客户端。它只触发既有的 `Status`、`Drain` 和 `WaitDrained`，不连接 etcd、
+不直接修改成员 lease，也不会终止进程。发布脚本应在 `wait-drained` 成功后自行发送 `SIGTERM` 或交给 Kubernetes
+结束 Pod：
+
+```bash
+cd /Users/a47/workspace/tx
+
+# 查看当前状态。
+go run ./cmd/txctl --endpoint 10.0.1.21:9100 status
+
+# 实例进入 draining，普通服务路由不再选择它。
+go run ./cmd/txctl --endpoint 10.0.1.21:9100 drain
+
+# 最多等待五分钟，直到已受理 handler 完成。
+go run ./cmd/txctl --endpoint 10.0.1.21:9100 --timeout 5m wait-drained
+```
+
+每条命令输出稳定的 `state=running|draining|drained|failed`；服务返回诊断时还会输出 `error=...`。`failed`
+状态和 RPC 调用错误都会让 `txctl` 以非零状态退出，因此发布脚本不能把它当成已安全下线。当前控制端点使用项目部署
+提供的网络隔离；认证与 TLS/mTLS 后续作为独立控制面能力加入。
+
 ## 类型注解
 
 type 级注解支持 marker 和带参数两种形态。无参数时，下面两种写法等价：
