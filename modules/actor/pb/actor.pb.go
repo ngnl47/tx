@@ -21,6 +21,58 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type RouteKeyKind int32
+
+const (
+	RouteKeyKind_ROUTE_KEY_NONE   RouteKeyKind = 0
+	RouteKeyKind_ROUTE_KEY_INT64  RouteKeyKind = 1
+	RouteKeyKind_ROUTE_KEY_UINT64 RouteKeyKind = 2
+	RouteKeyKind_ROUTE_KEY_STRING RouteKeyKind = 3
+)
+
+// Enum value maps for RouteKeyKind.
+var (
+	RouteKeyKind_name = map[int32]string{
+		0: "ROUTE_KEY_NONE",
+		1: "ROUTE_KEY_INT64",
+		2: "ROUTE_KEY_UINT64",
+		3: "ROUTE_KEY_STRING",
+	}
+	RouteKeyKind_value = map[string]int32{
+		"ROUTE_KEY_NONE":   0,
+		"ROUTE_KEY_INT64":  1,
+		"ROUTE_KEY_UINT64": 2,
+		"ROUTE_KEY_STRING": 3,
+	}
+)
+
+func (x RouteKeyKind) Enum() *RouteKeyKind {
+	p := new(RouteKeyKind)
+	*p = x
+	return p
+}
+
+func (x RouteKeyKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (RouteKeyKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_modules_actor_proto_actor_proto_enumTypes[0].Descriptor()
+}
+
+func (RouteKeyKind) Type() protoreflect.EnumType {
+	return &file_modules_actor_proto_actor_proto_enumTypes[0]
+}
+
+func (x RouteKeyKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use RouteKeyKind.Descriptor instead.
+func (RouteKeyKind) EnumDescriptor() ([]byte, []int) {
+	return file_modules_actor_proto_actor_proto_rawDescGZIP(), []int{0}
+}
+
 // Delivery 是投递给 Actor 的内部消息，目标路由由 PID 承担。
 // Payload 是调用方持有的不透明 BON 字节序列。
 type Delivery struct {
@@ -29,6 +81,9 @@ type Delivery struct {
 	CommandId         uint64                 `protobuf:"varint,2,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
 	Payload           []byte                 `protobuf:"bytes,3,opt,name=payload,proto3" json:"payload,omitempty"`
 	RequireAcceptance bool                   `protobuf:"varint,4,opt,name=require_acceptance,json=requireAcceptance,proto3" json:"require_acceptance,omitempty"`
+	RouteKeyKind      RouteKeyKind           `protobuf:"varint,5,opt,name=route_key_kind,json=routeKeyKind,proto3,enum=tx.actor.v1.RouteKeyKind" json:"route_key_kind,omitempty"`
+	RouteKeyNumeric   uint64                 `protobuf:"fixed64,6,opt,name=route_key_numeric,json=routeKeyNumeric,proto3" json:"route_key_numeric,omitempty"`
+	RouteKeyString    string                 `protobuf:"bytes,7,opt,name=route_key_string,json=routeKeyString,proto3" json:"route_key_string,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -91,6 +146,27 @@ func (x *Delivery) GetRequireAcceptance() bool {
 	return false
 }
 
+func (x *Delivery) GetRouteKeyKind() RouteKeyKind {
+	if x != nil {
+		return x.RouteKeyKind
+	}
+	return RouteKeyKind_ROUTE_KEY_NONE
+}
+
+func (x *Delivery) GetRouteKeyNumeric() uint64 {
+	if x != nil {
+		return x.RouteKeyNumeric
+	}
+	return 0
+}
+
+func (x *Delivery) GetRouteKeyString() string {
+	if x != nil {
+		return x.RouteKeyString
+	}
+	return ""
+}
+
 // Acceptance 表示目标 Actor 已从邮箱取出确认式投递，但不代表业务处理已经完成。
 type Acceptance struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -140,17 +216,25 @@ var File_modules_actor_proto_actor_proto protoreflect.FileDescriptor
 
 const file_modules_actor_proto_actor_proto_rawDesc = "" +
 	"\n" +
-	"\x1fmodules/actor/proto/actor.proto\x12\vtx.actor.v1\"\x95\x01\n" +
+	"\x1fmodules/actor/proto/actor.proto\x12\vtx.actor.v1\"\xac\x02\n" +
 	"\bDelivery\x12!\n" +
 	"\fmessage_type\x18\x01 \x01(\tR\vmessageType\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x02 \x01(\x04R\tcommandId\x12\x18\n" +
 	"\apayload\x18\x03 \x01(\fR\apayload\x12-\n" +
-	"\x12require_acceptance\x18\x04 \x01(\bR\x11requireAcceptance\"+\n" +
+	"\x12require_acceptance\x18\x04 \x01(\bR\x11requireAcceptance\x12?\n" +
+	"\x0eroute_key_kind\x18\x05 \x01(\x0e2\x19.tx.actor.v1.RouteKeyKindR\frouteKeyKind\x12*\n" +
+	"\x11route_key_numeric\x18\x06 \x01(\x06R\x0frouteKeyNumeric\x12(\n" +
+	"\x10route_key_string\x18\a \x01(\tR\x0erouteKeyString\"+\n" +
 	"\n" +
 	"Acceptance\x12\x1d\n" +
 	"\n" +
-	"command_id\x18\x01 \x01(\x04R\tcommandIdB/Z-github.com/ngnl47/tx/modules/actor/pb;actorpbb\x06proto3"
+	"command_id\x18\x01 \x01(\x04R\tcommandId*c\n" +
+	"\fRouteKeyKind\x12\x12\n" +
+	"\x0eROUTE_KEY_NONE\x10\x00\x12\x13\n" +
+	"\x0fROUTE_KEY_INT64\x10\x01\x12\x14\n" +
+	"\x10ROUTE_KEY_UINT64\x10\x02\x12\x14\n" +
+	"\x10ROUTE_KEY_STRING\x10\x03B/Z-github.com/ngnl47/tx/modules/actor/pb;actorpbb\x06proto3"
 
 var (
 	file_modules_actor_proto_actor_proto_rawDescOnce sync.Once
@@ -164,17 +248,20 @@ func file_modules_actor_proto_actor_proto_rawDescGZIP() []byte {
 	return file_modules_actor_proto_actor_proto_rawDescData
 }
 
+var file_modules_actor_proto_actor_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_modules_actor_proto_actor_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_modules_actor_proto_actor_proto_goTypes = []any{
-	(*Delivery)(nil),   // 0: tx.actor.v1.Delivery
-	(*Acceptance)(nil), // 1: tx.actor.v1.Acceptance
+	(RouteKeyKind)(0),  // 0: tx.actor.v1.RouteKeyKind
+	(*Delivery)(nil),   // 1: tx.actor.v1.Delivery
+	(*Acceptance)(nil), // 2: tx.actor.v1.Acceptance
 }
 var file_modules_actor_proto_actor_proto_depIdxs = []int32{
-	0, // [0:0] is the sub-list for method output_type
-	0, // [0:0] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	0, // 0: tx.actor.v1.Delivery.route_key_kind:type_name -> tx.actor.v1.RouteKeyKind
+	1, // [1:1] is the sub-list for method output_type
+	1, // [1:1] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_modules_actor_proto_actor_proto_init() }
@@ -187,13 +274,14 @@ func file_modules_actor_proto_actor_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_modules_actor_proto_actor_proto_rawDesc), len(file_modules_actor_proto_actor_proto_rawDesc)),
-			NumEnums:      0,
+			NumEnums:      1,
 			NumMessages:   2,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_modules_actor_proto_actor_proto_goTypes,
 		DependencyIndexes: file_modules_actor_proto_actor_proto_depIdxs,
+		EnumInfos:         file_modules_actor_proto_actor_proto_enumTypes,
 		MessageInfos:      file_modules_actor_proto_actor_proto_msgTypes,
 	}.Build()
 	File_modules_actor_proto_actor_proto = out.File

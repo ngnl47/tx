@@ -104,7 +104,7 @@ func (t *tcpTransport) Write(ctx context.Context, frame Frame) error {
 	if t == nil || t.connection == nil {
 		return ErrTransportNil
 	}
-	size, err := validateFrame(frame, t.maxFrameBytes)
+	prepared, err := prepareFrame(frame, t.maxFrameBytes)
 	if err != nil {
 		return err
 	}
@@ -112,9 +112,9 @@ func (t *tcpTransport) Write(ctx context.Context, frame Frame) error {
 	defer stop()
 	defer func() { _ = t.connection.SetWriteDeadline(time.Time{}) }()
 	var prefix [4 + frameHeaderBytes]byte
-	binary.BigEndian.PutUint32(prefix[:4], uint32(size))
-	encodeFrameHeader(prefix[4:], frame)
-	return writeBuffersFull(t.connection, net.Buffers{prefix[:], frame.Payload})
+	binary.BigEndian.PutUint32(prefix[:4], uint32(prepared.size))
+	encodeFrameHeader(prefix[4:], frame, len(prepared.routeKey))
+	return writeBuffersFull(t.connection, net.Buffers{prefix[:], prepared.routeKey, frame.Payload})
 }
 
 func (t *tcpTransport) Close() error {

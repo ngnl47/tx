@@ -34,7 +34,7 @@ func TestTCPAgentRoundTrip(t *testing.T) {
 	}
 	defer connection.Close()
 	writeTCPAgentFrame(t, connection, txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")})
-	writeTCPAgentFrame(t, connection, txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, Payload: []byte("bon-request")})
+	writeTCPAgentFrame(t, connection, txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, CommandID: 1, Payload: []byte("bon-request")})
 	request := receiveDispatch(t, dispatched)
 	if string(request.Payload) != "bon-request" {
 		t.Fatalf("dispatch payload = %q", request.Payload)
@@ -64,7 +64,7 @@ func TestWebSocketAgentRoundTrip(t *testing.T) {
 	}
 	defer connection.CloseNow()
 	writeWebSocketAgentFrame(t, ctx, connection, txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")})
-	writeWebSocketAgentFrame(t, ctx, connection, txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, Payload: []byte("bon-request")})
+	writeWebSocketAgentFrame(t, ctx, connection, txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, CommandID: 1, Payload: []byte("bon-request")})
 	request := receiveDispatch(t, dispatched)
 	if string(request.Payload) != "bon-request" {
 		t.Fatalf("dispatch payload = %q", request.Payload)

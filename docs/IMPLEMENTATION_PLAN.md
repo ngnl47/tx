@@ -78,8 +78,8 @@
 - 客户端上下行协议采用独立的 BON 二进制文档，不使用 Protobuf；WebSocket 传输层使用可协商的 permessage-deflate 压缩。会话字典和动态 key 压缩属于后续可选优化，必须先以真实消息体基准证明收益，再处理字典同步、重连重置和可观测性。
 - 内部跨进程通信的目标运行时是可选的 `modules/actor`，直接使用 `protoactor-go` 及其官方 etcd Cluster Provider；tx 只负责项目 yml 装配、`WaitGroupContext` 生命周期和 BON 业务载荷适配。邮箱沿用 ProtoActor 的有界 RingBuffer 与调度语义，仅以薄包装补充满队列限频日志；不自研调度器、远程 PID、成员发现或 Actor 重平衡。
 - `msgq` 是客户端会话邮箱模块名，负责 Session、下行 `sndQueue`、Seq/Ack、重连、Topic 和广播；它不承担所有业务 Actor 的中心中继。`modules/msgq` 已提供独立 protobuf/gRPC `MailboxService`，覆盖 Init、Rec、Pub、Fetch、FetchSome、Confirm、Touch、Topic 与 Close；它不复用 `modules/rpc`，payload 始终是 BON bytes。上行业务消息由 Agent 经过会话校验后直接投递目标 Player/Game Actor；任意业务 Actor 的下行消息投递到 `msgq`，再由 Agent 发给客户端。
-- `modules/agent` 已提供 TCP 长度帧和 WebSocket binary message 两种默认接入，并以项目注入的 `IdentityResolver` 和 `Dispatcher` 完成身份解析与 BON 业务分发；tx 不实现账号认证。Agent 在握手后按已有 session owner 优先、running msgq 兜底的规则选择本地或 gRPC `SessionClient`。同进程 `agent,msgq` 复用本地邮箱，不额外建 gRPC 连接；仅启动 agent 时必须经服务目录选择远端 msgq。上行 `Rec` 在业务 Dispatch 前推进 Seq，重复帧不重复分发；业务关键命令需要自带 `CommandID` 幂等。业务帧携带下行 Ack，空闲时使用无 payload 的 `FrameAck`；Ack 只能确认当前连接已成功写出的序号，越界或倒退会中止本次连接并保留未确认队列。断线不主动 Close Session，由 OfflineTimeout/重连 Init 管理。
-- `txgen` 已从同一份 data/cmd 输入导出 TypeScript `data.ts`、`cmd.ts` 和 BON schema 到 `txclient/src/gen`，并在 Go cmd 包生成 `DecodeBONCommand`/`EncodeBONCommand`。BON、客户端字段、cmd Provider 和 Store 下行变更投影统一使用 Go `msgpack` tag 名；`number` 只承载 JavaScript 安全整数范围内的 Go 整数。`tx/protocol/bon` 直接实现 BON 文档类型、7-bit 长度、小端数值和字符串引用；`txgame` 的 `NewBONDispatcher` 在 Agent 之后把 bytes 适配为生成 `*cmd.X`，Agent 本身继续只转发 bytes。TypeScript `decodeEnvelope` 从 `{ c, b }` 自动选择生成 schema，并拒绝未知命令、无效信封和尾随字节；已知命令才使用 `decodeCommand` 做额外命令名断言。`txclient/protocol/frame.ts` 已对齐 Agent Frame 版本、Seq/Ack 和 TCP 4 字节长度前缀，并提供半包/粘包解码；客户端不手写帧头。
+- `modules/agent` 已提供 TCP 长度帧和 WebSocket binary message 两种默认接入，并以项目注入的 `IdentityResolver` 和 `Dispatcher` 完成身份解析与 BON 业务分发；tx 不实现账号认证。Agent 在握手后按已有 session owner 优先、running msgq 兜底的规则选择本地或 gRPC `SessionClient`。同进程 `agent,msgq` 复用本地邮箱，不额外建 gRPC 连接；仅启动 agent 时必须经服务目录选择远端 msgq。上行 `Rec` 在业务 Dispatch 前推进 Seq，重复帧不重复分发。`FrameBusiness` 使用版本 2 的 32 字节头，携带生成的非零静态命令号和可选强类型路由键，但 Agent 不解析 BON body；业务幂等必须使用独立业务幂等键，不能复用静态命令号。业务帧携带下行 Ack，空闲时使用无 payload 的 `FrameAck`；Ack 只能确认当前连接已成功写出的序号，越界或倒退会中止本次连接并保留未确认队列。断线不主动 Close Session，由 OfflineTimeout/重连 Init 管理。
+- `txgen` 已从同一份 data/cmd 输入导出 TypeScript `data.ts`、`cmd.ts` 和 BON schema 到 `txclient/src/gen`，并在 Go cmd 包生成 `DecodeBONCommand`/`EncodeBONCommand`、稳定 `CommandID` registry 与无反射 `ExtractRouteKey`。项目在 `gen/protocol/routes.yml` 定义服务名及命令号段，生成器维护并版本化 `gen/protocol/command_ids.yml`，删除命令保留 tombstone，不能复用号码。`@cmdRoute` 可为请求声明 `toService`、`actor` 与顶层 `msgpack` `actorKey`；未声明时默认 `game`。BON、客户端字段、cmd Provider 和 Store 下行变更投影统一使用 Go `msgpack` tag 名；`number` 只承载 JavaScript 安全整数范围内的 Go 整数。`tx/protocol/bon` 直接实现 BON 文档类型、7-bit 长度、小端数值和字符串引用；`txgame` 的 `NewBONDispatcher` 在 Agent 之后把 bytes 适配为生成 `*cmd.X`，并复核 Frame 命令号、路由键类型和解码字段。TypeScript `decodeEnvelope` 从 `{ c, b }` 自动选择生成 schema，并拒绝未知命令、无效信封和尾随字节；已知命令才使用 `decodeCommand` 做额外命令名断言。`resolveCommandRoute` 从生成请求对象取得 Frame 头，客户端不手写命令号、路由键或 Frame 头。
 - Actor 分为两条互不混用的运行路径：可恢复实体使用 Cluster Virtual Actor，成员扩缩容后允许重新路由并从 Fusion 恢复；Battle、SLG 城市、MMO 场景等内存权威对象使用固定逻辑槽位的本地 Actor 与 Remote PID 直连，业务维护 `entityID -> logicalSlot -> runtimeInstance` 归属，不参与自动重平衡。SLG/MMO 的同服、同战区玩家与场景必须绑定同一逻辑槽位，例如 `realm:1001 -> game-slot-1`；`game-slot-1` 只在旧新 generation 间交接，不能因 `game-1@v42` 重启而改派到 `game-2`。固定归属 Actor 的迁移必须显式执行保存快照、停止旧实例、更新归属和目标恢复，节点短暂不可用时返回业务错误或由客户端重连，不得静默改派。
 - 滚动重启必须先 Drain：服务目录切为 `draining`，网络入口封口并等待已经受理的 handler；之后才关闭服务资源、取消全局 `WaitGroupContext`、完成要求的最终 Flush、从成员表注销并等待成员视图收敛，最后停止进程。排水不读取或拒绝 `Procedure`、`db.Save`、`db.SaveChange` 或 Store；外部存储可用性仍由实际 I/O 错误和项目健康闸门决定。ProtoActor 成员变化会停止不再属于本节点的 Virtual Actor；它不迁移业务内存状态，也不提供分布式事务、分布式锁、跨 Actor 回滚或 exactly-once 投递。无状态服务可按先扩后缩发布；可恢复 Virtual Actor 必须限制恢复并发，避免成员变化后集中回源；固定 Scene/Battle 等内存权威 Actor 不自动迁移，应由业务选择自然结束、显式快照交接或客户端短暂重连。
 - `storage.DocumentLoader` 和 `DocumentReplacer` 的公共文档契约统一使用 JSON 字段名。Redis 原样读写该文档；Mongo adapter 在完整文档读取与替换边界通过 `TypeSpec.DocumentFactory` 物化生成类型，再按 BSON tag 转换。Fusion 只传递公共 JSON 文档，不直接搬运 Mongo 的 BSON map。
@@ -123,14 +123,16 @@
 
 `txgame/internal/agent.NewFixedSlotTargetResolver` 已把项目提供的 `Identity -> SlotID/ActorID` 规则与 `SlotRouter` 组合；它只为 running 宿主构造 Remote PID，draining、stopping 或缺失宿主保留 `ErrSlotRuntimeUnavailable` 错误链，不替业务改派。
 
-`txgame/internal/agent.NewActorDispatcher` 已提供 Agent 到业务 Actor 的项目级桥接：项目只实现
-`Identity -> PID` 解析，桥接以 `agent.command` 原样投递 BON body；它不硬编码 role/room/battle kind，不把连接
-`Seq` 误作业务 `CommandID`，也不让 Agent 直接承载业务命令 handler。
+`txgame/internal/agent.NewActorDispatcher` 已提供 Agent 到业务 Actor 的项目级桥接：生成 registry 先以 Frame
+`CommandID` 找到 `CmdDescriptor` 并检查路由键类型，项目再按 `Identity + CmdDescriptor + RouteKey -> PID` 决定归属。
+桥接以 `agent.command` 原样投递 BON body、静态命令号和路由键；它不硬编码 role/room/battle kind，不把连接 `Seq`
+误作业务幂等键，也不让 Agent 直接承载业务命令 handler。
 
 `txgame/internal/actor.CommandActor` 已提供项目侧消费端：它接收 `actor.Delivery`、以生成
-`cmd.DecodeBONCommand` 解码 BON body，并按命令名调用通过 `RegisterCommand` 注册的强类型 handler。该适配只在
-`txgame` 依赖生成 cmd，不把业务处理器、GD 或 Store 引入 `tx/modules/actor`；未知命令、解码失败或业务 handler
-返回错误只记录结构化日志，不应让 Actor 进程 panic。
+`cmd.DecodeBONCommand` 解码 BON body，复核静态命令号和路由键与解码字段一致后，再按命令名调用通过
+`RegisterCommand` 注册的强类型 handler。该适配只在 `txgame` 依赖生成 cmd，不把业务处理器、GD 或 Store 引入
+`tx/modules/actor`；未知命令、外层元数据不匹配、解码失败或业务 handler 返回错误只记录结构化日志，不应让 Actor
+进程 panic。
 
 `msgq` 下行 payload 采用只读所有权移交：`Pub` 或 `BroadcastTopic` 成功后，调用方不得修改、append、复用或归还传入的 BON `[]byte`。本地广播的会话条目共享一份正文，跨进程 gRPC 在传输边界复制；确认前缀会解除正文引用，清空时释放条目数组，部分确认按低水位整理剩余条目。Agent 的 TCP 长度帧通过 scatter/gather 直接写长度、固定头和正文，WebSocket 以流式 writer 写固定头和正文，不在 tx 内拼接新的完整帧。
 

@@ -4,6 +4,13 @@ package tx.actor.v1;
 
 option go_package = "github.com/ngnl47/tx/modules/actor/pb;actorpb";
 
+enum RouteKeyKind {
+  ROUTE_KEY_NONE = 0;
+  ROUTE_KEY_INT64 = 1;
+  ROUTE_KEY_UINT64 = 2;
+  ROUTE_KEY_STRING = 3;
+}
+
 // Delivery 是投递给 Actor 的内部消息，目标路由由 PID 承担。
 // Payload 是调用方持有的不透明 BON 字节序列。
 message Delivery {
@@ -11,6 +18,9 @@ message Delivery {
   uint64 command_id = 2;
   bytes payload = 3;
   bool require_acceptance = 4;
+  RouteKeyKind route_key_kind = 5;
+  fixed64 route_key_numeric = 6;
+  string route_key_string = 7;
 }
 
 // Acceptance 表示目标 Actor 已从邮箱取出确认式投递，但不代表业务处理已经完成。

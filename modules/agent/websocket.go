@@ -55,7 +55,8 @@ func (t *webSocketTransport) Write(ctx context.Context, frame Frame) error {
 	if t == nil || t.connection == nil {
 		return ErrTransportNil
 	}
-	if _, err := validateFrame(frame, t.maxFrameBytes); err != nil {
+	prepared, err := prepareFrame(frame, t.maxFrameBytes)
+	if err != nil {
 		return err
 	}
 	writer, err := t.connection.Writer(ctx, websocket.MessageBinary)
@@ -63,8 +64,12 @@ func (t *webSocketTransport) Write(ctx context.Context, frame Frame) error {
 		return err
 	}
 	var header [frameHeaderBytes]byte
-	encodeFrameHeader(header[:], frame)
+	encodeFrameHeader(header[:], frame, len(prepared.routeKey))
 	if err := writeFull(writer, header[:]); err != nil {
+		_ = writer.Close()
+		return err
+	}
+	if err := writeFull(writer, prepared.routeKey); err != nil {
 		_ = writer.Close()
 		return err
 	}

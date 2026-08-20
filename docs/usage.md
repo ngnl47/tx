@@ -570,7 +570,8 @@ if err != nil {
 4. Agent 持续 `FetchSome` 下行队列，写出 `FrameOutbound`；客户端在后续上行帧携带 Ack，`Rec` 会确认对应下行消息。
 
 `Rec` 在业务分发之前前进上行 Seq。因此业务处理失败或进程在 `Rec` 之后崩溃时，该条上行不会被框架自动重放。
-普通游戏操作接受这个语义；不能重复执行的命令必须由项目在 BON body 中携带 `CommandID` 并实现幂等。
+普通游戏操作接受这个语义；不能重复执行的命令必须由项目定义独立的业务幂等键。Frame 的静态 `CommandID`
+只标识生成的命令类型，不能用作一次业务操作的幂等令牌。
 
 `txgame` 的最小配置如下。`agent` 被 `--services` 选中时至少配置一个监听地址，`maxFrameBytes` 和
 `fetchBatch` 必须为正数；`msgq` 的 Redis 会话 binding 参数也必须完整。服务选择只由 `--services` 决定，
@@ -634,7 +635,25 @@ if (incoming.command === "Role_RenameReq") {
 
 这段 `bytes` 可以直接放进 Agent 的业务 Frame；Agent 仍保持不透明转发。Go 整数在 TypeScript 侧使用
 `number`，因此业务协议值必须在 `-9,007,199,254,740,991` 到 `9,007,199,254,740,991` 之间；超界编码或解码
-会返回错误，避免悄悄丢失精度。
+会返回错误，避免悄悄丢失精度。客户端必须使用生成的 `resolveCommandRoute` 从请求对象取得 Frame 的静态命令号
+和可选路由键，不能手写这些传输字段：
+
+```ts
+import { resolveCommandRoute } from "../src/gen/cmd.js";
+import { encodeFrame, FrameKind } from "../src/protocol/frame.js";
+
+const request = { roleId: 470001, name: "new-name" };
+const route = resolveCommandRoute("Role_RenameReq", request);
+socket.send(encodeFrame({
+  kind: FrameKind.Business,
+  seq: nextBusinessSeq++,
+  ack: lastOutboundSeq,
+  restore: false,
+  commandID: route.commandID,
+  routeKey: route.routeKey,
+  payload: encodeCommand("Role_RenameReq", request, Schemas),
+}, maxFrameBytes));
+```
 
 下行处理通常预先不知道命令名，应使用 `decodeEnvelope(bytes, Schemas)` 从 `{ c, b }` 读取命令并按生成 schema
 解析 body；它会拒绝未知命令、无效信封和尾随字节。已知命令的固定处理点仍可使用 `decodeCommand(name, bytes, Schemas)`
@@ -642,19 +661,21 @@ if (incoming.command === "Role_RenameReq") {
 
 TypeScript 模板还提供与 `modules/agent.Frame` 对应的 `protocol/frame.ts`：WebSocket 使用原始 Frame bytes，
 TCP 在其外层加 4 字节 big-endian 长度；`TCPFrameDecoder` 能处理半包与粘包。两端都校验 Frame 版本、类型、
-Seq/Ack、恢复标记和最大长度，不能将非法帧交给业务 Dispatcher。
+Seq/Ack、静态命令号、路由键、恢复标记和最大长度，不能将非法帧交给业务 Dispatcher。
 
 ### Frame 与下行 Ack
 
-Frame 固定使用 24 字节头：第 0 字节是版本，第 1 字节是类型，第 2 字节是握手恢复标记，`Seq` 位于第 4--11
-字节，`Ack` 位于第 12--19 字节，payload 长度位于第 20--23 字节，所有整数均为 big-endian。类型如下：
+Frame 固定使用 32 字节头：第 0 字节是版本，第 1 字节是类型，第 2 字节是握手恢复标记，第 3 字节是路由键类型，
+`Seq` 位于第 4--11 字节，`Ack` 位于第 12--19 字节，静态命令号位于第 20--23 字节，路由键长度位于第 24--27
+字节，payload 长度位于第 28--31 字节，所有整数均为 big-endian。路由键紧随固定头，随后才是 payload。
+路由键只支持 `int64`、`uint64` 和 UTF-8 非空 `string`；它只出现在上行 `FrameBusiness`。
 
-| 类型 | Seq | Ack | Payload | 用途 |
-| --- | --- | --- | --- | --- |
-| `FrameHandshake` | `0` | 新连必须为 `0`；重连为已确认下行序号 | 登录 ticket | 建立或恢复会话 |
-| `FrameBusiness` | 严格递增正数 | 最近已处理的 `FrameOutbound.Seq` | BON 业务体 | 上行业务，同时确认下行 |
-| `FrameOutbound` | msgq 下行序号 | `0` | BON 业务体 | 服务端下行 |
-| `FrameAck` | `0` | 最近已处理的 `FrameOutbound.Seq` | 必须为空 | 客户端空闲期间仅做确认 |
+| 类型 | Seq | Ack | 命令号和路由键 | Payload | 用途 |
+| --- | --- | --- | --- | --- | --- |
+| `FrameHandshake` | `0` | 新连必须为 `0`；重连为已确认下行序号 | 必须为空 | 登录 ticket | 建立或恢复会话 |
+| `FrameBusiness` | 严格递增正数 | 最近已处理的 `FrameOutbound.Seq` | 生成的非零命令号；可选强类型路由键 | BON 业务体 | 上行业务，同时确认下行 |
+| `FrameOutbound` | msgq 下行序号 | `0` | 必须为空 | BON 业务体 | 服务端下行 |
+| `FrameAck` | `0` | 最近已处理的 `FrameOutbound.Seq` | 必须为空 | 必须为空 | 客户端空闲期间仅做确认 |
 
 客户端收到 `FrameOutbound` 后应先完成 payload 的处理，再更新本地 `lastOutboundSeq`。下一条业务帧直接携带该值，
 无需额外 ACK 帧：
@@ -665,7 +686,9 @@ socket.send(encodeFrame({
   seq: nextBusinessSeq++,
   ack: lastOutboundSeq,
   restore: false,
-  payload: encodeCommand("Role_RenameReq", { roleId: 470001, name: "new-name" }, Schemas),
+  commandID: route.commandID,
+  routeKey: route.routeKey,
+  payload: encodeCommand("Role_RenameReq", request, Schemas),
 }, maxFrameBytes));
 ```
 
@@ -906,7 +929,8 @@ if err := runtime.Tell(pid, txactor.Delivery{
 ```
 
 `Tell` 是默认的单向投递入口：返回 `nil` 仅表示本地 Runtime 已接受这条消息，不表示远端 Actor 已完成业务处理。
-它不会自动重试；需要重试时，业务消息必须以 `CommandID` 自行定义幂等规则。确实需要同步结果时，再显式取得底层
+它不会自动重试；需要重试时，业务消息必须携带项目定义的业务幂等键。Agent 上行链路中的 `Delivery.CommandID`
+保留给生成的静态命令号，不能兼作该幂等键。确实需要同步结果时，再显式取得底层
 `ActorSystem` 并使用 `RequestFuture`：
 
 ```go
@@ -978,8 +1002,10 @@ if err != nil {
 
 ```go
 dispatcher, err := appagent.NewActorDispatcher(runtime,
-    appagent.ActorTargetResolverFunc(func(ctx context.Context, identity txagent.Identity) (*protoactor.PID, error) {
-        return runtime.VirtualPID("role", strconv.FormatInt(identity.RoleID, 10))
+    appagent.ActorTargetResolverFunc(func(ctx context.Context, route appagent.CommandRoute) (*protoactor.PID, error) {
+        // 默认命令的 ToService 是 game。项目可以按 Descriptor.Route、RouteKey
+        // 和 Identity 决定 Role、Room、Battlefield 等实体的真实归属。
+        return runtime.VirtualPID("role", strconv.FormatInt(route.Identity.RoleID, 10))
     }),
 )
 if err != nil {
@@ -987,8 +1013,9 @@ if err != nil {
 }
 ```
 
-它投递 `MessageType: "agent.command"` 和原始 BON `Payload`。连接 `Seq` 只用于 Agent 重复帧抑制，不是业务
-`CommandID`；Actor 侧再通过生成的 `cmd.DecodeBONCommand` 解析 payload，并由具体命令自行定义幂等键。
+它投递 `MessageType: "agent.command"`、生成的静态 `CommandID`、可选 `RouteKey` 和原始 BON `Payload`。
+连接 `Seq` 只用于 Agent 重复帧抑制，不是业务幂等键。Actor 侧再通过生成的 `cmd.DecodeBONCommand` 解析 payload，
+核对外层命令号与路由键是否匹配请求字段；具体命令如需幂等，仍须定义独立业务幂等键。
 
 上例的 `role` 是可恢复的 Virtual Actor。它的 `identity` 由集群根据成员视图路由，业务必须能在新节点上从
 Fusion 恢复状态。固定归属的内存权威对象不调用 `VirtualPID`，而是由业务维护实例地址并构造直连 PID：
@@ -1217,7 +1244,7 @@ Kubernetes 有状态服务应使用 StatefulSet 的 ordinal，例如 Pod `game-1
 
 ProtoActor 的成员变更不会迁移业务内存状态；Virtual Actor 的业务状态必须可恢复。固定实例 Actor 的故障与迁移
 策略由业务维护。下行 msgq 实例崩溃时允许丢失尚未确认的内存消息，客户端重连和业务幂等负责恢复；内部命令
-若需要重试，必须自行定义 `CommandID` 与幂等契约，框架不盲目重试。
+若需要重试，必须自行定义业务幂等键与幂等契约，框架不盲目重试。
 
 ## 类型注解
 

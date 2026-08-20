@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	protoactor "github.com/asynkron/protoactor-go/actor"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
+	txprotocol "github.com/ngnl47/tx/protocol"
 )
 
 var (
@@ -22,6 +24,7 @@ var (
 type Delivery struct {
 	MessageType string
 	CommandID   uint64
+	RouteKey    txprotocol.RouteKey
 	Payload     []byte
 }
 
@@ -30,7 +33,7 @@ func (d Delivery) Validate() error {
 	if d.MessageType == "" || d.MessageType != strings.TrimSpace(d.MessageType) {
 		return ErrInvalidDelivery
 	}
-	return nil
+	return validateRouteKey(d.RouteKey)
 }
 
 // ToProto 将 Delivery 转换为 ProtoActor 可跨节点传输的 protobuf 信封。
@@ -42,11 +45,18 @@ func (d Delivery) toProto(requireAcceptance bool) (*actorpb.Delivery, error) {
 	if err := d.Validate(); err != nil {
 		return nil, err
 	}
+	routeKeyKind, routeKeyNumeric, routeKeyString, err := routeKeyToProto(d.RouteKey)
+	if err != nil {
+		return nil, err
+	}
 	return &actorpb.Delivery{
 		MessageType:       d.MessageType,
 		CommandId:         d.CommandID,
 		Payload:           append([]byte(nil), d.Payload...),
 		RequireAcceptance: requireAcceptance,
+		RouteKeyKind:      routeKeyKind,
+		RouteKeyNumeric:   routeKeyNumeric,
+		RouteKeyString:    routeKeyString,
 	}, nil
 }
 
@@ -55,15 +65,91 @@ func DeliveryFromProto(message *actorpb.Delivery) (Delivery, error) {
 	if message == nil {
 		return Delivery{}, ErrInvalidDelivery
 	}
+	routeKey, err := routeKeyFromProto(message.GetRouteKeyKind(), message.GetRouteKeyNumeric(), message.GetRouteKeyString())
+	if err != nil {
+		return Delivery{}, err
+	}
 	delivery := Delivery{
 		MessageType: message.GetMessageType(),
 		CommandID:   message.GetCommandId(),
+		RouteKey:    routeKey,
 		Payload:     append([]byte(nil), message.GetPayload()...),
 	}
 	if err := delivery.Validate(); err != nil {
 		return Delivery{}, err
 	}
 	return delivery, nil
+}
+
+func validateRouteKey(key txprotocol.RouteKey) error {
+	switch key.Kind() {
+	case txprotocol.RouteKeyNone:
+		return nil
+	case txprotocol.RouteKeyInt64:
+		_, ok := key.Int64()
+		if ok {
+			return nil
+		}
+	case txprotocol.RouteKeyUint64:
+		_, ok := key.Uint64()
+		if ok {
+			return nil
+		}
+	case txprotocol.RouteKeyString:
+		value, ok := key.String()
+		if ok && value != "" && utf8.ValidString(value) {
+			return nil
+		}
+	}
+	return ErrInvalidDelivery
+}
+
+func routeKeyToProto(key txprotocol.RouteKey) (actorpb.RouteKeyKind, uint64, string, error) {
+	if err := validateRouteKey(key); err != nil {
+		return actorpb.RouteKeyKind_ROUTE_KEY_NONE, 0, "", err
+	}
+	switch key.Kind() {
+	case txprotocol.RouteKeyNone:
+		return actorpb.RouteKeyKind_ROUTE_KEY_NONE, 0, "", nil
+	case txprotocol.RouteKeyInt64:
+		value, _ := key.Int64()
+		return actorpb.RouteKeyKind_ROUTE_KEY_INT64, uint64(value), "", nil
+	case txprotocol.RouteKeyUint64:
+		value, _ := key.Uint64()
+		return actorpb.RouteKeyKind_ROUTE_KEY_UINT64, value, "", nil
+	case txprotocol.RouteKeyString:
+		value, _ := key.String()
+		return actorpb.RouteKeyKind_ROUTE_KEY_STRING, 0, value, nil
+	default:
+		return actorpb.RouteKeyKind_ROUTE_KEY_NONE, 0, "", ErrInvalidDelivery
+	}
+}
+
+func routeKeyFromProto(kind actorpb.RouteKeyKind, numeric uint64, text string) (txprotocol.RouteKey, error) {
+	switch kind {
+	case actorpb.RouteKeyKind_ROUTE_KEY_NONE:
+		if numeric != 0 || text != "" {
+			return txprotocol.RouteKey{}, ErrInvalidDelivery
+		}
+		return txprotocol.RouteKey{}, nil
+	case actorpb.RouteKeyKind_ROUTE_KEY_INT64:
+		if text != "" {
+			return txprotocol.RouteKey{}, ErrInvalidDelivery
+		}
+		return txprotocol.Int64RouteKey(int64(numeric)), nil
+	case actorpb.RouteKeyKind_ROUTE_KEY_UINT64:
+		if text != "" {
+			return txprotocol.RouteKey{}, ErrInvalidDelivery
+		}
+		return txprotocol.Uint64RouteKey(numeric), nil
+	case actorpb.RouteKeyKind_ROUTE_KEY_STRING:
+		if numeric != 0 || text == "" || !utf8.ValidString(text) {
+			return txprotocol.RouteKey{}, ErrInvalidDelivery
+		}
+		return txprotocol.StringRouteKey(text), nil
+	default:
+		return txprotocol.RouteKey{}, ErrInvalidDelivery
+	}
 }
 
 // Confirm 投递一条要求确认的 Delivery，并等待目标 Actor 从邮箱取出该消息。

@@ -19,10 +19,13 @@ func TestAgentSessionAuthenticatesThenDispatchesAcceptedSequence(t *testing.T) {
 	go func() { result <- agent.Serve(context.Background(), transport) }()
 
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
-	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, Payload: []byte("bon-request")}
+	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, CommandID: 10001, RouteKey: txagent.Int64RouteKey(470001), Payload: []byte("bon-request")}
 	request := receiveDispatch(t, dispatched)
-	if request.Identity.RoleID != 470001 || request.Identity.SessionID != 99 || request.Seq != 1 || string(request.Payload) != "bon-request" {
+	if request.Identity.RoleID != 470001 || request.Identity.SessionID != 99 || request.Seq != 1 || request.CommandID != 10001 || string(request.Payload) != "bon-request" {
 		t.Fatalf("dispatch request = %#v", request)
+	}
+	if key, ok := request.RouteKey.Int64(); !ok || key != 470001 {
+		t.Fatalf("dispatch route key = %#v, want int64(470001)", request.RouteKey)
 	}
 
 	transport.closeReads()
@@ -49,7 +52,7 @@ func TestAgentSessionFetchesOutboundAndConfirmsAckOnNextInbound(t *testing.T) {
 	go func() { result <- agent.Serve(context.Background(), transport) }()
 
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
-	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, Payload: []byte("first")}
+	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, CommandID: 1, Payload: []byte("first")}
 	_ = receiveDispatch(t, dispatched)
 
 	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Message: []byte("bon-response")}); err != nil {
@@ -64,7 +67,7 @@ func TestAgentSessionFetchesOutboundAndConfirmsAckOnNextInbound(t *testing.T) {
 		t.Fatal("timed out waiting for outbound frame")
 	}
 
-	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 2, Ack: 1, Payload: []byte("second")}
+	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 2, Ack: 1, CommandID: 1, Payload: []byte("second")}
 	_ = receiveDispatch(t, dispatched)
 	deadline, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
@@ -153,9 +156,9 @@ func TestAgentSessionDoesNotDispatchDuplicateSequence(t *testing.T) {
 	go func() { result <- agent.Serve(context.Background(), transport) }()
 
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
-	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, Payload: []byte("first")}
+	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, CommandID: 1, Payload: []byte("first")}
 	_ = receiveDispatch(t, dispatched)
-	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, Payload: []byte("duplicate")}
+	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, CommandID: 1, Payload: []byte("duplicate")}
 	select {
 	case request := <-dispatched:
 		t.Fatalf("duplicate dispatched = %#v", request)
@@ -172,7 +175,7 @@ func TestAgentSessionDispatchFailureDoesNotRollbackAcceptedSequence(t *testing.T
 	dispatchErr := errors.New("dispatch failed")
 	agent, transport, mailbox, _ := newAgentSessionFixture(t, dispatchErr)
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
-	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, Payload: []byte("bon-request")}
+	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, CommandID: 1, Payload: []byte("bon-request")}
 
 	err := agent.Serve(context.Background(), transport)
 	if !errors.Is(err, dispatchErr) {
@@ -217,7 +220,7 @@ func TestAgentSessionDoesNotAdvanceSequenceWhenAdmissionRejects(t *testing.T) {
 	}
 	transport := newAgentTransport()
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
-	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, Payload: []byte("bon-request")}
+	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, CommandID: 1, Payload: []byte("bon-request")}
 	if err := agent.Serve(context.Background(), transport); !errors.Is(err, drainErr) {
 		t.Fatalf("Serve error = %v, want admission error", err)
 	}

@@ -15,6 +15,7 @@ import (
 	txlog "github.com/ngnl47/tx/log"
 	txactor "github.com/ngnl47/tx/modules/actor"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
+	txprotocol "github.com/ngnl47/tx/protocol"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -118,6 +119,7 @@ func TestActorDeliveryRoundTripCopiesPayload(t *testing.T) {
 	delivery := txactor.Delivery{
 		MessageType: "role.rename",
 		CommandID:   470001,
+		RouteKey:    txprotocol.Int64RouteKey(470001),
 		Payload:     []byte{1, 2, 3},
 	}
 	message, err := delivery.ToProto()
@@ -133,7 +135,8 @@ func TestActorDeliveryRoundTripCopiesPayload(t *testing.T) {
 		t.Fatalf("DeliveryFromProto() error = %v", err)
 	}
 	message.Payload[1] = 8
-	if decoded.MessageType != "role.rename" || decoded.CommandID != 470001 || string(decoded.Payload) != string([]byte{1, 2, 3}) {
+	key, ok := decoded.RouteKey.Int64()
+	if decoded.MessageType != "role.rename" || decoded.CommandID != 470001 || !ok || key != 470001 || string(decoded.Payload) != string([]byte{1, 2, 3}) {
 		t.Fatalf("decoded delivery = %#v", decoded)
 	}
 }

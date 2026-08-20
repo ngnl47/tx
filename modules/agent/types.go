@@ -54,9 +54,11 @@ func (f IdentityResolverFunc) ResolveIdentity(ctx context.Context, request AuthR
 
 // DispatchRequest 是已通过 Seq 校验的业务 BON 消息。
 type DispatchRequest struct {
-	Identity Identity
-	Seq      int64
-	Payload  []byte
+	Identity  Identity
+	Seq       int64
+	CommandID uint32
+	RouteKey  RouteKey
+	Payload   []byte
 }
 
 // Dispatcher 由项目实现业务命令解码与投递。
