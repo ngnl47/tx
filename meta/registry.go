@@ -19,7 +19,8 @@ func NewRegistry() *Registry {
 }
 
 func (r *Registry) RegisterType(spec TypeSpec) error {
-	spec = cloneTypeSpec(spec)
+	spec = CloneTypeSpec(spec)
+	spec.Type.Ref = spec.Type.Ref.normalized()
 	key := spec.Type.Ref.key()
 	if key == "" {
 		return fmt.Errorf("%w: missing type name", ErrInvalidTypeRef)
@@ -53,7 +54,7 @@ func (r *Registry) Lookup(ref TypeRef) (TypeSpec, bool) {
 	if !ok {
 		return TypeSpec{}, false
 	}
-	return cloneTypeSpec(spec), true
+	return CloneTypeSpec(spec), true
 }
 
 func (r *Registry) ApplyOverlay(overlay Overlay) error {
@@ -68,11 +69,12 @@ func (r *Registry) ApplyOverlay(overlay Overlay) error {
 
 	next := make(map[string]TypeSpec, len(r.types))
 	for key, spec := range r.types {
-		overlaid, err := overlay.Apply(cloneTypeSpec(spec))
+		overlaid, err := overlay.Apply(CloneTypeSpec(spec))
 		if err != nil {
 			return fmt.Errorf("meta: overlay type %s: %w", key, err)
 		}
-		overlaid = cloneTypeSpec(overlaid)
+		overlaid = CloneTypeSpec(overlaid)
+		overlaid.Type.Ref = overlaid.Type.Ref.normalized()
 		if err := validateTypeSpec(overlaid); err != nil {
 			return err
 		}

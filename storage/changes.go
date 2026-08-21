@@ -17,6 +17,7 @@ type ApplyOptions struct {
 }
 
 // DeltaApplier 定义支持 DeltaSet 直连落地的适配器。
+// TypeSpec 参数是只读元数据；适配器不得修改其中的 map、slice 或指针成员。
 type DeltaApplier interface {
 	ApplyDeltasWithOptions(context.Context, meta.TypeSpec, RecordKey, change.DeltaSet, change.FieldNameResolver, change.DeltaValueResolver, ApplyOptions) error
 }
@@ -155,6 +156,7 @@ func isReadOnlyDeltaStore(store DeltaStore) bool {
 
 // DocumentLoader 定义按记录键读取单条文档的适配器。
 //
+// TypeSpec 参数是只读元数据；适配器不得修改其中的 map、slice 或指针成员。
 // 返回值必须满足：exists=true 时 document 非 nil；exists=false 时 document 为 nil。
 type DocumentLoader interface {
 	LoadDocument(context.Context, meta.TypeSpec, RecordKey, ...string) (map[string]any, bool, error)

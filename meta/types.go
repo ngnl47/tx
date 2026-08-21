@@ -67,6 +67,7 @@ type Type struct {
 }
 
 // TypeSpec 是按类型注册的元数据单元。
+// 从 registry 或生成代码取得后如需修改，应先通过 CloneTypeSpec 获取隔离副本。
 type TypeSpec struct {
 	Type            Type
 	DocumentFactory func() any
@@ -120,8 +121,8 @@ func (spec TypeSpec) MsgpackName(name string) string {
 	return field.MsgpackName
 }
 
-func cloneTypeSpec(spec TypeSpec) TypeSpec {
-	spec.Type.Ref = spec.Type.Ref.normalized()
+// CloneTypeSpec returns an isolated copy of mutable type metadata.
+func CloneTypeSpec(spec TypeSpec) TypeSpec {
 	spec.Type.Fields = append([]Field(nil), spec.Type.Fields...)
 	spec.Type.Methods = append([]Method(nil), spec.Type.Methods...)
 	if spec.Redis != nil {

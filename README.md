@@ -1480,10 +1480,13 @@ RoleLog.Error("role save failed", "roleId", roleID, "err", err)
 `meta.TypeSpec` 使用 Go 字段名作为内部字段身份；`TypeSpec.Fields` 的 key、`idField`、`routeBy`、
 `LoadFields()` 入参和 `ChangeDocument()` 默认输出都使用 Go 字段名。`meta.Field` 同时保存
 `JSONName`、`BSONName`、`MsgpackName`，运行时适配器在靠近具体使用边界时再选择命名体系。
-生成代码会额外提供两类名字入口：`GDRoleGoFieldName` 这类常量表示 Go 字段名，供部分读取和
-业务字段选择使用；`GDRoleFieldName(field, kind)` 这类函数按 `go/json/bson/msgpack` 返回
+生成代码会额外提供两类名字入口：`GDRoleFieldName` 这类常量表示 Go 字段名，供部分读取和
+业务字段选择使用；`GDRoleResolveFieldName(field, kind)` 这类函数按 `go/json/bson/msgpack` 返回
 字段名本体。Redis、Mongo、Provider 是使用方策略：Redis 当前选择 JSON 名，Mongo 当前选择
 BSON 名，Provider 下行当前选择 Msgpack 名。
+
+逐字段公开常量只为 Go 字段名生成。JSON、BSON、Msgpack 名属于框架边界，不生成
+`GDRoleJSONFieldName` 之类的业务 API；高级扩展应通过 `GDRoleResolveFieldName` 获取。
 
 例如：
 
@@ -1498,12 +1501,12 @@ Store 内部变更文档使用 `RoleId`；完整 JSON 序列化使用 `roleId`�
 示例：
 
 ```go
-field := data.NewGDRoleStore(nil).FieldIndex(data.GDRoleGoFieldRoleId)
+field := data.NewGDRoleStore(nil).FieldIndex(data.GDRoleFieldRoleId)
 
-data.GDRoleFieldName(field, change.FieldNameGo)      // "RoleId"
-data.GDRoleFieldName(field, change.FieldNameJSON)    // "roleId"
-data.GDRoleFieldName(field, change.FieldNameBSON)    // "_id"
-data.GDRoleFieldName(field, change.FieldNameMsgpack) // "roleId"
+data.GDRoleResolveFieldName(field, change.FieldNameGo)      // "RoleId"
+data.GDRoleResolveFieldName(field, change.FieldNameJSON)    // "roleId"
+data.GDRoleResolveFieldName(field, change.FieldNameBSON)    // "_id"
+data.GDRoleResolveFieldName(field, change.FieldNameMsgpack) // "roleId"
 ```
 
 ## DeltaSet
@@ -1698,7 +1701,7 @@ deltas := role.Store().Deltas()
 
 ```go
 doc := role.Store().Deltas().DocumentWithResolver(
-	change.FieldNameResolverFunc(data.GDRoleFieldName),
+	change.FieldNameResolverFunc(data.GDRoleResolveFieldName),
 	change.FieldNameMsgpack,
 	role.Store(),
 )
@@ -3292,7 +3295,7 @@ env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp /Users/a47/sdk/go1.26
 - 确认 `idField` 和 `routeBy` 使用 Go 字段名，例如 `RoleId`，不是 `roleId`、`_id` 或 msgpack 名。
 - 如果 `routeBy != idField`，确认调用的是带 route 字段参数的 helper，或手动构造了带 `ShardKey` 的 `RecordKey`。
 - Fusion 从 Mongo 回填 Redis 时要求 `delayDelTime` 大于 0；如果缺失，默认回填路径会失败。
-- 部分读取传入的是 Go 字段名或生成常量，例如 `data.GDRoleGoFieldName`，不是 JSON/BSON/Msgpack 字段名。
+- 部分读取传入的是 Go 字段名或生成常量，例如 `data.GDRoleFieldName`，不是 JSON/BSON/Msgpack 字段名。
 
 ### Redis 中没有热数据
 
