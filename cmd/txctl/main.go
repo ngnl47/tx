@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	controlpb "github.com/ngnl47/tx/modules/control/pb"
@@ -41,8 +42,20 @@ func run(parent context.Context, arguments []string, output io.Writer, dialer di
 	if *timeout <= 0 {
 		return errors.New("--timeout must be greater than zero")
 	}
-	if flags.NArg() != 1 {
-		return errors.New("usage: txctl --endpoint host:port [--timeout 30s] status|drain|wait-drained")
+	if flags.NArg() == 0 {
+		return errors.New("usage: txctl --endpoint host:port [--timeout 30s] status|drain|wait-drained|promote-slot")
+	}
+	command := flags.Arg(0)
+	commandArguments := flags.Args()[1:]
+	var promotion *controlpb.PromoteSlotRequest
+	if command == "promote-slot" {
+		var err error
+		promotion, err = parsePromoteSlot(commandArguments)
+		if err != nil {
+			return err
+		}
+	} else if len(commandArguments) != 0 {
+		return fmt.Errorf("command %q does not accept arguments", command)
 	}
 
 	options := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
@@ -57,17 +70,31 @@ func run(parent context.Context, arguments []string, output io.Writer, dialer di
 
 	ctx, cancel := context.WithTimeout(parent, *timeout)
 	defer cancel()
-	client := controlpb.NewLifecycleServiceClient(connection)
+	lifecycleClient := controlpb.NewLifecycleServiceClient(connection)
 	var response *controlpb.LifecycleStatus
-	switch flags.Arg(0) {
+	switch command {
 	case "status":
-		response, err = client.Status(ctx, &controlpb.Empty{})
+		response, err = lifecycleClient.Status(ctx, &controlpb.Empty{})
 	case "drain":
-		response, err = client.Drain(ctx, &controlpb.Empty{})
+		response, err = lifecycleClient.Drain(ctx, &controlpb.Empty{})
 	case "wait-drained":
-		response, err = client.WaitDrained(ctx, &controlpb.Empty{})
+		response, err = lifecycleClient.WaitDrained(ctx, &controlpb.Empty{})
+	case "promote-slot":
+		promoted, promoteErr := controlpb.NewSlotServiceClient(connection).PromoteSlot(ctx, promotion)
+		if promoteErr != nil {
+			return promoteErr
+		}
+		if promoted == nil || promoted.GetAssignment() == nil {
+			return errors.New("control service returned an empty slot assignment")
+		}
+		if output == nil {
+			output = io.Discard
+		}
+		assignment := promoted.GetAssignment()
+		fmt.Fprintf(output, "slot=%s runtimeInstance=%s generation=%d\n", assignment.GetSlotId(), assignment.GetRuntimeInstanceId(), assignment.GetGeneration())
+		return nil
 	default:
-		return fmt.Errorf("unknown command %q", flags.Arg(0))
+		return fmt.Errorf("unknown command %q", command)
 	}
 	if err != nil {
 		return err
@@ -87,6 +114,32 @@ func run(parent context.Context, arguments []string, output io.Writer, dialer di
 		return fmt.Errorf("lifecycle state failed: %s", response.GetError())
 	}
 	return nil
+}
+
+func parsePromoteSlot(arguments []string) (*controlpb.PromoteSlotRequest, error) {
+	flags := flag.NewFlagSet("promote-slot", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	slotID := flags.String("slot", "", "logical slot ID")
+	currentInstance := flags.String("current-instance", "", "expected current runtime instance ID")
+	currentGeneration := flags.Uint64("current-generation", 0, "expected current generation")
+	nextInstance := flags.String("next-instance", "", "next running runtime instance ID")
+	if err := flags.Parse(arguments); err != nil {
+		return nil, err
+	}
+	if flags.NArg() != 0 {
+		return nil, errors.New("promote-slot does not accept positional arguments")
+	}
+	if strings.TrimSpace(*slotID) == "" || strings.TrimSpace(*currentInstance) == "" || *currentGeneration == 0 || strings.TrimSpace(*nextInstance) == "" {
+		return nil, errors.New("promote-slot requires --slot, --current-instance, --current-generation and --next-instance")
+	}
+	return &controlpb.PromoteSlotRequest{
+		Current: &controlpb.SlotAssignment{
+			SlotId:            *slotID,
+			RuntimeInstanceId: *currentInstance,
+			Generation:        *currentGeneration,
+		},
+		NextRuntimeInstanceId: *nextInstance,
+	}, nil
 }
 
 func lifecycleStateName(state controlpb.LifecycleState) string {

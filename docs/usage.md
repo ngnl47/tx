@@ -867,7 +867,7 @@ root.WaitDoneAndWaitGroupWait()
 
 `modules/agent.Server` 在调用 `msgq.Rec` **之前**调用 `Admission.Enter()`。因此 Agent 排水后，后续业务帧会返回明确错误并结束本次连接，不会推进上行 `Seq` 或伪造“已受理”。
 
-`modules/control` 是独立的运维 gRPC 契约，仅有 `Status`、`Drain`、`WaitDrained`。项目只需适配 `control.LifecycleController`；控制面不依赖 GD、Store、Procedure、Redis 或 Mongo：
+`modules/control` 是独立的运维 gRPC 契约。生命周期面提供 `Status`、`Drain`、`WaitDrained`。项目只需适配 `control.LifecycleController`；控制面不依赖 GD、Store、Procedure、Redis 或 Mongo：
 
 ```go
 grpcServer := grpc.NewServer()
@@ -877,6 +877,21 @@ if err := control.RegisterLifecycleService(grpcServer, coordinator); err != nil 
 ```
 
 `Drain` 只启动“目录标记为 `draining` + 入口封口”；`WaitDrained` 只等待已受理请求结束。最终资源关闭、根 context 取消、事务 Flush、Actor 与 discovery 注销仍由宿主负责。
+
+启用 discovery 的进程还可以注册独立的 `SlotService`。它接收完整旧 assignment 和下一运行实例 ID；下一
+generation 由框架按 `current.Generation + 1` 推导。项目侧 `SlotController` 必须确认目标实例为 `running`，再以
+完整旧值执行 CAS：
+
+```go
+// slotController 是项目对 discovery.SlotRouter 的薄适配；txgame 模板提供了
+// SlotPromoter 示例，项目也可以按同一接口组织自己的运维宿主。
+if err := control.RegisterSlotService(grpcServer, slotController); err != nil {
+    return err
+}
+```
+
+`PromoteSlot` 不创建首个槽位、不修改实例 lease，也不迁移 Actor 内存；首个 assignment 仍由业务部署流程显式创建。
+目标未进入 `running` 返回 unavailable，旧 assignment 已变化返回 CAS conflict，所有不确定结果都按失败处理。
 
 ## Actor Cluster 与 msgq
 
@@ -1253,8 +1268,8 @@ ProtoActor 的成员变更不会迁移业务内存状态；Virtual Actor 的业�
 
 ### 运维控制命令
 
-可选控制 gRPC 已有对应的 `txctl` 客户端。它只触发既有的 `Status`、`Drain` 和 `WaitDrained`，不连接 etcd、
-不直接修改成员 lease，也不会终止进程。发布脚本应在 `wait-drained` 成功后自行发送 `SIGTERM` 或交给 Kubernetes
+可选控制 gRPC 已有对应的 `txctl` 客户端。它不直接连接 etcd、不直接修改成员 lease，也不会终止进程。
+发布脚本应在 `wait-drained` 成功后自行发送 `SIGTERM` 或交给 Kubernetes
 结束 Pod：
 
 ```bash
@@ -1268,10 +1283,19 @@ go run ./cmd/txctl --endpoint 10.0.1.21:9100 drain
 
 # 最多等待五分钟，直到已受理 handler 完成。
 go run ./cmd/txctl --endpoint 10.0.1.21:9100 --timeout 5m wait-drained
+
+# 新实例已经注册为 running 后，以期望的旧 generation 执行槽位交接。
+go run ./cmd/txctl --endpoint 10.0.1.22:9100 promote-slot \
+  --slot game-slot-1 \
+  --current-instance game-1@v42 \
+  --current-generation 42 \
+  --next-instance game-1@v43
 ```
 
-每条命令输出稳定的 `state=running|draining|drained|failed`；服务返回诊断时还会输出 `error=...`。`failed`
-状态和 RPC 调用错误都会让 `txctl` 以非零状态退出，因此发布脚本不能把它当成已安全下线。当前控制端点使用项目部署
+三个生命周期命令输出稳定的 `state=running|draining|drained|failed`；服务返回诊断时还会输出 `error=...`。`failed`
+状态和 RPC 调用错误都会让 `txctl` 以非零状态退出。`promote-slot` 输出新的 `slot`、`runtimeInstance` 和
+`generation`；陈旧脚本会因旧 generation 或旧实例不匹配得到 CAS conflict，不能覆盖后来已经发布的 assignment。
+因此发布脚本不能把失败调用当成已安全下线或已完成交接。当前控制端点使用项目部署
 提供的网络隔离；认证与 TLS/mTLS 后续作为独立控制面能力加入。
 
 ## 类型注解

@@ -195,3 +195,105 @@ var LifecycleService_ServiceDesc = grpc.ServiceDesc{
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "modules/control/proto/control.proto",
 }
+
+const (
+	SlotService_PromoteSlot_FullMethodName = "/tx.control.v1.SlotService/PromoteSlot"
+)
+
+// SlotServiceClient is the client API for SlotService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type SlotServiceClient interface {
+	PromoteSlot(ctx context.Context, in *PromoteSlotRequest, opts ...grpc.CallOption) (*PromoteSlotResponse, error)
+}
+
+type slotServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewSlotServiceClient(cc grpc.ClientConnInterface) SlotServiceClient {
+	return &slotServiceClient{cc}
+}
+
+func (c *slotServiceClient) PromoteSlot(ctx context.Context, in *PromoteSlotRequest, opts ...grpc.CallOption) (*PromoteSlotResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PromoteSlotResponse)
+	err := c.cc.Invoke(ctx, SlotService_PromoteSlot_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SlotServiceServer is the server API for SlotService service.
+// All implementations must embed UnimplementedSlotServiceServer
+// for forward compatibility.
+type SlotServiceServer interface {
+	PromoteSlot(context.Context, *PromoteSlotRequest) (*PromoteSlotResponse, error)
+	mustEmbedUnimplementedSlotServiceServer()
+}
+
+// UnimplementedSlotServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedSlotServiceServer struct{}
+
+func (UnimplementedSlotServiceServer) PromoteSlot(context.Context, *PromoteSlotRequest) (*PromoteSlotResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PromoteSlot not implemented")
+}
+func (UnimplementedSlotServiceServer) mustEmbedUnimplementedSlotServiceServer() {}
+func (UnimplementedSlotServiceServer) testEmbeddedByValue()                     {}
+
+// UnsafeSlotServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to SlotServiceServer will
+// result in compilation errors.
+type UnsafeSlotServiceServer interface {
+	mustEmbedUnimplementedSlotServiceServer()
+}
+
+func RegisterSlotServiceServer(s grpc.ServiceRegistrar, srv SlotServiceServer) {
+	// If the following call pancis, it indicates UnimplementedSlotServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&SlotService_ServiceDesc, srv)
+}
+
+func _SlotService_PromoteSlot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PromoteSlotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SlotServiceServer).PromoteSlot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SlotService_PromoteSlot_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SlotServiceServer).PromoteSlot(ctx, req.(*PromoteSlotRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// SlotService_ServiceDesc is the grpc.ServiceDesc for SlotService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var SlotService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "tx.control.v1.SlotService",
+	HandlerType: (*SlotServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "PromoteSlot",
+			Handler:    _SlotService_PromoteSlot_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "modules/control/proto/control.proto",
+}

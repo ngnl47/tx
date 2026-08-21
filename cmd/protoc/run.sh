@@ -31,7 +31,7 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
 fi
 
 if [[ "${1:-}" == "--list" ]]; then
-    printf '%s\n' actor msgq rpc
+    printf '%s\n' actor control msgq rpc
     exit 0
 fi
 

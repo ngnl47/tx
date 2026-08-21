@@ -19,8 +19,27 @@ message LifecycleStatus {
   string error = 2;
 }
 
+message SlotAssignment {
+  string slot_id = 1;
+  string runtime_instance_id = 2;
+  uint64 generation = 3;
+}
+
+message PromoteSlotRequest {
+  SlotAssignment current = 1;
+  string next_runtime_instance_id = 2;
+}
+
+message PromoteSlotResponse {
+  SlotAssignment assignment = 1;
+}
+
 service LifecycleService {
   rpc Status(Empty) returns (LifecycleStatus);
   rpc Drain(Empty) returns (LifecycleStatus);
   rpc WaitDrained(Empty) returns (LifecycleStatus);
+}
+
+service SlotService {
+  rpc PromoteSlot(PromoteSlotRequest) returns (PromoteSlotResponse);
 }
