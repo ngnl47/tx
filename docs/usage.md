@@ -1614,13 +1614,13 @@ data.GDRoleFieldName(field, change.NameBackendMsgpack) // "roleId"
 
 涉及 `DeltaSet`、集合递归、批量读取、Redis/Mongo 写入或状态刷盘的热点路径改动前后，都应在同一台机器、同一 Go 版本下运行 benchmark，并同时查看耗时和分配次数。不要用不同机器的绝对 ns/op 数值作结论。
 
-`tx` 提供 `Compact()` 的隔离基线，分别覆盖重复普通字段、256 个 map 子字段和 256 个子路径后整字段覆盖：
+`tx` 提供 `Compact()` 与 `Clone()` 的隔离基线：前者分别覆盖重复普通字段、256 个 map 子字段和 256 个子路径后整字段覆盖；后者覆盖 64、256、1024 条 Delta 的连续切片复制和分配成本：
 
 ```sh
 cd /Users/a47/workspace/tx
 env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp \
   /Users/a47/sdk/go1.26.5/bin/go test ./tests -run '^$' \
-  -bench '^BenchmarkDeltaSetCompact$' -benchmem -count=5
+  -bench '^BenchmarkDeltaSet(Compact|Clone)$' -benchmem -count=5
 ```
 
 `txgen` 还提供生成 Store 的端到端基线，用来比较 snapshot diff 与 Store 路径，以及字段名投影：
@@ -1640,6 +1640,16 @@ cd /Users/a47/workspace/tx
 env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp \
   /Users/a47/sdk/go1.26.5/bin/go test ./tests -run '^$' \
   -bench '^BenchmarkFusionStrategyApplyDeltas$' -benchmem -count=5
+```
+
+事务锁基线分别观察纯锁表内核和 `WithLocks` 完整入口。`SharedKeyParallel` 应保持同 key 串行；`DisjointKeysParallel` 用来识别不同业务对象之间是否重新出现全局锁竞争：
+
+```sh
+cd /Users/a47/workspace/tx
+env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp \
+  /Users/a47/sdk/go1.26.5/bin/go test ./modules/txn -run '^$' \
+  -bench '^(BenchmarkLockTableAcquireRelease|BenchmarkWithLocks)$' \
+  -benchmem -count=5
 ```
 
 例如将 `Compact()` 的实现从双层路径比较改成索引结构前，先记录 `MapItemPaths256` 与 `AncestorReplace256` 的基线；改动后只有在这两类负载的耗时或分配确有收益，并且没有牺牲 `RepeatedField64` 的常见路径时，才引入更复杂的结构。
@@ -2001,6 +2011,8 @@ if errors.Is(err, context.DeadlineExceeded) {
 ```
 
 多个目标按 `LockTarget.Order`、`LockKey.Scope`、`LockKey.Value` 的稳定顺序获取锁。生成的 `LockTarget()` 默认 order 为 `0`；需要区分锁层级时，可由 `@transaction` 生成不同的 order，例如军团为 `10`、角色为 `20`。同一逻辑 Key 不得以不同 order 重复声明。
+
+锁表内部按 `LockKey` 分段管理：不同 key 可以并行进入各自的本机临界区，相同 key 始终严格串行。业务不需要选择分段，也不能把同一个对象编码成不同 `LockKey` 来绕过互斥；例如所有 `GDRole{RoleId: 470001}` 都必须使用生成的同一把角色锁。
 
 前置查询后需要动态收集锁时使用 `LockSet`。Builder 不在收集阶段自行去重或加锁，最终仍交给 `Run` 统一校验：
 

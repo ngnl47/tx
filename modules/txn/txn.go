@@ -341,7 +341,7 @@ func run(ctx context.Context, locks []LockTarget, fn func(*Tx) error, options Ca
 		return err
 	}
 	if err := validateCleanLockTargets(prepared, options); err != nil {
-		releaseLocks(heldLocks)
+		releaseLocks(&heldLocks)
 		return err
 	}
 
@@ -360,7 +360,7 @@ func run(ctx context.Context, locks []LockTarget, fn func(*Tx) error, options Ca
 			for _, lock := range prepared {
 				lock.Store.SetUndoRecorder(nil)
 			}
-			releaseLocks(heldLocks)
+			releaseLocks(&heldLocks)
 			for _, callback := range rollbackCallbacks {
 				callback(ctx)
 			}
@@ -382,7 +382,7 @@ func run(ctx context.Context, locks []LockTarget, fn func(*Tx) error, options Ca
 		for _, lock := range prepared {
 			lock.Store.SetUndoRecorder(nil)
 		}
-		releaseLocks(heldLocks)
+		releaseLocks(&heldLocks)
 		tx.active = false
 		for _, callback := range rollbackCallbacks {
 			callback(ctx)
@@ -395,7 +395,7 @@ func run(ctx context.Context, locks []LockTarget, fn func(*Tx) error, options Ca
 	for _, lock := range prepared {
 		lock.Store.SetUndoRecorder(nil)
 	}
-	releaseLocks(heldLocks)
+	releaseLocks(&heldLocks)
 	tx.active = false
 	return runAfterCommit(ctx, tx.afterCommit)
 }
@@ -417,7 +417,7 @@ func WithLocks(ctx context.Context, locks []LockTarget, fn func(context.Context)
 	if err != nil {
 		return err
 	}
-	defer releaseLocks(heldLocks)
+	defer releaseLocks(&heldLocks)
 	if fn == nil {
 		return nil
 	}
@@ -468,6 +468,12 @@ func prepareLocks(locks []LockTarget) ([]LockTarget, error) {
 	if len(locks) == 0 {
 		return nil, errors.New("transaction: no locks")
 	}
+	if len(locks) == 1 {
+		if err := validateLockTarget(locks[0]); err != nil {
+			return nil, err
+		}
+		return locks, nil
+	}
 	prepared := append([]LockTarget(nil), locks...)
 	sort.Slice(prepared, func(i, j int) bool {
 		if prepared[i].Order != prepared[j].Order {
@@ -481,14 +487,8 @@ func prepareLocks(locks []LockTarget) ([]LockTarget, error) {
 	seen := make(map[LockKey]LockTarget, len(prepared))
 	write := 0
 	for _, lock := range prepared {
-		if !lock.Key.valid() {
-			return nil, fmt.Errorf("transaction: invalid lock key %q", lock.Key.String())
-		}
-		if lock.Order < 0 {
-			return nil, fmt.Errorf("transaction: lock %s has negative lock order %d", lock.Key.String(), lock.Order)
-		}
-		if lock.Store == nil {
-			return nil, fmt.Errorf("transaction: lock %s has nil Store", lock.Key.String())
+		if err := validateLockTarget(lock); err != nil {
+			return nil, err
 		}
 		if previous, exists := seen[lock.Key]; exists {
 			if !sameStore(lock.Store, previous.Store) {
@@ -506,37 +506,86 @@ func prepareLocks(locks []LockTarget) ([]LockTarget, error) {
 	return prepared[:write], nil
 }
 
+func validateLockTarget(lock LockTarget) error {
+	if !lock.Key.valid() {
+		return fmt.Errorf("transaction: invalid lock key %q", lock.Key.String())
+	}
+	if lock.Order < 0 {
+		return fmt.Errorf("transaction: lock %s has negative lock order %d", lock.Key.String(), lock.Order)
+	}
+	if lock.Store == nil {
+		return fmt.Errorf("transaction: lock %s has nil Store", lock.Key.String())
+	}
+	return nil
+}
+
 type lockEntry struct {
 	token chan struct{}
 	refs  int
 }
 
-type lockTable struct {
+const (
+	lockShardCount       = 64
+	inlineHeldLockCount  = 4
+	lockKeyHashOffset64  = uint64(14695981039346656037)
+	lockKeyHashPrime64   = uint64(1099511628211)
+	lockKeyHashSeparator = byte(0xff)
+)
+
+type lockShard struct {
 	mu      sync.Mutex
 	entries map[LockKey]*lockEntry
 }
 
-var transactionLocks = lockTable{entries: make(map[LockKey]*lockEntry)}
+type lockTable struct {
+	shards [lockShardCount]lockShard
+	pool   sync.Pool
+}
+
+var transactionLocks lockTable
 
 type heldLock struct {
 	key   LockKey
 	entry *lockEntry
+	shard *lockShard
 }
 
-func acquireLocks(ctx context.Context, locks []LockTarget) ([]heldLock, error) {
-	heldLocks := make([]heldLock, 0, len(locks))
+type heldLockSet struct {
+	inline   [inlineHeldLockCount]heldLock
+	overflow []heldLock
+	count    int
+}
+
+func (set *heldLockSet) append(lock heldLock) {
+	if set.count < len(set.inline) {
+		set.inline[set.count] = lock
+	} else {
+		set.overflow = append(set.overflow, lock)
+	}
+	set.count++
+}
+
+func (set *heldLockSet) at(index int) *heldLock {
+	if index < len(set.inline) {
+		return &set.inline[index]
+	}
+	return &set.overflow[index-len(set.inline)]
+}
+
+func acquireLocks(ctx context.Context, locks []LockTarget) (heldLockSet, error) {
+	var heldLocks heldLockSet
 	for _, lock := range locks {
-		entry := transactionLocks.reserve(lock.Key)
-		if err := acquireLock(ctx, lock.Key, entry); err != nil {
-			transactionLocks.release(lock.Key, entry)
-			releaseLocks(heldLocks)
-			return nil, err
+		held := transactionLocks.reserve(lock.Key)
+		if err := acquireLock(ctx, lock.Key, held.entry); err != nil {
+			transactionLocks.release(held)
+			releaseLocks(&heldLocks)
+			return heldLockSet{}, err
 		}
-		heldLocks = append(heldLocks, heldLock{key: lock.Key, entry: entry})
+		heldLocks.append(held)
 	}
 	if err := ctx.Err(); err != nil {
-		releaseLocks(heldLocks)
-		return nil, fmt.Errorf("transaction: acquire locks: %w", err)
+		releaseLocks(&heldLocks)
+		return heldLockSet{}, fmt.Errorf("transaction: acquire locks: %w", err)
 	}
 	return heldLocks, nil
 }
@@ -557,36 +606,82 @@ func acquireLock(ctx context.Context, key LockKey, entry *lockEntry) error {
 	return nil
 }
 
-func releaseLocks(locks []heldLock) {
-	for index := len(locks) - 1; index >= 0; index-- {
-		locks[index].entry.token <- struct{}{}
-		transactionLocks.release(locks[index].key, locks[index].entry)
+func releaseLocks(locks *heldLockSet) {
+	if locks == nil {
+		return
 	}
+	for index := locks.count - 1; index >= 0; index-- {
+		held := locks.at(index)
+		held.entry.token <- struct{}{}
+		transactionLocks.release(*held)
+		*held = heldLock{}
+	}
+	clear(locks.overflow)
+	locks.overflow = nil
+	locks.count = 0
 }
 
-func (table *lockTable) reserve(key LockKey) *lockEntry {
-	table.mu.Lock()
-	defer table.mu.Unlock()
-	entry := table.entries[key]
+func (table *lockTable) reserve(key LockKey) heldLock {
+	shard := table.shard(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+	if shard.entries == nil {
+		shard.entries = make(map[LockKey]*lockEntry)
+	}
+	entry := shard.entries[key]
 	if entry == nil {
-		entry = &lockEntry{token: make(chan struct{}, 1)}
-		entry.token <- struct{}{}
-		table.entries[key] = entry
+		entry = table.acquireEntry()
+		shard.entries[key] = entry
 	}
 	entry.refs++
+	return heldLock{key: key, entry: entry, shard: shard}
+}
+
+func (table *lockTable) release(held heldLock) {
+	if held.shard == nil || held.entry == nil {
+		return
+	}
+	held.shard.mu.Lock()
+	if held.shard.entries[held.key] != held.entry {
+		held.shard.mu.Unlock()
+		return
+	}
+	held.entry.refs--
+	if held.entry.refs != 0 {
+		held.shard.mu.Unlock()
+		return
+	}
+	delete(held.shard.entries, held.key)
+	held.shard.mu.Unlock()
+	table.pool.Put(held.entry)
+}
+
+func (table *lockTable) shard(key LockKey) *lockShard {
+	return &table.shards[lockKeyHash(key)&(lockShardCount-1)]
+}
+
+func (table *lockTable) acquireEntry() *lockEntry {
+	if pooled := table.pool.Get(); pooled != nil {
+		return pooled.(*lockEntry)
+	}
+	entry := &lockEntry{token: make(chan struct{}, 1)}
+	entry.token <- struct{}{}
 	return entry
 }
 
-func (table *lockTable) release(key LockKey, entry *lockEntry) {
-	table.mu.Lock()
-	defer table.mu.Unlock()
-	if table.entries[key] != entry {
-		return
+func lockKeyHash(key LockKey) uint64 {
+	hash := lockKeyHashOffset64
+	for index := 0; index < len(key.Scope); index++ {
+		hash ^= uint64(key.Scope[index])
+		hash *= lockKeyHashPrime64
 	}
-	entry.refs--
-	if entry.refs == 0 {
-		delete(table.entries, key)
+	hash ^= uint64(lockKeyHashSeparator)
+	hash *= lockKeyHashPrime64
+	for index := 0; index < len(key.Value); index++ {
+		hash ^= uint64(key.Value[index])
+		hash *= lockKeyHashPrime64
 	}
+	return hash
 }
 
 func runAfterCommit(ctx context.Context, callbacks []func(context.Context) error) error {

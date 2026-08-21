@@ -77,6 +77,45 @@ func TestLocksAndLockSetCollectLockables(t *testing.T) {
 	}
 }
 
+func TestTransactionRunValidatesSingleLockTarget(t *testing.T) {
+	store := &transactionTestStore{}
+	tests := []struct {
+		name  string
+		locks []txn.LockTarget
+		want  string
+	}{
+		{name: "NoLocks", want: "no locks"},
+		{
+			name:  "InvalidKey",
+			locks: []txn.LockTarget{txn.NewLockTarget(txn.LockKey{}, store)},
+			want:  "invalid lock key",
+		},
+		{
+			name: "NegativeOrder",
+			locks: []txn.LockTarget{txn.NewOrderedLockTarget(
+				-1,
+				txn.NewLockKey("role", 1001),
+				store,
+			)},
+			want: "negative lock order",
+		},
+		{
+			name:  "NilStore",
+			locks: []txn.LockTarget{txn.NewLockTarget(txn.NewLockKey("role", 1001), nil)},
+			want:  "nil Store",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := txn.Run(context.Background(), test.locks, nil)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Run error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestTransactionRunRollsBackAndUnbindsStore(t *testing.T) {
 	store := &transactionTestStore{value: 1}
 	err := txn.Run(context.Background(), []txn.LockTarget{

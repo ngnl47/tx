@@ -65,21 +65,23 @@ err := storage.SaveDeltas(ctx, writer, store, batch)
 - 影响（整改前）：`go test -race ./... -count=1` 失败，无法把 race 作为持续回归门禁；生产实现未在本次审计中观察到对应竞态。
 - 整改：测试 handler 使用 mutex 保护记录写入，并只向测试协程暴露快照；Scheduler 回归不再直接并发读取内部 slice。完整 race 结果见本报告验证记录。
 
-### [P2] 单机事务锁表的全局串行与临时分配远高于基础互斥量
+### [P2][已整改] 单机事务锁表的全局串行与临时分配远高于基础互斥量
 
-- 位置：`modules/txn/txn.go:510`、`modules/txn/txn.go:520`、`modules/txn/txn.go:527`、`modules/txn/txn.go:568`
+- 位置：`modules/txn/txn.go:522`、`modules/txn/txn.go:545`、`modules/txn/txn.go:575`、`modules/txn/txn.go:624`
 - 触发条件：多个无冲突 Procedure 高频获取不同 LockKey。
 - 影响：所有 key 都先竞争同一个全局 mutex；每个新 key 还会分配 `lockEntry`、buffered channel 和 held-lock slice。不同业务实体的锁管理在元数据层发生串行。
-- 证据：本机临时审计基准中，串行和 16 线程离散 key 分别约 `555-569 ns/op`、`856-861 ns/op`，均为 `264 B/op, 5 allocs/op`；离散 `sync.Mutex` 基线约 `26 ns/op, 0 allocs/op`。
-- 建议：评估分段锁表与可复用 entry，保留当前有序多锁、context 超时和失败释放语义；优化前先把该基准转为正式回归。
+- 正式基线：`BenchmarkLockTableAcquireRelease` 的单 key 串行为 `341.8-347.9 ns/op, 176 B/op, 3 allocs/op`，四 key 串行为 `1.275-1.364 us/op, 672 B/op, 9 allocs/op`，16 线程离散 key 为 `520.5-556.3 ns/op, 176 B/op, 3 allocs/op`。共享同 key 的并行路径为 `402.2-419.2 ns/op, 48 B/op, 1 allocs/op`，说明并发持有期间会复用 entry，但短生命周期离散 key 仍承担创建成本和全局锁竞争。
+- 整改：锁元数据按稳定 `LockKey` 哈希分为 64 段；带 context 等待能力的 channel entry 在引用归零并从分段表删除后进入 `sync.Pool`；四把以内的常见事务锁集以内联数组持有，更多锁才使用 overflow slice。单锁预处理跳过没有意义的复制、排序和去重 map，但继续执行完整合法性校验。锁顺序、同 key 互斥、context 超时及失败反向释放语义不变。
+- 整改结果：锁内核单 key 串行为 `247.6-255.9 ns/op, 0 allocs`，四 key 串行为 `965.6-995.2 ns/op, 0 allocs`，16 线程离散 key 为 `43.99-62.26 ns/op, 0 allocs`；共享同 key 仍为 `403.2-423.4 ns/op, 0 allocs`，没有通过放宽同对象串行语义换取性能。完整 `WithLocks` 单 key 入口为 `282.6-311.7 ns/op, 0 allocs`；四 key 的排序和重复校验仍为 `1.585-1.696 us/op, 360 B/op, 4 allocs/op`，后续只有真实多对象事务基准证明值得时才继续复杂化预处理结构。
 
 ### [P2] Delta 的实际物理尺寸较大，边界 Clone 会按条目放大瞬时内存
 
 - 位置：`change/delta.go:22`、`change/delta.go:30`、`change/delta.go:36`、`change/delta.go:194`、`storage/mongo/document.go:61`
 - 触发条件：一个根对象积累大量不同 map key/index 路径，并进入 Mongo/Redis 文档构建。
 - 影响：定长路径具备良好局部性，但不是“小结构体”。在当前 64 位布局下 `PathKey=40B`、`PathNode=48B`、`DeltaPath=200B`、`DeltaEntry=208B`；256 条 Delta 的 backing array 约 52 KiB，边界 Clone 会再复制一份。
-- 证据：`Compact/RepeatedField64` 约 `2.28-2.42 us/op, 0 allocs`；`Compact/MapItemPaths256` 约 `45.2-47.6 us/op, 11560 B/op, 4 allocs`；祖先 Replace 256 条约 `15.2-15.7 us/op, 0 allocs`。
-- 建议：先解决投影批次所有权，减少为了防止原地 Compact 而做的重复 Clone；之后再用基准评估是否把 int/uint 共用一个 numeric slot。第一版继续保留 `any` 值解析，不引入自研值编码或 unsafe。
+- 证据：`Compact/RepeatedField64` 约 `2.28-2.42 us/op, 0 allocs`；`Compact/MapItemPaths256` 约 `45.2-47.6 us/op, 11560 B/op, 4 allocs`；祖先 Replace 256 条约 `15.2-15.7 us/op, 0 allocs`。正式 `BenchmarkDeltaSetClone` 中，64 条约 `3.19-3.71 us/op, 13568 B/op`，256 条约 `10.47-11.29 us/op, 57344 B/op`，1024 条约 `43.26-49.05 us/op, 212992 B/op`，均为一次大块分配。
+- 当前边界：生成 Store 的 `Deltas()` 已返回新建且压实的独立投影，但 `DocumentWithResolver`、Redis/Mongo 文档构建器是公开转换 API，不能默认取得调用方切片的修改所有权。Fusion 只把投影即时交给 Redis，延迟队列不保存 Delta；当前不存在为了 MongoQueue 再复制一份 Delta 的问题。
+- 建议：保留公开转换 API 的非修改语义，不为省一次 Clone 暴露“owned delta”定制接口。下一步单独决策是否把互斥的 int/uint key 合并到一个 64 位 numeric slot；预计可把 `DeltaEntry` 从 208B 降到 176B（约 15.4%），但会联动 `PathKey` 公共构造方式、txgen 模板和全部生成文件。第一版继续保留 `any` 值解析，不引入自研值编码或生产 `unsafe`。
 
 ### [P3][已整改] 事务创建保留了一次立即被覆盖的 context 分配
 
@@ -153,6 +155,6 @@ go test ./... -count=1                                   PASS
 3. 已完成：统一 Fusion 读写健康闸门，并区分后端不可用错误与调用方语义错误。
 4. 已完成：强类型化 Mongo client/cluster 构造并启动期 fast-fail。
 5. 已完成：将 Delta 容量收敛能力纳入持久化事务 Store 契约。
-6. 为事务锁表建立正式基准，再实施分段锁表/entry 复用。
-7. 在投影所有权收敛后评估 Delta Clone 和结构布局，避免两处优化相互抵消。
+6. 已完成：为事务锁表建立正式基准，并实施分段锁表、entry 复用、常见小锁集内联和单锁预处理快路径。
+7. 已完成评估：公开转换边界保留 Clone；`PathKey` 的 int/uint numeric slot 合并进入待决策项。
 8. 已完成：清理重复 context 分配，并修正测试目录文档规则。

@@ -1,12 +1,15 @@
 package tests
 
 import (
+	"fmt"
 	"testing"
+	"unsafe"
 
 	"github.com/ngnl47/tx/change"
 )
 
 var benchmarkCompactedDeltaSet change.DeltaSet
+var benchmarkClonedDeltaSet change.DeltaSet
 
 func BenchmarkDeltaSetCompact(b *testing.B) {
 	cases := []struct {
@@ -35,6 +38,20 @@ func BenchmarkDeltaSetCompact(b *testing.B) {
 			for b.Loop() {
 				copy(work, benchmarkCase.template)
 				benchmarkCompactedDeltaSet = work.Compact()
+			}
+		})
+	}
+}
+
+func BenchmarkDeltaSetClone(b *testing.B) {
+	entryBytes := int64(unsafe.Sizeof(change.DeltaEntry{}))
+	for _, count := range []int{64, 256, 1024} {
+		template := benchmarkMapItemDeltas(count)
+		b.Run(fmt.Sprintf("Entries%d", count), func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(entryBytes * int64(count))
+			for b.Loop() {
+				benchmarkClonedDeltaSet = template.Clone()
 			}
 		})
 	}
