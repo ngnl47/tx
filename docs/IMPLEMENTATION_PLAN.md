@@ -29,10 +29,11 @@
 - `txgame` 的 `agent`、`msgq`、`game` 始终注册为可选服务；仅 `--services` 决定当前进程启动集合。YAML 只保存服务静态运行参数，未选服务不校验其专属参数，选中服务的配置错误必须启动失败。
 - `GD*` 是纯数据对象；`GD*Store` 是独立、完整、可组合的变更追踪结构，绑定 `GD*` 后才具备读值、修改和投影意义。Store 只持有业务数据引用，不保存第二份业务数据。
 - `GD*` 可以懒持有默认主 Store，作为 `role.SetName(...)` 这类代理入口；Store 本身不依附于某个 `GD*` 实例，可单独创建、绑定、组合和复制。
-- Store 树按持久化路径组织：父 Store 持有复合字段、map key 或 slice index 对应的子 Store；子 Store 不向 `GD*` 写入父回调或父路径。`DeltaSet` 只在保存或下行边界从整棵 Store 树投影产生。
+- Store 树按持久化路径组织：父 Store 持有复合字段、map key 或 slice index 对应的子 Store；子 Store 不向 `GD*` 写入父回调或父路径。`ProjectDeltas(visitor)` 可从整棵 Store 树同步流式投影；`Deltas()` 只为仍使用切片协议的持久化边界和高级调用方物化 `DeltaSet`。
 - 同一个 `*GD...` 可以出现在多个根对象、集合字段或集合 key 中。每条路径拥有独立 Store 节点和 dirty 状态，业务数据引用可以共享；框架不维护全局反向引用表，也不自动把一次路径内修改扩散到其他引用位置。
 - `store.View()` 深复制 Store 的字段状态、集合状态和子 Store 树，浅复制绑定的 `GD*` 引用；不得直接复制含 map 或子 Store 指针的 Store 结构。主 Store 与 viewStore 的内部结构一致，但 viewStore 是只读投影模式：允许读取、`Touch/UnTouch` 和生成文档，不允许修改数据或持久化。
-- viewStore 是字段选择状态的副本，不是业务数据快照。`ChangeDocument()` 在边界重新读取当前 `GD*` 值并校验指针、map key、slice index 路径；结构漂移时必须提升为最近安全祖先的整字段写，不能输出已失效的 key/index 路径。需要时刻快照时，业务必须在变更后的下一步立即物化 `ChangeDocument()` 或协议 body。
+- viewStore 是字段选择状态的副本，不是业务数据快照。`ChangeDocument(kind)` 在边界重新读取当前 `GD*` 值并校验指针、map key、slice index 路径；结构漂移时必须提升为最近安全祖先的整字段写，不能输出已失效的 key/index 路径。需要时刻快照时，业务必须在变更后的下一步立即物化文档或协议 body。
+- 同一帧或同一锁定周期内需要合并多批广播变更时，使用生成的 `view.MergeChanges(next)` 合并同一个 `GD*` 引用上的规范化脏元数据；同字段和同 key 后写覆盖先写，后续整字段 Replace/Clear/Delete 吸收此前子路径。不同 `GD*` 引用必须返回 `change.ErrDeltaValueMismatch`，不能把路径与另一份当前值拼接。合并后的 view 仍不是值快照，跨协程或退出对象锁前必须物化文档。
 - 业务输入模型和协议字段不能直接声明生成的 `*Store` 类型；Store 只用于框架持久化和 Provider 投影输入。
 - 业务 facade 和框架 API 分层。无状态 handler 的 Store 拦截路径使用 `db.Save(role)`，snapshot diff 路径使用 `db.SaveChange(role)`；有状态服务通过项目装配的 `txn.Runtime.Call(ctx, procedure)` 进入 Procedure 运行时，由 Runtime 在后续 Flush 内部取得 Store 并调用 `storage.Save`。
 - `txgame/server/internal/db` 已提供泛型 `db.Save(role)` facade：它使用服务启动时装配的根 context 与 writer，并只在 facade 内部获取生成数据对象的 Store。
@@ -50,7 +51,7 @@
 - `txn.Runtime` 是有状态运行时的标准搭档。它按 `LockKey` 聚合脏 Store；`Runtime.Call` 在事务成功后登记 `DirtyTargets`，不执行 I/O；`Runtime.Flush` 逐目标取得同一把本机锁，普通路径只投影一次 DeltaSet，并通过仅在 Runtime 内部可构造的 Store 投影调用 `storage.Save`，成功才清理 delta。超过 `MaxRootDeltaEntries` 时，Runtime 会明确重写 Store dirty 树为顶层 Replace 并重新投影一次，这是容量降级后的新投影，不是重复读取同一批次。Runtime 不保存业务副本，不把 Store 或 DeltaSet 作为异步队列项；业务和高级调用方都不接触“传入 Delta 批次并清理 Store”的公共 API。
 - 有状态运行时的 Store dirty 状态是按路径覆盖的集合，不会因同一路径重复修改无限追加；但未成功 Flush 前的不同集合 key/index 会持续累积。`map[K]*GD...` 和 `[]*GD...` 会缓存已访问元素的子 Store，但另行维护 dirty 子路径索引，投影与清理不再遍历全部缓存子 Store。`RuntimeConfig.MaxRootDeltaEntries` 限制单个 pending root 投影后的 Delta 数量；Runtime 只在 Flush 的持锁投影点检查该预算，超过时清理该 Store 树的细粒度 dirty 状态，并将当前值收敛为全部可更新顶层字段的 `Replace` delta，跳过 BSON `_id`，记录一条告警后继续服务，避免每次事务提交递归投影整棵树。txgen 生成 Store 实现 `storage.CollapsibleDeltaStore`；配置非零预算时，自定义持久化 Store 若不具备相同能力，`Runtime.Call/MarkDirty` 必须在修改或登记前返回 `ErrDeltaCollapseUnsupported`，不能让预算静默失效。`RuntimeConfig.HeapSoftLimitBytes` 按 `HeapSampleInterval` 低频读取进程 `HeapAlloc`，仅在超过阈值时记录告警；它不能作为拒绝业务请求的根因。`RuntimeConfig.MaxPendingRoots` 仅是可选硬保护；满额时才拒绝新增 root。部署项目负责设置 Go 的 `GOMEMLIMIT`，tx 不修改全局 runtime 内存限制。预算限制的是 dirty 路径，不负责限制业务对象本身或干净子 Store 缓存的大小；setter 内不得强制 Flush 或 I/O。
 - 无状态服务不使用 `txn.Runtime`：请求内临时加载 GD，直接由项目 facade 调用 `db.Save` 或 snapshot `SaveChange` 写 Fusion。启用有状态运行时后，所有写操作都必须通过 `Procedure + txn.Runtime`；读取不要求进入事务。
-- 当前标脏主线的跨模块协议是 `change.DeltaSet`，但生成 Store 不常驻 `[]DeltaEntry`。txgen 为普通字段生成定长 `ops[fieldID-1]` 槽位，为集合元素生成 `ops[key/index]`，并用 `dirtyChildren` 索引真正变脏的子 Store；同一位置重复修改原地覆盖。`Deltas()`、文档、存储和 Provider 边界才递归物化扁平 DeltaSet，热路径既不常驻字符串路径，也不重复 append 固定大小的 DeltaEntry。
+- 当前持久化 adapter 的跨模块协议仍是 `change.DeltaSet`，但生成 Store 不常驻 `[]DeltaEntry`。txgen 为普通字段生成定长 `ops[fieldID-1]` 槽位，为集合元素生成 `ops[key/index]`，并用 `dirtyChildren` 索引真正变脏的子 Store；同一位置重复修改原地覆盖。`ChangeDocument(kind)` 已通过 `ProjectDeltas` 直接消费规范化状态，不再物化中间 DeltaSet；Go/JSON/BSON/Msgpack 四套字段名由参数显式选择。`Deltas()` 通过 `DeltaCollector` 保留给存储 adapter、Runtime 容量检查和高级调用方。下一阶段在不改变 adapter 正确性边界的前提下，评估让 Redis/Mongo/Fusion 直接消费流式投影。
 - 每个生成 `GD*` 只内联一个私有 `state` 指针。Store 引用、Store/snapshot 模式和 snapshot 基线放在按需分配的 sidecar 中；只构造、编解码或传递纯数据对象时不创建 sidecar。`Copy()`、`ResetStore()` 和完整加载替换会显式解绑旧 sidecar，避免复制 Store/快照运行时状态。
 - `DeltaEntry` 当前只保存 `Path` 和 `Op`，不持有字段值；生成 Store 会在输出边界按 DeltaPath 读取当前值。后续如需性能优化，只做局部 fast path，不提前引入自研 value 编码。
 - Redis/Mongo 写入边界要求 `DeltaValueResolver` 能解析每条 Set/Replace delta 的当前值；`(nil, true)` 是合法业务空值，`(_, false)` 必须显式返回错误并保留 delta，不能静默写成 `null`。
@@ -64,7 +65,7 @@
 - 所有实际存储 I/O、路由和锁操作必须先校验 `storage.RecordKey`：`ID` 不得为 nil、typed-nil 或空白字符串；当存储元数据声明 `routeBy != idField` 时，`ShardKey` 必填。缺失 `ShardKey` 返回 `storage.ErrInvalidRecordKey`，不得回退用 ID 选择 Redis/Mongo endpoint 或生成 Redis hash tag。
 - 非空 DeltaSet 经 Redis/Mongo 边界转换后必须至少产生一个有效 patch/update；否则返回 `storage.ErrNoEffectiveDeltas` 并保留 Store delta。Mongo upsert 仅剩不可变记录 ID 时同样失败，不能清理 dirty 后伪造已创建文档。
 - 涉及 DeltaSet、集合递归、批量读取、Redis/Mongo 写入或状态刷盘等热点路径的结构与算法调整，必须先补可复现 benchmark，并记录对象规模、嵌套深度、delta 密度、耗时与分配结果；只有数据证明收益覆盖复杂度时才引入优化，避免凭直觉堆砌机制。
-- 字符串路径只在输出边界生成，例如 `ChangeDocument()`、Redis JSON patch、Mongo update document 和 cmd Provider body。
+- 字符串路径只在输出边界生成，例如 `ChangeDocument(kind)`、Redis JSON patch、Mongo update document 和 cmd Provider body。`ProjectDeltas` 在输出边界之前只传递定长 `DeltaPath` 与 `DeltaOp`。
 - `DeltaSet.Compact()` 只做路径上可确定的压缩：同路径后写覆盖先写，后发生的祖先写清理更早子路径；较早祖先不会吞掉较晚子路径，因为 runtime 不读取当前对象，无法证明祖先值已包含后续修改。不做需要外部生命周期上下文的新建删除抵消。生成 Store 的 `Deltas()` 已由字段槽、元素状态和子 Store 树保证位置唯一，并在物化时处理父级覆盖、结构漂移和深度降级，因此不再重复调用通用 Compact；通用 Delta 输入和文档转换边界仍保留该算法。
 - Mongo update 边界可读取 Store 最终值：若 Compact 保留“较早祖先写、较晚子路径写”，Mongo 会把祖先提升为整路径替换并去掉子路径，避免同一 `$set/$unset` 同时包含父子路径冲突；通用 DeltaSet 不提前做这项依赖当前值的压缩。
 - `DeltaSet.Compact()` 对不超过 128 条的常见变更保持原地、零分配扫描；更大的互不相交路径集使用小型哈希索引查询完整路径和严格祖先，哈希碰撞必须再经完整 `DeltaPath.Equal` 确认。后发生根字段覆盖子路径的批次仍走原地扫描，避免为已能线性收敛的整字段覆盖引入索引分配；阈值或算法调整前后都必须复跑 `BenchmarkDeltaSetCompact`。
@@ -106,7 +107,7 @@
 
 已完成基线：
 
-- 生成 Store 已使用父 Store 路径树组织直接指针、map key 和 slice index 子 Store；`Deltas()` 在边界递归投影并压缩，viewStore 会复制状态树且禁止写入、持久化。
+- 生成 Store 已使用父 Store 路径树组织直接指针、map key 和 slice index 子 Store；`ProjectDeltas()` 在边界递归流式投影，`Deltas()` 仅在需要切片协议时收集，viewStore 会复制状态树且禁止写入、持久化。`MergeChanges()` 已支持同一 GD 上的多批 view 帧内合并，`ChangeDocument(kind)` 不再物化中间 DeltaSet；cmd Provider 固定传入 `FieldNameMsgpack`。
 - `map[K]*GD...` 遇到不能表达为 `PathKey` 的 key 类型时，仍可通过子 Store 修改数据，但导出时保守替换整 map；`txgame` 已覆盖枚举 key 的真实输入回归。
 - `txgame` 的 `GDRole`、`GDLegion` 已使用 `@transaction` 生成锁键与锁对象，并以 `PGuildContribution` 覆盖多对象锁序、生成 Store undo 和回滚后变更文档清理。
 - `txn.Tx.DirtyTargets()` 已按锁顺序暴露本次经受控 Store API 修改且仍有 delta 的根目标；savepoint 回滚或清空 delta 的目标不会出现。`txn.Runtime` 使用它在事务成功后登记落盘对象；项目 Host 直接持有 `txn.Runtime`，业务使用 `runtime.Call(ctx, procedure)` 作为有状态入口。`runtime.txn.flushInterval` 控制生命周期内的定时 Flush，`runtime.txn.shutdownFlushTimeout` 控制服务退出时的最终 Redis 刷盘窗口。生命周期先用服务全局 `WaitGroupContext` 等待已经进入的业务任务结束，再使用不受运行 context 取消影响的限时 context 进行最终刷盘；它不等待 Fusion 延迟队列回写 Mongo。`runtime.txn.debug.checkCleanLockTargets` 仅用于临时、无历史 delta 的直接 `txn.Call`；Runtime 会显式允许此前未 Flush 的 delta。
@@ -115,6 +116,7 @@
 
 1. 保持 `txgame` 集成验证与生成 Store 行为同步：新增集合、指针、存储边界行为时，补业务侧代码示例及真实 Redis/Mongo 回归。
 2. 持续收紧 Redis/Mongo/Fusion adapter 的失败契约：未知脚本协议结果、路径类型冲突和路由错误必须显式返回错误，不能静默成功或做运行时数据修复。
+后续专项：以当前 `ProjectDeltas` benchmark 为基线，分别评估 Redis/Mongo/Fusion adapter 直接消费同步投影；迁移前必须保持 Store 清理、失败重试、Mongo 父子路径降级和 Runtime 容量预算语义，不能为了消除 DeltaSet 一次性改写全部边界。
 3. 持续清理不再作为主线的字符串路径变更代码、过渡接口和旧测试，只保留必要历史 benchmark 结论。
 4. RedisJSON/ReJSON 仅作为未来可选 backend 单独评估；SQL、消息队列等其他 backend 也不进入当前主线。
 5. 完善可选的 `tx/modules/txn`：`@transaction` 已生成 `LockKey()` 和 `LockTarget()`；受控字段、map、slice 与生成对象子 Store 已登记 undo，并覆盖事务失败后的回滚。事务锁使用分片的精确 Key 锁注册表：哈希分片只保护 `LockKey -> lockEntry` 元数据，完整 Key 仍拥有独立 channel 信号量；锁按稳定顺序获取，并由 `context.Context` 提供等待超时，超时必须释放已获取锁且不得进入回调。entry 在引用归零后从注册表移除并通过 `sync.Pool` 复用，四把以内的常见锁集内联持有，单锁入口不再分配预处理副本。2026-08-21 在本机 i9-9880H 的正式基准中，锁内核单 key 串行为 `247.6-255.9ns/op`、四 key 串行为 `965.6-995.2ns/op`、16 线程离散 key 为 `43.99-62.26ns/op`，三者均为零分配；共享同 key 仍严格串行。`Procedure.Locks`/`tx.Call` 已约束锁集和输出嵌套路径；`txn.Runtime` 已覆盖事务后登记、持锁 Flush、失败重试，以及先等待全局 `WaitGroupContext` 再执行的最终限时刷盘。2026-08-09 在本机 i9-9880H 的基准中，100 元素 map 的 snapshot diff 约为 `83.8-87.0µs/op`、`45.4KiB/op`，生成 Store 路径约为 `9.0-9.3µs/op`、`15.6KiB/op`；当前 Store 树、同步 Flush 与失败重试尚不需要不可变写入批次。只有真实 I/O 或锁边界要求把投影结果交给其他 goroutine 时，才以独立设计重新评估不可变批次。第一版不处理分布式锁、跨实例事务或持久化层 ACID。

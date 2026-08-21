@@ -1478,7 +1478,7 @@ RoleLog.Error("role save failed", "roleId", roleID, "err", err)
 ## 元数据与字段名
 
 `meta.TypeSpec` 使用 Go 字段名作为内部字段身份；`TypeSpec.Fields` 的 key、`idField`、`routeBy`、
-`LoadFields()` 入参和 `ChangeDocument()` 默认输出都使用 Go 字段名。`meta.Field` 同时保存
+`LoadFields()` 入参使用 Go 字段名；`ChangeDocument(kind)` 由调用方显式选择输出字段名体系。`meta.Field` 同时保存
 `JSONName`、`BSONName`、`MsgpackName`，运行时适配器在靠近具体使用边界时再选择命名体系。
 生成代码会额外提供两类名字入口：`GDRoleFieldName` 这类常量表示 Go 字段名，供部分读取和
 业务字段选择使用；`GDRoleResolveFieldName(field, kind)` 这类函数按 `go/json/bson/msgpack` 返回
@@ -1494,9 +1494,9 @@ BSON 名，Provider 下行当前选择 Msgpack 名。
 RoleId int64 `json:"roleId,omitempty" bson:"_id,omitempty" msgpack:"roleId,omitempty"`
 ```
 
-Store 内部变更文档使用 `RoleId`；完整 JSON 序列化使用 `roleId`；Redis 写入当前也选择 JSON
-名 `roleId`；Mongo filter/update 选择 BSON 名 `_id`；cmd Provider 下行 body 选择 Msgpack 名
-`roleId`。
+Store 内部只保存 `RoleId` 对应的 `FieldID`，不保存字符串文档；`ChangeDocument(change.FieldNameGo)`
+才输出 `RoleId`。完整 JSON 序列化使用 `roleId`；Redis 写入选择 JSON 名 `roleId`；Mongo
+filter/update 选择 BSON 名 `_id`；cmd Provider 下行 body 选择 Msgpack 名 `roleId`。
 
 示例：
 
@@ -1511,7 +1511,7 @@ data.GDRoleResolveFieldName(field, change.FieldNameMsgpack) // "roleId"
 
 ## DeltaSet
 
-生成 Store 的保存主路径使用 `DeltaSet`。`DeltaSet` 只表示一次保存周期内“哪些字段需要被落地或下发”，
+当前存储 adapter 的保存主路径使用 `DeltaSet`。`DeltaSet` 只表示一次保存周期内“哪些字段需要被落地”，
 不保存字段值；Redis、Mongo、Fusion 或下行 Provider 在输出边界通过生成 Store 读取当前 `GD*` 对象里的最终值。
 运行时不保留字符串路径变更集合；业务代码也不直接维护脏字段容器。
 例如输出文档里的 `"Items.1001.Quantity"` 或 `"Tags.0"` 只是边界层为了 Redis/Mongo/Provider 生成的可读路径；
@@ -1531,16 +1531,17 @@ role.SetRoleId(1001)
 role.SetName("alice")
 role.SetPower(470001)
 
-doc, err := role.ChangeDocument()
+doc, err := role.ChangeDocument(change.FieldNameGo)
 if err != nil {
 	return err
 }
 ```
 
-`ChangeDocument()` 与 `MsgpackChangeDocument()` 都返回 `(change.Document, error)`。它们会在边界读取当前
-`GD*` 值并验证每条 delta 路径；解析失败时必须停止发送或保存，不能把字段伪造成 `null`。
+`ChangeDocument(kind)` 返回 `(change.Document, error)`。它会在边界读取当前 `GD*` 值并验证每条 delta
+路径；解析失败时必须停止发送或保存，不能把字段伪造成 `null`。`kind` 必须显式选择
+`FieldNameGo`、`FieldNameJSON`、`FieldNameBSON` 或 `FieldNameMsgpack`。
 
-这时 `ChangeDocument()` 使用 Go 字段名输出后端无关文档：
+这时 `ChangeDocument(change.FieldNameGo)` 使用 Go 字段名输出后端无关文档：
 
 ```go
 change.Document{
@@ -1549,14 +1550,14 @@ change.Document{
 		"Name":   "alice",
 		"Power":  int64(470001),
 	},
-	Clear: map[string]struct{}{},
+	Delete: map[string]struct{}{},
 }
 ```
 
-如果用于 cmd 下行，生成代码会把 Store 当前 dirty 状态物化为 `DeltaSet`，再转成 Msgpack 字段名文档：
+如果用于 cmd 下行，生成代码会流式遍历 Store 当前 dirty 状态，直接构建 Msgpack 字段名文档，不会先创建中间 `DeltaSet`：
 
 ```go
-body, err := role.MsgpackChangeDocument()
+body, err := role.ChangeDocument(change.FieldNameMsgpack)
 if err != nil {
 	return err
 }
@@ -1565,12 +1566,25 @@ if err != nil {
 例如 `HeadImg` 的 tag 是 `msgpack:"hi,omitempty"`，那么下行变更文档里使用 `hi`，不是 Go 字段名
 `HeadImg`。
 
-`Deltas()` 返回已经按字段和集合位置规范化的 `change.DeltaSet`。生成 Store 内部使用固定字段槽、集合 key/index 状态和 dirty 子 Store 记录变更，不在每次 setter 时追加完整 DeltaEntry；真正落库由 `tx/storage` 的通用 `Create` / `Save` 执行。
+`Deltas()` 返回已经按字段和集合位置规范化的 `change.DeltaSet`。生成 Store 内部使用固定字段槽、集合 key/index 状态和 dirty 子 Store 记录变更，不在每次 setter 时追加完整 DeltaEntry；`ChangeDocument(kind)` 通过 `ProjectDeltas` 直接消费这些状态，真正落库仍由 `tx/storage` 的通用 `Create` / `Save` 执行。
+
+四套字段名使用同一个入口，区别只由参数表达：
+
+```go
+goDoc, _ := role.ChangeDocument(change.FieldNameGo)
+jsonDoc, _ := role.ChangeDocument(change.FieldNameJSON)
+bsonDoc, _ := role.ChangeDocument(change.FieldNameBSON)
+msgpackDoc, _ := role.ChangeDocument(change.FieldNameMsgpack)
+```
+
+JSON/BSON 命名文档只是高级投影结果，不是完整的 Redis patch 或 Mongo update document。正常持久化仍调用
+项目 facade，例如 `db.Save(role)`；Redis adapter 固定选择 JSON 名，Mongo adapter 固定选择 BSON 名，cmd
+Provider 固定选择 Msgpack 名。
 
 ### Store 树、共享引用与 viewStore
 
 `GD*Store` 不复制业务数据，而是绑定一个 `GD*` 引用并保存该路径上的字段选择和变更状态。父 Store
-按需持有直接指针、map key、slice index 的子 Store，最终在 `Deltas()` 或 `ChangeDocument()` 边界递归投影：
+按需持有直接指针、map key、slice index 的子 Store，最终在 `Deltas()` 或 `ChangeDocument(kind)` 边界递归投影：
 
 ```text
 GDRoleStore
@@ -1617,7 +1631,7 @@ viewItem, _ := view.ItemsStore().Get(1001)
 viewItem.TouchItemId()
 viewItem.TouchQuantity()
 
-body, err := view.MsgpackChangeDocument()
+body, err := view.ChangeDocument(change.FieldNameMsgpack)
 if err != nil {
 	return err
 }
@@ -1635,7 +1649,7 @@ viewDress.TouchExpire()
 
 role.DressStore().RemoveAt(0) // slice 结构已变化
 
-doc, err := view.ChangeDocument()
+doc, err := view.ChangeDocument(change.FieldNameGo)
 if err != nil {
 	return err
 }
@@ -1657,7 +1671,7 @@ role.SetPower(100)
 view := role.Store().View()
 view.TouchName()
 view.TouchPower()
-body, err := view.MsgpackChangeDocument() // 此刻物化，后续 role 修改不会改变 body。
+body, err := view.ChangeDocument(change.FieldNameMsgpack) // 此刻物化，后续 role 修改不会改变 body。
 if err != nil {
 	return err
 }
@@ -1665,6 +1679,56 @@ if err != nil {
 role.SetPower(200)
 send(body)
 ```
+
+### 按帧合并 viewStore
+
+战场、沙盘等逻辑可能在一帧内产生多批变更，但只希望广播一次。生成 Store 可以合并同一 `GD*` 上的脏元数据，不需要把每批 view 展开为 DeltaSet 后再 Compact：
+
+```go
+role := data.NewGDRole()
+role.Items = map[int32]*data.GDItem{
+	1001: {ItemId: 1001, Quantity: 1},
+	1002: {ItemId: 1002, Quantity: 1},
+}
+
+// 第一批修改。
+first, _ := role.ItemsStore().Get(1001)
+first.SetQuantity(2)
+frame := role.Store().View()
+role.ClearChanges()
+
+// 同一帧内的后续修改。
+first, _ = role.ItemsStore().Get(1001)
+first.SetQuantity(3) // 同路径后写覆盖前写
+second, _ := role.ItemsStore().Get(1002)
+second.SetQuantity(9)
+next := role.Store().View()
+role.ClearChanges()
+
+if err := frame.MergeChanges(next); err != nil {
+	return err
+}
+body, err := frame.ChangeDocument(change.FieldNameMsgpack)
+if err != nil {
+	return err
+}
+// body 只包含 Items.1001.Quantity=3 和 Items.1002.Quantity=9。
+```
+
+`MergeChanges` 只接受引用同一份 `GD*` 数据的 Store；不同对象会返回 `change.ErrDeltaValueMismatch`。如果后续批次整体 `Replace` 或 `Clear` 了 `Items`，该父字段会吸收此前的 `Items.*` 子路径。合并后的 view 仍读取当前 `GD*`，适合在同一 Actor/实体锁定区间内累计；跨协程排队前应立即调用 `ChangeDocument(kind)` 物化，不要把 view 本身放入异步队列。
+
+框架扩展需要直接消费结构化路径时，可以使用高级接口：
+
+```go
+err := role.Store().ProjectDeltas(change.DeltaVisitorFunc(
+	func(path change.DeltaPath, op change.DeltaOp) error {
+		// 同步处理；不要在回调外假定当前 GD 值保持不变。
+		return nil
+	},
+))
+```
+
+普通业务不需要调用 `ProjectDeltas` 或 `Deltas()`；优先使用生成文档、cmd Provider 和项目 `db.Save(role)` facade。
 
 ### 集合递归深度预算
 
@@ -1803,7 +1867,7 @@ view := role.NewViewStore()
 view.TouchName()
 view.TouchPower()
 
-body, err := view.MsgpackChangeDocument()
+body, err := view.ChangeDocument(change.FieldNameMsgpack)
 if err != nil {
 	return err
 }
@@ -1819,7 +1883,7 @@ role.ClearChanges()
 
 task := role.DailyTaskStore()
 task.SetActive(2)
-// ChangeDocument(): Set["DailyTask.Active"] = int64(2)
+// ChangeDocument(change.FieldNameGo): Set["DailyTask.Active"] = int64(2)
 ```
 
 `SetDailyTask` 覆盖或 `ClearDailyTask` 清空字段时，父 Store 会替换或移除自己的子 Store 节点。旧对象没有父回调，因此旧对象后续的独立 Store 修改不会污染角色 Store。直接写 `role.DailyTask` 属于快照 diff 或手动 `TouchDailyTask()` 路径，不会自动产生嵌套 Store 变更。
@@ -2181,7 +2245,7 @@ if err := storage.Save(ctx, fusionStore, store); err != nil {
 role.ClearItems()
 role.ClearDress()
 
-doc, err := role.ChangeDocument()
+doc, err := role.ChangeDocument(change.FieldNameGo)
 if err != nil {
 	return err
 }

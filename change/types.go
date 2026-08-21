@@ -20,6 +20,16 @@ const (
 	FieldNameMsgpack FieldNameKind = "msgpack"
 )
 
+// Valid 判断字段名体系是否为运行时支持的固定集合。
+func (k FieldNameKind) Valid() bool {
+	switch k {
+	case FieldNameGo, FieldNameJSON, FieldNameBSON, FieldNameMsgpack:
+		return true
+	default:
+		return false
+	}
+}
+
 // FieldNameResolver 按命名体系把 FieldID 解析为字段名。
 //
 // FieldID 只在单个生成类型内部稳定，不能放进全局字段名表。生成代码应该

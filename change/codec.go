@@ -27,11 +27,97 @@ func (f DeltaValueResolverFunc) DeltaValue(path DeltaPath) (any, bool) {
 	return f(path)
 }
 
+// DocumentBuilder 把同步投影的 Delta 直接写入后端无关文档。
+// 生成 Store 保证输入已按自身脏状态收敛，因此这里不再构造或压缩 DeltaSet。
+type DocumentBuilder struct {
+	doc      Document
+	resolver FieldNameResolver
+	kind     FieldNameKind
+	values   DeltaValueResolver
+}
+
+// NewDocumentBuilder 创建一个流式变更文档构建器。
+func NewDocumentBuilder(resolver FieldNameResolver, kind FieldNameKind, values DeltaValueResolver) *DocumentBuilder {
+	return &DocumentBuilder{
+		doc: Document{
+			Set:    map[string]any{},
+			Delete: map[string]struct{}{},
+		},
+		resolver: resolver,
+		kind:     kind,
+		values:   values,
+	}
+}
+
+// ProjectDocument 按指定字段命名体系把规范化脏状态投影为变更文档。
+func ProjectDocument(projector DeltaProjector, resolver FieldNameResolver, kind FieldNameKind, values DeltaValueResolver) (Document, error) {
+	if projector == nil {
+		return Document{}, ErrNilDeltaProjector
+	}
+	if !kind.Valid() {
+		return Document{}, fmt.Errorf("change: unknown field name kind %q", kind)
+	}
+	builder := NewDocumentBuilder(resolver, kind, values)
+	if err := projector.ProjectDeltas(builder); err != nil {
+		return Document{}, err
+	}
+	return builder.Document(), nil
+}
+
+// VisitDelta 实现 DeltaVisitor。
+func (b *DocumentBuilder) VisitDelta(path DeltaPath, op DeltaOp) error {
+	if b == nil {
+		return ErrNilDeltaVisitor
+	}
+	if !op.Valid() {
+		return fmt.Errorf("change: unknown delta operation %d", op)
+	}
+	display := path.FullPath(b.resolver, b.kind)
+	if len(display) == 0 {
+		return fmt.Errorf("change: cannot resolve %s field path for delta %#v", b.kind, path)
+	}
+	name := display.String()
+	switch op {
+	case OpDelete:
+		delete(b.doc.Set, name)
+		b.doc.Delete[name] = struct{}{}
+	case OpClear:
+		value, err := emptyDeltaValueFor(b.values, path, display)
+		if err != nil {
+			return err
+		}
+		delete(b.doc.Delete, name)
+		b.doc.Set[name] = value
+	case OpSet, OpReplace:
+		if b.values == nil {
+			return fmt.Errorf("change: cannot resolve current value for path %s", display)
+		}
+		value, ok := b.values.DeltaValue(path)
+		if !ok {
+			return fmt.Errorf("change: cannot resolve current value for path %s", display)
+		}
+		delete(b.doc.Delete, name)
+		b.doc.Set[name] = value
+	}
+	return nil
+}
+
+// Document 返回已同步构建的文档。调用方在继续 VisitDelta 前不应修改其 map。
+func (b *DocumentBuilder) Document() Document {
+	if b == nil {
+		return Document{}
+	}
+	return b.doc
+}
+
 // DocumentWithResolver 把 DeltaSet 转成指定命名体系下的 Set/Delete 文档。
 //
 // 每个 Set 或 Replace Delta 都必须能从 values 读取当前值。路径或值无法解析时
 // 返回错误，避免把未知状态伪造成 null 字段。
 func (ds DeltaSet) DocumentWithResolver(resolver FieldNameResolver, kind FieldNameKind, values DeltaValueResolver) (Document, error) {
+	if !kind.Valid() {
+		return Document{}, fmt.Errorf("change: unknown field name kind %q", kind)
+	}
 	if err := ds.ValidateOps(); err != nil {
 		return Document{}, err
 	}

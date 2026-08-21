@@ -265,13 +265,13 @@ GDRoleStore
                   +-- Quantity
 ```
 
-叶子 Store 只保存自己的局部字段状态；集合 Store 保存发生变化的 key/index 及对应子 Store，父级通过 `notifyDirty` 只记录“这个分支需要投影”。调用根 Store 的 `Deltas()` 时，框架才递归访问 dirty 分支、追加集合 key/index，并得到：
+叶子 Store 只保存自己的局部字段状态；集合 Store 保存发生变化的 key/index 及对应子 Store，父级通过 `notifyDirty` 只记录“这个分支需要投影”。调用根 Store 的 `ProjectDeltas(visitor)` 或兼容入口 `Deltas()` 时，框架才递归访问 dirty 分支、追加集合 key/index，并得到：
 
 ```text
 Items[1001].Quantity
 ```
 
-因此 Store 树确实分层保存局部变更状态，但不会在每次修改时遍历整棵树，也不会让根 Store 长期保存一份已经展开的全路径副本。所谓“冒泡”是 dirty 通知：子节点通知父集合对应 key/index 已变更；真正的路径拼接发生在 `Deltas()` 或 `ChangeDocument()` 投影边界。根 Store 只递归访问 dirty 索引，使用 `JoinDeltaPathLimited` 组合路径。生成 Store 的状态在记录时已经按字段或 key 唯一化，正常投影不再额外执行通用 `Compact()`。父子关联属于 Store 路径关系，不代表 GD 对象只能有一个父节点。
+因此 Store 树确实分层保存局部变更状态，但不会在每次修改时遍历整棵树，也不会让根 Store 长期保存一份已经展开的全路径副本。所谓“冒泡”是 dirty 通知：子节点通知父集合对应 key/index 已变更；真正的路径拼接发生在输出边界。根 Store 只递归访问 dirty 索引，使用 `JoinDeltaPathLimited` 组合路径。生成 Store 的状态在记录时已经按字段或 key 唯一化，正常投影不再额外执行通用 `Compact()`。父子关联属于 Store 路径关系，不代表 GD 对象只能有一个父节点。
 
 ### 共享指针与按路径追踪
 
@@ -293,16 +293,57 @@ roleB.Items[9] ----+
 - viewStore 的 Delta 只用于生成一次下行投影；允许读取以及 `Touch/UnTouch` 调整字段选择。
 - viewStore 禁止 `Set/Clear/Inc`、集合增删改等业务数据修改，也禁止持久化。生成代码会在误用修改 API 时立即暴露编程错误。
 - `store.View()` 复制变更结构，不复制完整 GD 数据。
+- `view.MergeChanges(next)` 只合并同一 GD 引用上的变更结构，用于帧内累计；它不复制或冻结业务值。
 
 例如，业务可以从主 Store 复制当前变更，再补充一个只用于广播的字段：
 
 ```go
 view := role.Store().View()
 view.TouchPower()
-body := view.ChangeDocument()
+body := view.ChangeDocument(change.FieldNameMsgpack)
 ```
 
-这里 `TouchPower` 只改变 view 的字段选择，不修改 `role.Power`，也不污染主 Store。viewStore 仍然从当前 GD 读取值，因此创建 view 后应立即物化 `ChangedBody()` 或 `ChangeDocument()`。如果主 Store 随后改变 map key、slice 长度或对象归属，旧 view 的细粒度路径可能已经无法稳定解析；框架会在可以证明正确时降级为祖先整字段投影，不能伪造旧索引路径。
+这里 `TouchPower` 只改变 view 的字段选择，不修改 `role.Power`，也不污染主 Store。viewStore 仍然从当前 GD 读取值，因此创建 view 后应立即物化 `ChangedBody()` 或 `ChangeDocument(kind)`。如果主 Store 随后改变 map key、slice 长度或对象归属，旧 view 的细粒度路径可能已经无法稳定解析；框架会在可以证明正确时降级为祖先整字段投影，不能伪造旧索引路径。
+
+### 同步投影与帧内合并
+
+生成 Store 提供两个不同成本的输出入口：
+
+- `ProjectDeltas(visitor)` 同步逐条访问规范化路径，不创建 `[]DeltaEntry`。`ChangeDocument(kind)` 使用该入口直接构建文档，Go/JSON/BSON/Msgpack 字段名由 `kind` 显式选择。
+- `Deltas()` 使用 `DeltaCollector` 把同一投影物化为 `DeltaSet`，供当前存储 adapter、Runtime 容量检查和高级调用方使用。
+
+字段名体系与使用边界保持正交：
+
+```text
+Store dirty state (FieldID + PathKey + DeltaOp)
+├── ChangeDocument(FieldNameGo/JSON/BSON/Msgpack)  # 高级通用投影
+├── cmd Provider                                    # 固定选择 Msgpack
+├── Redis adapter                                   # 固定选择 JSON，并应用 Redis patch 规则
+└── Mongo adapter                                   # 固定选择 BSON，并应用 Mongo update 规则
+```
+
+`ChangeDocument(FieldNameJSON/BSON)` 只改变通用文档的路径名称，不会执行 Redis subKey 分组、Mongo
+`_id` 保护或 unsafe key 降级。存储调用不能用它绕过 adapter。
+
+Battlefield 一类按帧广播的对象不应把每次 view 先展开成 DeltaSet 再做通用 Compact。它可以让生成 Store 直接合并脏元数据：
+
+```go
+frame := role.Store().View()
+role.ClearChanges()
+
+// 同一帧内后续逻辑继续修改相同 role。
+item, _ := role.ItemsStore().Get(1001)
+item.SetQuantity(7)
+next := role.Store().View()
+role.ClearChanges()
+
+if err := frame.MergeChanges(next); err != nil {
+    return err
+}
+body, err := frame.ChangeDocument(change.FieldNameMsgpack)
+```
+
+合并规则由生成类型完成：同字段或同 key 的后写覆盖先写，后续父字段 Replace/Clear/Delete 会清除此前子路径，互不相交的字段保留。两份 Store 必须引用同一个 GD 对象；否则路径虽然相同，最终值来源不同，方法返回 `ErrDeltaValueMismatch`。该机制适合在实体锁或 Actor 单线程执行区间内累计；如果文档要跨协程排队，必须先物化为拥有独立 map 的 `change.Document`，不能把仍读取可变 GD 的 view 直接交给后台协程。
 
 ### 两种变更模式
 
@@ -337,7 +378,7 @@ err := role.SaveChange(...)
 
 ### 生成 Store 的常驻状态
 
-`DeltaSet` 是跨模块的边界协议，不是生成 Store 的常驻内存结构。txgen 已经知道每个类型的字段数量、字段 ID、集合类型和子对象类型，因此生成代码直接保存规范化状态：
+`DeltaSet` 是当前存储 adapter 使用的边界协议，不是生成 Store 的常驻内存结构。txgen 已经知道每个类型的字段数量、字段 ID、集合类型和子对象类型，因此生成代码直接保存规范化状态：
 
 ```go
 type GDRoleStore struct {
@@ -368,9 +409,9 @@ role.ItemsStore().Set(1001, second)
 role.ItemsStore().Set(1001, final)
 ```
 
-常驻状态始终只有 `ops[1001] = OpReplace`。只有调用 `Deltas()`、`ChangeDocument()` 或持久化 API 时，才物化一条 `Items[1001] Replace`。
+常驻状态始终只有 `ops[1001] = OpReplace`。调用 `ProjectDeltas` 或 `ChangeDocument(kind)` 时会同步访问一条 `Items[1001] Replace`；只有调用 `Deltas()` 或当前持久化 API 时才物化对应 `DeltaEntry`。
 
-Snapshot Diff 也先构造同一种生成 Store 状态，再走统一投影边界。这样两种变更模式共享最终 `DeltaSet` 协议，但高频 setter 不再为固定大小的 `DeltaEntry` 做重复 append、扫描和复制。
+Snapshot Diff 也先构造同一种生成 Store 状态，再走统一投影边界。这样两种变更模式共享字段槽、集合状态和子 Store 语义；下行文档可以直接流式消费，当前持久化 adapter 仍可收集为 DeltaSet。
 
 ### GD 运行时 sidecar
 
@@ -568,7 +609,7 @@ Slice：
 - `DeltaPath`：200 B。
 - `DeltaEntry`：208 B。
 
-公开的通用文档转换 API 不取得调用方 DeltaSet 的修改所有权，因此仍需要 Clone 后 Compact。256 条 Delta 的 Clone 会产生约 52 KiB backing array；这项成本发生在通用边界，不再发生于生成 Store 的每次 setter。任何布局优化必须同时衡量：
+公开的通用 `DeltaSet.DocumentWithResolver` 不取得调用方切片的修改所有权，因此仍需要 Clone 后 Compact。256 条 Delta 的 Clone 会产生约 52 KiB backing array。生成 Store 的 `ChangeDocument(kind)` 不再经过该路径，而是通过 `ProjectDocument` 同步消费 `ProjectDeltas`。任何布局优化必须同时衡量：
 
 - Entry 大小。
 - append 和复制频率。
@@ -587,6 +628,16 @@ Slice：
 | 同一 key 重复修改 | 约 593-664 ns/op | 约 488-522 ns/op | 热路径约快 17%-25% |
 
 这些数字用于证明本次物理模型选择，不是跨机器性能承诺。基准仍保留在 txgen 的 `BenchmarkGeneratedStoreDirtyRuntime`，模板或 runtime 改动后必须复跑。
+
+2026-08-21 使用 Go 1.26.5 继续比较 DeltaSet 物化与生成式同步投影，测试对象均为 1024 个不同 map key：
+
+| 场景 | DeltaSet 路径 | 生成式投影/合并 | 结果 |
+| --- | ---: | ---: | --- |
+| 只遍历脏路径 | 约 0.219-0.225 ms/op，693 KB/op，13 allocs/op | 约 0.083-0.087 ms/op，0 B/op，0 allocs/op | 投影耗时约降低 60%，消除中间切片分配 |
+| 生成 `change.Document` | 约 0.71-0.74 ms/op，1.16 MB/op，3015 allocs/op | 约 0.40-0.44 ms/op，212 KB/op，2996 allocs/op | 省去约 950 KB 中间 Delta/Clone；剩余分配来自最终字符串路径和文档 map |
+| 16 批 x 64 key 帧合并 | 约 0.46-0.52 ms/op，1.16 MB/op，140 allocs/op | 约 0.17-0.18 ms/op，37 KB/op，17 allocs/op | 生成 Store 直接合并脏元数据，最后只投影一次 |
+
+这组结果决定第一阶段保留 `ProjectDeltas + MergeChanges`：下行文档立即使用流式路径；存储 adapter 暂时继续接收 DeltaSet，待 Redis/Mongo/Fusion 分别补齐等价性和真实 I/O benchmark 后再迁移，不能一次性扩大正确性风险。
 
 同日继续把生成 GD 的三个常驻运行时字段收敛为一个懒分配 sidecar。使用 txgame 的真实生成结构与参考工程做 `unsafe.Sizeof` 对比：
 

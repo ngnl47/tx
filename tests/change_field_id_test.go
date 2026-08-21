@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -24,6 +25,17 @@ func (r testDeltaValueResolver) DeltaValue(path change.DeltaPath) (any, bool) {
 }
 
 type testNestedFieldNameResolver struct{}
+
+type testDeltaProjector []change.DeltaEntry
+
+func (p testDeltaProjector) ProjectDeltas(visitor change.DeltaVisitor) error {
+	for _, delta := range p {
+		if err := visitor.VisitDelta(delta.Path, delta.Op); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 func (testNestedFieldNameResolver) FieldName(field change.FieldID, kind change.FieldNameKind) string {
 	if field == 2 {
@@ -86,6 +98,41 @@ func TestDeltaPathFullPathCanResolveNestedTypeFields(t *testing.T) {
 
 	if got := path.FullPath(testNestedFieldNameResolver{}, change.FieldNameGo).String(); got != "items.1001.quantity" {
 		t.Fatalf("nested path = %q, want items.1001.quantity", got)
+	}
+}
+
+func TestProjectDocumentUsesRequestedFieldNameKind(t *testing.T) {
+	path := deltaPath(fieldNode(1))
+	projector := testDeltaProjector{{Path: path, Op: change.OpSet}}
+	resolver := testFieldNameResolver{
+		change.FieldNameGo:      {1: "HeadImg"},
+		change.FieldNameMsgpack: {1: "hi"},
+	}
+	values := testDeltaValueResolver{1: "avatar"}
+
+	doc, err := change.ProjectDocument(projector, resolver, change.FieldNameMsgpack, values)
+	if err != nil {
+		t.Fatalf("ProjectDocument returned error: %v", err)
+	}
+	if got := doc.Set["hi"]; got != "avatar" {
+		t.Fatalf("msgpack field hi = %#v, want avatar; doc=%#v", got, doc)
+	}
+	if _, ok := doc.Set["HeadImg"]; ok {
+		t.Fatalf("ProjectDocument used Go field name: %#v", doc)
+	}
+}
+
+func TestProjectDocumentRejectsNilProjector(t *testing.T) {
+	_, err := change.ProjectDocument(nil, testFieldNameResolver{}, change.FieldNameGo, nil)
+	if !errors.Is(err, change.ErrNilDeltaProjector) {
+		t.Fatalf("ProjectDocument error = %v, want ErrNilDeltaProjector", err)
+	}
+}
+
+func TestProjectDocumentRejectsUnknownFieldNameKind(t *testing.T) {
+	_, err := change.ProjectDocument(testDeltaProjector{}, testFieldNameResolver{}, change.FieldNameKind("unknown"), nil)
+	if err == nil || !strings.Contains(err.Error(), "unknown field name kind") {
+		t.Fatalf("ProjectDocument error = %v, want unknown field name kind", err)
 	}
 }
 
