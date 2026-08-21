@@ -17,7 +17,7 @@ func TestLockTableReusedEntryKeepsKeysIndependent(t *testing.T) {
 	if err := acquireLock(ctx, firstKey, first.entry); err != nil {
 		t.Fatalf("acquire first lock: %v", err)
 	}
-	first.entry.token <- struct{}{}
+	first.entry.mu.Unlock()
 	table.release(first)
 
 	second := table.reserve(secondKey)
@@ -30,9 +30,9 @@ func TestLockTableReusedEntryKeepsKeysIndependent(t *testing.T) {
 		t.Fatalf("reacquire first lock while second is held: %v", err)
 	}
 
-	firstAgain.entry.token <- struct{}{}
+	firstAgain.entry.mu.Unlock()
 	table.release(firstAgain)
-	second.entry.token <- struct{}{}
+	second.entry.mu.Unlock()
 	table.release(second)
 	assertLockTableEmpty(t, &table)
 }
@@ -53,7 +53,7 @@ func TestLockTableCanceledWaiterLeavesReusableEntry(t *testing.T) {
 	}
 	table.release(waiter)
 
-	holder.entry.token <- struct{}{}
+	holder.entry.mu.Unlock()
 	table.release(holder)
 	assertLockTableEmpty(t, &table)
 
@@ -61,7 +61,7 @@ func TestLockTableCanceledWaiterLeavesReusableEntry(t *testing.T) {
 	if err := acquireLock(context.Background(), key, reused.entry); err != nil {
 		t.Fatalf("acquire reused lock: %v", err)
 	}
-	reused.entry.token <- struct{}{}
+	reused.entry.mu.Unlock()
 	table.release(reused)
 	assertLockTableEmpty(t, &table)
 }

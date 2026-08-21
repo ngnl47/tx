@@ -11,12 +11,12 @@ import (
 
 func TestRedisBuildDocumentPatchesWithDeltasUsesJSONNames(t *testing.T) {
 	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet},
-		{Path: deltaPath(fieldNode(deltaFieldItems)), Kind: change.DeltaClear},
+		{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet},
+		{Path: deltaPath(fieldNode(deltaFieldItems)), Op: change.OpClear},
 	}
 	resolver := testFieldNameResolver{
-		change.NameBackendGo:   {deltaFieldName: "Name", deltaFieldItems: "Items"},
-		change.NameBackendJSON: {deltaFieldName: "roleName", deltaFieldItems: "items"},
+		change.FieldNameGo:   {deltaFieldName: "Name", deltaFieldItems: "Items"},
+		change.FieldNameJSON: {deltaFieldName: "roleName", deltaFieldItems: "items"},
 	}
 
 	patches, err := txredis.BuildDocumentPatchesWithDeltas(redisPatchSpec(), deltas, resolver, testDeltaValueResolver{deltaFieldName: "alice"})
@@ -36,10 +36,10 @@ func TestRedisBuildDocumentPatchesWithDeltasUsesJSONNames(t *testing.T) {
 }
 
 func TestRedisBuildDocumentPatchesWithDeltasRejectsMissingCurrentValue(t *testing.T) {
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
 	resolver := testFieldNameResolver{
-		change.NameBackendGo:   {deltaFieldName: "Name"},
-		change.NameBackendJSON: {deltaFieldName: "name"},
+		change.FieldNameGo:   {deltaFieldName: "Name"},
+		change.FieldNameJSON: {deltaFieldName: "name"},
 	}
 	_, err := txredis.BuildDocumentPatchesWithDeltas(redisPatchSpec(), deltas, resolver, nil)
 	if err == nil || !strings.Contains(err.Error(), "name") {
@@ -49,10 +49,10 @@ func TestRedisBuildDocumentPatchesWithDeltasRejectsMissingCurrentValue(t *testin
 
 func TestRedisBuildDocumentPatchesWithDeltasRejectsUnresolvedFieldPath(t *testing.T) {
 	const unknownField change.FieldID = 99
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(unknownField)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(unknownField)), Op: change.OpSet}}
 	resolver := testFieldNameResolver{
-		change.NameBackendGo:   {deltaFieldName: "Name"},
-		change.NameBackendJSON: {deltaFieldName: "name"},
+		change.FieldNameGo:   {deltaFieldName: "Name"},
+		change.FieldNameJSON: {deltaFieldName: "name"},
 	}
 
 	_, err := txredis.BuildDocumentPatchesWithDeltas(redisPatchSpec(), deltas, resolver, testDeltaValueResolver{unknownField: "alice"})
@@ -61,40 +61,40 @@ func TestRedisBuildDocumentPatchesWithDeltasRejectsUnresolvedFieldPath(t *testin
 	}
 }
 
-func TestRedisBuildDocumentPatchesWithDeltasRejectsUnknownDeltaKind(t *testing.T) {
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKind(99)}}
+func TestRedisBuildDocumentPatchesWithDeltasRejectsUnknownDeltaOp(t *testing.T) {
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.DeltaOp(99)}}
 	resolver := testFieldNameResolver{
-		change.NameBackendGo:   {deltaFieldName: "Name"},
-		change.NameBackendJSON: {deltaFieldName: "name"},
+		change.FieldNameGo:   {deltaFieldName: "Name"},
+		change.FieldNameJSON: {deltaFieldName: "name"},
 	}
 
 	_, err := txredis.BuildDocumentPatchesWithDeltas(redisPatchSpec(), deltas, resolver, testDeltaValueResolver{deltaFieldName: "alice"})
-	if err == nil || !strings.Contains(err.Error(), "unknown delta kind") {
-		t.Fatalf("BuildDocumentPatchesWithDeltas error = %v, want unknown delta kind error", err)
+	if err == nil || !strings.Contains(err.Error(), "unknown delta operation") {
+		t.Fatalf("BuildDocumentPatchesWithDeltas error = %v, want unknown delta operation error", err)
 	}
 }
 
 func TestRedisBuildDocumentPatchesWithDeltasRejectsUnknownKindForIgnoredField(t *testing.T) {
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKind(99)}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.DeltaOp(99)}}
 	resolver := testFieldNameResolver{
-		change.NameBackendGo:   {deltaFieldName: "Name"},
-		change.NameBackendJSON: {deltaFieldName: "name"},
+		change.FieldNameGo:   {deltaFieldName: "Name"},
+		change.FieldNameJSON: {deltaFieldName: "name"},
 	}
 	spec := meta.TypeSpec{Fields: map[string]meta.FieldSpec{
 		"Name": {Redis: &meta.RedisFieldSpec{Ignore: true}},
 	}}
 
 	_, err := txredis.BuildDocumentPatchesWithDeltas(spec, deltas, resolver, testDeltaValueResolver{deltaFieldName: "alice"})
-	if err == nil || !strings.Contains(err.Error(), "unknown delta kind") {
-		t.Fatalf("BuildDocumentPatchesWithDeltas error = %v, want unknown delta kind error", err)
+	if err == nil || !strings.Contains(err.Error(), "unknown delta operation") {
+		t.Fatalf("BuildDocumentPatchesWithDeltas error = %v, want unknown delta operation error", err)
 	}
 }
 
 func TestRedisBuildDocumentPatchesWithDeltasAllowsResolvedNilValue(t *testing.T) {
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
 	resolver := testFieldNameResolver{
-		change.NameBackendGo:   {deltaFieldName: "Name"},
-		change.NameBackendJSON: {deltaFieldName: "name"},
+		change.FieldNameGo:   {deltaFieldName: "Name"},
+		change.FieldNameJSON: {deltaFieldName: "name"},
 	}
 	patches, err := txredis.BuildDocumentPatchesWithDeltas(redisPatchSpec(), deltas, resolver, change.DeltaValueResolverFunc(func(change.DeltaPath) (any, bool) {
 		return nil, true
@@ -109,12 +109,12 @@ func TestRedisBuildDocumentPatchesWithDeltasAllowsResolvedNilValue(t *testing.T)
 
 func TestRedisBuildDocumentPatchesWithDeltasDoesNotMutateSource(t *testing.T) {
 	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet},
-		{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet},
+		{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet},
+		{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet},
 	}
 	resolver := testFieldNameResolver{
-		change.NameBackendGo:   {deltaFieldName: "Name"},
-		change.NameBackendJSON: {deltaFieldName: "name"},
+		change.FieldNameGo:   {deltaFieldName: "Name"},
+		change.FieldNameJSON: {deltaFieldName: "name"},
 	}
 	if _, err := txredis.BuildDocumentPatchesWithDeltas(redisPatchSpec(), deltas, resolver, testDeltaValueResolver{deltaFieldName: "alice"}); err != nil {
 		t.Fatalf("BuildDocumentPatchesWithDeltas returned error: %v", err)

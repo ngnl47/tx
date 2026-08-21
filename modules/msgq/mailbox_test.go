@@ -8,7 +8,7 @@ import (
 )
 
 func TestBroadcastTopicSharesImmutablePayload(t *testing.T) {
-	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: &testSessionStore{}, MaxBacklog: 4})
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: &testSessionStore{}, MaxBacklogMessages: 4})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -23,7 +23,7 @@ func TestBroadcastTopicSharesImmutablePayload(t *testing.T) {
 		}
 	}
 	payload := []byte("already-encoded-bon")
-	if _, err := server.BroadcastTopic(context.Background(), BroadcastTopicRequest{Topic: "guild:1", Message: payload}); err != nil {
+	if _, err := server.BroadcastTopic(context.Background(), BroadcastTopicRequest{Topic: "guild:1", Payload: payload}); err != nil {
 		t.Fatalf("broadcast topic: %v", err)
 	}
 	firstSession, _ := server.lookup(first.RoleID)
@@ -32,8 +32,8 @@ func TestBroadcastTopicSharesImmutablePayload(t *testing.T) {
 	defer firstSession.mu.Unlock()
 	secondSession.mu.Lock()
 	defer secondSession.mu.Unlock()
-	firstPayload := firstSession.outbound.entries[firstSession.outbound.head].message
-	secondPayload := secondSession.outbound.entries[secondSession.outbound.head].message
+	firstPayload := firstSession.outbound.entries[firstSession.outbound.head].payload
+	secondPayload := secondSession.outbound.entries[secondSession.outbound.head].payload
 	if &firstPayload[0] != &payload[0] || &secondPayload[0] != &payload[0] {
 		t.Fatal("broadcast payload was copied instead of shared")
 	}
@@ -45,7 +45,7 @@ func TestOutboundQueueReleasesAcknowledgedStorage(t *testing.T) {
 	for range 128 {
 		queue.enqueue(payload)
 	}
-	if &queue.entries[0].message[0] != &payload[0] {
+	if &queue.entries[0].payload[0] != &payload[0] {
 		t.Fatal("queue payload was copied")
 	}
 	entries := queue.dequeueSome(96)
@@ -72,10 +72,10 @@ func TestOutboundQueueReleasesAcknowledgedStorage(t *testing.T) {
 
 func TestSlowSessionWithoutAcknowledgementHitsByteLimit(t *testing.T) {
 	server, err := NewServer(ServerOptions{
-		InstanceID:      "msgq-1",
-		Store:           &testSessionStore{},
-		MaxBacklog:      4,
-		MaxBacklogBytes: 8,
+		InstanceID:         "msgq-1",
+		Store:              &testSessionStore{},
+		MaxBacklogMessages: 4,
+		MaxBacklogBytes:    8,
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -85,14 +85,14 @@ func TestSlowSessionWithoutAcknowledgementHitsByteLimit(t *testing.T) {
 		t.Fatalf("init: %v", err)
 	}
 	for _, message := range [][]byte{[]byte("one!"), []byte("two!")} {
-		if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Message: message}); err != nil {
+		if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Payload: message}); err != nil {
 			t.Fatalf("publish %q: %v", message, err)
 		}
 		if _, err := server.Fetch(context.Background(), FetchRequest{Header: header}); err != nil {
 			t.Fatalf("fetch %q: %v", message, err)
 		}
 	}
-	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Message: []byte("more")}); !errors.Is(err, ErrOutboundOverflow) {
+	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Payload: []byte("more")}); !errors.Is(err, ErrOutboundOverflow) {
 		t.Fatalf("publish after unacknowledged backlog error = %v, want %v", err, ErrOutboundOverflow)
 	}
 	if server.SessionCount() != 0 {
@@ -102,10 +102,10 @@ func TestSlowSessionWithoutAcknowledgementHitsByteLimit(t *testing.T) {
 
 func TestAcknowledgementReleasesOutboundByteBudget(t *testing.T) {
 	server, err := NewServer(ServerOptions{
-		InstanceID:      "msgq-1",
-		Store:           &testSessionStore{},
-		MaxBacklog:      2,
-		MaxBacklogBytes: 4,
+		InstanceID:         "msgq-1",
+		Store:              &testSessionStore{},
+		MaxBacklogMessages: 2,
+		MaxBacklogBytes:    4,
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -114,7 +114,7 @@ func TestAcknowledgementReleasesOutboundByteBudget(t *testing.T) {
 	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Message: []byte("full")}); err != nil {
+	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Payload: []byte("full")}); err != nil {
 		t.Fatalf("publish first: %v", err)
 	}
 	message, err := server.Fetch(context.Background(), FetchRequest{Header: header})
@@ -124,17 +124,17 @@ func TestAcknowledgementReleasesOutboundByteBudget(t *testing.T) {
 	if err := server.Confirm(context.Background(), ConfirmRequest{Header: header, Ack: message.Seq}); err != nil {
 		t.Fatalf("confirm first: %v", err)
 	}
-	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Message: []byte("next")}); err != nil {
+	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Payload: []byte("next")}); err != nil {
 		t.Fatalf("publish after acknowledgement: %v", err)
 	}
 }
 
 func TestSlowSessionExpiresDespiteClientActivity(t *testing.T) {
 	server, err := NewServer(ServerOptions{
-		InstanceID:     "msgq-1",
-		Store:          &testSessionStore{},
-		MaxBacklog:     2,
-		OfflineTimeout: time.Minute,
+		InstanceID:         "msgq-1",
+		Store:              &testSessionStore{},
+		MaxBacklogMessages: 2,
+		OfflineTimeout:     time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -143,7 +143,7 @@ func TestSlowSessionExpiresDespiteClientActivity(t *testing.T) {
 	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Message: []byte("pending")}); err != nil {
+	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Payload: []byte("pending")}); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	if _, err := server.Fetch(context.Background(), FetchRequest{Header: header}); err != nil {

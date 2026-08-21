@@ -301,7 +301,7 @@ func (x *RecResponse) GetAck() int64 {
 type PubRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Header        *SessionHeader         `protobuf:"bytes,1,opt,name=header,proto3" json:"header,omitempty"`
-	Message       []byte                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	Payload       []byte                 `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -343,9 +343,9 @@ func (x *PubRequest) GetHeader() *SessionHeader {
 	return nil
 }
 
-func (x *PubRequest) GetMessage() []byte {
+func (x *PubRequest) GetPayload() []byte {
 	if x != nil {
-		return x.Message
+		return x.Payload
 	}
 	return nil
 }
@@ -441,7 +441,7 @@ func (x *FetchRequest) GetHeader() *SessionHeader {
 type FetchResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Seq           int64                  `protobuf:"varint,1,opt,name=seq,proto3" json:"seq,omitempty"`
-	Message       []byte                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	Payload       []byte                 `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -483,9 +483,9 @@ func (x *FetchResponse) GetSeq() int64 {
 	return 0
 }
 
-func (x *FetchResponse) GetMessage() []byte {
+func (x *FetchResponse) GetPayload() []byte {
 	if x != nil {
-		return x.Message
+		return x.Payload
 	}
 	return nil
 }
@@ -781,7 +781,7 @@ func (x *TopicsResponse) GetTopics() []string {
 type BroadcastTopicRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Topic         string                 `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`
-	Message       []byte                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	Payload       []byte                 `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -823,9 +823,9 @@ func (x *BroadcastTopicRequest) GetTopic() string {
 	return ""
 }
 
-func (x *BroadcastTopicRequest) GetMessage() []byte {
+func (x *BroadcastTopicRequest) GetPayload() []byte {
 	if x != nil {
-		return x.Message
+		return x.Payload
 	}
 	return nil
 }
@@ -1006,14 +1006,14 @@ const file_modules_msgq_proto_msgq_proto_rawDesc = "" +
 	"\n" +
 	"PubRequest\x121\n" +
 	"\x06header\x18\x01 \x01(\v2\x19.tx.msgq.v1.SessionHeaderR\x06header\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\fR\amessage\"\x1f\n" +
+	"\apayload\x18\x02 \x01(\fR\apayload\"\x1f\n" +
 	"\vPubResponse\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\x03R\x03seq\"A\n" +
 	"\fFetchRequest\x121\n" +
 	"\x06header\x18\x01 \x01(\v2\x19.tx.msgq.v1.SessionHeaderR\x06header\";\n" +
 	"\rFetchResponse\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\x03R\x03seq\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\fR\amessage\"W\n" +
+	"\apayload\x18\x02 \x01(\fR\apayload\"W\n" +
 	"\x10FetchSomeRequest\x121\n" +
 	"\x06header\x18\x01 \x01(\v2\x19.tx.msgq.v1.SessionHeaderR\x06header\x12\x10\n" +
 	"\x03max\x18\x02 \x01(\x05R\x03max\"J\n" +
@@ -1031,7 +1031,7 @@ const file_modules_msgq_proto_msgq_proto_rawDesc = "" +
 	"\x06topics\x18\x01 \x03(\tR\x06topics\"G\n" +
 	"\x15BroadcastTopicRequest\x12\x14\n" +
 	"\x05topic\x18\x01 \x01(\tR\x05topic\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\fR\amessage\"\x8e\x01\n" +
+	"\apayload\x18\x02 \x01(\fR\apayload\"\x8e\x01\n" +
 	"\x16BroadcastTopicResponse\x12\x1c\n" +
 	"\tattempted\x18\x01 \x01(\x05R\tattempted\x12\x1c\n" +
 	"\tdelivered\x18\x02 \x01(\x05R\tdelivered\x12\x18\n" +

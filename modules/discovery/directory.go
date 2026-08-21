@@ -103,8 +103,8 @@ func (d *ServiceDirectory) Replace(instances []Instance) error {
 	return nil
 }
 
-// ResolveService 按轮转策略返回一个 running 状态的服务实例。
-func (d *ServiceDirectory) ResolveService(service string) (Instance, bool) {
+// NextInstance 按轮转策略返回下一个 running 状态的服务实例。
+func (d *ServiceDirectory) NextInstance(service string) (Instance, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	instances := d.byService[service]
@@ -138,8 +138,8 @@ func (d *ServiceDirectory) RunningInstances(service string) []Instance {
 	return result
 }
 
-// ResolveID 为精确路由返回已知的 running、draining 或 stopping 状态实例。
-func (d *ServiceDirectory) ResolveID(id string) (Instance, bool) {
+// LookupInstance 为精确路由返回已知的 running、draining 或 stopping 状态实例。
+func (d *ServiceDirectory) LookupInstance(id string) (Instance, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	instance, ok := d.byID[id]

@@ -175,14 +175,14 @@ type recordingRedisStore struct {
 func TestFusionStrategyEnqueuesMongoSave(t *testing.T) {
 	queue := &recordingQueue{}
 	redis := &recordingApplier{}
-	strategy := fusion.Strategy{Redis: redis, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue}
+	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue}
 	spec := meta.TypeSpec{
 		Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
 		Storage: meta.StorageSpec{
 			DelaySave: meta.Duration{Duration: 600 * time.Second},
 		},
 	}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
 	key := storage.RecordKey{TypeName: spec.Type.Ref.FullName, ID: int64(1001)}
 
 	if err := strategy.ApplyDeltasWithOptions(context.Background(), spec, key, deltas, testFieldNameResolver{}, testDeltaValueResolver{}, storage.ApplyOptions{}); err != nil {
@@ -202,9 +202,9 @@ func TestFusionStrategyEnqueuesMongoSave(t *testing.T) {
 func TestFusionStrategyReturnsRedisTransportErrorWithoutEnqueue(t *testing.T) {
 	transportErr := errors.New("redis unavailable")
 	queue := &recordingQueue{}
-	strategy := fusion.Strategy{Redis: &recordingApplier{err: transportErr}, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue}
+	strategy := fusion.Strategy{RedisApplier: &recordingApplier{err: transportErr}, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue}
 	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
 
 	err := strategy.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testFieldNameResolver{}, testDeltaValueResolver{}, storage.ApplyOptions{})
 	if !errors.Is(err, transportErr) {
@@ -217,7 +217,7 @@ func TestFusionStrategyReturnsRedisTransportErrorWithoutEnqueue(t *testing.T) {
 
 func TestFusionStrategyEnqueuesDelayedRedisDeleteAfterSaveWindow(t *testing.T) {
 	queue := &recordingQueue{}
-	strategy := fusion.Strategy{Redis: &recordingApplier{}, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue}
+	strategy := fusion.Strategy{RedisApplier: &recordingApplier{}, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue}
 	spec := meta.TypeSpec{
 		Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
 		Storage: meta.StorageSpec{
@@ -225,7 +225,7 @@ func TestFusionStrategyEnqueuesDelayedRedisDeleteAfterSaveWindow(t *testing.T) {
 			DelayDelete: meta.Duration{Duration: 24 * time.Hour},
 		},
 	}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
 	key := storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001), ShardKey: int64(7)}
 
 	if err := strategy.ApplyDeltasWithOptions(context.Background(), spec, key, deltas, testFieldNameResolver{}, testDeltaValueResolver{}, storage.ApplyOptions{}); err != nil {
@@ -247,13 +247,13 @@ func TestFusionStrategyEnqueuesDelayedRedisDeleteAfterSaveWindow(t *testing.T) {
 
 func TestFusionStrategyRejectsMissingWriteDependencies(t *testing.T) {
 	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
 	key := storage.RecordKey{TypeName: spec.Type.Ref.FullName, ID: int64(1001)}
 
 	if err := (fusion.Strategy{MongoQueue: &recordingQueue{}}).ApplyDeltasWithOptions(context.Background(), spec, key, deltas, testFieldNameResolver{}, testDeltaValueResolver{}, storage.ApplyOptions{}); !errors.Is(err, fusion.ErrRedisNotConfigured) {
 		t.Fatalf("missing Redis error = %v, want ErrRedisNotConfigured", err)
 	}
-	if err := (fusion.Strategy{Redis: &recordingApplier{}}).ApplyDeltasWithOptions(context.Background(), spec, key, deltas, testFieldNameResolver{}, testDeltaValueResolver{}, storage.ApplyOptions{}); !errors.Is(err, fusion.ErrMongoQueueNotConfigured) {
+	if err := (fusion.Strategy{RedisApplier: &recordingApplier{}}).ApplyDeltasWithOptions(context.Background(), spec, key, deltas, testFieldNameResolver{}, testDeltaValueResolver{}, storage.ApplyOptions{}); !errors.Is(err, fusion.ErrMongoQueueNotConfigured) {
 		t.Fatalf("missing MongoQueue error = %v, want ErrMongoQueueNotConfigured", err)
 	}
 }
@@ -261,11 +261,11 @@ func TestFusionStrategyRejectsMissingWriteDependencies(t *testing.T) {
 func TestFusionStrategyRejectsWriteWithoutMongoLoaderBeforeRedisWrite(t *testing.T) {
 	redis := &recordingApplier{}
 	strategy := fusion.Strategy{
-		Redis:      redis,
-		MongoQueue: &recordingQueue{},
+		RedisApplier: redis,
+		MongoQueue:   &recordingQueue{},
 	}
 	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
 
 	err := strategy.ApplyDeltasWithOptions(
 		context.Background(),
@@ -286,12 +286,12 @@ func TestFusionStrategyRejectsWriteWithoutMongoLoaderBeforeRedisWrite(t *testing
 
 func TestFusionStrategyRejectsTypedNilWriteDependencies(t *testing.T) {
 	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
 	key := storage.RecordKey{TypeName: spec.Type.Ref.FullName, ID: int64(1001)}
 
 	t.Run("redis", func(t *testing.T) {
 		var redis *recordingApplier
-		strategy := fusion.Strategy{Redis: redis, MongoQueue: &recordingQueue{}}
+		strategy := fusion.Strategy{RedisApplier: redis, MongoQueue: &recordingQueue{}}
 
 		err := strategy.ApplyDeltasWithOptions(context.Background(), spec, key, deltas, testFieldNameResolver{}, testDeltaValueResolver{}, storage.ApplyOptions{})
 		if !errors.Is(err, fusion.ErrRedisNotConfigured) {
@@ -301,7 +301,7 @@ func TestFusionStrategyRejectsTypedNilWriteDependencies(t *testing.T) {
 
 	t.Run("queue", func(t *testing.T) {
 		var queue *recordingQueue
-		strategy := fusion.Strategy{Redis: &recordingApplier{}, MongoQueue: queue}
+		strategy := fusion.Strategy{RedisApplier: &recordingApplier{}, MongoQueue: queue}
 
 		err := strategy.ApplyDeltasWithOptions(context.Background(), spec, key, deltas, testFieldNameResolver{}, testDeltaValueResolver{}, storage.ApplyOptions{})
 		if !errors.Is(err, fusion.ErrMongoQueueNotConfigured) {
@@ -313,7 +313,7 @@ func TestFusionStrategyRejectsTypedNilWriteDependencies(t *testing.T) {
 func TestFusionStrategyValidatesCompleteRuntimeDependencies(t *testing.T) {
 	redis := &recordingRedisStore{}
 	strategy := fusion.Strategy{
-		Redis:         redis,
+		RedisApplier:  redis,
 		RedisLoader:   redis,
 		RedisDeleter:  redis,
 		RedisReplacer: &recordingDocumentReplacerWithOptions{},
@@ -376,12 +376,12 @@ func TestFusionStrategyRejectsMissingMongoLoaderForBatchRedisMiss(t *testing.T) 
 func TestFusionStrategyAppliesRedisBeforeQueue(t *testing.T) {
 	queue := &recordingQueue{}
 	redis := &recordingApplier{}
-	strategy := fusion.Strategy{Redis: redis, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue}
+	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue}
 	spec := meta.TypeSpec{
 		Type:    meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
 		Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Second}},
 	}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
 	key := storage.RecordKey{TypeName: spec.Type.Ref.FullName, ID: int64(1001)}
 
 	if err := strategy.ApplyDeltasWithOptions(context.Background(), spec, key, deltas, testFieldNameResolver{}, testDeltaValueResolver{}, storage.ApplyOptions{}); err != nil {
@@ -402,14 +402,14 @@ func TestFusionStrategyQueueFailureKeepsStoreDeltasForRetry(t *testing.T) {
 	queueErr := errors.New("delay queue unavailable")
 	queue := &recordingQueue{err: queueErr}
 	redis := &recordingApplier{}
-	strategy := fusion.Strategy{Redis: redis, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue}
+	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue}
 	store := &testDeltaStore{
 		spec: meta.TypeSpec{
 			Type:    meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
 			Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Second}},
 		},
 		key:    storage.RecordKey{ID: int64(1001)},
-		deltas: change.DeltaSet{{Path: testStorageDeltaPath(2), Kind: change.DeltaKindSet}},
+		deltas: change.DeltaSet{{Path: testStorageDeltaPath(2), Op: change.OpSet}},
 	}
 
 	if err := storage.Save(context.Background(), strategy, store); !errors.Is(err, queueErr) {
@@ -437,22 +437,22 @@ func TestFusionStrategyQueueFailureKeepsStoreDeltasForRetry(t *testing.T) {
 func TestFusionStrategyPassesOptionsOnlyToRedis(t *testing.T) {
 	queue := &recordingQueue{}
 	redis := &recordingApplier{}
-	strategy := fusion.Strategy{Redis: redis, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue}
+	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue}
 	spec := meta.TypeSpec{
 		Type:    meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
 		Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Second}},
 	}
 	key := storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001), ShardKey: int64(7)}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
 
-	err := strategy.ApplyDeltasWithOptions(context.Background(), spec, key, deltas, testFieldNameResolver{}, testDeltaValueResolver{}, storage.ApplyOptions{Upsert: true, TTL: 600})
+	err := strategy.ApplyDeltasWithOptions(context.Background(), spec, key, deltas, testFieldNameResolver{}, testDeltaValueResolver{}, storage.ApplyOptions{Upsert: true, TTLSeconds: 600})
 	if err != nil {
 		t.Fatalf("ApplyDeltasWithOptions returned error: %v", err)
 	}
 	if redis.optionRuns != 1 {
 		t.Fatalf("redis option calls = %d, want 1", redis.optionRuns)
 	}
-	if redis.options.TTL != 600 || !redis.options.Upsert {
+	if redis.options.TTLSeconds != 600 || !redis.options.Upsert {
 		t.Fatalf("redis options = %#v, want TTL 600 and upsert", redis.options)
 	}
 	if redis.key != key {
@@ -578,7 +578,7 @@ func TestFusionStrategyDeleteUsesExplicitMongoDeleter(t *testing.T) {
 func TestFusionStrategyDeleteUsesRedisApplierWhenDeleterIsUnset(t *testing.T) {
 	redis := &recordingRedisStore{}
 	mongoDelete := &recordingDeleteApplier{}
-	strategy := fusion.Strategy{Redis: redis, RedisLocker: &recordingRecordLocker{}, MongoDeleter: mongoDelete}
+	strategy := fusion.Strategy{RedisApplier: redis, RedisLocker: &recordingRecordLocker{}, MongoDeleter: mongoDelete}
 	spec := meta.TypeSpec{
 		Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
 		Storage: meta.StorageSpec{
@@ -630,7 +630,7 @@ func TestFusionStrategyLoadDocumentUsesRedisApplierWhenLoaderIsUnset(t *testing.
 			exists: true,
 		},
 	}
-	strategy := fusion.Strategy{Redis: redis, MongoLoader: &recordingDocumentLoader{}}
+	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}}
 	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
 	key := storage.RecordKey{ID: int64(1001)}
 
@@ -668,7 +668,7 @@ func TestFusionStrategyLoadDocumentRejectsInconsistentMongoLoaderResult(t *testi
 		context.Background(),
 		meta.TypeSpec{},
 		storage.RecordKey{ID: int64(1001)},
-		fusion.LoadOptions{DontLoadToRedis: true},
+		fusion.LoadOptions{SkipRedisBackfill: true},
 	)
 	if err == nil || !strings.Contains(err.Error(), "missing document with data") {
 		t.Fatalf("LoadDocumentWithOptions error = %v, want inconsistent Mongo loader result", err)
@@ -735,7 +735,7 @@ func TestFusionStrategyLoadDocumentBackfillsRedisFromFullMongoFallback(t *testin
 	if len(mongo.fields) != 0 {
 		t.Fatalf("mongo fallback fields = %#v, want full document load", mongo.fields)
 	}
-	if replacer.calls != 1 || replacer.doc["power"] != int64(9) || replacer.options.TTL != int64(time.Hour/time.Second) {
+	if replacer.calls != 1 || replacer.doc["power"] != int64(9) || replacer.options.TTLSeconds != int64(time.Hour/time.Second) {
 		t.Fatalf("redis backfill calls/doc/options = %d/%#v/%#v", replacer.calls, replacer.doc, replacer.options)
 	}
 }
@@ -847,11 +847,11 @@ func TestFusionStrategyLoadDocumentWithNoBackfillOptionDoesNotBackfillRedis(t *t
 	redis := &recordingRedisStore{}
 	mongo := &recordingDocumentLoader{doc: map[string]any{"name": "cold"}, exists: true}
 	replacer := &recordingDocumentReplacerWithOptions{}
-	strategy := fusion.Strategy{Redis: redis, RedisReplacer: replacer, MongoLoader: mongo}
+	strategy := fusion.Strategy{RedisApplier: redis, RedisReplacer: replacer, MongoLoader: mongo}
 	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
 	key := storage.RecordKey{ID: int64(1001)}
 
-	doc, exists, err := strategy.LoadDocumentWithOptions(context.Background(), spec, key, fusion.LoadOptions{DontLoadToRedis: true}, "name")
+	doc, exists, err := strategy.LoadDocumentWithOptions(context.Background(), spec, key, fusion.LoadOptions{SkipRedisBackfill: true}, "name")
 	if err != nil {
 		t.Fatalf("LoadDocument returned error: %v", err)
 	}
@@ -952,7 +952,7 @@ func TestFusionStrategyLoadDocumentsBackfillsRedisFromFullMongoFallback(t *testi
 	}
 	replacer := &recordingDocumentReplacerWithOptions{}
 	locker := &recordingRecordLocker{}
-	strategy := fusion.Strategy{Redis: redis, RedisReplacer: replacer, RedisLocker: locker, MongoLoader: mongo}
+	strategy := fusion.Strategy{RedisApplier: redis, RedisReplacer: replacer, RedisLocker: locker, MongoLoader: mongo}
 	spec := meta.TypeSpec{
 		Type:    meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
 		Storage: meta.StorageSpec{DelayDelete: meta.Duration{Duration: time.Hour}},
@@ -974,7 +974,7 @@ func TestFusionStrategyLoadDocumentsBackfillsRedisFromFullMongoFallback(t *testi
 	if len(mongo.fields) != 0 {
 		t.Fatalf("mongo fallback fields = %#v, want full document load", mongo.fields)
 	}
-	if locker.calls != 2 || replacer.calls != 2 || replacer.options.TTL != int64(time.Hour/time.Second) {
+	if locker.calls != 2 || replacer.calls != 2 || replacer.options.TTLSeconds != int64(time.Hour/time.Second) {
 		t.Fatalf("lock/backfill calls/options = %d/%d/%#v", locker.calls, replacer.calls, replacer.options)
 	}
 }
@@ -995,7 +995,7 @@ func TestFusionStrategyLoadDocumentsBatchBackfillsFromMongo(t *testing.T) {
 	}
 	replacer := &recordingDocumentReplacerWithOptions{}
 	locker := &recordingRecordLocker{}
-	strategy := fusion.Strategy{Redis: redis, RedisReplacer: replacer, RedisLocker: locker, MongoLoader: mongo}
+	strategy := fusion.Strategy{RedisApplier: redis, RedisReplacer: replacer, RedisLocker: locker, MongoLoader: mongo}
 	spec := meta.TypeSpec{
 		Type:    meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
 		Storage: meta.StorageSpec{DelayDelete: meta.Duration{Duration: time.Hour}},
@@ -1014,7 +1014,7 @@ func TestFusionStrategyLoadDocumentsBatchBackfillsFromMongo(t *testing.T) {
 	if len(mongo.fields) != 0 {
 		t.Fatalf("mongo batch fallback fields = %#v, want full document load", mongo.fields)
 	}
-	if locker.calls != 2 || replacer.calls != 2 || replacer.options.TTL != int64(time.Hour/time.Second) {
+	if locker.calls != 2 || replacer.calls != 2 || replacer.options.TTLSeconds != int64(time.Hour/time.Second) {
 		t.Fatalf("lock/backfill calls/options = %d/%d/%#v", locker.calls, replacer.calls, replacer.options)
 	}
 }
@@ -1065,10 +1065,10 @@ func TestFusionStrategyLoadDocumentsWithNoBackfillOptionDoesNotBackfillRedis(t *
 		existsMany: []bool{true, true},
 	}
 	replacer := &recordingDocumentReplacerWithOptions{}
-	strategy := fusion.Strategy{Redis: redis, RedisReplacer: replacer, MongoLoader: mongo}
+	strategy := fusion.Strategy{RedisApplier: redis, RedisReplacer: replacer, MongoLoader: mongo}
 	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
 
-	docs, exists, err := strategy.LoadDocumentsWithOptions(context.Background(), spec, keys, fusion.LoadOptions{DontLoadToRedis: true}, "name")
+	docs, exists, err := strategy.LoadDocumentsWithOptions(context.Background(), spec, keys, fusion.LoadOptions{SkipRedisBackfill: true}, "name")
 	if err != nil {
 		t.Fatalf("LoadDocuments returned error: %v", err)
 	}
@@ -1135,7 +1135,7 @@ func TestFusionStrategyLoadDocumentsUsesRedisApplierWhenLoaderIsUnset(t *testing
 			existsMany: []bool{true, true},
 		},
 	}
-	strategy := fusion.Strategy{Redis: redis, MongoLoader: &recordingDocumentLoader{}}
+	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}}
 	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
 
 	docs, exists, err := strategy.LoadDocuments(context.Background(), spec, keys, "name")

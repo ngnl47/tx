@@ -7,11 +7,11 @@ import (
 
 // Document 是 DeltaSet 的后端无关文档形式。
 //
-// Set 对应字段设置、整体替换或容器清空；Clear 对应字段删除。Mongo
-// 适配器会把 Clear 转成 `$unset`，Redis 适配器会把 Clear 转成 JSON 字段移除。
+// Set 对应字段设置、整体替换或容器清空；Delete 对应字段删除。Mongo
+// 适配器会把 Delete 转成 `$unset`，Redis 适配器会把 Delete 转成 JSON 字段移除。
 type Document struct {
-	Set   map[string]any
-	Clear map[string]struct{}
+	Set    map[string]any
+	Delete map[string]struct{}
 }
 
 // DeltaValueResolver 按 DeltaPath 从当前对象读取最终值。
@@ -27,33 +27,33 @@ func (f DeltaValueResolverFunc) DeltaValue(path DeltaPath) (any, bool) {
 	return f(path)
 }
 
-// DocumentWithResolver 把 DeltaSet 转成指定命名体系下的 Set/Clear 文档。
+// DocumentWithResolver 把 DeltaSet 转成指定命名体系下的 Set/Delete 文档。
 //
 // 每个 Set 或 Replace Delta 都必须能从 values 读取当前值。路径或值无法解析时
 // 返回错误，避免把未知状态伪造成 null 字段。
-func (ds DeltaSet) DocumentWithResolver(resolver FieldNameResolver, backend NameBackend, values DeltaValueResolver) (Document, error) {
-	if err := ds.ValidateKinds(); err != nil {
+func (ds DeltaSet) DocumentWithResolver(resolver FieldNameResolver, kind FieldNameKind, values DeltaValueResolver) (Document, error) {
+	if err := ds.ValidateOps(); err != nil {
 		return Document{}, err
 	}
 	doc := Document{
-		Set:   map[string]any{},
-		Clear: map[string]struct{}{},
+		Set:    map[string]any{},
+		Delete: map[string]struct{}{},
 	}
 	for _, delta := range ds.Clone().Compact() {
-		path := delta.Path.FullPath(resolver, backend)
+		path := delta.Path.FullPath(resolver, kind)
 		if len(path) == 0 {
-			return Document{}, fmt.Errorf("change: cannot resolve %s field path for delta %#v", backend, delta.Path)
+			return Document{}, fmt.Errorf("change: cannot resolve %s field path for delta %#v", kind, delta.Path)
 		}
-		switch delta.Kind {
-		case DeltaDelete:
-			doc.Clear[path.String()] = struct{}{}
-		case DeltaClear:
+		switch delta.Op {
+		case OpDelete:
+			doc.Delete[path.String()] = struct{}{}
+		case OpClear:
 			value, err := emptyDeltaValueFor(values, delta.Path, path)
 			if err != nil {
 				return Document{}, err
 			}
 			doc.Set[path.String()] = value
-		case DeltaKindSet, DeltaKindReplace:
+		case OpSet, OpReplace:
 			if values == nil {
 				return Document{}, fmt.Errorf("change: cannot resolve current value for path %s", path)
 			}

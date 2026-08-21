@@ -96,7 +96,7 @@ func (r *SessionRouter) Resolve(ctx context.Context, roleID, expectedSessionID i
 	if expectedSessionID != 0 && binding.SessionID != expectedSessionID {
 		return SessionTarget{}, ErrSessionChanged
 	}
-	instance, found := r.directory.ResolveID(binding.InstanceID)
+	instance, found := r.directory.LookupInstance(binding.InstanceID)
 	if !found || !providesService(instance, "msgq") {
 		return SessionTarget{}, ErrRouteUnavailable
 	}

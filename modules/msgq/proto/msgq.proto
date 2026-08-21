@@ -34,7 +34,7 @@ message RecResponse {
 
 message PubRequest {
   SessionHeader header = 1;
-  bytes message = 2;
+  bytes payload = 2;
 }
 
 message PubResponse {
@@ -47,7 +47,7 @@ message FetchRequest {
 
 message FetchResponse {
   int64 seq = 1;
-  bytes message = 2;
+  bytes payload = 2;
 }
 
 message FetchSomeRequest {
@@ -79,7 +79,7 @@ message TopicsResponse {
 
 message BroadcastTopicRequest {
   string topic = 1;
-  bytes message = 2;
+  bytes payload = 2;
 }
 
 message BroadcastTopicResponse {

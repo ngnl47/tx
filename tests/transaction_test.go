@@ -38,7 +38,7 @@ func (store *transactionDirtyStore) Set(value int) {
 	store.value = value
 	store.deltas = append(store.deltas, change.DeltaEntry{
 		Path: change.DeltaPath{Nodes: [change.MaxDeltaDepth]change.PathNode{{Field: 1}}, Depth: 1},
-		Kind: change.DeltaKindSet,
+		Op:   change.OpSet,
 	})
 }
 
@@ -142,7 +142,7 @@ func TestTransactionDebugCheckRejectsPendingDeltasAtEntry(t *testing.T) {
 
 	store := &transactionDirtyStore{deltas: change.DeltaSet{{
 		Path: change.DeltaPath{Nodes: [change.MaxDeltaDepth]change.PathNode{{Field: 1}}, Depth: 1},
-		Kind: change.DeltaKindSet,
+		Op:   change.OpSet,
 	}}}
 	called := false
 	err := txn.Run(context.Background(), []txn.LockTarget{
@@ -169,7 +169,7 @@ func TestTransactionDebugCheckIsDisabledByDefault(t *testing.T) {
 
 	store := &transactionDirtyStore{deltas: change.DeltaSet{{
 		Path: change.DeltaPath{Nodes: [change.MaxDeltaDepth]change.PathNode{{Field: 1}}, Depth: 1},
-		Kind: change.DeltaKindSet,
+		Op:   change.OpSet,
 	}}}
 	called := false
 	err := txn.Run(context.Background(), []txn.LockTarget{

@@ -20,7 +20,7 @@ func TestTxnRuntimeRejectsProcedureBeforeMutationWhenAdmissionIsClosed(t *testin
 	store := &runtimeTestStore{}
 	writer := &recordingDeltaStoreApplier{}
 	admissionErr := errors.New("storage unavailable")
-	runtime := txn.NewRuntime(writer, txn.RuntimeConfig{Admission: rejectingAdmission{err: admissionErr}})
+	runtime := txn.NewRuntime(writer, txn.RuntimeConfig{WriteAdmission: rejectingAdmission{err: admissionErr}})
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
 	called := false
 

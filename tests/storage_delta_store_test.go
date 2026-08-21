@@ -42,7 +42,7 @@ func (s *testDeltaStore) TypeSpec() meta.TypeSpec      { return s.spec }
 func (s *testDeltaStore) RecordKey() storage.RecordKey { return s.key }
 func (s *testDeltaStore) Deltas() change.DeltaSet      { return s.deltas }
 func (s *testDeltaStore) FieldNameResolver() change.FieldNameResolver {
-	return change.FieldNameResolverFunc(func(field change.FieldID, backend change.NameBackend) string { return "" })
+	return change.FieldNameResolverFunc(func(field change.FieldID, kind change.FieldNameKind) string { return "" })
 }
 func (s *testDeltaStore) DeltaValueResolver() change.DeltaValueResolver {
 	return change.DeltaValueResolverFunc(func(change.DeltaPath) (any, bool) { return nil, false })
@@ -51,7 +51,7 @@ func (s *testDeltaStore) DefaultApplyOptions() storage.ApplyOptions { return s.d
 func (s *testDeltaStore) IsViewStore() bool                         { return s.view }
 func (s *testDeltaStore) AllTouch() {
 	s.allTouched++
-	s.deltas = change.DeltaSet{{Path: testStorageDeltaPath(1), Kind: change.DeltaKindSet}}
+	s.deltas = change.DeltaSet{{Path: testStorageDeltaPath(1), Op: change.OpSet}}
 }
 func (s *testDeltaStore) ClearDeltas() {
 	s.cleared++
@@ -62,7 +62,7 @@ func TestStorageCreateAppliesWholeStoreAndForcesUpsert(t *testing.T) {
 	store := &testDeltaStore{
 		spec:     meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{FullName: "GDRole"}}},
 		key:      storage.RecordKey{ID: int64(1001)},
-		defaults: storage.ApplyOptions{TTL: 600},
+		defaults: storage.ApplyOptions{TTLSeconds: 600},
 	}
 	applier := &recordingDeltaStoreApplier{}
 
@@ -75,7 +75,7 @@ func TestStorageCreateAppliesWholeStoreAndForcesUpsert(t *testing.T) {
 	if store.cleared != 1 {
 		t.Fatalf("ClearDeltas calls = %d, want 1", store.cleared)
 	}
-	if !applier.hasOptions || !applier.options.Upsert || applier.options.TTL != 600 {
+	if !applier.hasOptions || !applier.options.Upsert || applier.options.TTLSeconds != 600 {
 		t.Fatalf("options = %#v hasOptions=%v, want upsert with default TTL", applier.options, applier.hasOptions)
 	}
 	if len(applier.deltas) != 1 {
@@ -84,16 +84,16 @@ func TestStorageCreateAppliesWholeStoreAndForcesUpsert(t *testing.T) {
 }
 
 func TestStorageSaveAppliesDirtyDeltasAndForcesNonUpsert(t *testing.T) {
-	delta := change.DeltaEntry{Path: testStorageDeltaPath(2), Kind: change.DeltaKindSet}
+	delta := change.DeltaEntry{Path: testStorageDeltaPath(2), Op: change.OpSet}
 	store := &testDeltaStore{
 		spec:     meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{FullName: "GDRole"}}},
 		key:      storage.RecordKey{ID: int64(1001)},
 		deltas:   change.DeltaSet{delta},
-		defaults: storage.ApplyOptions{TTL: 600},
+		defaults: storage.ApplyOptions{TTLSeconds: 600},
 	}
 	applier := &recordingDeltaStoreApplier{}
 
-	if err := storage.SaveWithOptions(context.Background(), applier, store, storage.ApplyOptions{Upsert: true, TTL: 120}); err != nil {
+	if err := storage.SaveWithOptions(context.Background(), applier, store, storage.ApplyOptions{Upsert: true, TTLSeconds: 120}); err != nil {
 		t.Fatalf("SaveWithOptions returned error: %v", err)
 	}
 	if store.allTouched != 0 {
@@ -102,7 +102,7 @@ func TestStorageSaveAppliesDirtyDeltasAndForcesNonUpsert(t *testing.T) {
 	if store.cleared != 1 {
 		t.Fatalf("ClearDeltas calls = %d, want 1", store.cleared)
 	}
-	if !applier.hasOptions || applier.options.Upsert || applier.options.TTL != 120 {
+	if !applier.hasOptions || applier.options.Upsert || applier.options.TTLSeconds != 120 {
 		t.Fatalf("options = %#v hasOptions=%v, want non-upsert with explicit TTL", applier.options, applier.hasOptions)
 	}
 	if len(applier.deltas) != 1 || applier.deltas[0].Path != delta.Path {
@@ -114,7 +114,7 @@ func TestStorageSaveFailureKeepsDeltas(t *testing.T) {
 	saveErr := errors.New("boom")
 	store := &testDeltaStore{
 		key:    storage.RecordKey{ID: int64(1001)},
-		deltas: change.DeltaSet{{Path: testStorageDeltaPath(2), Kind: change.DeltaKindSet}},
+		deltas: change.DeltaSet{{Path: testStorageDeltaPath(2), Op: change.OpSet}},
 	}
 	applier := &recordingDeltaStoreApplier{err: saveErr}
 
@@ -128,7 +128,7 @@ func TestStorageSaveFailureKeepsDeltas(t *testing.T) {
 
 func TestStorageSaveRejectsInvalidRecordKeyAndKeepsDeltas(t *testing.T) {
 	store := &testDeltaStore{
-		deltas: change.DeltaSet{{Path: testStorageDeltaPath(2), Kind: change.DeltaKindSet}},
+		deltas: change.DeltaSet{{Path: testStorageDeltaPath(2), Op: change.OpSet}},
 	}
 	applier := &recordingDeltaStoreApplier{}
 
@@ -143,7 +143,7 @@ func TestStorageSaveRejectsInvalidRecordKeyAndKeepsDeltas(t *testing.T) {
 
 func TestStorageRejectsTypedNilDeltaApplier(t *testing.T) {
 	var applier *recordingDeltaStoreApplier
-	store := &testDeltaStore{deltas: change.DeltaSet{{Path: testStorageDeltaPath(2), Kind: change.DeltaKindSet}}}
+	store := &testDeltaStore{deltas: change.DeltaSet{{Path: testStorageDeltaPath(2), Op: change.OpSet}}}
 
 	if err := storage.Save(context.Background(), applier, store); !errors.Is(err, storage.ErrNilDeltaApplier) {
 		t.Fatalf("Save error = %v, want ErrNilDeltaApplier", err)

@@ -176,7 +176,7 @@ func (s *Server) writeOutbound(ctx context.Context, client msgq.SessionClient, h
 			return err
 		}
 		for _, message := range batch.Messages {
-			if err := transport.Write(ctx, Frame{Kind: FrameOutbound, Seq: message.Seq, Payload: message.Message}); err != nil {
+			if err := transport.Write(ctx, Frame{Kind: FrameOutbound, Seq: message.Seq, Payload: message.Payload}); err != nil {
 				return err
 			}
 			written.Store(message.Seq)

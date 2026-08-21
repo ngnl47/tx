@@ -50,10 +50,10 @@ func TestEtcdRegistryLifecycleIntegration(t *testing.T) {
 	}
 	defer registration.Close(context.Background())
 
-	if _, ok := directory.ResolveService("game"); ok {
+	if _, ok := directory.NextInstance("game"); ok {
 		t.Fatal("starting instance must not be selected by service route")
 	}
-	if _, ok := directory.ResolveID("game-integration"); ok {
+	if _, ok := directory.LookupInstance("game-integration"); ok {
 		t.Fatal("starting instance must not be selected by exact route")
 	}
 
@@ -61,7 +61,7 @@ func TestEtcdRegistryLifecycleIntegration(t *testing.T) {
 		t.Fatalf("mark instance running: %v", err)
 	}
 	waitDirectory(t, ctx, directory, func() bool {
-		instance, ok := directory.ResolveService("game")
+		instance, ok := directory.NextInstance("game")
 		return ok && instance.ID == "game-integration"
 	})
 
@@ -69,10 +69,10 @@ func TestEtcdRegistryLifecycleIntegration(t *testing.T) {
 		t.Fatalf("mark instance stopping: %v", err)
 	}
 	waitDirectory(t, ctx, directory, func() bool {
-		instance, ok := directory.ResolveID("game-integration")
+		instance, ok := directory.LookupInstance("game-integration")
 		return ok && instance.Status == discovery.StatusStopping
 	})
-	if _, ok := directory.ResolveService("game"); ok {
+	if _, ok := directory.NextInstance("game"); ok {
 		t.Fatal("stopping instance must not be selected by service route")
 	}
 
@@ -80,7 +80,7 @@ func TestEtcdRegistryLifecycleIntegration(t *testing.T) {
 		t.Fatalf("close registration: %v", err)
 	}
 	waitDirectory(t, ctx, directory, func() bool {
-		_, ok := directory.ResolveID("game-integration")
+		_, ok := directory.LookupInstance("game-integration")
 		return !ok
 	})
 

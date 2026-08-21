@@ -85,7 +85,7 @@ func (c *grpcConnection) Pub(ctx context.Context, request PubRequest) (PubResult
 			SessionId:    request.Header.SessionID,
 			ConnectionId: request.Header.ConnectionID,
 		},
-		Message: request.Message,
+		Payload: request.Payload,
 	})
 	if err != nil {
 		return PubResult{}, mailboxClientError(err)
@@ -116,7 +116,7 @@ func (c *grpcConnection) FetchSome(ctx context.Context, request FetchSomeRequest
 	}
 	result := FetchSomeResult{Messages: make([]FetchResult, len(response.GetMessages()))}
 	for index, message := range response.GetMessages() {
-		result.Messages[index] = FetchResult{Seq: message.GetSeq(), Message: message.GetMessage()}
+		result.Messages[index] = FetchResult{Seq: message.GetSeq(), Payload: message.GetPayload()}
 	}
 	return result, nil
 }
@@ -169,7 +169,7 @@ func NewSender(router *SessionRouter, dialer Dialer) (*Sender, error) {
 }
 
 // Pub 向 roleID 当前会话投递已编码的 BON payload。
-func (s *Sender) Pub(ctx context.Context, roleID int64, message []byte) (PubResult, error) {
+func (s *Sender) Pub(ctx context.Context, roleID int64, payload []byte) (PubResult, error) {
 	if s == nil {
 		return PubResult{}, ErrSenderClosed
 	}
@@ -186,7 +186,7 @@ func (s *Sender) Pub(ctx context.Context, roleID int64, message []byte) (PubResu
 			RoleID:    target.Binding.RoleID,
 			SessionID: target.Binding.SessionID,
 		},
-		Message: message,
+		Payload: payload,
 	})
 }
 

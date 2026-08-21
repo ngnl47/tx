@@ -153,9 +153,9 @@ func TestMongoAdapterAppliesUpdateByDefaultIDFilter(t *testing.T) {
 	spec := meta.TypeSpec{
 		Mongo: &meta.MongoSpec{Collection: "roles"},
 	}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
 
-	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
+	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testResolverForKind(change.FieldNameBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
 	if err != nil {
 		t.Fatalf("ApplyDeltasWithOptions returned error: %v", err)
 	}
@@ -171,9 +171,9 @@ func TestMongoAdapterAppliesUpdateByDefaultIDFilter(t *testing.T) {
 func TestMongoAdapterReturnsTransportError(t *testing.T) {
 	transportErr := errors.New("mongo unavailable")
 	adapter := mustMongoAdapter(t, &recordingMongoUpdater{updateErr: storage.NewBackendError(storage.BackendMongo, "update one", transportErr)})
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
 
-	err := adapter.ApplyDeltasWithOptions(context.Background(), meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
+	err := adapter.ApplyDeltasWithOptions(context.Background(), meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}, storage.RecordKey{ID: int64(1001)}, deltas, testResolverForKind(change.FieldNameBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
 	if !errors.Is(err, transportErr) {
 		t.Fatalf("ApplyDeltasWithOptions error = %v, want transport error", err)
 	}
@@ -184,9 +184,9 @@ func TestMongoAdapterReturnsTransportError(t *testing.T) {
 
 func TestMongoAdapterDoesNotClassifyUnmarkedClientError(t *testing.T) {
 	adapter := mustMongoAdapter(t, &recordingMongoUpdater{updateErr: errors.New("invalid bson value")})
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
 
-	err := adapter.ApplyDeltasWithOptions(context.Background(), meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
+	err := adapter.ApplyDeltasWithOptions(context.Background(), meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}, storage.RecordKey{ID: int64(1001)}, deltas, testResolverForKind(change.FieldNameBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
 	if _, ok := storage.BackendFromError(err); ok {
 		t.Fatalf("BackendFromError classified unmarked client error: %v", err)
 	}
@@ -196,9 +196,9 @@ func TestMongoAdapterRejectsMissingRecordOnNonUpsertUpdate(t *testing.T) {
 	updater := &recordingMongoUpdater{updateResult: &txmongo.UpdateResult{}}
 	adapter := mustMongoAdapter(t, updater)
 	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
 
-	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
+	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testResolverForKind(change.FieldNameBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
 	if !errors.Is(err, storage.ErrNotExists) {
 		t.Fatalf("ApplyDeltasWithOptions error = %v, want ErrNotExists", err)
 	}
@@ -208,9 +208,9 @@ func TestMongoAdapterRejectsUnexpectedUpsertResult(t *testing.T) {
 	updater := &recordingMongoUpdater{updateResult: &txmongo.UpdateResult{MatchedCount: 1, UpsertedCount: 1}}
 	adapter := mustMongoAdapter(t, updater)
 	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
 
-	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{Upsert: true})
+	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testResolverForKind(change.FieldNameBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{Upsert: true})
 	if err == nil || !strings.Contains(err.Error(), "unexpected update result") {
 		t.Fatalf("ApplyDeltasWithOptions error = %v, want unexpected update result", err)
 	}
@@ -220,9 +220,9 @@ func TestMongoAdapterAcceptsUpsertedCreate(t *testing.T) {
 	updater := &recordingMongoUpdater{updateResult: &txmongo.UpdateResult{UpsertedCount: 1}}
 	adapter := mustMongoAdapter(t, updater)
 	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
 
-	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{Upsert: true})
+	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testResolverForKind(change.FieldNameBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{Upsert: true})
 	if err != nil {
 		t.Fatalf("ApplyDeltasWithOptions returned error: %v", err)
 	}
@@ -266,8 +266,8 @@ func TestMongoAdapterRejectsDeltaSetWithoutEffectiveUpdate(t *testing.T) {
 		context.Background(),
 		meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}},
 		storage.RecordKey{ID: int64(1001)},
-		change.DeltaSet{{Kind: change.DeltaKindSet}},
-		testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()),
+		change.DeltaSet{{Op: change.OpSet}},
+		testResolverForKind(change.FieldNameBSON, deltaTestBSONNames()),
 		testDeltaValues(nil),
 		storage.ApplyOptions{},
 	)
@@ -297,10 +297,10 @@ func TestMongoAdapterMapsUpdatePathToBSONName(t *testing.T) {
 		Mongo: &meta.MongoSpec{Collection: "roles"},
 	}
 	const mongoFieldPower change.FieldID = 4
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(mongoFieldPower)), Kind: change.DeltaKindSet}}
-	resolver := testNamedBackendResolver(map[change.NameBackend]map[change.FieldID]string{
-		change.NameBackendGo:   {mongoFieldPower: "Power"},
-		change.NameBackendBSON: {mongoFieldPower: "p"},
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(mongoFieldPower)), Op: change.OpSet}}
+	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
+		change.FieldNameGo:   {mongoFieldPower: "Power"},
+		change.FieldNameBSON: {mongoFieldPower: "p"},
 	})
 
 	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, resolver, change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
@@ -333,9 +333,9 @@ func TestMongoAdapterUsesBSONIDFieldForFilter(t *testing.T) {
 		},
 		Mongo: &meta.MongoSpec{Collection: "roles", IDField: "RoleId"},
 	}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
 
-	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
+	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testResolverForKind(change.FieldNameBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
 	if err != nil {
 		t.Fatalf("ApplyDeltasWithOptions returned error: %v", err)
 	}
@@ -544,10 +544,10 @@ func TestMongoAdapterRejectsIDFieldUpdate(t *testing.T) {
 		Mongo: &meta.MongoSpec{Collection: "roles", IDField: "RoleId"},
 	}
 	const mongoFieldRoleID change.FieldID = 5
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(mongoFieldRoleID)), Kind: change.DeltaKindSet}}
-	resolver := testNamedBackendResolver(map[change.NameBackend]map[change.FieldID]string{
-		change.NameBackendGo:   {mongoFieldRoleID: "RoleId"},
-		change.NameBackendBSON: {mongoFieldRoleID: "_id"},
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(mongoFieldRoleID)), Op: change.OpSet}}
+	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
+		change.FieldNameGo:   {mongoFieldRoleID: "RoleId"},
+		change.FieldNameBSON: {mongoFieldRoleID: "_id"},
 	})
 
 	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, resolver, change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
@@ -582,12 +582,12 @@ func TestMongoAdapterUpsertSkipsImmutableIDDelta(t *testing.T) {
 		mongoFieldName   change.FieldID = 6
 	)
 	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(mongoFieldRoleID)), Kind: change.DeltaKindSet},
-		{Path: deltaPath(fieldNode(mongoFieldName)), Kind: change.DeltaKindSet},
+		{Path: deltaPath(fieldNode(mongoFieldRoleID)), Op: change.OpSet},
+		{Path: deltaPath(fieldNode(mongoFieldName)), Op: change.OpSet},
 	}
-	resolver := testNamedBackendResolver(map[change.NameBackend]map[change.FieldID]string{
-		change.NameBackendGo:   {mongoFieldRoleID: "RoleId", mongoFieldName: "Name"},
-		change.NameBackendBSON: {mongoFieldRoleID: "_id", mongoFieldName: "name"},
+	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
+		change.FieldNameGo:   {mongoFieldRoleID: "RoleId", mongoFieldName: "Name"},
+		change.FieldNameBSON: {mongoFieldRoleID: "_id", mongoFieldName: "name"},
 	})
 	values := change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
 		switch path.Nodes[0].Field {
@@ -624,10 +624,10 @@ func TestMongoAdapterRejectsUpsertWithOnlyImmutableIDDelta(t *testing.T) {
 		Mongo: &meta.MongoSpec{Collection: "roles", IDField: "RoleId"},
 	}
 	const mongoFieldRoleID change.FieldID = 5
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(mongoFieldRoleID)), Kind: change.DeltaKindSet}}
-	resolver := testNamedBackendResolver(map[change.NameBackend]map[change.FieldID]string{
-		change.NameBackendGo:   {mongoFieldRoleID: "RoleId"},
-		change.NameBackendBSON: {mongoFieldRoleID: "_id"},
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(mongoFieldRoleID)), Op: change.OpSet}}
+	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
+		change.FieldNameGo:   {mongoFieldRoleID: "RoleId"},
+		change.FieldNameBSON: {mongoFieldRoleID: "_id"},
 	})
 	values := change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
 		if path.Equal(deltaPath(fieldNode(mongoFieldRoleID))) {
@@ -651,9 +651,9 @@ func TestMongoAdapterPassesUpsertOptionToUpdate(t *testing.T) {
 	spec := meta.TypeSpec{
 		Mongo: &meta.MongoSpec{Collection: "roles"},
 	}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
 
-	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{Upsert: false})
+	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testResolverForKind(change.FieldNameBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{Upsert: false})
 	if err != nil {
 		t.Fatalf("ApplyDeltasWithOptions returned error: %v", err)
 	}
@@ -661,7 +661,7 @@ func TestMongoAdapterPassesUpsertOptionToUpdate(t *testing.T) {
 		t.Fatal("upsert = true, want false for update path")
 	}
 
-	err = adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{Upsert: true})
+	err = adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testResolverForKind(change.FieldNameBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{Upsert: true})
 	if err != nil {
 		t.Fatalf("ApplyDeltasWithOptions returned error: %v", err)
 	}
@@ -677,9 +677,9 @@ func TestMongoAdapterPassesUpsertOptionToBusinessIDFieldUpdate(t *testing.T) {
 		Collection: "roles",
 		IDField:    "roleId",
 	}}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
 
-	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{Upsert: false})
+	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testResolverForKind(change.FieldNameBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{Upsert: false})
 	if err != nil {
 		t.Fatalf("ApplyDeltasWithOptions returned error: %v", err)
 	}
@@ -710,9 +710,9 @@ func TestMongoAdapterUsesBusinessIDFieldWhenConfigured(t *testing.T) {
 		},
 	}
 	key := storage.RecordKey{ID: int64(1001)}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
 
-	if err := adapter.ApplyDeltasWithOptions(context.Background(), spec, key, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{}); err != nil {
+	if err := adapter.ApplyDeltasWithOptions(context.Background(), spec, key, deltas, testResolverForKind(change.FieldNameBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{}); err != nil {
 		t.Fatalf("ApplyDeltasWithOptions returned error: %v", err)
 	}
 	if client.collection != "roles" || client.filter.Field != "roleId" || client.filter.Value != int64(1001) {
@@ -856,10 +856,10 @@ func TestMongoAdapterAppliesFieldIDChangesWithResolver(t *testing.T) {
 	spec := meta.TypeSpec{
 		Mongo: &meta.MongoSpec{Collection: "roles"},
 	}
-	deltas := change.DeltaSet{{Path: deltaPath(intKeyNode(deltaFieldItems, 1001), fieldNode(deltaFieldQty)), Kind: change.DeltaKindSet}}
-	resolver := testNamedBackendResolver(map[change.NameBackend]map[change.FieldID]string{
-		change.NameBackendGo:   deltaTestGoNames(),
-		change.NameBackendBSON: deltaTestBSONNames(),
+	deltas := change.DeltaSet{{Path: deltaPath(intKeyNode(deltaFieldItems, 1001), fieldNode(deltaFieldQty)), Op: change.OpSet}}
+	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
+		change.FieldNameGo:   deltaTestGoNames(),
+		change.FieldNameBSON: deltaTestBSONNames(),
 	})
 	values := testDeltaValues(map[string]any{"Items.1001.Quantity": int64(9)})
 
@@ -887,9 +887,9 @@ func TestMongoClusterRoutesSingleWriteByShardKey(t *testing.T) {
 		Route:      meta.RouteSpec{Type: "role"},
 		Collection: "roles",
 	}}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
 
-	err := cluster.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001), ShardKey: int64(7)}, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
+	err := cluster.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001), ShardKey: int64(7)}, deltas, testResolverForKind(change.FieldNameBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
 	if err != nil {
 		t.Fatalf("ApplyDeltasWithOptions returned error: %v", err)
 	}
@@ -920,9 +920,9 @@ func TestMongoClusterRejectsMissingDistinctRouteShardKey(t *testing.T) {
 		Route:      meta.RouteSpec{Type: "role", By: "serverId"},
 		Collection: "roles",
 	}}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
 
-	err := cluster.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
+	err := cluster.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testResolverForKind(change.FieldNameBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
 	if !errors.Is(err, storage.ErrInvalidRecordKey) {
 		t.Fatalf("ApplyDeltasWithOptions error = %v, want ErrInvalidRecordKey", err)
 	}

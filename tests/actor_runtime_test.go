@@ -110,7 +110,7 @@ func TestActorRuntimeRejectsConfirmBeforeStart(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := runtime.Confirm(ctx, pid, txactor.Delivery{MessageType: "battle.tick"}); !errors.Is(err, txactor.ErrRuntimeNotStarted) {
+	if err := runtime.TellConfirmed(ctx, pid, txactor.Delivery{MessageType: "battle.tick"}); !errors.Is(err, txactor.ErrRuntimeNotStarted) {
 		t.Fatalf("Confirm() error = %v, want ErrRuntimeNotStarted", err)
 	}
 }
@@ -213,7 +213,7 @@ func TestActorRuntimeLifecycleIntegration(t *testing.T) {
 	}
 	confirmCtx, cancelConfirm := context.WithTimeout(ctx, 5*time.Second)
 	defer cancelConfirm()
-	if err := runtime.Confirm(confirmCtx, pid, txactor.Delivery{MessageType: "role.accept", CommandID: 8, Payload: []byte{8}}); err != nil {
+	if err := runtime.TellConfirmed(confirmCtx, pid, txactor.Delivery{MessageType: "role.accept", CommandID: 8, Payload: []byte{8}}); err != nil {
 		t.Fatalf("Confirm() error = %v", err)
 	}
 	select {

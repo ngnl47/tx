@@ -7,19 +7,19 @@ import (
 	"github.com/ngnl47/tx/modules/discovery"
 )
 
-func TestServiceDirectoryResolveServiceOnlyReturnsRunning(t *testing.T) {
+func TestServiceDirectoryNextInstanceOnlyReturnsRunning(t *testing.T) {
 	directory := discovery.NewServiceDirectory()
 	directory.Replace([]discovery.Instance{
 		{ID: "battle-1", Services: []string{"battle"}, Endpoint: "10.0.0.1:9000", Status: discovery.StatusStopping},
 		{ID: "battle-2", Services: []string{"battle"}, Endpoint: "10.0.0.2:9000", Status: discovery.StatusRunning},
 	})
 
-	instance, ok := directory.ResolveService("battle")
+	instance, ok := directory.NextInstance("battle")
 	if !ok {
-		t.Fatal("ResolveService() returned no running battle instance")
+		t.Fatal("NextInstance() returned no running battle instance")
 	}
 	if instance.ID != "battle-2" {
-		t.Fatalf("ResolveService() instance ID = %q, want battle-2", instance.ID)
+		t.Fatalf("NextInstance() instance ID = %q, want battle-2", instance.ID)
 	}
 }
 
@@ -43,27 +43,27 @@ func TestServiceDirectoryRunningInstancesReturnsDefensiveRunningSnapshot(t *test
 	}
 
 	instances[0].Services[0] = "changed"
-	stored, ok := directory.ResolveID("battle-2")
+	stored, ok := directory.LookupInstance("battle-2")
 	if !ok || stored.Services[0] != "battle" {
 		t.Fatalf("directory instance = %#v, want original services", stored)
 	}
 	stored.Services[0] = "mutated"
-	stored, ok = directory.ResolveID("battle-2")
+	stored, ok = directory.LookupInstance("battle-2")
 	if !ok || stored.Services[0] != "battle" {
-		t.Fatalf("ResolveID() returned shared services = %#v", stored)
+		t.Fatalf("LookupInstance() returned shared services = %#v", stored)
 	}
-	resolved, ok := directory.ResolveService("battle")
+	resolved, ok := directory.NextInstance("battle")
 	if !ok {
-		t.Fatal("ResolveService() returned no running battle instance")
+		t.Fatal("NextInstance() returned no running battle instance")
 	}
 	resolved.Services[0] = "mutated"
-	resolved, ok = directory.ResolveService("battle")
+	resolved, ok = directory.NextInstance("battle")
 	if !ok || resolved.Services[0] != "battle" {
-		t.Fatalf("ResolveService() returned shared services = %#v", resolved)
+		t.Fatalf("NextInstance() returned shared services = %#v", resolved)
 	}
 }
 
-func TestServiceDirectoryResolveIDKeepsStoppingInstanceForDrain(t *testing.T) {
+func TestServiceDirectoryLookupInstanceKeepsStoppingInstanceForDrain(t *testing.T) {
 	directory := discovery.NewServiceDirectory()
 	directory.Replace([]discovery.Instance{{
 		ID:       "msgq-1",
@@ -72,12 +72,12 @@ func TestServiceDirectoryResolveIDKeepsStoppingInstanceForDrain(t *testing.T) {
 		Status:   discovery.StatusStopping,
 	}})
 
-	instance, ok := directory.ResolveID("msgq-1")
+	instance, ok := directory.LookupInstance("msgq-1")
 	if !ok {
-		t.Fatal("ResolveID() returned no stopping instance")
+		t.Fatal("LookupInstance() returned no stopping instance")
 	}
 	if instance.Endpoint != "10.0.0.1:9100" {
-		t.Fatalf("ResolveID() endpoint = %q, want 10.0.0.1:9100", instance.Endpoint)
+		t.Fatalf("LookupInstance() endpoint = %q, want 10.0.0.1:9100", instance.Endpoint)
 	}
 }
 
@@ -92,15 +92,15 @@ func TestServiceDirectoryKeepsDrainingInstanceForExactDrain(t *testing.T) {
 		t.Fatalf("Replace() error = %v", err)
 	}
 
-	if _, ok := directory.ResolveService("game"); ok {
-		t.Fatal("ResolveService() selected draining instance")
+	if _, ok := directory.NextInstance("game"); ok {
+		t.Fatal("NextInstance() selected draining instance")
 	}
-	instance, ok := directory.ResolveID("game-1@v42")
+	instance, ok := directory.LookupInstance("game-1@v42")
 	if !ok {
-		t.Fatal("ResolveID() returned no draining instance")
+		t.Fatal("LookupInstance() returned no draining instance")
 	}
 	if instance.Status != discovery.StatusDraining {
-		t.Fatalf("ResolveID() status = %q, want draining", instance.Status)
+		t.Fatalf("LookupInstance() status = %q, want draining", instance.Status)
 	}
 }
 
@@ -114,8 +114,8 @@ func TestServiceDirectoryReplaceRemovesMissingInstance(t *testing.T) {
 	}})
 	directory.Replace(nil)
 
-	if _, ok := directory.ResolveID("battle-1"); ok {
-		t.Fatal("ResolveID() returned instance removed from the latest snapshot")
+	if _, ok := directory.LookupInstance("battle-1"); ok {
+		t.Fatal("LookupInstance() returned instance removed from the latest snapshot")
 	}
 }
 

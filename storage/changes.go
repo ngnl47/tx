@@ -12,8 +12,8 @@ import (
 
 // ApplyOptions 描述变更落地时可选的通用写入语义。
 type ApplyOptions struct {
-	Upsert bool
-	TTL    int64
+	Upsert     bool
+	TTLSeconds int64
 }
 
 // DeltaApplier 定义支持 DeltaSet 直连落地的适配器。
@@ -116,8 +116,8 @@ func SaveWithOptions(ctx context.Context, applier DeltaApplier, store DeltaStore
 
 func mergeApplyOptions(defaults ApplyOptions, explicit ApplyOptions) ApplyOptions {
 	out := explicit
-	if out.TTL == 0 {
-		out.TTL = defaults.TTL
+	if out.TTLSeconds == 0 {
+		out.TTLSeconds = defaults.TTLSeconds
 	}
 	return out
 }

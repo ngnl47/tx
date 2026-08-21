@@ -39,7 +39,7 @@ func TestTCPAgentRoundTrip(t *testing.T) {
 	if string(request.Payload) != "bon-request" {
 		t.Fatalf("dispatch payload = %q", request.Payload)
 	}
-	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Message: []byte("bon-response")}); err != nil {
+	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("bon-response")}); err != nil {
 		t.Fatalf("publish outbound: %v", err)
 	}
 	outbound := readTCPAgentFrame(t, connection)
@@ -69,7 +69,7 @@ func TestWebSocketAgentRoundTrip(t *testing.T) {
 	if string(request.Payload) != "bon-request" {
 		t.Fatalf("dispatch payload = %q", request.Payload)
 	}
-	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Message: []byte("bon-response")}); err != nil {
+	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("bon-response")}); err != nil {
 		t.Fatalf("publish outbound: %v", err)
 	}
 	outbound := readWebSocketAgentFrame(t, ctx, connection)

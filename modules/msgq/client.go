@@ -135,11 +135,11 @@ func (r *SessionClientRouter) Acquire(ctx context.Context, roleID int64) (Sessio
 		return nil, err
 	}
 	if found && binding.Validate() == nil && binding.RoleID == roleID {
-		if instance, available := r.directory.ResolveID(binding.InstanceID); available && instance.Status == discovery.StatusRunning && providesService(instance, "msgq") {
+		if instance, available := r.directory.LookupInstance(binding.InstanceID); available && instance.Status == discovery.StatusRunning && providesService(instance, "msgq") {
 			return r.connection(ctx, instance)
 		}
 	}
-	instance, available := r.directory.ResolveService("msgq")
+	instance, available := r.directory.NextInstance("msgq")
 	if !available {
 		return nil, ErrRouteUnavailable
 	}

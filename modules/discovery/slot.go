@@ -87,7 +87,7 @@ func (r *SlotRouter) ResolveSlot(ctx context.Context, slotID string) (SlotTarget
 	if err != nil {
 		return SlotTarget{}, err
 	}
-	instance, ok := r.directory.ResolveID(assignment.RuntimeInstanceID)
+	instance, ok := r.directory.LookupInstance(assignment.RuntimeInstanceID)
 	if !ok || instance.Status != StatusRunning {
 		return SlotTarget{}, ErrSlotRuntimeUnavailable
 	}
@@ -106,7 +106,7 @@ func (r *SlotRouter) PromoteSlot(ctx context.Context, current, next SlotAssignme
 	if err := ValidateSlotPromotion(current, next); err != nil {
 		return err
 	}
-	instance, ok := r.directory.ResolveID(next.RuntimeInstanceID)
+	instance, ok := r.directory.LookupInstance(next.RuntimeInstanceID)
 	if !ok || instance.Status != StatusRunning {
 		return ErrSlotRuntimeUnavailable
 	}

@@ -20,13 +20,13 @@ const (
 // Server 在本进程维护客户端会话与未确认下行消息。
 // Redis 只保存角色到 msgq 实例的短期归属，不保存下行 payload。
 type Server struct {
-	instanceID      string
-	store           SessionStore
-	maxBacklog      int
-	maxBacklogBytes int
-	offlineTTL      time.Duration
-	sweepEvery      time.Duration
-	reaping         atomic.Bool
+	instanceID         string
+	store              SessionStore
+	maxBacklogMessages int
+	maxBacklogBytes    int
+	offlineTimeout     time.Duration
+	sweepInterval      time.Duration
+	reaping            atomic.Bool
 
 	mu       sync.RWMutex
 	sessions map[int64]*mailboxSession
@@ -37,9 +37,9 @@ type Server struct {
 
 // ServerOptions 配置会话邮箱服务。
 type ServerOptions struct {
-	InstanceID string
-	Store      SessionStore
-	MaxBacklog int
+	InstanceID         string
+	Store              SessionStore
+	MaxBacklogMessages int
 	// MaxBacklogBytes 限制每个会话中尚未确认 payload 的总字节数。零值使用安全默认值。
 	MaxBacklogBytes int
 	OfflineTimeout  time.Duration
@@ -82,8 +82,8 @@ type RecResult struct {
 // Header 仅填写 RoleID 时表示投递给该角色当前会话；同时填写 SessionID 时会校验会话一致性。
 type PubRequest struct {
 	Header SessionHeader
-	// Message 在 Pub 成功后转交 msgq 只读持有，调用方不得修改、append、复用或归还该切片。
-	Message []byte
+	// Payload 在 Pub 成功后转交 msgq 只读持有，调用方不得修改、append、复用或归还该切片。
+	Payload []byte
 }
 
 // PubResult 返回下行消息序号，供 Agent 写入协议包。
@@ -99,8 +99,8 @@ type FetchRequest struct {
 // FetchResult 是一条待发送消息及其确认序号。
 type FetchResult struct {
 	Seq int64
-	// Message 引用 msgq 当前持有的只读 payload，调用方不得修改、append、复用或归还该切片。
-	Message []byte
+	// Payload 引用 msgq 当前持有的只读数据，调用方不得修改、append、复用或归还该切片。
+	Payload []byte
 }
 
 // FetchSomeRequest 从当前会话批量读取尚未发送的下行消息。Max 为零时读取当前全部可发送消息。
@@ -139,8 +139,8 @@ type TopicsResult struct {
 // BroadcastTopicRequest 向当前 msgq 实例内订阅 topic 的会话发送 BON 数据。
 type BroadcastTopicRequest struct {
 	Topic string
-	// Message 在 BroadcastTopic 成功后转交 msgq 只读持有，多个会话可能共享同一引用。
-	Message []byte
+	// Payload 在 BroadcastTopic 成功后转交 msgq 只读持有，多个会话可能共享同一引用。
+	Payload []byte
 }
 
 // BroadcastTopicResult 说明一次本地广播的实际投递结果。
@@ -153,7 +153,7 @@ type BroadcastTopicResult struct {
 
 // NewServer 创建一个有界的进程内会话邮箱。
 func NewServer(options ServerOptions) (*Server, error) {
-	if !validValue(options.InstanceID) || options.Store == nil || options.MaxBacklog <= 0 || options.OfflineTimeout < 0 || options.SweepInterval < 0 {
+	if !validValue(options.InstanceID) || options.Store == nil || options.MaxBacklogMessages <= 0 || options.OfflineTimeout < 0 || options.SweepInterval < 0 {
 		return nil, ErrInvalidServer
 	}
 	if options.OfflineTimeout == 0 {
@@ -169,14 +169,14 @@ func NewServer(options ServerOptions) (*Server, error) {
 		options.SweepInterval = defaultSweepInterval
 	}
 	return &Server{
-		instanceID:      options.InstanceID,
-		store:           options.Store,
-		maxBacklog:      options.MaxBacklog,
-		maxBacklogBytes: options.MaxBacklogBytes,
-		offlineTTL:      options.OfflineTimeout,
-		sweepEvery:      options.SweepInterval,
-		sessions:        make(map[int64]*mailboxSession),
-		topics:          make(map[string]map[*mailboxSession]struct{}),
+		instanceID:         options.InstanceID,
+		store:              options.Store,
+		maxBacklogMessages: options.MaxBacklogMessages,
+		maxBacklogBytes:    options.MaxBacklogBytes,
+		offlineTimeout:     options.OfflineTimeout,
+		sweepInterval:      options.SweepInterval,
+		sessions:           make(map[int64]*mailboxSession),
+		topics:             make(map[string]map[*mailboxSession]struct{}),
 	}, nil
 }
 
@@ -279,13 +279,13 @@ func (s *Server) Pub(ctx context.Context, request PubRequest) (PubResult, error)
 		session.mu.Unlock()
 		return PubResult{}, ErrSessionChanged
 	}
-	if session.outbound.exceeds(s.maxBacklog, s.maxBacklogBytes, request.Message) {
+	if session.outbound.exceeds(s.maxBacklogMessages, s.maxBacklogBytes, request.Payload) {
 		header := session.header()
 		session.mu.Unlock()
 		s.evict(ctx, session, header)
 		return PubResult{}, ErrOutboundOverflow
 	}
-	seq := session.outbound.enqueue(request.Message)
+	seq := session.outbound.enqueue(request.Payload)
 	session.signal()
 	session.mu.Unlock()
 	return PubResult{Seq: seq}, nil
@@ -305,7 +305,7 @@ func (s *Server) Fetch(ctx context.Context, request FetchRequest) (FetchResult, 
 		}
 		if entry, found := session.outbound.dequeue(); found {
 			session.mu.Unlock()
-			return FetchResult{Seq: entry.seq, Message: entry.message}, nil
+			return FetchResult{Seq: entry.seq, Payload: entry.payload}, nil
 		}
 		notify := session.notify
 		session.mu.Unlock()
@@ -337,7 +337,7 @@ func (s *Server) FetchSome(ctx context.Context, request FetchSomeRequest) (Fetch
 		if len(entries) > 0 {
 			messages := make([]FetchResult, len(entries))
 			for index, entry := range entries {
-				messages[index] = FetchResult{Seq: entry.seq, Message: entry.message}
+				messages[index] = FetchResult{Seq: entry.seq, Payload: entry.payload}
 			}
 			session.mu.Unlock()
 			return FetchSomeResult{Messages: messages}, nil
@@ -470,13 +470,13 @@ func (s *Server) BroadcastTopic(ctx context.Context, request BroadcastTopicReque
 			session.mu.Unlock()
 			continue
 		}
-		if session.outbound.exceeds(s.maxBacklog, s.maxBacklogBytes, request.Message) {
+		if session.outbound.exceeds(s.maxBacklogMessages, s.maxBacklogBytes, request.Payload) {
 			result.Overflowed++
 			overflowed = append(overflowed, session)
 			session.mu.Unlock()
 			continue
 		}
-		session.outbound.enqueue(request.Message)
+		session.outbound.enqueue(request.Payload)
 		session.signal()
 		result.Delivered++
 		session.mu.Unlock()
@@ -557,7 +557,7 @@ func (s *Server) Reap(ctx context.Context, now time.Time) (int, error) {
 	var errs []error
 	for _, session := range sessions {
 		session.mu.Lock()
-		expired := now.Sub(session.lastActivity) >= s.offlineTTL || session.outbound.expired(now, s.offlineTTL)
+		expired := now.Sub(session.lastActivity) >= s.offlineTimeout || session.outbound.expired(now, s.offlineTimeout)
 		if !session.active || !expired {
 			session.mu.Unlock()
 			continue
@@ -592,7 +592,7 @@ func (s *Server) Start(ctx waitGroupContext) error {
 	}
 	return ctx.Go(func(context.Context) {
 		defer s.reaping.Store(false)
-		ticker := time.NewTicker(s.sweepEvery)
+		ticker := time.NewTicker(s.sweepInterval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -818,7 +818,7 @@ func (s *mailboxSession) header() SessionHeader {
 
 type outboundEntry struct {
 	seq       int64
-	message   []byte
+	payload   []byte
 	createdAt time.Time
 }
 
@@ -832,10 +832,10 @@ type outboundQueue struct {
 	bytes        int
 }
 
-func (q *outboundQueue) enqueue(message []byte) int64 {
+func (q *outboundQueue) enqueue(payload []byte) int64 {
 	q.nextSeq++
-	q.entries = append(q.entries, outboundEntry{seq: q.nextSeq, message: message, createdAt: time.Now()})
-	q.bytes += len(message)
+	q.entries = append(q.entries, outboundEntry{seq: q.nextSeq, payload: payload, createdAt: time.Now()})
+	q.bytes += len(payload)
 	return q.nextSeq
 }
 
@@ -881,7 +881,7 @@ func (q *outboundQueue) confirm(ack int64) error {
 	q.confirmedSeq = ack
 	cut := q.head
 	for cut < len(q.entries) && q.entries[cut].seq <= ack {
-		q.bytes -= len(q.entries[cut].message)
+		q.bytes -= len(q.entries[cut].payload)
 		q.entries[cut] = outboundEntry{}
 		cut++
 	}
@@ -900,8 +900,8 @@ func (q *outboundQueue) len() int {
 	return len(q.entries) - q.head
 }
 
-func (q *outboundQueue) exceeds(maxEntries, maxBytes int, message []byte) bool {
-	return q.len() >= maxEntries || len(message) > maxBytes-q.bytes
+func (q *outboundQueue) exceeds(maxMessages, maxBytes int, payload []byte) bool {
+	return q.len() >= maxMessages || len(payload) > maxBytes-q.bytes
 }
 
 func (q *outboundQueue) expired(now time.Time, ttl time.Duration) bool {

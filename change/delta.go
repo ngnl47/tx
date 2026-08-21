@@ -69,7 +69,7 @@ func JoinDeltaPathLimited(parent, child DeltaPath) (out DeltaPath, complete bool
 }
 
 // FullPath 按指定字段名体系把 DeltaPath 转换为字符串路径。
-func (p DeltaPath) FullPath(resolver FieldNameResolver, backend NameBackend) Path {
+func (p DeltaPath) FullPath(resolver FieldNameResolver, kind FieldNameKind) Path {
 	if p.Depth == 0 || resolver == nil {
 		return nil
 	}
@@ -79,9 +79,9 @@ func (p DeltaPath) FullPath(resolver FieldNameResolver, backend NameBackend) Pat
 		if node.Field == FieldNone {
 			return nil
 		}
-		name := resolver.FieldName(node.Field, backend)
+		name := resolver.FieldName(node.Field, kind)
 		if pathResolver, ok := resolver.(DeltaPathFieldNameResolver); ok {
-			name = pathResolver.DeltaPathFieldName(p, i, backend)
+			name = pathResolver.DeltaPathFieldName(p, i, kind)
 		}
 		if name == "" {
 			return nil
@@ -170,21 +170,21 @@ func (k PathKey) appendPath(path Path) Path {
 	}
 }
 
-// DeltaKind 描述 DeltaEntry 的变更语义。
-type DeltaKind uint8
+// DeltaOp 描述 DeltaEntry 的变更操作。
+type DeltaOp uint8
 
 const (
-	DeltaKindSet DeltaKind = iota + 1
-	// DeltaKindReplace 覆盖路径当前值，不保留旧对象中的未出现字段。
-	DeltaKindReplace
-	DeltaDelete
-	DeltaClear
+	OpSet DeltaOp = iota + 1
+	// OpReplace 覆盖路径当前值，不保留旧对象中的未出现字段。
+	OpReplace
+	OpDelete
+	OpClear
 )
 
-// Valid 判断 kind 是否为已定义的 Delta 变更语义。
-func (kind DeltaKind) Valid() bool {
-	switch kind {
-	case DeltaKindSet, DeltaKindReplace, DeltaDelete, DeltaClear:
+// Valid 判断 op 是否为已定义的 Delta 变更操作。
+func (op DeltaOp) Valid() bool {
+	switch op {
+	case OpSet, OpReplace, OpDelete, OpClear:
 		return true
 	default:
 		return false
@@ -194,21 +194,21 @@ func (kind DeltaKind) Valid() bool {
 // DeltaEntry 是一条扁平紧凑的字段级变更记录。
 type DeltaEntry struct {
 	Path DeltaPath
-	Kind DeltaKind
+	Op   DeltaOp
 }
 
 // DeltaSet 是按发生顺序追加的一组 DeltaEntry。
 type DeltaSet []DeltaEntry
 
-// ValidateKinds 校验非空路径条目的变更语义。
+// ValidateOps 校验非空路径条目的变更操作。
 //
-// 必须在 Compact 或存储边界归一化前调用，避免未知 kind 被同路径覆盖或降级逻辑掩盖。
-func (ds DeltaSet) ValidateKinds() error {
+// 必须在 Compact 或存储边界归一化前调用，避免未知操作被同路径覆盖或降级逻辑掩盖。
+func (ds DeltaSet) ValidateOps() error {
 	for index, delta := range ds {
-		if delta.Path.Depth == 0 || delta.Kind.Valid() {
+		if delta.Path.Depth == 0 || delta.Op.Valid() {
 			continue
 		}
-		return fmt.Errorf("change: unknown delta kind %d at index %d", delta.Kind, index)
+		return fmt.Errorf("change: unknown delta operation %d at index %d", delta.Op, index)
 	}
 	return nil
 }

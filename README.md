@@ -213,7 +213,7 @@ go func() {
 }()
 
 // 普通服务请求只选 running 实例，按稳定顺序轮转。
-battle, ok := directory.ResolveService("battle")
+battle, ok := directory.NextInstance("battle")
 
 // 业务需要自定义首次分配策略时，取得稳定排序的 running 候选快照。
 // 例如对局创建时按 roomID 选择实例；后续 roomID -> instanceID 的归属关系由业务维护。
@@ -224,11 +224,11 @@ if len(candidates) == 0 {
 roomOwner := candidates[uint64(roomID)%uint64(len(candidates))]
 
 // 会话等精确路由可继续解析 draining/stopping 实例，用于连接排空。
-msgq, ok := directory.ResolveID("msgq-2")
+msgq, ok := directory.LookupInstance("msgq-2")
 ```
 
-`ResolveService` 是健康服务副本的轮转选择；`RunningInstances` 返回稳定排序、与目录内部隔离的健康实例
-快照，供业务实现随机、哈希或负载策略；`ResolveID` 是已知实例的精确路由。`roleId -> msgq 实例` 的会话
+`NextInstance` 是健康服务副本的轮转选择；`RunningInstances` 返回稳定排序、与目录内部隔离的健康实例
+快照，供业务实现随机、哈希或负载策略；`LookupInstance` 是已知实例的精确路由。`roleId -> msgq 实例` 的会话
 绑定、消息 Seq/Ack 和有界下行邮箱属于 `msgq`；Virtual Actor 的 `(kind, identity)` 路由属于 Actor Cluster；
 固定实例 Actor 的实体归属由业务维护，不在服务发现包内。
 
@@ -275,7 +275,7 @@ if err != nil {
 mailbox, err := msgq.NewServer(msgq.ServerOptions{
     InstanceID:      "msgq-2",
     Store:           bindings,
-    MaxBacklog:      1024,    // 未确认下行条数上限。
+    MaxBacklogMessages:      1024,    // 未确认下行条数上限。
     MaxBacklogBytes: 8 << 20, // 未确认 payload 总字节数上限；零值使用 64 MiB 默认值。
 })
 if err != nil {
@@ -324,7 +324,7 @@ published, err := mailbox.Pub(ctx, msgq.PubRequest{
     Message: bonBody,
 })
 if err != nil {
-    return err // 队列到达 MaxBacklog 时返回 msgq.ErrOutboundOverflow。
+    return err // 队列到达 MaxBacklogMessages 时返回 msgq.ErrOutboundOverflow。
 }
 _ = published.Seq
 
@@ -346,7 +346,7 @@ if err != nil {
 `Fetch` 不在持有会话锁时等待，因此同一会话的 `Pub` 不会被长轮询阻塞。`Pub` 和 `BroadcastTopic` 成功后，传入的
 payload 所有权移交给 msgq：调用方不得再修改、`append`、复用或归还该 `[]byte`，直至对应消息被确认或会话关闭；
 `Fetch`/`FetchSome` 返回的 `Message` 同样只读。这样本地 topic 广播只保留一份已编码 BON 正文，多个会话条目共享它；
-跨进程 gRPC 调用会在传输边界自然得到独立字节副本。`MaxBacklog` 与 `MaxBacklogBytes` 分别限制未确认消息数量与
+跨进程 gRPC 调用会在传输边界自然得到独立字节副本。`MaxBacklogMessages` 与 `MaxBacklogBytes` 分别限制未确认消息数量与
 payload 总字节数；任一上限触发时当前会话会被移除并返回
 `ErrOutboundOverflow`，避免持续不确认的客户端无限占用 msgq 内存。客户端重连后由业务重同步恢复状态。
 
@@ -418,7 +418,7 @@ _ = result.Delivered
 mailbox, err := msgq.NewServer(msgq.ServerOptions{
     InstanceID:     instanceID,
     Store:          bindings,
-    MaxBacklog:     1024,
+    MaxBacklogMessages:     1024,
     MaxBacklogBytes: 8 << 20,
     OfflineTimeout: 60 * time.Second,
     SweepInterval:  2 * time.Second,
@@ -581,7 +581,7 @@ runtime:
     routeType: fusion
     prefix: txgame:msgq
     ttl: 48h
-    maxBacklog: 1024
+    maxBacklogMessages: 1024
     maxBacklogBytes: 8388608
     offlineTimeout: 60s
     sweepInterval: 2s
@@ -1000,7 +1000,7 @@ deadline 的 context；成功只表示消息已交给目标 Actor，不表示其
 confirmCtx, cancel := context.WithTimeout(ctx, time.Second)
 defer cancel()
 
-if err := runtime.Confirm(confirmCtx, pid, txactor.Delivery{
+if err := runtime.TellConfirmed(confirmCtx, pid, txactor.Delivery{
     MessageType: "role.rename",
     CommandID:   470001,
     Payload:     bonBody,
@@ -1479,9 +1479,9 @@ RoleLog.Error("role save failed", "roleId", roleID, "err", err)
 
 `meta.TypeSpec` 使用 Go 字段名作为内部字段身份；`TypeSpec.Fields` 的 key、`idField`、`routeBy`、
 `LoadFields()` 入参和 `ChangeDocument()` 默认输出都使用 Go 字段名。`meta.Field` 同时保存
-`JSONName`、`BSONName`、`MsgpackName`、`RedisName`，运行时适配器在靠近具体后端时再转换字段名。
+`JSONName`、`BSONName`、`MsgpackName`，运行时适配器在靠近具体使用边界时再选择命名体系。
 生成代码会额外提供两类名字入口：`GDRoleGoFieldName` 这类常量表示 Go 字段名，供部分读取和
-业务字段选择使用；`GDRoleFieldName(field, backend)` 这类函数按 `go/json/bson/msgpack` 返回
+业务字段选择使用；`GDRoleFieldName(field, kind)` 这类函数按 `go/json/bson/msgpack` 返回
 字段名本体。Redis、Mongo、Provider 是使用方策略：Redis 当前选择 JSON 名，Mongo 当前选择
 BSON 名，Provider 下行当前选择 Msgpack 名。
 
@@ -1500,10 +1500,10 @@ Store 内部变更文档使用 `RoleId`；完整 JSON 序列化使用 `roleId`�
 ```go
 field := data.NewGDRoleStore(nil).FieldIndex(data.GDRoleGoFieldRoleId)
 
-data.GDRoleFieldName(field, change.NameBackendGo)      // "RoleId"
-data.GDRoleFieldName(field, change.NameBackendJSON)    // "roleId"
-data.GDRoleFieldName(field, change.NameBackendBSON)    // "_id"
-data.GDRoleFieldName(field, change.NameBackendMsgpack) // "roleId"
+data.GDRoleFieldName(field, change.FieldNameGo)      // "RoleId"
+data.GDRoleFieldName(field, change.FieldNameJSON)    // "roleId"
+data.GDRoleFieldName(field, change.FieldNameBSON)    // "_id"
+data.GDRoleFieldName(field, change.FieldNameMsgpack) // "roleId"
 ```
 
 ## DeltaSet
@@ -1699,7 +1699,7 @@ deltas := role.Store().Deltas()
 ```go
 doc := role.Store().Deltas().DocumentWithResolver(
 	change.FieldNameResolverFunc(data.GDRoleFieldName),
-	change.NameBackendMsgpack,
+	change.FieldNameMsgpack,
 	role.Store(),
 )
 // 如果 HeadImg 的 msgpack 字段名是 hi，则 doc.Set["hi"] 是当前头像值。
@@ -1725,10 +1725,10 @@ role.ClearHeadImg()
 // Redis/Mongo 中会保留 headImg 字段，值为 ""。
 
 role.TasksStore().Clear()
-// map/slice：DeltaClear Tasks，表示容器仍存在，但内容为空。
+// map/slice：OpClear Tasks，表示容器仍存在，但内容为空。
 ```
 
-如果业务确实需要删除 map key 或 Mongo 字段，集合 Store 会使用 `DeltaDelete` 表达，例如
+如果业务确实需要删除 map key 或 Mongo 字段，集合 Store 会使用 `OpDelete` 表达，例如
 `Items[1001]` 被删除时，对 Mongo 边界可转换为 `$unset: {"items.1001": ""}`。
 
 日常业务优先使用 `Set*`：
@@ -1948,8 +1948,8 @@ runtime := txn.NewRuntime(fusion, txn.RuntimeConfig{
 	FlushInterval:          10 * time.Second,
 	ShutdownFlushTimeout:   30 * time.Second,
 	MaxRootDeltaEntries:    1024,
-	PendingMemorySoftLimit: 512 << 20, // 512 MiB
-	MemorySampleInterval:   time.Second,
+	HeapSoftLimitBytes:     512 << 20, // 512 MiB
+	HeapSampleInterval:     time.Second,
 	MaxPendingRoots:        0, // 可选的数量兜底
 })
 
@@ -2001,7 +2001,7 @@ if errors.Is(err, txn.ErrDeltaCollapseUnsupported) {
 }
 ```
 
-`PendingMemorySoftLimit` 是进程 Heap 告警阈值（字节）。Runtime 按 `MemorySampleInterval` 读取 `HeapAlloc`；超过阈值只记录 `txn runtime pending memory threshold exceeded` 告警，不拒绝新 root，也不改变已提交事务。采样间隔为 `0` 时每次新增 root 预检都采样；内存阈值为 `0` 时禁用该观测。部署应通过 `GOMEMLIMIT` 约束整个 Go 进程；不能用进程级 Heap 采样作为拒绝业务请求的根因。
+`HeapSoftLimitBytes` 是进程 Heap 告警阈值（字节）。Runtime 按 `HeapSampleInterval` 读取 `HeapAlloc`；超过阈值只记录 `txn runtime heap soft limit exceeded` 告警，不拒绝新 root，也不改变已提交事务。采样间隔为 `0` 时每次新增 root 预检都采样；内存阈值为 `0` 时禁用该观测。部署应通过 `GOMEMLIMIT` 约束整个 Go 进程；不能用进程级 Heap 采样作为拒绝业务请求的根因。
 
 `MaxPendingRoots` 是可选的数量硬保护。容量满时同样仅拒绝新 root，并返回 `txn.ErrPendingRootCapacity`；设置为 `0` 表示不限制。当前同一路径的重复写入不会无限增加 dirty 条目，例如连续修改 `role.Items[1001].Quantity`，最终只保留 `Items.1001.Quantity` 的最新状态；但持续新增不同 key 仍会增加路径数量。生成的 map/slice Store 会缓存读取过的子 Store 以保持路径身份，不过投影和清理只遍历实际变脏的子路径，不会扫描全部缓存元素。不要在 setter 内加入隐式 Flush 或 I/O；由 Runtime 的调度周期和业务侧反压策略决定何时落盘。
 
@@ -2040,7 +2040,7 @@ role.ClearName()
 change.Document{Set: map[string]any{"Name": ""}}
 ```
 
-要删除 map 中某个元素，使用集合 wrapper 的 `Delete(key)`；它会生成 `DeltaDelete`，Redis 移除 JSON 路径，Mongo 转成 `$unset`。
+要删除 map 中某个元素，使用集合 wrapper 的 `Delete(key)`；它会生成 `OpDelete`，Redis 移除 JSON 路径，Mongo 转成 `$unset`。
 
 ### 集合字段和路径标脏
 
@@ -2165,14 +2165,14 @@ if err := storage.Save(ctx, fusionStore, store); err != nil {
 
 生成 Store 在保存/投影边界输出 `change.DeltaSet`：
 
-- `DeltaKindSet`：设置标量字段值，或修改已存在集合元素的子字段。
-- `DeltaKindReplace`：覆盖集合、结构体指针或集合元素的当前值。它保留到 Redis 边界，Lua 按路径直接赋值，不走递归 merge，因此旧对象的遗漏字段不会残留。
-- `DeltaDelete`：删除字段或集合元素，Mongo 边界会转成 `$unset`，Redis 边界会从 JSON 文档移除该路径。
-- `DeltaClear`：清空集合容器，保留字段但写为空 map/slice。
+- `OpSet`：设置标量字段值，或修改已存在集合元素的子字段。
+- `OpReplace`：覆盖集合、结构体指针或集合元素的当前值。它保留到 Redis 边界，Lua 按路径直接赋值，不走递归 merge，因此旧对象的遗漏字段不会残留。
+- `OpDelete`：删除字段或集合元素，Mongo 边界会转成 `$unset`，Redis 边界会从 JSON 文档移除该路径。
+- `OpClear`：清空集合容器，保留字段但写为空 map/slice。
 - `FieldID`：生成代码提供的稳定字段编号，避免热路径反复保存字段名字符串。
 - `DeltaPath`：字段路径。生成集合 Store 会在这里表达 map key、slice index 和生成对象子字段路径。
 
-`DeltaClear` 的投影会保留集合类别，不能把空 slice 误发成空对象：
+`OpClear` 的投影会保留集合类别，不能把空 slice 误发成空对象：
 
 ```go
 role.ClearItems()
@@ -2263,7 +2263,7 @@ Redis adapter 收到 Delta 变更后会：
 1. 根据 `TypeSpec` 和 `RecordKey` 生成 Redis key 前缀，例如 `role:{470001}`。
 2. 根据字段的 Go 字段名定位 `redis:"subKey:..."`，再用 JSON 字段名写入 main 文档或 subKey 文档。
 3. 把每个文档的 patch 编码成 JSON 字符串。
-4. 调用 Lua 脚本：顶层简单 `DeltaKindSet` 使用 merge；嵌套路径和 `DeltaKindReplace` 使用有序路径操作直接覆盖目标路径；两者都会在 Redis 内部 `cjson.decode` 后再编码写回。
+4. 调用 Lua 脚本：顶层简单 `OpSet` 使用 merge；嵌套路径和 `OpReplace` 使用有序路径操作直接覆盖目标路径；两者都会在 Redis 内部 `cjson.decode` 后再编码写回。
 5. 按 `ApplyOptions.TTL` 设置或续期 Redis 热数据。
 6. 递增 `<mainKey>@v` 版本键，并让它与 main/subKey 使用同一有效 TTL；持久化热数据时版本键也会持久化。
 
@@ -2329,7 +2329,7 @@ err = storage.Save(ctx, redisCluster, role.Store())
 // Redis 仍保持 "rankInfo":7。
 ```
 
-需要有意重建整个复杂字段时，使用字段级 `Set*`，让它生成 `DeltaKindReplace` 覆盖目标字段，而不是尝试
+需要有意重建整个复杂字段时，使用字段级 `Set*`，让它生成 `OpReplace` 覆盖目标字段，而不是尝试
 从错误类型的父节点继续局部写入：
 
 ```go
@@ -3090,7 +3090,7 @@ handler 会在这个流程外层持有同一条记录的 Redis 锁，避免多�
 
 运维侧应关注 Scheduler 错误日志、重试次数和队列积压时间。如果某类任务持续失败，优先排查对应类型的 Redis 热文档是否能正常反序列化、Mongo 路由/过滤条件是否正确、以及目标集合是否可写。队列中的失败原因不会写入 Redis 状态；需要更完整的告警和指标时，应通过项目自己的日志、监控或后续可插拔 observer 接入。
 
-通过项目健康 gate 后，Fusion Strategy 内部先查 Redis，未命中时才回源 Mongo；Redis 命中不会在本次请求里额外 Ping Mongo。单条回源会先获取记录级 Redis 锁，并在锁内再次读取 Redis：如果第二次读取命中，直接返回 Redis 热数据；只有第二次仍未命中时，才从 Mongo 全量读取文档，写回 Redis 热数据并使用 `delayDelTime` 续期，然后按请求字段返回结果。批量读取先合并第一次 Redis 查询；当 Mongo reader 支持批量读取时，所有 miss 会先通过一次 Mongo 全文批量读取取得候选文档，再逐条获取记录锁并二次读取 Redis。锁内已经被其他请求回填的记录直接返回最新 Redis 文档，仍未命中时才写入该条候选 Mongo 文档；因此批量回源不会用旧候选覆盖另一条回填完成后的热数据。该路径要求 `delayDelTime` 必须大于 0，避免生成没有 TTL 的 Redis 热数据；同时必须已装配带写入选项的 Redis 文档替换器和记录锁，缺少任一组件时会返回 `fusion.ErrStrategyDependenciesNotConfigured`，不会降级成只读 Mongo。显式使用 `LoadOptions.DontLoadToRedis` 时，才直接从 Mongo 按请求字段读取且不回填 Redis，适合低频只读场景。
+通过项目健康 gate 后，Fusion Strategy 内部先查 Redis，未命中时才回源 Mongo；Redis 命中不会在本次请求里额外 Ping Mongo。单条回源会先获取记录级 Redis 锁，并在锁内再次读取 Redis：如果第二次读取命中，直接返回 Redis 热数据；只有第二次仍未命中时，才从 Mongo 全量读取文档，写回 Redis 热数据并使用 `delayDelTime` 续期，然后按请求字段返回结果。批量读取先合并第一次 Redis 查询；当 Mongo reader 支持批量读取时，所有 miss 会先通过一次 Mongo 全文批量读取取得候选文档，再逐条获取记录锁并二次读取 Redis。锁内已经被其他请求回填的记录直接返回最新 Redis 文档，仍未命中时才写入该条候选 Mongo 文档；因此批量回源不会用旧候选覆盖另一条回填完成后的热数据。该路径要求 `delayDelTime` 必须大于 0，避免生成没有 TTL 的 Redis 热数据；同时必须已装配带写入选项的 Redis 文档替换器和记录锁，缺少任一组件时会返回 `fusion.ErrStrategyDependenciesNotConfigured`，不会降级成只读 Mongo。显式使用 `LoadOptions.SkipRedisBackfill` 时，才直接从 Mongo 按请求字段读取且不回填 Redis，适合低频只读场景。
 
 部分字段读取的优化主要发生在 Redis 热数据层：运行时按 main/subKey key 粒度减少 Redis 读取，随后按字段过滤返回文档；Redis 和 Mongo 中保存的仍是全量数据。只请求 subKey 字段时，Redis 可以只读取对应 subKey 文档，不要求主文档同时命中。
 
@@ -3211,7 +3211,7 @@ doc, exists, err := fusionStore.LoadDocumentWithOptions(
 	ctx,
 	data.GDRoleTypeSpec(),
 	data.GDRoleRecordKey(470001),
-	fusion.LoadOptions{DontLoadToRedis: true},
+	fusion.LoadOptions{SkipRedisBackfill: true},
 	"Name",
 )
 ```
@@ -3297,7 +3297,7 @@ env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp /Users/a47/sdk/go1.26
 ### Redis 中没有热数据
 
 - Redis mode 或 Fusion mode 写入后才会产生 Redis 热数据；Mongo-only 类型不会写 Redis。
-- Fusion 读取 Mongo 后默认会回填 Redis，但 `LoadOptions.DontLoadToRedis` 会关闭回填。
+- Fusion 读取 Mongo 后默认会回填 Redis，但 `LoadOptions.SkipRedisBackfill` 会关闭回填。
 - 检查 Redis routeType 是否能在 yml 路由表中找到 endpoint。
 - 检查 `RecordKey.ShardKey` 是否正确；`routeBy != idField` 时缺少 ShardKey 会导致路由或 hash tag 不符合预期。
 - 检查 `delayDelTime`，Redis key 可能已经按 TTL 过期。

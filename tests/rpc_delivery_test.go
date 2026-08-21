@@ -18,7 +18,7 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 )
 
-func TestRPCResolveServiceRouteUsesRunningInstance(t *testing.T) {
+func TestRPCNextInstanceRouteUsesRunningInstance(t *testing.T) {
 	directory := discovery.NewServiceDirectory()
 	if err := directory.Replace([]discovery.Instance{
 		{

@@ -128,8 +128,8 @@ func (a *Adapter) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec
 func withoutUpsertIDDelta(deltas change.DeltaSet, resolver change.FieldNameResolver) change.DeltaSet {
 	out := make(change.DeltaSet, 0, len(deltas))
 	for _, delta := range deltas {
-		bsonPath := delta.Path.FullPath(resolver, change.NameBackendBSON)
-		if len(bsonPath) == 1 && bsonPath[0] == "_id" && (delta.Kind == change.DeltaKindSet || delta.Kind == change.DeltaKindReplace) {
+		bsonPath := delta.Path.FullPath(resolver, change.FieldNameBSON)
+		if len(bsonPath) == 1 && bsonPath[0] == "_id" && (delta.Op == change.OpSet || delta.Op == change.OpReplace) {
 			continue
 		}
 		out = append(out, delta)

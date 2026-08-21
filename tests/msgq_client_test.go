@@ -93,9 +93,9 @@ func TestSessionClientRouterSelectsRunningServiceWhenNoOwner(t *testing.T) {
 
 func TestLocalSessionClientDelegatesMailboxCalls(t *testing.T) {
 	mailbox, err := msgq.NewServer(msgq.ServerOptions{
-		InstanceID: "msgq-local",
-		Store:      newMailboxSessionStore(),
-		MaxBacklog: 4,
+		InstanceID:         "msgq-local",
+		Store:              newMailboxSessionStore(),
+		MaxBacklogMessages: 4,
 	})
 	if err != nil {
 		t.Fatalf("new mailbox: %v", err)
@@ -111,14 +111,14 @@ func TestLocalSessionClientDelegatesMailboxCalls(t *testing.T) {
 	if _, err := client.Rec(context.Background(), msgq.RecRequest{Header: header, Seq: 1}); err != nil {
 		t.Fatalf("record inbound message: %v", err)
 	}
-	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Message: []byte("bon")}); err != nil {
+	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Payload: []byte("bon")}); err != nil {
 		t.Fatalf("publish outbound message: %v", err)
 	}
 	batch, err := client.FetchSome(context.Background(), msgq.FetchSomeRequest{Header: header, Max: 1})
 	if err != nil {
 		t.Fatalf("fetch outbound message: %v", err)
 	}
-	if len(batch.Messages) != 1 || batch.Messages[0].Seq != 1 || string(batch.Messages[0].Message) != "bon" {
+	if len(batch.Messages) != 1 || batch.Messages[0].Seq != 1 || string(batch.Messages[0].Payload) != "bon" {
 		t.Fatalf("fetched batch = %#v", batch)
 	}
 	if err := client.Confirm(context.Background(), msgq.ConfirmRequest{Header: header, Ack: 1}); err != nil {
@@ -151,9 +151,9 @@ func TestFixedSessionClientRouterAlwaysReturnsSharedLocalClient(t *testing.T) {
 
 func TestGRPCSessionClientDelegatesMailboxCalls(t *testing.T) {
 	mailbox, err := msgq.NewServer(msgq.ServerOptions{
-		InstanceID: "msgq-remote",
-		Store:      newMailboxSessionStore(),
-		MaxBacklog: 4,
+		InstanceID:         "msgq-remote",
+		Store:              newMailboxSessionStore(),
+		MaxBacklogMessages: 4,
 	})
 	if err != nil {
 		t.Fatalf("new mailbox: %v", err)
@@ -183,14 +183,14 @@ func TestGRPCSessionClientDelegatesMailboxCalls(t *testing.T) {
 	if _, err := client.Rec(context.Background(), msgq.RecRequest{Header: header, Seq: 1}); err != nil {
 		t.Fatalf("record inbound message: %v", err)
 	}
-	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Message: []byte("bon")}); err != nil {
+	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Payload: []byte("bon")}); err != nil {
 		t.Fatalf("publish outbound message: %v", err)
 	}
 	batch, err := client.FetchSome(context.Background(), msgq.FetchSomeRequest{Header: header, Max: 1})
 	if err != nil {
 		t.Fatalf("fetch outbound message: %v", err)
 	}
-	if len(batch.Messages) != 1 || batch.Messages[0].Seq != 1 || string(batch.Messages[0].Message) != "bon" {
+	if len(batch.Messages) != 1 || batch.Messages[0].Seq != 1 || string(batch.Messages[0].Payload) != "bon" {
 		t.Fatalf("fetched batch = %#v", batch)
 	}
 	if err := client.Confirm(context.Background(), msgq.ConfirmRequest{Header: header, Ack: 1}); err != nil {

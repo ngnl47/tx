@@ -36,12 +36,12 @@ var benchmarkFusionErr error
 func BenchmarkFusionStrategyApplyDeltas(b *testing.B) {
 	ctx := context.Background()
 	strategy := fusion.Strategy{
-		Redis:       benchmarkFusionRedisApplier{},
-		MongoLoader: benchmarkFusionMongoLoader{},
-		MongoQueue:  benchmarkFusionQueue{},
+		RedisApplier: benchmarkFusionRedisApplier{},
+		MongoLoader:  benchmarkFusionMongoLoader{},
+		MongoQueue:   benchmarkFusionQueue{},
 	}
-	resolver := change.FieldNameResolverFunc(func(field change.FieldID, backend change.NameBackend) string {
-		if backend == change.NameBackendGo {
+	resolver := change.FieldNameResolverFunc(func(field change.FieldID, kind change.FieldNameKind) string {
+		if kind == change.FieldNameGo {
 			return "Power"
 		}
 		return "power"
@@ -56,7 +56,7 @@ func BenchmarkFusionStrategyApplyDeltas(b *testing.B) {
 			DelaySave: meta.Duration{Duration: 10 * time.Minute},
 		},
 	}
-	delta := change.DeltaEntry{Path: benchmarkFusionDeltaPath(change.PathNode{Field: 1}), Kind: change.DeltaKindSet}
+	delta := change.DeltaEntry{Path: benchmarkFusionDeltaPath(change.PathNode{Field: 1}), Op: change.OpSet}
 	deltas := change.DeltaSet{delta}
 
 	for _, benchmarkCase := range []struct {

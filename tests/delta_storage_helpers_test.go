@@ -2,25 +2,25 @@ package tests
 
 import "github.com/ngnl47/tx/change"
 
-func testBackendResolver(backend change.NameBackend, names map[change.FieldID]string) change.FieldNameResolver {
+func testResolverForKind(kind change.FieldNameKind, names map[change.FieldID]string) change.FieldNameResolver {
 	return testFieldNameResolver{
-		change.NameBackendGo: names,
-		backend:              names,
+		change.FieldNameGo: names,
+		kind:               names,
 	}
 }
 
-func testNamedBackendResolver(namesByBackend map[change.NameBackend]map[change.FieldID]string) change.FieldNameResolver {
-	return testFieldNameResolver(namesByBackend)
+func testNamedFieldResolver(namesByKind map[change.FieldNameKind]map[change.FieldID]string) change.FieldNameResolver {
+	return testFieldNameResolver(namesByKind)
 }
 
 func testDeltaValues(values map[string]any) change.DeltaValueResolver {
 	return change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
 		value, ok := values[path.FullPath(testFieldNameResolver{
-			change.NameBackendGo:      deltaTestGoNames(),
-			change.NameBackendJSON:    deltaTestJSONNames(),
-			change.NameBackendBSON:    deltaTestBSONNames(),
-			change.NameBackendMsgpack: deltaTestJSONNames(),
-		}, change.NameBackendGo).String()]
+			change.FieldNameGo:      deltaTestGoNames(),
+			change.FieldNameJSON:    deltaTestJSONNames(),
+			change.FieldNameBSON:    deltaTestBSONNames(),
+			change.FieldNameMsgpack: deltaTestJSONNames(),
+		}, change.FieldNameGo).String()]
 		return value, ok
 	})
 }

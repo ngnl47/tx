@@ -12,12 +12,12 @@ import (
 
 func TestMongoBuildUpdateDocumentWithDeltasUsesBSONNames(t *testing.T) {
 	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet},
-		{Path: deltaPath(fieldNode(deltaFieldItems)), Kind: change.DeltaClear},
+		{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet},
+		{Path: deltaPath(fieldNode(deltaFieldItems)), Op: change.OpClear},
 	}
 	resolver := testFieldNameResolver{
-		change.NameBackendGo:   {deltaFieldName: "Name", deltaFieldItems: "Items"},
-		change.NameBackendBSON: {deltaFieldName: "rn", deltaFieldItems: "items"},
+		change.FieldNameGo:   {deltaFieldName: "Name", deltaFieldItems: "Items"},
+		change.FieldNameBSON: {deltaFieldName: "rn", deltaFieldItems: "items"},
 	}
 	spec := meta.TypeSpec{
 		Type: meta.Type{
@@ -43,11 +43,11 @@ func TestMongoBuildUpdateDocumentWithDeltasUsesBSONNames(t *testing.T) {
 
 func TestMongoBuildUpdateDocumentWithDeltasRejectsImmutableID(t *testing.T) {
 	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet},
+		{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet},
 	}
 	resolver := testFieldNameResolver{
-		change.NameBackendGo:   {deltaFieldName: "RoleId"},
-		change.NameBackendBSON: {deltaFieldName: "_id"},
+		change.FieldNameGo:   {deltaFieldName: "RoleId"},
+		change.FieldNameBSON: {deltaFieldName: "_id"},
 	}
 
 	_, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver, testDeltaValueResolver{deltaFieldName: int64(1001)})
@@ -57,10 +57,10 @@ func TestMongoBuildUpdateDocumentWithDeltasRejectsImmutableID(t *testing.T) {
 }
 
 func TestMongoBuildUpdateDocumentWithDeltasRejectsMissingCurrentValue(t *testing.T) {
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
 	resolver := testFieldNameResolver{
-		change.NameBackendGo:   {deltaFieldName: "Name"},
-		change.NameBackendBSON: {deltaFieldName: "name"},
+		change.FieldNameGo:   {deltaFieldName: "Name"},
+		change.FieldNameBSON: {deltaFieldName: "name"},
 	}
 	_, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver, nil)
 	if err == nil || !strings.Contains(err.Error(), "name") {
@@ -70,10 +70,10 @@ func TestMongoBuildUpdateDocumentWithDeltasRejectsMissingCurrentValue(t *testing
 
 func TestMongoBuildUpdateDocumentWithDeltasRejectsUnresolvedFieldPath(t *testing.T) {
 	const unknownField change.FieldID = 99
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(unknownField)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(unknownField)), Op: change.OpSet}}
 	resolver := testFieldNameResolver{
-		change.NameBackendGo:   {deltaFieldName: "Name"},
-		change.NameBackendBSON: {deltaFieldName: "name"},
+		change.FieldNameGo:   {deltaFieldName: "Name"},
+		change.FieldNameBSON: {deltaFieldName: "name"},
 	}
 
 	_, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver, testDeltaValueResolver{unknownField: "alice"})
@@ -82,24 +82,24 @@ func TestMongoBuildUpdateDocumentWithDeltasRejectsUnresolvedFieldPath(t *testing
 	}
 }
 
-func TestMongoBuildUpdateDocumentWithDeltasRejectsUnknownDeltaKind(t *testing.T) {
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKind(99)}}
+func TestMongoBuildUpdateDocumentWithDeltasRejectsUnknownDeltaOp(t *testing.T) {
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.DeltaOp(99)}}
 	resolver := testFieldNameResolver{
-		change.NameBackendGo:   {deltaFieldName: "Name"},
-		change.NameBackendBSON: {deltaFieldName: "name"},
+		change.FieldNameGo:   {deltaFieldName: "Name"},
+		change.FieldNameBSON: {deltaFieldName: "name"},
 	}
 
 	_, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver, testDeltaValueResolver{deltaFieldName: "alice"})
-	if err == nil || !strings.Contains(err.Error(), "unknown delta kind") {
-		t.Fatalf("BuildUpdateDocumentWithDeltas error = %v, want unknown delta kind error", err)
+	if err == nil || !strings.Contains(err.Error(), "unknown delta operation") {
+		t.Fatalf("BuildUpdateDocumentWithDeltas error = %v, want unknown delta operation error", err)
 	}
 }
 
 func TestMongoBuildUpdateDocumentWithDeltasAllowsResolvedNilValue(t *testing.T) {
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
 	resolver := testFieldNameResolver{
-		change.NameBackendGo:   {deltaFieldName: "Name"},
-		change.NameBackendBSON: {deltaFieldName: "name"},
+		change.FieldNameGo:   {deltaFieldName: "Name"},
+		change.FieldNameBSON: {deltaFieldName: "name"},
 	}
 	update, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver, change.DeltaValueResolverFunc(func(change.DeltaPath) (any, bool) {
 		return nil, true
@@ -114,12 +114,12 @@ func TestMongoBuildUpdateDocumentWithDeltasAllowsResolvedNilValue(t *testing.T) 
 
 func TestMongoBuildUpdateDocumentWithDeltasDoesNotMutateSource(t *testing.T) {
 	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet},
-		{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet},
+		{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet},
+		{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet},
 	}
 	resolver := testFieldNameResolver{
-		change.NameBackendGo:   {deltaFieldName: "Name"},
-		change.NameBackendBSON: {deltaFieldName: "name"},
+		change.FieldNameGo:   {deltaFieldName: "Name"},
+		change.FieldNameBSON: {deltaFieldName: "name"},
 	}
 	if _, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver, testDeltaValueResolver{deltaFieldName: "alice"}); err != nil {
 		t.Fatalf("BuildUpdateDocumentWithDeltas returned error: %v", err)
@@ -131,15 +131,15 @@ func TestMongoBuildUpdateDocumentWithDeltasDoesNotMutateSource(t *testing.T) {
 
 func TestMongoBuildUpdateDocumentWithDeltasUsesAncestorReplacementForLaterChild(t *testing.T) {
 	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(deltaFieldItems)), Kind: change.DeltaKindReplace},
-		{Path: deltaPath(intKeyNode(deltaFieldItems, 1001), fieldNode(deltaFieldQty)), Kind: change.DeltaDelete},
+		{Path: deltaPath(fieldNode(deltaFieldItems)), Op: change.OpReplace},
+		{Path: deltaPath(intKeyNode(deltaFieldItems, 1001), fieldNode(deltaFieldQty)), Op: change.OpDelete},
 	}
 	resolver := testFieldNameResolver{
-		change.NameBackendGo: {
+		change.FieldNameGo: {
 			deltaFieldItems: "Items",
 			deltaFieldQty:   "Quantity",
 		},
-		change.NameBackendBSON: {
+		change.FieldNameBSON: {
 			deltaFieldItems: "items",
 			deltaFieldQty:   "quantity",
 		},
@@ -178,12 +178,12 @@ func TestMongoBuildUpdateDocumentWithDeltasDowngradesUnsafeStringMapKey(t *testi
 				Field: fieldLabels,
 				Key:   change.PathKey{Kind: change.KeyString, Str: "foo.bar"},
 			}),
-			Kind: change.DeltaKindSet,
+			Op: change.OpSet,
 		},
 	}
 	resolver := testFieldNameResolver{
-		change.NameBackendGo:   {fieldLabels: "Labels"},
-		change.NameBackendBSON: {fieldLabels: "labels"},
+		change.FieldNameGo:   {fieldLabels: "Labels"},
+		change.FieldNameBSON: {fieldLabels: "labels"},
 	}
 	fullLabels := map[string]int{"foo.bar": 7}
 	values := change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
@@ -219,7 +219,7 @@ func TestMongoBuildUpdateDocumentWithDeltasKeepsSafeAncestorForNestedUnsafeStrin
 				change.PathNode{Field: fieldLabels, Key: change.PathKey{Kind: change.KeyString, Str: "safe"}},
 				change.PathNode{Field: fieldValue},
 			),
-			Kind: change.DeltaKindSet,
+			Op: change.OpSet,
 		},
 		{
 			Path: deltaPath(
@@ -227,14 +227,14 @@ func TestMongoBuildUpdateDocumentWithDeltasKeepsSafeAncestorForNestedUnsafeStrin
 				change.PathNode{Field: fieldLabels, Key: change.PathKey{Kind: change.KeyString, Str: "foo.bar"}},
 				change.PathNode{Field: fieldValue},
 			),
-			Kind: change.DeltaKindSet,
+			Op: change.OpSet,
 		},
 	}
 	resolver := testFieldNameResolver{
-		change.NameBackendGo: {
+		change.FieldNameGo: {
 			fieldItems: "Items", fieldLabels: "Labels", fieldValue: "Value",
 		},
-		change.NameBackendBSON: {
+		change.FieldNameBSON: {
 			fieldItems: "items", fieldLabels: "labels", fieldValue: "value",
 		},
 	}

@@ -32,8 +32,8 @@ func intKeyNode(field change.FieldID, key int64) change.PathNode {
 
 func TestDeltaSetCompactKeepsLatestSamePath(t *testing.T) {
 	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaDelete},
-		{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet},
+		{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpDelete},
+		{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet},
 	}
 
 	compacted := deltas.Compact()
@@ -41,8 +41,8 @@ func TestDeltaSetCompactKeepsLatestSamePath(t *testing.T) {
 	if len(compacted) != 1 {
 		t.Fatalf("compacted len = %d, want 1: %#v", len(compacted), compacted)
 	}
-	if compacted[0].Kind != change.DeltaKindSet {
-		t.Fatalf("remaining kind = %v, want DeltaKindSet", compacted[0].Kind)
+	if compacted[0].Op != change.OpSet {
+		t.Fatalf("remaining op = %v, want OpSet", compacted[0].Op)
 	}
 }
 
@@ -50,11 +50,11 @@ func TestDeltaSetCompactLaterAncestorRemovesEarlierChild(t *testing.T) {
 	deltas := change.DeltaSet{
 		{
 			Path: deltaPath(intKeyNode(deltaFieldItems, 1001), fieldNode(deltaFieldQty)),
-			Kind: change.DeltaKindSet,
+			Op:   change.OpSet,
 		},
 		{
 			Path: deltaPath(intKeyNode(deltaFieldItems, 1001)),
-			Kind: change.DeltaDelete,
+			Op:   change.OpDelete,
 		},
 	}
 
@@ -63,8 +63,8 @@ func TestDeltaSetCompactLaterAncestorRemovesEarlierChild(t *testing.T) {
 	if len(compacted) != 1 {
 		t.Fatalf("compacted len = %d, want 1: %#v", len(compacted), compacted)
 	}
-	if compacted[0].Kind != change.DeltaDelete {
-		t.Fatalf("remaining kind = %v, want DeltaDelete", compacted[0].Kind)
+	if compacted[0].Op != change.OpDelete {
+		t.Fatalf("remaining op = %v, want OpDelete", compacted[0].Op)
 	}
 	if !compacted[0].Path.Equal(deltaPath(intKeyNode(deltaFieldItems, 1001))) {
 		t.Fatalf("remaining path = %#v, want Items[1001]", compacted[0].Path)
@@ -75,11 +75,11 @@ func TestDeltaSetCompactKeepsLaterChildAfterEarlierAncestor(t *testing.T) {
 	deltas := change.DeltaSet{
 		{
 			Path: deltaPath(fieldNode(deltaFieldItems)),
-			Kind: change.DeltaKindSet,
+			Op:   change.OpSet,
 		},
 		{
 			Path: deltaPath(intKeyNode(deltaFieldItems, 1001), fieldNode(deltaFieldQty)),
-			Kind: change.DeltaKindSet,
+			Op:   change.OpSet,
 		},
 	}
 
@@ -100,11 +100,11 @@ func TestDeltaSetCompactKeepsSameDepthWildcardAndKeyedPaths(t *testing.T) {
 	deltas := change.DeltaSet{
 		{
 			Path: deltaPath(intKeyNode(deltaFieldItems, 1001), fieldNode(deltaFieldQty)),
-			Kind: change.DeltaKindSet,
+			Op:   change.OpSet,
 		},
 		{
 			Path: deltaPath(fieldNode(deltaFieldItems), fieldNode(deltaFieldQty)),
-			Kind: change.DeltaKindSet,
+			Op:   change.OpSet,
 		},
 	}
 
@@ -119,17 +119,17 @@ func TestDeltaSetCompactLaterWildcardAncestorRemovesKeyedChild(t *testing.T) {
 	deltas := change.DeltaSet{
 		{
 			Path: deltaPath(intKeyNode(deltaFieldItems, 1001), fieldNode(deltaFieldQty)),
-			Kind: change.DeltaKindSet,
+			Op:   change.OpSet,
 		},
 		{
 			Path: deltaPath(fieldNode(deltaFieldItems)),
-			Kind: change.DeltaKindReplace,
+			Op:   change.OpReplace,
 		},
 	}
 
 	compacted := deltas.Compact()
 
-	if len(compacted) != 1 || compacted[0].Kind != change.DeltaKindReplace {
+	if len(compacted) != 1 || compacted[0].Op != change.OpReplace {
 		t.Fatalf("compacted = %#v, want later Items replacement only", compacted)
 	}
 }
@@ -138,11 +138,11 @@ func TestDeltaSetCompactKeepsSetAfterDeleteOnSamePath(t *testing.T) {
 	deltas := change.DeltaSet{
 		{
 			Path: deltaPath(intKeyNode(deltaFieldItems, 1001)),
-			Kind: change.DeltaDelete,
+			Op:   change.OpDelete,
 		},
 		{
 			Path: deltaPath(intKeyNode(deltaFieldItems, 1001)),
-			Kind: change.DeltaKindSet,
+			Op:   change.OpSet,
 		},
 	}
 
@@ -151,8 +151,8 @@ func TestDeltaSetCompactKeepsSetAfterDeleteOnSamePath(t *testing.T) {
 	if len(compacted) != 1 {
 		t.Fatalf("compacted len = %d, want 1: %#v", len(compacted), compacted)
 	}
-	if compacted[0].Kind != change.DeltaKindSet {
-		t.Fatalf("remaining kind = %v, want DeltaKindSet", compacted[0].Kind)
+	if compacted[0].Op != change.OpSet {
+		t.Fatalf("remaining op = %v, want OpSet", compacted[0].Op)
 	}
 }
 
@@ -160,11 +160,11 @@ func TestDeltaSetCompactClearRemovesEarlierChildren(t *testing.T) {
 	deltas := change.DeltaSet{
 		{
 			Path: deltaPath(intKeyNode(deltaFieldItems, 1001), fieldNode(deltaFieldQty)),
-			Kind: change.DeltaKindSet,
+			Op:   change.OpSet,
 		},
 		{
 			Path: deltaPath(fieldNode(deltaFieldItems)),
-			Kind: change.DeltaClear,
+			Op:   change.OpClear,
 		},
 	}
 
@@ -173,8 +173,8 @@ func TestDeltaSetCompactClearRemovesEarlierChildren(t *testing.T) {
 	if len(compacted) != 1 {
 		t.Fatalf("compacted len = %d, want 1: %#v", len(compacted), compacted)
 	}
-	if compacted[0].Kind != change.DeltaClear {
-		t.Fatalf("remaining kind = %v, want DeltaClear", compacted[0].Kind)
+	if compacted[0].Op != change.OpClear {
+		t.Fatalf("remaining op = %v, want OpClear", compacted[0].Op)
 	}
 	if !compacted[0].Path.Equal(deltaPath(fieldNode(deltaFieldItems))) {
 		t.Fatalf("remaining path = %#v, want Items", compacted[0].Path)
@@ -185,11 +185,11 @@ func TestDeltaSetCompactDoesNotMergeChildAfterClear(t *testing.T) {
 	deltas := change.DeltaSet{
 		{
 			Path: deltaPath(fieldNode(deltaFieldItems)),
-			Kind: change.DeltaClear,
+			Op:   change.OpClear,
 		},
 		{
 			Path: deltaPath(intKeyNode(deltaFieldItems, 1001)),
-			Kind: change.DeltaKindSet,
+			Op:   change.OpSet,
 		},
 	}
 
@@ -202,9 +202,9 @@ func TestDeltaSetCompactDoesNotMergeChildAfterClear(t *testing.T) {
 
 func TestDeltaSetRemoveFieldRemovesFieldAndChildren(t *testing.T) {
 	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet},
-		{Path: deltaPath(intKeyNode(deltaFieldItems, 1001), fieldNode(deltaFieldQty)), Kind: change.DeltaKindSet},
-		{Path: deltaPath(fieldNode(deltaFieldQty)), Kind: change.DeltaKindSet},
+		{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet},
+		{Path: deltaPath(intKeyNode(deltaFieldItems, 1001), fieldNode(deltaFieldQty)), Op: change.OpSet},
+		{Path: deltaPath(fieldNode(deltaFieldQty)), Op: change.OpSet},
 	}
 
 	deltas = deltas.RemoveField(deltaFieldItems)
@@ -221,14 +221,14 @@ func TestDeltaSetRemoveFieldRemovesFieldAndChildren(t *testing.T) {
 
 func TestDeltaSetCloneDoesNotShareSliceHeader(t *testing.T) {
 	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet},
+		{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet},
 	}
 
 	cloned := deltas.Clone()
-	cloned[0].Kind = change.DeltaDelete
+	cloned[0].Op = change.OpDelete
 
-	if deltas[0].Kind != change.DeltaKindSet {
-		t.Fatalf("source kind = %v, want DeltaKindSet", deltas[0].Kind)
+	if deltas[0].Op != change.OpSet {
+		t.Fatalf("source kind = %v, want OpSet", deltas[0].Op)
 	}
 }
 

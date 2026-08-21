@@ -301,7 +301,6 @@ func scanFields(fset *token.FileSet, structType *ast.StructType) []meta.Field {
 				JSONName:    jsonNameForField(name, tag),
 				BSONName:    bsonNameForField(name, tag),
 				MsgpackName: msgpackNameForField(name, tag),
-				RedisName:   redisNameForField(name, tag),
 				Type:        fieldType,
 				Exported:    ast.IsExported(name),
 				Embedded:    true,
@@ -319,7 +318,6 @@ func scanFields(fset *token.FileSet, structType *ast.StructType) []meta.Field {
 				JSONName:    jsonNameForField(name.Name, tag),
 				BSONName:    bsonNameForField(name.Name, tag),
 				MsgpackName: msgpackNameForField(name.Name, tag),
-				RedisName:   redisNameForField(name.Name, tag),
 				Type:        fieldType,
 				Exported:    name.IsExported(),
 			})
@@ -362,10 +360,6 @@ func msgpackNameForField(name, tag string) string {
 		return value
 	}
 	return defaultBackendName(name, tag)
-}
-
-func redisNameForField(name, tag string) string {
-	return jsonNameForField(name, tag)
 }
 
 func fieldIgnored(tag string) bool {

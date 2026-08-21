@@ -16,9 +16,9 @@ import (
 func TestMsgQSenderResolvesSessionOwnerAndReusesConnection(t *testing.T) {
 	store := newMailboxSessionStore()
 	mailbox, err := msgq.NewServer(msgq.ServerOptions{
-		InstanceID: "msgq-1",
-		Store:      store,
-		MaxBacklog: 4,
+		InstanceID:         "msgq-1",
+		Store:              store,
+		MaxBacklogMessages: 4,
 	})
 	if err != nil {
 		t.Fatalf("new mailbox: %v", err)
@@ -83,7 +83,7 @@ func TestMsgQSenderResolvesSessionOwnerAndReusesConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetch messages: %v", err)
 	}
-	if len(batch.GetMessages()) != 2 || string(batch.GetMessages()[0].GetMessage()) != "first-bon" || string(batch.GetMessages()[1].GetMessage()) != "second-bon" {
+	if len(batch.GetMessages()) != 2 || string(batch.GetMessages()[0].GetPayload()) != "first-bon" || string(batch.GetMessages()[1].GetPayload()) != "second-bon" {
 		t.Fatalf("messages = %#v", batch.GetMessages())
 	}
 	if dialer.calls != 1 {

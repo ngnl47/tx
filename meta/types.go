@@ -41,14 +41,13 @@ func (ref TypeRef) key() string {
 	return ref.normalized().FullName
 }
 
-// Field 描述 Go 结构体字段及各后端使用的字段名。
+// Field 描述 Go 结构体字段及各命名体系使用的字段名。
 type Field struct {
 	Name        string
 	Alias       string
 	JSONName    string
 	BSONName    string
 	MsgpackName string
-	RedisName   string
 	Type        string
 	Exported    bool
 	Embedded    bool
@@ -119,14 +118,6 @@ func (spec TypeSpec) MsgpackName(name string) string {
 		return name
 	}
 	return field.MsgpackName
-}
-
-func (spec TypeSpec) RedisName(name string) string {
-	field, ok := spec.FieldByName(name)
-	if !ok || field.RedisName == "" {
-		return spec.JSONName(name)
-	}
-	return field.RedisName
 }
 
 func cloneTypeSpec(spec TypeSpec) TypeSpec {

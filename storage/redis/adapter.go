@@ -76,7 +76,7 @@ func (a *Adapter) applyDocumentPatchesWithOptions(ctx context.Context, spec meta
 		return err
 	}
 	prefix := redisKeyPrefix(spec, key)
-	if options.TTL != 0 {
+	if options.TTLSeconds != 0 {
 		ensureTTLOnlyPatches(spec, patches)
 	}
 	args := make([]any, 0, len(patches)*3+2)
@@ -99,7 +99,7 @@ func (a *Adapter) applyDocumentPatchesWithOptions(ctx context.Context, spec meta
 	if options.Upsert {
 		upsert = scriptFlagTrue
 	}
-	args = append(args, upsert, strconv.FormatInt(options.TTL, 10))
+	args = append(args, upsert, strconv.FormatInt(options.TTLSeconds, 10))
 	result, err := client.Eval(ctx, updateDocumentScript, []string{prefix}, args...)
 	if err != nil {
 		return fmt.Errorf("redis: apply changes %s: %w", prefix, err)

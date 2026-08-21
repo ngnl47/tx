@@ -12,7 +12,7 @@ import (
 // BuildUpdateDocumentWithDeltas 把 DeltaSet 转换成 MongoDB update document。
 // Mongo 边界当前选择 BSON 字段名。
 func BuildUpdateDocumentWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, resolver change.FieldNameResolver, values change.DeltaValueResolver) (map[string]any, error) {
-	if err := deltas.ValidateKinds(); err != nil {
+	if err := deltas.ValidateOps(); err != nil {
 		return nil, err
 	}
 	setDoc := map[string]any{}
@@ -22,23 +22,23 @@ func BuildUpdateDocumentWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, r
 		if valuePath.Depth == 0 {
 			continue
 		}
-		goPath := valuePath.FullPath(resolver, change.NameBackendGo)
+		goPath := valuePath.FullPath(resolver, change.FieldNameGo)
 		if len(goPath) == 0 {
 			return nil, fmt.Errorf("mongo: cannot resolve Go field path for delta %#v", valuePath)
 		}
-		bsonPath := valuePath.FullPath(resolver, change.NameBackendBSON)
+		bsonPath := valuePath.FullPath(resolver, change.FieldNameBSON)
 		if len(bsonPath) == 0 {
 			return nil, fmt.Errorf("mongo: cannot resolve BSON field path for Go path %s", goPath)
 		}
 		if bsonPath[0] == "_id" {
 			return nil, fmt.Errorf("mongo: cannot update immutable _id field %s", goPath[0])
 		}
-		switch delta.Kind {
-		case change.DeltaDelete:
+		switch delta.Op {
+		case change.OpDelete:
 			unsetDoc[bsonPath.String()] = ""
-		case change.DeltaClear:
+		case change.OpClear:
 			setDoc[bsonPath.String()] = emptyMongoValue(spec, goPath[0])
-		case change.DeltaKindSet, change.DeltaKindReplace:
+		case change.OpSet, change.OpReplace:
 			resolved, err := resolveMongoDeltaValue(values, delta.Path, bsonPath)
 			if err != nil {
 				return nil, err
@@ -80,7 +80,7 @@ func normalizeMongoDeltas(deltas change.DeltaSet) change.DeltaSet {
 		out = append(out, delta)
 	}
 	for _, fallback := range fallbacks {
-		out = append(out, change.DeltaEntry{Path: fallback, Kind: change.DeltaKindReplace})
+		out = append(out, change.DeltaEntry{Path: fallback, Op: change.OpReplace})
 	}
 	return out.Compact()
 }
@@ -95,14 +95,14 @@ func normalizeMongoAncestorWrites(deltas change.DeltaSet) change.DeltaSet {
 	suppressed := make([]bool, len(deltas))
 	for parentIndex := range deltas {
 		parent := &deltas[parentIndex]
-		if parent.Path.Depth == 0 || parent.Kind == change.DeltaDelete {
+		if parent.Path.Depth == 0 || parent.Op == change.OpDelete {
 			continue
 		}
 		for childIndex := parentIndex + 1; childIndex < len(deltas); childIndex++ {
 			if suppressed[childIndex] || !parent.Path.PrefixOf(deltas[childIndex].Path) {
 				continue
 			}
-			parent.Kind = change.DeltaKindReplace
+			parent.Op = change.OpReplace
 			suppressed[childIndex] = true
 		}
 	}

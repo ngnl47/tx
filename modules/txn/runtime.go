@@ -20,9 +20,9 @@ var (
 	ErrDeltaCollapseUnsupported = errors.New("txn runtime: persistent store does not support delta collapse")
 )
 
-// Admission 在开始新的 Procedure 前检查项目是否接受新的可持久化修改。
+// WriteAdmission 在开始新的 Procedure 前检查项目是否接受新的可持久化修改。
 // 它通常由项目侧的共享存储健康闸门实现；已有 pending 根不会经过该检查。
-type Admission interface {
+type WriteAdmission interface {
 	RequireWritable() error
 }
 
@@ -32,21 +32,21 @@ type RuntimeConfig struct {
 	FlushInterval time.Duration
 	// ShutdownFlushTimeout 限制服务关闭时的最终刷盘时间。通过 Shutdown 执行时必须大于零。
 	ShutdownFlushTimeout time.Duration
-	// Admission 在新的 Procedure 开始前执行。nil 表示不额外限制。
-	Admission Admission
+	// WriteAdmission 在新的 Procedure 开始前执行。nil 表示不额外限制。
+	WriteAdmission WriteAdmission
 	// MaxPendingRoots 限制等待 Flush 的持久化根对象数。零表示不限制。
 	MaxPendingRoots int
 	// MaxRootDeltaEntries 限制单个持久化根对象的细粒度 Delta 数量。超过后，
 	// Runtime 会将该根 Store 收敛为顶层字段 Replace，零表示不限制。
 	MaxRootDeltaEntries int
-	// PendingMemorySoftLimit 是进程 Heap 告警阈值（字节）。达到上限时，
+	// HeapSoftLimitBytes 是进程 Heap 告警阈值（字节）。达到上限时，
 	// Runtime 仅记录告警，不拒绝业务变更。零表示不观测。
-	PendingMemorySoftLimit uint64
-	// MemorySampleInterval 是 Heap 采样最小间隔。零表示每次新增根预检时采样。
-	MemorySampleInterval time.Duration
-	// HeapBytes 用于读取当前进程 Heap 占用。默认读取 runtime.MemStats.HeapAlloc。
+	HeapSoftLimitBytes uint64
+	// HeapSampleInterval 是 Heap 采样最小间隔。零表示每次新增根预检时采样。
+	HeapSampleInterval time.Duration
+	// ReadHeapBytes 用于读取当前进程 Heap 占用。默认读取 runtime.MemStats.HeapAlloc。
 	// 项目测试或自定义运行时观测可替换该函数。
-	HeapBytes func() uint64
+	ReadHeapBytes func() uint64
 }
 
 // Runtime 聚合当前进程内需要落盘的实体 Store。
@@ -57,20 +57,20 @@ type Runtime struct {
 	writer storage.DeltaApplier
 	config RuntimeConfig
 
-	mu                    sync.Mutex
-	generation            uint64
-	targets               map[LockKey]targetEntry
-	reserved              map[LockKey]int
-	maxPendingRoots       int
-	maxRootDeltas         int
-	memorySoftLimit       uint64
-	memorySampleInterval  time.Duration
-	heapBytes             func() uint64
-	memoryMu              sync.Mutex
-	lastMemoryAt          time.Time
-	lastHeapBytes         uint64
-	memorySoftLimitWarned bool
-	running               atomic.Bool
+	mu                  sync.Mutex
+	generation          uint64
+	targets             map[LockKey]targetEntry
+	reserved            map[LockKey]int
+	maxPendingRoots     int
+	maxRootDeltas       int
+	heapSoftLimitBytes  uint64
+	heapSampleInterval  time.Duration
+	readHeapBytes       func() uint64
+	heapMu              sync.Mutex
+	lastHeapSampleAt    time.Time
+	lastHeapBytes       uint64
+	heapSoftLimitWarned bool
+	running             atomic.Bool
 }
 
 type targetEntry struct {
@@ -85,38 +85,38 @@ func NewRuntime(writer storage.DeltaApplier, configs ...RuntimeConfig) *Runtime 
 	if len(configs) > 0 {
 		options = configs[0]
 	}
-	heapBytes := options.HeapBytes
-	if heapBytes == nil {
-		heapBytes = currentHeapBytes
+	readHeapBytes := options.ReadHeapBytes
+	if readHeapBytes == nil {
+		readHeapBytes = currentHeapBytes
 	}
 	return &Runtime{
-		writer:               writer,
-		config:               options,
-		targets:              make(map[LockKey]targetEntry),
-		reserved:             make(map[LockKey]int),
-		maxPendingRoots:      options.MaxPendingRoots,
-		maxRootDeltas:        options.MaxRootDeltaEntries,
-		memorySoftLimit:      options.PendingMemorySoftLimit,
-		memorySampleInterval: options.MemorySampleInterval,
-		heapBytes:            heapBytes,
+		writer:             writer,
+		config:             options,
+		targets:            make(map[LockKey]targetEntry),
+		reserved:           make(map[LockKey]int),
+		maxPendingRoots:    options.MaxPendingRoots,
+		maxRootDeltas:      options.MaxRootDeltaEntries,
+		heapSoftLimitBytes: options.HeapSoftLimitBytes,
+		heapSampleInterval: options.HeapSampleInterval,
+		readHeapBytes:      readHeapBytes,
 	}
 }
 
 // Call 执行一个单机 Procedure。过程成功后，它只登记本次修改的持久化 Store，
 // 不在事务提交路径执行 Redis 或 Mongo I/O。
-func (manager *Runtime) Call(ctx context.Context, procedure Procedure) error {
-	if manager == nil {
+func (runtime *Runtime) Call(ctx context.Context, procedure Procedure) error {
+	if runtime == nil {
 		return errors.New("txn runtime: runtime is nil")
 	}
 	if procedure == nil {
 		return errors.New("txn runtime: procedure is nil")
 	}
-	if manager.config.Admission != nil {
-		if err := manager.config.Admission.RequireWritable(); err != nil {
-			return fmt.Errorf("txn runtime: admission rejected procedure: %w", err)
+	if runtime.config.WriteAdmission != nil {
+		if err := runtime.config.WriteAdmission.RequireWritable(); err != nil {
+			return fmt.Errorf("txn runtime: write admission rejected procedure: %w", err)
 		}
 	}
-	managed := &managedProcedure{manager: manager, procedure: procedure}
+	managed := &managedProcedure{runtime: runtime, procedure: procedure}
 	err := CallWithOptions(ctx, managed, CallOptions{
 		AllowPendingDeltas: true,
 	})
@@ -128,52 +128,52 @@ func (manager *Runtime) Call(ctx context.Context, procedure Procedure) error {
 
 // MarkDirty 登记可持久化的根 Store。相同锁键在同一 Runtime 内只保留一个目标。
 // 纯内存目标不会进入落盘调度。
-func (manager *Runtime) MarkDirty(targets ...LockTarget) error {
-	if manager == nil {
+func (runtime *Runtime) MarkDirty(targets ...LockTarget) error {
+	if runtime == nil {
 		return errors.New("txn runtime: runtime is nil")
 	}
-	manager.mu.Lock()
-	defer manager.mu.Unlock()
-	if err := manager.acceptTargetsLocked(targets); err != nil {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if err := runtime.acceptTargetsLocked(targets); err != nil {
 		return err
 	}
-	manager.markDirtyLocked(targets)
+	runtime.markDirtyLocked(targets)
 	return nil
 }
 
-func (manager *Runtime) markDirtyLocked(targets []LockTarget) {
+func (runtime *Runtime) markDirtyLocked(targets []LockTarget) {
 	for _, target := range targets {
 		if !isPersistentTarget(target) {
 			continue
 		}
-		manager.generation++
-		manager.targets[target.Key] = targetEntry{target: target, generation: manager.generation}
+		runtime.generation++
+		runtime.targets[target.Key] = targetEntry{target: target, generation: runtime.generation}
 	}
 }
 
 // Pending 返回当前等待 Flush 的持久化实体数量。
-func (manager *Runtime) Pending() int {
-	if manager == nil {
+func (runtime *Runtime) Pending() int {
+	if runtime == nil {
 		return 0
 	}
-	manager.mu.Lock()
-	defer manager.mu.Unlock()
-	return len(manager.targets)
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	return len(runtime.targets)
 }
 
 // Flush 依次落盘当前待处理实体。每个实体在自身本机锁内执行，成功后清理
 // Store delta 并解除登记；失败的实体保留，以便下一次 Flush 重试。
-func (manager *Runtime) Flush(ctx context.Context) error {
-	if manager == nil {
+func (runtime *Runtime) Flush(ctx context.Context) error {
+	if runtime == nil {
 		return errors.New("txn runtime: runtime is nil")
 	}
-	if manager.writer == nil {
+	if runtime.writer == nil {
 		return storage.ErrNilDeltaApplier
 	}
-	entries := manager.snapshotTargets()
+	entries := runtime.snapshotTargets()
 	var errs []error
 	for _, entry := range entries {
-		if err := manager.flushTarget(ctx, entry); err != nil {
+		if err := runtime.flushTarget(ctx, entry); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -182,17 +182,17 @@ func (manager *Runtime) Flush(ctx context.Context) error {
 
 // Run 按 interval 持续 Flush，直到 ctx 取消。单个 Runtime 同一时刻只能运行一个
 // 调度循环；单次 Flush 失败只记录日志并保留待处理 Store，下一轮继续重试。
-func (manager *Runtime) Run(ctx context.Context, interval time.Duration) error {
-	if manager == nil {
+func (runtime *Runtime) Run(ctx context.Context, interval time.Duration) error {
+	if runtime == nil {
 		return errors.New("txn runtime: runtime is nil")
 	}
 	if interval <= 0 {
 		return fmt.Errorf("txn runtime: flush interval must be greater than 0")
 	}
-	if !manager.running.CompareAndSwap(false, true) {
-		return errors.New("txn runtime: manager is already running")
+	if !runtime.running.CompareAndSwap(false, true) {
+		return errors.New("txn runtime: runtime is already running")
 	}
-	defer manager.running.Store(false)
+	defer runtime.running.Store(false)
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -203,7 +203,7 @@ func (manager *Runtime) Run(ctx context.Context, interval time.Duration) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			if err := manager.Flush(ctx); err != nil {
+			if err := runtime.Flush(ctx); err != nil {
 				txlog.ErrorContext(ctx, "txn runtime flush failed", "err", err)
 			}
 		}
@@ -213,34 +213,34 @@ func (manager *Runtime) Run(ctx context.Context, interval time.Duration) error {
 // Shutdown 在关闭上下文有效期内反复 Flush，直到所有待落盘 Store 已清空。
 // 调用方应传入独立于服务运行上下文取消信号的关闭上下文，以确保服务停止时
 // 仍可完成最后一次 Redis 落盘。
-func (manager *Runtime) Shutdown(ctx context.Context) error {
-	if manager == nil {
+func (runtime *Runtime) Shutdown(ctx context.Context) error {
+	if runtime == nil {
 		return errors.New("txn runtime: runtime is nil")
 	}
-	retryInterval := manager.config.FlushInterval
+	retryInterval := runtime.config.FlushInterval
 	if retryInterval <= 0 {
 		return fmt.Errorf("txn runtime: shutdown retry interval must be greater than 0")
 	}
-	if manager.config.ShutdownFlushTimeout <= 0 {
+	if runtime.config.ShutdownFlushTimeout <= 0 {
 		return fmt.Errorf("txn runtime: shutdown flush timeout must be greater than 0")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	var cancel context.CancelFunc
-	ctx, cancel = context.WithTimeout(ctx, manager.config.ShutdownFlushTimeout)
+	ctx, cancel = context.WithTimeout(ctx, runtime.config.ShutdownFlushTimeout)
 	defer cancel()
 	for {
-		err := manager.Flush(ctx)
-		if manager.Pending() == 0 {
+		err := runtime.Flush(ctx)
+		if runtime.Pending() == 0 {
 			return nil
 		}
 		if err != nil {
-			txlog.ErrorContext(ctx, "txn runtime final flush failed, retry scheduled", "pending", manager.Pending(), "err", err)
+			txlog.ErrorContext(ctx, "txn runtime final flush failed, retry scheduled", "pending", runtime.Pending(), "err", err)
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("txn runtime: final flush stopped with %d pending stores: %w", manager.Pending(), ctx.Err())
+			return fmt.Errorf("txn runtime: final flush stopped with %d pending stores: %w", runtime.Pending(), ctx.Err())
 		case <-time.After(retryInterval):
 		}
 	}
@@ -252,25 +252,25 @@ type waitGroupContext interface {
 }
 
 // Start 将后台刷盘循环绑定到服务的 WaitGroupContext。
-func (manager *Runtime) Start(ctx waitGroupContext) error {
-	if manager == nil {
+func (runtime *Runtime) Start(ctx waitGroupContext) error {
+	if runtime == nil {
 		return errors.New("txn runtime: runtime is nil")
 	}
 	if ctx == nil {
 		return errors.New("txn runtime: lifecycle context is nil")
 	}
-	if manager.config.FlushInterval <= 0 {
+	if runtime.config.FlushInterval <= 0 {
 		return errors.New("txn runtime: flush interval must be greater than 0")
 	}
 	return ctx.Go(func(context.Context) {
-		if err := manager.Run(ctx, manager.config.FlushInterval); err != nil {
+		if err := runtime.Run(ctx, runtime.config.FlushInterval); err != nil {
 			txlog.ErrorContext(ctx, "txn runtime stopped", "err", err)
 		}
 	})
 }
 
 type managedProcedure struct {
-	manager     *Runtime
+	runtime     *Runtime
 	procedure   Procedure
 	reservation *pendingReservation
 }
@@ -280,7 +280,7 @@ func (procedure *managedProcedure) Locks(ctx context.Context) ([]LockTarget, err
 	if err != nil {
 		return nil, err
 	}
-	reservation, err := procedure.manager.reserve(targets)
+	reservation, err := procedure.runtime.reserve(targets)
 	if err != nil {
 		return nil, err
 	}
@@ -293,7 +293,7 @@ func (procedure *managedProcedure) Process(tx *Tx) error {
 		procedure.releaseReservation()
 	})
 	tx.AfterCommit(func(context.Context) error {
-		procedure.manager.commitReservation(procedure.reservation, tx.DirtyTargets())
+		procedure.runtime.commitReservation(procedure.reservation, tx.DirtyTargets())
 		procedure.reservation = nil
 		return nil
 	})
@@ -304,7 +304,7 @@ func (procedure *managedProcedure) releaseReservation() {
 	if procedure == nil || procedure.reservation == nil {
 		return
 	}
-	procedure.manager.releaseReservation(procedure.reservation)
+	procedure.runtime.releaseReservation(procedure.reservation)
 	procedure.reservation = nil
 }
 
@@ -312,76 +312,76 @@ type pendingReservation struct {
 	keys []LockKey
 }
 
-func (manager *Runtime) reserve(targets []LockTarget) (*pendingReservation, error) {
-	if manager == nil {
+func (runtime *Runtime) reserve(targets []LockTarget) (*pendingReservation, error) {
+	if runtime == nil {
 		return nil, errors.New("txn runtime: runtime is nil")
 	}
 	keys := persistentTargetKeys(targets)
-	manager.mu.Lock()
-	defer manager.mu.Unlock()
-	if err := manager.acceptTargetsLocked(targets); err != nil {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if err := runtime.acceptTargetsLocked(targets); err != nil {
 		return nil, err
 	}
 	for _, key := range keys {
-		manager.reserved[key]++
+		runtime.reserved[key]++
 	}
 	return &pendingReservation{keys: keys}, nil
 }
 
-func (manager *Runtime) releaseReservation(reservation *pendingReservation) {
-	if manager == nil || reservation == nil {
+func (runtime *Runtime) releaseReservation(reservation *pendingReservation) {
+	if runtime == nil || reservation == nil {
 		return
 	}
-	manager.mu.Lock()
-	defer manager.mu.Unlock()
-	manager.releaseReservationLocked(reservation)
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	runtime.releaseReservationLocked(reservation)
 }
 
-func (manager *Runtime) commitReservation(reservation *pendingReservation, targets []LockTarget) {
-	if manager == nil {
+func (runtime *Runtime) commitReservation(reservation *pendingReservation, targets []LockTarget) {
+	if runtime == nil {
 		return
 	}
-	manager.mu.Lock()
-	defer manager.mu.Unlock()
-	manager.releaseReservationLocked(reservation)
-	manager.markDirtyLocked(targets)
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	runtime.releaseReservationLocked(reservation)
+	runtime.markDirtyLocked(targets)
 }
 
-func (manager *Runtime) releaseReservationLocked(reservation *pendingReservation) {
+func (runtime *Runtime) releaseReservationLocked(reservation *pendingReservation) {
 	if reservation == nil {
 		return
 	}
 	for _, key := range reservation.keys {
-		if manager.reserved[key] <= 1 {
-			delete(manager.reserved, key)
+		if runtime.reserved[key] <= 1 {
+			delete(runtime.reserved, key)
 			continue
 		}
-		manager.reserved[key]--
+		runtime.reserved[key]--
 	}
 }
 
-func (manager *Runtime) hasCapacityLocked(targets []LockTarget) bool {
-	if manager.maxPendingRoots <= 0 {
+func (runtime *Runtime) hasCapacityLocked(targets []LockTarget) bool {
+	if runtime.maxPendingRoots <= 0 {
 		return true
 	}
-	occupied := len(manager.targets)
-	for key := range manager.reserved {
-		if _, exists := manager.targets[key]; !exists {
+	occupied := len(runtime.targets)
+	for key := range runtime.reserved {
+		if _, exists := runtime.targets[key]; !exists {
 			occupied++
 		}
 	}
 	additional := 0
 	for _, key := range persistentTargetKeys(targets) {
-		if _, exists := manager.targets[key]; exists || manager.reserved[key] > 0 {
+		if _, exists := runtime.targets[key]; exists || runtime.reserved[key] > 0 {
 			continue
 		}
 		additional++
 	}
-	return occupied+additional <= manager.maxPendingRoots
+	return occupied+additional <= runtime.maxPendingRoots
 }
 
-func (manager *Runtime) acceptTargetsLocked(targets []LockTarget) error {
-	if manager.maxRootDeltas > 0 {
+func (runtime *Runtime) acceptTargetsLocked(targets []LockTarget) error {
+	if runtime.maxRootDeltas > 0 {
 		for _, target := range targets {
 			if !isPersistentTarget(target) {
 				continue
@@ -391,18 +391,18 @@ func (manager *Runtime) acceptTargetsLocked(targets []LockTarget) error {
 			}
 		}
 	}
-	if !manager.hasCapacityLocked(targets) {
+	if !runtime.hasCapacityLocked(targets) {
 		return ErrPendingRootCapacity
 	}
-	if manager.hasNewPersistentRootLocked(targets) {
-		manager.warnMemorySoftLimitIfExceeded()
+	if runtime.hasNewPersistentRootLocked(targets) {
+		runtime.warnHeapSoftLimitIfExceeded()
 	}
 	return nil
 }
 
-func (manager *Runtime) hasNewPersistentRootLocked(targets []LockTarget) bool {
+func (runtime *Runtime) hasNewPersistentRootLocked(targets []LockTarget) bool {
 	for _, key := range persistentTargetKeys(targets) {
-		if _, exists := manager.targets[key]; exists || manager.reserved[key] > 0 {
+		if _, exists := runtime.targets[key]; exists || runtime.reserved[key] > 0 {
 			continue
 		}
 		return true
@@ -410,24 +410,24 @@ func (manager *Runtime) hasNewPersistentRootLocked(targets []LockTarget) bool {
 	return false
 }
 
-func (manager *Runtime) warnMemorySoftLimitIfExceeded() {
-	if manager.memorySoftLimit == 0 {
+func (runtime *Runtime) warnHeapSoftLimitIfExceeded() {
+	if runtime.heapSoftLimitBytes == 0 {
 		return
 	}
 	now := time.Now()
-	manager.memoryMu.Lock()
-	if manager.lastMemoryAt.IsZero() || manager.memorySampleInterval <= 0 || now.Sub(manager.lastMemoryAt) >= manager.memorySampleInterval {
-		manager.lastHeapBytes = manager.heapBytes()
-		manager.lastMemoryAt = now
+	runtime.heapMu.Lock()
+	if runtime.lastHeapSampleAt.IsZero() || runtime.heapSampleInterval <= 0 || now.Sub(runtime.lastHeapSampleAt) >= runtime.heapSampleInterval {
+		runtime.lastHeapBytes = runtime.readHeapBytes()
+		runtime.lastHeapSampleAt = now
 	}
-	exceeded := manager.lastHeapBytes >= manager.memorySoftLimit
-	shouldWarn := exceeded && !manager.memorySoftLimitWarned
-	manager.memorySoftLimitWarned = exceeded
-	heapBytes := manager.lastHeapBytes
-	limit := manager.memorySoftLimit
-	manager.memoryMu.Unlock()
+	exceeded := runtime.lastHeapBytes >= runtime.heapSoftLimitBytes
+	shouldWarn := exceeded && !runtime.heapSoftLimitWarned
+	runtime.heapSoftLimitWarned = exceeded
+	heapBytes := runtime.lastHeapBytes
+	limit := runtime.heapSoftLimitBytes
+	runtime.heapMu.Unlock()
 	if shouldWarn {
-		txlog.Warn("txn runtime pending memory threshold exceeded", "heapBytes", heapBytes, "threshold", limit)
+		txlog.Warn("txn runtime heap soft limit exceeded", "heapBytes", heapBytes, "limitBytes", limit)
 	}
 }
 
@@ -446,8 +446,8 @@ func (store deltaStoreProjection) Deltas() change.DeltaSet {
 	return store.deltas
 }
 
-func (manager *Runtime) enforceDeltaBudget(target LockTarget, store storage.DeltaStore, deltas change.DeltaSet) (change.DeltaSet, error) {
-	if manager == nil || manager.maxRootDeltas <= 0 || len(deltas) <= manager.maxRootDeltas {
+func (runtime *Runtime) enforceDeltaBudget(target LockTarget, store storage.DeltaStore, deltas change.DeltaSet) (change.DeltaSet, error) {
+	if runtime == nil || runtime.maxRootDeltas <= 0 || len(deltas) <= runtime.maxRootDeltas {
 		return deltas, nil
 	}
 	collapser, ok := store.(storage.CollapsibleDeltaStore)
@@ -455,7 +455,7 @@ func (manager *Runtime) enforceDeltaBudget(target LockTarget, store storage.Delt
 		return nil, fmt.Errorf("%w: scope=%s key=%s", ErrDeltaCollapseUnsupported, target.Key.Scope, target.Key.Value)
 	}
 	collapser.CollapseDeltas()
-	txlog.Warn("txn runtime root deltas collapsed", "scope", target.Key.Scope, "key", target.Key.Value, "budget", manager.maxRootDeltas)
+	txlog.Warn("txn runtime root deltas collapsed", "scope", target.Key.Scope, "key", target.Key.Value, "budget", runtime.maxRootDeltas)
 	return store.Deltas(), nil
 }
 
@@ -480,35 +480,35 @@ func isPersistentTarget(target LockTarget) bool {
 	return ok && target.Key.Scope != "" && target.Key.Value != ""
 }
 
-func (manager *Runtime) flushTarget(ctx context.Context, entry targetEntry) error {
+func (runtime *Runtime) flushTarget(ctx context.Context, entry targetEntry) error {
 	target := entry.target
 	return WithLocks(ctx, []LockTarget{target}, func(ctx context.Context) error {
 		store, ok := target.Store.(storage.DeltaStore)
 		if !ok {
-			manager.forget(entry)
+			runtime.forget(entry)
 			return nil
 		}
-		deltas, err := manager.enforceDeltaBudget(target, store, store.Deltas())
+		deltas, err := runtime.enforceDeltaBudget(target, store, store.Deltas())
 		if err != nil {
 			return err
 		}
 		if len(deltas) == 0 {
-			manager.forget(entry)
+			runtime.forget(entry)
 			return nil
 		}
-		if err := storage.Save(ctx, manager.writer, deltaStoreProjection{DeltaStore: store, deltas: deltas}); err != nil {
+		if err := storage.Save(ctx, runtime.writer, deltaStoreProjection{DeltaStore: store, deltas: deltas}); err != nil {
 			return err
 		}
-		manager.forget(entry)
+		runtime.forget(entry)
 		return nil
 	})
 }
 
-func (manager *Runtime) snapshotTargets() []targetEntry {
-	manager.mu.Lock()
-	defer manager.mu.Unlock()
-	targets := make([]targetEntry, 0, len(manager.targets))
-	for _, entry := range manager.targets {
+func (runtime *Runtime) snapshotTargets() []targetEntry {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	targets := make([]targetEntry, 0, len(runtime.targets))
+	for _, entry := range runtime.targets {
 		targets = append(targets, entry)
 	}
 	sort.Slice(targets, func(i, j int) bool {
@@ -523,10 +523,10 @@ func (manager *Runtime) snapshotTargets() []targetEntry {
 	return targets
 }
 
-func (manager *Runtime) forget(entry targetEntry) {
-	manager.mu.Lock()
-	defer manager.mu.Unlock()
-	if current, ok := manager.targets[entry.target.Key]; ok && current.generation == entry.generation {
-		delete(manager.targets, entry.target.Key)
+func (runtime *Runtime) forget(entry targetEntry) {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if current, ok := runtime.targets[entry.target.Key]; ok && current.generation == entry.generation {
+		delete(runtime.targets, entry.target.Key)
 	}
 }

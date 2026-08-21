@@ -67,9 +67,9 @@ func Resolve(directory *discovery.ServiceDirectory, route Route) (discovery.Inst
 		ok       bool
 	)
 	if route.Kind == RouteService {
-		instance, ok = directory.ResolveService(route.Service)
+		instance, ok = directory.NextInstance(route.Service)
 	} else {
-		instance, ok = directory.ResolveID(route.InstanceID)
+		instance, ok = directory.LookupInstance(route.InstanceID)
 	}
 	if !ok {
 		return discovery.Instance{}, ErrRouteUnavailable

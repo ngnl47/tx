@@ -9,21 +9,20 @@ import (
 	"github.com/ngnl47/tx/storage/redis"
 )
 
-func TestRedisPatchMapsGoFieldNameToRedisName(t *testing.T) {
+func TestRedisPatchMapsGoFieldNameToJSONName(t *testing.T) {
 	spec := meta.TypeSpec{
 		Type: meta.Type{Fields: []meta.Field{{
-			Name:      "Power",
-			JSONName:  "power",
-			RedisName: "p",
-			Type:      "int64",
-			Exported:  true,
+			Name:     "Power",
+			JSONName: "p",
+			Type:     "int64",
+			Exported: true,
 		}}},
 		Fields: map[string]meta.FieldSpec{"Power": {}},
 	}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(1)), Kind: change.DeltaKindSet}}
-	resolver := testNamedBackendResolver(map[change.NameBackend]map[change.FieldID]string{
-		change.NameBackendGo:   {1: "Power"},
-		change.NameBackendJSON: {1: "p"},
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(1)), Op: change.OpSet}}
+	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
+		change.FieldNameGo:   {1: "Power"},
+		change.FieldNameJSON: {1: "p"},
 	})
 
 	patches, err := redis.BuildDocumentPatchesWithDeltas(spec, deltas, resolver, testDeltaValueResolver{1: int64(100)})
@@ -39,23 +38,22 @@ func TestRedisPatchMapsGoFieldNameToRedisName(t *testing.T) {
 	}
 }
 
-func TestRedisPatchUsesSubKeyAndRedisName(t *testing.T) {
+func TestRedisPatchUsesSubKeyAndJSONName(t *testing.T) {
 	spec := meta.TypeSpec{
 		Type: meta.Type{Fields: []meta.Field{{
-			Name:      "Items",
-			JSONName:  "items",
-			RedisName: "it",
-			Type:      "map[int32]int64",
-			Exported:  true,
+			Name:     "Items",
+			JSONName: "it",
+			Type:     "map[int32]int64",
+			Exported: true,
 		}}},
 		Fields: map[string]meta.FieldSpec{
 			"Items": {Redis: &meta.RedisFieldSpec{SubKey: "bag"}},
 		},
 	}
-	deltas := change.DeltaSet{{Path: deltaPath(intKeyNode(1, 1001), fieldNode(2)), Kind: change.DeltaKindSet}}
-	resolver := testNamedBackendResolver(map[change.NameBackend]map[change.FieldID]string{
-		change.NameBackendGo:   {1: "Items", 2: "Quantity"},
-		change.NameBackendJSON: {1: "it", 2: "quantity"},
+	deltas := change.DeltaSet{{Path: deltaPath(intKeyNode(1, 1001), fieldNode(2)), Op: change.OpSet}}
+	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
+		change.FieldNameGo:   {1: "Items", 2: "Quantity"},
+		change.FieldNameJSON: {1: "it", 2: "quantity"},
 	})
 
 	patches, err := redis.BuildDocumentPatchesWithDeltas(spec, deltas, resolver, change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
@@ -79,23 +77,22 @@ func TestRedisPatchUsesSubKeyAndRedisName(t *testing.T) {
 func TestRedisPatchUsesOperationsForSliceElementField(t *testing.T) {
 	spec := meta.TypeSpec{
 		Type: meta.Type{Fields: []meta.Field{{
-			Name:      "Queue",
-			JSONName:  "queue",
-			RedisName: "queue",
-			Type:      "[]*Item",
-			Exported:  true,
+			Name:     "Queue",
+			JSONName: "queue",
+			Type:     "[]*Item",
+			Exported: true,
 		}}},
 		Fields: map[string]meta.FieldSpec{
 			"Queue": {Redis: &meta.RedisFieldSpec{SubKey: "queue"}},
 		},
 	}
 	delta := deltaPath(intKeyNode(1, 0), fieldNode(2))
-	resolver := testNamedBackendResolver(map[change.NameBackend]map[change.FieldID]string{
-		change.NameBackendGo:   {1: "Queue", 2: "Count"},
-		change.NameBackendJSON: {1: "queue", 2: "count"},
+	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
+		change.FieldNameGo:   {1: "Queue", 2: "Count"},
+		change.FieldNameJSON: {1: "queue", 2: "count"},
 	})
 
-	patches, err := redis.BuildDocumentPatchesWithDeltas(spec, change.DeltaSet{{Path: delta, Kind: change.DeltaKindSet}}, resolver, change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
+	patches, err := redis.BuildDocumentPatchesWithDeltas(spec, change.DeltaSet{{Path: delta, Op: change.OpSet}}, resolver, change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
 		if path.Equal(delta) {
 			return int64(8), true
 		}

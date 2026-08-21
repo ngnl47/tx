@@ -56,7 +56,7 @@ func TestAgentSessionFetchesOutboundAndConfirmsAckOnNextInbound(t *testing.T) {
 	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, CommandID: 1, Payload: []byte("first")}
 	_ = receiveDispatch(t, dispatched)
 
-	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Message: []byte("bon-response")}); err != nil {
+	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("bon-response")}); err != nil {
 		t.Fatalf("publish outbound: %v", err)
 	}
 	select {
@@ -90,7 +90,7 @@ func TestAgentSessionConfirmsAckWithoutBusinessFrame(t *testing.T) {
 
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
 	waitForMailboxSession(t, mailbox)
-	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Message: []byte("bon-response")}); err != nil {
+	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("bon-response")}); err != nil {
 		t.Fatalf("publish outbound: %v", err)
 	}
 	select {
@@ -128,7 +128,7 @@ func TestAgentSessionRejectsAcknowledgementBeyondWrittenOutbound(t *testing.T) {
 
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
 	waitForMailboxSession(t, mailbox)
-	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Message: []byte("bon-response")}); err != nil {
+	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("bon-response")}); err != nil {
 		t.Fatalf("publish outbound: %v", err)
 	}
 	select {
@@ -189,7 +189,7 @@ func TestAgentSessionDispatchFailureDoesNotRollbackAcceptedSequence(t *testing.T
 
 func TestAgentSessionDoesNotAdvanceSequenceWhenAdmissionRejects(t *testing.T) {
 	store := newMailboxSessionStore()
-	mailbox, err := msgq.NewServer(msgq.ServerOptions{InstanceID: "msgq-local", Store: store, MaxBacklog: 4})
+	mailbox, err := msgq.NewServer(msgq.ServerOptions{InstanceID: "msgq-local", Store: store, MaxBacklogMessages: 4})
 	if err != nil {
 		t.Fatalf("new mailbox: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestAgentSessionDoesNotAdvanceSequenceWhenAdmissionRejects(t *testing.T) {
 func newAgentSessionFixture(t *testing.T, dispatchErr error) (*txagent.Server, *agentTransport, *msgq.Server, <-chan txagent.DispatchRequest) {
 	t.Helper()
 	store := newMailboxSessionStore()
-	mailbox, err := msgq.NewServer(msgq.ServerOptions{InstanceID: "msgq-local", Store: store, MaxBacklog: 4})
+	mailbox, err := msgq.NewServer(msgq.ServerOptions{InstanceID: "msgq-local", Store: store, MaxBacklogMessages: 4})
 	if err != nil {
 		t.Fatalf("new mailbox: %v", err)
 	}

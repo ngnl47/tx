@@ -61,7 +61,7 @@ func benchmarkRepeatedFieldDeltas(count int) change.DeltaSet {
 	deltas := make(change.DeltaSet, count)
 	path := benchmarkDeltaPath(benchmarkFieldNode(1))
 	for i := range deltas {
-		deltas[i] = change.DeltaEntry{Path: path, Kind: change.DeltaKindSet}
+		deltas[i] = change.DeltaEntry{Path: path, Op: change.OpSet}
 	}
 	return deltas
 }
@@ -74,7 +74,7 @@ func benchmarkMapItemDeltas(count int) change.DeltaSet {
 				benchmarkIntKeyNode(2, int64(i)),
 				benchmarkFieldNode(3),
 			),
-			Kind: change.DeltaKindSet,
+			Op: change.OpSet,
 		}
 	}
 	return deltas
@@ -84,7 +84,7 @@ func benchmarkAncestorReplaceDeltas(count int) change.DeltaSet {
 	deltas := benchmarkMapItemDeltas(count)
 	return append(deltas, change.DeltaEntry{
 		Path: benchmarkDeltaPath(benchmarkFieldNode(2)),
-		Kind: change.DeltaKindReplace,
+		Op:   change.OpReplace,
 	})
 }
 

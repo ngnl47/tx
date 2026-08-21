@@ -519,9 +519,32 @@ func validateLockTarget(lock LockTarget) error {
 	return nil
 }
 
+type contextMutex struct {
+	permit chan struct{}
+}
+
+func newContextMutex() contextMutex {
+	mutex := contextMutex{permit: make(chan struct{}, 1)}
+	mutex.permit <- struct{}{}
+	return mutex
+}
+
+func (mutex *contextMutex) Lock(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-mutex.permit:
+		return nil
+	}
+}
+
+func (mutex *contextMutex) Unlock() {
+	mutex.permit <- struct{}{}
+}
+
 type lockEntry struct {
-	token chan struct{}
-	refs  int
+	mu   contextMutex
+	refs int
 }
 
 const (
@@ -594,13 +617,11 @@ func acquireLock(ctx context.Context, key LockKey, entry *lockEntry) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("transaction: acquire lock %s: %w", key.String(), err)
 	}
-	select {
-	case <-ctx.Done():
-		return fmt.Errorf("transaction: acquire lock %s: %w", key.String(), ctx.Err())
-	case <-entry.token:
+	if err := entry.mu.Lock(ctx); err != nil {
+		return fmt.Errorf("transaction: acquire lock %s: %w", key.String(), err)
 	}
 	if err := ctx.Err(); err != nil {
-		entry.token <- struct{}{}
+		entry.mu.Unlock()
 		return fmt.Errorf("transaction: acquire lock %s: %w", key.String(), err)
 	}
 	return nil
@@ -612,7 +633,7 @@ func releaseLocks(locks *heldLockSet) {
 	}
 	for index := locks.count - 1; index >= 0; index-- {
 		held := locks.at(index)
-		held.entry.token <- struct{}{}
+		held.entry.mu.Unlock()
 		transactionLocks.release(*held)
 		*held = heldLock{}
 	}
@@ -664,9 +685,7 @@ func (table *lockTable) acquireEntry() *lockEntry {
 	if pooled := table.pool.Get(); pooled != nil {
 		return pooled.(*lockEntry)
 	}
-	entry := &lockEntry{token: make(chan struct{}, 1)}
-	entry.token <- struct{}{}
-	return entry
+	return &lockEntry{mu: newContextMutex()}
 }
 
 func lockKeyHash(key LockKey) uint64 {

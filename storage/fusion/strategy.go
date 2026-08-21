@@ -19,7 +19,7 @@ const (
 )
 
 type LoadOptions struct {
-	DontLoadToRedis bool
+	SkipRedisBackfill bool
 }
 
 // Strategy 实现 fusion 模式的变更落地策略。
@@ -27,7 +27,7 @@ type LoadOptions struct {
 // Redis 适配器负责即时写入热数据；MongoQueue 负责把持久化保存推迟到
 // delaySave 配置之后执行。
 type Strategy struct {
-	Redis         storage.DeltaApplier
+	RedisApplier  storage.DeltaApplier
 	RedisDeleter  storage.DeleteApplier
 	RedisLoader   storage.DocumentLoader
 	RedisReplacer storage.DocumentReplacerWithOptions
@@ -43,7 +43,7 @@ type Strategy struct {
 // Redis/Mongo/延迟队列组件的半装配实例进入业务服务。
 func (s Strategy) Validate() error {
 	missing := make([]string, 0, 8)
-	if isNilFusionDependency(s.Redis) {
+	if isNilFusionDependency(s.RedisApplier) {
 		missing = append(missing, "redis delta applier")
 	}
 	if isNilFusionDependency(s.redisLoader()) {
@@ -84,7 +84,7 @@ func (s Strategy) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec
 	if err := s.writeDependencies(); err != nil {
 		return err
 	}
-	if err := s.Redis.ApplyDeltasWithOptions(ctx, spec, key, deltas, resolver, values, options); err != nil {
+	if err := s.RedisApplier.ApplyDeltasWithOptions(ctx, spec, key, deltas, resolver, values, options); err != nil {
 		return err
 	}
 	return s.enqueueDelayedWrites(ctx, spec, key)
@@ -137,7 +137,7 @@ func (s Strategy) LoadDocumentWithOptions(ctx context.Context, spec meta.TypeSpe
 	if exists {
 		return doc, true, nil
 	}
-	if options.DontLoadToRedis {
+	if options.SkipRedisBackfill {
 		return loadFusionDocument(ctx, s.MongoLoader, "mongo document loader", spec, key, fields...)
 	}
 	return s.loadMongoDocumentAndBackfillRedis(ctx, spec, key, fields...)
@@ -190,7 +190,7 @@ func (s Strategy) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSp
 	if len(missingKeys) == 0 {
 		return docs, exists, nil
 	}
-	if options.DontLoadToRedis {
+	if options.SkipRedisBackfill {
 		return s.loadMongoMissingDocuments(ctx, spec, missingIndexes, missingKeys, docs, exists, fields...)
 	}
 	if err := s.requireRedisBackfillDependencies(); err != nil {
@@ -214,7 +214,7 @@ func (s Strategy) readDependencies() (storage.DocumentLoader, error) {
 }
 
 func (s Strategy) writeDependencies() error {
-	if isNilFusionDependency(s.Redis) {
+	if isNilFusionDependency(s.RedisApplier) {
 		return ErrRedisNotConfigured
 	}
 	if isNilFusionDependency(s.MongoQueue) {
@@ -352,8 +352,8 @@ func (s Strategy) backfillMongoDocumentAfterRedisCheck(ctx context.Context, spec
 		return nil, false, fmt.Errorf("fusion: storage delayDelTime must be greater than 0 for redis backfill")
 	}
 	options := storage.ApplyOptions{
-		Upsert: true,
-		TTL:    ttl,
+		Upsert:     true,
+		TTLSeconds: ttl,
 	}
 	if err := replacer.ReplaceDocumentWithOptions(ctx, spec, key, mongoDocument, options); err != nil {
 		return nil, false, err
@@ -394,8 +394,8 @@ func (s Strategy) loadMongoDocumentAndBackfillRedis(ctx context.Context, spec me
 		return document, exists, err
 	}
 	options := storage.ApplyOptions{
-		Upsert: true,
-		TTL:    ttl,
+		Upsert:     true,
+		TTLSeconds: ttl,
 	}
 	if err := replacer.ReplaceDocumentWithOptions(ctx, spec, key, document, options); err != nil {
 		return nil, false, err
@@ -440,7 +440,7 @@ func (s Strategy) redisLoader() storage.DocumentLoader {
 	if !isNilFusionDependency(s.RedisLoader) {
 		return s.RedisLoader
 	}
-	loader, _ := s.Redis.(storage.DocumentLoader)
+	loader, _ := s.RedisApplier.(storage.DocumentLoader)
 	if isNilFusionDependency(loader) {
 		return nil
 	}
@@ -472,7 +472,7 @@ func (s Strategy) redisReplacerWithOptions() storage.DocumentReplacerWithOptions
 	if !isNilFusionDependency(s.RedisReplacer) {
 		return s.RedisReplacer
 	}
-	replacer, _ := s.Redis.(storage.DocumentReplacerWithOptions)
+	replacer, _ := s.RedisApplier.(storage.DocumentReplacerWithOptions)
 	if isNilFusionDependency(replacer) {
 		return nil
 	}
@@ -493,7 +493,7 @@ func (s Strategy) redisDeleter() storage.DeleteApplier {
 	if !isNilFusionDependency(s.RedisDeleter) {
 		return s.RedisDeleter
 	}
-	deleter, _ := s.Redis.(storage.DeleteApplier)
+	deleter, _ := s.RedisApplier.(storage.DeleteApplier)
 	if isNilFusionDependency(deleter) {
 		return nil
 	}
@@ -527,7 +527,7 @@ func (s Strategy) redisLocker() storage.RecordLocker {
 	if !isNilFusionDependency(s.RedisLocker) {
 		return s.RedisLocker
 	}
-	locker, _ := s.Redis.(storage.RecordLocker)
+	locker, _ := s.RedisApplier.(storage.RecordLocker)
 	if isNilFusionDependency(locker) {
 		return nil
 	}

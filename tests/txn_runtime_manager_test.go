@@ -74,7 +74,7 @@ func (store *runtimeTestStore) SetField(field change.FieldID) {
 	}
 	store.deltas = append(store.deltas, change.DeltaEntry{
 		Path: testStorageDeltaPath(field),
-		Kind: change.DeltaKindSet,
+		Op:   change.OpSet,
 	})
 }
 
@@ -92,7 +92,7 @@ func (store *runtimeTestStore) Deltas() change.DeltaSet {
 }
 
 func (store *runtimeTestStore) FieldNameResolver() change.FieldNameResolver {
-	return change.FieldNameResolverFunc(func(change.FieldID, change.NameBackend) string { return "field" })
+	return change.FieldNameResolverFunc(func(change.FieldID, change.FieldNameKind) string { return "field" })
 }
 
 func (store *runtimeTestStore) DeltaValueResolver() change.DeltaValueResolver {
@@ -113,7 +113,7 @@ func (store *runtimeTestStore) CollapseDeltas() {
 	store.collapsed++
 	store.deltas = change.DeltaSet{{
 		Path: testStorageDeltaPath(1),
-		Kind: change.DeltaKindReplace,
+		Op:   change.OpReplace,
 	}}
 }
 
@@ -324,8 +324,8 @@ func TestTxnRuntimeMarkDirtyRejectsNonCollapsiblePersistentTarget(t *testing.T) 
 func TestTxnRuntimeMemorySoftLimitWarnsButAcceptsNewPendingRoots(t *testing.T) {
 	var heapBytes uint64
 	manager := txn.NewRuntime(&recordingDeltaStoreApplier{}, txn.RuntimeConfig{
-		PendingMemorySoftLimit: 1,
-		HeapBytes:              func() uint64 { return heapBytes },
+		HeapSoftLimitBytes: 1,
+		ReadHeapBytes:      func() uint64 { return heapBytes },
 	})
 
 	first := &runtimeTestStore{}

@@ -18,9 +18,9 @@ import (
 func TestMsgQServerRestoresUnconfirmedOutboundMessages(t *testing.T) {
 	store := newMailboxSessionStore()
 	server, err := msgq.NewServer(msgq.ServerOptions{
-		InstanceID: "msgq-1",
-		Store:      store,
-		MaxBacklog: 4,
+		InstanceID:         "msgq-1",
+		Store:              store,
+		MaxBacklogMessages: 4,
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -35,10 +35,10 @@ func TestMsgQServerRestoresUnconfirmedOutboundMessages(t *testing.T) {
 	if init.ReceivedSeq != 0 {
 		t.Fatalf("received seq = %d, want 0", init.ReceivedSeq)
 	}
-	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Message: []byte("first")}); err != nil {
+	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("first")}); err != nil {
 		t.Fatalf("publish first: %v", err)
 	}
-	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Message: []byte("second")}); err != nil {
+	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("second")}); err != nil {
 		t.Fatalf("publish second: %v", err)
 	}
 
@@ -46,7 +46,7 @@ func TestMsgQServerRestoresUnconfirmedOutboundMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetch first: %v", err)
 	}
-	if firstMessage.Seq != 1 || string(firstMessage.Message) != "first" {
+	if firstMessage.Seq != 1 || string(firstMessage.Payload) != "first" {
 		t.Fatalf("first fetch = %#v", firstMessage)
 	}
 
@@ -62,7 +62,7 @@ func TestMsgQServerRestoresUnconfirmedOutboundMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetch restored: %v", err)
 	}
-	if secondMessage.Seq != 2 || string(secondMessage.Message) != "second" {
+	if secondMessage.Seq != 2 || string(secondMessage.Payload) != "second" {
 		t.Fatalf("restored fetch = %#v", secondMessage)
 	}
 	if err := server.Confirm(context.Background(), msgq.ConfirmRequest{Header: secondConn, Ack: 2}); err != nil {
@@ -79,9 +79,9 @@ func TestMsgQServerRestoresUnconfirmedOutboundMessages(t *testing.T) {
 
 func TestMsgQServerSerializesInboundAndRejectsStaleConnection(t *testing.T) {
 	server, err := msgq.NewServer(msgq.ServerOptions{
-		InstanceID: "msgq-1",
-		Store:      newMailboxSessionStore(),
-		MaxBacklog: 2,
+		InstanceID:         "msgq-1",
+		Store:              newMailboxSessionStore(),
+		MaxBacklogMessages: 2,
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -109,9 +109,9 @@ func TestMsgQServerSerializesInboundAndRejectsStaleConnection(t *testing.T) {
 
 func TestMsgQServerBoundsOutboundQueue(t *testing.T) {
 	server, err := msgq.NewServer(msgq.ServerOptions{
-		InstanceID: "msgq-1",
-		Store:      newMailboxSessionStore(),
-		MaxBacklog: 1,
+		InstanceID:         "msgq-1",
+		Store:              newMailboxSessionStore(),
+		MaxBacklogMessages: 1,
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -120,10 +120,10 @@ func TestMsgQServerBoundsOutboundQueue(t *testing.T) {
 	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Message: []byte("one")}); err != nil {
+	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("one")}); err != nil {
 		t.Fatalf("publish one: %v", err)
 	}
-	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Message: []byte("two")}); !errors.Is(err, msgq.ErrOutboundOverflow) {
+	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("two")}); !errors.Is(err, msgq.ErrOutboundOverflow) {
 		t.Fatalf("publish overflow error = %v, want outbound overflow", err)
 	}
 	if server.SessionCount() != 0 {
@@ -133,10 +133,10 @@ func TestMsgQServerBoundsOutboundQueue(t *testing.T) {
 
 func TestMsgQServerBoundsOutboundQueueBytes(t *testing.T) {
 	server, err := msgq.NewServer(msgq.ServerOptions{
-		InstanceID:      "msgq-1",
-		Store:           newMailboxSessionStore(),
-		MaxBacklog:      4,
-		MaxBacklogBytes: 3,
+		InstanceID:         "msgq-1",
+		Store:              newMailboxSessionStore(),
+		MaxBacklogMessages: 4,
+		MaxBacklogBytes:    3,
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -145,10 +145,10 @@ func TestMsgQServerBoundsOutboundQueueBytes(t *testing.T) {
 	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Message: []byte("123")}); err != nil {
+	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Payload: []byte("123")}); err != nil {
 		t.Fatalf("publish first: %v", err)
 	}
-	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Message: []byte("4")}); !errors.Is(err, msgq.ErrOutboundOverflow) {
+	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Payload: []byte("4")}); !errors.Is(err, msgq.ErrOutboundOverflow) {
 		t.Fatalf("publish byte overflow error = %v, want outbound overflow", err)
 	}
 	if server.SessionCount() != 0 {
@@ -157,7 +157,7 @@ func TestMsgQServerBoundsOutboundQueueBytes(t *testing.T) {
 }
 
 func TestMsgQServerRejectsAcknowledgementBeyondSentOutbound(t *testing.T) {
-	server, err := msgq.NewServer(msgq.ServerOptions{InstanceID: "msgq-1", Store: newMailboxSessionStore(), MaxBacklog: 4})
+	server, err := msgq.NewServer(msgq.ServerOptions{InstanceID: "msgq-1", Store: newMailboxSessionStore(), MaxBacklogMessages: 4})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestMsgQServerRejectsAcknowledgementBeyondSentOutbound(t *testing.T) {
 	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Message: []byte("one")}); err != nil {
+	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Payload: []byte("one")}); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	if err := server.Confirm(context.Background(), msgq.ConfirmRequest{Header: header, Ack: 1}); !errors.Is(err, msgq.ErrOutboundAcknowledgement) {
@@ -182,9 +182,9 @@ func TestMsgQServerRejectsAcknowledgementBeyondSentOutbound(t *testing.T) {
 
 func TestMsgQServerFetchSomeKeepsUnconfirmedSequence(t *testing.T) {
 	server, err := msgq.NewServer(msgq.ServerOptions{
-		InstanceID: "msgq-1",
-		Store:      newMailboxSessionStore(),
-		MaxBacklog: 4,
+		InstanceID:         "msgq-1",
+		Store:              newMailboxSessionStore(),
+		MaxBacklogMessages: 4,
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -197,7 +197,7 @@ func TestMsgQServerFetchSomeKeepsUnconfirmedSequence(t *testing.T) {
 	for _, message := range []string{"one", "two", "three"} {
 		if _, err := server.Pub(context.Background(), msgq.PubRequest{
 			Header:  msgq.SessionHeader{RoleID: header.RoleID},
-			Message: []byte(message),
+			Payload: []byte(message),
 		}); err != nil {
 			t.Fatalf("publish %q: %v", message, err)
 		}
@@ -207,20 +207,20 @@ func TestMsgQServerFetchSomeKeepsUnconfirmedSequence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetch some: %v", err)
 	}
-	if len(batch.Messages) != 2 || batch.Messages[0].Seq != 1 || batch.Messages[1].Seq != 2 || string(batch.Messages[1].Message) != "two" {
+	if len(batch.Messages) != 2 || batch.Messages[0].Seq != 1 || batch.Messages[1].Seq != 2 || string(batch.Messages[1].Payload) != "two" {
 		t.Fatalf("batch = %#v", batch.Messages)
 	}
 	last, err := server.Fetch(context.Background(), msgq.FetchRequest{Header: header})
-	if err != nil || last.Seq != 3 || string(last.Message) != "three" {
+	if err != nil || last.Seq != 3 || string(last.Payload) != "three" {
 		t.Fatalf("last = %#v, %v", last, err)
 	}
 }
 
 func TestMsgQServerBroadcastTopicReportsPartialOverflow(t *testing.T) {
 	server, err := msgq.NewServer(msgq.ServerOptions{
-		InstanceID: "msgq-1",
-		Store:      newMailboxSessionStore(),
-		MaxBacklog: 1,
+		InstanceID:         "msgq-1",
+		Store:              newMailboxSessionStore(),
+		MaxBacklogMessages: 1,
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -239,14 +239,14 @@ func TestMsgQServerBroadcastTopicReportsPartialOverflow(t *testing.T) {
 
 	firstBroadcast, err := server.BroadcastTopic(context.Background(), msgq.BroadcastTopicRequest{
 		Topic:   "guild:9",
-		Message: []byte("first"),
+		Payload: []byte("first"),
 	})
 	if err != nil || firstBroadcast.Attempted != 2 || firstBroadcast.Delivered != 2 || firstBroadcast.Overflowed != 0 {
 		t.Fatalf("first broadcast = %#v, %v", firstBroadcast, err)
 	}
 	secondBroadcast, err := server.BroadcastTopic(context.Background(), msgq.BroadcastTopicRequest{
 		Topic:   "guild:9",
-		Message: []byte("second"),
+		Payload: []byte("second"),
 	})
 	if !errors.Is(err, msgq.ErrOutboundOverflow) || secondBroadcast.Attempted != 2 || secondBroadcast.Delivered != 0 || secondBroadcast.Overflowed != 2 {
 		t.Fatalf("second broadcast = %#v, %v", secondBroadcast, err)
@@ -259,9 +259,9 @@ func TestMsgQServerBroadcastTopicReportsPartialOverflow(t *testing.T) {
 func TestMsgQServerRejectsOldConnectionCloseAfterRestore(t *testing.T) {
 	store := newMailboxSessionStore()
 	server, err := msgq.NewServer(msgq.ServerOptions{
-		InstanceID: "msgq-1",
-		Store:      store,
-		MaxBacklog: 2,
+		InstanceID:         "msgq-1",
+		Store:              store,
+		MaxBacklogMessages: 2,
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -312,9 +312,9 @@ func TestMsgQServerRedisIntegration(t *testing.T) {
 		t.Fatalf("new redis session store: %v", err)
 	}
 	server, err := msgq.NewServer(msgq.ServerOptions{
-		InstanceID: "msgq-1",
-		Store:      bindings,
-		MaxBacklog: 2,
+		InstanceID:         "msgq-1",
+		Store:              bindings,
+		MaxBacklogMessages: 2,
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -326,11 +326,11 @@ func TestMsgQServerRedisIntegration(t *testing.T) {
 	if _, found, err := bindings.Find(ctx, header.RoleID); err != nil || !found {
 		t.Fatalf("find owner after init = %t, %v", found, err)
 	}
-	if _, err := server.Pub(ctx, msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Message: []byte("notify")}); err != nil {
+	if _, err := server.Pub(ctx, msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Payload: []byte("notify")}); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	message, err := server.Fetch(ctx, msgq.FetchRequest{Header: header})
-	if err != nil || message.Seq != 1 || string(message.Message) != "notify" {
+	if err != nil || message.Seq != 1 || string(message.Payload) != "notify" {
 		t.Fatalf("fetch = %#v, %v", message, err)
 	}
 	if err := server.Confirm(ctx, msgq.ConfirmRequest{Header: header, Ack: message.Seq}); err != nil {
@@ -347,11 +347,11 @@ func TestMsgQServerRedisIntegration(t *testing.T) {
 func TestMsgQServerReapRemovesOfflineSessionAndBinding(t *testing.T) {
 	store := newMailboxSessionStore()
 	server, err := msgq.NewServer(msgq.ServerOptions{
-		InstanceID:     "msgq-1",
-		Store:          store,
-		MaxBacklog:     2,
-		OfflineTimeout: time.Second,
-		SweepInterval:  time.Millisecond,
+		InstanceID:         "msgq-1",
+		Store:              store,
+		MaxBacklogMessages: 2,
+		OfflineTimeout:     time.Second,
+		SweepInterval:      time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -374,11 +374,11 @@ func TestMsgQServerReapRemovesOfflineSessionAndBinding(t *testing.T) {
 
 func TestMsgQServerStartUsesLifecycleWorker(t *testing.T) {
 	server, err := msgq.NewServer(msgq.ServerOptions{
-		InstanceID:     "msgq-1",
-		Store:          newMailboxSessionStore(),
-		MaxBacklog:     2,
-		OfflineTimeout: time.Nanosecond,
-		SweepInterval:  time.Millisecond,
+		InstanceID:         "msgq-1",
+		Store:              newMailboxSessionStore(),
+		MaxBacklogMessages: 2,
+		OfflineTimeout:     time.Nanosecond,
+		SweepInterval:      time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)

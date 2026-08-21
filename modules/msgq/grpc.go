@@ -42,7 +42,7 @@ func (s *mailboxService) Rec(ctx context.Context, request *msgqpb.RecRequest) (*
 }
 
 func (s *mailboxService) Pub(ctx context.Context, request *msgqpb.PubRequest) (*msgqpb.PubResponse, error) {
-	result, err := s.mailbox.Pub(ctx, PubRequest{Header: headerFromProto(request.GetHeader()), Message: request.GetMessage()})
+	result, err := s.mailbox.Pub(ctx, PubRequest{Header: headerFromProto(request.GetHeader()), Payload: request.GetPayload()})
 	if err != nil {
 		return nil, mailboxStatusError(err)
 	}
@@ -97,7 +97,7 @@ func (s *mailboxService) Topics(ctx context.Context, request *msgqpb.TopicReques
 }
 
 func (s *mailboxService) BroadcastTopic(ctx context.Context, request *msgqpb.BroadcastTopicRequest) (*msgqpb.BroadcastTopicResponse, error) {
-	result, err := s.mailbox.BroadcastTopic(ctx, BroadcastTopicRequest{Topic: request.GetTopic(), Message: request.GetMessage()})
+	result, err := s.mailbox.BroadcastTopic(ctx, BroadcastTopicRequest{Topic: request.GetTopic(), Payload: request.GetPayload()})
 	response := &msgqpb.BroadcastTopicResponse{
 		Attempted:  int32(result.Attempted),
 		Delivered:  int32(result.Delivered),
@@ -129,7 +129,7 @@ func headerFromProto(header *msgqpb.SessionHeader) SessionHeader {
 }
 
 func fetchResultToProto(result FetchResult) *msgqpb.FetchResponse {
-	return &msgqpb.FetchResponse{Seq: result.Seq, Message: result.Message}
+	return &msgqpb.FetchResponse{Seq: result.Seq, Payload: result.Payload}
 }
 
 func mailboxStatusError(err error) error {

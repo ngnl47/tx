@@ -14,9 +14,9 @@ import (
 
 func TestMsgQGRPCServicePassesMailboxLifecycle(t *testing.T) {
 	mailbox, err := msgq.NewServer(msgq.ServerOptions{
-		InstanceID: "msgq-1",
-		Store:      newMailboxSessionStore(),
-		MaxBacklog: 4,
+		InstanceID:         "msgq-1",
+		Store:              newMailboxSessionStore(),
+		MaxBacklogMessages: 4,
 	})
 	if err != nil {
 		t.Fatalf("new mailbox: %v", err)
@@ -47,7 +47,7 @@ func TestMsgQGRPCServicePassesMailboxLifecycle(t *testing.T) {
 	}
 	if _, err := client.Pub(ctx, &msgqpb.PubRequest{
 		Header:  &msgqpb.SessionHeader{RoleId: header.GetRoleId()},
-		Message: []byte("bon-body"),
+		Payload: []byte("bon-body"),
 	}); err != nil {
 		t.Fatalf("publish mailbox: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestMsgQGRPCServicePassesMailboxLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetch mailbox: %v", err)
 	}
-	if message.GetSeq() != 1 || string(message.GetMessage()) != "bon-body" {
+	if message.GetSeq() != 1 || string(message.GetPayload()) != "bon-body" {
 		t.Fatalf("fetch result = %#v", message)
 	}
 	if _, err := client.Confirm(ctx, &msgqpb.ConfirmRequest{Header: header, Ack: message.GetSeq()}); err != nil {

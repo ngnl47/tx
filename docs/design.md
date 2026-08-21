@@ -45,6 +45,19 @@
 - 跨 goroutine 共享数据时，必须明确复制或所有权转移规则。
 - 新抽象只有在减少真实重复、稳定职责边界或降低调用复杂度时才引入。
 
+### 命名规则
+
+核心类型和高频状态必须让字段名与类型语义互相印证：
+
+- `Kind` 表示互斥分类，例如 `FieldNameKind`、`KeyKind`；它不表达一次变更动作。
+- `Op` 表示可执行或可投影的操作，例如 `DeltaOp` 与 `DeltaEntry.Op`。
+- `ops` 保存 `DeltaOp`；`dirty` 只用于布尔脏状态、脏子节点索引或脏通知。
+- 同步原语以职责命名。事务锁表使用 `contextMutex`，内部容量为一的 channel 只叫 `permit`，调用方不感知 channel 实现。
+- 时间、容量和字节配置在名字中写清单位或口径，例如 `TTLSeconds`、`MaxBacklogMessages`、`HeapSoftLimitBytes`。
+- JSON、BSON、Msgpack 属于字段命名体系；Redis、Mongo 属于使用这些名称的存储边界，不为存储边界重复生成字段名身份。
+
+公开名称一旦让调用者误解职责，应直接修正并同步生成代码和文档；当前工程不为未发布的中间名称保留兼容别名。
+
 ## 系统边界
 
 ### 三个工程的职责
@@ -153,7 +166,7 @@ meta 规范化和校验
 txgen 模板生成
 ```
 
-`anno` 不猜注解属于哪个类型；绑定关系必须由 AST 确定。`meta` 表达的是生成器和 runtime 共同理解的稳定语义，例如存储模式、路由字段、字段 ID 和多后端名称。
+`anno` 不猜注解属于哪个类型；绑定关系必须由 AST 确定。`meta` 表达的是生成器和 runtime 共同理解的稳定语义，例如存储模式、路由字段、字段 ID 和多序列化名称。
 
 ### 字段名体系
 
@@ -171,7 +184,7 @@ Redis 和 Mongo 是使用这些名称的后端，不是额外的字段名体系�
 - cmd 下行协议使用 MessagePack 名。
 - Store API 和 `LoadFields` 输入使用 Go 字段名。
 
-生成 resolver 负责 `FieldID -> backend name` 的静态映射。运行时不通过反射重新推导生成期已经知道的关系。
+生成 resolver 负责 `FieldID -> go/json/bson/msgpack name` 的静态映射。Redis、Mongo、Provider 在各自边界选择对应命名体系，运行时不通过反射重新推导生成期已经知道的关系。
 
 ### FieldID 稳定性
 
@@ -323,20 +336,20 @@ err := role.SaveChange(...)
 ```go
 type GDRoleStore struct {
     Value *GDRole
-    dirty [10]change.DeltaKind
+    ops   [10]change.DeltaOp
     // generated child/collection stores...
 }
 
 type GDRoleItemsCollectionStore struct {
     parent        *GDRoleStore
-    dirty         map[int32]change.DeltaKind
+    ops           map[int32]change.DeltaOp
     stores        map[int32]*GDItemStore
     dirtyChildren map[int32]struct{}
 }
 ```
 
-- 普通字段用 `dirty[fieldID-1]` 保存最后语义；同一字段重复 `Set` 不追加条目。
-- map/slice 的显式元素操作用 `dirty[key/index]` 保存最后语义。
+- 普通字段用 `ops[fieldID-1]` 保存最后语义；同一字段重复 `Set` 不追加条目。
+- map/slice 的显式元素操作用 `ops[key/index]` 保存最后语义。
 - 生成对象子字段的变化仍保存在对应子 Store；`dirtyChildren` 只索引真正变脏的子 Store，`stores` 可以缓存已经访问但仍干净的子 Store。
 - 整字段 Replace/Clear 会在投影时覆盖该字段下的 key/子 Store 状态；`UnTouch` 可以撤销显式选择，并重新暴露仍真实存在的子 Store 变更。
 - `View()` 复制这些规范化状态和 Store 树，但继续读取同一份 GD 数据。
@@ -349,7 +362,7 @@ role.ItemsStore().Set(1001, second)
 role.ItemsStore().Set(1001, final)
 ```
 
-常驻状态始终只有 `dirty[1001] = DeltaKindReplace`。只有调用 `Deltas()`、`ChangeDocument()` 或持久化 API 时，才物化一条 `Items[1001] Replace`。
+常驻状态始终只有 `ops[1001] = OpReplace`。只有调用 `Deltas()`、`ChangeDocument()` 或持久化 API 时，才物化一条 `Items[1001] Replace`。
 
 Snapshot Diff 也先构造同一种生成 Store 状态，再走统一投影边界。这样两种变更模式共享最终 `DeltaSet` 协议，但高频 setter 不再为固定大小的 `DeltaEntry` 做重复 append、扫描和复制。
 
@@ -360,10 +373,10 @@ Snapshot Diff 也先构造同一种生成 Store 状态，再走统一投影边�
 ```go
 type GDRole struct {
     // business fields...
-    state *dataState[GDRole, GDRoleStore]
+    state *storeState[GDRole, GDRoleStore]
 }
 
-type dataState[V any, S any] struct {
+type storeState[V any, S any] struct {
     store    *S
     mode     change.Mode
     snapshot *V
@@ -381,7 +394,7 @@ DeltaSet 是投影后交给文档、Redis、Mongo、Fusion 和 cmd Provider 的�
 ```go
 type DeltaEntry struct {
     Path DeltaPath
-    Kind DeltaKind
+    Op   DeltaOp
 }
 
 type DeltaSet []DeltaEntry
@@ -441,16 +454,16 @@ Depth 4: Role.Items[1001].Buffs[5].Attrs["ATK"].Value
 
 路径超过上限时不能 panic，也不能截断后继续把叶子值写到祖先。`JoinDeltaPathLimited` 返回最近可表达祖先和 `complete=false`，生成 Store 必须把该祖先提升为整体 Replace，并输出可观测提示。
 
-### DeltaKind
+### DeltaOp
 
 当前支持四种严格语义：
 
-| Kind | 含义 |
+| 操作 | 含义 |
 | --- | --- |
-| `DeltaKindSet` | 设置当前路径值；用于字段或集合元素局部更新 |
-| `DeltaKindReplace` | 用当前完整值覆盖路径，不保留旧对象中未出现字段 |
-| `DeltaDelete` | 删除 map 元素或存储字段路径 |
-| `DeltaClear` | 清空容器，但保留字段为空 map/slice |
+| `OpSet` | 设置当前路径值；用于字段或集合元素局部更新 |
+| `OpReplace` | 用当前完整值覆盖路径，不保留旧对象中未出现字段 |
+| `OpDelete` | 删除 map 元素或存储字段路径 |
+| `OpClear` | 清空容器，但保留字段为空 map/slice |
 
 `Set` 和 `Replace` 必须区分。例如旧文档为：
 
@@ -466,7 +479,7 @@ Depth 4: Role.Items[1001].Buffs[5].Attrs["ATK"].Value
 
 Replace 必须得到仅含 `quantity` 的对象，不能残留旧 `quality`。集合 wrapper 的 `Set(key, value)` 遵循 Go map 赋值的整体覆盖语义，因此复杂 value 记录 Replace；修改 value 的子字段才记录细粒度 Set。
 
-未知 Kind 是协议错误。存储边界必须先 `ValidateKinds()`，不能让 Compact 恰好覆盖未知条目后伪装成功。
+未知 Kind 是协议错误。存储边界必须先 `ValidateOps()`，不能让 Compact 恰好覆盖未知条目后伪装成功。
 
 ### 延迟取值
 
@@ -1062,7 +1075,7 @@ Runtime 不复制 GD，也不异步保存脱离对象的 Delta 值。Flush 必�
 
 - `MaxRootDeltaEntries`：单根路径条目超过预算时收敛为顶层 Replace。
 - `MaxPendingRoots`：可选的待刷根对象数量硬限制。
-- `PendingMemorySoftLimit`：进程 Heap 软告警，不拒绝业务。
+- `HeapSoftLimitBytes`：进程 Heap 软告警，不拒绝业务。
 
 HeapAlloc 受整个进程影响，不能作为 Manager 拒绝服务的唯一依据。外部存储不可用时，应由项目健康闸门先拒绝新的持久化业务；已经 pending 的对象保留并等待恢复。
 
@@ -1248,7 +1261,7 @@ result, err := mailbox.Pub(ctx, requestWithPayload)
 
 框架错误大致分为：
 
-- 调用契约错误：非法 LockKey、未知 DeltaKind、nil document。
+- 调用契约错误：非法 LockKey、未知 DeltaOp、nil document。
 - 数据协议错误：损坏 JSON、未知 Lua 返回值、路径类型冲突。
 - 外部 backend 错误：Redis/Mongo/etcd/gRPC 网络或服务错误。
 - 生命周期错误：排水拒绝、context 取消、Flush 超时。

@@ -152,9 +152,9 @@ func routeKeyFromProto(kind actorpb.RouteKeyKind, numeric uint64, text string) (
 	}
 }
 
-// Confirm 投递一条要求确认的 Delivery，并等待目标 Actor 从邮箱取出该消息。
+// TellConfirmed 投递一条要求确认的 Delivery，并等待目标 Actor 从邮箱取出该消息。
 // 它不确认后续业务处理是否成功，且必须传入带 deadline 的 context。
-func (r *Runtime) Confirm(ctx context.Context, pid *protoactor.PID, delivery Delivery) error {
+func (r *Runtime) TellConfirmed(ctx context.Context, pid *protoactor.PID, delivery Delivery) error {
 	if pid == nil {
 		return ErrInvalidPID
 	}
