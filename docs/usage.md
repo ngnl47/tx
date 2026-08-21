@@ -655,6 +655,11 @@ socket.send(encodeFrame({
 }, maxFrameBytes));
 ```
 
+静态命令号是协议身份，不是服务路由编码。项目生成的 `CmdDescriptor` 将稳定 `CommandID` 与当前
+`toService/actor/actorKey` 关联；Agent 按命令号查描述符后使用当前路由元数据，不能仅按数字号段推断目标服务。
+号段只参与新命令首次分配，因此新增命令或把已有命令从 `game` 改为 `room` 都不能改变既有编号。删除命令的
+编号必须作为 retired tombstone 永久保留，避免老客户端请求被解释成后来新增的其他协议。
+
 下行处理通常预先不知道命令名，应使用 `decodeEnvelope(bytes, Schemas)` 从 `{ c, b }` 读取命令并按生成 schema
 解析 body；它会拒绝未知命令、无效信封和尾随字节。已知命令的固定处理点仍可使用 `decodeCommand(name, bytes, Schemas)`
 额外校验命令名。
