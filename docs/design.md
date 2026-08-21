@@ -220,7 +220,7 @@ main GDRoleStore             copied/view Store
 Store 负责：
 
 - 提供强类型 setter 和集合 wrapper。
-- 记录 Delta 路径和变更语义。
+- 使用生成期字段槽位和集合 key/index 状态记录变更语义。
 - 为子 Store 组合父路径。
 - 在输出边界读取当前 GD 值。
 - 为事务绑定临时 undo recorder。
@@ -246,13 +246,13 @@ GDRoleStore
                   +-- Quantity
 ```
 
-叶子 Store 只保存自己的局部 Delta；集合 Store 保存发生变化的 key/index 及对应子 Store，父级通过 `notifyDirty` 只记录“这个分支需要投影”。调用根 Store 的 `Deltas()` 时，框架才递归访问 dirty 分支、追加集合 key/index，并得到：
+叶子 Store 只保存自己的局部字段状态；集合 Store 保存发生变化的 key/index 及对应子 Store，父级通过 `notifyDirty` 只记录“这个分支需要投影”。调用根 Store 的 `Deltas()` 时，框架才递归访问 dirty 分支、追加集合 key/index，并得到：
 
 ```text
 Items[1001].Quantity
 ```
 
-因此 Store 树确实分层保存局部变更状态，但不会在每次修改时遍历整棵树，也不会让根 Store长期保存一份已经展开的全路径副本。所谓“冒泡”是 dirty 通知：子节点通知父集合对应 key/index 已变更；真正的路径拼接发生在 `Deltas()` 或 `ChangeDocument()` 投影边界。根 Store 只递归访问 dirty 索引，使用 `JoinDeltaPathLimited` 组合路径并在输出前 Compact。父子关联属于 Store 路径关系，不代表 GD 对象只能有一个父节点。
+因此 Store 树确实分层保存局部变更状态，但不会在每次修改时遍历整棵树，也不会让根 Store 长期保存一份已经展开的全路径副本。所谓“冒泡”是 dirty 通知：子节点通知父集合对应 key/index 已变更；真正的路径拼接发生在 `Deltas()` 或 `ChangeDocument()` 投影边界。根 Store 只递归访问 dirty 索引，使用 `JoinDeltaPathLimited` 组合路径。生成 Store 的状态在记录时已经按字段或 key 唯一化，正常投影不再额外执行通用 `Compact()`。父子关联属于 Store 路径关系，不代表 GD 对象只能有一个父节点。
 
 ### 共享指针与按路径追踪
 
@@ -295,7 +295,7 @@ item, _ := role.Store().ItemsStore().Get(1001)
 item.SetQuantity(7)
 ```
 
-- O(1) 记录局部路径。
+- O(1) 更新字段槽位或集合 key/index 状态。
 - 适合大对象、高频修改和有状态服务。
 - 事务必须使用这一模式，undo 只覆盖受控 API。
 
@@ -316,9 +316,46 @@ err := role.SaveChange(...)
 
 ## DeltaSet 内核
 
-### 为什么使用扁平 Delta
+### 生成 Store 的常驻状态
 
-DeltaSet 是按发生顺序追加的扁平切片：
+`DeltaSet` 是跨模块的边界协议，不是生成 Store 的常驻内存结构。txgen 已经知道每个类型的字段数量、字段 ID、集合类型和子对象类型，因此生成代码直接保存规范化状态：
+
+```go
+type GDRoleStore struct {
+    Value      *GDRole
+    fieldKinds [10]change.DeltaKind
+    // generated child/collection stores...
+}
+
+type GDRoleItemsStore struct {
+    parent     *GDRoleStore
+    itemKinds map[int32]change.DeltaKind
+    itemStores map[int32]*GDItemStore
+    dirtyItems map[int32]struct{}
+}
+```
+
+- 普通字段用 `fieldKinds[fieldID-1]` 保存最后语义；同一字段重复 `Set` 不追加条目。
+- map/slice 的显式元素操作用 `itemKinds[key/index]` 保存最后语义。
+- 生成对象子字段的变化仍保存在对应子 Store；`dirtyItems` 只索引真正变脏的子 Store。
+- 整字段 Replace/Clear 会在投影时覆盖该字段下的 key/子 Store 状态；`UnTouch` 可以撤销显式选择，并重新暴露仍真实存在的子 Store 变更。
+- `View()` 复制这些规范化状态和 Store 树，但继续读取同一份 GD 数据。
+
+例如连续执行：
+
+```go
+role.ItemsStore().Set(1001, first)
+role.ItemsStore().Set(1001, second)
+role.ItemsStore().Set(1001, final)
+```
+
+常驻状态始终只有 `itemKinds[1001] = DeltaKindReplace`。只有调用 `Deltas()`、`ChangeDocument()` 或持久化 API 时，才物化一条 `Items[1001] Replace`。
+
+Snapshot Diff 也先构造同一种生成 Store 状态，再走统一投影边界。这样两种变更模式共享最终 `DeltaSet` 协议，但高频 setter 不再为固定大小的 `DeltaEntry` 做重复 append、扫描和复制。
+
+### 为什么边界使用扁平 Delta
+
+DeltaSet 是投影后交给文档、Redis、Mongo、Fusion 和 cmd Provider 的扁平切片：
 
 ```go
 type DeltaEntry struct {
@@ -329,7 +366,7 @@ type DeltaEntry struct {
 type DeltaSet []DeltaEntry
 ```
 
-它没有链表节点和子指针，常见扫描具有连续内存局部性。路径在单条 Entry 中使用定长数组表达，避免每次 setter 创建字符串切片和链式节点。
+它没有链表节点和子指针，边界扫描具有连续内存局部性。路径在单条 Entry 中使用定长数组表达，避免生成字符串切片和链式节点。通用调用方仍可以构造按发生顺序追加的 DeltaSet；生成 Store 输出的 DeltaSet 则已经按字段和 key 规范化。
 
 DeltaSet 是标脏描述，不是 AOF：它不负责重放每一次中间操作。当前 GD 保存最终准确状态，Delta 只回答“哪些位置需要从当前 GD 重新读取并写出”。因此 `DeltaEntry` 第一版不保存字段值。
 
@@ -424,7 +461,7 @@ Store.DeltaValue(path)
 当前 GD 中的 int64(7)
 ```
 
-这使同一路径在一个周期内修改多次时无需保存多个中间值，也允许 Compact 后只解析最终路径。
+这使同一路径在一个周期内修改多次时无需保存多个中间值。生成 Store 在物化前已经只保留最终 dirty 语义；通用 DeltaSet 则可在 Compact 后只解析最终路径。
 
 解析结果必须区分：
 
@@ -435,7 +472,7 @@ Store.DeltaValue(path)
 
 ### Compact 的确定性边界
 
-`Compact()` 只执行单看路径和发生顺序即可证明正确的规则：
+`Compact()` 服务于通用 DeltaSet、外部 Delta 输入以及尚未规范化的顺序变更集，只执行单看路径和发生顺序即可证明正确的规则：
 
 1. 同路径后者覆盖前者。
 2. 后发生祖先覆盖更早子孙，删除旧子孙。
@@ -452,6 +489,8 @@ Store.DeltaValue(path)
 原因是 DeltaSet 不持有数据库基线，也不保存创建来源。涉及当前对象状态的吸收由生成 Store 完成。
 
 当前实现对不超过 128 条的常见批次使用原地扫描；更大的互不相交路径集使用索引，哈希命中后仍以完整路径比较确认。后发生根祖先能够快速收敛的批次继续使用原地算法，避免无意义索引分配。
+
+生成 Store 的 `Deltas()` 不调用这套通用 Compact：字段槽和 `itemKinds` 已经保证同一位置唯一，父字段覆盖、结构漂移和超深路径降级也由具有当前类型上下文的生成代码在物化时处理。若未来向生成投影加入新的状态来源，必须先证明它仍保持这一规范化不变量，否则应恢复边界 Compact 或在生成层完成归一化。
 
 ### 集合规则
 
@@ -489,7 +528,7 @@ Slice：
 - `DeltaPath`：200 B。
 - `DeltaEntry`：208 B。
 
-公开的文档转换 API 不取得调用方 DeltaSet 的修改所有权，因此需要 Clone 后 Compact。256 条 Delta 的 Clone 会产生约 52 KiB backing array。任何布局优化必须同时衡量：
+公开的通用文档转换 API 不取得调用方 DeltaSet 的修改所有权，因此仍需要 Clone 后 Compact。256 条 Delta 的 Clone 会产生约 52 KiB backing array；这项成本发生在通用边界，不再发生于生成 Store 的每次 setter。任何布局优化必须同时衡量：
 
 - Entry 大小。
 - append 和复制频率。
@@ -498,6 +537,16 @@ Slice：
 - benchmark 中的真实收益。
 
 不要为了“零分配”过早引入自研 value union、`unsafe` 字符串或后端专属二进制值。
+
+2026-08-21 在 x86_64 macOS、Go 1.26.0 上，对 1024 个不同 map key 的生成 Store 基准进行同机前后对比：
+
+| 场景 | 旧常驻 DeltaSet | 生成字段槽/key 状态 | 结果 |
+| --- | ---: | ---: | --- |
+| 记录 1024 个不同 key | 约 37.3-40.2 ms/op，1.57 MB/op | 约 0.43-0.44 ms/op，0.87 MB/op | 耗时约降低 98.8%，分配字节约降低 44% |
+| 成功投影并清理 1024 个 key | 约 35.2-37.7 ms/op，1.51 MB/op | 约 0.41-0.44 ms/op，0.80 MB/op | 耗时约降低 98.9%，分配字节约降低 47% |
+| 同一 key 重复修改 | 约 593-664 ns/op | 约 488-522 ns/op | 热路径约快 17%-25% |
+
+这些数字用于证明本次物理模型选择，不是跨机器性能承诺。基准仍保留在 txgen 的 `BenchmarkGeneratedStoreDirtyRuntime`，模板或 runtime 改动后必须复跑。
 
 ## 存储抽象
 

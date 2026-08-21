@@ -1548,7 +1548,7 @@ change.Document{
 }
 ```
 
-如果用于 cmd 下行，生成代码会把 Store 里的 `DeltaSet` 转成 Msgpack 字段名文档：
+如果用于 cmd 下行，生成代码会把 Store 当前 dirty 状态物化为 `DeltaSet`，再转成 Msgpack 字段名文档：
 
 ```go
 body, err := role.MsgpackChangeDocument()
@@ -1560,8 +1560,7 @@ if err != nil {
 例如 `HeadImg` 的 tag 是 `msgpack:"hi,omitempty"`，那么下行变更文档里使用 `hi`，不是 Go 字段名
 `HeadImg`。
 
-`Deltas()` 返回压缩后的 `change.DeltaSet`。生成 Store 只负责提供 `TypeSpec`、`RecordKey`、
-`DeltaSet`、字段名解析器和值解析器；真正落库由 `tx/storage` 的通用 `Create` / `Save` 执行。
+`Deltas()` 返回已经按字段和集合位置规范化的 `change.DeltaSet`。生成 Store 内部使用固定字段槽、集合 key/index 状态和 dirty 子 Store 记录变更，不在每次 setter 时追加完整 DeltaEntry；真正落库由 `tx/storage` 的通用 `Create` / `Save` 执行。
 
 ### Store 树、共享引用与 viewStore
 
@@ -2094,14 +2093,14 @@ if ok {
 
 `Append`、`RemoveAt`、`Replace`、`Clear` 这类改变长度、顺序或整体语义的操作仍会记录整字段 dirty；如果同一轮里已经存在整字段 dirty，后续子字段 dirty 会被吸收。
 
-这里的 `"Tags.0"` 和 `"Dress.0.Expire"` 都是输出边界文档 key，不是 Store 内部 dirty 结构。Store 内部仍是 `DeltaEntry{Path: Tags + index 0}` 或 `DeltaEntry{Path: Dress + index 0 + Expire}`。
+这里的 `"Tags.0"` 和 `"Dress.0.Expire"` 都是输出边界文档 key，不是 Store 内部 dirty 结构。Store 内部保存 `Tags` 的 index 状态，以及 `Dress[0]` 对应子 Store 的 `Expire` 字段槽；只有 `Deltas()` 或文档边界才组合成 `DeltaEntry{Path: Tags + index 0}` 和 `DeltaEntry{Path: Dress + index 0 + Expire}`。
 
 `Append`、`RemoveAt`、`Clear`、`Replace` 会改变长度、顺序或整体语义，因此仍然记录整字段 dirty。
 生成代码不会暴露字符串 path 级标脏 API，业务侧应使用强类型方法。
 
 ### 覆盖规则
 
-`DeltaSet` 同一目标多次写入时，只保留最后一次：
+生成 Store 对同一目标多次写入时，只保留最后一次 dirty 语义：
 
 ```go
 role.SetName("alice")
@@ -2114,7 +2113,7 @@ role.SetName("bob")
 Set["Name"] = "bob"
 ```
 
-父路径和子路径的覆盖规则由 Store 和 `DeltaSet.Compact()` 共同负责。例如：
+父路径和子路径的覆盖规则由具有类型上下文的生成 Store 在投影时负责。例如：
 
 ```go
 role.ItemsStore().Set(1001, &data.GDItem{ItemId: 1001, Quantity: 3})
@@ -2125,7 +2124,7 @@ role.TouchItems()
 
 ### AllTouch 和 ClearChanges
 
-`AllTouch()` 表示整对象需要全量落地。它会清空已有字段级 `DeltaSet`：
+`AllTouch()` 表示整对象需要全量落地。它会清空已有字段、集合 key/index 和子 Store dirty 状态，再标记全部顶层字段：
 
 ```go
 role.SetName("bob")
@@ -2133,7 +2132,7 @@ role.ItemsStore().Set(1001, &data.GDItem{ItemId: 1001, Quantity: 3})
 role.Store().AllTouch()
 ```
 
-执行后不再保留 `Name` 或集合字段的局部记录。后续保存路径应根据 `AllDirty()` 走整文档替换。
+执行后不再保留 `Name` 或集合字段的局部记录，`Deltas()` 会按当前 GD 值投影全部顶层字段。
 
 `ClearChanges()` 或 Store 的 `AllUnTouch()` 用于加载完成、主动放弃本轮修改，或显式 Store 写入成功后手动清空脏标记。它会递归清理整棵 Store 树的字段、集合和子节点状态。
 普通请求链路建议使用项目 facade 自动清理：
@@ -2162,7 +2161,7 @@ if err := storage.Save(ctx, fusionStore, store); err != nil {
 
 ### DeltaSet 到后端文档
 
-生成 Store 的主路径记录的是 `change.DeltaSet`：
+生成 Store 在保存/投影边界输出 `change.DeltaSet`：
 
 - `DeltaKindSet`：设置标量字段值，或修改已存在集合元素的子字段。
 - `DeltaKindReplace`：覆盖集合、结构体指针或集合元素的当前值。它保留到 Redis 边界，Lua 按路径直接赋值，不走递归 merge，因此旧对象的遗漏字段不会残留。
