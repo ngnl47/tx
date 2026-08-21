@@ -71,7 +71,7 @@ err := storage.SaveDeltas(ctx, writer, store, batch)
 - 触发条件：多个无冲突 Procedure 高频获取不同 LockKey。
 - 影响：所有 key 都先竞争同一个全局 mutex；每个新 key 还会分配 `lockEntry`、buffered channel 和 held-lock slice。不同业务实体的锁管理在元数据层发生串行。
 - 正式基线：`BenchmarkLockTableAcquireRelease` 的单 key 串行为 `341.8-347.9 ns/op, 176 B/op, 3 allocs/op`，四 key 串行为 `1.275-1.364 us/op, 672 B/op, 9 allocs/op`，16 线程离散 key 为 `520.5-556.3 ns/op, 176 B/op, 3 allocs/op`。共享同 key 的并行路径为 `402.2-419.2 ns/op, 48 B/op, 1 allocs/op`，说明并发持有期间会复用 entry，但短生命周期离散 key 仍承担创建成本和全局锁竞争。
-- 整改：锁元数据按稳定 `LockKey` 哈希分为 64 段；带 context 等待能力的 channel entry 在引用归零并从分段表删除后进入 `sync.Pool`；四把以内的常见事务锁集以内联数组持有，更多锁才使用 overflow slice。单锁预处理跳过没有意义的复制、排序和去重 map，但继续执行完整合法性校验。锁顺序、同 key 互斥、context 超时及失败反向释放语义不变。
+- 整改：精确 Key 锁注册表的元数据按稳定 `LockKey` 哈希分为 64 个 shard；哈希碰撞只竞争短暂的注册表 mutex，不会让不同 Key 共用业务锁。带 context 等待能力的 channel entry 在引用归零并从注册表删除后进入 `sync.Pool`；四把以内的常见事务锁集以内联数组持有，更多锁才使用 overflow slice。单锁预处理跳过没有意义的复制、排序和去重 map，但继续执行完整合法性校验。锁顺序、同 key 互斥、context 超时及失败反向释放语义不变。
 - 整改结果：锁内核单 key 串行为 `247.6-255.9 ns/op, 0 allocs`，四 key 串行为 `965.6-995.2 ns/op, 0 allocs`，16 线程离散 key 为 `43.99-62.26 ns/op, 0 allocs`；共享同 key 仍为 `403.2-423.4 ns/op, 0 allocs`，没有通过放宽同对象串行语义换取性能。完整 `WithLocks` 单 key 入口为 `282.6-311.7 ns/op, 0 allocs`；四 key 的排序和重复校验仍为 `1.585-1.696 us/op, 360 B/op, 4 allocs/op`，后续只有真实多对象事务基准证明值得时才继续复杂化预处理结构。
 
 ### [P2] Delta 的实际物理尺寸较大，边界 Clone 会按条目放大瞬时内存
@@ -155,6 +155,6 @@ go test ./... -count=1                                   PASS
 3. 已完成：统一 Fusion 读写健康闸门，并区分后端不可用错误与调用方语义错误。
 4. 已完成：强类型化 Mongo client/cluster 构造并启动期 fast-fail。
 5. 已完成：将 Delta 容量收敛能力纳入持久化事务 Store 契约。
-6. 已完成：为事务锁表建立正式基准，并实施分段锁表、entry 复用、常见小锁集内联和单锁预处理快路径。
+6. 已完成：为事务锁表建立正式基准，并实施精确 Key 锁注册表分片、entry 复用、常见小锁集内联和单锁预处理快路径。
 7. 已完成评估：公开转换边界保留 Clone；`PathKey` 的 int/uint numeric slot 合并进入待决策项。
 8. 已完成：清理重复 context 分配，并修正测试目录文档规则。
