@@ -15,7 +15,10 @@ import (
 	"github.com/ngnl47/tx/storage"
 )
 
-var ErrPendingRootCapacity = errors.New("txn runtime: pending root capacity reached")
+var (
+	ErrPendingRootCapacity      = errors.New("txn runtime: pending root capacity reached")
+	ErrDeltaCollapseUnsupported = errors.New("txn runtime: persistent store does not support delta collapse")
+)
 
 // Admission 在开始新的 Procedure 前检查项目是否接受新的可持久化修改。
 // 它通常由项目侧的共享存储健康闸门实现；已有 pending 根不会经过该检查。
@@ -378,6 +381,16 @@ func (manager *Runtime) hasCapacityLocked(targets []LockTarget) bool {
 }
 
 func (manager *Runtime) acceptTargetsLocked(targets []LockTarget) error {
+	if manager.maxRootDeltas > 0 {
+		for _, target := range targets {
+			if !isPersistentTarget(target) {
+				continue
+			}
+			if _, ok := target.Store.(storage.CollapsibleDeltaStore); !ok {
+				return fmt.Errorf("%w: scope=%s key=%s", ErrDeltaCollapseUnsupported, target.Key.Scope, target.Key.Value)
+			}
+		}
+	}
 	if !manager.hasCapacityLocked(targets) {
 		return ErrPendingRootCapacity
 	}
@@ -424,10 +437,6 @@ func currentHeapBytes() uint64 {
 	return stats.HeapAlloc
 }
 
-type deltaCollapser interface {
-	CollapseDeltas()
-}
-
 type deltaStoreProjection struct {
 	storage.DeltaStore
 	deltas change.DeltaSet
@@ -437,17 +446,17 @@ func (store deltaStoreProjection) Deltas() change.DeltaSet {
 	return store.deltas
 }
 
-func (manager *Runtime) enforceDeltaBudget(target LockTarget, store storage.DeltaStore, deltas change.DeltaSet) change.DeltaSet {
+func (manager *Runtime) enforceDeltaBudget(target LockTarget, store storage.DeltaStore, deltas change.DeltaSet) (change.DeltaSet, error) {
 	if manager == nil || manager.maxRootDeltas <= 0 || len(deltas) <= manager.maxRootDeltas {
-		return deltas
+		return deltas, nil
 	}
-	collapser, ok := target.Store.(deltaCollapser)
+	collapser, ok := store.(storage.CollapsibleDeltaStore)
 	if !ok {
-		return deltas
+		return nil, fmt.Errorf("%w: scope=%s key=%s", ErrDeltaCollapseUnsupported, target.Key.Scope, target.Key.Value)
 	}
 	collapser.CollapseDeltas()
 	txlog.Warn("txn runtime root deltas collapsed", "scope", target.Key.Scope, "key", target.Key.Value, "budget", manager.maxRootDeltas)
-	return store.Deltas()
+	return store.Deltas(), nil
 }
 
 func persistentTargetKeys(targets []LockTarget) []LockKey {
@@ -479,7 +488,10 @@ func (manager *Runtime) flushTarget(ctx context.Context, entry targetEntry) erro
 			manager.forget(entry)
 			return nil
 		}
-		deltas := manager.enforceDeltaBudget(target, store, store.Deltas())
+		deltas, err := manager.enforceDeltaBudget(target, store, store.Deltas())
+		if err != nil {
+			return err
+		}
 		if len(deltas) == 0 {
 			manager.forget(entry)
 			return nil

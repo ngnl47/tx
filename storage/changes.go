@@ -33,6 +33,13 @@ type DeltaStore interface {
 	ClearDeltas()
 }
 
+// CollapsibleDeltaStore 描述能把细粒度变更收敛为顶层字段替换的持久化 Store。
+// txn.Runtime 配置单根 Delta 容量上限时要求持久化 Store 实现该契约。
+type CollapsibleDeltaStore interface {
+	DeltaStore
+	CollapseDeltas()
+}
+
 // ReadOnlyDeltaStore 标记只可用于投影或下行、不可持久化的 Store。
 // 生成的 viewStore 实现该接口；普通 Store 无需额外实现。
 type ReadOnlyDeltaStore interface {

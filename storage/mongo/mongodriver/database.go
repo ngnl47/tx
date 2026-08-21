@@ -20,6 +20,8 @@ type Database struct {
 	db *mongo.Database
 }
 
+var _ txmongo.Client = Database{}
+
 func NewDatabase(db *mongo.Database) Database {
 	return Database{db: db}
 }

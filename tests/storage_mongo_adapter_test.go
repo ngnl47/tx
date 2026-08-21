@@ -35,13 +35,6 @@ type recordingMongoUpdater struct {
 	manyExists     []bool
 }
 
-type recordingMongoFinder struct {
-	collection string
-	filters    []txmongo.Filter
-	fields     []string
-	docs       map[any]map[string]any
-}
-
 type recordingMongoRouter struct {
 	calls []recordingMongoRouteCall
 	names map[any]string
@@ -127,14 +120,6 @@ func (u *recordingMongoUpdater) FindMany(_ context.Context, collection string, f
 	return u.manyDocs, u.manyExists, nil
 }
 
-func (f *recordingMongoFinder) FindOne(_ context.Context, collection string, filter txmongo.Filter, fields ...string) (map[string]any, bool, error) {
-	f.collection = collection
-	f.filters = append(f.filters, filter)
-	f.fields = append([]string(nil), fields...)
-	doc, exists := f.docs[filter.Value]
-	return doc, exists, nil
-}
-
 func (r *recordingMongoRouter) RouteMongo(_ context.Context, routeType string, shardKey any) (string, error) {
 	r.calls = append(r.calls, recordingMongoRouteCall{routeType: routeType, shardKey: shardKey})
 	name, ok := r.names[shardKey]
@@ -144,9 +129,27 @@ func (r *recordingMongoRouter) RouteMongo(_ context.Context, routeType string, s
 	return name, nil
 }
 
+func mustMongoAdapter(t *testing.T, client txmongo.Client) *txmongo.Adapter {
+	t.Helper()
+	adapter, err := txmongo.NewAdapter(client)
+	if err != nil {
+		t.Fatalf("NewAdapter returned error: %v", err)
+	}
+	return adapter
+}
+
+func mustMongoCluster(t *testing.T, router txmongo.Router, shards map[string]txmongo.Client) *txmongo.Cluster {
+	t.Helper()
+	cluster, err := txmongo.NewCluster(router, shards)
+	if err != nil {
+		t.Fatalf("NewCluster returned error: %v", err)
+	}
+	return cluster
+}
+
 func TestMongoAdapterAppliesUpdateByDefaultIDFilter(t *testing.T) {
 	updater := &recordingMongoUpdater{}
-	adapter := txmongo.NewAdapter(updater)
+	adapter := mustMongoAdapter(t, updater)
 	spec := meta.TypeSpec{
 		Mongo: &meta.MongoSpec{Collection: "roles"},
 	}
@@ -167,7 +170,7 @@ func TestMongoAdapterAppliesUpdateByDefaultIDFilter(t *testing.T) {
 
 func TestMongoAdapterReturnsTransportError(t *testing.T) {
 	transportErr := errors.New("mongo unavailable")
-	adapter := txmongo.NewAdapter(&recordingMongoUpdater{updateErr: storage.NewBackendError(storage.BackendMongo, "update one", transportErr)})
+	adapter := mustMongoAdapter(t, &recordingMongoUpdater{updateErr: storage.NewBackendError(storage.BackendMongo, "update one", transportErr)})
 	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
 
 	err := adapter.ApplyDeltasWithOptions(context.Background(), meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
@@ -180,7 +183,7 @@ func TestMongoAdapterReturnsTransportError(t *testing.T) {
 }
 
 func TestMongoAdapterDoesNotClassifyUnmarkedClientError(t *testing.T) {
-	adapter := txmongo.NewAdapter(&recordingMongoUpdater{updateErr: errors.New("invalid bson value")})
+	adapter := mustMongoAdapter(t, &recordingMongoUpdater{updateErr: errors.New("invalid bson value")})
 	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
 
 	err := adapter.ApplyDeltasWithOptions(context.Background(), meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
@@ -191,7 +194,7 @@ func TestMongoAdapterDoesNotClassifyUnmarkedClientError(t *testing.T) {
 
 func TestMongoAdapterRejectsMissingRecordOnNonUpsertUpdate(t *testing.T) {
 	updater := &recordingMongoUpdater{updateResult: &txmongo.UpdateResult{}}
-	adapter := txmongo.NewAdapter(updater)
+	adapter := mustMongoAdapter(t, updater)
 	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}
 	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
 
@@ -203,7 +206,7 @@ func TestMongoAdapterRejectsMissingRecordOnNonUpsertUpdate(t *testing.T) {
 
 func TestMongoAdapterRejectsUnexpectedUpsertResult(t *testing.T) {
 	updater := &recordingMongoUpdater{updateResult: &txmongo.UpdateResult{MatchedCount: 1, UpsertedCount: 1}}
-	adapter := txmongo.NewAdapter(updater)
+	adapter := mustMongoAdapter(t, updater)
 	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}
 	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
 
@@ -215,7 +218,7 @@ func TestMongoAdapterRejectsUnexpectedUpsertResult(t *testing.T) {
 
 func TestMongoAdapterAcceptsUpsertedCreate(t *testing.T) {
 	updater := &recordingMongoUpdater{updateResult: &txmongo.UpdateResult{UpsertedCount: 1}}
-	adapter := txmongo.NewAdapter(updater)
+	adapter := mustMongoAdapter(t, updater)
 	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}
 	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
 
@@ -227,7 +230,7 @@ func TestMongoAdapterAcceptsUpsertedCreate(t *testing.T) {
 
 func TestMongoAdapterRejectsUnexpectedReplacementResult(t *testing.T) {
 	updater := &recordingMongoUpdater{replaceResult: &txmongo.ReplaceResult{}}
-	err := txmongo.NewAdapter(updater).ReplaceDocument(context.Background(), mongoDocumentSpec(), storage.RecordKey{ID: int64(1001)}, map[string]any{"roleId": int64(1001)})
+	err := mustMongoAdapter(t, updater).ReplaceDocument(context.Background(), mongoDocumentSpec(), storage.RecordKey{ID: int64(1001)}, map[string]any{"roleId": int64(1001)})
 	if err == nil || !strings.Contains(err.Error(), "unexpected replace result") {
 		t.Fatalf("ReplaceDocument error = %v, want unexpected replace result", err)
 	}
@@ -235,7 +238,7 @@ func TestMongoAdapterRejectsUnexpectedReplacementResult(t *testing.T) {
 
 func TestMongoAdapterAcceptsMissingDeleteAsIdempotent(t *testing.T) {
 	updater := &recordingMongoUpdater{deleteResult: &txmongo.DeleteResult{}}
-	err := txmongo.NewAdapter(updater).ApplyDelete(context.Background(), mongoDocumentSpec(), storage.RecordKey{ID: int64(1001)})
+	err := mustMongoAdapter(t, updater).ApplyDelete(context.Background(), mongoDocumentSpec(), storage.RecordKey{ID: int64(1001)})
 	if err != nil {
 		t.Fatalf("ApplyDelete returned error for missing record: %v", err)
 	}
@@ -243,59 +246,22 @@ func TestMongoAdapterAcceptsMissingDeleteAsIdempotent(t *testing.T) {
 
 func TestMongoAdapterRejectsUnexpectedDeleteResult(t *testing.T) {
 	updater := &recordingMongoUpdater{deleteResult: &txmongo.DeleteResult{DeletedCount: 2}}
-	err := txmongo.NewAdapter(updater).ApplyDelete(context.Background(), mongoDocumentSpec(), storage.RecordKey{ID: int64(1001)})
+	err := mustMongoAdapter(t, updater).ApplyDelete(context.Background(), mongoDocumentSpec(), storage.RecordKey{ID: int64(1001)})
 	if err == nil || !strings.Contains(err.Error(), "unexpected delete result") {
 		t.Fatalf("ApplyDelete error = %v, want unexpected delete result", err)
 	}
 }
 
-func TestMongoAdapterRejectsMissingClientCapability(t *testing.T) {
-	adapter := txmongo.NewAdapter(struct{}{})
-	spec := meta.TypeSpec{DocumentFactory: mongoMapDocumentFactory, Mongo: &meta.MongoSpec{Collection: "roles"}}
-	key := storage.RecordKey{ID: int64(1001)}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
-
-	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, key, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
-	assertMongoUnsupportedClient(t, err, "Updater")
-
-	err = adapter.ReplaceDocument(context.Background(), spec, key, map[string]any{"name": "alice"})
-	assertMongoUnsupportedClient(t, err, "Replacer")
-
-	err = adapter.ApplyDelete(context.Background(), spec, key)
-	assertMongoUnsupportedClient(t, err, "Deleter")
-
-	_, _, err = adapter.LoadDocument(context.Background(), spec, key)
-	assertMongoUnsupportedClient(t, err, "Finder")
-
-	_, _, err = adapter.LoadDocuments(context.Background(), spec, []storage.RecordKey{key})
-	assertMongoUnsupportedClient(t, err, "BatchFinder or Finder")
-}
-
 func TestMongoAdapterRejectsTypedNilClient(t *testing.T) {
 	var client *recordingMongoUpdater
-	adapter := txmongo.NewAdapter(client)
-	spec := mongoDocumentSpec()
-	key := storage.RecordKey{ID: int64(1001)}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
-
-	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, key, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
-	assertMongoUnsupportedClient(t, err, "Updater")
-
-	err = adapter.ReplaceDocument(context.Background(), spec, key, map[string]any{"roleId": int64(1001)})
-	assertMongoUnsupportedClient(t, err, "Replacer")
-
-	err = adapter.ApplyDelete(context.Background(), spec, key)
-	assertMongoUnsupportedClient(t, err, "Deleter")
-
-	_, _, err = adapter.LoadDocument(context.Background(), spec, key)
-	assertMongoUnsupportedClient(t, err, "Finder")
-
-	_, _, err = adapter.LoadDocuments(context.Background(), spec, []storage.RecordKey{key})
-	assertMongoUnsupportedClient(t, err, "BatchFinder or Finder")
+	adapter, err := txmongo.NewAdapter(client)
+	if adapter != nil || !errors.Is(err, txmongo.ErrClientNotConfigured) {
+		t.Fatalf("NewAdapter = %#v, %v, want nil ErrClientNotConfigured", adapter, err)
+	}
 }
 
 func TestMongoAdapterRejectsDeltaSetWithoutEffectiveUpdate(t *testing.T) {
-	adapter := txmongo.NewAdapter(&recordingMongoUpdater{})
+	adapter := mustMongoAdapter(t, &recordingMongoUpdater{})
 	err := adapter.ApplyDeltasWithOptions(
 		context.Background(),
 		meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}},
@@ -311,26 +277,16 @@ func TestMongoAdapterRejectsDeltaSetWithoutEffectiveUpdate(t *testing.T) {
 }
 
 func TestMongoAdapterRejectsNilReplacementDocument(t *testing.T) {
-	adapter := txmongo.NewAdapter(&recordingMongoUpdater{})
+	adapter := mustMongoAdapter(t, &recordingMongoUpdater{})
 	err := adapter.ReplaceDocument(context.Background(), mongoDocumentSpec(), storage.RecordKey{ID: int64(1001)}, nil)
 	if !errors.Is(err, storage.ErrNilDocument) {
 		t.Fatalf("ReplaceDocument error = %v, want ErrNilDocument", err)
 	}
 }
 
-func assertMongoUnsupportedClient(t *testing.T, err error, capability string) {
-	t.Helper()
-	if !errors.Is(err, txmongo.ErrUnsupportedClient) {
-		t.Fatalf("error = %v, want ErrUnsupportedClient", err)
-	}
-	if !strings.Contains(err.Error(), capability) {
-		t.Fatalf("error = %v, want capability %q", err, capability)
-	}
-}
-
 func TestMongoAdapterMapsUpdatePathToBSONName(t *testing.T) {
 	updater := &recordingMongoUpdater{}
-	adapter := txmongo.NewAdapter(updater)
+	adapter := mustMongoAdapter(t, updater)
 	spec := meta.TypeSpec{
 		Type: meta.Type{
 			Fields: []meta.Field{{
@@ -367,7 +323,7 @@ func TestMongoAdapterMapsUpdatePathToBSONName(t *testing.T) {
 
 func TestMongoAdapterUsesBSONIDFieldForFilter(t *testing.T) {
 	updater := &recordingMongoUpdater{}
-	adapter := txmongo.NewAdapter(updater)
+	adapter := mustMongoAdapter(t, updater)
 	spec := meta.TypeSpec{
 		Type: meta.Type{
 			Fields: []meta.Field{{
@@ -393,7 +349,7 @@ func TestMongoAdapterMapsProjectionToBSONName(t *testing.T) {
 		doc:    map[string]any{"p": int64(9)},
 		exists: true,
 	}
-	adapter := txmongo.NewAdapter(client)
+	adapter := mustMongoAdapter(t, client)
 	spec := meta.TypeSpec{
 		Type: meta.Type{
 			Fields: []meta.Field{{
@@ -429,7 +385,7 @@ func TestMongoAdapterConvertsWholeDocumentsBetweenJSONAndBSON(t *testing.T) {
 		},
 		exists: true,
 	}
-	adapter := txmongo.NewAdapter(client)
+	adapter := mustMongoAdapter(t, client)
 	spec := mongoDocumentSpec()
 
 	input := map[string]any{
@@ -477,7 +433,7 @@ func TestMongoAdapterRejectsMalformedBatchFinderResult(t *testing.T) {
 		manyDocs:   []map[string]any{{"_id": int64(1001), "p": int64(9)}},
 		manyExists: nil,
 	}
-	adapter := txmongo.NewAdapter(client)
+	adapter := mustMongoAdapter(t, client)
 	spec := mongoDocumentSpec()
 	keys := []storage.RecordKey{{ID: int64(1001)}}
 
@@ -492,7 +448,7 @@ func TestMongoAdapterRejectsMalformedBatchFinderResult(t *testing.T) {
 
 func TestMongoAdapterRejectsMissingDocumentForExistingResult(t *testing.T) {
 	client := &recordingMongoUpdater{exists: true}
-	adapter := txmongo.NewAdapter(client)
+	adapter := mustMongoAdapter(t, client)
 	spec := mongoDocumentSpec()
 	key := storage.RecordKey{ID: int64(1001)}
 
@@ -510,7 +466,7 @@ func TestMongoAdapterRejectsMissingDocumentForExistingResult(t *testing.T) {
 
 func TestMongoAdapterRejectsDataForMissingResult(t *testing.T) {
 	client := &recordingMongoUpdater{doc: map[string]any{"p": int64(9)}}
-	adapter := txmongo.NewAdapter(client)
+	adapter := mustMongoAdapter(t, client)
 
 	_, exists, err := adapter.LoadDocument(context.Background(), mongoDocumentSpec(), storage.RecordKey{ID: int64(1001)})
 	if err == nil {
@@ -529,7 +485,7 @@ func TestMongoAdapterRejectsMissingBatchDocumentForExistingResult(t *testing.T) 
 		manyDocs:   []map[string]any{nil},
 		manyExists: []bool{true},
 	}
-	adapter := txmongo.NewAdapter(client)
+	adapter := mustMongoAdapter(t, client)
 
 	_, _, err := adapter.LoadDocuments(context.Background(), mongoDocumentSpec(), []storage.RecordKey{{ID: int64(1001)}})
 	if err == nil {
@@ -545,7 +501,7 @@ func TestMongoAdapterRejectsBatchDataForMissingResult(t *testing.T) {
 		manyDocs:   []map[string]any{{"p": int64(9)}},
 		manyExists: []bool{false},
 	}
-	adapter := txmongo.NewAdapter(client)
+	adapter := mustMongoAdapter(t, client)
 
 	_, _, err := adapter.LoadDocuments(context.Background(), mongoDocumentSpec(), []storage.RecordKey{{ID: int64(1001)}})
 	if err == nil {
@@ -561,7 +517,7 @@ func TestMongoAdapterRejectsDocumentOperationWithoutGeneratedFactory(t *testing.
 		doc:    map[string]any{"name": "alice"},
 		exists: true,
 	}
-	adapter := txmongo.NewAdapter(client)
+	adapter := mustMongoAdapter(t, client)
 	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{FullName: "data.GDRole"}}, Mongo: &meta.MongoSpec{Collection: "roles"}}
 	key := storage.RecordKey{ID: int64(1001)}
 
@@ -577,7 +533,7 @@ func TestMongoAdapterRejectsDocumentOperationWithoutGeneratedFactory(t *testing.
 
 func TestMongoAdapterRejectsIDFieldUpdate(t *testing.T) {
 	updater := &recordingMongoUpdater{}
-	adapter := txmongo.NewAdapter(updater)
+	adapter := mustMongoAdapter(t, updater)
 	spec := meta.TypeSpec{
 		Type: meta.Type{
 			Fields: []meta.Field{{
@@ -613,7 +569,7 @@ func TestMongoAdapterRejectsIDFieldUpdate(t *testing.T) {
 
 func TestMongoAdapterUpsertSkipsImmutableIDDelta(t *testing.T) {
 	updater := &recordingMongoUpdater{}
-	adapter := txmongo.NewAdapter(updater)
+	adapter := mustMongoAdapter(t, updater)
 	spec := meta.TypeSpec{
 		Type: meta.Type{Fields: []meta.Field{
 			{Name: "RoleId", BSONName: "_id"},
@@ -662,7 +618,7 @@ func TestMongoAdapterUpsertSkipsImmutableIDDelta(t *testing.T) {
 
 func TestMongoAdapterRejectsUpsertWithOnlyImmutableIDDelta(t *testing.T) {
 	updater := &recordingMongoUpdater{}
-	adapter := txmongo.NewAdapter(updater)
+	adapter := mustMongoAdapter(t, updater)
 	spec := meta.TypeSpec{
 		Type:  meta.Type{Fields: []meta.Field{{Name: "RoleId", BSONName: "_id"}}},
 		Mongo: &meta.MongoSpec{Collection: "roles", IDField: "RoleId"},
@@ -691,7 +647,7 @@ func TestMongoAdapterRejectsUpsertWithOnlyImmutableIDDelta(t *testing.T) {
 
 func TestMongoAdapterPassesUpsertOptionToUpdate(t *testing.T) {
 	updater := &recordingMongoUpdater{}
-	adapter := txmongo.NewAdapter(updater)
+	adapter := mustMongoAdapter(t, updater)
 	spec := meta.TypeSpec{
 		Mongo: &meta.MongoSpec{Collection: "roles"},
 	}
@@ -716,7 +672,7 @@ func TestMongoAdapterPassesUpsertOptionToUpdate(t *testing.T) {
 
 func TestMongoAdapterPassesUpsertOptionToBusinessIDFieldUpdate(t *testing.T) {
 	updater := &recordingMongoUpdater{}
-	adapter := txmongo.NewAdapter(updater)
+	adapter := mustMongoAdapter(t, updater)
 	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{
 		Collection: "roles",
 		IDField:    "roleId",
@@ -745,7 +701,7 @@ func TestMongoAdapterUsesBusinessIDFieldWhenConfigured(t *testing.T) {
 		},
 		manyExists: []bool{true, false},
 	}
-	adapter := txmongo.NewAdapter(client)
+	adapter := mustMongoAdapter(t, client)
 	spec := meta.TypeSpec{
 		DocumentFactory: mongoMapDocumentFactory,
 		Mongo: &meta.MongoSpec{
@@ -803,7 +759,7 @@ func TestMongoAdapterUsesBusinessIDFieldWhenConfigured(t *testing.T) {
 
 func TestMongoAdapterReplacesDocumentByDefaultIDFilter(t *testing.T) {
 	client := &recordingMongoUpdater{}
-	adapter := txmongo.NewAdapter(client)
+	adapter := mustMongoAdapter(t, client)
 	spec := meta.TypeSpec{DocumentFactory: mongoMapDocumentFactory, Mongo: &meta.MongoSpec{Collection: "roles"}}
 	doc := map[string]any{"roleId": int64(1001), "name": "alice"}
 
@@ -821,7 +777,7 @@ func TestMongoAdapterReplacesDocumentByDefaultIDFilter(t *testing.T) {
 
 func TestMongoAdapterDeletesDocumentByDefaultIDFilter(t *testing.T) {
 	client := &recordingMongoUpdater{}
-	adapter := txmongo.NewAdapter(client)
+	adapter := mustMongoAdapter(t, client)
 	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}
 
 	err := adapter.ApplyDelete(context.Background(), spec, storage.RecordKey{ID: int64(1001)})
@@ -838,7 +794,7 @@ func TestMongoAdapterLoadDocumentPassesProjection(t *testing.T) {
 		doc:    map[string]any{"name": "alice"},
 		exists: true,
 	}
-	adapter := txmongo.NewAdapter(client)
+	adapter := mustMongoAdapter(t, client)
 	spec := meta.TypeSpec{DocumentFactory: mongoMapDocumentFactory, Mongo: &meta.MongoSpec{Collection: "roles"}}
 
 	doc, exists, err := adapter.LoadDocument(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "name", "roleId")
@@ -867,7 +823,7 @@ func TestMongoAdapterLoadDocumentsPassesProjection(t *testing.T) {
 		},
 		manyExists: []bool{true, false},
 	}
-	adapter := txmongo.NewAdapter(client)
+	adapter := mustMongoAdapter(t, client)
 	spec := meta.TypeSpec{DocumentFactory: mongoMapDocumentFactory, Mongo: &meta.MongoSpec{Collection: "roles"}}
 
 	docs, exists, err := adapter.LoadDocuments(context.Background(), spec, []storage.RecordKey{
@@ -894,42 +850,9 @@ func TestMongoAdapterLoadDocumentsPassesProjection(t *testing.T) {
 	}
 }
 
-func TestMongoAdapterLoadDocumentsFallsBackToFindOne(t *testing.T) {
-	client := &recordingMongoFinder{
-		docs: map[any]map[string]any{
-			int64(1001): {"name": "alice"},
-		},
-	}
-	adapter := txmongo.NewAdapter(client)
-	spec := meta.TypeSpec{DocumentFactory: mongoMapDocumentFactory, Mongo: &meta.MongoSpec{Collection: "roles"}}
-
-	docs, exists, err := adapter.LoadDocuments(context.Background(), spec, []storage.RecordKey{
-		{ID: int64(1001)},
-		{ID: int64(1002)},
-	}, "name")
-	if err != nil {
-		t.Fatalf("LoadDocuments returned error: %v", err)
-	}
-	if client.collection != "roles" {
-		t.Fatalf("collection = %q, want roles", client.collection)
-	}
-	if len(client.filters) != 2 || client.filters[0].Field != "_id" || client.filters[0].Value != int64(1001) || client.filters[1].Field != "_id" || client.filters[1].Value != int64(1002) {
-		t.Fatalf("filters = %#v, want _id [1001 1002]", client.filters)
-	}
-	if len(client.fields) != 1 || client.fields[0] != "name" {
-		t.Fatalf("fields = %#v, want [name]", client.fields)
-	}
-	if len(docs) != 2 || docs[0]["name"] != "alice" || docs[1] != nil {
-		t.Fatalf("docs = %#v", docs)
-	}
-	if len(exists) != 2 || !exists[0] || exists[1] {
-		t.Fatalf("exists = %#v", exists)
-	}
-}
-
 func TestMongoAdapterAppliesFieldIDChangesWithResolver(t *testing.T) {
 	updater := &recordingMongoUpdater{}
-	adapter := txmongo.NewAdapter(updater)
+	adapter := mustMongoAdapter(t, updater)
 	spec := meta.TypeSpec{
 		Mongo: &meta.MongoSpec{Collection: "roles"},
 	}
@@ -956,7 +879,7 @@ func TestMongoClusterRoutesSingleWriteByShardKey(t *testing.T) {
 	router := &recordingMongoRouter{names: map[any]string{
 		int64(7): "role-shard",
 	}}
-	cluster := txmongo.NewCluster(router, map[string]any{
+	cluster := mustMongoCluster(t, router, map[string]txmongo.Client{
 		"role-shard": roleShard,
 		"user-shard": userShard,
 	})
@@ -981,26 +904,17 @@ func TestMongoClusterRoutesSingleWriteByShardKey(t *testing.T) {
 	}
 }
 
-func TestMongoClusterSkipsEmptyDeltasWithoutRouting(t *testing.T) {
-	cluster := txmongo.NewCluster(nil, nil)
-
-	err := cluster.ApplyDeltasWithOptions(
-		context.Background(),
-		meta.TypeSpec{},
-		storage.RecordKey{},
-		nil,
-		nil,
-		nil,
-		storage.ApplyOptions{},
-	)
-	if err != nil {
-		t.Fatalf("ApplyDeltasWithOptions returned error for empty deltas: %v", err)
+func TestMongoClusterRejectsEmptyAssembly(t *testing.T) {
+	router := &recordingMongoRouter{}
+	cluster, err := txmongo.NewCluster(router, nil)
+	if cluster != nil || err == nil || !strings.Contains(err.Error(), "shards are not configured") {
+		t.Fatalf("NewCluster = %#v, %v, want shards configuration error", cluster, err)
 	}
 }
 
 func TestMongoClusterRejectsMissingDistinctRouteShardKey(t *testing.T) {
 	router := &recordingMongoRouter{names: map[any]string{int64(1001): "role-shard"}}
-	cluster := txmongo.NewCluster(router, map[string]any{"role-shard": &recordingMongoUpdater{}})
+	cluster := mustMongoCluster(t, router, map[string]txmongo.Client{"role-shard": &recordingMongoUpdater{}})
 	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{
 		IDField:    "roleId",
 		Route:      meta.RouteSpec{Type: "role", By: "serverId"},
@@ -1019,13 +933,9 @@ func TestMongoClusterRejectsMissingDistinctRouteShardKey(t *testing.T) {
 
 func TestMongoClusterRejectsTypedNilRouter(t *testing.T) {
 	var router *recordingMongoRouter
-	cluster := txmongo.NewCluster(router, map[string]any{"role": &recordingMongoUpdater{}})
-	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{Route: meta.RouteSpec{Type: "role"}, Collection: "roles"}}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
-
-	err := cluster.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
-	if err == nil || !strings.Contains(err.Error(), "router is not configured") {
-		t.Fatalf("ApplyDeltasWithOptions error = %v, want router configuration error", err)
+	cluster, err := txmongo.NewCluster(router, map[string]txmongo.Client{"role": &recordingMongoUpdater{}})
+	if cluster != nil || err == nil || !strings.Contains(err.Error(), "router is not configured") {
+		t.Fatalf("NewCluster = %#v, %v, want router configuration error", cluster, err)
 	}
 }
 
@@ -1045,7 +955,7 @@ func TestMongoClusterBatchLoadsByShardGroupAndRestoresOrder(t *testing.T) {
 		int64(7): "a",
 		int64(8): "b",
 	}}
-	cluster := txmongo.NewCluster(router, map[string]any{
+	cluster := mustMongoCluster(t, router, map[string]txmongo.Client{
 		"a": shardA,
 		"b": shardB,
 	})

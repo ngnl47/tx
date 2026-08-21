@@ -346,7 +346,6 @@ func run(ctx context.Context, locks []LockTarget, fn func(*Tx) error, options Ca
 	}
 
 	tx := &Tx{
-		ctx:     context.WithValue(ctx, contextKey{}, (*Tx)(nil)),
 		active:  true,
 		locks:   make(map[LockKey]change.UndoBindable, len(prepared)),
 		targets: append([]LockTarget(nil), prepared...),

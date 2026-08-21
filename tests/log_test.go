@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"testing"
 
 	txlog "github.com/ngnl47/tx/log"
@@ -15,10 +16,11 @@ func TestLogDefaultLoggerCanBeReplaced(t *testing.T) {
 
 	txlog.Default().Error("save failed", slog.Int64("id", 1001), slog.String("err", "temporary"))
 
-	if len(handler.records) != 1 {
-		t.Fatalf("records = %#v, want one", handler.records)
+	records := handler.Records()
+	if len(records) != 1 {
+		t.Fatalf("records = %#v, want one", records)
 	}
-	record := handler.records[0]
+	record := records[0]
 	if record.Level != slog.LevelError || record.Message != "save failed" {
 		t.Fatalf("record = %#v, want error save failed", record)
 	}
@@ -39,10 +41,11 @@ func TestLogPackageLevelShortcutsUseDefaultLogger(t *testing.T) {
 
 	txlog.Error("save failed", "id", int64(1001), "err", "temporary")
 
-	if len(handler.records) != 1 {
-		t.Fatalf("records = %#v, want one", handler.records)
+	records := handler.Records()
+	if len(records) != 1 {
+		t.Fatalf("records = %#v, want one", records)
 	}
-	record := handler.records[0]
+	record := records[0]
 	if record.Level != slog.LevelError || record.Message != "save failed" {
 		t.Fatalf("record = %#v, want error save failed", record)
 	}
@@ -63,20 +66,22 @@ func TestLogNamedLoggerUsesCurrentDefaultLogger(t *testing.T) {
 	txlog.SetDefault(slog.New(secondHandler))
 	roleLog.ErrorContext(context.Background(), "role save failed", "id", int64(1002))
 
-	if len(firstHandler.records) != 1 {
-		t.Fatalf("first records = %#v, want one", firstHandler.records)
+	firstRecords := firstHandler.Records()
+	if len(firstRecords) != 1 {
+		t.Fatalf("first records = %#v, want one", firstRecords)
 	}
-	first := firstHandler.records[0]
+	first := firstRecords[0]
 	if first.Level != slog.LevelInfo || first.Message != "role loaded" ||
 		!recordHasStringAttr(first, "logger", "role") ||
 		!recordHasInt64Attr(first, "id", 1001) {
 		t.Fatalf("first record = %#v attrs=%#v", first, recordAttrs(first))
 	}
 
-	if len(secondHandler.records) != 1 {
-		t.Fatalf("second records = %#v, want one", secondHandler.records)
+	secondRecords := secondHandler.Records()
+	if len(secondRecords) != 1 {
+		t.Fatalf("second records = %#v, want one", secondRecords)
 	}
-	second := secondHandler.records[0]
+	second := secondRecords[0]
 	if second.Level != slog.LevelError || second.Message != "role save failed" ||
 		!recordHasStringAttr(second, "logger", "role") ||
 		!recordHasInt64Attr(second, "id", 1002) {
@@ -85,8 +90,10 @@ func TestLogNamedLoggerUsesCurrentDefaultLogger(t *testing.T) {
 }
 
 type recordingSlogHandler struct {
+	mu      sync.Mutex
 	records []slog.Record
 	attrs   []slog.Attr
+	sink    *recordingSlogHandler
 }
 
 func (h *recordingSlogHandler) Enabled(context.Context, slog.Level) bool {
@@ -94,20 +101,39 @@ func (h *recordingSlogHandler) Enabled(context.Context, slog.Level) bool {
 }
 
 func (h *recordingSlogHandler) Handle(_ context.Context, record slog.Record) error {
+	sink := h.recordSink()
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
 	clone := record.Clone()
 	if len(h.attrs) > 0 {
 		clone.AddAttrs(h.attrs...)
 	}
-	h.records = append(h.records, clone)
+	sink.records = append(sink.records, clone)
 	return nil
 }
 
 func (h *recordingSlogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	h.attrs = append(h.attrs, attrs...)
-	return h
+	combined := make([]slog.Attr, 0, len(h.attrs)+len(attrs))
+	combined = append(combined, h.attrs...)
+	combined = append(combined, attrs...)
+	return &recordingSlogHandler{attrs: combined, sink: h.recordSink()}
 }
 
 func (h *recordingSlogHandler) WithGroup(string) slog.Handler {
+	return h
+}
+
+func (h *recordingSlogHandler) Records() []slog.Record {
+	sink := h.recordSink()
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	return append([]slog.Record(nil), sink.records...)
+}
+
+func (h *recordingSlogHandler) recordSink() *recordingSlogHandler {
+	if h.sink != nil {
+		return h.sink
+	}
 	return h
 }
 

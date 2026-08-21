@@ -14,7 +14,7 @@
 - `fusion` 作为 Redis 热数据与 Mongo 冷数据组合模式名。
 - Redis key 默认使用 `shardBy` 作为 Redis Cluster hash tag。
 - Fusion 延迟任务抽象成可替换任务后端。
-- 测试用例只放在 `tests/` 目录下。
+- 跨包行为和公共 API 回归放在 `tests/`；未导出算法、脚本与 driver glue 的白盒测试允许和实现包同目录，不能为了测试扩大生产 API。
 
 ## Current Stable Decisions
 
@@ -48,7 +48,7 @@
 - 单机事务只保证经 Store 受控 API 发生的修改可回滚；裸字段赋值和 snapshot diff 不参与事务回滚。undo log 属于一次事务的临时状态，不写入 GD，也不作为 Store 的长期业务数据。
 - 事务锁对象由生成代码在 GD 与 Store 侧提供：业务通过 `txn.Locks(guild, role)` 收集，GD 的 `LockTarget()` 只代理默认 Store，不复制业务数据。字段 setter、map/slice 的 `Set/Delete/Replace` 和生成对象子 Store setter 在事务内登记 undo；事务成功后的存储写入、消息发送或后续业务动作通过 `AfterCommit` 等机制调度；这表示内存事务已提交，不等价于 Mongo 已可靠落盘。
 - `txn.Runtime` 是有状态运行时的标准搭档。它按 `LockKey` 聚合脏 Store；`Runtime.Call` 在事务成功后登记 `DirtyTargets`，不执行 I/O；`Runtime.Flush` 逐目标取得同一把本机锁，普通路径只投影一次 DeltaSet，并通过仅在 Runtime 内部可构造的 Store 投影调用 `storage.Save`，成功才清理 delta。超过 `MaxRootDeltaEntries` 时，Runtime 会明确重写 Store dirty 树为顶层 Replace 并重新投影一次，这是容量降级后的新投影，不是重复读取同一批次。Runtime 不保存业务副本，不把 Store 或 DeltaSet 作为异步队列项；业务和高级调用方都不接触“传入 Delta 批次并清理 Store”的公共 API。
-- 有状态运行时的 Store dirty 状态是按路径覆盖的集合，不会因同一路径重复修改无限追加；但未成功 Flush 前的不同集合 key/index 会持续累积。`map[K]*GD...` 和 `[]*GD...` 会缓存已访问元素的子 Store，但另行维护 dirty 子路径索引，投影与清理不再遍历全部缓存子 Store。`RuntimeConfig.MaxRootDeltaEntries` 限制单个 pending root 投影后的 Delta 数量；Runtime 只在 Flush 的持锁投影点检查该预算，超过时清理该 Store 树的细粒度 dirty 状态，并将当前值收敛为全部可更新顶层字段的 `Replace` delta，跳过 BSON `_id`，记录一条告警后继续服务，避免每次事务提交递归投影整棵树。`RuntimeConfig.PendingMemorySoftLimit` 按 `MemorySampleInterval` 低频读取进程 `HeapAlloc`，仅在超过阈值时记录告警；它不能作为拒绝业务请求的根因。`RuntimeConfig.MaxPendingRoots` 仅是可选硬保护；满额时才拒绝新增 root。部署项目负责设置 Go 的 `GOMEMLIMIT`，tx 不修改全局 runtime 内存限制。预算限制的是 dirty 路径，不负责限制业务对象本身或干净子 Store 缓存的大小；setter 内不得强制 Flush 或 I/O。
+- 有状态运行时的 Store dirty 状态是按路径覆盖的集合，不会因同一路径重复修改无限追加；但未成功 Flush 前的不同集合 key/index 会持续累积。`map[K]*GD...` 和 `[]*GD...` 会缓存已访问元素的子 Store，但另行维护 dirty 子路径索引，投影与清理不再遍历全部缓存子 Store。`RuntimeConfig.MaxRootDeltaEntries` 限制单个 pending root 投影后的 Delta 数量；Runtime 只在 Flush 的持锁投影点检查该预算，超过时清理该 Store 树的细粒度 dirty 状态，并将当前值收敛为全部可更新顶层字段的 `Replace` delta，跳过 BSON `_id`，记录一条告警后继续服务，避免每次事务提交递归投影整棵树。txgen 生成 Store 实现 `storage.CollapsibleDeltaStore`；配置非零预算时，自定义持久化 Store 若不具备相同能力，`Runtime.Call/MarkDirty` 必须在修改或登记前返回 `ErrDeltaCollapseUnsupported`，不能让预算静默失效。`RuntimeConfig.PendingMemorySoftLimit` 按 `MemorySampleInterval` 低频读取进程 `HeapAlloc`，仅在超过阈值时记录告警；它不能作为拒绝业务请求的根因。`RuntimeConfig.MaxPendingRoots` 仅是可选硬保护；满额时才拒绝新增 root。部署项目负责设置 Go 的 `GOMEMLIMIT`，tx 不修改全局 runtime 内存限制。预算限制的是 dirty 路径，不负责限制业务对象本身或干净子 Store 缓存的大小；setter 内不得强制 Flush 或 I/O。
 - 无状态服务不使用 `txn.Runtime`：请求内临时加载 GD，直接由项目 facade 调用 `db.Save` 或 snapshot `SaveChange` 写 Fusion。启用有状态运行时后，所有写操作都必须通过 `Procedure + txn.Runtime`；读取不要求进入事务。
 - 当前标脏主线是 `change.DeltaSet`。热路径只保存 `FieldID`、map key、slice index 和 `DeltaKind`，不常驻拼接字符串路径。
 - `DeltaEntry` 当前只保存 `Path` 和 `Kind`，不持有字段值；生成 Store 会在输出边界按 DeltaPath 读取当前值。后续如需性能优化，只做局部 fast path，不提前引入自研 value 编码。
@@ -168,7 +168,7 @@ tx/
   modules/txn/      # 可选：单机事务、savepoint、undo log 和 after-commit hook
   modules/actor/    # 可选：protoactor-go Actor Cluster 装配
   util/             # 小型通用工具
-  tests/            # 所有测试文件，仅此目录下生成 *_test.go
+  tests/            # 跨包行为和公共 API 回归
 ```
 
 当前实现以 `anno`、`astscan`、`meta`、`storage`、`change`、`util` 和 `tests` 为主要边界；代码生成职责放在独立的 `txgen` 工程。
@@ -450,7 +450,7 @@ Store 生成、Redis key helper、Mongo filter helper、字段编号 resolver �
 当前能力：
 
 - Redis adapter 支持 string JSON main/subKey 文档、Lua merge/replace、TTL 续期、批量读取和可选 `ClusterSafe`；完整替换会保留空 main 文档并删除新文档未包含的已知 subKey，避免陈旧子文档回流；`redis.Cluster` 的 shard 映射使用 `ScriptClient` 强类型约束，实际 I/O 遇到未装配 client 会返回 `redis.ErrClientNotConfigured`，不再静默 no-op。
-- Mongo adapter 支持 load、batch load、delta update、replace、delete、route cluster 和官方 driver 薄适配层。
+- Mongo adapter 支持 load、batch load、delta update、replace、delete、route cluster 和官方 driver 薄适配层；生产构造接收完整 `mongo.Client` 组合接口并返回装配错误，缺失能力在编译期暴露，nil/typed-nil 和无效 shard 在启动期失败。
 - Fusion strategy 支持 Redis 热写、Mongo miss 回源、Redis 回填、延迟保存任务入队、后台 scheduler 和 Redis 到 Mongo 整文档回写。
 - Mongo JSON/BSON 整文档转换已接入生成 `TypeSpec`：不同 JSON/BSON 字段名、Mongo `_id`、嵌套 struct/map/slice 均通过类型对象中转；真实 Redis/Mongo 集成测试已覆盖 Fusion 回填、延迟回写和生成 reader。
 - `storage/config.RouteTableConfig` 支持项目 yml 路由配置归一化；项目负责读取 yml 和创建 driver client。
@@ -464,16 +464,12 @@ Store 生成、Redis key helper、Mongo filter helper、字段编号 resolver �
 
 ## Testing Policy
 
-用户已确认：仅在 `tests/` 文件夹下生成测试用例。
-
 执行规则：
 
 - 大节点架构审计按 `docs/architecture_audit_standard.md` 执行，先输出 P0-P3 findings、证据和残余风险，不在审计阶段直接混入大规模重构。
 
-- 所有 `*_test.go` 只放在 `/Users/a47/workspace/tx/tests`。
-- 包目录如 `meta/`、`storage/` 不放测试文件。
-- 测试 package 统一使用 `package tests`。
-- 测试通过 public API 驱动，避免为了测试暴露内部实现。
+- 跨包行为、公共 API 和端到端 runtime 契约放在 `/Users/a47/workspace/tx/tests`，使用 `package tests` 并通过 public API 驱动。
+- 只验证未导出状态机、生成脚本、Lua/driver glue 的白盒测试允许与实现包同目录；这类测试不得反向要求扩大生产导出面。
 - 临时输入文件用 `t.TempDir()` 生成。
 - `tx` 单元测试默认不依赖外部 Redis/MongoDB；真实 Redis/Mongo/Fusion 集成验证放在 `txgame/server/tests/integration`。
 - `tx` runtime 单元测试可使用最小手写 `TypeSpec`、fake client 和构造 Delta，专注通用算法与故障分支；涉及脚手架字段名、Store、`DocumentFactory`、Redis main/subKey 或 Mongo BSON 映射的契约测试，必须在 `txgame` 使用实际 txgen 生成类型。`GDStorageProbe` 是该层的最小专用输入，覆盖 JSON/BSON 不同名称、Mongo `_id`、map/slice subKey。
@@ -487,7 +483,7 @@ Store 生成、Redis key helper、Mongo filter helper、字段编号 resolver �
 - `meta`
 - `anno`
 - `astscan`
-- tests only in `tests/`
+- public API and cross-package tests in `tests/`; focused white-box tests may stay with their package
 
 完成标准：
 

@@ -29,15 +29,28 @@ type Cluster struct {
 }
 
 // NewCluster 创建 Mongo route/cluster 适配器。
-func NewCluster(router Router, shards map[string]any) *Cluster {
+func NewCluster(router Router, shards map[string]Client) (*Cluster, error) {
+	if isNilRouter(router) {
+		return nil, fmt.Errorf("mongo: router is not configured")
+	}
+	if len(shards) == 0 {
+		return nil, fmt.Errorf("mongo: shards are not configured")
+	}
 	cluster := &Cluster{
 		router: router,
 		shards: make(map[string]*Adapter, len(shards)),
 	}
 	for name, client := range shards {
-		cluster.shards[name] = NewAdapter(client)
+		if name == "" {
+			return nil, fmt.Errorf("mongo: shard name is empty")
+		}
+		adapter, err := NewAdapter(client)
+		if err != nil {
+			return nil, fmt.Errorf("mongo: shard %q: %w", name, err)
+		}
+		cluster.shards[name] = adapter
 	}
-	return cluster
+	return cluster, nil
 }
 
 func (c *Cluster) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, deltas change.DeltaSet, resolver change.FieldNameResolver, values change.DeltaValueResolver, options storage.ApplyOptions) error {

@@ -19,6 +19,46 @@ type runtimeTestStore struct {
 	collapsed  int
 }
 
+type runtimeNonCollapsibleStore struct {
+	store runtimeTestStore
+}
+
+func (store *runtimeNonCollapsibleStore) SetUndoRecorder(recorder change.UndoRecorder) {
+	store.store.SetUndoRecorder(recorder)
+}
+
+func (store *runtimeNonCollapsibleStore) TypeSpec() meta.TypeSpec {
+	return store.store.TypeSpec()
+}
+
+func (store *runtimeNonCollapsibleStore) RecordKey() storage.RecordKey {
+	return store.store.RecordKey()
+}
+
+func (store *runtimeNonCollapsibleStore) Deltas() change.DeltaSet {
+	return store.store.Deltas()
+}
+
+func (store *runtimeNonCollapsibleStore) FieldNameResolver() change.FieldNameResolver {
+	return store.store.FieldNameResolver()
+}
+
+func (store *runtimeNonCollapsibleStore) DeltaValueResolver() change.DeltaValueResolver {
+	return store.store.DeltaValueResolver()
+}
+
+func (store *runtimeNonCollapsibleStore) DefaultApplyOptions() storage.ApplyOptions {
+	return store.store.DefaultApplyOptions()
+}
+
+func (store *runtimeNonCollapsibleStore) AllTouch() {
+	store.store.AllTouch()
+}
+
+func (store *runtimeNonCollapsibleStore) ClearDeltas() {
+	store.store.ClearDeltas()
+}
+
 func (store *runtimeTestStore) SetUndoRecorder(recorder change.UndoRecorder) {
 	store.recorder = recorder
 }
@@ -98,6 +138,20 @@ type observingRuntimeTestProcedure struct {
 
 type multiFieldRuntimeTestProcedure struct {
 	runtimeTestProcedure
+}
+
+type runtimeNonCollapsibleProcedure struct {
+	lock   txn.LockTarget
+	called *bool
+}
+
+func (procedure runtimeNonCollapsibleProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
+	return []txn.LockTarget{procedure.lock}, nil
+}
+
+func (procedure runtimeNonCollapsibleProcedure) Process(*txn.Tx) error {
+	*procedure.called = true
+	return nil
 }
 
 func (procedure multiFieldRuntimeTestProcedure) Process(*txn.Tx) error {
@@ -232,6 +286,38 @@ func TestTxnRuntimeCollapsesOverBudgetRootDeltasBeforeFlush(t *testing.T) {
 	}
 	if manager.Pending() != 0 {
 		t.Fatalf("Pending = %d, want 0 after successful Flush", manager.Pending())
+	}
+}
+
+func TestTxnRuntimeRejectsNonCollapsiblePersistentTargetBeforeProcedure(t *testing.T) {
+	store := &runtimeNonCollapsibleStore{}
+	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
+	manager := txn.NewRuntime(&recordingDeltaStoreApplier{}, txn.RuntimeConfig{MaxRootDeltaEntries: 1})
+	called := false
+
+	err := manager.Call(context.Background(), runtimeNonCollapsibleProcedure{
+		lock:   lock,
+		called: &called,
+	})
+	if !errors.Is(err, txn.ErrDeltaCollapseUnsupported) {
+		t.Fatalf("Call error = %v, want ErrDeltaCollapseUnsupported", err)
+	}
+	if called || manager.Pending() != 0 {
+		t.Fatalf("unsupported target reached procedure: called=%t pending=%d", called, manager.Pending())
+	}
+}
+
+func TestTxnRuntimeMarkDirtyRejectsNonCollapsiblePersistentTarget(t *testing.T) {
+	store := &runtimeNonCollapsibleStore{}
+	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
+	manager := txn.NewRuntime(&recordingDeltaStoreApplier{}, txn.RuntimeConfig{MaxRootDeltaEntries: 1})
+
+	err := manager.MarkDirty(lock)
+	if !errors.Is(err, txn.ErrDeltaCollapseUnsupported) {
+		t.Fatalf("MarkDirty error = %v, want ErrDeltaCollapseUnsupported", err)
+	}
+	if manager.Pending() != 0 {
+		t.Fatalf("Pending = %d, want 0", manager.Pending())
 	}
 }
 

@@ -377,10 +377,11 @@ func TestFusionSchedulerRunOnceRetriesFailedTask(t *testing.T) {
 	if len(leases) != 1 || leases[0].Attempts != 2 {
 		t.Fatalf("leases after retry delay = %#v, want attempts 2", leases)
 	}
-	if len(handler.records) != 1 {
-		t.Fatalf("log records = %#v, want one retry error", handler.records)
+	records := handler.Records()
+	if len(records) != 1 {
+		t.Fatalf("log records = %#v, want one retry error", records)
 	}
-	record := handler.records[0]
+	record := records[0]
 	if record.Level != slog.LevelError || record.Message != "delay task failed, retry scheduled" {
 		t.Fatalf("log record = %#v", record)
 	}
@@ -439,18 +440,20 @@ func TestFusionSchedulerStartLogsRunOnceError(t *testing.T) {
 	assertClosed(t, backend.claimed, "scheduler did not attempt to claim due tasks")
 
 	deadline := time.After(time.Second)
-	for len(handler.records) == 0 {
+	var records []slog.Record
+	for len(records) == 0 {
 		select {
 		case <-deadline:
 			t.Fatal("scheduler did not log RunOnce error")
 		case <-time.After(time.Millisecond):
 		}
+		records = handler.Records()
 	}
 
 	ctx.Cancel()
 	ctx.WaitDoneAndWaitGroupWait()
 
-	record := handler.records[0]
+	record := records[0]
 	if record.Level != slog.LevelError || record.Message != "delay task scheduler failed" {
 		t.Fatalf("log record = %#v, want scheduler error", record)
 	}

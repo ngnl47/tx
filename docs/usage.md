@@ -2113,6 +2113,19 @@ if err := runtime.Shutdown(context.WithoutCancel(serviceCtx)); err != nil {
 
 `MaxRootDeltaEntries` 限制单个 pending root 的细粒度 Delta 数量。Runtime 只在 `Flush` 取得该对象锁、准备投影时检查，避免每次 `Procedure` 提交递归遍历整棵 Store 树；若数量超过预算，就清理树内的细粒度 dirty 状态，并按当前 `GD*` 值记录全部可更新顶层字段的 `Replace`，自动跳过 BSON `_id`。例如一轮持续修改 `role.Items[1..2000]` 时，预算为 `1024` 不会拒绝这次业务，而会把本次保存收敛为 `Name`、`Items` 等顶层字段的覆盖写，避免不同 key 长期累积。该收敛会记录一条 `txn runtime root deltas collapsed` 告警；它限制 dirty 路径，不限制 `GD*` 业务对象本身或干净子 Store 缓存的内存。
 
+txgen 生成的 Store 已实现 `storage.CollapsibleDeltaStore`。高级用户若手写持久化 Store，并把
+`MaxRootDeltaEntries` 配置为非零，也必须实现 `CollapseDeltas()`；否则 `Runtime.Call` 会在执行
+`Procedure.Process` 前、`Runtime.MarkDirty` 会在登记 pending root 前返回
+`txn.ErrDeltaCollapseUnsupported`。这保证容量配置不会对自定义 Store 静默失效。配置为 `0` 时不启用该预算，
+普通 `storage.DeltaStore` 仍可使用。
+
+```go
+err := runtime.Call(ctx, procedure)
+if errors.Is(err, txn.ErrDeltaCollapseUnsupported) {
+	return fmt.Errorf("persistent store must support delta collapse: %w", err)
+}
+```
+
 `PendingMemorySoftLimit` 是进程 Heap 告警阈值（字节）。Runtime 按 `MemorySampleInterval` 读取 `HeapAlloc`；超过阈值只记录 `txn runtime pending memory threshold exceeded` 告警，不拒绝新 root，也不改变已提交事务。采样间隔为 `0` 时每次新增 root 预检都采样；内存阈值为 `0` 时禁用该观测。部署应通过 `GOMEMLIMIT` 约束整个 Go 进程；不能用进程级 Heap 采样作为拒绝业务请求的根因。
 
 `MaxPendingRoots` 是可选的数量硬保护。容量满时同样仅拒绝新 root，并返回 `txn.ErrPendingRootCapacity`；设置为 `0` 表示不限制。当前同一路径的重复写入不会无限增加 dirty 条目，例如连续修改 `role.Items[1001].Quantity`，最终只保留 `Items.1001.Quantity` 的最新状态；但持续新增不同 key 仍会增加路径数量。生成的 map/slice Store 会缓存读取过的子 Store 以保持路径身份，不过投影和清理只遍历实际变脏的子路径，不会扫描全部缓存元素。不要在 setter 内加入隐式 Flush 或 I/O；由 Runtime 的调度周期和业务侧反压策略决定何时落盘。
@@ -2826,11 +2839,16 @@ Mongo adapter 当前支持：
 
 ```go
 database := txmongodriver.NewDatabase(mongoDB)
-adapter := txmongo.NewAdapter(database)
+adapter, err := txmongo.NewAdapter(database)
+if err != nil {
+	return err
+}
 ```
 
-adapter 在真正执行读、写、替换或删除时会检查对应能力。装配对象缺少 `Updater`、`Finder`、`Replacer` 或
-`Deleter` 时返回 `mongo.ErrUnsupportedClient`，不会伪装成空写入或“记录不存在”。
+`txmongo.Client` 在编译期要求装配对象同时实现 `Updater`、`Replacer`、`Deleter`、`Finder` 和
+`BatchFinder`。官方 driver 的 `txmongodriver.Database` 已满足该契约；自定义 client 缺少任一能力时无法通过编译，
+nil 或 typed-nil 则由 `NewAdapter` 在启动装配阶段返回 `mongo.ErrClientNotConfigured`。运行期不再通过动态断言补能力，
+批量读取也不会退化为逐条查询。
 
 Mongo adapter 通过统一 filter 抽象调用底层 client：默认 filter 是 `{_id: id}`；配置
 `idField` 时 filter 字段由 `spec.BSONName(idField)` 推导。Mongo update 会遵守 `storage.ApplyOptions.Upsert`：
@@ -2878,7 +2896,7 @@ if err != nil {
 	return err
 }
 
-shards := map[string]any{}
+shards := map[string]txmongo.Client{}
 for endpoint := range mongoRoutes.Endpoints() {
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(endpoint))
 	if err != nil {
@@ -2888,7 +2906,10 @@ for endpoint := range mongoRoutes.Endpoints() {
 	shards[endpoint] = txmongodriver.NewDatabase(client.Database(dbName))
 }
 
-mongoCluster := txmongo.NewCluster(routeTable, shards)
+mongoCluster, err := txmongo.NewCluster(routeTable, shards)
+if err != nil {
+	return err
+}
 ```
 
 对应 import 路径：

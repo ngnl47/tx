@@ -69,14 +69,26 @@ type BatchFinder interface {
 	FindMany(context.Context, string, ValuesFilter, ...string) ([]map[string]any, []bool, error)
 }
 
+// Client 是生产 Mongo adapter 所需能力的完整编译期契约。
+type Client interface {
+	Updater
+	Replacer
+	Deleter
+	Finder
+	BatchFinder
+}
+
 // Adapter 把 DeltaSet 应用到 MongoDB 更新文档。
 type Adapter struct {
-	client any
+	client Client
 }
 
 // NewAdapter 创建 Mongo DeltaSet 适配器。
-func NewAdapter(client any) *Adapter {
-	return &Adapter{client: client}
+func NewAdapter(client Client) (*Adapter, error) {
+	if isNilMongoClient(client) {
+		return nil, ErrClientNotConfigured
+	}
+	return &Adapter{client: client}, nil
 }
 
 // ApplyDeltasWithOptions 根据 Mongo 元数据和记录 ID 执行 Delta 更新。
@@ -100,15 +112,11 @@ func (a *Adapter) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec
 		}
 		return storage.ErrNoEffectiveDeltas
 	}
-	client, err := a.clientFor("Updater")
+	client, err := a.clientFor()
 	if err != nil {
 		return err
 	}
-	updater, ok := client.(Updater)
-	if !ok {
-		return unsupportedClientError("Updater")
-	}
-	result, err := updater.UpdateOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), update, options)
+	result, err := client.UpdateOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), update, options)
 	if err != nil {
 		return err
 	}
@@ -137,19 +145,15 @@ func (a *Adapter) ReplaceDocument(ctx context.Context, spec meta.TypeSpec, key s
 	if err := storage.ValidateRecordKey(spec, key); err != nil {
 		return err
 	}
-	client, err := a.clientFor("Replacer")
+	client, err := a.clientFor()
 	if err != nil {
 		return err
-	}
-	replacer, ok := client.(Replacer)
-	if !ok {
-		return unsupportedClientError("Replacer")
 	}
 	bsonDocument, err := bsonDocumentFromCanonical(spec, doc)
 	if err != nil {
 		return err
 	}
-	result, err := replacer.ReplaceOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), bsonDocument)
+	result, err := client.ReplaceOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), bsonDocument)
 	if err != nil {
 		return err
 	}
@@ -167,15 +171,11 @@ func (a *Adapter) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key stora
 	if err := storage.ValidateRecordKey(spec, key); err != nil {
 		return err
 	}
-	client, err := a.clientFor("Deleter")
+	client, err := a.clientFor()
 	if err != nil {
 		return err
 	}
-	deleter, ok := client.(Deleter)
-	if !ok {
-		return unsupportedClientError("Deleter")
-	}
-	result, err := deleter.DeleteOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key))
+	result, err := client.DeleteOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key))
 	if err != nil {
 		return err
 	}
@@ -203,15 +203,11 @@ func (a *Adapter) LoadDocument(ctx context.Context, spec meta.TypeSpec, key stor
 	if err := storage.ValidateRecordKey(spec, key); err != nil {
 		return nil, false, err
 	}
-	client, err := a.clientFor("Finder")
+	client, err := a.clientFor()
 	if err != nil {
 		return nil, false, err
 	}
-	finder, ok := client.(Finder)
-	if !ok {
-		return nil, false, unsupportedClientError("Finder")
-	}
-	document, exists, err := finder.FindOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), mongoProjectionFields(spec, fields)...)
+	document, exists, err := client.FindOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), mongoProjectionFields(spec, fields)...)
 	if err != nil {
 		return nil, false, err
 	}
@@ -240,70 +236,41 @@ func (a *Adapter) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []
 	}
 	collection := mongoCollection(spec)
 	projection := mongoProjectionFields(spec, fields)
-	client, err := a.clientFor("BatchFinder or Finder")
+	client, err := a.clientFor()
 	if err != nil {
 		return nil, nil, err
 	}
-	finder, ok := client.(BatchFinder)
-	if ok {
-		documents, exists, err := finder.FindMany(ctx, collection, mongoRecordValuesFilter(spec, keys), projection...)
+	documents, exists, err := client.FindMany(ctx, collection, mongoRecordValuesFilter(spec, keys), projection...)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(documents) != len(keys) || len(exists) != len(keys) {
+		return nil, nil, fmt.Errorf("mongo: batch finder returned documents=%d exists=%d for keys=%d", len(documents), len(exists), len(keys))
+	}
+	if err := storage.ValidateDocumentResults(documents, exists); err != nil {
+		return nil, nil, fmt.Errorf("mongo: batch finder: %w", err)
+	}
+	for i, found := range exists {
+		if !found {
+			continue
+		}
+		canonical, err := canonicalDocumentFromBSON(spec, documents[i], fields)
 		if err != nil {
 			return nil, nil, err
 		}
-		if len(documents) != len(keys) || len(exists) != len(keys) {
-			return nil, nil, fmt.Errorf("mongo: batch finder returned documents=%d exists=%d for keys=%d", len(documents), len(exists), len(keys))
-		}
-		if err := storage.ValidateDocumentResults(documents, exists); err != nil {
-			return nil, nil, fmt.Errorf("mongo: batch finder: %w", err)
-		}
-		for i, found := range exists {
-			if !found {
-				continue
-			}
-			canonical, err := canonicalDocumentFromBSON(spec, documents[i], fields)
-			if err != nil {
-				return nil, nil, err
-			}
-			documents[i] = canonical
-		}
-		return documents, exists, nil
+		documents[i] = canonical
 	}
-	singleFinder, ok := client.(Finder)
-	if !ok {
-		return nil, nil, unsupportedClientError("BatchFinder or Finder")
-	}
-	for i, key := range keys {
-		doc, found, err := singleFinder.FindOne(ctx, collection, mongoRecordFilter(spec, key), projection...)
-		if err != nil {
-			return nil, nil, err
-		}
-		if err := storage.ValidateDocumentResult(doc, found); err != nil {
-			return nil, nil, fmt.Errorf("mongo: finder result at index %d: %w", i, err)
-		}
-		if found {
-			doc, err = canonicalDocumentFromBSON(spec, doc, fields)
-			if err != nil {
-				return nil, nil, err
-			}
-		}
-		docs[i] = doc
-		exists[i] = found
-	}
-	return docs, exists, nil
+	return documents, exists, nil
 }
 
-func unsupportedClientError(capability string) error {
-	return fmt.Errorf("mongo: adapter client does not implement %s: %w", capability, ErrUnsupportedClient)
-}
-
-func (a *Adapter) clientFor(capability string) (any, error) {
+func (a *Adapter) clientFor() (Client, error) {
 	if a == nil || isNilMongoClient(a.client) {
-		return nil, unsupportedClientError(capability)
+		return nil, ErrClientNotConfigured
 	}
 	return a.client, nil
 }
 
-func isNilMongoClient(client any) bool {
+func isNilMongoClient(client Client) bool {
 	if client == nil {
 		return true
 	}
