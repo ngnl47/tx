@@ -1514,6 +1514,8 @@ data.GDRoleFieldName(field, change.NameBackendMsgpack) // "roleId"
 例如输出文档里的 `"Items.1001.Quantity"` 或 `"Tags.0"` 只是边界层为了 Redis/Mongo/Provider 生成的可读路径；
 `DeltaSet` 内部保存的是字段编号、map key 或 slice index 组成的结构化路径，不会在热路径上常驻这些拼接字符串。
 
+生成 `GD*` 只内联一个私有运行时状态指针。单纯 `data.NewGDRole()`、完整编解码或只读传递不会创建 Store；首次调用 setter、`Store()` 或 `BeginChange()` 时才按需创建 Store/snapshot sidecar。该细节由生成代码维护，业务仍只使用 `role.SetName(...)`、`db.Save(role)` 等高层 API。
+
 Delta 的内部结构、Compact 规则、物理尺寸和 benchmark 方法属于维护者设计，见 [DeltaSet 内核](docs/design.md#deltaset-内核) 与 [性能分级与验证](docs/design.md#性能分级与验证)。
 
 ### 常用业务写法

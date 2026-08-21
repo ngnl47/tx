@@ -322,22 +322,22 @@ err := role.SaveChange(...)
 
 ```go
 type GDRoleStore struct {
-    Value      *GDRole
-    fieldKinds [10]change.DeltaKind
+    Value *GDRole
+    dirty [10]change.DeltaKind
     // generated child/collection stores...
 }
 
-type GDRoleItemsStore struct {
-    parent     *GDRoleStore
-    itemKinds map[int32]change.DeltaKind
-    itemStores map[int32]*GDItemStore
-    dirtyItems map[int32]struct{}
+type GDRoleItemsCollectionStore struct {
+    parent        *GDRoleStore
+    dirty         map[int32]change.DeltaKind
+    stores        map[int32]*GDItemStore
+    dirtyChildren map[int32]struct{}
 }
 ```
 
-- 普通字段用 `fieldKinds[fieldID-1]` 保存最后语义；同一字段重复 `Set` 不追加条目。
-- map/slice 的显式元素操作用 `itemKinds[key/index]` 保存最后语义。
-- 生成对象子字段的变化仍保存在对应子 Store；`dirtyItems` 只索引真正变脏的子 Store。
+- 普通字段用 `dirty[fieldID-1]` 保存最后语义；同一字段重复 `Set` 不追加条目。
+- map/slice 的显式元素操作用 `dirty[key/index]` 保存最后语义。
+- 生成对象子字段的变化仍保存在对应子 Store；`dirtyChildren` 只索引真正变脏的子 Store，`stores` 可以缓存已经访问但仍干净的子 Store。
 - 整字段 Replace/Clear 会在投影时覆盖该字段下的 key/子 Store 状态；`UnTouch` 可以撤销显式选择，并重新暴露仍真实存在的子 Store 变更。
 - `View()` 复制这些规范化状态和 Store 树，但继续读取同一份 GD 数据。
 
@@ -349,9 +349,30 @@ role.ItemsStore().Set(1001, second)
 role.ItemsStore().Set(1001, final)
 ```
 
-常驻状态始终只有 `itemKinds[1001] = DeltaKindReplace`。只有调用 `Deltas()`、`ChangeDocument()` 或持久化 API 时，才物化一条 `Items[1001] Replace`。
+常驻状态始终只有 `dirty[1001] = DeltaKindReplace`。只有调用 `Deltas()`、`ChangeDocument()` 或持久化 API 时，才物化一条 `Items[1001] Replace`。
 
 Snapshot Diff 也先构造同一种生成 Store 状态，再走统一投影边界。这样两种变更模式共享最终 `DeltaSet` 协议，但高频 setter 不再为固定大小的 `DeltaEntry` 做重复 append、扫描和复制。
+
+### GD 运行时 sidecar
+
+`GD*` 是业务数据载体，不应让 Store 引用、模式和 snapshot 基线永久放大每一个数据对象。生成结构只保留一个私有指针：
+
+```go
+type GDRole struct {
+    // business fields...
+    state *dataState[GDRole, GDRoleStore]
+}
+
+type dataState[V any, S any] struct {
+    store    *S
+    mode     change.Mode
+    snapshot *V
+}
+```
+
+`state` 在首次进入 Store 模式或 snapshot 模式时才分配。只做完整 JSON/BSON/Msgpack 编解码、跨层传递或只读访问的 GD 不承担 sidecar 分配。`Copy()` 和 `ResetStore()` 会清空 `state`；完整 `Load` 替换业务字段时也不会把临时对象的运行时状态复制给调用方。
+
+集合内部按路径创建的子 Store 使用集合自己的 `stores` 绑定，不会把共享的子 GD 强行绑定到某一条父路径。这样同一个 `*GDItem` 可以出现在多个角色或多个集合中，每条路径仍独立记录 dirty 状态。
 
 ### 为什么边界使用扁平 Delta
 
@@ -490,7 +511,7 @@ Store.DeltaValue(path)
 
 当前实现对不超过 128 条的常见批次使用原地扫描；更大的互不相交路径集使用索引，哈希命中后仍以完整路径比较确认。后发生根祖先能够快速收敛的批次继续使用原地算法，避免无意义索引分配。
 
-生成 Store 的 `Deltas()` 不调用这套通用 Compact：字段槽和 `itemKinds` 已经保证同一位置唯一，父字段覆盖、结构漂移和超深路径降级也由具有当前类型上下文的生成代码在物化时处理。若未来向生成投影加入新的状态来源，必须先证明它仍保持这一规范化不变量，否则应恢复边界 Compact 或在生成层完成归一化。
+生成 Store 的 `Deltas()` 不调用这套通用 Compact：字段槽和集合 `dirty` 状态已经保证同一位置唯一，父字段覆盖、结构漂移和超深路径降级也由具有当前类型上下文的生成代码在物化时处理。若未来向生成投影加入新的状态来源，必须先证明它仍保持这一规范化不变量，否则应恢复边界 Compact 或在生成层完成归一化。
 
 ### 集合规则
 
@@ -547,6 +568,20 @@ Slice：
 | 同一 key 重复修改 | 约 593-664 ns/op | 约 488-522 ns/op | 热路径约快 17%-25% |
 
 这些数字用于证明本次物理模型选择，不是跨机器性能承诺。基准仍保留在 txgen 的 `BenchmarkGeneratedStoreDirtyRuntime`，模板或 runtime 改动后必须复跑。
+
+同日继续把生成 GD 的三个常驻运行时字段收敛为一个懒分配 sidecar。使用 txgame 的真实生成结构与参考工程做 `unsafe.Sizeof` 对比：
+
+| 结构 | sidecar 前 | sidecar 后 | 参考工程 |
+| --- | ---: | ---: | ---: |
+| `GDRole` | 1048 B | 936 B | 936 B |
+| `GDItem` | 56 B | 40 B | 40 B |
+| 根 Store | 448 B | 448 B | 1440 B |
+| Items 集合 Store | 32 B | 32 B | 32 B |
+| Item Store | 56 B | 56 B | 64 B |
+
+`GDRole` 的收益大于单个对象尾部减少的 16 B，是因为它按值包含的多个生成结构也同时缩小，收益会递归累积。sidecar 本身在真正进入 Store/snapshot 模式时按需分配；表格只比较结构体常驻内联尺寸。相同 benchmark 下，1024 个不同 map key 的当前结果约为 `0.44-0.45 ms/op, 0.855 MB/op`，成功投影并清理约为 `0.41-0.43 ms/op, 0.788 MB/op`，相对 sidecar 前继续减少约 15-17 KB/op，耗时保持同一量级。
+
+sidecar 不是无条件收益：首次直接修改一个独立 GD 会多一次小对象分配。txgame 的真实 `GDRole` 首次标脏从约 `1600 B/op, 2 allocs/op` 变为 `1496 B/op, 3 allocs/op`，总字节减少且耗时处于同一波动区间；极小的独立 `GDItem` 从约 `128 B/op, 2 allocs/op` 变为 `136 B/op, 3 allocs/op`。集合中的生成对象子字段通过路径子 Store 修改，不会为每个值绑定 sidecar，因此大集合基准仍然净受益。`BenchmarkGeneratedStoreDirtyRuntime/FirstScalarWrite` 用于持续观察首次写入成本；若未来真实业务证明大量微型 GD 都作为独立根对象高频首次写入，再评估专用 fast path，不能以增加所有纯数据对象常驻尺寸为代价提前优化。
 
 ## 存储抽象
 
