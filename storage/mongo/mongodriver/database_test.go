@@ -2,12 +2,27 @@ package mongodriver
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/ngnl47/tx/storage"
 	txmongo "github.com/ngnl47/tx/storage/mongo"
 )
+
+func TestMongoBackendErrorOnlyClassifiesTimeoutOrNetworkFailure(t *testing.T) {
+	err := mongoBackendError("find one", context.DeadlineExceeded)
+	if backend, ok := storage.BackendFromError(err); !ok || backend != storage.BackendMongo {
+		t.Fatalf("BackendFromError = %v, %t, want mongo, true", backend, ok)
+	}
+
+	decodeErr := errors.New("invalid bson document")
+	if err := mongoBackendError("decode", decodeErr); !errors.Is(err, decodeErr) {
+		t.Fatalf("mongoBackendError = %v, want original decode error", err)
+	} else if _, ok := storage.BackendFromError(err); ok {
+		t.Fatalf("BackendFromError classified decode error: %v", err)
+	}
+}
 
 func TestDatabaseReturnsErrorWhenMongoDatabaseMissing(t *testing.T) {
 	db := NewDatabase(nil)

@@ -2,6 +2,8 @@
 
 本文是 `github.com/ngnl47/tx` 存储元数据与运行时能力的实施计划。
 
+架构质量以 [`architecture_audit_standard.md`](architecture_audit_standard.md) 为重复审计基线。核心模型、公共 API、存储/RPC 基础设施发生重大变化或准备发布重大版本时，必须重新执行审计；审计结论确认后再进入重构实施。
+
 目标是提供一套独立、稳定、可由 `txgen` 生成代码消费的 Go runtime 能力：
 
 - 使用 Go 注释作为元数据主入口，保持类型定义和存储定义靠近。
@@ -45,7 +47,7 @@
 - 需要在根事务提交后开启独立事务时，通过 `AfterCommit` 调度新的 `Procedure`，不与父事务共享原子性或锁。
 - 单机事务只保证经 Store 受控 API 发生的修改可回滚；裸字段赋值和 snapshot diff 不参与事务回滚。undo log 属于一次事务的临时状态，不写入 GD，也不作为 Store 的长期业务数据。
 - 事务锁对象由生成代码在 GD 与 Store 侧提供：业务通过 `txn.Locks(guild, role)` 收集，GD 的 `LockTarget()` 只代理默认 Store，不复制业务数据。字段 setter、map/slice 的 `Set/Delete/Replace` 和生成对象子 Store setter 在事务内登记 undo；事务成功后的存储写入、消息发送或后续业务动作通过 `AfterCommit` 等机制调度；这表示内存事务已提交，不等价于 Mongo 已可靠落盘。
-- `txn.Runtime` 是有状态运行时的标准搭档。它按 `LockKey` 聚合脏 Store；`Runtime.Call` 在事务成功后登记 `DirtyTargets`，不执行 I/O；`Runtime.Flush` 逐目标取得同一把本机锁，只投影一次 DeltaSet 并复用该结果调用 `storage.SaveDeltas`，成功才清理 delta。Runtime 不保存业务副本，不把 Store 或 DeltaSet 作为异步队列项。
+- `txn.Runtime` 是有状态运行时的标准搭档。它按 `LockKey` 聚合脏 Store；`Runtime.Call` 在事务成功后登记 `DirtyTargets`，不执行 I/O；`Runtime.Flush` 逐目标取得同一把本机锁，普通路径只投影一次 DeltaSet，并通过仅在 Runtime 内部可构造的 Store 投影调用 `storage.Save`，成功才清理 delta。超过 `MaxRootDeltaEntries` 时，Runtime 会明确重写 Store dirty 树为顶层 Replace 并重新投影一次，这是容量降级后的新投影，不是重复读取同一批次。Runtime 不保存业务副本，不把 Store 或 DeltaSet 作为异步队列项；业务和高级调用方都不接触“传入 Delta 批次并清理 Store”的公共 API。
 - 有状态运行时的 Store dirty 状态是按路径覆盖的集合，不会因同一路径重复修改无限追加；但未成功 Flush 前的不同集合 key/index 会持续累积。`map[K]*GD...` 和 `[]*GD...` 会缓存已访问元素的子 Store，但另行维护 dirty 子路径索引，投影与清理不再遍历全部缓存子 Store。`RuntimeConfig.MaxRootDeltaEntries` 限制单个 pending root 投影后的 Delta 数量；Runtime 只在 Flush 的持锁投影点检查该预算，超过时清理该 Store 树的细粒度 dirty 状态，并将当前值收敛为全部可更新顶层字段的 `Replace` delta，跳过 BSON `_id`，记录一条告警后继续服务，避免每次事务提交递归投影整棵树。`RuntimeConfig.PendingMemorySoftLimit` 按 `MemorySampleInterval` 低频读取进程 `HeapAlloc`，仅在超过阈值时记录告警；它不能作为拒绝业务请求的根因。`RuntimeConfig.MaxPendingRoots` 仅是可选硬保护；满额时才拒绝新增 root。部署项目负责设置 Go 的 `GOMEMLIMIT`，tx 不修改全局 runtime 内存限制。预算限制的是 dirty 路径，不负责限制业务对象本身或干净子 Store 缓存的大小；setter 内不得强制 Flush 或 I/O。
 - 无状态服务不使用 `txn.Runtime`：请求内临时加载 GD，直接由项目 facade 调用 `db.Save` 或 snapshot `SaveChange` 写 Fusion。启用有状态运行时后，所有写操作都必须通过 `Procedure + txn.Runtime`；读取不要求进入事务。
 - 当前标脏主线是 `change.DeltaSet`。热路径只保存 `FieldID`、map key、slice index 和 `DeltaKind`，不常驻拼接字符串路径。
@@ -64,8 +66,8 @@
 - `DeltaSet.Compact()` 只做路径上可确定的压缩：同路径后写覆盖先写，后发生的祖先写清理更早子路径；较早祖先不会吞掉较晚子路径，因为 runtime 不读取当前对象，无法证明祖先值已包含后续修改。不做需要外部生命周期上下文的新建删除抵消。
 - Mongo update 边界可读取 Store 最终值：若 Compact 保留“较早祖先写、较晚子路径写”，Mongo 会把祖先提升为整路径替换并去掉子路径，避免同一 `$set/$unset` 同时包含父子路径冲突；通用 DeltaSet 不提前做这项依赖当前值的压缩。
 - `DeltaSet.Compact()` 对不超过 128 条的常见变更保持原地、零分配扫描；更大的互不相交路径集使用小型哈希索引查询完整路径和严格祖先，哈希碰撞必须再经完整 `DeltaPath.Equal` 确认。后发生根字段覆盖子路径的批次仍走原地扫描，避免为已能线性收敛的整字段覆盖引入索引分配；阈值或算法调整前后都必须复跑 `BenchmarkDeltaSetCompact`。
-- Fusion 是完整装配的存储策略，不保留半成品 no-op 兼容路径：运行时必须同时具备 Redis delta/document/load-lock/delete 能力、Mongo load/delete 能力和延迟队列；`Strategy.Validate` 负责汇总校验，业务工程启动时必须在 Redis/Mongo endpoint 探活后调用它，任一依赖或连接不可用即失败退出。非空 Delta 的热写还会在任何 Redis I/O 前检查 Mongo document loader 已装配，不能把只有 Redis 与队列的半装配 Strategy 当成可写实例。运行期不在每次 Fusion 调用前额外 Ping 两端，而是由实际访问的后端返回真实错误：Redis 热命中可直接返回，不依赖 Mongo；Redis miss 回源 Mongo 时 Mongo 通信错误必须原样返回，不能伪装成记录不存在；热写成功写入 Redis 并入队后不等待 Mongo，Mongo 短暂不可达时既有任务保留，由 worker 的 at-least-once 重试在恢复后回写。Redis/Mongo 短时服务波动只能作为业务调用的 `error` 返回，runtime 不得把通信失败转换为 panic、静默成功或后台 goroutine 退出。Redis 写入与任务入队是跨组件的两步操作，不承诺跨路由原子性；若 Redis 已写而任务入队失败，写入 API 必须返回错误且保留 Store delta，`txn.Runtime` 下次 Flush 会重试；无状态 facade 必须把错误交给上层重试或失败处理，不能把本次调用视为已完成持久化。
-- `txgame` 的项目运行时以后台 Redis/Mongo 健康探针维护 Fusion 新写入闸门，不在每个业务操作前 Ping。启动时先同步探活；探针或真实热写失败会关闭闸门，新的 `txn.Runtime.Call` 和 `db.Save` 返回 `runtime.ErrStorageUnavailable`，不执行 `Procedure.Process` 或写入 I/O。已有 pending root 保留并继续由 Runtime Flush 重试；只有所有端点恢复后探针才重新开放闸门。Mongo 延迟回写失败只保留 Redis 队列任务并重试，不单独关闭闸门；外部服务异常一律通过 error 传播，不得 panic。
+- Fusion 是完整装配的存储策略，不保留半成品 no-op 兼容路径：运行时必须同时具备 Redis delta/document/load-lock/delete 能力、Mongo load/delete 能力和延迟队列；`Strategy.Validate` 负责汇总校验，业务工程启动时必须在 Redis/Mongo endpoint 探活后调用它，任一依赖或连接不可用即失败退出。非空 Delta 的热写还会在任何 Redis I/O 前检查 Mongo document loader 已装配，不能把只有 Redis 与队列的半装配 Strategy 当成可写实例。运行期不在每次 Fusion 调用前额外 Ping 两端；项目运行时通过后台探针和真实 I/O 错误维护 Redis、Mongo 两个独立健康状态，Fusion 业务读写在进入底层 Strategy 前要求两端都健康，即使 Redis 能命中热数据，Mongo 已知不可用时也直接返回 `error`。热写成功写入 Redis 并入队后不等待 Mongo；Mongo 短暂不可达时既有任务保留，由 worker 的 at-least-once 重试在恢复后回写。Redis/Mongo 短时服务波动只能作为业务调用的 `error` 返回，runtime 不得把通信失败转换为 panic、静默成功或后台 goroutine 退出。Redis 写入与任务入队是跨组件的两步操作，不承诺跨路由原子性；若 Redis 已写而任务入队失败，写入 API 必须返回错误且保留 Store delta，`txn.Runtime` 下次 Flush 会重试；无状态 facade 必须把错误交给上层重试或失败处理，不能把本次调用视为已完成持久化。
+- `txgame` 的项目运行时不在每个业务操作前 Ping。启动时先同步探活；后台探针及 guarded reader/writer、延迟回写 handler 观察到的真实 Redis/Mongo I/O 错误会关闭对应 backend 的健康状态。mode-aware writer 按 `TypeSpec.Storage.Mode` 选择 Redis、Mongo 或 Fusion，不把单后端类型误送入 Fusion；Redis 类型只要求 Redis 健康，Mongo 类型只要求 Mongo 健康，Fusion 类型要求两端都健康。新的 Fusion 读取、`txn.Runtime.Call` 和 `db.Save` 返回 `runtime.ErrStorageUnavailable`，不执行后续业务或存储 I/O。错误分类发生在具体 go-redis/Mongo driver 边界；通用 adapter 只传播标记。RecordKey、Delta、字段映射、解码、未知脚本结果等请求或协议语义错误，以及调用方 context 取消，不得污染全局健康状态。已有 pending root 不丢弃；延迟任务 handler 仍执行并把失败返回 scheduler，由 lease/retry 机制保留任务，恢复后继续回写。Probe 以 backend generation 防止较早启动的成功探针覆盖期间发生的新 I/O 故障；只有没有观察到更新故障的探针才能重新开放对应 backend。外部服务异常一律通过 error 传播，不得 panic。
 - Fusion 显式删除要求 Redis 与 Mongo 删除器及 Redis 记录锁均已装配，并在任何删除 I/O 前完成检查；缺少任一组件时返回 `ErrStrategyDependenciesNotConfigured`，不删除 Redis 热数据或 Mongo 文档。显式删除、延迟保存与延迟删除使用同一记录锁：保存任务在锁内读取 Redis 再回写 Mongo，删除在锁内删除 Redis、Mongo，避免已读取的旧热文档在删除后重新写回 Mongo。完整装配后仍按 Redis、Mongo 的顺序执行，运行时连接错误原样返回给调用方。
 - `DeltaKindSet` 用于标记当前字段值；`DeltaKindReplace` 用于集合、结构体指针和集合元素的覆盖赋值。`SetItems(value)`、`ItemsStore().Set(key, value)`、`SetAt(index, value)` 都遵循 Go 赋值语义：持久化时不保留旧值中未出现的字段；对子对象的 setter 才保留局部 `DeltaKindSet` 路径。
 - `MaxDeltaDepth` 是 Store 树投影和 snapshot diff 共用的真实递归预算，当前为 4 层 `PathNode`。即将超过预算时必须立刻停止向下比较或投影，将最近可解析祖先标为 `DeltaKindReplace`；不能 panic，也不能继续做无效深层 diff。每个生成数据类型通过 `sync.Once` 输出一次告警，提示该类型发生了深度降级。
@@ -465,6 +467,8 @@ Store 生成、Redis key helper、Mongo filter helper、字段编号 resolver �
 用户已确认：仅在 `tests/` 文件夹下生成测试用例。
 
 执行规则：
+
+- 大节点架构审计按 `docs/architecture_audit_standard.md` 执行，先输出 P0-P3 findings、证据和残余风险，不在审计阶段直接混入大规模重构。
 
 - 所有 `*_test.go` 只放在 `/Users/a47/workspace/tx/tests`。
 - 包目录如 `meta/`、`storage/` 不放测试文件。

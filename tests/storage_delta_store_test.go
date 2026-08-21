@@ -159,34 +159,6 @@ func TestStorageRejectsTypedNilDeltaApplier(t *testing.T) {
 	}
 }
 
-func TestStorageSaveDeltasUsesProvidedProjectionAndSkipsEmptySet(t *testing.T) {
-	delta := change.DeltaEntry{Path: testStorageDeltaPath(2), Kind: change.DeltaKindSet}
-	store := &testDeltaStore{
-		key:    storage.RecordKey{ID: int64(1001)},
-		deltas: change.DeltaSet{{Path: testStorageDeltaPath(1), Kind: change.DeltaKindSet}},
-	}
-	applier := &recordingDeltaStoreApplier{}
-
-	if err := storage.SaveDeltas(context.Background(), applier, store, change.DeltaSet{delta}); err != nil {
-		t.Fatalf("SaveDeltas returned error: %v", err)
-	}
-	if len(applier.deltas) != 1 || !applier.deltas[0].Path.Equal(delta.Path) {
-		t.Fatalf("applied deltas = %#v, want supplied projection", applier.deltas)
-	}
-	if store.cleared != 1 {
-		t.Fatalf("ClearDeltas calls = %d, want 1", store.cleared)
-	}
-
-	store.cleared = 0
-	applier.hasOptions = false
-	if err := storage.SaveDeltas(context.Background(), applier, store, nil); err != nil {
-		t.Fatalf("SaveDeltas empty set returned error: %v", err)
-	}
-	if applier.hasOptions || store.cleared != 0 {
-		t.Fatalf("empty set reached persistence path: applier=%#v store=%#v", applier, store)
-	}
-}
-
 func TestStorageRejectsViewStore(t *testing.T) {
 	store := &testDeltaStore{view: true}
 	applier := &recordingDeltaStoreApplier{}

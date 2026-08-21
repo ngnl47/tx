@@ -12,9 +12,34 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ngnl47/tx/storage"
 	"github.com/ngnl47/tx/storage/task"
 	taskredis "github.com/ngnl47/tx/storage/task/redis"
 )
+
+func TestRedisTaskBackendClassifiesTransportError(t *testing.T) {
+	transportErr := errors.New("redis unavailable")
+	backend := taskredis.NewBackend(scriptedTaskRedis{err: storage.NewBackendError(storage.BackendRedis, "eval", transportErr)}, taskredis.Options{})
+	item := task.DelayTask{Type: "role", ID: int64(1001), Action: "save"}
+
+	err := backend.Enqueue(context.Background(), item)
+	if !errors.Is(err, transportErr) {
+		t.Fatalf("Enqueue error = %v, want transport error", err)
+	}
+	if dependency, ok := storage.BackendFromError(err); !ok || dependency != storage.BackendRedis {
+		t.Fatalf("BackendFromError = %v, %t, want redis, true", dependency, ok)
+	}
+}
+
+func TestRedisTaskBackendDoesNotClassifyUnmarkedClientError(t *testing.T) {
+	backend := taskredis.NewBackend(scriptedTaskRedis{err: errors.New("invalid redis response")}, taskredis.Options{})
+	item := task.DelayTask{Type: "role", ID: int64(1001), Action: "save"}
+
+	err := backend.Enqueue(context.Background(), item)
+	if _, ok := storage.BackendFromError(err); ok {
+		t.Fatalf("BackendFromError classified unmarked client error: %v", err)
+	}
+}
 
 func TestRedisTaskBackendRejectsMissingClient(t *testing.T) {
 	backend := taskredis.NewBackend(nil, taskredis.Options{})

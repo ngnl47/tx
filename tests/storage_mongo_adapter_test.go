@@ -167,12 +167,25 @@ func TestMongoAdapterAppliesUpdateByDefaultIDFilter(t *testing.T) {
 
 func TestMongoAdapterReturnsTransportError(t *testing.T) {
 	transportErr := errors.New("mongo unavailable")
-	adapter := txmongo.NewAdapter(&recordingMongoUpdater{updateErr: transportErr})
+	adapter := txmongo.NewAdapter(&recordingMongoUpdater{updateErr: storage.NewBackendError(storage.BackendMongo, "update one", transportErr)})
 	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
 
 	err := adapter.ApplyDeltasWithOptions(context.Background(), meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
 	if !errors.Is(err, transportErr) {
 		t.Fatalf("ApplyDeltasWithOptions error = %v, want transport error", err)
+	}
+	if backend, ok := storage.BackendFromError(err); !ok || backend != storage.BackendMongo {
+		t.Fatalf("BackendFromError = %v, %t, want mongo, true", backend, ok)
+	}
+}
+
+func TestMongoAdapterDoesNotClassifyUnmarkedClientError(t *testing.T) {
+	adapter := txmongo.NewAdapter(&recordingMongoUpdater{updateErr: errors.New("invalid bson value")})
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+
+	err := adapter.ApplyDeltasWithOptions(context.Background(), meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "roles"}}, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendBSON, deltaTestBSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
+	if _, ok := storage.BackendFromError(err); ok {
+		t.Fatalf("BackendFromError classified unmarked client error: %v", err)
 	}
 }
 

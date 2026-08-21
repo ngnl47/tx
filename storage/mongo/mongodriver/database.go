@@ -35,7 +35,7 @@ func (d Database) UpdateOne(ctx context.Context, collection string, filter txmon
 		options.Update().SetUpsert(applyOptions.Upsert),
 	)
 	if err != nil {
-		return txmongo.UpdateResult{}, err
+		return txmongo.UpdateResult{}, mongoBackendError("update one", err)
 	}
 	return txmongo.UpdateResult{MatchedCount: result.MatchedCount, UpsertedCount: result.UpsertedCount}, nil
 }
@@ -51,7 +51,7 @@ func (d Database) ReplaceOne(ctx context.Context, collection string, filter txmo
 		options.Replace().SetUpsert(true),
 	)
 	if err != nil {
-		return txmongo.ReplaceResult{}, err
+		return txmongo.ReplaceResult{}, mongoBackendError("replace one", err)
 	}
 	return txmongo.ReplaceResult{MatchedCount: result.MatchedCount, UpsertedCount: result.UpsertedCount}, nil
 }
@@ -62,7 +62,7 @@ func (d Database) DeleteOne(ctx context.Context, collection string, filter txmon
 	}
 	result, err := d.db.Collection(collection).DeleteOne(ctx, bson.M{filter.Field: filter.Value})
 	if err != nil {
-		return txmongo.DeleteResult{}, err
+		return txmongo.DeleteResult{}, mongoBackendError("delete one", err)
 	}
 	return txmongo.DeleteResult{DeletedCount: result.DeletedCount}, nil
 }
@@ -71,12 +71,16 @@ func (d Database) FindOne(ctx context.Context, collection string, filter txmongo
 	if d.db == nil {
 		return nil, false, errMongoDatabaseNotConfigured
 	}
-	var doc map[string]any
-	err := d.db.Collection(collection).FindOne(ctx, bson.M{filter.Field: filter.Value}, options.FindOne().SetProjection(projection(fields...))).Decode(&doc)
+	result := d.db.Collection(collection).FindOne(ctx, bson.M{filter.Field: filter.Value}, options.FindOne().SetProjection(projection(fields...)))
+	err := result.Err()
 	if err == mongo.ErrNoDocuments {
 		return nil, false, nil
 	}
 	if err != nil {
+		return nil, false, mongoBackendError("find one", err)
+	}
+	var doc map[string]any
+	if err := result.Decode(&doc); err != nil {
 		return nil, false, err
 	}
 	return doc, true, nil
@@ -93,7 +97,7 @@ func (d Database) FindMany(ctx context.Context, collection string, filter txmong
 	}
 	cursor, err := d.db.Collection(collection).Find(ctx, bson.M{filter.Field: bson.M{"$in": filter.Values}}, options.Find().SetProjection(projectionWithRequiredField(fields, filter.Field)))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, mongoBackendError("find many", err)
 	}
 	defer cursor.Close(ctx)
 
@@ -120,9 +124,16 @@ func (d Database) FindMany(ctx context.Context, collection string, filter txmong
 		}
 	}
 	if err := cursor.Err(); err != nil {
-		return nil, nil, err
+		return nil, nil, mongoBackendError("find many cursor", err)
 	}
 	return docs, exists, nil
+}
+
+func mongoBackendError(operation string, err error) error {
+	if err == nil || (!mongo.IsNetworkError(err) && !mongo.IsTimeout(err)) {
+		return err
+	}
+	return storage.NewBackendError(storage.BackendMongo, operation, err)
 }
 
 func projection(fields ...string) bson.M {

@@ -4,10 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"strconv"
 	"time"
 
 	redis "github.com/redis/go-redis/v9"
+
+	"github.com/ngnl47/tx/storage"
 )
 
 var errRedisClientNotConfigured = errors.New("redis client is not configured")
@@ -30,7 +34,7 @@ func (c Client) Get(ctx context.Context, key string) (string, bool, error) {
 		return "", false, nil
 	}
 	if err != nil {
-		return "", false, err
+		return "", false, redisBackendError("get", err)
 	}
 	return value, true, nil
 }
@@ -39,14 +43,14 @@ func (c Client) Set(ctx context.Context, key string, value string) error {
 	if c.client == nil {
 		return errRedisClientNotConfigured
 	}
-	return c.client.Set(ctx, key, value, 0).Err()
+	return redisBackendError("set", c.client.Set(ctx, key, value, 0).Err())
 }
 
 func (c Client) SetWithTTL(ctx context.Context, key string, value string, ttl time.Duration) error {
 	if c.client == nil {
 		return errRedisClientNotConfigured
 	}
-	return c.client.Set(ctx, key, value, ttl).Err()
+	return redisBackendError("set with ttl", c.client.Set(ctx, key, value, ttl).Err())
 }
 
 func (c Client) Eval(ctx context.Context, script string, keys []string, args ...any) (string, error) {
@@ -55,7 +59,7 @@ func (c Client) Eval(ctx context.Context, script string, keys []string, args ...
 	}
 	value, err := c.client.Eval(ctx, script, keys, args...).Result()
 	if err != nil {
-		return "", err
+		return "", redisBackendError("eval", err)
 	}
 	switch value := value.(type) {
 	case string:
@@ -73,7 +77,7 @@ func (c Client) MGet(ctx context.Context, keys ...string) ([]string, error) {
 	}
 	values, err := c.client.MGet(ctx, keys...).Result()
 	if err != nil {
-		return nil, err
+		return nil, redisBackendError("mget", err)
 	}
 	out := make([]string, len(values))
 	for i, value := range values {
@@ -87,4 +91,26 @@ func (c Client) MGet(ctx context.Context, keys ...string) ([]string, error) {
 		out[i] = text
 	}
 	return out, nil
+}
+
+func redisBackendError(operation string, err error) error {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	var serverErr redis.Error
+	if errors.As(err, &serverErr) {
+		return err
+	}
+	if errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, redis.ErrClosed) ||
+		errors.Is(err, redis.ErrPoolExhausted) ||
+		errors.Is(err, redis.ErrPoolTimeout) {
+		return storage.NewBackendError(storage.BackendRedis, operation, err)
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) {
+		return storage.NewBackendError(storage.BackendRedis, operation, err)
+	}
+	return err
 }

@@ -2390,6 +2390,19 @@ err := storage.Save(ctx, redisCluster, role.Store())
 `storage.Save` 强制 `Upsert=false`。如果 Redis 中不存在该记录，Redis adapter 会返回
 `storage.ErrNotExists`，避免普通更新意外创建新热数据。
 
+`storage.Save` 和 `storage.SaveWithOptions` 是框架装配层 API。业务项目应再包一层 facade，隐藏
+`context`、writer、Store 和 Delta 投影；例如 txgame 中业务代码只需要：
+
+```go
+role.SetName("bob")
+if err := db.Save(role); err != nil {
+	return err
+}
+```
+
+框架不会提供“调用方先取得 `store.Deltas()`，再把这批 Delta 传回保存并清理 Store”的公共入口。
+投影和清理必须在同一个框架所有权边界内完成，避免投影后新增的其他 dirty 路径被一并清理。
+
 ### 局部路径的类型约束
 
 Lua 只会为**缺失**的对象父节点创建 `{}`。已存在的 `null`、数字、字符串等非容器父节点会使 adapter 返回
@@ -3091,11 +3104,18 @@ Redis 的部分读取按 main/subKey 的 key 粒度优化：当请求字段位�
 这些接口是 Store 读取、Fusion 回源、Redis 热数据回填和延迟保存回写的共同边界。具体后端仍负责把
 `RecordKey` 转成自己的底层定位方式，例如 Redis key/hash tag 或 Mongo filter。
 
-框架层可以把 Redis/Mongo/Fusion adapter 传给 `storage.Create/Save`；业务侧更推荐使用项目 facade：
+框架装配层可以把 Redis/Mongo/Fusion adapter 传给 `storage.Create/Save`：
 
 ```go
 role, exists, err := data.LoadGDRole(ctx, fusionStrategy, data.GDRoleRecordKey(470001))
 err = storage.Save(ctx, fusionStrategy, role.Store())
+```
+
+业务侧应使用项目 facade，不传 adapter、context、Store 或 Delta：
+
+```go
+role.SetName("new-name")
+err := db.Save(role)
 ```
 
 需要写测试时，可以用内存假实现，只实现最小接口：
@@ -3136,7 +3156,13 @@ if err := scheduler.Start(appContext); err != nil {
 }
 ```
 
-运行期不为每次 Fusion 调用额外 Ping Redis 与 Mongo，实际读写命令就是对应后端的可用性探针。Redis 热命中只访问 Redis，即使 Mongo 暂时不可达也可以返回热数据；Redis miss、`DontLoadToRedis` 直读或延迟回写实际访问 Mongo 时，Mongo 通信错误会原样返回或由 Scheduler 重试，绝不伪装成记录不存在。Redis/Mongo 的短时不可用只会让当前读写返回 `error`，不会使 `txgame` 因通信错误 panic；业务 handler 应捕获该错误并结束本次上行请求。Fusion 热写只在 Redis 同步写入与延迟任务入队成功后返回，不等待 Mongo；因此 Mongo 暂时不可达不会丢弃已经写入 Redis 的热数据或已存在的延迟任务，恢复后 worker 会继续把 Redis 当前文档回写 Mongo。
+运行期不为每次 Fusion 调用额外 Ping Redis 与 Mongo。项目运行时由后台探针和真实 I/O 错误分别维护两个 backend 的健康状态，并在业务入口执行模式级检查：Redis 类型只要求 Redis 健康，Mongo 类型只要求 Mongo 健康，Fusion 类型要求两端都健康。Mongo 已知不可用时，即使底层 Redis 可能命中热数据，Fusion 业务读取和写入也会在进入 Strategy 前返回 `runtime.ErrStorageUnavailable`。Redis/Mongo 的短时不可用只会让当前调用返回 `error`，不会使 `txgame` panic；业务 handler 应捕获错误并结束本次上行请求。
+
+具体 go-redis/Mongo driver client 只把网络、超时等真实外部调用失败包装为 `storage.BackendError`，通用 Redis/Mongo adapter 只传播已经分类的错误。RecordKey 校验、Delta/字段映射、BSON/Redis 返回值解码、未知 Lua 返回值等请求或协议语义错误，以及调用方 context 取消，不会关闭全局健康状态。自定义 driver adapter 需要遵守同一规则：只在能确认是后端通信失败的位置调用 `storage.NewBackendError`，项目运行时通过 `storage.BackendFromError` 识别故障来源。
+
+健康探针会记录开始检查时的 backend generation。若探针执行期间有真实业务 I/O 报告了更新的故障，较早的成功探针结果不能清除这次新故障；下一轮在新 generation 上完整成功的探针才会重新开放入口。
+
+Fusion 热写只在 Redis 同步写入与延迟任务入队成功后返回，不等待 Mongo。Mongo 暂时不可达不会丢弃已经存在的延迟任务；handler 返回错误后，Scheduler 通过 lease/retry 保留任务并持续退避重试，恢复后继续把 Redis 当前文档回写 Mongo。handler 的 backend 错误也会立即更新项目健康状态，但健康 gate 不会阻止 worker 自身继续尝试恢复。
 
 ```go
 role.SetName("new-name")
@@ -3148,14 +3174,17 @@ if err := db.Save(role); err != nil {
 
 这条规则只针对外部通信失败。修改 viewStore、混用 `BeginChange` 与 Store 模式等本地 API 违约仍属于编程错误，应在开发期修正，不能依赖运行时吞掉 panic。
 
-例如 Mongo 临时不可达时：
+例如探针或一次真实 Mongo I/O 已发现 Mongo 临时不可达时：
 
 ```go
 role.SetName("new-name")
-err := storage.Save(ctx, fusionStore, role.Store()) // Redis 写入和任务入队成功。
+err := db.Save(role)
+// errors.Is(err, runtime.ErrStorageUnavailable) == true
+// 本次不会继续写 Redis；role.Store() 的 dirty 状态仍保留。
 
-role, exists, err := data.LoadGDRole(ctx, fusionStore, data.GDRoleRecordKey(1001))
-// Redis 命中时仍可读取；只有 Redis miss 需要回源 Mongo 时才返回 Mongo 错误。
+role, exists, err := data.FindGDRoleByID(ctx, 1001)
+// 即使 Redis 已有热数据，也返回 runtime.ErrStorageUnavailable。
+// Mongo 恢复并被探针确认后，新的 Fusion 读写自动恢复。
 ```
 
 生产环境的延迟回写 handler 只负责存储同步。由于任务可能因为网络抖动、进程重启或租约恢复被再次执行，Mongo 回写路径应按“同一记录的当前 Redis 热文档 replace 到 Mongo”设计为存储幂等操作。比如同一条 `GDRole` save 任务执行两次，结果应只是 Mongo 中 `roleId=1001` 的文档被相同或更新后的热数据覆盖两次；队列中不保存 `GDRole` 的中间态快照，也不按每次字段变更生成事件日志。
@@ -3165,7 +3194,7 @@ handler 会在这个流程外层持有同一条记录的 Redis 锁，避免多�
 
 运维侧应关注 Scheduler 错误日志、重试次数和队列积压时间。如果某类任务持续失败，优先排查对应类型的 Redis 热文档是否能正常反序列化、Mongo 路由/过滤条件是否正确、以及目标集合是否可写。队列中的失败原因不会写入 Redis 状态；需要更完整的告警和指标时，应通过项目自己的日志、监控或后续可插拔 observer 接入。
 
-Fusion 读取会先查 Redis，未命中时才回源 Mongo；Redis 命中不会额外探测 Mongo。单条回源会先获取记录级 Redis 锁，并在锁内再次读取 Redis：如果第二次读取命中，直接返回 Redis 热数据；只有第二次仍未命中时，才从 Mongo 全量读取文档，写回 Redis 热数据并使用 `delayDelTime` 续期，然后按请求字段返回结果。批量读取先合并第一次 Redis 查询；当 Mongo reader 支持批量读取时，所有 miss 会先通过一次 Mongo 全文批量读取取得候选文档，再逐条获取记录锁并二次读取 Redis。锁内已经被其他请求回填的记录直接返回最新 Redis 文档，仍未命中时才写入该条候选 Mongo 文档；因此批量回源不会用旧候选覆盖另一条回填完成后的热数据。该路径要求 `delayDelTime` 必须大于 0，避免生成没有 TTL 的 Redis 热数据；同时必须已装配带写入选项的 Redis 文档替换器和记录锁，缺少任一组件时会返回 `fusion.ErrStrategyDependenciesNotConfigured`，不会降级成只读 Mongo。显式使用 `LoadOptions.DontLoadToRedis` 时，才直接从 Mongo 按请求字段读取且不回填 Redis，适合低频只读场景。
+通过项目健康 gate 后，Fusion Strategy 内部先查 Redis，未命中时才回源 Mongo；Redis 命中不会在本次请求里额外 Ping Mongo。单条回源会先获取记录级 Redis 锁，并在锁内再次读取 Redis：如果第二次读取命中，直接返回 Redis 热数据；只有第二次仍未命中时，才从 Mongo 全量读取文档，写回 Redis 热数据并使用 `delayDelTime` 续期，然后按请求字段返回结果。批量读取先合并第一次 Redis 查询；当 Mongo reader 支持批量读取时，所有 miss 会先通过一次 Mongo 全文批量读取取得候选文档，再逐条获取记录锁并二次读取 Redis。锁内已经被其他请求回填的记录直接返回最新 Redis 文档，仍未命中时才写入该条候选 Mongo 文档；因此批量回源不会用旧候选覆盖另一条回填完成后的热数据。该路径要求 `delayDelTime` 必须大于 0，避免生成没有 TTL 的 Redis 热数据；同时必须已装配带写入选项的 Redis 文档替换器和记录锁，缺少任一组件时会返回 `fusion.ErrStrategyDependenciesNotConfigured`，不会降级成只读 Mongo。显式使用 `LoadOptions.DontLoadToRedis` 时，才直接从 Mongo 按请求字段读取且不回填 Redis，适合低频只读场景。
 
 部分字段读取的优化主要发生在 Redis 热数据层：运行时按 main/subKey key 粒度减少 Redis 读取，随后按字段过滤返回文档；Redis 和 Mongo 中保存的仍是全量数据。只请求 subKey 字段时，Redis 可以只读取对应 subKey 文档，不要求主文档同时命中。
 

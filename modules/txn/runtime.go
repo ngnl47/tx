@@ -428,6 +428,15 @@ type deltaCollapser interface {
 	CollapseDeltas()
 }
 
+type deltaStoreProjection struct {
+	storage.DeltaStore
+	deltas change.DeltaSet
+}
+
+func (store deltaStoreProjection) Deltas() change.DeltaSet {
+	return store.deltas
+}
+
 func (manager *Runtime) enforceDeltaBudget(target LockTarget, store storage.DeltaStore, deltas change.DeltaSet) change.DeltaSet {
 	if manager == nil || manager.maxRootDeltas <= 0 || len(deltas) <= manager.maxRootDeltas {
 		return deltas
@@ -475,7 +484,7 @@ func (manager *Runtime) flushTarget(ctx context.Context, entry targetEntry) erro
 			manager.forget(entry)
 			return nil
 		}
-		if err := storage.SaveDeltas(ctx, manager.writer, store, deltas); err != nil {
+		if err := storage.Save(ctx, manager.writer, deltaStoreProjection{DeltaStore: store, deltas: deltas}); err != nil {
 			return err
 		}
 		manager.forget(entry)

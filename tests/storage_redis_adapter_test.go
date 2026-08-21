@@ -164,12 +164,25 @@ func TestRedisAdapterAppliesChangesWithSingleLuaEval(t *testing.T) {
 
 func TestRedisAdapterReturnsTransportError(t *testing.T) {
 	transportErr := errors.New("redis unavailable")
-	adapter := txredis.NewAdapter(&recordingRedisStringClient{evalErr: transportErr})
+	adapter := txredis.NewAdapter(&recordingRedisStringClient{evalErr: storage.NewBackendError(storage.BackendRedis, "eval", transportErr)})
 	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
 
 	err := adapter.ApplyDeltasWithOptions(context.Background(), meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendJSON, deltaTestJSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{Upsert: true})
 	if !errors.Is(err, transportErr) {
 		t.Fatalf("ApplyDeltasWithOptions error = %v, want transport error", err)
+	}
+	if backend, ok := storage.BackendFromError(err); !ok || backend != storage.BackendRedis {
+		t.Fatalf("BackendFromError = %v, %t, want redis, true", backend, ok)
+	}
+}
+
+func TestRedisAdapterDoesNotClassifyUnmarkedClientError(t *testing.T) {
+	adapter := txredis.NewAdapter(&recordingRedisStringClient{evalErr: errors.New("invalid redis response")})
+	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Kind: change.DeltaKindSet}}
+
+	err := adapter.ApplyDeltasWithOptions(context.Background(), meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}, storage.RecordKey{ID: int64(1001)}, deltas, testBackendResolver(change.NameBackendJSON, deltaTestJSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{Upsert: true})
+	if _, ok := storage.BackendFromError(err); ok {
+		t.Fatalf("BackendFromError classified unmarked client error: %v", err)
 	}
 }
 
