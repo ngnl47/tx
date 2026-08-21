@@ -7,6 +7,7 @@ import (
 	"math"
 	"sync/atomic"
 
+	"github.com/ngnl47/tx/lifecycle"
 	"github.com/ngnl47/tx/modules/msgq"
 )
 
@@ -16,7 +17,7 @@ const defaultFetchBatch = 1
 type Server struct {
 	identityResolver IdentityResolver
 	dispatcher       Dispatcher
-	admission        Admission
+	admission        lifecycle.Admission
 	sessions         SessionClientRouter
 	connectionID     ConnectionIDGenerator
 	fetchBatch       int

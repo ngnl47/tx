@@ -732,16 +732,21 @@ delivery := &rpcpb.Delivery{
 新增业务可以使用该包进行明确的服务/实例调用，但不应依赖生成的 `pb` 类型定义客户端 DTO。会话 owner 由
 `msgq.SessionRouter` 解析；Actor 消息由 `actor.VirtualPID` 或 `actor.FixedPID` 投递。
 
-服务进程创建 gRPC server 后，注册接收器即可得到已校验的业务 `Delivery`。Receiver 返回错误时，
-调用方会收到 gRPC 错误，框架不会把投递失败伪装为已接受：
+服务进程创建 gRPC server 后，先用该服务的 `Ingress` 包装接收器，再注册得到已校验的业务 `Delivery`。
+Receiver 返回错误时，调用方会收到 gRPC 错误，框架不会把投递失败伪装为已接受：
 
 ```go
 grpcServer := grpc.NewServer()
-err := rpc.RegisterDeliveryService(grpcServer, rpc.ReceiverFunc(
+businessReceiver := rpc.ReceiverFunc(
     func(ctx context.Context, delivery rpc.Delivery) error {
         return enqueueToMailbox(delivery)
     },
-))
+)
+receiver, err := rpc.NewAdmissionReceiver(businessReceiver, app.Ingress)
+if err != nil {
+    return err
+}
+err = rpc.RegisterDeliveryService(grpcServer, receiver)
 if err != nil {
     return err
 }
@@ -865,7 +870,19 @@ root.WaitDoneAndWaitGroupWait()
 
 `Ingress` 只属于网络入口或 Actor/RPC 接收器，不能被 `Procedure`、`db.Save`、`db.SaveChange` 或 Store 读取。排水中已受理的业务必须继续完成；存储可用性仍只由 Redis/Mongo 的实际 I/O 错误和项目健康闸门决定。
 
-`modules/agent.Server` 在调用 `msgq.Rec` **之前**调用 `Admission.Enter()`。因此 Agent 排水后，后续业务帧会返回明确错误并结束本次连接，不会推进上行 `Seq` 或伪造“已受理”。
+`lifecycle.Admission` 是服务入口的最小公共接口。`modules/agent.Server` 在调用 `msgq.Rec` **之前**调用 `Admission.Enter()`；因此 Agent 排水后，后续业务帧会返回明确错误并结束本次连接，不会推进上行 `Seq` 或伪造“已受理”。通用 gRPC Receiver 使用同一个入口账本：
+
+```go
+receiver, err := rpc.NewAdmissionReceiver(businessReceiver, ingress)
+if err != nil {
+    return err
+}
+if err := rpc.RegisterDeliveryService(grpcServer, receiver); err != nil {
+    return err
+}
+```
+
+排水采用严格封口：`BeginDrain` 后所有新的 Agent/RPC 入站请求都被拒绝，不支持按命令名或 `CommandID` 配置放行白名单。否则 `WaitDrained` 无法证明未来不会再增加请求计数。充值回调、发奖等必须完成的动作应先写入项目选择的可靠消息队列；目标服务排水时保留消息，恢复后重试消费。可靠队列负责 at-least-once 与业务幂等，`CommandID` 只负责协议身份和路由。
 
 `modules/control` 是独立的运维 gRPC 契约。生命周期面提供 `Status`、`Drain`、`WaitDrained`。项目只需适配 `control.LifecycleController`；控制面不依赖 GD、Store、Procedure、Redis 或 Mongo：
 
@@ -876,7 +893,7 @@ if err := control.RegisterLifecycleService(grpcServer, coordinator); err != nil 
 }
 ```
 
-`Drain` 只启动“目录标记为 `draining` + 入口封口”；`WaitDrained` 只等待已受理请求结束。最终资源关闭、根 context 取消、事务 Flush、Actor 与 discovery 注销仍由宿主负责。
+`Drain` 只启动“目录标记为 `draining` + 严格入口封口”；`WaitDrained` 只等待已受理请求结束。最终资源关闭、根 context 取消、事务 Flush、Actor 与 discovery 注销仍由宿主负责。
 
 启用 discovery 的进程还可以注册独立的 `SlotService`。它接收完整旧 assignment 和下一运行实例 ID；下一
 generation 由框架按 `current.Generation + 1` 推导。项目侧 `SlotController` 必须确认目标实例为 `running`，再以

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ngnl47/tx/lifecycle"
 	txagent "github.com/ngnl47/tx/modules/agent"
 	"github.com/ngnl47/tx/modules/discovery"
 	"github.com/ngnl47/tx/modules/msgq"
@@ -209,7 +210,7 @@ func TestAgentSessionDoesNotAdvanceSequenceWhenAdmissionRejects(t *testing.T) {
 			t.Fatal("dispatcher must not run when admission rejects")
 			return nil
 		}),
-		Admission: txagent.AdmissionFunc(func() (func(), error) { return nil, drainErr }),
+		Admission: lifecycle.AdmissionFunc(func() (func(), error) { return nil, drainErr }),
 		Sessions:  router,
 		ConnectionID: func() (int64, error) {
 			return 7, nil

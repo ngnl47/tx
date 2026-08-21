@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/ngnl47/tx/lifecycle"
 	"github.com/ngnl47/tx/modules/msgq"
 )
 
@@ -73,19 +74,6 @@ func (f DispatchFunc) Dispatch(ctx context.Context, request DispatchRequest) err
 	return f(ctx, request)
 }
 
-// Admission accepts an inbound business frame and returns its completion
-// callback. Implementations use it to stop new work during service drain.
-type Admission interface {
-	Enter() (func(), error)
-}
-
-// AdmissionFunc adapts a function into Admission.
-type AdmissionFunc func() (func(), error)
-
-func (f AdmissionFunc) Enter() (func(), error) {
-	return f()
-}
-
 // Transport 是一个已完成帧读写的玩家连接。TCP 与 WebSocket 都适配为此接口。
 type Transport interface {
 	Read(context.Context) (Frame, error)
@@ -105,7 +93,7 @@ type ConnectionIDGenerator func() (int64, error)
 type ServerOptions struct {
 	IdentityResolver IdentityResolver
 	Dispatcher       Dispatcher
-	Admission        Admission
+	Admission        lifecycle.Admission
 	Sessions         SessionClientRouter
 	ConnectionID     ConnectionIDGenerator
 	FetchBatch       int

@@ -2,14 +2,19 @@ package tests
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
+	"time"
 
+	"github.com/ngnl47/tx/lifecycle"
 	"github.com/ngnl47/tx/modules/discovery"
 	"github.com/ngnl47/tx/modules/rpc"
 	rpcpb "github.com/ngnl47/tx/modules/rpc/pb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -90,6 +95,83 @@ func TestRPCDeliveryServicePassesOpaquePayloadToReceiver(t *testing.T) {
 	}
 	if string(received.Payload) != string(payload) {
 		t.Fatalf("received payload = %x, want %x", received.Payload, payload)
+	}
+}
+
+func TestRPCAdmissionRejectsNewDeliveryAndDrainsAcceptedReceiver(t *testing.T) {
+	listener := bufconn.Listen(1024 * 1024)
+	server := grpc.NewServer()
+	defer server.Stop()
+
+	root := lifecycle.NewWaitGroupContext(context.Background())
+	ingress := lifecycle.NewIngress(root)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	receiver, err := rpc.NewAdmissionReceiver(rpc.ReceiverFunc(func(context.Context, rpc.Delivery) error {
+		close(started)
+		<-release
+		return nil
+	}), ingress)
+	if err != nil {
+		t.Fatalf("new admission receiver: %v", err)
+	}
+	if err := rpc.RegisterDeliveryService(server, receiver); err != nil {
+		t.Fatalf("register delivery service: %v", err)
+	}
+	go func() { _ = server.Serve(listener) }()
+
+	conn, err := grpc.DialContext(context.Background(), "bufnet",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("dial delivery service: %v", err)
+	}
+	defer conn.Close()
+	client := rpcpb.NewDeliveryServiceClient(conn)
+	request := &rpcpb.Delivery{
+		Route:       &rpcpb.Route{Kind: rpcpb.RouteKind_ROUTE_KIND_SERVICE, Service: "game"},
+		MessageType: "role.update",
+		CommandId:   72001,
+	}
+
+	accepted := make(chan error, 1)
+	go func() {
+		_, callErr := client.Deliver(context.Background(), request)
+		accepted <- callErr
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("accepted receiver did not start")
+	}
+
+	ingress.BeginDrain()
+	if _, err := client.Deliver(context.Background(), request); status.Code(err) != codes.Unavailable {
+		t.Fatalf("delivery while draining error = %v, want Unavailable", err)
+	}
+	drained := make(chan struct{})
+	go func() {
+		ingress.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+		t.Fatal("ingress drained before accepted receiver completed")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-accepted; err != nil {
+		t.Fatalf("accepted delivery returned error: %v", err)
+	}
+	select {
+	case <-drained:
+	case <-time.After(time.Second):
+		t.Fatal("ingress did not drain after accepted receiver completed")
+	}
+	if _, err := ingress.Enter(); !errors.Is(err, lifecycle.ErrDraining) {
+		t.Fatalf("ingress reopened after drain: %v", err)
 	}
 }
 

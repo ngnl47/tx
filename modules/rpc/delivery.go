@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/ngnl47/tx/lifecycle"
 	rpcpb "github.com/ngnl47/tx/modules/rpc/pb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -13,6 +14,7 @@ import (
 
 var (
 	ErrReceiverNil     = errors.New("rpc: receiver is nil")
+	ErrAdmissionNil    = errors.New("rpc: admission is nil")
 	ErrInvalidDelivery = errors.New("rpc: invalid delivery")
 )
 
@@ -46,6 +48,33 @@ func (f ReceiverFunc) Deliver(ctx context.Context, delivery Delivery) error {
 	return f(ctx, delivery)
 }
 
+type admissionReceiver struct {
+	next      Receiver
+	admission lifecycle.Admission
+}
+
+// NewAdmissionReceiver wraps a business Receiver with strict service ingress.
+// Once draining starts, no new delivery reaches next; already accepted work
+// remains registered until the returned completion callback runs.
+func NewAdmissionReceiver(next Receiver, admission lifecycle.Admission) (Receiver, error) {
+	if next == nil {
+		return nil, ErrReceiverNil
+	}
+	if admission == nil {
+		return nil, ErrAdmissionNil
+	}
+	return &admissionReceiver{next: next, admission: admission}, nil
+}
+
+func (r *admissionReceiver) Deliver(ctx context.Context, delivery Delivery) error {
+	done, err := r.admission.Enter()
+	if err != nil {
+		return err
+	}
+	defer done()
+	return r.next.Deliver(ctx, delivery)
+}
+
 // RegisterDeliveryService registers the generated gRPC service on registrar.
 func RegisterDeliveryService(registrar grpc.ServiceRegistrar, receiver Receiver) error {
 	if registrar == nil || receiver == nil {
@@ -66,6 +95,9 @@ func (s *deliveryService) Deliver(ctx context.Context, request *rpcpb.Delivery) 
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	if err := s.receiver.Deliver(ctx, delivery); err != nil {
+		if errors.Is(err, lifecycle.ErrDraining) || errors.Is(err, lifecycle.ErrStopping) {
+			return nil, status.Error(codes.Unavailable, err.Error())
+		}
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return &rpcpb.DeliveryAck{Accepted: true}, nil
