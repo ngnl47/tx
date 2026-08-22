@@ -130,22 +130,22 @@ func TestRedisAdapterAppliesChangesWithSingleLuaEval(t *testing.T) {
 			"Items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
 		},
 	}
-	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet},
-		{Path: deltaPath(intKeyNode(deltaFieldItems, 1001), fieldNode(deltaFieldQty)), Op: change.OpSet},
+	changes := recordedChanges{
+		{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet},
+		{Path: changePath(intKeyNode(changeFieldItems, 1001), fieldNode(changeFieldQty)), Op: change.OpSet},
 	}
 	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
-		change.FieldNameGo:   deltaTestGoNames(),
-		change.FieldNameJSON: deltaTestJSONNames(),
+		change.FieldNameGo:   changeTestGoNames(),
+		change.FieldNameJSON: changeTestJSONNames(),
 	})
-	values := testDeltaValues(map[string]any{
+	values := testChangeValues(map[string]any{
 		"Name":                "alice",
 		"Items.1001.Quantity": int64(9),
 	})
 
-	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, resolver, values, storage.ApplyOptions{Upsert: true})
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, changes, resolver, values, storage.ApplyOptions{Upsert: true})
 	if err != nil {
-		t.Fatalf("ApplyDeltasWithOptions returned error: %v", err)
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
 	}
 	if len(client.evals) != 1 {
 		t.Fatalf("eval calls = %#v, want exactly one", client.evals)
@@ -165,11 +165,11 @@ func TestRedisAdapterAppliesChangesWithSingleLuaEval(t *testing.T) {
 func TestRedisAdapterReturnsTransportError(t *testing.T) {
 	transportErr := errors.New("redis unavailable")
 	adapter := txredis.NewAdapter(&recordingRedisStringClient{evalErr: storage.NewBackendError(storage.BackendRedis, "eval", transportErr)})
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
+	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
-	err := adapter.ApplyDeltasWithOptions(context.Background(), meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}, storage.RecordKey{ID: int64(1001)}, deltas, testResolverForKind(change.FieldNameJSON, deltaTestJSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{Upsert: true})
+	err := adapter.ApplyChangesWithOptions(context.Background(), meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}, storage.RecordKey{ID: int64(1001)}, changes, testResolverForKind(change.FieldNameJSON, changeTestJSONNames()), testChangeValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{Upsert: true})
 	if !errors.Is(err, transportErr) {
-		t.Fatalf("ApplyDeltasWithOptions error = %v, want transport error", err)
+		t.Fatalf("ApplyChangesWithOptions error = %v, want transport error", err)
 	}
 	if backend, ok := storage.BackendFromError(err); !ok || backend != storage.BackendRedis {
 		t.Fatalf("BackendFromError = %v, %t, want redis, true", backend, ok)
@@ -178,9 +178,9 @@ func TestRedisAdapterReturnsTransportError(t *testing.T) {
 
 func TestRedisAdapterDoesNotClassifyUnmarkedClientError(t *testing.T) {
 	adapter := txredis.NewAdapter(&recordingRedisStringClient{evalErr: errors.New("invalid redis response")})
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
+	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
-	err := adapter.ApplyDeltasWithOptions(context.Background(), meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}, storage.RecordKey{ID: int64(1001)}, deltas, testResolverForKind(change.FieldNameJSON, deltaTestJSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{Upsert: true})
+	err := adapter.ApplyChangesWithOptions(context.Background(), meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}, storage.RecordKey{ID: int64(1001)}, changes, testResolverForKind(change.FieldNameJSON, changeTestJSONNames()), testChangeValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{Upsert: true})
 	if _, ok := storage.BackendFromError(err); ok {
 		t.Fatalf("BackendFromError classified unmarked client error: %v", err)
 	}
@@ -190,9 +190,9 @@ func TestRedisAdapterRejectsNilClientForDocumentOperations(t *testing.T) {
 	adapter := txredis.NewAdapter(nil)
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
 	key := storage.RecordKey{ID: int64(1001)}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
+	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
-	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, key, deltas, testResolverForKind(change.FieldNameJSON, deltaTestJSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, key, changes, testResolverForKind(change.FieldNameJSON, changeTestJSONNames()), testChangeValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
 	assertRedisClientNotConfigured(t, err)
 
 	err = adapter.ApplyDelete(context.Background(), spec, key)
@@ -222,19 +222,56 @@ func TestRedisAdapterRejectsNilClientForDocumentOperations(t *testing.T) {
 	assertRedisClientNotConfigured(t, err)
 }
 
-func TestRedisAdapterRejectsDeltaSetWithoutEffectivePatch(t *testing.T) {
+func TestRedisAdapterRejectsChangesWithoutEffectivePatch(t *testing.T) {
 	adapter := txredis.NewAdapter(&recordingRedisStringClient{})
-	err := adapter.ApplyDeltasWithOptions(
+	err := adapter.ApplyChangesWithOptions(
 		context.Background(),
 		meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}},
 		storage.RecordKey{ID: int64(1001)},
-		change.DeltaSet{{Op: change.OpSet}},
-		testResolverForKind(change.FieldNameJSON, deltaTestJSONNames()),
-		testDeltaValues(nil),
+		recordedChanges{{Op: change.OpSet}},
+		testResolverForKind(change.FieldNameJSON, changeTestJSONNames()),
+		testChangeValues(nil),
 		storage.ApplyOptions{},
 	)
-	if !errors.Is(err, storage.ErrNoEffectiveDeltas) {
-		t.Fatalf("ApplyDeltasWithOptions error = %v, want ErrNoEffectiveDeltas", err)
+	if !errors.Is(err, storage.ErrNoEffectiveChanges) {
+		t.Fatalf("ApplyChangesWithOptions error = %v, want ErrNoEffectiveChanges", err)
+	}
+}
+
+func TestRedisAdapterRejectsDirtySourceWithoutVisitedChanges(t *testing.T) {
+	adapter := txredis.NewAdapter(&recordingRedisStringClient{})
+	err := adapter.ApplyChangesWithOptions(
+		context.Background(),
+		meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}},
+		storage.RecordKey{ID: int64(1001)},
+		emptyDirtySource{},
+		testResolverForKind(change.FieldNameJSON, changeTestJSONNames()),
+		testChangeValues(nil),
+		storage.ApplyOptions{},
+	)
+	if !errors.Is(err, storage.ErrNoEffectiveChanges) {
+		t.Fatalf("ApplyChangesWithOptions error = %v, want ErrNoEffectiveChanges", err)
+	}
+}
+
+func TestRedisAdapterDoesNotWriteBeforeTraversalCompletes(t *testing.T) {
+	wantErr := errors.New("visit failed")
+	client := &recordingRedisStringClient{}
+	adapter := txredis.NewAdapter(client)
+	err := adapter.ApplyChangesWithOptions(
+		context.Background(),
+		meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}},
+		storage.RecordKey{ID: int64(1001)},
+		failingSource{err: wantErr},
+		testResolverForKind(change.FieldNameJSON, changeTestJSONNames()),
+		testChangeValues(map[string]any{"Name": "alice"}),
+		storage.ApplyOptions{},
+	)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("ApplyChangesWithOptions error = %v, want %v", err, wantErr)
+	}
+	if len(client.evals) != 0 {
+		t.Fatalf("Redis Eval calls = %d, want 0 before traversal succeeds", len(client.evals))
 	}
 }
 
@@ -390,11 +427,11 @@ func TestRedisAdapterUsesShardKeyAsHashTagWhenRouteByDiffersFromID(t *testing.T)
 			Route:   meta.RouteSpec{By: "serverId"},
 		},
 	}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
+	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
-	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001), ShardKey: int64(7)}, deltas, testResolverForKind(change.FieldNameJSON, deltaTestJSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{Upsert: true})
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001), ShardKey: int64(7)}, changes, testResolverForKind(change.FieldNameJSON, changeTestJSONNames()), testChangeValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{Upsert: true})
 	if err != nil {
-		t.Fatalf("ApplyDeltasWithOptions returned error: %v", err)
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
 	}
 	if len(client.evals) != 1 {
 		t.Fatalf("eval calls = %#v, want exactly one", client.evals)
@@ -408,11 +445,11 @@ func TestRedisAdapterLuaUsesCompatibleArrayDetection(t *testing.T) {
 	client := &recordingRedisStringClient{}
 	adapter := txredis.NewAdapter(client)
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
+	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
-	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testResolverForKind(change.FieldNameJSON, map[change.FieldID]string{deltaFieldName: "tags"}), testDeltaValues(map[string]any{"Name": []string{"a"}}), storage.ApplyOptions{Upsert: true})
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, changes, testResolverForKind(change.FieldNameJSON, map[change.FieldID]string{changeFieldName: "tags"}), testChangeValues(map[string]any{"Name": []string{"a"}}), storage.ApplyOptions{Upsert: true})
 	if err != nil {
-		t.Fatalf("ApplyDeltasWithOptions returned error: %v", err)
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
 	}
 	if len(client.evals) != 1 {
 		t.Fatalf("eval calls = %#v, want exactly one", client.evals)
@@ -430,15 +467,15 @@ func TestRedisAdapterLuaUsesCompatibleArrayDetection(t *testing.T) {
 	}
 }
 
-func TestRedisAdapterApplyDeltasWithOptionsDisablesUpsert(t *testing.T) {
+func TestRedisAdapterApplyChangesWithOptionsDisablesUpsert(t *testing.T) {
 	client := &recordingRedisStringClient{}
 	adapter := txredis.NewAdapter(client)
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
+	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
-	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testResolverForKind(change.FieldNameJSON, deltaTestJSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, changes, testResolverForKind(change.FieldNameJSON, changeTestJSONNames()), testChangeValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
 	if err != nil {
-		t.Fatalf("ApplyDeltasWithOptions returned error: %v", err)
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
 	}
 	if len(client.evals) != 1 {
 		t.Fatalf("eval calls = %#v, want exactly one", client.evals)
@@ -449,18 +486,18 @@ func TestRedisAdapterApplyDeltasWithOptionsDisablesUpsert(t *testing.T) {
 	}
 }
 
-func TestRedisAdapterApplyDeltasWithOptionsPassesTTL(t *testing.T) {
+func TestRedisAdapterApplyChangesWithOptionsPassesTTL(t *testing.T) {
 	client := &recordingRedisStringClient{}
 	adapter := txredis.NewAdapter(client)
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
+	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
-	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testResolverForKind(change.FieldNameJSON, deltaTestJSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, changes, testResolverForKind(change.FieldNameJSON, changeTestJSONNames()), testChangeValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{
 		Upsert:     true,
 		TTLSeconds: 120,
 	})
 	if err != nil {
-		t.Fatalf("ApplyDeltasWithOptions returned error: %v", err)
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
 	}
 	if len(client.evals) != 1 {
 		t.Fatalf("eval calls = %#v, want exactly one", client.evals)
@@ -471,7 +508,7 @@ func TestRedisAdapterApplyDeltasWithOptionsPassesTTL(t *testing.T) {
 	}
 }
 
-func TestRedisAdapterApplyDeltasWithOptionsAddsTTLOnlySubKeys(t *testing.T) {
+func TestRedisAdapterApplyChangesWithOptionsAddsTTLOnlySubKeys(t *testing.T) {
 	client := &recordingRedisStringClient{}
 	adapter := txredis.NewAdapter(client)
 	spec := meta.TypeSpec{
@@ -481,14 +518,14 @@ func TestRedisAdapterApplyDeltasWithOptionsAddsTTLOnlySubKeys(t *testing.T) {
 			"heroes": {Redis: &meta.RedisFieldSpec{SubKey: "heroes"}},
 		},
 	}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
+	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
-	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testResolverForKind(change.FieldNameJSON, deltaTestJSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, changes, testResolverForKind(change.FieldNameJSON, changeTestJSONNames()), testChangeValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{
 		Upsert:     true,
 		TTLSeconds: 120,
 	})
 	if err != nil {
-		t.Fatalf("ApplyDeltasWithOptions returned error: %v", err)
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
 	}
 	if len(client.evals) != 1 {
 		t.Fatalf("eval calls = %#v, want exactly one", client.evals)
@@ -508,45 +545,45 @@ func TestRedisAdapterApplyDeltasWithOptionsAddsTTLOnlySubKeys(t *testing.T) {
 	}
 }
 
-func TestRedisAdapterApplyDeltasWithOptionsReturnsNotExists(t *testing.T) {
+func TestRedisAdapterApplyChangesWithOptionsReturnsNotExists(t *testing.T) {
 	client := &recordingRedisStringClient{evalResult: "ne", hasResult: true}
 	adapter := txredis.NewAdapter(client)
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
+	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
-	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testResolverForKind(change.FieldNameJSON, deltaTestJSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, changes, testResolverForKind(change.FieldNameJSON, changeTestJSONNames()), testChangeValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
 	if !errors.Is(err, storage.ErrNotExists) {
-		t.Fatalf("ApplyDeltasWithOptions err = %v, want ErrNotExists", err)
+		t.Fatalf("ApplyChangesWithOptions err = %v, want ErrNotExists", err)
 	}
 }
 
-func TestRedisAdapterApplyDeltasWithOptionsReturnsPathTypeMismatch(t *testing.T) {
+func TestRedisAdapterApplyChangesWithOptionsReturnsPathTypeMismatch(t *testing.T) {
 	client := &recordingRedisStringClient{evalResult: "pt:dailyTask", hasResult: true}
 	adapter := txredis.NewAdapter(client)
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
+	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
-	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testResolverForKind(change.FieldNameJSON, deltaTestJSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, changes, testResolverForKind(change.FieldNameJSON, changeTestJSONNames()), testChangeValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
 	if !errors.Is(err, storage.ErrPathTypeMismatch) {
-		t.Fatalf("ApplyDeltasWithOptions err = %v, want ErrPathTypeMismatch", err)
+		t.Fatalf("ApplyChangesWithOptions err = %v, want ErrPathTypeMismatch", err)
 	}
 	if !strings.Contains(err.Error(), "dailyTask") {
-		t.Fatalf("ApplyDeltasWithOptions err = %v, want path", err)
+		t.Fatalf("ApplyChangesWithOptions err = %v, want path", err)
 	}
 }
 
-func TestRedisAdapterApplyDeltasWithOptionsRejectsUnknownScriptResult(t *testing.T) {
+func TestRedisAdapterApplyChangesWithOptionsRejectsUnknownScriptResult(t *testing.T) {
 	client := &recordingRedisStringClient{evalResult: "unexpected", hasResult: true}
 	adapter := txredis.NewAdapter(client)
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
+	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
-	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testResolverForKind(change.FieldNameJSON, deltaTestJSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, changes, testResolverForKind(change.FieldNameJSON, changeTestJSONNames()), testChangeValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
 	if err == nil {
-		t.Fatal("ApplyDeltasWithOptions error = nil, want unknown script result error")
+		t.Fatal("ApplyChangesWithOptions error = nil, want unknown script result error")
 	}
 	if !strings.Contains(err.Error(), "unexpected script result") || !strings.Contains(err.Error(), "unexpected") {
-		t.Fatalf("ApplyDeltasWithOptions error = %v, want unknown result details", err)
+		t.Fatalf("ApplyChangesWithOptions error = %v, want unknown result details", err)
 	}
 }
 
@@ -783,36 +820,36 @@ func TestRedisAdapterAppliesStringDocumentsWithRecordID(t *testing.T) {
 	}
 	const redisFieldHeadImg change.FieldID = 4
 	const redisFieldQuality change.FieldID = 5
-	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet},
-		{Path: deltaPath(fieldNode(redisFieldHeadImg)), Op: change.OpClear},
-		{Path: deltaPath(intKeyNode(deltaFieldItems, 1001), fieldNode(deltaFieldQty)), Op: change.OpSet},
-		{Path: deltaPath(intKeyNode(deltaFieldItems, 1001), fieldNode(redisFieldQuality)), Op: change.OpClear},
+	changes := recordedChanges{
+		{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet},
+		{Path: changePath(fieldNode(redisFieldHeadImg)), Op: change.OpClear},
+		{Path: changePath(intKeyNode(changeFieldItems, 1001), fieldNode(changeFieldQty)), Op: change.OpSet},
+		{Path: changePath(intKeyNode(changeFieldItems, 1001), fieldNode(redisFieldQuality)), Op: change.OpClear},
 	}
 	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
 		change.FieldNameGo: {
-			deltaFieldName:    "Name",
+			changeFieldName:   "Name",
 			redisFieldHeadImg: "HeadImg",
-			deltaFieldItems:   "Items",
-			deltaFieldQty:     "Quantity",
+			changeFieldItems:  "Items",
+			changeFieldQty:    "Quantity",
 			redisFieldQuality: "Quality",
 		},
 		change.FieldNameJSON: {
-			deltaFieldName:    "name",
+			changeFieldName:   "name",
 			redisFieldHeadImg: "headImg",
-			deltaFieldItems:   "items",
-			deltaFieldQty:     "quantity",
+			changeFieldItems:  "items",
+			changeFieldQty:    "quantity",
 			redisFieldQuality: "quality",
 		},
 	})
-	values := testDeltaValues(map[string]any{
+	values := testChangeValues(map[string]any{
 		"Name":                "alice",
 		"Items.1001.Quantity": int64(3),
 	})
 
-	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, resolver, values, storage.ApplyOptions{Upsert: true})
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, changes, resolver, values, storage.ApplyOptions{Upsert: true})
 	if err != nil {
-		t.Fatalf("ApplyDeltasWithOptions returned error: %v", err)
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
 	}
 
 	patches := evalPatchDocuments(t, client)
@@ -844,16 +881,16 @@ func TestRedisAdapterAppliesFieldIDChangesWithResolver(t *testing.T) {
 			"Items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
 		},
 	}
-	deltas := change.DeltaSet{{Path: deltaPath(intKeyNode(deltaFieldItems, 1001), fieldNode(deltaFieldQty)), Op: change.OpSet}}
+	changes := recordedChanges{{Path: changePath(intKeyNode(changeFieldItems, 1001), fieldNode(changeFieldQty)), Op: change.OpSet}}
 	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
-		change.FieldNameGo:   deltaTestGoNames(),
-		change.FieldNameJSON: deltaTestJSONNames(),
+		change.FieldNameGo:   changeTestGoNames(),
+		change.FieldNameJSON: changeTestJSONNames(),
 	})
-	values := testDeltaValues(map[string]any{"Items.1001.Quantity": int64(9)})
+	values := testChangeValues(map[string]any{"Items.1001.Quantity": int64(9)})
 
-	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, resolver, values, storage.ApplyOptions{Upsert: true})
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, changes, resolver, values, storage.ApplyOptions{Upsert: true})
 	if err != nil {
-		t.Fatalf("ApplyDeltasWithOptions returned error: %v", err)
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
 	}
 	itemsDoc := evalPatchDocuments(t, client)["items"]
 	items := itemsDoc["items"].(map[string]any)
@@ -872,20 +909,20 @@ func TestRedisAdapterUsesPathReplaceModeForCollectionElement(t *testing.T) {
 			"Items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
 		},
 	}
-	deltas := change.DeltaSet{{
-		Path: deltaPath(intKeyNode(deltaFieldItems, 1001)),
+	changes := recordedChanges{{
+		Path: changePath(intKeyNode(changeFieldItems, 1001)),
 		Op:   change.OpReplace,
 	}}
 	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
-		change.FieldNameGo:   deltaTestGoNames(),
-		change.FieldNameJSON: deltaTestJSONNames(),
+		change.FieldNameGo:   changeTestGoNames(),
+		change.FieldNameJSON: changeTestJSONNames(),
 	})
-	values := testDeltaValues(map[string]any{
+	values := testChangeValues(map[string]any{
 		"Items.1001": map[string]any{"itemId": int64(1001), "quantity": int64(3)},
 	})
 
-	if err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, resolver, values, storage.ApplyOptions{Upsert: true}); err != nil {
-		t.Fatalf("ApplyDeltasWithOptions returned error: %v", err)
+	if err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, changes, resolver, values, storage.ApplyOptions{Upsert: true}); err != nil {
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
 	}
 	if len(client.evals) != 1 {
 		t.Fatalf("eval calls = %#v, want exactly one", client.evals)
@@ -916,16 +953,16 @@ func TestRedisAdapterUsesFullUpdateModeForWholeSubKeyReplace(t *testing.T) {
 			"Items": {Redis: &meta.RedisFieldSpec{SubKey: "items", FullUpdate: true}},
 		},
 	}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldItems)), Op: change.OpReplace}}
+	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldItems)), Op: change.OpReplace}}
 	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
-		change.FieldNameGo:   deltaTestGoNames(),
-		change.FieldNameJSON: deltaTestJSONNames(),
+		change.FieldNameGo:   changeTestGoNames(),
+		change.FieldNameJSON: changeTestJSONNames(),
 	})
-	values := testDeltaValues(map[string]any{"Items": map[string]any{"1001": map[string]any{"quantity": int64(3)}}})
+	values := testChangeValues(map[string]any{"Items": map[string]any{"1001": map[string]any{"quantity": int64(3)}}})
 
-	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, resolver, values, storage.ApplyOptions{Upsert: true})
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, changes, resolver, values, storage.ApplyOptions{Upsert: true})
 	if err != nil {
-		t.Fatalf("ApplyDeltasWithOptions returned error: %v", err)
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
 	}
 	if len(client.evals) != 1 {
 		t.Fatalf("eval calls = %#v, want exactly one", client.evals)
@@ -960,36 +997,36 @@ func TestRedisAdapterUsesPartialFullUpdateModeWhenSubKeyHasFullAndDiffChanges(t 
 	}
 	const redisFieldEquip change.FieldID = 6
 	const redisFieldWeapon change.FieldID = 7
-	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(deltaFieldItems)), Op: change.OpSet},
-		{Path: deltaPath(fieldNode(redisFieldEquip), fieldNode(redisFieldWeapon)), Op: change.OpSet},
+	changes := recordedChanges{
+		{Path: changePath(fieldNode(changeFieldItems)), Op: change.OpSet},
+		{Path: changePath(fieldNode(redisFieldEquip), fieldNode(redisFieldWeapon)), Op: change.OpSet},
 	}
 	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
 		change.FieldNameGo: {
-			deltaFieldItems:  "Items",
+			changeFieldItems: "Items",
 			redisFieldEquip:  "Equip",
 			redisFieldWeapon: "Weapon",
 		},
 		change.FieldNameJSON: {
-			deltaFieldItems:  "items",
+			changeFieldItems: "items",
 			redisFieldEquip:  "equip",
 			redisFieldWeapon: "weapon",
 		},
 	})
-	values := change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
+	values := change.ValueResolverFunc(func(path change.Path) (any, bool) {
 		switch {
-		case path.Equal(deltaPath(fieldNode(deltaFieldItems))):
+		case path.Equal(changePath(fieldNode(changeFieldItems))):
 			return map[string]any{"1001": map[string]any{"quantity": int64(3)}}, true
-		case path.Equal(deltaPath(fieldNode(redisFieldEquip), fieldNode(redisFieldWeapon))):
+		case path.Equal(changePath(fieldNode(redisFieldEquip), fieldNode(redisFieldWeapon))):
 			return "sword", true
 		default:
 			return nil, false
 		}
 	})
 
-	err := adapter.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, resolver, values, storage.ApplyOptions{Upsert: true})
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, changes, resolver, values, storage.ApplyOptions{Upsert: true})
 	if err != nil {
-		t.Fatalf("ApplyDeltasWithOptions returned error: %v", err)
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
 	}
 	if len(client.evals) != 1 {
 		t.Fatalf("eval calls = %#v, want exactly one", client.evals)
@@ -1327,11 +1364,11 @@ func TestRedisClusterRoutesSingleWriteByShardKey(t *testing.T) {
 		IDField: "roleId",
 		Route:   meta.RouteSpec{Type: "role", By: "serverId"},
 	}}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
+	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
-	err := cluster.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001), ShardKey: int64(7)}, deltas, testResolverForKind(change.FieldNameJSON, deltaTestJSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{Upsert: true})
+	err := cluster.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001), ShardKey: int64(7)}, changes, testResolverForKind(change.FieldNameJSON, changeTestJSONNames()), testChangeValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{Upsert: true})
 	if err != nil {
-		t.Fatalf("ApplyDeltasWithOptions returned error: %v", err)
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
 	}
 	if len(router.calls) != 1 || router.calls[0].routeType != "role" || router.calls[0].shardKey != int64(7) {
 		t.Fatalf("router calls = %#v, want role shard key 7", router.calls)
@@ -1365,7 +1402,7 @@ func TestRedisAdapterRejectsMissingDistinctRouteShardKey(t *testing.T) {
 func TestRedisClusterSkipsEmptyDeltasWithoutRouting(t *testing.T) {
 	cluster := txredis.NewCluster(nil, nil)
 
-	err := cluster.ApplyDeltasWithOptions(
+	err := cluster.ApplyChangesWithOptions(
 		context.Background(),
 		meta.TypeSpec{},
 		storage.RecordKey{},
@@ -1375,7 +1412,7 @@ func TestRedisClusterSkipsEmptyDeltasWithoutRouting(t *testing.T) {
 		storage.ApplyOptions{},
 	)
 	if err != nil {
-		t.Fatalf("ApplyDeltasWithOptions returned error for empty deltas: %v", err)
+		t.Fatalf("ApplyChangesWithOptions returned error for empty changes: %v", err)
 	}
 }
 
@@ -1383,11 +1420,11 @@ func TestRedisClusterRejectsTypedNilRouter(t *testing.T) {
 	var router *recordingRedisRouter
 	cluster := txredis.NewCluster(router, map[string]txredis.ScriptClient{"role": &recordingRedisStringClient{}})
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role", Route: meta.RouteSpec{Type: "role"}}}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
+	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
-	err := cluster.ApplyDeltasWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, deltas, testResolverForKind(change.FieldNameJSON, deltaTestJSONNames()), testDeltaValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
+	err := cluster.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, changes, testResolverForKind(change.FieldNameJSON, changeTestJSONNames()), testChangeValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
 	if err == nil || !strings.Contains(err.Error(), "router is not configured") {
-		t.Fatalf("ApplyDeltasWithOptions error = %v, want router configuration error", err)
+		t.Fatalf("ApplyChangesWithOptions error = %v, want router configuration error", err)
 	}
 }
 

@@ -53,15 +53,15 @@ func NewCluster(router Router, shards map[string]Client) (*Cluster, error) {
 	return cluster, nil
 }
 
-func (c *Cluster) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, deltas change.DeltaSet, resolver change.FieldNameResolver, values change.DeltaValueResolver, options storage.ApplyOptions) error {
-	if len(deltas) == 0 {
+func (c *Cluster) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver, options storage.ApplyOptions) error {
+	if source == nil || !source.HasChanges() {
 		return nil
 	}
 	adapter, err := c.adapterFor(ctx, spec, key)
 	if err != nil {
 		return err
 	}
-	return adapter.ApplyDeltasWithOptions(ctx, spec, key, deltas, resolver, values, options)
+	return adapter.ApplyChangesWithOptions(ctx, spec, key, source, resolver, values, options)
 }
 
 func (c *Cluster) ReplaceDocument(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any) error {

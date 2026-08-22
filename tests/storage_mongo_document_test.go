@@ -10,14 +10,14 @@ import (
 	txmongo "github.com/ngnl47/tx/storage/mongo"
 )
 
-func TestMongoBuildUpdateDocumentWithDeltasUsesBSONNames(t *testing.T) {
-	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet},
-		{Path: deltaPath(fieldNode(deltaFieldItems)), Op: change.OpClear},
+func TestMongoBuildUpdateDocumentUsesBSONNames(t *testing.T) {
+	source := recordedChanges{
+		{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet},
+		{Path: changePath(fieldNode(changeFieldItems)), Op: change.OpClear},
 	}
 	resolver := testFieldNameResolver{
-		change.FieldNameGo:   {deltaFieldName: "Name", deltaFieldItems: "Items"},
-		change.FieldNameBSON: {deltaFieldName: "rn", deltaFieldItems: "items"},
+		change.FieldNameGo:   {changeFieldName: "Name", changeFieldItems: "Items"},
+		change.FieldNameBSON: {changeFieldName: "rn", changeFieldItems: "items"},
 	}
 	spec := meta.TypeSpec{
 		Type: meta.Type{
@@ -28,9 +28,9 @@ func TestMongoBuildUpdateDocumentWithDeltasUsesBSONNames(t *testing.T) {
 		},
 	}
 
-	update, err := txmongo.BuildUpdateDocumentWithDeltas(spec, deltas, resolver, testDeltaValueResolver{deltaFieldName: "alice"})
+	update, err := txmongo.BuildUpdateDocument(spec, source, resolver, testValueResolver{changeFieldName: "alice"})
 	if err != nil {
-		t.Fatalf("BuildUpdateDocumentWithDeltas returned error: %v", err)
+		t.Fatalf("BuildUpdateDocument returned error: %v", err)
 	}
 	setDoc := update["$set"].(map[string]any)
 	if setDoc["rn"] != "alice" {
@@ -41,140 +41,82 @@ func TestMongoBuildUpdateDocumentWithDeltasUsesBSONNames(t *testing.T) {
 	}
 }
 
-func TestMongoBuildUpdateDocumentWithDeltasRejectsImmutableID(t *testing.T) {
-	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet},
+func TestMongoBuildUpdateDocumentRejectsImmutableID(t *testing.T) {
+	source := recordedChanges{
+		{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet},
 	}
 	resolver := testFieldNameResolver{
-		change.FieldNameGo:   {deltaFieldName: "RoleId"},
-		change.FieldNameBSON: {deltaFieldName: "_id"},
+		change.FieldNameGo:   {changeFieldName: "RoleId"},
+		change.FieldNameBSON: {changeFieldName: "_id"},
 	}
 
-	_, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver, testDeltaValueResolver{deltaFieldName: int64(1001)})
+	_, err := txmongo.BuildUpdateDocument(meta.TypeSpec{}, source, resolver, testValueResolver{changeFieldName: int64(1001)})
 	if err == nil {
-		t.Fatal("BuildUpdateDocumentWithDeltas returned nil error, want immutable _id error")
+		t.Fatal("BuildUpdateDocument returned nil error, want immutable _id error")
 	}
 }
 
-func TestMongoBuildUpdateDocumentWithDeltasRejectsMissingCurrentValue(t *testing.T) {
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
+func TestMongoBuildUpdateDocumentRejectsMissingCurrentValue(t *testing.T) {
+	source := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 	resolver := testFieldNameResolver{
-		change.FieldNameGo:   {deltaFieldName: "Name"},
-		change.FieldNameBSON: {deltaFieldName: "name"},
+		change.FieldNameGo:   {changeFieldName: "Name"},
+		change.FieldNameBSON: {changeFieldName: "name"},
 	}
-	_, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver, nil)
+	_, err := txmongo.BuildUpdateDocument(meta.TypeSpec{}, source, resolver, nil)
 	if err == nil || !strings.Contains(err.Error(), "name") {
-		t.Fatalf("BuildUpdateDocumentWithDeltas error = %v, want unresolved name error", err)
+		t.Fatalf("BuildUpdateDocument error = %v, want unresolved name error", err)
 	}
 }
 
-func TestMongoBuildUpdateDocumentWithDeltasRejectsUnresolvedFieldPath(t *testing.T) {
+func TestMongoBuildUpdateDocumentRejectsUnresolvedFieldPath(t *testing.T) {
 	const unknownField change.FieldID = 99
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(unknownField)), Op: change.OpSet}}
+	source := recordedChanges{{Path: changePath(fieldNode(unknownField)), Op: change.OpSet}}
 	resolver := testFieldNameResolver{
-		change.FieldNameGo:   {deltaFieldName: "Name"},
-		change.FieldNameBSON: {deltaFieldName: "name"},
+		change.FieldNameGo:   {changeFieldName: "Name"},
+		change.FieldNameBSON: {changeFieldName: "name"},
 	}
 
-	_, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver, testDeltaValueResolver{unknownField: "alice"})
+	_, err := txmongo.BuildUpdateDocument(meta.TypeSpec{}, source, resolver, testValueResolver{unknownField: "alice"})
 	if err == nil || !strings.Contains(err.Error(), "field path") {
-		t.Fatalf("BuildUpdateDocumentWithDeltas error = %v, want unresolved field path error", err)
+		t.Fatalf("BuildUpdateDocument error = %v, want unresolved field path error", err)
 	}
 }
 
-func TestMongoBuildUpdateDocumentWithDeltasRejectsUnknownDeltaOp(t *testing.T) {
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.DeltaOp(99)}}
+func TestMongoBuildUpdateDocumentRejectsUnknownOp(t *testing.T) {
+	source := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.Op(99)}}
 	resolver := testFieldNameResolver{
-		change.FieldNameGo:   {deltaFieldName: "Name"},
-		change.FieldNameBSON: {deltaFieldName: "name"},
+		change.FieldNameGo:   {changeFieldName: "Name"},
+		change.FieldNameBSON: {changeFieldName: "name"},
 	}
 
-	_, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver, testDeltaValueResolver{deltaFieldName: "alice"})
-	if err == nil || !strings.Contains(err.Error(), "unknown delta operation") {
-		t.Fatalf("BuildUpdateDocumentWithDeltas error = %v, want unknown delta operation error", err)
+	_, err := txmongo.BuildUpdateDocument(meta.TypeSpec{}, source, resolver, testValueResolver{changeFieldName: "alice"})
+	if err == nil || !strings.Contains(err.Error(), "unknown operation") {
+		t.Fatalf("BuildUpdateDocument error = %v, want unknown operation error", err)
 	}
 }
 
-func TestMongoBuildUpdateDocumentWithDeltasAllowsResolvedNilValue(t *testing.T) {
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
+func TestMongoBuildUpdateDocumentAllowsResolvedNilValue(t *testing.T) {
+	source := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 	resolver := testFieldNameResolver{
-		change.FieldNameGo:   {deltaFieldName: "Name"},
-		change.FieldNameBSON: {deltaFieldName: "name"},
+		change.FieldNameGo:   {changeFieldName: "Name"},
+		change.FieldNameBSON: {changeFieldName: "name"},
 	}
-	update, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver, change.DeltaValueResolverFunc(func(change.DeltaPath) (any, bool) {
+	update, err := txmongo.BuildUpdateDocument(meta.TypeSpec{}, source, resolver, change.ValueResolverFunc(func(change.Path) (any, bool) {
 		return nil, true
 	}))
 	if err != nil {
-		t.Fatalf("BuildUpdateDocumentWithDeltas returned error: %v", err)
+		t.Fatalf("BuildUpdateDocument returned error: %v", err)
 	}
 	if got := update["$set"].(map[string]any)["name"]; got != nil {
 		t.Fatalf("update value = %#v, want nil", got)
 	}
 }
 
-func TestMongoBuildUpdateDocumentWithDeltasDoesNotMutateSource(t *testing.T) {
-	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet},
-		{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet},
-	}
-	resolver := testFieldNameResolver{
-		change.FieldNameGo:   {deltaFieldName: "Name"},
-		change.FieldNameBSON: {deltaFieldName: "name"},
-	}
-	if _, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver, testDeltaValueResolver{deltaFieldName: "alice"}); err != nil {
-		t.Fatalf("BuildUpdateDocumentWithDeltas returned error: %v", err)
-	}
-	if len(deltas) != 2 || deltas[0].Path.Depth == 0 {
-		t.Fatalf("source deltas mutated: %#v", deltas)
-	}
-}
-
-func TestMongoBuildUpdateDocumentWithDeltasUsesAncestorReplacementForLaterChild(t *testing.T) {
-	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(deltaFieldItems)), Op: change.OpReplace},
-		{Path: deltaPath(intKeyNode(deltaFieldItems, 1001), fieldNode(deltaFieldQty)), Op: change.OpDelete},
-	}
-	resolver := testFieldNameResolver{
-		change.FieldNameGo: {
-			deltaFieldItems: "Items",
-			deltaFieldQty:   "Quantity",
-		},
-		change.FieldNameBSON: {
-			deltaFieldItems: "items",
-			deltaFieldQty:   "quantity",
-		},
-	}
-	items := map[int64]map[string]int64{1002: {"quantity": 9}}
-	values := change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
-		if path.Equal(deltaPath(fieldNode(deltaFieldItems))) {
-			return items, true
-		}
-		return nil, false
-	})
-
-	update, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver, values)
-	if err != nil {
-		t.Fatalf("BuildUpdateDocumentWithDeltas returned error: %v", err)
-	}
-	setDoc := update["$set"].(map[string]any)
-	if got := setDoc["items"]; !reflect.DeepEqual(got, items) {
-		t.Fatalf("items replacement = %#v, want %#v", got, items)
-	}
-	if _, ok := setDoc["items.1001.quantity"]; ok {
-		t.Fatalf("update contains conflicting child set: %#v", update)
-	}
-	if unset, ok := update["$unset"].(map[string]any); ok {
-		if _, exists := unset["items.1001.quantity"]; exists {
-			t.Fatalf("update contains conflicting child unset: %#v", update)
-		}
-	}
-}
-
-func TestMongoBuildUpdateDocumentWithDeltasDowngradesUnsafeStringMapKey(t *testing.T) {
+func TestMongoBuildUpdateDocumentDowngradesUnsafeStringMapKey(t *testing.T) {
 	const fieldLabels change.FieldID = 9
-	deltas := change.DeltaSet{
+	source := recordedChanges{
 		{
-			Path: deltaPath(change.PathNode{
+			Path: changePath(change.PathNode{
 				Field: fieldLabels,
 				Key:   change.PathKey{Kind: change.KeyString, Str: "foo.bar"},
 			}),
@@ -186,16 +128,16 @@ func TestMongoBuildUpdateDocumentWithDeltasDowngradesUnsafeStringMapKey(t *testi
 		change.FieldNameBSON: {fieldLabels: "labels"},
 	}
 	fullLabels := map[string]int{"foo.bar": 7}
-	values := change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
-		if path.Equal(deltaPath(fieldNode(fieldLabels))) {
+	values := change.ValueResolverFunc(func(path change.Path) (any, bool) {
+		if path.Equal(changePath(fieldNode(fieldLabels))) {
 			return fullLabels, true
 		}
 		return nil, false
 	})
 
-	update, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver, values)
+	update, err := txmongo.BuildUpdateDocument(meta.TypeSpec{}, source, resolver, values)
 	if err != nil {
-		t.Fatalf("BuildUpdateDocumentWithDeltas returned error: %v", err)
+		t.Fatalf("BuildUpdateDocument returned error: %v", err)
 	}
 	setDoc := update["$set"].(map[string]any)
 	if got := setDoc["labels"]; !reflect.DeepEqual(got, fullLabels) {
@@ -206,15 +148,15 @@ func TestMongoBuildUpdateDocumentWithDeltasDowngradesUnsafeStringMapKey(t *testi
 	}
 }
 
-func TestMongoBuildUpdateDocumentWithDeltasKeepsSafeAncestorForNestedUnsafeStringMapKey(t *testing.T) {
+func TestMongoBuildUpdateDocumentKeepsSafeAncestorForNestedUnsafeStringMapKey(t *testing.T) {
 	const (
 		fieldItems change.FieldID = iota + 20
 		fieldLabels
 		fieldValue
 	)
-	deltas := change.DeltaSet{
+	source := recordedChanges{
 		{
-			Path: deltaPath(
+			Path: changePath(
 				change.PathNode{Field: fieldItems, Key: change.PathKey{Kind: change.KeyInt, Int: 1001}},
 				change.PathNode{Field: fieldLabels, Key: change.PathKey{Kind: change.KeyString, Str: "safe"}},
 				change.PathNode{Field: fieldValue},
@@ -222,7 +164,7 @@ func TestMongoBuildUpdateDocumentWithDeltasKeepsSafeAncestorForNestedUnsafeStrin
 			Op: change.OpSet,
 		},
 		{
-			Path: deltaPath(
+			Path: changePath(
 				change.PathNode{Field: fieldItems, Key: change.PathKey{Kind: change.KeyInt, Int: 1001}},
 				change.PathNode{Field: fieldLabels, Key: change.PathKey{Kind: change.KeyString, Str: "foo.bar"}},
 				change.PathNode{Field: fieldValue},
@@ -242,15 +184,15 @@ func TestMongoBuildUpdateDocumentWithDeltasKeepsSafeAncestorForNestedUnsafeStrin
 		"foo.bar": {"value": 7},
 		"safe":    {"value": 9},
 	}
-	values := change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
-		want := deltaPath(
+	values := change.ValueResolverFunc(func(path change.Path) (any, bool) {
+		want := changePath(
 			change.PathNode{Field: fieldItems, Key: change.PathKey{Kind: change.KeyInt, Int: 1001}},
 			change.PathNode{Field: fieldLabels},
 		)
 		if path.Equal(want) {
 			return fullLabels, true
 		}
-		safePath := deltaPath(
+		safePath := changePath(
 			change.PathNode{Field: fieldItems, Key: change.PathKey{Kind: change.KeyInt, Int: 1001}},
 			change.PathNode{Field: fieldLabels, Key: change.PathKey{Kind: change.KeyString, Str: "safe"}},
 			change.PathNode{Field: fieldValue},
@@ -261,9 +203,9 @@ func TestMongoBuildUpdateDocumentWithDeltasKeepsSafeAncestorForNestedUnsafeStrin
 		return nil, false
 	})
 
-	update, err := txmongo.BuildUpdateDocumentWithDeltas(meta.TypeSpec{}, deltas, resolver, values)
+	update, err := txmongo.BuildUpdateDocument(meta.TypeSpec{}, source, resolver, values)
 	if err != nil {
-		t.Fatalf("BuildUpdateDocumentWithDeltas returned error: %v", err)
+		t.Fatalf("BuildUpdateDocument returned error: %v", err)
 	}
 	setDoc := update["$set"].(map[string]any)
 	if got := setDoc["items.1001.labels"]; !reflect.DeepEqual(got, fullLabels) {

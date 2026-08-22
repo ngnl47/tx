@@ -14,9 +14,9 @@ func (r testFieldNameResolver) FieldName(field change.FieldID, kind change.Field
 	return r[kind][field]
 }
 
-type testDeltaValueResolver map[change.FieldID]any
+type testValueResolver map[change.FieldID]any
 
-func (r testDeltaValueResolver) DeltaValue(path change.DeltaPath) (any, bool) {
+func (r testValueResolver) ResolveValue(path change.Path) (any, bool) {
 	if path.Depth == 0 {
 		return nil, false
 	}
@@ -26,17 +26,6 @@ func (r testDeltaValueResolver) DeltaValue(path change.DeltaPath) (any, bool) {
 
 type testNestedFieldNameResolver struct{}
 
-type testDeltaProjector []change.DeltaEntry
-
-func (p testDeltaProjector) ProjectDeltas(visitor change.DeltaVisitor) error {
-	for _, delta := range p {
-		if err := visitor.VisitDelta(delta.Path, delta.Op); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (testNestedFieldNameResolver) FieldName(field change.FieldID, kind change.FieldNameKind) string {
 	if field == 2 {
 		return "items"
@@ -44,7 +33,7 @@ func (testNestedFieldNameResolver) FieldName(field change.FieldID, kind change.F
 	return ""
 }
 
-func (testNestedFieldNameResolver) DeltaPathFieldName(path change.DeltaPath, index int, kind change.FieldNameKind) string {
+func (testNestedFieldNameResolver) PathFieldName(path change.Path, index int, kind change.FieldNameKind) string {
 	if index == 0 && path.Nodes[index].Field == 2 {
 		return "items"
 	}
@@ -78,12 +67,12 @@ func TestFieldNameResolverUsesBackend(t *testing.T) {
 	}
 }
 
-func TestDeltaPathFullPathUsesBackend(t *testing.T) {
+func TestPathFullPathUsesBackend(t *testing.T) {
 	resolver := testFieldNameResolver{
 		change.FieldNameGo:   {2: "Items", 3: "Quantity"},
 		change.FieldNameBSON: {2: "items", 3: "q"},
 	}
-	path := deltaPath(intKeyNode(2, 1001), fieldNode(3))
+	path := changePath(intKeyNode(2, 1001), fieldNode(3))
 
 	if got := path.FullPath(resolver, change.FieldNameGo).String(); got != "Items.1001.Quantity" {
 		t.Fatalf("Go path = %q, want Items.1001.Quantity", got)
@@ -93,52 +82,52 @@ func TestDeltaPathFullPathUsesBackend(t *testing.T) {
 	}
 }
 
-func TestDeltaPathFullPathCanResolveNestedTypeFields(t *testing.T) {
-	path := deltaPath(intKeyNode(2, 1001), fieldNode(2))
+func TestPathFullPathCanResolveNestedTypeFields(t *testing.T) {
+	path := changePath(intKeyNode(2, 1001), fieldNode(2))
 
 	if got := path.FullPath(testNestedFieldNameResolver{}, change.FieldNameGo).String(); got != "items.1001.quantity" {
 		t.Fatalf("nested path = %q, want items.1001.quantity", got)
 	}
 }
 
-func TestProjectDocumentUsesRequestedFieldNameKind(t *testing.T) {
-	path := deltaPath(fieldNode(1))
-	projector := testDeltaProjector{{Path: path, Op: change.OpSet}}
+func TestBuildDocumentUsesRequestedFieldNameKind(t *testing.T) {
+	path := changePath(fieldNode(1))
+	source := recordedChanges{{Path: path, Op: change.OpSet}}
 	resolver := testFieldNameResolver{
 		change.FieldNameGo:      {1: "HeadImg"},
 		change.FieldNameMsgpack: {1: "hi"},
 	}
-	values := testDeltaValueResolver{1: "avatar"}
+	values := testValueResolver{1: "avatar"}
 
-	doc, err := change.ProjectDocument(projector, resolver, change.FieldNameMsgpack, values)
+	doc, err := change.BuildDocument(source, resolver, change.FieldNameMsgpack, values)
 	if err != nil {
-		t.Fatalf("ProjectDocument returned error: %v", err)
+		t.Fatalf("BuildDocument returned error: %v", err)
 	}
 	if got := doc.Set["hi"]; got != "avatar" {
 		t.Fatalf("msgpack field hi = %#v, want avatar; doc=%#v", got, doc)
 	}
 	if _, ok := doc.Set["HeadImg"]; ok {
-		t.Fatalf("ProjectDocument used Go field name: %#v", doc)
+		t.Fatalf("BuildDocument used Go field name: %#v", doc)
 	}
 }
 
-func TestProjectDocumentRejectsNilProjector(t *testing.T) {
-	_, err := change.ProjectDocument(nil, testFieldNameResolver{}, change.FieldNameGo, nil)
-	if !errors.Is(err, change.ErrNilDeltaProjector) {
-		t.Fatalf("ProjectDocument error = %v, want ErrNilDeltaProjector", err)
+func TestBuildDocumentRejectsNilSource(t *testing.T) {
+	_, err := change.BuildDocument(nil, testFieldNameResolver{}, change.FieldNameGo, nil)
+	if !errors.Is(err, change.ErrNilSource) {
+		t.Fatalf("BuildDocument error = %v, want ErrNilSource", err)
 	}
 }
 
-func TestProjectDocumentRejectsUnknownFieldNameKind(t *testing.T) {
-	_, err := change.ProjectDocument(testDeltaProjector{}, testFieldNameResolver{}, change.FieldNameKind("unknown"), nil)
+func TestBuildDocumentRejectsUnknownFieldNameKind(t *testing.T) {
+	_, err := change.BuildDocument(recordedChanges{}, testFieldNameResolver{}, change.FieldNameKind("unknown"), nil)
 	if err == nil || !strings.Contains(err.Error(), "unknown field name kind") {
-		t.Fatalf("ProjectDocument error = %v, want unknown field name kind", err)
+		t.Fatalf("BuildDocument error = %v, want unknown field name kind", err)
 	}
 }
 
-func TestDeltaPathFullPathRejectsUnknownKeyKind(t *testing.T) {
-	path := change.DeltaPath{
-		Nodes: [change.MaxDeltaDepth]change.PathNode{{
+func TestPathFullPathRejectsUnknownKeyKind(t *testing.T) {
+	path := change.Path{
+		Nodes: [change.MaxPathDepth]change.PathNode{{
 			Field: 1,
 			Key:   change.PathKey{Kind: change.KeyKind(99)},
 		}},
@@ -151,23 +140,23 @@ func TestDeltaPathFullPathRejectsUnknownKeyKind(t *testing.T) {
 	}
 }
 
-func TestDeltaSetDocumentWithResolverUsesBackendNames(t *testing.T) {
+func TestBuildDocumentUsesBackendNames(t *testing.T) {
 	resolver := testFieldNameResolver{
 		change.FieldNameGo:      {1: "Name", 2: "Items", 3: "Quantity"},
 		change.FieldNameJSON:    {1: "name", 2: "items", 3: "quantity"},
 		change.FieldNameMsgpack: {1: "n", 2: "it", 3: "q"},
 	}
-	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(1)), Op: change.OpSet},
-		{Path: deltaPath(fieldNode(1)), Op: change.OpSet},
+	source := recordedChanges{
+		{Path: changePath(fieldNode(1)), Op: change.OpSet},
+		{Path: changePath(fieldNode(1)), Op: change.OpSet},
 		{
-			Path: deltaPath(intKeyNode(2, 1001), fieldNode(3)),
+			Path: changePath(intKeyNode(2, 1001), fieldNode(3)),
 			Op:   change.OpSet,
 		},
-		{Path: deltaPath(fieldNode(3)), Op: change.OpDelete},
+		{Path: changePath(fieldNode(3)), Op: change.OpDelete},
 	}
 
-	doc, err := deltas.DocumentWithResolver(resolver, change.FieldNameMsgpack, change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
+	doc, err := change.BuildDocument(source, resolver, change.FieldNameMsgpack, change.ValueResolverFunc(func(path change.Path) (any, bool) {
 		if path.Depth == 1 && path.Nodes[0].Field == 1 {
 			return "bob", true
 		}
@@ -177,7 +166,7 @@ func TestDeltaSetDocumentWithResolverUsesBackendNames(t *testing.T) {
 		return nil, false
 	}))
 	if err != nil {
-		t.Fatalf("DocumentWithResolver returned error: %v", err)
+		t.Fatalf("BuildDocument returned error: %v", err)
 	}
 
 	if got := doc.Set["n"]; got != "bob" {
@@ -194,40 +183,17 @@ func TestDeltaSetDocumentWithResolverUsesBackendNames(t *testing.T) {
 	}
 }
 
-func TestDeltaSetDocumentWithResolverDoesNotMutateSourceDeltas(t *testing.T) {
+func TestBuildDocumentReadsCurrentValueFromResolver(t *testing.T) {
 	resolver := testFieldNameResolver{
 		change.FieldNameMsgpack: {1: "n"},
 	}
-	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(1)), Op: change.OpSet},
-		{Path: deltaPath(fieldNode(1)), Op: change.OpSet},
+	source := recordedChanges{
+		{Path: changePath(fieldNode(1)), Op: change.OpSet},
 	}
 
-	if _, err := deltas.DocumentWithResolver(resolver, change.FieldNameMsgpack, testDeltaValueResolver{1: "bob"}); err != nil {
-		t.Fatalf("DocumentWithResolver returned error: %v", err)
-	}
-
-	if len(deltas) != 2 {
-		t.Fatalf("deltas len = %d, want 2", len(deltas))
-	}
-	for i, delta := range deltas {
-		if delta.Path.Depth == 0 {
-			t.Fatalf("deltas[%d] was compacted in place: %#v", i, deltas)
-		}
-	}
-}
-
-func TestDeltaSetDocumentWithResolverReadsCurrentValueFromResolver(t *testing.T) {
-	resolver := testFieldNameResolver{
-		change.FieldNameMsgpack: {1: "n"},
-	}
-	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(1)), Op: change.OpSet},
-	}
-
-	doc, err := deltas.DocumentWithResolver(resolver, change.FieldNameMsgpack, testDeltaValueResolver{1: "current"})
+	doc, err := change.BuildDocument(source, resolver, change.FieldNameMsgpack, testValueResolver{1: "current"})
 	if err != nil {
-		t.Fatalf("DocumentWithResolver returned error: %v", err)
+		t.Fatalf("BuildDocument returned error: %v", err)
 	}
 
 	if got := doc.Set["n"]; got != "current" {
@@ -235,58 +201,48 @@ func TestDeltaSetDocumentWithResolverReadsCurrentValueFromResolver(t *testing.T)
 	}
 }
 
-func TestDeltaSetDocumentWithResolverRejectsMissingCurrentValue(t *testing.T) {
+func TestBuildDocumentRejectsMissingCurrentValue(t *testing.T) {
 	resolver := testFieldNameResolver{
 		change.FieldNameMsgpack: {1: "n"},
 	}
-	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(1)), Op: change.OpSet},
+	source := recordedChanges{
+		{Path: changePath(fieldNode(1)), Op: change.OpSet},
 	}
 
-	_, err := deltas.DocumentWithResolver(resolver, change.FieldNameMsgpack, nil)
+	_, err := change.BuildDocument(source, resolver, change.FieldNameMsgpack, nil)
 	if err == nil {
-		t.Fatal("DocumentWithResolver returned nil error for an unresolved delta value")
+		t.Fatal("BuildDocument returned nil error for an unresolved change value")
 	}
 }
 
-func TestDeltaSetDocumentWithResolverRejectsUnknownDeltaOp(t *testing.T) {
+func TestBuildDocumentRejectsUnknownOp(t *testing.T) {
 	resolver := testFieldNameResolver{
 		change.FieldNameMsgpack: {1: "n"},
 	}
-	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(1)), Op: change.DeltaOp(99)},
-		{Path: deltaPath(fieldNode(1)), Op: change.OpSet},
+	source := recordedChanges{
+		{Path: changePath(fieldNode(1)), Op: change.Op(99)},
+		{Path: changePath(fieldNode(1)), Op: change.OpSet},
 	}
 
-	_, err := deltas.DocumentWithResolver(resolver, change.FieldNameMsgpack, testDeltaValueResolver{1: "current"})
-	if err == nil || !strings.Contains(err.Error(), "unknown delta operation") {
-		t.Fatalf("DocumentWithResolver error = %v, want unknown delta operation error", err)
+	_, err := change.BuildDocument(source, resolver, change.FieldNameMsgpack, testValueResolver{1: "current"})
+	if err == nil || !strings.Contains(err.Error(), "unknown operation") {
+		t.Fatalf("BuildDocument error = %v, want unknown operation error", err)
 	}
 }
 
-func TestDeltaOpValid(t *testing.T) {
-	for _, kind := range []change.DeltaOp{
+func TestOpValid(t *testing.T) {
+	for _, kind := range []change.Op{
 		change.OpSet,
 		change.OpReplace,
 		change.OpDelete,
 		change.OpClear,
 	} {
 		if !kind.Valid() {
-			t.Fatalf("DeltaOp(%d).Valid() = false, want true", kind)
+			t.Fatalf("Op(%d).Valid() = false, want true", kind)
 		}
 	}
-	if change.DeltaOp(99).Valid() {
-		t.Fatal("DeltaOp(99).Valid() = true, want false")
-	}
-}
-
-func TestDeltaSetValidateOpsSkipsCompactionTombstones(t *testing.T) {
-	deltas := change.DeltaSet{
-		{Op: change.DeltaOp(99)},
-		{Path: deltaPath(fieldNode(1)), Op: change.OpSet},
-	}
-	if err := deltas.ValidateOps(); err != nil {
-		t.Fatalf("ValidateOps returned error for empty path tombstone: %v", err)
+	if change.Op(99).Valid() {
+		t.Fatal("Op(99).Valid() = true, want false")
 	}
 }
 

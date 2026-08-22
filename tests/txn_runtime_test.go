@@ -18,7 +18,7 @@ func (admission rejectingAdmission) RequireWritable() error {
 
 func TestTxnRuntimeRejectsProcedureBeforeMutationWhenAdmissionIsClosed(t *testing.T) {
 	store := &runtimeTestStore{}
-	writer := &recordingDeltaStoreApplier{}
+	writer := &recordingChangeStoreApplier{}
 	admissionErr := errors.New("storage unavailable")
 	runtime := txn.NewRuntime(writer, txn.RuntimeConfig{WriteAdmission: rejectingAdmission{err: admissionErr}})
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
@@ -31,7 +31,7 @@ func TestTxnRuntimeRejectsProcedureBeforeMutationWhenAdmissionIsClosed(t *testin
 	if !errors.Is(err, admissionErr) {
 		t.Fatalf("Call error = %v, want admission error", err)
 	}
-	if called || len(store.Deltas()) != 0 || runtime.Pending() != 0 {
-		t.Fatalf("closed admission executed procedure: called=%t deltas=%#v pending=%d", called, store.Deltas(), runtime.Pending())
+	if called || len(store.changes) != 0 || runtime.Pending() != 0 {
+		t.Fatalf("closed admission executed procedure: called=%t changes=%#v pending=%d", called, store.changes, runtime.Pending())
 	}
 }

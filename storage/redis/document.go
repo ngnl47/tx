@@ -1,4 +1,4 @@
-// Package redis 提供 DeltaSet 到 Redis string JSON 写入模型的转换。
+// Package redis 提供生成式变更到 Redis string JSON 写入模型的转换。
 package redis
 
 import (
@@ -18,7 +18,7 @@ const maxLuaJSONSafeInteger uint64 = 1<<53 - 1
 type DocumentPatch struct {
 	Set        []PathValue
 	Replace    []PathValue
-	Delete     []change.Path
+	Delete     []change.DocumentPath
 	Mode       documentPatchMode
 	fullUpdate bool
 	diffUpdate bool
@@ -27,39 +27,46 @@ type DocumentPatch struct {
 
 // PathValue 描述 JSON 文档内一个路径和值。
 type PathValue struct {
-	Path  change.Path
+	Path  change.DocumentPath
 	Value any
 }
 
 type documentPatchOperation struct {
-	Kind  string      `json:"kind"`
-	Path  change.Path `json:"path"`
-	Value any         `json:"value"`
+	Kind  string              `json:"kind"`
+	Path  change.DocumentPath `json:"path"`
+	Value any                 `json:"value"`
 }
 
-// BuildDocumentPatchesWithDeltas 按 Redis string/subKey 模型把 DeltaSet
+// BuildDocumentPatches 按 Redis string/subKey 模型把规范化变更流
 // 分组成 JSON 文档 patch。Redis 边界当前选择 JSON 字段名。
-func BuildDocumentPatchesWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, resolver change.FieldNameResolver, values change.DeltaValueResolver) (map[string]DocumentPatch, error) {
-	if err := deltas.ValidateOps(); err != nil {
-		return nil, err
+func BuildDocumentPatches(spec meta.TypeSpec, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver) (map[string]DocumentPatch, error) {
+	return buildDocumentPatches(spec, source, resolver, values)
+}
+
+func buildDocumentPatches(spec meta.TypeSpec, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver) (map[string]DocumentPatch, error) {
+	if source == nil {
+		return nil, change.ErrNilSource
 	}
 	out := map[string]DocumentPatch{}
-	for _, delta := range deltas.Clone().Compact() {
-		if delta.Path.Depth == 0 {
-			continue
+	err := source.VisitChanges(change.VisitorFunc(func(path change.Path, op change.Op) error {
+		if path.Depth == 0 {
+			return nil
 		}
-		goPath := delta.Path.FullPath(resolver, change.FieldNameGo)
+		if !op.Valid() {
+			return fmt.Errorf("change: unknown operation %d", op)
+		}
+		goPath := path.FullPath(resolver, change.FieldNameGo)
 		if len(goPath) == 0 {
-			return nil, fmt.Errorf("redis: cannot resolve Go field path for delta %#v", delta.Path)
+			return fmt.Errorf("redis: cannot resolve Go field path for change %#v", path)
 		}
-		jsonPath := delta.Path.FullPath(resolver, change.FieldNameJSON)
+		jsonPath := path.FullPath(resolver, change.FieldNameJSON)
 		if len(jsonPath) == 0 {
-			return nil, fmt.Errorf("redis: cannot resolve JSON field path for Go path %s", goPath)
+			return fmt.Errorf("redis: cannot resolve JSON field path for Go path %s", goPath)
 		}
 		goField := goPath[0]
 		suffix, ignore := redisDocumentSuffix(spec, goField)
 		if ignore {
-			continue
+			return nil
 		}
 		patch := out[suffix]
 		if patch.Mode == "" {
@@ -70,7 +77,7 @@ func BuildDocumentPatchesWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, 
 		if len(jsonPath) > 1 {
 			patch.Mode = documentPatchModeOperations
 		}
-		switch delta.Op {
+		switch op {
 		case change.OpClear:
 			patch = appendDocumentPatchSet(patch, jsonPath, emptyDocumentValue(spec, goField), "clear")
 			patch.diffUpdate = true
@@ -79,9 +86,9 @@ func BuildDocumentPatchesWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, 
 			patch.operations = append(patch.operations, documentPatchOperation{Kind: "delete", Path: jsonPath})
 			patch.diffUpdate = true
 		case change.OpReplace:
-			value, err := resolveDeltaValue(values, delta.Path, jsonPath)
+			value, err := resolveChangeValue(values, path, jsonPath)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			if redisFullUpdateField(spec, goField) && suffix != "" && len(jsonPath) == 1 {
 				patch = appendDocumentPatchValue(patch, jsonPath, value, goField, suffix, spec)
@@ -91,35 +98,39 @@ func BuildDocumentPatchesWithDeltas(spec meta.TypeSpec, deltas change.DeltaSet, 
 				patch.Mode = documentPatchModeOperations
 			}
 		case change.OpSet:
-			value, err := resolveDeltaValue(values, delta.Path, jsonPath)
+			value, err := resolveChangeValue(values, path, jsonPath)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			patch = appendDocumentPatchValue(patch, jsonPath, value, goField, suffix, spec)
 		}
 		out[suffix] = patch
+		return nil
+	}))
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
 
-func resolveDeltaValue(values change.DeltaValueResolver, path change.DeltaPath, display change.Path) (any, error) {
+func resolveChangeValue(values change.ValueResolver, path change.Path, display change.DocumentPath) (any, error) {
 	if values == nil {
 		return nil, fmt.Errorf("redis: cannot resolve current value for path %s", display)
 	}
-	value, ok := values.DeltaValue(path)
+	value, ok := values.ResolveValue(path)
 	if !ok {
 		return nil, fmt.Errorf("redis: cannot resolve current value for path %s", display)
 	}
 	return value, nil
 }
 
-func appendDocumentPatchSet(patch DocumentPatch, path change.Path, value any, kind string) DocumentPatch {
+func appendDocumentPatchSet(patch DocumentPatch, path change.DocumentPath, value any, kind string) DocumentPatch {
 	patch.Set = append(patch.Set, PathValue{Path: path, Value: value})
 	patch.operations = append(patch.operations, documentPatchOperation{Kind: kind, Path: path, Value: value})
 	return patch
 }
 
-func appendDocumentPatchValue(patch DocumentPatch, path change.Path, value any, field, suffix string, spec meta.TypeSpec) DocumentPatch {
+func appendDocumentPatchValue(patch DocumentPatch, path change.DocumentPath, value any, field, suffix string, spec meta.TypeSpec) DocumentPatch {
 	patch = appendDocumentPatchSet(patch, path, value, "set")
 	if patch.Mode == documentPatchModeOperations {
 		return patch
@@ -150,7 +161,7 @@ func buildReplaceDocumentPatches(spec meta.TypeSpec, doc map[string]any) map[str
 		}
 		patch := out[suffix]
 		patch.Mode = documentPatchModeReplace
-		patch.Set = append(patch.Set, PathValue{Path: redisPath(spec, change.Path{goField}), Value: value})
+		patch.Set = append(patch.Set, PathValue{Path: redisPath(spec, change.DocumentPath{goField}), Value: value})
 		out[suffix] = patch
 	}
 	if _, ok := out[""]; !ok {
@@ -174,11 +185,11 @@ func redisGoFieldForCanonicalName(spec meta.TypeSpec, name string) string {
 	return field.Name
 }
 
-func redisPath(spec meta.TypeSpec, path change.Path) change.Path {
+func redisPath(spec meta.TypeSpec, path change.DocumentPath) change.DocumentPath {
 	if len(path) == 0 {
 		return nil
 	}
-	out := append(change.Path(nil), path...)
+	out := append(change.DocumentPath(nil), path...)
 	out[0] = spec.JSONName(path[0])
 	return out
 }
@@ -439,7 +450,7 @@ func redisBatchReadPlan(spec meta.TypeSpec, fields []string) redisBatchPlan {
 	return redisBatchPlan{includeMain: includeMain, subKeys: suffixes}
 }
 
-func setPathValue(doc map[string]any, path change.Path, value any) {
+func setPathValue(doc map[string]any, path change.DocumentPath, value any) {
 	if len(path) == 0 {
 		return
 	}
@@ -459,7 +470,7 @@ func setPathValue(doc map[string]any, path change.Path, value any) {
 	current[path[len(path)-1]] = value
 }
 
-func clearPathValue(doc map[string]any, path change.Path) {
+func clearPathValue(doc map[string]any, path change.DocumentPath) {
 	if len(path) == 0 {
 		return
 	}

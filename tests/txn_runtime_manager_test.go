@@ -14,8 +14,8 @@ import (
 
 type runtimeTestStore struct {
 	recorder   change.UndoRecorder
-	deltas     change.DeltaSet
-	deltaReads int
+	changes    recordedChanges
+	visitCalls int
 	collapsed  int
 }
 
@@ -35,16 +35,20 @@ func (store *runtimeNonCollapsibleStore) RecordKey() storage.RecordKey {
 	return store.store.RecordKey()
 }
 
-func (store *runtimeNonCollapsibleStore) Deltas() change.DeltaSet {
-	return store.store.Deltas()
+func (store *runtimeNonCollapsibleStore) VisitChanges(visitor change.Visitor) error {
+	return store.store.VisitChanges(visitor)
+}
+
+func (store *runtimeNonCollapsibleStore) HasChanges() bool {
+	return store.store.HasChanges()
 }
 
 func (store *runtimeNonCollapsibleStore) FieldNameResolver() change.FieldNameResolver {
 	return store.store.FieldNameResolver()
 }
 
-func (store *runtimeNonCollapsibleStore) DeltaValueResolver() change.DeltaValueResolver {
-	return store.store.DeltaValueResolver()
+func (store *runtimeNonCollapsibleStore) ResolveValue(path change.Path) (any, bool) {
+	return store.store.ResolveValue(path)
 }
 
 func (store *runtimeNonCollapsibleStore) DefaultApplyOptions() storage.ApplyOptions {
@@ -55,8 +59,8 @@ func (store *runtimeNonCollapsibleStore) AllTouch() {
 	store.store.AllTouch()
 }
 
-func (store *runtimeNonCollapsibleStore) ClearDeltas() {
-	store.store.ClearDeltas()
+func (store *runtimeNonCollapsibleStore) ClearChanges() {
+	store.store.ClearChanges()
 }
 
 func (store *runtimeTestStore) SetUndoRecorder(recorder change.UndoRecorder) {
@@ -68,12 +72,12 @@ func (store *runtimeTestStore) Set() {
 }
 
 func (store *runtimeTestStore) SetField(field change.FieldID) {
-	previous := store.deltas.Clone()
+	previous := store.changes.clone()
 	if store.recorder != nil {
-		store.recorder.RecordUndo(func() { store.deltas = previous })
+		store.recorder.RecordUndo(func() { store.changes = previous })
 	}
-	store.deltas = append(store.deltas, change.DeltaEntry{
-		Path: testStorageDeltaPath(field),
+	store.changes = append(store.changes, recordedChange{
+		Path: testStoragePath(field),
 		Op:   change.OpSet,
 	})
 }
@@ -86,18 +90,20 @@ func (store *runtimeTestStore) RecordKey() storage.RecordKey {
 	return storage.RecordKey{ID: int64(1001)}
 }
 
-func (store *runtimeTestStore) Deltas() change.DeltaSet {
-	store.deltaReads++
-	return store.deltas
+func (store *runtimeTestStore) VisitChanges(visitor change.Visitor) error {
+	store.visitCalls++
+	return store.changes.VisitChanges(visitor)
+}
+
+func (store *runtimeTestStore) HasChanges() bool {
+	return len(store.changes) > 0
 }
 
 func (store *runtimeTestStore) FieldNameResolver() change.FieldNameResolver {
 	return change.FieldNameResolverFunc(func(change.FieldID, change.FieldNameKind) string { return "field" })
 }
 
-func (store *runtimeTestStore) DeltaValueResolver() change.DeltaValueResolver {
-	return change.DeltaValueResolverFunc(func(change.DeltaPath) (any, bool) { return "value", true })
-}
+func (store *runtimeTestStore) ResolveValue(change.Path) (any, bool) { return "value", true }
 
 func (store *runtimeTestStore) DefaultApplyOptions() storage.ApplyOptions {
 	return storage.ApplyOptions{}
@@ -105,14 +111,14 @@ func (store *runtimeTestStore) DefaultApplyOptions() storage.ApplyOptions {
 
 func (store *runtimeTestStore) AllTouch() {}
 
-func (store *runtimeTestStore) ClearDeltas() {
-	store.deltas = nil
+func (store *runtimeTestStore) ClearChanges() {
+	store.changes = nil
 }
 
-func (store *runtimeTestStore) CollapseDeltas() {
+func (store *runtimeTestStore) CollapseChanges() {
 	store.collapsed++
-	store.deltas = change.DeltaSet{{
-		Path: testStorageDeltaPath(1),
+	store.changes = recordedChanges{{
+		Path: testStoragePath(1),
 		Op:   change.OpReplace,
 	}}
 }
@@ -167,7 +173,7 @@ func (procedure observingRuntimeTestProcedure) Process(tx *txn.Tx) error {
 
 func TestTxnRuntimeDefersTransactionStoreUntilFlush(t *testing.T) {
 	store := &runtimeTestStore{}
-	writer := &recordingDeltaStoreApplier{}
+	writer := &recordingChangeStoreApplier{}
 	manager := txn.NewRuntime(writer, txn.RuntimeConfig{
 		FlushInterval:        time.Millisecond,
 		ShutdownFlushTimeout: time.Second,
@@ -183,22 +189,41 @@ func TestTxnRuntimeDefersTransactionStoreUntilFlush(t *testing.T) {
 	if manager.Pending() != 1 {
 		t.Fatalf("Pending = %d, want 1", manager.Pending())
 	}
-	if len(store.Deltas()) != 1 {
-		t.Fatalf("store deltas = %#v, want pending change", store.Deltas())
+	if len(store.changes) != 1 {
+		t.Fatalf("store changes = %#v, want pending change", store.changes)
 	}
-	store.deltaReads = 0
+	store.visitCalls = 0
 
 	if err := manager.Flush(context.Background()); err != nil {
 		t.Fatalf("Flush returned error: %v", err)
 	}
-	if !writer.hasOptions || len(writer.deltas) != 1 {
-		t.Fatalf("writer state = %#v, want one persisted delta", writer)
+	if !writer.hasOptions || len(writer.changes) != 1 {
+		t.Fatalf("writer state = %#v, want one persisted change", writer)
 	}
-	if store.deltaReads != 1 {
-		t.Fatalf("Flush Deltas calls = %d, want 1", store.deltaReads)
+	if store.visitCalls != 1 {
+		t.Fatalf("Flush VisitChanges calls = %d, want 1", store.visitCalls)
 	}
-	if manager.Pending() != 0 || len(store.Deltas()) != 0 {
-		t.Fatalf("flush left pending=%d deltas=%#v", manager.Pending(), store.Deltas())
+	if manager.Pending() != 0 || len(store.changes) != 0 {
+		t.Fatalf("flush left pending=%d changes=%#v", manager.Pending(), store.changes)
+	}
+}
+
+func TestTxnRuntimeBudgetedFlushVisitsOnceWhenWithinBudget(t *testing.T) {
+	store := &runtimeTestStore{}
+	writer := &recordingChangeStoreApplier{}
+	manager := txn.NewRuntime(writer, txn.RuntimeConfig{MaxRootChanges: 2})
+	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
+
+	if err := manager.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	store.visitCalls = 0
+
+	if err := manager.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush returned error: %v", err)
+	}
+	if store.visitCalls != 1 {
+		t.Fatalf("Flush VisitChanges calls = %d, want 1", store.visitCalls)
 	}
 }
 
@@ -209,22 +234,22 @@ func TestTxnRuntimeAllowsAccumulatedDeltasWhenCleanTargetCheckIsEnabled(t *testi
 
 	store := &runtimeTestStore{}
 	store.Set()
-	manager := txn.NewRuntime(&recordingDeltaStoreApplier{})
+	manager := txn.NewRuntime(&recordingChangeStoreApplier{})
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
 	manager.MarkDirty(lock)
 
 	if err := manager.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
-		t.Fatalf("Call returned error with accumulated deltas: %v", err)
+		t.Fatalf("Call returned error with accumulated changes: %v", err)
 	}
-	if manager.Pending() != 1 || len(store.Deltas()) != 2 {
-		t.Fatalf("txn runtime lost accumulated deltas: pending=%d deltas=%#v", manager.Pending(), store.Deltas())
+	if manager.Pending() != 1 || len(store.changes) != 2 {
+		t.Fatalf("txn runtime lost accumulated changes: pending=%d changes=%#v", manager.Pending(), store.changes)
 	}
 }
 
 func TestTxnRuntimeAllowsPendingRootWhenCapacityIsFull(t *testing.T) {
 	store := &runtimeTestStore{}
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
-	manager := txn.NewRuntime(&recordingDeltaStoreApplier{}, txn.RuntimeConfig{MaxPendingRoots: 1})
+	manager := txn.NewRuntime(&recordingChangeStoreApplier{}, txn.RuntimeConfig{MaxPendingRoots: 1})
 	if err := manager.MarkDirty(lock); err != nil {
 		t.Fatalf("MarkDirty returned error: %v", err)
 	}
@@ -232,15 +257,15 @@ func TestTxnRuntimeAllowsPendingRootWhenCapacityIsFull(t *testing.T) {
 	if err := manager.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
 		t.Fatalf("Call for pending root returned error: %v", err)
 	}
-	if manager.Pending() != 1 || len(store.Deltas()) != 1 {
-		t.Fatalf("pending root state = pending:%d deltas:%#v, want one accumulated delta", manager.Pending(), store.Deltas())
+	if manager.Pending() != 1 || len(store.changes) != 1 {
+		t.Fatalf("pending root state = pending:%d changes:%#v, want one accumulated change", manager.Pending(), store.changes)
 	}
 }
 
 func TestTxnRuntimeRejectsNewRootBeforeProcedureWhenCapacityIsFull(t *testing.T) {
 	first := &runtimeTestStore{}
 	firstLock := txn.NewLockTarget(txn.NewLockKey("role", 1001), first)
-	manager := txn.NewRuntime(&recordingDeltaStoreApplier{}, txn.RuntimeConfig{MaxPendingRoots: 1})
+	manager := txn.NewRuntime(&recordingChangeStoreApplier{}, txn.RuntimeConfig{MaxPendingRoots: 1})
 	if err := manager.MarkDirty(firstLock); err != nil {
 		t.Fatalf("MarkDirty returned error: %v", err)
 	}
@@ -255,8 +280,8 @@ func TestTxnRuntimeRejectsNewRootBeforeProcedureWhenCapacityIsFull(t *testing.T)
 	if !errors.Is(err, txn.ErrPendingRootCapacity) {
 		t.Fatalf("Call error = %v, want ErrPendingRootCapacity", err)
 	}
-	if called || len(second.Deltas()) != 0 {
-		t.Fatalf("rejected procedure ran: called=%t deltas=%#v", called, second.Deltas())
+	if called || len(second.changes) != 0 {
+		t.Fatalf("rejected procedure ran: called=%t changes=%#v", called, second.changes)
 	}
 	if manager.Pending() != 1 {
 		t.Fatalf("Pending = %d, want original root only", manager.Pending())
@@ -266,8 +291,8 @@ func TestTxnRuntimeRejectsNewRootBeforeProcedureWhenCapacityIsFull(t *testing.T)
 func TestTxnRuntimeCollapsesOverBudgetRootDeltasBeforeFlush(t *testing.T) {
 	store := &runtimeTestStore{}
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
-	manager := txn.NewRuntime(&recordingDeltaStoreApplier{}, txn.RuntimeConfig{
-		MaxRootDeltaEntries: 1,
+	manager := txn.NewRuntime(&recordingChangeStoreApplier{}, txn.RuntimeConfig{
+		MaxRootChanges: 1,
 	})
 
 	if err := manager.Call(context.Background(), multiFieldRuntimeTestProcedure{
@@ -276,13 +301,13 @@ func TestTxnRuntimeCollapsesOverBudgetRootDeltasBeforeFlush(t *testing.T) {
 		t.Fatalf("Call returned error: %v", err)
 	}
 	if store.collapsed != 0 {
-		t.Fatalf("CollapseDeltas calls before Flush = %d, want 0", store.collapsed)
+		t.Fatalf("CollapseChanges calls before Flush = %d, want 0", store.collapsed)
 	}
 	if err := manager.Flush(context.Background()); err != nil {
 		t.Fatalf("Flush returned error: %v", err)
 	}
 	if store.collapsed != 1 {
-		t.Fatalf("CollapseDeltas calls = %d, want 1", store.collapsed)
+		t.Fatalf("CollapseChanges calls = %d, want 1", store.collapsed)
 	}
 	if manager.Pending() != 0 {
 		t.Fatalf("Pending = %d, want 0 after successful Flush", manager.Pending())
@@ -292,15 +317,15 @@ func TestTxnRuntimeCollapsesOverBudgetRootDeltasBeforeFlush(t *testing.T) {
 func TestTxnRuntimeRejectsNonCollapsiblePersistentTargetBeforeProcedure(t *testing.T) {
 	store := &runtimeNonCollapsibleStore{}
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
-	manager := txn.NewRuntime(&recordingDeltaStoreApplier{}, txn.RuntimeConfig{MaxRootDeltaEntries: 1})
+	manager := txn.NewRuntime(&recordingChangeStoreApplier{}, txn.RuntimeConfig{MaxRootChanges: 1})
 	called := false
 
 	err := manager.Call(context.Background(), runtimeNonCollapsibleProcedure{
 		lock:   lock,
 		called: &called,
 	})
-	if !errors.Is(err, txn.ErrDeltaCollapseUnsupported) {
-		t.Fatalf("Call error = %v, want ErrDeltaCollapseUnsupported", err)
+	if !errors.Is(err, txn.ErrChangeCollapseUnsupported) {
+		t.Fatalf("Call error = %v, want ErrChangeCollapseUnsupported", err)
 	}
 	if called || manager.Pending() != 0 {
 		t.Fatalf("unsupported target reached procedure: called=%t pending=%d", called, manager.Pending())
@@ -310,11 +335,11 @@ func TestTxnRuntimeRejectsNonCollapsiblePersistentTargetBeforeProcedure(t *testi
 func TestTxnRuntimeMarkDirtyRejectsNonCollapsiblePersistentTarget(t *testing.T) {
 	store := &runtimeNonCollapsibleStore{}
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
-	manager := txn.NewRuntime(&recordingDeltaStoreApplier{}, txn.RuntimeConfig{MaxRootDeltaEntries: 1})
+	manager := txn.NewRuntime(&recordingChangeStoreApplier{}, txn.RuntimeConfig{MaxRootChanges: 1})
 
 	err := manager.MarkDirty(lock)
-	if !errors.Is(err, txn.ErrDeltaCollapseUnsupported) {
-		t.Fatalf("MarkDirty error = %v, want ErrDeltaCollapseUnsupported", err)
+	if !errors.Is(err, txn.ErrChangeCollapseUnsupported) {
+		t.Fatalf("MarkDirty error = %v, want ErrChangeCollapseUnsupported", err)
 	}
 	if manager.Pending() != 0 {
 		t.Fatalf("Pending = %d, want 0", manager.Pending())
@@ -323,7 +348,7 @@ func TestTxnRuntimeMarkDirtyRejectsNonCollapsiblePersistentTarget(t *testing.T) 
 
 func TestTxnRuntimeMemorySoftLimitWarnsButAcceptsNewPendingRoots(t *testing.T) {
 	var heapBytes uint64
-	manager := txn.NewRuntime(&recordingDeltaStoreApplier{}, txn.RuntimeConfig{
+	manager := txn.NewRuntime(&recordingChangeStoreApplier{}, txn.RuntimeConfig{
 		HeapSoftLimitBytes: 1,
 		ReadHeapBytes:      func() uint64 { return heapBytes },
 	})
@@ -359,7 +384,7 @@ func TestTxnRuntimeMemorySoftLimitWarnsButAcceptsNewPendingRoots(t *testing.T) {
 func TestTxnRuntimeRetainsDirtyStoreWhenFlushFails(t *testing.T) {
 	store := &runtimeTestStore{}
 	store.Set()
-	writer := &recordingDeltaStoreApplier{err: errors.New("storage unavailable")}
+	writer := &recordingChangeStoreApplier{err: errors.New("storage unavailable")}
 	manager := txn.NewRuntime(writer)
 	manager.MarkDirty(txn.NewLockTarget(txn.NewLockKey("role", 1001), store))
 
@@ -367,32 +392,32 @@ func TestTxnRuntimeRetainsDirtyStoreWhenFlushFails(t *testing.T) {
 	if !errors.Is(err, writer.err) {
 		t.Fatalf("Flush error = %v, want storage error", err)
 	}
-	if manager.Pending() != 1 || len(store.Deltas()) != 1 {
-		t.Fatalf("failed flush lost state: pending=%d deltas=%#v", manager.Pending(), store.Deltas())
+	if manager.Pending() != 1 || len(store.changes) != 1 {
+		t.Fatalf("failed flush lost state: pending=%d changes=%#v", manager.Pending(), store.changes)
 	}
 
 	writer.err = nil
 	if err := manager.Flush(context.Background()); err != nil {
 		t.Fatalf("retry Flush returned error: %v", err)
 	}
-	if manager.Pending() != 0 || len(store.Deltas()) != 0 {
-		t.Fatalf("successful retry left pending=%d deltas=%#v", manager.Pending(), store.Deltas())
+	if manager.Pending() != 0 || len(store.changes) != 0 {
+		t.Fatalf("successful retry left pending=%d changes=%#v", manager.Pending(), store.changes)
 	}
 }
 
 func TestTxnRuntimeRetainsDirtyStoreWhenWriterIsTypedNil(t *testing.T) {
-	var writer *recordingDeltaStoreApplier
+	var writer *recordingChangeStoreApplier
 	store := &runtimeTestStore{}
 	store.Set()
 	manager := txn.NewRuntime(writer)
 	manager.MarkDirty(txn.NewLockTarget(txn.NewLockKey("role", 1001), store))
 
 	err := manager.Flush(context.Background())
-	if !errors.Is(err, storage.ErrNilDeltaApplier) {
-		t.Fatalf("Flush error = %v, want ErrNilDeltaApplier", err)
+	if !errors.Is(err, storage.ErrNilChangeApplier) {
+		t.Fatalf("Flush error = %v, want ErrNilChangeApplier", err)
 	}
-	if manager.Pending() != 1 || len(store.Deltas()) != 1 {
-		t.Fatalf("typed nil writer lost state: pending=%d deltas=%#v", manager.Pending(), store.Deltas())
+	if manager.Pending() != 1 || len(store.changes) != 1 {
+		t.Fatalf("typed nil writer lost state: pending=%d changes=%#v", manager.Pending(), store.changes)
 	}
 }
 
@@ -409,7 +434,7 @@ type retryingRuntimeWriter struct {
 	attempts int
 }
 
-func (writer *scheduledRuntimeWriter) ApplyDeltasWithOptions(context.Context, meta.TypeSpec, storage.RecordKey, change.DeltaSet, change.FieldNameResolver, change.DeltaValueResolver, storage.ApplyOptions) error {
+func (writer *scheduledRuntimeWriter) ApplyChangesWithOptions(context.Context, meta.TypeSpec, storage.RecordKey, change.Source, change.FieldNameResolver, change.ValueResolver, storage.ApplyOptions) error {
 	select {
 	case writer.called <- struct{}{}:
 	default:
@@ -417,7 +442,7 @@ func (writer *scheduledRuntimeWriter) ApplyDeltasWithOptions(context.Context, me
 	return nil
 }
 
-func (writer *retryingRuntimeWriter) ApplyDeltasWithOptions(context.Context, meta.TypeSpec, storage.RecordKey, change.DeltaSet, change.FieldNameResolver, change.DeltaValueResolver, storage.ApplyOptions) error {
+func (writer *retryingRuntimeWriter) ApplyChangesWithOptions(context.Context, meta.TypeSpec, storage.RecordKey, change.Source, change.FieldNameResolver, change.ValueResolver, storage.ApplyOptions) error {
 	writer.attempts++
 	if writer.attempts == 1 {
 		return errors.New("temporary storage failure")
@@ -425,7 +450,7 @@ func (writer *retryingRuntimeWriter) ApplyDeltasWithOptions(context.Context, met
 	return nil
 }
 
-func (writer *blockingRuntimeWriter) ApplyDeltasWithOptions(context.Context, meta.TypeSpec, storage.RecordKey, change.DeltaSet, change.FieldNameResolver, change.DeltaValueResolver, storage.ApplyOptions) error {
+func (writer *blockingRuntimeWriter) ApplyChangesWithOptions(context.Context, meta.TypeSpec, storage.RecordKey, change.Source, change.FieldNameResolver, change.ValueResolver, storage.ApplyOptions) error {
 	close(writer.started)
 	<-writer.release
 	return nil
@@ -492,8 +517,8 @@ func TestTxnRuntimeRunFlushesPendingStoresOnInterval(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
-	if manager.Pending() != 0 || len(store.Deltas()) != 0 {
-		t.Fatalf("scheduled flush left pending=%d deltas=%#v", manager.Pending(), store.Deltas())
+	if manager.Pending() != 0 || len(store.changes) != 0 {
+		t.Fatalf("scheduled flush left pending=%d changes=%#v", manager.Pending(), store.changes)
 	}
 }
 
@@ -515,7 +540,7 @@ func TestTxnRuntimeShutdownRetriesUntilPendingStoreIsFlushed(t *testing.T) {
 	if writer.attempts != 2 {
 		t.Fatalf("storage attempts = %d, want 2", writer.attempts)
 	}
-	if manager.Pending() != 0 || len(store.Deltas()) != 0 {
-		t.Fatalf("shutdown left pending=%d deltas=%#v", manager.Pending(), store.Deltas())
+	if manager.Pending() != 0 || len(store.changes) != 0 {
+		t.Fatalf("shutdown left pending=%d changes=%#v", manager.Pending(), store.changes)
 	}
 }

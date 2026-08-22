@@ -19,15 +19,15 @@ func TestRedisPatchMapsGoFieldNameToJSONName(t *testing.T) {
 		}}},
 		Fields: map[string]meta.FieldSpec{"Power": {}},
 	}
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(1)), Op: change.OpSet}}
+	changes := recordedChanges{{Path: changePath(fieldNode(1)), Op: change.OpSet}}
 	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
 		change.FieldNameGo:   {1: "Power"},
 		change.FieldNameJSON: {1: "p"},
 	})
 
-	patches, err := redis.BuildDocumentPatchesWithDeltas(spec, deltas, resolver, testDeltaValueResolver{1: int64(100)})
+	patches, err := redis.BuildDocumentPatches(spec, changes, resolver, testValueResolver{1: int64(100)})
 	if err != nil {
-		t.Fatalf("BuildDocumentPatchesWithDeltas returned error: %v", err)
+		t.Fatalf("BuildDocumentPatches returned error: %v", err)
 	}
 	patch := patches[""]
 	if len(patch.Set) != 1 {
@@ -50,20 +50,20 @@ func TestRedisPatchUsesSubKeyAndJSONName(t *testing.T) {
 			"Items": {Redis: &meta.RedisFieldSpec{SubKey: "bag"}},
 		},
 	}
-	deltas := change.DeltaSet{{Path: deltaPath(intKeyNode(1, 1001), fieldNode(2)), Op: change.OpSet}}
+	changes := recordedChanges{{Path: changePath(intKeyNode(1, 1001), fieldNode(2)), Op: change.OpSet}}
 	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
 		change.FieldNameGo:   {1: "Items", 2: "Quantity"},
 		change.FieldNameJSON: {1: "it", 2: "quantity"},
 	})
 
-	patches, err := redis.BuildDocumentPatchesWithDeltas(spec, deltas, resolver, change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
-		if path.Equal(deltaPath(intKeyNode(1, 1001), fieldNode(2))) {
+	patches, err := redis.BuildDocumentPatches(spec, changes, resolver, change.ValueResolverFunc(func(path change.Path) (any, bool) {
+		if path.Equal(changePath(intKeyNode(1, 1001), fieldNode(2))) {
 			return int64(9), true
 		}
 		return nil, false
 	}))
 	if err != nil {
-		t.Fatalf("BuildDocumentPatchesWithDeltas returned error: %v", err)
+		t.Fatalf("BuildDocumentPatches returned error: %v", err)
 	}
 	patch := patches["bag"]
 	if len(patch.Set) != 1 {
@@ -86,20 +86,20 @@ func TestRedisPatchUsesOperationsForSliceElementField(t *testing.T) {
 			"Queue": {Redis: &meta.RedisFieldSpec{SubKey: "queue"}},
 		},
 	}
-	delta := deltaPath(intKeyNode(1, 0), fieldNode(2))
+	delta := changePath(intKeyNode(1, 0), fieldNode(2))
 	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
 		change.FieldNameGo:   {1: "Queue", 2: "Count"},
 		change.FieldNameJSON: {1: "queue", 2: "count"},
 	})
 
-	patches, err := redis.BuildDocumentPatchesWithDeltas(spec, change.DeltaSet{{Path: delta, Op: change.OpSet}}, resolver, change.DeltaValueResolverFunc(func(path change.DeltaPath) (any, bool) {
+	patches, err := redis.BuildDocumentPatches(spec, recordedChanges{{Path: delta, Op: change.OpSet}}, resolver, change.ValueResolverFunc(func(path change.Path) (any, bool) {
 		if path.Equal(delta) {
 			return int64(8), true
 		}
 		return nil, false
 	}))
 	if err != nil {
-		t.Fatalf("BuildDocumentPatchesWithDeltas returned error: %v", err)
+		t.Fatalf("BuildDocumentPatches returned error: %v", err)
 	}
 	body, err := redis.EncodeDocumentPatch(patches["queue"])
 	if err != nil {

@@ -16,8 +16,8 @@ import (
 )
 
 var (
-	ErrPendingRootCapacity      = errors.New("txn runtime: pending root capacity reached")
-	ErrDeltaCollapseUnsupported = errors.New("txn runtime: persistent store does not support delta collapse")
+	ErrPendingRootCapacity       = errors.New("txn runtime: pending root capacity reached")
+	ErrChangeCollapseUnsupported = errors.New("txn runtime: persistent store does not support change collapse")
 )
 
 // WriteAdmission 在开始新的 Procedure 前检查项目是否接受新的可持久化修改。
@@ -36,9 +36,9 @@ type RuntimeConfig struct {
 	WriteAdmission WriteAdmission
 	// MaxPendingRoots 限制等待 Flush 的持久化根对象数。零表示不限制。
 	MaxPendingRoots int
-	// MaxRootDeltaEntries 限制单个持久化根对象的细粒度 Delta 数量。超过后，
+	// MaxRootChanges 限制单个持久化根对象的细粒度变更数量。超过后，
 	// Runtime 会将该根 Store 收敛为顶层字段 Replace，零表示不限制。
-	MaxRootDeltaEntries int
+	MaxRootChanges int
 	// HeapSoftLimitBytes 是进程 Heap 告警阈值（字节）。达到上限时，
 	// Runtime 仅记录告警，不拒绝业务变更。零表示不观测。
 	HeapSoftLimitBytes uint64
@@ -51,10 +51,10 @@ type RuntimeConfig struct {
 
 // Runtime 聚合当前进程内需要落盘的实体 Store。
 //
-// 它不保存业务数据副本，也不把 DeltaSet 作为异步消息传递。Flush 会取得与
+// 它不保存业务数据副本，也不把 Store 作为异步消息传递。Flush 会取得与
 // Procedure 相同的本机锁，在锁内从 Store 读取当前值并调用 storage.Save。
 type Runtime struct {
-	writer storage.DeltaApplier
+	writer storage.ChangeApplier
 	config RuntimeConfig
 
 	mu                  sync.Mutex
@@ -62,7 +62,7 @@ type Runtime struct {
 	targets             map[LockKey]targetEntry
 	reserved            map[LockKey]int
 	maxPendingRoots     int
-	maxRootDeltas       int
+	maxRootChanges      int
 	heapSoftLimitBytes  uint64
 	heapSampleInterval  time.Duration
 	readHeapBytes       func() uint64
@@ -80,7 +80,7 @@ type targetEntry struct {
 
 // NewRuntime 创建 Procedure 的标准运行时。writer 通常是已装配的 Fusion 写入器。
 // 未提供配置时使用零值配置，适合不启动后台循环的单元测试或手动 Flush 场景。
-func NewRuntime(writer storage.DeltaApplier, configs ...RuntimeConfig) *Runtime {
+func NewRuntime(writer storage.ChangeApplier, configs ...RuntimeConfig) *Runtime {
 	var options RuntimeConfig
 	if len(configs) > 0 {
 		options = configs[0]
@@ -95,7 +95,7 @@ func NewRuntime(writer storage.DeltaApplier, configs ...RuntimeConfig) *Runtime 
 		targets:            make(map[LockKey]targetEntry),
 		reserved:           make(map[LockKey]int),
 		maxPendingRoots:    options.MaxPendingRoots,
-		maxRootDeltas:      options.MaxRootDeltaEntries,
+		maxRootChanges:     options.MaxRootChanges,
 		heapSoftLimitBytes: options.HeapSoftLimitBytes,
 		heapSampleInterval: options.HeapSampleInterval,
 		readHeapBytes:      readHeapBytes,
@@ -118,7 +118,7 @@ func (runtime *Runtime) Call(ctx context.Context, procedure Procedure) error {
 	}
 	managed := &managedProcedure{runtime: runtime, procedure: procedure}
 	err := CallWithOptions(ctx, managed, CallOptions{
-		AllowPendingDeltas: true,
+		AllowPendingChanges: true,
 	})
 	if err != nil {
 		managed.releaseReservation()
@@ -162,13 +162,13 @@ func (runtime *Runtime) Pending() int {
 }
 
 // Flush 依次落盘当前待处理实体。每个实体在自身本机锁内执行，成功后清理
-// Store delta 并解除登记；失败的实体保留，以便下一次 Flush 重试。
+// Store 变更并解除登记；失败的实体保留，以便下一次 Flush 重试。
 func (runtime *Runtime) Flush(ctx context.Context) error {
 	if runtime == nil {
 		return errors.New("txn runtime: runtime is nil")
 	}
 	if runtime.writer == nil {
-		return storage.ErrNilDeltaApplier
+		return storage.ErrNilChangeApplier
 	}
 	entries := runtime.snapshotTargets()
 	var errs []error
@@ -381,13 +381,13 @@ func (runtime *Runtime) hasCapacityLocked(targets []LockTarget) bool {
 }
 
 func (runtime *Runtime) acceptTargetsLocked(targets []LockTarget) error {
-	if runtime.maxRootDeltas > 0 {
+	if runtime.maxRootChanges > 0 {
 		for _, target := range targets {
 			if !isPersistentTarget(target) {
 				continue
 			}
-			if _, ok := target.Store.(storage.CollapsibleDeltaStore); !ok {
-				return fmt.Errorf("%w: scope=%s key=%s", ErrDeltaCollapseUnsupported, target.Key.Scope, target.Key.Value)
+			if _, ok := target.Store.(storage.CollapsibleChangeStore); !ok {
+				return fmt.Errorf("%w: scope=%s key=%s", ErrChangeCollapseUnsupported, target.Key.Scope, target.Key.Value)
 			}
 		}
 	}
@@ -437,26 +437,59 @@ func currentHeapBytes() uint64 {
 	return stats.HeapAlloc
 }
 
-type deltaStoreProjection struct {
-	storage.DeltaStore
-	deltas change.DeltaSet
+var errChangeBudgetExceeded = errors.New("txn runtime: change budget exceeded")
+
+type changeBudgetStore struct {
+	storage.ChangeStore
+	limit int
 }
 
-func (store deltaStoreProjection) Deltas() change.DeltaSet {
-	return store.deltas
-}
-
-func (runtime *Runtime) enforceDeltaBudget(target LockTarget, store storage.DeltaStore, deltas change.DeltaSet) (change.DeltaSet, error) {
-	if runtime == nil || runtime.maxRootDeltas <= 0 || len(deltas) <= runtime.maxRootDeltas {
-		return deltas, nil
+func (store changeBudgetStore) VisitChanges(visitor change.Visitor) error {
+	if visitor == nil {
+		return change.ErrNilVisitor
 	}
-	collapser, ok := store.(storage.CollapsibleDeltaStore)
+	return store.ChangeStore.VisitChanges(&changeBudgetVisitor{
+		visitor:   visitor,
+		remaining: store.limit,
+	})
+}
+
+func (store changeBudgetStore) IsViewStore() bool {
+	readOnly, ok := store.ChangeStore.(storage.ReadOnlyChangeStore)
+	return ok && readOnly.IsViewStore()
+}
+
+type changeBudgetVisitor struct {
+	visitor   change.Visitor
+	remaining int
+}
+
+func (visitor *changeBudgetVisitor) VisitChange(path change.Path, op change.Op) error {
+	if visitor.remaining == 0 {
+		return errChangeBudgetExceeded
+	}
+	visitor.remaining--
+	return visitor.visitor.VisitChange(path, op)
+}
+
+func (runtime *Runtime) saveStore(ctx context.Context, target LockTarget, store storage.ChangeStore) error {
+	if runtime == nil || runtime.maxRootChanges <= 0 {
+		return storage.Save(ctx, runtime.writer, store)
+	}
+	err := storage.Save(ctx, runtime.writer, changeBudgetStore{
+		ChangeStore: store,
+		limit:       runtime.maxRootChanges,
+	})
+	if !errors.Is(err, errChangeBudgetExceeded) {
+		return err
+	}
+	collapser, ok := store.(storage.CollapsibleChangeStore)
 	if !ok {
-		return nil, fmt.Errorf("%w: scope=%s key=%s", ErrDeltaCollapseUnsupported, target.Key.Scope, target.Key.Value)
+		return fmt.Errorf("%w: scope=%s key=%s", ErrChangeCollapseUnsupported, target.Key.Scope, target.Key.Value)
 	}
-	collapser.CollapseDeltas()
-	txlog.Warn("txn runtime root deltas collapsed", "scope", target.Key.Scope, "key", target.Key.Value, "budget", runtime.maxRootDeltas)
-	return store.Deltas(), nil
+	collapser.CollapseChanges()
+	txlog.Warn("txn runtime root changes collapsed", "scope", target.Key.Scope, "key", target.Key.Value, "budget", runtime.maxRootChanges)
+	return storage.Save(ctx, runtime.writer, store)
 }
 
 func persistentTargetKeys(targets []LockTarget) []LockKey {
@@ -476,27 +509,23 @@ func persistentTargetKeys(targets []LockTarget) []LockKey {
 }
 
 func isPersistentTarget(target LockTarget) bool {
-	_, ok := target.Store.(storage.DeltaStore)
+	_, ok := target.Store.(storage.ChangeStore)
 	return ok && target.Key.Scope != "" && target.Key.Value != ""
 }
 
 func (runtime *Runtime) flushTarget(ctx context.Context, entry targetEntry) error {
 	target := entry.target
 	return WithLocks(ctx, []LockTarget{target}, func(ctx context.Context) error {
-		store, ok := target.Store.(storage.DeltaStore)
+		store, ok := target.Store.(storage.ChangeStore)
 		if !ok {
 			runtime.forget(entry)
 			return nil
 		}
-		deltas, err := runtime.enforceDeltaBudget(target, store, store.Deltas())
-		if err != nil {
-			return err
-		}
-		if len(deltas) == 0 {
+		if !store.HasChanges() {
 			runtime.forget(entry)
 			return nil
 		}
-		if err := storage.Save(ctx, runtime.writer, deltaStoreProjection{DeltaStore: store, deltas: deltas}); err != nil {
+		if err := runtime.saveStore(ctx, target, store); err != nil {
 			return err
 		}
 		runtime.forget(entry)

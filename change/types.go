@@ -38,12 +38,12 @@ type FieldNameResolver interface {
 	FieldName(FieldID, FieldNameKind) string
 }
 
-// DeltaPathFieldNameResolver 可按完整 DeltaPath 和节点位置解析字段名。
+// PathFieldNameResolver 可按完整 Path 和节点位置解析字段名。
 //
-// 嵌套 DeltaPath 中的 FieldID 只在对应节点的数据类型内部稳定。生成 Store
+// 嵌套 Path 中的 FieldID 只在对应节点的数据类型内部稳定。生成 Store
 // 知道父字段指向的子类型时，可以实现该接口，为子节点切换到子类型字段名。
-type DeltaPathFieldNameResolver interface {
-	DeltaPathFieldName(DeltaPath, int, FieldNameKind) string
+type PathFieldNameResolver interface {
+	PathFieldName(Path, int, FieldNameKind) string
 }
 
 // FieldNameResolverFunc 允许用生成的函数直接实现 FieldNameResolver。
@@ -56,19 +56,19 @@ func (f FieldNameResolverFunc) FieldName(field FieldID, kind FieldNameKind) stri
 	return f(field, kind)
 }
 
-// Path 是从根对象到变更字段的别名路径。
+// DocumentPath 是从根对象到变更字段的已解析文档路径。
 //
-// 例如角色名字段是 Path{"name"}，物品数量可以表示为
-// Path{"items", "1001", "quantity"}。
-type Path []string
+// 例如角色名字段是 DocumentPath{"name"}，物品数量可以表示为
+// DocumentPath{"items", "1001", "quantity"}。
+type DocumentPath []string
 
 // String 返回点分隔路径，便于转换为 Mongo `$set` 字段或日志输出。
-func (p Path) String() string {
+func (p DocumentPath) String() string {
 	return strings.Join(p, ".")
 }
 
 // Equal 判断两个路径是否逐段相等。
-func (p Path) Equal(other Path) bool {
+func (p DocumentPath) Equal(other DocumentPath) bool {
 	if len(p) != len(other) {
 		return false
 	}

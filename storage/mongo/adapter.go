@@ -78,12 +78,12 @@ type Client interface {
 	BatchFinder
 }
 
-// Adapter 把 DeltaSet 应用到 MongoDB 更新文档。
+// Adapter 把规范化变更流应用到 MongoDB 更新文档。
 type Adapter struct {
 	client Client
 }
 
-// NewAdapter 创建 Mongo DeltaSet 适配器。
+// NewAdapter 创建 Mongo 变更适配器。
 func NewAdapter(client Client) (*Adapter, error) {
 	if isNilMongoClient(client) {
 		return nil, ErrClientNotConfigured
@@ -91,26 +91,23 @@ func NewAdapter(client Client) (*Adapter, error) {
 	return &Adapter{client: client}, nil
 }
 
-// ApplyDeltasWithOptions 根据 Mongo 元数据和记录 ID 执行 Delta 更新。
-func (a *Adapter) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, deltas change.DeltaSet, resolver change.FieldNameResolver, values change.DeltaValueResolver, options storage.ApplyOptions) error {
-	if len(deltas) == 0 {
+// ApplyChangesWithOptions 根据 Mongo 元数据和记录 ID 执行变更更新。
+func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver, options storage.ApplyOptions) error {
+	if source == nil || !source.HasChanges() {
 		return nil
 	}
 	if err := storage.ValidateRecordKey(spec, key); err != nil {
 		return err
 	}
-	if options.Upsert {
-		deltas = withoutUpsertIDDelta(deltas, resolver)
-	}
-	update, err := BuildUpdateDocumentWithDeltas(spec, deltas, resolver, values)
+	update, err := buildUpdateDocument(spec, source, resolver, values, options.Upsert)
 	if err != nil {
 		return err
 	}
 	if len(update) == 0 {
 		if options.Upsert {
-			return fmt.Errorf("mongo: upsert has no mutable deltas after excluding immutable record id")
+			return fmt.Errorf("mongo: upsert has no mutable changes after excluding immutable record id")
 		}
-		return storage.ErrNoEffectiveDeltas
+		return storage.ErrNoEffectiveChanges
 	}
 	client, err := a.clientFor()
 	if err != nil {
@@ -121,20 +118,6 @@ func (a *Adapter) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec
 		return err
 	}
 	return validateUpdateResult(result, options.Upsert)
-}
-
-// withoutUpsertIDDelta 移除首次创建时由等值 filter 自动提供的 Mongo _id。
-// 常规更新仍由 BuildUpdateDocumentWithDeltas 拒绝修改 _id。
-func withoutUpsertIDDelta(deltas change.DeltaSet, resolver change.FieldNameResolver) change.DeltaSet {
-	out := make(change.DeltaSet, 0, len(deltas))
-	for _, delta := range deltas {
-		bsonPath := delta.Path.FullPath(resolver, change.FieldNameBSON)
-		if len(bsonPath) == 1 && bsonPath[0] == "_id" && (delta.Op == change.OpSet || delta.Op == change.OpReplace) {
-			continue
-		}
-		out = append(out, delta)
-	}
-	return out
 }
 
 // ReplaceDocument 按记录键替换一条 Mongo 文档。

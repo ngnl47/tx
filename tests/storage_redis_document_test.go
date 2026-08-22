@@ -9,19 +9,19 @@ import (
 	txredis "github.com/ngnl47/tx/storage/redis"
 )
 
-func TestRedisBuildDocumentPatchesWithDeltasUsesJSONNames(t *testing.T) {
-	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet},
-		{Path: deltaPath(fieldNode(deltaFieldItems)), Op: change.OpClear},
+func TestRedisBuildDocumentPatchesUsesJSONNames(t *testing.T) {
+	source := recordedChanges{
+		{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet},
+		{Path: changePath(fieldNode(changeFieldItems)), Op: change.OpClear},
 	}
 	resolver := testFieldNameResolver{
-		change.FieldNameGo:   {deltaFieldName: "Name", deltaFieldItems: "Items"},
-		change.FieldNameJSON: {deltaFieldName: "roleName", deltaFieldItems: "items"},
+		change.FieldNameGo:   {changeFieldName: "Name", changeFieldItems: "Items"},
+		change.FieldNameJSON: {changeFieldName: "roleName", changeFieldItems: "items"},
 	}
 
-	patches, err := txredis.BuildDocumentPatchesWithDeltas(redisPatchSpec(), deltas, resolver, testDeltaValueResolver{deltaFieldName: "alice"})
+	patches, err := txredis.BuildDocumentPatches(redisPatchSpec(), source, resolver, testValueResolver{changeFieldName: "alice"})
 	if err != nil {
-		t.Fatalf("BuildDocumentPatchesWithDeltas returned error: %v", err)
+		t.Fatalf("BuildDocumentPatches returned error: %v", err)
 	}
 
 	if patches[""].Set[0].Path.String() != "roleName" || patches[""].Set[0].Value != "alice" {
@@ -35,98 +35,81 @@ func TestRedisBuildDocumentPatchesWithDeltasUsesJSONNames(t *testing.T) {
 	}
 }
 
-func TestRedisBuildDocumentPatchesWithDeltasRejectsMissingCurrentValue(t *testing.T) {
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
+func TestRedisBuildDocumentPatchesRejectsMissingCurrentValue(t *testing.T) {
+	source := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 	resolver := testFieldNameResolver{
-		change.FieldNameGo:   {deltaFieldName: "Name"},
-		change.FieldNameJSON: {deltaFieldName: "name"},
+		change.FieldNameGo:   {changeFieldName: "Name"},
+		change.FieldNameJSON: {changeFieldName: "name"},
 	}
-	_, err := txredis.BuildDocumentPatchesWithDeltas(redisPatchSpec(), deltas, resolver, nil)
+	_, err := txredis.BuildDocumentPatches(redisPatchSpec(), source, resolver, nil)
 	if err == nil || !strings.Contains(err.Error(), "name") {
-		t.Fatalf("BuildDocumentPatchesWithDeltas error = %v, want unresolved name error", err)
+		t.Fatalf("BuildDocumentPatches error = %v, want unresolved name error", err)
 	}
 }
 
-func TestRedisBuildDocumentPatchesWithDeltasRejectsUnresolvedFieldPath(t *testing.T) {
+func TestRedisBuildDocumentPatchesRejectsUnresolvedFieldPath(t *testing.T) {
 	const unknownField change.FieldID = 99
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(unknownField)), Op: change.OpSet}}
+	source := recordedChanges{{Path: changePath(fieldNode(unknownField)), Op: change.OpSet}}
 	resolver := testFieldNameResolver{
-		change.FieldNameGo:   {deltaFieldName: "Name"},
-		change.FieldNameJSON: {deltaFieldName: "name"},
+		change.FieldNameGo:   {changeFieldName: "Name"},
+		change.FieldNameJSON: {changeFieldName: "name"},
 	}
 
-	_, err := txredis.BuildDocumentPatchesWithDeltas(redisPatchSpec(), deltas, resolver, testDeltaValueResolver{unknownField: "alice"})
+	_, err := txredis.BuildDocumentPatches(redisPatchSpec(), source, resolver, testValueResolver{unknownField: "alice"})
 	if err == nil || !strings.Contains(err.Error(), "field path") {
-		t.Fatalf("BuildDocumentPatchesWithDeltas error = %v, want unresolved field path error", err)
+		t.Fatalf("BuildDocumentPatches error = %v, want unresolved field path error", err)
 	}
 }
 
-func TestRedisBuildDocumentPatchesWithDeltasRejectsUnknownDeltaOp(t *testing.T) {
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.DeltaOp(99)}}
+func TestRedisBuildDocumentPatchesRejectsUnknownOp(t *testing.T) {
+	source := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.Op(99)}}
 	resolver := testFieldNameResolver{
-		change.FieldNameGo:   {deltaFieldName: "Name"},
-		change.FieldNameJSON: {deltaFieldName: "name"},
+		change.FieldNameGo:   {changeFieldName: "Name"},
+		change.FieldNameJSON: {changeFieldName: "name"},
 	}
 
-	_, err := txredis.BuildDocumentPatchesWithDeltas(redisPatchSpec(), deltas, resolver, testDeltaValueResolver{deltaFieldName: "alice"})
-	if err == nil || !strings.Contains(err.Error(), "unknown delta operation") {
-		t.Fatalf("BuildDocumentPatchesWithDeltas error = %v, want unknown delta operation error", err)
+	_, err := txredis.BuildDocumentPatches(redisPatchSpec(), source, resolver, testValueResolver{changeFieldName: "alice"})
+	if err == nil || !strings.Contains(err.Error(), "unknown operation") {
+		t.Fatalf("BuildDocumentPatches error = %v, want unknown operation error", err)
 	}
 }
 
-func TestRedisBuildDocumentPatchesWithDeltasRejectsUnknownKindForIgnoredField(t *testing.T) {
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.DeltaOp(99)}}
+func TestRedisBuildDocumentPatchesRejectsUnknownKindForIgnoredField(t *testing.T) {
+	source := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.Op(99)}}
 	resolver := testFieldNameResolver{
-		change.FieldNameGo:   {deltaFieldName: "Name"},
-		change.FieldNameJSON: {deltaFieldName: "name"},
+		change.FieldNameGo:   {changeFieldName: "Name"},
+		change.FieldNameJSON: {changeFieldName: "name"},
 	}
 	spec := meta.TypeSpec{Fields: map[string]meta.FieldSpec{
 		"Name": {Redis: &meta.RedisFieldSpec{Ignore: true}},
 	}}
 
-	_, err := txredis.BuildDocumentPatchesWithDeltas(spec, deltas, resolver, testDeltaValueResolver{deltaFieldName: "alice"})
-	if err == nil || !strings.Contains(err.Error(), "unknown delta operation") {
-		t.Fatalf("BuildDocumentPatchesWithDeltas error = %v, want unknown delta operation error", err)
+	_, err := txredis.BuildDocumentPatches(spec, source, resolver, testValueResolver{changeFieldName: "alice"})
+	if err == nil || !strings.Contains(err.Error(), "unknown operation") {
+		t.Fatalf("BuildDocumentPatches error = %v, want unknown operation error", err)
 	}
 }
 
-func TestRedisBuildDocumentPatchesWithDeltasAllowsResolvedNilValue(t *testing.T) {
-	deltas := change.DeltaSet{{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet}}
+func TestRedisBuildDocumentPatchesAllowsResolvedNilValue(t *testing.T) {
+	source := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 	resolver := testFieldNameResolver{
-		change.FieldNameGo:   {deltaFieldName: "Name"},
-		change.FieldNameJSON: {deltaFieldName: "name"},
+		change.FieldNameGo:   {changeFieldName: "Name"},
+		change.FieldNameJSON: {changeFieldName: "name"},
 	}
-	patches, err := txredis.BuildDocumentPatchesWithDeltas(redisPatchSpec(), deltas, resolver, change.DeltaValueResolverFunc(func(change.DeltaPath) (any, bool) {
+	patches, err := txredis.BuildDocumentPatches(redisPatchSpec(), source, resolver, change.ValueResolverFunc(func(change.Path) (any, bool) {
 		return nil, true
 	}))
 	if err != nil {
-		t.Fatalf("BuildDocumentPatchesWithDeltas returned error: %v", err)
+		t.Fatalf("BuildDocumentPatches returned error: %v", err)
 	}
 	if got := patches[""].Set[0].Value; got != nil {
 		t.Fatalf("patch value = %#v, want nil", got)
 	}
 }
 
-func TestRedisBuildDocumentPatchesWithDeltasDoesNotMutateSource(t *testing.T) {
-	deltas := change.DeltaSet{
-		{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet},
-		{Path: deltaPath(fieldNode(deltaFieldName)), Op: change.OpSet},
-	}
-	resolver := testFieldNameResolver{
-		change.FieldNameGo:   {deltaFieldName: "Name"},
-		change.FieldNameJSON: {deltaFieldName: "name"},
-	}
-	if _, err := txredis.BuildDocumentPatchesWithDeltas(redisPatchSpec(), deltas, resolver, testDeltaValueResolver{deltaFieldName: "alice"}); err != nil {
-		t.Fatalf("BuildDocumentPatchesWithDeltas returned error: %v", err)
-	}
-	if len(deltas) != 2 || deltas[0].Path.Depth == 0 {
-		t.Fatalf("source deltas mutated: %#v", deltas)
-	}
-}
-
 func TestRedisEncodeDocumentPatchAllowsSafeIntegers(t *testing.T) {
 	_, err := txredis.EncodeDocumentPatch(txredis.DocumentPatch{
-		Set: []txredis.PathValue{{Path: change.Path{"roleId"}, Value: int64(1<<53 - 1)}},
+		Set: []txredis.PathValue{{Path: change.DocumentPath{"roleId"}, Value: int64(1<<53 - 1)}},
 	})
 	if err != nil {
 		t.Fatalf("EncodeDocumentPatch returned error: %v", err)
@@ -135,7 +118,7 @@ func TestRedisEncodeDocumentPatchAllowsSafeIntegers(t *testing.T) {
 
 func TestRedisEncodeDocumentPatchRejectsUnsafeIntegers(t *testing.T) {
 	_, err := txredis.EncodeDocumentPatch(txredis.DocumentPatch{
-		Set: []txredis.PathValue{{Path: change.Path{"roleId"}, Value: int64(1 << 53)}},
+		Set: []txredis.PathValue{{Path: change.DocumentPath{"roleId"}, Value: int64(1 << 53)}},
 	})
 	if err == nil {
 		t.Fatal("EncodeDocumentPatch returned nil error, want unsafe integer error")

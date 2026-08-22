@@ -27,7 +27,7 @@ type LoadOptions struct {
 // Redis 适配器负责即时写入热数据；MongoQueue 负责把持久化保存推迟到
 // delaySave 配置之后执行。
 type Strategy struct {
-	RedisApplier  storage.DeltaApplier
+	RedisApplier  storage.ChangeApplier
 	RedisDeleter  storage.DeleteApplier
 	RedisLoader   storage.DocumentLoader
 	RedisReplacer storage.DocumentReplacerWithOptions
@@ -44,7 +44,7 @@ type Strategy struct {
 func (s Strategy) Validate() error {
 	missing := make([]string, 0, 8)
 	if isNilFusionDependency(s.RedisApplier) {
-		missing = append(missing, "redis delta applier")
+		missing = append(missing, "redis change applier")
 	}
 	if isNilFusionDependency(s.redisLoader()) {
 		missing = append(missing, "redis document loader")
@@ -73,9 +73,9 @@ func (s Strategy) Validate() error {
 	return nil
 }
 
-// ApplyDeltasWithOptions 应用一次 Delta 变更，并把写入选项限定传递给 Redis。
-func (s Strategy) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, deltas change.DeltaSet, resolver change.FieldNameResolver, values change.DeltaValueResolver, options storage.ApplyOptions) error {
-	if len(deltas) == 0 {
+// ApplyChangesWithOptions 应用一次规范化变更，并把写入选项限定传递给 Redis。
+func (s Strategy) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver, options storage.ApplyOptions) error {
+	if source == nil || !source.HasChanges() {
 		return nil
 	}
 	if err := storage.ValidateRecordKey(spec, key); err != nil {
@@ -84,7 +84,7 @@ func (s Strategy) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec
 	if err := s.writeDependencies(); err != nil {
 		return err
 	}
-	if err := s.RedisApplier.ApplyDeltasWithOptions(ctx, spec, key, deltas, resolver, values, options); err != nil {
+	if err := s.RedisApplier.ApplyChangesWithOptions(ctx, spec, key, source, resolver, values, options); err != nil {
 		return err
 	}
 	return s.enqueueDelayedWrites(ctx, spec, key)

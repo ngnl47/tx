@@ -4,6 +4,8 @@
 
 审计环境：`go1.26.5 darwin/amd64`，Intel i9-9880H，macOS 15.6
 
+更新说明：本报告保留审计时的证据。报告中提到的物化变更批次、通用 Compact、`Deltas()` 和 `Build*WithDeltas` 已在后续生成式投影重构中删除，不代表当前可用 API；当前设计以 [`../design.md`](../design.md) 为准。
+
 审计范围：`tx` 全部包、公开 API、Delta/Store/Fusion/事务、Agent/msgq/RPC/Actor、txgame 真实 Redis/Mongo 集成链路，以及 etcd 服务发现链路。
 
 本报告按 [`../architecture_audit_standard.md`](../architecture_audit_standard.md) 执行。审计阶段只记录证据和建议，不直接修改实现或把未确认方案写入实施计划。
@@ -16,9 +18,9 @@
 
 - 位置：`storage/changes.go:90`、`storage/changes.go:97`、`storage/changes.go:119`
 - 触发条件：高级调用方先取得一份 Delta 投影，随后 Store 又产生投影中不存在的新路径，或者调用方仅传入当前 Delta 的子集，再调用 `SaveDeltasWithOptions`。
-- 影响：适配器只落地传入的 Delta，但成功后 `ClearDeltas` 会清理 Store 的全部当前 dirty 状态；未包含在本批次里的变更可能不再被保存。
+- 影响：适配器只落地传入的 Delta，但成功后 `ClearChanges` 会清理 Store 的全部当前 dirty 状态；未包含在本批次里的变更可能不再被保存。
 - 当前主线：`txn.Runtime` 在同一事务锁内投影并保存同一个 Store，当前支持路径不会触发该问题。风险来自公开 API 未在类型中表达“投影代际、锁所有权和清理范围”。
-- 整改：已移除公开的 `SaveDeltas/SaveDeltasWithOptions`。`storage.Save` 总是从传入 Store 取得当前投影并在成功后清理；`txn.Runtime` 在持有目标锁期间通过 Runtime 私有的 Store 投影视图复用该批次。普通路径只投影一次；超预算路径会先把 dirty 树明确收敛为顶层 Replace，再取得一次新的降级投影。业务层继续只暴露 `db.Save(role)` 等 facade，不能自行传入 Delta 子集。
+- 整改：已移除公开的 `SaveDeltas/SaveDeltasWithOptions`。`storage.Save` 总是从传入 Store 同步投影当前变更并在成功后清理；`txn.Runtime` 的私有 visitor 装饰器在 adapter 的同一次投影中完成容量计数。普通路径只投影一次；超预算路径会在任何外部 I/O 前中止，再把 dirty 树明确收敛为顶层 Replace 并重新投影。业务层继续只暴露 `db.Save(role)` 等 facade，不能自行传入 Delta 子集。
 
 示例：
 
@@ -31,7 +33,7 @@ store.SetPower(9000)    // batch 中没有 Power 路径
 err := storage.SaveDeltas(ctx, writer, store, batch)
 ```
 
-同一路径在投影后再次赋值时，`DeltaValueResolver` 通常会读取 Store 的当前值，因此并不是该问题的最小触发条件；危险的是投影之后新增了尚未包含在批次里的其他路径。
+同一路径在投影后再次赋值时，`ValueResolver` 通常会读取 Store 的当前值，因此并不是该问题的最小触发条件；危险的是投影之后新增了尚未包含在批次里的其他路径。
 
 ### [P1][已整改] Fusion 健康闸门没有覆盖完整读写边界，写错误分类又过宽
 
@@ -50,13 +52,13 @@ err := storage.SaveDeltas(ctx, writer, store, batch)
 - 对比：Redis adapter 已使用 `ScriptClient` 强类型构造；正式 Mongo driver 的 `Database` 已完整实现 Updater、Replacer、Deleter、Finder、BatchFinder。
 - 整改：新增组合接口 `mongo.Client`，统一要求 `Updater/Replacer/Deleter/Finder/BatchFinder`；`NewAdapter` 与 `NewCluster` 返回装配错误，Cluster shard 改为强类型 map。官方 driver 增加编译期接口断言，nil、typed-nil、空 router、空 shard 名和空 shard 集合均在启动装配阶段失败；运行时能力断言和逐条 batch fallback 已移除。
 
-### [P1][已整改] `MaxRootDeltaEntries` 对非生成 Store 会静默失效
+### [P1][已整改] `MaxRootChanges` 对非生成 Store 会静默失效
 
 - 位置：`modules/txn/runtime.go:36`、`modules/txn/runtime.go:427`、`modules/txn/runtime.go:431`
-- 触发条件：持久化目标实现 `DeltaStore`，但未额外实现未导出的 `CollapseDeltas` 能力，同时 Delta 数量超过配置预算。
+- 触发条件：持久化目标实现 `ChangeStore`，但未额外实现未导出的 `CollapseChanges` 能力，同时 Delta 数量超过配置预算。
 - 影响：文档和配置声明 Runtime 会收敛超额路径，实际代码直接返回原 Delta，既不报错也不告警；高级扩展 Store 可能在持续失败刷盘时突破预期预算。
 - 当前主线：txgen 生成 Store 已实现收敛，常规业务路径安全。
-- 整改：新增 `storage.CollapsibleDeltaStore` 显式契约。配置非零 `MaxRootDeltaEntries` 时，`Runtime.Call` 在进入 Procedure 前、`Runtime.MarkDirty` 在登记前校验持久化目标；不支持收敛时返回 `txn.ErrDeltaCollapseUnsupported`。Flush 内保留防御校验，不再存在静默绕过容量预算的分支。
+- 整改：新增 `storage.CollapsibleChangeStore` 显式契约。配置非零 `MaxRootChanges` 时，`Runtime.Call` 在进入 Procedure 前、`Runtime.MarkDirty` 在登记前校验持久化目标；不支持收敛时返回 `txn.ErrChangeCollapseUnsupported`。Flush 内保留防御校验，不再存在静默绕过容量预算的分支。
 
 ### [P1][已整改] race 质量门禁被并发测试日志收集器打红
 
@@ -78,7 +80,7 @@ err := storage.SaveDeltas(ctx, writer, store, batch)
 
 - 位置：`change/delta.go:22`、`change/delta.go:30`、`change/delta.go:36`、`change/delta.go:194`、`storage/mongo/document.go:61`
 - 触发条件：一个根对象积累大量不同 map key/index 路径，并进入 Mongo/Redis 文档构建。
-- 影响：定长路径具备良好局部性，但不是“小结构体”。在当前 64 位布局下 `PathKey=40B`、`PathNode=48B`、`DeltaPath=200B`、`DeltaEntry=208B`；256 条 Delta 的 backing array 约 52 KiB，边界 Clone 会再复制一份。
+- 影响：定长路径具备良好局部性，但不是“小结构体”。在当前 64 位布局下 `PathKey=40B`、`PathNode=48B`、`Path=200B`、`DeltaEntry=208B`；256 条 Delta 的 backing array 约 52 KiB，边界 Clone 会再复制一份。
 - 证据：`Compact/RepeatedField64` 约 `2.28-2.42 us/op, 0 allocs`；`Compact/MapItemPaths256` 约 `45.2-47.6 us/op, 11560 B/op, 4 allocs`；祖先 Replace 256 条约 `15.2-15.7 us/op, 0 allocs`。正式 `BenchmarkDeltaSetClone` 中，64 条约 `3.19-3.71 us/op, 13568 B/op`，256 条约 `10.47-11.29 us/op, 57344 B/op`，1024 条约 `43.26-49.05 us/op, 212992 B/op`，均为一次大块分配。
 - 当前边界：生成 Store 的 `Deltas()` 已返回新建且压实的独立投影，但 `DocumentWithResolver`、Redis/Mongo 文档构建器是公开转换 API，不能默认取得调用方切片的修改所有权。Fusion 只把投影即时交给 Redis，延迟队列不保存 Delta；当前不存在为了 MongoQueue 再复制一份 Delta 的问题。
 - 建议：保留公开转换 API 的非修改语义，不为省一次 Clone 暴露“owned delta”定制接口。下一步单独决策是否把互斥的 int/uint key 合并到一个 64 位 numeric slot；预计可把 `DeltaEntry` 从 208B 降到 176B（约 15.4%），但会联动 `PathKey` 公共构造方式、txgen 模板和全部生成文件。第一版继续保留 `any` 值解析，不引入自研值编码或生产 `unsafe`。

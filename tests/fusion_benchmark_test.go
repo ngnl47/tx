@@ -14,8 +14,8 @@ import (
 
 type benchmarkFusionRedisApplier struct{}
 
-func (benchmarkFusionRedisApplier) ApplyDeltasWithOptions(_ context.Context, spec meta.TypeSpec, _ storage.RecordKey, deltas change.DeltaSet, resolver change.FieldNameResolver, values change.DeltaValueResolver, _ storage.ApplyOptions) error {
-	_, err := txredis.BuildDocumentPatchesWithDeltas(spec, deltas, resolver, values)
+func (benchmarkFusionRedisApplier) ApplyChangesWithOptions(_ context.Context, spec meta.TypeSpec, _ storage.RecordKey, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver, _ storage.ApplyOptions) error {
+	_, err := txredis.BuildDocumentPatches(spec, source, resolver, values)
 	return err
 }
 
@@ -33,7 +33,7 @@ func (benchmarkFusionQueue) Enqueue(context.Context, fusion.DelayedOperation) er
 
 var benchmarkFusionErr error
 
-func BenchmarkFusionStrategyApplyDeltas(b *testing.B) {
+func BenchmarkFusionStrategyApplyChanges(b *testing.B) {
 	ctx := context.Background()
 	strategy := fusion.Strategy{
 		RedisApplier: benchmarkFusionRedisApplier{},
@@ -46,7 +46,7 @@ func BenchmarkFusionStrategyApplyDeltas(b *testing.B) {
 		}
 		return "power"
 	})
-	values := change.DeltaValueResolverFunc(func(change.DeltaPath) (any, bool) {
+	values := change.ValueResolverFunc(func(change.Path) (any, bool) {
 		return int64(7), true
 	})
 	key := storage.RecordKey{TypeName: "data.GDRole", ID: int64(470001)}
@@ -56,8 +56,8 @@ func BenchmarkFusionStrategyApplyDeltas(b *testing.B) {
 			DelaySave: meta.Duration{Duration: 10 * time.Minute},
 		},
 	}
-	delta := change.DeltaEntry{Path: benchmarkFusionDeltaPath(change.PathNode{Field: 1}), Op: change.OpSet}
-	deltas := change.DeltaSet{delta}
+	delta := recordedChange{Path: benchmarkFusionPath(change.PathNode{Field: 1}), Op: change.OpSet}
+	changes := recordedChanges{delta}
 
 	for _, benchmarkCase := range []struct {
 		name string
@@ -79,7 +79,7 @@ func BenchmarkFusionStrategyApplyDeltas(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for b.Loop() {
-				benchmarkFusionErr = strategy.ApplyDeltasWithOptions(ctx, benchmarkCase.spec, key, deltas, resolver, values, storage.ApplyOptions{})
+				benchmarkFusionErr = strategy.ApplyChangesWithOptions(ctx, benchmarkCase.spec, key, changes, resolver, values, storage.ApplyOptions{})
 			}
 			if benchmarkFusionErr != nil {
 				b.Fatal(benchmarkFusionErr)
@@ -88,8 +88,8 @@ func BenchmarkFusionStrategyApplyDeltas(b *testing.B) {
 	}
 }
 
-func benchmarkFusionDeltaPath(nodes ...change.PathNode) change.DeltaPath {
-	var path change.DeltaPath
+func benchmarkFusionPath(nodes ...change.PathNode) change.Path {
+	var path change.Path
 	path.Depth = uint8(len(nodes))
 	copy(path.Nodes[:], nodes)
 	return path

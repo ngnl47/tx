@@ -109,9 +109,9 @@ type Procedure interface {
 
 // CallOptions 描述根 Procedure 的执行选项。
 type CallOptions struct {
-	// AllowPendingDeltas 允许锁定对象在进入事务前已保留待落盘 delta。
+	// AllowPendingChanges 允许锁定对象在进入事务前已保留待落盘变更。
 	// 有状态运行时会在多次事务之间合并 Store 脏状态，因此需要显式开启。
-	AllowPendingDeltas bool
+	AllowPendingChanges bool
 }
 
 // Tx 是一次正在执行的单机事务。
@@ -153,7 +153,7 @@ func (tx *Tx) RecordUndo(undo change.UndoFunc) {
 	tx.undos = append(tx.undos, undo)
 }
 
-// DirtyTargets 返回本次事务经受控 Store 修改且当前仍有 delta 的根目标。
+// DirtyTargets 返回本次事务经受控 Store 修改且当前仍有待落盘变更的根目标。
 //
 // 返回顺序与事务锁顺序一致。该结果适合业务 facade 在提交后选择持久化对象；
 // 它不包含未经事务 Store API 修改的裸字段变更。
@@ -166,7 +166,7 @@ func (tx *Tx) DirtyTargets() []LockTarget {
 		if _, ok := tx.dirty[target.Key]; !ok {
 			continue
 		}
-		if store, ok := target.Store.(change.DeltaInspectable); ok && len(store.Deltas()) == 0 {
+		if store, ok := target.Store.(change.Source); ok && !store.HasChanges() {
 			continue
 		}
 		targets = append(targets, target)
@@ -425,15 +425,15 @@ func WithLocks(ctx context.Context, locks []LockTarget, fn func(context.Context)
 }
 
 func validateCleanLockTargets(locks []LockTarget, options CallOptions) error {
-	if options.AllowPendingDeltas || !CurrentConfig().Debug.CheckCleanLockTargets {
+	if options.AllowPendingChanges || !CurrentConfig().Debug.CheckCleanLockTargets {
 		return nil
 	}
 	for _, lock := range locks {
-		store, ok := lock.Store.(change.DeltaInspectable)
-		if !ok || len(store.Deltas()) == 0 {
+		store, ok := lock.Store.(change.Source)
+		if !ok || !store.HasChanges() {
 			continue
 		}
-		return fmt.Errorf("transaction: lock target %s has pending deltas before transaction", lock.Key.String())
+		return fmt.Errorf("transaction: lock target %s has pending changes before transaction", lock.Key.String())
 	}
 	return nil
 }

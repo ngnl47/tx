@@ -42,30 +42,30 @@ type LoadOptions struct {
 	ClusterSafe bool
 }
 
-// Adapter 把 DeltaSet 应用到 Redis string JSON 文档。
+// Adapter 把规范化变更流应用到 Redis string JSON 文档。
 type Adapter struct {
 	client ScriptClient
 }
 
-// NewAdapter 创建 Redis DeltaSet 适配器。
+// NewAdapter 创建 Redis 变更适配器。
 func NewAdapter(client ScriptClient) *Adapter {
 	return &Adapter{client: client}
 }
 
-// ApplyDeltasWithOptions 根据指定选项写入 Redis string JSON Delta 变更。
-func (a *Adapter) ApplyDeltasWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, deltas change.DeltaSet, resolver change.FieldNameResolver, values change.DeltaValueResolver, options storage.ApplyOptions) error {
-	if len(deltas) == 0 {
+// ApplyChangesWithOptions 根据指定选项写入 Redis string JSON 变更。
+func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver, options storage.ApplyOptions) error {
+	if source == nil || !source.HasChanges() {
 		return nil
 	}
 	if err := storage.ValidateRecordKey(spec, key); err != nil {
 		return err
 	}
-	patches, err := BuildDocumentPatchesWithDeltas(spec, deltas, resolver, values)
+	patches, err := buildDocumentPatches(spec, source, resolver, values)
 	if err != nil {
 		return err
 	}
 	if len(patches) == 0 {
-		return storage.ErrNoEffectiveDeltas
+		return storage.ErrNoEffectiveChanges
 	}
 	return a.applyDocumentPatchesWithOptions(ctx, spec, key, patches, options)
 }

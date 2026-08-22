@@ -11,7 +11,7 @@ type Config struct {
 
 // DebugConfig 是仅建议在开发、测试或灰度环境开启的事务校验项。
 type DebugConfig struct {
-	// CheckCleanLockTargets 要求事务入口的每个可检查 Store 均没有待落地 delta。
+	// CheckCleanLockTargets 要求事务入口的每个可检查 Store 均没有待落地变更。
 	// 它用于发现事务外 Store 修改混入本次提交边界的问题。
 	CheckCleanLockTargets bool
 }

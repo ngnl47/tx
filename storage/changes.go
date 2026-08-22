@@ -16,56 +16,58 @@ type ApplyOptions struct {
 	TTLSeconds int64
 }
 
-// DeltaApplier 定义支持 DeltaSet 直连落地的适配器。
+// ChangeApplier 定义支持规范化变更流直连落地的适配器。
 // TypeSpec 参数是只读元数据；适配器不得修改其中的 map、slice 或指针成员。
-type DeltaApplier interface {
-	ApplyDeltasWithOptions(context.Context, meta.TypeSpec, RecordKey, change.DeltaSet, change.FieldNameResolver, change.DeltaValueResolver, ApplyOptions) error
+// 适配器必须在第一次外部 I/O 前完整消费 Source 并处理遍历错误，不能把
+// visitor 中途返回的错误变成部分写入。
+type ChangeApplier interface {
+	ApplyChangesWithOptions(context.Context, meta.TypeSpec, RecordKey, change.Source, change.FieldNameResolver, change.ValueResolver, ApplyOptions) error
 }
 
-// DeltaStore 描述一个可由 storage 通用写入入口落地的变更 Store。
-type DeltaStore interface {
+// ChangeStore 描述一个可由 storage 通用写入入口落地的变更 Store。
+type ChangeStore interface {
+	change.Source
+	change.ValueResolver
 	TypeSpec() meta.TypeSpec
 	RecordKey() RecordKey
-	Deltas() change.DeltaSet
 	FieldNameResolver() change.FieldNameResolver
-	DeltaValueResolver() change.DeltaValueResolver
 	DefaultApplyOptions() ApplyOptions
 	AllTouch()
-	ClearDeltas()
+	ClearChanges()
 }
 
-// CollapsibleDeltaStore 描述能把细粒度变更收敛为顶层字段替换的持久化 Store。
-// txn.Runtime 配置单根 Delta 容量上限时要求持久化 Store 实现该契约。
-type CollapsibleDeltaStore interface {
-	DeltaStore
-	CollapseDeltas()
+// CollapsibleChangeStore 描述能把细粒度变更收敛为顶层字段替换的持久化 Store。
+// txn.Runtime 配置单根变更容量上限时要求持久化 Store 实现该契约。
+type CollapsibleChangeStore interface {
+	ChangeStore
+	CollapseChanges()
 }
 
-// ReadOnlyDeltaStore 标记只可用于投影或下行、不可持久化的 Store。
+// ReadOnlyChangeStore 标记只可用于变更文档或下行、不可持久化的 Store。
 // 生成的 viewStore 实现该接口；普通 Store 无需额外实现。
-type ReadOnlyDeltaStore interface {
+type ReadOnlyChangeStore interface {
 	IsViewStore() bool
 }
 
 // StoreProvider 描述能暴露生成 Store 的数据对象。
-type StoreProvider[S DeltaStore] interface {
+type StoreProvider[S ChangeStore] interface {
 	Store() S
 }
 
 // Create 全字段创建一条记录。创建语义强制 Upsert=true，成功后清理 Store 变更。
-func Create(ctx context.Context, applier DeltaApplier, store DeltaStore) error {
+func Create(ctx context.Context, applier ChangeApplier, store ChangeStore) error {
 	return CreateWithOptions(ctx, applier, store, ApplyOptions{})
 }
 
 // CreateWithOptions 全字段创建一条记录，并允许框架调用方覆盖 TTL 等写入选项。
-func CreateWithOptions(ctx context.Context, applier DeltaApplier, store DeltaStore, options ApplyOptions) error {
-	if isNilDeltaApplier(applier) {
-		return ErrNilDeltaApplier
+func CreateWithOptions(ctx context.Context, applier ChangeApplier, store ChangeStore, options ApplyOptions) error {
+	if isNilChangeApplier(applier) {
+		return ErrNilChangeApplier
 	}
-	if isNilDeltaStore(store) {
-		return ErrNilDeltaStore
+	if isNilChangeStore(store) {
+		return ErrNilChangeStore
 	}
-	if isReadOnlyDeltaStore(store) {
+	if isReadOnlyChangeStore(store) {
 		return ErrReadOnlyStore
 	}
 	key := store.RecordKey()
@@ -75,31 +77,30 @@ func CreateWithOptions(ctx context.Context, applier DeltaApplier, store DeltaSto
 	store.AllTouch()
 	options = mergeApplyOptions(store.DefaultApplyOptions(), options)
 	options.Upsert = true
-	if err := applier.ApplyDeltasWithOptions(ctx, store.TypeSpec(), key, store.Deltas(), store.FieldNameResolver(), store.DeltaValueResolver(), options); err != nil {
+	if err := applier.ApplyChangesWithOptions(ctx, store.TypeSpec(), key, store, store.FieldNameResolver(), store, options); err != nil {
 		return err
 	}
-	store.ClearDeltas()
+	store.ClearChanges()
 	return nil
 }
 
-// Save 保存 Store 当前记录的 DeltaSet。保存语义强制 Upsert=false，成功后清理 Store 变更。
-func Save(ctx context.Context, applier DeltaApplier, store DeltaStore) error {
+// Save 保存 Store 当前记录的规范化变更。保存语义强制 Upsert=false，成功后清理 Store 变更。
+func Save(ctx context.Context, applier ChangeApplier, store ChangeStore) error {
 	return SaveWithOptions(ctx, applier, store, ApplyOptions{})
 }
 
-// SaveWithOptions 保存 Store 当前记录的 DeltaSet，并允许框架调用方覆盖 TTL 等写入选项。
-func SaveWithOptions(ctx context.Context, applier DeltaApplier, store DeltaStore, options ApplyOptions) error {
-	if isNilDeltaApplier(applier) {
-		return ErrNilDeltaApplier
+// SaveWithOptions 保存 Store 当前记录的规范化变更，并允许框架调用方覆盖 TTL 等写入选项。
+func SaveWithOptions(ctx context.Context, applier ChangeApplier, store ChangeStore, options ApplyOptions) error {
+	if isNilChangeApplier(applier) {
+		return ErrNilChangeApplier
 	}
-	if isNilDeltaStore(store) {
-		return ErrNilDeltaStore
+	if isNilChangeStore(store) {
+		return ErrNilChangeStore
 	}
-	if isReadOnlyDeltaStore(store) {
+	if isReadOnlyChangeStore(store) {
 		return ErrReadOnlyStore
 	}
-	deltas := store.Deltas()
-	if len(deltas) == 0 {
+	if !store.HasChanges() {
 		return nil
 	}
 	key := store.RecordKey()
@@ -108,10 +109,10 @@ func SaveWithOptions(ctx context.Context, applier DeltaApplier, store DeltaStore
 	}
 	options = mergeApplyOptions(store.DefaultApplyOptions(), options)
 	options.Upsert = false
-	if err := applier.ApplyDeltasWithOptions(ctx, store.TypeSpec(), key, deltas, store.FieldNameResolver(), store.DeltaValueResolver(), options); err != nil {
+	if err := applier.ApplyChangesWithOptions(ctx, store.TypeSpec(), key, store, store.FieldNameResolver(), store, options); err != nil {
 		return err
 	}
-	store.ClearDeltas()
+	store.ClearChanges()
 	return nil
 }
 
@@ -123,7 +124,7 @@ func mergeApplyOptions(defaults ApplyOptions, explicit ApplyOptions) ApplyOption
 	return out
 }
 
-func isNilDeltaStore(store DeltaStore) bool {
+func isNilChangeStore(store ChangeStore) bool {
 	if store == nil {
 		return true
 	}
@@ -136,7 +137,7 @@ func isNilDeltaStore(store DeltaStore) bool {
 	}
 }
 
-func isNilDeltaApplier(applier DeltaApplier) bool {
+func isNilChangeApplier(applier ChangeApplier) bool {
 	if applier == nil {
 		return true
 	}
@@ -149,8 +150,8 @@ func isNilDeltaApplier(applier DeltaApplier) bool {
 	}
 }
 
-func isReadOnlyDeltaStore(store DeltaStore) bool {
-	readOnly, ok := store.(ReadOnlyDeltaStore)
+func isReadOnlyChangeStore(store ChangeStore) bool {
+	readOnly, ok := store.(ReadOnlyChangeStore)
 	return ok && readOnly.IsViewStore()
 }
 

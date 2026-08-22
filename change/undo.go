@@ -17,10 +17,3 @@ type UndoRecorder interface {
 type UndoBindable interface {
 	SetUndoRecorder(UndoRecorder)
 }
-
-// DeltaInspectable 由生成 Store 实现，用于在调试场景检查是否存在待落地变更。
-//
-// 该接口不包含存储元数据，避免可选事务模块依赖具体存储实现。
-type DeltaInspectable interface {
-	Deltas() DeltaSet
-}

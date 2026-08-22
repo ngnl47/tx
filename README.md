@@ -7,7 +7,7 @@
 ## 阅读路径
 
 - 初次接入：从“定位”和“快速接入流程”开始。
-- 数据开发：重点阅读“类型注解”“DeltaSet”“Redis/Mongo/Fusion 存储模型”。
+- 数据开发：重点阅读“类型注解”“变更追踪与同步遍历”“Redis/Mongo/Fusion 存储模型”。
 - 有状态服务：继续阅读“单机事务”和“有状态落盘调度”。
 - 分布式服务：按需阅读“服务发现”“内部 gRPC 协议”“msgq”“Agent”和“Actor Cluster”。
 - 框架维护：转到 [docs/design.md](docs/design.md)，不要仅根据公共 API 示例推断内部实现。
@@ -33,7 +33,7 @@
 
 - 解析和保存类型元数据。
 - 追踪字段级变更。
-- 将生成 Store 的 `DeltaSet` 落地到 Redis、Mongo 或 Fusion 策略。
+- 将生成 Store 的同步变更遍历结果落地到 Redis、Mongo 或 Fusion 策略。
 - 提供 Redis 延迟任务 backend 和 Fusion 后台回写所需组件。
 
 生成代码依赖 `tx`，`tx` 不依赖生成器工程。
@@ -127,7 +127,7 @@ func RenameRole(ctx context.Context, roleID int64, name string) error {
 这类 facade 可以使用 `storage.StoreProvider[S]` 作为泛型约束，不需要反射或 `any`：
 
 ```go
-func Save[S storage.DeltaStore](value storage.StoreProvider[S]) error {
+func Save[S storage.ChangeStore](value storage.StoreProvider[S]) error {
 	return storage.Save(ctx, writer, value.Store())
 }
 ```
@@ -1509,17 +1509,16 @@ data.GDRoleResolveFieldName(field, change.FieldNameBSON)    // "_id"
 data.GDRoleResolveFieldName(field, change.FieldNameMsgpack) // "roleId"
 ```
 
-## DeltaSet
+## 变更追踪与同步遍历
 
-当前存储 adapter 的保存主路径使用 `DeltaSet`。`DeltaSet` 只表示一次保存周期内“哪些字段需要被落地”，
-不保存字段值；Redis、Mongo、Fusion 或下行 Provider 在输出边界通过生成 Store 读取当前 `GD*` 对象里的最终值。
+当前保存主路径由生成 Store 直接遍历“哪些字段需要被落地”，不创建中间变更切片，也不保存字段值；Redis、Mongo、Fusion 或下行 Provider 在输出边界通过生成 Store 读取当前 `GD*` 对象里的最终值。
 运行时不保留字符串路径变更集合；业务代码也不直接维护脏字段容器。
 例如输出文档里的 `"Items.1001.Quantity"` 或 `"Tags.0"` 只是边界层为了 Redis/Mongo/Provider 生成的可读路径；
-`DeltaSet` 内部保存的是字段编号、map key 或 slice index 组成的结构化路径，不会在热路径上常驻这些拼接字符串。
+Store 内部保存的是字段编号、map key 或 slice index 组成的结构化路径，不会在热路径上常驻这些拼接字符串。
 
 生成 `GD*` 只内联一个私有运行时状态指针。单纯 `data.NewGDRole()`、完整编解码或只读传递不会创建 Store；首次调用 setter、`Store()` 或 `BeginChange()` 时才按需创建 Store/snapshot sidecar。该细节由生成代码维护，业务仍只使用 `role.SetName(...)`、`db.Save(role)` 等高层 API。
 
-Delta 的内部结构、Compact 规则、物理尺寸和 benchmark 方法属于维护者设计，见 [DeltaSet 内核](docs/design.md#deltaset-内核) 与 [性能分级与验证](docs/design.md#性能分级与验证)。
+同步变更遍历、帧内合并、物理尺寸和 benchmark 方法属于维护者设计，见 [生成式变更内核](docs/design.md#生成式变更内核) 与 [性能分级与验证](docs/design.md#性能分级与验证)。
 
 ### 常用业务写法
 
@@ -1554,7 +1553,7 @@ change.Document{
 }
 ```
 
-如果用于 cmd 下行，生成代码会流式遍历 Store 当前 dirty 状态，直接构建 Msgpack 字段名文档，不会先创建中间 `DeltaSet`：
+如果用于 cmd 下行，生成代码会流式遍历 Store 当前 dirty 状态，直接构建 Msgpack 字段名文档：
 
 ```go
 body, err := role.ChangeDocument(change.FieldNameMsgpack)
@@ -1566,7 +1565,7 @@ if err != nil {
 例如 `HeadImg` 的 tag 是 `msgpack:"hi,omitempty"`，那么下行变更文档里使用 `hi`，不是 Go 字段名
 `HeadImg`。
 
-`Deltas()` 返回已经按字段和集合位置规范化的 `change.DeltaSet`。生成 Store 内部使用固定字段槽、集合 key/index 状态和 dirty 子 Store 记录变更，不在每次 setter 时追加完整 DeltaEntry；`ChangeDocument(kind)` 通过 `ProjectDeltas` 直接消费这些状态，真正落库仍由 `tx/storage` 的通用 `Create` / `Save` 执行。
+生成 Store 内部使用固定字段槽、集合 key/index 状态和 dirty 子 Store 记录变更，不在每次 setter 时追加完整路径项；`ChangeDocument(kind)` 与 `tx/storage` 的通用 `Create` / `Save` 都通过 `VisitChanges` 直接消费这些状态。
 
 四套字段名使用同一个入口，区别只由参数表达：
 
@@ -1584,7 +1583,7 @@ Provider 固定选择 Msgpack 名。
 ### Store 树、共享引用与 viewStore
 
 `GD*Store` 不复制业务数据，而是绑定一个 `GD*` 引用并保存该路径上的字段选择和变更状态。父 Store
-按需持有直接指针、map key、slice index 的子 Store，最终在 `Deltas()` 或 `ChangeDocument(kind)` 边界递归投影：
+按需持有直接指针、map key、slice index 的子 Store，最终在保存、`VisitChanges` 或 `ChangeDocument(kind)` 边界递归投影：
 
 ```text
 GDRoleStore
@@ -1616,7 +1615,7 @@ for _, role := range guildRoles {
 不要期待 `gift.Store().SetQuantity(2)` 自动把变更扩散到所有引用它的角色；独立 `gift.Store()` 只描述
 `gift` 自己作为根对象时的变更，不具备“我属于哪些角色”的业务上下文。
 
-`viewStore` 与主 Store 使用同一种状态树和 Delta 投影逻辑，但用途是只读下行投影：主 Store 可以修改数据并保存；
+`viewStore` 与主 Store 使用同一种状态树和变更遍历逻辑，但用途是只读下行投影：主 Store 可以修改数据并保存；
 viewStore 只选择需要下行的字段，不参与持久化。生成代码会保护 viewStore 的修改 API，错误调用 `Set`、`Update`、
 `Delete` 等方法会立即报错，避免把视图误当成业务写入器。
 
@@ -1682,7 +1681,7 @@ send(body)
 
 ### 按帧合并 viewStore
 
-战场、沙盘等逻辑可能在一帧内产生多批变更，但只希望广播一次。生成 Store 可以合并同一 `GD*` 上的脏元数据，不需要把每批 view 展开为 DeltaSet 后再 Compact：
+战场、沙盘等逻辑可能在一帧内产生多批变更，但只希望广播一次。生成 Store 可以直接合并同一 `GD*` 上的脏元数据：
 
 ```go
 role := data.NewGDRole()
@@ -1694,16 +1693,20 @@ role.Items = map[int32]*data.GDItem{
 // 第一批修改。
 first, _ := role.ItemsStore().Get(1001)
 first.SetQuantity(2)
-frame := role.Store().View()
-role.ClearChanges()
+frame := role.NewViewStore()
+frameFirst, _ := frame.ItemsStore().Get(1001)
+frameFirst.TouchQuantity()
 
 // 同一帧内的后续修改。
 first, _ = role.ItemsStore().Get(1001)
 first.SetQuantity(3) // 同路径后写覆盖前写
 second, _ := role.ItemsStore().Get(1002)
 second.SetQuantity(9)
-next := role.Store().View()
-role.ClearChanges()
+next := role.NewViewStore()
+nextFirst, _ := next.ItemsStore().Get(1001)
+nextFirst.TouchQuantity()
+nextSecond, _ := next.ItemsStore().Get(1002)
+nextSecond.TouchQuantity()
 
 if err := frame.MergeChanges(next); err != nil {
 	return err
@@ -1715,31 +1718,31 @@ if err != nil {
 // body 只包含 Items.1001.Quantity=3 和 Items.1002.Quantity=9。
 ```
 
-`MergeChanges` 只接受引用同一份 `GD*` 数据的 Store；不同对象会返回 `change.ErrDeltaValueMismatch`。如果后续批次整体 `Replace` 或 `Clear` 了 `Items`，该父字段会吸收此前的 `Items.*` 子路径。合并后的 view 仍读取当前 `GD*`，适合在同一 Actor/实体锁定区间内累计；跨协程排队前应立即调用 `ChangeDocument(kind)` 物化，不要把 view 本身放入异步队列。
+`MergeChanges` 只接受引用同一份 `GD*` 数据的 Store；不同对象会返回 `change.ErrValueMismatch`。如果后续批次整体 `Replace` 或 `Clear` 了 `Items`，该父字段会吸收此前的 `Items.*` 子路径。反过来，前一批 `ClearItems()`、后一批重新写入 `Items[1001]` 时，合并结果会提升为当前整个 `Items` 的 Replace，而不是继续输出空 map。`NewViewStore()` 的状态独立于主 Store，所以上例不会清掉待落库 dirty。合并后的 view 仍读取当前 `GD*`，适合在同一 Actor/实体锁定区间内累计；跨协程排队前应立即调用 `ChangeDocument(kind)` 物化，不要把 view 本身放入异步队列。
 
-框架扩展需要直接消费结构化路径时，可以使用高级接口：
+框架扩展需要直接消费结构化路径时，可以使用高级接口。`VisitChanges` 只做同步遍历，不物化中间切片；需要文档时使用 `ChangeDocument(kind)` 或底层 `change.BuildDocument`：
 
 ```go
-err := role.Store().ProjectDeltas(change.DeltaVisitorFunc(
-	func(path change.DeltaPath, op change.DeltaOp) error {
+err := role.Store().VisitChanges(change.VisitorFunc(
+	func(path change.Path, op change.Op) error {
 		// 同步处理；不要在回调外假定当前 GD 值保持不变。
 		return nil
 	},
 ))
 ```
 
-普通业务不需要调用 `ProjectDeltas` 或 `Deltas()`；优先使用生成文档、cmd Provider 和项目 `db.Save(role)` facade。
+普通业务不需要调用 `VisitChanges`；优先使用生成文档、cmd Provider 和项目 `db.Save(role)` facade。
 
 ### 集合递归深度预算
 
-`change.MaxDeltaDepth` 当前为 `4`，它是集合子对象路径的真实递归预算，而不是仅用于存储的数组长度。
+`change.MaxPathDepth` 当前为 `4`，它是集合子对象路径的真实递归预算，而不是仅用于存储的数组长度。
 map key 或 slice index 与所属字段合并为一个路径节点，因此下面这条路径正好占用四层：
 
 ```text
 Role.Items[1001].Attrs["atk"].Buffs[2].Modifiers[7]
 ```
 
-Store 树投影和 `BeginChange/SaveChange` 快照 diff 都使用同一预算。若业务继续修改第五层，框架会立即停止
+Store 树遍历和 `BeginChange/SaveChange` 快照 diff 都使用同一预算。若业务继续修改第五层，框架会立即停止
 向下追踪，并把最近可解析祖先改为整体覆盖，保证最终数据正确且避免无意义的深层遍历。例如：
 
 ```go
@@ -1748,28 +1751,19 @@ Store 树投影和 `BeginChange/SaveChange` 快照 diff 都使用同一预算。
 buff.SetValue(9)
 ```
 
-该数据类型首次发生这种降级时会输出一次结构化警告。它不是业务错误，也不会 panic；警告用于提示这条路径的
-持久化写放大已经超过当前的精细追踪预算。
+同一个深度四祖先下面即使有多个第五层子字段同时修改，也只投影一次该祖先 Replace。该数据类型首次发生这种
+降级时会输出一次结构化警告。它不是业务错误，也不会 panic；警告用于提示这条路径的持久化写放大已经超过当前的精细追踪预算。
 
 ```go
 role := data.NewGDRole()
 role.SetName("alice")
 role.SetName("bob")
 
-deltas := role.Store().Deltas()
-// 只保留 Name 字段被 Set 的 Delta 记录；值不保存在 DeltaEntry 中。
-```
-
-`DeltaSet` 也可以在边界转成 `change.Document`。转换会先复制再压缩，不会污染 Store 里原始的
-变更队列：
-
-```go
-doc := role.Store().Deltas().DocumentWithResolver(
-	change.FieldNameResolverFunc(data.GDRoleResolveFieldName),
-	change.FieldNameMsgpack,
-	role.Store(),
-)
-// 如果 HeadImg 的 msgpack 字段名是 hi，则 doc.Set["hi"] 是当前头像值。
+doc, err := role.ChangeDocument(change.FieldNameGo)
+if err != nil {
+	return err
+}
+// 同一路径只投影一次，doc.Set["Name"] == "bob"。
 ```
 
 ### Set、Touch、Replace、Clear
@@ -1788,7 +1782,7 @@ doc := role.Store().Deltas().DocumentWithResolver(
 
 ```go
 role.ClearHeadImg()
-// 普通字段：DeltaSet 只记录 HeadImg 需要写入；边界从 Store 当前值读取到 Go 零值。
+// 普通字段：Store 只记录 HeadImg 需要写入；边界从 Store 当前值读取到 Go 零值。
 // Redis/Mongo 中会保留 headImg 字段，值为 ""。
 
 role.TasksStore().Clear()
@@ -1918,10 +1912,10 @@ txn.Configure(txn.Config{
 
 role.SetName("outside-transaction")
 err := txn.Run(ctx, txn.Locks(role), process)
-// err: transaction: lock target role:1001 has pending deltas before transaction
+// err: transaction: lock target role:1001 has pending changes before transaction
 ```
 
-项目应在启动时把自己的 yml 配置转换为这项配置；`tx` 不读取项目文件。生产环境通常保持默认 `false`，避免每个事务入口递归投影整棵 Store 树。开启后应先保存或 `ClearDeltas()` 处理事务外已有的 Store 变更，再进入事务；不要把事务外修改混入本次提交边界。
+项目应在启动时把自己的 yml 配置转换为这项配置；`tx` 不读取项目文件。生产环境通常保持默认 `false`，避免每个事务入口递归投影整棵 Store 树。开启后应先保存或 `ClearChanges()` 处理事务外已有的 Store 变更，再进入事务；不要把事务外修改混入本次提交边界。
 
 常驻内存实体由 `txn.Runtime` 管理时，前一轮事务的 delta 会刻意保留到下一次 Flush，因此必须使用 `runtime.Call`。它会在内部允许已有 delta，普通业务代码不要直接调用 `txn.CallWithOptions`。
 
@@ -2014,7 +2008,7 @@ func (p *PUpdateRole) Process(tx *txn.Tx) error {
 runtime := txn.NewRuntime(fusion, txn.RuntimeConfig{
 	FlushInterval:          10 * time.Second,
 	ShutdownFlushTimeout:   30 * time.Second,
-	MaxRootDeltaEntries:    1024,
+	MaxRootChanges:    1024,
 	HeapSoftLimitBytes:     512 << 20, // 512 MiB
 	HeapSampleInterval:     time.Second,
 	MaxPendingRoots:        0, // 可选的数量兜底
@@ -2030,7 +2024,7 @@ if err := runtime.Flush(ctx); err != nil {
 }
 ```
 
-`Flush` 会为每个实体取得与 `Procedure` 相同的本机锁，在锁内执行一次 `Deltas -> Compact`，并将这份投影交给框架写入入口，成功后才清理 delta。这样并发 Procedure 不会在 Flush 读取 `GD*` 当前值时修改同一个对象：
+`Flush` 会为每个实体取得与 `Procedure` 相同的本机锁，在锁内同步遍历 Store 当前状态，并将结果交给框架写入入口，成功后才清理变更。这样并发 Procedure 不会在 Flush 读取 `GD*` 当前值时修改同一个对象：
 
 ```text
 事务 1：role.SetGold(100)
@@ -2051,19 +2045,19 @@ if err := runtime.Shutdown(context.WithoutCancel(serviceCtx)); err != nil {
 }
 ```
 
-`Run` 遇到单次写入错误会记录错误并保留目标，下一轮继续重试。`Shutdown` 在 `ShutdownFlushTimeout` 有效期内立即 Flush 并按 `FlushInterval` 继续尝试；截止时间到达时会返回错误和剩余待刷数量。该超时只约束内存 Store 到 Redis 的最终刷盘，不等待 Fusion 的 Redis 延迟队列回写 Mongo。第一版不把 `DeltaSet`、Store 或 GD 指针交给 Actor 外的异步写队列；如未来需要解除 Flush 的 I/O 持锁时间，应在锁内物化不可变写入批次，并补齐顺序确认与失败重试语义。
+`Run` 遇到单次写入错误会记录错误并保留目标，下一轮继续重试。`Shutdown` 在 `ShutdownFlushTimeout` 有效期内立即 Flush 并按 `FlushInterval` 继续尝试；截止时间到达时会返回错误和剩余待刷数量。该超时只约束内存 Store 到 Redis 的最终刷盘，不等待 Fusion 的 Redis 延迟队列回写 Mongo。第一版不把 Store 或 GD 指针交给 Actor 外的异步写队列；如未来需要解除 Flush 的 I/O 持锁时间，应在锁内生成不可变后端写入命令，并补齐顺序确认与失败重试语义。
 
-`MaxRootDeltaEntries` 限制单个 pending root 的细粒度 Delta 数量。Runtime 只在 `Flush` 取得该对象锁、准备投影时检查，避免每次 `Procedure` 提交递归遍历整棵 Store 树；若数量超过预算，就清理树内的细粒度 dirty 状态，并按当前 `GD*` 值记录全部可更新顶层字段的 `Replace`，自动跳过 BSON `_id`。例如一轮持续修改 `role.Items[1..2000]` 时，预算为 `1024` 不会拒绝这次业务，而会把本次保存收敛为 `Name`、`Items` 等顶层字段的覆盖写，避免不同 key 长期累积。该收敛会记录一条 `txn runtime root deltas collapsed` 告警；它限制 dirty 路径，不限制 `GD*` 业务对象本身或干净子 Store 缓存的内存。
+`MaxRootChanges` 限制单个 pending root 的细粒度变更数量。Runtime 只在 `Flush` 取得该对象锁、准备构建文档时检查，避免每次 `Procedure` 提交递归遍历整棵 Store 树；预算检查与 adapter 的正常文档构建共用一次 visitor 遍历，只有超过预算时才会中止内存文档构建、收敛 dirty 树并重新构建。若数量超过预算，Runtime 按当前 `GD*` 值记录全部可更新顶层字段的 `Replace`，自动跳过 BSON `_id`。例如一轮持续修改 `role.Items[1..2000]` 时，预算为 `1024` 不会拒绝这次业务，而会把本次保存收敛为 `Name`、`Items` 等顶层字段的覆盖写，避免不同 key 长期累积。该收敛会记录一条 `txn runtime root changes collapsed` 告警；它限制 dirty 路径，不限制 `GD*` 业务对象本身或干净子 Store 缓存的内存。
 
-txgen 生成的 Store 已实现 `storage.CollapsibleDeltaStore`。高级用户若手写持久化 Store，并把
-`MaxRootDeltaEntries` 配置为非零，也必须实现 `CollapseDeltas()`；否则 `Runtime.Call` 会在执行
+txgen 生成的 Store 已实现 `storage.CollapsibleChangeStore`。高级用户若手写持久化 Store，并把
+`MaxRootChanges` 配置为非零，也必须实现 `CollapseChanges()`；否则 `Runtime.Call` 会在执行
 `Procedure.Process` 前、`Runtime.MarkDirty` 会在登记 pending root 前返回
-`txn.ErrDeltaCollapseUnsupported`。这保证容量配置不会对自定义 Store 静默失效。配置为 `0` 时不启用该预算，
-普通 `storage.DeltaStore` 仍可使用。
+`txn.ErrChangeCollapseUnsupported`。这保证容量配置不会对自定义 Store 静默失效。配置为 `0` 时不启用该预算，
+普通 `storage.ChangeStore` 仍可使用。
 
 ```go
 err := runtime.Call(ctx, procedure)
-if errors.Is(err, txn.ErrDeltaCollapseUnsupported) {
+if errors.Is(err, txn.ErrChangeCollapseUnsupported) {
 	return fmt.Errorf("persistent store must support delta collapse: %w", err)
 }
 ```
@@ -2162,7 +2156,7 @@ if ok {
 
 `Append`、`RemoveAt`、`Replace`、`Clear` 这类改变长度、顺序或整体语义的操作仍会记录整字段 dirty；如果同一轮里已经存在整字段 dirty，后续子字段 dirty 会被吸收。
 
-这里的 `"Tags.0"` 和 `"Dress.0.Expire"` 都是输出边界文档 key，不是 Store 内部 dirty 结构。Store 内部保存 `Tags` 的 index 状态，以及 `Dress[0]` 对应子 Store 的 `Expire` 字段槽；只有 `Deltas()` 或文档边界才组合成 `DeltaEntry{Path: Tags + index 0}` 和 `DeltaEntry{Path: Dress + index 0 + Expire}`。
+这里的 `"Tags.0"` 和 `"Dress.0.Expire"` 都是输出边界文档 key，不是 Store 内部 dirty 结构。Store 内部保存 `Tags` 的 index 状态，以及 `Dress[0]` 对应子 Store 的 `Expire` 字段槽；文档和存储边界只在同步遍历时构造结构化路径。
 
 `Append`、`RemoveAt`、`Clear`、`Replace` 会改变长度、顺序或整体语义，因此仍然记录整字段 dirty。
 生成代码不会暴露字符串 path 级标脏 API，业务侧应使用强类型方法。
@@ -2201,7 +2195,7 @@ role.ItemsStore().Set(1001, &data.GDItem{ItemId: 1001, Quantity: 3})
 role.Store().AllTouch()
 ```
 
-执行后不再保留 `Name` 或集合字段的局部记录，`Deltas()` 会按当前 GD 值投影全部顶层字段。
+执行后不再保留 `Name` 或集合字段的局部记录，后续投影会按当前 GD 值输出全部顶层字段。
 
 `ClearChanges()` 或 Store 的 `AllUnTouch()` 用于加载完成、主动放弃本轮修改，或显式 Store 写入成功后手动清空脏标记。它会递归清理整棵 Store 树的字段、集合和子节点状态。
 普通请求链路建议使用项目 facade 自动清理：
@@ -2224,20 +2218,20 @@ if err := storage.Save(ctx, fusionStore, store); err != nil {
 }
 ```
 
-这种写法适合 SLG/MMO 战斗、沙盘状态等有状态高频对象；关键是由业务循环明确控制“累计多久、何时保存”。保存成功后 Store 会自动清理 dirty；如果需要先广播或排队合并，可以在保存前复制 `store.View()` 或 `store.Deltas()`。
+这种写法适合 SLG/MMO 战斗、沙盘状态等有状态高频对象；关键是由业务循环明确控制“累计多久、何时保存”。保存成功后 Store 会自动清理 dirty；同一 GD 的帧内广播合并应在保存前复制 `store.View()` 并调用 `MergeChanges()`。跨对象广播应先分别生成不可变文档，再由业务消息组合。
 
 生成的加载方法在成功读取后会自动清空脏标记，避免“刚加载出来的数据”被误认为需要保存。
 
-### DeltaSet 到后端文档
+### 生成变更到后端文档
 
-生成 Store 在保存/投影边界输出 `change.DeltaSet`：
+生成 Store 在保存或文档构建边界直接输出结构化 `Path + Op`：
 
 - `OpSet`：设置标量字段值，或修改已存在集合元素的子字段。
 - `OpReplace`：覆盖集合、结构体指针或集合元素的当前值。它保留到 Redis 边界，Lua 按路径直接赋值，不走递归 merge，因此旧对象的遗漏字段不会残留。
 - `OpDelete`：删除字段或集合元素，Mongo 边界会转成 `$unset`，Redis 边界会从 JSON 文档移除该路径。
 - `OpClear`：清空集合容器，保留字段但写为空 map/slice。
 - `FieldID`：生成代码提供的稳定字段编号，避免热路径反复保存字段名字符串。
-- `DeltaPath`：字段路径。生成集合 Store 会在这里表达 map key、slice index 和生成对象子字段路径。
+- `Path`：字段路径。生成集合 Store 会在这里表达 map key、slice index 和生成对象子字段路径。
 
 `OpClear` 的投影会保留集合类别，不能把空 slice 误发成空对象：
 
@@ -2263,12 +2257,12 @@ _ = dress
 生成代码会传入字段名 resolver，把字段编号解析为字段名：
 
 ```text
-DeltaPath{FieldID(fieldGDRoleName)} -> Name
-DeltaPath{FieldID(fieldGDRoleItems)} -> Items
+Path{FieldID(fieldGDRoleName)} -> Name
+Path{FieldID(fieldGDRoleItems)} -> Items
 ```
 
 变更落地和下行投影不会对整个数据对象做全量 `json.Marshal`、`bson.Marshal` 或
-`msgpack.Marshal`。`DeltaSet` 只遍历本保存周期内的脏字段，通过生成的 resolver 或
+`msgpack.Marshal`。生成式投影只遍历本保存周期内的脏字段，通过生成的 resolver 或
 `TypeSpec` 转成目标后端字段名，再生成局部 patch/update document。若某个脏字段本身是
 map、slice 或 struct 指针，具体字段值在最终编码时仍会交给对应 JSON/BSON/Msgpack 编码器展开。
 完整对象读取、回源或整文档替换路径才会依赖序列化库按 tag 映射字段。
@@ -2310,7 +2304,7 @@ arena:{roleId}:id
 
 ### 写入流程
 
-生成 Store 会把业务变更转成 `DeltaSet`，并优先交给实现了 `storage.DeltaApplier` 的 Redis adapter：
+生成 Store 会以 `change.Source` 直接交给实现了 `storage.ChangeApplier` 的 Redis adapter，不创建中间变更切片：
 
 ```go
 role := data.NewGDRole()
@@ -2325,7 +2319,7 @@ role.SetPower(47)
 err := storage.Create(ctx, redisCluster, role.Store())
 ```
 
-Redis adapter 收到 Delta 变更后会：
+Redis adapter 收到规范化变更后会：
 
 1. 根据 `TypeSpec` 和 `RecordKey` 生成 Redis key 前缀，例如 `role:{470001}`。
 2. 根据字段的 Go 字段名定位 `redis:"subKey:..."`，再用 JSON 字段名写入 main 文档或 subKey 文档。
@@ -2346,7 +2340,7 @@ err := storage.Save(ctx, redisCluster, role.Store())
 `storage.ErrNotExists`，避免普通更新意外创建新热数据。
 
 `storage.Save` 和 `storage.SaveWithOptions` 是框架装配层 API。业务项目应再包一层 facade，隐藏
-`context`、writer、Store 和 Delta 投影；例如 txgame 中业务代码只需要：
+`context`、writer、Store 和变更遍历；例如 txgame 中业务代码只需要：
 
 ```go
 role.SetName("bob")
@@ -2355,7 +2349,7 @@ if err := db.Save(role); err != nil {
 }
 ```
 
-框架不会提供“调用方先取得 `store.Deltas()`，再把这批 Delta 传回保存并清理 Store”的公共入口。
+框架写入入口直接接收 Store，并在成功后清理其变更状态；调用方不需要管理独立变更批次。
 投影和清理必须在同一个框架所有权边界内完成，避免投影后新增的其他 dirty 路径被一并清理。
 
 ### 局部路径的类型约束
@@ -2714,7 +2708,7 @@ redisCluster := txredis.NewCluster(routeTable, shards)
 ```
 
 `NewCluster` 的 shard 映射使用 `txredis.ScriptClient` 强类型约束，不能把任意对象塞入 Redis endpoint。若实际读写时
-adapter 没有可用 client（包括接口中包装了 nil 指针），会返回 `txredis.ErrClientNotConfigured`；空 `DeltaSet` 或空批量读取
+adapter 没有可用 client（包括接口中包装了 nil 指针），会返回 `txredis.ErrClientNotConfigured`；空变更源或空批量读取
 仍是正常 no-op，不会因为未装配 client 失败。
 
 ```go
@@ -2770,7 +2764,7 @@ arena:{1001}:90001:members
 
 Mongo adapter 当前支持：
 
-- `ApplyDeltasWithOptions`：将生成 Store 的 `DeltaSet` 转成 Mongo update 文档。
+- `ApplyChangesWithOptions`：直接遍历生成 Store，把结构化变更转成 Mongo update 文档。
 - `LoadDocument`：按记录键读取单条文档，可带 projection 字段。
 - `LoadDocuments`：按记录键批量读取并保持返回顺序。
 - `ReplaceDocument`：整文档替换，供 Fusion 延迟保存回写使用。
@@ -2941,7 +2935,7 @@ err := storage.Save(ctx, mongoCluster, role.Store())
 
 如果 Mongo 中没有对应记录，普通保存不会新建文档。需要明确创建时使用 `storage.Create`。
 Mongo adapter 会校验单文档写入结果：普通 `Save` 未匹配记录时返回 `storage.ErrNotExists`，并保留
-Store 当前 Delta 供业务定位或重试；`Create` 只接受“匹配已有记录”或“新建一条记录”两种结果。
+Store 当前变更供业务定位或重试；`Create` 只接受“匹配已有记录”或“新建一条记录”两种结果。
 把字段写为当前已有值时，Mongo 的 `ModifiedCount` 可以为 `0`，这仍是合法成功。
 
 集合元素删除会转成 Mongo `$unset`：
@@ -3099,7 +3093,7 @@ func (f fakeLoader) LoadDocument(context.Context, meta.TypeSpec, storage.RecordK
 
 Fusion 策略的当前保存路径：
 
-1. 业务变更生成 `DeltaSet`。
+1. 业务变更记录在生成 Store 的字段槽、集合 key/index 和 dirty 子 Store 中。
 2. Redis 同步写入热数据。
 3. Redis delayed task backend 写入延迟保存任务。
 4. Scheduler 到期 claim 任务。

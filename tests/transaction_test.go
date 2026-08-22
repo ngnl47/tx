@@ -19,25 +19,29 @@ type transactionTestStore struct {
 
 type transactionDirtyStore struct {
 	transactionTestStore
-	deltas change.DeltaSet
+	changes recordedChanges
 }
 
-func (store *transactionDirtyStore) Deltas() change.DeltaSet {
-	return store.deltas
+func (store *transactionDirtyStore) HasChanges() bool {
+	return len(store.changes) > 0
+}
+
+func (store *transactionDirtyStore) VisitChanges(visitor change.Visitor) error {
+	return store.changes.VisitChanges(visitor)
 }
 
 func (store *transactionDirtyStore) Set(value int) {
 	previousValue := store.value
-	previousDeltas := store.deltas.Clone()
+	previousDeltas := store.changes.clone()
 	if store.recorder != nil {
 		store.recorder.RecordUndo(func() {
 			store.value = previousValue
-			store.deltas = previousDeltas
+			store.changes = previousDeltas
 		})
 	}
 	store.value = value
-	store.deltas = append(store.deltas, change.DeltaEntry{
-		Path: change.DeltaPath{Nodes: [change.MaxDeltaDepth]change.PathNode{{Field: 1}}, Depth: 1},
+	store.changes = append(store.changes, recordedChange{
+		Path: change.Path{Nodes: [change.MaxPathDepth]change.PathNode{{Field: 1}}, Depth: 1},
 		Op:   change.OpSet,
 	})
 }
@@ -140,8 +144,8 @@ func TestTransactionDebugCheckRejectsPendingDeltasAtEntry(t *testing.T) {
 	t.Cleanup(func() { txn.Configure(previousConfig) })
 	txn.Configure(txn.Config{Debug: txn.DebugConfig{CheckCleanLockTargets: true}})
 
-	store := &transactionDirtyStore{deltas: change.DeltaSet{{
-		Path: change.DeltaPath{Nodes: [change.MaxDeltaDepth]change.PathNode{{Field: 1}}, Depth: 1},
+	store := &transactionDirtyStore{changes: recordedChanges{{
+		Path: change.Path{Nodes: [change.MaxPathDepth]change.PathNode{{Field: 1}}, Depth: 1},
 		Op:   change.OpSet,
 	}}}
 	called := false
@@ -151,14 +155,14 @@ func TestTransactionDebugCheckRejectsPendingDeltasAtEntry(t *testing.T) {
 		called = true
 		return nil
 	})
-	if err == nil || !strings.Contains(err.Error(), "role:1001") || !strings.Contains(err.Error(), "pending deltas") {
-		t.Fatalf("Run error = %v, want pending delta validation error", err)
+	if err == nil || !strings.Contains(err.Error(), "role:1001") || !strings.Contains(err.Error(), "pending changes") {
+		t.Fatalf("Run error = %v, want pending change validation error", err)
 	}
 	if called {
-		t.Fatal("transaction callback ran with pending deltas")
+		t.Fatal("transaction callback ran with pending changes")
 	}
 	if store.recorder != nil {
-		t.Fatal("store recorder bound after pending delta validation failed")
+		t.Fatal("store recorder bound after pending change validation failed")
 	}
 }
 
@@ -167,8 +171,8 @@ func TestTransactionDebugCheckIsDisabledByDefault(t *testing.T) {
 	t.Cleanup(func() { txn.Configure(previousConfig) })
 	txn.Configure(txn.Config{})
 
-	store := &transactionDirtyStore{deltas: change.DeltaSet{{
-		Path: change.DeltaPath{Nodes: [change.MaxDeltaDepth]change.PathNode{{Field: 1}}, Depth: 1},
+	store := &transactionDirtyStore{changes: recordedChanges{{
+		Path: change.Path{Nodes: [change.MaxPathDepth]change.PathNode{{Field: 1}}, Depth: 1},
 		Op:   change.OpSet,
 	}}}
 	called := false
