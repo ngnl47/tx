@@ -547,10 +547,11 @@ Store 生成、Redis key helper、Mongo filter helper、字段编号 resolver �
 - map wrapper key 级状态与生成对象指针子 Store。
 - slice wrapper 稳定 index 级状态与 `[]*GD...` 子 Store。
 - 主 Store 使用可变 Store 状态树；StoreView 使用独立稀疏 GD 值和 txgen 生成的强类型视图状态树，不共享根 GD，也不依赖结构漂移回退。
+- 生成包提供单份私有基础层，收敛集合状态、字段 undo、加载位图和 Store 读取装配；具体 `GD*Store.go` 只保留公开强类型 API 与捕获热路径的静态字段路由。
 
 完成标准：
 
-- 生成式投影、确定性帧内合并、危险 string key 降级、snapshot diff 与路径 Store 树已完成。当前生成 Store 在导出边界递归访问 dirty 路径；共享引用按路径隔离，StoreView 在捕获边界复制所选值并从类型系统上排除持久化入口。
+- 生成式投影、确定性帧内合并、危险 string key 降级、snapshot diff、路径 Store 树和生成包基础层已完成。当前生成 Store 在导出边界递归访问 dirty 路径；共享引用按路径隔离，StoreView 在捕获边界复制所选值并从类型系统上排除持久化入口。真实 txgame 生成 Store 包总行数已由 `411,893` 收敛到 `303,451`，并由 fixture 体积约束与运行时 benchmark 共同防回退。
 
 ## Open Design Details
 

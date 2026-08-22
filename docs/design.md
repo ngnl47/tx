@@ -192,6 +192,18 @@ Redis 和 Mongo 是使用这些名称的后端，不是额外的字段名体系�
 
 `CloneTypeSpec` 只负责深拷贝可变成员；`TypeRef` 的去空格和完整名称补齐属于 Registry 注册边界。所有接收私有静态 `TypeSpec` 的 tx 内部 adapter 必须把它视为只读输入，不能修改其中的 map、slice 或指针成员。
 
+### 生成包基础层
+
+txgen 在每个 data 输出包只生成一份私有基础层，当前与类型注册表一起放在 `type_registry.go`。它不是业务 API，也不改变 `GD*`、`GD*Store` 和 `GD*StoreView` 的公开签名；职责是承接所有类型都会重复、但不需要逐字段静态展开的实现：
+
+- 集合操作状态的复制、恢复和单 key 回滚。
+- 普通字段赋值与 undo 登记。
+- 已加载字段 bitset 的查询、设置和字段名枚举。
+- RecordKey 字段补齐检查，以及单条/批量读取后的 Store 装配流程。
+- StoreView 的叶子状态、路径尾部和低频状态查询辅助逻辑。
+
+具体 `GD*Store.go` 仍保留生成期已知类型的字段 switch、集合 key/index 校验、StoreView `record/copy/visit`、嵌套 `ResolveValue` 和子 Store 路由。这些路径位于 setter、捕获、合并或文档遍历的高频调用链，静态生成能避免反射、`any` 断言和回调分发，并给编译器更多内联机会。顶层 `ResolveValue` 仍先经过单个紧凑字段 switch；只有指针、map 和 slice 的嵌套路径按类型静态展开。维护者不能只为缩短生成文件而把热路径改成动态注册表；也不能把低频固定流程重新复制到每个 Store。生成体积和运行时 benchmark 必须一起作为模板重构门槛。
+
 ### FieldID 稳定性
 
 `FieldID` 是运行时变更路径的字段身份，不是网络协议号。它由生成代码为每个结构定义并配套 resolver。维护时必须保证：
@@ -833,7 +845,7 @@ StoreView 不使用通用完整 `Path` 集合。txgen 已知每个 GD 类型的�
 
 分配次数只小幅下降，说明剩余小对象主要来自稀疏值复制和最终 `change.Document` 的字符串路径/map，而不再来自每条变更保存完整 `Path`。基准由 `BenchmarkGeneratedStoreDirtyRuntime/CaptureMergeAndBuildFrameDocument`、`CaptureAndBuildFrameDocument` 和 `CaptureLeafAndBuildFrameDocument` 持续回归。
 
-生成状态树会增加生成文件体积。固定 txgen 测试输入的 `GDRoleStore.go` 从约 `125.7 KB` 增至 `137.8 KB`，txgame 真实 `GDRoleStore.go` 从约 `664.4 KB` 增至 `723.2 KB`，增幅约 `9%`。模板使用通用 `ops` 循环处理普通字段，只为指针和集合输出专属分支；只有标量字段的类型复用生成包内的叶子状态助手。这把试验初版约 `777.9 KB` 的体积降了约 `7%`，且基准保持同一量级。当前接受这一编译期代码体积成本，以换取运行时分配字节显著下降和更强的 key 类型契约。
+生成状态树需要保留类型专属热路径，但不意味着每个 Store 都应复制完整基础设施。2026-08-22 将集合状态、字段 undo、加载位图和读取装配下沉到生成包基础层后，txgame 真实 `GDRoleStore.go` 从 `29,434` 行、约 `723 KB` 降至 `21,663` 行、约 `584 KB`；全部 `*Store.go` 加 `type_registry.go` 从 `411,893` 行、约 `10.16 MB` 降至 `303,451` 行、约 `8.22 MB`，总行数减少约 `26.3%`，源码字节减少约 `19.1%`。固定 txgen fixture 的 `GDRoleStore.go` 受 `record/copy/visit` 和嵌套 resolve 静态展开保护，设置了 `4,550` 行和 `119.5 KB` 的体积回归上限。运行时分配次数保持不变，捕获、合并和文档构建仍以 `BenchmarkGeneratedStoreDirtyRuntime` 持续校验。
 
 ## 存储抽象
 
