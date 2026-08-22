@@ -15,20 +15,6 @@ type viewStateChange struct {
 	op   Op
 }
 
-// CaptureViewState 同步复制 Source 当前的规范化变更状态。
-func CaptureViewState(source Source) (ViewState, error) {
-	if err := ValidateSource(source); err != nil {
-		return ViewState{}, err
-	}
-	var state ViewState
-	if err := source.VisitChanges(VisitorFunc(func(path Path, op Op) error {
-		return state.Record(path, op)
-	})); err != nil {
-		return ViewState{}, err
-	}
-	return state, nil
-}
-
 // Record 把一条后发生的变更合并到当前规范化状态。
 func (s *ViewState) Record(path Path, op Op) error {
 	if s == nil {

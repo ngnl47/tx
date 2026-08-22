@@ -1721,10 +1721,11 @@ role.SetPower(200)
 send(payload) // payload 仍保存 Power=100。
 ```
 
-### 按帧合并 StoreView
+### 按帧累计 StoreView
 
-战场、沙盘等逻辑可能在一帧内产生多批变更，但只希望广播一次。每批先同步捕获为独立 StoreView，再按发生顺序
-调用 `Merge`：
+战场、沙盘等逻辑可能在一帧内产生多批变更，但只希望广播一次。如果这些批次始终在同一个实体锁、Actor 或其他
+根对象所有权区间内执行，优先用 `Capture` 把当前 Store 的变更和值直接累计进已有 StoreView。它不会创建中间视图，
+也不会清理主 Store：
 
 ```go
 role := data.NewGDRole()
@@ -1752,15 +1753,10 @@ first.SetQuantity(3) // 根 GD 已变为 3，frame 仍保持 2
 second, _ := role.ItemsStore().Get(1002)
 second.SetQuantity(9)
 
-next, err := role.Store().View(nil)
-if err != nil {
+if err := frame.Capture(role.Store(), nil); err != nil {
 	return err
 }
 role.ClearChanges()
-
-if err := frame.Merge(next); err != nil {
-	return err
-}
 body, err := frame.Document(change.FieldNameMsgpack)
 if err != nil {
 	return err
@@ -1768,9 +1764,12 @@ if err != nil {
 // body 只包含 Items.1001.Quantity=3 和 Items.1002.Quantity=9。
 ```
 
-`Merge` 的接收者和 `next` 必须由同一个根 Store 捕获。生成类型不同会在编译期被拒绝；类型相同但分别来自
-`roleA.Store()`、`roleB.Store()` 时，即使字段值完全一致，也返回 `change.ErrValueMismatch`。StoreView 只保留轻量同源
-标识，不保留根 Store 或根 GD 引用；`next` 固定表示后发生批次，其值覆盖同路径的旧值。
+`Capture` 必须在根 GD 仍由当前调用方独占时同步执行，因为它会读取当前主 Store 和根 GD；返回后新增内容已经复制到
+StoreView，后续根对象修改不会使其漂移。`Capture` 不会自动调用 `ClearChanges()`，何时结束当前持久化批次仍由业务控制。
+传入其他根 Store 会返回 `change.ErrValueMismatch`。
+
+如果后续批次已经先物化成 StoreView，例如不同同步阶段先进入了帧队列，再用 `Merge` 合并独立载荷。`Merge` 不读取
+根 GD，接收者和 `next` 仍必须来自同一个根 Store：
 
 ```go
 first, _ := roleA.Store().View(nil)
@@ -1781,9 +1780,10 @@ other, _ := roleB.Store().View(nil)
 err = first.Merge(other)   // change.ErrValueMismatch
 ```
 
-如果后续批次整体 Replace/Clear/Delete `Items`，父字段会吸收此前的 `Items.*` 子路径。反过来，前一批 Clear、
-后一批重新写入子路径时，合并状态提升为 `Items Replace`，值由两份稀疏载荷重建，不回读根 GD。`Merge` 会修改
-接收者，因此应在单一所有权边界内完成；合并完毕的 StoreView 或编码后 bytes 才能按只读载荷跨协程发布。
+`Capture` 和 `Merge` 使用相同的确定性覆盖规则：后续批次整体 Replace/Clear/Delete `Items` 时，父字段吸收此前的
+`Items.*` 子路径；前一批 Clear、后一批重新写入子路径时，状态提升为 `Items Replace`。`Capture` 从当前根 GD 复制
+本批值，`Merge` 从 `next` 的稀疏载荷复制值。二者都会修改接收者，完成累计后的 StoreView 或编码后 bytes 才能按
+只读载荷跨协程发布。
 
 框架扩展需要直接消费结构化路径时，可以使用高级接口。`VisitChanges` 只做同步遍历，不物化中间切片；需要文档时使用 `Document(kind)` 或底层 `change.BuildDocument`：
 
@@ -2293,7 +2293,7 @@ if err := storage.Save(ctx, fusionStore, store); err != nil {
 }
 ```
 
-这种写法适合 SLG/MMO 战斗、沙盘状态等有状态高频对象；关键是由业务循环明确控制“累计多久、何时保存”。保存成功后 Store 会自动清理 dirty；同一 GD 的帧内广播应在保存前调用 `store.View(nil)` 同步捕获，随后对各批 StoreView 调用 `Merge()`。跨对象广播应先分别构建文档并编码为独立载荷，再由业务消息组合；载荷发布后不得修改。
+这种写法适合 SLG/MMO 战斗、沙盘状态等有状态高频对象；关键是由业务循环明确控制“累计多久、何时保存”。保存成功后 Store 会自动清理 dirty；同一 GD 的帧内广播应在保存前调用 `store.View(nil)` 捕获首批，在同一所有权区间内用 `view.Capture(store, nil)` 累计后续批次，已物化批次才使用 `Merge()`。跨对象广播应先分别构建文档并编码为独立载荷，再由业务消息组合；载荷发布后不得修改。
 
 生成的加载方法在成功读取后会自动清空脏标记，避免“刚加载出来的数据”被误认为需要保存。
 
