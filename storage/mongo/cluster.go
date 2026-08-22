@@ -54,7 +54,10 @@ func NewCluster(router Router, shards map[string]Client) (*Cluster, error) {
 }
 
 func (c *Cluster) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver, options storage.ApplyOptions) error {
-	if source == nil || !source.HasChanges() {
+	if err := change.ValidateSource(source); err != nil {
+		return err
+	}
+	if !source.HasChanges() {
 		return nil
 	}
 	adapter, err := c.adapterFor(ctx, spec, key)

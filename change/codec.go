@@ -51,8 +51,8 @@ func NewDocumentBuilder(resolver FieldNameResolver, kind FieldNameKind, values V
 
 // BuildDocument 按指定字段命名体系把规范化脏状态构建为变更文档。
 func BuildDocument(source Source, resolver FieldNameResolver, kind FieldNameKind, values ValueResolver) (Document, error) {
-	if source == nil {
-		return Document{}, ErrNilSource
+	if err := ValidateSource(source); err != nil {
+		return Document{}, err
 	}
 	if !kind.Valid() {
 		return Document{}, fmt.Errorf("change: unknown field name kind %q", kind)
@@ -69,6 +69,9 @@ func (b *DocumentBuilder) VisitChange(path Path, op Op) error {
 	if b == nil {
 		return ErrNilVisitor
 	}
+	if !path.Valid() {
+		return fmt.Errorf("%w: %#v", ErrInvalidPath, path)
+	}
 	if !op.Valid() {
 		return fmt.Errorf("change: unknown operation %d", op)
 	}
@@ -82,9 +85,9 @@ func (b *DocumentBuilder) VisitChange(path Path, op Op) error {
 		delete(b.doc.Set, name)
 		b.doc.Delete[name] = struct{}{}
 	case OpClear:
-		value, err := emptyChangeValueFor(b.values, path, display)
-		if err != nil {
-			return err
+		value, ok := ResolveClearValue(b.values, path)
+		if !ok {
+			return fmt.Errorf("change: cannot resolve clear value for path %s", display)
 		}
 		delete(b.doc.Delete, name)
 		b.doc.Set[name] = value
@@ -110,26 +113,30 @@ func (b *DocumentBuilder) Document() Document {
 	return b.doc
 }
 
-func emptyChangeValueFor(values ValueResolver, path Path, display DocumentPath) (any, error) {
+// ResolveClearValue 返回与路径当前集合类型一致的空值。
+//
+// Clear 的类型不能从根字段或字段名推测；嵌套 map/slice 必须按完整路径解析，
+// 否则存储边界可能把数组错误写成对象。
+func ResolveClearValue(values ValueResolver, path Path) (any, bool) {
 	if values == nil {
-		return nil, fmt.Errorf("change: cannot resolve current value for path %s", display)
+		return nil, false
 	}
 	value, ok := values.ResolveValue(path)
 	if !ok {
-		return nil, fmt.Errorf("change: cannot resolve current value for path %s", display)
+		return nil, false
 	}
 	valueType := reflect.TypeOf(value)
 	if valueType == nil {
-		return map[string]any{}, nil
+		return nil, false
 	}
 	switch valueType.Kind() {
 	case reflect.Map:
-		return reflect.MakeMapWithSize(valueType, 0).Interface(), nil
+		return reflect.MakeMapWithSize(valueType, 0).Interface(), true
 	case reflect.Slice:
-		return reflect.MakeSlice(valueType, 0, 0).Interface(), nil
+		return reflect.MakeSlice(valueType, 0, 0).Interface(), true
 	case reflect.Array:
-		return reflect.Zero(valueType).Interface(), nil
+		return reflect.Zero(valueType).Interface(), true
 	default:
-		return map[string]any{}, nil
+		return nil, false
 	}
 }

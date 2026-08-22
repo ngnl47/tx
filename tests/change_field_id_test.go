@@ -112,9 +112,11 @@ func TestBuildDocumentUsesRequestedFieldNameKind(t *testing.T) {
 }
 
 func TestBuildDocumentRejectsNilSource(t *testing.T) {
-	_, err := change.BuildDocument(nil, testFieldNameResolver{}, change.FieldNameGo, nil)
-	if !errors.Is(err, change.ErrNilSource) {
-		t.Fatalf("BuildDocument error = %v, want ErrNilSource", err)
+	for _, source := range []change.Source{nil, (*typedNilSource)(nil)} {
+		_, err := change.BuildDocument(source, testFieldNameResolver{}, change.FieldNameGo, nil)
+		if !errors.Is(err, change.ErrNilSource) {
+			t.Fatalf("BuildDocument(%T) error = %v, want ErrNilSource", source, err)
+		}
 	}
 }
 
@@ -122,6 +124,18 @@ func TestBuildDocumentRejectsUnknownFieldNameKind(t *testing.T) {
 	_, err := change.BuildDocument(recordedChanges{}, testFieldNameResolver{}, change.FieldNameKind("unknown"), nil)
 	if err == nil || !strings.Contains(err.Error(), "unknown field name kind") {
 		t.Fatalf("BuildDocument error = %v, want unknown field name kind", err)
+	}
+}
+
+func TestBuildDocumentRejectsInvalidPath(t *testing.T) {
+	source := recordedChanges{{
+		Path: change.Path{Depth: change.MaxPathDepth + 1},
+		Op:   change.OpSet,
+	}}
+
+	_, err := change.BuildDocument(source, testFieldNameResolver{}, change.FieldNameGo, nil)
+	if !errors.Is(err, change.ErrInvalidPath) {
+		t.Fatalf("BuildDocument error = %v, want ErrInvalidPath", err)
 	}
 }
 

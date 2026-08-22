@@ -194,12 +194,12 @@ Redis 和 Mongo 是使用这些名称的后端，不是额外的字段名体系�
 
 ### FieldID 稳定性
 
-`FieldID` 是运行时 Delta 路径的字段身份，不是网络协议号。它由生成代码为每个结构定义并配套 resolver。维护时必须保证：
+`FieldID` 是运行时变更路径的字段身份，不是网络协议号。它由生成代码为每个结构定义并配套 resolver。维护时必须保证：
 
 - 同一生成版本内唯一。
-- Delta 创建方和解析方使用同一份生成代码。
+- 变更创建方和解析方使用同一份生成代码。
 - 不把 FieldID 直接持久化成长期数据库协议。
-- 跨版本持久化任务保存记录定位，不保存依赖旧 FieldID 的长期 Delta。
+- 跨版本持久化任务保存记录定位，不保存依赖旧 FieldID 的长期变更流。
 
 ## 数据对象与 Store
 
@@ -287,10 +287,10 @@ roleB.Items[9] ----+
 
 ### 主 Store 与 viewStore
 
-主 Store 和 viewStore 使用同一种 Store 结构与 Delta 投影算法，但权限不同，不是两套生成类型：
+主 Store 和 viewStore 使用同一种 Store 结构与变更投影算法，但权限不同，不是两套生成类型：
 
-- 主 Store 的 Delta 用于持久化或有状态运行时累计。
-- viewStore 的 Delta 只用于生成一次下行投影；允许读取以及 `Touch/UnTouch` 调整字段选择。
+- 主 Store 的变更状态用于持久化或有状态运行时累计。
+- viewStore 的变更状态只用于生成一次下行投影；允许读取以及 `Touch/UnTouch` 调整字段选择。
 - viewStore 禁止 `Set/Clear/Inc`、集合增删改等业务数据修改，也禁止持久化。生成代码会在误用修改 API 时立即暴露编程错误。
 - `store.View()` 复制变更结构，不复制完整 GD 数据。
 - `view.MergeChanges(next)` 只合并同一 GD 引用上的变更结构，用于帧内累计；它不复制或冻结业务值。
@@ -360,7 +360,7 @@ if err := frame.MergeChanges(next); err != nil {
 body, err := frame.ChangeDocument(change.FieldNameMsgpack)
 ```
 
-合并规则由生成类型完成：同字段或同 key 的后写覆盖先写，后续父字段 Replace/Clear/Delete 会清除此前子路径，互不相交的字段保留。两份 Store 必须引用同一个 GD 对象；否则路径虽然相同，最终值来源不同，方法返回 `ErrValueMismatch`。该机制适合在实体锁或 Actor 单线程执行区间内累计；如果文档要跨协程排队，必须先物化为拥有独立 map 的 `change.Document`，不能把仍读取可变 GD 的 view 直接交给后台协程。
+合并规则由生成类型完成：同字段或同 key 的后写覆盖先写，后续父字段 Replace/Clear/Delete 会清除此前子路径，互不相交的字段保留。两份 Store 必须引用同一个 GD 对象；否则路径虽然相同，最终值来源不同，方法返回 `ErrValueMismatch`。如果根 GD 仍相同、但某个指针字段已直接替换，旧帧与新帧的子 Store 绑定对象不同，合并会把该父字段提升为当前完整值的 Replace，而不是合并两棵不同对象的子状态。该机制适合在实体锁或 Actor 单线程执行区间内累计；如果文档要跨协程排队，必须先物化为拥有独立 map 的 `change.Document`，不能把仍读取可变 GD 的 view 直接交给后台协程。
 
 ### 两种变更模式
 
@@ -389,7 +389,7 @@ err := role.SaveChange(...)
 - 对整棵根对象创建基线并在结束时比较。
 - 适合低频请求，不适合持续高频大对象循环。
 
-同一变更周期不能混用两种模式。框架无法在裸字段写入时同步维护 Store 的实时 Delta 和事务 undo。
+同一变更周期不能混用两种模式。框架无法在裸字段写入时同步维护 Store 的实时变更状态和事务 undo。
 
 ## 生成式变更内核
 
@@ -494,7 +494,9 @@ Depth  = 2
 
 这比把 `Items` 和 `1001` 分成两个节点更紧凑，也让“整个集合元素”和“元素子字段”天然具有前缀关系。
 
-`Depth == 0` 表示空或无效路径。有效投影路径至少一层。
+`Depth == 0` 表示空或无效路径。有效投影路径至少一层。`Path.Valid()` 同时校验深度、字段编号和 key
+类型；所有公开文档/存储边界以及生成的 `ResolveValue`、路径 resolver 都必须先校验，再访问定长数组。
+外部 `Source` 提供 `Depth > MaxPathDepth` 或未知节点时返回 `ErrInvalidPath`，不能因数组切片越界 panic。
 
 ### 最大深度
 
@@ -519,6 +521,10 @@ Depth 4: Role.Items[1001].Buffs[5].Attrs["ATK"].Value
 | `OpReplace` | 用当前完整值覆盖路径，不保留旧对象中未出现字段 |
 | `OpDelete` | 删除 map 元素或存储字段路径 |
 | `OpClear` | 清空容器，但保留字段为空 map/slice |
+
+`OpClear` 的空值类型必须由 `ValueResolver` 按完整路径解析。例如根字段是 `LordInfo`、实际变更路径是
+`LordInfo.Skills` 时，边界读取 `Skills` 的 `[]int32` 类型并构造同类型空 slice；Redis/Mongo 不得只根据
+`LordInfo` 猜成空对象。无法解析集合类型时写入失败并保留 Store 变更。
 
 `Set` 和 `Replace` 必须区分。例如旧文档为：
 
@@ -646,6 +652,8 @@ Slice：
 
 2026-08-22 删除物化 API 与过渡适配层后，使用 Go 1.26.5 在同一台 x86_64 macOS 设备复测：`VisitChanges1024` 为约 `0.082-0.088 ms/op, 0 B/op, 0 allocs/op`，`BuildDocument1024` 为约 `0.389-0.399 ms/op, 212 KB/op, 2996 allocs/op`，`MergeAndBuildFrameDocument` 为约 `0.167-0.174 ms/op, 37 KB/op, 17 allocs/op`。txgame 的真实生成结构边界中，Redis patch 为约 `0.873-0.928 ms/op, 359 KB/op, 4691 allocs/op`，Mongo update document 为约 `0.988-1.041 ms/op, 330 KB/op, 5717 allocs/op`。这些结果与删除前的同步遍历路径处于同一量级，说明精简公开 API 和运行时中间层没有引入可见性能回退。
 
+同日增加公开 `Path` 合法性防线后，先消除边界、`FullPath` 与生成 resolver 的重复扫描，再以相同 1024 key 场景复测：Redis 为约 `0.920-0.992 ms/op, 359 KB/op, 4691 allocs/op`，Mongo 为约 `0.984-1.029 ms/op, 330 KB/op, 5716 allocs/op`。结果仍处于原有波动区间且分配次数未增加；完整节点校验只在 I/O/文档边界执行一次，生成 resolver 仅保留固定数组深度护栏。
+
 同日继续把生成 GD 的三个常驻运行时字段收敛为一个懒分配 sidecar。使用 txgame 的真实生成结构与参考工程做 `unsafe.Sizeof` 对比：
 
 | 结构 | sidecar 前 | sidecar 后 | 参考工程 |
@@ -717,10 +725,10 @@ writer.ApplyChangesWithOptions(...)
     |
     +-- success -> ClearChanges
     |
-    +-- error   -> 保留全部 delta
+    +-- error   -> 保留全部变更状态
 ```
 
-只要策略整体没有成功，就不能清理 Store。Fusion 中 Redis patch 成功但延迟任务入队失败时，调用仍返回错误并保留 Delta，下一次重试允许重复写 Redis并再次登记任务。
+只要策略整体没有成功，就不能清理 Store。Fusion 中 Redis patch 成功但延迟任务入队失败时，调用仍返回错误并保留变更状态，下一次重试允许重复写 Redis并再次登记任务。
 
 ### 文档返回值严格性
 
@@ -734,7 +742,7 @@ Replacer：
 - 空 map 是合法空对象。
 - nil map 没有明确写入语义，返回 `ErrNilDocument`。
 
-未知 Lua 返回值、损坏 JSON、无有效 Delta、字段路径无法解析等都返回错误。不能把“不知道发生了什么”归类为成功。
+未知 Lua 返回值、损坏 JSON、无有效变更、字段路径无法解析等都返回错误。不能把“不知道发生了什么”归类为成功。
 
 ## Redis 后端
 
@@ -759,7 +767,7 @@ mainKey@lock              回源、回写和删除互斥锁
 - Lua 可以原子合并 main/subKey 文档和版本。
 - 与参考生产路径和云 Redis 代理兼容。
 
-代价是 Lua 局部 patch 需要解码和重新编码对应 JSON 文档。RedisJSON/ReJSON 作为未来可选 backend 评估，不改变通用 Store 和 Delta 契约。
+代价是 Lua 局部 patch 需要解码和重新编码对应 JSON 文档。RedisJSON/ReJSON 作为未来可选 backend 评估，不改变通用 Store 和变更遍历契约。
 
 ### Lua patch
 
@@ -783,7 +791,7 @@ Mongo 文档主键必然是 `_id`，但业务 `idField`、`routeBy` 和 BSON `_i
 
 同一字段可以同时承担这些角色，也可以分开。生成期必须校验 `_id` 绑定唯一，避免 routeBy/idField 与其他 `_id` 字段产生冲突。
 
-局部 Delta 最终转换为 Mongo `$set` / `$unset` 文档。Replace 复杂对象时，边界读取当前完整值并整体写入该路径；不能按子字段 set 后遗留旧 BSON 字段。
+局部变更最终转换为 Mongo `$set` / `$unset` 文档。Replace 复杂对象时，边界读取当前完整值并整体写入该路径；不能按子字段 set 后遗留旧 BSON 字段。
 
 Mongo 写入不是 setter 热路径，优先使用官方 driver 的 BSON tag 映射保证正确性；只有 benchmark 证明必要时才为具体字段生成更低层编码。
 
@@ -802,7 +810,7 @@ Fusion 不是双写事务，也不是业务事件队列。
 ### 保存状态机
 
 ```text
-业务 Store Delta
+业务 Store 变更状态
       |
       v
 Redis 同步 patch + @v 递增
@@ -810,7 +818,7 @@ Redis 同步 patch + @v 递增
       v
 Redis 延迟队列登记记录定位
       |
-      +---- 当前请求成功并清理 Store Delta
+      +---- 当前请求成功并清理 Store 变更状态
 
 到期 worker
       |
@@ -818,7 +826,7 @@ Redis 延迟队列登记记录定位
 claim task -> 读取 Redis 当前完整文档 -> Replace Mongo -> complete
 ```
 
-延迟任务不保存 GD 快照，也不保存每次 Delta。十分钟内修改同一角色多次，任务到期只读取一次 Redis 最终状态。
+延迟任务不保存 GD 快照，也不保存每次变更。十分钟内修改同一角色多次，任务到期只读取一次 Redis 最终状态。
 
 ### at-least-once
 
@@ -876,9 +884,13 @@ claim、lease、retry 和进程重启决定任务是 at-least-once。Mongo 回�
 
 启动时探活并 fast-fail；运行期由真实 I/O 错误和后台探针维护 backend generation。每次业务调用不额外 Ping。
 
+Redis 与 Mongo 的 Adapter/Cluster 构造器都在启动装配阶段校验完整 client、router 和 shard 集合，不能创建一个等待首次
+业务 I/O 才失败的半装配对象。变更写入口把 nil 或 typed-nil `change.Source` 视为调用契约错误；有效 Source 明确返回
+`HasChanges() == false` 时才执行无 I/O no-op。该区分避免“未提供输入”和“输入确实没有变化”被折叠成同一种成功结果。
+
 Fusion 任一端已知不可用时，新业务读写返回 `ErrStorageUnavailable`，避免继续接受无法可靠持久化的状态。已经存在的延迟任务不被删除，worker 仍可继续重试，Mongo 恢复后正常消费。
 
-只有 driver 能确认的网络、超时和服务端通信错误才包装为 `BackendError`。RecordKey、Delta、BSON、JSON、Lua 协议等本地语义错误不能错误地把全局 backend 标成不可用。
+只有 driver 能确认的网络、超时和服务端通信错误才包装为 `BackendError`。RecordKey、变更流、BSON、JSON、Lua 协议等本地语义错误不能错误地把全局 backend 标成不可用。
 
 ## 单机事务
 
@@ -922,7 +934,7 @@ Procedure.Locks
 按顺序获取精确 Key 锁
       |
       v
-校验 pending Delta 契约
+校验 pending 变更契约
       |
       v
 创建 Tx 并绑定 Store undo recorder
@@ -978,7 +990,7 @@ Go `sync.Mutex` 和当前 channel 信号量都不可重入。框架不通过 gor
 
 ### Undo 与 savepoint
 
-Store setter 在绑定 recorder 时先登记反向操作，再修改当前数据和 Delta。undo 闭包只捕获该操作恢复所需的局部旧值和局部 Delta 状态，不复制整个 GD。
+Store setter 在绑定 recorder 时先登记反向操作，再修改当前数据和变更状态。undo 闭包只捕获该操作恢复所需的局部旧值和局部变更状态，不复制整个 GD。
 
 `tx.Do` 和 `tx.Call(child)` 进入前记录 savepoint：
 
@@ -1352,7 +1364,7 @@ result, err := mailbox.Pub(ctx, requestWithPayload)
 
 | 等级 | 示例 | 目标 |
 | --- | --- | --- |
-| L0 | Delta 路径拼接、frame header 编解码、队列游标 | 零分配或接近零分配 |
+| L0 | 变更路径拼接、frame header 编解码、队列游标 | 零分配或接近零分配 |
 | L1 | Store setter、事务加锁、文档构建、Agent/RPC 转发 | 分配和复制有明确上限 |
 | L2 | 配置解析、服务注册、错误构造、启动装配 | 优先清晰和正确 |
 
@@ -1402,7 +1414,7 @@ go tool pprof /tmp/tx-mem.pprof
 6. 它是否引入新的跨 goroutine 所有权？
 7. 是否已有成熟库能承担通用部分？
 
-成熟依赖优先用于数据库驱动、网络协议、服务发现和标准编解码。Delta、Store、Fusion 和事务锁顺序承载 tx 的一致性语义，只有候选库完整表达这些契约时才替换。
+成熟依赖优先用于数据库驱动、网络协议、服务发现和标准编解码。变更追踪、Store、Fusion 和事务锁顺序承载 tx 的一致性语义，只有候选库完整表达这些契约时才替换。
 
 ## 文档维护规则
 

@@ -33,7 +33,7 @@
 - 同一个 `*GD...` 可以出现在多个根对象、集合字段或集合 key 中。每条路径拥有独立 Store 节点和 dirty 状态，业务数据引用可以共享；框架不维护全局反向引用表，也不自动把一次路径内修改扩散到其他引用位置。
 - `store.View()` 深复制 Store 的字段状态、集合状态和子 Store 树，浅复制绑定的 `GD*` 引用；不得直接复制含 map 或子 Store 指针的 Store 结构。主 Store 与 viewStore 的内部结构一致，但 viewStore 是只读视图模式：允许读取、`Touch/UnTouch` 和生成文档，不允许修改数据或持久化。
 - viewStore 是字段选择状态的副本，不是业务数据快照。`ChangeDocument(kind)` 在边界重新读取当前 `GD*` 值并校验指针、map key、slice index 路径；结构漂移时必须提升为最近安全祖先的整字段写，不能输出已失效的 key/index 路径。需要时刻快照时，业务必须在变更后的下一步立即物化文档或协议 body。
-- 同一帧或同一锁定周期内需要合并多批广播变更时，使用生成的 `view.MergeChanges(next)` 合并同一个 `GD*` 引用上的规范化脏元数据；同字段和同 key 后写覆盖先写，后续整字段 Replace/Clear/Delete 吸收此前子路径。不同 `GD*` 引用必须返回 `change.ErrValueMismatch`，不能把路径与另一份当前值拼接。合并后的 view 仍不是值快照，跨协程或退出对象锁前必须物化文档。
+- 同一帧或同一锁定周期内需要合并多批广播变更时，使用生成的 `view.MergeChanges(next)` 合并同一个 `GD*` 引用上的规范化脏元数据；同字段和同 key 后写覆盖先写，后续整字段 Replace/Clear/Delete 吸收此前子路径。不同 `GD*` 引用必须返回 `change.ErrValueMismatch`，不能把路径与另一份当前值拼接；根对象相同但指针字段已替换时，旧/新子 Store 身份漂移必须提升为该父字段当前完整值的 Replace。合并后的 view 仍不是值快照，跨协程或退出对象锁前必须物化文档。
 - 业务输入模型和协议字段不能直接声明生成的 `*Store` 类型；Store 只用于框架持久化和 Provider 投影输入。
 - 业务 facade 和框架 API 分层。无状态 handler 的 Store 拦截路径使用 `db.Save(role)`，snapshot diff 路径使用 `db.SaveChange(role)`；有状态服务通过项目装配的 `txn.Runtime.Call(ctx, procedure)` 进入 Procedure 运行时，由 Runtime 在后续 Flush 内部取得 Store 并调用 `storage.Save`。
 - `txgame/server/internal/db` 已提供泛型 `db.Save(role)` facade：它使用服务启动时装配的根 context 与 writer，并只在 facade 内部获取生成数据对象的 Store。
@@ -54,11 +54,11 @@
 - 持久化 adapter 的跨模块协议是 `change.Source`：它组合 `VisitChanges(visitor)` 与 O(1) 的 `HasChanges()`，避免 adapter 为判空重复遍历。txgen 为普通字段生成定长 `ops[fieldID-1]` 槽位，为集合元素生成 `ops[key/index]`，并用 `dirtyChildren` 索引真正变脏的子 Store；同一位置重复修改原地覆盖。`ChangeDocument(kind)`、Redis、Mongo、Fusion 与 Runtime 都直接消费规范化状态；Go/JSON/BSON/Msgpack 四套字段名由各自输出边界显式选择。
 - 每个生成 `GD*` 只内联一个私有 `state` 指针。Store 引用、Store/snapshot 模式和 snapshot 基线放在按需分配的 sidecar 中；只构造、编解码或传递纯数据对象时不创建 sidecar。`Copy()`、`ResetStore()` 和完整加载替换会显式解绑旧 sidecar，避免复制 Store/快照运行时状态。
 - 访问事件只传递 `Path + Op`，不持有字段值；生成 Store 会在输出边界按 Path 读取当前值。后续如需性能优化，只做局部 fast path，不提前引入自研 value 编码。
-- Redis/Mongo 写入边界要求 `ValueResolver` 能解析每条 Set/Replace 变更 的当前值；`(nil, true)` 是合法业务空值，`(_, false)` 必须显式返回错误并保留变更，不能静默写成 `null`。
+- Redis/Mongo 写入边界要求 `ValueResolver` 能解析每条 Set/Replace 变更的当前值；`(nil, true)` 是合法业务空值，`(_, false)` 必须显式返回错误并保留变更，不能静默写成 `null`。Clear 必须按完整路径解析实际 map/slice/array 类型并构造同类型空值，不能按根字段猜测嵌套集合类型。
 - 所有外部协议返回值都必须在 adapter 中显式枚举：仅已定义的成功、冲突或未命中状态可继续处理；空值、未知值和不完整结构一律返回错误，不能以 `nil` 兜底或跳过异常片段。
 - `Op` 是 adapter 输入协议的一部分；生成式 visitor 只接受 `Set/Replace/Delete/Clear`，未知操作必须返回错误，不能隐式按 Set 处理。
 - 核心命名按职责收敛：`Source`/`Visitor`/`VisitChanges` 只表达同步变更遍历，`BuildDocument` 才表达文档物化；`Path` 是结构化字段路径，`DocumentPath` 是输出边界字符串路径；`Op` 表达变更操作，生成 Store 的操作槽叫 `ops`，`dirty` 只保留给布尔脏状态与脏子节点。字段命名体系使用 `FieldNameKind`，Redis 直接选择 JSON 名；删除文档路径使用 `Document.Delete`，容器清空仍使用 `OpClear`。带口径的配置显式使用 `TTLSeconds`、`MaxBacklogMessages`、`HeapSoftLimitBytes` 等名称，不为建设期旧名称保留兼容入口。
-- `Path` 只接受已定义的 key 类型；未知 key 必须让路径解析失败，不能忽略 key 并退化为父字段写入。
+- `Path` 只接受 `1..MaxPathDepth` 的深度、非空字段编号和已定义 key 类型；外部 Source 或高级 API 输入非法路径时，通用文档、Redis、Mongo 与生成 resolver 都必须稳定返回 `change.ErrInvalidPath`/解析失败，不能数组越界 panic，也不能忽略 key 并退化为父字段写入。
 - `storage.DocumentLoader` 的结果必须一致：`exists=true` 对应非 `nil` 文档，`exists=false` 对应 `nil` 文档；批量结果逐项遵守同一契约。adapter 或外部实现返回矛盾组合时立即失败，不能被误当作未命中继续回源。
 - 项目 yml 读取必须使用严格字段校验：`app/runtime/storage` 的未知节点或属性在解析阶段报错；Redis/Mongo 路由表的 routeType 名保持项目自定义，但必须是非空、无首尾空白的唯一标量，规则对象只允许 `min/max/shards`；每个 endpoint 必须非空且不含首尾空白，具体 URI 协议与连接参数由项目适配层解析。YAML anchor 统一放入项目显式声明的 `aliases` 节点，不能依赖被静默忽略的根字段。
 - `storage.DocumentReplacer` 的输入文档必须非 `nil`；空 map 代表合法空对象，`nil` 返回 `storage.ErrNilDocument`，不允许以 no-op 伪造写入成功。延迟删除需要重排而队列未装配时同样返回错误，保留任务重试机会。
@@ -451,7 +451,7 @@ Store 生成、Redis key helper、Mongo filter helper、字段编号 resolver �
 
 当前能力：
 
-- Redis adapter 支持 string JSON main/subKey 文档、Lua merge/replace、TTL 续期、批量读取和可选 `ClusterSafe`；完整替换会保留空 main 文档并删除新文档未包含的已知 subKey，避免陈旧子文档回流；`redis.Cluster` 的 shard 映射使用 `ScriptClient` 强类型约束，实际 I/O 遇到未装配 client 会返回 `redis.ErrClientNotConfigured`，不再静默 no-op。
+- Redis adapter 支持 string JSON main/subKey 文档、Lua merge/replace、TTL 续期、批量读取和可选 `ClusterSafe`；完整替换会保留空 main 文档并删除新文档未包含的已知 subKey，避免陈旧子文档回流；`redis.NewAdapter/NewCluster` 使用 `ScriptClient` 强类型约束，并在启动装配阶段拒绝 nil/typed-nil client、nil router、空 shard 名与空 shard 集合。Redis、Mongo、Fusion 写入口收到 nil/typed-nil `change.Source` 时统一返回 `change.ErrNilSource`；只有有效 Source 明确报告无变更才是合法 no-op。嵌套集合 Clear 已通过 txgame 生成结构及真实 Redis/Mongo 回归，空 slice 在两端均保持数组类型。
 - Mongo adapter 支持 load、batch load、change update、replace、delete、route cluster 和官方 driver 薄适配层；生产构造接收完整 `mongo.Client` 组合接口并返回装配错误，缺失能力在编译期暴露，nil/typed-nil 和无效 shard 在启动期失败。
 - Fusion strategy 支持 Redis 热写、Mongo miss 回源、Redis 回填、延迟保存任务入队、后台 scheduler 和 Redis 到 Mongo 整文档回写。
 - Mongo JSON/BSON 整文档转换已接入生成 `TypeSpec`：不同 JSON/BSON 字段名、Mongo `_id`、嵌套 struct/map/slice 均通过类型对象中转；真实 Redis/Mongo 集成测试已覆盖 Fusion 回填、延迟回写和生成 reader。

@@ -49,6 +49,24 @@ type recordingRedisRouteCall struct {
 	shardKey  any
 }
 
+func mustRedisAdapter(t testing.TB, client txredis.ScriptClient) *txredis.Adapter {
+	t.Helper()
+	adapter, err := txredis.NewAdapter(client)
+	if err != nil {
+		t.Fatalf("NewAdapter returned error: %v", err)
+	}
+	return adapter
+}
+
+func mustRedisCluster(t testing.TB, router txredis.Router, shards map[string]txredis.ScriptClient) *txredis.Cluster {
+	t.Helper()
+	cluster, err := txredis.NewCluster(router, shards)
+	if err != nil {
+		t.Fatalf("NewCluster returned error: %v", err)
+	}
+	return cluster
+}
+
 func (c *recordingRedisStringClient) Get(_ context.Context, key string) (string, bool, error) {
 	if c.values == nil {
 		return "", false, nil
@@ -123,7 +141,7 @@ func (r *recordingRedisRouter) RouteRedis(_ context.Context, routeType string, s
 
 func TestRedisAdapterAppliesChangesWithSingleLuaEval(t *testing.T) {
 	client := &recordingRedisStringClient{}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{Key: "role"},
 		Fields: map[string]meta.FieldSpec{
@@ -162,9 +180,39 @@ func TestRedisAdapterAppliesChangesWithSingleLuaEval(t *testing.T) {
 	}
 }
 
+func TestRedisNewAdapterRejectsNilClient(t *testing.T) {
+	if _, err := txredis.NewAdapter(nil); !errors.Is(err, txredis.ErrClientNotConfigured) {
+		t.Fatalf("NewAdapter error = %v, want ErrClientNotConfigured", err)
+	}
+
+	var typedNil *recordingRedisStringClient
+	if _, err := txredis.NewAdapter(typedNil); !errors.Is(err, txredis.ErrClientNotConfigured) {
+		t.Fatalf("NewAdapter typed-nil error = %v, want ErrClientNotConfigured", err)
+	}
+}
+
+func TestRedisAdapterRejectsNilChangeSource(t *testing.T) {
+	adapter := mustRedisAdapter(t, &recordingRedisStringClient{})
+
+	for _, source := range []change.Source{nil, (*typedNilSource)(nil)} {
+		err := adapter.ApplyChangesWithOptions(
+			context.Background(),
+			meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}},
+			storage.RecordKey{ID: int64(1001)},
+			source,
+			nil,
+			nil,
+			storage.ApplyOptions{},
+		)
+		if !errors.Is(err, change.ErrNilSource) {
+			t.Fatalf("ApplyChangesWithOptions(%T) error = %v, want ErrNilSource", source, err)
+		}
+	}
+}
+
 func TestRedisAdapterReturnsTransportError(t *testing.T) {
 	transportErr := errors.New("redis unavailable")
-	adapter := txredis.NewAdapter(&recordingRedisStringClient{evalErr: storage.NewBackendError(storage.BackendRedis, "eval", transportErr)})
+	adapter := mustRedisAdapter(t, &recordingRedisStringClient{evalErr: storage.NewBackendError(storage.BackendRedis, "eval", transportErr)})
 	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
 	err := adapter.ApplyChangesWithOptions(context.Background(), meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}, storage.RecordKey{ID: int64(1001)}, changes, testResolverForKind(change.FieldNameJSON, changeTestJSONNames()), testChangeValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{Upsert: true})
@@ -177,7 +225,7 @@ func TestRedisAdapterReturnsTransportError(t *testing.T) {
 }
 
 func TestRedisAdapterDoesNotClassifyUnmarkedClientError(t *testing.T) {
-	adapter := txredis.NewAdapter(&recordingRedisStringClient{evalErr: errors.New("invalid redis response")})
+	adapter := mustRedisAdapter(t, &recordingRedisStringClient{evalErr: errors.New("invalid redis response")})
 	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
 	err := adapter.ApplyChangesWithOptions(context.Background(), meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}, storage.RecordKey{ID: int64(1001)}, changes, testResolverForKind(change.FieldNameJSON, changeTestJSONNames()), testChangeValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{Upsert: true})
@@ -186,8 +234,8 @@ func TestRedisAdapterDoesNotClassifyUnmarkedClientError(t *testing.T) {
 	}
 }
 
-func TestRedisAdapterRejectsNilClientForDocumentOperations(t *testing.T) {
-	adapter := txredis.NewAdapter(nil)
+func TestRedisAdapterRejectsNilReceiverForDocumentOperations(t *testing.T) {
+	var adapter *txredis.Adapter
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
 	key := storage.RecordKey{ID: int64(1001)}
 	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
@@ -216,14 +264,10 @@ func TestRedisAdapterRejectsNilClientForDocumentOperations(t *testing.T) {
 	_, err = adapter.LockRecord(context.Background(), spec, key, storage.LockOptions{TTL: time.Second})
 	assertRedisClientNotConfigured(t, err)
 
-	var typedNil *recordingRedisStringClient
-	typedNilAdapter := txredis.NewAdapter(typedNil)
-	err = typedNilAdapter.ApplyDelete(context.Background(), spec, key)
-	assertRedisClientNotConfigured(t, err)
 }
 
-func TestRedisAdapterRejectsChangesWithoutEffectivePatch(t *testing.T) {
-	adapter := txredis.NewAdapter(&recordingRedisStringClient{})
+func TestRedisAdapterRejectsInvalidChangePath(t *testing.T) {
+	adapter := mustRedisAdapter(t, &recordingRedisStringClient{})
 	err := adapter.ApplyChangesWithOptions(
 		context.Background(),
 		meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}},
@@ -233,13 +277,13 @@ func TestRedisAdapterRejectsChangesWithoutEffectivePatch(t *testing.T) {
 		testChangeValues(nil),
 		storage.ApplyOptions{},
 	)
-	if !errors.Is(err, storage.ErrNoEffectiveChanges) {
-		t.Fatalf("ApplyChangesWithOptions error = %v, want ErrNoEffectiveChanges", err)
+	if !errors.Is(err, change.ErrInvalidPath) {
+		t.Fatalf("ApplyChangesWithOptions error = %v, want ErrInvalidPath", err)
 	}
 }
 
 func TestRedisAdapterRejectsDirtySourceWithoutVisitedChanges(t *testing.T) {
-	adapter := txredis.NewAdapter(&recordingRedisStringClient{})
+	adapter := mustRedisAdapter(t, &recordingRedisStringClient{})
 	err := adapter.ApplyChangesWithOptions(
 		context.Background(),
 		meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}},
@@ -257,7 +301,7 @@ func TestRedisAdapterRejectsDirtySourceWithoutVisitedChanges(t *testing.T) {
 func TestRedisAdapterDoesNotWriteBeforeTraversalCompletes(t *testing.T) {
 	wantErr := errors.New("visit failed")
 	client := &recordingRedisStringClient{}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	err := adapter.ApplyChangesWithOptions(
 		context.Background(),
 		meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}},
@@ -284,7 +328,7 @@ func assertRedisClientNotConfigured(t *testing.T, err error) {
 
 func TestRedisAdapterReplaceDocumentWithOptionsUsesFullReplaceAndTTL(t *testing.T) {
 	client := &recordingRedisStringClient{}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{Key: "role"},
 		Fields: map[string]meta.FieldSpec{
@@ -320,7 +364,7 @@ func TestRedisAdapterReplaceDocumentWithOptionsUsesFullReplaceAndTTL(t *testing.
 
 func TestRedisAdapterReplaceDocumentKeepsEmptyMainDocumentForSubKeyOnlyData(t *testing.T) {
 	client := &recordingRedisStringClient{}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{Key: "role"},
 		Fields: map[string]meta.FieldSpec{
@@ -349,7 +393,7 @@ func TestRedisAdapterReplaceDocumentKeepsEmptyMainDocumentForSubKeyOnlyData(t *t
 
 func TestRedisAdapterReplaceDocumentClearsOmittedSubKey(t *testing.T) {
 	client := &recordingRedisStringClient{}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{Key: "role"},
 		Fields: map[string]meta.FieldSpec{
@@ -376,7 +420,7 @@ func TestRedisAdapterReplaceDocumentClearsOmittedSubKey(t *testing.T) {
 
 func TestRedisAdapterReplaceDocumentRoutesCanonicalJSONNameToSubKey(t *testing.T) {
 	client := &recordingRedisStringClient{}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{Key: "role"},
 		Type: meta.Type{Fields: []meta.Field{
@@ -404,7 +448,7 @@ func TestRedisAdapterReplaceDocumentRoutesCanonicalJSONNameToSubKey(t *testing.T
 }
 
 func TestRedisAdapterRejectsNilReplacementDocument(t *testing.T) {
-	adapter := txredis.NewAdapter(&recordingRedisStringClient{})
+	adapter := mustRedisAdapter(t, &recordingRedisStringClient{})
 	err := adapter.ReplaceDocumentWithOptions(
 		context.Background(),
 		meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}},
@@ -419,7 +463,7 @@ func TestRedisAdapterRejectsNilReplacementDocument(t *testing.T) {
 
 func TestRedisAdapterUsesShardKeyAsHashTagWhenRouteByDiffersFromID(t *testing.T) {
 	client := &recordingRedisStringClient{}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{
 			Key:     "role",
@@ -443,7 +487,7 @@ func TestRedisAdapterUsesShardKeyAsHashTagWhenRouteByDiffersFromID(t *testing.T)
 
 func TestRedisAdapterLuaUsesCompatibleArrayDetection(t *testing.T) {
 	client := &recordingRedisStringClient{}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
 	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
@@ -469,7 +513,7 @@ func TestRedisAdapterLuaUsesCompatibleArrayDetection(t *testing.T) {
 
 func TestRedisAdapterApplyChangesWithOptionsDisablesUpsert(t *testing.T) {
 	client := &recordingRedisStringClient{}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
 	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
@@ -488,7 +532,7 @@ func TestRedisAdapterApplyChangesWithOptionsDisablesUpsert(t *testing.T) {
 
 func TestRedisAdapterApplyChangesWithOptionsPassesTTL(t *testing.T) {
 	client := &recordingRedisStringClient{}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
 	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
@@ -510,7 +554,7 @@ func TestRedisAdapterApplyChangesWithOptionsPassesTTL(t *testing.T) {
 
 func TestRedisAdapterApplyChangesWithOptionsAddsTTLOnlySubKeys(t *testing.T) {
 	client := &recordingRedisStringClient{}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{Key: "role"},
 		Fields: map[string]meta.FieldSpec{
@@ -547,7 +591,7 @@ func TestRedisAdapterApplyChangesWithOptionsAddsTTLOnlySubKeys(t *testing.T) {
 
 func TestRedisAdapterApplyChangesWithOptionsReturnsNotExists(t *testing.T) {
 	client := &recordingRedisStringClient{evalResult: "ne", hasResult: true}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
 	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
@@ -559,7 +603,7 @@ func TestRedisAdapterApplyChangesWithOptionsReturnsNotExists(t *testing.T) {
 
 func TestRedisAdapterApplyChangesWithOptionsReturnsPathTypeMismatch(t *testing.T) {
 	client := &recordingRedisStringClient{evalResult: "pt:dailyTask", hasResult: true}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
 	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
@@ -574,7 +618,7 @@ func TestRedisAdapterApplyChangesWithOptionsReturnsPathTypeMismatch(t *testing.T
 
 func TestRedisAdapterApplyChangesWithOptionsRejectsUnknownScriptResult(t *testing.T) {
 	client := &recordingRedisStringClient{evalResult: "unexpected", hasResult: true}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
 	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
@@ -589,7 +633,7 @@ func TestRedisAdapterApplyChangesWithOptionsRejectsUnknownScriptResult(t *testin
 
 func TestRedisAdapterApplyDeleteDeletesMainSubKeysAndVersion(t *testing.T) {
 	client := &recordingRedisStringClient{}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
 		Type:  meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
 		Redis: &meta.RedisSpec{Key: "role"},
@@ -620,7 +664,7 @@ func TestRedisAdapterApplyDeleteDeletesMainSubKeysAndVersion(t *testing.T) {
 
 func TestRedisAdapterApplyDeleteRejectsUnknownScriptResult(t *testing.T) {
 	client := &recordingRedisStringClient{evalResult: "unexpected", hasResult: true}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
 
 	err := adapter.ApplyDelete(context.Background(), spec, storage.RecordKey{ID: int64(1001)})
@@ -634,7 +678,7 @@ func TestRedisAdapterApplyDeleteRejectsUnknownScriptResult(t *testing.T) {
 
 func TestRedisAdapterApplyDeleteWithRevisionUsesVersionKeyCompare(t *testing.T) {
 	client := &recordingRedisStringClient{}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{Key: "role"},
 		Fields: map[string]meta.FieldSpec{
@@ -662,7 +706,7 @@ func TestRedisAdapterApplyDeleteWithRevisionUsesVersionKeyCompare(t *testing.T) 
 
 func TestRedisAdapterApplyDeleteWithRevisionReportsChangedRevision(t *testing.T) {
 	client := &recordingRedisStringClient{evalResult: "6", hasResult: true}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
 
 	deleted, current, err := adapter.ApplyDeleteWithRevision(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "5")
@@ -676,7 +720,7 @@ func TestRedisAdapterApplyDeleteWithRevisionReportsChangedRevision(t *testing.T)
 
 func TestRedisAdapterApplyDeleteWithRevisionRejectsInvalidRevisionProtocol(t *testing.T) {
 	client := &recordingRedisStringClient{evalResult: "unexpected", hasResult: true}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
 
 	deleted, current, err := adapter.ApplyDeleteWithRevision(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "5")
@@ -693,7 +737,7 @@ func TestRedisAdapterApplyDeleteWithRevisionRejectsInvalidRevisionProtocol(t *te
 
 func TestRedisAdapterApplyDeleteWithRevisionRejectsMissingExpectedRevision(t *testing.T) {
 	client := &recordingRedisStringClient{}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
 
 	_, _, err := adapter.ApplyDeleteWithRevision(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "")
@@ -707,7 +751,7 @@ func TestRedisAdapterApplyDeleteWithRevisionRejectsMissingExpectedRevision(t *te
 
 func TestRedisAdapterReadRecordRevisionUsesVersionKey(t *testing.T) {
 	client := &recordingRedisStringClient{evalResult: "7", hasResult: true}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
 
 	revision, err := adapter.ReadRecordRevision(context.Background(), spec, storage.RecordKey{ID: int64(1001)})
@@ -726,7 +770,7 @@ func TestRedisAdapterReadRecordRevisionRejectsMissingOrInvalidRevision(t *testin
 	for _, result := range []string{"", "unexpected"} {
 		t.Run(result, func(t *testing.T) {
 			client := &recordingRedisStringClient{evalResult: result, hasResult: true}
-			adapter := txredis.NewAdapter(client)
+			adapter := mustRedisAdapter(t, client)
 			spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
 
 			_, err := adapter.ReadRecordRevision(context.Background(), spec, storage.RecordKey{ID: int64(1001)})
@@ -739,7 +783,7 @@ func TestRedisAdapterReadRecordRevisionRejectsMissingOrInvalidRevision(t *testin
 
 func TestRedisAdapterLockRecordUsesMainKeyHashTag(t *testing.T) {
 	client := &recordingRedisStringClient{}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{
 			Key:     "arena_record",
@@ -779,7 +823,7 @@ func TestRedisAdapterLockRecordUsesMainKeyHashTag(t *testing.T) {
 
 func TestRedisAdapterLockRecordRejectsUnknownScriptResult(t *testing.T) {
 	client := &recordingRedisStringClient{evalResult: "unexpected", hasResult: true}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
 
 	_, err := adapter.LockRecord(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, storage.LockOptions{TTL: time.Second})
@@ -793,7 +837,7 @@ func TestRedisAdapterLockRecordRejectsUnknownScriptResult(t *testing.T) {
 
 func TestRedisRecordLockUnlockRejectsUnknownScriptResult(t *testing.T) {
 	client := &recordingRedisStringClient{evalResults: []string{"ok", "unexpected"}}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
 
 	lock, err := adapter.LockRecord(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, storage.LockOptions{TTL: time.Second})
@@ -811,7 +855,7 @@ func TestRedisRecordLockUnlockRejectsUnknownScriptResult(t *testing.T) {
 
 func TestRedisAdapterAppliesStringDocumentsWithRecordID(t *testing.T) {
 	client := &recordingRedisStringClient{}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{Key: "role"},
 		Fields: map[string]meta.FieldSpec{
@@ -822,9 +866,9 @@ func TestRedisAdapterAppliesStringDocumentsWithRecordID(t *testing.T) {
 	const redisFieldQuality change.FieldID = 5
 	changes := recordedChanges{
 		{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet},
-		{Path: changePath(fieldNode(redisFieldHeadImg)), Op: change.OpClear},
+		{Path: changePath(fieldNode(redisFieldHeadImg)), Op: change.OpSet},
 		{Path: changePath(intKeyNode(changeFieldItems, 1001), fieldNode(changeFieldQty)), Op: change.OpSet},
-		{Path: changePath(intKeyNode(changeFieldItems, 1001), fieldNode(redisFieldQuality)), Op: change.OpClear},
+		{Path: changePath(intKeyNode(changeFieldItems, 1001), fieldNode(redisFieldQuality)), Op: change.OpSet},
 	}
 	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
 		change.FieldNameGo: {
@@ -842,9 +886,19 @@ func TestRedisAdapterAppliesStringDocumentsWithRecordID(t *testing.T) {
 			redisFieldQuality: "quality",
 		},
 	})
-	values := testChangeValues(map[string]any{
-		"Name":                "alice",
-		"Items.1001.Quantity": int64(3),
+	values := change.ValueResolverFunc(func(path change.Path) (any, bool) {
+		switch {
+		case path.Equal(changePath(fieldNode(changeFieldName))):
+			return "alice", true
+		case path.Equal(changePath(fieldNode(redisFieldHeadImg))):
+			return "", true
+		case path.Equal(changePath(intKeyNode(changeFieldItems, 1001), fieldNode(changeFieldQty))):
+			return int64(3), true
+		case path.Equal(changePath(intKeyNode(changeFieldItems, 1001), fieldNode(redisFieldQuality))):
+			return int64(0), true
+		default:
+			return nil, false
+		}
 	})
 
 	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, changes, resolver, values, storage.ApplyOptions{Upsert: true})
@@ -857,8 +911,8 @@ func TestRedisAdapterAppliesStringDocumentsWithRecordID(t *testing.T) {
 	if mainDoc["name"] != "alice" {
 		t.Fatalf("main doc = %#v", mainDoc)
 	}
-	if headImg, ok := mainDoc["headImg"].(map[string]any); !ok || len(headImg) != 0 {
-		t.Fatalf("main doc headImg = %#v, want empty document marker in %#v", mainDoc["headImg"], mainDoc)
+	if headImg, ok := mainDoc["headImg"].(string); !ok || headImg != "" {
+		t.Fatalf("main doc headImg = %#v, want empty string in %#v", mainDoc["headImg"], mainDoc)
 	}
 
 	itemsDoc := patches["items"]
@@ -867,14 +921,14 @@ func TestRedisAdapterAppliesStringDocumentsWithRecordID(t *testing.T) {
 	if item["quantity"] != float64(3) {
 		t.Fatalf("items doc = %#v", itemsDoc)
 	}
-	if quality, ok := item["quality"].(map[string]any); !ok || len(quality) != 0 {
-		t.Fatalf("items doc quality = %#v, want empty document marker in %#v", item["quality"], itemsDoc)
+	if quality, ok := item["quality"].(float64); !ok || quality != 0 {
+		t.Fatalf("items doc quality = %#v, want zero in %#v", item["quality"], itemsDoc)
 	}
 }
 
 func TestRedisAdapterAppliesFieldIDChangesWithResolver(t *testing.T) {
 	client := &recordingRedisStringClient{}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{Key: "role"},
 		Fields: map[string]meta.FieldSpec{
@@ -902,7 +956,7 @@ func TestRedisAdapterAppliesFieldIDChangesWithResolver(t *testing.T) {
 
 func TestRedisAdapterUsesPathReplaceModeForCollectionElement(t *testing.T) {
 	client := &recordingRedisStringClient{}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{Key: "role"},
 		Fields: map[string]meta.FieldSpec{
@@ -946,7 +1000,7 @@ func TestRedisAdapterUsesPathReplaceModeForCollectionElement(t *testing.T) {
 
 func TestRedisAdapterUsesFullUpdateModeForWholeSubKeyReplace(t *testing.T) {
 	client := &recordingRedisStringClient{}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{Key: "role"},
 		Fields: map[string]meta.FieldSpec{
@@ -987,7 +1041,7 @@ func TestRedisAdapterUsesFullUpdateModeForWholeSubKeyReplace(t *testing.T) {
 
 func TestRedisAdapterUsesPartialFullUpdateModeWhenSubKeyHasFullAndDiffChanges(t *testing.T) {
 	client := &recordingRedisStringClient{}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{Key: "role"},
 		Fields: map[string]meta.FieldSpec{
@@ -1052,7 +1106,7 @@ func TestRedisAdapterLoadsStringDocumentWithSubKeys(t *testing.T) {
 		evalResult: `{"roleId":1001,"name":"alice","items":{"1001":{"quantity":3}}}`,
 		hasResult:  true,
 	}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{Key: "role"},
 		Fields: map[string]meta.FieldSpec{
@@ -1088,7 +1142,7 @@ func TestRedisAdapterLoadDocumentReadsSubKeyOnly(t *testing.T) {
 		evalResult: `{"items":{"1001":{"quantity":3}}}`,
 		hasResult:  true,
 	}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{Key: "role"},
 		Fields: map[string]meta.FieldSpec{
@@ -1115,7 +1169,7 @@ func TestRedisAdapterLoadDocumentReadsSubKeyOnly(t *testing.T) {
 
 func TestRedisAdapterLoadDocumentMissing(t *testing.T) {
 	client := &recordingRedisStringClient{hasResult: true}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 
 	doc, exists, err := adapter.LoadDocument(context.Background(), meta.TypeSpec{
 		Redis: &meta.RedisSpec{Key: "role"},
@@ -1135,7 +1189,7 @@ func TestRedisAdapterLoadDocumentRejectsNonObjectOrTrailingJSON(t *testing.T) {
 	for _, body := range []string{`null`, `[]`, `{"name":"alice"}{"name":"bob"}`} {
 		t.Run(body, func(t *testing.T) {
 			client := &recordingRedisStringClient{evalResult: body, hasResult: true}
-			adapter := txredis.NewAdapter(client)
+			adapter := mustRedisAdapter(t, client)
 
 			_, exists, err := adapter.LoadDocument(context.Background(), meta.TypeSpec{
 				Redis: &meta.RedisSpec{Key: "role"},
@@ -1154,7 +1208,7 @@ func TestRedisAdapterLoadDocumentsReadsSubKeyOnly(t *testing.T) {
 			"",
 		},
 	}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{Key: "role"},
 		Fields: map[string]meta.FieldSpec{
@@ -1189,7 +1243,7 @@ func TestRedisAdapterLoadDocumentsRejectsMalformedDocumentPart(t *testing.T) {
 			`null`,
 		},
 	}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{Key: "role"},
 		Fields: map[string]meta.FieldSpec{
@@ -1212,7 +1266,7 @@ func TestRedisAdapterLoadsStringDocumentsWithSubKeys(t *testing.T) {
 			"",
 		},
 	}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{Key: "role"},
 		Fields: map[string]meta.FieldSpec{
@@ -1256,7 +1310,7 @@ func TestRedisAdapterLoadDocumentsFallsBackToEval(t *testing.T) {
 			"",
 		},
 	}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{Key: "role"},
 		Fields: map[string]meta.FieldSpec{
@@ -1311,7 +1365,7 @@ func TestRedisAdapterLoadDocumentsWithOptionsChunksMGet(t *testing.T) {
 			},
 		},
 	}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{Key: "role"},
 		Fields: map[string]meta.FieldSpec{
@@ -1355,7 +1409,7 @@ func TestRedisClusterRoutesSingleWriteByShardKey(t *testing.T) {
 	router := &recordingRedisRouter{names: map[any]string{
 		int64(7): "role-shard",
 	}}
-	cluster := txredis.NewCluster(router, map[string]txredis.ScriptClient{
+	cluster := mustRedisCluster(t, router, map[string]txredis.ScriptClient{
 		"role-shard": roleShard,
 		"user-shard": userShard,
 	})
@@ -1383,7 +1437,7 @@ func TestRedisClusterRoutesSingleWriteByShardKey(t *testing.T) {
 
 func TestRedisAdapterRejectsMissingDistinctRouteShardKey(t *testing.T) {
 	client := &recordingRedisStringClient{}
-	adapter := txredis.NewAdapter(client)
+	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{
 		Key:     "role",
 		IDField: "roleId",
@@ -1399,14 +1453,34 @@ func TestRedisAdapterRejectsMissingDistinctRouteShardKey(t *testing.T) {
 	}
 }
 
-func TestRedisClusterSkipsEmptyDeltasWithoutRouting(t *testing.T) {
-	cluster := txredis.NewCluster(nil, nil)
+func TestRedisNewClusterRejectsIncompleteConfiguration(t *testing.T) {
+	if _, err := txredis.NewCluster(nil, nil); err == nil || !strings.Contains(err.Error(), "router is not configured") {
+		t.Fatalf("NewCluster error = %v, want router configuration error", err)
+	}
+
+	router := &recordingRedisRouter{}
+	if _, err := txredis.NewCluster(router, nil); err == nil || !strings.Contains(err.Error(), "shards are not configured") {
+		t.Fatalf("NewCluster error = %v, want shards configuration error", err)
+	}
+	if _, err := txredis.NewCluster(router, map[string]txredis.ScriptClient{"": &recordingRedisStringClient{}}); err == nil || !strings.Contains(err.Error(), "shard name is empty") {
+		t.Fatalf("NewCluster error = %v, want empty shard name error", err)
+	}
+
+	var typedNil *recordingRedisStringClient
+	if _, err := txredis.NewCluster(router, map[string]txredis.ScriptClient{"role": typedNil}); !errors.Is(err, txredis.ErrClientNotConfigured) {
+		t.Fatalf("NewCluster typed-nil shard error = %v, want ErrClientNotConfigured", err)
+	}
+}
+
+func TestRedisClusterSkipsEmptyChangesWithoutRouting(t *testing.T) {
+	router := &recordingRedisRouter{}
+	cluster := mustRedisCluster(t, router, map[string]txredis.ScriptClient{"role": &recordingRedisStringClient{}})
 
 	err := cluster.ApplyChangesWithOptions(
 		context.Background(),
 		meta.TypeSpec{},
 		storage.RecordKey{},
-		nil,
+		recordedChanges{},
 		nil,
 		nil,
 		storage.ApplyOptions{},
@@ -1416,15 +1490,21 @@ func TestRedisClusterSkipsEmptyDeltasWithoutRouting(t *testing.T) {
 	}
 }
 
-func TestRedisClusterRejectsTypedNilRouter(t *testing.T) {
-	var router *recordingRedisRouter
-	cluster := txredis.NewCluster(router, map[string]txredis.ScriptClient{"role": &recordingRedisStringClient{}})
-	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role", Route: meta.RouteSpec{Type: "role"}}}
-	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
+func TestRedisClusterRejectsNilChangeSource(t *testing.T) {
+	router := &recordingRedisRouter{}
+	cluster := mustRedisCluster(t, router, map[string]txredis.ScriptClient{"role": &recordingRedisStringClient{}})
 
-	err := cluster.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, changes, testResolverForKind(change.FieldNameJSON, changeTestJSONNames()), testChangeValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{})
+	err := cluster.ApplyChangesWithOptions(context.Background(), meta.TypeSpec{}, storage.RecordKey{}, nil, nil, nil, storage.ApplyOptions{})
+	if !errors.Is(err, change.ErrNilSource) {
+		t.Fatalf("ApplyChangesWithOptions error = %v, want ErrNilSource", err)
+	}
+}
+
+func TestRedisNewClusterRejectsTypedNilRouter(t *testing.T) {
+	var router *recordingRedisRouter
+	_, err := txredis.NewCluster(router, map[string]txredis.ScriptClient{"role": &recordingRedisStringClient{}})
 	if err == nil || !strings.Contains(err.Error(), "router is not configured") {
-		t.Fatalf("ApplyChangesWithOptions error = %v, want router configuration error", err)
+		t.Fatalf("NewCluster error = %v, want router configuration error", err)
 	}
 }
 
@@ -1434,7 +1514,7 @@ func TestRedisClusterRoutesRecordLockByShardKey(t *testing.T) {
 	router := &recordingRedisRouter{names: map[any]string{
 		int64(7): "role-shard",
 	}}
-	cluster := txredis.NewCluster(router, map[string]txredis.ScriptClient{
+	cluster := mustRedisCluster(t, router, map[string]txredis.ScriptClient{
 		"role-shard": roleShard,
 		"user-shard": userShard,
 	})
@@ -1468,7 +1548,7 @@ func TestRedisClusterRoutesRecordRevisionByShardKey(t *testing.T) {
 	router := &recordingRedisRouter{names: map[any]string{
 		int64(7): "role-shard",
 	}}
-	cluster := txredis.NewCluster(router, map[string]txredis.ScriptClient{
+	cluster := mustRedisCluster(t, router, map[string]txredis.ScriptClient{
 		"role-shard": roleShard,
 		"user-shard": userShard,
 	})
@@ -1509,7 +1589,7 @@ func TestRedisClusterBatchLoadsByShardGroupAndRestoresOrder(t *testing.T) {
 		int64(7): "a",
 		int64(8): "b",
 	}}
-	cluster := txredis.NewCluster(router, map[string]txredis.ScriptClient{
+	cluster := mustRedisCluster(t, router, map[string]txredis.ScriptClient{
 		"a": shardA,
 		"b": shardB,
 	})
@@ -1562,7 +1642,7 @@ func TestRedisClusterBatchLoadClusterSafeGroupsByHashTag(t *testing.T) {
 		int64(7): "role",
 		int64(8): "role",
 	}}
-	cluster := txredis.NewCluster(router, map[string]txredis.ScriptClient{"role": shard})
+	cluster := mustRedisCluster(t, router, map[string]txredis.ScriptClient{"role": shard})
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{
 			Key:     "role",

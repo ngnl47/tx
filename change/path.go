@@ -36,6 +36,29 @@ type Path struct {
 	Depth uint8
 }
 
+// Valid 判断路径是否能安全用于解析和存储边界转换。
+func (p Path) Valid() bool {
+	if p.Depth == 0 || int(p.Depth) > len(p.Nodes) {
+		return false
+	}
+	for i := 0; i < int(p.Depth); i++ {
+		if p.Nodes[i].Field == FieldNone || !p.Nodes[i].Key.Valid() {
+			return false
+		}
+	}
+	return true
+}
+
+// Valid 判断 key 类型是否为运行时支持的强类型 key。
+func (k PathKey) Valid() bool {
+	switch k.Kind {
+	case KeyNone, KeyInt, KeyUint, KeyString:
+		return true
+	default:
+		return false
+	}
+}
+
 // JoinPath 把子路径追加到父路径后。返回 ok=false 表示超过 MaxPathDepth。
 func JoinPath(parent, child Path) (Path, bool) {
 	out, complete := JoinPathLimited(parent, child)
@@ -67,7 +90,7 @@ func JoinPathLimited(parent, child Path) (out Path, complete bool) {
 
 // FullPath 按指定字段名体系把 Path 转换为字符串路径。
 func (p Path) FullPath(resolver FieldNameResolver, kind FieldNameKind) DocumentPath {
-	if p.Depth == 0 || resolver == nil {
+	if p.Depth == 0 || int(p.Depth) > len(p.Nodes) || resolver == nil {
 		return nil
 	}
 	out := make(DocumentPath, 0, int(p.Depth)*2)
@@ -94,7 +117,9 @@ func (p Path) FullPath(resolver FieldNameResolver, kind FieldNameKind) DocumentP
 
 // Equal 判断两条结构化路径是否完全相同。
 func (p Path) Equal(other Path) bool {
-	if p.Depth != other.Depth {
+	if p.Depth == 0 || int(p.Depth) > len(p.Nodes) ||
+		other.Depth == 0 || int(other.Depth) > len(other.Nodes) ||
+		p.Depth != other.Depth {
 		return false
 	}
 	for i := 0; i < int(p.Depth); i++ {

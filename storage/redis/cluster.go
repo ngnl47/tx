@@ -30,17 +30,30 @@ type Cluster struct {
 }
 
 // NewCluster 创建 Redis route/cluster 适配器。
-func NewCluster(router Router, shards map[string]ScriptClient) *Cluster {
+func NewCluster(router Router, shards map[string]ScriptClient) (*Cluster, error) {
+	if isNilRouter(router) {
+		return nil, fmt.Errorf("redis: router is not configured")
+	}
+	if len(shards) == 0 {
+		return nil, fmt.Errorf("redis: shards are not configured")
+	}
 	cluster := &Cluster{
 		router:  router,
 		shards:  make(map[string]*Adapter, len(shards)),
 		clients: make(map[string]ScriptClient, len(shards)),
 	}
 	for name, client := range shards {
-		cluster.shards[name] = NewAdapter(client)
+		if name == "" {
+			return nil, fmt.Errorf("redis: shard name is empty")
+		}
+		adapter, err := NewAdapter(client)
+		if err != nil {
+			return nil, fmt.Errorf("redis: shard %q: %w", name, err)
+		}
+		cluster.shards[name] = adapter
 		cluster.clients[name] = client
 	}
-	return cluster
+	return cluster, nil
 }
 
 // ScriptClientFor 返回 routeType 和 shardKey 对应的原始脚本客户端。
@@ -62,7 +75,10 @@ func (c *Cluster) ScriptClientFor(ctx context.Context, routeType string, shardKe
 }
 
 func (c *Cluster) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver, options storage.ApplyOptions) error {
-	if source == nil || !source.HasChanges() {
+	if err := change.ValidateSource(source); err != nil {
+		return err
+	}
+	if !source.HasChanges() {
 		return nil
 	}
 	adapter, err := c.adapterFor(ctx, spec, key)

@@ -93,7 +93,10 @@ func NewAdapter(client Client) (*Adapter, error) {
 
 // ApplyChangesWithOptions 根据 Mongo 元数据和记录 ID 执行变更更新。
 func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver, options storage.ApplyOptions) error {
-	if source == nil || !source.HasChanges() {
+	if err := change.ValidateSource(source); err != nil {
+		return err
+	}
+	if !source.HasChanges() {
 		return nil
 	}
 	if err := storage.ValidateRecordKey(spec, key); err != nil {

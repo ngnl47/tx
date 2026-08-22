@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
-	"strings"
 
 	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/meta"
@@ -44,13 +43,13 @@ func BuildDocumentPatches(spec meta.TypeSpec, source change.Source, resolver cha
 }
 
 func buildDocumentPatches(spec meta.TypeSpec, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver) (map[string]DocumentPatch, error) {
-	if source == nil {
-		return nil, change.ErrNilSource
+	if err := change.ValidateSource(source); err != nil {
+		return nil, err
 	}
 	out := map[string]DocumentPatch{}
 	err := source.VisitChanges(change.VisitorFunc(func(path change.Path, op change.Op) error {
-		if path.Depth == 0 {
-			return nil
+		if !path.Valid() {
+			return fmt.Errorf("%w: %#v", change.ErrInvalidPath, path)
 		}
 		if !op.Valid() {
 			return fmt.Errorf("change: unknown operation %d", op)
@@ -79,7 +78,11 @@ func buildDocumentPatches(spec meta.TypeSpec, source change.Source, resolver cha
 		}
 		switch op {
 		case change.OpClear:
-			patch = appendDocumentPatchSet(patch, jsonPath, emptyDocumentValue(spec, goField), "clear")
+			value, ok := change.ResolveClearValue(values, path)
+			if !ok {
+				return fmt.Errorf("redis: cannot resolve clear value for path %s", jsonPath)
+			}
+			patch = appendDocumentPatchSet(patch, jsonPath, value, "clear")
 			patch.diffUpdate = true
 		case change.OpDelete:
 			patch.Delete = append(patch.Delete, jsonPath)
@@ -327,19 +330,6 @@ func redisDocumentSuffix(spec meta.TypeSpec, field string) (string, bool) {
 func redisFullUpdateField(spec meta.TypeSpec, field string) bool {
 	fieldSpec, ok := spec.Fields[field]
 	return ok && fieldSpec.Redis != nil && fieldSpec.Redis.FullUpdate
-}
-
-func emptyDocumentValue(spec meta.TypeSpec, field string) any {
-	fieldSpec, ok := spec.FieldByName(field)
-	if !ok {
-		return map[string]any{}
-	}
-	switch {
-	case strings.HasPrefix(fieldSpec.Type, "[]"), strings.HasPrefix(fieldSpec.Type, "["):
-		return []any{}
-	default:
-		return map[string]any{}
-	}
 }
 
 func ensureTTLOnlyPatches(spec meta.TypeSpec, patches map[string]DocumentPatch) {

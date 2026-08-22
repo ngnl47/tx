@@ -32,11 +32,11 @@ func (store *transactionDirtyStore) VisitChanges(visitor change.Visitor) error {
 
 func (store *transactionDirtyStore) Set(value int) {
 	previousValue := store.value
-	previousDeltas := store.changes.clone()
+	previousChanges := store.changes.clone()
 	if store.recorder != nil {
 		store.recorder.RecordUndo(func() {
 			store.value = previousValue
-			store.changes = previousDeltas
+			store.changes = previousChanges
 		})
 	}
 	store.value = value
@@ -139,7 +139,7 @@ func TestTransactionRunRollsBackAndUnbindsStore(t *testing.T) {
 	}
 }
 
-func TestTransactionDebugCheckRejectsPendingDeltasAtEntry(t *testing.T) {
+func TestTransactionDebugCheckRejectsPendingChangesAtEntry(t *testing.T) {
 	previousConfig := txn.CurrentConfig()
 	t.Cleanup(func() { txn.Configure(previousConfig) })
 	txn.Configure(txn.Config{Debug: txn.DebugConfig{CheckCleanLockTargets: true}})

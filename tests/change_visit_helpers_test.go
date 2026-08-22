@@ -59,6 +59,16 @@ func (emptyDirtySource) VisitChanges(change.Visitor) error { return nil }
 
 func (emptyDirtySource) HasChanges() bool { return true }
 
+type typedNilSource struct{}
+
+func (*typedNilSource) VisitChanges(change.Visitor) error {
+	panic("typed nil source must be rejected before VisitChanges")
+}
+
+func (*typedNilSource) HasChanges() bool {
+	panic("typed nil source must be rejected before HasChanges")
+}
+
 type failingSource struct {
 	err error
 }

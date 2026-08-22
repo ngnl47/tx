@@ -75,7 +75,10 @@ func (s Strategy) Validate() error {
 
 // ApplyChangesWithOptions 应用一次规范化变更，并把写入选项限定传递给 Redis。
 func (s Strategy) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver, options storage.ApplyOptions) error {
-	if source == nil || !source.HasChanges() {
+	if err := change.ValidateSource(source); err != nil {
+		return err
+	}
+	if !source.HasChanges() {
 		return nil
 	}
 	if err := storage.ValidateRecordKey(spec, key); err != nil {

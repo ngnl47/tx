@@ -1,6 +1,8 @@
 package tests
 
 import (
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -19,7 +21,10 @@ func TestRedisBuildDocumentPatchesUsesJSONNames(t *testing.T) {
 		change.FieldNameJSON: {changeFieldName: "roleName", changeFieldItems: "items"},
 	}
 
-	patches, err := txredis.BuildDocumentPatches(redisPatchSpec(), source, resolver, testValueResolver{changeFieldName: "alice"})
+	patches, err := txredis.BuildDocumentPatches(redisPatchSpec(), source, resolver, testValueResolver{
+		changeFieldName:  "alice",
+		changeFieldItems: map[int64]any(nil),
+	})
 	if err != nil {
 		t.Fatalf("BuildDocumentPatches returned error: %v", err)
 	}
@@ -30,8 +35,37 @@ func TestRedisBuildDocumentPatchesUsesJSONNames(t *testing.T) {
 	if patches["items"].Set[0].Path.String() != "items" {
 		t.Fatalf("items patch path = %q, want items", patches["items"].Set[0].Path.String())
 	}
-	if _, ok := patches["items"].Set[0].Value.(map[string]any); !ok {
-		t.Fatalf("items clear value = %#v, want empty document", patches["items"].Set[0].Value)
+	items := reflect.ValueOf(patches["items"].Set[0].Value)
+	if items.Kind() != reflect.Map || items.Len() != 0 {
+		t.Fatalf("items clear value = %#v, want empty map", patches["items"].Set[0].Value)
+	}
+}
+
+func TestRedisBuildDocumentPatchesPreservesNestedSliceClearKind(t *testing.T) {
+	const (
+		fieldLordInfo change.FieldID = 20
+		fieldSkills   change.FieldID = 21
+	)
+	path := changePath(fieldNode(fieldLordInfo), fieldNode(fieldSkills))
+	source := recordedChanges{{Path: path, Op: change.OpClear}}
+	resolver := testFieldNameResolver{
+		change.FieldNameGo:   {fieldLordInfo: "LordInfo", fieldSkills: "Skills"},
+		change.FieldNameJSON: {fieldLordInfo: "lordInfo", fieldSkills: "skills"},
+	}
+	values := change.ValueResolverFunc(func(candidate change.Path) (any, bool) {
+		if candidate.Equal(path) {
+			return []int32(nil), true
+		}
+		return nil, false
+	})
+
+	patches, err := txredis.BuildDocumentPatches(meta.TypeSpec{}, source, resolver, values)
+	if err != nil {
+		t.Fatalf("BuildDocumentPatches returned error: %v", err)
+	}
+	got := patches[""].Set[0].Value
+	if value, ok := got.([]int32); !ok || len(value) != 0 {
+		t.Fatalf("nested slice clear value = %#v (%v), want empty []int32", got, reflect.TypeOf(got))
 	}
 }
 
@@ -58,6 +92,18 @@ func TestRedisBuildDocumentPatchesRejectsUnresolvedFieldPath(t *testing.T) {
 	_, err := txredis.BuildDocumentPatches(redisPatchSpec(), source, resolver, testValueResolver{unknownField: "alice"})
 	if err == nil || !strings.Contains(err.Error(), "field path") {
 		t.Fatalf("BuildDocumentPatches error = %v, want unresolved field path error", err)
+	}
+}
+
+func TestRedisBuildDocumentPatchesRejectsInvalidPath(t *testing.T) {
+	source := recordedChanges{{
+		Path: change.Path{Depth: change.MaxPathDepth + 1},
+		Op:   change.OpSet,
+	}}
+
+	_, err := txredis.BuildDocumentPatches(meta.TypeSpec{}, source, testFieldNameResolver{}, nil)
+	if !errors.Is(err, change.ErrInvalidPath) {
+		t.Fatalf("BuildDocumentPatches error = %v, want ErrInvalidPath", err)
 	}
 }
 

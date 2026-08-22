@@ -168,6 +168,28 @@ func TestMongoAdapterAppliesUpdateByDefaultIDFilter(t *testing.T) {
 	}
 }
 
+func TestMongoAdapterRejectsNilChangeSource(t *testing.T) {
+	adapter, err := txmongo.NewAdapter(&recordingMongoUpdater{})
+	if err != nil {
+		t.Fatalf("NewAdapter returned error: %v", err)
+	}
+
+	for _, source := range []change.Source{nil, (*typedNilSource)(nil)} {
+		err = adapter.ApplyChangesWithOptions(
+			context.Background(),
+			meta.TypeSpec{Mongo: &meta.MongoSpec{Collection: "role"}},
+			storage.RecordKey{ID: int64(1001)},
+			source,
+			nil,
+			nil,
+			storage.ApplyOptions{},
+		)
+		if !errors.Is(err, change.ErrNilSource) {
+			t.Fatalf("ApplyChangesWithOptions(%T) error = %v, want ErrNilSource", source, err)
+		}
+	}
+}
+
 func TestMongoAdapterReturnsTransportError(t *testing.T) {
 	transportErr := errors.New("mongo unavailable")
 	adapter := mustMongoAdapter(t, &recordingMongoUpdater{updateErr: storage.NewBackendError(storage.BackendMongo, "update one", transportErr)})
@@ -260,7 +282,7 @@ func TestMongoAdapterRejectsTypedNilClient(t *testing.T) {
 	}
 }
 
-func TestMongoAdapterRejectsChangesWithoutEffectiveUpdate(t *testing.T) {
+func TestMongoAdapterRejectsInvalidChangePath(t *testing.T) {
 	adapter := mustMongoAdapter(t, &recordingMongoUpdater{})
 	err := adapter.ApplyChangesWithOptions(
 		context.Background(),
@@ -271,8 +293,8 @@ func TestMongoAdapterRejectsChangesWithoutEffectiveUpdate(t *testing.T) {
 		testChangeValues(nil),
 		storage.ApplyOptions{},
 	)
-	if !errors.Is(err, storage.ErrNoEffectiveChanges) {
-		t.Fatalf("ApplyChangesWithOptions error = %v, want ErrNoEffectiveChanges", err)
+	if !errors.Is(err, change.ErrInvalidPath) {
+		t.Fatalf("ApplyChangesWithOptions error = %v, want ErrInvalidPath", err)
 	}
 }
 
@@ -938,6 +960,16 @@ func TestMongoClusterRoutesSingleWriteByShardKey(t *testing.T) {
 	}
 	if userShard.update != nil {
 		t.Fatalf("unexpected user shard update = %#v", userShard.update)
+	}
+}
+
+func TestMongoClusterRejectsNilChangeSource(t *testing.T) {
+	router := &recordingMongoRouter{names: map[any]string{int64(7): "role-shard"}}
+	cluster := mustMongoCluster(t, router, map[string]txmongo.Client{"role-shard": &recordingMongoUpdater{}})
+
+	err := cluster.ApplyChangesWithOptions(context.Background(), meta.TypeSpec{}, storage.RecordKey{}, nil, nil, nil, storage.ApplyOptions{})
+	if !errors.Is(err, change.ErrNilSource) {
+		t.Fatalf("ApplyChangesWithOptions error = %v, want ErrNilSource", err)
 	}
 }
 

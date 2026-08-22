@@ -48,13 +48,19 @@ type Adapter struct {
 }
 
 // NewAdapter 创建 Redis 变更适配器。
-func NewAdapter(client ScriptClient) *Adapter {
-	return &Adapter{client: client}
+func NewAdapter(client ScriptClient) (*Adapter, error) {
+	if isNilScriptClient(client) {
+		return nil, ErrClientNotConfigured
+	}
+	return &Adapter{client: client}, nil
 }
 
 // ApplyChangesWithOptions 根据指定选项写入 Redis string JSON 变更。
 func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver, options storage.ApplyOptions) error {
-	if source == nil || !source.HasChanges() {
+	if err := change.ValidateSource(source); err != nil {
+		return err
+	}
+	if !source.HasChanges() {
 		return nil
 	}
 	if err := storage.ValidateRecordKey(spec, key); err != nil {

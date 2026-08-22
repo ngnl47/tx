@@ -25,7 +25,7 @@
 - `delaySaveTime` 表示回写 Mongo 的延迟；`delayDelTime` 表示 Redis 热数据 TTL，不会删除 Mongo 数据。
 - 单机事务只回滚通过 Store 受控 API 发生的修改；事务内子流程使用 `tx.Call`，不能嵌套启动根事务。
 - `msgq` 管理客户端会话和下行邮箱；Actor 负责业务实体投递；普通 gRPC RPC 负责服务或实例调用，三者不是同一个中继层。
-- 需要理解内部 Delta、锁注册表、Fusion 状态机或分布式拓扑时，阅读 [设计文档](docs/design.md)。
+- 需要理解内部变更追踪、锁注册表、Fusion 状态机或分布式拓扑时，阅读 [设计文档](docs/design.md)。
 
 ## 定位
 
@@ -132,11 +132,11 @@ func Save[S storage.ChangeStore](value storage.StoreProvider[S]) error {
 }
 ```
 
-`storage.Save` 只有在整个写入策略成功后才会清理 Store delta。以 Fusion 为例，Redis 热写和延迟任务入队是两步操作；如果 Redis 已写但入队失败，`Save` 会返回错误，原 delta 仍留在 Store 中，下一次调用可以安全重试并再次登记任务：
+`storage.Save` 只有在整个写入策略成功后才会清理 Store 变更状态。以 Fusion 为例，Redis 热写和延迟任务入队是两步操作；如果 Redis 已写但入队失败，`Save` 会返回错误，原变更仍留在 Store 中，下一次调用可以安全重试并再次登记任务：
 
 ```go
 if err := storage.Save(ctx, fusionStore, role.Store()); err != nil {
-	// role.Store() 仍保留本轮 delta；不能把这次请求当成已完成持久化。
+	// role.Store() 仍保留本轮变更；不能把这次请求当成已完成持久化。
 	return err
 }
 ```
@@ -1536,7 +1536,7 @@ if err != nil {
 }
 ```
 
-`ChangeDocument(kind)` 返回 `(change.Document, error)`。它会在边界读取当前 `GD*` 值并验证每条 delta
+`ChangeDocument(kind)` 返回 `(change.Document, error)`。它会在边界读取当前 `GD*` 值并验证每条变更路径
 路径；解析失败时必须停止发送或保存，不能把字段伪造成 `null`。`kind` 必须显式选择
 `FieldNameGo`、`FieldNameJSON`、`FieldNameBSON` 或 `FieldNameMsgpack`。
 
@@ -1770,7 +1770,7 @@ if err != nil {
 
 生成 Store 每个字段通常会有四类方法：
 
-| 方法 | 是否修改内存字段 | Delta 语义 | 常见用途 |
+| 方法 | 是否修改内存字段 | 变更语义 | 常见用途 |
 | --- | --- | --- | --- |
 | `SetName(value)` | 是 | set | 日常修改标量字段。 |
 | `SetItems(value)` | 是 | replace | 覆盖 map/slice/struct 指针字段，不保留旧值中未出现的字段。 |
@@ -1778,7 +1778,7 @@ if err != nil {
 | `TouchName()` | 否 | set 当前内存值 | 字段值已经被业务直接改过，需要补标脏；或 viewStore 只想把当前字段加入下行。 |
 | `ClearName()` | 是，设置为 Go 零值 | set 零值 | 保留字段并写入 Go 零值，例如字符串写入 `""`。 |
 
-在 Delta 路径里，普通字段清零和集合清空会被区分：
+在变更路径里，普通字段清零和集合清空会被区分：
 
 ```go
 role.ClearHeadImg()
@@ -1869,7 +1869,7 @@ if err != nil {
 
 这适合广播或响应中“额外携带一些未修改字段”的场景。主对象的落库 Store 不会因此多出脏字段。
 
-普通字段为生成数据对象指针时，应通过父 Store 取得路径上下文中的子 Store；子 Store 的字段修改会在边界投影为父对象的嵌套 delta：
+普通字段为生成数据对象指针时，应通过父 Store 取得路径上下文中的子 Store；子 Store 的字段修改会在边界投影为父对象的嵌套变更：
 
 ```go
 role.SetDailyTask(&data.GDDailyTask{Active: 1})
@@ -1899,9 +1899,9 @@ task.SetActive(2)
 })
 ```
 
-回调返回错误或 panic 时，字段值、map/slice 结构、子 Store delta 都会恢复到进入事务前的状态。未进入 `txn.Run` 的普通 Store 修改不会建立 undo log，也不会复制旧集合。
+回调返回错误或 panic 时，字段值、map/slice 结构、子 Store 变更状态都会恢复到进入事务前的状态。未进入 `txn.Run` 的普通 Store 修改不会建立 undo log，也不会复制旧集合。
 
-直接使用 `txn.Run` 或 `txn.Call` 的临时事务要求进入前的目标 Store 没有遗留 delta。开发、测试或灰度环境可通过项目配置打开运行时检查；检查在完整锁集获取后、业务回调开始前执行，发现事务外修改时会释放锁并返回错误：
+直接使用 `txn.Run` 或 `txn.Call` 的临时事务要求进入前的目标 Store 没有遗留变更。开发、测试或灰度环境可通过项目配置打开运行时检查；检查在完整锁集获取后、业务回调开始前执行，发现事务外修改时会释放锁并返回错误：
 
 ```go
 txn.Configure(txn.Config{
@@ -1917,7 +1917,7 @@ err := txn.Run(ctx, txn.Locks(role), process)
 
 项目应在启动时把自己的 yml 配置转换为这项配置；`tx` 不读取项目文件。生产环境通常保持默认 `false`，避免每个事务入口递归投影整棵 Store 树。开启后应先保存或 `ClearChanges()` 处理事务外已有的 Store 变更，再进入事务；不要把事务外修改混入本次提交边界。
 
-常驻内存实体由 `txn.Runtime` 管理时，前一轮事务的 delta 会刻意保留到下一次 Flush，因此必须使用 `runtime.Call`。它会在内部允许已有 delta，普通业务代码不要直接调用 `txn.CallWithOptions`。
+常驻内存实体由 `txn.Runtime` 管理时，前一轮事务的变更会刻意保留到下一次 Flush，因此必须使用 `runtime.Call`。它会在内部允许已有变更，普通业务代码不要直接调用 `txn.CallWithOptions`。
 
 锁等待通过调用方的 `context.Context` 统一控制。获取完整锁集之前发生超时或取消时，框架会释放本次已获取的锁，且不会执行回调：
 
@@ -1989,7 +1989,7 @@ err := runtime.Call(ctx, &PGuildContribution{Guild: guild, Role: role})
 
 `txn.Tx` 只表示本次已持锁的运行环境，负责 undo、savepoint、子过程调用和提交/回滚回调；它不是业务数据，也不是 `context.Context`。事务内通过生成的 `GD*` 代理方法或显式 Store 修改数据，两者都会走同一受控 Store 路径并登记 undo。过程成功只表示内存修改已提交，不等价于 Redis 或 Mongo 已写入；`AfterCommit` 在锁释放、undo 解绑后按注册顺序执行，任一回调失败会停止后续回调，但不会回滚内存修改。过程返回错误时，`AfterCommit` 不会执行；可用 `AfterRollback` 做指标记录、临时资源释放等不应持久化的数据清理。
 
-事务中可通过 `tx.DirtyTargets()` 取得本次经受控 Store API 修改、且当前仍有 delta 的根目标。结果按锁顺序返回；被 savepoint 回滚或随后 `UnTouch` 清空的 Store 不会出现。它供 `txn.Runtime` 登记落盘目标，普通业务循环不需要调用：
+事务中可通过 `tx.DirtyTargets()` 取得本次经受控 Store API 修改、且当前仍有变更的根目标。结果按锁顺序返回；被 savepoint 回滚或随后 `UnTouch` 清空的 Store 不会出现。它供 `txn.Runtime` 登记落盘目标，普通业务循环不需要调用：
 
 ```go
 func (p *PUpdateRole) Process(tx *txn.Tx) error {
@@ -2000,9 +2000,9 @@ func (p *PUpdateRole) Process(tx *txn.Tx) error {
 
 ### 有状态落盘调度
 
-`txn.Runtime` 是实体长期驻留内存服务中 Procedure 的标准搭档。事务成功后它只按锁键登记对应 Store；多个事务持续修改同一对象时，Store 保留路径 delta，下一次 Flush 才把当前值物化为一次 Fusion 写入。
+`txn.Runtime` 是实体长期驻留内存服务中 Procedure 的标准搭档。事务成功后它只按锁键登记对应 Store；多个事务持续修改同一对象时，Store 保留路径变更，下一次 Flush 才把当前值物化为一次 Fusion 写入。
 
-这里的 `pending` 指“已发生受控修改、尚未成功 Flush 的持久化根对象”。`Runtime.Pending()` 返回按 `LockKey` 去重后的这个数量，而不是内存中全部 `GD*` 的数量：同一个 `GDRole` 连续修改多次、或仅修改 `GDRole.Items[1001]` 等子字段，都只算一个 pending root；同一事务修改一个 `GDLegion` 和两个不同的 `GDRole`，则算三个。Flush 成功、Store delta 清理后，对应 root 才会移出 pending；未产生 delta 或纯内存对象不计入其中。
+这里的 `pending` 指“已发生受控修改、尚未成功 Flush 的持久化根对象”。`Runtime.Pending()` 返回按 `LockKey` 去重后的这个数量，而不是内存中全部 `GD*` 的数量：同一个 `GDRole` 连续修改多次、或仅修改 `GDRole.Items[1001]` 等子字段，都只算一个 pending root；同一事务修改一个 `GDLegion` 和两个不同的 `GDRole`，则算三个。Flush 成功、Store 变更清理后，对应 root 才会移出 pending；未产生变更或纯内存对象不计入其中。
 
 ```go
 runtime := txn.NewRuntime(fusion, txn.RuntimeConfig{
@@ -2018,9 +2018,9 @@ if err := runtime.Call(ctx, &PGuildContribution{Guild: guild, Role: role}); err 
 	return err
 }
 
-// 尚未发生 Redis/Mongo I/O；role、guild 的 Store 仍保留本轮及此前未 Flush 的 delta。
+// 尚未发生 Redis/Mongo I/O；role、guild 的 Store 仍保留本轮及此前未 Flush 的变更。
 if err := runtime.Flush(ctx); err != nil {
-	return err // delta 保留，下一次 Flush 可重试
+	return err // 变更保留，下一次 Flush 可重试
 }
 ```
 
@@ -2058,7 +2058,7 @@ txgen 生成的 Store 已实现 `storage.CollapsibleChangeStore`。高级用户�
 ```go
 err := runtime.Call(ctx, procedure)
 if errors.Is(err, txn.ErrChangeCollapseUnsupported) {
-	return fmt.Errorf("persistent store must support delta collapse: %w", err)
+	return fmt.Errorf("persistent store must support change collapse: %w", err)
 }
 ```
 
@@ -2087,7 +2087,7 @@ change.Document{
 ```
 
 落到 Redis/Mongo 后，字段仍然存在，只是值为 `""` 或 `0`。这和 `omitempty` 不冲突：`omitempty`
-主要影响完整对象序列化时是否省略零值；生成 Store 的 Delta set 语义会明确保留这次设置的零值。
+主要影响完整对象序列化时是否省略零值；生成 Store 的 Set 变更语义会明确保留这次设置的零值。
 
 `Clear*` 不删除普通字段，而是写入其 Go 零值：
 
@@ -2250,6 +2250,21 @@ items := doc.Set["Items"]
 dress := doc.Set["Dress"]
 _ = items
 _ = dress
+```
+
+嵌套集合也按完整结构化路径解析类型，不会只看根字段猜测：
+
+```go
+role.SetLordInfo(&data.GDLordInfo{Skills: []int32{1, 2}})
+role.ClearChanges()
+
+role.LordInfoStore().ClearSkills()
+if err := db.Save(role); err != nil {
+	return err
+}
+
+// Redis JSON: {"lordInfo":{"skills":[]}}
+// Mongo BSON:  {"lordInfo":{"skills":[]}}
 ```
 
 因此 JSON/Msgpack 编码后，map 和结构体字段使用空对象 `{}`，slice 使用空数组 `[]`；不会把清空列表误传成空对象。
@@ -2665,9 +2680,12 @@ client := redis.NewClient(&redis.Options{
 	DB:   15,
 })
 
-redisCluster := txredis.NewCluster(routeTable, map[string]txredis.ScriptClient{
+redisCluster, err := txredis.NewCluster(routeTable, map[string]txredis.ScriptClient{
 	"redis://127.0.0.1:6379/15": txgoredis.NewClient(client),
 })
+if err != nil {
+	return err
+}
 ```
 
 批量读取时不需要特殊选项：
@@ -2704,18 +2722,24 @@ for endpoint := range redisRoutes.Endpoints() {
 	shards[endpoint] = txgoredis.NewClient(redis.NewClient(opt))
 }
 
-redisCluster := txredis.NewCluster(routeTable, shards)
+redisCluster, err := txredis.NewCluster(routeTable, shards)
+if err != nil {
+	return err
+}
 ```
 
-`NewCluster` 的 shard 映射使用 `txredis.ScriptClient` 强类型约束，不能把任意对象塞入 Redis endpoint。若实际读写时
-adapter 没有可用 client（包括接口中包装了 nil 指针），会返回 `txredis.ErrClientNotConfigured`；空变更源或空批量读取
-仍是正常 no-op，不会因为未装配 client 失败。
+`NewAdapter` 和 `NewCluster` 在启动装配阶段校验 client、router、shard 名称与 shard 集合。shard 映射使用
+`txredis.ScriptClient` 强类型约束，不能把任意对象塞入 Redis endpoint；nil 或接口中包装的 typed-nil client 会直接返回
+`txredis.ErrClientNotConfigured`，不会等到第一次业务 I/O 才暴露半装配状态。
 
 ```go
-adapter := txredis.NewAdapter(nil)
-err := adapter.ApplyDelete(ctx, GDRoleTypeSpec(), data.GDRoleRecordKey(1001))
+adapter, err := txredis.NewAdapter(nil)
 // errors.Is(err, txredis.ErrClientNotConfigured) == true
+// adapter == nil
 ```
+
+写入口接收 `nil change.Source` 时返回 `change.ErrNilSource`。一个有效 Source 的 `HasChanges()` 返回 `false` 才表示合法
+no-op，此时不会执行路由或 Redis I/O；空批量读取也返回对应长度的空结果。
 
 默认批量读取会先按 endpoint 分组，再在每个 endpoint 内使用原生 `MGET`。云代理能识别 `MGET` 的参数都是 key，
 可以在代理层完成跨 slot 分发和聚合。不要把跨记录批量读取包进自定义 Lua：云代理不能可靠判断 Lua 的
@@ -2954,7 +2978,7 @@ bson.M{
 }
 ```
 
-map key 级 Delta 会转换为 Mongo dot path。例如 `Items[1001]` 会写成类似 `items.1001`。
+map key 级变更会转换为 Mongo dot path。例如 `Items[1001]` 会写成类似 `items.1001`。
 如果 `map[string]` 的 key 为空字符串，或包含 `.` / `$`，runtime 不会转义或改写业务 key，而是在 Mongo 边界降级为整 map 字段写回：
 
 ```go
@@ -3068,7 +3092,7 @@ role, exists, err := data.LoadGDRole(ctx, fusionStrategy, data.GDRoleRecordKey(4
 err = storage.Save(ctx, fusionStrategy, role.Store())
 ```
 
-业务侧应使用项目 facade，不传 adapter、context、Store 或 Delta：
+业务侧应使用项目 facade，不传 adapter、context、Store 或变更流：
 
 ```go
 role.SetName("new-name")
@@ -3105,7 +3129,7 @@ Fusion 策略的当前保存路径：
 任务失败重试时，Scheduler 会输出结构化错误日志；失败原因不写入 Redis 任务状态，避免错误字符串占用队列内存。重试间隔由 lease 的持久化 `Attempts` 计算：`retryInitialDelay` 按 `retryMultiplier` 递增至 `retryMaxDelay`，并可施加不超过最大值的 `retryJitter`。达到上限后任务持续重试，不会因次数耗尽被丢弃。
 Scheduler 循环中的 claim、complete、retry 等 backend 错误也会输出结构化错误日志；服务关闭导致的 context 结束不会额外记录错误。
 Fusion delayed task queue 接受保存 action 和 Redis 热数据延迟删除 action；其他未知 action 会返回错误。入队任务与 `StorageTaskHandler` 消费入口都会统一校验 `Type`、`ID`、`Action`：空白类型/动作、nil ID 与空字符串 ID 都返回 `task.ErrInvalidDelayTask`，防止手工写入或遗留异常任务落到存储层。`Complete`、`Retry` 额外要求有效的 lease token 和正数尝试次数；格式完整但已过期的 lease 仍按幂等 no-op 处理。任务类型优先来自 `DelayedOperation.Type`，为空时使用 `DelayedOperation.Key.TypeName`。Fusion 延迟保存按类型、记录 ID、route/shard key 和 action 生成一条合并任务，不暴露额外 suffix，避免同一记录产生多条重复保存任务。延迟保存任务不携带业务对象或字段变更日志，回写时重新读取 Redis 当前热数据。显式删除仍走显式删除接口，不进入延迟队列。Redis claim 发现损坏或不完整的 payload 同样返回错误，不会把它当成可执行任务。
-Fusion 保存路径要求 Redis delta applier、Mongo document loader 与延迟队列都已装配；缺少其中任一项时，非空 Delta 会在 Redis I/O 前返回错误。延迟任务执行还要求 handler、Redis 文档读取、Mongo replace 和删除任务所需的 revision/lock 组件完整可用。`Strategy.Validate()` 会汇总检查 Redis delta/document/load-lock/delete、Mongo load/delete 和延迟队列；项目启动阶段必须在 Redis/Mongo 探活后调用它。`txgame/server` 的 `NewStorage` 已执行这两步，任一依赖或连接不可达即启动失败。`Scheduler.Start` 也返回 `error`，项目启动代码必须处理，不能在 worker 未运行时继续对外服务：
+Fusion 保存路径要求 Redis change applier、Mongo document loader 与延迟队列都已装配；缺少其中任一项时，非空变更会在 Redis I/O 前返回错误。延迟任务执行还要求 handler、Redis 文档读取、Mongo replace 和删除任务所需的 revision/lock 组件完整可用。`Strategy.Validate()` 会汇总检查 Redis change/document/load-lock/delete、Mongo load/delete 和延迟队列；项目启动阶段必须在 Redis/Mongo 探活后调用它。`txgame/server` 的 `NewStorage` 已执行这两步，任一依赖或连接不可达即启动失败。`Scheduler.Start` 也返回 `error`，项目启动代码必须处理，不能在 worker 未运行时继续对外服务：
 
 ```go
 if err := scheduler.Start(appContext); err != nil {
@@ -3115,7 +3139,7 @@ if err := scheduler.Start(appContext); err != nil {
 
 运行期不为每次 Fusion 调用额外 Ping Redis 与 Mongo。项目运行时由后台探针和真实 I/O 错误分别维护两个 backend 的健康状态，并在业务入口执行模式级检查：Redis 类型只要求 Redis 健康，Mongo 类型只要求 Mongo 健康，Fusion 类型要求两端都健康。Mongo 已知不可用时，即使底层 Redis 可能命中热数据，Fusion 业务读取和写入也会在进入 Strategy 前返回 `runtime.ErrStorageUnavailable`。Redis/Mongo 的短时不可用只会让当前调用返回 `error`，不会使 `txgame` panic；业务 handler 应捕获错误并结束本次上行请求。
 
-具体 go-redis/Mongo driver client 只把网络、超时等真实外部调用失败包装为 `storage.BackendError`，通用 Redis/Mongo adapter 只传播已经分类的错误。RecordKey 校验、Delta/字段映射、BSON/Redis 返回值解码、未知 Lua 返回值等请求或协议语义错误，以及调用方 context 取消，不会关闭全局健康状态。自定义 driver adapter 需要遵守同一规则：只在能确认是后端通信失败的位置调用 `storage.NewBackendError`，项目运行时通过 `storage.BackendFromError` 识别故障来源。
+具体 go-redis/Mongo driver client 只把网络、超时等真实外部调用失败包装为 `storage.BackendError`，通用 Redis/Mongo adapter 只传播已经分类的错误。RecordKey 校验、变更/字段映射、BSON/Redis 返回值解码、未知 Lua 返回值等请求或协议语义错误，以及调用方 context 取消，不会关闭全局健康状态。自定义 driver adapter 需要遵守同一规则：只在能确认是后端通信失败的位置调用 `storage.NewBackendError`，项目运行时通过 `storage.BackendFromError` 识别故障来源。
 
 健康探针会记录开始检查时的 backend generation。若探针执行期间有真实业务 I/O 报告了更新的故障，较早的成功探针结果不能清除这次新故障；下一轮在新 generation 上完整成功的探针才会重新开放入口。
 
@@ -3375,7 +3399,7 @@ env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp /Users/a47/sdk/go1.26
 
 - 直接字段赋值不会标脏，例如 `role.Name = "bob"` 只改内存，不会进入 Store dirty。
 - 使用生成代理方法：`role.SetName("bob")`、`role.SetItems(...)`、`role.TouchItems()`。
-- 如果已经通过集合 wrapper 生成了 key/index 级 Delta，再调用 `TouchItems()` 或 `AllTouch()` 时，顶层 dirty 会覆盖并清理更细的路径记录。
+- 如果已经通过集合 wrapper 生成了 key/index 级变更，再调用 `TouchItems()` 或 `AllTouch()` 时，顶层 dirty 会覆盖并清理更细的路径记录。
 - 保存成功后如果继续复用对象，调用 `ClearChanges()` 或 Store 的 `AllUnTouch()` 清掉本轮 dirty。
 
 ### 批量读取报 Redis cross-slot

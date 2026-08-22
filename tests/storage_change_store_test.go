@@ -93,7 +93,7 @@ func TestStorageCreateAppliesWholeStoreAndForcesUpsert(t *testing.T) {
 	}
 }
 
-func TestStorageSaveAppliesDirtyDeltasAndForcesNonUpsert(t *testing.T) {
+func TestStorageSaveAppliesDirtyChangesAndForcesNonUpsert(t *testing.T) {
 	item := recordedChange{Path: testStoragePath(2), Op: change.OpSet}
 	store := &testChangeStore{
 		spec:     meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{FullName: "GDRole"}}},
@@ -120,7 +120,7 @@ func TestStorageSaveAppliesDirtyDeltasAndForcesNonUpsert(t *testing.T) {
 	}
 }
 
-func TestStorageSaveFailureKeepsDeltas(t *testing.T) {
+func TestStorageSaveFailureKeepsChanges(t *testing.T) {
 	saveErr := errors.New("boom")
 	store := &testChangeStore{
 		key:     storage.RecordKey{ID: int64(1001)},
@@ -136,7 +136,7 @@ func TestStorageSaveFailureKeepsDeltas(t *testing.T) {
 	}
 }
 
-func TestStorageSaveRejectsInvalidRecordKeyAndKeepsDeltas(t *testing.T) {
+func TestStorageSaveRejectsInvalidRecordKeyAndKeepsChanges(t *testing.T) {
 	store := &testChangeStore{
 		changes: recordedChanges{{Path: testStoragePath(2), Op: change.OpSet}},
 	}

@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -28,7 +29,10 @@ func TestMongoBuildUpdateDocumentUsesBSONNames(t *testing.T) {
 		},
 	}
 
-	update, err := txmongo.BuildUpdateDocument(spec, source, resolver, testValueResolver{changeFieldName: "alice"})
+	update, err := txmongo.BuildUpdateDocument(spec, source, resolver, testValueResolver{
+		changeFieldName:  "alice",
+		changeFieldItems: map[int64]any(nil),
+	})
 	if err != nil {
 		t.Fatalf("BuildUpdateDocument returned error: %v", err)
 	}
@@ -36,8 +40,37 @@ func TestMongoBuildUpdateDocumentUsesBSONNames(t *testing.T) {
 	if setDoc["rn"] != "alice" {
 		t.Fatalf("update = %#v, want rn set to alice", update)
 	}
-	if _, ok := setDoc["items"].(map[string]any); !ok {
-		t.Fatalf("items clear value = %#v, want empty document", setDoc["items"])
+	items := reflect.ValueOf(setDoc["items"])
+	if items.Kind() != reflect.Map || items.Len() != 0 {
+		t.Fatalf("items clear value = %#v, want empty map", setDoc["items"])
+	}
+}
+
+func TestMongoBuildUpdateDocumentPreservesNestedSliceClearKind(t *testing.T) {
+	const (
+		fieldLordInfo change.FieldID = 20
+		fieldSkills   change.FieldID = 21
+	)
+	path := changePath(fieldNode(fieldLordInfo), fieldNode(fieldSkills))
+	source := recordedChanges{{Path: path, Op: change.OpClear}}
+	resolver := testFieldNameResolver{
+		change.FieldNameGo:   {fieldLordInfo: "LordInfo", fieldSkills: "Skills"},
+		change.FieldNameBSON: {fieldLordInfo: "lordInfo", fieldSkills: "skills"},
+	}
+	values := change.ValueResolverFunc(func(candidate change.Path) (any, bool) {
+		if candidate.Equal(path) {
+			return []int32(nil), true
+		}
+		return nil, false
+	})
+
+	update, err := txmongo.BuildUpdateDocument(meta.TypeSpec{}, source, resolver, values)
+	if err != nil {
+		t.Fatalf("BuildUpdateDocument returned error: %v", err)
+	}
+	got := update["$set"].(map[string]any)["lordInfo.skills"]
+	if value, ok := got.([]int32); !ok || len(value) != 0 {
+		t.Fatalf("nested slice clear value = %#v (%v), want empty []int32", got, reflect.TypeOf(got))
 	}
 }
 
@@ -79,6 +112,18 @@ func TestMongoBuildUpdateDocumentRejectsUnresolvedFieldPath(t *testing.T) {
 	_, err := txmongo.BuildUpdateDocument(meta.TypeSpec{}, source, resolver, testValueResolver{unknownField: "alice"})
 	if err == nil || !strings.Contains(err.Error(), "field path") {
 		t.Fatalf("BuildUpdateDocument error = %v, want unresolved field path error", err)
+	}
+}
+
+func TestMongoBuildUpdateDocumentRejectsInvalidPath(t *testing.T) {
+	source := recordedChanges{{
+		Path: change.Path{Depth: change.MaxPathDepth + 1},
+		Op:   change.OpSet,
+	}}
+
+	_, err := txmongo.BuildUpdateDocument(meta.TypeSpec{}, source, testFieldNameResolver{}, nil)
+	if !errors.Is(err, change.ErrInvalidPath) {
+		t.Fatalf("BuildUpdateDocument error = %v, want ErrInvalidPath", err)
 	}
 }
 

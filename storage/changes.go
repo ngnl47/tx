@@ -18,6 +18,8 @@ type ApplyOptions struct {
 
 // ChangeApplier 定义支持规范化变更流直连落地的适配器。
 // TypeSpec 参数是只读元数据；适配器不得修改其中的 map、slice 或指针成员。
+// nil Source 必须返回 change.ErrNilSource；只有有效 Source 明确报告无变更时
+// 才能作为不执行 I/O 的成功 no-op。
 // 适配器必须在第一次外部 I/O 前完整消费 Source 并处理遍历错误，不能把
 // visitor 中途返回的错误变成部分写入。
 type ChangeApplier interface {

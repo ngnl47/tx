@@ -16,15 +16,15 @@ func BuildUpdateDocument(spec meta.TypeSpec, source change.Source, resolver chan
 }
 
 func buildUpdateDocument(spec meta.TypeSpec, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver, skipUpsertID bool) (map[string]any, error) {
-	if source == nil {
-		return nil, change.ErrNilSource
+	if err := change.ValidateSource(source); err != nil {
+		return nil, err
 	}
 	setDoc := map[string]any{}
 	unsetDoc := map[string]any{}
 	fallbacks := make([]change.Path, 0)
 	err := source.VisitChanges(change.VisitorFunc(func(valuePath change.Path, op change.Op) error {
-		if valuePath.Depth == 0 {
-			return nil
+		if !valuePath.Valid() {
+			return fmt.Errorf("%w: %#v", change.ErrInvalidPath, valuePath)
 		}
 		if !op.Valid() {
 			return fmt.Errorf("change: unknown operation %d", op)
@@ -72,8 +72,12 @@ func buildUpdateDocument(spec meta.TypeSpec, source change.Source, resolver chan
 			delete(setDoc, name)
 			unsetDoc[name] = ""
 		case change.OpClear:
+			value, ok := change.ResolveClearValue(values, valuePath)
+			if !ok {
+				return fmt.Errorf("mongo: cannot resolve clear value for path %s", bsonPath)
+			}
 			delete(unsetDoc, name)
-			setDoc[name] = emptyMongoValue(spec, goPath[0])
+			setDoc[name] = value
 		case change.OpSet, change.OpReplace:
 			resolved, err := resolveMongoChangeValue(values, valuePath, bsonPath)
 			if err != nil {
@@ -168,19 +172,6 @@ func fallbackMongoUnsafeStringKeyPath(path change.Path) (change.Path, bool) {
 
 func unsafeMongoPathKey(key string) bool {
 	return key == "" || strings.ContainsAny(key, ".$")
-}
-
-func emptyMongoValue(spec meta.TypeSpec, field string) any {
-	fieldSpec, ok := spec.FieldByName(field)
-	if !ok {
-		return map[string]any{}
-	}
-	switch {
-	case len(fieldSpec.Type) > 0 && fieldSpec.Type[0] == '[':
-		return []any{}
-	default:
-		return map[string]any{}
-	}
 }
 
 func mongoProjectionFields(spec meta.TypeSpec, fields []string) []string {

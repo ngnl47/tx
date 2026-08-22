@@ -227,7 +227,7 @@ func TestTxnRuntimeBudgetedFlushVisitsOnceWhenWithinBudget(t *testing.T) {
 	}
 }
 
-func TestTxnRuntimeAllowsAccumulatedDeltasWhenCleanTargetCheckIsEnabled(t *testing.T) {
+func TestTxnRuntimeAllowsAccumulatedChangesWhenCleanTargetCheckIsEnabled(t *testing.T) {
 	previous := txn.CurrentConfig()
 	t.Cleanup(func() { txn.Configure(previous) })
 	txn.Configure(txn.Config{Debug: txn.DebugConfig{CheckCleanLockTargets: true}})
@@ -288,7 +288,7 @@ func TestTxnRuntimeRejectsNewRootBeforeProcedureWhenCapacityIsFull(t *testing.T)
 	}
 }
 
-func TestTxnRuntimeCollapsesOverBudgetRootDeltasBeforeFlush(t *testing.T) {
+func TestTxnRuntimeCollapsesOverBudgetRootChangesBeforeFlush(t *testing.T) {
 	store := &runtimeTestStore{}
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
 	manager := txn.NewRuntime(&recordingChangeStoreApplier{}, txn.RuntimeConfig{

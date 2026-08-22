@@ -402,7 +402,7 @@ func TestFusionStrategyAppliesRedisBeforeQueue(t *testing.T) {
 	}
 }
 
-func TestFusionStrategyQueueFailureKeepsStoreDeltasForRetry(t *testing.T) {
+func TestFusionStrategyQueueFailureKeepsStoreChangesForRetry(t *testing.T) {
 	queueErr := errors.New("delay queue unavailable")
 	queue := &recordingQueue{err: queueErr}
 	redis := &recordingApplier{}
@@ -475,11 +475,29 @@ func TestFusionStrategySkipsEmptyChanges(t *testing.T) {
 	strategy := fusion.Strategy{MongoQueue: queue}
 	key := storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)}
 
-	if err := strategy.ApplyChangesWithOptions(context.Background(), meta.TypeSpec{}, key, nil, testFieldNameResolver{}, testValueResolver{}, storage.ApplyOptions{}); err != nil {
+	if err := strategy.ApplyChangesWithOptions(context.Background(), meta.TypeSpec{}, key, recordedChanges{}, testFieldNameResolver{}, testValueResolver{}, storage.ApplyOptions{}); err != nil {
 		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
 	}
 	if len(queue.ops) != 0 {
 		t.Fatalf("queued ops = %#v, want empty", queue.ops)
+	}
+}
+
+func TestFusionStrategyRejectsNilChangeSource(t *testing.T) {
+	strategy := fusion.Strategy{}
+	for _, source := range []change.Source{nil, (*typedNilSource)(nil)} {
+		err := strategy.ApplyChangesWithOptions(
+			context.Background(),
+			meta.TypeSpec{},
+			storage.RecordKey{},
+			source,
+			nil,
+			nil,
+			storage.ApplyOptions{},
+		)
+		if !errors.Is(err, change.ErrNilSource) {
+			t.Fatalf("ApplyChangesWithOptions(%T) error = %v, want ErrNilSource", source, err)
+		}
 	}
 }
 

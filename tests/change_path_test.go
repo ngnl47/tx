@@ -42,3 +42,18 @@ func TestPathJoinLimitedKeepsNearestAncestor(t *testing.T) {
 		t.Fatalf("limited path = %#v, want %#v", joined, want)
 	}
 }
+
+func TestPathRejectsDepthBeyondFixedCapacity(t *testing.T) {
+	path := change.Path{Depth: change.MaxPathDepth + 1}
+	resolver := testFieldNameResolver{change.FieldNameGo: {1: "Name"}}
+
+	if path.Valid() {
+		t.Fatal("Path.Valid() = true, want false")
+	}
+	if got := path.FullPath(resolver, change.FieldNameGo); got != nil {
+		t.Fatalf("FullPath() = %q, want nil", got)
+	}
+	if path.Equal(path) {
+		t.Fatal("invalid paths compare equal")
+	}
+}
