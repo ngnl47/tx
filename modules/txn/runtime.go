@@ -454,11 +454,6 @@ func (store changeBudgetStore) VisitChanges(visitor change.Visitor) error {
 	})
 }
 
-func (store changeBudgetStore) IsViewStore() bool {
-	readOnly, ok := store.ChangeStore.(storage.ReadOnlyChangeStore)
-	return ok && readOnly.IsViewStore()
-}
-
 type changeBudgetVisitor struct {
 	visitor   change.Visitor
 	remaining int

@@ -226,14 +226,17 @@ type GDRole struct {
 
 ### Store 的职责
 
-`GD*Store` 是变更追踪结构。它绑定一个 GD 数据指针，但不保存第二份完整业务数据：
+`GD*Store` 是可变的变更追踪结构。它绑定一个 GD 数据指针，但不保存第二份完整业务数据：
 
 ```text
-GDRole ----------------------> 一份业务数据
-   ^                              ^
-   |                              |
-main GDRoleStore             copied/view Store
-各自保存变更结构              仍从同一数据读取当前值
+GDRole <--------------------- main GDRoleStore
+唯一可变业务数据                可变状态树
+                                   |
+                                   | View(configure) 同步捕获
+                                   v
+                            GDRoleStoreView
+                            ├── 稀疏 GDRole 值
+                            └── change.ViewState
 ```
 
 Store 负责：
@@ -243,7 +246,7 @@ Store 负责：
 - 为子 Store 组合父路径。
 - 在输出边界读取当前 GD 值。
 - 为事务绑定临时 undo recorder。
-- 生成变更视图并构建下行文档。
+- 同步捕获强类型 StoreView 并构建下行文档。
 
 Store 不负责：
 
@@ -285,31 +288,55 @@ roleB.Items[9] ----+
 
 两个根 Store 会创建各自的子 Store 路径。通过 `roleA.ItemsStore().Get(1)` 得到的 Store 只向 roleA 根记录变化；不能让裸 `item.SetQuantity()` 自动猜测应该写入哪个根或哪个 view。
 
-### 主 Store 与变更视图
+### 主 Store、selector 与 StoreView
 
-主 Store 和变更视图使用同一种 Store 状态树与同步遍历算法，但权限不同，不是两套生成类型：
+这三个对象的职责刻意分开：
 
-- 主 Store 的变更状态用于持久化或有状态运行时累计。
-- 变更视图只用于组织下行字段选择和帧内合并；允许读取以及 `Touch/UnTouch` 调整字段选择。
-- 变更视图禁止 `Set/Clear/Inc`、集合增删改等业务数据修改，也禁止持久化。生成代码会在误用修改 API 时立即暴露编程错误。
-- `store.View()` 复制变更结构，不复制完整 GD 数据。
-- `view.MergeChanges(next)` 只合并同一 GD 引用上的变更结构，用于帧内累计；它不复制业务值，也不生成独立载荷。
+- 主 Store 是唯一可变追踪对象，用于受控修改、持久化、undo 和有状态 Runtime 累计。
+- selector 是 `View` 回调期间存在的临时 `GD*Store`。它复制主 Store 当前的选择状态，只允许 `Touch/UnTouch`；调用 `Set/Clear/Replace` 或集合增删改会立即 panic，暴露框架 API 的编程误用。
+- StoreView 是生成的独立类型，例如 `GDRoleStoreView`。它持有捕获时刻的稀疏 `GDRole` 和只包含 `Path + Op` 的 `change.ViewState`，不再持有根 GD、主 Store 或 selector。
 
-例如，业务可以从主 Store 复制当前变更，再补充一个只用于广播的字段：
+默认捕获主 Store 当前全部变更：
 
 ```go
-view := role.Store().View()
-view.TouchPower()
-body := view.ChangeDocument(change.FieldNameMsgpack)
+role.SetName("alice")
+role.SetPower(0)
+
+view, err := role.Store().View(nil)
+if err != nil {
+    return err
+}
+
+// Role 是捕获时刻的稀疏值；HasPower 能区分“选中的零值”和“未选择”。
+fmt.Println(view.Role.Name) // alice
+fmt.Println(view.HasPower()) // true
 ```
 
-这里 `TouchPower` 只改变 view 的字段选择，不修改 `role.Power`，也不污染主 Store。变更视图仍然从当前 GD 读取值，因此创建 view 后应在同一所有权边界内构建 `ChangedBody()` 或 `ChangeDocument(kind)`；结果需要跨协程时，还要继续深复制复杂值或编码为与根 GD 脱离的独立载荷，并在发布后按只读数据使用。如果主 Store 随后改变 map key、slice 长度或对象归属，旧 view 的细粒度路径可能已经无法稳定解析；框架会在可以证明正确时提升为祖先整字段 Replace，不能伪造旧索引路径。
+只选择广播字段时，先清空继承的选择，再 Touch 目标路径：
+
+```go
+view, err := role.Store().View(func(selector *data.GDRoleStore) {
+    selector.AllUnTouch()
+    selector.TouchName()
+    selector.TouchPower()
+})
+if err != nil {
+    return err
+}
+
+body, err := view.Document(change.FieldNameMsgpack)
+```
+
+`TouchPower` 只调整 selector，不修改 `role.Power`，也不污染主 Store。捕获过程只复制所选数据：标量直接赋值，嵌套指针、map、slice 只复制所需分支，整字段 Replace/Clear 才复制整个字段。因此成本与所选路径规模相关，不等于深复制整个根 GD。
+
+StoreView 创建完成后，根 GD 的后续修改、map key 增删、slice 长度变化和指针替换都不会改变已经捕获的值。`view.Role` 对业务可读，但应在捕获后按不可变对象使用；需要增加内容时重新捕获一份 StoreView，再通过 `Merge` 合并，不能直接修改稀疏 Role。
 
 ### 输出与帧内合并概览
 
-生成 Store 提供两个不同成本的输出入口：
+生成代码提供两类输出入口：
 
-- `VisitChanges(visitor)` 同步逐条访问规范化路径，不创建中间变更切片。`ChangeDocument(kind)`、Redis、Mongo、Fusion 与 Runtime 容量检查都使用该入口。
+- 主 Store 的 `VisitChanges(visitor)` 同步逐条访问当前规范化路径，不创建中间变更切片。Redis、Mongo、Fusion 与 Runtime 容量检查使用该入口。
+- StoreView 的 `VisitChanges(visitor)` 访问已经捕获的 `change.ViewState`；`Document(kind)` 从 StoreView 自身的稀疏 GD 取值，不再读取根对象。
 
 存储边界接受 `Source`，它组合 `VisitChanges` 与 O(1) 的 `HasChanges`。这避免 adapter 为判空先遍历一次、真正写入时再遍历一次，也把“源在状态不变时可重复访问”的契约固定在编译期。
 
@@ -333,34 +360,42 @@ if store.HasChanges() {
 
 ```text
 Store state (FieldID + PathKey + Op)
-├── ChangeDocument(FieldNameGo/JSON/BSON/Msgpack)  # 高级通用文档构建
+├── Document(FieldNameGo/JSON/BSON/Msgpack)  # 高级通用文档构建
 ├── cmd Provider                                    # 固定选择 Msgpack
 ├── Redis adapter                                   # 固定选择 JSON，并应用 Redis patch 规则
 └── Mongo adapter                                   # 固定选择 BSON，并应用 Mongo update 规则
 ```
 
-`ChangeDocument(FieldNameJSON/BSON)` 只改变通用文档的路径名称，不会执行 Redis subKey 分组、Mongo
+`Document(FieldNameJSON/BSON)` 只改变通用文档的路径名称，不会执行 Redis subKey 分组、Mongo
 `_id` 保护或 unsafe key 降级。存储调用不能用它绕过 adapter。
 
-Battlefield 一类按帧广播的对象应让生成 Store 直接合并每批 view 的脏元数据：
+Battlefield 一类按帧广播的对象应合并每批独立 StoreView：
 
 ```go
-frame := role.Store().View()
+frame, err := role.Store().View(nil)
+if err != nil {
+    return err
+}
 role.ClearChanges()
 
 // 同一帧内后续逻辑继续修改相同 role。
 item, _ := role.ItemsStore().Get(1001)
 item.SetQuantity(7)
-next := role.Store().View()
-role.ClearChanges()
-
-if err := frame.MergeChanges(next); err != nil {
+next, err := role.Store().View(nil)
+if err != nil {
     return err
 }
-body, err := frame.ChangeDocument(change.FieldNameMsgpack)
+role.ClearChanges()
+
+if err := frame.Merge(next); err != nil {
+    return err
+}
+body, err := frame.Document(change.FieldNameMsgpack)
 ```
 
-合并规则由生成类型完成：同字段或同 key 的后写覆盖先写，后续父字段 Replace/Clear/Delete 会清除此前子路径，互不相交的字段保留。两份 Store 必须引用同一个 GD 对象；否则路径虽然相同，最终值来源不同，方法返回 `ErrValueMismatch`。如果根 GD 仍相同、但某个指针字段已直接替换，旧帧与新帧的子 Store 绑定对象不同，合并会把该父字段提升为当前完整值的 Replace，而不是合并两棵不同对象的子状态。该机制适合在实体锁或 Actor 单线程执行区间内累计；如果结果要跨协程排队，必须在锁内完成边界文档构建并继续深复制或编码为独立载荷。`change.Document` 的 map 本身独立，但复杂 value 可能仍引用当前 GD，不能仅因已经调用 `ChangeDocument` 就把它视为独立载荷。
+合并规则由 `change.ViewState` 与生成的强类型稀疏复制共同完成：同字段或同 key 的后写覆盖先写，后续父字段 Replace/Clear/Delete 会清除此前子路径，互不相交的字段保留；Clear/Delete 后再出现子路径时，父路径提升为 Replace 并保留后批次捕获的数据。两份 StoreView 必须来自同一个主 Store；即使两个主 Store 绑定同一个 GD 指针，也会返回 `ErrValueMismatch`，避免混淆两个独立追踪边界。
+
+StoreView 已经与根 GD 脱离，可以在实体锁或 Actor 单线程区间内捕获后送入帧队列；发布后仍必须按只读对象使用。若先构建 `change.Document` 再跨协程，文档中的复杂 value 只可能引用 StoreView 的稀疏数据，不会引用根 GD，但同样不得在发布后修改。
 
 ### 两种变更模式
 
@@ -429,20 +464,22 @@ Store 不保存第二份业务数据，也不保存每次操作的 value、时�
 | 遍历上下文 | 变更操作 | `change.Op` | 当前结构化路径上的 Set、Replace、Delete 或 Clear 语义 |
 | 遍历上下文 | 同步遍历 | `VisitChanges(change.Visitor)` | 在当前调用栈中从 Store 状态树生成 `Path + Op`；不创建中间变更切片 |
 | 取值上下文 | 值解析 | `change.ValueResolver`、`Store.ResolveValue` | 按结构化路径从当前 GD 读取最终值，并区分业务 nil 与解析失败 |
-| 合并上下文 | 变更视图 | `Store.View()`、`GD*.NewViewStore()` | `View()` 复制现有状态，`NewViewStore()` 从空选择状态开始；二者都继续引用同一 GD，不是数据快照 |
-| 合并上下文 | 帧内合并 | `Store.MergeChanges(next)` | 按批次先后合并同一根 GD 的变更状态；`next` 表示后发生批次 |
+| 捕获上下文 | selector | `Store.View(func(*GD*Store))` 的回调参数 | 继承主 Store 当前选择状态的临时 Store；只允许 Touch/UnTouch，不允许修改业务数据，也不会返回给调用方 |
+| 捕获上下文 | StoreView | 生成的 `GD*StoreView` | 持有捕获时刻的稀疏 GD 值、`change.ViewState` 和同源身份；不引用根 GD 或主 Store |
+| 捕获上下文 | 稀疏 GD | `StoreView.Role` 等生成字段 | 只物化所选路径的强类型数据；字段为零值时使用 `Has<Field>()` 判断是否被选择 |
+| 捕获上下文 | 同步捕获 | `Store.View(configure)` | 在当前调用栈内完成路径选择、状态规范化和值复制；返回后根 GD 的变化不影响 StoreView |
+| 合并上下文 | 帧内合并 | `StoreView.Merge(next)` | 按批次先后合并同一主 Store 捕获的独立 StoreView；`next` 表示后发生批次 |
 | 合并上下文 | 覆盖吸收 | 父级 `OpReplace/OpClear/OpDelete` | 父路径已经完整决定写入语义，子路径不再单独输出 |
-| 防御上下文 | 结构漂移 | 指针身份、map key、slice index 校验 | Store 中记录的位置已不能安全解析到原绑定值 |
-| 防御上下文 | 祖先提升 | 最近安全祖先的 `OpReplace` | 结构漂移、超深路径或后端路径限制下的正确性降级 |
+| 防御上下文 | 祖先提升 | 最近安全祖先的 `OpReplace` | 超深路径、Store 合并冲突或后端路径限制下的正确性降级 |
 | 容量上下文 | 容量收敛 | `storage.CollapsibleChangeStore`、`CollapseChanges()` | 单根变更位置超预算后，清理细粒度状态并改为可更新顶层字段 Replace |
-| 输出上下文 | 边界文档构建 | `ChangeDocument(kind)`、`change.BuildDocument`、Redis/Mongo document builder | 转换字段名、解析当前值并形成目标边界需要的文档 |
-| 输出上下文 | 独立载荷 | 深复制后的对象或已编码的 BON/JSON/BSON `[]byte` | 不再引用可变 GD；根 GD 后续变化不会改变该载荷 |
+| 输出上下文 | 边界文档构建 | `Document(kind)`、`change.BuildDocument`、Redis/Mongo document builder | 转换字段名、解析当前值并形成目标边界需要的文档 |
+| 输出上下文 | 独立载荷 | StoreView、深复制对象或已编码的 BON/JSON/BSON `[]byte` | 不再引用可变根 GD；发布后必须按只读对象使用 |
 | 发布上下文 | 只读发布 | `msgq.Pub` 等异步所有权交接 | 发布成功后调用方和消费方都不得修改、追加或复用载荷内存 |
 | 持久化上下文 | 保存成功清理 | `storage.Save`、`Store.ClearChanges()` | 存储成功后递归清理 Store 状态，不修改 GD 数据 |
 | 持久化上下文 | 保存失败保留 | `storage.Save` 的错误路径 | I/O 或边界构建失败时保留全部状态，供后续重试 |
 | 事务上下文 | 撤销记录 | `change.UndoRecorder`、`change.UndoFunc` | 恢复事务前 GD 值和 Store 状态；与帧内合并职责独立 |
 
-“帧”在这里表示一次业务合并窗口，不限定为 20ms，也不是网络 `Frame`。Store 状态本身是按位置归一化的集合，遍历顺序不构成业务契约；只有 `MergeChanges(next)` 的批次先后具有“后批次覆盖前批次”含义。
+“帧”在这里表示一次业务合并窗口，不限定为 20ms，也不是网络 `Frame`。Store 状态本身是按位置归一化的集合，遍历顺序不构成业务契约；只有 `Merge(next)` 的批次先后具有“后批次覆盖前批次”含义。
 
 ### 生成 Store 的常驻状态
 
@@ -467,7 +504,7 @@ type GDRoleItemsCollectionStore struct {
 - map/slice 的显式元素操作用 `ops[key/index]` 保存最后语义。
 - 生成对象子字段的变化仍保存在对应子 Store；`dirtyChildren` 只索引真正变脏的子 Store，`stores` 可以缓存已经访问但仍干净的子 Store。
 - 整字段 Replace/Clear 会在同步遍历时覆盖该字段下的 key/子 Store 状态；`UnTouch` 可以撤销显式选择，并重新暴露仍真实存在的子 Store 变更。
-- `View()` 复制这些规范化状态和 Store 树，但继续读取同一份 GD 数据。
+- `View(configure)` 只在回调期间复制这些规范化状态作为 selector；捕获完成后返回独立的 StoreView，不返回复制的 Store 树。
 
 例如连续执行：
 
@@ -477,7 +514,7 @@ role.ItemsStore().Set(1001, second)
 role.ItemsStore().Set(1001, final)
 ```
 
-常驻状态始终只有 `ops[1001] = OpReplace`。调用 `VisitChanges`、`ChangeDocument(kind)` 或常规持久化 API 时会同步访问一条 `Items[1001] Replace`，不会创建中间变更切片。
+常驻状态始终只有 `ops[1001] = OpReplace`。调用 `VisitChanges`、`Document(kind)` 或常规持久化 API 时会同步访问一条 `Items[1001] Replace`，不会创建中间变更切片。
 
 Snapshot Diff 也先构造同一种临时生成 Store 状态，再走统一输出边界。这样两种变更模式共享字段槽、集合状态和子 Store 语义；下行文档与持久化 adapter 都直接同步消费。
 
@@ -527,15 +564,21 @@ type storeState[V any, S any] struct {
 
 集合内部按路径创建的子 Store 使用集合自己的 `stores` 绑定，不会把共享的子 GD 强行绑定到某一条父路径。这样同一个 `*GDItem` 可以出现在多个角色或多个集合中，每条路径仍独立记录 dirty 状态。
 
-### 同步遍历与帧内合并
+### 同步遍历、捕获与帧内合并
 
-`VisitChanges(visitor)` 在调用栈内同步遍历规范化状态，按值传递 `Path + Op`。visitor 必须在回调内完成处理，不能把 Store 或当前 GD 指针交给无锁异步队列。Redis、Mongo、Fusion、cmd Provider 与事务 Runtime 都消费同一契约。
+主 Store 的 `VisitChanges(visitor)` 在调用栈内遍历规范化状态，按值传递 `Path + Op`。visitor 必须在回调内完成处理，不能把主 Store 或根 GD 指针交给无锁异步队列。Redis、Mongo、Fusion 与事务 Runtime 直接消费这一契约。
 
-`View()` 深复制 `ops`、集合元素槽、`dirtyChildren` 和其中真正变脏的子 Store，浅复制绑定的 GD 引用。`GD*.NewViewStore()` 则在同一 GD 上创建空选择状态，适合从零组织一份下行字段集合。变更视图禁止通过 Set/Clear/Replace 修改业务数据，也不能交给 `storage.Save`；它允许 Touch/UnTouch、同步遍历和 `MergeChanges`，用于独立组织下行字段选择状态。
+`View(configure)` 分成三个同步阶段：
 
-Battlefield 等按帧广播场景通过生成的 `MergeChanges(next)` 合并同一 GD 上的变更视图：同一位置由后批次覆盖，父字段 Replace/Clear/Delete 吸收子路径，最后只构建一次输出。跨对象合并应在业务层分别构建独立载荷后再组织消息；runtime 不提供脱离 Store 的通用顺序批次。
+1. `selectionCopy()` 复制主 Store 的 `ops`、集合元素槽、dirty 索引和必要子 Store，形成临时 selector。
+2. 可选 configure 回调用 Touch/UnTouch 调整 selector；任何数据修改 API 都被生成代码拒绝。
+3. `change.CaptureViewState` 规范化 selector 的 `Path + Op`，生成的 `copyGD*StoreViewPath` 按路径把捕获时刻的值复制进稀疏 GD。
 
-当前 GD 保存最终准确状态，Store 只回答“哪些位置需要从当前 GD 重新读取并写出”。因此变更视图必须在同一实体锁、Actor 单线程区间或其他数据不再变化的所有权边界内合并和读取。
+返回的 StoreView 实现 `change.Source`，但不实现 `storage.ChangeStore`。因此它可以构建下行文档和参与帧内合并，却无法在编译期传给 `storage.Save`。`change.ViewState` 只保存路径和操作，业务值只存在于生成的稀疏 GD 中，不维护第二套 `any` value 日志。
+
+Battlefield 等按帧广播场景通过 `StoreView.Merge(next)` 合并同一主 Store 的多次捕获：同一位置由后批次覆盖，父字段 Replace/Clear/Delete 吸收子路径，最后只构建一次输出。合并先从 next 的稀疏 GD 复制后批次值，再合并 `ViewState`；整个过程不访问根 GD。跨对象合并应在业务层分别构建载荷后再组织消息。
+
+捕获动作必须发生在实体锁、Actor 单线程或其他根 GD 所有权边界内，确保读到一致时刻的路径和值。StoreView 一旦返回便不受根 GD 后续修改影响；它可以进入异步帧队列，但从此必须只读。
 
 ### PathNode 与 PathKey
 
@@ -643,50 +686,56 @@ Store.ResolveValue(path)
 
 不能把解析失败写成数据库 null。
 
-`change.Document` 会创建独立的 `Set/Delete` map，但 `Set` 中的复杂 map、slice 或指针 value 可能仍引用当前 GD。术语上必须区分三个阶段：
+`change.Document` 会创建独立的 `Set/Delete` map。若来源是主 Store，`Set` 中的复杂 map、slice 或指针 value 可能仍引用当前根 GD；若来源是 StoreView，它们只引用 StoreView 自己的稀疏数据。术语上必须区分三个阶段：
 
-- 调用 `ChangeDocument(kind)` 是“边界文档构建”。
-- 把复杂值深复制，或编码为 BON/JSON/BSON 字节，得到的是“独立载荷”。
+- 调用 `Document(kind)` 是“边界文档构建”。
+- StoreView 是与根 GD 脱离的“独立载荷”；把任意文档继续编码为 BON/JSON/BSON 字节，也会得到独立载荷。
 - 把独立载荷交给 msgq、网络或其他异步队列后进入“只读发布”阶段，各方都不得原地修改、追加或复用载荷内存。
 
-只有独立载荷才能在退出对象锁后交给异步队列；否则后续 GD 修改可能改变待发送内容。只读发布是所有权契约，不表示 Go 运行时把 `[]byte` 变成不可写内存，也不限制根 GD 和主 Store继续处理下一批业务变更。
+只有独立载荷才能在退出对象锁后交给异步队列；否则后续 GD 修改可能改变待发送内容。只读发布是所有权契约，不表示 Go 运行时把 StoreView、map、slice 或 `[]byte` 变成不可写内存，也不限制根 GD 和主 Store 继续处理下一批业务变更。
 
 ### 确定性合并边界
 
-生成 Store 在记录和 `MergeChanges()` 时只执行具有当前类型上下文、可以确定正确的合并规则：
+主 Store 在每次记录时按字段槽或集合位置原地归一化，不提供批次 `Merge`。跨时刻的帧内合并只发生在同类型 StoreView 之间，并执行可以由捕获状态确定的规则：
 
 1. 同一字段槽或集合 key/index 由后者覆盖前者。
 2. 后发生的父字段 Replace/Delete/Clear 清理更早子路径。
-3. 前批次已记录父字段 Clear/Replace、后批次又修改其子路径时，最终提升为父字段当前完整值的 Replace。
-4. 后批次直接操作集合元素时，该 key/index 的元素槽覆盖此前同位置的脏子 Store。
-5. 后批次修改同一子对象且指针身份稳定时，递归合并对应子 Store。
+3. 前批次已记录父字段 Clear/Delete、后批次又捕获其子路径时，最终提升为父字段 Replace，并从两份稀疏数据重建结果。
+4. 后批次直接操作集合元素时，该 key/index 的元素状态覆盖此前同位置的子路径。
+5. 后批次修改同一子路径时，复制后批次 StoreView 已捕获的值，不读取根 GD 或比较当前指针身份。
 6. 互不相关的位置分别保留。
-7. 直接指针替换、map key/index 绑定漂移、slice 长度变化、超深路径和不安全后端 key，在拥有当前值的最近边界提升为祖先 Replace。
-8. 两份 Store 没有引用同一个根 GD 时返回 `change.ErrValueMismatch`，不得开始跨对象合并。
+7. 超深路径在主 Store 捕获前提升为最近祖先 Replace；不安全后端 key 仍在具体存储边界提升，二者不由 StoreView 猜测。
+8. 两份 StoreView 不是由同一个主 Store 捕获时返回 `change.ErrValueMismatch`，即使主 Store 恰好绑定同一个 GD 指针也不能合并。
 
 它不会猜测：
 
 - “先创建后删除，因此可完全抵消”的数据库状态推断。
 - 依赖当前 map 是否原本存在的业务判断。
-- 跨 GD、跨 flush 批次的日志重放压缩。
+- 跨主 Store、跨 flush 批次的持久化日志重放压缩。
 
-原因是 Store 不持有数据库基线，也不保存创建来源。需要业务上下文的抵消必须由业务层决定；runtime 只维护当前 GD 的可靠写入位置。
+原因是主 Store 和 StoreView 都不持有数据库基线，也不保存创建来源。需要业务上下文的抵消必须由业务层决定；runtime 只维护当前 GD 的可靠写入位置。
 
 合并直接修改接收者状态：
 
 ```go
-frame := role.Store().View() // 前批次
+frame, err := role.Store().View(nil) // 前批次已独立捕获
+if err != nil {
+    return err
+}
 role.ClearChanges()
 
 role.SetPower(100)           // 后批次
-next := role.Store().View()
+next, err := role.Store().View(nil)
+if err != nil {
+    return err
+}
 
-if err := frame.MergeChanges(next); err != nil {
+if err := frame.Merge(next); err != nil {
     return err
 }
 ```
 
-这里 `next` 明确表示后发生批次。`MergeChanges` 完成后，`frame` 同时保留前批次互不冲突的位置和后批次的最终语义；它仍然读取同一个 `role` 当前值，不是可脱离 role 生命周期保存的日志。
+这里 `next` 明确表示后发生批次。`Merge` 完成后，`frame` 同时保留前批次互不冲突的位置和后批次捕获值；它不再读取 `role`，可以脱离 role 生命周期按只读载荷保存和发布。
 
 ### 集合规则
 
@@ -702,7 +751,7 @@ Slice：
 - `SetAt(index, value)` 可以表示已存在索引的整体 Replace。
 - 修改元素子字段可以记录 index 路径。
 - Append、Insert、RemoveAt 或任何导致索引漂移的操作提升为整个 slice Replace。
-- 变更视图执行同步遍历时如果长度已经变化，不能继续使用旧 index 生成局部路径。
+- StoreView 在捕获时已经复制稳定 index 对应的值；捕获后 slice 长度变化不会改变旧 StoreView。
 
 ### 动态 key 的后端降级
 
@@ -745,7 +794,7 @@ Slice：
 | 生成 `change.Document` | 约 0.71-0.74 ms/op，1.16 MB/op，3015 allocs/op | 约 0.40-0.44 ms/op，212 KB/op，2996 allocs/op | 省去约 950 KB 中间 Delta/Clone；剩余分配来自最终字符串路径和文档 map |
 | 16 批 x 64 key 帧合并 | 约 0.46-0.52 ms/op，1.16 MB/op，140 allocs/op | 约 0.17-0.18 ms/op，37 KB/op，17 allocs/op | 生成 Store 直接合并变更状态，最后只构建一次文档 |
 
-这组结果决定只保留 `VisitChanges + MergeChanges`。物化批次、通用 Compact 及其公开 API 已删除；表格仅记录技术选型依据。
+这组结果决定只保留 `VisitChanges + Merge`。物化批次、通用 Compact 及其公开 API 已删除；表格仅记录技术选型依据。
 
 2026-08-22 使用 Go 1.26.5，在 txgame 真实生成 `GDRole.Items` 上继续比较存储边界。对象包含 1024 个不同 map key，每个 key 修改 `Quantity`；两条路径都生成相同 Redis patch 或 Mongo update document：
 
@@ -773,6 +822,14 @@ Slice：
 `GDRole` 的收益大于单个对象尾部减少的 16 B，是因为它按值包含的多个生成结构也同时缩小，收益会递归累积。sidecar 本身在真正进入 Store/snapshot 模式时按需分配；表格只比较结构体常驻内联尺寸。相同 benchmark 下，1024 个不同 map key 的当前结果约为 `0.44-0.45 ms/op, 0.855 MB/op`，成功构建文档并清理约为 `0.41-0.43 ms/op, 0.788 MB/op`，相对 sidecar 前继续减少约 15-17 KB/op，耗时保持同一量级。
 
 sidecar 不是无条件收益：首次直接修改一个独立 GD 会多一次小对象分配。txgame 的真实 `GDRole` 首次标脏从约 `1600 B/op, 2 allocs/op` 变为 `1496 B/op, 3 allocs/op`，总字节减少且耗时处于同一波动区间；极小的独立 `GDItem` 从约 `128 B/op, 2 allocs/op` 变为 `136 B/op, 3 allocs/op`。集合中的生成对象子字段通过路径子 Store 修改，不会为每个值绑定 sidecar，因此大集合基准仍然净受益。`BenchmarkGeneratedStoreDirtyRuntime/FirstScalarWrite` 用于持续观察首次写入成本；若未来真实业务证明大量微型 GD 都作为独立根对象高频首次写入，再评估专用 fast path，不能以增加所有纯数据对象常驻尺寸为代价提前优化。
+
+### StoreView 捕获索引
+
+`change.ViewState` 同时维护两种内部表示：有序的扁平 change slice 是遍历和合并结果的唯一事实来源；精确路径索引与祖先计数只用于缩小 `Record` 的查找范围。索引使用规范化 `Path` 的 64 位指纹，命中后仍比较完整 `Path`；发生哈希碰撞时，该桶退回完整路径扫描。因此碰撞最多降低性能，不能改变覆盖、祖先吸收或路径查询结果。
+
+不能直接使用 `map[Path]...` 作为索引。当前定长 `Path` 超过 Go map 的内联 key 阈值，大 key 会按条间接分配。2026-08-22 在 x86_64 macOS、Go 1.26.0 上记录 1024 条互不重叠路径：线性扫描约为 `53.0-57.1 ms/op, 693 KB/op, 12 allocs/op`；直接使用完整 `Path` map 约为 `1.27-1.42 ms/op, 981 KB/op, 1061 allocs/op`；紧凑指纹索引约为 `0.44-0.47 ms/op, 768 KB/op, 36 allocs/op`。该基准由 `BenchmarkViewStateRecordDistinct1024` 固定。
+
+同机生成代码真实链路以 16 批、每批 64 个不同 map key 捕获 StoreView，依次 `Merge` 后构建一次文档。索引前约为 `60.6-63.5 ms/op, 2.08 MB/op, 12659 allocs/op`；指纹索引并让 `View(nil)` 直接读取主 Store 状态后约为 `2.56-2.59 ms/op, 2.20 MB/op, 12782-12783 allocs/op`。耗时下降约 96%，临时字节增加约 6%；增加部分属于 StoreView 帧内生命周期的索引，随视图释放，不增加 GD、主 Store 或编码后载荷的常驻布局。只有传入 `configure` 时才复制 selector 状态，常规帧捕获不克隆整棵选择树。该路径由 `BenchmarkGeneratedStoreDirtyRuntime/CaptureMergeAndBuildFrameDocument` 持续回归。
 
 ## 存储抽象
 

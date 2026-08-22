@@ -37,7 +37,6 @@ type testChangeStore struct {
 	key        storage.RecordKey
 	changes    recordedChanges
 	defaults   storage.ApplyOptions
-	view       bool
 	allTouched int
 	cleared    int
 }
@@ -58,7 +57,6 @@ func (s *testChangeStore) FieldNameResolver() change.FieldNameResolver {
 }
 func (s *testChangeStore) ResolveValue(change.Path) (any, bool)      { return nil, false }
 func (s *testChangeStore) DefaultApplyOptions() storage.ApplyOptions { return s.defaults }
-func (s *testChangeStore) IsViewStore() bool                         { return s.view }
 func (s *testChangeStore) AllTouch() {
 	s.allTouched++
 	s.changes = recordedChanges{{Path: testStoragePath(1), Op: change.OpSet}}
@@ -166,21 +164,6 @@ func TestStorageRejectsTypedNilChangeApplier(t *testing.T) {
 	}
 	if store.allTouched != 0 {
 		t.Fatalf("AllTouch calls = %d, want 0", store.allTouched)
-	}
-}
-
-func TestStorageRejectsViewStore(t *testing.T) {
-	store := &testChangeStore{view: true}
-	applier := &recordingChangeStoreApplier{}
-
-	if err := storage.Save(context.Background(), applier, store); !errors.Is(err, storage.ErrReadOnlyStore) {
-		t.Fatalf("Save err = %v, want ErrReadOnlyStore", err)
-	}
-	if err := storage.Create(context.Background(), applier, store); !errors.Is(err, storage.ErrReadOnlyStore) {
-		t.Fatalf("Create err = %v, want ErrReadOnlyStore", err)
-	}
-	if applier.hasOptions || store.allTouched != 0 || store.cleared != 0 {
-		t.Fatalf("view Store reached persistence path: applier=%#v store=%#v", applier, store)
 	}
 }
 

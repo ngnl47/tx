@@ -130,6 +130,27 @@ func (p Path) Equal(other Path) bool {
 	return true
 }
 
+// IsPrefixOf 判断当前路径是否为 other 的严格祖先路径。
+func (p Path) IsPrefixOf(other Path) bool {
+	if !p.Valid() || !other.Valid() || p.Depth > other.Depth {
+		return false
+	}
+	for i := 0; i < int(p.Depth); i++ {
+		current := p.Nodes[i]
+		next := other.Nodes[i]
+		if current.Field != next.Field {
+			return false
+		}
+		if current.Key.Equal(next.Key) {
+			continue
+		}
+		// 方案 A 把字段和集合 key 放在同一个节点中，因此 Items 是
+		// Items[1001] 的祖先，尽管两条路径的显式 Depth 都可能是 1。
+		return i == int(p.Depth)-1 && current.Key.Kind == KeyNone && next.Key.Kind != KeyNone
+	}
+	return p.Depth < other.Depth
+}
+
 // Equal 判断两个路径节点是否完全相同。
 func (n PathNode) Equal(other PathNode) bool {
 	return n.Field == other.Field && n.Key.Equal(other.Key)

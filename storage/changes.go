@@ -45,12 +45,6 @@ type CollapsibleChangeStore interface {
 	CollapseChanges()
 }
 
-// ReadOnlyChangeStore 标记只可用于变更文档或下行、不可持久化的 Store。
-// 生成的 viewStore 实现该接口；普通 Store 无需额外实现。
-type ReadOnlyChangeStore interface {
-	IsViewStore() bool
-}
-
 // StoreProvider 描述能暴露生成 Store 的数据对象。
 type StoreProvider[S ChangeStore] interface {
 	Store() S
@@ -68,9 +62,6 @@ func CreateWithOptions(ctx context.Context, applier ChangeApplier, store ChangeS
 	}
 	if isNilChangeStore(store) {
 		return ErrNilChangeStore
-	}
-	if isReadOnlyChangeStore(store) {
-		return ErrReadOnlyStore
 	}
 	key := store.RecordKey()
 	if err := ValidateRecordKey(store.TypeSpec(), key); err != nil {
@@ -98,9 +89,6 @@ func SaveWithOptions(ctx context.Context, applier ChangeApplier, store ChangeSto
 	}
 	if isNilChangeStore(store) {
 		return ErrNilChangeStore
-	}
-	if isReadOnlyChangeStore(store) {
-		return ErrReadOnlyStore
 	}
 	if !store.HasChanges() {
 		return nil
@@ -150,11 +138,6 @@ func isNilChangeApplier(applier ChangeApplier) bool {
 	default:
 		return false
 	}
-}
-
-func isReadOnlyChangeStore(store ChangeStore) bool {
-	readOnly, ok := store.(ReadOnlyChangeStore)
-	return ok && readOnly.IsViewStore()
 }
 
 // DocumentLoader 定义按记录键读取单条文档的适配器。

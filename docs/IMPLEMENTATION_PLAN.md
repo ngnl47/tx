@@ -28,12 +28,12 @@
 - `txgen` 负责生成 `GD*.go`、`GD*Store.go`、cmd、字段名函数、字段编号和类型元数据；业务模板和集成样例放在 `txgame`。
 - `txgame` 的 `agent`、`msgq`、`game` 始终注册为可选服务；仅 `--services` 决定当前进程启动集合。YAML 只保存服务静态运行参数，未选服务不校验其专属参数，选中服务的配置错误必须启动失败。
 - `GD*` 是纯数据对象；`GD*Store` 是独立、完整、可组合的变更追踪结构，绑定 `GD*` 后才具备读值、修改和投影意义。Store 只持有业务数据引用，不保存第二份业务数据。
-- `GD*` 可以懒持有默认主 Store，作为 `role.SetName(...)` 这类代理入口；Store 本身不依附于某个 `GD*` 实例，可单独创建、绑定、组合和复制。
+- `GD*` 可以懒持有默认主 Store，作为 `role.SetName(...)` 这类代理入口；生成 Store 也可由框架显式创建并绑定 GD。业务不复制主 Store；下行捕获由生成的独立 `GD*StoreView` 承担。
 - Store 树按持久化路径组织：父 Store 持有复合字段、map key 或 slice index 对应的子 Store；子 Store 不向 `GD*` 写入父回调或父路径。`VisitChanges(visitor)` 可从整棵 Store 树同步遍历规范化变更；Redis、Mongo、Fusion、cmd Provider 与 Runtime 直接消费 `change.Source`，不创建中间变更批次。
 - 同一个 `*GD...` 可以出现在多个根对象、集合字段或集合 key 中。每条路径拥有独立 Store 节点和 dirty 状态，业务数据引用可以共享；框架不维护全局反向引用表，也不自动把一次路径内修改扩散到其他引用位置。
-- `store.View()` 深复制 Store 的字段状态、集合状态和子 Store 树，浅复制绑定的 `GD*` 引用；不得直接复制含 map 或子 Store 指针的 Store 结构。主 Store 与 viewStore 的内部结构一致，但 viewStore 是只读视图模式：允许读取、`Touch/UnTouch` 和生成文档，不允许修改数据或持久化。
-- viewStore 是字段选择状态的副本，不是业务数据快照。`ChangeDocument(kind)` 在边界重新读取当前 `GD*` 值并校验指针、map key、slice index 路径；结构漂移时必须提升为最近安全祖先的整字段写，不能输出已失效的 key/index 路径。需要时刻快照时，业务必须在变更后的下一步立即物化文档或协议 body。
-- 同一帧或同一锁定周期内需要合并多批广播变更时，使用生成的 `view.MergeChanges(next)` 合并同一个 `GD*` 引用上的规范化脏元数据；同字段和同 key 后写覆盖先写，后续整字段 Replace/Clear/Delete 吸收此前子路径。不同 `GD*` 引用必须返回 `change.ErrValueMismatch`，不能把路径与另一份当前值拼接；根对象相同但指针字段已替换时，旧/新子 Store 身份漂移必须提升为该父字段当前完整值的 Replace。合并后的 view 仍不是值快照，跨协程或退出对象锁前必须物化文档。
+- `store.View(configure)` 是同步捕获边界：先复制主 Store 当前的选择状态，允许回调通过 `Touch/UnTouch` 调整选择，再立即把所选路径在当前时刻的值复制到生成的稀疏 `GD*StoreView`。selector 只用于选择路径，调用 Set/Clear/Replace 或集合增删改会立即 panic；返回的 StoreView 不持有根 GD 或主 Store，也不实现持久化 Store 接口。
+- `GD*StoreView` 由稀疏 `GD*` 值、规范化 `change.ViewState` 和同源身份组成。标量直接复制；被选中的指针、map、slice 与嵌套对象只复制必要分支；整字段 Replace/Clear 才复制整个字段。业务用 `view.Role` 查询捕获值，用生成的 `Has<Field>()` 或 `Contains(path)` 区分“选中了零值”和“没有选择”。StoreView 生成后不再受根 GD 后续变化影响。
+- 同一帧或同一锁定周期内需要合并多批广播变更时，使用生成的 `view.Merge(next)` 合并同一主 Store 捕获出的独立 StoreView；后批次同路径覆盖前批次，后续祖先 Replace/Clear/Delete 吸收此前子路径，Clear/Delete 后又出现子路径时提升为祖先 Replace 并保留后批次已捕获值。不同主 Store 来源返回 `change.ErrValueMismatch`。合并只访问两个 StoreView 的稀疏数据，不再读取可变根 GD；合并结果可以在退出根对象所有权边界后生成文档。
 - 业务输入模型和协议字段不能直接声明生成的 `*Store` 类型；Store 只用于框架持久化和 Provider 投影输入。
 - 业务 facade 和框架 API 分层。无状态 handler 的 Store 拦截路径使用 `db.Save(role)`，snapshot diff 路径使用 `db.SaveChange(role)`；有状态服务通过项目装配的 `txn.Runtime.Call(ctx, procedure)` 进入 Procedure 运行时，由 Runtime 在后续 Flush 内部取得 Store 并调用 `storage.Save`。
 - `txgame/server/internal/db` 已提供泛型 `db.Save(role)` facade：它使用服务启动时装配的根 context 与 writer，并只在 facade 内部获取生成数据对象的 Store。
@@ -51,7 +51,7 @@
 - `txn.Runtime` 是有状态运行时的标准搭档。它按 `LockKey` 聚合脏 Store；`Runtime.Call` 在事务成功后登记 `DirtyTargets`，不执行 I/O；`Runtime.Flush` 逐目标取得同一把本机锁，通过 Runtime 私有 visitor 装饰器把容量计数并入 adapter 的正常遍历，成功才清理变更。未超 `MaxRootChanges` 时只遍历一次；超预算时第一次遍历在外部 I/O 前中止，Runtime 明确重写 Store dirty 树为顶层 Replace 后再保存。Runtime 不保存业务副本，不把 Store 作为异步队列项。
 - 有状态运行时的 Store dirty 状态是按路径覆盖的集合，不会因同一路径重复修改无限追加；但未成功 Flush 前的不同集合 key/index 会持续累积。`map[K]*GD...` 和 `[]*GD...` 会缓存已访问元素的子 Store，但另行维护 dirty 子路径索引，变更遍历与清理不再扫描全部缓存子 Store。`RuntimeConfig.MaxRootChanges` 限制单个 pending root 的变更路径数量；Runtime 只在 Flush 的持锁遍历点检查该预算，超过时清理该 Store 树的细粒度 dirty 状态，并将当前值收敛为全部可更新顶层字段的 `Replace` 变更，跳过 BSON `_id`，记录一条告警后继续服务，避免每次事务提交递归遍历整棵树。txgen 生成 Store 实现 `storage.CollapsibleChangeStore`；配置非零预算时，自定义持久化 Store 若不具备相同能力，`Runtime.Call/MarkDirty` 必须在修改或登记前返回 `ErrChangeCollapseUnsupported`，不能让预算静默失效。`RuntimeConfig.HeapSoftLimitBytes` 按 `HeapSampleInterval` 低频读取进程 `HeapAlloc`，仅在超过阈值时记录告警；它不能作为拒绝业务请求的根因。`RuntimeConfig.MaxPendingRoots` 仅是可选硬保护；满额时才拒绝新增 root。部署项目负责设置 Go 的 `GOMEMLIMIT`，tx 不修改全局 runtime 内存限制。预算限制的是 dirty 路径，不负责限制业务对象本身或干净子 Store 缓存的大小；setter 内不得强制 Flush 或 I/O。
 - 无状态服务不使用 `txn.Runtime`：请求内临时加载 GD，直接由项目 facade 调用 `db.Save` 或 snapshot `SaveChange` 写 Fusion。启用有状态运行时后，所有写操作都必须通过 `Procedure + txn.Runtime`；读取不要求进入事务。
-- 持久化 adapter 的跨模块协议是 `change.Source`：它组合 `VisitChanges(visitor)` 与 O(1) 的 `HasChanges()`，避免 adapter 为判空重复遍历。txgen 为普通字段生成定长 `ops[fieldID-1]` 槽位，为集合元素生成 `ops[key/index]`，并用 `dirtyChildren` 索引真正变脏的子 Store；同一位置重复修改原地覆盖。`ChangeDocument(kind)`、Redis、Mongo、Fusion 与 Runtime 都直接消费规范化状态；Go/JSON/BSON/Msgpack 四套字段名由各自输出边界显式选择。
+- 持久化 adapter 的跨模块协议是 `change.Source`：它组合 `VisitChanges(visitor)` 与 O(1) 的 `HasChanges()`，避免 adapter 为判空重复遍历。txgen 为普通字段生成定长 `ops[fieldID-1]` 槽位，为集合元素生成 `ops[key/index]`，并用 `dirtyChildren` 索引真正变脏的子 Store；同一位置重复修改原地覆盖。`Document(kind)`、Redis、Mongo、Fusion 与 Runtime 都直接消费规范化状态；Go/JSON/BSON/Msgpack 四套字段名由各自输出边界显式选择。
 - 每个生成 `GD*` 只内联一个私有 `state` 指针。Store 引用、Store/snapshot 模式和 snapshot 基线放在按需分配的 sidecar 中；只构造、编解码或传递纯数据对象时不创建 sidecar。`Copy()`、`ResetStore()` 和完整加载替换会显式解绑旧 sidecar，避免复制 Store/快照运行时状态。
 - 访问事件只传递 `Path + Op`，不持有字段值；生成 Store 会在输出边界按 Path 读取当前值。后续如需性能优化，只做局部 fast path，不提前引入自研 value 编码。
 - Redis/Mongo 写入边界要求 `ValueResolver` 能解析每条 Set/Replace 变更的当前值；`(nil, true)` 是合法业务空值，`(_, false)` 必须显式返回错误并保留变更，不能静默写成 `null`。Clear 必须按完整路径解析实际 map/slice/array 类型并构造同类型空值，不能按根字段猜测嵌套集合类型。
@@ -65,8 +65,8 @@
 - 所有实际存储 I/O、路由和锁操作必须先校验 `storage.RecordKey`：`ID` 不得为 nil、typed-nil 或空白字符串；当存储元数据声明 `routeBy != idField` 时，`ShardKey` 必填。缺失 `ShardKey` 返回 `storage.ErrInvalidRecordKey`，不得回退用 ID 选择 Redis/Mongo endpoint 或生成 Redis hash tag。
 - 非空 Source 经 Redis/Mongo 边界转换后必须至少产生一个有效 patch/update；否则返回 `storage.ErrNoEffectiveChanges` 并保留 Store 变更。Mongo upsert 仅剩不可变记录 ID 时同样失败，不能清理 dirty 后伪造已创建文档。
 - 涉及生成式投影、帧内合并、集合递归、批量读取、Redis/Mongo 写入或状态刷盘等热点路径的结构与算法调整，必须先补可复现 benchmark，并记录对象规模、嵌套深度、变更密度、耗时与分配结果；只有数据证明收益覆盖复杂度时才引入优化，避免凭直觉堆砌机制。
-- 字符串路径只在输出边界生成，例如 `ChangeDocument(kind)`、Redis JSON patch、Mongo update document 和 cmd Provider body。`VisitChanges` 在输出边界之前只传递定长 `Path` 与 `Op`。
-- 确定性合并只在拥有类型上下文的同类型生成 Store 内通过 `MergeChanges` 完成：同位置后写覆盖先写，后发生父字段 Replace/Clear/Delete 清理更早子路径，结构漂移和超深路径提升为最近安全祖先 Replace。框架不猜测需要数据库基线的“新建后删除抵消”，跨对象结果应先分别物化为不可变文档再由调用方组合。
+- 字符串路径只在输出边界生成，例如 `Document(kind)`、Redis JSON patch、Mongo update document 和 cmd Provider body。`VisitChanges` 在输出边界之前只传递定长 `Path` 与 `Op`。
+- 确定性帧内合并只在拥有类型上下文的同类型 StoreView 间通过 `Merge` 完成：同位置后写覆盖先写，后发生父字段 Replace/Clear/Delete 清理更早子路径，Clear/Delete 后出现子路径时提升为父级 Replace。Store 状态树自身按位置覆盖，不需要额外批次压缩；超深路径在生成 Store 捕获前提升为最近安全祖先 Replace。框架不猜测需要数据库基线的“新建后删除抵消”，跨对象结果应先分别物化为独立载荷再由调用方组合。
 - Fusion 是完整装配的存储策略，不保留半成品 no-op 兼容路径：运行时必须同时具备 Redis change/document/load-lock/delete 能力、Mongo load/delete 能力和延迟队列；`Strategy.Validate` 负责汇总校验，业务工程启动时必须在 Redis/Mongo endpoint 探活后调用它，任一依赖或连接不可用即失败退出。非空变更 的热写还会在任何 Redis I/O 前检查 Mongo document loader 已装配，不能把只有 Redis 与队列的半装配 Strategy 当成可写实例。运行期不在每次 Fusion 调用前额外 Ping 两端；项目运行时通过后台探针和真实 I/O 错误维护 Redis、Mongo 两个独立健康状态，Fusion 业务读写在进入底层 Strategy 前要求两端都健康，即使 Redis 能命中热数据，Mongo 已知不可用时也直接返回 `error`。热写成功写入 Redis 并入队后不等待 Mongo；Mongo 短暂不可达时既有任务保留，由 worker 的 at-least-once 重试在恢复后回写。Redis/Mongo 短时服务波动只能作为业务调用的 `error` 返回，runtime 不得把通信失败转换为 panic、静默成功或后台 goroutine 退出。Redis 写入与任务入队是跨组件的两步操作，不承诺跨路由原子性；若 Redis 已写而任务入队失败，写入 API 必须返回错误且保留 Store 变更，`txn.Runtime` 下次 Flush 会重试；无状态 facade 必须把错误交给上层重试或失败处理，不能把本次调用视为已完成持久化。
 - `txgame` 的项目运行时不在每个业务操作前 Ping。启动时先同步探活；后台探针及 guarded reader/writer、延迟回写 handler 观察到的真实 Redis/Mongo I/O 错误会关闭对应 backend 的健康状态。mode-aware writer 按 `TypeSpec.Storage.Mode` 选择 Redis、Mongo 或 Fusion，不把单后端类型误送入 Fusion；Redis 类型只要求 Redis 健康，Mongo 类型只要求 Mongo 健康，Fusion 类型要求两端都健康。新的 Fusion 读取、`txn.Runtime.Call` 和 `db.Save` 返回 `runtime.ErrStorageUnavailable`，不执行后续业务或存储 I/O。错误分类发生在具体 go-redis/Mongo driver 边界；通用 adapter 只传播标记。RecordKey、变更、字段映射、解码、未知脚本结果等请求或协议语义错误，以及调用方 context 取消，不得污染全局健康状态。已有 pending root 不丢弃；延迟任务 handler 仍执行并把失败返回 scheduler，由 lease/retry 机制保留任务，恢复后继续回写。Probe 以 backend generation 防止较早启动的成功探针覆盖期间发生的新 I/O 故障；只有没有观察到更新故障的探针才能重新开放对应 backend。外部服务异常一律通过 error 传播，不得 panic。
 - Fusion 显式删除要求 Redis 与 Mongo 删除器及 Redis 记录锁均已装配，并在任何删除 I/O 前完成检查；缺少任一组件时返回 `ErrStrategyDependenciesNotConfigured`，不删除 Redis 热数据或 Mongo 文档。显式删除、延迟保存与延迟删除使用同一记录锁：保存任务在锁内读取 Redis 再回写 Mongo，删除在锁内删除 Redis、Mongo，避免已读取的旧热文档在删除后重新写回 Mongo。完整装配后仍按 Redis、Mongo 的顺序执行，运行时连接错误原样返回给调用方。
@@ -75,8 +75,8 @@
 - `map[string]` 的 key 如果为空字符串、包含 `.` 或 `$`，Mongo 边界不转义 key，而是降级整字段写，保证数据库中保留业务真实 key。
 - Store 拦截路径和 snapshot diff 路径同时存在，但同一变更周期互斥。`ModeStore` 用于 setter/Store wrapper 标脏，`ModeSnapshot` 用于 `BeginChange/SaveChange`。
 - `BeginChange()` 必须在业务直接修改字段之前调用；`SaveChange()` 成功后清理 snapshot 和本轮 dirty，失败时保留可重试状态。
-- Store 路径适合高频对象和大集合字段；保存前可用 `store.View()` 复制下行选择状态，或立即物化下行文档，避免保存成功清理 dirty 后丢失广播字段。
-- 当前集合策略：map wrapper 支持 key 级状态和生成对象指针子 Store；slice wrapper 支持稳定 index 级状态和 `[]*GD...` 元素子 Store。`InsertAt`、`Append`、`RemoveAt`、`Replace`、`Clear` 这类长度或整体语义变化按整字段处理；viewStore 发现 map/slice 结构漂移时同样整字段降级。
+- Store 路径适合高频对象和大集合字段；保存前可用 `store.View(nil)` 捕获当前全部 dirty 路径，避免保存成功清理主 Store 后丢失广播值。只广播指定字段时，在 configure 回调中先 `AllUnTouch()`，再调用目标 `Touch*`。
+- 当前集合策略：map wrapper 支持 key 级状态和生成对象指针子 Store；slice wrapper 支持稳定 index 级状态和 `[]*GD...` 元素子 Store。`InsertAt`、`Append`、`RemoveAt`、`Replace`、`Clear` 这类长度或整体语义变化按整字段处理；StoreView 在同步捕获时复制被选中的 key/index 或整字段，不依赖后续结构漂移防御。
 - 字段名体系本体是 `go/json/bson/msgpack`。Redis 当前选择 JSON 名，Mongo 当前选择 BSON 名，cmd Provider 当前选择 Msgpack 名；`alias` 只是输入侧语法糖。
 - 客户端上下行协议采用独立的 BON 二进制文档，不使用 Protobuf；WebSocket 传输层使用可协商的 permessage-deflate 压缩。会话字典和动态 key 压缩属于后续可选优化，必须先以真实消息体基准证明收益，再处理字典同步、重连重置和可观测性。
 - 内部跨进程通信的目标运行时是可选的 `modules/actor`，直接使用 `protoactor-go` 及其官方 etcd Cluster Provider；tx 只负责项目 yml 装配、`WaitGroupContext` 生命周期和 BON 业务载荷适配。邮箱沿用 ProtoActor 的有界 RingBuffer 与调度语义，仅以薄包装补充满队列限频日志；不自研调度器、远程 PID、成员发现或 Actor 重平衡。
@@ -105,7 +105,7 @@
 
 已完成基线：
 
-- 生成 Store 已使用父 Store 路径树组织直接指针、map key 和 slice index 子 Store；`VisitChanges()` 在边界递归同步遍历，viewStore 会复制状态树且禁止写入、持久化。`MergeChanges()` 已支持同一 GD 上的多批 view 帧内合并，`ChangeDocument(kind)` 不创建中间变更切片；cmd Provider 固定传入 `FieldNameMsgpack`。
+- 生成 Store 已使用父 Store 路径树组织直接指针、map key 和 slice index 子 Store；`VisitChanges()` 在边界递归同步遍历。`View(configure)` 通过临时 selector 选择路径并同步物化强类型稀疏 StoreView，返回值不再引用根 GD；`Merge()` 支持同一主 Store 捕获的多批 StoreView 帧内合并，`Document(kind)` 不创建旧式 Delta/字符串路径批次；cmd Provider 固定消费 StoreView 并使用 `FieldNameMsgpack`。
 - `map[K]*GD...` 遇到不能表达为 `PathKey` 的 key 类型时，仍可通过子 Store 修改数据，但导出时保守替换整 map；`txgame` 已覆盖枚举 key 的真实输入回归。
 - `txgame` 的 `GDRole`、`GDLegion` 已使用 `@transaction` 生成锁键与锁对象，并以 `PGuildContribution` 覆盖多对象锁序、生成 Store undo 和回滚后变更文档清理。
 - `txn.Tx.DirtyTargets()` 已按锁顺序暴露本次经受控 Store API 修改且仍有变更的根目标；savepoint 回滚或清空变更的目标不会出现。`txn.Runtime` 使用它在事务成功后登记落盘对象；项目 Host 直接持有 `txn.Runtime`，业务使用 `runtime.Call(ctx, procedure)` 作为有状态入口。`runtime.txn.flushInterval` 控制生命周期内的定时 Flush，`runtime.txn.shutdownFlushTimeout` 控制服务退出时的最终 Redis 刷盘窗口。生命周期先用服务全局 `WaitGroupContext` 等待已经进入的业务任务结束，再使用不受运行 context 取消影响的限时 context 进行最终刷盘；它不等待 Fusion 延迟队列回写 Mongo。`runtime.txn.debug.checkCleanLockTargets` 仅用于临时、无历史变更的直接 `txn.Call`；Runtime 会显式允许此前未 Flush 的变更。
@@ -541,16 +541,16 @@ Store 生成、Redis key helper、Mongo filter helper、字段编号 resolver �
 
 交付：
 
-- 生成 Store `Source` 主线与 `MergeChanges` 帧内合并能力。
+- 生成 Store `Source` 主线与 `Merge` 帧内合并能力。
 - Store 模式和 snapshot diff 模式互斥。
 - Store 树按直接字段、map key、slice index 懒创建路径子节点。
 - map wrapper key 级状态与生成对象指针子 Store。
 - slice wrapper 稳定 index 级状态与 `[]*GD...` 子 Store。
-- 主 Store 与 viewStore 使用同一追踪结构；viewStore 在边界校验路径，结构漂移时整字段降级。
+- 主 Store 使用可变 Store 状态树；StoreView 使用独立稀疏 GD 值和 `change.ViewState`，不共享根 GD，也不依赖结构漂移回退。
 
 完成标准：
 
-- 生成式投影、确定性帧内合并、危险 string key 降级、snapshot diff 与路径 Store 树已完成。当前生成 Store 在导出边界递归访问 dirty 路径；共享引用按路径隔离，viewStore 会重新校验结构漂移并拒绝写入/持久化。
+- 生成式投影、确定性帧内合并、危险 string key 降级、snapshot diff 与路径 Store 树已完成。当前生成 Store 在导出边界递归访问 dirty 路径；共享引用按路径隔离，StoreView 在捕获边界复制所选值并从类型系统上排除持久化入口。
 
 ## Open Design Details
 

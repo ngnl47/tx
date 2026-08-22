@@ -1478,7 +1478,7 @@ RoleLog.Error("role save failed", "roleId", roleID, "err", err)
 ## 元数据与字段名
 
 `meta.TypeSpec` 使用 Go 字段名作为内部字段身份；`TypeSpec.Fields` 的 key、`idField`、`routeBy`、
-`LoadFields()` 入参使用 Go 字段名；`ChangeDocument(kind)` 由调用方显式选择输出字段名体系。`meta.Field` 同时保存
+`LoadFields()` 入参使用 Go 字段名；`Document(kind)` 由调用方显式选择输出字段名体系。`meta.Field` 同时保存
 `JSONName`、`BSONName`、`MsgpackName`，运行时适配器在靠近具体使用边界时再选择命名体系。
 生成代码会额外提供两类名字入口：`GDRoleFieldName` 这类常量表示 Go 字段名，供部分读取和
 业务字段选择使用；`GDRoleResolveFieldName(field, kind)` 这类函数按 `go/json/bson/msgpack` 返回
@@ -1494,7 +1494,7 @@ BSON 名，Provider 下行当前选择 Msgpack 名。
 RoleId int64 `json:"roleId,omitempty" bson:"_id,omitempty" msgpack:"roleId,omitempty"`
 ```
 
-Store 内部只保存 `RoleId` 对应的 `FieldID`，不保存字符串文档；`ChangeDocument(change.FieldNameGo)`
+Store 内部只保存 `RoleId` 对应的 `FieldID`，不保存字符串文档；`Document(change.FieldNameGo)`
 才输出 `RoleId`。完整 JSON 序列化使用 `roleId`；Redis 写入选择 JSON 名 `roleId`；Mongo
 filter/update 选择 BSON 名 `_id`；cmd Provider 下行 body 选择 Msgpack 名 `roleId`。
 
@@ -1530,17 +1530,17 @@ role.SetRoleId(1001)
 role.SetName("alice")
 role.SetPower(470001)
 
-doc, err := role.ChangeDocument(change.FieldNameGo)
+doc, err := role.Document(change.FieldNameGo)
 if err != nil {
 	return err
 }
 ```
 
-`ChangeDocument(kind)` 返回 `(change.Document, error)`。它会在边界读取当前 `GD*` 值并验证每条变更路径
-路径；解析失败时必须停止发送或保存，不能把字段伪造成 `null`。`kind` 必须显式选择
+`Document(kind)` 返回 `(change.Document, error)`。主 Store 会在边界读取当前 `GD*` 值并验证每条变更路径；
+StoreView 则读取自己捕获的稀疏值。解析失败时必须停止发送或保存，不能把字段伪造成 `null`。`kind` 必须显式选择
 `FieldNameGo`、`FieldNameJSON`、`FieldNameBSON` 或 `FieldNameMsgpack`。
 
-这时 `ChangeDocument(change.FieldNameGo)` 使用 Go 字段名输出后端无关文档：
+这时 `Document(change.FieldNameGo)` 使用 Go 字段名输出后端无关文档：
 
 ```go
 change.Document{
@@ -1556,7 +1556,7 @@ change.Document{
 如果用于 cmd 下行，生成代码会流式遍历 Store 当前 dirty 状态，直接构建 Msgpack 字段名文档：
 
 ```go
-body, err := role.ChangeDocument(change.FieldNameMsgpack)
+body, err := role.Document(change.FieldNameMsgpack)
 if err != nil {
 	return err
 }
@@ -1565,25 +1565,25 @@ if err != nil {
 例如 `HeadImg` 的 tag 是 `msgpack:"hi,omitempty"`，那么下行变更文档里使用 `hi`，不是 Go 字段名
 `HeadImg`。
 
-生成 Store 内部使用固定字段槽、集合 key/index 状态和 dirty 子 Store 记录变更，不在每次 setter 时追加完整路径项；`ChangeDocument(kind)` 与 `tx/storage` 的通用 `Create` / `Save` 都通过 `VisitChanges` 直接消费这些状态。
+生成 Store 内部使用固定字段槽、集合 key/index 状态和 dirty 子 Store 记录变更，不在每次 setter 时追加完整路径项；`Document(kind)` 与 `tx/storage` 的通用 `Create` / `Save` 都通过 `VisitChanges` 直接消费这些状态。
 
 四套字段名使用同一个入口，区别只由参数表达：
 
 ```go
-goDoc, _ := role.ChangeDocument(change.FieldNameGo)
-jsonDoc, _ := role.ChangeDocument(change.FieldNameJSON)
-bsonDoc, _ := role.ChangeDocument(change.FieldNameBSON)
-msgpackDoc, _ := role.ChangeDocument(change.FieldNameMsgpack)
+goDoc, _ := role.Document(change.FieldNameGo)
+jsonDoc, _ := role.Document(change.FieldNameJSON)
+bsonDoc, _ := role.Document(change.FieldNameBSON)
+msgpackDoc, _ := role.Document(change.FieldNameMsgpack)
 ```
 
 JSON/BSON 命名文档只是高级文档构建结果，不是完整的 Redis patch 或 Mongo update document。正常持久化仍调用
 项目 facade，例如 `db.Save(role)`；Redis adapter 固定选择 JSON 名，Mongo adapter 固定选择 BSON 名，cmd
 Provider 固定选择 Msgpack 名。
 
-### Store 树、共享引用与 viewStore
+### Store 树与共享业务对象
 
 `GD*Store` 不复制业务数据，而是绑定一个 `GD*` 引用并保存该路径上的字段选择和变更状态。父 Store
-按需持有直接指针、map key、slice index 的子 Store，最终在保存、`VisitChanges` 或 `ChangeDocument(kind)` 边界递归遍历：
+按需持有直接指针、map key、slice index 的子 Store，最终在保存、`VisitChanges` 或 `Document(kind)` 边界递归遍历：
 
 ```text
 GDRoleStore
@@ -1615,62 +1615,99 @@ for _, role := range guildRoles {
 不要期待 `gift.Store().SetQuantity(2)` 自动把变更扩散到所有引用它的角色；独立 `gift.Store()` 只描述
 `gift` 自己作为根对象时的变更，不具备“我属于哪些角色”的业务上下文。
 
-`viewStore` 与主 Store 使用同一种状态树和变更遍历逻辑，但用途是只读下行变更构建：主 Store 可以修改数据并保存；
-viewStore 只选择需要下行的字段，不参与持久化。生成代码会保护 viewStore 的修改 API，错误调用 `Set`、`Update`、
-`Delete` 等方法会立即报错，避免把视图误当成业务写入器。
+### 同步捕获 StoreView
+
+`GD*StoreView` 是从主 Store 同步捕获的独立、稀疏载荷，不是另一个 Store。它只包含选中路径在捕获时刻的值和
+规范化路径状态，不实现持久化 Store 所需的 `RecordKey`、`TypeSpec`、`ClearChanges` 等接口，因此不能误传给
+`storage.Save`。
+
+`View(configure)` 默认复制主 Store 当前 dirty 选择；需要单独组织下行字段时，在回调第一步调用 `AllUnTouch()`，
+再用 `Touch*` 选择字段。回调收到的 Store 只是同步选择器，`Set/Clear/Replace/Delete` 等写数据方法属于编程错误并
+立即 panic；业务数据修改仍必须发生在主 Store 上。选择器只读取源 GD：访问一个当前为 `nil` 的 map/slice Store
+不会把源字段初始化为空集合，也不会凭空创建变更；需要发送空集合时，应先在主 Store 上明确 `Clear` 或 `Replace`。
 
 ```go
 // 主 Store：修改数据。
 item, _ := role.ItemsStore().Get(1001)
 item.SetQuantity(2)
 
-// viewStore：只选择下行内容。
-view := role.Store().View()
-viewItem, _ := view.ItemsStore().Get(1001)
-viewItem.TouchItemId()
-viewItem.TouchQuantity()
+// StoreView：同步选择并捕获下行内容。
+view, err := role.Store().View(func(s *data.GDRoleStore) {
+	s.AllUnTouch()
+	viewItem, _ := s.ItemsStore().Get(1001)
+	viewItem.TouchItemId()
+	viewItem.TouchQuantity()
+})
+if err != nil {
+	return err
+}
 
-body, err := view.ChangeDocument(change.FieldNameMsgpack)
+body, err := view.Document(change.FieldNameMsgpack)
 if err != nil {
 	return err
 }
 ```
 
-`NewViewStore()` 从空选择状态开始；`store.View()` 深复制当前 Store 的字段、集合和子 Store 状态，继续引用同一份
-`GD*` 数据。它不会复制业务数据，也不能用 Go 赋值直接复制 Store，因为内部 map 和子 Store 必须递归复制。
-
-viewStore 是“选择哪些字段”的副本，不是“创建瞬间的数据快照”。生成文档时会读取当前 `GD*` 值并重新校验每条路径：
+StoreView 不深复制整个根 GD，只复制被选中的最小值范围：普通字段复制该字段；嵌套叶子只构造稀疏父结构并复制
+叶子；map key 或 slice index 只复制对应元素；整字段 Replace/Clear 才复制整个字段。根 GD 后续发生任何修改，
+已经捕获的 StoreView 都不会漂移：
 
 ```go
-view := role.Store().View()
-viewDress, _ := view.DressStore().GetAt(0)
-viewDress.TouchExpire()
+role.Name = "t1"
+role.Items = map[int32]*data.GDItem{
+	1001: {ItemId: 1001, Quantity: 3},
+}
 
-role.DressStore().RemoveAt(0) // slice 结构已变化
-
-doc, err := view.ChangeDocument(change.FieldNameGo)
+view, err := role.Store().View(func(s *data.GDRoleStore) {
+	s.AllUnTouch()
+	s.TouchName()
+	item, _ := s.ItemsStore().Get(1001)
+	item.TouchQuantity()
+})
 if err != nil {
 	return err
 }
-// 不输出不可靠的 Dress.0.Expire。
-// 降级输出 Dress 的当前完整 slice。
+
+role.Name = "t2"
+role.Items[1001].Quantity = 9
+
+doc, err := view.Document(change.FieldNameGo)
+if err != nil {
+	return err
+}
+// doc.Set["Name"] == "t1"
+// doc.Set["Items.1001.Quantity"] == int64(3)
 ```
 
-直接指针替换或清空、map key 删除或指向新对象、slice 长度变化、插入、删除、换位或 index 指向新对象，都会触发
-最近安全祖先的整字段输出。这样不会产生失效的 map key 或 slice index 路径。
+生成的强类型视图值可直接查询。未选择字段保持 Go 零值，必须配合 `Has<Field>()` 区分“未选择”和“选择了零值”：
+
+```go
+if view.HasName() {
+	fmt.Println(view.Role.Name)
+}
+```
+
+高级代码可用 `view.Contains(path)` 查询一条规范化路径。`view.Role` 由 StoreView 独占，但它仍是公开 Go 数据；捕获
+完成后应按只读值使用，不要修改其中的 map、slice 或指针，也不要与 `Merge` 并发执行。
 
 如果 map 的 key 类型不能表达为 `change.PathKey`（例如业务 enum 或结构体 key），生成器仍会提供该 key 的子 Store，
 但导出时保守替换整个 map 字段。这样不会生成无法被 Redis/Mongo 正确定位的伪路径。
 
-如果下行内容必须严格固定为某个时刻的值，应在同一所有权边界内构建文档并编码为独立载荷，而不是把 viewStore 留到后续继续使用：
+StoreView 已经与根 GD 脱离；需要进入 msgq、网络协程或异步队列时，通常继续编码为 BON/JSON/BSON 字节，并在发布
+后遵守只读所有权：
 
 ```go
 role.SetPower(100)
 
-view := role.Store().View()
-view.TouchName()
-view.TouchPower()
-doc, err := view.ChangeDocument(change.FieldNameMsgpack)
+view, err := role.Store().View(func(s *data.GDRoleStore) {
+	s.AllUnTouch()
+	s.TouchName()
+	s.TouchPower()
+})
+if err != nil {
+	return err
+}
+doc, err := view.Document(change.FieldNameMsgpack)
 if err != nil {
 	return err
 }
@@ -1684,11 +1721,10 @@ role.SetPower(200)
 send(payload) // payload 仍保存 Power=100。
 ```
 
-`ChangeDocument(kind)` 只完成边界文档构建。`Document.Set/Delete` map 是新建的，但其中复杂 map、slice 或指针 value 仍可能引用根 `GD*`；只有完成深复制或 BON/JSON/BSON 编码后，结果才是与根 GD 脱离的**独立载荷**。独立载荷交给 msgq、网络协程或其他异步队列后进入**只读发布**阶段：调用方和消费方都不得修改、`append`、复用或提前归还其内存。该约束不影响根 GD 和主 Store继续记录下一批变更。
+### 按帧合并 StoreView
 
-### 按帧合并 viewStore
-
-战场、沙盘等逻辑可能在一帧内产生多批变更，但只希望广播一次。生成 Store 可以直接合并同一 `GD*` 上的脏元数据：
+战场、沙盘等逻辑可能在一帧内产生多批变更，但只希望广播一次。每批先同步捕获为独立 StoreView，再按发生顺序
+调用 `Merge`：
 
 ```go
 role := data.NewGDRole()
@@ -1700,56 +1736,56 @@ role.Items = map[int32]*data.GDItem{
 // 第一批修改。
 first, _ := role.ItemsStore().Get(1001)
 first.SetQuantity(2)
-frame := role.NewViewStore()
-frameFirst, _ := frame.ItemsStore().Get(1001)
-frameFirst.TouchQuantity()
+frame, err := role.Store().View(nil)
+if err != nil {
+	return err
+}
+role.ClearChanges()
 
-// 此时调用 frame.ChangeDocument(change.FieldNameGo)：
+// frame 已捕获 t1：
 // Set["Items.1001.Quantity"] == int64(2)
 
 // 同一帧内的后续修改。
 first, _ = role.ItemsStore().Get(1001)
-first.SetQuantity(3) // 同路径后写覆盖前写
-
-// frame 保存的是字段选择而不是值快照，因此此时再次构建文档：
-// Set["Items.1001.Quantity"] == int64(3)
+first.SetQuantity(3) // 根 GD 已变为 3，frame 仍保持 2
 
 second, _ := role.ItemsStore().Get(1002)
 second.SetQuantity(9)
 
-// frame 尚未选择 Items[1002].Quantity，因此此时单独构建文档仍然只有：
-// Set["Items.1001.Quantity"] == int64(3)
-
-next := role.NewViewStore()
-nextFirst, _ := next.ItemsStore().Get(1001)
-nextFirst.TouchQuantity()
-nextSecond, _ := next.ItemsStore().Get(1002)
-nextSecond.TouchQuantity()
-
-if err := frame.MergeChanges(next); err != nil {
+next, err := role.Store().View(nil)
+if err != nil {
 	return err
 }
-body, err := frame.ChangeDocument(change.FieldNameMsgpack)
+role.ClearChanges()
+
+if err := frame.Merge(next); err != nil {
+	return err
+}
+body, err := frame.Document(change.FieldNameMsgpack)
 if err != nil {
 	return err
 }
 // body 只包含 Items.1001.Quantity=3 和 Items.1002.Quantity=9。
 ```
 
-`MergeChanges` 的接收者和 `next` 必须是同一生成 Store 类型，并且引用同一个根 `GD*` 实例。生成类型不同会在编译期被拒绝；类型相同但分别绑定 `roleA`、`roleB` 时，即使二者字段值完全一致，也会返回 `change.ErrValueMismatch`。该方法只合并两棵 Store 状态树，不复制或合并两份 GD 数据；`next` 固定表示后发生的批次。
+`Merge` 的接收者和 `next` 必须由同一个根 Store 捕获。生成类型不同会在编译期被拒绝；类型相同但分别来自
+`roleA.Store()`、`roleB.Store()` 时，即使字段值完全一致，也返回 `change.ErrValueMismatch`。StoreView 只保留轻量同源
+标识，不保留根 Store 或根 GD 引用；`next` 固定表示后发生批次，其值覆盖同路径的旧值。
 
 ```go
-first := roleA.Store().View()
-second := roleA.Store().View()
-err := first.MergeChanges(second) // 合法：引用同一个 roleA
+first, _ := roleA.Store().View(nil)
+second, _ := roleA.Store().View(nil)
+err := first.Merge(second) // 合法：来自同一个根 Store
 
-other := roleB.Store().View()
-err = first.MergeChanges(other)   // change.ErrValueMismatch
+other, _ := roleB.Store().View(nil)
+err = first.Merge(other)   // change.ErrValueMismatch
 ```
 
-如果后续批次整体 `Replace` 或 `Clear` 了 `Items`，该父字段会吸收此前的 `Items.*` 子路径。反过来，前一批 `ClearItems()`、后一批重新写入 `Items[1001]` 时，合并结果会提升为当前整个 `Items` 的 Replace，而不是继续输出空 map。`NewViewStore()` 的状态独立于主 Store，所以上例不会清掉待落库 dirty。合并后的 view 仍读取当前 `GD*`，适合在同一 Actor/实体锁定区间内累计；不要把 view 本身放入异步队列。
+如果后续批次整体 Replace/Clear/Delete `Items`，父字段会吸收此前的 `Items.*` 子路径。反过来，前一批 Clear、
+后一批重新写入子路径时，合并状态提升为 `Items Replace`，值由两份稀疏载荷重建，不回读根 GD。`Merge` 会修改
+接收者，因此应在单一所有权边界内完成；合并完毕的 StoreView 或编码后 bytes 才能按只读载荷跨协程发布。
 
-框架扩展需要直接消费结构化路径时，可以使用高级接口。`VisitChanges` 只做同步遍历，不物化中间切片；需要文档时使用 `ChangeDocument(kind)` 或底层 `change.BuildDocument`：
+框架扩展需要直接消费结构化路径时，可以使用高级接口。`VisitChanges` 只做同步遍历，不物化中间切片；需要文档时使用 `Document(kind)` 或底层 `change.BuildDocument`：
 
 ```go
 err := role.Store().VisitChanges(change.VisitorFunc(
@@ -1788,7 +1824,7 @@ role := data.NewGDRole()
 role.SetName("alice")
 role.SetName("bob")
 
-doc, err := role.ChangeDocument(change.FieldNameGo)
+doc, err := role.Document(change.FieldNameGo)
 if err != nil {
 	return err
 }
@@ -1804,7 +1840,7 @@ if err != nil {
 | `SetName(value)` | 是 | set | 日常修改标量字段。 |
 | `SetItems(value)` | 是 | replace | 覆盖 map/slice/struct 指针字段，不保留旧值中未出现的字段。 |
 | `ItemsStore().Set(key, value)` / `DressStore().SetAt(index, value)` | 是 | replace | 覆盖一个 map/slice 元素，不保留该旧元素中未出现的字段。 |
-| `TouchName()` | 否 | set 当前内存值 | 字段值已经被业务直接改过，需要补标脏；或 viewStore 只想把当前字段加入下行。 |
+| `TouchName()` | 否 | set 当前内存值 | 字段值已经被业务直接改过，需要补标脏；或 StoreView 选择器要把当前字段加入下行。 |
 | `ClearName()` | 是，设置为 Go 零值 | set 零值 | 保留字段并写入 Go 零值，例如字符串写入 `""`。 |
 
 在变更路径里，普通字段清零和集合清空会被区分：
@@ -1867,14 +1903,19 @@ if err := db.SaveChange(role); err != nil {
 role.SetName("bob")
 role.ItemsStore().Set(1001, &data.GDItem{ItemId: 1001, Quantity: 7})
 
-view := role.Store().View() // 保存前复制一份下行视图
+view, err := role.Store().View(nil) // 保存前同步捕获当前 dirty 值
+if err != nil {
+	return err
+}
 
 if err := storage.Save(ctx, fusionDB, role.Store()); err != nil {
 	return err
 }
 ```
 
-`BeginChange/SaveChange` 和 Store 写入模式在同一个变更周期内互斥；`NewViewStore()` 与 `store.View()` 只用于下行/广播视图，不参与持久化模式。业务项目通常会再包装一层 facade：Store 拦截路径使用 `db.Save(role)`，snapshot diff 路径使用 `db.SaveChange(role)`，避免 handler 直接传入 `ctx`、writer 或 Store，并保证两条路径都经过项目的存储健康闸门。
+`BeginChange/SaveChange` 和 Store 写入模式在同一个变更周期内互斥；`store.View(...)` 只同步捕获下行/广播
+StoreView，不参与持久化模式。业务项目通常会再包装一层 facade：Store 拦截路径使用 `db.Save(role)`，snapshot diff
+路径使用 `db.SaveChange(role)`，避免 handler 直接传入 `ctx`、writer 或 Store，并保证两条路径都经过项目的存储健康闸门。
 
 如果业务直接修改了字段，需要手动 `Touch*` 补标脏：
 
@@ -1883,14 +1924,19 @@ role.Name = "bob"
 role.TouchName()
 ```
 
-如果只想把字段加入下行变更，但不想污染主 Store，可以创建 viewStore：
+如果只想把字段加入下行变更，但不想污染主 Store，可以在同步捕获回调里重新选择字段：
 
 ```go
-view := role.NewViewStore()
-view.TouchName()
-view.TouchPower()
+view, err := role.Store().View(func(s *data.GDRoleStore) {
+	s.AllUnTouch()
+	s.TouchName()
+	s.TouchPower()
+})
+if err != nil {
+	return err
+}
 
-body, err := view.ChangeDocument(change.FieldNameMsgpack)
+body, err := view.Document(change.FieldNameMsgpack)
 if err != nil {
 	return err
 }
@@ -1906,7 +1952,7 @@ role.ClearChanges()
 
 task := role.DailyTaskStore()
 task.SetActive(2)
-// ChangeDocument(change.FieldNameGo): Set["DailyTask.Active"] = int64(2)
+// Document(change.FieldNameGo): Set["DailyTask.Active"] = int64(2)
 ```
 
 `SetDailyTask` 覆盖或 `ClearDailyTask` 清空字段时，父 Store 会替换或移除自己的子 Store 节点。旧对象没有父回调，因此旧对象后续的独立 Store 修改不会污染角色 Store。直接写 `role.DailyTask` 属于快照 diff 或手动 `TouchDailyTask()` 路径，不会自动产生嵌套 Store 变更。
@@ -2247,7 +2293,7 @@ if err := storage.Save(ctx, fusionStore, store); err != nil {
 }
 ```
 
-这种写法适合 SLG/MMO 战斗、沙盘状态等有状态高频对象；关键是由业务循环明确控制“累计多久、何时保存”。保存成功后 Store 会自动清理 dirty；同一 GD 的帧内广播合并应在保存前复制 `store.View()` 并调用 `MergeChanges()`。跨对象广播应先分别构建文档并编码为独立载荷，再由业务消息组合；载荷发布后不得修改。
+这种写法适合 SLG/MMO 战斗、沙盘状态等有状态高频对象；关键是由业务循环明确控制“累计多久、何时保存”。保存成功后 Store 会自动清理 dirty；同一 GD 的帧内广播应在保存前调用 `store.View(nil)` 同步捕获，随后对各批 StoreView 调用 `Merge()`。跨对象广播应先分别构建文档并编码为独立载荷，再由业务消息组合；载荷发布后不得修改。
 
 生成的加载方法在成功读取后会自动清空脏标记，避免“刚加载出来的数据”被误认为需要保存。
 
@@ -2268,7 +2314,7 @@ if err := storage.Save(ctx, fusionStore, store); err != nil {
 role.ClearItems()
 role.ClearDress()
 
-doc, err := role.ChangeDocument(change.FieldNameGo)
+doc, err := role.Document(change.FieldNameGo)
 if err != nil {
 	return err
 }
@@ -3182,7 +3228,8 @@ if err := db.Save(role); err != nil {
 }
 ```
 
-这条规则只针对外部通信失败。修改 viewStore、混用 `BeginChange` 与 Store 模式等本地 API 违约仍属于编程错误，应在开发期修正，不能依赖运行时吞掉 panic。
+这条规则只针对外部通信失败。在 StoreView 选择回调中修改业务值、混用 `BeginChange` 与 Store 模式等本地 API
+违约仍属于编程错误，应在开发期修正，不能依赖运行时吞掉 panic。
 
 例如探针或一次真实 Mongo I/O 已发现 Mongo 临时不可达时：
 

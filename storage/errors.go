@@ -14,7 +14,6 @@ var (
 	ErrNilDocument        = errors.New("storage: document is nil")
 	ErrInvalidRecordKey   = errors.New("storage: invalid record key")
 	ErrNoEffectiveChanges = errors.New("storage: changes contain no effective write")
-	ErrReadOnlyStore      = errors.New("storage: view store cannot be persisted")
 )
 
 // Backend identifies an external persistence dependency. It is used only for
