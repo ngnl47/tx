@@ -1768,7 +1768,7 @@ if err != nil {
 StoreView，后续根对象修改不会使其漂移。`Capture` 不会自动调用 `ClearChanges()`，何时结束当前持久化批次仍由业务控制。
 传入其他根 Store 会返回 `change.ErrValueMismatch`。
 
-如果后续批次已经先物化成 StoreView，例如不同同步阶段先进入了帧队列，再用 `Merge` 合并独立视图。`Merge` 不读取
+如果后续批次已经先创建为 StoreView，例如不同同步阶段先进入了帧队列，再用 `Merge` 合并独立视图。`Merge` 不读取
 根 GD，接收者和 `next` 仍必须来自同一个根 Store：
 
 ```go
@@ -1780,12 +1780,14 @@ other, _ := roleB.Store().View(nil)
 err = first.Merge(other)   // change.ErrValueMismatch
 ```
 
+`Merge` 不会修改或清空 `next`；合并完成后，`second.Document(...)` 仍会输出 second 原有的独立视图。
+
 `Capture` 和 `Merge` 使用相同的确定性覆盖规则：后续批次整体 Replace/Clear/Delete `Items` 时，父字段吸收此前的
 `Items.*` 子路径；前一批 Clear、后一批重新写入子路径时，状态提升为 `Items Replace`。`Capture` 从当前根 GD 复制
-本批值，`Merge` 从 `next` 的稀疏视图复制值。二者都会修改接收者，完成累计后的 StoreView 应按只读视图使用；编码
+本批值，`Merge` 从 `next` 的稀疏视图复制值。二者都只修改接收者，完成累计后的 StoreView 应按只读视图使用；编码
 后的 bytes 才称为载荷，并按只读载荷跨协程发布。
 
-框架扩展需要直接消费结构化路径时，可以使用高级接口。`VisitChanges` 只做同步遍历，不物化中间切片；需要文档时使用 `Document(kind)` 或底层 `change.BuildDocument`：
+框架扩展需要直接消费结构化路径时，可以使用高级接口。`VisitChanges` 只做同步遍历，不创建中间切片；需要文档时使用 `Document(kind)` 或底层 `change.BuildDocument`：
 
 ```go
 err := role.Store().VisitChanges(change.VisitorFunc(
@@ -2075,7 +2077,7 @@ func (p *PUpdateRole) Process(tx *txn.Tx) error {
 
 ### 有状态落盘调度
 
-`txn.Runtime` 是实体长期驻留内存服务中 Procedure 的标准搭档。事务成功后它只按锁键登记对应 Store；多个事务持续修改同一对象时，Store 保留路径变更，下一次 Flush 才把当前值物化为一次 Fusion 写入。
+`txn.Runtime` 是实体长期驻留内存服务中 Procedure 的标准搭档。事务成功后它只按锁键登记对应 Store；多个事务持续修改同一对象时，Store 保留路径变更，下一次 Flush 才按当前值构建一次 Fusion 写入。
 
 这里的 `pending` 指“已发生受控修改、尚未成功 Flush 的持久化根对象”。`Runtime.Pending()` 返回按 `LockKey` 去重后的这个数量，而不是内存中全部 `GD*` 的数量：同一个 `GDRole` 连续修改多次、或仅修改 `GDRole.Items[1001]` 等子字段，都只算一个 pending root；同一事务修改一个 `GDLegion` 和两个不同的 `GDRole`，则算三个。Flush 成功、Store 变更清理后，对应 root 才会移出 pending；未产生变更或纯内存对象不计入其中。
 
@@ -2293,7 +2295,7 @@ if err := storage.Save(ctx, fusionStore, store); err != nil {
 }
 ```
 
-这种写法适合 SLG/MMO 战斗、沙盘状态等有状态高频对象；关键是由业务循环明确控制“累计多久、何时保存”。保存成功后 Store 会自动清理 dirty；同一 GD 的帧内广播应在保存前调用 `store.View(nil)` 捕获首批，在同一所有权区间内用 `view.Capture(store, nil)` 累计后续批次，已物化批次才使用 `Merge()`。跨对象广播应先分别构建文档并编码为独立载荷，再由业务消息组合；载荷发布后不得修改。
+这种写法适合 SLG/MMO 战斗、沙盘状态等有状态高频对象；关键是由业务循环明确控制“累计多久、何时保存”。保存成功后 Store 会自动清理 dirty；同一 GD 的帧内广播应在保存前调用 `store.View(nil)` 捕获首批，在同一所有权区间内用 `view.Capture(store, nil)` 累计后续批次，后续批次已经创建为独立 StoreView 时才使用 `Merge()`。跨对象广播应先分别构建文档并编码为独立载荷，再由业务消息组合；载荷发布后不得修改。
 
 生成的加载方法在成功读取后会自动清空脏标记，避免“刚加载出来的数据”被误认为需要保存。
 
@@ -3125,7 +3127,7 @@ ExpireAt int64 `json:"expireAt" bson:"expireAt" msgpack:"expireAt" mongodb:"inde
 延迟删除发现 Redis 生命周期版本已变化时，必须重新入队；若此时延迟队列未装配，handler 返回依赖错误而不是确认旧任务，避免后续自动清理任务丢失。
 
 这些接口传递的 `map[string]any` 统一使用 **JSON 字段名**，不是某个具体数据库的原始文档。生成的
-`TypeSpec` 会提供 `DocumentFactory`；Mongo adapter 用它把公共文档物化为 GD 对象，再由 `bson` tag
+`TypeSpec` 会提供 `DocumentFactory`；Mongo adapter 用它把公共文档还原为 GD 对象，再由 `bson` tag
 写入或读回 Mongo。因此 Fusion 可以直接把 Mongo 回源结果回填 Redis，不会把 Mongo 的 `_id` 或缩写字段名
 写进 Redis。
 

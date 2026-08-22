@@ -4,7 +4,7 @@
 
 审计环境：`go1.26.5 darwin/amd64`，Intel i9-9880H，macOS 15.6
 
-更新说明：本报告保留审计时的证据。报告中提到的物化变更批次、通用 Compact、`Deltas()` 和 `Build*WithDeltas` 已在后续生成式投影重构中删除，不代表当前可用 API；当前设计以 [`../design.md`](../design.md) 为准。
+更新说明：本报告保留审计时的证据。报告中提到的显式变更批次、通用 Compact、`Deltas()` 和 `Build*WithDeltas` 已在后续生成式遍历重构中删除，不代表当前可用 API；当前设计以 [`../design.md`](../design.md) 为准。
 
 审计范围：`tx` 全部包、公开 API、Delta/Store/Fusion/事务、Agent/msgq/RPC/Actor、txgame 真实 Redis/Mongo 集成链路，以及 etcd 服务发现链路。
 

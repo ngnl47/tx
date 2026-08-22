@@ -234,9 +234,9 @@ GDRole <--------------------- main GDRoleStore
                                    |
                                    | View(configure) 同步捕获
                                    v
-                            GDRoleStoreView
-                            ├── 稀疏 GDRole 值
-                            └── change.ViewState
+	                            GDRoleStoreView
+	                            ├── 稀疏 GDRole 值
+	                            └── txgen 生成的强类型视图状态树
 ```
 
 Store 负责：
@@ -294,7 +294,7 @@ roleB.Items[9] ----+
 
 - 主 Store 是唯一可变追踪对象，用于受控修改、持久化、undo 和有状态 Runtime 累计。
 - selector 是 `View` 回调期间存在的临时 `GD*Store`。它复制主 Store 当前的选择状态，只允许 `Touch/UnTouch`；调用 `Set/Clear/Replace` 或集合增删改会立即 panic，暴露框架 API 的编程误用。
-- StoreView 是生成的独立类型，例如 `GDRoleStoreView`。它持有捕获时刻的稀疏 `GDRole` 和只包含 `Path + Op` 的 `change.ViewState`，不再持有根 GD、主 Store 或 selector。
+- StoreView 是生成的独立类型，例如 `GDRoleStoreView`。它持有捕获时刻的稀疏 `GDRole`、同源身份和 txgen 为 `GDRole` 生成的私有强类型状态树，不再持有根 GD、主 Store 或 selector。普通字段状态放在定长 `ops` 中，集合 key/index 使用原始 Go key 类型，生成对象子状态按需创建；完整 `change.Path` 只在 `VisitChanges` 输出边界临时组合。
 
 默认捕获主 Store 当前全部变更：
 
@@ -329,14 +329,14 @@ body, err := view.Document(change.FieldNameMsgpack)
 
 `TouchPower` 只调整 selector，不修改 `role.Power`，也不污染主 Store。捕获过程只复制所选数据：标量直接赋值，嵌套指针、map、slice 只复制所需分支，整字段 Replace/Clear 才复制整个字段。因此成本与所选路径规模相关，不等于深复制整个根 GD。
 
-StoreView 创建完成后，根 GD 的后续修改、map key 增删、slice 长度变化和指针替换都不会改变已经捕获的值。`view.Role` 对业务可读，但应在捕获后按不可变对象使用。根对象仍处于同一所有权区间时，用 `view.Capture(store, configure)` 直接累计当前批次；批次已经物化或排队时，再捕获一份 StoreView 并通过 `Merge` 合并。两种方式都不能通过直接修改稀疏 Role 来补内容。
+StoreView 创建完成后，根 GD 的后续修改、map key 增删、slice 长度变化和指针替换都不会改变已经捕获的值。`view.Role` 对业务可读，但应在捕获后按不可变对象使用。根对象仍处于同一所有权区间时，用 `view.Capture(store, configure)` 直接累计当前批次；后续批次已经创建为独立 StoreView 或进入队列时，再通过 `Merge` 合并。两种方式都不能通过直接修改稀疏 Role 来补内容。
 
 ### 输出与帧内合并概览
 
 生成代码提供两类输出入口：
 
 - 主 Store 的 `VisitChanges(visitor)` 同步逐条访问当前规范化路径，不创建中间变更切片。Redis、Mongo、Fusion 与 Runtime 容量检查使用该入口。
-- StoreView 的 `VisitChanges(visitor)` 访问已经捕获的 `change.ViewState`；`Document(kind)` 从 StoreView 自身的稀疏 GD 取值，不再读取根对象。
+- StoreView 的 `VisitChanges(visitor)` 访问生成的强类型视图状态树；`Document(kind)` 从 StoreView 自身的稀疏 GD 取值，不再读取根对象。
 
 存储边界接受 `Source`，它组合 `VisitChanges` 与 O(1) 的 `HasChanges`。这避免 adapter 为判空先遍历一次、真正写入时再遍历一次，也把“源在状态不变时可重复访问”的契约固定在编译期。
 
@@ -388,9 +388,9 @@ role.ClearChanges()
 body, err := frame.Document(change.FieldNameMsgpack)
 ```
 
-累计规则由 `change.ViewState` 与生成的强类型稀疏复制共同完成：同字段或同 key 的后写覆盖先写，后续父字段 Replace/Clear/Delete 会清除此前子路径，互不相交的字段保留；Clear/Delete 后再出现子路径时，父路径提升为 Replace 并保留后批次捕获的数据。`Capture` 必须使用创建视图的同一个主 Store；即使两个主 Store 绑定同一个 GD 指针，也会返回 `ErrValueMismatch`，避免混淆两个独立追踪边界。`Capture` 会同步读取根 GD，因此只能在根对象所有权边界内调用，且不会替调用方清理源 Store。
+累计规则由生成的强类型视图状态树与稀疏值复制共同完成：同字段或同 key 的后写覆盖先写，后续父字段 Replace/Clear/Delete 会清除此前子路径，互不相交的字段保留；Clear/Delete 后再出现子路径时，父路径提升为 Replace 并保留后批次捕获的数据。`Capture` 必须使用创建视图的同一个主 Store；即使两个主 Store 绑定同一个 GD 指针，也会返回 `ErrValueMismatch`，避免混淆两个独立追踪边界。`Capture` 会同步读取根 GD，因此只能在根对象所有权边界内调用，且不会替调用方清理源 Store。
 
-如果每批已经先物化成独立 StoreView，则使用 `frame.Merge(next)`；该路径只访问两份稀疏视图，不读取根 GD，适合批次已经进入帧队列后的合并。
+如果后续批次已经创建为独立 StoreView，则使用 `frame.Merge(next)`；该路径只访问两份稀疏视图，不读取根 GD，适合批次已经进入帧队列后的合并。`Merge` 不修改 `next`，因此来源视图在合并后仍可读取或用于其他只读输出。
 
 StoreView 已经与根 GD 脱离，可以在实体锁或 Actor 单线程区间内捕获后送入帧队列；发布后仍必须按只读对象使用。若先构建 `change.Document` 再跨协程，文档中的复杂 value 只可能引用 StoreView 的稀疏数据，不会引用根 GD，但同样不得在发布后修改。
 
@@ -462,8 +462,8 @@ Store 不保存第二份业务数据，也不保存每次操作的 value、时�
 | 遍历上下文 | 同步遍历 | `VisitChanges(change.Visitor)` | 在当前调用栈中从 Store 状态树生成 `Path + Op`；不创建中间变更切片 |
 | 取值上下文 | 值解析 | `change.ValueResolver`、`Store.ResolveValue` | 按结构化路径从当前 GD 读取最终值，并区分业务 nil 与解析失败 |
 | 捕获上下文 | selector | `Store.View(func(*GD*Store))` 的回调参数 | 继承主 Store 当前选择状态的临时 Store；只允许 Touch/UnTouch，不允许修改业务数据，也不会返回给调用方 |
-| 捕获上下文 | StoreView | 生成的 `GD*StoreView` | 持有捕获时刻的稀疏 GD 值、`change.ViewState` 和同源身份；不引用根 GD 或主 Store |
-| 捕获上下文 | 稀疏 GD | `StoreView.Role` 等生成字段 | 只物化所选路径的强类型数据；字段为零值时使用 `Has<Field>()` 判断是否被选择 |
+| 捕获上下文 | StoreView | 生成的 `GD*StoreView` | 持有捕获时刻的稀疏 GD 值、生成的强类型视图状态树和同源身份；不引用根 GD 或主 Store |
+| 捕获上下文 | 稀疏 GD | `StoreView.Role` 等生成字段 | 只复制所选路径的强类型数据；字段为零值时使用 `Has<Field>()` 判断是否被选择 |
 | 捕获上下文 | 同步捕获 | `Store.View(configure)` | 在当前调用栈内完成路径选择、状态规范化和值复制；返回后根 GD 的变化不影响 StoreView |
 | 捕获上下文 | 同源累计 | `StoreView.Capture(store, configure)` | 在同一根对象所有权区间内，把当前 Store 的路径和值直接累计进既有视图；不创建中间 StoreView，也不清理源 Store |
 | 合并上下文 | 帧内合并 | `StoreView.Merge(next)` | 按批次先后合并同一主 Store 捕获的独立 StoreView；`next` 表示后发生批次 |
@@ -571,11 +571,11 @@ type storeState[V any, S any] struct {
 
 1. 没有 configure 时直接遍历主 Store；有 configure 时，`selectionCopy()` 才复制 `ops`、集合元素槽、dirty 索引和必要子 Store，形成临时 selector。
 2. 可选 configure 回调用 Touch/UnTouch 调整 selector；任何数据修改 API 都被生成代码拒绝。
-3. 生成 visitor 逐条把捕获时刻的值复制进稀疏 GD，并直接调用 `change.ViewState.Record` 规范化 `Path + Op`，不物化中间路径批次。
+3. 生成 visitor 逐条把捕获时刻的值复制进稀疏 GD，并按字段类型写入 StoreView 自己的定长字段槽、强类型集合槽和按需子状态，不创建中间路径批次。
 
-返回的 StoreView 实现 `change.Source`，但不实现 `storage.ChangeStore`。因此它可以构建下行文档和参与帧内合并，却无法在编译期传给 `storage.Save`。`change.ViewState` 只保存路径和操作，业务值只存在于生成的稀疏 GD 中，不维护第二套 `any` value 日志。
+返回的 StoreView 实现 `change.Source`，但不实现 `storage.ChangeStore`。因此它可以构建下行文档和参与帧内合并，却无法在编译期传给 `storage.Save`。视图状态树只保存字段或集合位置上的 `change.Op`，业务值只存在于生成的稀疏 GD 中，不维护第二套 `any` value 日志。
 
-Battlefield 等按帧广播场景在根对象所有权区间内通过 `StoreView.Capture(store, configure)` 直接累计：生成 visitor 把当前 Store 的本批值复制到既有稀疏 GD，并立即记录进同一个 `ViewState`，避免临时 StoreView 的值复制和二次状态登记。若后续批次已经物化，则通过 `StoreView.Merge(next)` 从 next 的稀疏 GD 复制值并合并状态；该过程不访问根 GD。跨对象合并应在业务层分别构建独立视图或编码载荷后再组织消息。
+Battlefield 等按帧广播场景在根对象所有权区间内通过 `StoreView.Capture(store, configure)` 直接累计：生成 visitor 把当前 Store 的本批值复制到既有稀疏 GD，并立即记录进同一棵生成状态树，避免临时 StoreView 的值复制和二次状态登记。若后续批次已经创建为独立视图，则通过 `StoreView.Merge(next)` 从 next 的稀疏 GD 复制值并合并状态；该过程不访问根 GD，也不修改 next。跨对象合并应在业务层分别构建独立视图或编码载荷后再组织消息。
 
 捕获动作必须发生在实体锁、Actor 单线程或其他根 GD 所有权边界内，确保读到一致时刻的路径和值。StoreView 一旦返回便不受根 GD 后续修改影响；它可以进入异步帧队列，但从此必须只读。
 
@@ -695,7 +695,7 @@ Store.ResolveValue(path)
 
 ### 确定性合并边界
 
-主 Store 在每次记录时按字段槽或集合位置原地归一化，不提供批次合并 API。跨时刻的帧内累计发生在同类型 StoreView 上：同一根对象所有权区间内使用 `Capture`，已物化批次使用 `Merge`，二者执行相同的确定性规则：
+主 Store 在每次记录时按字段槽或集合位置原地归一化，不提供批次合并 API。跨时刻的帧内累计发生在同类型 StoreView 上：同一根对象所有权区间内使用 `Capture`，已经创建为独立视图的批次使用 `Merge`，二者执行相同的确定性规则：
 
 1. 同一字段槽或集合 key/index 由后者覆盖前者。
 2. 后发生的父字段 Replace/Delete/Clear 清理更早子路径。
@@ -729,7 +729,7 @@ if err := frame.Capture(role.Store(), nil); err != nil {
 }
 ```
 
-`Capture` 返回后，`frame` 同时保留前批次互不冲突的位置和后批次捕获值；随后不再读取 `role`，可以脱离 role 生命周期按只读载荷保存和发布。若后批次已先物化成 `next`，改用 `frame.Merge(next)`，该过程完全不访问根 GD。
+`Capture` 返回后，`frame` 同时保留前批次互不冲突的位置和后批次捕获值；随后不再读取 `role`，可以脱离 role 生命周期按只读视图保存，或编码后发布。若后批次已先创建为 `next`，改用 `frame.Merge(next)`，该过程完全不访问根 GD，也不会消费 next。
 
 ### 集合规则
 
@@ -780,7 +780,7 @@ Slice：
 
 这些数字用于证明本次物理模型选择，不是跨机器性能承诺。基准仍保留在 txgen 的 `BenchmarkGeneratedStoreDirtyRuntime`，模板或 runtime 改动后必须复跑。
 
-2026-08-21 使用 Go 1.26.5 比较已删除的物化 `[]DeltaEntry` 实验路径与生成式同步遍历/合并，测试对象均为 1024 个不同 map key：
+2026-08-21 使用 Go 1.26.5 比较已删除的 `[]DeltaEntry` 中间批次实验路径与生成式同步遍历/合并，测试对象均为 1024 个不同 map key：
 
 | 场景 | DeltaSet 路径 | 生成式同步遍历/合并 | 结果 |
 | --- | ---: | ---: | --- |
@@ -788,18 +788,18 @@ Slice：
 | 生成 `change.Document` | 约 0.71-0.74 ms/op，1.16 MB/op，3015 allocs/op | 约 0.40-0.44 ms/op，212 KB/op，2996 allocs/op | 省去约 950 KB 中间 Delta/Clone；剩余分配来自最终字符串路径和文档 map |
 | 16 批 x 64 key 帧合并 | 约 0.46-0.52 ms/op，1.16 MB/op，140 allocs/op | 约 0.17-0.18 ms/op，37 KB/op，17 allocs/op | 生成 Store 直接合并变更状态，最后只构建一次文档 |
 
-这组结果决定只保留 `VisitChanges + Merge`。物化批次、通用 Compact 及其公开 API 已删除；表格仅记录技术选型依据。
+这组结果决定只保留 `VisitChanges + Merge`。显式中间批次、通用 Compact 及其公开 API 已删除；表格仅记录技术选型依据。
 
 2026-08-22 使用 Go 1.26.5，在 txgame 真实生成 `GDRole.Items` 上继续比较存储边界。对象包含 1024 个不同 map key，每个 key 修改 `Quantity`；两条路径都生成相同 Redis patch 或 Mongo update document：
 
-| 场景 | 先物化 DeltaSet | Store 直接同步遍历 | 结果 |
+| 场景 | 先创建 DeltaSet 中间批次 | Store 直接同步遍历 | 结果 |
 | --- | ---: | ---: | --- |
 | Redis document patch | 约 1.47-1.54 ms/op，1.31 MB/op，4713 allocs/op | 约 0.88-0.90 ms/op，359 KB/op，4692 allocs/op | 耗时降低约 40%，分配字节降低约 73% |
-| Mongo update document | 约 13.37-14.55 ms/op，1.28 MB/op，5740 allocs/op | 约 0.98-1.00 ms/op，330 KB/op，5718 allocs/op | 避免物化、Clone、通用 Compact 和二次路径扫描，耗时降低约 93%，分配字节降低约 74% |
+| Mongo update document | 约 13.37-14.55 ms/op，1.28 MB/op，5740 allocs/op | 约 0.98-1.00 ms/op，330 KB/op，5718 allocs/op | 避免中间批次、Clone、通用 Compact 和二次路径扫描，耗时降低约 93%，分配字节降低约 74% |
 
-因此 Redis/Mongo/Fusion adapter 与 `txn.Runtime` 直接消费 `Source`。旧的 `Build*WithDeltas` 与显式批次类型已经删除，`storage.Save` 不得重新引入中间物化层。
+因此 Redis/Mongo/Fusion adapter 与 `txn.Runtime` 直接消费 `Source`。旧的 `Build*WithDeltas` 与显式批次类型已经删除，`storage.Save` 不得重新引入中间批次层。
 
-2026-08-22 删除物化 API 与过渡适配层后，使用 Go 1.26.5 在同一台 x86_64 macOS 设备复测：`VisitChanges1024` 为约 `0.082-0.088 ms/op, 0 B/op, 0 allocs/op`，`BuildDocument1024` 为约 `0.389-0.399 ms/op, 212 KB/op, 2996 allocs/op`，`MergeAndBuildFrameDocument` 为约 `0.167-0.174 ms/op, 37 KB/op, 17 allocs/op`。txgame 的真实生成结构边界中，Redis patch 为约 `0.873-0.928 ms/op, 359 KB/op, 4691 allocs/op`，Mongo update document 为约 `0.988-1.041 ms/op, 330 KB/op, 5717 allocs/op`。这些结果与删除前的同步遍历路径处于同一量级，说明精简公开 API 和运行时中间层没有引入可见性能回退。
+2026-08-22 删除显式批次 API 与过渡适配层后，使用 Go 1.26.5 在同一台 x86_64 macOS 设备复测：`VisitChanges1024` 为约 `0.082-0.088 ms/op, 0 B/op, 0 allocs/op`，`BuildDocument1024` 为约 `0.389-0.399 ms/op, 212 KB/op, 2996 allocs/op`，`MergeAndBuildFrameDocument` 为约 `0.167-0.174 ms/op, 37 KB/op, 17 allocs/op`。txgame 的真实生成结构边界中，Redis patch 为约 `0.873-0.928 ms/op, 359 KB/op, 4691 allocs/op`，Mongo update document 为约 `0.988-1.041 ms/op, 330 KB/op, 5717 allocs/op`。这些结果与删除前的同步遍历路径处于同一量级，说明精简公开 API 和运行时中间层没有引入可见性能回退。
 
 同日增加公开 `Path` 合法性防线后，先消除边界、`FullPath` 与生成 resolver 的重复扫描，再以相同 1024 key 场景复测：Redis 为约 `0.920-0.992 ms/op, 359 KB/op, 4691 allocs/op`，Mongo 为约 `0.984-1.029 ms/op, 330 KB/op, 5716 allocs/op`。结果仍处于原有波动区间且分配次数未增加；完整节点校验只在 I/O/文档边界执行一次，生成 resolver 仅保留固定数组深度护栏。
 
@@ -817,15 +817,23 @@ Slice：
 
 sidecar 不是无条件收益：首次直接修改一个独立 GD 会多一次小对象分配。txgame 的真实 `GDRole` 首次标脏从约 `1600 B/op, 2 allocs/op` 变为 `1496 B/op, 3 allocs/op`，总字节减少且耗时处于同一波动区间；极小的独立 `GDItem` 从约 `128 B/op, 2 allocs/op` 变为 `136 B/op, 3 allocs/op`。集合中的生成对象子字段通过路径子 Store 修改，不会为每个值绑定 sidecar，因此大集合基准仍然净受益。`BenchmarkGeneratedStoreDirtyRuntime/FirstScalarWrite` 用于持续观察首次写入成本；若未来真实业务证明大量微型 GD 都作为独立根对象高频首次写入，再评估专用 fast path，不能以增加所有纯数据对象常驻尺寸为代价提前优化。
 
-### StoreView 捕获索引
+### StoreView 生成状态树
 
-`change.ViewState` 同时维护两种内部表示：有序的扁平 change slice 是遍历和合并结果的唯一事实来源；精确路径索引与祖先计数只用于缩小 `Record` 的查找范围。索引使用规范化 `Path` 的 64 位指纹，命中后仍比较完整 `Path`；发生哈希碰撞时，该桶退回完整路径扫描。因此碰撞最多降低性能，不能改变覆盖、祖先吸收或路径查询结果。
+StoreView 不使用通用完整 `Path` 集合。txgen 已知每个 GD 类型的字段 ID、集合 key/index 类型和生成对象嵌套关系，因此为每个类型生成私有状态树。例如 `GDRole` 的普通字段操作保存在定长 `ops` 中，`Items` 使用 `map[int32]change.Op` 保存元素整体操作，并使用 `map[int32]*viewStateGDItem` 按需保存叶子字段状态。状态树的结构与 Go 类型一致；只有真正发生变更的集合 key 和子对象才分配节点。
 
-不能直接使用 `map[Path]...` 作为索引。当前定长 `Path` 超过 Go map 的内联 key 阈值，大 key 会按条间接分配。2026-08-22 在 x86_64 macOS、Go 1.26.0 上记录 1024 条互不重叠路径：线性扫描约为 `53.0-57.1 ms/op, 693 KB/op, 12 allocs/op`；直接使用完整 `Path` map 约为 `1.27-1.42 ms/op, 981 KB/op, 1061 allocs/op`；紧凑指纹索引约为 `0.44-0.47 ms/op, 768 KB/op, 36 allocs/op`。该基准由 `BenchmarkViewStateRecordDistinct1024` 固定。
+`Record`、`Contains`、`Capture` 和 `Merge` 都直接访问这些强类型槽位。同位置后写覆盖、父路径吸收和 Clear/Delete 后子写提升在生成状态树内完成；`VisitChanges` 才递归组合定长 `change.Path` 并交给输出边界。整数 map key 从公开 `PathKey` 转回实际 Go key 前必须做无损范围校验，例如 `math.MaxInt64` 不能截断成 `int32(-1)` 后误命中已有状态或业务值。
 
-同机生成代码真实链路以 16 批、每批 64 个不同 map key 捕获 StoreView，依次 `Merge` 后构建一次文档。索引前约为 `60.6-63.5 ms/op, 2.08 MB/op, 12659 allocs/op`；指纹索引并让 `View(nil)` 直接读取主 Store 状态后约为 `2.56-2.59 ms/op, 2.20 MB/op, 12782-12783 allocs/op`。耗时下降约 96%；只有传入 `configure` 时才复制 selector 状态。该历史路径由 `BenchmarkGeneratedStoreDirtyRuntime/CaptureMergeAndBuildFrameDocument` 保留回归。
+2026-08-22 在 x86_64 macOS、Go 1.26.5 上，以 16 批、每批 64 个不同 map key 的真实生成 `GDRole` 回测：
 
-同日增加 `StoreView.Capture` 直接累计入口，并为可空动态字段生成 nil 快照 fast path。相同 16 x 64 key 场景中，先物化 16 份 StoreView 再 Merge 约为 `1.95-2.02 ms/op, 1.866 MB/op, 6794 allocs/op`；在同一所有权区间内直接 Capture 约为 `1.36-1.39 ms/op, 1.267 MB/op, 5323 allocs/op`，耗时减少约 30%，分配字节减少约 32%，分配次数减少约 22%。单个包含 `nil interface{}` 字段的 map 元素捕获从 `24` 降至 `21 allocs/run`。`alloc_space` profile 中，直接 Capture 后的约 `1.15 MB/op` 采样内存由 `ViewState.Record` 约占 59%、最终 Document 约 15.6%、被选中值的稀疏复制约 11.8%、业务集合写入约 7.5%、帧对象与切片约 4.4% 构成。集合捕获只复制命中的 key/index；整元素 Set 会复制该元素的全部字段，子 Store 叶子 Set 只复制叶子路径。新路径由 `BenchmarkGeneratedStoreDirtyRuntime/CaptureAndBuildFrameDocument` 持续回归。
+| 场景 | 通用完整路径状态 | txgen 生成状态树 | 结果 |
+| --- | ---: | ---: | --- |
+| 先创建 16 份 StoreView、依次 Merge、最后构建文档 | 约 `2.020-2.202 ms/op, 1.866 MB/op, 6794 allocs/op` | 约 `1.34-1.53 ms/op, 0.694 MB/op, 6645 allocs/op` | 分配字节降低约 63%，耗时降低约 24%-39% |
+| 同一所有权区间直接 Capture、最后构建文档 | 约 `1.340-1.377 ms/op, 1.267 MB/op, 5323 allocs/op` | 约 `1.02-1.18 ms/op, 0.537 MB/op, 5309 allocs/op` | 分配字节降低约 58%，耗时降低约 12%-26% |
+| 1024 个已存在 map 元素只捕获叶子 `Quantity` | 无同版历史基线 | 约 `1.65-1.80 ms/op, 0.755 MB/op, 9156 allocs/op` | 持续观察深层叶子复制和最终文档成本 |
+
+分配次数只小幅下降，说明剩余小对象主要来自稀疏值复制和最终 `change.Document` 的字符串路径/map，而不再来自每条变更保存完整 `Path`。基准由 `BenchmarkGeneratedStoreDirtyRuntime/CaptureMergeAndBuildFrameDocument`、`CaptureAndBuildFrameDocument` 和 `CaptureLeafAndBuildFrameDocument` 持续回归。
+
+生成状态树会增加生成文件体积。固定 txgen 测试输入的 `GDRoleStore.go` 从约 `125.7 KB` 增至 `137.8 KB`，txgame 真实 `GDRoleStore.go` 从约 `664.4 KB` 增至 `723.2 KB`，增幅约 `9%`。模板使用通用 `ops` 循环处理普通字段，只为指针和集合输出专属分支；只有标量字段的类型复用生成包内的叶子状态助手。这把试验初版约 `777.9 KB` 的体积降了约 `7%`，且基准保持同一量级。当前接受这一编译期代码体积成本，以换取运行时分配字节显著下降和更强的 key 类型契约。
 
 ## 存储抽象
 
@@ -843,7 +851,7 @@ JSON-name Document
 Redis JSON      Mongo BSON adapter
 ```
 
-Mongo adapter 通过生成的 `DocumentFactory` 把公共文档物化为 GD，再由 Mongo driver 根据 BSON tag 编解码。这样 `_id`、缩写 BSON 名和 Redis JSON 名不会互相泄漏。
+Mongo adapter 通过生成的 `DocumentFactory` 把公共文档还原为 GD，再由 Mongo driver 根据 BSON tag 编解码。这样 `_id`、缩写 BSON 名和 Redis JSON 名不会互相泄漏。
 
 ### RecordKey
 
