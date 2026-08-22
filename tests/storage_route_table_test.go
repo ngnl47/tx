@@ -63,6 +63,23 @@ func TestRouteTableImplementsRedisAndMongoRouter(t *testing.T) {
 	}
 }
 
+func TestRouteTableCopiesShardSlices(t *testing.T) {
+	shards := []string{"role-a", "role-b"}
+	table := storage.NewRouteTable(map[string][]storage.RouteRule{
+		"role": {{Min: 1, Shards: shards}},
+	})
+
+	shards[0] = "mutated"
+
+	got, err := table.Route(context.Background(), "role", int64(2))
+	if err != nil {
+		t.Fatalf("Route returned error: %v", err)
+	}
+	if got != "role-a" {
+		t.Fatalf("Route = %q, want copied shard role-a", got)
+	}
+}
+
 func TestRouteTableReturnsErrorsForInvalidConfig(t *testing.T) {
 	tests := []struct {
 		name     string

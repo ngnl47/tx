@@ -60,7 +60,7 @@
 - 核心命名按职责收敛：`Source`/`Visitor`/`VisitChanges` 只表达同步变更遍历，`BuildDocument` 才表达文档构建；`Path` 是结构化字段路径，`DocumentPath` 是输出边界字符串路径；`Op` 表达变更操作，生成 Store 的操作槽叫 `ops`，`dirty` 只保留给布尔脏状态与脏子节点。字段命名体系使用 `FieldNameKind`，Redis 直接选择 JSON 名；删除文档路径使用 `Document.Delete`，容器清空仍使用 `OpClear`。带口径的配置显式使用 `TTLSeconds`、`MaxBacklogMessages`、`HeapSoftLimitBytes` 等名称，不为建设期旧名称保留兼容入口。
 - `Path` 只接受 `1..MaxPathDepth` 的深度、非空字段编号和已定义 key 类型；外部 Source 或高级 API 输入非法路径时，通用文档、Redis、Mongo 与生成 resolver 都必须稳定返回 `change.ErrInvalidPath`/解析失败，不能数组越界 panic，也不能忽略 key 并退化为父字段写入。
 - `storage.DocumentLoader` 的结果必须一致：`exists=true` 对应非 `nil` 文档，`exists=false` 对应 `nil` 文档；批量结果逐项遵守同一契约。adapter 或外部实现返回矛盾组合时立即失败，不能被误当作未命中继续回源。
-- 项目 yml 读取必须使用严格字段校验：`app/runtime/storage` 的未知节点或属性在解析阶段报错；Redis/Mongo 路由表的 routeType 名保持项目自定义，但必须是非空、无首尾空白的唯一标量，规则对象只允许 `min/max/shards`；每个 endpoint 必须非空且不含首尾空白，具体 URI 协议与连接参数由项目适配层解析。YAML anchor 统一放入项目显式声明的 `aliases` 节点，不能依赖被静默忽略的根字段。
+- 项目 yml 读取必须使用严格字段校验：`app/runtime/storage` 的未知节点或属性在解析阶段报错；Redis/Mongo 路由表的 routeType 名保持项目自定义，但必须是非空、无首尾空白的唯一标量，规则对象只允许 `min/max/shards`，同一 routeType 的规范化区间不得重叠；每个 endpoint 必须非空且不含首尾空白，具体 URI 协议与连接参数由项目适配层解析。YAML anchor 统一放入项目显式声明的 `aliases` 节点，不能依赖被静默忽略的根字段。
 - `storage.DocumentReplacer` 的输入文档必须非 `nil`；空 map 代表合法空对象，`nil` 返回 `storage.ErrNilDocument`，不允许以 no-op 伪造写入成功。延迟删除需要重排而队列未装配时同样返回错误，保留任务重试机会。
 - 所有实际存储 I/O、路由和锁操作必须先校验 `storage.RecordKey`：`ID` 不得为 nil、typed-nil 或空白字符串；当存储元数据声明 `routeBy != idField` 时，`ShardKey` 必填。缺失 `ShardKey` 返回 `storage.ErrInvalidRecordKey`，不得回退用 ID 选择 Redis/Mongo endpoint 或生成 Redis hash tag。
 - 非空 Source 经 Redis/Mongo 边界转换后必须至少产生一个有效 patch/update；否则返回 `storage.ErrNoEffectiveChanges` 并保留 Store 变更。Mongo upsert 仅剩不可变记录 ID 时同样失败，不能清理 dirty 后伪造已创建文档。
@@ -392,8 +392,8 @@ type DelayTaskBackend interface {
 - Mongo runtime 已提供最小 route/cluster adapter，按 routeType 和 RecordKey.ShardKey 路由单条读写，并在批量读取时按 Mongo shard 分组后还原输入顺序；`storage/mongo/mongodriver` 提供官方 MongoDB driver 的薄适配层。
 - Redis runtime 已提供与 Mongo 对等的最小 route/cluster adapter：先按 routeType 和 RecordKey.ShardKey 路由到具体 Redis endpoint/adapter，再在每个 endpoint 内执行批量读取并还原输入顺序；`storage/redis/goredis` 提供 go-redis 的薄适配层。
 - Redis 写入和整文档替换 API 直接使用 `storage.ApplyOptions`，不再保留 Redis 包内的 `ApplyOptions` 类型别名；`redis.LoadOptions` 仅表达 Redis 批量读取专用选项。
-- `storage.RouteTable` 已提供 Redis/Mongo 共用的运行时路由表：支持 `min/max` 区间命中、多 shard 按 `routeBy % len(shards)` 选 endpoint、单 shard 字符串主键直连，并同时实现 Redis/Mongo cluster router 接口；后续 yml 配置解析应构造该路由表，而不是在 Redis/Mongo adapter 内重复实现路由规则。
-- `storage/config.RouteTableConfig` 已提供项目 yml 路由配置的强类型承接模型：支持标量 endpoint、endpoint 数组和 `min/max/shards` 规则数组；项目负责读取本地 yml 和 include，tx 负责把解析后的配置对象归一化为 `storage.RouteTable`。
+- `storage.RouteTable` 已提供 Redis/Mongo 共用的运行时路由表：支持 `min/max` 区间命中、多 shard 按 `routeBy % len(shards)` 选 endpoint、单 shard 字符串主键直连，并同时实现 Redis/Mongo cluster router 接口；构造时深复制规则与 shard 切片，调用方后续修改配置对象不会改变运行时路由。后续 yml 配置解析应构造该路由表，而不是在 Redis/Mongo adapter 内重复实现路由规则。
+- `storage/config.RouteTableConfig` 已提供项目 yml 路由配置的强类型承接模型：支持标量 endpoint、endpoint 数组和 `min/max/shards` 规则数组；同一 routeType 的规范化区间重叠会在启动配置阶段失败。项目负责读取本地 yml 和 include，tx 负责把解析后的配置对象归一化为 `storage.RouteTable`。
 - Redis 批量读取默认贴合生产云存储代理能力：同一个 Redis endpoint 内允许直接批量读取多条不同 hash tag 的记录，由云代理负责跨 slot 分发和结果聚合，避免把生产热路径退化为多次 IO。
 - Redis 批量读取应使用客户端层原生 `MGET` 展平 main/subKey key 后读取，再在 Go 侧按固定步长合并文档；不要把跨记录批量读取包进 Lua。云代理能识别 `MGET` 的所有参数都是 key，但不能可靠分析自定义 Lua 中哪些 `ARGV` 是 key，也不能安全拆分一个需要原子执行的脚本。
 - 本地原生 Redis Cluster 或直连节点只作为研发 debug 兼容路径：已提供显式可选的 `LoadOptions.ClusterSafe` 模式，按 hash tag 分组后多次读取，保证本地集群可复现和排查跨槽问题，但不作为生产默认策略。

@@ -77,6 +77,20 @@ func (c RouteTableConfig) Validate() error {
 				}
 			}
 		}
+		for i := range target.Rules {
+			leftMin := normalizedMin(target.Rules[i].Min)
+			leftMax := normalizedMax(target.Rules[i].Max)
+			for j := i + 1; j < len(target.Rules); j++ {
+				rightMin := normalizedMin(target.Rules[j].Min)
+				rightMax := normalizedMax(target.Rules[j].Max)
+				if leftMin <= rightMax && rightMin <= leftMax {
+					return fmt.Errorf(
+						"storage config: route %q rules %d [%d,%d] and %d [%d,%d] overlap",
+						routeType, i, leftMin, leftMax, j, rightMin, rightMax,
+					)
+				}
+			}
+		}
 	}
 	return nil
 }

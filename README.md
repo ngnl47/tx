@@ -2632,6 +2632,9 @@ router := storage.NewRouteTable(map[string][]storage.RouteRule{
 })
 ```
 
+`NewRouteTable` 会复制规则和每条规则的 `Shards` 切片。构造完成后，调用方继续复用或修改原配置对象，
+不会改变已经运行的 Redis/Mongo 路由。
+
 路由规则：
 
 - 先按 `routeType` 找到规则列表。
@@ -2691,6 +2694,21 @@ role: redis://second
 
 rank: " redis://rank.example.com:6379 "
 ```
+
+同一 `routeType` 的规范化区间不能相交，边界相同也属于重叠。例如下面两个规则都包含 `1000000`，
+`RouteTable()` 会明确返回错误，而不是依赖规则书写顺序选择 endpoint：
+
+```yaml
+role:
+  - min: 1
+    max: 1000000
+    shards: ["redis://role-a"]
+  - min: 1000000
+    shards: ["redis://role-b"]
+```
+
+连续但不重叠的写法应把前一区间结束在 `999999`，后一区间从 `1000000` 开始。区间可以留空，
+未命中的 `shardKey` 会在运行时返回路由错误，不会静默落到其他分片。
 
 配置对象可直接构造运行时路由表：
 

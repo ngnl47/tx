@@ -138,6 +138,17 @@ func TestStorageConfigRouteTableRejectsInvalidRules(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "overlapping ranges",
+			cfg: storageconfig.RouteTableConfig{
+				Routes: map[string]storageconfig.RouteTarget{
+					"role": {Rules: []storageconfig.RouteRule{
+						{Min: 1, Max: 10, Shards: []string{"redis://role-a"}},
+						{Min: 10, Max: 20, Shards: []string{"redis://role-b"}},
+					}},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {

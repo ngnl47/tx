@@ -26,7 +26,10 @@ func NewRouteTable(routes map[string][]RouteRule) *RouteTable {
 	}
 	for routeType, rules := range routes {
 		copied := make([]RouteRule, len(rules))
-		copy(copied, rules)
+		for index, rule := range rules {
+			copied[index] = rule
+			copied[index].Shards = append([]string(nil), rule.Shards...)
+		}
 		table.routes[routeType] = copied
 	}
 	return table
