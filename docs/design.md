@@ -390,7 +390,7 @@ body, err := frame.Document(change.FieldNameMsgpack)
 
 累计规则由 `change.ViewState` 与生成的强类型稀疏复制共同完成：同字段或同 key 的后写覆盖先写，后续父字段 Replace/Clear/Delete 会清除此前子路径，互不相交的字段保留；Clear/Delete 后再出现子路径时，父路径提升为 Replace 并保留后批次捕获的数据。`Capture` 必须使用创建视图的同一个主 Store；即使两个主 Store 绑定同一个 GD 指针，也会返回 `ErrValueMismatch`，避免混淆两个独立追踪边界。`Capture` 会同步读取根 GD，因此只能在根对象所有权边界内调用，且不会替调用方清理源 Store。
 
-如果每批已经先物化成独立 StoreView，则使用 `frame.Merge(next)`；该路径只访问两份稀疏载荷，不读取根 GD，适合批次已经进入帧队列后的合并。
+如果每批已经先物化成独立 StoreView，则使用 `frame.Merge(next)`；该路径只访问两份稀疏视图，不读取根 GD，适合批次已经进入帧队列后的合并。
 
 StoreView 已经与根 GD 脱离，可以在实体锁或 Actor 单线程区间内捕获后送入帧队列；发布后仍必须按只读对象使用。若先构建 `change.Document` 再跨协程，文档中的复杂 value 只可能引用 StoreView 的稀疏数据，不会引用根 GD，但同样不得在发布后修改。
 
@@ -471,7 +471,8 @@ Store 不保存第二份业务数据，也不保存每次操作的 value、时�
 | 防御上下文 | 祖先提升 | 最近安全祖先的 `OpReplace` | 超深路径、Store 合并冲突或后端路径限制下的正确性降级 |
 | 容量上下文 | 容量收敛 | `storage.CollapsibleChangeStore`、`CollapseChanges()` | 单根变更位置超预算后，清理细粒度状态并改为可更新顶层字段 Replace |
 | 输出上下文 | 边界文档构建 | `Document(kind)`、`change.BuildDocument`、Redis/Mongo document builder | 转换字段名、解析当前值并形成目标边界需要的文档 |
-| 输出上下文 | 独立载荷 | StoreView、深复制对象或已编码的 BON/JSON/BSON `[]byte` | 不再引用可变根 GD；发布后必须按只读对象使用 |
+| 输出上下文 | 独立视图 | StoreView | 保存捕获时刻的稀疏值和路径状态，不再引用可变根 GD；完成累计后按只读视图使用 |
+| 输出上下文 | 编码载荷 | BON/JSON/BSON `[]byte` | 由视图、变更文档或其他独立对象编码而成；发布后按只读载荷使用 |
 | 发布上下文 | 只读发布 | `msgq.Pub` 等异步所有权交接 | 发布成功后调用方和消费方都不得修改、追加或复用载荷内存 |
 | 持久化上下文 | 保存成功清理 | `storage.Save`、`Store.ClearChanges()` | 存储成功后递归清理 Store 状态，不修改 GD 数据 |
 | 持久化上下文 | 保存失败保留 | `storage.Save` 的错误路径 | I/O 或边界构建失败时保留全部状态，供后续重试 |
@@ -574,7 +575,7 @@ type storeState[V any, S any] struct {
 
 返回的 StoreView 实现 `change.Source`，但不实现 `storage.ChangeStore`。因此它可以构建下行文档和参与帧内合并，却无法在编译期传给 `storage.Save`。`change.ViewState` 只保存路径和操作，业务值只存在于生成的稀疏 GD 中，不维护第二套 `any` value 日志。
 
-Battlefield 等按帧广播场景在根对象所有权区间内通过 `StoreView.Capture(store, configure)` 直接累计：生成 visitor 把当前 Store 的本批值复制到既有稀疏 GD，并立即记录进同一个 `ViewState`，避免临时 StoreView 的值复制和二次状态登记。若后续批次已经物化，则通过 `StoreView.Merge(next)` 从 next 的稀疏 GD 复制值并合并状态；该过程不访问根 GD。跨对象合并应在业务层分别构建载荷后再组织消息。
+Battlefield 等按帧广播场景在根对象所有权区间内通过 `StoreView.Capture(store, configure)` 直接累计：生成 visitor 把当前 Store 的本批值复制到既有稀疏 GD，并立即记录进同一个 `ViewState`，避免临时 StoreView 的值复制和二次状态登记。若后续批次已经物化，则通过 `StoreView.Merge(next)` 从 next 的稀疏 GD 复制值并合并状态；该过程不访问根 GD。跨对象合并应在业务层分别构建独立视图或编码载荷后再组织消息。
 
 捕获动作必须发生在实体锁、Actor 单线程或其他根 GD 所有权边界内，确保读到一致时刻的路径和值。StoreView 一旦返回便不受根 GD 后续修改影响；它可以进入异步帧队列，但从此必须只读。
 
@@ -687,10 +688,10 @@ Store.ResolveValue(path)
 `change.Document` 会创建独立的 `Set/Delete` map。若来源是主 Store，`Set` 中的复杂 map、slice 或指针 value 可能仍引用当前根 GD；若来源是 StoreView，它们只引用 StoreView 自己的稀疏数据。术语上必须区分三个阶段：
 
 - 调用 `Document(kind)` 是“边界文档构建”。
-- StoreView 是与根 GD 脱离的“独立载荷”；把任意文档继续编码为 BON/JSON/BSON 字节，也会得到独立载荷。
-- 把独立载荷交给 msgq、网络或其他异步队列后进入“只读发布”阶段，各方都不得原地修改、追加或复用载荷内存。
+- StoreView 是与根 GD 脱离的“独立视图”；把视图或变更文档编码为 BON/JSON/BSON 字节后，才得到编码载荷。
+- 把编码载荷交给 msgq、网络或其他异步队列后进入“只读发布”阶段，各方都不得原地修改、追加或复用载荷内存。
 
-只有独立载荷才能在退出对象锁后交给异步队列；否则后续 GD 修改可能改变待发送内容。只读发布是所有权契约，不表示 Go 运行时把 StoreView、map、slice 或 `[]byte` 变成不可写内存，也不限制根 GD 和主 Store 继续处理下一批业务变更。
+只有不再引用根 GD 的独立视图或编码载荷才能退出对象锁；交给异步队列时优先使用编码载荷。否则后续 GD 修改可能改变待发送内容。只读发布是所有权契约，不表示 Go 运行时把 StoreView、map、slice 或 `[]byte` 变成不可写内存，也不限制根 GD 和主 Store 继续处理下一批业务变更。
 
 ### 确定性合并边界
 

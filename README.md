@@ -1617,7 +1617,7 @@ for _, role := range guildRoles {
 
 ### 同步捕获 StoreView
 
-`GD*StoreView` 是从主 Store 同步捕获的独立、稀疏载荷，不是另一个 Store。它只包含选中路径在捕获时刻的值和
+`GD*StoreView` 是从主 Store 同步捕获的独立、稀疏视图，不是另一个 Store。它只包含选中路径在捕获时刻的值和
 规范化路径状态，不实现持久化 Store 所需的 `RecordKey`、`TypeSpec`、`ClearChanges` 等接口，因此不能误传给
 `storage.Save`。
 
@@ -1768,7 +1768,7 @@ if err != nil {
 StoreView，后续根对象修改不会使其漂移。`Capture` 不会自动调用 `ClearChanges()`，何时结束当前持久化批次仍由业务控制。
 传入其他根 Store 会返回 `change.ErrValueMismatch`。
 
-如果后续批次已经先物化成 StoreView，例如不同同步阶段先进入了帧队列，再用 `Merge` 合并独立载荷。`Merge` 不读取
+如果后续批次已经先物化成 StoreView，例如不同同步阶段先进入了帧队列，再用 `Merge` 合并独立视图。`Merge` 不读取
 根 GD，接收者和 `next` 仍必须来自同一个根 Store：
 
 ```go
@@ -1782,8 +1782,8 @@ err = first.Merge(other)   // change.ErrValueMismatch
 
 `Capture` 和 `Merge` 使用相同的确定性覆盖规则：后续批次整体 Replace/Clear/Delete `Items` 时，父字段吸收此前的
 `Items.*` 子路径；前一批 Clear、后一批重新写入子路径时，状态提升为 `Items Replace`。`Capture` 从当前根 GD 复制
-本批值，`Merge` 从 `next` 的稀疏载荷复制值。二者都会修改接收者，完成累计后的 StoreView 或编码后 bytes 才能按
-只读载荷跨协程发布。
+本批值，`Merge` 从 `next` 的稀疏视图复制值。二者都会修改接收者，完成累计后的 StoreView 应按只读视图使用；编码
+后的 bytes 才称为载荷，并按只读载荷跨协程发布。
 
 框架扩展需要直接消费结构化路径时，可以使用高级接口。`VisitChanges` 只做同步遍历，不物化中间切片；需要文档时使用 `Document(kind)` 或底层 `change.BuildDocument`：
 
