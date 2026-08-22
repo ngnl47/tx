@@ -126,6 +126,8 @@
 
 `modules/control` 已提供最小运维 gRPC：生命周期面包含 `Status`、`Drain`、`WaitDrained`，槽位面包含 `PromoteSlot`。生命周期服务只面向 `LifecycleController` 抽象；`txgame` 的 `DrainCoordinator` 将其适配为 discovery 状态更新和 `Host.Drain`。槽位服务只面向 `SlotController`；`txgame` 的 `SlotPromoter` 组合 `SlotRouter`、当前成员目录和 etcd SlotStore，在目标进入 `running` 后执行 CAS。两者可由 `--control-listen` 或 `TXGAME_CONTROL_LISTEN` 启用。`Drain` 不取消根 context、不拒绝 Procedure/DB/Store；它严格封口 Agent 和通用 RPC 等服务入口并等待已受理 handler，不支持按命令号继续准入。`cmd/txctl` 以 `status`、`drain`、`wait-drained` 和 `promote-slot` 供发布脚本串联；它不修改实例 lease 或成员状态，`promote-slot` 也只能通过受控服务修改槽位 assignment。发布平台在 `WaitDrained` 后发送正常终止信号，进程再关闭资源、取消 `WaitGroupContext`、最终 Flush 并撤销成员记录。后续只评估认证和 TLS/mTLS，不改变这一职责边界。
 
+`txgame` 已按物理进程装配唯一的普通 gRPC Host：先绑定 `TXGAME_INSTANCE_ENDPOINT`，所选服务在启动期注册 protobuf service，全部成功后统一 Serve，并把实际绑定 endpoint 发布到 discovery；本地未启用 discovery 时可用 `127.0.0.1:0` 调试。`msgq` 已改为只注册 `MailboxService`，不再自行创建 listener/server。共享 listener 在 Drain 阶段保持可用，让已受理业务完成下行；Host Stop 时才统一关闭。通用 `modules/rpc.DeliveryService` 每进程只允许注册一次，聚合服务由项目进程级 Receiver 分派，不能由 `game/room/battlefield` 重复注册；Actor Remote 和 control 继续使用专用入口。
+
 `txgame/internal/agent.NewFixedSlotTargetResolver` 已把项目提供的 `Identity -> SlotID/ActorID` 规则与 `SlotRouter` 组合；它只为 running 宿主构造 Remote PID，draining、stopping 或缺失宿主保留 `ErrSlotRuntimeUnavailable` 错误链，不替业务改派。
 
 `txgame/internal/agent.NewActorDispatcher` 已提供 Agent 到业务 Actor 的项目级桥接：生成 registry 先以 Frame

@@ -460,16 +460,19 @@ defer conn.Close()
 client := msgqpb.NewMailboxServiceClient(conn)
 _, err = client.Pub(ctx, &msgqpb.PubRequest{
     Header:  &msgqpb.SessionHeader{RoleId: target.Binding.RoleID, SessionId: target.Binding.SessionID},
-    Message: bonBody,
+    Payload: bonBody,
 })
 if err != nil {
     return err
 }
 ```
 
+上面的 `grpc.NewServer/Serve` 只展示独立嵌入的最小闭环。模块化项目应复用进程级 gRPC Host，仅调用
+`RegisterMailboxService` 注册协议，不再为 msgq 单独创建 listener/server。
+
 `Fetch` 是 unary 长轮询，调用方必须传递自己的超时或连接 context。运行时错误会转为明确的 gRPC status：无效请求为
 `InvalidArgument`，离线会话为 `NotFound`，旧连接为 `Aborted`，队列满为 `ResourceExhausted`；不会静默丢失或伪造投递成功。
-应用服务关闭时先停止 gRPC listener，未确认下行仍遵循 msgq 的内存语义。
+应用服务关闭时由宿主统一停止共享 gRPC listener，未确认下行仍遵循 msgq 的内存语义。
 
 业务 Actor 或其他服务不应自行读取 `SessionBinding`、拼接 endpoint 或维护每个 msgq 实例的连接。使用 `Sender` 即可按
 `roleID` 解析 Redis owner、校验当前 `SessionID`，并按 endpoint 复用 gRPC 连接：
@@ -725,7 +728,7 @@ delivery := &rpcpb.Delivery{
 新增业务可以使用该包进行明确的服务/实例调用，但不应依赖生成的 `pb` 类型定义客户端 DTO。会话 owner 由
 `msgq.SessionRouter` 解析；Actor 消息由 `actor.VirtualPID` 或 `actor.FixedPID` 投递。
 
-服务进程创建 gRPC server 后，先用该服务的 `Ingress` 包装接收器，再注册得到已校验的业务 `Delivery`。
+服务进程的宿主统一创建 gRPC server 后，先用该服务的 `Ingress` 包装接收器，再注册得到已校验的业务 `Delivery`。
 Receiver 返回错误时，调用方会收到 gRPC 错误，框架不会把投递失败伪装为已接受：
 
 ```go
@@ -744,6 +747,10 @@ if err != nil {
     return err
 }
 ```
+
+推荐每个物理进程只监听一个普通业务 gRPC endpoint，所选服务在 Serve 前向该 server 注册协议。msgq 可以用独立的
+`MailboxService` 共享这个 endpoint；Actor Remote 与 control 仍使用专用入口。`DeliveryService` 在同一 server 中只能
+注册一次，聚合多个业务服务时应由项目的进程级 Receiver 再分发，不能重复注册同名 protobuf service。
 
 需要选择目标实例时，使用 `Resolve`。服务路由只返回 `running` 副本；已经知道实例 ID 的实例路由会精确
 解析 `running/draining/stopping` 实例：
