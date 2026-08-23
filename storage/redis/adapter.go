@@ -231,6 +231,9 @@ func (a *Adapter) LockRecord(ctx context.Context, spec meta.TypeSpec, key storag
 	if ttl <= 0 {
 		return nil, fmt.Errorf("redis: lock ttl must be greater than 0")
 	}
+	if ttl < time.Millisecond {
+		return nil, fmt.Errorf("redis: lock ttl must be at least 1ms")
+	}
 	wait := options.Wait
 	lockKey := redisKeyPrefix(spec, key) + "@lock"
 	token := newLockToken()

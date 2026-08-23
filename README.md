@@ -355,6 +355,10 @@ if err != nil {
 }
 ```
 
+会话绑定使用 Redis `PX` 毫秒 TTL，`TTL` 因此必须至少为 `1ms`。例如
+`TTL: 500 * time.Microsecond` 会在创建 `RedisSessionStore` 时返回
+`msgq.ErrInvalidSessionOptions`，不会把截断后的 `0` 发送给 Redis。
+
 `Fetch` 不在持有会话锁时等待，因此同一会话的 `Pub` 不会被长轮询阻塞。`Pub` 和 `BroadcastTopic` 成功后，传入的
 payload 所有权移交给 msgq：调用方不得再修改、`append`、复用或归还该 `[]byte`，直至对应消息被确认或会话关闭；
 `Fetch`/`FetchSome` 返回的 `Message` 同样只读。这样本地 topic 广播只保留一份已编码 BON 正文，多个会话条目共享它；
@@ -3342,6 +3346,8 @@ role, exists, err := data.FindGDRoleByID(ctx, 1001)
 
 Redis 热数据延迟删除任务也是存储同步的一部分：handler 执行时读取当前 `@v`，再读取 Redis 热文档并回写 Mongo，最后带着读取到的 revision 删除 Redis。如果回写 Mongo 期间这条记录又发生新写入，`@v` 会变化，Lua 删除会返回当前数字版本，handler 会重新排一条延迟删除任务。`@v` 由 Redis `INCR` 生成，读取、条件删除和 Lua 返回只接受正整数；缺失或非数字结果会返回错误并保留任务，绝不会退化为无条件删除。
 handler 会在这个流程外层持有同一条记录的 Redis 锁，避免多个服务实例同时执行同一条记录的回写/删除窗口。
+记录锁同样使用 Redis `PX`，高级调用方传入的 `storage.LockOptions.TTL` 必须至少为 `1ms`；
+亚毫秒值会在任何 Redis I/O 前返回错误。
 
 运维侧应关注 Scheduler 错误日志、重试次数和队列积压时间。如果某类任务持续失败，优先排查对应类型的 Redis 热文档是否能正常反序列化、Mongo 路由/过滤条件是否正确、以及目标集合是否可写。队列中的失败原因不会写入 Redis 状态；需要更完整的告警和指标时，应通过项目自己的日志、监控或后续可插拔 observer 接入。
 
@@ -3428,6 +3434,10 @@ server-c claim bucket 1 中租约过期后可恢复的任务
 ```
 
 `ClaimDue` 允许同时返回已成功取得的 leases 和后续 bucket 的错误，语义与 `io.Reader` 的“数据和错误可以同时返回”一致。标准 Scheduler 会先处理并结算全部可见 lease，再汇总报告 claim、complete、retry 错误；单条结算失败也不会阻止本批其他 lease 继续处理。业务使用标准 Fusion runtime 时不需要直接处理该契约。高级自定义 Scheduler 必须遵循相同顺序：
+
+延迟任务 lease 使用 Redis 毫秒时间戳。配置零值表示采用框架默认值；显式值必须至少为 `1ms`，
+例如 `lease: 500us` 会在服务启动校验时失败。若高级调用方直接构造 Redis task backend，所有操作也会在
+Redis I/O 前返回 `task/redis.ErrInvalidOptions`，避免租约到期时间被截断为当前毫秒而立即被其他 worker 重领。
 
 ```go
 leases, claimErr := backend.ClaimDue(ctx, now, limit)

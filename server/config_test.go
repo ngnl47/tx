@@ -2,11 +2,26 @@ package server
 
 import (
 	"testing"
+	"time"
 
 	txactor "github.com/ngnl47/tx/modules/actor"
 	"github.com/ngnl47/tx/modules/discovery"
 	storageconfig "github.com/ngnl47/tx/storage/config"
 )
+
+func TestRuntimeConfigRejectsInvalidDelayTaskLeasePrecision(t *testing.T) {
+	for _, lease := range []time.Duration{-time.Second, time.Nanosecond} {
+		t.Run(lease.String(), func(t *testing.T) {
+			config := RuntimeConfig{
+				DelayTask: DelayTaskConfig{Lease: lease},
+				Health:    HealthConfig{Interval: time.Second, Timeout: time.Second},
+			}
+			if err := config.validate(); err == nil {
+				t.Fatal("RuntimeConfig.validate error = nil, want invalid delay task lease")
+			}
+		})
+	}
+}
 
 func TestConfigCloneOwnsMutableRoutesAndEndpoints(t *testing.T) {
 	routes := storageconfig.NewRouteTableConfig(map[string]storageconfig.RouteTarget{

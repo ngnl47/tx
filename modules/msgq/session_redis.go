@@ -77,7 +77,7 @@ func NewRoutedRedisSessionStore(resolver SessionRedisResolver, options SessionRe
 }
 
 func newRedisSessionStore(resolve func(context.Context, int64) (SessionRedisClient, error), options SessionRedisOptions) (*RedisSessionStore, error) {
-	if options.Prefix == "" || options.Prefix != strings.TrimSpace(options.Prefix) || strings.ContainsAny(options.Prefix, "{}") || options.TTL <= 0 {
+	if options.Prefix == "" || options.Prefix != strings.TrimSpace(options.Prefix) || strings.ContainsAny(options.Prefix, "{}") || options.TTL < time.Millisecond {
 		return nil, ErrInvalidSessionOptions
 	}
 	return &RedisSessionStore{resolve: resolve, prefix: options.Prefix, ttl: options.TTL}, nil

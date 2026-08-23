@@ -821,6 +821,20 @@ func TestRedisAdapterLockRecordUsesMainKeyHashTag(t *testing.T) {
 	}
 }
 
+func TestRedisAdapterLockRecordRejectsSubMillisecondTTLBeforeIO(t *testing.T) {
+	client := &recordingRedisStringClient{}
+	adapter := mustRedisAdapter(t, client)
+	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
+
+	_, err := adapter.LockRecord(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, storage.LockOptions{TTL: time.Nanosecond})
+	if err == nil || !strings.Contains(err.Error(), "at least 1ms") {
+		t.Fatalf("LockRecord error = %v, want minimum TTL error", err)
+	}
+	if len(client.evals) != 0 {
+		t.Fatalf("eval calls = %d, want no Redis I/O", len(client.evals))
+	}
+}
+
 func TestRedisAdapterLockRecordRejectsUnknownScriptResult(t *testing.T) {
 	client := &recordingRedisStringClient{evalResult: "unexpected", hasResult: true}
 	adapter := mustRedisAdapter(t, client)

@@ -1104,6 +1104,10 @@ t6  新 worker 重新读取 Redis，Replace Mongo(during-worker)
 
 `Complete` 表示旧处理周期成功，follow-up 进入新的尝试周期，下一次 `Attempts` 从 1 开始。`Retry` 表示当前存储故障仍未解除，会采用最新 payload、清除单独的 pending 标记，并沿当前次数和退避时间继续重试。lease 超时恢复同样清除 pending 标记，立即以最新 payload 恢复当前任务，避免同一新写入被执行两次。
 
+lease 的 Redis score 使用毫秒时间戳，因此显式 `LeaseTimeout` 必须至少为 `1ms`。亚毫秒值若直接截断，
+可能让新 lease 在创建时已经到期并被另一 worker 并发重领；标准 server 在启动校验阶段拒绝，底层 backend
+也在任何脚本调用前保留同一错误防线。
+
 claim 必须先检查本批所有 `due` member 都存在对应 `payload`，随后才能批量写入 `busy/token/attempts`。缺少 payload 属于队列状态损坏：Lua 返回显式错误信封，Go adapter 返回错误，且整批状态保持不变。不能先租出部分正常任务再报错，因为调用方拿不到已经创建的 lease；也不能删除损坏 member 后继续，否则会把待持久化记录静默丢弃。
 
 Redis backend 会轮询多个 bucket，而不同 hash tag 之间不能组成一次原子操作。因此后续 bucket 失败时，`ClaimDue` 同时返回之前 bucket 已成功解析的 leases 和 error。Scheduler 必须像处理 `io.Reader` 的 `n > 0, err != nil` 一样，先逐条调用 handler 并执行 `Complete/Retry`，再向运行循环报告聚合错误。某一条 lease 的 `Complete/Retry` 失败时也继续处理本批剩余 lease；错误结果附带任务 Type、ID、Action，并使用 `errors.Join` 保留所有原始原因。这样不会为了隐藏部分结果额外执行不可靠的 Redis 回滚，也不会让已领取任务只能等待 lease 超时。
@@ -1131,6 +1135,9 @@ Redis backend 会轮询多个 bucket，而不同 hash tag 之间不能组成一�
 ```
 
 二次读取避免两个实例同时 miss 时，较晚返回的旧 Mongo 快照覆盖已经回填的新 Redis 数据。
+
+RecordLock 以 Redis `PX` 保存租约，运行时只接受至少 `1ms` 的 TTL。Go 的 `time.Duration`
+可以表达纳秒，但 Redis 入口使用毫秒整数；边界必须先拒绝会截断为 `0` 的亚毫秒值，不能依赖 Redis 命令错误兜底。
 
 批量读取先批量查询 Redis，再批量取得 Mongo 候选。每条 miss 在自己的 RecordLock 内二次读 Redis；锁内已命中的记录丢弃旧 Mongo 候选，仍未命中才回填。这保证正确性优先，同时保留 Mongo 批量 I/O。
 

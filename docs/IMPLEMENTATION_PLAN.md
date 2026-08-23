@@ -103,6 +103,7 @@
 - Redis 整文档替换在文档只包含 subKey 或为空时仍写入 main `{}`，保持 main key 作为热记录存在标记；不能因字段拆分形成只有 subKey、没有根记录的状态。
 - Redis 局部 patch 只会创建缺失的 JSON object 父节点；已有 `null` 或标量父节点返回 `storage.ErrPathTypeMismatch`，不做静默类型修复。Lua 使用 cjson array metatable 保留空数组的 `[]` 语义。对已有数组，仅允许生成 Store 用稳定整数 index 进入并更新既有元素的子字段；不允许 Lua 扩容、插入、删除或修复数组。`InsertAt`、`Append`、`RemoveAt` 等长度变化仍由 Store 降级为字段级 `OpReplace` 覆盖。
 - `delaySaveTime` 表示 Redis 热数据变更后多久回写一次 Mongo；`delayDelTime` 表示 Redis 热数据 TTL 和自动续期时间，不表示 Mongo 删除延迟。
+- Redis `PX` 和延迟队列 score 的时间边界统一使用毫秒精度：记录锁 TTL、msgq 会话 TTL 与延迟任务显式 lease 必须至少为 `1ms`。亚毫秒值必须在外部 I/O 前返回错误；标准 server 配置还要在启动校验期 fast-fail，不能把截断后的 `0` 交给 Redis，也不能创建立即过期的任务 lease。
 - Fusion 延迟任务队列只保存记录定位信息；到期后读取 Redis 当前最新热数据，整文档 replace 到 Mongo。队列不保存中间态业务对象或本轮字段 diff。Mongo 回写失败且 Redis 可用时，Scheduler 使用基于 Redis 持久化 `Attempts` 的指数退避：初始延迟、乘数、最大延迟和有界 jitter 计算出的 `nextDue` 写回 Redis ZSet；达到最大延迟后持续以带 jitter 的最大周期重试，不限制次数或丢弃任务。若 Redis 不可用而无法写回重试时间，任务保持 busy lease，Redis 恢复并在 lease 到期后重新领取；运行时只返回 error，不 panic 或静默成功。
 - 从 Mongo 回填 Redis 必须具备 `delayDelTime > 0` 的热数据 TTL；并发 miss 回填要通过 Redis 锁和二次读取避免旧 Mongo 快照覆盖新 Redis 热数据。
 - Redis `<mainKey>@v` 是热数据生命周期版本键，只用于 Redis 删除/过期窗口并发保护，不是业务字段，也不是 Mongo 字段；版本键和 main/subKey 必须使用同一 hash tag，并在每次热写时使用同一有效 TTL 续期或同步转为持久化。版本值由 Redis `INCR` 生成，读取、条件删除和 Lua 返回值只接受正整数；缺失或非数字版本必须返回错误，不能退化为无条件删除。

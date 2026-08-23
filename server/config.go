@@ -128,6 +128,9 @@ func (config RuntimeConfig) validate() error {
 	if config.DelayTask.Buckets < 0 {
 		return fmt.Errorf("server: delay task buckets must be greater than or equal to 0")
 	}
+	if config.DelayTask.Lease < 0 || config.DelayTask.Lease > 0 && config.DelayTask.Lease < time.Millisecond {
+		return fmt.Errorf("server: delay task lease must be zero or at least 1ms")
+	}
 	if config.Scheduler.BatchSize < 0 {
 		return fmt.Errorf("server: scheduler batch size must be greater than or equal to 0")
 	}

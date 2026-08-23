@@ -16,7 +16,10 @@ import (
 	"github.com/ngnl47/tx/storage/task"
 )
 
-var ErrClientNotConfigured = errors.New("redis task: client is not configured")
+var (
+	ErrClientNotConfigured = errors.New("redis task: client is not configured")
+	ErrInvalidOptions      = errors.New("redis task: invalid options")
+)
 
 type ScriptClient interface {
 	Eval(context.Context, string, []string, ...any) (string, error)
@@ -33,6 +36,7 @@ type Backend struct {
 	prefix       string
 	bucketCount  int
 	leaseTimeout time.Duration
+	optionsErr   error
 	seq          atomic.Uint64
 	claimCursor  atomic.Uint64
 }
@@ -47,14 +51,18 @@ func NewBackend(client ScriptClient, options Options) *Backend {
 		bucketCount = defaultBucketCount
 	}
 	leaseTimeout := options.LeaseTimeout
-	if leaseTimeout <= 0 {
+	var optionsErr error
+	if leaseTimeout == 0 {
 		leaseTimeout = defaultLeaseTimeout
+	} else if leaseTimeout < time.Millisecond {
+		optionsErr = fmt.Errorf("%w: lease timeout must be at least 1ms", ErrInvalidOptions)
 	}
 	return &Backend{
 		client:       client,
 		prefix:       prefix,
 		bucketCount:  bucketCount,
 		leaseTimeout: leaseTimeout,
+		optionsErr:   optionsErr,
 	}
 }
 
@@ -67,6 +75,9 @@ func (b *Backend) Enqueue(ctx context.Context, item task.DelayTask) error {
 	}
 	if b == nil || isNilScriptClient(b.client) {
 		return ErrClientNotConfigured
+	}
+	if b.optionsErr != nil {
+		return b.optionsErr
 	}
 	body, err := json.Marshal(item)
 	if err != nil {
@@ -88,6 +99,9 @@ func (b *Backend) ClaimDue(ctx context.Context, now time.Time, limit int) ([]tas
 	}
 	if b == nil || isNilScriptClient(b.client) {
 		return nil, ErrClientNotConfigured
+	}
+	if b.optionsErr != nil {
+		return nil, b.optionsErr
 	}
 	if limit <= 0 {
 		return nil, nil
@@ -144,6 +158,9 @@ func (b *Backend) Complete(ctx context.Context, lease task.DelayTaskLease) error
 	if b == nil || isNilScriptClient(b.client) {
 		return ErrClientNotConfigured
 	}
+	if b.optionsErr != nil {
+		return b.optionsErr
+	}
 	if err := task.ValidateDelayTaskLease(lease); err != nil {
 		return err
 	}
@@ -163,6 +180,9 @@ func (b *Backend) Retry(ctx context.Context, lease task.DelayTaskLease, next tim
 	}
 	if b == nil || isNilScriptClient(b.client) {
 		return ErrClientNotConfigured
+	}
+	if b.optionsErr != nil {
+		return b.optionsErr
 	}
 	if err := task.ValidateDelayTaskLease(lease); err != nil {
 		return err
