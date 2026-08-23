@@ -45,19 +45,6 @@ func (a *recordingApplier) ApplyChangesWithOptions(_ context.Context, spec meta.
 	return a.err
 }
 
-type recordingDeleteApplier struct {
-	calls int
-	spec  meta.TypeSpec
-	key   storage.RecordKey
-}
-
-func (a *recordingDeleteApplier) ApplyDelete(_ context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
-	a.calls++
-	a.spec = spec
-	a.key = key
-	return nil
-}
-
 type recordingDocumentLoader struct {
 	doc        map[string]any
 	exists     bool
@@ -172,7 +159,6 @@ func (l *recordingRecordLock) Unlock(context.Context) error {
 
 type recordingRedisStore struct {
 	recordingApplier
-	recordingDeleteApplier
 	recordingDocumentLoader
 }
 
@@ -319,11 +305,9 @@ func TestFusionStrategyValidatesCompleteRuntimeDependencies(t *testing.T) {
 	strategy := fusion.Strategy{
 		RedisApplier:  redis,
 		RedisLoader:   redis,
-		RedisDeleter:  redis,
 		RedisReplacer: &recordingDocumentReplacerWithOptions{},
 		RedisLocker:   &recordingRecordLocker{},
 		MongoLoader:   &recordingDocumentLoader{},
-		MongoDeleter:  &recordingDeleteApplier{},
 		MongoQueue:    &recordingQueue{},
 	}
 	validator, ok := any(strategy).(interface{ Validate() error })
@@ -332,6 +316,12 @@ func TestFusionStrategyValidatesCompleteRuntimeDependencies(t *testing.T) {
 	}
 	if err := validator.Validate(); err != nil {
 		t.Fatalf("Validate returned error: %v", err)
+	}
+}
+
+func TestFusionStrategyDoesNotExposePhysicalDelete(t *testing.T) {
+	if _, ok := any(fusion.Strategy{}).(storage.DeleteApplier); ok {
+		t.Fatal("fusion strategy implements storage.DeleteApplier, want physical delete unavailable")
 	}
 }
 
@@ -498,128 +488,6 @@ func TestFusionStrategyRejectsNilChangeSource(t *testing.T) {
 		if !errors.Is(err, change.ErrNilSource) {
 			t.Fatalf("ApplyChangesWithOptions(%T) error = %v, want ErrNilSource", source, err)
 		}
-	}
-}
-
-func TestFusionStrategyDeleteDoesNotUseDelayDeleteAsMongoQueueDelay(t *testing.T) {
-	queue := &recordingQueue{}
-	redisDelete := &recordingDeleteApplier{}
-	mongoDelete := &recordingDeleteApplier{}
-	strategy := fusion.Strategy{RedisDeleter: redisDelete, RedisLocker: &recordingRecordLocker{}, MongoDeleter: mongoDelete, MongoQueue: queue}
-	spec := meta.TypeSpec{
-		Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
-		Storage: meta.StorageSpec{
-			DelayDelete: meta.Duration{Duration: 24 * time.Hour},
-		},
-	}
-
-	if err := strategy.ApplyDelete(context.Background(), spec, storage.RecordKey{ID: int64(1001)}); err != nil {
-		t.Fatalf("ApplyDelete returned error: %v", err)
-	}
-	if redisDelete.calls != 1 {
-		t.Fatalf("redis delete calls = %d, want 1", redisDelete.calls)
-	}
-	if redisDelete.key.ID != int64(1001) {
-		t.Fatalf("redis delete key = %#v, want ID=1001", redisDelete.key)
-	}
-	if mongoDelete.calls != 1 {
-		t.Fatalf("mongo delete calls = %d, want 1", mongoDelete.calls)
-	}
-	if len(queue.ops) != 0 {
-		t.Fatalf("queued ops = %#v, want no Mongo delete queue from delayDelTime", queue.ops)
-	}
-}
-
-func TestFusionStrategyDeleteRejectsIncompleteDependenciesBeforeAnyDelete(t *testing.T) {
-	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
-	key := storage.RecordKey{ID: int64(1001)}
-
-	t.Run("missing redis deleter", func(t *testing.T) {
-		mongoDelete := &recordingDeleteApplier{}
-		strategy := fusion.Strategy{MongoDeleter: mongoDelete}
-
-		err := strategy.ApplyDelete(context.Background(), spec, key)
-		if !errors.Is(err, fusion.ErrStrategyDependenciesNotConfigured) {
-			t.Fatalf("ApplyDelete error = %v, want ErrStrategyDependenciesNotConfigured", err)
-		}
-		if mongoDelete.calls != 0 {
-			t.Fatalf("mongo delete calls = %d, want 0", mongoDelete.calls)
-		}
-	})
-
-	t.Run("missing mongo deleter", func(t *testing.T) {
-		redisDelete := &recordingDeleteApplier{}
-		strategy := fusion.Strategy{RedisDeleter: redisDelete}
-
-		err := strategy.ApplyDelete(context.Background(), spec, key)
-		if !errors.Is(err, fusion.ErrStrategyDependenciesNotConfigured) {
-			t.Fatalf("ApplyDelete error = %v, want ErrStrategyDependenciesNotConfigured", err)
-		}
-		if redisDelete.calls != 0 {
-			t.Fatalf("redis delete calls = %d, want 0", redisDelete.calls)
-		}
-	})
-
-	t.Run("missing redis record locker", func(t *testing.T) {
-		redisDelete := &recordingDeleteApplier{}
-		mongoDelete := &recordingDeleteApplier{}
-		strategy := fusion.Strategy{RedisDeleter: redisDelete, MongoDeleter: mongoDelete}
-
-		err := strategy.ApplyDelete(context.Background(), spec, key)
-		if !errors.Is(err, fusion.ErrStrategyDependenciesNotConfigured) {
-			t.Fatalf("ApplyDelete error = %v, want ErrStrategyDependenciesNotConfigured", err)
-		}
-		if redisDelete.calls != 0 || mongoDelete.calls != 0 {
-			t.Fatalf("redis/mongo delete calls = %d/%d, want 0/0", redisDelete.calls, mongoDelete.calls)
-		}
-	})
-}
-
-func TestFusionStrategyDeleteUsesExplicitMongoDeleter(t *testing.T) {
-	redisDelete := &recordingDeleteApplier{}
-	mongoDelete := &recordingDeleteApplier{}
-	locker := &recordingRecordLocker{}
-	strategy := fusion.Strategy{RedisDeleter: redisDelete, RedisLocker: locker, MongoDeleter: mongoDelete}
-	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}}}
-	key := storage.RecordKey{ID: int64(1001), ShardKey: int64(7)}
-
-	if err := strategy.ApplyDelete(context.Background(), spec, key); err != nil {
-		t.Fatalf("ApplyDelete returned error: %v", err)
-	}
-	if redisDelete.calls != 1 {
-		t.Fatalf("redis delete calls = %d, want 1", redisDelete.calls)
-	}
-	if mongoDelete.calls != 1 || mongoDelete.key != key {
-		t.Fatalf("mongo delete calls/key = %d/%#v, want explicit delete for %#v", mongoDelete.calls, mongoDelete.key, key)
-	}
-	if locker.calls != 1 {
-		t.Fatalf("redis lock calls = %d, want 1", locker.calls)
-	}
-}
-
-func TestFusionStrategyDeleteUsesRedisApplierWhenDeleterIsUnset(t *testing.T) {
-	redis := &recordingRedisStore{}
-	mongoDelete := &recordingDeleteApplier{}
-	strategy := fusion.Strategy{RedisApplier: redis, RedisLocker: &recordingRecordLocker{}, MongoDeleter: mongoDelete}
-	spec := meta.TypeSpec{
-		Type: meta.Type{Ref: meta.TypeRef{Name: "GDRole"}},
-		Storage: meta.StorageSpec{
-			DelayDelete: meta.Duration{Duration: 24 * time.Hour},
-		},
-	}
-	key := storage.RecordKey{ID: int64(1001), ShardKey: int64(7)}
-
-	if err := strategy.ApplyDelete(context.Background(), spec, key); err != nil {
-		t.Fatalf("ApplyDelete returned error: %v", err)
-	}
-	if redis.recordingDeleteApplier.calls != 1 {
-		t.Fatalf("redis delete calls = %d, want 1", redis.recordingDeleteApplier.calls)
-	}
-	if redis.recordingDeleteApplier.key.ID != key.ID {
-		t.Fatalf("redis delete key = %#v, want %#v", redis.recordingDeleteApplier.key, key)
-	}
-	if mongoDelete.calls != 1 || mongoDelete.key != key {
-		t.Fatalf("mongo delete calls/key = %d/%#v, want explicit delete for %#v", mongoDelete.calls, mongoDelete.key, key)
 	}
 }
 

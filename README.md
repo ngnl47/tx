@@ -2941,7 +2941,7 @@ Mongo adapter 当前支持：
 - `LoadDocument`：按记录键读取单条文档，可带 projection 字段。
 - `LoadDocuments`：按记录键批量读取并保持返回顺序。
 - `ReplaceDocument`：整文档替换，供 Fusion 延迟保存回写使用。
-- `ApplyDelete`：显式物理删除接口，由业务代码决定是否调用。
+- `ApplyDelete`：Mongo-only adapter 的显式物理删除能力；Fusion 不组合该能力。
 - `mongo.Cluster`：按 `routeType` 和 `storage.RecordKey.ShardKey` 路由到具体 Mongo adapter；批量读取会按 shard 分组并按输入顺序还原结果。
 
 项目装配时应传入同时实现所需读写能力的官方 driver 薄适配，而不是直接传任意对象：
@@ -3297,12 +3297,12 @@ if err := db.Save(role); err != nil {
 
 第一次 lease 完成后，队列仍会产生一次后续回写；后续 worker 重新读取 Redis 当前热文档，最终让 Mongo 收敛到 `during-worker`。业务 API 不需要感知 lease 或手工重排任务。
 
-Fusion delayed task queue 接受保存 action 和 Redis 热数据延迟删除 action；其他未知 action 会返回错误。入队任务与 `StorageTaskHandler` 消费入口都会统一校验 `Type`、`ID`、`Action`：空白类型/动作、nil ID 与空字符串 ID 都返回 `task.ErrInvalidDelayTask`，防止手工写入或遗留异常任务落到存储层。`Complete`、`Retry` 额外要求有效的 lease token 和正数尝试次数；格式完整但已过期的 lease 仍按幂等 no-op 处理。任务类型优先来自 `DelayedOperation.Type`，为空时使用 `DelayedOperation.Key.TypeName`。Fusion 延迟保存按类型、记录 ID、route/shard key 和 action 生成一条合并任务，不暴露额外 suffix，避免同一记录产生多条重复保存任务。延迟保存任务不携带业务对象或字段变更日志，回写时重新读取 Redis 当前热数据。显式删除仍走显式删除接口，不进入延迟队列。Redis claim 发现损坏或不完整的 payload 同样返回错误，不会把它当成可执行任务；如果 `due` 中存在任务但对应 payload 缺失，整批 claim 会在创建任何 lease 前失败，并保留原 due 状态供运维修复，绝不会静默删除持久化任务。
+Fusion delayed task queue 接受保存 action 和 Redis 热数据延迟淘汰 action；其他未知 action 会返回错误。入队任务与 `StorageTaskHandler` 消费入口都会统一校验 `Type`、`ID`、`Action`：空白类型/动作、nil ID 与空字符串 ID 都返回 `task.ErrInvalidDelayTask`，防止手工写入或遗留异常任务落到存储层。`Complete`、`Retry` 额外要求有效的 lease token 和正数尝试次数；格式完整但已过期的 lease 仍按幂等 no-op 处理。任务类型优先来自 `DelayedOperation.Type`，为空时使用 `DelayedOperation.Key.TypeName`。Fusion 延迟保存按类型、记录 ID、route/shard key 和 action 生成一条合并任务，不暴露额外 suffix，避免同一记录产生多条重复保存任务。延迟保存任务不携带业务对象或字段变更日志，回写时重新读取 Redis 当前热数据。`delete` action 只负责回写当前热文档并淘汰 Redis 数据，不表示删除 Mongo 根记录。Redis claim 发现损坏或不完整的 payload 同样返回错误，不会把它当成可执行任务；如果 `due` 中存在任务但对应 payload 缺失，整批 claim 会在创建任何 lease 前失败，并保留原 due 状态供运维修复，绝不会静默删除持久化任务。
 
 数值定位在 Redis 任务 payload 中精确往返。比如业务使用
 `uint64(9223372036854775809)` 作为记录 ID 时，claim 后仍得到同一个 `uint64`；框架不会先转成
 `float64` 再舍入，否则 `Complete` 会计算出另一个幂等任务键并让原 lease 无法正常结算。
-Fusion 保存路径要求 Redis change applier、Mongo document loader 与延迟队列都已装配；缺少其中任一项时，非空变更会在 Redis I/O 前返回错误。延迟任务执行还要求 handler、Redis 文档读取、Mongo replace 和删除任务所需的 revision/lock 组件完整可用。`Strategy.Validate()` 会汇总检查 Redis change/document/load-lock/delete、Mongo load/delete 和延迟队列；项目启动阶段必须在 Redis/Mongo 探活后调用它。`txgame/server` 的 `NewStorage` 已执行这两步，任一依赖或连接不可达即启动失败。`Scheduler.Start` 也返回 `error`，项目启动代码必须处理，不能在 worker 未运行时继续对外服务：
+Fusion 保存路径要求 Redis change applier、Mongo document loader 与延迟队列都已装配；缺少其中任一项时，非空变更会在 Redis I/O 前返回错误。延迟任务执行还要求 handler、Redis 文档读取、Mongo replace 和 Redis 热数据淘汰所需的 revision/lock 组件完整可用。`Strategy.Validate()` 会汇总检查 Redis change applier、document loader、document replacer、record locker、Mongo document loader 和延迟队列；项目启动阶段必须在 Redis/Mongo 探活后调用它。`txgame/server` 的 `NewStorage` 已执行这两步，任一依赖或连接不可达即启动失败。`Scheduler.Start` 也返回 `error`，项目启动代码必须处理，不能在 worker 未运行时继续对外服务：
 
 ```go
 if err := scheduler.Start(appContext); err != nil {
@@ -3345,7 +3345,7 @@ role, exists, err := data.FindGDRoleByID(ctx, 1001)
 生产环境的延迟回写 handler 只负责存储同步。由于任务可能因为网络抖动、进程重启或租约恢复被再次执行，Mongo 回写路径应按“同一记录的当前 Redis 热文档 replace 到 Mongo”设计为存储幂等操作。比如同一条 `GDRole` save 任务执行两次，结果应只是 Mongo 中 `roleId=1001` 的文档被相同或更新后的热数据覆盖两次；队列中不保存 `GDRole` 的中间态快照，也不按每次字段变更生成事件日志。
 
 Redis 热数据延迟删除任务也是存储同步的一部分：handler 执行时读取当前 `@v`，再读取 Redis 热文档并回写 Mongo，最后带着读取到的 revision 删除 Redis。如果回写 Mongo 期间这条记录又发生新写入，`@v` 会变化，Lua 删除会返回当前数字版本，handler 会重新排一条延迟删除任务。`@v` 由 Redis `INCR` 生成，读取、条件删除和 Lua 返回只接受正整数；缺失或非数字结果会返回错误并保留任务，绝不会退化为无条件删除。
-handler 会在这个流程外层持有同一条记录的 Redis 锁，避免多个服务实例同时执行同一条记录的回写/删除窗口。
+handler 会在这个流程外层持有同一条记录的 Redis 锁，避免多个服务实例同时执行同一条记录的回写或热数据淘汰窗口。
 记录锁同样使用 Redis `PX`，高级调用方传入的 `storage.LockOptions.TTL` 必须至少为 `1ms`；
 亚毫秒值会在任何 Redis I/O 前返回错误。
 
@@ -3355,27 +3355,25 @@ handler 会在这个流程外层持有同一条记录的 Redis 锁，避免多�
 
 部分字段读取的优化主要发生在 Redis 热数据层：运行时按 main/subKey key 粒度减少 Redis 读取，随后按字段过滤返回文档；Redis 和 Mongo 中保存的仍是全量数据。只请求 subKey 字段时，Redis 可以只读取对应 subKey 文档，不要求主文档同时命中。
 
-Fusion 显式删除不会进入延迟队列。删除路径会先确认 Redis 与 Mongo 删除器均已装配；缺少任一组件时返回 `fusion.ErrStrategyDependenciesNotConfigured`，且不会删除任何一侧。检查通过后先删除 Redis 热数据，再立即删除 Mongo 文档；如果只绕过 Fusion 删除 Mongo，而 Redis 热数据和延迟保存任务仍存在，后续保存任务可能按 Redis 当前数据重新写回 Mongo。
+Fusion 根记录禁止物理删除。Redis 与 Mongo 无法在一次原子事务中共同删除同一条记录；任一侧先成功都可能让另一侧的旧数据在回填或延迟保存时重新出现。生成代码因此不会为 `mode:"fusion"` 类型暴露整记录删除入口，业务应使用状态字段逻辑删除。
 
 ### Fusion 初始化示例
 
 Fusion 需要三类组件：
 
 - Redis：同步热数据读写。
-- Mongo：未命中回源、延迟回写和显式删除。
+- Mongo：未命中回源和延迟回写。
 - DelayQueue：把“这条记录稍后保存到 Mongo”写入延迟任务队列。
 
 示例：
 
 ```go
 fusionStore := fusion.Strategy{
-	Redis:         redisCluster,
+	RedisApplier:  redisCluster,
 	RedisLoader:   redisCluster,
-	RedisDeleter:  redisCluster,
 	RedisReplacer: redisCluster,
 	RedisLocker:   redisCluster,
 	MongoLoader:   mongoCluster,
-	MongoDeleter:  mongoCluster,
 	MongoQueue:    delayQueue,
 }
 ```
@@ -3501,7 +3499,7 @@ doc, exists, err := fusionStore.LoadDocumentWithOptions(
 
 `delayDelTime` 表示 Redis 热数据 TTL，用于释放长时间不活跃记录的热备数据；写入后会续期。显式传入 `ApplyOptions.TTL` 时，以显式值为准。Fusion 默认 Mongo 回源并回填 Redis 时必须配置该值。
 
-`delayDelTime` 不代表 Mongo 删除延迟，也不会触发 Mongo 删除。业务是否执行 Mongo 物理删除，仍由显式 delete 接口和业务代码决定。
+`delayDelTime` 不代表 Mongo 删除延迟，也不会触发 Mongo 删除。Fusion 根记录禁止物理删除；该参数只控制 Redis 热数据生命周期。
 
 常见配置：
 
@@ -3519,21 +3517,6 @@ doc, exists, err := fusionStore.LoadDocumentWithOptions(
 如果玩家持续在线且频繁修改，Redis 热数据会不断续期；Mongo 回写按延迟任务节奏合并。玩家长时间不活跃后，Redis key 到期释放内存；
 再次加载时从 Mongo 读取完整数据并重新缓存到 Redis。
 
-显式删除：
-
-```go
-err := role.Store().ApplyDelete(ctx, fusionStore)
-```
-
-Fusion 显式删除会：
-
-1. 先取得该记录的 Redis 锁；延迟保存和延迟删除任务也使用同一把锁。
-2. 删除 Redis 主文档、subKey 文档和版本键。
-3. 立即删除 Mongo 文档。
-4. 不写入延迟保存队列。
-
-例如某个延迟保存任务已经到期时，显式删除会与它串行：保存先取得锁时，删除会在保存完成后删除 Mongo；删除先取得锁时，保存任务稍后读取 Redis 会发现记录不存在并跳过回写。因此不会出现“删除完成后再被旧热数据重新写回 Mongo”的交错。
-
 Redis 热数据还维护一个生命周期版本键 `<mainKey>@v`，例如 `role:{1001}@v`。这个键不是业务字段，也不会写入 Mongo；它只用于 Redis 热数据过期/删除窗口的并发保护。每次热写都会递增它，并使用与 main/subKey 相同的有效 TTL；热数据持久化时它也会持久化，因此不会在热数据仍有效时提前失去删除窗口保护。运行时的带版本删除原语会在 Lua 中先比对 `@v`，只有版本一致才删除 main/subKey/version key；如果版本已变化，说明这条热数据发生过新写入，删除方应跳过本次删除并稍后重试。所有附属 key 都从 mainKey 派生：
 
 | Redis key | 示例 | 用途 |
@@ -3545,7 +3528,7 @@ Redis 热数据还维护一个生命周期版本键 `<mainKey>@v`，例如 `role
 
 这些 key 共享 `{1001}` 这个 hash tag；当 `routeBy != idField` 时也会共享 routeBy 生成的 hash tag，例如 `arena_record:{470001}:90001`、`arena_record:{470001}:90001@v` 和 `arena_record:{470001}:90001@lock`。
 
-如果业务希望“逻辑删除”，推荐在业务数据里定义字段：
+Fusion 业务删除必须在数据里定义状态字段：
 
 ```go
 role.SetDeleted(true)
@@ -3553,6 +3536,15 @@ err := db.Save(role)
 ```
 
 框架不会替业务决定逻辑删除字段，也不会把 `delayDelTime` 解释成 Mongo 删除时间。
+
+集合元素删除仍然属于普通文档变更，例如：
+
+```go
+role.ItemsStore().Delete(1001)
+err := db.Save(role)
+```
+
+这会删除 `GDRole.Items[1001]` 并保存根记录，不会删除整条 `GDRole`。
 
 ## 测试
 

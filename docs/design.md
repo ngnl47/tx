@@ -942,11 +942,13 @@ RecordKey 不等于事务 LockKey：
 - `ChangeApplier`：应用当前规范化变更。
 - `DocumentLoader` / `BatchDocumentLoader`：读取公共文档。
 - `DocumentReplacer`：完整替换文档。
-- `DeleteApplier`：显式删除。
+- `DeleteApplier`：Redis-only、Mongo-only adapter 的整记录删除能力。
 - `RecordLocker`：记录级互斥。
 - `RecordRevisionReader` / `RevisionDeleteApplier`：版本保护删除。
 
-Redis、Mongo 和 Fusion 通过组合这些接口表达能力。公共 API 可以保持 `storage.Save`，而不是暴露 `ApplyInsert/ApplyUpdate/ApplyReplace` 组合给业务。
+Redis 与 Mongo adapter 通过组合这些接口表达单后端能力；Fusion 组合读、写、回填和延迟回写能力，但不实现 `DeleteApplier`。公共 API 可以保持 `storage.Save`，而不是暴露 `ApplyInsert/ApplyUpdate/ApplyReplace` 组合给业务。
+
+Fusion 根记录代表玩家、军团等长期身份数据。Redis 与 Mongo 无法在一次原子事务中共同物理删除；任一侧成功、另一侧失败，都可能导致旧 Mongo 回填 Redis、旧 Redis 延迟回写 Mongo，或调用成功但数据丢失。因此框架在生成期和类型系统中禁止 Fusion 根记录物理删除，业务使用显式状态字段完成逻辑删除。该限制只作用于整条根记录，不影响 `ItemsStore().Delete(key)` 这类集合元素变更。
 
 ### 保存成功边界
 

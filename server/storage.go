@@ -99,11 +99,9 @@ func newStorage(ctx context.Context, cfg StorageConfig, opts storageOptions, typ
 	store.fusion = txfusion.Strategy{
 		RedisApplier:  redisCluster,
 		RedisLoader:   redisCluster,
-		RedisDeleter:  redisCluster,
 		RedisReplacer: redisCluster,
 		RedisLocker:   redisCluster,
 		MongoLoader:   mongoCluster,
-		MongoDeleter:  mongoCluster,
 		MongoQueue:    delayQueue,
 	}
 	if err := store.fusion.Validate(); err != nil {

@@ -28,12 +28,10 @@ type LoadOptions struct {
 // delaySave 配置之后执行。
 type Strategy struct {
 	RedisApplier  storage.ChangeApplier
-	RedisDeleter  storage.DeleteApplier
 	RedisLoader   storage.DocumentLoader
 	RedisReplacer storage.DocumentReplacerWithOptions
 	RedisLocker   storage.RecordLocker
 	MongoLoader   storage.DocumentLoader
-	MongoDeleter  storage.DeleteApplier
 	MongoQueue    DelayQueue
 	LoadLockTTL   time.Duration
 	LoadLockWait  time.Duration
@@ -49,9 +47,6 @@ func (s Strategy) Validate() error {
 	if isNilFusionDependency(s.redisLoader()) {
 		missing = append(missing, "redis document loader")
 	}
-	if isNilFusionDependency(s.redisDeleter()) {
-		missing = append(missing, "redis deleter")
-	}
 	if isNilFusionDependency(s.redisReplacerWithOptions()) {
 		missing = append(missing, "redis document replacer")
 	}
@@ -60,9 +55,6 @@ func (s Strategy) Validate() error {
 	}
 	if isNilFusionDependency(s.MongoLoader) {
 		missing = append(missing, "mongo document loader")
-	}
-	if isNilFusionDependency(s.MongoDeleter) {
-		missing = append(missing, "mongo deleter")
 	}
 	if isNilFusionDependency(s.MongoQueue) {
 		missing = append(missing, "mongo delayed queue")
@@ -91,33 +83,6 @@ func (s Strategy) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 		return err
 	}
 	return s.enqueueDelayedWrites(ctx, spec, key)
-}
-
-// ApplyDelete 应用一次对象删除。
-//
-// 删除要求 Redis 与 Mongo 删除器均已装配。Redis 会先删除热数据，随后 Mongo
-// 立即删除持久化数据。storage.delayDelTime 只表示 Redis 热数据 TTL，不参与 Mongo
-// 删除延迟。
-func (s Strategy) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) (err error) {
-	if err := storage.ValidateRecordKey(spec, key); err != nil {
-		return err
-	}
-	redisDeleter, mongoDeleter, locker, err := s.deleteDependencies()
-	if err != nil {
-		return err
-	}
-	lock, err := locker.LockRecord(ctx, spec, key, storage.LockOptions{TTL: s.loadLockTTL(), Wait: s.loadLockWait()})
-	if err != nil {
-		return err
-	}
-	if isNilFusionDependency(lock) {
-		return fmt.Errorf("%w: redis delete received nil record lock", ErrStrategyDependenciesNotConfigured)
-	}
-	defer func() { releaseRecordLock(ctx, lock, &err) }()
-	if err := redisDeleter.ApplyDelete(ctx, spec, key); err != nil {
-		return err
-	}
-	return mongoDeleter.ApplyDelete(ctx, spec, key)
 }
 
 // LoadDocument 优先从 Redis 读取，未命中时回源 Mongo。
@@ -227,21 +192,6 @@ func (s Strategy) writeDependencies() error {
 		return fmt.Errorf("%w: mongo document loader", ErrStrategyDependenciesNotConfigured)
 	}
 	return nil
-}
-
-func (s Strategy) deleteDependencies() (storage.DeleteApplier, storage.DeleteApplier, storage.RecordLocker, error) {
-	redisDeleter := s.redisDeleter()
-	if isNilFusionDependency(redisDeleter) {
-		return nil, nil, nil, fmt.Errorf("%w: redis deleter", ErrStrategyDependenciesNotConfigured)
-	}
-	if isNilFusionDependency(s.MongoDeleter) {
-		return nil, nil, nil, fmt.Errorf("%w: mongo deleter", ErrStrategyDependenciesNotConfigured)
-	}
-	locker := s.redisLocker()
-	if isNilFusionDependency(locker) {
-		return nil, nil, nil, fmt.Errorf("%w: redis record locker", ErrStrategyDependenciesNotConfigured)
-	}
-	return redisDeleter, s.MongoDeleter, locker, nil
 }
 
 func isNilFusionDependency(value any) bool {
@@ -490,17 +440,6 @@ func (s Strategy) requireRedisBackfillDependencies() error {
 		return fmt.Errorf("%w: redis record locker", ErrStrategyDependenciesNotConfigured)
 	}
 	return nil
-}
-
-func (s Strategy) redisDeleter() storage.DeleteApplier {
-	if !isNilFusionDependency(s.RedisDeleter) {
-		return s.RedisDeleter
-	}
-	deleter, _ := s.RedisApplier.(storage.DeleteApplier)
-	if isNilFusionDependency(deleter) {
-		return nil
-	}
-	return deleter
 }
 
 func (s Strategy) enqueueDelayedWrites(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
