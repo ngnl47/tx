@@ -65,7 +65,8 @@ func (s Strategy) Validate() error {
 	return nil
 }
 
-// ApplyChangesWithOptions 应用一次规范化变更，并把写入选项限定传递给 Redis。
+// ApplyChangesWithOptions 应用一次规范化变更。Fusion 会把 Redis 热文档转为
+// 持久状态，直到延迟任务完成 Mongo 回写和版本保护淘汰。
 func (s Strategy) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver, options storage.ApplyOptions) error {
 	if err := change.ValidateSource(source); err != nil {
 		return err
@@ -79,6 +80,9 @@ func (s Strategy) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 	if err := s.writeDependencies(); err != nil {
 		return err
 	}
+	// Fusion 的脏热数据必须保留到 Mongo 可靠回写并完成版本删除，有限 TTL
+	// 只能用于尚未承载本地变更的回源缓存。
+	options.TTLSeconds = -1
 	if err := s.RedisApplier.ApplyChangesWithOptions(ctx, spec, key, source, resolver, values, options); err != nil {
 		return err
 	}

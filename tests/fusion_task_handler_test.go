@@ -144,7 +144,7 @@ func TestFusionDelayTaskHandlerRejectsSaveWithoutRecordLockBeforeRead(t *testing
 	}
 }
 
-func TestFusionDelayTaskHandlerSkipsMissingRedisDocument(t *testing.T) {
+func TestFusionDelayTaskHandlerRejectsMissingRedisDocument(t *testing.T) {
 	registry := meta.NewRegistry()
 	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Package: "data", Name: "GDRole"}}}
 	if err := registry.RegisterType(spec); err != nil {
@@ -159,11 +159,39 @@ func TestFusionDelayTaskHandlerSkipsMissingRedisDocument(t *testing.T) {
 		ID:     int64(1001),
 		Action: string(fusion.DelayedSave),
 	})
-	if err != nil {
-		t.Fatalf("HandleDelayTask returned error: %v", err)
+	if !errors.Is(err, storage.ErrNotExists) {
+		t.Fatalf("HandleDelayTask error = %v, want storage.ErrNotExists", err)
 	}
 	if mongo.calls != 0 {
 		t.Fatalf("mongo calls = %d, want 0", mongo.calls)
+	}
+}
+
+func TestFusionDelayTaskHandlerRejectsMissingRedisDocumentDuringDelete(t *testing.T) {
+	registry := meta.NewRegistry()
+	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Package: "data", Name: "GDRole"}}}
+	if err := registry.RegisterType(spec); err != nil {
+		t.Fatalf("RegisterType returned error: %v", err)
+	}
+	redis := &recordingDocumentLoader{}
+	mongo := &recordingDocumentReplacer{}
+	deleter := &recordingRevisionDeleteApplier{deleted: true}
+	handler := fusion.NewDelayTaskHandlerWithOptions(registry, redis, mongo, fusion.DelayTaskHandlerOptions{
+		RedisRevisionReader: &recordingRevisionReader{revision: "5"},
+		RedisRevisionDelete: deleter,
+		RedisLocker:         &recordingRecordLocker{},
+	})
+
+	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
+		Type:   "data.GDRole",
+		ID:     int64(1001),
+		Action: string(fusion.DelayedDelete),
+	})
+	if !errors.Is(err, storage.ErrNotExists) {
+		t.Fatalf("HandleDelayTask error = %v, want storage.ErrNotExists", err)
+	}
+	if mongo.calls != 0 || deleter.calls != 0 {
+		t.Fatalf("mongo/delete calls = %d/%d, want 0/0", mongo.calls, deleter.calls)
 	}
 }
 

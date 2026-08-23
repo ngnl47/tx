@@ -200,6 +200,36 @@ func TestFusionStrategyEnqueuesMongoSave(t *testing.T) {
 	}
 }
 
+func TestFusionStrategyPersistsDirtyRedisDocumentUntilDelayedDelete(t *testing.T) {
+	queue := &recordingQueue{}
+	redis := &recordingApplier{}
+	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue}
+	spec := meta.TypeSpec{
+		Type: fusionRoleType(),
+		Storage: meta.StorageSpec{
+			DelaySave:   meta.Duration{Duration: 10 * time.Minute},
+			DelayDelete: meta.Duration{Duration: 24 * time.Hour},
+		},
+	}
+	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
+
+	err := strategy.ApplyChangesWithOptions(
+		context.Background(),
+		spec,
+		storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)},
+		changes,
+		testFieldNameResolver{},
+		testValueResolver{},
+		storage.ApplyOptions{TTLSeconds: 86400},
+	)
+	if err != nil {
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
+	}
+	if redis.options.TTLSeconds != -1 {
+		t.Fatalf("Redis TTLSeconds = %d, want -1 while dirty data waits for Mongo", redis.options.TTLSeconds)
+	}
+}
+
 func TestFusionStrategyReturnsRedisTransportErrorWithoutEnqueue(t *testing.T) {
 	transportErr := errors.New("redis unavailable")
 	queue := &recordingQueue{}
@@ -439,7 +469,7 @@ func TestFusionStrategyQueueFailureKeepsStoreChangesForRetry(t *testing.T) {
 	}
 }
 
-func TestFusionStrategyPassesOptionsOnlyToRedis(t *testing.T) {
+func TestFusionStrategyScopesWriteOptionsToRedisAndPersistsDirtyDocument(t *testing.T) {
 	queue := &recordingQueue{}
 	redis := &recordingApplier{}
 	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue}
@@ -457,8 +487,8 @@ func TestFusionStrategyPassesOptionsOnlyToRedis(t *testing.T) {
 	if redis.optionRuns != 1 {
 		t.Fatalf("redis option calls = %d, want 1", redis.optionRuns)
 	}
-	if redis.options.TTLSeconds != 600 || !redis.options.Upsert {
-		t.Fatalf("redis options = %#v, want TTL 600 and upsert", redis.options)
+	if redis.options.TTLSeconds != -1 || !redis.options.Upsert {
+		t.Fatalf("redis options = %#v, want persistent TTL and upsert", redis.options)
 	}
 	if redis.key != key {
 		t.Fatalf("redis key = %#v, want %#v", redis.key, key)

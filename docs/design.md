@@ -1063,7 +1063,7 @@ Fusion 不是双写事务，也不是业务事件队列。
 业务 Store 变更状态
       |
       v
-Redis 同步 patch + @v 递增
+Redis 同步 patch + @v 递增 + 脏热文档 PERSIST
       |
       v
 Redis 延迟队列登记记录定位
@@ -1073,7 +1073,12 @@ Redis 延迟队列登记记录定位
 到期 worker
       |
       v
-claim task -> 读取 Redis 当前完整文档 -> Replace Mongo -> complete
+claim save task -> 读取 Redis 当前完整文档 -> Replace Mongo -> complete
+
+到达热数据淘汰时间
+      |
+      v
+读取 @v 和当前文档 -> Replace Mongo -> revision 条件删除 Redis
 ```
 
 延迟任务不保存 GD 快照，也不保存每次变更。十分钟内修改同一角色多次，任务到期只读取一次 Redis 最终状态。
@@ -1154,7 +1159,9 @@ RecordLock 以 Redis `PX` 保存租约，运行时只接受至少 `1ms` 的 TTL�
 
 ### 热数据删除与 revision
 
-`delayDelTime` 是 Redis 热数据 TTL，不是 Mongo 删除时间。延迟热数据删除必须：
+`delayDelTime` 是热数据的目标保留时间，不是 Mongo 删除时间。Mongo 回源产生、尚未承载业务变更的纯净缓存可直接使用它作为 TTL；Fusion 业务写入后的脏热数据必须先转为持久状态，避免 Mongo 故障或 worker 停止期间由 TTL 提前淘汰。
+
+延迟热数据删除必须：
 
 1. 读取当前 `@v`。
 2. 读取 Redis 当前热文档并回写 Mongo。
@@ -1162,7 +1169,7 @@ RecordLock 以 Redis `PX` 保存租约，运行时只接受至少 `1ms` 的 TTL�
 4. revision 未变化才删除 main/subKey/version。
 5. revision 已变化说明有新写入，保留热数据并重新排队。
 
-显式业务删除则在同一 RecordLock 下立即删除 Redis 和 Mongo，并与延迟保存串行，避免旧热数据重新写回 Mongo。
+Mongo 或延迟队列故障时，脏热数据允许超过 `delayDelTime` 继续占用 Redis；恢复后任务再完成回写与淘汰。保存或删除任务读取不到对应 Redis 文档时返回 `storage.ErrNotExists` 并保留任务，不能静默视为成功。
 
 ### 健康闸门
 

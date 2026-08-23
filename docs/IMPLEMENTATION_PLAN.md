@@ -102,11 +102,11 @@
 - Fusion 是 Redis 热数据加 Mongo 冷数据。Redis main/subKey 都使用 string JSON 文档；RedisJSON/ReJSON 仅作为后续可选 backend，不是当前默认路径。
 - Redis 整文档替换在文档只包含 subKey 或为空时仍写入 main `{}`，保持 main key 作为热记录存在标记；不能因字段拆分形成只有 subKey、没有根记录的状态。
 - Redis 局部 patch 只会创建缺失的 JSON object 父节点；已有 `null` 或标量父节点返回 `storage.ErrPathTypeMismatch`，不做静默类型修复。Lua 使用 cjson array metatable 保留空数组的 `[]` 语义。对已有数组，仅允许生成 Store 用稳定整数 index 进入并更新既有元素的子字段；不允许 Lua 扩容、插入、删除或修复数组。`InsertAt`、`Append`、`RemoveAt` 等长度变化仍由 Store 降级为字段级 `OpReplace` 覆盖。
-- `delaySaveTime` 表示 Redis 热数据变更后多久回写一次 Mongo；`delayDelTime` 表示 Redis 热数据 TTL 和自动续期时间，不表示 Mongo 删除延迟。
+- `delaySaveTime` 表示 Redis 热数据变更后多久回写一次 Mongo；`delayDelTime` 表示热数据目标保留时间，不表示 Mongo 删除延迟。Redis-only 与 Fusion 纯净回源缓存可直接把它作为 TTL；Fusion 业务写入后的脏热数据必须同步转为持久状态，由延迟任务在 Mongo 成功收敛后按 revision 删除。Mongo 故障时宁可延长 Redis 占用，也不能让有限 TTL 淘汰未落盘数据。
 - Redis `PX` 和延迟队列 score 的时间边界统一使用毫秒精度：记录锁 TTL、msgq 会话 TTL 与延迟任务显式 lease 必须至少为 `1ms`。亚毫秒值必须在外部 I/O 前返回错误；标准 server 配置还要在启动校验期 fast-fail，不能把截断后的 `0` 交给 Redis，也不能创建立即过期的任务 lease。
 - Fusion 延迟任务队列只保存记录定位信息；到期后读取 Redis 当前最新热数据，整文档 replace 到 Mongo。队列不保存中间态业务对象或本轮字段 diff。Mongo 回写失败且 Redis 可用时，Scheduler 使用基于 Redis 持久化 `Attempts` 的指数退避：初始延迟、乘数、最大延迟和有界 jitter 计算出的 `nextDue` 写回 Redis ZSet；达到最大延迟后持续以带 jitter 的最大周期重试，不限制次数或丢弃任务。若 Redis 不可用而无法写回重试时间，任务保持 busy lease，Redis 恢复并在 lease 到期后重新领取；运行时只返回 error，不 panic 或静默成功。
 - 从 Mongo 回填 Redis 必须具备 `delayDelTime > 0` 的热数据 TTL；并发 miss 回填要通过 Redis 锁和二次读取避免旧 Mongo 快照覆盖新 Redis 热数据。
-- Redis `<mainKey>@v` 是热数据生命周期版本键，只用于 Redis 删除/过期窗口并发保护，不是业务字段，也不是 Mongo 字段；版本键和 main/subKey 必须使用同一 hash tag，并在每次热写时使用同一有效 TTL 续期或同步转为持久化。版本值由 Redis `INCR` 生成，读取、条件删除和 Lua 返回值只接受正整数；缺失或非数字版本必须返回错误，不能退化为无条件删除。
+- Redis `<mainKey>@v` 是热数据生命周期版本键，只用于 Redis 删除窗口并发保护，不是业务字段，也不是 Mongo 字段；版本键和 main/subKey 必须使用同一 hash tag，并在每次热写时同步转为持久化。纯净回源缓存阶段三者使用同一 TTL。版本值由 Redis `INCR` 生成，读取、条件删除和 Lua 返回值只接受正整数；缺失或非数字版本必须返回错误，不能退化为无条件删除。
 - Redis 批量读取默认按生产云代理能力走 endpoint 内原生 `MGET`；本地原生 Redis Cluster debug 才显式打开 `LoadOptions.ClusterSafe` 按 hash tag 分组多次读取。
 - Mongo-only 与 Redis-only 类型可以使用单后端物理删除接口，是否调用由业务决定；Fusion 根记录禁止物理删除。TTL 索引是 Mongo 自身按字段值删除整条文档的能力，生成阶段限制同一类型最多一个 TTL 字段。
 - 持久化 GD 的字段演进是项目使用约定：只允许新增，不删除、不改名、不改变类型或 JSON/BSON/Msgpack 字段名；迁移时保留旧字段并由业务处理。runtime 与 generator 不维护自动迁移或历史字段缺失校验。
@@ -410,12 +410,12 @@ type DelayTaskBackend interface {
 - Redis delayed task payload 的整数定位必须精确往返：`int64` 范围外的非负整数恢复为 `uint64`，不得退化成有损 `float64`，避免 claim 后幂等任务键变化而无法 complete/retry。Mongo 批量读取使用 BSON 类型和值编码恢复输入顺序，不把动态 ID 直接作为 Go map key；`[]byte` 等不可比较 BSON 主键不能触发 panic。
 - `log`: 基于标准库 `log/slog` 提供最小 logger 注入入口，默认使用 `slog.Default()`；已提供 `Debug/Info/Warn/Error` 和 Context 版本的包级快捷方法，并提供 `NewLogger(name)` 轻量命名 logger 代理；Fusion Scheduler 失败重试时输出结构化错误日志，失败原因不进入 Redis 队列状态。
 - `storage/fusion.TaskQueue` 负责把 Fusion 延迟 operation 转换为 `storage/task.DelayTask`，只保留 record id、route/shard key、action 和 due time；任务类型优先来自 `DelayedOperation.Type`，为空时使用 `RecordKey.TypeName`；Fusion 层不暴露额外 suffix，同一记录的延迟保存按 locator 合并为一条任务；入队支持保存和热数据延迟删除 action，并要求类型和 record id 非空，避免无效任务进入 Redis 队列。`storage/task` 的 memory/Redis backend 也统一校验 Type、ID、Action，Redis claim 解码不完整 payload 时返回错误。延迟任务不携带业务对象或字段变更日志，执行时重新读取 Redis 当前热数据。
-- `storage/fusion.StorageTaskHandler` 负责消费 delayed task：保存任务从 Redis 读取完整热数据并 replace 到 Mongo；Redis 热数据延迟删除任务会读取 `<mainKey>@v`、保存 Redis 当前热文档到 Mongo，然后仅在版本未变化时删除 Redis main/subKey/version key，版本变化时重新排队。
+- `storage/fusion.StorageTaskHandler` 负责消费 delayed task：保存任务从 Redis 读取完整热数据并 replace 到 Mongo；Redis 热数据延迟删除任务会读取 `<mainKey>@v`、保存 Redis 当前热文档到 Mongo，然后仅在版本未变化时删除 Redis main/subKey/version key，版本变化时重新排队。任一任务找不到对应热文档都返回 `storage.ErrNotExists` 并保留重试，不能把数据缺失当成任务完成。
 - Fusion 根记录只允许逻辑删除；延迟队列中的 delete action 仅表示“先把当前 Redis 热文档回写 Mongo，再按生命周期版本淘汰 Redis 热数据”，不表示删除 Mongo 记录。
 - Fusion 延迟保存已通过真实 Redis/Mongo 集成路径验证：Redis 同步写入热数据，Redis delayed task backend 入队，Scheduler claim 到期任务，StorageTaskHandler 读取 Redis 热数据并整文档 replace Mongo。
 - Fusion 读取默认在 Redis miss 后从 Mongo 全量加载并回填 Redis 热数据，回填路径运行时要求 `delayDelTime` 大于 0；回填前会获取记录级 Redis 锁并二次读取 Redis，防止并发 miss 时 Mongo 快照覆盖新的 Redis 热数据；显式 `SkipRedisBackfill` 选项才允许直接读 Mongo 且不回填；部分字段读取主要按 Redis main/subKey key 粒度减少热数据读取，只请求 subKey 字段时不强依赖主文档命中。
-- Redis 热数据生命周期版本键 `<mainKey>@v` 已作为运行时原语实现并接入 Fusion 延迟删除 handler：Redis delete 可带 expected revision 比对，只在版本未变化时删除 main/subKey/version key。每次 Redis 热写都会递增版本键，并让它与 main/subKey 使用同一有效 TTL 续期；持久化热数据则同步持久化版本键。该版本只用于 Redis 热数据过期/删除窗口的并发保护，不是业务字段，也不是 Mongo 文档字段。
-- `txgame` 已用真实 Redis/Mongo 验证两个版本键窗口：热写的 main/subKey/version key 会共同自然过期；延迟删除在 Mongo 回写期间遇到 Redis 新写时，条件删除会失败、保留新热数据并重新排队删除任务。
+- Redis 热数据生命周期版本键 `<mainKey>@v` 已作为运行时原语实现并接入 Fusion 延迟删除 handler：Redis delete 可带 expected revision 比对，只在版本未变化时删除 main/subKey/version key。每次 Redis 热写都会递增版本键，并让它与 main/subKey 一起转为持久状态；纯净回源缓存仍使用同一有效 TTL。该版本只用于 Redis 热数据删除窗口的并发保护，不是业务字段，也不是 Mongo 文档字段。
+- `txgame` 的真实 Redis/Mongo 回归需要同时验证两个版本键窗口：Fusion 业务热写会把 main/subKey/version key 共同转为持久状态；延迟删除在 Mongo 回写期间遇到 Redis 新写时，条件删除会失败、保留新热数据并重新排队删除任务。
 - `txgame` 已用真实 Redis/Mongo 验证并发 Redis miss 回填：两个请求同时在 Redis miss 后竞争同一记录锁，只有一个请求回源 Mongo；另一个请求在锁内二次读取到已回填的 Redis 文档，不会以第二份 Mongo 快照覆盖热数据。
 - Mongo runtime 已提供最小 route/cluster adapter，按 routeType 和 RecordKey.ShardKey 路由单条读写，并在批量读取时按 Mongo shard 分组后还原输入顺序；`storage/mongo/mongodriver` 提供官方 MongoDB driver 的薄适配层。
 - Redis runtime 已提供与 Mongo 对等的最小 route/cluster adapter：先按 routeType 和 RecordKey.ShardKey 路由到具体 Redis endpoint/adapter，再在每个 endpoint 内执行批量读取并还原输入顺序；`storage/redis/goredis` 提供 go-redis 的薄适配层。
@@ -426,7 +426,7 @@ type DelayTaskBackend interface {
 - Redis 批量读取应使用客户端层原生 `MGET` 展平 main/subKey key 后读取，再在 Go 侧按固定步长合并文档；不要把跨记录批量读取包进 Lua。云代理能识别 `MGET` 的所有参数都是 key，但不能可靠分析自定义 Lua 中哪些 `ARGV` 是 key，也不能安全拆分一个需要原子执行的脚本。
 - 本地原生 Redis Cluster 或直连节点只作为研发 debug 兼容路径：已提供显式可选的 `LoadOptions.ClusterSafe` 模式，按 hash tag 分组后多次读取，保证本地集群可复现和排查跨槽问题，但不作为生产默认策略。
 - StorageTaskHandler 把 Redis 当前 JSON 文档原样 replace 到 Mongo；业务 `null` 是合法数据，必须保留。字段删除只由 `OpDelete` / `Document.Delete` 表达，不能再用 map 中的 `nil` 兼作删除标记。
-- `delaySaveTime` 表示 Redis 热数据变更后，经过多久触发一次 Mongo 回写；`delayDelTime` 表示 Redis 热数据 TTL，用于释放长时间不活跃记录的热备数据，不代表 Mongo 删除延迟。
+- `delaySaveTime` 表示 Redis 热数据变更后，经过多久触发一次 Mongo 回写；`delayDelTime` 表示热数据目标保留时间，不代表 Mongo 删除延迟。Fusion 纯净回源缓存使用 TTL；承载业务变更后必须持久化到可靠回写与版本删除完成。
 - `change.Mode` 已作为生成代码的持久化模式边界：`ModeSnapshot` 用于原生字段修改后的快照 diff 持久化，`ModeStore` 用于生成 Store 的拦截式脏标记持久化；两者在同一变更周期内互斥。当前快照 diff 由 txgen 生成代码实现，tx 只提供共用模式枚举和错误。
 - RedisJSON/ReJSON 可作为后续可选 Redis backend 单独评估：当前主线仍保持 Redis string JSON main/subKey 文档模型，后续只有在确认目标云 Redis、本地测试环境、Redis Cluster 行为和 JSON path 局部读写收益后再引入。
 - 后续可增加 SQL backend、消息队列 backend；当前优先贴合生产参考流程，不引入 Kafka 等新的持久化队列依赖。

@@ -92,7 +92,7 @@ func (h *StorageTaskHandler) handleSave(ctx context.Context, spec meta.TypeSpec,
 		return fmt.Errorf("fusion: delayed save redis document loader: %w", err)
 	}
 	if !exists {
-		return nil
+		return fmt.Errorf("fusion: delayed save redis document: %w", storage.ErrNotExists)
 	}
 	return h.mongoReplace.ReplaceDocument(ctx, spec, key, doc)
 }
@@ -122,7 +122,7 @@ func (h *StorageTaskHandler) handleDelete(ctx context.Context, spec meta.TypeSpe
 		return fmt.Errorf("fusion: delayed delete redis document loader: %w", err)
 	}
 	if !exists {
-		return nil
+		return fmt.Errorf("fusion: delayed delete redis document: %w", storage.ErrNotExists)
 	}
 	if err := h.mongoReplace.ReplaceDocument(ctx, spec, key, doc); err != nil {
 		return err
