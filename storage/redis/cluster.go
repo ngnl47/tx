@@ -140,6 +140,9 @@ func (c *Cluster) LockRecord(ctx context.Context, spec meta.TypeSpec, key storag
 }
 
 func (c *Cluster) LoadDocument(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, fields ...string) (map[string]any, bool, error) {
+	if err := storage.ValidateLoadFields(spec, fields); err != nil {
+		return nil, false, err
+	}
 	adapter, err := c.adapterFor(ctx, spec, key)
 	if err != nil {
 		return nil, false, err
@@ -154,6 +157,9 @@ func (c *Cluster) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []
 func (c *Cluster) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSpec, keys []storage.RecordKey, options LoadOptions, fields ...string) ([]map[string]any, []bool, error) {
 	docs := make([]map[string]any, len(keys))
 	exists := make([]bool, len(keys))
+	if err := storage.ValidateLoadFields(spec, fields); err != nil {
+		return nil, nil, err
+	}
 	if len(keys) == 0 {
 		return docs, exists, nil
 	}

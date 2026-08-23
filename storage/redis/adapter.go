@@ -284,6 +284,9 @@ func (a *Adapter) LoadDocument(ctx context.Context, spec meta.TypeSpec, key stor
 	if err := storage.ValidateRecordKey(spec, key); err != nil {
 		return nil, false, err
 	}
+	if err := storage.ValidateLoadFields(spec, fields); err != nil {
+		return nil, false, err
+	}
 	client, err := a.scriptClient()
 	if err != nil {
 		return nil, false, err
@@ -316,6 +319,9 @@ func (a *Adapter) LoadDocuments(ctx context.Context, spec meta.TypeSpec, records
 func (a *Adapter) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSpec, records []storage.RecordKey, options LoadOptions, fields ...string) ([]map[string]any, []bool, error) {
 	docs := make([]map[string]any, len(records))
 	exists := make([]bool, len(records))
+	if err := storage.ValidateLoadFields(spec, fields); err != nil {
+		return nil, nil, err
+	}
 	if len(records) == 0 {
 		return docs, exists, nil
 	}

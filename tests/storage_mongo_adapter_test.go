@@ -67,6 +67,17 @@ func mongoDocumentSpec() meta.TypeSpec {
 	}
 }
 
+func mongoProjectionSpec() meta.TypeSpec {
+	return meta.TypeSpec{
+		Type: meta.Type{Fields: []meta.Field{
+			{Name: "RoleId", JSONName: "roleId", BSONName: "roleId"},
+			{Name: "Name", JSONName: "name", BSONName: "name"},
+		}},
+		DocumentFactory: mongoMapDocumentFactory,
+		Mongo:           &meta.MongoSpec{Collection: "roles"},
+	}
+}
+
 func mongoMapDocumentFactory() any {
 	value := map[string]any{}
 	return &value
@@ -762,10 +773,14 @@ func TestMongoAdapterUsesBusinessIDFieldWhenConfigured(t *testing.T) {
 	}
 	adapter := mustMongoAdapter(t, client)
 	spec := meta.TypeSpec{
+		Type: meta.Type{Fields: []meta.Field{
+			{Name: "RoleId", JSONName: "roleId", BSONName: "roleId"},
+			{Name: "Name", JSONName: "name", BSONName: "name"},
+		}},
 		DocumentFactory: mongoMapDocumentFactory,
 		Mongo: &meta.MongoSpec{
 			Collection: "roles",
-			IDField:    "roleId",
+			IDField:    "RoleId",
 		},
 	}
 	key := storage.RecordKey{ID: int64(1001)}
@@ -785,7 +800,7 @@ func TestMongoAdapterUsesBusinessIDFieldWhenConfigured(t *testing.T) {
 		t.Fatalf("replace target filter/doc = %#v/%#v", client.filter, client.replace)
 	}
 
-	if _, exists, err := adapter.LoadDocument(context.Background(), spec, key, "name"); err != nil {
+	if _, exists, err := adapter.LoadDocument(context.Background(), spec, key, "Name"); err != nil {
 		t.Fatalf("LoadDocument returned error: %v", err)
 	} else if !exists {
 		t.Fatal("LoadDocument exists = false, want true")
@@ -797,7 +812,7 @@ func TestMongoAdapterUsesBusinessIDFieldWhenConfigured(t *testing.T) {
 	docs, exists, err := adapter.LoadDocuments(context.Background(), spec, []storage.RecordKey{
 		{ID: int64(1001)},
 		{ID: int64(1002)},
-	}, "name")
+	}, "Name")
 	if err != nil {
 		t.Fatalf("LoadDocuments returned error: %v", err)
 	}
@@ -819,7 +834,7 @@ func TestMongoAdapterUsesBusinessIDFieldWhenConfigured(t *testing.T) {
 func TestMongoAdapterReplacesDocumentByDefaultIDFilter(t *testing.T) {
 	client := &recordingMongoUpdater{}
 	adapter := mustMongoAdapter(t, client)
-	spec := meta.TypeSpec{DocumentFactory: mongoMapDocumentFactory, Mongo: &meta.MongoSpec{Collection: "roles"}}
+	spec := mongoProjectionSpec()
 	doc := map[string]any{"roleId": int64(1001), "name": "alice"}
 
 	err := adapter.ReplaceDocument(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, doc)
@@ -854,9 +869,9 @@ func TestMongoAdapterLoadDocumentPassesProjection(t *testing.T) {
 		exists: true,
 	}
 	adapter := mustMongoAdapter(t, client)
-	spec := meta.TypeSpec{DocumentFactory: mongoMapDocumentFactory, Mongo: &meta.MongoSpec{Collection: "roles"}}
+	spec := mongoProjectionSpec()
 
-	doc, exists, err := adapter.LoadDocument(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "name", "roleId")
+	doc, exists, err := adapter.LoadDocument(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "Name", "RoleId")
 	if err != nil {
 		t.Fatalf("LoadDocument returned error: %v", err)
 	}
@@ -874,6 +889,19 @@ func TestMongoAdapterLoadDocumentPassesProjection(t *testing.T) {
 	}
 }
 
+func TestMongoAdapterRejectsUnknownProjectionBeforeFinder(t *testing.T) {
+	client := &recordingMongoUpdater{}
+	adapter := mustMongoAdapter(t, client)
+
+	_, _, err := adapter.LoadDocument(context.Background(), mongoDocumentSpec(), storage.RecordKey{ID: int64(1001)}, "Pwoer")
+	if !errors.Is(err, storage.ErrUnknownField) {
+		t.Fatalf("LoadDocument error = %v, want ErrUnknownField", err)
+	}
+	if client.collection != "" {
+		t.Fatalf("finder collection = %q, want no finder call", client.collection)
+	}
+}
+
 func TestMongoAdapterLoadDocumentsPassesProjection(t *testing.T) {
 	client := &recordingMongoUpdater{
 		manyDocs: []map[string]any{
@@ -883,12 +911,12 @@ func TestMongoAdapterLoadDocumentsPassesProjection(t *testing.T) {
 		manyExists: []bool{true, false},
 	}
 	adapter := mustMongoAdapter(t, client)
-	spec := meta.TypeSpec{DocumentFactory: mongoMapDocumentFactory, Mongo: &meta.MongoSpec{Collection: "roles"}}
+	spec := mongoProjectionSpec()
 
 	docs, exists, err := adapter.LoadDocuments(context.Background(), spec, []storage.RecordKey{
 		{ID: int64(1001)},
 		{ID: int64(1002)},
-	}, "name")
+	}, "Name")
 	if err != nil {
 		t.Fatalf("LoadDocuments returned error: %v", err)
 	}
@@ -1029,6 +1057,7 @@ func TestMongoClusterBatchLoadsByShardGroupAndRestoresOrder(t *testing.T) {
 		"b": shardB,
 	})
 	spec := meta.TypeSpec{
+		Type:            mongoProjectionSpec().Type,
 		DocumentFactory: mongoMapDocumentFactory,
 		Mongo: &meta.MongoSpec{
 			Route:      meta.RouteSpec{Type: "role"},
@@ -1041,7 +1070,7 @@ func TestMongoClusterBatchLoadsByShardGroupAndRestoresOrder(t *testing.T) {
 		{ID: int64(1003), ShardKey: int64(7)},
 	}
 
-	docs, exists, err := cluster.LoadDocuments(context.Background(), spec, keys, "name")
+	docs, exists, err := cluster.LoadDocuments(context.Background(), spec, keys, "Name")
 	if err != nil {
 		t.Fatalf("LoadDocuments returned error: %v", err)
 	}

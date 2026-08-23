@@ -1542,6 +1542,22 @@ BSON 名，Provider 下行当前选择 Msgpack 名。
 逐字段公开常量只为 Go 字段名生成。JSON、BSON、Msgpack 名属于框架边界，不生成
 `GDRoleJSONFieldName` 之类的业务 API；高级扩展应通过 `GDRoleResolveFieldName` 获取。
 
+部分读取必须传入生成的 Go 字段名常量：
+
+```go
+role, exists, err := data.LoadGDRoleFields(
+	ctx,
+	loader,
+	data.GDRoleRecordKey(470001),
+	data.GDRoleFieldPower,
+)
+```
+
+这里 `data.GDRoleFieldPower` 的值是 `"Power"`。传入 JSON 名 `"power"`、BSON 名、
+Msgpack 名或拼写错误的 `"Pwoer"`，都会在路由和 Redis/Mongo I/O 前返回
+`storage.ErrUnknownField`；不会把缺失字段的 Go 零值当成已加载数据。字段列表为空表示读取完整文档，
+重复的合法字段允许保留。
+
 例如：
 
 ```go

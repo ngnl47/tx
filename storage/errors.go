@@ -13,6 +13,7 @@ var (
 	ErrNilChangeStore     = errors.New("storage: change store is nil")
 	ErrNilDocument        = errors.New("storage: document is nil")
 	ErrInvalidRecordKey   = errors.New("storage: invalid record key")
+	ErrUnknownField       = errors.New("storage: unknown field")
 	ErrNoEffectiveChanges = errors.New("storage: changes contain no effective write")
 )
 

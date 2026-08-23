@@ -94,6 +94,9 @@ func (s Strategy) LoadDocumentWithOptions(ctx context.Context, spec meta.TypeSpe
 	if err := storage.ValidateRecordKey(spec, key); err != nil {
 		return nil, false, err
 	}
+	if err := storage.ValidateLoadFields(spec, fields); err != nil {
+		return nil, false, err
+	}
 	redisLoader, err := s.readDependencies()
 	if err != nil {
 		return nil, false, err
@@ -119,6 +122,9 @@ func (s Strategy) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []
 func (s Strategy) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSpec, keys []storage.RecordKey, options LoadOptions, fields ...string) ([]map[string]any, []bool, error) {
 	docs := make([]map[string]any, len(keys))
 	exists := make([]bool, len(keys))
+	if err := storage.ValidateLoadFields(spec, fields); err != nil {
+		return nil, nil, err
+	}
 	if len(keys) == 0 {
 		return docs, exists, nil
 	}

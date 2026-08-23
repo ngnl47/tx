@@ -180,6 +180,23 @@ func TestRedisAdapterAppliesChangesWithSingleLuaEval(t *testing.T) {
 	}
 }
 
+func TestRedisAdapterRejectsUnknownProjectionBeforeEval(t *testing.T) {
+	client := &recordingRedisStringClient{}
+	adapter := mustRedisAdapter(t, client)
+	spec := meta.TypeSpec{
+		Type:  meta.Type{Ref: meta.TypeRef{Name: "GDRole"}, Fields: []meta.Field{{Name: "RoleId"}, {Name: "Power"}}},
+		Redis: &meta.RedisSpec{Key: "role"},
+	}
+
+	_, _, err := adapter.LoadDocument(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "Pwoer")
+	if !errors.Is(err, storage.ErrUnknownField) {
+		t.Fatalf("LoadDocument error = %v, want ErrUnknownField", err)
+	}
+	if len(client.evals) != 0 {
+		t.Fatalf("eval calls = %d, want 0", len(client.evals))
+	}
+}
+
 func TestRedisNewAdapterRejectsNilClient(t *testing.T) {
 	if _, err := txredis.NewAdapter(nil); !errors.Is(err, txredis.ErrClientNotConfigured) {
 		t.Fatalf("NewAdapter error = %v, want ErrClientNotConfigured", err)
@@ -330,9 +347,10 @@ func TestRedisAdapterReplaceDocumentWithOptionsUsesFullReplaceAndTTL(t *testing.
 	client := &recordingRedisStringClient{}
 	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
+		Type:  meta.Type{Fields: []meta.Field{{Name: "Items", JSONName: "items"}}},
 		Redis: &meta.RedisSpec{Key: "role"},
 		Fields: map[string]meta.FieldSpec{
-			"items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+			"Items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
 		},
 	}
 
@@ -366,9 +384,10 @@ func TestRedisAdapterReplaceDocumentKeepsEmptyMainDocumentForSubKeyOnlyData(t *t
 	client := &recordingRedisStringClient{}
 	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
+		Type:  meta.Type{Fields: []meta.Field{{Name: "Items", JSONName: "items"}}},
 		Redis: &meta.RedisSpec{Key: "role"},
 		Fields: map[string]meta.FieldSpec{
-			"items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+			"Items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
 		},
 	}
 	err := adapter.ReplaceDocumentWithOptions(
@@ -1158,13 +1177,14 @@ func TestRedisAdapterLoadDocumentReadsSubKeyOnly(t *testing.T) {
 	}
 	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
+		Type:  meta.Type{Fields: []meta.Field{{Name: "Items", JSONName: "items"}}},
 		Redis: &meta.RedisSpec{Key: "role"},
 		Fields: map[string]meta.FieldSpec{
-			"items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+			"Items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
 		},
 	}
 
-	doc, exists, err := adapter.LoadDocument(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "items")
+	doc, exists, err := adapter.LoadDocument(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "Items")
 	if err != nil {
 		t.Fatalf("LoadDocument returned error: %v", err)
 	}
@@ -1224,16 +1244,17 @@ func TestRedisAdapterLoadDocumentsReadsSubKeyOnly(t *testing.T) {
 	}
 	adapter := mustRedisAdapter(t, client)
 	spec := meta.TypeSpec{
+		Type:  meta.Type{Fields: []meta.Field{{Name: "Items", JSONName: "items"}}},
 		Redis: &meta.RedisSpec{Key: "role"},
 		Fields: map[string]meta.FieldSpec{
-			"items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+			"Items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
 		},
 	}
 
 	docs, exists, err := adapter.LoadDocuments(context.Background(), spec, []storage.RecordKey{
 		{ID: int64(1001)},
 		{ID: int64(1002)},
-	}, "items")
+	}, "Items")
 	if err != nil {
 		t.Fatalf("LoadDocuments returned error: %v", err)
 	}

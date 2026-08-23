@@ -88,7 +88,7 @@
 - `BeginChange()` 必须在业务直接修改字段之前调用；`SaveChange()` 成功后清理 snapshot 和本轮 dirty，失败时保留可重试状态。
 - Store 路径适合高频对象和大集合字段；保存前可用 `store.View(nil)` 捕获当前全部 dirty 路径，避免保存成功清理主 Store 后丢失广播值。只广播指定字段时，在 configure 回调中先 `AllUnTouch()`，再调用目标 `Touch*`。
 - 当前集合策略：map wrapper 支持 key 级状态和生成对象指针子 Store；slice wrapper 支持稳定 index 级状态和 `[]*GD...` 元素子 Store。`InsertAt`、`Append`、`RemoveAt`、`Replace`、`Clear` 这类长度或整体语义变化按整字段处理；StoreView 在同步捕获时复制被选中的 key/index 或整字段，不依赖后续结构漂移防御。
-- 字段名体系本体是 `go/json/bson/msgpack`。Redis 当前选择 JSON 名，Mongo 当前选择 BSON 名，cmd Provider 当前选择 Msgpack 名；`alias` 只是输入侧语法糖。
+- 字段名体系本体是 `go/json/bson/msgpack`。Redis 当前选择 JSON 名，Mongo 当前选择 BSON 名，cmd Provider 当前选择 Msgpack 名；`alias` 只是输入侧语法糖。部分读取只接受 `TypeSpec` 中的 Go 字段名，未知字段必须在生成 helper、路由和外部 I/O 前返回 `storage.ErrUnknownField`，不能静默返回不完整对象。
 - 客户端上下行协议采用独立的 BON 二进制文档，不使用 Protobuf；WebSocket 传输层使用可协商的 permessage-deflate 压缩。会话字典和动态 key 压缩属于后续可选优化，必须先以真实消息体基准证明收益，再处理字典同步、重连重置和可观测性。
 - 内部跨进程通信的目标运行时是可选的 `modules/actor`，直接使用 `protoactor-go` 及其官方 etcd Cluster Provider；tx 只负责项目 yml 装配、`WaitGroupContext` 生命周期和 BON 业务载荷适配。邮箱沿用 ProtoActor 的有界 RingBuffer 与调度语义，仅以薄包装补充满队列限频日志；不自研调度器、远程 PID、成员发现或 Actor 重平衡。
 - `msgq` 是客户端会话邮箱模块名，负责 Session、下行 `sndQueue`、Seq/Ack、重连、Topic 和广播；它不承担所有业务 Actor 的中心中继。`modules/msgq` 已提供独立 protobuf/gRPC `MailboxService`，覆盖 Init、Rec、Pub、Fetch、FetchSome、Confirm、Touch、Topic 与 Close；它不复用 `modules/rpc`，payload 始终是 BON bytes。上行业务消息由 Agent 经过会话校验后直接投递目标 Player/Game Actor；任意业务 Actor 的下行消息投递到 `msgq`，再由 Agent 发给客户端。
