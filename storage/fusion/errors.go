@@ -10,4 +10,6 @@ var (
 	ErrStrategyDependenciesNotConfigured  = errors.New("fusion: strategy dependencies are not configured")
 	ErrRedisNotConfigured                 = errors.New("fusion: redis change applier is not configured")
 	ErrMongoQueueNotConfigured            = errors.New("fusion: mongo delayed queue is not configured")
+	ErrHandoffStoreNotConfigured          = errors.New("fusion: handoff store is not configured")
+	ErrHandoffTypesNotConfigured          = errors.New("fusion: handoff type registry is not configured")
 )

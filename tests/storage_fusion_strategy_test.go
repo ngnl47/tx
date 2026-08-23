@@ -11,15 +11,22 @@ import (
 	"github.com/ngnl47/tx/meta"
 	"github.com/ngnl47/tx/storage"
 	"github.com/ngnl47/tx/storage/fusion"
+	txredis "github.com/ngnl47/tx/storage/redis"
 )
 
 type recordingQueue struct {
-	ops []fusion.DelayedOperation
-	err error
+	ops  []fusion.DelayedOperation
+	err  error
+	errs []error
 }
 
 func (q *recordingQueue) Enqueue(_ context.Context, op fusion.DelayedOperation) error {
 	q.ops = append(q.ops, op)
+	if len(q.errs) > 0 {
+		err := q.errs[0]
+		q.errs = q.errs[1:]
+		return err
+	}
 	return q.err
 }
 
@@ -30,6 +37,10 @@ type recordingApplier struct {
 	changes    recordedChanges
 	options    storage.ApplyOptions
 	err        error
+	handoffs   []txredis.HandoffOptions
+	revision   string
+	confirmed  bool
+	confirms   int
 }
 
 func (a *recordingApplier) ApplyChangesWithOptions(_ context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, _ change.FieldNameResolver, _ change.ValueResolver, options storage.ApplyOptions) error {
@@ -43,6 +54,25 @@ func (a *recordingApplier) ApplyChangesWithOptions(_ context.Context, spec meta.
 	a.changes = changes
 	a.options = options
 	return a.err
+}
+
+func (a *recordingApplier) ApplyChangesWithHandoff(_ context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, _ change.FieldNameResolver, _ change.ValueResolver, options storage.ApplyOptions, handoff txredis.HandoffOptions) (txredis.HandoffReceipt, error) {
+	a.handoffs = append(a.handoffs, handoff)
+	if err := a.ApplyChangesWithOptions(context.Background(), spec, key, source, nil, nil, options); err != nil {
+		return txredis.HandoffReceipt{}, err
+	}
+	if a.revision == "" {
+		return txredis.HandoffReceipt{Revision: "1", Token: "token-1"}, nil
+	}
+	return txredis.HandoffReceipt{Revision: a.revision, Token: "token-" + a.revision}, nil
+}
+
+func (a *recordingApplier) ConfirmHandoff(_ context.Context, _ meta.TypeSpec, _ storage.RecordKey, _ string, _ txredis.HandoffReceipt) (bool, error) {
+	a.confirms++
+	if !a.confirmed {
+		return false, nil
+	}
+	return true, nil
 }
 
 type recordingDocumentLoader struct {
@@ -195,8 +225,57 @@ func TestFusionStrategyEnqueuesMongoSave(t *testing.T) {
 	if redis.optionRuns != 1 {
 		t.Fatalf("redis runs = %d, want 1", redis.optionRuns)
 	}
+	if len(redis.handoffs) != 1 || redis.confirms != 1 {
+		t.Fatalf("handoffs=%#v confirms=%d, want one atomic marker and one confirmation", redis.handoffs, redis.confirms)
+	}
+	if redis.handoffs[0].Marker == "" || redis.handoffs[0].MaxPendingPerSlot <= 0 {
+		t.Fatalf("handoff options = %#v", redis.handoffs[0])
+	}
 	if queue.ops[0].RunAfter != 600*time.Second {
 		t.Fatalf("RunAfter = %s", queue.ops[0].RunAfter)
+	}
+}
+
+func TestFusionStrategyLeavesHandoffWhenDelayedQueueFails(t *testing.T) {
+	queueErr := errors.New("delay queue unavailable")
+	queue := &recordingQueue{err: queueErr}
+	redis := &recordingApplier{confirmed: true}
+	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue}
+	spec := meta.TypeSpec{
+		Type:    fusionRoleType(),
+		Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Minute}},
+	}
+	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
+
+	err := strategy.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)}, changes, testFieldNameResolver{}, testValueResolver{}, storage.ApplyOptions{})
+	if !errors.Is(err, queueErr) {
+		t.Fatalf("ApplyChangesWithOptions error = %v, want queue error", err)
+	}
+	if len(redis.handoffs) != 1 || redis.confirms != 0 {
+		t.Fatalf("handoffs=%d confirms=%d, want marker retained without confirmation", len(redis.handoffs), redis.confirms)
+	}
+}
+
+func TestFusionStrategyLeavesHandoffWhenSecondDelayedTaskFails(t *testing.T) {
+	deleteErr := errors.New("delete enqueue failed")
+	queue := &recordingQueue{errs: []error{nil, deleteErr}}
+	redis := &recordingApplier{confirmed: true}
+	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue}
+	spec := meta.TypeSpec{
+		Type: fusionRoleType(),
+		Storage: meta.StorageSpec{
+			DelaySave:   meta.Duration{Duration: time.Minute},
+			DelayDelete: meta.Duration{Duration: time.Hour},
+		},
+	}
+	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
+
+	err := strategy.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)}, changes, testFieldNameResolver{}, testValueResolver{}, storage.ApplyOptions{})
+	if !errors.Is(err, deleteErr) {
+		t.Fatalf("ApplyChangesWithOptions error = %v, want delete enqueue error", err)
+	}
+	if len(queue.ops) != 2 || redis.confirms != 0 {
+		t.Fatalf("queue ops=%#v confirms=%d, want partial queue preserved and marker retained", queue.ops, redis.confirms)
 	}
 }
 

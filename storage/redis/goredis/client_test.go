@@ -11,10 +11,12 @@ import (
 	redis "github.com/redis/go-redis/v9"
 
 	"github.com/ngnl47/tx/storage"
+	txredis "github.com/ngnl47/tx/storage/redis"
 )
 
 type testRedisHook struct {
-	process func(redis.Cmder) error
+	process  func(redis.Cmder) error
+	pipeline func([]redis.Cmder) error
 }
 
 func (hook testRedisHook) DialHook(next redis.DialHook) redis.DialHook {
@@ -28,6 +30,11 @@ func (hook testRedisHook) ProcessHook(redis.ProcessHook) redis.ProcessHook {
 }
 
 func (hook testRedisHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	if hook.pipeline != nil {
+		return func(_ context.Context, commands []redis.Cmder) error {
+			return hook.pipeline(commands)
+		}
+	}
 	return next
 }
 
@@ -80,7 +87,36 @@ func TestClientReturnsErrorWhenRedisClientMissing(t *testing.T) {
 	if _, err := client.Eval(context.Background(), "return 'ok'", nil); err == nil || !strings.Contains(err.Error(), "redis client is not configured") {
 		t.Fatalf("Eval error = %v, want missing client error", err)
 	}
+	if _, err := client.EvalBatch(context.Background(), []txredis.ScriptCall{{Script: "return 'ok'"}}); err == nil || !strings.Contains(err.Error(), "redis client is not configured") {
+		t.Fatalf("EvalBatch error = %v, want missing client error", err)
+	}
 	if _, err := client.MGet(context.Background(), "role:{1001}"); err == nil || !strings.Contains(err.Error(), "redis client is not configured") {
 		t.Fatalf("MGet error = %v, want missing client error", err)
+	}
+}
+
+func TestClientEvalBatchUsesOnePipelineAndDecodesEveryResult(t *testing.T) {
+	raw := redis.NewClient(&redis.Options{Addr: "unused"})
+	pipelines := 0
+	raw.AddHook(testRedisHook{pipeline: func(commands []redis.Cmder) error {
+		pipelines++
+		for index, command := range commands {
+			command.(*redis.Cmd).SetVal([]any{"one", int64(2)}[index])
+		}
+		return nil
+	}})
+
+	results, err := NewClient(raw).EvalBatch(context.Background(), []txredis.ScriptCall{
+		{Script: "return 'one'", Keys: []string{"slot:{1}"}},
+		{Script: "return 2", Keys: []string{"slot:{2}"}},
+	})
+	if err != nil {
+		t.Fatalf("EvalBatch returned error: %v", err)
+	}
+	if pipelines != 1 {
+		t.Fatalf("pipeline calls = %d, want 1", pipelines)
+	}
+	if len(results) != 2 || results[0] != "one" || results[1] != "2" {
+		t.Fatalf("EvalBatch results = %#v, want [one 2]", results)
 	}
 }

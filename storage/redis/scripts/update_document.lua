@@ -5,6 +5,7 @@ end
 local FLAG_TRUE = "1"
 local RESULT_NOT_EXISTS = "ne"
 local RESULT_PATH_TYPE_MISMATCH = "pt"
+local RESULT_HANDOFF_FULL = "hf"
 local PATCH_MODE_REPLACE = "1"
 local PATCH_MODE_PARTIAL_REPLACE = "2"
 local PATCH_MODE_OPERATIONS = "3"
@@ -15,7 +16,18 @@ local arg_len = #ARGV
 if arg_len <= 2 then
   return "ok"
 end
-local upsert = ARGV[arg_len - 1] == FLAG_TRUE
+local handoff = #KEYS == 2
+local tail_len = 2
+local marker = nil
+local token = nil
+local max_pending = 0
+if handoff then
+  tail_len = 5
+  marker = ARGV[arg_len - 2]
+  token = ARGV[arg_len - 1]
+  max_pending = tonumber(ARGV[arg_len])
+end
+local upsert = ARGV[arg_len - tail_len + 1] == FLAG_TRUE
 
 if not upsert then
   local exists = redis.call("exists", key)
@@ -24,13 +36,17 @@ if not upsert then
   end
 end
 
-local ttlMode = tonumber(ARGV[arg_len])
+local ttlMode = tonumber(ARGV[arg_len - tail_len + 2])
 local ttl = ttlMode
 if ttlMode == 0 then
   ttl = redis.call("ttl", key)
   if ttl == 0 then
     ttl = 1
   end
+end
+
+if handoff and redis.call("hexists", KEYS[2], marker) == 0 and redis.call("hlen", KEYS[2]) >= max_pending then
+  return RESULT_HANDOFF_FULL
 end
 
 local function get_type(v)
@@ -203,7 +219,7 @@ local function load(full_key)
   return obj, true
 end
 
-for i = 1, arg_len - 2, 3 do
+for i = 1, arg_len - tail_len, 3 do
   local suffix = ARGV[i]
   local body = ARGV[i + 1]
   local mode = ARGV[i + 2]
@@ -289,10 +305,14 @@ for k, v in pairs(save) do
 end
 
 local vkey = key .. "@v"
-redis.call("incr", vkey)
+local revision = redis.call("incr", vkey)
 if ttl > 0 then
   redis.call("expire", vkey, ttl)
 else
   redis.call("persist", vkey)
+end
+if handoff then
+  redis.call("hset", KEYS[2], marker, token)
+  return revision
 end
 return "ok"

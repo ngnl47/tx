@@ -1014,11 +1014,17 @@ mainKey                   根文档
 mainKey:<subKey>          拆分的大字段文档
 mainKey@v                 热数据生命周期版本
 mainKey@lock              回源、回写和删除互斥锁
+tx:fusion:handoff:{tag}   对应物理 slot 的 Fusion 交接 Hash
 ```
 
 带 subKey 的类型仍必须存在 main 文档。即使全部业务字段都拆到 subKey，main 至少保存 `{}`，作为热记录存在标记。
 
-### 为什么不是 Redis Hash 或 RedisJSON
+Fusion 交接 Hash 不是业务文档，也不是 delayed task backend。进程为 Redis 的 16384 个物理 slot 各维护一个
+固定 key；`tag` 是预先求得的规范 hash tag，使该 Hash 与落在同一物理 slot 的任意业务记录可以进入同一条 Lua。
+Hash field 编码稳定的 `Type + ID + ShardKey`，value 保存本次热写的随机 token。稳定 field 控制容量，token
+区分同一记录的不同写入和不同热数据生命周期。
+
+### 为什么业务文档不使用 Redis Hash 或 RedisJSON
 
 当前默认选择普通 Redis string JSON：
 
@@ -1032,6 +1038,10 @@ mainKey@lock              回源、回写和删除互斥锁
 
 Redis Lua 在对应 main/subKey 文档内应用 set/delete/clear/replace。局部路径缺少父对象时可以创建正确的中间 table；如果已存在父节点类型与路径要求冲突，返回错误，不把异常标量自动替换成容器。
 
+Fusion 热写会把业务文档 key 与对应物理 slot 的交接 Hash key 一起作为 `KEYS[]` 传入同一脚本。脚本先检查
+Hash 容量，再 patch 文档、递增 revision、持久化 main/subKey/`@v`，最后 `HSET marker token`。容量检查必须发生在
+任何业务文档写入之前；新 marker 超限时返回 `ErrHandoffFull`，已有 marker 可以继续更新 token。
+
 严格失败是为了暴露数据来源问题。运行时自动修复异常拓扑可能掩盖旧代码或人工写库造成的数据损坏。
 
 ### Cluster 路由
@@ -1039,6 +1049,10 @@ Redis Lua 在对应 main/subKey 文档内应用 set/delete/clear/replace。局�
 同一记录的 main、subKey、`@v` 和 `@lock` 必须共享 hash tag。云代理或单节点可直接执行 MGET；本地原生 Redis Cluster 在客户端按 slot/hash tag 分组后多次 MGET。
 
 Lua 的 `KEYS[]` 是 Redis 命令显式标记的 key 参数。任意一次 Lua 调用涉及的 key 必须同 slot；云代理不能分析脚本内部任意字符串并替调用方拆分执行。
+
+交接 Hash 不复用业务 hash tag 文本，而是按业务 key 算出物理 slot，再从进程级只读表取得该 slot 的规范 key。
+这使恢复器只需访问固定的 16384 个已知 key，不需要保存所有业务 tag，也绝不执行 `SCAN`。稳态查找是数组索引；
+完整 key 在一次性建表时生成，热写路径不再分配拼接字符串。
 
 ## Mongo 后端
 
@@ -1076,10 +1090,13 @@ Fusion 不是双写事务，也不是业务事件队列。
 业务 Store 变更状态
       |
       v
-Redis 同步 patch + @v 递增 + 脏热文档 PERSIST
+Redis 同一 Lua：容量预检 + patch + @v 递增 + PERSIST + HSET(marker, token)
       |
       v
 Fusion 延迟任务队列登记记录定位
+      |
+      v
+revision + token 条件确认并移除交接标记
       |
       +---- 当前请求成功并清理 Store 变更状态
 
@@ -1095,6 +1112,51 @@ claim save task -> 读取 Redis 当前完整文档 -> Replace Mongo -> complete
 ```
 
 延迟任务不保存 GD 快照，也不保存每次变更。十分钟内修改同一角色多次，任务到期只读取一次 Redis 最终状态。
+
+### 热写与任务队列交接
+
+Redis 文档和 delayed task backend 即使都位于 Redis，也可能因为 hash tag 不同而无法进入同一条 Cluster Lua。
+因此 Fusion 使用同槽交接标记封住两步提交之间的进程退出窗口，而不是把任务内容复制到另一套 outbox：
+
+```mermaid
+sequenceDiagram
+    participant B as 业务 Save
+    participant R as Redis 热文档
+    participant H as 同槽交接 Hash
+    participant Q as delayed task backend
+    participant W as HandoffRecoverer
+
+    B->>R: Lua patch + INCR @v + PERSIST
+    R->>H: 同一 Lua HSET(marker, token-A)
+    R-->>B: receipt(revision=18, token-A)
+    B->>Q: Enqueue save/delete
+    alt 全部入队成功
+        B->>H: revision==18 且 token==token-A 时 HDEL
+    else 入队失败或进程退出
+        H-->>W: 固定 slot Hash 返回 marker/token
+        W->>R: 读取当前 revision
+        W->>Q: 按当前 TypeSpec 重建 save/delete
+        W->>H: revision 和 token 均未变化时 HDEL
+    end
+```
+
+交接标记没有 `saveDue`、`deleteDue`、`nextRecoverAt`、action 或重试状态。恢复时按当前时间和当前
+`TypeSpec.Storage.DelaySave/DelayDelete` 重新调用现有入队逻辑；几毫秒级到期时间差不改变延迟保存语义。
+真正的到期、lease、pending、attempts 与指数退避只存在于 delayed task backend。
+
+恢复器按物理 slot 游标分批调用 `HRANDFIELD ... WITHVALUES`，同一 Redis endpoint 的多条读取通过 pipeline 提交。
+空 Hash 返回空 JSON 数组；损坏 marker、未知 TypeSpec、revision 缺失、入队失败或确认失败都返回明确错误并保留记录。
+某个 endpoint 读取失败时游标推进到下一个 endpoint，错误仍向上报告，但健康 endpoint 不会被永久饿死。
+循环级故障使用全局指数退避并封顶，恢复成功后回到固定轮询间隔；不为每个 marker 维护额外重试时间。
+
+revision 与随机 token 共同构成 fencing：恢复器读取 revision `18` 和 token-A 后，若业务又写出 revision `19`
+和 token-B，旧恢复器只能得到 stale。即使热记录被合法删除后新生命周期的 revision 又从 `1` 开始，旧 token-A
+也不能删除 token-B。合法的 revision 条件热数据删除会在同一条 Lua 中清理该记录的 marker，避免无主记录长期占用容量。
+下一轮恢复按 Redis 当前终态重建任务；既有任务键会在 delayed task backend 中合并，不产生并发 lease。
+
+单 slot 标记容量只限制尚未确认的不同根记录数。Hash 已包含同一 marker 时，后续高频更新仍允许继续写；Hash
+达到上限后，新的根记录在 patch 前失败，避免 delayed task backend 长期不可用时交接索引无界增长。该上限不是
+内存精确预算，也不限制单个 Store 的变更路径数。
 
 任务载荷使用 JSON 保存定位信息，但数值恢复不能经过有损 `float64`。Redis backend 先恢复
 `int64`，超过 `int64` 上限的非负整数再精确恢复为 `uint64`；例如

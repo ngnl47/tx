@@ -11,6 +11,7 @@ import (
 	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/meta"
 	"github.com/ngnl47/tx/storage"
+	txredis "github.com/ngnl47/tx/storage/redis"
 )
 
 const (
@@ -27,14 +28,17 @@ type LoadOptions struct {
 // Redis 适配器负责即时写入热数据；MongoQueue 负责把持久化保存推迟到
 // delaySave 配置之后执行。
 type Strategy struct {
-	RedisApplier  storage.ChangeApplier
+	RedisApplier  txredis.HandoffWriter
 	RedisLoader   storage.DocumentLoader
 	RedisReplacer storage.DocumentReplacerWithOptions
 	RedisLocker   storage.RecordLocker
 	MongoLoader   storage.DocumentLoader
 	MongoQueue    DelayQueue
-	LoadLockTTL   time.Duration
-	LoadLockWait  time.Duration
+	// HandoffMaxPendingPerSlot 限制单个 Redis 物理 slot 中尚未确认的根记录数。
+	// 零值使用框架默认值；已登记记录不受该上限阻止，可以继续覆盖更新。
+	HandoffMaxPendingPerSlot int
+	LoadLockTTL              time.Duration
+	LoadLockWait             time.Duration
 }
 
 // Validate 校验 Fusion 运行时的完整装配。项目启动时必须调用该方法，避免缺失
@@ -77,16 +81,29 @@ func (s Strategy) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 	if err := storage.ValidateRecordKey(spec, key); err != nil {
 		return err
 	}
-	if err := s.writeDependencies(); err != nil {
+	redisWriter, err := s.writeDependencies()
+	if err != nil {
 		return err
 	}
 	// Fusion 的脏热数据必须保留到 Mongo 可靠回写并完成版本删除，有限 TTL
 	// 只能用于尚未承载本地变更的回源缓存。
 	options.TTLSeconds = -1
-	if err := s.RedisApplier.ApplyChangesWithOptions(ctx, spec, key, source, resolver, values, options); err != nil {
+	marker, err := encodeHandoffMarker(spec, key)
+	if err != nil {
 		return err
 	}
-	return s.enqueueDelayedWrites(ctx, spec, key)
+	receipt, err := redisWriter.ApplyChangesWithHandoff(ctx, spec, key, source, resolver, values, options, txredis.HandoffOptions{
+		Marker:            marker,
+		MaxPendingPerSlot: s.handoffMaxPendingPerSlot(),
+	})
+	if err != nil {
+		return err
+	}
+	if err := enqueueDelayedWrites(ctx, s.MongoQueue, spec, key); err != nil {
+		return err
+	}
+	_, err = redisWriter.ConfirmHandoff(ctx, spec, key, marker, receipt)
+	return err
 }
 
 // LoadDocument 优先从 Redis 读取，未命中时回源 Mongo。
@@ -191,17 +208,17 @@ func (s Strategy) readDependencies() (storage.DocumentLoader, error) {
 	return redisLoader, nil
 }
 
-func (s Strategy) writeDependencies() error {
+func (s Strategy) writeDependencies() (txredis.HandoffWriter, error) {
 	if isNilFusionDependency(s.RedisApplier) {
-		return ErrRedisNotConfigured
+		return nil, ErrRedisNotConfigured
 	}
 	if isNilFusionDependency(s.MongoQueue) {
-		return ErrMongoQueueNotConfigured
+		return nil, ErrMongoQueueNotConfigured
 	}
 	if isNilFusionDependency(s.MongoLoader) {
-		return fmt.Errorf("%w: mongo document loader", ErrStrategyDependenciesNotConfigured)
+		return nil, fmt.Errorf("%w: mongo document loader", ErrStrategyDependenciesNotConfigured)
 	}
-	return nil
+	return s.RedisApplier, nil
 }
 
 func isNilFusionDependency(value any) bool {
@@ -452,11 +469,11 @@ func (s Strategy) requireRedisBackfillDependencies() error {
 	return nil
 }
 
-func (s Strategy) enqueueDelayedWrites(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
-	if isNilFusionDependency(s.MongoQueue) {
+func enqueueDelayedWrites(ctx context.Context, queue DelayQueue, spec meta.TypeSpec, key storage.RecordKey) error {
+	if isNilFusionDependency(queue) {
 		return ErrMongoQueueNotConfigured
 	}
-	if err := s.MongoQueue.Enqueue(ctx, DelayedOperation{
+	if err := queue.Enqueue(ctx, DelayedOperation{
 		Kind:     DelayedSave,
 		Type:     spec.Type.Ref,
 		Key:      key,
@@ -467,7 +484,7 @@ func (s Strategy) enqueueDelayedWrites(ctx context.Context, spec meta.TypeSpec, 
 	if spec.Storage.DelayDelete.Duration <= 0 {
 		return nil
 	}
-	return s.MongoQueue.Enqueue(ctx, DelayedOperation{
+	return queue.Enqueue(ctx, DelayedOperation{
 		Kind:     DelayedDelete,
 		Type:     spec.Type.Ref,
 		Key:      key,

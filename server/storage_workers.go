@@ -8,6 +8,7 @@ import (
 var (
 	errStorageNotConfigured = errors.New("server: storage is not configured")
 	errWorkerNotConfigured  = errors.New("server: delayed task worker is not configured")
+	errHandoffWorkerMissing = errors.New("server: fusion handoff recovery worker is not configured")
 	errWorkerContextMissing = errors.New("server: worker lifecycle context is not configured")
 )
 
@@ -28,8 +29,14 @@ func (s *storageRuntime) startBackgroundWorkers(ctx workerContext) error {
 	if s.delayWorker == nil {
 		return errWorkerNotConfigured
 	}
+	if s.handoffWorker == nil {
+		return errHandoffWorkerMissing
+	}
 	s.workerOnce.Do(func() {
-		s.workerStartErr = s.delayWorker.Start(ctx)
+		s.workerStartErr = errors.Join(
+			s.delayWorker.Start(ctx),
+			s.handoffWorker.Start(ctx),
+		)
 	})
 	return s.workerStartErr
 }

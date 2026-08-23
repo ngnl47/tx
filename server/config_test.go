@@ -66,6 +66,26 @@ func TestRuntimeConfigRejectsInvalidDelayTaskLeasePrecision(t *testing.T) {
 	}
 }
 
+func TestRuntimeConfigRejectsNegativeHandoffCapacity(t *testing.T) {
+	config := RuntimeConfig{
+		DelayTask: DelayTaskConfig{HandoffMaxPendingPerSlot: -1},
+		Health:    HealthConfig{Interval: time.Second, Timeout: time.Second},
+	}
+	if err := config.validate(); err == nil || !strings.Contains(err.Error(), "handoff") {
+		t.Fatalf("RuntimeConfig.validate error = %v, want invalid handoff capacity", err)
+	}
+}
+
+func TestRuntimeConfigPassesHandoffCapacityToStorage(t *testing.T) {
+	config := RuntimeConfig{
+		DelayTask: DelayTaskConfig{HandoffMaxPendingPerSlot: 2048},
+		Health:    HealthConfig{Interval: time.Second, Timeout: time.Second},
+	}
+	if got := config.storageOptions().HandoffMaxPendingPerSlot; got != 2048 {
+		t.Fatalf("HandoffMaxPendingPerSlot = %d, want 2048", got)
+	}
+}
+
 func TestConfigCloneOwnsMutableRoutesAndEndpoints(t *testing.T) {
 	routes := storageconfig.NewRouteTableConfig(map[string]storageconfig.RouteTarget{
 		"main": {Rules: []storageconfig.RouteRule{{Min: 1, Shards: []string{"endpoint-1"}}}},

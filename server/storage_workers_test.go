@@ -6,10 +6,35 @@ import (
 	"time"
 
 	"github.com/ngnl47/tx/lifecycle"
+	"github.com/ngnl47/tx/meta"
+	"github.com/ngnl47/tx/storage"
 	"github.com/ngnl47/tx/storage/fusion"
+	txredis "github.com/ngnl47/tx/storage/redis"
 	"github.com/ngnl47/tx/storage/task"
 	taskmemory "github.com/ngnl47/tx/storage/task/memory"
 )
+
+type emptyHandoffStore struct{}
+
+func (emptyHandoffStore) ReadHandoffs(context.Context, uint64, int, int) ([]txredis.HandoffEntry, uint64, error) {
+	return nil, 0, nil
+}
+
+func (emptyHandoffStore) ReadRecordRevision(context.Context, meta.TypeSpec, storage.RecordKey) (string, error) {
+	return "1", nil
+}
+
+func (emptyHandoffStore) ConfirmHandoff(context.Context, meta.TypeSpec, storage.RecordKey, string, txredis.HandoffReceipt) (bool, error) {
+	return true, nil
+}
+
+type emptyDelayQueue struct{}
+
+func (emptyDelayQueue) Enqueue(context.Context, fusion.DelayedOperation) error { return nil }
+
+func newEmptyHandoffRecoverer() *fusion.HandoffRecoverer {
+	return fusion.NewHandoffRecoverer(meta.NewRegistry(), emptyHandoffStore{}, emptyDelayQueue{})
+}
 
 func TestStartBackgroundWorkersWaitsForActiveTask(t *testing.T) {
 	backend := taskmemory.NewBackend()
@@ -18,7 +43,7 @@ func TestStartBackgroundWorkersWaitsForActiveTask(t *testing.T) {
 	release := make(chan struct{})
 	done := make(chan struct{})
 	root := lifecycle.NewWaitGroupContext(context.Background())
-	store := &storageRuntime{delayWorker: fusion.NewSchedulerWithOptions(backend, fusion.SchedulerOptions{
+	store := &storageRuntime{handoffWorker: newEmptyHandoffRecoverer(), delayWorker: fusion.NewSchedulerWithOptions(backend, fusion.SchedulerOptions{
 		BatchSize:    10,
 		PollInterval: time.Millisecond,
 		Now:          func() time.Time { return now },
@@ -53,6 +78,9 @@ func TestStartBackgroundWorkersRejectsMissingDependencies(t *testing.T) {
 	if err := (&storageRuntime{}).startBackgroundWorkers(root); err == nil {
 		t.Fatal("missing worker error = nil")
 	}
+	if err := (&storageRuntime{delayWorker: fusion.NewScheduler(taskmemory.NewBackend())}).startBackgroundWorkers(root); err == nil {
+		t.Fatal("missing handoff worker error = nil")
+	}
 	if err := (&storageRuntime{}).startBackgroundWorkers(nil); err == nil {
 		t.Fatal("nil lifecycle error = nil")
 	}
@@ -66,7 +94,7 @@ func TestStartBackgroundWorkersStartsOnlyOnce(t *testing.T) {
 	started := make(chan string, 2)
 	release := make(chan struct{})
 	root := lifecycle.NewWaitGroupContext(context.Background())
-	store := &storageRuntime{delayWorker: fusion.NewSchedulerWithOptions(backend, fusion.SchedulerOptions{
+	store := &storageRuntime{handoffWorker: newEmptyHandoffRecoverer(), delayWorker: fusion.NewSchedulerWithOptions(backend, fusion.SchedulerOptions{
 		BatchSize:    1,
 		PollInterval: time.Millisecond,
 		Now:          func() time.Time { return now },

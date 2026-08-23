@@ -12,6 +12,7 @@ import (
 	redis "github.com/redis/go-redis/v9"
 
 	"github.com/ngnl47/tx/storage"
+	txredis "github.com/ngnl47/tx/storage/redis"
 )
 
 var errRedisClientNotConfigured = errors.New("redis client is not configured")
@@ -61,6 +62,38 @@ func (c Client) Eval(ctx context.Context, script string, keys []string, args ...
 	if err != nil {
 		return "", redisBackendError("eval", err)
 	}
+	return decodeEvalResult(value)
+}
+
+func (c Client) EvalBatch(ctx context.Context, calls []txredis.ScriptCall) ([]string, error) {
+	if c.client == nil {
+		return nil, errRedisClientNotConfigured
+	}
+	commands := make([]*redis.Cmd, len(calls))
+	_, err := c.client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		for index, call := range calls {
+			commands[index] = pipe.Eval(ctx, call.Script, call.Keys, call.Args...)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, redisBackendError("eval batch", err)
+	}
+	results := make([]string, len(commands))
+	for index, command := range commands {
+		value, err := command.Result()
+		if err != nil {
+			return nil, redisBackendError("eval batch", err)
+		}
+		results[index], err = decodeEvalResult(value)
+		if err != nil {
+			return nil, fmt.Errorf("redis eval batch call %d: %w", index, err)
+		}
+	}
+	return results, nil
+}
+
+func decodeEvalResult(value any) (string, error) {
 	switch value := value.(type) {
 	case string:
 		return value, nil

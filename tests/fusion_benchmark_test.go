@@ -19,6 +19,15 @@ func (benchmarkFusionRedisApplier) ApplyChangesWithOptions(_ context.Context, sp
 	return err
 }
 
+func (benchmarkFusionRedisApplier) ApplyChangesWithHandoff(_ context.Context, spec meta.TypeSpec, _ storage.RecordKey, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver, _ storage.ApplyOptions, _ txredis.HandoffOptions) (txredis.HandoffReceipt, error) {
+	_, err := txredis.BuildDocumentPatches(spec, source, resolver, values)
+	return txredis.HandoffReceipt{Revision: "1", Token: "token-1"}, err
+}
+
+func (benchmarkFusionRedisApplier) ConfirmHandoff(context.Context, meta.TypeSpec, storage.RecordKey, string, txredis.HandoffReceipt) (bool, error) {
+	return true, nil
+}
+
 type benchmarkFusionMongoLoader struct{}
 
 func (benchmarkFusionMongoLoader) LoadDocument(context.Context, meta.TypeSpec, storage.RecordKey, ...string) (map[string]any, bool, error) {

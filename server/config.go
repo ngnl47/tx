@@ -63,10 +63,11 @@ type RuntimeConfig struct {
 }
 
 type DelayTaskConfig struct {
-	RouteType string
-	Prefix    string
-	Buckets   int
-	Lease     time.Duration
+	RouteType                string
+	Prefix                   string
+	Buckets                  int
+	Lease                    time.Duration
+	HandoffMaxPendingPerSlot int
 }
 
 type SchedulerConfig struct {
@@ -182,6 +183,9 @@ func (config RuntimeConfig) validate() error {
 	if config.DelayTask.Lease < 0 || config.DelayTask.Lease > 0 && config.DelayTask.Lease < time.Millisecond {
 		return fmt.Errorf("server: delay task lease must be zero or at least 1ms")
 	}
+	if config.DelayTask.HandoffMaxPendingPerSlot < 0 {
+		return fmt.Errorf("server: fusion handoff max pending per slot must be greater than or equal to 0")
+	}
 	if config.Scheduler.BatchSize < 0 {
 		return fmt.Errorf("server: scheduler batch size must be greater than or equal to 0")
 	}
@@ -209,6 +213,7 @@ func (config RuntimeConfig) storageOptions() storageOptions {
 		DelayTaskPrefix:          config.DelayTask.Prefix,
 		DelayTaskBuckets:         config.DelayTask.Buckets,
 		DelayTaskLease:           config.DelayTask.Lease,
+		HandoffMaxPendingPerSlot: config.DelayTask.HandoffMaxPendingPerSlot,
 		SchedulerBatchSize:       config.Scheduler.BatchSize,
 		SchedulerPoll:            config.Scheduler.PollInterval,
 		SchedulerRetryInitial:    config.Scheduler.RetryInitial,

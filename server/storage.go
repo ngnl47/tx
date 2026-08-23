@@ -37,6 +37,7 @@ type storageOptions struct {
 	DelayTaskPrefix          string
 	DelayTaskBuckets         int
 	DelayTaskLease           time.Duration
+	HandoffMaxPendingPerSlot int
 	SchedulerBatchSize       int
 	SchedulerPoll            time.Duration
 	SchedulerRetryInitial    time.Duration
@@ -48,15 +49,16 @@ type storageOptions struct {
 }
 
 type storageRuntime struct {
-	ctx          context.Context
-	redis        *txredis.Cluster
-	mongo        *txmongo.Cluster
-	wal          wal.Store
-	fusion       txfusion.Strategy
-	delayBackend *txtaskredis.Backend
-	delayQueue   *txfusion.TaskQueue
-	delayHandler txfusion.DelayTaskHandler
-	delayWorker  *txfusion.Scheduler
+	ctx           context.Context
+	redis         *txredis.Cluster
+	mongo         *txmongo.Cluster
+	wal           wal.Store
+	fusion        txfusion.Strategy
+	delayBackend  *txtaskredis.Backend
+	delayQueue    *txfusion.TaskQueue
+	delayHandler  txfusion.DelayTaskHandler
+	delayWorker   *txfusion.Scheduler
+	handoffWorker *txfusion.HandoffRecoverer
 
 	workerOnce     sync.Once
 	workerStartErr error
@@ -110,12 +112,13 @@ func newStorage(ctx context.Context, cfg StorageConfig, opts storageOptions, typ
 		store.wal = healthAwareWAL{storage: store, next: walStore}
 	}
 	store.fusion = txfusion.Strategy{
-		RedisApplier:  redisCluster,
-		RedisLoader:   redisCluster,
-		RedisReplacer: redisCluster,
-		RedisLocker:   redisCluster,
-		MongoLoader:   mongoCluster,
-		MongoQueue:    delayQueue,
+		RedisApplier:             redisCluster,
+		RedisLoader:              redisCluster,
+		RedisReplacer:            redisCluster,
+		RedisLocker:              redisCluster,
+		MongoLoader:              mongoCluster,
+		MongoQueue:               delayQueue,
+		HandoffMaxPendingPerSlot: opts.HandoffMaxPendingPerSlot,
 	}
 	if err := store.fusion.Validate(); err != nil {
 		closeRedisClients(redisClients)
@@ -137,6 +140,13 @@ func newStorage(ctx context.Context, cfg StorageConfig, opts storageOptions, typ
 		RetryMaxDelay:     opts.SchedulerRetryMax,
 		RetryJitter:       opts.SchedulerRetryJitter,
 		Handler:           store.delayHandler,
+	})
+	store.handoffWorker = txfusion.NewHandoffRecovererWithOptions(types, redisCluster, delayQueue, txfusion.HandoffRecovererOptions{
+		PollInterval:      opts.SchedulerPoll,
+		RetryInitialDelay: opts.SchedulerRetryInitial,
+		RetryMultiplier:   opts.SchedulerRetryMultiplier,
+		RetryMaxDelay:     opts.SchedulerRetryMax,
+		RetryJitter:       opts.SchedulerRetryJitter,
 	})
 	return store, nil
 }
