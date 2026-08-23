@@ -33,10 +33,11 @@ func (s *storageRuntime) startBackgroundWorkers(ctx workerContext) error {
 		return errHandoffWorkerMissing
 	}
 	s.workerOnce.Do(func() {
-		s.workerStartErr = errors.Join(
-			s.delayWorker.Start(ctx),
-			s.handoffWorker.Start(ctx),
-		)
+		if err := s.handoffWorker.Start(ctx); err != nil {
+			s.workerStartErr = err
+			return
+		}
+		s.workerStartErr = s.delayWorker.Start(ctx)
 	})
 	return s.workerStartErr
 }

@@ -111,6 +111,13 @@ func newStorage(ctx context.Context, cfg StorageConfig, opts storageOptions, typ
 	if walStore != nil {
 		store.wal = healthAwareWAL{storage: store, next: walStore}
 	}
+	store.handoffWorker = txfusion.NewHandoffRecovererWithOptions(types, redisCluster, delayQueue, txfusion.HandoffRecovererOptions{
+		EntriesPerSlot:    opts.HandoffMaxPendingPerSlot,
+		RetryInitialDelay: opts.SchedulerRetryInitial,
+		RetryMultiplier:   opts.SchedulerRetryMultiplier,
+		RetryMaxDelay:     opts.SchedulerRetryMax,
+		RetryJitter:       opts.SchedulerRetryJitter,
+	})
 	store.fusion = txfusion.Strategy{
 		RedisApplier:             redisCluster,
 		RedisLoader:              redisCluster,
@@ -118,6 +125,7 @@ func newStorage(ctx context.Context, cfg StorageConfig, opts storageOptions, typ
 		RedisLocker:              redisCluster,
 		MongoLoader:              mongoCluster,
 		MongoQueue:               delayQueue,
+		HandoffRetryer:           store.handoffWorker,
 		HandoffMaxPendingPerSlot: opts.HandoffMaxPendingPerSlot,
 	}
 	if err := store.fusion.Validate(); err != nil {
@@ -140,13 +148,6 @@ func newStorage(ctx context.Context, cfg StorageConfig, opts storageOptions, typ
 		RetryMaxDelay:     opts.SchedulerRetryMax,
 		RetryJitter:       opts.SchedulerRetryJitter,
 		Handler:           store.delayHandler,
-	})
-	store.handoffWorker = txfusion.NewHandoffRecovererWithOptions(types, redisCluster, delayQueue, txfusion.HandoffRecovererOptions{
-		PollInterval:      opts.SchedulerPoll,
-		RetryInitialDelay: opts.SchedulerRetryInitial,
-		RetryMultiplier:   opts.SchedulerRetryMultiplier,
-		RetryMaxDelay:     opts.SchedulerRetryMax,
-		RetryJitter:       opts.SchedulerRetryJitter,
 	})
 	return store, nil
 }

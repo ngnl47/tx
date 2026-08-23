@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -14,10 +15,12 @@ import (
 	taskmemory "github.com/ngnl47/tx/storage/task/memory"
 )
 
-type emptyHandoffStore struct{}
+type emptyHandoffStore struct {
+	readErr error
+}
 
-func (emptyHandoffStore) ReadHandoffs(context.Context, uint64, int, int) ([]txredis.HandoffEntry, uint64, error) {
-	return nil, 0, nil
+func (s emptyHandoffStore) ReadHandoffs(context.Context, uint64, int, int) ([]txredis.HandoffEntry, uint64, error) {
+	return nil, 0, s.readErr
 }
 
 func (emptyHandoffStore) ReadRecordRevision(context.Context, meta.TypeSpec, storage.RecordKey) (string, error) {
@@ -34,6 +37,41 @@ func (emptyDelayQueue) Enqueue(context.Context, fusion.DelayedOperation) error {
 
 func newEmptyHandoffRecoverer() *fusion.HandoffRecoverer {
 	return fusion.NewHandoffRecoverer(meta.NewRegistry(), emptyHandoffStore{}, emptyDelayQueue{})
+}
+
+func TestStartBackgroundWorkersDoesNotStartSchedulerWhenHandoffRecoveryFails(t *testing.T) {
+	recoveryErr := errors.New("handoff recovery unavailable")
+	started := make(chan struct{}, 1)
+	root := lifecycle.NewWaitGroupContext(context.Background())
+	backend := taskmemory.NewBackend()
+	now := time.Unix(100, 0)
+	scheduler := fusion.NewSchedulerWithOptions(backend, fusion.SchedulerOptions{
+		PollInterval: time.Millisecond,
+		Now:          func() time.Time { return now },
+		Handler: fusion.DelayTaskHandlerFunc(func(context.Context, task.DelayTask) error {
+			started <- struct{}{}
+			return nil
+		}),
+	})
+	if err := scheduler.Schedule(root, task.DelayTask{Type: "role", ID: "1", Action: "save", DueAt: now}); err != nil {
+		t.Fatalf("Schedule returned error: %v", err)
+	}
+	store := &storageRuntime{
+		handoffWorker: fusion.NewHandoffRecoverer(meta.NewRegistry(), emptyHandoffStore{readErr: recoveryErr}, emptyDelayQueue{}),
+		delayWorker:   scheduler,
+	}
+
+	err := store.startBackgroundWorkers(root)
+	if !errors.Is(err, recoveryErr) {
+		t.Fatalf("StartBackgroundWorkers error = %v, want handoff recovery error", err)
+	}
+	select {
+	case <-started:
+		t.Fatal("scheduler started after handoff readiness failed")
+	case <-time.After(20 * time.Millisecond):
+	}
+	root.Cancel()
+	root.WaitDoneAndWaitGroupWait()
 }
 
 func TestStartBackgroundWorkersWaitsForActiveTask(t *testing.T) {

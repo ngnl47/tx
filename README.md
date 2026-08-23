@@ -3302,9 +3302,16 @@ Fusion 策略的当前保存路径：
 8. 任务成功后通过 Lua complete 删除该任务在 Redis 队列中的状态。
 
 交接标记解决“Redis 已写成功，但进程在 delayed task 入队前退出”的故障窗口。它只保存稳定的
-`Type + ID + ShardKey`，不保存 GD、Store、变更文档、任务 action、`due` 或重试次数。后台
-`HandoffRecoverer` 轮询固定的 16384 个物理 slot Hash，按当前 `TypeSpec` 重建既有 save/delete
-任务；它不会执行 Redis `SCAN`，也不会成为第二套任务队列。任务入队或条件确认失败时标记保留，下一轮继续恢复。
+`Type + ID + ShardKey`，不保存 GD、Store、变更文档、任务 action、`due` 或重试次数。进程仍存活时，
+`HandoffRecoverer` 只重试本进程已知入队或确认失败的 marker；相同 marker 只保留最新 token。进程在交接窗口退出时，
+下一次启动会在业务服务和 delayed task Scheduler 启动前完整遍历一次所有 Redis endpoint 的固定物理 slot Hash，
+按当前 `TypeSpec` 重建 save/delete 任务。运行期不再周期遍历所有 slot，不需要为恢复器分配 worker 身份，也不会执行
+Redis `SCAN` 或形成第二套任务队列。
+
+标准 `server` 不把 Redis `PING` 成功等同于 Fusion 恢复链路可用。启动恢复使用真实
+`read_handoffs.lua` 读取全部固定 slot；若 Redis 版本不支持 `HRANDFIELD ... WITHVALUES`、ACL 禁止该命令、
+Lua 不可执行、返回协议损坏或遗留 marker 无法恢复，`Server.Run` 会直接返回启动错误，延迟回写 Scheduler 和业务
+服务都不会启动。例如 Redis 连接正常但账号缺少 `HRANDFIELD` 权限时，不能让进程进入 running 后再异步报告恢复失败。
 
 延迟任务队列使用 bucket hash tag，支持多个服务实例并发消费。语义是 at-least-once，Mongo 回写必须保持存储幂等。
 任务失败重试时，Scheduler 会输出结构化错误日志；失败原因不写入 Redis 任务状态，避免错误字符串占用队列内存。重试间隔由 lease 的持久化 `Attempts` 计算：`retryInitialDelay` 按 `retryMultiplier` 递增至 `retryMaxDelay`，并可施加不超过最大值的 `retryJitter`。达到上限后任务持续重试，不会因次数耗尽被丢弃。
@@ -3334,7 +3341,7 @@ Fusion 延迟任务队列接受保存 action 和 Redis 热数据淘汰 action；
 数值定位在 Redis 任务载荷中精确往返。比如业务使用
 `uint64(9223372036854775809)` 作为记录 ID 时，claim 后仍得到同一个 `uint64`；框架不会先转成
 `float64` 再舍入，否则 `Complete` 会计算出另一个幂等任务键并让原 lease 无法正常结算。
-Fusion 保存路径要求 Redis change applier、Mongo document loader 与 Fusion 延迟任务队列都已装配；缺少其中任一项时，非空变更会在 Redis I/O 前返回错误。延迟任务执行还要求 handler、Redis 文档读取、Mongo replace 和 Redis 热数据淘汰所需的 revision/lock 组件完整可用。`Strategy.Validate()` 会汇总检查 Redis change applier、document loader、document replacer、record locker、Mongo document loader 和 Fusion 延迟任务队列；项目启动阶段必须在 Redis/Mongo 探活后调用它。`txgame/server` 的 `NewStorage` 已执行这两步，任一依赖或连接不可达即启动失败。`Scheduler.Start` 也返回 `error`，项目启动代码必须处理，不能在 worker 未运行时继续对外服务：
+Fusion 保存路径要求 Redis change applier、Mongo document loader、Fusion 延迟任务队列与交接定点重试器都已装配；缺少其中任一项时，非空变更会在 Redis I/O 前返回错误。延迟任务执行还要求 handler、Redis 文档读取、Mongo replace 和 Redis 热数据淘汰所需的 revision/lock 组件完整可用。`Strategy.Validate()` 会汇总检查 Redis change applier、document loader、document replacer、record locker、Mongo document loader、Fusion 延迟任务队列和交接定点重试器；项目启动阶段必须在 Redis/Mongo 探活后调用它。标准 `server` 还会执行一轮完整启动恢复，验证恢复协议所需命令、Lua 和 ACL 权限并处理遗留 marker。`txgame/server` 的 `NewStorage` 已执行依赖装配和连接探活，worker 启动边界执行完整恢复；任一环节失败都不会继续启动业务服务。`Scheduler.Start` 也返回 `error`，项目启动代码必须处理，不能在 worker 未运行时继续对外服务：
 
 ```go
 if err := scheduler.Start(appContext); err != nil {
@@ -3442,10 +3449,15 @@ err := db.Save(role)
 // Redis 中的新名字和同槽交接标记都已经存在。
 ```
 
-服务恢复后不需要读取或重放这次 Store 变更。`HandoffRecoverer` 只读取交接标记中的记录定位，按
+`db.Save` 返回原错误，Store 变更仍保留；同时 Recoverer 用独立于请求的服务生命周期登记该 marker。进程存活时，
+后台只按 marker 定点重试，不遍历其他 slot。若 save 任务已经入队、delete 任务失败，重试会按同一幂等任务键覆盖或
+合并现有任务，不会产生第二份并发 lease。
+
+如果进程在登记本地重试前退出，Redis 同槽 marker 仍然存在。下一次服务启动会完整遍历一次固定 slot，按
 `GDRoleTypeSpec` 重新登记 save/delete 任务，然后用当前 `@v` 与读取到的 token 条件移除记录。若恢复期间又有一次
 业务写入使 revision 从 `18` 变为 `19`，或删除重建后 revision 再次从 `1` 开始，旧 token 都不能删除新交接记录；
-下一轮会继续按 Redis 当前最终状态恢复。合法的 revision 条件热数据淘汰会在同一条 Lua 中清理 marker，避免残留。
+新 token 会留给当前进程的定点重试或下一次启动恢复。合法的 revision 条件热数据淘汰会在同一条 Lua 中清理 marker，
+避免残留。
 
 ### 延迟回写任务
 

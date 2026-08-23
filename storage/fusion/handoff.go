@@ -1,6 +1,8 @@
 package fusion
 
 import (
+	"errors"
+
 	"github.com/ngnl47/tx/meta"
 	"github.com/ngnl47/tx/storage"
 	txredis "github.com/ngnl47/tx/storage/redis"
@@ -8,6 +10,12 @@ import (
 )
 
 const defaultHandoffMaxPendingPerSlot = 1024
+
+// HandoffRetryer 接收 Redis 热写完成后未能完成的交接记录。
+// 普通业务保存不直接使用该接口。
+type HandoffRetryer interface {
+	QueueHandoffRetry(txredis.HandoffEntry) error
+}
 
 type handoffMarker struct {
 	Type     string `json:"type"`
@@ -29,4 +37,14 @@ func (s Strategy) handoffMaxPendingPerSlot() int {
 		return s.HandoffMaxPendingPerSlot
 	}
 	return defaultHandoffMaxPendingPerSlot
+}
+
+func (s Strategy) queueHandoffRetry(marker string, receipt txredis.HandoffReceipt, cause error) error {
+	if isNilFusionDependency(s.HandoffRetryer) {
+		return errors.Join(cause, ErrHandoffRetryerNotConfigured)
+	}
+	if err := s.HandoffRetryer.QueueHandoffRetry(txredis.HandoffEntry{Marker: marker, Token: receipt.Token}); err != nil {
+		return errors.Join(cause, err)
+	}
+	return cause
 }

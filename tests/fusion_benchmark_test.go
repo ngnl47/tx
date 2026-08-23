@@ -40,14 +40,21 @@ func (benchmarkFusionQueue) Enqueue(context.Context, fusion.DelayedOperation) er
 	return nil
 }
 
+type benchmarkHandoffRetryer struct{}
+
+func (benchmarkHandoffRetryer) QueueHandoffRetry(txredis.HandoffEntry) error {
+	return nil
+}
+
 var benchmarkFusionErr error
 
 func BenchmarkFusionStrategyApplyChanges(b *testing.B) {
 	ctx := context.Background()
 	strategy := fusion.Strategy{
-		RedisApplier: benchmarkFusionRedisApplier{},
-		MongoLoader:  benchmarkFusionMongoLoader{},
-		MongoQueue:   benchmarkFusionQueue{},
+		RedisApplier:   benchmarkFusionRedisApplier{},
+		MongoLoader:    benchmarkFusionMongoLoader{},
+		MongoQueue:     benchmarkFusionQueue{},
+		HandoffRetryer: benchmarkHandoffRetryer{},
 	}
 	resolver := change.FieldNameResolverFunc(func(field change.FieldID, kind change.FieldNameKind) string {
 		if kind == change.FieldNameGo {

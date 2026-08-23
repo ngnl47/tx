@@ -1132,8 +1132,13 @@ sequenceDiagram
     B->>Q: Enqueue save/delete
     alt 全部入队成功
         B->>H: revision==18 且 token==token-A 时 HDEL
-    else 入队失败或进程退出
-        H-->>W: 固定 slot Hash 返回 marker/token
+    else 入队或确认失败且进程存活
+        B->>W: QueueHandoffRetry(marker, token-A)
+        W->>R: 读取当前 revision
+        W->>Q: 按当前 TypeSpec 重建 save/delete
+        W->>H: revision 和 token 均未变化时 HDEL
+    else 进程在交接窗口退出
+        H-->>W: 下一次启动完整遍历时返回 marker/token
         W->>R: 读取当前 revision
         W->>Q: 按当前 TypeSpec 重建 save/delete
         W->>H: revision 和 token 均未变化时 HDEL
@@ -1144,15 +1149,25 @@ sequenceDiagram
 `TypeSpec.Storage.DelaySave/DelayDelete` 重新调用现有入队逻辑；几毫秒级到期时间差不改变延迟保存语义。
 真正的到期、lease、pending、attempts 与指数退避只存在于 delayed task backend。
 
-恢复器按物理 slot 游标分批调用 `HRANDFIELD ... WITHVALUES`，同一 Redis endpoint 的多条读取通过 pipeline 提交。
-空 Hash 返回空 JSON 数组；损坏 marker、未知 TypeSpec、revision 缺失、入队失败或确认失败都返回明确错误并保留记录。
-某个 endpoint 读取失败时游标推进到下一个 endpoint，错误仍向上报告，但健康 endpoint 不会被永久饿死。
-循环级故障使用全局指数退避并封顶，恢复成功后回到固定轮询间隔；不为每个 marker 维护额外重试时间。
+恢复分为两个互补阶段：
+
+1. **启动全量恢复**：`HandoffRecoverer.Start` 在注册 goroutine 前从 cursor `0` 开始完整走完一轮全部 Redis endpoint
+   的固定物理 slot。每批调用 `HRANDFIELD ... WITHVALUES`，同一 endpoint 的多条读取通过 pipeline 提交；每个 Hash
+   的读取上限与写入侧 `HandoffMaxPendingPerSlot` 一致。任一读取、marker 解码、TypeSpec 查找、任务入队或确认失败都
+   直接终止启动。标准 server 只有在完整恢复成功后才启动 delayed task Scheduler 和业务服务。
+2. **运行期定点重试**：Redis 热写成功后，若任务入队或交接确认调用失败，`Strategy` 返回原始错误并把本次
+   `marker + token` 登记到进程内去重表。相同 marker 只保留最新 token；后台循环只处理这张表，失败时使用有上限的
+   指数退避，成功后删除对应 token。它不调用 `ReadHandoffs`，不遍历 slot，也不需要选举 leader 或分配微服务身份。
+
+空 Hash 返回空 JSON 数组。启动全量恢复本身会执行真实读取脚本，因此同时验证 Redis 命令版本、Lua、ACL 和返回
+协议，无需再维护单独的能力探测接口。运行期去重表是进程内故障恢复状态，不是第二套持久化 outbox；若进程退出，
+本地状态可以丢失，因为同槽 marker 仍由下一次启动全量恢复接管。部署环境必须由进程守护或容器编排重新拉起异常
+退出的 storage runtime；若长期没有新进程启动，marker 和 Redis 脏热文档会安全保留，但对应 Mongo 回写也会停留等待。
 
 revision 与随机 token 共同构成 fencing：恢复器读取 revision `18` 和 token-A 后，若业务又写出 revision `19`
 和 token-B，旧恢复器只能得到 stale。即使热记录被合法删除后新生命周期的 revision 又从 `1` 开始，旧 token-A
 也不能删除 token-B。合法的 revision 条件热数据删除会在同一条 Lua 中清理该记录的 marker，避免无主记录长期占用容量。
-下一轮恢复按 Redis 当前终态重建任务；既有任务键会在 delayed task backend 中合并，不产生并发 lease。
+后续定点重试或启动恢复按 Redis 当前终态重建任务；既有任务键会在 delayed task backend 中合并，不产生并发 lease。
 
 单 slot 标记容量只限制尚未确认的不同根记录数。Hash 已包含同一 marker 时，后续高频更新仍允许继续写；Hash
 达到上限后，新的根记录在 patch 前失败，避免 delayed task backend 长期不可用时交接索引无界增长。该上限不是
@@ -1256,7 +1271,9 @@ Mongo 或 Fusion 延迟任务队列故障时，脏热数据允许超过 `delayDe
 | Mongo | Mongo |
 | Fusion | Redis 和 Mongo |
 
-启动时探活并 fast-fail；运行期由真实 I/O 错误和后台探针维护 backend generation。每次业务调用不额外 Ping。
+启动时探活并 fast-fail；Fusion 除连接探活外，还必须完整恢复一次全部 Redis endpoint 的交接 Hash，
+该过程同时验证交接读取脚本可执行。
+运行期由真实 I/O 错误和后台探针维护 backend generation。每次业务调用不额外 Ping。
 
 Redis 与 Mongo 的 Adapter/Cluster 构造器都在启动装配阶段校验完整 client、router 和 shard 集合，不能创建一个等待首次
 业务 I/O 才失败的半装配对象。变更写入口把 nil 或 typed-nil `change.Source` 视为调用契约错误；有效 Source 明确返回

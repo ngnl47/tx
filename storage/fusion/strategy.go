@@ -34,6 +34,8 @@ type Strategy struct {
 	RedisLocker   storage.RecordLocker
 	MongoLoader   storage.DocumentLoader
 	MongoQueue    DelayQueue
+	// HandoffRetryer 定点重试 Redis 热写后未完成的 delayed task 交接。
+	HandoffRetryer HandoffRetryer
 	// HandoffMaxPendingPerSlot 限制单个 Redis 物理 slot 中尚未确认的根记录数。
 	// 零值使用框架默认值；已登记记录不受该上限阻止，可以继续覆盖更新。
 	HandoffMaxPendingPerSlot int
@@ -62,6 +64,9 @@ func (s Strategy) Validate() error {
 	}
 	if isNilFusionDependency(s.MongoQueue) {
 		missing = append(missing, "mongo delayed queue")
+	}
+	if isNilFusionDependency(s.HandoffRetryer) {
+		missing = append(missing, "handoff retryer")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("%w: %s", ErrStrategyDependenciesNotConfigured, strings.Join(missing, ", "))
@@ -100,10 +105,13 @@ func (s Strategy) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 		return err
 	}
 	if err := enqueueDelayedWrites(ctx, s.MongoQueue, spec, key); err != nil {
-		return err
+		return s.queueHandoffRetry(marker, receipt, err)
 	}
 	_, err = redisWriter.ConfirmHandoff(ctx, spec, key, marker, receipt)
-	return err
+	if err != nil {
+		return s.queueHandoffRetry(marker, receipt, err)
+	}
+	return nil
 }
 
 // LoadDocument 优先从 Redis 读取，未命中时回源 Mongo。
@@ -217,6 +225,9 @@ func (s Strategy) writeDependencies() (txredis.HandoffWriter, error) {
 	}
 	if isNilFusionDependency(s.MongoLoader) {
 		return nil, fmt.Errorf("%w: mongo document loader", ErrStrategyDependenciesNotConfigured)
+	}
+	if isNilFusionDependency(s.HandoffRetryer) {
+		return nil, ErrHandoffRetryerNotConfigured
 	}
 	return s.RedisApplier, nil
 }

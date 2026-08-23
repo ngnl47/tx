@@ -116,7 +116,7 @@ func (c *Cluster) ConfirmHandoff(ctx context.Context, spec meta.TypeSpec, key st
 	return adapter.ConfirmHandoff(ctx, spec, key, marker, receipt)
 }
 
-// ReadHandoffs 轮询所有已装配 Redis endpoint 的固定物理 slot Hash，不扫描 keyspace。
+// ReadHandoffs 分批读取所有已装配 Redis endpoint 的固定物理 slot Hash，不扫描 keyspace。
 func (c *Cluster) ReadHandoffs(ctx context.Context, cursor uint64, slotLimit int, entryLimit int) ([]HandoffEntry, uint64, error) {
 	if c == nil || len(c.order) == 0 || slotLimit <= 0 || entryLimit <= 0 {
 		return nil, cursor, ErrInvalidHandoff

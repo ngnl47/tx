@@ -12,4 +12,5 @@ var (
 	ErrMongoQueueNotConfigured            = errors.New("fusion: mongo delayed queue is not configured")
 	ErrHandoffStoreNotConfigured          = errors.New("fusion: handoff store is not configured")
 	ErrHandoffTypesNotConfigured          = errors.New("fusion: handoff type registry is not configured")
+	ErrHandoffRetryerNotConfigured        = errors.New("fusion: handoff retryer is not configured")
 )
