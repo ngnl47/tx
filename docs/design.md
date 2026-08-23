@@ -536,7 +536,7 @@ Store 不保存第二份业务数据，也不保存每次操作的 value、时�
 | 合并上下文 | 帧内合并 | `StoreView.Merge(next)` | 按批次先后合并同一主 Store 捕获的独立 StoreView；`next` 表示后发生批次 |
 | 合并上下文 | 覆盖吸收 | 父级 `OpReplace/OpClear/OpDelete` | 父路径已经完整决定写入语义，子路径不再单独输出 |
 | 防御上下文 | 祖先提升 | 最近安全祖先的 `OpReplace` | 超深路径、Store 合并冲突或后端路径限制下的正确性降级 |
-| 容量上下文 | 容量收敛 | `storage.CollapsibleChangeStore`、`CollapseChanges()` | 单根变更位置超预算后，清理细粒度状态并改为可更新顶层字段 Replace |
+| 容量上下文 | 容量收敛 | `storage.CollapsibleChangeStore`、`CollapseChanges()` | 单根变更位置超预算后，清理细粒度状态并只 Replace 实际变脏的顶层分支 |
 | 输出上下文 | 边界文档构建 | `Document(kind)`、`change.BuildDocument`、Redis/Mongo document builder | 转换字段名、解析当前值并形成目标边界需要的文档 |
 | 输出上下文 | 独立视图 | StoreView | 保存捕获时刻的稀疏值和路径状态，不再引用可变根 GD；完成累计后按只读视图使用 |
 | 输出上下文 | 编码载荷 | BON/JSON/BSON `[]byte` | 由视图、变更文档或其他独立对象编码而成；发布后按只读载荷使用 |
@@ -871,6 +871,8 @@ Slice：
 同日增加公开 `Path` 合法性防线后，先消除边界、`FullPath` 与生成 resolver 的重复扫描，再以相同 1024 key 场景复测：Redis 为约 `0.920-0.992 ms/op, 359 KB/op, 4691 allocs/op`，Mongo 为约 `0.984-1.029 ms/op, 330 KB/op, 5716 allocs/op`。结果仍处于原有波动区间且分配次数未增加；完整节点校验只在 I/O/文档边界执行一次，生成 resolver 仅保留固定数组深度护栏。
 
 2026-08-23 继续消除存储边界的重复路径构造：`Path.FieldNameAt` 在不创建 `DocumentPath` 的情况下解析单个字段，并保留嵌套类型的 `PathFieldNameResolver` 语义。Redis/Mongo 只用根 Go 字段查询元数据，因此不再为每条变更额外构造完整 Go 路径；JSON/BSON 输出路径仍在对应边界完整解析。相同 1024 key 基准中，Redis 从约 `359 KB/op, 4691 allocs/op` 降至 `292 KB/op, 2743 allocs/op`，Mongo 从约 `330 KB/op, 5716 allocs/op` 降至 `263 KB/op, 3768 allocs/op`，两者每次均减少约 66.5 KB 和 1948 次分配，耗时未出现稳定回退。
+
+同日使用 txgame 真实生成 `GDRole.Items` 把容量成本拆为记录、遍历和最终边界三段。测试先创建 1024 个已有 `GDItem`，再通过子 Store 修改每个 `Quantity`：记录状态约为 `0.340-0.359 ms/op, 290 KB/op, 3126 allocs/op`；对已经记录的状态反复执行 `VisitChanges` 约为 `0.250-0.264 ms/op, 0 B/op, 0 allocs/op`；Redis patch 约为 `0.777-0.846 ms/op, 292 KB/op, 2743 allocs/op`，Mongo update document 约为 `0.848-0.871 ms/op, 263 KB/op, 3768 allocs/op`。这说明首次创建强类型集合子 Store 和最终文档仍是主要分配来源，保留状态的同步遍历不会在每轮 Flush 额外分配。当前不增加按估算字节拒绝或收敛的配置；只有真实服务证明 dirty tree 的常驻内存无法由 `MaxRootChanges`、`MaxPendingRoots` 和进程 Heap 观测解释时，才重新评审 byte 预算。
 
 同日继续把生成 GD 的三个常驻运行时字段收敛为一个懒分配 sidecar。使用 txgame 的真实生成结构与参考工程做 `unsafe.Sizeof` 对比：
 
@@ -1508,11 +1510,11 @@ Runtime 不复制 GD，也不异步保存脱离对象的变更值。Flush 必须
 
 容量保护分为：
 
-- `MaxRootChanges`：单根路径条目超过预算时收敛为顶层 Replace。
+- `MaxRootChanges`：单根路径条目超过预算时，只把实际变脏的顶层分支收敛为 Replace。
 - `MaxPendingRoots`：可选的待刷根对象数量硬限制。
 - `HeapSoftLimitBytes`：进程 Heap 软告警，不拒绝业务。
 
-`MaxRootChanges` 通过 Runtime 私有的 `Source` visitor 装饰器执行。未超预算时，adapter 在构建完整内存文档的同一次遍历中完成计数，随后才执行第一次外部 I/O；超预算时 visitor 返回内部错误，adapter 丢弃尚未写出的临时文档，Runtime 将 Store 收敛为顶层 Replace 后重新构建。这个契约要求所有 `storage.ChangeApplier` 都先完整访问变更并处理错误，再进行外部 I/O，不能边遍历边写远端。
+`MaxRootChanges` 通过 Runtime 私有的 `Source` visitor 装饰器执行。未超预算时，adapter 在构建完整内存文档的同一次遍历中完成计数，随后才执行第一次外部 I/O；超预算时 visitor 返回内部错误，adapter 丢弃尚未写出的临时文档，Runtime 先记录当前状态树中实际变脏的顶层分支，再清理细路径并只把这些分支收敛为 Replace。比如 `Items[1].Quantity` 与 `Items[2].Quantity` 超预算后只输出当前完整 `Items`，不会把部分加载对象中未修改的 `Name`、`Power` 零值写入数据库。这个契约要求所有 `storage.ChangeApplier` 都先完整访问变更并处理错误，再进行外部 I/O，不能边遍历边写远端。
 
 HeapAlloc 受整个进程影响，不能作为 Manager 拒绝服务的唯一依据。外部存储不可用时，应由项目健康闸门先拒绝新的持久化业务；已经 pending 的对象保留并等待恢复。
 

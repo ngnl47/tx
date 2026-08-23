@@ -2178,7 +2178,16 @@ if err := runtime.Shutdown(context.WithoutCancel(serviceCtx)); err != nil {
 
 `Run` 遇到单次写入错误会记录错误并保留目标，下一轮继续重试。`Shutdown` 在 `ShutdownFlushTimeout` 有效期内立即 Flush 并按 `FlushInterval` 继续尝试；截止时间到达时会返回错误和剩余待刷数量。该超时只约束内存 Store 到 Redis 的最终刷盘，不等待 Fusion 的 Redis 延迟队列回写 Mongo。第一版不把 Store 或 GD 指针交给 Actor 外的异步写队列；如未来需要解除 Flush 的 I/O 持锁时间，应在锁内生成与 GD 脱离的后端写入命令，并在交给异步队列后遵守只读发布契约，同时补齐顺序确认与失败重试语义。
 
-`MaxRootChanges` 限制单个 pending root 的细粒度变更数量。Runtime 只在 `Flush` 取得该对象锁、准备构建文档时检查，避免每次 `Procedure` 提交递归遍历整棵 Store 树；预算检查与 adapter 的正常文档构建共用一次 visitor 遍历，只有超过预算时才会中止内存文档构建、收敛 dirty 树并重新构建。若数量超过预算，Runtime 按当前 `GD*` 值记录全部可更新顶层字段的 `Replace`，自动跳过 BSON `_id`。例如一轮持续修改 `role.Items[1..2000]` 时，预算为 `1024` 不会拒绝这次业务，而会把本次保存收敛为 `Name`、`Items` 等顶层字段的覆盖写，避免不同 key 长期累积。该收敛会记录一条 `txn runtime root changes collapsed` 告警；它限制 dirty 路径，不限制 `GD*` 业务对象本身或干净子 Store 缓存的内存。
+`MaxRootChanges` 限制单个 pending root 的细粒度变更数量。Runtime 只在 `Flush` 取得该对象锁、准备构建文档时检查，避免每次 `Procedure` 提交递归遍历整棵 Store 树；预算检查与 adapter 的正常文档构建共用一次 visitor 遍历，只有超过预算时才会中止内存文档构建、收敛 dirty 树并重新构建。若数量超过预算，Runtime 只把本轮实际变脏的顶层分支按当前 `GD*` 值记录为 `Replace`，并自动跳过 BSON `_id`。例如：
+
+```go
+first, _ := role.ItemsStore().Get(1001)
+first.SetQuantity(3)
+second, _ := role.ItemsStore().Get(1002)
+second.SetQuantity(7)
+```
+
+当预算为 `1` 时，两条细路径会收敛为一条完整 `Items` Replace；没有修改的 `Name`、`Power` 等字段不会进入变更文档。即使 role 来自部分字段加载，它们的 Go 零值也不会覆盖数据库中的既有值。若同一轮还调用了 `role.SetName("alice")`，则最终输出 `Name` 和 `Items` 两个顶层 Replace。该收敛会记录一条 `txn runtime root changes collapsed` 告警；它限制 dirty 路径，不限制 `GD*` 业务对象本身或干净子 Store 缓存的内存。真正需要全量落地整个对象时使用 `AllTouch()`，不要把它与容量收敛混用。
 
 txgen 生成的 Store 已实现 `storage.CollapsibleChangeStore`。高级用户若手写持久化 Store，并把
 `MaxRootChanges` 配置为非零，也必须实现 `CollapseChanges()`；否则 `Runtime.Call` 会在执行
