@@ -14,6 +14,7 @@ import (
 
 type checkpointBackend struct {
 	trimCalls atomic.Int64
+	trimErr   error
 }
 
 func (*checkpointBackend) Append(context.Context, wal.Record) error { return nil }
@@ -22,7 +23,7 @@ func (*checkpointBackend) Read(context.Context, wal.Stream, uint64, int) ([]wal.
 }
 func (backend *checkpointBackend) Trim(context.Context, wal.Stream, uint64) error {
 	backend.trimCalls.Add(1)
-	return nil
+	return backend.trimErr
 }
 
 func TestWALNewRecordBuildsValidatedImmutableIdentity(t *testing.T) {
@@ -121,6 +122,36 @@ func TestWALCheckpointOnlyTrimsAfterCheckpointSucceeds(t *testing.T) {
 	}
 	if backend.trimCalls.Load() != 1 {
 		t.Fatalf("trim calls after checkpoint success = %d, want 1", backend.trimCalls.Load())
+	}
+}
+
+func TestWALCheckpointReturnsTrimFailureAndAllowsRetry(t *testing.T) {
+	trimErr := errors.New("trim failed")
+	backend := &checkpointBackend{trimErr: trimErr}
+	store, err := wal.NewStore(backend)
+	if err != nil {
+		t.Fatalf("NewStore returned error: %v", err)
+	}
+	stream := wal.Stream{Namespace: "slgworld", StreamKey: "world:47", Generation: 1}
+	var persistCalls atomic.Int64
+	persist := func(context.Context) error {
+		persistCalls.Add(1)
+		return nil
+	}
+
+	if err := store.Checkpoint(context.Background(), stream, 10, persist); !errors.Is(err, trimErr) {
+		t.Fatalf("Checkpoint error = %v, want trim failure", err)
+	}
+	if persistCalls.Load() != 1 || backend.trimCalls.Load() != 1 {
+		t.Fatalf("first checkpoint calls = persist:%d trim:%d, want 1/1", persistCalls.Load(), backend.trimCalls.Load())
+	}
+
+	backend.trimErr = nil
+	if err := store.Checkpoint(context.Background(), stream, 10, persist); err != nil {
+		t.Fatalf("retry Checkpoint returned error: %v", err)
+	}
+	if persistCalls.Load() != 2 || backend.trimCalls.Load() != 2 {
+		t.Fatalf("retry checkpoint calls = persist:%d trim:%d, want 2/2", persistCalls.Load(), backend.trimCalls.Load())
 	}
 }
 

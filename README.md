@@ -3636,21 +3636,28 @@ if err := service.log.Append(ctx, record); err != nil {
 
 相同位置、相同版本和相同 payload 的重复追加按幂等成功处理；相同位置出现不同内容时返回 `wal.ErrConflict`，旧记录不会被覆盖。
 
-恢复时从 checkpoint 已覆盖的序号之后读取：
+恢复时从 checkpoint 已覆盖的序号之后分批读取，直到得到空批次：
 
 ```go
-records, err := service.log.Read(ctx, stream, checkpointSeq, 256)
-if err != nil {
-	return err
-}
-for _, record := range records {
-	if err := applyWorldFrame(record.PayloadVersion, record.Payload); err != nil {
+afterSeq := checkpointSeq
+for {
+	records, err := service.log.Read(ctx, stream, afterSeq, 256)
+	if err != nil {
 		return err
+	}
+	if len(records) == 0 {
+		break
+	}
+	for _, record := range records {
+		if err := applyWorldFrame(record.PayloadVersion, record.Payload); err != nil {
+			return err
+		}
+		afterSeq = record.Seq
 	}
 }
 ```
 
-`Read` 会校验返回记录属于同一条 stream，并且从 `checkpointSeq+1` 开始连续。缺号返回 `wal.ErrSequenceGap`，不能跳过后继续恢复。单次读取数量必须在 `1..wal.MaxReadBatch` 范围内，当前上限是 `4096`；返回 payload 总量最多 `wal.MaxReadBatchBytes`，当前为 64 MiB。更大的恢复任务应按最后一个 `Seq` 分批推进，避免一次读取放大进程内存。
+`Read` 会校验返回记录属于同一条 stream，并且从 `afterSeq+1` 开始连续。缺号返回 `wal.ErrSequenceGap`，不能跳过后继续恢复。单次读取数量必须在 `1..wal.MaxReadBatch` 范围内，当前上限是 `4096`；返回 payload 总量最多 `wal.MaxReadBatchBytes`，当前为 64 MiB。字节预算可能让一批记录少于请求的 `limit`，因此不能用 `len(records) < limit` 判断恢复结束；应始终用最后一个 `Seq` 继续读取，直到返回空批次。
 
 多 Mongo 分片配置下，WAL 会根据 `Namespace + StreamKey` 生成稳定的 `int64` 路由键。同一状态流的所有 generation 必须落在同一个分片，业务不能传入另一个分片键改变其归属。该路由键只用于选择 Mongo endpoint，不写入 WAL 文档，也不改变恢复身份。
 
