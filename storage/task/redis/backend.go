@@ -267,6 +267,9 @@ func normalizeJSONNumber(value any) any {
 	if i, err := number.Int64(); err == nil {
 		return i
 	}
+	if u, err := strconv.ParseUint(string(number), 10, 64); err == nil {
+		return u
+	}
 	if f, err := number.Float64(); err == nil {
 		return f
 	}

@@ -97,16 +97,20 @@ func (d Database) FindMany(ctx context.Context, collection string, filter txmong
 	if d.db == nil {
 		return nil, nil, errMongoDatabaseNotConfigured
 	}
+	positions := make(map[string][]int, len(filter.Values))
+	for i, value := range filter.Values {
+		identity, err := mongoValueIdentity(value)
+		if err != nil {
+			return nil, nil, fmt.Errorf("mongo: encode batch filter value at index %d: %w", i, err)
+		}
+		positions[identity] = append(positions[identity], i)
+	}
 	cursor, err := d.db.Collection(collection).Find(ctx, bson.M{filter.Field: bson.M{"$in": filter.Values}}, options.Find().SetProjection(projectionWithRequiredField(fields, filter.Field)))
 	if err != nil {
 		return nil, nil, mongoBackendError("find many", err)
 	}
 	defer cursor.Close(ctx)
 
-	positions := make(map[any][]int, len(filter.Values))
-	for i, value := range filter.Values {
-		positions[value] = append(positions[value], i)
-	}
 	for cursor.Next(ctx) {
 		var doc map[string]any
 		if err := cursor.Decode(&doc); err != nil {
@@ -116,7 +120,11 @@ func (d Database) FindMany(ctx context.Context, collection string, filter txmong
 		if !ok {
 			return nil, nil, fmt.Errorf("mongo: batch document is missing filter field %q", filter.Field)
 		}
-		indexes, ok := positions[value]
+		identity, err := mongoValueIdentity(value)
+		if err != nil {
+			return nil, nil, fmt.Errorf("mongo: encode batch document filter field %q: %w", filter.Field, err)
+		}
+		indexes, ok := positions[identity]
 		if !ok {
 			return nil, nil, fmt.Errorf("mongo: batch document returned unexpected filter value %v for field %q", value, filter.Field)
 		}
@@ -129,6 +137,17 @@ func (d Database) FindMany(ctx context.Context, collection string, filter txmong
 		return nil, nil, mongoBackendError("find many cursor", err)
 	}
 	return docs, exists, nil
+}
+
+func mongoValueIdentity(value any) (string, error) {
+	kind, encoded, err := bson.MarshalValue(value)
+	if err != nil {
+		return "", err
+	}
+	identity := make([]byte, len(encoded)+1)
+	identity[0] = byte(kind)
+	copy(identity[1:], encoded)
+	return string(identity), nil
 }
 
 func mongoBackendError(operation string, err error) error {

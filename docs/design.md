@@ -1030,6 +1030,10 @@ Mongo 文档主键必然是 `_id`，但业务 `idField`、`routeBy` 和 BSON `_i
 
 Mongo 写入不是 setter 热路径，优先使用官方 driver 的 BSON tag 映射保证正确性；只有 benchmark 证明必要时才为具体字段生成更低层编码。
 
+Mongo 批量读取用 BSON 类型与编码值构造内部回序身份，不直接把 `any` ID 放入 Go map。
+因此重复 ID 可以恢复到全部输入位置，`[]byte` 等合法但不可比较的 BSON 主键也不会触发
+`hash of unhashable type` panic；无法编码成 BSON 的定位值必须在查询边界返回错误。
+
 ## Fusion 后端
 
 ### 职责
@@ -1062,6 +1066,11 @@ claim task -> 读取 Redis 当前完整文档 -> Replace Mongo -> complete
 ```
 
 延迟任务不保存 GD 快照，也不保存每次变更。十分钟内修改同一角色多次，任务到期只读取一次 Redis 最终状态。
+
+任务 payload 使用 JSON 保存定位信息，但数值恢复不能经过有损 `float64`。Redis backend 先恢复
+`int64`，超过 `int64` 上限的非负整数再精确恢复为 `uint64`；例如
+`9223372036854775809` 在 claim、complete 和 retry 全链路中必须保持同一个幂等任务键，不能舍入为
+`9223372036854775808` 或科学计数形式。
 
 ### at-least-once
 

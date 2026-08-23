@@ -510,6 +510,35 @@ func TestRedisDelayTaskBackendPreservesNumericRecordKey(t *testing.T) {
 	}
 }
 
+func TestRedisDelayTaskBackendPreservesUint64RecordKey(t *testing.T) {
+	ctx := context.Background()
+	client := newFakeTaskRedis()
+	backend := taskredis.NewBackend(client, taskredis.Options{Prefix: "tx:test", BucketCount: 8, LeaseTimeout: time.Minute})
+	now := time.Unix(100, 0)
+	id := uint64(9223372036854775809)
+	shardKey := uint64(9223372036854775811)
+
+	if err := backend.Enqueue(ctx, task.DelayTask{Type: "role", ID: id, ShardKey: shardKey, Action: "save", DueAt: now}); err != nil {
+		t.Fatalf("Enqueue returned error: %v", err)
+	}
+	leases, err := backend.ClaimDue(ctx, now, 10)
+	if err != nil {
+		t.Fatalf("ClaimDue returned error: %v", err)
+	}
+	if len(leases) != 1 {
+		t.Fatalf("leases = %#v, want one", leases)
+	}
+	if leases[0].Task.ID != id || leases[0].Task.ShardKey != shardKey {
+		t.Fatalf("task key = %#v/%#v, want uint64 values %d/%d", leases[0].Task.ID, leases[0].Task.ShardKey, id, shardKey)
+	}
+	if err := backend.Complete(ctx, leases[0]); err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+	if leases, err = backend.ClaimDue(ctx, now.Add(2*time.Minute), 10); err != nil || len(leases) != 0 {
+		t.Fatalf("leases after Complete = %#v, error = %v, want empty", leases, err)
+	}
+}
+
 func TestRedisDelayTaskBackendRequeuesEnqueueDuringLeaseIntegration(t *testing.T) {
 	endpoint := os.Getenv("TX_REDIS_ENDPOINT")
 	if endpoint == "" {

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"go.mongodb.org/mongo-driver/bson/primitive"
+
 	"github.com/ngnl47/tx/storage"
 	txmongo "github.com/ngnl47/tx/storage/mongo"
 )
@@ -59,5 +61,19 @@ func TestProjectionWithRequiredFieldIncludesFilterField(t *testing.T) {
 func TestProjectionWithRequiredFieldKeepsFullDocumentProjectionUnset(t *testing.T) {
 	if projection := projectionWithRequiredField(nil, "roleId"); projection != nil {
 		t.Fatalf("projection = %#v, want nil for full document", projection)
+	}
+}
+
+func TestMongoValueIdentityMatchesBinaryInputAndDecodedValue(t *testing.T) {
+	input, err := mongoValueIdentity([]byte{1, 2, 3})
+	if err != nil {
+		t.Fatalf("mongoValueIdentity input error: %v", err)
+	}
+	decoded, err := mongoValueIdentity(primitive.Binary{Subtype: 0, Data: []byte{1, 2, 3}})
+	if err != nil {
+		t.Fatalf("mongoValueIdentity decoded error: %v", err)
+	}
+	if input != decoded {
+		t.Fatalf("binary identities differ: input=%q decoded=%q", input, decoded)
 	}
 }
