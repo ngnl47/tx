@@ -28,8 +28,8 @@ func TestRegistrySelectsServicesInRegistrationOrder(t *testing.T) {
 }
 
 func TestCapabilitiesStringNamesFrameworkResources(t *testing.T) {
-	capabilities := CapabilityStorage | CapabilityDiscovery | CapabilityTransaction
-	if got := capabilities.String(); got != "storage,discovery,transaction" {
+	capabilities := CapabilityStorage | CapabilityDiscovery | CapabilityTransaction | CapabilityWAL
+	if got := capabilities.String(); got != "storage,wal,discovery,transaction" {
 		t.Fatalf("capabilities.String() = %q", got)
 	}
 }

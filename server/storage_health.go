@@ -10,7 +10,40 @@ import (
 	txstorage "github.com/ngnl47/tx/storage"
 	txfusion "github.com/ngnl47/tx/storage/fusion"
 	"github.com/ngnl47/tx/storage/task"
+	"github.com/ngnl47/tx/wal"
 )
+
+type healthAwareWAL struct {
+	storage *storageRuntime
+	next    wal.Store
+}
+
+func (store healthAwareWAL) Append(ctx context.Context, record wal.Record) error {
+	if err := store.storage.requireStorageMode(meta.StorageModeMongo); err != nil {
+		return err
+	}
+	err := store.next.Append(ctx, record)
+	store.storage.observeStorageError(err)
+	return err
+}
+
+func (store healthAwareWAL) Read(ctx context.Context, stream wal.Stream, afterSeq uint64, limit int) ([]wal.Record, error) {
+	if err := store.storage.requireStorageMode(meta.StorageModeMongo); err != nil {
+		return nil, err
+	}
+	records, err := store.next.Read(ctx, stream, afterSeq, limit)
+	store.storage.observeStorageError(err)
+	return records, err
+}
+
+func (store healthAwareWAL) Checkpoint(ctx context.Context, stream wal.Stream, throughSeq uint64, persist func(context.Context) error) error {
+	if err := store.storage.requireStorageMode(meta.StorageModeMongo); err != nil {
+		return err
+	}
+	err := store.next.Checkpoint(ctx, stream, throughSeq, persist)
+	store.storage.observeStorageError(err)
+	return err
+}
 
 type healthAwareDelayHandler struct {
 	storage *storageRuntime

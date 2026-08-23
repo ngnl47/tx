@@ -120,6 +120,7 @@ Redis / Mongo / etcd / gRPC / Actor
 | `Tasks()` | `lifecycle.Tasks` | 注册本服务后台任务、读取取消信号 | `Cancel/Wait` 在 `server.Server` |
 | `Admission()` | `lifecycle.Admission` | 登记和封口本服务外部入口 | 进程排水顺序在 service host |
 | `Storage()` | `server.Storage` | 安装业务 facade、读取、写变更和检查健康闸门 | client、worker 和 Close 在 server |
+| `WAL()` | `wal.Store` | 追加恢复记录、连续读取和 checkpoint 后清理 | backend、索引、连接和健康状态在 server |
 | `RPC()` | `rpc.Registrar` | 启动前注册 protobuf service、读取 endpoint | Serve/Stop 在共享 Host |
 | `Directory()` | `discovery.Directory` | 查询 running/指定实例快照 | watch 与 Replace 在 discovery runtime |
 | `Actor()` | `actor.Messenger` | 解析 PID、单向或确认式投递 | Start/Shutdown/ActorSystem 在 actor runtime |
@@ -1174,6 +1175,79 @@ Redis 与 Mongo 的 Adapter/Cluster 构造器都在启动装配阶段校验完�
 Fusion 任一端已知不可用时，新业务读写返回 `ErrStorageUnavailable`，避免继续接受无法可靠持久化的状态。已经存在的延迟任务不被删除，worker 仍可继续重试，Mongo 恢复后正常消费。
 
 只有 driver 能确认的网络、超时和服务端通信错误才包装为 `BackendError`。RecordKey、变更流、BSON、JSON、Lua 协议等本地语义错误不能错误地把全局 backend 标成不可用。
+
+## WAL
+
+### 职责与边界
+
+`wal` 是可选的 Write-Ahead Log（预写日志）基础能力，面向以内存作为运行期权威状态、但不能为每次变化同步重写大型持久化快照的有状态服务。它保护的故障窗口是：业务已经准备确认一批内存变化，而异步 checkpoint 尚未覆盖这批变化。
+
+tx 选择“同步追加小型有序记录、异步更新较重 checkpoint”的组合：状态 owner 先在串行边界内合并变化并编码不可变 payload；对于采用 WAL 保护的提交路径，只有追加成功后才把本批视为具备崩溃恢复依据。后台 checkpoint 成功并记录已覆盖的 `Generation + Seq` 后，安全门面才能清理旧日志。恢复时先加载 checkpoint，再连续重放其后的 WAL：
+
+```mermaid
+flowchart LR
+    A[状态 owner 合并变化] --> B[编码不可变 payload]
+    B --> C[同步 Append WAL]
+    C -->|成功| D[业务确认本批可恢复]
+    D --> E[异步保存 checkpoint]
+    E -->|成功| F[清理已覆盖 WAL]
+    G[进程恢复] --> H[加载 checkpoint]
+    H --> I[从已覆盖 Seq + 1 读取]
+    I --> J[连续重放 WAL]
+```
+
+例如，一个 SLG 大世界服务可以让每个逻辑世界的 owner 在帧内合并建筑、资源点和行军单位的变化，然后把编码结果写入独立 stream；这里的服务和对象只用于解释使用场景，不属于 WAL 模型。WAL 不持有 GD、Store 或 StoreView 指针，也不替业务决定 Actor、场景、bucket、stream 或 checkpoint 的划分。
+
+WAL 与可靠业务消息队列是两个正交边界：
+
+- WAL 保存同一状态流的有序恢复记录，核心操作是追加、按位置读取和 checkpoint 后清理。
+- 可靠消息队列保存付费发奖、跨服务必达命令等待消费工作，核心操作是发布、消费、确认、重试和死信。
+- `modules/msgq` 仍是允许实例崩溃后丢失未确认下行的会话邮箱，不能承担以上两种职责。
+
+第一版只实现 Mongo backend。未来 RocketMQ backend 必须复用相同 WAL 契约，但它的连接、Topic、ConsumerGroup 和消息类型配置只在实现并完成真实链路测试时加入；当前不能保留无效占位配置或把未知 backend 静默回退到 Mongo。
+
+### 记录身份
+
+一条 WAL 记录至少包含：
+
+```text
+Namespace + StreamKey + Generation + Seq
+PayloadVersion + PayloadHash + Payload + CreatedAt
+```
+
+- `Namespace` 隔离玩法或数据域。
+- `StreamKey` 标识一条独立有序状态流，例如一个 world actor。
+- `Generation` 隔离槽位交接或状态重建后的写入世代。
+- `Seq` 是 generation 内从 1 开始严格递增的位置。
+- `Payload` 是追加前已经完成编码的只读字节，不引用可变 Store 状态。
+- `PayloadVersion` 供恢复代码选择解码器；`PayloadHash` 用于确认同位置重试是否真的是同一内容。
+
+通用契约限制单条 payload 最多 4 MiB，单次恢复返回的 payload 总量最多 64 MiB、记录数最多 4096。官方 Mongo backend 还把 cursor batch 固定为最多 16 条，避免 driver 在恢复期间一次预取过多大文档。更大的状态必须按业务恢复单元拆分，不得依赖 Mongo 单文档物理上限。
+
+Mongo backend 为 `(namespace, streamKey, generation, seq)` 建立唯一索引。相同位置、相同版本、相同哈希和相同 payload 的重复追加按幂等成功处理；相同位置出现不同内容必须返回冲突错误，绝不能覆盖旧记录。第一版由单一 stream owner 串行分配 `Seq`，backend 不猜测缺口或自动改号；恢复读取必须验证连续性，发现缺口立即失败。
+
+### checkpoint 与清理顺序
+
+checkpoint 和 WAL 清理遵循固定顺序：
+
+1. 在状态 owner 的串行边界内确定本批最终 `Seq`，编码不可变 payload。
+2. WAL 追加成功后，本批才具备可恢复性；追加失败不能把本批视为已经可靠提交。
+3. 后台使用 WAL 重放或当前内存状态写入 checkpoint，并记录 checkpoint 已覆盖的 `Generation + Seq`。
+4. `wal.Store.Checkpoint` 只有在 checkpoint 回调成功后，才会清理同一 stream 中不大于该位置的旧 WAL。
+
+checkpoint 成功而日志清理前进程退出，只会留下可安全跳过的重复日志；先清理再写 checkpoint 会造成不可恢复的数据缺口，因此普通服务取得的 `wal.Store` 不暴露原始 `Trim`。自定义 backend 的高级扩展点 `wal.Backend` 才保留 `Trim`，并由安全门面统一控制调用顺序。第一版不配置自动 TTL，保留期只能作为未来运维保护项单独评审。
+
+安全门面只在同一 stream 存在重叠 checkpoint 调用时保留一份短生命周期顺序状态：调用通过可响应 context 取消的 channel 信号量串行化，较大位置成功持久化后，仍在排队的较小位置返回 `ErrCheckpointRegression`，回调不会执行；最后一个调用退出时注册项立即删除，不随历史 stream 或 generation 累积。该状态只解决单进程重叠竞争；非重叠调用和跨进程仍要求单一 stream owner，并由业务 checkpoint 写入使用 `Generation + Seq` 单调更新或 CAS。WAL 不把业务 checkpoint 文档收归 backend，因此不能替业务伪造跨进程事务。
+
+### Mongo backend
+
+Mongo WAL 使用独立 collection，不复用 GD 文档 adapter，也不把 WAL 记录伪装成 GD。它复用项目已经装配的 Mongo route table，并由 `Namespace + StreamKey` 稳定生成 `int64` 路由键；generation 不参与路由，因此同一状态流换代后仍落在原分片。业务不能提供另一个分片键改变归属，路由键也不写入日志文档。单次读取只查询一个 `Namespace + StreamKey + Generation`，按 `Seq` 升序返回，超出记录或字节预算时按最后一个 Seq 继续分页。
+
+稳定哈希只保证输入身份不变时路由键不变，不保证 route table 改动后 endpoint 仍然相同。WAL 分片集合、顺序和范围规则属于持久化布局契约；已有日志时不能直接修改。第一版不建设 placement 元数据或自动迁移，变更布局必须由运维先封口 stream、迁移 WAL 与 checkpoint、验证后再切换配置。
+
+`server` 在启动装配期复用现有 Mongo database 创建 WAL client，并为四元位置创建唯一索引；索引创建失败会使启动 fast-fail。Mongo WAL collection 强制使用 `majority + j:true` 写关注，不能继承更弱的 URI 默认值。启用后 runtime 增加 `CapabilityWAL`，服务通过 `Context.WAL()` 取得后端无关的安全 `wal.Store`，不能取得 Mongo client、原始清理入口或连接关闭权。WAL 操作复用 Mongo 健康闸门和 backend generation，不在每次追加前执行 Ping。
+
+Mongo 服务不可用时，追加、读取和 checkpoint 都返回原始可识别错误，不 panic、不静默成功。WAL 是否阻止当前业务提交由上层状态模块决定；对于声明“先写 WAL 才提交”的路径，追加失败必须终止本次提交。进程排水时不再接受新的外部工作，已进入的 WAL 追加由全局 `WaitGroupContext` 等待完成。
 
 ## 单机事务
 

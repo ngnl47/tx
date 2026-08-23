@@ -9,6 +9,7 @@ import (
 	txrpc "github.com/ngnl47/tx/modules/rpc"
 	"github.com/ngnl47/tx/modules/txn"
 	txserver "github.com/ngnl47/tx/server"
+	"github.com/ngnl47/tx/wal"
 )
 
 // Context 是标准服务测试使用的可配置 server.Context fake。
@@ -18,6 +19,7 @@ type Context struct {
 	TasksValue         lifecycle.Tasks
 	AdmissionValue     lifecycle.Admission
 	StorageValue       txserver.Storage
+	WALValue           wal.Store
 	RPCValue           txrpc.Registrar
 	DirectoryValue     discovery.Directory
 	ActorValue         txactor.Messenger
@@ -33,6 +35,7 @@ func (context Context) Instance() discovery.Instance   { return context.Instance
 func (context Context) Tasks() lifecycle.Tasks         { return context.TasksValue }
 func (context Context) Admission() lifecycle.Admission { return context.AdmissionValue }
 func (context Context) Storage() txserver.Storage      { return context.StorageValue }
+func (context Context) WAL() wal.Store                 { return context.WALValue }
 func (context Context) RPC() txrpc.Registrar           { return context.RPCValue }
 func (context Context) Directory() discovery.Directory { return context.DirectoryValue }
 func (context Context) Actor() txactor.Messenger       { return context.ActorValue }

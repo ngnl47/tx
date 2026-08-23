@@ -32,6 +32,26 @@ type LogConfig struct {
 type StorageConfig struct {
 	Redis   storageconfig.RouteTableConfig
 	MongoDB storageconfig.RouteTableConfig
+	WAL     WALConfig
+}
+
+// WALBackend 标识 WAL 的持久化实现。
+type WALBackend string
+
+// WALBackendMongo 使用项目已经装配的 Mongo route table 和连接。
+const WALBackendMongo WALBackend = "mongo"
+
+// WALConfig 配置可选的预写日志。当前仅实现 Mongo backend。
+type WALConfig struct {
+	Enabled bool
+	Backend WALBackend
+	Mongo   WALMongoConfig
+}
+
+// WALMongoConfig 指定 WAL 使用的 Mongo routeType 和独立 collection。
+type WALMongoConfig struct {
+	RouteType  string
+	Collection string
 }
 
 type RuntimeConfig struct {
@@ -99,6 +119,9 @@ func (config Config) Validate() error {
 	if err := config.Storage.MongoDB.Validate(); err != nil {
 		return fmt.Errorf("server: mongo routes: %w", err)
 	}
+	if err := config.Storage.WAL.validate(config.Storage.MongoDB); err != nil {
+		return err
+	}
 	if err := config.Runtime.validate(); err != nil {
 		return err
 	}
@@ -122,6 +145,34 @@ func (config Config) clone() Config {
 	cloned.Actor.Runtime.Etcd.Endpoints = append([]string(nil), config.Actor.Runtime.Etcd.Endpoints...)
 	cloned.Discovery.Etcd.Endpoints = append([]string(nil), config.Discovery.Etcd.Endpoints...)
 	return cloned
+}
+
+func (config WALConfig) validate(routes storageconfig.RouteTableConfig) error {
+	backend := WALBackend(strings.TrimSpace(string(config.Backend)))
+	if config.Backend != "" && backend != config.Backend {
+		return fmt.Errorf("server: WAL backend must not contain surrounding whitespace")
+	}
+	if backend != "" && backend != WALBackendMongo {
+		return fmt.Errorf("server: unsupported WAL backend %q", config.Backend)
+	}
+	if !config.Enabled {
+		return nil
+	}
+	if backend == "" {
+		return fmt.Errorf("server: WAL backend is required")
+	}
+	routeType := strings.TrimSpace(config.Mongo.RouteType)
+	if routeType == "" || routeType != config.Mongo.RouteType {
+		return fmt.Errorf("server: WAL Mongo route type is empty or contains surrounding whitespace")
+	}
+	if _, ok := routes.Routes[routeType]; !ok {
+		return fmt.Errorf("server: WAL Mongo route %q is not configured", routeType)
+	}
+	collection := strings.TrimSpace(config.Mongo.Collection)
+	if collection == "" || collection != config.Mongo.Collection {
+		return fmt.Errorf("server: WAL Mongo collection is empty or contains surrounding whitespace")
+	}
+	return nil
 }
 
 func (config RuntimeConfig) validate() error {

@@ -8,7 +8,18 @@ import (
 	"github.com/ngnl47/tx/modules/discovery"
 	txrpc "github.com/ngnl47/tx/modules/rpc"
 	"github.com/ngnl47/tx/modules/txn"
+	"github.com/ngnl47/tx/wal"
 )
+
+type contextWAL struct{}
+
+func (contextWAL) Append(context.Context, wal.Record) error { return nil }
+func (contextWAL) Read(context.Context, wal.Stream, uint64, int) ([]wal.Record, error) {
+	return nil, nil
+}
+func (contextWAL) Checkpoint(context.Context, wal.Stream, uint64, func(context.Context) error) error {
+	return nil
+}
 
 func TestServiceContextExposesCapabilitiesWithoutLifecycleOwnership(t *testing.T) {
 	root := lifecycle.NewWaitGroupContext(context.Background())
@@ -21,8 +32,9 @@ func TestServiceContextExposesCapabilitiesWithoutLifecycleOwnership(t *testing.T
 		transaction:  &txn.Runtime{},
 		directory:    discovery.NewServiceDirectory(),
 		instance:     discovery.Instance{ID: "game-1", Services: []string{"game"}, Endpoint: "127.0.0.1:9000", Status: discovery.StatusRunning},
-		capabilities: CapabilityStorage | CapabilityRPC | CapabilityDiscovery | CapabilityTransaction,
+		capabilities: CapabilityStorage | CapabilityRPC | CapabilityDiscovery | CapabilityTransaction | CapabilityWAL,
 	}
+	runtime.storage.wal = contextWAL{}
 	serviceContext := newServiceContext(runtime, ingress)
 
 	if got := serviceContext.AppID(); got != "context-test" {
@@ -36,7 +48,7 @@ func TestServiceContextExposesCapabilitiesWithoutLifecycleOwnership(t *testing.T
 	if !serviceContext.Has(CapabilityTransaction) {
 		t.Fatal("Has(transaction) = false")
 	}
-	if serviceContext.Admission() == nil || serviceContext.Tasks() == nil || serviceContext.Storage() == nil || serviceContext.RPC() == nil || serviceContext.Transaction() == nil || serviceContext.Directory() == nil {
+	if serviceContext.Admission() == nil || serviceContext.Tasks() == nil || serviceContext.Storage() == nil || serviceContext.WAL() == nil || serviceContext.RPC() == nil || serviceContext.Transaction() == nil || serviceContext.Directory() == nil {
 		t.Fatal("service context omitted an assembled capability")
 	}
 
@@ -53,6 +65,9 @@ func TestServiceContextExposesCapabilitiesWithoutLifecycleOwnership(t *testing.T
 		Replace([]discovery.Instance) error
 	}); ok {
 		t.Fatal("Directory exposes discovery snapshot mutation")
+	}
+	if _, ok := any(serviceContext.WAL()).(interface{ Close(context.Context) error }); ok {
+		t.Fatal("WAL exposes shared Mongo connection ownership")
 	}
 }
 

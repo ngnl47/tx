@@ -178,6 +178,9 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 			Status:   discovery.StatusStarting,
 		},
 	}
+	if store.WAL() != nil {
+		runtime.capabilities |= CapabilityWAL
+	}
 	server.mu.Lock()
 	server.runtime = runtime
 	server.mu.Unlock()

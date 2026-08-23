@@ -15,6 +15,7 @@ const (
 	CapabilityDiscovery
 	CapabilityActor
 	CapabilityTransaction
+	CapabilityWAL
 )
 
 func (capabilities Capabilities) String() string {
@@ -26,6 +27,7 @@ func (capabilities Capabilities) String() string {
 		name  string
 	}{
 		{CapabilityStorage, "storage"},
+		{CapabilityWAL, "wal"},
 		{CapabilityRPC, "rpc"},
 		{CapabilityDiscovery, "discovery"},
 		{CapabilityActor, "actor"},

@@ -10,6 +10,7 @@ import (
 	"github.com/ngnl47/tx/modules/txn"
 	txstorage "github.com/ngnl47/tx/storage"
 	txredis "github.com/ngnl47/tx/storage/redis"
+	"github.com/ngnl47/tx/wal"
 )
 
 // StorageReaders 是生成 data 包使用的读取契约。
@@ -41,6 +42,7 @@ type Context interface {
 	Tasks() lifecycle.Tasks
 	Admission() lifecycle.Admission
 	Storage() Storage
+	WAL() wal.Store
 	RPC() txrpc.Registrar
 	Directory() discovery.Directory
 	Actor() txactor.Messenger
@@ -92,6 +94,13 @@ func (service *serviceContext) Storage() Storage {
 		return nil
 	}
 	return storageAccess{storage: service.runtime.storage}
+}
+
+func (service *serviceContext) WAL() wal.Store {
+	if service == nil || service.runtime == nil || service.runtime.storage == nil {
+		return nil
+	}
+	return service.runtime.storage.WAL()
 }
 
 func (service *serviceContext) RPC() txrpc.Registrar {

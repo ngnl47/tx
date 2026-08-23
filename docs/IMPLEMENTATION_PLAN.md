@@ -111,6 +111,8 @@
 - Mongo-only 与 Redis-only 类型可以使用单后端物理删除接口，是否调用由业务决定；Fusion 根记录禁止物理删除。TTL 索引是 Mongo 自身按字段值删除整条文档的能力，生成阶段限制同一类型最多一个 TTL 字段。
 - 持久化 GD 的字段演进是项目使用约定：只允许新增，不删除、不改名、不改变类型或 JSON/BSON/Msgpack 字段名；迁移时保留旧字段并由业务处理。runtime 与 generator 不维护自动迁移或历史字段缺失校验。
 - 后续如发现中间过渡结构、废弃测试或过时文档描述，应持续瘦身；保留稳定决策，不保留已经放弃的实现路线。
+- 可选有状态恢复链路命名为 WAL。第一版提供 backend 无关的追加、限量连续读取和安全 checkpoint 契约，并以 Mongo 实现真实存储；记录身份固定为 `Namespace + StreamKey + Generation + Seq`，同位置相同内容重试幂等成功，不同内容返回冲突。普通 `wal.Store` 只有在 checkpoint 回调成功后才清理已覆盖日志；同进程重叠的同 stream checkpoint 以 context-aware 信号量串行并禁止并发位置回退，空闲后立即释放注册项，原始 `Trim` 只属于 backend 扩展契约。非重叠调用和跨进程依赖单一 stream owner 与业务 checkpoint 的单调更新/CAS。WAL 只接收追加前已编码的不可变 payload，不持有 GD、Store 或 StoreView；单条 payload 最多 4 MiB，单批恢复最多 4096 条和 64 MiB。可靠业务消息队列另行负责付费发奖和跨服务必达命令，不能与 WAL、Fusion delay task 或 `modules/msgq` 混为一个接口。
+- 项目 yml 通过 `storage.wal.backend` 选择 WAL backend。当前只接受 `mongo`，并使用 `storage.wal.mongo` 配置 routeType 和 collection；未知 backend 在启动期失败，不能静默回退。RocketMQ adapter 实施前先要求提供 Docker RocketMQ 5.x 实例完成真实链路测试，再加入 endpoints、topic 等配置字段；当前不引入 RocketMQ 依赖或占位配置。
 
 ## Next Work Items
 
@@ -130,6 +132,7 @@
 - `txn.Tx.DirtyTargets()` 已按锁顺序暴露本次经受控 Store API 修改且仍有变更的根目标；savepoint 回滚或清空变更的目标不会出现。`txn.Runtime` 使用它在事务成功后登记落盘对象；项目 Host 直接持有 `txn.Runtime`，业务使用 `runtime.Call(ctx, procedure)` 作为有状态入口。`runtime.txn.flushInterval` 控制生命周期内的定时 Flush，`runtime.txn.shutdownFlushTimeout` 控制服务退出时的最终 Redis 刷盘窗口。生命周期先用服务全局 `WaitGroupContext` 等待已经进入的业务任务结束，再使用不受运行 context 取消影响的限时 context 进行最终刷盘；它不等待 Fusion 延迟队列回写 Mongo。`runtime.txn.debug.checkCleanLockTargets` 仅用于临时、无历史变更的直接 `txn.Call`；Runtime 会显式允许此前未 Flush 的变更。
 - `txgame` 已以真实 Redis、Redis 延迟任务和 Mongo 覆盖 `txn.Runtime`：`Procedure` 成功后 Redis 尚无记录，`Flush` 后热数据出现并清理 Store 变更，延迟任务消费后 Mongo 获得相同最终文档。集成回归会以 `MaxRootChanges: 1` 强制收敛 `Items[1001].Quantity`，确认 Redis 与 Mongo 都按整个 `Items[1001]` 当前值替换、不会残留旧 `quality` 字段。生命周期会把最终 Flush 错误返回给项目宿主，不静默吞掉超时或失败。默认本地配置以 `maxRootChanges: 1024` 收敛单根细粒度路径，并以 `heapSoftLimitBytes: 536870912`（512 MiB）和 `heapSampleInterval: 1s` 记录 Heap 告警；`runtime.health.interval: 1s`、`runtime.health.timeout: 500ms` 维护 Fusion 新写入闸门。实际部署值必须按实例规格和 `GOMEMLIMIT` 调整。
 - Fusion 批量混合命中先批量读取 Redis；Mongo reader 支持批量读取时，所有 miss 只做一次 Mongo 全文批量读取，再逐条进入记录锁、二次 Redis 读取与带 TTL 回填。锁内命中 Redis 时直接返回新热数据，不能以旧 Mongo 候选覆盖它。
+- WAL 第一阶段已经完成：`wal.Store` 提供同步追加、受条数和字节双预算约束的连续读取及安全 checkpoint；Mongo backend 复用 server 的 route table、database client、健康闸门和关闭生命周期，由 `Namespace + StreamKey` 稳定生成分片键，并强制 `majority + j:true` 写关注。WAL route table 被定义为不可直接改动的持久化布局，后续分片迁移需单独建设。`(namespace, streamKey, generation, seq)` 唯一索引保证位置不被覆盖；相同内容重试幂等成功，不同内容返回 `wal.ErrConflict`，恢复缺号返回 `wal.ErrSequenceGap`，并发 checkpoint 回退返回 `wal.ErrCheckpointRegression`。`server.Context.WAL()` 与 `CapabilityWAL` 只暴露后端无关安全门面，txgame 严格 yml 默认关闭该可选功能。真实 Mongo 集成回归覆盖索引、追加、幂等、冲突、跨 generation 同序号、缺号读取、generation 清理隔离和 checkpoint 后清理。2026-08-23 在本机 i9-9880H 的 1 KiB payload 独立基准中，`wal.NewRecord` 为 `2.859-3.005µs/op`、约 `341-358 MB/s`，保持 `0 B/op`、`0 allocs/op`。
 
 1. 保持 `txgame` 集成验证与生成 Store 行为同步：新增集合、指针、存储边界行为时，补业务侧代码示例及真实 Redis/Mongo 回归。
 2. 持续收紧 Redis/Mongo/Fusion adapter 的失败契约：未知脚本协议结果、路径类型冲突和路由错误必须显式返回错误，不能静默成功或做运行时数据修复。
@@ -185,6 +188,8 @@ tx/
   storage/mongo/    # Mongo collection/index/sharding metadata、后续 Mongo adapter
   storage/fusion/   # Fusion 策略与延迟任务抽象
   storage/task/     # Delay task backend interface 和内存实现
+  wal/              # 可选：backend 无关的 WAL 记录、追加、读取与清理契约
+  wal/mongo/        # 可选：复用项目 Mongo 路由的 WAL backend
   modules/discovery/ # 可选：etcd lease/watch 服务发现与进程实例目录
   modules/control/   # 可选：运维排水控制 gRPC 契约
   modules/msgq/      # 可选：客户端会话 owner 与进程内下行邮箱

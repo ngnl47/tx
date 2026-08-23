@@ -20,6 +20,9 @@ import (
 	txredis "github.com/ngnl47/tx/storage/redis"
 	txgoredis "github.com/ngnl47/tx/storage/redis/goredis"
 	txtaskredis "github.com/ngnl47/tx/storage/task/redis"
+	"github.com/ngnl47/tx/wal"
+	walmongo "github.com/ngnl47/tx/wal/mongo"
+	waldriver "github.com/ngnl47/tx/wal/mongo/mongodriver"
 	goredis "github.com/redis/go-redis/v9"
 	mongodriver "go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -48,6 +51,7 @@ type storageRuntime struct {
 	ctx          context.Context
 	redis        *txredis.Cluster
 	mongo        *txmongo.Cluster
+	wal          wal.Store
 	fusion       txfusion.Strategy
 	delayBackend *txtaskredis.Backend
 	delayQueue   *txfusion.TaskQueue
@@ -75,12 +79,18 @@ func newStorage(ctx context.Context, cfg StorageConfig, opts storageOptions, typ
 	if err != nil {
 		return nil, err
 	}
-	mongoCluster, mongoClients, err := buildMongoCluster(ctx, cfg.MongoDB)
+	mongoCluster, mongoClients, mongoWALShards, err := buildMongoCluster(ctx, cfg.MongoDB)
 	if err != nil {
 		closeRedisClients(redisClients)
 		return nil, err
 	}
 	delayBackend, delayQueue, err := buildDelayQueue(ctx, cfg.Redis, redisShards, opts)
+	if err != nil {
+		closeRedisClients(redisClients)
+		disconnectMongoClients(ctx, mongoClients)
+		return nil, err
+	}
+	walStore, err := buildWAL(ctx, cfg.WAL, cfg.MongoDB, mongoWALShards)
 	if err != nil {
 		closeRedisClients(redisClients)
 		disconnectMongoClients(ctx, mongoClients)
@@ -95,6 +105,9 @@ func newStorage(ctx context.Context, cfg StorageConfig, opts storageOptions, typ
 		delayQueue:   delayQueue,
 		redisClients: redisClients,
 		mongoClients: mongoClients,
+	}
+	if walStore != nil {
+		store.wal = healthAwareWAL{storage: store, next: walStore}
 	}
 	store.fusion = txfusion.Strategy{
 		RedisApplier:  redisCluster,
@@ -165,6 +178,13 @@ func (s *storageRuntime) FusionReader() txstorage.DocumentLoader {
 		return nil
 	}
 	return s.guardReader(meta.StorageModeFusion, s.fusion)
+}
+
+func (s *storageRuntime) WAL() wal.Store {
+	if s == nil {
+		return nil
+	}
+	return s.wal
 }
 
 // RedisScriptClientFor 返回 routeType/shardKey 对应的既有 Redis 客户端。
@@ -315,39 +335,78 @@ func buildRedisCluster(ctx context.Context, cfg storageconfig.RouteTableConfig) 
 	return cluster, clients, runtimeClients, nil
 }
 
-func buildMongoCluster(ctx context.Context, cfg storageconfig.RouteTableConfig) (*txmongo.Cluster, []*mongodriver.Client, error) {
+func buildMongoCluster(ctx context.Context, cfg storageconfig.RouteTableConfig) (*txmongo.Cluster, []*mongodriver.Client, map[string]walmongo.Client, error) {
 	routeTable, err := cfg.RouteTable()
 	if err != nil {
-		return nil, nil, fmt.Errorf("server: build mongo route table: %w", err)
+		return nil, nil, nil, fmt.Errorf("server: build mongo route table: %w", err)
 	}
 	shards := map[string]txmongo.Client{}
+	walShards := map[string]walmongo.Client{}
 	clients := make([]*mongodriver.Client, 0, len(cfg.Endpoints()))
 	for _, endpoint := range sortedEndpointValues(cfg.Endpoints()) {
 		client, err := mongodriver.Connect(ctx, options.Client().ApplyURI(endpoint))
 		if err != nil {
 			disconnectMongoClients(ctx, clients)
-			return nil, nil, fmt.Errorf("server: connect mongo endpoint %s: %w", endpoint, err)
+			return nil, nil, nil, fmt.Errorf("server: connect mongo endpoint %s: %w", endpoint, err)
 		}
 		if err := client.Ping(ctx, nil); err != nil {
 			_ = client.Disconnect(ctx)
 			disconnectMongoClients(ctx, clients)
-			return nil, nil, fmt.Errorf("server: ping mongo endpoint %s: %w", endpoint, err)
+			return nil, nil, nil, fmt.Errorf("server: ping mongo endpoint %s: %w", endpoint, err)
 		}
 		dbName, err := mongoDatabaseName(endpoint)
 		if err != nil {
 			_ = client.Disconnect(ctx)
 			disconnectMongoClients(ctx, clients)
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		clients = append(clients, client)
-		shards[endpoint] = txmongodriver.NewDatabase(client.Database(dbName))
+		database := client.Database(dbName)
+		shards[endpoint] = txmongodriver.NewDatabase(database)
+		walShards[endpoint] = waldriver.NewDatabase(database)
 	}
 	cluster, err := txmongo.NewCluster(routeTable, shards)
 	if err != nil {
 		disconnectMongoClients(ctx, clients)
-		return nil, nil, fmt.Errorf("server: build mongo cluster: %w", err)
+		return nil, nil, nil, fmt.Errorf("server: build mongo cluster: %w", err)
 	}
-	return cluster, clients, nil
+	return cluster, clients, walShards, nil
+}
+
+func buildWAL(ctx context.Context, cfg WALConfig, routes storageconfig.RouteTableConfig, shards map[string]walmongo.Client) (wal.Store, error) {
+	if !cfg.Enabled {
+		return nil, nil
+	}
+	target, ok := routes.Routes[cfg.Mongo.RouteType]
+	if !ok {
+		return nil, fmt.Errorf("server: WAL Mongo route %q is not configured", cfg.Mongo.RouteType)
+	}
+	walShards := make(map[string]walmongo.Client)
+	for _, rule := range target.Rules {
+		for _, endpoint := range rule.Shards {
+			client, exists := shards[endpoint]
+			if !exists {
+				return nil, fmt.Errorf("server: WAL Mongo endpoint %q is not configured", endpoint)
+			}
+			walShards[endpoint] = client
+		}
+	}
+	routeTable, err := routes.RouteTable()
+	if err != nil {
+		return nil, fmt.Errorf("server: build WAL route table: %w", err)
+	}
+	cluster, err := walmongo.NewCluster(ctx, routeTable, walShards, walmongo.Options{
+		RouteType:  cfg.Mongo.RouteType,
+		Collection: cfg.Mongo.Collection,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("server: build Mongo WAL: %w", err)
+	}
+	store, err := wal.NewStore(cluster)
+	if err != nil {
+		return nil, fmt.Errorf("server: build WAL store: %w", err)
+	}
+	return store, nil
 }
 
 func buildDelayQueue(ctx context.Context, cfg storageconfig.RouteTableConfig, clients map[string]txgoredis.Client, opts storageOptions) (*txtaskredis.Backend, *txfusion.TaskQueue, error) {
