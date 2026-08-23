@@ -88,6 +88,24 @@ func JoinPathLimited(parent, child Path) (out Path, complete bool) {
 	return out, complete
 }
 
+// FieldNameAt 按指定字段名体系解析路径中的单个字段名。
+//
+// 嵌套路径会优先使用 PathFieldNameResolver，让相同 FieldID 在不同子类型中
+// 仍能解析为正确名称。索引越界、字段无效或无法解析时返回空字符串。
+func (p Path) FieldNameAt(resolver FieldNameResolver, index int, kind FieldNameKind) string {
+	if index < 0 || p.Depth == 0 || int(p.Depth) > len(p.Nodes) || index >= int(p.Depth) || resolver == nil {
+		return ""
+	}
+	node := p.Nodes[index]
+	if node.Field == FieldNone {
+		return ""
+	}
+	if pathResolver, ok := resolver.(PathFieldNameResolver); ok {
+		return pathResolver.PathFieldName(p, index, kind)
+	}
+	return resolver.FieldName(node.Field, kind)
+}
+
 // FullPath 按指定字段名体系把 Path 转换为字符串路径。
 func (p Path) FullPath(resolver FieldNameResolver, kind FieldNameKind) DocumentPath {
 	if p.Depth == 0 || int(p.Depth) > len(p.Nodes) || resolver == nil {
@@ -96,13 +114,7 @@ func (p Path) FullPath(resolver FieldNameResolver, kind FieldNameKind) DocumentP
 	out := make(DocumentPath, 0, int(p.Depth)*2)
 	for i := 0; i < int(p.Depth); i++ {
 		node := p.Nodes[i]
-		if node.Field == FieldNone {
-			return nil
-		}
-		name := resolver.FieldName(node.Field, kind)
-		if pathResolver, ok := resolver.(PathFieldNameResolver); ok {
-			name = pathResolver.PathFieldName(p, i, kind)
-		}
+		name := p.FieldNameAt(resolver, i, kind)
 		if name == "" {
 			return nil
 		}

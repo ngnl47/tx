@@ -54,15 +54,14 @@ func buildDocumentPatches(spec meta.TypeSpec, source change.Source, resolver cha
 		if !op.Valid() {
 			return fmt.Errorf("change: unknown operation %d", op)
 		}
-		goPath := path.FullPath(resolver, change.FieldNameGo)
-		if len(goPath) == 0 {
+		goField := path.FieldNameAt(resolver, 0, change.FieldNameGo)
+		if goField == "" {
 			return fmt.Errorf("redis: cannot resolve Go field path for change %#v", path)
 		}
 		jsonPath := path.FullPath(resolver, change.FieldNameJSON)
 		if len(jsonPath) == 0 {
-			return fmt.Errorf("redis: cannot resolve JSON field path for Go path %s", goPath)
+			return fmt.Errorf("redis: cannot resolve JSON field path for Go field %s", goField)
 		}
-		goField := goPath[0]
 		suffix, ignore := redisDocumentSuffix(spec, goField)
 		if ignore {
 			return nil

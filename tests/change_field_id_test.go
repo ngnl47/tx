@@ -90,6 +90,24 @@ func TestPathFullPathCanResolveNestedTypeFields(t *testing.T) {
 	}
 }
 
+func TestPathFieldNameAtUsesNestedTypeResolver(t *testing.T) {
+	path := changePath(intKeyNode(2, 1001), fieldNode(2))
+	resolver := testNestedFieldNameResolver{}
+
+	if got := path.FieldNameAt(resolver, 0, change.FieldNameGo); got != "items" {
+		t.Fatalf("root field name = %q, want items", got)
+	}
+	if got := path.FieldNameAt(resolver, 1, change.FieldNameGo); got != "quantity" {
+		t.Fatalf("nested field name = %q, want quantity", got)
+	}
+	if got := path.FieldNameAt(resolver, 2, change.FieldNameGo); got != "" {
+		t.Fatalf("out-of-range field name = %q, want empty", got)
+	}
+	if got := path.FieldNameAt(nil, 0, change.FieldNameGo); got != "" {
+		t.Fatalf("nil resolver field name = %q, want empty", got)
+	}
+}
+
 func TestBuildDocumentUsesRequestedFieldNameKind(t *testing.T) {
 	path := changePath(fieldNode(1))
 	source := recordedChanges{{Path: path, Op: change.OpSet}}

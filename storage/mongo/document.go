@@ -52,19 +52,19 @@ func buildUpdateDocument(spec meta.TypeSpec, source change.Source, resolver chan
 			fallbacks = append(fallbacks, fallback)
 			return nil
 		}
-		goPath := valuePath.FullPath(resolver, change.FieldNameGo)
-		if len(goPath) == 0 {
+		goField := valuePath.FieldNameAt(resolver, 0, change.FieldNameGo)
+		if goField == "" {
 			return fmt.Errorf("mongo: cannot resolve Go field path for change %#v", valuePath)
 		}
 		bsonPath := valuePath.FullPath(resolver, change.FieldNameBSON)
 		if len(bsonPath) == 0 {
-			return fmt.Errorf("mongo: cannot resolve BSON field path for Go path %s", goPath)
+			return fmt.Errorf("mongo: cannot resolve BSON field path for Go field %s", goField)
 		}
 		if bsonPath[0] == "_id" {
 			if skipUpsertID && len(bsonPath) == 1 && (op == change.OpSet || op == change.OpReplace) {
 				return nil
 			}
-			return fmt.Errorf("mongo: cannot update immutable _id field %s", goPath[0])
+			return fmt.Errorf("mongo: cannot update immutable _id field %s", goField)
 		}
 		name := bsonPath.String()
 		switch op {
