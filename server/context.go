@@ -73,9 +73,7 @@ func (service *serviceContext) Instance() discovery.Instance {
 	if service == nil || service.runtime == nil {
 		return discovery.Instance{}
 	}
-	instance := service.runtime.instance
-	instance.Services = append([]string(nil), instance.Services...)
-	return instance
+	return service.runtime.instanceSnapshot()
 }
 
 func (service *serviceContext) Tasks() lifecycle.Tasks {

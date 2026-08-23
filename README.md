@@ -98,6 +98,22 @@ func (Service) Start(runtime server.Context) error {
 adapter 时，才从 `runtime.Advanced()` 取得 Redis 路由或逻辑槽位 Store；高级 SPI 仍不授予连接关闭、
 runtime shutdown 或 discovery 快照写权限。
 
+`runtime.Instance()` 返回本进程身份和当前生命周期状态的只读快照，`Services` 切片也会复制，调用方修改
+返回值不会污染运行时。服务 `Start` 阶段看到 `starting`；共享 RPC Host、控制面和 discovery 全部就绪后
+变为 `running`；调用 `Server.Drain` 并发布排水状态后变为 `draining`：
+
+```go
+instance := runtime.Instance()
+if instance.Status != discovery.StatusRunning {
+	return fmt.Errorf("game: local instance is not running: %s", instance.Status)
+}
+
+if err := app.Drain(ctx); err != nil {
+	return err
+}
+// 此后新取得的快照为 draining；旧 instance 变量仍是独立快照。
+```
+
 handler 中常见写法：
 
 ```go
@@ -581,6 +597,20 @@ if err != nil {
 `Rec` 在业务分发之前前进上行 Seq。因此业务处理失败或进程在 `Rec` 之后崩溃时，该条上行不会被框架自动重放。
 普通游戏操作接受这个语义；不能重复执行的命令必须由项目定义独立的业务幂等键。Frame 的静态 `CommandID`
 只标识生成的命令类型，不能用作一次业务操作的幂等令牌。
+
+同进程装配显式提供 `LocalMsgQ` 后，它就是唯一会话来源。若本地 msgq 尚未启动或不能创建
+`SessionClient`，Agent 启动会直接返回原始错误，不会偷偷改走远端 discovery：
+
+```go
+agentService, err := agent.New(agent.Options{
+	LocalMsgQ: localMailbox,
+	// 省略监听、身份和 Dispatcher 配置。
+})
+if err != nil {
+	return err
+}
+// localMailbox.SessionClient() 失败时，Start 明确失败；只有未配置 LocalMsgQ 才使用远端 msgq。
+```
 
 `txgame` 的最小配置如下。`agent` 被 `--services` 选中时至少配置一个监听地址，`maxFrameBytes` 和
 `fetchBatch` 必须为正数；`msgq` 的 Redis 会话 binding 参数也必须完整。服务选择只由 `--services` 决定，

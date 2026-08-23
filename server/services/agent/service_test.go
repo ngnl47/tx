@@ -2,27 +2,21 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/ngnl47/tx/lifecycle"
 	txagent "github.com/ngnl47/tx/modules/agent"
-	"github.com/ngnl47/tx/modules/discovery"
 	txmsgq "github.com/ngnl47/tx/modules/msgq"
-	txrpc "github.com/ngnl47/tx/modules/rpc"
 	txserver "github.com/ngnl47/tx/server"
 	"github.com/ngnl47/tx/server/internal/servertest"
-	msgqservice "github.com/ngnl47/tx/server/services/msgq"
 )
 
 func TestServiceStartsWithLocalMsgQAndFrameworkLifecycle(t *testing.T) {
 	root := lifecycle.NewWaitGroupContext(context.Background())
-	rpcHost, err := txrpc.NewHost("127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("NewHost returned error: %v", err)
-	}
-	mailbox, err := msgqservice.New(msgqservice.Options{
+	mailbox, err := txmsgq.NewServer(txmsgq.ServerOptions{
 		InstanceID:         "msgq-test",
 		Store:              newMemorySessionStore(),
 		MaxBacklogMessages: 8,
@@ -30,7 +24,11 @@ func TestServiceStartsWithLocalMsgQAndFrameworkLifecycle(t *testing.T) {
 		SweepInterval:      time.Second,
 	})
 	if err != nil {
-		t.Fatalf("new msgq service: %v", err)
+		t.Fatalf("new msgq runtime: %v", err)
+	}
+	client, err := txmsgq.NewLocalSessionClient(mailbox)
+	if err != nil {
+		t.Fatalf("new local session client: %v", err)
 	}
 	service, err := New(Options{
 		TCPListen:     "127.0.0.1:0",
@@ -40,13 +38,13 @@ func TestServiceStartsWithLocalMsgQAndFrameworkLifecycle(t *testing.T) {
 			return txagent.Identity{RoleID: 1001, SessionID: 1}, nil
 		}),
 		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error { return nil }),
-		LocalMsgQ:  mailbox,
+		LocalMsgQ:  fixedLocalMsgQ{client: client},
 	})
 	if err != nil {
 		t.Fatalf("new agent service: %v", err)
 	}
-	if err := mailbox.Start(servertest.Context{TasksValue: root, RPCValue: rpcHost, InstanceValue: discovery.Instance{ID: "msgq-test"}}); err != nil {
-		t.Fatalf("start msgq service: %v", err)
+	if err := mailbox.Start(root); err != nil {
+		t.Fatalf("start msgq runtime: %v", err)
 	}
 	if err := service.Start(servertest.Context{TasksValue: root, AdmissionValue: lifecycle.NewIngress(root)}); err != nil {
 		t.Fatalf("start agent service: %v", err)
@@ -54,13 +52,8 @@ func TestServiceStartsWithLocalMsgQAndFrameworkLifecycle(t *testing.T) {
 	if service.TCPAddress() == "" {
 		t.Fatal("TCP address is empty")
 	}
-	if err := rpcHost.Start(root); err != nil {
-		t.Fatalf("start RPC host: %v", err)
-	}
 	t.Cleanup(func() {
 		_ = service.Stop(context.Background())
-		_ = mailbox.Stop(context.Background())
-		_ = rpcHost.Stop(context.Background())
 		root.Cancel()
 		root.WaitDoneAndWaitGroupWait()
 	})
@@ -72,6 +65,47 @@ func TestRemoteAgentDeclaresDiscoveryCapability(t *testing.T) {
 	if got := service.Spec().Requires; got != want {
 		t.Fatalf("capabilities = %d, want %d", got, want)
 	}
+}
+
+func TestServiceDoesNotFallbackWhenConfiguredLocalMsgQFails(t *testing.T) {
+	want := errors.New("local msgq is not started")
+	service, err := New(Options{
+		TCPListen:     "127.0.0.1:0",
+		MaxFrameBytes: 1024,
+		FetchBatch:    1,
+		Identity: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (txagent.Identity, error) {
+			return txagent.Identity{RoleID: 1001, SessionID: 1}, nil
+		}),
+		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error { return nil }),
+		LocalMsgQ:  failingLocalMsgQ{err: want},
+	})
+	if err != nil {
+		t.Fatalf("new agent service: %v", err)
+	}
+	root := lifecycle.NewWaitGroupContext(context.Background())
+	t.Cleanup(func() {
+		root.Cancel()
+		root.WaitDoneAndWaitGroupWait()
+	})
+	err = service.Start(servertest.Context{
+		TasksValue:     root,
+		AdmissionValue: lifecycle.NewIngress(root),
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("Start error = %v, want local msgq error", err)
+	}
+}
+
+type failingLocalMsgQ struct{ err error }
+
+func (msgq failingLocalMsgQ) SessionClient() (txmsgq.SessionClient, error) {
+	return nil, msgq.err
+}
+
+type fixedLocalMsgQ struct{ client txmsgq.SessionClient }
+
+func (msgq fixedLocalMsgQ) SessionClient() (txmsgq.SessionClient, error) {
+	return msgq.client, nil
 }
 
 type memorySessionStore struct {

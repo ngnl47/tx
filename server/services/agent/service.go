@@ -282,13 +282,15 @@ func (service *Service) resolveSessions(runtime txserver.Context) (txagent.Sessi
 		return service.options.Sessions, noOpCloser{}, nil
 	}
 	if service.options.LocalMsgQ != nil {
-		if client, err := service.options.LocalMsgQ.SessionClient(); err == nil {
-			router, err := txmsgq.NewFixedSessionClientRouter(client)
-			if err != nil {
-				return nil, nil, err
-			}
-			return router, router, nil
+		client, err := service.options.LocalMsgQ.SessionClient()
+		if err != nil {
+			return nil, nil, fmt.Errorf("agent service: resolve local msgq: %w", err)
 		}
+		router, err := txmsgq.NewFixedSessionClientRouter(client)
+		if err != nil {
+			return nil, nil, err
+		}
+		return router, router, nil
 	}
 	if runtime.Directory() == nil {
 		return nil, nil, fmt.Errorf("agent service: remote msgq requires service discovery")

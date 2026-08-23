@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"errors"
+
+	"github.com/ngnl47/tx/modules/discovery"
 )
 
 // Drain removes the instance from ordinary routing and waits for already
@@ -14,13 +16,21 @@ func (server *Server) Drain(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	server.mu.Lock()
+	runtime := server.runtime
+	discoveryRuntime := server.discovery
+	host := server.host
+	server.mu.Unlock()
 	var discoveryErr error
-	if server.discovery != nil {
-		discoveryErr = server.discovery.markDraining(ctx)
+	if discoveryRuntime != nil {
+		discoveryErr = discoveryRuntime.markDraining(ctx)
+	}
+	if runtime != nil {
+		runtime.setInstanceStatus(discovery.StatusDraining)
 	}
 	var hostErr error
-	if server.host != nil {
-		hostErr = server.host.drain(ctx)
+	if host != nil {
+		hostErr = host.drain(ctx)
 	}
 	return errors.Join(discoveryErr, hostErr)
 }
@@ -80,6 +90,9 @@ func (server *Server) stop(ctx context.Context, drain bool) error {
 	}
 	if runtime != nil && runtime.actor != nil {
 		errs = append(errs, runtime.actor.Shutdown())
+	}
+	if runtime != nil {
+		runtime.setInstanceStatus(discovery.StatusStopping)
 	}
 	if discoveryRuntime != nil {
 		errs = append(errs, discoveryRuntime.markStopping(context.WithoutCancel(ctx)))

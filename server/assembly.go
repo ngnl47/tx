@@ -66,7 +66,7 @@ func (server *Server) startDiscovery(options RunOptions) error {
 		}
 		return nil
 	}
-	instance := server.runtime.instance
+	instance := server.runtime.instanceSnapshot()
 	if err := instance.Validate(); err != nil {
 		return fmt.Errorf("server: discovery instance: %w", err)
 	}
@@ -77,7 +77,6 @@ func (server *Server) startDiscovery(options RunOptions) error {
 	server.discovery = discoveryRuntime
 	server.runtime.directory = discoveryRuntime.directorySnapshot()
 	server.runtime.slots = discoveryRuntime.slotStore()
-	server.runtime.instance = instance
 	if strings.TrimSpace(options.LogicalSlot) != "" {
 		logicalSlot, err := newLogicalSlot(options.LogicalSlot, instance.ID)
 		if err != nil {

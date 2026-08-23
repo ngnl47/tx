@@ -229,14 +229,15 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 	if err := rpcHost.Start(root); err != nil {
 		return fmt.Errorf("server: start RPC host: %w", err)
 	}
+	if err := server.startControl(options.ControlListen); err != nil {
+		return err
+	}
 	if server.discovery != nil {
 		if err := server.discovery.markRunning(context.Background()); err != nil {
 			return fmt.Errorf("server: mark discovery running: %w", err)
 		}
 	}
-	if err := server.startControl(options.ControlListen); err != nil {
-		return err
-	}
+	runtime.setInstanceStatus(discovery.StatusRunning)
 	txlog.Info("server initialized", "app", server.config.AppID, "services", options.Services, "endpoint", rpcHost.Endpoint())
 	return nil
 }

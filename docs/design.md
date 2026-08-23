@@ -128,6 +128,10 @@ Redis / Mongo / etcd / gRPC / Actor
 门面返回专用 wrapper，而不是把具体指针仅仅窄化成接口。这样服务不能通过类型断言重新取得
 `Cancel`、`Stop`、`Shutdown`、`Replace` 或 `Flush`。
 
+`Context.Instance()` 返回 ownership-safe 的本地实例快照。运行时以锁保护实例状态，复制 `Services`
+切片后再交给调用方；它不是 discovery 目录中可写的成员对象。状态顺序固定为
+`starting -> running -> draining -> stopping`，服务可观测状态与对外注册状态使用同一语义。
+
 `Context.Advanced()` 是第一版受控高级 SPI：
 
 - `Redis()` 返回 `redis.ScriptRoutes`，允许基础设施 adapter 复用已经装配的 Redis 路由和连接；它不暴露
@@ -1439,7 +1443,7 @@ project config parser
   -> Discovery / Actor / Transaction when configured or required
   -> generated data binding + project facade setup
   -> health workers + selected services
-  -> RPC Serve + discovery running
+  -> RPC Serve + control ready + discovery running
 ```
 
 项目不实现自己的 Host 或 Runtime。`txgame/internal/app` 只是 composition root：注册生成数据、安装 `db`
@@ -1467,6 +1471,11 @@ discovery -> draining
 
 Drain 期间不会提前取消根 `WaitGroupContext`，也不会关闭 msgq 下行所需的共享 RPC Host。只有服务入口完成
 封口并等待已受理工作后，Stop 才进入资源关闭阶段。
+
+实例只有在共享 RPC Host 和可选控制面都成功启动、discovery 成功发布 `running` 后，才把本地
+`Context.Instance().Status` 切为 `running`。任一步失败都不会发布 `running`，而会进入启动回滚并转为
+`stopping`；不能让服务在控制面尚不可用时提前进入普通路由。Drain 先向 discovery 发布 `draining`，再同步本地快照并封口入口；即使远端
+状态更新失败，本地入口仍会排水且错误会明确返回，调用方不能把结果当成成功。
 
 ### 总体拓扑
 
@@ -1532,6 +1541,10 @@ Receiver，再按稳定消息元数据分发，不能让每个服务重复注册
 - 本地 Topic 广播。
 
 Redis 只保存带 TTL 的 owner 绑定；下行正文保存在 msgq 实例内存。实例崩溃允许丢失未确认下行，客户端重连后由业务状态重同步恢复。
+
+Agent 的会话来源是显式二选一：配置 `LocalMsgQ` 表示同进程复用，未配置时才通过 discovery 解析远端 msgq。
+本地 provider 返回错误时必须让 Agent 启动失败，不能回退远端；否则一次本地装配顺序错误会被误判成跨进程
+部署，并把半装配进程带入运行态。
 
 ### Agent
 
