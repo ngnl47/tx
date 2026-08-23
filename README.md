@@ -14,7 +14,7 @@
 
 ## 核心使用约定
 
-- `tx` 提供 runtime；`txgen` 负责扫描和生成；项目负责读取配置、创建 client 并装配两者。
+- `tx/server` 提供进程级 runtime 装配；`txgen` 负责扫描和生成；项目只读取配置并转换为强类型 `server.Config`，再注入生成包和业务服务。
 - `GD*` 是业务数据对象，`GD*Store` 是绑定该数据的变更追踪结构，不保存第二份完整数据。
 - Store 不是协议字段。cmd 和业务输入模型不得直接声明生成的 `*Store` 类型。
 - handler 优先使用项目 facade，例如 `db.Save(role)`；直接传入 Store、writer 和 context 属于扩展层用法。
@@ -35,6 +35,7 @@
 - 追踪字段级变更。
 - 将生成 Store 的同步变更遍历结果落地到 Redis、Mongo 或 Fusion 策略。
 - 提供 Redis 延迟任务 backend 和 Fusion 后台回写所需组件。
+- 通过 `tx/server` 统一装配 Storage、共享 gRPC Host、Discovery、Actor、事务、健康探针、后台 worker 与服务生命周期。
 
 生成代码依赖 `tx`，`tx` 不依赖生成器工程。
 
@@ -43,64 +44,41 @@
 业务工程通常按下面顺序接入运行时：
 
 1. 由生成工程输出 `server/gen/data` 和 `server/gen/cmd`。
-2. 业务服务读取本地 yml，解析 Redis/Mongo routeType 路由表。
-3. 业务服务创建 go-redis、MongoDB driver client，并用 tx 的薄适配层包装。
-4. 用 Redis/Mongo cluster adapter 组装 Fusion strategy。
-5. 将 Fusion strategy 注册给生成包的默认 reader。
-6. handler 选择一条持久化主线：`BeginChange/SaveChange` 用于直接字段修改，`Store + storage.Save` 用于 setter/Store 拦截式标脏。
-7. 后台 Scheduler 消费 Redis 延迟任务，把 Redis 热数据回写 Mongo。
+2. 项目读取本地 yml，严格解析后转换为只含 Go 值的 `server.Config`；tx 不读取 yml、环境变量或命令行。
+3. 项目注册生成数据绑定、业务 facade 初始化函数和可选服务。
+4. 启动参数通过 `server.RunOptions` 选择本进程服务并注入部署身份。
+5. `server.Server` 统一创建 Redis/Mongo/Fusion、共享 gRPC Host、服务发现、Actor、事务和后台任务。
+6. handler 使用 `db.Save(role)` 或项目事务 facade，不直接装配 writer/client。
 
-一个简化的启动伪代码如下：
+一个简化的项目组合根如下：
 
 ```go
-func BootstrapStorage(ctx context.Context, cfg AppConfig) (*fusion.Strategy, error) {
-	redisCluster, err := buildRedisCluster(ctx, cfg.Storage.Redis)
-	if err != nil {
-		return nil, err
-	}
-	mongoCluster, err := buildMongoCluster(ctx, cfg.Storage.MongoDB)
-	if err != nil {
-		return nil, err
-	}
-	delayQueue, err := buildRedisDelayQueue(ctx, cfg.Storage.Redis)
-	if err != nil {
-		return nil, err
-	}
+func NewApplication(config server.Config) (*server.Server, error) {
+	return server.New(
+		config,
+		server.WithGeneratedData(data.DefaultTypeRegistry(), func(runtime server.StorageRuntime) {
+			data.RegisterStorageRuntime(runtime)
+		}),
+		server.WithRuntimeSetup(func(runtime *server.Runtime) (func(), error) {
+			db.SetDefault(db.New(runtime.Storage))
+			return func() { db.SetDefault(nil) }, nil
+		}),
+		server.WithService(game.Service{}, mailboxService, agentService),
+	)
+}
 
-	store := &fusion.Strategy{
-		Redis:         redisCluster,
-		RedisLoader:   redisCluster,
-		RedisDeleter:  redisCluster,
-		RedisReplacer: redisCluster,
-		MongoLoader:   mongoCluster,
-		MongoDeleter:  mongoCluster,
-		MongoQueue:    delayQueue,
-	}
-
-	data.RegisterStorageRuntime(runtimeReaders{
-		redis:  redisCluster,
-		mongo:  mongoCluster,
-		fusion: store,
+func Run(ctx context.Context, app *server.Server) error {
+	return app.Run(ctx, server.RunOptions{
+		Services:         "game,msgq,agent",
+		InstanceID:       "game-1@boot-43",
+		InstanceVersion:  "20260823.1",
+		InstanceEndpoint: "10.0.1.21:9000",
+		RPCListen:        "0.0.0.0:9000",
 	})
-	return store, nil
 }
 ```
 
-`runtimeReaders` 是业务工程自己的小适配结构，只需要满足生成包里的 `StorageRuntime` 接口：
-
-```go
-type runtimeReaders struct {
-	redis  storage.DocumentLoader
-	mongo  storage.DocumentLoader
-	fusion storage.DocumentLoader
-}
-
-func (r runtimeReaders) RedisReader() data.DefaultReader  { return r.redis }
-func (r runtimeReaders) MongoReader() data.DefaultReader  { return r.mongo }
-func (r runtimeReaders) FusionReader() data.DefaultReader { return r.fusion }
-```
-
-如果 reader 同时实现 `storage.BatchDocumentLoader`，生成包会把它注册成默认批量 reader。Redis/Mongo/Fusion 的 cluster adapter 均实现批量读取接口。
+`WithRuntimeSetup` 是项目组合根使用的高级扩展点，适合安装 `db` facade 或业务级 runtime 适配器；普通 handler 不应保存或传递 `server.Runtime`。若只需要单独使用某个底层存储 adapter，后文仍提供手动装配接口。
 
 handler 中常见写法：
 

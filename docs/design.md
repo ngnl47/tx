@@ -1375,6 +1375,48 @@ HeapAlloc 受整个进程影响，不能作为 Manager 拒绝服务的唯一依�
 
 ## 分布式服务模块
 
+### 进程运行时装配
+
+`tx/server` 是每个物理进程唯一的运行时宿主。项目先把 yml、环境变量和命令行转换为强类型
+`server.Config` 与 `server.RunOptions`；此后由 `server.Server` 按固定顺序装配并管理：
+
+```text
+project config parser
+  -> server.Config
+  -> server.New(options...)
+  -> select services
+  -> Storage + shared RPC Host
+  -> Discovery / Actor / Transaction when configured or required
+  -> generated data binding + project facade setup
+  -> health workers + selected services
+  -> RPC Serve + discovery running
+```
+
+项目不实现自己的 Host 或 Runtime。`txgame/internal/app` 只是 composition root：注册生成数据、安装 `db`
+facade、注入身份解析/业务分发回调和声明可选业务服务。`server/services/agent` 与
+`server/services/msgq` 是 tx 提供的通用服务适配器；项目配置转换会延迟到对应服务真正被当前进程选中时执行，
+未选服务的专属配置不能阻止其他服务启动。
+
+每个 `server.Service` 用 `Spec` 声明稳定名称与框架能力依赖，并在 `Start(*server.Runtime)` 中只注册或启动
+本服务资源。`server.Runtime` 是服务扩展层 API，普通业务 handler 应使用项目 facade。服务启动失败时按已启动
+顺序逆序回滚；正常退出顺序固定为：
+
+```text
+discovery -> draining
+  -> service ingress drain and accepted-work wait
+  -> service stop
+  -> shared RPC stop
+  -> root WaitGroupContext cancel and wait
+  -> transaction final flush
+  -> actor shutdown
+  -> discovery stopping/close
+  -> project cleanup
+  -> storage close
+```
+
+Drain 期间不会提前取消根 `WaitGroupContext`，也不会关闭 msgq 下行所需的共享 RPC Host。只有服务入口完成
+封口并等待已受理工作后，Stop 才进入资源关闭阶段。
+
 ### 总体拓扑
 
 ```text
@@ -1420,8 +1462,8 @@ etcd
 它不实现 Actor mailbox、会话 Seq/Ack 或业务幂等。发送结果不确定时不能由框架盲目重试；业务必须有独立幂等键。
 
 `modules/rpc.Host` 实现“每个物理进程一个普通 gRPC Host”：它唯一持有 listener 与 `grpc.Server`，直接接入
-`lifecycle.WaitGroupContext`，并负责注册阶段、Serve 和幂等 Stop。项目宿主只负责创建 Host、让所选服务在启动期注册
-protobuf service、全部注册成功后启动 Host，并把实际 endpoint 发布到服务发现。
+`lifecycle.WaitGroupContext`，并负责注册阶段、Serve 和幂等 Stop。`tx/server.Server` 创建 Host，让所选服务在启动期
+注册 protobuf service，全部注册成功后启动 Host，并把实际 endpoint 发布到服务发现。
 同进程的 msgq 与普通 RPC 因此可以共享 endpoint，但保持不同 protobuf service；任一服务不得自行关闭共享 listener。
 
 通用 `DeliveryService` 在同一个 gRPC server 中只能注册一次。聚合多个业务服务的进程应由项目提供一个进程级

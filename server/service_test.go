@@ -1,0 +1,160 @@
+package server
+
+import (
+	"context"
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/ngnl47/tx/lifecycle"
+)
+
+func TestRegistrySelectsServicesInRegistrationOrder(t *testing.T) {
+	registry, err := newRegistry(
+		testService{spec: Spec{Name: "game"}},
+		testService{spec: Spec{Name: "room"}},
+		testService{spec: Spec{Name: "task"}},
+	)
+	if err != nil {
+		t.Fatalf("newRegistry returned error: %v", err)
+	}
+	selected, err := registry.selectServices("*,!room")
+	if err != nil {
+		t.Fatalf("selectServices returned error: %v", err)
+	}
+	if names := selectedNames(selected); !reflect.DeepEqual(names, []string{"game", "task"}) {
+		t.Fatalf("selected services = %#v, want game and task", names)
+	}
+}
+
+func TestCapabilitiesStringNamesFrameworkResources(t *testing.T) {
+	capabilities := CapabilityStorage | CapabilityDiscovery | CapabilityTransaction
+	if got := capabilities.String(); got != "storage,discovery,transaction" {
+		t.Fatalf("capabilities.String() = %q", got)
+	}
+}
+
+func TestRegistryRejectsUnknownAndEmptySelection(t *testing.T) {
+	registry, err := newRegistry(testService{spec: Spec{Name: "game"}})
+	if err != nil {
+		t.Fatalf("newRegistry returned error: %v", err)
+	}
+	if _, err := registry.selectServices("unknown"); err == nil {
+		t.Fatal("unknown service error = nil, want error")
+	}
+	if _, err := registry.selectServices("!game"); err == nil {
+		t.Fatal("empty selection error = nil, want error")
+	}
+}
+
+func TestServiceHostRollsBackAndStopsInReverseOrder(t *testing.T) {
+	root := lifecycle.NewWaitGroupContext(context.Background())
+	runtime := &Runtime{Lifecycle: root}
+	var calls []string
+	registry, err := newRegistry(
+		testService{
+			spec:  Spec{Name: "game"},
+			start: func(*Runtime) error { calls = append(calls, "start:game"); return nil },
+			stop:  func(context.Context) error { calls = append(calls, "stop:game"); return nil },
+		},
+		testService{
+			spec:  Spec{Name: "task"},
+			start: func(*Runtime) error { calls = append(calls, "start:task"); return context.DeadlineExceeded },
+		},
+	)
+	if err != nil {
+		t.Fatalf("newRegistry returned error: %v", err)
+	}
+	host := newServiceHost(registry, runtime)
+	if err := host.start("game,task"); err == nil {
+		t.Fatal("start error = nil, want failure")
+	}
+	if want := []string{"start:game", "start:task", "stop:game"}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("calls = %#v, want %#v", calls, want)
+	}
+}
+
+func TestServiceHostDrainWaitsForAcceptedWork(t *testing.T) {
+	root := lifecycle.NewWaitGroupContext(context.Background())
+	runtime := &Runtime{Lifecycle: root}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	registry, err := newRegistry(testService{
+		spec: Spec{Name: "agent"},
+		start: func(runtime *Runtime) error {
+			done, err := runtime.Ingress.Enter()
+			if err != nil {
+				return err
+			}
+			close(started)
+			go func() {
+				<-release
+				done()
+			}()
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("newRegistry returned error: %v", err)
+	}
+	host := newServiceHost(registry, runtime)
+	if err := host.start("agent"); err != nil {
+		t.Fatalf("start returned error: %v", err)
+	}
+	<-started
+
+	drained := make(chan error, 1)
+	go func() { drained <- host.drain(context.Background()) }()
+	select {
+	case err := <-drained:
+		t.Fatalf("drain returned early: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case err := <-drained:
+		if err != nil {
+			t.Fatalf("drain returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("drain did not wait for accepted work")
+	}
+}
+
+type testService struct {
+	spec  Spec
+	start func(*Runtime) error
+	drain func(context.Context) error
+	stop  func(context.Context) error
+}
+
+func (service testService) Spec() Spec { return service.spec }
+
+func (service testService) Start(runtime *Runtime) error {
+	if service.start == nil {
+		return nil
+	}
+	return service.start(runtime)
+}
+
+func (service testService) Drain(ctx context.Context) error {
+	if service.drain == nil {
+		return nil
+	}
+	return service.drain(ctx)
+}
+
+func (service testService) Stop(ctx context.Context) error {
+	if service.stop == nil {
+		return nil
+	}
+	return service.stop(ctx)
+}
+
+func selectedNames(services []Service) []string {
+	names := make([]string, 0, len(services))
+	for _, service := range services {
+		names = append(names, service.Spec().Name)
+	}
+	return names
+}
