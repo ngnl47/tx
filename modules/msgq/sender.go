@@ -168,7 +168,7 @@ func NewSender(router *SessionRouter, dialer Dialer) (*Sender, error) {
 	}, nil
 }
 
-// Pub 向 roleID 当前会话投递已编码的 BON payload。
+// Pub 向 roleID 当前会话投递 BON 编码载荷。
 func (s *Sender) Pub(ctx context.Context, roleID int64, payload []byte) (PubResult, error) {
 	if s == nil {
 		return PubResult{}, ErrSenderClosed

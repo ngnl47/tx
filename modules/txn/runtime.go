@@ -21,7 +21,7 @@ var (
 )
 
 // WriteAdmission 在开始新的 Procedure 前检查项目是否接受新的可持久化修改。
-// 它通常由项目侧的共享存储健康闸门实现；已有 pending 根不会经过该检查。
+// 它通常由项目侧的共享存储健康闸门实现；已有待刷根对象不会经过该检查。
 type WriteAdmission interface {
 	RequireWritable() error
 }

@@ -18,7 +18,7 @@ const (
 )
 
 // Server 在本进程维护客户端会话与未确认下行消息。
-// Redis 只保存角色到 msgq 实例的短期归属，不保存下行 payload。
+// Redis 只保存角色到 msgq 实例的短期归属，不保存下行编码载荷。
 type Server struct {
 	instanceID         string
 	store              SessionStore
@@ -40,7 +40,7 @@ type ServerOptions struct {
 	InstanceID         string
 	Store              SessionStore
 	MaxBacklogMessages int
-	// MaxBacklogBytes 限制每个会话中尚未确认 payload 的总字节数。零值使用安全默认值。
+	// MaxBacklogBytes 限制每个会话中尚未确认编码载荷的总字节数。零值使用安全默认值。
 	MaxBacklogBytes int
 	OfflineTimeout  time.Duration
 	SweepInterval   time.Duration

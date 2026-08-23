@@ -175,7 +175,7 @@ func (current *store) Checkpoint(ctx context.Context, stream Stream, throughSeq 
 	return current.backend.Trim(ctx, stream, throughSeq)
 }
 
-// NewRecord 创建一条记录并计算稳定的内容哈希。它不会复制 payload。
+// NewRecord 创建一条记录并计算稳定的内容哈希。它不会复制编码载荷。
 func NewRecord(stream Stream, seq uint64, payloadVersion uint32, payload []byte) (Record, error) {
 	record := Record{
 		Stream:         stream,

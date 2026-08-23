@@ -20,8 +20,8 @@
 - handler 优先使用项目 facade，例如 `db.Save(role)`；直接传入 Store、writer 和 context 属于扩展层用法。
 - 高频大对象修改使用 Store wrapper；低频请求可以使用 `BeginChange/SaveChange`。同一变更周期不要混用两种模式。
 - `Set` 写入零值，`Replace` 整体覆盖复杂值，`Delete` 删除集合元素或存储路径，`Clear` 清空容器。
-- 保存失败时 Store 保留 dirty 状态。业务必须处理返回的 `error`，不能把外部服务异常当成成功。
-- Fusion 同时要求 Redis 和 Mongo 健康；Redis 是热数据，Mongo 是持久化数据，延迟队列只保存记录定位。
+- 保存失败时 Store 保留变更状态。业务必须处理返回的 `error`，不能把外部服务异常当成成功。
+- Fusion 同时要求 Redis 和 Mongo 健康；Redis 是热数据，Mongo 是持久化数据，Fusion 延迟任务队列只保存记录定位。
 - `delaySaveTime` 表示回写 Mongo 的延迟；`delayDelTime` 表示热数据目标保留时间，不会删除 Mongo 数据。Fusion 脏热数据在可靠回写前不会按 TTL 淘汰。
 - 单机事务只回滚通过 Store 受控 API 发生的修改；事务内子流程使用 `tx.Call`，不能嵌套启动根事务。
 - `msgq` 管理客户端会话和下行邮箱；Actor 负责业务实体投递；普通 gRPC RPC 负责服务或实例调用，三者不是同一个中继层。
@@ -257,7 +257,7 @@ TX_ETCD_ENDPOINT=127.0.0.1:2379 \
 ## msgq 会话绑定
 
 `modules/msgq` 负责 `roleID -> (sessionID, connectionID, msgq instanceID)` 的短期绑定与精确 owner 解析，也提供本进程内的
-`Server` 管理 Session、下行队列和 Seq/Ack。它不把下行 payload 写入 Redis；Redis 只保存带 TTL 的绑定 key，
+`Server` 管理 Session、下行队列和 Seq/Ack。它不把下行编码载荷写入 Redis；Redis 只保存带 TTL 的绑定 key，
 下行消息始终属于 msgq 实例内存，实例崩溃时未确认消息允许丢失。
 
 绑定 key 固定为 `<prefix>:session:{<roleID>}`，花括号保证本地原生 Redis Cluster 下 Lua 始终只访问同一 slot：
@@ -288,7 +288,7 @@ mailbox, err := msgq.NewServer(msgq.ServerOptions{
     InstanceID:      "msgq-2",
     Store:           bindings,
     MaxBacklogMessages:      1024,    // 未确认下行条数上限。
-    MaxBacklogBytes: 8 << 20, // 未确认 payload 总字节数上限；零值使用 64 MiB 默认值。
+    MaxBacklogBytes: 8 << 20, // 未确认编码载荷总字节数上限；零值使用 64 MiB 默认值。
 })
 if err != nil {
     return err
@@ -360,13 +360,13 @@ if err != nil {
 `msgq.ErrInvalidSessionOptions`，不会把截断后的 `0` 发送给 Redis。
 
 `Fetch` 不在持有会话锁时等待，因此同一会话的 `Pub` 不会被长轮询阻塞。`Pub` 和 `BroadcastTopic` 成功后，传入的
-payload 所有权移交给 msgq：调用方不得再修改、`append`、复用或归还该 `[]byte`，直至对应消息被确认或会话关闭；
+编码载荷的所有权移交给 msgq：调用方不得再修改、`append`、复用或归还该 `[]byte`，直至对应消息被确认或会话关闭；
 `Fetch`/`FetchSome` 返回的 `Message` 同样只读。这样本地 topic 广播只保留一份已编码 BON 正文，多个会话条目共享它；
 跨进程 gRPC 调用会在传输边界自然得到独立字节副本。`MaxBacklogMessages` 与 `MaxBacklogBytes` 分别限制未确认消息数量与
-payload 总字节数；任一上限触发时当前会话会被移除并返回
+编码载荷总字节数；任一上限触发时当前会话会被移除并返回
 `ErrOutboundOverflow`，避免持续不确认的客户端无限占用 msgq 内存。客户端重连后由业务重同步恢复状态。
 
-确认前缀后，msgq 会解除队列条目对 payload 的引用；确认全部积压时直接释放条目数组，部分确认时按低水位整理剩余
+确认前缀后，msgq 会解除队列条目对编码载荷的引用；确认全部积压时直接释放条目数组，部分确认时按低水位整理剩余
 条目，避免一次广播高峰长期保留过大的条目数组。正文不会在本地广播时按会话复制。
 
 ### 批量下行与本地 Topic
@@ -456,7 +456,7 @@ if err := mailbox.Start(appContext); err != nil { // appContext 是 lifecycle.Wa
 
 `modules/msgq` 提供独立的 protobuf/gRPC `MailboxService`，不复用通用的 `modules/rpc`。连接侧可调用
 `Init`、`Rec`、`Fetch`、`FetchSome`、`Confirm`、`Touch`、Topic 和 `Close`；业务或其他服务可调用 `Pub`。
-所有 payload 都是已经编码完成的 BON `bytes`，服务不会解析或转换客户端协议体。
+所有 `payload` 字段都承载已经编码完成的 BON 字节，统一称为编码载荷；服务不会解析或转换客户端协议体。
 
 ```go
 grpcServer := grpc.NewServer()
@@ -715,7 +715,7 @@ Seq/Ack、静态命令号、路由键、恢复标记和最大长度，不能将�
 
 Frame 固定使用 32 字节头：第 0 字节是版本，第 1 字节是类型，第 2 字节是握手恢复标记，第 3 字节是路由键类型，
 `Seq` 位于第 4--11 字节，`Ack` 位于第 12--19 字节，静态命令号位于第 20--23 字节，路由键长度位于第 24--27
-字节，payload 长度位于第 28--31 字节，所有整数均为 big-endian。路由键紧随固定头，随后才是 payload。
+字节，编码载荷长度位于第 28--31 字节，所有整数均为 big-endian。路由键紧随固定头，随后才是编码载荷。
 路由键只支持 `int64`、`uint64` 和 UTF-8 非空 `string`；它只出现在上行 `FrameBusiness`。
 
 | 类型 | Seq | Ack | 命令号和路由键 | Payload | 用途 |
@@ -725,7 +725,7 @@ Frame 固定使用 32 字节头：第 0 字节是版本，第 1 字节是类型�
 | `FrameOutbound` | msgq 下行序号 | `0` | 必须为空 | BON 业务体 | 服务端下行 |
 | `FrameAck` | `0` | 最近已处理的 `FrameOutbound.Seq` | 必须为空 | 必须为空 | 客户端空闲期间仅做确认 |
 
-客户端收到 `FrameOutbound` 后应先完成 payload 的处理，再更新本地 `lastOutboundSeq`。下一条业务帧直接携带该值，
+客户端收到 `FrameOutbound` 后应先完成编码载荷的处理，再更新本地 `lastOutboundSeq`。下一条业务帧直接携带该值，
 无需额外 ACK 帧：
 
 ```ts
@@ -740,7 +740,7 @@ socket.send(encodeFrame({
 }, maxFrameBytes));
 ```
 
-客户端空闲但已经处理新的下行时，才发送空 payload 的 `FrameAck`：
+客户端空闲但已经处理新的下行时，才发送编码载荷为空的 `FrameAck`：
 
 ```ts
 import { createAckFrame, encodeFrame } from "../src/protocol/frame.js";
@@ -750,7 +750,7 @@ socket.send(encodeFrame(createAckFrame(lastOutboundSeq), maxFrameBytes));
 
 服务端只接受不倒退且不超过当前连接**已成功写出**的下行序号；超出范围的 Ack 会断开本次连接并保留未确认队列，
 不会错误清理未来消息。重连握手使用同一个最后确认号恢复未确认下行。客户端不得把“收到网络字节”当作已确认，
-必须在业务 payload 已被本地处理后才推进 Ack。
+必须在业务编码载荷已被本地处理后才推进 Ack。
 
 ## 内部 gRPC 协议
 
@@ -1098,7 +1098,7 @@ if err != nil {
 ```
 
 它投递 `MessageType: "agent.command"`、生成的静态 `CommandID`、可选 `RouteKey` 和原始 BON `Payload`。
-连接 `Seq` 只用于 Agent 重复帧抑制，不是业务幂等键。Actor 侧再通过生成的 `cmd.DecodeBONCommand` 解析 payload，
+连接 `Seq` 只用于 Agent 重复帧抑制，不是业务幂等键。Actor 侧再通过生成的 `cmd.DecodeBONCommand` 解析编码载荷，
 核对外层命令号与路由键是否匹配请求字段；具体命令如需幂等，仍须定义独立业务幂等键。
 
 上例的 `role` 是可恢复的 Virtual Actor。它的 `identity` 由集群根据成员视图路由，业务必须能在新节点上从
@@ -1623,7 +1623,7 @@ change.Document{
 }
 ```
 
-如果用于 cmd 下行，生成代码会流式遍历 Store 当前 dirty 状态，直接构建 Msgpack 字段名文档：
+如果用于 cmd 下行，生成代码会同步遍历 Store 当前变更状态，直接构建 Msgpack 字段名文档：
 
 ```go
 body, err := role.Document(change.FieldNameMsgpack)
@@ -1635,7 +1635,7 @@ if err != nil {
 例如 `HeadImg` 的 tag 是 `msgpack:"hi,omitempty"`，那么下行变更文档里使用 `hi`，不是 Go 字段名
 `HeadImg`。
 
-生成 Store 内部使用固定字段槽、集合 key/index 状态和 dirty 子 Store 记录变更，不在每次 setter 时追加完整路径项；`Document(kind)` 与 `tx/storage` 的通用 `Create` / `Save` 都通过 `VisitChanges` 直接消费这些状态。
+生成 Store 内部使用固定字段槽、集合 key/index 状态和脏子节点索引记录变更，不在每次 setter 时追加完整路径项；`Document(kind)` 与 `tx/storage` 的通用 `Create` / `Save` 都通过 `VisitChanges` 直接消费这些状态。
 
 四套字段名使用同一个入口，区别只由参数表达：
 
@@ -1650,7 +1650,7 @@ JSON/BSON 命名文档只是高级文档构建结果，不是完整的 Redis pat
 项目 facade，例如 `db.Save(role)`；Redis adapter 固定选择 JSON 名，Mongo adapter 固定选择 BSON 名，cmd
 Provider 固定选择 Msgpack 名。
 
-### Store 树与共享业务对象
+### Store 状态树与共享业务对象
 
 `GD*Store` 不复制业务数据，而是绑定一个 `GD*` 引用并保存该路径上的字段选择和变更状态。父 Store
 按需持有直接指针、map key、slice index 的子 Store，最终在保存、`VisitChanges` 或 `Document(kind)` 边界递归遍历：
@@ -1691,7 +1691,7 @@ for _, role := range guildRoles {
 规范化路径状态，不实现持久化 Store 所需的 `RecordKey`、`TypeSpec`、`ClearChanges` 等接口，因此不能误传给
 `storage.Save`。
 
-`View(configure)` 默认复制主 Store 当前 dirty 选择；需要单独组织下行字段时，在回调第一步调用 `AllUnTouch()`，
+`View(configure)` 默认复制主 Store 当前变更选择；需要单独组织下行字段时，在回调第一步调用 `AllUnTouch()`，
 再用 `Touch*` 选择字段。回调收到的 Store 只是同步选择器，`Set/Clear/Replace/Delete` 等写数据方法属于编程错误并
 立即 panic；业务数据修改仍必须发生在主 Store 上。选择器只读取源 GD：访问一个当前为 `nil` 的 map/slice Store
 不会把源字段初始化为空集合，也不会凭空创建变更；需要发送空集合时，应先在主 Store 上明确 `Clear` 或 `Replace`。
@@ -1782,7 +1782,7 @@ if err != nil {
 	return err
 }
 
-payload, err := bon.Marshal(doc.Set) // 编码后与 role 脱离，成为独立载荷。
+payload, err := bon.Marshal(doc.Set) // 编码后与 role 脱离，成为独立编码载荷。
 if err != nil {
 	return err
 }
@@ -1879,7 +1879,7 @@ map key 或 slice index 与所属字段合并为一个路径节点，因此下�
 Role.Items[1001].Attrs["atk"].Buffs[2].Modifiers[7]
 ```
 
-Store 树遍历和 `BeginChange/SaveChange` 快照 diff 都使用同一预算。若业务继续修改第五层，框架会立即停止
+Store 状态树同步遍历和 `BeginChange/SaveChange` 快照差分都使用同一预算。若业务继续修改第五层，框架会立即停止
 向下追踪，并把最近可解析祖先改为整体覆盖，保证最终数据正确且避免无意义的深层遍历。例如：
 
 ```go
@@ -1936,7 +1936,7 @@ role.SetName("bob")
 role.SetPower(role.GetPower() + 100)
 ```
 
-生成代码同时支持两条持久化主线。休闲游戏的无状态请求可以使用快照 diff：
+生成代码同时支持两条持久化主线。休闲游戏的无状态请求可以使用快照差分：
 
 ```go
 if err := role.BeginChange(); err != nil {
@@ -1969,13 +1969,13 @@ if err := db.SaveChange(role); err != nil {
 
 若元素本身被替换为另一个对象、设为 `nil`，或者 slice 长度和顺序变化，框架会保守地写对应整元素或整个 slice，避免 index 语义漂移。
 
-高频有状态对象优先使用 Store 拦截式标脏：
+高频有状态对象优先使用 Store 受控修改：
 
 ```go
 role.SetName("bob")
 role.ItemsStore().Set(1001, &data.GDItem{ItemId: 1001, Quantity: 7})
 
-view, err := role.Store().View(nil) // 保存前同步捕获当前 dirty 值
+view, err := role.Store().View(nil) // 保存前同步捕获当前变更值
 if err != nil {
 	return err
 }
@@ -1986,7 +1986,7 @@ if err := storage.Save(ctx, fusionDB, role.Store()); err != nil {
 ```
 
 `BeginChange/SaveChange` 和 Store 写入模式在同一个变更周期内互斥；`store.View(...)` 只同步捕获下行/广播
-StoreView，不参与持久化模式。业务项目通常会再包装一层 facade：Store 拦截路径使用 `db.Save(role)`，snapshot diff
+StoreView，不参与持久化模式。业务项目通常会再包装一层 facade：Store 受控修改路径使用 `db.Save(role)`，快照差分
 路径使用 `db.SaveChange(role)`，避免 handler 直接传入 `ctx`、writer 或 Store，并保证两条路径都经过项目的存储健康闸门。
 
 如果业务直接修改了字段，需要手动 `Touch*` 补标脏：
@@ -2027,7 +2027,7 @@ task.SetActive(2)
 // Document(change.FieldNameGo): Set["DailyTask.Active"] = int64(2)
 ```
 
-`SetDailyTask` 覆盖或 `ClearDailyTask` 清空字段时，父 Store 会替换或移除自己的子 Store 节点。旧对象没有父回调，因此旧对象后续的独立 Store 修改不会污染角色 Store。直接写 `role.DailyTask` 属于快照 diff 或手动 `TouchDailyTask()` 路径，不会自动产生嵌套 Store 变更。
+`SetDailyTask` 覆盖或 `ClearDailyTask` 清空字段时，父 Store 会替换或移除自己的子 Store 节点。旧对象没有父回调，因此旧对象后续的独立 Store 修改不会污染角色 Store。直接写 `role.DailyTask` 属于快照差分或手动 `TouchDailyTask()` 路径，不会自动产生嵌套 Store 变更。
 
 ### 单机事务
 
@@ -2062,7 +2062,7 @@ err := txn.Run(ctx, txn.Locks(role), process)
 // err: transaction: lock target role:1001 has pending changes before transaction
 ```
 
-项目应在启动时把自己的 yml 配置转换为这项配置；`tx` 不读取项目文件。生产环境通常保持默认 `false`，避免每个事务入口递归遍历整棵 Store 树。开启后应先保存或 `ClearChanges()` 处理事务外已有的 Store 变更，再进入事务；不要把事务外修改混入本次提交边界。
+项目应在启动时把自己的 yml 配置转换为这项配置；`tx` 不读取项目文件。生产环境通常保持默认 `false`，避免每个事务入口递归遍历整棵 Store 状态树。开启后应先保存或 `ClearChanges()` 处理事务外已有的 Store 变更，再进入事务；不要把事务外修改混入本次提交边界。
 
 常驻内存实体由 `txn.Runtime` 管理时，前一轮事务的变更会刻意保留到下一次 Flush，因此必须使用 `runtime.Call`。它会在内部允许已有变更，普通业务代码不要直接调用 `txn.CallWithOptions`。
 
@@ -2149,7 +2149,7 @@ func (p *PUpdateRole) Process(tx *txn.Tx) error {
 
 `txn.Runtime` 是实体长期驻留内存服务中 Procedure 的标准搭档。事务成功后它只按锁键登记对应 Store；多个事务持续修改同一对象时，Store 保留路径变更，下一次 Flush 才按当前值构建一次 Fusion 写入。
 
-这里的 `pending` 指“已发生受控修改、尚未成功 Flush 的持久化根对象”。`Runtime.Pending()` 返回按 `LockKey` 去重后的这个数量，而不是内存中全部 `GD*` 的数量：同一个 `GDRole` 连续修改多次、或仅修改 `GDRole.Items[1001]` 等子字段，都只算一个 pending root；同一事务修改一个 `GDLegion` 和两个不同的 `GDRole`，则算三个。Flush 成功、Store 变更清理后，对应 root 才会移出 pending；未产生变更或纯内存对象不计入其中。
+这里的固定术语是“待刷根对象”：它指已发生受控修改、尚未成功 Flush 的持久化根对象。`Runtime.Pending()` 返回按 `LockKey` 去重后的待刷根对象数量，而不是内存中全部 `GD*` 的数量：同一个 `GDRole` 连续修改多次、或仅修改 `GDRole.Items[1001]` 等子字段，都只算一个待刷根对象；同一事务修改一个 `GDLegion` 和两个不同的 `GDRole`，则算三个。Flush 成功、Store 变更状态清理后，对应根对象才会移出待刷集合；未产生变更或纯内存对象不计入其中。
 
 ```go
 runtime := txn.NewRuntime(fusion, txn.RuntimeConfig{
@@ -2192,9 +2192,9 @@ if err := runtime.Shutdown(context.WithoutCancel(serviceCtx)); err != nil {
 }
 ```
 
-`Run` 遇到单次写入错误会记录错误并保留目标，下一轮继续重试。`Shutdown` 在 `ShutdownFlushTimeout` 有效期内立即 Flush 并按 `FlushInterval` 继续尝试；截止时间到达时会返回错误和剩余待刷数量。该超时只约束内存 Store 到 Redis 的最终刷盘，不等待 Fusion 的 Redis 延迟队列回写 Mongo。第一版不把 Store 或 GD 指针交给 Actor 外的异步写队列；如未来需要解除 Flush 的 I/O 持锁时间，应在锁内生成与 GD 脱离的后端写入命令，并在交给异步队列后遵守只读发布契约，同时补齐顺序确认与失败重试语义。
+`Run` 遇到单次写入错误会记录错误并保留目标，下一轮继续重试。`Shutdown` 在 `ShutdownFlushTimeout` 有效期内立即 Flush 并按 `FlushInterval` 继续尝试；截止时间到达时会返回错误和剩余待刷数量。该超时只约束内存 Store 到 Redis 的最终刷盘，不等待 Fusion 延迟任务队列回写 Mongo。第一版不把 Store 或 GD 指针交给 Actor 外的异步写队列；如未来需要解除 Flush 的 I/O 持锁时间，应在锁内生成与 GD 脱离的后端写入命令，并在交给异步队列后遵守只读发布契约，同时补齐顺序确认与失败重试语义。
 
-`MaxRootChanges` 限制单个 pending root 的细粒度变更数量。Runtime 只在 `Flush` 取得该对象锁、准备构建文档时检查，避免每次 `Procedure` 提交递归遍历整棵 Store 树；预算检查与 adapter 的正常文档构建共用一次 visitor 遍历，只有超过预算时才会中止内存文档构建、收敛 dirty 树并重新构建。若数量超过预算，Runtime 只把本轮实际变脏的顶层分支按当前 `GD*` 值记录为 `Replace`，并自动跳过 BSON `_id`。例如：
+`MaxRootChanges` 限制单个待刷根对象的细粒度变更位置数量。Runtime 只在 `Flush` 取得该对象锁、准备构建文档时检查，避免每次 `Procedure` 提交递归遍历整棵 Store 状态树；预算检查与 adapter 的正常文档构建共用一次 visitor 遍历，只有超过预算时才会中止内存文档构建、收敛 Store 状态树并重新构建。若数量超过预算，Runtime 只把本轮实际标脏的顶层分支按当前 `GD*` 值记录为 `Replace`，并自动跳过 BSON `_id`。例如：
 
 ```go
 first, _ := role.ItemsStore().Get(1001)
@@ -2203,11 +2203,11 @@ second, _ := role.ItemsStore().Get(1002)
 second.SetQuantity(7)
 ```
 
-当预算为 `1` 时，两条细路径会收敛为一条完整 `Items` Replace；没有修改的 `Name`、`Power` 等字段不会进入变更文档。即使 role 来自部分字段加载，它们的 Go 零值也不会覆盖数据库中的既有值。若同一轮还调用了 `role.SetName("alice")`，则最终输出 `Name` 和 `Items` 两个顶层 Replace。该收敛会记录一条 `txn runtime root changes collapsed` 告警；它限制 dirty 路径，不限制 `GD*` 业务对象本身或干净子 Store 缓存的内存。真正需要全量落地整个对象时使用 `AllTouch()`，不要把它与容量收敛混用。
+当预算为 `1` 时，两条细粒度变更位置会收敛为一条完整 `Items` Replace；没有修改的 `Name`、`Power` 等字段不会进入变更文档。即使 role 来自部分字段加载，它们的 Go 零值也不会覆盖数据库中的既有值。若同一轮还调用了 `role.SetName("alice")`，则最终输出 `Name` 和 `Items` 两个顶层 Replace。该收敛会记录一条 `txn runtime root changes collapsed` 告警；它限制变更位置数量，不限制 `GD*` 业务对象本身或干净子 Store 缓存的内存。真正需要全量落地整个对象时使用 `AllTouch()`，不要把它与容量收敛混用。
 
 txgen 生成的 Store 已实现 `storage.CollapsibleChangeStore`。高级用户若手写持久化 Store，并把
 `MaxRootChanges` 配置为非零，也必须实现 `CollapseChanges()`；否则 `Runtime.Call` 会在执行
-`Procedure.Process` 前、`Runtime.MarkDirty` 会在登记 pending root 前返回
+`Procedure.Process` 前、`Runtime.MarkDirty` 会在登记待刷根对象前返回
 `txn.ErrChangeCollapseUnsupported`。这保证容量配置不会对自定义 Store 静默失效。配置为 `0` 时不启用该预算，
 普通 `storage.ChangeStore` 仍可使用。
 
@@ -2220,7 +2220,7 @@ if errors.Is(err, txn.ErrChangeCollapseUnsupported) {
 
 `HeapSoftLimitBytes` 是进程 Heap 告警阈值（字节）。Runtime 按 `HeapSampleInterval` 读取 `HeapAlloc`；超过阈值只记录 `txn runtime heap soft limit exceeded` 告警，不拒绝新 root，也不改变已提交事务。采样间隔为 `0` 时每次新增 root 预检都采样；内存阈值为 `0` 时禁用该观测。部署应通过 `GOMEMLIMIT` 约束整个 Go 进程；不能用进程级 Heap 采样作为拒绝业务请求的根因。
 
-`MaxPendingRoots` 是可选的数量硬保护。容量满时同样仅拒绝新 root，并返回 `txn.ErrPendingRootCapacity`；设置为 `0` 表示不限制。当前同一路径的重复写入不会无限增加 dirty 条目，例如连续修改 `role.Items[1001].Quantity`，最终只保留 `Items.1001.Quantity` 的最新状态；但持续新增不同 key 仍会增加路径数量。生成的 map/slice Store 会缓存读取过的子 Store 以保持路径身份，不过变更遍历和清理只访问实际变脏的子路径，不会扫描全部缓存元素。不要在 setter 内加入隐式 Flush 或 I/O；由 Runtime 的调度周期和业务侧反压策略决定何时落盘。
+`MaxPendingRoots` 是可选的数量硬保护。容量满时同样仅拒绝新的待刷根对象，并返回 `txn.ErrPendingRootCapacity`；设置为 `0` 表示不限制。当前同一位置的重复写入不会无限增加变更状态，例如连续修改 `role.Items[1001].Quantity`，最终只保留 `Items.1001.Quantity` 的最新状态；但持续新增不同 key 仍会增加变更位置数量。生成的 map/slice Store 会缓存读取过的子 Store 以保持路径身份，不过同步遍历和清理只访问实际标脏的子路径，不会扫描全部缓存元素。不要在 setter 内加入隐式 Flush 或 I/O；由 Runtime 的调度周期和业务侧反压策略决定何时落盘。
 
 ### 零值和删除
 
@@ -2291,7 +2291,7 @@ item.SetQuantity(7)
 // 变更文档：Set["Items.1001.Quantity"] = 7
 ```
 
-slice 的 `SetAt`、`TouchAt` 会在长度和顺序不变时记录 index 级 dirty：
+slice 的 `SetAt`、`TouchAt` 会在长度和顺序不变时记录 index 级变更：
 
 ```go
 role.TagsStore().SetAt(0, "old_new")
@@ -2310,16 +2310,16 @@ if ok {
 // 变更文档：Set["Dress.0.Expire"] = 200
 ```
 
-`Append`、`RemoveAt`、`Replace`、`Clear` 这类改变长度、顺序或整体语义的操作仍会记录整字段 dirty；如果同一轮里已经存在整字段 dirty，后续子字段 dirty 会被吸收。
+`Append`、`RemoveAt`、`Replace`、`Clear` 这类改变长度、顺序或整体语义的操作仍会记录整字段变更；如果同一轮里已经存在整字段变更，后续子字段变更会被吸收。
 
-这里的 `"Tags.0"` 和 `"Dress.0.Expire"` 都是输出边界文档 key，不是 Store 内部 dirty 结构。Store 内部保存 `Tags` 的 index 状态，以及 `Dress[0]` 对应子 Store 的 `Expire` 字段槽；文档和存储边界只在同步遍历时构造结构化路径。
+这里的 `"Tags.0"` 和 `"Dress.0.Expire"` 都是输出边界文档 key，不是 Store 内部的状态结构。Store 内部保存 `Tags` 的 index 状态，以及 `Dress[0]` 对应子 Store 的 `Expire` 字段槽；文档和存储边界只在同步遍历时构造结构化路径。
 
-`Append`、`RemoveAt`、`Clear`、`Replace` 会改变长度、顺序或整体语义，因此仍然记录整字段 dirty。
+`Append`、`RemoveAt`、`Clear`、`Replace` 会改变长度、顺序或整体语义，因此仍然记录整字段变更。
 生成代码不会暴露字符串 path 级标脏 API，业务侧应使用强类型方法。
 
 ### 覆盖规则
 
-生成 Store 对同一目标多次写入时，只保留最后一次 dirty 语义：
+生成 Store 对同一目标多次写入时，只保留最后一次变更语义：
 
 ```go
 role.SetName("alice")
@@ -2343,7 +2343,7 @@ role.TouchItems()
 
 ### AllTouch 和 ClearChanges
 
-`AllTouch()` 表示整对象需要全量落地。它会清空已有字段、集合 key/index 和子 Store dirty 状态，再标记全部顶层字段：
+`AllTouch()` 表示整对象需要全量落地。它会清空已有字段、集合 key/index 和子 Store 变更状态，再标记全部顶层字段：
 
 ```go
 role.SetName("bob")
@@ -2353,7 +2353,7 @@ role.Store().AllTouch()
 
 执行后不再保留 `Name` 或集合字段的局部记录，后续同步遍历会按当前 GD 值输出全部顶层字段。
 
-`ClearChanges()` 或 Store 的 `AllUnTouch()` 用于加载完成、主动放弃本轮修改，或显式 Store 写入成功后手动清空脏标记。它会递归清理整棵 Store 树的字段、集合和子节点状态。
+`ClearChanges()` 或 Store 的 `AllUnTouch()` 用于加载完成、主动放弃本轮修改，或显式 Store 写入成功后手动清理变更状态。它会递归清理整棵 Store 状态树的字段、集合和子节点状态。
 普通请求链路建议使用项目 facade 自动清理：
 
 ```go
@@ -2374,9 +2374,9 @@ if err := storage.Save(ctx, fusionStore, store); err != nil {
 }
 ```
 
-这种写法适合 SLG/MMO 战斗、沙盘状态等有状态高频对象；关键是由业务循环明确控制“累计多久、何时保存”。保存成功后 Store 会自动清理 dirty；同一 GD 的帧内广播应在保存前调用 `store.View(nil)` 捕获首批，在同一所有权区间内用 `view.Capture(store, nil)` 累计后续批次，后续批次已经创建为独立 StoreView 时才使用 `Merge()`。跨对象广播应先分别构建文档并编码为独立载荷，再由业务消息组合；载荷发布后不得修改。
+这种写法适合 SLG/MMO 战斗、沙盘状态等有状态高频对象；关键是由业务循环明确控制“累计多久、何时保存”。保存成功后 Store 会自动清理变更状态；同一 GD 的帧内广播应在保存前调用 `store.View(nil)` 捕获首批，在同一所有权区间内用 `view.Capture(store, nil)` 累计后续批次，后续批次已经创建为独立 StoreView 时才使用 `Merge()`。跨对象广播应先分别构建文档并编码为独立编码载荷，再由业务消息组合；编码载荷发布后不得修改。
 
-生成的加载方法在成功读取后会自动清空脏标记，避免“刚加载出来的数据”被误认为需要保存。
+生成的加载方法在成功读取后会自动清理 Store 变更状态，避免“刚加载出来的数据”被误认为需要保存。
 
 ### 生成变更到后端文档
 
@@ -2521,7 +2521,7 @@ if err := db.Save(role); err != nil {
 ```
 
 框架写入入口直接接收 Store，并在成功后清理其变更状态；调用方不需要管理独立变更批次。
-变更遍历和清理必须在同一个框架所有权边界内完成，避免遍历后新增的其他 dirty 路径被一并清理。
+同步遍历和清理必须在同一个框架所有权边界内完成，避免遍历后新增的其他变更位置被一并清理。
 
 ### 局部路径的类型约束
 
@@ -3222,7 +3222,7 @@ ExpireAt int64 `json:"expireAt" bson:"expireAt" msgpack:"expireAt" mongodb:"inde
 - `DocumentReplacer`：按 `TypeSpec + RecordKey` 整文档替换。
 - `DocumentReplacerWithOptions`：整文档替换并接收 `storage.ApplyOptions`，用于需要 TTL/upsert 等写入语义的路径。
 
-延迟删除发现 Redis 生命周期版本已变化时，必须重新入队；若此时延迟队列未装配，handler 返回依赖错误而不是确认旧任务，避免后续自动清理任务丢失。
+热数据淘汰任务发现 Redis 生命周期版本已变化时，必须重新入队；若此时 Fusion 延迟任务队列未装配，handler 返回依赖错误而不是确认旧任务，避免后续自动清理任务丢失。
 
 这些接口传递的 `map[string]any` 统一使用 **JSON 字段名**，不是某个具体数据库的原始文档。生成的
 `TypeSpec` 会提供 `DocumentFactory`；Mongo adapter 用它把公共文档还原为 GD 对象，再由 `bson` tag
@@ -3292,7 +3292,7 @@ func (f fakeLoader) LoadDocument(context.Context, meta.TypeSpec, storage.RecordK
 
 Fusion 策略的当前保存路径：
 
-1. 业务变更记录在生成 Store 的字段槽、集合 key/index 和 dirty 子 Store 中。
+1. 业务变更记录在生成 Store 的字段槽、集合 key/index 和脏子节点索引中。
 2. Redis 同步写入热数据。
 3. Redis delayed task backend 写入延迟保存任务。
 4. Scheduler 到期 claim 任务。
@@ -3304,7 +3304,7 @@ Fusion 策略的当前保存路径：
 任务失败重试时，Scheduler 会输出结构化错误日志；失败原因不写入 Redis 任务状态，避免错误字符串占用队列内存。重试间隔由 lease 的持久化 `Attempts` 计算：`retryInitialDelay` 按 `retryMultiplier` 递增至 `retryMaxDelay`，并可施加不超过最大值的 `retryJitter`。达到上限后任务持续重试，不会因次数耗尽被丢弃。
 Scheduler 循环中的 claim、complete、retry 等 backend 错误也会输出结构化错误日志；服务关闭导致的 context 结束不会额外记录错误。
 
-同一记录被 worker 租用期间，业务仍可能产生新的 Fusion 热写。队列不会并发发放第二份 lease，也不会只覆盖 payload 后让旧 `Complete` 把新写入一并删除；新入队会记录一份 follow-up 到期状态。旧 lease 成功时，`Complete` 原子地把 follow-up 重新放回 due 队列，并把它视为新的第 1 次处理；旧 lease 失败时，最新 payload 合并进原任务并沿已有 `Attempts` 继续退避，不能借新写入绕过故障退避。
+同一记录被 worker 租用期间，业务仍可能产生新的 Fusion 热写。队列不会并发发放第二份任务租约，也不会只覆盖任务载荷后让旧 `Complete` 把新写入一并删除；新入队会记录后续到期时间。旧任务租约成功时，`Complete` 原子地把后续任务重新放回到期队列，并把它视为新的第 1 次处理；旧任务租约失败时，最新任务载荷合并进原任务并沿已有 `Attempts` 继续退避，不能借新写入绕过故障退避。
 
 例如下面两次业务保存可能与 worker 交错执行：
 
@@ -3323,12 +3323,12 @@ if err := db.Save(role); err != nil {
 
 第一次 lease 完成后，队列仍会产生一次后续回写；后续 worker 重新读取 Redis 当前热文档，最终让 Mongo 收敛到 `during-worker`。业务 API 不需要感知 lease 或手工重排任务。
 
-Fusion delayed task queue 接受保存 action 和 Redis 热数据延迟淘汰 action；其他未知 action 会返回错误。入队任务与 `StorageTaskHandler` 消费入口都会统一校验 `Type`、`ID`、`Action`：空白类型/动作、nil ID 与空字符串 ID 都返回 `task.ErrInvalidDelayTask`，防止手工写入或遗留异常任务落到存储层。`Complete`、`Retry` 额外要求有效的 lease token 和正数尝试次数；格式完整但已过期的 lease 仍按幂等 no-op 处理。任务类型优先来自 `DelayedOperation.Type`，为空时使用 `DelayedOperation.Key.TypeName`。Fusion 延迟保存按类型、记录 ID、route/shard key 和 action 生成一条合并任务，不暴露额外 suffix，避免同一记录产生多条重复保存任务。延迟保存任务不携带业务对象或字段变更日志，回写时重新读取 Redis 当前热数据。`delete` action 只负责回写当前热文档并淘汰 Redis 数据，不表示删除 Mongo 根记录。Redis claim 发现损坏或不完整的 payload 同样返回错误，不会把它当成可执行任务；如果 `due` 中存在任务但对应 payload 缺失，整批 claim 会在创建任何 lease 前失败，并保留原 due 状态供运维修复，绝不会静默删除持久化任务。
+Fusion 延迟任务队列接受保存 action 和 Redis 热数据淘汰 action；其他未知 action 会返回错误。入队任务与 `StorageTaskHandler` 消费入口都会统一校验 `Type`、`ID`、`Action`：空白类型/动作、nil ID 与空字符串 ID 都返回 `task.ErrInvalidDelayTask`，防止手工写入或遗留异常任务落到存储层。`Complete`、`Retry` 额外要求有效的任务租约 token 和正数尝试次数；格式完整但已过期的任务租约仍按幂等 no-op 处理。任务类型优先来自 `DelayedOperation.Type`，为空时使用 `DelayedOperation.Key.TypeName`。Fusion 延迟保存按类型、记录 ID、route/shard key 和 action 生成一条合并任务，不暴露额外 suffix，避免同一记录产生多条重复保存任务。延迟保存任务不携带业务对象或 Store 变更状态，回写时重新读取 Redis 当前热数据。`delete` action 只负责回写当前热文档并淘汰 Redis 数据，不表示删除 Mongo 根记录。Redis claim 发现损坏或不完整的任务载荷同样返回错误，不会把它当成可执行任务；如果 `due` 中存在任务但对应 `payload` 任务载荷缺失，整批 claim 会在创建任何任务租约前失败，并保留原到期状态供运维修复，绝不会静默删除持久化任务。
 
-数值定位在 Redis 任务 payload 中精确往返。比如业务使用
+数值定位在 Redis 任务载荷中精确往返。比如业务使用
 `uint64(9223372036854775809)` 作为记录 ID 时，claim 后仍得到同一个 `uint64`；框架不会先转成
 `float64` 再舍入，否则 `Complete` 会计算出另一个幂等任务键并让原 lease 无法正常结算。
-Fusion 保存路径要求 Redis change applier、Mongo document loader 与延迟队列都已装配；缺少其中任一项时，非空变更会在 Redis I/O 前返回错误。延迟任务执行还要求 handler、Redis 文档读取、Mongo replace 和 Redis 热数据淘汰所需的 revision/lock 组件完整可用。`Strategy.Validate()` 会汇总检查 Redis change applier、document loader、document replacer、record locker、Mongo document loader 和延迟队列；项目启动阶段必须在 Redis/Mongo 探活后调用它。`txgame/server` 的 `NewStorage` 已执行这两步，任一依赖或连接不可达即启动失败。`Scheduler.Start` 也返回 `error`，项目启动代码必须处理，不能在 worker 未运行时继续对外服务：
+Fusion 保存路径要求 Redis change applier、Mongo document loader 与 Fusion 延迟任务队列都已装配；缺少其中任一项时，非空变更会在 Redis I/O 前返回错误。延迟任务执行还要求 handler、Redis 文档读取、Mongo replace 和 Redis 热数据淘汰所需的 revision/lock 组件完整可用。`Strategy.Validate()` 会汇总检查 Redis change applier、document loader、document replacer、record locker、Mongo document loader 和 Fusion 延迟任务队列；项目启动阶段必须在 Redis/Mongo 探活后调用它。`txgame/server` 的 `NewStorage` 已执行这两步，任一依赖或连接不可达即启动失败。`Scheduler.Start` 也返回 `error`，项目启动代码必须处理，不能在 worker 未运行时继续对外服务：
 
 ```go
 if err := scheduler.Start(appContext); err != nil {
@@ -3361,7 +3361,7 @@ if err := db.Save(role); err != nil {
 role.SetName("new-name")
 err := db.Save(role)
 // errors.Is(err, runtime.ErrStorageUnavailable) == true
-// 本次不会继续写 Redis；role.Store() 的 dirty 状态仍保留。
+// 本次不会继续写 Redis；role.Store() 的变更状态仍保留。
 
 role, exists, err := data.FindGDRoleByID(ctx, 1001)
 // 即使 Redis 已有热数据，也返回 runtime.ErrStorageUnavailable。
@@ -3390,7 +3390,7 @@ Fusion 需要三类组件：
 
 - Redis：同步热数据读写。
 - Mongo：未命中回源和延迟回写。
-- DelayQueue：把“这条记录稍后保存到 Mongo”写入延迟任务队列。
+- Fusion 延迟任务队列：登记“这条记录稍后保存到 Mongo”的延迟保存任务。
 
 示例：
 
@@ -3416,8 +3416,8 @@ err := storage.Save(ctx, fusionStore, role.Store())
 执行后：
 
 1. Redis 立即写入热数据，并持久化 main/subKey/`@v`，避免 Mongo 回写前被 TTL 淘汰。
-2. DelayQueue 记录一条保存任务，任务到期时间来自 `delaySaveTime`。
-3. 如果配置了 `delayDelTime > 0`，DelayQueue 还会记录一条 Redis 热数据延迟删除任务，到期时间为 `delaySaveTime + delayDelTime`。
+2. Fusion 延迟任务队列记录一条延迟保存任务，任务到期时间来自 `delaySaveTime`。
+3. 如果配置了 `delayDelTime > 0`，队列还会记录一条热数据淘汰任务，到期时间为 `delaySaveTime + delayDelTime`。
 4. 本次调用不等待 Mongo 立即写入。
 
 ### 延迟回写任务
@@ -3449,7 +3449,7 @@ due = now + delaySaveTime + delayDelTime
 
 ### 多实例消费
 
-Redis delayed task backend 使用 ZSet/hash 保存 due、payload、busy、token、attempts、pending 等状态，并通过 Lua 保证
+Redis 延迟任务 backend 使用 ZSet/hash 保存 `due`、`payload`、`busy`、`token`、`attempts`、`pending` 等内部状态，并通过 Lua 保证
 claim/complete/retry 的原子性。多个服务实例可以同时跑 Scheduler：
 
 ```text
@@ -3548,7 +3548,7 @@ WAL 的正常写入与 checkpoint 流程如下：
 ```mermaid
 flowchart TD
     A[业务请求或定时 Tick] --> B[状态 owner 串行修改内存状态]
-    B --> C[合并本轮变化并编码只读 payload]
+    B --> C[合并本轮变化并生成只读编码载荷]
     C --> D[同步 Append WAL]
     D -->|失败| E[本轮不能确认可靠提交<br/>业务返回错误、回滚或停止推进]
     D -->|成功| F[本轮变化具备崩溃恢复依据]
@@ -3565,7 +3565,7 @@ flowchart TD
     A[服务启动或状态 owner 重建] --> B[加载最近一次 checkpoint]
     B --> C[取得 checkpoint 已覆盖的 Generation 和 Seq]
     C --> D[从 Seq + 1 开始分批读取 WAL]
-    D --> E{记录是否连续且 payload 有效}
+    D --> E{记录是否连续且编码载荷有效}
     E -->|否| F[停止恢复并返回明确错误]
     E -->|是| G[按 Seq 顺序重放到内存状态]
     G --> H{是否还有后续记录}
@@ -3659,9 +3659,9 @@ if err := service.log.Append(ctx, record); err != nil {
 }
 ```
 
-`NewRecord` 会计算 payload 哈希，但不会复制 payload。调用方必须保证从创建记录到 `Append` 返回期间不修改、append、复用或归还该字节缓冲；同步追加返回后，调用方可以自行复用原缓冲区。单条 payload 上限是 `wal.MaxPayloadBytes`，当前为 4 MiB；更大的场景状态必须先按 bucket 或业务恢复单元拆分，不能用一条超大日志绕过边界。
+`NewRecord` 会计算编码载荷哈希，但不会复制编码载荷。调用方必须保证从创建记录到 `Append` 返回期间不修改、append、复用或归还该字节缓冲；同步追加返回后，调用方可以自行复用原缓冲区。单条编码载荷上限是 `wal.MaxPayloadBytes`，当前为 4 MiB；更大的场景状态必须先按 bucket 或业务恢复单元拆分，不能用一条超大日志绕过边界。
 
-相同位置、相同版本和相同 payload 的重复追加按幂等成功处理；相同位置出现不同内容时返回 `wal.ErrConflict`，旧记录不会被覆盖。
+相同位置、相同版本和相同编码载荷的重复追加按幂等成功处理；相同位置出现不同内容时返回 `wal.ErrConflict`，旧记录不会被覆盖。
 
 普通业务通过 `Replay` 从 checkpoint 已覆盖的序号之后连续恢复。分页大小和空批次判断由 WAL 内部处理：
 
@@ -3676,7 +3676,7 @@ if err != nil {
 
 `Replay` 按 `Seq` 顺序调用回放函数，只在回调成功后推进 `lastSeq`。只有 `err == nil` 时，返回位置才表示整条可见 WAL 已经完整重放；发生缺号、context 取消或业务回放错误时，内存状态可能只应用了前缀，调用方必须丢弃本次未完成状态并从 checkpoint 重新构建，不能用部分 `lastSeq` 开放业务或推进 checkpoint。
 
-`Read` 继续作为高级分页入口。它会校验返回记录属于同一条 stream，并且从 `afterSeq+1` 开始连续；缺号返回 `wal.ErrSequenceGap`，不能跳过后继续恢复。单次读取数量必须在 `1..wal.MaxReadBatch` 范围内，当前上限是 `4096`；返回 payload 总量最多 `wal.MaxReadBatchBytes`，当前为 64 MiB。字节预算可能让一批记录少于请求的 `limit`，因此自行分页时不能用 `len(records) < limit` 判断恢复结束，必须用最后一个 `Seq` 继续读取，直到返回空批次。
+`Read` 继续作为高级分页入口。它会校验返回记录属于同一条 stream，并且从 `afterSeq+1` 开始连续；缺号返回 `wal.ErrSequenceGap`，不能跳过后继续恢复。单次读取数量必须在 `1..wal.MaxReadBatch` 范围内，当前上限是 `4096`；返回编码载荷总量最多 `wal.MaxReadBatchBytes`，当前为 64 MiB。字节预算可能让一批记录少于请求的 `limit`，因此自行分页时不能用 `len(records) < limit` 判断恢复结束，必须用最后一个 `Seq` 继续读取，直到返回空批次。
 
 多 Mongo 分片配置下，WAL 会根据 `Namespace + StreamKey` 生成稳定的 `int64` 路由键。同一状态流的所有 generation 必须落在同一个分片，业务不能传入另一个分片键改变其归属。该路由键只用于选择 Mongo endpoint，不写入 WAL 文档，也不改变恢复身份。
 
@@ -3791,10 +3791,10 @@ env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp /Users/a47/sdk/go1.26
 
 ### 更新没有字段变化
 
-- 直接字段赋值不会标脏，例如 `role.Name = "bob"` 只改内存，不会进入 Store dirty。
+- 直接字段赋值不会标脏，例如 `role.Name = "bob"` 只改内存，不会进入 Store 变更状态。
 - 使用生成代理方法：`role.SetName("bob")`、`role.SetItems(...)`、`role.TouchItems()`。
-- 如果已经通过集合 wrapper 生成了 key/index 级变更，再调用 `TouchItems()` 或 `AllTouch()` 时，顶层 dirty 会覆盖并清理更细的路径记录。
-- 保存成功后如果继续复用对象，调用 `ClearChanges()` 或 Store 的 `AllUnTouch()` 清掉本轮 dirty。
+- 如果已经通过集合 wrapper 生成了 key/index 级变更，再调用 `TouchItems()` 或 `AllTouch()` 时，顶层变更会覆盖并清理更细的路径记录。
+- 保存成功后如果继续复用对象，调用 `ClearChanges()` 或 Store 的 `AllUnTouch()` 清掉本轮 Store 变更状态。
 
 ### 批量读取报 Redis cross-slot
 
