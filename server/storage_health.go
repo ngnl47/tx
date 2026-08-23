@@ -36,6 +36,15 @@ func (store healthAwareWAL) Read(ctx context.Context, stream wal.Stream, afterSe
 	return records, err
 }
 
+func (store healthAwareWAL) Replay(ctx context.Context, stream wal.Stream, afterSeq uint64, apply func(context.Context, wal.Record) error) (uint64, error) {
+	if err := store.storage.requireStorageMode(meta.StorageModeMongo); err != nil {
+		return afterSeq, err
+	}
+	lastSeq, err := store.next.Replay(ctx, stream, afterSeq, apply)
+	store.storage.observeStorageError(err)
+	return lastSeq, err
+}
+
 func (store healthAwareWAL) Checkpoint(ctx context.Context, stream wal.Stream, throughSeq uint64, persist func(context.Context) error) error {
 	if err := store.storage.requireStorageMode(meta.StorageModeMongo); err != nil {
 		return err

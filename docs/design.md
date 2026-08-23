@@ -120,7 +120,7 @@ Redis / Mongo / etcd / gRPC / Actor
 | `Tasks()` | `lifecycle.Tasks` | 注册本服务后台任务、读取取消信号 | `Cancel/Wait` 在 `server.Server` |
 | `Admission()` | `lifecycle.Admission` | 登记和封口本服务外部入口 | 进程排水顺序在 service host |
 | `Storage()` | `server.Storage` | 安装业务 facade、读取、写变更和检查健康闸门 | client、worker 和 Close 在 server |
-| `WAL()` | `wal.Store` | 追加恢复记录、连续读取和 checkpoint 后清理 | backend、索引、连接和健康状态在 server |
+| `WAL()` | `wal.Store` | 追加恢复记录、连续重放和 checkpoint 后清理 | backend、索引、连接和健康状态在 server |
 | `RPC()` | `rpc.Registrar` | 启动前注册 protobuf service、读取 endpoint | Serve/Stop 在共享 Host |
 | `Directory()` | `discovery.Directory` | 查询 running/指定实例快照 | watch 与 Replace 在 discovery runtime |
 | `Actor()` | `actor.Messenger` | 解析 PID、单向或确认式投递 | Start/Shutdown/ActorSystem 在 actor runtime |
@@ -1197,6 +1197,8 @@ flowchart LR
 ```
 
 例如，一个 SLG 大世界服务可以让每个逻辑世界的 owner 在帧内合并建筑、资源点和行军单位的变化，然后把编码结果写入独立 stream；这里的服务和对象只用于解释使用场景，不属于 WAL 模型。WAL 不持有 GD、Store 或 StoreView 指针，也不替业务决定 Actor、场景、bucket、stream 或 checkpoint 的划分。
+
+普通服务使用 `wal.Store.Replay` 完成连续分页恢复，页大小和“短页不等于结束”的判断留在 runtime 内部；`Read` 只保留为高级分页入口。`Replay` 返回错误时可能已经把日志前缀交给业务回调，因此调用方必须丢弃未完整恢复的内存对象并从 checkpoint 重建，不能把部分位置当作新 checkpoint。
 
 WAL 与可靠业务消息队列是两个正交边界：
 

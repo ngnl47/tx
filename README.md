@@ -3636,28 +3636,20 @@ if err := service.log.Append(ctx, record); err != nil {
 
 相同位置、相同版本和相同 payload 的重复追加按幂等成功处理；相同位置出现不同内容时返回 `wal.ErrConflict`，旧记录不会被覆盖。
 
-恢复时从 checkpoint 已覆盖的序号之后分批读取，直到得到空批次：
+普通业务通过 `Replay` 从 checkpoint 已覆盖的序号之后连续恢复。分页大小和空批次判断由 WAL 内部处理：
 
 ```go
-afterSeq := checkpointSeq
-for {
-	records, err := service.log.Read(ctx, stream, afterSeq, 256)
-	if err != nil {
-		return err
-	}
-	if len(records) == 0 {
-		break
-	}
-	for _, record := range records {
-		if err := applyWorldFrame(record.PayloadVersion, record.Payload); err != nil {
-			return err
-		}
-		afterSeq = record.Seq
-	}
+lastSeq, err := service.log.Replay(ctx, stream, checkpointSeq, func(ctx context.Context, record wal.Record) error {
+	return applyWorldFrame(record.PayloadVersion, record.Payload)
+})
+if err != nil {
+	return err
 }
 ```
 
-`Read` 会校验返回记录属于同一条 stream，并且从 `afterSeq+1` 开始连续。缺号返回 `wal.ErrSequenceGap`，不能跳过后继续恢复。单次读取数量必须在 `1..wal.MaxReadBatch` 范围内，当前上限是 `4096`；返回 payload 总量最多 `wal.MaxReadBatchBytes`，当前为 64 MiB。字节预算可能让一批记录少于请求的 `limit`，因此不能用 `len(records) < limit` 判断恢复结束；应始终用最后一个 `Seq` 继续读取，直到返回空批次。
+`Replay` 按 `Seq` 顺序调用回放函数，只在回调成功后推进 `lastSeq`。只有 `err == nil` 时，返回位置才表示整条可见 WAL 已经完整重放；发生缺号、context 取消或业务回放错误时，内存状态可能只应用了前缀，调用方必须丢弃本次未完成状态并从 checkpoint 重新构建，不能用部分 `lastSeq` 开放业务或推进 checkpoint。
+
+`Read` 继续作为高级分页入口。它会校验返回记录属于同一条 stream，并且从 `afterSeq+1` 开始连续；缺号返回 `wal.ErrSequenceGap`，不能跳过后继续恢复。单次读取数量必须在 `1..wal.MaxReadBatch` 范围内，当前上限是 `4096`；返回 payload 总量最多 `wal.MaxReadBatchBytes`，当前为 64 MiB。字节预算可能让一批记录少于请求的 `limit`，因此自行分页时不能用 `len(records) < limit` 判断恢复结束，必须用最后一个 `Seq` 继续读取，直到返回空批次。
 
 多 Mongo 分片配置下，WAL 会根据 `Namespace + StreamKey` 生成稳定的 `int64` 路由键。同一状态流的所有 generation 必须落在同一个分片，业务不能传入另一个分片键改变其归属。该路由键只用于选择 Mongo endpoint，不写入 WAL 文档，也不改变恢复身份。
 

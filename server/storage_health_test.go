@@ -42,6 +42,11 @@ func (store *recordingWAL) Read(context.Context, wal.Stream, uint64, int) ([]wal
 	return nil, store.err
 }
 
+func (store *recordingWAL) Replay(context.Context, wal.Stream, uint64, func(context.Context, wal.Record) error) (uint64, error) {
+	store.calls++
+	return 0, store.err
+}
+
 func (store *recordingWAL) Checkpoint(context.Context, wal.Stream, uint64, func(context.Context) error) error {
 	store.calls++
 	return store.err
@@ -114,6 +119,9 @@ func TestWALUsesMongoHealthGateAndReportsBackendFailure(t *testing.T) {
 	guarded := healthAwareWAL{storage: storage, next: next}
 	if err := guarded.Checkpoint(context.Background(), wal.Stream{Namespace: "world", StreamKey: "47", Generation: 1}, 1, func(context.Context) error { return nil }); !errors.Is(err, ErrStorageUnavailable) || next.calls != 0 {
 		t.Fatalf("unhealthy WAL checkpoint error/calls = %v/%d, want unavailable/0", err, next.calls)
+	}
+	if _, err := guarded.Replay(context.Background(), wal.Stream{Namespace: "world", StreamKey: "47", Generation: 1}, 0, func(context.Context, wal.Record) error { return nil }); !errors.Is(err, ErrStorageUnavailable) || next.calls != 0 {
+		t.Fatalf("unhealthy WAL replay error/calls = %v/%d, want unavailable/0", err, next.calls)
 	}
 
 	storage.recoverBackendHealth(txstorage.BackendMongo, storage.backendHealthGeneration(txstorage.BackendMongo))

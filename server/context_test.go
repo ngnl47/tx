@@ -17,6 +17,9 @@ func (contextWAL) Append(context.Context, wal.Record) error { return nil }
 func (contextWAL) Read(context.Context, wal.Stream, uint64, int) ([]wal.Record, error) {
 	return nil, nil
 }
+func (contextWAL) Replay(context.Context, wal.Stream, uint64, func(context.Context, wal.Record) error) (uint64, error) {
+	return 0, nil
+}
 func (contextWAL) Checkpoint(context.Context, wal.Stream, uint64, func(context.Context) error) error {
 	return nil
 }

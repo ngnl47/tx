@@ -27,7 +27,8 @@ const (
 	// MaxReadBatch 限制单次恢复读取的记录数，调用方应使用 Seq 分批推进。
 	MaxReadBatch = 4096
 	// MaxReadBatchBytes 限制一次恢复结果携带的正文总量。
-	MaxReadBatchBytes = 64 << 20
+	MaxReadBatchBytes  = 64 << 20
+	defaultReplayBatch = 256
 )
 
 // Stream 标识一条独立、有序的恢复日志流。后端路由由 Namespace 和 StreamKey 稳定推导，
@@ -50,11 +51,12 @@ type Record struct {
 	CreatedAt      time.Time
 }
 
-// Store 是服务使用的安全 WAL 门面。Checkpoint 只会在回调成功后清理已覆盖日志，
-// 并在当前进程内串行同一 Stream 的重叠 checkpoint、拒绝并发位置回退。
+// Store 是服务使用的安全 WAL 门面。Replay 负责连续分页恢复；Checkpoint 只会在回调成功后
+// 清理已覆盖日志，并在当前进程内串行同一 Stream 的重叠 checkpoint、拒绝并发位置回退。
 type Store interface {
 	Append(context.Context, Record) error
 	Read(context.Context, Stream, uint64, int) ([]Record, error)
+	Replay(context.Context, Stream, uint64, func(context.Context, Record) error) (uint64, error)
 	Checkpoint(context.Context, Stream, uint64, func(context.Context) error) error
 }
 
@@ -119,6 +121,36 @@ func (current *store) Read(ctx context.Context, stream Stream, afterSeq uint64, 
 		return nil, err
 	}
 	return records, nil
+}
+
+// Replay 从 afterSeq 后连续分批读取记录，并按 Seq 顺序交给 apply。
+// 返回值只推进到最后一条成功处理的记录；返回错误时，调用方不应开放尚未完整恢复的状态。
+func (current *store) Replay(ctx context.Context, stream Stream, afterSeq uint64, apply func(context.Context, Record) error) (uint64, error) {
+	if apply == nil {
+		return afterSeq, fmt.Errorf("%w: replay callback is nil", ErrInvalidRecord)
+	}
+	if err := validateRead(stream, afterSeq, defaultReplayBatch); err != nil {
+		return afterSeq, err
+	}
+	lastSeq := afterSeq
+	for {
+		records, err := current.Read(ctx, stream, lastSeq, defaultReplayBatch)
+		if err != nil {
+			return lastSeq, err
+		}
+		if len(records) == 0 {
+			return lastSeq, nil
+		}
+		for _, record := range records {
+			if err := ctx.Err(); err != nil {
+				return lastSeq, err
+			}
+			if err := apply(ctx, record); err != nil {
+				return lastSeq, fmt.Errorf("wal: replay sequence %d: %w", record.Seq, err)
+			}
+			lastSeq = record.Seq
+		}
+	}
 }
 
 func (current *store) Checkpoint(ctx context.Context, stream Stream, throughSeq uint64, persist func(context.Context) error) error {
