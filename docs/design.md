@@ -1419,8 +1419,9 @@ etcd
 
 它不实现 Actor mailbox、会话 Seq/Ack 或业务幂等。发送结果不确定时不能由框架盲目重试；业务必须有独立幂等键。
 
-项目宿主应按“每个物理进程一个普通 gRPC Host”装配网络入口：Host 唯一持有 listener 与 `grpc.Server`，
-所选服务只在启动期注册 protobuf service，全部注册成功后才统一 Serve 并把实际 endpoint 发布到服务发现。
+`modules/rpc.Host` 实现“每个物理进程一个普通 gRPC Host”：它唯一持有 listener 与 `grpc.Server`，直接接入
+`lifecycle.WaitGroupContext`，并负责注册阶段、Serve 和幂等 Stop。项目宿主只负责创建 Host、让所选服务在启动期注册
+protobuf service、全部注册成功后启动 Host，并把实际 endpoint 发布到服务发现。
 同进程的 msgq 与普通 RPC 因此可以共享 endpoint，但保持不同 protobuf service；任一服务不得自行关闭共享 listener。
 
 通用 `DeliveryService` 在同一个 gRPC server 中只能注册一次。聚合多个业务服务的进程应由项目提供一个进程级

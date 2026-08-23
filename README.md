@@ -467,12 +467,29 @@ if err != nil {
 }
 ```
 
-上面的 `grpc.NewServer/Serve` 只展示独立嵌入的最小闭环。模块化项目应复用进程级 gRPC Host，仅调用
-`RegisterMailboxService` 注册协议，不再为 msgq 单独创建 listener/server。
+上面的 `grpc.NewServer/Serve` 只展示独立嵌入的最小闭环。模块化项目应直接使用 `modules/rpc.Host` 复用
+进程级普通 gRPC endpoint，不再为 msgq 或其他服务分别创建 listener/server：
+
+```go
+rpcHost, err := rpc.NewHost("127.0.0.1:9000")
+if err != nil {
+    return err
+}
+if err := rpcHost.Register(func(registrar grpc.ServiceRegistrar) error {
+    return msgq.RegisterMailboxService(registrar, mailbox)
+}); err != nil {
+    return err
+}
+if err := rpcHost.Start(rootWaitGroupContext); err != nil {
+    return err
+}
+defer rpcHost.Stop(context.Background())
+```
 
 `Fetch` 是 unary 长轮询，调用方必须传递自己的超时或连接 context。运行时错误会转为明确的 gRPC status：无效请求为
 `InvalidArgument`，离线会话为 `NotFound`，旧连接为 `Aborted`，队列满为 `ResourceExhausted`；不会静默丢失或伪造投递成功。
-应用服务关闭时由宿主统一停止共享 gRPC listener，未确认下行仍遵循 msgq 的内存语义。
+`rpc.Host` 直接接入全局 `lifecycle.WaitGroupContext`。应用服务关闭时由项目宿主统一调用 `Stop`，未确认下行仍遵循
+msgq 的内存语义。
 
 业务 Actor 或其他服务不应自行读取 `SessionBinding`、拼接 endpoint 或维护每个 msgq 实例的连接。使用 `Sender` 即可按
 `roleID` 解析 Redis owner、校验当前 `SessionID`，并按 endpoint 复用 gRPC 连接：
