@@ -1095,6 +1095,8 @@ t6  新 worker 重新读取 Redis，Replace Mongo(during-worker)
 
 `Complete` 表示旧处理周期成功，follow-up 进入新的尝试周期，下一次 `Attempts` 从 1 开始。`Retry` 表示当前存储故障仍未解除，会采用最新 payload、清除单独的 pending 标记，并沿当前次数和退避时间继续重试。lease 超时恢复同样清除 pending 标记，立即以最新 payload 恢复当前任务，避免同一新写入被执行两次。
 
+claim 必须先检查本批所有 `due` member 都存在对应 `payload`，随后才能批量写入 `busy/token/attempts`。缺少 payload 属于队列状态损坏：Lua 返回显式错误信封，Go adapter 返回错误，且整批状态保持不变。不能先租出部分正常任务再报错，因为调用方拿不到已经创建的 lease；也不能删除损坏 member 后继续，否则会把待持久化记录静默丢弃。
+
 ### 读取与并发回填
 
 单条读取：

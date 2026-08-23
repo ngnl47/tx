@@ -22,19 +22,21 @@ for _, taskKey in ipairs(expired) do
 end
 
 local taskKeys = redis.call("zrangebyscore", dueKey, "-inf", now, "limit", 0, limit)
+for _, taskKey in ipairs(taskKeys) do
+	if redis.call("hexists", payloadKey, taskKey) == 0 then
+		return cjson.encode({error = "missing_payload", taskKey = taskKey})
+	end
+end
+
 local result = {}
 for i, taskKey in ipairs(taskKeys) do
 	local body = redis.call("hget", payloadKey, taskKey)
-	if body then
-		local token = tokenPrefix .. "-" .. tostring(i)
-		local attempts = redis.call("hincrby", attemptsKey, taskKey, 1)
-		redis.call("zrem", dueKey, taskKey)
-		redis.call("zadd", busyKey, leaseUntil, taskKey)
-		redis.call("hset", tokenKey, taskKey, token)
-		table.insert(result, {body = body, token = token, attempts = attempts})
-	else
-		redis.call("zrem", dueKey, taskKey)
-	end
+	local token = tokenPrefix .. "-" .. tostring(i)
+	local attempts = redis.call("hincrby", attemptsKey, taskKey, 1)
+	redis.call("zrem", dueKey, taskKey)
+	redis.call("zadd", busyKey, leaseUntil, taskKey)
+	redis.call("hset", tokenKey, taskKey, token)
+	table.insert(result, {body = body, token = token, attempts = attempts})
 end
 
 if #result == 0 then

@@ -164,6 +164,40 @@ func TestRedisDelayTaskBackendClaimDueRejectsIncompleteTaskPayload(t *testing.T)
 	}
 }
 
+func TestRedisDelayTaskBackendClaimDueKeepsTaskWithMissingPayload(t *testing.T) {
+	ctx := context.Background()
+	client := newFakeTaskRedis()
+	backend := taskredis.NewBackend(client, taskredis.Options{Prefix: "tx:test", BucketCount: 1})
+	now := time.Unix(100, 0)
+	items := []task.DelayTask{
+		{Type: "role", ID: "1", Action: "save", DueAt: now},
+		{Type: "role", ID: "2", Action: "save", DueAt: now},
+	}
+
+	for _, item := range items {
+		if err := backend.Enqueue(ctx, item); err != nil {
+			t.Fatalf("Enqueue returned error: %v", err)
+		}
+	}
+	queue := client.queues["tx:test:{0}:due"]
+	missingKey := items[1].IdempotencyKey()
+	body := queue.payload[missingKey]
+	delete(queue.payload, missingKey)
+
+	if _, err := backend.ClaimDue(ctx, now, 2); err == nil || !strings.Contains(err.Error(), "missing payload") {
+		t.Fatalf("ClaimDue error = %v, want missing payload error", err)
+	}
+	if len(queue.due) != 2 || len(queue.busy) != 0 || len(queue.token) != 0 || len(queue.attempts) != 0 {
+		t.Fatalf("failed batch mutated queue: due=%#v busy=%#v token=%#v attempts=%#v", queue.due, queue.busy, queue.token, queue.attempts)
+	}
+
+	queue.payload[missingKey] = body
+	leases, err := backend.ClaimDue(ctx, now, 2)
+	if err != nil || len(leases) != 2 || leases[0].Attempts != 1 || leases[1].Attempts != 1 {
+		t.Fatalf("ClaimDue after restoring payload leases = %#v, error = %v, want two first attempts", leases, err)
+	}
+}
+
 func TestRedisDelayTaskBackendClaimDueRejectsIncompleteLeaseRows(t *testing.T) {
 	for _, result := range []string{
 		`[{"body":"{}","token":"","attempts":1}]`,
@@ -478,6 +512,44 @@ func TestRedisDelayTaskBackendRequeuesEnqueueDuringLeaseIntegration(t *testing.T
 	}
 }
 
+func TestRedisDelayTaskBackendKeepsMissingPayloadTaskIntegration(t *testing.T) {
+	endpoint := os.Getenv("TX_REDIS_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("set TX_REDIS_ENDPOINT to run Redis delay task integration test")
+	}
+	ctx := context.Background()
+	raw := redisclient.NewClient(&redisclient.Options{Addr: endpoint})
+	defer raw.Close()
+	if err := raw.Ping(ctx).Err(); err != nil {
+		t.Fatalf("ping redis %q: %v", endpoint, err)
+	}
+
+	prefix := fmt.Sprintf("tx:test:task-missing-payload:%d", time.Now().UnixNano())
+	queuePrefix := prefix + ":{0}"
+	keys := []string{
+		queuePrefix + ":due",
+		queuePrefix + ":payload",
+		queuePrefix + ":busy",
+		queuePrefix + ":token",
+		queuePrefix + ":attempts",
+		queuePrefix + ":pending",
+	}
+	t.Cleanup(func() { _ = raw.Del(context.Background(), keys...).Err() })
+	backend := taskredis.NewBackend(txgoredis.NewClient(raw), taskredis.Options{Prefix: prefix, BucketCount: 1})
+	now := time.Unix(100, 0)
+	item := task.DelayTask{Type: "role", ID: int64(1001), Action: "save", DueAt: now}
+	if err := raw.ZAdd(ctx, keys[0], redisclient.Z{Score: float64(now.UnixMilli()), Member: item.IdempotencyKey()}).Err(); err != nil {
+		t.Fatalf("seed due task without payload: %v", err)
+	}
+
+	if _, err := backend.ClaimDue(ctx, now, 1); err == nil || !strings.Contains(err.Error(), "missing payload") {
+		t.Fatalf("ClaimDue error = %v, want missing payload error", err)
+	}
+	if score, err := raw.ZScore(ctx, keys[0], item.IdempotencyKey()).Result(); err != nil || int64(score) != now.UnixMilli() {
+		t.Fatalf("due task after failed claim score = %v, error = %v, want preserved", score, err)
+	}
+}
+
 type fakeTaskRedis struct {
 	queues   map[string]*fakeTaskRedisQueue
 	seq      int
@@ -585,6 +657,12 @@ func (r *fakeTaskRedis) claim(queue *fakeTaskRedisQueue, args ...any) (string, e
 	if len(keys) > limit {
 		keys = keys[:limit]
 	}
+	for _, key := range keys {
+		if _, ok := queue.payload[key]; !ok {
+			encoded, err := json.Marshal(map[string]string{"error": "missing_payload", "taskKey": key})
+			return string(encoded), err
+		}
+	}
 
 	type leaseJSON struct {
 		Body     string `json:"body"`
@@ -594,10 +672,6 @@ func (r *fakeTaskRedis) claim(queue *fakeTaskRedisQueue, args ...any) (string, e
 	out := make([]leaseJSON, 0, len(keys))
 	for _, key := range keys {
 		body := queue.payload[key]
-		if body == "" {
-			delete(queue.due, key)
-			continue
-		}
 		r.seq++
 		token := fmt.Sprintf("%s-%d", tokenPrefix, r.seq)
 		queue.attempts[key]++

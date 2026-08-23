@@ -198,9 +198,27 @@ type leaseRow struct {
 	Attempts int    `json:"attempts"`
 }
 
+type claimFailure struct {
+	Error   string `json:"error"`
+	TaskKey string `json:"taskKey"`
+}
+
 func decodeLeaseRows(body string) ([]leaseRow, error) {
 	encoded := bytes.TrimSpace([]byte(body))
-	if len(encoded) == 0 || encoded[0] != '[' {
+	if len(encoded) == 0 {
+		return nil, fmt.Errorf("expected JSON array")
+	}
+	if encoded[0] == '{' {
+		var failure claimFailure
+		if err := json.Unmarshal(encoded, &failure); err != nil {
+			return nil, fmt.Errorf("decode claim failure: %w", err)
+		}
+		if failure.Error == "missing_payload" && failure.TaskKey != "" {
+			return nil, fmt.Errorf("missing payload for task %q", failure.TaskKey)
+		}
+		return nil, fmt.Errorf("unexpected claim failure %q for task %q", failure.Error, failure.TaskKey)
+	}
+	if encoded[0] != '[' {
 		return nil, fmt.Errorf("expected JSON array")
 	}
 	var rows []leaseRow
