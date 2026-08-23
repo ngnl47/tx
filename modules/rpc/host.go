@@ -19,8 +19,7 @@ var (
 	errHostStopped         = errors.New("rpc: host is stopped")
 )
 
-// Registrar is the service-facing side of the shared gRPC host. Process start
-// and stop remain private to the server assembly layer.
+// Registrar 是共享 gRPC Host 面向服务的一侧，进程启动和停止仍由 server 装配层私有管理。
 type Registrar interface {
 	Register(func(grpc.ServiceRegistrar) error) error
 	Endpoint() string
@@ -28,8 +27,8 @@ type Registrar interface {
 
 var _ Registrar = (*Host)(nil)
 
-// Host owns the ordinary gRPC listener shared by services in one process.
-// Services register protocols before Start; Host owns serving and shutdown.
+// Host 持有同一进程内各服务共享的普通 gRPC listener。
+// 各服务在 Start 前注册协议，Host 负责对外服务和关闭。
 type Host struct {
 	registrationMu sync.Mutex
 	mu             sync.Mutex
@@ -44,8 +43,7 @@ type Host struct {
 	stopErr   error
 }
 
-// NewHost binds the process endpoint before service registration so callers
-// can publish the actual address selected for a port-zero listener.
+// NewHost 在服务注册前绑定进程 endpoint，使调用方能够发布端口为零时实际选择的地址。
 func NewHost(address string, options ...grpc.ServerOption) (*Host, error) {
 	address = strings.TrimSpace(address)
 	if address == "" {
@@ -62,7 +60,7 @@ func NewHost(address string, options ...grpc.ServerOption) (*Host, error) {
 	}, nil
 }
 
-// Register adds one generated gRPC service before Host starts serving.
+// Register 在 Host 开始服务前添加一个生成的 gRPC 服务。
 func (host *Host) Register(register func(grpc.ServiceRegistrar) error) error {
 	if host == nil || register == nil {
 		return errHostRegistrationNil
@@ -84,7 +82,7 @@ func (host *Host) Register(register func(grpc.ServiceRegistrar) error) error {
 	return register(server)
 }
 
-// Start serves all registered protocols as work owned by root.
+// Start 启动全部已注册协议，并将服务任务登记到 root。
 func (host *Host) Start(root *lifecycle.WaitGroupContext) error {
 	if host == nil {
 		return fmt.Errorf("rpc: host is nil")
@@ -128,8 +126,7 @@ func (host *Host) Start(root *lifecycle.WaitGroupContext) error {
 	return nil
 }
 
-// Stop closes the shared listener once. Protocol-specific state remains owned
-// by the service that registered it.
+// Stop 关闭一次共享 listener。协议专属状态仍由注册该协议的服务负责。
 func (host *Host) Stop(ctx context.Context) error {
 	if host == nil {
 		return nil
@@ -182,8 +179,7 @@ func (host *Host) Stop(ctx context.Context) error {
 	return err
 }
 
-// Endpoint returns the bound address, including the selected port when NewHost
-// received a port-zero address.
+// Endpoint 返回实际绑定地址；NewHost 使用零端口时，返回值包含系统选择的端口。
 func (host *Host) Endpoint() string {
 	if host == nil {
 		return ""

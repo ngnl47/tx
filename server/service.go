@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Capabilities declares framework resources required by a service.
+// Capabilities 声明服务需要的框架资源。
 type Capabilities uint32
 
 const (
@@ -46,24 +46,24 @@ func (capabilities Capabilities) String() string {
 	return strings.Join(names, ",")
 }
 
-// Spec is the stable identity and runtime contract of one selectable service.
+// Spec 是可选服务的稳定身份和 runtime 契约。
 type Spec struct {
 	Name     string
 	Requires Capabilities
 }
 
-// Service is one independently selectable process service.
+// Service 表示一个可独立选择的进程服务。
 type Service interface {
 	Spec() Spec
 	Start(Context) error
 }
 
-// Drainer stops a service from accepting new external work.
+// Drainer 让服务停止接受新的外部工作。
 type Drainer interface {
 	Drain(context.Context) error
 }
 
-// Stopper releases service-owned resources after drain completes.
+// Stopper 在排水完成后释放服务持有的资源。
 type Stopper interface {
 	Stop(context.Context) error
 }

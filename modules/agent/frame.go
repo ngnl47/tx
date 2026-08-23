@@ -7,7 +7,7 @@ import (
 	txprotocol "github.com/ngnl47/tx/protocol"
 )
 
-// FrameKind distinguishes handshake, inbound business, outbound, and ack frames.
+// FrameKind 区分握手帧、上行业务帧、下行帧和确认帧。
 type FrameKind uint8
 
 const (
@@ -46,9 +46,8 @@ func StringRouteKey(value string) RouteKey {
 	return txprotocol.StringRouteKey(value)
 }
 
-// Frame is a transport-independent protocol frame. Payload is token bytes for a
-// handshake, BON bytes for a business frame, and a backend message for outbound.
-// CommandID and RouteKey belong only to inbound business frames.
+// Frame 是与传输协议无关的协议帧。握手帧的 Payload 是 token 字节，业务帧使用 BON 字节，
+// 下行帧则携带后端消息。CommandID 和 RouteKey 只属于上行业务帧。
 type Frame struct {
 	Kind      FrameKind
 	Seq       int64
@@ -96,7 +95,7 @@ type encodedFrame struct {
 	size     int
 }
 
-// EncodeFrame encodes a Frame into its versioned binary envelope.
+// EncodeFrame 将 Frame 编码为带版本的二进制信封。
 func EncodeFrame(frame Frame, maxFrameBytes int) ([]byte, error) {
 	prepared, err := prepareFrame(frame, maxFrameBytes)
 	if err != nil {
@@ -163,7 +162,7 @@ func encodeFrameHeader(header []byte, frame Frame, routeKeySize int) {
 	binary.BigEndian.PutUint32(header[28:32], uint32(len(frame.Payload)))
 }
 
-// DecodeFrame decodes and validates a versioned binary envelope.
+// DecodeFrame 解码并校验带版本的二进制信封。
 func DecodeFrame(encoded []byte, maxFrameBytes int) (Frame, error) {
 	if maxFrameBytes < frameHeaderBytes || len(encoded) < frameHeaderBytes {
 		return Frame{}, ErrInvalidFrame

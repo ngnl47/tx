@@ -73,8 +73,7 @@ type Runtime struct {
 	running             atomic.Bool
 }
 
-// Executor is the application-facing transaction contract. Scheduling,
-// flushing, and shutdown remain owned by the process runtime.
+// Executor 是面向应用的事务契约，调度、刷盘和关闭仍由进程 runtime 负责。
 type Executor interface {
 	Call(context.Context, Procedure) error
 	MarkDirty(...LockTarget) error

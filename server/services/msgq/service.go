@@ -1,4 +1,4 @@
-// Package msgq provides the standard client-session mailbox service adapter.
+// Package msgq 提供标准的客户端会话邮箱服务 adapter。
 package msgq
 
 import (
@@ -27,7 +27,7 @@ type Options struct {
 	SweepInterval      time.Duration
 }
 
-// OptionsProvider converts project configuration when msgq is selected.
+// OptionsProvider 在 msgq 被选中时转换项目配置。
 type OptionsProvider func() (Options, error)
 
 type Service struct {
@@ -45,9 +45,8 @@ func New(options Options) (*Service, error) {
 	return &Service{options: options}, nil
 }
 
-// NewConfigured defers project configuration conversion until the service is
-// selected for this process. Unselected services therefore cannot block an
-// otherwise valid process startup.
+// NewConfigured 将项目配置转换推迟到当前进程选中该服务之后。
+// 因此，未选中的服务不会阻止其他有效进程启动。
 func NewConfigured(provider OptionsProvider) (*Service, error) {
 	if provider == nil {
 		return nil, fmt.Errorf("msgq service: options provider is nil")

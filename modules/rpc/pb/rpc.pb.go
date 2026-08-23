@@ -21,7 +21,7 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// RouteKind identifies how a delivery target is resolved.
+// RouteKind 标识消息目标的解析方式。
 type RouteKind int32
 
 const (
@@ -71,7 +71,7 @@ func (RouteKind) EnumDescriptor() ([]byte, []int) {
 	return file_modules_rpc_proto_rpc_proto_rawDescGZIP(), []int{0}
 }
 
-// Route contains transport-level routing metadata. Payload remains opaque.
+// Route 保存传输层路由元数据，Payload 保持不透明。
 type Route struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Kind          RouteKind              `protobuf:"varint,1,opt,name=kind,proto3,enum=tx.rpc.v1.RouteKind" json:"kind,omitempty"`
@@ -132,7 +132,7 @@ func (x *Route) GetInstanceId() string {
 	return ""
 }
 
-// Delivery is a directed internal message. Payload uses the caller's codec.
+// Delivery 表示一条定向内部消息，Payload 使用调用方选择的编解码格式。
 type Delivery struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Route         *Route                 `protobuf:"bytes,1,opt,name=route,proto3" json:"route,omitempty"`

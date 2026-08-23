@@ -21,7 +21,7 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// SessionHeader identifies one concrete client connection.
+// SessionHeader 标识一条具体的客户端连接。
 type SessionHeader struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RoleId        int64                  `protobuf:"varint,1,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`

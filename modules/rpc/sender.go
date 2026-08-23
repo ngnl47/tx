@@ -19,24 +19,24 @@ var (
 	ErrDeliveryRejected        = errors.New("rpc: delivery rejected")
 )
 
-// Connection sends deliveries through one resolved endpoint.
+// Connection 通过已经解析的 endpoint 发送消息。
 type Connection interface {
 	Deliver(context.Context, Delivery) error
 	Close() error
 }
 
-// Dialer opens a connection to one discovered instance.
+// Dialer 建立到指定服务实例的连接。
 type Dialer interface {
 	Dial(context.Context, discovery.Instance) (Connection, error)
 }
 
-// GRPCDialer opens gRPC connections with explicitly configured credentials.
+// GRPCDialer 使用显式配置的凭据建立 gRPC 连接。
 type GRPCDialer struct {
 	credentials credentials.TransportCredentials
 	options     []grpc.DialOption
 }
 
-// NewGRPCDialer creates a gRPC dialer. Callers must explicitly select TLS or insecure credentials.
+// NewGRPCDialer 创建 gRPC dialer。调用方必须显式选择 TLS 或不安全凭据。
 func NewGRPCDialer(transportCredentials credentials.TransportCredentials, options ...grpc.DialOption) (*GRPCDialer, error) {
 	if transportCredentials == nil {
 		return nil, ErrTransportCredentialsNil
@@ -91,7 +91,7 @@ func (c *grpcConnection) Close() error {
 	return c.connection.Close()
 }
 
-// Sender resolves routes and reuses one connection for each endpoint until Close.
+// Sender 解析路由，并在 Close 前为每个 endpoint 复用同一连接。
 type Sender struct {
 	directory discovery.Directory
 	dialer    Dialer
@@ -101,7 +101,7 @@ type Sender struct {
 	closed      bool
 }
 
-// NewSender creates a route-aware delivery sender.
+// NewSender 创建支持路由的消息发送器。
 func NewSender(directory discovery.Directory, dialer Dialer) (*Sender, error) {
 	if directory == nil {
 		return nil, ErrDirectoryNil
@@ -116,7 +116,7 @@ func NewSender(directory discovery.Directory, dialer Dialer) (*Sender, error) {
 	}, nil
 }
 
-// Send resolves a delivery route and sends it to the selected endpoint.
+// Send 解析消息路由并将消息发送到选中的 endpoint。
 func (s *Sender) Send(ctx context.Context, delivery Delivery) error {
 	if s == nil {
 		return ErrSenderClosed
@@ -135,7 +135,7 @@ func (s *Sender) Send(ctx context.Context, delivery Delivery) error {
 	return connection.Deliver(ctx, delivery)
 }
 
-// Close closes every cached endpoint connection.
+// Close 关闭全部缓存的 endpoint 连接。
 func (s *Sender) Close() error {
 	if s == nil {
 		return nil

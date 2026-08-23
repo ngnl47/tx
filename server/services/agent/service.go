@@ -1,4 +1,4 @@
-// Package agent provides the standard TCP and WebSocket player ingress service.
+// Package agent 提供标准的 TCP 和 WebSocket 玩家入口服务。
 package agent
 
 import (
@@ -26,7 +26,7 @@ type LocalMsgQ interface {
 
 type HandlerProvider func() (txagent.IdentityResolver, txagent.Dispatcher, error)
 
-// OptionsProvider converts project configuration when agent is selected.
+// OptionsProvider 在 agent 被选中时转换项目配置。
 type OptionsProvider func() (Options, error)
 
 type Options struct {
@@ -62,8 +62,7 @@ func New(options Options) (*Service, error) {
 	return &Service{options: options}, nil
 }
 
-// NewConfigured defers project configuration conversion until the service is
-// selected for this process.
+// NewConfigured 将项目配置转换推迟到当前进程选中该服务之后。
 func NewConfigured(provider OptionsProvider) (*Service, error) {
 	if provider == nil {
 		return nil, fmt.Errorf("agent service: options provider is nil")

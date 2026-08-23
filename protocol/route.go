@@ -1,7 +1,7 @@
-// Package protocol defines transport-neutral values shared by game protocols.
+// Package protocol 定义游戏协议共享且与传输方式无关的值。
 package protocol
 
-// RouteKeyKind describes the original Go type of a business-route key.
+// RouteKeyKind 描述业务路由键原始的 Go 类型。
 type RouteKeyKind uint8
 
 const (
@@ -11,44 +11,44 @@ const (
 	RouteKeyString
 )
 
-// RouteKey is an opaque, strongly typed routing value carried outside BON payloads.
+// RouteKey 是携带在 BON 载荷之外的不透明强类型路由值。
 type RouteKey struct {
 	kind    RouteKeyKind
 	numeric uint64
 	text    string
 }
 
-// Int64RouteKey creates a signed integer route key.
+// Int64RouteKey 创建有符号整数路由键。
 func Int64RouteKey(value int64) RouteKey {
 	return RouteKey{kind: RouteKeyInt64, numeric: uint64(value)}
 }
 
-// Uint64RouteKey creates an unsigned integer route key.
+// Uint64RouteKey 创建无符号整数路由键。
 func Uint64RouteKey(value uint64) RouteKey {
 	return RouteKey{kind: RouteKeyUint64, numeric: value}
 }
 
-// StringRouteKey creates a string route key.
+// StringRouteKey 创建字符串路由键。
 func StringRouteKey(value string) RouteKey {
 	return RouteKey{kind: RouteKeyString, text: value}
 }
 
-// Kind returns the route key's original Go type.
+// Kind 返回路由键原始的 Go 类型。
 func (key RouteKey) Kind() RouteKeyKind {
 	return key.kind
 }
 
-// Int64 returns the signed key value when this is an int64 route key.
+// Int64 在当前路由键为 int64 时返回有符号整数值。
 func (key RouteKey) Int64() (int64, bool) {
 	return int64(key.numeric), key.kind == RouteKeyInt64
 }
 
-// Uint64 returns the unsigned key value when this is a uint64 route key.
+// Uint64 在当前路由键为 uint64 时返回无符号整数值。
 func (key RouteKey) Uint64() (uint64, bool) {
 	return key.numeric, key.kind == RouteKeyUint64
 }
 
-// String returns the key value when this is a string route key.
+// String 在当前路由键为 string 时返回字符串值。
 func (key RouteKey) String() (string, bool) {
 	return key.text, key.kind == RouteKeyString
 }

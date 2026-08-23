@@ -14,9 +14,8 @@ type hostDrainer interface {
 	Drain(context.Context) error
 }
 
-// drainCoordinator adapts project service ingress and discovery to the generic
-// operational control plane. It intentionally does not own lifecycle cancel,
-// final storage flush, or Procedure admission.
+// drainCoordinator 将项目服务入口和 discovery 适配到通用运维控制面。
+// 它刻意不持有生命周期取消、最终存储刷盘或 Procedure 准入权限。
 type drainCoordinator struct {
 	host     hostDrainer
 	mu       sync.Mutex
@@ -32,9 +31,8 @@ func newDrainCoordinator(host hostDrainer) *drainCoordinator {
 	}
 }
 
-// BeginDrain marks the instance unavailable to normal routing, then starts
-// ingress drain asynchronously. The control RPC can return while accepted work
-// finishes; callers use WaitDrained for the terminal state.
+// BeginDrain 将实例标记为不可用于普通路由，再异步启动入口排水。
+// 控制 RPC 可以在已接受工作完成前返回，调用方通过 WaitDrained 等待最终状态。
 func (c *drainCoordinator) BeginDrain(ctx context.Context) error {
 	if c == nil || c.host == nil {
 		return errors.New("server: drain host is not configured")
@@ -62,7 +60,7 @@ func (c *drainCoordinator) BeginDrain(ctx context.Context) error {
 	return nil
 }
 
-// WaitDrained waits for the drain request that was previously started.
+// WaitDrained 等待此前启动的排水请求完成。
 func (c *drainCoordinator) WaitDrained(ctx context.Context) error {
 	if c == nil {
 		return errDrainNotStarted

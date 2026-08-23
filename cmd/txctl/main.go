@@ -1,4 +1,4 @@
-// txctl is a small operational client for the optional tx control service.
+// txctl 是可选 tx 控制服务的轻量运维客户端。
 package main
 
 import (

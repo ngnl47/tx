@@ -7,8 +7,8 @@ import (
 	"github.com/ngnl47/tx/modules/discovery"
 )
 
-// Drain removes the instance from ordinary routing and waits for already
-// accepted service ingress. It does not cancel background work or close RPC.
+// Drain 将实例移出普通路由，并等待服务入口已经接受的工作完成。
+// 它不会取消后台任务或关闭 RPC。
 func (server *Server) Drain(ctx context.Context) error {
 	if server == nil {
 		return nil
@@ -35,7 +35,7 @@ func (server *Server) Drain(ctx context.Context) error {
 	return errors.Join(discoveryErr, hostErr)
 }
 
-// Stop is idempotent and owns the full reverse-order shutdown sequence.
+// Stop 具备幂等性，并负责完整的逆序关闭流程。
 func (server *Server) Stop(ctx context.Context) error {
 	return server.stop(ctx, true)
 }

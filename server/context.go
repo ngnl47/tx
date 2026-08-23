@@ -12,15 +12,14 @@ import (
 	txredis "github.com/ngnl47/tx/storage/redis"
 )
 
-// StorageReaders is the read contract consumed by generated data packages.
+// StorageReaders 是生成 data 包使用的读取契约。
 type StorageReaders interface {
 	RedisReader() txstorage.DocumentLoader
 	MongoReader() txstorage.DocumentLoader
 	FusionReader() txstorage.DocumentLoader
 }
 
-// Storage is the stable application-facing storage contract. Connection pools,
-// health state, background workers, and shutdown remain server-owned.
+// Storage 是稳定的应用侧存储契约。连接池、健康状态、后台任务和关闭流程仍由 server 管理。
 type Storage interface {
 	StorageReaders
 	Context() context.Context
@@ -28,16 +27,14 @@ type Storage interface {
 	RequireWritable() error
 }
 
-// Advanced exposes the first supported expert extension surface. Ordinary
-// business services should use the direct Context capability methods.
+// Advanced 暴露第一版受支持的专家级扩展面。普通业务服务应直接使用 Context 的能力方法。
 type Advanced interface {
 	Redis() txredis.ScriptRoutes
 	Slots() discovery.SlotStore
 }
 
-// Context is the stable, ownership-safe capability view passed to a selected
-// service. It can perform business work, but every returned module contract
-// excludes process start/stop ownership.
+// Context 是传递给选中服务的稳定能力视图，并隔离资源所有权。
+// 它可以执行业务工作，但返回的模块契约均不包含进程启动或停止权限。
 type Context interface {
 	AppID() string
 	Instance() discovery.Instance

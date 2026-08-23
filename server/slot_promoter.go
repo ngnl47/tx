@@ -7,9 +7,8 @@ import (
 	"github.com/ngnl47/tx/modules/discovery"
 )
 
-// slotPromoter adapts the project discovery store and live directory to the
-// operational control contract. It never creates assignments or changes an
-// instance lease; it only performs a generation-fenced handoff.
+// slotPromoter 将项目 discovery store 和实时目录适配到运维控制契约。
+// 它不会创建 assignment 或修改实例 lease，只执行受 generation 保护的交接。
 type slotPromoter struct {
 	router *discovery.SlotRouter
 }

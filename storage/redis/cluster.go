@@ -15,8 +15,7 @@ type Router interface {
 	RouteRedis(context.Context, string, any) (string, error)
 }
 
-// ScriptRoutes exposes routed script clients to infrastructure adapters that
-// must reuse an already assembled Redis routing table.
+// ScriptRoutes 向需要复用既有 Redis 路由表的基础设施 adapter 暴露路由脚本客户端。
 type ScriptRoutes interface {
 	ScriptClientFor(context.Context, string, any) (ScriptClient, error)
 }

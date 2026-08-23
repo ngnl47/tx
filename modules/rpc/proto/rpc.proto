@@ -4,21 +4,21 @@ package tx.rpc.v1;
 
 option go_package = "github.com/ngnl47/tx/modules/rpc/pb;rpcpb";
 
-// RouteKind identifies how a delivery target is resolved.
+// RouteKind 标识消息目标的解析方式。
 enum RouteKind {
   ROUTE_KIND_UNSPECIFIED = 0;
   ROUTE_KIND_SERVICE = 1;
   ROUTE_KIND_INSTANCE = 2;
 }
 
-// Route contains transport-level routing metadata. Payload remains opaque.
+// Route 保存传输层路由元数据，Payload 保持不透明。
 message Route {
   RouteKind kind = 1;
   string service = 2;
   string instance_id = 3;
 }
 
-// Delivery is a directed internal message. Payload uses the caller's codec.
+// Delivery 表示一条定向内部消息，Payload 使用调用方选择的编解码格式。
 message Delivery {
   Route route = 1;
   string message_type = 2;

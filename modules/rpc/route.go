@@ -13,7 +13,7 @@ var (
 	ErrRouteUnavailable = errors.New("rpc: route has no available instance")
 )
 
-// RouteKind identifies how a delivery target is resolved.
+// RouteKind 标识消息目标的解析方式。
 type RouteKind uint8
 
 const (
@@ -22,19 +22,19 @@ const (
 	RouteInstance
 )
 
-// Route contains transport-level routing metadata.
+// Route 保存传输层路由元数据。
 type Route struct {
 	Kind       RouteKind
 	Service    string
 	InstanceID string
 }
 
-// ServiceRoute creates a route that selects a running service replica.
+// ServiceRoute 创建一个从 running 服务副本中选择目标的路由。
 func ServiceRoute(service string) Route {
 	return Route{Kind: RouteService, Service: service}
 }
 
-// InstanceRoute creates a route that selects a known running or stopping instance.
+// InstanceRoute 创建一个指向已知 running 或 stopping 实例的路由。
 func InstanceRoute(instanceID string) Route {
 	return Route{Kind: RouteInstance, InstanceID: instanceID}
 }
@@ -53,7 +53,7 @@ func (r Route) Validate() error {
 	return ErrInvalidRoute
 }
 
-// Resolve resolves service routes to a running replica and exact routes to one known instance.
+// Resolve 将服务路由解析为 running 副本，将精确路由解析为指定实例。
 func Resolve(directory discovery.Directory, route Route) (discovery.Instance, error) {
 	if directory == nil {
 		return discovery.Instance{}, ErrDirectoryNil

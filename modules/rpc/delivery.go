@@ -18,7 +18,7 @@ var (
 	ErrInvalidDelivery = errors.New("rpc: invalid delivery")
 )
 
-// Delivery is a directed internal message. Payload uses the caller's codec.
+// Delivery 表示一条定向内部消息，Payload 使用调用方选择的编解码格式。
 type Delivery struct {
 	Route       Route
 	MessageType string
@@ -36,12 +36,12 @@ func (d Delivery) Validate() error {
 	return nil
 }
 
-// Receiver handles one validated internal delivery.
+// Receiver 处理一条已经校验的内部消息。
 type Receiver interface {
 	Deliver(context.Context, Delivery) error
 }
 
-// ReceiverFunc adapts a function to Receiver.
+// ReceiverFunc 将函数适配为 Receiver。
 type ReceiverFunc func(context.Context, Delivery) error
 
 func (f ReceiverFunc) Deliver(ctx context.Context, delivery Delivery) error {
@@ -53,9 +53,8 @@ type admissionReceiver struct {
 	admission lifecycle.Admission
 }
 
-// NewAdmissionReceiver wraps a business Receiver with strict service ingress.
-// Once draining starts, no new delivery reaches next; already accepted work
-// remains registered until the returned completion callback runs.
+// NewAdmissionReceiver 为业务 Receiver 增加严格的服务入口控制。
+// 排水开始后，新消息不再进入 next；已经接受的工作会持续登记到完成回调执行为止。
 func NewAdmissionReceiver(next Receiver, admission lifecycle.Admission) (Receiver, error) {
 	if next == nil {
 		return nil, ErrReceiverNil
@@ -75,7 +74,7 @@ func (r *admissionReceiver) Deliver(ctx context.Context, delivery Delivery) erro
 	return r.next.Deliver(ctx, delivery)
 }
 
-// RegisterDeliveryService registers the generated gRPC service on registrar.
+// RegisterDeliveryService 将生成的 gRPC 服务注册到 registrar。
 func RegisterDeliveryService(registrar grpc.ServiceRegistrar, receiver Receiver) error {
 	if registrar == nil || receiver == nil {
 		return ErrReceiverNil

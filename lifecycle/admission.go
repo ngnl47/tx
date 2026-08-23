@@ -1,12 +1,11 @@
 package lifecycle
 
-// Admission registers one request with a service ingress. The returned
-// completion callback must run exactly once after an accepted request finishes.
+// Admission 向服务入口登记一个请求。请求被接受后，返回的完成回调必须且只能执行一次。
 type Admission interface {
 	Enter() (func(), error)
 }
 
-// AdmissionFunc adapts a function into Admission.
+// AdmissionFunc 将函数适配为 Admission。
 type AdmissionFunc func() (func(), error)
 
 func (f AdmissionFunc) Enter() (func(), error) {

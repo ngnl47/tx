@@ -13,15 +13,14 @@ import (
 
 var ErrSlotControllerNil = errors.New("control: slot controller is nil")
 
-// SlotPromotion describes one generation-fenced logical-slot handoff. Current
-// must match the persisted assignment; the next generation is derived rather
-// than supplied independently by an operational script.
+// SlotPromotion 描述一次受 generation 保护的逻辑槽位交接。Current 必须匹配持久化 assignment；
+// 下一代 generation 由框架推导，不能由运维脚本独立提供。
 type SlotPromotion struct {
 	Current               discovery.SlotAssignment
 	NextRuntimeInstanceID string
 }
 
-// NextAssignment validates the handoff and returns its deterministic target.
+// NextAssignment 校验交接请求并返回确定的目标 assignment。
 func (promotion SlotPromotion) NextAssignment() (discovery.SlotAssignment, error) {
 	next := discovery.SlotAssignment{
 		SlotID:            promotion.Current.SlotID,
@@ -34,13 +33,12 @@ func (promotion SlotPromotion) NextAssignment() (discovery.SlotAssignment, error
 	return next, nil
 }
 
-// SlotController performs the storage-backed compare-and-swap. Implementations
-// must also verify that the target runtime is ready before publishing it.
+// SlotController 执行由存储保障的 CAS。实现必须在发布前确认目标运行实例已经就绪。
 type SlotController interface {
 	PromoteSlot(context.Context, SlotPromotion) error
 }
 
-// RegisterSlotService binds logical-slot operations to the control gRPC server.
+// RegisterSlotService 将逻辑槽位操作注册到控制面 gRPC 服务端。
 func RegisterSlotService(registrar grpc.ServiceRegistrar, controller SlotController) error {
 	if registrar == nil || controller == nil {
 		return ErrSlotControllerNil

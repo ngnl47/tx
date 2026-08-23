@@ -1,5 +1,5 @@
-// Package servertest provides fakes for tests of server-owned service adapters.
-// It is internal so production users cannot treat fake assembly as a public API.
+// Package servertest 为 server 持有的服务 adapter 测试提供 fake。
+// 它位于 internal 中，避免生产使用者把测试装配当作公共 API。
 package servertest
 
 import (
@@ -11,7 +11,7 @@ import (
 	txserver "github.com/ngnl47/tx/server"
 )
 
-// Context is a configurable server.Context fake for standard service tests.
+// Context 是标准服务测试使用的可配置 server.Context fake。
 type Context struct {
 	App                string
 	InstanceValue      discovery.Instance

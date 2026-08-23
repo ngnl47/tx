@@ -16,8 +16,7 @@ var (
 	ErrNoEffectiveChanges = errors.New("storage: changes contain no effective write")
 )
 
-// Backend identifies an external persistence dependency. It is used only for
-// health classification; storage modes remain defined by meta.StorageMode.
+// Backend 标识外部持久化依赖，仅用于健康状态分类；存储模式仍由 meta.StorageMode 定义。
 type Backend uint8
 
 const (
@@ -37,8 +36,8 @@ func (backend Backend) String() string {
 	}
 }
 
-// BackendError marks an error returned by an actual external backend call.
-// Validation, mapping and caller-context errors must not use this wrapper.
+// BackendError 标记真实外部后端调用返回的错误。
+// 校验、映射和调用方 context 错误不得使用该包装。
 type BackendError struct {
 	Backend   Backend
 	Operation string
@@ -62,7 +61,7 @@ func (err *BackendError) Unwrap() error {
 	return err.Err
 }
 
-// NewBackendError wraps one failed external backend call. A nil cause remains nil.
+// NewBackendError 包装一次失败的外部后端调用；cause 为 nil 时仍返回 nil。
 func NewBackendError(backend Backend, operation string, err error) error {
 	if err == nil {
 		return nil
@@ -73,7 +72,7 @@ func NewBackendError(backend Backend, operation string, err error) error {
 	return &BackendError{Backend: backend, Operation: operation, Err: err}
 }
 
-// BackendFromError extracts the first classified external backend from err.
+// BackendFromError 从 err 中提取第一个已经分类的外部后端。
 func BackendFromError(err error) (Backend, bool) {
 	var backendErr *BackendError
 	if !errors.As(err, &backendErr) || backendErr == nil {

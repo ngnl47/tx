@@ -15,7 +15,7 @@ import (
 
 type Option func(*Server) error
 
-// WithService registers a process-selectable service in declaration order.
+// WithService 按声明顺序注册一个可由进程选择的服务。
 func WithService(services ...Service) Option {
 	return func(server *Server) error {
 		server.services = append(server.services, services...)
@@ -23,8 +23,8 @@ func WithService(services ...Service) Option {
 	}
 }
 
-// WithGeneratedData connects the generated type registry and default readers to
-// the framework. bind is normally data.RegisterStorageRuntime.
+// WithGeneratedData 将生成的类型注册表和默认 reader 接入框架。
+// bind 通常使用 data.RegisterStorageRuntime。
 func WithGeneratedData(types fusion.TypeRegistry, bind func(StorageReaders)) Option {
 	return func(server *Server) error {
 		if types == nil {
@@ -39,9 +39,8 @@ func WithGeneratedData(types fusion.TypeRegistry, bind func(StorageReaders)) Opt
 	}
 }
 
-// WithSetup registers project glue that runs after framework capabilities are
-// ready and before services start. The callback receives the same ownership-safe
-// Context contract as services; cleanup runs in reverse order.
+// WithSetup 注册项目胶水逻辑，它会在框架能力就绪后、服务启动前运行。
+// 回调接收与服务相同且隔离所有权的 Context 契约，cleanup 按相反顺序执行。
 func WithSetup(setup func(Context) (cleanup func(), err error)) Option {
 	return func(server *Server) error {
 		if setup == nil {
@@ -52,7 +51,7 @@ func WithSetup(setup func(Context) (cleanup func(), err error)) Option {
 	}
 }
 
-// Server owns the common process runtime and selected service lifecycle.
+// Server 持有进程公共 runtime 和选中服务的生命周期。
 type Server struct {
 	config Config
 
@@ -96,8 +95,7 @@ func New(config Config, options ...Option) (*Server, error) {
 	return server, nil
 }
 
-// Run starts selected services, waits for ctx cancellation, and performs the
-// complete drain and shutdown sequence.
+// Run 启动选中的服务、等待 ctx 取消，并执行完整的排水和关闭流程。
 func (server *Server) Run(ctx context.Context, options RunOptions) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -112,10 +110,8 @@ func (server *Server) Run(ctx context.Context, options RunOptions) error {
 	return server.Stop(context.Background())
 }
 
-// Start assembles framework resources and starts the selected services. The
-// supplied context contributes values but is intentionally detached from its
-// cancellation signal; Run controls shutdown order so accepted work drains
-// before the global WaitGroupContext is canceled.
+// Start 装配框架资源并启动选中的服务。传入 context 的值会被保留，但取消信号会被刻意分离；
+// Run 负责控制关闭顺序，确保已接受工作排空后再取消全局 WaitGroupContext。
 func (server *Server) Start(ctx context.Context, options RunOptions) (err error) {
 	if server == nil {
 		return errors.New("server: server is nil")
@@ -242,7 +238,7 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 	return nil
 }
 
-// Context returns the assembled ownership-safe capability view after Start succeeds.
+// Context 在 Start 成功后返回已经装配且隔离所有权的能力视图。
 func (server *Server) Context() Context {
 	if server == nil {
 		return nil

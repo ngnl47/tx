@@ -25,8 +25,7 @@ var (
 	ErrInvalidPID        = errors.New("actor: invalid pid")
 )
 
-// Messenger is the service-facing actor contract. Cluster startup, shutdown,
-// and access to the underlying ActorSystem remain runtime ownership concerns.
+// Messenger 是面向服务的 Actor 契约。集群启动、关闭和底层 ActorSystem 访问仍由 runtime 管理。
 type Messenger interface {
 	VirtualPID(kind, identity string) (*protoactor.PID, error)
 	Tell(pid *protoactor.PID, delivery Delivery) error

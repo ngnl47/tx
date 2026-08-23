@@ -1,5 +1,4 @@
-// Package control exposes a minimal operational gRPC surface for graceful
-// process drain. It does not know application services or persistence.
+// Package control 提供进程优雅排水所需的最小运维 gRPC 接口，不感知应用服务或持久化实现。
 package control
 
 import (
@@ -14,7 +13,7 @@ import (
 
 var ErrControllerNil = errors.New("control: lifecycle controller is nil")
 
-// State describes one process drain state.
+// State 描述进程的排水状态。
 type State uint8
 
 const (
@@ -24,21 +23,21 @@ const (
 	StateFailed
 )
 
-// Status is the current operational state of a process.
+// Status 表示进程当前的运维状态。
 type Status struct {
 	State State
 	Error string
 }
 
-// LifecycleController is implemented by the application host. BeginDrain
-// must only stop ingress and start drain work; WaitDrained waits for it.
+// LifecycleController 由应用宿主实现。BeginDrain 只负责封闭入口并启动排水，
+// WaitDrained 负责等待排水完成。
 type LifecycleController interface {
 	BeginDrain(context.Context) error
 	WaitDrained(context.Context) error
 	Status() Status
 }
 
-// RegisterLifecycleService binds a lifecycle controller to a gRPC server.
+// RegisterLifecycleService 将生命周期控制器注册到 gRPC 服务端。
 func RegisterLifecycleService(registrar grpc.ServiceRegistrar, controller LifecycleController) error {
 	if registrar == nil || controller == nil {
 		return ErrControllerNil

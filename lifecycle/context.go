@@ -1,5 +1,4 @@
-// Package lifecycle provides cancellable contexts that keep accepted work alive
-// until it has finished during graceful shutdown.
+// Package lifecycle 提供支持取消的上下文，并在优雅关闭期间等待已接受的工作执行完毕。
 package lifecycle
 
 import (
@@ -10,17 +9,14 @@ import (
 
 var ErrStopping = errors.New("lifecycle: context is stopping")
 
-// Tasks is the service-facing lifecycle contract. It lets a module attach
-// owned background work without granting permission to cancel or wait on the
-// process root.
+// Tasks 是面向服务的生命周期契约。模块可以登记自己负责的后台任务，但无权取消或等待进程根上下文。
 type Tasks interface {
 	context.Context
 	Go(func(context.Context)) error
 }
 
-// WaitGroupContext combines a cancellation signal with the work that was
-// accepted before that signal. Call Go for long-running tasks instead of
-// managing a sync.WaitGroup directly.
+// WaitGroupContext 将取消信号与信号发出前已经接受的工作组合起来。
+// 长期运行的任务应调用 Go，而不是直接维护 sync.WaitGroup。
 type WaitGroupContext struct {
 	context.Context
 
@@ -31,7 +27,7 @@ type WaitGroupContext struct {
 	wg       sync.WaitGroup
 }
 
-// NewWaitGroupContext creates a lifecycle root. A nil parent uses Background.
+// NewWaitGroupContext 创建生命周期根节点。parent 为 nil 时使用 context.Background。
 func NewWaitGroupContext(parent context.Context) *WaitGroupContext {
 	if parent == nil {
 		parent = context.Background()
@@ -40,8 +36,7 @@ func NewWaitGroupContext(parent context.Context) *WaitGroupContext {
 	return &WaitGroupContext{Context: ctx, cancel: cancel}
 }
 
-// Enter registers work that is already executing on the caller goroutine. Its
-// returned function must be called once after that work has completed.
+// Enter 登记已经在调用方 goroutine 中执行的工作。工作完成后必须调用一次返回函数。
 func (c *WaitGroupContext) Enter() (func(), error) {
 	if c == nil {
 		return nil, ErrStopping
@@ -58,8 +53,7 @@ func (c *WaitGroupContext) Enter() (func(), error) {
 	return func() { once.Do(c.wg.Done) }, nil
 }
 
-// Go registers and starts work that belongs to this lifecycle. Once shutdown
-// begins, no further work is accepted, so waiting cannot race with a later Add.
+// Go 登记并启动属于当前生命周期的工作。关闭开始后不再接受新工作，避免等待过程与后续登记发生竞争。
 func (c *WaitGroupContext) Go(task func(context.Context)) error {
 	if task == nil {
 		return ErrStopping
@@ -76,8 +70,7 @@ func (c *WaitGroupContext) Go(task func(context.Context)) error {
 	return nil
 }
 
-// Cancel starts graceful shutdown. Work accepted before this call remains
-// tracked and Wait still waits for it to finish.
+// Cancel 开始优雅关闭。调用前已经接受的工作仍会被追踪，Wait 仍会等待它们完成。
 func (c *WaitGroupContext) Cancel() bool {
 	if c == nil {
 		return false
@@ -92,12 +85,12 @@ func (c *WaitGroupContext) Cancel() bool {
 	return true
 }
 
-// Canceled reports whether this context or one of its parents has been canceled.
+// Canceled 判断当前上下文或任一父上下文是否已经取消。
 func (c *WaitGroupContext) Canceled() bool {
 	return c == nil || c.Err() != nil
 }
 
-// WaitDone waits for cancellation without waiting for accepted work.
+// WaitDone 等待取消信号，但不等待已经接受的工作。
 func (c *WaitGroupContext) WaitDone() {
 	if c == nil {
 		return
@@ -105,7 +98,7 @@ func (c *WaitGroupContext) WaitDone() {
 	<-c.Done()
 }
 
-// Wait waits for every task accepted before cancellation.
+// Wait 等待取消前接受的全部任务完成。
 func (c *WaitGroupContext) Wait() {
 	if c == nil {
 		return
@@ -113,7 +106,7 @@ func (c *WaitGroupContext) Wait() {
 	c.wg.Wait()
 }
 
-// WaitDoneAndWaitGroupWait waits for shutdown and then for every accepted task.
+// WaitDoneAndWaitGroupWait 先等待关闭信号，再等待全部已接受任务完成。
 func (c *WaitGroupContext) WaitDoneAndWaitGroupWait() {
 	if c == nil {
 		return
@@ -122,14 +115,12 @@ func (c *WaitGroupContext) WaitDoneAndWaitGroupWait() {
 	c.Wait()
 }
 
-// ChildWaitGroupContext is a child lifecycle. It is automatically joined to
-// its parent, so root shutdown waits for work registered on child contexts.
+// ChildWaitGroupContext 是子生命周期。它会自动加入父节点，因此根节点关闭时会等待子上下文登记的工作。
 type ChildWaitGroupContext struct {
 	*WaitGroupContext
 }
 
-// NewChildWaitGroupContext creates a child lifecycle. The child observes the
-// parent's cancellation and the parent waits until the child has drained.
+// NewChildWaitGroupContext 创建子生命周期。子节点会感知父节点取消，父节点会等待子节点排空。
 func NewChildWaitGroupContext(parent *WaitGroupContext) *ChildWaitGroupContext {
 	if parent == nil {
 		return &ChildWaitGroupContext{WaitGroupContext: NewWaitGroupContext(context.Background())}

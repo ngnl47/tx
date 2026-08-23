@@ -14,24 +14,22 @@ import (
 	"google.golang.org/grpc"
 )
 
-// controlServer exposes process drain operations on a separate operational
-// endpoint. It is not a business service and is never registered in discovery.
+// controlServer 通过独立运维 endpoint 暴露进程排水操作。
+// 它不是业务服务，也不会注册到服务发现。
 type controlServer struct {
 	listener net.Listener
 	server   *grpc.Server
 	stopOnce sync.Once
 }
 
-// controlServerOptions declares the operational surfaces exposed on one
-// endpoint. Lifecycle is required; Slots is available only when discovery is
-// assembled for this process.
+// controlServerOptions 声明同一 endpoint 暴露的运维接口。
+// Lifecycle 必须提供；只有当前进程装配 discovery 后才能提供 Slots。
 type controlServerOptions struct {
 	Lifecycle control.LifecycleController
 	Slots     control.SlotController
 }
 
-// startControlServer starts the optional operational gRPC server. An empty
-// endpoint means the control surface is disabled by the project deployment.
+// startControlServer 启动可选的运维 gRPC 服务端。endpoint 为空表示项目部署禁用控制面。
 func startControlServer(root *lifecycle.WaitGroupContext, endpoint string, options controlServerOptions) (*controlServer, error) {
 	if strings.TrimSpace(endpoint) == "" {
 		return nil, nil

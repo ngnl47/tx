@@ -12,9 +12,8 @@ import (
 	storageconfig "github.com/ngnl47/tx/storage/config"
 )
 
-// Config is the framework configuration after a project has parsed its local
-// configuration source. The server package does not read YAML, environment
-// variables, or command-line flags.
+// Config 是项目解析本地配置源后得到的框架配置。
+// server 包不读取 YAML、环境变量或命令行参数。
 type Config struct {
 	AppID     string
 	Storage   StorageConfig
@@ -79,8 +78,7 @@ type DiscoveryConfig struct {
 	Etcd    discovery.EtcdConfig
 }
 
-// RunOptions contains deployment identity and process selection. These values
-// normally come from command-line flags or the orchestrator, not application YAML.
+// RunOptions 保存部署身份和进程服务选择。这些值通常来自命令行参数或编排系统，而不是应用 YAML。
 type RunOptions struct {
 	Services         string
 	InstanceID       string

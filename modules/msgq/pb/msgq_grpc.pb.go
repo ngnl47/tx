@@ -37,7 +37,7 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// MailboxService is the dedicated msgq transport. Payload bytes remain BON data.
+// MailboxService 是 msgq 专用传输服务，Payload 字节保持为 BON 数据。
 type MailboxServiceClient interface {
 	Init(ctx context.Context, in *InitRequest, opts ...grpc.CallOption) (*InitResponse, error)
 	Rec(ctx context.Context, in *RecRequest, opts ...grpc.CallOption) (*RecResponse, error)
@@ -185,7 +185,7 @@ func (c *mailboxServiceClient) Close(ctx context.Context, in *CloseRequest, opts
 // All implementations must embed UnimplementedMailboxServiceServer
 // for forward compatibility.
 //
-// MailboxService is the dedicated msgq transport. Payload bytes remain BON data.
+// MailboxService 是 msgq 专用传输服务，Payload 字节保持为 BON 数据。
 type MailboxServiceServer interface {
 	Init(context.Context, *InitRequest) (*InitResponse, error)
 	Rec(context.Context, *RecRequest) (*RecResponse, error)

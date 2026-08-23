@@ -4,7 +4,7 @@ package tx.msgq.v1;
 
 option go_package = "github.com/ngnl47/tx/modules/msgq/pb;msgqpb";
 
-// SessionHeader identifies one concrete client connection.
+// SessionHeader 标识一条具体的客户端连接。
 message SessionHeader {
   int64 role_id = 1;
   int64 session_id = 2;
@@ -95,7 +95,7 @@ message CloseRequest {
 
 message Empty {}
 
-// MailboxService is the dedicated msgq transport. Payload bytes remain BON data.
+// MailboxService 是 msgq 专用传输服务，Payload 字节保持为 BON 数据。
 service MailboxService {
   rpc Init(InitRequest) returns (InitResponse);
   rpc Rec(RecRequest) returns (RecResponse);

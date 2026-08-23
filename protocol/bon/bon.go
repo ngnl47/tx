@@ -1,4 +1,4 @@
-// Package bon implements the binary object notation used by client protocol payloads.
+// Package bon 实现客户端协议载荷使用的二进制对象表示。
 package bon
 
 import (
@@ -27,7 +27,7 @@ const (
 	typeStringRef byte = 99
 )
 
-// Marshal serializes a Go value using its msgpack field tags.
+// Marshal 使用 Go 值的 msgpack field tag 完成序列化。
 func Marshal(value any) ([]byte, error) {
 	writer := newWriter()
 	if err := writer.writeReflect(reflect.ValueOf(value)); err != nil {
@@ -36,7 +36,7 @@ func Marshal(value any) ([]byte, error) {
 	return writer.result(), nil
 }
 
-// Unmarshal decodes a complete payload into target. target must be a non-nil pointer.
+// Unmarshal 将完整载荷解码到 target；target 必须是非 nil 指针。
 func Unmarshal(payload []byte, target any) error {
 	reader := newReader(payload)
 	value, err := reader.readValue()
@@ -49,7 +49,7 @@ func Unmarshal(payload []byte, target any) error {
 	return DecodeValue(value, target)
 }
 
-// MarshalEnvelope serializes a protocol command as {c: command, b: body}.
+// MarshalEnvelope 将协议命令序列化为 {c: command, b: body}。
 func MarshalEnvelope(command string, body any) ([]byte, error) {
 	if command == "" {
 		return nil, fmt.Errorf("bon: command is empty")
@@ -66,7 +66,7 @@ func MarshalEnvelope(command string, body any) ([]byte, error) {
 	return writer.result(), nil
 }
 
-// UnmarshalEnvelope decodes a complete protocol command payload.
+// UnmarshalEnvelope 解码完整的协议命令载荷。
 func UnmarshalEnvelope(payload []byte) (command string, body any, err error) {
 	reader := newReader(payload)
 	value, err := reader.readValue()
@@ -91,7 +91,7 @@ func UnmarshalEnvelope(payload []byte) (command string, body any, err error) {
 	return command, body, nil
 }
 
-// DecodeValue maps a decoded BON value to target using msgpack tags.
+// DecodeValue 使用 msgpack tag 将已经解码的 BON 值映射到 target。
 func DecodeValue(value any, target any) error {
 	if target == nil {
 		return fmt.Errorf("bon: target is nil")

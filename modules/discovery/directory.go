@@ -60,9 +60,7 @@ type ServiceDirectory struct {
 	next      map[string]uint64
 }
 
-// Directory is the read-only service discovery contract used by routers and
-// application modules. Snapshot replacement remains owned by the discovery
-// runtime.
+// Directory 是路由器和应用模块使用的只读服务发现契约，快照替换仍由 discovery runtime 负责。
 type Directory interface {
 	NextInstance(service string) (Instance, bool)
 	RunningInstances(service string) []Instance

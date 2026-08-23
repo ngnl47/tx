@@ -121,7 +121,7 @@ func (spec TypeSpec) MsgpackName(name string) string {
 	return field.MsgpackName
 }
 
-// CloneTypeSpec returns an isolated copy of mutable type metadata.
+// CloneTypeSpec 返回可变类型元数据的独立副本。
 func CloneTypeSpec(spec TypeSpec) TypeSpec {
 	spec.Type.Fields = append([]Field(nil), spec.Type.Fields...)
 	spec.Type.Methods = append([]Method(nil), spec.Type.Methods...)
