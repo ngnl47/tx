@@ -44,7 +44,7 @@ type storageOptions struct {
 	HealthProbeTimeout       time.Duration
 }
 
-type Storage struct {
+type storageRuntime struct {
 	ctx          context.Context
 	redis        *txredis.Cluster
 	mongo        *txmongo.Cluster
@@ -67,7 +67,7 @@ type Storage struct {
 	mongoHealthGen uint64
 }
 
-func newStorage(ctx context.Context, cfg StorageConfig, opts storageOptions, types txfusion.TypeRegistry) (*Storage, error) {
+func newStorage(ctx context.Context, cfg StorageConfig, opts storageOptions, types txfusion.TypeRegistry) (*storageRuntime, error) {
 	if types == nil {
 		return nil, fmt.Errorf("server: generated type registry is required")
 	}
@@ -87,7 +87,7 @@ func newStorage(ctx context.Context, cfg StorageConfig, opts storageOptions, typ
 		return nil, err
 	}
 
-	store := &Storage{
+	store := &storageRuntime{
 		ctx:          ctx,
 		redis:        redisCluster,
 		mongo:        mongoCluster,
@@ -130,14 +130,14 @@ func newStorage(ctx context.Context, cfg StorageConfig, opts storageOptions, typ
 	return store, nil
 }
 
-func (s *Storage) Context() context.Context {
+func (s *storageRuntime) Context() context.Context {
 	if s == nil || s.ctx == nil {
 		return context.Background()
 	}
 	return s.ctx
 }
 
-func (s *Storage) close(ctx context.Context) error {
+func (s *storageRuntime) close(ctx context.Context) error {
 	if s == nil {
 		return nil
 	}
@@ -148,21 +148,21 @@ func (s *Storage) close(ctx context.Context) error {
 	return s.closeErr
 }
 
-func (s *Storage) RedisReader() txstorage.DocumentLoader {
+func (s *storageRuntime) RedisReader() txstorage.DocumentLoader {
 	if s == nil {
 		return nil
 	}
 	return s.guardReader(meta.StorageModeRedis, s.redis)
 }
 
-func (s *Storage) MongoReader() txstorage.DocumentLoader {
+func (s *storageRuntime) MongoReader() txstorage.DocumentLoader {
 	if s == nil {
 		return nil
 	}
 	return s.guardReader(meta.StorageModeMongo, s.mongo)
 }
 
-func (s *Storage) FusionReader() txstorage.DocumentLoader {
+func (s *storageRuntime) FusionReader() txstorage.DocumentLoader {
 	if s == nil {
 		return nil
 	}
@@ -171,7 +171,7 @@ func (s *Storage) FusionReader() txstorage.DocumentLoader {
 
 // RedisScriptClientFor 返回 routeType/shardKey 对应的既有 Redis 客户端。
 // 仅限会话绑定等项目基础设施复用；GD 数据读写仍通过 Storage 的类型化入口完成。
-func (s *Storage) RedisScriptClientFor(ctx context.Context, routeType string, shardKey any) (txredis.ScriptClient, error) {
+func (s *storageRuntime) RedisScriptClientFor(ctx context.Context, routeType string, shardKey any) (txredis.ScriptClient, error) {
 	if s == nil || s.redis == nil {
 		return nil, errStorageNotConfigured
 	}
@@ -180,13 +180,13 @@ func (s *Storage) RedisScriptClientFor(ctx context.Context, routeType string, sh
 
 // RequireWritable 确认 Fusion 的 Redis 与 Mongo 依赖均可接受新的业务写入。
 // 它只读取后台健康探针维护的状态，不会在业务热路径额外执行 Ping。
-func (s *Storage) RequireWritable() error {
+func (s *storageRuntime) RequireWritable() error {
 	return s.requireStorageMode(meta.StorageModeFusion)
 }
 
 // probe 检查当前项目装配的全部 Redis 与 Mongo 端点。只有全部恢复后才重新开放
 // 新业务写入，避免 Fusion 在单边依赖异常时继续接受状态事务。
-func (s *Storage) probe(ctx context.Context) error {
+func (s *storageRuntime) probe(ctx context.Context) error {
 	if s == nil {
 		return errStorageNotConfigured
 	}
@@ -236,7 +236,7 @@ func (s *Storage) probe(ctx context.Context) error {
 
 // ChangeWriter 返回项目业务与 txn.Runtime 共用的 mode-aware 写入口。入口按
 // TypeSpec.Storage.Mode 检查对应健康状态并选择 Redis、Mongo 或 Fusion writer。
-func (s *Storage) ChangeWriter() txstorage.ChangeApplier {
+func (s *storageRuntime) ChangeWriter() txstorage.ChangeApplier {
 	if s == nil {
 		return storageChangeWriter{}
 	}
@@ -249,7 +249,7 @@ func (s *Storage) ChangeWriter() txstorage.ChangeApplier {
 }
 
 type storageChangeWriter struct {
-	storage *Storage
+	storage *storageRuntime
 	redis   txstorage.ChangeApplier
 	mongo   txstorage.ChangeApplier
 	fusion  txstorage.ChangeApplier

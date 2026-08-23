@@ -11,7 +11,7 @@ import (
 
 type serviceHost struct {
 	registry *registry
-	runtime  *Runtime
+	runtime  *runtime
 
 	mu        sync.Mutex
 	started   []startedService
@@ -24,7 +24,7 @@ type startedService struct {
 	ingress *lifecycle.Ingress
 }
 
-func newServiceHost(registry *registry, runtime *Runtime) *serviceHost {
+func newServiceHost(registry *registry, runtime *runtime) *serviceHost {
 	return &serviceHost{registry: registry, runtime: runtime}
 }
 
@@ -37,7 +37,7 @@ func (host *serviceHost) start(expression string) error {
 }
 
 func (host *serviceHost) startServices(services []Service) error {
-	if host == nil || host.runtime == nil || host.runtime.Lifecycle == nil {
+	if host == nil || host.runtime == nil || host.runtime.lifecycle == nil {
 		return errors.New("server: runtime lifecycle is not configured")
 	}
 	host.mu.Lock()
@@ -47,15 +47,14 @@ func (host *serviceHost) startServices(services []Service) error {
 	}
 	for _, service := range services {
 		spec := service.Spec()
-		if missing := spec.Requires &^ host.runtime.Capabilities; missing != 0 {
+		if missing := spec.Requires &^ host.runtime.capabilities; missing != 0 {
 			return host.rollbackStart(fmt.Errorf("server: service %q requires unavailable capabilities %s", spec.Name, missing))
 		}
-		scoped := *host.runtime
-		scoped.Ingress = lifecycle.NewIngress(host.runtime.Lifecycle)
-		if err := service.Start(&scoped); err != nil {
+		ingress := lifecycle.NewIngress(host.runtime.lifecycle)
+		if err := service.Start(newServiceContext(host.runtime, ingress)); err != nil {
 			return host.rollbackStart(fmt.Errorf("server: start service %q: %w", spec.Name, err))
 		}
-		host.started = append(host.started, startedService{service: service, ingress: scoped.Ingress})
+		host.started = append(host.started, startedService{service: service, ingress: ingress})
 	}
 	return nil
 }

@@ -13,7 +13,7 @@ import (
 )
 
 type healthAwareDelayHandler struct {
-	storage *Storage
+	storage *storageRuntime
 	next    txfusion.DelayTaskHandler
 }
 
@@ -27,7 +27,7 @@ func (handler healthAwareDelayHandler) HandleDelayTask(ctx context.Context, item
 }
 
 type guardedReader struct {
-	storage *Storage
+	storage *storageRuntime
 	mode    meta.StorageMode
 	next    txstorage.DocumentLoader
 }
@@ -55,7 +55,7 @@ func (reader guardedBatchReader) LoadDocuments(ctx context.Context, spec meta.Ty
 	return documents, exists, err
 }
 
-func (s *Storage) guardReader(mode meta.StorageMode, next txstorage.DocumentLoader) txstorage.DocumentLoader {
+func (s *storageRuntime) guardReader(mode meta.StorageMode, next txstorage.DocumentLoader) txstorage.DocumentLoader {
 	if s == nil || next == nil {
 		return nil
 	}
@@ -66,7 +66,7 @@ func (s *Storage) guardReader(mode meta.StorageMode, next txstorage.DocumentLoad
 	return reader
 }
 
-func (s *Storage) requireStorageMode(mode meta.StorageMode) error {
+func (s *storageRuntime) requireStorageMode(mode meta.StorageMode) error {
 	if s == nil {
 		return errStorageNotConfigured
 	}
@@ -97,7 +97,7 @@ func unavailableBackendError(backend txstorage.Backend, err error) error {
 	return fmt.Errorf("%w: %s: %v", ErrStorageUnavailable, backend, err)
 }
 
-func (s *Storage) observeStorageError(err error) {
+func (s *storageRuntime) observeStorageError(err error) {
 	if s == nil || err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return
 	}
@@ -108,7 +108,7 @@ func (s *Storage) observeStorageError(err error) {
 	s.markBackendUnavailable(backend, err)
 }
 
-func (s *Storage) markBackendUnavailable(backend txstorage.Backend, err error) {
+func (s *storageRuntime) markBackendUnavailable(backend txstorage.Backend, err error) {
 	if s == nil || err == nil {
 		return
 	}
@@ -134,7 +134,7 @@ func (s *Storage) markBackendUnavailable(backend txstorage.Backend, err error) {
 	}
 }
 
-func (s *Storage) backendHealthGeneration(backend txstorage.Backend) uint64 {
+func (s *storageRuntime) backendHealthGeneration(backend txstorage.Backend) uint64 {
 	if s == nil {
 		return 0
 	}
@@ -150,7 +150,7 @@ func (s *Storage) backendHealthGeneration(backend txstorage.Backend) uint64 {
 	}
 }
 
-func (s *Storage) recoverBackendHealth(backend txstorage.Backend, observedGeneration uint64) {
+func (s *storageRuntime) recoverBackendHealth(backend txstorage.Backend, observedGeneration uint64) {
 	if s == nil {
 		return
 	}

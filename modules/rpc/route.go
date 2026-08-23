@@ -54,7 +54,7 @@ func (r Route) Validate() error {
 }
 
 // Resolve resolves service routes to a running replica and exact routes to one known instance.
-func Resolve(directory *discovery.ServiceDirectory, route Route) (discovery.Instance, error) {
+func Resolve(directory discovery.Directory, route Route) (discovery.Instance, error) {
 	if directory == nil {
 		return discovery.Instance{}, ErrDirectoryNil
 	}

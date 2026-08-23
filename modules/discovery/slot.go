@@ -63,10 +63,10 @@ type SlotTarget struct {
 // running 实例，draining/stopping/丢失实例一律返回明确错误，避免静默改派。
 type SlotRouter struct {
 	store     SlotStore
-	directory *ServiceDirectory
+	directory Directory
 }
 
-func NewSlotRouter(store SlotStore, directory *ServiceDirectory) (*SlotRouter, error) {
+func NewSlotRouter(store SlotStore, directory Directory) (*SlotRouter, error) {
 	if store == nil {
 		return nil, ErrSlotStoreNil
 	}

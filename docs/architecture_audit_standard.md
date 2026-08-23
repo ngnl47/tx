@@ -14,6 +14,30 @@
 4. 性能优化有 benchmark、逃逸分析或 profile 证据。
 5. 低频路径优先正确性和可维护性，不为追求表面零分配增加复杂度。
 
+## 依赖层级基线
+
+依赖层级与后文性能路径的 L0/L1/L2 无关。架构审计按以下方向判断职责是否倒置：
+
+```text
+纯算法与通用契约
+  -> backend / 基础运行时模块
+  -> 跨能力中立 adapter
+  -> 可选标准服务
+  -> 进程级 server 装配
+  -> txgame 项目组合根与业务 facade
+```
+
+- 高层只能通过下层公开契约组合能力，不能读取下层实现字段或接管其生命周期。
+- 契约优先由能力所有者声明。例如 RPC 注册契约属于 `modules/rpc`，只读实例目录属于
+  `modules/discovery`，后台任务契约属于 `lifecycle`。
+- 两个同级实现需要复用逻辑时，先把稳定契约或中立 adapter 下沉；禁止一个
+  `server/services/<name>` 直接导入另一个 `server/services/<name>` 的实现。
+- `server.Server` 是进程资源的唯一 owner。Redis/Mongo client、gRPC Host、Actor Runtime、事务 Runtime、
+  discovery 快照和根 `WaitGroupContext` 的 Start/Stop/Shutdown/Replace/Flush 权限不能透传给服务。
+- `txgame` 只负责配置转换、业务回调、业务 facade 和服务选择，不复制 tx 的 runtime/host/service
+  生命周期实现。
+- 包名或目录深度不是层级证据；实际判断依据是依赖方向、接口所有权和资源生命周期。
+
 ## 审计严重级别
 
 - **P0 正确性**：可能产生脏数据、丢数据、重复写入、并发覆盖、错误成功或无法恢复的状态。
@@ -145,6 +169,10 @@ err := queue.Publish(payload)
 2. **扩展层**：供项目装配、adapter 和业务 facade 使用，暴露必要接口但不暴露实现状态。
 3. **内核层**：供高级用户和框架扩展使用，允许精细控制，并明确所有权、并发、生命周期和错误契约。
 
+高级接口也必须是受控 SPI，而不是把具体 runtime 暴露出去。第一版允许复用已经装配的 Redis 路由和
+逻辑槽位 Store，但不允许关闭连接、替换 discovery 快照、停止共享 gRPC Host、取得 Actor 生命周期所有权，
+或主动 Flush/Shutdown 事务 Runtime。
+
 ### 检查规则
 
 - 常规业务优先使用 `db.Save(role)` 这类 facade，不接触 Writer、backend、Fusion 内部对象或装配细节。
@@ -154,6 +182,9 @@ err := queue.Publish(payload)
 - 同一语义只保留一个推荐入口；不因历史兼容保留重复 facade、别名方法和迁移 API。
 - Redis、Mongo、etcd、RPC 等外部服务错误通过稳定且可识别的错误返回，不得 panic。
 - 高级 API 单独归类并记录契约，不能混入新手主路径示例。
+- 普通服务应接收受控能力门面；它可以执行已授权业务操作，但返回的动态值不能通过类型断言重新取得 owner API。
+- `Start/Stop/Shutdown/Close/Replace/Flush/Cancel/Wait` 等所有权方法默认只存在于装配层，除非该服务
+  明确拥有对应资源。
 - 接口应围绕使用方需要定义，避免只有单一实现、没有替换价值的装饰接口。
 
 ## 包结构审计

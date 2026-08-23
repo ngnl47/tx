@@ -12,7 +12,7 @@ import (
 	txmsgq "github.com/ngnl47/tx/modules/msgq"
 	msgqpb "github.com/ngnl47/tx/modules/msgq/pb"
 	txrpc "github.com/ngnl47/tx/modules/rpc"
-	txserver "github.com/ngnl47/tx/server"
+	"github.com/ngnl47/tx/server/internal/servertest"
 	"github.com/ngnl47/tx/storage/redis/goredis"
 	redis "github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
@@ -52,7 +52,7 @@ func TestServiceStartsMsgQGRPCServiceWithRedisSessionStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new gRPC host: %v", err)
 	}
-	if err := service.Start(&txserver.Runtime{Lifecycle: root, RPC: rpcHost}); err != nil {
+	if err := service.Start(servertest.Context{TasksValue: root, RPCValue: rpcHost, InstanceValue: discovery.Instance{ID: "msgq-test-1"}}); err != nil {
 		t.Fatalf("start msgq service: %v", err)
 	}
 	if err := rpcHost.Start(root); err != nil {

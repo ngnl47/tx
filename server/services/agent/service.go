@@ -14,7 +14,7 @@ import (
 	txagent "github.com/ngnl47/tx/modules/agent"
 	txmsgq "github.com/ngnl47/tx/modules/msgq"
 	txserver "github.com/ngnl47/tx/server"
-	msgqservice "github.com/ngnl47/tx/server/services/msgq"
+	"github.com/ngnl47/tx/server/adapters/msgqredis"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -39,7 +39,7 @@ type Options struct {
 	Handlers        HandlerProvider
 	Sessions        txagent.SessionClientRouter
 	LocalMsgQ       LocalMsgQ
-	SessionStore    msgqservice.SessionStoreOptions
+	SessionStore    msgqredis.Options
 }
 
 type Service struct {
@@ -79,8 +79,8 @@ func (service *Service) Spec() txserver.Spec {
 	return txserver.Spec{Name: ServiceName, Requires: requires}
 }
 
-func (service *Service) Start(runtime *txserver.Runtime) error {
-	if service == nil || runtime == nil || runtime.Lifecycle == nil || runtime.Ingress == nil {
+func (service *Service) Start(runtime txserver.Context) error {
+	if service == nil || runtime == nil || runtime.Tasks() == nil || runtime.Admission() == nil {
 		return fmt.Errorf("agent service: lifecycle and ingress are required")
 	}
 	if err := service.configure(); err != nil {
@@ -97,7 +97,7 @@ func (service *Service) Start(runtime *txserver.Runtime) error {
 	agentRuntime, err := txagent.NewServer(txagent.ServerOptions{
 		IdentityResolver: identity,
 		Dispatcher:       dispatcher,
-		Admission:        runtime.Ingress,
+		Admission:        runtime.Admission(),
 		Sessions:         sessions,
 		FetchBatch:       service.options.FetchBatch,
 	})
@@ -119,7 +119,7 @@ func (service *Service) Start(runtime *txserver.Runtime) error {
 		return err
 	}
 	if tcp != nil {
-		if err := runtime.Lifecycle.Go(func(ctx context.Context) {
+		if err := runtime.Tasks().Go(func(ctx context.Context) {
 			if serveErr := tcp.Serve(ctx); serveErr != nil && ctx.Err() == nil {
 				txlog.ErrorContext(ctx, "agent TCP service stopped unexpectedly", "err", serveErr)
 			}
@@ -164,7 +164,7 @@ func (service *Service) configure() error {
 	return nil
 }
 
-func (service *Service) startWebSocket(runtime *txserver.Runtime, agentRuntime *txagent.Server, tcp *txagent.TCPServer) (*http.Server, net.Listener, error) {
+func (service *Service) startWebSocket(runtime txserver.Context, agentRuntime *txagent.Server, tcp *txagent.TCPServer) (*http.Server, net.Listener, error) {
 	if service.options.WebSocketListen == "" {
 		return nil, nil, nil
 	}
@@ -186,10 +186,10 @@ func (service *Service) startWebSocket(runtime *txserver.Runtime, agentRuntime *
 		Addr:    listener.Addr().String(),
 		Handler: handler,
 		BaseContext: func(net.Listener) context.Context {
-			return runtime.Lifecycle
+			return runtime.Tasks()
 		},
 	}
-	if err := runtime.Lifecycle.Go(func(ctx context.Context) {
+	if err := runtime.Tasks().Go(func(ctx context.Context) {
 		if serveErr := httpServer.Serve(listener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) && ctx.Err() == nil && !service.isDraining() {
 			txlog.ErrorContext(ctx, "agent WebSocket service stopped unexpectedly", "err", serveErr)
 		}
@@ -274,7 +274,7 @@ func (service *Service) WebSocketAddress() string {
 	return service.websocketAddr
 }
 
-func (service *Service) resolveSessions(runtime *txserver.Runtime) (txagent.SessionClientRouter, interface{ Close() error }, error) {
+func (service *Service) resolveSessions(runtime txserver.Context) (txagent.SessionClientRouter, interface{ Close() error }, error) {
 	if service.options.Sessions != nil {
 		if closer, ok := service.options.Sessions.(interface{ Close() error }); ok {
 			return service.options.Sessions, closer, nil
@@ -290,10 +290,14 @@ func (service *Service) resolveSessions(runtime *txserver.Runtime) (txagent.Sess
 			return router, router, nil
 		}
 	}
-	if runtime.Directory == nil {
+	if runtime.Directory() == nil {
 		return nil, nil, fmt.Errorf("agent service: remote msgq requires service discovery")
 	}
-	store, err := msgqservice.NewSessionStore(runtime.Storage, service.options.SessionStore)
+	advanced := runtime.Advanced()
+	if advanced == nil || advanced.Redis() == nil {
+		return nil, nil, fmt.Errorf("agent service: Redis routes are unavailable")
+	}
+	store, err := msgqredis.New(advanced.Redis(), service.options.SessionStore)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -301,7 +305,7 @@ func (service *Service) resolveSessions(runtime *txserver.Runtime) (txagent.Sess
 	if err != nil {
 		return nil, nil, err
 	}
-	router, err := txmsgq.NewSessionClientRouter(runtime.Directory, store, dialer)
+	router, err := txmsgq.NewSessionClientRouter(runtime.Directory(), store, dialer)
 	if err != nil {
 		return nil, nil, err
 	}

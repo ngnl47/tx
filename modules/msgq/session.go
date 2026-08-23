@@ -59,12 +59,12 @@ type SessionTarget struct {
 
 // SessionRouter 将角色会话解析为唯一的消息服务归属实例。
 type SessionRouter struct {
-	directory *discovery.ServiceDirectory
+	directory discovery.Directory
 	store     SessionStore
 }
 
 // NewSessionRouter 创建使用实例目录和绑定存储的会话路由器。
-func NewSessionRouter(directory *discovery.ServiceDirectory, store SessionStore) (*SessionRouter, error) {
+func NewSessionRouter(directory discovery.Directory, store SessionStore) (*SessionRouter, error) {
 	if directory == nil {
 		return nil, ErrDirectoryNil
 	}

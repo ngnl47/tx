@@ -93,7 +93,7 @@ func (c *grpcConnection) Close() error {
 
 // Sender resolves routes and reuses one connection for each endpoint until Close.
 type Sender struct {
-	directory *discovery.ServiceDirectory
+	directory discovery.Directory
 	dialer    Dialer
 
 	mu          sync.Mutex
@@ -102,7 +102,7 @@ type Sender struct {
 }
 
 // NewSender creates a route-aware delivery sender.
-func NewSender(directory *discovery.ServiceDirectory, dialer Dialer) (*Sender, error) {
+func NewSender(directory discovery.Directory, dialer Dialer) (*Sender, error) {
 	if directory == nil {
 		return nil, ErrDirectoryNil
 	}

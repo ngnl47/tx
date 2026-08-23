@@ -8,9 +8,11 @@ import (
 
 	"github.com/ngnl47/tx/lifecycle"
 	txagent "github.com/ngnl47/tx/modules/agent"
+	"github.com/ngnl47/tx/modules/discovery"
 	txmsgq "github.com/ngnl47/tx/modules/msgq"
 	txrpc "github.com/ngnl47/tx/modules/rpc"
 	txserver "github.com/ngnl47/tx/server"
+	"github.com/ngnl47/tx/server/internal/servertest"
 	msgqservice "github.com/ngnl47/tx/server/services/msgq"
 )
 
@@ -43,10 +45,10 @@ func TestServiceStartsWithLocalMsgQAndFrameworkLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new agent service: %v", err)
 	}
-	if err := mailbox.Start(&txserver.Runtime{Lifecycle: root, RPC: rpcHost}); err != nil {
+	if err := mailbox.Start(servertest.Context{TasksValue: root, RPCValue: rpcHost, InstanceValue: discovery.Instance{ID: "msgq-test"}}); err != nil {
 		t.Fatalf("start msgq service: %v", err)
 	}
-	if err := service.Start(&txserver.Runtime{Lifecycle: root, Ingress: lifecycle.NewIngress(root)}); err != nil {
+	if err := service.Start(servertest.Context{TasksValue: root, AdmissionValue: lifecycle.NewIngress(root)}); err != nil {
 		t.Fatalf("start agent service: %v", err)
 	}
 	if service.TCPAddress() == "" {

@@ -18,7 +18,7 @@ func TestStartBackgroundWorkersWaitsForActiveTask(t *testing.T) {
 	release := make(chan struct{})
 	done := make(chan struct{})
 	root := lifecycle.NewWaitGroupContext(context.Background())
-	store := &Storage{delayWorker: fusion.NewSchedulerWithOptions(backend, fusion.SchedulerOptions{
+	store := &storageRuntime{delayWorker: fusion.NewSchedulerWithOptions(backend, fusion.SchedulerOptions{
 		BatchSize:    10,
 		PollInterval: time.Millisecond,
 		Now:          func() time.Time { return now },
@@ -47,13 +47,13 @@ func TestStartBackgroundWorkersWaitsForActiveTask(t *testing.T) {
 
 func TestStartBackgroundWorkersRejectsMissingDependencies(t *testing.T) {
 	root := lifecycle.NewWaitGroupContext(context.Background())
-	if err := (*Storage)(nil).startBackgroundWorkers(root); err == nil {
+	if err := (*storageRuntime)(nil).startBackgroundWorkers(root); err == nil {
 		t.Fatal("nil storage error = nil")
 	}
-	if err := (&Storage{}).startBackgroundWorkers(root); err == nil {
+	if err := (&storageRuntime{}).startBackgroundWorkers(root); err == nil {
 		t.Fatal("missing worker error = nil")
 	}
-	if err := (&Storage{}).startBackgroundWorkers(nil); err == nil {
+	if err := (&storageRuntime{}).startBackgroundWorkers(nil); err == nil {
 		t.Fatal("nil lifecycle error = nil")
 	}
 	root.Cancel()
@@ -66,7 +66,7 @@ func TestStartBackgroundWorkersStartsOnlyOnce(t *testing.T) {
 	started := make(chan string, 2)
 	release := make(chan struct{})
 	root := lifecycle.NewWaitGroupContext(context.Background())
-	store := &Storage{delayWorker: fusion.NewSchedulerWithOptions(backend, fusion.SchedulerOptions{
+	store := &storageRuntime{delayWorker: fusion.NewSchedulerWithOptions(backend, fusion.SchedulerOptions{
 		BatchSize:    1,
 		PollInterval: time.Millisecond,
 		Now:          func() time.Time { return now },

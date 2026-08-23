@@ -73,6 +73,16 @@ type Runtime struct {
 	running             atomic.Bool
 }
 
+// Executor is the application-facing transaction contract. Scheduling,
+// flushing, and shutdown remain owned by the process runtime.
+type Executor interface {
+	Call(context.Context, Procedure) error
+	MarkDirty(...LockTarget) error
+	Pending() int
+}
+
+var _ Executor = (*Runtime)(nil)
+
 type targetEntry struct {
 	target     LockTarget
 	generation uint64

@@ -49,17 +49,17 @@ func TestRegistryRejectsUnknownAndEmptySelection(t *testing.T) {
 
 func TestServiceHostRollsBackAndStopsInReverseOrder(t *testing.T) {
 	root := lifecycle.NewWaitGroupContext(context.Background())
-	runtime := &Runtime{Lifecycle: root}
+	runtime := &runtime{lifecycle: root}
 	var calls []string
 	registry, err := newRegistry(
 		testService{
 			spec:  Spec{Name: "game"},
-			start: func(*Runtime) error { calls = append(calls, "start:game"); return nil },
+			start: func(Context) error { calls = append(calls, "start:game"); return nil },
 			stop:  func(context.Context) error { calls = append(calls, "stop:game"); return nil },
 		},
 		testService{
 			spec:  Spec{Name: "task"},
-			start: func(*Runtime) error { calls = append(calls, "start:task"); return context.DeadlineExceeded },
+			start: func(Context) error { calls = append(calls, "start:task"); return context.DeadlineExceeded },
 		},
 	)
 	if err != nil {
@@ -76,13 +76,13 @@ func TestServiceHostRollsBackAndStopsInReverseOrder(t *testing.T) {
 
 func TestServiceHostDrainWaitsForAcceptedWork(t *testing.T) {
 	root := lifecycle.NewWaitGroupContext(context.Background())
-	runtime := &Runtime{Lifecycle: root}
+	runtime := &runtime{lifecycle: root}
 	started := make(chan struct{})
 	release := make(chan struct{})
 	registry, err := newRegistry(testService{
 		spec: Spec{Name: "agent"},
-		start: func(runtime *Runtime) error {
-			done, err := runtime.Ingress.Enter()
+		start: func(runtime Context) error {
+			done, err := runtime.Admission().Enter()
 			if err != nil {
 				return err
 			}
@@ -123,14 +123,14 @@ func TestServiceHostDrainWaitsForAcceptedWork(t *testing.T) {
 
 type testService struct {
 	spec  Spec
-	start func(*Runtime) error
+	start func(Context) error
 	drain func(context.Context) error
 	stop  func(context.Context) error
 }
 
 func (service testService) Spec() Spec { return service.spec }
 
-func (service testService) Start(runtime *Runtime) error {
+func (service testService) Start(runtime Context) error {
 	if service.start == nil {
 		return nil
 	}

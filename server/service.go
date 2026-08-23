@@ -55,7 +55,7 @@ type Spec struct {
 // Service is one independently selectable process service.
 type Service interface {
 	Spec() Spec
-	Start(*Runtime) error
+	Start(Context) error
 }
 
 // Drainer stops a service from accepting new external work.

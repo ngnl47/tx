@@ -15,6 +15,12 @@ type Router interface {
 	RouteRedis(context.Context, string, any) (string, error)
 }
 
+// ScriptRoutes exposes routed script clients to infrastructure adapters that
+// must reuse an already assembled Redis routing table.
+type ScriptRoutes interface {
+	ScriptClientFor(context.Context, string, any) (ScriptClient, error)
+}
+
 // RouterFunc 允许用函数快速实现 Router。
 type RouterFunc func(context.Context, string, any) (string, error)
 
@@ -28,6 +34,8 @@ type Cluster struct {
 	shards  map[string]*Adapter
 	clients map[string]ScriptClient
 }
+
+var _ ScriptRoutes = (*Cluster)(nil)
 
 // NewCluster 创建 Redis route/cluster 适配器。
 func NewCluster(router Router, shards map[string]ScriptClient) (*Cluster, error) {

@@ -18,14 +18,14 @@ func (server *Server) startControl(endpoint string) error {
 		return nil
 	}
 	var slots *slotPromoter
-	if server.runtime.Slots != nil && server.runtime.Directory != nil {
-		promoter, err := newSlotPromoter(server.runtime.Slots, server.runtime.Directory)
+	if server.runtime.slots != nil && server.runtime.directory != nil {
+		promoter, err := newSlotPromoter(server.runtime.slots, server.runtime.directory)
 		if err != nil {
 			return fmt.Errorf("server: initialize slot control: %w", err)
 		}
 		slots = promoter
 	}
-	controlServer, err := startControlServer(server.runtime.Lifecycle, endpoint, controlServerOptions{
+	controlServer, err := startControlServer(server.runtime.lifecycle, endpoint, controlServerOptions{
 		Lifecycle: newDrainCoordinator(server),
 		Slots:     slots,
 	})
@@ -66,33 +66,33 @@ func (server *Server) startDiscovery(options RunOptions) error {
 		}
 		return nil
 	}
-	instance := server.runtime.Instance
+	instance := server.runtime.instance
 	if err := instance.Validate(); err != nil {
 		return fmt.Errorf("server: discovery instance: %w", err)
 	}
-	discoveryRuntime, err := newDiscovery(server.runtime.Lifecycle, server.config.Discovery.Etcd, instance)
+	discoveryRuntime, err := newDiscovery(server.runtime.lifecycle, server.config.Discovery.Etcd, instance)
 	if err != nil {
 		return fmt.Errorf("server: initialize discovery: %w", err)
 	}
 	server.discovery = discoveryRuntime
-	server.runtime.Directory = discoveryRuntime.directorySnapshot()
-	server.runtime.Slots = discoveryRuntime.slotStore()
-	server.runtime.Instance = instance
+	server.runtime.directory = discoveryRuntime.directorySnapshot()
+	server.runtime.slots = discoveryRuntime.slotStore()
+	server.runtime.instance = instance
 	if strings.TrimSpace(options.LogicalSlot) != "" {
 		logicalSlot, err := newLogicalSlot(options.LogicalSlot, instance.ID)
 		if err != nil {
 			return fmt.Errorf("server: logical slot: %w", err)
 		}
-		server.runtime.LogicalSlot = logicalSlot
+		server.runtime.logicalSlot = logicalSlot
 	}
-	if err := server.runtime.Lifecycle.Go(func(ctx context.Context) {
+	if err := server.runtime.lifecycle.Go(func(ctx context.Context) {
 		if err := discoveryRuntime.watch(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			txlog.ErrorContext(ctx, "service discovery watch stopped", "err", err)
 		}
 	}); err != nil {
 		return fmt.Errorf("server: start discovery watch: %w", err)
 	}
-	server.runtime.Capabilities |= CapabilityDiscovery
+	server.runtime.capabilities |= CapabilityDiscovery
 	return nil
 }
 
@@ -104,28 +104,28 @@ func (server *Server) startActor() error {
 	if err != nil {
 		return fmt.Errorf("server: initialize actor runtime: %w", err)
 	}
-	if err := runtime.Start(server.runtime.Lifecycle); err != nil {
+	if err := runtime.Start(server.runtime.lifecycle); err != nil {
 		return fmt.Errorf("server: start actor runtime: %w", err)
 	}
-	server.runtime.Actor = runtime
-	server.runtime.Capabilities |= CapabilityActor
+	server.runtime.actor = runtime
+	server.runtime.capabilities |= CapabilityActor
 	return nil
 }
 
 func (server *Server) startTransaction() error {
 	config := server.config.Runtime.Transaction
-	config.Runtime.WriteAdmission = server.runtime.Storage
+	config.Runtime.WriteAdmission = server.runtime.storage
 	txn.Configure(config.Module)
-	runtime := txn.NewRuntime(server.runtime.Storage.ChangeWriter(), config.Runtime)
-	if err := runtime.Start(server.runtime.Lifecycle); err != nil {
+	runtime := txn.NewRuntime(server.runtime.storage.ChangeWriter(), config.Runtime)
+	if err := runtime.Start(server.runtime.lifecycle); err != nil {
 		return fmt.Errorf("server: start transaction runtime: %w", err)
 	}
-	server.runtime.Transaction = runtime
-	server.runtime.Capabilities |= CapabilityTransaction
+	server.runtime.transaction = runtime
+	server.runtime.capabilities |= CapabilityTransaction
 	return nil
 }
 
-func startStorageHealth(root *lifecycle.WaitGroupContext, store *Storage, config HealthConfig) error {
+func startStorageHealth(root *lifecycle.WaitGroupContext, store *storageRuntime, config HealthConfig) error {
 	if root == nil || store == nil {
 		return errors.New("server: storage health dependencies are not configured")
 	}

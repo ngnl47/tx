@@ -19,6 +19,15 @@ var (
 	errHostStopped         = errors.New("rpc: host is stopped")
 )
 
+// Registrar is the service-facing side of the shared gRPC host. Process start
+// and stop remain private to the server assembly layer.
+type Registrar interface {
+	Register(func(grpc.ServiceRegistrar) error) error
+	Endpoint() string
+}
+
+var _ Registrar = (*Host)(nil)
+
 // Host owns the ordinary gRPC listener shared by services in one process.
 // Services register protocols before Start; Host owns serving and shutdown.
 type Host struct {

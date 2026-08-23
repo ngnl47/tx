@@ -110,6 +110,34 @@ Redis / Mongo / etcd / gRPC / Actor
 
 新增 API 时先判断它属于哪一层。不能因为测试方便，把内核对象泄露到业务层；也不能为了隐藏一切，阻断高级使用者实现 adapter 的可能。
 
+### 运行时能力门面
+
+`server.Server` 持有进程资源的完整实现，但标准服务只接收 `server.Context`。Context 是受控能力门面，
+不是 Runtime 对象的字段集合。它可以执行业务写入和 Procedure，但不能接管进程资源生命周期：
+
+| Context 能力 | 所属模块契约 | 服务可做什么 | owner 权限仍在哪里 |
+| --- | --- | --- | --- |
+| `Tasks()` | `lifecycle.Tasks` | 注册本服务后台任务、读取取消信号 | `Cancel/Wait` 在 `server.Server` |
+| `Admission()` | `lifecycle.Admission` | 登记和封口本服务外部入口 | 进程排水顺序在 service host |
+| `Storage()` | `server.Storage` | 安装业务 facade、读取、写变更和检查健康闸门 | client、worker 和 Close 在 server |
+| `RPC()` | `rpc.Registrar` | 启动前注册 protobuf service、读取 endpoint | Serve/Stop 在共享 Host |
+| `Directory()` | `discovery.Directory` | 查询 running/指定实例快照 | watch 与 Replace 在 discovery runtime |
+| `Actor()` | `actor.Messenger` | 解析 PID、单向或确认式投递 | Start/Shutdown/ActorSystem 在 actor runtime |
+| `Transaction()` | `txn.Executor` | 执行 Procedure、登记 dirty、读取 pending 数 | Start/Flush/Shutdown 在 server |
+
+门面返回专用 wrapper，而不是把具体指针仅仅窄化成接口。这样服务不能通过类型断言重新取得
+`Cancel`、`Stop`、`Shutdown`、`Replace` 或 `Flush`。
+
+`Context.Advanced()` 是第一版受控高级 SPI：
+
+- `Redis()` 返回 `redis.ScriptRoutes`，允许基础设施 adapter 复用已经装配的 Redis 路由和连接；它不暴露
+  Close 或连接池所有权。
+- `Slots()` 返回 `discovery.SlotStore`，允许高级项目按完整 assignment 和 generation CAS 管理逻辑槽位；
+  它不暴露 etcd client、成员 lease 或 discovery 快照写权限。
+
+普通 handler 不应持有 `server.Context`。项目组合根通过 `server.WithSetup` 把 `Storage()` 包装成
+`db.Save(role)` 等业务 facade；可选服务只在 `Start(Context)` 期间取得自己需要的能力。
+
 ## 依赖方向
 
 核心依赖保持由上到下单向：
@@ -143,6 +171,28 @@ lifecycle <- discovery / rpc / msgq / agent / actor / control / txn runtime
 - 项目业务可以组合 Actor、Procedure 和存储 runtime，模块之间不反向耦合。
 
 全局 registry、回调和 `any` 也可能形成隐式反向依赖。审查依赖时不能只看 import cycle。
+
+### 模块组合规则
+
+维护时按以下职责层次判断新增代码放置位置：
+
+```text
+change/meta/storage contracts
+  -> storage backend 与 lifecycle/discovery/rpc/msgq/actor/txn 基础模块
+  -> server/adapters 下的跨能力中立适配
+  -> server/services 下的可选标准服务
+  -> server.Server 进程装配与反序关闭
+  -> txgame 配置转换、项目服务和业务 facade
+```
+
+- 基础模块声明最小消费契约。路由器依赖 `discovery.Directory`，不能依赖具体
+  `*ServiceDirectory`；服务注册只依赖 `rpc.Registrar`，不能取得 `*rpc.Host`。
+- 跨能力胶水必须有中立归属。例如 `server/adapters/msgqredis` 只把
+  `redis.ScriptRoutes` 适配成 `msgq.SessionStore`，不启动 msgq，也不拥有 Redis client。
+- 标准服务只负责本服务的配置、协议注册和资源启停。`agent` 不导入 `services/msgq`；同进程复用通过
+  `LocalMsgQ` 契约，跨进程会话解析通过 `modules/msgq` 与中立 Redis adapter 完成。
+- `server.Server` 可以实例化和编排下层模块，但下层模块不能反向访问 server 的内部 `runtime`。
+- 测试 fake 放在 `server/internal/servertest`，不能为了测试构造任意 Runtime 而扩大生产 API。
 
 ## 元数据与代码生成边界
 
@@ -1397,8 +1447,9 @@ facade、注入身份解析/业务分发回调和声明可选业务服务。`ser
 `server/services/msgq` 是 tx 提供的通用服务适配器；项目配置转换会延迟到对应服务真正被当前进程选中时执行，
 未选服务的专属配置不能阻止其他服务启动。
 
-每个 `server.Service` 用 `Spec` 声明稳定名称与框架能力依赖，并在 `Start(*server.Runtime)` 中只注册或启动
-本服务资源。`server.Runtime` 是服务扩展层 API，普通业务 handler 应使用项目 facade。服务启动失败时按已启动
+每个 `server.Service` 用 `Spec` 声明稳定名称与框架能力依赖，并在 `Start(server.Context)` 中只注册或启动
+本服务资源。`server.Context` 只暴露消费能力，不暴露进程资源所有权；普通业务 handler 应使用项目 facade。
+服务启动失败时按已启动
 顺序逆序回滚；正常退出顺序固定为：
 
 ```text

@@ -68,18 +68,18 @@ func (server *Server) stop(ctx context.Context, drain bool) error {
 	if host != nil {
 		errs = append(errs, host.stop(ctx))
 	}
-	if runtime != nil && runtime.RPC != nil {
-		errs = append(errs, runtime.RPC.Stop(ctx))
+	if runtime != nil && runtime.rpc != nil {
+		errs = append(errs, runtime.rpc.Stop(ctx))
 	}
-	if runtime != nil && runtime.Lifecycle != nil {
-		runtime.Lifecycle.Cancel()
-		runtime.Lifecycle.WaitDoneAndWaitGroupWait()
+	if runtime != nil && runtime.lifecycle != nil {
+		runtime.lifecycle.Cancel()
+		runtime.lifecycle.WaitDoneAndWaitGroupWait()
 	}
-	if runtime != nil && runtime.Transaction != nil {
-		errs = append(errs, runtime.Transaction.Shutdown(context.WithoutCancel(ctx)))
+	if runtime != nil && runtime.transaction != nil {
+		errs = append(errs, runtime.transaction.Shutdown(context.WithoutCancel(ctx)))
 	}
-	if runtime != nil && runtime.Actor != nil {
-		errs = append(errs, runtime.Actor.Shutdown())
+	if runtime != nil && runtime.actor != nil {
+		errs = append(errs, runtime.actor.Shutdown())
 	}
 	if discoveryRuntime != nil {
 		errs = append(errs, discoveryRuntime.markStopping(context.WithoutCancel(ctx)))
@@ -89,8 +89,8 @@ func (server *Server) stop(ctx context.Context, drain bool) error {
 		server.cleanups[index]()
 	}
 	server.bindStorage(nil)
-	if runtime != nil && runtime.Storage != nil {
-		errs = append(errs, runtime.Storage.close(context.WithoutCancel(ctx)))
+	if runtime != nil && runtime.storage != nil {
+		errs = append(errs, runtime.storage.close(context.WithoutCancel(ctx)))
 	}
 
 	server.mu.Lock()

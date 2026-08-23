@@ -11,6 +11,7 @@ import (
 	txlog "github.com/ngnl47/tx/log"
 	txmsgq "github.com/ngnl47/tx/modules/msgq"
 	txserver "github.com/ngnl47/tx/server"
+	"github.com/ngnl47/tx/server/adapters/msgqredis"
 	"google.golang.org/grpc"
 )
 
@@ -19,17 +20,11 @@ const ServiceName = "msgq"
 type Options struct {
 	InstanceID         string
 	Store              txmsgq.SessionStore
-	SessionStore       SessionStoreOptions
+	SessionStore       msgqredis.Options
 	MaxBacklogMessages int
 	MaxBacklogBytes    int
 	OfflineTimeout     time.Duration
 	SweepInterval      time.Duration
-}
-
-type SessionStoreOptions struct {
-	RouteType string
-	Prefix    string
-	TTL       time.Duration
 }
 
 // OptionsProvider converts project configuration when msgq is selected.
@@ -67,8 +62,8 @@ func (service *Service) Spec() txserver.Spec {
 	}
 }
 
-func (service *Service) Start(runtime *txserver.Runtime) error {
-	if runtime == nil || runtime.Lifecycle == nil || runtime.RPC == nil {
+func (service *Service) Start(runtime txserver.Context) error {
+	if runtime == nil || runtime.Tasks() == nil || runtime.RPC() == nil {
 		return fmt.Errorf("msgq service: lifecycle and RPC host are required")
 	}
 	if err := service.configure(); err != nil {
@@ -76,12 +71,16 @@ func (service *Service) Start(runtime *txserver.Runtime) error {
 	}
 	instanceID := strings.TrimSpace(service.options.InstanceID)
 	if instanceID == "" {
-		instanceID = runtime.Instance.ID
+		instanceID = runtime.Instance().ID
 	}
 	store := service.options.Store
 	var err error
 	if store == nil {
-		store, err = NewSessionStore(runtime.Storage, service.options.SessionStore)
+		advanced := runtime.Advanced()
+		if advanced == nil || advanced.Redis() == nil {
+			return fmt.Errorf("msgq service: Redis routes are unavailable")
+		}
+		store, err = msgqredis.New(advanced.Redis(), service.options.SessionStore)
 		if err != nil {
 			return err
 		}
@@ -101,18 +100,18 @@ func (service *Service) Start(runtime *txserver.Runtime) error {
 	if err != nil {
 		return err
 	}
-	if err := runtime.RPC.Register(func(registrar grpc.ServiceRegistrar) error {
+	if err := runtime.RPC().Register(func(registrar grpc.ServiceRegistrar) error {
 		return txmsgq.RegisterMailboxService(registrar, mailbox)
 	}); err != nil {
 		return err
 	}
-	if err := mailbox.Start(runtime.Lifecycle); err != nil {
+	if err := mailbox.Start(runtime.Tasks()); err != nil {
 		return err
 	}
 	service.mu.Lock()
 	service.client = client
 	service.mu.Unlock()
-	txlog.Info("msgq service initialized", "endpoint", runtime.RPC.Endpoint(), "maxBacklogMessages", service.options.MaxBacklogMessages, "maxBacklogBytes", service.options.MaxBacklogBytes)
+	txlog.Info("msgq service initialized", "endpoint", runtime.RPC().Endpoint(), "maxBacklogMessages", service.options.MaxBacklogMessages, "maxBacklogBytes", service.options.MaxBacklogBytes)
 	return nil
 }
 
@@ -155,38 +154,6 @@ func (service *Service) SessionClient() (txmsgq.SessionClient, error) {
 		return nil, fmt.Errorf("msgq service: local session client is unavailable")
 	}
 	return client, nil
-}
-
-// NewSessionStore reuses the framework Redis routing table; it does not create
-// a second Redis client or connection pool.
-func NewSessionStore(store *txserver.Storage, options SessionStoreOptions) (txmsgq.SessionStore, error) {
-	if store == nil {
-		return nil, fmt.Errorf("msgq service: storage is required")
-	}
-	if strings.TrimSpace(options.RouteType) == "" || strings.TrimSpace(options.Prefix) == "" || options.TTL <= 0 {
-		return nil, fmt.Errorf("msgq service: invalid session store options")
-	}
-	return txmsgq.NewRoutedRedisSessionStore(redisResolver{storage: store, routeType: options.RouteType}, txmsgq.SessionRedisOptions{
-		Prefix: options.Prefix,
-		TTL:    options.TTL,
-	})
-}
-
-type redisResolver struct {
-	storage   *txserver.Storage
-	routeType string
-}
-
-func (resolver redisResolver) ResolveSessionRedis(ctx context.Context, roleID int64) (txmsgq.SessionRedisClient, error) {
-	client, err := resolver.storage.RedisScriptClientFor(ctx, resolver.routeType, roleID)
-	if err != nil {
-		return nil, err
-	}
-	resolved, ok := client.(txmsgq.SessionRedisClient)
-	if !ok {
-		return nil, fmt.Errorf("msgq service: redis client does not support session commands")
-	}
-	return resolved, nil
 }
 
 func validateOptions(options Options) error {

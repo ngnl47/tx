@@ -60,6 +60,17 @@ type ServiceDirectory struct {
 	next      map[string]uint64
 }
 
+// Directory is the read-only service discovery contract used by routers and
+// application modules. Snapshot replacement remains owned by the discovery
+// runtime.
+type Directory interface {
+	NextInstance(service string) (Instance, bool)
+	RunningInstances(service string) []Instance
+	LookupInstance(id string) (Instance, bool)
+}
+
+var _ Directory = (*ServiceDirectory)(nil)
+
 func NewServiceDirectory() *ServiceDirectory {
 	return &ServiceDirectory{
 		byID:      make(map[string]Instance),

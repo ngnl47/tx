@@ -56,11 +56,11 @@
 func NewApplication(config server.Config) (*server.Server, error) {
 	return server.New(
 		config,
-		server.WithGeneratedData(data.DefaultTypeRegistry(), func(runtime server.StorageRuntime) {
+		server.WithGeneratedData(data.DefaultTypeRegistry(), func(runtime server.StorageReaders) {
 			data.RegisterStorageRuntime(runtime)
 		}),
-		server.WithRuntimeSetup(func(runtime *server.Runtime) (func(), error) {
-			db.SetDefault(db.New(runtime.Storage))
+		server.WithSetup(func(runtime server.Context) (func(), error) {
+			db.SetDefault(db.New(runtime.Storage()))
 			return func() { db.SetDefault(nil) }, nil
 		}),
 		server.WithService(game.Service{}, mailboxService, agentService),
@@ -78,7 +78,25 @@ func Run(ctx context.Context, app *server.Server) error {
 }
 ```
 
-`WithRuntimeSetup` 是项目组合根使用的高级扩展点，适合安装 `db` facade 或业务级 runtime 适配器；普通 handler 不应保存或传递 `server.Runtime`。若只需要单独使用某个底层存储 adapter，后文仍提供手动装配接口。
+`WithSetup` 是项目组合根使用的装配扩展点，适合安装 `db` facade。回调拿到的是受控
+`server.Context`：可以执行已授权业务操作，但不能取消根生命周期、关闭共享 gRPC Host、停止 Actor/Transaction，
+或替换 discovery 快照。普通 handler 不应保存或传递 Context；若只需要单独使用某个底层存储 adapter，
+后文仍提供手动装配接口。
+
+可选服务也使用同一能力门面：
+
+```go
+func (Service) Start(runtime server.Context) error {
+	if runtime.RPC() == nil {
+		return errors.New("game: RPC is unavailable")
+	}
+	return runtime.RPC().Register(registerGameService)
+}
+```
+
+常规服务使用 `Tasks/Admission/Storage/RPC/Directory/Actor/Transaction` 等最小契约。确实需要编写基础设施
+adapter 时，才从 `runtime.Advanced()` 取得 Redis 路由或逻辑槽位 Store；高级 SPI 仍不授予连接关闭、
+runtime shutdown 或 discovery 快照写权限。
 
 handler 中常见写法：
 

@@ -18,7 +18,7 @@ type workerContext interface {
 
 // startBackgroundWorkers 启动存储后台任务。启动配置缺失必须返回错误，服务入口
 // 据此停止启动，避免延迟回写没有运行却继续接收业务请求。
-func (s *Storage) startBackgroundWorkers(ctx workerContext) error {
+func (s *storageRuntime) startBackgroundWorkers(ctx workerContext) error {
 	if s == nil {
 		return errStorageNotConfigured
 	}

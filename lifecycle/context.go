@@ -10,6 +10,14 @@ import (
 
 var ErrStopping = errors.New("lifecycle: context is stopping")
 
+// Tasks is the service-facing lifecycle contract. It lets a module attach
+// owned background work without granting permission to cancel or wait on the
+// process root.
+type Tasks interface {
+	context.Context
+	Go(func(context.Context)) error
+}
+
 // WaitGroupContext combines a cancellation signal with the work that was
 // accepted before that signal. Call Go for long-running tasks instead of
 // managing a sync.WaitGroup directly.

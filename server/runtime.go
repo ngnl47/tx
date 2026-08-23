@@ -8,19 +8,16 @@ import (
 	"github.com/ngnl47/tx/modules/txn"
 )
 
-// Runtime exposes framework-owned resources to services. Services consume these
-// objects but do not create or close them.
-type Runtime struct {
-	Config       Config
-	Lifecycle    *lifecycle.WaitGroupContext
-	Ingress      *lifecycle.Ingress
-	Storage      *Storage
-	RPC          *txrpc.Host
-	Actor        *txactor.Runtime
-	Transaction  *txn.Runtime
-	Directory    *discovery.ServiceDirectory
-	Slots        discovery.SlotStore
-	Instance     discovery.Instance
-	LogicalSlot  *LogicalSlot
-	Capabilities Capabilities
+type runtime struct {
+	config       Config
+	lifecycle    *lifecycle.WaitGroupContext
+	storage      *storageRuntime
+	rpc          *txrpc.Host
+	actor        *txactor.Runtime
+	transaction  *txn.Runtime
+	directory    *discovery.ServiceDirectory
+	slots        discovery.SlotStore
+	instance     discovery.Instance
+	logicalSlot  *LogicalSlot
+	capabilities Capabilities
 }

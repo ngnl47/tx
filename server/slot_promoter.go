@@ -14,7 +14,7 @@ type slotPromoter struct {
 	router *discovery.SlotRouter
 }
 
-func newSlotPromoter(store discovery.SlotStore, directory *discovery.ServiceDirectory) (*slotPromoter, error) {
+func newSlotPromoter(store discovery.SlotStore, directory discovery.Directory) (*slotPromoter, error) {
 	router, err := discovery.NewSlotRouter(store, directory)
 	if err != nil {
 		return nil, err

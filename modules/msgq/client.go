@@ -93,7 +93,7 @@ func (localSessionClient) Close() error { return nil }
 
 // SessionClientRouter 为认证后的 Agent 选择可用 msgq 实例。
 type SessionClientRouter struct {
-	directory *discovery.ServiceDirectory
+	directory discovery.Directory
 	store     SessionStore
 	dialer    SessionClientDialer
 
@@ -103,7 +103,7 @@ type SessionClientRouter struct {
 }
 
 // NewSessionClientRouter 创建基于既有 owner 和服务目录的会话客户端路由器。
-func NewSessionClientRouter(directory *discovery.ServiceDirectory, store SessionStore, dialer SessionClientDialer) (*SessionClientRouter, error) {
+func NewSessionClientRouter(directory discovery.Directory, store SessionStore, dialer SessionClientDialer) (*SessionClientRouter, error) {
 	if directory == nil {
 		return nil, ErrDirectoryNil
 	}

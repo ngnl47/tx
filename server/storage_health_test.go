@@ -37,7 +37,7 @@ func (staticSource) VisitChanges(visitor change.Visitor) error {
 func (staticSource) HasChanges() bool { return true }
 
 func TestFusionHealthGateRejectsBeforeRedisReadWhenMongoIsUnavailable(t *testing.T) {
-	store := &Storage{}
+	store := &storageRuntime{}
 	store.markBackendUnavailable(txstorage.BackendMongo, errors.New("mongo unavailable"))
 	loader := &recordingLoader{}
 	_, _, err := store.guardReader(meta.StorageModeFusion, loader).LoadDocument(context.Background(), meta.TypeSpec{}, txstorage.RecordKey{ID: int64(1001)})
@@ -47,7 +47,7 @@ func TestFusionHealthGateRejectsBeforeRedisReadWhenMongoIsUnavailable(t *testing
 }
 
 func TestStorageHealthGateIsModeAware(t *testing.T) {
-	store := &Storage{}
+	store := &storageRuntime{}
 	store.markBackendUnavailable(txstorage.BackendMongo, errors.New("mongo unavailable"))
 	loader := &recordingLoader{}
 	if _, _, err := store.guardReader(meta.StorageModeRedis, loader).LoadDocument(context.Background(), meta.TypeSpec{}, txstorage.RecordKey{ID: int64(1001)}); err != nil {
@@ -64,7 +64,7 @@ func TestStorageHealthGateIsModeAware(t *testing.T) {
 }
 
 func TestOlderProbeCannotClearNewBackendFailure(t *testing.T) {
-	store := &Storage{}
+	store := &storageRuntime{}
 	generation := store.backendHealthGeneration(txstorage.BackendRedis)
 	store.markBackendUnavailable(txstorage.BackendRedis, errors.New("new redis failure"))
 	store.recoverBackendHealth(txstorage.BackendRedis, generation)
@@ -74,7 +74,7 @@ func TestOlderProbeCannotClearNewBackendFailure(t *testing.T) {
 }
 
 func TestOnlyBackendErrorsCloseStorageHealthGate(t *testing.T) {
-	store := &Storage{}
+	store := &storageRuntime{}
 	store.observeStorageError(context.Canceled)
 	store.observeStorageError(txstorage.ErrNoEffectiveChanges)
 	if err := store.RequireWritable(); err != nil {
@@ -87,7 +87,7 @@ func TestOnlyBackendErrorsCloseStorageHealthGate(t *testing.T) {
 }
 
 func TestDelayHandlerReportsBackendFailureForRetry(t *testing.T) {
-	store := &Storage{}
+	store := &storageRuntime{}
 	handler := healthAwareDelayHandler{
 		storage: store,
 		next: fusion.DelayTaskHandlerFunc(func(context.Context, task.DelayTask) error {

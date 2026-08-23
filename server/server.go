@@ -10,17 +10,8 @@ import (
 	txlog "github.com/ngnl47/tx/log"
 	"github.com/ngnl47/tx/modules/discovery"
 	txrpc "github.com/ngnl47/tx/modules/rpc"
-	"github.com/ngnl47/tx/storage"
 	"github.com/ngnl47/tx/storage/fusion"
 )
-
-// StorageRuntime is the storage reader contract implemented by the framework
-// runtime and consumed by generated data packages.
-type StorageRuntime interface {
-	RedisReader() storage.DocumentLoader
-	MongoReader() storage.DocumentLoader
-	FusionReader() storage.DocumentLoader
-}
 
 type Option func(*Server) error
 
@@ -34,7 +25,7 @@ func WithService(services ...Service) Option {
 
 // WithGeneratedData connects the generated type registry and default readers to
 // the framework. bind is normally data.RegisterStorageRuntime.
-func WithGeneratedData(types fusion.TypeRegistry, bind func(StorageRuntime)) Option {
+func WithGeneratedData(types fusion.TypeRegistry, bind func(StorageReaders)) Option {
 	return func(server *Server) error {
 		if types == nil {
 			return errors.New("server: generated type registry is nil")
@@ -48,12 +39,13 @@ func WithGeneratedData(types fusion.TypeRegistry, bind func(StorageRuntime)) Opt
 	}
 }
 
-// WithRuntimeSetup registers project glue that must run after framework
-// resources are ready and before services start. cleanup runs in reverse order.
-func WithRuntimeSetup(setup func(*Runtime) (cleanup func(), err error)) Option {
+// WithSetup registers project glue that runs after framework capabilities are
+// ready and before services start. The callback receives the same ownership-safe
+// Context contract as services; cleanup runs in reverse order.
+func WithSetup(setup func(Context) (cleanup func(), err error)) Option {
 	return func(server *Server) error {
 		if setup == nil {
-			return errors.New("server: runtime setup is nil")
+			return errors.New("server: setup is nil")
 		}
 		server.setups = append(server.setups, setup)
 		return nil
@@ -66,13 +58,13 @@ type Server struct {
 
 	services    []Service
 	types       fusion.TypeRegistry
-	bindStorage func(StorageRuntime)
-	setups      []func(*Runtime) (func(), error)
+	bindStorage func(StorageReaders)
+	setups      []func(Context) (func(), error)
 
 	mu        sync.Mutex
 	started   bool
 	stopping  bool
-	runtime   *Runtime
+	runtime   *runtime
 	host      *serviceHost
 	discovery *discoveryRuntime
 	control   *controlServer
@@ -115,7 +107,7 @@ func (server *Server) Run(ctx context.Context, options RunOptions) error {
 	}
 	select {
 	case <-ctx.Done():
-	case <-server.runtime.Lifecycle.Done():
+	case <-server.runtime.lifecycle.Done():
 	}
 	return server.Stop(context.Background())
 }
@@ -176,13 +168,13 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 	if instanceEndpoint == "" {
 		instanceEndpoint = rpcHost.Endpoint()
 	}
-	runtime := &Runtime{
-		Config:       server.config,
-		Lifecycle:    root,
-		Storage:      store,
-		RPC:          rpcHost,
-		Capabilities: CapabilityStorage | CapabilityRPC,
-		Instance: discovery.Instance{
+	runtime := &runtime{
+		config:       server.config,
+		lifecycle:    root,
+		storage:      store,
+		rpc:          rpcHost,
+		capabilities: CapabilityStorage | CapabilityRPC,
+		instance: discovery.Instance{
 			ID:       strings.TrimSpace(options.InstanceID),
 			Endpoint: instanceEndpoint,
 			Version:  strings.TrimSpace(options.InstanceVersion),
@@ -205,15 +197,16 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 			return err
 		}
 	}
-	if missing := requires &^ runtime.Capabilities; missing != 0 {
+	if missing := requires &^ runtime.capabilities; missing != 0 {
 		return fmt.Errorf("server: selected services require unavailable capabilities %s", missing)
 	}
 
 	server.bindStorage(store)
+	setupContext := newServiceContext(runtime, nil)
 	for _, setup := range server.setups {
-		cleanup, setupErr := setup(runtime)
+		cleanup, setupErr := setup(setupContext)
 		if setupErr != nil {
-			return fmt.Errorf("server: runtime setup: %w", setupErr)
+			return fmt.Errorf("server: setup: %w", setupErr)
 		}
 		if cleanup != nil {
 			server.cleanups = append(server.cleanups, cleanup)
@@ -248,12 +241,15 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 	return nil
 }
 
-// Runtime returns the assembled advanced runtime after Start succeeds.
-func (server *Server) Runtime() *Runtime {
+// Context returns the assembled ownership-safe capability view after Start succeeds.
+func (server *Server) Context() Context {
 	if server == nil {
 		return nil
 	}
 	server.mu.Lock()
 	defer server.mu.Unlock()
-	return server.runtime
+	if server.runtime == nil {
+		return nil
+	}
+	return newServiceContext(server.runtime, nil)
 }
