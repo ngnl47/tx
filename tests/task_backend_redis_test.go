@@ -6,13 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	redisclient "github.com/redis/go-redis/v9"
+
 	"github.com/ngnl47/tx/storage"
+	txgoredis "github.com/ngnl47/tx/storage/redis/goredis"
 	"github.com/ngnl47/tx/storage/task"
 	taskredis "github.com/ngnl47/tx/storage/task/redis"
 )
@@ -247,6 +251,69 @@ func TestRedisDelayTaskBackendRetryReschedulesLease(t *testing.T) {
 	}
 }
 
+func TestRedisDelayTaskBackendRequeuesEnqueueDuringLease(t *testing.T) {
+	ctx := context.Background()
+	client := newFakeTaskRedis()
+	backend := taskredis.NewBackend(client, taskredis.Options{Prefix: "tx:test", LeaseTimeout: time.Minute})
+	now := time.Unix(100, 0)
+	item := task.DelayTask{Type: "role", ID: "1", Action: "save", DueAt: now}
+
+	if err := backend.Enqueue(ctx, item); err != nil {
+		t.Fatalf("Enqueue returned error: %v", err)
+	}
+	leases, err := backend.ClaimDue(ctx, now, 1)
+	if err != nil || len(leases) != 1 {
+		t.Fatalf("ClaimDue leases = %#v, error = %v, want one", leases, err)
+	}
+
+	item.DueAt = now.Add(time.Minute)
+	if err := backend.Enqueue(ctx, item); err != nil {
+		t.Fatalf("Enqueue during lease returned error: %v", err)
+	}
+	if err := backend.Complete(ctx, leases[0]); err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+
+	if leases, err = backend.ClaimDue(ctx, now.Add(30*time.Second), 1); err != nil || len(leases) != 0 {
+		t.Fatalf("ClaimDue before next due leases = %#v, error = %v, want none", leases, err)
+	}
+	if leases, err = backend.ClaimDue(ctx, now.Add(time.Minute), 1); err != nil || len(leases) != 1 || leases[0].Attempts != 1 {
+		t.Fatalf("ClaimDue after next due leases = %#v, error = %v, want one", leases, err)
+	}
+}
+
+func TestRedisDelayTaskBackendMergesEnqueueIntoRetryDuringLease(t *testing.T) {
+	ctx := context.Background()
+	client := newFakeTaskRedis()
+	backend := taskredis.NewBackend(client, taskredis.Options{Prefix: "tx:test", LeaseTimeout: time.Minute})
+	now := time.Unix(100, 0)
+	item := task.DelayTask{Type: "role", ID: "1", Action: "save", DueAt: now}
+
+	if err := backend.Enqueue(ctx, item); err != nil {
+		t.Fatalf("Enqueue returned error: %v", err)
+	}
+	leases, err := backend.ClaimDue(ctx, now, 1)
+	if err != nil || len(leases) != 1 {
+		t.Fatalf("ClaimDue leases = %#v, error = %v, want one", leases, err)
+	}
+
+	item.DueAt = now.Add(time.Minute)
+	if err := backend.Enqueue(ctx, item); err != nil {
+		t.Fatalf("Enqueue during lease returned error: %v", err)
+	}
+	retryAt := now.Add(2 * time.Minute)
+	if err := backend.Retry(ctx, leases[0], retryAt, context.Canceled); err != nil {
+		t.Fatalf("Retry returned error: %v", err)
+	}
+
+	if leases, err = backend.ClaimDue(ctx, now.Add(time.Minute), 1); err != nil || len(leases) != 0 {
+		t.Fatalf("ClaimDue before retry due leases = %#v, error = %v, want none", leases, err)
+	}
+	if leases, err = backend.ClaimDue(ctx, retryAt, 1); err != nil || len(leases) != 1 || leases[0].Attempts != 2 {
+		t.Fatalf("ClaimDue after retry due leases = %#v, error = %v, want attempt two", leases, err)
+	}
+}
+
 func TestRedisDelayTaskBackendRecoversExpiredLeases(t *testing.T) {
 	ctx := context.Background()
 	client := newFakeTaskRedis()
@@ -281,6 +348,36 @@ func TestRedisDelayTaskBackendRecoversExpiredLeases(t *testing.T) {
 	}
 }
 
+func TestRedisDelayTaskBackendRecoversLatestEnqueueAfterLeaseExpires(t *testing.T) {
+	ctx := context.Background()
+	client := newFakeTaskRedis()
+	backend := taskredis.NewBackend(client, taskredis.Options{Prefix: "tx:test", LeaseTimeout: time.Second})
+	now := time.Unix(100, 0)
+	item := task.DelayTask{Type: "role", ID: "1", Action: "save", DueAt: now}
+
+	if err := backend.Enqueue(ctx, item); err != nil {
+		t.Fatalf("Enqueue returned error: %v", err)
+	}
+	leases, err := backend.ClaimDue(ctx, now, 1)
+	if err != nil || len(leases) != 1 {
+		t.Fatalf("ClaimDue leases = %#v, error = %v, want one", leases, err)
+	}
+
+	item.DueAt = now.Add(time.Minute)
+	if err := backend.Enqueue(ctx, item); err != nil {
+		t.Fatalf("Enqueue during lease returned error: %v", err)
+	}
+	if leases, err = backend.ClaimDue(ctx, now.Add(2*time.Second), 1); err != nil || len(leases) != 1 || leases[0].Attempts != 2 {
+		t.Fatalf("ClaimDue after lease timeout leases = %#v, error = %v, want latest attempt two", leases, err)
+	}
+	if err := backend.Complete(ctx, leases[0]); err != nil {
+		t.Fatalf("Complete recovered lease returned error: %v", err)
+	}
+	if leases, err = backend.ClaimDue(ctx, now.Add(2*time.Minute), 1); err != nil || len(leases) != 0 {
+		t.Fatalf("ClaimDue after recovered complete leases = %#v, error = %v, want none", leases, err)
+	}
+}
+
 func TestRedisDelayTaskBackendUsesBucketHashTagKeys(t *testing.T) {
 	ctx := context.Background()
 	client := newFakeTaskRedis()
@@ -300,6 +397,7 @@ func TestRedisDelayTaskBackendUsesBucketHashTagKeys(t *testing.T) {
 		prefix + ":busy",
 		prefix + ":token",
 		prefix + ":attempts",
+		prefix + ":pending",
 	}
 	if fmt.Sprint(client.lastKeys) != fmt.Sprint(want) {
 		t.Fatalf("keys = %#v, want %#v", client.lastKeys, want)
@@ -327,6 +425,59 @@ func TestRedisDelayTaskBackendPreservesNumericRecordKey(t *testing.T) {
 	}
 }
 
+func TestRedisDelayTaskBackendRequeuesEnqueueDuringLeaseIntegration(t *testing.T) {
+	endpoint := os.Getenv("TX_REDIS_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("set TX_REDIS_ENDPOINT to run Redis delay task integration test")
+	}
+	ctx := context.Background()
+	raw := redisclient.NewClient(&redisclient.Options{Addr: endpoint})
+	defer raw.Close()
+	if err := raw.Ping(ctx).Err(); err != nil {
+		t.Fatalf("ping redis %q: %v", endpoint, err)
+	}
+
+	prefix := fmt.Sprintf("tx:test:task-followup:%d", time.Now().UnixNano())
+	queuePrefix := prefix + ":{0}"
+	keys := []string{
+		queuePrefix + ":due",
+		queuePrefix + ":payload",
+		queuePrefix + ":busy",
+		queuePrefix + ":token",
+		queuePrefix + ":attempts",
+		queuePrefix + ":pending",
+	}
+	t.Cleanup(func() { _ = raw.Del(context.Background(), keys...).Err() })
+	backend := taskredis.NewBackend(txgoredis.NewClient(raw), taskredis.Options{
+		Prefix:       prefix,
+		BucketCount:  1,
+		LeaseTimeout: time.Minute,
+	})
+	now := time.Unix(100, 0)
+	item := task.DelayTask{Type: "role", ID: int64(1001), Action: "save", DueAt: now}
+
+	if err := backend.Enqueue(ctx, item); err != nil {
+		t.Fatalf("Enqueue returned error: %v", err)
+	}
+	leases, err := backend.ClaimDue(ctx, now, 1)
+	if err != nil || len(leases) != 1 {
+		t.Fatalf("ClaimDue leases = %#v, error = %v, want one", leases, err)
+	}
+	item.DueAt = now.Add(time.Minute)
+	if err := backend.Enqueue(ctx, item); err != nil {
+		t.Fatalf("Enqueue during lease returned error: %v", err)
+	}
+	if err := backend.Complete(ctx, leases[0]); err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+	if leases, err = backend.ClaimDue(ctx, now.Add(30*time.Second), 1); err != nil || len(leases) != 0 {
+		t.Fatalf("ClaimDue before next due leases = %#v, error = %v, want none", leases, err)
+	}
+	if leases, err = backend.ClaimDue(ctx, now.Add(time.Minute), 1); err != nil || len(leases) != 1 || leases[0].Attempts != 1 {
+		t.Fatalf("ClaimDue after next due leases = %#v, error = %v, want one", leases, err)
+	}
+}
+
 type fakeTaskRedis struct {
 	queues   map[string]*fakeTaskRedisQueue
 	seq      int
@@ -348,6 +499,7 @@ type fakeTaskRedisQueue struct {
 	busy     map[string]int64
 	token    map[string]string
 	attempts map[string]int
+	pending  map[string]int64
 }
 
 func newFakeTaskRedis() *fakeTaskRedis {
@@ -383,6 +535,7 @@ func (r *fakeTaskRedis) queue(keys []string) *fakeTaskRedisQueue {
 			busy:     map[string]int64{},
 			token:    map[string]string{},
 			attempts: map[string]int{},
+			pending:  map[string]int64{},
 		}
 		r.queues[key] = queue
 	}
@@ -394,9 +547,11 @@ func (r *fakeTaskRedis) enqueue(queue *fakeTaskRedisQueue, args ...any) (string,
 	score := mustInt64(args[1])
 	body := fmt.Sprint(args[2])
 	queue.payload[key] = body
-	if _, ok := queue.busy[key]; !ok {
-		queue.due[key] = score
+	if _, ok := queue.busy[key]; ok {
+		queue.pending[key] = score
+		return "leased", nil
 	}
+	queue.due[key] = score
 	return "ok", nil
 }
 
@@ -410,6 +565,7 @@ func (r *fakeTaskRedis) claim(queue *fakeTaskRedisQueue, args ...any) (string, e
 		if until <= now {
 			delete(queue.busy, key)
 			delete(queue.token, key)
+			delete(queue.pending, key)
 			queue.due[key] = now
 		}
 	}
@@ -460,10 +616,16 @@ func (r *fakeTaskRedis) complete(queue *fakeTaskRedisQueue, args ...any) (string
 	if queue.token[key] != token {
 		return "stale", nil
 	}
-	delete(queue.payload, key)
-	delete(queue.due, key)
 	delete(queue.busy, key)
 	delete(queue.token, key)
+	if due, ok := queue.pending[key]; ok {
+		delete(queue.pending, key)
+		delete(queue.attempts, key)
+		queue.due[key] = due
+		return "ok", nil
+	}
+	delete(queue.payload, key)
+	delete(queue.due, key)
 	delete(queue.attempts, key)
 	return "ok", nil
 }
@@ -477,6 +639,7 @@ func (r *fakeTaskRedis) retry(queue *fakeTaskRedisQueue, args ...any) (string, e
 	}
 	delete(queue.busy, key)
 	delete(queue.token, key)
+	delete(queue.pending, key)
 	queue.due[key] = next
 	return "ok", nil
 }

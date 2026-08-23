@@ -21,9 +21,11 @@ type Backend struct {
 }
 
 type entry struct {
-	task     task.DelayTask
-	attempts int
-	token    string
+	task        task.DelayTask
+	followup    task.DelayTask
+	hasFollowup bool
+	attempts    int
+	token       string
 }
 
 func NewBackend() *Backend {
@@ -51,7 +53,8 @@ func (b *Backend) Enqueue(ctx context.Context, item task.DelayTask) error {
 		return nil
 	}
 	if existing := b.leased[key]; existing != nil {
-		existing.task = item
+		existing.followup = item
+		existing.hasFollowup = true
 		return nil
 	}
 	b.pending[key] = &entry{task: item}
@@ -124,6 +127,14 @@ func (b *Backend) Complete(ctx context.Context, lease task.DelayTaskLease) error
 		return nil
 	}
 	delete(b.leased, key)
+	if item.hasFollowup {
+		item.task = item.followup
+		item.followup = task.DelayTask{}
+		item.hasFollowup = false
+		item.attempts = 0
+		item.token = ""
+		b.pending[key] = item
+	}
 	return nil
 }
 
@@ -145,6 +156,11 @@ func (b *Backend) Retry(ctx context.Context, lease task.DelayTaskLease, next tim
 		return nil
 	}
 	delete(b.leased, key)
+	if item.hasFollowup {
+		item.task = item.followup
+		item.followup = task.DelayTask{}
+		item.hasFollowup = false
+	}
 	item.task.DueAt = next
 	item.token = ""
 	b.pending[key] = item

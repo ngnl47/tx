@@ -184,6 +184,7 @@ func (b *Backend) keysForBucket(bucket int) []string {
 		prefix + ":busy",
 		prefix + ":token",
 		prefix + ":attempts",
+		prefix + ":pending",
 	}
 }
 

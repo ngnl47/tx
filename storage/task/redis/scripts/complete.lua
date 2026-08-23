@@ -9,6 +9,7 @@ local payloadKey = KEYS[2]
 local busyKey = KEYS[3]
 local tokenKey = KEYS[4]
 local attemptsKey = KEYS[5]
+local pendingKey = KEYS[6]
 
 local taskKey = ARGV[1]
 local token = ARGV[2]
@@ -17,9 +18,17 @@ if redis.call("hget", tokenKey, taskKey) ~= token then
 	return RESULT_STALE
 end
 
-redis.call("zrem", dueKey, taskKey)
 redis.call("zrem", busyKey, taskKey)
-redis.call("hdel", payloadKey, taskKey)
 redis.call("hdel", tokenKey, taskKey)
+local pendingDue = redis.call("zscore", pendingKey, taskKey)
+if pendingDue then
+	redis.call("zrem", pendingKey, taskKey)
+	redis.call("zadd", dueKey, pendingDue, taskKey)
+	redis.call("hdel", attemptsKey, taskKey)
+	return RESULT_OK
+end
+
+redis.call("zrem", dueKey, taskKey)
+redis.call("hdel", payloadKey, taskKey)
 redis.call("hdel", attemptsKey, taskKey)
 return RESULT_OK

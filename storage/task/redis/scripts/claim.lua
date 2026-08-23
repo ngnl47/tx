@@ -6,6 +6,7 @@ local payloadKey = KEYS[2]
 local busyKey = KEYS[3]
 local tokenKey = KEYS[4]
 local attemptsKey = KEYS[5]
+local pendingKey = KEYS[6]
 
 local now = ARGV[1]
 local limit = tonumber(ARGV[2])
@@ -16,6 +17,7 @@ local expired = redis.call("zrangebyscore", busyKey, "-inf", now)
 for _, taskKey in ipairs(expired) do
 	redis.call("zrem", busyKey, taskKey)
 	redis.call("hdel", tokenKey, taskKey)
+	redis.call("zrem", pendingKey, taskKey)
 	redis.call("zadd", dueKey, now, taskKey)
 end
 

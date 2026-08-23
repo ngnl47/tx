@@ -81,6 +81,67 @@ func TestMemoryDelayTaskBackendRetryReschedulesLease(t *testing.T) {
 	}
 }
 
+func TestMemoryDelayTaskBackendRequeuesEnqueueDuringLease(t *testing.T) {
+	ctx := context.Background()
+	backend := memory.NewBackend()
+	now := time.Unix(100, 0)
+	item := task.DelayTask{Type: "role", ID: "1", Action: "save", DueAt: now}
+
+	if err := backend.Enqueue(ctx, item); err != nil {
+		t.Fatalf("Enqueue returned error: %v", err)
+	}
+	leases, err := backend.ClaimDue(ctx, now, 1)
+	if err != nil || len(leases) != 1 {
+		t.Fatalf("ClaimDue leases = %#v, error = %v, want one", leases, err)
+	}
+
+	item.DueAt = now.Add(time.Minute)
+	if err := backend.Enqueue(ctx, item); err != nil {
+		t.Fatalf("Enqueue during lease returned error: %v", err)
+	}
+	if err := backend.Complete(ctx, leases[0]); err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+
+	if leases, err = backend.ClaimDue(ctx, now.Add(30*time.Second), 1); err != nil || len(leases) != 0 {
+		t.Fatalf("ClaimDue before next due leases = %#v, error = %v, want none", leases, err)
+	}
+	if leases, err = backend.ClaimDue(ctx, now.Add(time.Minute), 1); err != nil || len(leases) != 1 || leases[0].Attempts != 1 {
+		t.Fatalf("ClaimDue after next due leases = %#v, error = %v, want one", leases, err)
+	}
+}
+
+func TestMemoryDelayTaskBackendMergesEnqueueIntoRetryDuringLease(t *testing.T) {
+	ctx := context.Background()
+	backend := memory.NewBackend()
+	now := time.Unix(100, 0)
+	item := task.DelayTask{Type: "role", ID: "1", Action: "save", DueAt: now}
+
+	if err := backend.Enqueue(ctx, item); err != nil {
+		t.Fatalf("Enqueue returned error: %v", err)
+	}
+	leases, err := backend.ClaimDue(ctx, now, 1)
+	if err != nil || len(leases) != 1 {
+		t.Fatalf("ClaimDue leases = %#v, error = %v, want one", leases, err)
+	}
+
+	item.DueAt = now.Add(time.Minute)
+	if err := backend.Enqueue(ctx, item); err != nil {
+		t.Fatalf("Enqueue during lease returned error: %v", err)
+	}
+	retryAt := now.Add(2 * time.Minute)
+	if err := backend.Retry(ctx, leases[0], retryAt, context.Canceled); err != nil {
+		t.Fatalf("Retry returned error: %v", err)
+	}
+
+	if leases, err = backend.ClaimDue(ctx, now.Add(time.Minute), 1); err != nil || len(leases) != 0 {
+		t.Fatalf("ClaimDue before retry due leases = %#v, error = %v, want none", leases, err)
+	}
+	if leases, err = backend.ClaimDue(ctx, retryAt, 1); err != nil || len(leases) != 1 || leases[0].Attempts != 2 {
+		t.Fatalf("ClaimDue after retry due leases = %#v, error = %v, want attempt two", leases, err)
+	}
+}
+
 func TestMemoryDelayTaskBackendUsesIdempotencyKey(t *testing.T) {
 	ctx := context.Background()
 	backend := memory.NewBackend()

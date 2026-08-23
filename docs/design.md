@@ -1069,6 +1069,32 @@ claim、lease、retry 和进程重启决定任务是 at-least-once。Mongo 回�
 
 重试原因写日志，不写入 Redis error hash，避免不可控错误文本占满内存。退避达到最大值后持续按封顶间隔重试，不能因次数耗尽丢弃持久化任务。
 
+### 租约期间的新写入
+
+Redis delayed task backend 在每个 bucket 中维护六类状态，六个 key 使用同一个 hash tag，因此单次 Lua 可以在 Redis Cluster 中原子访问：
+
+| 状态 | 结构 | 职责 |
+| --- | --- | --- |
+| `due` | ZSet | 等待 claim 的任务与到期时间。 |
+| `payload` | Hash | 每个幂等任务键的最新定位信息。 |
+| `busy` | ZSet | 已发放 lease 的任务与租约到期时间。 |
+| `token` | Hash | 隔离过期 worker 的 lease token。 |
+| `attempts` | Hash | 当前失败周期的处理次数。 |
+| `pending` | ZSet | 任务被租用期间再次入队时的后续到期时间。 |
+
+任务被租用后，worker 可能已经读取 Redis 文档并开始写 Mongo；此时普通 Fusion 热写不会持有 worker 的记录锁。若入队只覆盖 `payload`，旧 worker 随后的 `Complete` 会删除任务状态，Mongo 将永久停留在旧快照。因此 enqueue 在发现 `busy` 时必须同时更新最新 `payload` 和 `pending`，但不能发放第二份并发 lease。
+
+```text
+t1  claim(save role:1001)，worker 读取 name=before-worker
+t2  业务写 Redis name=during-worker，并 enqueue 同一任务
+t3  enqueue 更新 payload，并把下一次到期时间写入 pending
+t4  旧 worker Replace Mongo(before-worker) 后 Complete
+t5  Complete 原子地把 pending 移回 due，并重置 attempts
+t6  新 worker 重新读取 Redis，Replace Mongo(during-worker)
+```
+
+`Complete` 表示旧处理周期成功，follow-up 进入新的尝试周期，下一次 `Attempts` 从 1 开始。`Retry` 表示当前存储故障仍未解除，会采用最新 payload、清除单独的 pending 标记，并沿当前次数和退避时间继续重试。lease 超时恢复同样清除 pending 标记，立即以最新 payload 恢复当前任务，避免同一新写入被执行两次。
+
 ### 读取与并发回填
 
 单条读取：

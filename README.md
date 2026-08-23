@@ -3273,6 +3273,26 @@ Fusion 策略的当前保存路径：
 延迟任务队列使用 bucket hash tag，支持多个服务实例并发消费。语义是 at-least-once，Mongo 回写必须保持存储幂等。
 任务失败重试时，Scheduler 会输出结构化错误日志；失败原因不写入 Redis 任务状态，避免错误字符串占用队列内存。重试间隔由 lease 的持久化 `Attempts` 计算：`retryInitialDelay` 按 `retryMultiplier` 递增至 `retryMaxDelay`，并可施加不超过最大值的 `retryJitter`。达到上限后任务持续重试，不会因次数耗尽被丢弃。
 Scheduler 循环中的 claim、complete、retry 等 backend 错误也会输出结构化错误日志；服务关闭导致的 context 结束不会额外记录错误。
+
+同一记录被 worker 租用期间，业务仍可能产生新的 Fusion 热写。队列不会并发发放第二份 lease，也不会只覆盖 payload 后让旧 `Complete` 把新写入一并删除；新入队会记录一份 follow-up 到期状态。旧 lease 成功时，`Complete` 原子地把 follow-up 重新放回 due 队列，并把它视为新的第 1 次处理；旧 lease 失败时，最新 payload 合并进原任务并沿已有 `Attempts` 继续退避，不能借新写入绕过故障退避。
+
+例如下面两次业务保存可能与 worker 交错执行：
+
+```go
+role.SetName("before-worker")
+if err := db.Save(role); err != nil {
+	return err
+}
+
+// worker 已读取 before-worker，正在写 Mongo。
+role.SetName("during-worker")
+if err := db.Save(role); err != nil {
+	return err
+}
+```
+
+第一次 lease 完成后，队列仍会产生一次后续回写；后续 worker 重新读取 Redis 当前热文档，最终让 Mongo 收敛到 `during-worker`。业务 API 不需要感知 lease 或手工重排任务。
+
 Fusion delayed task queue 接受保存 action 和 Redis 热数据延迟删除 action；其他未知 action 会返回错误。入队任务与 `StorageTaskHandler` 消费入口都会统一校验 `Type`、`ID`、`Action`：空白类型/动作、nil ID 与空字符串 ID 都返回 `task.ErrInvalidDelayTask`，防止手工写入或遗留异常任务落到存储层。`Complete`、`Retry` 额外要求有效的 lease token 和正数尝试次数；格式完整但已过期的 lease 仍按幂等 no-op 处理。任务类型优先来自 `DelayedOperation.Type`，为空时使用 `DelayedOperation.Key.TypeName`。Fusion 延迟保存按类型、记录 ID、route/shard key 和 action 生成一条合并任务，不暴露额外 suffix，避免同一记录产生多条重复保存任务。延迟保存任务不携带业务对象或字段变更日志，回写时重新读取 Redis 当前热数据。显式删除仍走显式删除接口，不进入延迟队列。Redis claim 发现损坏或不完整的 payload 同样返回错误，不会把它当成可执行任务。
 Fusion 保存路径要求 Redis change applier、Mongo document loader 与延迟队列都已装配；缺少其中任一项时，非空变更会在 Redis I/O 前返回错误。延迟任务执行还要求 handler、Redis 文档读取、Mongo replace 和删除任务所需的 revision/lock 组件完整可用。`Strategy.Validate()` 会汇总检查 Redis change/document/load-lock/delete、Mongo load/delete 和延迟队列；项目启动阶段必须在 Redis/Mongo 探活后调用它。`txgame/server` 的 `NewStorage` 已执行这两步，任一依赖或连接不可达即启动失败。`Scheduler.Start` 也返回 `error`，项目启动代码必须处理，不能在 worker 未运行时继续对外服务：
 
@@ -3394,7 +3414,7 @@ due = now + delaySaveTime + delayDelTime
 
 ### 多实例消费
 
-Redis delayed task backend 使用 ZSet/hash 保存 due、payload、busy、token、attempts 等状态，并通过 Lua 保证
+Redis delayed task backend 使用 ZSet/hash 保存 due、payload、busy、token、attempts、pending 等状态，并通过 Lua 保证
 claim/complete/retry 的原子性。多个服务实例可以同时跑 Scheduler：
 
 ```text
