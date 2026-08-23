@@ -2,6 +2,8 @@ package fusion
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"math"
 	"math/rand/v2"
 	"time"
@@ -138,15 +140,19 @@ func (s *Scheduler) RunOnce(ctx context.Context, now time.Time) (int, error) {
 	if s == nil || isNilFusionDependency(s.backend) {
 		return 0, ErrTaskBackendNotConfigured
 	}
-	leases, err := s.backend.ClaimDue(ctx, now, s.batchSize)
-	if err != nil {
-		return 0, err
-	}
+	leases, runErr := s.backend.ClaimDue(ctx, now, s.batchSize)
 	for _, lease := range leases {
 		if err := s.handle(ctx, lease.Task); err != nil {
 			retryAt := now.Add(s.retryDelay(lease.Attempts))
 			if retryErr := s.backend.Retry(ctx, lease, retryAt, err); retryErr != nil {
-				return len(leases), retryErr
+				runErr = errors.Join(runErr, fmt.Errorf(
+					"settle delayed task type=%s id=%v action=%s: %w",
+					lease.Task.Type,
+					lease.Task.ID,
+					lease.Task.Action,
+					errors.Join(err, retryErr),
+				))
+				continue
 			}
 			txlog.ErrorContext(ctx, "delay task failed, retry scheduled",
 				"taskType", lease.Task.Type,
@@ -159,10 +165,16 @@ func (s *Scheduler) RunOnce(ctx context.Context, now time.Time) (int, error) {
 			continue
 		}
 		if err := s.backend.Complete(ctx, lease); err != nil {
-			return len(leases), err
+			runErr = errors.Join(runErr, fmt.Errorf(
+				"complete delayed task type=%s id=%v action=%s: %w",
+				lease.Task.Type,
+				lease.Task.ID,
+				lease.Task.Action,
+				err,
+			))
 		}
 	}
-	return len(leases), nil
+	return len(leases), runErr
 }
 
 func (s *Scheduler) retryDelay(attempts int) time.Duration {

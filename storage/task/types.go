@@ -91,6 +91,8 @@ func ValidateDelayTaskLease(lease DelayTaskLease) error {
 	return nil
 }
 
+// DelayTaskBackend 管理可重试的延迟任务。ClaimDue 允许同时返回已成功取得的
+// lease 和非 nil error；调用方必须先结算这些 lease，再处理本轮 claim 错误。
 type DelayTaskBackend interface {
 	Enqueue(ctx context.Context, task DelayTask) error
 	ClaimDue(ctx context.Context, now time.Time, limit int) ([]DelayTaskLease, error)

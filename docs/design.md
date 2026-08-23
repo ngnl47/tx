@@ -1097,6 +1097,8 @@ t6  新 worker 重新读取 Redis，Replace Mongo(during-worker)
 
 claim 必须先检查本批所有 `due` member 都存在对应 `payload`，随后才能批量写入 `busy/token/attempts`。缺少 payload 属于队列状态损坏：Lua 返回显式错误信封，Go adapter 返回错误，且整批状态保持不变。不能先租出部分正常任务再报错，因为调用方拿不到已经创建的 lease；也不能删除损坏 member 后继续，否则会把待持久化记录静默丢弃。
 
+Redis backend 会轮询多个 bucket，而不同 hash tag 之间不能组成一次原子操作。因此后续 bucket 失败时，`ClaimDue` 同时返回之前 bucket 已成功解析的 leases 和 error。Scheduler 必须像处理 `io.Reader` 的 `n > 0, err != nil` 一样，先逐条调用 handler 并执行 `Complete/Retry`，再向运行循环报告聚合错误。某一条 lease 的 `Complete/Retry` 失败时也继续处理本批剩余 lease；错误结果附带任务 Type、ID、Action，并使用 `errors.Join` 保留所有原始原因。这样不会为了隐藏部分结果额外执行不可靠的 Redis 回滚，也不会让已领取任务只能等待 lease 超时。
+
 ### 读取与并发回填
 
 单条读取：

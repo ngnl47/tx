@@ -3423,6 +3423,18 @@ server-b claim bucket 2 中的一批任务
 server-c claim bucket 1 中租约过期后可恢复的任务
 ```
 
+`ClaimDue` 允许同时返回已成功取得的 leases 和后续 bucket 的错误，语义与 `io.Reader` 的“数据和错误可以同时返回”一致。标准 Scheduler 会先处理并结算全部可见 lease，再汇总报告 claim、complete、retry 错误；单条结算失败也不会阻止本批其他 lease 继续处理。业务使用标准 Fusion runtime 时不需要直接处理该契约。高级自定义 Scheduler 必须遵循相同顺序：
+
+```go
+leases, claimErr := backend.ClaimDue(ctx, now, limit)
+var settleErr error
+for _, lease := range leases {
+	// 必须先处理并 Complete/Retry 每一份已取得的 lease，
+	// 将结算错误追加到 settleErr 后继续下一条。
+}
+return errors.Join(claimErr, settleErr)
+```
+
 整体语义是 at-least-once：同一任务可能因为网络失败、进程重启或租约恢复被再次执行。因此 Mongo 回写必须是幂等的。
 当前设计是“按记录键把 Redis 当前热文档 replace 到 Mongo”，重复执行只会覆盖同一条记录，不应产生额外业务副作用。
 

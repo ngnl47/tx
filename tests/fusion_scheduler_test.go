@@ -392,6 +392,90 @@ func TestFusionSchedulerRunOnceRetriesFailedTask(t *testing.T) {
 	}
 }
 
+func TestFusionSchedulerProcessesPartialClaimBeforeReturningError(t *testing.T) {
+	claimErr := errors.New("later bucket failed")
+	backend := &partialDelayTaskBackend{
+		leases: []task.DelayTaskLease{{
+			Task:     task.DelayTask{Type: "role", ID: "1", Action: "save"},
+			Token:    "lease-1",
+			Attempts: 1,
+		}},
+		claimErr: claimErr,
+	}
+	handled := make([]string, 0, 1)
+	scheduler := fusion.NewSchedulerWithOptions(backend, fusion.SchedulerOptions{
+		Handler: fusion.DelayTaskHandlerFunc(func(_ context.Context, item task.DelayTask) error {
+			handled = append(handled, fmt.Sprint(item.ID))
+			return nil
+		}),
+	})
+
+	count, err := scheduler.RunOnce(context.Background(), time.Unix(100, 0))
+	if count != 1 || !errors.Is(err, claimErr) {
+		t.Fatalf("RunOnce count=%d error=%v, want one and claim error", count, err)
+	}
+	if fmt.Sprint(handled) != "[1]" || fmt.Sprint(backend.completed) != "[1]" {
+		t.Fatalf("handled=%v completed=%v, want partial lease settled", handled, backend.completed)
+	}
+}
+
+func TestFusionSchedulerSettlesRemainingLeasesAfterFinalizeError(t *testing.T) {
+	completeErr := errors.New("complete failed")
+	backend := &partialDelayTaskBackend{
+		leases: []task.DelayTaskLease{
+			{Task: task.DelayTask{Type: "role", ID: "1", Action: "save"}, Token: "lease-1", Attempts: 1},
+			{Task: task.DelayTask{Type: "role", ID: "2", Action: "save"}, Token: "lease-2", Attempts: 1},
+		},
+		completeErrors: map[string]error{"1": completeErr},
+	}
+	handled := make([]string, 0, 2)
+	scheduler := fusion.NewSchedulerWithOptions(backend, fusion.SchedulerOptions{
+		Handler: fusion.DelayTaskHandlerFunc(func(_ context.Context, item task.DelayTask) error {
+			handled = append(handled, fmt.Sprint(item.ID))
+			return nil
+		}),
+	})
+
+	count, err := scheduler.RunOnce(context.Background(), time.Unix(100, 0))
+	if count != 2 || !errors.Is(err, completeErr) {
+		t.Fatalf("RunOnce count=%d error=%v, want two and complete error", count, err)
+	}
+	if fmt.Sprint(handled) != "[1 2]" || fmt.Sprint(backend.completed) != "[1 2]" {
+		t.Fatalf("handled=%v completed=%v, want both leases settled", handled, backend.completed)
+	}
+}
+
+func TestFusionSchedulerSettlesRemainingLeasesAfterRetryError(t *testing.T) {
+	retryErr := errors.New("retry failed")
+	handlerErr := errors.New("handler failed")
+	backend := &partialDelayTaskBackend{
+		leases: []task.DelayTaskLease{
+			{Task: task.DelayTask{Type: "role", ID: "1", Action: "save"}, Token: "lease-1", Attempts: 1},
+			{Task: task.DelayTask{Type: "role", ID: "2", Action: "save"}, Token: "lease-2", Attempts: 1},
+		},
+		retryErrors: map[string]error{"1": retryErr},
+	}
+	handled := make([]string, 0, 2)
+	scheduler := fusion.NewSchedulerWithOptions(backend, fusion.SchedulerOptions{
+		Handler: fusion.DelayTaskHandlerFunc(func(_ context.Context, item task.DelayTask) error {
+			id := fmt.Sprint(item.ID)
+			handled = append(handled, id)
+			if id == "1" {
+				return handlerErr
+			}
+			return nil
+		}),
+	})
+
+	count, err := scheduler.RunOnce(context.Background(), time.Unix(100, 0))
+	if count != 2 || !errors.Is(err, handlerErr) || !errors.Is(err, retryErr) {
+		t.Fatalf("RunOnce count=%d error=%v, want two with handler and retry errors", count, err)
+	}
+	if fmt.Sprint(handled) != "[1 2]" || fmt.Sprint(backend.retried) != "[1]" || fmt.Sprint(backend.completed) != "[2]" {
+		t.Fatalf("handled=%v retried=%v completed=%v, want failed retry followed by second completion", handled, backend.retried, backend.completed)
+	}
+}
+
 func TestFusionSchedulerRetriesWithCappedExponentialDelay(t *testing.T) {
 	ctx := context.Background()
 	backend := memory.NewBackend()
@@ -503,6 +587,35 @@ type failingDelayTaskBackend struct {
 	err     error
 	claimed chan struct{}
 	closed  bool
+}
+
+type partialDelayTaskBackend struct {
+	leases         []task.DelayTaskLease
+	claimErr       error
+	completeErrors map[string]error
+	retryErrors    map[string]error
+	completed      []string
+	retried        []string
+}
+
+func (b *partialDelayTaskBackend) Enqueue(context.Context, task.DelayTask) error {
+	return nil
+}
+
+func (b *partialDelayTaskBackend) ClaimDue(context.Context, time.Time, int) ([]task.DelayTaskLease, error) {
+	return b.leases, b.claimErr
+}
+
+func (b *partialDelayTaskBackend) Complete(_ context.Context, lease task.DelayTaskLease) error {
+	id := fmt.Sprint(lease.Task.ID)
+	b.completed = append(b.completed, id)
+	return b.completeErrors[id]
+}
+
+func (b *partialDelayTaskBackend) Retry(_ context.Context, lease task.DelayTaskLease, _ time.Time, _ error) error {
+	id := fmt.Sprint(lease.Task.ID)
+	b.retried = append(b.retried, id)
+	return b.retryErrors[id]
 }
 
 func (b *failingDelayTaskBackend) Enqueue(context.Context, task.DelayTask) error {

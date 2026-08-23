@@ -127,6 +127,57 @@ func TestRedisDelayTaskBackendClaimDueAcceptsEmptyArray(t *testing.T) {
 	}
 }
 
+func TestRedisDelayTaskBackendClaimDueReturnsLeasesBeforeLaterBucketError(t *testing.T) {
+	itemBody, err := json.Marshal(task.DelayTask{Type: "role", ID: "1", Action: "save"})
+	if err != nil {
+		t.Fatalf("marshal task: %v", err)
+	}
+	leaseBody, err := json.Marshal([]map[string]any{{
+		"body":     string(itemBody),
+		"token":    "lease-1",
+		"attempts": 1,
+	}})
+	if err != nil {
+		t.Fatalf("marshal lease: %v", err)
+	}
+	bucketErr := errors.New("bucket unavailable")
+	backend := taskredis.NewBackend(&sequenceTaskRedis{results: []scriptedTaskRedis{
+		{result: string(leaseBody)},
+		{err: bucketErr},
+	}}, taskredis.Options{BucketCount: 2})
+
+	leases, err := backend.ClaimDue(context.Background(), time.Now(), 2)
+	if !errors.Is(err, bucketErr) {
+		t.Fatalf("ClaimDue error = %v, want bucket error", err)
+	}
+	if len(leases) != 1 || leases[0].Task.ID != "1" || leases[0].Token != "lease-1" {
+		t.Fatalf("ClaimDue leases = %#v, want successfully claimed first bucket lease", leases)
+	}
+}
+
+func TestRedisDelayTaskBackendClaimDueReturnsValidRowsWithInvalidLeaseError(t *testing.T) {
+	itemBody, err := json.Marshal(task.DelayTask{Type: "role", ID: "1", Action: "save"})
+	if err != nil {
+		t.Fatalf("marshal task: %v", err)
+	}
+	result, err := json.Marshal([]map[string]any{
+		{"body": string(itemBody), "token": "lease-1", "attempts": 1},
+		{"body": string(itemBody), "token": "", "attempts": 1},
+	})
+	if err != nil {
+		t.Fatalf("marshal leases: %v", err)
+	}
+	backend := taskredis.NewBackend(scriptedTaskRedis{result: string(result)}, taskredis.Options{BucketCount: 1})
+
+	leases, err := backend.ClaimDue(context.Background(), time.Now(), 2)
+	if err == nil || !strings.Contains(err.Error(), "invalid task lease") {
+		t.Fatalf("ClaimDue error = %v, want invalid task lease", err)
+	}
+	if len(leases) != 1 || leases[0].Token != "lease-1" {
+		t.Fatalf("ClaimDue leases = %#v, want valid row", leases)
+	}
+}
+
 func TestRedisDelayTaskBackendRejectsIncompleteTask(t *testing.T) {
 	backend := taskredis.NewBackend(scriptedTaskRedis{result: "ok"}, taskredis.Options{})
 	for _, item := range []task.DelayTask{
@@ -550,6 +601,71 @@ func TestRedisDelayTaskBackendKeepsMissingPayloadTaskIntegration(t *testing.T) {
 	}
 }
 
+func TestRedisDelayTaskBackendReturnsCrossBucketPartialLeasesIntegration(t *testing.T) {
+	endpoint := os.Getenv("TX_REDIS_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("set TX_REDIS_ENDPOINT to run Redis delay task integration test")
+	}
+	ctx := context.Background()
+	raw := redisclient.NewClient(&redisclient.Options{Addr: endpoint})
+	defer raw.Close()
+	if err := raw.Ping(ctx).Err(); err != nil {
+		t.Fatalf("ping redis %q: %v", endpoint, err)
+	}
+
+	prefix := fmt.Sprintf("tx:test:task-partial-claim:%d", time.Now().UnixNano())
+	keys := make([]string, 0, 12)
+	for bucket := 0; bucket < 2; bucket++ {
+		queuePrefix := fmt.Sprintf("%s:{%d}", prefix, bucket)
+		keys = append(keys,
+			queuePrefix+":due",
+			queuePrefix+":payload",
+			queuePrefix+":busy",
+			queuePrefix+":token",
+			queuePrefix+":attempts",
+			queuePrefix+":pending",
+		)
+	}
+	t.Cleanup(func() { _ = raw.Del(context.Background(), keys...).Err() })
+	now := time.Unix(100, 0)
+	valid := delayTaskForBucket(t, 1, 2, now)
+	missing := delayTaskForBucket(t, 0, 2, now)
+	validBody, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatalf("marshal valid task: %v", err)
+	}
+	if err := raw.ZAdd(ctx, keys[6], redisclient.Z{Score: float64(now.UnixMilli()), Member: valid.IdempotencyKey()}).Err(); err != nil {
+		t.Fatalf("seed valid due task: %v", err)
+	}
+	if err := raw.HSet(ctx, keys[7], valid.IdempotencyKey(), string(validBody)).Err(); err != nil {
+		t.Fatalf("seed valid payload: %v", err)
+	}
+	if err := raw.ZAdd(ctx, keys[0], redisclient.Z{Score: float64(now.UnixMilli()), Member: missing.IdempotencyKey()}).Err(); err != nil {
+		t.Fatalf("seed missing-payload due task: %v", err)
+	}
+
+	backend := taskredis.NewBackend(txgoredis.NewClient(raw), taskredis.Options{Prefix: prefix, BucketCount: 2})
+	leases, err := backend.ClaimDue(ctx, now, 2)
+	if err == nil || !strings.Contains(err.Error(), "missing payload") {
+		t.Fatalf("ClaimDue error = %v, want later bucket missing payload", err)
+	}
+	if len(leases) != 1 || fmt.Sprint(leases[0].Task.ID) != fmt.Sprint(valid.ID) {
+		t.Fatalf("ClaimDue leases = %#v, want valid first bucket lease", leases)
+	}
+}
+
+func delayTaskForBucket(t *testing.T, bucket int, bucketCount int, dueAt time.Time) task.DelayTask {
+	t.Helper()
+	for id := 1; id <= 1000; id++ {
+		item := task.DelayTask{Type: "role", ID: id, Action: "save", DueAt: dueAt}
+		if testBucketFor(item.IdempotencyKey(), bucketCount) == bucket {
+			return item
+		}
+	}
+	t.Fatalf("no task id found for bucket %d", bucket)
+	return task.DelayTask{}
+}
+
 type fakeTaskRedis struct {
 	queues   map[string]*fakeTaskRedisQueue
 	seq      int
@@ -563,6 +679,20 @@ type scriptedTaskRedis struct {
 
 func (r scriptedTaskRedis) Eval(context.Context, string, []string, ...any) (string, error) {
 	return r.result, r.err
+}
+
+type sequenceTaskRedis struct {
+	results []scriptedTaskRedis
+	next    int
+}
+
+func (r *sequenceTaskRedis) Eval(context.Context, string, []string, ...any) (string, error) {
+	if r.next >= len(r.results) {
+		return "", fmt.Errorf("unexpected eval call %d", r.next+1)
+	}
+	result := r.results[r.next]
+	r.next++
+	return result.result, result.err
 }
 
 type fakeTaskRedisQueue struct {

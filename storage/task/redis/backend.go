@@ -107,25 +107,31 @@ func (b *Backend) ClaimDue(ctx context.Context, now time.Time, limit int) ([]tas
 			tokenPrefix,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("redis task: claim due bucket %d: %w", bucket, err)
+			return leases, fmt.Errorf("redis task: claim due bucket %d: %w", bucket, err)
 		}
 		rows, err := decodeLeaseRows(body)
 		if err != nil {
-			return nil, fmt.Errorf("redis task: decode leases: %w", err)
+			return leases, fmt.Errorf("redis task: decode leases from bucket %d: %w", bucket, err)
 		}
-		for _, row := range rows {
+		var rowErrors []error
+		for index, row := range rows {
 			if row.Token == "" || row.Attempts <= 0 {
-				return nil, fmt.Errorf("redis task: invalid task lease")
+				rowErrors = append(rowErrors, fmt.Errorf("row %d: invalid task lease", index))
+				continue
 			}
 			item, err := decodeDelayTask(row.Body)
 			if err != nil {
-				return nil, fmt.Errorf("redis task: decode task lease: %w", err)
+				rowErrors = append(rowErrors, fmt.Errorf("row %d: decode task lease: %w", index, err))
+				continue
 			}
 			leases = append(leases, task.DelayTaskLease{
 				Task:     item,
 				Token:    row.Token,
 				Attempts: row.Attempts,
 			})
+		}
+		if err := errors.Join(rowErrors...); err != nil {
+			return leases, fmt.Errorf("redis task: decode leases from bucket %d: %w", bucket, err)
 		}
 	}
 	return leases, nil
