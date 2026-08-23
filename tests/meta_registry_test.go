@@ -107,15 +107,3 @@ func TestMetaRegistryRejectsDuplicateFieldAlias(t *testing.T) {
 		t.Fatalf("field error should include field name, got %q", err.Error())
 	}
 }
-
-func TestMetaOverlayRejectsApplyAfterFreeze(t *testing.T) {
-	reg := meta.NewRegistry()
-	reg.Freeze()
-
-	err := reg.ApplyOverlay(meta.OverlayFunc(func(spec meta.TypeSpec) (meta.TypeSpec, error) {
-		return spec, nil
-	}))
-	if !errors.Is(err, meta.ErrRegistryFrozen) {
-		t.Fatalf("expected ErrRegistryFrozen, got %v", err)
-	}
-}

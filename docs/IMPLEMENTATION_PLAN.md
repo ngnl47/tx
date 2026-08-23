@@ -270,13 +270,12 @@ Go 注释 / struct tag -> anno -> astscan -> meta -> storage/gen
   - `Freeze()`
   - `Lookup(typeRef) (TypeSpec, bool)`
   - 注册后 freeze，freeze 后不允许隐式修改。
-- `meta.Overlay`
-  - 预留显式覆盖机制，但第一版可以只定义接口，不启用运行期修改。
+- 元数据必须在 `RegisterType` 前完成规范化和校验；Registry 不提供通用覆盖钩子，避免出现未进入装配链的预留公共 API。
 
 验收：
 
 - Registry 支持初始化期注册、冻结、查找。
-- Freeze 后注册或覆盖返回明确错误。
+- Freeze 后注册返回明确错误。
 - 错误包含 type 名和字段名，便于迁移诊断。
 
 测试：

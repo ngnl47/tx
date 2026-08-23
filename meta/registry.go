@@ -57,37 +57,6 @@ func (r *Registry) Lookup(ref TypeRef) (TypeSpec, bool) {
 	return CloneTypeSpec(spec), true
 }
 
-func (r *Registry) ApplyOverlay(overlay Overlay) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.frozen {
-		return fmt.Errorf("%w: cannot apply overlay", ErrRegistryFrozen)
-	}
-	if overlay == nil {
-		return nil
-	}
-
-	next := make(map[string]TypeSpec, len(r.types))
-	for key, spec := range r.types {
-		overlaid, err := overlay.Apply(CloneTypeSpec(spec))
-		if err != nil {
-			return fmt.Errorf("meta: overlay type %s: %w", key, err)
-		}
-		overlaid = CloneTypeSpec(overlaid)
-		overlaid.Type.Ref = overlaid.Type.Ref.normalized()
-		if err := validateTypeSpec(overlaid); err != nil {
-			return err
-		}
-		nextKey := overlaid.Type.Ref.key()
-		if existing, exists := next[nextKey]; exists {
-			return fmt.Errorf("%w: type %s conflicts with type %s", ErrDuplicateType, nextKey, existing.Type.Ref.FullName)
-		}
-		next[nextKey] = overlaid
-	}
-	r.types = next
-	return nil
-}
-
 func validateTypeSpec(spec TypeSpec) error {
 	typeName := spec.Type.Ref.key()
 	aliases := make(map[string]string, len(spec.Type.Fields))
