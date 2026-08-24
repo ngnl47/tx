@@ -542,6 +542,20 @@ defer rpcHost.Stop(context.Background())
 
 `Fetch` 是 unary 长轮询，调用方必须传递自己的超时或连接 context。运行时错误会转为明确的 gRPC status：无效请求为
 `InvalidArgument`，离线会话为 `NotFound`，旧连接为 `Aborted`，队列满为 `ResourceExhausted`；不会静默丢失或伪造投递成功。
+客户端还会校验成功响应本身：空响应、`Pub.Seq <= 0`、负的 Init/Rec 序号，以及 `FetchSome` 中为空、非正数或乱序的消息，都会返回 `msgq.ErrInvalidMailboxResponse`。这表示传输结果不可信，调用方应结束当前链路并记录错误，不能把零值当作成功或在没有业务幂等键时自动重发：
+
+```go
+result, err := sender.Pub(ctx, roleID, bonBody)
+if errors.Is(err, msgq.ErrInvalidMailboxResponse) {
+    logger.Error("msgq 返回了无效确认", "roleID", roleID, "err", err)
+    return err
+}
+if err != nil {
+    return err
+}
+useOutboundSeq(result.Seq)
+```
+
 `rpc.Host` 直接接入全局 `lifecycle.WaitGroupContext`。应用服务关闭时由项目宿主统一调用 `Stop`，未确认下行仍遵循
 msgq 的内存语义。
 

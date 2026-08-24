@@ -16,6 +16,7 @@ var (
 	ErrSessionRouterNil        = errors.New("msgq: session router is nil")
 	ErrTransportCredentialsNil = errors.New("msgq: transport credentials are nil")
 	ErrSenderClosed            = errors.New("msgq: sender is closed")
+	ErrInvalidMailboxResponse  = errors.New("msgq: invalid mailbox response")
 )
 
 // Connection 向一个已解析的 msgq 实例投递下行消息。
@@ -90,6 +91,9 @@ func (c *grpcConnection) Pub(ctx context.Context, request PubRequest) (PubResult
 	if err != nil {
 		return PubResult{}, mailboxClientError(err)
 	}
+	if response == nil || response.GetSeq() <= 0 {
+		return PubResult{}, ErrInvalidMailboxResponse
+	}
 	return PubResult{Seq: response.GetSeq()}, nil
 }
 
@@ -97,6 +101,9 @@ func (c *grpcConnection) Init(ctx context.Context, request InitRequest) (InitRes
 	response, err := c.client.Init(ctx, &msgqpb.InitRequest{Header: headerToProto(request.Header), Restore: request.Restore, Ack: request.Ack})
 	if err != nil {
 		return InitResult{}, mailboxClientError(err)
+	}
+	if response == nil || response.GetReceivedSeq() < 0 {
+		return InitResult{}, ErrInvalidMailboxResponse
 	}
 	return InitResult{ReceivedSeq: response.GetReceivedSeq()}, nil
 }
@@ -106,6 +113,9 @@ func (c *grpcConnection) Rec(ctx context.Context, request RecRequest) (RecResult
 	if err != nil {
 		return RecResult{}, mailboxClientError(err)
 	}
+	if response == nil || response.GetReceivedSeq() < 0 || response.GetAck() < 0 {
+		return RecResult{}, ErrInvalidMailboxResponse
+	}
 	return RecResult{ReceivedSeq: response.GetReceivedSeq(), Ack: response.GetAck()}, nil
 }
 
@@ -114,21 +124,42 @@ func (c *grpcConnection) FetchSome(ctx context.Context, request FetchSomeRequest
 	if err != nil {
 		return FetchSomeResult{}, mailboxClientError(err)
 	}
-	result := FetchSomeResult{Messages: make([]FetchResult, len(response.GetMessages()))}
-	for index, message := range response.GetMessages() {
+	if response == nil {
+		return FetchSomeResult{}, ErrInvalidMailboxResponse
+	}
+	messages := response.GetMessages()
+	result := FetchSomeResult{Messages: make([]FetchResult, len(messages))}
+	var previousSeq int64
+	for index, message := range messages {
+		if message == nil || message.GetSeq() <= previousSeq {
+			return FetchSomeResult{}, ErrInvalidMailboxResponse
+		}
 		result.Messages[index] = FetchResult{Seq: message.GetSeq(), Payload: message.GetPayload()}
+		previousSeq = message.GetSeq()
 	}
 	return result, nil
 }
 
 func (c *grpcConnection) Confirm(ctx context.Context, request ConfirmRequest) error {
-	_, err := c.client.Confirm(ctx, &msgqpb.ConfirmRequest{Header: headerToProto(request.Header), Ack: request.Ack})
-	return mailboxClientError(err)
+	response, err := c.client.Confirm(ctx, &msgqpb.ConfirmRequest{Header: headerToProto(request.Header), Ack: request.Ack})
+	if err != nil {
+		return mailboxClientError(err)
+	}
+	if response == nil {
+		return ErrInvalidMailboxResponse
+	}
+	return nil
 }
 
 func (c *grpcConnection) CloseSession(ctx context.Context, header SessionHeader) error {
-	_, err := c.client.Close(ctx, &msgqpb.CloseRequest{Header: headerToProto(header)})
-	return mailboxClientError(err)
+	response, err := c.client.Close(ctx, &msgqpb.CloseRequest{Header: headerToProto(header)})
+	if err != nil {
+		return mailboxClientError(err)
+	}
+	if response == nil {
+		return ErrInvalidMailboxResponse
+	}
+	return nil
 }
 
 func (c *grpcConnection) Close() error {
