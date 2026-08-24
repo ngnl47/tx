@@ -1164,7 +1164,22 @@ sequenceDiagram
 
 发布失败日志固定为 `fusion delay task publish failed`，包含 pending 数、重试等待和完整错误链，供外部日志中心告警。退避从一秒开始，倍增到一分钟后持续按封顶间隔重试，并使用随机扰动错开实例压力。业务不配置本地 pending 容量；相同根记录不会膨胀条数，剩余容量由进程内存和运行监控负责。
 
-这个方案接受一个明确故障窗口：进程在 Redis 热写成功、任务持久化成功之前异常退出，本地 pending 不可恢复。选择该边界是为了避免每次热写增加持久化索引 I/O、全槽扫描、启动选举和容量闸门。正确性要求转化为两条可运维契约：进程存活时发布失败绝不静默；进程异常退出时应排查根因，而不是依赖框架用更复杂的旁路协议掩盖崩溃。
+后台发布循环与关闭排空共享一个可被 context 中断的发布闸门，同一时刻只有一个执行者向 delayed task backend 发布快照。正常关闭时，CMod 依赖逆序保证 Transaction 先完成内存 Store 的最终保存，Fusion 随后调用 `DelayTaskDispatcher.Drain`；每条任务只有在 backend 确认接收后才从 pending 删除。排空复用 `runtime.lifecycle.drainTimeout`，超时错误包含剩余 pending 数量，`Server.Stop` 汇总错误后继续释放资源，不能无限阻塞关闭。
+
+```text
+停止业务入口并等待已受理工作
+        |
+        v
+Transaction final Flush -> 新增本地 pending
+        |
+        v
+Fusion Drain -> Redis delayed task backend 确认接收
+        |
+        v
+取消根 WaitGroupContext -> 停止后台循环 -> 关闭存储连接
+```
+
+这个方案仍接受一个明确故障窗口：进程在 Redis 热写成功、任务持久化成功之前异常退出，或排空超时后被终止，本地 pending 不可恢复。选择该边界是为了避免每次热写增加持久化索引 I/O、全槽扫描、启动选举和容量闸门。正确性要求转化为两条可运维契约：进程存活时发布失败绝不静默；正常关闭必须先尝试排空；异常退出或排空超时时应排查根因，而不是依赖框架用更复杂的旁路协议掩盖崩溃。
 
 任务载荷使用 JSON 保存定位信息，但数值恢复不能经过有损 `float64`。Redis backend 先恢复
 `int64`，超过 `int64` 上限的非负整数再精确恢复为 `uint64`；例如
@@ -1640,7 +1655,10 @@ HeapAlloc 受整个进程影响，不能作为 Manager 拒绝服务的唯一依�
 停止项目服务并执行事务最终 Flush
         |
         v
-停止共享 RPC，取消后台循环并等待退出
+停止共享 RPC，排空 Fusion 本地延迟任务登记
+        |
+        v
+取消后台循环并等待退出
         |
         v
 关闭 Actor、服务发现、存储 client 等物理资源
@@ -1685,8 +1703,7 @@ facade、注入身份解析/业务分发回调和声明可选业务服务。`ser
 `server/services/msgq` 是 tx 提供的通用服务适配器；项目配置转换会延迟到对应服务真正被当前进程选中时执行，
 未选服务的专属配置不能阻止其他服务启动。
 
-`runtime.lifecycle.drainTimeout` 属于所有 L4 服务共享的进程生命周期配置，不由某个 CMod 或服务启用。零值使用
-5 分钟默认值；txgame 模板显式配置该值，便于发布环境审阅。
+`runtime.lifecycle.drainTimeout` 属于所有 L4 服务共享的进程生命周期配置，不由某个 CMod 或服务启用。入口等待与 Fusion 本地 pending 排空分别使用这项单阶段上限，零值使用 5 分钟默认值；txgame 模板显式配置该值，便于发布环境审阅。
 
 每个 `server.Service` 用 `Spec` 声明稳定名称与框架能力依赖，并在 `Start(server.Context)` 中只注册或启动
 本服务资源。`server.Context` 只暴露消费能力，不暴露进程资源所有权；普通业务 handler 应使用项目 facade。
@@ -1700,6 +1717,7 @@ discovery -> draining
   -> project cleanup and generated storage unbind
   -> transaction final flush
   -> shared RPC graceful stop
+  -> fusion delay-task pending drain
   -> root WaitGroupContext cancel and wait
   -> actor shutdown
   -> discovery stopping/close

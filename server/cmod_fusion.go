@@ -1,6 +1,9 @@
 package server
 
-import "errors"
+import (
+	"context"
+	"errors"
+)
 
 func (server *Server) fusionCMod() CMod {
 	return &builtInCMod{
@@ -23,6 +26,14 @@ func (server *Server) fusionCMod() CMod {
 				return err
 			}
 			return store.startDelayTaskDispatcher(server.runtime.lifecycle)
+		},
+		drain: func(ctx context.Context) error {
+			if server.runtime == nil || server.runtime.storage == nil {
+				return nil
+			}
+			drainCtx, cancel := context.WithTimeout(ctx, effectiveDrainTimeout(server.config.Runtime.Lifecycle.DrainTimeout))
+			defer cancel()
+			return server.runtime.storage.drainDelayTaskDispatcher(drainCtx)
 		},
 	}
 }

@@ -63,7 +63,7 @@ type RuntimeConfig struct {
 	Transaction TransactionConfig
 }
 
-// LifecycleConfig 配置进程优雅排水的服务端上限。
+// LifecycleConfig 配置进程入口等待和 Fusion 本地登记排空的单阶段上限。
 type LifecycleConfig struct {
 	DrainTimeout time.Duration
 }

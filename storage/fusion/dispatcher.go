@@ -52,6 +52,8 @@ type DelayTaskDispatcher struct {
 	nextSeq uint64
 	pending map[string]pendingDelayedWrite
 	wake    chan struct{}
+
+	publishGate chan struct{}
 }
 
 func NewDelayTaskDispatcher(queue DelayQueue) *DelayTaskDispatcher {
@@ -91,6 +93,7 @@ func NewDelayTaskDispatcherWithOptions(queue DelayQueue, options DelayTaskDispat
 		random:            random,
 		pending:           make(map[string]pendingDelayedWrite),
 		wake:              make(chan struct{}, 1),
+		publishGate:       make(chan struct{}, 1),
 	}
 }
 
@@ -115,6 +118,60 @@ func (d *DelayTaskDispatcher) Start(ctx waitGroupContext) error {
 	return ctx.Go(func(context.Context) {
 		d.run(ctx)
 	})
+}
+
+// Drain 在 ctx 有效期内发布完全部进程内待发布任务。
+// 发布失败会沿用分发器退避策略重试；超时返回错误且不会删除尚未确认的 pending。
+func (d *DelayTaskDispatcher) Drain(ctx context.Context) error {
+	if d == nil || isNilFusionDependency(d.queue) {
+		return ErrDelayQueueNotConfigured
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	failures := 0
+	for d.hasPending() {
+		if err := ctx.Err(); err != nil {
+			return d.drainContextError(err, nil)
+		}
+		_, err := d.runPendingOnce(ctx)
+		if !d.hasPending() {
+			return nil
+		}
+		if err == nil {
+			failures = 0
+			continue
+		}
+		if ctx.Err() != nil {
+			return d.drainContextError(ctx.Err(), err)
+		}
+		failures++
+		retryAfter := d.retryDelay(failures)
+		txlog.ErrorContext(ctx, "fusion delay task publish failed",
+			"phase", "drain",
+			"pending", d.pendingCount(),
+			"retryAfter", retryAfter,
+			"err", err,
+		)
+		timer := time.NewTimer(retryAfter)
+		select {
+		case <-ctx.Done():
+			stopDelayTimer(timer)
+			return d.drainContextError(ctx.Err(), err)
+		case <-d.wake:
+			stopDelayTimer(timer)
+		case <-timer.C:
+		}
+	}
+	return nil
+}
+
+func (d *DelayTaskDispatcher) drainContextError(ctxErr error, publishErr error) error {
+	err := fmt.Errorf("fusion: drain delay task dispatcher with %d pending: %w", d.pendingCount(), ctxErr)
+	if publishErr == nil {
+		return err
+	}
+	return errors.Join(err, publishErr)
 }
 
 func (d *DelayTaskDispatcher) run(ctx context.Context) {
@@ -167,6 +224,12 @@ func stopDelayTimer(timer *time.Timer) {
 }
 
 func (d *DelayTaskDispatcher) runPendingOnce(ctx context.Context) (int, error) {
+	select {
+	case d.publishGate <- struct{}{}:
+		defer func() { <-d.publishGate }()
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
 	entries := d.pendingSnapshot()
 	var runErr error
 	completed := 0

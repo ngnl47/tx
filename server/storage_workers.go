@@ -30,6 +30,16 @@ func (s *storageRuntime) startDelayTaskDispatcher(ctx workerContext) error {
 	return s.delayDispatcher.Start(ctx)
 }
 
+func (s *storageRuntime) drainDelayTaskDispatcher(ctx context.Context) error {
+	if s == nil {
+		return errStorageNotConfigured
+	}
+	if s.delayDispatcher == nil {
+		return errDispatcherMissing
+	}
+	return s.delayDispatcher.Drain(ctx)
+}
+
 func (s *storageRuntime) startDelayScheduler(ctx workerContext) error {
 	if s == nil {
 		return errStorageNotConfigured

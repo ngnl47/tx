@@ -153,7 +153,7 @@ if err := storage.Save(ctx, fusionStore, role.Store()); err != nil {
 }
 ```
 
-若延迟任务 backend 暂时不可用，后台分发器保留按根记录去重的本地 pending，输出结构化 error 日志，并按最大一分钟的有界指数退避持续重试；它不会把已经成功的业务写重新返回为失败，避免调用方重放发奖、扣费等业务操作。进程在 Redis 成功后、任务持久化前异常退出仍可能丢失这次本地登记，这是当前方案明确接受的可靠性边界；生产环境应通过日志告警监护 Redis/task backend，并排查导致进程崩溃的根因。
+若延迟任务 backend 暂时不可用，后台分发器保留按根记录去重的本地 pending，输出结构化 error 日志，并按最大一分钟的有界指数退避持续重试；它不会把已经成功的业务写重新返回为失败，避免调用方重放发奖、扣费等业务操作。正常优雅关闭时，Fusion CMod 会在根 `WaitGroupContext` 取消前限时排空这些 pending；只有进程异常退出或排空超时，才可能丢失尚未持久化的本地登记。这是当前方案明确接受的可靠性边界；生产环境应通过日志告警监护 Redis/task backend，并排查导致进程崩溃或排空超时的根因。
 
 如果业务需要显式持有 Store，例如高频对象在内存中维护变更队列、定时合并后再落地，也可以直接使用
 `storage.Save(ctx, writer, role.Store())` 这类框架层写入入口，并由调用方决定何时保存或重新累计下一轮变更。
@@ -977,8 +977,8 @@ if err := control.RegisterLifecycleService(grpcServer, coordinator); err != nil 
 
 `Drain` 只启动“目录标记为 `draining` + 严格入口封口”；`WaitDrained` 只等待已受理请求结束。最终资源关闭、根 context 取消、事务 Flush、Actor 与 discovery 注销仍由宿主负责。
 
-控制面的服务端排水上限由 `server.RuntimeConfig.Lifecycle.DrainTimeout` 设置，零值默认 5 分钟；它与 `txctl --timeout`
-不是同一个参数，后者只限制运维客户端等待 RPC 的时间。达到服务端上限时，控制状态转为 `failed` 并输出错误日志，
+进程排水的单阶段上限由 `server.RuntimeConfig.Lifecycle.DrainTimeout` 设置，零值默认 5 分钟。入口已受理工作等待和 Fusion 本地 pending 排空分别使用这项上限；它与 `txctl --timeout`
+不是同一个参数，后者只限制运维客户端等待 RPC 的时间。入口等待达到服务端上限时，控制状态转为 `failed` 并输出错误日志，
 错误会包含仍有未完成工作的服务名和 pending 数量，例如：
 
 ```text
@@ -3355,13 +3355,14 @@ Fusion 策略的当前保存路径：
 4. Redis 热写与本地登记完成后，`db.Save(role)` 返回 `nil`，Store 清理本轮变更。
 5. 后台分发器把唯一一条延迟保存任务写入 Redis delayed task backend。
 6. 发布失败时输出结构化 error 日志，并按有上限的指数退避持续重试；成功后移除本地 pending。
-7. Scheduler 到期 claim 任务，StorageTaskHandler 根据记录定位重新读取 Redis 当前热文档并 replace 到 Mongo。
-8. Mongo 保存成功后，handler 仅在 `@v` 未变化时原子地把所有热数据键的 TTL 收敛为 `delayDelTime`；版本变化则重新排一条保存任务。
-9. 任务成功后通过 Lua complete 删除该任务在 Redis 队列中的状态。
+7. 正常关闭时，Transaction CMod 先最终保存内存 Store，Fusion CMod 再限时发布全部本地 pending，随后才取消根 `WaitGroupContext`。
+8. Scheduler 到期 claim 任务，StorageTaskHandler 根据记录定位重新读取 Redis 当前热文档并 replace 到 Mongo。
+9. Mongo 保存成功后，handler 仅在 `@v` 未变化时原子地把所有热数据键的 TTL 收敛为 `delayDelTime`；版本变化则重新排一条保存任务。
+10. 任务成功后通过 Lua complete 删除该任务在 Redis 队列中的状态。
 
-本地 pending 只保存根记录的 `TypeSpec + RecordKey`，不保存 GD、Store、变更文档或业务对象快照；同一角色连续保存一万次，在发布受阻期间仍只占一条根记录登记。它不设置需要业务估算的容量阈值。分发器由 `WaitGroupContext` 管理生命周期，正常服务关闭时不再突然中断正在组织的业务调用。
+本地 pending 只保存根记录的 `TypeSpec + RecordKey`，不保存 GD、Store、变更文档或业务对象快照；同一角色连续保存一万次，在发布受阻期间仍只占一条根记录登记。它不设置需要业务估算的容量阈值。分发器由 `WaitGroupContext` 管理后台循环，但正常关闭不会直接依赖根取消来结束它：Fusion CMod 会先调用 `Drain`，只有 Redis 延迟任务队列确认接收后才删除 pending。排空达到 `runtime.lifecycle.drainTimeout` 后返回包含剩余 pending 数量的错误，`Server.Stop` 继续执行后续关闭并把错误返回给调用方，不会把超时伪装成成功。
 
-Redis 热写与持久化任务发布不是分布式事务。当前设计优先保证业务调用语义明确：Redis 热写失败返回错误；Redis 已成功后，任务 backend 的短时故障由后台日志和重试处理，不让调用方因模糊错误重放业务。若进程恰好在热写成功、任务持久化前异常崩溃，本地 pending 会丢失；框架不为这个低概率窗口增加同槽索引、全槽扫描和额外 Redis I/O。外部日志系统应对 `fusion delay task publish failed` 告警，运维人员据此检查和修复集群状态。
+Redis 热写与持久化任务发布不是分布式事务。当前设计优先保证业务调用语义明确：Redis 热写失败返回错误；Redis 已成功后，任务 backend 的短时故障由后台日志和重试处理，不让调用方因模糊错误重放业务。正常关闭会补发本地 pending；若进程恰好在热写成功、任务持久化前异常崩溃，或排空超时后仍被运维终止，本地 pending 仍会丢失。框架不为这个低概率窗口增加同槽索引、全槽扫描和额外 Redis I/O。外部日志系统应对 `fusion delay task publish failed` 和关闭返回错误告警，运维人员据此检查和修复集群状态。
 
 延迟任务队列使用 bucket hash tag，支持多个服务实例并发消费。语义是 at-least-once，Mongo 回写必须保持存储幂等。
 任务失败重试时，Scheduler 会输出结构化错误日志；失败原因不写入 Redis 任务状态，避免错误字符串占用队列内存。重试间隔由 lease 的持久化 `Attempts` 计算：`retryInitialDelay` 按 `retryMultiplier` 递增至 `retryMaxDelay`，并可施加不超过最大值的 `retryJitter`。达到上限后任务持续重试，不会因次数耗尽被丢弃。
@@ -3496,6 +3497,7 @@ err := storage.Save(ctx, fusionStore, role.Store())
 3. 后台分发器记录一条延迟保存任务，到期时间来自 `delaySaveTime`。
 4. 保存任务成功回写 Mongo 后，main/subKey/`@v` 的 TTL 在 revision 未变化时统一收敛为 `delayDelTime`。
 5. 发布失败时保留本地登记并输出 error 日志，成功后移除该根记录的 pending。
+6. 服务正常关闭时，最终业务保存产生的 pending 会在根生命周期取消前发布到 Redis 延迟任务队列。
 
 例如 Redis 已经保存 `role:{470001}`，但任务 backend 暂时不可用：
 
@@ -3506,7 +3508,7 @@ err := db.Save(role)
 // 后台会输出 fusion delay task publish failed，并持续重试任务发布。
 ```
 
-相同根记录再次保存时只更新本地 pending 的代次；旧发布结果不能误删发布期间产生的新登记。重试按相同幂等任务键覆盖或合并既有保存任务，不产生第二份并发 lease。进程异常退出会丢失尚未持久化的本地 pending，因此日志告警不是可选装饰，而是当前可靠性边界的一部分。
+相同根记录再次保存时只更新本地 pending 的代次；旧发布结果不能误删发布期间产生的新登记。重试按相同幂等任务键覆盖或合并既有保存任务，不产生第二份并发 lease。正常关闭时会先排空 pending；进程异常退出或排空超时仍可能丢失尚未持久化的本地 pending，因此日志告警不是可选装饰，而是当前可靠性边界的一部分。
 
 ### 延迟回写任务
 

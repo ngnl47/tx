@@ -24,6 +24,37 @@ type retryingDelayQueue struct {
 	succeeded  chan struct{}
 }
 
+type blockingDelayQueue struct {
+	mu         sync.Mutex
+	once       sync.Once
+	attempts   int
+	operations []fusion.DelayedOperation
+	started    chan struct{}
+	release    chan struct{}
+}
+
+func (q *blockingDelayQueue) Enqueue(ctx context.Context, operation fusion.DelayedOperation) error {
+	q.mu.Lock()
+	q.attempts++
+	q.mu.Unlock()
+	q.once.Do(func() { close(q.started) })
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-q.release:
+	}
+	q.mu.Lock()
+	q.operations = append(q.operations, operation)
+	q.mu.Unlock()
+	return nil
+}
+
+func (q *blockingDelayQueue) snapshot() (int, []fusion.DelayedOperation) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.attempts, append([]fusion.DelayedOperation(nil), q.operations...)
+}
+
 func (q *retryingDelayQueue) Enqueue(_ context.Context, operation fusion.DelayedOperation) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -46,6 +77,12 @@ func (q *retryingDelayQueue) snapshot() (int, []fusion.DelayedOperation) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return q.attempts, append([]fusion.DelayedOperation(nil), q.operations...)
+}
+
+func (q *retryingDelayQueue) setFailures(failures int) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.failures = failures
 }
 
 func TestDelayTaskDispatcherRetriesFailedPublishAndLogsError(t *testing.T) {
@@ -163,5 +200,96 @@ func TestDelayTaskDispatcherPublishesOnlyDelayedSave(t *testing.T) {
 	}
 	if operations[0].Kind != fusion.DelayedSave || operations[0].RunAfter != 10*time.Minute {
 		t.Fatalf("save operation = %#v", operations[0])
+	}
+}
+
+func TestDelayTaskDispatcherDrainRetriesUntilPendingPublished(t *testing.T) {
+	queue := &retryingDelayQueue{failures: 1}
+	dispatcher := fusion.NewDelayTaskDispatcherWithOptions(queue, fusion.DelayTaskDispatcherOptions{
+		RetryInitialDelay: time.Millisecond,
+		RetryMaxDelay:     time.Millisecond,
+		RetryJitter:       0,
+	})
+	dispatcher.Submit(
+		meta.TypeSpec{Type: fusionRoleType(), Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Minute}}},
+		storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := dispatcher.Drain(ctx); err != nil {
+		t.Fatalf("Drain returned error: %v", err)
+	}
+
+	attempts, operations := queue.snapshot()
+	if attempts != 2 || len(operations) != 1 || operations[0].Kind != fusion.DelayedSave {
+		t.Fatalf("attempts=%d operations=%#v, want one failed and one successful save publication", attempts, operations)
+	}
+}
+
+func TestDelayTaskDispatcherDrainTimeoutKeepsPendingForNextDrain(t *testing.T) {
+	queue := &retryingDelayQueue{failures: 1000}
+	dispatcher := fusion.NewDelayTaskDispatcherWithOptions(queue, fusion.DelayTaskDispatcherOptions{
+		RetryInitialDelay: time.Millisecond,
+		RetryMaxDelay:     time.Millisecond,
+		RetryJitter:       0,
+	})
+	dispatcher.Submit(
+		meta.TypeSpec{Type: fusionRoleType(), Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Minute}}},
+		storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)},
+	)
+
+	timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	err := dispatcher.Drain(timeoutCtx)
+	timeoutCancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Drain error = %v, want context deadline exceeded", err)
+	}
+
+	queue.setFailures(0)
+	retryCtx, retryCancel := context.WithTimeout(context.Background(), time.Second)
+	defer retryCancel()
+	if err := dispatcher.Drain(retryCtx); err != nil {
+		t.Fatalf("second Drain returned error: %v", err)
+	}
+	_, operations := queue.snapshot()
+	if len(operations) != 1 || operations[0].Kind != fusion.DelayedSave {
+		t.Fatalf("operations=%#v, want retained pending save to be published", operations)
+	}
+}
+
+func TestDelayTaskDispatcherDrainDoesNotDuplicateBackgroundPublish(t *testing.T) {
+	queue := &blockingDelayQueue{started: make(chan struct{}), release: make(chan struct{})}
+	dispatcher := fusion.NewDelayTaskDispatcher(queue)
+	dispatcher.Submit(
+		meta.TypeSpec{Type: fusionRoleType(), Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Minute}}},
+		storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)},
+	)
+	root := lifecycle.NewWaitGroupContext(context.Background())
+	if err := dispatcher.Start(root); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	select {
+	case <-queue.started:
+	case <-time.After(time.Second):
+		t.Fatal("background publisher did not start")
+	}
+
+	drained := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		drained <- dispatcher.Drain(ctx)
+	}()
+	close(queue.release)
+	if err := <-drained; err != nil {
+		t.Fatalf("Drain returned error: %v", err)
+	}
+	root.Cancel()
+	root.WaitDoneAndWaitGroupWait()
+
+	attempts, operations := queue.snapshot()
+	if attempts != 1 || len(operations) != 1 {
+		t.Fatalf("attempts=%d operations=%#v, want one serialized publication", attempts, operations)
 	}
 }
