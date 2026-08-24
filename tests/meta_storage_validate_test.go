@@ -28,7 +28,11 @@ func TestValidateAcceptsRedisIDFieldGoName(t *testing.T) {
 			Fields: []meta.Field{{Name: "RoleId", JSONName: "roleId", Type: "int64"}},
 		},
 		Storage: meta.StorageSpec{Mode: meta.StorageModeRedis},
-		Redis:   &meta.RedisSpec{IDField: "RoleId", Route: meta.RouteSpec{By: "RoleId"}},
+		Redis: &meta.RedisSpec{
+			IDField: "RoleId",
+			Key:     "role",
+			Route:   meta.RouteSpec{Type: "role", By: "RoleId"},
+		},
 	}
 	if err := meta.Validate(spec, spec); err != nil {
 		t.Fatalf("Validate returned error: %v", err)
@@ -70,7 +74,8 @@ func TestValidateAcceptsIntegerAndStringRouteFieldTypes(t *testing.T) {
 				Storage: meta.StorageSpec{Mode: meta.StorageModeRedis},
 				Redis: &meta.RedisSpec{
 					IDField: "ID",
-					Route:   meta.RouteSpec{By: "ID"},
+					Key:     "test",
+					Route:   meta.RouteSpec{Type: "test", By: "ID"},
 				},
 			}
 
@@ -149,6 +154,116 @@ func TestValidateAcceptsFusionWithDifferentRouteTypes(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsMissingStorageLocatorText(t *testing.T) {
+	tests := []struct {
+		name     string
+		property string
+		mutate   func(*meta.TypeSpec)
+	}{
+		{
+			name:     "redis route type",
+			property: "redis.routeType",
+			mutate: func(spec *meta.TypeSpec) {
+				spec.Redis.Route.Type = ""
+			},
+		},
+		{
+			name:     "redis key",
+			property: "redis.key",
+			mutate: func(spec *meta.TypeSpec) {
+				spec.Redis.Key = ""
+			},
+		},
+		{
+			name:     "mongodb route type",
+			property: "mongodb.routeType",
+			mutate: func(spec *meta.TypeSpec) {
+				spec.Mongo.Route.Type = ""
+			},
+		},
+		{
+			name:     "mongodb collection",
+			property: "mongodb.collection",
+			mutate: func(spec *meta.TypeSpec) {
+				spec.Mongo.Collection = ""
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := validFusionStorageSpec()
+			tt.mutate(&spec)
+
+			err := meta.Validate(spec, spec)
+			if !errors.Is(err, meta.ErrMissingConfig) {
+				t.Fatalf("err = %v, want ErrMissingConfig", err)
+			}
+			if !strings.Contains(err.Error(), tt.property) {
+				t.Fatalf("err = %q, want it to contain %q", err, tt.property)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsStorageLocatorTextWithSurroundingWhitespace(t *testing.T) {
+	tests := []struct {
+		name     string
+		property string
+		mutate   func(*meta.TypeSpec)
+	}{
+		{
+			name:     "redis route type",
+			property: "redis.routeType",
+			mutate: func(spec *meta.TypeSpec) {
+				spec.Redis.Route.Type = " role"
+			},
+		},
+		{
+			name:     "redis key",
+			property: "redis.key",
+			mutate: func(spec *meta.TypeSpec) {
+				spec.Redis.Key = "role "
+			},
+		},
+		{
+			name:     "mongodb route type",
+			property: "mongodb.routeType",
+			mutate: func(spec *meta.TypeSpec) {
+				spec.Mongo.Route.Type = " role "
+			},
+		},
+		{
+			name:     "mongodb collection",
+			property: "mongodb.collection",
+			mutate: func(spec *meta.TypeSpec) {
+				spec.Mongo.Collection = " roles "
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := validFusionStorageSpec()
+			tt.mutate(&spec)
+
+			err := meta.Validate(spec, spec)
+			if err == nil {
+				t.Fatal("Validate returned nil, want surrounding whitespace error")
+			}
+			for _, want := range []string{tt.property, "surrounding whitespace"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("err = %q, want it to contain %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+func validFusionStorageSpec() meta.TypeSpec {
+	return fusionIdentitySpec()
+}
+
 func fusionIdentitySpec() meta.TypeSpec {
 	fields := []meta.Field{
 		{Name: "RoleId", Type: "int64"},
@@ -160,6 +275,7 @@ func fusionIdentitySpec() meta.TypeSpec {
 		Storage: meta.StorageSpec{Mode: meta.StorageModeFusion},
 		Redis: &meta.RedisSpec{
 			IDField: "RoleId",
+			Key:     "role",
 			Route: meta.RouteSpec{
 				Type: "role",
 				By:   "RoleId",

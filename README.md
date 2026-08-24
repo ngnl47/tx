@@ -1407,6 +1407,20 @@ mongodb:"index,unique,expireAfter:0"
 | `@mongodb` | `collection` | 是 | 字符串 | Mongo collection 名称。别名：`c`、`col`。 |
 | `@mongodb` | `enableSharding` | 否 | flag 或布尔字符串 | 标记该 collection 开启分片语义；当前主要进入元数据。 |
 
+`redis.routeType`、`redis.key`、`mongodb.routeType` 和 `mongodb.collection` 都是持久化定位契约，必须填写
+非空且没有首尾空白的原始文本。元数据校验不会自动补默认值或调用 `TrimSpace` 修正拼写；下面的定义会在
+txgen 扫描阶段失败；高级调用方手工构造完整存储元数据时也应调用 `meta.Validate`，不要把错误拖到首次
+Redis/Mongo I/O：
+
+```go
+// 缺少 key，无法生成稳定的 Redis 记录前缀。
+// @storage:`mode:"redis" delayDelTime:"1h"`
+// @redis:`routeType:"role" routeBy:"RoleId" idField:"RoleId"`
+type GDRole struct {
+	RoleId int64 `json:"roleId" bson:"roleId" msgpack:"roleId"`
+}
+```
+
 常见 type 注解组合：
 
 ```go

@@ -1,6 +1,9 @@
 package meta
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Validate 根据扫描得到的 Go 类型元数据校验内置存储元数据。
 //
@@ -40,11 +43,14 @@ func Validate(spec TypeSpec, astType TypeSpec) error {
 		if err := validateRouteFieldType("redis.routeBy", spec.Redis.Route.By, astType); err != nil {
 			return err
 		}
+		if err := requireConfigText("redis.routeType", spec.Redis.Route.Type); err != nil {
+			return err
+		}
+		if err := requireConfigText("redis.key", spec.Redis.Key); err != nil {
+			return err
+		}
 	}
 	if spec.Mongo != nil {
-		if spec.Mongo.Collection == "" {
-			return fmt.Errorf("%w: mongodb.collection", ErrMissingConfig)
-		}
 		if err := requireField("mongodb.idField", spec.Mongo.IDField, fields); err != nil {
 			return err
 		}
@@ -52,6 +58,12 @@ func Validate(spec TypeSpec, astType TypeSpec) error {
 			return err
 		}
 		if err := validateRouteFieldType("mongodb.routeBy", spec.Mongo.Route.By, astType); err != nil {
+			return err
+		}
+		if err := requireConfigText("mongodb.routeType", spec.Mongo.Route.Type); err != nil {
+			return err
+		}
+		if err := requireConfigText("mongodb.collection", spec.Mongo.Collection); err != nil {
 			return err
 		}
 	}
@@ -107,6 +119,17 @@ func requireField(property, field string, fields map[string]struct{}) error {
 	}
 	if _, ok := fields[field]; !ok {
 		return fmt.Errorf("%w: %s references %q", ErrUnknownField, property, field)
+	}
+	return nil
+}
+
+func requireConfigText(property, value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fmt.Errorf("%w: %s", ErrMissingConfig, property)
+	}
+	if value != trimmed {
+		return fmt.Errorf("meta: %s contains surrounding whitespace", property)
 	}
 	return nil
 }
