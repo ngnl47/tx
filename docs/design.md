@@ -570,7 +570,7 @@ GDRole                                      业务数据唯一事实源
 └── GDRoleStore                             根 Store
     ├── ops[Name] = OpSet                   顶层字段槽
     ├── ops[Power] = OpSet
-    └── GDRoleItemsCollectionStore          集合 Store
+    └── GDRoleItemsMapStore                 map 集合 Store
         ├── ops[1001] = OpReplace           集合元素槽
         └── dirtyChildren[1002]
             └── GDItemStore
@@ -578,6 +578,10 @@ GDRole                                      业务数据唯一事实源
 ```
 
 Store 不保存第二份业务数据，也不保存每次操作的 value、时间或顺序。`GDRoleStore.Value`、集合 Store 的 `parent` 和子 Store 的 `Value` 都指向当前 GD 数据；Store 只保存“哪些持久化位置需要按什么语义重新读取”。
+
+生成类型名直接携带容器语义：map 字段使用 `<GD><Field>MapStore`，slice 字段使用
+`<GD><Field>SliceStore`。这些集合 Store 只能由所属 GD 或父 Store 的 `<Field>Store()` 创建，
+不支持手工构造或零值使用。
 
 ### 限界上下文与固定术语
 
@@ -592,8 +596,8 @@ Store 不保存第二份业务数据，也不保存每次操作的 value、时�
 | 追踪上下文 | Store 变更状态 | 字段槽、集合元素槽、脏子节点索引 | 主 Store 当前保留的规范化操作集合；同一位置只保留最后语义，不保存业务值副本 |
 | 追踪上下文 | 标脏 | `Set*`、`Touch*`、集合 Store 受控 API | 把一个持久化位置写入 Store 变更状态；不等于立即构建文档或执行 I/O |
 | 追踪上下文 | 字段槽 | `GD*Store.ops[fieldID-1]` | 顶层或子对象普通字段的最后变更语义 |
-| 追踪上下文 | 集合元素槽 | `CollectionStore.ops[key/index]` | map key 或 slice index 本身的最后 Replace/Delete 等语义 |
-| 追踪上下文 | 脏子节点索引 | `CollectionStore.dirtyChildren` | 只标识哪些缓存子 Store 需要遍历，不保存路径或 value |
+| 追踪上下文 | 集合元素槽 | `<GD><Field>MapStore.ops[key]`、`<GD><Field>SliceStore.ops[index]` | map key 或 slice index 本身的最后 Replace/Delete 等语义 |
+| 追踪上下文 | 脏子节点索引 | 生成的 map/slice Store `dirtyChildren` | 只标识哪些缓存子 Store 需要遍历，不保存路径或 value |
 | 追踪上下文 | 脏通知 | `dirtyHook`、`notifyDirty`、`markChildDirty` | 把子 Store 加入父级待遍历索引或通知运行时；不是完整变更向根复制 |
 | 加载上下文 | 已加载字段状态 | `loadedFields`、`LoadedFields()` | 描述部分加载结果，与字段是否变更相互独立 |
 | 加载上下文 | 字段投影 | `Load*Fields`、`[]meta.FieldRef` | 指一次存储读取请求选择的字段集合；不是 Store 状态树、StoreView 或变更文档 |
@@ -642,7 +646,7 @@ type GDRoleStore struct {
     // generated child/collection stores...
 }
 
-type GDRoleItemsCollectionStore struct {
+type GDRoleItemsMapStore struct {
     parent        *GDRoleStore
     ops           map[int32]change.Op
     stores        map[int32]*GDItemStore
