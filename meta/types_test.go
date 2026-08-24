@@ -20,7 +20,10 @@ func TestCloneTypeSpecIsolatesMutableMetadata(t *testing.T) {
 			"Items": {
 				Redis: &meta.RedisFieldSpec{SubKey: "items"},
 				Mongo: &meta.MongoFieldSpec{
-					Indexes: []meta.IndexSpec{{Order: "asc", Weight: 1}},
+					Indexes: []meta.IndexSpec{{
+						Keys:    []meta.IndexKeySpec{{Order: "asc"}},
+						Weights: []meta.IndexWeightSpec{{Weight: 1}},
+					}},
 				},
 			},
 		},
@@ -33,7 +36,8 @@ func TestCloneTypeSpecIsolatesMutableMetadata(t *testing.T) {
 	cloned.Mongo.Collection = "changed-roles"
 	field := cloned.Fields["Items"]
 	field.Redis.SubKey = "changed-items"
-	field.Mongo.Indexes[0].Weight = 2
+	field.Mongo.Indexes[0].Keys[0].Order = "desc"
+	field.Mongo.Indexes[0].Weights[0].Weight = 2
 	cloned.Fields["Items"] = field
 	delete(cloned.Fields, "Items")
 
@@ -52,7 +56,10 @@ func TestCloneTypeSpecIsolatesMutableMetadata(t *testing.T) {
 	if got := source.Fields["Items"].Redis.SubKey; got != "items" {
 		t.Fatalf("source Redis subKey = %q, want items", got)
 	}
-	if got := source.Fields["Items"].Mongo.Indexes[0].Weight; got != 1 {
+	if got := source.Fields["Items"].Mongo.Indexes[0].Keys[0].Order; got != "asc" {
+		t.Fatalf("source Mongo index order = %q, want asc", got)
+	}
+	if got := source.Fields["Items"].Mongo.Indexes[0].Weights[0].Weight; got != 1 {
 		t.Fatalf("source Mongo index weight = %d, want 1", got)
 	}
 	if _, exists := source.Fields["Items"]; !exists {

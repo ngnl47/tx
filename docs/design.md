@@ -259,6 +259,12 @@ txgen 模板生成
 严格解析并携带属性名返回错误，不能把非法输入静默转换为 `0` 或 `false`。纯整数 duration 按秒兼容既有输入，
 但使用 `time.ParseDuration` 完成范围检查，避免整数乘法溢出产生错误生命周期。
 
+紧凑注解参数必须保留声明顺序、重复项以及参数和裸 flag 的区别，不能先压入 `map[string]string` 再规范化。
+Mongo 命名复合索引依赖同一个 `index:<name>` 在多个字段上重复出现，单个字段也可以同时声明命名索引和匿名
+索引。例如 `Platform mongodb:"index:p_id"` 与 `PlatformUId mongodb:"index:p_id,index"` 共同声明
+`p_id=(Platform, PlatformUId)`，并为 `PlatformUId` 额外声明一个匿名单字段索引。注解解析层只保存有序参数，
+`meta.Normalize` 负责将其转换成强类型索引元数据。
+
 `meta.Validate` 是存储元数据的唯一共享校验入口。除校验 `idField`、`routeBy` 的 Go 字段身份和类型外，它还
 要求 Redis 的 `routeType/key` 与 Mongo 的 `routeType/collection` 是非空且没有首尾空白的原始文本。这些值
 直接参与路由表、记录 key 和 collection 定位，校验层不能补默认值或静默去空白；txgen 和高级手工元数据调用方
@@ -1128,6 +1134,19 @@ Mongo 文档主键必然是 `_id`，但业务 `idField`、`routeBy` 和 BSON `_i
 局部变更最终转换为 Mongo `$set` / `$unset` 文档。Replace 复杂对象时，边界读取当前完整值并整体写入该路径；不能按子字段 set 后遗留旧 BSON 字段。
 
 Mongo 写入不是 setter 热路径，优先使用官方 driver 的 BSON tag 映射保证正确性；只有 benchmark 证明必要时才为具体字段生成更低层编码。
+
+字段索引注解支持三种组合：`mongodb:"index"` 声明匿名单字段索引；多个字段使用相同的
+`mongodb:"index:<name>"` 声明按字段顺序聚合的命名复合索引；
+`mongodb:"index::<field1>:<order1>:<field2>:<order2>"` 在单个字段上声明显式复合键。
+`order/indexType`、`unique`、`weight` 和 `expire/expireAfter` 只修饰它们前面最近声明的索引；一个字段可以
+通过重复 `index` 同时属于多个索引。普通索引键在元数据中用空路径表示“注解所在 Go 字段”，Mongo 边界再通过
+`TypeSpec` 解析为 BSON 名；以 `.` 开头的路径表示当前字段下的相对 BSON 路径，其余显式路径已经是 BSON 路径。
+
+Mongo CMod 在连接和生成类型注册表就绪后，只汇总当前服务 Mongo 路由表覆盖的类型；注册表中属于其他服务且
+没有配置对应 `routeType` 的类型不参与本次初始化。相同非空名称的索引按字段声明顺序合并；匿名索引根据最终
+BSON 键和顺序生成稳定名称。启动逻辑只创建缺失索引，不自动删除数据库已有索引，也不静默修改同名索引。
+已有同名索引与生成规范不一致、同一个命名索引的 TTL 定义互相冲突、索引字段无法解析时，启动必须
+fast-fail。多个实例并发启动复用 MongoDB 的幂等创建语义，不为 Mongo-only 服务额外引入 Redis 分布式锁。
 
 Mongo 批量读取用 BSON 类型与编码值构造内部回序身份，不直接把 `any` ID 放入 Go map。
 因此重复 ID 可以恢复到全部输入位置，`[]byte` 等合法但不可比较的 BSON 主键也不会触发

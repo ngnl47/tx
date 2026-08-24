@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -21,9 +22,69 @@ type Database struct {
 }
 
 var _ txmongo.Client = Database{}
+var _ txmongo.IndexManager = Database{}
 
 func NewDatabase(db *mongo.Database) Database {
 	return Database{db: db}
+}
+
+// EnsureIndexes 通过 MongoDB 的幂等 createIndexes 命令创建缺失索引。
+// 同名定义不一致时由 MongoDB 返回冲突错误，调用方必须让启动失败。
+func (d Database) EnsureIndexes(ctx context.Context, collection string, indexes []txmongo.IndexModel) error {
+	if d.db == nil {
+		return errMongoDatabaseNotConfigured
+	}
+	if len(indexes) == 0 {
+		return nil
+	}
+	models, err := mongoIndexModels(indexes)
+	if err != nil {
+		return err
+	}
+	if _, err := d.db.Collection(collection).Indexes().CreateMany(ctx, models); err != nil {
+		return mongoBackendError("create indexes", err)
+	}
+	return nil
+}
+
+func mongoIndexModels(indexes []txmongo.IndexModel) ([]mongo.IndexModel, error) {
+	models := make([]mongo.IndexModel, 0, len(indexes))
+	for _, index := range indexes {
+		keys := make(bson.D, 0, len(index.Keys))
+		for _, key := range index.Keys {
+			keys = append(keys, bson.E{Key: key.Path, Value: mongoIndexOrder(key.Order)})
+		}
+		indexOptions := options.Index().SetBackground(true).SetName(index.Name)
+		if index.Unique {
+			indexOptions.SetUnique(true)
+		}
+		if len(index.Weights) > 0 {
+			weights := make(bson.D, 0, len(index.Weights))
+			for _, weight := range index.Weights {
+				weights = append(weights, bson.E{Key: weight.Path, Value: weight.Weight})
+			}
+			indexOptions.SetWeights(weights)
+		}
+		if index.ExpireAfter != nil {
+			if *index.ExpireAfter < 0 || *index.ExpireAfter > math.MaxInt32 {
+				return nil, fmt.Errorf("mongo: index %q expireAfter %d is outside int32 seconds", index.Name, *index.ExpireAfter)
+			}
+			indexOptions.SetExpireAfterSeconds(int32(*index.ExpireAfter))
+		}
+		models = append(models, mongo.IndexModel{Keys: keys, Options: indexOptions})
+	}
+	return models, nil
+}
+
+func mongoIndexOrder(order string) any {
+	switch order {
+	case "1":
+		return 1
+	case "-1":
+		return -1
+	default:
+		return order
+	}
 }
 
 func (d Database) UpdateOne(ctx context.Context, collection string, filter txmongo.Filter, update map[string]any, applyOptions storage.ApplyOptions) (txmongo.UpdateResult, error) {

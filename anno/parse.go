@@ -26,8 +26,8 @@ func ParseTypeTagLine(text string) (Directive, error) {
 //	// @custom:`"single-value"`
 //	// @custom:`owner:"roleId" ttl:"600"`
 //
-// 解析结果刻意保持非强类型。quoted single value 会写入 Params["value"]；
-// struct tag 中的所有字段值都会生成字符串参数。
+// 解析结果刻意保持非强类型。quoted single value 会写入名为 value 的参数；
+// struct tag 中的所有字段值都会生成有序字符串参数。
 func ParseTypeTagLineWithDefinitions(text string, defs Definitions) (Directive, error) {
 	defs = defs.WithBuiltinsIfEmpty()
 	text = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(text), "//"))
@@ -40,7 +40,7 @@ func ParseTypeTagLineWithDefinitions(text string, defs Definitions) (Directive, 
 		return Directive{}, fmt.Errorf("%w: %s", ErrUnknownTag, name)
 	}
 	if !ok {
-		return parseContent(name, ScopeType, ""), nil
+		return parseContent(name, ScopeType, "")
 	}
 	content := strings.TrimSpace(rest)
 	if strings.HasPrefix(content, "`") && strings.HasSuffix(content, "`") {
@@ -53,11 +53,14 @@ func ParseTypeTagLineWithDefinitions(text string, defs Definitions) (Directive, 
 		if err != nil {
 			return Directive{}, fmt.Errorf("anno: type directive %s must use quoted single value or struct tag fields", name)
 		}
-		directive := parseContent(name, ScopeType, "")
-		directive.Params["value"] = value
+		directive, err := parseContent(name, ScopeType, "")
+		if err != nil {
+			return Directive{}, err
+		}
+		directive.Arguments = append(directive.Arguments, Argument{Name: "value", Value: value, HasValue: true})
 		return directive, nil
 	}
-	return parseContent(name, ScopeType, content), nil
+	return parseContent(name, ScopeType, content)
 }
 
 // ParseTypeDoc 从类型注释中解析内置注解指令。
@@ -112,31 +115,27 @@ func ParseStructTagWithDefinitions(tag reflect.StructTag, scope Scope, defs Defi
 		if content == "" {
 			continue
 		}
-		directives = append(directives, parseContent(def.Name, ScopeField, content))
+		directive, err := parseContent(def.Name, ScopeField, content)
+		if err != nil {
+			return nil, err
+		}
+		directives = append(directives, directive)
 	}
 	return directives, nil
 }
 
-func parseContent(name string, scope Scope, content string) Directive {
+func parseContent(name string, scope Scope, content string) (Directive, error) {
 	directive := Directive{
-		Name:   name,
-		Scope:  scope,
-		Params: map[string]string{},
-		Flags:  map[string]bool{},
+		Name:  name,
+		Scope: scope,
 	}
 	if strings.Contains(content, `:"`) {
-		tag := reflect.StructTag(content)
-		for _, part := range strings.Fields(content) {
-			key, _, ok := strings.Cut(part, ":")
-			if !ok {
-				continue
-			}
-			key = strings.TrimSpace(key)
-			if value := tag.Get(key); value != "" {
-				directive.Params[key] = value
-			}
+		arguments, err := parseStructTagArguments(content)
+		if err != nil {
+			return Directive{}, fmt.Errorf("anno: parse %s parameters: %w", name, err)
 		}
-		return directive
+		directive.Arguments = arguments
+		return directive, nil
 	}
 	for _, part := range strings.Split(content, ",") {
 		part = strings.TrimSpace(part)
@@ -145,10 +144,66 @@ func parseContent(name string, scope Scope, content string) Directive {
 		}
 		key, value, ok := strings.Cut(part, ":")
 		if !ok {
-			directive.Flags[part] = true
+			directive.Arguments = append(directive.Arguments, Argument{Name: part})
 			continue
 		}
-		directive.Params[strings.TrimSpace(key)] = strings.TrimSpace(value)
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return Directive{}, fmt.Errorf("anno: %s parameter name is empty", name)
+		}
+		directive.Arguments = append(directive.Arguments, Argument{
+			Name:     key,
+			Value:    strings.TrimSpace(value),
+			HasValue: true,
+		})
 	}
-	return directive
+	return directive, nil
+}
+
+func parseStructTagArguments(content string) ([]Argument, error) {
+	var arguments []Argument
+	for content != "" {
+		content = strings.TrimLeft(content, " \t\r\n")
+		if content == "" {
+			break
+		}
+		colon := strings.IndexByte(content, ':')
+		if colon <= 0 || colon+1 >= len(content) || content[colon+1] != '"' {
+			return nil, fmt.Errorf("invalid struct tag fragment %q", content)
+		}
+		name := content[:colon]
+		if strings.ContainsAny(name, " \t\r\n\"") {
+			return nil, fmt.Errorf("invalid struct tag name %q", name)
+		}
+		quoted := content[colon+1:]
+		end := quotedStringEnd(quoted)
+		if end == 0 {
+			return nil, fmt.Errorf("unterminated value for %q", name)
+		}
+		value, err := strconv.Unquote(quoted[:end])
+		if err != nil {
+			return nil, fmt.Errorf("invalid value for %q: %w", name, err)
+		}
+		arguments = append(arguments, Argument{Name: name, Value: value, HasValue: true})
+		content = quoted[end:]
+	}
+	return arguments, nil
+}
+
+func quotedStringEnd(value string) int {
+	if len(value) < 2 || value[0] != '"' {
+		return 0
+	}
+	escaped := false
+	for i := 1; i < len(value); i++ {
+		switch {
+		case escaped:
+			escaped = false
+		case value[i] == '\\':
+			escaped = true
+		case value[i] == '"':
+			return i + 1
+		}
+	}
+	return 0
 }

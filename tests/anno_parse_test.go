@@ -15,8 +15,10 @@ func TestAnnoParseTypeTagLine(t *testing.T) {
 	if directive.Name != "redis" || directive.Scope != anno.ScopeType {
 		t.Fatalf("directive = %#v", directive)
 	}
-	if directive.Params["routeBy"] != "roleId" || directive.Params["omitempty"] != "true" {
-		t.Fatalf("params=%#v flags=%#v", directive.Params, directive.Flags)
+	routeBy, _ := directive.Param("routeBy")
+	omitEmpty, _ := directive.Param("omitempty")
+	if routeBy != "roleId" || omitEmpty != "true" {
+		t.Fatalf("arguments=%#v", directive.Arguments)
 	}
 }
 
@@ -33,8 +35,8 @@ func TestAnnoParseTypeMarkerTagLine(t *testing.T) {
 			if directive.Name != "storage" || directive.Scope != anno.ScopeType {
 				t.Fatalf("directive = %#v", directive)
 			}
-			if len(directive.Params) != 0 || len(directive.Flags) != 0 {
-				t.Fatalf("params=%#v flags=%#v", directive.Params, directive.Flags)
+			if len(directive.Arguments) != 0 {
+				t.Fatalf("arguments=%#v", directive.Arguments)
 			}
 		})
 	}
@@ -53,8 +55,9 @@ func TestAnnoParseTypeSingleValueTagLine(t *testing.T) {
 	if directive.Name != "custom" || directive.Scope != anno.ScopeType {
 		t.Fatalf("directive = %#v", directive)
 	}
-	if directive.Params["value"] != "角色" {
-		t.Fatalf("params=%#v", directive.Params)
+	value, _ := directive.Param("value")
+	if value != "角色" {
+		t.Fatalf("arguments=%#v", directive.Arguments)
 	}
 }
 
@@ -72,10 +75,10 @@ func TestAnnoParseFieldTagDoesNotUseTypeSingleValueRule(t *testing.T) {
 	if len(directives) != 1 {
 		t.Fatalf("directives=%#v", directives)
 	}
-	if _, ok := directives[0].Params["value"]; ok {
-		t.Fatalf("field tag unexpectedly mapped single value to Params[value]: %#v", directives[0])
+	if _, ok := directives[0].Param("value"); ok {
+		t.Fatalf("field tag unexpectedly mapped single value to value argument: %#v", directives[0])
 	}
-	if !directives[0].Flags["quoted"] {
+	if !directives[0].HasFlag("quoted") {
 		t.Fatalf("field tag should keep compact flag semantics: %#v", directives[0])
 	}
 }
@@ -96,7 +99,8 @@ func TestAnnoParseTypeDocAndStructTag(t *testing.T) {
 	if len(typeDirectives) != 3 || len(fieldDirectives) != 2 {
 		t.Fatalf("type=%#v field=%#v", typeDirectives, fieldDirectives)
 	}
-	if fieldDirectives[0].Params["subKey"] != "items" {
+	subKey, _ := fieldDirectives[0].Param("subKey")
+	if subKey != "items" {
 		t.Fatalf("field directives = %#v", fieldDirectives)
 	}
 }

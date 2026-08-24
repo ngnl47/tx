@@ -43,7 +43,9 @@ func TestAnnoParseTypeTagLineSupportsStructTagSyntax(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseTypeTagLineWithDefinitions returned error: %v", err)
 	}
-	if directive.Params["owner"] != "roleId" || directive.Params["ttl"] != "600" {
+	owner, _ := directive.Param("owner")
+	ttl, _ := directive.Param("ttl")
+	if owner != "roleId" || ttl != "600" {
 		t.Fatalf("directive = %#v", directive)
 	}
 }

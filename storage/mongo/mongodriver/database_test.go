@@ -3,9 +3,12 @@ package mongodriver
 import (
 	"context"
 	"errors"
+	"math"
+	"reflect"
 	"strings"
 	"testing"
 
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 
 	"github.com/ngnl47/tx/storage"
@@ -43,6 +46,67 @@ func TestDatabaseReturnsErrorWhenMongoDatabaseMissing(t *testing.T) {
 	}
 	if _, _, err := db.FindMany(context.Background(), "roles", txmongo.ValuesFilter{Field: "_id", Values: []any{int64(1001)}}); err == nil || !strings.Contains(err.Error(), "mongo database is not configured") {
 		t.Fatalf("FindMany error = %v, want missing database error", err)
+	}
+	if err := db.EnsureIndexes(context.Background(), "roles", nil); err == nil || !strings.Contains(err.Error(), "mongo database is not configured") {
+		t.Fatalf("EnsureIndexes error = %v, want missing database error", err)
+	}
+}
+
+func TestMongoIndexModelsPreserveKeyTypesAndOptions(t *testing.T) {
+	expireAfter := int64(60)
+	models, err := mongoIndexModels([]txmongo.IndexModel{{
+		Name:   "search",
+		Keys:   []txmongo.IndexKey{{Path: "createdAt", Order: "-1"}, {Path: "content", Order: "text"}},
+		Unique: true,
+		Weights: []txmongo.IndexWeight{
+			{Path: "content", Weight: 8},
+		},
+		ExpireAfter: &expireAfter,
+	}})
+	if err != nil {
+		t.Fatalf("mongoIndexModels returned error: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("models = %#v, want one model", models)
+	}
+	keys, ok := models[0].Keys.(bson.D)
+	if !ok || !reflect.DeepEqual(keys, bson.D{{Key: "createdAt", Value: -1}, {Key: "content", Value: "text"}}) {
+		t.Fatalf("keys = %#v, want typed Mongo keys", models[0].Keys)
+	}
+	if models[0].Options.Name == nil || *models[0].Options.Name != "search" || models[0].Options.Unique == nil || !*models[0].Options.Unique {
+		t.Fatalf("options = %#v, want named unique index", models[0].Options)
+	}
+	if models[0].Options.ExpireAfterSeconds == nil || *models[0].Options.ExpireAfterSeconds != 60 {
+		t.Fatalf("expireAfter = %#v, want 60", models[0].Options.ExpireAfterSeconds)
+	}
+	weights, ok := models[0].Options.Weights.(bson.D)
+	if !ok || !reflect.DeepEqual(weights, bson.D{{Key: "content", Value: 8}}) {
+		t.Fatalf("weights = %#v, want content weight", models[0].Options.Weights)
+	}
+}
+
+func TestMongoIndexModelsRejectExpireAfterOverflow(t *testing.T) {
+	expireAfter := int64(math.MaxInt32) + 1
+	_, err := mongoIndexModels([]txmongo.IndexModel{{
+		Name:        "ttl",
+		Keys:        []txmongo.IndexKey{{Path: "expireAt", Order: "1"}},
+		ExpireAfter: &expireAfter,
+	}})
+	if err == nil {
+		t.Fatal("mongoIndexModels returned nil error, want expireAfter overflow")
+	}
+}
+
+func TestMongoIndexModelsOmitDisabledBooleanOptions(t *testing.T) {
+	models, err := mongoIndexModels([]txmongo.IndexModel{{
+		Name: "plain",
+		Keys: []txmongo.IndexKey{{Path: "name", Order: "1"}},
+	}})
+	if err != nil {
+		t.Fatalf("mongoIndexModels returned error: %v", err)
+	}
+	if models[0].Options.Unique != nil {
+		t.Fatalf("unique = %#v, want omitted option", models[0].Options.Unique)
 	}
 }
 

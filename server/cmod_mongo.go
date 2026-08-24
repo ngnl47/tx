@@ -20,6 +20,9 @@ func (server *Server) mongoCMod() CMod {
 			if err := store.startMongo(server.runtime.lifecycle, server.config.Storage.MongoDB); err != nil {
 				return err
 			}
+			if err := store.initializeMongoIndexes(server.runtime.lifecycle, server.config.Storage.MongoDB, server.types); err != nil {
+				return err
+			}
 			return startStorageHealth(server.runtime.lifecycle, store, server.config.Runtime.Health, txstorage.BackendMongo)
 		},
 		stop: func(ctx context.Context) error {

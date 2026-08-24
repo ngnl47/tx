@@ -146,7 +146,7 @@ func CloneTypeSpec(spec TypeSpec) TypeSpec {
 			}
 			if field.Mongo != nil {
 				mongo := *field.Mongo
-				mongo.Indexes = append([]IndexSpec(nil), field.Mongo.Indexes...)
+				mongo.Indexes = cloneIndexSpecs(field.Mongo.Indexes)
 				field.Mongo = &mongo
 			}
 			fields[name] = field
@@ -154,6 +154,20 @@ func CloneTypeSpec(spec TypeSpec) TypeSpec {
 		spec.Fields = fields
 	}
 	return spec
+}
+
+func cloneIndexSpecs(source []IndexSpec) []IndexSpec {
+	indexes := make([]IndexSpec, len(source))
+	for i, index := range source {
+		indexes[i] = index
+		indexes[i].Keys = append([]IndexKeySpec(nil), index.Keys...)
+		indexes[i].Weights = append([]IndexWeightSpec(nil), index.Weights...)
+		if index.ExpireAfter != nil {
+			expireAfter := *index.ExpireAfter
+			indexes[i].ExpireAfter = &expireAfter
+		}
+	}
+	return indexes
 }
 
 type StorageMode string
@@ -214,10 +228,24 @@ type MongoFieldSpec struct {
 }
 
 type IndexSpec struct {
-	Unique      bool   `json:"unique,omitempty"`
-	Order       string `json:"order,omitempty"`
-	Weight      int    `json:"weight,omitempty"`
-	ExpireAfter string `json:"expireAfter,omitempty"`
+	Name        string            `json:"name,omitempty"`
+	Keys        []IndexKeySpec    `json:"keys"`
+	Unique      bool              `json:"unique,omitempty"`
+	Weights     []IndexWeightSpec `json:"weights,omitempty"`
+	ExpireAfter *int64            `json:"expireAfter,omitempty"`
+}
+
+// IndexKeySpec 描述一段 Mongo 索引键。Path 为空表示注解所在字段，
+// 以点开头表示相对该字段的 BSON 子路径，其他值表示完整 BSON 路径。
+type IndexKeySpec struct {
+	Path  string `json:"path,omitempty"`
+	Order string `json:"order"`
+}
+
+// IndexWeightSpec 描述文本索引权重，Path 规则与 IndexKeySpec 相同。
+type IndexWeightSpec struct {
+	Path   string `json:"path,omitempty"`
+	Weight int    `json:"weight"`
 }
 
 type Duration struct {

@@ -60,6 +60,7 @@ type storageRuntime struct {
 
 	redisShards    map[string]txgoredis.Client
 	mongoWALShards map[string]walmongo.Client
+	mongoIndexers  map[string]txmongo.IndexManager
 	redisClients   []*goredis.Client
 	mongoClients   []*mongodriver.Client
 	redisCloseOnce sync.Once
@@ -95,13 +96,56 @@ func (s *storageRuntime) startMongo(ctx context.Context, cfg storageconfig.Route
 	if s == nil {
 		return errStorageNotConfigured
 	}
-	mongoCluster, mongoClients, mongoWALShards, err := buildMongoCluster(ctx, cfg)
+	mongoCluster, mongoClients, mongoWALShards, mongoIndexers, err := buildMongoCluster(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	s.mongo = mongoCluster
 	s.mongoClients = mongoClients
 	s.mongoWALShards = mongoWALShards
+	s.mongoIndexers = mongoIndexers
+	return nil
+}
+
+func (s *storageRuntime) initializeMongoIndexes(ctx context.Context, cfg storageconfig.RouteTableConfig, types txfusion.TypeRegistry) error {
+	if s == nil {
+		return errStorageNotConfigured
+	}
+	if types == nil {
+		return nil
+	}
+	for _, spec := range types.TypeSpecs() {
+		if spec.Mongo == nil || spec.Storage.Mode == meta.StorageModeRedis {
+			continue
+		}
+		target, ok := cfg.Routes[spec.Mongo.Route.Type]
+		if !ok {
+			continue
+		}
+		indexes, err := txmongo.BuildIndexModels(spec)
+		if err != nil {
+			return fmt.Errorf("server: build Mongo indexes for %s: %w", spec.Type.Ref.FullName, err)
+		}
+		if len(indexes) == 0 {
+			continue
+		}
+		visited := make(map[string]struct{})
+		for _, rule := range target.Rules {
+			for _, endpoint := range rule.Shards {
+				if _, ok := visited[endpoint]; ok {
+					continue
+				}
+				visited[endpoint] = struct{}{}
+				indexer, ok := s.mongoIndexers[endpoint]
+				if !ok || indexer == nil {
+					return fmt.Errorf("server: Mongo index endpoint %q for %s is not configured", endpoint, spec.Type.Ref.FullName)
+				}
+				if err := indexer.EnsureIndexes(ctx, spec.Mongo.Collection, indexes); err != nil {
+					return fmt.Errorf("server: ensure Mongo indexes for %s on %s: %w", spec.Type.Ref.FullName, endpoint, err)
+				}
+			}
+		}
+	}
 	return nil
 }
 
@@ -391,42 +435,45 @@ func buildRedisCluster(ctx context.Context, cfg storageconfig.RouteTableConfig) 
 	return cluster, clients, runtimeClients, nil
 }
 
-func buildMongoCluster(ctx context.Context, cfg storageconfig.RouteTableConfig) (*txmongo.Cluster, []*mongodriver.Client, map[string]walmongo.Client, error) {
+func buildMongoCluster(ctx context.Context, cfg storageconfig.RouteTableConfig) (*txmongo.Cluster, []*mongodriver.Client, map[string]walmongo.Client, map[string]txmongo.IndexManager, error) {
 	routeTable, err := cfg.RouteTable()
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("server: build mongo route table: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("server: build mongo route table: %w", err)
 	}
 	shards := map[string]txmongo.Client{}
 	walShards := map[string]walmongo.Client{}
+	indexers := map[string]txmongo.IndexManager{}
 	clients := make([]*mongodriver.Client, 0, len(cfg.Endpoints()))
 	for _, endpoint := range sortedEndpointValues(cfg.Endpoints()) {
 		client, err := mongodriver.Connect(ctx, options.Client().ApplyURI(endpoint))
 		if err != nil {
 			disconnectMongoClients(ctx, clients)
-			return nil, nil, nil, fmt.Errorf("server: connect mongo endpoint %s: %w", endpoint, err)
+			return nil, nil, nil, nil, fmt.Errorf("server: connect mongo endpoint %s: %w", endpoint, err)
 		}
 		if err := client.Ping(ctx, nil); err != nil {
 			_ = client.Disconnect(ctx)
 			disconnectMongoClients(ctx, clients)
-			return nil, nil, nil, fmt.Errorf("server: ping mongo endpoint %s: %w", endpoint, err)
+			return nil, nil, nil, nil, fmt.Errorf("server: ping mongo endpoint %s: %w", endpoint, err)
 		}
 		dbName, err := mongoDatabaseName(endpoint)
 		if err != nil {
 			_ = client.Disconnect(ctx)
 			disconnectMongoClients(ctx, clients)
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		clients = append(clients, client)
 		database := client.Database(dbName)
-		shards[endpoint] = txmongodriver.NewDatabase(database)
+		runtimeDatabase := txmongodriver.NewDatabase(database)
+		shards[endpoint] = runtimeDatabase
 		walShards[endpoint] = waldriver.NewDatabase(database)
+		indexers[endpoint] = runtimeDatabase
 	}
 	cluster, err := txmongo.NewCluster(routeTable, shards)
 	if err != nil {
 		disconnectMongoClients(ctx, clients)
-		return nil, nil, nil, fmt.Errorf("server: build mongo cluster: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("server: build mongo cluster: %w", err)
 	}
-	return cluster, clients, walShards, nil
+	return cluster, clients, walShards, indexers, nil
 }
 
 func buildWAL(ctx context.Context, cfg WALConfig, routes storageconfig.RouteTableConfig, shards map[string]walmongo.Client) (wal.Store, error) {

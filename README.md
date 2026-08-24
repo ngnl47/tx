@@ -1346,14 +1346,16 @@ type 级注解支持 marker 和带参数两种形态。无参数时，下面两�
 // @comment:`""`
 ```
 
-上面两行会分别解析为 `Params["value"] = "角色"` 和 `Params["value"] = ""`。多参数写法使用 Go struct tag 语法：
+上面两行会分别解析为 `Argument{Name: "value", Value: "角色", HasValue: true}` 和
+`Argument{Name: "value", Value: "", HasValue: true}`。多参数写法使用 Go struct tag 语法：
 
 ```go
 // @storage:`mode:"fusion" delaySaveTime:"600" delayDelTime:"86400"`
 // @genEnum:`gcgc:"true" gcvo:"true"`
 ```
 
-解析后会统一得到 `anno.Directive`。marker 注解的 `Params` 和 `Flags` 为空；带参数注解的键值会进入 `Params`。
+解析后会统一得到 `anno.Directive`。`Directive.Arguments` 保留参数声明顺序、重复项以及键值参数和裸 flag 的区别；
+普通调用方可用 `Param(name)` 读取最后一个同名键值参数，只有需要消费重复项时才直接遍历 `Arguments`。
 
 ### field tag 解析规则
 
@@ -1376,10 +1378,10 @@ mongodb:"index,unique,expireAfter:0"
 ```
 
 - 逗号 `,` 分隔多个片段。
-- `key:value` 表示参数，进入 `Params[key] = value`。
-- 没有冒号的片段表示 flag，进入 `Flags[flag] = true`。
+- `key:value` 表示带值参数，得到 `Argument{Name: key, Value: value, HasValue: true}`。
+- 没有冒号的片段表示裸 flag，得到 `Argument{Name: flag}`。
 - 片段两边空格会被裁剪，空片段会跳过。
-- field tag 的单值不会自动映射到 `Params["value"]`；type 注解的单值规则只作用于 type 级注解。
+- field tag 的单值不会自动映射到 `value` 参数；type 注解的单值规则只作用于 type 级注解。
 
 字段名类 tag 不属于内置注解解析结果，由 AST 扫描直接读取。Go 字段名是框架内部字段身份；
 `json`、`bson`、`msgpack` 分别决定对应后端的物理字段名。`alias` 只是输入侧语法糖，如果写了
@@ -1491,13 +1493,13 @@ Fusion 的 Redis 和 Mongo 共用一份 `RecordKey`，因此两边的 `idField` 
 | `redis` | `subKey` | 字符串 | 将该字段从 Redis 主文档拆到独立 key，例如 `role:{1001}:items`。 |
 | `redis` | `ignore` | flag 或布尔字符串 | Redis 文档忽略该字段。 |
 | `redis` | `fullUpdate` | flag 或布尔字符串 | Redis 写入策略：该字段位于 `subKey` 时可直接替换独立 Redis 文档，避免 Lua 读取并合并整个文档。它不改变字段 `Set` 或集合 wrapper `Replace` 的业务覆盖语义。 |
-| `mongodb` | `index` | flag 或布尔字符串 | 为该字段生成 Mongo 索引元数据。 |
-| `mongodb` | `unique` | flag 或布尔字符串 | 索引唯一约束，通常和 `index` 一起使用。 |
+| `mongodb` | `index` | flag、名称或复合定义 | `index` 声明匿名单字段索引；`index:<name>` 声明命名索引；`index:<name>:<path>:<order>...` 声明显式复合索引，省略名称时写成 `index::<path>:<order>...`。同一字段可重复声明。 |
+| `mongodb` | `unique` | flag 或布尔字符串 | 修饰前面最近声明的索引；命名复合索引任一成员声明后，最终索引使用唯一约束。 |
 | `mongodb` | `ignore` | flag 或布尔字符串 | Mongo 文档忽略该字段。 |
-| `mongodb` | `order` | `asc`、`desc` 或数字字符串 | 索引方向。 |
-| `mongodb` | `indexType` | 字符串 | 索引类型，例如文本索引等。 |
-| `mongodb` | `weight` | 整数字符串 | 文本索引权重；非法整数会在生成前报错。 |
-| `mongodb` | `expireAfter` | 非负秒数字符串 | Mongo TTL 索引过期时间；命中后删除整条文档，不是删除单个字段。别名：`expire`。 |
+| `mongodb` | `order` | `1`、`-1` 或 Mongo 索引类型 | 修饰前面最近声明索引的当前字段方向或类型。 |
+| `mongodb` | `indexType` | 字符串 | `order` 的别名，例如 `text`。 |
+| `mongodb` | `weight` | 整数或命名权重定义 | 文本索引权重；非法整数会在生成前报错。 |
+| `mongodb` | `expireAfter` | 非负秒数字符串 | 修饰前面最近声明的索引；TTL 到期删除整条文档，不是删除单个字段。别名：`expire`。 |
 
 常见 field tag 组合：
 
@@ -1517,19 +1519,103 @@ Items map[int32]*GDItem `comment:"物品" json:"items,omitempty" bson:"items,omi
 ```
 
 ```go
-// Mongo 索引字段。
-Name string `comment:"名字" json:"name" bson:"name" msgpack:"name" mongodb:"index"`
-```
-
-```go
-// Mongo TTL 字段。注意：TTL 到期删除整条 Mongo 文档。
-ExpireAt int64 `comment:"过期时间" json:"expireAt" bson:"expireAt" msgpack:"expireAt" mongodb:"index,expireAfter:0"`
-```
-
-```go
 // 输入侧 alias 语法糖，等价于同时使用 roleId 作为 json/bson/msgpack 字段名。
 RoleId int64 `comment:"角色ID" alias:"roleId"`
 ```
+
+### Mongo 索引定义范式
+
+索引参数按从左到右的声明顺序解析。`unique`、`order/indexType`、`weight` 和 `expire/expireAfter` 修饰
+前面最近声明的 `index`。
+
+#### 匿名单字段索引
+
+```go
+Name string `json:"name" bson:"name" msgpack:"name" mongodb:"index"`
+```
+
+生成 `{name: 1}`，稳定索引名为 `name_1`。普通索引不需要重复填写 BSON 名，runtime 会根据生成字段元数据完成转换。
+
+#### 唯一索引
+
+```go
+RoleId int64 `json:"roleId" bson:"roleId" msgpack:"roleId" mongodb:"index,unique"`
+```
+
+生成唯一索引 `{roleId: 1}`。`unique` 约束索引键组合，不表示字段不能为空。
+
+#### 降序索引
+
+```go
+CreateAt time.Time `json:"createAt" bson:"createAt" msgpack:"createAt" mongodb:"index,order:-1"`
+```
+
+生成 `{createAt: -1}`。需要稳定自定义名称时可以写成 `mongodb:"index:created_at:-1"`。
+
+#### 跨字段命名复合索引
+
+```go
+type GDUser struct {
+	Platform    string `json:"platform" bson:"platform" msgpack:"platform" mongodb:"index:p_id"`
+	PlatformUId string `json:"platformUId" bson:"platformUId" msgpack:"platformUId" mongodb:"index:p_id"`
+}
+```
+
+相同名称 `p_id` 按 Go 字段声明顺序合并为 `{platform: 1, platformUId: 1}`。任一成员在对应 `index:p_id`
+后声明 `unique`，最终约束的是整个复合索引。
+
+#### 同一字段属于多个索引
+
+```go
+type GDUser struct {
+	Platform    string `json:"platform" bson:"platform" msgpack:"platform" mongodb:"index:p_id"`
+	PlatformUId string `json:"platformUId" bson:"platformUId" msgpack:"platformUId" mongodb:"index:p_id,index"`
+}
+```
+
+生成复合索引 `p_id={platform: 1, platformUId: 1}`，同时生成单字段索引
+`platformUId_1={platformUId: 1}`。这是参考工程 `GDUser` 使用的组合。
+
+#### 显式复合索引
+
+```go
+AreaId int64 `json:"areaId" bson:"areaId" msgpack:"areaId" mongodb:"index::areaId:1:deleted:1:roleId:1"`
+```
+
+生成匿名复合索引 `{areaId: 1, deleted: 1, roleId: 1}`，稳定名称为
+`areaId_1_deleted_1_roleId_1`。显式路径已经位于 Mongo 边界，必须使用 BSON 字段名。
+
+需要自定义名称时保留第一个名称段：
+
+```go
+AreaId int64 `mongodb:"index:active_role:areaId:1:deleted:1:roleId:1"`
+```
+
+这会生成名为 `active_role` 的相同复合索引。
+
+#### 同一字段声明多个显式复合索引
+
+```go
+RoleId int64 `mongodb:"index::roleId:1:state:1:expireAt:1,index::roleId:1:id:1:category:1:state:1:expireAt:1"`
+```
+
+两个 `index` 会保留原始顺序并分别生成。这种形式适合多个查询前缀共享同一个起始字段。
+
+#### TTL 索引
+
+```go
+ExpireAt time.Time `json:"expireAt" bson:"expireAt" msgpack:"expireAt" mongodb:"index,expireAfter:0"`
+```
+
+生成 `{expireAt: 1}` 和 `expireAfterSeconds=0`。TTL 到期后 Mongo 删除整条文档，不是只删除 `ExpireAt` 字段。
+
+#### 文本索引
+
+```go
+Content string `json:"content" bson:"content" msgpack:"content" mongodb:"index:content_search:text,weight:10"`
+```
+
+生成命名文本索引 `content_search={content: "text"}`，字段权重为 `10`。
 
 非法或不推荐写法：
 
@@ -3353,11 +3439,27 @@ stores, exists, err := data.LoadGDRoleStoresByID(ctx, mongoCluster, []int64{1001
 字段级 `mongodb:"index,expireAfter:0"` 表示创建 Mongo TTL 索引。TTL 到期后 Mongo 删除的是整条文档：
 
 ```go
-ExpireAt int64 `json:"expireAt" bson:"expireAt" msgpack:"expireAt" mongodb:"index,expireAfter:0"`
+ExpireAt time.Time `json:"expireAt" bson:"expireAt" msgpack:"expireAt" mongodb:"index,expireAfter:0"`
 ```
 
 这通常用于临时房间、临时任务等可物理过期的数据。不要把它理解成“删除 ExpireAt 字段”。同一类型多个 TTL 字段会产生歧义，
 生成阶段应直接拒绝。
+
+### Mongo 索引初始化
+
+字段索引注解会进入生成的 `TypeSpec`。选择 Mongo 或 Fusion CMod 时，`tx/server` 在开放业务入口前按生成类型注册表
+汇总并创建当前服务 Mongo 路由表覆盖的索引。生成注册表可以包含其他服务使用的 GD 类型；其 `routeType` 未出现在
+本服务配置中时不会参与本次初始化。
+
+- `mongodb:"index"` 创建匿名单字段索引，名称根据最终 BSON 路径和顺序稳定生成，例如 `platformUId_1`。
+- 多个字段的 `mongodb:"index:p_id"` 按 Go 字段声明顺序合并为一个命名复合索引。
+- `mongodb:"index::areaId:1:deleted:1:roleId:1"` 直接声明 BSON 路径和顺序。
+- 多个实例可以并发启动；定义完全相同的 `createIndexes` 是幂等操作。
+- 框架只创建声明的索引，不自动删除数据库已有索引。已有同名索引与新定义不一致时 Mongo 返回冲突，服务启动失败。
+
+显式复合定义里的路径已经位于 Mongo 边界，因此必须使用 BSON 名。例如 Go 字段 `RoleId` 的
+`bson:"_id"` 应写 `_id`，不能写 `RoleId`。普通单字段和跨字段命名索引不需要重复 BSON 名，runtime 会通过生成的
+字段元数据完成转换。
 
 ## 通用文档接口
 

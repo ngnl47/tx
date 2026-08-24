@@ -69,6 +69,11 @@ type BatchFinder interface {
 	FindMany(context.Context, string, ValuesFilter, ...string) ([]map[string]any, []bool, error)
 }
 
+// IndexManager 创建由生成元数据声明的 Mongo 索引。
+type IndexManager interface {
+	EnsureIndexes(context.Context, string, []IndexModel) error
+}
+
 // Client 是生产 Mongo adapter 所需能力的完整编译期契约。
 type Client interface {
 	Updater

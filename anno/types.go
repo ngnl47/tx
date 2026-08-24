@@ -90,16 +90,45 @@ func (defs Definitions) Has(name string, scope Scope) bool {
 	return false
 }
 
+// Argument 表示注解中的一个有序参数。
+// HasValue 为 false 时表示裸 flag，例如 mongodb:"index"；为 true 时表示
+// 键值参数，例如 mongodb:"index:p_id"。Arguments 允许同名参数重复出现。
+type Argument struct {
+	Name     string
+	Value    string
+	HasValue bool
+}
+
 // Directive 表示一个已经解析并绑定到 type 或 field 的注解实例。
 //
-// Params 保存键值参数。Flags 保存紧凑 tag 语法中的裸选项，例如
-// `redis:"omitempty"`。Field 只会在 AST 绑定 field 级注解后设置，值为解析后的字段别名。
+// Arguments 保留声明顺序、重复项以及键值参数和裸 flag 的区别。
+// Field 只会在 AST 绑定 field 级注解后设置，值为 Go 字段名。
 type Directive struct {
-	Name   string            // 注解名称。
-	Scope  Scope             // type 或 field 作用域。
-	Params map[string]string // 解析后的键值参数。
-	Flags  map[string]bool   // 紧凑语法解析出的裸 flag。
-	Field  string            // field 级注解绑定到的字段别名。
+	Name      string     // 注解名称。
+	Scope     Scope      // type 或 field 作用域。
+	Arguments []Argument // 有序参数。
+	Field     string     // field 级注解绑定到的 Go 字段名。
+}
+
+// Param 返回最后一个同名键值参数。需要消费全部重复值时应直接遍历 Arguments。
+func (d Directive) Param(name string) (string, bool) {
+	for i := len(d.Arguments) - 1; i >= 0; i-- {
+		argument := d.Arguments[i]
+		if argument.Name == name && argument.HasValue {
+			return argument.Value, true
+		}
+	}
+	return "", false
+}
+
+// HasFlag 判断是否包含指定裸 flag。
+func (d Directive) HasFlag(name string) bool {
+	for _, argument := range d.Arguments {
+		if argument.Name == name && !argument.HasValue {
+			return true
+		}
+	}
+	return false
 }
 
 // StorageTag 是内置的 type 级存储模式注解定义。
