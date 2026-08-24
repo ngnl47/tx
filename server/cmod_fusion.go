@@ -9,10 +9,7 @@ func (server *Server) fusionCMod() CMod {
 			if server.types == nil || server.bindStorage == nil {
 				return errors.New("generated data binding is required")
 			}
-			if err := server.config.Runtime.DelayTask.validate(); err != nil {
-				return err
-			}
-			return server.config.Runtime.HandoffRecovery.validate()
+			return server.config.Runtime.DelayTask.validate()
 		},
 		start: func(CModContext) error {
 			store := server.runtime.storage
@@ -22,7 +19,7 @@ func (server *Server) fusionCMod() CMod {
 			if err := store.startFusion(server.runtime.lifecycle, server.config.Storage.Redis, server.config.Runtime.storageOptions(), server.types); err != nil {
 				return err
 			}
-			return store.startHandoffWorker(server.runtime.lifecycle)
+			return store.startDelayTaskDispatcher(server.runtime.lifecycle)
 		},
 	}
 }

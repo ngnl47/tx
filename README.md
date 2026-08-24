@@ -144,16 +144,16 @@ func Save[S storage.ChangeStore](value storage.StoreProvider[S]) error {
 }
 ```
 
-`storage.Save` 只有在整个写入策略成功后才会清理 Store 变更状态。以 Fusion 为例，Redis 热写和延迟任务入队是两步操作；如果 Redis 已写但入队失败，`Save` 会返回错误，原变更仍留在 Store 中，下一次调用可以安全重试并再次登记任务：
+`storage.Save` 只有在写入策略成功后才会清理 Store 变更状态。Fusion 把成功边界定义为“Redis 热写成功，并已把根记录登记到进程内延迟任务分发器”。登记不执行外部 I/O，因此成功后返回 `nil` 并清理 Store；真正的任务发布由后台分发器完成：
 
 ```go
 if err := storage.Save(ctx, fusionStore, role.Store()); err != nil {
-	// role.Store() 仍保留本轮变更；不能把这次请求当成已完成持久化。
+	// Redis 热写失败或 Fusion 依赖未完整装配，Store 仍保留本轮变更。
 	return err
 }
 ```
 
-有状态服务由 `txn.Runtime.Flush` 保留失败目标并在下一轮重试；无状态服务的 facade 应把错误交给请求重试或业务失败处理。该路径不承诺 Redis 写入与跨组件任务入队的分布式原子性。
+若延迟任务 backend 暂时不可用，后台分发器保留按根记录去重的本地 pending，输出结构化 error 日志，并按最大一分钟的有界指数退避持续重试；它不会把已经成功的业务写重新返回为失败，避免调用方重放发奖、扣费等业务操作。进程在 Redis 成功后、任务持久化前异常退出仍可能丢失这次本地登记，这是当前方案明确接受的可靠性边界；生产环境应通过日志告警监护 Redis/task backend，并排查导致进程崩溃的根因。
 
 如果业务需要显式持有 Store，例如高频对象在内存中维护变更队列、定时合并后再落地，也可以直接使用
 `storage.Save(ctx, writer, role.Store())` 这类框架层写入入口，并由调用方决定何时保存或重新累计下一轮变更。
@@ -943,7 +943,9 @@ handleRequest()
 
 // 发布时先封口，等待已受理请求；最后才取消根 context。
 ingress.BeginDrain()
-ingress.Wait()
+if err := ingress.Wait(); err != nil {
+    return err
+}
 root.Cancel()
 root.WaitDoneAndWaitGroupWait()
 ```
@@ -974,6 +976,18 @@ if err := control.RegisterLifecycleService(grpcServer, coordinator); err != nil 
 ```
 
 `Drain` 只启动“目录标记为 `draining` + 严格入口封口”；`WaitDrained` 只等待已受理请求结束。最终资源关闭、根 context 取消、事务 Flush、Actor 与 discovery 注销仍由宿主负责。
+
+控制面的服务端排水上限由 `server.RuntimeConfig.Lifecycle.DrainTimeout` 设置，零值默认 5 分钟；它与 `txctl --timeout`
+不是同一个参数，后者只限制运维客户端等待 RPC 的时间。达到服务端上限时，控制状态转为 `failed` 并输出错误日志，
+错误会包含仍有未完成工作的服务名和 pending 数量，例如：
+
+```text
+server drain failed timeout=5m0s err="server: drain service \"game\" with pending 3: context deadline exceeded"
+```
+
+该错误不会把排水当成成功。发布平台只有在 `WaitDrained` 返回 `drained` 后才能发送 `SIGTERM`；`failed` 时应先排查
+对应 handler，不能继续执行正常滚动步骤。超时不会重新开放入口或丢弃 pending 账本；若运维随后显式停止进程，
+`Server.Stop` 仍会使用调用方提供的 context 重新等待已受理工作，而不是复用控制面的超时结果并跳过等待。
 
 启用 discovery 的进程还可以注册独立的 `SlotService`。它接收完整旧 assignment 和下一运行实例 ID；下一
 generation 由框架按 `current.Generation + 1` 推导。项目侧 `SlotController` 必须确认目标实例为 `running`，再以
@@ -1250,14 +1264,14 @@ _ = dispatcher
 
 重启 `game1`、`game2` 不要求其他服务组停机，但必须先 Drain。第一阶段只处理能够
 执行优雅关闭的发布：旧 generation 先进入 `draining`，停止该逻辑槽位的新命令准入；
-全局 `WaitGroupContext` 再等待已登记的后台任务，完成最终 Flush，最后才将旧实例
+服务入口等待已受理工作完成并执行最终 Flush，再取消全局 `WaitGroupContext`、等待后台任务退出，最后才将旧实例
 切为 `stopping` 并注销。固定槽位在这个窗口内不得改派到其他 game 实例，调用方只能等待
 或收到明确的重试错误。
 
 ```text
 旧实例 draining -> 停止该槽位的新命令准入
--> WaitGroupContext 等待已登记的后台任务
--> 完成要求的最终 Flush -> 旧实例 stopping -> 撤销成员 lease -> 停止进程
+-> Ingress 等待已受理工作 -> 完成要求的最终 Flush
+-> 取消 WaitGroupContext 并等待后台任务 -> 旧实例 stopping -> 撤销成员 lease -> 停止进程
 -> 新实例启动并完成依赖预检 -> CAS Promote(slot, old generation, new generation)
 -> 新 generation 接收该槽位请求
 ```
@@ -3336,30 +3350,17 @@ func (f fakeLoader) LoadDocument(context.Context, meta.TypeSpec, storage.RecordK
 Fusion 策略的当前保存路径：
 
 1. 业务变更记录在生成 Store 的字段槽、集合 key/index 和脏子节点索引中。
-2. Redis 在同一条 Lua 中 patch 热数据、递增 `@v`、持久化热文档，并向同物理 slot 的 Hash 登记稳定 marker 和本次写入 token。
-3. Redis delayed task backend 写入延迟保存和可选的热数据淘汰任务。
-4. 仅当任务全部入队成功、`@v` 等于本次 revision 且 marker 仍保存本次 token 时，Lua 才移除交接记录。
-5. Scheduler 到期 claim 任务。
-6. StorageTaskHandler 根据任务定位重新读取 Redis 热文档。
-7. Handler 将 Redis 当前完整文档 replace 到 Mongo。
+2. Redis Lua patch 热数据、递增 `@v`，并把 main/subKey/`@v` 保持为持久状态。
+3. `Strategy` 将 `TypeSpec + RecordKey` 登记到进程内 `DelayTaskDispatcher`；相同根记录只保留最新登记。
+4. Redis 热写与本地登记完成后，`db.Save(role)` 返回 `nil`，Store 清理本轮变更。
+5. 后台分发器把延迟保存和可选的热数据淘汰任务写入 Redis delayed task backend。
+6. 发布失败时输出结构化 error 日志，并按有上限的指数退避持续重试；成功后移除本地 pending。
+7. Scheduler 到期 claim 任务，StorageTaskHandler 根据记录定位重新读取 Redis 当前热文档并 replace 到 Mongo。
 8. 任务成功后通过 Lua complete 删除该任务在 Redis 队列中的状态。
 
-交接标记解决“Redis 已写成功，但进程在 delayed task 入队前退出”的故障窗口。它只保存稳定的
-`Type + ID + ShardKey`，不保存 GD、Store、变更文档、任务 action、`due` 或重试次数。进程仍存活时，
-`HandoffRecoverer` 只重试本进程已知入队或确认失败的 marker；相同 marker 只保留最新 token。进程在交接窗口退出时，
-下一次启动会在业务服务和 delayed task Scheduler 启动前完整遍历一次所有 Redis endpoint 的固定物理 slot Hash，
-按当前 `TypeSpec` 重建 save/delete 任务。运行期不再周期遍历所有 slot，不需要为恢复器分配 worker 身份，也不会执行
-Redis `SCAN` 或形成第二套任务队列。
+本地 pending 只保存根记录的 `TypeSpec + RecordKey`，不保存 GD、Store、变更文档或业务对象快照；同一角色连续保存一万次，在发布受阻期间仍只占一条根记录登记。它不设置需要业务估算的容量阈值。分发器由 `WaitGroupContext` 管理生命周期，正常服务关闭时不再突然中断正在组织的业务调用。
 
-同一批次启动多个 Fusion 实例时，它们会竞争一个带随机 token 的 Redis 启动 lease。只有持有者扫描全部 slot，并按
-`startupLeaseTTL/3` 续租；其他实例等待 `complete`。持有者崩溃后 lease 到期，等待实例可接管；旧 token 不能续租、
-完成或释放新持有者的 lease。等待超过 `startupWaitTimeout` 或续租失去所有权会使当前实例启动失败。这个启动 lease
-只协调完整恢复扫描，不是 Scheduler claim 单条任务使用的 task lease。
-
-标准 `server` 不把 Redis `PING` 成功等同于 Fusion 恢复链路可用。启动恢复使用真实
-`read_handoffs.lua` 读取全部固定 slot；若 Redis 版本不支持 `HRANDFIELD ... WITHVALUES`、ACL 禁止该命令、
-Lua 不可执行、返回协议损坏或遗留 marker 无法恢复，`Server.Run` 会直接返回启动错误，延迟回写 Scheduler 和业务
-服务都不会启动。例如 Redis 连接正常但账号缺少 `HRANDFIELD` 权限时，不能让进程进入 running 后再异步报告恢复失败。
+Redis 热写与持久化任务发布不是分布式事务。当前设计优先保证业务调用语义明确：Redis 热写失败返回错误；Redis 已成功后，任务 backend 的短时故障由后台日志和重试处理，不让调用方因模糊错误重放业务。若进程恰好在热写成功、任务持久化前异常崩溃，本地 pending 会丢失；框架不为这个低概率窗口增加同槽索引、全槽扫描和额外 Redis I/O。外部日志系统应对 `fusion delay task publish failed` 告警，运维人员据此检查和修复集群状态。
 
 延迟任务队列使用 bucket hash tag，支持多个服务实例并发消费。语义是 at-least-once，Mongo 回写必须保持存储幂等。
 任务失败重试时，Scheduler 会输出结构化错误日志；失败原因不写入 Redis 任务状态，避免错误字符串占用队列内存。重试间隔由 lease 的持久化 `Attempts` 计算：`retryInitialDelay` 按 `retryMultiplier` 递增至 `retryMaxDelay`，并可施加不超过最大值的 `retryJitter`。达到上限后任务持续重试，不会因次数耗尽被丢弃。
@@ -3389,7 +3390,7 @@ Fusion 延迟任务队列接受保存 action 和 Redis 热数据淘汰 action；
 数值定位在 Redis 任务载荷中精确往返。比如业务使用
 `uint64(9223372036854775809)` 作为记录 ID 时，claim 后仍得到同一个 `uint64`；框架不会先转成
 `float64` 再舍入，否则 `Complete` 会计算出另一个幂等任务键并让原 lease 无法正常结算。
-Fusion 保存路径要求 Redis change applier、Mongo document loader、Fusion 延迟任务队列与交接定点重试器都已装配；缺少其中任一项时，非空变更会在 Redis I/O 前返回错误。延迟任务执行还要求 handler、Redis 文档读取、Mongo replace 和 Redis 热数据淘汰所需的 revision/lock 组件完整可用。`Strategy.Validate()` 会汇总检查 Redis change applier、document loader、document replacer、record locker、Mongo document loader、Fusion 延迟任务队列和交接定点重试器；项目启动阶段必须在 Redis/Mongo 探活后调用它。标准 `server` 还会执行一轮完整启动恢复，验证恢复协议所需命令、Lua 和 ACL 权限并处理遗留 marker。`txgame/server` 的 `NewStorage` 已执行依赖装配和连接探活，worker 启动边界执行完整恢复；任一环节失败都不会继续启动业务服务。`Scheduler.Start` 也返回 `error`，项目启动代码必须处理，不能在 worker 未运行时继续对外服务：
+Fusion 保存路径要求 Redis change applier、Mongo document loader 与本地延迟任务分发器完整装配；缺少任一项时，非空变更会在 Redis I/O 前返回错误。延迟任务执行还要求 handler、Redis 文档读取、Mongo replace 和 Redis 热数据淘汰所需的 revision/lock 组件完整可用。`Strategy.Validate()` 会汇总检查这些依赖；标准 `server` 在 Redis/Mongo 探活后创建并启动分发器与 Scheduler，任一装配或启动失败都不会继续启动业务服务。`Scheduler.Start` 返回 `error`，项目启动代码必须处理：
 
 ```go
 if err := scheduler.Start(appContext); err != nil {
@@ -3403,7 +3404,7 @@ if err := scheduler.Start(appContext); err != nil {
 
 健康探针会记录开始检查时的 backend generation。若探针执行期间有真实业务 I/O 报告了更新的故障，较早的成功探针结果不能清除这次新故障；下一轮在新 generation 上完整成功的探针才会重新开放入口。
 
-Fusion 热写只在 Redis 同步写入、延迟任务入队和交接确认调用均未报错后返回，不等待 Mongo。若确认时发现 revision 或 token 已变化，说明存在更新写入或新的热数据生命周期，当前调用可以成功，但交接记录必须留给恢复器重建最新任务。业务变更写入 Redis 时会把 main/subKey/`@v` 转为持久状态，不允许有限 TTL 在 Mongo 回写前淘汰脏热数据。Mongo 暂时不可达不会丢弃已经存在的延迟任务、交接记录或脏热文档；handler 返回错误后，Scheduler 通过 lease/retry 保留任务并持续退避重试，恢复后继续把 Redis 当前文档回写 Mongo。handler 的 backend 错误也会立即更新项目健康状态，但健康 gate 不会阻止 worker 自身继续尝试恢复。
+Fusion 热写在 Redis 同步写入并完成本地登记后返回，不等待 delayed task backend 或 Mongo。业务变更写入 Redis 时会把 main/subKey/`@v` 转为持久状态，不允许有限 TTL 在 Mongo 回写前淘汰脏热数据。任务发布暂时失败时，本地分发器持续重试并输出 error 日志；任务已经持久化后，Mongo 暂时不可达也不会丢弃任务或脏热文档，Scheduler 通过 lease/retry 持续退避，恢复后继续把 Redis 当前文档回写 Mongo。handler 的 backend 错误会更新项目健康状态，但健康 gate 不阻止 worker 自身继续尝试恢复。
 
 ```go
 role.SetName("new-name")
@@ -3457,20 +3458,16 @@ Fusion 需要三类组件：
 
 ```go
 fusionStore := fusion.Strategy{
-	RedisApplier:             redisCluster,
-	RedisLoader:              redisCluster,
-	RedisReplacer:            redisCluster,
-	RedisLocker:              redisCluster,
-	MongoLoader:              mongoCluster,
-	MongoQueue:               delayQueue,
-	HandoffMaxPendingPerSlot: 1024,
+	RedisApplier:  redisCluster,
+	RedisLoader:   redisCluster,
+	RedisReplacer: redisCluster,
+	RedisLocker:   redisCluster,
+	MongoLoader:   mongoCluster,
+	DelaySubmitter: fusion.NewDelayTaskDispatcher(delayQueue),
 }
 ```
 
-普通项目通过 `server.RuntimeConfig.HandoffRecovery.MaxPendingPerSlot` 配置该上限，不直接构造 Strategy。
-零值使用默认值 `1024`。上限统计的是单个 Redis 物理 slot 中尚未确认的根记录数：已经登记的记录即使 slot
-已满仍可继续更新；只有新的根记录会在任何业务文档被修改前返回 `redis.ErrHandoffFull`。这条防线限制任务系统
-持续不可用时的交接标记增长，不改变正常 save/update 吞吐路径。
+标准项目不直接构造这些组件；`tx/server` 会创建共享 `DelayTaskDispatcher`，把它同时注入 Fusion Strategy，并使用服务根 `WaitGroupContext` 启动后台发布循环。分发器的重试参数采用框架默认值，不进入业务 YAML。
 
 业务写入：
 
@@ -3482,30 +3479,22 @@ err := storage.Save(ctx, fusionStore, role.Store())
 
 执行后：
 
-1. Redis 立即写入热数据，同时递增 `@v` 并登记交接标记；main/subKey/`@v` 都保持持久状态，避免 Mongo 回写前被 TTL 淘汰。
-2. Fusion 延迟任务队列记录一条延迟保存任务，任务到期时间来自 `delaySaveTime`。
-3. 如果配置了 `delayDelTime > 0`，队列还会记录一条热数据淘汰任务，到期时间为 `delaySaveTime + delayDelTime`。
-4. 全部任务入队后按本次 revision 和 token 条件移除交接记录；进程中途退出时，恢复器会据 marker/token 重新执行第 2、3 步。
-5. 本次调用不等待 Mongo 立即写入。
+1. Redis 立即写入热数据并递增 `@v`；main/subKey/`@v` 都保持持久状态，避免 Mongo 回写前被 TTL 淘汰。
+2. Strategy 在进程内登记当前根记录，随后本次调用返回 `nil`，不等待 Mongo。
+3. 后台分发器记录一条延迟保存任务，到期时间来自 `delaySaveTime`。
+4. 如果配置了 `delayDelTime > 0`，分发器还记录一条热数据淘汰任务，到期时间为 `delaySaveTime + delayDelTime`。
+5. 发布失败时保留本地登记并输出 error 日志，成功后移除该根记录的 pending。
 
 例如 Redis 已经保存 `role:{470001}`，但任务 backend 暂时不可用：
 
 ```go
 role.SetName("bob")
 err := db.Save(role)
-// err != nil；role.Store() 仍保留变更状态。
-// Redis 中的新名字和同槽交接标记都已经存在。
+// err == nil；Redis 中的新名字已经是本次业务提交结果。
+// 后台会输出 fusion delay task publish failed，并持续重试任务发布。
 ```
 
-`db.Save` 返回原错误，Store 变更仍保留；同时 Recoverer 用独立于请求的服务生命周期登记该 marker。进程存活时，
-后台只按 marker 定点重试，不遍历其他 slot。若 save 任务已经入队、delete 任务失败，重试会按同一幂等任务键覆盖或
-合并现有任务，不会产生第二份并发 lease。
-
-如果进程在登记本地重试前退出，Redis 同槽 marker 仍然存在。下一次服务启动会完整遍历一次固定 slot，按
-`GDRoleTypeSpec` 重新登记 save/delete 任务，然后用当前 `@v` 与读取到的 token 条件移除记录。若恢复期间又有一次
-业务写入使 revision 从 `18` 变为 `19`，或删除重建后 revision 再次从 `1` 开始，旧 token 都不能删除新交接记录；
-新 token 会留给当前进程的定点重试或下一次启动恢复。合法的 revision 条件热数据淘汰会在同一条 Lua 中清理 marker，
-避免残留。
+相同根记录再次保存时只更新本地 pending 的代次；旧发布结果不能误删发布期间产生的新登记。若 save 已入队而 delete 发布失败，重试会按相同幂等任务键覆盖或合并既有任务，不产生第二份并发 lease。进程异常退出会丢失尚未持久化的本地 pending，因此日志告警不是可选装饰，而是当前可靠性边界的一部分。
 
 ### 延迟回写任务
 

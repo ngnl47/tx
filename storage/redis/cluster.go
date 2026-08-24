@@ -100,53 +100,6 @@ func (c *Cluster) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 	return adapter.ApplyChangesWithOptions(ctx, spec, key, source, resolver, values, options)
 }
 
-func (c *Cluster) ApplyChangesWithHandoff(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver, options storage.ApplyOptions, handoff HandoffOptions) (HandoffReceipt, error) {
-	adapter, err := c.adapterFor(ctx, spec, key)
-	if err != nil {
-		return HandoffReceipt{}, err
-	}
-	return adapter.ApplyChangesWithHandoff(ctx, spec, key, source, resolver, values, options, handoff)
-}
-
-func (c *Cluster) ConfirmHandoff(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, marker string, receipt HandoffReceipt) (bool, error) {
-	adapter, err := c.adapterFor(ctx, spec, key)
-	if err != nil {
-		return false, err
-	}
-	return adapter.ConfirmHandoff(ctx, spec, key, marker, receipt)
-}
-
-// ReadHandoffs 分批读取所有已装配 Redis endpoint 的固定物理 slot Hash，不扫描 keyspace。
-func (c *Cluster) ReadHandoffs(ctx context.Context, cursor uint64, slotLimit int, entryLimit int) ([]HandoffEntry, uint64, error) {
-	if c == nil || len(c.order) == 0 || slotLimit <= 0 || entryLimit <= 0 {
-		return nil, cursor, ErrInvalidHandoff
-	}
-	total := uint64(len(c.order) * redisClusterSlotCount)
-	if uint64(slotLimit) > total {
-		slotLimit = int(total)
-	}
-	entries := make([]HandoffEntry, 0)
-	processed := uint64(0)
-	for processed < uint64(slotLimit) {
-		position := (cursor + processed) % total
-		shardIndex := position / redisClusterSlotCount
-		slot := position % redisClusterSlotCount
-		name := c.order[shardIndex]
-		remaining := uint64(slotLimit) - processed
-		if untilNextShard := uint64(redisClusterSlotCount) - slot; remaining > untilNextShard {
-			remaining = untilNextShard
-		}
-		batch, _, err := c.shards[name].ReadHandoffs(ctx, slot, int(remaining), entryLimit)
-		if err != nil {
-			nextEndpoint := ((shardIndex + 1) * redisClusterSlotCount) % total
-			return entries, nextEndpoint, err
-		}
-		entries = append(entries, batch...)
-		processed += remaining
-	}
-	return entries, (cursor + processed) % total, nil
-}
-
 func (c *Cluster) ReplaceDocumentWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any, options storage.ApplyOptions) error {
 	adapter, err := c.adapterFor(ctx, spec, key)
 	if err != nil {

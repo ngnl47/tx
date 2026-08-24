@@ -5,7 +5,6 @@ end
 local FLAG_TRUE = "1"
 local RESULT_NOT_EXISTS = "ne"
 local RESULT_PATH_TYPE_MISMATCH = "pt"
-local RESULT_HANDOFF_FULL = "hf"
 local PATCH_MODE_REPLACE = "1"
 local PATCH_MODE_PARTIAL_REPLACE = "2"
 local PATCH_MODE_OPERATIONS = "3"
@@ -16,17 +15,7 @@ local arg_len = #ARGV
 if arg_len <= 2 then
   return "ok"
 end
-local handoff = #KEYS == 2
 local tail_len = 2
-local marker = nil
-local token = nil
-local max_pending = 0
-if handoff then
-  tail_len = 5
-  marker = ARGV[arg_len - 2]
-  token = ARGV[arg_len - 1]
-  max_pending = tonumber(ARGV[arg_len])
-end
 local upsert = ARGV[arg_len - tail_len + 1] == FLAG_TRUE
 
 if not upsert then
@@ -43,10 +32,6 @@ if ttlMode == 0 then
   if ttl == 0 then
     ttl = 1
   end
-end
-
-if handoff and redis.call("hexists", KEYS[2], marker) == 0 and redis.call("hlen", KEYS[2]) >= max_pending then
-  return RESULT_HANDOFF_FULL
 end
 
 local function get_type(v)
@@ -310,9 +295,5 @@ if ttl > 0 then
   redis.call("expire", vkey, ttl)
 else
   redis.call("persist", vkey)
-end
-if handoff then
-  redis.call("hset", KEYS[2], marker, token)
-  return revision
 end
 return "ok"

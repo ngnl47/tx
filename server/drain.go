@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
+	txlog "github.com/ngnl47/tx/log"
 	"github.com/ngnl47/tx/modules/control"
 )
 
 var errDrainNotStarted = errors.New("server: drain has not started")
+
+const defaultDrainTimeout = 5 * time.Minute
 
 type hostDrainer interface {
 	Drain(context.Context) error
@@ -22,23 +26,22 @@ type drainCoordinator struct {
 	status   control.Status
 	drainErr error
 	done     chan struct{}
+	timeout  time.Duration
 }
 
-func newDrainCoordinator(host hostDrainer) *drainCoordinator {
+func newDrainCoordinator(host hostDrainer, timeout time.Duration) *drainCoordinator {
 	return &drainCoordinator{
-		host:   host,
-		status: control.Status{State: control.StateRunning},
+		host:    host,
+		status:  control.Status{State: control.StateRunning},
+		timeout: effectiveDrainTimeout(timeout),
 	}
 }
 
 // BeginDrain 将实例标记为不可用于普通路由，再异步启动入口排水。
 // 控制 RPC 可以在已接受工作完成前返回，调用方通过 WaitDrained 等待最终状态。
-func (c *drainCoordinator) BeginDrain(ctx context.Context) error {
+func (c *drainCoordinator) BeginDrain(context.Context) error {
 	if c == nil || c.host == nil {
 		return errors.New("server: drain host is not configured")
-	}
-	if ctx == nil {
-		ctx = context.Background()
 	}
 	c.mu.Lock()
 	if c.done != nil {
@@ -55,7 +58,13 @@ func (c *drainCoordinator) BeginDrain(ctx context.Context) error {
 	c.mu.Unlock()
 
 	go func() {
-		c.finish(c.host.Drain(context.Background()))
+		ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
+		defer cancel()
+		err := c.host.Drain(ctx)
+		if err != nil {
+			txlog.Error("server drain failed", "timeout", c.timeout, "err", err)
+		}
+		c.finish(err)
 	}()
 	return nil
 }
@@ -107,4 +116,11 @@ func (c *drainCoordinator) finish(err error) {
 		c.status = control.Status{State: control.StateDrained}
 	}
 	close(c.done)
+}
+
+func effectiveDrainTimeout(timeout time.Duration) time.Duration {
+	if timeout <= 0 {
+		return defaultDrainTimeout
+	}
+	return timeout
 }

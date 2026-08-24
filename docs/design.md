@@ -1019,7 +1019,7 @@ writer.ApplyChangesWithOptions(...)
     +-- error   -> 保留全部变更状态
 ```
 
-只要策略整体没有成功，就不能清理 Store。Fusion 中 Redis patch 成功但延迟任务入队失败时，调用仍返回错误并保留变更状态，下一次重试允许重复写 Redis并再次登记任务。
+只要策略整体没有成功，就不能清理 Store。Fusion 的策略成功边界是 Redis patch 成功且根记录已经登记到进程内分发器；登记不执行外部 I/O。延迟任务 backend 发布失败发生在业务调用返回之后，由分发器保留本地 pending、输出结构化 error 日志并持续重试，不能反向把已经成功的 Redis 业务写改成失败。
 
 ### 文档返回值严格性
 
@@ -1046,15 +1046,9 @@ mainKey                   根文档
 mainKey:<subKey>          拆分的大字段文档
 mainKey@v                 热数据生命周期版本
 mainKey@lock              回源、回写和删除互斥锁
-tx:fusion:handoff:{tag}   对应物理 slot 的 Fusion 交接 Hash
 ```
 
 带 subKey 的类型仍必须存在 main 文档。即使全部业务字段都拆到 subKey，main 至少保存 `{}`，作为热记录存在标记。
-
-Fusion 交接 Hash 不是业务文档，也不是 delayed task backend。进程为 Redis 的 16384 个物理 slot 各维护一个
-固定 key；`tag` 是预先求得的规范 hash tag，使该 Hash 与落在同一物理 slot 的任意业务记录可以进入同一条 Lua。
-Hash field 编码稳定的 `Type + ID + ShardKey`，value 保存本次热写的随机 token。稳定 field 控制容量，token
-区分同一记录的不同写入和不同热数据生命周期。
 
 ### 为什么业务文档不使用 Redis Hash 或 RedisJSON
 
@@ -1070,9 +1064,7 @@ Hash field 编码稳定的 `Type + ID + ShardKey`，value 保存本次热写的�
 
 Redis Lua 在对应 main/subKey 文档内应用 set/delete/clear/replace。局部路径缺少父对象时可以创建正确的中间 table；如果已存在父节点类型与路径要求冲突，返回错误，不把异常标量自动替换成容器。
 
-Fusion 热写会把业务文档 key 与对应物理 slot 的交接 Hash key 一起作为 `KEYS[]` 传入同一脚本。脚本先检查
-Hash 容量，再 patch 文档、递增 revision、持久化 main/subKey/`@v`，最后 `HSET marker token`。容量检查必须发生在
-任何业务文档写入之前；新 marker 超限时返回 `ErrHandoffFull`，已有 marker 可以继续更新 token。
+Fusion 热写与普通 Redis 文档写入使用同一套 Lua：patch 文档、递增 revision，并持久化 main/subKey/`@v`。延迟任务登记属于进程内分发器职责，不向业务文档 Lua 增加第二类 key 或容量协议。
 
 严格失败是为了暴露数据来源问题。运行时自动修复异常拓扑可能掩盖旧代码或人工写库造成的数据损坏。
 
@@ -1081,10 +1073,6 @@ Hash 容量，再 patch 文档、递增 revision、持久化 main/subKey/`@v`，
 同一记录的 main、subKey、`@v` 和 `@lock` 必须共享 hash tag。云代理或单节点可直接执行 MGET；本地原生 Redis Cluster 在客户端按 slot/hash tag 分组后多次 MGET。
 
 Lua 的 `KEYS[]` 是 Redis 命令显式标记的 key 参数。任意一次 Lua 调用涉及的 key 必须同 slot；云代理不能分析脚本内部任意字符串并替调用方拆分执行。
-
-交接 Hash 不复用业务 hash tag 文本，而是按业务 key 算出物理 slot，再从进程级只读表取得该 slot 的规范 key。
-这使恢复器只需访问固定的 16384 个已知 key，不需要保存所有业务 tag，也绝不执行 `SCAN`。稳态查找是数组索引；
-完整 key 在一次性建表时生成，热写路径不再分配拼接字符串。
 
 ## Mongo 后端
 
@@ -1122,15 +1110,19 @@ Fusion 不是双写事务，也不是业务事件队列。
 业务 Store 变更状态
       |
       v
-Redis 同一 Lua：容量预检 + patch + @v 递增 + PERSIST + HSET(marker, token)
+Redis Lua：patch + @v 递增 + PERSIST
       |
       v
-Fusion 延迟任务队列登记记录定位
+进程内 DelayTaskDispatcher 登记 TypeSpec + RecordKey
       |
       v
-revision + token 条件确认并移除交接标记
+当前请求成功并清理 Store 变更状态
+
+后台分发器
       |
-      +---- 当前请求成功并清理 Store 变更状态
+      +---- 发布成功 -> 移除本地 pending
+      |
+      +---- 发布失败 -> error log + 有上限指数退避重试
 
 到期 worker
       |
@@ -1145,75 +1137,35 @@ claim save task -> 读取 Redis 当前完整文档 -> Replace Mongo -> complete
 
 延迟任务不保存 GD 快照，也不保存每次变更。十分钟内修改同一角色多次，任务到期只读取一次 Redis 最终状态。
 
-### 热写与任务队列交接
+### 热写与任务发布
 
-Redis 文档和 delayed task backend 即使都位于 Redis，也可能因为 hash tag 不同而无法进入同一条 Cluster Lua。
-因此 Fusion 使用同槽交接标记封住两步提交之间的进程退出窗口，而不是把任务内容复制到另一套 outbox：
+Redis 热文档和 delayed task backend 是两个独立写边界。第一版不引入持久化 outbox 或同槽索引，而是明确划分同步业务提交与后台任务发布：
 
 ```mermaid
 sequenceDiagram
     participant B as 业务 Save
     participant R as Redis 热文档
-    participant H as 同槽交接 Hash
+    participant D as DelayTaskDispatcher
     participant Q as delayed task backend
-    participant W as HandoffRecoverer
 
     B->>R: Lua patch + INCR @v + PERSIST
-    R->>H: 同一 Lua HSET(marker, token-A)
-    R-->>B: receipt(revision=18, token-A)
-    B->>Q: Enqueue save/delete
-    alt 全部入队成功
-        B->>H: revision==18 且 token==token-A 时 HDEL
-    else 入队或确认失败且进程存活
-        B->>W: QueueHandoffRetry(marker, token-A)
-        W->>R: 读取当前 revision
-        W->>Q: 按当前 TypeSpec 重建 save/delete
-        W->>H: revision 和 token 均未变化时 HDEL
-    else 进程在交接窗口退出
-        H-->>W: 下一次启动完整遍历时返回 marker/token
-        W->>R: 读取当前 revision
-        W->>Q: 按当前 TypeSpec 重建 save/delete
-        W->>H: revision 和 token 均未变化时 HDEL
+    R-->>B: 写入成功
+    B->>D: Submit(TypeSpec, RecordKey)
+    D-->>B: 本地登记完成
+    B-->>B: 返回 nil，清理 Store
+    D->>Q: Enqueue save/delete
+    alt 发布成功
+        D->>D: 删除相同代次 pending
+    else 发布失败
+        D->>D: 输出 error log 并退避重试
     end
 ```
 
-交接标记没有 `saveDue`、`deleteDue`、`nextRecoverAt`、action 或重试状态。恢复时按当前时间和当前
-`TypeSpec.Storage.DelaySave/DelayDelete` 重新调用现有入队逻辑；几毫秒级到期时间差不改变延迟保存语义。
-真正的到期、lease、pending、attempts 与指数退避只存在于 delayed task backend。
+本地 pending 按根记录身份去重，每次 Submit 生成递增代次。分发器复制当前 pending 后执行外部 I/O；只有发布成功且 map 中仍是同一代次时才删除，避免发布期间的新业务写被旧结果误清。save 已成功而 delete 失败时保留整条根记录，下一轮按同一幂等任务键重发 save/delete；任务 backend 合并重复任务，不产生并发 lease。
 
-恢复分为两个互补阶段：
+发布失败日志固定为 `fusion delay task publish failed`，包含 pending 数、重试等待和完整错误链，供外部日志中心告警。退避从一秒开始，倍增到一分钟后持续按封顶间隔重试，并使用随机扰动错开实例压力。业务不配置本地 pending 容量；相同根记录不会膨胀条数，剩余容量由进程内存和运行监控负责。
 
-1. **启动全量恢复**：`HandoffRecoverer.Start` 在注册 goroutine 前从 cursor `0` 开始完整走完一轮全部 Redis endpoint
-   的固定物理 slot。每批调用 `HRANDFIELD ... WITHVALUES`，同一 endpoint 的多条读取通过 pipeline 提交；每个 Hash
-   的读取上限与写入侧 `HandoffMaxPendingPerSlot` 一致。任一读取、marker 解码、TypeSpec 查找、任务入队或确认失败都
-   直接终止启动。标准 server 只有在完整恢复成功后才启动 delayed task Scheduler 和业务服务。
-2. **运行期定点重试**：Redis 热写成功后，若任务入队或交接确认调用失败，`Strategy` 返回原始错误并把本次
-   `marker + token` 登记到进程内去重表。相同 marker 只保留最新 token；后台循环只处理这张表，失败时使用有上限的
-   指数退避，成功后删除对应 token。它不调用 `ReadHandoffs`，不遍历 slot，也不需要选举 leader 或分配微服务身份。
-
-多个 Fusion 实例同时启动时，全量恢复还受 Redis 启动 lease 协调。lease key 从 delay task prefix 派生并保持在固定
-hash slot，值只能是 `running:<token>` 或 `complete:<token>`。第一个取得 lease 的实例遍历全部 handoff slot，并按
-`startupLeaseTTL/3` 续租；其他实例只等待完成状态，不重复扫描。持有者成功后用 token CAS 写入 `complete`，失败时
-释放自己的 token；崩溃后由 TTL 允许其他实例接管。旧持有者不能续租、完成或释放新持有者的 lease。等待超过
-`startupWaitTimeout`、读取到未知状态或续租丢失所有权都会使当前 Fusion CMod 启动失败，不能默认放行业务服务。
-
-启动 lease 与 Scheduler task lease 是两份不同契约：前者只协调“一批并发启动实例中由谁做一次完整扫描”，后者
-保护单条到期任务的领取和结算。启动完成状态保留到 TTL 到期，让同一批实例跳过重复工作；后续新批次会再次扫描，
-确保较晚进程异常遗留的 marker 仍能恢复。
-
-空 Hash 返回空 JSON 数组。启动全量恢复本身会执行真实读取脚本，因此同时验证 Redis 命令版本、Lua、ACL 和返回
-协议，无需再维护单独的能力探测接口。运行期去重表是进程内故障恢复状态，不是第二套持久化 outbox；若进程退出，
-本地状态可以丢失，因为同槽 marker 仍由下一次启动全量恢复接管。部署环境必须由进程守护或容器编排重新拉起异常
-退出的 storage runtime；若长期没有新进程启动，marker 和 Redis 脏热文档会安全保留，但对应 Mongo 回写也会停留等待。
-
-revision 与随机 token 共同构成 fencing：恢复器读取 revision `18` 和 token-A 后，若业务又写出 revision `19`
-和 token-B，旧恢复器只能得到 stale。即使热记录被合法删除后新生命周期的 revision 又从 `1` 开始，旧 token-A
-也不能删除 token-B。合法的 revision 条件热数据删除会在同一条 Lua 中清理该记录的 marker，避免无主记录长期占用容量。
-后续定点重试或启动恢复按 Redis 当前终态重建任务；既有任务键会在 delayed task backend 中合并，不产生并发 lease。
-
-单 slot 标记容量只限制尚未确认的不同根记录数。Hash 已包含同一 marker 时，后续高频更新仍允许继续写；Hash
-达到上限后，新的根记录在 patch 前失败，避免 delayed task backend 长期不可用时交接索引无界增长。该上限不是
-内存精确预算，也不限制单个 Store 的变更路径数。
+这个方案接受一个明确故障窗口：进程在 Redis 热写成功、任务持久化成功之前异常退出，本地 pending 不可恢复。选择该边界是为了避免每次热写增加持久化索引 I/O、全槽扫描、启动选举和容量闸门。正确性要求转化为两条可运维契约：进程存活时发布失败绝不静默；进程异常退出时应排查根因，而不是依赖框架用更复杂的旁路协议掩盖崩溃。
 
 任务载荷使用 JSON 保存定位信息，但数值恢复不能经过有损 `float64`。Redis backend 先恢复
 `int64`，超过 `int64` 上限的非负整数再精确恢复为 `uint64`；例如
@@ -1313,8 +1265,7 @@ Mongo 或 Fusion 延迟任务队列故障时，脏热数据允许超过 `delayDe
 | Mongo | Mongo |
 | Fusion | Redis 和 Mongo |
 
-启动时探活并 fast-fail；Fusion 除连接探活外，还必须完整恢复一次全部 Redis endpoint 的交接 Hash，
-该过程同时验证交接读取脚本可执行。
+启动时探活并 fast-fail；Fusion 还必须完成 Redis/Mongo、延迟任务 backend、分发器和 Scheduler 的完整装配，任何组件缺失都不能启动业务服务。
 运行期由真实 I/O 错误和后台探针维护 backend generation。每次业务调用不额外 Ping。
 
 Redis 与 Mongo 的 Adapter/Cluster 构造器都在启动装配阶段校验完整 client、router 和 shard 集合，不能创建一个等待首次
@@ -1685,16 +1636,23 @@ HeapAlloc 受整个进程影响，不能作为 Manager 拒绝服务的唯一依�
 等待已受理 handler / Procedure / mailbox 工作完成
         |
         v
-取消后台循环并等待退出
+停止项目服务并执行事务最终 Flush
         |
         v
-最终限时 Flush
+停止共享 RPC，取消后台循环并等待退出
         |
         v
-关闭外部 client 和撤销服务注册
+关闭 Actor、服务发现、存储 client 等物理资源
 ```
 
 最终 Flush 使用独立限时 context，不能因为运行 context 已取消而立刻失败。超时必须返回错误并输出当前可观测状态，不能无限等待或静默退出。
+
+控制面排水还有一份独立的服务端 `drainTimeout`。`lifecycle.Ingress` 原地维护已受理但未完成的工作计数，并通过
+一次性完成 channel 让等待响应 context；它不为每次等待创建 goroutine。超时错误必须带服务名和 pending 数量，
+`drainCoordinator` 将状态置为 `failed` 并记录错误。运维客户端自己的 RPC timeout 只限制客户端等待，不能替代
+服务端上限。服务端超时只结束控制面的本次等待，不会重新开放入口，也不会把未完成工作从账本移除；后续显式
+`Server.Stop` 仍会使用自己的 context 重新等待 pending 清零。排水失败后不能继续正常滚动发布，避免在仍有已受理
+工作时把失败误判成安全关闭。
 
 ### 排水与关闭的区别
 
@@ -1726,6 +1684,9 @@ facade、注入身份解析/业务分发回调和声明可选业务服务。`ser
 `server/services/msgq` 是 tx 提供的通用服务适配器；项目配置转换会延迟到对应服务真正被当前进程选中时执行，
 未选服务的专属配置不能阻止其他服务启动。
 
+`runtime.lifecycle.drainTimeout` 属于所有 L4 服务共享的进程生命周期配置，不由某个 CMod 或服务启用。零值使用
+5 分钟默认值；txgame 模板显式配置该值，便于发布环境审阅。
+
 每个 `server.Service` 用 `Spec` 声明稳定名称与框架能力依赖，并在 `Start(server.Context)` 中只注册或启动
 本服务资源。`server.Context` 只暴露消费能力，不暴露进程资源所有权；普通业务 handler 应使用项目 facade。
 服务启动失败时按已启动
@@ -1735,12 +1696,12 @@ facade、注入身份解析/业务分发回调和声明可选业务服务。`ser
 discovery -> draining
   -> service ingress drain and accepted-work wait
   -> service stop
-  -> shared RPC stop
-  -> root WaitGroupContext cancel and wait
+  -> project cleanup and generated storage unbind
   -> transaction final flush
+  -> shared RPC graceful stop
+  -> root WaitGroupContext cancel and wait
   -> actor shutdown
   -> discovery stopping/close
-  -> project cleanup
   -> storage close
 ```
 
@@ -1869,10 +1830,13 @@ Actor 间跨实例通信是网状直连，不经过 msgq 中继。msgq 只负责
 入口不再分配新工作
        |
        v
-WaitGroupContext 等待已受理工作
+Ingress 等待已受理工作
        |
        v
 最终 Flush
+       |
+       v
+取消 WaitGroupContext 并等待后台循环退出
        |
        v
 旧实例 stopping / 撤销 lease

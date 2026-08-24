@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/ngnl47/tx/lifecycle"
 	controlpb "github.com/ngnl47/tx/modules/control/pb"
@@ -15,7 +16,7 @@ func TestControlServerDrainsThroughCoordinator(t *testing.T) {
 	root := lifecycle.NewWaitGroupContext(context.Background())
 	defer func() { root.Cancel(); root.WaitDoneAndWaitGroupWait() }()
 	host := &blockingDrainHost{started: make(chan struct{}), release: make(chan struct{})}
-	coordinator := newDrainCoordinator(host)
+	coordinator := newDrainCoordinator(host, time.Second)
 	server, err := startControlServer(root, "127.0.0.1:0", controlServerOptions{Lifecycle: coordinator})
 	if err != nil {
 		t.Fatalf("StartControlServer returned error: %v", err)
@@ -54,7 +55,7 @@ func TestControlServerPromotesLogicalSlot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSlotPromoter returned error: %v", err)
 	}
-	coordinator := newDrainCoordinator(&blockingDrainHost{})
+	coordinator := newDrainCoordinator(&blockingDrainHost{}, time.Second)
 	server, err := startControlServer(root, "127.0.0.1:0", controlServerOptions{Lifecycle: coordinator, Slots: promoter})
 	if err != nil {
 		t.Fatalf("StartControlServer returned error: %v", err)

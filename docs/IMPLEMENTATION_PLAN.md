@@ -67,6 +67,7 @@ RedisJSON/ReJSON、SQL 和其他存储后端不进入当前主线。评审时必
 ## 明确不做
 
 - 不在 tx 内实现分布式事务、跨实例锁或 Redis/Mongo 原子双写。
+- 不为 Fusion 热写与延迟任务发布增加同槽持久交接索引、启动全槽扫描或容量闸门；进程存活期由本地去重重试和结构化错误日志保障任务发布。
 - 不允许 Fusion 根记录物理删除；业务使用状态字段逻辑删除。
 - 不把 Store、StoreView、变更文档或 WAL 记录声明为业务协议字段。
 - 不把 Actor 与 GD、Store、Procedure 或持久化 Runtime 强绑定。

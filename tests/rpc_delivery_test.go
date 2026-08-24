@@ -150,14 +150,13 @@ func TestRPCAdmissionRejectsNewDeliveryAndDrainsAcceptedReceiver(t *testing.T) {
 	if _, err := client.Deliver(context.Background(), request); status.Code(err) != codes.Unavailable {
 		t.Fatalf("delivery while draining error = %v, want Unavailable", err)
 	}
-	drained := make(chan struct{})
+	drained := make(chan error, 1)
 	go func() {
-		ingress.Wait()
-		close(drained)
+		drained <- ingress.Wait()
 	}()
 	select {
-	case <-drained:
-		t.Fatal("ingress drained before accepted receiver completed")
+	case err := <-drained:
+		t.Fatalf("ingress drained before accepted receiver completed: %v", err)
 	case <-time.After(20 * time.Millisecond):
 	}
 
@@ -166,7 +165,10 @@ func TestRPCAdmissionRejectsNewDeliveryAndDrainsAcceptedReceiver(t *testing.T) {
 		t.Fatalf("accepted delivery returned error: %v", err)
 	}
 	select {
-	case <-drained:
+	case err := <-drained:
+		if err != nil {
+			t.Fatalf("ingress Wait returned error: %v", err)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("ingress did not drain after accepted receiver completed")
 	}

@@ -88,54 +88,8 @@ func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 	return a.applyDocumentPatchesWithOptions(ctx, spec, key, patches, options)
 }
 
-// ApplyChangesWithHandoff 在同一条 Redis Lua 中写入热文档并登记同槽交接标记。
-// 返回值携带本次热写的 revision 和唯一 token，供延迟任务入队成功后执行条件确认。
-func (a *Adapter) ApplyChangesWithHandoff(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver, options storage.ApplyOptions, handoff HandoffOptions) (HandoffReceipt, error) {
-	if err := change.ValidateSource(source); err != nil {
-		return HandoffReceipt{}, err
-	}
-	if !source.HasChanges() {
-		return HandoffReceipt{}, nil
-	}
-	if err := storage.ValidateRecordKey(spec, key); err != nil {
-		return HandoffReceipt{}, err
-	}
-	if err := validateHandoffOptions(handoff); err != nil {
-		return HandoffReceipt{}, err
-	}
-	token, err := newHandoffToken()
-	if err != nil {
-		return HandoffReceipt{}, err
-	}
-	handoff.token = token
-	patches, err := buildDocumentPatches(spec, source, resolver, values)
-	if err != nil {
-		return HandoffReceipt{}, err
-	}
-	if len(patches) == 0 {
-		return HandoffReceipt{}, storage.ErrNoEffectiveChanges
-	}
-	result, prefix, err := a.evalDocumentPatchesWithOptions(ctx, spec, key, patches, options, &handoff)
-	if err != nil {
-		return HandoffReceipt{}, err
-	}
-	if result == scriptResultHandoffFull {
-		return HandoffReceipt{}, fmt.Errorf("redis: apply changes %s: %w", prefix, ErrHandoffFull)
-	}
-	if result == scriptResultNotExists {
-		return HandoffReceipt{}, fmt.Errorf("redis: apply changes %s: %w", prefix, storage.ErrNotExists)
-	}
-	if path, ok := strings.CutPrefix(result, scriptResultPathTypeMismatch+":"); ok {
-		return HandoffReceipt{}, fmt.Errorf("redis: apply changes %s at %s: %w", prefix, path, storage.ErrPathTypeMismatch)
-	}
-	if !isRecordRevision(result) {
-		return HandoffReceipt{}, fmt.Errorf("redis: apply changes %s: invalid record revision %q", prefix, result)
-	}
-	return HandoffReceipt{Revision: result, Token: token}, nil
-}
-
 func (a *Adapter) applyDocumentPatchesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, patches map[string]DocumentPatch, options storage.ApplyOptions) error {
-	result, prefix, err := a.evalDocumentPatchesWithOptions(ctx, spec, key, patches, options, nil)
+	result, prefix, err := a.evalDocumentPatchesWithOptions(ctx, spec, key, patches, options)
 	if err != nil {
 		return err
 	}
@@ -151,7 +105,7 @@ func (a *Adapter) applyDocumentPatchesWithOptions(ctx context.Context, spec meta
 	return nil
 }
 
-func (a *Adapter) evalDocumentPatchesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, patches map[string]DocumentPatch, options storage.ApplyOptions, handoff *HandoffOptions) (string, string, error) {
+func (a *Adapter) evalDocumentPatchesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, patches map[string]DocumentPatch, options storage.ApplyOptions) (string, string, error) {
 	client, err := a.scriptClient()
 	if err != nil {
 		return "", "", err
@@ -181,45 +135,11 @@ func (a *Adapter) evalDocumentPatchesWithOptions(ctx context.Context, spec meta.
 		upsert = scriptFlagTrue
 	}
 	args = append(args, upsert, strconv.FormatInt(options.TTLSeconds, 10))
-	keys := []string{prefix}
-	if handoff != nil {
-		keys = append(keys, redisHandoffKey(redisClusterSlot(prefix)))
-		args = append(args, handoff.Marker, handoff.token, handoff.MaxPendingPerSlot)
-	}
-	result, err := client.Eval(ctx, updateDocumentScript, keys, args...)
+	result, err := client.Eval(ctx, updateDocumentScript, []string{prefix}, args...)
 	if err != nil {
 		return "", prefix, fmt.Errorf("redis: apply changes %s: %w", prefix, err)
 	}
 	return result, prefix, nil
-}
-
-// ConfirmHandoff 仅当记录 revision 和本次热写 token 同时匹配时移除交接标记。
-// false 表示期间发生了更新或记录已进入新生命周期，标记必须留给恢复 worker。
-func (a *Adapter) ConfirmHandoff(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, marker string, receipt HandoffReceipt) (bool, error) {
-	if err := storage.ValidateRecordKey(spec, key); err != nil {
-		return false, err
-	}
-	if strings.TrimSpace(marker) == "" || !isRecordRevision(receipt.Revision) || strings.TrimSpace(receipt.Token) == "" {
-		return false, ErrInvalidHandoff
-	}
-	client, err := a.scriptClient()
-	if err != nil {
-		return false, err
-	}
-	prefix := redisKeyPrefix(spec, key)
-	handoffKey := redisHandoffKey(redisClusterSlot(prefix))
-	result, err := client.Eval(ctx, confirmHandoffScript, []string{prefix + "@v", handoffKey}, marker, receipt.Revision, receipt.Token)
-	if err != nil {
-		return false, fmt.Errorf("redis: confirm handoff %s: %w", prefix, err)
-	}
-	switch result {
-	case scriptResultOK:
-		return true, nil
-	case scriptResultStale:
-		return false, nil
-	default:
-		return false, fmt.Errorf("redis: confirm handoff %s: unexpected script result %q", prefix, result)
-	}
 }
 
 // ReplaceDocumentWithOptions 按 Redis string JSON 文档模型全量替换一条热数据。
@@ -275,13 +195,6 @@ func (a *Adapter) ApplyDeleteWithRevision(ctx context.Context, spec meta.TypeSpe
 	}
 	keys := redisDeleteKeys(spec, prefix)
 	args := []any{expectedRevision}
-	marker, markerErr := EncodeHandoffMarker(spec.Type.Ref, key)
-	if markerErr == nil {
-		keys = append(keys, redisHandoffKey(redisClusterSlot(prefix)))
-		args = append(args, marker)
-	} else if spec.Storage.Mode == meta.StorageModeFusion {
-		return false, "", markerErr
-	}
 	result, err := client.Eval(ctx, deleteDocumentScript, keys, args...)
 	if err != nil {
 		return false, "", fmt.Errorf("redis: delete document %s: %w", prefix, err)

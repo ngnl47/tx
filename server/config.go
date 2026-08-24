@@ -54,11 +54,16 @@ type WALMongoConfig struct {
 }
 
 type RuntimeConfig struct {
-	DelayTask       DelayTaskConfig
-	HandoffRecovery HandoffRecoveryConfig
-	Scheduler       SchedulerConfig
-	Health          HealthConfig
-	Transaction     TransactionConfig
+	Lifecycle   LifecycleConfig
+	DelayTask   DelayTaskConfig
+	Scheduler   SchedulerConfig
+	Health      HealthConfig
+	Transaction TransactionConfig
+}
+
+// LifecycleConfig 配置进程优雅排水的服务端上限。
+type LifecycleConfig struct {
+	DrainTimeout time.Duration
 }
 
 type DelayTaskConfig struct {
@@ -66,16 +71,6 @@ type DelayTaskConfig struct {
 	Prefix    string
 	Buckets   int
 	Lease     time.Duration
-}
-
-type HandoffRecoveryConfig struct {
-	StartupLeaseTTL    time.Duration
-	StartupWaitTimeout time.Duration
-	MaxPendingPerSlot  int
-	RetryInitial       time.Duration
-	RetryMultiplier    float64
-	RetryMax           time.Duration
-	RetryJitter        float64
 }
 
 type SchedulerConfig struct {
@@ -119,6 +114,16 @@ type RunOptions struct {
 func (config Config) Validate() error {
 	if strings.TrimSpace(config.AppID) == "" {
 		return fmt.Errorf("server: app ID is required")
+	}
+	if err := config.Runtime.Lifecycle.validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (config LifecycleConfig) validate() error {
+	if config.DrainTimeout < 0 {
+		return fmt.Errorf("server: lifecycle drain timeout must be greater than or equal to 0")
 	}
 	return nil
 }
@@ -177,28 +182,6 @@ func (config DelayTaskConfig) validate() error {
 	return nil
 }
 
-func (config HandoffRecoveryConfig) validate() error {
-	if config.StartupLeaseTTL < time.Millisecond {
-		return fmt.Errorf("server: handoff startup lease TTL must be at least 1ms")
-	}
-	if config.StartupWaitTimeout <= 0 {
-		return fmt.Errorf("server: handoff startup wait timeout must be greater than 0")
-	}
-	if config.MaxPendingPerSlot < 0 {
-		return fmt.Errorf("server: fusion handoff max pending per slot must be greater than or equal to 0")
-	}
-	if config.RetryMultiplier != 0 && config.RetryMultiplier <= 1 {
-		return fmt.Errorf("server: handoff retry multiplier must be greater than 1")
-	}
-	if config.RetryJitter < 0 || config.RetryJitter > 1 {
-		return fmt.Errorf("server: handoff retry jitter must be between 0 and 1")
-	}
-	if config.RetryInitial > 0 && config.RetryMax > 0 && config.RetryMax < config.RetryInitial {
-		return fmt.Errorf("server: handoff retry max must not be less than retry initial")
-	}
-	return nil
-}
-
 func (config SchedulerConfig) validate() error {
 	if config.BatchSize < 0 {
 		return fmt.Errorf("server: scheduler batch size must be greater than or equal to 0")
@@ -231,15 +214,8 @@ func (config RuntimeConfig) storageOptions() storageOptions {
 		DelayTaskPrefix:          config.DelayTask.Prefix,
 		DelayTaskBuckets:         config.DelayTask.Buckets,
 		DelayTaskLease:           config.DelayTask.Lease,
-		HandoffMaxPendingPerSlot: config.HandoffRecovery.MaxPendingPerSlot,
 		SchedulerBatchSize:       config.Scheduler.BatchSize,
 		SchedulerPoll:            config.Scheduler.PollInterval,
-		HandoffStartupLeaseTTL:   config.HandoffRecovery.StartupLeaseTTL,
-		HandoffStartupWait:       config.HandoffRecovery.StartupWaitTimeout,
-		HandoffRetryInitial:      config.HandoffRecovery.RetryInitial,
-		HandoffRetryMultiplier:   config.HandoffRecovery.RetryMultiplier,
-		HandoffRetryMax:          config.HandoffRecovery.RetryMax,
-		HandoffRetryJitter:       config.HandoffRecovery.RetryJitter,
 		SchedulerRetryInitial:    config.Scheduler.RetryInitial,
 		SchedulerRetryMultiplier: config.Scheduler.RetryMultiplier,
 		SchedulerRetryMax:        config.Scheduler.RetryMax,

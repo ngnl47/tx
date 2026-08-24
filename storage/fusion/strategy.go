@@ -11,7 +11,6 @@ import (
 	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/meta"
 	"github.com/ngnl47/tx/storage"
-	txredis "github.com/ngnl47/tx/storage/redis"
 )
 
 const (
@@ -25,22 +24,17 @@ type LoadOptions struct {
 
 // Strategy 实现 fusion 模式的变更落地策略。
 //
-// Redis 适配器负责即时写入热数据；MongoQueue 负责把持久化保存推迟到
-// delaySave 配置之后执行。
+// Redis 适配器负责即时写入热数据；DelaySubmitter 只把根记录登记到进程内
+// 分发器，实际延迟任务发布不阻塞业务保存。
 type Strategy struct {
-	RedisApplier  txredis.HandoffWriter
-	RedisLoader   storage.DocumentLoader
-	RedisReplacer storage.DocumentReplacerWithOptions
-	RedisLocker   storage.RecordLocker
-	MongoLoader   storage.DocumentLoader
-	MongoQueue    DelayQueue
-	// HandoffRetryer 定点重试 Redis 热写后未完成的 delayed task 交接。
-	HandoffRetryer HandoffRetryer
-	// HandoffMaxPendingPerSlot 限制单个 Redis 物理 slot 中尚未确认的根记录数。
-	// 零值使用框架默认值；已登记记录不受该上限阻止，可以继续覆盖更新。
-	HandoffMaxPendingPerSlot int
-	LoadLockTTL              time.Duration
-	LoadLockWait             time.Duration
+	RedisApplier   storage.ChangeApplier
+	RedisLoader    storage.DocumentLoader
+	RedisReplacer  storage.DocumentReplacerWithOptions
+	RedisLocker    storage.RecordLocker
+	MongoLoader    storage.DocumentLoader
+	DelaySubmitter DelayTaskSubmitter
+	LoadLockTTL    time.Duration
+	LoadLockWait   time.Duration
 }
 
 // Validate 校验 Fusion 运行时的完整装配。项目启动时必须调用该方法，避免缺失
@@ -62,11 +56,8 @@ func (s Strategy) Validate() error {
 	if isNilFusionDependency(s.MongoLoader) {
 		missing = append(missing, "mongo document loader")
 	}
-	if isNilFusionDependency(s.MongoQueue) {
-		missing = append(missing, "mongo delayed queue")
-	}
-	if isNilFusionDependency(s.HandoffRetryer) {
-		missing = append(missing, "handoff retryer")
+	if isNilFusionDependency(s.DelaySubmitter) {
+		missing = append(missing, "delay task submitter")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("%w: %s", ErrStrategyDependenciesNotConfigured, strings.Join(missing, ", "))
@@ -93,24 +84,10 @@ func (s Strategy) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 	// Fusion 的脏热数据必须保留到 Mongo 可靠回写并完成版本删除，有限 TTL
 	// 只能用于尚未承载本地变更的回源缓存。
 	options.TTLSeconds = -1
-	marker, err := encodeHandoffMarker(spec, key)
-	if err != nil {
+	if err := redisWriter.ApplyChangesWithOptions(ctx, spec, key, source, resolver, values, options); err != nil {
 		return err
 	}
-	receipt, err := redisWriter.ApplyChangesWithHandoff(ctx, spec, key, source, resolver, values, options, txredis.HandoffOptions{
-		Marker:            marker,
-		MaxPendingPerSlot: s.handoffMaxPendingPerSlot(),
-	})
-	if err != nil {
-		return err
-	}
-	if err := enqueueDelayedWrites(ctx, s.MongoQueue, spec, key); err != nil {
-		return s.queueHandoffRetry(marker, receipt, err)
-	}
-	_, err = redisWriter.ConfirmHandoff(ctx, spec, key, marker, receipt)
-	if err != nil {
-		return s.queueHandoffRetry(marker, receipt, err)
-	}
+	s.DelaySubmitter.Submit(spec, key)
 	return nil
 }
 
@@ -216,18 +193,15 @@ func (s Strategy) readDependencies() (storage.DocumentLoader, error) {
 	return redisLoader, nil
 }
 
-func (s Strategy) writeDependencies() (txredis.HandoffWriter, error) {
+func (s Strategy) writeDependencies() (storage.ChangeApplier, error) {
 	if isNilFusionDependency(s.RedisApplier) {
 		return nil, ErrRedisNotConfigured
-	}
-	if isNilFusionDependency(s.MongoQueue) {
-		return nil, ErrMongoQueueNotConfigured
 	}
 	if isNilFusionDependency(s.MongoLoader) {
 		return nil, fmt.Errorf("%w: mongo document loader", ErrStrategyDependenciesNotConfigured)
 	}
-	if isNilFusionDependency(s.HandoffRetryer) {
-		return nil, ErrHandoffRetryerNotConfigured
+	if isNilFusionDependency(s.DelaySubmitter) {
+		return nil, ErrDelayTaskSubmitterNotConfigured
 	}
 	return s.RedisApplier, nil
 }
@@ -482,7 +456,7 @@ func (s Strategy) requireRedisBackfillDependencies() error {
 
 func enqueueDelayedWrites(ctx context.Context, queue DelayQueue, spec meta.TypeSpec, key storage.RecordKey) error {
 	if isNilFusionDependency(queue) {
-		return ErrMongoQueueNotConfigured
+		return ErrDelayQueueNotConfigured
 	}
 	if err := queue.Enqueue(ctx, DelayedOperation{
 		Kind:     DelayedSave,

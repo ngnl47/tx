@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -121,6 +123,77 @@ func TestServiceHostDrainWaitsForAcceptedWork(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("drain did not wait for accepted work")
+	}
+}
+
+func TestServiceHostDrainTimeoutReportsServiceAndPendingWork(t *testing.T) {
+	root := lifecycle.NewWaitGroupContext(context.Background())
+	runtime := &runtime{lifecycle: root}
+	var done func()
+	registry, err := newRegistry(testService{
+		spec: Spec{Name: "game"},
+		start: func(runtime Context) error {
+			var enterErr error
+			done, enterErr = runtime.Admission().Enter()
+			return enterErr
+		},
+	})
+	if err != nil {
+		t.Fatalf("newRegistry returned error: %v", err)
+	}
+	host := newServiceHost(registry, runtime)
+	if err := host.start("game"); err != nil {
+		t.Fatalf("start returned error: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+	err = host.drain(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("drain error = %v, want deadline exceeded", err)
+	}
+	if !strings.Contains(err.Error(), `service "game"`) || !strings.Contains(err.Error(), "pending 1") {
+		t.Fatalf("drain error = %v, want service and pending count", err)
+	}
+	done()
+}
+
+func TestServiceHostDrainCanWaitAgainAfterTimeout(t *testing.T) {
+	root := lifecycle.NewWaitGroupContext(context.Background())
+	runtime := &runtime{lifecycle: root}
+	var done func()
+	drainCalls := 0
+	registry, err := newRegistry(testService{
+		spec: Spec{Name: "game"},
+		start: func(runtime Context) error {
+			var enterErr error
+			done, enterErr = runtime.Admission().Enter()
+			return enterErr
+		},
+		drain: func(context.Context) error {
+			drainCalls++
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("newRegistry returned error: %v", err)
+	}
+	host := newServiceHost(registry, runtime)
+	if err := host.start("game"); err != nil {
+		t.Fatalf("start returned error: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	err = host.drain(ctx)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("first drain error = %v, want deadline exceeded", err)
+	}
+
+	done()
+	if err := host.drain(context.Background()); err != nil {
+		t.Fatalf("second drain returned error: %v", err)
+	}
+	if drainCalls != 1 {
+		t.Fatalf("service drain calls = %d, want 1", drainCalls)
 	}
 }
 

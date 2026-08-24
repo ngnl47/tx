@@ -100,70 +100,15 @@ func TestUpdateLuaScriptKeepsVersionKeyLifecycleInSync(t *testing.T) {
 	}
 }
 
-func TestFusionHandoffLuaProtocolKeepsCapacityAndRevisionFences(t *testing.T) {
-	updateBody, err := luaScripts.ReadFile("scripts/update_document.lua")
-	if err != nil {
-		t.Fatalf("ReadFile update script returned error: %v", err)
-	}
-	updateText := string(updateBody)
-	for _, want := range []string{
-		"local RESULT_HANDOFF_FULL = \"hf\"",
-		"redis.call(\"hexists\", KEYS[2], marker)",
-		"redis.call(\"hlen\", KEYS[2]) >= max_pending",
-		"local revision = redis.call(\"incr\", vkey)",
-		"redis.call(\"hset\", KEYS[2], marker, token)",
-		"return revision",
-	} {
-		if !strings.Contains(updateText, want) {
-			t.Fatalf("update script does not preserve Fusion handoff protocol: missing %q", want)
-		}
-	}
-	if strings.Index(updateText, "redis.call(\"hlen\", KEYS[2]) >= max_pending") > strings.Index(updateText, "for k, v in pairs(save) do") {
-		t.Fatal("handoff capacity must be checked before Redis documents are mutated")
-	}
-
-	confirmBody, err := luaScripts.ReadFile("scripts/confirm_handoff.lua")
-	if err != nil {
-		t.Fatalf("ReadFile confirm handoff script returned error: %v", err)
-	}
-	confirmText := string(confirmBody)
-	for _, want := range []string{
-		"revision ~= ARGV[2]",
-		"redis.call(\"hget\", KEYS[2], ARGV[1])",
-		"token ~= ARGV[3]",
-		"redis.call(\"hdel\", KEYS[2], ARGV[1])",
-	} {
-		if !strings.Contains(confirmText, want) {
-			t.Fatalf("confirm handoff script does not fence stale writers: missing %q", want)
-		}
-	}
-}
-
-func TestReadHandoffsLuaUsesBoundedKnownHashRead(t *testing.T) {
-	body, err := luaScripts.ReadFile("scripts/read_handoffs.lua")
-	if err != nil {
-		t.Fatalf("ReadFile handoff reader returned error: %v", err)
-	}
-	text := string(body)
-	if !strings.Contains(text, "redis.call(\"hrandfield\", KEYS[1], count, \"withvalues\")") {
-		t.Fatal("handoff reader must use bounded HRANDFIELD WITHVALUES on the known slot Hash")
-	}
-	for _, forbidden := range []string{"redis.call(\"scan\"", "redis.call(\"keys\""} {
-		if strings.Contains(strings.ToLower(text), forbidden) {
-			t.Fatalf("handoff reader must not inspect the Redis keyspace with %q", forbidden)
-		}
-	}
-}
-
-func TestDeleteLuaClearsHandoffOnlyAfterRevisionMatch(t *testing.T) {
+func TestDeleteLuaChecksRevisionBeforeDeletingDocuments(t *testing.T) {
 	body, err := luaScripts.ReadFile("scripts/delete_document.lua")
 	if err != nil {
 		t.Fatalf("ReadFile delete script returned error: %v", err)
 	}
 	text := string(body)
 	revisionCheck := strings.Index(text, "current_revision ~= expected_revision")
-	handoffDelete := strings.Index(text, "redis.call(\"hdel\", KEYS[#KEYS], handoff_marker)")
-	if revisionCheck < 0 || handoffDelete < 0 || revisionCheck > handoffDelete {
-		t.Fatal("delete script must clear the handoff marker only after the revision fence passes")
+	documentDelete := strings.Index(text, "redis.call(\"del\", KEYS[i])")
+	if revisionCheck < 0 || documentDelete < 0 || revisionCheck > documentDelete {
+		t.Fatal("delete script must check the revision before deleting Redis documents")
 	}
 }

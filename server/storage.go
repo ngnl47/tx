@@ -37,13 +37,6 @@ type storageOptions struct {
 	DelayTaskPrefix          string
 	DelayTaskBuckets         int
 	DelayTaskLease           time.Duration
-	HandoffMaxPendingPerSlot int
-	HandoffStartupLeaseTTL   time.Duration
-	HandoffStartupWait       time.Duration
-	HandoffRetryInitial      time.Duration
-	HandoffRetryMultiplier   float64
-	HandoffRetryMax          time.Duration
-	HandoffRetryJitter       float64
 	SchedulerBatchSize       int
 	SchedulerPoll            time.Duration
 	SchedulerRetryInitial    time.Duration
@@ -53,16 +46,16 @@ type storageOptions struct {
 }
 
 type storageRuntime struct {
-	ctx           context.Context
-	redis         *txredis.Cluster
-	mongo         *txmongo.Cluster
-	wal           wal.Store
-	fusion        txfusion.Strategy
-	delayBackend  *txtaskredis.Backend
-	delayQueue    *txfusion.TaskQueue
-	delayHandler  txfusion.DelayTaskHandler
-	delayWorker   *txfusion.Scheduler
-	handoffWorker *txfusion.HandoffRecoverer
+	ctx             context.Context
+	redis           *txredis.Cluster
+	mongo           *txmongo.Cluster
+	wal             wal.Store
+	fusion          txfusion.Strategy
+	delayBackend    *txtaskredis.Backend
+	delayQueue      *txfusion.TaskQueue
+	delayHandler    txfusion.DelayTaskHandler
+	delayWorker     *txfusion.Scheduler
+	delayDispatcher *txfusion.DelayTaskDispatcher
 
 	redisShards    map[string]txgoredis.Client
 	mongoWALShards map[string]walmongo.Client
@@ -127,25 +120,14 @@ func (s *storageRuntime) startFusion(ctx context.Context, redisConfig storagecon
 	}
 	s.delayBackend = delayBackend
 	s.delayQueue = delayQueue
-	s.handoffWorker = txfusion.NewHandoffRecovererWithOptions(types, s.redis, delayQueue, txfusion.HandoffRecovererOptions{
-		EntriesPerSlot:    opts.HandoffMaxPendingPerSlot,
-		RetryInitialDelay: opts.HandoffRetryInitial,
-		RetryMultiplier:   opts.HandoffRetryMultiplier,
-		RetryMaxDelay:     opts.HandoffRetryMax,
-		RetryJitter:       opts.HandoffRetryJitter,
-		StartupLease:      delayBackend.StartupLease(),
-		StartupLeaseTTL:   opts.HandoffStartupLeaseTTL,
-		StartupWait:       opts.HandoffStartupWait,
-	})
+	s.delayDispatcher = txfusion.NewDelayTaskDispatcher(delayQueue)
 	s.fusion = txfusion.Strategy{
-		RedisApplier:             s.redis,
-		RedisLoader:              s.redis,
-		RedisReplacer:            s.redis,
-		RedisLocker:              s.redis,
-		MongoLoader:              s.mongo,
-		MongoQueue:               delayQueue,
-		HandoffRetryer:           s.handoffWorker,
-		HandoffMaxPendingPerSlot: opts.HandoffMaxPendingPerSlot,
+		RedisApplier:   s.redis,
+		RedisLoader:    s.redis,
+		RedisReplacer:  s.redis,
+		RedisLocker:    s.redis,
+		MongoLoader:    s.mongo,
+		DelaySubmitter: s.delayDispatcher,
 	}
 	if err := s.fusion.Validate(); err != nil {
 		return fmt.Errorf("server: validate fusion storage: %w", err)

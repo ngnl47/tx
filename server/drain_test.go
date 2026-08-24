@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -10,7 +11,7 @@ import (
 
 func TestDrainCoordinatorWaitsForHost(t *testing.T) {
 	host := &blockingDrainHost{started: make(chan struct{}), release: make(chan struct{})}
-	coordinator := newDrainCoordinator(host)
+	coordinator := newDrainCoordinator(host, time.Second)
 	if err := coordinator.BeginDrain(context.Background()); err != nil {
 		t.Fatalf("BeginDrain returned error: %v", err)
 	}
@@ -36,6 +37,28 @@ func TestDrainCoordinatorWaitsForHost(t *testing.T) {
 	if got := coordinator.Status().State; got != control.StateDrained {
 		t.Fatalf("state = %v, want drained", got)
 	}
+}
+
+func TestDrainCoordinatorFailsWhenServerDrainTimesOut(t *testing.T) {
+	coordinator := newDrainCoordinator(contextDrainHost{}, 5*time.Millisecond)
+	if err := coordinator.BeginDrain(context.Background()); err != nil {
+		t.Fatalf("BeginDrain returned error: %v", err)
+	}
+	err := coordinator.WaitDrained(context.Background())
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("WaitDrained error = %v, want deadline exceeded", err)
+	}
+	status := coordinator.Status()
+	if status.State != control.StateFailed || status.Error == "" {
+		t.Fatalf("status = %#v, want failed with diagnostic", status)
+	}
+}
+
+type contextDrainHost struct{}
+
+func (contextDrainHost) Drain(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 type blockingDrainHost struct {

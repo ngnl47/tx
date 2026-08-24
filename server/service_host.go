@@ -82,6 +82,7 @@ func (host *serviceHost) drain(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	host.mu.Lock()
+	services := append([]startedService(nil), host.started...)
 	if host.drainDone != nil {
 		done := host.drainDone
 		host.mu.Unlock()
@@ -90,12 +91,11 @@ func (host *serviceHost) drain(ctx context.Context) error {
 			host.mu.Lock()
 			err := host.drainErr
 			host.mu.Unlock()
-			return err
+			return errors.Join(err, waitServiceIngress(ctx, services))
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
-	services := append([]startedService(nil), host.started...)
 	host.drainDone = make(chan struct{})
 	done := host.drainDone
 	host.mu.Unlock()
@@ -111,15 +111,27 @@ func (host *serviceHost) drain(ctx context.Context) error {
 			}
 		}
 	}
-	for index := len(services) - 1; index >= 0; index-- {
-		services[index].ingress.Wait()
-	}
 	host.mu.Lock()
 	host.drainErr = errors.Join(errs...)
 	close(done)
 	err := host.drainErr
 	host.mu.Unlock()
-	return err
+	return errors.Join(err, waitServiceIngress(ctx, services))
+}
+
+func waitServiceIngress(ctx context.Context, services []startedService) error {
+	var errs []error
+	for index := len(services) - 1; index >= 0; index-- {
+		if err := services[index].ingress.WaitContext(ctx); err != nil {
+			errs = append(errs, fmt.Errorf(
+				"server: drain service %q with pending %d: %w",
+				services[index].service.Spec().Name,
+				services[index].ingress.Pending(),
+				err,
+			))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (host *serviceHost) stop(ctx context.Context) error {

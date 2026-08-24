@@ -18,7 +18,6 @@ const (
 	scriptResultOK               = "ok"
 	scriptResultBusy             = "busy"
 	scriptResultStale            = "stale"
-	scriptResultHandoffFull      = "hf"
 	scriptResultNotExists        = "ne"
 	scriptResultPathTypeMismatch = "pt"
 )

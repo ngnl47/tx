@@ -13,6 +13,3 @@ var completeScript string
 
 //go:embed scripts/retry.lua
 var retryScript string
-
-//go:embed scripts/startup_lease.lua
-var startupLeaseScript string

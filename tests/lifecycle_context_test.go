@@ -57,14 +57,58 @@ func TestIngressDrainsAcceptedWorkWithoutAcceptingNewWork(t *testing.T) {
 		t.Fatalf("Enter while draining error = %v, want ErrDraining", err)
 	}
 
-	drained := make(chan struct{})
+	drained := make(chan error, 1)
 	go func() {
-		ingress.Wait()
-		close(drained)
+		drained <- ingress.Wait()
 	}()
-	assertNotClosed(t, drained, "ingress returned before accepted work finished")
+	select {
+	case err := <-drained:
+		t.Fatalf("ingress returned before accepted work finished: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
 	doneWork()
-	assertClosed(t, drained, "ingress did not finish after accepted work")
+	select {
+	case err := <-drained:
+		if err != nil {
+			t.Fatalf("ingress Wait returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ingress did not finish after accepted work")
+	}
+}
+
+func TestIngressWaitContextReportsPendingWorkOnTimeout(t *testing.T) {
+	root := lifecycle.NewWaitGroupContext(context.Background())
+	ingress := lifecycle.NewIngress(root)
+	done, err := ingress.Enter()
+	if err != nil {
+		t.Fatalf("Enter returned error: %v", err)
+	}
+	ingress.BeginDrain()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+	if err := ingress.WaitContext(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("WaitContext error = %v, want deadline exceeded", err)
+	}
+	if pending := ingress.Pending(); pending != 1 {
+		t.Fatalf("Pending = %d, want 1", pending)
+	}
+	done()
+	if err := ingress.WaitContext(context.Background()); err != nil {
+		t.Fatalf("WaitContext after completion: %v", err)
+	}
+}
+
+func TestIngressWaitRejectsMissingOrOpenGate(t *testing.T) {
+	var missing *lifecycle.Ingress
+	if err := missing.Wait(); !errors.Is(err, lifecycle.ErrStopping) {
+		t.Fatalf("nil ingress Wait error = %v, want ErrStopping", err)
+	}
+
+	ingress := lifecycle.NewIngress(lifecycle.NewWaitGroupContext(context.Background()))
+	if err := ingress.Wait(); !errors.Is(err, lifecycle.ErrDrainNotStarted) {
+		t.Fatalf("open ingress Wait error = %v, want ErrDrainNotStarted", err)
+	}
 }
 
 func TestChildWaitGroupContextIsJoinedToParent(t *testing.T) {

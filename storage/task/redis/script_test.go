@@ -26,16 +26,6 @@ func TestTaskLuaScriptsNameProtocolValues(t *testing.T) {
 	if !strings.Contains(claimScript, `return "[]"`) {
 		t.Fatal("claim script must return an empty JSON array for an empty lease batch")
 	}
-	for _, want := range []string{
-		`local RESULT_ACQUIRED = "acquired"`,
-		`local RESULT_RUNNING = "running"`,
-		`local RESULT_COMPLETE = "complete"`,
-		`if current ~= runningValue then`,
-	} {
-		if !strings.Contains(startupLeaseScript, want) {
-			t.Fatalf("startup lease script missing protocol %q", want)
-		}
-	}
 	for name, body := range map[string]string{
 		"enqueue":  enqueueScript,
 		"claim":    claimScript,

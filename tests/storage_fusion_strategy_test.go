@@ -11,7 +11,6 @@ import (
 	"github.com/ngnl47/tx/meta"
 	"github.com/ngnl47/tx/storage"
 	"github.com/ngnl47/tx/storage/fusion"
-	txredis "github.com/ngnl47/tx/storage/redis"
 )
 
 type recordingQueue struct {
@@ -20,14 +19,18 @@ type recordingQueue struct {
 	errs []error
 }
 
-type recordingHandoffRetryer struct {
-	entries []txredis.HandoffEntry
-	err     error
+type recordingDelaySubmitter struct {
+	specs    []meta.TypeSpec
+	keys     []storage.RecordKey
+	onSubmit func()
 }
 
-func (r *recordingHandoffRetryer) QueueHandoffRetry(entry txredis.HandoffEntry) error {
-	r.entries = append(r.entries, entry)
-	return r.err
+func (s *recordingDelaySubmitter) Submit(spec meta.TypeSpec, key storage.RecordKey) {
+	s.specs = append(s.specs, spec)
+	s.keys = append(s.keys, key)
+	if s.onSubmit != nil {
+		s.onSubmit()
+	}
 }
 
 func (q *recordingQueue) Enqueue(_ context.Context, op fusion.DelayedOperation) error {
@@ -47,11 +50,6 @@ type recordingApplier struct {
 	changes    recordedChanges
 	options    storage.ApplyOptions
 	err        error
-	handoffs   []txredis.HandoffOptions
-	revision   string
-	confirmed  bool
-	confirms   int
-	confirmErr error
 }
 
 func (a *recordingApplier) ApplyChangesWithOptions(_ context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, _ change.FieldNameResolver, _ change.ValueResolver, options storage.ApplyOptions) error {
@@ -65,28 +63,6 @@ func (a *recordingApplier) ApplyChangesWithOptions(_ context.Context, spec meta.
 	a.changes = changes
 	a.options = options
 	return a.err
-}
-
-func (a *recordingApplier) ApplyChangesWithHandoff(_ context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, _ change.FieldNameResolver, _ change.ValueResolver, options storage.ApplyOptions, handoff txredis.HandoffOptions) (txredis.HandoffReceipt, error) {
-	a.handoffs = append(a.handoffs, handoff)
-	if err := a.ApplyChangesWithOptions(context.Background(), spec, key, source, nil, nil, options); err != nil {
-		return txredis.HandoffReceipt{}, err
-	}
-	if a.revision == "" {
-		return txredis.HandoffReceipt{Revision: "1", Token: "token-1"}, nil
-	}
-	return txredis.HandoffReceipt{Revision: a.revision, Token: "token-" + a.revision}, nil
-}
-
-func (a *recordingApplier) ConfirmHandoff(_ context.Context, _ meta.TypeSpec, _ storage.RecordKey, _ string, _ txredis.HandoffReceipt) (bool, error) {
-	a.confirms++
-	if a.confirmErr != nil {
-		return false, a.confirmErr
-	}
-	if !a.confirmed {
-		return false, nil
-	}
-	return true, nil
 }
 
 type recordingDocumentLoader struct {
@@ -217,10 +193,10 @@ type recordingRedisStore struct {
 	recordingDocumentLoader
 }
 
-func TestFusionStrategyEnqueuesMongoSave(t *testing.T) {
-	queue := &recordingQueue{}
+func TestFusionStrategyRegistersDelayedSaveAfterRedisWrite(t *testing.T) {
+	submitter := &recordingDelaySubmitter{}
 	redis := &recordingApplier{}
-	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue, HandoffRetryer: &recordingHandoffRetryer{}}
+	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}, DelaySubmitter: submitter}
 	spec := meta.TypeSpec{
 		Type: fusionRoleType(),
 		Storage: meta.StorageSpec{
@@ -233,102 +209,20 @@ func TestFusionStrategyEnqueuesMongoSave(t *testing.T) {
 	if err := strategy.ApplyChangesWithOptions(context.Background(), spec, key, changes, testFieldNameResolver{}, testValueResolver{}, storage.ApplyOptions{}); err != nil {
 		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
 	}
-	if len(queue.ops) != 1 {
-		t.Fatalf("queued ops = %#v", queue.ops)
-	}
 	if redis.optionRuns != 1 {
 		t.Fatalf("redis runs = %d, want 1", redis.optionRuns)
 	}
-	if len(redis.handoffs) != 1 || redis.confirms != 1 {
-		t.Fatalf("handoffs=%#v confirms=%d, want one atomic marker and one confirmation", redis.handoffs, redis.confirms)
+	if len(submitter.keys) != 1 || submitter.keys[0] != key {
+		t.Fatalf("submitted keys = %#v, want %#v", submitter.keys, key)
 	}
-	if redis.handoffs[0].Marker == "" || redis.handoffs[0].MaxPendingPerSlot <= 0 {
-		t.Fatalf("handoff options = %#v", redis.handoffs[0])
-	}
-	if queue.ops[0].RunAfter != 600*time.Second {
-		t.Fatalf("RunAfter = %s", queue.ops[0].RunAfter)
-	}
-}
-
-func TestFusionStrategyLeavesHandoffWhenDelayedQueueFails(t *testing.T) {
-	queueErr := errors.New("delay queue unavailable")
-	queue := &recordingQueue{err: queueErr}
-	redis := &recordingApplier{confirmed: true}
-	retryer := &recordingHandoffRetryer{}
-	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue, HandoffRetryer: retryer}
-	spec := meta.TypeSpec{
-		Type:    fusionRoleType(),
-		Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Minute}},
-	}
-	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
-
-	err := strategy.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)}, changes, testFieldNameResolver{}, testValueResolver{}, storage.ApplyOptions{})
-	if !errors.Is(err, queueErr) {
-		t.Fatalf("ApplyChangesWithOptions error = %v, want queue error", err)
-	}
-	if len(redis.handoffs) != 1 || redis.confirms != 0 {
-		t.Fatalf("handoffs=%d confirms=%d, want marker retained without confirmation", len(redis.handoffs), redis.confirms)
-	}
-	if len(retryer.entries) != 1 || retryer.entries[0].Marker != redis.handoffs[0].Marker || retryer.entries[0].Token != "token-1" {
-		t.Fatalf("retry entries = %#v, want failed marker and write token", retryer.entries)
-	}
-}
-
-func TestFusionStrategyLeavesHandoffWhenSecondDelayedTaskFails(t *testing.T) {
-	deleteErr := errors.New("delete enqueue failed")
-	queue := &recordingQueue{errs: []error{nil, deleteErr}}
-	redis := &recordingApplier{confirmed: true}
-	retryer := &recordingHandoffRetryer{}
-	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue, HandoffRetryer: retryer}
-	spec := meta.TypeSpec{
-		Type: fusionRoleType(),
-		Storage: meta.StorageSpec{
-			DelaySave:   meta.Duration{Duration: time.Minute},
-			DelayDelete: meta.Duration{Duration: time.Hour},
-		},
-	}
-	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
-
-	err := strategy.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)}, changes, testFieldNameResolver{}, testValueResolver{}, storage.ApplyOptions{})
-	if !errors.Is(err, deleteErr) {
-		t.Fatalf("ApplyChangesWithOptions error = %v, want delete enqueue error", err)
-	}
-	if len(queue.ops) != 2 || redis.confirms != 0 {
-		t.Fatalf("queue ops=%#v confirms=%d, want partial queue preserved and marker retained", queue.ops, redis.confirms)
-	}
-	if len(retryer.entries) != 1 || retryer.entries[0].Token != "token-1" {
-		t.Fatalf("retry entries = %#v, want one targeted retry", retryer.entries)
-	}
-}
-
-func TestFusionStrategyQueuesHandoffWhenConfirmationFails(t *testing.T) {
-	confirmErr := errors.New("handoff confirmation unavailable")
-	queue := &recordingQueue{}
-	redis := &recordingApplier{confirmErr: confirmErr}
-	retryer := &recordingHandoffRetryer{}
-	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue, HandoffRetryer: retryer}
-	spec := meta.TypeSpec{
-		Type:    fusionRoleType(),
-		Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Minute}},
-	}
-	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
-
-	err := strategy.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)}, changes, testFieldNameResolver{}, testValueResolver{}, storage.ApplyOptions{})
-	if !errors.Is(err, confirmErr) {
-		t.Fatalf("ApplyChangesWithOptions error = %v, want confirmation error", err)
-	}
-	if len(queue.ops) != 1 || redis.confirms != 1 {
-		t.Fatalf("queue ops=%#v confirms=%d, want task enqueued before failed confirmation", queue.ops, redis.confirms)
-	}
-	if len(retryer.entries) != 1 || retryer.entries[0].Marker != redis.handoffs[0].Marker || retryer.entries[0].Token != "token-1" {
-		t.Fatalf("retry entries = %#v, want failed confirmation marker and token", retryer.entries)
+	if len(submitter.specs) != 1 || submitter.specs[0].Storage.DelaySave.Duration != 600*time.Second {
+		t.Fatalf("submitted specs = %#v, want delaySave=600s", submitter.specs)
 	}
 }
 
 func TestFusionStrategyPersistsDirtyRedisDocumentUntilDelayedDelete(t *testing.T) {
-	queue := &recordingQueue{}
 	redis := &recordingApplier{}
-	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue, HandoffRetryer: &recordingHandoffRetryer{}}
+	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}, DelaySubmitter: &recordingDelaySubmitter{}}
 	spec := meta.TypeSpec{
 		Type: fusionRoleType(),
 		Storage: meta.StorageSpec{
@@ -357,8 +251,8 @@ func TestFusionStrategyPersistsDirtyRedisDocumentUntilDelayedDelete(t *testing.T
 
 func TestFusionStrategyReturnsRedisTransportErrorWithoutEnqueue(t *testing.T) {
 	transportErr := errors.New("redis unavailable")
-	queue := &recordingQueue{}
-	strategy := fusion.Strategy{RedisApplier: &recordingApplier{err: transportErr}, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue, HandoffRetryer: &recordingHandoffRetryer{}}
+	submitter := &recordingDelaySubmitter{}
+	strategy := fusion.Strategy{RedisApplier: &recordingApplier{err: transportErr}, MongoLoader: &recordingDocumentLoader{}, DelaySubmitter: submitter}
 	spec := meta.TypeSpec{Type: fusionRoleType()}
 	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
@@ -366,38 +260,8 @@ func TestFusionStrategyReturnsRedisTransportErrorWithoutEnqueue(t *testing.T) {
 	if !errors.Is(err, transportErr) {
 		t.Fatalf("ApplyChangesWithOptions error = %v, want transport error", err)
 	}
-	if len(queue.ops) != 0 {
-		t.Fatalf("queue ops = %#v, want no delayed task after Redis failure", queue.ops)
-	}
-}
-
-func TestFusionStrategyEnqueuesDelayedRedisDeleteAfterSaveWindow(t *testing.T) {
-	queue := &recordingQueue{}
-	strategy := fusion.Strategy{RedisApplier: &recordingApplier{}, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue, HandoffRetryer: &recordingHandoffRetryer{}}
-	spec := meta.TypeSpec{
-		Type: fusionRoleType(),
-		Storage: meta.StorageSpec{
-			DelaySave:   meta.Duration{Duration: 10 * time.Minute},
-			DelayDelete: meta.Duration{Duration: 24 * time.Hour},
-		},
-	}
-	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
-	key := storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001), ShardKey: int64(7)}
-
-	if err := strategy.ApplyChangesWithOptions(context.Background(), spec, key, changes, testFieldNameResolver{}, testValueResolver{}, storage.ApplyOptions{}); err != nil {
-		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
-	}
-	if len(queue.ops) != 2 {
-		t.Fatalf("queued ops = %#v, want save and delayed delete", queue.ops)
-	}
-	if queue.ops[0].Kind != fusion.DelayedSave || queue.ops[0].RunAfter != 10*time.Minute {
-		t.Fatalf("save op = %#v, want 10 minute save", queue.ops[0])
-	}
-	if queue.ops[1].Kind != fusion.DelayedDelete || queue.ops[1].RunAfter != 24*time.Hour+10*time.Minute {
-		t.Fatalf("delete op = %#v, want delaySave + delayDel", queue.ops[1])
-	}
-	if queue.ops[1].Key != key {
-		t.Fatalf("delete key = %#v, want %#v", queue.ops[1].Key, key)
+	if len(submitter.keys) != 0 {
+		t.Fatalf("submitted keys = %#v, want no delayed task after Redis failure", submitter.keys)
 	}
 }
 
@@ -406,19 +270,19 @@ func TestFusionStrategyRejectsMissingWriteDependencies(t *testing.T) {
 	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 	key := storage.RecordKey{TypeName: spec.Type.Ref.FullName, ID: int64(1001)}
 
-	if err := (fusion.Strategy{MongoQueue: &recordingQueue{}}).ApplyChangesWithOptions(context.Background(), spec, key, changes, testFieldNameResolver{}, testValueResolver{}, storage.ApplyOptions{}); !errors.Is(err, fusion.ErrRedisNotConfigured) {
+	if err := (fusion.Strategy{DelaySubmitter: &recordingDelaySubmitter{}}).ApplyChangesWithOptions(context.Background(), spec, key, changes, testFieldNameResolver{}, testValueResolver{}, storage.ApplyOptions{}); !errors.Is(err, fusion.ErrRedisNotConfigured) {
 		t.Fatalf("missing Redis error = %v, want ErrRedisNotConfigured", err)
 	}
-	if err := (fusion.Strategy{RedisApplier: &recordingApplier{}}).ApplyChangesWithOptions(context.Background(), spec, key, changes, testFieldNameResolver{}, testValueResolver{}, storage.ApplyOptions{}); !errors.Is(err, fusion.ErrMongoQueueNotConfigured) {
-		t.Fatalf("missing MongoQueue error = %v, want ErrMongoQueueNotConfigured", err)
+	if err := (fusion.Strategy{RedisApplier: &recordingApplier{}, MongoLoader: &recordingDocumentLoader{}}).ApplyChangesWithOptions(context.Background(), spec, key, changes, testFieldNameResolver{}, testValueResolver{}, storage.ApplyOptions{}); !errors.Is(err, fusion.ErrDelayTaskSubmitterNotConfigured) {
+		t.Fatalf("missing DelaySubmitter error = %v, want ErrDelayTaskSubmitterNotConfigured", err)
 	}
 }
 
 func TestFusionStrategyRejectsWriteWithoutMongoLoaderBeforeRedisWrite(t *testing.T) {
 	redis := &recordingApplier{}
 	strategy := fusion.Strategy{
-		RedisApplier: redis,
-		MongoQueue:   &recordingQueue{},
+		RedisApplier:   redis,
+		DelaySubmitter: &recordingDelaySubmitter{},
 	}
 	spec := meta.TypeSpec{Type: fusionRoleType()}
 	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
@@ -440,12 +304,11 @@ func TestFusionStrategyRejectsWriteWithoutMongoLoaderBeforeRedisWrite(t *testing
 	}
 }
 
-func TestFusionStrategyRejectsWriteWithoutHandoffRetryerBeforeRedisWrite(t *testing.T) {
+func TestFusionStrategyRejectsWriteWithoutDelaySubmitterBeforeRedisWrite(t *testing.T) {
 	redis := &recordingApplier{}
 	strategy := fusion.Strategy{
 		RedisApplier: redis,
 		MongoLoader:  &recordingDocumentLoader{},
-		MongoQueue:   &recordingQueue{},
 	}
 	spec := meta.TypeSpec{Type: fusionRoleType()}
 	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
@@ -459,11 +322,11 @@ func TestFusionStrategyRejectsWriteWithoutHandoffRetryerBeforeRedisWrite(t *test
 		testValueResolver{},
 		storage.ApplyOptions{},
 	)
-	if !errors.Is(err, fusion.ErrHandoffRetryerNotConfigured) {
-		t.Fatalf("ApplyChangesWithOptions error = %v, want ErrHandoffRetryerNotConfigured", err)
+	if !errors.Is(err, fusion.ErrDelayTaskSubmitterNotConfigured) {
+		t.Fatalf("ApplyChangesWithOptions error = %v, want ErrDelayTaskSubmitterNotConfigured", err)
 	}
 	if redis.optionRuns != 0 {
-		t.Fatalf("redis writes = %d, want 0 before incomplete handoff configuration is rejected", redis.optionRuns)
+		t.Fatalf("redis writes = %d, want 0 before incomplete delay dispatcher configuration is rejected", redis.optionRuns)
 	}
 }
 
@@ -474,7 +337,7 @@ func TestFusionStrategyRejectsTypedNilWriteDependencies(t *testing.T) {
 
 	t.Run("redis", func(t *testing.T) {
 		var redis *recordingApplier
-		strategy := fusion.Strategy{RedisApplier: redis, MongoQueue: &recordingQueue{}}
+		strategy := fusion.Strategy{RedisApplier: redis, DelaySubmitter: &recordingDelaySubmitter{}}
 
 		err := strategy.ApplyChangesWithOptions(context.Background(), spec, key, changes, testFieldNameResolver{}, testValueResolver{}, storage.ApplyOptions{})
 		if !errors.Is(err, fusion.ErrRedisNotConfigured) {
@@ -482,13 +345,13 @@ func TestFusionStrategyRejectsTypedNilWriteDependencies(t *testing.T) {
 		}
 	})
 
-	t.Run("queue", func(t *testing.T) {
-		var queue *recordingQueue
-		strategy := fusion.Strategy{RedisApplier: &recordingApplier{}, MongoQueue: queue}
+	t.Run("submitter", func(t *testing.T) {
+		var submitter *recordingDelaySubmitter
+		strategy := fusion.Strategy{RedisApplier: &recordingApplier{}, MongoLoader: &recordingDocumentLoader{}, DelaySubmitter: submitter}
 
 		err := strategy.ApplyChangesWithOptions(context.Background(), spec, key, changes, testFieldNameResolver{}, testValueResolver{}, storage.ApplyOptions{})
-		if !errors.Is(err, fusion.ErrMongoQueueNotConfigured) {
-			t.Fatalf("ApplyChangesWithOptions error = %v, want ErrMongoQueueNotConfigured", err)
+		if !errors.Is(err, fusion.ErrDelayTaskSubmitterNotConfigured) {
+			t.Fatalf("ApplyChangesWithOptions error = %v, want ErrDelayTaskSubmitterNotConfigured", err)
 		}
 	})
 }
@@ -501,8 +364,7 @@ func TestFusionStrategyValidatesCompleteRuntimeDependencies(t *testing.T) {
 		RedisReplacer:  &recordingDocumentReplacerWithOptions{},
 		RedisLocker:    &recordingRecordLocker{},
 		MongoLoader:    &recordingDocumentLoader{},
-		MongoQueue:     &recordingQueue{},
-		HandoffRetryer: &recordingHandoffRetryer{},
+		DelaySubmitter: &recordingDelaySubmitter{},
 	}
 	validator, ok := any(strategy).(interface{ Validate() error })
 	if !ok {
@@ -561,10 +423,14 @@ func TestFusionStrategyRejectsMissingMongoLoaderForBatchRedisMiss(t *testing.T) 
 	}
 }
 
-func TestFusionStrategyAppliesRedisBeforeQueue(t *testing.T) {
-	queue := &recordingQueue{}
+func TestFusionStrategyAppliesRedisBeforeDelayRegistration(t *testing.T) {
 	redis := &recordingApplier{}
-	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue, HandoffRetryer: &recordingHandoffRetryer{}}
+	submitter := &recordingDelaySubmitter{onSubmit: func() {
+		if redis.optionRuns != 1 {
+			t.Fatalf("redis option calls at Submit = %d, want 1", redis.optionRuns)
+		}
+	}}
+	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}, DelaySubmitter: submitter}
 	spec := meta.TypeSpec{
 		Type:    fusionRoleType(),
 		Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Second}},
@@ -581,16 +447,15 @@ func TestFusionStrategyAppliesRedisBeforeQueue(t *testing.T) {
 	if redis.key.ID != int64(1001) {
 		t.Fatalf("redis key = %#v", redis.key)
 	}
-	if len(queue.ops) != 1 {
-		t.Fatalf("queued ops = %#v", queue.ops)
+	if len(submitter.keys) != 1 {
+		t.Fatalf("submitted keys = %#v", submitter.keys)
 	}
 }
 
-func TestFusionStrategyQueueFailureKeepsStoreChangesForRetry(t *testing.T) {
-	queueErr := errors.New("delay queue unavailable")
-	queue := &recordingQueue{err: queueErr}
+func TestFusionStrategySuccessfulHotWriteClearsStoreAfterLocalRegistration(t *testing.T) {
+	submitter := &recordingDelaySubmitter{}
 	redis := &recordingApplier{}
-	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue, HandoffRetryer: &recordingHandoffRetryer{}}
+	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}, DelaySubmitter: submitter}
 	store := &testChangeStore{
 		spec: meta.TypeSpec{
 			Type:    fusionRoleType(),
@@ -600,32 +465,21 @@ func TestFusionStrategyQueueFailureKeepsStoreChangesForRetry(t *testing.T) {
 		changes: recordedChanges{{Path: testStoragePath(2), Op: change.OpSet}},
 	}
 
-	if err := storage.Save(context.Background(), strategy, store); !errors.Is(err, queueErr) {
-		t.Fatalf("first Save error = %v, want queue error", err)
-	}
-	if store.cleared != 0 || len(store.changes) != 1 {
-		t.Fatalf("store after failed enqueue = cleared:%d changes:%#v, want retained change", store.cleared, store.changes)
-	}
-	if redis.optionRuns != 1 || len(queue.ops) != 1 {
-		t.Fatalf("first save calls = redis:%d queue:%d, want 1/1", redis.optionRuns, len(queue.ops))
-	}
-
-	queue.err = nil
 	if err := storage.Save(context.Background(), strategy, store); err != nil {
-		t.Fatalf("retry Save returned error: %v", err)
+		t.Fatalf("Save returned error: %v", err)
 	}
 	if store.cleared != 1 || len(store.changes) != 0 {
-		t.Fatalf("store after retry = cleared:%d changes:%#v, want cleared", store.cleared, store.changes)
+		t.Fatalf("store after Save = cleared:%d changes:%#v, want cleared", store.cleared, store.changes)
 	}
-	if redis.optionRuns != 2 || len(queue.ops) != 2 {
-		t.Fatalf("retry calls = redis:%d queue:%d, want 2/2", redis.optionRuns, len(queue.ops))
+	if redis.optionRuns != 1 || len(submitter.keys) != 1 {
+		t.Fatalf("save calls = redis:%d submit:%d, want 1/1", redis.optionRuns, len(submitter.keys))
 	}
 }
 
 func TestFusionStrategyScopesWriteOptionsToRedisAndPersistsDirtyDocument(t *testing.T) {
-	queue := &recordingQueue{}
+	submitter := &recordingDelaySubmitter{}
 	redis := &recordingApplier{}
-	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}, MongoQueue: queue, HandoffRetryer: &recordingHandoffRetryer{}}
+	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}, DelaySubmitter: submitter}
 	spec := meta.TypeSpec{
 		Type:    fusionRoleType(),
 		Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Second}},
@@ -646,24 +500,21 @@ func TestFusionStrategyScopesWriteOptionsToRedisAndPersistsDirtyDocument(t *test
 	if redis.key != key {
 		t.Fatalf("redis key = %#v, want %#v", redis.key, key)
 	}
-	if len(queue.ops) != 1 {
-		t.Fatalf("queued ops = %#v, want one save op", queue.ops)
-	}
-	if queue.ops[0].Key != key || queue.ops[0].RunAfter != time.Second {
-		t.Fatalf("queued op = %#v, want record key and delay", queue.ops[0])
+	if len(submitter.keys) != 1 || submitter.keys[0] != key {
+		t.Fatalf("submitted keys = %#v, want %#v", submitter.keys, key)
 	}
 }
 
 func TestFusionStrategySkipsEmptyChanges(t *testing.T) {
-	queue := &recordingQueue{}
-	strategy := fusion.Strategy{MongoQueue: queue}
+	submitter := &recordingDelaySubmitter{}
+	strategy := fusion.Strategy{DelaySubmitter: submitter}
 	key := storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)}
 
 	if err := strategy.ApplyChangesWithOptions(context.Background(), meta.TypeSpec{}, key, recordedChanges{}, testFieldNameResolver{}, testValueResolver{}, storage.ApplyOptions{}); err != nil {
 		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
 	}
-	if len(queue.ops) != 0 {
-		t.Fatalf("queued ops = %#v, want empty", queue.ops)
+	if len(submitter.keys) != 0 {
+		t.Fatalf("submitted keys = %#v, want empty", submitter.keys)
 	}
 }
 

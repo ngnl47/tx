@@ -62,20 +62,10 @@ func TestRuntimeConfigRejectsInvalidDelayTaskLeasePrecision(t *testing.T) {
 	}
 }
 
-func TestRuntimeConfigRejectsNegativeHandoffCapacity(t *testing.T) {
-	config := HandoffRecoveryConfig{StartupLeaseTTL: time.Second, StartupWaitTimeout: time.Second, MaxPendingPerSlot: -1}
-	if err := config.validate(); err == nil || !strings.Contains(err.Error(), "handoff") {
-		t.Fatalf("HandoffRecoveryConfig.validate error = %v, want invalid handoff capacity", err)
-	}
-}
-
-func TestRuntimeConfigPassesHandoffCapacityToStorage(t *testing.T) {
-	config := RuntimeConfig{
-		HandoffRecovery: HandoffRecoveryConfig{MaxPendingPerSlot: 2048},
-		Health:          HealthConfig{Interval: time.Second, Timeout: time.Second},
-	}
-	if got := config.storageOptions().HandoffMaxPendingPerSlot; got != 2048 {
-		t.Fatalf("HandoffMaxPendingPerSlot = %d, want 2048", got)
+func TestConfigRejectsNegativeLifecycleDrainTimeout(t *testing.T) {
+	config := Config{AppID: "lifecycle-test", Runtime: RuntimeConfig{Lifecycle: LifecycleConfig{DrainTimeout: -time.Second}}}
+	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "drain timeout") {
+		t.Fatalf("Config.Validate error = %v, want invalid drain timeout", err)
 	}
 }
 

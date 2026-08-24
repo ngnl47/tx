@@ -27,7 +27,7 @@ func (server *Server) startControl(endpoint string) error {
 		slots = promoter
 	}
 	controlServer, err := startControlServer(server.runtime.lifecycle, endpoint, controlServerOptions{
-		Lifecycle: newDrainCoordinator(server),
+		Lifecycle: newDrainCoordinator(server, server.config.Runtime.Lifecycle.DrainTimeout),
 		Slots:     slots,
 	})
 	if err != nil {
