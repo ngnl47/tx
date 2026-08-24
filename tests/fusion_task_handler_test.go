@@ -108,7 +108,7 @@ func TestFusionDelayTaskHandlerSavesRedisDocumentToMongo(t *testing.T) {
 		Type:     "data.GDRole",
 		ID:       int64(1001),
 		ShardKey: int64(7),
-		Action:   string(fusion.DelayedSave),
+		Action:   "save",
 	})
 	if err != nil {
 		t.Fatalf("HandleDelayTask returned error: %v", err)
@@ -162,19 +162,19 @@ func TestFusionDelayTaskHandlerRequeuesSaveWhenRevisionChangesBeforeTTLConverges
 			RedisRevisionReader: &recordingRevisionReader{revision: "5"},
 			RedisRevisionTTL:    &recordingRevisionTTLApplier{applied: false, current: "6"},
 			RedisLocker:         &recordingRecordLocker{},
-			DelayQueue:          queue,
+			DelayedSaveQueue:    queue,
 		},
 	)
 
 	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
 		Type:   "data.GDRole",
 		ID:     int64(1001),
-		Action: string(fusion.DelayedSave),
+		Action: "save",
 	})
 	if err != nil {
 		t.Fatalf("HandleDelayTask returned error: %v", err)
 	}
-	if len(queue.ops) != 1 || queue.ops[0].Kind != fusion.DelayedSave || queue.ops[0].RunAfter != 10*time.Minute {
+	if len(queue.ops) != 1 || queue.ops[0].RunAfter != 10*time.Minute {
 		t.Fatalf("requeued operations = %#v, want one delayed save", queue.ops)
 	}
 }
@@ -201,7 +201,7 @@ func TestFusionDelayTaskHandlerKeepsDirtyTTLWhenDelayDeleteIsNotConfigured(t *te
 	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
 		Type:   "data.GDGlobalConfig",
 		ID:     int64(1),
-		Action: string(fusion.DelayedSave),
+		Action: "save",
 	})
 	if err != nil {
 		t.Fatalf("HandleDelayTask returned error: %v", err)
@@ -224,7 +224,7 @@ func TestFusionDelayTaskHandlerRejectsSaveWithoutRecordLockBeforeRead(t *testing
 	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
 		Type:   "data.GDRole",
 		ID:     int64(1001),
-		Action: string(fusion.DelayedSave),
+		Action: "save",
 	})
 	if !errors.Is(err, fusion.ErrDelayTaskDependenciesNotConfigured) {
 		t.Fatalf("HandleDelayTask error = %v, want missing record lock error", err)
@@ -247,7 +247,7 @@ func TestFusionDelayTaskHandlerRejectsMissingRedisDocument(t *testing.T) {
 	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
 		Type:   "data.GDRole",
 		ID:     int64(1001),
-		Action: string(fusion.DelayedSave),
+		Action: "save",
 	})
 	if !errors.Is(err, storage.ErrNotExists) {
 		t.Fatalf("HandleDelayTask error = %v, want storage.ErrNotExists", err)
@@ -270,7 +270,7 @@ func TestFusionDelayTaskHandlerRejectsInconsistentRedisDocument(t *testing.T) {
 	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
 		Type:   "data.GDRole",
 		ID:     int64(1001),
-		Action: string(fusion.DelayedSave),
+		Action: "save",
 	})
 	if err == nil || !strings.Contains(err.Error(), "missing document with data") {
 		t.Fatalf("HandleDelayTask error = %v, want inconsistent document error", err)
@@ -304,7 +304,7 @@ func TestFusionDelayTaskHandlerReturnsRecordUnlockError(t *testing.T) {
 	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
 		Type:   "data.GDRole",
 		ID:     int64(1001),
-		Action: string(fusion.DelayedSave),
+		Action: "save",
 	})
 	if !errors.Is(err, unlockErr) {
 		t.Fatalf("HandleDelayTask error = %v, want unlock error", err)
@@ -321,16 +321,39 @@ func TestFusionDelayTaskHandlerRejectsMissingRecordID(t *testing.T) {
 
 	var typedNil *int64
 	for _, item := range []task.DelayTask{
-		{Type: "data.GDRole", Action: string(fusion.DelayedSave)},
-		{Type: "data.GDRole", ID: typedNil, Action: string(fusion.DelayedSave)},
-		{Type: "data.GDRole", ID: "   ", Action: string(fusion.DelayedSave)},
-		{ID: int64(1001), Action: string(fusion.DelayedSave)},
+		{Type: "data.GDRole", Action: "save"},
+		{Type: "data.GDRole", ID: typedNil, Action: "save"},
+		{Type: "data.GDRole", ID: "   ", Action: "save"},
+		{ID: int64(1001), Action: "save"},
 		{Type: "data.GDRole", ID: int64(1001)},
 	} {
 		err := handler.HandleDelayTask(context.Background(), item)
 		if !errors.Is(err, task.ErrInvalidDelayTask) {
 			t.Fatalf("HandleDelayTask(%#v) error = %v, want ErrInvalidDelayTask", item, err)
 		}
+	}
+}
+
+func TestFusionDelayTaskHandlerRejectsUnknownActionBeforeStorage(t *testing.T) {
+	registry := meta.NewRegistry()
+	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Package: "data", Name: "GDRole"}}}
+	if err := registry.RegisterType(spec); err != nil {
+		t.Fatalf("RegisterType returned error: %v", err)
+	}
+	redis := &recordingDocumentLoader{doc: map[string]any{"name": "alice"}, exists: true}
+	mongo := &recordingDocumentReplacer{}
+	handler := newRecordingDelayTaskHandler(registry, redis, mongo, &recordingRecordLocker{})
+
+	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
+		Type:   "data.GDRole",
+		ID:     int64(1001),
+		Action: "delete",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unknown delayed task action") {
+		t.Fatalf("HandleDelayTask error = %v, want unknown action error", err)
+	}
+	if redis.calls != 0 || mongo.calls != 0 {
+		t.Fatalf("redis/mongo calls = %d/%d, want 0/0", redis.calls, mongo.calls)
 	}
 }
 
@@ -345,7 +368,7 @@ func TestFusionDelayTaskHandlerRejectsMissingSaveDependencies(t *testing.T) {
 	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
 		Type:   "data.GDRole",
 		ID:     int64(1001),
-		Action: string(fusion.DelayedSave),
+		Action: "save",
 	})
 	if !errors.Is(err, fusion.ErrDelayTaskDependenciesNotConfigured) {
 		t.Fatalf("HandleDelayTask error = %v, want ErrDelayTaskDependenciesNotConfigured", err)
@@ -365,7 +388,7 @@ func TestFusionDelayTaskHandlerRejectsTypedNilDependencies(t *testing.T) {
 	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
 		Type:   "data.GDRole",
 		ID:     int64(1001),
-		Action: string(fusion.DelayedSave),
+		Action: "save",
 	})
 	if !errors.Is(err, fusion.ErrDelayTaskDependenciesNotConfigured) {
 		t.Fatalf("typed nil dependencies error = %v, want ErrDelayTaskDependenciesNotConfigured", err)
@@ -379,7 +402,7 @@ func TestFusionDelayTaskHandlerRejectsTypedNilRegistry(t *testing.T) {
 	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
 		Type:   "data.GDRole",
 		ID:     int64(1001),
-		Action: string(fusion.DelayedSave),
+		Action: "save",
 	})
 	if !errors.Is(err, fusion.ErrDelayTaskDependenciesNotConfigured) {
 		t.Fatalf("typed nil registry error = %v, want ErrDelayTaskDependenciesNotConfigured", err)

@@ -480,12 +480,11 @@ func (s Strategy) requireRedisBackfillDependencies() error {
 	return nil
 }
 
-func enqueueDelayedWrites(ctx context.Context, queue DelayQueue, spec meta.TypeSpec, key storage.RecordKey) error {
+func enqueueDelayedWrites(ctx context.Context, queue DelayedSaveQueue, spec meta.TypeSpec, key storage.RecordKey) error {
 	if isNilFusionDependency(queue) {
-		return ErrDelayQueueNotConfigured
+		return ErrDelayedSaveQueueNotConfigured
 	}
-	return queue.Enqueue(ctx, DelayedOperation{
-		Kind:     DelayedSave,
+	return queue.Enqueue(ctx, DelayedSave{
 		Type:     spec.Type.Ref,
 		Key:      key,
 		RunAfter: spec.Storage.DelaySave.Duration,

@@ -3608,7 +3608,19 @@ if err := db.Save(role); err != nil {
 
 第一次 lease 完成后，队列仍会产生一次后续回写；后续 worker 重新读取 Redis 当前热文档，最终让 Mongo 收敛到 `during-worker`。业务 API 不需要感知 lease 或手工重排任务。
 
-Fusion 延迟任务队列只接受保存 action；其他未知 action 会返回错误。入队任务与 `StorageTaskHandler` 消费入口都会统一校验 `Type`、`ID`、`Action`：空白类型/动作、nil ID 与空字符串 ID 都返回 `task.ErrInvalidDelayTask`，防止手工写入或异常任务落到存储层。`Complete`、`Retry` 额外要求有效的任务租约 token 和正数尝试次数；格式完整但已过期的任务租约仍按幂等 no-op 处理。任务类型只来自 `DelayedOperation.Type`；`RecordKey` 只保存 `ID` 和 route/shard key，不承担类型识别。Fusion 延迟保存按类型、记录 ID 和 route/shard key 生成一条合并任务，不暴露额外 suffix，避免同一记录产生多条重复保存任务。任务不携带业务对象或 Store 变更状态，回写时重新读取 Redis 当前热数据。Redis claim 发现损坏或不完整的任务载荷同样返回错误，不会把它当成可执行任务；如果 `due` 中存在任务但对应 `payload` 任务载荷缺失，整批 claim 会在创建任何任务租约前失败，并保留原到期状态供运维修复，绝不会静默删除持久化任务。
+Fusion 延迟发布入口只接受 `DelayedSave`，调用方不再填写恒为 `save` 的动作字段。任务类型只来自 `DelayedSave.Type`；`RecordKey` 只保存 `ID` 和 route/shard key，不承担类型识别。持久化 task backend 与 `StorageTaskHandler` 消费入口仍会统一校验 `Type`、`ID`、`Action`：空白类型/动作、nil ID 与空字符串 ID 都返回 `task.ErrInvalidDelayTask`，未知 action 也会明确失败，防止手工写入或损坏任务落到存储层。`Complete`、`Retry` 额外要求有效的任务租约 token 和正数尝试次数；格式完整但已过期的任务租约仍按幂等 no-op 处理。Fusion 延迟保存按类型、记录 ID 和 route/shard key 生成一条合并任务，不暴露额外 suffix，避免同一记录产生多条重复保存任务。任务不携带业务对象或 Store 变更状态，回写时重新读取 Redis 当前热数据。Redis claim 发现损坏或不完整的任务载荷同样返回错误，不会把它当成可执行任务；如果 `due` 中存在任务但对应 `payload` 任务载荷缺失，整批 claim 会在创建任何任务租约前失败，并保留原到期状态供运维修复，绝不会静默删除持久化任务。
+
+高级装配或测试替身只需要描述保存目标和到期时间：
+
+```go
+err := queue.Enqueue(ctx, fusion.DelayedSave{
+	Type:     spec.Type.Ref,
+	Key:      key,
+	RunAfter: spec.Storage.DelaySave.Duration,
+})
+```
+
+常规业务仍只调用 `db.Save(role)`；延迟保存任务由框架在 Redis 热写成功后生成。
 
 数值定位在 Redis 任务载荷中精确往返。比如业务使用
 `uint64(9223372036854775809)` 作为记录 ID 时，claim 后仍得到同一个 `uint64`；框架不会先转成
@@ -3686,7 +3698,7 @@ fusionStore := fusion.Strategy{
 	RedisReplacer:  redisCluster,
 	RedisLocker:    redisCluster,
 	MongoLoader:    mongoCluster,
-	DelaySubmitter: fusion.NewDelayTaskDispatcher(delayQueue),
+	DelaySubmitter: fusion.NewDelayTaskDispatcher(delayedSaveQueue),
 	DirtyTTL:       30 * 24 * time.Hour,
 }
 ```

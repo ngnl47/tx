@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"testing"
 	"time"
 
@@ -77,8 +76,7 @@ func TestFusionDelayTaskComponentsRejectTypedNilBackend(t *testing.T) {
 	var backend *memory.Backend
 
 	queue := fusion.NewTaskQueue(backend)
-	if err := queue.Enqueue(ctx, fusion.DelayedOperation{
-		Kind: fusion.DelayedSave,
+	if err := queue.Enqueue(ctx, fusion.DelayedSave{
 		Type: meta.TypeRef{Package: "data", Name: "GDRole"},
 		Key:  storage.RecordKey{ID: "1"},
 	}); !errors.Is(err, fusion.ErrTaskBackendNotConfigured) {
@@ -144,8 +142,7 @@ func TestFusionTaskQueueEnqueuesDelayTaskBackend(t *testing.T) {
 	queue := fusion.NewTaskQueueWithOptions(backend, fusion.TaskQueueOptions{Now: func() time.Time {
 		return now
 	}})
-	err := queue.Enqueue(ctx, fusion.DelayedOperation{
-		Kind:     fusion.DelayedSave,
+	err := queue.Enqueue(ctx, fusion.DelayedSave{
 		Type:     meta.TypeRef{Package: "data", Name: "GDRole"},
 		Key:      storage.RecordKey{ID: int64(1001), ShardKey: int64(7)},
 		RunAfter: time.Minute,
@@ -162,59 +159,11 @@ func TestFusionTaskQueueEnqueuesDelayTaskBackend(t *testing.T) {
 		t.Fatalf("leases = %#v, want one", leases)
 	}
 	got := leases[0].Task
-	if got.Type != "data.GDRole" || got.ID != int64(1001) || got.ShardKey != int64(7) || got.Action != string(fusion.DelayedSave) {
+	if got.Type != "data.GDRole" || got.ID != int64(1001) || got.ShardKey != int64(7) || got.Action != "save" {
 		t.Fatalf("delay task = %#v", got)
 	}
 	if !got.DueAt.Equal(now.Add(time.Minute)) {
 		t.Fatalf("due at = %s, want %s", got.DueAt, now.Add(time.Minute))
-	}
-}
-
-func TestFusionTaskQueueRejectsDeleteAction(t *testing.T) {
-	ctx := context.Background()
-	backend := memory.NewBackend()
-	now := time.Unix(100, 0)
-	queue := fusion.NewTaskQueueWithOptions(backend, fusion.TaskQueueOptions{Now: func() time.Time {
-		return now
-	}})
-
-	err := queue.Enqueue(ctx, fusion.DelayedOperation{
-		Kind:     fusion.DelayedOperationKind("delete"),
-		Key:      storage.RecordKey{ID: int64(1001), ShardKey: int64(7)},
-		RunAfter: time.Hour,
-	})
-	if err == nil || !strings.Contains(err.Error(), "unknown delayed operation kind") {
-		t.Fatalf("Enqueue error = %v, want unsupported delete action", err)
-	}
-
-	leases, err := backend.ClaimDue(ctx, now.Add(time.Hour), 10)
-	if err != nil {
-		t.Fatalf("ClaimDue returned error: %v", err)
-	}
-	if len(leases) != 0 {
-		t.Fatalf("leases = %#v, want none", leases)
-	}
-}
-
-func TestFusionTaskQueueRejectsUnknownOperation(t *testing.T) {
-	ctx := context.Background()
-	backend := memory.NewBackend()
-	queue := fusion.NewTaskQueue(backend)
-
-	err := queue.Enqueue(ctx, fusion.DelayedOperation{
-		Kind: "compact",
-		Type: meta.TypeRef{Package: "data", Name: "GDRole"},
-		Key:  storage.RecordKey{ID: int64(1001)},
-	})
-	if err == nil || !strings.Contains(err.Error(), "unknown delayed operation kind") {
-		t.Fatalf("Enqueue error = %v, want unknown kind error", err)
-	}
-	leases, err := backend.ClaimDue(ctx, time.Now().Add(time.Hour), 10)
-	if err != nil {
-		t.Fatalf("ClaimDue returned error: %v", err)
-	}
-	if len(leases) != 0 {
-		t.Fatalf("leases = %#v, want no queued task", leases)
 	}
 }
 
@@ -226,34 +175,30 @@ func TestFusionTaskQueueRejectsMissingRecordLocator(t *testing.T) {
 
 	for _, tt := range []struct {
 		name string
-		op   fusion.DelayedOperation
+		op   fusion.DelayedSave
 	}{
 		{
 			name: "missing type",
-			op: fusion.DelayedOperation{
-				Kind: fusion.DelayedSave,
-				Key:  storage.RecordKey{ID: int64(1001)},
+			op: fusion.DelayedSave{
+				Key: storage.RecordKey{ID: int64(1001)},
 			},
 		},
 		{
 			name: "missing id",
-			op: fusion.DelayedOperation{
-				Kind: fusion.DelayedSave,
+			op: fusion.DelayedSave{
 				Type: meta.TypeRef{Package: "data", Name: "GDRole"},
 			},
 		},
 		{
 			name: "typed nil id",
-			op: fusion.DelayedOperation{
-				Kind: fusion.DelayedSave,
+			op: fusion.DelayedSave{
 				Type: meta.TypeRef{Package: "data", Name: "GDRole"},
 				Key:  storage.RecordKey{ID: typedNil},
 			},
 		},
 		{
 			name: "blank string id",
-			op: fusion.DelayedOperation{
-				Kind: fusion.DelayedSave,
+			op: fusion.DelayedSave{
 				Type: meta.TypeRef{Package: "data", Name: "GDRole"},
 				Key:  storage.RecordKey{ID: "  "},
 			},

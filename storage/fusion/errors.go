@@ -9,6 +9,6 @@ var (
 	ErrDelayTaskDependenciesNotConfigured = errors.New("fusion: delayed task dependencies are not configured")
 	ErrStrategyDependenciesNotConfigured  = errors.New("fusion: strategy dependencies are not configured")
 	ErrRedisNotConfigured                 = errors.New("fusion: redis change applier is not configured")
-	ErrDelayQueueNotConfigured            = errors.New("fusion: delayed task queue is not configured")
+	ErrDelayedSaveQueueNotConfigured      = errors.New("fusion: delayed save queue is not configured")
 	ErrDelayTaskSubmitterNotConfigured    = errors.New("fusion: delay task submitter is not configured")
 )

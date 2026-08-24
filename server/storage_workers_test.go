@@ -13,17 +13,17 @@ import (
 
 type emptyDelayQueue struct{}
 
-func (emptyDelayQueue) Enqueue(context.Context, fusion.DelayedOperation) error { return nil }
+func (emptyDelayQueue) Enqueue(context.Context, fusion.DelayedSave) error { return nil }
 
 func newEmptyDelayTaskDispatcher() *fusion.DelayTaskDispatcher {
 	return fusion.NewDelayTaskDispatcher(emptyDelayQueue{})
 }
 
 type recordingDelayQueue struct {
-	operations []fusion.DelayedOperation
+	operations []fusion.DelayedSave
 }
 
-func (queue *recordingDelayQueue) Enqueue(_ context.Context, operation fusion.DelayedOperation) error {
+func (queue *recordingDelayQueue) Enqueue(_ context.Context, operation fusion.DelayedSave) error {
 	queue.operations = append(queue.operations, operation)
 	return nil
 }
@@ -59,7 +59,7 @@ func TestFusionCModDrainPublishesPendingDelayTask(t *testing.T) {
 	if err := drainer.Drain(context.Background()); err != nil {
 		t.Fatalf("Drain returned error: %v", err)
 	}
-	if len(queue.operations) != 1 || queue.operations[0].Kind != fusion.DelayedSave {
+	if len(queue.operations) != 1 {
 		t.Fatalf("operations = %#v, want one delayed save", queue.operations)
 	}
 }

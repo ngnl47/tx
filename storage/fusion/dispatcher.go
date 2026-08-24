@@ -41,7 +41,7 @@ type pendingDelayedWrite struct {
 // DelayTaskDispatcher 把 Redis 热写后的根记录登记异步发布到 Fusion 延迟任务队列。
 // 相同根记录只保留最新登记；发布失败会记录错误并持续重试。
 type DelayTaskDispatcher struct {
-	queue             DelayQueue
+	queue             DelayedSaveQueue
 	retryInitialDelay time.Duration
 	retryMultiplier   float64
 	retryMaxDelay     time.Duration
@@ -56,11 +56,11 @@ type DelayTaskDispatcher struct {
 	publishGate chan struct{}
 }
 
-func NewDelayTaskDispatcher(queue DelayQueue) *DelayTaskDispatcher {
+func NewDelayTaskDispatcher(queue DelayedSaveQueue) *DelayTaskDispatcher {
 	return NewDelayTaskDispatcherWithOptions(queue, DelayTaskDispatcherOptions{})
 }
 
-func NewDelayTaskDispatcherWithOptions(queue DelayQueue, options DelayTaskDispatcherOptions) *DelayTaskDispatcher {
+func NewDelayTaskDispatcherWithOptions(queue DelayedSaveQueue, options DelayTaskDispatcherOptions) *DelayTaskDispatcher {
 	retryInitialDelay := options.RetryInitialDelay
 	if retryInitialDelay <= 0 {
 		retryInitialDelay = defaultRetryInitialDelay
@@ -110,7 +110,7 @@ func (d *DelayTaskDispatcher) Submit(spec meta.TypeSpec, key storage.RecordKey) 
 // Start 使用服务根生命周期启动发布循环。
 func (d *DelayTaskDispatcher) Start(ctx waitGroupContext) error {
 	if d == nil || isNilFusionDependency(d.queue) {
-		return ErrDelayQueueNotConfigured
+		return ErrDelayedSaveQueueNotConfigured
 	}
 	if isNilFusionDependency(ctx) {
 		return ErrSchedulerContextNotConfigured
@@ -124,7 +124,7 @@ func (d *DelayTaskDispatcher) Start(ctx waitGroupContext) error {
 // 发布失败会沿用分发器退避策略重试；超时返回错误且不会删除尚未确认的 pending。
 func (d *DelayTaskDispatcher) Drain(ctx context.Context) error {
 	if d == nil || isNilFusionDependency(d.queue) {
-		return ErrDelayQueueNotConfigured
+		return ErrDelayedSaveQueueNotConfigured
 	}
 	if ctx == nil {
 		ctx = context.Background()

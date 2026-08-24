@@ -53,7 +53,6 @@ type storageRuntime struct {
 	wal             wal.Store
 	fusion          txfusion.Strategy
 	delayBackend    *txtaskredis.Backend
-	delayQueue      *txfusion.TaskQueue
 	delayHandler    txfusion.DelayTaskHandler
 	delayWorker     *txfusion.Scheduler
 	delayDispatcher *txfusion.DelayTaskDispatcher
@@ -159,13 +158,12 @@ func (s *storageRuntime) startFusion(ctx context.Context, redisConfig storagecon
 	if s.redis == nil || s.mongo == nil {
 		return fmt.Errorf("server: Redis and Mongo storage must start before Fusion")
 	}
-	delayBackend, delayQueue, err := buildDelayQueue(ctx, redisConfig, s.redisShards, opts)
+	delayBackend, delayedSaveQueue, err := buildDelayedSaveQueue(ctx, redisConfig, s.redisShards, opts)
 	if err != nil {
 		return err
 	}
 	s.delayBackend = delayBackend
-	s.delayQueue = delayQueue
-	s.delayDispatcher = txfusion.NewDelayTaskDispatcher(delayQueue)
+	s.delayDispatcher = txfusion.NewDelayTaskDispatcher(delayedSaveQueue)
 	s.fusion = txfusion.Strategy{
 		RedisApplier:   s.redis,
 		RedisLoader:    s.redis,
@@ -182,7 +180,7 @@ func (s *storageRuntime) startFusion(ctx context.Context, redisConfig storagecon
 		RedisRevisionReader: s.redis,
 		RedisRevisionTTL:    s.redis,
 		RedisLocker:         s.redis,
-		DelayQueue:          delayQueue,
+		DelayedSaveQueue:    delayedSaveQueue,
 	})
 	s.delayHandler = healthAwareDelayHandler{storage: s, next: delayHandler}
 	return nil
@@ -509,22 +507,22 @@ func buildWAL(ctx context.Context, cfg WALConfig, routes storageconfig.RouteTabl
 	return store, nil
 }
 
-func buildDelayQueue(ctx context.Context, cfg storageconfig.RouteTableConfig, clients map[string]txgoredis.Client, opts storageOptions) (*txtaskredis.Backend, *txfusion.TaskQueue, error) {
+func buildDelayedSaveQueue(ctx context.Context, cfg storageconfig.RouteTableConfig, clients map[string]txgoredis.Client, opts storageOptions) (*txtaskredis.Backend, *txfusion.TaskQueue, error) {
 	routeType := opts.DelayTaskRouteType
 	if routeType == "" {
 		routeType = defaultDelayTaskRouteType
 	}
 	routeTable, err := cfg.RouteTable()
 	if err != nil {
-		return nil, nil, fmt.Errorf("server: build delay queue route table: %w", err)
+		return nil, nil, fmt.Errorf("server: build delayed save queue route table: %w", err)
 	}
 	endpoint, err := routeTable.RouteRedis(ctx, routeType, int64(1))
 	if err != nil {
-		return nil, nil, fmt.Errorf("server: route delay queue redis endpoint %q: %w", routeType, err)
+		return nil, nil, fmt.Errorf("server: route delayed save queue redis endpoint %q: %w", routeType, err)
 	}
 	client, ok := clients[endpoint]
 	if !ok {
-		return nil, nil, fmt.Errorf("server: delay queue redis endpoint %q is not configured", endpoint)
+		return nil, nil, fmt.Errorf("server: delayed save queue redis endpoint %q is not configured", endpoint)
 	}
 	backend := txtaskredis.NewBackend(client, txtaskredis.Options{
 		Prefix:       opts.DelayTaskPrefix,

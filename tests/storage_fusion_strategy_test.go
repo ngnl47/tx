@@ -14,7 +14,7 @@ import (
 )
 
 type recordingQueue struct {
-	ops  []fusion.DelayedOperation
+	ops  []fusion.DelayedSave
 	err  error
 	errs []error
 }
@@ -33,7 +33,7 @@ func (s *recordingDelaySubmitter) Submit(spec meta.TypeSpec, key storage.RecordK
 	}
 }
 
-func (q *recordingQueue) Enqueue(_ context.Context, op fusion.DelayedOperation) error {
+func (q *recordingQueue) Enqueue(_ context.Context, op fusion.DelayedSave) error {
 	q.ops = append(q.ops, op)
 	if len(q.errs) > 0 {
 		err := q.errs[0]

@@ -2,7 +2,6 @@ package fusion
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/ngnl47/tx/meta"
@@ -10,25 +9,19 @@ import (
 	"github.com/ngnl47/tx/storage/task"
 )
 
-// DelayedOperationKind 描述延迟队列中的落地动作。
-type DelayedOperationKind string
+const delayedSaveAction = "save"
 
-const (
-	// DelayedSave 表示延迟保存 MongoDB 持久化数据。
-	DelayedSave DelayedOperationKind = "save"
-)
-
-// DelayedOperation 是 fusion 模式写入 MongoDB 前的延迟保存任务。
-type DelayedOperation struct {
-	Kind     DelayedOperationKind
+// DelayedSave 是 Fusion 模式写入 MongoDB 前的延迟保存任务。
+// Fusion 不支持物理删除，因此该结构不再暴露多动作状态。
+type DelayedSave struct {
 	Type     meta.TypeRef
 	Key      storage.RecordKey
 	RunAfter time.Duration
 }
 
-// DelayQueue 定义 fusion 模式使用的延迟保存队列。
-type DelayQueue interface {
-	Enqueue(context.Context, DelayedOperation) error
+// DelayedSaveQueue 定义 Fusion 模式使用的延迟保存队列。
+type DelayedSaveQueue interface {
+	Enqueue(context.Context, DelayedSave) error
 }
 
 type TaskQueueOptions struct {
@@ -52,19 +45,16 @@ func NewTaskQueueWithOptions(backend task.DelayTaskBackend, options TaskQueueOpt
 	return &TaskQueue{backend: backend, now: now}
 }
 
-func (q *TaskQueue) Enqueue(ctx context.Context, op DelayedOperation) error {
+func (q *TaskQueue) Enqueue(ctx context.Context, save DelayedSave) error {
 	if q == nil || isNilFusionDependency(q.backend) {
 		return ErrTaskBackendNotConfigured
 	}
-	if op.Kind != DelayedSave {
-		return fmt.Errorf("fusion: unknown delayed operation kind %q", op.Kind)
-	}
 	item := task.DelayTask{
-		Type:     delayedTaskType(op.Type),
-		ID:       op.Key.ID,
-		ShardKey: op.Key.ShardKey,
-		Action:   string(op.Kind),
-		DueAt:    q.now().Add(op.RunAfter),
+		Type:     delayedTaskType(save.Type),
+		ID:       save.Key.ID,
+		ShardKey: save.Key.ShardKey,
+		Action:   delayedSaveAction,
+		DueAt:    q.now().Add(save.RunAfter),
 	}
 	if err := task.ValidateDelayTask(item); err != nil {
 		return err

@@ -20,7 +20,7 @@ type retryingDelayQueue struct {
 	mu         sync.Mutex
 	failures   int
 	attempts   int
-	operations []fusion.DelayedOperation
+	operations []fusion.DelayedSave
 	succeeded  chan struct{}
 }
 
@@ -28,12 +28,12 @@ type blockingDelayQueue struct {
 	mu         sync.Mutex
 	once       sync.Once
 	attempts   int
-	operations []fusion.DelayedOperation
+	operations []fusion.DelayedSave
 	started    chan struct{}
 	release    chan struct{}
 }
 
-func (q *blockingDelayQueue) Enqueue(ctx context.Context, operation fusion.DelayedOperation) error {
+func (q *blockingDelayQueue) Enqueue(ctx context.Context, operation fusion.DelayedSave) error {
 	q.mu.Lock()
 	q.attempts++
 	q.mu.Unlock()
@@ -49,13 +49,13 @@ func (q *blockingDelayQueue) Enqueue(ctx context.Context, operation fusion.Delay
 	return nil
 }
 
-func (q *blockingDelayQueue) snapshot() (int, []fusion.DelayedOperation) {
+func (q *blockingDelayQueue) snapshot() (int, []fusion.DelayedSave) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return q.attempts, append([]fusion.DelayedOperation(nil), q.operations...)
+	return q.attempts, append([]fusion.DelayedSave(nil), q.operations...)
 }
 
-func (q *retryingDelayQueue) Enqueue(_ context.Context, operation fusion.DelayedOperation) error {
+func (q *retryingDelayQueue) Enqueue(_ context.Context, operation fusion.DelayedSave) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.attempts++
@@ -73,10 +73,10 @@ func (q *retryingDelayQueue) Enqueue(_ context.Context, operation fusion.Delayed
 	return nil
 }
 
-func (q *retryingDelayQueue) snapshot() (int, []fusion.DelayedOperation) {
+func (q *retryingDelayQueue) snapshot() (int, []fusion.DelayedSave) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return q.attempts, append([]fusion.DelayedOperation(nil), q.operations...)
+	return q.attempts, append([]fusion.DelayedSave(nil), q.operations...)
 }
 
 func (q *retryingDelayQueue) setFailures(failures int) {
@@ -114,7 +114,7 @@ func TestDelayTaskDispatcherRetriesFailedPublishAndLogsError(t *testing.T) {
 	root.WaitDoneAndWaitGroupWait()
 
 	attempts, operations := queue.snapshot()
-	if attempts != 2 || len(operations) != 1 || operations[0].Kind != fusion.DelayedSave {
+	if attempts != 2 || len(operations) != 1 {
 		t.Fatalf("attempts=%d operations=%#v, want one failed and one successful save publication", attempts, operations)
 	}
 	records := handler.Records()
@@ -198,7 +198,7 @@ func TestDelayTaskDispatcherPublishesOnlyDelayedSave(t *testing.T) {
 	if len(operations) != 1 {
 		t.Fatalf("operations = %#v, want one save", operations)
 	}
-	if operations[0].Kind != fusion.DelayedSave || operations[0].RunAfter != 10*time.Minute {
+	if operations[0].RunAfter != 10*time.Minute {
 		t.Fatalf("save operation = %#v", operations[0])
 	}
 }
@@ -222,7 +222,7 @@ func TestDelayTaskDispatcherDrainRetriesUntilPendingPublished(t *testing.T) {
 	}
 
 	attempts, operations := queue.snapshot()
-	if attempts != 2 || len(operations) != 1 || operations[0].Kind != fusion.DelayedSave {
+	if attempts != 2 || len(operations) != 1 {
 		t.Fatalf("attempts=%d operations=%#v, want one failed and one successful save publication", attempts, operations)
 	}
 }
@@ -253,7 +253,7 @@ func TestDelayTaskDispatcherDrainTimeoutKeepsPendingForNextDrain(t *testing.T) {
 		t.Fatalf("second Drain returned error: %v", err)
 	}
 	_, operations := queue.snapshot()
-	if len(operations) != 1 || operations[0].Kind != fusion.DelayedSave {
+	if len(operations) != 1 {
 		t.Fatalf("operations=%#v, want retained pending save to be published", operations)
 	}
 }

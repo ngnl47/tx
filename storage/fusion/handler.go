@@ -21,14 +21,14 @@ type StorageTaskHandler struct {
 	redisRevisionReader storage.RecordRevisionReader
 	redisRevisionTTL    storage.RevisionTTLApplier
 	redisLocker         storage.RecordLocker
-	delayQueue          DelayQueue
+	delayedSaveQueue    DelayedSaveQueue
 }
 
 type DelayTaskHandlerOptions struct {
 	RedisRevisionReader storage.RecordRevisionReader
 	RedisRevisionTTL    storage.RevisionTTLApplier
 	RedisLocker         storage.RecordLocker
-	DelayQueue          DelayQueue
+	DelayedSaveQueue    DelayedSaveQueue
 }
 
 func NewDelayTaskHandler(types TypeRegistry, redisLoader storage.DocumentLoader, mongoReplace storage.DocumentReplacer, redisLocker storage.RecordLocker) *StorageTaskHandler {
@@ -49,7 +49,7 @@ func NewDelayTaskHandlerWithOptions(types TypeRegistry, redisLoader storage.Docu
 		redisRevisionReader: options.RedisRevisionReader,
 		redisRevisionTTL:    options.RedisRevisionTTL,
 		redisLocker:         options.RedisLocker,
-		delayQueue:          options.DelayQueue,
+		delayedSaveQueue:    options.DelayedSaveQueue,
 	}
 }
 
@@ -68,12 +68,10 @@ func (h *StorageTaskHandler) HandleDelayTask(ctx context.Context, item task.Dela
 		ID:       item.ID,
 		ShardKey: item.ShardKey,
 	}
-	switch DelayedOperationKind(item.Action) {
-	case DelayedSave:
-		return h.handleSave(ctx, spec, key)
-	default:
+	if item.Action != delayedSaveAction {
 		return fmt.Errorf("fusion: unknown delayed task action %q", item.Action)
 	}
+	return h.handleSave(ctx, spec, key)
 }
 
 func (h *StorageTaskHandler) handleSave(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) (err error) {
@@ -123,11 +121,10 @@ func (h *StorageTaskHandler) handleSave(ctx context.Context, spec meta.TypeSpec,
 }
 
 func (h *StorageTaskHandler) requeueSave(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
-	if isNilFusionDependency(h.delayQueue) {
+	if isNilFusionDependency(h.delayedSaveQueue) {
 		return fmt.Errorf("%w: delayed save requeue requires delay queue", ErrDelayTaskDependenciesNotConfigured)
 	}
-	return h.delayQueue.Enqueue(ctx, DelayedOperation{
-		Kind:     DelayedSave,
+	return h.delayedSaveQueue.Enqueue(ctx, DelayedSave{
 		Type:     spec.Type.Ref,
 		Key:      key,
 		RunAfter: spec.Storage.DelaySave.Duration,
