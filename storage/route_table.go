@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"strconv"
 )
 
 // RouteRule 描述一个 routeType 在指定 routeBy 区间内的分片规则。
@@ -35,7 +34,7 @@ func NewRouteTable(routes map[string][]RouteRule) *RouteTable {
 	return table
 }
 
-// Route 按 routeType 和 shardKey 选择端点名称。
+// Route 按 routeType 和 shardKey 选择端点名称。字符串 shardKey 使用稳定 FNV-1a 32 位哈希。
 func (t *RouteTable) Route(_ context.Context, routeType string, shardKey any) (string, error) {
 	if t == nil {
 		return "", fmt.Errorf("storage: route table is not configured")
@@ -44,20 +43,14 @@ func (t *RouteTable) Route(_ context.Context, routeType string, shardKey any) (s
 	if !ok || len(rules) == 0 {
 		return "", fmt.Errorf("storage: route %q is not configured", routeType)
 	}
+	routeBy, err := routeKeyValue(shardKey)
+	if err != nil {
+		return "", fmt.Errorf("storage: route %q shardKey %v cannot be routed: %w", routeType, shardKey, err)
+	}
 	for _, rule := range rules {
 		min, max := normalizeRouteRange(rule)
 		if len(rule.Shards) == 0 {
 			return "", fmt.Errorf("storage: route %q has empty shards", routeType)
-		}
-		if len(rule.Shards) == 1 {
-			if routeKeyInSingleShardRange(shardKey, min, max) {
-				return rule.Shards[0], nil
-			}
-			continue
-		}
-		routeBy, err := routeKeyInt64(shardKey)
-		if err != nil {
-			return "", fmt.Errorf("storage: route %q shardKey %v is not numeric: %w", routeType, shardKey, err)
 		}
 		if routeBy < min || routeBy > max {
 			continue
@@ -89,15 +82,7 @@ func normalizeRouteRange(rule RouteRule) (int64, int64) {
 	return min, max
 }
 
-func routeKeyInSingleShardRange(shardKey any, min, max int64) bool {
-	routeBy, err := routeKeyInt64(shardKey)
-	if err != nil {
-		return min <= 1 && max == math.MaxInt64
-	}
-	return routeBy >= min && routeBy <= max
-}
-
-func routeKeyInt64(value any) (int64, error) {
+func routeKeyValue(value any) (int64, error) {
 	switch v := value.(type) {
 	case int:
 		return int64(v), nil
@@ -126,8 +111,24 @@ func routeKeyInt64(value any) (int64, error) {
 		}
 		return int64(v), nil
 	case string:
-		return strconv.ParseInt(v, 10, 64)
+		return int64(stringRouteHash(v)), nil
 	default:
 		return 0, fmt.Errorf("unsupported type %T", value)
 	}
+}
+
+func stringRouteHash(value string) uint32 {
+	const (
+		offset32 = uint32(2166136261)
+		prime32  = uint32(16777619)
+	)
+	hash := offset32
+	for i := 0; i < len(value); i++ {
+		hash ^= uint32(value[i])
+		hash *= prime32
+	}
+	if hash == 0 {
+		return 1
+	}
+	return hash
 }

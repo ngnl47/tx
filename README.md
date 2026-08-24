@@ -2766,6 +2766,9 @@ router := storage.NewRouteTable(map[string][]storage.RouteRule{
     "global": {
         {Shards: []string{"main"}},
     },
+    "user": {
+        {Shards: []string{"user-a", "user-b"}},
+    },
 })
 ```
 
@@ -2775,9 +2778,10 @@ router := storage.NewRouteTable(map[string][]storage.RouteRule{
 路由规则：
 
 - 先按 `routeType` 找到规则列表。
-- 再按 `shardKey` 命中 `min/max` 区间；`min <= 0` 视为 `1`，`max <= 0` 视为无限大。
-- 多 shard 规则用 `routeBy % len(shards)` 选择 endpoint。
-- 单 shard 规则允许字符串主键，用于全局表或单分片表。
+- 数字 `shardKey` 直接作为路由值；字符串 `shardKey` 使用稳定 FNV-1a 32 位哈希生成路由值。即使字符串内容是 `"1001"`，也不会按十进制数字 `1001` 处理。
+- 再按路由值命中 `min/max` 区间；`min <= 0` 视为 `1`，`max <= 0` 视为无限大。
+- 多 shard 规则用 `路由值 % len(shards)` 选择 endpoint；数字和字符串字段都支持单 shard、多 shard 与分段规则。
+- 字符串哈希结果为零时固定改为 `1`。哈希算法和零值规则属于持久化布局契约，不能在已有数据上直接更换。
 
 以上配置表示：
 
@@ -2786,6 +2790,15 @@ router := storage.NewRouteTable(map[string][]storage.RouteRule{
 | `role` | `1001` | `role-b`，因为 `1001 % 2 = 1` |
 | `role` | `1000000` | `role-c` |
 | `global` | `"season"` | `main` |
+
+字符串路由不要求业务先把 ID 转成整数：
+
+```go
+endpoint, err := router.Route(ctx, "user", "open-id-470001")
+```
+
+相同字符串在不同进程、Redis 路由和 Mongo 路由中始终得到相同的 FNV-1a 路由值。字符串的 `min/max`
+针对哈希结果，不是字典顺序，也不能用来表达“某个时间之后创建的字符串 ID”。
 
 ### 从 yml 配置构造
 
@@ -2862,6 +2875,42 @@ endpoints := redisRoutes.Endpoints()
 ```
 
 `Endpoints()` 返回配置中出现过的 endpoint URI 集合；当前 key 和 value 都是 URI，运行时装配可按 URI 创建并复用客户端。
+
+### 路由表与扩缩容
+
+`RouteTable` 是启动期构造的只读持久化布局，不监听 yml，也不负责数据迁移。直接给已有规则增加、删除或重排
+`shards` 会改变取模结果，例如从两个 endpoint 扩成三个 endpoint 时，大量已有记录会被路由到新位置。tx 不会自动
+双读、双写或从旧 endpoint 回查，这类修改必须先停止对应写入、迁移数据、验证后再切换配置。
+
+生产环境优先把一个云 Redis 或 Mongo 集群的稳定代理地址配置成一个 endpoint，让云服务在该 endpoint 后完成节点、
+副本和数据 shard 的扩缩容。例如下面的 Mongo 多地址连接串在 `RouteTable` 中仍然只是一个标量 endpoint：
+
+```yaml
+role: "mongodb://mongos-a:27017,mongos-b:27017/game"
+```
+
+只有确实要把业务数据拆到两个互相独立的存储集群时，才配置两个应用层 endpoint：
+
+```yaml
+role:
+  - "mongodb://role-cluster-a/game"
+  - "mongodb://role-cluster-b/game"
+```
+
+对于单调递增的数字 ID，可以保留旧区间并为未来 ID 增加新区间，避免旧记录重新取模。tx 要求明确写出前一区间的
+`max`，不会根据后一条规则自动推断迁移边界：
+
+```yaml
+role:
+  - min: 1
+    max: 999999
+    shards: ["redis://role-a"]
+  - min: 1000000
+    shards: ["redis://role-a", "redis://role-b"]
+```
+
+这只是静态布局能力，不是自动扩容。它只适用于能保证未来 ID 落入新区间的数字字段；字符串路由值是哈希结果，
+不能用这种方式区分新旧数据。
 
 tx 提供官方 driver 的薄适配层，业务工程仍负责读取本地配置、创建具体 client，再传给 tx runtime：
 
@@ -3057,6 +3106,9 @@ main: "mongodb://127.0.0.1:27017/txgame"
 role: "mongodb://127.0.0.1:27017/txgame"
 rank: "mongodb://127.0.0.1:27017/txgame"
 ```
+
+Mongo URI 可以包含副本集成员或多个 `mongos` 种子地址。无论 URI 中有几个地址，只要它在 yml 中是一个标量，
+tx 就把它视为一个应用层 endpoint；Mongo Go Driver 和 Mongo 集群负责该 endpoint 内部的节点选择、故障转移与数据分片。
 
 如果生产环境按业务或 routeBy 区间拆分多个 Mongo endpoint，可以写成规则数组：
 

@@ -23,7 +23,7 @@ func TestRouteTableRoutesByRangeAndModulo(t *testing.T) {
 		{name: "first range first shard", shardKey: int64(2), want: "role-a"},
 		{name: "first range second shard", shardKey: int64(3), want: "role-b"},
 		{name: "open ended range", shardKey: int64(11), want: "role-e"},
-		{name: "numeric string", shardKey: "12", want: "role-c"},
+		{name: "numeric-looking string uses hash", shardKey: "12", want: "role-d"},
 	}
 
 	for _, tt := range tests {
@@ -92,9 +92,9 @@ func TestRouteTableReturnsErrorsForInvalidConfig(t *testing.T) {
 		{name: "empty shards", table: storage.NewRouteTable(map[string][]storage.RouteRule{
 			"role": {{Min: 1}},
 		}), route: "role", shardKey: int64(1)},
-		{name: "non numeric multi shard", table: storage.NewRouteTable(map[string][]storage.RouteRule{
+		{name: "unsupported shard key type", table: storage.NewRouteTable(map[string][]storage.RouteRule{
 			"role": {{Min: 1, Shards: []string{"a", "b"}}},
-		}), route: "role", shardKey: "abc"},
+		}), route: "role", shardKey: struct{ ID int }{ID: 1}},
 	}
 
 	for _, tt := range tests {
