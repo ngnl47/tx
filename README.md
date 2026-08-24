@@ -542,7 +542,10 @@ defer rpcHost.Stop(context.Background())
 
 `Fetch` 是 unary 长轮询，调用方必须传递自己的超时或连接 context。运行时错误会转为明确的 gRPC status：无效请求为
 `InvalidArgument`，离线会话为 `NotFound`，旧连接为 `Aborted`，队列满为 `ResourceExhausted`；不会静默丢失或伪造投递成功。
-客户端还会校验成功响应本身：空响应、`Pub.Seq <= 0`、负的 Init/Rec 序号，以及 `FetchSome` 中为空、非正数或乱序的消息，都会返回 `msgq.ErrInvalidMailboxResponse`。这表示传输结果不可信，调用方应结束当前链路并记录错误，不能把零值当作成功或在没有业务幂等键时自动重发：
+客户端还会校验成功响应本身：空响应、`Pub.Seq <= 0`、负的 Init 序号、`Rec.ReceivedSeq` 落后于本次请求、
+`Rec.Ack` 与本次请求不一致，以及 `FetchSome` 返回空批次、空消息、非正数或乱序消息，都会返回
+`msgq.ErrInvalidMailboxResponse`。这表示传输结果不可信，调用方应结束当前链路并记录错误，不能把零值当作成功或在
+没有业务幂等键时自动重发：
 
 ```go
 result, err := sender.Pub(ctx, roleID, bonBody)
@@ -886,7 +889,9 @@ err = sender.Send(ctx, rpc.Delivery{
 ```
 
 TLS/mTLS 的 yml 装配、证书加载和轮换不属于当前范围；未来引入时不改变 `Sender` 或 `Delivery` 的业务调用。
-`Sender.Send` 会返回路由不可用、建连、传输或 Receiver 拒绝等错误，不会自动重试或静默丢弃消息。
+`Sender.Send` 会返回路由不可用、建连、传输或 Receiver 拒绝等错误，不会自动重试或静默丢弃消息。gRPC 确认只有在
+`Accepted=true` 且 `ErrorCode` 为空时才算成功；例如 `{Accepted: true, ErrorCode: "queue-full"}` 属于矛盾响应，
+会返回 `rpc.ErrDeliveryRejected`，不能用成功位掩盖错误状态。
 
 ### 生成 proto
 
@@ -1503,11 +1508,11 @@ Fusion 的 Redis 和 Mongo 共用一份 `RecordKey`，因此两边的 `idField` 
 | --- | --- | --- | --- |
 | `comment` | 单值 | 任意字符串 | 字段说明，只作为元数据和生成代码注释使用。 |
 | `json` | 字段名 | 字符串或 `-` | JSON 字段名。`-` 表示 JSON 忽略该字段。 |
-| `json` | 选项 | `omitempty`、`string` 等 Go JSON 选项 | 必须写在字段名之后，例如 `json:"name,omitempty"`。`json:",omitempty"` 属于歧义写法，生成器会拒绝。 |
+| `json` | 选项 | `omitempty` | 必须写在字段名之后，例如 `json:"name,omitempty"`。其他选项可能使全量编解码与增量写入产生不同值语义，因此生成器会拒绝。 |
 | `bson` | 字段名 | 字符串、`_id` 或 `-` | BSON 字段名。`_id` 表示绑定 Mongo 文档主键；`-` 表示 BSON 忽略该字段。 |
-| `bson` | 选项 | Mongo Go Driver 支持的选项 | 例如 `omitempty`、`inline`。匿名嵌入结构在 JSON 下默认内联，BSON/Msgpack 如果需要内联需显式配置。 |
+| `bson` | 选项 | `omitempty`、匿名嵌入字段的 `inline` | 匿名嵌入结构在 JSON 下默认内联，BSON/Msgpack 如果需要内联需显式配置。 |
 | `msgpack` | 字段名 | 字符串或 `-` | Msgpack 字段名，cmd Provider 下行变更文档使用该名称。 |
-| `msgpack` | 选项 | Msgpack 编码器支持的选项 | 例如 `omitempty`、`inline`。 |
+| `msgpack` | 选项 | `omitempty`、匿名嵌入字段的 `inline` | 未知、重复或位于普通字段上的 `inline` 会在生成前报错。 |
 | `alias` | 单值 | 字符串 | 输入侧语法糖：同时作为 JSON、BSON、Msgpack、Redis 的默认字段名。不能和 `json`、`bson`、`msgpack` 混用。 |
 | `redis` | `subKey` | 字符串 | 将该字段从 Redis 主文档拆到独立 key，例如 `role:{1001}:items`。 |
 | `redis` | `ignore` | flag 或布尔字符串 | Redis 文档忽略该字段。 |
@@ -1518,6 +1523,19 @@ Fusion 的 Redis 和 Mongo 共用一份 `RecordKey`，因此两边的 `idField` 
 | `mongodb` | `order` | `1`、`-1` 或 Mongo 索引类型 | 修饰前面最近声明索引的当前字段方向或类型。 |
 | `mongodb` | `weight` | `1` 到 `99999` 的整数或命名权重定义 | 只能修饰包含对应 `text` 键的文本索引。 |
 | `mongodb` | `expireAfter` | 非负秒数字符串 | 修饰前面最近声明的单字段升序或降序索引；TTL 到期删除整条文档，不是删除单个字段。别名：`expire`。 |
+
+`alias/json/bson/msgpack` 的显式字段名必须匹配 `[A-Za-z_][A-Za-z0-9_]*`。这是框架输入规则，目的不是
+兼容任意后端名称：`daily.reward`、`device-id`、`$value`、`1value` 和 `名称` 都会由 txgen 在写出产物前拒绝。
+`-` 仍表示忽略字段，Mongo `_id` 也是合法标识符；匿名嵌入字段的 `bson:",inline" msgpack:",inline"`
+属于结构选项，不受字段名规则影响。
+
+```go
+// 合法：四套字段名可以不同，但都遵守同一命名规则。
+RoleId int64 `json:"roleId" bson:"_id" msgpack:"rid"`
+
+// 非法：不要依赖 TypeScript 引号属性、Mongo 路径转义或其他边界兼容。
+DailyReward int32 `msgpack:"daily.reward"`
+```
 
 常见 field tag 组合：
 

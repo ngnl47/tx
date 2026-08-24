@@ -295,6 +295,11 @@ Redis 和 Mongo 是使用这些名称的后端，不是额外的字段名体系�
 - cmd 下行协议使用 MessagePack 名。
 - Store API 和 `LoadFields` 输入使用 Go 字段名。
 
+生成输入采用统一的 ASCII 标识符契约：显式 Alias、JSON、BSON 和 Msgpack 名必须匹配
+`[A-Za-z_][A-Za-z0-9_]*`。普通字段只接受 `omitempty`，匿名嵌入字段只接受 BSON/Msgpack 的 `inline`。
+框架不为特殊静态字段名维护 TypeScript 引号属性、数据库名称转义或多边界兼容分支；txgen 在生成前失败。
+运行期 `map[string]` 的动态 key 不属于这条规则，Mongo 边界仍按既定策略在不安全 key 上降级为整字段写。
+
 部分读取是严格的元数据契约。`storage.ValidateLoadFields` 使用 `TypeSpec.Fields` 校验所有请求字段；
 生成 helper、Redis/Mongo/Fusion adapter 与 cluster 路由都必须在自定义 loader、选路和外部 I/O 前完成校验。
 未知字段统一返回 `storage.ErrUnknownField`，不能把只返回记录键或空字段投影解释为读取成功。空字段列表表示完整读取；
@@ -1854,6 +1859,7 @@ etcd
 - protobuf envelope 的 `payload` 字段承载业务 BON 编码载荷。
 
 它不实现 Actor mailbox、会话 Seq/Ack 或业务幂等。发送结果不确定时不能由框架盲目重试；业务必须有独立幂等键。
+客户端只接受 `Accepted=true` 且没有错误码的确认；成功位与错误码同时存在属于矛盾状态，统一按拒绝处理。
 
 `modules/rpc.Host` 实现“每个物理进程一个普通 gRPC Host”：它唯一持有 listener 与 `grpc.Server`，直接接入
 `lifecycle.WaitGroupContext`，并负责注册阶段、Serve 和幂等 Stop。`tx/server.Server` 创建 Host，让所选服务在启动期
@@ -1876,9 +1882,9 @@ Receiver，再按稳定消息元数据分发，不能让每个服务重复注册
 
 Redis 只保存带 TTL 的 owner 绑定；下行正文保存在 msgq 实例内存。实例崩溃允许丢失未确认下行，客户端重连后由业务状态重同步恢复。
 
-gRPC client 只在同时得到合法响应时报告成功。空响应、非正数的下行 Seq、负的会话序号和乱序的批量消息统一返回
-`ErrInvalidMailboxResponse`；它们不能退化为零值成功。该错误只说明本次传输确认不可信，框架不会自动重发业务载荷，
-避免在缺少幂等键时制造重复下行。
+gRPC client 只在同时得到合法响应时报告成功。空响应、非正数的下行 Seq、`Rec` 接收序号落后于请求、Ack 未原样
+确认、空批次和批量消息为空、非正数或乱序时统一返回 `ErrInvalidMailboxResponse`；它们不能退化为零值成功。该错误
+只说明本次传输确认不可信，框架不会自动重发业务载荷，避免在缺少幂等键时制造重复下行。
 
 Agent 的会话来源是显式二选一：配置 `LocalMsgQ` 表示同进程复用，未配置时才通过 discovery 解析远端 msgq。
 本地 provider 返回错误时必须让 Agent 启动失败，不能回退远端；否则一次本地装配顺序错误会被误判成跨进程

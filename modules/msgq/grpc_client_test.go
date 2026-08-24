@@ -122,3 +122,47 @@ func TestGRPCConnectionRejectsInvalidResponseSequences(t *testing.T) {
 		})
 	}
 }
+
+type contradictorySequenceMailboxClient struct {
+	msgqpb.MailboxServiceClient
+	receivedSeq int64
+	ack         int64
+}
+
+func (c *contradictorySequenceMailboxClient) Rec(context.Context, *msgqpb.RecRequest, ...grpc.CallOption) (*msgqpb.RecResponse, error) {
+	return &msgqpb.RecResponse{ReceivedSeq: c.receivedSeq, Ack: c.ack}, nil
+}
+
+func TestGRPCConnectionRejectsContradictoryRecResponse(t *testing.T) {
+	header := SessionHeader{RoleID: 47, SessionID: 1, ConnectionID: 2}
+	tests := map[string]*contradictorySequenceMailboxClient{
+		"received seq behind request": {receivedSeq: 6, ack: 3},
+		"ack differs from request":    {receivedSeq: 7, ack: 2},
+	}
+	for name, client := range tests {
+		t.Run(name, func(t *testing.T) {
+			connection := &grpcConnection{client: client}
+			_, err := connection.Rec(context.Background(), RecRequest{Header: header, Seq: 7, Ack: 3})
+			if !errors.Is(err, ErrInvalidMailboxResponse) {
+				t.Fatalf("Rec error = %v, want %v", err, ErrInvalidMailboxResponse)
+			}
+		})
+	}
+}
+
+type emptyFetchSomeMailboxClient struct {
+	msgqpb.MailboxServiceClient
+}
+
+func (*emptyFetchSomeMailboxClient) FetchSome(context.Context, *msgqpb.FetchSomeRequest, ...grpc.CallOption) (*msgqpb.FetchSomeResponse, error) {
+	return &msgqpb.FetchSomeResponse{}, nil
+}
+
+func TestGRPCConnectionRejectsEmptyFetchSomeResponse(t *testing.T) {
+	connection := &grpcConnection{client: &emptyFetchSomeMailboxClient{}}
+	header := SessionHeader{RoleID: 47, SessionID: 1, ConnectionID: 2}
+	_, err := connection.FetchSome(context.Background(), FetchSomeRequest{Header: header, Max: 1})
+	if !errors.Is(err, ErrInvalidMailboxResponse) {
+		t.Fatalf("FetchSome error = %v, want %v", err, ErrInvalidMailboxResponse)
+	}
+}

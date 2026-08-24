@@ -113,7 +113,7 @@ func (c *grpcConnection) Rec(ctx context.Context, request RecRequest) (RecResult
 	if err != nil {
 		return RecResult{}, mailboxClientError(err)
 	}
-	if response == nil || response.GetReceivedSeq() < 0 || response.GetAck() < 0 {
+	if response == nil || response.GetReceivedSeq() < request.Seq || response.GetAck() != request.Ack {
 		return RecResult{}, ErrInvalidMailboxResponse
 	}
 	return RecResult{ReceivedSeq: response.GetReceivedSeq(), Ack: response.GetAck()}, nil
@@ -124,7 +124,7 @@ func (c *grpcConnection) FetchSome(ctx context.Context, request FetchSomeRequest
 	if err != nil {
 		return FetchSomeResult{}, mailboxClientError(err)
 	}
-	if response == nil {
+	if response == nil || len(response.GetMessages()) == 0 {
 		return FetchSomeResult{}, ErrInvalidMailboxResponse
 	}
 	messages := response.GetMessages()

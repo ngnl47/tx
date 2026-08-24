@@ -78,11 +78,14 @@ func (c *grpcConnection) Deliver(ctx context.Context, delivery Delivery) error {
 	if err != nil {
 		return err
 	}
-	if ack == nil || !ack.GetAccepted() {
-		if ack == nil || ack.GetErrorCode() == "" {
-			return ErrDeliveryRejected
-		}
+	if ack == nil {
+		return ErrDeliveryRejected
+	}
+	if ack.GetErrorCode() != "" {
 		return fmt.Errorf("%w: %s", ErrDeliveryRejected, ack.GetErrorCode())
+	}
+	if !ack.GetAccepted() {
+		return ErrDeliveryRejected
 	}
 	return nil
 }
