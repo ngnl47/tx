@@ -37,6 +37,14 @@ type recordingRevisionTTLApplier struct {
 	ttl     time.Duration
 }
 
+type cancelingDocumentLoader struct {
+	cancel context.CancelFunc
+}
+
+type contextRecordingRecordLock struct {
+	unlockContextErr error
+}
+
 func (r *recordingDocumentReplacer) ReplaceDocument(_ context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any) error {
 	r.calls++
 	r.spec = spec
@@ -59,6 +67,16 @@ func (a *recordingRevisionTTLApplier) ApplyTTLWithRevision(_ context.Context, sp
 	a.expect = expectedRevision
 	a.ttl = ttl
 	return a.applied, a.current, nil
+}
+
+func (l *cancelingDocumentLoader) LoadDocument(context.Context, meta.TypeSpec, storage.RecordKey, ...string) (map[string]any, bool, error) {
+	l.cancel()
+	return nil, false, context.Canceled
+}
+
+func (l *contextRecordingRecordLock) Unlock(ctx context.Context) error {
+	l.unlockContextErr = ctx.Err()
+	return l.unlockContextErr
 }
 
 func newRecordingDelayTaskHandler(types fusion.TypeRegistry, redis storage.DocumentLoader, mongo storage.DocumentReplacer, locker storage.RecordLocker) *fusion.StorageTaskHandler {
@@ -138,6 +156,37 @@ func TestFusionDelayTaskHandlerSavesRedisDocumentToMongo(t *testing.T) {
 	item1001 := items["1001"].(map[string]any)
 	if value, exists := item1001["quality"]; !exists || value != nil {
 		t.Fatalf("mongo doc nested quality = %#v, want explicit nil", mongo.doc)
+	}
+}
+
+func TestFusionDelayTaskHandlerReleasesRecordLockAfterRequestCancellation(t *testing.T) {
+	registry := meta.NewRegistry()
+	spec := meta.TypeSpec{
+		Type:  meta.Type{Ref: meta.TypeRef{Package: "data", Name: "GDRole"}},
+		Mongo: &meta.MongoSpec{Collection: "roles"},
+	}
+	if err := registry.RegisterType(spec); err != nil {
+		t.Fatalf("RegisterType returned error: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	lock := &contextRecordingRecordLock{}
+	handler := fusion.NewDelayTaskHandler(
+		registry,
+		&cancelingDocumentLoader{cancel: cancel},
+		&recordingDocumentReplacer{},
+		&recordingRecordLocker{lock: lock},
+	)
+
+	err := handler.HandleDelayTask(ctx, task.DelayTask{
+		Type:   "data.GDRole",
+		ID:     int64(1001),
+		Action: "save",
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("HandleDelayTask error = %v, want context.Canceled", err)
+	}
+	if lock.unlockContextErr != nil {
+		t.Fatalf("unlock context error = %v, want cleanup context unaffected by request cancellation", lock.unlockContextErr)
 	}
 }
 

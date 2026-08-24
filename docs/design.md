@@ -1322,6 +1322,9 @@ Redis backend 会轮询多个 bucket，而不同 hash tag 之间不能组成一�
 
 RecordLock 以 Redis `PX` 保存租约，运行时只接受至少 `1ms` 的 TTL。Go 的 `time.Duration`
 可以表达纳秒，但 Redis 入口使用毫秒整数；边界必须先拒绝会截断为 `0` 的亚毫秒值，不能依赖 Redis 命令错误兜底。
+释放 RecordLock 属于已取得资源的清理动作，不能继续复用已经超时或取消的请求上下文。Fusion 使用
+`context.WithoutCancel` 保留链路值并隔离请求取消：例如 Mongo 回源返回 `context.Canceled` 时，业务仍收到原错误，
+但 Redis `Unlock` 仍有机会立即删除锁，而不是无谓等待 `PX` 租约自然过期。
 
 批量读取先批量查询 Redis，再批量取得 Mongo 候选。每条 miss 在自己的 RecordLock 内二次读 Redis；锁内已命中的记录丢弃旧 Mongo 候选，仍未命中才回填。这保证正确性优先，同时保留 Mongo 批量 I/O。
 
@@ -1362,7 +1365,9 @@ Redis 与 Mongo 的 Adapter/Cluster 构造器都在启动装配阶段校验完�
 
 Fusion 任一端已知不可用时，新业务读写返回 `ErrStorageUnavailable`，避免继续接受无法可靠持久化的状态。已经存在的延迟任务不被删除，worker 仍可继续重试，Mongo 恢复后正常消费。
 
-只有 driver 能确认的网络、超时和服务端通信错误才包装为 `BackendError`。RecordKey、变更流、BSON、JSON、Lua 协议等本地语义错误不能错误地把全局 backend 标成不可用。
+只有 driver 能确认的网络、后端超时和服务端通信错误才包装为 `BackendError`。调用方自己的
+`context.Canceled`、`context.DeadlineExceeded` 只结束当前请求，不能关闭全局健康闸门；RecordKey、变更流、
+BSON、JSON、Lua 协议等本地语义错误同样不能把全局 backend 标成不可用。
 
 ## WAL
 

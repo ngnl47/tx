@@ -377,7 +377,7 @@ func (s Strategy) loadMongoDocumentAndBackfillRedis(ctx context.Context, spec me
 }
 
 func releaseRecordLock(ctx context.Context, lock storage.RecordLock, result *error) {
-	if unlockErr := lock.Unlock(ctx); unlockErr != nil {
+	if unlockErr := lock.Unlock(context.WithoutCancel(ctx)); unlockErr != nil {
 		unlockErr = fmt.Errorf("fusion: unlock record lock: %w", unlockErr)
 		if *result == nil {
 			*result = unlockErr

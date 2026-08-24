@@ -212,7 +212,10 @@ func mongoValueIdentity(value any) (string, error) {
 }
 
 func mongoBackendError(operation string, err error) error {
-	if err == nil || (!mongo.IsNetworkError(err) && !mongo.IsTimeout(err)) {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	if !mongo.IsNetworkError(err) && !mongo.IsTimeout(err) {
 		return err
 	}
 	return storage.NewBackendError(storage.BackendMongo, operation, err)

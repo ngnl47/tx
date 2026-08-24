@@ -10,15 +10,33 @@ import (
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 
 	"github.com/ngnl47/tx/storage"
 	txmongo "github.com/ngnl47/tx/storage/mongo"
 )
 
-func TestMongoBackendErrorOnlyClassifiesTimeoutOrNetworkFailure(t *testing.T) {
-	err := mongoBackendError("find one", context.DeadlineExceeded)
-	if backend, ok := storage.BackendFromError(err); !ok || backend != storage.BackendMongo {
-		t.Fatalf("BackendFromError = %v, %t, want mongo, true", backend, ok)
+func TestMongoBackendErrorDoesNotClassifyCallerContextError(t *testing.T) {
+	for _, contextErr := range []error{context.Canceled, context.DeadlineExceeded} {
+		err := mongoBackendError("find one", contextErr)
+		if !errors.Is(err, contextErr) {
+			t.Fatalf("mongoBackendError = %v, want %v", err, contextErr)
+		}
+		if backend, ok := storage.BackendFromError(err); ok {
+			t.Fatalf("BackendFromError = %v, true, want unclassified caller context error", backend)
+		}
+	}
+}
+
+func TestMongoBackendErrorClassifiesDriverTimeoutOrNetworkFailure(t *testing.T) {
+	for _, driverErr := range []error{
+		mongo.CommandError{Code: 50, Message: "operation exceeded time limit"},
+		mongo.CommandError{Labels: []string{"NetworkError"}, Message: "connection reset"},
+	} {
+		err := mongoBackendError("find one", driverErr)
+		if backend, ok := storage.BackendFromError(err); !ok || backend != storage.BackendMongo {
+			t.Fatalf("BackendFromError = %v, %t, want mongo, true for %v", backend, ok, driverErr)
+		}
 	}
 
 	decodeErr := errors.New("invalid bson document")
