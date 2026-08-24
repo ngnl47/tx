@@ -33,6 +33,7 @@ const defaultDelayTaskRouteType = "fusion"
 var ErrStorageUnavailable = errors.New("server: storage unavailable")
 
 type storageOptions struct {
+	FusionDirtyTTL           time.Duration
 	DelayTaskRouteType       string
 	DelayTaskPrefix          string
 	DelayTaskBuckets         int
@@ -128,13 +129,14 @@ func (s *storageRuntime) startFusion(ctx context.Context, redisConfig storagecon
 		RedisLocker:    s.redis,
 		MongoLoader:    s.mongo,
 		DelaySubmitter: s.delayDispatcher,
+		DirtyTTL:       opts.FusionDirtyTTL,
 	}
 	if err := s.fusion.Validate(); err != nil {
 		return fmt.Errorf("server: validate fusion storage: %w", err)
 	}
 	delayHandler := txfusion.NewDelayTaskHandlerWithOptions(types, s.redis, s.mongo, txfusion.DelayTaskHandlerOptions{
 		RedisRevisionReader: s.redis,
-		RedisRevisionDelete: s.redis,
+		RedisRevisionTTL:    s.redis,
 		RedisLocker:         s.redis,
 		DelayQueue:          delayQueue,
 	})

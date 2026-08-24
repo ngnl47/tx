@@ -10,6 +10,7 @@ import (
 	"github.com/ngnl47/tx/modules/discovery"
 	"github.com/ngnl47/tx/modules/txn"
 	storageconfig "github.com/ngnl47/tx/storage/config"
+	txfusion "github.com/ngnl47/tx/storage/fusion"
 )
 
 // Config 是项目解析本地配置源后得到的框架配置。
@@ -55,6 +56,7 @@ type WALMongoConfig struct {
 
 type RuntimeConfig struct {
 	Lifecycle   LifecycleConfig
+	Fusion      txfusion.Config
 	DelayTask   DelayTaskConfig
 	Scheduler   SchedulerConfig
 	Health      HealthConfig
@@ -210,6 +212,7 @@ func (config HealthConfig) validate() error {
 
 func (config RuntimeConfig) storageOptions() storageOptions {
 	return storageOptions{
+		FusionDirtyTTL:           config.Fusion.EffectiveDirtyTTL(),
 		DelayTaskRouteType:       config.DelayTask.RouteType,
 		DelayTaskPrefix:          config.DelayTask.Prefix,
 		DelayTaskBuckets:         config.DelayTask.Buckets,

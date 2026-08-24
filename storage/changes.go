@@ -229,9 +229,9 @@ type DeleteApplier interface {
 	ApplyDelete(context.Context, meta.TypeSpec, RecordKey) error
 }
 
-// RevisionDeleteApplier 定义带 Redis 生命周期版本校验的删除适配器。
-type RevisionDeleteApplier interface {
-	ApplyDeleteWithRevision(context.Context, meta.TypeSpec, RecordKey, string) (bool, string, error)
+// RevisionTTLApplier 仅在记录版本未变化时统一更新 Redis 文档键的 TTL。
+type RevisionTTLApplier interface {
+	ApplyTTLWithRevision(context.Context, meta.TypeSpec, RecordKey, string, time.Duration) (bool, string, error)
 }
 
 // RecordRevisionReader 定义读取存储记录生命周期版本的适配器。

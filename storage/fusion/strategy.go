@@ -33,6 +33,7 @@ type Strategy struct {
 	RedisLocker    storage.RecordLocker
 	MongoLoader    storage.DocumentLoader
 	DelaySubmitter DelayTaskSubmitter
+	DirtyTTL       time.Duration
 	LoadLockTTL    time.Duration
 	LoadLockWait   time.Duration
 }
@@ -65,8 +66,8 @@ func (s Strategy) Validate() error {
 	return nil
 }
 
-// ApplyChangesWithOptions 应用一次规范化变更。Fusion 会把 Redis 热文档转为
-// 持久状态，直到延迟任务完成 Mongo 回写和版本保护淘汰。
+// ApplyChangesWithOptions 应用一次规范化变更。Fusion 会用 dirtyTTL 保护
+// Redis 脏热文档，直到延迟任务完成 Mongo 回写和版本保护的 TTL 收敛。
 func (s Strategy) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver, options storage.ApplyOptions) error {
 	if err := change.ValidateSource(source); err != nil {
 		return err
@@ -77,13 +78,20 @@ func (s Strategy) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 	if err := storage.ValidateRecordKey(spec, key); err != nil {
 		return err
 	}
+	dirtyTTL, err := (Config{DirtyTTL: s.DirtyTTL}).validateDirtyTTL()
+	if err != nil {
+		return err
+	}
+	if err := validateDirtyTTLForType(dirtyTTL, spec); err != nil {
+		return err
+	}
 	redisWriter, err := s.writeDependencies()
 	if err != nil {
 		return err
 	}
-	// Fusion 的脏热数据必须保留到 Mongo 可靠回写并完成版本删除，有限 TTL
-	// 只能用于尚未承载本地变更的回源缓存。
-	options.TTLSeconds = -1
+	// Fusion 使用独立的安全 TTL 保护尚未确认写入 Mongo 的热数据；业务传入的
+	// TTL 不得缩短这段可靠回写窗口。
+	options.TTLSeconds = int64(dirtyTTL / time.Second)
 	if err := redisWriter.ApplyChangesWithOptions(ctx, spec, key, source, resolver, values, options); err != nil {
 		return err
 	}
@@ -312,9 +320,9 @@ func (s Strategy) backfillMongoDocumentAfterRedisCheck(ctx context.Context, spec
 	if !mongoExists {
 		return nil, false, nil
 	}
-	ttl := int64(spec.Storage.DelayDelete.Duration.Seconds())
-	if ttl <= 0 {
-		return nil, false, fmt.Errorf("fusion: storage delayDelTime must be greater than 0 for redis backfill")
+	ttl, err := s.redisBackfillTTL(spec)
+	if err != nil {
+		return nil, false, err
 	}
 	options := storage.ApplyOptions{
 		Upsert:     true,
@@ -350,9 +358,9 @@ func (s Strategy) loadMongoDocumentAndBackfillRedis(ctx context.Context, spec me
 			return document, true, nil
 		}
 	}
-	ttl := int64(spec.Storage.DelayDelete.Duration.Seconds())
-	if ttl <= 0 {
-		return nil, false, fmt.Errorf("fusion: storage delayDelTime must be greater than 0 for redis backfill")
+	ttl, err := s.redisBackfillTTL(spec)
+	if err != nil {
+		return nil, false, err
 	}
 	document, exists, err = loadFusionDocument(ctx, s.MongoLoader, "mongo document loader", spec, key)
 	if err != nil || !exists {
@@ -377,6 +385,25 @@ func releaseRecordLock(ctx context.Context, lock storage.RecordLock, result *err
 		}
 		*result = errors.Join(*result, unlockErr)
 	}
+}
+
+func (s Strategy) redisBackfillTTL(spec meta.TypeSpec) (int64, error) {
+	ttl := spec.Storage.DelayDelete.Duration
+	if ttl <= 0 {
+		dirtyTTL, err := (Config{DirtyTTL: s.DirtyTTL}).validateDirtyTTL()
+		if err != nil {
+			return 0, err
+		}
+		if err := validateDirtyTTLForType(dirtyTTL, spec); err != nil {
+			return 0, err
+		}
+		ttl = dirtyTTL
+	}
+	seconds := int64(ttl / time.Second)
+	if seconds <= 0 {
+		return 0, fmt.Errorf("fusion: redis backfill TTL must be at least 1s")
+	}
+	return seconds, nil
 }
 
 func (s Strategy) loadRedisDocumentsOneByOne(ctx context.Context, spec meta.TypeSpec, keys []storage.RecordKey, loader storage.DocumentLoader, docs []map[string]any, exists []bool, missingIndexes *[]int, missingKeys *[]storage.RecordKey, fields ...string) error {
@@ -458,22 +485,11 @@ func enqueueDelayedWrites(ctx context.Context, queue DelayQueue, spec meta.TypeS
 	if isNilFusionDependency(queue) {
 		return ErrDelayQueueNotConfigured
 	}
-	if err := queue.Enqueue(ctx, DelayedOperation{
+	return queue.Enqueue(ctx, DelayedOperation{
 		Kind:     DelayedSave,
 		Type:     spec.Type.Ref,
 		Key:      key,
 		RunAfter: spec.Storage.DelaySave.Duration,
-	}); err != nil {
-		return err
-	}
-	if spec.Storage.DelayDelete.Duration <= 0 {
-		return nil
-	}
-	return queue.Enqueue(ctx, DelayedOperation{
-		Kind:     DelayedDelete,
-		Type:     spec.Type.Ref,
-		Key:      key,
-		RunAfter: delayedDeleteAfter(spec),
 	})
 }
 
@@ -500,14 +516,6 @@ func (s Strategy) loadLockWait() time.Duration {
 		return s.LoadLockWait
 	}
 	return defaultLoadLockWait
-}
-
-func delayedDeleteAfter(spec meta.TypeSpec) time.Duration {
-	runAfter := spec.Storage.DelayDelete.Duration
-	if spec.Storage.DelaySave.Duration > 0 {
-		runAfter += spec.Storage.DelaySave.Duration
-	}
-	return runAfter
 }
 
 func projectDocument(spec meta.TypeSpec, doc map[string]any, fields []string) map[string]any {

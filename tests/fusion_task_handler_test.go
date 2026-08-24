@@ -27,13 +27,14 @@ type recordingRevisionReader struct {
 	key      storage.RecordKey
 }
 
-type recordingRevisionDeleteApplier struct {
+type recordingRevisionTTLApplier struct {
 	calls   int
-	deleted bool
+	applied bool
 	current string
 	spec    meta.TypeSpec
 	key     storage.RecordKey
 	expect  string
+	ttl     time.Duration
 }
 
 func (r *recordingDocumentReplacer) ReplaceDocument(_ context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any) error {
@@ -51,19 +52,29 @@ func (r *recordingRevisionReader) ReadRecordRevision(_ context.Context, spec met
 	return r.revision, nil
 }
 
-func (a *recordingRevisionDeleteApplier) ApplyDeleteWithRevision(_ context.Context, spec meta.TypeSpec, key storage.RecordKey, expectedRevision string) (bool, string, error) {
+func (a *recordingRevisionTTLApplier) ApplyTTLWithRevision(_ context.Context, spec meta.TypeSpec, key storage.RecordKey, expectedRevision string, ttl time.Duration) (bool, string, error) {
 	a.calls++
 	a.spec = spec
 	a.key = key
 	a.expect = expectedRevision
-	return a.deleted, a.current, nil
+	a.ttl = ttl
+	return a.applied, a.current, nil
+}
+
+func newRecordingDelayTaskHandler(types fusion.TypeRegistry, redis storage.DocumentLoader, mongo storage.DocumentReplacer, locker storage.RecordLocker) *fusion.StorageTaskHandler {
+	return fusion.NewDelayTaskHandlerWithOptions(types, redis, mongo, fusion.DelayTaskHandlerOptions{
+		RedisRevisionReader: &recordingRevisionReader{revision: "1"},
+		RedisRevisionTTL:    &recordingRevisionTTLApplier{applied: true},
+		RedisLocker:         locker,
+	})
 }
 
 func TestFusionDelayTaskHandlerSavesRedisDocumentToMongo(t *testing.T) {
 	registry := meta.NewRegistry()
 	spec := meta.TypeSpec{
-		Type:  meta.Type{Ref: meta.TypeRef{Package: "data", Name: "GDRole"}},
-		Mongo: &meta.MongoSpec{Collection: "roles"},
+		Type:    meta.Type{Ref: meta.TypeRef{Package: "data", Name: "GDRole"}},
+		Storage: meta.StorageSpec{DelayDelete: meta.Duration{Duration: 24 * time.Hour}},
+		Mongo:   &meta.MongoSpec{Collection: "roles"},
 	}
 	if err := registry.RegisterType(spec); err != nil {
 		t.Fatalf("RegisterType returned error: %v", err)
@@ -85,7 +96,13 @@ func TestFusionDelayTaskHandlerSavesRedisDocumentToMongo(t *testing.T) {
 	mongo := &recordingDocumentReplacer{}
 	lock := &recordingRecordLock{}
 	locker := &recordingRecordLocker{lock: lock}
-	handler := fusion.NewDelayTaskHandler(registry, redis, mongo, locker)
+	revision := &recordingRevisionReader{revision: "5"}
+	ttl := &recordingRevisionTTLApplier{applied: true}
+	handler := fusion.NewDelayTaskHandlerWithOptions(registry, redis, mongo, fusion.DelayTaskHandlerOptions{
+		RedisRevisionReader: revision,
+		RedisRevisionTTL:    ttl,
+		RedisLocker:         locker,
+	})
 
 	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
 		Type:     "data.GDRole",
@@ -108,6 +125,9 @@ func TestFusionDelayTaskHandlerSavesRedisDocumentToMongo(t *testing.T) {
 	if lock.unlocks != 1 {
 		t.Fatalf("redis lock unlocks = %d, want 1", lock.unlocks)
 	}
+	if revision.calls != 1 || ttl.calls != 1 || ttl.expect != "5" || ttl.ttl != 24*time.Hour {
+		t.Fatalf("revision/TTL calls = %d/%d expected=%q ttl=%s", revision.calls, ttl.calls, ttl.expect, ttl.ttl)
+	}
 	if mongo.spec.Mongo.Collection != "roles" || mongo.doc["name"] != "alice" {
 		t.Fatalf("mongo spec/doc = %#v %#v", mongo.spec, mongo.doc)
 	}
@@ -118,6 +138,76 @@ func TestFusionDelayTaskHandlerSavesRedisDocumentToMongo(t *testing.T) {
 	item1001 := items["1001"].(map[string]any)
 	if value, exists := item1001["quality"]; !exists || value != nil {
 		t.Fatalf("mongo doc nested quality = %#v, want explicit nil", mongo.doc)
+	}
+}
+
+func TestFusionDelayTaskHandlerRequeuesSaveWhenRevisionChangesBeforeTTLConverges(t *testing.T) {
+	registry := meta.NewRegistry()
+	spec := meta.TypeSpec{
+		Type: meta.Type{Ref: meta.TypeRef{Package: "data", Name: "GDRole"}},
+		Storage: meta.StorageSpec{
+			DelaySave:   meta.Duration{Duration: 10 * time.Minute},
+			DelayDelete: meta.Duration{Duration: 24 * time.Hour},
+		},
+	}
+	if err := registry.RegisterType(spec); err != nil {
+		t.Fatalf("RegisterType returned error: %v", err)
+	}
+	queue := &recordingQueue{}
+	handler := fusion.NewDelayTaskHandlerWithOptions(
+		registry,
+		&recordingDocumentLoader{doc: map[string]any{"name": "alice"}, exists: true},
+		&recordingDocumentReplacer{},
+		fusion.DelayTaskHandlerOptions{
+			RedisRevisionReader: &recordingRevisionReader{revision: "5"},
+			RedisRevisionTTL:    &recordingRevisionTTLApplier{applied: false, current: "6"},
+			RedisLocker:         &recordingRecordLocker{},
+			DelayQueue:          queue,
+		},
+	)
+
+	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
+		Type:   "data.GDRole",
+		ID:     int64(1001),
+		Action: string(fusion.DelayedSave),
+	})
+	if err != nil {
+		t.Fatalf("HandleDelayTask returned error: %v", err)
+	}
+	if len(queue.ops) != 1 || queue.ops[0].Kind != fusion.DelayedSave || queue.ops[0].RunAfter != 10*time.Minute {
+		t.Fatalf("requeued operations = %#v, want one delayed save", queue.ops)
+	}
+}
+
+func TestFusionDelayTaskHandlerKeepsDirtyTTLWhenDelayDeleteIsNotConfigured(t *testing.T) {
+	registry := meta.NewRegistry()
+	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Package: "data", Name: "GDGlobalConfig"}}}
+	if err := registry.RegisterType(spec); err != nil {
+		t.Fatalf("RegisterType returned error: %v", err)
+	}
+	ttl := &recordingRevisionTTLApplier{applied: true}
+	revision := &recordingRevisionReader{revision: "5"}
+	handler := fusion.NewDelayTaskHandlerWithOptions(
+		registry,
+		&recordingDocumentLoader{doc: map[string]any{"name": "global"}, exists: true},
+		&recordingDocumentReplacer{},
+		fusion.DelayTaskHandlerOptions{
+			RedisRevisionReader: revision,
+			RedisRevisionTTL:    ttl,
+			RedisLocker:         &recordingRecordLocker{},
+		},
+	)
+
+	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
+		Type:   "data.GDGlobalConfig",
+		ID:     int64(1),
+		Action: string(fusion.DelayedSave),
+	})
+	if err != nil {
+		t.Fatalf("HandleDelayTask returned error: %v", err)
+	}
+	if revision.calls != 0 || ttl.calls != 0 {
+		t.Fatalf("revision/TTL convergence calls = %d/%d, want dirty TTL unchanged without extra Redis I/O", revision.calls, ttl.calls)
 	}
 }
 
@@ -152,7 +242,7 @@ func TestFusionDelayTaskHandlerRejectsMissingRedisDocument(t *testing.T) {
 	}
 	redis := &recordingDocumentLoader{}
 	mongo := &recordingDocumentReplacer{}
-	handler := fusion.NewDelayTaskHandler(registry, redis, mongo, &recordingRecordLocker{})
+	handler := newRecordingDelayTaskHandler(registry, redis, mongo, &recordingRecordLocker{})
 
 	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
 		Type:   "data.GDRole",
@@ -164,34 +254,6 @@ func TestFusionDelayTaskHandlerRejectsMissingRedisDocument(t *testing.T) {
 	}
 	if mongo.calls != 0 {
 		t.Fatalf("mongo calls = %d, want 0", mongo.calls)
-	}
-}
-
-func TestFusionDelayTaskHandlerRejectsMissingRedisDocumentDuringDelete(t *testing.T) {
-	registry := meta.NewRegistry()
-	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Package: "data", Name: "GDRole"}}}
-	if err := registry.RegisterType(spec); err != nil {
-		t.Fatalf("RegisterType returned error: %v", err)
-	}
-	redis := &recordingDocumentLoader{}
-	mongo := &recordingDocumentReplacer{}
-	deleter := &recordingRevisionDeleteApplier{deleted: true}
-	handler := fusion.NewDelayTaskHandlerWithOptions(registry, redis, mongo, fusion.DelayTaskHandlerOptions{
-		RedisRevisionReader: &recordingRevisionReader{revision: "5"},
-		RedisRevisionDelete: deleter,
-		RedisLocker:         &recordingRecordLocker{},
-	})
-
-	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
-		Type:   "data.GDRole",
-		ID:     int64(1001),
-		Action: string(fusion.DelayedDelete),
-	})
-	if !errors.Is(err, storage.ErrNotExists) {
-		t.Fatalf("HandleDelayTask error = %v, want storage.ErrNotExists", err)
-	}
-	if mongo.calls != 0 || deleter.calls != 0 {
-		t.Fatalf("mongo/delete calls = %d/%d, want 0/0", mongo.calls, deleter.calls)
 	}
 }
 
@@ -203,7 +265,7 @@ func TestFusionDelayTaskHandlerRejectsInconsistentRedisDocument(t *testing.T) {
 	}
 	redis := &recordingDocumentLoader{doc: map[string]any{"name": "unexpected"}}
 	mongo := &recordingDocumentReplacer{}
-	handler := fusion.NewDelayTaskHandler(registry, redis, mongo, &recordingRecordLocker{})
+	handler := newRecordingDelayTaskHandler(registry, redis, mongo, &recordingRecordLocker{})
 
 	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
 		Type:   "data.GDRole",
@@ -215,54 +277,6 @@ func TestFusionDelayTaskHandlerRejectsInconsistentRedisDocument(t *testing.T) {
 	}
 	if mongo.calls != 0 {
 		t.Fatalf("mongo calls = %d, want 0", mongo.calls)
-	}
-}
-
-func TestFusionDelayTaskHandlerDeletesRedisAfterSavingCurrentDocument(t *testing.T) {
-	registry := meta.NewRegistry()
-	spec := meta.TypeSpec{
-		Type:    meta.Type{Ref: meta.TypeRef{Package: "data", Name: "GDRole"}},
-		Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Minute}, DelayDelete: meta.Duration{Duration: time.Hour}},
-	}
-	if err := registry.RegisterType(spec); err != nil {
-		t.Fatalf("RegisterType returned error: %v", err)
-	}
-	redis := &recordingDocumentLoader{doc: map[string]any{"roleId": int64(1001), "name": "alice"}, exists: true}
-	mongo := &recordingDocumentReplacer{}
-	revisions := &recordingRevisionReader{revision: "5"}
-	deleter := &recordingRevisionDeleteApplier{deleted: true}
-	locker := &recordingRecordLocker{}
-	queue := &recordingQueue{}
-	handler := fusion.NewDelayTaskHandlerWithOptions(registry, redis, mongo, fusion.DelayTaskHandlerOptions{
-		RedisRevisionReader: revisions,
-		RedisRevisionDelete: deleter,
-		RedisLocker:         locker,
-		DelayQueue:          queue,
-	})
-
-	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
-		Type:     "data.GDRole",
-		ID:       int64(1001),
-		ShardKey: int64(7),
-		Action:   string(fusion.DelayedDelete),
-	})
-	if err != nil {
-		t.Fatalf("HandleDelayTask returned error: %v", err)
-	}
-	if revisions.calls != 1 || revisions.key.ID != int64(1001) {
-		t.Fatalf("revision calls/key = %d/%#v, want one read for role", revisions.calls, revisions.key)
-	}
-	if locker.calls != 1 || locker.key.ID != int64(1001) {
-		t.Fatalf("lock calls/key = %d/%#v, want one record lock", locker.calls, locker.key)
-	}
-	if mongo.calls != 1 || mongo.doc["name"] != "alice" {
-		t.Fatalf("mongo calls/doc = %d/%#v, want save current Redis document", mongo.calls, mongo.doc)
-	}
-	if deleter.calls != 1 || deleter.expect != "5" {
-		t.Fatalf("delete calls/expect = %d/%q, want revision 5", deleter.calls, deleter.expect)
-	}
-	if len(queue.ops) != 0 {
-		t.Fatalf("queued ops = %#v, want no requeue on successful delete", queue.ops)
 	}
 }
 
@@ -282,7 +296,7 @@ func TestFusionDelayTaskHandlerReturnsRecordUnlockError(t *testing.T) {
 		&recordingDocumentReplacer{},
 		fusion.DelayTaskHandlerOptions{
 			RedisRevisionReader: &recordingRevisionReader{revision: "5"},
-			RedisRevisionDelete: &recordingRevisionDeleteApplier{deleted: true},
+			RedisRevisionTTL:    &recordingRevisionTTLApplier{applied: true},
 			RedisLocker:         &recordingRecordLocker{lock: &recordingRecordLock{unlockErr: unlockErr}},
 		},
 	)
@@ -290,86 +304,10 @@ func TestFusionDelayTaskHandlerReturnsRecordUnlockError(t *testing.T) {
 	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
 		Type:   "data.GDRole",
 		ID:     int64(1001),
-		Action: string(fusion.DelayedDelete),
+		Action: string(fusion.DelayedSave),
 	})
 	if !errors.Is(err, unlockErr) {
 		t.Fatalf("HandleDelayTask error = %v, want unlock error", err)
-	}
-}
-
-func TestFusionDelayTaskHandlerRequeuesDelayedDeleteWhenRevisionChanged(t *testing.T) {
-	registry := meta.NewRegistry()
-	spec := meta.TypeSpec{
-		Type:    meta.Type{Ref: meta.TypeRef{Package: "data", Name: "GDRole"}},
-		Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Minute}, DelayDelete: meta.Duration{Duration: time.Hour}},
-	}
-	if err := registry.RegisterType(spec); err != nil {
-		t.Fatalf("RegisterType returned error: %v", err)
-	}
-	redis := &recordingDocumentLoader{doc: map[string]any{"roleId": int64(1001), "name": "alice"}, exists: true}
-	mongo := &recordingDocumentReplacer{}
-	revisions := &recordingRevisionReader{revision: "5"}
-	deleter := &recordingRevisionDeleteApplier{deleted: false, current: "6"}
-	locker := &recordingRecordLocker{}
-	queue := &recordingQueue{}
-	handler := fusion.NewDelayTaskHandlerWithOptions(registry, redis, mongo, fusion.DelayTaskHandlerOptions{
-		RedisRevisionReader: revisions,
-		RedisRevisionDelete: deleter,
-		RedisLocker:         locker,
-		DelayQueue:          queue,
-	})
-
-	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
-		Type:     "data.GDRole",
-		ID:       int64(1001),
-		ShardKey: int64(7),
-		Action:   string(fusion.DelayedDelete),
-	})
-	if err != nil {
-		t.Fatalf("HandleDelayTask returned error: %v", err)
-	}
-	if deleter.calls != 1 || deleter.expect != "5" {
-		t.Fatalf("delete calls/expect = %d/%q, want revision 5", deleter.calls, deleter.expect)
-	}
-	if len(queue.ops) != 1 {
-		t.Fatalf("queued ops = %#v, want one delayed delete requeue", queue.ops)
-	}
-	got := queue.ops[0]
-	if got.Kind != fusion.DelayedDelete || got.Key.ID != int64(1001) || got.Key.ShardKey != int64(7) {
-		t.Fatalf("queued op = %#v, want delayed delete for same record", got)
-	}
-	if got.RunAfter != time.Hour+time.Minute {
-		t.Fatalf("queued delay = %s, want delaySave + delayDel", got.RunAfter)
-	}
-}
-
-func TestFusionDelayTaskHandlerRejectsMissingQueueWhenDeleteMustRequeue(t *testing.T) {
-	registry := meta.NewRegistry()
-	spec := meta.TypeSpec{
-		Type:    meta.Type{Ref: meta.TypeRef{Package: "data", Name: "GDRole"}},
-		Storage: meta.StorageSpec{DelayDelete: meta.Duration{Duration: time.Hour}},
-	}
-	if err := registry.RegisterType(spec); err != nil {
-		t.Fatalf("RegisterType returned error: %v", err)
-	}
-	handler := fusion.NewDelayTaskHandlerWithOptions(
-		registry,
-		&recordingDocumentLoader{doc: map[string]any{"roleId": int64(1001)}, exists: true},
-		&recordingDocumentReplacer{},
-		fusion.DelayTaskHandlerOptions{
-			RedisRevisionReader: &recordingRevisionReader{revision: "5"},
-			RedisRevisionDelete: &recordingRevisionDeleteApplier{deleted: false, current: "6"},
-			RedisLocker:         &recordingRecordLocker{},
-		},
-	)
-
-	err := handler.HandleDelayTask(context.Background(), task.DelayTask{
-		Type:   "data.GDRole",
-		ID:     int64(1001),
-		Action: string(fusion.DelayedDelete),
-	})
-	if !errors.Is(err, fusion.ErrDelayTaskDependenciesNotConfigured) {
-		t.Fatalf("HandleDelayTask error = %v, want missing delay queue error", err)
 	}
 }
 

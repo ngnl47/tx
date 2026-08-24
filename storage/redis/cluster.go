@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"time"
 
 	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/meta"
@@ -120,20 +121,20 @@ func (c *Cluster) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key stora
 	return adapter.ApplyDelete(ctx, spec, key)
 }
 
-func (c *Cluster) ApplyDeleteWithRevision(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, expectedRevision string) (bool, string, error) {
-	adapter, err := c.adapterFor(ctx, spec, key)
-	if err != nil {
-		return false, "", err
-	}
-	return adapter.ApplyDeleteWithRevision(ctx, spec, key, expectedRevision)
-}
-
 func (c *Cluster) ReadRecordRevision(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) (string, error) {
 	adapter, err := c.adapterFor(ctx, spec, key)
 	if err != nil {
 		return "", err
 	}
 	return adapter.ReadRecordRevision(ctx, spec, key)
+}
+
+func (c *Cluster) ApplyTTLWithRevision(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, expectedRevision string, ttl time.Duration) (bool, string, error) {
+	adapter, err := c.adapterFor(ctx, spec, key)
+	if err != nil {
+		return false, "", err
+	}
+	return adapter.ApplyTTLWithRevision(ctx, spec, key, expectedRevision, ttl)
 }
 
 func (c *Cluster) LockRecord(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, options storage.LockOptions) (storage.RecordLock, error) {

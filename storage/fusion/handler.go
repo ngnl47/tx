@@ -11,6 +11,7 @@ import (
 
 type TypeRegistry interface {
 	Lookup(meta.TypeRef) (meta.TypeSpec, bool)
+	TypeSpecs() []meta.TypeSpec
 }
 
 type StorageTaskHandler struct {
@@ -18,20 +19,26 @@ type StorageTaskHandler struct {
 	redisLoader         storage.DocumentLoader
 	mongoReplace        storage.DocumentReplacer
 	redisRevisionReader storage.RecordRevisionReader
-	redisRevisionDelete storage.RevisionDeleteApplier
+	redisRevisionTTL    storage.RevisionTTLApplier
 	redisLocker         storage.RecordLocker
 	delayQueue          DelayQueue
 }
 
 type DelayTaskHandlerOptions struct {
 	RedisRevisionReader storage.RecordRevisionReader
-	RedisRevisionDelete storage.RevisionDeleteApplier
+	RedisRevisionTTL    storage.RevisionTTLApplier
 	RedisLocker         storage.RecordLocker
 	DelayQueue          DelayQueue
 }
 
 func NewDelayTaskHandler(types TypeRegistry, redisLoader storage.DocumentLoader, mongoReplace storage.DocumentReplacer, redisLocker storage.RecordLocker) *StorageTaskHandler {
-	return NewDelayTaskHandlerWithOptions(types, redisLoader, mongoReplace, DelayTaskHandlerOptions{RedisLocker: redisLocker})
+	revisionReader, _ := redisLoader.(storage.RecordRevisionReader)
+	revisionTTL, _ := redisLoader.(storage.RevisionTTLApplier)
+	return NewDelayTaskHandlerWithOptions(types, redisLoader, mongoReplace, DelayTaskHandlerOptions{
+		RedisRevisionReader: revisionReader,
+		RedisRevisionTTL:    revisionTTL,
+		RedisLocker:         redisLocker,
+	})
 }
 
 func NewDelayTaskHandlerWithOptions(types TypeRegistry, redisLoader storage.DocumentLoader, mongoReplace storage.DocumentReplacer, options DelayTaskHandlerOptions) *StorageTaskHandler {
@@ -40,7 +47,7 @@ func NewDelayTaskHandlerWithOptions(types TypeRegistry, redisLoader storage.Docu
 		redisLoader:         redisLoader,
 		mongoReplace:        mongoReplace,
 		redisRevisionReader: options.RedisRevisionReader,
-		redisRevisionDelete: options.RedisRevisionDelete,
+		redisRevisionTTL:    options.RedisRevisionTTL,
 		redisLocker:         options.RedisLocker,
 		delayQueue:          options.DelayQueue,
 	}
@@ -65,8 +72,6 @@ func (h *StorageTaskHandler) HandleDelayTask(ctx context.Context, item task.Dela
 	switch DelayedOperationKind(item.Action) {
 	case DelayedSave:
 		return h.handleSave(ctx, spec, key)
-	case DelayedDelete:
-		return h.handleDelete(ctx, spec, key)
 	default:
 		return fmt.Errorf("fusion: unknown delayed task action %q", item.Action)
 	}
@@ -76,6 +81,10 @@ func (h *StorageTaskHandler) handleSave(ctx context.Context, spec meta.TypeSpec,
 	if isNilFusionDependency(h.redisLoader) || isNilFusionDependency(h.mongoReplace) || isNilFusionDependency(h.redisLocker) {
 		return fmt.Errorf("%w: delayed save requires redis loader, mongo replacer and record locker", ErrDelayTaskDependenciesNotConfigured)
 	}
+	convergeTTL := spec.Storage.DelayDelete.Duration > 0
+	if convergeTTL && (isNilFusionDependency(h.redisRevisionReader) || isNilFusionDependency(h.redisRevisionTTL)) {
+		return fmt.Errorf("%w: delayed save TTL convergence requires revision reader and revision TTL applier", ErrDelayTaskDependenciesNotConfigured)
+	}
 	lock, err := h.redisLocker.LockRecord(ctx, spec, key, storage.LockOptions{TTL: defaultLoadLockTTL, Wait: defaultLoadLockWait})
 	if err != nil {
 		return err
@@ -84,6 +93,13 @@ func (h *StorageTaskHandler) handleSave(ctx context.Context, spec meta.TypeSpec,
 		return fmt.Errorf("%w: delayed save received nil record lock", ErrDelayTaskDependenciesNotConfigured)
 	}
 	defer func() { releaseRecordLock(ctx, lock, &err) }()
+	var revision string
+	if convergeTTL {
+		revision, err = h.redisRevisionReader.ReadRecordRevision(ctx, spec, key)
+		if err != nil {
+			return err
+		}
+	}
 	doc, exists, err := h.redisLoader.LoadDocument(ctx, spec, key)
 	if err != nil {
 		return err
@@ -94,58 +110,28 @@ func (h *StorageTaskHandler) handleSave(ctx context.Context, spec meta.TypeSpec,
 	if !exists {
 		return fmt.Errorf("fusion: delayed save redis document: %w", storage.ErrNotExists)
 	}
-	return h.mongoReplace.ReplaceDocument(ctx, spec, key, doc)
-}
-
-func (h *StorageTaskHandler) handleDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) (err error) {
-	if isNilFusionDependency(h.redisLoader) || isNilFusionDependency(h.mongoReplace) || isNilFusionDependency(h.redisRevisionReader) || isNilFusionDependency(h.redisRevisionDelete) || isNilFusionDependency(h.redisLocker) {
-		return fmt.Errorf("%w: delayed delete requires redis loader, mongo replacer, revision reader, revision deleter and record locker", ErrDelayTaskDependenciesNotConfigured)
-	}
-	lock, err := h.redisLocker.LockRecord(ctx, spec, key, storage.LockOptions{TTL: defaultLoadLockTTL, Wait: defaultLoadLockWait})
-	if err != nil {
-		return err
-	}
-	if isNilFusionDependency(lock) {
-		return fmt.Errorf("%w: delayed delete received nil record lock", ErrDelayTaskDependenciesNotConfigured)
-	}
-	defer func() { releaseRecordLock(ctx, lock, &err) }()
-
-	revision, err := h.redisRevisionReader.ReadRecordRevision(ctx, spec, key)
-	if err != nil {
-		return err
-	}
-	doc, exists, err := h.redisLoader.LoadDocument(ctx, spec, key)
-	if err != nil {
-		return err
-	}
-	if err := storage.ValidateDocumentResult(doc, exists); err != nil {
-		return fmt.Errorf("fusion: delayed delete redis document loader: %w", err)
-	}
-	if !exists {
-		return fmt.Errorf("fusion: delayed delete redis document: %w", storage.ErrNotExists)
-	}
 	if err := h.mongoReplace.ReplaceDocument(ctx, spec, key, doc); err != nil {
 		return err
 	}
-	deleted, _, err := h.redisRevisionDelete.ApplyDeleteWithRevision(ctx, spec, key, revision)
-	if err != nil || deleted {
-		return err
-	}
-	return h.requeueDelete(ctx, spec, key)
-}
-
-func (h *StorageTaskHandler) requeueDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
-	if spec.Storage.DelayDelete.Duration <= 0 {
+	if !convergeTTL {
 		return nil
 	}
+	applied, _, err := h.redisRevisionTTL.ApplyTTLWithRevision(ctx, spec, key, revision, spec.Storage.DelayDelete.Duration)
+	if err != nil || applied {
+		return err
+	}
+	return h.requeueSave(ctx, spec, key)
+}
+
+func (h *StorageTaskHandler) requeueSave(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
 	if isNilFusionDependency(h.delayQueue) {
-		return fmt.Errorf("%w: delayed delete requeue requires delay queue", ErrDelayTaskDependenciesNotConfigured)
+		return fmt.Errorf("%w: delayed save requeue requires delay queue", ErrDelayTaskDependenciesNotConfigured)
 	}
 	return h.delayQueue.Enqueue(ctx, DelayedOperation{
-		Kind:     DelayedDelete,
+		Kind:     DelayedSave,
 		Type:     spec.Type.Ref,
 		Key:      key,
-		RunAfter: delayedDeleteAfter(spec),
+		RunAfter: spec.Storage.DelaySave.Duration,
 	})
 }
 

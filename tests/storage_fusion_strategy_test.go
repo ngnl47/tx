@@ -220,9 +220,14 @@ func TestFusionStrategyRegistersDelayedSaveAfterRedisWrite(t *testing.T) {
 	}
 }
 
-func TestFusionStrategyPersistsDirtyRedisDocumentUntilDelayedDelete(t *testing.T) {
+func TestFusionStrategyUsesConfiguredSafetyTTLForDirtyRedisDocument(t *testing.T) {
 	redis := &recordingApplier{}
-	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}, DelaySubmitter: &recordingDelaySubmitter{}}
+	strategy := fusion.Strategy{
+		RedisApplier:   redis,
+		MongoLoader:    &recordingDocumentLoader{},
+		DelaySubmitter: &recordingDelaySubmitter{},
+		DirtyTTL:       7 * 24 * time.Hour,
+	}
 	spec := meta.TypeSpec{
 		Type: fusionRoleType(),
 		Storage: meta.StorageSpec{
@@ -244,8 +249,70 @@ func TestFusionStrategyPersistsDirtyRedisDocumentUntilDelayedDelete(t *testing.T
 	if err != nil {
 		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
 	}
-	if redis.options.TTLSeconds != -1 {
-		t.Fatalf("Redis TTLSeconds = %d, want -1 while dirty data waits for Mongo", redis.options.TTLSeconds)
+	if redis.options.TTLSeconds != int64((7*24*time.Hour)/time.Second) {
+		t.Fatalf("Redis TTLSeconds = %d, want seven-day safety TTL", redis.options.TTLSeconds)
+	}
+}
+
+func TestFusionStrategyRejectsDirtyTTLBelowRedisSecondPrecision(t *testing.T) {
+	redis := &recordingApplier{}
+	strategy := fusion.Strategy{
+		RedisApplier:   redis,
+		MongoLoader:    &recordingDocumentLoader{},
+		DelaySubmitter: &recordingDelaySubmitter{},
+		DirtyTTL:       500 * time.Millisecond,
+	}
+	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
+
+	err := strategy.ApplyChangesWithOptions(
+		context.Background(),
+		meta.TypeSpec{Type: fusionRoleType()},
+		storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)},
+		changes,
+		testFieldNameResolver{},
+		testValueResolver{},
+		storage.ApplyOptions{},
+	)
+	if err == nil || !strings.Contains(err.Error(), "at least 1s") {
+		t.Fatalf("ApplyChangesWithOptions error = %v, want dirty TTL precision error", err)
+	}
+	if redis.optionRuns != 0 {
+		t.Fatalf("Redis calls = %d, want validation before I/O", redis.optionRuns)
+	}
+}
+
+func TestFusionStrategyRejectsDirtyTTLNotGreaterThanTypeLifetime(t *testing.T) {
+	redis := &recordingApplier{}
+	strategy := fusion.Strategy{
+		RedisApplier:   redis,
+		MongoLoader:    &recordingDocumentLoader{},
+		DelaySubmitter: &recordingDelaySubmitter{},
+		DirtyTTL:       24 * time.Hour,
+	}
+	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
+	spec := meta.TypeSpec{
+		Type: meta.Type{Ref: meta.TypeRef{FullName: "data.GDRole"}},
+		Storage: meta.StorageSpec{
+			Mode:        meta.StorageModeFusion,
+			DelaySave:   meta.Duration{Duration: 10 * time.Minute},
+			DelayDelete: meta.Duration{Duration: 24 * time.Hour},
+		},
+	}
+
+	err := strategy.ApplyChangesWithOptions(
+		context.Background(),
+		spec,
+		storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)},
+		changes,
+		testFieldNameResolver{},
+		testValueResolver{},
+		storage.ApplyOptions{},
+	)
+	if err == nil || !strings.Contains(err.Error(), "delayDelTime") {
+		t.Fatalf("ApplyChangesWithOptions error = %v, want dirty TTL lifetime error", err)
+	}
+	if redis.optionRuns != 0 {
+		t.Fatalf("Redis calls = %d, want validation before I/O", redis.optionRuns)
 	}
 }
 
@@ -476,10 +543,10 @@ func TestFusionStrategySuccessfulHotWriteClearsStoreAfterLocalRegistration(t *te
 	}
 }
 
-func TestFusionStrategyScopesWriteOptionsToRedisAndPersistsDirtyDocument(t *testing.T) {
+func TestFusionStrategyScopesWriteOptionsToRedisAndOverridesBusinessTTL(t *testing.T) {
 	submitter := &recordingDelaySubmitter{}
 	redis := &recordingApplier{}
-	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}, DelaySubmitter: submitter}
+	strategy := fusion.Strategy{RedisApplier: redis, MongoLoader: &recordingDocumentLoader{}, DelaySubmitter: submitter, DirtyTTL: 30 * 24 * time.Hour}
 	spec := meta.TypeSpec{
 		Type:    fusionRoleType(),
 		Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Second}},
@@ -494,8 +561,8 @@ func TestFusionStrategyScopesWriteOptionsToRedisAndPersistsDirtyDocument(t *test
 	if redis.optionRuns != 1 {
 		t.Fatalf("redis option calls = %d, want 1", redis.optionRuns)
 	}
-	if redis.options.TTLSeconds != -1 || !redis.options.Upsert {
-		t.Fatalf("redis options = %#v, want persistent TTL and upsert", redis.options)
+	if redis.options.TTLSeconds != int64((30*24*time.Hour)/time.Second) || !redis.options.Upsert {
+		t.Fatalf("redis options = %#v, want configured dirty TTL and upsert", redis.options)
 	}
 	if redis.key != key {
 		t.Fatalf("redis key = %#v, want %#v", redis.key, key)
@@ -822,7 +889,7 @@ func TestFusionStrategyLoadDocumentWithNoBackfillOptionDoesNotBackfillRedis(t *t
 	}
 }
 
-func TestFusionStrategyLoadDocumentRequiresDelayDeleteForRedisBackfill(t *testing.T) {
+func TestFusionStrategyLoadDocumentUsesDirtyTTLWhenDelayDeleteIsNotConfigured(t *testing.T) {
 	redis := &recordingDocumentLoader{}
 	mongo := &recordingDocumentLoader{doc: map[string]any{"name": "cold"}, exists: true}
 	replacer := &recordingDocumentReplacerWithOptions{}
@@ -830,15 +897,15 @@ func TestFusionStrategyLoadDocumentRequiresDelayDeleteForRedisBackfill(t *testin
 	strategy := fusion.Strategy{RedisLoader: redis, RedisReplacer: replacer, RedisLocker: locker, MongoLoader: mongo}
 	spec := meta.TypeSpec{Type: fusionRoleType()}
 
-	_, exists, err := strategy.LoadDocument(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "Name")
-	if err == nil {
-		t.Fatal("LoadDocument returned nil error, want missing delayDelTime error")
+	doc, exists, err := strategy.LoadDocument(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "Name")
+	if err != nil {
+		t.Fatalf("LoadDocument returned error: %v", err)
 	}
-	if exists {
-		t.Fatal("LoadDocument exists = true, want false on missing delayDelTime")
+	if !exists || doc["name"] != "cold" {
+		t.Fatalf("LoadDocument = %#v exists=%v, want Mongo document", doc, exists)
 	}
-	if replacer.calls != 0 {
-		t.Fatalf("redis backfill calls = %d, want 0", replacer.calls)
+	if replacer.calls != 1 || replacer.options.TTLSeconds != int64(fusion.DefaultDirtyTTL/time.Second) {
+		t.Fatalf("redis backfill calls/options = %d/%#v, want default dirty TTL", replacer.calls, replacer.options)
 	}
 }
 

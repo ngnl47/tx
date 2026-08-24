@@ -91,3 +91,22 @@ func TestRegistryNormalizesRegisteredTypeRef(t *testing.T) {
 		t.Fatalf("registered TypeRef.FullName = %q, want data.GDRole", got.Type.Ref.FullName)
 	}
 }
+
+func TestRegistryTypeSpecsReturnsStableClones(t *testing.T) {
+	registry := meta.NewRegistry()
+	for _, name := range []string{"GDSecond", "GDFirst"} {
+		if err := registry.RegisterType(meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{Package: "data", Name: name}}}); err != nil {
+			t.Fatalf("RegisterType(%s) returned error: %v", name, err)
+		}
+	}
+
+	first := registry.TypeSpecs()
+	if len(first) != 2 || first[0].Type.Ref.FullName != "data.GDFirst" || first[1].Type.Ref.FullName != "data.GDSecond" {
+		t.Fatalf("TypeSpecs = %#v, want stable full-name order", first)
+	}
+	first[0].Type.Ref.FullName = "mutated"
+	second := registry.TypeSpecs()
+	if second[0].Type.Ref.FullName != "data.GDFirst" {
+		t.Fatalf("TypeSpecs shared mutable metadata: got %q", second[0].Type.Ref.FullName)
+	}
+}

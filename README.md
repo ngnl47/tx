@@ -22,7 +22,7 @@
 - `Set` 写入零值，`Replace` 整体覆盖复杂值，`Delete` 删除集合元素或存储路径，`Clear` 清空容器。
 - 保存失败时 Store 保留变更状态。业务必须处理返回的 `error`，不能把外部服务异常当成成功。
 - Fusion 同时要求 Redis 和 Mongo 健康；Redis 是热数据，Mongo 是持久化数据，Fusion 延迟任务队列只保存记录定位。
-- `delaySaveTime` 表示回写 Mongo 的延迟；`delayDelTime` 表示热数据目标保留时间，不会删除 Mongo 数据。Fusion 脏热数据在可靠回写前不会按 TTL 淘汰。
+- `delaySaveTime` 表示回写 Mongo 的延迟；`delayDelTime` 表示已确认回写后的热数据保留时间；`runtime.fusion.dirtyTTL` 是尚未确认回写时的安全 TTL。三者都不会删除 Mongo 数据。
 - 单机事务只回滚通过 Store 受控 API 发生的修改；事务内子流程使用 `tx.Call`，不能嵌套启动根事务。
 - `msgq` 管理客户端会话和下行邮箱；Actor 负责业务实体投递；普通 gRPC RPC 负责服务或实例调用，三者不是同一个中继层。
 - 需要理解内部变更追踪、锁注册表、Fusion 状态机或分布式拓扑时，阅读 [设计文档](docs/design.md)。
@@ -2667,7 +2667,7 @@ err := storage.SaveWithOptions(ctx, redisCluster, role.Store(), storage.ApplyOpt
 
 如果 `TTLSeconds > 0`，Redis 使用该 TTL 写入或续期；如果 `TTLSeconds == 0`，生成 Store 会补默认 TTL；如果 `TTLSeconds < 0`，Redis 会持久化 main/subKey/`@v`。如果底层直接调用 runtime 且没有生成 Store 补默认值，则需要调用方自己明确 TTL 策略。
 
-Fusion 策略不接受业务用有限 TTL 淘汰脏热数据：业务写入时会把 `TTLSeconds` 收敛为 `-1`，直到 Mongo 可靠回写和 revision 条件删除完成。Fusion 从 Mongo 回填 Redis 时仍要求 `delayDelTime > 0`，因为这时缓存尚未承载未落盘变更，可以安全自然过期。
+Fusion 策略不接受业务用更短 TTL 淘汰脏热数据：业务写入时会把 `TTLSeconds` 收敛为框架配置的 `dirtyTTL`。Mongo 确认回写后，handler 才按 revision 条件把 main/subKey/`@v` 的 TTL 一起缩短为正数 `delayDelTime`。Fusion 从 Mongo 回填 Redis 时优先使用正数 `delayDelTime`，否则使用 `dirtyTTL`，因为这时缓存尚未承载未落盘变更，但仍不能生成永久 key。
 
 ### 读取流程
 
@@ -3350,13 +3350,14 @@ func (f fakeLoader) LoadDocument(context.Context, meta.TypeSpec, storage.RecordK
 Fusion 策略的当前保存路径：
 
 1. 业务变更记录在生成 Store 的字段槽、集合 key/index 和脏子节点索引中。
-2. Redis Lua patch 热数据、递增 `@v`，并把 main/subKey/`@v` 保持为持久状态。
+2. Redis Lua patch 热数据、递增 `@v`，并把 main/subKey/`@v` 的 TTL 统一刷新为 `dirtyTTL`。
 3. `Strategy` 将 `TypeSpec + RecordKey` 登记到进程内 `DelayTaskDispatcher`；相同根记录只保留最新登记。
 4. Redis 热写与本地登记完成后，`db.Save(role)` 返回 `nil`，Store 清理本轮变更。
-5. 后台分发器把延迟保存和可选的热数据淘汰任务写入 Redis delayed task backend。
+5. 后台分发器把唯一一条延迟保存任务写入 Redis delayed task backend。
 6. 发布失败时输出结构化 error 日志，并按有上限的指数退避持续重试；成功后移除本地 pending。
 7. Scheduler 到期 claim 任务，StorageTaskHandler 根据记录定位重新读取 Redis 当前热文档并 replace 到 Mongo。
-8. 任务成功后通过 Lua complete 删除该任务在 Redis 队列中的状态。
+8. Mongo 保存成功后，handler 仅在 `@v` 未变化时原子地把所有热数据键的 TTL 收敛为 `delayDelTime`；版本变化则重新排一条保存任务。
+9. 任务成功后通过 Lua complete 删除该任务在 Redis 队列中的状态。
 
 本地 pending 只保存根记录的 `TypeSpec + RecordKey`，不保存 GD、Store、变更文档或业务对象快照；同一角色连续保存一万次，在发布受阻期间仍只占一条根记录登记。它不设置需要业务估算的容量阈值。分发器由 `WaitGroupContext` 管理生命周期，正常服务关闭时不再突然中断正在组织的业务调用。
 
@@ -3385,12 +3386,12 @@ if err := db.Save(role); err != nil {
 
 第一次 lease 完成后，队列仍会产生一次后续回写；后续 worker 重新读取 Redis 当前热文档，最终让 Mongo 收敛到 `during-worker`。业务 API 不需要感知 lease 或手工重排任务。
 
-Fusion 延迟任务队列接受保存 action 和 Redis 热数据淘汰 action；其他未知 action 会返回错误。入队任务与 `StorageTaskHandler` 消费入口都会统一校验 `Type`、`ID`、`Action`：空白类型/动作、nil ID 与空字符串 ID 都返回 `task.ErrInvalidDelayTask`，防止手工写入或遗留异常任务落到存储层。`Complete`、`Retry` 额外要求有效的任务租约 token 和正数尝试次数；格式完整但已过期的任务租约仍按幂等 no-op 处理。任务类型优先来自 `DelayedOperation.Type`，为空时使用 `DelayedOperation.Key.TypeName`。Fusion 延迟保存按类型、记录 ID、route/shard key 和 action 生成一条合并任务，不暴露额外 suffix，避免同一记录产生多条重复保存任务。延迟保存任务不携带业务对象或 Store 变更状态，回写时重新读取 Redis 当前热数据。`delete` action 只负责回写当前热文档并淘汰 Redis 数据，不表示删除 Mongo 根记录。Redis claim 发现损坏或不完整的任务载荷同样返回错误，不会把它当成可执行任务；如果 `due` 中存在任务但对应 `payload` 任务载荷缺失，整批 claim 会在创建任何任务租约前失败，并保留原到期状态供运维修复，绝不会静默删除持久化任务。
+Fusion 延迟任务队列只接受保存 action；其他未知 action 会返回错误。入队任务与 `StorageTaskHandler` 消费入口都会统一校验 `Type`、`ID`、`Action`：空白类型/动作、nil ID 与空字符串 ID 都返回 `task.ErrInvalidDelayTask`，防止手工写入或异常任务落到存储层。`Complete`、`Retry` 额外要求有效的任务租约 token 和正数尝试次数；格式完整但已过期的任务租约仍按幂等 no-op 处理。任务类型优先来自 `DelayedOperation.Type`，为空时使用 `DelayedOperation.Key.TypeName`。Fusion 延迟保存按类型、记录 ID 和 route/shard key 生成一条合并任务，不暴露额外 suffix，避免同一记录产生多条重复保存任务。任务不携带业务对象或 Store 变更状态，回写时重新读取 Redis 当前热数据。Redis claim 发现损坏或不完整的任务载荷同样返回错误，不会把它当成可执行任务；如果 `due` 中存在任务但对应 `payload` 任务载荷缺失，整批 claim 会在创建任何任务租约前失败，并保留原到期状态供运维修复，绝不会静默删除持久化任务。
 
 数值定位在 Redis 任务载荷中精确往返。比如业务使用
 `uint64(9223372036854775809)` 作为记录 ID 时，claim 后仍得到同一个 `uint64`；框架不会先转成
 `float64` 再舍入，否则 `Complete` 会计算出另一个幂等任务键并让原 lease 无法正常结算。
-Fusion 保存路径要求 Redis change applier、Mongo document loader 与本地延迟任务分发器完整装配；缺少任一项时，非空变更会在 Redis I/O 前返回错误。延迟任务执行还要求 handler、Redis 文档读取、Mongo replace 和 Redis 热数据淘汰所需的 revision/lock 组件完整可用。`Strategy.Validate()` 会汇总检查这些依赖；标准 `server` 在 Redis/Mongo 探活后创建并启动分发器与 Scheduler，任一装配或启动失败都不会继续启动业务服务。`Scheduler.Start` 返回 `error`，项目启动代码必须处理：
+Fusion 保存路径要求 Redis change applier、Mongo document loader 与本地延迟任务分发器完整装配；缺少任一项时，非空变更会在 Redis I/O 前返回错误。延迟任务执行还要求 handler、Redis 文档读取、Mongo replace、revision 条件 TTL 和记录锁组件完整可用。`Strategy.Validate()` 会汇总检查这些依赖；标准 `server` 在 Redis/Mongo 探活后创建并启动分发器与 Scheduler，任一装配或启动失败都不会继续启动业务服务。`Scheduler.Start` 返回 `error`，项目启动代码必须处理：
 
 ```go
 if err := scheduler.Start(appContext); err != nil {
@@ -3404,7 +3405,7 @@ if err := scheduler.Start(appContext); err != nil {
 
 健康探针会记录开始检查时的 backend generation。若探针执行期间有真实业务 I/O 报告了更新的故障，较早的成功探针结果不能清除这次新故障；下一轮在新 generation 上完整成功的探针才会重新开放入口。
 
-Fusion 热写在 Redis 同步写入并完成本地登记后返回，不等待 delayed task backend 或 Mongo。业务变更写入 Redis 时会把 main/subKey/`@v` 转为持久状态，不允许有限 TTL 在 Mongo 回写前淘汰脏热数据。任务发布暂时失败时，本地分发器持续重试并输出 error 日志；任务已经持久化后，Mongo 暂时不可达也不会丢弃任务或脏热文档，Scheduler 通过 lease/retry 持续退避，恢复后继续把 Redis 当前文档回写 Mongo。handler 的 backend 错误会更新项目健康状态，但健康 gate 不阻止 worker 自身继续尝试恢复。
+Fusion 热写在 Redis 同步写入并完成本地登记后返回，不等待 delayed task backend 或 Mongo。业务变更写入 Redis 时会把 main/subKey/`@v` 的 TTL 刷新为 `dirtyTTL`，为延迟任务和外部服务恢复保留安全窗口。任务发布暂时失败时，本地分发器持续重试并输出 error 日志；任务已经持久化后，Mongo 暂时不可达不会立即丢弃任务，Scheduler 通过 lease/retry 持续退避，恢复后继续把 Redis 当前文档回写 Mongo。若故障持续超过 `dirtyTTL`，Redis 可以自然淘汰数据，这是当前运维边界，必须通过错误日志和集群告警尽早处理。handler 的 backend 错误会更新项目健康状态，但健康 gate 不阻止 worker 自身继续尝试恢复。
 
 ```go
 role.SetName("new-name")
@@ -3432,15 +3433,15 @@ role, exists, err := data.FindGDRoleByID(ctx, 1001)
 
 生产环境的延迟回写 handler 只负责存储同步。由于任务可能因为网络抖动、进程重启或租约恢复被再次执行，Mongo 回写路径应按“同一记录的当前 Redis 热文档 replace 到 Mongo”设计为存储幂等操作。比如同一条 `GDRole` save 任务执行两次，结果应只是 Mongo 中 `roleId=1001` 的文档被相同或更新后的热数据覆盖两次；队列中不保存 `GDRole` 的中间态快照，也不按每次字段变更生成事件日志。
 
-Redis 热数据延迟删除任务也是存储同步的一部分：handler 执行时读取当前 `@v`，再读取 Redis 热文档并回写 Mongo，最后带着读取到的 revision 删除 Redis。如果回写 Mongo 期间这条记录又发生新写入，`@v` 会变化，Lua 删除会返回当前数字版本，handler 会重新排一条延迟删除任务。`@v` 由 Redis `INCR` 生成，读取、条件删除和 Lua 返回只接受正整数；缺失或非数字结果会返回错误并保留任务，绝不会退化为无条件删除。
-handler 会在这个流程外层持有同一条记录的 Redis 锁，避免多个服务实例同时执行同一条记录的回写或热数据淘汰窗口。
-保存或删除任务存在时，Redis 热文档就是待落盘事实；handler 如果读取不到文档，会返回 `storage.ErrNotExists` 并让 Scheduler 保留任务重试，不会把“数据已经丢失”当成任务完成。持续出现该错误通常表示人工删除、淘汰策略或路由配置破坏了 Fusion 生命周期，需要运维介入排查。
+handler 执行保存任务时先读取当前 `@v`，再读取 Redis 热文档并回写 Mongo，最后带着读取到的 revision 设置 `delayDelTime` TTL。如果回写 Mongo 期间这条记录又发生新写入，`@v` 会变化，Lua 不会缩短新热数据的 TTL，handler 会重新排一条保存任务。`@v` 由 Redis `INCR` 生成，读取、条件 TTL 和 Lua 返回只接受正整数；缺失或非数字结果会返回错误并保留任务，绝不会退化为无条件续期。
+handler 会在这个流程外层持有同一条记录的 Redis 锁，减少多个服务实例同时处理同一记录的重复回写；revision 仍是防止业务热写与回写收敛并发冲突的最终边界。
+保存任务存在时，Redis 热文档就是待落盘事实；handler 如果读取不到文档，会返回 `storage.ErrNotExists` 并让 Scheduler 保留任务重试，不会把“数据已经丢失”当成任务完成。持续出现该错误通常表示安全 TTL 已耗尽、人工删除、淘汰策略或路由配置破坏了 Fusion 生命周期，需要运维介入排查。
 记录锁同样使用 Redis `PX`，高级调用方传入的 `storage.LockOptions.TTL` 必须至少为 `1ms`；
 亚毫秒值会在任何 Redis I/O 前返回错误。
 
 运维侧应关注 Scheduler 错误日志、重试次数和队列积压时间。如果某类任务持续失败，优先排查对应类型的 Redis 热文档是否能正常反序列化、Mongo 路由/过滤条件是否正确、以及目标集合是否可写。队列中的失败原因不会写入 Redis 状态；需要更完整的告警和指标时，应通过项目自己的日志、监控或后续可插拔 observer 接入。
 
-通过项目健康 gate 后，Fusion Strategy 内部先查 Redis，未命中时才回源 Mongo；Redis 命中不会在本次请求里额外 Ping Mongo。单条回源会先获取记录级 Redis 锁，并在锁内再次读取 Redis：如果第二次读取命中，直接返回 Redis 热数据；只有第二次仍未命中时，才从 Mongo 全量读取文档，写回 Redis 热数据并使用 `delayDelTime` 续期，然后按请求字段返回结果。批量读取先合并第一次 Redis 查询；当 Mongo reader 支持批量读取时，所有 miss 会先通过一次 Mongo 全文批量读取取得候选文档，再逐条获取记录锁并二次读取 Redis。锁内已经被其他请求回填的记录直接返回最新 Redis 文档，仍未命中时才写入该条候选 Mongo 文档；因此批量回源不会用旧候选覆盖另一条回填完成后的热数据。该路径要求 `delayDelTime` 必须大于 0，避免生成没有 TTL 的 Redis 热数据；同时必须已装配带写入选项的 Redis 文档替换器和记录锁，缺少任一组件时会返回 `fusion.ErrStrategyDependenciesNotConfigured`，不会降级成只读 Mongo。显式使用 `LoadOptions.SkipRedisBackfill` 时，才直接从 Mongo 按请求字段读取且不回填 Redis，适合低频只读场景。
+通过项目健康 gate 后，Fusion Strategy 内部先查 Redis，未命中时才回源 Mongo；Redis 命中不会在本次请求里额外 Ping Mongo。单条回源会先获取记录级 Redis 锁，并在锁内再次读取 Redis：如果第二次读取命中，直接返回 Redis 热数据；只有第二次仍未命中时，才从 Mongo 全量读取文档，写回 Redis 热数据并使用 `delayDelTime` 续期，然后按请求字段返回结果。若类型未配置正数 `delayDelTime`，回填使用 `dirtyTTL`，仍不会生成永久 Redis key。批量读取先合并第一次 Redis 查询；当 Mongo reader 支持批量读取时，所有 miss 会先通过一次 Mongo 全文批量读取取得候选文档，再逐条获取记录锁并二次读取 Redis。锁内已经被其他请求回填的记录直接返回最新 Redis 文档，仍未命中时才写入该条候选 Mongo 文档；因此批量回源不会用旧候选覆盖另一条回填完成后的热数据。该路径必须已装配带写入选项的 Redis 文档替换器和记录锁，缺少任一组件时会返回 `fusion.ErrStrategyDependenciesNotConfigured`，不会降级成只读 Mongo。显式使用 `LoadOptions.SkipRedisBackfill` 时，才直接从 Mongo 按请求字段读取且不回填 Redis，适合低频只读场景。
 
 部分字段读取的优化主要发生在 Redis 热数据层：运行时按 main/subKey key 粒度减少 Redis 读取，随后按字段过滤返回文档；Redis 和 Mongo 中保存的仍是全量数据。只请求 subKey 字段时，Redis 可以只读取对应 subKey 文档，不要求主文档同时命中。
 
@@ -3458,16 +3459,27 @@ Fusion 需要三类组件：
 
 ```go
 fusionStore := fusion.Strategy{
-	RedisApplier:  redisCluster,
-	RedisLoader:   redisCluster,
-	RedisReplacer: redisCluster,
-	RedisLocker:   redisCluster,
-	MongoLoader:   mongoCluster,
+	RedisApplier:   redisCluster,
+	RedisLoader:    redisCluster,
+	RedisReplacer:  redisCluster,
+	RedisLocker:    redisCluster,
+	MongoLoader:    mongoCluster,
 	DelaySubmitter: fusion.NewDelayTaskDispatcher(delayQueue),
+	DirtyTTL:       30 * 24 * time.Hour,
 }
 ```
 
 标准项目不直接构造这些组件；`tx/server` 会创建共享 `DelayTaskDispatcher`，把它同时注入 Fusion Strategy，并使用服务根 `WaitGroupContext` 启动后台发布循环。分发器的重试参数采用框架默认值，不进入业务 YAML。
+
+项目配置只提供 Fusion 安全 TTL：
+
+```yaml
+runtime:
+  fusion:
+    dirtyTTL: 720h
+```
+
+`dirtyTTL` 默认 30 天，并且必须严格大于生成类型中最大的 `delaySaveTime` 和 `delayDelTime`。标准 `server` 在 Fusion CMod 预检阶段遍历生成 `TypeSpec`；任一类型不满足约束都会让启动直接失败，不会先连接 Redis/Mongo 再暴露运行期错误。例如 `delayDelTime:"86400"` 时，`dirtyTTL: 24h` 非法，至少需要配置为大于 24 小时的值。
 
 业务写入：
 
@@ -3479,10 +3491,10 @@ err := storage.Save(ctx, fusionStore, role.Store())
 
 执行后：
 
-1. Redis 立即写入热数据并递增 `@v`；main/subKey/`@v` 都保持持久状态，避免 Mongo 回写前被 TTL 淘汰。
+1. Redis 立即写入热数据并递增 `@v`；main/subKey/`@v` 的 TTL 都刷新为 `dirtyTTL`。
 2. Strategy 在进程内登记当前根记录，随后本次调用返回 `nil`，不等待 Mongo。
 3. 后台分发器记录一条延迟保存任务，到期时间来自 `delaySaveTime`。
-4. 如果配置了 `delayDelTime > 0`，分发器还记录一条热数据淘汰任务，到期时间为 `delaySaveTime + delayDelTime`。
+4. 保存任务成功回写 Mongo 后，main/subKey/`@v` 的 TTL 在 revision 未变化时统一收敛为 `delayDelTime`。
 5. 发布失败时保留本地登记并输出 error 日志，成功后移除该根记录的 pending。
 
 例如 Redis 已经保存 `role:{470001}`，但任务 backend 暂时不可用：
@@ -3494,7 +3506,7 @@ err := db.Save(role)
 // 后台会输出 fusion delay task publish failed，并持续重试任务发布。
 ```
 
-相同根记录再次保存时只更新本地 pending 的代次；旧发布结果不能误删发布期间产生的新登记。若 save 已入队而 delete 发布失败，重试会按相同幂等任务键覆盖或合并既有任务，不产生第二份并发 lease。进程异常退出会丢失尚未持久化的本地 pending，因此日志告警不是可选装饰，而是当前可靠性边界的一部分。
+相同根记录再次保存时只更新本地 pending 的代次；旧发布结果不能误删发布期间产生的新登记。重试按相同幂等任务键覆盖或合并既有保存任务，不产生第二份并发 lease。进程异常退出会丢失尚未持久化的本地 pending，因此日志告警不是可选装饰，而是当前可靠性边界的一部分。
 
 ### 延迟回写任务
 
@@ -3508,20 +3520,9 @@ action = save
 due = now + delaySaveTime
 ```
 
-Scheduler 到期 claim 任务后，`StorageTaskHandler` 会重新读取 Redis 当前热数据，再整文档 replace 到 Mongo。
-这意味着 10 分钟内同一条 `GDRole` 修改多次，Mongo 回写只需要使用 Redis 中的最新状态。
+Scheduler 到期 claim 任务后，`StorageTaskHandler` 会读取 revision 和 Redis 当前热数据，再整文档 replace 到 Mongo。这意味着 10 分钟内同一条 `GDRole` 修改多次，Mongo 回写只需要使用 Redis 中的最新状态。
 
-如果配置了 `delayDelTime`，写入时还会额外排一条 Redis 热数据延迟删除任务：
-
-```text
-type = GDRole
-id = 470001
-shardKey = 470001
-action = delete
-due = now + delaySaveTime + delayDelTime
-```
-
-删除任务到期后，handler 会先把 Redis 当前热数据回写 Mongo，再按 `<mainKey>@v` 比对删除 Redis。比如 `role:{470001}@v` 在任务开始时是 `5`，Mongo 回写期间业务又调用 `role.SetName("new")` 导致 `@v` 变成 `6`，删除 Lua 会返回当前版本 `6`，handler 不会删除 Redis，而是重新排一条 `delete` 任务。
+Mongo 保存完成后，handler 使用任务开始时读到的 revision 原子设置所有热数据键的 TTL。比如 `role:{470001}@v` 在任务开始时是 `5`，Mongo 回写期间业务又调用 `role.SetName("new")` 导致 `@v` 变成 `6`，Lua 会返回当前版本 `6`，不会把新热数据的 TTL 缩短为 `delayDelTime`；handler 随后重新排一条 `save` 任务。若 revision 仍为 `5`，main/subKey/`@v` 会一起获得 `delayDelTime`，到期后由 Redis 原生过期机制释放。
 
 ### 多实例消费
 
@@ -3778,10 +3779,12 @@ Mongo 追加固定使用 `majority + j:true` 写关注，不能被项目 URI 中
 
 `delayDelTime` 表示 Redis 热数据的目标保留时间，但纯净缓存和脏热数据使用不同的安全边界：
 
-- Redis-only 数据，以及 Fusion 从 Mongo 回源得到、尚未承载业务变更的纯净缓存，使用它作为 Redis TTL。
-- Fusion 业务写入后的脏热数据会转为持久状态，并在 `delaySaveTime + delayDelTime` 后由延迟删除任务先可靠回写 Mongo，再按 revision 条件删除。Mongo 或任务系统异常时允许保留得更久，不能按有限 TTL 丢弃尚未落盘的数据。
+- Redis-only 数据使用类型配置的 `delayDelTime`。Fusion 从 Mongo 回源得到、尚未承载业务变更的纯净缓存优先使用正数 `delayDelTime`；未配置或配置为 `-1` 时改用 `dirtyTTL`。
+- Fusion 业务写入后的脏热数据先使用 `dirtyTTL`；Mongo 确认回写后，才按 revision 条件把 TTL 收敛为 `delayDelTime`。
 
-Fusion 策略会把业务写入携带的 `ApplyOptions.TTLSeconds` 收敛为持久化模式；高级调用方不能用显式 TTL 绕过可靠回写。Mongo 回源并回填 Redis 时仍要求 `delayDelTime > 0`，避免纯净缓存永久占用内存。
+类型未配置正数 `delayDelTime` 时不执行 TTL 收敛，热数据继续保留本次写入设置的 `dirtyTTL` 并最终自然过期。该规则使历史上使用 `delayDelTime:"-1"` 表达长生命周期的 Fusion 类型也拥有项目级兜底，不会永久占用 Redis。
+
+Fusion 策略会把业务写入携带的 `ApplyOptions.TTLSeconds` 收敛为 `runtime.fusion.dirtyTTL`；高级调用方不能用显式 TTL 缩短可靠回写窗口。`dirtyTTL` 默认 30 天，配置期要求它严格大于所有 Fusion 类型的 `delaySaveTime` 和 `delayDelTime`。Mongo 回源并回填 Redis 时，缺少正数 `delayDelTime` 的类型也使用 `dirtyTTL`，避免纯净缓存永久占用内存。
 
 `delayDelTime` 不代表 Mongo 删除延迟，也不会触发 Mongo 删除。Fusion 根记录禁止物理删除；该参数只控制 Redis 热数据生命周期。
 
@@ -3796,11 +3799,11 @@ Fusion 策略会把业务写入携带的 `ApplyOptions.TTLSeconds` 收敛为持�
 | 字段 | 含义 |
 | --- | --- |
 | `delaySaveTime:"600"` | Redis 热数据变更后，约 10 分钟触发一次 Mongo 回写。 |
-| `delayDelTime:"86400"` | 纯净回源缓存使用 24 小时 TTL；Fusion 脏热数据在回写窗口后保留约 24 小时，再由可靠删除任务淘汰。 |
+| `delayDelTime:"86400"` | 纯净回源缓存使用 24 小时 TTL；Fusion 脏热数据确认写入 Mongo 后也收敛为 24 小时 TTL。 |
 
-如果玩家持续在线且频繁修改，延迟保存与删除任务会按同一记录合并并更新到期时间；Mongo 回写读取 Redis 当前最终状态。玩家长时间不活跃后，延迟删除任务先确认 Mongo 已收敛，再释放 Redis；再次加载时从 Mongo 读取完整数据并重新缓存到 Redis。若 Mongo 长时间不可用，Redis 脏热数据会超过目标保留时间继续存在，这是避免脏数据丢失的正确降级。
+如果玩家持续在线且频繁修改，保存任务会按同一记录合并并更新到期时间；每次热写都刷新 `dirtyTTL`，Mongo 回写读取 Redis 当前最终状态。玩家长时间不活跃时，成功回写会把 TTL 收敛为 `delayDelTime`，随后 Redis 自然释放热数据；再次加载时从 Mongo 读取完整数据并重新缓存。若 Mongo 长时间不可用，Scheduler 会持续重试并记录错误；故障超过 `dirtyTTL` 时数据可能自然过期，因此生产配置应给修复留出充足窗口并接入告警。
 
-Redis 热数据还维护一个生命周期版本键 `<mainKey>@v`，例如 `role:{1001}@v`。这个键不是业务字段，也不会写入 Mongo；它只用于 Redis 热数据删除窗口的并发保护。每次热写都会递增它；纯净缓存阶段使用与 main/subKey 相同的 TTL，承载业务变更后则与 main/subKey 一起转为持久状态。运行时的带版本删除原语会在 Lua 中先比对 `@v`，只有版本一致才删除 main/subKey/version key；如果版本已变化，说明这条热数据发生过新写入，删除方应跳过本次删除并稍后重试。所有附属 key 都从 mainKey 派生：
+Redis 热数据还维护一个生命周期版本键 `<mainKey>@v`，例如 `role:{1001}@v`。这个键不是业务字段，也不会写入 Mongo；它用于 Mongo 回写后的 TTL 收敛并发保护。每次热写都会递增它，并与 main/subKey 使用相同 TTL。运行时的带版本 TTL 原语会在 Lua 中先比对 `@v`，只有版本一致才同时设置 main/subKey/version key 的 TTL；如果版本已变化，说明热数据发生过新写入，handler 跳过本次收敛并重新排一条保存任务。所有附属 key 都从 mainKey 派生：
 
 | Redis key | 示例 | 用途 |
 | --- | --- | --- |
@@ -3843,7 +3846,7 @@ env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp /Users/a47/sdk/go1.26
 - 确认 `@storage.mode` 与实际注册的 reader 匹配；Fusion 类型默认读 Fusion reader，Redis 类型默认读 Redis reader，Mongo 类型默认读 Mongo reader。
 - 确认 `idField` 和 `routeBy` 使用 Go 字段名，例如 `RoleId`，不是 `roleId`、`_id` 或 msgpack 名。
 - 如果 `routeBy != idField`，确认调用的是带 route 字段参数的 helper，或手动构造了带 `ShardKey` 的 `RecordKey`。
-- Fusion 从 Mongo 回填 Redis 时要求 `delayDelTime` 大于 0；如果缺失，默认回填路径会失败。
+- Fusion 从 Mongo 回填 Redis 时优先使用正数 `delayDelTime`；未配置或配置为 `-1` 时使用 `dirtyTTL`，不会生成永久 key。
 - 部分读取传入的是 Go 字段名或生成常量，例如 `data.GDRoleFieldName`，不是 JSON/BSON/Msgpack 字段名。
 
 ### Redis 中没有热数据
@@ -3853,7 +3856,7 @@ env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp /Users/a47/sdk/go1.26
 - 检查 Redis routeType 是否能在 yml 路由表中找到 endpoint。
 - 检查 `RecordKey.ShardKey` 是否正确；`routeBy != idField` 时缺少 ShardKey 会导致路由或 hash tag 不符合预期。
 - 如果只是 Mongo 回源后的纯净缓存，检查 `delayDelTime`，Redis key 可能已经按 TTL 过期。
-- 如果已经发生 Fusion 业务写入，对应 main/subKey/`@v` 应处于持久状态；此时缺失通常表示人工删除、错误淘汰或路由变化，应结合 Scheduler 的 `storage.ErrNotExists` 日志排查。
+- 如果已经发生 Fusion 业务写入，对应 main/subKey/`@v` 应带有 `dirtyTTL`；提前缺失通常表示安全窗口耗尽、人工删除、错误淘汰或路由变化，应结合 Scheduler 的 `storage.ErrNotExists` 日志排查。
 
 ### Mongo 没有立即更新
 

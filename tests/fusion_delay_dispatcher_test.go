@@ -132,8 +132,8 @@ func TestDelayTaskDispatcherDeduplicatesPendingRoot(t *testing.T) {
 	}
 }
 
-func TestDelayTaskDispatcherPublishesSaveAndDeleteWindows(t *testing.T) {
-	queue := &retryingDelayQueue{succeeded: make(chan struct{}, 2)}
+func TestDelayTaskDispatcherPublishesOnlyDelayedSave(t *testing.T) {
+	queue := &retryingDelayQueue{succeeded: make(chan struct{}, 1)}
 	dispatcher := fusion.NewDelayTaskDispatcher(queue)
 	spec := meta.TypeSpec{
 		Type: fusionRoleType(),
@@ -149,24 +149,19 @@ func TestDelayTaskDispatcherPublishesSaveAndDeleteWindows(t *testing.T) {
 	if err := dispatcher.Start(root); err != nil {
 		t.Fatalf("Start returned error: %v", err)
 	}
-	for range 2 {
-		select {
-		case <-queue.succeeded:
-		case <-time.After(time.Second):
-			t.Fatal("dispatcher did not publish both delayed tasks")
-		}
+	select {
+	case <-queue.succeeded:
+	case <-time.After(time.Second):
+		t.Fatal("dispatcher did not publish delayed save")
 	}
 	root.Cancel()
 	root.WaitDoneAndWaitGroupWait()
 
 	_, operations := queue.snapshot()
-	if len(operations) != 2 {
-		t.Fatalf("operations = %#v, want save and delete", operations)
+	if len(operations) != 1 {
+		t.Fatalf("operations = %#v, want one save", operations)
 	}
 	if operations[0].Kind != fusion.DelayedSave || operations[0].RunAfter != 10*time.Minute {
 		t.Fatalf("save operation = %#v", operations[0])
-	}
-	if operations[1].Kind != fusion.DelayedDelete || operations[1].RunAfter != 24*time.Hour+10*time.Minute {
-		t.Fatalf("delete operation = %#v", operations[1])
 	}
 }

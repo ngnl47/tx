@@ -587,9 +587,9 @@ Store 不保存第二份业务数据，也不保存每次操作的 value、时�
 | 持久化上下文 | 保存成功清理 | `storage.Save`、`Store.ClearChanges()` | 存储成功后递归清理 Store 状态，不修改 GD 数据 |
 | 持久化上下文 | 保存失败保留 | `storage.Save` 的错误路径 | I/O 或边界构建失败时保留全部状态，供后续重试 |
 | Fusion 上下文 | 纯净回源缓存 | Mongo 回源后写入 Redis、尚未承载业务变更的文档 | 可以使用有限 TTL；不是待回写事实 |
-| Fusion 上下文 | 脏热数据 | Fusion 业务写入后、尚未完成 Mongo 可靠回写的 Redis 文档 | main、subKey 和 `@v` 必须持久化到可靠回写和版本删除完成 |
+| Fusion 上下文 | 脏热数据 | Fusion 业务写入后、尚未完成 Mongo 可靠回写的 Redis 文档 | main、subKey 和 `@v` 使用 `dirtyTTL` 安全窗口，并由每次热写刷新 |
 | Fusion 上下文 | 延迟保存任务 | `fusion.DelayedSave` | 到期后读取 Redis 当前完整文档并 Replace Mongo，不保存业务对象或变更文档 |
-| Fusion 上下文 | 热数据淘汰任务 | `fusion.DelayedDelete` | 先回写 Mongo，再按 revision 条件删除 Redis；不是业务删除或 Mongo 删除 |
+| Fusion 上下文 | TTL 收敛 | `storage.RevisionTTLApplier` | Mongo 保存成功后，仅在 revision 未变化时把 main、subKey 和 `@v` 的 TTL 统一缩短为 `delayDelTime` |
 | 延迟任务上下文 | 任务租约 | `task.DelayTaskLease`、busy 状态 | worker 在限定时间内取得一次任务处理权；不能简称为 Store 或事务锁 |
 | 延迟任务上下文 | 任务载荷 | Redis task backend 的 `payload` 字段 | 任务定位与执行参数的编码值；不是业务消息载荷，也不保存 GD 或 Store 变更状态 |
 | 延迟任务上下文 | 后续到期时间 | Redis task backend 的 `pending` 字段 | 任务已被租用期间再次入队时保存的新到期时间；不是待刷根对象 |
@@ -1110,7 +1110,7 @@ Fusion 不是双写事务，也不是业务事件队列。
 业务 Store 变更状态
       |
       v
-Redis Lua：patch + @v 递增 + PERSIST
+Redis Lua：patch + @v 递增 + 刷新 dirtyTTL
       |
       v
 进程内 DelayTaskDispatcher 登记 TypeSpec + RecordKey
@@ -1127,12 +1127,11 @@ Redis Lua：patch + @v 递增 + PERSIST
 到期 worker
       |
       v
-claim save task -> 读取 Redis 当前完整文档 -> Replace Mongo -> complete
-
-到达热数据淘汰时间
+claim save task -> 读取 @v 和 Redis 当前完整文档 -> Replace Mongo
       |
-      v
-读取 @v 和当前文档 -> Replace Mongo -> revision 条件删除 Redis
+      +---- revision 未变化 -> 原子设置 delayDelTime TTL -> complete
+      |
+      +---- revision 已变化 -> 保留 dirtyTTL -> 重新排 save task
 ```
 
 延迟任务不保存 GD 快照，也不保存每次变更。十分钟内修改同一角色多次，任务到期只读取一次 Redis 最终状态。
@@ -1148,12 +1147,12 @@ sequenceDiagram
     participant D as DelayTaskDispatcher
     participant Q as delayed task backend
 
-    B->>R: Lua patch + INCR @v + PERSIST
+    B->>R: Lua patch + INCR @v + 刷新 dirtyTTL
     R-->>B: 写入成功
     B->>D: Submit(TypeSpec, RecordKey)
     D-->>B: 本地登记完成
     B-->>B: 返回 nil，清理 Store
-    D->>Q: Enqueue save/delete
+    D->>Q: Enqueue save
     alt 发布成功
         D->>D: 删除相同代次 pending
     else 发布失败
@@ -1161,7 +1160,7 @@ sequenceDiagram
     end
 ```
 
-本地 pending 按根记录身份去重，每次 Submit 生成递增代次。分发器复制当前 pending 后执行外部 I/O；只有发布成功且 map 中仍是同一代次时才删除，避免发布期间的新业务写被旧结果误清。save 已成功而 delete 失败时保留整条根记录，下一轮按同一幂等任务键重发 save/delete；任务 backend 合并重复任务，不产生并发 lease。
+本地 pending 按根记录身份去重，每次 Submit 生成递增代次。分发器复制当前 pending 后执行外部 I/O；只有发布成功且 map 中仍是同一代次时才删除，避免发布期间的新业务写被旧结果误清。下一轮按同一幂等任务键重发 save；任务 backend 合并重复任务，不产生并发 lease。
 
 发布失败日志固定为 `fusion delay task publish failed`，包含 pending 数、重试等待和完整错误链，供外部日志中心告警。退避从一秒开始，倍增到一分钟后持续按封顶间隔重试，并使用随机扰动错开实例压力。业务不配置本地 pending 容量；相同根记录不会膨胀条数，剩余容量由进程内存和运行监控负责。
 
@@ -1241,19 +1240,21 @@ RecordLock 以 Redis `PX` 保存租约，运行时只接受至少 `1ms` 的 TTL�
 
 批量读取先批量查询 Redis，再批量取得 Mongo 候选。每条 miss 在自己的 RecordLock 内二次读 Redis；锁内已命中的记录丢弃旧 Mongo 候选，仍未命中才回填。这保证正确性优先，同时保留 Mongo 批量 I/O。
 
-### 热数据删除与 revision
+### 热数据 TTL 与 revision
 
-`delayDelTime` 是热数据的目标保留时间，不是 Mongo 删除时间。Mongo 回源产生、尚未承载业务变更的纯净缓存可直接使用它作为 TTL；Fusion 业务写入后的脏热数据必须先转为持久状态，避免 Mongo 故障或 worker 停止期间由 TTL 提前淘汰。
+`delayDelTime` 是已确认回写后的热数据目标保留时间，不是 Mongo 删除时间。Mongo 回源产生、尚未承载业务变更的纯净缓存优先使用正数 `delayDelTime`；未配置或为 `-1` 时使用 `dirtyTTL`，不能生成永久 key。Fusion 业务写入后的脏热数据始终使用独立的 `dirtyTTL` 安全窗口。
 
-延迟热数据删除必须：
+延迟保存和 TTL 收敛必须：
 
 1. 读取当前 `@v`。
 2. 读取 Redis 当前热文档并回写 Mongo。
 3. Lua 比较读取时 revision。
-4. revision 未变化才删除 main/subKey/version。
-5. revision 已变化说明有新写入，保留热数据并重新排队。
+4. revision 未变化才把 main/subKey/version 的 TTL 一起设置为 `delayDelTime`。
+5. revision 已变化说明有新写入，保留新写入刷新的 `dirtyTTL` 并重新排保存任务。
 
-Mongo 或 Fusion 延迟任务队列故障时，脏热数据允许超过 `delayDelTime` 继续占用 Redis；恢复后任务再完成回写与淘汰。保存或删除任务读取不到对应 Redis 文档时返回 `storage.ErrNotExists` 并保留任务，不能静默视为成功。
+第 4 步只在 `delayDelTime > 0` 时执行；零值或 `-1` 表示不缩短，保留 `dirtyTTL` 作为最终兜底。
+
+`dirtyTTL` 默认 30 天，并在 Fusion CMod 预检阶段对全部生成 TypeSpec 做配置校验：它必须至少为一秒，且严格大于每个 Fusion 类型的 `delaySaveTime` 和 `delayDelTime`。该规则保证正常调度下任务到期和确认后保留窗口都小于安全 TTL；它不是无限期持久化。Mongo 或 Fusion 延迟任务队列故障时，Scheduler 持续重试并记录错误；若故障超过 `dirtyTTL`，Redis 可以自然淘汰数据。保存任务读取不到对应 Redis 文档时返回 `storage.ErrNotExists` 并保留任务，不能静默视为成功。
 
 ### 健康闸门
 

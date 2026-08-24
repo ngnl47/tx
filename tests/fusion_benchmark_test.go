@@ -57,32 +57,13 @@ func BenchmarkFusionStrategyApplyChanges(b *testing.B) {
 	delta := recordedChange{Path: benchmarkFusionPath(change.PathNode{Field: 1}), Op: change.OpSet}
 	changes := recordedChanges{delta}
 
-	for _, benchmarkCase := range []struct {
-		name string
-		spec meta.TypeSpec
-	}{
-		{name: "SaveOnly", spec: baseSpec},
-		{
-			name: "SaveAndDelayedDelete",
-			spec: meta.TypeSpec{
-				Type: baseSpec.Type,
-				Storage: meta.StorageSpec{
-					DelaySave:   baseSpec.Storage.DelaySave,
-					DelayDelete: meta.Duration{Duration: 24 * time.Hour},
-				},
-			},
-		},
-	} {
-		b.Run(benchmarkCase.name, func(b *testing.B) {
-			b.ReportAllocs()
-			b.ResetTimer()
-			for b.Loop() {
-				benchmarkFusionErr = strategy.ApplyChangesWithOptions(ctx, benchmarkCase.spec, key, changes, resolver, values, storage.ApplyOptions{})
-			}
-			if benchmarkFusionErr != nil {
-				b.Fatal(benchmarkFusionErr)
-			}
-		})
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		benchmarkFusionErr = strategy.ApplyChangesWithOptions(ctx, baseSpec, key, changes, resolver, values, storage.ApplyOptions{})
+	}
+	if benchmarkFusionErr != nil {
+		b.Fatal(benchmarkFusionErr)
 	}
 }
 

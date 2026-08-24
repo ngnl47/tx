@@ -199,7 +199,7 @@ func TestFusionTaskQueueUsesRecordKeyTypeNameWhenTypeRefMissing(t *testing.T) {
 	}
 }
 
-func TestFusionTaskQueueEnqueuesDelayedDelete(t *testing.T) {
+func TestFusionTaskQueueRejectsDeleteAction(t *testing.T) {
 	ctx := context.Background()
 	backend := memory.NewBackend()
 	now := time.Unix(100, 0)
@@ -208,24 +208,20 @@ func TestFusionTaskQueueEnqueuesDelayedDelete(t *testing.T) {
 	}})
 
 	err := queue.Enqueue(ctx, fusion.DelayedOperation{
-		Kind:     fusion.DelayedDelete,
+		Kind:     fusion.DelayedOperationKind("delete"),
 		Key:      storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001), ShardKey: int64(7)},
 		RunAfter: time.Hour,
 	})
-	if err != nil {
-		t.Fatalf("Enqueue returned error: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "unknown delayed operation kind") {
+		t.Fatalf("Enqueue error = %v, want unsupported delete action", err)
 	}
 
 	leases, err := backend.ClaimDue(ctx, now.Add(time.Hour), 10)
 	if err != nil {
 		t.Fatalf("ClaimDue returned error: %v", err)
 	}
-	if len(leases) != 1 {
-		t.Fatalf("leases = %#v, want one", leases)
-	}
-	got := leases[0].Task
-	if got.Type != "data.GDRole" || got.ID != int64(1001) || got.ShardKey != int64(7) || got.Action != string(fusion.DelayedDelete) {
-		t.Fatalf("delay task = %#v", got)
+	if len(leases) != 0 {
+		t.Fatalf("leases = %#v, want none", leases)
 	}
 }
 

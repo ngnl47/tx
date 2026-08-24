@@ -100,15 +100,16 @@ func TestUpdateLuaScriptKeepsVersionKeyLifecycleInSync(t *testing.T) {
 	}
 }
 
-func TestDeleteLuaChecksRevisionBeforeDeletingDocuments(t *testing.T) {
+func TestDeleteLuaOnlyDeletesProvidedDocumentKeys(t *testing.T) {
 	body, err := luaScripts.ReadFile("scripts/delete_document.lua")
 	if err != nil {
 		t.Fatalf("ReadFile delete script returned error: %v", err)
 	}
 	text := string(body)
-	revisionCheck := strings.Index(text, "current_revision ~= expected_revision")
-	documentDelete := strings.Index(text, "redis.call(\"del\", KEYS[i])")
-	if revisionCheck < 0 || documentDelete < 0 || revisionCheck > documentDelete {
-		t.Fatal("delete script must check the revision before deleting Redis documents")
+	if !strings.Contains(text, "redis.call(\"del\", KEYS[i])") {
+		t.Fatal("delete script must delete every provided Redis document key")
+	}
+	if strings.Contains(text, "expected_revision") {
+		t.Fatal("explicit Redis delete script must not require a lifecycle revision")
 	}
 }

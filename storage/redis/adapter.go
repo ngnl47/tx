@@ -180,34 +180,6 @@ func (a *Adapter) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key stora
 	return nil
 }
 
-// ApplyDeleteWithRevision 仅当 Redis 生命周期版本仍为 expectedRevision 时删除热数据。
-func (a *Adapter) ApplyDeleteWithRevision(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, expectedRevision string) (bool, string, error) {
-	if err := storage.ValidateRecordKey(spec, key); err != nil {
-		return false, "", err
-	}
-	client, err := a.scriptClient()
-	if err != nil {
-		return false, "", err
-	}
-	prefix := redisKeyPrefix(spec, key)
-	if !isRecordRevision(expectedRevision) {
-		return false, "", fmt.Errorf("redis: delete document %s: missing record revision", prefix)
-	}
-	keys := redisDeleteKeys(spec, prefix)
-	args := []any{expectedRevision}
-	result, err := client.Eval(ctx, deleteDocumentScript, keys, args...)
-	if err != nil {
-		return false, "", fmt.Errorf("redis: delete document %s: %w", prefix, err)
-	}
-	if result == scriptResultOK {
-		return true, "", nil
-	}
-	if isRecordRevision(result) {
-		return false, result, nil
-	}
-	return false, "", fmt.Errorf("redis: delete document %s: unexpected script result %q", prefix, result)
-}
-
 // ReadRecordRevision 读取 Redis 热数据生命周期版本。
 func (a *Adapter) ReadRecordRevision(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) (string, error) {
 	if err := storage.ValidateRecordKey(spec, key); err != nil {
@@ -226,6 +198,42 @@ func (a *Adapter) ReadRecordRevision(ctx context.Context, spec meta.TypeSpec, ke
 		return "", fmt.Errorf("redis: read record revision %s: invalid record revision %q", prefix, result)
 	}
 	return result, nil
+}
+
+// ApplyTTLWithRevision 仅当 Redis 生命周期版本未变化时，原子更新主文档、
+// subKey 文档和版本键的 TTL。
+func (a *Adapter) ApplyTTLWithRevision(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, expectedRevision string, ttl time.Duration) (bool, string, error) {
+	if err := storage.ValidateRecordKey(spec, key); err != nil {
+		return false, "", err
+	}
+	client, err := a.scriptClient()
+	if err != nil {
+		return false, "", err
+	}
+	prefix := redisKeyPrefix(spec, key)
+	if !isRecordRevision(expectedRevision) {
+		return false, "", fmt.Errorf("redis: update document TTL %s: missing record revision", prefix)
+	}
+	if ttl <= 0 || ttl.Milliseconds() <= 0 {
+		return false, "", fmt.Errorf("redis: update document TTL %s: TTL must be at least 1ms", prefix)
+	}
+	result, err := client.Eval(
+		ctx,
+		expireDocumentScript,
+		redisDeleteKeys(spec, prefix),
+		expectedRevision,
+		ttl.Milliseconds(),
+	)
+	if err != nil {
+		return false, "", fmt.Errorf("redis: update document TTL %s: %w", prefix, err)
+	}
+	if result == scriptResultOK {
+		return true, "", nil
+	}
+	if isRecordRevision(result) {
+		return false, result, nil
+	}
+	return false, "", fmt.Errorf("redis: update document TTL %s: unexpected script result %q", prefix, result)
 }
 
 func isRecordRevision(value string) bool {

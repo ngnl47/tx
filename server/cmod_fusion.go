@@ -9,7 +9,10 @@ func (server *Server) fusionCMod() CMod {
 			if server.types == nil || server.bindStorage == nil {
 				return errors.New("generated data binding is required")
 			}
-			return server.config.Runtime.DelayTask.validate()
+			if err := server.config.Runtime.DelayTask.validate(); err != nil {
+				return err
+			}
+			return server.config.Runtime.Fusion.Validate(server.types)
 		},
 		start: func(CModContext) error {
 			store := server.runtime.storage

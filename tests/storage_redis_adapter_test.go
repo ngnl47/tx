@@ -289,7 +289,7 @@ func TestRedisAdapterRejectsNilReceiverForDocumentOperations(t *testing.T) {
 	err = adapter.ReplaceDocumentWithOptions(context.Background(), spec, key, map[string]any{"name": "alice"}, storage.ApplyOptions{})
 	assertRedisClientNotConfigured(t, err)
 
-	_, _, err = adapter.ApplyDeleteWithRevision(context.Background(), spec, key, "1")
+	_, _, err = adapter.ApplyTTLWithRevision(context.Background(), spec, key, "1", time.Hour)
 	assertRedisClientNotConfigured(t, err)
 
 	_, err = adapter.ReadRecordRevision(context.Background(), spec, key)
@@ -712,79 +712,6 @@ func TestRedisAdapterApplyDeleteRejectsUnknownScriptResult(t *testing.T) {
 	}
 }
 
-func TestRedisAdapterApplyDeleteWithRevisionUsesVersionKeyCompare(t *testing.T) {
-	client := &recordingRedisStringClient{}
-	adapter := mustRedisAdapter(t, client)
-	spec := meta.TypeSpec{
-		Redis: &meta.RedisSpec{Key: "role"},
-		Fields: map[string]meta.FieldSpec{
-			"items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
-		},
-	}
-
-	deleted, current, err := adapter.ApplyDeleteWithRevision(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "5")
-	if err != nil {
-		t.Fatalf("ApplyDeleteWithRevision returned error: %v", err)
-	}
-	if !deleted || current != "" {
-		t.Fatalf("ApplyDeleteWithRevision deleted/current = %v/%q, want deleted", deleted, current)
-	}
-	if got, want := client.evals[0].keys, []string{"role:{1001}", "role:{1001}:items", "role:{1001}@v"}; !sameStrings(got, want) {
-		t.Fatalf("delete keys = %#v, want %#v", got, want)
-	}
-	if got, want := client.evals[0].args, []any{"5"}; len(got) != 1 || got[0] != want[0] {
-		t.Fatalf("delete args = %#v, want %#v", got, want)
-	}
-	if !strings.Contains(client.evals[0].script, "ARGV[1]") || !strings.Contains(client.evals[0].script, "get") {
-		t.Fatalf("delete script = %q, want revision compare", client.evals[0].script)
-	}
-}
-
-func TestRedisAdapterApplyDeleteWithRevisionReportsChangedRevision(t *testing.T) {
-	client := &recordingRedisStringClient{evalResult: "6", hasResult: true}
-	adapter := mustRedisAdapter(t, client)
-	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
-
-	deleted, current, err := adapter.ApplyDeleteWithRevision(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "5")
-	if err != nil {
-		t.Fatalf("ApplyDeleteWithRevision returned error: %v", err)
-	}
-	if deleted || current != "6" {
-		t.Fatalf("ApplyDeleteWithRevision deleted/current = %v/%q, want changed revision 6", deleted, current)
-	}
-}
-
-func TestRedisAdapterApplyDeleteWithRevisionRejectsInvalidRevisionProtocol(t *testing.T) {
-	client := &recordingRedisStringClient{evalResult: "unexpected", hasResult: true}
-	adapter := mustRedisAdapter(t, client)
-	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
-
-	deleted, current, err := adapter.ApplyDeleteWithRevision(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "5")
-	if err == nil {
-		t.Fatal("ApplyDeleteWithRevision error = nil, want invalid revision protocol error")
-	}
-	if deleted || current != "" {
-		t.Fatalf("ApplyDeleteWithRevision deleted/current = %v/%q, want no delete result on protocol error", deleted, current)
-	}
-	if !strings.Contains(err.Error(), "unexpected script result") || !strings.Contains(err.Error(), "unexpected") {
-		t.Fatalf("ApplyDeleteWithRevision error = %v, want unknown result details", err)
-	}
-}
-
-func TestRedisAdapterApplyDeleteWithRevisionRejectsMissingExpectedRevision(t *testing.T) {
-	client := &recordingRedisStringClient{}
-	adapter := mustRedisAdapter(t, client)
-	spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
-
-	_, _, err := adapter.ApplyDeleteWithRevision(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "")
-	if err == nil || !strings.Contains(err.Error(), "missing record revision") {
-		t.Fatalf("ApplyDeleteWithRevision error = %v, want missing record revision", err)
-	}
-	if len(client.evals) != 0 {
-		t.Fatalf("eval calls = %#v, want no unconditional delete", client.evals)
-	}
-}
-
 func TestRedisAdapterReadRecordRevisionUsesVersionKey(t *testing.T) {
 	client := &recordingRedisStringClient{evalResult: "7", hasResult: true}
 	adapter := mustRedisAdapter(t, client)
@@ -799,6 +726,59 @@ func TestRedisAdapterReadRecordRevisionUsesVersionKey(t *testing.T) {
 	}
 	if got, want := client.evals[0].keys, []string{"role:{1001}@v"}; !sameStrings(got, want) {
 		t.Fatalf("revision keys = %#v, want %#v", got, want)
+	}
+}
+
+func TestRedisAdapterApplyTTLWithRevisionUpdatesAllDocumentKeys(t *testing.T) {
+	client := &recordingRedisStringClient{}
+	adapter := mustRedisAdapter(t, client)
+	spec := meta.TypeSpec{
+		Redis: &meta.RedisSpec{Key: "role"},
+		Fields: map[string]meta.FieldSpec{
+			"Items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+		},
+	}
+
+	applied, current, err := adapter.ApplyTTLWithRevision(
+		context.Background(),
+		spec,
+		storage.RecordKey{ID: int64(1001)},
+		"5",
+		24*time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("ApplyTTLWithRevision returned error: %v", err)
+	}
+	if !applied || current != "" {
+		t.Fatalf("ApplyTTLWithRevision applied/current = %v/%q, want applied", applied, current)
+	}
+	if got, want := client.evals[0].keys, []string{"role:{1001}", "role:{1001}:items", "role:{1001}@v"}; !sameStrings(got, want) {
+		t.Fatalf("TTL keys = %#v, want %#v", got, want)
+	}
+	if got := client.evals[0].args; len(got) != 2 || got[0] != "5" || got[1] != (24*time.Hour).Milliseconds() {
+		t.Fatalf("TTL args = %#v, want revision and milliseconds", got)
+	}
+	if !strings.Contains(client.evals[0].script, "pexpire") {
+		t.Fatalf("TTL script = %q, want pexpire", client.evals[0].script)
+	}
+}
+
+func TestRedisAdapterApplyTTLWithRevisionReportsChangedRevision(t *testing.T) {
+	client := &recordingRedisStringClient{evalResult: "6", hasResult: true}
+	adapter := mustRedisAdapter(t, client)
+
+	applied, current, err := adapter.ApplyTTLWithRevision(
+		context.Background(),
+		meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}},
+		storage.RecordKey{ID: int64(1001)},
+		"5",
+		time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("ApplyTTLWithRevision returned error: %v", err)
+	}
+	if applied || current != "6" {
+		t.Fatalf("ApplyTTLWithRevision applied/current = %v/%q, want changed revision 6", applied, current)
 	}
 }
 

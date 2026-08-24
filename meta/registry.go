@@ -2,6 +2,7 @@ package meta
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 )
 
@@ -55,6 +56,22 @@ func (r *Registry) Lookup(ref TypeRef) (TypeSpec, bool) {
 		return TypeSpec{}, false
 	}
 	return CloneTypeSpec(spec), true
+}
+
+// TypeSpecs 按类型全名稳定返回注册元数据的独立副本。
+func (r *Registry) TypeSpecs() []TypeSpec {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	keys := make([]string, 0, len(r.types))
+	for key := range r.types {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	specs := make([]TypeSpec, 0, len(keys))
+	for _, key := range keys {
+		specs = append(specs, CloneTypeSpec(r.types[key]))
+	}
+	return specs
 }
 
 func validateTypeSpec(spec TypeSpec) error {
