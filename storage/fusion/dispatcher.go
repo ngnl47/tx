@@ -310,7 +310,7 @@ func (d *DelayTaskDispatcher) retryDelay(attempts int) time.Duration {
 
 func delayedWriteIdentity(spec meta.TypeSpec, key storage.RecordKey) string {
 	item := task.DelayTask{
-		Type:     delayedOperationType(DelayedOperation{Kind: DelayedSave, Type: spec.Type.Ref, Key: key}),
+		Type:     delayedTaskType(spec.Type.Ref),
 		ID:       key.ID,
 		ShardKey: key.ShardKey,
 		Action:   "root",

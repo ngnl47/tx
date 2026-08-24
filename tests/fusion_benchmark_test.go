@@ -47,7 +47,7 @@ func BenchmarkFusionStrategyApplyChanges(b *testing.B) {
 	values := change.ValueResolverFunc(func(change.Path) (any, bool) {
 		return int64(7), true
 	})
-	key := storage.RecordKey{TypeName: "data.GDRole", ID: int64(470001)}
+	key := storage.RecordKey{ID: int64(470001)}
 	baseSpec := meta.TypeSpec{
 		Type: meta.Type{Ref: meta.TypeRef{Package: "data", Name: "GDRole"}},
 		Storage: meta.StorageSpec{

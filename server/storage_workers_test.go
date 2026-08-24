@@ -46,7 +46,7 @@ func TestFusionCModDrainPublishesPendingDelayTask(t *testing.T) {
 			Type:    meta.Type{Ref: meta.TypeRef{FullName: "data.GDRole"}},
 			Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Minute}},
 		},
-		storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)},
+		storage.RecordKey{ID: int64(1001)},
 	)
 	app := &Server{
 		config:  Config{Runtime: RuntimeConfig{Lifecycle: LifecycleConfig{DrainTimeout: time.Second}}},

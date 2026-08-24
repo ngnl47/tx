@@ -102,7 +102,7 @@ func TestDelayTaskDispatcherRetriesFailedPublishAndLogsError(t *testing.T) {
 	}
 	dispatcher.Submit(
 		meta.TypeSpec{Type: fusionRoleType(), Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Minute}}},
-		storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)},
+		storage.RecordKey{ID: int64(1001)},
 	)
 
 	select {
@@ -146,7 +146,7 @@ func TestDelayTaskDispatcherDeduplicatesPendingRoot(t *testing.T) {
 	queue := &retryingDelayQueue{succeeded: make(chan struct{}, 1)}
 	dispatcher := fusion.NewDelayTaskDispatcher(queue)
 	spec := meta.TypeSpec{Type: fusionRoleType(), Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Minute}}}
-	key := storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001), ShardKey: int64(7)}
+	key := storage.RecordKey{ID: int64(1001), ShardKey: int64(7)}
 
 	dispatcher.Submit(spec, key)
 	dispatcher.Submit(spec, key)
@@ -179,7 +179,7 @@ func TestDelayTaskDispatcherPublishesOnlyDelayedSave(t *testing.T) {
 			DelayDelete: meta.Duration{Duration: 24 * time.Hour},
 		},
 	}
-	key := storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001), ShardKey: int64(7)}
+	key := storage.RecordKey{ID: int64(1001), ShardKey: int64(7)}
 	dispatcher.Submit(spec, key)
 
 	root := lifecycle.NewWaitGroupContext(context.Background())
@@ -212,7 +212,7 @@ func TestDelayTaskDispatcherDrainRetriesUntilPendingPublished(t *testing.T) {
 	})
 	dispatcher.Submit(
 		meta.TypeSpec{Type: fusionRoleType(), Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Minute}}},
-		storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)},
+		storage.RecordKey{ID: int64(1001)},
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -236,7 +236,7 @@ func TestDelayTaskDispatcherDrainTimeoutKeepsPendingForNextDrain(t *testing.T) {
 	})
 	dispatcher.Submit(
 		meta.TypeSpec{Type: fusionRoleType(), Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Minute}}},
-		storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)},
+		storage.RecordKey{ID: int64(1001)},
 	)
 
 	timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
@@ -263,7 +263,7 @@ func TestDelayTaskDispatcherDrainDoesNotDuplicateBackgroundPublish(t *testing.T)
 	dispatcher := fusion.NewDelayTaskDispatcher(queue)
 	dispatcher.Submit(
 		meta.TypeSpec{Type: fusionRoleType(), Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Minute}}},
-		storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)},
+		storage.RecordKey{ID: int64(1001)},
 	)
 	root := lifecycle.NewWaitGroupContext(context.Background())
 	if err := dispatcher.Start(root); err != nil {

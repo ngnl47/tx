@@ -60,7 +60,7 @@ func (q *TaskQueue) Enqueue(ctx context.Context, op DelayedOperation) error {
 		return fmt.Errorf("fusion: unknown delayed operation kind %q", op.Kind)
 	}
 	item := task.DelayTask{
-		Type:     delayedOperationType(op),
+		Type:     delayedTaskType(op.Type),
 		ID:       op.Key.ID,
 		ShardKey: op.Key.ShardKey,
 		Action:   string(op.Kind),
@@ -70,13 +70,6 @@ func (q *TaskQueue) Enqueue(ctx context.Context, op DelayedOperation) error {
 		return err
 	}
 	return q.backend.Enqueue(ctx, item)
-}
-
-func delayedOperationType(op DelayedOperation) string {
-	if typ := delayedTaskType(op.Type); typ != "" {
-		return typ
-	}
-	return op.Key.TypeName
 }
 
 func delayedTaskType(ref meta.TypeRef) string {

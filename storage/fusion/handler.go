@@ -65,7 +65,6 @@ func (h *StorageTaskHandler) HandleDelayTask(ctx context.Context, item task.Dela
 		return fmt.Errorf("fusion: unknown delayed task type %q", item.Type)
 	}
 	key := storage.RecordKey{
-		TypeName: item.Type,
 		ID:       item.ID,
 		ShardKey: item.ShardKey,
 	}

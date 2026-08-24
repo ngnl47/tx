@@ -204,7 +204,7 @@ func TestFusionStrategyRegistersDelayedSaveAfterRedisWrite(t *testing.T) {
 		},
 	}
 	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
-	key := storage.RecordKey{TypeName: spec.Type.Ref.FullName, ID: int64(1001)}
+	key := storage.RecordKey{ID: int64(1001)}
 
 	if err := strategy.ApplyChangesWithOptions(context.Background(), spec, key, changes, testFieldNameResolver{}, testValueResolver{}, storage.ApplyOptions{}); err != nil {
 		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
@@ -240,7 +240,7 @@ func TestFusionStrategyUsesConfiguredSafetyTTLForDirtyRedisDocument(t *testing.T
 	err := strategy.ApplyChangesWithOptions(
 		context.Background(),
 		spec,
-		storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)},
+		storage.RecordKey{ID: int64(1001)},
 		changes,
 		testFieldNameResolver{},
 		testValueResolver{},
@@ -275,7 +275,7 @@ func TestFusionStrategyPreservesDirtyTTLMillisecondPrecision(t *testing.T) {
 	err := strategy.ApplyChangesWithOptions(
 		context.Background(),
 		spec,
-		storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)},
+		storage.RecordKey{ID: int64(1001)},
 		changes,
 		testFieldNameResolver{},
 		testValueResolver{},
@@ -302,7 +302,7 @@ func TestFusionStrategyRejectsDirtyTTLBelowRedisMillisecondPrecision(t *testing.
 	err := strategy.ApplyChangesWithOptions(
 		context.Background(),
 		meta.TypeSpec{Type: fusionRoleType()},
-		storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)},
+		storage.RecordKey{ID: int64(1001)},
 		changes,
 		testFieldNameResolver{},
 		testValueResolver{},
@@ -337,7 +337,7 @@ func TestFusionStrategyRejectsDirtyTTLNotGreaterThanTypeLifetime(t *testing.T) {
 	err := strategy.ApplyChangesWithOptions(
 		context.Background(),
 		spec,
-		storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)},
+		storage.RecordKey{ID: int64(1001)},
 		changes,
 		testFieldNameResolver{},
 		testValueResolver{},
@@ -370,7 +370,7 @@ func TestFusionStrategyReturnsRedisTransportErrorWithoutEnqueue(t *testing.T) {
 func TestFusionStrategyRejectsMissingWriteDependencies(t *testing.T) {
 	spec := meta.TypeSpec{Type: fusionRoleType()}
 	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
-	key := storage.RecordKey{TypeName: spec.Type.Ref.FullName, ID: int64(1001)}
+	key := storage.RecordKey{ID: int64(1001)}
 
 	if err := (fusion.Strategy{DelaySubmitter: &recordingDelaySubmitter{}}).ApplyChangesWithOptions(context.Background(), spec, key, changes, testFieldNameResolver{}, testValueResolver{}, storage.ApplyOptions{}); !errors.Is(err, fusion.ErrRedisNotConfigured) {
 		t.Fatalf("missing Redis error = %v, want ErrRedisNotConfigured", err)
@@ -392,7 +392,7 @@ func TestFusionStrategyRejectsWriteWithoutMongoLoaderBeforeRedisWrite(t *testing
 	err := strategy.ApplyChangesWithOptions(
 		context.Background(),
 		spec,
-		storage.RecordKey{TypeName: spec.Type.Ref.FullName, ID: int64(1001)},
+		storage.RecordKey{ID: int64(1001)},
 		changes,
 		testFieldNameResolver{},
 		testValueResolver{},
@@ -418,7 +418,7 @@ func TestFusionStrategyRejectsWriteWithoutDelaySubmitterBeforeRedisWrite(t *test
 	err := strategy.ApplyChangesWithOptions(
 		context.Background(),
 		spec,
-		storage.RecordKey{TypeName: spec.Type.Ref.FullName, ID: int64(1001)},
+		storage.RecordKey{ID: int64(1001)},
 		changes,
 		testFieldNameResolver{},
 		testValueResolver{},
@@ -435,7 +435,7 @@ func TestFusionStrategyRejectsWriteWithoutDelaySubmitterBeforeRedisWrite(t *test
 func TestFusionStrategyRejectsTypedNilWriteDependencies(t *testing.T) {
 	spec := meta.TypeSpec{Type: fusionRoleType()}
 	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
-	key := storage.RecordKey{TypeName: spec.Type.Ref.FullName, ID: int64(1001)}
+	key := storage.RecordKey{ID: int64(1001)}
 
 	t.Run("redis", func(t *testing.T) {
 		var redis *recordingApplier
@@ -538,7 +538,7 @@ func TestFusionStrategyAppliesRedisBeforeDelayRegistration(t *testing.T) {
 		Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Second}},
 	}
 	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
-	key := storage.RecordKey{TypeName: spec.Type.Ref.FullName, ID: int64(1001)}
+	key := storage.RecordKey{ID: int64(1001)}
 
 	if err := strategy.ApplyChangesWithOptions(context.Background(), spec, key, changes, testFieldNameResolver{}, testValueResolver{}, storage.ApplyOptions{}); err != nil {
 		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
@@ -586,7 +586,7 @@ func TestFusionStrategyScopesWriteOptionsToRedisAndOverridesBusinessTTL(t *testi
 		Type:    fusionRoleType(),
 		Storage: meta.StorageSpec{DelaySave: meta.Duration{Duration: time.Second}},
 	}
-	key := storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001), ShardKey: int64(7)}
+	key := storage.RecordKey{ID: int64(1001), ShardKey: int64(7)}
 	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
 	err := strategy.ApplyChangesWithOptions(context.Background(), spec, key, changes, testFieldNameResolver{}, testValueResolver{}, storage.ApplyOptions{Upsert: true, TTL: 10 * time.Minute})
@@ -610,7 +610,7 @@ func TestFusionStrategyScopesWriteOptionsToRedisAndOverridesBusinessTTL(t *testi
 func TestFusionStrategySkipsEmptyChanges(t *testing.T) {
 	submitter := &recordingDelaySubmitter{}
 	strategy := fusion.Strategy{DelaySubmitter: submitter}
-	key := storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)}
+	key := storage.RecordKey{ID: int64(1001)}
 
 	if err := strategy.ApplyChangesWithOptions(context.Background(), meta.TypeSpec{}, key, recordedChanges{}, testFieldNameResolver{}, testValueResolver{}, storage.ApplyOptions{}); err != nil {
 		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)

@@ -2858,7 +2858,6 @@ stores, exists, err := data.LoadGDRoleStoresByID(ctx, redisCluster, []int64{1001
 
 ```go
 type RecordKey struct {
-    TypeName string
     ID       any
     ShardKey any
 }
@@ -2884,8 +2883,7 @@ key := data.GDRoleRecordKey(470001)
 
 ```go
 storage.RecordKey{
-	TypeName: "github.com/example/game/gen/data.GDRole",
-	ID:       int64(470001),
+	ID: int64(470001),
 }
 ```
 
@@ -2894,7 +2892,6 @@ storage.RecordKey{
 ```go
 // @redis:`routeType:"arena" routeBy:"RoleId" idField:"ID" key:"arena"`
 key := storage.RecordKey{
-	TypeName: data.GDArenaRecordTypeSpec().Type.Ref.FullName,
 	ID:       int64(90001),
 	ShardKey: int64(470001),
 }
@@ -3611,7 +3608,7 @@ if err := db.Save(role); err != nil {
 
 第一次 lease 完成后，队列仍会产生一次后续回写；后续 worker 重新读取 Redis 当前热文档，最终让 Mongo 收敛到 `during-worker`。业务 API 不需要感知 lease 或手工重排任务。
 
-Fusion 延迟任务队列只接受保存 action；其他未知 action 会返回错误。入队任务与 `StorageTaskHandler` 消费入口都会统一校验 `Type`、`ID`、`Action`：空白类型/动作、nil ID 与空字符串 ID 都返回 `task.ErrInvalidDelayTask`，防止手工写入或异常任务落到存储层。`Complete`、`Retry` 额外要求有效的任务租约 token 和正数尝试次数；格式完整但已过期的任务租约仍按幂等 no-op 处理。任务类型优先来自 `DelayedOperation.Type`，为空时使用 `DelayedOperation.Key.TypeName`。Fusion 延迟保存按类型、记录 ID 和 route/shard key 生成一条合并任务，不暴露额外 suffix，避免同一记录产生多条重复保存任务。任务不携带业务对象或 Store 变更状态，回写时重新读取 Redis 当前热数据。Redis claim 发现损坏或不完整的任务载荷同样返回错误，不会把它当成可执行任务；如果 `due` 中存在任务但对应 `payload` 任务载荷缺失，整批 claim 会在创建任何任务租约前失败，并保留原到期状态供运维修复，绝不会静默删除持久化任务。
+Fusion 延迟任务队列只接受保存 action；其他未知 action 会返回错误。入队任务与 `StorageTaskHandler` 消费入口都会统一校验 `Type`、`ID`、`Action`：空白类型/动作、nil ID 与空字符串 ID 都返回 `task.ErrInvalidDelayTask`，防止手工写入或异常任务落到存储层。`Complete`、`Retry` 额外要求有效的任务租约 token 和正数尝试次数；格式完整但已过期的任务租约仍按幂等 no-op 处理。任务类型只来自 `DelayedOperation.Type`；`RecordKey` 只保存 `ID` 和 route/shard key，不承担类型识别。Fusion 延迟保存按类型、记录 ID 和 route/shard key 生成一条合并任务，不暴露额外 suffix，避免同一记录产生多条重复保存任务。任务不携带业务对象或 Store 变更状态，回写时重新读取 Redis 当前热数据。Redis claim 发现损坏或不完整的任务载荷同样返回错误，不会把它当成可执行任务；如果 `due` 中存在任务但对应 `payload` 任务载荷缺失，整批 claim 会在创建任何任务租约前失败，并保留原到期状态供运维修复，绝不会静默删除持久化任务。
 
 数值定位在 Redis 任务载荷中精确往返。比如业务使用
 `uint64(9223372036854775809)` 作为记录 ID 时，claim 后仍得到同一个 `uint64`；框架不会先转成
