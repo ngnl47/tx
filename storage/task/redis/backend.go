@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ngnl47/tx/storage"
 	"github.com/ngnl47/tx/storage/task"
 )
 
@@ -54,8 +55,8 @@ func NewBackend(client ScriptClient, options Options) *Backend {
 	var optionsErr error
 	if leaseTimeout == 0 {
 		leaseTimeout = defaultLeaseTimeout
-	} else if leaseTimeout < time.Millisecond {
-		optionsErr = fmt.Errorf("%w: lease timeout must be at least 1ms", ErrInvalidOptions)
+	} else if err := storage.ValidateMillisecondDuration(leaseTimeout); err != nil {
+		optionsErr = fmt.Errorf("%w: lease timeout: %v", ErrInvalidOptions, err)
 	}
 	return &Backend{
 		client:       client,

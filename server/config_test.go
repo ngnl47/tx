@@ -52,7 +52,7 @@ func TestWALCModValidatesSelectedConfiguration(t *testing.T) {
 }
 
 func TestRuntimeConfigRejectsInvalidDelayTaskLeasePrecision(t *testing.T) {
-	for _, lease := range []time.Duration{-time.Second, time.Nanosecond} {
+	for _, lease := range []time.Duration{-time.Second, time.Nanosecond, 1500*time.Millisecond + time.Nanosecond} {
 		t.Run(lease.String(), func(t *testing.T) {
 			config := DelayTaskConfig{Lease: lease}
 			if err := config.validate(); err == nil {

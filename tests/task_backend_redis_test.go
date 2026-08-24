@@ -82,19 +82,26 @@ func TestRedisTaskBackendRejectsTypedNilClient(t *testing.T) {
 	}
 }
 
-func TestRedisTaskBackendRejectsSubMillisecondLeaseBeforeIO(t *testing.T) {
-	client := &sequenceTaskRedis{}
-	backend := taskredis.NewBackend(client, taskredis.Options{LeaseTimeout: time.Nanosecond})
-	item := task.DelayTask{Type: "data.GDRole", ID: int64(1001), Action: "save"}
+func TestRedisTaskBackendRejectsLeaseOutsideMillisecondPrecisionBeforeIO(t *testing.T) {
+	for _, leaseTimeout := range []time.Duration{
+		time.Nanosecond,
+		1500*time.Millisecond + time.Nanosecond,
+	} {
+		t.Run(leaseTimeout.String(), func(t *testing.T) {
+			client := &sequenceTaskRedis{}
+			backend := taskredis.NewBackend(client, taskredis.Options{LeaseTimeout: leaseTimeout})
+			item := task.DelayTask{Type: "data.GDRole", ID: int64(1001), Action: "save"}
 
-	if err := backend.Enqueue(context.Background(), item); !errors.Is(err, taskredis.ErrInvalidOptions) {
-		t.Fatalf("Enqueue error = %v, want ErrInvalidOptions", err)
-	}
-	if _, err := backend.ClaimDue(context.Background(), time.Now(), 1); !errors.Is(err, taskredis.ErrInvalidOptions) {
-		t.Fatalf("ClaimDue error = %v, want ErrInvalidOptions", err)
-	}
-	if client.next != 0 {
-		t.Fatalf("eval calls = %d, want no Redis I/O", client.next)
+			if err := backend.Enqueue(context.Background(), item); !errors.Is(err, taskredis.ErrInvalidOptions) {
+				t.Fatalf("Enqueue error = %v, want ErrInvalidOptions", err)
+			}
+			if _, err := backend.ClaimDue(context.Background(), time.Now(), 1); !errors.Is(err, taskredis.ErrInvalidOptions) {
+				t.Fatalf("ClaimDue error = %v, want ErrInvalidOptions", err)
+			}
+			if client.next != 0 {
+				t.Fatalf("eval calls = %d, want no Redis I/O", client.next)
+			}
+		})
 	}
 }
 

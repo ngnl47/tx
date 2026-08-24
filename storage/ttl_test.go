@@ -27,3 +27,16 @@ func TestValidateExpiringTTLRequiresWholePositiveMilliseconds(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateMillisecondDurationRequiresWholePositiveMilliseconds(t *testing.T) {
+	for _, value := range []time.Duration{0, -time.Second, time.Nanosecond, time.Millisecond + time.Nanosecond} {
+		if err := ValidateMillisecondDuration(value); err == nil {
+			t.Fatalf("ValidateMillisecondDuration(%s) error = nil", value)
+		}
+	}
+	for _, value := range []time.Duration{time.Millisecond, 1500 * time.Millisecond} {
+		if err := ValidateMillisecondDuration(value); err != nil {
+			t.Fatalf("ValidateMillisecondDuration(%s) error = %v", value, err)
+		}
+	}
+}

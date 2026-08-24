@@ -3539,9 +3539,9 @@ server-c claim bucket 1 中租约过期后可恢复的任务
 
 `ClaimDue` 允许同时返回已成功取得的 leases 和后续 bucket 的错误，语义与 `io.Reader` 的“数据和错误可以同时返回”一致。标准 Scheduler 会先处理并结算全部可见 lease，再汇总报告 claim、complete、retry 错误；单条结算失败也不会阻止本批其他 lease 继续处理。业务使用标准 Fusion runtime 时不需要直接处理该契约。高级自定义 Scheduler 必须遵循相同顺序：
 
-延迟任务 lease 使用 Redis 毫秒时间戳。配置零值表示采用框架默认值；显式值必须至少为 `1ms`，
-例如 `lease: 500us` 会在服务启动校验时失败。若高级调用方直接构造 Redis task backend，所有操作也会在
-Redis I/O 前返回 `task/redis.ErrInvalidOptions`，避免租约到期时间被截断为当前毫秒而立即被其他 worker 重领。
+延迟任务 lease 使用 Redis 毫秒时间戳。配置零值表示采用框架默认值；显式值必须至少为 `1ms` 且使用整毫秒。
+例如 `lease: 500us` 或 `lease: 1500ms500us` 会在服务启动校验时失败。若高级调用方直接构造 Redis task backend，
+所有操作也会在 Redis I/O 前返回 `task/redis.ErrInvalidOptions`，避免租约到期时间被截断后提前由其他 worker 重领。
 
 ```go
 leases, claimErr := backend.ClaimDue(ctx, now, limit)

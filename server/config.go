@@ -9,6 +9,7 @@ import (
 	txactor "github.com/ngnl47/tx/modules/actor"
 	"github.com/ngnl47/tx/modules/discovery"
 	"github.com/ngnl47/tx/modules/txn"
+	txstorage "github.com/ngnl47/tx/storage"
 	storageconfig "github.com/ngnl47/tx/storage/config"
 	txfusion "github.com/ngnl47/tx/storage/fusion"
 )
@@ -178,8 +179,10 @@ func (config DelayTaskConfig) validate() error {
 	if config.Buckets < 0 {
 		return fmt.Errorf("server: delay task buckets must be greater than or equal to 0")
 	}
-	if config.Lease < 0 || config.Lease > 0 && config.Lease < time.Millisecond {
-		return fmt.Errorf("server: delay task lease must be zero or at least 1ms")
+	if config.Lease != 0 {
+		if err := txstorage.ValidateMillisecondDuration(config.Lease); err != nil {
+			return fmt.Errorf("server: delay task lease: %w", err)
+		}
 	}
 	return nil
 }
