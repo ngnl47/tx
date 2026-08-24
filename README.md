@@ -1407,6 +1407,11 @@ mongodb:"index,unique,expireAfter:0"
 | `@mongodb` | `collection` | 是 | 字符串 | Mongo collection 名称。别名：`c`、`col`。 |
 | `@mongodb` | `enableSharding` | 否 | flag 或布尔字符串 | 标记该 collection 开启分片语义；当前主要进入元数据。 |
 
+注解标量采用严格解析。时间参数的纯整数继续按秒处理，其他值必须是合法 Go duration；布尔参数必须是
+`strconv.ParseBool` 支持的值，或直接使用对应 flag。Mongo `weight` 必须是整数，`expireAfter` 必须是非负秒数。
+拼写错误不会再静默变成零值，例如 `delaySaveTime:"10mm"`、`omitempty:"ture"` 和
+`expireAfter:later` 都会在扫描或生成阶段返回包含具体属性名的错误。
+
 `storage.mode` 与 type 级 backend 注解必须严格对应：`redis` 只能声明 `@redis`，`mongo` 只能声明
 `@mongodb`，只有 `fusion` 可以同时声明两者。字段上的 `json`、`bson`、`msgpack` tag 是序列化名称，始终可以
 按业务协议填写，不代表启用了对应存储 backend。例如 `mode:"redis"` 的结构仍可声明 `bson:"roleId"`，但不能
@@ -1491,8 +1496,8 @@ Fusion 的 Redis 和 Mongo 共用一份 `RecordKey`，因此两边的 `idField` 
 | `mongodb` | `ignore` | flag 或布尔字符串 | Mongo 文档忽略该字段。 |
 | `mongodb` | `order` | `asc`、`desc` 或数字字符串 | 索引方向。 |
 | `mongodb` | `indexType` | 字符串 | 索引类型，例如文本索引等。 |
-| `mongodb` | `weight` | 数字字符串 | 文本索引权重。 |
-| `mongodb` | `expireAfter` | 秒数字符串 | Mongo TTL 索引过期时间；命中后删除整条文档，不是删除单个字段。别名：`expire`。 |
+| `mongodb` | `weight` | 整数字符串 | 文本索引权重；非法整数会在生成前报错。 |
+| `mongodb` | `expireAfter` | 非负秒数字符串 | Mongo TTL 索引过期时间；命中后删除整条文档，不是删除单个字段。别名：`expire`。 |
 
 常见 field tag 组合：
 

@@ -78,11 +78,23 @@ func normalizeStorage(d anno.Directive) (StorageSpec, error) {
 		case "mode":
 			out.Mode = StorageMode(value)
 		case "delaySaveTime", "saveTime", "delaySave":
-			out.DelaySave = Duration{Duration: parseDuration(value)}
+			duration, err := parseDurationParam("storage."+key, value)
+			if err != nil {
+				return StorageSpec{}, err
+			}
+			out.DelaySave = Duration{Duration: duration}
 		case "delayDelTime", "delTime", "delayDelete":
-			out.DelayDelete = Duration{Duration: parseDuration(value)}
+			duration, err := parseDurationParam("storage."+key, value)
+			if err != nil {
+				return StorageSpec{}, err
+			}
+			out.DelayDelete = Duration{Duration: duration}
 		case "memoryCache":
-			out.MemoryCache = Duration{Duration: parseDuration(value)}
+			duration, err := parseDurationParam("storage."+key, value)
+			if err != nil {
+				return StorageSpec{}, err
+			}
+			out.MemoryCache = Duration{Duration: duration}
 		default:
 			return StorageSpec{}, fmt.Errorf("%w: storage.%s", ErrUnknownParam, key)
 		}
@@ -108,7 +120,11 @@ func normalizeRedis(d anno.Directive) (RedisSpec, error) {
 		case "storeType":
 			out.StoreType = value
 		case "omitempty":
-			out.OmitEmpty = parseBool(value)
+			parsed, err := parseBoolParam("redis."+key, value)
+			if err != nil {
+				return RedisSpec{}, err
+			}
+			out.OmitEmpty = parsed
 		default:
 			return RedisSpec{}, fmt.Errorf("%w: redis.%s", ErrUnknownParam, key)
 		}
@@ -137,7 +153,11 @@ func normalizeMongo(d anno.Directive) (MongoSpec, error) {
 		case "collection", "c", "col":
 			out.Collection = value
 		case "enableSharding":
-			out.Sharding.Enabled = parseBool(value)
+			parsed, err := parseBoolParam("mongodb."+key, value)
+			if err != nil {
+				return MongoSpec{}, err
+			}
+			out.Sharding.Enabled = parsed
 		default:
 			return MongoSpec{}, fmt.Errorf("%w: mongodb.%s", ErrUnknownParam, key)
 		}
@@ -163,9 +183,17 @@ func normalizeFieldDirective(d anno.Directive) (FieldSpec, error) {
 			case "subKey":
 				field.SubKey = value
 			case "ignore":
-				field.Ignore = parseBool(value)
+				parsed, err := parseBoolParam("redis."+key, value)
+				if err != nil {
+					return FieldSpec{}, err
+				}
+				field.Ignore = parsed
 			case "fullUpdate":
-				field.FullUpdate = parseBool(value)
+				parsed, err := parseBoolParam("redis."+key, value)
+				if err != nil {
+					return FieldSpec{}, err
+				}
+				field.FullUpdate = parsed
 			default:
 				return FieldSpec{}, fmt.Errorf("%w: redis.%s", ErrUnknownParam, key)
 			}
@@ -191,17 +219,32 @@ func normalizeFieldDirective(d anno.Directive) (FieldSpec, error) {
 				index.Order = value
 				hasIndex = true
 			case "weight":
-				index.Weight, _ = strconv.Atoi(value)
+				weight, err := parseIntParam("mongodb."+key, value)
+				if err != nil {
+					return FieldSpec{}, err
+				}
+				index.Weight = weight
 				hasIndex = true
 			case "expire", "expireAfter":
+				if err := validateNonNegativeInt64Param("mongodb."+key, value); err != nil {
+					return FieldSpec{}, err
+				}
 				index.ExpireAfter = value
 				hasIndex = true
 			case "ignore":
-				field.Ignore = parseBool(value)
+				parsed, err := parseBoolParam("mongodb."+key, value)
+				if err != nil {
+					return FieldSpec{}, err
+				}
+				field.Ignore = parsed
 			case "index":
-				hasIndex = hasIndex || parseBool(value)
+				hasIndex = hasIndex || parseIndexMarker(value)
 			case "unique":
-				index.Unique = parseBool(value)
+				parsed, err := parseBoolParam("mongodb."+key, value)
+				if err != nil {
+					return FieldSpec{}, err
+				}
+				index.Unique = parsed
 				hasIndex = hasIndex || index.Unique
 			default:
 				return FieldSpec{}, fmt.Errorf("%w: mongodb.%s", ErrUnknownParam, key)
@@ -230,18 +273,52 @@ func normalizeFieldDirective(d anno.Directive) (FieldSpec, error) {
 	return out, nil
 }
 
-func parseDuration(value string) time.Duration {
-	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
-		return time.Duration(seconds) * time.Second
+func parseDurationParam(property, value string) (time.Duration, error) {
+	if _, err := strconv.ParseInt(value, 10, 64); err == nil {
+		duration, err := time.ParseDuration(value + "s")
+		if err != nil {
+			return 0, fmt.Errorf("meta: parse %s %q: %w", property, value, err)
+		}
+		return duration, nil
 	}
-	dur, err := time.ParseDuration(value)
+	duration, err := time.ParseDuration(value)
 	if err != nil {
-		return 0
+		return 0, fmt.Errorf("meta: parse %s %q: %w", property, value, err)
 	}
-	return dur
+	return duration, nil
 }
 
-func parseBool(value string) bool {
+func parseBoolParam(property, value string) (bool, error) {
+	if value == "" {
+		return true, nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("meta: parse %s %q: %w", property, value, err)
+	}
+	return parsed, nil
+}
+
+func parseIntParam(property, value string) (int, error) {
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("meta: parse %s %q: %w", property, value, err)
+	}
+	return parsed, nil
+}
+
+func validateNonNegativeInt64Param(property, value string) error {
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return fmt.Errorf("meta: parse %s %q: %w", property, value, err)
+	}
+	if parsed < 0 {
+		return fmt.Errorf("meta: parse %s %q: value must be non-negative", property, value)
+	}
+	return nil
+}
+
+func parseIndexMarker(value string) bool {
 	if value == "" {
 		return true
 	}
