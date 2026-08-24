@@ -10,7 +10,7 @@ import (
 	storageconfig "github.com/ngnl47/tx/storage/config"
 )
 
-func TestConfigValidatesEnabledWAL(t *testing.T) {
+func TestWALCModValidatesSelectedConfiguration(t *testing.T) {
 	routes := storageconfig.NewRouteTableConfig(map[string]storageconfig.RouteTarget{
 		"main": {Rules: []storageconfig.RouteRule{{Shards: []string{"mongodb://localhost:27017/tx"}}}},
 		"wal":  {Rules: []storageconfig.RouteRule{{Shards: []string{"mongodb://localhost:27017/tx"}}}},
@@ -21,14 +21,13 @@ func TestConfigValidatesEnabledWAL(t *testing.T) {
 			Redis:   routes,
 			MongoDB: routes,
 			WAL: WALConfig{
-				Enabled: true,
 				Backend: WALBackendMongo,
 				Mongo:   WALMongoConfig{RouteType: "wal", Collection: "tx_wal"},
 			},
 		},
 		Runtime: RuntimeConfig{Health: HealthConfig{Interval: time.Second, Timeout: time.Second}},
 	}
-	if err := base.Validate(); err != nil {
+	if err := base.Storage.WAL.validate(base.Storage.MongoDB); err != nil {
 		t.Fatalf("valid WAL config returned error: %v", err)
 	}
 
@@ -45,7 +44,7 @@ func TestConfigValidatesEnabledWAL(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			config := base.clone()
 			tt.mutate(&config)
-			if err := config.Validate(); err == nil || !strings.Contains(err.Error(), tt.want) {
+			if err := config.Storage.WAL.validate(config.Storage.MongoDB); err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("Validate error = %v, want substring %q", err, tt.want)
 			}
 		})
@@ -55,31 +54,25 @@ func TestConfigValidatesEnabledWAL(t *testing.T) {
 func TestRuntimeConfigRejectsInvalidDelayTaskLeasePrecision(t *testing.T) {
 	for _, lease := range []time.Duration{-time.Second, time.Nanosecond} {
 		t.Run(lease.String(), func(t *testing.T) {
-			config := RuntimeConfig{
-				DelayTask: DelayTaskConfig{Lease: lease},
-				Health:    HealthConfig{Interval: time.Second, Timeout: time.Second},
-			}
+			config := DelayTaskConfig{Lease: lease}
 			if err := config.validate(); err == nil {
-				t.Fatal("RuntimeConfig.validate error = nil, want invalid delay task lease")
+				t.Fatal("DelayTaskConfig.validate error = nil, want invalid delay task lease")
 			}
 		})
 	}
 }
 
 func TestRuntimeConfigRejectsNegativeHandoffCapacity(t *testing.T) {
-	config := RuntimeConfig{
-		DelayTask: DelayTaskConfig{HandoffMaxPendingPerSlot: -1},
-		Health:    HealthConfig{Interval: time.Second, Timeout: time.Second},
-	}
+	config := HandoffRecoveryConfig{StartupLeaseTTL: time.Second, StartupWaitTimeout: time.Second, MaxPendingPerSlot: -1}
 	if err := config.validate(); err == nil || !strings.Contains(err.Error(), "handoff") {
-		t.Fatalf("RuntimeConfig.validate error = %v, want invalid handoff capacity", err)
+		t.Fatalf("HandoffRecoveryConfig.validate error = %v, want invalid handoff capacity", err)
 	}
 }
 
 func TestRuntimeConfigPassesHandoffCapacityToStorage(t *testing.T) {
 	config := RuntimeConfig{
-		DelayTask: DelayTaskConfig{HandoffMaxPendingPerSlot: 2048},
-		Health:    HealthConfig{Interval: time.Second, Timeout: time.Second},
+		HandoffRecovery: HandoffRecoveryConfig{MaxPendingPerSlot: 2048},
+		Health:          HealthConfig{Interval: time.Second, Timeout: time.Second},
 	}
 	if got := config.storageOptions().HandoffMaxPendingPerSlot; got != 2048 {
 		t.Fatalf("HandoffMaxPendingPerSlot = %d, want 2048", got)
@@ -94,7 +87,7 @@ func TestConfigCloneOwnsMutableRoutesAndEndpoints(t *testing.T) {
 		Storage: StorageConfig{
 			Redis:   routes,
 			MongoDB: routes,
-			WAL:     WALConfig{Enabled: true, Backend: WALBackendMongo, Mongo: WALMongoConfig{RouteType: "main", Collection: "tx_wal"}},
+			WAL:     WALConfig{Backend: WALBackendMongo, Mongo: WALMongoConfig{RouteType: "main", Collection: "tx_wal"}},
 		},
 		Actor:     ActorConfig{Runtime: txactor.Config{Etcd: txactor.EtcdConfig{Endpoints: []string{"actor-1"}}}},
 		Discovery: DiscoveryConfig{Etcd: discovery.EtcdConfig{Endpoints: []string{"discovery-1"}}},

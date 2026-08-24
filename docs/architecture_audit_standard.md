@@ -16,14 +16,14 @@
 
 ## 依赖层级基线
 
-依赖层级与后文性能路径的 L0/L1/L2 无关。架构审计按以下方向判断职责是否倒置：
+依赖层级使用设计文档的 L0-L4；它与后文性能路径 H0/H1/H2 无关。架构审计按以下方向判断职责是否倒置：
 
 ```text
-纯算法与通用契约
-  -> backend / 基础运行时模块
-  -> 跨能力中立 adapter
-  -> 可选标准服务
-  -> 进程级 server 装配
+L0 纯算法与通用契约
+  -> L1 backend / transport adapter
+  -> L2 可复用运行时组件
+  -> L3 CMod 与进程级 server 装配
+  -> L4 可选服务
   -> txgame 项目组合根与业务 facade
 ```
 
@@ -36,6 +36,8 @@
   discovery 快照和根 `WaitGroupContext` 的 Start/Stop/Shutdown/Replace/Flush 权限不能透传给服务。
 - `txgame` 只负责配置转换、业务回调、业务 facade 和服务选择，不复制 tx 的 runtime/host/service
   生命周期实现。
+- L4 服务只能声明直接 CMod 依赖；Redis/Mongo、RPC Host、Scheduler、Transaction Runtime 等资源由 L3
+  依赖图按闭包唯一装配。未进入闭包的配置不得被语义校验，也不得创建外部资源。
 - 包名或目录深度不是层级证据；实际判断依据是依赖方向、接口所有权和资源生命周期。
 
 ## 审计严重级别

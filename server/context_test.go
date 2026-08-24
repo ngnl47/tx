@@ -24,18 +24,24 @@ func (contextWAL) Checkpoint(context.Context, wal.Stream, uint64, func(context.C
 	return nil
 }
 
-func TestServiceContextExposesCapabilitiesWithoutLifecycleOwnership(t *testing.T) {
+func TestServiceContextExposesCModsWithoutLifecycleOwnership(t *testing.T) {
 	root := lifecycle.NewWaitGroupContext(context.Background())
 	ingress := lifecycle.NewIngress(root)
 	runtime := &runtime{
-		config:       Config{AppID: "context-test"},
-		lifecycle:    root,
-		storage:      &storageRuntime{},
-		rpc:          &txrpc.Host{},
-		transaction:  &txn.Runtime{},
-		directory:    discovery.NewServiceDirectory(),
-		instance:     discovery.Instance{ID: "game-1", Services: []string{"game"}, Endpoint: "127.0.0.1:9000", Status: discovery.StatusRunning},
-		capabilities: CapabilityStorage | CapabilityRPC | CapabilityDiscovery | CapabilityTransaction | CapabilityWAL,
+		config:      Config{AppID: "context-test"},
+		lifecycle:   root,
+		storage:     &storageRuntime{},
+		rpc:         &txrpc.Host{},
+		transaction: &txn.Runtime{},
+		directory:   discovery.NewServiceDirectory(),
+		instance:    discovery.Instance{ID: "game-1", Services: []string{"game"}, Endpoint: "127.0.0.1:9000", Status: discovery.StatusRunning},
+		cmods: map[CModID]struct{}{
+			CModRedisStorage: {},
+			CModRPC:          {},
+			CModDiscovery:    {},
+			CModTransaction:  {},
+			CModWAL:          {},
+		},
 	}
 	runtime.storage.wal = contextWAL{}
 	serviceContext := newServiceContext(runtime, ingress)
@@ -48,8 +54,8 @@ func TestServiceContextExposesCapabilitiesWithoutLifecycleOwnership(t *testing.T
 	if got := serviceContext.Instance().Services[0]; got != "game" {
 		t.Fatalf("Instance() leaked mutable services: %q", got)
 	}
-	if !serviceContext.Has(CapabilityTransaction) {
-		t.Fatal("Has(transaction) = false")
+	if !serviceContext.HasCMod(CModTransaction) {
+		t.Fatal("HasCMod(transaction) = false")
 	}
 	if serviceContext.Admission() == nil || serviceContext.Tasks() == nil || serviceContext.Storage() == nil || serviceContext.WAL() == nil || serviceContext.RPC() == nil || serviceContext.Transaction() == nil || serviceContext.Directory() == nil {
 		t.Fatal("service context omitted an assembled capability")

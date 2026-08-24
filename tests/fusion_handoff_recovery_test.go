@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/ngnl47/tx/storage/fusion"
 	txredis "github.com/ngnl47/tx/storage/redis"
 	txgoredis "github.com/ngnl47/tx/storage/redis/goredis"
+	"github.com/ngnl47/tx/storage/task"
 	redisclient "github.com/redis/go-redis/v9"
 )
 
@@ -64,6 +66,239 @@ func (s *notifyingHandoffStore) ConfirmHandoff(_ context.Context, _ meta.TypeSpe
 
 type notifyingDelayQueue struct {
 	operations chan fusion.DelayedOperation
+}
+
+type memoryStartupLease struct {
+	mu      sync.Mutex
+	state   task.StartupLeaseStatus
+	token   string
+	expires time.Time
+}
+
+func (lease *memoryStartupLease) Acquire(_ context.Context, token string, ttl time.Duration) (task.StartupLeaseStatus, error) {
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	if lease.state != task.StartupLeaseStatusMissing && time.Now().After(lease.expires) {
+		lease.state = task.StartupLeaseStatusMissing
+		lease.token = ""
+	}
+	if lease.state == task.StartupLeaseStatusMissing {
+		lease.state = task.StartupLeaseStatusRunning
+		lease.token = token
+		lease.expires = time.Now().Add(ttl)
+		return task.StartupLeaseStatusAcquired, nil
+	}
+	return lease.state, nil
+}
+
+func (lease *memoryStartupLease) Renew(_ context.Context, token string, ttl time.Duration) (bool, error) {
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	if lease.state != task.StartupLeaseStatusRunning || lease.token != token || time.Now().After(lease.expires) {
+		return false, nil
+	}
+	lease.expires = time.Now().Add(ttl)
+	return true, nil
+}
+
+func (lease *memoryStartupLease) Complete(_ context.Context, token string, ttl time.Duration) (bool, error) {
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	if lease.state != task.StartupLeaseStatusRunning || lease.token != token || time.Now().After(lease.expires) {
+		return false, nil
+	}
+	lease.state = task.StartupLeaseStatusComplete
+	lease.expires = time.Now().Add(ttl)
+	return true, nil
+}
+
+func (lease *memoryStartupLease) Release(_ context.Context, token string) (bool, error) {
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	if lease.state != task.StartupLeaseStatusRunning || lease.token != token {
+		return false, nil
+	}
+	lease.state = task.StartupLeaseStatusMissing
+	lease.token = ""
+	return true, nil
+}
+
+type countingHandoffStore struct {
+	reads atomic.Int32
+}
+
+func (store *countingHandoffStore) ReadHandoffs(context.Context, uint64, int, int) ([]txredis.HandoffEntry, uint64, error) {
+	store.reads.Add(1)
+	return nil, 0, nil
+}
+
+func (*countingHandoffStore) ReadRecordRevision(context.Context, meta.TypeSpec, storage.RecordKey) (string, error) {
+	return "1", nil
+}
+
+func (*countingHandoffStore) ConfirmHandoff(context.Context, meta.TypeSpec, storage.RecordKey, string, txredis.HandoffReceipt) (bool, error) {
+	return true, nil
+}
+
+type concurrentWorkerContext struct {
+	context.Context
+	goCalls atomic.Int32
+}
+
+func (context *concurrentWorkerContext) Go(func(context.Context)) error {
+	context.goCalls.Add(1)
+	return nil
+}
+
+func TestHandoffRecovererStartupLeaseAllowsOneFullTraversal(t *testing.T) {
+	lease := &memoryStartupLease{}
+	store := &countingHandoffStore{}
+	registry := meta.NewRegistry()
+	var group sync.WaitGroup
+	errs := make(chan error, 10)
+	for range 10 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			recoverer := fusion.NewHandoffRecovererWithOptions(registry, store, &recordingQueue{}, fusion.HandoffRecovererOptions{
+				StartupLease:    lease,
+				StartupLeaseTTL: 100 * time.Millisecond,
+				StartupWait:     time.Second,
+			})
+			errs <- recoverer.Start(&concurrentWorkerContext{Context: context.Background()})
+		}()
+	}
+	group.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("Start returned error: %v", err)
+		}
+	}
+	if got := store.reads.Load(); got != 1 {
+		t.Fatalf("full startup traversals = %d, want 1", got)
+	}
+}
+
+type runningStartupLease struct{}
+
+func (runningStartupLease) Acquire(context.Context, string, time.Duration) (task.StartupLeaseStatus, error) {
+	return task.StartupLeaseStatusRunning, nil
+}
+func (runningStartupLease) Renew(context.Context, string, time.Duration) (bool, error) {
+	return false, nil
+}
+func (runningStartupLease) Complete(context.Context, string, time.Duration) (bool, error) {
+	return false, nil
+}
+func (runningStartupLease) Release(context.Context, string) (bool, error) { return false, nil }
+
+func TestHandoffRecovererStartupLeaseWaitTimeoutFailsStart(t *testing.T) {
+	recoverer := fusion.NewHandoffRecovererWithOptions(meta.NewRegistry(), &countingHandoffStore{}, &recordingQueue{}, fusion.HandoffRecovererOptions{
+		StartupLease:    runningStartupLease{},
+		StartupLeaseTTL: 3 * time.Millisecond,
+		StartupWait:     5 * time.Millisecond,
+	})
+	err := recoverer.Start(&concurrentWorkerContext{Context: context.Background()})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Start error = %v, want deadline exceeded", err)
+	}
+}
+
+type recordingStartupLease struct {
+	mu            sync.Mutex
+	renew         bool
+	completeCalls int
+	releaseCalls  int
+}
+
+func (*recordingStartupLease) Acquire(context.Context, string, time.Duration) (task.StartupLeaseStatus, error) {
+	return task.StartupLeaseStatusAcquired, nil
+}
+
+func (lease *recordingStartupLease) Renew(context.Context, string, time.Duration) (bool, error) {
+	return lease.renew, nil
+}
+
+func (lease *recordingStartupLease) Complete(context.Context, string, time.Duration) (bool, error) {
+	lease.mu.Lock()
+	lease.completeCalls++
+	lease.mu.Unlock()
+	return true, nil
+}
+
+func (lease *recordingStartupLease) Release(context.Context, string) (bool, error) {
+	lease.mu.Lock()
+	lease.releaseCalls++
+	lease.mu.Unlock()
+	return true, nil
+}
+
+func (lease *recordingStartupLease) calls() (complete int, release int) {
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	return lease.completeCalls, lease.releaseCalls
+}
+
+func TestHandoffRecovererStartupFailureReleasesLeaseWithoutCompleting(t *testing.T) {
+	lease := &recordingStartupLease{renew: true}
+	wantErr := errors.New("handoff scan failed")
+	recoverer := fusion.NewHandoffRecovererWithOptions(meta.NewRegistry(), &recordingHandoffStore{readErr: wantErr}, &recordingQueue{}, fusion.HandoffRecovererOptions{
+		StartupLease:    lease,
+		StartupLeaseTTL: time.Second,
+		StartupWait:     time.Second,
+	})
+
+	err := recoverer.Start(&concurrentWorkerContext{Context: context.Background()})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Start error = %v, want scan failure", err)
+	}
+	complete, release := lease.calls()
+	if complete != 0 || release != 1 {
+		t.Fatalf("lease calls complete=%d release=%d, want 0/1", complete, release)
+	}
+}
+
+type cancellationHandoffStore struct {
+	started chan struct{}
+}
+
+func (store *cancellationHandoffStore) ReadHandoffs(ctx context.Context, _ uint64, _ int, _ int) ([]txredis.HandoffEntry, uint64, error) {
+	close(store.started)
+	<-ctx.Done()
+	return nil, 0, ctx.Err()
+}
+
+func (*cancellationHandoffStore) ReadRecordRevision(context.Context, meta.TypeSpec, storage.RecordKey) (string, error) {
+	return "1", nil
+}
+
+func (*cancellationHandoffStore) ConfirmHandoff(context.Context, meta.TypeSpec, storage.RecordKey, string, txredis.HandoffReceipt) (bool, error) {
+	return true, nil
+}
+
+func TestHandoffRecovererLostLeaseCancelsStartupTraversal(t *testing.T) {
+	lease := &recordingStartupLease{}
+	store := &cancellationHandoffStore{started: make(chan struct{})}
+	recoverer := fusion.NewHandoffRecovererWithOptions(meta.NewRegistry(), store, &recordingQueue{}, fusion.HandoffRecovererOptions{
+		StartupLease:    lease,
+		StartupLeaseTTL: 3 * time.Millisecond,
+		StartupWait:     time.Second,
+	})
+
+	err := recoverer.Start(&concurrentWorkerContext{Context: context.Background()})
+	if !errors.Is(err, fusion.ErrStartupLeaseLost) {
+		t.Fatalf("Start error = %v, want ErrStartupLeaseLost", err)
+	}
+	select {
+	case <-store.started:
+	default:
+		t.Fatal("startup traversal did not begin")
+	}
+	complete, release := lease.calls()
+	if complete != 0 || release != 1 {
+		t.Fatalf("lease calls complete=%d release=%d, want 0/1", complete, release)
+	}
 }
 
 func (q notifyingDelayQueue) Enqueue(_ context.Context, operation fusion.DelayedOperation) error {

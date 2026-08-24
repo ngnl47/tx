@@ -35,7 +35,6 @@ func TestBuildWALOnlyIndexesEndpointsUsedByWALRoute(t *testing.T) {
 	mainClient := &indexingWALClient{}
 	walClient := &indexingWALClient{}
 	store, err := buildWAL(context.Background(), WALConfig{
-		Enabled: true,
 		Backend: WALBackendMongo,
 		Mongo:   WALMongoConfig{RouteType: "wal", Collection: "tx_wal"},
 	}, routes, map[string]walmongo.Client{

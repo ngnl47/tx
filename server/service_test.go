@@ -27,10 +27,13 @@ func TestRegistrySelectsServicesInRegistrationOrder(t *testing.T) {
 	}
 }
 
-func TestCapabilitiesStringNamesFrameworkResources(t *testing.T) {
-	capabilities := CapabilityStorage | CapabilityDiscovery | CapabilityTransaction | CapabilityWAL
-	if got := capabilities.String(); got != "storage,wal,discovery,transaction" {
-		t.Fatalf("capabilities.String() = %q", got)
+func TestServiceSelectionReturnsStableNames(t *testing.T) {
+	selection := newServiceSelection([]Service{
+		testService{spec: Spec{Name: "msgq"}},
+		testService{spec: Spec{Name: "agent"}},
+	})
+	if got, want := selection.Names(), []string{"agent", "msgq"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("selection names = %v, want %v", got, want)
 	}
 }
 

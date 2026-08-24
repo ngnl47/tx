@@ -57,7 +57,7 @@ func NewConfigured(provider OptionsProvider) (*Service, error) {
 func (service *Service) Spec() txserver.Spec {
 	return txserver.Spec{
 		Name:     ServiceName,
-		Requires: txserver.CapabilityStorage | txserver.CapabilityRPC,
+		Requires: []txserver.CModID{txserver.CModRPC, txserver.CModRedisStorage},
 	}
 }
 

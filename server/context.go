@@ -48,7 +48,7 @@ type Context interface {
 	Actor() txactor.Messenger
 	Transaction() txn.Executor
 	LogicalSlot() (LogicalSlot, bool)
-	Has(Capabilities) bool
+	HasCMod(CModID) bool
 	Advanced() Advanced
 }
 
@@ -138,8 +138,8 @@ func (service *serviceContext) LogicalSlot() (LogicalSlot, bool) {
 	return *service.runtime.logicalSlot, true
 }
 
-func (service *serviceContext) Has(capabilities Capabilities) bool {
-	return service != nil && service.runtime != nil && service.runtime.capabilities&capabilities == capabilities
+func (service *serviceContext) HasCMod(id CModID) bool {
+	return service != nil && service.runtime != nil && service.runtime.hasCMod(id)
 }
 
 func (service *serviceContext) Advanced() Advanced {

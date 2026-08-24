@@ -17,9 +17,20 @@ type workerContext interface {
 	Go(func(context.Context)) error
 }
 
-// startBackgroundWorkers 启动存储后台任务。启动配置缺失必须返回错误，服务入口
-// 据此停止启动，避免延迟回写没有运行却继续接收业务请求。
-func (s *storageRuntime) startBackgroundWorkers(ctx workerContext) error {
+func (s *storageRuntime) startHandoffWorker(ctx workerContext) error {
+	if s == nil {
+		return errStorageNotConfigured
+	}
+	if ctx == nil {
+		return errWorkerContextMissing
+	}
+	if s.handoffWorker == nil {
+		return errHandoffWorkerMissing
+	}
+	return s.handoffWorker.Start(ctx)
+}
+
+func (s *storageRuntime) startDelayScheduler(ctx workerContext) error {
 	if s == nil {
 		return errStorageNotConfigured
 	}
@@ -29,15 +40,5 @@ func (s *storageRuntime) startBackgroundWorkers(ctx workerContext) error {
 	if s.delayWorker == nil {
 		return errWorkerNotConfigured
 	}
-	if s.handoffWorker == nil {
-		return errHandoffWorkerMissing
-	}
-	s.workerOnce.Do(func() {
-		if err := s.handoffWorker.Start(ctx); err != nil {
-			s.workerStartErr = err
-			return
-		}
-		s.workerStartErr = s.delayWorker.Start(ctx)
-	})
-	return s.workerStartErr
+	return s.delayWorker.Start(ctx)
 }

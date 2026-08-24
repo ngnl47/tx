@@ -43,7 +43,6 @@ const WALBackendMongo WALBackend = "mongo"
 
 // WALConfig 配置可选的预写日志。当前仅实现 Mongo backend。
 type WALConfig struct {
-	Enabled bool
 	Backend WALBackend
 	Mongo   WALMongoConfig
 }
@@ -55,19 +54,28 @@ type WALMongoConfig struct {
 }
 
 type RuntimeConfig struct {
-	BackgroundWorkers bool
-	DelayTask         DelayTaskConfig
-	Scheduler         SchedulerConfig
-	Health            HealthConfig
-	Transaction       TransactionConfig
+	DelayTask       DelayTaskConfig
+	HandoffRecovery HandoffRecoveryConfig
+	Scheduler       SchedulerConfig
+	Health          HealthConfig
+	Transaction     TransactionConfig
 }
 
 type DelayTaskConfig struct {
-	RouteType                string
-	Prefix                   string
-	Buckets                  int
-	Lease                    time.Duration
-	HandoffMaxPendingPerSlot int
+	RouteType string
+	Prefix    string
+	Buckets   int
+	Lease     time.Duration
+}
+
+type HandoffRecoveryConfig struct {
+	StartupLeaseTTL    time.Duration
+	StartupWaitTimeout time.Duration
+	MaxPendingPerSlot  int
+	RetryInitial       time.Duration
+	RetryMultiplier    float64
+	RetryMax           time.Duration
+	RetryJitter        float64
 }
 
 type SchedulerConfig struct {
@@ -90,13 +98,11 @@ type TransactionConfig struct {
 }
 
 type ActorConfig struct {
-	Enabled bool
 	Runtime txactor.Config
 }
 
 type DiscoveryConfig struct {
-	Enabled bool
-	Etcd    discovery.EtcdConfig
+	Etcd discovery.EtcdConfig
 }
 
 // RunOptions 保存部署身份和进程服务选择。这些值通常来自命令行参数或编排系统，而不是应用 YAML。
@@ -114,27 +120,15 @@ func (config Config) Validate() error {
 	if strings.TrimSpace(config.AppID) == "" {
 		return fmt.Errorf("server: app ID is required")
 	}
-	if err := config.Storage.Redis.Validate(); err != nil {
-		return fmt.Errorf("server: redis routes: %w", err)
+	return nil
+}
+
+func validateStorageRoutes(name string, routes storageconfig.RouteTableConfig) error {
+	if len(routes.Routes) == 0 {
+		return fmt.Errorf("server: %s routes are required", name)
 	}
-	if err := config.Storage.MongoDB.Validate(); err != nil {
-		return fmt.Errorf("server: mongo routes: %w", err)
-	}
-	if err := config.Storage.WAL.validate(config.Storage.MongoDB); err != nil {
-		return err
-	}
-	if err := config.Runtime.validate(); err != nil {
-		return err
-	}
-	if config.Actor.Enabled {
-		if _, err := config.Actor.Runtime.Normalize(); err != nil {
-			return fmt.Errorf("server: actor config: %w", err)
-		}
-	}
-	if config.Discovery.Enabled {
-		if _, err := config.Discovery.Etcd.Normalize(); err != nil {
-			return fmt.Errorf("server: discovery config: %w", err)
-		}
+	if err := routes.Validate(); err != nil {
+		return fmt.Errorf("server: %s routes: %w", name, err)
 	}
 	return nil
 }
@@ -156,9 +150,6 @@ func (config WALConfig) validate(routes storageconfig.RouteTableConfig) error {
 	if backend != "" && backend != WALBackendMongo {
 		return fmt.Errorf("server: unsupported WAL backend %q", config.Backend)
 	}
-	if !config.Enabled {
-		return nil
-	}
 	if backend == "" {
 		return fmt.Errorf("server: WAL backend is required")
 	}
@@ -176,32 +167,59 @@ func (config WALConfig) validate(routes storageconfig.RouteTableConfig) error {
 	return nil
 }
 
-func (config RuntimeConfig) validate() error {
-	if config.DelayTask.Buckets < 0 {
+func (config DelayTaskConfig) validate() error {
+	if config.Buckets < 0 {
 		return fmt.Errorf("server: delay task buckets must be greater than or equal to 0")
 	}
-	if config.DelayTask.Lease < 0 || config.DelayTask.Lease > 0 && config.DelayTask.Lease < time.Millisecond {
+	if config.Lease < 0 || config.Lease > 0 && config.Lease < time.Millisecond {
 		return fmt.Errorf("server: delay task lease must be zero or at least 1ms")
 	}
-	if config.DelayTask.HandoffMaxPendingPerSlot < 0 {
+	return nil
+}
+
+func (config HandoffRecoveryConfig) validate() error {
+	if config.StartupLeaseTTL < time.Millisecond {
+		return fmt.Errorf("server: handoff startup lease TTL must be at least 1ms")
+	}
+	if config.StartupWaitTimeout <= 0 {
+		return fmt.Errorf("server: handoff startup wait timeout must be greater than 0")
+	}
+	if config.MaxPendingPerSlot < 0 {
 		return fmt.Errorf("server: fusion handoff max pending per slot must be greater than or equal to 0")
 	}
-	if config.Scheduler.BatchSize < 0 {
+	if config.RetryMultiplier != 0 && config.RetryMultiplier <= 1 {
+		return fmt.Errorf("server: handoff retry multiplier must be greater than 1")
+	}
+	if config.RetryJitter < 0 || config.RetryJitter > 1 {
+		return fmt.Errorf("server: handoff retry jitter must be between 0 and 1")
+	}
+	if config.RetryInitial > 0 && config.RetryMax > 0 && config.RetryMax < config.RetryInitial {
+		return fmt.Errorf("server: handoff retry max must not be less than retry initial")
+	}
+	return nil
+}
+
+func (config SchedulerConfig) validate() error {
+	if config.BatchSize < 0 {
 		return fmt.Errorf("server: scheduler batch size must be greater than or equal to 0")
 	}
-	if config.Scheduler.RetryMultiplier != 0 && config.Scheduler.RetryMultiplier <= 1 {
+	if config.RetryMultiplier != 0 && config.RetryMultiplier <= 1 {
 		return fmt.Errorf("server: scheduler retry multiplier must be greater than 1")
 	}
-	if config.Scheduler.RetryJitter < 0 || config.Scheduler.RetryJitter > 1 {
+	if config.RetryJitter < 0 || config.RetryJitter > 1 {
 		return fmt.Errorf("server: scheduler retry jitter must be between 0 and 1")
 	}
-	if config.Scheduler.RetryInitial > 0 && config.Scheduler.RetryMax > 0 && config.Scheduler.RetryMax < config.Scheduler.RetryInitial {
+	if config.RetryInitial > 0 && config.RetryMax > 0 && config.RetryMax < config.RetryInitial {
 		return fmt.Errorf("server: scheduler retry max must not be less than retry initial")
 	}
-	if config.Health.Interval <= 0 || config.Health.Timeout <= 0 {
+	return nil
+}
+
+func (config HealthConfig) validate() error {
+	if config.Interval <= 0 || config.Timeout <= 0 {
 		return fmt.Errorf("server: health interval and timeout must be greater than 0")
 	}
-	if config.Health.Timeout > config.Health.Interval {
+	if config.Timeout > config.Interval {
 		return fmt.Errorf("server: health timeout must not be greater than interval")
 	}
 	return nil
@@ -213,14 +231,18 @@ func (config RuntimeConfig) storageOptions() storageOptions {
 		DelayTaskPrefix:          config.DelayTask.Prefix,
 		DelayTaskBuckets:         config.DelayTask.Buckets,
 		DelayTaskLease:           config.DelayTask.Lease,
-		HandoffMaxPendingPerSlot: config.DelayTask.HandoffMaxPendingPerSlot,
+		HandoffMaxPendingPerSlot: config.HandoffRecovery.MaxPendingPerSlot,
 		SchedulerBatchSize:       config.Scheduler.BatchSize,
 		SchedulerPoll:            config.Scheduler.PollInterval,
+		HandoffStartupLeaseTTL:   config.HandoffRecovery.StartupLeaseTTL,
+		HandoffStartupWait:       config.HandoffRecovery.StartupWaitTimeout,
+		HandoffRetryInitial:      config.HandoffRecovery.RetryInitial,
+		HandoffRetryMultiplier:   config.HandoffRecovery.RetryMultiplier,
+		HandoffRetryMax:          config.HandoffRecovery.RetryMax,
+		HandoffRetryJitter:       config.HandoffRecovery.RetryJitter,
 		SchedulerRetryInitial:    config.Scheduler.RetryInitial,
 		SchedulerRetryMultiplier: config.Scheduler.RetryMultiplier,
 		SchedulerRetryMax:        config.Scheduler.RetryMax,
 		SchedulerRetryJitter:     config.Scheduler.RetryJitter,
-		HealthProbeInterval:      config.Health.Interval,
-		HealthProbeTimeout:       config.Health.Timeout,
 	}
 }

@@ -26,7 +26,7 @@ type Context struct {
 	TransactionValue   txn.Executor
 	LogicalSlotValue   txserver.LogicalSlot
 	LogicalSlotPresent bool
-	Capabilities       txserver.Capabilities
+	CMods              map[txserver.CModID]struct{}
 	AdvancedValue      txserver.Advanced
 }
 
@@ -43,8 +43,9 @@ func (context Context) Transaction() txn.Executor      { return context.Transact
 func (context Context) LogicalSlot() (txserver.LogicalSlot, bool) {
 	return context.LogicalSlotValue, context.LogicalSlotPresent
 }
-func (context Context) Has(capabilities txserver.Capabilities) bool {
-	return context.Capabilities&capabilities == capabilities
+func (context Context) HasCMod(id txserver.CModID) bool {
+	_, ok := context.CMods[id]
+	return ok
 }
 func (context Context) Advanced() txserver.Advanced { return context.AdvancedValue }
 

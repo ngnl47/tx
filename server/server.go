@@ -9,7 +9,6 @@ import (
 
 	txlog "github.com/ngnl47/tx/log"
 	"github.com/ngnl47/tx/modules/discovery"
-	txrpc "github.com/ngnl47/tx/modules/rpc"
 	"github.com/ngnl47/tx/storage/fusion"
 )
 
@@ -19,6 +18,30 @@ type Option func(*Server) error
 func WithService(services ...Service) Option {
 	return func(server *Server) error {
 		server.services = append(server.services, services...)
+		return nil
+	}
+}
+
+// WithCMod 注册项目能力模组。项目服务应通过构造函数接收其强类型实例，
+// 不应在运行期通过 CModID 做动态类型断言。
+func WithCMod(mods ...CMod) Option {
+	return func(server *Server) error {
+		server.cmods = append(server.cmods, mods...)
+		return nil
+	}
+}
+
+// WithCModConfigProvider 注册惰性配置提供者。
+// 普通业务代码不需要使用它；项目组合根可借此只转换本次启动闭包需要的配置。
+func WithCModConfigProvider(provider CModConfigProvider) Option {
+	return func(server *Server) error {
+		if provider == nil {
+			return errors.New("server: CMod config provider is nil")
+		}
+		if server.configProvider != nil {
+			return errors.New("server: CMod config provider is already registered")
+		}
+		server.configProvider = provider
 		return nil
 	}
 }
@@ -55,16 +78,19 @@ func WithSetup(setup func(Context) (cleanup func(), err error)) Option {
 type Server struct {
 	config Config
 
-	services    []Service
-	types       fusion.TypeRegistry
-	bindStorage func(StorageReaders)
-	setups      []func(Context) (func(), error)
+	services       []Service
+	cmods          []CMod
+	configProvider CModConfigProvider
+	types          fusion.TypeRegistry
+	bindStorage    func(StorageReaders)
+	setups         []func(Context) (func(), error)
 
 	mu        sync.Mutex
 	started   bool
 	stopping  bool
 	runtime   *runtime
 	host      *serviceHost
+	cmodHost  *cmodHost
 	discovery *discoveryRuntime
 	control   *controlServer
 	cleanups  []func()
@@ -85,9 +111,6 @@ func New(config Config, options ...Option) (*Server, error) {
 		if err := option(server); err != nil {
 			return nil, err
 		}
-	}
-	if server.types == nil || server.bindStorage == nil {
-		return nil, errors.New("server: generated data binding is required")
 	}
 	if _, err := newRegistry(server.services...); err != nil {
 		return nil, err
@@ -128,10 +151,6 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 			err = errors.Join(err, server.stop(context.Background(), false))
 		}
 	}()
-	if err := configureLogger(server.config.Log); err != nil {
-		return fmt.Errorf("server: configure logger: %w", err)
-	}
-
 	registry, err := newRegistry(server.services...)
 	if err != nil {
 		return err
@@ -140,67 +159,55 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 	if err != nil {
 		return err
 	}
-	requires := requiredCapabilities(selected)
+	allCMods := append(server.builtInCMods(options), server.cmods...)
+	graph, err := resolveCModGraph(allCMods, selected)
+	if err != nil {
+		return err
+	}
+	if server.configProvider != nil {
+		resolved, resolveErr := server.configProvider(NewCModSelection(graph.IDs()...))
+		if resolveErr != nil {
+			return fmt.Errorf("server: resolve CMod config: %w", resolveErr)
+		}
+		resolved = resolved.clone()
+		if resolveErr := resolved.Validate(); resolveErr != nil {
+			return resolveErr
+		}
+		if resolved.AppID != server.config.AppID {
+			return fmt.Errorf("server: CMod config provider changed app ID from %q to %q", server.config.AppID, resolved.AppID)
+		}
+		server.config = resolved
+	}
+	if err := configureLogger(server.config.Log); err != nil {
+		return fmt.Errorf("server: configure logger: %w", err)
+	}
 
 	root := lifecycleRoot(ctx)
-	store, err := newStorage(root, server.config.Storage, server.config.Runtime.storageOptions(), server.types)
-	if err != nil {
-		return fmt.Errorf("server: initialize storage: %w", err)
-	}
-	rpcListen := strings.TrimSpace(options.RPCListen)
-	if rpcListen == "" {
-		rpcListen = strings.TrimSpace(options.InstanceEndpoint)
-	}
-	if rpcListen == "" {
-		rpcListen = "127.0.0.1:0"
-	}
-	rpcHost, err := txrpc.NewHost(rpcListen)
-	if err != nil {
-		_ = store.close(context.Background())
-		return fmt.Errorf("server: initialize RPC host: %w", err)
-	}
-
-	instanceEndpoint := strings.TrimSpace(options.InstanceEndpoint)
-	if instanceEndpoint == "" {
-		instanceEndpoint = rpcHost.Endpoint()
-	}
 	runtime := &runtime{
-		config:       server.config,
-		lifecycle:    root,
-		storage:      store,
-		rpc:          rpcHost,
-		capabilities: CapabilityStorage | CapabilityRPC,
+		config:    server.config,
+		lifecycle: root,
+		cmods:     make(map[CModID]struct{}),
 		instance: discovery.Instance{
 			ID:       strings.TrimSpace(options.InstanceID),
-			Endpoint: instanceEndpoint,
+			Endpoint: strings.TrimSpace(options.InstanceEndpoint),
 			Version:  strings.TrimSpace(options.InstanceVersion),
 			Services: selectedServiceNames(selected),
 			Status:   discovery.StatusStarting,
 		},
 	}
-	if store.WAL() != nil {
-		runtime.capabilities |= CapabilityWAL
-	}
 	server.mu.Lock()
 	server.runtime = runtime
 	server.mu.Unlock()
 
-	if err := server.startDiscovery(options); err != nil {
+	cmodHost := newCModHost(newServiceContext(runtime, nil), graph, runtime.markCMod)
+	server.cmodHost = cmodHost
+	if err := cmodHost.start(); err != nil {
 		return err
-	}
-	if err := server.startActor(); err != nil {
-		return err
-	}
-	if requires&CapabilityTransaction != 0 {
-		if err := server.startTransaction(); err != nil {
-			return err
-		}
-	}
-	if missing := requires &^ runtime.capabilities; missing != 0 {
-		return fmt.Errorf("server: selected services require unavailable capabilities %s", missing)
 	}
 
-	server.bindStorage(store)
+	if server.bindStorage != nil {
+		server.bindStorage(runtime.storage)
+	}
 	setupContext := newServiceContext(runtime, nil)
 	for _, setup := range server.setups {
 		cleanup, setupErr := setup(setupContext)
@@ -211,22 +218,15 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 			server.cleanups = append(server.cleanups, cleanup)
 		}
 	}
-	if server.config.Runtime.BackgroundWorkers {
-		if err := store.startBackgroundWorkers(root); err != nil {
-			return fmt.Errorf("server: start storage workers: %w", err)
-		}
-	}
-	if err := startStorageHealth(root, store, server.config.Runtime.Health); err != nil {
-		return err
-	}
-
 	host := newServiceHost(registry, runtime)
 	server.host = host
 	if err := host.startServices(selected); err != nil {
 		return err
 	}
-	if err := rpcHost.Start(root); err != nil {
-		return fmt.Errorf("server: start RPC host: %w", err)
+	if runtime.rpc != nil {
+		if err := runtime.rpc.Start(root); err != nil {
+			return fmt.Errorf("server: start RPC host: %w", err)
+		}
 	}
 	if err := server.startControl(options.ControlListen); err != nil {
 		return err
@@ -237,7 +237,13 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 		}
 	}
 	runtime.setInstanceStatus(discovery.StatusRunning)
-	txlog.Info("server initialized", "app", server.config.AppID, "services", options.Services, "endpoint", rpcHost.Endpoint())
+	txlog.Info(
+		"server initialized",
+		"app", server.config.AppID,
+		"services", strings.Join(selectedServiceNames(selected), ","),
+		"cmods", strings.Join(cmodIDStrings(graph.IDs()), ","),
+		"endpoint", runtime.instanceSnapshot().Endpoint,
+	)
 	return nil
 }
 

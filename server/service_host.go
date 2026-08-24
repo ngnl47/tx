@@ -47,8 +47,10 @@ func (host *serviceHost) startServices(services []Service) error {
 	}
 	for _, service := range services {
 		spec := service.Spec()
-		if missing := spec.Requires &^ host.runtime.capabilities; missing != 0 {
-			return host.rollbackStart(fmt.Errorf("server: service %q requires unavailable capabilities %s", spec.Name, missing))
+		for _, required := range spec.Requires {
+			if !host.runtime.hasCMod(required) {
+				return host.rollbackStart(fmt.Errorf("server: service %q requires unavailable CMod %q", spec.Name, required))
+			}
 		}
 		ingress := lifecycle.NewIngress(host.runtime.lifecycle)
 		if err := service.Start(newServiceContext(host.runtime, ingress)); err != nil {

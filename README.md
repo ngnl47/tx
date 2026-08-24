@@ -2,7 +2,7 @@
 
 `tx` 是面向游戏服务端的 Go 运行时基础库，提供类型元数据、字段级变更追踪、Redis/Mongo/Fusion 存储适配、单机事务、生命周期以及可选的分布式服务模块。
 
-本文是 `tx` 使用者的主手册，记录当前已经实现并验证的公共能力、配置方式和业务示例。框架维护者需要理解内部数据结构、并发模型、状态机或技术选型时，请阅读 [设计文档](docs/design.md)；当前进度和后续任务见 [实施计划](docs/IMPLEMENTATION_PLAN.md)，架构质量要求见 [审计标准](docs/architecture_audit_standard.md)。
+本文是 `tx` 使用者的主手册，记录当前已经实现并验证的公共能力、配置方式和业务示例。框架维护者需要理解内部数据结构、并发模型、状态机或技术选型时，请阅读 [设计文档](docs/design.md)；当前进度和后续任务见 [实施计划](docs/implementation_plan.md)，架构质量要求见 [审计标准](docs/architecture_audit_standard.md)。
 
 ## 阅读路径
 
@@ -47,7 +47,7 @@
 2. 项目读取本地 yml，严格解析后转换为只含 Go 值的 `server.Config`；tx 不读取 yml、环境变量或命令行。
 3. 项目注册生成数据绑定、业务 facade 初始化函数和可选服务。
 4. 启动参数通过 `server.RunOptions` 选择本进程服务并注入部署身份。
-5. `server.Server` 统一创建 Redis/Mongo/Fusion、共享 gRPC Host、服务发现、Actor、事务和后台任务。
+5. `server.Server` 解析所选服务的 CMod 依赖闭包，只创建本进程实际需要的 Redis、Mongo、Fusion、共享 gRPC Host、服务发现、Actor、事务和后台任务。
 6. handler 使用 `db.Save(role)` 或项目事务 facade，不直接装配 writer/client。
 
 一个简化的项目组合根如下：
@@ -157,6 +157,39 @@ if err := storage.Save(ctx, fusionStore, role.Store()); err != nil {
 
 如果业务需要显式持有 Store，例如高频对象在内存中维护变更队列、定时合并后再落地，也可以直接使用
 `storage.Save(ctx, writer, role.Store())` 这类框架层写入入口，并由调用方决定何时保存或重新累计下一轮变更。
+
+## 能力模组与服务装配
+
+`tx/server` 使用能力模组（Capability Module，简称 CMod）组合运行时。CMod 是 L3 装配单元；Redis/Mongo adapter
+属于 L1，Fusion、RPC Host、Scheduler、Transaction Runtime 等组件属于 L2，`agent/msgq/game` 等可启动服务属于 L4。
+`--services` 只选择 L4 服务，框架递归展开其 CMod 依赖：
+
+| 服务 | 直接 CMod | 展开后的主要资源 |
+| --- | --- | --- |
+| `agent` | RPC、Redis；跨进程邮箱时增加 Discovery | 玩家 TCP/WebSocket 入口、共享 RPC、Redis 会话绑定 |
+| `msgq` | RPC、Redis | 共享 RPC 上的 MailboxService、Redis owner binding |
+| `game` | RPC、Fusion、Transaction、DelayScheduler | Redis、Mongo、Fusion、事务 Runtime、延迟回写调度器 |
+
+例如只启动一个 RPC-only 自定义服务时，`Context.Storage()` 保持 `nil`，框架不会校验 Redis/Mongo 配置，也不会连接
+对应外部服务。项目需要从 yml 字符串惰性转换强类型配置时，在组合根注册配置提供者：
+
+```go
+base, err := config.FrameworkBase()
+if err != nil {
+	return nil, err
+}
+
+return server.New(
+	base,
+	server.WithCModConfigProvider(config.Framework),
+	server.WithGeneratedData(data.DefaultTypeRegistry(), data.RegisterStorageRuntime),
+	server.WithService(gameService, msgqService, agentService),
+)
+```
+
+`Framework(selection)` 只解析闭包内的配置。例如本次只有 Redis CMod，错误的 txn 时长和缺失的 Actor host 不影响启动；
+一旦 Transaction 或 Actor 被选中，相同错误会在任何连接、监听器或 goroutine 创建前返回。普通 handler 不使用
+`CModSelection`，只从项目 facade 取得所需业务能力。
 
 ## 服务发现
 
@@ -1265,6 +1298,7 @@ go run ./cmd/txctl --endpoint 10.0.1.22:9100 promote-slot \
   --current-instance game-1@v42 \
   --current-generation 42 \
   --next-instance game-1@v43
+
 ```
 
 三个生命周期命令输出稳定的 `state=running|draining|drained|failed`；服务返回诊断时还会输出 `error=...`。`failed`
@@ -1272,6 +1306,15 @@ go run ./cmd/txctl --endpoint 10.0.1.22:9100 promote-slot \
 `generation`；陈旧脚本会因旧 generation 或旧实例不匹配得到 CAS conflict，不能覆盖后来已经发布的 assignment。
 因此发布脚本不能把失败调用当成已安全下线或已完成交接。当前控制端点使用项目部署
 提供的网络隔离；认证与 TLS/mTLS 后续作为独立控制面能力加入。
+
+服务启动成功时会输出一次解析后的服务集合和稳定 CMod 装配顺序，例如：
+
+```text
+server initialized app=txgame services=game,msgq cmods=rpc,redis-storage,mongo-storage,fusion-storage,transaction,delay-scheduler endpoint=10.0.1.21:9000
+```
+
+这条日志只描述本进程已经采用的静态装配结果，不包含 URI、密码或 token。CMod 不支持生产期动态装载；依赖缺失、
+重复 ID 或循环依赖会在启动阶段直接返回错误。
 
 ## 类型注解
 
@@ -3308,6 +3351,11 @@ Fusion 策略的当前保存路径：
 按当前 `TypeSpec` 重建 save/delete 任务。运行期不再周期遍历所有 slot，不需要为恢复器分配 worker 身份，也不会执行
 Redis `SCAN` 或形成第二套任务队列。
 
+同一批次启动多个 Fusion 实例时，它们会竞争一个带随机 token 的 Redis 启动 lease。只有持有者扫描全部 slot，并按
+`startupLeaseTTL/3` 续租；其他实例等待 `complete`。持有者崩溃后 lease 到期，等待实例可接管；旧 token 不能续租、
+完成或释放新持有者的 lease。等待超过 `startupWaitTimeout` 或续租失去所有权会使当前实例启动失败。这个启动 lease
+只协调完整恢复扫描，不是 Scheduler claim 单条任务使用的 task lease。
+
 标准 `server` 不把 Redis `PING` 成功等同于 Fusion 恢复链路可用。启动恢复使用真实
 `read_handoffs.lua` 读取全部固定 slot；若 Redis 版本不支持 `HRANDFIELD ... WITHVALUES`、ACL 禁止该命令、
 Lua 不可执行、返回协议损坏或遗留 marker 无法恢复，`Server.Run` 会直接返回启动错误，延迟回写 Scheduler 和业务
@@ -3419,7 +3467,7 @@ fusionStore := fusion.Strategy{
 }
 ```
 
-普通项目通过 `server.RuntimeConfig.DelayTask.HandoffMaxPendingPerSlot` 配置该上限，不直接构造 Strategy。
+普通项目通过 `server.RuntimeConfig.HandoffRecovery.MaxPendingPerSlot` 配置该上限，不直接构造 Strategy。
 零值使用默认值 `1024`。上限统计的是单个 Redis 物理 slot 中尚未确认的根记录数：已经登记的记录即使 slot
 已满仍可继续更新；只有新的根记录会在任何业务文档被修改前返回 `redis.ErrHandoffFull`。这条防线限制任务系统
 持续不可用时的交接标记增长，不改变正常 save/update 吞吐路径。
@@ -3628,7 +3676,6 @@ storage:
     main: mongodb://127.0.0.1:27017/txgame
     wal: mongodb://127.0.0.1:27017/txgame
   wal:
-    enabled: true
     backend: mongo
     mongo:
       routeType: wal
@@ -3639,7 +3686,6 @@ storage:
 
 ```go
 config.Storage.WAL = server.WALConfig{
-	Enabled: true,
 	Backend: server.WALBackendMongo,
 	Mongo: server.WALMongoConfig{
 		RouteType:  "wal",
@@ -3652,7 +3698,7 @@ config.Storage.WAL = server.WALConfig{
 
 ### 服务接入
 
-使用 WAL 的服务应声明 `CapabilityWAL`。未启用 WAL 时，框架会在服务启动前报告缺失能力，不会让业务运行到第一次追加时才失败：
+使用 WAL 的服务应声明 `CModWAL`。WAL 是否装配只由服务依赖闭包决定，不使用额外 enabled 开关：
 
 ```go
 type WorldService struct {
@@ -3662,7 +3708,7 @@ type WorldService struct {
 func (*WorldService) Spec() server.Spec {
 	return server.Spec{
 		Name:     "slgworld",
-		Requires: server.CapabilityWAL,
+		Requires: []server.CModID{server.CModWAL},
 	}
 }
 

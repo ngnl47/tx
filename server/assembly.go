@@ -11,6 +11,7 @@ import (
 	txlog "github.com/ngnl47/tx/log"
 	txactor "github.com/ngnl47/tx/modules/actor"
 	"github.com/ngnl47/tx/modules/txn"
+	txstorage "github.com/ngnl47/tx/storage"
 )
 
 func (server *Server) startControl(endpoint string) error {
@@ -43,14 +44,6 @@ func lifecycleRoot(ctx context.Context) *lifecycle.WaitGroupContext {
 	return lifecycle.NewWaitGroupContext(context.WithoutCancel(ctx))
 }
 
-func requiredCapabilities(services []Service) Capabilities {
-	var capabilities Capabilities
-	for _, service := range services {
-		capabilities |= service.Spec().Requires
-	}
-	return capabilities
-}
-
 func selectedServiceNames(services []Service) []string {
 	names := make([]string, 0, len(services))
 	for _, service := range services {
@@ -60,12 +53,6 @@ func selectedServiceNames(services []Service) []string {
 }
 
 func (server *Server) startDiscovery(options RunOptions) error {
-	if !server.config.Discovery.Enabled {
-		if strings.TrimSpace(options.LogicalSlot) != "" {
-			return errors.New("server: logical slot requires discovery")
-		}
-		return nil
-	}
 	instance := server.runtime.instanceSnapshot()
 	if err := instance.Validate(); err != nil {
 		return fmt.Errorf("server: discovery instance: %w", err)
@@ -91,14 +78,10 @@ func (server *Server) startDiscovery(options RunOptions) error {
 	}); err != nil {
 		return fmt.Errorf("server: start discovery watch: %w", err)
 	}
-	server.runtime.capabilities |= CapabilityDiscovery
 	return nil
 }
 
 func (server *Server) startActor() error {
-	if !server.config.Actor.Enabled {
-		return nil
-	}
 	runtime, err := txactor.New(server.config.Actor.Runtime)
 	if err != nil {
 		return fmt.Errorf("server: initialize actor runtime: %w", err)
@@ -107,7 +90,6 @@ func (server *Server) startActor() error {
 		return fmt.Errorf("server: start actor runtime: %w", err)
 	}
 	server.runtime.actor = runtime
-	server.runtime.capabilities |= CapabilityActor
 	return nil
 }
 
@@ -120,11 +102,10 @@ func (server *Server) startTransaction() error {
 		return fmt.Errorf("server: start transaction runtime: %w", err)
 	}
 	server.runtime.transaction = runtime
-	server.runtime.capabilities |= CapabilityTransaction
 	return nil
 }
 
-func startStorageHealth(root *lifecycle.WaitGroupContext, store *storageRuntime, config HealthConfig) error {
+func startStorageHealth(root *lifecycle.WaitGroupContext, store *storageRuntime, config HealthConfig, backend txstorage.Backend) error {
 	if root == nil || store == nil {
 		return errors.New("server: storage health dependencies are not configured")
 	}
@@ -137,7 +118,7 @@ func startStorageHealth(root *lifecycle.WaitGroupContext, store *storageRuntime,
 				return
 			case <-ticker.C:
 				probeCtx, cancel := context.WithTimeout(ctx, config.Timeout)
-				_ = store.probe(probeCtx)
+				_ = store.probeBackend(probeCtx, backend)
 				cancel()
 			}
 		}

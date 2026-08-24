@@ -199,6 +199,38 @@ change/meta/storage contracts
 - `server.Server` 可以实例化和编排下层模块，但下层模块不能反向访问 server 的内部 `runtime`。
 - 测试 fake 放在 `server/internal/servertest`，不能为了测试构造任意 Runtime 而扩大生产 API。
 
+### L0-L4 与能力模组
+
+运行时使用下面的固定层级：
+
+| 层级 | 职责 | 示例 |
+| --- | --- | --- |
+| L0 | 纯算法、基础结构和稳定契约 | `change`、`meta`、`lifecycle`、storage/WAL 契约 |
+| L1 | 外部 backend 与传输 adapter | Redis、Mongo、gRPC、etcd adapter |
+| L2 | 可复用运行时组件 | Fusion Strategy、RPC Host、Scheduler、Transaction Runtime、Actor Runtime |
+| L3 | 能力模组（Capability Module，CMod）和进程装配 | `server.CMod`、依赖图、CMod 生命周期、受控 Context |
+| L4 | 可由 `--services` 选择的服务 | agent、msgq、game、room、battlefield |
+
+CMod 是组合 L0-L2 能力的生命周期单元，不是 L2 组件的别名。L4 服务只声明直接 `CModID`，`server` 使用同一个
+DFS 解析器得到依赖闭包、稳定拓扑顺序、循环路径和缺失依赖。内置关系为：
+
+```text
+fusion-storage -> redis-storage, mongo-storage
+transaction -> fusion-storage
+delay-scheduler -> fusion-storage
+actor -> rpc, discovery
+wal -> mongo-storage
+```
+
+启动固定执行“选择 L4 服务 -> 解析 CMod 闭包 -> 惰性转换闭包配置 -> 校验全部 CMod -> 按拓扑启动”。全部
+校验通过前不能建立连接、监听端口或启动 goroutine。停止时先排水和停止 L4，再反向排水 CMod，取消并等待根
+`WaitGroupContext`，最后反向关闭 CMod 持有的物理资源。
+
+`CModConfigProvider` 只在依赖图确定后运行。它解决同一份 YAML 被 agent、msgq、game 等不同进程复用时的配置边界：
+未选择 Transaction 时不解析 txn 时长，未选择 Actor 时不要求 Actor host，未选择 Mongo 时不验证或连接 Mongo。
+未知 YAML 字段仍由项目解析器在加载期拒绝。CMod ID 只用于依赖解析和启动日志；业务调用使用构造函数强类型注入或
+`server.Context` 的稳定窄接口，不提供按字符串取 `any` 的 service locator。
+
 ## 元数据与代码生成边界
 
 ### 元数据链路
@@ -1159,6 +1191,16 @@ sequenceDiagram
    `marker + token` 登记到进程内去重表。相同 marker 只保留最新 token；后台循环只处理这张表，失败时使用有上限的
    指数退避，成功后删除对应 token。它不调用 `ReadHandoffs`，不遍历 slot，也不需要选举 leader 或分配微服务身份。
 
+多个 Fusion 实例同时启动时，全量恢复还受 Redis 启动 lease 协调。lease key 从 delay task prefix 派生并保持在固定
+hash slot，值只能是 `running:<token>` 或 `complete:<token>`。第一个取得 lease 的实例遍历全部 handoff slot，并按
+`startupLeaseTTL/3` 续租；其他实例只等待完成状态，不重复扫描。持有者成功后用 token CAS 写入 `complete`，失败时
+释放自己的 token；崩溃后由 TTL 允许其他实例接管。旧持有者不能续租、完成或释放新持有者的 lease。等待超过
+`startupWaitTimeout`、读取到未知状态或续租丢失所有权都会使当前 Fusion CMod 启动失败，不能默认放行业务服务。
+
+启动 lease 与 Scheduler task lease 是两份不同契约：前者只协调“一批并发启动实例中由谁做一次完整扫描”，后者
+保护单条到期任务的领取和结算。启动完成状态保留到 TTL 到期，让同一批实例跳过重复工作；后续新批次会再次扫描，
+确保较晚进程异常遗留的 marker 仍能恢复。
+
 空 Hash 返回空 JSON 数组。启动全量恢复本身会执行真实读取脚本，因此同时验证 Redis 命令版本、Lua、ACL 和返回
 协议，无需再维护单独的能力探测接口。运行期去重表是进程内故障恢复状态，不是第二套持久化 outbox；若进程退出，
 本地状态可以丢失，因为同槽 marker 仍由下一次启动全量恢复接管。部署环境必须由进程守护或容器编排重新拉起异常
@@ -1354,7 +1396,7 @@ Mongo WAL 使用独立 collection，不复用 GD 文档 adapter，也不把 WAL 
 
 稳定哈希只保证输入身份不变时路由键不变，不保证 route table 改动后 endpoint 仍然相同。WAL 分片集合、顺序和范围规则属于持久化布局契约；已有日志时不能直接修改。第一版不建设 placement 元数据或自动迁移，变更布局必须由运维先封口 stream、迁移 WAL 与 checkpoint、验证后再切换配置。
 
-`server` 在启动装配期复用现有 Mongo database 创建 WAL client，并为四元位置创建唯一索引；索引创建失败会使启动 fast-fail。Mongo WAL collection 强制使用 `majority + j:true` 写关注，不能继承更弱的 URI 默认值。启用后 runtime 增加 `CapabilityWAL`，服务通过 `Context.WAL()` 取得后端无关的安全 `wal.Store`，不能取得 Mongo client、原始清理入口或连接关闭权。WAL 操作复用 Mongo 健康闸门和 backend generation，不在每次追加前执行 Ping。
+`server` 在启动装配期复用现有 Mongo database 创建 WAL client，并为四元位置创建唯一索引；索引创建失败会使启动 fast-fail。Mongo WAL collection 强制使用 `majority + j:true` 写关注，不能继承更弱的 URI 默认值。服务声明 `CModWAL` 后，依赖图自动装配 `CModMongoStorage`，并通过 `Context.WAL()` 提供后端无关的安全 `wal.Store`；服务不能取得 Mongo client、原始清理入口或连接关闭权。WAL 操作复用 Mongo 健康闸门和 backend generation，不在每次追加前执行 Ping。
 
 Mongo 服务不可用时，追加、读取和 checkpoint 都返回原始可识别错误，不 panic、不静默成功。WAL 是否阻止当前业务提交由上层状态模块决定；对于声明“先写 WAL 才提交”的路径，追加失败必须终止本次提交。进程排水时不再接受新的外部工作，已进入的 WAL 追加由全局 `WaitGroupContext` 等待完成。
 

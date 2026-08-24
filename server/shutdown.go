@@ -64,6 +64,7 @@ func (server *Server) stop(ctx context.Context, drain bool) error {
 	server.stopping = true
 	runtime := server.runtime
 	host := server.host
+	cmodHost := server.cmodHost
 	discoveryRuntime := server.discovery
 	controlServer := server.control
 	server.mu.Unlock()
@@ -78,34 +79,27 @@ func (server *Server) stop(ctx context.Context, drain bool) error {
 	if host != nil {
 		errs = append(errs, host.stop(ctx))
 	}
-	if runtime != nil && runtime.rpc != nil {
-		errs = append(errs, runtime.rpc.Stop(ctx))
+	for index := len(server.cleanups) - 1; index >= 0; index-- {
+		server.cleanups[index]()
+	}
+	if server.bindStorage != nil {
+		server.bindStorage(nil)
+	}
+	if cmodHost != nil {
+		errs = append(errs, cmodHost.drain(ctx))
 	}
 	if runtime != nil && runtime.lifecycle != nil {
 		runtime.lifecycle.Cancel()
 		runtime.lifecycle.WaitDoneAndWaitGroupWait()
 	}
-	if runtime != nil && runtime.transaction != nil {
-		errs = append(errs, runtime.transaction.Shutdown(context.WithoutCancel(ctx)))
-	}
-	if runtime != nil && runtime.actor != nil {
-		errs = append(errs, runtime.actor.Shutdown())
-	}
 	if runtime != nil {
 		runtime.setInstanceStatus(discovery.StatusStopping)
 	}
-	if discoveryRuntime != nil {
-		errs = append(errs, discoveryRuntime.markStopping(context.WithoutCancel(ctx)))
+	if cmodHost != nil {
+		errs = append(errs, cmodHost.stop(context.WithoutCancel(ctx)))
+	} else if discoveryRuntime != nil {
 		errs = append(errs, discoveryRuntime.close(context.WithoutCancel(ctx)))
 	}
-	for index := len(server.cleanups) - 1; index >= 0; index-- {
-		server.cleanups[index]()
-	}
-	server.bindStorage(nil)
-	if runtime != nil && runtime.storage != nil {
-		errs = append(errs, runtime.storage.close(context.WithoutCancel(ctx)))
-	}
-
 	server.mu.Lock()
 	server.stopErr = errors.Join(errs...)
 	close(server.stopDone)

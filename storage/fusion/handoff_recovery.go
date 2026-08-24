@@ -24,6 +24,8 @@ import (
 const (
 	defaultHandoffSlotsPerRun    = 256
 	defaultHandoffEntriesPerHash = defaultHandoffMaxPendingPerSlot
+	defaultStartupLeaseTTL       = 30 * time.Second
+	defaultStartupWaitTimeout    = 2 * time.Minute
 )
 
 // HandoffStore 是 Fusion 交接恢复使用的 Redis 高级边界。
@@ -43,6 +45,10 @@ type HandoffRecovererOptions struct {
 	RetryMaxDelay     time.Duration
 	RetryJitter       float64
 	Random            func() float64
+	StartupLease      task.StartupLease
+	StartupLeaseTTL   time.Duration
+	StartupWait       time.Duration
+	StartupToken      func() string
 }
 
 // HandoffRecoverer 把 Redis 同槽交接标记幂等重建为现有 Fusion 延迟任务。
@@ -59,6 +65,10 @@ type HandoffRecoverer struct {
 	retryMax        time.Duration
 	retryJitter     float64
 	random          func() float64
+	startupLease    task.StartupLease
+	startupLeaseTTL time.Duration
+	startupWait     time.Duration
+	startupToken    func() string
 	pendingMu       sync.Mutex
 	pending         map[string]txredis.HandoffEntry
 	wake            chan struct{}
@@ -100,6 +110,18 @@ func NewHandoffRecovererWithOptions(types TypeRegistry, store HandoffStore, queu
 	if random == nil {
 		random = rand.Float64
 	}
+	startupLeaseTTL := options.StartupLeaseTTL
+	if startupLeaseTTL <= 0 {
+		startupLeaseTTL = defaultStartupLeaseTTL
+	}
+	startupWait := options.StartupWait
+	if startupWait <= 0 {
+		startupWait = defaultStartupWaitTimeout
+	}
+	startupToken := options.StartupToken
+	if startupToken == nil {
+		startupToken = newHandoffStartupToken
+	}
 	return &HandoffRecoverer{
 		types:           types,
 		store:           store,
@@ -111,6 +133,10 @@ func NewHandoffRecovererWithOptions(types TypeRegistry, store HandoffStore, queu
 		retryMax:        retryMax,
 		retryJitter:     retryJitter,
 		random:          random,
+		startupLease:    options.StartupLease,
+		startupLeaseTTL: startupLeaseTTL,
+		startupWait:     startupWait,
+		startupToken:    startupToken,
 		pending:         make(map[string]txredis.HandoffEntry),
 		wake:            make(chan struct{}, 1),
 	}
@@ -123,12 +149,130 @@ func (r *HandoffRecoverer) Start(ctx waitGroupContext) error {
 	if isNilFusionDependency(ctx) {
 		return ErrSchedulerContextNotConfigured
 	}
-	if _, err := r.RecoverStartup(ctx); err != nil {
+	if _, err := r.recoverStartup(ctx); err != nil {
 		return fmt.Errorf("fusion: recover startup handoffs: %w", err)
 	}
 	return ctx.Go(func(context.Context) {
 		r.run(ctx)
 	})
+}
+
+func (r *HandoffRecoverer) recoverStartup(ctx context.Context) (int, error) {
+	if isNilFusionDependency(r.startupLease) {
+		return r.RecoverStartup(ctx)
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, r.startupWait)
+	defer cancel()
+	token := r.startupToken()
+	if strings.TrimSpace(token) == "" {
+		return 0, fmt.Errorf("fusion: startup lease token is empty")
+	}
+	for {
+		status, err := r.startupLease.Acquire(waitCtx, token, r.startupLeaseTTL)
+		if err != nil {
+			return 0, err
+		}
+		switch status {
+		case task.StartupLeaseStatusAcquired:
+			return r.recoverStartupAsOwner(waitCtx, token)
+		case task.StartupLeaseStatusComplete:
+			return 0, nil
+		case task.StartupLeaseStatusMissing, task.StartupLeaseStatusRunning:
+			if err := waitStartupLease(waitCtx, r.startupLeaseTTL); err != nil {
+				return 0, err
+			}
+		default:
+			return 0, fmt.Errorf("fusion: unexpected startup lease status %d", status)
+		}
+	}
+}
+
+func (r *HandoffRecoverer) recoverStartupAsOwner(ctx context.Context, token string) (int, error) {
+	recoveryCtx, cancelRecovery := context.WithCancel(ctx)
+	stopRenew := make(chan struct{})
+	renewDone := make(chan error, 1)
+	go r.renewStartupLease(recoveryCtx, token, stopRenew, cancelRecovery, renewDone)
+
+	count, recoveryErr := r.RecoverStartup(recoveryCtx)
+	close(stopRenew)
+	renewErr := <-renewDone
+	cancelRecovery()
+	if err := errors.Join(recoveryErr, renewErr); err != nil {
+		r.releaseStartupLease(token)
+		return count, err
+	}
+	completed, err := r.startupLease.Complete(ctx, token, r.startupLeaseTTL)
+	if err != nil {
+		r.releaseStartupLease(token)
+		return count, err
+	}
+	if !completed {
+		return count, ErrStartupLeaseLost
+	}
+	return count, nil
+}
+
+func (r *HandoffRecoverer) renewStartupLease(ctx context.Context, token string, stop <-chan struct{}, cancel context.CancelFunc, done chan<- error) {
+	interval := r.startupLeaseTTL / 3
+	if interval < time.Millisecond {
+		interval = time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			done <- nil
+			return
+		case <-ctx.Done():
+			done <- ctx.Err()
+			return
+		case <-ticker.C:
+			ok, err := r.startupLease.Renew(ctx, token, r.startupLeaseTTL)
+			if err != nil {
+				cancel()
+				done <- err
+				return
+			}
+			if !ok {
+				cancel()
+				done <- ErrStartupLeaseLost
+				return
+			}
+		}
+	}
+}
+
+func (r *HandoffRecoverer) releaseStartupLease(token string) {
+	timeout := r.startupLeaseTTL
+	if timeout > time.Second {
+		timeout = time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	_, _ = r.startupLease.Release(ctx, token)
+}
+
+func waitStartupLease(ctx context.Context, ttl time.Duration) error {
+	delay := ttl / 3
+	if delay < time.Millisecond {
+		delay = time.Millisecond
+	}
+	if delay > time.Second {
+		delay = time.Second
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func newHandoffStartupToken() string {
+	return strconv.FormatInt(time.Now().UnixNano(), 36) + "-" + strconv.FormatUint(rand.Uint64(), 36)
 }
 
 // RecoverStartup 在服务开放前遍历一次全部固定 slot，恢复进程异常退出遗留的交接记录。

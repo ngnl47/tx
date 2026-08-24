@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 
@@ -18,7 +19,10 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-const ServiceName = "agent"
+const (
+	ServiceName     = "agent"
+	msgqServiceName = "msgq"
+)
 
 type LocalMsgQ interface {
 	SessionClient() (txmsgq.SessionClient, error)
@@ -43,8 +47,10 @@ type Options struct {
 }
 
 type Service struct {
-	options  Options
-	provider OptionsProvider
+	options       Options
+	provider      OptionsProvider
+	configureOnce sync.Once
+	configureErr  error
 
 	mu                sync.RWMutex
 	tcp               *txagent.TCPServer
@@ -71,11 +77,26 @@ func NewConfigured(provider OptionsProvider) (*Service, error) {
 }
 
 func (service *Service) Spec() txserver.Spec {
-	requires := txserver.CapabilityStorage
-	if service != nil && service.provider == nil && service.options.Sessions == nil && service.options.LocalMsgQ == nil {
-		requires |= txserver.CapabilityDiscovery
+	return txserver.Spec{
+		Name:     ServiceName,
+		Requires: []txserver.CModID{txserver.CModRPC, txserver.CModRedisStorage},
 	}
-	return txserver.Spec{Name: ServiceName, Requires: requires}
+}
+
+// RequiredCMods 根据本轮是否同时启动 msgq，选择本地邮箱或远端发现链路。
+func (service *Service) RequiredCMods(selection txserver.ServiceSelection) ([]txserver.CModID, error) {
+	if err := service.configure(); err != nil {
+		return nil, err
+	}
+	usesLocal := service.options.LocalMsgQ != nil && selection.Has(msgqServiceName)
+	usesRemote := service.options.Sessions == nil && !usesLocal
+	if !usesRemote {
+		return nil, nil
+	}
+	if strings.TrimSpace(service.options.SessionStore.RouteType) == "" || strings.TrimSpace(service.options.SessionStore.Prefix) == "" || service.options.SessionStore.TTL <= 0 {
+		return nil, fmt.Errorf("agent service: remote session routing is not configured")
+	}
+	return []txserver.CModID{txserver.CModDiscovery}, nil
 }
 
 func (service *Service) Start(runtime txserver.Context) error {
@@ -149,18 +170,23 @@ func (service *Service) configure() error {
 	if service == nil {
 		return fmt.Errorf("agent service: service is nil")
 	}
-	if service.provider == nil {
-		return validateOptions(service.options)
-	}
-	options, err := service.provider()
-	if err != nil {
-		return fmt.Errorf("agent service: configure: %w", err)
-	}
-	if err := validateOptions(options); err != nil {
-		return err
-	}
-	service.options = options
-	return nil
+	service.configureOnce.Do(func() {
+		if service.provider == nil {
+			service.configureErr = validateOptions(service.options)
+			return
+		}
+		options, err := service.provider()
+		if err != nil {
+			service.configureErr = fmt.Errorf("agent service: configure: %w", err)
+			return
+		}
+		if err := validateOptions(options); err != nil {
+			service.configureErr = err
+			return
+		}
+		service.options = options
+	})
+	return service.configureErr
 }
 
 func (service *Service) startWebSocket(runtime txserver.Context, agentRuntime *txagent.Server, tcp *txagent.TCPServer) (*http.Server, net.Listener, error) {
@@ -280,7 +306,9 @@ func (service *Service) resolveSessions(runtime txserver.Context) (txagent.Sessi
 		}
 		return service.options.Sessions, noOpCloser{}, nil
 	}
-	if service.options.LocalMsgQ != nil {
+	selectedServices := runtime.Instance().Services
+	usesLocal := service.options.LocalMsgQ != nil && (len(selectedServices) == 0 || slices.Contains(selectedServices, msgqServiceName))
+	if usesLocal {
 		client, err := service.options.LocalMsgQ.SessionClient()
 		if err != nil {
 			return nil, nil, fmt.Errorf("agent service: resolve local msgq: %w", err)

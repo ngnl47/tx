@@ -38,14 +38,18 @@ type storageOptions struct {
 	DelayTaskBuckets         int
 	DelayTaskLease           time.Duration
 	HandoffMaxPendingPerSlot int
+	HandoffStartupLeaseTTL   time.Duration
+	HandoffStartupWait       time.Duration
+	HandoffRetryInitial      time.Duration
+	HandoffRetryMultiplier   float64
+	HandoffRetryMax          time.Duration
+	HandoffRetryJitter       float64
 	SchedulerBatchSize       int
 	SchedulerPoll            time.Duration
 	SchedulerRetryInitial    time.Duration
 	SchedulerRetryMultiplier float64
 	SchedulerRetryMax        time.Duration
 	SchedulerRetryJitter     float64
-	HealthProbeInterval      time.Duration
-	HealthProbeTimeout       time.Duration
 }
 
 type storageRuntime struct {
@@ -60,12 +64,14 @@ type storageRuntime struct {
 	delayWorker   *txfusion.Scheduler
 	handoffWorker *txfusion.HandoffRecoverer
 
-	workerOnce     sync.Once
-	workerStartErr error
-	closeOnce      sync.Once
-	closeErr       error
+	redisShards    map[string]txgoredis.Client
+	mongoWALShards map[string]walmongo.Client
 	redisClients   []*goredis.Client
 	mongoClients   []*mongodriver.Client
+	redisCloseOnce sync.Once
+	mongoCloseOnce sync.Once
+	redisCloseErr  error
+	mongoCloseErr  error
 	healthMu       sync.RWMutex
 	redisHealthErr error
 	mongoHealthErr error
@@ -73,83 +79,119 @@ type storageRuntime struct {
 	mongoHealthGen uint64
 }
 
-func newStorage(ctx context.Context, cfg StorageConfig, opts storageOptions, types txfusion.TypeRegistry) (*storageRuntime, error) {
-	if types == nil {
-		return nil, fmt.Errorf("server: generated type registry is required")
-	}
-	redisCluster, redisClients, redisShards, err := buildRedisCluster(ctx, cfg.Redis)
-	if err != nil {
-		return nil, err
-	}
-	mongoCluster, mongoClients, mongoWALShards, err := buildMongoCluster(ctx, cfg.MongoDB)
-	if err != nil {
-		closeRedisClients(redisClients)
-		return nil, err
-	}
-	delayBackend, delayQueue, err := buildDelayQueue(ctx, cfg.Redis, redisShards, opts)
-	if err != nil {
-		closeRedisClients(redisClients)
-		disconnectMongoClients(ctx, mongoClients)
-		return nil, err
-	}
-	walStore, err := buildWAL(ctx, cfg.WAL, cfg.MongoDB, mongoWALShards)
-	if err != nil {
-		closeRedisClients(redisClients)
-		disconnectMongoClients(ctx, mongoClients)
-		return nil, err
-	}
+func newStorageRuntime(ctx context.Context) *storageRuntime {
+	return &storageRuntime{ctx: ctx}
+}
 
-	store := &storageRuntime{
-		ctx:          ctx,
-		redis:        redisCluster,
-		mongo:        mongoCluster,
-		delayBackend: delayBackend,
-		delayQueue:   delayQueue,
-		redisClients: redisClients,
-		mongoClients: mongoClients,
+func (s *storageRuntime) startRedis(ctx context.Context, cfg storageconfig.RouteTableConfig) error {
+	if s == nil {
+		return errStorageNotConfigured
 	}
-	if walStore != nil {
-		store.wal = healthAwareWAL{storage: store, next: walStore}
+	redisCluster, redisClients, redisShards, err := buildRedisCluster(ctx, cfg)
+	if err != nil {
+		return err
 	}
-	store.handoffWorker = txfusion.NewHandoffRecovererWithOptions(types, redisCluster, delayQueue, txfusion.HandoffRecovererOptions{
+	s.redis = redisCluster
+	s.redisClients = redisClients
+	s.redisShards = redisShards
+	return nil
+}
+
+func (s *storageRuntime) startMongo(ctx context.Context, cfg storageconfig.RouteTableConfig) error {
+	if s == nil {
+		return errStorageNotConfigured
+	}
+	mongoCluster, mongoClients, mongoWALShards, err := buildMongoCluster(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	s.mongo = mongoCluster
+	s.mongoClients = mongoClients
+	s.mongoWALShards = mongoWALShards
+	return nil
+}
+
+func (s *storageRuntime) startFusion(ctx context.Context, redisConfig storageconfig.RouteTableConfig, opts storageOptions, types txfusion.TypeRegistry) error {
+	if s == nil {
+		return errStorageNotConfigured
+	}
+	if types == nil {
+		return fmt.Errorf("server: generated type registry is required")
+	}
+	if s.redis == nil || s.mongo == nil {
+		return fmt.Errorf("server: Redis and Mongo storage must start before Fusion")
+	}
+	delayBackend, delayQueue, err := buildDelayQueue(ctx, redisConfig, s.redisShards, opts)
+	if err != nil {
+		return err
+	}
+	s.delayBackend = delayBackend
+	s.delayQueue = delayQueue
+	s.handoffWorker = txfusion.NewHandoffRecovererWithOptions(types, s.redis, delayQueue, txfusion.HandoffRecovererOptions{
 		EntriesPerSlot:    opts.HandoffMaxPendingPerSlot,
-		RetryInitialDelay: opts.SchedulerRetryInitial,
-		RetryMultiplier:   opts.SchedulerRetryMultiplier,
-		RetryMaxDelay:     opts.SchedulerRetryMax,
-		RetryJitter:       opts.SchedulerRetryJitter,
+		RetryInitialDelay: opts.HandoffRetryInitial,
+		RetryMultiplier:   opts.HandoffRetryMultiplier,
+		RetryMaxDelay:     opts.HandoffRetryMax,
+		RetryJitter:       opts.HandoffRetryJitter,
+		StartupLease:      delayBackend.StartupLease(),
+		StartupLeaseTTL:   opts.HandoffStartupLeaseTTL,
+		StartupWait:       opts.HandoffStartupWait,
 	})
-	store.fusion = txfusion.Strategy{
-		RedisApplier:             redisCluster,
-		RedisLoader:              redisCluster,
-		RedisReplacer:            redisCluster,
-		RedisLocker:              redisCluster,
-		MongoLoader:              mongoCluster,
+	s.fusion = txfusion.Strategy{
+		RedisApplier:             s.redis,
+		RedisLoader:              s.redis,
+		RedisReplacer:            s.redis,
+		RedisLocker:              s.redis,
+		MongoLoader:              s.mongo,
 		MongoQueue:               delayQueue,
-		HandoffRetryer:           store.handoffWorker,
+		HandoffRetryer:           s.handoffWorker,
 		HandoffMaxPendingPerSlot: opts.HandoffMaxPendingPerSlot,
 	}
-	if err := store.fusion.Validate(); err != nil {
-		closeRedisClients(redisClients)
-		disconnectMongoClients(ctx, mongoClients)
-		return nil, fmt.Errorf("server: validate fusion storage: %w", err)
+	if err := s.fusion.Validate(); err != nil {
+		return fmt.Errorf("server: validate fusion storage: %w", err)
 	}
-	delayHandler := txfusion.NewDelayTaskHandlerWithOptions(types, redisCluster, mongoCluster, txfusion.DelayTaskHandlerOptions{
-		RedisRevisionReader: redisCluster,
-		RedisRevisionDelete: redisCluster,
-		RedisLocker:         redisCluster,
+	delayHandler := txfusion.NewDelayTaskHandlerWithOptions(types, s.redis, s.mongo, txfusion.DelayTaskHandlerOptions{
+		RedisRevisionReader: s.redis,
+		RedisRevisionDelete: s.redis,
+		RedisLocker:         s.redis,
 		DelayQueue:          delayQueue,
 	})
-	store.delayHandler = healthAwareDelayHandler{storage: store, next: delayHandler}
-	store.delayWorker = txfusion.NewSchedulerWithOptions(delayBackend, txfusion.SchedulerOptions{
+	s.delayHandler = healthAwareDelayHandler{storage: s, next: delayHandler}
+	return nil
+}
+
+func (s *storageRuntime) prepareDelayScheduler(opts storageOptions) error {
+	if s == nil {
+		return errStorageNotConfigured
+	}
+	if s.delayBackend == nil || s.delayHandler == nil {
+		return errWorkerNotConfigured
+	}
+	s.delayWorker = txfusion.NewSchedulerWithOptions(s.delayBackend, txfusion.SchedulerOptions{
 		BatchSize:         opts.SchedulerBatchSize,
 		PollInterval:      opts.SchedulerPoll,
 		RetryInitialDelay: opts.SchedulerRetryInitial,
 		RetryMultiplier:   opts.SchedulerRetryMultiplier,
 		RetryMaxDelay:     opts.SchedulerRetryMax,
 		RetryJitter:       opts.SchedulerRetryJitter,
-		Handler:           store.delayHandler,
+		Handler:           s.delayHandler,
 	})
-	return store, nil
+	return nil
+}
+
+func (s *storageRuntime) startWAL(ctx context.Context, cfg WALConfig, mongoConfig storageconfig.RouteTableConfig) error {
+	if s == nil || s.mongo == nil {
+		return errStorageNotConfigured
+	}
+	store, err := buildWAL(ctx, cfg, mongoConfig, s.mongoWALShards)
+	if err != nil {
+		return err
+	}
+	if store == nil {
+		return fmt.Errorf("server: WAL storage is not configured")
+	}
+	s.wal = healthAwareWAL{storage: s, next: store}
+	return nil
 }
 
 func (s *storageRuntime) Context() context.Context {
@@ -159,15 +201,20 @@ func (s *storageRuntime) Context() context.Context {
 	return s.ctx
 }
 
-func (s *storageRuntime) close(ctx context.Context) error {
+func (s *storageRuntime) closeRedis() error {
 	if s == nil {
 		return nil
 	}
-	s.closeOnce.Do(func() {
-		closeRedisClients(s.redisClients)
-		s.closeErr = disconnectMongoClients(ctx, s.mongoClients)
-	})
-	return s.closeErr
+	s.redisCloseOnce.Do(func() { closeRedisClients(s.redisClients) })
+	return s.redisCloseErr
+}
+
+func (s *storageRuntime) closeMongo(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	s.mongoCloseOnce.Do(func() { s.mongoCloseErr = disconnectMongoClients(ctx, s.mongoClients) })
+	return s.mongoCloseErr
 }
 
 func (s *storageRuntime) RedisReader() txstorage.DocumentLoader {
@@ -213,12 +260,23 @@ func (s *storageRuntime) RequireWritable() error {
 	return s.requireStorageMode(meta.StorageModeFusion)
 }
 
-// probe 检查当前项目装配的全部 Redis 与 Mongo 端点。只有全部恢复后才重新开放
-// 新业务写入，避免 Fusion 在单边依赖异常时继续接受状态事务。
-func (s *storageRuntime) probe(ctx context.Context) error {
+// probeBackend 检查指定 backend 的全部端点。只有本轮探针没有观察到新的失败时，
+// 才重新开放对应健康闸门。
+func (s *storageRuntime) probeBackend(ctx context.Context, backend txstorage.Backend) error {
 	if s == nil {
 		return errStorageNotConfigured
 	}
+	switch backend {
+	case txstorage.BackendRedis:
+		return s.probeRedis(ctx)
+	case txstorage.BackendMongo:
+		return s.probeMongo(ctx)
+	default:
+		return fmt.Errorf("server: unsupported health backend %q", backend)
+	}
+}
+
+func (s *storageRuntime) probeRedis(ctx context.Context) error {
 	redisGeneration := s.backendHealthGeneration(txstorage.BackendRedis)
 	var redisErr error
 	if len(s.redisClients) == 0 {
@@ -239,7 +297,10 @@ func (s *storageRuntime) probe(ctx context.Context) error {
 	} else {
 		s.recoverBackendHealth(txstorage.BackendRedis, redisGeneration)
 	}
+	return redisErr
+}
 
+func (s *storageRuntime) probeMongo(ctx context.Context) error {
 	mongoGeneration := s.backendHealthGeneration(txstorage.BackendMongo)
 	var mongoErr error
 	if len(s.mongoClients) == 0 {
@@ -260,7 +321,7 @@ func (s *storageRuntime) probe(ctx context.Context) error {
 	} else {
 		s.recoverBackendHealth(txstorage.BackendMongo, mongoGeneration)
 	}
-	return errors.Join(redisErr, mongoErr)
+	return mongoErr
 }
 
 // ChangeWriter 返回项目业务与 txn.Runtime 共用的 mode-aware 写入口。入口按
@@ -385,9 +446,6 @@ func buildMongoCluster(ctx context.Context, cfg storageconfig.RouteTableConfig) 
 }
 
 func buildWAL(ctx context.Context, cfg WALConfig, routes storageconfig.RouteTableConfig, shards map[string]walmongo.Client) (wal.Store, error) {
-	if !cfg.Enabled {
-		return nil, nil
-	}
 	target, ok := routes.Routes[cfg.Mongo.RouteType]
 	if !ok {
 		return nil, fmt.Errorf("server: WAL Mongo route %q is not configured", cfg.Mongo.RouteType)

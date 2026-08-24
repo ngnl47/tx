@@ -13,4 +13,5 @@ var (
 	ErrHandoffStoreNotConfigured          = errors.New("fusion: handoff store is not configured")
 	ErrHandoffTypesNotConfigured          = errors.New("fusion: handoff type registry is not configured")
 	ErrHandoffRetryerNotConfigured        = errors.New("fusion: handoff retryer is not configured")
+	ErrStartupLeaseLost                   = errors.New("fusion: startup recovery lease ownership lost")
 )
