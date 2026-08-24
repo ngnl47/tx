@@ -1440,6 +1440,18 @@ type GDRole struct {
 }
 ```
 
+Fusion 的 Redis 和 Mongo 共用一份 `RecordKey`，因此两边的 `idField` 必须引用同一个 Go 字段，`routeBy` 也必须
+引用同一个 Go 字段。两边的 `routeType` 可以不同，它们仍可分别选择 Redis 与 Mongo 路由表。例如下面的配置合法：
+
+```go
+// @redis:`routeType:"redis-role" routeBy:"RoleId" idField:"RoleId" key:"role"`
+// @mongodb:`routeType:"mongo-role" routeBy:"RoleId" idField:"RoleId" collection:"roles"`
+```
+
+如果 Mongo 改成 `idField:"AccountId"` 或 `routeBy:"ServerId"`，元数据校验和 txgen 都会失败，不会把 Redis
+构造的 ID、ShardKey 当成另一个 Mongo 字段的值。JSON/BSON/Msgpack 字段名仍然各自独立；例如同一个
+`RoleId` 可以写成 `json:"roleId" bson:"_id"`。
+
 ### field tag 字段表
 
 | tag | 字段或 flag | 取值 | 说明 |

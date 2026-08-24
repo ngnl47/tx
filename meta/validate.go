@@ -49,10 +49,33 @@ func Validate(spec TypeSpec, astType TypeSpec) error {
 			return err
 		}
 	}
+	if spec.Storage.Mode == StorageModeFusion {
+		if err := validateFusionRecordIdentity(spec); err != nil {
+			return err
+		}
+	}
 	for field := range spec.Fields {
 		if _, ok := fields[field]; !ok {
 			return fmt.Errorf("%w: fields.%s", ErrUnknownField, field)
 		}
+	}
+	return nil
+}
+
+func validateFusionRecordIdentity(spec TypeSpec) error {
+	if spec.Redis.IDField != spec.Mongo.IDField {
+		return fmt.Errorf(
+			"meta: fusion redis idField %q differs from mongodb idField %q",
+			spec.Redis.IDField,
+			spec.Mongo.IDField,
+		)
+	}
+	if spec.Redis.Route.By != spec.Mongo.Route.By {
+		return fmt.Errorf(
+			"meta: fusion redis routeBy %q differs from mongodb routeBy %q",
+			spec.Redis.Route.By,
+			spec.Mongo.Route.By,
+		)
 	}
 	return nil
 }

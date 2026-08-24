@@ -1045,6 +1045,11 @@ Replacer：
 FNV-1a 算法、字符串零值规则、区间和 shard 顺序共同组成持久化布局契约。字符串即使只含数字也按字符串哈希，
 不能因为表现形式相同而与数值 ID 混用。
 
+Fusion 只有一份 `RecordKey.ID` 和 `RecordKey.ShardKey`。`meta.Validate` 因此要求 Redis 与 Mongo 的 `idField`
+引用相同 Go 字段，`routeBy` 也引用相同 Go 字段；否则生成层若优先取一侧字段，另一侧会把同一个值解释成不同
+业务身份并产生错读写。`routeType` 不属于记录身份，可以在两个 backend 上不同。JSON、BSON、Msgpack 字段名
+也不参与这项比较，它们继续由同一个 Go 字段在各自输出边界独立映射。
+
 路由配置表达的是应用层独立存储终端，不展开终端内部拓扑。一条包含多个副本集成员或 `mongos` 地址的 Mongo URI
 仍是一个 endpoint；云 Redis 代理后的节点和 slot 也不进入 `RouteTable`。原生集群内部扩缩容由驱动和云服务处理，
 通常不修改应用配置。
