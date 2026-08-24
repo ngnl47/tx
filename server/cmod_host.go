@@ -35,7 +35,13 @@ func (host *cmodHost) start() error {
 	}
 	for _, mod := range host.graph.ordered {
 		if err := mod.Start(host.context); err != nil {
-			return host.rollback(fmt.Errorf("server: start CMod %q: %w", mod.Spec().ID, err))
+			startErr := fmt.Errorf("server: start CMod %q: %w", mod.Spec().ID, err)
+			if stopper, ok := mod.(CModStopper); ok {
+				if stopErr := stopper.Stop(context.Background()); stopErr != nil {
+					startErr = errors.Join(startErr, fmt.Errorf("server: rollback CMod %q: %w", mod.Spec().ID, stopErr))
+				}
+			}
+			return host.rollback(startErr)
 		}
 		host.started = append(host.started, mod)
 		if host.mark != nil {

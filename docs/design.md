@@ -226,6 +226,10 @@ wal -> mongo-storage
 校验通过前不能建立连接、监听端口或启动 goroutine。停止时先排水和停止 L4，再反向排水 CMod，取消并等待根
 `WaitGroupContext`，最后反向关闭 CMod 持有的物理资源。
 
+CMod 或 L4 Service 的 `Start` 允许分阶段创建连接、监听器和后台任务，因此实现 `Stop` 时必须保证幂等，并能清理
+部分启动状态。某个单元的 `Start` 返回错误后，Host 先调用该失败单元的 `Stop`，再按逆拓扑顺序停止此前已经成功启动
+的单元；启动错误与所有清理错误通过 `errors.Join` 一并返回。失败单元不会进入 started 集合，也不会被标记为可用。
+
 `CModConfigProvider` 只在依赖图确定后运行。它解决同一份 YAML 被 agent、msgq、game 等不同进程复用时的配置边界：
 未选择 Transaction 时不解析 txn 时长，未选择 Actor 时不要求 Actor host，未选择 Mongo 时不验证或连接 Mongo。
 未知 YAML 字段仍由项目解析器在加载期拒绝。CMod ID 只用于依赖解析和启动日志；业务调用使用构造函数强类型注入或
@@ -304,6 +308,10 @@ JSON 或 BSON 名称。
 生成代码还会基于上述名称表和紧凑字段类型表构建一份包内私有的只读 `TypeSpec`。生成的 Load、Find、Delete、SaveChange 和类型注册路径直接复用该静态元数据，不在每次 I/O 前重新展开字段描述。公开的 `GD*TypeSpec()` 与 `Store.TypeSpec()` 则通过 `meta.CloneTypeSpec` 返回隔离副本，调用方修改字段切片、存储指针、字段配置 map 或 Mongo 索引时不会污染生成包的静态规范。
 
 `CloneTypeSpec` 只负责深拷贝可变成员；`TypeRef` 的去空格和完整名称补齐属于 Registry 注册边界。所有接收私有静态 `TypeSpec` 的 tx 内部 adapter 必须把它视为只读输入，不能修改其中的 map、slice 或指针成员。
+
+Mongo 索引元数据由 `storage/mongoindex` 解析为 driver 无关模型。该包只依赖 `meta`，负责 BSON 路径转换、命名索引合并、
+稳定匿名名称以及 TTL/文本权重语义校验；txgen 在生成前调用它，Mongo runtime 在创建索引前调用同一实现。具体 Mongo
+driver 只负责把已经验证的模型转换为 `mongo.IndexModel`，生成器不会因此依赖 Mongo driver 或文档 codec。
 
 ### 生成包基础层
 
@@ -1767,8 +1775,7 @@ facade、注入身份解析/业务分发回调和声明可选业务服务。`ser
 
 每个 `server.Service` 用 `Spec` 声明稳定名称与框架能力依赖，并在 `Start(server.Context)` 中只注册或启动
 本服务资源。`server.Context` 只暴露消费能力，不暴露进程资源所有权；普通业务 handler 应使用项目 facade。
-服务启动失败时按已启动
-顺序逆序回滚；正常退出顺序固定为：
+服务启动失败时先清理失败服务自身的部分资源，再按已启动顺序逆序回滚；正常退出顺序固定为：
 
 ```text
 discovery -> draining

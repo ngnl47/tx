@@ -65,6 +65,7 @@ func TestServiceHostRollsBackAndStopsInReverseOrder(t *testing.T) {
 		testService{
 			spec:  Spec{Name: "task"},
 			start: func(Context) error { calls = append(calls, "start:task"); return context.DeadlineExceeded },
+			stop:  func(context.Context) error { calls = append(calls, "stop:task"); return nil },
 		},
 	)
 	if err != nil {
@@ -74,7 +75,7 @@ func TestServiceHostRollsBackAndStopsInReverseOrder(t *testing.T) {
 	if err := host.start("game,task"); err == nil {
 		t.Fatal("start error = nil, want failure")
 	}
-	if want := []string{"start:game", "start:task", "stop:game"}; !reflect.DeepEqual(calls, want) {
+	if want := []string{"start:game", "start:task", "stop:task", "stop:game"}; !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls = %#v, want %#v", calls, want)
 	}
 }

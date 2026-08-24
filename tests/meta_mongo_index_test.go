@@ -3,6 +3,7 @@ package tests
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ngnl47/tx/anno"
@@ -62,6 +63,30 @@ func TestNormalizeMongoIndexesPreservesRepeatedExplicitCompounds(t *testing.T) {
 	}
 	if len(indexes[0].Keys) != 3 || len(indexes[1].Keys) != 5 {
 		t.Fatalf("indexes = %#v, want 3-key and 5-key compounds", indexes)
+	}
+}
+
+func TestNormalizeMongoIndexesRejectsModifiersWithoutPrecedingIndex(t *testing.T) {
+	for _, tag := range []reflect.StructTag{
+		`mongodb:"unique,index"`,
+		`mongodb:"order:-1"`,
+		`mongodb:"weight:10"`,
+		`mongodb:"expireAfter:0"`,
+		`mongodb:"index:false,unique"`,
+	} {
+		t.Run(string(tag), func(t *testing.T) {
+			directives, err := anno.ParseStructTag(tag, anno.ScopeField)
+			if err != nil {
+				t.Fatalf("ParseStructTag returned error: %v", err)
+			}
+			for i := range directives {
+				directives[i].Field = "ExpireAt"
+			}
+			_, err = meta.Normalize(directives)
+			if err == nil || !strings.Contains(err.Error(), "requires a preceding index") {
+				t.Fatalf("Normalize error = %v, want preceding index error", err)
+			}
+		})
 	}
 }
 

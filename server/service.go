@@ -21,7 +21,8 @@ type Drainer interface {
 	Drain(context.Context) error
 }
 
-// Stopper 在排水完成后释放服务持有的资源。
+// Stopper 释放服务持有的资源。
+// Stop 必须幂等，并能清理由失败的 Start 留下的部分资源。
 type Stopper interface {
 	Stop(context.Context) error
 }

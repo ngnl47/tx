@@ -54,7 +54,13 @@ func (host *serviceHost) startServices(services []Service) error {
 		}
 		ingress := lifecycle.NewIngress(host.runtime.lifecycle)
 		if err := service.Start(newServiceContext(host.runtime, ingress)); err != nil {
-			return host.rollbackStart(fmt.Errorf("server: start service %q: %w", spec.Name, err))
+			startErr := fmt.Errorf("server: start service %q: %w", spec.Name, err)
+			if stopper, ok := service.(Stopper); ok {
+				if stopErr := stopper.Stop(context.Background()); stopErr != nil {
+					startErr = errors.Join(startErr, fmt.Errorf("server: rollback service %q: %w", spec.Name, stopErr))
+				}
+			}
+			return host.rollbackStart(startErr)
 		}
 		host.started = append(host.started, startedService{service: service, ingress: ingress})
 	}

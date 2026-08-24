@@ -219,13 +219,12 @@ func normalizeFieldDirective(d anno.Directive) (FieldSpec, error) {
 		out.Redis = field
 	case "mongodb":
 		field := &MongoFieldSpec{}
-		pending := IndexSpec{}
 		currentIndex := -1
-		current := func() *IndexSpec {
-			if currentIndex >= 0 {
-				return &field.Indexes[currentIndex]
+		current := func(name string) (*IndexSpec, error) {
+			if currentIndex < 0 {
+				return nil, fmt.Errorf("meta: mongodb.%s requires a preceding index", name)
 			}
-			return &pending
+			return &field.Indexes[currentIndex], nil
 		}
 		for _, argument := range d.Arguments {
 			switch argument.Name {
@@ -235,14 +234,8 @@ func normalizeFieldDirective(d anno.Directive) (FieldSpec, error) {
 					return FieldSpec{}, err
 				}
 				if !enabled {
-					pending = IndexSpec{}
 					currentIndex = -1
 					continue
-				}
-				if len(field.Indexes) == 0 {
-					index.Unique = pending.Unique
-					index.Weights = append(index.Weights, pending.Weights...)
-					index.ExpireAfter = pending.ExpireAfter
 				}
 				field.Indexes = append(field.Indexes, index)
 				currentIndex = len(field.Indexes) - 1
@@ -250,26 +243,36 @@ func normalizeFieldDirective(d anno.Directive) (FieldSpec, error) {
 				if !argument.HasValue {
 					return FieldSpec{}, fmt.Errorf("%w: mongodb.%s", ErrUnknownParam, argument.Name)
 				}
-				index := current()
+				index, err := current(argument.Name)
+				if err != nil {
+					return FieldSpec{}, err
+				}
 				if len(index.Keys) > 0 {
 					index.Keys[0].Order = argument.Value
 				}
 			case "weight":
+				index, err := current(argument.Name)
+				if err != nil {
+					return FieldSpec{}, err
+				}
 				weights, err := parseMongoWeightArgument(argument)
 				if err != nil {
 					return FieldSpec{}, err
 				}
-				index := current()
 				index.Weights = append(index.Weights, weights...)
 			case "expire", "expireAfter":
 				if !argument.HasValue {
 					return FieldSpec{}, fmt.Errorf("%w: mongodb.%s", ErrUnknownParam, argument.Name)
 				}
+				index, err := current(argument.Name)
+				if err != nil {
+					return FieldSpec{}, err
+				}
 				if err := validateNonNegativeInt64Param("mongodb."+argument.Name, argument.Value); err != nil {
 					return FieldSpec{}, err
 				}
 				expireAfter, _ := strconv.ParseInt(argument.Value, 10, 64)
-				current().ExpireAfter = &expireAfter
+				index.ExpireAfter = &expireAfter
 			case "ignore":
 				parsed, err := parseBoolArgument("mongodb."+argument.Name, argument)
 				if err != nil {
@@ -277,11 +280,15 @@ func normalizeFieldDirective(d anno.Directive) (FieldSpec, error) {
 				}
 				field.Ignore = parsed
 			case "unique":
+				index, err := current(argument.Name)
+				if err != nil {
+					return FieldSpec{}, err
+				}
 				parsed, err := parseBoolArgument("mongodb."+argument.Name, argument)
 				if err != nil {
 					return FieldSpec{}, err
 				}
-				current().Unique = parsed
+				index.Unique = parsed
 			default:
 				return FieldSpec{}, fmt.Errorf("%w: mongodb.%s", ErrUnknownParam, argument.Name)
 			}

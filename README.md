@@ -191,6 +191,11 @@ return server.New(
 一旦 Transaction 或 Actor 被选中，相同错误会在任何连接、监听器或 goroutine 创建前返回。普通 handler 不使用
 `CModSelection`，只从项目 facade 取得所需业务能力。
 
+高级用户实现自定义 CMod 或 L4 Service 时，`Start` 可以分阶段创建资源，但对应 `Stop` 必须幂等，并能安全清理
+失败 `Start` 已经创建的部分资源。启动失败后，Host 会先调用当前失败单元的 `Stop`，再逆序停止此前已经启动的单元。
+例如 Mongo client 已建立但索引初始化失败时，Mongo CMod 会先关闭自身连接，随后才回滚其前置能力；启动错误和清理错误
+会一起返回，不会把资源泄漏隐藏在最初的失败之后。
+
 ## 服务发现
 
 `modules/discovery` 是可选的 etcd 服务发现基础模块。tx 只接收已经解析完成的
@@ -1498,8 +1503,8 @@ Fusion 的 Redis 和 Mongo 共用一份 `RecordKey`，因此两边的 `idField` 
 | `mongodb` | `ignore` | flag 或布尔字符串 | Mongo 文档忽略该字段。 |
 | `mongodb` | `order` | `1`、`-1` 或 Mongo 索引类型 | 修饰前面最近声明索引的当前字段方向或类型。 |
 | `mongodb` | `indexType` | 字符串 | `order` 的别名，例如 `text`。 |
-| `mongodb` | `weight` | 整数或命名权重定义 | 文本索引权重；非法整数会在生成前报错。 |
-| `mongodb` | `expireAfter` | 非负秒数字符串 | 修饰前面最近声明的索引；TTL 到期删除整条文档，不是删除单个字段。别名：`expire`。 |
+| `mongodb` | `weight` | `1` 到 `99999` 的整数或命名权重定义 | 只能修饰包含对应 `text` 键的文本索引。 |
+| `mongodb` | `expireAfter` | 非负秒数字符串 | 修饰前面最近声明的单字段升序或降序索引；TTL 到期删除整条文档，不是删除单个字段。别名：`expire`。 |
 
 常见 field tag 组合：
 
@@ -1607,7 +1612,9 @@ RoleId int64 `mongodb:"index::roleId:1:state:1:expireAt:1,index::roleId:1:id:1:c
 ExpireAt time.Time `json:"expireAt" bson:"expireAt" msgpack:"expireAt" mongodb:"index,expireAfter:0"`
 ```
 
-生成 `{expireAt: 1}` 和 `expireAfterSeconds=0`。TTL 到期后 Mongo 删除整条文档，不是只删除 `ExpireAt` 字段。
+生成 `{expireAt: 1}` 和 `expireAfterSeconds=0`。TTL 只能用于单字段升序或降序索引；复合索引和 `_id` 默认索引不能
+附加 TTL。到期后 Mongo 删除整条文档，不是只删除 `ExpireAt` 字段。字段应编码为 BSON Date，普通生成输入推荐直接
+使用 `time.Time`；第一版不禁止项目通过命名类型或自定义 BSON codec 提供等价日期编码。
 
 #### 文本索引
 
@@ -1615,11 +1622,15 @@ ExpireAt time.Time `json:"expireAt" bson:"expireAt" msgpack:"expireAt" mongodb:"
 Content string `json:"content" bson:"content" msgpack:"content" mongodb:"index:content_search:text,weight:10"`
 ```
 
-生成命名文本索引 `content_search={content: "text"}`，字段权重为 `10`。
+生成命名文本索引 `content_search={content: "text"}`，字段权重为 `10`。权重必须位于 `1` 到 `99999`，并且只能
+引用当前索引中声明为 `text` 的键。
 
 非法或不推荐写法：
 
 ```go
+// 非法：索引修饰符必须写在所属 index 之后。
+RoleId int64 `mongodb:"unique,index"`
+
 // 非法：alias 不能和 json/bson/msgpack 混用。
 RoleId int64 `alias:"rid" json:"roleId"`
 
@@ -3442,8 +3453,8 @@ stores, exists, err := data.LoadGDRoleStoresByID(ctx, mongoCluster, []int64{1001
 ExpireAt time.Time `json:"expireAt" bson:"expireAt" msgpack:"expireAt" mongodb:"index,expireAfter:0"`
 ```
 
-这通常用于临时房间、临时任务等可物理过期的数据。不要把它理解成“删除 ExpireAt 字段”。同一类型多个 TTL 字段会产生歧义，
-生成阶段应直接拒绝。
+这通常用于临时房间、临时任务等可物理过期的数据。不要把它理解成“删除 ExpireAt 字段”。TTL 只能是单字段升序或
+降序索引；同一类型多个 TTL 字段、复合 TTL、`_id` TTL 都会在生成阶段直接拒绝。
 
 ### Mongo 索引初始化
 

@@ -80,3 +80,61 @@ func TestBuildIndexModelsRejectsNamedIndexOptionConflicts(t *testing.T) {
 		t.Fatalf("BuildIndexModels error = %v, want named index conflict", err)
 	}
 }
+
+func TestBuildIndexModelsRejectsInvalidTTLAndTextWeightOptions(t *testing.T) {
+	expireAfter := int64(0)
+	tests := []struct {
+		name string
+		spec meta.TypeSpec
+		want string
+	}{
+		{
+			name: "compound TTL",
+			spec: meta.TypeSpec{
+				Type: meta.Type{Fields: []meta.Field{{Name: "ExpireAt", BSONName: "expireAt"}}},
+				Fields: map[string]meta.FieldSpec{
+					"ExpireAt": {Mongo: &meta.MongoFieldSpec{Indexes: []meta.IndexSpec{{
+						Keys:        []meta.IndexKeySpec{{Path: "expireAt", Order: "1"}, {Path: "roleId", Order: "1"}},
+						ExpireAfter: &expireAfter,
+					}}}},
+				},
+			},
+			want: "TTL index",
+		},
+		{
+			name: "weight without text key",
+			spec: meta.TypeSpec{
+				Type: meta.Type{Fields: []meta.Field{{Name: "Content", BSONName: "content"}}},
+				Fields: map[string]meta.FieldSpec{
+					"Content": {Mongo: &meta.MongoFieldSpec{Indexes: []meta.IndexSpec{{
+						Keys:    []meta.IndexKeySpec{{Order: "1"}},
+						Weights: []meta.IndexWeightSpec{{Weight: 10}},
+					}}}},
+				},
+			},
+			want: "text index",
+		},
+		{
+			name: "weight outside Mongo range",
+			spec: meta.TypeSpec{
+				Type: meta.Type{Fields: []meta.Field{{Name: "Content", BSONName: "content"}}},
+				Fields: map[string]meta.FieldSpec{
+					"Content": {Mongo: &meta.MongoFieldSpec{Indexes: []meta.IndexSpec{{
+						Keys:    []meta.IndexKeySpec{{Order: "text"}},
+						Weights: []meta.IndexWeightSpec{{Weight: 100000}},
+					}}}},
+				},
+			},
+			want: "weight",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := BuildIndexModels(tt.spec)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("BuildIndexModels error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}

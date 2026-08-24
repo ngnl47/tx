@@ -75,7 +75,8 @@ type CModDrainer interface {
 	Drain(context.Context) error
 }
 
-// CModStopper 在根任务退出后释放能力模组持有的物理资源。
+// CModStopper 释放能力模组持有的物理资源。
+// Stop 必须幂等，并能清理由失败的 Start 留下的部分资源。
 type CModStopper interface {
 	Stop(context.Context) error
 }
