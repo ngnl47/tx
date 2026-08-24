@@ -90,6 +90,17 @@ func TestNormalizeMongoIndexesRejectsModifiersWithoutPrecedingIndex(t *testing.T
 	}
 }
 
+func TestNormalizeMongoIndexesRejectsUnknownIndexTypeParameter(t *testing.T) {
+	directives, err := anno.ParseStructTag(`mongodb:"index,indexType:-1"`, anno.ScopeField)
+	if err != nil {
+		t.Fatalf("ParseStructTag returned error: %v", err)
+	}
+	_, err = meta.Normalize(directives)
+	if err == nil || !strings.Contains(err.Error(), "unknown param: mongodb.indexType") {
+		t.Fatalf("Normalize error = %v, want unknown indexType rejection", err)
+	}
+}
+
 func normalizeMongoFieldTag(t *testing.T, field string, tag reflect.StructTag) meta.TypeSpec {
 	t.Helper()
 	directives, err := anno.ParseStructTag(tag, anno.ScopeField)

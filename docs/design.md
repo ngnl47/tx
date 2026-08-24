@@ -1146,7 +1146,7 @@ Mongo 写入不是 setter 热路径，优先使用官方 driver 的 BSON tag 映
 字段索引注解支持三种组合：`mongodb:"index"` 声明匿名单字段索引；多个字段使用相同的
 `mongodb:"index:<name>"` 声明按字段顺序聚合的命名复合索引；
 `mongodb:"index::<field1>:<order1>:<field2>:<order2>"` 在单个字段上声明显式复合键。
-`order/indexType`、`unique`、`weight` 和 `expire/expireAfter` 只修饰它们前面最近声明的索引；一个字段可以
+`order`、`unique`、`weight` 和 `expire/expireAfter` 只修饰它们前面最近声明的索引；一个字段可以
 通过重复 `index` 同时属于多个索引。普通索引键在元数据中用空路径表示“注解所在 Go 字段”，Mongo 边界再通过
 `TypeSpec` 解析为 BSON 名；以 `.` 开头的路径表示当前字段下的相对 BSON 路径，其余显式路径已经是 BSON 路径。
 

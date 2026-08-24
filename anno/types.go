@@ -170,7 +170,6 @@ type MongoDBFieldTag struct {
 	Unique      bool   // 是否创建唯一索引。
 	Ignore      bool   // 该字段是否不写入 MongoDB。
 	Order       string // 索引顺序或类型别名。
-	IndexType   string // 旧版索引顺序或类型别名。
 	Weight      int    // 文本索引权重。
 	Expire      string // TTL 时长别名。
 	ExpireAfter string // TTL 时长别名。

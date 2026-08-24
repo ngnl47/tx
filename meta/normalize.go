@@ -239,7 +239,7 @@ func normalizeFieldDirective(d anno.Directive) (FieldSpec, error) {
 				}
 				field.Indexes = append(field.Indexes, index)
 				currentIndex = len(field.Indexes) - 1
-			case "order", "indexType":
+			case "order":
 				if !argument.HasValue {
 					return FieldSpec{}, fmt.Errorf("%w: mongodb.%s", ErrUnknownParam, argument.Name)
 				}

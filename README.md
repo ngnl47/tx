@@ -1502,7 +1502,6 @@ Fusion 的 Redis 和 Mongo 共用一份 `RecordKey`，因此两边的 `idField` 
 | `mongodb` | `unique` | flag 或布尔字符串 | 修饰前面最近声明的索引；命名复合索引任一成员声明后，最终索引使用唯一约束。 |
 | `mongodb` | `ignore` | flag 或布尔字符串 | Mongo 文档忽略该字段。 |
 | `mongodb` | `order` | `1`、`-1` 或 Mongo 索引类型 | 修饰前面最近声明索引的当前字段方向或类型。 |
-| `mongodb` | `indexType` | 字符串 | `order` 的别名，例如 `text`。 |
 | `mongodb` | `weight` | `1` 到 `99999` 的整数或命名权重定义 | 只能修饰包含对应 `text` 键的文本索引。 |
 | `mongodb` | `expireAfter` | 非负秒数字符串 | 修饰前面最近声明的单字段升序或降序索引；TTL 到期删除整条文档，不是删除单个字段。别名：`expire`。 |
 
@@ -1530,7 +1529,7 @@ RoleId int64 `comment:"角色ID" alias:"roleId"`
 
 ### Mongo 索引定义范式
 
-索引参数按从左到右的声明顺序解析。`unique`、`order/indexType`、`weight` 和 `expire/expireAfter` 修饰
+索引参数按从左到右的声明顺序解析。`unique`、`order`、`weight` 和 `expire/expireAfter` 修饰
 前面最近声明的 `index`。
 
 #### 匿名单字段索引
