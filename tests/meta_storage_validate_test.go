@@ -25,13 +25,59 @@ func TestValidateRejectsMissingRedisIDField(t *testing.T) {
 func TestValidateAcceptsRedisIDFieldGoName(t *testing.T) {
 	spec := meta.TypeSpec{
 		Type: meta.Type{
-			Fields: []meta.Field{{Name: "RoleId", JSONName: "roleId"}},
+			Fields: []meta.Field{{Name: "RoleId", JSONName: "roleId", Type: "int64"}},
 		},
 		Storage: meta.StorageSpec{Mode: meta.StorageModeRedis},
 		Redis:   &meta.RedisSpec{IDField: "RoleId", Route: meta.RouteSpec{By: "RoleId"}},
 	}
 	if err := meta.Validate(spec, spec); err != nil {
 		t.Fatalf("Validate returned error: %v", err)
+	}
+}
+
+func TestValidateRejectsUnsupportedRouteFieldType(t *testing.T) {
+	spec := meta.TypeSpec{
+		Type: meta.Type{
+			Ref: meta.TypeRef{Name: "FeatureState"},
+			Fields: []meta.Field{
+				{Name: "ID", Type: "int64"},
+				{Name: "Enabled", Type: "bool"},
+			},
+		},
+		Storage: meta.StorageSpec{Mode: meta.StorageModeRedis},
+		Redis: &meta.RedisSpec{
+			IDField: "ID",
+			Route:   meta.RouteSpec{By: "Enabled"},
+		},
+	}
+
+	err := meta.Validate(spec, spec)
+	if err == nil {
+		t.Fatal("Validate returned nil, want unsupported route field type error")
+	}
+	for _, want := range []string{"redis.routeBy", "Enabled", "bool", "integer or string"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("err = %q, want it to contain %q", err, want)
+		}
+	}
+}
+
+func TestValidateAcceptsIntegerAndStringRouteFieldTypes(t *testing.T) {
+	for _, fieldType := range []string{"int64", "uint32", "string"} {
+		t.Run(fieldType, func(t *testing.T) {
+			spec := meta.TypeSpec{
+				Type:    meta.Type{Fields: []meta.Field{{Name: "ID", Type: fieldType}}},
+				Storage: meta.StorageSpec{Mode: meta.StorageModeRedis},
+				Redis: &meta.RedisSpec{
+					IDField: "ID",
+					Route:   meta.RouteSpec{By: "ID"},
+				},
+			}
+
+			if err := meta.Validate(spec, spec); err != nil {
+				t.Fatalf("Validate returned error: %v", err)
+			}
+		})
 	}
 }
 

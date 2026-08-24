@@ -2726,7 +2726,7 @@ type RecordKey struct {
 
 - `ID` 来自 `idField`。
 - `ShardKey` 来自 `routeBy`，仅在 `routeBy != idField` 时需要。
-- txgen 要求 `routeBy` 使用 Go 内建整数类型、`byte`、`rune` 或 `string`；不支持 `bool`、浮点、容器、结构体和自定义具名类型。字符串由 `RouteTable` 使用稳定 FNV-1a 路由。
+- 元数据校验要求 `routeBy` 使用 Go 内建整数类型、`byte`、`rune` 或 `string`；不支持 `bool`、浮点、容器、结构体和自定义具名类型。txgen 复用同一校验，字符串由 `RouteTable` 使用稳定 FNV-1a 路由。
 - 批量读取必须保证每条记录携带正确路由字段，才能构造正确 `RecordKey`、Redis endpoint 和 hash tag。
 - 存储入口会校验 `RecordKey`：`ID` 不能是 nil、typed-nil 或空白字符串；当 `routeBy != idField` 时，缺少 `ShardKey` 返回 `storage.ErrInvalidRecordKey`，不会回退使用 `ID` 路由或生成错误 Redis hash tag。
 

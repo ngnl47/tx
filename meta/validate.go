@@ -37,6 +37,9 @@ func Validate(spec TypeSpec, astType TypeSpec) error {
 		if err := requireField("redis.routeBy", spec.Redis.Route.By, fields); err != nil {
 			return err
 		}
+		if err := validateRouteFieldType("redis.routeBy", spec.Redis.Route.By, astType); err != nil {
+			return err
+		}
 	}
 	if spec.Mongo != nil {
 		if spec.Mongo.Collection == "" {
@@ -46,6 +49,9 @@ func Validate(spec TypeSpec, astType TypeSpec) error {
 			return err
 		}
 		if err := requireField("mongodb.routeBy", spec.Mongo.Route.By, fields); err != nil {
+			return err
+		}
+		if err := validateRouteFieldType("mongodb.routeBy", spec.Mongo.Route.By, astType); err != nil {
 			return err
 		}
 	}
@@ -60,6 +66,21 @@ func Validate(spec TypeSpec, astType TypeSpec) error {
 		}
 	}
 	return nil
+}
+
+func validateRouteFieldType(property, fieldName string, astType TypeSpec) error {
+	field, ok := astType.FieldByName(fieldName)
+	if !ok {
+		return nil
+	}
+	switch field.Type {
+	case "int", "int8", "int16", "int32", "int64",
+		"uint", "uint8", "uint16", "uint32", "uint64",
+		"byte", "rune", "string":
+		return nil
+	default:
+		return fmt.Errorf("%s %s field type %s is unsupported; use a built-in integer or string", property, fieldName, field.Type)
+	}
 }
 
 func validateFusionRecordIdentity(spec TypeSpec) error {

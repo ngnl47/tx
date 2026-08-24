@@ -24,8 +24,8 @@ func TestAnnoNormalizeAndValidate(t *testing.T) {
 	astType := meta.TypeSpec{Type: meta.Type{
 		Ref: meta.TypeRef{FullName: "example.com/project/data.Role"},
 		Fields: []meta.Field{
-			{Name: "RoleID", JSONName: "roleId"},
-			{Name: "Items", JSONName: "items"},
+			{Name: "RoleID", JSONName: "roleId", Type: "int64"},
+			{Name: "Items", JSONName: "items", Type: "map[int64]int64"},
 		},
 	}}
 	spec.Type = astType.Type
