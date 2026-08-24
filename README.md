@@ -2221,7 +2221,28 @@ task.SetActive(2)
 
 ### 单机事务
 
-为类型声明 `@transaction` 后，生成代码提供稳定 `LockKey()` 与 `LockTarget()`。业务传入 GD 数据对象即可，事务只回滚 Store 受控 API 的修改，不处理跨进程锁、Redis/Mongo 分布式事务或裸字段赋值：
+为类型声明 `@transaction` 后，生成代码提供稳定 `LockKey()` 与 `LockTarget()`。项目在 txgen 的生成元数据中集中定义锁域顺序，Go 输入只引用域名：
+
+```yaml
+# gen/transaction/lock_orders.yml
+scopes:
+  legion: 10
+  role: 20
+```
+
+```go
+// @transaction:`scope:"legion" keyField:"Id"`
+type GDLegion struct {
+	Id int64
+}
+
+// @transaction:`scope:"role" keyField:"RoleId"`
+type GDRole struct {
+	RoleId int64
+}
+```
+
+txgen 生成时把顺序编译进 `LockTarget.Order`，tx runtime 不读取 YAML。业务传入 GD 数据对象即可，事务只回滚 Store 受控 API 的修改，不处理跨进程锁、Redis/Mongo 分布式事务或裸字段赋值：
 
 ```go
 	err := txn.Run(ctx, txn.Locks(role), func(tx *txn.Tx) error {
@@ -2271,9 +2292,9 @@ if errors.Is(err, context.DeadlineExceeded) {
 }
 ```
 
-多个目标按 `LockTarget.Order`、`LockKey.Scope`、`LockKey.Value` 的稳定顺序获取锁。生成的 `LockTarget()` 默认 order 为 `0`；需要区分锁层级时，可由 `@transaction` 生成不同的 order，例如军团为 `10`、角色为 `20`。同一逻辑 Key 不得以不同 order 重复声明。
+多个目标按 `LockTarget.Order`、`LockKey.Scope`、`LockKey.Value` 的稳定顺序获取锁。上例先获取军团域，再获取角色域；同一锁域内按对象键稳定排序。业务调用仍然只是 `txn.Locks(guild, role)`，不传 order，也不需要知道生成整数。同一逻辑 Key 不得以不同 order 重复声明。
 
-不同 `LockKey` 可以并行执行，相同 Key 在当前进程内严格串行。业务不能把同一个对象编码成不同 `LockKey` 来绕过互斥；例如所有 `GDRole{RoleId: 470001}` 都必须使用生成的同一把角色锁。进程级精确 Key 注册表、channel 二元信号量和超时释放流程见 [事务锁注册表](docs/design.md#事务锁注册表)。
+不同 `LockKey` 可以并行执行，相同 Key 在当前进程内严格串行。业务不能把同一个对象编码成不同 `LockKey` 来绕过互斥；例如所有 `GDRole{RoleId: 470001}` 都必须使用生成的同一把角色锁。进程级精确 Key 注册表、channel 二元信号量和超时释放流程见 [事务精确 Key 锁注册表](docs/design.md#事务精确-key-锁注册表)。
 
 前置查询后需要动态收集锁时使用 `LockSet`。Builder 不在收集阶段自行去重或加锁，最终仍交给 `Run` 统一校验：
 
