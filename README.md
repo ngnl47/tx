@@ -2,7 +2,7 @@
 
 `tx` 是面向游戏服务端的 Go 运行时基础库，提供类型元数据、字段级变更追踪、Redis/Mongo/Fusion 存储适配、单机事务、生命周期以及可选的分布式服务模块。
 
-本文是 `tx` 使用者的主手册，记录当前已经实现并验证的公共能力、配置方式和业务示例。框架维护者需要理解内部数据结构、并发模型、状态机或技术选型时，请阅读 [设计文档](docs/design.md)；当前进度和后续任务见 [实施计划](docs/implementation_plan.md)，架构质量要求见 [审计标准](docs/architecture_audit_standard.md)。
+本文是 `tx` 使用者的主手册，记录当前已经实现并验证的公共能力、配置方式和业务示例。框架维护者需要理解内部数据结构、并发模型、状态机或技术选型时，请阅读 [设计文档](docs/design.md)；当前进度和后续任务见 [实施计划](docs/IMPLEMENTATION_PLAN.md)，架构质量要求见 [审计标准](docs/architecture_audit_standard.md)。
 
 ## 阅读路径
 
@@ -2696,7 +2696,7 @@ stores, exists, err := data.LoadGDRoleStoresByID(ctx, redisCluster, []int64{1001
 ```
 
 如果类型的 `routeBy != idField`，生成器不会生成简单的 `Load*ByID(ids)`，因为仅有 id 无法构造 Redis endpoint 和 hash tag。
-这类类型需要业务传入包含 routeBy 的 `RecordKey` 列表，或使用生成器后续提供的 route-aware helper。
+这类类型使用生成的 `RecordFilter` 同时传入 id 和 route 字段；测试、工具等底层流程也可以显式传入完整的 `RecordKey` 列表。
 
 ## RecordKey
 
@@ -2714,6 +2714,7 @@ type RecordKey struct {
 
 - `ID` 来自 `idField`。
 - `ShardKey` 来自 `routeBy`，仅在 `routeBy != idField` 时需要。
+- txgen 要求 `routeBy` 使用 Go 内建整数类型、`byte`、`rune` 或 `string`；不支持 `bool`、浮点、容器、结构体和自定义具名类型。字符串由 `RouteTable` 使用稳定 FNV-1a 路由。
 - 批量读取必须保证每条记录携带正确路由字段，才能构造正确 `RecordKey`、Redis endpoint 和 hash tag。
 - 存储入口会校验 `RecordKey`：`ID` 不能是 nil、typed-nil 或空白字符串；当 `routeBy != idField` 时，缺少 `ShardKey` 返回 `storage.ErrInvalidRecordKey`，不会回退使用 `ID` 路由或生成错误 Redis hash tag。
 
