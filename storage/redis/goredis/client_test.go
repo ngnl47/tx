@@ -75,6 +75,19 @@ func TestClientClassifiesDriverErrorsButNotResultDecoding(t *testing.T) {
 	}
 }
 
+func TestClientDoesNotClassifyCallerContextError(t *testing.T) {
+	raw := redis.NewClient(&redis.Options{Addr: "unused"})
+	raw.AddHook(testRedisHook{process: func(redis.Cmder) error { return context.DeadlineExceeded }})
+
+	_, err := NewClient(raw).Eval(context.Background(), "return 'ok'", nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Eval error = %v, want context.DeadlineExceeded", err)
+	}
+	if backend, ok := storage.BackendFromError(err); ok {
+		t.Fatalf("BackendFromError = %v, true, want unclassified caller context error", backend)
+	}
+}
+
 func TestClientReturnsErrorWhenRedisClientMissing(t *testing.T) {
 	client := NewClient(nil)
 

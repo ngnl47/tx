@@ -127,7 +127,7 @@ func (c Client) MGet(ctx context.Context, keys ...string) ([]string, error) {
 }
 
 func redisBackendError(operation string, err error) error {
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if err == nil {
 		return err
 	}
 	var serverErr redis.Error

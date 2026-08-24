@@ -1365,8 +1365,9 @@ Redis 与 Mongo 的 Adapter/Cluster 构造器都在启动装配阶段校验完�
 
 Fusion 任一端已知不可用时，新业务读写返回 `ErrStorageUnavailable`，避免继续接受无法可靠持久化的状态。已经存在的延迟任务不被删除，worker 仍可继续重试，Mongo 恢复后正常消费。
 
-只有 driver 能确认的网络、后端超时和服务端通信错误才包装为 `BackendError`。调用方自己的
-`context.Canceled`、`context.DeadlineExceeded` 只结束当前请求，不能关闭全局健康闸门；RecordKey、变更流、
+只有 driver 能确认的网络、后端超时和服务端通信错误才包装为 `BackendError`。这条防线收敛在
+`storage.NewBackendError`：即使 driver 将调用方自己的 `context.Canceled`、`context.DeadlineExceeded`
+传入公共入口，它们也只结束当前请求，不能关闭全局健康闸门；RecordKey、变更流、
 BSON、JSON、Lua 协议等本地语义错误同样不能把全局 backend 标成不可用。
 
 ## WAL

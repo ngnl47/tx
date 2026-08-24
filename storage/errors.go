@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
@@ -63,12 +64,16 @@ func (err *BackendError) Unwrap() error {
 }
 
 // NewBackendError 包装一次失败的外部后端调用；cause 为 nil 时仍返回 nil。
+// 调用方取消或超时只结束当前请求，不得被分类为后端故障。
 func NewBackendError(backend Backend, operation string, err error) error {
 	if err == nil {
 		return nil
 	}
 	if backend != BackendRedis && backend != BackendMongo {
 		return fmt.Errorf("storage: invalid backend %d for %s: %w", backend, operation, err)
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
 	}
 	return &BackendError{Backend: backend, Operation: operation, Err: err}
 }

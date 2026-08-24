@@ -20,10 +20,15 @@ func TestStorageBackendErrorPreservesDependencyAndCause(t *testing.T) {
 	}
 }
 
-func TestStorageBackendErrorPreservesRequestCancellation(t *testing.T) {
-	err := storage.NewBackendError(storage.BackendMongo, "find", context.Canceled)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("BackendError = %v, want context cancellation", err)
+func TestStorageBackendErrorDoesNotClassifyCallerContextError(t *testing.T) {
+	for _, contextErr := range []error{context.Canceled, context.DeadlineExceeded} {
+		err := storage.NewBackendError(storage.BackendMongo, "find", contextErr)
+		if !errors.Is(err, contextErr) {
+			t.Fatalf("NewBackendError = %v, want %v", err, contextErr)
+		}
+		if backend, ok := storage.BackendFromError(err); ok {
+			t.Fatalf("BackendFromError = %v, true, want unclassified caller context error", backend)
+		}
 	}
 }
 
