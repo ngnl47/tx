@@ -374,7 +374,7 @@ func TestRedisAdapterReplaceDocumentWithOptionsUsesFullReplaceAndTTL(t *testing.
 	err := adapter.ReplaceDocumentWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, map[string]any{
 		"name":  "alice",
 		"items": map[string]any{"1001": map[string]any{"quantity": int64(9)}},
-	}, storage.ApplyOptions{TTLSeconds: 3600})
+	}, storage.ApplyOptions{TTL: time.Hour})
 	if err != nil {
 		t.Fatalf("ReplaceDocumentWithOptions returned error: %v", err)
 	}
@@ -385,8 +385,8 @@ func TestRedisAdapterReplaceDocumentWithOptionsUsesFullReplaceAndTTL(t *testing.
 	if len(call.keys) != 1 || call.keys[0] != "role:{1001}" {
 		t.Fatalf("eval keys = %#v, want role:{1001}", call.keys)
 	}
-	if len(call.args) != 8 || call.args[len(call.args)-2] != "1" || call.args[len(call.args)-1] != "3600" {
-		t.Fatalf("eval args = %#v, want upsert true and ttl 3600", call.args)
+	if len(call.args) != 8 || call.args[len(call.args)-2] != "1" || call.args[len(call.args)-1] != "3600000" {
+		t.Fatalf("eval args = %#v, want upsert true and ttl 3600000ms", call.args)
 	}
 	triples := evalTriples(t, call.args)
 	if triples[""].mode != "1" || !strings.Contains(triples[""].body, `"name":"alice"`) {
@@ -573,8 +573,8 @@ func TestRedisAdapterApplyChangesWithOptionsPassesTTL(t *testing.T) {
 	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
 	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, changes, testResolverForKind(change.FieldNameJSON, changeTestJSONNames()), testChangeValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{
-		Upsert:     true,
-		TTLSeconds: 120,
+		Upsert: true,
+		TTL:    1500 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
@@ -583,8 +583,8 @@ func TestRedisAdapterApplyChangesWithOptionsPassesTTL(t *testing.T) {
 		t.Fatalf("eval calls = %#v, want exactly one", client.evals)
 	}
 	args := client.evals[0].args
-	if args[len(args)-1] != "120" {
-		t.Fatalf("ttl arg = %#v, want 120; args=%#v", args[len(args)-1], args)
+	if args[len(args)-1] != "1500" {
+		t.Fatalf("ttl arg = %#v, want 1500ms; args=%#v", args[len(args)-1], args)
 	}
 }
 
@@ -601,8 +601,8 @@ func TestRedisAdapterApplyChangesWithOptionsAddsTTLOnlySubKeys(t *testing.T) {
 	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
 	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, changes, testResolverForKind(change.FieldNameJSON, changeTestJSONNames()), testChangeValues(map[string]any{"Name": "alice"}), storage.ApplyOptions{
-		Upsert:     true,
-		TTLSeconds: 120,
+		Upsert: true,
+		TTL:    2 * time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
@@ -744,7 +744,7 @@ func TestRedisAdapterApplyTTLWithRevisionUpdatesAllDocumentKeys(t *testing.T) {
 		spec,
 		storage.RecordKey{ID: int64(1001)},
 		"5",
-		24*time.Hour,
+		1500*time.Millisecond,
 	)
 	if err != nil {
 		t.Fatalf("ApplyTTLWithRevision returned error: %v", err)
@@ -755,11 +755,46 @@ func TestRedisAdapterApplyTTLWithRevisionUpdatesAllDocumentKeys(t *testing.T) {
 	if got, want := client.evals[0].keys, []string{"role:{1001}", "role:{1001}:items", "role:{1001}@v"}; !sameStrings(got, want) {
 		t.Fatalf("TTL keys = %#v, want %#v", got, want)
 	}
-	if got := client.evals[0].args; len(got) != 2 || got[0] != "5" || got[1] != (24*time.Hour).Milliseconds() {
+	if got := client.evals[0].args; len(got) != 2 || got[0] != "5" || got[1] != int64(1500) {
 		t.Fatalf("TTL args = %#v, want revision and milliseconds", got)
 	}
 	if !strings.Contains(client.evals[0].script, "pexpire") {
 		t.Fatalf("TTL script = %q, want pexpire", client.evals[0].script)
+	}
+}
+
+func TestRedisAdapterRejectsTTLOutsideMillisecondPrecisionBeforeIO(t *testing.T) {
+	tests := []struct {
+		name string
+		ttl  time.Duration
+		want string
+	}{
+		{name: "below one millisecond", ttl: 500 * time.Microsecond, want: "at least 1ms"},
+		{name: "fractional millisecond", ttl: time.Millisecond + time.Nanosecond, want: "whole milliseconds"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &recordingRedisStringClient{}
+			adapter := mustRedisAdapter(t, client)
+			spec := meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}}
+			changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
+
+			err := adapter.ApplyChangesWithOptions(
+				context.Background(),
+				spec,
+				storage.RecordKey{ID: int64(1001)},
+				changes,
+				testResolverForKind(change.FieldNameJSON, changeTestJSONNames()),
+				testChangeValues(map[string]any{"Name": "alice"}),
+				storage.ApplyOptions{TTL: tt.ttl},
+			)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("ApplyChangesWithOptions error = %v, want %q", err, tt.want)
+			}
+			if len(client.evals) != 0 {
+				t.Fatalf("Redis Eval calls = %d, want validation before I/O", len(client.evals))
+			}
+		})
 	}
 }
 

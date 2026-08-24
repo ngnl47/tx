@@ -1393,7 +1393,7 @@ mongodb:"index,unique,expireAfter:0"
 | --- | --- | --- | --- | --- |
 | `@storage` | `mode` | 是 | `redis`、`mongo`、`fusion` | 选择存储模式。`redis` 只写 Redis；`mongo` 只写 Mongo；`fusion` 使用 Redis 热数据加 Mongo 延迟回写。 |
 | `@storage` | `delaySaveTime` | fusion 建议必填 | 秒数字符串或 Go duration | Redis 热数据变更后，经过多久进入 Mongo 回写。别名：`saveTime`、`delaySave`。 |
-| `@storage` | `delayDelTime` | Redis/Fusion 热数据建议必填 | 秒数字符串、Go duration 或 `-1` | 热数据目标保留时间。Redis-only 与 Fusion 纯净回源缓存将其作为 TTL；Fusion 脏热数据等待可靠回写后再淘汰。不表示 Mongo 删除延迟。别名：`delTime`、`delayDelete`。 |
+| `@storage` | `delayDelTime` | Redis/Fusion 热数据建议必填 | 秒数字符串、Go duration 或 `-1` | 热数据目标保留时间。Redis-only 与 Fusion 纯净回源缓存将其作为 TTL；Fusion 脏热数据等待可靠回写后再淘汰。不表示 Mongo 删除延迟。正数 TTL 至少为 `1ms` 且必须使用整毫秒，例如 `1500ms` 会原样写入 Redis。别名：`delTime`、`delayDelete`。 |
 | `@storage` | `memoryCache` | 否 | 秒数字符串或 Go duration | 预留本地内存缓存时间配置，当前 runtime 不把它作为核心路径。 |
 | `@redis` | `routeType` | 是 | 字符串 | 路由配置名，用来在 yml 路由表中选择 Redis endpoint。别名：`shardType`、`config`。 |
 | `@redis` | `routeBy` | 是 | Go 字段名 | 路由字段，决定 Redis endpoint 与 Redis Cluster hash tag。别名：`shardBy`。 |
@@ -2553,7 +2553,7 @@ Redis adapter 收到规范化变更后会：
 2. 根据字段的 Go 字段名定位 `redis:"subKey:..."`，再用 JSON 字段名写入 main 文档或 subKey 文档。
 3. 把每个文档的 patch 编码成 JSON 字符串。
 4. 调用 Lua 脚本：顶层简单 `OpSet` 使用 merge；嵌套路径和 `OpReplace` 使用有序路径操作直接覆盖目标路径；两者都会在 Redis 内部 `cjson.decode` 后再编码写回。
-5. 按 `ApplyOptions.TTLSeconds` 设置、续期或持久化 Redis 热数据。
+5. 按 `ApplyOptions.TTL` 设置、续期或持久化 Redis 热数据。
 6. 递增 `<mainKey>@v` 版本键，并让它与 main/subKey 使用同一有效 TTL；持久化热数据时版本键也会持久化。
 
 更新已有记录使用 `storage.Save`：
@@ -2656,18 +2656,18 @@ err := storage.Save(ctx, redisCluster, role.Store())
 // @storage:`mode:"fusion" delaySaveTime:"600" delayDelTime:"86400"`
 ```
 
-对于 Redis-only writer，上面配置表示热数据默认 86400 秒过期。写入时如果调用方没有显式传 `ApplyOptions.TTLSeconds`，生成代码会自动填入该值。
+对于 Redis-only writer，上面配置表示热数据默认 86400 秒过期。写入时如果调用方没有显式传 `ApplyOptions.TTL`，生成代码会直接使用 `TypeSpec` 中解析后的 `time.Duration`。
 高级调用方可以覆盖 Redis-only TTL：
 
 ```go
 err := storage.SaveWithOptions(ctx, redisCluster, role.Store(), storage.ApplyOptions{
-	TTLSeconds: 3600,
+	TTL: time.Hour,
 })
 ```
 
-如果 `TTLSeconds > 0`，Redis 使用该 TTL 写入或续期；如果 `TTLSeconds == 0`，生成 Store 会补默认 TTL；如果 `TTLSeconds < 0`，Redis 会持久化 main/subKey/`@v`。如果底层直接调用 runtime 且没有生成 Store 补默认值，则需要调用方自己明确 TTL 策略。
+如果 `TTL > 0`，Redis 使用该 TTL 写入或续期；正数必须至少为 `1ms` 且使用整毫秒，`1500ms` 会原样传到 Redis 的 `PEXPIRE/PSETEX`。如果 `TTL == 0`，生成 Store 会补默认 TTL；如果 `TTL < 0`，Redis 会持久化 main/subKey/`@v`。如果底层直接调用 runtime 且没有生成 Store 补默认值，则需要调用方自己明确 TTL 策略。
 
-Fusion 策略不接受业务用更短 TTL 淘汰脏热数据：业务写入时会把 `TTLSeconds` 收敛为框架配置的 `dirtyTTL`。Mongo 确认回写后，handler 才按 revision 条件把 main/subKey/`@v` 的 TTL 一起缩短为正数 `delayDelTime`。Fusion 从 Mongo 回填 Redis 时优先使用正数 `delayDelTime`，否则使用 `dirtyTTL`，因为这时缓存尚未承载未落盘变更，但仍不能生成永久 key。
+Fusion 策略不接受业务用更短 TTL 淘汰脏热数据：业务写入时会把 `TTL` 收敛为框架配置的 `dirtyTTL`。Mongo 确认回写后，handler 才按 revision 条件把 main/subKey/`@v` 的 TTL 一起缩短为正数 `delayDelTime`。Fusion 从 Mongo 回填 Redis 时优先使用正数 `delayDelTime`，否则使用 `dirtyTTL`，因为这时缓存尚未承载未落盘变更，但仍不能生成永久 key。
 
 ### 读取流程
 
@@ -3479,7 +3479,7 @@ runtime:
     dirtyTTL: 720h
 ```
 
-`dirtyTTL` 默认 30 天，并且必须严格大于生成类型中最大的 `delaySaveTime` 和 `delayDelTime`。标准 `server` 在 Fusion CMod 预检阶段遍历生成 `TypeSpec`；任一类型不满足约束都会让启动直接失败，不会先连接 Redis/Mongo 再暴露运行期错误。例如 `delayDelTime:"86400"` 时，`dirtyTTL: 24h` 非法，至少需要配置为大于 24 小时的值。
+`dirtyTTL` 默认 30 天，并且必须严格大于生成类型中最大的 `delaySaveTime` 和 `delayDelTime`。标准 `server` 在 Fusion CMod 预检阶段遍历生成 `TypeSpec`；任一类型不满足约束都会让启动直接失败，不会先连接 Redis/Mongo 再暴露运行期错误。例如 `delayDelTime:"86400"` 时，`dirtyTTL: 24h` 非法，至少需要配置为大于 24 小时的值。配置允许 Go duration；正数 TTL 至少为 `1ms` 且必须使用整毫秒，`dirtyTTL: 1500ms` 会以 `1500ms` 写入 Redis。
 
 业务写入：
 
@@ -3784,7 +3784,7 @@ Mongo 追加固定使用 `majority + j:true` 写关注，不能被项目 URI 中
 
 类型未配置正数 `delayDelTime` 时不执行 TTL 收敛，热数据继续保留本次写入设置的 `dirtyTTL` 并最终自然过期。该规则使历史上使用 `delayDelTime:"-1"` 表达长生命周期的 Fusion 类型也拥有项目级兜底，不会永久占用 Redis。
 
-Fusion 策略会把业务写入携带的 `ApplyOptions.TTLSeconds` 收敛为 `runtime.fusion.dirtyTTL`；高级调用方不能用显式 TTL 缩短可靠回写窗口。`dirtyTTL` 默认 30 天，配置期要求它严格大于所有 Fusion 类型的 `delaySaveTime` 和 `delayDelTime`。Mongo 回源并回填 Redis 时，缺少正数 `delayDelTime` 的类型也使用 `dirtyTTL`，避免纯净缓存永久占用内存。
+Fusion 策略会把业务写入携带的 `ApplyOptions.TTL` 收敛为 `runtime.fusion.dirtyTTL`；高级调用方不能用显式 TTL 缩短可靠回写窗口。`dirtyTTL` 默认 30 天，配置期要求它严格大于所有 Fusion 类型的 `delaySaveTime` 和 `delayDelTime`。Mongo 回源并回填 Redis 时，缺少正数 `delayDelTime` 的类型也使用 `dirtyTTL`，避免纯净缓存永久占用内存。
 
 `delayDelTime` 不代表 Mongo 删除延迟，也不会触发 Mongo 删除。Fusion 根记录禁止物理删除；该参数只控制 Redis 热数据生命周期。
 

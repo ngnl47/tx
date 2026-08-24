@@ -28,7 +28,7 @@ end
 local ttlMode = tonumber(ARGV[arg_len - tail_len + 2])
 local ttl = ttlMode
 if ttlMode == 0 then
-  ttl = redis.call("ttl", key)
+  ttl = redis.call("pttl", key)
   if ttl == 0 then
     ttl = 1
   end
@@ -274,7 +274,7 @@ end
 for k, v in pairs(save) do
   if v == "" then
     if ttlMode > 0 then
-      redis.call("expire", k, ttl)
+      redis.call("pexpire", k, ttl)
     elseif ttlMode < 0 then
       redis.call("persist", k)
     end
@@ -282,7 +282,7 @@ for k, v in pairs(save) do
     redis.call("del", k)
   else
     if ttl > 0 then
-      redis.call("setex", k, ttl, v)
+      redis.call("psetex", k, ttl, v)
     else
       redis.call("set", k, v)
     end
@@ -292,7 +292,7 @@ end
 local vkey = key .. "@v"
 local revision = redis.call("incr", vkey)
 if ttl > 0 then
-  redis.call("expire", vkey, ttl)
+  redis.call("pexpire", vkey, ttl)
 else
   redis.call("persist", vkey)
 end

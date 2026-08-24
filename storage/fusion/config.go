@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ngnl47/tx/meta"
+	"github.com/ngnl47/tx/storage"
 )
 
 // DefaultDirtyTTL 是 Fusion 脏热数据等待 Mongo 确认回写时的默认安全 TTL。
@@ -27,11 +28,8 @@ func (config Config) EffectiveDirtyTTL() time.Duration {
 
 func (config Config) validateDirtyTTL() (time.Duration, error) {
 	dirtyTTL := config.EffectiveDirtyTTL()
-	if dirtyTTL <= 0 {
-		return 0, fmt.Errorf("fusion: dirty TTL must be greater than 0")
-	}
-	if dirtyTTL < time.Second {
-		return 0, fmt.Errorf("fusion: dirty TTL must be at least 1s")
+	if err := storage.ValidateExpiringTTL(dirtyTTL); err != nil {
+		return 0, fmt.Errorf("fusion: dirty TTL: %w", err)
 	}
 	return dirtyTTL, nil
 }

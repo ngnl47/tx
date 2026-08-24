@@ -91,7 +91,7 @@ func (s Strategy) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 	}
 	// Fusion 使用独立的安全 TTL 保护尚未确认写入 Mongo 的热数据；业务传入的
 	// TTL 不得缩短这段可靠回写窗口。
-	options.TTLSeconds = int64(dirtyTTL / time.Second)
+	options.TTL = dirtyTTL
 	if err := redisWriter.ApplyChangesWithOptions(ctx, spec, key, source, resolver, values, options); err != nil {
 		return err
 	}
@@ -325,8 +325,8 @@ func (s Strategy) backfillMongoDocumentAfterRedisCheck(ctx context.Context, spec
 		return nil, false, err
 	}
 	options := storage.ApplyOptions{
-		Upsert:     true,
-		TTLSeconds: ttl,
+		Upsert: true,
+		TTL:    ttl,
 	}
 	if err := replacer.ReplaceDocumentWithOptions(ctx, spec, key, mongoDocument, options); err != nil {
 		return nil, false, err
@@ -367,8 +367,8 @@ func (s Strategy) loadMongoDocumentAndBackfillRedis(ctx context.Context, spec me
 		return document, exists, err
 	}
 	options := storage.ApplyOptions{
-		Upsert:     true,
-		TTLSeconds: ttl,
+		Upsert: true,
+		TTL:    ttl,
 	}
 	if err := replacer.ReplaceDocumentWithOptions(ctx, spec, key, document, options); err != nil {
 		return nil, false, err
@@ -387,7 +387,7 @@ func releaseRecordLock(ctx context.Context, lock storage.RecordLock, result *err
 	}
 }
 
-func (s Strategy) redisBackfillTTL(spec meta.TypeSpec) (int64, error) {
+func (s Strategy) redisBackfillTTL(spec meta.TypeSpec) (time.Duration, error) {
 	ttl := spec.Storage.DelayDelete.Duration
 	if ttl <= 0 {
 		dirtyTTL, err := (Config{DirtyTTL: s.DirtyTTL}).validateDirtyTTL()
@@ -399,11 +399,10 @@ func (s Strategy) redisBackfillTTL(spec meta.TypeSpec) (int64, error) {
 		}
 		ttl = dirtyTTL
 	}
-	seconds := int64(ttl / time.Second)
-	if seconds <= 0 {
-		return 0, fmt.Errorf("fusion: redis backfill TTL must be at least 1s")
+	if err := storage.ValidateExpiringTTL(ttl); err != nil {
+		return 0, fmt.Errorf("fusion: redis backfill TTL: %w", err)
 	}
-	return seconds, nil
+	return ttl, nil
 }
 
 func (s Strategy) loadRedisDocumentsOneByOne(ctx context.Context, spec meta.TypeSpec, keys []storage.RecordKey, loader storage.DocumentLoader, docs []map[string]any, exists []bool, missingIndexes *[]int, missingKeys *[]storage.RecordKey, fields ...string) error {

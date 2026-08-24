@@ -88,14 +88,19 @@ func TestUpdateLuaScriptKeepsVersionKeyLifecycleInSync(t *testing.T) {
 	}
 	text := string(updateBody)
 	for _, want := range []string{
-		"redis.call(\"expire\", vkey, ttl)",
+		"redis.call(\"pexpire\", vkey, ttl)",
 		"redis.call(\"persist\", vkey)",
+		"redis.call(\"pttl\", key)",
+		"redis.call(\"psetex\", k, ttl, v)",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("update script does not synchronize version key lifecycle: missing %q", want)
 		}
 	}
-	if strings.Contains(text, "redis.call(\"expire\", vkey, 60)") {
+	if strings.Contains(text, "redis.call(\"expire\"") || strings.Contains(text, "redis.call(\"setex\"") || strings.Contains(text, "redis.call(\"ttl\"") {
+		t.Fatalf("update script must use millisecond TTL commands")
+	}
+	if strings.Contains(text, "redis.call(\"pexpire\", vkey, 60000)") {
 		t.Fatalf("update script must not use a fixed version key ttl")
 	}
 }

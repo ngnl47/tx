@@ -53,7 +53,7 @@
 - `Op` 表示一条变更的操作语义，例如 `OpSet`、`OpReplace`、`OpDelete`、`OpClear`。
 - `ops` 保存 `Op`；`dirty` 只用于布尔脏状态、脏子节点索引或脏通知。
 - 同步原语以职责命名。事务锁表使用 `contextMutex`，内部容量为一的 channel 只叫 `permit`，调用方不感知 channel 实现。
-- 时间、容量和字节配置在名字中写清单位或口径，例如 `TTLSeconds`、`MaxBacklogMessages`、`HeapSoftLimitBytes`。
+- 时间优先使用 `time.Duration` 固化单位；容量和字节配置在名字中写清口径，例如 `MaxBacklogMessages`、`HeapSoftLimitBytes`。
 - JSON、BSON、Msgpack 属于字段命名体系；Redis、Mongo 属于使用这些名称的存储边界，不为存储边界重复生成字段名身份。
 
 公开名称一旦让调用者误解职责，应直接修正并同步生成代码和文档；当前工程不为未发布的中间名称保留兼容别名。
@@ -1254,7 +1254,7 @@ RecordLock 以 Redis `PX` 保存租约，运行时只接受至少 `1ms` 的 TTL�
 
 第 4 步只在 `delayDelTime > 0` 时执行；零值或 `-1` 表示不缩短，保留 `dirtyTTL` 作为最终兜底。
 
-`dirtyTTL` 默认 30 天，并在 Fusion CMod 预检阶段对全部生成 TypeSpec 做配置校验：它必须至少为一秒，且严格大于每个 Fusion 类型的 `delaySaveTime` 和 `delayDelTime`。该规则保证正常调度下任务到期和确认后保留窗口都小于安全 TTL；它不是无限期持久化。Mongo 或 Fusion 延迟任务队列故障时，Scheduler 持续重试并记录错误；若故障超过 `dirtyTTL`，Redis 可以自然淘汰数据。保存任务读取不到对应 Redis 文档时返回 `storage.ErrNotExists` 并保留任务，不能静默视为成功。
+`dirtyTTL` 默认 30 天，并在 Fusion CMod 预检阶段对全部生成 TypeSpec 做配置校验：它必须至少为 `1ms`、使用整毫秒，并且严格大于每个 Fusion 类型的 `delaySaveTime` 和 `delayDelTime`。该规则保证正常调度下任务到期和确认后保留窗口都小于安全 TTL；它不是无限期持久化。配置层、TypeSpec、生成 Store 和 runtime 始终传递 `time.Duration`，只有 Redis adapter 在 I/O 边界转换为毫秒整数并调用 `PTTL/PEXPIRE/PSETEX`；txgen、Fusion 与 Redis 复用 `storage.ValidateExpiringTTL`，不能各自截断或取整。Mongo 或 Fusion 延迟任务队列故障时，Scheduler 持续重试并记录错误；若故障超过 `dirtyTTL`，Redis 可以自然淘汰数据。保存任务读取不到对应 Redis 文档时返回 `storage.ErrNotExists` 并保留任务，不能静默视为成功。
 
 ### 健康闸门
 

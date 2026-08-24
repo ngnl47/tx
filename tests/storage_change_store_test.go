@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/meta"
@@ -70,7 +71,7 @@ func TestStorageCreateAppliesWholeStoreAndForcesUpsert(t *testing.T) {
 	store := &testChangeStore{
 		spec:     meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{FullName: "GDRole"}}},
 		key:      storage.RecordKey{ID: int64(1001)},
-		defaults: storage.ApplyOptions{TTLSeconds: 600},
+		defaults: storage.ApplyOptions{TTL: 10 * time.Minute},
 	}
 	applier := &recordingChangeStoreApplier{}
 
@@ -83,7 +84,7 @@ func TestStorageCreateAppliesWholeStoreAndForcesUpsert(t *testing.T) {
 	if store.cleared != 1 {
 		t.Fatalf("ClearChanges calls = %d, want 1", store.cleared)
 	}
-	if !applier.hasOptions || !applier.options.Upsert || applier.options.TTLSeconds != 600 {
+	if !applier.hasOptions || !applier.options.Upsert || applier.options.TTL != 10*time.Minute {
 		t.Fatalf("options = %#v hasOptions=%v, want upsert with default TTL", applier.options, applier.hasOptions)
 	}
 	if len(applier.changes) != 1 {
@@ -97,11 +98,11 @@ func TestStorageSaveAppliesDirtyChangesAndForcesNonUpsert(t *testing.T) {
 		spec:     meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{FullName: "GDRole"}}},
 		key:      storage.RecordKey{ID: int64(1001)},
 		changes:  recordedChanges{item},
-		defaults: storage.ApplyOptions{TTLSeconds: 600},
+		defaults: storage.ApplyOptions{TTL: 10 * time.Minute},
 	}
 	applier := &recordingChangeStoreApplier{}
 
-	if err := storage.SaveWithOptions(context.Background(), applier, store, storage.ApplyOptions{Upsert: true, TTLSeconds: 120}); err != nil {
+	if err := storage.SaveWithOptions(context.Background(), applier, store, storage.ApplyOptions{Upsert: true, TTL: 2 * time.Minute}); err != nil {
 		t.Fatalf("SaveWithOptions returned error: %v", err)
 	}
 	if store.allTouched != 0 {
@@ -110,7 +111,7 @@ func TestStorageSaveAppliesDirtyChangesAndForcesNonUpsert(t *testing.T) {
 	if store.cleared != 1 {
 		t.Fatalf("ClearChanges calls = %d, want 1", store.cleared)
 	}
-	if !applier.hasOptions || applier.options.Upsert || applier.options.TTLSeconds != 120 {
+	if !applier.hasOptions || applier.options.Upsert || applier.options.TTL != 2*time.Minute {
 		t.Fatalf("options = %#v hasOptions=%v, want non-upsert with explicit TTL", applier.options, applier.hasOptions)
 	}
 	if len(applier.changes) != 1 || applier.changes[0].Path != item.Path {

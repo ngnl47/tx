@@ -12,8 +12,11 @@ import (
 
 // ApplyOptions 描述变更落地时可选的通用写入语义。
 type ApplyOptions struct {
-	Upsert     bool
-	TTLSeconds int64
+	// Upsert 由 Create/Save 等框架入口收敛，业务调用方不应自行推断。
+	Upsert bool
+	// TTL 控制支持过期语义的后端：正数表示续期，零值保留默认策略，负数表示持久化。
+	// 正数 TTL 必须至少为 1ms 且使用整毫秒。
+	TTL time.Duration
 }
 
 // ChangeApplier 定义支持规范化变更流直连落地的适配器。
@@ -108,8 +111,8 @@ func SaveWithOptions(ctx context.Context, applier ChangeApplier, store ChangeSto
 
 func mergeApplyOptions(defaults ApplyOptions, explicit ApplyOptions) ApplyOptions {
 	out := explicit
-	if out.TTLSeconds == 0 {
-		out.TTLSeconds = defaults.TTLSeconds
+	if out.TTL == 0 {
+		out.TTL = defaults.TTL
 	}
 	return out
 }

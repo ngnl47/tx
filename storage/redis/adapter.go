@@ -111,7 +111,11 @@ func (a *Adapter) evalDocumentPatchesWithOptions(ctx context.Context, spec meta.
 		return "", "", err
 	}
 	prefix := redisKeyPrefix(spec, key)
-	if options.TTLSeconds != 0 {
+	ttlMilliseconds, err := applyTTLMilliseconds(options.TTL)
+	if err != nil {
+		return "", prefix, fmt.Errorf("redis: apply changes %s: %w", prefix, err)
+	}
+	if options.TTL != 0 {
 		ensureTTLOnlyPatches(spec, patches)
 	}
 	args := make([]any, 0, len(patches)*3+2)
@@ -134,7 +138,7 @@ func (a *Adapter) evalDocumentPatchesWithOptions(ctx context.Context, spec meta.
 	if options.Upsert {
 		upsert = scriptFlagTrue
 	}
-	args = append(args, upsert, strconv.FormatInt(options.TTLSeconds, 10))
+	args = append(args, upsert, strconv.FormatInt(ttlMilliseconds, 10))
 	result, err := client.Eval(ctx, updateDocumentScript, []string{prefix}, args...)
 	if err != nil {
 		return "", prefix, fmt.Errorf("redis: apply changes %s: %w", prefix, err)
@@ -214,15 +218,16 @@ func (a *Adapter) ApplyTTLWithRevision(ctx context.Context, spec meta.TypeSpec, 
 	if !isRecordRevision(expectedRevision) {
 		return false, "", fmt.Errorf("redis: update document TTL %s: missing record revision", prefix)
 	}
-	if ttl <= 0 || ttl.Milliseconds() <= 0 {
-		return false, "", fmt.Errorf("redis: update document TTL %s: TTL must be at least 1ms", prefix)
+	ttlMilliseconds, err := positiveTTLMilliseconds(ttl)
+	if err != nil {
+		return false, "", fmt.Errorf("redis: update document TTL %s: %w", prefix, err)
 	}
 	result, err := client.Eval(
 		ctx,
 		expireDocumentScript,
 		redisDeleteKeys(spec, prefix),
 		expectedRevision,
-		ttl.Milliseconds(),
+		ttlMilliseconds,
 	)
 	if err != nil {
 		return false, "", fmt.Errorf("redis: update document TTL %s: %w", prefix, err)
@@ -260,15 +265,16 @@ func (a *Adapter) LockRecord(ctx context.Context, spec meta.TypeSpec, key storag
 	if ttl <= 0 {
 		return nil, fmt.Errorf("redis: lock ttl must be greater than 0")
 	}
-	if ttl < time.Millisecond {
-		return nil, fmt.Errorf("redis: lock ttl must be at least 1ms")
+	ttlMilliseconds, err := positiveTTLMilliseconds(ttl)
+	if err != nil {
+		return nil, fmt.Errorf("redis: lock record: %w", err)
 	}
 	wait := options.Wait
 	lockKey := redisKeyPrefix(spec, key) + "@lock"
 	token := newLockToken()
 	deadline := time.Now().Add(wait)
 	for {
-		result, err := client.Eval(ctx, lockRecordScript, []string{lockKey}, token, ttl.Milliseconds())
+		result, err := client.Eval(ctx, lockRecordScript, []string{lockKey}, token, ttlMilliseconds)
 		if err != nil {
 			return nil, fmt.Errorf("redis: lock record %s: %w", lockKey, err)
 		}
@@ -289,6 +295,23 @@ func (a *Adapter) LockRecord(ctx context.Context, spec meta.TypeSpec, key storag
 		case <-timer.C:
 		}
 	}
+}
+
+func applyTTLMilliseconds(ttl time.Duration) (int64, error) {
+	if ttl < 0 {
+		return -1, nil
+	}
+	if ttl == 0 {
+		return 0, nil
+	}
+	return positiveTTLMilliseconds(ttl)
+}
+
+func positiveTTLMilliseconds(ttl time.Duration) (int64, error) {
+	if err := storage.ValidateExpiringTTL(ttl); err != nil {
+		return 0, err
+	}
+	return ttl.Milliseconds(), nil
 }
 
 func (l *recordLock) Unlock(ctx context.Context) error {

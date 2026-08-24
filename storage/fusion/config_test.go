@@ -74,10 +74,10 @@ func TestConfigUsesThirtyDayDefaultDirtyTTL(t *testing.T) {
 	}
 }
 
-func TestConfigRejectsDirtyTTLBelowRedisSecondPrecision(t *testing.T) {
+func TestConfigRejectsDirtyTTLBelowRedisMillisecondPrecision(t *testing.T) {
 	registry := meta.NewRegistry()
-	err := (Config{DirtyTTL: 500 * time.Millisecond}).Validate(registry)
-	if err == nil || !strings.Contains(err.Error(), "at least 1s") {
-		t.Fatalf("Validate error = %v, want Redis second precision error", err)
+	err := (Config{DirtyTTL: 500 * time.Microsecond}).Validate(registry)
+	if err == nil || !strings.Contains(err.Error(), "at least 1ms") {
+		t.Fatalf("Validate error = %v, want Redis millisecond precision error", err)
 	}
 }

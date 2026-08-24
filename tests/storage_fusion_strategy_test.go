@@ -244,23 +244,58 @@ func TestFusionStrategyUsesConfiguredSafetyTTLForDirtyRedisDocument(t *testing.T
 		changes,
 		testFieldNameResolver{},
 		testValueResolver{},
-		storage.ApplyOptions{TTLSeconds: 86400},
+		storage.ApplyOptions{TTL: 24 * time.Hour},
 	)
 	if err != nil {
 		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
 	}
-	if redis.options.TTLSeconds != int64((7*24*time.Hour)/time.Second) {
-		t.Fatalf("Redis TTLSeconds = %d, want seven-day safety TTL", redis.options.TTLSeconds)
+	if redis.options.TTL != 7*24*time.Hour {
+		t.Fatalf("Redis TTL = %s, want seven-day safety TTL", redis.options.TTL)
 	}
 }
 
-func TestFusionStrategyRejectsDirtyTTLBelowRedisSecondPrecision(t *testing.T) {
+func TestFusionStrategyPreservesDirtyTTLMillisecondPrecision(t *testing.T) {
 	redis := &recordingApplier{}
 	strategy := fusion.Strategy{
 		RedisApplier:   redis,
 		MongoLoader:    &recordingDocumentLoader{},
 		DelaySubmitter: &recordingDelaySubmitter{},
-		DirtyTTL:       500 * time.Millisecond,
+		DirtyTTL:       1500 * time.Millisecond,
+	}
+	spec := meta.TypeSpec{
+		Type: fusionRoleType(),
+		Storage: meta.StorageSpec{
+			Mode:        meta.StorageModeFusion,
+			DelaySave:   meta.Duration{Duration: time.Second},
+			DelayDelete: meta.Duration{Duration: time.Second},
+		},
+	}
+	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
+
+	err := strategy.ApplyChangesWithOptions(
+		context.Background(),
+		spec,
+		storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001)},
+		changes,
+		testFieldNameResolver{},
+		testValueResolver{},
+		storage.ApplyOptions{},
+	)
+	if err != nil {
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
+	}
+	if redis.options.TTL != 1500*time.Millisecond {
+		t.Fatalf("Redis TTL = %s, want 1500ms", redis.options.TTL)
+	}
+}
+
+func TestFusionStrategyRejectsDirtyTTLBelowRedisMillisecondPrecision(t *testing.T) {
+	redis := &recordingApplier{}
+	strategy := fusion.Strategy{
+		RedisApplier:   redis,
+		MongoLoader:    &recordingDocumentLoader{},
+		DelaySubmitter: &recordingDelaySubmitter{},
+		DirtyTTL:       500 * time.Microsecond,
 	}
 	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
@@ -273,7 +308,7 @@ func TestFusionStrategyRejectsDirtyTTLBelowRedisSecondPrecision(t *testing.T) {
 		testValueResolver{},
 		storage.ApplyOptions{},
 	)
-	if err == nil || !strings.Contains(err.Error(), "at least 1s") {
+	if err == nil || !strings.Contains(err.Error(), "at least 1ms") {
 		t.Fatalf("ApplyChangesWithOptions error = %v, want dirty TTL precision error", err)
 	}
 	if redis.optionRuns != 0 {
@@ -554,14 +589,14 @@ func TestFusionStrategyScopesWriteOptionsToRedisAndOverridesBusinessTTL(t *testi
 	key := storage.RecordKey{TypeName: "data.GDRole", ID: int64(1001), ShardKey: int64(7)}
 	changes := recordedChanges{{Path: changePath(fieldNode(changeFieldName)), Op: change.OpSet}}
 
-	err := strategy.ApplyChangesWithOptions(context.Background(), spec, key, changes, testFieldNameResolver{}, testValueResolver{}, storage.ApplyOptions{Upsert: true, TTLSeconds: 600})
+	err := strategy.ApplyChangesWithOptions(context.Background(), spec, key, changes, testFieldNameResolver{}, testValueResolver{}, storage.ApplyOptions{Upsert: true, TTL: 10 * time.Minute})
 	if err != nil {
 		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
 	}
 	if redis.optionRuns != 1 {
 		t.Fatalf("redis option calls = %d, want 1", redis.optionRuns)
 	}
-	if redis.options.TTLSeconds != int64((30*24*time.Hour)/time.Second) || !redis.options.Upsert {
+	if redis.options.TTL != 30*24*time.Hour || !redis.options.Upsert {
 		t.Fatalf("redis options = %#v, want configured dirty TTL and upsert", redis.options)
 	}
 	if redis.key != key {
@@ -737,7 +772,7 @@ func TestFusionStrategyLoadDocumentBackfillsRedisFromFullMongoFallback(t *testin
 	if len(mongo.fields) != 0 {
 		t.Fatalf("mongo fallback fields = %#v, want full document load", mongo.fields)
 	}
-	if replacer.calls != 1 || replacer.doc["power"] != int64(9) || replacer.options.TTLSeconds != int64(time.Hour/time.Second) {
+	if replacer.calls != 1 || replacer.doc["power"] != int64(9) || replacer.options.TTL != time.Hour {
 		t.Fatalf("redis backfill calls/doc/options = %d/%#v/%#v", replacer.calls, replacer.doc, replacer.options)
 	}
 }
@@ -904,8 +939,33 @@ func TestFusionStrategyLoadDocumentUsesDirtyTTLWhenDelayDeleteIsNotConfigured(t 
 	if !exists || doc["name"] != "cold" {
 		t.Fatalf("LoadDocument = %#v exists=%v, want Mongo document", doc, exists)
 	}
-	if replacer.calls != 1 || replacer.options.TTLSeconds != int64(fusion.DefaultDirtyTTL/time.Second) {
+	if replacer.calls != 1 || replacer.options.TTL != fusion.DefaultDirtyTTL {
 		t.Fatalf("redis backfill calls/options = %d/%#v, want default dirty TTL", replacer.calls, replacer.options)
+	}
+}
+
+func TestFusionStrategyPreservesBackfillTTLMillisecondPrecision(t *testing.T) {
+	redis := &recordingDocumentLoader{}
+	mongo := &recordingDocumentLoader{doc: map[string]any{"name": "cold"}, exists: true}
+	replacer := &recordingDocumentReplacerWithOptions{}
+	locker := &recordingRecordLocker{}
+	strategy := fusion.Strategy{RedisLoader: redis, RedisReplacer: replacer, RedisLocker: locker, MongoLoader: mongo}
+	spec := meta.TypeSpec{
+		Type: fusionRoleType(),
+		Storage: meta.StorageSpec{
+			DelayDelete: meta.Duration{Duration: 1500 * time.Millisecond},
+		},
+	}
+
+	_, exists, err := strategy.LoadDocument(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, "Name")
+	if err != nil {
+		t.Fatalf("LoadDocument returned error: %v", err)
+	}
+	if !exists {
+		t.Fatal("LoadDocument exists = false, want Mongo document")
+	}
+	if replacer.calls != 1 || replacer.options.TTL != 1500*time.Millisecond {
+		t.Fatalf("redis backfill calls/options = %d/%#v, want 1500ms", replacer.calls, replacer.options)
 	}
 }
 
@@ -994,7 +1054,7 @@ func TestFusionStrategyLoadDocumentsBackfillsRedisFromFullMongoFallback(t *testi
 	if len(mongo.fields) != 0 {
 		t.Fatalf("mongo fallback fields = %#v, want full document load", mongo.fields)
 	}
-	if locker.calls != 2 || replacer.calls != 2 || replacer.options.TTLSeconds != int64(time.Hour/time.Second) {
+	if locker.calls != 2 || replacer.calls != 2 || replacer.options.TTL != time.Hour {
 		t.Fatalf("lock/backfill calls/options = %d/%d/%#v", locker.calls, replacer.calls, replacer.options)
 	}
 }
@@ -1034,7 +1094,7 @@ func TestFusionStrategyLoadDocumentsBatchBackfillsFromMongo(t *testing.T) {
 	if len(mongo.fields) != 0 {
 		t.Fatalf("mongo batch fallback fields = %#v, want full document load", mongo.fields)
 	}
-	if locker.calls != 2 || replacer.calls != 2 || replacer.options.TTLSeconds != int64(time.Hour/time.Second) {
+	if locker.calls != 2 || replacer.calls != 2 || replacer.options.TTL != time.Hour {
 		t.Fatalf("lock/backfill calls/options = %d/%d/%#v", locker.calls, replacer.calls, replacer.options)
 	}
 }
