@@ -3607,7 +3607,7 @@ if err := db.Save(role); err != nil {
 
 第一次 lease 完成后，队列仍会产生一次后续回写；后续 worker 重新读取 Redis 当前热文档，最终让 Mongo 收敛到 `during-worker`。业务 API 不需要感知 lease 或手工重排任务。
 
-Fusion 延迟发布入口只接受 `DelayedSave`，调用方不再填写恒为 `save` 的动作字段。任务类型只来自 `DelayedSave.Type`；`RecordKey` 只保存 `ID` 和 route/shard key，不承担类型识别。持久化 task backend 与 `StorageTaskHandler` 消费入口仍会统一校验 `Type`、`ID`、`Action`：空白类型/动作、nil ID 与空字符串 ID 都返回 `task.ErrInvalidDelayTask`，未知 action 也会明确失败，防止手工写入或损坏任务落到存储层。`Complete`、`Retry` 额外要求有效的任务租约 token 和正数尝试次数；格式完整但已过期的任务租约仍按幂等 no-op 处理。Fusion 延迟保存按类型、记录 ID 和 route/shard key 生成一条合并任务，不暴露额外 suffix，避免同一记录产生多条重复保存任务。任务不携带业务对象或 Store 变更状态，回写时重新读取 Redis 当前热数据。Redis claim 发现损坏或不完整的任务载荷同样返回错误，不会把它当成可执行任务；如果 `due` 中存在任务但对应 `payload` 任务载荷缺失，整批 claim 会在创建任何任务租约前失败，并保留原到期状态供运维修复，绝不会静默删除持久化任务。
+Fusion 延迟发布入口只接受 `DelayedSave`，调用方不再填写恒为 `save` 的动作字段。任务类型只来自 `DelayedSave.Type`；`RecordKey` 只保存 `ID` 和 route/shard key，不承担类型识别。持久化 task backend 与 `StorageTaskHandler` 消费入口仍会统一校验 `Type`、`ID`、`Action`：空白类型/动作、nil ID、空字符串 ID，以及不是 Go 内建 string/整数标量的 ID 或 route/shard key 都返回 `task.ErrInvalidDelayTask`；未知 action 也会明确失败，防止手工写入或损坏任务落到存储层。`Complete`、`Retry` 额外要求有效的任务租约 token 和正数尝试次数；格式完整但已过期的任务租约仍按幂等 no-op 处理。Fusion 延迟保存按类型、记录 ID 和 route/shard key 生成一条合并任务，不暴露额外 suffix，避免同一记录产生多条重复保存任务。任务不携带业务对象或 Store 变更状态，回写时重新读取 Redis 当前热数据。Redis claim 发现损坏或不完整的任务载荷同样返回错误，不会把它当成可执行任务；如果 `due` 中存在任务但对应 `payload` 任务载荷缺失，整批 claim 会在创建任何任务租约前失败，并保留原到期状态供运维修复，绝不会静默删除持久化任务。
 
 高级装配或测试替身只需要描述保存目标和到期时间：
 
@@ -3621,9 +3621,21 @@ err := queue.Enqueue(ctx, fusion.DelayedSave{
 
 常规业务仍只调用 `db.Save(role)`；延迟保存任务由框架在 Redis 热写成功后生成。
 
-数值定位在 Redis 任务载荷中精确往返。比如业务使用
-`uint64(9223372036854775809)` 作为记录 ID 时，claim 后仍得到同一个 `uint64`；框架不会先转成
-`float64` 再舍入，否则 `Complete` 会计算出另一个幂等任务键并让原 lease 无法正常结算。
+Redis 任务载荷会分别记录定位值的标量类型和十进制文本，claim 后恢复完全相同的 Go 动态类型。例如：
+
+```go
+item := task.DelayTask{
+	Type:     "data.GDRole",
+	ID:       uint32(47001),
+	ShardKey: int16(7),
+	Action:   "save",
+}
+```
+
+这条任务往返 Redis 后，`ID` 仍是 `uint32`，`ShardKey` 仍是 `int16`；`uint64(9223372036854775809)`
+也不会先转成 `float64` 再舍入。任务幂等键同时包含标量类型，所以 `int32(1)`、`int64(1)`、`uint32(1)`
+和字符串 `"1"` 不会互相碰撞。txgen 会在生成期限制存储 `idField` 和 `routeBy` 使用 Go 内建 string/整数，避免任务恢复后无法重建自定义具名类型。
+
 Fusion 保存路径要求 Redis change applier、Mongo document loader 与本地延迟任务分发器完整装配；缺少任一项时，非空变更会在 Redis I/O 前返回错误。延迟任务执行还要求 handler、Redis 文档读取、Mongo replace、revision 条件 TTL 和记录锁组件完整可用。`Strategy.Validate()` 会汇总检查这些依赖；标准 `server` 在 Redis/Mongo 探活后创建并启动分发器与 Scheduler，任一装配或启动失败都不会继续启动业务服务。`Scheduler.Start` 返回 `error`，项目启动代码必须处理：
 
 ```go

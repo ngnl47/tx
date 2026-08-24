@@ -190,6 +190,18 @@ func TestMemoryDelayTaskBackendKeepsColonDelimitedLocatorsDistinct(t *testing.T)
 	}
 }
 
+func TestDelayTaskIdempotencyKeyDistinguishesScalarTypes(t *testing.T) {
+	seen := make(map[string]any)
+	for _, id := range []any{int32(1), int64(1), uint32(1), uint64(1), "1"} {
+		item := task.DelayTask{Type: "role", ID: id, Action: "save"}
+		key := item.IdempotencyKey()
+		if previous, exists := seen[key]; exists {
+			t.Fatalf("idempotency key %q collides for %T and %T", key, previous, id)
+		}
+		seen[key] = id
+	}
+}
+
 func TestMemoryDelayTaskBackendRejectsIncompleteTask(t *testing.T) {
 	backend := memory.NewBackend()
 	for _, item := range []task.DelayTask{
@@ -197,6 +209,8 @@ func TestMemoryDelayTaskBackendRejectsIncompleteTask(t *testing.T) {
 		{Type: "role", Action: "save"},
 		{Type: "role", ID: "1"},
 		{Type: "role", ID: "", Action: "save"},
+		{Type: "role", ID: struct{ Value int }{Value: 1}, Action: "save"},
+		{Type: "role", ID: "1", ShardKey: struct{ Value int }{Value: 1}, Action: "save"},
 	} {
 		if err := backend.Enqueue(context.Background(), item); err == nil {
 			t.Fatalf("Enqueue(%#v) error = nil, want invalid task error", item)

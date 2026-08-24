@@ -208,6 +208,8 @@ func TestRedisDelayTaskBackendRejectsIncompleteTask(t *testing.T) {
 		{Type: "role", Action: "save"},
 		{Type: "role", ID: "1"},
 		{Type: "role", ID: "", Action: "save"},
+		{Type: "role", ID: struct{ Value int }{Value: 1}, Action: "save"},
+		{Type: "role", ID: "1", ShardKey: struct{ Value int }{Value: 1}, Action: "save"},
 	} {
 		if err := backend.Enqueue(context.Background(), item); err == nil {
 			t.Fatalf("Enqueue(%#v) error = nil, want invalid task error", item)
@@ -513,23 +515,31 @@ func TestRedisDelayTaskBackendUsesBucketHashTagKeys(t *testing.T) {
 }
 
 func TestRedisDelayTaskBackendPreservesNumericRecordKey(t *testing.T) {
-	ctx := context.Background()
-	client := newFakeTaskRedis()
-	backend := taskredis.NewBackend(client, taskredis.Options{Prefix: "tx:test", BucketCount: 8, LeaseTimeout: time.Minute})
-	now := time.Unix(100, 0)
+	values := []any{
+		int(1), int8(2), int16(3), int32(4), int64(5),
+		uint(6), uint8(7), uint16(8), uint32(9), uint64(10),
+	}
+	for _, value := range values {
+		t.Run(fmt.Sprintf("%T", value), func(t *testing.T) {
+			ctx := context.Background()
+			client := newFakeTaskRedis()
+			backend := taskredis.NewBackend(client, taskredis.Options{Prefix: "tx:test", BucketCount: 8, LeaseTimeout: time.Minute})
+			now := time.Unix(100, 0)
 
-	if err := backend.Enqueue(ctx, task.DelayTask{Type: "role", ID: int64(1001), ShardKey: int64(7), Action: "save", DueAt: now}); err != nil {
-		t.Fatalf("Enqueue returned error: %v", err)
-	}
-	leases, err := backend.ClaimDue(ctx, now, 10)
-	if err != nil {
-		t.Fatalf("ClaimDue returned error: %v", err)
-	}
-	if len(leases) != 1 {
-		t.Fatalf("leases = %#v, want one", leases)
-	}
-	if leases[0].Task.ID != int64(1001) || leases[0].Task.ShardKey != int64(7) {
-		t.Fatalf("task key = %#v/%#v, want int64 values", leases[0].Task.ID, leases[0].Task.ShardKey)
+			if err := backend.Enqueue(ctx, task.DelayTask{Type: "role", ID: value, ShardKey: value, Action: "save", DueAt: now}); err != nil {
+				t.Fatalf("Enqueue returned error: %v", err)
+			}
+			leases, err := backend.ClaimDue(ctx, now, 10)
+			if err != nil {
+				t.Fatalf("ClaimDue returned error: %v", err)
+			}
+			if len(leases) != 1 {
+				t.Fatalf("leases = %#v, want one", leases)
+			}
+			if leases[0].Task.ID != value || leases[0].Task.ShardKey != value {
+				t.Fatalf("task key = %#v/%#v (%T/%T), want %#v (%T)", leases[0].Task.ID, leases[0].Task.ShardKey, leases[0].Task.ID, leases[0].Task.ShardKey, value, value)
+			}
+		})
 	}
 }
 

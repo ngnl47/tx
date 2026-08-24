@@ -1249,10 +1249,12 @@ Fusion Drain -> Redis delayed task backend 确认接收
 
 这个方案仍接受一个明确故障窗口：进程在 Redis 热写成功、任务持久化成功之前异常退出，或排空超时后被终止，本地 pending 不可恢复。选择该边界是为了避免每次热写增加持久化索引 I/O、全槽扫描、启动选举和容量闸门。正确性要求转化为两条可运维契约：进程存活时发布失败绝不静默；正常关闭必须先尝试排空；异常退出或排空超时时应排查根因，而不是依赖框架用更复杂的旁路协议掩盖崩溃。
 
-任务载荷使用 JSON 保存定位信息，但数值恢复不能经过有损 `float64`。Redis backend 先恢复
-`int64`，超过 `int64` 上限的非负整数再精确恢复为 `uint64`；例如
-`9223372036854775809` 在 claim、complete 和 retry 全链路中必须保持同一个幂等任务键，不能舍入为
-`9223372036854775808` 或科学计数形式。
+任务载荷使用 JSON 保存定位信息，但 `ID` 与可选 `ShardKey` 不是裸 JSON number。线格式分别记录
+`kind` 和十进制 `value`，claim 时据此恢复 `int/int8/int16/int32/int64/uint/uint8/uint16/uint32/uint64`
+或 `string` 的原始 Go 动态类型。任务幂等键同样包含 `kind`，因此数值相同但 Go 类型不同的记录键不会碰撞。
+例如 `uint32(7)` 不能恢复成 `int64(7)`；`uint64(9223372036854775809)` 在 claim、complete 和 retry
+全链路中也必须保持同一个类型和值，不能舍入或改写为科学计数形式。其他动态类型在 backend I/O 前失败，
+存储根的 `idField/routeBy` 则由 txgen 在生成期限制为 Go 内建 string/整数，runtime 不负责猜测具名类型。
 
 ### at-least-once
 

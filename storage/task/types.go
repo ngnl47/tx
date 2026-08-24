@@ -24,8 +24,9 @@ type DelayTask struct {
 	DueAt     time.Time
 }
 
-// ValidateDelayTask 校验延迟任务的稳定定位字段。ShardKey 与 DueAt 由不同后端
-// 自行解释，允许为空；Type、ID 和 Action 缺失会让任务无法可靠消费或去重。
+// ValidateDelayTask 校验延迟任务的稳定定位字段。ID 和可选的 ShardKey
+// 只接受内置 string/整数标量，保证任务持久化后仍能恢复原始键类型；
+// DueAt 由不同后端自行解释，Type、ID 和 Action 缺失会让任务无法可靠消费或去重。
 func ValidateDelayTask(item DelayTask) error {
 	if strings.TrimSpace(item.Type) == "" {
 		return fmt.Errorf("%w: missing type", ErrInvalidDelayTask)
@@ -35,6 +36,14 @@ func ValidateDelayTask(item DelayTask) error {
 	}
 	if value, ok := item.ID.(string); ok && strings.TrimSpace(value) == "" {
 		return fmt.Errorf("%w: empty string id", ErrInvalidDelayTask)
+	}
+	if err := validateTaskScalar(item.ID); err != nil {
+		return fmt.Errorf("%w: invalid id: %v", ErrInvalidDelayTask, err)
+	}
+	if !isNilTaskID(item.ShardKey) {
+		if err := validateTaskScalar(item.ShardKey); err != nil {
+			return fmt.Errorf("%w: invalid shard key: %v", ErrInvalidDelayTask, err)
+		}
 	}
 	if strings.TrimSpace(item.Action) == "" {
 		return fmt.Errorf("%w: missing action", ErrInvalidDelayTask)
@@ -57,7 +66,7 @@ func isNilTaskID(value any) bool {
 
 // IdempotencyKey 根据记录定位和动作生成无歧义的任务标识。
 func (t DelayTask) IdempotencyKey() string {
-	parts := []string{t.Type, fmt.Sprint(t.ID), fmt.Sprint(t.ShardKey), t.Action}
+	parts := []string{t.Type, taskScalarIdentity(t.ID), taskScalarIdentity(t.ShardKey), t.Action}
 	if t.KeySuffix != "" {
 		parts = append(parts, t.KeySuffix)
 	}

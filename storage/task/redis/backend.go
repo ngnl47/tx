@@ -261,7 +261,6 @@ func unixMillis(t time.Time) int64 {
 
 func decodeDelayTask(body string) (task.DelayTask, error) {
 	decoder := json.NewDecoder(bytes.NewBufferString(body))
-	decoder.UseNumber()
 	var item task.DelayTask
 	if err := decoder.Decode(&item); err != nil {
 		return task.DelayTask{}, err
@@ -272,29 +271,10 @@ func decodeDelayTask(body string) (task.DelayTask, error) {
 		}
 		return task.DelayTask{}, fmt.Errorf("invalid trailing JSON: %w", err)
 	}
-	item.ID = normalizeJSONNumber(item.ID)
-	item.ShardKey = normalizeJSONNumber(item.ShardKey)
 	if err := task.ValidateDelayTask(item); err != nil {
 		return task.DelayTask{}, err
 	}
 	return item, nil
-}
-
-func normalizeJSONNumber(value any) any {
-	number, ok := value.(json.Number)
-	if !ok {
-		return value
-	}
-	if i, err := number.Int64(); err == nil {
-		return i
-	}
-	if u, err := strconv.ParseUint(string(number), 10, 64); err == nil {
-		return u
-	}
-	if f, err := number.Float64(); err == nil {
-		return f
-	}
-	return string(number)
 }
 
 func isNilScriptClient(client ScriptClient) bool {
