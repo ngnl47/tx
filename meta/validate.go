@@ -22,9 +22,15 @@ func Validate(spec TypeSpec, astType TypeSpec) error {
 		if spec.Redis == nil {
 			return fmt.Errorf("%w: redis", ErrMissingConfig)
 		}
+		if spec.Mongo != nil {
+			return fmt.Errorf("meta: storage.mode %q must not declare mongodb config", spec.Storage.Mode)
+		}
 	case StorageModeMongo:
 		if spec.Mongo == nil {
 			return fmt.Errorf("%w: mongodb", ErrMissingConfig)
+		}
+		if spec.Redis != nil {
+			return fmt.Errorf("meta: storage.mode %q must not declare redis config", spec.Storage.Mode)
 		}
 	case StorageModeFusion:
 		if spec.Redis == nil || spec.Mongo == nil {

@@ -1407,6 +1407,11 @@ mongodb:"index,unique,expireAfter:0"
 | `@mongodb` | `collection` | 是 | 字符串 | Mongo collection 名称。别名：`c`、`col`。 |
 | `@mongodb` | `enableSharding` | 否 | flag 或布尔字符串 | 标记该 collection 开启分片语义；当前主要进入元数据。 |
 
+`storage.mode` 与 type 级 backend 注解必须严格对应：`redis` 只能声明 `@redis`，`mongo` 只能声明
+`@mongodb`，只有 `fusion` 可以同时声明两者。字段上的 `json`、`bson`、`msgpack` tag 是序列化名称，始终可以
+按业务协议填写，不代表启用了对应存储 backend。例如 `mode:"redis"` 的结构仍可声明 `bson:"roleId"`，但不能
+再声明 type 级 `@mongodb`。
+
 `redis.routeType`、`redis.key`、`mongodb.routeType` 和 `mongodb.collection` 都是持久化定位契约，必须填写
 非空且没有首尾空白的原始文本。元数据校验不会自动补默认值或调用 `TrimSpace` 修正拼写；下面的定义会在
 txgen 扫描阶段失败；高级调用方手工构造完整存储元数据时也应调用 `meta.Validate`，不要把错误拖到首次

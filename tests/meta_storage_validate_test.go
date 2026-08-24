@@ -114,6 +114,34 @@ func TestValidateRejectsFusionWithoutBothStores(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsBackendOutsideStorageMode(t *testing.T) {
+	tests := []struct {
+		name       string
+		mode       meta.StorageMode
+		unexpected string
+	}{
+		{name: "redis mode with mongodb", mode: meta.StorageModeRedis, unexpected: "mongodb"},
+		{name: "mongo mode with redis", mode: meta.StorageModeMongo, unexpected: "redis"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := fusionIdentitySpec()
+			spec.Storage.Mode = tt.mode
+
+			err := meta.Validate(spec, spec)
+			if err == nil {
+				t.Fatal("Validate returned nil, want backend conflict error")
+			}
+			for _, want := range []string{"storage.mode", string(tt.mode), tt.unexpected} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("err = %q, want it to contain %q", err, want)
+				}
+			}
+		})
+	}
+}
+
 func TestValidateRejectsFusionWithDifferentIDFields(t *testing.T) {
 	spec := fusionIdentitySpec()
 	spec.Mongo.IDField = "AccountId"
