@@ -123,7 +123,7 @@ Redis / Mongo / etcd / gRPC / Actor
 | `WAL()` | `wal.Store` | 追加恢复记录、连续重放和 checkpoint 后清理 | backend、索引、连接和健康状态在 server |
 | `RPC()` | `rpc.Registrar` | 启动前注册 protobuf service、读取 endpoint | Serve/Stop 在共享 Host |
 | `Directory()` | `discovery.Directory` | 查询 running/指定实例快照 | watch 与 Replace 在 discovery runtime |
-| `Actor()` | `actor.Messenger` | 解析 PID、单向或确认式投递 | Start/Shutdown/ActorSystem 在 actor runtime |
+| `Actor()` | `actor.Messenger` | 解析 PID、单向投递、接收确认和业务调用 | Start/Shutdown/ActorSystem 在 actor runtime |
 | `Transaction()` | `txn.Executor` | 执行 Procedure、登记标脏、读取待刷根对象数 | Start/Flush/Shutdown 在 server |
 
 门面返回专用 wrapper，而不是把具体指针仅仅窄化成接口。这样服务不能通过类型断言重新取得
@@ -218,9 +218,12 @@ DFS 解析器得到依赖闭包、稳定拓扑顺序、循环路径和缺失依�
 fusion-storage -> redis-storage, mongo-storage
 transaction -> fusion-storage
 delay-scheduler -> fusion-storage
-actor -> rpc, discovery
 wal -> mongo-storage
 ```
+
+Actor CMod 没有隐含普通 RPC 或服务发现依赖。ProtoActor Remote 与官方 etcd Cluster Provider 是 Actor Runtime
+自身的传输和成员能力；L4 服务若同时使用普通 gRPC 或 `ServiceDirectory`，必须显式声明对应 CMod，避免把两套
+独立通信拓扑错误耦合。
 
 启动固定执行“选择 L4 服务 -> 解析 CMod 闭包 -> 惰性转换闭包配置 -> 校验全部 CMod -> 按拓扑启动”。全部
 校验通过前不能建立连接、监听端口或启动 goroutine。停止时先排水和停止 L4，再反向排水 CMod，取消并等待根
@@ -1949,12 +1952,32 @@ Actor 间跨实例通信是网状直连，不经过 msgq 中继。msgq 只负责
 
 默认 Actor mailbox 有界且非阻塞：满时丢弃新消息，并在目标实例限频记录 overflow。普通 `Tell` 只表示本地 runtime 接受投递，不确认远端业务完成。
 
-`Confirm` 使用 RequestFuture 等待目标 Actor 取出消息并返回 Acceptance：
+Actor 对外固定四种投递语义：
 
-- 确认的是接收，不是业务成功。
-- 必须带 deadline。
-- 不应成为所有消息的默认路径。
-- 业务结果仍使用显式请求/响应协议。
+| API | 完成条件 | 适用场景 |
+| --- | --- | --- |
+| `Tell` | 本地 Runtime 接受投递 | 可丢通知、可由业务恢复的刷新 |
+| `TellAccepted` | 目标 Actor 从邮箱取出消息 | 少量需要确认送达邮箱、但不等待业务完成的命令 |
+| `CallFuture` | 立即返回本地 Future，稍后等待业务结果 | 可以并行完成其他工作的请求 |
+| `Call` | 等待业务结果 | 必须取得 RoomReady、创建结果或查询结果后才能继续的流程 |
+
+`TellAccepted` 的 Acceptance 在 receiver middleware 调用业务 Actor 之前返回；它不能代表业务成功。`Call` 复用
+`CallFuture + Await`，不能另建第二套请求协议。所有等待入口必须带 deadline，超时表示结果不确定，不能自动
+重试或切换 PID。取消一次 `Await` 只终止本地等待，不撤销已经投递的远端处理。
+
+protobuf `Delivery` 使用内部 `DeliveryMode` 和 `request_id` 区分三类线上信封；业务结果使用 `Result` 信封，错误由
+稳定 code 和诊断 message 表达。每个 Runtime 创建一个本地响应 Actor，把 Acceptance/Result 按 request ID 投递到
+有界 pending 表。pending 容量由 `MaxPendingCalls` 限制，context 使用 `AfterFunc` 到期清理，不为每个 Future 常驻
+等待 goroutine；Runtime 关闭会用 `ErrRuntimeStopped` 一次性完成所有 pending。
+
+L4 服务在 `server.Spec.ActorKinds` 中声明 Kind，L3 Server 自动将 Actor CMod 加入依赖闭包并在启动前拒绝重名。
+普通项目使用 `actor.NewKind`；只有需要 ProtoActor 自定义 Strategy 的高级项目才使用 `actor.AdaptKind`。底层
+`ActorSystem` 保留为高级扩展面，不属于常规业务调用链。
+
+2026-08-25 使用 Go 1.26.5 在 x86_64 macOS 上运行 `BenchmarkPendingCallsRoundTrip`，单次本地
+`add -> resolve -> Await` 约为 `0.78-0.86 us/op, 408 B/op, 6 allocs/op`。该基线包含 Future、完成通知、
+`context.AfterFunc` 和结果只读复制，不包含 Actor Remote 网络 I/O。当前不为这条低于网络开销的边界引入对象池；
+只有实际 profile 证明 pending 生命周期成为瓶颈时，才评审更复杂的复用方案。
 
 ### control 与滚动发布
 

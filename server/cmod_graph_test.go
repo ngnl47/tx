@@ -5,6 +5,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	protoactor "github.com/asynkron/protoactor-go/actor"
+	txactor "github.com/ngnl47/tx/modules/actor"
 )
 
 func TestResolveCModGraphReturnsStableDependencyOrder(t *testing.T) {
@@ -123,6 +126,40 @@ func TestResolveCModGraphEvaluatesConditionalRequirementsForSelectedServices(t *
 	}
 }
 
+func TestResolveCModGraphAddsActorForDeclaredKinds(t *testing.T) {
+	roomKind := txactor.MustKind("room", func() protoactor.Actor { return cmodActorFake{} })
+	selected := []Service{cmodServiceFake{spec: Spec{Name: "room", ActorKinds: []txactor.Kind{roomKind}}}}
+	cmods := []CMod{
+		cmodGraphFake{id: CModActor},
+	}
+
+	graph, err := resolveCModGraph(cmods, selected)
+	if err != nil {
+		t.Fatalf("resolve CMod graph: %v", err)
+	}
+	if want := []CModID{CModActor}; !slices.Equal(graph.IDs(), want) {
+		t.Fatalf("CMod order = %v, want %v", graph.IDs(), want)
+	}
+	kinds, err := collectActorKinds(selected)
+	if err != nil {
+		t.Fatalf("collect Actor kinds: %v", err)
+	}
+	if len(kinds) != 1 || kinds[0].Name() != "room" {
+		t.Fatalf("Actor kinds = %#v", kinds)
+	}
+}
+
+func TestCollectActorKindsRejectsDuplicateNames(t *testing.T) {
+	kind := txactor.MustKind("room", func() protoactor.Actor { return cmodActorFake{} })
+	services := []Service{
+		cmodServiceFake{spec: Spec{Name: "room-a", ActorKinds: []txactor.Kind{kind}}},
+		cmodServiceFake{spec: Spec{Name: "room-b", ActorKinds: []txactor.Kind{kind}}},
+	}
+	if _, err := collectActorKinds(services); err == nil || !strings.Contains(err.Error(), "duplicate Actor kind") {
+		t.Fatalf("collect Actor kinds error = %v", err)
+	}
+}
+
 type cmodGraphFake struct {
 	id       CModID
 	requires []CModID
@@ -154,3 +191,7 @@ func (fake *cmodConditionalServiceFake) RequiredCMods(ServiceSelection) ([]CModI
 	fake.calls++
 	return nil, fake.err
 }
+
+type cmodActorFake struct{}
+
+func (cmodActorFake) Receive(protoactor.Context) {}

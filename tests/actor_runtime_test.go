@@ -10,13 +10,11 @@ import (
 	"time"
 
 	protoactor "github.com/asynkron/protoactor-go/actor"
-	"github.com/asynkron/protoactor-go/cluster"
 	"github.com/ngnl47/tx/lifecycle"
 	txlog "github.com/ngnl47/tx/log"
 	txactor "github.com/ngnl47/tx/modules/actor"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 	txprotocol "github.com/ngnl47/tx/protocol"
-	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 func TestActorConfigNormalize(t *testing.T) {
@@ -43,6 +41,9 @@ func TestActorConfigNormalize(t *testing.T) {
 	}
 	if config.MailboxCapacity != txactor.DefaultMailboxCapacity {
 		t.Fatalf("Normalize() mailbox capacity = %d, want %d", config.MailboxCapacity, txactor.DefaultMailboxCapacity)
+	}
+	if config.MaxPendingCalls != txactor.DefaultMaxPendingCalls {
+		t.Fatalf("Normalize() max pending calls = %d, want %d", config.MaxPendingCalls, txactor.DefaultMaxPendingCalls)
 	}
 }
 
@@ -94,7 +95,7 @@ func TestActorRuntimeRejectsTellBeforeStart(t *testing.T) {
 	}
 }
 
-func TestActorRuntimeRejectsConfirmBeforeStart(t *testing.T) {
+func TestActorRuntimeRejectsAcceptedBeforeStart(t *testing.T) {
 	runtime, err := txactor.New(txactor.Config{
 		ClusterName: "game",
 		Host:        "127.0.0.1",
@@ -110,8 +111,27 @@ func TestActorRuntimeRejectsConfirmBeforeStart(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := runtime.TellConfirmed(ctx, pid, txactor.Delivery{MessageType: "battle.tick"}); !errors.Is(err, txactor.ErrRuntimeNotStarted) {
-		t.Fatalf("Confirm() error = %v, want ErrRuntimeNotStarted", err)
+	if err := runtime.TellAccepted(ctx, pid, txactor.Delivery{MessageType: "battle.tick"}); !errors.Is(err, txactor.ErrRuntimeNotStarted) {
+		t.Fatalf("TellAccepted() error = %v, want ErrRuntimeNotStarted", err)
+	}
+}
+
+func TestActorRuntimeRequiresCallDeadline(t *testing.T) {
+	runtime, err := txactor.New(txactor.Config{
+		ClusterName: "game",
+		Host:        "127.0.0.1",
+		Port:        9200,
+		Etcd:        txactor.EtcdConfig{Endpoints: []string{"127.0.0.1:2379"}},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	pid, err := txactor.FixedPID("127.0.0.1:9201", "battle-1001")
+	if err != nil {
+		t.Fatalf("FixedPID() error = %v", err)
+	}
+	if _, err := runtime.CallFuture(context.Background(), pid, txactor.Delivery{MessageType: "battle.tick"}); !errors.Is(err, txactor.ErrRequestDeadlineRequired) {
+		t.Fatalf("CallFuture() error = %v, want ErrRequestDeadlineRequired", err)
 	}
 }
 
@@ -148,6 +168,19 @@ func TestActorDeliveryRejectsInvalidMessage(t *testing.T) {
 	if _, err := txactor.DeliveryFromProto(&actorpb.Delivery{MessageType: " role.rename"}); !errors.Is(err, txactor.ErrInvalidDelivery) {
 		t.Fatalf("DeliveryFromProto() error = %v, want ErrInvalidDelivery", err)
 	}
+	if _, err := txactor.DeliveryFromProto(&actorpb.Delivery{
+		MessageType: "role.rename",
+		Mode:        actorpb.DeliveryMode_DELIVERY_MODE_CALL,
+	}); !errors.Is(err, txactor.ErrInvalidDelivery) {
+		t.Fatalf("DeliveryFromProto() missing request ID error = %v, want ErrInvalidDelivery", err)
+	}
+	if _, err := txactor.DeliveryFromProto(&actorpb.Delivery{
+		MessageType: "role.rename",
+		Mode:        actorpb.DeliveryMode_DELIVERY_MODE_TELL,
+		RequestId:   1,
+	}); !errors.Is(err, txactor.ErrInvalidDelivery) {
+		t.Fatalf("DeliveryFromProto() unexpected request ID error = %v, want ErrInvalidDelivery", err)
+	}
 }
 
 func TestActorRuntimeLifecycleIntegration(t *testing.T) {
@@ -157,6 +190,8 @@ func TestActorRuntimeLifecycleIntegration(t *testing.T) {
 	}
 	ctx := lifecycle.NewWaitGroupContext(context.Background())
 	received := make(chan txactor.Delivery, 3)
+	acceptedStarted := make(chan struct{}, 1)
+	acceptedRelease := make(chan struct{})
 	runtime, err := txactor.New(txactor.Config{
 		ClusterName: "tx-actor-integration",
 		Host:        "127.0.0.1",
@@ -166,9 +201,9 @@ func TestActorRuntimeLifecycleIntegration(t *testing.T) {
 			Prefix:      fmt.Sprintf("/tx/tests/actor-%d", time.Now().UnixNano()),
 			DialTimeout: time.Second,
 		},
-	}, cluster.NewKind("echo", protoactor.PropsFromProducer(func() protoactor.Actor {
-		return actorEcho{received: received}
-	})))
+	}, txactor.MustKind("echo", func() protoactor.Actor {
+		return actorEcho{received: received, acceptedStarted: acceptedStarted, acceptedRelease: acceptedRelease}
+	}))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -187,21 +222,14 @@ func TestActorRuntimeLifecycleIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VirtualPID() error = %v", err)
 	}
-	system, err := runtime.ActorSystem()
+	callCtx, cancelCall := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelCall()
+	result, err := runtime.Call(callCtx, pid, txactor.Delivery{MessageType: "role.ping", CommandID: 7, Payload: []byte{7}})
 	if err != nil {
-		t.Fatalf("ActorSystem() error = %v", err)
+		t.Fatalf("Call() error = %v", err)
 	}
-	delivery, err := (txactor.Delivery{MessageType: "role.ping", Payload: []byte{7}}).ToProto()
-	if err != nil {
-		t.Fatalf("ToProto() error = %v", err)
-	}
-	response, err := system.Root.RequestFuture(pid, delivery, 5*time.Second).Result()
-	if err != nil {
-		t.Fatalf("RequestFuture() error = %v", err)
-	}
-	ack, ok := response.(*wrapperspb.StringValue)
-	if !ok || ack.GetValue() != "role.ping:7" {
-		t.Fatalf("response = %#v, want role.ping:7", response)
+	if result.MessageType != "role.pong" || result.CommandID != 8 || string(result.Payload) != "role.ping:7" {
+		t.Fatalf("Call() result = %#v", result)
 	}
 	select {
 	case receivedDelivery := <-received:
@@ -211,18 +239,45 @@ func TestActorRuntimeLifecycleIntegration(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("wait actor request delivery timed out")
 	}
-	confirmCtx, cancelConfirm := context.WithTimeout(ctx, 5*time.Second)
-	defer cancelConfirm()
-	if err := runtime.TellConfirmed(confirmCtx, pid, txactor.Delivery{MessageType: "role.accept", CommandID: 8, Payload: []byte{8}}); err != nil {
-		t.Fatalf("Confirm() error = %v", err)
+	futureCtx, cancelFuture := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelFuture()
+	future, err := runtime.CallFuture(futureCtx, pid, txactor.Delivery{MessageType: "role.future", CommandID: 9, Payload: []byte{9}})
+	if err != nil {
+		t.Fatalf("CallFuture() error = %v", err)
+	}
+	futureResult, err := future.Await(futureCtx)
+	if err != nil {
+		t.Fatalf("Future.Await() error = %v", err)
+	}
+	if futureResult.MessageType != "role.pong" || futureResult.CommandID != 10 || string(futureResult.Payload) != "role.future:9" {
+		t.Fatalf("Future.Await() result = %#v", futureResult)
 	}
 	select {
 	case receivedDelivery := <-received:
-		if receivedDelivery.MessageType != "role.accept" || receivedDelivery.CommandID != 8 || string(receivedDelivery.Payload) != string([]byte{8}) {
-			t.Fatalf("confirmed delivery = %#v", receivedDelivery)
+		if receivedDelivery.MessageType != "role.future" || string(receivedDelivery.Payload) != string([]byte{9}) {
+			t.Fatalf("future delivery = %#v", receivedDelivery)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("wait actor confirmed delivery timed out")
+		t.Fatal("wait actor future delivery timed out")
+	}
+	acceptCtx, cancelAccept := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelAccept()
+	if err := runtime.TellAccepted(acceptCtx, pid, txactor.Delivery{MessageType: "role.accept", CommandID: 8, Payload: []byte{8}}); err != nil {
+		t.Fatalf("TellAccepted() error = %v", err)
+	}
+	select {
+	case <-acceptedStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("TellAccepted waited for business completion")
+	}
+	close(acceptedRelease)
+	select {
+	case receivedDelivery := <-received:
+		if receivedDelivery.MessageType != "role.accept" || receivedDelivery.CommandID != 8 || string(receivedDelivery.Payload) != string([]byte{8}) {
+			t.Fatalf("accepted delivery = %#v", receivedDelivery)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("wait actor accepted delivery timed out")
 	}
 	if err := runtime.Tell(pid, txactor.Delivery{MessageType: "role.notify", CommandID: 7, Payload: []byte{9}}); err != nil {
 		t.Fatalf("Tell() error = %v", err)
@@ -261,9 +316,9 @@ func TestActorRuntimeLogsMailboxOverflow(t *testing.T) {
 			Prefix:      fmt.Sprintf("/tx/tests/actor-overflow-%d", time.Now().UnixNano()),
 			DialTimeout: time.Second,
 		},
-	}, cluster.NewKind("blocked", protoactor.PropsFromProducer(func() protoactor.Actor {
+	}, txactor.MustKind("blocked", func() protoactor.Actor {
 		return blockingActor{started: started, release: release}
-	})))
+	}))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -307,7 +362,9 @@ func TestActorRuntimeLogsMailboxOverflow(t *testing.T) {
 }
 
 type actorEcho struct {
-	received chan<- txactor.Delivery
+	received        chan<- txactor.Delivery
+	acceptedStarted chan<- struct{}
+	acceptedRelease <-chan struct{}
 }
 
 type blockingActor struct {
@@ -362,11 +419,21 @@ func (actor actorEcho) Receive(ctx protoactor.Context) {
 	if actor.received != nil {
 		actor.received <- delivery
 	}
+	if delivery.MessageType == "role.accept" && actor.acceptedRelease != nil {
+		actor.acceptedStarted <- struct{}{}
+		<-actor.acceptedRelease
+	}
 	payload := ""
 	if len(delivery.Payload) > 0 {
 		payload = fmt.Sprint(delivery.Payload[0])
 	}
-	if ctx.Sender() != nil && !message.GetRequireAcceptance() {
-		ctx.Respond(wrapperspb.String(delivery.MessageType + ":" + payload))
+	if delivery.WantsResult() {
+		if err := txactor.Respond(ctx, delivery, txactor.Result{
+			MessageType: "role.pong",
+			CommandID:   delivery.CommandID + 1,
+			Payload:     []byte(delivery.MessageType + ":" + payload),
+		}, nil); err != nil {
+			panic(err)
+		}
 	}
 }

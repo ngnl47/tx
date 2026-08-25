@@ -96,8 +96,16 @@ func (access actorAccess) Tell(pid *protoactor.PID, delivery txactor.Delivery) e
 	return access.runtime.Tell(pid, delivery)
 }
 
-func (access actorAccess) TellConfirmed(ctx context.Context, pid *protoactor.PID, delivery txactor.Delivery) error {
-	return access.runtime.TellConfirmed(ctx, pid, delivery)
+func (access actorAccess) TellAccepted(ctx context.Context, pid *protoactor.PID, delivery txactor.Delivery) error {
+	return access.runtime.TellAccepted(ctx, pid, delivery)
+}
+
+func (access actorAccess) Call(ctx context.Context, pid *protoactor.PID, delivery txactor.Delivery) (txactor.Result, error) {
+	return access.runtime.Call(ctx, pid, delivery)
+}
+
+func (access actorAccess) CallFuture(ctx context.Context, pid *protoactor.PID, delivery txactor.Delivery) (*txactor.Future, error) {
+	return access.runtime.CallFuture(ctx, pid, delivery)
 }
 
 type transactionAccess struct{ runtime *txn.Runtime }

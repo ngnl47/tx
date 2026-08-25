@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	txactor "github.com/ngnl47/tx/modules/actor"
 )
 
 type cmodGraph struct {
@@ -53,6 +55,9 @@ func resolveCModGraph(cmods []CMod, services []Service) (cmodGraph, error) {
 		}
 		spec := service.Spec()
 		required := append([]CModID(nil), spec.Requires...)
+		if len(spec.ActorKinds) > 0 {
+			required = append(required, CModActor)
+		}
 		if provider, ok := service.(CModRequirementsProvider); ok {
 			conditional, err := provider.RequiredCMods(selection)
 			if err != nil {
@@ -115,6 +120,29 @@ func resolveCModGraph(cmods []CMod, services []Service) (cmodGraph, error) {
 		}
 	}
 	return cmodGraph{ordered: ordered, roots: serviceRoots}, nil
+}
+
+func collectActorKinds(services []Service) ([]txactor.Kind, error) {
+	var kinds []txactor.Kind
+	owners := make(map[string]string)
+	for _, service := range services {
+		if service == nil {
+			return nil, errors.New("server: selected service is nil")
+		}
+		spec := service.Spec()
+		for _, kind := range spec.ActorKinds {
+			name := kind.Name()
+			if name == "" {
+				return nil, fmt.Errorf("server: service %q declares invalid Actor kind", spec.Name)
+			}
+			if owner, exists := owners[name]; exists {
+				return nil, fmt.Errorf("server: duplicate Actor kind %q declared by services %q and %q", name, owner, spec.Name)
+			}
+			owners[name] = spec.Name
+			kinds = append(kinds, kind)
+		}
+	}
+	return kinds, nil
 }
 
 func uniqueCModIDs(ids []CModID) []CModID {

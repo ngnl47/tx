@@ -1048,34 +1048,37 @@ tx 不实现 Actor mailbox、调度、Remote PID、成员发现或重平衡；�
 地址发布给集群，适合本地调试和弹性实例。
 
 ```go
-import (
-    "time"
-
-    protoactor "github.com/asynkron/protoactor-go/actor"
-    "github.com/asynkron/protoactor-go/cluster"
-    txactor "github.com/ngnl47/tx/modules/actor"
-    actorpb "github.com/ngnl47/tx/modules/actor/pb"
-)
-
-runtime, err := txactor.New(txactor.Config{
-    ClusterName: "game",
-    Host:        "10.0.1.21",
-    Port:        0,
-    Etcd: txactor.EtcdConfig{
-        Endpoints:   []string{"127.0.0.1:2379"},
-        Prefix:      "/txgame/actor",
-        DialTimeout: 2 * time.Second,
-    },
-}, cluster.NewKind("role", protoactor.PropsFromProducer(func() protoactor.Actor {
-    return &roleActor{}
-})))
-if err != nil {
-    return err
-}
-if err := runtime.Start(ctx); err != nil { // 启动期先检查 etcd，可达性失败直接返回错误。
-    return err
+type roleService struct {
+    kind txactor.Kind
 }
 
+func newRoleService() (*roleService, error) {
+    kind, err := txactor.NewKind("role", func() protoactor.Actor {
+        return &roleActor{}
+    })
+    if err != nil {
+        return nil, err
+    }
+    return &roleService{kind: kind}, nil
+}
+
+func (service *roleService) Spec() txserver.Spec {
+    return txserver.Spec{
+        Name:       "game",
+        ActorKinds: []txactor.Kind{service.kind},
+    }
+}
+func (*roleService) Start(txserver.Context) error { return nil }
+```
+
+L4 服务只声明业务 Kind，Server 会自动装配 `CModActor` 并管理 Runtime 生命周期。`CModActor` 只包含 ProtoActor
+Remote 和官方 etcd Cluster Provider，不依赖 tx 的普通 gRPC Host 或 `ServiceDirectory`；服务若还需要普通 RPC、
+服务目录或存储，应继续在 `Spec.Requires` 中显式声明。重复 Kind 会在任何外部连接建立前返回错误。
+
+服务运行后通过受控 `server.Context.Actor()` 取得 `actor.Messenger`：
+
+```go
+runtime := serviceContext.Actor()
 pid, err := runtime.VirtualPID("role", "470001")
 if err != nil {
     return err
@@ -1083,68 +1086,60 @@ if err != nil {
 if err := runtime.Tell(pid, txactor.Delivery{
     MessageType: "role.rename",
     CommandID:   470001,
-    Payload:     bonBody, // 调用方已编码的 BON 字节。
-}); err != nil {
-    return err
-}
-```
-
-`Tell` 是默认的单向投递入口：返回 `nil` 仅表示本地 Runtime 已接受这条消息，不表示远端 Actor 已完成业务处理。
-它不会自动重试；需要重试时，业务消息必须携带项目定义的业务幂等键。Agent 上行链路中的 `Delivery.CommandID`
-保留给生成的静态命令号，不能兼作该幂等键。确实需要同步结果时，再显式取得底层
-`ActorSystem` 并使用 `RequestFuture`：
-
-```go
-system, err := runtime.ActorSystem()
-if err != nil {
-    return err
-}
-message, err := (txactor.Delivery{
-    MessageType: "battle.resolve",
-    CommandID:   8001,
-    Payload:     bonRequest,
-}).ToProto()
-if err != nil {
-    return err
-}
-result, err := system.Root.RequestFuture(pid, message, time.Second).Result()
-if err != nil {
-    return err
-}
-_ = result
-```
-
-每个通过 `actor.New(config, kinds...)` 注册的 Cluster Kind 都使用有界用户邮箱。`Config.MailboxCapacity` 缺省为
-`1024`；满时不会阻塞 `Tell`，新消息被丢弃，并在**目标 Actor 所在服务实例**记录限频错误日志
-`actor mailbox overflow`。日志含 `cluster`、`host`、`kind`、`capacity` 和累计 `dropped`，可由日志中心告警。
-因此 `Tell` 只适合允许丢失或可由业务幂等恢复的通知：
-
-```go
-// 可丢的状态刷新通知：满邮箱时由目标实例记录错误日志。
-_ = runtime.Tell(pid, txactor.Delivery{MessageType: "battle.refresh", Payload: bonBody})
-```
-
-必须确认消息已被目标 Actor 从邮箱取出时，使用 `Confirm`。它会额外产生一条 `Acceptance` 回执，必须传入带
-deadline 的 context；成功只表示消息已交给目标 Actor，不表示其中的业务逻辑已执行成功：
-
-```go
-confirmCtx, cancel := context.WithTimeout(ctx, time.Second)
-defer cancel()
-
-if err := runtime.TellConfirmed(confirmCtx, pid, txactor.Delivery{
-    MessageType: "role.rename",
-    CommandID:   470001,
     Payload:     bonBody,
 }); err != nil {
-    return err // 可能是邮箱未接收、目标不可达或超时。
+    return err
 }
 ```
 
-确认式投递的目标 Actor 不应再对同一条消息调用 `ctx.Respond`，因为该响应位已由运行时的 `Acceptance` 占用。
-需要业务结果时应直接使用前面的 `RequestFuture`，由业务 Actor 负责返回其协议结果。
+`Tell` 是默认的单向投递入口：返回 `nil` 只表示本地 Runtime 接受投递，不表示远端邮箱接收或业务完成。它不会
+自动重试；业务需要重试时必须定义独立幂等键，不能把静态 `CommandID` 兼作幂等键。
 
-业务 Actor 收到的是 `*actorpb.Delivery`，在业务边界转换回普通值对象即可。转换会复制 `Payload`，避免发送方或
-ProtoActor 内部复用缓冲区影响业务读取：
+必须知道目标 Actor 已从邮箱取出消息时使用 `TellAccepted`。它会多一条 `Acceptance` 回执，但不等待业务 handler：
+
+```go
+acceptedCtx, cancel := context.WithTimeout(ctx, time.Second)
+defer cancel()
+if err := runtime.TellAccepted(acceptedCtx, pid, txactor.Delivery{
+    MessageType: "battle.enqueue",
+    CommandID:   8001,
+    Payload:     bonBody,
+}); err != nil {
+    return err
+}
+```
+
+需要业务结果时使用 `Call`；需要先继续本地工作、稍后等待时使用 `CallFuture`。`Call` 只是
+`CallFuture + Await` 的同步入口，两者共用同一套请求号和响应协议：
+
+```go
+callCtx, cancel := context.WithTimeout(ctx, time.Second)
+defer cancel()
+future, err := runtime.CallFuture(callCtx, pid, txactor.Delivery{
+    MessageType: "room.create",
+    CommandID:   8101,
+    Payload:     bonRequest,
+})
+if err != nil {
+    return err
+}
+result, err := future.Await(callCtx)
+if err != nil {
+    return err
+}
+_ = result.MessageType
+_ = result.Payload
+```
+
+`TellAccepted`、`CallFuture`、`Call` 和 `Future.Await` 必须使用带 deadline 的 context。一次 `Await` 超时只停止
+本次本地等待，不撤销远端业务；原请求仍会在创建 Future 时的 deadline 到达、Runtime 关闭或收到响应时清理。
+超时代表结果不确定，框架不会自动重试或改派目标。
+
+每个 Kind 使用有界用户邮箱。`Config.MailboxCapacity` 缺省为 `1024`；满时不会阻塞 `Tell`，新消息会被丢弃，
+目标实例限频记录 `actor mailbox overflow`。因此 `Tell` 只适合允许丢失或可由业务幂等恢复的通知。
+
+业务 Actor 收到 `*actorpb.Delivery`，在业务边界转换后处理。`TellAccepted` 的回执由 Runtime 中间件自动发送；
+只有 Call 请求需要业务返回结果：
 
 ```go
 message, ok := ctx.Message().(*actorpb.Delivery)
@@ -1155,8 +1150,16 @@ delivery, err := txactor.DeliveryFromProto(message)
 if err != nil {
     return
 }
-// delivery.MessageType、delivery.CommandID 和 delivery.Payload 由业务处理。
+result, resultErr := handle(delivery)
+if delivery.WantsResult() {
+    _ = txactor.Respond(ctx, delivery, result, resultErr)
+}
 ```
+
+`Config.MaxPendingCalls` 缺省为 `4096`，限制当前进程尚未完成的 `CallFuture` 和 `TellAccepted`。达到上限时返回
+`ErrPendingCallsFull`，不会继续扩大内存。每个 Runtime 只有一个响应 Actor 和一张有界 pending 表，context 通过
+定时回调清理请求，不为每个 Future 常驻等待 goroutine。Runtime 关闭时，所有 pending 都以
+`ErrRuntimeStopped` 完成。远端业务错误返回 `*actor.CallError`，`Code` 用于稳定分支，`Message` 用于日志。
 
 项目将 Agent 与业务服务分进程部署时，可在项目层把经握手、Seq/Ack 校验后的 BON body 投递给 Actor。该适配属于
 项目装配，不要求 Agent 知道具体 `GD*` 或 cmd 类型：

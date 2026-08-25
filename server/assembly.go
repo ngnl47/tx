@@ -82,7 +82,7 @@ func (server *Server) startDiscovery(options RunOptions) error {
 }
 
 func (server *Server) startActor() error {
-	runtime, err := txactor.New(server.config.Actor.Runtime)
+	runtime, err := txactor.New(server.config.Actor.Runtime, server.runtime.actorKinds...)
 	if err != nil {
 		return fmt.Errorf("server: initialize actor runtime: %w", err)
 	}

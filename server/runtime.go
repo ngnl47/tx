@@ -16,6 +16,7 @@ type runtime struct {
 	storage     *storageRuntime
 	rpc         *txrpc.Host
 	actor       *txactor.Runtime
+	actorKinds  []txactor.Kind
 	transaction *txn.Runtime
 	directory   *discovery.ServiceDirectory
 	slots       discovery.SlotStore

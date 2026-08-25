@@ -10,6 +10,7 @@ import (
 const (
 	defaultEtcdPrefix      = "/tx/actor"
 	DefaultMailboxCapacity = 1024
+	DefaultMaxPendingCalls = 4096
 )
 
 var ErrInvalidConfig = errors.New("actor: invalid config")
@@ -20,6 +21,7 @@ type Config struct {
 	Host            string
 	Port            int
 	MailboxCapacity int
+	MaxPendingCalls int
 	Etcd            EtcdConfig
 }
 
@@ -33,11 +35,14 @@ type EtcdConfig struct {
 func (c Config) Normalize() (Config, error) {
 	c.ClusterName = strings.TrimSpace(c.ClusterName)
 	c.Host = strings.TrimSpace(c.Host)
-	if c.ClusterName == "" || c.Host == "" || c.Port < 0 || c.Port > 65535 || c.MailboxCapacity < 0 {
+	if c.ClusterName == "" || c.Host == "" || c.Port < 0 || c.Port > 65535 || c.MailboxCapacity < 0 || c.MaxPendingCalls < 0 {
 		return Config{}, ErrInvalidConfig
 	}
 	if c.MailboxCapacity == 0 {
 		c.MailboxCapacity = DefaultMailboxCapacity
+	}
+	if c.MaxPendingCalls == 0 {
+		c.MaxPendingCalls = DefaultMaxPendingCalls
 	}
 	etcd, err := c.Etcd.Normalize()
 	if err != nil {

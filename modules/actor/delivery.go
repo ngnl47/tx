@@ -3,9 +3,7 @@ package actor
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	protoactor "github.com/asynkron/protoactor-go/actor"
@@ -14,9 +12,7 @@ import (
 )
 
 var (
-	ErrInvalidDelivery         = errors.New("actor: invalid delivery")
-	ErrConfirmDeadlineRequired = errors.New("actor: confirmation requires a context deadline")
-	ErrConfirmationRejected    = errors.New("actor: invalid confirmation response")
+	ErrInvalidDelivery = errors.New("actor: invalid delivery")
 )
 
 // Delivery 是投递给目标 Actor 的内部消息。目标位置由 PID 决定，Payload 保持调用方
@@ -26,6 +22,9 @@ type Delivery struct {
 	CommandID   uint64
 	RouteKey    txprotocol.RouteKey
 	Payload     []byte
+
+	mode      actorpb.DeliveryMode
+	requestID uint64
 }
 
 // Validate 校验跨进程投递所需的最小元数据。
@@ -38,10 +37,10 @@ func (d Delivery) Validate() error {
 
 // ToProto 将 Delivery 转换为 ProtoActor 可跨节点传输的 protobuf 信封。
 func (d Delivery) ToProto() (*actorpb.Delivery, error) {
-	return d.toProto(false)
+	return d.toProto(actorpb.DeliveryMode_DELIVERY_MODE_TELL, 0)
 }
 
-func (d Delivery) toProto(requireAcceptance bool) (*actorpb.Delivery, error) {
+func (d Delivery) toProto(mode actorpb.DeliveryMode, requestID uint64) (*actorpb.Delivery, error) {
 	if err := d.Validate(); err != nil {
 		return nil, err
 	}
@@ -50,13 +49,14 @@ func (d Delivery) toProto(requireAcceptance bool) (*actorpb.Delivery, error) {
 		return nil, err
 	}
 	return &actorpb.Delivery{
-		MessageType:       d.MessageType,
-		CommandId:         d.CommandID,
-		Payload:           append([]byte(nil), d.Payload...),
-		RequireAcceptance: requireAcceptance,
-		RouteKeyKind:      routeKeyKind,
-		RouteKeyNumeric:   routeKeyNumeric,
-		RouteKeyString:    routeKeyString,
+		MessageType:     d.MessageType,
+		CommandId:       d.CommandID,
+		Payload:         append([]byte(nil), d.Payload...),
+		Mode:            mode,
+		RouteKeyKind:    routeKeyKind,
+		RouteKeyNumeric: routeKeyNumeric,
+		RouteKeyString:  routeKeyString,
+		RequestId:       requestID,
 	}, nil
 }
 
@@ -74,11 +74,30 @@ func DeliveryFromProto(message *actorpb.Delivery) (Delivery, error) {
 		CommandID:   message.GetCommandId(),
 		RouteKey:    routeKey,
 		Payload:     append([]byte(nil), message.GetPayload()...),
+		mode:        message.GetMode(),
+		requestID:   message.GetRequestId(),
 	}
 	if err := delivery.Validate(); err != nil {
 		return Delivery{}, err
 	}
+	switch delivery.mode {
+	case actorpb.DeliveryMode_DELIVERY_MODE_TELL:
+		if delivery.requestID != 0 {
+			return Delivery{}, ErrInvalidDelivery
+		}
+	case actorpb.DeliveryMode_DELIVERY_MODE_ACCEPTED, actorpb.DeliveryMode_DELIVERY_MODE_CALL:
+		if delivery.requestID == 0 {
+			return Delivery{}, ErrInvalidDelivery
+		}
+	default:
+		return Delivery{}, ErrInvalidDelivery
+	}
 	return delivery, nil
+}
+
+// WantsResult 判断当前消息是否由 Call 或 CallFuture 发起并要求业务结果。
+func (d Delivery) WantsResult() bool {
+	return d.mode == actorpb.DeliveryMode_DELIVERY_MODE_CALL && d.requestID != 0
 }
 
 func validateRouteKey(key txprotocol.RouteKey) error {
@@ -152,41 +171,57 @@ func routeKeyFromProto(kind actorpb.RouteKeyKind, numeric uint64, text string) (
 	}
 }
 
-// TellConfirmed 投递一条要求确认的 Delivery，并等待目标 Actor 从邮箱取出该消息。
-// 它不确认后续业务处理是否成功，且必须传入带 deadline 的 context。
-func (r *Runtime) TellConfirmed(ctx context.Context, pid *protoactor.PID, delivery Delivery) error {
+// TellAccepted 投递消息并等待目标 Actor 从邮箱取出。它不等待业务处理完成。
+func (r *Runtime) TellAccepted(ctx context.Context, pid *protoactor.PID, delivery Delivery) error {
+	future, err := r.sendRequest(ctx, pid, delivery, actorpb.DeliveryMode_DELIVERY_MODE_ACCEPTED, pendingAccepted)
+	if err != nil {
+		return err
+	}
+	_, err = future.Await(ctx)
+	return err
+}
+
+// CallFuture 投递业务请求并立即返回 Future。
+func (r *Runtime) CallFuture(ctx context.Context, pid *protoactor.PID, delivery Delivery) (*Future, error) {
+	return r.sendRequest(ctx, pid, delivery, actorpb.DeliveryMode_DELIVERY_MODE_CALL, pendingResult)
+}
+
+// Call 投递业务请求并等待结果。它与 CallFuture 共用同一套 pending 和响应协议。
+func (r *Runtime) Call(ctx context.Context, pid *protoactor.PID, delivery Delivery) (Result, error) {
+	future, err := r.CallFuture(ctx, pid, delivery)
+	if err != nil {
+		return Result{}, err
+	}
+	return future.Await(ctx)
+}
+
+func (r *Runtime) sendRequest(ctx context.Context, pid *protoactor.PID, delivery Delivery, mode actorpb.DeliveryMode, expected pendingKind) (*Future, error) {
+	if err := requireDeadline(ctx); err != nil {
+		return nil, err
+	}
 	if pid == nil {
-		return ErrInvalidPID
+		return nil, ErrInvalidPID
 	}
-	if ctx == nil {
-		return ErrConfirmDeadlineRequired
+	if err := delivery.Validate(); err != nil {
+		return nil, err
 	}
-	system, err := r.ActorSystem()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped {
+		return nil, ErrRuntimeStopped
+	}
+	if !r.started || r.cluster == nil || r.responder == nil {
+		return nil, ErrRuntimeNotStarted
+	}
+	requestID, future, err := r.pending.add(ctx, expected, delivery.CommandID)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		return ErrConfirmDeadlineRequired
-	}
-	timeout := time.Until(deadline)
-	if timeout <= 0 {
-		return context.DeadlineExceeded
-	}
-	message, err := delivery.toProto(true)
+	message, err := delivery.toProto(mode, requestID)
 	if err != nil {
-		return err
+		r.pending.fail(requestID, err)
+		return nil, err
 	}
-	response, err := system.Root.RequestFuture(pid, message, timeout).Result()
-	if err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return fmt.Errorf("actor: confirm delivery: %w", err)
-	}
-	acceptance, ok := response.(*actorpb.Acceptance)
-	if !ok || acceptance.GetCommandId() != delivery.CommandID {
-		return ErrConfirmationRejected
-	}
-	return nil
+	r.cluster.ActorSystem.Root.RequestWithCustomSender(pid, message, r.responder)
+	return future, nil
 }

@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	txlog "github.com/ngnl47/tx/log"
+	txactor "github.com/ngnl47/tx/modules/actor"
 	"github.com/ngnl47/tx/modules/discovery"
 	"github.com/ngnl47/tx/storage/fusion"
 )
@@ -159,6 +160,10 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 	if err != nil {
 		return err
 	}
+	actorKinds, err := collectActorKinds(selected)
+	if err != nil {
+		return err
+	}
 	allCMods := append(server.builtInCMods(options), server.cmods...)
 	graph, err := resolveCModGraph(allCMods, selected)
 	if err != nil {
@@ -184,9 +189,10 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 
 	root := lifecycleRoot(ctx)
 	runtime := &runtime{
-		config:    server.config,
-		lifecycle: root,
-		cmods:     make(map[CModID]struct{}),
+		config:     server.config,
+		lifecycle:  root,
+		cmods:      make(map[CModID]struct{}),
+		actorKinds: append([]txactor.Kind(nil), actorKinds...),
 		instance: discovery.Instance{
 			ID:       strings.TrimSpace(options.InstanceID),
 			Endpoint: strings.TrimSpace(options.InstanceEndpoint),

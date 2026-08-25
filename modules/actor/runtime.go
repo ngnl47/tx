@@ -29,7 +29,9 @@ var (
 type Messenger interface {
 	VirtualPID(kind, identity string) (*protoactor.PID, error)
 	Tell(pid *protoactor.PID, delivery Delivery) error
-	TellConfirmed(ctx context.Context, pid *protoactor.PID, delivery Delivery) error
+	TellAccepted(ctx context.Context, pid *protoactor.PID, delivery Delivery) error
+	Call(ctx context.Context, pid *protoactor.PID, delivery Delivery) (Result, error)
+	CallFuture(ctx context.Context, pid *protoactor.PID, delivery Delivery) (*Future, error)
 }
 
 var _ Messenger = (*Runtime)(nil)
@@ -39,14 +41,16 @@ type Runtime struct {
 	config Config
 	kinds  []*cluster.Kind
 
-	mu      sync.Mutex
-	cluster *cluster.Cluster
-	started bool
-	stopped bool
+	mu        sync.Mutex
+	cluster   *cluster.Cluster
+	responder *protoactor.PID
+	pending   *pendingCalls
+	started   bool
+	stopped   bool
 }
 
 // New 创建尚未启动的 Actor Cluster 运行时。
-func New(config Config, kinds ...*cluster.Kind) (*Runtime, error) {
+func New(config Config, kinds ...Kind) (*Runtime, error) {
 	config, err := config.Normalize()
 	if err != nil {
 		return nil, err
@@ -55,7 +59,11 @@ func New(config Config, kinds ...*cluster.Kind) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Runtime{config: config, kinds: configuredKinds}, nil
+	return &Runtime{
+		config:  config,
+		kinds:   configuredKinds,
+		pending: newPendingCalls(config.MaxPendingCalls),
+	}, nil
 }
 
 // Start 校验 etcd 可达性，并将当前进程启动为集群成员。停止由调用方在完成
@@ -97,6 +105,14 @@ func (r *Runtime) Start(ctx context.Context) (err error) {
 		r.stopLocked()
 		return err
 	}
+	responder, err := system.Root.SpawnNamed(protoactor.PropsFromProducer(func() protoactor.Actor {
+		return responseActor{pending: r.pending}
+	}), "tx-call-responses")
+	if err != nil {
+		r.stopLocked()
+		return fmt.Errorf("actor: start response receiver: %w", err)
+	}
+	r.responder = responder
 	r.started = true
 	return nil
 }
@@ -133,7 +149,8 @@ func (r *Runtime) VirtualPID(kind, identity string) (*protoactor.PID, error) {
 	return pid, nil
 }
 
-// ActorSystem 返回底层 ActorSystem，供项目注册固定归属的本地 Actor 或向已解析 PID 发起请求。
+// ActorSystem 返回底层 ActorSystem，是注册本地 Actor 等定制能力的高级扩展入口。
+// 普通业务投递和请求应使用 Messenger 的四个稳定方法。
 func (r *Runtime) ActorSystem() (*protoactor.ActorSystem, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -148,8 +165,8 @@ func (r *Runtime) ActorSystem() (*protoactor.ActorSystem, error) {
 
 // Tell 将一条单向 Delivery 投递到 Virtual 或固定归属的 Actor PID。
 //
-// 返回 nil 仅表示本地 Runtime 已接受投递；远端业务处理结果、超时和重试由消息契约负责。
-// 需要显式响应时，调用方应通过 ActorSystem 使用 RequestFuture。
+// 返回 nil 仅表示本地 Runtime 已接受投递；需要接收确认或业务结果时分别使用
+// TellAccepted、CallFuture 或 Call。
 func (r *Runtime) Tell(pid *protoactor.PID, delivery Delivery) error {
 	if pid == nil {
 		return ErrInvalidPID
@@ -198,6 +215,10 @@ func (r *Runtime) checkEtcd(ctx context.Context) error {
 }
 
 func (r *Runtime) stopLocked() {
+	if r.pending != nil {
+		r.pending.failAll(ErrRuntimeStopped)
+	}
+	r.responder = nil
 	if r.cluster == nil {
 		return
 	}
@@ -222,29 +243,33 @@ func startMember(cluster *cluster.Cluster) (err error) {
 	return nil
 }
 
-func configureKinds(config Config, kinds []*cluster.Kind) ([]*cluster.Kind, error) {
+func configureKinds(config Config, kinds []Kind) ([]*cluster.Kind, error) {
+	if err := validateKinds(kinds); err != nil {
+		return nil, err
+	}
 	configured := make([]*cluster.Kind, len(kinds))
 	for index, kind := range kinds {
-		if kind == nil || strings.TrimSpace(kind.Kind) == "" || kind.Props == nil {
-			return nil, ErrInvalidConfig
-		}
-		props := kind.Props.Clone(
-			protoactor.WithMailbox(observedBoundedMailbox(config, kind.Kind)),
-			protoactor.WithReceiverMiddleware(confirmationReceiverMiddleware),
+		clusterKind := kind.cluster
+		props := clusterKind.Props.Clone(
+			protoactor.WithMailbox(observedBoundedMailbox(config, clusterKind.Kind)),
+			protoactor.WithReceiverMiddleware(acceptanceReceiverMiddleware),
 		)
 		configured[index] = &cluster.Kind{
-			Kind:            kind.Kind,
+			Kind:            clusterKind.Kind,
 			Props:           props,
-			StrategyBuilder: kind.StrategyBuilder,
+			StrategyBuilder: clusterKind.StrategyBuilder,
 		}
 	}
 	return configured, nil
 }
 
-func confirmationReceiverMiddleware(next protoactor.ReceiverFunc) protoactor.ReceiverFunc {
+func acceptanceReceiverMiddleware(next protoactor.ReceiverFunc) protoactor.ReceiverFunc {
 	return func(ctx protoactor.ReceiverContext, envelope *protoactor.MessageEnvelope) {
-		if delivery, ok := envelope.Message.(*actorpb.Delivery); ok && delivery.GetRequireAcceptance() && envelope.Sender != nil {
-			ctx.ActorSystem().Root.Send(envelope.Sender, &actorpb.Acceptance{CommandId: delivery.GetCommandId()})
+		if delivery, ok := envelope.Message.(*actorpb.Delivery); ok && delivery.GetMode() == actorpb.DeliveryMode_DELIVERY_MODE_ACCEPTED && envelope.Sender != nil {
+			ctx.ActorSystem().Root.Send(envelope.Sender, &actorpb.Acceptance{
+				CommandId: delivery.GetCommandId(),
+				RequestId: delivery.GetRequestId(),
+			})
 		}
 		next(ctx, envelope)
 	}

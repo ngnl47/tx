@@ -2,12 +2,15 @@ package server
 
 import (
 	"context"
+
+	txactor "github.com/ngnl47/tx/modules/actor"
 )
 
 // Spec 是可选服务的稳定身份和 runtime 契约。
 type Spec struct {
-	Name     string
-	Requires []CModID
+	Name       string
+	Requires   []CModID
+	ActorKinds []txactor.Kind
 }
 
 // Service 表示一个可独立选择的进程服务。
