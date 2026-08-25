@@ -16,6 +16,7 @@ const (
 	scriptFlagTrue  = "1"
 
 	scriptResultOK               = "ok"
+	scriptResultExists           = "ex"
 	scriptResultBusy             = "busy"
 	scriptResultStale            = "stale"
 	scriptResultNotExists        = "ne"

@@ -1033,6 +1033,7 @@ RecordKey 不等于事务 LockKey：
 - `ChangeApplier`：应用当前规范化变更。
 - `DocumentLoader` / `BatchDocumentLoader`：读取公共文档。
 - `DocumentReplacer`：完整替换文档。
+- `DocumentBackfiller`：仅在目标不存在时原子回填文档，并显式报告是否插入。
 - `DeleteApplier`：Redis-only、Mongo-only adapter 的整记录删除能力。
 - `RecordLocker`：记录级互斥。
 - `RecordRevisionReader` / `RevisionDeleteApplier`：版本保护删除。
@@ -1324,10 +1325,28 @@ Redis backend 会轮询多个 bucket，而不同 hash tag 之间不能组成一�
         |
         +-- hit -> 返回较新热数据
         |
-        +-- miss -> 读 Mongo 全文 -> 带 TTL 回填 Redis -> 返回所需字段
+        +-- miss -> 读 Mongo 全文 -> Lua 仅缺失时回填 -> 返回所需字段
 ```
 
-二次读取避免两个实例同时 miss 时，较晚返回的旧 Mongo 快照覆盖已经回填的新 Redis 数据。
+RecordLock 只串行化同一记录的回源读取，用来合并重复 Mongo I/O。正常玩家请求仍必须按角色稳定路由到同一个
+逻辑 game owner，并由同一 Actor 邮箱串行处理；断线重连也应恢复到同一逻辑槽位。RecordLock 和条件回填都不替代
+这条集群规则，也不提供分布式并发控制。
+
+存储层仍应保证回填语义本身正确：adapter 使用一条 Lua 原子检查 main 文档是否存在，并在仍不存在时一起写入
+main、已知 subKey 和 `@v`。如果检查时 main 已经存在，Lua 不修改任何热数据，Fusion 丢弃 Mongo 候选并重新读取
+Redis。Mongo 返回不存在时也要再读 Redis，覆盖恢复工具、高级存储入口或异常双 owner 在回源期间创建热文档的边界。
+
+```text
+t1  Redis miss，取得 RecordLock，锁内复查仍 miss
+t2  开始读取 Mongo，得到候选 name=cold
+t3  另一个受控入口把 Redis 写成 name=hot
+t4  条件回填 Lua 发现 main 已存在，返回 inserted=false
+t5  Fusion 丢弃 cold，重读并返回 Redis 的 hot
+```
+
+Lua 检查和写入不可拆成 `EXISTS` 加普通 Replace 两次调用，否则热写仍可插入两次 Redis 命令之间。带 subKey 的类型
+始终保留至少为 `{}` 的 main 文档，因此 mainKey 是这条热记录统一的存在标记；所有派生 key 共用同一 hash tag，脚本
+在原生 Redis Cluster 中仍保持同槽原子执行。
 
 RecordLock 以 Redis `PX` 保存租约，运行时只接受至少 `1ms` 的 TTL。Go 的 `time.Duration`
 可以表达纳秒，但 Redis 入口使用毫秒整数；边界必须先拒绝会截断为 `0` 的亚毫秒值，不能依赖 Redis 命令错误兜底。
@@ -1335,7 +1354,9 @@ RecordLock 以 Redis `PX` 保存租约，运行时只接受至少 `1ms` 的 TTL�
 `context.WithoutCancel` 保留链路值并隔离请求取消：例如 Mongo 回源返回 `context.Canceled` 时，业务仍收到原错误，
 但 Redis `Unlock` 仍有机会立即删除锁，而不是无谓等待 `PX` 租约自然过期。
 
-批量读取先批量查询 Redis，再批量取得 Mongo 候选。每条 miss 在自己的 RecordLock 内二次读 Redis；锁内已命中的记录丢弃旧 Mongo 候选，仍未命中才回填。这保证正确性优先，同时保留 Mongo 批量 I/O。
+批量读取先批量查询 Redis，再批量取得 Mongo 候选。每条 miss 在自己的 RecordLock 内二次读 Redis；锁内已命中的记录
+直接丢弃旧候选，仍未命中时也必须走同一条件回填 Lua。若 Lua 输给并发热写则重读 Redis，不能因为候选已经批量取得
+就无条件 Replace。这样既保留 Mongo 批量 I/O，也让单条与批量路径共享同一正确性规则。
 
 ### 热数据 TTL 与 revision
 

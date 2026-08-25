@@ -37,7 +37,10 @@ type Cluster struct {
 	order   []string
 }
 
-var _ ScriptRoutes = (*Cluster)(nil)
+var (
+	_ ScriptRoutes               = (*Cluster)(nil)
+	_ storage.DocumentBackfiller = (*Cluster)(nil)
+)
 
 // NewCluster 创建 Redis route/cluster 适配器。
 func NewCluster(router Router, shards map[string]ScriptClient) (*Cluster, error) {
@@ -107,6 +110,14 @@ func (c *Cluster) ReplaceDocumentWithOptions(ctx context.Context, spec meta.Type
 		return err
 	}
 	return adapter.ReplaceDocumentWithOptions(ctx, spec, key, doc, options)
+}
+
+func (c *Cluster) BackfillDocumentWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any, options storage.ApplyOptions) (bool, error) {
+	adapter, err := c.adapterFor(ctx, spec, key)
+	if err != nil {
+		return false, err
+	}
+	return adapter.BackfillDocumentWithOptions(ctx, spec, key, doc, options)
 }
 
 func (c *Cluster) ReplaceDocument(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any) error {

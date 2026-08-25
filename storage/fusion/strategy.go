@@ -27,15 +27,15 @@ type LoadOptions struct {
 // Redis 适配器负责即时写入热数据；DelaySubmitter 只把根记录登记到进程内
 // 分发器，实际延迟任务发布不阻塞业务保存。
 type Strategy struct {
-	RedisApplier   storage.ChangeApplier
-	RedisLoader    storage.DocumentLoader
-	RedisReplacer  storage.DocumentReplacerWithOptions
-	RedisLocker    storage.RecordLocker
-	MongoLoader    storage.DocumentLoader
-	DelaySubmitter DelayTaskSubmitter
-	DirtyTTL       time.Duration
-	LoadLockTTL    time.Duration
-	LoadLockWait   time.Duration
+	RedisApplier    storage.ChangeApplier
+	RedisLoader     storage.DocumentLoader
+	RedisBackfiller storage.DocumentBackfiller
+	RedisLocker     storage.RecordLocker
+	MongoLoader     storage.DocumentLoader
+	DelaySubmitter  DelayTaskSubmitter
+	DirtyTTL        time.Duration
+	LoadLockTTL     time.Duration
+	LoadLockWait    time.Duration
 }
 
 // Validate 校验 Fusion 运行时的完整装配。项目启动时必须调用该方法，避免缺失
@@ -48,8 +48,8 @@ func (s Strategy) Validate() error {
 	if isNilFusionDependency(s.redisLoader()) {
 		missing = append(missing, "redis document loader")
 	}
-	if isNilFusionDependency(s.redisReplacerWithOptions()) {
-		missing = append(missing, "redis document replacer")
+	if isNilFusionDependency(s.redisBackfiller()) {
+		missing = append(missing, "redis document backfiller")
 	}
 	if isNilFusionDependency(s.redisLocker()) {
 		missing = append(missing, "redis record locker")
@@ -294,7 +294,7 @@ func (s Strategy) backfillMongoDocumentAfterRedisCheck(ctx context.Context, spec
 	if err := s.requireRedisBackfillDependencies(); err != nil {
 		return nil, false, err
 	}
-	replacer := s.redisReplacerWithOptions()
+	backfiller := s.redisBackfiller()
 	locker := s.redisLocker()
 	lock, err := locker.LockRecord(ctx, spec, key, storage.LockOptions{TTL: s.loadLockTTL(), Wait: s.loadLockWait()})
 	if err != nil {
@@ -318,7 +318,7 @@ func (s Strategy) backfillMongoDocumentAfterRedisCheck(ctx context.Context, spec
 		return nil, false, fmt.Errorf("fusion: mongo batch loader: %w", err)
 	}
 	if !mongoExists {
-		return nil, false, nil
+		return loadFusionDocument(ctx, s.redisLoader(), "redis document loader after mongo miss", spec, key, fields...)
 	}
 	ttl, err := s.redisBackfillTTL(spec)
 	if err != nil {
@@ -328,17 +328,21 @@ func (s Strategy) backfillMongoDocumentAfterRedisCheck(ctx context.Context, spec
 		Upsert: true,
 		TTL:    ttl,
 	}
-	if err := replacer.ReplaceDocumentWithOptions(ctx, spec, key, mongoDocument, options); err != nil {
+	inserted, err := backfiller.BackfillDocumentWithOptions(ctx, spec, key, mongoDocument, options)
+	if err != nil {
 		return nil, false, err
 	}
-	return projectDocument(spec, mongoDocument, fields), true, nil
+	if inserted {
+		return projectDocument(spec, mongoDocument, fields), true, nil
+	}
+	return s.loadRedisAfterConcurrentBackfill(ctx, spec, key, fields...)
 }
 
 func (s Strategy) loadMongoDocumentAndBackfillRedis(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, fields ...string) (document map[string]any, exists bool, err error) {
 	if err := s.requireRedisBackfillDependencies(); err != nil {
 		return nil, false, err
 	}
-	replacer := s.redisReplacerWithOptions()
+	backfiller := s.redisBackfiller()
 	locker := s.redisLocker()
 	lock, err := locker.LockRecord(ctx, spec, key, storage.LockOptions{TTL: s.loadLockTTL(), Wait: s.loadLockWait()})
 	if err != nil {
@@ -363,17 +367,35 @@ func (s Strategy) loadMongoDocumentAndBackfillRedis(ctx context.Context, spec me
 		return nil, false, err
 	}
 	document, exists, err = loadFusionDocument(ctx, s.MongoLoader, "mongo document loader", spec, key)
-	if err != nil || !exists {
+	if err != nil {
 		return document, exists, err
+	}
+	if !exists {
+		return loadFusionDocument(ctx, s.redisLoader(), "redis document loader after mongo miss", spec, key, fields...)
 	}
 	options := storage.ApplyOptions{
 		Upsert: true,
 		TTL:    ttl,
 	}
-	if err := replacer.ReplaceDocumentWithOptions(ctx, spec, key, document, options); err != nil {
+	inserted, err := backfiller.BackfillDocumentWithOptions(ctx, spec, key, document, options)
+	if err != nil {
 		return nil, false, err
 	}
-	return projectDocument(spec, document, fields), true, nil
+	if inserted {
+		return projectDocument(spec, document, fields), true, nil
+	}
+	return s.loadRedisAfterConcurrentBackfill(ctx, spec, key, fields...)
+}
+
+func (s Strategy) loadRedisAfterConcurrentBackfill(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, fields ...string) (map[string]any, bool, error) {
+	document, exists, err := loadFusionDocument(ctx, s.redisLoader(), "redis document loader after concurrent backfill", spec, key, fields...)
+	if err != nil {
+		return nil, false, err
+	}
+	if !exists {
+		return nil, false, fmt.Errorf("fusion: redis document disappeared after concurrent backfill: %w", storage.ErrNotExists)
+	}
+	return document, true, nil
 }
 
 func releaseRecordLock(ctx context.Context, lock storage.RecordLock, result *error) {
@@ -459,20 +481,20 @@ func validateFusionDocumentResults(source string, documents []map[string]any, ex
 	return nil
 }
 
-func (s Strategy) redisReplacerWithOptions() storage.DocumentReplacerWithOptions {
-	if !isNilFusionDependency(s.RedisReplacer) {
-		return s.RedisReplacer
+func (s Strategy) redisBackfiller() storage.DocumentBackfiller {
+	if !isNilFusionDependency(s.RedisBackfiller) {
+		return s.RedisBackfiller
 	}
-	replacer, _ := s.RedisApplier.(storage.DocumentReplacerWithOptions)
-	if isNilFusionDependency(replacer) {
+	backfiller, _ := s.RedisApplier.(storage.DocumentBackfiller)
+	if isNilFusionDependency(backfiller) {
 		return nil
 	}
-	return replacer
+	return backfiller
 }
 
 func (s Strategy) requireRedisBackfillDependencies() error {
-	if isNilFusionDependency(s.redisReplacerWithOptions()) {
-		return fmt.Errorf("%w: redis document replacer with options", ErrStrategyDependenciesNotConfigured)
+	if isNilFusionDependency(s.redisBackfiller()) {
+		return fmt.Errorf("%w: redis document backfiller", ErrStrategyDependenciesNotConfigured)
 	}
 	if isNilFusionDependency(s.redisLocker()) {
 		return fmt.Errorf("%w: redis record locker", ErrStrategyDependenciesNotConfigured)

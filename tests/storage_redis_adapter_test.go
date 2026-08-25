@@ -397,6 +397,101 @@ func TestRedisAdapterReplaceDocumentWithOptionsUsesFullReplaceAndTTL(t *testing.
 	}
 }
 
+func TestRedisAdapterBackfillDocumentWritesOnlyWhenMainDocumentIsMissing(t *testing.T) {
+	client := &recordingRedisStringClient{}
+	adapter := mustRedisAdapter(t, client)
+	spec := meta.TypeSpec{
+		Type:  meta.Type{Fields: []meta.Field{{Name: "Items", JSONName: "items"}}},
+		Redis: &meta.RedisSpec{Key: "role"},
+		Fields: map[string]meta.FieldSpec{
+			"Items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}},
+		},
+	}
+
+	inserted, err := adapter.BackfillDocumentWithOptions(
+		context.Background(),
+		spec,
+		storage.RecordKey{ID: int64(1001)},
+		map[string]any{
+			"name":  "alice",
+			"items": map[string]any{"1001": map[string]any{"quantity": int64(9)}},
+		},
+		storage.ApplyOptions{TTL: 1500 * time.Millisecond},
+	)
+	if err != nil {
+		t.Fatalf("BackfillDocumentWithOptions returned error: %v", err)
+	}
+	if !inserted {
+		t.Fatal("BackfillDocumentWithOptions inserted = false, want true")
+	}
+	if len(client.evals) != 1 {
+		t.Fatalf("eval calls = %#v, want exactly one", client.evals)
+	}
+	call := client.evals[0]
+	if len(call.keys) != 1 || call.keys[0] != "role:{1001}" {
+		t.Fatalf("eval keys = %#v, want role:{1001}", call.keys)
+	}
+	if len(call.args) == 0 || call.args[len(call.args)-1] != "1500" {
+		t.Fatalf("eval args = %#v, want 1500ms ttl tail", call.args)
+	}
+	triples := backfillEvalTriples(t, call.args)
+	if triples[""].mode != "1" || !strings.Contains(triples[""].body, `"name":"alice"`) {
+		t.Fatalf("main triple = %#v, want full replacement with name", triples[""])
+	}
+	if triples["items"].mode != "1" || !strings.Contains(triples["items"].body, `"items"`) {
+		t.Fatalf("items triple = %#v, want full replacement with items", triples["items"])
+	}
+}
+
+func TestRedisAdapterBackfillDocumentReportsConcurrentExistingDocument(t *testing.T) {
+	client := &recordingRedisStringClient{hasResult: true, evalResult: "ex"}
+	adapter := mustRedisAdapter(t, client)
+
+	inserted, err := adapter.BackfillDocumentWithOptions(
+		context.Background(),
+		meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}},
+		storage.RecordKey{ID: int64(1001)},
+		map[string]any{"name": "cold"},
+		storage.ApplyOptions{},
+	)
+	if err != nil {
+		t.Fatalf("BackfillDocumentWithOptions returned error: %v", err)
+	}
+	if inserted {
+		t.Fatal("BackfillDocumentWithOptions inserted = true, want false for existing document")
+	}
+}
+
+func TestRedisAdapterBackfillDocumentRejectsUnknownScriptResult(t *testing.T) {
+	client := &recordingRedisStringClient{hasResult: true, evalResult: "unknown"}
+	adapter := mustRedisAdapter(t, client)
+
+	inserted, err := adapter.BackfillDocumentWithOptions(
+		context.Background(),
+		meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}},
+		storage.RecordKey{ID: int64(1001)},
+		map[string]any{"name": "cold"},
+		storage.ApplyOptions{},
+	)
+	if err == nil || inserted || !strings.Contains(err.Error(), "unexpected script result") {
+		t.Fatalf("BackfillDocumentWithOptions inserted/error = %v/%v, want false/explicit error", inserted, err)
+	}
+}
+
+func TestRedisAdapterBackfillDocumentRejectsNilDocument(t *testing.T) {
+	adapter := mustRedisAdapter(t, &recordingRedisStringClient{})
+	_, err := adapter.BackfillDocumentWithOptions(
+		context.Background(),
+		meta.TypeSpec{Redis: &meta.RedisSpec{Key: "role"}},
+		storage.RecordKey{ID: int64(1001)},
+		nil,
+		storage.ApplyOptions{},
+	)
+	if !errors.Is(err, storage.ErrNilDocument) {
+		t.Fatalf("BackfillDocumentWithOptions error = %v, want ErrNilDocument", err)
+	}
+}
+
 func TestRedisAdapterReplaceDocumentKeepsEmptyMainDocumentForSubKeyOnlyData(t *testing.T) {
 	client := &recordingRedisStringClient{}
 	adapter := mustRedisAdapter(t, client)
@@ -1502,6 +1597,44 @@ func TestRedisClusterRoutesSingleWriteByShardKey(t *testing.T) {
 	}
 }
 
+func TestRedisClusterRoutesConditionalBackfillByShardKey(t *testing.T) {
+	roleShard := &recordingRedisStringClient{}
+	userShard := &recordingRedisStringClient{}
+	router := &recordingRedisRouter{names: map[any]string{int64(7): "role-shard"}}
+	cluster := mustRedisCluster(t, router, map[string]txredis.ScriptClient{
+		"role-shard": roleShard,
+		"user-shard": userShard,
+	})
+	spec := meta.TypeSpec{Redis: &meta.RedisSpec{
+		Key:     "role",
+		IDField: "roleId",
+		Route:   meta.RouteSpec{Type: "role", By: "serverId"},
+	}}
+
+	inserted, err := cluster.BackfillDocumentWithOptions(
+		context.Background(),
+		spec,
+		storage.RecordKey{ID: int64(1001), ShardKey: int64(7)},
+		map[string]any{"roleId": int64(1001)},
+		storage.ApplyOptions{TTL: time.Hour},
+	)
+	if err != nil {
+		t.Fatalf("BackfillDocumentWithOptions returned error: %v", err)
+	}
+	if !inserted {
+		t.Fatal("BackfillDocumentWithOptions inserted = false, want true")
+	}
+	if len(router.calls) != 1 || router.calls[0].routeType != "role" || router.calls[0].shardKey != int64(7) {
+		t.Fatalf("router calls = %#v, want role shard key 7", router.calls)
+	}
+	if len(roleShard.evals) != 1 || !sameStrings(roleShard.evals[0].keys, []string{"role:{7}:1001"}) {
+		t.Fatalf("role shard evals = %#v, want one conditional backfill", roleShard.evals)
+	}
+	if len(userShard.evals) != 0 {
+		t.Fatalf("unexpected user shard evals = %#v", userShard.evals)
+	}
+}
+
 func TestRedisAdapterRejectsMissingDistinctRouteShardKey(t *testing.T) {
 	client := &recordingRedisStringClient{}
 	adapter := mustRedisAdapter(t, client)
@@ -1842,6 +1975,24 @@ func evalTriples(t *testing.T, args []any) map[string]redisEvalTriple {
 		mode, ok := args[i+2].(string)
 		if !ok {
 			t.Fatalf("eval arg %d = %#v, want mode string", i+2, args[i+2])
+		}
+		triples[suffix] = redisEvalTriple{body: body, mode: mode}
+	}
+	return triples
+}
+
+func backfillEvalTriples(t *testing.T, args []any) map[string]redisEvalTriple {
+	t.Helper()
+	if len(args) < 4 || (len(args)-1)%3 != 0 {
+		t.Fatalf("backfill eval args = %#v, want suffix/document/mode triples plus ttl", args)
+	}
+	triples := map[string]redisEvalTriple{}
+	for i := 0; i < len(args)-1; i += 3 {
+		suffix, suffixOK := args[i].(string)
+		body, bodyOK := args[i+1].(string)
+		mode, modeOK := args[i+2].(string)
+		if !suffixOK || !bodyOK || !modeOK {
+			t.Fatalf("backfill eval triple at %d = %#v, want strings", i, args[i:i+3])
 		}
 		triples[suffix] = redisEvalTriple{body: body, mode: mode}
 	}

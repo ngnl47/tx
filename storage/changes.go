@@ -205,6 +205,12 @@ type DocumentReplacerWithOptions interface {
 	ReplaceDocumentWithOptions(context.Context, meta.TypeSpec, RecordKey, map[string]any, ApplyOptions) error
 }
 
+// DocumentBackfiller 定义仅在目标记录尚不存在时回填整文档的适配器。
+// inserted=true 表示本次写入成功；false 表示目标已被并发写入，调用方必须读取当前值，不能覆盖。
+type DocumentBackfiller interface {
+	BackfillDocumentWithOptions(context.Context, meta.TypeSpec, RecordKey, map[string]any, ApplyOptions) (inserted bool, err error)
+}
+
 // DocumentReplacer 定义按记录键整文档替换的适配器。
 // document 必须非 nil；空 map 表示合法的空 JSON 对象。
 type DocumentReplacer interface {

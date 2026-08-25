@@ -6,6 +6,14 @@ import (
 )
 
 func TestLuaScriptsAreEmbeddedAssets(t *testing.T) {
+	backfillBody, err := luaScripts.ReadFile("scripts/backfill_document.lua")
+	if err != nil {
+		t.Fatalf("ReadFile backfill script returned error: %v", err)
+	}
+	if !strings.Contains(string(backfillBody), "redis.replicate_commands()") {
+		t.Fatalf("embedded backfill script does not look like Lua: %s", string(backfillBody))
+	}
+
 	updateBody, err := luaScripts.ReadFile("scripts/update_document.lua")
 	if err != nil {
 		t.Fatalf("ReadFile update script returned error: %v", err)
@@ -20,6 +28,26 @@ func TestLuaScriptsAreEmbeddedAssets(t *testing.T) {
 	}
 	if !strings.Contains(string(findBody), "return result") {
 		t.Fatalf("embedded find script does not look like Lua: %s", string(findBody))
+	}
+}
+
+func TestBackfillLuaScriptUsesAtomicMissingDocumentProtocol(t *testing.T) {
+	body, err := luaScripts.ReadFile("scripts/backfill_document.lua")
+	if err != nil {
+		t.Fatalf("ReadFile backfill script returned error: %v", err)
+	}
+	text := string(body)
+	for _, want := range []string{
+		"local RESULT_EXISTS = \"ex\"",
+		"redis.call(\"exists\", key)",
+		"local PATCH_MODE_REPLACE = \"1\"",
+		"local PATCH_MODE_KEEP_EMPTY = \"4\"",
+		"redis.call(\"incr\", vkey)",
+		"redis.call(\"pexpire\", vkey, ttl)",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("backfill script missing atomic protocol fragment %q", want)
+		}
 	}
 }
 

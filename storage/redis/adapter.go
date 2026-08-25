@@ -59,6 +59,8 @@ type Adapter struct {
 	client ScriptClient
 }
 
+var _ storage.DocumentBackfiller = (*Adapter)(nil)
+
 // NewAdapter 创建 Redis 变更适配器。
 func NewAdapter(client ScriptClient) (*Adapter, error) {
 	if isNilScriptClient(client) {
@@ -156,6 +158,50 @@ func (a *Adapter) ReplaceDocumentWithOptions(ctx context.Context, spec meta.Type
 	}
 	options.Upsert = true
 	return a.applyDocumentPatchesWithOptions(ctx, spec, key, buildReplaceDocumentPatches(spec, doc), options)
+}
+
+// BackfillDocumentWithOptions 仅当 Redis 主热文档不存在时原子回填完整文档。
+func (a *Adapter) BackfillDocumentWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any, options storage.ApplyOptions) (bool, error) {
+	if doc == nil {
+		return false, storage.ErrNilDocument
+	}
+	if err := storage.ValidateRecordKey(spec, key); err != nil {
+		return false, err
+	}
+	client, err := a.scriptClient()
+	if err != nil {
+		return false, err
+	}
+	prefix := redisKeyPrefix(spec, key)
+	ttlMilliseconds, err := applyTTLMilliseconds(options.TTL)
+	if err != nil {
+		return false, fmt.Errorf("redis: backfill document %s: %w", prefix, err)
+	}
+	patches := buildReplaceDocumentPatches(spec, doc)
+	args := make([]any, 0, len(patches)*3+1)
+	for suffix, patch := range patches {
+		if patch.Mode != documentPatchModeReplace && patch.Mode != documentPatchModeKeepEmpty {
+			return false, fmt.Errorf("redis: backfill document %s: invalid patch mode %q", prefix, patch.Mode)
+		}
+		body, err := EncodeDocumentPatch(patch)
+		if err != nil {
+			return false, err
+		}
+		args = append(args, suffix, body, string(patch.Mode))
+	}
+	args = append(args, strconv.FormatInt(ttlMilliseconds, 10))
+	result, err := client.Eval(ctx, backfillDocumentScript, []string{prefix}, args...)
+	if err != nil {
+		return false, fmt.Errorf("redis: backfill document %s: %w", prefix, err)
+	}
+	switch result {
+	case scriptResultOK:
+		return true, nil
+	case scriptResultExists:
+		return false, nil
+	default:
+		return false, fmt.Errorf("redis: backfill document %s: unexpected script result %q", prefix, result)
+	}
 }
 
 // ReplaceDocument 按 Redis string JSON 文档模型全量替换一条热数据。

@@ -6,13 +6,14 @@ import "embed"
 var luaScripts embed.FS
 
 var (
-	deleteDocumentScript = mustReadLuaScript("scripts/delete_document.lua")
-	expireDocumentScript = mustReadLuaScript("scripts/expire_document.lua")
-	findDocumentScript   = mustReadLuaScript("scripts/find_document.lua")
-	lockRecordScript     = mustReadLuaScript("scripts/lock_record.lua")
-	readRevisionScript   = mustReadLuaScript("scripts/read_revision.lua")
-	unlockRecordScript   = mustReadLuaScript("scripts/unlock_record.lua")
-	updateDocumentScript = mustReadLuaScript("scripts/update_document.lua")
+	backfillDocumentScript = mustReadLuaScript("scripts/backfill_document.lua")
+	deleteDocumentScript   = mustReadLuaScript("scripts/delete_document.lua")
+	expireDocumentScript   = mustReadLuaScript("scripts/expire_document.lua")
+	findDocumentScript     = mustReadLuaScript("scripts/find_document.lua")
+	lockRecordScript       = mustReadLuaScript("scripts/lock_record.lua")
+	readRevisionScript     = mustReadLuaScript("scripts/read_revision.lua")
+	unlockRecordScript     = mustReadLuaScript("scripts/unlock_record.lua")
+	updateDocumentScript   = mustReadLuaScript("scripts/update_document.lua")
 )
 
 func mustReadLuaScript(name string) string {

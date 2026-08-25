@@ -3557,6 +3557,7 @@ ExpireAt time.Time `json:"expireAt" bson:"expireAt" msgpack:"expireAt" mongodb:"
 - `BatchDocumentLoader`：按 `TypeSpec + []RecordKey` 批量读取文档。
 - `DocumentReplacer`：按 `TypeSpec + RecordKey` 整文档替换。
 - `DocumentReplacerWithOptions`：整文档替换并接收 `storage.ApplyOptions`，用于需要 TTL/upsert 等写入语义的路径。
+- `DocumentBackfiller`：仅在目标文档仍不存在时原子回填；返回 `false` 表示并发写已经创建目标，调用方必须读取当前值。
 
 热数据淘汰任务发现 Redis 生命周期版本已变化时，必须重新入队；若此时 Fusion 延迟任务队列未装配，handler 返回依赖错误而不是确认旧任务，避免后续自动清理任务丢失。
 
@@ -3745,7 +3746,20 @@ handler 会在这个流程外层持有同一条记录的 Redis 锁，减少多�
 
 运维侧应关注 Scheduler 错误日志、重试次数和队列积压时间。如果某类任务持续失败，优先排查对应类型的 Redis 热文档是否能正常反序列化、Mongo 路由/过滤条件是否正确、以及目标集合是否可写。队列中的失败原因不会写入 Redis 状态；需要更完整的告警和指标时，应通过项目自己的日志、监控或后续可插拔 observer 接入。
 
-通过项目健康 gate 后，Fusion Strategy 内部先查 Redis，未命中时才回源 Mongo；Redis 命中不会在本次请求里额外 Ping Mongo。单条回源会先获取记录级 Redis 锁，并在锁内再次读取 Redis：如果第二次读取命中，直接返回 Redis 热数据；只有第二次仍未命中时，才从 Mongo 全量读取文档，写回 Redis 热数据并使用 `delayDelTime` 续期，然后按请求字段返回结果。若类型未配置正数 `delayDelTime`，回填使用 `dirtyTTL`，仍不会生成永久 Redis key。批量读取先合并第一次 Redis 查询；当 Mongo reader 支持批量读取时，所有 miss 会先通过一次 Mongo 全文批量读取取得候选文档，再逐条获取记录锁并二次读取 Redis。锁内已经被其他请求回填的记录直接返回最新 Redis 文档，仍未命中时才写入该条候选 Mongo 文档；因此批量回源不会用旧候选覆盖另一条回填完成后的热数据。该路径必须已装配带写入选项的 Redis 文档替换器和记录锁，缺少任一组件时会返回 `fusion.ErrStrategyDependenciesNotConfigured`，不会降级成只读 Mongo。显式使用 `LoadOptions.SkipRedisBackfill` 时，才直接从 Mongo 按请求字段读取且不回填 Redis，适合低频只读场景。
+通过项目健康 gate 后，Fusion Strategy 内部先查 Redis，未命中时才回源 Mongo；Redis 命中不会在本次请求里额外 Ping Mongo。单条回源会先获取记录级 Redis 锁，并在锁内再次读取 Redis：如果第二次读取命中，直接返回 Redis 热数据；只有第二次仍未命中时，才从 Mongo 全量读取文档。Mongo 文档不会无条件覆盖 Redis，而是通过一条 Lua 原子执行“主热文档仍不存在才回填 main/subKey/`@v`”。若 Lua 发现普通业务热写已经创建主文档，Fusion 会丢弃旧 Mongo 候选并重新读取 Redis；Mongo 返回不存在时也会再读一次 Redis，避免把回源期间产生的热写误报为不存在。若类型未配置正数 `delayDelTime`，回填使用 `dirtyTTL`，仍不会生成永久 Redis key。
+
+批量读取先合并第一次 Redis 查询；当 Mongo reader 支持批量读取时，所有 miss 会先通过一次 Mongo 全文批量读取取得候选文档，再逐条获取记录锁并二次读取 Redis。每条候选仍使用相同的 Lua 条件回填；因此锁内复查结束后若目标已经由其他受控入口创建，旧候选也不会覆盖当前值。记录锁只用于合并重复回源、减少 Mongo I/O，不是条件回填的正确性边界。该路径必须已装配 Redis 条件回填器和记录锁，缺少任一组件时会返回 `fusion.ErrStrategyDependenciesNotConfigured`，不会降级成只读 Mongo。显式使用 `LoadOptions.SkipRedisBackfill` 时，才直接从 Mongo 按请求字段读取且不回填 Redis，适合低频只读场景。
+
+玩家请求仍应按角色稳定路由到同一个逻辑 game owner，并由同一 Actor 邮箱串行处理；断线重连也应恢复到同一逻辑槽位。条件回填不替代这条集群规则，也不提供分布式并发控制。它只收紧存储边界的固有语义：Mongo 回源结果是缓存候选，只能填充缺失的 Redis 热文档，不能覆盖任何已经存在的当前值。
+
+例如在恢复工具、高级存储入口或异常的双 owner 场景中，Mongo 候选是 `name="cold"`，而 Redis 已经存在 `name="hot"`：
+
+```text
+Mongo candidate: name="cold"
+Redis hot write: name="hot"
+Lua backfill:    mainKey 已存在，返回未插入
+Fusion result:   重新读取 Redis，返回 name="hot"
+```
 
 部分字段读取的优化主要发生在 Redis 热数据层：运行时按 main/subKey key 粒度减少 Redis 读取，随后按字段过滤返回文档；Redis 和 Mongo 中保存的仍是全量数据。只请求 subKey 字段时，Redis 可以只读取对应 subKey 文档，不要求主文档同时命中。
 
@@ -3763,13 +3777,13 @@ Fusion 需要三类组件：
 
 ```go
 fusionStore := fusion.Strategy{
-	RedisApplier:   redisCluster,
-	RedisLoader:    redisCluster,
-	RedisReplacer:  redisCluster,
-	RedisLocker:    redisCluster,
-	MongoLoader:    mongoCluster,
-	DelaySubmitter: fusion.NewDelayTaskDispatcher(delayedSaveQueue),
-	DirtyTTL:       30 * 24 * time.Hour,
+	RedisApplier:    redisCluster,
+	RedisLoader:     redisCluster,
+	RedisBackfiller: redisCluster,
+	RedisLocker:     redisCluster,
+	MongoLoader:     mongoCluster,
+	DelaySubmitter:  fusion.NewDelayTaskDispatcher(delayedSaveQueue),
+	DirtyTTL:        30 * 24 * time.Hour,
 }
 ```
 
@@ -3869,8 +3883,9 @@ return errors.Join(claimErr, settleErr)
 4. 锁内再次读 Redis。
 5. 第二次 Redis 命中，直接返回。
 6. 第二次 Redis 仍未命中，读 Mongo 完整文档。
-7. 将 Mongo 完整文档写回 Redis，并使用 `delayDelTime` 作为 Redis TTL。
-8. 按请求字段返回给调用方。
+7. Lua 原子检查主热文档仍不存在，再回填完整文档并设置 TTL。
+8. 若并发热写已经创建主文档，丢弃 Mongo 候选并重新读取 Redis。
+9. 按请求字段返回给调用方。
 
 代码示例：
 
@@ -3886,7 +3901,7 @@ role, exists, err := data.LoadGDRoleFields(ctx, fusionStore, data.GDRoleRecordKe
 
 即使只请求 `Name` 和 `Power`，Redis miss 后默认也会从 Mongo 读取完整文档并回填 Redis。这样 Redis 继续承担热数据缓存职责。
 
-这个锁用于保护并发回填。例如 `game-a` 和 `game-b` 同时读取 `role:{1001}` 未命中；`game-a` 先拿到锁、从 Mongo 读取并回填 Redis；`game-b` 随后拿到锁时会先二次读取 Redis，发现已经有热数据，于是不会再用自己稍后读到的 Mongo 快照覆盖 Redis。
+这个锁用于合并重复回源。例如两个只读查询同时读取 `role:{1001}` 未命中；第一个查询先拿到锁、从 Mongo 读取并回填 Redis；第二个查询随后拿到锁时会先二次读取 Redis，发现已经有热数据，于是不再读取 Mongo。最终正确性由 Redis 条件回填 Lua 保证：无论调用来自正常回源、恢复工具还是高级存储入口，旧 Mongo 候选都不能覆盖已经存在的 Redis 当前值。
 
 如果明确是低频只读，不希望回填 Redis，可以使用 runtime option：
 

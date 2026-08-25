@@ -165,13 +165,13 @@ func (s *storageRuntime) startFusion(ctx context.Context, redisConfig storagecon
 	s.delayBackend = delayBackend
 	s.delayDispatcher = txfusion.NewDelayTaskDispatcher(delayedSaveQueue)
 	s.fusion = txfusion.Strategy{
-		RedisApplier:   s.redis,
-		RedisLoader:    s.redis,
-		RedisReplacer:  s.redis,
-		RedisLocker:    s.redis,
-		MongoLoader:    s.mongo,
-		DelaySubmitter: s.delayDispatcher,
-		DirtyTTL:       opts.FusionDirtyTTL,
+		RedisApplier:    s.redis,
+		RedisLoader:     s.redis,
+		RedisBackfiller: s.redis,
+		RedisLocker:     s.redis,
+		MongoLoader:     s.mongo,
+		DelaySubmitter:  s.delayDispatcher,
+		DirtyTTL:        opts.FusionDirtyTTL,
 	}
 	if err := s.fusion.Validate(); err != nil {
 		return fmt.Errorf("server: validate fusion storage: %w", err)
