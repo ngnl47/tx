@@ -96,7 +96,23 @@ Redis / Mongo / etcd / gRPC / Actor
 - 是生产工程组织方式和集成验证模板。
 - 读取 yml、环境变量和命令行参数，构造具体 client 与实例配置。
 - 提供 `db.Save(role)` 之类业务 facade。
-- 组织 `services/*` 微服务和 `domain/modules/*` 业务模块。
+- 以 `services/*` 组织 L4 微服务；服务专属 Handler、路由、Actor 和业务模块随所属 Service 放置。
+- `server/internal` 只保存进程级组合根、配置转换和基础设施 facade，不作为业务代码汇总包。
+
+txgame 的业务模块按稳定能力、领域实现和事务编排分层：`modules/*_service.go` 使用包级函数提供 Handler 与 Procedure
+共用的业务能力，`modules/internal/<domain>` 保存具体领域实现，`services/<name>/internal/procedure/P*.go` 负责编排
+所属 L4 Service 的本机事务。业务能力不持有无状态 Service 实例，不判断当前事务层级，也不负责最终刷盘。
+
+Procedure 单向依赖并组合 `modules` 的稳定业务能力，`modules` 禁止反向依赖 Procedure。Procedure 放在 Service 的
+`internal` 目录而不是 `modules/internal`：这样所属 Service 的 Handler 可以启动根 Procedure，其他 L4 Service 又不能
+越界调用。Go 的 `internal` 规则同时禁止 Handler 绕过稳定能力直接依赖 `modules/internal` 领域实现。
+
+无状态 Handler 直接调用 `modules` 并显式保存根 GD；有状态 Handler 使用 `txn.Executor.Call` 启动根 Procedure。
+父 Procedure 需要复用另一事务流程时，使用当前 `*txn.Tx.Call` 创建子 savepoint。根过程必须提前声明完整锁集，错误的
+嵌套根调用会直接返回错误。该依赖方向借鉴 rj3d 的 Procedure 组合方式，但不依赖线程局部状态猜测根调用与子调用。
+
+跨 L4 Service 调用必须经过 Actor/RPC client，并在目标服务内执行自己的 Procedure；即使多个 Service 聚合在同一进程，
+也不扩大单机事务边界。运行模型属于整个 Service，进程启动后不能按请求切换。
 
 ### API 分层
 
@@ -1819,8 +1835,9 @@ project config parser
   -> RPC Serve + control ready + discovery running
 ```
 
-项目不实现自己的 Host 或 Runtime。`txgame/internal/app` 只是 composition root：注册生成数据、安装 `db`
-facade、注入身份解析/业务分发回调和声明可选业务服务。`server/services/agent` 与
+项目不实现自己的 Host 或 Runtime。`txgame/server/internal/app` 只是 composition root：注册生成数据、安装 `db`
+facade、注入身份解析/业务分发回调和声明可选业务服务。项目专属 SPI 与业务逻辑随所属 L4 Service 放在
+`txgame/server/services/<name>`；`server/services/agent` 与
 `server/services/msgq` 是 tx 提供的通用服务适配器；项目配置转换会延迟到对应服务真正被当前进程选中时执行，
 未选服务的专属配置不能阻止其他服务启动。
 

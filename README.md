@@ -168,7 +168,7 @@ if err := storage.Save(ctx, fusionStore, role.Store()); err != nil {
 | --- | --- | --- |
 | `agent` | RPC、Redis；跨进程邮箱时增加 Discovery | 玩家 TCP/WebSocket 入口、共享 RPC、Redis 会话绑定 |
 | `msgq` | RPC、Redis | 共享 RPC 上的 MailboxService、Redis owner binding |
-| `game` | RPC、Fusion、Transaction、DelayScheduler | Redis、Mongo、Fusion、事务 Runtime、延迟回写调度器 |
+| `game` 示例 | RPC、Fusion、DelayScheduler；有状态形态追加 Transaction | Redis、Mongo、Fusion、延迟回写调度器；按项目选择事务 Runtime |
 
 例如只启动一个 RPC-only 自定义服务时，`Context.Storage()` 保持 `nil`，框架不会校验 Redis/Mongo 配置，也不会连接
 对应外部服务。项目需要从 yml 字符串惰性转换强类型配置时，在组合根注册配置提供者：
@@ -1276,7 +1276,7 @@ _ = pid
 的新命令准入、等待已进入的 Procedure、完成最终 Flush。`txgame` 未启用服务发现时 `app.Slots` 为 nil；依赖固定槽位的
 服务必须在启动时显式失败，不能退化为普通实例路由。
 
-`txgame/internal/agent` 的 `NewFixedSlotTargetResolver` 是 Agent 到固定 Actor 的项目侧组合器。业务只提供身份到
+`txgame/server/services/agent` 的 `NewFixedSlotTargetResolver` 是 Agent 到固定 Actor 的项目侧组合器。业务只提供身份到
 `SlotID` 和 Actor 名称的规则；它复用 `SlotRouter`，因此目标处于 `draining`、`stopping` 或缺失时会保留
 `ErrSlotRuntimeUnavailable` 错误链，调用方用 `errors.Is` 判断，不能改派其他 game：
 
