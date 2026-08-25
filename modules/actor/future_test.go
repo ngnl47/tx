@@ -77,6 +77,20 @@ func TestPendingCallsRejectsMalformedResultError(t *testing.T) {
 	}
 }
 
+func TestPendingCallsRejectsEmptySuccessfulResult(t *testing.T) {
+	calls := newPendingCalls(1)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	requestID, future, err := calls.add(ctx, pendingResult, 7)
+	if err != nil {
+		t.Fatalf("add pending result: %v", err)
+	}
+	calls.resolve(&actorpb.Result{RequestId: requestID})
+	if _, err := future.Await(ctx); !errors.Is(err, ErrInvalidResponse) {
+		t.Fatalf("Future.Await() error = %v, want ErrInvalidResponse", err)
+	}
+}
+
 func BenchmarkPendingCallsRoundTrip(b *testing.B) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 	defer cancel()

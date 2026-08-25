@@ -38,19 +38,35 @@ func NewWaitGroupContext(parent context.Context) *WaitGroupContext {
 
 // Enter 登记已经在调用方 goroutine 中执行的工作。工作完成后必须调用一次返回函数。
 func (c *WaitGroupContext) Enter() (func(), error) {
-	if c == nil {
-		return nil, ErrStopping
+	if err := c.BeginWork(); err != nil {
+		return nil, err
 	}
-	c.mu.Lock()
-	if c.stopping || c.Err() != nil {
-		c.mu.Unlock()
-		return nil, ErrStopping
-	}
-	c.wg.Add(1)
-	c.mu.Unlock()
 
 	var once sync.Once
-	return func() { once.Do(c.wg.Done) }, nil
+	return func() { once.Do(c.EndWork) }, nil
+}
+
+// BeginWork 登记一项已被框架队列接受的工作。它与 EndWork 成对使用，供邮箱等
+// 高频基础组件避免为每项工作创建完成闭包；普通调用方应优先使用 Enter 或 Go。
+func (c *WaitGroupContext) BeginWork() error {
+	if c == nil {
+		return ErrStopping
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.stopping || c.Err() != nil {
+		return ErrStopping
+	}
+	c.wg.Add(1)
+	return nil
+}
+
+// EndWork 完成一项由 BeginWork 登记的工作。每次成功登记必须且只能调用一次。
+func (c *WaitGroupContext) EndWork() {
+	if c == nil {
+		return
+	}
+	c.wg.Done()
 }
 
 // Go 登记并启动属于当前生命周期的工作。关闭开始后不再接受新工作，避免等待过程与后续登记发生竞争。

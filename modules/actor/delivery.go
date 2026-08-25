@@ -210,6 +210,9 @@ func (r *Runtime) sendRequest(ctx context.Context, pid *protoactor.PID, delivery
 	if r.stopped {
 		return nil, ErrRuntimeStopped
 	}
+	if r.draining {
+		return nil, ErrRuntimeDraining
+	}
 	if !r.started || r.cluster == nil || r.responder == nil {
 		return nil, ErrRuntimeNotStarted
 	}

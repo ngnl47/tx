@@ -1786,6 +1786,14 @@ HeapAlloc 受整个进程影响，不能作为 Manager 拒绝服务的唯一依�
 `Server.Stop` 仍会使用自己的 context 重新等待 pending 清零。排水失败后不能继续正常滚动发布，避免在仍有已受理
 工作时把失败误判成安全关闭。
 
+Actor 业务工作在 mailbox 成功接收 tx `Delivery` 前调用 `WaitGroupContext.BeginWork`，在 handler 同步返回后调用
+`EndWork`。这一对低层入口避免为每条高频消息分配完成闭包，并使排队消息与执行中消息共享同一生命周期账本；
+mailbox 溢出时立即回滚登记。只有 tx `Delivery` 属于业务工作，ProtoActor 的 `PoisonPill`、监督和集群控制消息不能
+受根生命周期准入限制，否则 Runtime 关闭时会拒绝自身停止消息。ActorSystem 保存同一个只读标准 `context.Context`，
+项目命令适配层把它嵌入生成的 `HandlerContext`；业务可将其传给下游 I/O，但不能取得 `WaitGroupContext.Cancel/Wait`。
+正常关闭先调用 Actor `Drain` 封闭新 Delivery 并等待 mailbox 排空，此时根 context 保持有效；随后才能停止业务服务和
+执行事务最终 Flush。Actor 排空受统一 `runtime.lifecycle.drainTimeout` 限制，超时错误包含剩余 Delivery 数量。
+
 ### 排水与关闭的区别
 
 排水是入口策略：不再接受新的外部工作。关闭是资源生命周期：等待已进入工作，停止循环，Flush 并释放资源。
@@ -1825,6 +1833,7 @@ facade、注入身份解析/业务分发回调和声明可选业务服务。`ser
 ```text
 discovery -> draining
   -> service ingress drain and accepted-work wait
+  -> actor Delivery admission close and mailbox drain
   -> service stop
   -> project cleanup and generated storage unbind
   -> transaction final flush
@@ -1836,8 +1845,8 @@ discovery -> draining
   -> storage close
 ```
 
-Drain 期间不会提前取消根 `WaitGroupContext`，也不会关闭 msgq 下行所需的共享 RPC Host。只有服务入口完成
-封口并等待已受理工作后，Stop 才进入资源关闭阶段。
+Drain 期间不会提前取消根 `WaitGroupContext`，也不会关闭 msgq 下行所需的共享 RPC Host。只有服务入口和 Actor
+业务邮箱完成封口并等待已受理工作后，Stop 才停止项目服务并进入最终 Flush 与资源关闭阶段。
 
 实例只有在共享 RPC Host 和可选控制面都成功启动、discovery 成功发布 `running` 后，才把本地
 `Context.Instance().Status` 切为 `running`。任一步失败都不会发布 `running`，而会进入启动回滚并转为
@@ -1968,7 +1977,8 @@ Actor 对外固定四种投递语义：
 protobuf `Delivery` 使用内部 `DeliveryMode` 和 `request_id` 区分三类线上信封；业务结果使用 `Result` 信封，错误由
 稳定 code 和诊断 message 表达。每个 Runtime 创建一个本地响应 Actor，把 Acceptance/Result 按 request ID 投递到
 有界 pending 表。pending 容量由 `MaxPendingCalls` 限制，context 使用 `AfterFunc` 到期清理，不为每个 Future 常驻
-等待 goroutine；Runtime 关闭会用 `ErrRuntimeStopped` 一次性完成所有 pending。
+等待 goroutine；Runtime 关闭会用 `ErrRuntimeStopped` 一次性完成所有 pending。成功 Result 必须携带非空
+`MessageType`；空类型无法建立生成响应类型契约，响应 Actor 会将其判定为 `ErrInvalidResponse`。
 
 L4 服务在 `server.Spec.ActorKinds` 中声明 Kind，L3 Server 自动将 Actor CMod 加入依赖闭包并在启动前拒绝重名。
 普通项目使用 `actor.NewKind`；只有需要 ProtoActor 自定义 Strategy 的高级项目才使用 `actor.AdaptKind`。底层

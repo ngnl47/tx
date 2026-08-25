@@ -1037,9 +1037,9 @@ if err := control.RegisterSlotService(grpcServer, slotController); err != nil {
 ## Actor Cluster 与 msgq
 
 `modules/actor` 已提供可选的 Actor Cluster 装配，直接使用 `protoactor-go` 与官方 etcd Cluster Provider。
-tx 不实现 Actor mailbox、调度、Remote PID、成员发现或重平衡；项目只将 yml 转换为模块配置，并用服务
-全局 `WaitGroupContext` 编排启动与优雅停止。ProtoActor 内部使用 protobuf 信封，但业务 Payload 保持 BON
-字节，因此不会生成 protobuf 版 GD 或客户端 DTO。
+tx 不重新实现 Actor 调度、Remote PID、成员发现或重平衡；它只在 ProtoActor mailbox 外包一层有界容量、溢出日志和
+业务生命周期登记。项目将 yml 转换为模块配置，并由服务全局 `WaitGroupContext` 编排启动与优雅停止。ProtoActor
+内部使用 protobuf 信封，但业务 Payload 保持 BON 字节，因此不会生成 protobuf 版 GD 或客户端 DTO。
 
 ### Actor Cluster 装配
 
@@ -1074,6 +1074,8 @@ func (*roleService) Start(txserver.Context) error { return nil }
 L4 服务只声明业务 Kind，Server 会自动装配 `CModActor` 并管理 Runtime 生命周期。`CModActor` 只包含 ProtoActor
 Remote 和官方 etcd Cluster Provider，不依赖 tx 的普通 gRPC Host 或 `ServiceDirectory`；服务若还需要普通 RPC、
 服务目录或存储，应继续在 `Spec.Requires` 中显式声明。重复 Kind 会在任何外部连接建立前返回错误。
+标准项目不直接启动 Runtime；高级项目独立使用时，`Runtime.Start` 必须传入 `lifecycle.WaitGroupContext` 或其子上下文，
+传入普通 `context.Background()` 会返回 `actor.ErrLifecycleContextRequired`，避免看似启动成功却无法保证邮箱排空。
 
 服务运行后通过受控 `server.Context.Actor()` 取得 `actor.Messenger`：
 
@@ -1094,6 +1096,12 @@ if err := runtime.Tell(pid, txactor.Delivery{
 
 `Tell` 是默认的单向投递入口：返回 `nil` 只表示本地 Runtime 接受投递，不表示远端邮箱接收或业务完成。它不会
 自动重试；业务需要重试时必须定义独立幂等键，不能把静态 `CommandID` 兼作幂等键。
+
+通过 tx `Delivery` 进入目标 mailbox 的业务消息会从成功入队开始登记到全局 `WaitGroupContext`，直到 Actor handler
+返回才完成登记。因此正常 `Server.Stop` 会先封闭 Actor 业务准入并等待已经排队和正在执行的消息，再停止业务服务和
+执行事务最终 Flush；根 context 此时仍然有效。排水后到达的新 `Delivery` 会被拒绝并输出结构化错误；ProtoActor
+自身的停止和监督消息仍然放行，避免优雅关闭阻塞。
+自定义 Kind 若绕过 `Delivery` 直接向底层 ActorSystem 投递私有消息，其生命周期由高级扩展自行管理。
 
 必须知道目标 Actor 已从邮箱取出消息时使用 `TellAccepted`。它会多一条 `Acceptance` 回执，但不等待业务 handler：
 
@@ -1160,6 +1168,9 @@ if delivery.WantsResult() {
 `ErrPendingCallsFull`，不会继续扩大内存。每个 Runtime 只有一个响应 Actor 和一张有界 pending 表，context 通过
 定时回调清理请求，不为每个 Future 常驻等待 goroutine。Runtime 关闭时，所有 pending 都以
 `ErrRuntimeStopped` 完成。远端业务错误返回 `*actor.CallError`，`Code` 用于稳定分支，`Message` 用于日志。
+成功的 `Result` 必须携带非空且首尾无空白的 `MessageType`，用于调用方选择生成响应类型；即使响应没有业务字段，
+也应返回对应的空响应结构，而不是发送没有类型的成功信封。缺少 `MessageType` 的成功响应会以
+`ErrInvalidResponse` 完成本地 Future，不会被当作成功。
 
 项目将 Agent 与业务服务分进程部署时，可在项目层把经握手、Seq/Ack 校验后的 BON body 投递给 Actor。该适配属于
 项目装配，不要求 Agent 知道具体 `GD*` 或 cmd 类型：
@@ -1297,13 +1308,14 @@ _ = dispatcher
 
 重启 `game1`、`game2` 不要求其他服务组停机，但必须先 Drain。第一阶段只处理能够
 执行优雅关闭的发布：旧 generation 先进入 `draining`，停止该逻辑槽位的新命令准入；
-服务入口等待已受理工作完成并执行最终 Flush，再取消全局 `WaitGroupContext`、等待后台任务退出，最后才将旧实例
+服务入口与 Actor 邮箱等待已受理工作完成，再执行最终 Flush；随后取消全局 `WaitGroupContext`、等待后台任务退出，最后才将旧实例
 切为 `stopping` 并注销。固定槽位在这个窗口内不得改派到其他 game 实例，调用方只能等待
 或收到明确的重试错误。
 
 ```text
 旧实例 draining -> 停止该槽位的新命令准入
--> Ingress 等待已受理工作 -> 完成要求的最终 Flush
+-> Ingress 等待已受理工作 -> Actor Delivery 邮箱排空
+-> 完成要求的最终 Flush
 -> 取消 WaitGroupContext 并等待后台任务 -> 旧实例 stopping -> 撤销成员 lease -> 停止进程
 -> 新实例启动并完成依赖预检 -> CAS Promote(slot, old generation, new generation)
 -> 新 generation 接收该槽位请求
@@ -3638,7 +3650,7 @@ Fusion 策略的当前保存路径：
 4. Redis 热写与本地登记完成后，`db.Save(role)` 返回 `nil`，Store 清理本轮变更。
 5. 后台分发器把唯一一条延迟保存任务写入 Redis delayed task backend。
 6. 发布失败时输出结构化 error 日志，并按有上限的指数退避持续重试；成功后移除本地 pending。
-7. 正常关闭时，Transaction CMod 先最终保存内存 Store，Fusion CMod 再限时发布全部本地 pending，随后才取消根 `WaitGroupContext`。
+7. 正常关闭时，服务入口和 Actor Delivery 邮箱先完成排空，Transaction CMod 再最终保存内存 Store，Fusion CMod 随后限时发布全部本地 pending，最后才取消根 `WaitGroupContext`。
 8. Scheduler 到期 claim 任务，StorageTaskHandler 根据记录定位重新读取 Redis 当前热文档并 replace 到 Mongo。
 9. Mongo 保存成功后，handler 仅在 `@v` 未变化时原子地把所有热数据键的 TTL 收敛为 `delayDelTime`；版本变化则重新排一条保存任务。
 10. 任务成功后通过 Lua complete 删除该任务在 Redis 队列中的状态。

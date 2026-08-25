@@ -20,9 +20,11 @@ import (
 )
 
 var (
-	ErrRuntimeNotStarted = errors.New("actor: runtime is not started")
-	ErrRuntimeStopped    = errors.New("actor: runtime is stopped")
-	ErrInvalidPID        = errors.New("actor: invalid pid")
+	ErrRuntimeNotStarted        = errors.New("actor: runtime is not started")
+	ErrRuntimeDraining          = errors.New("actor: runtime is draining")
+	ErrRuntimeStopped           = errors.New("actor: runtime is stopped")
+	ErrLifecycleContextRequired = errors.New("actor: lifecycle WaitGroupContext is required")
+	ErrInvalidPID               = errors.New("actor: invalid pid")
 )
 
 // Messenger 是面向服务的 Actor 契约。集群启动、关闭和底层 ActorSystem 访问仍由 runtime 管理。
@@ -38,14 +40,16 @@ var _ Messenger = (*Runtime)(nil)
 
 // Runtime 管理一个集群成员，并将 Actor 生命周期、成员发现和虚拟 Actor 放置交给 ProtoActor。
 type Runtime struct {
-	config Config
-	kinds  []*cluster.Kind
+	config    Config
+	kinds     []*cluster.Kind
+	lifecycle *mailboxLifecycle
 
 	mu        sync.Mutex
 	cluster   *cluster.Cluster
 	responder *protoactor.PID
 	pending   *pendingCalls
 	started   bool
+	draining  bool
 	stopped   bool
 }
 
@@ -55,14 +59,16 @@ func New(config Config, kinds ...Kind) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	configuredKinds, err := configureKinds(config, kinds)
+	lifecycle := &mailboxLifecycle{}
+	configuredKinds, err := configureKinds(config, kinds, lifecycle)
 	if err != nil {
 		return nil, err
 	}
 	return &Runtime{
-		config:  config,
-		kinds:   configuredKinds,
-		pending: newPendingCalls(config.MaxPendingCalls),
+		config:    config,
+		kinds:     configuredKinds,
+		lifecycle: lifecycle,
+		pending:   newPendingCalls(config.MaxPendingCalls),
 	}, nil
 }
 
@@ -71,6 +77,10 @@ func New(config Config, kinds ...Kind) (*Runtime, error) {
 func (r *Runtime) Start(ctx context.Context) (err error) {
 	if ctx == nil {
 		return ErrInvalidConfig
+	}
+	root, ok := actorLifecycleRoot(ctx)
+	if !ok {
+		return ErrLifecycleContextRequired
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -83,6 +93,7 @@ func (r *Runtime) Start(ctx context.Context) (err error) {
 	if err := r.checkEtcd(ctx); err != nil {
 		return err
 	}
+	r.lifecycle.bind(root)
 
 	provider, err := actorEtcd.NewWithConfig(r.config.Etcd.Prefix, clientv3.Config{
 		Endpoints:   r.config.Etcd.Endpoints,
@@ -92,6 +103,7 @@ func (r *Runtime) Start(ctx context.Context) (err error) {
 		return fmt.Errorf("actor: create etcd provider: %w", err)
 	}
 	system := protoactor.NewActorSystem()
+	system.Extensions.Register(&actorLifecycleExtension{context: ctx})
 	remoteConfig := remote.Configure(r.config.Host, r.config.Port)
 	clusterConfig := cluster.Configure(
 		r.config.ClusterName,
@@ -114,6 +126,32 @@ func (r *Runtime) Start(ctx context.Context) (err error) {
 	}
 	r.responder = responder
 	r.started = true
+	return nil
+}
+
+// Drain 停止接受新的 tx Delivery，并等待已经进入 Actor 邮箱的业务消息处理完成。
+// 它不会取消根 context，也不会关闭 ProtoActor 的监督和停止控制消息。
+func (r *Runtime) Drain(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	r.mu.Lock()
+	if r.stopped {
+		r.mu.Unlock()
+		return ErrRuntimeStopped
+	}
+	if !r.started || r.cluster == nil {
+		r.mu.Unlock()
+		return ErrRuntimeNotStarted
+	}
+	r.draining = true
+	r.lifecycle.beginDrain()
+	r.mu.Unlock()
+	if err := r.lifecycle.waitDrained(ctx); err != nil {
+		pending := r.lifecycle.pending()
+		txlog.Error("actor runtime drain failed", "pending", pending, "err", err)
+		return fmt.Errorf("actor: drain %d pending deliveries: %w", pending, err)
+	}
 	return nil
 }
 
@@ -171,7 +209,7 @@ func (r *Runtime) Tell(pid *protoactor.PID, delivery Delivery) error {
 	if pid == nil {
 		return ErrInvalidPID
 	}
-	system, err := r.ActorSystem()
+	system, err := r.deliveryActorSystem()
 	if err != nil {
 		return err
 	}
@@ -181,6 +219,21 @@ func (r *Runtime) Tell(pid *protoactor.PID, delivery Delivery) error {
 	}
 	system.Root.Send(pid, message)
 	return nil
+}
+
+func (r *Runtime) deliveryActorSystem() (*protoactor.ActorSystem, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped {
+		return nil, ErrRuntimeStopped
+	}
+	if r.draining {
+		return nil, ErrRuntimeDraining
+	}
+	if !r.started || r.cluster == nil {
+		return nil, ErrRuntimeNotStarted
+	}
+	return r.cluster.ActorSystem, nil
 }
 
 // FixedPID 返回固定归属 Actor 的直连 Remote PID。实体归属由业务维护，不参与集群重平衡。
@@ -243,7 +296,7 @@ func startMember(cluster *cluster.Cluster) (err error) {
 	return nil
 }
 
-func configureKinds(config Config, kinds []Kind) ([]*cluster.Kind, error) {
+func configureKinds(config Config, kinds []Kind, lifecycle *mailboxLifecycle) ([]*cluster.Kind, error) {
 	if err := validateKinds(kinds); err != nil {
 		return nil, err
 	}
@@ -251,7 +304,7 @@ func configureKinds(config Config, kinds []Kind) ([]*cluster.Kind, error) {
 	for index, kind := range kinds {
 		clusterKind := kind.cluster
 		props := clusterKind.Props.Clone(
-			protoactor.WithMailbox(observedBoundedMailbox(config, clusterKind.Kind)),
+			protoactor.WithMailbox(observedBoundedMailbox(config, clusterKind.Kind, lifecycle)),
 			protoactor.WithReceiverMiddleware(acceptanceReceiverMiddleware),
 		)
 		configured[index] = &cluster.Kind{

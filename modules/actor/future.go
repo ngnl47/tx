@@ -248,6 +248,10 @@ func (calls *pendingCalls) resolve(message *actorpb.Result) {
 		state.complete(Result{}, &CallError{Code: message.GetErrorCode(), Message: message.GetErrorMessage()})
 		return
 	}
+	if result.MessageType == "" || result.MessageType != strings.TrimSpace(result.MessageType) {
+		state.complete(Result{}, ErrInvalidResponse)
+		return
+	}
 	state.complete(result, nil)
 }
 

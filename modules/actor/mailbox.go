@@ -9,6 +9,7 @@ import (
 	protoactor "github.com/asynkron/protoactor-go/actor"
 
 	txlog "github.com/ngnl47/tx/log"
+	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 )
 
 const (
@@ -16,7 +17,7 @@ const (
 	mailboxRunning
 )
 
-func observedBoundedMailbox(config Config, kind string) protoactor.MailboxProducer {
+func observedBoundedMailbox(config Config, kind string, lifecycle *mailboxLifecycle) protoactor.MailboxProducer {
 	overflow := &mailboxOverflowObserver{
 		clusterName: config.ClusterName,
 		host:        config.Host,
@@ -25,8 +26,9 @@ func observedBoundedMailbox(config Config, kind string) protoactor.MailboxProduc
 	}
 	return func() protoactor.Mailbox {
 		return &boundedMailbox{
-			user:     rbqueue.NewRingBuffer(uint64(config.MailboxCapacity)),
-			overflow: overflow,
+			user:      rbqueue.NewRingBuffer(uint64(config.MailboxCapacity)),
+			overflow:  overflow,
+			lifecycle: lifecycle,
 		}
 	}
 }
@@ -37,6 +39,7 @@ type mailboxOverflowObserver struct {
 	kind        string
 	capacity    int
 	dropped     atomic.Uint64
+	rejected    atomic.Uint64
 }
 
 func (o *mailboxOverflowObserver) report() {
@@ -53,10 +56,25 @@ func (o *mailboxOverflowObserver) report() {
 	)
 }
 
+func (o *mailboxOverflowObserver) reportRejected(err error) {
+	rejected := o.rejected.Add(1)
+	if rejected&(rejected-1) != 0 {
+		return
+	}
+	txlog.Error("actor mailbox rejected after lifecycle stopped",
+		"cluster", o.clusterName,
+		"host", o.host,
+		"kind", o.kind,
+		"rejected", rejected,
+		"err", err,
+	)
+}
+
 type boundedMailbox struct {
-	user     *rbqueue.RingBuffer
-	system   systemMailbox
-	overflow *mailboxOverflowObserver
+	user      *rbqueue.RingBuffer
+	system    systemMailbox
+	overflow  *mailboxOverflowObserver
+	lifecycle *mailboxLifecycle
 
 	schedulerStatus atomic.Int32
 	userMessages    atomic.Int32
@@ -81,8 +99,18 @@ func (m *boundedMailbox) PostUserMessage(message interface{}) {
 			return
 		}
 	}
+	tracked := tracksLifecycle(message)
+	if tracked {
+		if err := m.lifecycle.begin(); err != nil {
+			m.overflow.reportRejected(err)
+			return
+		}
+	}
 	accepted, err := m.user.Offer(message)
 	if err != nil || !accepted {
+		if tracked {
+			m.lifecycle.end()
+		}
 		m.overflow.report()
 		return
 	}
@@ -126,8 +154,12 @@ process:
 
 func (m *boundedMailbox) run() {
 	var message interface{}
+	processingTrackedMessage := false
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			if processingTrackedMessage {
+				m.lifecycle.end()
+			}
 			m.invoker.EscalateFailure(recovered, message)
 		}
 	}()
@@ -162,8 +194,21 @@ func (m *boundedMailbox) run() {
 			return
 		}
 		m.userMessages.Add(-1)
+		processingTrackedMessage = tracksLifecycle(message)
 		m.invoker.InvokeUserMessage(message)
+		if processingTrackedMessage {
+			processingTrackedMessage = false
+			m.lifecycle.end()
+		}
 	}
+}
+
+func tracksLifecycle(message interface{}) bool {
+	if envelope, ok := message.(*protoactor.MessageEnvelope); ok {
+		message = envelope.Message
+	}
+	_, ok := message.(*actorpb.Delivery)
+	return ok
 }
 
 type systemMailbox struct {

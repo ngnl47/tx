@@ -292,6 +292,109 @@ func TestActorRuntimeLifecycleIntegration(t *testing.T) {
 	}
 }
 
+func TestActorRuntimeStartRequiresWaitGroupContext(t *testing.T) {
+	runtime, err := txactor.New(txactor.Config{
+		ClusterName: "tx-actor-lifecycle-required",
+		Host:        "127.0.0.1",
+		Port:        0,
+		Etcd: txactor.EtcdConfig{
+			Endpoints:   []string{"127.0.0.1:1"},
+			Prefix:      "/tx/tests/actor-lifecycle-required",
+			DialTimeout: time.Millisecond,
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := runtime.Start(context.Background()); !errors.Is(err, txactor.ErrLifecycleContextRequired) {
+		t.Fatalf("Start() error = %v, want %v", err, txactor.ErrLifecycleContextRequired)
+	}
+}
+
+func TestActorRuntimeDrainWaitsForQueuedMessages(t *testing.T) {
+	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("set TX_ETCD_ENDPOINT to run the actor integration test")
+	}
+	ctx := lifecycle.NewWaitGroupContext(context.Background())
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	processed := make(chan uint64, 2)
+	runtime, err := txactor.New(txactor.Config{
+		ClusterName:     "tx-actor-lifecycle",
+		Host:            "127.0.0.1",
+		Port:            0,
+		MailboxCapacity: 4,
+		Etcd: txactor.EtcdConfig{
+			Endpoints:   []string{endpoint},
+			Prefix:      fmt.Sprintf("/tx/tests/actor-lifecycle-%d", time.Now().UnixNano()),
+			DialTimeout: time.Second,
+		},
+	}, txactor.MustKind("blocked", func() protoactor.Actor {
+		return &lifecycleBlockingActor{started: started, release: release, processed: processed}
+	}))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := runtime.Start(ctx); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := runtime.Shutdown(); err != nil {
+			t.Errorf("Shutdown() error = %v", err)
+		}
+	})
+
+	pid, err := runtime.VirtualPID("blocked", "role-470001")
+	if err != nil {
+		t.Fatalf("VirtualPID() error = %v", err)
+	}
+	if err := runtime.Tell(pid, txactor.Delivery{MessageType: "role.first", CommandID: 1}); err != nil {
+		t.Fatalf("Tell() first message error = %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("wait first actor message timed out")
+	}
+	if err := runtime.Tell(pid, txactor.Delivery{MessageType: "role.second", CommandID: 2}); err != nil {
+		t.Fatalf("Tell() second message error = %v", err)
+	}
+
+	drained := make(chan error, 1)
+	go func() {
+		drained <- runtime.Drain(context.Background())
+	}()
+	select {
+	case err := <-drained:
+		t.Fatalf("Drain() returned while Actor mailbox still had accepted work: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+	for commandID := uint64(1); commandID <= 2; commandID++ {
+		select {
+		case got := <-processed:
+			if got != commandID {
+				t.Fatalf("processed command ID = %d, want %d", got, commandID)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("wait command %d timed out", commandID)
+		}
+	}
+	select {
+	case err := <-drained:
+		if err != nil {
+			t.Fatalf("Drain() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Drain() did not return after queued Actor work completed")
+	}
+	if err := runtime.Tell(pid, txactor.Delivery{MessageType: "role.third", CommandID: 3}); !errors.Is(err, txactor.ErrRuntimeDraining) {
+		t.Fatalf("Tell() after Drain error = %v, want %v", err, txactor.ErrRuntimeDraining)
+	}
+}
+
 func TestActorRuntimeLogsMailboxOverflow(t *testing.T) {
 	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
 	if endpoint == "" {
@@ -370,6 +473,26 @@ type actorEcho struct {
 type blockingActor struct {
 	started chan<- struct{}
 	release <-chan struct{}
+}
+
+type lifecycleBlockingActor struct {
+	started   chan<- struct{}
+	release   <-chan struct{}
+	processed chan<- uint64
+	first     bool
+}
+
+func (actor *lifecycleBlockingActor) Receive(ctx protoactor.Context) {
+	message, ok := ctx.Message().(*actorpb.Delivery)
+	if !ok {
+		return
+	}
+	if !actor.first {
+		actor.first = true
+		actor.started <- struct{}{}
+		<-actor.release
+	}
+	actor.processed <- message.GetCommandId()
 }
 
 func (actor blockingActor) Receive(ctx protoactor.Context) {

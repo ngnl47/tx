@@ -75,6 +75,11 @@ func (server *Server) stop(ctx context.Context, drain bool) error {
 	}
 	if drain {
 		errs = append(errs, server.Drain(ctx))
+		if runtime != nil && runtime.actor != nil {
+			actorDrainCtx, cancel := context.WithTimeout(ctx, effectiveDrainTimeout(server.config.Runtime.Lifecycle.DrainTimeout))
+			errs = append(errs, runtime.actor.Drain(actorDrainCtx))
+			cancel()
+		}
 	}
 	if host != nil {
 		errs = append(errs, host.stop(ctx))
