@@ -112,6 +112,25 @@ func TestAnnoParseRejectsUnknownTag(t *testing.T) {
 	}
 }
 
+func TestAnnoParseWithEmptyDefinitionsDoesNotEnableBuiltins(t *testing.T) {
+	_, err := anno.ParseTypeTagLineWithDefinitions(`// @storage`, nil)
+	if err == nil {
+		t.Fatal("ParseTypeTagLineWithDefinitions returned nil error for an empty annotation whitelist")
+	}
+
+	directives, err := anno.ParseStructTagWithDefinitions(
+		reflect.StructTag(`redis:"subKey:items"`),
+		anno.ScopeField,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("ParseStructTagWithDefinitions returned error: %v", err)
+	}
+	if len(directives) != 0 {
+		t.Fatalf("directives = %#v, want none for an empty annotation whitelist", directives)
+	}
+}
+
 func TestAnnoParseRejectsLegacyTypeTagSyntax(t *testing.T) {
 	_, err := anno.ParseTypeTagLine(`// @redis:"routeType:role,routeBy:roleId"`)
 	if err == nil {

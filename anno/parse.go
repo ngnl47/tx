@@ -29,7 +29,6 @@ func ParseTypeTagLine(text string) (Directive, error) {
 // 解析结果刻意保持非强类型。quoted single value 会写入名为 value 的参数；
 // struct tag 中的所有字段值都会生成有序字符串参数。
 func ParseTypeTagLineWithDefinitions(text string, defs Definitions) (Directive, error) {
-	defs = defs.WithBuiltinsIfEmpty()
 	text = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(text), "//"))
 	if !strings.HasPrefix(text, "@") {
 		return Directive{}, fmt.Errorf("anno: not a directive: %q", text)
@@ -107,7 +106,7 @@ func ParseStructTagWithDefinitions(tag reflect.StructTag, scope Scope, defs Defi
 		return nil, fmt.Errorf("anno: struct tags only support field scope")
 	}
 	var directives []Directive
-	for _, def := range defs.WithBuiltinsIfEmpty() {
+	for _, def := range defs {
 		if def.Scope != ScopeField {
 			continue
 		}

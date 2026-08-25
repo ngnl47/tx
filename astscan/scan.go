@@ -59,7 +59,10 @@ func ScanFiles(files []string, opts Options) (*PackageSet, error) {
 			FieldDirectives: map[string]map[string][]anno.Directive{},
 		}, nil
 	}
-	defs := opts.Annotations.WithBuiltinsIfEmpty()
+	defs := opts.Annotations
+	if len(defs) == 0 {
+		defs = anno.BuiltinDefinitions()
+	}
 
 	fset := token.NewFileSet()
 	parsed := make([]*ast.File, 0, len(files))

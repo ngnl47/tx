@@ -56,7 +56,6 @@ func FieldTag[T any](name string) Definition {
 }
 
 // BuiltinDefinitions 返回 tx 内置的存储相关注解定义。
-// 解析或扫描 API 收到空 Definitions 时会使用该集合，以兼容默认存储元数据扫描。
 func BuiltinDefinitions() Definitions {
 	return Definitions{
 		TypeTag[StorageTag]("storage"),
@@ -65,19 +64,6 @@ func BuiltinDefinitions() Definitions {
 		FieldTag[RedisFieldTag]("redis"),
 		FieldTag[MongoDBFieldTag]("mongodb"),
 	}
-}
-
-// IsZero 判断是否未提供任何注解定义。
-func (defs Definitions) IsZero() bool {
-	return len(defs) == 0
-}
-
-// WithBuiltinsIfEmpty 在 defs 为空时返回 BuiltinDefinitions。
-func (defs Definitions) WithBuiltinsIfEmpty() Definitions {
-	if len(defs) == 0 {
-		return BuiltinDefinitions()
-	}
-	return defs
 }
 
 // Has 判断是否存在指定名称和作用域的注解定义。

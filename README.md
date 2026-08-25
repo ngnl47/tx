@@ -762,6 +762,12 @@ socket.send(encodeFrame({
 解析 body；它会拒绝未知命令、无效信封和尾随字节。已知命令的固定处理点仍可使用 `decodeCommand(name, bytes, Schemas)`
 额外校验命令名。
 
+BON 的字符串、二进制和容器数量使用无符号 7-bit 变长整数；例如长度 `128` 固定编码为 `0x80 0x01`，Go 与
+TypeScript 必须保持完全相同的 wire format。解码器会在创建数组或文档前检查声明数量是否可能由剩余载荷表达，
+并拒绝超过 64 层的容器嵌套。正常的 `GD*`/cmd 结构远低于这个上限；伪造的大数量或超深载荷会返回协议错误，
+不会先按声明数量申请内存或递归到业务 Dispatcher。TypeScript 解码临时文档不继承对象原型，命令信封和 schema
+字段只读取自有属性，因此不能通过 `__proto__` 等输入伪造 `c/b` 或业务字段。
+
 TypeScript 模板还提供与 `modules/agent.Frame` 对应的 `protocol/frame.ts`：WebSocket 使用原始 Frame bytes，
 TCP 在其外层加 4 字节 big-endian 长度；`TCPFrameDecoder` 能处理半包与粘包。两端都校验 Frame 版本、类型、
 Seq/Ack、静态命令号、路由键、恢复标记和最大长度，不能将非法帧交给业务 Dispatcher。
@@ -1380,6 +1386,27 @@ type 级注解支持 marker 和带参数两种形态。无参数时，下面两�
 
 解析后会统一得到 `anno.Directive`。`Directive.Arguments` 保留参数声明顺序、重复项以及键值参数和裸 flag 的区别；
 普通调用方可用 `Param(name)` 读取最后一个同名键值参数，只有需要消费重复项时才直接遍历 `Arguments`。
+
+`anno.ParseTypeTagLine`、`anno.ParseTypeDoc` 和 `anno.ParseStructTag` 使用 tx 内置注解定义。名称带
+`WithDefinitions` 的高级入口严格使用调用方提供的白名单，不会为空白名单补入内置定义：
+
+```go
+type CacheTag struct {
+	TTL int
+}
+
+defs := anno.Definitions{anno.TypeTag[CacheTag]("cache")}
+directive, err := anno.ParseTypeTagLineWithDefinitions(
+	"// @cache:`ttl:\"600\"`",
+	defs,
+)
+
+// 空白名单表示不接受任何注解；这里会返回 anno.ErrUnknownTag。
+_, err = anno.ParseTypeTagLineWithDefinitions(`// @storage`, nil)
+```
+
+`astscan.Options{}` 是另一个明确的默认入口：`Annotations` 为空时扫描器使用
+`anno.BuiltinDefinitions()`。需要扫描自定义注解时应传入完整白名单；扫描器不会猜测自定义定义是否要与内置定义合并。
 
 ### field tag 解析规则
 

@@ -27,6 +27,8 @@ const (
 	typeStringRef byte = 99
 )
 
+const maxContainerDepth = 64
+
 // Marshal 使用 Go 值的 msgpack field tag 完成序列化。
 func Marshal(value any) ([]byte, error) {
 	writer := newWriter()
@@ -356,10 +358,12 @@ func (writer *writer) writeString(value string) {
 	writer.bytes = append(writer.bytes, value...)
 }
 func (writer *writer) writeNatural(value int) {
-	for next := uint32(value); next >= 0x80; next >>= 7 {
+	next := uint64(value)
+	for next >= 0x80 {
 		writer.writeByte(byte(next) | 0x80)
+		next >>= 7
 	}
-	writer.writeByte(byte(value))
+	writer.writeByte(byte(next))
 }
 func (writer *writer) writeByte(value byte) { writer.bytes = append(writer.bytes, value) }
 
@@ -375,6 +379,10 @@ func newReader(payload []byte) *reader {
 func (reader *reader) done() bool { return reader.pos == len(reader.bytes) }
 
 func (reader *reader) readValue() (any, error) {
+	return reader.readValueAtDepth(0)
+}
+
+func (reader *reader) readValueAtDepth(depth int) (any, error) {
 	kind, err := reader.readByte()
 	if err != nil {
 		return nil, err
@@ -400,9 +408,15 @@ func (reader *reader) readValue() (any, error) {
 	case typeBinary:
 		return reader.readBinary()
 	case typeDocument:
-		return reader.readDocument()
+		if depth >= maxContainerDepth {
+			return nil, fmt.Errorf("bon: container depth exceeds %d", maxContainerDepth)
+		}
+		return reader.readDocument(depth + 1)
 	case typeArray:
-		return reader.readArray()
+		if depth >= maxContainerDepth {
+			return nil, fmt.Errorf("bon: container depth exceeds %d", maxContainerDepth)
+		}
+		return reader.readArray(depth + 1)
 	case typeDateTime:
 		value, err := reader.readLong()
 		if err != nil {
@@ -414,14 +428,18 @@ func (reader *reader) readValue() (any, error) {
 	}
 }
 
-func (reader *reader) readDocument() (map[string]any, error) {
+func (reader *reader) readDocument(depth int) (map[string]any, error) {
 	count, err := reader.readNatural()
 	if err != nil {
 		return nil, err
 	}
+	// 每个成员至少包含一个两字节的字符串键和一个一字节的值类型。
+	if count > reader.remaining()/3 {
+		return nil, fmt.Errorf("bon: document length %d exceeds remaining payload", count)
+	}
 	document := make(map[string]any, count)
 	for index := 0; index < count; index++ {
-		key, err := reader.readValue()
+		key, err := reader.readValueAtDepth(depth)
 		if err != nil {
 			return nil, err
 		}
@@ -429,7 +447,7 @@ func (reader *reader) readDocument() (map[string]any, error) {
 		if !ok {
 			return nil, fmt.Errorf("bon: document key is not string")
 		}
-		value, err := reader.readValue()
+		value, err := reader.readValueAtDepth(depth)
 		if err != nil {
 			return nil, err
 		}
@@ -438,14 +456,18 @@ func (reader *reader) readDocument() (map[string]any, error) {
 	return document, nil
 }
 
-func (reader *reader) readArray() ([]any, error) {
+func (reader *reader) readArray(depth int) ([]any, error) {
 	count, err := reader.readNatural()
 	if err != nil {
 		return nil, err
 	}
+	// 每个元素至少需要一个值类型字节，先拒绝不可能的数量再分配切片。
+	if count > reader.remaining() {
+		return nil, fmt.Errorf("bon: array length %d exceeds remaining payload", count)
+	}
 	values := make([]any, count)
 	for index := range values {
-		value, err := reader.readValue()
+		value, err := reader.readValueAtDepth(depth)
 		if err != nil {
 			return nil, err
 		}
@@ -526,8 +548,14 @@ func (reader *reader) readNatural() (int, error) {
 		if err != nil {
 			return 0, err
 		}
+		if shift == 28 && next&0xf0 != 0 {
+			return 0, fmt.Errorf("bon: invalid 7-bit length")
+		}
 		value |= uint32(next&0x7f) << shift
 		if next&0x80 == 0 {
+			if uint64(value) > uint64(maxInt()) {
+				return 0, fmt.Errorf("bon: length exceeds int range")
+			}
 			return int(value), nil
 		}
 	}
@@ -547,6 +575,14 @@ func (reader *reader) readBytes(length int) ([]byte, error) {
 	value := reader.bytes[reader.pos : reader.pos+length]
 	reader.pos += length
 	return value, nil
+}
+
+func (reader *reader) remaining() int {
+	return len(reader.bytes) - reader.pos
+}
+
+func maxInt() int {
+	return int(^uint(0) >> 1)
 }
 
 var timeType = reflect.TypeFor[time.Time]()

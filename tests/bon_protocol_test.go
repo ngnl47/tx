@@ -2,6 +2,7 @@ package tests
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,4 +80,73 @@ func TestBONRejectsMalformedEnvelope(t *testing.T) {
 	if _, _, err := bon.UnmarshalEnvelope([]byte{8, 1, 5, 1, 99}); err == nil {
 		t.Fatal("UnmarshalEnvelope returned nil error for truncated payload")
 	}
+}
+
+func TestBONRoundTripsMultiByteLengths(t *testing.T) {
+	type value struct {
+		Text   string  `msgpack:"text"`
+		Binary []byte  `msgpack:"binary"`
+		Values []int32 `msgpack:"values"`
+	}
+	want := value{
+		Text:   strings.Repeat("x", 128),
+		Binary: make([]byte, 128),
+		Values: make([]int32, 128),
+	}
+	encodedText, err := bon.Marshal(want.Text)
+	if err != nil {
+		t.Fatalf("Marshal text returned error: %v", err)
+	}
+	if len(encodedText) < 3 || !reflect.DeepEqual(encodedText[:3], []byte{5, 0x80, 0x01}) {
+		t.Fatalf("128-byte string prefix = %v, want [5 128 1]", encodedText[:min(len(encodedText), 3)])
+	}
+	for index := range want.Binary {
+		want.Binary[index] = byte(index)
+		want.Values[index] = int32(index)
+	}
+
+	payload, err := bon.Marshal(want)
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+	var got value
+	if err := bon.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("decoded value does not match input")
+	}
+}
+
+func TestBONRejectsImpossibleContainerLengthBeforeAllocation(t *testing.T) {
+	payload := append([]byte{9}, encodeBONNatural(65_536)...)
+	var target any
+	err := bon.Unmarshal(payload, &target)
+	if err == nil || !strings.Contains(err.Error(), "array length 65536 exceeds remaining payload") {
+		t.Fatalf("Unmarshal error = %v, want impossible array length error", err)
+	}
+}
+
+func TestBONRejectsExcessiveContainerDepth(t *testing.T) {
+	payload := make([]byte, 0, 2*65+1)
+	for range 65 {
+		payload = append(payload, 9, 1)
+	}
+	payload = append(payload, 0)
+
+	var target any
+	err := bon.Unmarshal(payload, &target)
+	if err == nil || !strings.Contains(err.Error(), "container depth exceeds 64") {
+		t.Fatalf("Unmarshal error = %v, want container depth error", err)
+	}
+}
+
+func encodeBONNatural(value int) []byte {
+	encoded := make([]byte, 0, 5)
+	next := uint32(value)
+	for next >= 0x80 {
+		encoded = append(encoded, byte(next)|0x80)
+		next >>= 7
+	}
+	return append(encoded, byte(next))
 }

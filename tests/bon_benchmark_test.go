@@ -40,6 +40,16 @@ func BenchmarkBONEnvelopeDecode(b *testing.B) {
 	}
 }
 
+func BenchmarkBONRejectImpossibleArray(b *testing.B) {
+	payload := append([]byte{9}, encodeBONNatural(65_536)...)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		var target any
+		benchmarkBONErr = bon.Unmarshal(payload, &target)
+	}
+}
+
 func BenchmarkJSONEnvelopeEncode(b *testing.B) {
 	value := bonProtocolRequest{RoleID: 470001, Item: &bonProtocolItem{ID: 1001, Quantity: 3}, Labels: map[string]int32{"daily.reward": 7}}
 	b.ReportAllocs()
@@ -81,6 +91,7 @@ func BenchmarkJSONEnvelopeDecode(b *testing.B) {
 var (
 	benchmarkBONPayload  []byte
 	benchmarkBONRequest  bonProtocolRequest
+	benchmarkBONErr      error
 	benchmarkJSONPayload []byte
 	benchmarkJSONRequest bonProtocolRequest
 )
