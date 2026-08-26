@@ -1005,7 +1005,7 @@ if err := control.RegisterLifecycleService(grpcServer, coordinator); err != nil 
 }
 ```
 
-`Drain` 只启动“目录标记为 `draining` + 严格入口封口”；`WaitDrained` 只等待已受理请求结束。最终资源关闭、根 context 取消、事务 Flush、Actor 与 discovery 注销仍由宿主负责。
+`Drain` 只启动“目录标记为 `draining` + 严格入口封口”；`WaitDrained` 只等待已受理请求结束。最终资源关闭、根 context 取消、缓存管理器 Flush、Actor 与 discovery 注销仍由宿主负责。
 
 进程排水的单阶段上限由 `server.RuntimeConfig.Lifecycle.DrainTimeout` 设置，零值默认 5 分钟。入口已受理工作等待和 Fusion 本地 pending 排空分别使用这项上限；它与 `txctl --timeout`
 不是同一个参数，后者只限制运维客户端等待 RPC 的时间。入口等待达到服务端上限时，控制状态转为 `failed` 并输出错误日志，
@@ -1099,7 +1099,7 @@ if err := runtime.Tell(pid, txactor.Delivery{
 
 通过 tx `Delivery` 进入目标 mailbox 的业务消息会从成功入队开始登记到全局 `WaitGroupContext`，直到 Actor handler
 返回才完成登记。因此正常 `Server.Stop` 会先封闭 Actor 业务准入并等待已经排队和正在执行的消息，再停止业务服务和
-执行事务最终 Flush；根 context 此时仍然有效。排水后到达的新 `Delivery` 会被拒绝并输出结构化错误；ProtoActor
+执行缓存管理器最终 Flush；根 context 此时仍然有效。排水后到达的新 `Delivery` 会被拒绝并输出结构化错误；ProtoActor
 自身的停止和监督消息仍然放行，避免优雅关闭阻塞。
 自定义 Kind 若绕过 `Delivery` 直接向底层 ActorSystem 投递私有消息，其生命周期由高级扩展自行管理。
 
@@ -1202,8 +1202,8 @@ pid, err := txactor.FixedPID("battle-1.internal:12000", "battle-1001")
 `FixedPID` 只验证地址并创建 Remote PID；它不查询实例目录、不迁移 Actor，也不提供分布式锁或事务。
 
 `Runtime.Start` 只加入集群，**不会**因 `ctx` 取消立即注销成员。宿主的正确顺序是先停止入口新业务、等待已受理的
-服务 handler、完成最终 Flush，再调用 `Runtime.Shutdown` 退出成员表。`txgame` 的 Lifecycle 已按这个顺序将
-事务最终 Flush 放在 Actor Shutdown 之前。真实 etcd 回归可通过 `TX_ETCD_ENDPOINT=127.0.0.1:2379` 启用。
+服务 handler、完成缓存管理器最终 Flush，再调用 `Runtime.Shutdown` 退出成员表。`txgame` 的 Lifecycle 已按这个顺序将
+缓存管理器最终 Flush 放在 Actor Shutdown 之前。真实 etcd 回归可通过 `TX_ETCD_ENDPOINT=127.0.0.1:2379` 启用。
 
 `msgq` 是客户端会话邮箱，不是所有业务 Actor 的中心中继。它维护在线 Session、下行 `sndQueue`、Seq/Ack、
 重连、Topic 和广播。客户端上行业务 Payload 由 Agent 在完成会话序号校验后直接投递 Player/Game Actor；
@@ -1273,7 +1273,7 @@ _ = pid
 ```
 
 `SlotRouter` 只负责“稳定槽位 -> 当前可用 endpoint”的安全解析与交接前检查；发布控制面或业务必须在 Promote 前停止旧槽位
-的新命令准入、等待已进入的 Procedure、完成最终 Flush。`txgame` 未启用服务发现时 `app.Slots` 为 nil；依赖固定槽位的
+的新命令准入、等待已进入的 Procedure、完成缓存管理器最终 Flush。`txgame` 未启用服务发现时 `app.Slots` 为 nil；依赖固定槽位的
 服务必须在启动时显式失败，不能退化为普通实例路由。
 
 `txgame/server/services/agent` 的 `NewFixedSlotTargetResolver` 是 Agent 到固定 Actor 的项目侧组合器。业务只提供身份到
@@ -1308,14 +1308,14 @@ _ = dispatcher
 
 重启 `game1`、`game2` 不要求其他服务组停机，但必须先 Drain。第一阶段只处理能够
 执行优雅关闭的发布：旧 generation 先进入 `draining`，停止该逻辑槽位的新命令准入；
-服务入口与 Actor 邮箱等待已受理工作完成，再执行最终 Flush；随后取消全局 `WaitGroupContext`、等待后台任务退出，最后才将旧实例
+服务入口与 Actor 邮箱等待已受理工作完成，再执行缓存管理器最终 Flush；随后取消全局 `WaitGroupContext`、等待后台任务退出，最后才将旧实例
 切为 `stopping` 并注销。固定槽位在这个窗口内不得改派到其他 game 实例，调用方只能等待
 或收到明确的重试错误。
 
 ```text
 旧实例 draining -> 停止该槽位的新命令准入
 -> Ingress 等待已受理工作 -> Actor Delivery 邮箱排空
--> 完成要求的最终 Flush
+-> 完成缓存管理器最终 Flush
 -> 取消 WaitGroupContext 并等待后台任务 -> 旧实例 stopping -> 撤销成员 lease -> 停止进程
 -> 新实例启动并完成依赖预检 -> CAS Promote(slot, old generation, new generation)
 -> 新 generation 接收该槽位请求
@@ -2348,7 +2348,7 @@ err := txn.Run(ctx, txn.Locks(role), process)
 
 项目应在启动时把自己的 yml 配置转换为这项配置；`tx` 不读取项目文件。生产环境通常保持默认 `false`，避免每个事务入口递归遍历整棵 Store 状态树。开启后应先保存或 `ClearChanges()` 处理事务外已有的 Store 变更，再进入事务；不要把事务外修改混入本次提交边界。
 
-常驻内存实体由 `txn.Runtime` 管理时，前一轮事务的变更会刻意保留到下一次 Flush，因此必须使用 `runtime.Call`。它会在内部允许已有变更，普通业务代码不要直接调用 `txn.CallWithOptions`。
+常驻内存实体由 `cache.Manager` 管理时，前一轮事务的变更会刻意保留到下一次 Flush，因此根过程必须使用已经绑定 CommitSink 的 `runtime.Call`。它会在内部允许同一 Store 的已有变更，普通业务代码不要直接调用 `txn.CallWithOptions` 绕过提交接收器。
 
 锁等待通过调用方的 `context.Context` 统一控制。获取当前直接锁批次时发生超时或取消，框架会释放该批次中尚未交给业务使用的新锁，且不会执行对应回调：
 
@@ -2442,42 +2442,39 @@ if errors.As(err, &deadlock) {
 
 `txn.Tx` 只表示本次已持锁的运行环境，负责 undo、savepoint、子过程调用和提交/回滚回调；它不是业务数据，也不是 `context.Context`。事务内通过生成的 `GD*` 代理方法或显式 Store 修改数据，两者都会走同一受控 Store 路径并登记 undo。过程成功只表示内存修改已提交，不等价于 Redis 或 Mongo 已写入；`AfterCommit` 在锁释放、undo 解绑后按注册顺序执行，任一回调失败会停止后续回调，但不会回滚内存修改。过程返回错误时，`AfterCommit` 不会执行；可用 `AfterRollback` 做指标记录、临时资源释放等不应持久化的数据清理。
 
-事务中可通过 `tx.DirtyTargets()` 取得本次经受控 Store API 修改、且当前仍有变更的根目标。结果按根事务实际取得目标的顺序返回；被 savepoint 回滚或随后 `UnTouch` 清空的 Store 不会出现。它供 `txn.Runtime` 登记落盘目标，普通业务循环不需要调用：
-
-```go
-func (p *PUpdateRole) Process(tx *txn.Tx) error {
-	p.Role.SetPower(p.Role.Power + 10)
-	return nil
-}
-```
-
 ### 有状态落盘调度
 
-`txn.Runtime` 是实体长期驻留内存服务中 Procedure 的标准搭档。事务成功后它只按锁键登记对应 Store；多个事务持续修改同一对象时，Store 保留路径变更，下一次 Flush 才按当前值构建一次 Fusion 写入。
+`txn.Runtime` 只执行 Procedure、锁、undo、savepoint、死锁检测和提交回调。它不持有 writer、缓存根对象或后台任务，也不向业务暴露脏目标。项目若选择有状态运行模型，应由 CMod 在启动期把一个 `cache.Runtime` 绑定为 `txn.CommitSink`；`cache.Manager` 是 tx 提供的默认实现。无状态业务继续在请求末尾调用项目封装的 `db.Save(role)`。
 
-这里的固定术语是“待刷根对象”：它指已发生受控修改、尚未成功 Flush 的持久化根对象。`Runtime.Pending()` 返回按 `LockKey` 去重后的待刷根对象数量，而不是内存中全部 `GD*` 的数量：同一个 `GDRole` 连续修改多次、或仅修改 `GDRole.Items[1001]` 等子字段，都只算一个待刷根对象；同一事务修改一个 `GDLegion` 和两个不同的 `GDRole`，则算三个。Flush 成功、Store 变更状态清理后，对应根对象才会移出待刷集合；未产生变更或纯内存对象不计入其中。
+`cache.Manager` 只管理提交身份、待刷根对象、代际隔离和延迟刷盘，不是完整的业务对象缓存。对象如何加载、查询、淘汰、分片以及建立业务索引由项目决定。项目需要扩展时应优先包装默认 Manager，复用已经验证的提交和刷盘规则，再在外层增加自己的对象缓存能力。
+
+`CommitSink.Prepare` 在 `Procedure.Process` 前完成身份校验、容量预留和存储健康准入；事务成功后的 `CommitReservation.Commit` 不得失败，只接收提交时仍真实变脏的根对象。回滚、panic 或死锁重试会调用 `Abort`，不会留下虚假的缓存身份。
 
 ```go
-runtime := txn.NewRuntime(fusion, txn.RuntimeConfig{
-	FlushInterval:          10 * time.Second,
-	ShutdownFlushTimeout:   30 * time.Second,
-	MaxRootChanges:    1024,
-	HeapSoftLimitBytes:     512 << 20, // 512 MiB
-	HeapSampleInterval:     time.Second,
-	MaxPendingRoots:        0, // 可选的数量兜底
+runtime := txn.NewRuntime()
+manager := cache.NewManager(cache.Dependencies{
+	Writer:         fusionWriter,
+	WriteAdmission: storageAdmission,
+}, cache.Config{
+	FlushInterval:        10 * time.Second,
+	ShutdownFlushTimeout: 30 * time.Second,
+	MaxRootChanges:       1024,
+	HeapSoftLimitBytes:   512 << 20,
+	HeapSampleInterval:   time.Second,
 })
+if err := runtime.BindCommitSink(manager); err != nil {
+	return err
+}
+if err := manager.Start(waitGroupContext); err != nil {
+	return err
+}
 
 if err := runtime.Call(ctx, &PGuildContribution{Guild: guild, Role: role}); err != nil {
 	return err
 }
-
-// 尚未发生 Redis/Mongo I/O；role、guild 的 Store 仍保留本轮及此前未 Flush 的变更。
-if err := runtime.Flush(ctx); err != nil {
-	return err // 变更保留，下一次 Flush 可重试
-}
 ```
 
-`Flush` 会为每个实体取得与 `Procedure` 相同的本机锁，在锁内同步遍历 Store 当前状态，并将结果交给框架写入入口，成功后才清理变更。这样并发 Procedure 不会在 Flush 读取 `GD*` 当前值时修改同一个对象：
+上面的手工装配属于框架或高级用户入口。普通业务只调用 `runtime.Call`；成功后，Manager 按 `LockKey` 去重登记“待刷根对象”。同一个 `GDRole` 连续修改多次或只修改多个子字段，都只计一个待刷根对象；一个事务修改军团和两个角色则计三个。Manager Flush 时取得与 Procedure 相同的精确 Key 锁，在锁内访问 Store 和 GD 当前值，成功后才清理 Store 状态与 Pending，失败则保留并重试：
 
 ```text
 事务 1：role.SetGold(100)
@@ -2485,22 +2482,22 @@ if err := runtime.Flush(ctx); err != nil {
 Flush：  只写 role.Gold = 120
 ```
 
-服务启动后应将定时循环纳入自己的优雅关停 context。标准项目启动调用 `Runtime.Start(waitGroupContext)`；关闭阶段调用 `Runtime.Shutdown(context.WithoutCancel(serviceCtx))`，由 Runtime 使用配置的超时完成最后刷盘：
+Manager 不要求对象必须经特定 `LoadRole` 入口取得。业务自行创建或加载的 GD 只要通过生成的 `LockTarget()` 进入 Procedure，就会在修改前完成身份接纳；同一 Manager 内，相同 `LockKey` 绑定不同 Store 会在进入业务逻辑前返回 `cache.ErrIdentityConflict`，防止一份实体出现两个内存权威实例。
 
 ```go
-if err := runtime.Start(serviceCtx); err != nil {
-	return err
-}
+role := data.NewGDRole()
+role.RoleId = 470001
 
-// 先由服务全局 WaitGroupContext 等待已经进入的业务任务结束，再执行。
-if err := runtime.Shutdown(context.WithoutCancel(serviceCtx)); err != nil {
+if err := runtime.Call(ctx, &PUpdateRole{Role: role}); err != nil {
 	return err
 }
 ```
 
-`Run` 遇到单次写入错误会记录错误并保留目标，下一轮继续重试。`Shutdown` 在 `ShutdownFlushTimeout` 有效期内立即 Flush 并按 `FlushInterval` 继续尝试；截止时间到达时会返回错误和剩余待刷数量。该超时只约束内存 Store 到 Redis 的最终刷盘，不等待 Fusion 延迟任务队列回写 Mongo。第一版不把 Store 或 GD 指针交给 Actor 外的异步写队列；如未来需要解除 Flush 的 I/O 持锁时间，应在锁内生成与 GD 脱离的后端写入命令，并在交给异步队列后遵守只读发布契约，同时补齐顺序确认与失败重试语义。
+Actor、场景或其他所有者卸载根对象前，应在 Flush 成功后调用 `Manager.Release(role.LockTarget())`。Release 会取得与 Procedure 相同的实体锁，必须在 Procedure 外调用；业务不能在锁外轮询 `Store.HasChanges()` 判断后台 Flush 是否完成。仍有 Pending、Store 变更或事务预留时返回 `cache.ErrPendingRoot`，不会提前解除身份。项目可以把这个底层调用包装为 `cachemgr.Release(role)`；业务不需要取得 Manager 指针。
 
-`MaxRootChanges` 限制单个待刷根对象的细粒度变更位置数量。Runtime 只在 `Flush` 取得该对象锁、准备构建文档时检查，避免每次 `Procedure` 提交递归遍历整棵 Store 状态树；预算检查与 adapter 的正常文档构建共用一次 visitor 遍历，只有超过预算时才会中止内存文档构建、收敛 Store 状态树并重新构建。若数量超过预算，Runtime 只把本轮实际标脏的顶层分支按当前 `GD*` 值记录为 `Replace`，并自动跳过 BSON `_id`。例如：
+`Manager.Run` 遇到单次写入错误会记录错误并保留目标，下一轮继续重试。`Manager.Shutdown` 在 `ShutdownFlushTimeout` 内立即 Flush 并按 `FlushInterval` 重试；截止时返回错误和剩余待刷数量。该超时只约束内存 Store 到 Redis 的最终刷盘，不等待 Fusion 延迟任务回写 Mongo。
+
+`MaxRootChanges` 限制单个待刷根对象的细粒度变更位置数量。Manager 只在取得对象锁并准备构建文档时检查；超过预算后只把实际变脏的顶层分支收敛为 Replace。例如：
 
 ```go
 first, _ := role.ItemsStore().Get(1001)
@@ -2509,24 +2506,20 @@ second, _ := role.ItemsStore().Get(1002)
 second.SetQuantity(7)
 ```
 
-当预算为 `1` 时，两条细粒度变更位置会收敛为一条完整 `Items` Replace；没有修改的 `Name`、`Power` 等字段不会进入变更文档。即使 role 来自部分字段加载，它们的 Go 零值也不会覆盖数据库中的既有值。若同一轮还调用了 `role.SetName("alice")`，则最终输出 `Name` 和 `Items` 两个顶层 Replace。该收敛会记录一条 `txn runtime root changes collapsed` 告警；它限制变更位置数量，不限制 `GD*` 业务对象本身或干净子 Store 缓存的内存。真正需要全量落地整个对象时使用 `AllTouch()`，不要把它与容量收敛混用。
+当预算为 `1` 时，两条位置收敛为一条完整 `Items` Replace；未修改的 `Name`、`Power` 不进入文档，部分加载对象的其他 Go 零值也不会覆盖数据库。收敛会记录 `cache manager root changes collapsed` 告警。真正需要全量落地整个对象时使用 `AllTouch()`，不要与容量收敛混用。
 
-txgen 生成的 Store 已实现 `storage.CollapsibleChangeStore`。高级用户若手写持久化 Store，并把
-`MaxRootChanges` 配置为非零，也必须实现 `CollapseChanges()`；否则 `Runtime.Call` 会在执行
-`Procedure.Process` 前、`Runtime.MarkDirty` 会在登记待刷根对象前返回
-`txn.ErrChangeCollapseUnsupported`。这保证容量配置不会对自定义 Store 静默失效。配置为 `0` 时不启用该预算，
-普通 `storage.ChangeStore` 仍可使用。
+txgen 生成的 Store 已实现 `storage.CollapsibleChangeStore`。高级用户若手写持久化 Store并启用 `MaxRootChanges`，也必须实现 `CollapseChanges()`；否则 Manager 会在 `Procedure.Process` 前返回 `cache.ErrChangeCollapseUnsupported`。配置为 `0` 时普通 `storage.ChangeStore` 仍可使用。
 
 ```go
 err := runtime.Call(ctx, procedure)
-if errors.Is(err, txn.ErrChangeCollapseUnsupported) {
+if errors.Is(err, cache.ErrChangeCollapseUnsupported) {
 	return fmt.Errorf("persistent store must support change collapse: %w", err)
 }
 ```
 
-`HeapSoftLimitBytes` 是进程 Heap 告警阈值（字节）。Runtime 按 `HeapSampleInterval` 读取 `HeapAlloc`；超过阈值只记录 `txn runtime heap soft limit exceeded` 告警，不拒绝新 root，也不改变已提交事务。采样间隔为 `0` 时每次新增 root 预检都采样；内存阈值为 `0` 时禁用该观测。部署应通过 `GOMEMLIMIT` 约束整个 Go 进程；不能用进程级 Heap 采样作为拒绝业务请求的根因。
+`HeapSoftLimitBytes` 是进程 Heap 告警阈值。Manager 按 `HeapSampleInterval` 读取 `HeapAlloc`；超过阈值只记录告警，不拒绝新根对象，也不改变已提交事务。部署应通过 `GOMEMLIMIT` 约束整个进程，不能用进程级 Heap 采样作为拒绝业务的根因。
 
-`MaxPendingRoots` 是可选的数量硬保护。容量满时同样仅拒绝新的待刷根对象，并返回 `txn.ErrPendingRootCapacity`；设置为 `0` 表示不限制。当前同一位置的重复写入不会无限增加变更状态，例如连续修改 `role.Items[1001].Quantity`，最终只保留 `Items.1001.Quantity` 的最新状态；但持续新增不同 key 仍会增加变更位置数量。生成的 map/slice Store 会缓存读取过的子 Store 以保持路径身份，不过同步遍历和清理只访问实际标脏的子路径，不会扫描全部缓存元素。不要在 setter 内加入隐式 Flush 或 I/O；由 Runtime 的调度周期和业务侧反压策略决定何时落盘。
+`MaxPendingRoots` 是可选数量硬保护。容量满时仅拒绝新的待刷根对象并返回 `cache.ErrPendingRootCapacity`；已经 Pending 的对象仍可继续修改。设置为 `0` 表示不限制。不要在 setter 内加入隐式 Flush 或 I/O；由 cache Manager 的调度周期决定何时落盘。
 
 ### 零值和删除
 

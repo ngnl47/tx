@@ -93,6 +93,7 @@ type CModContext interface {
 	Directory() discovery.Directory
 	Actor() txactor.Messenger
 	Transaction() txn.Executor
+	BindTransactionCommitSink(txn.CommitSink) error
 	HasCMod(CModID) bool
 	Advanced() Advanced
 }

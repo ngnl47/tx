@@ -114,14 +114,6 @@ func (access transactionAccess) Call(ctx context.Context, procedure txn.Procedur
 	return access.runtime.Call(ctx, procedure)
 }
 
-func (access transactionAccess) MarkDirty(targets ...txn.LockTarget) error {
-	return access.runtime.MarkDirty(targets...)
-}
-
-func (access transactionAccess) Pending() int {
-	return access.runtime.Pending()
-}
-
 type advancedAccess struct{ runtime *runtime }
 
 func (access advancedAccess) Redis() txredis.ScriptRoutes {

@@ -13,6 +13,17 @@ import (
 
 type contextWAL struct{}
 
+type contextCommitSink struct{}
+
+func (contextCommitSink) Prepare(context.Context, []txn.LockTarget) (txn.CommitReservation, error) {
+	return contextCommitReservation{}, nil
+}
+
+type contextCommitReservation struct{}
+
+func (contextCommitReservation) Commit([]txn.LockTarget) {}
+func (contextCommitReservation) Abort()                  {}
+
 func (contextWAL) Append(context.Context, wal.Record) error { return nil }
 func (contextWAL) Read(context.Context, wal.Stream, uint64, int) ([]wal.Record, error) {
 	return nil, nil
@@ -88,5 +99,23 @@ func TestAdvancedContextKeepsSharedResourceOwnershipPrivate(t *testing.T) {
 	}
 	if _, ok := any(advanced.Redis()).(interface{ Close(context.Context) error }); ok {
 		t.Fatal("advanced storage exposes framework close ownership")
+	}
+}
+
+func TestCModContextBindsTransactionCommitSinkWithoutExposingBusinessContext(t *testing.T) {
+	runtime := &runtime{transaction: txn.NewRuntime()}
+	service := newServiceContext(runtime, nil)
+	if _, ok := any(service).(interface {
+		BindTransactionCommitSink(txn.CommitSink) error
+	}); ok {
+		t.Fatal("business Context exposes transaction commit sink binding")
+	}
+
+	mod := newCModContext(runtime)
+	if err := mod.BindTransactionCommitSink(contextCommitSink{}); err != nil {
+		t.Fatalf("BindTransactionCommitSink returned error: %v", err)
+	}
+	if err := mod.BindTransactionCommitSink(contextCommitSink{}); err == nil {
+		t.Fatal("second BindTransactionCommitSink returned nil error")
 	}
 }

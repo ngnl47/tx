@@ -229,35 +229,6 @@ func TestTransactionDebugCheckIsDisabledByDefault(t *testing.T) {
 	}
 }
 
-func TestTransactionDirtyTargetsIncludesOnlyPendingModifiedStores(t *testing.T) {
-	first := &transactionDirtyStore{}
-	second := &transactionDirtyStore{}
-	firstLock := txn.NewLockTarget(txn.NewLockKey("role", 1001), first)
-	secondLock := txn.NewLockTarget(txn.NewLockKey("role", 1002), second)
-	var transaction *txn.Tx
-
-	err := txn.Run(context.Background(), []txn.LockTarget{secondLock, firstLock}, func(tx *txn.Tx) error {
-		transaction = tx
-		second.Set(2)
-		if err := tx.Do(func(*txn.Tx) error {
-			first.Set(1)
-			return errors.New("rollback first")
-		}); err == nil {
-			t.Fatal("Do returned nil error")
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-	if transaction == nil {
-		t.Fatal("transaction was not captured")
-	}
-	if got := transaction.DirtyTargets(); !reflect.DeepEqual(got, []txn.LockTarget{secondLock}) {
-		t.Fatalf("DirtyTargets = %#v, want %#v", got, []txn.LockTarget{secondLock})
-	}
-}
-
 func TestTransactionDoRollsBackOnlyNestedSavepoint(t *testing.T) {
 	store := &transactionTestStore{value: 1}
 	err := txn.Run(context.Background(), []txn.LockTarget{

@@ -180,11 +180,7 @@ func (tx *Tx) RecordUndo(undo change.UndoFunc) {
 	tx.undos = append(tx.undos, undo)
 }
 
-// DirtyTargets 返回本次事务经受控 Store 修改且当前仍有待落盘变更的根目标。
-//
-// 返回顺序与根事务实际取得目标的顺序一致。该结果适合业务 facade 在提交后选择持久化对象；
-// 它不包含未经事务 Store API 修改的裸字段变更。
-func (tx *Tx) DirtyTargets() []LockTarget {
+func (tx *Tx) dirtyTargets() []LockTarget {
 	if tx == nil || len(tx.dirty) == 0 {
 		return nil
 	}
@@ -193,12 +189,25 @@ func (tx *Tx) DirtyTargets() []LockTarget {
 		if _, ok := tx.dirty[target.Key]; !ok {
 			continue
 		}
-		if store, ok := target.Store.(change.Source); ok && !store.HasChanges() {
-			continue
+		if tx.active {
+			if store, ok := target.Store.(change.Source); ok && !store.HasChanges() {
+				continue
+			}
 		}
 		targets = append(targets, target)
 	}
 	return targets
+}
+
+func (tx *Tx) finalizeDirtyTargets() {
+	for _, target := range tx.targets {
+		if _, ok := tx.dirty[target.Key]; !ok {
+			continue
+		}
+		if store, ok := target.Store.(change.Source); ok && !store.HasChanges() {
+			delete(tx.dirty, target.Key)
+		}
+	}
 }
 
 func (tx *Tx) markDirty(target LockTarget) {
@@ -430,6 +439,7 @@ func run(ctx context.Context, locks []LockTarget, fn func(*Tx) error, options Ca
 		if recovered := recover(); recovered != nil {
 			rollbackCallbacks := append([]func(context.Context){}, tx.afterRollback...)
 			tx.rollbackTo(savepoint{}, false)
+			clear(tx.dirty)
 			for _, lock := range tx.targets {
 				lock.Store.SetUndoRecorder(nil)
 			}
@@ -455,6 +465,7 @@ func run(ctx context.Context, locks []LockTarget, fn func(*Tx) error, options Ca
 	if err != nil {
 		rollbackCallbacks := append([]func(context.Context){}, tx.afterRollback...)
 		tx.rollbackTo(savepoint{}, false)
+		clear(tx.dirty)
 		for _, lock := range tx.targets {
 			lock.Store.SetUndoRecorder(nil)
 		}
@@ -470,6 +481,7 @@ func run(ctx context.Context, locks []LockTarget, fn func(*Tx) error, options Ca
 	}
 
 	// 成功时不再需要反向操作。提交回调不能占用数据锁，也不能继续修改已解绑 Store。
+	tx.finalizeDirtyTargets()
 	tx.undos = nil
 	for _, lock := range tx.targets {
 		lock.Store.SetUndoRecorder(nil)

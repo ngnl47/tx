@@ -19,8 +19,8 @@
 - 位置：`storage/changes.go:90`、`storage/changes.go:97`、`storage/changes.go:119`
 - 触发条件：高级调用方先取得一份 Delta 投影，随后 Store 又产生投影中不存在的新路径，或者调用方仅传入当前 Delta 的子集，再调用 `SaveDeltasWithOptions`。
 - 影响：适配器只落地传入的 Delta，但成功后 `ClearChanges` 会清理 Store 的全部当前 dirty 状态；未包含在本批次里的变更可能不再被保存。
-- 当前主线：`txn.Runtime` 在同一事务锁内投影并保存同一个 Store，当前支持路径不会触发该问题。风险来自公开 API 未在类型中表达“投影代际、锁所有权和清理范围”。
-- 整改：已移除公开的 `SaveDeltas/SaveDeltasWithOptions`。`storage.Save` 总是从传入 Store 同步投影当前变更并在成功后清理；`txn.Runtime` 的私有 visitor 装饰器在 adapter 的同一次投影中完成容量计数。普通路径只投影一次；超预算路径会在任何外部 I/O 前中止，再把 dirty 树明确收敛为顶层 Replace 并重新投影。业务层继续只暴露 `db.Save(role)` 等 facade，不能自行传入 Delta 子集。
+- 当前主线：`cache.Manager` 在与 Procedure 相同的实体锁内投影并保存同一个 Store，当前支持路径不会触发该问题。风险来自公开 API 未在类型中表达“投影代际、锁所有权和清理范围”。
+- 整改：已移除公开的 `SaveDeltas/SaveDeltasWithOptions`。`storage.Save` 总是从传入 Store 同步投影当前变更并在成功后清理；`cache.Manager` 的私有 visitor 装饰器在 adapter 的同一次投影中完成容量计数。普通路径只投影一次；超预算路径会在任何外部 I/O 前中止，再把 dirty 树明确收敛为顶层 Replace 并重新投影。业务层继续只暴露 `db.Save(role)` 等 facade，不能自行传入 Delta 子集。
 
 示例：
 
@@ -54,11 +54,11 @@ err := storage.SaveDeltas(ctx, writer, store, batch)
 
 ### [P1][已整改] `MaxRootChanges` 对非生成 Store 会静默失效
 
-- 位置：`modules/txn/runtime.go:36`、`modules/txn/runtime.go:427`、`modules/txn/runtime.go:431`
+- 位置：整改前位于 `modules/txn/runtime.go`；当前能力位于 `modules/cache/manager.go`
 - 触发条件：持久化目标实现 `ChangeStore`，但未额外实现未导出的 `CollapseChanges` 能力，同时 Delta 数量超过配置预算。
 - 影响：文档和配置声明 Runtime 会收敛超额路径，实际代码直接返回原 Delta，既不报错也不告警；高级扩展 Store 可能在持续失败刷盘时突破预期预算。
 - 当前主线：txgen 生成 Store 已实现收敛，常规业务路径安全。
-- 整改：新增 `storage.CollapsibleChangeStore` 显式契约。配置非零 `MaxRootChanges` 时，`Runtime.Call` 在进入 Procedure 前、`Runtime.MarkDirty` 在登记前校验持久化目标；不支持收敛时返回 `txn.ErrChangeCollapseUnsupported`。Flush 内保留防御校验，不再存在静默绕过容量预算的分支。
+- 整改：新增 `storage.CollapsibleChangeStore` 显式契约。配置非零 `MaxRootChanges` 时，`cache.Manager.Prepare` 在进入 Procedure 前校验持久化目标；不支持收敛时返回 `cache.ErrChangeCollapseUnsupported`。Flush 内保留防御校验，不再存在静默绕过容量预算的分支。
 
 ### [P1][已整改] race 质量门禁被并发测试日志收集器打红
 
@@ -109,7 +109,7 @@ err := storage.SaveDeltas(ctx, writer, store, batch)
 - Agent、msgq、通用 gRPC 与 Actor 的职责依赖方向保持单向；Actor payload 使用 protobuf 信封，业务 BON body 不在基础设施中反序列化。
 - gRPC Receiver 排水只封闭新入口，已接受工作由 lifecycle Admission 计数；下行 msgq 不被错误地绑定到业务排水入口。
 - etcd 注册、配置、Slot CAS 与关闭后 slot 保留通过真实 etcd 集成测试。
-- Redis `@v`、Lua 路径创建/异常父类型拒绝、map element Replace、Mongo/Fusion Delta 写入和 txn Runtime 延迟刷盘通过真实 Redis/Mongo 集成测试。
+- Redis `@v`、Lua 路径创建/异常父类型拒绝、map element Replace、Mongo/Fusion Delta 写入和 cache Manager 延迟刷盘通过真实 Redis/Mongo 集成测试。
 - `go vet ./...` 通过；全量普通测试在允许本地端口监听的环境下通过。
 
 ## 已知语义与残余风险

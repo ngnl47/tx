@@ -140,7 +140,7 @@ Procedure 单向依赖并组合 `modules` 的稳定业务能力，`modules` 禁�
 | `RPC()` | `rpc.Registrar` | 启动前注册 protobuf service、读取 endpoint | Serve/Stop 在共享 Host |
 | `Directory()` | `discovery.Directory` | 查询 running/指定实例快照 | watch 与 Replace 在 discovery runtime |
 | `Actor()` | `actor.Messenger` | 解析 PID、单向投递、接收确认和业务调用 | Start/Shutdown/ActorSystem 在 actor runtime |
-| `Transaction()` | `txn.Executor` | 执行 Procedure、登记标脏、读取待刷根对象数 | Start/Flush/Shutdown 在 server |
+| `Transaction()` | `txn.Executor` | 执行根 Procedure | CommitSink 绑定和生命周期在 CMod，Flush 在 cache Manager |
 
 门面返回专用 wrapper，而不是把具体指针仅仅窄化成接口。这样服务不能通过类型断言重新取得
 `Cancel`、`Stop`、`Shutdown`、`Replace` 或 `Flush`。
@@ -180,7 +180,8 @@ storage contracts
 redis    mongo     fusion
 
 optional modules:
-lifecycle <- discovery / rpc / msgq / agent / actor / control / txn runtime
+lifecycle <- discovery / rpc / msgq / agent / actor / control / cache manager
+change <- txn runtime <- cache manager -> storage contracts
 ```
 
 关键约束：
@@ -188,7 +189,8 @@ lifecycle <- discovery / rpc / msgq / agent / actor / control / txn runtime
 - `change` 不能依赖 `storage`，否则纯变更算法会被具体 I/O 语义污染。
 - `storage` 通用契约不能依赖 Redis 或 Mongo adapter。
 - `modules/actor` 不代表 GD，不依赖 Store、Fusion 或 `txn.Runtime`。
-- `modules/txn` 可以依赖 `change` 和通用 `storage` 契约，但不能依赖具体 backend。
+- `modules/txn` 只依赖 `change`，不持有 writer 或具体 backend。
+- `modules/cache` 依赖 `txn` 提交 SPI 和通用 `storage` 契约，不依赖 Redis、Mongo 或 Fusion 实现。
 - 项目业务可以组合 Actor、Procedure 和存储 runtime，模块之间不反向耦合。
 
 全局 registry、回调和 `any` 也可能形成隐式反向依赖。审查依赖时不能只看 import cycle。
@@ -649,7 +651,8 @@ Store 不保存第二份业务数据，也不保存每次操作的 value、时�
 | 延迟任务上下文 | 任务租约 | `task.DelayTaskLease`、busy 状态 | worker 在限定时间内取得一次任务处理权；不能简称为 Store 或事务锁 |
 | 延迟任务上下文 | 任务载荷 | Redis task backend 的 `payload` 字段 | 任务定位与执行参数的编码值；不是业务消息载荷，也不保存 GD 或 Store 变更状态 |
 | 延迟任务上下文 | 后续到期时间 | Redis task backend 的 `pending` 字段 | 任务已被租用期间再次入队时保存的新到期时间；不是待刷根对象 |
-| 有状态运行时上下文 | 待刷根对象 | `txn.Runtime.Pending()` 管理的 root | 已发生受控修改且尚未成功 Flush 的持久化根对象；一个 root 的多条路径只计一个 |
+| 有状态缓存上下文 | 缓存运行时 | `cache.Runtime` | CMod 依赖的提交、生命周期和实体释放 SPI；默认实现是 `cache.Manager`，不是业务对象缓存的固定形态 |
+| 有状态缓存上下文 | 待刷根对象 | 默认 `cache.Manager.Pending()` 管理的 root | 已发生受控修改且尚未成功 Flush 的持久化根对象；一个 root 的多条路径只计一个 |
 | 事务上下文 | 撤销记录 | `change.UndoRecorder`、`change.UndoFunc` | 恢复事务前 GD 值和 Store 状态；与帧内合并职责独立 |
 
 “帧内合并”中的“帧”表示一次业务合并窗口，不限定为 20ms；网络上下文中的“协议帧”才表示 Agent `Frame`。Store 状态本身是按位置归一化的集合，遍历顺序不构成业务契约；`Capture` 的调用顺序和 `Merge(next)` 的参数顺序都具有“后批次覆盖前批次”含义。
@@ -971,7 +974,7 @@ Slice：
 | Redis document patch | 约 1.47-1.54 ms/op，1.31 MB/op，4713 allocs/op | 约 0.88-0.90 ms/op，359 KB/op，4692 allocs/op | 耗时降低约 40%，分配字节降低约 73% |
 | Mongo update document | 约 13.37-14.55 ms/op，1.28 MB/op，5740 allocs/op | 约 0.98-1.00 ms/op，330 KB/op，5718 allocs/op | 避免中间批次、Clone、通用 Compact 和二次路径扫描，耗时降低约 93%，分配字节降低约 74% |
 
-因此 Redis/Mongo/Fusion adapter 与 `txn.Runtime` 直接消费 `Source`。旧的 `Build*WithDeltas` 与显式批次类型已经删除，`storage.Save` 不得重新引入中间批次层。
+因此 Redis/Mongo/Fusion adapter 与 `cache.Manager` 直接消费 `Source`。旧的 `Build*WithDeltas` 与显式批次类型已经删除，`storage.Save` 不得重新引入中间批次层。
 
 2026-08-22 删除显式批次 API 与过渡适配层后，使用 Go 1.26.5 在同一台 x86_64 macOS 设备复测：`VisitChanges1024` 为约 `0.082-0.088 ms/op, 0 B/op, 0 allocs/op`，`BuildDocument1024` 为约 `0.389-0.399 ms/op, 212 KB/op, 2996 allocs/op`，`MergeAndBuildFrameDocument` 为约 `0.167-0.174 ms/op, 37 KB/op, 17 allocs/op`。txgame 的真实生成结构边界中，Redis patch 为约 `0.873-0.928 ms/op, 359 KB/op, 4691 allocs/op`，Mongo update document 为约 `0.988-1.041 ms/op, 330 KB/op, 5717 allocs/op`。这些结果与删除前的同步遍历路径处于同一量级，说明精简公开 API 和运行时中间层没有引入可见性能回退。
 
@@ -1261,13 +1264,13 @@ sequenceDiagram
 
 发布失败日志固定为 `fusion delay task publish failed`，包含 pending 数、重试等待和完整错误链，供外部日志中心告警。退避从一秒开始，倍增到一分钟后持续按封顶间隔重试，并使用随机扰动错开实例压力。业务不配置本地 pending 容量；相同根记录不会膨胀条数，剩余容量由进程内存和运行监控负责。
 
-后台发布循环与关闭排空共享一个可被 context 中断的发布闸门，同一时刻只有一个执行者向 delayed task backend 发布快照。正常关闭时，CMod 依赖逆序保证 Transaction 先完成内存 Store 的最终保存，Fusion 随后调用 `DelayTaskDispatcher.Drain`；每条任务只有在 backend 确认接收后才从 pending 删除。排空复用 `runtime.lifecycle.drainTimeout`，超时错误包含剩余 pending 数量，`Server.Stop` 汇总错误后继续释放资源，不能无限阻塞关闭。
+后台发布循环与关闭排空共享一个可被 context 中断的发布闸门，同一时刻只有一个执行者向 delayed task backend 发布快照。正常关闭时，CMod 依赖逆序保证 cache Manager 先完成内存 Store 的最终保存，Fusion 随后调用 `DelayTaskDispatcher.Drain`；每条任务只有在 backend 确认接收后才从 pending 删除。排空复用 `runtime.lifecycle.drainTimeout`，超时错误包含剩余 pending 数量，`Server.Stop` 汇总错误后继续释放资源，不能无限阻塞关闭。
 
 ```text
 停止业务入口并等待已受理工作
         |
         v
-Transaction final Flush -> 新增本地 pending
+cache Manager final Flush -> 新增本地 pending
         |
         v
 Fusion Drain -> Redis delayed task backend 确认接收
@@ -1503,8 +1506,8 @@ Mongo 服务不可用时，追加、读取和 checkpoint 都返回原始可识�
 - 多个 GD 根对象的稳定加锁。
 - Store 受控修改的 undo log。
 - savepoint 和子 Procedure。
-- 提交后脏目标收集。
-- 与 `txn.Runtime` 配合的延迟 Flush。
+- 提交时最终变脏根对象的包内收集。
+- 在修改前调用可选 `CommitSink.Prepare`，并在提交或回滚时完成确认。
 
 它不提供：
 
@@ -1771,28 +1774,50 @@ go test ./modules/txn -run '^$' \
 
 不要为了优化注册表而退回“哈希碰撞共用业务锁”的固定 stripe 方案。
 
-## 有状态事务 Runtime
+## 有状态事务与缓存运行时
 
-`txn.Runtime` 是 Procedure 的标准运行时搭档，不是项目额外实现的通用缓存框架。它负责：
+`txn.Runtime` 是 Procedure 执行器，只负责锁、undo、savepoint、死锁检测和提交回调。最终变脏根对象在根事务仍持锁时确定，但不作为公共 API 暴露。Runtime 不持有 GD 缓存、存储 writer、Pending 集合或后台任务。
 
-- 调用 Procedure。
-- 从 `Tx.DirtyTargets()` 登记需要 Flush 的根对象。
-- 多次事务之间累计同一 Store 的变更状态。
-- 定时在精确 Key 锁下 Flush。
-- 写入失败时保留待刷根对象并重试。
-- 关闭时配合 WaitGroupContext 完成最终限时 Flush。
+`modules/cache.Runtime` 是有状态缓存 CMod 使用的稳定 SPI，组合 `txn.CommitSink`、后台生命周期、最终刷盘和实体释放契约。`modules/cache.Manager` 是 tx 提供的默认实现，项目 CMod 在启动期创建或注入 Runtime 并把它绑定为 `txn.CommitSink`：
 
-Runtime 不复制 GD，也不异步保存脱离对象的变更值。Flush 必须再次取得对象锁，在锁内同步访问 Store 当前变更和 GD 当前值，写入成功后清理。
+1. `Prepare` 在 `Process` 前校验 `LockKey -> Store` 身份、存储准入和容量，并预留根对象。
+2. Procedure 回滚时 `Abort` 释放预留；提交时无失败地登记最终变脏根对象。
+3. 多次事务继续在同一 Store 状态树上累计，Pending 按根 `LockKey` 去重。
+4. Flush 再次取得相同实体锁，在锁内同步访问 Store 与 GD 当前值；写入成功才清理，失败保留。
+5. 根对象不再由 Actor 或场景持有时，必须在 Procedure 外调用 `Release`。它取得相同实体锁并在锁内确认 Pending、预留和 Store 状态，干净后解除身份并允许回收。
+
+默认 Manager 不复制 GD，也不把引用 GD 的变更状态交给无锁异步写队列。同一 Manager 内相同 `LockKey` 不允许绑定不同 Store；对象可以由业务自行创建或加载，不要求经过指定加载函数。Store 不是并发安全容器，业务不能在实体锁外轮询 `HasChanges` 观察后台 Flush。
+
+默认 Manager 不是完整的业务对象缓存，不定义 `LoadRole`、LRU、TTL 淘汰、Actor 归属、业务分片或二级索引。静态 `Config` 只保存调度和容量参数；writer 与写入闸门通过 `cache.Dependencies` 在 CMod 启动期注入。项目需要缓存能力时有两种边界：
+
+1. 普通项目直接使用默认 Manager，业务只通过项目 facade 调用 Procedure 和 `Release`。
+2. 高级项目实现 `cache.Runtime`，优先以装饰器包装默认 Manager，并在外层增加加载、淘汰、业务索引、WAL/checkpoint 或项目指标。txgame 的 CMod 通过 Factory 创建该实现，事务和生命周期仍只依赖 SPI。
+
+因此依赖方向固定为：
+
+```text
+txn.Runtime -> txn.CommitSink <- cache.Runtime SPI
+                                  ^
+                                  |
+                     cache.Manager 默认实现
+                                  ^
+                                  |
+                    项目 cacheMgr 可选装饰器
+```
+
+项目 CMod 不持有具体 `*cache.Manager`，项目 facade 也不能要求调用方取得该指针。完整替换 Runtime 属于高级扩展面；实现必须保持 `Prepare` 先于业务修改、`Commit` 不失败、失败 Flush 不清理变更、同一实体锁内读取 Store 等契约。
+
+txgame CMod 会先保留 facade 所有权，再绑定 CommitSink 并启动 Runtime；只有 `Runtime.Start` 成功后才开放业务 facade。开始 Drain 时先关闭 facade 准入并等待已经进入的调用完成，再执行 `Runtime.Shutdown`。`Start` 返回错误时 CMod 会在 `ShutdownFlushTimeout` 内调用同一实例的 `Shutdown` 清理部分启动资源；本次 `Server.Start` 随即进入终止回滚，该 Server 实例不可再次启动。
 
 ### 容量保护
 
 容量保护分为：
 
-- `MaxRootChanges`：单根路径条目超过预算时，只把实际变脏的顶层分支收敛为 Replace。
+- `MaxRootChanges`：单根变更位置超过预算时，只把实际变脏的顶层分支收敛为 Replace。
 - `MaxPendingRoots`：可选的待刷根对象数量硬限制。
 - `HeapSoftLimitBytes`：进程 Heap 软告警，不拒绝业务。
 
-`MaxRootChanges` 通过 Runtime 私有的 `Source` visitor 装饰器执行。未超预算时，adapter 在构建完整内存文档的同一次遍历中完成计数，随后才执行第一次外部 I/O；超预算时 visitor 返回内部错误，adapter 丢弃尚未写出的临时文档，Runtime 先记录当前状态树中实际变脏的顶层分支，再清理细路径并只把这些分支收敛为 Replace。比如 `Items[1].Quantity` 与 `Items[2].Quantity` 超预算后只输出当前完整 `Items`，不会把部分加载对象中未修改的 `Name`、`Power` 零值写入数据库。这个契约要求所有 `storage.ChangeApplier` 都先完整访问变更并处理错误，再进行外部 I/O，不能边遍历边写远端。
+`MaxRootChanges` 通过 Manager 的 `Source` visitor 装饰器执行。未超预算时，adapter 在构建完整内存文档的同一次遍历中完成计数，随后才执行第一次外部 I/O；超预算时 visitor 返回内部错误，adapter 丢弃尚未写出的临时文档，Manager 先记录当前状态树中实际变脏的顶层分支，再清理细路径并只把这些分支收敛为 Replace。比如 `Items[1].Quantity` 与 `Items[2].Quantity` 超预算后只输出当前完整 `Items`，不会把部分加载对象中未修改的 `Name`、`Power` 零值写入数据库。这个契约要求所有 `storage.ChangeApplier` 都先完整访问变更并处理错误，再进行外部 I/O，不能边遍历边写远端。
 
 HeapAlloc 受整个进程影响，不能作为 Manager 拒绝服务的唯一依据。外部存储不可用时，应由项目健康闸门先拒绝新的持久化业务；已有待刷根对象保留并等待恢复。
 
@@ -1816,7 +1841,7 @@ HeapAlloc 受整个进程影响，不能作为 Manager 拒绝服务的唯一依�
 等待已受理 handler / Procedure / mailbox 工作完成
         |
         v
-停止项目服务并执行事务最终 Flush
+停止项目服务并执行缓存管理器最终 Flush
         |
         v
 停止共享 RPC，排空 Fusion 本地延迟任务登记
@@ -1843,7 +1868,7 @@ mailbox 溢出时立即回滚登记。只有 tx `Delivery` 属于业务工作，
 受根生命周期准入限制，否则 Runtime 关闭时会拒绝自身停止消息。ActorSystem 保存同一个只读标准 `context.Context`，
 项目命令适配层把它嵌入生成的 `HandlerContext`；业务可将其传给下游 I/O，但不能取得 `WaitGroupContext.Cancel/Wait`。
 正常关闭先调用 Actor `Drain` 封闭新 Delivery 并等待 mailbox 排空，此时根 context 保持有效；随后才能停止业务服务和
-执行事务最终 Flush。Actor 排空受统一 `runtime.lifecycle.drainTimeout` 限制，超时错误包含剩余 Delivery 数量。
+执行缓存管理器最终 Flush。Actor 排空受统一 `runtime.lifecycle.drainTimeout` 限制，超时错误包含剩余 Delivery 数量。
 
 ### 排水与关闭的区别
 
@@ -1888,7 +1913,7 @@ discovery -> draining
   -> actor Delivery admission close and mailbox drain
   -> service stop
   -> project cleanup and generated storage unbind
-  -> transaction final flush
+  -> cache manager final flush
   -> shared RPC graceful stop
   -> fusion delay-task pending drain
   -> root WaitGroupContext cancel and wait

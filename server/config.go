@@ -91,8 +91,7 @@ type HealthConfig struct {
 }
 
 type TransactionConfig struct {
-	Module  txn.Config
-	Runtime txn.RuntimeConfig
+	Module txn.Config
 }
 
 type ActorConfig struct {

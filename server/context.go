@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 
 	"github.com/ngnl47/tx/lifecycle"
 	txactor "github.com/ngnl47/tx/modules/actor"
@@ -57,8 +58,23 @@ type serviceContext struct {
 	admission lifecycle.Admission
 }
 
+type cmodContext struct {
+	*serviceContext
+}
+
 func newServiceContext(runtime *runtime, admission lifecycle.Admission) Context {
 	return &serviceContext{runtime: runtime, admission: admission}
+}
+
+func newCModContext(runtime *runtime) CModContext {
+	return &cmodContext{serviceContext: &serviceContext{runtime: runtime}}
+}
+
+func (context *cmodContext) BindTransactionCommitSink(sink txn.CommitSink) error {
+	if context == nil || context.runtime == nil || context.runtime.transaction == nil {
+		return errors.New("server: transaction runtime is not configured")
+	}
+	return context.runtime.transaction.BindCommitSink(sink)
 }
 
 func (service *serviceContext) AppID() string {

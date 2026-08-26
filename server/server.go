@@ -205,7 +205,7 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 	server.runtime = runtime
 	server.mu.Unlock()
 
-	cmodHost := newCModHost(newServiceContext(runtime, nil), graph, runtime.markCMod)
+	cmodHost := newCModHost(newCModContext(runtime), graph, runtime.markCMod)
 	server.cmodHost = cmodHost
 	if err := cmodHost.start(); err != nil {
 		return err

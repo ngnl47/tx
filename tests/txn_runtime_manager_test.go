@@ -3,12 +3,12 @@ package tests
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/meta"
+	cachemodule "github.com/ngnl47/tx/modules/cache"
 	"github.com/ngnl47/tx/modules/txn"
 	"github.com/ngnl47/tx/storage"
 )
@@ -22,6 +22,14 @@ type runtimeTestStore struct {
 
 type runtimeNonCollapsibleStore struct {
 	store runtimeTestStore
+}
+
+type runtimeMemoryStore struct {
+	runtimeTestStore
+}
+
+func (*runtimeMemoryStore) TypeSpec() meta.TypeSpec {
+	return meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{FullName: "RuntimeMemoryTest"}}}
 }
 
 func (store *runtimeNonCollapsibleStore) SetUndoRecorder(recorder change.UndoRecorder) {
@@ -84,7 +92,10 @@ func (store *runtimeTestStore) SetField(field change.FieldID) {
 }
 
 func (store *runtimeTestStore) TypeSpec() meta.TypeSpec {
-	return meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{FullName: "RuntimeTest"}}}
+	return meta.TypeSpec{
+		Type:    meta.Type{Ref: meta.TypeRef{FullName: "RuntimeTest"}},
+		Storage: meta.StorageSpec{Mode: meta.StorageModeRedis},
+	}
 }
 
 func (store *runtimeTestStore) RecordKey() storage.RecordKey {
@@ -205,16 +216,26 @@ func (procedure observingRuntimeTestProcedure) Process(tx *txn.Tx) error {
 	return procedure.runtimeTestProcedure.Process(tx)
 }
 
-func TestTxnRuntimeDefersTransactionStoreUntilFlush(t *testing.T) {
+func newCacheRuntime(t *testing.T, writer storage.ChangeApplier, config cachemodule.Config) (*txn.Runtime, *cachemodule.Manager) {
+	t.Helper()
+	manager := cachemodule.NewManager(cachemodule.Dependencies{Writer: writer}, config)
+	runtime := txn.NewRuntime()
+	if err := runtime.BindCommitSink(manager); err != nil {
+		t.Fatalf("BindCommitSink returned error: %v", err)
+	}
+	return runtime, manager
+}
+
+func TestCacheManagerDefersTransactionStoreUntilFlush(t *testing.T) {
 	store := &runtimeTestStore{}
 	writer := &recordingChangeStoreApplier{}
-	manager := txn.NewRuntime(writer, txn.RuntimeConfig{
+	runtime, manager := newCacheRuntime(t, writer, cachemodule.Config{
 		FlushInterval:        time.Millisecond,
 		ShutdownFlushTimeout: time.Second,
 	})
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
 
-	if err := manager.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
+	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
 	if writer.hasOptions {
@@ -242,13 +263,13 @@ func TestTxnRuntimeDefersTransactionStoreUntilFlush(t *testing.T) {
 	}
 }
 
-func TestTxnRuntimeBudgetedFlushVisitsOnceWhenWithinBudget(t *testing.T) {
+func TestCacheManagerBudgetedFlushVisitsOnceWhenWithinBudget(t *testing.T) {
 	store := &runtimeTestStore{}
 	writer := &recordingChangeStoreApplier{}
-	manager := txn.NewRuntime(writer, txn.RuntimeConfig{MaxRootChanges: 2})
+	runtime, manager := newCacheRuntime(t, writer, cachemodule.Config{MaxRootChanges: 2})
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
 
-	if err := manager.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
+	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
 	store.visitCalls = 0
@@ -261,18 +282,18 @@ func TestTxnRuntimeBudgetedFlushVisitsOnceWhenWithinBudget(t *testing.T) {
 	}
 }
 
-func TestTxnRuntimeAllowsAccumulatedChangesWhenCleanTargetCheckIsEnabled(t *testing.T) {
+func TestCacheManagerAllowsAccumulatedChangesWhenCleanTargetCheckIsEnabled(t *testing.T) {
 	previous := txn.CurrentConfig()
 	t.Cleanup(func() { txn.Configure(previous) })
 	txn.Configure(txn.Config{Debug: txn.DebugConfig{CheckCleanLockTargets: true}})
 
 	store := &runtimeTestStore{}
-	store.Set()
-	manager := txn.NewRuntime(&recordingChangeStoreApplier{})
+	runtime, manager := newCacheRuntime(t, &recordingChangeStoreApplier{}, cachemodule.Config{})
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
-	manager.MarkDirty(lock)
-
-	if err := manager.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
+	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
+		t.Fatalf("first Call returned error: %v", err)
+	}
+	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
 		t.Fatalf("Call returned error with accumulated changes: %v", err)
 	}
 	if manager.Pending() != 1 || len(store.changes) != 2 {
@@ -280,38 +301,38 @@ func TestTxnRuntimeAllowsAccumulatedChangesWhenCleanTargetCheckIsEnabled(t *test
 	}
 }
 
-func TestTxnRuntimeAllowsPendingRootWhenCapacityIsFull(t *testing.T) {
+func TestCacheManagerAllowsPendingRootWhenCapacityIsFull(t *testing.T) {
 	store := &runtimeTestStore{}
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
-	manager := txn.NewRuntime(&recordingChangeStoreApplier{}, txn.RuntimeConfig{MaxPendingRoots: 1})
-	if err := manager.MarkDirty(lock); err != nil {
-		t.Fatalf("MarkDirty returned error: %v", err)
+	runtime, manager := newCacheRuntime(t, &recordingChangeStoreApplier{}, cachemodule.Config{MaxPendingRoots: 1})
+	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
+		t.Fatalf("first Call returned error: %v", err)
 	}
 
-	if err := manager.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
+	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
 		t.Fatalf("Call for pending root returned error: %v", err)
 	}
-	if manager.Pending() != 1 || len(store.changes) != 1 {
-		t.Fatalf("pending root state = pending:%d changes:%#v, want one accumulated change", manager.Pending(), store.changes)
+	if manager.Pending() != 1 || len(store.changes) != 2 {
+		t.Fatalf("pending root state = pending:%d changes:%#v, want two accumulated changes", manager.Pending(), store.changes)
 	}
 }
 
-func TestTxnRuntimeRejectsNewRootBeforeProcedureWhenCapacityIsFull(t *testing.T) {
+func TestCacheManagerRejectsNewRootBeforeProcedureWhenCapacityIsFull(t *testing.T) {
 	first := &runtimeTestStore{}
 	firstLock := txn.NewLockTarget(txn.NewLockKey("role", 1001), first)
-	manager := txn.NewRuntime(&recordingChangeStoreApplier{}, txn.RuntimeConfig{MaxPendingRoots: 1})
-	if err := manager.MarkDirty(firstLock); err != nil {
-		t.Fatalf("MarkDirty returned error: %v", err)
+	runtime, manager := newCacheRuntime(t, &recordingChangeStoreApplier{}, cachemodule.Config{MaxPendingRoots: 1})
+	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: firstLock, store: first}); err != nil {
+		t.Fatalf("first Call returned error: %v", err)
 	}
 
 	second := &runtimeTestStore{}
 	secondLock := txn.NewLockTarget(txn.NewLockKey("role", 1002), second)
 	called := false
-	err := manager.Call(context.Background(), observingRuntimeTestProcedure{
+	err := runtime.Call(context.Background(), observingRuntimeTestProcedure{
 		runtimeTestProcedure: runtimeTestProcedure{lock: secondLock, store: second},
 		called:               &called,
 	})
-	if !errors.Is(err, txn.ErrPendingRootCapacity) {
+	if !errors.Is(err, cachemodule.ErrPendingRootCapacity) {
 		t.Fatalf("Call error = %v, want ErrPendingRootCapacity", err)
 	}
 	if called || len(second.changes) != 0 {
@@ -322,20 +343,20 @@ func TestTxnRuntimeRejectsNewRootBeforeProcedureWhenCapacityIsFull(t *testing.T)
 	}
 }
 
-func TestTxnRuntimeReservesDynamicChildTargetBeforeChildProcess(t *testing.T) {
+func TestCacheManagerReservesDynamicChildTargetBeforeChildProcess(t *testing.T) {
 	first := &runtimeTestStore{}
 	second := &runtimeTestStore{}
 	firstLock := txn.NewLockTarget(txn.NewLockKey("role", 1001), first)
 	secondLock := txn.NewLockTarget(txn.NewLockKey("role", 1002), second)
 	childCalled := false
-	manager := txn.NewRuntime(&recordingChangeStoreApplier{}, txn.RuntimeConfig{MaxPendingRoots: 1})
+	runtime, manager := newCacheRuntime(t, &recordingChangeStoreApplier{}, cachemodule.Config{MaxPendingRoots: 1})
 
-	err := manager.Call(context.Background(), runtimeDynamicParentProcedure{
+	err := runtime.Call(context.Background(), runtimeDynamicParentProcedure{
 		lock:  firstLock,
 		store: first,
 		child: runtimeDynamicChildProcedure{lock: secondLock, store: second, called: &childCalled},
 	})
-	if !errors.Is(err, txn.ErrPendingRootCapacity) {
+	if !errors.Is(err, cachemodule.ErrPendingRootCapacity) {
 		t.Fatalf("Call error = %v, want ErrPendingRootCapacity", err)
 	}
 	if childCalled {
@@ -346,14 +367,14 @@ func TestTxnRuntimeReservesDynamicChildTargetBeforeChildProcess(t *testing.T) {
 	}
 }
 
-func TestTxnRuntimeCommitsDynamicChildTarget(t *testing.T) {
+func TestCacheManagerCommitsDynamicChildTarget(t *testing.T) {
 	first := &runtimeTestStore{}
 	second := &runtimeTestStore{}
 	firstLock := txn.NewLockTarget(txn.NewLockKey("role", 1001), first)
 	secondLock := txn.NewLockTarget(txn.NewLockKey("role", 1002), second)
-	manager := txn.NewRuntime(&recordingChangeStoreApplier{}, txn.RuntimeConfig{MaxPendingRoots: 2})
+	runtime, manager := newCacheRuntime(t, &recordingChangeStoreApplier{}, cachemodule.Config{MaxPendingRoots: 2})
 
-	if err := manager.Call(context.Background(), runtimeDynamicParentProcedure{
+	if err := runtime.Call(context.Background(), runtimeDynamicParentProcedure{
 		lock:  firstLock,
 		store: first,
 		child: runtimeDynamicChildProcedure{lock: secondLock, store: second},
@@ -365,14 +386,14 @@ func TestTxnRuntimeCommitsDynamicChildTarget(t *testing.T) {
 	}
 }
 
-func TestTxnRuntimeCollapsesOverBudgetRootChangesBeforeFlush(t *testing.T) {
+func TestCacheManagerCollapsesOverBudgetRootChangesBeforeFlush(t *testing.T) {
 	store := &runtimeTestStore{}
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
-	manager := txn.NewRuntime(&recordingChangeStoreApplier{}, txn.RuntimeConfig{
+	runtime, manager := newCacheRuntime(t, &recordingChangeStoreApplier{}, cachemodule.Config{
 		MaxRootChanges: 1,
 	})
 
-	if err := manager.Call(context.Background(), multiFieldRuntimeTestProcedure{
+	if err := runtime.Call(context.Background(), multiFieldRuntimeTestProcedure{
 		runtimeTestProcedure: runtimeTestProcedure{lock: lock, store: store},
 	}); err != nil {
 		t.Fatalf("Call returned error: %v", err)
@@ -391,17 +412,17 @@ func TestTxnRuntimeCollapsesOverBudgetRootChangesBeforeFlush(t *testing.T) {
 	}
 }
 
-func TestTxnRuntimeRejectsNonCollapsiblePersistentTargetBeforeProcedure(t *testing.T) {
+func TestCacheManagerRejectsNonCollapsiblePersistentTargetBeforeProcedure(t *testing.T) {
 	store := &runtimeNonCollapsibleStore{}
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
-	manager := txn.NewRuntime(&recordingChangeStoreApplier{}, txn.RuntimeConfig{MaxRootChanges: 1})
+	runtime, manager := newCacheRuntime(t, &recordingChangeStoreApplier{}, cachemodule.Config{MaxRootChanges: 1})
 	called := false
 
-	err := manager.Call(context.Background(), runtimeNonCollapsibleProcedure{
+	err := runtime.Call(context.Background(), runtimeNonCollapsibleProcedure{
 		lock:   lock,
 		called: &called,
 	})
-	if !errors.Is(err, txn.ErrChangeCollapseUnsupported) {
+	if !errors.Is(err, cachemodule.ErrChangeCollapseUnsupported) {
 		t.Fatalf("Call error = %v, want ErrChangeCollapseUnsupported", err)
 	}
 	if called || manager.Pending() != 0 {
@@ -409,77 +430,24 @@ func TestTxnRuntimeRejectsNonCollapsiblePersistentTargetBeforeProcedure(t *testi
 	}
 }
 
-func TestTxnRuntimeMarkDirtyRejectsNonCollapsiblePersistentTarget(t *testing.T) {
-	store := &runtimeNonCollapsibleStore{}
-	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
-	manager := txn.NewRuntime(&recordingChangeStoreApplier{}, txn.RuntimeConfig{MaxRootChanges: 1})
-
-	err := manager.MarkDirty(lock)
-	if !errors.Is(err, txn.ErrChangeCollapseUnsupported) {
-		t.Fatalf("MarkDirty error = %v, want ErrChangeCollapseUnsupported", err)
-	}
-	if manager.Pending() != 0 {
-		t.Fatalf("Pending = %d, want 0", manager.Pending())
-	}
-}
-
-func TestTxnRuntimeMarkDirtyRejectsInvalidTargets(t *testing.T) {
-	runtime := txn.NewRuntime(nil)
-	tests := []struct {
-		name   string
-		target txn.LockTarget
-		want   string
-	}{
-		{
-			name:   "InvalidKey",
-			target: txn.NewLockTarget(txn.LockKey{}, &runtimeTestStore{}),
-			want:   "invalid lock key",
-		},
-		{
-			name: "TypedNilStore",
-			target: txn.NewLockTarget(
-				txn.NewLockKey("role", 1001),
-				(*runtimeTestStore)(nil),
-			),
-			want: "nil Store",
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			err := runtime.MarkDirty(test.target)
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("MarkDirty error = %v, want %q", err, test.want)
-			}
-			if runtime.Pending() != 0 {
-				t.Fatalf("Pending = %d, want 0", runtime.Pending())
-			}
-		})
-	}
-}
-
-func TestTxnRuntimeMemorySoftLimitWarnsButAcceptsNewPendingRoots(t *testing.T) {
+func TestCacheManagerMemorySoftLimitWarnsButAcceptsNewPendingRoots(t *testing.T) {
 	var heapBytes uint64
-	manager := txn.NewRuntime(&recordingChangeStoreApplier{}, txn.RuntimeConfig{
+	runtime, manager := newCacheRuntime(t, &recordingChangeStoreApplier{}, cachemodule.Config{
 		HeapSoftLimitBytes: 1,
 		ReadHeapBytes:      func() uint64 { return heapBytes },
 	})
 
 	first := &runtimeTestStore{}
 	firstLock := txn.NewLockTarget(txn.NewLockKey("role", 1001), first)
-	if err := manager.MarkDirty(firstLock); err != nil {
-		t.Fatalf("MarkDirty returned error: %v", err)
+	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: firstLock, store: first}); err != nil {
+		t.Fatalf("first Call returned error: %v", err)
 	}
 	heapBytes = 2
-
-	if err := manager.Call(context.Background(), runtimeTestProcedure{lock: firstLock, store: first}); err != nil {
-		t.Fatalf("Call for existing pending root returned error: %v", err)
-	}
 
 	second := &runtimeTestStore{}
 	secondLock := txn.NewLockTarget(txn.NewLockKey("role", 1002), second)
 	called := new(bool)
-	if err := manager.Call(context.Background(), observingRuntimeTestProcedure{
+	if err := runtime.Call(context.Background(), observingRuntimeTestProcedure{
 		runtimeTestProcedure: runtimeTestProcedure{lock: secondLock, store: second},
 		called:               called,
 	}); err != nil {
@@ -490,46 +458,6 @@ func TestTxnRuntimeMemorySoftLimitWarnsButAcceptsNewPendingRoots(t *testing.T) {
 	}
 	if manager.Pending() != 2 {
 		t.Fatalf("Pending = %d, want both roots", manager.Pending())
-	}
-}
-
-func TestTxnRuntimeRetainsDirtyStoreWhenFlushFails(t *testing.T) {
-	store := &runtimeTestStore{}
-	store.Set()
-	writer := &recordingChangeStoreApplier{err: errors.New("storage unavailable")}
-	manager := txn.NewRuntime(writer)
-	manager.MarkDirty(txn.NewLockTarget(txn.NewLockKey("role", 1001), store))
-
-	err := manager.Flush(context.Background())
-	if !errors.Is(err, writer.err) {
-		t.Fatalf("Flush error = %v, want storage error", err)
-	}
-	if manager.Pending() != 1 || len(store.changes) != 1 {
-		t.Fatalf("failed flush lost state: pending=%d changes=%#v", manager.Pending(), store.changes)
-	}
-
-	writer.err = nil
-	if err := manager.Flush(context.Background()); err != nil {
-		t.Fatalf("retry Flush returned error: %v", err)
-	}
-	if manager.Pending() != 0 || len(store.changes) != 0 {
-		t.Fatalf("successful retry left pending=%d changes=%#v", manager.Pending(), store.changes)
-	}
-}
-
-func TestTxnRuntimeRetainsDirtyStoreWhenWriterIsTypedNil(t *testing.T) {
-	var writer *recordingChangeStoreApplier
-	store := &runtimeTestStore{}
-	store.Set()
-	manager := txn.NewRuntime(writer)
-	manager.MarkDirty(txn.NewLockTarget(txn.NewLockKey("role", 1001), store))
-
-	err := manager.Flush(context.Background())
-	if !errors.Is(err, storage.ErrNilChangeApplier) {
-		t.Fatalf("Flush error = %v, want ErrNilChangeApplier", err)
-	}
-	if manager.Pending() != 1 || len(store.changes) != 1 {
-		t.Fatalf("typed nil writer lost state: pending=%d changes=%#v", manager.Pending(), store.changes)
 	}
 }
 
@@ -568,13 +496,14 @@ func (writer *blockingRuntimeWriter) ApplyChangesWithOptions(context.Context, me
 	return nil
 }
 
-func TestTxnRuntimeFlushHoldsTransactionLockUntilStorageWriteFinishes(t *testing.T) {
+func TestCacheManagerFlushHoldsTransactionLockUntilStorageWriteFinishes(t *testing.T) {
 	store := &runtimeTestStore{}
-	store.Set()
 	writer := &blockingRuntimeWriter{started: make(chan struct{}), release: make(chan struct{})}
-	manager := txn.NewRuntime(writer)
+	runtime, manager := newCacheRuntime(t, writer, cachemodule.Config{})
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
-	manager.MarkDirty(lock)
+	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
 
 	flushDone := make(chan error, 1)
 	go func() { flushDone <- manager.Flush(context.Background()) }()
@@ -609,12 +538,14 @@ func TestTxnRuntimeFlushHoldsTransactionLockUntilStorageWriteFinishes(t *testing
 	}
 }
 
-func TestTxnRuntimeRunFlushesPendingStoresOnInterval(t *testing.T) {
+func TestCacheManagerRunFlushesPendingStoresOnInterval(t *testing.T) {
 	store := &runtimeTestStore{}
-	store.Set()
 	writer := &scheduledRuntimeWriter{called: make(chan struct{}, 1)}
-	manager := txn.NewRuntime(writer)
-	manager.MarkDirty(txn.NewLockTarget(txn.NewLockKey("role", 1001), store))
+	runtime, manager := newCacheRuntime(t, writer, cachemodule.Config{})
+	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
+	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -634,15 +565,17 @@ func TestTxnRuntimeRunFlushesPendingStoresOnInterval(t *testing.T) {
 	}
 }
 
-func TestTxnRuntimeShutdownRetriesUntilPendingStoreIsFlushed(t *testing.T) {
+func TestCacheManagerShutdownRetriesUntilPendingStoreIsFlushed(t *testing.T) {
 	store := &runtimeTestStore{}
-	store.Set()
 	writer := &retryingRuntimeWriter{}
-	manager := txn.NewRuntime(writer, txn.RuntimeConfig{
+	runtime, manager := newCacheRuntime(t, writer, cachemodule.Config{
 		FlushInterval:        time.Millisecond,
 		ShutdownFlushTimeout: time.Second,
 	})
-	manager.MarkDirty(txn.NewLockTarget(txn.NewLockKey("role", 1001), store))
+	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
+	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()

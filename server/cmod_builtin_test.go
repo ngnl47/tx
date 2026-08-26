@@ -19,7 +19,7 @@ func TestBuiltInCModsDeclareStableDependencies(t *testing.T) {
 		CModRPC:            nil,
 		CModDiscovery:      nil,
 		CModActor:          nil,
-		CModTransaction:    {CModFusionStorage},
+		CModTransaction:    nil,
 		CModDelayScheduler: {CModFusionStorage},
 		CModWAL:            {CModMongoStorage},
 	}

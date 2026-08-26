@@ -95,13 +95,8 @@ func (server *Server) startActor() error {
 
 func (server *Server) startTransaction() error {
 	config := server.config.Runtime.Transaction
-	config.Runtime.WriteAdmission = server.runtime.storage
 	txn.Configure(config.Module)
-	runtime := txn.NewRuntime(server.runtime.storage.ChangeWriter(), config.Runtime)
-	if err := runtime.Start(server.runtime.lifecycle); err != nil {
-		return fmt.Errorf("server: start transaction runtime: %w", err)
-	}
-	server.runtime.transaction = runtime
+	server.runtime.transaction = txn.NewRuntime()
 	return nil
 }
 
