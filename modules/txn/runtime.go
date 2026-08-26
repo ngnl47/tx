@@ -126,11 +126,15 @@ func (runtime *Runtime) Call(ctx context.Context, procedure Procedure) error {
 		}
 	}
 	managed := &managedProcedure{runtime: runtime, procedure: procedure}
-	err := CallWithOptions(ctx, managed, CallOptions{
+	err := callWithHooks(ctx, managed, CallOptions{
 		AllowPendingChanges: true,
+		DeadlockRetries:     defaultDeadlockRetries,
+	}, callHooks{
+		reserveDynamicTargets: managed.reserveAdditional,
+		afterAttemptFailure:   managed.releaseReservations,
 	})
 	if err != nil {
-		managed.releaseReservation()
+		managed.releaseReservations()
 	}
 	return err
 }
@@ -279,9 +283,13 @@ func (runtime *Runtime) Start(ctx waitGroupContext) error {
 }
 
 type managedProcedure struct {
-	runtime     *Runtime
-	procedure   Procedure
-	reservation *pendingReservation
+	runtime      *Runtime
+	procedure    Procedure
+	reservations []*pendingReservation
+}
+
+func (procedure *managedProcedure) transactionProcedureName() string {
+	return procedureName(procedure.procedure)
 }
 
 func (procedure *managedProcedure) Locks(ctx context.Context) ([]LockTarget, error) {
@@ -293,28 +301,39 @@ func (procedure *managedProcedure) Locks(ctx context.Context) ([]LockTarget, err
 	if err != nil {
 		return nil, err
 	}
-	procedure.reservation = reservation
+	procedure.reservations = append(procedure.reservations, reservation)
 	return targets, nil
 }
 
 func (procedure *managedProcedure) Process(tx *Tx) error {
 	tx.AfterRollback(func(context.Context) {
-		procedure.releaseReservation()
+		procedure.releaseReservations()
 	})
 	tx.AfterCommit(func(context.Context) error {
-		procedure.runtime.commitReservation(procedure.reservation, tx.DirtyTargets())
-		procedure.reservation = nil
+		procedure.runtime.commitReservations(procedure.reservations, tx.DirtyTargets())
+		procedure.reservations = nil
 		return nil
 	})
 	return procedure.procedure.Process(tx)
 }
 
-func (procedure *managedProcedure) releaseReservation() {
-	if procedure == nil || procedure.reservation == nil {
+func (procedure *managedProcedure) reserveAdditional(targets []LockTarget) error {
+	reservation, err := procedure.runtime.reserve(targets)
+	if err != nil {
+		return err
+	}
+	procedure.reservations = append(procedure.reservations, reservation)
+	return nil
+}
+
+func (procedure *managedProcedure) releaseReservations() {
+	if procedure == nil || len(procedure.reservations) == 0 {
 		return
 	}
-	procedure.runtime.releaseReservation(procedure.reservation)
-	procedure.reservation = nil
+	for _, reservation := range procedure.reservations {
+		procedure.runtime.releaseReservation(reservation)
+	}
+	procedure.reservations = nil
 }
 
 type pendingReservation struct {
@@ -346,13 +365,15 @@ func (runtime *Runtime) releaseReservation(reservation *pendingReservation) {
 	runtime.releaseReservationLocked(reservation)
 }
 
-func (runtime *Runtime) commitReservation(reservation *pendingReservation, targets []LockTarget) {
+func (runtime *Runtime) commitReservations(reservations []*pendingReservation, targets []LockTarget) {
 	if runtime == nil {
 		return
 	}
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
-	runtime.releaseReservationLocked(reservation)
+	for _, reservation := range reservations {
+		runtime.releaseReservationLocked(reservation)
+	}
 	runtime.markDirtyLocked(targets)
 }
 
@@ -547,9 +568,6 @@ func (runtime *Runtime) snapshotTargets() []targetEntry {
 	sort.Slice(targets, func(i, j int) bool {
 		if targets[i].target.Order != targets[j].target.Order {
 			return targets[i].target.Order < targets[j].target.Order
-		}
-		if targets[i].target.Key.Scope != targets[j].target.Key.Scope {
-			return targets[i].target.Key.Scope < targets[j].target.Key.Scope
 		}
 		return targets[i].target.Key.Value < targets[j].target.Key.Value
 	})

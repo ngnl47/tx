@@ -128,6 +128,39 @@ type runtimeTestProcedure struct {
 	store *runtimeTestStore
 }
 
+type runtimeDynamicChildProcedure struct {
+	lock   txn.LockTarget
+	store  *runtimeTestStore
+	called *bool
+}
+
+func (procedure runtimeDynamicChildProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
+	return []txn.LockTarget{procedure.lock}, nil
+}
+
+func (procedure runtimeDynamicChildProcedure) Process(*txn.Tx) error {
+	if procedure.called != nil {
+		*procedure.called = true
+	}
+	procedure.store.Set()
+	return nil
+}
+
+type runtimeDynamicParentProcedure struct {
+	lock  txn.LockTarget
+	store *runtimeTestStore
+	child txn.Procedure
+}
+
+func (procedure runtimeDynamicParentProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
+	return []txn.LockTarget{procedure.lock}, nil
+}
+
+func (procedure runtimeDynamicParentProcedure) Process(tx *txn.Tx) error {
+	procedure.store.Set()
+	return tx.Call(procedure.child)
+}
+
 func (procedure runtimeTestProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
 	return []txn.LockTarget{procedure.lock}, nil
 }
@@ -285,6 +318,49 @@ func TestTxnRuntimeRejectsNewRootBeforeProcedureWhenCapacityIsFull(t *testing.T)
 	}
 	if manager.Pending() != 1 {
 		t.Fatalf("Pending = %d, want original root only", manager.Pending())
+	}
+}
+
+func TestTxnRuntimeReservesDynamicChildTargetBeforeChildProcess(t *testing.T) {
+	first := &runtimeTestStore{}
+	second := &runtimeTestStore{}
+	firstLock := txn.NewLockTarget(txn.NewLockKey("role", 1001), first)
+	secondLock := txn.NewLockTarget(txn.NewLockKey("role", 1002), second)
+	childCalled := false
+	manager := txn.NewRuntime(&recordingChangeStoreApplier{}, txn.RuntimeConfig{MaxPendingRoots: 1})
+
+	err := manager.Call(context.Background(), runtimeDynamicParentProcedure{
+		lock:  firstLock,
+		store: first,
+		child: runtimeDynamicChildProcedure{lock: secondLock, store: second, called: &childCalled},
+	})
+	if !errors.Is(err, txn.ErrPendingRootCapacity) {
+		t.Fatalf("Call error = %v, want ErrPendingRootCapacity", err)
+	}
+	if childCalled {
+		t.Fatal("dynamic child Process ran after target reservation was rejected")
+	}
+	if len(first.changes) != 0 || len(second.changes) != 0 || manager.Pending() != 0 {
+		t.Fatalf("rejected dynamic target left changes or pending roots: first=%#v second=%#v pending=%d", first.changes, second.changes, manager.Pending())
+	}
+}
+
+func TestTxnRuntimeCommitsDynamicChildTarget(t *testing.T) {
+	first := &runtimeTestStore{}
+	second := &runtimeTestStore{}
+	firstLock := txn.NewLockTarget(txn.NewLockKey("role", 1001), first)
+	secondLock := txn.NewLockTarget(txn.NewLockKey("role", 1002), second)
+	manager := txn.NewRuntime(&recordingChangeStoreApplier{}, txn.RuntimeConfig{MaxPendingRoots: 2})
+
+	if err := manager.Call(context.Background(), runtimeDynamicParentProcedure{
+		lock:  firstLock,
+		store: first,
+		child: runtimeDynamicChildProcedure{lock: secondLock, store: second},
+	}); err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if manager.Pending() != 2 {
+		t.Fatalf("Pending = %d, want root and dynamic child", manager.Pending())
 	}
 }
 

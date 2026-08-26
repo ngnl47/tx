@@ -5,6 +5,8 @@ import (
 	"errors"
 	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -361,14 +363,19 @@ func TestTransactionCallReusesRootTargetsAndRollsBackChildSavepoint(t *testing.T
 }
 
 type transactionNewLockProcedure struct {
-	lock txn.LockTarget
+	lock  txn.LockTarget
+	store *transactionTestStore
+	value int
 }
 
 func (procedure transactionNewLockProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
 	return []txn.LockTarget{procedure.lock}, nil
 }
 
-func (transactionNewLockProcedure) Process(*txn.Tx) error {
+func (procedure transactionNewLockProcedure) Process(*txn.Tx) error {
+	if procedure.store != nil {
+		procedure.store.Set(procedure.value)
+	}
 	return nil
 }
 
@@ -385,18 +392,50 @@ func (procedure transactionCallsNewLockProcedure) Process(tx *txn.Tx) error {
 	return tx.Call(procedure.child)
 }
 
-func TestTransactionCallRejectsChildProcedureWithNewLock(t *testing.T) {
+func TestTransactionCallAcquiresChildProcedureDirectLock(t *testing.T) {
 	first := &transactionTestStore{}
-	second := &transactionTestStore{}
+	second := &transactionTestStore{value: 1}
 	parent := transactionCallsNewLockProcedure{
 		lock: txn.NewLockTarget(txn.NewLockKey("role", 1001), first),
 		child: transactionNewLockProcedure{
-			lock: txn.NewLockTarget(txn.NewLockKey("role", 1002), second),
+			lock:  txn.NewLockTarget(txn.NewLockKey("role", 1002), second),
+			store: second,
+			value: 2,
 		},
 	}
-	err := txn.Call(context.Background(), parent)
-	if err == nil || !strings.Contains(err.Error(), "transactionCallsNewLockProcedure -> transactionNewLockProcedure") || !strings.Contains(err.Error(), "role:1002") {
-		t.Fatalf("Call error = %v, want procedure trace and new lock", err)
+	if err := txn.Call(context.Background(), parent); err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if second.value != 2 {
+		t.Fatalf("child store value = %d, want 2", second.value)
+	}
+	if second.recorder != nil {
+		t.Fatal("dynamic child Store remains bound after root commit")
+	}
+}
+
+func TestTransactionCallRollsBackDynamicChildSavepoint(t *testing.T) {
+	first := &transactionTestStore{value: 1}
+	second := &transactionTestStore{value: 10}
+	firstLock := txn.NewLockTarget(txn.NewLockKey("role", 1001), first)
+	secondLock := txn.NewLockTarget(txn.NewLockKey("role", 1002), second)
+	parent := transactionParentProcedure{
+		lock:  firstLock,
+		store: first,
+		child: transactionChildProcedure{lock: secondLock, store: second},
+	}
+
+	if err := txn.Call(context.Background(), parent); err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if first.value != 2 {
+		t.Fatalf("parent value = %d, want 2", first.value)
+	}
+	if second.value != 10 {
+		t.Fatalf("dynamic child value = %d, want rollback to 10", second.value)
+	}
+	if second.recorder != nil {
+		t.Fatal("dynamic child Store remains bound after root commit")
 	}
 }
 
@@ -413,6 +452,141 @@ func TestTransactionCallRejectsChildProcedureWithDifferentStoreForHeldKey(t *tes
 	err := txn.Call(context.Background(), parent)
 	if err == nil || !strings.Contains(err.Error(), "different Store") || !strings.Contains(err.Error(), "role:1001") {
 		t.Fatalf("Call error = %v, want different Store error", err)
+	}
+}
+
+type transactionDeadlockFirstProcedure struct {
+	lock      txn.LockTarget
+	store     *transactionTestStore
+	child     txn.Procedure
+	ready     chan struct{}
+	peerReady chan struct{}
+	once      sync.Once
+	attempts  atomic.Int32
+	commits   atomic.Int32
+}
+
+func (procedure *transactionDeadlockFirstProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
+	return []txn.LockTarget{procedure.lock}, nil
+}
+
+func (procedure *transactionDeadlockFirstProcedure) Process(tx *txn.Tx) error {
+	procedure.attempts.Add(1)
+	procedure.store.Set(procedure.store.value + 1)
+	tx.AfterCommit(func(context.Context) error {
+		procedure.commits.Add(1)
+		return nil
+	})
+	procedure.once.Do(func() { close(procedure.ready) })
+	<-procedure.peerReady
+	return tx.Call(procedure.child)
+}
+
+type transactionDeadlockSecondProcedure struct {
+	lock      txn.LockTarget
+	store     *transactionTestStore
+	child     txn.Procedure
+	ready     chan struct{}
+	peerReady chan struct{}
+	once      sync.Once
+	attempts  atomic.Int32
+	commits   atomic.Int32
+}
+
+func (procedure *transactionDeadlockSecondProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
+	return []txn.LockTarget{procedure.lock}, nil
+}
+
+func (procedure *transactionDeadlockSecondProcedure) Process(tx *txn.Tx) error {
+	procedure.attempts.Add(1)
+	procedure.store.Set(procedure.store.value + 1)
+	tx.AfterCommit(func(context.Context) error {
+		procedure.commits.Add(1)
+		return nil
+	})
+	procedure.once.Do(func() { close(procedure.ready) })
+	<-procedure.peerReady
+	return tx.Call(procedure.child)
+}
+
+func newTransactionDeadlockProcedures() (*transactionDeadlockFirstProcedure, *transactionDeadlockSecondProcedure, *transactionTestStore, *transactionTestStore) {
+	firstStore := &transactionTestStore{}
+	secondStore := &transactionTestStore{}
+	firstLock := txn.NewLockTarget(txn.NewLockKey("role", 1001), firstStore)
+	secondLock := txn.NewLockTarget(txn.NewLockKey("role", 1002), secondStore)
+	firstReady := make(chan struct{})
+	secondReady := make(chan struct{})
+	first := &transactionDeadlockFirstProcedure{
+		lock:      firstLock,
+		store:     firstStore,
+		child:     transactionNewLockProcedure{lock: secondLock},
+		ready:     firstReady,
+		peerReady: secondReady,
+	}
+	second := &transactionDeadlockSecondProcedure{
+		lock:      secondLock,
+		store:     secondStore,
+		child:     transactionNewLockProcedure{lock: firstLock},
+		ready:     secondReady,
+		peerReady: firstReady,
+	}
+	return first, second, firstStore, secondStore
+}
+
+func TestTransactionDeadlockReportsCompleteWaitingAndProcedureChain(t *testing.T) {
+	first, second, _, _ := newTransactionDeadlockProcedures()
+	results := make(chan error, 2)
+	go func() { results <- txn.CallWithOptions(context.Background(), first, txn.CallOptions{}) }()
+	go func() { results <- txn.CallWithOptions(context.Background(), second, txn.CallOptions{}) }()
+
+	var deadlock *txn.DeadlockError
+	for range 2 {
+		err := <-results
+		if err == nil {
+			continue
+		}
+		if !errors.As(err, &deadlock) {
+			t.Fatalf("concurrent Call error = %v, want DeadlockError", err)
+		}
+	}
+	if deadlock == nil {
+		t.Fatal("concurrent Calls returned without a deadlock victim")
+	}
+	if len(deadlock.Cycle) != 2 {
+		t.Fatalf("deadlock cycle length = %d, want 2", len(deadlock.Cycle))
+	}
+	joined := deadlock.Error()
+	for _, part := range []string{
+		"transactionDeadlockFirstProcedure -> transactionNewLockProcedure",
+		"transactionDeadlockSecondProcedure -> transactionNewLockProcedure",
+		"role:1001",
+		"role:1002",
+	} {
+		if !strings.Contains(joined, part) {
+			t.Fatalf("deadlock error %q does not contain %q", joined, part)
+		}
+	}
+}
+
+func TestTransactionCallRetriesDeadlockVictimFromCleanRootState(t *testing.T) {
+	first, second, firstStore, secondStore := newTransactionDeadlockProcedures()
+	results := make(chan error, 2)
+	go func() { results <- txn.Call(context.Background(), first) }()
+	go func() { results <- txn.Call(context.Background(), second) }()
+
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Fatalf("Call returned error after bounded retry: %v", err)
+		}
+	}
+	if firstStore.value != 1 || secondStore.value != 1 {
+		t.Fatalf("committed values = (%d, %d), want (1, 1)", firstStore.value, secondStore.value)
+	}
+	if first.attempts.Load()+second.attempts.Load() < 3 {
+		t.Fatalf("total attempts = %d, want at least one deadlock retry", first.attempts.Load()+second.attempts.Load())
+	}
+	if first.commits.Load()+second.commits.Load() != 2 {
+		t.Fatalf("after-commit calls = %d, want one for each committed root", first.commits.Load()+second.commits.Load())
 	}
 }
 

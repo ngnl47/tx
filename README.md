@@ -23,7 +23,7 @@
 - 保存失败时 Store 保留变更状态。业务必须处理返回的 `error`，不能把外部服务异常当成成功。
 - Fusion 同时要求 Redis 和 Mongo 健康；Redis 是热数据，Mongo 是持久化数据，Fusion 延迟任务队列只保存记录定位。
 - `delaySaveTime` 表示回写 Mongo 的延迟；`delayDelTime` 表示已确认回写后的热数据保留时间；`runtime.fusion.dirtyTTL` 是尚未确认回写时的安全 TTL。三者都不会删除 Mongo 数据。
-- 单机事务只回滚通过 Store 受控 API 发生的修改；事务内子流程使用 `tx.Call`，不能嵌套启动根事务。
+- 单机事务只回滚通过 Store 受控 API 发生的修改；事务内子流程使用 `tx.Call` 动态复用或增加直接锁，不能嵌套启动根事务。
 - `msgq` 管理客户端会话和下行邮箱；Actor 负责业务实体投递；普通 gRPC RPC 负责服务或实例调用，三者不是同一个中继层。
 - 需要理解内部变更追踪、锁注册表、Fusion 状态机或分布式拓扑时，阅读 [设计文档](docs/design.md)。
 
@@ -2332,7 +2332,7 @@ txgen 生成时把顺序编译进 `LockTarget.Order`，tx runtime 不读取 YAML
 
 回调返回错误或 panic 时，字段值、map/slice 结构、子 Store 变更状态都会恢复到进入事务前的状态。未进入 `txn.Run` 的普通 Store 修改不会建立 undo log，也不会复制旧集合。
 
-直接使用 `txn.Run` 或 `txn.Call` 的临时事务要求进入前的目标 Store 没有遗留变更。开发、测试或灰度环境可通过项目配置打开运行时检查；检查在完整锁集获取后、业务回调开始前执行，发现事务外修改时会释放锁并返回错误：
+直接使用 `txn.Run` 或 `txn.Call` 的临时事务要求新锁目标在绑定 recorder 前没有遗留变更。开发、测试或灰度环境可通过项目配置打开运行时检查；根直接锁在业务回调开始前检查，动态锁在 child `Process` 开始前检查，发现事务外修改时会释放本次新锁并返回错误：
 
 ```go
 txn.Configure(txn.Config{
@@ -2350,7 +2350,7 @@ err := txn.Run(ctx, txn.Locks(role), process)
 
 常驻内存实体由 `txn.Runtime` 管理时，前一轮事务的变更会刻意保留到下一次 Flush，因此必须使用 `runtime.Call`。它会在内部允许已有变更，普通业务代码不要直接调用 `txn.CallWithOptions`。
 
-锁等待通过调用方的 `context.Context` 统一控制。获取完整锁集之前发生超时或取消时，框架会释放本次已获取的锁，且不会执行回调：
+锁等待通过调用方的 `context.Context` 统一控制。获取当前直接锁批次时发生超时或取消，框架会释放该批次中尚未交给业务使用的新锁，且不会执行对应回调：
 
 ```go
 ctx, cancel := context.WithTimeout(rootCtx, 200*time.Millisecond)
@@ -2365,11 +2365,11 @@ if errors.Is(err, context.DeadlineExceeded) {
 }
 ```
 
-多个目标按 `LockTarget.Order`、`LockKey.Scope`、`LockKey.Value` 的稳定顺序获取锁。上例先获取军团域，再获取角色域；同一锁域内按对象键稳定排序。业务调用仍然只是 `txn.Locks(guild, role)`，不传 order，也不需要知道生成整数。同一逻辑 Key 不得以不同 order 重复声明。
+每个锁域在项目级注册表中占用唯一 `LockTarget.Order`。多个目标先按 `Order` 获取不同锁域，再在同一锁域内按 `LockKey.Value` 稳定排序。上例先获取军团域，再获取角色域；业务调用仍然只是 `txn.Locks(guild, role)`，不传 order，也不需要知道生成整数。同一逻辑 Key 不得以不同 order 重复声明。
 
-不同 `LockKey` 可以并行执行，相同 Key 在当前进程内严格串行。业务不能把同一个对象编码成不同 `LockKey` 来绕过互斥；例如所有 `GDRole{RoleId: 470001}` 都必须使用生成的同一把角色锁。进程级精确 Key 注册表、channel 二元信号量和超时释放流程见 [事务精确 Key 锁注册表](docs/design.md#事务精确-key-锁注册表)。
+不同 `LockKey` 可以并行执行，相同 Key 在当前进程内严格串行。业务不能把同一个对象编码成不同 `LockKey` 来绕过互斥；例如所有 `GDRole{RoleId: 470001}` 都必须使用生成的同一把角色锁。进程级精确 Key 注册表、所有权等待队列和死锁检测流程见 [事务精确 Key 锁注册表](docs/design.md#事务精确-key-锁注册表)。
 
-前置查询后需要动态收集锁时使用 `LockSet`。Builder 不在收集阶段自行去重或加锁，最终仍交给 `Run` 统一校验：
+根过程在执行前已经知道一批对象时可以使用 `LockSet` 一次收集。Builder 不在收集阶段自行去重或加锁，最终仍交给 `Run` 统一校验：
 
 ```go
 locks := txn.NewLockSet().Add(guild)
@@ -2382,7 +2382,7 @@ err := txn.Run(ctx, locks.Build(), func(tx *txn.Tx) error {
 })
 ```
 
-需要复用一段带锁业务逻辑时，定义 `Procedure` 并按项目约定使用 `P` 前缀。根过程通过 `txn.Call` 获取完整锁集；子过程通过当前 `tx.Call` 同步执行，只能声明根过程已经持有的锁：
+需要复用一段带锁业务逻辑时，定义 `Procedure` 并按项目约定使用 `P` 前缀。每个 Procedure 的 `Locks` 只声明自己直接访问的对象；子过程通过当前 `tx.Call` 同步执行，已持有锁会复用，新锁会动态获取并一直持有到根事务结束：
 
 ```go
 type PGuildContribution struct {
@@ -2391,7 +2391,7 @@ type PGuildContribution struct {
 }
 
 func (p *PGuildContribution) Locks(context.Context) ([]txn.LockTarget, error) {
-	return txn.Locks(p.Guild, p.Role), nil
+	return txn.Locks(p.Guild), nil
 }
 
 func (p *PGuildContribution) Process(tx *txn.Tx) error {
@@ -2418,9 +2418,31 @@ func (p *PGrantReward) Process(*txn.Tx) error {
 err := runtime.Call(ctx, &PGuildContribution{Guild: guild, Role: role})
 ```
 
+上例的根过程先持有军团锁，进入 `PGrantReward` 时再获取角色锁。动态锁让父过程不必展开全部子过程实现，但不同根事务仍可能按相反顺序请求锁。框架会在真正阻塞前维护等待图；若新增等待边形成环，当前请求者成为死锁受害者，完整回滚后由标准 `txn.Call` / `runtime.Call` 最多重试三次。每次重试都会输出包含完整等待链和 Procedure 路径的 warning；重试耗尽时可结构化读取错误：
+
+```go
+err := runtime.Call(ctx, procedure)
+var deadlock *txn.DeadlockError
+if errors.As(err, &deadlock) {
+	for _, step := range deadlock.Cycle {
+		log.Error(
+			"procedure deadlock",
+			"waiter", step.Waiter,
+			"blocker", step.Blocker,
+			"lock", step.Lock.String(),
+			"procedurePath", step.ProcedurePath,
+		)
+	}
+}
+```
+
+`CallWithOptions` 是高级入口，`DeadlockRetries: 0` 表示直接返回第一个死锁受害者错误。锁等待超过调用 context 的 deadline 仍返回 `context.DeadlineExceeded`，不会伪装成死锁。若业务已经知道完整锁集，一次收集仍然更高效；动态锁用于运行时筛选和 Procedure 复用，不是要求把所有锁都拆到最晚获取。
+
+死锁重试会重新执行根 `Process`。Procedure 实例只应保存不可变输入，支付、消息投递和其他外部副作用必须放入 `tx.AfterCommit`；不能在 Process 中先执行不可回滚 I/O，再期待 undo 撤销它。
+
 `txn.Tx` 只表示本次已持锁的运行环境，负责 undo、savepoint、子过程调用和提交/回滚回调；它不是业务数据，也不是 `context.Context`。事务内通过生成的 `GD*` 代理方法或显式 Store 修改数据，两者都会走同一受控 Store 路径并登记 undo。过程成功只表示内存修改已提交，不等价于 Redis 或 Mongo 已写入；`AfterCommit` 在锁释放、undo 解绑后按注册顺序执行，任一回调失败会停止后续回调，但不会回滚内存修改。过程返回错误时，`AfterCommit` 不会执行；可用 `AfterRollback` 做指标记录、临时资源释放等不应持久化的数据清理。
 
-事务中可通过 `tx.DirtyTargets()` 取得本次经受控 Store API 修改、且当前仍有变更的根目标。结果按锁顺序返回；被 savepoint 回滚或随后 `UnTouch` 清空的 Store 不会出现。它供 `txn.Runtime` 登记落盘目标，普通业务循环不需要调用：
+事务中可通过 `tx.DirtyTargets()` 取得本次经受控 Store API 修改、且当前仍有变更的根目标。结果按根事务实际取得目标的顺序返回；被 savepoint 回滚或随后 `UnTouch` 清空的 Store 不会出现。它供 `txn.Runtime` 登记落盘目标，普通业务循环不需要调用：
 
 ```go
 func (p *PUpdateRole) Process(tx *txn.Tx) error {

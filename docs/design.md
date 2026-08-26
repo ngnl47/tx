@@ -52,7 +52,7 @@
 - `Kind` 表示互斥分类，例如 `FieldNameKind`、`KeyKind`；它不表达一次变更动作。
 - `Op` 表示一条变更的操作语义，例如 `OpSet`、`OpReplace`、`OpDelete`、`OpClear`。
 - `ops` 保存 `Op`；`dirty` 只用于布尔脏状态、脏子节点索引或脏通知。
-- 同步原语以职责命名。事务锁表使用 `contextMutex`，内部容量为一的 channel 只叫 `permit`，调用方不感知 channel 实现。
+- 同步原语以职责命名。事务锁条目使用 `owner`、`waiters` 和 `signal` 表达所有权、等待队列与唤醒职责，调用方不感知内部互斥实现。
 - 时间优先使用 `time.Duration` 固化单位；容量和字节配置在名字中写清口径，例如 `MaxBacklogMessages`、`HeapSoftLimitBytes`。
 - JSON、BSON、Msgpack 属于字段命名体系；Redis、Mongo 属于使用这些名称的存储边界，不为存储边界重复生成字段名身份。
 
@@ -108,8 +108,8 @@ Procedure 单向依赖并组合 `modules` 的稳定业务能力，`modules` 禁�
 越界调用。Go 的 `internal` 规则同时禁止 Handler 绕过稳定能力直接依赖 `modules/internal` 领域实现。
 
 无状态 Handler 直接调用 `modules` 并显式保存根 GD；有状态 Handler 使用 `txn.Executor.Call` 启动根 Procedure。
-父 Procedure 需要复用另一事务流程时，使用当前 `*txn.Tx.Call` 创建子 savepoint。根过程必须提前声明完整锁集，错误的
-嵌套根调用会直接返回错误。该依赖方向借鉴 rj3d 的 Procedure 组合方式，但不依赖线程局部状态猜测根调用与子调用。
+父 Procedure 需要复用另一事务流程时，使用当前 `*txn.Tx.Call` 创建子 savepoint。每个 Procedure 只声明自己直接访问的锁，
+子调用可以在运行时增加锁；错误的嵌套根调用仍会直接返回错误。该依赖方向借鉴 rj3d 的 Procedure 组合方式，但不依赖线程局部状态猜测根调用与子调用。
 
 跨 L4 Service 调用必须经过 Actor/RPC client，并在目标服务内执行自己的 Procedure；即使多个 Service 聚合在同一进程，
 也不扩大单机事务边界。运行模型属于整个 Service，进程启动后不能按请求切换。
@@ -1524,13 +1524,13 @@ type Procedure interface {
 }
 ```
 
-一次根调用：
+`Locks` 只声明当前 Procedure 直接访问的锁，不要求父过程展开全部子过程。一次根调用：
 
 ```text
-Procedure.Locks
+根 Procedure.Locks
       |
       v
-校验、排序、去重完整锁集
+校验、排序、去重根直接锁集
       |
       v
 按顺序获取精确 Key 锁
@@ -1543,21 +1543,28 @@ Procedure.Locks
       |
       v
 Process
-  |          |
-  | error    | success
-  v          v
-反向 undo    丢弃 undo
-  |          |
-  +----解除 recorder----+
+  |
+  +-- tx.Call(child)
+  |       |
+  |       +-- child.Locks：复用已持有锁，获取新的直接锁
+  |       +-- 为 child 建立 savepoint
+  |       +-- child 失败只回滚到 savepoint
+  |
+  +-- 根 error：反向 undo
+  +-- 根 success：丢弃 undo
              |
              v
-         反向释放锁
+      解除全部 Store recorder
              |
              v
-     AfterRollback / AfterCommit
+      反向释放根与动态锁
+             |
+             v
+      AfterRollback / AfterCommit
 ```
 
 AfterCommit 在释放数据锁后执行。它不能回滚已经提交的内存状态；需要可靠投递时应使用项目选择的 outbox 或可靠消息队列。
+Procedure 可能在死锁受害者重试中再次执行，因此对象字段应只保存不可变输入，外部 I/O 和消息投递必须登记到 `AfterCommit`。
 
 ### LockKey 与 LockTarget
 
@@ -1574,23 +1581,24 @@ Order 20: role:1001
 Order 20: role:1002
 ```
 
-框架按 `Order -> Scope -> Value` 全序获取。所有事务遵守同一排序，避免循环等待。相同 Key 使用不同 Order 是定义错误；相同 Key 绑定不同 Store 也是错误。
+每个 `Scope` 在项目级注册表中占用唯一 `Order`。框架对每次 `Locks` 返回的直接锁批次按 `Order -> Value` 全序获取：先按锁域层级获取大锁和小锁，再在同一锁域内按对象键稳定排序。静态顺序会显著减少循环等待，但运行时子过程可能在父过程持锁后才发现新锁，因此等待图仍负责检测无法提前消除的动态环路。相同 Key 使用不同 Order 是定义错误；相同 Key 绑定不同 Store 也是错误。
 
 生成对象的 `Order` 来自项目级事务锁域顺序注册表。txgen 在生成期把 `scope -> order` 编译进 `LockTarget()`；tx runtime 只消费整数和 `LockKey`，不读取项目 YAML，也不维护锁域名称映射。该生成期注册表与下文进程级精确 Key 锁注册表职责不同：前者定义锁域先后，后者负责每个具体对象键的互斥和生命周期。
 
-锁集合必须在根事务前完整声明。若锁依赖查询结果，先只读查询、构建 LockSet、获取全部锁，再在锁内重新校验前置条件。运行中动态扩张锁集可能破坏全序，不受支持。
+若业务在根过程前已经知道完整对象集合，仍应使用 `LockSet` 一次获取，以减少等待和重试。若锁目标只能由运行时筛选结果或子 Procedure 决定，则由 `tx.Call(child)` 动态获取；框架通过等待图保证不会真正进入循环等待。
 
 ### 子 Procedure 与不可重入
 
-Go `sync.Mutex` 和当前 channel 信号量都不可重入。框架不通过 goroutine ID 实现可重入锁：
+Go `sync.Mutex` 不可重入。框架也不通过 goroutine ID 或第三方可重入锁改变调用模型：
 
 - 嵌套 `txn.Run` / 根 `txn.Call` 被拒绝。
 - 子逻辑使用 `tx.Call(child)`。
-- child 可以声明根锁集的子集。
-- `tx.Call` 只校验 Key 和 Store，不重新获取锁。
-- child 引入新锁时返回包含 Procedure 路径的错误。
+- child 声明已经持有的 Key 时只校验 Store 身份，不重复获取。
+- child 声明新 Key 时按自己的直接锁批次排序并获取。
+- 新锁与根锁一起持有到根事务提交或回滚，符合严格两阶段锁。
+- child 业务失败只回滚自己的 savepoint；死锁受害者错误会把根事务标记为必须回滚。
 
-这样可复用 Procedure 不依赖第三方可重入锁，也不会在事务中等待自己。
+这样可复用 Procedure 不依赖调用方展开实现细节，也不会因为重复声明同一 Key 而等待自己。
 
 ### Undo 与 savepoint
 
@@ -1608,7 +1616,7 @@ type savepoint struct {
 
 子调用失败时，从 undo 尾部反向执行到 savepoint，并截断该调用注册的回调。根调用失败则回滚到空 savepoint。
 
-事务内必须使用传入锁目标对应的同一个 Store 实例。否则 undo recorder 与实际修改对象不一致，框架会拒绝子 Procedure 的 Store 绑定。
+事务内必须使用传入锁目标对应的同一个 Store 实例。否则 undo recorder 与实际修改对象不一致，框架会拒绝子 Procedure 的 Store 绑定。动态 Store 在锁获取和 Runtime 容量预留成功后才绑定 recorder；若 child 尚未执行就失败，新锁可以立即释放，不会产生半绑定状态。
 
 ## 事务精确 Key 锁注册表
 
@@ -1620,8 +1628,11 @@ type savepoint struct {
 var transactionLocks lockTable
 
 type lockTable struct {
-    shards [64]lockShard
-    pool   sync.Pool
+    shards     [64]lockShard
+    entryPool  sync.Pool
+    waiterPool sync.Pool
+    waitsMu    sync.Mutex
+    waits      waitGraph
 }
 
 type lockShard struct {
@@ -1639,11 +1650,11 @@ type lockShard struct {
 ```text
 shard 18
   |
-  +-- role:1001 -> entry A -> token A
-  +-- role:9009 -> entry B -> token B
+  +-- role:1001 -> entry A -> owner / waiters A
+  +-- role:9009 -> entry B -> owner / waiters B
 ```
 
-即使两个 Key 哈希到同一个 shard，它们只在 reserve/release map 的极短临界区内竞争；事务执行期间分别持有 token A 和 token B，可以并行。
+即使两个 Key 哈希到同一个 shard，它们只在 reserve/release map 的极短临界区内竞争；事务执行期间分别由 entry A 和 entry B 记录所有权，可以并行。
 
 这与固定分段业务锁不同：
 
@@ -1654,41 +1665,29 @@ shard 18
 
 分片数量只控制注册表元数据竞争和固定 mutex 成本，不限制可同时存在的业务 Key 锁数量。
 
-### channel 二元信号量
+### 锁所有权与可取消等待队列
 
 ```go
 type lockEntry struct {
-    token chan struct{}
-    refs  int
+    mu      sync.Mutex
+    owner   TransactionID
+    waiters *lockWaiter
+    tail    *lockWaiter
+    refs    int
 }
 ```
 
-`token` 是容量 1 的 buffered channel。创建时放入一枚 token：
+`owner == 0` 表示空闲。无竞争获取只短暂进入该条目的局部 mutex 并设置 owner，不进入全局等待图；不同 Key 的条目互不阻塞。发生争用时，请求者才创建或复用一个 waiter，登记等待边并进入条目的 FIFO 队列：
 
 ```text
-[token]  空闲
-[]       已被持有
+transaction 18 --等待 role:1002--> transaction 23
+                                          |
+                                          +-- lockEntry.owner = 23
 ```
 
-获取：
+waiter 使用容量一的 `signal` channel 接收所有权转移，同时通过调用方 context 响应取消。等待图按 FIFO 前驱关系建边：队首等待当前 owner，后续 waiter 等待自己的前一个 waiter。释放者只需删除队首等待边、转移 owner 并发送 signal；中间 waiter 取消时，也只需把直接后继改接到自己的前驱。这样既不会保留指向已释放事务的陈旧关系，也避免每次授权遍历整条队列形成 O(n²) 成本。取消和授权同时发生时，条目状态决定唯一结果；若 context 已取消但所有权已经转移，请求者会立即释放该锁，不进入 Procedure。
 
-```go
-select {
-case <-ctx.Done():
-    return ctx.Err()
-case <-entry.token:
-}
-```
-
-释放：
-
-```go
-entry.token <- struct{}{}
-```
-
-选择 channel 而不是直接 `sync.Mutex` 的原因是锁等待必须响应 context timeout。token 和取消可能同时 ready，因此获得 token 后再次检查 `ctx.Err()`；如果已经取消，立即归还 token，不进入 Procedure。
-
-channel 不提供可重入语义，也不承诺业务级严格 FIFO。正确性来自同 Key 单 token、稳定多锁顺序和超时失败释放。
+`signal` 只负责唤醒，不代表锁本身；锁的唯一事实来源是 `lockEntry.owner`。因此死锁诊断不需要猜测 channel 中是否还有 token，也不依赖 goroutine ID。
 
 ### reserve、refs 与回收
 
@@ -1700,11 +1699,11 @@ reserve 流程：
 4. 不存在时从 pool 取得或创建 entry。
 5. `refs++`。
 6. 释放 shard mutex。
-7. 再等待 entry token。
+7. 尝试取得 owner；只有发生争用时才进入等待图和队列。
 
-`refs` 统计已经 reserve 的持有者和等待者，不记录 goroutine 所有权。它保证仍有人引用 entry 时不会从 map 删除或回收到 pool。
+`refs` 统计已经 reserve 的持有者和等待者。它保证仍有人引用 entry 时不会从 map 删除或回收到 pool；owner 和等待队列由 entry mutex 单独保护。
 
-释放时先归还 token，再在对应 shard 下 `refs--`。归零后删除精确 Key 映射，并把 entry 放入 `sync.Pool`。pool 复用 channel，避免短生命周期离散 Key 每次分配 channel。
+释放所有权后再在对应 shard 下 `refs--`。归零后删除精确 Key 映射，并把 entry 放入 `entryPool`。争用 waiter 也由 `waiterPool` 复用，稳定争用路径不会持续制造 channel 和节点分配。
 
 ### 单次事务持锁结构
 
@@ -1722,15 +1721,51 @@ type heldLockSet struct {
 
 ### 为什么不使用成熟可重入锁
 
-当前需求是完整锁集、稳定排序、context timeout 和子 Procedure 复用，而不是任意嵌套重入。第三方可重入锁通常需要识别 goroutine 或改变调用模型，还不能自动解决动态扩锁死锁。禁止嵌套根事务并让 child 复用根锁集，边界更明确、诊断路径也更可靠。
+当前需求是 Procedure 直接锁、动态扩锁、context timeout 和子 Procedure 复用，而不是任意嵌套重入。第三方可重入锁通常需要识别 goroutine 或改变调用模型，也不能自动发现多个根事务之间的动态扩锁死锁。禁止嵌套根事务，并让 child 通过同一个 `Tx` 复用 owner 身份，边界更明确。
+
+### 等待图与技术选型
+
+本轮先比较了四类方案：
+
+1. **根过程静态展开完整子树。** 无运行时死锁检测成本，但运行时筛选玩家、条件分支和可复用 Procedure 必然让父过程知道全部子过程实现细节，破坏开闭原则，因此不再作为核心契约。
+2. **Wait-Die / Wound-Wait。** 两者都用事务年龄打破循环；前者让年轻请求者回滚，后者允许老事务使年轻持有者回滚。它们适合高冲突数据库调度，但需要维护年龄和跨执行单元受害者状态，重试率受负载影响，也不能直接给出当前完整 Procedure 等待路径。tx 第一版不采用。
+3. **通用图库。** Gonum、`dominikbraun/graph`、`yourbasic/graph` 能提供 DFS、拓扑和环检测，但它们面向任意多出边图，带来通用节点/邻接结构、遍历器或 visited 集合。事务同步执行时一个根事务同一时刻至多等待一把锁，通用结构超出需求。
+4. **单出边等待图。** 当前采用。`waitsFor[waiter] = edge{blocker, lock, procedurePath}`；新增边前沿 blocker 链做指针追踪。现有图始终保持无环，所以首次回到 waiter 就得到唯一完整等待环。
+
+等待图本身是无锁纯算法；`lockTable.waitsMu` 在争用边界保护它。无竞争锁不访问 `waitsMu`。发现环时，本次新增等待边不会写入图，请求当前边的根事务成为受害者：
+
+```text
+T1 [PGuildTrade -> PGrantItem] --role:1002--> T2
+T2 [PRefreshGuild -> PLoadOwner] --guild:7----> T1
+                                      |
+                                      v
+拒绝 T2 的新等待边，返回 DeadlockError.Cycle
+```
+
+`DeadlockError.Cycle` 的每个 `DeadlockStep` 都包含 `Waiter`、`Blocker`、`Lock` 和 `ProcedurePath`。`Blocker` 可能是当前锁持有者，也可能是 FIFO 队列中必须先推进的前驱事务；它准确表达等待图中的直接依赖，不把排队者误报为锁 owner。正常链路不构造诊断切片；只有确认成环时才分配完整链。错误可通过 `errors.Is(err, txn.ErrDeadlock)` 和 `errors.As(err, *txn.DeadlockError)` 识别。
+
+标准 `txn.Call` 与 `txn.Runtime.Call` 最多自动重试三次死锁受害者。每次重试前完整 undo、解绑 recorder、释放锁和 Runtime 容量预留，并输出带完整等待链的 warning。`CallWithOptions` 供高级调用方设置 `DeadlockRetries`；零表示不重试。锁等待超时仍返回 context deadline/cancel 错误，不混同为死锁。
+
+框架不会跨 goroutine 强制回滚另一个正在执行的根事务。当前请求者只让自己的根事务失败，符合 Go 同步调用和局部 undo 的所有权边界。Procedure 如果捕获 `tx.Call` 的死锁错误，根事务仍被标记为必须回滚；业务应立即返回该错误，不应继续外部副作用。
 
 ### 基准结论
 
-2026-08-21 审计基准显示，分片精确 Key 注册表、entry pool、四锁内联和单锁快路径使锁内核单 Key、四 Key 和离散并发 Key 达到零分配；共享同 Key 仍严格串行。数字属于特定机器和 revision，后续判断应重跑：
+2026-08-26 在 Intel i9-9880H、darwin/amd64、Go 1.26 上对改造前后各运行多轮。无竞争路径保持零分配并有所下降；等待图仅在争用时参与：
+
+| 场景 | 改造前 | 等待图版本 | 分配 |
+|---|---:|---:|---:|
+| 单 Key 串行 | 267.7-286.1 ns/op | 221.0-264.3 ns/op | 0 allocs/op |
+| 四 Key 串行 | 1.049-1.115 us/op | 0.890-1.082 us/op | 0 allocs/op |
+| 离散 Key 并发 | 50.0-70.1 ns/op | 48.0-58.1 ns/op | 0 allocs/op |
+| 同 Key 高争用 | 447.8-455.5 ns/op | 0.898-1.061 us/op | 0 allocs/op |
+
+同 Key 极限争用约为旧实现的 2.0-2.4 倍，代价来自 owner、FIFO 公平唤醒和等待边维护；这条基准只测锁的取得与释放，没有任何业务处理，因此放大了协调成本。争用路径仍严格串行且稳定零分配。无环等待边的纯算法约 56-67 ns/op、零分配；确认两事务环约 182-209 ns/op、216 B/op、3 allocs/op，分配只用于完整诊断链。根 Procedure 约 1.28-1.42 us/op、1160 B/op、9 allocs/op；child 复用根锁约 1.44-1.70 us/op、1192 B/op、10 allocs/op；child 新增一把动态锁约 2.42-2.66 us/op、1481 B/op、14 allocs/op。第一版接受热点冲突路径的显式成本，以换取动态 Procedure 和完整可诊断等待环；后续只有真实服务 profile 证明同 Key 锁协调占主要耗时，才优化 waiter 协调，不能删除完整等待链。
+
+数字属于特定机器和 revision，后续判断应重跑：
 
 ```bash
 go test ./modules/txn -run '^$' \
-  -bench '^(BenchmarkLockTableAcquireRelease|BenchmarkWithLocks)$' \
+  -bench '^(BenchmarkLockTableAcquireRelease|BenchmarkWithLocks|BenchmarkProcedureCall|BenchmarkWaitGraph)$' \
   -benchmem -count=5
 ```
 

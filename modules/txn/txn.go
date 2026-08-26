@@ -10,9 +10,9 @@ import (
 	"reflect"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/ngnl47/tx/change"
+	txlog "github.com/ngnl47/tx/log"
 )
 
 type contextKey struct{}
@@ -65,7 +65,7 @@ func Locks(values ...Lockable) []LockTarget {
 	return NewLockSet().Add(values...).Build()
 }
 
-// LockSet 用于在进入事务前动态收集完整锁集。
+// LockSet 用于在进入事务前收集一批已经确定的锁对象。
 type LockSet struct {
 	locks []LockTarget
 }
@@ -100,8 +100,8 @@ func (set *LockSet) Build() []LockTarget {
 
 // Procedure 是可复用的单机事务业务单元。
 //
-// Locks 必须在进入根事务前给出完整锁键集合。子 Procedure 只能声明根事务
-// 已持有锁键的子集；需要更多锁时，应由根 Procedure 在调用前一并声明。
+// Locks 只声明当前 Procedure 直接使用的锁。子 Procedure 通过 Tx.Call 同步执行时，
+// 框架会复用已持有锁并获取新锁；所有锁直到根事务结束才释放。
 type Procedure interface {
 	Locks(context.Context) ([]LockTarget, error)
 	Process(*Tx) error
@@ -112,16 +112,43 @@ type CallOptions struct {
 	// AllowPendingChanges 允许锁定对象在进入事务前已保留待落盘变更。
 	// 有状态运行时会在多次事务之间合并 Store 脏状态，因此需要显式开启。
 	AllowPendingChanges bool
+	// DeadlockRetries 是根 Procedure 被选为死锁受害者后的最大重试次数。
+	// 零表示不重试；每次重试都会从干净根状态重新执行 Process。
+	DeadlockRetries int
+}
+
+type callHooks struct {
+	reserveDynamicTargets func([]LockTarget) error
+	afterAttemptFailure   func()
+}
+
+const defaultDeadlockRetries = 3
+
+type deadlockVictimError struct {
+	err error
+}
+
+func (err *deadlockVictimError) Error() string {
+	return err.err.Error()
+}
+
+func (err *deadlockVictimError) Unwrap() error {
+	return err.err
 }
 
 // Tx 是一次正在执行的单机事务。
 type Tx struct {
+	id         TransactionID
 	ctx        context.Context
 	active     bool
 	locks      map[LockKey]change.UndoBindable
 	targets    []LockTarget
+	heldLocks  heldLockSet
 	dirty      map[LockKey]struct{}
 	procedures []string
+	deadlock   error
+	options    CallOptions
+	hooks      callHooks
 
 	undos         []change.UndoFunc
 	afterCommit   []func(context.Context) error
@@ -155,7 +182,7 @@ func (tx *Tx) RecordUndo(undo change.UndoFunc) {
 
 // DirtyTargets 返回本次事务经受控 Store 修改且当前仍有待落盘变更的根目标。
 //
-// 返回顺序与事务锁顺序一致。该结果适合业务 facade 在提交后选择持久化对象；
+// 返回顺序与根事务实际取得目标的顺序一致。该结果适合业务 facade 在提交后选择持久化对象；
 // 它不包含未经事务 Store API 修改的裸字段变更。
 func (tx *Tx) DirtyTargets() []LockTarget {
 	if tx == nil || len(tx.dirty) == 0 {
@@ -210,10 +237,13 @@ func (tx *Tx) Do(fn func(*Tx) error) error {
 }
 
 // Call 在当前事务中调用子 Procedure，并为它建立 savepoint。
-// 子 Procedure 不会重新加锁，且只能使用根事务已声明的锁。
+// 已持有锁会直接复用；新锁按当前 Procedure 的直接锁集排序后获取，并持有到根事务结束。
 func (tx *Tx) Call(procedure Procedure) error {
 	if tx == nil || !tx.active {
 		return errors.New("transaction: inactive transaction")
+	}
+	if tx.deadlock != nil {
+		return tx.deadlock
 	}
 	if procedure == nil {
 		return errors.New("transaction: nil procedure")
@@ -227,13 +257,41 @@ func (tx *Tx) Call(procedure Procedure) error {
 		if err != nil {
 			return fmt.Errorf("transaction: procedure %s locks: %w", procedureName(procedure), err)
 		}
+		var newLocks []LockTarget
 		for _, lock := range prepared {
 			rootStore, exists := tx.locks[lock.Key]
 			if !exists {
-				return fmt.Errorf("transaction: procedure %s introduces undeclared lock %s", tx.procedureTrace(procedure), lock.Key.String())
+				newLocks = append(newLocks, lock)
+				continue
 			}
 			if !sameStore(rootStore, lock.Store) {
 				return fmt.Errorf("transaction: procedure %s uses different Store for declared lock %s", tx.procedureTrace(procedure), lock.Key.String())
+			}
+		}
+		if len(newLocks) > 0 {
+			trace := tx.procedureTrace(procedure)
+			heldLocks, err := acquireLocks(tx.ctx, tx.id, newLocks, trace)
+			if err != nil {
+				if errors.Is(err, ErrDeadlock) {
+					tx.deadlock = err
+				}
+				return err
+			}
+			if err := validateCleanLockTargets(newLocks, tx.options); err != nil {
+				releaseLocks(tx.id, &heldLocks)
+				return err
+			}
+			if tx.hooks.reserveDynamicTargets != nil {
+				if err := tx.hooks.reserveDynamicTargets(newLocks); err != nil {
+					releaseLocks(tx.id, &heldLocks)
+					return err
+				}
+			}
+			tx.heldLocks.appendSet(&heldLocks)
+			for _, lock := range newLocks {
+				tx.locks[lock.Key] = lock.Store
+				tx.targets = append(tx.targets, lock)
+				lock.Store.SetUndoRecorder(targetUndoRecorder{tx: tx, target: lock})
 			}
 		}
 	}
@@ -297,7 +355,14 @@ func (tx *Tx) procedureTrace(next Procedure) string {
 	return strings.Join(trace, " -> ")
 }
 
+type procedureNameProvider interface {
+	transactionProcedureName() string
+}
+
 func procedureName(procedure Procedure) string {
+	if provider, ok := procedure.(procedureNameProvider); ok {
+		return provider.transactionProcedureName()
+	}
 	typ := reflect.TypeOf(procedure)
 	for typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
@@ -322,10 +387,10 @@ func sameStore(left, right change.UndoBindable) bool {
 
 // Run 按稳定锁顺序执行一次单机事务。只有传入锁对象绑定的 Store 会在回调期间绑定 undo recorder。
 func Run(ctx context.Context, locks []LockTarget, fn func(*Tx) error) (err error) {
-	return run(ctx, locks, fn, CallOptions{})
+	return unwrapDeadlockVictim(run(ctx, locks, fn, CallOptions{}, callHooks{}, "txn.Run"))
 }
 
-func run(ctx context.Context, locks []LockTarget, fn func(*Tx) error, options CallOptions) (err error) {
+func run(ctx context.Context, locks []LockTarget, fn func(*Tx) error, options CallOptions, hooks callHooks, procedurePath string) (err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -336,20 +401,28 @@ func run(ctx context.Context, locks []LockTarget, fn func(*Tx) error, options Ca
 	if err != nil {
 		return err
 	}
-	heldLocks, err := acquireLocks(ctx, prepared)
+	transaction := nextTransactionID()
+	heldLocks, err := acquireLocks(ctx, transaction, prepared, procedurePath)
 	if err != nil {
+		if errors.Is(err, ErrDeadlock) {
+			return &deadlockVictimError{err: err}
+		}
 		return err
 	}
 	if err := validateCleanLockTargets(prepared, options); err != nil {
-		releaseLocks(&heldLocks)
+		releaseLocks(transaction, &heldLocks)
 		return err
 	}
 
 	tx := &Tx{
-		active:  true,
-		locks:   make(map[LockKey]change.UndoBindable, len(prepared)),
-		targets: append([]LockTarget(nil), prepared...),
-		dirty:   make(map[LockKey]struct{}, len(prepared)),
+		id:        transaction,
+		active:    true,
+		locks:     make(map[LockKey]change.UndoBindable, len(prepared)),
+		targets:   append([]LockTarget(nil), prepared...),
+		heldLocks: heldLocks,
+		dirty:     make(map[LockKey]struct{}, len(prepared)),
+		options:   options,
+		hooks:     hooks,
 	}
 	tx.ctx = context.WithValue(ctx, contextKey{}, tx)
 	defer func() {
@@ -357,10 +430,10 @@ func run(ctx context.Context, locks []LockTarget, fn func(*Tx) error, options Ca
 		if recovered := recover(); recovered != nil {
 			rollbackCallbacks := append([]func(context.Context){}, tx.afterRollback...)
 			tx.rollbackTo(savepoint{}, false)
-			for _, lock := range prepared {
+			for _, lock := range tx.targets {
 				lock.Store.SetUndoRecorder(nil)
 			}
-			releaseLocks(&heldLocks)
+			releaseLocks(transaction, &tx.heldLocks)
 			for _, callback := range rollbackCallbacks {
 				callback(ctx)
 			}
@@ -376,26 +449,32 @@ func run(ctx context.Context, locks []LockTarget, fn func(*Tx) error, options Ca
 	if fn != nil {
 		err = fn(tx)
 	}
+	if err == nil && tx.deadlock != nil {
+		err = tx.deadlock
+	}
 	if err != nil {
 		rollbackCallbacks := append([]func(context.Context){}, tx.afterRollback...)
 		tx.rollbackTo(savepoint{}, false)
-		for _, lock := range prepared {
+		for _, lock := range tx.targets {
 			lock.Store.SetUndoRecorder(nil)
 		}
-		releaseLocks(&heldLocks)
+		releaseLocks(transaction, &tx.heldLocks)
 		tx.active = false
 		for _, callback := range rollbackCallbacks {
 			callback(ctx)
+		}
+		if tx.deadlock != nil {
+			return &deadlockVictimError{err: tx.deadlock}
 		}
 		return err
 	}
 
 	// 成功时不再需要反向操作。提交回调不能占用数据锁，也不能继续修改已解绑 Store。
 	tx.undos = nil
-	for _, lock := range prepared {
+	for _, lock := range tx.targets {
 		lock.Store.SetUndoRecorder(nil)
 	}
-	releaseLocks(&heldLocks)
+	releaseLocks(transaction, &tx.heldLocks)
 	tx.active = false
 	return runAfterCommit(ctx, tx.afterCommit)
 }
@@ -413,11 +492,12 @@ func WithLocks(ctx context.Context, locks []LockTarget, fn func(context.Context)
 	if err != nil {
 		return err
 	}
-	heldLocks, err := acquireLocks(ctx, prepared)
+	transaction := nextTransactionID()
+	heldLocks, err := acquireLocks(ctx, transaction, prepared, "txn.WithLocks")
 	if err != nil {
 		return err
 	}
-	defer releaseLocks(&heldLocks)
+	defer releaseLocks(transaction, &heldLocks)
 	if fn == nil {
 		return nil
 	}
@@ -438,14 +518,18 @@ func validateCleanLockTargets(locks []LockTarget, options CallOptions) error {
 	return nil
 }
 
-// Call 使用 Procedure 声明的完整锁集创建根事务。
-// 已在事务内时必须改用 tx.Call，以避免动态扩张锁集。
+// Call 使用 Procedure 声明的直接锁集创建根事务。
+// 已在事务内时必须改用 tx.Call，以复用当前事务身份和 savepoint。
 func Call(ctx context.Context, procedure Procedure) error {
-	return CallWithOptions(ctx, procedure, CallOptions{})
+	return CallWithOptions(ctx, procedure, CallOptions{DeadlockRetries: defaultDeadlockRetries})
 }
 
-// CallWithOptions 使用 Procedure 声明的完整锁集创建根事务，并应用执行选项。
+// CallWithOptions 使用 Procedure 声明的直接锁集创建根事务，并应用执行选项。
 func CallWithOptions(ctx context.Context, procedure Procedure, options CallOptions) error {
+	return callWithHooks(ctx, procedure, options, callHooks{})
+}
+
+func callWithHooks(ctx context.Context, procedure Procedure, options CallOptions, hooks callHooks) error {
 	if procedure == nil {
 		return errors.New("transaction: nil procedure")
 	}
@@ -455,13 +539,43 @@ func CallWithOptions(ctx context.Context, procedure Procedure, options CallOptio
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	locks, err := procedure.Locks(ctx)
-	if err != nil {
-		return fmt.Errorf("transaction: procedure %s locks: %w", procedureName(procedure), err)
+	if options.DeadlockRetries < 0 {
+		return errors.New("transaction: deadlock retries cannot be negative")
 	}
-	return run(ctx, locks, func(tx *Tx) error {
-		return tx.call(procedure)
-	}, options)
+	for attempt := 0; ; attempt++ {
+		locks, err := procedure.Locks(ctx)
+		if err != nil {
+			return fmt.Errorf("transaction: procedure %s locks: %w", procedureName(procedure), err)
+		}
+		err = run(ctx, locks, func(tx *Tx) error {
+			return tx.call(procedure)
+		}, options, hooks, procedureName(procedure))
+		if err != nil && hooks.afterAttemptFailure != nil {
+			hooks.afterAttemptFailure()
+		}
+		var victim *deadlockVictimError
+		if !errors.As(err, &victim) {
+			return err
+		}
+		if attempt >= options.DeadlockRetries || ctx.Err() != nil {
+			return victim.err
+		}
+		txlog.WarnContext(
+			ctx,
+			"transaction deadlock detected, retry scheduled",
+			"attempt", attempt+1,
+			"maxRetries", options.DeadlockRetries,
+			"err", victim.err,
+		)
+	}
+}
+
+func unwrapDeadlockVictim(err error) error {
+	var victim *deadlockVictimError
+	if errors.As(err, &victim) {
+		return victim.err
+	}
+	return err
 }
 
 func prepareLocks(locks []LockTarget) ([]LockTarget, error) {
@@ -478,9 +592,6 @@ func prepareLocks(locks []LockTarget) ([]LockTarget, error) {
 	sort.Slice(prepared, func(i, j int) bool {
 		if prepared[i].Order != prepared[j].Order {
 			return prepared[i].Order < prepared[j].Order
-		}
-		if prepared[i].Key.Scope != prepared[j].Key.Scope {
-			return prepared[i].Key.Scope < prepared[j].Key.Scope
 		}
 		return prepared[i].Key.Value < prepared[j].Key.Value
 	})
@@ -517,190 +628,6 @@ func validateLockTarget(lock LockTarget) error {
 		return fmt.Errorf("transaction: lock %s has nil Store", lock.Key.String())
 	}
 	return nil
-}
-
-type contextMutex struct {
-	permit chan struct{}
-}
-
-func newContextMutex() contextMutex {
-	mutex := contextMutex{permit: make(chan struct{}, 1)}
-	mutex.permit <- struct{}{}
-	return mutex
-}
-
-func (mutex *contextMutex) Lock(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-mutex.permit:
-		return nil
-	}
-}
-
-func (mutex *contextMutex) Unlock() {
-	mutex.permit <- struct{}{}
-}
-
-type lockEntry struct {
-	mu   contextMutex
-	refs int
-}
-
-const (
-	lockShardCount       = 64
-	inlineHeldLockCount  = 4
-	lockKeyHashOffset64  = uint64(14695981039346656037)
-	lockKeyHashPrime64   = uint64(1099511628211)
-	lockKeyHashSeparator = byte(0xff)
-)
-
-type lockShard struct {
-	mu      sync.Mutex
-	entries map[LockKey]*lockEntry
-}
-
-type lockTable struct {
-	shards [lockShardCount]lockShard
-	pool   sync.Pool
-}
-
-var transactionLocks lockTable
-
-type heldLock struct {
-	key   LockKey
-	entry *lockEntry
-	shard *lockShard
-}
-
-type heldLockSet struct {
-	inline   [inlineHeldLockCount]heldLock
-	overflow []heldLock
-	count    int
-}
-
-func (set *heldLockSet) append(lock heldLock) {
-	if set.count < len(set.inline) {
-		set.inline[set.count] = lock
-	} else {
-		set.overflow = append(set.overflow, lock)
-	}
-	set.count++
-}
-
-func (set *heldLockSet) at(index int) *heldLock {
-	if index < len(set.inline) {
-		return &set.inline[index]
-	}
-	return &set.overflow[index-len(set.inline)]
-}
-
-func acquireLocks(ctx context.Context, locks []LockTarget) (heldLockSet, error) {
-	var heldLocks heldLockSet
-	for _, lock := range locks {
-		held := transactionLocks.reserve(lock.Key)
-		if err := acquireLock(ctx, lock.Key, held.entry); err != nil {
-			transactionLocks.release(held)
-			releaseLocks(&heldLocks)
-			return heldLockSet{}, err
-		}
-		heldLocks.append(held)
-	}
-	if err := ctx.Err(); err != nil {
-		releaseLocks(&heldLocks)
-		return heldLockSet{}, fmt.Errorf("transaction: acquire locks: %w", err)
-	}
-	return heldLocks, nil
-}
-
-func acquireLock(ctx context.Context, key LockKey, entry *lockEntry) error {
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("transaction: acquire lock %s: %w", key.String(), err)
-	}
-	if err := entry.mu.Lock(ctx); err != nil {
-		return fmt.Errorf("transaction: acquire lock %s: %w", key.String(), err)
-	}
-	if err := ctx.Err(); err != nil {
-		entry.mu.Unlock()
-		return fmt.Errorf("transaction: acquire lock %s: %w", key.String(), err)
-	}
-	return nil
-}
-
-func releaseLocks(locks *heldLockSet) {
-	if locks == nil {
-		return
-	}
-	for index := locks.count - 1; index >= 0; index-- {
-		held := locks.at(index)
-		held.entry.mu.Unlock()
-		transactionLocks.release(*held)
-		*held = heldLock{}
-	}
-	clear(locks.overflow)
-	locks.overflow = nil
-	locks.count = 0
-}
-
-func (table *lockTable) reserve(key LockKey) heldLock {
-	shard := table.shard(key)
-	shard.mu.Lock()
-	defer shard.mu.Unlock()
-	if shard.entries == nil {
-		shard.entries = make(map[LockKey]*lockEntry)
-	}
-	entry := shard.entries[key]
-	if entry == nil {
-		entry = table.acquireEntry()
-		shard.entries[key] = entry
-	}
-	entry.refs++
-	return heldLock{key: key, entry: entry, shard: shard}
-}
-
-func (table *lockTable) release(held heldLock) {
-	if held.shard == nil || held.entry == nil {
-		return
-	}
-	held.shard.mu.Lock()
-	if held.shard.entries[held.key] != held.entry {
-		held.shard.mu.Unlock()
-		return
-	}
-	held.entry.refs--
-	if held.entry.refs != 0 {
-		held.shard.mu.Unlock()
-		return
-	}
-	delete(held.shard.entries, held.key)
-	held.shard.mu.Unlock()
-	table.pool.Put(held.entry)
-}
-
-func (table *lockTable) shard(key LockKey) *lockShard {
-	return &table.shards[lockKeyHash(key)&(lockShardCount-1)]
-}
-
-func (table *lockTable) acquireEntry() *lockEntry {
-	if pooled := table.pool.Get(); pooled != nil {
-		return pooled.(*lockEntry)
-	}
-	return &lockEntry{mu: newContextMutex()}
-}
-
-func lockKeyHash(key LockKey) uint64 {
-	hash := lockKeyHashOffset64
-	for index := 0; index < len(key.Scope); index++ {
-		hash ^= uint64(key.Scope[index])
-		hash *= lockKeyHashPrime64
-	}
-	hash ^= uint64(lockKeyHashSeparator)
-	hash *= lockKeyHashPrime64
-	for index := 0; index < len(key.Value); index++ {
-		hash ^= uint64(key.Value[index])
-		hash *= lockKeyHashPrime64
-	}
-	return hash
 }
 
 func runAfterCommit(ctx context.Context, callbacks []func(context.Context) error) error {
