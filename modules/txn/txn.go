@@ -81,7 +81,7 @@ func (set *LockSet) Add(values ...Lockable) *LockSet {
 		return nil
 	}
 	for _, value := range values {
-		if value == nil {
+		if isNil(value) {
 			set.locks = append(set.locks, LockTarget{})
 			continue
 		}
@@ -245,7 +245,7 @@ func (tx *Tx) Call(procedure Procedure) error {
 	if tx.deadlock != nil {
 		return tx.deadlock
 	}
-	if procedure == nil {
+	if isNil(procedure) {
 		return errors.New("transaction: nil procedure")
 	}
 	locks, err := procedure.Locks(tx.ctx)
@@ -530,7 +530,7 @@ func CallWithOptions(ctx context.Context, procedure Procedure, options CallOptio
 }
 
 func callWithHooks(ctx context.Context, procedure Procedure, options CallOptions, hooks callHooks) error {
-	if procedure == nil {
+	if isNil(procedure) {
 		return errors.New("transaction: nil procedure")
 	}
 	if _, ok := FromContext(ctx); ok {
@@ -624,10 +624,23 @@ func validateLockTarget(lock LockTarget) error {
 	if lock.Order < 0 {
 		return fmt.Errorf("transaction: lock %s has negative lock order %d", lock.Key.String(), lock.Order)
 	}
-	if lock.Store == nil {
+	if isNil(lock.Store) {
 		return fmt.Errorf("transaction: lock %s has nil Store", lock.Key.String())
 	}
 	return nil
+}
+
+func isNil(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 func runAfterCommit(ctx context.Context, callbacks []func(context.Context) error) error {

@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/ngnl47/tx/modules/txn"
@@ -14,6 +15,15 @@ type rejectingAdmission struct {
 
 func (admission rejectingAdmission) RequireWritable() error {
 	return admission.err
+}
+
+func TestTxnRuntimeRejectsTypedNilProcedure(t *testing.T) {
+	runtime := txn.NewRuntime(nil)
+	var procedure *runtimeTestProcedure
+	err := runtime.Call(context.Background(), procedure)
+	if err == nil || !strings.Contains(err.Error(), "procedure is nil") {
+		t.Fatalf("Call error = %v, want nil procedure", err)
+	}
 }
 
 func TestTxnRuntimeRejectsProcedureBeforeMutationWhenAdmissionIsClosed(t *testing.T) {

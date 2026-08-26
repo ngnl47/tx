@@ -117,7 +117,7 @@ func (runtime *Runtime) Call(ctx context.Context, procedure Procedure) error {
 	if runtime == nil {
 		return errors.New("txn runtime: runtime is nil")
 	}
-	if procedure == nil {
+	if isNil(procedure) {
 		return errors.New("txn runtime: procedure is nil")
 	}
 	if runtime.config.WriteAdmission != nil {
@@ -411,6 +411,11 @@ func (runtime *Runtime) hasCapacityLocked(targets []LockTarget) bool {
 }
 
 func (runtime *Runtime) acceptTargetsLocked(targets []LockTarget) error {
+	for _, target := range targets {
+		if err := validateLockTarget(target); err != nil {
+			return err
+		}
+	}
 	if runtime.maxRootChanges > 0 {
 		for _, target := range targets {
 			if !isPersistentTarget(target) {

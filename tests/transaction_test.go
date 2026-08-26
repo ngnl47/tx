@@ -83,6 +83,18 @@ func TestLocksAndLockSetCollectLockables(t *testing.T) {
 	}
 }
 
+func TestLockSetDefersTypedNilLockableValidationToTransaction(t *testing.T) {
+	var lockable *transactionTestLockable
+	locks := txn.Locks(lockable)
+	if len(locks) != 1 {
+		t.Fatalf("Locks length = %d, want 1", len(locks))
+	}
+	err := txn.Run(context.Background(), locks, nil)
+	if err == nil || !strings.Contains(err.Error(), "invalid lock key") {
+		t.Fatalf("Run error = %v, want invalid lock key", err)
+	}
+}
+
 func TestTransactionRunValidatesSingleLockTarget(t *testing.T) {
 	store := &transactionTestStore{}
 	tests := []struct {
@@ -110,6 +122,14 @@ func TestTransactionRunValidatesSingleLockTarget(t *testing.T) {
 			locks: []txn.LockTarget{txn.NewLockTarget(txn.NewLockKey("role", 1001), nil)},
 			want:  "nil Store",
 		},
+		{
+			name: "TypedNilStore",
+			locks: []txn.LockTarget{txn.NewLockTarget(
+				txn.NewLockKey("role", 1001),
+				(*transactionTestStore)(nil),
+			)},
+			want: "nil Store",
+		},
 	}
 
 	for _, test := range tests {
@@ -119,6 +139,23 @@ func TestTransactionRunValidatesSingleLockTarget(t *testing.T) {
 				t.Fatalf("Run error = %v, want %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestTransactionCallRejectsTypedNilProcedure(t *testing.T) {
+	var procedure *transactionDeadlockFirstProcedure
+	if err := txn.Call(context.Background(), procedure); err == nil || !strings.Contains(err.Error(), "nil procedure") {
+		t.Fatalf("Call error = %v, want nil procedure", err)
+	}
+
+	store := &transactionTestStore{}
+	err := txn.Run(context.Background(), []txn.LockTarget{
+		txn.NewLockTarget(txn.NewLockKey("role", 1001), store),
+	}, func(tx *txn.Tx) error {
+		return tx.Call(procedure)
+	})
+	if err == nil || !strings.Contains(err.Error(), "nil procedure") {
+		t.Fatalf("Tx.Call error = %v, want nil procedure", err)
 	}
 }
 

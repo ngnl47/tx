@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -419,6 +420,41 @@ func TestTxnRuntimeMarkDirtyRejectsNonCollapsiblePersistentTarget(t *testing.T) 
 	}
 	if manager.Pending() != 0 {
 		t.Fatalf("Pending = %d, want 0", manager.Pending())
+	}
+}
+
+func TestTxnRuntimeMarkDirtyRejectsInvalidTargets(t *testing.T) {
+	runtime := txn.NewRuntime(nil)
+	tests := []struct {
+		name   string
+		target txn.LockTarget
+		want   string
+	}{
+		{
+			name:   "InvalidKey",
+			target: txn.NewLockTarget(txn.LockKey{}, &runtimeTestStore{}),
+			want:   "invalid lock key",
+		},
+		{
+			name: "TypedNilStore",
+			target: txn.NewLockTarget(
+				txn.NewLockKey("role", 1001),
+				(*runtimeTestStore)(nil),
+			),
+			want: "nil Store",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := runtime.MarkDirty(test.target)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("MarkDirty error = %v, want %q", err, test.want)
+			}
+			if runtime.Pending() != 0 {
+				t.Fatalf("Pending = %d, want 0", runtime.Pending())
+			}
+		})
 	}
 }
 
