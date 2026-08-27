@@ -14,7 +14,7 @@
 
 ## 核心使用约定
 
-- `tx/server` 提供进程级 runtime 装配；`txgen` 负责扫描和生成；项目只读取配置并转换为强类型 `server.Config`，再注入生成包和业务服务。
+- `bee` 提供无状态服务门面，`ant` 提供有状态服务门面；两者共有 Builder、Server、Service 和基础 CMod API 同名同义。项目只读取配置并转换为对应的强类型 `Config`，再注入生成包和业务服务。
 - `GD*` 是业务数据对象，`GD*Store` 是绑定该数据的变更追踪结构，不保存第二份完整数据。
 - Store 不是协议字段。cmd 和业务输入模型不得直接声明生成的 `*Store` 类型。
 - handler 优先使用项目 facade，例如 `db.Save(role)`；直接传入 Store、writer 和 context 属于扩展层用法。
@@ -35,7 +35,7 @@
 - 追踪字段级变更。
 - 将生成 Store 的同步变更遍历结果落地到 Redis、Mongo 或 Fusion 策略。
 - 提供 Redis 延迟任务 backend 和 Fusion 后台回写所需组件。
-- 通过 `tx/server` 统一装配 Storage、共享 gRPC Host、Discovery、Actor、事务、健康探针、后台 worker 与服务生命周期。
+- 通过 Bee 或 Ant 统一装配 Storage、共享 gRPC Host、Discovery、Actor、健康探针、后台 worker 与服务生命周期；Ant 额外提供 CModProcedure、缓存运行时、可选 WAL 和逻辑槽位。
 
 生成代码依赖 `tx`，`tx` 不依赖生成器工程。
 
@@ -44,31 +44,33 @@
 业务工程通常按下面顺序接入运行时：
 
 1. 由生成工程输出 `server/gen/data` 和 `server/gen/cmd`。
-2. 项目读取本地 yml，严格解析后转换为只含 Go 值的 `server.Config`；tx 不读取 yml、环境变量或命令行。
+2. 项目读取本地 yml，严格解析后转换为只含 Go 值的 `bee.Config` 或 `ant.Config`；tx 不读取 yml、环境变量或命令行。
 3. 项目注册生成数据绑定、业务 facade 初始化函数和可选服务。
-4. 启动参数通过 `server.RunOptions` 选择本进程服务并注入部署身份。
-5. `server.Server` 解析所选服务的 CMod 依赖闭包，只创建本进程实际需要的 Redis、Mongo、Fusion、共享 gRPC Host、服务发现、Actor、事务和后台任务。
+4. 启动参数通过 `bee.RunOptions` 或 `ant.RunOptions` 选择本进程服务并注入部署身份。
+5. Bee/Ant Server 解析所选服务的 CMod 依赖闭包，只创建本进程实际需要的外部连接、共享 Host 和后台任务。
 6. handler 使用 `db.Save(role)` 或项目事务 facade，不直接装配 writer/client。
 
 一个简化的项目组合根如下：
 
 ```go
-func NewApplication(config server.Config) (*server.Server, error) {
-	return server.New(
-		config,
-		server.WithGeneratedData(data.DefaultTypeRegistry(), func(runtime server.StorageReaders) {
+func NewApplication(config bee.Config, services ...bee.ServiceRegistration) (*bee.Server, error) {
+	return bee.New(config).
+		GeneratedData(data.DefaultTypeRegistry(), func(runtime bee.StorageReaders) {
 			data.RegisterStorageRuntime(runtime)
-		}),
-		server.WithSetup(func(runtime server.Context) (func(), error) {
-			db.SetDefault(db.New(runtime.Storage()))
-			return func() { db.SetDefault(nil) }, nil
-		}),
-		server.WithService(game.Service{}, mailboxService, agentService),
-	)
+		}).
+		Setup(func(runtime bee.Context) (func(), error) {
+			storage, err := runtime.Storage()
+			if err != nil {
+				return nil, err
+			}
+			return db.Install(storage)
+		}).
+		Services(services...).
+		Build()
 }
 
-func Run(ctx context.Context, app *server.Server) error {
-	return app.Run(ctx, server.RunOptions{
+func Run(ctx context.Context, app *bee.Server) error {
+	return app.Run(ctx, bee.RunOptions{
 		Services:         "game,msgq,agent",
 		InstanceID:       "pod-uid-43",
 		InstanceVersion:  "20260823.1",
@@ -81,25 +83,37 @@ func Run(ctx context.Context, app *server.Server) error {
 `InstanceID` 只表示本次物理运行实例，例如 Kubernetes Pod UID；它不包含服务名或
 `LogicalSlot`。有状态服务通过独立的 `LogicalSlot` 保存稳定业务归属。
 
-`WithSetup` 是项目组合根使用的装配扩展点，适合安装 `db` facade。回调拿到的是受控
-`server.Context`：可以执行已授权业务操作，但不能取消根生命周期、关闭共享 gRPC Host、停止 Actor/Transaction，
+`Setup` 是项目组合根使用的装配扩展点，适合安装 `db` facade。回调拿到的是受控
+`bee.Context` 或 `ant.Context`：可以读取当前注册单元已经声明的能力，但不能取消根生命周期、关闭共享 gRPC Host、停止 Actor/Procedure，
 或替换 discovery 快照。普通 handler 不应保存或传递 Context；若只需要单独使用某个底层存储 adapter，
 后文仍提供手动装配接口。
 
 可选服务也使用同一能力门面：
 
 ```go
-func (Service) Start(runtime server.Context) error {
-	if runtime.RPC() == nil {
-		return errors.New("game: RPC is unavailable")
-	}
-	return runtime.RPC().Register(registerGameService)
+game := bee.ServiceRegistration{
+	Spec: bee.ServiceSpec{
+		Name:     "game",
+		Requires: []bee.CModID{bee.CModRPC, bee.CModFusionStorage},
+	},
+	Factory: func(runtime bee.Context) (bee.Service, error) {
+		rpc, err := runtime.CModRPC()
+		if err != nil {
+			return nil, err
+		}
+		return newGameService(rpc), nil
+	},
 }
 ```
 
-常规服务使用 `Tasks/Admission/Storage/RPC/Directory/Actor/Transaction` 等最小契约。确实需要编写基础设施
-adapter 时，才从 `runtime.Advanced()` 取得 Redis 路由或逻辑槽位 Store；高级 SPI 仍不授予连接关闭、
+常规服务通过 `Tasks/Admission/CModRedisStorage/CModMongoStorage/CModFusionStorage/CModRPC/CModDiscovery/CModActor`
+等最小契约取得已经声明的能力；项目组合根才使用通用 `Storage()` 安装 `db.Save` facade。
+Ant 在同一基础 API 上增加 `CModProcedure/CModSlots/LogicalSlot`。这些能力视图都不授予连接关闭、
 runtime shutdown 或 discovery 快照写权限。
+
+三类存储 CMod 返回不同的窄接口：Redis 只暴露 `RedisReader`，MongoDB 只暴露 `MongoReader`，Fusion 只暴露
+`FusionReader`；对应 `ChangeWriter` 也只接受相同 `TypeSpec.Storage.Mode`。即使同一进程中的其他服务启用了更多后端，
+当前服务也不能越过 `ServiceSpec.Requires` 使用未声明存储。
 
 `runtime.Instance()` 返回本进程身份和当前生命周期状态的只读快照，`Services` 切片也会复制，调用方修改
 返回值不会污染运行时。服务 `Start` 阶段看到 `starting`；共享 RPC Host、控制面和 discovery 全部就绪后
@@ -163,7 +177,7 @@ if err := storage.Save(ctx, fusionStore, role.Store()); err != nil {
 
 ## 能力模组与服务装配
 
-`tx/server` 使用能力模组（Capability Module，简称 CMod）组合运行时。CMod 是带稳定身份、依赖关系和生命周期的装配单位，
+Bee 和 Ant 使用能力模组（Capability Module，简称 CMod）组合运行时。CMod 是带稳定身份、依赖关系和生命周期的装配单位，
 固定表示进程级 L3 能力门面。Transaction Runtime、Cache Runtime、WAL Store、checkpoint Scheduler 和 Delay Scheduler
 都是门面内部的强类型组件，不拥有独立 `CModID`，也不单独参与全局生命周期。`agent/msgq/game` 等 L4 服务只选择所需
 CMod，框架递归展开 `Requires` 依赖；`After` 仅调整已经选中门面的启动顺序，不会暗中启用能力。
@@ -173,31 +187,30 @@ CMod，框架递归展开 `Requires` 依赖；`After` 仅调整已经选中门�
 | `agent` | RPC、Redis；跨进程邮箱时增加 Discovery | 玩家 TCP/WebSocket 入口、共享 RPC、Redis 会话绑定 |
 | `msgq` | RPC、Redis | 共享 RPC 上的 MailboxService、Redis owner binding |
 | `txgame` 无状态 `game` | RPC、Fusion | 请求结束显式保存；Fusion 内部组合 Redis、Mongo 和 Delay Scheduler |
-| `txgameslg` 有状态 `slggame` | RPC、Fusion、StateRuntime | Procedure 提交后由 StateRuntime 的 Cache 组件分帧写 Fusion |
-| `txgameslg` 有状态 `slgworld` | RPC、Mongo、StateRuntime | StateRuntime 组合 Transaction、Cache 和按 `slgworld` 启用的 Mongo WAL |
+| `txgameslg` 有状态 `slggame` | RPC、Fusion、CModProcedure | Procedure 提交后由 CModProcedure 的 Cache 组件分帧写 Fusion |
+| `txgameslg` 有状态 `slgworld` | RPC、Mongo、CModProcedure | CModProcedure 组合 Transaction、Cache 和按 `slgworld` 启用的 Mongo WAL |
 
-有状态组合由 Builder 显式表达，项目可以为不同服务选择不同 Writer，并替换 `StateCache` SPI：
+有状态组合由 Builder 显式表达，项目可以为不同服务选择不同 Writer，并替换 `CModProcedureCache` SPI：
 
 ```go
-stateRuntime, err := server.NewStateRuntimeBuilder().
+procedure, err := ant.NewCModProcedureBuilder().
 	Cache(cacheComponent).
-	WAL(server.MongoWALForServices("slgworld")).
+	WAL(ant.NewCModProcedureMongoWAL("slgworld")).
 	Build()
 if err != nil {
 	return err
 }
 
-app, err := server.New(
-	config,
-	server.WithCMod(stateRuntime),
-	server.WithService(slgGameService, slgWorldService),
-)
+app, err := ant.New(config).
+	CMods(procedure).
+	Services(slgGameService, slgWorldService).
+	Build()
 ```
 
-Mongo WAL 只会在本轮选择 `slgworld` 时启用，并要求该服务同时选择 Mongo CMod；`slggame` 使用相同 StateRuntime 时不会创建
-WAL backend。高级项目可以实现 `StateWAL`，把 RocketMQ 等后端作为同一 Builder 插槽的替代组件，而不修改 StateRuntime。
+Mongo WAL 只会在本轮选择 `slgworld` 时启用，并要求该服务同时选择 Mongo CMod；`slggame` 使用相同 CModProcedure 时不会创建
+WAL backend。高级项目可以实现 `CModProcedureWAL`，把 RocketMQ 等后端作为同一 Builder 插槽的替代组件，而不修改 CModProcedure。
 启动日志除稳定 `cmods` 顺序外，还输出实际生效的 `components`，例如
-`state-runtime(transaction=default,cache=txgameslg[checkpoint=mongo,wal=mongo])`。项目缓存组件声明的 checkpoint worker 与 Builder
+`procedure(transaction=default,cache=txgameslg[checkpoint=mongo,wal=mongo])`。项目缓存组件声明的 checkpoint worker 与 Builder
 选择的 WAL 都会进入同一拓扑，日志不会隐藏实际运行的后台组件。
 
 例如只启动一个 RPC-only 自定义服务时，`Context.Storage()` 保持 `nil`，框架不会校验 Redis/Mongo 配置，也不会连接
@@ -209,16 +222,15 @@ if err != nil {
 	return nil, err
 }
 
-return server.New(
-	base,
-	server.WithCModConfigProvider(config.Framework),
-	server.WithGeneratedData(data.DefaultTypeRegistry(), data.RegisterStorageRuntime),
-	server.WithService(gameService, msgqService, agentService),
-)
+return bee.New(base).
+	ConfigProvider(config.Framework).
+	GeneratedData(data.DefaultTypeRegistry(), data.RegisterStorageRuntime).
+	Services(gameService, msgqService, agentService).
+	Build()
 ```
 
 `Framework(selection)` 只解析本轮 `AssemblySelection` 中的服务与 CMod。例如本次只有 Redis CMod，错误的事务时长和缺失的
-Actor host 不影响启动；一旦 StateRuntime 或 Actor 被选中，相同错误会在任何连接、监听器或 goroutine 创建前返回。普通
+Actor host 不影响启动；一旦 CModProcedure 或 Actor 被选中，相同错误会在任何连接、监听器或 goroutine 创建前返回。普通
 handler 不使用装配选择，只从项目 facade 取得所需业务能力。
 
 高级用户实现自定义 CMod 或 L4 Service 时，`Start` 可以分阶段创建资源，但对应 `Stop` 必须幂等，并能安全清理
@@ -227,8 +239,9 @@ handler 不使用装配选择，只从项目 facade 取得所需业务能力。
 例如 Mongo client 已建立但索引初始化失败时，Mongo CMod 会先关闭自身连接，随后才回滚其前置能力；启动错误和清理错误
 会一起返回，不会把资源泄漏隐藏在最初的失败之后。
 
-`Server.Context()` 只在全部 CMod、项目 setup、L4 服务、RPC 和控制入口都启动成功后发布。并发调用 `Stop` 会等待正在进行的
-`Start` 完成，再执行一次完整逆序关闭；启动中、启动失败和停止后的调用都返回 `nil`，不会暴露半装配或已关闭的能力视图。
+Context 只在项目 Setup 和已声明依赖的 Service/CMod Factory 中短期提供。Bee/Ant Server 不提供全局能力定位器，
+因此启动中、启动失败和停止后的业务代码都无法取得半装配或已关闭的能力视图。并发调用 `Stop` 会等待正在进行的
+`Start` 完成，再执行一次完整逆序关闭。
 
 ## 服务发现
 
@@ -642,17 +655,21 @@ WebSocket 只接受 binary message。两种传输共用同一套 `Frame`、身�
 始终是 BON bytes，不转换为 protobuf 或 JSON。
 
 Agent 不实现账号、JWT、游客登录或角色选择。项目必须在启动组合根提供 `HandlerProvider`：它接收当前
-`server.Context`，组合身份解析器和项目 Actor 路由策略。这样项目不需要全局注册表，也不会在多测试、多 Server
+Bee 或 Ant Context，组合身份解析器和项目 Actor 路由策略。这样项目不需要全局注册表，也不会在多测试、多 Server
 进程组合时共享可变状态。握手中的不透明数据由项目解析为逻辑 `RoleID` 和 `SessionID`：
 
 ```go
-handlers := func(runtime txserver.Context) (txagent.IdentityResolver, txagent.Dispatcher, error) {
+handlers := func(runtime bee.Context) (txagent.IdentityResolver, txagent.Dispatcher, error) {
     identity := txagent.IdentityResolverFunc(func(ctx context.Context, req txagent.AuthRequest) (txagent.Identity, error) {
         // 项目在这里校验 token，或解析登录服签发的可信 ticket。
         return txagent.Identity{RoleID: 470001, SessionID: 99}, nil
     })
+    messenger, err := runtime.CModActor()
+    if err != nil {
+        return nil, nil, err
+    }
     dispatcher, err := txagent.NewActorDispatcher(txagent.ActorDispatcherOptions{
-        Messenger: runtime.Actor(),
+        Messenger: messenger,
         Resolver:  projectActorResolver,
     })
     return identity, dispatcher, err
@@ -1081,27 +1098,22 @@ tx 不重新实现 Actor 调度、Remote PID、成员发现或重平衡；它只
 地址发布给集群，适合本地调试和弹性实例。
 
 ```go
-type roleService struct {
-    kind txactor.Kind
+kind, err := txactor.NewKind("role", func() protoactor.Actor {
+    return &roleActor{}
+})
+if err != nil {
+    return err
 }
 
-func newRoleService() (*roleService, error) {
-    kind, err := txactor.NewKind("role", func() protoactor.Actor {
-        return &roleActor{}
-    })
-    if err != nil {
-        return nil, err
-    }
-    return &roleService{kind: kind}, nil
-}
-
-func (service *roleService) Spec() txserver.Spec {
-    return txserver.Spec{
+game := bee.ServiceRegistration{
+    Spec: bee.ServiceSpec{
         Name:       "game",
-        ActorKinds: []txactor.Kind{service.kind},
-    }
+        ActorKinds: []txactor.Kind{kind},
+    },
+    Factory: func(bee.Context) (bee.Service, error) {
+        return &roleService{}, nil
+    },
 }
-func (*roleService) Start(txserver.Context) error { return nil }
 ```
 
 L4 服务只声明业务 Kind，Server 会自动装配 `CModActor` 并管理 Runtime 生命周期。`CModActor` 只包含 ProtoActor
@@ -1110,10 +1122,13 @@ Remote 和官方 etcd Cluster Provider，不依赖 tx 的普通 gRPC Host 或 `S
 标准项目不直接启动 Runtime；高级项目独立使用时，`Runtime.Start` 必须传入 `lifecycle.WaitGroupContext` 或其子上下文，
 传入普通 `context.Background()` 会返回 `actor.ErrLifecycleContextRequired`，避免看似启动成功却无法保证邮箱排空。
 
-服务运行后通过受控 `server.Context.Actor()` 取得 `actor.Messenger`：
+服务 Factory 通过受控 `Context.CModActor()` 取得 `actor.Messenger`：
 
 ```go
-runtime := serviceContext.Actor()
+runtime, err := serviceContext.CModActor()
+if err != nil {
+    return err
+}
 pid, err := runtime.VirtualPID("role", "470001")
 if err != nil {
     return err
@@ -1209,8 +1224,12 @@ if delivery.WantsResult() {
 只决定目标 PID；tx 的通用 Dispatcher 根据命令是否声明响应类型选择 `Tell` 或 `Call`：
 
 ```go
+messenger, err := runtime.CModActor()
+if err != nil {
+    return err
+}
 dispatcher, err := txagent.NewActorDispatcher(txagent.ActorDispatcherOptions{
-    Messenger: runtime.Actor(),
+    Messenger: messenger,
     Resolver: txagent.ActorDispatchResolverFunc(func(ctx context.Context, request txagent.DispatchRequest) (txagent.ActorDispatch, error) {
         pid, err := resolveProjectActor(ctx, request)
         return txagent.ActorDispatch{Target: pid, Delivery: buildDelivery(request)}, err
@@ -1267,7 +1286,7 @@ Actor 不代表 GD，也不提供分布式事务。同一 Actor 内需要修改�
 ### 固定逻辑槽位
 
 `EtcdRegistry.Slots()` 提供独立于实例 lease 的低级持久 `SlotStore`，用于控制面写入、独立工具和诊断；它的
-`ResolveSlot` 会直接读取 etcd，不能放入 Agent 消息热路径。Server 启动后暴露的 `Context.Advanced().Slots()` 是
+`ResolveSlot` 会直接读取 etcd，不能放入 Agent 消息热路径。Ant 启动后通过 `Context.CModSlots()` 暴露的 Store 是
 Watch 缓存门面：`ResolveSlot` 只读进程内 `SlotDirectory`，`CreateSlot` 和 `PromoteSlot` 才委托持久 Store。
 
 实例下线不会删除槽位 assignment；首次分配使用 `CreateSlot`，旧新 generation 交接必须使用带当前完整 assignment 的
@@ -1279,9 +1298,14 @@ Watch 缓存门面：`ResolveSlot` 只读进程内 `SlotDirectory`，`CreateSlot
 `stopping` 时返回 `ErrSlotRuntimeUnavailable`，绝不随机改派。
 
 ```go
-runtime := server.Context()
-slots := runtime.Advanced().Slots()
-directory := runtime.Directory()
+slots, err := runtime.CModSlots()
+if err != nil {
+    return err
+}
+directory, err := runtime.CModDiscovery()
+if err != nil {
+    return err
+}
 current := discovery.SlotAssignment{
 	SlotID:            "game-slot-1",
 	RuntimeInstanceID: "pod-uid-a",
@@ -1328,7 +1352,7 @@ _ = pid
 它不应使用低级 `EtcdSlotStore.ResolveSlot` 轮询 etcd。
 
 `SlotRouter` 只负责“稳定槽位 -> 当前可用 endpoint”的安全解析与交接前检查；发布控制面或业务必须在 Promote 前停止旧槽位
-的新命令准入、等待已进入的 Procedure、完成缓存管理器最终 Flush。未启用服务发现时 `Context.Advanced().Slots()`
+的新命令准入、等待已进入的 Procedure、完成缓存管理器最终 Flush。未启用服务发现时 `ant.Context.CModSlots()`
 不可用；依赖固定槽位的服务必须在启动时显式失败，不能退化为普通实例路由。
 
 Server 会在标记实例 `running` 前完成实例目录和槽位目录的首轮快照。任一 etcd Watch 终止时，两份目录作为同一个路由
@@ -3615,7 +3639,7 @@ ExpireAt time.Time `json:"expireAt" bson:"expireAt" msgpack:"expireAt" mongodb:"
 
 ### Mongo 索引初始化
 
-字段索引注解会进入生成的 `TypeSpec`。选择 Mongo 或 Fusion CMod 时，`tx/server` 在开放业务入口前按生成类型注册表
+字段索引注解会进入生成的 `TypeSpec`。选择 Mongo 或 Fusion CMod 时，Bee/Ant Server 在开放业务入口前按生成类型注册表
 汇总并创建当前服务 Mongo 路由表覆盖的索引。生成注册表可以包含其他服务使用的 GD 类型；其 `routeType` 未出现在
 本服务配置中时不会参与本次初始化。
 
@@ -3715,7 +3739,7 @@ Fusion 策略的当前保存路径：
 4. Redis 热写与本地登记完成后，`db.Save(role)` 返回 `nil`，Store 清理本轮变更。
 5. 后台分发器把唯一一条延迟保存任务写入 Redis delayed task backend。
 6. 发布失败时输出结构化 error 日志，并按有上限的指数退避持续重试；成功后移除本地 pending。
-7. 正常关闭时，服务入口和 Actor Delivery 邮箱先完成排空，StateRuntime 的 Cache 组件再最终保存内存 Store，Fusion CMod 随后限时发布全部本地 pending，最后才取消根 `WaitGroupContext`。
+7. 正常关闭时，服务入口和 Actor Delivery 邮箱先完成排空，CModProcedure 的 Cache 组件再最终保存内存 Store，Fusion CMod 随后限时发布全部本地 pending，最后才取消根 `WaitGroupContext`。
 8. Scheduler 到期 claim 任务，StorageTaskHandler 根据记录定位重新读取 Redis 当前热文档并 replace 到 Mongo。
 9. Mongo 保存成功后，handler 仅在 `@v` 未变化时原子地把所有热数据键的 TTL 收敛为 `delayDelTime`；版本变化则重新排一条保存任务。
 10. 任务成功后通过 Lua complete 删除该任务在 Redis 队列中的状态。
@@ -3867,7 +3891,7 @@ fusionStore := fusion.Strategy{
 }
 ```
 
-标准项目不直接构造这些组件；`tx/server` 会创建共享 `DelayTaskDispatcher`，把它同时注入 Fusion Strategy，并使用服务根 `WaitGroupContext` 启动后台发布循环。分发器的重试参数采用框架默认值，不进入业务 YAML。
+标准项目不直接构造这些组件；Bee/Ant 的 Fusion CMod 会创建共享 `DelayTaskDispatcher`，把它同时注入 Fusion Strategy，并使用服务根 `WaitGroupContext` 启动后台发布循环。分发器的重试参数采用框架默认值，不进入业务 YAML。
 
 项目配置只提供 Fusion 安全 TTL：
 
@@ -4075,9 +4099,9 @@ storage:
 然后转换为框架配置：
 
 ```go
-config.Storage.WAL = server.WALConfig{
-	Backend: server.WALBackendMongo,
-	Mongo: server.WALMongoConfig{
+config.Storage.WAL = ant.WALConfig{
+	Backend: ant.WALBackendMongo,
+	Mongo: ant.WALMongoConfig{
 		RouteType:  "wal",
 		Collection: "tx_wal",
 	},
@@ -4088,52 +4112,33 @@ config.Storage.WAL = server.WALConfig{
 
 ### 服务接入
 
-WAL 是 StateRuntime 中 Cache 组件的可选子组件，不是独立 CMod。需要第一版 Mongo WAL 的 L4 服务声明
-`CModMongoStorage` 与 `CModStateRuntime`；项目组合根再明确 WAL 对哪些服务启用：
+WAL 是 CModProcedure 中 Cache 组件的可选子组件，不是独立 CMod。需要第一版 Mongo WAL 的 L4 服务声明
+`CModMongoStorage` 与 `CModProcedure`；项目组合根再明确 WAL 对哪些服务启用：
 
 ```go
-type WorldService struct {
-	log wal.Store
-}
-
-func (*WorldService) Spec() server.Spec {
-	return server.Spec{
-		Name:     "slgworld",
-		Requires: []server.CModID{
-			server.CModMongoStorage,
-			server.CModStateRuntime,
-		},
-	}
-}
-
-func (service *WorldService) Start(runtime server.Context) error {
-	service.log = runtime.WAL()
-	if service.log == nil {
-		return errors.New("slgworld: WAL is not configured")
-	}
-	return nil
-}
-
-func NewServer(config server.Config, cacheComponent server.StateCache) (*server.Server, error) {
-	stateRuntime, err := server.NewStateRuntimeBuilder().
+func NewServer(
+	config ant.Config,
+	cacheComponent ant.CModProcedureCache,
+	services ...ant.ServiceRegistration,
+) (*ant.Server, error) {
+	procedure, err := ant.NewCModProcedureBuilder().
 		Cache(cacheComponent).
-		WAL(server.MongoWALForServices("slgworld")).
+		WAL(ant.NewCModProcedureMongoWAL("slgworld")).
 		Build()
 	if err != nil {
 		return nil, err
 	}
 
-	return server.New(
-		config,
-		server.WithCMod(stateRuntime),
-		server.WithService(&WorldService{}),
-	)
+	return ant.New(config).
+		CMods(procedure).
+		Services(services...).
+		Build()
 }
 ```
 
-Builder 只声明组件拓扑，不创建连接。启动选择包含 `slgworld` 时，StateRuntime 才复用进程已经装配的 Mongo 连接和 route
-table 创建 WAL；其他有状态服务复用同一 StateRuntime 也不会得到 WAL。服务只能取得 `wal.Store`，不能关闭连接、替换索引
-或接管健康探针。
+Builder 只声明组件拓扑，不创建连接。启动选择包含 `slgworld` 时，CModProcedure 才复用进程已经装配的 Mongo 连接和 route
+table 创建 WAL；其他有状态服务复用同一 CModProcedure 也不会得到 WAL。WAL 只通过
+`CModProcedureContext.WAL()` 注入 Cache 组件，不暴露给普通 Service 或 Handler；组件不能关闭连接、替换索引或接管健康探针。
 
 需要同步等待最终存储时使用 `wal/writer.Sync`；大世界等按帧提交的有状态服务使用 `wal/writer.Async` 与
 `wal/checkpoint.Scheduler`。异步调度器只合并同一 stream 的最大 `ThroughSeq`，不复制 WAL 正文；同流串行、跨流有界并行：

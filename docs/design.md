@@ -60,6 +60,56 @@
 
 ## 系统边界
 
+### Core 的物理边界
+
+Core 是 `tx` 中 L0-L2 公共基础包的架构集合，不对应单独的 `core` Go 包。Go 包按单一职责拆分；维护者和高级使用者
+根据需要直接依赖 `change`、`component`、`storage`、`wal` 或 `modules/*` 等稳定契约，普通项目则只使用 Bee 或 Ant
+门面。框架不提供大而全的 `core.Server`、`core.Context` 或 `core.Runtime`，避免把数据、存储、网络和事务重新耦合到
+一个万能命名空间。
+
+当前 `tx` 运行时相关包结构如下：
+
+```text
+tx/
+├── bee/                    # 无状态游戏后端的 L3 门面、CMod 和标准 Service Registration
+├── ant/                    # 有状态游戏后端的 L3 门面、CModProcedure 和标准 Service Registration
+├── internal/framework/     # Bee/Ant 共享的私有进程装配内核，业务与外部库不可导入
+├── component/              # 中立组件契约、依赖图和生命周期宿主
+├── change/                 # Store 状态树、StoreView 和变更文档投影
+├── lifecycle/              # WaitGroupContext、任务子生命周期和入口准入契约
+├── meta/                   # 生成类型、字段、存储与索引元数据
+├── protocol/               # 网络帧与 BON 等协议基础能力
+├── storage/                # 通用存储契约、Redis、Mongo、Fusion 和延迟任务实现
+├── wal/                    # WAL 契约、Mongo backend、writer 和 checkpoint 调度
+├── modules/
+│   ├── actor/              # Actor Runtime、寻址和消息投递
+│   ├── agent/              # 长连接、帧处理和会话入口组件
+│   ├── cache/              # 有状态根对象登记与分帧刷盘组件
+│   ├── control/            # 节点状态和逻辑槽位控制面
+│   ├── discovery/          # etcd 服务发现与本地快照
+│   ├── msgq/               # 会话邮箱及其 RPC、Redis 适配组件
+│   ├── rpc/                # 共享 gRPC Host 和调用基础能力
+│   └── txn/                # Procedure、锁、undo、savepoint 和死锁检测
+├── anno/                   # 生成注解公共定义
+├── astscan/                # Go AST 扫描辅助能力
+├── cmd/                    # tx 自带维护命令
+├── log/                    # 框架日志契约
+└── util/                   # 面向业务的独立工具组件
+```
+
+其中，`component`、`change`、`lifecycle`、`meta`、`protocol`、`storage`、`wal` 和 `modules/*` 等共同构成
+Core。`internal/framework` 使用这些包实现进程装配、能力图解析和生命周期编排，但它是私有实现，不是第四个公共门面。
+Bee 与 Ant 只负责把 Core 组件组合为两种运行模型；它们不能互相依赖，也不能被 Core 反向依赖。
+
+调用方按下面的边界选择入口：
+
+```text
+普通无状态项目      -> bee
+普通有状态项目      -> ant
+高级组件或 adapter  -> 按职责直接使用 component / storage / wal / modules/*
+生成代码            -> 只依赖 change / meta / storage 等中立 Core 契约
+```
+
 ### 四个工程的职责
 
 ```text
@@ -133,38 +183,38 @@ Procedure 单向依赖并组合 `modules` 的稳定业务能力，`modules` 禁�
 
 新增 API 时先判断它属于哪一层。不能因为测试方便，把内核对象泄露到业务层；也不能为了隐藏一切，阻断高级使用者实现 adapter 的可能。
 
-### 运行时能力门面
+### Bee 与 Ant 运行时门面
 
-`server.Server` 持有进程资源的完整实现，但标准服务只接收 `server.Context`。Context 是受控能力门面，
-不是 Runtime 对象的字段集合。它可以执行业务写入和 Procedure，但不能接管进程资源生命周期：
+`bee` 是无状态服务公开门面，`ant` 是有状态服务公开门面。两者共同持有 Builder、Server、ServiceRegistration、
+ServiceSpec、CMod 和基础 Context；同名 API 具有相同签名和生命周期语义。Ant 只增加 CModProcedure、固定逻辑槽位、
+缓存和可选 WAL，不改变 Bee 已有调用方式。这个对称契约由 `tests/facade_symmetry_test.go` 在编译期和运行期锁定。
 
-| Context 能力 | 所属模块契约 | 服务可做什么 | owner 权限仍在哪里 |
+公开 Context 是受控能力视图，不是 Runtime 对象的字段集合：
+
+| Context 能力 | 适用门面 | 服务可做什么 | owner 权限仍在哪里 |
 | --- | --- | --- | --- |
-| `Tasks()` | `lifecycle.Tasks` | 注册本服务后台任务、读取取消信号 | `Cancel/Wait` 在 `server.Server` |
-| `Admission()` | `lifecycle.Admission` | 登记和封口本服务外部入口 | 进程排水顺序在 service host |
-| `Storage()` | `server.Storage` | 安装业务 facade，并通过带健康保护的 reader/writer 读写变更 | client、健康状态、worker 和 Close 在 server |
-| `WAL()` | `wal.Store` | 追加恢复记录、连续重放和 checkpoint 后清理 | backend、索引、连接和健康状态在 server |
-| `RPC()` | `rpc.Registrar` | 启动前注册 protobuf service、读取 endpoint | Serve/Stop 在共享 Host |
-| `Directory()` | `discovery.Directory` | 查询 running/指定实例快照 | watch 与 Replace 在 discovery runtime |
-| `Actor()` | `actor.Messenger` | 解析 PID、单向投递、接收确认和业务调用 | Start/Shutdown/ActorSystem 在 actor runtime |
-| `Transaction()` | `txn.Executor` | 执行根 Procedure | CommitParticipant 绑定在 StateRuntime，Flush 在 Cache Runtime |
+| `Tasks()` | Bee/Ant | 注册本服务后台任务、读取取消信号 | 每个 Service 独立子生命周期，`Cancel/Wait` 在私有装配内核 |
+| `Admission()` | Bee/Ant | 登记和封口本服务外部入口 | 进程排水顺序在 Service Host |
+| `Storage()` | Bee/Ant | 仅供项目组合根安装 mode-aware 业务 facade | client、健康状态、worker 和 Close 在存储 Runtime |
+| `CModRedisStorage()` | Bee/Ant | 取得仅允许 Redis TypeSpec 的 reader/writer 和脚本路由 | 连接池所有权在存储 Runtime |
+| `CModMongoStorage()` | Bee/Ant | 取得仅允许 MongoDB TypeSpec 的 reader/writer | 连接池所有权在存储 Runtime |
+| `CModFusionStorage()` | Bee/Ant | 取得仅允许 Fusion TypeSpec 的 reader/writer | Redis、Mongo 和延迟任务所有权在存储 Runtime |
+| `CModRPC()` | Bee/Ant | 启动前注册 protobuf service | Serve/Stop 在共享 RPC Host |
+| `CModDiscovery()` | Bee/Ant | 查询 running 或指定实例快照 | watch 与 Replace 在 discovery Runtime |
+| `CModActor()` | Bee/Ant | 解析 PID、投递和业务调用 | Start/Shutdown/ActorSystem 在 Actor Runtime |
+| `CModProcedure()` | Ant | 执行根 Procedure | CommitParticipant 和生命周期在 CModProcedure |
+| `CModSlots()` | Ant | 读写受控逻辑槽位门面 | etcd client、成员 lease 和 watch 在 discovery Runtime |
+| `LogicalSlot()` | Ant | 读取当前稳定逻辑槽位和物理实例身份 | 槽位迁移由控制面负责 |
 
-门面返回专用 wrapper，而不是把具体指针仅仅窄化成接口。这样服务不能通过类型断言重新取得
-`Cancel`、`Stop`、`Shutdown`、`Replace` 或 `Flush`。
+Context 返回专用 wrapper，而不是把具体指针仅仅窄化成接口，因此调用方不能通过类型断言重新取得
+`Cancel`、`Stop`、`Shutdown`、`Replace` 或 `Flush`。`Context.Instance()` 返回 ownership-safe 的本地实例快照，
+状态顺序固定为 `starting -> running -> draining -> stopping`。
 
-`Context.Instance()` 返回 ownership-safe 的本地实例快照。运行时以锁保护实例状态，复制 `Services`
-切片后再交给调用方；它不是 discovery 目录中可写的成员对象。状态顺序固定为
-`starting -> running -> draining -> stopping`，服务可观测状态与对外注册状态使用同一语义。
-
-`Context.Advanced()` 是第一版受控高级 SPI：
-
-- `Redis()` 返回 `redis.ScriptRoutes`，允许基础设施 adapter 复用已经装配的 Redis 路由和连接；它不暴露
-  Close 或连接池所有权。
-- `Slots()` 返回 `discovery.SlotStore`，允许高级项目按完整 assignment 和 generation CAS 管理逻辑槽位；
-  它不暴露 etcd client、成员 lease 或 discovery 快照写权限。
-
-普通 handler 不应持有 `server.Context`。项目组合根通过 `server.WithSetup` 把 `Storage()` 包装成
-`db.Save(role)` 等业务 facade；可选服务只在 `Start(Context)` 期间取得自己需要的能力。
+普通 Handler 不应保存 Bee/Ant Context。项目组合根通过 `Builder.Setup` 把 `Storage()` 包装成 `db.Save(role)` 等业务
+facade；Service 和 CMod Factory 只在构造期间取得自己通过 `Requires` 声明的窄能力。Redis、MongoDB、Fusion 三类
+存储 accessor 的 reader 方法集互不重叠，writer 也会在第一次 I/O 前校验 `TypeSpec.Storage.Mode`，不能借进程内其他
+Service 已选择的后端跨越能力边界。高级使用者需要 Redis 脚本或槽位管理时，
+使用命名明确的 `CModRedisStorage()` 与 `CModSlots()`，不通过字符串 service locator 或全局 Runtime 查找能力。
 
 ## 依赖方向
 
@@ -189,6 +239,9 @@ redis    mongo     fusion
 optional modules:
 lifecycle <- discovery / rpc / msgq / agent / actor / control / cache manager
 change <- txn runtime <- cache manager -> storage contracts
+
+process assembly:
+L0-L2 components -> internal/framework private kernel -> bee / ant -> project L4 services
 ```
 
 关键约束：
@@ -199,6 +252,8 @@ change <- txn runtime <- cache manager -> storage contracts
 - `modules/txn` 只依赖 `change`，不持有 writer 或具体 backend。
 - `modules/cache` 依赖 `txn` 提交 SPI 和通用 `storage` 契约，不依赖 Redis、Mongo 或 Fusion 实现。
 - 项目业务可以组合 Actor、Procedure 和存储 runtime，模块之间不反向耦合。
+- `internal/framework` 可以编排中立组件，但不能成为项目可 import 的公共 API。
+- Bee 与 Ant 不能互相 import；Core 和私有装配内核不能反向 import Bee 或 Ant。
 
 全局 registry、回调和 `any` 也可能形成隐式反向依赖。审查依赖时不能只看 import cycle。
 
@@ -209,20 +264,20 @@ change <- txn runtime <- cache manager -> storage contracts
 ```text
 change/meta/storage contracts
   -> storage backend 与 lifecycle/discovery/rpc/msgq/actor/txn 基础模块
-  -> server/adapters 下的跨能力中立适配
-  -> server/services 下的可选标准服务
-  -> server.Server 进程装配与反序关闭
-  -> txgame 配置转换、项目服务和业务 facade
+  -> 中立 runtime、adapter 与标准 agent/msgq service 组件
+  -> internal/framework 私有装配内核
+  -> bee / ant 公开门面与各自 CMod
+  -> txgame / txgameslg 配置转换、项目服务和业务 facade
 ```
 
 - 基础模块声明最小消费契约。路由器依赖 `discovery.Directory`，不能依赖具体
   `*ServiceDirectory`；服务注册只依赖 `rpc.Registrar`，不能取得 `*rpc.Host`。
-- 跨能力胶水必须有中立归属。例如 `server/adapters/msgqredis` 只把
+- 跨能力胶水必须有中立归属。例如 `modules/msgq/msgqredis` 只把
   `redis.ScriptRoutes` 适配成 `msgq.SessionStore`，不启动 msgq，也不拥有 Redis client。
-- 标准服务只负责本服务的配置、协议注册和资源启停。`agent` 不导入 `services/msgq`；同进程复用通过
+- 标准服务组件只负责本服务的配置、协议注册和资源启停。`agent` 不导入 msgq 门面；同进程复用通过
   `LocalMsgQ` 契约，跨进程会话解析通过 `modules/msgq` 与中立 Redis adapter 完成。
-- `server.Server` 可以实例化和编排下层模块，但下层模块不能反向访问 server 的内部 `runtime`。
-- 测试 fake 放在 `server/internal/servertest`，不能为了测试构造任意 Runtime 而扩大生产 API。
+- 私有装配内核可以实例化和编排下层模块，但下层模块不能反向访问其内部 Runtime。
+- 测试 fake 就近放在目标 package 的测试文件或内部测试辅助包，不能为了测试构造任意 Runtime 而扩大生产 API。
 
 ### L0-L4 与能力模组
 
@@ -233,21 +288,21 @@ change/meta/storage contracts
 | L0 | 纯算法、基础结构和稳定契约 | `change`、`meta`、`lifecycle`、storage/WAL 契约 |
 | L1 | 外部 backend 与传输 adapter | Redis、Mongo、gRPC、etcd adapter |
 | L2 | 可复用运行时组件 | Fusion Strategy、RPC Host、Scheduler、Transaction Runtime、Actor Runtime |
-| L3 | 进程装配与能力门面 | `server.Server`、CMod 依赖图、进程生命周期、受控 Context |
+| L3 | 进程能力门面 | Bee/Ant CMod、受控 Context、由私有内核执行的依赖图和进程生命周期 |
 | L4 | 可由 `--services` 选择的服务 | agent、msgq、game、room、battlefield |
 
 CMod 固定属于 L3，是带稳定身份、依赖关系和进程生命周期的能力门面。L0-L2 的算法、backend、Runtime 和 Scheduler
-只能作为强类型组件被 CMod Builder 组合，不拥有全局 `CModID`。L4 服务只声明直接 `CModID`，`server` 使用同一个解析器
+只能作为强类型组件被 CMod Builder 组合，不拥有全局 `CModID`。L4 服务只声明直接 `CModID`，Bee/Ant 复用私有内核中的同一个解析器
 得到依赖闭包、稳定拓扑顺序、循环路径和缺失依赖。`Requires` 会选择依赖，`After` 只对已经选中的门面增加顺序边。
 当前内置关系为：
 
 ```text
 fusion-storage requires redis-storage, mongo-storage
 fusion-storage components: scheduler=delay
-state-runtime components: transaction=default, cache=<project>[checkpoint=<project>,wal=<backend>]
+procedure components: transaction=default, cache=<project>[checkpoint=<project>,wal=<backend>]
 ```
 
-`state-runtime` 是项目注册的 L3 CMod。Transaction、Cache 和可选 WAL 都由它统一校验、启动、排水和停止；WAL 只在
+`procedure` 是项目注册的 L3 CMod。Transaction、Cache 和可选 WAL 都由它统一校验、启动、排水和停止；WAL 只在
 Builder 指定的 L4 服务被选择时生效。`fusion-storage` 统一拥有 Delay Scheduler，服务不再分别选择 producer 与 consumer。
 启动日志保留 CMod 拓扑顺序，同时输出过滤后的组件拓扑，便于核对当前进程实际创建了哪些组件。
 
@@ -257,56 +312,55 @@ Actor CMod 没有隐含普通 RPC 或服务发现依赖。ProtoActor Remote 与�
 
 组件职责仍保持正交。Transaction 只负责锁、undo、savepoint、死锁检测和提交参与者调度；Cache 只登记根 Store 并决定
 何时 Flush；Fusion 与 Mongo 是可选目标 Writer；WAL 只提供追加、重放和 checkpoint 契约。正交不等于平级暴露：
-StateRuntime 负责把这些组件按明确顺序组合为一个进程能力门面。
+CModProcedure 负责把这些组件按明确顺序组合为一个进程能力门面。
 
 典型 L4 组合与调度边界如下：
 
 | 服务形态 | 显式 CMod | 运行期调度 |
 | --- | --- | --- |
 | 无状态请求服务 | RPC、Fusion | Handler 修改 GD 后显式保存；Fusion 内部运行 Delay Scheduler |
-| 有状态逻辑服 | RPC、Fusion、StateRuntime | Procedure 只提交内存；StateRuntime 的 Cache 组件分帧写 Fusion |
-| 有状态大世界 | RPC、Mongo、StateRuntime | Cache 的 WAL 子组件先可靠追加，再异步推进 Mongo checkpoint |
+| 有状态逻辑服 | RPC、Fusion、CModProcedure | Procedure 只提交内存；CModProcedure 的 Cache 组件分帧写 Fusion |
+| 有状态大世界 | RPC、Mongo、CModProcedure | Cache 的 WAL 子组件先可靠追加，再异步推进 Mongo checkpoint |
 
-StateRuntime Builder 只组合组件，不隐式选择外部存储 CMod。启用 Mongo WAL 的服务仍须在自身 `Requires` 中显式声明
+CModProcedure Builder 只组合组件，不隐式选择外部存储 CMod。启用 Mongo WAL 的服务仍须在自身 `Requires` 中显式声明
 Mongo；使用 Fusion Writer 的服务显式声明 Fusion。这样配置关系在 L4 仍然可见，组件生命周期又不会泄漏为一组平级 CMod。
 
-项目组合根负责创建唯一的 StateRuntime 实例：
+项目组合根负责创建唯一的 CModProcedure 实例：
 
 ```go
 cacheComponent, err := cachemgr.NewComponent(config.CacheManagerConfig)
 if err != nil {
 	return nil, err
 }
-stateRuntime, err := server.NewStateRuntimeBuilder().
+procedure, err := ant.NewCModProcedureBuilder().
 	Cache(cacheComponent).
-	WAL(server.MongoWALForServices("slgworld")).
+	WAL(ant.NewCModProcedureMongoWAL("slgworld")).
 	Build()
 if err != nil {
 	return nil, err
 }
 
-return server.New(
-	framework,
-	server.WithCMod(stateRuntime),
-	server.WithService(slggame, slgworld),
-)
+return ant.New(config).
+	CMods(procedure).
+	Services(slggame, slgworld).
+	Build()
 ```
 
-`Cache` 接收 `StateCache` SPI，`WAL` 接收 `StateWAL` SPI。项目可以替换缓存或 WAL 实现，但组件只能看到
-`StateRuntimeContext` 提供的 Tasks、Storage、目标感知 WriteAdmission、Transaction、WAL 和提交参与者绑定接口，不能取得
+`Cache` 接收 `CModProcedureCache` SPI，`WAL` 接收 `CModProcedureWAL` SPI。项目可以替换缓存或 WAL 实现，但组件只能看到
+`CModProcedureContext` 提供的 Tasks、Storage、目标感知 WriteAdmission、Transaction、WAL 和提交参与者绑定接口，不能取得
 `Server` 所有权。
-内置 `MongoWALForServices` 只是 `StateWAL` 的第一种实现。Builder 生成的组件拓扑为：
+内置 `NewCModProcedureMongoWAL` 只是 `CModProcedureWAL` 的第一种实现。Builder 生成的组件拓扑为：
 
 ```text
-state-runtime
+procedure
 ├── transaction=default
 └── cache=txgameslg
     ├── checkpoint=mongo  [仅 services 包含 slgworld 时生效]
     └── wal=mongo         [仅 services 包含 slgworld 时生效]
 ```
 
-启动时 StateRuntime 先根据本轮 `ServiceSelection` 判定 WAL 是否生效；生效时先校验并创建 WAL，再创建 Transaction，最后
-启动 Cache 并绑定提交参与者。排水与停止从 Cache 开始，Mongo/Fusion 等外部 CMod 因拓扑在 StateRuntime 之后反向关闭，
+启动时 CModProcedure 先根据本轮 `ServiceSelection` 判定 WAL 是否生效；生效时先校验并创建 WAL，再创建 Transaction，最后
+启动 Cache 并绑定提交参与者。排水与停止从 Cache 开始，Mongo/Fusion 等外部 CMod 因拓扑在 CModProcedure 之后反向关闭，
 因此最终 Flush 期间依赖仍然可用。组件不能自行注册 CMod、修改全局依赖图或关闭外部 backend。
 
 启动固定执行“选择 L4 服务 -> 解析 CMod 闭包 -> 惰性转换闭包配置 -> 校验全部 CMod -> 按拓扑启动”。全部
@@ -318,15 +372,15 @@ CMod 或 L4 Service 的 `Start` 允许分阶段创建连接、监听器和后台
 该单元登记的后台任务，再调用失败单元的 `Stop`；随后按逆拓扑顺序以相同流程停止此前成功启动的单元。这样 Redis、Mongo
 等依赖不会在使用它们的 worker 仍运行时被提前关闭。启动错误与所有清理错误通过 `errors.Join` 一并返回。
 
-`Server` 使用 `starting -> running -> stopping -> stopped` 单向状态机。`Context()` 只在完整启动成功后发布，启动中、失败回滚
-和停止后均不可见；并发 `Stop` 必须等待 `Start` 完成后再关闭已经创建的全部资源，不能返回成功后留下继续运行的进程。
+Bee/Ant Server 使用 `starting -> running -> stopping -> stopped` 单向状态机。Context 只传递给启动过程中的 Setup 和
+Factory，不提供可在业务运行期任意查询的全局入口；并发 `Stop` 必须等待 `Start` 完成后再关闭已经创建的全部资源，不能返回成功后留下继续运行的进程。
 正常停止时先执行 CMod Drain，随后取消并等待根及全部子生命周期，最后才调用 CMod Stop 释放物理依赖。
 
 `CModConfigProvider` 只在依赖图和 L4 服务集合确定后运行，接收只读 `AssemblySelection`。它解决同一份 YAML 被
-agent、msgq、game 等不同进程复用时的配置边界：未选择 StateRuntime 时不解析事务时长，未选择 Actor 时不要求 Actor
+agent、msgq、game 等不同进程复用时的配置边界：未选择 CModProcedure 时不解析事务时长，未选择 Actor 时不要求 Actor
 host，未选择 Mongo 时不验证或连接 Mongo。
 未知 YAML 字段仍由项目解析器在加载期拒绝。CMod ID 只用于依赖解析和启动日志；业务调用使用构造函数强类型注入或
-`server.Context` 的稳定窄接口，不提供按字符串取 `any` 的 service locator。
+Bee/Ant Context 的稳定窄接口，不提供按字符串取 `any` 的 service locator。
 
 `CModContext.HasCMod` 查询本轮已经解析完成的完整选择闭包，不是“此前已经启动”的瞬时状态。因此所有 Validator 都能在
 创建连接之前按组合条件预检项目配置；Start 仍只能使用拓扑中已经位于自己之前的实际运行时能力。
@@ -726,7 +780,7 @@ Store 不保存第二份业务数据，也不保存每次操作的 value、时�
 | 延迟任务上下文 | 任务租约 | `task.DelayTaskLease`、busy 状态 | worker 在限定时间内取得一次任务处理权；不能简称为 Store 或事务锁 |
 | 延迟任务上下文 | 任务载荷 | Redis task backend 的 `payload` 字段 | 任务定位与执行参数的编码值；不是业务消息载荷，也不保存 GD 或 Store 变更状态 |
 | 延迟任务上下文 | 后续到期时间 | Redis task backend 的 `pending` 字段 | 任务已被租用期间再次入队时保存的新到期时间；不是待刷根对象 |
-| 有状态缓存上下文 | 缓存运行时 | `cache.Runtime` | StateRuntime Cache 组件依赖的提交、生命周期和实体释放 SPI；默认实现是 `cache.Manager`，不是业务对象缓存的固定形态 |
+| 有状态缓存上下文 | 缓存运行时 | `cache.Runtime` | CModProcedure Cache 组件依赖的提交、生命周期和实体释放 SPI；默认实现是 `cache.Manager`，不是业务对象缓存的固定形态 |
 | 有状态缓存上下文 | 待刷根对象 | 默认 `cache.Manager.Pending()` 管理的 root | 已发生受控修改且尚未成功 Flush 的持久化根对象；一个 root 的多条路径只计一个 |
 | 事务上下文 | 撤销记录 | `change.UndoRecorder`、`change.UndoFunc` | 恢复事务前 GD 值和 Store 状态；与帧内合并职责独立 |
 
@@ -1600,7 +1654,7 @@ Mongo WAL 使用独立 collection，不复用 GD 文档 adapter，也不把 WAL 
 
 稳定哈希只保证输入身份不变时路由键不变，不保证 route table 改动后 endpoint 仍然相同。WAL 分片集合、顺序和范围规则属于持久化布局契约；已有日志时不能直接修改。第一版不建设 placement 元数据或自动迁移，变更布局必须由运维先封口 stream、迁移 WAL 与 checkpoint、验证后再切换配置。
 
-`server` 在 StateRuntime 启动期复用已经显式选择的 Mongo database 创建 WAL client，并为四元位置创建唯一索引；索引创建失败会使启动 fast-fail。Mongo WAL collection 强制使用 `majority + j:true` 写关注，不能继承更弱的 URI 默认值。第一版 Mongo WAL 要求 L4 服务同时声明 `CModMongoStorage` 和 `CModStateRuntime`，并由项目组合根通过 `MongoWALForServices` 把 WAL 挂到 Cache 组件下；Builder 不会隐式补齐 Mongo。框架通过 `Context.WAL()` 提供后端无关的安全 `wal.Store`；服务不能取得 Mongo client、原始清理入口或连接关闭权。WAL 操作复用 Mongo 健康闸门和 backend generation，不在每次追加前执行 Ping。
+Ant 在 CModProcedure 启动期复用已经显式选择的 Mongo database 创建 WAL client，并为四元位置创建唯一索引；索引创建失败会使启动 fast-fail。Mongo WAL collection 强制使用 `majority + j:true` 写关注，不能继承更弱的 URI 默认值。第一版 Mongo WAL 要求 L4 服务同时声明 `CModMongoStorage` 和 `CModProcedure`，并由项目组合根通过 `NewCModProcedureMongoWAL` 把 WAL 挂到 Cache 组件下；Builder 不会隐式补齐 Mongo。框架只通过 `CModProcedureContext.WAL()` 向 Cache 组件提供后端无关的安全 `wal.Store`；普通 Service 不能取得 Mongo client、原始清理入口或连接关闭权。WAL 操作复用 Mongo 健康闸门和 backend generation，不在每次追加前执行 Ping。
 
 Mongo 服务不可用时，追加、读取和 checkpoint 都返回原始可识别错误，不 panic、不静默成功。WAL 是否阻止当前业务提交由上层状态模块决定；对于声明“先写 WAL 才提交”的路径，追加失败必须终止本次提交。进程排水时不再接受新的外部工作，已进入的 WAL 追加由全局 `WaitGroupContext` 等待完成。
 
@@ -1885,7 +1939,7 @@ go test ./modules/txn -run '^$' \
 
 `txn.Runtime` 是 Procedure 执行器，只负责锁、undo、savepoint、死锁检测和提交回调。最终变脏根对象在根事务仍持锁时确定，但不作为公共 API 暴露。Runtime 不持有 GD 缓存、存储 writer、Pending 集合或后台任务。
 
-`modules/cache.Runtime` 是 StateRuntime Cache 组件使用的稳定 SPI，组合 `txn.CommitParticipant`、后台生命周期、最终刷盘和实体释放契约。`modules/cache.Manager` 是 tx 提供的默认实现，项目 Cache 组件在启动期创建或注入 Runtime，并由 StateRuntime 把它绑定为 `txn.CommitParticipant`：
+`modules/cache.Runtime` 是 CModProcedure Cache 组件使用的稳定 SPI，组合 `txn.CommitParticipant`、后台生命周期、最终刷盘和实体释放契约。`modules/cache.Manager` 是 tx 提供的默认实现，项目 Cache 组件在启动期创建或注入 Runtime，并由 CModProcedure 把它绑定为 `txn.CommitParticipant`：
 
 1. `Prepare` 在 `Process` 前校验 `LockKey -> Store` 身份、存储准入和容量，并预留根对象。
 2. Procedure 回滚时 `Abort` 释放预留；提交时无失败地登记最终变脏根对象。
@@ -1895,21 +1949,21 @@ go test ./modules/txn -run '^$' \
 
 默认 Manager 不复制 GD，也不把引用 GD 的变更状态交给无锁异步写队列。同一 Manager 内相同 `LockKey` 不允许绑定不同 Store；对象可以由业务自行创建或加载，不要求经过指定加载函数。Store 不是并发安全容器，业务不能在实体锁外轮询 `HasChanges` 观察后台 Flush。
 
-默认 Manager 不是完整的业务对象缓存，不定义 `LoadRole`、LRU、TTL 淘汰、Actor 归属、业务分片或二级索引。静态 `Config` 只保存调度和容量参数；writer 与写入闸门通过 `cache.Dependencies` 在 StateRuntime 启动期注入。项目需要缓存能力时有两种边界：
+默认 Manager 不是完整的业务对象缓存，不定义 `LoadRole`、LRU、TTL 淘汰、Actor 归属、业务分片或二级索引。静态 `Config` 只保存调度和容量参数；writer 与写入闸门通过 `cache.Dependencies` 在 CModProcedure 启动期注入。项目需要缓存能力时有两种边界：
 
 1. 普通项目直接使用默认 Manager，业务只通过项目 facade 调用 Procedure 和 `Release`。
 2. 高级项目实现 `cache.Runtime`，优先以装饰器包装默认 Manager，并在外层增加加载、淘汰、业务索引、WAL/checkpoint 或项目指标。`txgameslg` 的 Cache 组件通过 Factory 创建该实现，事务和生命周期仍只依赖 SPI。
 
-CacheManager 不绑定固定持久化目标。StateRuntime 启动期向项目 Factory 注入窄依赖，项目按已显式选择的服务组合决定 Writer：
+CacheManager 不绑定固定持久化目标。CModProcedure 启动期向项目 Factory 注入窄依赖，项目按已显式选择的服务组合决定 Writer：
 
 | 服务形态 | L3 CMod | CacheManager Writer | 提交成功边界 |
 | --- | --- | --- | --- |
-| 无状态请求服务 | Fusion，不选择 StateRuntime | 无 CacheManager；业务调用 `db.Save(role)` | Redis 热写和本地延迟任务登记成功 |
-| 有状态逻辑服 | Fusion、StateRuntime | mode-aware Fusion Writer | Procedure 只提交内存；帧 Flush 成功写入 Fusion 后清理 Store |
-| 有状态大世界 | Mongo、StateRuntime | 项目 WAL Pipeline | Procedure 只提交内存；帧 Flush 追加 WAL 成功后清理 Store，Mongo checkpoint 异步完成 |
+| 无状态请求服务 | Fusion，不选择 CModProcedure | 无 CacheManager；业务调用 `db.Save(role)` | Redis 热写和本地延迟任务登记成功 |
+| 有状态逻辑服 | Fusion、CModProcedure | mode-aware Fusion Writer | Procedure 只提交内存；帧 Flush 成功写入 Fusion 后清理 Store |
+| 有状态大世界 | Mongo、CModProcedure | 项目 WAL Pipeline | Procedure 只提交内存；帧 Flush 追加 WAL 成功后清理 Store，Mongo checkpoint 异步完成 |
 
-项目 Factory 只能取得 Writer、写入准入和可选 WAL 门面，不取得 `server.runtime`、Mongo client 或生命周期所有权。
-StateRuntime 不会自动选择 Fusion 或 Mongo；L4 服务必须显式列出作为目标 Writer 或 WAL backend 的存储 CMod。
+项目 Factory 只能取得 Writer、写入准入和可选 WAL 门面，不取得私有装配内核、Mongo client 或生命周期所有权。
+CModProcedure 不会自动选择 Fusion 或 Mongo；L4 服务必须显式列出作为目标 Writer 或 WAL backend 的存储 CMod。
 
 因此依赖方向固定为：
 
@@ -1923,7 +1977,7 @@ txn.Runtime -> txn.CommitParticipant <- cache.Runtime SPI
                     项目 cacheMgr 可选装饰器
 ```
 
-StateRuntime 不持有具体 `*cache.Manager`，项目 facade 也不能要求调用方取得该指针。完整替换 Runtime 属于高级扩展面；实现必须保持 `Prepare` 先于业务修改、`Commit` 不失败、失败 Flush 不清理变更、同一实体锁内读取 Store 等契约。
+CModProcedure 不持有具体 `*cache.Manager`，项目 facade 也不能要求调用方取得该指针。完整替换 Runtime 属于高级扩展面；实现必须保持 `Prepare` 先于业务修改、`Commit` 不失败、失败 Flush 不清理变更、同一实体锁内读取 Store 等契约。
 
 `txgameslg` 的 Cache 组件会先保留 facade 所有权，再绑定 CommitParticipant 并启动 Runtime；只有 `Runtime.Start` 成功后才开放业务 facade。开始 Drain 时先关闭 facade 准入并等待已经进入的调用完成，再执行 `Runtime.Shutdown`。`Start` 返回错误时组件会在 `ShutdownFlushTimeout` 内调用同一实例的 `Shutdown` 清理部分启动资源；本次 `Server.Start` 随即进入终止回滚，该 Server 实例不可再次启动。
 
@@ -2029,38 +2083,40 @@ mailbox 溢出时立即回滚登记。只有 tx `Delivery` 属于业务工作，
 
 ### 进程运行时装配
 
-`tx/server` 是每个物理进程唯一的运行时宿主。项目先把 yml、环境变量和命令行转换为强类型
-`server.Config` 与 `server.RunOptions`；此后由 `server.Server` 按固定顺序装配并管理：
+Bee 或 Ant Server 是每个物理进程唯一的公开运行时宿主。项目先把 yml、环境变量和命令行转换为强类型
+`bee.Config/bee.RunOptions` 或 `ant.Config/ant.RunOptions`；此后由对应 Server 按固定顺序装配并管理：
 
 ```text
 project config parser
-  -> server.Config
-  -> server.New(options...)
+  -> bee.Config / ant.Config
+  -> bee.New(...).Build() / ant.New(...).Build()
   -> select services
   -> Storage + shared RPC Host
-  -> Discovery / Actor / Transaction when configured or required
+  -> Discovery / Actor / CModProcedure when configured or required
   -> generated data binding + project facade setup
   -> health workers + selected services
   -> RPC Serve + control ready + discovery running
 ```
 
-项目不实现自己的 Host 或 Runtime。`txgame/server/internal/app` 只是 composition root：注册生成数据、安装 `db`
-facade、注入身份解析/业务分发回调和声明可选业务服务。项目专属 SPI 与业务逻辑随所属 L4 Service 放在
-`txgame/server/services/<name>`；`server/services/agent` 与
-`server/services/msgq` 是 tx 提供的通用服务适配器；项目配置转换会延迟到对应服务真正被当前进程选中时执行，
+项目不实现自己的 Host 或装配 Runtime。`txgame/server/internal/app` 与 `txgameslg/server/internal/app` 只是
+composition root：注册生成数据、安装 `db` facade、注入身份解析/业务分发回调和声明可选业务服务。项目专属 SPI 与业务
+逻辑随所属 L4 Service 放在 `server/services/<name>`；`bee/services/agent`、`bee/services/msgq` 及其 Ant 对称门面是 tx
+提供的标准服务注册器；项目配置转换会延迟到对应服务真正被当前进程选中时执行，
 未选服务的专属配置不能阻止其他服务启动。
 
 `runtime.lifecycle.drainTimeout` 属于所有 L4 服务共享的进程生命周期配置，不由某个 CMod 或服务启用。入口等待与 Fusion 本地 pending 排空分别使用这项单阶段上限，零值使用 5 分钟默认值；txgame 模板显式配置该值，便于发布环境审阅。
 
-每个 `server.Service` 用 `Spec` 声明稳定名称与框架能力依赖，并在 `Start(server.Context)` 中只注册或启动
-本服务资源。`server.Context` 只暴露消费能力，不暴露进程资源所有权；普通业务 handler 应使用项目 facade。
-服务启动失败时先清理失败服务自身的部分资源，再按已启动顺序逆序回滚；正常退出顺序固定为：
+每个 `ServiceRegistration` 用 `ServiceSpec` 声明稳定名称与框架能力依赖，并在 Factory 中取得受控 Context、构造 Service；
+`Service.Start(context.Context)` 只启动本服务资源。Context 只暴露消费能力，不暴露进程资源所有权；普通业务 Handler 应使用项目 facade。
+服务启动失败时先清理失败服务自身的部分资源，再按已启动顺序逆序回滚。回滚会先取消 Service Tasks，再调用幂等
+`Stop` 解除 listener 等资源阻塞，最后等待任务退出；正常退出因 Drain 已先封口入口，顺序固定为：
 
 ```text
 discovery -> draining
   -> service ingress drain and accepted-work wait
   -> actor Delivery admission close and mailbox drain
-  -> service stop
+  -> 取消并等待各 Service 自有 Tasks
+  -> 停止 Service
   -> project cleanup and generated storage unbind
   -> cache manager final flush
   -> shared RPC graceful stop
@@ -2073,7 +2129,8 @@ discovery -> draining
 ```
 
 Drain 期间不会提前取消根 `WaitGroupContext`，也不会关闭 msgq 下行所需的共享 RPC Host。只有服务入口和 Actor
-业务邮箱完成封口并等待已受理工作后，Stop 才停止项目服务并进入最终 Flush 与资源关闭阶段。
+业务邮箱完成封口并等待已受理工作后，Stop 才取消并等待各 Service 通过 `Tasks()` 登记的后台任务，然后停止项目服务并进入
+最终 Flush 与资源关闭阶段。这样 Service 后台任务不能在 CModProcedure 最终刷盘后再次提交内存变更。
 
 实例只有在共享 RPC Host 和可选控制面都成功启动、discovery 成功发布 `running` 后，才把本地
 `Context.Instance().Status` 切为 `running`。任一步失败都不会发布 `running`，而会进入启动回滚并转为
@@ -2160,7 +2217,7 @@ assignment，也不能临时恢复成逐消息 etcd Get。该选择以不向错�
 客户端只接受 `Accepted=true` 且没有错误码的确认；成功位与错误码同时存在属于矛盾状态，统一按拒绝处理。
 
 `modules/rpc.Host` 实现“每个物理进程一个普通 gRPC Host”：它唯一持有 listener 与 `grpc.Server`，直接接入
-`lifecycle.WaitGroupContext`，并负责注册阶段、Serve 和幂等 Stop。`tx/server.Server` 创建 Host，让所选服务在启动期
+`lifecycle.WaitGroupContext`，并负责注册阶段、Serve 和幂等 Stop。Bee/Ant 的私有装配内核创建 Host，让所选服务在启动期
 注册 protobuf service，全部注册成功后启动 Host，并把实际 endpoint 发布到服务发现。
 同进程的 msgq 与普通 RPC 因此可以共享 endpoint，但保持不同 protobuf service；任一服务不得自行关闭共享 listener。
 
@@ -2207,8 +2264,8 @@ Agent 的会话来源是显式二选一：配置 `LocalMsgQ` 表示同进程复�
 
 连接入口可以是真实客户端，也可以由项目扩展为本地驱动或旁路模拟连接。tx 提供基础网络 Agent，同时保持 dispatcher 接口开放。
 
-项目通过 `server/services/agent.HandlerProvider` 在组合根注入认证与 Actor 路由。Provider 接收当前
-`server.Context`，因此可以使用本次 Server 的 Actor、服务目录和逻辑槽位；它不能依赖包级可变注册表。无状态项目通常
+项目通过自身 `services/agent.HandlerProvider` 在组合根注入认证与 Actor 路由。Provider 接收当前
+Bee 或 Ant Context，因此可以使用本次 Server 已声明的 Actor、服务目录，以及 Ant 的逻辑槽位；它不能依赖包级可变注册表。无状态项目通常
 解析 Virtual PID，有状态项目通常把业务槽位映射为固定 Kind 宿主 PID。
 
 `Dispatcher` 返回 `DispatchResult`。`Payload == nil` 表示本次命令没有直接下行；非 nil payload 的所有权在返回后
@@ -2292,7 +2349,7 @@ Actor 实体生命周期属于进程内数据面，不属于 etcd 控制面：
 - `Instance.ActorEndpoint`：ProtoActor Remote。
 
 `actor.NewKind` 声明 Virtual Actor；`actor.NewFixedKind` 声明固定实体。L4 服务仍统一放入
-`server.Spec.ActorKinds`，Server 发现固定 Kind 后自动选择 Discovery CMod，并保证 Actor Remote 先启动、写入
+`bee.ServiceSpec.ActorKinds` 或 `ant.ServiceSpec.ActorKinds`；Server 发现固定 Kind 后自动选择 Discovery CMod，并保证 Actor Remote 先启动、写入
 `ActorEndpoint`，随后才注册实例 lease。固定宿主邮箱接入同一排水生命周期；进入排水后新 Delivery 不会创建实体，
 已经转发到 child 的消息仍由 WaitGroupContext 等待完成。
 
@@ -2319,7 +2376,7 @@ protobuf `Delivery` 使用内部 `DeliveryMode` 和 `request_id` 区分三类线
 等待 goroutine；Runtime 关闭会用 `ErrRuntimeStopped` 一次性完成所有 pending。成功 Result 必须携带非空
 `MessageType`；空类型无法建立生成响应类型契约，响应 Actor 会将其判定为 `ErrInvalidResponse`。
 
-L4 服务在 `server.Spec.ActorKinds` 中声明 Kind，L3 Server 自动将 Actor CMod 加入依赖闭包并在启动前拒绝重名。
+L4 服务在 Bee/Ant `ServiceSpec.ActorKinds` 中声明 Kind，L3 Server 自动将 Actor CMod 加入依赖闭包并在启动前拒绝重名。
 普通可恢复实体使用 `actor.NewKind`，固定归属实体使用 `actor.NewFixedKind`；只有需要 ProtoActor 自定义 Strategy 的
 高级项目才使用 `actor.AdaptKind`。底层
 `ActorSystem` 保留为高级扩展面，不属于常规业务调用链。

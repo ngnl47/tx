@@ -41,7 +41,7 @@ type Dependencies struct {
 	WriteAdmission WriteAdmission
 }
 
-// Runtime 是 StateRuntime Cache 组件依赖的稳定 SPI。
+// Runtime 是 CModProcedure Cache 组件依赖的稳定 SPI。
 // 项目可以包装默认 Manager 扩展对象加载、淘汰和业务索引，也可以为高级场景提供完整实现。
 type Runtime interface {
 	txn.CommitParticipant

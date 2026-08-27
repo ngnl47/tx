@@ -134,7 +134,7 @@ func TestAnnoParseWithEmptyDefinitionsDoesNotEnableBuiltins(t *testing.T) {
 func TestAnnoParseRejectsLegacyTypeTagSyntax(t *testing.T) {
 	_, err := anno.ParseTypeTagLine(`// @redis:"routeType:role,routeBy:roleId"`)
 	if err == nil {
-		t.Fatal("expected legacy type tag syntax error")
+		t.Fatal("expected removed type tag syntax error")
 	}
 }
 

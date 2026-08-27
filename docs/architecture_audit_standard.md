@@ -30,7 +30,7 @@
 L0 纯算法与通用契约
   -> L1 backend / transport adapter
   -> L2 可复用运行时组件
-  -> L3 进程级 server 装配与 CMod 依赖图
+  -> L3 Bee/Ant 进程门面与 CMod 依赖图
   -> L4 可选服务
   -> txgame 项目组合根与业务 facade
 ```
@@ -39,13 +39,15 @@ L0 纯算法与通用契约
 - 契约优先由能力所有者声明。例如 RPC 注册契约属于 `modules/rpc`，只读实例目录属于
   `modules/discovery`，后台任务契约属于 `lifecycle`。
 - 两个同级实现需要复用逻辑时，先把稳定契约或中立 adapter 下沉；禁止一个
-  `server/services/<name>` 直接导入另一个 `server/services/<name>` 的实现。
-- `server.Server` 是进程资源的唯一 owner。Redis/Mongo client、gRPC Host、Actor Runtime、事务 Runtime、
-  discovery 快照和根 `WaitGroupContext` 的 Start/Stop/Shutdown/Replace/Flush 权限不能透传给服务。
+  `services/<name>` 直接导入另一个 `services/<name>` 的实现。
+- Bee/Ant `Server` 是进程资源的公开宿主，资源所有权由私有装配内核执行。Redis/Mongo client、gRPC Host、
+  Actor Runtime、Procedure Runtime、discovery 快照和根 `WaitGroupContext` 的 Start/Stop/Shutdown/Replace/Flush
+  权限不能透传给服务。
 - `txgame` 只负责配置转换、业务回调、业务 facade 和服务选择，不复制 tx 的 runtime/host/service
   生命周期实现。
-- CMod 固定属于 L3，是带稳定身份、依赖关系和进程生命周期的能力门面。L4 服务只能声明直接 CMod 依赖；Redis/Mongo、RPC Host、Scheduler、
+- CMod 固定属于 L3，是带稳定身份、依赖关系和进程生命周期的 Bee/Ant 能力门面。L4 服务只能声明直接 CMod 依赖；Redis/Mongo、RPC Host、Scheduler、
   Transaction Runtime 等资源由 L3 依赖图按闭包唯一装配。未进入闭包的配置不得被语义校验，也不得创建外部资源。
+- Bee 与 Ant 的共有公开 API 必须同名同义；Ant 只能增加 `CModProcedure`、逻辑槽位等有状态能力。Core 和私有装配内核不得反向依赖 Bee/Ant，Bee 与 Ant 不得互相导入。
 - 包名或目录深度不是层级证据；实际判断依据是依赖方向、接口所有权和资源生命周期。
 
 ## 审计严重级别
