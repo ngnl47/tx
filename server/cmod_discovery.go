@@ -24,10 +24,7 @@ func (server *Server) discoveryCMod(options RunOptions) CMod {
 			if server.discovery == nil {
 				return nil
 			}
-			return errors.Join(
-				server.discovery.markStopping(context.WithoutCancel(ctx)),
-				server.discovery.close(context.WithoutCancel(ctx)),
-			)
+			return server.discovery.close(context.WithoutCancel(ctx))
 		},
 	}
 }

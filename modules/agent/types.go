@@ -62,15 +62,22 @@ type DispatchRequest struct {
 	Payload   []byte
 }
 
-// Dispatcher 由项目实现业务命令解码与投递。
+// DispatchResult 是项目分发器返回给当前客户端会话的可选 BON 响应。
+// Payload 为 nil 表示当前命令不产生直接响应；非 nil 时，所有权在 Dispatch
+// 成功返回后移交给 Agent，调用方不得继续修改、append、复用或归还该切片。
+type DispatchResult struct {
+	Payload []byte
+}
+
+// Dispatcher 由项目实现业务命令解码与投递，并可返回当前请求的直接响应。
 type Dispatcher interface {
-	Dispatch(context.Context, DispatchRequest) error
+	Dispatch(context.Context, DispatchRequest) (DispatchResult, error)
 }
 
 // DispatchFunc 适合以内联函数实现 Dispatcher。
-type DispatchFunc func(context.Context, DispatchRequest) error
+type DispatchFunc func(context.Context, DispatchRequest) (DispatchResult, error)
 
-func (f DispatchFunc) Dispatch(ctx context.Context, request DispatchRequest) error {
+func (f DispatchFunc) Dispatch(ctx context.Context, request DispatchRequest) (DispatchResult, error) {
 	return f(ctx, request)
 }
 

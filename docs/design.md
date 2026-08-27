@@ -2065,9 +2065,10 @@ discovery -> draining
   -> cache manager final flush
   -> shared RPC graceful stop
   -> fusion delay-task pending drain
+  -> discovery stopping
   -> root WaitGroupContext cancel and wait
   -> actor shutdown
-  -> discovery stopping/close
+  -> discovery close
   -> storage close
 ```
 
@@ -2171,6 +2172,15 @@ Agent 的会话来源是显式二选一：配置 `LocalMsgQ` 表示同进程复�
 生成的 `CmdDescriptor` 提供静态 CommandID、目标服务、Actor kind 和 route key 类型；项目 resolver 根据身份和业务映射决定具体 PID 或实例。
 
 连接入口可以是真实客户端，也可以由项目扩展为本地驱动或旁路模拟连接。tx 提供基础网络 Agent，同时保持 dispatcher 接口开放。
+
+项目通过 `server/services/agent.HandlerProvider` 在组合根注入认证与 Actor 路由。Provider 接收当前
+`server.Context`，因此可以使用本次 Server 的 Actor、服务目录和逻辑槽位；它不能依赖包级可变注册表。无状态项目通常
+解析 Virtual PID，有状态项目通常把业务槽位映射为 Fixed PID。
+
+`Dispatcher` 返回 `DispatchResult`。`Payload == nil` 表示本次命令没有直接下行；非 nil payload 的所有权在返回后
+转移给 Agent，调用方不能再修改。Agent 使用当前连接的完整 `SessionHeader` 把响应发布到 MsgQ，旧连接产生的迟到响应
+不能进入已经替换的新会话。通用 Actor Dispatcher 对无响应命令使用 `Tell`，对声明响应类型的命令使用带 deadline 的
+`Call`；Actor 返回的 BON bytes 不在 Agent 内反序列化。
 
 ### Actor
 

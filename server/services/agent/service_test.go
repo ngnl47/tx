@@ -40,8 +40,10 @@ func TestServiceStartsWithLocalMsgQAndFrameworkLifecycle(t *testing.T) {
 		Identity: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (txagent.Identity, error) {
 			return txagent.Identity{RoleID: 1001, SessionID: 1}, nil
 		}),
-		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error { return nil }),
-		LocalMsgQ:  fixedLocalMsgQ{client: client},
+		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) (txagent.DispatchResult, error) {
+			return txagent.DispatchResult{}, nil
+		}),
+		LocalMsgQ: fixedLocalMsgQ{client: client},
 	})
 	if err != nil {
 		t.Fatalf("new agent service: %v", err)
@@ -62,7 +64,20 @@ func TestServiceStartsWithLocalMsgQAndFrameworkLifecycle(t *testing.T) {
 	})
 }
 
-func TestRemoteAgentDeclaresDiscoveryCMod(t *testing.T) {
+func TestAgentDeclaresClusterRoutingCMods(t *testing.T) {
+	service := &Service{}
+	want := []txserver.CModID{
+		txserver.CModRPC,
+		txserver.CModRedisStorage,
+		txserver.CModDiscovery,
+		txserver.CModActor,
+	}
+	if got := service.Spec().Requires; !slices.Equal(got, want) {
+		t.Fatalf("agent CMods = %v, want %v", got, want)
+	}
+}
+
+func TestRemoteAgentDoesNotRepeatDiscoveryCMod(t *testing.T) {
 	service, err := New(Options{
 		TCPListen:     "127.0.0.1:0",
 		MaxFrameBytes: 1024,
@@ -70,8 +85,10 @@ func TestRemoteAgentDeclaresDiscoveryCMod(t *testing.T) {
 		Identity: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (txagent.Identity, error) {
 			return txagent.Identity{RoleID: 1001, SessionID: 1}, nil
 		}),
-		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error { return nil }),
-		LocalMsgQ:  fixedLocalMsgQ{},
+		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) (txagent.DispatchResult, error) {
+			return txagent.DispatchResult{}, nil
+		}),
+		LocalMsgQ: fixedLocalMsgQ{},
 		SessionStore: msgqredis.Options{
 			RouteType: "fusion",
 			Prefix:    "agent-test",
@@ -85,8 +102,8 @@ func TestRemoteAgentDeclaresDiscoveryCMod(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve requirements: %v", err)
 	}
-	if want := []txserver.CModID{txserver.CModDiscovery}; !slices.Equal(conditional, want) {
-		t.Fatalf("conditional CMods = %v, want %v", conditional, want)
+	if len(conditional) != 0 {
+		t.Fatalf("conditional CMods = %v, want none", conditional)
 	}
 }
 
@@ -101,8 +118,10 @@ func TestConfiguredServiceResolvesOptionsOnlyOnce(t *testing.T) {
 			Identity: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (txagent.Identity, error) {
 				return txagent.Identity{RoleID: 1001, SessionID: 1}, nil
 			}),
-			Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error { return nil }),
-			LocalMsgQ:  fixedLocalMsgQ{},
+			Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) (txagent.DispatchResult, error) {
+				return txagent.DispatchResult{}, nil
+			}),
+			LocalMsgQ: fixedLocalMsgQ{},
 			SessionStore: msgqredis.Options{
 				RouteType: "fusion",
 				Prefix:    "agent-test",
@@ -121,6 +140,34 @@ func TestConfiguredServiceResolvesOptionsOnlyOnce(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("options provider calls = %d, want 1", calls)
+	}
+}
+
+func TestHandlerProviderReceivesCurrentServiceContext(t *testing.T) {
+	runtime := &servertest.Context{}
+	var received txserver.Context
+	service, err := New(Options{
+		TCPListen:     "127.0.0.1:0",
+		MaxFrameBytes: 1024,
+		FetchBatch:    1,
+		Handlers: func(current txserver.Context) (txagent.IdentityResolver, txagent.Dispatcher, error) {
+			received = current
+			return txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (txagent.Identity, error) {
+					return txagent.Identity{RoleID: 1001, SessionID: 1}, nil
+				}), txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) (txagent.DispatchResult, error) {
+					return txagent.DispatchResult{}, nil
+				}), nil
+		},
+		LocalMsgQ: fixedLocalMsgQ{},
+	})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	if _, _, err := service.resolveHandlers(runtime); err != nil {
+		t.Fatalf("resolveHandlers returned error: %v", err)
+	}
+	if received != runtime {
+		t.Fatalf("handler context = %#v, want current runtime", received)
 	}
 }
 
@@ -146,8 +193,10 @@ func TestRequirementQueryDoesNotChangeActualLocalMsgQSelection(t *testing.T) {
 		Identity: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (txagent.Identity, error) {
 			return txagent.Identity{RoleID: 1001, SessionID: 1}, nil
 		}),
-		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error { return nil }),
-		LocalMsgQ:  fixedLocalMsgQ{client: client},
+		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) (txagent.DispatchResult, error) {
+			return txagent.DispatchResult{}, nil
+		}),
+		LocalMsgQ: fixedLocalMsgQ{client: client},
 		SessionStore: msgqredis.Options{
 			RouteType: "fusion",
 			Prefix:    "agent-test",
@@ -183,8 +232,10 @@ func TestServiceDoesNotFallbackWhenConfiguredLocalMsgQFails(t *testing.T) {
 		Identity: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (txagent.Identity, error) {
 			return txagent.Identity{RoleID: 1001, SessionID: 1}, nil
 		}),
-		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error { return nil }),
-		LocalMsgQ:  failingLocalMsgQ{err: want},
+		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) (txagent.DispatchResult, error) {
+			return txagent.DispatchResult{}, nil
+		}),
+		LocalMsgQ: failingLocalMsgQ{err: want},
 	})
 	if err != nil {
 		t.Fatalf("new agent service: %v", err)

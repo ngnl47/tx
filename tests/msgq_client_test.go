@@ -111,7 +111,7 @@ func TestLocalSessionClientDelegatesMailboxCalls(t *testing.T) {
 	if _, err := client.Rec(context.Background(), msgq.RecRequest{Header: header, Seq: 1}); err != nil {
 		t.Fatalf("record inbound message: %v", err)
 	}
-	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Payload: []byte("bon")}); err != nil {
+	if _, err := client.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Payload: []byte("bon")}); err != nil {
 		t.Fatalf("publish outbound message: %v", err)
 	}
 	batch, err := client.FetchSome(context.Background(), msgq.FetchSomeRequest{Header: header, Max: 1})
@@ -183,7 +183,7 @@ func TestGRPCSessionClientDelegatesMailboxCalls(t *testing.T) {
 	if _, err := client.Rec(context.Background(), msgq.RecRequest{Header: header, Seq: 1}); err != nil {
 		t.Fatalf("record inbound message: %v", err)
 	}
-	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Payload: []byte("bon")}); err != nil {
+	if _, err := client.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Payload: []byte("bon")}); err != nil {
 		t.Fatalf("publish outbound message: %v", err)
 	}
 	batch, err := client.FetchSome(context.Background(), msgq.FetchSomeRequest{Header: header, Max: 1})
@@ -231,6 +231,10 @@ func (*sessionClientFake) Init(context.Context, msgq.InitRequest) (msgq.InitResu
 
 func (*sessionClientFake) Rec(context.Context, msgq.RecRequest) (msgq.RecResult, error) {
 	return msgq.RecResult{}, nil
+}
+
+func (*sessionClientFake) Pub(context.Context, msgq.PubRequest) (msgq.PubResult, error) {
+	return msgq.PubResult{}, nil
 }
 
 func (*sessionClientFake) FetchSome(context.Context, msgq.FetchSomeRequest) (msgq.FetchSomeResult, error) {

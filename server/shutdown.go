@@ -123,12 +123,15 @@ func (server *Server) shutdown(ctx context.Context, drain bool) error {
 	if cmodHost != nil {
 		errs = append(errs, cmodHost.drain(ctx))
 	}
+	if runtime != nil {
+		runtime.setInstanceStatus(discovery.StatusStopping)
+	}
+	if discoveryRuntime != nil {
+		errs = append(errs, discoveryRuntime.markStopping(context.WithoutCancel(ctx)))
+	}
 	if runtime != nil && runtime.lifecycle != nil {
 		runtime.lifecycle.Cancel()
 		runtime.lifecycle.WaitDoneAndWaitGroupWait()
-	}
-	if runtime != nil {
-		runtime.setInstanceStatus(discovery.StatusStopping)
 	}
 	if cmodHost != nil {
 		errs = append(errs, cmodHost.stop(context.WithoutCancel(ctx)))

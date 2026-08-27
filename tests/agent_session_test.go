@@ -83,6 +83,59 @@ func TestAgentSessionFetchesOutboundAndConfirmsAckOnNextInbound(t *testing.T) {
 	}
 }
 
+func TestAgentSessionPublishesDispatchResultToCurrentSession(t *testing.T) {
+	store := newMailboxSessionStore()
+	mailbox, err := msgq.NewServer(msgq.ServerOptions{InstanceID: "msgq-local", Store: store, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatalf("new mailbox: %v", err)
+	}
+	client, err := msgq.NewLocalSessionClient(mailbox)
+	if err != nil {
+		t.Fatalf("new local client: %v", err)
+	}
+	router, err := msgq.NewFixedSessionClientRouter(client)
+	if err != nil {
+		t.Fatalf("new fixed router: %v", err)
+	}
+	agent, err := txagent.NewServer(txagent.ServerOptions{
+		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (txagent.Identity, error) {
+			return txagent.Identity{RoleID: 470001, SessionID: 99}, nil
+		}),
+		Dispatcher: txagent.DispatchFunc(func(_ context.Context, request txagent.DispatchRequest) (txagent.DispatchResult, error) {
+			if request.Seq != 1 {
+				t.Fatalf("dispatch seq = %d, want 1", request.Seq)
+			}
+			return txagent.DispatchResult{Payload: []byte("bon-response")}, nil
+		}),
+		Sessions: router,
+		ConnectionID: func() (int64, error) {
+			return 7, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("new agent: %v", err)
+	}
+	transport := newAgentTransport()
+	result := make(chan error, 1)
+	go func() { result <- agent.Serve(context.Background(), transport) }()
+
+	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
+	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, CommandID: 1, Payload: []byte("bon-request")}
+	select {
+	case outbound := <-transport.writes:
+		if outbound.Kind != txagent.FrameOutbound || outbound.Seq != 1 || string(outbound.Payload) != "bon-response" {
+			t.Fatalf("outbound frame = %#v", outbound)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for dispatch response")
+	}
+
+	transport.closeReads()
+	if err := <-result; !errors.Is(err, io.EOF) {
+		t.Fatalf("serve error = %v, want EOF", err)
+	}
+}
+
 func TestAgentSessionConfirmsAckWithoutBusinessFrame(t *testing.T) {
 	agent, transport, mailbox, dispatched := newAgentSessionFixture(t, nil)
 	result := make(chan error, 1)
@@ -206,9 +259,9 @@ func TestAgentSessionDoesNotAdvanceSequenceWhenAdmissionRejects(t *testing.T) {
 		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (txagent.Identity, error) {
 			return txagent.Identity{RoleID: 470001, SessionID: 99}, nil
 		}),
-		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error {
+		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) (txagent.DispatchResult, error) {
 			t.Fatal("dispatcher must not run when admission rejects")
-			return nil
+			return txagent.DispatchResult{}, nil
 		}),
 		Admission: lifecycle.AdmissionFunc(func() (func(), error) { return nil, drainErr }),
 		Sessions:  router,
@@ -255,9 +308,9 @@ func newAgentSessionFixture(t *testing.T, dispatchErr error) (*txagent.Server, *
 		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (txagent.Identity, error) {
 			return txagent.Identity{RoleID: 470001, SessionID: 99}, nil
 		}),
-		Dispatcher: txagent.DispatchFunc(func(_ context.Context, request txagent.DispatchRequest) error {
+		Dispatcher: txagent.DispatchFunc(func(_ context.Context, request txagent.DispatchRequest) (txagent.DispatchResult, error) {
 			dispatched <- request
-			return dispatchErr
+			return txagent.DispatchResult{}, dispatchErr
 		}),
 		Sessions:     router,
 		ConnectionID: func() (int64, error) { return 7, nil },

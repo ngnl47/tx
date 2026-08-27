@@ -18,6 +18,7 @@ var (
 type SessionClient interface {
 	Init(context.Context, InitRequest) (InitResult, error)
 	Rec(context.Context, RecRequest) (RecResult, error)
+	Pub(context.Context, PubRequest) (PubResult, error)
 	FetchSome(context.Context, FetchSomeRequest) (FetchSomeResult, error)
 	Confirm(context.Context, ConfirmRequest) error
 	CloseSession(context.Context, SessionHeader) error
@@ -75,6 +76,10 @@ func (c localSessionClient) Init(ctx context.Context, request InitRequest) (Init
 
 func (c localSessionClient) Rec(ctx context.Context, request RecRequest) (RecResult, error) {
 	return c.mailbox.Rec(ctx, request)
+}
+
+func (c localSessionClient) Pub(ctx context.Context, request PubRequest) (PubResult, error) {
+	return c.mailbox.Pub(ctx, request)
 }
 
 func (c localSessionClient) FetchSome(ctx context.Context, request FetchSomeRequest) (FetchSomeResult, error) {

@@ -641,23 +641,21 @@ GOMODCACHE=/private/tmp/tx-go-modcache GOTOOLCHAIN=local \
 WebSocket 只接受 binary message。两种传输共用同一套 `Frame`、身份解析、Seq/Ack 和下行 Fetch 循环；业务 body
 始终是 BON bytes，不转换为 protobuf 或 JSON。
 
-Agent 不实现账号、JWT、游客登录或角色选择。项目必须在启动前提供 `IdentityResolver`，将握手中的不透明数据解析为
-逻辑 `RoleID` 和 `SessionID`；上游已经认证时，也可以直接解析可信 ticket：
+Agent 不实现账号、JWT、游客登录或角色选择。项目必须在启动组合根提供 `HandlerProvider`：它接收当前
+`server.Context`，组合身份解析器和项目 Actor 路由策略。这样项目不需要全局注册表，也不会在多测试、多 Server
+进程组合时共享可变状态。握手中的不透明数据由项目解析为逻辑 `RoleID` 和 `SessionID`：
 
 ```go
-handlers := appagent.Handlers{
-    IdentityResolver: txagent.IdentityResolverFunc(func(ctx context.Context, req txagent.AuthRequest) (txagent.Identity, error) {
+handlers := func(runtime txserver.Context) (txagent.IdentityResolver, txagent.Dispatcher, error) {
+    identity := txagent.IdentityResolverFunc(func(ctx context.Context, req txagent.AuthRequest) (txagent.Identity, error) {
         // 项目在这里校验 token，或解析登录服签发的可信 ticket。
         return txagent.Identity{RoleID: 470001, SessionID: 99}, nil
-    }),
-    Dispatcher: txagent.DispatchFunc(func(ctx context.Context, req txagent.DispatchRequest) error {
-        // req.Payload 是已经编码好的 BON 业务 body。
-        // 项目在这里解码 Cmd，并投递本地服务或业务 Actor。
-        return nil
-    }),
-}
-if err := appagent.RegisterHandlers(handlers); err != nil {
-    return err
+    })
+    dispatcher, err := txagent.NewActorDispatcher(txagent.ActorDispatcherOptions{
+        Messenger: runtime.Actor(),
+        Resolver:  projectActorResolver,
+    })
+    return identity, dispatcher, err
 }
 ```
 
@@ -1206,17 +1204,17 @@ if delivery.WantsResult() {
 也应返回对应的空响应结构，而不是发送没有类型的成功信封。缺少 `MessageType` 的成功响应会以
 `ErrInvalidResponse` 完成本地 Future，不会被当作成功。
 
-项目将 Agent 与业务服务分进程部署时，可在项目层把经握手、Seq/Ack 校验后的 BON body 投递给 Actor。该适配属于
-项目装配，不要求 Agent 知道具体 `GD*` 或 cmd 类型：
+项目将 Agent 与业务服务分进程部署时，可在项目层把经握手、Seq/Ack 校验后的 BON body 投递给 Actor。项目 resolver
+只决定目标 PID；tx 的通用 Dispatcher 根据命令是否声明响应类型选择 `Tell` 或 `Call`：
 
 ```go
-dispatcher, err := appagent.NewActorDispatcher(runtime,
-    appagent.ActorTargetResolverFunc(func(ctx context.Context, route appagent.CommandRoute) (*protoactor.PID, error) {
-        // 默认命令的 ToService 是 game。项目可以按 Descriptor.Route、RouteKey
-        // 和 Identity 决定 Role、Room、Battlefield 等实体的真实归属。
-        return runtime.VirtualPID("role", strconv.FormatInt(route.Identity.RoleID, 10))
+dispatcher, err := txagent.NewActorDispatcher(txagent.ActorDispatcherOptions{
+    Messenger: runtime.Actor(),
+    Resolver: txagent.ActorDispatchResolverFunc(func(ctx context.Context, request txagent.DispatchRequest) (txagent.ActorDispatch, error) {
+        pid, err := resolveProjectActor(ctx, request)
+        return txagent.ActorDispatch{Target: pid, Delivery: buildDelivery(request)}, err
     }),
-)
+})
 if err != nil {
     return err
 }
@@ -1307,50 +1305,42 @@ _ = pid
 ```
 
 `SlotRouter` 只负责“稳定槽位 -> 当前可用 endpoint”的安全解析与交接前检查；发布控制面或业务必须在 Promote 前停止旧槽位
-的新命令准入、等待已进入的 Procedure、完成缓存管理器最终 Flush。`txgame` 未启用服务发现时 `app.Slots` 为 nil；依赖固定槽位的
-服务必须在启动时显式失败，不能退化为普通实例路由。
+的新命令准入、等待已进入的 Procedure、完成缓存管理器最终 Flush。未启用服务发现时 `Context.Advanced().Slots()`
+不可用；依赖固定槽位的服务必须在启动时显式失败，不能退化为普通实例路由。
 
-`txgame/server/services/agent` 的 `NewFixedSlotTargetResolver` 是 Agent 到固定 Actor 的项目侧组合器。业务只提供身份到
-`SlotID` 和 Actor 名称的规则；它复用 `SlotRouter`，因此目标处于 `draining`、`stopping` 或缺失时会保留
+`txgameslg/server/services/agent` 的 `NewFixedSlotHandlers` 是 Agent 到固定 Actor 的项目侧组合器。业务只提供身份到
+`SlotID` 和 Actor 名称的规则；它在启动时复用当前 Server 的 `SlotRouter`，因此目标处于 `draining`、`stopping` 或缺失时会保留
 `ErrSlotRuntimeUnavailable` 错误链，调用方用 `errors.Is` 判断，不能改派其他 game：
 
 ```go
-router, err := discovery.NewSlotRouter(app.Slots, app.Directory)
-if err != nil {
-    return err
-}
-resolver, err := appagent.NewFixedSlotTargetResolver(
-    router,
-    appagent.SlotIDResolverFunc(func(ctx context.Context, identity txagent.Identity) (string, error) {
-        return realmSlot(identity.RoleID), nil // 项目决定同服/战区归属。
+handlers, err := appagent.NewFixedSlotHandlers(
+    identityResolver,
+    appagent.SlotIDResolverFunc(func(ctx context.Context, route appagent.CommandRoute) (string, error) {
+        return realmSlot(route.Identity.RoleID), nil // 项目决定同服/战区归属。
     }),
-    appagent.ActorIDResolverFunc(func(_ context.Context, identity txagent.Identity, target discovery.SlotTarget) (string, error) {
-        return "role-" + strconv.FormatInt(identity.RoleID, 10), nil
+    appagent.ActorIDResolverFunc(func(_ context.Context, route appagent.CommandRoute, target discovery.SlotTarget) (string, error) {
+        return actorName(route), nil
     }),
 )
 if err != nil {
     return err
 }
-dispatcher, err := appagent.NewActorDispatcher(app.Actor, resolver)
-if err != nil {
-    return err
-}
-_ = dispatcher
+server, err := app.New(config, app.WithAgentHandlers(handlers))
 ```
 
 ### 滚动重启
 
 重启 `game1`、`game2` 不要求其他服务组停机，但必须先 Drain。第一阶段只处理能够
 执行优雅关闭的发布：旧 generation 先进入 `draining`，停止该逻辑槽位的新命令准入；
-服务入口与 Actor 邮箱等待已受理工作完成，再执行缓存管理器最终 Flush；随后取消全局 `WaitGroupContext`、等待后台任务退出，最后才将旧实例
-切为 `stopping` 并注销。固定槽位在这个窗口内不得改派到其他 game 实例，调用方只能等待
+服务入口与 Actor 邮箱等待已受理工作完成，再执行缓存管理器最终 Flush；随后将旧实例发布为 `stopping`，再取消全局
+`WaitGroupContext`、等待后台任务退出并注销。固定槽位在这个窗口内不得改派到其他 game 实例，调用方只能等待
 或收到明确的重试错误。
 
 ```text
 旧实例 draining -> 停止该槽位的新命令准入
 -> Ingress 等待已受理工作 -> Actor Delivery 邮箱排空
 -> 完成缓存管理器最终 Flush
--> 取消 WaitGroupContext 并等待后台任务 -> 旧实例 stopping -> 撤销成员 lease -> 停止进程
+-> 旧实例 stopping -> 取消 WaitGroupContext 并等待后台任务 -> 撤销成员 lease -> 停止进程
 -> 新实例启动并完成依赖预检 -> CAS Promote(slot, old generation, new generation)
 -> 新 generation 接收该槽位请求
 ```

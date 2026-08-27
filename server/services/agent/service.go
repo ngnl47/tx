@@ -30,8 +30,8 @@ type LocalMsgQ interface {
 	SessionClient() (txmsgq.SessionClient, error)
 }
 
-// HandlerProvider 在 Agent 启动时惰性取得项目身份解析器和业务分发器。
-type HandlerProvider func() (txagent.IdentityResolver, txagent.Dispatcher, error)
+// HandlerProvider 在 Agent 启动时根据当前服务能力惰性创建身份解析器和业务分发器。
+type HandlerProvider func(txserver.Context) (txagent.IdentityResolver, txagent.Dispatcher, error)
 
 // OptionsProvider 在 agent 被选中时转换项目配置。
 type OptionsProvider func() (Options, error)
@@ -94,12 +94,18 @@ func NewConfigured(provider OptionsProvider) (*Service, error) {
 // Spec 声明 Agent 的基础能力依赖。
 func (service *Service) Spec() txserver.Spec {
 	return txserver.Spec{
-		Name:     ServiceName,
-		Requires: []txserver.CModID{txserver.CModRPC, txserver.CModRedisStorage},
+		Name: ServiceName,
+		Requires: []txserver.CModID{
+			txserver.CModRPC,
+			txserver.CModRedisStorage,
+			txserver.CModDiscovery,
+			txserver.CModActor,
+		},
 	}
 }
 
-// RequiredCMods 根据本轮是否同时启动 msgq，选择本地邮箱或远端发现链路。
+// RequiredCMods 根据本轮是否同时启动 msgq，校验远端会话路由配置。
+// Agent 的 Actor 与服务发现依赖由 Spec 固定声明。
 func (service *Service) RequiredCMods(selection txserver.ServiceSelection) ([]txserver.CModID, error) {
 	if err := service.configure(); err != nil {
 		return nil, err
@@ -112,7 +118,7 @@ func (service *Service) RequiredCMods(selection txserver.ServiceSelection) ([]tx
 	if strings.TrimSpace(service.options.SessionStore.RouteType) == "" || strings.TrimSpace(service.options.SessionStore.Prefix) == "" || service.options.SessionStore.TTL <= 0 {
 		return nil, fmt.Errorf("agent service: remote session routing is not configured")
 	}
-	return []txserver.CModID{txserver.CModDiscovery}, nil
+	return nil, nil
 }
 
 // Start 解析会话路由并启动选中的 TCP、WebSocket 入口。
@@ -123,7 +129,7 @@ func (service *Service) Start(runtime txserver.Context) error {
 	if err := service.configure(); err != nil {
 		return err
 	}
-	identity, dispatcher, err := service.resolveHandlers()
+	identity, dispatcher, err := service.resolveHandlers(runtime)
 	if err != nil {
 		return err
 	}
@@ -358,14 +364,14 @@ func (service *Service) resolveSessions(runtime txserver.Context) (txagent.Sessi
 	return router, router, nil
 }
 
-func (service *Service) resolveHandlers() (txagent.IdentityResolver, txagent.Dispatcher, error) {
+func (service *Service) resolveHandlers(runtime txserver.Context) (txagent.IdentityResolver, txagent.Dispatcher, error) {
 	if service.options.Identity != nil && service.options.Dispatcher != nil {
 		return service.options.Identity, service.options.Dispatcher, nil
 	}
 	if service.options.Handlers == nil {
 		return nil, nil, fmt.Errorf("agent service: business handlers are not configured")
 	}
-	identity, dispatcher, err := service.options.Handlers()
+	identity, dispatcher, err := service.options.Handlers(runtime)
 	if err != nil {
 		return nil, nil, err
 	}

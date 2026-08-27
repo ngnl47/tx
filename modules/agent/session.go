@@ -160,13 +160,21 @@ func (s *Server) dispatchBusiness(ctx context.Context, client msgq.SessionClient
 		return nil
 	}
 	*receivedSeq = result.ReceivedSeq
-	return s.dispatcher.Dispatch(ctx, DispatchRequest{
+	dispatched, err := s.dispatcher.Dispatch(ctx, DispatchRequest{
 		Identity:  identity,
 		Seq:       frame.Seq,
 		CommandID: frame.CommandID,
 		RouteKey:  frame.RouteKey,
 		Payload:   cloneBytes(frame.Payload),
 	})
+	if err != nil {
+		return err
+	}
+	if dispatched.Payload == nil {
+		return nil
+	}
+	_, err = client.Pub(ctx, msgq.PubRequest{Header: header, Payload: dispatched.Payload})
+	return err
 }
 
 func (s *Server) writeOutbound(ctx context.Context, client msgq.SessionClient, header msgq.SessionHeader, transport Transport, written *atomic.Int64) error {

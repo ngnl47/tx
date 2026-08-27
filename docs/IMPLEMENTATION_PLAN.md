@@ -19,6 +19,9 @@
    checkpoint Scheduler、Fusion Writer 和 Delay Scheduler 作为强类型组件由 CMod Builder 组装，不再以平级 CModID
    暴露给 L4 Service。第一阶段将 Transaction、CacheManager 与可选 WAL 收拢为 StateRuntime CMod，并将 DelayScheduler
    收拢进 Fusion CMod；Builder 必须保存可观测的组件拓扑，组件生命周期只由所属 CMod 管理。
+6. 补齐有状态固定 Actor 的本地宿主契约。当前 `txgameslg` 已能把逻辑槽位解析为 Fixed PID，但 `slggame/slgworld`
+   仍需一套由槽位 owner 创建、按稳定 Actor ID 惰性恢复并在排水期停止激活的本地实体宿主。它必须复用 Actor Runtime
+   与 WaitGroupContext，不能退化为 Virtual Actor，也不能让 Agent resolver 负责创建业务 Actor。
 
 ### P1：性能基线
 
@@ -48,9 +51,9 @@ Browser WebSocket
   -> Browser
 ```
 
-开始实现前必须先补齐 Actor 业务响应到 Agent/msgq 的标准返回路径，并确定浏览器调试入口的显式 Origin
-白名单或同源代理。调试台不得绕过项目握手认证，不允许使用通配 Origin，也不能把 JSON helper 引入 BON
-业务载荷主链路。
+Actor 业务响应到 Agent/msgq 的标准返回路径已经完成：生成命令声明响应时走 Actor `Call`，返回的 BON bytes 由
+Agent 发布到当前 MsgQ 会话。实现浏览器调试入口前仍须确定显式 Origin 白名单或同源代理；调试台不得绕过项目握手
+认证，不允许使用通配 Origin，也不能把 JSON helper 引入 BON 业务载荷主链路。
 
 ## 待决策能力
 
