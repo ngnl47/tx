@@ -31,7 +31,9 @@ type Client interface {
 
 // Options 定义 WAL 在现有 Mongo 路由表中的位置。
 type Options struct {
-	RouteType  string
+	// RouteType 是现有 Mongo 路由表中专门用于 WAL 的稳定路由类型。
+	RouteType string
+	// Collection 是每个目标 Mongo database 中保存 WAL 记录的集合名。
 	Collection string
 }
 

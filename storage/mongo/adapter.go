@@ -14,13 +14,42 @@ import (
 //
 // runtime 基建不直接依赖具体驱动；官方 MongoDB driver 适配见 storage/mongo/mongodriver。
 type Filter struct {
+	// Field 是记录主键在 BSON 文档中的字段名。
 	Field string
+	// Value 是主键字段必须匹配的值。
 	Value any
+	// Conditions 是与主键同时参与原子匹配的附加等值条件。
+	Conditions []Equality
+}
+
+// Equality 描述附加在记录键之后的等值条件。
+type Equality struct {
+	// Field 是附加等值条件使用的 BSON 字段名。
+	Field string
+	// Value 是该字段必须匹配的当前值。
+	Value any
+}
+
+// Fence 描述一次条件写入必须匹配的当前字段值。
+type Fence struct {
+	// Path 是条件写入需要校验的结构化字段路径。
+	Path change.Path
+	// Expected 是该路径在写入发生前必须匹配的当前值。
+	Expected any
+}
+
+// FencedChangeApplier 是 Mongo 条件更新使用的窄接口。
+// 它把记录键与 Fence 合并为同一次原子过滤，不把代际语义扩散到通用存储层。
+type FencedChangeApplier interface {
+	storage.ChangeApplier
+	ApplyChangesWithFence(context.Context, meta.TypeSpec, storage.RecordKey, change.Source, change.FieldNameResolver, change.ValueResolver, Fence, storage.ApplyOptions) error
 }
 
 // ValuesFilter 描述一批 Mongo 文档的等值集合过滤条件。
 type ValuesFilter struct {
-	Field  string
+	// Field 是批量读取时使用的主键 BSON 字段名。
+	Field string
+	// Values 是需要匹配的主键集合；结果顺序由上层存储契约恢复。
 	Values []any
 }
 
@@ -29,18 +58,23 @@ type ValuesFilter struct {
 // MatchedCount 为匹配到的记录数；UpsertedCount 为本次创建的记录数。
 // ModifiedCount 不进入该抽象：把字段写成当前已有值仍是一次成功更新。
 type UpdateResult struct {
-	MatchedCount  int64
+	// MatchedCount 是本次更新匹配到的现有文档数量。
+	MatchedCount int64
+	// UpsertedCount 是本次更新新建的文档数量。
 	UpsertedCount int64
 }
 
 // ReplaceResult 描述 MongoDB 单文档整文档替换结果。
 type ReplaceResult struct {
-	MatchedCount  int64
+	// MatchedCount 是本次替换匹配到的现有文档数量。
+	MatchedCount int64
+	// UpsertedCount 是本次替换新建的文档数量。
 	UpsertedCount int64
 }
 
 // DeleteResult 描述 MongoDB 单文档删除结果。
 type DeleteResult struct {
+	// DeletedCount 是本次调用实际删除的文档数量。
 	DeletedCount int64
 }
 
@@ -88,6 +122,8 @@ type Adapter struct {
 	client Client
 }
 
+var _ FencedChangeApplier = (*Adapter)(nil)
+
 // NewAdapter 创建 Mongo 变更适配器。
 func NewAdapter(client Client) (*Adapter, error) {
 	if isNilMongoClient(client) {
@@ -98,6 +134,15 @@ func NewAdapter(client Client) (*Adapter, error) {
 
 // ApplyChangesWithOptions 根据 Mongo 元数据和记录 ID 执行变更更新。
 func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver, options storage.ApplyOptions) error {
+	return a.applyChanges(ctx, spec, key, source, resolver, values, nil, options)
+}
+
+// ApplyChangesWithFence 在同一次 Mongo update 中校验记录键和代际字段。
+func (a *Adapter) ApplyChangesWithFence(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver, fence Fence, options storage.ApplyOptions) error {
+	return a.applyChanges(ctx, spec, key, source, resolver, values, &fence, options)
+}
+
+func (a *Adapter) applyChanges(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver, fence *Fence, options storage.ApplyOptions) error {
 	if err := change.ValidateSource(source); err != nil {
 		return err
 	}
@@ -121,11 +166,36 @@ func (a *Adapter) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 	if err != nil {
 		return err
 	}
-	result, err := client.UpdateOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), update, options)
+	filter := mongoRecordFilter(spec, key)
+	if fence != nil {
+		condition, err := mongoFenceCondition(*fence, resolver)
+		if err != nil {
+			return err
+		}
+		if condition.Field == filter.Field {
+			return fmt.Errorf("mongo: fence field %q duplicates record key", condition.Field)
+		}
+		filter.Conditions = []Equality{condition}
+	}
+	result, err := client.UpdateOne(ctx, mongoCollection(spec), filter, update, options)
 	if err != nil {
 		return err
 	}
+	if fence != nil {
+		return validateFencedUpdateResult(result, options.Upsert)
+	}
 	return validateUpdateResult(result, options.Upsert)
+}
+
+func mongoFenceCondition(fence Fence, resolver change.FieldNameResolver) (Equality, error) {
+	if !fence.Path.Valid() {
+		return Equality{}, fmt.Errorf("%w: fence %#v", change.ErrInvalidPath, fence.Path)
+	}
+	path := fence.Path.FullPath(resolver, change.FieldNameBSON)
+	if len(path) == 0 {
+		return Equality{}, fmt.Errorf("mongo: cannot resolve BSON fence path for %#v", fence.Path)
+	}
+	return Equality{Field: path.String(), Value: fence.Expected}, nil
 }
 
 // ReplaceDocument 按记录键替换一条 Mongo 文档。
@@ -187,6 +257,19 @@ func validateUpdateResult(result UpdateResult, upsert bool) error {
 		return storage.ErrNotExists
 	}
 	return fmt.Errorf("mongo: unexpected update result matched=%d upserted=%d upsert=%t", result.MatchedCount, result.UpsertedCount, upsert)
+}
+
+func validateFencedUpdateResult(result UpdateResult, upsert bool) error {
+	if result.MatchedCount == 1 && result.UpsertedCount == 0 {
+		return nil
+	}
+	if upsert && result.MatchedCount == 0 && result.UpsertedCount == 1 {
+		return nil
+	}
+	if result.MatchedCount == 0 && result.UpsertedCount == 0 {
+		return ErrFenceRejected
+	}
+	return fmt.Errorf("mongo: unexpected fenced update result matched=%d upserted=%d upsert=%t", result.MatchedCount, result.UpsertedCount, upsert)
 }
 
 // LoadDocument 按记录键读取单条 Mongo 文档。

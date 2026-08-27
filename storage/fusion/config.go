@@ -15,6 +15,7 @@ const DefaultDirtyTTL = 30 * 24 * time.Hour
 
 // Config 配置 Fusion 热数据生命周期。
 type Config struct {
+	// DirtyTTL 是 Redis 热文档和生命周期版本键在异常流程下的兜底存活时间；0 使用框架默认值。
 	DirtyTTL time.Duration
 }
 

@@ -220,8 +220,8 @@ func newCacheRuntime(t *testing.T, writer storage.ChangeApplier, config cachemod
 	t.Helper()
 	manager := cachemodule.NewManager(cachemodule.Dependencies{Writer: writer}, config)
 	runtime := txn.NewRuntime()
-	if err := runtime.BindCommitSink(manager); err != nil {
-		t.Fatalf("BindCommitSink returned error: %v", err)
+	if err := runtime.BindCommitParticipant(manager); err != nil {
+		t.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
 	return runtime, manager
 }

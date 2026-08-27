@@ -70,6 +70,35 @@ func TestDatabaseReturnsErrorWhenMongoDatabaseMissing(t *testing.T) {
 	}
 }
 
+func TestMongoFilterDocumentIncludesRecordKeyAndFenceConditions(t *testing.T) {
+	filter, err := mongoFilterDocument(txmongo.Filter{
+		Field: "_id",
+		Value: "world-1/7",
+		Conditions: []txmongo.Equality{
+			{Field: "checkpointGeneration", Value: uint64(3)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("mongoFilterDocument returned error: %v", err)
+	}
+	if !reflect.DeepEqual(filter, bson.M{"_id": "world-1/7", "checkpointGeneration": uint64(3)}) {
+		t.Fatalf("filter = %#v, want record key and generation fence", filter)
+	}
+}
+
+func TestMongoFilterDocumentRejectsDuplicateCondition(t *testing.T) {
+	_, err := mongoFilterDocument(txmongo.Filter{
+		Field: "_id",
+		Value: "world-1/7",
+		Conditions: []txmongo.Equality{
+			{Field: "_id", Value: "other"},
+		},
+	})
+	if err == nil {
+		t.Fatal("mongoFilterDocument error = nil, want duplicate condition error")
+	}
+}
+
 func TestMongoIndexModelsPreserveKeyTypesAndOptions(t *testing.T) {
 	expireAfter := int64(60)
 	models, err := mongoIndexModels([]txmongo.IndexModel{{

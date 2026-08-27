@@ -29,15 +29,23 @@ func (graph cmodGraph) IDs() []CModID {
 func resolveCModGraph(cmods []CMod, services []Service) (cmodGraph, error) {
 	byID := make(map[CModID]CMod, len(cmods))
 	for _, mod := range cmods {
-		if mod == nil {
+		if isNilInterface(mod) {
 			return cmodGraph{}, errors.New("server: CMod is nil")
 		}
 		spec := mod.Spec()
 		if err := validateCModID(spec.ID); err != nil {
 			return cmodGraph{}, err
 		}
+		if err := validateComponentSpecs(string(spec.ID), spec.Components); err != nil {
+			return cmodGraph{}, err
+		}
 		if _, exists := byID[spec.ID]; exists {
 			return cmodGraph{}, fmt.Errorf("server: duplicate CMod %q", spec.ID)
+		}
+		for _, dependency := range append(append([]CModID(nil), spec.Requires...), spec.After...) {
+			if err := validateCModID(dependency); err != nil {
+				return cmodGraph{}, fmt.Errorf("server: CMod %q dependency: %w", spec.ID, err)
+			}
 		}
 		byID[spec.ID] = mod
 	}
@@ -50,7 +58,7 @@ func resolveCModGraph(cmods []CMod, services []Service) (cmodGraph, error) {
 	roots := make([]root, 0)
 	serviceRoots := make([]cmodServiceRoot, 0, len(services))
 	for _, service := range services {
-		if service == nil {
+		if isNilInterface(service) {
 			return cmodGraph{}, errors.New("server: selected service is nil")
 		}
 		spec := service.Spec()
@@ -77,11 +85,11 @@ func resolveCModGraph(cmods []CMod, services []Service) (cmodGraph, error) {
 		visiting
 		visited
 	)
+	selected := make(map[CModID]struct{}, len(byID))
 	states := make(map[CModID]uint8, len(byID))
-	ordered := make([]CMod, 0, len(byID))
 	path := make([]CModID, 0, len(byID))
-	var visit func(CModID, string) error
-	visit = func(id CModID, service string) error {
+	var selectRequired func(CModID, string) error
+	selectRequired = func(id CModID, service string) error {
 		if err := validateCModID(id); err != nil {
 			return fmt.Errorf("server: service %q requirement: %w", service, err)
 		}
@@ -105,7 +113,50 @@ func resolveCModGraph(cmods []CMod, services []Service) (cmodGraph, error) {
 		states[id] = visiting
 		path = append(path, id)
 		for _, dependency := range mod.Spec().Requires {
-			if err := visit(dependency, service); err != nil {
+			if err := selectRequired(dependency, service); err != nil {
+				return err
+			}
+		}
+		path = path[:len(path)-1]
+		states[id] = visited
+		selected[id] = struct{}{}
+		return nil
+	}
+	for _, root := range roots {
+		if err := selectRequired(root.id, root.service); err != nil {
+			return cmodGraph{}, err
+		}
+	}
+
+	states = make(map[CModID]uint8, len(selected))
+	path = path[:0]
+	ordered := make([]CMod, 0, len(selected))
+	var order func(CModID, string) error
+	order = func(id CModID, service string) error {
+		switch states[id] {
+		case visited:
+			return nil
+		case visiting:
+			start := 0
+			for start < len(path) && path[start] != id {
+				start++
+			}
+			cycle := append(append([]CModID(nil), path[start:]...), id)
+			return fmt.Errorf("server: CMod dependency cycle: %s", joinCModPath(cycle))
+		}
+		mod := byID[id]
+		states[id] = visiting
+		path = append(path, id)
+		for _, dependency := range mod.Spec().Requires {
+			if err := order(dependency, service); err != nil {
+				return err
+			}
+		}
+		for _, predecessor := range mod.Spec().After {
+			if _, ok := selected[predecessor]; !ok {
+				continue
+			}
+			if err := order(predecessor, service); err != nil {
 				return err
 			}
 		}
@@ -115,7 +166,7 @@ func resolveCModGraph(cmods []CMod, services []Service) (cmodGraph, error) {
 		return nil
 	}
 	for _, root := range roots {
-		if err := visit(root.id, root.service); err != nil {
+		if err := order(root.id, root.service); err != nil {
 			return cmodGraph{}, err
 		}
 	}

@@ -17,24 +17,38 @@ import (
 // Config 是项目解析本地配置源后得到的框架配置。
 // server 包不读取 YAML、环境变量或命令行参数。
 type Config struct {
-	AppID     string
-	Storage   StorageConfig
-	Runtime   RuntimeConfig
-	Log       LogConfig
-	Actor     ActorConfig
+	// AppID 是当前应用的稳定身份，用于隔离同一基础设施上的不同项目。
+	AppID string
+	// Storage 描述 Redis、MongoDB 和可选 WAL 的连接路由。
+	Storage StorageConfig
+	// Runtime 描述生命周期、存储调度和事务等进程运行参数。
+	Runtime RuntimeConfig
+	// Log 描述框架结构化日志的级别、格式和输出目标。
+	Log LogConfig
+	// Actor 描述可选 Actor CMod 的运行参数；未装配该 CMod 时不会使用。
+	Actor ActorConfig
+	// Discovery 描述可选服务发现 CMod 的运行参数；未装配该 CMod 时不会使用。
 	Discovery DiscoveryConfig
 }
 
+// LogConfig 描述框架日志输出策略。
 type LogConfig struct {
-	Level  string
+	// Level 是最低输出级别，例如 debug、info、warn 或 error。
+	Level string
+	// Format 是日志编码格式，例如 text 或 json。
 	Format string
+	// Output 接收框架日志；为 nil 时由装配层选择默认输出。
 	Output io.Writer
 }
 
+// StorageConfig 描述进程可装配的持久化连接和 WAL backend。
 type StorageConfig struct {
-	Redis   storageconfig.RouteTableConfig
+	// Redis 是按 routeType 索引的 Redis 连接路由表。
+	Redis storageconfig.RouteTableConfig
+	// MongoDB 是按 routeType 索引的 MongoDB 连接路由表。
 	MongoDB storageconfig.RouteTableConfig
-	WAL     WALConfig
+	// WAL 描述可选 WAL backend；只有装配 WAL CMod 时才会校验和创建。
+	WAL WALConfig
 }
 
 // WALBackend 标识 WAL 的持久化实现。
@@ -45,72 +59,112 @@ const WALBackendMongo WALBackend = "mongo"
 
 // WALConfig 配置可选的预写日志。当前仅实现 Mongo backend。
 type WALConfig struct {
+	// Backend 选择 WAL 持久化实现。
 	Backend WALBackend
-	Mongo   WALMongoConfig
+	// Mongo 是 Mongo WAL backend 的连接路由和 collection 参数。
+	Mongo WALMongoConfig
 }
 
 // WALMongoConfig 指定 WAL 使用的 Mongo routeType 和独立 collection。
 type WALMongoConfig struct {
-	RouteType  string
+	// RouteType 引用 Storage.MongoDB 中已经配置的路由。
+	RouteType string
+	// Collection 是 WAL 记录使用的独立 MongoDB collection。
 	Collection string
 }
 
+// RuntimeConfig 描述进程运行期的通用组件参数。
 type RuntimeConfig struct {
-	Lifecycle   LifecycleConfig
-	Fusion      txfusion.Config
-	DelayTask   DelayTaskConfig
-	Scheduler   SchedulerConfig
-	Health      HealthConfig
+	// Lifecycle 控制进程入口等待和关闭排空时间。
+	Lifecycle LifecycleConfig
+	// Fusion 控制 Redis 热数据和 MongoDB 冷数据的融合存储行为。
+	Fusion txfusion.Config
+	// DelayTask 控制 Fusion 延迟写任务的 Redis 存储。
+	DelayTask DelayTaskConfig
+	// Scheduler 控制延迟写任务的轮询、批量和失败重试。
+	Scheduler SchedulerConfig
+	// Health 控制外部依赖健康探测的周期和超时。
+	Health HealthConfig
+	// Transaction 控制可选单机事务 CMod 的运行参数。
 	Transaction TransactionConfig
 }
 
 // LifecycleConfig 配置进程入口等待和 Fusion 本地登记排空的单阶段上限。
 type LifecycleConfig struct {
+	// DrainTimeout 是停止阶段等待入口任务和 Fusion 本地登记排空的最长时间；0 使用框架默认值。
 	DrainTimeout time.Duration
 }
 
+// DelayTaskConfig 描述 Fusion 延迟写任务在 Redis 中的组织方式。
 type DelayTaskConfig struct {
+	// RouteType 引用 Storage.Redis 中已经配置的路由。
 	RouteType string
-	Prefix    string
-	Buckets   int
-	Lease     time.Duration
+	// Prefix 隔离当前应用的延迟任务键空间。
+	Prefix string
+	// Buckets 是延迟任务分桶数；0 使用框架默认值。
+	Buckets int
+	// Lease 是单批任务的消费租约时长；0 使用框架默认值。
+	Lease time.Duration
 }
 
+// SchedulerConfig 描述 Fusion 延迟写调度器的消费和重试策略。
 type SchedulerConfig struct {
-	BatchSize       int
-	PollInterval    time.Duration
-	RetryInitial    time.Duration
+	// BatchSize 是单轮最多领取的延迟写任务数；0 使用框架默认值。
+	BatchSize int
+	// PollInterval 是无到期任务时的轮询间隔；0 使用框架默认值。
+	PollInterval time.Duration
+	// RetryInitial 是消费失败后的首次退避时间；0 使用框架默认值。
+	RetryInitial time.Duration
+	// RetryMultiplier 是连续失败时的退避倍率；0 使用框架默认值。
 	RetryMultiplier float64
-	RetryMax        time.Duration
-	RetryJitter     float64
+	// RetryMax 是单次退避的时间上限；0 使用框架默认值。
+	RetryMax time.Duration
+	// RetryJitter 是退避抖动比例，取值范围为 0 到 1；0 表示不增加抖动。
+	RetryJitter float64
 }
 
+// HealthConfig 描述外部依赖的周期性健康探测。
 type HealthConfig struct {
+	// Interval 是相邻两轮探测的时间间隔。
 	Interval time.Duration
-	Timeout  time.Duration
+	// Timeout 是单轮探测的最长等待时间，不能大于 Interval。
+	Timeout time.Duration
 }
 
+// TransactionConfig 描述可选单机事务运行时。
 type TransactionConfig struct {
+	// Module 是 txn 模块的调试、锁和执行参数。
 	Module txn.Config
 }
 
+// ActorConfig 描述可选 Actor 集群运行时。
 type ActorConfig struct {
+	// Runtime 是 Actor 集群、远程通信和邮箱容量参数。
 	Runtime txactor.Config
 }
 
+// DiscoveryConfig 描述可选服务发现运行时。
 type DiscoveryConfig struct {
+	// Etcd 是服务注册、租约和实例目录使用的 etcd 参数。
 	Etcd discovery.EtcdConfig
 }
 
 // RunOptions 保存部署身份和进程服务选择。这些值通常来自命令行参数或编排系统，而不是应用 YAML。
 type RunOptions struct {
-	Services         string
-	InstanceID       string
-	InstanceVersion  string
+	// Services 是本进程需要启动的 L4 服务选择表达式。
+	Services string
+	// InstanceID 是当前物理实例在集群中的稳定唯一身份。
+	InstanceID string
+	// InstanceVersion 是当前实例发布的代码或镜像版本。
+	InstanceVersion string
+	// InstanceEndpoint 是服务发现对外发布的可达地址。
 	InstanceEndpoint string
-	LogicalSlot      string
-	RPCListen        string
-	ControlListen    string
+	// LogicalSlot 是有状态服务稳定绑定的逻辑槽位；无状态服务可留空。
+	LogicalSlot string
+	// RPCListen 是进程共享 gRPC Host 的监听地址。
+	RPCListen string
+	// ControlListen 是健康检查和排水控制面的监听地址。
+	ControlListen string
 }
 
 func (config Config) Validate() error {

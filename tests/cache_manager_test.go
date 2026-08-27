@@ -42,8 +42,8 @@ func TestCacheManagerRegistersCommittedRootAndFlushesChanges(t *testing.T) {
 	writer := &recordingChangeStoreApplier{}
 	manager := cachemodule.NewManager(cachemodule.Dependencies{Writer: writer}, cachemodule.Config{})
 	runtime := txn.NewRuntime()
-	if err := runtime.BindCommitSink(manager); err != nil {
-		t.Fatalf("BindCommitSink returned error: %v", err)
+	if err := runtime.BindCommitParticipant(manager); err != nil {
+		t.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
 
@@ -66,8 +66,8 @@ func TestCacheManagerRejectsDifferentStoreForRetainedIdentity(t *testing.T) {
 	second := &runtimeTestStore{}
 	manager := cachemodule.NewManager(cachemodule.Dependencies{Writer: &recordingChangeStoreApplier{}}, cachemodule.Config{})
 	runtime := txn.NewRuntime()
-	if err := runtime.BindCommitSink(manager); err != nil {
-		t.Fatalf("BindCommitSink returned error: %v", err)
+	if err := runtime.BindCommitParticipant(manager); err != nil {
+		t.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
 	key := txn.NewLockKey("role", 1001)
 	firstLock := txn.NewLockTarget(key, first)
@@ -97,11 +97,11 @@ func TestCacheManagerAbortReleasesUncommittedIdentity(t *testing.T) {
 	second := &runtimeTestStore{}
 	manager := cachemodule.NewManager(cachemodule.Dependencies{Writer: &recordingChangeStoreApplier{}}, cachemodule.Config{})
 	runtime := txn.NewRuntime()
-	if err := runtime.BindCommitSink(manager); err != nil {
-		t.Fatalf("BindCommitSink returned error: %v", err)
+	if err := runtime.BindCommitParticipant(manager); err != nil {
+		t.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
 	key := txn.NewLockKey("role", 1001)
-	err := runtime.Call(context.Background(), commitSinkProcedure{
+	err := runtime.Call(context.Background(), commitParticipantProcedure{
 		lock:       txn.NewLockTarget(key, first),
 		store:      first,
 		processErr: errors.New("rollback"),
@@ -122,8 +122,8 @@ func TestCacheManagerReleaseRequiresCleanRoot(t *testing.T) {
 	store := &runtimeTestStore{}
 	manager := cachemodule.NewManager(cachemodule.Dependencies{Writer: &recordingChangeStoreApplier{}}, cachemodule.Config{})
 	runtime := txn.NewRuntime()
-	if err := runtime.BindCommitSink(manager); err != nil {
-		t.Fatalf("BindCommitSink returned error: %v", err)
+	if err := runtime.BindCommitParticipant(manager); err != nil {
+		t.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
@@ -149,8 +149,8 @@ func TestCacheManagerReleaseWaitsForActiveProcedure(t *testing.T) {
 	store := &runtimeTestStore{}
 	manager := cachemodule.NewManager(cachemodule.Dependencies{Writer: &recordingChangeStoreApplier{}}, cachemodule.Config{})
 	runtime := txn.NewRuntime()
-	if err := runtime.BindCommitSink(manager); err != nil {
-		t.Fatalf("BindCommitSink returned error: %v", err)
+	if err := runtime.BindCommitParticipant(manager); err != nil {
+		t.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
@@ -219,8 +219,8 @@ func TestCacheManagerKeepsFailedFlushPending(t *testing.T) {
 	writer := &recordingChangeStoreApplier{err: errors.New("storage unavailable")}
 	manager := cachemodule.NewManager(cachemodule.Dependencies{Writer: writer}, cachemodule.Config{})
 	runtime := txn.NewRuntime()
-	if err := runtime.BindCommitSink(manager); err != nil {
-		t.Fatalf("BindCommitSink returned error: %v", err)
+	if err := runtime.BindCommitParticipant(manager); err != nil {
+		t.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
@@ -239,11 +239,11 @@ func TestCacheManagerIgnoresPureMemoryTransactionTarget(t *testing.T) {
 	store := &runtimeMemoryStore{}
 	manager := cachemodule.NewManager(cachemodule.Dependencies{Writer: &recordingChangeStoreApplier{}}, cachemodule.Config{})
 	runtime := txn.NewRuntime()
-	if err := runtime.BindCommitSink(manager); err != nil {
-		t.Fatalf("BindCommitSink returned error: %v", err)
+	if err := runtime.BindCommitParticipant(manager); err != nil {
+		t.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
 	lock := txn.NewLockTarget(txn.NewLockKey("memory", 1001), store)
-	if err := runtime.Call(context.Background(), commitSinkProcedure{
+	if err := runtime.Call(context.Background(), commitParticipantProcedure{
 		lock:  lock,
 		store: &store.runtimeTestStore,
 	}); err != nil {
@@ -258,8 +258,8 @@ func BenchmarkTxnRuntimeCommitToCacheManager(b *testing.B) {
 	store := &runtimeTestStore{}
 	manager := cachemodule.NewManager(cachemodule.Dependencies{Writer: &recordingChangeStoreApplier{}}, cachemodule.Config{})
 	runtime := txn.NewRuntime()
-	if err := runtime.BindCommitSink(manager); err != nil {
-		b.Fatalf("BindCommitSink returned error: %v", err)
+	if err := runtime.BindCommitParticipant(manager); err != nil {
+		b.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
 	procedure := runtimeTestProcedure{
 		lock:  txn.NewLockTarget(txn.NewLockKey("role", 1001), store),
@@ -279,7 +279,7 @@ func BenchmarkTxnRuntimeCommitToCacheManager(b *testing.B) {
 	}
 }
 
-func BenchmarkTxnRuntimeWithoutCommitSink(b *testing.B) {
+func BenchmarkTxnRuntimeWithoutCommitParticipant(b *testing.B) {
 	store := &runtimeTestStore{}
 	runtime := txn.NewRuntime()
 	procedure := runtimeTestProcedure{

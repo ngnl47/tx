@@ -30,7 +30,7 @@
 L0 纯算法与通用契约
   -> L1 backend / transport adapter
   -> L2 可复用运行时组件
-  -> L3 CMod 与进程级 server 装配
+  -> L3 进程级 server 装配与 CMod 依赖图
   -> L4 可选服务
   -> txgame 项目组合根与业务 facade
 ```
@@ -44,8 +44,8 @@ L0 纯算法与通用契约
   discovery 快照和根 `WaitGroupContext` 的 Start/Stop/Shutdown/Replace/Flush 权限不能透传给服务。
 - `txgame` 只负责配置转换、业务回调、业务 facade 和服务选择，不复制 tx 的 runtime/host/service
   生命周期实现。
-- L4 服务只能声明直接 CMod 依赖；Redis/Mongo、RPC Host、Scheduler、Transaction Runtime 等资源由 L3
-  依赖图按闭包唯一装配。未进入闭包的配置不得被语义校验，也不得创建外部资源。
+- CMod 是跨层装配描述，不因名字自动归入 L3。L4 服务只能声明直接 CMod 依赖；Redis/Mongo、RPC Host、Scheduler、
+  Transaction Runtime 等资源由 L3 依赖图按闭包唯一装配。未进入闭包的配置不得被语义校验，也不得创建外部资源。
 - 包名或目录深度不是层级证据；实际判断依据是依赖方向、接口所有权和资源生命周期。
 
 ## 审计严重级别
@@ -192,6 +192,9 @@ err := queue.Publish(payload)
 - 同一语义只保留一个推荐入口；不因历史兼容保留重复 facade、别名方法和迁移 API。
 - Redis、Mongo、etcd、RPC 等外部服务错误通过稳定且可识别的错误返回，不得 panic。
 - 高级 API 单独归类并记录契约，不能混入新手主路径示例。
+- `Config`、`Dependencies`、`Spec`、`Options`、`Builder` 等公开声明式结构必须逐字段使用中文注释说明职责、
+  数据来源、零值或 `nil` 语义以及生效条件；不能要求使用者仅凭字段名猜测装配关系。生成的业务数据字段和
+  私有实现字段不做机械注释。
 - 普通服务应接收受控能力门面；它可以执行已授权业务操作，但返回的动态值不能通过类型断言重新取得 owner API。
 - `Start/Stop/Shutdown/Close/Replace/Flush/Cancel/Wait` 等所有权方法默认只存在于装配层，除非该服务
   明确拥有对应资源。

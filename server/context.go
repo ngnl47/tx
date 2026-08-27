@@ -60,21 +60,45 @@ type serviceContext struct {
 
 type cmodContext struct {
 	*serviceContext
+	server *Server
+	tasks  lifecycle.Tasks
+}
+
+func newCModContextWithTasks(server *Server, tasks lifecycle.Tasks) CModContext {
+	context := newCModContext(server).(*cmodContext)
+	context.tasks = tasks
+	return context
+}
+
+func (context *cmodContext) Tasks() lifecycle.Tasks {
+	if context != nil && context.tasks != nil {
+		return context.tasks
+	}
+	if context == nil || context.serviceContext == nil {
+		return nil
+	}
+	return context.serviceContext.Tasks()
 }
 
 func newServiceContext(runtime *runtime, admission lifecycle.Admission) Context {
 	return &serviceContext{runtime: runtime, admission: admission}
 }
 
-func newCModContext(runtime *runtime) CModContext {
-	return &cmodContext{serviceContext: &serviceContext{runtime: runtime}}
+func newCModContext(server *Server) CModContext {
+	if server == nil {
+		return &cmodContext{}
+	}
+	return &cmodContext{
+		serviceContext: &serviceContext{runtime: server.runtime},
+		server:         server,
+	}
 }
 
-func (context *cmodContext) BindTransactionCommitSink(sink txn.CommitSink) error {
+func (context *cmodContext) BindTransactionCommitParticipant(participant txn.CommitParticipant) error {
 	if context == nil || context.runtime == nil || context.runtime.transaction == nil {
 		return errors.New("server: transaction runtime is not configured")
 	}
-	return context.runtime.transaction.BindCommitSink(sink)
+	return context.runtime.transaction.BindCommitParticipant(participant)
 }
 
 func (service *serviceContext) AppID() string {
@@ -113,10 +137,10 @@ func (service *serviceContext) Storage() Storage {
 }
 
 func (service *serviceContext) WAL() wal.Store {
-	if service == nil || service.runtime == nil || service.runtime.storage == nil {
+	if service == nil || service.runtime == nil {
 		return nil
 	}
-	return service.runtime.storage.WAL()
+	return service.runtime.wal
 }
 
 func (service *serviceContext) RPC() txrpc.Registrar {

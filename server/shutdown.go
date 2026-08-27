@@ -17,10 +17,14 @@ func (server *Server) Drain(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	server.mu.Lock()
+	ready := server.started
 	runtime := server.runtime
 	discoveryRuntime := server.discovery
 	host := server.host
 	server.mu.Unlock()
+	if !ready {
+		return nil
+	}
 	var discoveryErr error
 	if discoveryRuntime != nil {
 		discoveryErr = discoveryRuntime.markDraining(ctx)
@@ -47,21 +51,47 @@ func (server *Server) stop(ctx context.Context, drain bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	server.mu.Lock()
-	if server.stopping {
-		done := server.stopDone
-		server.mu.Unlock()
-		select {
-		case <-done:
-			server.mu.Lock()
-			err := server.stopErr
+	for {
+		server.mu.Lock()
+		if server.starting {
+			done := server.startDone
 			server.mu.Unlock()
-			return err
-		case <-ctx.Done():
-			return ctx.Err()
+			select {
+			case <-done:
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
+		if server.stopping {
+			done := server.stopDone
+			server.mu.Unlock()
+			select {
+			case <-done:
+				server.mu.Lock()
+				err := server.stopErr
+				server.mu.Unlock()
+				return err
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		server.stopping = true
+		server.mu.Unlock()
+		break
 	}
-	server.stopping = true
+
+	err := server.shutdown(ctx, drain)
+	server.mu.Lock()
+	server.stopErr = err
+	server.clearRuntimeLocked()
+	close(server.stopDone)
+	server.mu.Unlock()
+	return err
+}
+
+func (server *Server) shutdown(ctx context.Context, drain bool) error {
+	server.mu.Lock()
 	runtime := server.runtime
 	host := server.host
 	cmodHost := server.cmodHost
@@ -105,10 +135,5 @@ func (server *Server) stop(ctx context.Context, drain bool) error {
 	} else if discoveryRuntime != nil {
 		errs = append(errs, discoveryRuntime.close(context.WithoutCancel(ctx)))
 	}
-	server.mu.Lock()
-	server.stopErr = errors.Join(errs...)
-	close(server.stopDone)
-	err := server.stopErr
-	server.mu.Unlock()
-	return err
+	return errors.Join(errs...)
 }

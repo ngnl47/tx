@@ -179,6 +179,90 @@ func TestMongoAdapterAppliesUpdateByDefaultIDFilter(t *testing.T) {
 	}
 }
 
+func TestMongoAdapterAppliesFenceInSameUpdateFilter(t *testing.T) {
+	const (
+		fieldName       change.FieldID = 1
+		fieldGeneration change.FieldID = 2
+	)
+	updater := &recordingMongoUpdater{}
+	adapter := mustMongoAdapter(t, updater)
+	spec := meta.TypeSpec{
+		Type: meta.Type{Fields: []meta.Field{
+			{Name: "Name", BSONName: "name"},
+			{Name: "CheckpointGeneration", BSONName: "checkpointGeneration"},
+		}},
+		Mongo: &meta.MongoSpec{Collection: "world_buckets"},
+	}
+	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
+		change.FieldNameGo: {
+			fieldName:       "Name",
+			fieldGeneration: "CheckpointGeneration",
+		},
+		change.FieldNameBSON: {
+			fieldName:       "name",
+			fieldGeneration: "checkpointGeneration",
+		},
+	})
+	source := recordedChanges{{Path: changePath(fieldNode(fieldName)), Op: change.OpSet}}
+	values := change.ValueResolverFunc(func(path change.Path) (any, bool) {
+		if path.Equal(changePath(fieldNode(fieldName))) {
+			return "alice", true
+		}
+		return nil, false
+	})
+
+	err := adapter.ApplyChangesWithFence(
+		context.Background(),
+		spec,
+		storage.RecordKey{ID: "world-1/7"},
+		source,
+		resolver,
+		values,
+		txmongo.Fence{Path: changePath(fieldNode(fieldGeneration)), Expected: uint64(3)},
+		storage.ApplyOptions{},
+	)
+	if err != nil {
+		t.Fatalf("ApplyChangesWithFence returned error: %v", err)
+	}
+	if updater.filter.Field != "_id" || updater.filter.Value != "world-1/7" {
+		t.Fatalf("record filter = %#v, want _id/world-1/7", updater.filter)
+	}
+	if len(updater.filter.Conditions) != 1 || updater.filter.Conditions[0].Field != "checkpointGeneration" || updater.filter.Conditions[0].Value != uint64(3) {
+		t.Fatalf("fence conditions = %#v, want checkpointGeneration=3", updater.filter.Conditions)
+	}
+}
+
+func TestMongoAdapterReturnsFenceRejectedWhenGenerationDoesNotMatch(t *testing.T) {
+	const (
+		fieldName       change.FieldID = 1
+		fieldGeneration change.FieldID = 2
+	)
+	updater := &recordingMongoUpdater{updateResult: &txmongo.UpdateResult{}}
+	adapter := mustMongoAdapter(t, updater)
+	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
+		change.FieldNameGo:   {fieldName: "Name", fieldGeneration: "CheckpointGeneration"},
+		change.FieldNameBSON: {fieldName: "name", fieldGeneration: "checkpointGeneration"},
+	})
+	source := recordedChanges{{Path: changePath(fieldNode(fieldName)), Op: change.OpSet}}
+	values := change.ValueResolverFunc(func(path change.Path) (any, bool) {
+		return "alice", path.Equal(changePath(fieldNode(fieldName)))
+	})
+
+	err := adapter.ApplyChangesWithFence(
+		context.Background(),
+		meta.TypeSpec{Type: meta.Type{Fields: []meta.Field{{Name: "Name"}, {Name: "CheckpointGeneration"}}}, Mongo: &meta.MongoSpec{Collection: "world_buckets"}},
+		storage.RecordKey{ID: "world-1/7"},
+		source,
+		resolver,
+		values,
+		txmongo.Fence{Path: changePath(fieldNode(fieldGeneration)), Expected: uint64(3)},
+		storage.ApplyOptions{},
+	)
+	if !errors.Is(err, txmongo.ErrFenceRejected) {
+		t.Fatalf("ApplyChangesWithFence error = %v, want ErrFenceRejected", err)
+	}
+}
+
 func TestMongoAdapterRejectsNilChangeSource(t *testing.T) {
 	adapter, err := txmongo.NewAdapter(&recordingMongoUpdater{})
 	if err != nil {
@@ -988,6 +1072,51 @@ func TestMongoClusterRoutesSingleWriteByShardKey(t *testing.T) {
 	}
 	if userShard.update != nil {
 		t.Fatalf("unexpected user shard update = %#v", userShard.update)
+	}
+}
+
+func TestMongoClusterRoutesFencedWriteByShardKey(t *testing.T) {
+	const (
+		fieldName       change.FieldID = 1
+		fieldGeneration change.FieldID = 2
+	)
+	router := &recordingMongoRouter{names: map[any]string{"world-1": "world-shard"}}
+	client := &recordingMongoUpdater{}
+	cluster := mustMongoCluster(t, router, map[string]txmongo.Client{"world-shard": client})
+	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
+		change.FieldNameGo:   {fieldName: "Name", fieldGeneration: "CheckpointGeneration"},
+		change.FieldNameBSON: {fieldName: "name", fieldGeneration: "checkpointGeneration"},
+	})
+	source := recordedChanges{{Path: changePath(fieldNode(fieldName)), Op: change.OpSet}}
+	values := change.ValueResolverFunc(func(path change.Path) (any, bool) {
+		return "alice", path.Equal(changePath(fieldNode(fieldName)))
+	})
+	spec := meta.TypeSpec{
+		Type: meta.Type{Fields: []meta.Field{{Name: "Name"}, {Name: "CheckpointGeneration"}}},
+		Mongo: &meta.MongoSpec{
+			Collection: "world_buckets",
+			Route:      meta.RouteSpec{Type: "battlefield"},
+		},
+	}
+
+	err := cluster.ApplyChangesWithFence(
+		context.Background(),
+		spec,
+		storage.RecordKey{ID: "world-1/7", ShardKey: "world-1"},
+		source,
+		resolver,
+		values,
+		txmongo.Fence{Path: changePath(fieldNode(fieldGeneration)), Expected: uint64(3)},
+		storage.ApplyOptions{},
+	)
+	if err != nil {
+		t.Fatalf("ApplyChangesWithFence returned error: %v", err)
+	}
+	if len(router.calls) != 1 || router.calls[0].shardKey != "world-1" {
+		t.Fatalf("router calls = %#v, want world-1", router.calls)
+	}
+	if len(client.filter.Conditions) != 1 || client.filter.Conditions[0].Value != uint64(3) {
+		t.Fatalf("fence conditions = %#v, want generation 3", client.filter.Conditions)
 	}
 }
 

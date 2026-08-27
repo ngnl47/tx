@@ -17,18 +17,27 @@ var ErrInvalidConfig = errors.New("actor: invalid config")
 
 // Config 描述一个 Actor Cluster 成员。项目代码负责解析配置文件后构造该值。
 type Config struct {
-	ClusterName     string
-	Host            string
-	Port            int
+	// ClusterName 是当前 Actor 集群的稳定名称。
+	ClusterName string
+	// Host 是当前 Actor 实例向其他集群成员发布的可达主机地址。
+	Host string
+	// Port 是当前 Actor 实例远程通信端口；0 允许运行时选择空闲端口。
+	Port int
+	// MailboxCapacity 是单个 Actor 的默认有界邮箱容量；0 使用框架默认值。
 	MailboxCapacity int
+	// MaxPendingCalls 限制当前进程同时等待业务结果的 Future 数量；0 使用框架默认值。
 	MaxPendingCalls int
-	Etcd            EtcdConfig
+	// Etcd 描述 Actor Cluster Provider 使用的 etcd 连接。
+	Etcd EtcdConfig
 }
 
 // EtcdConfig 保存 Actor Cluster 的静态发现配置。
 type EtcdConfig struct {
-	Endpoints   []string
-	Prefix      string
+	// Endpoints 是可连接的 etcd 节点列表。
+	Endpoints []string
+	// Prefix 隔离当前 Actor Cluster 的成员和 placement 数据；空值使用框架默认前缀。
+	Prefix string
+	// DialTimeout 是建立 etcd 连接的最长等待时间；非正值使用框架默认值。
 	DialTimeout time.Duration
 }
 

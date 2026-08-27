@@ -34,8 +34,11 @@ const (
 // Stream 标识一条独立、有序的恢复日志流。后端路由由 Namespace 和 StreamKey 稳定推导，
 // Generation 变化不能让同一状态流漂移到其他分片。
 type Stream struct {
-	Namespace  string
-	StreamKey  string
+	// Namespace 区分不同业务日志类型，并参与稳定后端路由。
+	Namespace string
+	// StreamKey 标识同一 Namespace 下必须保持顺序的业务状态流。
+	StreamKey string
+	// Generation 区分同一状态流的不同 owner 世代，阻止旧 owner 继续推进新位置。
 	Generation uint64
 }
 
@@ -43,12 +46,18 @@ type Stream struct {
 //
 // Payload 在 Append 返回前必须保持只读。WAL 的同步追加边界返回后，调用方可自行复用原缓冲区。
 type Record struct {
-	Stream         Stream
-	Seq            uint64
+	// Stream 指定记录所属的有序恢复流。
+	Stream Stream
+	// Seq 是当前 Generation 内从 1 开始连续递增的序号。
+	Seq uint64
+	// PayloadVersion 标识业务载荷编码格式，供恢复器选择对应解码逻辑。
 	PayloadVersion uint32
-	PayloadHash    [sha256.Size]byte
-	Payload        []byte
-	CreatedAt      time.Time
+	// PayloadHash 是 Payload 的 SHA-256，用于幂等重试和冲突检测。
+	PayloadHash [sha256.Size]byte
+	// Payload 是追加前已经编码完成的只读业务变更正文。
+	Payload []byte
+	// CreatedAt 记录业务生成该 WAL 记录的时间，不参与流内排序。
+	CreatedAt time.Time
 }
 
 // Store 是服务使用的安全 WAL 门面。Replay 负责连续分页恢复；Checkpoint 只会在回调成功后

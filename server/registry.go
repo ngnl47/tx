@@ -14,7 +14,7 @@ type registry struct {
 func newRegistry(services ...Service) (*registry, error) {
 	result := &registry{byName: make(map[string]Service, len(services))}
 	for _, service := range services {
-		if service == nil {
+		if isNilInterface(service) {
 			return nil, errors.New("server: service is nil")
 		}
 		spec := service.Spec()

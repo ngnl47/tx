@@ -56,6 +56,35 @@ func TestResolveCModGraphStartsSharedDependencyOnce(t *testing.T) {
 	}
 }
 
+func TestResolveCModGraphOrdersSelectedOptionalPredecessorWithoutSelectingIt(t *testing.T) {
+	cmods := []CMod{
+		cmodGraphFake{id: "mongo"},
+		cmodGraphFake{id: "wal", after: []CModID{"mongo"}},
+	}
+
+	withoutMongo, err := resolveCModGraph(cmods, []Service{cmodServiceFake{spec: Spec{
+		Name:     "wal-only",
+		Requires: []CModID{"wal"},
+	}}})
+	if err != nil {
+		t.Fatalf("resolve WAL-only CMod graph: %v", err)
+	}
+	if want := []CModID{"wal"}; !slices.Equal(withoutMongo.IDs(), want) {
+		t.Fatalf("WAL-only CMod order = %v, want %v", withoutMongo.IDs(), want)
+	}
+
+	withMongo, err := resolveCModGraph(cmods, []Service{cmodServiceFake{spec: Spec{
+		Name:     "world",
+		Requires: []CModID{"wal", "mongo"},
+	}}})
+	if err != nil {
+		t.Fatalf("resolve world CMod graph: %v", err)
+	}
+	if want := []CModID{"mongo", "wal"}; !slices.Equal(withMongo.IDs(), want) {
+		t.Fatalf("world CMod order = %v, want %v", withMongo.IDs(), want)
+	}
+}
+
 func TestResolveCModGraphReportsCompleteMissingDependencyPath(t *testing.T) {
 	cmods := []CMod{
 		cmodGraphFake{id: "transaction", requires: []CModID{"fusion"}},
@@ -98,6 +127,35 @@ func TestResolveCModGraphRejectsDuplicateID(t *testing.T) {
 	_, err := resolveCModGraph(cmods, selected)
 	if err == nil || !strings.Contains(err.Error(), "duplicate CMod \"rpc\"") {
 		t.Fatalf("duplicate error = %v", err)
+	}
+}
+
+func TestResolveCModGraphRejectsTypedNilCMod(t *testing.T) {
+	var mod *cmodLifecycleFake
+	_, err := resolveCModGraph([]CMod{mod}, []Service{cmodServiceFake{spec: Spec{Name: "game"}}})
+	if err == nil || !strings.Contains(err.Error(), "CMod is nil") {
+		t.Fatalf("resolveCModGraph error = %v, want typed nil CMod error", err)
+	}
+}
+
+func TestResolveCModGraphRejectsInvalidComponentTopology(t *testing.T) {
+	cmods := []CMod{
+		cmodGraphFake{
+			id: "state-runtime",
+			components: []ComponentSpec{
+				{Role: "cache", Name: "first"},
+				{Role: "cache", Name: "second"},
+			},
+		},
+	}
+	selected := []Service{cmodServiceFake{spec: Spec{
+		Name:     "slggame",
+		Requires: []CModID{"state-runtime"},
+	}}}
+
+	_, err := resolveCModGraph(cmods, selected)
+	if err == nil || !strings.Contains(err.Error(), "duplicate component role") {
+		t.Fatalf("component topology error = %v", err)
 	}
 }
 
@@ -161,12 +219,14 @@ func TestCollectActorKindsRejectsDuplicateNames(t *testing.T) {
 }
 
 type cmodGraphFake struct {
-	id       CModID
-	requires []CModID
+	id         CModID
+	requires   []CModID
+	after      []CModID
+	components []ComponentSpec
 }
 
 func (fake cmodGraphFake) Spec() CModSpec {
-	return CModSpec{ID: fake.id, Requires: fake.requires}
+	return CModSpec{ID: fake.id, Requires: fake.requires, After: fake.after, Components: fake.components}
 }
 
 func (cmodGraphFake) Start(CModContext) error { return nil }

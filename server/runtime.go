@@ -8,48 +8,31 @@ import (
 	"github.com/ngnl47/tx/modules/discovery"
 	txrpc "github.com/ngnl47/tx/modules/rpc"
 	"github.com/ngnl47/tx/modules/txn"
+	"github.com/ngnl47/tx/wal"
 )
 
 type runtime struct {
-	config      Config
-	lifecycle   *lifecycle.WaitGroupContext
-	storage     *storageRuntime
-	rpc         *txrpc.Host
-	actor       *txactor.Runtime
-	actorKinds  []txactor.Kind
-	transaction *txn.Runtime
-	directory   *discovery.ServiceDirectory
-	slots       discovery.SlotStore
-	instanceMu  sync.RWMutex
-	instance    discovery.Instance
-	logicalSlot *LogicalSlot
-	cmodsMu     sync.RWMutex
-	cmods       map[CModID]struct{}
-}
-
-func (runtime *runtime) markCMod(id CModID, started bool) {
-	if runtime == nil {
-		return
-	}
-	runtime.cmodsMu.Lock()
-	defer runtime.cmodsMu.Unlock()
-	if runtime.cmods == nil {
-		runtime.cmods = make(map[CModID]struct{})
-	}
-	if started {
-		runtime.cmods[id] = struct{}{}
-	} else {
-		delete(runtime.cmods, id)
-	}
+	config        Config
+	lifecycle     *lifecycle.WaitGroupContext
+	storage       *storageRuntime
+	rpc           *txrpc.Host
+	actor         *txactor.Runtime
+	actorKinds    []txactor.Kind
+	transaction   *txn.Runtime
+	wal           wal.Store
+	directory     *discovery.ServiceDirectory
+	slots         discovery.SlotStore
+	instanceMu    sync.RWMutex
+	instance      discovery.Instance
+	logicalSlot   *LogicalSlot
+	selectedCMods map[CModID]struct{}
 }
 
 func (runtime *runtime) hasCMod(id CModID) bool {
 	if runtime == nil {
 		return false
 	}
-	runtime.cmodsMu.RLock()
-	_, ok := runtime.cmods[id]
-	runtime.cmodsMu.RUnlock()
+	_, ok := runtime.selectedCMods[id]
 	return ok
 }
 

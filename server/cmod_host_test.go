@@ -5,6 +5,9 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
+
+	"github.com/ngnl47/tx/lifecycle"
 )
 
 func TestCModHostValidatesAllBeforeStartingAny(t *testing.T) {
@@ -13,7 +16,7 @@ func TestCModHostValidatesAllBeforeStartingAny(t *testing.T) {
 	host := newCModHost(nil, cmodGraph{ordered: []CMod{
 		&cmodLifecycleFake{id: "redis", events: &events},
 		&cmodLifecycleFake{id: "fusion", validateErr: wantErr, events: &events},
-	}}, nil)
+	}})
 
 	err := host.start()
 	if !errors.Is(err, wantErr) {
@@ -31,7 +34,7 @@ func TestCModHostRollsBackStartedModulesInReverseOrder(t *testing.T) {
 		&cmodLifecycleFake{id: "redis", events: &events},
 		&cmodLifecycleFake{id: "fusion", events: &events},
 		&cmodLifecycleFake{id: "transaction", startErr: wantErr, events: &events},
-	}}, nil)
+	}})
 
 	err := host.start()
 	if !errors.Is(err, wantErr) {
@@ -49,7 +52,7 @@ func TestCModHostDrainsAndStopsInReverseOrder(t *testing.T) {
 		&cmodLifecycleFake{id: "redis", events: &events},
 		&cmodLifecycleFake{id: "fusion", events: &events},
 		&cmodLifecycleFake{id: "transaction", events: &events},
-	}}, nil)
+	}})
 	if err := host.start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -69,11 +72,65 @@ func TestCModHostDrainsAndStopsInReverseOrder(t *testing.T) {
 	}
 }
 
+func TestCModHostStopsOwnedTasksBeforeRollbackDependencies(t *testing.T) {
+	root := lifecycle.NewWaitGroupContext(context.Background())
+	t.Cleanup(func() {
+		root.Cancel()
+		root.WaitDoneAndWaitGroupWait()
+	})
+	server := &Server{runtime: &runtime{lifecycle: root}}
+	taskStarted := make(chan struct{})
+	taskStopped := make(chan struct{})
+	owner := &ownedTaskCMod{taskStarted: taskStarted, taskStopped: taskStopped}
+	host := newCModHost(newCModContext(server), cmodGraph{ordered: []CMod{
+		owner,
+		&cmodLifecycleFake{id: "failure", startErr: errors.New("failed"), events: &[]string{}},
+	}})
+
+	err := host.start()
+	if err == nil {
+		t.Fatal("start error = nil, want failure")
+	}
+	select {
+	case <-taskStopped:
+	case <-time.After(time.Second):
+		t.Fatal("owned task was not stopped during rollback")
+	}
+	if !owner.stopObservedTaskExit {
+		t.Fatal("CMod Stop ran before its owned task exited")
+	}
+}
+
 type cmodLifecycleFake struct {
 	id          CModID
 	validateErr error
 	startErr    error
 	events      *[]string
+}
+
+type ownedTaskCMod struct {
+	taskStarted          chan struct{}
+	taskStopped          chan struct{}
+	stopObservedTaskExit bool
+}
+
+func (*ownedTaskCMod) Spec() CModSpec { return CModSpec{ID: "owner"} }
+
+func (mod *ownedTaskCMod) Start(runtime CModContext) error {
+	return runtime.Tasks().Go(func(ctx context.Context) {
+		close(mod.taskStarted)
+		<-ctx.Done()
+		close(mod.taskStopped)
+	})
+}
+
+func (mod *ownedTaskCMod) Stop(context.Context) error {
+	select {
+	case <-mod.taskStopped:
+		mod.stopObservedTaskExit = true
+	default:
+	}
+	return nil
 }
 
 func (fake *cmodLifecycleFake) Spec() CModSpec { return CModSpec{ID: fake.id} }

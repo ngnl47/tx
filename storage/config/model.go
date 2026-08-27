@@ -9,18 +9,23 @@ import (
 
 // RouteTableConfig 表示 redis.yml 或 mongodb.yml 中的 routeType 路由表。
 type RouteTableConfig struct {
+	// Routes 按 routeType 保存一组稳定分片规则。
 	Routes map[string]RouteTarget `yaml:",inline" json:"routes"`
 }
 
 // RouteTarget 表示一个 routeType 的路由目标，支持标量、字符串数组和规则数组。
 type RouteTarget struct {
+	// Rules 按 routeBy 数值区间选择可用 endpoint 分片集合。
 	Rules []RouteRule `json:"rules"`
 }
 
 // RouteRule 描述一个 routeBy 区间内可用的 endpoint 列表。
 type RouteRule struct {
-	Min    int64    `yaml:"min" json:"min"`
-	Max    int64    `yaml:"max" json:"max"`
+	// Min 是当前路由区间的闭区间起点；非正值按 1 处理。
+	Min int64 `yaml:"min" json:"min"`
+	// Max 是当前路由区间的闭区间终点；非正值表示不设置上界。
+	Max int64 `yaml:"max" json:"max"`
+	// Shards 是当前区间参与稳定哈希路由的 endpoint 列表。
 	Shards []string `yaml:"shards" json:"shards"`
 }
 

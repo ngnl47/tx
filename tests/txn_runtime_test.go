@@ -18,13 +18,13 @@ func (admission rejectingAdmission) RequireWritable() error {
 	return admission.err
 }
 
-type recordingCommitSink struct {
+type recordingCommitParticipant struct {
 	prepared bool
 	commits  [][]txn.LockTarget
 	aborts   int
 }
 
-func (sink *recordingCommitSink) Prepare(_ context.Context, targets []txn.LockTarget) (txn.CommitReservation, error) {
+func (sink *recordingCommitParticipant) Prepare(_ context.Context, targets []txn.LockTarget) (txn.CommitReservation, error) {
 	sink.prepared = true
 	return &recordingCommitReservation{
 		sink:    sink,
@@ -33,7 +33,7 @@ func (sink *recordingCommitSink) Prepare(_ context.Context, targets []txn.LockTa
 }
 
 type recordingCommitReservation struct {
-	sink    *recordingCommitSink
+	sink    *recordingCommitParticipant
 	targets []txn.LockTarget
 }
 
@@ -48,20 +48,20 @@ func (reservation *recordingCommitReservation) Abort() {
 	reservation.sink.aborts++
 }
 
-type commitSinkProcedure struct {
+type commitParticipantProcedure struct {
 	lock       txn.LockTarget
 	store      *runtimeTestStore
 	prepared   *bool
 	processErr error
 }
 
-func (procedure commitSinkProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
+func (procedure commitParticipantProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
 	return []txn.LockTarget{procedure.lock}, nil
 }
 
-func (procedure commitSinkProcedure) Process(*txn.Tx) error {
+func (procedure commitParticipantProcedure) Process(*txn.Tx) error {
 	if procedure.prepared != nil && !*procedure.prepared {
-		return errors.New("commit sink was not prepared before process")
+		return errors.New("commit participant was not prepared before process")
 	}
 	procedure.store.Set()
 	return procedure.processErr
@@ -76,16 +76,24 @@ func TestTxnRuntimeRejectsTypedNilProcedure(t *testing.T) {
 	}
 }
 
+func TestTxnRuntimeBindsGenericCommitParticipant(t *testing.T) {
+	runtime := txn.NewRuntime()
+	var participant txn.CommitParticipant = &recordingCommitParticipant{}
+	if err := runtime.BindCommitParticipant(participant); err != nil {
+		t.Fatalf("BindCommitParticipant returned error: %v", err)
+	}
+}
+
 func TestTxnRuntimeCommitsFinalDirtyTargetsToBoundSink(t *testing.T) {
 	store := &runtimeTestStore{}
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
-	sink := &recordingCommitSink{}
+	sink := &recordingCommitParticipant{}
 	runtime := txn.NewRuntime()
-	if err := runtime.BindCommitSink(sink); err != nil {
-		t.Fatalf("BindCommitSink returned error: %v", err)
+	if err := runtime.BindCommitParticipant(sink); err != nil {
+		t.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
 
-	err := runtime.Call(context.Background(), commitSinkProcedure{
+	err := runtime.Call(context.Background(), commitParticipantProcedure{
 		lock:     lock,
 		store:    store,
 		prepared: &sink.prepared,
@@ -104,13 +112,13 @@ func TestTxnRuntimeCommitsFinalDirtyTargetsToBoundSink(t *testing.T) {
 func TestTxnRuntimeAbortsCommitReservationAfterRollback(t *testing.T) {
 	store := &runtimeTestStore{}
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
-	sink := &recordingCommitSink{}
+	sink := &recordingCommitParticipant{}
 	runtime := txn.NewRuntime()
-	if err := runtime.BindCommitSink(sink); err != nil {
-		t.Fatalf("BindCommitSink returned error: %v", err)
+	if err := runtime.BindCommitParticipant(sink); err != nil {
+		t.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
 
-	err := runtime.Call(context.Background(), commitSinkProcedure{
+	err := runtime.Call(context.Background(), commitParticipantProcedure{
 		lock:       lock,
 		store:      store,
 		prepared:   &sink.prepared,
@@ -124,17 +132,17 @@ func TestTxnRuntimeAbortsCommitReservationAfterRollback(t *testing.T) {
 	}
 }
 
-func TestTxnRuntimeRejectsInvalidOrDuplicateCommitSink(t *testing.T) {
+func TestTxnRuntimeRejectsInvalidOrDuplicateCommitParticipant(t *testing.T) {
 	runtime := txn.NewRuntime()
-	var typedNil *recordingCommitSink
-	if err := runtime.BindCommitSink(typedNil); err == nil || !strings.Contains(err.Error(), "commit sink is nil") {
-		t.Fatalf("typed nil BindCommitSink error = %v, want nil sink", err)
+	var typedNil *recordingCommitParticipant
+	if err := runtime.BindCommitParticipant(typedNil); err == nil || !strings.Contains(err.Error(), "commit participant is nil") {
+		t.Fatalf("typed nil BindCommitParticipant error = %v, want nil participant", err)
 	}
-	if err := runtime.BindCommitSink(&recordingCommitSink{}); err != nil {
-		t.Fatalf("first BindCommitSink returned error: %v", err)
+	if err := runtime.BindCommitParticipant(&recordingCommitParticipant{}); err != nil {
+		t.Fatalf("first BindCommitParticipant returned error: %v", err)
 	}
-	if err := runtime.BindCommitSink(&recordingCommitSink{}); err == nil || !strings.Contains(err.Error(), "already bound") {
-		t.Fatalf("second BindCommitSink error = %v, want already bound", err)
+	if err := runtime.BindCommitParticipant(&recordingCommitParticipant{}); err == nil || !strings.Contains(err.Error(), "already bound") {
+		t.Fatalf("second BindCommitParticipant error = %v, want already bound", err)
 	}
 }
 
@@ -147,8 +155,8 @@ func TestTxnRuntimeRejectsProcedureBeforeMutationWhenAdmissionIsClosed(t *testin
 		WriteAdmission: rejectingAdmission{err: admissionErr},
 	}, cachemodule.Config{})
 	runtime := txn.NewRuntime()
-	if err := runtime.BindCommitSink(manager); err != nil {
-		t.Fatalf("BindCommitSink returned error: %v", err)
+	if err := runtime.BindCommitParticipant(manager); err != nil {
+		t.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
 	called := false
@@ -171,11 +179,11 @@ func TestTxnRuntimeAllowsPureMemoryProcedureWhenAdmissionIsClosed(t *testing.T) 
 		WriteAdmission: rejectingAdmission{err: errors.New("storage unavailable")},
 	}, cachemodule.Config{})
 	runtime := txn.NewRuntime()
-	if err := runtime.BindCommitSink(manager); err != nil {
-		t.Fatalf("BindCommitSink returned error: %v", err)
+	if err := runtime.BindCommitParticipant(manager); err != nil {
+		t.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
 	lock := txn.NewLockTarget(txn.NewLockKey("memory", 1001), store)
-	if err := runtime.Call(context.Background(), commitSinkProcedure{
+	if err := runtime.Call(context.Background(), commitParticipantProcedure{
 		lock:  lock,
 		store: &store.runtimeTestStore,
 	}); err != nil {
@@ -194,8 +202,8 @@ func TestCacheManagerTreatsTypedNilWriteAdmissionAsAbsent(t *testing.T) {
 		WriteAdmission: typedNil,
 	}, cachemodule.Config{})
 	runtime := txn.NewRuntime()
-	if err := runtime.BindCommitSink(manager); err != nil {
-		t.Fatalf("BindCommitSink returned error: %v", err)
+	if err := runtime.BindCommitParticipant(manager); err != nil {
+		t.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
 	err := runtime.Call(context.Background(), runtimeTestProcedure{
 		lock:  txn.NewLockTarget(txn.NewLockKey("role", 1001), store),

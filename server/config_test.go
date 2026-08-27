@@ -10,7 +10,7 @@ import (
 	storageconfig "github.com/ngnl47/tx/storage/config"
 )
 
-func TestWALCModValidatesSelectedConfiguration(t *testing.T) {
+func TestWALComponentValidatesSelectedConfiguration(t *testing.T) {
 	routes := storageconfig.NewRouteTableConfig(map[string]storageconfig.RouteTarget{
 		"main": {Rules: []storageconfig.RouteRule{{Shards: []string{"mongodb://localhost:27017/tx"}}}},
 		"wal":  {Rules: []storageconfig.RouteRule{{Shards: []string{"mongodb://localhost:27017/tx"}}}},

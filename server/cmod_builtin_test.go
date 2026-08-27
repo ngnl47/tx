@@ -12,21 +12,38 @@ import (
 
 func TestBuiltInCModsDeclareStableDependencies(t *testing.T) {
 	app := &Server{}
-	want := map[CModID][]CModID{
-		CModRedisStorage:   nil,
-		CModMongoStorage:   nil,
-		CModFusionStorage:  {CModRedisStorage, CModMongoStorage},
-		CModRPC:            nil,
-		CModDiscovery:      nil,
-		CModActor:          nil,
-		CModTransaction:    nil,
-		CModDelayScheduler: {CModFusionStorage},
-		CModWAL:            {CModMongoStorage},
+	type dependencies struct {
+		requires   []CModID
+		after      []CModID
+		components []ComponentSpec
+	}
+	want := map[CModID]dependencies{
+		CModRedisStorage: {},
+		CModMongoStorage: {},
+		CModFusionStorage: {
+			requires: []CModID{CModRedisStorage, CModMongoStorage},
+			components: []ComponentSpec{
+				{Role: "scheduler", Name: "delay"},
+			},
+		},
+		CModRPC:       {},
+		CModDiscovery: {},
+		CModActor:     {},
 	}
 	for _, mod := range app.builtInCMods(RunOptions{}) {
 		spec := mod.Spec()
-		if !slices.Equal(spec.Requires, want[spec.ID]) {
-			t.Fatalf("CMod %q requires = %v, want %v", spec.ID, spec.Requires, want[spec.ID])
+		dependencies, exists := want[spec.ID]
+		if !exists {
+			t.Fatalf("unexpected built-in CMod %q", spec.ID)
+		}
+		if !slices.Equal(spec.Requires, dependencies.requires) {
+			t.Fatalf("CMod %q requires = %v, want %v", spec.ID, spec.Requires, dependencies.requires)
+		}
+		if !slices.Equal(spec.After, dependencies.after) {
+			t.Fatalf("CMod %q after = %v, want %v", spec.ID, spec.After, dependencies.after)
+		}
+		if !equalComponentSpecs(spec.Components, dependencies.components) {
+			t.Fatalf("CMod %q components = %#v, want %#v", spec.ID, spec.Components, dependencies.components)
 		}
 		delete(want, spec.ID)
 	}

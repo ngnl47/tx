@@ -50,7 +50,6 @@ type storageRuntime struct {
 	ctx             context.Context
 	redis           *txredis.Cluster
 	mongo           *txmongo.Cluster
-	wal             wal.Store
 	fusion          txfusion.Strategy
 	delayBackend    *txtaskredis.Backend
 	delayHandler    txfusion.DelayTaskHandler
@@ -205,19 +204,18 @@ func (s *storageRuntime) prepareDelayScheduler(opts storageOptions) error {
 	return nil
 }
 
-func (s *storageRuntime) startWAL(ctx context.Context, cfg WALConfig, mongoConfig storageconfig.RouteTableConfig) error {
+func (s *storageRuntime) buildWAL(ctx context.Context, cfg WALConfig, mongoConfig storageconfig.RouteTableConfig) (wal.Store, error) {
 	if s == nil || s.mongo == nil {
-		return errStorageNotConfigured
+		return nil, errStorageNotConfigured
 	}
 	store, err := buildWAL(ctx, cfg, mongoConfig, s.mongoWALShards)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if store == nil {
-		return fmt.Errorf("server: WAL storage is not configured")
+		return nil, fmt.Errorf("server: WAL storage is not configured")
 	}
-	s.wal = healthAwareWAL{storage: s, next: store}
-	return nil
+	return healthAwareWAL{storage: s, next: store}, nil
 }
 
 func (s *storageRuntime) Context() context.Context {
@@ -262,13 +260,6 @@ func (s *storageRuntime) FusionReader() txstorage.DocumentLoader {
 		return nil
 	}
 	return s.guardReader(meta.StorageModeFusion, s.fusion)
-}
-
-func (s *storageRuntime) WAL() wal.Store {
-	if s == nil {
-		return nil
-	}
-	return s.wal
 }
 
 // RedisScriptClientFor 返回 routeType/shardKey 对应的既有 Redis 客户端。
@@ -394,6 +385,28 @@ func (writer storageChangeWriter) ApplyChangesWithOptions(ctx context.Context, s
 		return fmt.Errorf("server: %s writer is not configured", mode)
 	}
 	if err := applier.ApplyChangesWithOptions(ctx, spec, key, source, resolver, values, options); err != nil {
+		writer.storage.observeStorageError(err)
+		return err
+	}
+	return nil
+}
+
+// ApplyChangesWithFence 只为 Mongo 条件更新开放窄入口，Redis 与 Fusion 不伪造代际语义。
+func (writer storageChangeWriter) ApplyChangesWithFence(ctx context.Context, spec meta.TypeSpec, key txstorage.RecordKey, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver, fence txmongo.Fence, options txstorage.ApplyOptions) error {
+	if writer.storage == nil {
+		return errStorageNotConfigured
+	}
+	if spec.Storage.Mode != meta.StorageModeMongo {
+		return fmt.Errorf("server: fenced changes require mongo storage mode, got %q", spec.Storage.Mode)
+	}
+	if err := writer.storage.requireStorageMode(meta.StorageModeMongo); err != nil {
+		return err
+	}
+	applier, ok := writer.mongo.(txmongo.FencedChangeApplier)
+	if !ok || applier == nil {
+		return errors.New("server: mongo writer does not support fenced changes")
+	}
+	if err := applier.ApplyChangesWithFence(ctx, spec, key, source, resolver, values, fence, options); err != nil {
 		writer.storage.observeStorageError(err)
 		return err
 	}

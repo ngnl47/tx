@@ -10,10 +10,15 @@ const defaultEtcdPrefix = "/tx/discovery/instances"
 
 var ErrInvalidEtcdConfig = errors.New("discovery: invalid etcd config")
 
+// EtcdConfig 描述普通 RPC 服务注册和实例目录使用的 etcd 连接。
 type EtcdConfig struct {
-	Endpoints   []string
-	Prefix      string
-	LeaseTTL    time.Duration
+	// Endpoints 是可连接的 etcd 节点列表。
+	Endpoints []string
+	// Prefix 隔离当前应用的服务实例注册键；空值使用框架默认前缀。
+	Prefix string
+	// LeaseTTL 是实例停止续约后注册信息继续存活的时间，必须为整秒且不少于一秒。
+	LeaseTTL time.Duration
+	// DialTimeout 是建立 etcd 连接的最长等待时间；非正值使用框架默认值。
 	DialTimeout time.Duration
 }
 

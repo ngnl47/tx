@@ -7,12 +7,21 @@ import (
 
 func (server *Server) fusionCMod() CMod {
 	return &builtInCMod{
-		spec: CModSpec{ID: CModFusionStorage, Requires: []CModID{CModRedisStorage, CModMongoStorage}},
+		spec: CModSpec{
+			ID:       CModFusionStorage,
+			Requires: []CModID{CModRedisStorage, CModMongoStorage},
+			Components: []ComponentSpec{
+				{Role: "scheduler", Name: "delay"},
+			},
+		},
 		validate: func(CModContext) error {
 			if server.types == nil || server.bindStorage == nil {
 				return errors.New("generated data binding is required")
 			}
 			if err := server.config.Runtime.DelayTask.validate(); err != nil {
+				return err
+			}
+			if err := server.config.Runtime.Scheduler.validate(); err != nil {
 				return err
 			}
 			return server.config.Runtime.Fusion.Validate(server.types)
@@ -25,7 +34,13 @@ func (server *Server) fusionCMod() CMod {
 			if err := store.startFusion(server.runtime.lifecycle, server.config.Storage.Redis, server.config.Runtime.storageOptions(), server.types); err != nil {
 				return err
 			}
-			return store.startDelayTaskDispatcher(server.runtime.lifecycle)
+			if err := store.startDelayTaskDispatcher(server.runtime.lifecycle); err != nil {
+				return err
+			}
+			if err := store.prepareDelayScheduler(server.config.Runtime.storageOptions()); err != nil {
+				return err
+			}
+			return store.startDelayScheduler(server.runtime.lifecycle)
 		},
 		drain: func(ctx context.Context) error {
 			if server.runtime == nil || server.runtime.storage == nil {

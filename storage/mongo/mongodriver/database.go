@@ -91,9 +91,13 @@ func (d Database) UpdateOne(ctx context.Context, collection string, filter txmon
 	if d.db == nil {
 		return txmongo.UpdateResult{}, errMongoDatabaseNotConfigured
 	}
+	query, err := mongoFilterDocument(filter)
+	if err != nil {
+		return txmongo.UpdateResult{}, err
+	}
 	result, err := d.db.Collection(collection).UpdateOne(
 		ctx,
-		bson.M{filter.Field: filter.Value},
+		query,
 		update,
 		options.Update().SetUpsert(applyOptions.Upsert),
 	)
@@ -107,9 +111,13 @@ func (d Database) ReplaceOne(ctx context.Context, collection string, filter txmo
 	if d.db == nil {
 		return txmongo.ReplaceResult{}, errMongoDatabaseNotConfigured
 	}
+	query, err := mongoFilterDocument(filter)
+	if err != nil {
+		return txmongo.ReplaceResult{}, err
+	}
 	result, err := d.db.Collection(collection).ReplaceOne(
 		ctx,
-		bson.M{filter.Field: filter.Value},
+		query,
 		doc,
 		options.Replace().SetUpsert(true),
 	)
@@ -123,7 +131,11 @@ func (d Database) DeleteOne(ctx context.Context, collection string, filter txmon
 	if d.db == nil {
 		return txmongo.DeleteResult{}, errMongoDatabaseNotConfigured
 	}
-	result, err := d.db.Collection(collection).DeleteOne(ctx, bson.M{filter.Field: filter.Value})
+	query, err := mongoFilterDocument(filter)
+	if err != nil {
+		return txmongo.DeleteResult{}, err
+	}
+	result, err := d.db.Collection(collection).DeleteOne(ctx, query)
 	if err != nil {
 		return txmongo.DeleteResult{}, mongoBackendError("delete one", err)
 	}
@@ -134,8 +146,12 @@ func (d Database) FindOne(ctx context.Context, collection string, filter txmongo
 	if d.db == nil {
 		return nil, false, errMongoDatabaseNotConfigured
 	}
-	result := d.db.Collection(collection).FindOne(ctx, bson.M{filter.Field: filter.Value}, options.FindOne().SetProjection(projection(fields...)))
-	err := result.Err()
+	query, err := mongoFilterDocument(filter)
+	if err != nil {
+		return nil, false, err
+	}
+	result := d.db.Collection(collection).FindOne(ctx, query, options.FindOne().SetProjection(projection(fields...)))
+	err = result.Err()
 	if err == mongo.ErrNoDocuments {
 		return nil, false, nil
 	}
@@ -147,6 +163,23 @@ func (d Database) FindOne(ctx context.Context, collection string, filter txmongo
 		return nil, false, err
 	}
 	return doc, true, nil
+}
+
+func mongoFilterDocument(filter txmongo.Filter) (bson.M, error) {
+	if filter.Field == "" {
+		return nil, errors.New("mongo: filter field is empty")
+	}
+	document := bson.M{filter.Field: filter.Value}
+	for _, condition := range filter.Conditions {
+		if condition.Field == "" {
+			return nil, errors.New("mongo: filter condition field is empty")
+		}
+		if _, exists := document[condition.Field]; exists {
+			return nil, fmt.Errorf("mongo: duplicate filter field %q", condition.Field)
+		}
+		document[condition.Field] = condition.Value
+	}
+	return document, nil
 }
 
 func (d Database) FindMany(ctx context.Context, collection string, filter txmongo.ValuesFilter, fields ...string) ([]map[string]any, []bool, error) {

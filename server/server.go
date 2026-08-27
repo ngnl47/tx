@@ -87,8 +87,10 @@ type Server struct {
 	setups         []func(Context) (func(), error)
 
 	mu        sync.Mutex
+	starting  bool
 	started   bool
 	stopping  bool
+	startDone chan struct{}
 	runtime   *runtime
 	host      *serviceHost
 	cmodHost  *cmodHost
@@ -127,9 +129,15 @@ func (server *Server) Run(ctx context.Context, options RunOptions) error {
 	if err := server.Start(context.WithoutCancel(ctx), options); err != nil {
 		return err
 	}
+	server.mu.Lock()
+	runtime := server.runtime
+	server.mu.Unlock()
+	if runtime == nil || runtime.lifecycle == nil {
+		return server.Stop(context.Background())
+	}
 	select {
 	case <-ctx.Done():
-	case <-server.runtime.lifecycle.Done():
+	case <-runtime.lifecycle.Done():
 	}
 	return server.Stop(context.Background())
 }
@@ -141,16 +149,31 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 		return errors.New("server: server is nil")
 	}
 	server.mu.Lock()
-	if server.started || server.stopping {
+	if server.starting || server.started || server.stopping {
 		server.mu.Unlock()
 		return errors.New("server: server is already started or stopping")
 	}
-	server.started = true
+	server.starting = true
+	server.startDone = make(chan struct{})
 	server.mu.Unlock()
 	defer func() {
+		var cleanupErr error
 		if err != nil {
-			err = errors.Join(err, server.stop(context.Background(), false))
+			cleanupErr = server.shutdown(context.Background(), false)
+			err = errors.Join(err, cleanupErr)
 		}
+		server.mu.Lock()
+		server.starting = false
+		if err == nil {
+			server.started = true
+		} else {
+			server.stopping = true
+			server.stopErr = cleanupErr
+			server.clearRuntimeLocked()
+			close(server.stopDone)
+		}
+		close(server.startDone)
+		server.mu.Unlock()
 	}()
 	registry, err := newRegistry(server.services...)
 	if err != nil {
@@ -170,7 +193,10 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 		return err
 	}
 	if server.configProvider != nil {
-		resolved, resolveErr := server.configProvider(NewCModSelection(graph.IDs()...))
+		resolved, resolveErr := server.configProvider(newAssemblySelection(
+			newCModSelection(graph.IDs()...),
+			newServiceSelection(selected),
+		))
 		if resolveErr != nil {
 			return fmt.Errorf("server: resolve CMod config: %w", resolveErr)
 		}
@@ -189,10 +215,10 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 
 	root := lifecycleRoot(ctx)
 	runtime := &runtime{
-		config:     server.config,
-		lifecycle:  root,
-		cmods:      make(map[CModID]struct{}),
-		actorKinds: append([]txactor.Kind(nil), actorKinds...),
+		config:        server.config,
+		lifecycle:     root,
+		selectedCMods: newCModSelection(graph.IDs()...).ids,
+		actorKinds:    append([]txactor.Kind(nil), actorKinds...),
 		instance: discovery.Instance{
 			ID:       strings.TrimSpace(options.InstanceID),
 			Endpoint: strings.TrimSpace(options.InstanceEndpoint),
@@ -205,7 +231,7 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 	server.runtime = runtime
 	server.mu.Unlock()
 
-	cmodHost := newCModHost(newCModContext(runtime), graph, runtime.markCMod)
+	cmodHost := newCModHost(newCModContext(server), graph)
 	server.cmodHost = cmodHost
 	if err := cmodHost.start(); err != nil {
 		return err
@@ -248,6 +274,7 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 		"app", server.config.AppID,
 		"services", strings.Join(selectedServiceNames(selected), ","),
 		"cmods", strings.Join(cmodIDStrings(graph.IDs()), ","),
+		"components", strings.Join(cmodTopology(graph.ordered, newServiceSelection(selected)), ";"),
 		"endpoint", runtime.instanceSnapshot().Endpoint,
 	)
 	return nil
@@ -260,8 +287,18 @@ func (server *Server) Context() Context {
 	}
 	server.mu.Lock()
 	defer server.mu.Unlock()
-	if server.runtime == nil {
+	if !server.started || server.stopping || server.runtime == nil {
 		return nil
 	}
 	return newServiceContext(server.runtime, nil)
+}
+
+func (server *Server) clearRuntimeLocked() {
+	server.started = false
+	server.runtime = nil
+	server.host = nil
+	server.cmodHost = nil
+	server.discovery = nil
+	server.control = nil
+	server.cleanups = nil
 }

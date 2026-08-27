@@ -6,6 +6,7 @@ import "sync/atomic"
 //
 // 项目应在服务启动阶段完成配置。未配置时使用零值，即不启用调试校验。
 type Config struct {
+	// Debug 是仅建议在开发、测试或灰度环境启用的一致性检查。
 	Debug DebugConfig
 }
 

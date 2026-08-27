@@ -5,15 +5,12 @@ import (
 )
 
 const (
-	CModRedisStorage   CModID = "redis-storage"
-	CModMongoStorage   CModID = "mongo-storage"
-	CModFusionStorage  CModID = "fusion-storage"
-	CModRPC            CModID = "rpc"
-	CModDiscovery      CModID = "discovery"
-	CModActor          CModID = "actor"
-	CModTransaction    CModID = "transaction"
-	CModDelayScheduler CModID = "delay-scheduler"
-	CModWAL            CModID = "wal"
+	CModRedisStorage  CModID = "redis-storage"
+	CModMongoStorage  CModID = "mongo-storage"
+	CModFusionStorage CModID = "fusion-storage"
+	CModRPC           CModID = "rpc"
+	CModDiscovery     CModID = "discovery"
+	CModActor         CModID = "actor"
 )
 
 type builtInCMod struct {
@@ -62,8 +59,5 @@ func (server *Server) builtInCMods(options RunOptions) []CMod {
 		server.rpcCMod(options),
 		server.discoveryCMod(options),
 		server.actorCMod(),
-		server.transactionCMod(),
-		server.delaySchedulerCMod(),
-		server.walCMod(),
 	}
 }

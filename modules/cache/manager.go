@@ -33,14 +33,16 @@ type WriteAdmission interface {
 
 // Dependencies 是缓存运行时启动时注入的基础能力，不属于静态配置。
 type Dependencies struct {
-	Writer         storage.ChangeApplier
+	// Writer 接收缓存管理器最终刷出的根 Store 变更，通常由 Fusion 或 Mongo 能力提供。
+	Writer storage.ChangeApplier
+	// WriteAdmission 在 Procedure 修改内存对象前检查目标存储是否允许产生新的待刷状态；nil 表示不设置前置闸门。
 	WriteAdmission WriteAdmission
 }
 
-// Runtime 是有状态缓存 CMod 依赖的稳定 SPI。
+// Runtime 是 StateRuntime Cache 组件依赖的稳定 SPI。
 // 项目可以包装默认 Manager 扩展对象加载、淘汰和业务索引，也可以为高级场景提供完整实现。
 type Runtime interface {
-	txn.CommitSink
+	txn.CommitParticipant
 	Start(lifecycle.Tasks) error
 	Shutdown(context.Context) error
 	Release(txn.LockTarget) error
@@ -48,13 +50,20 @@ type Runtime interface {
 
 // Config 描述缓存根对象的刷盘调度与资源边界。
 type Config struct {
-	FlushInterval        time.Duration
+	// FlushInterval 是后台批量刷盘循环的触发间隔。
+	FlushInterval time.Duration
+	// ShutdownFlushTimeout 是优雅关闭阶段最终刷空 pending 根对象的最长等待时间。
 	ShutdownFlushTimeout time.Duration
-	MaxPendingRoots      int
-	MaxRootChanges       int
-	HeapSoftLimitBytes   uint64
-	HeapSampleInterval   time.Duration
-	ReadHeapBytes        func() uint64
+	// MaxPendingRoots 限制待刷根对象数量；0 表示不限制。
+	MaxPendingRoots int
+	// MaxRootChanges 限制单个根 Store 累积的变更数量；0 表示不触发变更折叠。
+	MaxRootChanges int
+	// HeapSoftLimitBytes 是只记录告警的进程堆内存软阈值；0 表示关闭该告警。
+	HeapSoftLimitBytes uint64
+	// HeapSampleInterval 是堆内存采样的最小间隔；0 表示每次新增 pending 根对象时都允许采样。
+	HeapSampleInterval time.Duration
+	// ReadHeapBytes 覆盖默认 Go 堆内存采集函数，主要用于测试和项目级监控适配；nil 使用 runtime.MemStats。
+	ReadHeapBytes func() uint64
 }
 
 // Validate 校验缓存管理器完整生命周期所需的配置。

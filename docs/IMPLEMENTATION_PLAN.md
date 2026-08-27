@@ -15,6 +15,10 @@
 2. 持续审计 Redis、Mongo、Fusion、WAL 和延迟任务的失败契约。未知返回值、矛盾文档状态、非法路径、路由错误和依赖缺失必须返回明确错误，不能静默成功、自动修复持久化数据或错误清理 Store 状态。
 3. 发现旧接口、过渡结构、淘汰测试或旧方案文档时，在确认没有生产调用后直接删除。生效文档只描述当前方案；必要的技术取舍只保留在设计文档。
 4. 新增或修改持久化能力时优先使用 `txgame` 生成的真实 `GD*`/`GD*Store` 做集成测试，避免 runtime 测试与生成契约割裂。
+5. 收拢 CMod 分层：只有进程级 L3 能力门面保留 CMod 身份。`txn.Runtime`、`cache.Runtime`、`wal.Store`、
+   checkpoint Scheduler、Fusion Writer 和 Delay Scheduler 作为强类型组件由 CMod Builder 组装，不再以平级 CModID
+   暴露给 L4 Service。第一阶段将 Transaction、CacheManager 与可选 WAL 收拢为 StateRuntime CMod，并将 DelayScheduler
+   收拢进 Fusion CMod；Builder 必须保存可观测的组件拓扑，组件生命周期只由所属 CMod 管理。
 
 ### P1：性能基线
 
@@ -54,7 +58,9 @@
 
 ### 异常接管与 fencing
 
-当前逻辑槽位只支持受控排水后的 generation CAS 交接。异常宕机、网络分区和自动接管需要 Lease、存储 fencing 与恢复策略，不能假定 `WaitGroupContext` 或 etcd 成员过期已经保证单 owner。
+逻辑槽位支持受控排水后的 generation CAS 交接；`slgworld` 示例也已用 Mongo generation fence 阻止旧 checkpoint 覆盖新
+owner。尚未完成的是异常宕机、网络分区和自动接管的通用 Lease/placement 策略，以及由业务枚举恢复 stream 的组织方式。
+不能假定 `WaitGroupContext`、etcd 成员过期或单次 Mongo CAS 已经独立保证单 owner。
 
 ### 可选存储 backend
 

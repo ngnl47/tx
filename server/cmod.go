@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/ngnl47/tx/lifecycle"
 	txactor "github.com/ngnl47/tx/modules/actor"
@@ -15,16 +17,13 @@ import (
 // CModID 是能力模组的稳定身份，用于依赖解析和启动日志。
 type CModID string
 
-// CModSelection 是已经解析完成的能力模组依赖闭包。
-// 它用于启动前的惰性配置转换，不允许调用方修改内部顺序。
-type CModSelection struct {
+type cmodSelection struct {
 	ids     map[CModID]struct{}
 	ordered []CModID
 }
 
-// NewCModSelection 创建一份独立的能力模组选择，主要供配置提供者和测试使用。
-func NewCModSelection(ids ...CModID) CModSelection {
-	selection := CModSelection{
+func newCModSelection(ids ...CModID) cmodSelection {
+	selection := cmodSelection{
 		ids:     make(map[CModID]struct{}, len(ids)),
 		ordered: make([]CModID, 0, len(ids)),
 	}
@@ -39,27 +38,138 @@ func NewCModSelection(ids ...CModID) CModSelection {
 }
 
 // Has 判断能力模组是否属于本次启动的完整依赖闭包。
-func (selection CModSelection) Has(id CModID) bool {
+func (selection cmodSelection) Has(id CModID) bool {
 	_, ok := selection.ids[id]
 	return ok
 }
 
 // IDs 按稳定拓扑顺序返回能力模组 ID 的副本。
-func (selection CModSelection) IDs() []CModID {
+func (selection cmodSelection) IDs() []CModID {
 	return append([]CModID(nil), selection.ordered...)
+}
+
+// AssemblySelection 是启动前已经解析完成的 L4 服务与 L3 CMod 选择。
+// 配置提供者通过它惰性转换本轮实际需要的组件参数。
+type AssemblySelection struct {
+	cmods    cmodSelection
+	services ServiceSelection
+}
+
+func newAssemblySelection(cmods cmodSelection, services ServiceSelection) AssemblySelection {
+	return AssemblySelection{cmods: cmods, services: services}
+}
+
+// NewAssemblySelection 创建一份独立的启动选择，主要供项目配置转换器和测试使用。
+func NewAssemblySelection(cmodIDs []CModID, serviceNames []string) AssemblySelection {
+	services := ServiceSelection{names: make(map[string]struct{}, len(serviceNames))}
+	for _, name := range serviceNames {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			services.names[name] = struct{}{}
+		}
+	}
+	return newAssemblySelection(newCModSelection(cmodIDs...), services)
+}
+
+// HasCMod 判断指定 L3 能力门面是否进入本轮启动闭包。
+func (selection AssemblySelection) HasCMod(id CModID) bool {
+	return selection.cmods.Has(id)
+}
+
+// HasService 判断指定 L4 服务是否进入本轮启动集合。
+func (selection AssemblySelection) HasService(name string) bool {
+	return selection.services.Has(name)
+}
+
+// CModIDs 返回稳定拓扑顺序的 CMod ID 副本。
+func (selection AssemblySelection) CModIDs() []CModID {
+	if selection.cmods.ids == nil {
+		return nil
+	}
+	return selection.cmods.IDs()
+}
+
+// ServiceNames 返回稳定字典序的服务名。
+func (selection AssemblySelection) ServiceNames() []string {
+	if selection.services.names == nil {
+		return nil
+	}
+	return selection.services.Names()
 }
 
 // CModConfigProvider 在依赖图确定后，将项目配置惰性转换为框架强类型配置。
 // 提供者只能读取配置，不得创建连接、监听端口或启动 goroutine。
-type CModConfigProvider func(CModSelection) (Config, error)
+type CModConfigProvider func(AssemblySelection) (Config, error)
 
-// CModSpec 声明能力模组的身份和直接依赖。
+// CModSpec 声明能力模组的身份、必选依赖和可选前置顺序。
+// Requires 会把依赖加入选择闭包；After 只在目标已经进入本次选择闭包时建立启动顺序。
 type CModSpec struct {
-	ID       CModID
+	// ID 是参与依赖解析、去重和启动日志的稳定能力标识。
+	ID CModID
+	// Requires 是必须进入本轮启动闭包并先于当前 CMod 启动的依赖。
 	Requires []CModID
+	// After 只在目标已被其他服务选中时增加启动顺序，不会隐式启用目标 CMod。
+	After []CModID
+	// Components 描述该 L3 能力门面内部的强类型组件拓扑。
+	// 它只用于校验、日志和审计，不参与全局 CMod 依赖解析。
+	Components []ComponentSpec
 }
 
-// CMod 是组合 L0-L2 能力并由 Server 管理生命周期的 L3 单元。
+// ComponentSpec 描述 CMod Builder 选择的一个内部组件。
+// 组件没有全局身份，也不单独参与 Server 生命周期。
+type ComponentSpec struct {
+	// Role 是组件在父级 Builder 中的稳定职责名称，同级组件不可重复。
+	Role string
+	// Name 是当前职责采用的具体实现名称，用于启动日志和架构审计。
+	Name string
+	// Optional 表示组件只在 Services 命中的 L4 服务被选择时生效。
+	Optional bool
+	// Services 列出可选组件的启用服务；非可选组件必须保持为空。
+	Services []string
+	// Components 描述当前组件内部继续组合的子组件拓扑。
+	Components []ComponentSpec
+}
+
+func validateComponentSpecs(parent string, components []ComponentSpec) error {
+	roles := make(map[string]struct{}, len(components))
+	for _, component := range components {
+		role := strings.TrimSpace(component.Role)
+		name := strings.TrimSpace(component.Name)
+		if role == "" || name == "" {
+			return fmt.Errorf("server: %s component role and name are required", parent)
+		}
+		if role != component.Role || name != component.Name {
+			return fmt.Errorf("server: %s component %q role and name must not contain surrounding whitespace", parent, role)
+		}
+		if _, exists := roles[role]; exists {
+			return fmt.Errorf("server: %s contains duplicate component role %q", parent, role)
+		}
+		roles[role] = struct{}{}
+		if component.Optional && len(component.Services) == 0 {
+			return fmt.Errorf("server: %s.%s optional component services are required", parent, role)
+		}
+		if !component.Optional && len(component.Services) > 0 {
+			return fmt.Errorf("server: %s.%s non-optional component must not declare services", parent, role)
+		}
+		services := make(map[string]struct{}, len(component.Services))
+		for _, service := range component.Services {
+			trimmed := strings.TrimSpace(service)
+			if trimmed == "" || trimmed != service {
+				return fmt.Errorf("server: %s.%s component service %q is invalid", parent, role, service)
+			}
+			if _, exists := services[service]; exists {
+				return fmt.Errorf("server: %s.%s component contains duplicate service %q", parent, role, service)
+			}
+			services[service] = struct{}{}
+		}
+		if err := validateComponentSpecs(parent+"."+role, component.Components); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CMod 是由 Server 管理生命周期和依赖顺序的能力模组。
 type CMod interface {
 	Spec() CModSpec
 	Start(CModContext) error
@@ -93,7 +203,7 @@ type CModContext interface {
 	Directory() discovery.Directory
 	Actor() txactor.Messenger
 	Transaction() txn.Executor
-	BindTransactionCommitSink(txn.CommitSink) error
+	BindTransactionCommitParticipant(txn.CommitParticipant) error
 	HasCMod(CModID) bool
 	Advanced() Advanced
 }

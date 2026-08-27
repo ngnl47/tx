@@ -13,9 +13,9 @@ import (
 
 type contextWAL struct{}
 
-type contextCommitSink struct{}
+type contextCommitParticipant struct{}
 
-func (contextCommitSink) Prepare(context.Context, []txn.LockTarget) (txn.CommitReservation, error) {
+func (contextCommitParticipant) Prepare(context.Context, []txn.LockTarget) (txn.CommitReservation, error) {
 	return contextCommitReservation{}, nil
 }
 
@@ -46,15 +46,14 @@ func TestServiceContextExposesCModsWithoutLifecycleOwnership(t *testing.T) {
 		transaction: &txn.Runtime{},
 		directory:   discovery.NewServiceDirectory(),
 		instance:    discovery.Instance{ID: "game-1", Services: []string{"game"}, Endpoint: "127.0.0.1:9000", Status: discovery.StatusRunning},
-		cmods: map[CModID]struct{}{
+		selectedCMods: map[CModID]struct{}{
 			CModRedisStorage: {},
 			CModRPC:          {},
 			CModDiscovery:    {},
-			CModTransaction:  {},
-			CModWAL:          {},
+			CModStateRuntime: {},
 		},
 	}
-	runtime.storage.wal = contextWAL{}
+	runtime.wal = contextWAL{}
 	serviceContext := newServiceContext(runtime, ingress)
 
 	if got := serviceContext.AppID(); got != "context-test" {
@@ -65,8 +64,8 @@ func TestServiceContextExposesCModsWithoutLifecycleOwnership(t *testing.T) {
 	if got := serviceContext.Instance().Services[0]; got != "game" {
 		t.Fatalf("Instance() leaked mutable services: %q", got)
 	}
-	if !serviceContext.HasCMod(CModTransaction) {
-		t.Fatal("HasCMod(transaction) = false")
+	if !serviceContext.HasCMod(CModStateRuntime) {
+		t.Fatal("HasCMod(state-runtime) = false")
 	}
 	if serviceContext.Admission() == nil || serviceContext.Tasks() == nil || serviceContext.Storage() == nil || serviceContext.WAL() == nil || serviceContext.RPC() == nil || serviceContext.Transaction() == nil || serviceContext.Directory() == nil {
 		t.Fatal("service context omitted an assembled capability")
@@ -102,20 +101,20 @@ func TestAdvancedContextKeepsSharedResourceOwnershipPrivate(t *testing.T) {
 	}
 }
 
-func TestCModContextBindsTransactionCommitSinkWithoutExposingBusinessContext(t *testing.T) {
+func TestCModContextBindsTransactionCommitParticipantWithoutExposingBusinessContext(t *testing.T) {
 	runtime := &runtime{transaction: txn.NewRuntime()}
 	service := newServiceContext(runtime, nil)
 	if _, ok := any(service).(interface {
-		BindTransactionCommitSink(txn.CommitSink) error
+		BindTransactionCommitParticipant(txn.CommitParticipant) error
 	}); ok {
-		t.Fatal("business Context exposes transaction commit sink binding")
+		t.Fatal("business Context exposes transaction commit participant binding")
 	}
 
-	mod := newCModContext(runtime)
-	if err := mod.BindTransactionCommitSink(contextCommitSink{}); err != nil {
-		t.Fatalf("BindTransactionCommitSink returned error: %v", err)
+	mod := newCModContext(&Server{runtime: runtime})
+	if err := mod.BindTransactionCommitParticipant(contextCommitParticipant{}); err != nil {
+		t.Fatalf("BindTransactionCommitParticipant returned error: %v", err)
 	}
-	if err := mod.BindTransactionCommitSink(contextCommitSink{}); err == nil {
-		t.Fatal("second BindTransactionCommitSink returned nil error")
+	if err := mod.BindTransactionCommitParticipant(contextCommitParticipant{}); err == nil {
+		t.Fatal("second BindTransactionCommitParticipant returned nil error")
 	}
 }

@@ -11,15 +11,15 @@ func TestCModConfigProviderReceivesResolvedDependencyClosure(t *testing.T) {
 		root CModID = "test-root"
 		leaf CModID = "test-leaf"
 	)
-	var selected []CModID
+	var selected AssemblySelection
 	app, err := New(
 		Config{AppID: "cmod-config-test"},
 		WithCMod(
 			&builtInCMod{spec: CModSpec{ID: leaf}},
 			&builtInCMod{spec: CModSpec{ID: root, Requires: []CModID{leaf}}},
 		),
-		WithCModConfigProvider(func(selection CModSelection) (Config, error) {
-			selected = selection.IDs()
+		WithCModConfigProvider(func(selection AssemblySelection) (Config, error) {
+			selected = selection
 			return Config{AppID: "cmod-config-test"}, nil
 		}),
 		WithService(testService{spec: Spec{Name: "test", Requires: []CModID{root}}}),
@@ -27,21 +27,24 @@ func TestCModConfigProviderReceivesResolvedDependencyClosure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
 	}
-	if selected != nil {
-		t.Fatalf("provider ran before Start: %v", selected)
+	if selected.CModIDs() != nil || selected.ServiceNames() != nil {
+		t.Fatalf("provider ran before Start: %#v", selected)
 	}
 	if err := app.Start(context.Background(), RunOptions{Services: "test"}); err != nil {
 		t.Fatalf("Start returned error: %v", err)
 	}
 	t.Cleanup(func() { _ = app.Stop(context.Background()) })
-	if want := []CModID{leaf, root}; !slices.Equal(selected, want) {
-		t.Fatalf("selected CMods = %v, want %v", selected, want)
+	if want := []CModID{leaf, root}; !slices.Equal(selected.CModIDs(), want) {
+		t.Fatalf("selected CMods = %v, want %v", selected.CModIDs(), want)
+	}
+	if want := []string{"test"}; !slices.Equal(selected.ServiceNames(), want) {
+		t.Fatalf("selected services = %v, want %v", selected.ServiceNames(), want)
 	}
 }
 
 func TestCModSelectionOwnsItsIDList(t *testing.T) {
 	ids := []CModID{"redis-storage", "rpc"}
-	selection := NewCModSelection(ids...)
+	selection := newCModSelection(ids...)
 	ids[0] = "mutated"
 	got := selection.IDs()
 	got[1] = "mutated"

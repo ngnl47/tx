@@ -5,21 +5,27 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+
+	"github.com/ngnl47/tx/lifecycle"
 )
+
+type startedCMod struct {
+	mod   CMod
+	tasks *lifecycle.ChildWaitGroupContext
+}
 
 type cmodHost struct {
 	context CModContext
 	graph   cmodGraph
-	mark    func(CModID, bool)
 
 	mu      sync.Mutex
-	started []CMod
+	started []startedCMod
 	drained bool
 	stopped bool
 }
 
-func newCModHost(context CModContext, graph cmodGraph, mark func(CModID, bool)) *cmodHost {
-	return &cmodHost{context: context, graph: graph, mark: mark}
+func newCModHost(context CModContext, graph cmodGraph) *cmodHost {
+	return &cmodHost{context: context, graph: graph}
 }
 
 func (host *cmodHost) start() error {
@@ -34,8 +40,18 @@ func (host *cmodHost) start() error {
 		}
 	}
 	for _, mod := range host.graph.ordered {
-		if err := mod.Start(host.context); err != nil {
+		started := startedCMod{mod: mod}
+		startContext := host.context
+		if context, ok := host.context.(*cmodContext); ok && context.runtime != nil && context.runtime.lifecycle != nil {
+			started.tasks = lifecycle.NewChildWaitGroupContext(context.runtime.lifecycle)
+			startContext = newCModContextWithTasks(context.server, taskAccess{
+				Context: started.tasks,
+				root:    started.tasks.WaitGroupContext,
+			})
+		}
+		if err := mod.Start(startContext); err != nil {
 			startErr := fmt.Errorf("server: start CMod %q: %w", mod.Spec().ID, err)
+			stopCModTasks(started)
 			if stopper, ok := mod.(CModStopper); ok {
 				if stopErr := stopper.Stop(context.Background()); stopErr != nil {
 					startErr = errors.Join(startErr, fmt.Errorf("server: rollback CMod %q: %w", mod.Spec().ID, stopErr))
@@ -43,10 +59,7 @@ func (host *cmodHost) start() error {
 			}
 			return host.rollback(startErr)
 		}
-		host.started = append(host.started, mod)
-		if host.mark != nil {
-			host.mark(mod.Spec().ID, true)
-		}
+		host.started = append(host.started, started)
 	}
 	return nil
 }
@@ -54,14 +67,13 @@ func (host *cmodHost) start() error {
 func (host *cmodHost) rollback(startErr error) error {
 	errs := []error{startErr}
 	for index := len(host.started) - 1; index >= 0; index-- {
-		mod := host.started[index]
+		started := host.started[index]
+		mod := started.mod
+		stopCModTasks(started)
 		if stopper, ok := mod.(CModStopper); ok {
 			if err := stopper.Stop(context.Background()); err != nil {
 				errs = append(errs, fmt.Errorf("server: rollback CMod %q: %w", mod.Spec().ID, err))
 			}
-		}
-		if host.mark != nil {
-			host.mark(mod.Spec().ID, false)
 		}
 	}
 	host.started = nil
@@ -81,12 +93,12 @@ func (host *cmodHost) drain(ctx context.Context) error {
 		return nil
 	}
 	host.drained = true
-	started := append([]CMod(nil), host.started...)
+	started := append([]startedCMod(nil), host.started...)
 	host.mu.Unlock()
 
 	var errs []error
 	for index := len(started) - 1; index >= 0; index-- {
-		mod := started[index]
+		mod := started[index].mod
 		if drainer, ok := mod.(CModDrainer); ok {
 			if err := drainer.Drain(ctx); err != nil {
 				errs = append(errs, fmt.Errorf("server: drain CMod %q: %w", mod.Spec().ID, err))
@@ -109,21 +121,28 @@ func (host *cmodHost) stop(ctx context.Context) error {
 		return nil
 	}
 	host.stopped = true
-	started := append([]CMod(nil), host.started...)
+	started := append([]startedCMod(nil), host.started...)
 	host.started = nil
 	host.mu.Unlock()
 
 	var errs []error
 	for index := len(started) - 1; index >= 0; index-- {
-		mod := started[index]
+		current := started[index]
+		mod := current.mod
+		stopCModTasks(current)
 		if stopper, ok := mod.(CModStopper); ok {
 			if err := stopper.Stop(ctx); err != nil {
 				errs = append(errs, fmt.Errorf("server: stop CMod %q: %w", mod.Spec().ID, err))
 			}
 		}
-		if host.mark != nil {
-			host.mark(mod.Spec().ID, false)
-		}
 	}
 	return errors.Join(errs...)
+}
+
+func stopCModTasks(started startedCMod) {
+	if started.tasks == nil {
+		return
+	}
+	started.tasks.Cancel()
+	started.tasks.WaitDoneAndWaitGroupWait()
 }

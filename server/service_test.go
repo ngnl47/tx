@@ -52,6 +52,14 @@ func TestRegistryRejectsUnknownAndEmptySelection(t *testing.T) {
 	}
 }
 
+func TestRegistryRejectsTypedNilService(t *testing.T) {
+	var service *pointerTestService
+	_, err := newRegistry(service)
+	if err == nil || !strings.Contains(err.Error(), "service is nil") {
+		t.Fatalf("newRegistry error = %v, want typed nil service error", err)
+	}
+}
+
 func TestServiceHostRollsBackAndStopsInReverseOrder(t *testing.T) {
 	root := lifecycle.NewWaitGroupContext(context.Background())
 	runtime := &runtime{lifecycle: root}
@@ -204,6 +212,12 @@ type testService struct {
 	drain func(context.Context) error
 	stop  func(context.Context) error
 }
+
+type pointerTestService struct{}
+
+func (*pointerTestService) Spec() Spec { return Spec{Name: "pointer-test"} }
+
+func (*pointerTestService) Start(Context) error { return nil }
 
 func (service testService) Spec() Spec { return service.spec }
 
