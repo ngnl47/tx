@@ -271,12 +271,6 @@ func (s *storageRuntime) RedisScriptClientFor(ctx context.Context, routeType str
 	return s.redis.ScriptClientFor(ctx, routeType, shardKey)
 }
 
-// RequireWritable 确认 Fusion 的 Redis 与 Mongo 依赖均可接受新的业务写入。
-// 它只读取后台健康探针维护的状态，不会在业务热路径额外执行 Ping。
-func (s *storageRuntime) RequireWritable() error {
-	return s.requireStorageMode(meta.StorageModeFusion)
-}
-
 // probeBackend 检查指定 backend 的全部端点。只有本轮探针没有观察到新的失败时，
 // 才重新开放对应健康闸门。
 func (s *storageRuntime) probeBackend(ctx context.Context, backend txstorage.Backend) error {

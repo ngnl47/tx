@@ -20,30 +20,44 @@ import (
 )
 
 const (
+	// ServiceName 是 Agent 在启动参数和服务发现中的稳定名称。
 	ServiceName     = "agent"
 	msgqServiceName = "msgq"
 )
 
+// LocalMsgQ 提供同进程 msgq 的会话客户端，避免绕行服务发现和网络 RPC。
 type LocalMsgQ interface {
 	SessionClient() (txmsgq.SessionClient, error)
 }
 
+// HandlerProvider 在 Agent 启动时惰性取得项目身份解析器和业务分发器。
 type HandlerProvider func() (txagent.IdentityResolver, txagent.Dispatcher, error)
 
 // OptionsProvider 在 agent 被选中时转换项目配置。
 type OptionsProvider func() (Options, error)
 
+// Options 描述 Agent 的监听地址、帧限制和项目扩展点。
 type Options struct {
-	TCPListen       string
+	// TCPListen 是原生 TCP 监听地址；空字符串表示不启动 TCP 入口。
+	TCPListen string
+	// WebSocketListen 是 WebSocket 监听地址；空字符串表示不启动 WebSocket 入口。
 	WebSocketListen string
-	MaxFrameBytes   int
-	FetchBatch      int
-	Identity        txagent.IdentityResolver
-	Dispatcher      txagent.Dispatcher
-	Handlers        HandlerProvider
-	Sessions        txagent.SessionClientRouter
-	LocalMsgQ       LocalMsgQ
-	SessionStore    msgqredis.Options
+	// MaxFrameBytes 限制单个协议帧的最大字节数。
+	MaxFrameBytes int
+	// FetchBatch 控制每轮从会话邮箱拉取的最大下行消息数。
+	FetchBatch int
+	// Identity 与 Dispatcher 同时设置时优先作为静态业务处理器。
+	Identity txagent.IdentityResolver
+	// Dispatcher 与 Identity 同时设置时优先作为静态业务处理器。
+	Dispatcher txagent.Dispatcher
+	// Handlers 在未同时设置 Identity 和 Dispatcher 时惰性提供业务处理器。
+	Handlers HandlerProvider
+	// Sessions 显式覆盖会话邮箱路由；设置后不再自动选择本地或远端 msgq。
+	Sessions txagent.SessionClientRouter
+	// LocalMsgQ 在当前进程同时选择 msgq 时提供零网络跳转的会话客户端。
+	LocalMsgQ LocalMsgQ
+	// SessionStore 配置通过 Redis 和服务发现访问远端 msgq 的会话绑定。
+	SessionStore msgqredis.Options
 }
 
 type Service struct {
@@ -61,6 +75,7 @@ type Service struct {
 	draining          bool
 }
 
+// New 使用已经转换完成的强类型配置创建 Agent 服务。
 func New(options Options) (*Service, error) {
 	if err := validateOptions(options); err != nil {
 		return nil, err
@@ -76,6 +91,7 @@ func NewConfigured(provider OptionsProvider) (*Service, error) {
 	return &Service{provider: provider}, nil
 }
 
+// Spec 声明 Agent 的基础能力依赖。
 func (service *Service) Spec() txserver.Spec {
 	return txserver.Spec{
 		Name:     ServiceName,
@@ -99,6 +115,7 @@ func (service *Service) RequiredCMods(selection txserver.ServiceSelection) ([]tx
 	return []txserver.CModID{txserver.CModDiscovery}, nil
 }
 
+// Start 解析会话路由并启动选中的 TCP、WebSocket 入口。
 func (service *Service) Start(runtime txserver.Context) error {
 	if service == nil || runtime == nil || runtime.Tasks() == nil || runtime.Admission() == nil {
 		return fmt.Errorf("agent service: lifecycle and ingress are required")

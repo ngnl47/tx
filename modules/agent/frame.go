@@ -11,9 +11,13 @@ import (
 type FrameKind uint8
 
 const (
+	// FrameHandshake 建立或恢复逻辑会话。
 	FrameHandshake FrameKind = iota + 1
+	// FrameBusiness 携带客户端上行业务命令。
 	FrameBusiness
+	// FrameOutbound 携带服务端下行消息。
 	FrameOutbound
+	// FrameAck 只推进客户端已经确认的下行序号。
 	FrameAck
 )
 
@@ -26,9 +30,13 @@ const (
 type RouteKeyKind = txprotocol.RouteKeyKind
 
 const (
-	RouteKeyNone   = txprotocol.RouteKeyNone
-	RouteKeyInt64  = txprotocol.RouteKeyInt64
+	// RouteKeyNone 表示命令不携带 Actor 路由键。
+	RouteKeyNone = txprotocol.RouteKeyNone
+	// RouteKeyInt64 表示有符号整数路由键。
+	RouteKeyInt64 = txprotocol.RouteKeyInt64
+	// RouteKeyUint64 表示无符号整数路由键。
 	RouteKeyUint64 = txprotocol.RouteKeyUint64
+	// RouteKeyString 表示 UTF-8 字符串路由键。
 	RouteKeyString = txprotocol.RouteKeyString
 )
 
@@ -49,13 +57,20 @@ func StringRouteKey(value string) RouteKey {
 // Frame 是与传输协议无关的协议帧。握手帧的 Payload 是 token 字节，业务帧使用 BON 字节，
 // 下行帧则携带后端消息。CommandID 和 RouteKey 只属于上行业务帧。
 type Frame struct {
-	Kind      FrameKind
-	Seq       int64
-	Ack       int64
-	Restore   bool
+	// Kind 决定其余头字段的校验规则。
+	Kind FrameKind
+	// Seq 是当前方向从 1 开始递增的消息序号。
+	Seq int64
+	// Ack 是发送方已经连续处理完成的对端消息序号。
+	Ack int64
+	// Restore 只用于握手帧，表示恢复既有逻辑会话。
+	Restore bool
+	// CommandID 是上行业务帧的稳定命令号。
 	CommandID uint32
-	RouteKey  RouteKey
-	Payload   []byte
+	// RouteKey 是上行业务帧用于直达目标服务或 Actor 的路由键。
+	RouteKey RouteKey
+	// Payload 是握手 token、BON 业务载荷或下行消息正文。
+	Payload []byte
 }
 
 func (f Frame) validHandshake() bool {

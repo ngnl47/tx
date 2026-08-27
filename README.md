@@ -2479,7 +2479,7 @@ if errors.As(err, &deadlock) {
 
 `cache.Manager` 只管理提交身份、待刷根对象、代际隔离和延迟刷盘，不是完整的业务对象缓存。对象如何加载、查询、淘汰、分片以及建立业务索引由项目决定。项目需要扩展时应优先包装默认 Manager，复用已经验证的提交和刷盘规则，再在外层增加自己的对象缓存能力。
 
-`CommitParticipant.Prepare` 在 `Procedure.Process` 前完成身份校验、容量预留和存储健康准入；事务成功后的 `CommitReservation.Commit` 不得失败，只接收提交时仍真实变脏的根对象。回滚、panic 或死锁重试会调用 `Abort`，不会留下虚假的缓存身份。
+`CommitParticipant.Prepare` 在 `Procedure.Process` 前完成身份校验、容量预留和存储健康准入；写入准入只检查本次持久化目标的 `TypeSpec.Storage.Mode`：Redis-only 目标不受 Mongo 状态影响，Mongo-only 目标不依赖 Redis，Fusion 或同一事务内混合 Redis/Mongo 目标要求两端都可用。事务成功后的 `CommitReservation.Commit` 不得失败，只接收提交时仍真实变脏的根对象。回滚、panic 或死锁重试会调用 `Abort`，不会留下虚假的缓存身份。
 
 ```go
 runtime := txn.NewRuntime()

@@ -5,12 +5,18 @@ import (
 )
 
 const (
-	CModRedisStorage  CModID = "redis-storage"
-	CModMongoStorage  CModID = "mongo-storage"
+	// CModRedisStorage 提供 Redis 文档读写与脚本路由能力。
+	CModRedisStorage CModID = "redis-storage"
+	// CModMongoStorage 提供 Mongo 文档读写能力。
+	CModMongoStorage CModID = "mongo-storage"
+	// CModFusionStorage 组合 Redis 热数据、Mongo 冷数据与延迟回写能力。
 	CModFusionStorage CModID = "fusion-storage"
-	CModRPC           CModID = "rpc"
-	CModDiscovery     CModID = "discovery"
-	CModActor         CModID = "actor"
+	// CModRPC 提供当前进程共享的 gRPC Host。
+	CModRPC CModID = "rpc"
+	// CModDiscovery 提供 etcd 注册、发现和稳定槽位目录。
+	CModDiscovery CModID = "discovery"
+	// CModActor 提供基于服务发现的 Actor 投递能力。
+	CModActor CModID = "actor"
 )
 
 type builtInCMod struct {

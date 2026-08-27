@@ -22,8 +22,11 @@ var (
 type Backend uint8
 
 const (
+	// BackendUnknown 表示错误没有归属于受支持的外部存储后端。
 	BackendUnknown Backend = iota
+	// BackendRedis 表示 Redis 外部调用。
 	BackendRedis
+	// BackendMongo 表示 Mongo 外部调用。
 	BackendMongo
 )
 
@@ -41,9 +44,12 @@ func (backend Backend) String() string {
 // BackendError 标记真实外部后端调用返回的错误。
 // 校验、映射和调用方 context 错误不得使用该包装。
 type BackendError struct {
-	Backend   Backend
+	// Backend 是发生外部调用失败的存储后端。
+	Backend Backend
+	// Operation 是驱动执行的简短操作名，用于日志定位。
 	Operation string
-	Err       error
+	// Err 是原始驱动错误。
+	Err error
 }
 
 func (err *BackendError) Error() string {

@@ -56,10 +56,6 @@ func (access storageAccess) ChangeWriter() txstorage.ChangeApplier {
 	return access.storage.ChangeWriter()
 }
 
-func (access storageAccess) RequireWritable() error {
-	return access.storage.RequireWritable()
-}
-
 type readOnlyContext struct{ context.Context }
 
 type rpcAccess struct{ host *txrpc.Host }

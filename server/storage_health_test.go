@@ -7,9 +7,11 @@ import (
 
 	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/meta"
+	"github.com/ngnl47/tx/modules/txn"
 	txstorage "github.com/ngnl47/tx/storage"
 	"github.com/ngnl47/tx/storage/fusion"
 	txmongo "github.com/ngnl47/tx/storage/mongo"
+	txredis "github.com/ngnl47/tx/storage/redis"
 	"github.com/ngnl47/tx/storage/task"
 	"github.com/ngnl47/tx/wal"
 )
@@ -73,6 +75,68 @@ func (staticSource) VisitChanges(visitor change.Visitor) error {
 }
 
 func (staticSource) HasChanges() bool { return true }
+
+type admissionStore struct {
+	txstorage.ChangeStore
+	mode meta.StorageMode
+}
+
+func (*admissionStore) SetUndoRecorder(change.UndoRecorder) {}
+
+func (store *admissionStore) TypeSpec() meta.TypeSpec {
+	return meta.TypeSpec{Storage: meta.StorageSpec{Mode: store.mode}}
+}
+
+func admissionTarget(scope string, mode meta.StorageMode) txn.LockTarget {
+	return txn.NewLockTarget(txn.NewLockKey(scope, 1001), &admissionStore{mode: mode})
+}
+
+func TestStorageWriteAdmissionChecksTargetStorageModes(t *testing.T) {
+	storage := &storageRuntime{redis: &txredis.Cluster{}, mongo: &txmongo.Cluster{}}
+	storage.markBackendUnavailable(txstorage.BackendMongo, errors.New("mongo unavailable"))
+	admission := storageWriteAdmission{storage: storage}
+
+	if err := admission.RequireWritable([]txn.LockTarget{
+		admissionTarget("redis-role", meta.StorageModeRedis),
+	}); err != nil {
+		t.Fatalf("Redis-only target rejected Mongo outage: %v", err)
+	}
+	if err := admission.RequireWritable([]txn.LockTarget{
+		admissionTarget("mongo-world", meta.StorageModeMongo),
+	}); !errors.Is(err, ErrStorageUnavailable) {
+		t.Fatalf("Mongo target error = %v, want ErrStorageUnavailable", err)
+	}
+	if err := admission.RequireWritable([]txn.LockTarget{
+		admissionTarget("fusion-role", meta.StorageModeFusion),
+	}); !errors.Is(err, ErrStorageUnavailable) {
+		t.Fatalf("Fusion target error = %v, want ErrStorageUnavailable", err)
+	}
+}
+
+func TestStorageWriteAdmissionDoesNotRequireUnrelatedBackend(t *testing.T) {
+	redisOnly := storageWriteAdmission{storage: &storageRuntime{redis: &txredis.Cluster{}}}
+	if err := redisOnly.RequireWritable([]txn.LockTarget{
+		admissionTarget("redis-role", meta.StorageModeRedis),
+	}); err != nil {
+		t.Fatalf("Redis-only target required Mongo: %v", err)
+	}
+
+	mongoOnly := storageWriteAdmission{storage: &storageRuntime{mongo: &txmongo.Cluster{}}}
+	if err := mongoOnly.RequireWritable([]txn.LockTarget{
+		admissionTarget("mongo-world", meta.StorageModeMongo),
+	}); err != nil {
+		t.Fatalf("Mongo-only target required Redis: %v", err)
+	}
+}
+
+func TestStorageWriteAdmissionRejectsMissingTargetBackend(t *testing.T) {
+	admission := storageWriteAdmission{storage: &storageRuntime{}}
+	if err := admission.RequireWritable([]txn.LockTarget{
+		admissionTarget("redis-role", meta.StorageModeRedis),
+	}); !errors.Is(err, ErrStorageUnavailable) {
+		t.Fatalf("missing Redis target error = %v, want ErrStorageUnavailable", err)
+	}
+}
 
 func TestFusionHealthGateRejectsBeforeRedisReadWhenMongoIsUnavailable(t *testing.T) {
 	store := &storageRuntime{}
@@ -141,11 +205,11 @@ func TestOnlyBackendErrorsCloseStorageHealthGate(t *testing.T) {
 	store := &storageRuntime{}
 	store.observeStorageError(context.Canceled)
 	store.observeStorageError(txstorage.ErrNoEffectiveChanges)
-	if err := store.RequireWritable(); err != nil {
+	if err := store.requireStorageMode(meta.StorageModeFusion); err != nil {
 		t.Fatalf("request error closed health gate: %v", err)
 	}
 	store.observeStorageError(txstorage.NewBackendError(txstorage.BackendRedis, "eval", errors.New("connection refused")))
-	if err := store.RequireWritable(); !errors.Is(err, ErrStorageUnavailable) {
+	if err := store.requireStorageMode(meta.StorageModeFusion); !errors.Is(err, ErrStorageUnavailable) {
 		t.Fatalf("backend error did not close health gate: %v", err)
 	}
 }
@@ -187,7 +251,7 @@ func TestDelayHandlerReportsBackendFailureForRetry(t *testing.T) {
 	if err := handler.HandleDelayTask(context.Background(), task.DelayTask{Type: "role", ID: int64(1001), Action: "save"}); err == nil {
 		t.Fatal("HandleDelayTask error = nil, want retryable backend error")
 	}
-	if err := store.RequireWritable(); !errors.Is(err, ErrStorageUnavailable) {
+	if err := store.requireStorageMode(meta.StorageModeFusion); !errors.Is(err, ErrStorageUnavailable) {
 		t.Fatalf("backend error did not close Fusion gate: %v", err)
 	}
 }

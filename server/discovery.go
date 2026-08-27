@@ -22,7 +22,9 @@ type discoveryRuntime struct {
 // RuntimeInstanceID 分离；业务使用它决定 FixedSlot 路由，Runtime.Slots 保存实际
 // generation 归属。
 type LogicalSlot struct {
-	ID                string
+	// ID 是部署控制面分配的稳定逻辑槽位，不随进程重启变化。
+	ID string
+	// RuntimeInstanceID 是本次进程实例身份，用于校验槽位当前归属。
 	RuntimeInstanceID string
 }
 

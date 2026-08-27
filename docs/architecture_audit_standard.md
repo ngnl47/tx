@@ -44,7 +44,7 @@ L0 纯算法与通用契约
   discovery 快照和根 `WaitGroupContext` 的 Start/Stop/Shutdown/Replace/Flush 权限不能透传给服务。
 - `txgame` 只负责配置转换、业务回调、业务 facade 和服务选择，不复制 tx 的 runtime/host/service
   生命周期实现。
-- CMod 是跨层装配描述，不因名字自动归入 L3。L4 服务只能声明直接 CMod 依赖；Redis/Mongo、RPC Host、Scheduler、
+- CMod 固定属于 L3，是带稳定身份、依赖关系和进程生命周期的能力门面。L4 服务只能声明直接 CMod 依赖；Redis/Mongo、RPC Host、Scheduler、
   Transaction Runtime 等资源由 L3 依赖图按闭包唯一装配。未进入闭包的配置不得被语义校验，也不得创建外部资源。
 - 包名或目录深度不是层级证据；实际判断依据是依赖方向、接口所有权和资源生命周期。
 

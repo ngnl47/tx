@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/ngnl47/tx/lifecycle"
+	cachemodule "github.com/ngnl47/tx/modules/cache"
 	"github.com/ngnl47/tx/modules/txn"
 	"github.com/ngnl47/tx/wal"
 )
@@ -19,30 +20,47 @@ const CModStateRuntime CModID = "state-runtime"
 // StateRuntimeContext 是缓存组件在 StateRuntime 内可见的窄上下文。
 // 组件不能取得 CMod 身份、依赖图或 Server 生命周期所有权。
 type StateRuntimeContext interface {
+	// Tasks 返回 StateRuntime 子生命周期的后台任务入口。
 	Tasks() lifecycle.Tasks
+	// Storage 返回框架管理的文档读写能力。
 	Storage() Storage
+	// WriteAdmission 返回按本次事务目标存储模式检查健康状态的写入闸门。
+	WriteAdmission() cachemodule.WriteAdmission
+	// WAL 返回当前 L4 服务实际启用的预写日志；未启用时返回 nil。
 	WAL() wal.Store
+	// Transaction 返回 StateRuntime 独占装配的单机事务执行器。
 	Transaction() txn.Executor
+	// BindTransactionCommitParticipant 绑定唯一的事务提交参与者。
 	BindTransactionCommitParticipant(txn.CommitParticipant) error
+	// WALEnabled 判断当前 L4 服务是否启用了 Builder 中的可选 WAL 组件。
 	WALEnabled() bool
 }
 
 // StateCache 是 StateRuntime 使用的缓存运行时组件。
 // 它由 StateRuntime 统一管理校验、启动、排水和停止顺序。
 type StateCache interface {
+	// ComponentSpec 返回缓存组件的职责、实现和可选子组件拓扑。
 	ComponentSpec() ComponentSpec
+	// Validate 在创建资源前校验组件配置和依赖。
 	Validate(StateRuntimeContext) error
+	// Start 绑定事务提交边界并启动缓存运行时。
 	Start(StateRuntimeContext) error
+	// Drain 在依赖仍可用时刷空已接纳的待持久化对象。
 	Drain(context.Context) error
+	// Stop 释放组件自身资源；实现必须幂等。
 	Stop(context.Context) error
 }
 
 // StateWAL 是 StateRuntime Cache 管线使用的可选预写日志组件。
 // 组件创建安全 wal.Store，但不能安装全局能力或接管 Server 生命周期。
 type StateWAL interface {
+	// ComponentSpec 返回 WAL 组件的职责、实现和适用 L4 服务。
 	ComponentSpec() ComponentSpec
+	// Validate 在创建连接或集合前校验 WAL 配置和依赖。
 	Validate(StateRuntimeContext) error
+	// Start 创建由 StateRuntime 托管的 WAL Store。
 	Start(StateRuntimeContext) (wal.Store, error)
+	// Stop 释放 WAL 组件自身资源；实现必须幂等。
 	Stop(context.Context) error
 }
 
@@ -267,6 +285,15 @@ func (mod *stateRuntimeCMod) walEnabled(selection ServiceSelection) bool {
 type stateRuntimeContext struct {
 	CModContext
 	walEnabled bool
+}
+
+// WriteAdmission 返回按事务目标存储模式检查健康状态的 StateRuntime 专用闸门。
+func (runtime stateRuntimeContext) WriteAdmission() cachemodule.WriteAdmission {
+	context, ok := runtime.CModContext.(*cmodContext)
+	if !ok || context == nil || context.runtime == nil || context.runtime.storage == nil {
+		return nil
+	}
+	return storageWriteAdmission{storage: context.runtime.storage}
 }
 
 func (runtime stateRuntimeContext) WALEnabled() bool { return runtime.walEnabled }

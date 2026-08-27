@@ -170,19 +170,28 @@ func cloneIndexSpecs(source []IndexSpec) []IndexSpec {
 	return indexes
 }
 
+// StorageMode 决定生成 GD 类型使用的持久化读写链路。
 type StorageMode string
 
 const (
-	StorageModeRedis  StorageMode = "redis"
-	StorageModeMongo  StorageMode = "mongo"
+	// StorageModeRedis 只读写 Redis 文档。
+	StorageModeRedis StorageMode = "redis"
+	// StorageModeMongo 只读写 Mongo 文档。
+	StorageModeMongo StorageMode = "mongo"
+	// StorageModeFusion 使用 Redis 热数据和 Mongo 冷数据的延迟回写链路。
 	StorageModeFusion StorageMode = "fusion"
 )
 
+// StorageSpec 描述生成类型的存储模式与生命周期参数。
 type StorageSpec struct {
-	Mode        StorageMode `json:"mode"`
-	DelaySave   Duration    `json:"delaySave,omitempty"`
-	DelayDelete Duration    `json:"delayDelete,omitempty"`
-	MemoryCache Duration    `json:"memoryCache,omitempty"`
+	// Mode 选择 Redis、Mongo 或 Fusion 持久化链路。
+	Mode StorageMode `json:"mode"`
+	// DelaySave 是 Fusion 热写后登记 Mongo 回写的延迟。
+	DelaySave Duration `json:"delaySave,omitempty"`
+	// DelayDelete 是 Redis 热文档的业务存活时间。
+	DelayDelete Duration `json:"delayDelete,omitempty"`
+	// MemoryCache 是业务缓存建议值，不改变 tx 存储适配器行为。
+	MemoryCache Duration `json:"memoryCache,omitempty"`
 }
 
 type RedisSpec struct {

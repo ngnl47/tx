@@ -135,7 +135,7 @@ Procedure 单向依赖并组合 `modules` 的稳定业务能力，`modules` 禁�
 | --- | --- | --- | --- |
 | `Tasks()` | `lifecycle.Tasks` | 注册本服务后台任务、读取取消信号 | `Cancel/Wait` 在 `server.Server` |
 | `Admission()` | `lifecycle.Admission` | 登记和封口本服务外部入口 | 进程排水顺序在 service host |
-| `Storage()` | `server.Storage` | 安装业务 facade、读取、写变更和检查健康闸门 | client、worker 和 Close 在 server |
+| `Storage()` | `server.Storage` | 安装业务 facade，并通过带健康保护的 reader/writer 读写变更 | client、健康状态、worker 和 Close 在 server |
 | `WAL()` | `wal.Store` | 追加恢复记录、连续重放和 checkpoint 后清理 | backend、索引、连接和健康状态在 server |
 | `RPC()` | `rpc.Registrar` | 启动前注册 protobuf service、读取 endpoint | Serve/Stop 在共享 Host |
 | `Directory()` | `discovery.Directory` | 查询 running/指定实例快照 | watch 与 Replace 在 discovery runtime |
@@ -286,7 +286,8 @@ return server.New(
 ```
 
 `Cache` 接收 `StateCache` SPI，`WAL` 接收 `StateWAL` SPI。项目可以替换缓存或 WAL 实现，但组件只能看到
-`StateRuntimeContext` 提供的 Tasks、Storage、Transaction、WAL 和提交参与者绑定接口，不能取得 `Server` 所有权。
+`StateRuntimeContext` 提供的 Tasks、Storage、目标感知 WriteAdmission、Transaction、WAL 和提交参与者绑定接口，不能取得
+`Server` 所有权。
 内置 `MongoWALForServices` 只是 `StateWAL` 的第一种实现。Builder 生成的组件拓扑为：
 
 ```text

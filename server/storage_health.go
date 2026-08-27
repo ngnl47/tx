@@ -7,11 +7,72 @@ import (
 
 	txlog "github.com/ngnl47/tx/log"
 	"github.com/ngnl47/tx/meta"
+	"github.com/ngnl47/tx/modules/txn"
 	txstorage "github.com/ngnl47/tx/storage"
 	txfusion "github.com/ngnl47/tx/storage/fusion"
 	"github.com/ngnl47/tx/storage/task"
 	"github.com/ngnl47/tx/wal"
 )
+
+// storageWriteAdmission 是 StateRuntime 专用的写入准入适配器。
+// 它按事务目标声明的存储模式检查健康状态，不向普通业务存储 API 暴露闸门细节。
+type storageWriteAdmission struct {
+	storage *storageRuntime
+}
+
+// RequireWritable 检查本次事务涉及的全部持久化模式。
+// 混合 Redis/Mongo 目标与 Fusion 目标都要求两个后端同时可写。
+func (admission storageWriteAdmission) RequireWritable(targets []txn.LockTarget) error {
+	if admission.storage == nil {
+		return errStorageNotConfigured
+	}
+	var redisRequired bool
+	var mongoRequired bool
+	for _, target := range targets {
+		store, ok := target.Store.(txstorage.ChangeStore)
+		if !ok || isNilInterface(store) {
+			return fmt.Errorf("server: write admission target %s is not a persistent Store", target.Key.String())
+		}
+		switch mode := store.TypeSpec().Storage.Mode; mode {
+		case meta.StorageModeRedis:
+			redisRequired = true
+		case meta.StorageModeMongo:
+			mongoRequired = true
+		case meta.StorageModeFusion:
+			redisRequired = true
+			mongoRequired = true
+		default:
+			return fmt.Errorf("server: write admission target %s has unsupported storage mode %q", target.Key.String(), mode)
+		}
+	}
+	switch {
+	case redisRequired && mongoRequired:
+		var redisErr error
+		var mongoErr error
+		if admission.storage.redis == nil {
+			redisErr = unavailableBackendError(txstorage.BackendRedis, errStorageNotConfigured)
+		}
+		if admission.storage.mongo == nil {
+			mongoErr = unavailableBackendError(txstorage.BackendMongo, errStorageNotConfigured)
+		}
+		if err := errors.Join(redisErr, mongoErr); err != nil {
+			return err
+		}
+		return admission.storage.requireStorageMode(meta.StorageModeFusion)
+	case redisRequired:
+		if admission.storage.redis == nil {
+			return unavailableBackendError(txstorage.BackendRedis, errStorageNotConfigured)
+		}
+		return admission.storage.requireStorageMode(meta.StorageModeRedis)
+	case mongoRequired:
+		if admission.storage.mongo == nil {
+			return unavailableBackendError(txstorage.BackendMongo, errStorageNotConfigured)
+		}
+		return admission.storage.requireStorageMode(meta.StorageModeMongo)
+	default:
+		return nil
+	}
+}
 
 type healthAwareWAL struct {
 	storage *storageRuntime

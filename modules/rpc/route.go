@@ -17,15 +17,21 @@ var (
 type RouteKind uint8
 
 const (
+	// RouteUnknown 表示尚未指定有效路由方式。
 	RouteUnknown RouteKind = iota
+	// RouteService 从指定服务的 running 实例中选择目标。
 	RouteService
+	// RouteInstance 精确指向一个已知实例。
 	RouteInstance
 )
 
 // Route 保存传输层路由元数据。
 type Route struct {
-	Kind       RouteKind
-	Service    string
+	// Kind 决定使用 Service 还是 InstanceID 解析目标。
+	Kind RouteKind
+	// Service 是 RouteService 使用的稳定服务名。
+	Service string
+	// InstanceID 是 RouteInstance 使用的精确实例身份。
 	InstanceID string
 }
 

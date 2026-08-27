@@ -214,6 +214,17 @@ func TestCacheManagerReleaseRejectsInvalidTarget(t *testing.T) {
 	}
 }
 
+func TestCacheManagerPrepareRejectsTypedNilStore(t *testing.T) {
+	manager := cachemodule.NewManager(cachemodule.Dependencies{}, cachemodule.Config{})
+	var store *runtimeTestStore
+	_, err := manager.Prepare(context.Background(), []txn.LockTarget{
+		txn.NewLockTarget(txn.NewLockKey("role", 1001), store),
+	})
+	if !errors.Is(err, cachemodule.ErrInvalidTarget) {
+		t.Fatalf("Prepare typed nil Store error = %v, want ErrInvalidTarget", err)
+	}
+}
+
 func TestCacheManagerKeepsFailedFlushPending(t *testing.T) {
 	store := &runtimeTestStore{}
 	writer := &recordingChangeStoreApplier{err: errors.New("storage unavailable")}

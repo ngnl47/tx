@@ -28,7 +28,9 @@ var (
 
 // WriteAdmission 在 Procedure 修改内存对象前检查外部存储是否允许产生新的待刷状态。
 type WriteAdmission interface {
-	RequireWritable() error
+	// RequireWritable 按本次 Procedure 实际涉及的持久化目标检查写入闸门。
+	// targets 已去除纯内存对象和重复锁键，调用方不得修改切片内容。
+	RequireWritable(targets []txn.LockTarget) error
 }
 
 // Dependencies 是缓存运行时启动时注入的基础能力，不属于静态配置。
@@ -140,12 +142,17 @@ func (manager *Manager) Prepare(_ context.Context, targets []txn.LockTarget) (tx
 	if manager == nil {
 		return nil, errors.New("cache manager: manager is nil")
 	}
+	for _, target := range targets {
+		if target.Key.Scope == "" || target.Key.Value == "" || isNil(target.Store) {
+			return nil, ErrInvalidTarget
+		}
+	}
 	persistent := persistentTargets(targets)
 	if len(persistent) == 0 {
 		return &reservation{manager: manager}, nil
 	}
 	if manager.writeAdmission != nil {
-		if err := manager.writeAdmission.RequireWritable(); err != nil {
+		if err := manager.writeAdmission.RequireWritable(persistent); err != nil {
 			return nil, fmt.Errorf("cache manager: write admission rejected procedure: %w", err)
 		}
 	}
@@ -602,7 +609,7 @@ func persistentTargets(targets []txn.LockTarget) []txn.LockTarget {
 
 func isPersistentTarget(target txn.LockTarget) bool {
 	store, ok := target.Store.(storage.ChangeStore)
-	return ok && store.TypeSpec().Storage.Mode != "" && target.Key.Scope != "" && target.Key.Value != ""
+	return ok && !isNil(store) && store.TypeSpec().Storage.Mode != "" && target.Key.Scope != "" && target.Key.Value != ""
 }
 
 func sameStore(left, right change.UndoBindable) bool {

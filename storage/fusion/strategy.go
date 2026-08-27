@@ -18,7 +18,9 @@ const (
 	defaultLoadLockWait = 8 * time.Second
 )
 
+// LoadOptions 控制单次 Fusion 读取的回填行为。
 type LoadOptions struct {
+	// SkipRedisBackfill 只返回 Mongo 回源结果，不把结果写回 Redis。
 	SkipRedisBackfill bool
 }
 
@@ -27,15 +29,24 @@ type LoadOptions struct {
 // Redis 适配器负责即时写入热数据；DelaySubmitter 只把根记录登记到进程内
 // 分发器，实际延迟任务发布不阻塞业务保存。
 type Strategy struct {
-	RedisApplier    storage.ChangeApplier
-	RedisLoader     storage.DocumentLoader
+	// RedisApplier 把业务变更即时写入 Redis 热文档。
+	RedisApplier storage.ChangeApplier
+	// RedisLoader 读取 Redis 热文档；为空时尝试从 RedisBackfiller 复用读取能力。
+	RedisLoader storage.DocumentLoader
+	// RedisBackfiller 把 Mongo 回源文档以版本保护方式写回 Redis。
 	RedisBackfiller storage.DocumentBackfiller
-	RedisLocker     storage.RecordLocker
-	MongoLoader     storage.DocumentLoader
-	DelaySubmitter  DelayTaskSubmitter
-	DirtyTTL        time.Duration
-	LoadLockTTL     time.Duration
-	LoadLockWait    time.Duration
+	// RedisLocker 保护同一记录的并发 Mongo 回源与 Redis 回填。
+	RedisLocker storage.RecordLocker
+	// MongoLoader 在 Redis 未命中时读取 Mongo 冷数据。
+	MongoLoader storage.DocumentLoader
+	// DelaySubmitter 在 Redis 写成功后登记异步 Mongo 回写任务。
+	DelaySubmitter DelayTaskSubmitter
+	// DirtyTTL 保护尚未确认回写 Mongo 的 Redis 热文档。
+	DirtyTTL time.Duration
+	// LoadLockTTL 是并发回源锁的租约时长；零值使用默认值。
+	LoadLockTTL time.Duration
+	// LoadLockWait 是等待其他实例完成回填的最长时间；零值使用默认值。
+	LoadLockWait time.Duration
 }
 
 // Validate 校验 Fusion 运行时的完整装配。项目启动时必须调用该方法，避免缺失

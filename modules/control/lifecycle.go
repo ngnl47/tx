@@ -17,15 +17,21 @@ var ErrControllerNil = errors.New("control: lifecycle controller is nil")
 type State uint8
 
 const (
+	// StateRunning 表示进程正常接收外部工作。
 	StateRunning State = iota + 1
+	// StateDraining 表示入口已封闭，正在等待已接纳工作完成。
 	StateDraining
+	// StateDrained 表示排水已经完成，可以停止物理资源。
 	StateDrained
+	// StateFailed 表示排水过程失败，Error 保存原因。
 	StateFailed
 )
 
 // Status 表示进程当前的运维状态。
 type Status struct {
+	// State 是当前生命周期状态。
 	State State
+	// Error 是 StateFailed 时的错误文本，其他状态保持为空。
 	Error string
 }
 

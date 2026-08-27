@@ -14,7 +14,7 @@ type rejectingAdmission struct {
 	err error
 }
 
-func (admission rejectingAdmission) RequireWritable() error {
+func (admission rejectingAdmission) RequireWritable([]txn.LockTarget) error {
 	return admission.err
 }
 

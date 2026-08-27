@@ -15,16 +15,25 @@ import (
 	"google.golang.org/grpc"
 )
 
+// ServiceName 是 msgq 在启动参数和服务发现中的稳定名称。
 const ServiceName = "msgq"
 
+// Options 描述会话邮箱存储、积压边界和离线回收策略。
 type Options struct {
-	InstanceID         string
-	Store              txmsgq.SessionStore
-	SessionStore       msgqredis.Options
+	// InstanceID 覆盖框架实例 ID；空字符串使用服务发现中的当前实例 ID。
+	InstanceID string
+	// Store 显式提供会话存储；设置后不再从 SessionStore 创建 Redis 实现。
+	Store txmsgq.SessionStore
+	// SessionStore 配置默认 Redis 会话存储。
+	SessionStore msgqredis.Options
+	// MaxBacklogMessages 限制单会话未确认下行消息条数。
 	MaxBacklogMessages int
-	MaxBacklogBytes    int
-	OfflineTimeout     time.Duration
-	SweepInterval      time.Duration
+	// MaxBacklogBytes 限制单会话未确认下行载荷字节数；零表示不按字节限制。
+	MaxBacklogBytes int
+	// OfflineTimeout 是离线会话保留时间；零表示不按离线时间回收。
+	OfflineTimeout time.Duration
+	// SweepInterval 是离线会话扫描间隔；零值使用 msgq 的默认间隔。
+	SweepInterval time.Duration
 }
 
 // OptionsProvider 在 msgq 被选中时转换项目配置。
@@ -38,6 +47,7 @@ type Service struct {
 	client txmsgq.SessionClient
 }
 
+// New 使用已经转换完成的强类型配置创建 msgq 服务。
 func New(options Options) (*Service, error) {
 	if err := validateOptions(options); err != nil {
 		return nil, err
@@ -54,6 +64,7 @@ func NewConfigured(provider OptionsProvider) (*Service, error) {
 	return &Service{provider: provider}, nil
 }
 
+// Spec 声明 msgq 的 RPC 与 Redis 能力依赖。
 func (service *Service) Spec() txserver.Spec {
 	return txserver.Spec{
 		Name:     ServiceName,
@@ -61,6 +72,7 @@ func (service *Service) Spec() txserver.Spec {
 	}
 }
 
+// Start 创建会话邮箱、注册共享 gRPC 服务并接入进程生命周期。
 func (service *Service) Start(runtime txserver.Context) error {
 	if runtime == nil || runtime.Tasks() == nil || runtime.RPC() == nil {
 		return fmt.Errorf("msgq service: lifecycle and RPC host are required")
@@ -132,6 +144,7 @@ func (service *Service) configure() error {
 	return nil
 }
 
+// Stop 清理本地会话客户端引用；邮箱后台任务由根生命周期等待退出。
 func (service *Service) Stop(context.Context) error {
 	if service == nil {
 		return nil
@@ -142,6 +155,7 @@ func (service *Service) Stop(context.Context) error {
 	return nil
 }
 
+// SessionClient 返回同进程 Agent 可复用的本地会话客户端。
 func (service *Service) SessionClient() (txmsgq.SessionClient, error) {
 	if service == nil {
 		return nil, fmt.Errorf("msgq service: local session client is unavailable")
