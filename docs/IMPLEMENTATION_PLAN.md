@@ -27,6 +27,31 @@
 3. `MaxRootChanges` 继续只按变更位置数收敛 Store 状态树；进程 Heap 只用于告警，不能成为 cache Manager 拒绝业务的唯一依据。只有真实服务证明路径数和待刷根对象数不足以解释常驻内存时，才重新评审字节预算。
 4. Redis 大型整字段写入的安全整数检查只有在 profile 证明为热点后才优化；任何优化都不能降低整数精度保护。
 
+## 已确认待实施能力
+
+### txclient Web 协议调试台
+
+第一版调试台属于 `txclient`，只在 `debug`、`test` 环境启用；`release` 不提供默认入口。它复用 txgen
+导出的 `CommandSchemas`、`Schemas` 以及 txclient 已有 BON/Frame 编解码，不在 `tx` 服务端新增第二套协议模型。
+
+调试台至少包括：WebSocket 地址和认证参数、命令检索与分组、按 Schema 生成的参数表单、自动填充
+`CommandID` 与强类型 route key、JSON/BON/hex 查看、上下行时间线、Seq/Ack/重连状态和本地历史记录。
+
+真实调试链路保持为：
+
+```text
+Browser WebSocket
+  -> Agent
+  -> Actor
+  -> generated Handler
+  -> msgq outbound
+  -> Browser
+```
+
+开始实现前必须先补齐 Actor 业务响应到 Agent/msgq 的标准返回路径，并确定浏览器调试入口的显式 Origin
+白名单或同源代理。调试台不得绕过项目握手认证，不允许使用通配 Origin，也不能把 JSON helper 引入 BON
+业务载荷主链路。
+
 ## 待决策能力
 
 下列事项在进入实现前必须重新评审需求、边界和成熟依赖，不能以占位配置或兼容接口提前进入主线。
