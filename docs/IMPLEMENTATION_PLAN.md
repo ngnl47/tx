@@ -19,7 +19,7 @@
 ### P1：性能基线
 
 1. 继续以 `VisitChanges`、StoreView 捕获/合并、Redis/Mongo 变更文档构建、事务精确 Key 锁注册表、缓存服务发现路由和
-   Actor 解析/激活/销毁 benchmark 为热点基线。
+   Actor 解析/激活/销毁及滚动成员拓扑 benchmark 为热点基线。
 2. 热点优化必须记录对象规模、嵌套深度、变更密度、Go 版本、耗时和分配；没有基准证据时不引入 pool、`unsafe` 或新的中间批次。
 3. `MaxRootChanges` 继续只按变更位置数收敛 Store 状态树；进程 Heap 只用于告警，不能成为 cache Manager 拒绝业务的唯一依据。只有真实服务证明路径数和待刷根对象数不足以解释常驻内存时，才重新评审字节预算。
 4. Redis 大型整字段写入的安全整数检查只有在 profile 证明为热点后才优化；任何优化都不能降低整数精度保护。

@@ -2340,6 +2340,19 @@ Cluster Provider 和真实 `disthash`；将外层全局互斥改为读写隔离�
 当前没有证据支持把每个 Kind 的单宿主 Actor 拆成分片宿主。`TestActorLifecycleDoesNotRewriteEtcdTopology` 在真实 etcd
 上连续创建并停止 64 个 Virtual Actor 和 64 个 Fixed Actor，成员键和槽位键的数量、值、`ModRevision` 均保持不变。
 
+Actor 实体 churn 与进程成员 churn 是两条不同路径。`TestVirtualPlacementRollingReplacementCanMoveIdentityMoreThanOnce`
+使用 ProtoActor 原生 Rendezvous，对 10 个成员和 10,000 个活跃 identity 逐台执行离开、加入：完整替换后累计发生
+20,115 次 owner 变化，其中 6,526 个 identity 变化超过一次。这证明 Rendezvous 只限制单次拓扑变化的影响范围，不能
+消除完整滚动发布期间的重复归属变化。
+
+同环境运行 `BenchmarkVirtualPlacementRollingReplacement`，每次处理一对离开、加入拓扑；每份拓扑按 10,000 个
+集群活跃 identity 的宿主合计扫描量计算，耗时约 `12.86-14.21 ms/op`，产生约
+`5.11 MB/op, 100,093-100,095 allocs/op`，平均改变约
+`2,012-2,095` 个 owner。分配主要来自 ProtoActor `Rendezvous.GetByIdentity` 在每个 identity 查找中按 Kind 构造成员
+切片。该成本只发生在进程成员拓扑变化时，不属于普通消息热路径；当前不为此复制或替换第三方 placement。Virtual Actor
+继续只承载可恢复且允许漂移的实体，有状态实体继续使用 Fixed Kind。若生产规模证明滚动发布的 GC 或重建峰值不可接受，
+再评审上游优化或自定义 IdentityLookup；成员离开必须立即生效，不能用统一延迟继续向失效 owner 路由。
+
 ### control 与滚动发布
 
 `modules/control` 提供受控运维接口：
