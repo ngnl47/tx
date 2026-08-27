@@ -23,22 +23,22 @@ func TestSlotControlPromotesExpectedAssignment(t *testing.T) {
 	response, err := client.PromoteSlot(context.Background(), &controlpb.PromoteSlotRequest{
 		Current: &controlpb.SlotAssignment{
 			SlotId:            "game-slot-1",
-			RuntimeInstanceId: "game-1@v42",
+			RuntimeInstanceId: "pod-uid-a",
 			Generation:        42,
 		},
-		NextRuntimeInstanceId: "game-1@v43",
+		NextRuntimeInstanceId: "pod-uid-b",
 	})
 	if err != nil {
 		t.Fatalf("PromoteSlot returned error: %v", err)
 	}
-	if got, want := controller.promotion.Current.RuntimeInstanceID, "game-1@v42"; got != want {
+	if got, want := controller.promotion.Current.RuntimeInstanceID, "pod-uid-a"; got != want {
 		t.Fatalf("current runtime = %q, want %q", got, want)
 	}
-	if got, want := controller.promotion.NextRuntimeInstanceID, "game-1@v43"; got != want {
+	if got, want := controller.promotion.NextRuntimeInstanceID, "pod-uid-b"; got != want {
 		t.Fatalf("next runtime = %q, want %q", got, want)
 	}
 	assignment := response.GetAssignment()
-	if assignment.GetSlotId() != "game-slot-1" || assignment.GetRuntimeInstanceId() != "game-1@v43" || assignment.GetGeneration() != 43 {
+	if assignment.GetSlotId() != "game-slot-1" || assignment.GetRuntimeInstanceId() != "pod-uid-b" || assignment.GetGeneration() != 43 {
 		t.Fatalf("assignment = %#v", assignment)
 	}
 }
@@ -61,10 +61,10 @@ func TestSlotControlRejectsInvalidAndConflictingPromotion(t *testing.T) {
 		_, err := client.PromoteSlot(context.Background(), &controlpb.PromoteSlotRequest{
 			Current: &controlpb.SlotAssignment{
 				SlotId:            "game-slot-1",
-				RuntimeInstanceId: "game-1@v42",
+				RuntimeInstanceId: "pod-uid-a",
 				Generation:        42,
 			},
-			NextRuntimeInstanceId: "game-1@v43",
+			NextRuntimeInstanceId: "pod-uid-b",
 		})
 		if status.Code(err) != codes.Aborted {
 			t.Fatalf("PromoteSlot error = %v, want Aborted", err)

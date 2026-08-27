@@ -40,11 +40,11 @@ func TestControlServerDrainsThroughCoordinator(t *testing.T) {
 func TestControlServerPromotesLogicalSlot(t *testing.T) {
 	root := lifecycle.NewWaitGroupContext(context.Background())
 	defer func() { root.Cancel(); root.WaitDoneAndWaitGroupWait() }()
-	current := discovery.SlotAssignment{SlotID: "game-slot-1", RuntimeInstanceID: "game-1@v42", Generation: 42}
+	current := discovery.SlotAssignment{SlotID: "game-slot-1", RuntimeInstanceID: "pod-uid-a", Generation: 42}
 	store := &controlSlotStore{current: current}
 	directory := discovery.NewServiceDirectory()
 	if err := directory.Replace([]discovery.Instance{{
-		ID:       "game-1@v43",
+		ID:       "pod-uid-b",
 		Endpoint: "127.0.0.1:9000",
 		Services: []string{"game"},
 		Status:   discovery.StatusRunning,
@@ -71,13 +71,13 @@ func TestControlServerPromotesLogicalSlot(t *testing.T) {
 			RuntimeInstanceId: current.RuntimeInstanceID,
 			Generation:        current.Generation,
 		},
-		NextRuntimeInstanceId: "game-1@v43",
+		NextRuntimeInstanceId: "pod-uid-b",
 	})
 	if err != nil {
 		t.Fatalf("PromoteSlot returned error: %v", err)
 	}
 	assignment := response.GetAssignment()
-	if assignment.GetGeneration() != 43 || assignment.GetRuntimeInstanceId() != "game-1@v43" {
+	if assignment.GetGeneration() != 43 || assignment.GetRuntimeInstanceId() != "pod-uid-b" {
 		t.Fatalf("assignment = %#v", assignment)
 	}
 	if store.current.Generation != 43 {

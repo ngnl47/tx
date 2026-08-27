@@ -19,12 +19,12 @@ type discoveryRuntime struct {
 }
 
 // LogicalSlot 是部署为有状态服务显式声明的稳定业务槽位。它与每次启动都会变化的
-// RuntimeInstanceID 分离；业务使用它决定 FixedSlot 路由，Runtime.Slots 保存实际
-// generation 归属。
+// RuntimeInstanceID 分离且不会参与实例 ID 拼接；业务使用它决定 FixedSlot 路由，
+// Runtime.Slots 保存实际 generation 归属。
 type LogicalSlot struct {
 	// ID 是部署控制面分配的稳定逻辑槽位，不随进程重启变化。
 	ID string
-	// RuntimeInstanceID 是本次进程实例身份，用于校验槽位当前归属。
+	// RuntimeInstanceID 是本次进程实例身份，用于校验槽位当前归属；它不包含逻辑槽位 ID。
 	RuntimeInstanceID string
 }
 

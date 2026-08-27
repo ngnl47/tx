@@ -112,7 +112,7 @@ func TestEtcdSlotStorePromotesWithCompareAndSwap(t *testing.T) {
 	slots := registry.Slots()
 	current := discovery.SlotAssignment{
 		SlotID:            "game-slot-1",
-		RuntimeInstanceID: "game-1@v42@a",
+		RuntimeInstanceID: "pod-uid-a",
 		Generation:        42,
 	}
 	if err := slots.CreateSlot(ctx, current); err != nil {
@@ -128,7 +128,7 @@ func TestEtcdSlotStorePromotesWithCompareAndSwap(t *testing.T) {
 
 	next := discovery.SlotAssignment{
 		SlotID:            current.SlotID,
-		RuntimeInstanceID: "game-1@v43@b",
+		RuntimeInstanceID: "pod-uid-b",
 		Generation:        43,
 	}
 	if err := slots.PromoteSlot(ctx, current, next); err != nil {
@@ -165,7 +165,7 @@ func TestEtcdSlotStoreSurvivesRegistryClose(t *testing.T) {
 	}
 	assignment := discovery.SlotAssignment{
 		SlotID:            "game-slot-1",
-		RuntimeInstanceID: "game-1@v42@a",
+		RuntimeInstanceID: "pod-uid-a",
 		Generation:        42,
 	}
 	if err := registry.Slots().CreateSlot(ctx, assignment); err != nil {

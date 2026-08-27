@@ -10,11 +10,11 @@ import (
 )
 
 func TestSlotPromoterPublishesOnlyRunningNextRuntime(t *testing.T) {
-	current := discovery.SlotAssignment{SlotID: "game-slot-1", RuntimeInstanceID: "game-1@v42", Generation: 42}
+	current := discovery.SlotAssignment{SlotID: "game-slot-1", RuntimeInstanceID: "pod-uid-a", Generation: 42}
 	store := &controlSlotStore{current: current}
 	directory := discovery.NewServiceDirectory()
 	if err := directory.Replace([]discovery.Instance{{
-		ID:       "game-1@v43",
+		ID:       "pod-uid-b",
 		Endpoint: "127.0.0.1:9000",
 		Services: []string{"game"},
 		Status:   discovery.StatusStarting,
@@ -25,13 +25,13 @@ func TestSlotPromoterPublishesOnlyRunningNextRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSlotPromoter returned error: %v", err)
 	}
-	promotion := control.SlotPromotion{Current: current, NextRuntimeInstanceID: "game-1@v43"}
+	promotion := control.SlotPromotion{Current: current, NextRuntimeInstanceID: "pod-uid-b"}
 	if err := promoter.PromoteSlot(context.Background(), promotion); !errors.Is(err, discovery.ErrSlotRuntimeUnavailable) {
 		t.Fatalf("PromoteSlot before ready error = %v, want ErrSlotRuntimeUnavailable", err)
 	}
 
 	if err := directory.Replace([]discovery.Instance{{
-		ID:       "game-1@v43",
+		ID:       "pod-uid-b",
 		Endpoint: "127.0.0.1:9000",
 		Services: []string{"game"},
 		Status:   discovery.StatusRunning,
@@ -41,8 +41,8 @@ func TestSlotPromoterPublishesOnlyRunningNextRuntime(t *testing.T) {
 	if err := promoter.PromoteSlot(context.Background(), promotion); err != nil {
 		t.Fatalf("PromoteSlot returned error: %v", err)
 	}
-	assignment := discovery.SlotAssignment{SlotID: current.SlotID, RuntimeInstanceID: "game-1@v43", Generation: 43}
-	if assignment.Generation != 43 || assignment.RuntimeInstanceID != "game-1@v43" {
+	assignment := discovery.SlotAssignment{SlotID: current.SlotID, RuntimeInstanceID: "pod-uid-b", Generation: 43}
+	if assignment.Generation != 43 || assignment.RuntimeInstanceID != "pod-uid-b" {
 		t.Fatalf("assignment = %#v", assignment)
 	}
 	if store.current != assignment {

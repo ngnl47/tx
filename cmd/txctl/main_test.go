@@ -52,18 +52,18 @@ func TestRunPromotesLogicalSlotAndPrintsNewAssignment(t *testing.T) {
 		"--endpoint", "control",
 		"promote-slot",
 		"--slot", "game-slot-1",
-		"--current-instance", "game-1@v42",
+		"--current-instance", "pod-uid-a",
 		"--current-generation", "42",
-		"--next-instance", "game-1@v43",
+		"--next-instance", "pod-uid-b",
 	}, &output, bufconnDialer(listener))
 	if err != nil {
 		t.Fatalf("run promote-slot returned error: %v", err)
 	}
-	if got, want := output.String(), "slot=game-slot-1 runtimeInstance=game-1@v43 generation=43\n"; got != want {
+	if got, want := output.String(), "slot=game-slot-1 runtimeInstance=pod-uid-b generation=43\n"; got != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
 	request := recorder.request
-	if request == nil || request.GetCurrent().GetGeneration() != 42 || request.GetNextRuntimeInstanceId() != "game-1@v43" {
+	if request == nil || request.GetCurrent().GetGeneration() != 42 || request.GetNextRuntimeInstanceId() != "pod-uid-b" {
 		t.Fatalf("promotion request = %#v", request)
 	}
 }

@@ -153,13 +153,15 @@ type DiscoveryConfig struct {
 type RunOptions struct {
 	// Services 是本进程需要启动的 L4 服务选择表达式。
 	Services string
-	// InstanceID 是当前物理实例在集群中的稳定唯一身份。
+	// InstanceID 是本次物理运行实例在集群中的唯一身份。容器或进程重建时必须变化，
+	// 且不得重复编码 LogicalSlot。
 	InstanceID string
 	// InstanceVersion 是当前实例发布的代码或镜像版本。
 	InstanceVersion string
 	// InstanceEndpoint 是服务发现对外发布的可达地址。
 	InstanceEndpoint string
-	// LogicalSlot 是有状态服务稳定绑定的逻辑槽位；无状态服务可留空。
+	// LogicalSlot 是有状态服务稳定绑定的逻辑槽位；无状态服务可留空。框架不会把它
+	// 拼接到 InstanceID。
 	LogicalSlot string
 	// RPCListen 是进程共享 gRPC Host 的监听地址。
 	RPCListen string

@@ -70,13 +70,16 @@ func NewApplication(config server.Config) (*server.Server, error) {
 func Run(ctx context.Context, app *server.Server) error {
 	return app.Run(ctx, server.RunOptions{
 		Services:         "game,msgq,agent",
-		InstanceID:       "game-1@boot-43",
+		InstanceID:       "pod-uid-43",
 		InstanceVersion:  "20260823.1",
 		InstanceEndpoint: "10.0.1.21:9000",
 		RPCListen:        "0.0.0.0:9000",
 	})
 }
 ```
+
+`InstanceID` 只表示本次物理运行实例，例如 Kubernetes Pod UID；它不包含服务名或
+`LogicalSlot`。有状态服务通过独立的 `LogicalSlot` 保存稳定业务归属。
 
 `WithSetup` 是项目组合根使用的装配扩展点，适合安装 `db` facade。回调拿到的是受控
 `server.Context`：可以执行已授权业务操作，但不能取消根生命周期、关闭共享 gRPC Host、停止 Actor/Transaction，
@@ -1272,7 +1275,7 @@ Actor 不代表 GD，也不提供分布式事务。同一 Actor 内需要修改�
 slots := registry.Slots()
 current := discovery.SlotAssignment{
 	SlotID:            "game-slot-1",
-	RuntimeInstanceID: "game-1@v42@a",
+	RuntimeInstanceID: "pod-uid-a",
 	Generation:        42,
 }
 if err := slots.CreateSlot(ctx, current); err != nil {
@@ -1294,7 +1297,7 @@ if err != nil {
 
 next := discovery.SlotAssignment{
 	SlotID:            current.SlotID,
-	RuntimeInstanceID: "game-1@v43@b",
+	RuntimeInstanceID: "pod-uid-b",
 	Generation:        43,
 }
 if err := router.PromoteSlot(ctx, current, next); err != nil {
@@ -1354,7 +1357,8 @@ _ = dispatcher
 
 `LogicalSlotID` 不是服务发现按实例数量生成的编号。原生部署由启动参数或环境变量注入；
 Kubernetes 有状态服务应使用 StatefulSet 的 ordinal，例如 Pod `game-1` 注入
-`TXGAME_LOGICAL_SLOT=game-1`，每次 Pod 重建则以新的 UID 形成新的 `RuntimeInstanceID`。
+`TXGAME_LOGICAL_SLOT=game-1`，同时把本次 Pod UID 作为 `TXGAME_INSTANCE_ID`；每次
+Pod 重建只更换 `RuntimeInstanceID`，框架不会把两个值拼接起来。
 同一镜像复制出的普通 Deployment 副本不能共享写死的 SlotID。
 
 `WaitGroupContext` 只保证正常关闭路径。`SIGKILL`、OOM、机器故障和网络分区下的自动
@@ -1385,9 +1389,9 @@ go run ./cmd/txctl --endpoint 10.0.1.21:9100 --timeout 5m wait-drained
 # 新实例已经注册为 running 后，以期望的旧 generation 执行槽位交接。
 go run ./cmd/txctl --endpoint 10.0.1.22:9100 promote-slot \
   --slot game-slot-1 \
-  --current-instance game-1@v42 \
+  --current-instance pod-uid-a \
   --current-generation 42 \
-  --next-instance game-1@v43
+  --next-instance pod-uid-b
 
 ```
 

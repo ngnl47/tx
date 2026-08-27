@@ -84,7 +84,7 @@ func TestServiceDirectoryLookupInstanceKeepsStoppingInstanceForDrain(t *testing.
 func TestServiceDirectoryKeepsDrainingInstanceForExactDrain(t *testing.T) {
 	directory := discovery.NewServiceDirectory()
 	if err := directory.Replace([]discovery.Instance{{
-		ID:       "game-1@v42",
+		ID:       "pod-uid-a",
 		Services: []string{"game"},
 		Endpoint: "10.0.0.1:9000",
 		Status:   discovery.StatusDraining,
@@ -95,7 +95,7 @@ func TestServiceDirectoryKeepsDrainingInstanceForExactDrain(t *testing.T) {
 	if _, ok := directory.NextInstance("game"); ok {
 		t.Fatal("NextInstance() selected draining instance")
 	}
-	instance, ok := directory.LookupInstance("game-1@v42")
+	instance, ok := directory.LookupInstance("pod-uid-a")
 	if !ok {
 		t.Fatal("LookupInstance() returned no draining instance")
 	}

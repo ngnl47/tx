@@ -18,7 +18,7 @@ var (
 
 // SlotAssignment 将稳定逻辑槽位绑定到一个特定运行实例 generation。SlotID 是业务
 // 归属键，例如 game-slot-1；RuntimeInstanceID 必须是每次进程启动唯一的实例 ID，
-// 不能复用部署名称或逻辑槽位名称。
+// 不能复用或重复编码部署名称与逻辑槽位名称。
 type SlotAssignment struct {
 	SlotID            string `json:"slotId"`
 	RuntimeInstanceID string `json:"runtimeInstanceId"`

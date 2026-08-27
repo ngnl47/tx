@@ -11,7 +11,7 @@ import (
 func TestSlotAssignmentValidatesStableSlotAndRuntimeGeneration(t *testing.T) {
 	valid := discovery.SlotAssignment{
 		SlotID:            "game-slot-1",
-		RuntimeInstanceID: "game-1@v42@a",
+		RuntimeInstanceID: "pod-uid-a",
 		Generation:        42,
 	}
 	if err := valid.Validate(); err != nil {
@@ -33,7 +33,7 @@ func TestSlotAssignmentValidatesStableSlotAndRuntimeGeneration(t *testing.T) {
 func TestSlotRouterOnlyResolvesRunningAssignedRuntime(t *testing.T) {
 	assignment := discovery.SlotAssignment{
 		SlotID:            "game-slot-1",
-		RuntimeInstanceID: "game-1@v42@a",
+		RuntimeInstanceID: "pod-uid-a",
 		Generation:        42,
 	}
 	store := &slotStoreFake{assignments: map[string]discovery.SlotAssignment{assignment.SlotID: assignment}}
@@ -75,12 +75,12 @@ func TestSlotRouterOnlyResolvesRunningAssignedRuntime(t *testing.T) {
 func TestSlotRouterPromotesOnlyToReadyRuntime(t *testing.T) {
 	current := discovery.SlotAssignment{
 		SlotID:            "game-slot-1",
-		RuntimeInstanceID: "game-1@v42@a",
+		RuntimeInstanceID: "pod-uid-a",
 		Generation:        42,
 	}
 	next := discovery.SlotAssignment{
 		SlotID:            current.SlotID,
-		RuntimeInstanceID: "game-1@v43@b",
+		RuntimeInstanceID: "pod-uid-b",
 		Generation:        43,
 	}
 	store := &slotStoreFake{assignments: map[string]discovery.SlotAssignment{current.SlotID: current}}
@@ -153,12 +153,12 @@ func (s *slotStoreFake) PromoteSlot(_ context.Context, current, next discovery.S
 func TestSlotPromotionRequiresNextGenerationAndDistinctRuntime(t *testing.T) {
 	current := discovery.SlotAssignment{
 		SlotID:            "game-slot-1",
-		RuntimeInstanceID: "game-1@v42@a",
+		RuntimeInstanceID: "pod-uid-a",
 		Generation:        42,
 	}
 	next := discovery.SlotAssignment{
 		SlotID:            current.SlotID,
-		RuntimeInstanceID: "game-1@v43@b",
+		RuntimeInstanceID: "pod-uid-b",
 		Generation:        43,
 	}
 	if err := discovery.ValidateSlotPromotion(current, next); err != nil {
@@ -166,9 +166,9 @@ func TestSlotPromotionRequiresNextGenerationAndDistinctRuntime(t *testing.T) {
 	}
 
 	for _, candidate := range []discovery.SlotAssignment{
-		{SlotID: current.SlotID, RuntimeInstanceID: "game-1@v43@b", Generation: 42},
-		{SlotID: current.SlotID, RuntimeInstanceID: "game-1@v42@a", Generation: 43},
-		{SlotID: "game-slot-2", RuntimeInstanceID: "game-1@v43@b", Generation: 43},
+		{SlotID: current.SlotID, RuntimeInstanceID: "pod-uid-b", Generation: 42},
+		{SlotID: current.SlotID, RuntimeInstanceID: "pod-uid-a", Generation: 43},
+		{SlotID: "game-slot-2", RuntimeInstanceID: "pod-uid-b", Generation: 43},
 	} {
 		if !errors.Is(discovery.ValidateSlotPromotion(current, candidate), discovery.ErrInvalidSlotPromotion) {
 			t.Fatalf("ValidateSlotPromotion(%#v, %#v) must return ErrInvalidSlotPromotion", current, candidate)
