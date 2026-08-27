@@ -45,7 +45,7 @@ type Runtime struct {
 	fixed     []fixedKind
 	lifecycle *mailboxLifecycle
 
-	mu        sync.Mutex
+	mu        sync.RWMutex
 	cluster   *cluster.Cluster
 	responder *protoactor.PID
 	pending   *pendingCalls
@@ -178,8 +178,8 @@ func (r *Runtime) VirtualPID(kind, identity string) (*protoactor.PID, error) {
 	if strings.TrimSpace(kind) == "" || strings.TrimSpace(identity) == "" {
 		return nil, ErrInvalidPID
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	if r.stopped {
 		return nil, ErrRuntimeStopped
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
@@ -14,7 +15,9 @@ import (
 	txlog "github.com/ngnl47/tx/log"
 	txactor "github.com/ngnl47/tx/modules/actor"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
+	"github.com/ngnl47/tx/modules/discovery"
 	txprotocol "github.com/ngnl47/tx/protocol"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 func TestActorConfigNormalize(t *testing.T) {
@@ -292,6 +295,124 @@ func TestActorRuntimeLifecycleIntegration(t *testing.T) {
 	}
 }
 
+func TestActorLifecycleDoesNotRewriteEtcdTopology(t *testing.T) {
+	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("set TX_ETCD_ENDPOINT to run the actor integration test")
+	}
+	basePrefix := fmt.Sprintf("/tx/tests/actor-churn-%d", time.Now().UnixNano())
+	actorPrefix := basePrefix + "/actors"
+	discoveryPrefix := basePrefix + "/discovery"
+	slotPrefix := discoveryPrefix + "/slots/"
+
+	client, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: time.Second})
+	if err != nil {
+		t.Fatalf("create etcd client: %v", err)
+	}
+	defer client.Close()
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if _, cleanupErr := client.Delete(cleanupCtx, basePrefix, clientv3.WithPrefix()); cleanupErr != nil {
+			t.Errorf("cleanup etcd prefix: %v", cleanupErr)
+		}
+	}()
+
+	registry, err := discovery.NewEtcdRegistry(context.Background(), discovery.EtcdConfig{
+		Endpoints:   []string{endpoint},
+		Prefix:      discoveryPrefix,
+		LeaseTTL:    3 * time.Second,
+		DialTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewEtcdRegistry() error = %v", err)
+	}
+	defer registry.Close()
+	assignment := discovery.SlotAssignment{
+		SlotID:            "game-slot-1",
+		RuntimeInstanceID: "game-runtime-1",
+		Generation:        1,
+	}
+	if err := registry.Slots().CreateSlot(context.Background(), assignment); err != nil {
+		t.Fatalf("CreateSlot() error = %v", err)
+	}
+
+	root := lifecycle.NewWaitGroupContext(context.Background())
+	runtime, err := txactor.New(txactor.Config{
+		ClusterName: "tx-actor-churn-integration",
+		Host:        "127.0.0.1",
+		Port:        0,
+		Etcd: txactor.EtcdConfig{
+			Endpoints:   []string{endpoint},
+			Prefix:      actorPrefix,
+			DialTimeout: time.Second,
+		},
+	},
+		txactor.MustKind("virtual-churn", func() protoactor.Actor { return actorChurnProbe{} }),
+		txactor.MustFixedKind("fixed-churn", func() protoactor.Actor { return actorChurnProbe{} }),
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := runtime.Start(root); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer func() {
+		if shutdownErr := runtime.Shutdown(); shutdownErr != nil {
+			t.Errorf("Shutdown() error = %v", shutdownErr)
+		}
+		root.Cancel()
+		root.WaitDoneAndWaitGroupWait()
+	}()
+
+	memberBefore := readEtcdKeySnapshot(t, client, actorPrefix)
+	slotBefore := readEtcdKeySnapshot(t, client, slotPrefix)
+	if len(memberBefore) != 1 {
+		t.Fatalf("actor member keys = %d, want 1", len(memberBefore))
+	}
+	if len(slotBefore) != 1 {
+		t.Fatalf("slot keys = %d, want 1", len(slotBefore))
+	}
+
+	endpointAddress, err := runtime.Endpoint()
+	if err != nil {
+		t.Fatalf("Endpoint() error = %v", err)
+	}
+	fixedHost, err := txactor.FixedKindPID(endpointAddress, "fixed-churn")
+	if err != nil {
+		t.Fatalf("FixedKindPID() error = %v", err)
+	}
+	for index := uint64(1); index <= 64; index++ {
+		virtual, resolveErr := runtime.VirtualPID("virtual-churn", fmt.Sprintf("role-%d", index))
+		if resolveErr != nil {
+			t.Fatalf("VirtualPID(%d) error = %v", index, resolveErr)
+		}
+		callCtx, cancelCall := context.WithTimeout(root, 5*time.Second)
+		if _, callErr := runtime.Call(callCtx, virtual, txactor.Delivery{MessageType: "actor.churn", CommandID: index}); callErr != nil {
+			cancelCall()
+			t.Fatalf("Call virtual Actor %d error = %v", index, callErr)
+		}
+		if _, callErr := runtime.Call(callCtx, fixedHost, txactor.Delivery{
+			MessageType: "actor.churn",
+			CommandID:   index,
+			RouteKey:    txprotocol.Uint64RouteKey(index),
+		}); callErr != nil {
+			cancelCall()
+			t.Fatalf("Call fixed Actor %d error = %v", index, callErr)
+		}
+		cancelCall()
+	}
+
+	memberAfter := readEtcdKeySnapshot(t, client, actorPrefix)
+	slotAfter := readEtcdKeySnapshot(t, client, slotPrefix)
+	if !reflect.DeepEqual(memberAfter, memberBefore) {
+		t.Fatalf("actor churn changed member keys: before=%#v after=%#v", memberBefore, memberAfter)
+	}
+	if !reflect.DeepEqual(slotAfter, slotBefore) {
+		t.Fatalf("actor churn changed slot keys: before=%#v after=%#v", slotBefore, slotAfter)
+	}
+}
+
 func TestActorRuntimeStartRequiresWaitGroupContext(t *testing.T) {
 	runtime, err := txactor.New(txactor.Config{
 		ClusterName: "tx-actor-lifecycle-required",
@@ -468,6 +589,48 @@ type actorEcho struct {
 	received        chan<- txactor.Delivery
 	acceptedStarted chan<- struct{}
 	acceptedRelease <-chan struct{}
+}
+
+type actorChurnProbe struct{}
+
+func (actorChurnProbe) Receive(ctx protoactor.Context) {
+	message, ok := ctx.Message().(*actorpb.Delivery)
+	if !ok {
+		return
+	}
+	delivery, err := txactor.DeliveryFromProto(message)
+	if err != nil {
+		return
+	}
+	if delivery.WantsResult() {
+		if err := txactor.Respond(ctx, delivery, txactor.Result{MessageType: "actor.churn.done", CommandID: delivery.CommandID}, nil); err != nil {
+			panic(err)
+		}
+	}
+	ctx.Stop(ctx.Self())
+}
+
+type etcdKeyState struct {
+	Value       string
+	ModRevision int64
+}
+
+func readEtcdKeySnapshot(t *testing.T, client *clientv3.Client, prefix string) map[string]etcdKeyState {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	response, err := client.Get(ctx, prefix, clientv3.WithPrefix())
+	if err != nil {
+		t.Fatalf("read etcd prefix %q: %v", prefix, err)
+	}
+	snapshot := make(map[string]etcdKeyState, len(response.Kvs))
+	for _, item := range response.Kvs {
+		snapshot[string(item.Key)] = etcdKeyState{
+			Value:       string(item.Value),
+			ModRevision: item.ModRevision,
+		}
+	}
+	return snapshot
 }
 
 type blockingActor struct {

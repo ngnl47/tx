@@ -251,6 +251,40 @@ func TestSlotPromotionRequiresNextGenerationAndDistinctRuntime(t *testing.T) {
 }
 
 func BenchmarkSlotRouterCachedResolve(b *testing.B) {
+	router, backing, slotID := newBenchmarkSlotRouter(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := router.ResolveSlot(context.Background(), slotID); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.StopTimer()
+	if backing.resolutions != 0 {
+		b.Fatalf("backing ResolveSlot calls = %d, want 0", backing.resolutions)
+	}
+}
+
+func BenchmarkSlotRouterCachedResolveParallel(b *testing.B) {
+	router, backing, slotID := newBenchmarkSlotRouter(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if _, err := router.ResolveSlot(context.Background(), slotID); err != nil {
+				b.Error(err)
+				return
+			}
+		}
+	})
+	b.StopTimer()
+	if backing.resolutions != 0 {
+		b.Fatalf("backing ResolveSlot calls = %d, want 0", backing.resolutions)
+	}
+}
+
+func newBenchmarkSlotRouter(b *testing.B) (*discovery.SlotRouter, *slotStoreFake, string) {
+	b.Helper()
 	assignment := discovery.SlotAssignment{
 		SlotID:            "game-slot-1",
 		RuntimeInstanceID: "pod-uid-a",
@@ -279,17 +313,7 @@ func BenchmarkSlotRouterCachedResolve(b *testing.B) {
 	if err != nil {
 		b.Fatalf("NewSlotRouter: %v", err)
 	}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for range b.N {
-		if _, err := router.ResolveSlot(context.Background(), assignment.SlotID); err != nil {
-			b.Fatal(err)
-		}
-	}
-	b.StopTimer()
-	if backing.resolutions != 0 {
-		b.Fatalf("backing ResolveSlot calls = %d, want 0", backing.resolutions)
-	}
+	return router, backing, assignment.SlotID
 }
 
 func TestSlotRouterCachedResolveDoesNotAllocate(t *testing.T) {

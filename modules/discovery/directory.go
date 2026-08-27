@@ -66,7 +66,7 @@ func (s Status) Valid() bool {
 }
 
 type ServiceDirectory struct {
-	mu        sync.Mutex
+	mu        sync.RWMutex
 	ready     chan struct{}
 	readyOnce sync.Once
 	byID      map[string]Instance
@@ -178,8 +178,8 @@ func (d *ServiceDirectory) NextInstance(service string) (Instance, bool) {
 // RunningInstances 返回指定服务的全部 running 实例快照，保持实例 ID 的稳定排序。
 // 调用方可据此实现业务自己的随机、哈希或负载策略；目录不承担实体归属决策。
 func (d *ServiceDirectory) RunningInstances(service string) []Instance {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 	instances := d.byService[service]
 	result := make([]Instance, 0, len(instances))
 	for _, instance := range instances {
@@ -192,8 +192,8 @@ func (d *ServiceDirectory) RunningInstances(service string) []Instance {
 
 // LookupInstance 为精确路由返回已知的 running、draining 或 stopping 状态实例。
 func (d *ServiceDirectory) LookupInstance(id string) (Instance, bool) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 	instance, ok := d.byID[id]
 	if !ok || (instance.Status != StatusRunning && instance.Status != StatusDraining && instance.Status != StatusStopping) {
 		return Instance{}, false
@@ -206,8 +206,8 @@ func (d *ServiceDirectory) LookupRouteInstance(id string) (RouteInstance, bool) 
 	if d == nil {
 		return RouteInstance{}, false
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 	instance, ok := d.byID[id]
 	if !ok || (instance.Status != StatusRunning && instance.Status != StatusDraining && instance.Status != StatusStopping) {
 		return RouteInstance{}, false

@@ -2140,8 +2140,13 @@ generation 后再放流。
 assignment，也不能临时恢复成逐消息 etcd Get。该选择以不向错误 owner 投递为最高优先级。
 
 `SlotRouter` 使用不含 `Services []string` 的 `RouteInstance` 值类型读取 endpoint，避免高频路由为防御性复制服务列表而
-分配内存。2026-08-27 使用 Go 1.27.0 在 x86_64 macOS 上运行 `BenchmarkSlotRouterCachedResolve`，进程内稳定槽位解析约为
-`118.6-120.1 ns/op, 0 B/op, 0 allocs/op`，且底层持久 Store 的读取次数为 0。
+分配内存。`SlotDirectory` 与 `ServiceDirectory` 的纯读取路径使用读锁；只有服务轮询游标、快照替换和失效操作使用写锁，
+避免并发 Agent 请求被互相串行化。
+
+2026-08-27 使用 Go 1.27.0 在 x86_64 macOS 上运行缓存槽位解析基准：单线程
+`BenchmarkSlotRouterCachedResolve` 为 `110.7-115.4 ns/op`；16 路并行
+`BenchmarkSlotRouterCachedResolveParallel` 从互斥读写时的 `175.0-201.1 ns/op` 降至
+`50.3-59.0 ns/op`。两组结果均为 `0 B/op, 0 allocs/op`，且底层持久 Store 的读取次数为 0。
 
 ### rpc
 
@@ -2218,6 +2223,49 @@ Agent 的会话来源是显式二选一：配置 `LocalMsgQ` 表示同进程复�
 - Virtual Actor：按 `(kind, identity)` 由集群定位，适合无状态或可恢复实体。
 - Fixed Kind：业务槽位确定物理实例，Runtime 在该实例内按 `Delivery.RouteKey` 惰性激活实体 Actor。
 
+#### Virtual Actor 与 Fixed Kind 的归属模型
+
+Fixed Kind 不是为 Virtual Actor 更换另一种 Hash 算法，而是绕开基于动态成员集合的 Actor 放置，改用稳定逻辑槽位和
+显式 assignment。两种模型可以分别写成：
+
+```text
+Virtual Actor:
+owner = Rendezvous(kind, identity, currentMembers)
+
+Fixed Kind:
+slot       = BusinessRoute(actorKey)
+assignment = PersistedAssignment(slot)
+owner      = assignment.RuntimeInstanceID
+```
+
+Virtual Actor 没有集中保存全部 Actor 位置的主管节点。每个集群成员根据同一份 MemberList 独立计算 owner；目标实例的
+placement Actor 只维护本机的 `identity -> PID`。成员离开或加入后，Rendezvous 归属会重新计算，受影响的 Actor 在原
+实例停止，并在后续请求到达新 owner 时惰性重建。优雅关闭负责排空已受理消息和安全释放状态，不能消除滚动发布期间的
+多次成员归属重算。
+
+Fixed Kind 使用两级稳定映射：
+
+```text
+actorKey，例如 roleId/serverId/worldId
+        |
+        v 业务规则
+稳定 SlotID，例如 game-slot-1
+        |
+        v 本地 Watch 缓存的 etcd assignment
+RuntimeInstanceID + Generation + ActorEndpoint
+        |
+        v Fixed Kind 宿主
+RouteKey -> child PID
+```
+
+etcd 只持久化 `SlotID -> RuntimeInstanceID + Generation`，不会保存每个 Actor 的 PID。Agent 或其他调用服务通过本地
+`SlotDirectory` 缓存解析槽位，不持有逐 Actor 位置表；具体 `RouteKey -> child PID` 只存在于目标进程的固定宿主
+Actor 中，进程重启后按首条消息惰性重建。
+
+业务可以使用 Hash 计算逻辑槽位，但槽位集合必须稳定，例如 `hash(roleID) % 1024`。禁止使用
+`hash(roleID) % len(currentRunningInstances)` 直接选择有状态宿主，否则实例扩缩容会重新引入数据漂移。槽位到运行
+实例的 assignment 只能由发布控制面显式创建或通过 CAS `PromoteSlot` 换代，不能随 MemberList 变化自动改派。
+
 Actor 间跨实例通信是网状直连，不经过 msgq 中继。msgq 只负责客户端会话链路。
 
 有状态 SLG/MMO 实体不能因为成员变化随机漂移。业务使用逻辑槽位和 generation 固定宿主；节点重启期间该槽位短暂不可用，恢复后原位重建。无状态轻量 Actor 才允许成员哈希变化后惰性重建。
@@ -2226,6 +2274,17 @@ Actor 间跨实例通信是网状直连，不经过 msgq 中继。msgq 只负责
 `RouteKey` 中。宿主邮箱串行完成 `RouteKey -> child PID` 的 O(1) 查找；首次访问时创建并监视 child，后续消息保留原
 sender 转发给同一 child。child 使用与 Virtual Actor 相同的有界邮箱、Acceptance 和生命周期统计，但不安装
 ProtoActor ClusterIdentity 中间件，也不注册到 `disthash`。
+
+Actor 实体生命周期属于进程内数据面，不属于 etcd 控制面：
+
+- Virtual Actor 的 identity 与 PID 由 ProtoActor `disthash` placement Actor 在本地维护，成员拓扑变化通过
+  ProtoActor MemberList 传播；单个 identity 的创建和停止不会注册 etcd key。
+- Fixed Kind 的 `RouteKey -> child PID` 只保存在固定宿主 Actor 的本地 map 中；child 停止后由 `Terminated` 清理。
+- etcd 只保存进程成员 lease 和业务显式创建的固定槽位 assignment。玩家上线/下线、Room 创建/销毁不会写 etcd，
+  也不会触发对应的 watch 风暴。
+
+`Runtime` 使用读写锁隔离本地生命周期状态。Start、Drain 和 Shutdown 独占写锁；互不相关的 `VirtualPID` 解析共享
+读锁并发进入 ProtoActor placement。Shutdown 等待已经进入的解析返回后再拆除 Cluster，不能让解析观察到半关闭状态。
 
 服务发现实例同时发布两个不可混用的地址：
 
@@ -2269,6 +2328,17 @@ L4 服务在 `server.Spec.ActorKinds` 中声明 Kind，L3 Server 自动将 Actor
 `add -> resolve -> Await` 约为 `0.78-0.86 us/op, 408 B/op, 6 allocs/op`。该基线包含 Future、完成通知、
 `context.AfterFunc` 和结果只读复制，不包含 Actor Remote 网络 I/O。当前不为这条低于网络开销的边界引入对象池；
 只有实际 profile 证明 pending 生命周期成为瓶颈时，才评审更复杂的复用方案。
+
+2026-08-27 使用 Go 1.27.0 在 x86_64 macOS 上运行 Actor 生命周期基准。`VirtualPID` 使用 ProtoActor 官方内存
+Cluster Provider 和真实 `disthash`；将外层全局互斥改为读写隔离后，已有 identity 的 16 路并行解析中位数从
+`9.12 us/op` 降至 `2.03 us/op`，分配从 `19` 降至 `18 allocs/op`。冷 identity 的并行中位数从
+`12.92 us/op` 降至 `9.38 us/op`；串行结果仍在约 `9.38-16.43 us/op` 波动，说明主要成本来自 placement，不能继续
+用本地锁微调掩盖底层成本。
+
+固定宿主的已有实体串行为 `11.22-11.55 us/op`，16 路并行为 `1.43-2.23 us/op`；冷激活串行为
+`12.70-14.71 us/op`，并行为 `3.13-3.65 us/op`；创建、响应、停止完整 churn 为 `21.20-22.32 us/op`。
+当前没有证据支持把每个 Kind 的单宿主 Actor 拆成分片宿主。`TestActorLifecycleDoesNotRewriteEtcdTopology` 在真实 etcd
+上连续创建并停止 64 个 Virtual Actor 和 64 个 Fixed Actor，成员键和槽位键的数量、值、`ModRevision` 均保持不变。
 
 ### control 与滚动发布
 
