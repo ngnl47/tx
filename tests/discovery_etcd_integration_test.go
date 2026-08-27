@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ngnl47/tx/modules/discovery"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 func TestEtcdRegistryLifecycleIntegration(t *testing.T) {
@@ -146,6 +147,75 @@ func TestEtcdSlotStorePromotesWithCompareAndSwap(t *testing.T) {
 	}
 }
 
+func TestEtcdSlotWatchMaintainsCachedDirectoryAndFailsClosed(t *testing.T) {
+	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("set TX_ETCD_ENDPOINT to run the etcd integration test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	prefix := fmt.Sprintf("/tx/tests/slot-watch-%d", time.Now().UnixNano())
+	registry, err := discovery.NewEtcdRegistry(ctx, discovery.EtcdConfig{
+		Endpoints:   []string{endpoint},
+		Prefix:      prefix,
+		LeaseTTL:    5 * time.Second,
+		DialTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("create etcd registry: %v", err)
+	}
+	defer registry.Close()
+
+	slots := registry.Slots()
+	current := discovery.SlotAssignment{
+		SlotID:            "game-slot-1",
+		RuntimeInstanceID: "pod-uid-a",
+		Generation:        42,
+	}
+	if err := slots.CreateSlot(ctx, current); err != nil {
+		t.Fatalf("CreateSlot() error = %v", err)
+	}
+	directory := discovery.NewSlotDirectory()
+	cached, err := discovery.NewCachedSlotStore(slots, directory)
+	if err != nil {
+		t.Fatalf("NewCachedSlotStore() error = %v", err)
+	}
+	watchCtx, stopWatch := context.WithCancel(ctx)
+	watchResult := make(chan error, 1)
+	go func() {
+		watchResult <- slots.Watch(watchCtx, directory)
+	}()
+
+	waitSlotAssignment(t, ctx, cached, current)
+	next := discovery.SlotAssignment{
+		SlotID:            current.SlotID,
+		RuntimeInstanceID: "pod-uid-b",
+		Generation:        43,
+	}
+	if err := cached.PromoteSlot(ctx, current, next); err != nil {
+		t.Fatalf("PromoteSlot() error = %v", err)
+	}
+	waitSlotAssignment(t, ctx, cached, next)
+	client, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: time.Second})
+	if err != nil {
+		t.Fatalf("create etcd cleanup client: %v", err)
+	}
+	defer client.Close()
+	if _, err := client.Delete(ctx, prefix+"/slots/"+current.SlotID); err != nil {
+		t.Fatalf("delete slot assignment: %v", err)
+	}
+	waitSlotMissing(t, ctx, cached, current.SlotID)
+
+	stopWatch()
+	if err := <-watchResult; !errors.Is(err, context.Canceled) {
+		t.Fatalf("watch error = %v, want context canceled", err)
+	}
+	if _, err := cached.ResolveSlot(ctx, current.SlotID); !errors.Is(err, discovery.ErrSlotDirectoryUnavailable) {
+		t.Fatalf("ResolveSlot() after watch stop error = %v, want ErrSlotDirectoryUnavailable", err)
+	}
+}
+
 func TestEtcdSlotStoreSurvivesRegistryClose(t *testing.T) {
 	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
 	if endpoint == "" {
@@ -201,6 +271,40 @@ func waitDirectory(t *testing.T, ctx context.Context, directory *discovery.Servi
 		select {
 		case <-ctx.Done():
 			t.Fatalf("wait discovery directory: %v", ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitSlotAssignment(t *testing.T, ctx context.Context, store discovery.SlotStore, want discovery.SlotAssignment) {
+	t.Helper()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		assignment, err := store.ResolveSlot(ctx, want.SlotID)
+		if err == nil && assignment == want {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("wait slot assignment %#v: %v", want, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitSlotMissing(t *testing.T, ctx context.Context, store discovery.SlotStore, slotID string) {
+	t.Helper()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		_, err := store.ResolveSlot(ctx, slotID)
+		if errors.Is(err, discovery.ErrSlotNotFound) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("wait slot %q deletion: %v", slotID, ctx.Err())
 		case <-ticker.C:
 		}
 	}

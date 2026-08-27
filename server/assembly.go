@@ -78,6 +78,15 @@ func (server *Server) startDiscovery(options RunOptions) error {
 	}); err != nil {
 		return fmt.Errorf("server: start discovery watch: %w", err)
 	}
+	readyTimeout := server.config.Discovery.Etcd.DialTimeout
+	if readyTimeout <= 0 {
+		readyTimeout = 5 * time.Second
+	}
+	readyCtx, cancelReady := context.WithTimeout(context.Background(), readyTimeout)
+	defer cancelReady()
+	if err := discoveryRuntime.waitReady(readyCtx); err != nil {
+		return fmt.Errorf("server: wait discovery snapshot: %w", err)
+	}
 	return nil
 }
 

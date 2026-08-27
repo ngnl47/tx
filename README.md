@@ -1266,22 +1266,33 @@ Actor 不代表 GD，也不提供分布式事务。同一 Actor 内需要修改�
 
 ### 固定逻辑槽位
 
-`EtcdRegistry.Slots()` 提供独立于实例 lease 的持久 `SlotStore`。实例下线不会删除槽位 assignment；首次分配使用
-`CreateSlot`，旧新 generation 交接必须使用带当前完整 assignment 的 `PromoteSlot`。后者同时校验 generation 连续递增
-并以 etcd `ModRevision` 做 Compare-And-Swap，过期发布流程不能覆盖已经完成的交接。
+`EtcdRegistry.Slots()` 提供独立于实例 lease 的低级持久 `SlotStore`，用于控制面写入、独立工具和诊断；它的
+`ResolveSlot` 会直接读取 etcd，不能放入 Agent 消息热路径。Server 启动后暴露的 `Context.Advanced().Slots()` 是
+Watch 缓存门面：`ResolveSlot` 只读进程内 `SlotDirectory`，`CreateSlot` 和 `PromoteSlot` 才委托持久 Store。
+
+实例下线不会删除槽位 assignment；首次分配使用 `CreateSlot`，旧新 generation 交接必须使用带当前完整 assignment 的
+`PromoteSlot`。后者同时校验 generation 连续递增并以 etcd `ModRevision` 做 Compare-And-Swap，过期发布流程不能覆盖
+已经完成的交接。持久写入成功与所有进程观察到新 generation 是两个时刻；控制面必须等待 Watch 缓存可见后再放流。
 
 业务决定 `SlotID` 的计算规则，框架不解析 GD、不推断同服/战区归属，也不创建业务 Actor。解析时通过 `SlotRouter`
 将持久 assignment 与当前成员目录组合，只有目标运行实例是 `running` 才能返回 endpoint；目标缺失、`draining` 或
 `stopping` 时返回 `ErrSlotRuntimeUnavailable`，绝不随机改派。
 
 ```go
-slots := registry.Slots()
+runtime := server.Context()
+slots := runtime.Advanced().Slots()
+directory := runtime.Directory()
 current := discovery.SlotAssignment{
 	SlotID:            "game-slot-1",
 	RuntimeInstanceID: "pod-uid-a",
 	Generation:        42,
 }
 if err := slots.CreateSlot(ctx, current); err != nil {
+	return err
+}
+
+// 正式放流前，等待本进程 Watch 已观察到 generation 42。
+if err := waitSlotGeneration(ctx, slots, current); err != nil {
 	return err
 }
 
@@ -1306,12 +1317,23 @@ next := discovery.SlotAssignment{
 if err := router.PromoteSlot(ctx, current, next); err != nil {
 	return err
 }
+if err := waitSlotGeneration(ctx, slots, next); err != nil {
+	return err
+}
 _ = pid
 ```
+
+`waitSlotGeneration` 是控制流程中的普通等待函数：仅当本地缓存等于目标完整 assignment 时返回；
+`ErrSlotNotFound` 和 `ErrSlotDirectoryUnavailable` 表示尚未收敛，继续等待到 `ctx` 超时，其他错误立即返回。
+它不应使用低级 `EtcdSlotStore.ResolveSlot` 轮询 etcd。
 
 `SlotRouter` 只负责“稳定槽位 -> 当前可用 endpoint”的安全解析与交接前检查；发布控制面或业务必须在 Promote 前停止旧槽位
 的新命令准入、等待已进入的 Procedure、完成缓存管理器最终 Flush。未启用服务发现时 `Context.Advanced().Slots()`
 不可用；依赖固定槽位的服务必须在启动时显式失败，不能退化为普通实例路由。
+
+Server 会在标记实例 `running` 前完成实例目录和槽位目录的首轮快照。任一 etcd Watch 终止时，两份目录作为同一个路由
+一致性域立即失败关闭，`ResolveSlot` 返回 `ErrSlotDirectoryUnavailable`，不会用旧归属继续投递，也不会退化为逐消息
+etcd Get。后台重新载入完整快照后自动恢复。
 
 `txgameslg/server/services/agent` 的 `NewFixedSlotHandlers` 是 Agent 到固定 Actor 的项目侧组合器。业务只提供身份到
 `SlotID` 的规则；Actor kind 来自 txgen 生成的命令路由描述，固定宿主 PID 由框架生成。它在启动时复用当前 Server 的

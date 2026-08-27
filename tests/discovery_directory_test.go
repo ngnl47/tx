@@ -23,6 +23,33 @@ func TestServiceDirectoryNextInstanceOnlyReturnsRunning(t *testing.T) {
 	}
 }
 
+func TestServiceDirectoryReadyClosesAfterInitialSnapshot(t *testing.T) {
+	directory := discovery.NewServiceDirectory()
+	select {
+	case <-directory.Ready():
+		t.Fatal("Ready() closed before initial snapshot")
+	default:
+	}
+	if err := directory.Replace(nil); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+	select {
+	case <-directory.Ready():
+	default:
+		t.Fatal("Ready() must close after initial snapshot")
+	}
+}
+
+func TestServiceDirectoryInvalidationDoesNotCompleteInitialSnapshot(t *testing.T) {
+	directory := discovery.NewServiceDirectory()
+	directory.Invalidate()
+	select {
+	case <-directory.Ready():
+		t.Fatal("Ready() closed after invalidation without a snapshot")
+	default:
+	}
+}
+
 func TestServiceDirectoryRunningInstancesReturnsDefensiveRunningSnapshot(t *testing.T) {
 	directory := discovery.NewServiceDirectory()
 	if err := directory.Replace([]discovery.Instance{

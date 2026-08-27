@@ -2111,8 +2111,37 @@ etcd
 - `ServiceDirectory` 维护本地快照。
 - 服务路由只选择 running 实例。
 - 精确实例路由可以看到 draining/stopping，用于排空既有绑定。
+- `SlotDirectory` 维护固定逻辑槽位的进程内快照，消息路由不读取 etcd。
 
 实例 ID、endpoint、版本和服务列表在启动时动态构造，不写死在业务 yml。etcd 保存集群控制状态，不保存 GD 或业务地图数据。
+
+固定槽位的数据流分为低频控制面与高频消息面：
+
+```text
+控制面 CreateSlot / PromoteSlot
+            |
+            v
+      EtcdSlotStore CAS
+            |
+            v
+       etcd Watch --------------+
+                                |
+                                v
+Agent ResolveSlot -> CachedSlotStore -> SlotDirectory -> ServiceDirectory
+                                本地内存          本地内存
+```
+
+`EtcdRegistry.Slots()` 是直接访问 etcd 的低级持久 Store；Server 对业务暴露的是组合后的 `CachedSlotStore`。缓存门面只把
+创建和迁移委托给持久 Store，读取永远不回源。持久提交与 Watch 可见之间允许存在短暂收敛窗口，发布控制面必须观察目标
+generation 后再放流。
+
+实例目录与槽位目录属于同一个路由一致性域。Server 启动时等待两份首轮快照，再把实例标记为 `running`；任一 Watch
+中断会同时清空实例目录、使槽位目录进入 unavailable，并按固定退避重新获取完整快照。此时路由默认失败，不能使用旧
+assignment，也不能临时恢复成逐消息 etcd Get。该选择以不向错误 owner 投递为最高优先级。
+
+`SlotRouter` 使用不含 `Services []string` 的 `RouteInstance` 值类型读取 endpoint，避免高频路由为防御性复制服务列表而
+分配内存。2026-08-27 使用 Go 1.27.0 在 x86_64 macOS 上运行 `BenchmarkSlotRouterCachedResolve`，进程内稳定槽位解析约为
+`118.6-120.1 ns/op, 0 B/op, 0 allocs/op`，且底层持久 Store 的读取次数为 0。
 
 ### rpc
 

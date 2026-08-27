@@ -72,6 +72,78 @@ func TestSlotRouterOnlyResolvesRunningAssignedRuntime(t *testing.T) {
 	}
 }
 
+func TestCachedSlotStoreResolveDoesNotReadBackingStore(t *testing.T) {
+	assignment := discovery.SlotAssignment{
+		SlotID:            "game-slot-1",
+		RuntimeInstanceID: "pod-uid-a",
+		Generation:        42,
+	}
+	backing := &slotStoreFake{assignments: map[string]discovery.SlotAssignment{assignment.SlotID: assignment}}
+	directory := discovery.NewSlotDirectory()
+	if err := directory.Replace([]discovery.SlotAssignment{assignment}); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+	store, err := discovery.NewCachedSlotStore(backing, directory)
+	if err != nil {
+		t.Fatalf("NewCachedSlotStore() error = %v", err)
+	}
+
+	for range 100 {
+		resolved, resolveErr := store.ResolveSlot(context.Background(), assignment.SlotID)
+		if resolveErr != nil {
+			t.Fatalf("ResolveSlot() error = %v", resolveErr)
+		}
+		if resolved != assignment {
+			t.Fatalf("ResolveSlot() = %#v, want %#v", resolved, assignment)
+		}
+	}
+	if backing.resolutions != 0 {
+		t.Fatalf("backing ResolveSlot calls = %d, want 0", backing.resolutions)
+	}
+}
+
+func TestSlotDirectoryReadyClosesAfterInitialSnapshot(t *testing.T) {
+	directory := discovery.NewSlotDirectory()
+	select {
+	case <-directory.Ready():
+		t.Fatal("Ready() closed before initial snapshot")
+	default:
+	}
+	if err := directory.Replace(nil); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+	select {
+	case <-directory.Ready():
+	default:
+		t.Fatal("Ready() must close after initial snapshot")
+	}
+}
+
+func TestCachedSlotStoreFailsClosedAfterDirectoryInvalidation(t *testing.T) {
+	assignment := discovery.SlotAssignment{
+		SlotID:            "game-slot-1",
+		RuntimeInstanceID: "pod-uid-a",
+		Generation:        42,
+	}
+	backing := &slotStoreFake{assignments: map[string]discovery.SlotAssignment{assignment.SlotID: assignment}}
+	directory := discovery.NewSlotDirectory()
+	if err := directory.Replace([]discovery.SlotAssignment{assignment}); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+	store, err := discovery.NewCachedSlotStore(backing, directory)
+	if err != nil {
+		t.Fatalf("NewCachedSlotStore() error = %v", err)
+	}
+	directory.Invalidate()
+
+	if _, err := store.ResolveSlot(context.Background(), assignment.SlotID); !errors.Is(err, discovery.ErrSlotDirectoryUnavailable) {
+		t.Fatalf("ResolveSlot() error = %v, want ErrSlotDirectoryUnavailable", err)
+	}
+	if backing.resolutions != 0 {
+		t.Fatalf("backing ResolveSlot calls = %d, want 0", backing.resolutions)
+	}
+}
+
 func TestSlotRouterPromotesOnlyToReadyRuntime(t *testing.T) {
 	current := discovery.SlotAssignment{
 		SlotID:            "game-slot-1",
@@ -122,10 +194,12 @@ func TestSlotRouterPromotesOnlyToReadyRuntime(t *testing.T) {
 
 type slotStoreFake struct {
 	assignments map[string]discovery.SlotAssignment
+	resolutions int
 	promotions  int
 }
 
 func (s *slotStoreFake) ResolveSlot(_ context.Context, slotID string) (discovery.SlotAssignment, error) {
+	s.resolutions++
 	assignment, ok := s.assignments[slotID]
 	if !ok {
 		return discovery.SlotAssignment{}, discovery.ErrSlotNotFound
@@ -173,5 +247,87 @@ func TestSlotPromotionRequiresNextGenerationAndDistinctRuntime(t *testing.T) {
 		if !errors.Is(discovery.ValidateSlotPromotion(current, candidate), discovery.ErrInvalidSlotPromotion) {
 			t.Fatalf("ValidateSlotPromotion(%#v, %#v) must return ErrInvalidSlotPromotion", current, candidate)
 		}
+	}
+}
+
+func BenchmarkSlotRouterCachedResolve(b *testing.B) {
+	assignment := discovery.SlotAssignment{
+		SlotID:            "game-slot-1",
+		RuntimeInstanceID: "pod-uid-a",
+		Generation:        42,
+	}
+	backing := &slotStoreFake{assignments: map[string]discovery.SlotAssignment{assignment.SlotID: assignment}}
+	slots := discovery.NewSlotDirectory()
+	if err := slots.Replace([]discovery.SlotAssignment{assignment}); err != nil {
+		b.Fatalf("Replace slots: %v", err)
+	}
+	store, err := discovery.NewCachedSlotStore(backing, slots)
+	if err != nil {
+		b.Fatalf("NewCachedSlotStore: %v", err)
+	}
+	instances := discovery.NewServiceDirectory()
+	if err := instances.Replace([]discovery.Instance{{
+		ID:            assignment.RuntimeInstanceID,
+		Services:      []string{"game"},
+		Endpoint:      "127.0.0.1:9000",
+		ActorEndpoint: "127.0.0.1:9010",
+		Status:        discovery.StatusRunning,
+	}}); err != nil {
+		b.Fatalf("Replace instances: %v", err)
+	}
+	router, err := discovery.NewSlotRouter(store, instances)
+	if err != nil {
+		b.Fatalf("NewSlotRouter: %v", err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := router.ResolveSlot(context.Background(), assignment.SlotID); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.StopTimer()
+	if backing.resolutions != 0 {
+		b.Fatalf("backing ResolveSlot calls = %d, want 0", backing.resolutions)
+	}
+}
+
+func TestSlotRouterCachedResolveDoesNotAllocate(t *testing.T) {
+	assignment := discovery.SlotAssignment{
+		SlotID:            "game-slot-1",
+		RuntimeInstanceID: "pod-uid-a",
+		Generation:        42,
+	}
+	backing := &slotStoreFake{assignments: map[string]discovery.SlotAssignment{assignment.SlotID: assignment}}
+	slots := discovery.NewSlotDirectory()
+	if err := slots.Replace([]discovery.SlotAssignment{assignment}); err != nil {
+		t.Fatalf("Replace slots: %v", err)
+	}
+	store, err := discovery.NewCachedSlotStore(backing, slots)
+	if err != nil {
+		t.Fatalf("NewCachedSlotStore: %v", err)
+	}
+	instances := discovery.NewServiceDirectory()
+	if err := instances.Replace([]discovery.Instance{{
+		ID:            assignment.RuntimeInstanceID,
+		Services:      []string{"game"},
+		Endpoint:      "127.0.0.1:9000",
+		ActorEndpoint: "127.0.0.1:9010",
+		Status:        discovery.StatusRunning,
+	}}); err != nil {
+		t.Fatalf("Replace instances: %v", err)
+	}
+	router, err := discovery.NewSlotRouter(store, instances)
+	if err != nil {
+		t.Fatalf("NewSlotRouter: %v", err)
+	}
+
+	allocations := testing.AllocsPerRun(1000, func() {
+		if _, resolveErr := router.ResolveSlot(context.Background(), assignment.SlotID); resolveErr != nil {
+			t.Fatal(resolveErr)
+		}
+	})
+	if allocations != 0 {
+		t.Fatalf("ResolveSlot allocations = %.0f, want 0", allocations)
 	}
 }

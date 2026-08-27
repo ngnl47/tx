@@ -37,6 +37,70 @@ func (s *EtcdSlotStore) ResolveSlot(ctx context.Context, slotID string) (SlotAss
 	return decodeSlotAssignment(key, response.Kvs[0].Value)
 }
 
+// Watch 先载入完整槽位快照，再持续把 etcd 变更写入本地目录。方法退出前会使
+// 目录失效，调用方不得在 Watch 中断期间继续使用旧归属。
+func (s *EtcdSlotStore) Watch(ctx context.Context, directory *SlotDirectory) error {
+	if directory == nil {
+		return ErrSlotDirectoryNil
+	}
+	prefix, err := s.slotPrefix()
+	if err != nil {
+		return err
+	}
+	response, err := s.registry.client.Get(ctx, prefix, clientv3.WithPrefix())
+	if err != nil {
+		return err
+	}
+	current := make(map[string]SlotAssignment, len(response.Kvs))
+	for _, item := range response.Kvs {
+		assignment, decodeErr := decodeSlotAssignment(string(item.Key), item.Value)
+		if decodeErr != nil {
+			return decodeErr
+		}
+		current[assignment.SlotID] = assignment
+	}
+	if err := replaceSlotDirectory(directory, current); err != nil {
+		return err
+	}
+	defer directory.Invalidate()
+
+	watch := s.registry.client.Watch(ctx, prefix, clientv3.WithPrefix(), clientv3.WithRev(response.Header.Revision+1))
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case response, ok := <-watch:
+			if !ok {
+				return ErrEtcdWatchClosed
+			}
+			if err := response.Err(); err != nil {
+				return err
+			}
+			for _, event := range response.Events {
+				switch event.Type {
+				case clientv3.EventTypePut:
+					assignment, decodeErr := decodeSlotAssignment(string(event.Kv.Key), event.Kv.Value)
+					if decodeErr != nil {
+						return decodeErr
+					}
+					current[assignment.SlotID] = assignment
+				case clientv3.EventTypeDelete:
+					slotID := strings.TrimPrefix(string(event.Kv.Key), prefix)
+					if !validSlotID(slotID) {
+						return ErrInvalidSlotAssignment
+					}
+					delete(current, slotID)
+				default:
+					return ErrEtcdWatchClosed
+				}
+			}
+			if err := replaceSlotDirectory(directory, current); err != nil {
+				return err
+			}
+		}
+	}
+}
+
 func (s *EtcdSlotStore) CreateSlot(ctx context.Context, assignment SlotAssignment) error {
 	if err := assignment.Validate(); err != nil {
 		return err
@@ -102,13 +166,21 @@ func (s *EtcdSlotStore) PromoteSlot(ctx context.Context, current, next SlotAssig
 }
 
 func (s *EtcdSlotStore) slotKey(slotID string) (string, error) {
-	if s == nil || s.registry == nil || s.registry.client == nil {
-		return "", ErrEtcdClientNil
-	}
 	if !validSlotID(slotID) {
 		return "", ErrInvalidSlotAssignment
 	}
-	return strings.TrimSuffix(s.registry.config.Prefix, "/instances") + "/slots/" + slotID, nil
+	prefix, err := s.slotPrefix()
+	if err != nil {
+		return "", err
+	}
+	return prefix + slotID, nil
+}
+
+func (s *EtcdSlotStore) slotPrefix() (string, error) {
+	if s == nil || s.registry == nil || s.registry.client == nil {
+		return "", ErrEtcdClientNil
+	}
+	return strings.TrimSuffix(s.registry.config.Prefix, "/instances") + "/slots/", nil
 }
 
 func decodeSlotAssignment(key string, payload []byte) (SlotAssignment, error) {
@@ -121,4 +193,12 @@ func decodeSlotAssignment(key string, payload []byte) (SlotAssignment, error) {
 
 func validSlotID(slotID string) bool {
 	return strings.TrimSpace(slotID) != "" && slotID == strings.TrimSpace(slotID) && !strings.Contains(slotID, "/")
+}
+
+func replaceSlotDirectory(directory *SlotDirectory, current map[string]SlotAssignment) error {
+	assignments := make([]SlotAssignment, 0, len(current))
+	for _, assignment := range current {
+		assignments = append(assignments, assignment)
+	}
+	return directory.Replace(assignments)
 }

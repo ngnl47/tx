@@ -7,13 +7,14 @@ import (
 )
 
 var (
-	ErrInvalidSlotAssignment  = errors.New("discovery: invalid slot assignment")
-	ErrInvalidSlotPromotion   = errors.New("discovery: invalid slot promotion")
-	ErrSlotNotFound           = errors.New("discovery: slot assignment not found")
-	ErrSlotConflict           = errors.New("discovery: slot assignment conflict")
-	ErrSlotStoreNil           = errors.New("discovery: slot store is nil")
-	ErrSlotDirectoryNil       = errors.New("discovery: slot directory is nil")
-	ErrSlotRuntimeUnavailable = errors.New("discovery: slot runtime is unavailable")
+	ErrInvalidSlotAssignment    = errors.New("discovery: invalid slot assignment")
+	ErrInvalidSlotPromotion     = errors.New("discovery: invalid slot promotion")
+	ErrSlotNotFound             = errors.New("discovery: slot assignment not found")
+	ErrSlotConflict             = errors.New("discovery: slot assignment conflict")
+	ErrSlotStoreNil             = errors.New("discovery: slot store is nil")
+	ErrSlotDirectoryNil         = errors.New("discovery: slot directory is nil")
+	ErrSlotDirectoryUnavailable = errors.New("discovery: slot directory is unavailable")
+	ErrSlotRuntimeUnavailable   = errors.New("discovery: slot runtime is unavailable")
 )
 
 // SlotAssignment 将稳定逻辑槽位绑定到一个特定运行实例 generation。SlotID 是业务
@@ -57,14 +58,15 @@ type SlotStore interface {
 // Instance.ActorEndpoint，二者不能混用。
 type SlotTarget struct {
 	Assignment SlotAssignment
-	Instance   Instance
+	Instance   RouteInstance
 }
 
-// SlotRouter 将持久 assignment 和当前服务成员视图组合为可调用目标。它只接受
+// SlotRouter 将 Watch assignment 和当前服务成员视图组合为可调用目标。它只接受
 // running 实例，draining/stopping/丢失实例一律返回明确错误，避免静默改派。
 type SlotRouter struct {
-	store     SlotStore
-	directory Directory
+	store          SlotStore
+	directory      Directory
+	routeDirectory RouteDirectory
 }
 
 func NewSlotRouter(store SlotStore, directory Directory) (*SlotRouter, error) {
@@ -74,7 +76,11 @@ func NewSlotRouter(store SlotStore, directory Directory) (*SlotRouter, error) {
 	if directory == nil {
 		return nil, ErrSlotDirectoryNil
 	}
-	return &SlotRouter{store: store, directory: directory}, nil
+	router := &SlotRouter{store: store, directory: directory}
+	if routeDirectory, ok := directory.(RouteDirectory); ok {
+		router.routeDirectory = routeDirectory
+	}
+	return router, nil
 }
 
 func (r *SlotRouter) ResolveSlot(ctx context.Context, slotID string) (SlotTarget, error) {
@@ -88,11 +94,22 @@ func (r *SlotRouter) ResolveSlot(ctx context.Context, slotID string) (SlotTarget
 	if err != nil {
 		return SlotTarget{}, err
 	}
-	instance, ok := r.directory.LookupInstance(assignment.RuntimeInstanceID)
+	instance, ok := r.lookupRouteInstance(assignment.RuntimeInstanceID)
 	if !ok || instance.Status != StatusRunning {
 		return SlotTarget{}, ErrSlotRuntimeUnavailable
 	}
 	return SlotTarget{Assignment: assignment, Instance: instance}, nil
+}
+
+func (r *SlotRouter) lookupRouteInstance(instanceID string) (RouteInstance, bool) {
+	if r.routeDirectory != nil {
+		return r.routeDirectory.LookupRouteInstance(instanceID)
+	}
+	instance, ok := r.directory.LookupInstance(instanceID)
+	if !ok {
+		return RouteInstance{}, false
+	}
+	return routeInstance(instance), true
 }
 
 // PromoteSlot 在写入持久 assignment 前确认目标实例已进入 running。它不主动将旧实例

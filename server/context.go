@@ -37,7 +37,8 @@ type Storage interface {
 type Advanced interface {
 	// Redis 返回 Redis 脚本路由能力；普通 GD 读写不应使用该入口。
 	Redis() txredis.ScriptRoutes
-	// Slots 返回有状态服务逻辑槽位的归属存储。
+	// Slots 返回有状态服务逻辑槽位门面。读取只访问 Watch 内存目录，创建和迁移
+	// 仍通过 etcd CAS 持久化；业务消息热路径不会执行 etcd Get。
 	Slots() discovery.SlotStore
 }
 

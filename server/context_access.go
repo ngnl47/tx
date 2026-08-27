@@ -82,6 +82,10 @@ func (access directoryAccess) LookupInstance(id string) (discovery.Instance, boo
 	return access.directory.LookupInstance(id)
 }
 
+func (access directoryAccess) LookupRouteInstance(id string) (discovery.RouteInstance, bool) {
+	return access.directory.LookupRouteInstance(id)
+}
+
 type actorAccess struct{ runtime *txactor.Runtime }
 
 func (access actorAccess) VirtualPID(kind, identity string) (*protoactor.PID, error) {

@@ -28,6 +28,16 @@ type Instance struct {
 	Status        Status   `json:"status"`
 }
 
+// RouteInstance 是消息路由所需的只读实例视图。它刻意不携带 Services 切片，
+// 因而可以按值跨越高频路由边界且不产生防御性复制分配。
+type RouteInstance struct {
+	ID            string
+	Endpoint      string
+	ActorEndpoint string
+	Version       string
+	Status        Status
+}
+
 func (i Instance) Validate() error {
 	if i.ID == "" || i.ID != strings.TrimSpace(i.ID) ||
 		i.Endpoint == "" || i.Endpoint != strings.TrimSpace(i.Endpoint) ||
@@ -57,6 +67,8 @@ func (s Status) Valid() bool {
 
 type ServiceDirectory struct {
 	mu        sync.Mutex
+	ready     chan struct{}
+	readyOnce sync.Once
 	byID      map[string]Instance
 	byService map[string][]Instance
 	next      map[string]uint64
@@ -69,14 +81,30 @@ type Directory interface {
 	LookupInstance(id string) (Instance, bool)
 }
 
+// RouteDirectory 是内置目录提供的高频只读路由扩展。自定义 Directory 可以不实现，
+// SlotRouter 会回退到普通 LookupInstance 契约。
+type RouteDirectory interface {
+	LookupRouteInstance(id string) (RouteInstance, bool)
+}
+
 var _ Directory = (*ServiceDirectory)(nil)
 
 func NewServiceDirectory() *ServiceDirectory {
 	return &ServiceDirectory{
+		ready:     make(chan struct{}),
 		byID:      make(map[string]Instance),
 		byService: make(map[string][]Instance),
 		next:      make(map[string]uint64),
 	}
+}
+
+// Ready 在首份完整服务发现快照生效后关闭。它只表示启动同步已经完成，后续
+// Watch 失联仍由目录清空和路由失败处理。
+func (d *ServiceDirectory) Ready() <-chan struct{} {
+	if d == nil {
+		return nil
+	}
+	return d.ready
 }
 
 // Replace 应用一份完整的发现快照。
@@ -111,7 +139,20 @@ func (d *ServiceDirectory) Replace(instances []Instance) error {
 		}
 	}
 	d.mu.Unlock()
+	d.readyOnce.Do(func() { close(d.ready) })
 	return nil
+}
+
+// Invalidate 清空当前实例快照，但不把失效事件计作成功的首轮同步。
+func (d *ServiceDirectory) Invalidate() {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	d.byID = make(map[string]Instance)
+	d.byService = make(map[string][]Instance)
+	d.next = make(map[string]uint64)
+	d.mu.Unlock()
 }
 
 // NextInstance 按轮转策略返回下一个 running 状态的服务实例。
@@ -160,7 +201,31 @@ func (d *ServiceDirectory) LookupInstance(id string) (Instance, bool) {
 	return cloneInstance(instance), true
 }
 
+// LookupRouteInstance 返回不含可变切片的路由视图。
+func (d *ServiceDirectory) LookupRouteInstance(id string) (RouteInstance, bool) {
+	if d == nil {
+		return RouteInstance{}, false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	instance, ok := d.byID[id]
+	if !ok || (instance.Status != StatusRunning && instance.Status != StatusDraining && instance.Status != StatusStopping) {
+		return RouteInstance{}, false
+	}
+	return routeInstance(instance), true
+}
+
 func cloneInstance(instance Instance) Instance {
 	instance.Services = append([]string(nil), instance.Services...)
 	return instance
+}
+
+func routeInstance(instance Instance) RouteInstance {
+	return RouteInstance{
+		ID:            instance.ID,
+		Endpoint:      instance.Endpoint,
+		ActorEndpoint: instance.ActorEndpoint,
+		Version:       instance.Version,
+		Status:        instance.Status,
+	}
 }

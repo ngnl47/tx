@@ -5,17 +5,24 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"time"
 
+	txlog "github.com/ngnl47/tx/log"
 	"github.com/ngnl47/tx/modules/discovery"
 )
 
+const discoveryWatchRetryDelay = time.Second
+
 // discoveryRuntime 管理当前进程在 etcd 中的服务实例租约和共享路由目录。
 type discoveryRuntime struct {
-	registry     *discovery.EtcdRegistry
-	registration *discovery.EtcdRegistration
-	directory    *discovery.ServiceDirectory
-	closeOnce    sync.Once
-	closeErr     error
+	registry        *discovery.EtcdRegistry
+	registration    *discovery.EtcdRegistration
+	directory       *discovery.ServiceDirectory
+	persistentSlots *discovery.EtcdSlotStore
+	slotDirectory   *discovery.SlotDirectory
+	slots           *discovery.CachedSlotStore
+	closeOnce       sync.Once
+	closeErr        error
 }
 
 // LogicalSlot 是部署为有状态服务显式声明的稳定业务槽位。它与每次启动都会变化的
@@ -51,10 +58,20 @@ func newDiscovery(ctx context.Context, etcdConfig discovery.EtcdConfig, instance
 	if err != nil {
 		return nil, errors.Join(err, registry.Close())
 	}
+	slotStore := registry.Slots()
+	slotDirectory := discovery.NewSlotDirectory()
+	slots, err := discovery.NewCachedSlotStore(slotStore, slotDirectory)
+	if err != nil {
+		_ = registration.Close(context.WithoutCancel(ctx))
+		return nil, errors.Join(err, registry.Close())
+	}
 	return &discoveryRuntime{
-		registry:     registry,
-		registration: registration,
-		directory:    discovery.NewServiceDirectory(),
+		registry:        registry,
+		registration:    registration,
+		directory:       discovery.NewServiceDirectory(),
+		persistentSlots: slotStore,
+		slotDirectory:   slotDirectory,
+		slots:           slots,
 	}, nil
 }
 
@@ -66,30 +83,67 @@ func (d *discoveryRuntime) directorySnapshot() *discovery.ServiceDirectory {
 	return d.directory
 }
 
-// Slots 返回稳定逻辑槽位的持久归属存储。它只保存 SlotID 到运行实例 generation
-// 的映射；业务服务负责在 Promote 前确认目标实例已经 ready，并决定哪些实体使用
-// 哪个槽位。
+// Slots 返回稳定逻辑槽位的缓存门面。读取只访问 Watch 目录，持久创建和迁移委托
+// etcd Store；业务服务负责在 Promote 前确认目标实例 ready，并决定槽位规则。
 func (d *discoveryRuntime) slotStore() discovery.SlotStore {
-	if d == nil || d.registry == nil {
+	if d == nil {
 		return nil
 	}
-	return d.registry.Slots()
+	return d.slots
 }
 
-// Watch 持续将 etcd 实例快照写入共享目录。非上下文取消的异常会清空目录，
-// 防止调用方继续向已过期 endpoint 路由。
+// Watch 将实例和槽位视为同一个路由一致性域。任一 Watch 终止都会让两份目录
+// 同时失败关闭，随后重新载入完整快照，避免其中一边继续使用已经过期的视图。
 func (d *discoveryRuntime) watch(ctx context.Context) error {
-	if d == nil || d.registry == nil || d.directory == nil {
+	if d == nil || d.registry == nil || d.directory == nil || d.persistentSlots == nil || d.slotDirectory == nil {
 		return errors.New("server: discovery is not configured")
 	}
-	err := d.registry.Watch(ctx, d.directory)
-	if ctx.Err() != nil {
+	for {
+		err := d.watchOnce(ctx)
+		d.directory.Invalidate()
+		d.slotDirectory.Invalidate()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		txlog.ErrorContext(ctx, "service discovery watch interrupted; rebuilding snapshot", "err", err)
+		timer := time.NewTimer(discoveryWatchRetryDelay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (d *discoveryRuntime) watchOnce(ctx context.Context) error {
+	watchCtx, cancel := context.WithCancel(ctx)
+	results := make(chan error, 2)
+	go func() { results <- d.registry.Watch(watchCtx, d.directory) }()
+	go func() { results <- d.persistentSlots.Watch(watchCtx, d.slotDirectory) }()
+	first := <-results
+	cancel()
+	second := <-results
+	return errors.Join(first, second)
+}
+
+func (d *discoveryRuntime) waitReady(ctx context.Context) error {
+	if d == nil || d.directory == nil || d.slotDirectory == nil {
+		return errors.New("server: discovery is not configured")
+	}
+	select {
+	case <-ctx.Done():
 		return ctx.Err()
+	case <-d.directory.Ready():
 	}
-	if err != nil {
-		_ = d.directory.Replace(nil)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-d.slotDirectory.Ready():
+		return nil
 	}
-	return err
 }
 
 // MarkRunning 表示进程已经完成选中模块的启动，可以接受普通服务路由。
