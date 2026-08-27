@@ -60,7 +60,7 @@
 
 ## 系统边界
 
-### 三个工程的职责
+### 四个工程的职责
 
 ```text
 txgen 输入 Go 源文件
@@ -69,7 +69,7 @@ txgen 输入 Go 源文件
 txgen 编译期扫描和生成
         |
         v
-txgame/server/gen/data 与 gen/cmd
+txgame 或 txgameslg 的 server/gen/data 与 gen/cmd
         |
         v
 tx runtime 契约与 adapter
@@ -93,13 +93,20 @@ Redis / Mongo / etcd / gRPC / Actor
 
 `txgame`：
 
-- 是生产工程组织方式和集成验证模板。
+- 是无状态游戏服务的生产工程组织方式和集成验证模板。
 - 读取 yml、环境变量和命令行参数，构造具体 client 与实例配置。
 - 提供 `db.Save(role)` 之类业务 facade。
 - 以 `services/*` 组织 L4 微服务；服务专属 Handler、路由、Actor 和业务模块随所属 Service 放置。
 - `server/internal` 只保存进程级组合根、配置转换和基础设施 facade，不作为业务代码汇总包。
 
-txgame 的业务模块按稳定能力、领域实现和事务编排分层：`modules/*_service.go` 使用包级函数提供 Handler 与 Procedure
+`txgameslg`：
+
+- 是有状态 SLG/MMO 服务的独立生产模板，不依赖 `txgame`。
+- 使用 Actor 作为运行期权威对象的唯一串行命令入口，使用 Procedure 和 CacheManager 管理单机事务与分帧保存；对象的实际缓存结构由项目 SPI 决定。
+- `slggame` 通过 Fusion 保存角色、军团等根对象；`slgworld` 通过 Mongo WAL 和 checkpoint 保存分区场景数据。
+- 只依赖 `tx`、`txgen` 及自身生成产物；配置、服务组合、业务 SPI 和测试均在本项目闭环。
+
+两个模板的业务模块按稳定能力、领域实现和事务编排分层：`modules/*_service.go` 使用包级函数提供 Handler 与 Procedure
 共用的业务能力，`modules/internal/<domain>` 保存具体领域实现，`services/<name>/internal/procedure/P*.go` 负责编排
 所属 L4 Service 的本机事务。业务能力不持有无状态 Service 实例，不判断当前事务层级，也不负责最终刷盘。
 
@@ -281,7 +288,7 @@ if err != nil {
 return server.New(
 	framework,
 	server.WithCMod(stateRuntime),
-	server.WithService(game, slggame, slgworld),
+	server.WithService(slggame, slgworld),
 )
 ```
 
@@ -293,7 +300,7 @@ return server.New(
 ```text
 state-runtime
 ├── transaction=default
-└── cache=txgame
+└── cache=txgameslg
     ├── checkpoint=mongo  [仅 services 包含 slgworld 时生效]
     └── wal=mongo         [仅 services 包含 slgworld 时生效]
 ```
@@ -1891,7 +1898,7 @@ go test ./modules/txn -run '^$' \
 默认 Manager 不是完整的业务对象缓存，不定义 `LoadRole`、LRU、TTL 淘汰、Actor 归属、业务分片或二级索引。静态 `Config` 只保存调度和容量参数；writer 与写入闸门通过 `cache.Dependencies` 在 StateRuntime 启动期注入。项目需要缓存能力时有两种边界：
 
 1. 普通项目直接使用默认 Manager，业务只通过项目 facade 调用 Procedure 和 `Release`。
-2. 高级项目实现 `cache.Runtime`，优先以装饰器包装默认 Manager，并在外层增加加载、淘汰、业务索引、WAL/checkpoint 或项目指标。txgame 的 Cache 组件通过 Factory 创建该实现，事务和生命周期仍只依赖 SPI。
+2. 高级项目实现 `cache.Runtime`，优先以装饰器包装默认 Manager，并在外层增加加载、淘汰、业务索引、WAL/checkpoint 或项目指标。`txgameslg` 的 Cache 组件通过 Factory 创建该实现，事务和生命周期仍只依赖 SPI。
 
 CacheManager 不绑定固定持久化目标。StateRuntime 启动期向项目 Factory 注入窄依赖，项目按已显式选择的服务组合决定 Writer：
 
@@ -1918,7 +1925,7 @@ txn.Runtime -> txn.CommitParticipant <- cache.Runtime SPI
 
 StateRuntime 不持有具体 `*cache.Manager`，项目 facade 也不能要求调用方取得该指针。完整替换 Runtime 属于高级扩展面；实现必须保持 `Prepare` 先于业务修改、`Commit` 不失败、失败 Flush 不清理变更、同一实体锁内读取 Store 等契约。
 
-txgame CMod 会先保留 facade 所有权，再绑定 CommitParticipant 并启动 Runtime；只有 `Runtime.Start` 成功后才开放业务 facade。开始 Drain 时先关闭 facade 准入并等待已经进入的调用完成，再执行 `Runtime.Shutdown`。`Start` 返回错误时 CMod 会在 `ShutdownFlushTimeout` 内调用同一实例的 `Shutdown` 清理部分启动资源；本次 `Server.Start` 随即进入终止回滚，该 Server 实例不可再次启动。
+`txgameslg` 的 Cache 组件会先保留 facade 所有权，再绑定 CommitParticipant 并启动 Runtime；只有 `Runtime.Start` 成功后才开放业务 facade。开始 Drain 时先关闭 facade 准入并等待已经进入的调用完成，再执行 `Runtime.Shutdown`。`Start` 返回错误时组件会在 `ShutdownFlushTimeout` 内调用同一实例的 `Shutdown` 清理部分启动资源；本次 `Server.Start` 随即进入终止回滚，该 Server 实例不可再次启动。
 
 带 WAL 的缓存 Runtime 必须按下面的顺序管理生命周期：
 

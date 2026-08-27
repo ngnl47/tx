@@ -169,9 +169,9 @@ CMod，框架递归展开 `Requires` 依赖；`After` 仅调整已经选中门�
 | --- | --- | --- |
 | `agent` | RPC、Redis；跨进程邮箱时增加 Discovery | 玩家 TCP/WebSocket 入口、共享 RPC、Redis 会话绑定 |
 | `msgq` | RPC、Redis | 共享 RPC 上的 MailboxService、Redis owner binding |
-| 无状态 `game` 示例 | RPC、Fusion | 请求结束显式保存；Fusion 内部组合 Redis、Mongo 和 Delay Scheduler |
-| 有状态 `slggame` 示例 | RPC、Fusion、StateRuntime | Procedure 提交后由 StateRuntime 的 Cache 组件分帧写 Fusion |
-| 有状态 `slgworld` 示例 | RPC、Mongo、StateRuntime | StateRuntime 组合 Transaction、Cache 和按 `slgworld` 启用的 Mongo WAL |
+| `txgame` 无状态 `game` | RPC、Fusion | 请求结束显式保存；Fusion 内部组合 Redis、Mongo 和 Delay Scheduler |
+| `txgameslg` 有状态 `slggame` | RPC、Fusion、StateRuntime | Procedure 提交后由 StateRuntime 的 Cache 组件分帧写 Fusion |
+| `txgameslg` 有状态 `slgworld` | RPC、Mongo、StateRuntime | StateRuntime 组合 Transaction、Cache 和按 `slgworld` 启用的 Mongo WAL |
 
 有状态组合由 Builder 显式表达，项目可以为不同服务选择不同 Writer，并替换 `StateCache` SPI：
 
@@ -187,14 +187,14 @@ if err != nil {
 app, err := server.New(
 	config,
 	server.WithCMod(stateRuntime),
-	server.WithService(gameService, slgGameService, slgWorldService),
+	server.WithService(slgGameService, slgWorldService),
 )
 ```
 
 Mongo WAL 只会在本轮选择 `slgworld` 时启用，并要求该服务同时选择 Mongo CMod；`slggame` 使用相同 StateRuntime 时不会创建
 WAL backend。高级项目可以实现 `StateWAL`，把 RocketMQ 等后端作为同一 Builder 插槽的替代组件，而不修改 StateRuntime。
 启动日志除稳定 `cmods` 顺序外，还输出实际生效的 `components`，例如
-`state-runtime(transaction=default,cache=txgame[checkpoint=mongo,wal=mongo])`。项目缓存组件声明的 checkpoint worker 与 Builder
+`state-runtime(transaction=default,cache=txgameslg[checkpoint=mongo,wal=mongo])`。项目缓存组件声明的 checkpoint worker 与 Builder
 选择的 WAL 都会进入同一拓扑，日志不会隐藏实际运行的后台组件。
 
 例如只启动一个 RPC-only 自定义服务时，`Context.Storage()` 保持 `nil`，框架不会校验 Redis/Mongo 配置，也不会连接

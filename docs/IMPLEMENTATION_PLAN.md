@@ -11,10 +11,10 @@
 
 ### P0：正确性与跨工程回归
 
-1. 保持 `tx`、`txgen`、`txgame` 的行为同步。涉及生成 Store、集合、StoreView、字段名或存储边界的变更，必须同时检查生成器测试、生成产物和业务侧真实 Redis/Mongo 回归。
+1. 保持 `tx`、`txgen`、`txgame`、`txgameslg` 的行为同步。涉及生成 Store、集合、StoreView、字段名或存储边界的变更，必须同时检查生成器测试、两个模板的生成产物和业务侧真实 Redis/Mongo 回归。
 2. 持续审计 Redis、Mongo、Fusion、WAL 和延迟任务的失败契约。未知返回值、矛盾文档状态、非法路径、路由错误和依赖缺失必须返回明确错误，不能静默成功、自动修复持久化数据或错误清理 Store 状态。
 3. 发现旧接口、过渡结构、淘汰测试或旧方案文档时，在确认没有生产调用后直接删除。生效文档只描述当前方案；必要的技术取舍只保留在设计文档。
-4. 新增或修改持久化能力时优先使用 `txgame` 生成的真实 `GD*`/`GD*Store` 做集成测试，避免 runtime 测试与生成契约割裂。
+4. 新增或修改无状态持久化能力时优先使用 `txgame` 生成的真实 `GD*`/`GD*Store`；涉及 Procedure、CacheManager、WAL 或 checkpoint 时使用 `txgameslg` 的有状态生成模型，避免 runtime 测试与生成契约割裂。
 5. 收拢 CMod 分层：只有进程级 L3 能力门面保留 CMod 身份。`txn.Runtime`、`cache.Runtime`、`wal.Store`、
    checkpoint Scheduler、Fusion Writer 和 Delay Scheduler 作为强类型组件由 CMod Builder 组装，不再以平级 CModID
    暴露给 L4 Service。第一阶段将 Transaction、CacheManager 与可选 WAL 收拢为 StateRuntime CMod，并将 DelayScheduler
