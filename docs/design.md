@@ -2175,7 +2175,7 @@ Agent 的会话来源是显式二选一：配置 `LocalMsgQ` 表示同进程复�
 
 项目通过 `server/services/agent.HandlerProvider` 在组合根注入认证与 Actor 路由。Provider 接收当前
 `server.Context`，因此可以使用本次 Server 的 Actor、服务目录和逻辑槽位；它不能依赖包级可变注册表。无状态项目通常
-解析 Virtual PID，有状态项目通常把业务槽位映射为 Fixed PID。
+解析 Virtual PID，有状态项目通常把业务槽位映射为固定 Kind 宿主 PID。
 
 `Dispatcher` 返回 `DispatchResult`。`Payload == nil` 表示本次命令没有直接下行；非 nil payload 的所有权在返回后
 转移给 Agent，调用方不能再修改。Agent 使用当前连接的完整 `SessionHeader` 把响应发布到 MsgQ，旧连接产生的迟到响应
@@ -2187,11 +2187,26 @@ Agent 的会话来源是显式二选一：配置 `LocalMsgQ` 表示同进程复�
 `modules/actor` 基于 ProtoActor-go 和官方 etcd Cluster Provider。它提供两类定位：
 
 - Virtual Actor：按 `(kind, identity)` 由集群定位，适合无状态或可恢复实体。
-- Fixed PID：业务已经知道 endpoint 和 actor ID，适合固定归属实体。
+- Fixed Kind：业务槽位确定物理实例，Runtime 在该实例内按 `Delivery.RouteKey` 惰性激活实体 Actor。
 
 Actor 间跨实例通信是网状直连，不经过 msgq 中继。msgq 只负责客户端会话链路。
 
 有状态 SLG/MMO 实体不能因为成员变化随机漂移。业务使用逻辑槽位和 generation 固定宿主；节点重启期间该槽位短暂不可用，恢复后原位重建。无状态轻量 Actor 才允许成员哈希变化后惰性重建。
+
+每个固定 Kind 在进程内只有一个稳定宿主 Actor。外部 PID 只定位这个宿主，实体 ID 不拼进 PID，而是保留在强类型
+`RouteKey` 中。宿主邮箱串行完成 `RouteKey -> child PID` 的 O(1) 查找；首次访问时创建并监视 child，后续消息保留原
+sender 转发给同一 child。child 使用与 Virtual Actor 相同的有界邮箱、Acceptance 和生命周期统计，但不安装
+ProtoActor ClusterIdentity 中间件，也不注册到 `disthash`。
+
+服务发现实例同时发布两个不可混用的地址：
+
+- `Instance.Endpoint`：当前进程共享 gRPC Host。
+- `Instance.ActorEndpoint`：ProtoActor Remote。
+
+`actor.NewKind` 声明 Virtual Actor；`actor.NewFixedKind` 声明固定实体。L4 服务仍统一放入
+`server.Spec.ActorKinds`，Server 发现固定 Kind 后自动选择 Discovery CMod，并保证 Actor Remote 先启动、写入
+`ActorEndpoint`，随后才注册实例 lease。固定宿主邮箱接入同一排水生命周期；进入排水后新 Delivery 不会创建实体，
+已经转发到 child 的消息仍由 WaitGroupContext 等待完成。
 
 ### Actor mailbox
 
@@ -2217,7 +2232,8 @@ protobuf `Delivery` 使用内部 `DeliveryMode` 和 `request_id` 区分三类线
 `MessageType`；空类型无法建立生成响应类型契约，响应 Actor 会将其判定为 `ErrInvalidResponse`。
 
 L4 服务在 `server.Spec.ActorKinds` 中声明 Kind，L3 Server 自动将 Actor CMod 加入依赖闭包并在启动前拒绝重名。
-普通项目使用 `actor.NewKind`；只有需要 ProtoActor 自定义 Strategy 的高级项目才使用 `actor.AdaptKind`。底层
+普通可恢复实体使用 `actor.NewKind`，固定归属实体使用 `actor.NewFixedKind`；只有需要 ProtoActor 自定义 Strategy 的
+高级项目才使用 `actor.AdaptKind`。底层
 `ActorSystem` 保留为高级扩展面，不属于常规业务调用链。
 
 2026-08-25 使用 Go 1.26.5 在 x86_64 macOS 上运行 `BenchmarkPendingCallsRoundTrip`，单次本地

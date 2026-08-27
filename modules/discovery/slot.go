@@ -53,7 +53,8 @@ type SlotStore interface {
 }
 
 // SlotTarget 是一次安全解析后的固定归属目标。业务使用 Assignment 中的 generation
-// 防止缓存旧路由；实际 Actor PID 或 gRPC client 由业务按 Instance.Endpoint 创建。
+// 防止缓存旧路由；gRPC client 使用 Instance.Endpoint，固定 Actor PID 使用
+// Instance.ActorEndpoint，二者不能混用。
 type SlotTarget struct {
 	Assignment SlotAssignment
 	Instance   Instance

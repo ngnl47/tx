@@ -314,7 +314,7 @@ msgq, ok := directory.LookupInstance("msgq-2")
 `NextInstance` 是健康服务副本的轮转选择；`RunningInstances` 返回稳定排序、与目录内部隔离的健康实例
 快照，供业务实现随机、哈希或负载策略；`LookupInstance` 是已知实例的精确路由。`roleId -> msgq 实例` 的会话
 绑定、消息 Seq/Ack 和有界下行邮箱属于 `msgq`；Virtual Actor 的 `(kind, identity)` 路由属于 Actor Cluster；
-固定实例 Actor 的实体归属由业务维护，不在服务发现包内。
+固定 Kind Actor 的实体归属由业务槽位维护，不由服务发现包推断。
 
 本机或 CI 已启动 etcd 时，可显式执行真实 lease/watch 回归；未设置环境变量时该集成用例会跳过，
 不会要求所有开发机安装 etcd：
@@ -866,7 +866,8 @@ delivery := &rpcpb.Delivery{
 ```
 
 新增业务可以使用该包进行明确的服务/实例调用，但不应依赖生成的 `pb` 类型定义客户端 DTO。会话 owner 由
-`msgq.SessionRouter` 解析；Actor 消息由 `actor.VirtualPID` 或 `actor.FixedPID` 投递。
+`msgq.SessionRouter` 解析；Actor 消息由 `actor.VirtualPID` 或 `actor.FixedKindPID` 投递。自行管理本地 Actor ID 的高级扩展
+才直接使用 `actor.FixedPID`。
 
 服务进程的宿主统一创建 gRPC server 后，先用该服务的 `Ingress` 包装接收器，再注册得到已校验的业务 `Delivery`。
 Receiver 返回错误时，调用方会收到 gRPC 错误，框架不会把投递失败伪装为已接受：
@@ -1225,13 +1226,16 @@ if err != nil {
 核对外层命令号与路由键是否匹配请求字段；具体命令如需幂等，仍须定义独立业务幂等键。
 
 上例的 `role` 是可恢复的 Virtual Actor。它的 `identity` 由集群根据成员视图路由，业务必须能在新节点上从
-Fusion 恢复状态。固定归属的内存权威对象不调用 `VirtualPID`，而是由业务维护实例地址并构造直连 PID：
+Fusion 恢复状态。固定归属的内存权威对象使用固定 Kind：
 
 ```go
-pid, err := txactor.FixedPID("battle-1.internal:12000", "battle-1001")
+kind := txactor.MustFixedKind("battlefield", newBattlefieldActor)
+pid, err := txactor.FixedKindPID(target.Instance.ActorEndpoint, kind.Name())
 ```
 
-`FixedPID` 只验证地址并创建 Remote PID；它不查询实例目录、不迁移 Actor，也不提供分布式锁或事务。
+Runtime 会为每个固定 Kind 创建一个稳定本地宿主。消息到达宿主后，按强类型 `Delivery.RouteKey` 惰性创建或复用实体
+Actor；实体不会进入 `disthash`，成员变化不会把它改派到其他进程。`FixedPID` 仍是自行管理本地 Actor ID 和生命周期的
+高级直连接口，普通固定实体不使用它。
 
 `Runtime.Start` 只加入集群，**不会**因 `ctx` 取消立即注销成员。宿主的正确顺序是先停止入口新业务、等待已受理的
 服务 handler、完成缓存管理器最终 Flush，再调用 `Runtime.Shutdown` 退出成员表。`txgame` 的 Lifecycle 已按这个顺序将
@@ -1251,10 +1255,11 @@ Actor 间跨实例投递按 PID 直达目标，不经过 `msgq`；`msgq` 只管�
 pid, err := runtime.VirtualPID("role", strconv.FormatInt(roleID, 10))
 ```
 
-Battle、SLG 城市和 MMO 场景等内存权威对象使用固定逻辑槽位与 Remote PID。业务维护 `entityID -> logicalSlot -> runtimeInstance` 归属；目标节点重启时返回明确的暂时不可用错误，不能自动改派到其他节点：
+Battle、SLG 城市和 MMO 场景等内存权威对象使用固定逻辑槽位与固定 Kind。业务维护
+`entityID -> logicalSlot -> runtimeInstance` 归属；目标节点重启时返回明确的暂时不可用错误，不能自动改派到其他节点：
 
 ```go
-pid, err := txactor.FixedPID(target.Instance.Endpoint, "scene-1001")
+pid, err := txactor.FixedKindPID(target.Instance.ActorEndpoint, "scene")
 ```
 
 Actor 不代表 GD，也不提供分布式事务。同一 Actor 内需要修改多个 GD 时，仍使用单机 `Procedure`。
@@ -1288,7 +1293,7 @@ target, err := router.ResolveSlot(ctx, "game-slot-1")
 if err != nil {
 	return err // 目标不是 running 时明确失败
 }
-pid, err := actor.FixedPID(target.Instance.Endpoint, "scene-1001")
+pid, err := actor.FixedKindPID(target.Instance.ActorEndpoint, "scene")
 if err != nil {
 	return err
 }
@@ -1309,7 +1314,8 @@ _ = pid
 不可用；依赖固定槽位的服务必须在启动时显式失败，不能退化为普通实例路由。
 
 `txgameslg/server/services/agent` 的 `NewFixedSlotHandlers` 是 Agent 到固定 Actor 的项目侧组合器。业务只提供身份到
-`SlotID` 和 Actor 名称的规则；它在启动时复用当前 Server 的 `SlotRouter`，因此目标处于 `draining`、`stopping` 或缺失时会保留
+`SlotID` 的规则；Actor kind 来自 txgen 生成的命令路由描述，固定宿主 PID 由框架生成。它在启动时复用当前 Server 的
+`SlotRouter`，因此目标处于 `draining`、`stopping` 或缺失时会保留
 `ErrSlotRuntimeUnavailable` 错误链，调用方用 `errors.Is` 判断，不能改派其他 game：
 
 ```go
@@ -1317,9 +1323,6 @@ handlers, err := appagent.NewFixedSlotHandlers(
     identityResolver,
     appagent.SlotIDResolverFunc(func(ctx context.Context, route appagent.CommandRoute) (string, error) {
         return realmSlot(route.Identity.RoleID), nil // 项目决定同服/战区归属。
-    }),
-    appagent.ActorIDResolverFunc(func(_ context.Context, route appagent.CommandRoute, target discovery.SlotTarget) (string, error) {
-        return actorName(route), nil
     }),
 )
 if err != nil {
@@ -1354,8 +1357,8 @@ Pod 重建只更换 `RuntimeInstanceID`，框架不会把两个值拼接起来�
 `WaitGroupContext` 只保证正常关闭路径。`SIGKILL`、OOM、机器故障和网络分区下的自动
 安全接管需要 Lease 与存储 fencing，这是后续独立能力，当前不能假定已经提供。
 
-ProtoActor 的成员变更不会迁移业务内存状态；Virtual Actor 的业务状态必须可恢复。固定实例 Actor 的故障与迁移
-策略由业务维护。下行 msgq 实例崩溃时允许丢失尚未确认的内存消息，客户端重连和业务幂等负责恢复；内部命令
+ProtoActor 的成员变更不会迁移业务内存状态；Virtual Actor 的业务状态必须可恢复。固定 Kind 由业务槽位决定目标实例，
+Runtime 只负责该实例内的惰性激活和串行邮箱。下行 msgq 实例崩溃时允许丢失尚未确认的内存消息，客户端重连和业务幂等负责恢复；内部命令
 若需要重试，必须自行定义业务幂等键与幂等契约，框架不盲目重试。
 
 ### 运维控制命令

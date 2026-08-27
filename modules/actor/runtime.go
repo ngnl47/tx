@@ -42,6 +42,7 @@ var _ Messenger = (*Runtime)(nil)
 type Runtime struct {
 	config    Config
 	kinds     []*cluster.Kind
+	fixed     []fixedKind
 	lifecycle *mailboxLifecycle
 
 	mu        sync.Mutex
@@ -60,13 +61,14 @@ func New(config Config, kinds ...Kind) (*Runtime, error) {
 		return nil, err
 	}
 	lifecycle := &mailboxLifecycle{}
-	configuredKinds, err := configureKinds(config, kinds, lifecycle)
+	configuredKinds, fixedKinds, err := configureKinds(config, kinds, lifecycle)
 	if err != nil {
 		return nil, err
 	}
 	return &Runtime{
 		config:    config,
 		kinds:     configuredKinds,
+		fixed:     fixedKinds,
 		lifecycle: lifecycle,
 		pending:   newPendingCalls(config.MaxPendingCalls),
 	}, nil
@@ -114,6 +116,10 @@ func (r *Runtime) Start(ctx context.Context) (err error) {
 	)
 	r.cluster = cluster.New(system, clusterConfig)
 	if err := startMember(r.cluster); err != nil {
+		r.stopLocked()
+		return err
+	}
+	if err := r.startFixedHosts(system); err != nil {
 		r.stopLocked()
 		return err
 	}
@@ -201,6 +207,19 @@ func (r *Runtime) ActorSystem() (*protoactor.ActorSystem, error) {
 	return r.cluster.ActorSystem, nil
 }
 
+// Endpoint 返回当前 Actor Remote 对外发布的实际地址。
+func (r *Runtime) Endpoint() (string, error) {
+	system, err := r.ActorSystem()
+	if err != nil {
+		return "", err
+	}
+	endpoint := strings.TrimSpace(system.Address())
+	if endpoint == "" {
+		return "", ErrRuntimeNotStarted
+	}
+	return endpoint, nil
+}
+
 // Tell 将一条单向 Delivery 投递到 Virtual 或固定归属的 Actor PID。
 //
 // 返回 nil 仅表示本地 Runtime 已接受投递；需要接收确认或业务结果时分别使用
@@ -236,7 +255,8 @@ func (r *Runtime) deliveryActorSystem() (*protoactor.ActorSystem, error) {
 	return r.cluster.ActorSystem, nil
 }
 
-// FixedPID 返回固定归属 Actor 的直连 Remote PID。实体归属由业务维护，不参与集群重平衡。
+// FixedPID 返回底层直连 Remote PID。普通固定实体应使用 FixedKindPID；该入口保留给
+// 已经自行管理本地 Actor ID 和生命周期的高级扩展。
 func FixedPID(endpoint, actorID string) (*protoactor.PID, error) {
 	endpoint = strings.TrimSpace(endpoint)
 	actorID = strings.TrimSpace(actorID)
@@ -296,24 +316,51 @@ func startMember(cluster *cluster.Cluster) (err error) {
 	return nil
 }
 
-func configureKinds(config Config, kinds []Kind, lifecycle *mailboxLifecycle) ([]*cluster.Kind, error) {
+func configureKinds(config Config, kinds []Kind, lifecycle *mailboxLifecycle) ([]*cluster.Kind, []fixedKind, error) {
 	if err := validateKinds(kinds); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	configured := make([]*cluster.Kind, len(kinds))
-	for index, kind := range kinds {
+	configured := make([]*cluster.Kind, 0, len(kinds))
+	fixed := make([]fixedKind, 0, len(kinds))
+	for _, kind := range kinds {
 		clusterKind := kind.cluster
-		props := clusterKind.Props.Clone(
+		baseProps := clusterKind.Props
+		if kind.isFixed() {
+			baseProps = kind.props
+		}
+		props := baseProps.Clone(
 			protoactor.WithMailbox(observedBoundedMailbox(config, clusterKind.Kind, lifecycle)),
 			protoactor.WithReceiverMiddleware(acceptanceReceiverMiddleware),
 		)
-		configured[index] = &cluster.Kind{
+		if kind.isFixed() {
+			fixed = append(fixed, fixedKind{name: clusterKind.Kind, props: props})
+			continue
+		}
+		configured = append(configured, &cluster.Kind{
 			Kind:            clusterKind.Kind,
 			Props:           props,
 			StrategyBuilder: clusterKind.StrategyBuilder,
+		})
+	}
+	return configured, fixed, nil
+}
+
+func (r *Runtime) startFixedHosts(system *protoactor.ActorSystem) error {
+	for _, kind := range r.fixed {
+		props, err := newFixedHostProps(kind.name, kind.props)
+		if err != nil {
+			return fmt.Errorf("actor: create fixed kind host %q: %w", kind.name, err)
+		}
+		props = props.Clone(protoactor.WithMailbox(observedBoundedMailbox(r.config, kind.name+".host", r.lifecycle)))
+		hostID, err := fixedKindHostID(kind.name)
+		if err != nil {
+			return fmt.Errorf("actor: resolve fixed kind host %q: %w", kind.name, err)
+		}
+		if _, err := system.Root.SpawnNamed(props, hostID); err != nil {
+			return fmt.Errorf("actor: start fixed kind host %q: %w", kind.name, err)
 		}
 	}
-	return configured, nil
+	return nil
 }
 
 func acceptanceReceiverMiddleware(next protoactor.ReceiverFunc) protoactor.ReceiverFunc {

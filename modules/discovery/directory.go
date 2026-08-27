@@ -20,16 +20,18 @@ const (
 )
 
 type Instance struct {
-	ID       string   `json:"id"`
-	Services []string `json:"services"`
-	Endpoint string   `json:"endpoint"`
-	Version  string   `json:"version,omitempty"`
-	Status   Status   `json:"status"`
+	ID            string   `json:"id"`
+	Services      []string `json:"services"`
+	Endpoint      string   `json:"endpoint"`
+	ActorEndpoint string   `json:"actorEndpoint,omitempty"`
+	Version       string   `json:"version,omitempty"`
+	Status        Status   `json:"status"`
 }
 
 func (i Instance) Validate() error {
 	if i.ID == "" || i.ID != strings.TrimSpace(i.ID) ||
 		i.Endpoint == "" || i.Endpoint != strings.TrimSpace(i.Endpoint) ||
+		i.ActorEndpoint != strings.TrimSpace(i.ActorEndpoint) ||
 		!i.Status.Valid() {
 		return ErrInvalidInstance
 	}

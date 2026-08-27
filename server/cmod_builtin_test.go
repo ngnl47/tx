@@ -26,9 +26,11 @@ func TestBuiltInCModsDeclareStableDependencies(t *testing.T) {
 				{Role: "scheduler", Name: "delay"},
 			},
 		},
-		CModRPC:       {},
-		CModDiscovery: {},
-		CModActor:     {},
+		CModRPC: {},
+		CModDiscovery: {
+			after: []CModID{CModRPC, CModActor},
+		},
+		CModActor: {},
 	}
 	for _, mod := range app.builtInCMods(RunOptions{}) {
 		spec := mod.Spec()

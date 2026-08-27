@@ -65,6 +65,12 @@ func resolveCModGraph(cmods []CMod, services []Service) (cmodGraph, error) {
 		required := append([]CModID(nil), spec.Requires...)
 		if len(spec.ActorKinds) > 0 {
 			required = append(required, CModActor)
+			for _, kind := range spec.ActorKinds {
+				if kind.IsFixed() {
+					required = append(required, CModDiscovery)
+					break
+				}
+			}
 		}
 		if provider, ok := service.(CModRequirementsProvider); ok {
 			conditional, err := provider.RequiredCMods(selection)

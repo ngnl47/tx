@@ -65,6 +65,15 @@ func (runtime *runtime) setInstanceEndpoint(endpoint string) {
 	runtime.instanceMu.Unlock()
 }
 
+func (runtime *runtime) setActorEndpoint(endpoint string) {
+	if runtime == nil {
+		return
+	}
+	runtime.instanceMu.Lock()
+	runtime.instance.ActorEndpoint = endpoint
+	runtime.instanceMu.Unlock()
+}
+
 func (runtime *runtime) ensureStorage() *storageRuntime {
 	if runtime == nil {
 		return nil

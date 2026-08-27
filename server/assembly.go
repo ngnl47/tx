@@ -89,7 +89,13 @@ func (server *Server) startActor() error {
 	if err := runtime.Start(server.runtime.lifecycle); err != nil {
 		return fmt.Errorf("server: start actor runtime: %w", err)
 	}
+	endpoint, err := runtime.Endpoint()
+	if err != nil {
+		_ = runtime.Shutdown()
+		return fmt.Errorf("server: resolve actor endpoint: %w", err)
+	}
 	server.runtime.actor = runtime
+	server.runtime.setActorEndpoint(endpoint)
 	return nil
 }
 

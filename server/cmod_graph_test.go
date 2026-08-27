@@ -207,6 +207,30 @@ func TestResolveCModGraphAddsActorForDeclaredKinds(t *testing.T) {
 	}
 }
 
+func TestResolveCModGraphAddsActorForFixedKinds(t *testing.T) {
+	roleKind := txactor.MustFixedKind("role", func() protoactor.Actor { return cmodActorFake{} })
+	selected := []Service{cmodServiceFake{spec: Spec{Name: "slggame", ActorKinds: []txactor.Kind{roleKind}}}}
+	cmods := []CMod{
+		cmodGraphFake{id: CModActor},
+		cmodGraphFake{id: CModDiscovery, after: []CModID{CModActor}},
+	}
+
+	graph, err := resolveCModGraph(cmods, selected)
+	if err != nil {
+		t.Fatalf("resolve CMod graph: %v", err)
+	}
+	if want := []CModID{CModActor, CModDiscovery}; !slices.Equal(graph.IDs(), want) {
+		t.Fatalf("CMod order = %v, want %v", graph.IDs(), want)
+	}
+	kinds, err := collectActorKinds(selected)
+	if err != nil {
+		t.Fatalf("collect Actor kinds: %v", err)
+	}
+	if len(kinds) != 1 || kinds[0].Name() != "role" {
+		t.Fatalf("Actor kinds = %#v", kinds)
+	}
+}
+
 func TestCollectActorKindsRejectsDuplicateNames(t *testing.T) {
 	kind := txactor.MustKind("room", func() protoactor.Actor { return cmodActorFake{} })
 	services := []Service{
