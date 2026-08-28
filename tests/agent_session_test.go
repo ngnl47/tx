@@ -55,13 +55,14 @@ func TestAgentSessionFetchesOutboundAndConfirmsAckOnNextInbound(t *testing.T) {
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
 	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, CommandID: 1, Payload: []byte("first")}
 	_ = receiveDispatch(t, dispatched)
+	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 1, "")
 
 	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("bon-response")}); err != nil {
 		t.Fatalf("publish outbound: %v", err)
 	}
 	select {
 	case outbound := <-transport.writes:
-		if outbound.Kind != txagent.FrameOutbound || outbound.Seq != 1 || string(outbound.Payload) != "bon-response" {
+		if outbound.Kind != txagent.FrameOutbound || outbound.Seq != 1 || outbound.Ack != 1 || string(outbound.Payload) != "bon-response" {
 			t.Fatalf("outbound frame = %#v", outbound)
 		}
 	case <-time.After(time.Second):
@@ -70,6 +71,7 @@ func TestAgentSessionFetchesOutboundAndConfirmsAckOnNextInbound(t *testing.T) {
 
 	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 2, Ack: 1, CommandID: 1, Payload: []byte("second")}
 	_ = receiveDispatch(t, dispatched)
+	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 2, "")
 	deadline, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	_, err := mailbox.FetchSome(deadline, msgq.FetchSomeRequest{Header: msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}, Max: 1})
@@ -123,12 +125,33 @@ func TestAgentSessionPublishesDispatchResultToCurrentSession(t *testing.T) {
 	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, CommandID: 1, Payload: []byte("bon-request")}
 	select {
 	case outbound := <-transport.writes:
-		if outbound.Kind != txagent.FrameOutbound || outbound.Seq != 1 || string(outbound.Payload) != "bon-response" {
+		if outbound.Kind != txagent.FrameOutbound || outbound.Seq != 1 || outbound.Ack != 1 || string(outbound.Payload) != "bon-response" {
 			t.Fatalf("outbound frame = %#v", outbound)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for dispatch response")
 	}
+	select {
+	case frame := <-transport.writes:
+		t.Fatalf("response was followed by redundant acknowledgement = %#v", frame)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	transport.closeReads()
+	if err := <-result; !errors.Is(err, io.EOF) {
+		t.Fatalf("serve error = %v, want EOF", err)
+	}
+}
+
+func TestAgentSessionAcknowledgesBusinessWithoutDispatchResponse(t *testing.T) {
+	agent, transport, _, dispatched := newAgentSessionFixture(t, nil)
+	result := make(chan error, 1)
+	go func() { result <- agent.Serve(context.Background(), transport) }()
+
+	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
+	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, CommandID: 1, Payload: []byte("bon-request")}
+	_ = receiveDispatch(t, dispatched)
+	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 1, "")
 
 	transport.closeReads()
 	if err := <-result; !errors.Is(err, io.EOF) {
@@ -212,12 +235,14 @@ func TestAgentSessionDoesNotDispatchDuplicateSequence(t *testing.T) {
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
 	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, CommandID: 1, Payload: []byte("first")}
 	_ = receiveDispatch(t, dispatched)
+	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 1, "")
 	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, CommandID: 1, Payload: []byte("duplicate")}
 	select {
 	case request := <-dispatched:
 		t.Fatalf("duplicate dispatched = %#v", request)
 	case <-time.After(20 * time.Millisecond):
 	}
+	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 1, "")
 
 	transport.closeReads()
 	if err := <-result; !errors.Is(err, io.EOF) {
@@ -329,6 +354,18 @@ func receiveDispatch(t *testing.T, dispatched <-chan txagent.DispatchRequest) tx
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for dispatch")
 		return txagent.DispatchRequest{}
+	}
+}
+
+func assertAgentFrame(t *testing.T, frames <-chan txagent.Frame, kind txagent.FrameKind, seq, ack int64, payload string) {
+	t.Helper()
+	select {
+	case frame := <-frames:
+		if frame.Kind != kind || frame.Seq != seq || frame.Ack != ack || string(frame.Payload) != payload {
+			t.Fatalf("frame = %#v, want kind=%d seq=%d ack=%d payload=%q", frame, kind, seq, ack, payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for kind=%d seq=%d ack=%d", kind, seq, ack)
 	}
 }
 

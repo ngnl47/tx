@@ -705,6 +705,7 @@ if err != nil {
 2. Agent 按 `RoleID` 取得当前 msgq owner 并调用 `Init`；同进程 msgq 时直接复用本地 `SessionClient`，分进程时按 Redis owner 和服务目录复用 gRPC 连接。
 3. 每个 `FrameBusiness` 先调用 `Rec(roleID, seq, ack)`。只有 `ReceivedSeq` 前进时才进入 `Dispatcher`，重复 Seq 不会重复分发。
 4. Agent 持续 `FetchSome` 下行队列，写出 `FrameOutbound`；客户端在后续上行帧携带 Ack，`Rec` 会确认对应下行消息。
+5. 服务端已经受理的 `FrameBusiness.Seq` 也会得到确认：有业务响应时由 `FrameOutbound.Ack` 捎带，没有响应或收到重复 Seq 时返回独立 `FrameAck`。
 
 `Rec` 在业务分发之前前进上行 Seq。因此业务处理失败或进程在 `Rec` 之后崩溃时，该条上行不会被框架自动重放。
 普通游戏操作接受这个语义；不能重复执行的命令必须由项目定义独立的业务幂等键。Frame 的静态 `CommandID`
@@ -842,8 +843,8 @@ Frame 固定使用 32 字节头：第 0 字节是版本，第 1 字节是类型�
 | --- | --- | --- | --- | --- | --- |
 | `FrameHandshake` | `0` | 新连必须为 `0`；重连为已确认下行序号 | 必须为空 | 登录 ticket | 建立或恢复会话 |
 | `FrameBusiness` | 严格递增正数 | 最近已处理的 `FrameOutbound.Seq` | 生成的非零命令号；可选强类型路由键 | BON 业务体 | 上行业务，同时确认下行 |
-| `FrameOutbound` | msgq 下行序号 | `0` | 必须为空 | BON 业务体 | 服务端下行 |
-| `FrameAck` | `0` | 最近已处理的 `FrameOutbound.Seq` | 必须为空 | 必须为空 | 客户端空闲期间仅做确认 |
+| `FrameOutbound` | msgq 下行序号 | 服务端最近已受理的 `FrameBusiness.Seq` | 必须为空 | BON 业务体 | 服务端下行，同时确认上行 |
+| `FrameAck` | `0` | 发送方最近已连续处理的对端 `Seq` | 必须为空 | 必须为空 | 没有业务载荷可捎带时单独确认 |
 
 客户端收到 `FrameOutbound` 后应先完成编码载荷的处理，再更新本地 `lastOutboundSeq`。下一条业务帧直接携带该值，
 无需额外 ACK 帧：
@@ -871,6 +872,10 @@ socket.send(encodeFrame(createAckFrame(lastOutboundSeq), maxFrameBytes));
 服务端只接受不倒退且不超过当前连接**已成功写出**的下行序号；超出范围的 Ack 会断开本次连接并保留未确认队列，
 不会错误清理未来消息。重连握手使用同一个最后确认号恢复未确认下行。客户端不得把“收到网络字节”当作已确认，
 必须在业务编码载荷已被本地处理后才推进 Ack。
+
+客户端与服务端的 `Seq` 是两条彼此独立的单调序列。客户端 `Business.Seq=8` 的响应可以是服务端
+`Outbound.Seq=5, Ack=8`；这里的 `Ack=8` 表示服务端已经连续受理到客户端序号 8，并不表示响应序号必须等于请求序号。
+需要业务级请求与响应关联时，应在业务协议中定义独立的请求标识，不能复用传输层 Seq。
 
 ## 内部 gRPC 协议
 

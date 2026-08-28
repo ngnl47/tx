@@ -42,10 +42,7 @@ func TestTCPAgentRoundTrip(t *testing.T) {
 	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("bon-response")}); err != nil {
 		t.Fatalf("publish outbound: %v", err)
 	}
-	outbound := readTCPAgentFrame(t, connection)
-	if outbound.Kind != txagent.FrameOutbound || outbound.Seq != 1 || string(outbound.Payload) != "bon-response" {
-		t.Fatalf("outbound frame = %#v", outbound)
-	}
+	assertAgentTransportFrames(t, readTCPAgentFrame(t, connection), readTCPAgentFrame(t, connection))
 }
 
 func TestWebSocketAgentRoundTrip(t *testing.T) {
@@ -72,8 +69,26 @@ func TestWebSocketAgentRoundTrip(t *testing.T) {
 	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("bon-response")}); err != nil {
 		t.Fatalf("publish outbound: %v", err)
 	}
-	outbound := readWebSocketAgentFrame(t, ctx, connection)
-	if outbound.Kind != txagent.FrameOutbound || outbound.Seq != 1 || string(outbound.Payload) != "bon-response" {
+	assertAgentTransportFrames(t, readWebSocketAgentFrame(t, ctx, connection), readWebSocketAgentFrame(t, ctx, connection))
+}
+
+func assertAgentTransportFrames(t *testing.T, first, second txagent.Frame) {
+	t.Helper()
+	var acknowledgement, outbound txagent.Frame
+	for _, frame := range [...]txagent.Frame{first, second} {
+		switch frame.Kind {
+		case txagent.FrameAck:
+			acknowledgement = frame
+		case txagent.FrameOutbound:
+			outbound = frame
+		default:
+			t.Fatalf("unexpected agent frame = %#v", frame)
+		}
+	}
+	if acknowledgement.Ack != 1 {
+		t.Fatalf("acknowledgement frame = %#v, want ack=1", acknowledgement)
+	}
+	if outbound.Seq != 1 || outbound.Ack != 1 || string(outbound.Payload) != "bon-response" {
 		t.Fatalf("outbound frame = %#v", outbound)
 	}
 }

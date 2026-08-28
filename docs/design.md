@@ -2273,6 +2273,11 @@ Bee 或 Ant Context，因此可以使用本次 Server 已声明的 Actor、服�
 不能进入已经替换的新会话。通用 Actor Dispatcher 对无响应命令使用 `Tell`，对声明响应类型的命令使用带 deadline 的
 `Call`；Actor 返回的 BON bytes 不在 Agent 内反序列化。
 
+连接上存在两条独立序列：客户端为 `FrameBusiness` 分配 Seq，服务端为 `FrameOutbound` 分配 Seq。帧中的 Ack
+始终确认对端序列，不承担请求与响应关联：`FrameBusiness.Ack` 确认服务端下行，`FrameOutbound.Ack` 确认客户端上行。
+服务端在 `msgq.Rec` 接受 Seq 后才推进确认游标；Dispatcher 有响应时把该游标捎带到 `FrameOutbound`，无响应或重复
+Seq 时发送独立 `FrameAck`。响应发送协程和独立确认共用连接级串行 writer，避免并发写同一个 TCP/WebSocket transport。
+
 ### Actor
 
 `modules/actor` 基于 ProtoActor-go 和官方 etcd Cluster Provider。它提供两类定位：

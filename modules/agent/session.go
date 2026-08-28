@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"math"
+	"sync"
 	"sync/atomic"
 
 	"github.com/ngnl47/tx/lifecycle"
@@ -95,13 +96,16 @@ func (s *Server) Serve(ctx context.Context, transport Transport) (serveErr error
 	}
 
 	sessionCtx, cancel := context.WithCancel(ctx)
+	writer := sessionFrameWriter{transport: transport}
 	var writtenOutbound atomic.Int64
 	if handshake.Restore {
 		writtenOutbound.Store(handshake.Ack)
 	}
+	var receivedBusiness atomic.Int64
+	receivedBusiness.Store(initialized.ReceivedSeq)
 	writerResult := make(chan error, 1)
 	go func() {
-		writerResult <- s.writeOutbound(sessionCtx, client, header, transport, &writtenOutbound)
+		writerResult <- s.writeOutbound(sessionCtx, client, header, &writer, &writtenOutbound, &receivedBusiness)
 		cancel()
 	}()
 	defer func() {
@@ -112,7 +116,6 @@ func (s *Server) Serve(ctx context.Context, transport Transport) (serveErr error
 		}
 	}()
 
-	receivedSeq := initialized.ReceivedSeq
 	confirmedOutbound := handshake.Ack
 	for {
 		frame, err := transport.Read(sessionCtx)
@@ -135,31 +138,37 @@ func (s *Server) Serve(ctx context.Context, transport Transport) (serveErr error
 		if err := validateAcknowledgement(frame.Ack, confirmedOutbound, writtenOutbound.Load()); err != nil {
 			return err
 		}
-		if err := s.dispatchBusiness(sessionCtx, client, header, identity, frame, &receivedSeq, &confirmedOutbound); err != nil {
+		responseQueued, err := s.dispatchBusiness(sessionCtx, client, header, identity, frame, &receivedBusiness, &confirmedOutbound)
+		if err != nil {
 			return err
+		}
+		if !responseQueued {
+			if err := writer.Write(sessionCtx, Frame{Kind: FrameAck, Ack: receivedBusiness.Load()}); err != nil {
+				return err
+			}
 		}
 	}
 }
 
-func (s *Server) dispatchBusiness(ctx context.Context, client msgq.SessionClient, header msgq.SessionHeader, identity Identity, frame Frame, receivedSeq, confirmedOutbound *int64) error {
+func (s *Server) dispatchBusiness(ctx context.Context, client msgq.SessionClient, header msgq.SessionHeader, identity Identity, frame Frame, receivedBusiness *atomic.Int64, confirmedOutbound *int64) (bool, error) {
 	var done func()
 	if s.admission != nil {
 		var err error
 		done, err = s.admission.Enter()
 		if err != nil {
-			return err
+			return false, err
 		}
 		defer done()
 	}
 	result, err := client.Rec(ctx, msgq.RecRequest{Header: header, Seq: frame.Seq, Ack: frame.Ack})
 	if err != nil {
-		return err
+		return false, err
 	}
 	*confirmedOutbound = frame.Ack
-	if result.ReceivedSeq <= *receivedSeq {
-		return nil
+	if result.ReceivedSeq <= receivedBusiness.Load() {
+		return false, nil
 	}
-	*receivedSeq = result.ReceivedSeq
+	receivedBusiness.Store(result.ReceivedSeq)
 	dispatched, err := s.dispatcher.Dispatch(ctx, DispatchRequest{
 		Identity:  identity,
 		Seq:       frame.Seq,
@@ -168,28 +177,40 @@ func (s *Server) dispatchBusiness(ctx context.Context, client msgq.SessionClient
 		Payload:   cloneBytes(frame.Payload),
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 	if dispatched.Payload == nil {
-		return nil
+		return false, nil
 	}
 	_, err = client.Pub(ctx, msgq.PubRequest{Header: header, Payload: dispatched.Payload})
-	return err
+	return err == nil, err
 }
 
-func (s *Server) writeOutbound(ctx context.Context, client msgq.SessionClient, header msgq.SessionHeader, transport Transport, written *atomic.Int64) error {
+func (s *Server) writeOutbound(ctx context.Context, client msgq.SessionClient, header msgq.SessionHeader, writer *sessionFrameWriter, written, receivedBusiness *atomic.Int64) error {
 	for {
 		batch, err := client.FetchSome(ctx, msgq.FetchSomeRequest{Header: header, Max: s.fetchBatch})
 		if err != nil {
 			return err
 		}
 		for _, message := range batch.Messages {
-			if err := transport.Write(ctx, Frame{Kind: FrameOutbound, Seq: message.Seq, Payload: message.Payload}); err != nil {
+			if err := writer.Write(ctx, Frame{Kind: FrameOutbound, Seq: message.Seq, Ack: receivedBusiness.Load(), Payload: message.Payload}); err != nil {
 				return err
 			}
 			written.Store(message.Seq)
 		}
 	}
+}
+
+// sessionFrameWriter 保证一条连接上的响应帧与控制帧串行写入。
+type sessionFrameWriter struct {
+	transport Transport
+	mu        sync.Mutex
+}
+
+func (w *sessionFrameWriter) Write(ctx context.Context, frame Frame) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.transport.Write(ctx, frame)
 }
 
 func validateAcknowledgement(ack, confirmed, written int64) error {

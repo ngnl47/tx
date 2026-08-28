@@ -17,7 +17,7 @@ const (
 	FrameBusiness
 	// FrameOutbound 携带服务端下行消息。
 	FrameOutbound
-	// FrameAck 只推进客户端已经确认的下行序号。
+	// FrameAck 在没有业务载荷可捎带时，单独确认对端已经连续处理的 Seq。
 	FrameAck
 )
 
