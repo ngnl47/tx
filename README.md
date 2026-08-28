@@ -707,6 +707,22 @@ if err != nil {
 4. Agent 持续 `FetchSome` 下行队列，写出 `FrameOutbound`；客户端在后续上行帧携带 Ack，`Rec` 会确认对应下行消息。
 5. 服务端已经受理的 `FrameBusiness.Seq` 也会得到确认：有业务响应时由 `FrameOutbound.Ack` 捎带，没有响应或收到重复 Seq 时返回独立 `FrameAck`。
 
+Actor 已经定位并返回的请求级失败不应等同于连接故障。标准 txgame/txgameslg Agent 适配层会把 Actor `CallError`
+编码为生成的 `System_Error` 下行，其中 `RequestSeq` 指向原上行 Seq，`Code` 是供客户端多语言表使用的
+`int32` 稳定错误码；连接会继续处理后续请求。业务错误码 `0` 保留为“无错误”，未分类内部错误使用
+`actor.CallErrorCodeInternal`。Handler 未注册、命令解码失败等 Actor 分派拒绝使用
+`actor.CallErrorCodeDispatch`，也会作为 `System_Error` 返回，不会关闭已经建立的客户端连接。例如：
+
+```go
+const ErrorCodeNameExists int32 = 41001
+
+return nil, txactor.NewCallError(ErrorCodeNameExists, errors.New("name already exists"))
+```
+
+Agent 核心仍把握手失败、非法 Frame、Seq/Ack 违约、Actor 目标解析失败、Actor 调用超时或不可达等没有取得
+Actor 明确响应的基础设施错误视为会话失败并关闭连接。这样 Actor 请求失败不会迫使玩家重连，损坏的协议状态
+也不会被继续使用。
+
 `Rec` 在业务分发之前前进上行 Seq。因此业务处理失败或进程在 `Rec` 之后崩溃时，该条上行不会被框架自动重放。
 普通游戏操作接受这个语义；不能重复执行的命令必须由项目定义独立的业务幂等键。Frame 的静态 `CommandID`
 只标识生成的命令类型，不能用作一次业务操作的幂等令牌。

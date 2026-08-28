@@ -284,7 +284,7 @@ type Result struct {
 	MessageType   string                 `protobuf:"bytes,2,opt,name=message_type,json=messageType,proto3" json:"message_type,omitempty"`
 	CommandId     uint64                 `protobuf:"varint,3,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
 	Payload       []byte                 `protobuf:"bytes,4,opt,name=payload,proto3" json:"payload,omitempty"`
-	ErrorCode     string                 `protobuf:"bytes,5,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
+	ErrorCode     int32                  `protobuf:"varint,5,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
 	ErrorMessage  string                 `protobuf:"bytes,6,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -348,11 +348,11 @@ func (x *Result) GetPayload() []byte {
 	return nil
 }
 
-func (x *Result) GetErrorCode() string {
+func (x *Result) GetErrorCode() int32 {
 	if x != nil {
 		return x.ErrorCode
 	}
-	return ""
+	return 0
 }
 
 func (x *Result) GetErrorMessage() string {
@@ -392,7 +392,7 @@ const file_modules_actor_proto_actor_proto_rawDesc = "" +
 	"command_id\x18\x03 \x01(\x04R\tcommandId\x12\x18\n" +
 	"\apayload\x18\x04 \x01(\fR\apayload\x12\x1d\n" +
 	"\n" +
-	"error_code\x18\x05 \x01(\tR\terrorCode\x12#\n" +
+	"error_code\x18\x05 \x01(\x05R\terrorCode\x12#\n" +
 	"\rerror_message\x18\x06 \x01(\tR\ferrorMessage*c\n" +
 	"\fRouteKeyKind\x12\x12\n" +
 	"\x0eROUTE_KEY_NONE\x10\x00\x12\x13\n" +

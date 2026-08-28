@@ -42,6 +42,6 @@ message Result {
   string message_type = 2;
   uint64 command_id = 3;
   bytes payload = 4;
-  string error_code = 5;
+  int32 error_code = 5;
   string error_message = 6;
 }

@@ -2273,6 +2273,14 @@ Bee 或 Ant Context，因此可以使用本次 Server 已声明的 Actor、服�
 不能进入已经替换的新会话。通用 Actor Dispatcher 对无响应命令使用 `Tell`，对声明响应类型的命令使用带 deadline 的
 `Call`；Actor 返回的 BON bytes 不在 Agent 内反序列化。
 
+Agent 核心不依赖项目生成协议，因此不会自行构造业务错误包。项目 Agent 适配层负责把 Actor `CallError` 转换为
+生成的 `System_Error{RequestSeq, Code, Message}`，并以普通 `DispatchResult` 进入 MsgQ；这类结果不会终止连接。
+`Code` 使用 `int32` 跨 Actor protobuf 边界传递，`0` 表示没有错误，`CallErrorCodeInternal=-1` 表示未分类内部错误，
+正数空间由项目错误码表分配。`CallErrorCodeDispatch=-2` 标识 Actor 解码、Handler 注册和投递模式等分派契约失败；
+目标 Actor 已经返回该错误时，项目适配层同样生成 `System_Error`，连接继续处理后续请求。握手、Frame、Seq/Ack、
+目标解析、Actor 调用超时、传输错误和其他没有取得 Actor 明确响应的基础设施错误仍沿 Agent 错误返回链关闭连接，
+不能为了“不断连”把损坏协议状态或不可确定的投递结果吞成请求失败。
+
 连接上存在两条独立序列：客户端为 `FrameBusiness` 分配 Seq，服务端为 `FrameOutbound` 分配 Seq。帧中的 Ack
 始终确认对端序列，不承担请求与响应关联：`FrameBusiness.Ack` 确认服务端下行，`FrameOutbound.Ack` 确认客户端上行。
 服务端在 `msgq.Rec` 接受 Seq 后才推进确认游标；Dispatcher 有响应时把该游标捎带到 `FrameOutbound`，无响应或重复
@@ -2376,7 +2384,7 @@ Actor 对外固定四种投递语义：
 重试或切换 PID。取消一次 `Await` 只终止本地等待，不撤销已经投递的远端处理。
 
 protobuf `Delivery` 使用内部 `DeliveryMode` 和 `request_id` 区分三类线上信封；业务结果使用 `Result` 信封，错误由
-稳定 code 和诊断 message 表达。每个 Runtime 创建一个本地响应 Actor，把 Acceptance/Result 按 request ID 投递到
+稳定 `int32` code 和诊断 message 表达。每个 Runtime 创建一个本地响应 Actor，把 Acceptance/Result 按 request ID 投递到
 有界 pending 表。pending 容量由 `MaxPendingCalls` 限制，context 使用 `AfterFunc` 到期清理，不为每个 Future 常驻
 等待 goroutine；Runtime 关闭会用 `ErrRuntimeStopped` 一次性完成所有 pending。成功 Result 必须携带非空
 `MessageType`；空类型无法建立生成响应类型契约，响应 Actor 会将其判定为 `ErrInvalidResponse`。

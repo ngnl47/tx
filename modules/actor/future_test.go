@@ -77,6 +77,36 @@ func TestPendingCallsRejectsMalformedResultError(t *testing.T) {
 	}
 }
 
+func TestPendingCallsPreservesNumericCallErrorCode(t *testing.T) {
+	calls := newPendingCalls(1)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	requestID, future, err := calls.add(ctx, pendingResult, 7)
+	if err != nil {
+		t.Fatalf("add pending result: %v", err)
+	}
+	calls.resolve(&actorpb.Result{RequestId: requestID, ErrorCode: 41001, ErrorMessage: "name already exists"})
+	_, err = future.Await(ctx)
+	var callErr *CallError
+	if !errors.As(err, &callErr) {
+		t.Fatalf("Future.Await() error = %T, want *CallError", err)
+	}
+	if callErr.Code != 41001 || callErr.Message != "name already exists" {
+		t.Fatalf("CallError = %#v", callErr)
+	}
+}
+
+func TestNewCallErrorUsesNumericCode(t *testing.T) {
+	err := NewCallError(42001, errors.New("insufficient gold"))
+	if err.Code != 42001 || err.ErrorCode() != 42001 || err.Message != "insufficient gold" {
+		t.Fatalf("NewCallError() = %#v", err)
+	}
+	code, message := callErrorFields(err)
+	if code != 42001 || message != "insufficient gold" {
+		t.Fatalf("callErrorFields() = %d, %q", code, message)
+	}
+}
+
 func TestPendingCallsRejectsEmptySuccessfulResult(t *testing.T) {
 	calls := newPendingCalls(1)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)

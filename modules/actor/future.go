@@ -3,6 +3,7 @@ package actor
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -11,7 +12,12 @@ import (
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 )
 
-const defaultCallErrorCode = "internal"
+const (
+	// CallErrorCodeInternal 表示业务没有提供可公开错误码的内部失败。
+	CallErrorCodeInternal int32 = -1
+	// CallErrorCodeDispatch 表示 Actor 命令无法通过框架分派契约校验。
+	CallErrorCodeDispatch int32 = -2
+)
 
 var (
 	ErrRequestDeadlineRequired = errors.New("actor: request requires a context deadline")
@@ -29,7 +35,7 @@ type Result struct {
 
 // CallError 是远端业务返回的显式错误。
 type CallError struct {
-	Code    string
+	Code    int32
 	Message string
 }
 
@@ -38,24 +44,23 @@ func (err *CallError) Error() string {
 		return ""
 	}
 	if err.Message == "" {
-		return err.Code
+		return strconv.FormatInt(int64(err.Code), 10)
 	}
-	return err.Code + ": " + err.Message
+	return strconv.FormatInt(int64(err.Code), 10) + ": " + err.Message
 }
 
 // ErrorCode 允许同一个错误在响应边界保留稳定错误码。
-func (err *CallError) ErrorCode() string {
+func (err *CallError) ErrorCode() int32 {
 	if err == nil {
-		return ""
+		return 0
 	}
 	return err.Code
 }
 
 // NewCallError 创建可跨 Actor 边界传递的业务错误。
-func NewCallError(code string, cause error) *CallError {
-	code = strings.TrimSpace(code)
-	if code == "" {
-		code = defaultCallErrorCode
+func NewCallError(code int32, cause error) *CallError {
+	if code == 0 {
+		code = CallErrorCodeInternal
 	}
 	message := ""
 	if cause != nil {
@@ -240,11 +245,11 @@ func (calls *pendingCalls) resolve(message *actorpb.Result) {
 		CommandID:   message.GetCommandId(),
 		Payload:     append([]byte(nil), message.GetPayload()...),
 	}
-	if message.GetErrorCode() == "" && message.GetErrorMessage() != "" {
+	if message.GetErrorCode() == 0 && message.GetErrorMessage() != "" {
 		state.complete(Result{}, ErrInvalidResponse)
 		return
 	}
-	if message.GetErrorCode() != "" {
+	if message.GetErrorCode() != 0 {
 		state.complete(Result{}, &CallError{Code: message.GetErrorCode(), Message: message.GetErrorMessage()})
 		return
 	}
@@ -280,17 +285,24 @@ func Respond(ctx protoactor.Context, request Delivery, result Result, resultErr 
 		Payload:     append([]byte(nil), result.Payload...),
 	}
 	if resultErr != nil {
-		message.ErrorCode = defaultCallErrorCode
-		message.ErrorMessage = resultErr.Error()
-		var coded interface{ ErrorCode() string }
-		if errors.As(resultErr, &coded) {
-			if code := strings.TrimSpace(coded.ErrorCode()); code != "" {
-				message.ErrorCode = code
-			}
-		}
+		message.ErrorCode, message.ErrorMessage = callErrorFields(resultErr)
 	}
 	ctx.Respond(message)
 	return nil
+}
+
+func callErrorFields(err error) (int32, string) {
+	code := CallErrorCodeInternal
+	message := err.Error()
+	var callErr *CallError
+	if errors.As(err, &callErr) {
+		return callErr.Code, callErr.Message
+	}
+	var coded interface{ ErrorCode() int32 }
+	if errors.As(err, &coded) && coded.ErrorCode() != 0 {
+		code = coded.ErrorCode()
+	}
+	return code, message
 }
 
 func requireDeadline(ctx context.Context) error {
