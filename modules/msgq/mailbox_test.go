@@ -1,11 +1,61 @@
 package msgq
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
+
+	txlog "github.com/ngnl47/tx/log"
 )
+
+func TestMailboxLogsStateTransitionsAtDebug(t *testing.T) {
+	var output bytes.Buffer
+	txlog.SetDefault(slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { txlog.SetDefault(nil) })
+
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: &testSessionStore{}, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	header := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := server.Rec(context.Background(), RecRequest{Header: header, Seq: 1}); err != nil {
+		t.Fatalf("rec: %v", err)
+	}
+	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Payload: []byte("downMsg")}); err != nil {
+		t.Fatalf("pub: %v", err)
+	}
+	downMsg, err := server.Fetch(context.Background(), FetchRequest{Header: header})
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if err := server.Confirm(context.Background(), ConfirmRequest{Header: header, Ack: downMsg.Seq}); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+
+	records := decodeJSONLogs(t, output.String())
+	for _, message := range []string{
+		"msgq session initialized",
+		"msgq upMsg accepted",
+		"msgq downMsg published",
+		"msgq downMsg confirmed",
+	} {
+		record := findJSONLog(t, records, message)
+		if record["level"] != "DEBUG" {
+			t.Fatalf("%q level = %v, want DEBUG", message, record["level"])
+		}
+		if record["roleID"] != float64(header.RoleID) {
+			t.Fatalf("%q roleID = %v, want %d", message, record["roleID"], header.RoleID)
+		}
+	}
+}
 
 func TestBroadcastTopicSharesImmutablePayload(t *testing.T) {
 	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: &testSessionStore{}, MaxBacklogMessages: 4})
@@ -240,4 +290,32 @@ func (*testSessionStore) Refresh(context.Context, SessionBinding) (bool, error) 
 
 func (*testSessionStore) Unbind(context.Context, SessionBinding) (bool, error) {
 	return true, nil
+}
+
+func decodeJSONLogs(t *testing.T, output string) []map[string]any {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	records := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("decode log %q: %v", line, err)
+		}
+		records = append(records, record)
+	}
+	return records
+}
+
+func findJSONLog(t *testing.T, records []map[string]any, message string) map[string]any {
+	t.Helper()
+	for _, record := range records {
+		if record["msg"] == message {
+			return record
+		}
+	}
+	t.Fatalf("logs = %#v, want message %q", records, message)
+	return nil
 }

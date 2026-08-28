@@ -5,17 +5,56 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
+	txlog "github.com/ngnl47/tx/log"
 	txagent "github.com/ngnl47/tx/modules/agent"
 	"github.com/ngnl47/tx/modules/msgq"
 )
 
 const agentTransportMaxFrameBytes = 256
+
+func TestTCPAgentLogsConnectionLifecycle(t *testing.T) {
+	handler := &recordingSlogHandler{}
+	txlog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { txlog.SetDefault(nil) })
+
+	agent, _, mailbox, _ := newAgentSessionFixture(t, nil)
+	server, err := txagent.ListenTCP("127.0.0.1:0", agent, agentTransportMaxFrameBytes)
+	if err != nil {
+		t.Fatalf("listen TCP agent: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer server.Close()
+	go func() { _ = server.Serve(ctx) }()
+
+	connection, err := net.Dial("tcp", server.Addr().String())
+	if err != nil {
+		t.Fatalf("dial TCP agent: %v", err)
+	}
+	writeTCPAgentFrame(t, connection, txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")})
+	waitForMailboxSession(t, mailbox)
+	if err := connection.Close(); err != nil {
+		t.Fatalf("close TCP agent: %v", err)
+	}
+
+	records := waitForAgentLifecycleLogs(t, handler)
+	assertAgentLifecycleLog(t, records, "agent connection opened", slog.LevelInfo)
+	established := assertAgentLifecycleLog(t, records, "agent session established", slog.LevelInfo)
+	if !recordHasInt64Attr(established, "roleID", 470001) || !recordHasInt64Attr(established, "sessionID", 99) {
+		t.Fatalf("session established attrs = %#v", recordAttrs(established))
+	}
+	closed := assertAgentLifecycleLog(t, records, "agent connection closed", slog.LevelInfo)
+	if !recordHasStringAttr(closed, "transport", "tcp") {
+		t.Fatalf("connection closed attrs = %#v", recordAttrs(closed))
+	}
+}
 
 func TestTCPAgentRoundTrip(t *testing.T) {
 	agent, _, mailbox, dispatched := newAgentSessionFixture(t, nil)
@@ -177,4 +216,41 @@ func readWebSocketAgentFrame(t *testing.T, ctx context.Context, connection *webs
 		t.Fatalf("decode WebSocket frame: %v", err)
 	}
 	return frame
+}
+
+func waitForAgentLifecycleLogs(t *testing.T, handler *recordingSlogHandler) []slog.Record {
+	t.Helper()
+	deadline := time.After(time.Second)
+	for {
+		records := handler.Records()
+		foundClosed := false
+		for _, record := range records {
+			if record.Message == "agent connection closed" {
+				foundClosed = true
+				break
+			}
+		}
+		if foundClosed {
+			return records
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("agent lifecycle logs = %#v, want connection closed", records)
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
+func assertAgentLifecycleLog(t *testing.T, records []slog.Record, message string, level slog.Level) slog.Record {
+	t.Helper()
+	for _, record := range records {
+		if record.Message == message {
+			if record.Level != level {
+				t.Fatalf("%q level = %s, want %s", message, record.Level, level)
+			}
+			return record
+		}
+	}
+	t.Fatalf("agent lifecycle logs = %#v, want %q", records, message)
+	return slog.Record{}
 }

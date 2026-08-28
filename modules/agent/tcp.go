@@ -53,7 +53,7 @@ func (s *TCPServer) Serve(ctx context.Context) error {
 			return err
 		}
 		go func() {
-			_ = s.agent.Serve(ctx, &tcpTransport{connection: connection, maxFrameBytes: s.maxFrameBytes})
+			serveConnection(ctx, "tcp", connection.RemoteAddr().String(), s.agent, &tcpTransport{connection: connection, maxFrameBytes: s.maxFrameBytes})
 		}()
 	}
 }

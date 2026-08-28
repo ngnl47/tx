@@ -39,7 +39,7 @@ func NewWebSocketHandler(agent *Server, maxFrameBytes int, options WebSocketOpti
 		if err != nil {
 			return
 		}
-		_ = agent.Serve(request.Context(), &webSocketTransport{connection: connection, maxFrameBytes: maxFrameBytes})
+		serveConnection(request.Context(), "websocket", request.RemoteAddr, agent, &webSocketTransport{connection: connection, maxFrameBytes: maxFrameBytes})
 	}), nil
 }
 

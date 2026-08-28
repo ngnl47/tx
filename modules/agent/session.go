@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"github.com/ngnl47/tx/lifecycle"
+	txlog "github.com/ngnl47/tx/log"
 	"github.com/ngnl47/tx/modules/msgq"
 )
 
@@ -94,6 +95,14 @@ func (s *Server) Serve(ctx context.Context, transport Transport) (serveErr error
 	if err != nil {
 		return err
 	}
+	txlog.InfoContext(ctx, "agent session established",
+		"roleID", identity.RoleID,
+		"sessionID", identity.SessionID,
+		"connectionID", connectionID,
+		"restore", handshake.Restore,
+		"upMsgSeq", initialized.UpMsgSeq,
+		"downAck", handshake.Ack,
+	)
 
 	sessionCtx, cancel := context.WithCancel(ctx)
 	writer := sessionFrameWriter{transport: transport}

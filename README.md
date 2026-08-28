@@ -1915,6 +1915,16 @@ Actor CMod 会通过 ProtoActor 官方的 LoggerFactory 复用同一 Handler，�
 云日志 API，也不负责文件切割、上传重试和远端留存。高级项目仍可在启动期调用 `log.SetDefault(logger)` 注入自己的
 `slog.Logger`；传入 `nil` 会恢复到 `slog.Default()`。
 
+Agent、msgq 和项目业务的消息日志按职责只记录一次：
+
+- Agent 在 Info 级别记录 TCP/WebSocket 连接建立、逻辑会话就绪和连接关闭，不逐条记录 `UpMsg/DownMsg`。
+- msgq 在 Debug 级别记录 `Init/Rec/Pub/Confirm` 成功后的 Seq、Ack 和积压状态，不记录编码载荷，也不记录空轮询。
+- 玩家命令的协议名、业务结果和耗时由项目 Agent Dispatcher 记录；无状态模板可使用 Info，有状态高频模板可使用 Debug。
+
+例如一条成功的项目侧访问事件可以包含 `roleID`、`sessionID`、`seq`、`commandID`、`command`、`response`、
+`responseBytes`、`status` 和 `durationMs`。主动推送没有对应 `UpMsg`，应在项目发布门面记录，不能为了补日志而让 Agent
+反序列化业务载荷。
+
 默认调用方式：
 
 ```go

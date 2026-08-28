@@ -201,14 +201,16 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 			return InitResult{}, ErrSessionOffline
 		}
 		current.mu.Lock()
-		defer current.mu.Unlock()
 		if !current.active {
+			current.mu.Unlock()
 			return InitResult{}, ErrSessionOffline
 		}
 		if current.sessionID != request.Header.SessionID {
+			current.mu.Unlock()
 			return InitResult{}, ErrSessionChanged
 		}
 		if err := current.downMsgs.validateAck(request.Ack); err != nil {
+			current.mu.Unlock()
 			return InitResult{}, err
 		}
 		session = current
@@ -220,15 +222,18 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 		InstanceID:   s.instanceID,
 	}
 	if _, _, err := s.store.Bind(ctx, binding); err != nil {
+		if request.Restore {
+			session.mu.Unlock()
+		}
 		return InitResult{}, err
 	}
 
 	if !request.Restore {
 		session = s.installFresh(request.Header)
 		session.mu.Lock()
-		defer session.mu.Unlock()
 	}
 	if !session.active || session.sessionID != request.Header.SessionID {
+		session.mu.Unlock()
 		return InitResult{}, ErrSessionChanged
 	}
 	session.connectionID = request.Header.ConnectionID
@@ -236,11 +241,24 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 	if request.Restore {
 		session.downMsgs.resetSent()
 		if err := session.downMsgs.confirm(request.Ack); err != nil {
+			session.mu.Unlock()
 			return InitResult{}, err
 		}
 	}
+	upMsgSeq := session.upMsgSeq
+	pending := session.downMsgs.len()
 	session.signal()
-	return InitResult{UpMsgSeq: session.upMsgSeq}, nil
+	session.mu.Unlock()
+	txlog.DebugContext(ctx, "msgq session initialized",
+		"roleID", request.Header.RoleID,
+		"sessionID", request.Header.SessionID,
+		"connectionID", request.Header.ConnectionID,
+		"restore", request.Restore,
+		"upMsgSeq", upMsgSeq,
+		"downAck", request.Ack,
+		"pending", pending,
+	)
+	return InitResult{UpMsgSeq: upMsgSeq}, nil
 }
 
 // Rec 串行确认一条客户端上行消息。重复序号幂等返回当前已接收序号。
@@ -253,23 +271,38 @@ func (s *Server) Rec(ctx context.Context, request RecRequest) (RecResult, error)
 		return RecResult{}, err
 	}
 	session.mu.Lock()
-	defer session.mu.Unlock()
 	if err := session.requireConnection(request.Header); err != nil {
+		session.mu.Unlock()
 		return RecResult{}, err
 	}
 	if err := session.downMsgs.validateAck(request.Ack); err != nil {
+		session.mu.Unlock()
 		return RecResult{}, err
 	}
 	if request.Seq > session.upMsgSeq+1 {
+		session.mu.Unlock()
 		return RecResult{}, ErrUpMsgSequence
 	}
 	if request.Seq == session.upMsgSeq+1 {
 		session.upMsgSeq++
 	}
 	if err := session.downMsgs.confirm(request.Ack); err != nil {
+		session.mu.Unlock()
 		return RecResult{}, err
 	}
-	return RecResult{UpMsgSeq: session.upMsgSeq, Ack: request.Ack}, nil
+	upMsgSeq := session.upMsgSeq
+	pending := session.downMsgs.len()
+	session.mu.Unlock()
+	txlog.DebugContext(ctx, "msgq upMsg accepted",
+		"roleID", request.Header.RoleID,
+		"sessionID", request.Header.SessionID,
+		"connectionID", request.Header.ConnectionID,
+		"seq", request.Seq,
+		"upMsgSeq", upMsgSeq,
+		"downAck", request.Ack,
+		"pending", pending,
+	)
+	return RecResult{UpMsgSeq: upMsgSeq, Ack: request.Ack}, nil
 }
 
 // Pub 将数据追加到当前会话的未确认下行队列。
@@ -303,8 +336,20 @@ func (s *Server) Pub(ctx context.Context, request PubRequest) (PubResult, error)
 		return PubResult{}, ErrDownMsgOverflow
 	}
 	seq := session.downMsgs.enqueue(request.Payload)
+	pending := session.downMsgs.len()
+	pendingBytes := session.downMsgs.bytes
+	header := session.header()
 	session.signal()
 	session.mu.Unlock()
+	txlog.DebugContext(ctx, "msgq downMsg published",
+		"roleID", header.RoleID,
+		"sessionID", header.SessionID,
+		"connectionID", header.ConnectionID,
+		"seq", seq,
+		"bytes", len(request.Payload),
+		"pending", pending,
+		"pendingBytes", pendingBytes,
+	)
 	return PubResult{Seq: seq}, nil
 }
 
@@ -380,11 +425,26 @@ func (s *Server) Confirm(ctx context.Context, request ConfirmRequest) error {
 		return err
 	}
 	session.mu.Lock()
-	defer session.mu.Unlock()
 	if err := session.requireConnection(request.Header); err != nil {
+		session.mu.Unlock()
 		return err
 	}
-	return session.downMsgs.confirm(request.Ack)
+	if err := session.downMsgs.confirm(request.Ack); err != nil {
+		session.mu.Unlock()
+		return err
+	}
+	pending := session.downMsgs.len()
+	pendingBytes := session.downMsgs.bytes
+	session.mu.Unlock()
+	txlog.DebugContext(ctx, "msgq downMsg confirmed",
+		"roleID", request.Header.RoleID,
+		"sessionID", request.Header.SessionID,
+		"connectionID", request.Header.ConnectionID,
+		"ack", request.Ack,
+		"pending", pending,
+		"pendingBytes", pendingBytes,
+	)
+	return nil
 }
 
 // Touch 仅续期会话 owner，供连接空闲但仍保持在线时调用。
