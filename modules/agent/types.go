@@ -19,7 +19,7 @@ var (
 	ErrInvalidIdentity        = errors.New("agent: invalid identity")
 	ErrHandshakeRequired      = errors.New("agent: handshake is required")
 	ErrInvalidFrame           = errors.New("agent: invalid frame")
-	ErrInvalidAcknowledgement = errors.New("agent: invalid outbound acknowledgement")
+	ErrInvalidAcknowledgement = errors.New("agent: invalid DownMsg acknowledgement")
 	ErrFrameTooLarge          = errors.New("agent: frame is too large")
 )
 

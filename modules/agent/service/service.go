@@ -314,7 +314,7 @@ func validateOptions(options Options) error {
 		return fmt.Errorf("agent service: at least one TCP or WebSocket listen address is required")
 	}
 	if options.MaxFrameBytes <= 0 || options.FetchBatch <= 0 || options.Identity == nil || options.Dispatcher == nil {
-		return fmt.Errorf("agent service: frame limits and business handlers are required")
+		return fmt.Errorf("agent service: frame limits and command handlers are required")
 	}
 	if options.Sessions == nil && options.LocalMsgQ == nil && (strings.TrimSpace(options.SessionStore.RouteType) == "" || strings.TrimSpace(options.SessionStore.Prefix) == "" || options.SessionStore.TTL <= 0) {
 		return fmt.Errorf("agent service: session routing is not configured")

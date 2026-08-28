@@ -34,13 +34,13 @@ func TestTCPAgentRoundTrip(t *testing.T) {
 	}
 	defer connection.Close()
 	writeTCPAgentFrame(t, connection, txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")})
-	writeTCPAgentFrame(t, connection, txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, CommandID: 1, Payload: []byte("bon-request")})
+	writeTCPAgentFrame(t, connection, txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("bon-request")})
 	request := receiveDispatch(t, dispatched)
 	if string(request.Payload) != "bon-request" {
 		t.Fatalf("dispatch payload = %q", request.Payload)
 	}
 	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("bon-response")}); err != nil {
-		t.Fatalf("publish outbound: %v", err)
+		t.Fatalf("publish downMsg: %v", err)
 	}
 	assertAgentTransportFrames(t, readTCPAgentFrame(t, connection), readTCPAgentFrame(t, connection))
 }
@@ -61,26 +61,26 @@ func TestWebSocketAgentRoundTrip(t *testing.T) {
 	}
 	defer connection.CloseNow()
 	writeWebSocketAgentFrame(t, ctx, connection, txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")})
-	writeWebSocketAgentFrame(t, ctx, connection, txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, CommandID: 1, Payload: []byte("bon-request")})
+	writeWebSocketAgentFrame(t, ctx, connection, txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("bon-request")})
 	request := receiveDispatch(t, dispatched)
 	if string(request.Payload) != "bon-request" {
 		t.Fatalf("dispatch payload = %q", request.Payload)
 	}
 	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("bon-response")}); err != nil {
-		t.Fatalf("publish outbound: %v", err)
+		t.Fatalf("publish downMsg: %v", err)
 	}
 	assertAgentTransportFrames(t, readWebSocketAgentFrame(t, ctx, connection), readWebSocketAgentFrame(t, ctx, connection))
 }
 
 func assertAgentTransportFrames(t *testing.T, first, second txagent.Frame) {
 	t.Helper()
-	var acknowledgement, outbound txagent.Frame
+	var acknowledgement, downMsg txagent.Frame
 	for _, frame := range [...]txagent.Frame{first, second} {
 		switch frame.Kind {
 		case txagent.FrameAck:
 			acknowledgement = frame
-		case txagent.FrameOutbound:
-			outbound = frame
+		case txagent.FrameDownMsg:
+			downMsg = frame
 		default:
 			t.Fatalf("unexpected agent frame = %#v", frame)
 		}
@@ -88,8 +88,8 @@ func assertAgentTransportFrames(t *testing.T, first, second txagent.Frame) {
 	if acknowledgement.Ack != 1 {
 		t.Fatalf("acknowledgement frame = %#v, want ack=1", acknowledgement)
 	}
-	if outbound.Seq != 1 || outbound.Ack != 1 || string(outbound.Payload) != "bon-response" {
-		t.Fatalf("outbound frame = %#v", outbound)
+	if downMsg.Seq != 1 || downMsg.Ack != 1 || string(downMsg.Payload) != "bon-response" {
+		t.Fatalf("downMsg frame = %#v", downMsg)
 	}
 }
 

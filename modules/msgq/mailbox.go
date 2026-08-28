@@ -15,6 +15,7 @@ const (
 	defaultOfflineTimeout  = 60 * time.Second
 	defaultSweepInterval   = 2 * time.Second
 	defaultMaxBacklogBytes = 64 * 1024 * 1024
+	initLockShards         = 64
 )
 
 // Server 在本进程维护客户端会话与未确认下行消息。
@@ -27,6 +28,7 @@ type Server struct {
 	offlineTimeout     time.Duration
 	sweepInterval      time.Duration
 	reaping            atomic.Bool
+	initLocks          [initLockShards]sync.Mutex
 
 	mu       sync.RWMutex
 	sessions map[int64]*mailboxSession
@@ -62,7 +64,7 @@ type InitRequest struct {
 
 // InitResult 返回当前已接收的上行序号。
 type InitResult struct {
-	ReceivedSeq int64
+	UpMsgSeq int64
 }
 
 // RecRequest 确认一条客户端上行消息，并可携带下行确认号。
@@ -74,8 +76,8 @@ type RecRequest struct {
 
 // RecResult 返回服务端实际接受的上行序号和确认号。
 type RecResult struct {
-	ReceivedSeq int64
-	Ack         int64
+	UpMsgSeq int64
+	Ack      int64
 }
 
 // PubRequest 向一个角色的当前会话发布下行 BON 数据。
@@ -188,15 +190,28 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 	if err := request.Header.validateConnection(); err != nil || request.Ack < 0 || (!request.Restore && request.Ack != 0) {
 		return InitResult{}, ErrInvalidHeader
 	}
+	initLock := &s.initLocks[uint64(request.Header.RoleID)%initLockShards]
+	initLock.Lock()
+	defer initLock.Unlock()
+
+	var session *mailboxSession
 	if request.Restore {
-		if current, found := s.lookup(request.Header.RoleID); found && current.sessionID == request.Header.SessionID {
-			current.mu.Lock()
-			valid := current.outbound.validateAck(request.Ack) == nil
-			current.mu.Unlock()
-			if !valid {
-				return InitResult{}, ErrOutboundAcknowledgement
-			}
+		current, found := s.lookup(request.Header.RoleID)
+		if !found {
+			return InitResult{}, ErrSessionOffline
 		}
+		current.mu.Lock()
+		defer current.mu.Unlock()
+		if !current.active {
+			return InitResult{}, ErrSessionOffline
+		}
+		if current.sessionID != request.Header.SessionID {
+			return InitResult{}, ErrSessionChanged
+		}
+		if err := current.downMsgs.validateAck(request.Ack); err != nil {
+			return InitResult{}, err
+		}
+		session = current
 	}
 	binding := SessionBinding{
 		RoleID:       request.Header.RoleID,
@@ -208,28 +223,30 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 		return InitResult{}, err
 	}
 
-	session := s.install(request.Header)
-	session.mu.Lock()
-	defer session.mu.Unlock()
+	if !request.Restore {
+		session = s.installFresh(request.Header)
+		session.mu.Lock()
+		defer session.mu.Unlock()
+	}
 	if !session.active || session.sessionID != request.Header.SessionID {
 		return InitResult{}, ErrSessionChanged
 	}
 	session.connectionID = request.Header.ConnectionID
 	session.lastActivity = time.Now()
 	if request.Restore {
-		session.outbound.resetSent()
-		if err := session.outbound.confirm(request.Ack); err != nil {
+		session.downMsgs.resetSent()
+		if err := session.downMsgs.confirm(request.Ack); err != nil {
 			return InitResult{}, err
 		}
 	}
 	session.signal()
-	return InitResult{ReceivedSeq: session.receivedSeq}, nil
+	return InitResult{UpMsgSeq: session.upMsgSeq}, nil
 }
 
 // Rec 串行确认一条客户端上行消息。重复序号幂等返回当前已接收序号。
 func (s *Server) Rec(ctx context.Context, request RecRequest) (RecResult, error) {
 	if request.Seq <= 0 || request.Ack < 0 {
-		return RecResult{}, ErrInboundSequence
+		return RecResult{}, ErrUpMsgSequence
 	}
 	session, err := s.touch(ctx, request.Header)
 	if err != nil {
@@ -240,19 +257,19 @@ func (s *Server) Rec(ctx context.Context, request RecRequest) (RecResult, error)
 	if err := session.requireConnection(request.Header); err != nil {
 		return RecResult{}, err
 	}
-	if err := session.outbound.validateAck(request.Ack); err != nil {
+	if err := session.downMsgs.validateAck(request.Ack); err != nil {
 		return RecResult{}, err
 	}
-	if request.Seq > session.receivedSeq+1 {
-		return RecResult{}, ErrInboundSequence
+	if request.Seq > session.upMsgSeq+1 {
+		return RecResult{}, ErrUpMsgSequence
 	}
-	if request.Seq == session.receivedSeq+1 {
-		session.receivedSeq++
+	if request.Seq == session.upMsgSeq+1 {
+		session.upMsgSeq++
 	}
-	if err := session.outbound.confirm(request.Ack); err != nil {
+	if err := session.downMsgs.confirm(request.Ack); err != nil {
 		return RecResult{}, err
 	}
-	return RecResult{ReceivedSeq: session.receivedSeq, Ack: request.Ack}, nil
+	return RecResult{UpMsgSeq: session.upMsgSeq, Ack: request.Ack}, nil
 }
 
 // Pub 将数据追加到当前会话的未确认下行队列。
@@ -279,13 +296,13 @@ func (s *Server) Pub(ctx context.Context, request PubRequest) (PubResult, error)
 		session.mu.Unlock()
 		return PubResult{}, ErrSessionChanged
 	}
-	if session.outbound.exceeds(s.maxBacklogMessages, s.maxBacklogBytes, request.Payload) {
+	if session.downMsgs.exceeds(s.maxBacklogMessages, s.maxBacklogBytes, request.Payload) {
 		header := session.header()
 		session.mu.Unlock()
 		s.evict(ctx, session, header)
-		return PubResult{}, ErrOutboundOverflow
+		return PubResult{}, ErrDownMsgOverflow
 	}
-	seq := session.outbound.enqueue(request.Payload)
+	seq := session.downMsgs.enqueue(request.Payload)
 	session.signal()
 	session.mu.Unlock()
 	return PubResult{Seq: seq}, nil
@@ -303,7 +320,7 @@ func (s *Server) Fetch(ctx context.Context, request FetchRequest) (FetchResult, 
 			session.mu.Unlock()
 			return FetchResult{}, err
 		}
-		if entry, found := session.outbound.dequeue(); found {
+		if entry, found := session.downMsgs.dequeue(); found {
 			session.mu.Unlock()
 			return FetchResult{Seq: entry.seq, Payload: entry.payload}, nil
 		}
@@ -333,7 +350,7 @@ func (s *Server) FetchSome(ctx context.Context, request FetchSomeRequest) (Fetch
 			session.mu.Unlock()
 			return FetchSomeResult{}, err
 		}
-		entries := session.outbound.dequeueSome(request.Max)
+		entries := session.downMsgs.dequeueSome(request.Max)
 		if len(entries) > 0 {
 			messages := make([]FetchResult, len(entries))
 			for index, entry := range entries {
@@ -367,7 +384,7 @@ func (s *Server) Confirm(ctx context.Context, request ConfirmRequest) error {
 	if err := session.requireConnection(request.Header); err != nil {
 		return err
 	}
-	return session.outbound.confirm(request.Ack)
+	return session.downMsgs.confirm(request.Ack)
 }
 
 // Touch 仅续期会话 owner，供连接空闲但仍保持在线时调用。
@@ -449,7 +466,7 @@ func (s *Server) Topics(ctx context.Context, request TopicRequest) (TopicsResult
 }
 
 // BroadcastTopic 向当前实例内订阅 topic 的会话广播。
-// 部分会话队列满时，已成功投递的会话不会回滚，返回值会保留完整统计并返回 ErrOutboundOverflow。
+// 部分会话队列满时，已成功投递的会话不会回滚，返回值会保留完整统计并返回 ErrDownMsgOverflow。
 func (s *Server) BroadcastTopic(ctx context.Context, request BroadcastTopicRequest) (BroadcastTopicResult, error) {
 	if s == nil {
 		return BroadcastTopicResult{}, ErrServerNil
@@ -470,13 +487,13 @@ func (s *Server) BroadcastTopic(ctx context.Context, request BroadcastTopicReque
 			session.mu.Unlock()
 			continue
 		}
-		if session.outbound.exceeds(s.maxBacklogMessages, s.maxBacklogBytes, request.Payload) {
+		if session.downMsgs.exceeds(s.maxBacklogMessages, s.maxBacklogBytes, request.Payload) {
 			result.Overflowed++
 			overflowed = append(overflowed, session)
 			session.mu.Unlock()
 			continue
 		}
-		session.outbound.enqueue(request.Payload)
+		session.downMsgs.enqueue(request.Payload)
 		session.signal()
 		result.Delivered++
 		session.mu.Unlock()
@@ -491,7 +508,7 @@ func (s *Server) BroadcastTopic(ctx context.Context, request BroadcastTopicReque
 		}
 	}
 	if result.Overflowed > 0 {
-		return result, ErrOutboundOverflow
+		return result, ErrDownMsgOverflow
 	}
 	return result, nil
 }
@@ -557,7 +574,7 @@ func (s *Server) Reap(ctx context.Context, now time.Time) (int, error) {
 	var errs []error
 	for _, session := range sessions {
 		session.mu.Lock()
-		expired := now.Sub(session.lastActivity) >= s.offlineTimeout || session.outbound.expired(now, s.offlineTimeout)
+		expired := now.Sub(session.lastActivity) >= s.offlineTimeout || session.downMsgs.expired(now, s.offlineTimeout)
 		if !session.active || !expired {
 			session.mu.Unlock()
 			continue
@@ -607,13 +624,9 @@ func (s *Server) Start(ctx waitGroupContext) error {
 	})
 }
 
-func (s *Server) install(header SessionHeader) *mailboxSession {
+func (s *Server) installFresh(header SessionHeader) *mailboxSession {
 	s.mu.Lock()
 	current := s.sessions[header.RoleID]
-	if current != nil && current.sessionID == header.SessionID {
-		s.mu.Unlock()
-		return current
-	}
 	session := newMailboxSession(header)
 	s.sessions[header.RoleID] = session
 	s.mu.Unlock()
@@ -774,11 +787,11 @@ type mailboxSession struct {
 	roleID       int64
 	sessionID    int64
 	connectionID int64
-	receivedSeq  int64
+	upMsgSeq     int64
 	active       bool
 	lastActivity time.Time
 	notify       chan struct{}
-	outbound     outboundQueue
+	downMsgs     downMsgQueue
 	topics       map[string]struct{}
 	mu           sync.Mutex
 }
@@ -816,14 +829,14 @@ func (s *mailboxSession) header() SessionHeader {
 	return SessionHeader{RoleID: s.roleID, SessionID: s.sessionID, ConnectionID: s.connectionID}
 }
 
-type outboundEntry struct {
+type downMsgEntry struct {
 	seq       int64
 	payload   []byte
 	createdAt time.Time
 }
 
-type outboundQueue struct {
-	entries      []outboundEntry
+type downMsgQueue struct {
+	entries      []downMsgEntry
 	head         int
 	sent         int
 	nextSeq      int64
@@ -832,16 +845,16 @@ type outboundQueue struct {
 	bytes        int
 }
 
-func (q *outboundQueue) enqueue(payload []byte) int64 {
+func (q *downMsgQueue) enqueue(payload []byte) int64 {
 	q.nextSeq++
-	q.entries = append(q.entries, outboundEntry{seq: q.nextSeq, payload: payload, createdAt: time.Now()})
+	q.entries = append(q.entries, downMsgEntry{seq: q.nextSeq, payload: payload, createdAt: time.Now()})
 	q.bytes += len(payload)
 	return q.nextSeq
 }
 
-func (q *outboundQueue) dequeue() (outboundEntry, bool) {
+func (q *downMsgQueue) dequeue() (downMsgEntry, bool) {
 	if q.sent >= len(q.entries) {
-		return outboundEntry{}, false
+		return downMsgEntry{}, false
 	}
 	entry := q.entries[q.sent]
 	q.sent++
@@ -849,7 +862,7 @@ func (q *outboundQueue) dequeue() (outboundEntry, bool) {
 	return entry, true
 }
 
-func (q *outboundQueue) dequeueSome(max int) []outboundEntry {
+func (q *downMsgQueue) dequeueSome(max int) []downMsgEntry {
 	available := len(q.entries) - q.sent
 	if available <= 0 {
 		return nil
@@ -863,18 +876,18 @@ func (q *outboundQueue) dequeueSome(max int) []outboundEntry {
 	return entries
 }
 
-func (q *outboundQueue) resetSent() {
+func (q *downMsgQueue) resetSent() {
 	q.sent = q.head
 }
 
-func (q *outboundQueue) validateAck(ack int64) error {
+func (q *downMsgQueue) validateAck(ack int64) error {
 	if ack < q.confirmedSeq || ack > q.sentSeq {
-		return ErrOutboundAcknowledgement
+		return ErrDownMsgAcknowledgement
 	}
 	return nil
 }
 
-func (q *outboundQueue) confirm(ack int64) error {
+func (q *downMsgQueue) confirm(ack int64) error {
 	if err := q.validateAck(ack); err != nil {
 		return err
 	}
@@ -882,7 +895,7 @@ func (q *outboundQueue) confirm(ack int64) error {
 	cut := q.head
 	for cut < len(q.entries) && q.entries[cut].seq <= ack {
 		q.bytes -= len(q.entries[cut].payload)
-		q.entries[cut] = outboundEntry{}
+		q.entries[cut] = downMsgEntry{}
 		cut++
 	}
 	if cut == q.head {
@@ -896,19 +909,19 @@ func (q *outboundQueue) confirm(ack int64) error {
 	return nil
 }
 
-func (q *outboundQueue) len() int {
+func (q *downMsgQueue) len() int {
 	return len(q.entries) - q.head
 }
 
-func (q *outboundQueue) exceeds(maxMessages, maxBytes int, payload []byte) bool {
+func (q *downMsgQueue) exceeds(maxMessages, maxBytes int, payload []byte) bool {
 	return q.len() >= maxMessages || len(payload) > maxBytes-q.bytes
 }
 
-func (q *outboundQueue) expired(now time.Time, ttl time.Duration) bool {
+func (q *downMsgQueue) expired(now time.Time, ttl time.Duration) bool {
 	return q.len() > 0 && now.Sub(q.entries[q.head].createdAt) >= ttl
 }
 
-func (q *outboundQueue) compactStorage() {
+func (q *downMsgQueue) compactStorage() {
 	pending := q.len()
 	if pending == 0 {
 		q.entries = nil
@@ -919,7 +932,7 @@ func (q *outboundQueue) compactStorage() {
 	if q.head < 64 || q.head*2 < len(q.entries) {
 		return
 	}
-	entries := make([]outboundEntry, pending, pending*2)
+	entries := make([]downMsgEntry, pending, pending*2)
 	copy(entries, q.entries[q.head:])
 	q.entries = entries
 	q.sent -= q.head

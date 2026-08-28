@@ -2281,10 +2281,15 @@ Agent 核心不依赖项目生成协议，因此不会自行构造业务错误�
 目标解析、Actor 调用超时、传输错误和其他没有取得 Actor 明确响应的基础设施错误仍沿 Agent 错误返回链关闭连接，
 不能为了“不断连”把损坏协议状态或不可确定的投递结果吞成请求失败。
 
-连接上存在两条独立序列：客户端为 `FrameBusiness` 分配 Seq，服务端为 `FrameOutbound` 分配 Seq。帧中的 Ack
-始终确认对端序列，不承担请求与响应关联：`FrameBusiness.Ack` 确认服务端下行，`FrameOutbound.Ack` 确认客户端上行。
-服务端在 `msgq.Rec` 接受 Seq 后才推进确认游标；Dispatcher 有响应时把该游标捎带到 `FrameOutbound`，无响应或重复
+连接上存在两条独立序列：客户端为 `FrameUpMsg` 分配 Seq，服务端为 `FrameDownMsg` 分配 Seq。帧中的 Ack
+始终确认对端序列，不承担请求与响应关联：`FrameUpMsg.Ack` 确认服务端下行，`FrameDownMsg.Ack` 确认客户端上行。
+服务端在 `msgq.Rec` 接受 Seq 后才推进确认游标；Dispatcher 有响应时把该游标捎带到 `FrameDownMsg`，无响应或重复
 Seq 时发送独立 `FrameAck`。响应发送协程和独立确认共用连接级串行 writer，避免并发写同一个 TCP/WebSocket transport。
+
+客户端把未确认 UpMsg 保存在逻辑 Session 自己的重放队列中。Frame 在首次发送前入队，Ack 只释放连续前缀；队列内的
+Frame 和 Payload 在确认前只读。恢复连接复用原 Session，先发送带最后已处理 DownMsg Ack 的握手，再按原序号重放剩余
+UpMsg。msgq 的新建与恢复语义严格分离：新建总是安装空会话，恢复必须命中同一 SessionID。恢复成功后 Agent 立即回送
+当前 UpMsg Ack；即使客户端随后重放已经受理的 Frame，`Rec` 也只幂等返回当前序号，不会重复调用 Dispatcher。
 
 ### Actor
 

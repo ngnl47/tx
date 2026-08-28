@@ -20,7 +20,7 @@ func TestAgentSessionAuthenticatesThenDispatchesAcceptedSequence(t *testing.T) {
 	go func() { result <- agent.Serve(context.Background(), transport) }()
 
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
-	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, CommandID: 10001, RouteKey: txagent.Int64RouteKey(470001), Payload: []byte("bon-request")}
+	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 10001, RouteKey: txagent.Int64RouteKey(470001), Payload: []byte("bon-request")}
 	request := receiveDispatch(t, dispatched)
 	if request.Identity.RoleID != 470001 || request.Identity.SessionID != 99 || request.Seq != 1 || request.CommandID != 10001 || string(request.Payload) != "bon-request" {
 		t.Fatalf("dispatch request = %#v", request)
@@ -35,11 +35,11 @@ func TestAgentSessionAuthenticatesThenDispatchesAcceptedSequence(t *testing.T) {
 	}
 }
 
-func TestAgentSessionRejectsBusinessFrameBeforeHandshake(t *testing.T) {
+func TestAgentSessionRejectsUpMsgFrameBeforeHandshake(t *testing.T) {
 	agent, transport, _, _ := newAgentSessionFixture(t, nil)
 	result := make(chan error, 1)
 	go func() { result <- agent.Serve(context.Background(), transport) }()
-	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, Payload: []byte("bon-request")}
+	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, Payload: []byte("bon-request")}
 
 	err := <-result
 	if !errors.Is(err, txagent.ErrHandshakeRequired) {
@@ -47,29 +47,29 @@ func TestAgentSessionRejectsBusinessFrameBeforeHandshake(t *testing.T) {
 	}
 }
 
-func TestAgentSessionFetchesOutboundAndConfirmsAckOnNextInbound(t *testing.T) {
+func TestAgentSessionFetchesDownMsgAndConfirmsAckOnNextUpMsg(t *testing.T) {
 	agent, transport, mailbox, dispatched := newAgentSessionFixture(t, nil)
 	result := make(chan error, 1)
 	go func() { result <- agent.Serve(context.Background(), transport) }()
 
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
-	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, CommandID: 1, Payload: []byte("first")}
+	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("first")}
 	_ = receiveDispatch(t, dispatched)
 	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 1, "")
 
 	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("bon-response")}); err != nil {
-		t.Fatalf("publish outbound: %v", err)
+		t.Fatalf("publish downMsg: %v", err)
 	}
 	select {
-	case outbound := <-transport.writes:
-		if outbound.Kind != txagent.FrameOutbound || outbound.Seq != 1 || outbound.Ack != 1 || string(outbound.Payload) != "bon-response" {
-			t.Fatalf("outbound frame = %#v", outbound)
+	case downMsg := <-transport.writes:
+		if downMsg.Kind != txagent.FrameDownMsg || downMsg.Seq != 1 || downMsg.Ack != 1 || string(downMsg.Payload) != "bon-response" {
+			t.Fatalf("downMsg frame = %#v", downMsg)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for outbound frame")
+		t.Fatal("timed out waiting for downMsg frame")
 	}
 
-	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 2, Ack: 1, CommandID: 1, Payload: []byte("second")}
+	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 2, Ack: 1, CommandID: 1, Payload: []byte("second")}
 	_ = receiveDispatch(t, dispatched)
 	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 2, "")
 	deadline, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
@@ -122,11 +122,11 @@ func TestAgentSessionPublishesDispatchResultToCurrentSession(t *testing.T) {
 	go func() { result <- agent.Serve(context.Background(), transport) }()
 
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
-	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, CommandID: 1, Payload: []byte("bon-request")}
+	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("bon-request")}
 	select {
-	case outbound := <-transport.writes:
-		if outbound.Kind != txagent.FrameOutbound || outbound.Seq != 1 || outbound.Ack != 1 || string(outbound.Payload) != "bon-response" {
-			t.Fatalf("outbound frame = %#v", outbound)
+	case downMsg := <-transport.writes:
+		if downMsg.Kind != txagent.FrameDownMsg || downMsg.Seq != 1 || downMsg.Ack != 1 || string(downMsg.Payload) != "bon-response" {
+			t.Fatalf("downMsg frame = %#v", downMsg)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for dispatch response")
@@ -143,13 +143,13 @@ func TestAgentSessionPublishesDispatchResultToCurrentSession(t *testing.T) {
 	}
 }
 
-func TestAgentSessionAcknowledgesBusinessWithoutDispatchResponse(t *testing.T) {
+func TestAgentSessionAcknowledgesUpMsgWithoutDispatchResponse(t *testing.T) {
 	agent, transport, _, dispatched := newAgentSessionFixture(t, nil)
 	result := make(chan error, 1)
 	go func() { result <- agent.Serve(context.Background(), transport) }()
 
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
-	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, CommandID: 1, Payload: []byte("bon-request")}
+	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("bon-request")}
 	_ = receiveDispatch(t, dispatched)
 	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 1, "")
 
@@ -159,7 +159,7 @@ func TestAgentSessionAcknowledgesBusinessWithoutDispatchResponse(t *testing.T) {
 	}
 }
 
-func TestAgentSessionConfirmsAckWithoutBusinessFrame(t *testing.T) {
+func TestAgentSessionConfirmsAckWithoutUpMsgFrame(t *testing.T) {
 	agent, transport, mailbox, dispatched := newAgentSessionFixture(t, nil)
 	result := make(chan error, 1)
 	go func() { result <- agent.Serve(context.Background(), transport) }()
@@ -167,15 +167,15 @@ func TestAgentSessionConfirmsAckWithoutBusinessFrame(t *testing.T) {
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
 	waitForMailboxSession(t, mailbox)
 	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("bon-response")}); err != nil {
-		t.Fatalf("publish outbound: %v", err)
+		t.Fatalf("publish downMsg: %v", err)
 	}
 	select {
-	case outbound := <-transport.writes:
-		if outbound.Kind != txagent.FrameOutbound || outbound.Seq != 1 {
-			t.Fatalf("outbound frame = %#v", outbound)
+	case downMsg := <-transport.writes:
+		if downMsg.Kind != txagent.FrameDownMsg || downMsg.Seq != 1 {
+			t.Fatalf("downMsg frame = %#v", downMsg)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for outbound frame")
+		t.Fatal("timed out waiting for downMsg frame")
 	}
 
 	transport.reads <- txagent.Frame{Kind: txagent.FrameAck, Ack: 1}
@@ -197,7 +197,7 @@ func TestAgentSessionConfirmsAckWithoutBusinessFrame(t *testing.T) {
 	}
 }
 
-func TestAgentSessionRejectsAcknowledgementBeyondWrittenOutbound(t *testing.T) {
+func TestAgentSessionRejectsAcknowledgementBeyondWrittenDownMsg(t *testing.T) {
 	agent, transport, mailbox, _ := newAgentSessionFixture(t, nil)
 	result := make(chan error, 1)
 	go func() { result <- agent.Serve(context.Background(), transport) }()
@@ -205,12 +205,12 @@ func TestAgentSessionRejectsAcknowledgementBeyondWrittenOutbound(t *testing.T) {
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
 	waitForMailboxSession(t, mailbox)
 	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("bon-response")}); err != nil {
-		t.Fatalf("publish outbound: %v", err)
+		t.Fatalf("publish downMsg: %v", err)
 	}
 	select {
 	case <-transport.writes:
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for outbound frame")
+		t.Fatal("timed out waiting for downMsg frame")
 	}
 	transport.reads <- txagent.Frame{Kind: txagent.FrameAck, Ack: 2}
 	if err := <-result; !errors.Is(err, txagent.ErrInvalidAcknowledgement) {
@@ -233,13 +233,42 @@ func TestAgentSessionDoesNotDispatchDuplicateSequence(t *testing.T) {
 	go func() { result <- agent.Serve(context.Background(), transport) }()
 
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
-	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, CommandID: 1, Payload: []byte("first")}
+	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("first")}
 	_ = receiveDispatch(t, dispatched)
 	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 1, "")
-	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, CommandID: 1, Payload: []byte("duplicate")}
+	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("duplicate")}
 	select {
 	case request := <-dispatched:
 		t.Fatalf("duplicate dispatched = %#v", request)
+	case <-time.After(20 * time.Millisecond):
+	}
+	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 1, "")
+
+	transport.closeReads()
+	if err := <-result; !errors.Is(err, io.EOF) {
+		t.Fatalf("serve error = %v, want EOF", err)
+	}
+}
+
+func TestAgentSessionRestoreAcknowledgesAcceptedUpMsgAndSkipsReplay(t *testing.T) {
+	agent, transport, mailbox, dispatched := newAgentSessionFixture(t, nil)
+	previous := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 6}
+	if _, err := mailbox.Init(context.Background(), msgq.InitRequest{Header: previous}); err != nil {
+		t.Fatalf("init previous session: %v", err)
+	}
+	if _, err := mailbox.Rec(context.Background(), msgq.RecRequest{Header: previous, Seq: 1}); err != nil {
+		t.Fatalf("record previous upMsg: %v", err)
+	}
+
+	result := make(chan error, 1)
+	go func() { result <- agent.Serve(context.Background(), transport) }()
+	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Restore: true, Payload: []byte("token")}
+	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 1, "")
+
+	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("replay")}
+	select {
+	case request := <-dispatched:
+		t.Fatalf("replayed upMsg dispatched = %#v", request)
 	case <-time.After(20 * time.Millisecond):
 	}
 	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 1, "")
@@ -254,7 +283,7 @@ func TestAgentSessionDispatchFailureDoesNotRollbackAcceptedSequence(t *testing.T
 	dispatchErr := errors.New("dispatch failed")
 	agent, transport, mailbox, _ := newAgentSessionFixture(t, dispatchErr)
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
-	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, CommandID: 1, Payload: []byte("bon-request")}
+	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("bon-request")}
 
 	err := agent.Serve(context.Background(), transport)
 	if !errors.Is(err, dispatchErr) {
@@ -299,7 +328,7 @@ func TestAgentSessionDoesNotAdvanceSequenceWhenAdmissionRejects(t *testing.T) {
 	}
 	transport := newAgentTransport()
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
-	transport.reads <- txagent.Frame{Kind: txagent.FrameBusiness, Seq: 1, CommandID: 1, Payload: []byte("bon-request")}
+	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("bon-request")}
 	if err := agent.Serve(context.Background(), transport); !errors.Is(err, drainErr) {
 		t.Fatalf("Serve error = %v, want admission error", err)
 	}

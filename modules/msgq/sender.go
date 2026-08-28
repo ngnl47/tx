@@ -105,7 +105,7 @@ func (c *grpcConnection) Init(ctx context.Context, request InitRequest) (InitRes
 	if response == nil || response.GetReceivedSeq() < 0 {
 		return InitResult{}, ErrInvalidMailboxResponse
 	}
-	return InitResult{ReceivedSeq: response.GetReceivedSeq()}, nil
+	return InitResult{UpMsgSeq: response.GetReceivedSeq()}, nil
 }
 
 func (c *grpcConnection) Rec(ctx context.Context, request RecRequest) (RecResult, error) {
@@ -116,7 +116,7 @@ func (c *grpcConnection) Rec(ctx context.Context, request RecRequest) (RecResult
 	if response == nil || response.GetReceivedSeq() < request.Seq || response.GetAck() != request.Ack {
 		return RecResult{}, ErrInvalidMailboxResponse
 	}
-	return RecResult{ReceivedSeq: response.GetReceivedSeq(), Ack: response.GetAck()}, nil
+	return RecResult{UpMsgSeq: response.GetReceivedSeq(), Ack: response.GetAck()}, nil
 }
 
 func (c *grpcConnection) FetchSome(ctx context.Context, request FetchSomeRequest) (FetchSomeResult, error) {

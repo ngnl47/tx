@@ -109,20 +109,20 @@ func TestLocalSessionClientDelegatesMailboxCalls(t *testing.T) {
 		t.Fatalf("init: %v", err)
 	}
 	if _, err := client.Rec(context.Background(), msgq.RecRequest{Header: header, Seq: 1}); err != nil {
-		t.Fatalf("record inbound message: %v", err)
+		t.Fatalf("record upMsg message: %v", err)
 	}
 	if _, err := client.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Payload: []byte("bon")}); err != nil {
-		t.Fatalf("publish outbound message: %v", err)
+		t.Fatalf("publish downMsg message: %v", err)
 	}
 	batch, err := client.FetchSome(context.Background(), msgq.FetchSomeRequest{Header: header, Max: 1})
 	if err != nil {
-		t.Fatalf("fetch outbound message: %v", err)
+		t.Fatalf("fetch downMsg message: %v", err)
 	}
 	if len(batch.Messages) != 1 || batch.Messages[0].Seq != 1 || string(batch.Messages[0].Payload) != "bon" {
 		t.Fatalf("fetched batch = %#v", batch)
 	}
 	if err := client.Confirm(context.Background(), msgq.ConfirmRequest{Header: header, Ack: 1}); err != nil {
-		t.Fatalf("confirm outbound message: %v", err)
+		t.Fatalf("confirm downMsg message: %v", err)
 	}
 }
 
@@ -181,20 +181,20 @@ func TestGRPCSessionClientDelegatesMailboxCalls(t *testing.T) {
 		t.Fatalf("init: %v", err)
 	}
 	if _, err := client.Rec(context.Background(), msgq.RecRequest{Header: header, Seq: 1}); err != nil {
-		t.Fatalf("record inbound message: %v", err)
+		t.Fatalf("record upMsg message: %v", err)
 	}
 	if _, err := client.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Payload: []byte("bon")}); err != nil {
-		t.Fatalf("publish outbound message: %v", err)
+		t.Fatalf("publish downMsg message: %v", err)
 	}
 	batch, err := client.FetchSome(context.Background(), msgq.FetchSomeRequest{Header: header, Max: 1})
 	if err != nil {
-		t.Fatalf("fetch outbound message: %v", err)
+		t.Fatalf("fetch downMsg message: %v", err)
 	}
 	if len(batch.Messages) != 1 || batch.Messages[0].Seq != 1 || string(batch.Messages[0].Payload) != "bon" {
 		t.Fatalf("fetched batch = %#v", batch)
 	}
 	if err := client.Confirm(context.Background(), msgq.ConfirmRequest{Header: header, Ack: 1}); err != nil {
-		t.Fatalf("confirm outbound message: %v", err)
+		t.Fatalf("confirm downMsg message: %v", err)
 	}
 }
 

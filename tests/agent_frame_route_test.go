@@ -8,7 +8,7 @@ import (
 
 func TestAgentFrameRoundTripsCommandRouteWithoutParsingPayload(t *testing.T) {
 	original := txagent.Frame{
-		Kind:      txagent.FrameBusiness,
+		Kind:      txagent.FrameUpMsg,
 		Seq:       1,
 		CommandID: 30001,
 		RouteKey:  txagent.Int64RouteKey(470001),
@@ -31,13 +31,13 @@ func TestAgentFrameRoundTripsCommandRouteWithoutParsingPayload(t *testing.T) {
 	}
 }
 
-func TestAgentFrameRejectsBusinessWithoutCommandID(t *testing.T) {
+func TestAgentFrameRejectsUpMsgWithoutCommandID(t *testing.T) {
 	_, err := txagent.EncodeFrame(txagent.Frame{
-		Kind:    txagent.FrameBusiness,
+		Kind:    txagent.FrameUpMsg,
 		Seq:     1,
 		Payload: []byte{1},
 	}, 1024)
 	if err == nil {
-		t.Fatal("EncodeFrame accepted business frame without CommandID")
+		t.Fatal("EncodeFrame accepted upMsg frame without CommandID")
 	}
 }

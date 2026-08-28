@@ -97,15 +97,21 @@ func (s *Server) Serve(ctx context.Context, transport Transport) (serveErr error
 
 	sessionCtx, cancel := context.WithCancel(ctx)
 	writer := sessionFrameWriter{transport: transport}
-	var writtenOutbound atomic.Int64
+	var writtenDownSeq atomic.Int64
 	if handshake.Restore {
-		writtenOutbound.Store(handshake.Ack)
+		writtenDownSeq.Store(handshake.Ack)
 	}
-	var receivedBusiness atomic.Int64
-	receivedBusiness.Store(initialized.ReceivedSeq)
+	var receivedUpSeq atomic.Int64
+	receivedUpSeq.Store(initialized.UpMsgSeq)
+	if handshake.Restore && initialized.UpMsgSeq > 0 {
+		if err := writer.Write(sessionCtx, Frame{Kind: FrameAck, Ack: initialized.UpMsgSeq}); err != nil {
+			cancel()
+			return err
+		}
+	}
 	writerResult := make(chan error, 1)
 	go func() {
-		writerResult <- s.writeOutbound(sessionCtx, client, header, &writer, &writtenOutbound, &receivedBusiness)
+		writerResult <- s.writeDownMsgs(sessionCtx, client, header, &writer, &writtenDownSeq, &receivedUpSeq)
 		cancel()
 	}()
 	defer func() {
@@ -116,41 +122,41 @@ func (s *Server) Serve(ctx context.Context, transport Transport) (serveErr error
 		}
 	}()
 
-	confirmedOutbound := handshake.Ack
+	confirmedDownSeq := handshake.Ack
 	for {
 		frame, err := transport.Read(sessionCtx)
 		if err != nil {
 			return err
 		}
 		if frame.validAck() {
-			if err := validateAcknowledgement(frame.Ack, confirmedOutbound, writtenOutbound.Load()); err != nil {
+			if err := validateAcknowledgement(frame.Ack, confirmedDownSeq, writtenDownSeq.Load()); err != nil {
 				return err
 			}
 			if err := client.Confirm(sessionCtx, msgq.ConfirmRequest{Header: header, Ack: frame.Ack}); err != nil {
 				return err
 			}
-			confirmedOutbound = frame.Ack
+			confirmedDownSeq = frame.Ack
 			continue
 		}
-		if !frame.validBusiness() {
+		if !frame.validUpMsg() {
 			return ErrInvalidFrame
 		}
-		if err := validateAcknowledgement(frame.Ack, confirmedOutbound, writtenOutbound.Load()); err != nil {
+		if err := validateAcknowledgement(frame.Ack, confirmedDownSeq, writtenDownSeq.Load()); err != nil {
 			return err
 		}
-		responseQueued, err := s.dispatchBusiness(sessionCtx, client, header, identity, frame, &receivedBusiness, &confirmedOutbound)
+		responseQueued, err := s.dispatchUpMsg(sessionCtx, client, header, identity, frame, &receivedUpSeq, &confirmedDownSeq)
 		if err != nil {
 			return err
 		}
 		if !responseQueued {
-			if err := writer.Write(sessionCtx, Frame{Kind: FrameAck, Ack: receivedBusiness.Load()}); err != nil {
+			if err := writer.Write(sessionCtx, Frame{Kind: FrameAck, Ack: receivedUpSeq.Load()}); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-func (s *Server) dispatchBusiness(ctx context.Context, client msgq.SessionClient, header msgq.SessionHeader, identity Identity, frame Frame, receivedBusiness *atomic.Int64, confirmedOutbound *int64) (bool, error) {
+func (s *Server) dispatchUpMsg(ctx context.Context, client msgq.SessionClient, header msgq.SessionHeader, identity Identity, frame Frame, receivedUpSeq *atomic.Int64, confirmedDownSeq *int64) (bool, error) {
 	var done func()
 	if s.admission != nil {
 		var err error
@@ -164,11 +170,11 @@ func (s *Server) dispatchBusiness(ctx context.Context, client msgq.SessionClient
 	if err != nil {
 		return false, err
 	}
-	*confirmedOutbound = frame.Ack
-	if result.ReceivedSeq <= receivedBusiness.Load() {
+	*confirmedDownSeq = frame.Ack
+	if result.UpMsgSeq <= receivedUpSeq.Load() {
 		return false, nil
 	}
-	receivedBusiness.Store(result.ReceivedSeq)
+	receivedUpSeq.Store(result.UpMsgSeq)
 	dispatched, err := s.dispatcher.Dispatch(ctx, DispatchRequest{
 		Identity:  identity,
 		Seq:       frame.Seq,
@@ -186,14 +192,14 @@ func (s *Server) dispatchBusiness(ctx context.Context, client msgq.SessionClient
 	return err == nil, err
 }
 
-func (s *Server) writeOutbound(ctx context.Context, client msgq.SessionClient, header msgq.SessionHeader, writer *sessionFrameWriter, written, receivedBusiness *atomic.Int64) error {
+func (s *Server) writeDownMsgs(ctx context.Context, client msgq.SessionClient, header msgq.SessionHeader, writer *sessionFrameWriter, written, receivedUpSeq *atomic.Int64) error {
 	for {
 		batch, err := client.FetchSome(ctx, msgq.FetchSomeRequest{Header: header, Max: s.fetchBatch})
 		if err != nil {
 			return err
 		}
 		for _, message := range batch.Messages {
-			if err := writer.Write(ctx, Frame{Kind: FrameOutbound, Seq: message.Seq, Ack: receivedBusiness.Load(), Payload: message.Payload}); err != nil {
+			if err := writer.Write(ctx, Frame{Kind: FrameDownMsg, Seq: message.Seq, Ack: receivedUpSeq.Load(), Payload: message.Payload}); err != nil {
 				return err
 			}
 			written.Store(message.Seq)

@@ -125,19 +125,19 @@ func TestGRPCConnectionRejectsInvalidResponseSequences(t *testing.T) {
 
 type contradictorySequenceMailboxClient struct {
 	msgqpb.MailboxServiceClient
-	receivedSeq int64
-	ack         int64
+	upMsgSeq int64
+	ack      int64
 }
 
 func (c *contradictorySequenceMailboxClient) Rec(context.Context, *msgqpb.RecRequest, ...grpc.CallOption) (*msgqpb.RecResponse, error) {
-	return &msgqpb.RecResponse{ReceivedSeq: c.receivedSeq, Ack: c.ack}, nil
+	return &msgqpb.RecResponse{ReceivedSeq: c.upMsgSeq, Ack: c.ack}, nil
 }
 
 func TestGRPCConnectionRejectsContradictoryRecResponse(t *testing.T) {
 	header := SessionHeader{RoleID: 47, SessionID: 1, ConnectionID: 2}
 	tests := map[string]*contradictorySequenceMailboxClient{
-		"received seq behind request": {receivedSeq: 6, ack: 3},
-		"ack differs from request":    {receivedSeq: 7, ack: 2},
+		"upMsg seq behind request": {upMsgSeq: 6, ack: 3},
+		"ack differs from request": {upMsgSeq: 7, ack: 2},
 	}
 	for name, client := range tests {
 		t.Run(name, func(t *testing.T) {

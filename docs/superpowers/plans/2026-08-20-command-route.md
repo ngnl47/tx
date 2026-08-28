@@ -153,7 +153,7 @@ env GOCACHE=/private/tmp/tx-go126-build GOTMPDIR=/private/tmp GOTOOLCHAIN=local 
 
 ```go
 frame := agent.Frame{
-    Kind: agent.FrameBusiness, Seq: 1, CommandID: 30001,
+    Kind: agent.FrameUpMsg, Seq: 1, CommandID: 30001,
     RouteKey: agent.Int64RouteKey(47001), Payload: []byte{1, 2},
 }
 decoded, err := agent.DecodeFrame(encoded, 1024)

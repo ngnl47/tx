@@ -13,10 +13,10 @@ type FrameKind uint8
 const (
 	// FrameHandshake 建立或恢复逻辑会话。
 	FrameHandshake FrameKind = iota + 1
-	// FrameBusiness 携带客户端上行业务命令。
-	FrameBusiness
-	// FrameOutbound 携带服务端下行消息。
-	FrameOutbound
+	// FrameUpMsg 携带客户端上行业务命令。
+	FrameUpMsg
+	// FrameDownMsg 携带服务端下行消息。
+	FrameDownMsg
 	// FrameAck 在没有业务载荷可捎带时，单独确认对端已经连续处理的 Seq。
 	FrameAck
 )
@@ -77,12 +77,12 @@ func (f Frame) validHandshake() bool {
 	return f.Kind == FrameHandshake && f.Seq == 0 && f.Ack >= 0 && (f.Restore || f.Ack == 0) && !f.hasCommandRoute()
 }
 
-func (f Frame) validBusiness() bool {
-	return f.Kind == FrameBusiness && f.Seq > 0 && f.Ack >= 0 && f.CommandID > 0 && f.validRouteKey()
+func (f Frame) validUpMsg() bool {
+	return f.Kind == FrameUpMsg && f.Seq > 0 && f.Ack >= 0 && f.CommandID > 0 && f.validRouteKey()
 }
 
-func (f Frame) validOutbound() bool {
-	return f.Kind == FrameOutbound && f.Seq > 0 && f.Ack >= 0 && !f.Restore && !f.hasCommandRoute()
+func (f Frame) validDownMsg() bool {
+	return f.Kind == FrameDownMsg && f.Seq > 0 && f.Ack >= 0 && !f.Restore && !f.hasCommandRoute()
 }
 
 func (f Frame) validAck() bool {
@@ -124,7 +124,7 @@ func EncodeFrame(frame Frame, maxFrameBytes int) ([]byte, error) {
 }
 
 func prepareFrame(frame Frame, maxFrameBytes int) (encodedFrame, error) {
-	if maxFrameBytes < frameHeaderBytes || (!frame.validHandshake() && !frame.validBusiness() && !frame.validOutbound() && !frame.validAck()) {
+	if maxFrameBytes < frameHeaderBytes || (!frame.validHandshake() && !frame.validUpMsg() && !frame.validDownMsg() && !frame.validAck()) {
 		return encodedFrame{}, ErrInvalidFrame
 	}
 	routeKey, err := encodeRouteKey(frame.RouteKey)
@@ -206,7 +206,7 @@ func DecodeFrame(encoded []byte, maxFrameBytes int) (Frame, error) {
 		RouteKey:  routeKey,
 		Payload:   cloneBytes(encoded[frameHeaderBytes+routeKeySize:]),
 	}
-	if (!frame.validHandshake() && !frame.validBusiness() && !frame.validOutbound() && !frame.validAck()) || (frame.Restore && frame.Kind != FrameHandshake) {
+	if (!frame.validHandshake() && !frame.validUpMsg() && !frame.validDownMsg() && !frame.validAck()) || (frame.Restore && frame.Kind != FrameHandshake) {
 		return Frame{}, ErrInvalidFrame
 	}
 	return frame, nil

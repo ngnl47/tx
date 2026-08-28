@@ -32,15 +32,15 @@ func TestBroadcastTopicSharesImmutablePayload(t *testing.T) {
 	defer firstSession.mu.Unlock()
 	secondSession.mu.Lock()
 	defer secondSession.mu.Unlock()
-	firstPayload := firstSession.outbound.entries[firstSession.outbound.head].payload
-	secondPayload := secondSession.outbound.entries[secondSession.outbound.head].payload
+	firstPayload := firstSession.downMsgs.entries[firstSession.downMsgs.head].payload
+	secondPayload := secondSession.downMsgs.entries[secondSession.downMsgs.head].payload
 	if &firstPayload[0] != &payload[0] || &secondPayload[0] != &payload[0] {
 		t.Fatal("broadcast payload was copied instead of shared")
 	}
 }
 
-func TestOutboundQueueReleasesAcknowledgedStorage(t *testing.T) {
-	var queue outboundQueue
+func TestDownMsgQueueReleasesAcknowledgedStorage(t *testing.T) {
+	var queue downMsgQueue
 	payload := []byte("payload")
 	for range 128 {
 		queue.enqueue(payload)
@@ -92,15 +92,15 @@ func TestSlowSessionWithoutAcknowledgementHitsByteLimit(t *testing.T) {
 			t.Fatalf("fetch %q: %v", message, err)
 		}
 	}
-	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Payload: []byte("more")}); !errors.Is(err, ErrOutboundOverflow) {
-		t.Fatalf("publish after unacknowledged backlog error = %v, want %v", err, ErrOutboundOverflow)
+	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Payload: []byte("more")}); !errors.Is(err, ErrDownMsgOverflow) {
+		t.Fatalf("publish after unacknowledged backlog error = %v, want %v", err, ErrDownMsgOverflow)
 	}
 	if server.SessionCount() != 0 {
 		t.Fatalf("session count after overflow = %d, want 0", server.SessionCount())
 	}
 }
 
-func TestAcknowledgementReleasesOutboundByteBudget(t *testing.T) {
+func TestAcknowledgementReleasesDownMsgByteBudget(t *testing.T) {
 	server, err := NewServer(ServerOptions{
 		InstanceID:         "msgq-1",
 		Store:              &testSessionStore{},
@@ -126,6 +126,64 @@ func TestAcknowledgementReleasesOutboundByteBudget(t *testing.T) {
 	}
 	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Payload: []byte("next")}); err != nil {
 		t.Fatalf("publish after acknowledgement: %v", err)
+	}
+}
+
+func TestInitWithoutRestoreAlwaysCreatesFreshSession(t *testing.T) {
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: &testSessionStore{}, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	first := SessionHeader{RoleID: 1, SessionID: 7, ConnectionID: 1}
+	if _, err := server.Init(context.Background(), InitRequest{Header: first}); err != nil {
+		t.Fatalf("init first: %v", err)
+	}
+	if _, err := server.Rec(context.Background(), RecRequest{Header: first, Seq: 1}); err != nil {
+		t.Fatalf("rec first: %v", err)
+	}
+	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: first.RoleID}, Payload: []byte("pending")}); err != nil {
+		t.Fatalf("publish first: %v", err)
+	}
+
+	second := SessionHeader{RoleID: 1, SessionID: 7, ConnectionID: 2}
+	result, err := server.Init(context.Background(), InitRequest{Header: second})
+	if err != nil {
+		t.Fatalf("init fresh: %v", err)
+	}
+	if result.UpMsgSeq != 0 {
+		t.Fatalf("fresh upMsg seq = %d, want 0", result.UpMsgSeq)
+	}
+	session, found := server.lookup(second.RoleID)
+	if !found {
+		t.Fatal("fresh session is missing")
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.connectionID != second.ConnectionID || session.upMsgSeq != 0 || session.downMsgs.len() != 0 {
+		t.Fatalf("fresh session retained old state: %#v", session)
+	}
+}
+
+func TestInitRestoreRequiresExistingMatchingSession(t *testing.T) {
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: &testSessionStore{}, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	missing := SessionHeader{RoleID: 1, SessionID: 7, ConnectionID: 1}
+	if _, err := server.Init(context.Background(), InitRequest{Header: missing, Restore: true}); !errors.Is(err, ErrSessionOffline) {
+		t.Fatalf("restore missing error = %v, want %v", err, ErrSessionOffline)
+	}
+	if _, found := server.lookup(missing.RoleID); found {
+		t.Fatal("restore missing installed an empty session")
+	}
+
+	current := SessionHeader{RoleID: 1, SessionID: 7, ConnectionID: 2}
+	if _, err := server.Init(context.Background(), InitRequest{Header: current}); err != nil {
+		t.Fatalf("init current: %v", err)
+	}
+	mismatch := SessionHeader{RoleID: 1, SessionID: 8, ConnectionID: 3}
+	if _, err := server.Init(context.Background(), InitRequest{Header: mismatch, Restore: true}); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("restore mismatched error = %v, want %v", err, ErrSessionChanged)
 	}
 }
 
@@ -155,7 +213,7 @@ func TestSlowSessionExpiresDespiteClientActivity(t *testing.T) {
 	}
 	session.mu.Lock()
 	session.lastActivity = time.Now()
-	session.outbound.entries[session.outbound.head].createdAt = time.Now().Add(-2 * time.Minute)
+	session.downMsgs.entries[session.downMsgs.head].createdAt = time.Now().Add(-2 * time.Minute)
 	session.mu.Unlock()
 	removed, err := server.Reap(context.Background(), time.Now())
 	if err != nil || removed != 1 {

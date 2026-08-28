@@ -30,7 +30,7 @@ func (s *mailboxService) Init(ctx context.Context, request *msgqpb.InitRequest) 
 	if err != nil {
 		return nil, mailboxStatusError(err)
 	}
-	return &msgqpb.InitResponse{ReceivedSeq: result.ReceivedSeq}, nil
+	return &msgqpb.InitResponse{ReceivedSeq: result.UpMsgSeq}, nil
 }
 
 func (s *mailboxService) Rec(ctx context.Context, request *msgqpb.RecRequest) (*msgqpb.RecResponse, error) {
@@ -38,7 +38,7 @@ func (s *mailboxService) Rec(ctx context.Context, request *msgqpb.RecRequest) (*
 	if err != nil {
 		return nil, mailboxStatusError(err)
 	}
-	return &msgqpb.RecResponse{ReceivedSeq: result.ReceivedSeq, Ack: result.Ack}, nil
+	return &msgqpb.RecResponse{ReceivedSeq: result.UpMsgSeq, Ack: result.Ack}, nil
 }
 
 func (s *mailboxService) Pub(ctx context.Context, request *msgqpb.PubRequest) (*msgqpb.PubResponse, error) {
@@ -143,13 +143,13 @@ func mailboxStatusError(err error) error {
 		return status.Error(codes.DeadlineExceeded, err.Error())
 	}
 	switch {
-	case errors.Is(err, ErrInvalidHeader), errors.Is(err, ErrInboundSequence), errors.Is(err, ErrOutboundAcknowledgement), errors.Is(err, ErrInvalidTopic):
+	case errors.Is(err, ErrInvalidHeader), errors.Is(err, ErrUpMsgSequence), errors.Is(err, ErrDownMsgAcknowledgement), errors.Is(err, ErrInvalidTopic):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, ErrSessionOffline):
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, ErrSessionChanged):
 		return status.Error(codes.Aborted, err.Error())
-	case errors.Is(err, ErrOutboundOverflow):
+	case errors.Is(err, ErrDownMsgOverflow):
 		return status.Error(codes.ResourceExhausted, err.Error())
 	case errors.Is(err, ErrRouteUnavailable):
 		return status.Error(codes.Unavailable, err.Error())
@@ -179,7 +179,7 @@ func mailboxClientError(err error) error {
 	case codes.Aborted:
 		return fmt.Errorf("%w: %v", ErrSessionChanged, err)
 	case codes.ResourceExhausted:
-		return fmt.Errorf("%w: %v", ErrOutboundOverflow, err)
+		return fmt.Errorf("%w: %v", ErrDownMsgOverflow, err)
 	case codes.Unavailable:
 		return fmt.Errorf("%w: %v", ErrRouteUnavailable, err)
 	default:

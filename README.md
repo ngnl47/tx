@@ -408,7 +408,7 @@ _ = target.Instance.Endpoint
 `Instance.Endpoint` 上的独立 `MailboxService`；不要把 `Server` 当作全局消息队列。
 
 ```go
-// Agent 收到客户端上行：Seq 必须连续；重复 Seq 幂等返回当前 ReceivedSeq。
+// Agent 收到客户端上行：Seq 必须连续；重复 Seq 幂等返回当前 UpMsgSeq。
 received, err := mailbox.Rec(ctx, msgq.RecRequest{
     Header: header,
     Seq:    12,
@@ -417,24 +417,24 @@ received, err := mailbox.Rec(ctx, msgq.RecRequest{
 if err != nil {
     return err
 }
-_ = received.ReceivedSeq
+_ = received.UpMsgSeq
 
 // 任意本地业务逻辑发布 BON 下行。只填写 RoleID 即投递给当前会话。
 published, err := mailbox.Pub(ctx, msgq.PubRequest{
     Header:  msgq.SessionHeader{RoleID: 470001},
-    Message: bonBody,
+    Payload: bonBody,
 })
 if err != nil {
-    return err // 队列到达 MaxBacklogMessages 时返回 msgq.ErrOutboundOverflow。
+    return err // 队列到达 MaxBacklogMessages 时返回 msgq.ErrDownMsgOverflow。
 }
 _ = published.Seq
 
 // Agent 以自身的连接 context 长轮询；ctx 超时或取消即结束本次 Fetch。
-outbound, err := mailbox.Fetch(ctx, msgq.FetchRequest{Header: header})
+downMsg, err := mailbox.Fetch(ctx, msgq.FetchRequest{Header: header})
 if err != nil {
     return err
 }
-writeProtocolPacket(outbound.Seq, outbound.Message)
+writeProtocolPacket(downMsg.Seq, downMsg.Payload)
 
 // 同一 SessionID 重连：重置发送游标并丢弃已经 Ack 的前缀，未确认消息会重发。
 nextHeader := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 8}
@@ -453,7 +453,7 @@ if err != nil {
 `Fetch`/`FetchSome` 返回的 `Message` 同样只读。这样本地 topic 广播只保留一份已编码 BON 正文，多个会话条目共享它；
 跨进程 gRPC 调用会在传输边界自然得到独立字节副本。`MaxBacklogMessages` 与 `MaxBacklogBytes` 分别限制未确认消息数量与
 编码载荷总字节数；任一上限触发时当前会话会被移除并返回
-`ErrOutboundOverflow`，避免持续不确认的客户端无限占用 msgq 内存。客户端重连后由业务重同步恢复状态。
+`ErrDownMsgOverflow`，避免持续不确认的客户端无限占用 msgq 内存。客户端重连后由业务重同步恢复状态。
 
 确认前缀后，msgq 会解除队列条目对编码载荷的引用；确认全部积压时直接释放条目数组，部分确认时按低水位整理剩余
 条目，避免一次广播高峰长期保留过大的条目数组。正文不会在本地广播时按会话复制。
@@ -472,7 +472,7 @@ if err != nil {
     return err
 }
 for _, message := range batch.Messages {
-    writeProtocolPacket(message.Seq, message.Message)
+    writeProtocolPacket(message.Seq, message.Payload)
 }
 
 // 客户端实际收到整个批次后，再确认其中最大 Seq。
@@ -496,11 +496,11 @@ if err := mailbox.JoinTopics(ctx, msgq.TopicRequest{
 
 result, err := mailbox.BroadcastTopic(ctx, msgq.BroadcastTopicRequest{
     Topic:   "guild:9",
-    Message: bonNotify,
+    Payload: bonNotify,
 })
 if err != nil {
     // 已投递的会话不会回滚。检查统计后决定是否记录、重试或触发业务重同步。
-    if errors.Is(err, msgq.ErrOutboundOverflow) {
+    if errors.Is(err, msgq.ErrDownMsgOverflow) {
         reportSlowSessions(result.Overflowed, result.Skipped)
     }
     return err
@@ -509,7 +509,7 @@ _ = result.Delivered
 ```
 
 `BroadcastTopicResult` 中 `Attempted` 是 topic 快照中的会话数，`Delivered` 是实际入队数，`Skipped` 表示快照后已关闭的
-会话，`Overflowed` 表示因条数或字节积压无法入队的会话数。广播出现积压返回 `ErrOutboundOverflow`，对应会话会被移除，
+会话，`Overflowed` 表示因条数或字节积压无法入队的会话数。广播出现积压返回 `ErrDownMsgOverflow`，对应会话会被移除，
 但结果保留已经成功投递的数量；框架不会伪造全量成功，也不会尝试回滚其他会话。
 
 ### 空闲会话清理
@@ -593,7 +593,7 @@ defer rpcHost.Stop(context.Background())
 
 `Fetch` 是 unary 长轮询，调用方必须传递自己的超时或连接 context。运行时错误会转为明确的 gRPC status：无效请求为
 `InvalidArgument`，离线会话为 `NotFound`，旧连接为 `Aborted`，队列满为 `ResourceExhausted`；不会静默丢失或伪造投递成功。
-客户端还会校验成功响应本身：空响应、`Pub.Seq <= 0`、负的 Init 序号、`Rec.ReceivedSeq` 落后于本次请求、
+客户端还会校验成功响应本身：空响应、`Pub.Seq <= 0`、负的 Init 序号、`Rec.UpMsgSeq` 落后于本次请求、
 `Rec.Ack` 与本次请求不一致，以及 `FetchSome` 返回空批次、空消息、非正数或乱序消息，都会返回
 `msgq.ErrInvalidMailboxResponse`。这表示传输结果不可信，调用方应结束当前链路并记录错误，不能把零值当作成功或在
 没有业务幂等键时自动重发：
@@ -607,7 +607,7 @@ if errors.Is(err, msgq.ErrInvalidMailboxResponse) {
 if err != nil {
     return err
 }
-useOutboundSeq(result.Seq)
+useDownMsgSeq(result.Seq)
 ```
 
 `rpc.Host` 直接接入全局 `lifecycle.WaitGroupContext`。应用服务关闭时由项目宿主统一调用 `Stop`，未确认下行仍遵循
@@ -703,9 +703,15 @@ if err != nil {
 
 1. 客户端先发送 `FrameHandshake`，其中 `Payload` 交给 `IdentityResolver`，`Restore/Ack` 交给会话恢复。
 2. Agent 按 `RoleID` 取得当前 msgq owner 并调用 `Init`；同进程 msgq 时直接复用本地 `SessionClient`，分进程时按 Redis owner 和服务目录复用 gRPC 连接。
-3. 每个 `FrameBusiness` 先调用 `Rec(roleID, seq, ack)`。只有 `ReceivedSeq` 前进时才进入 `Dispatcher`，重复 Seq 不会重复分发。
-4. Agent 持续 `FetchSome` 下行队列，写出 `FrameOutbound`；客户端在后续上行帧携带 Ack，`Rec` 会确认对应下行消息。
-5. 服务端已经受理的 `FrameBusiness.Seq` 也会得到确认：有业务响应时由 `FrameOutbound.Ack` 捎带，没有响应或收到重复 Seq 时返回独立 `FrameAck`。
+3. 新会话始终重置该 `SessionID` 的本地 Seq 与下行队列；恢复会话必须命中相同 `SessionID`，不存在或已被替换时明确失败，不能安装一份空会话。
+4. 恢复成功且服务端已经受理过 UpMsg 时，Agent 立即发送 `FrameAck` 报告当前 `UpMsgSeq`，客户端可据此释放已确认的重放前缀。
+5. 每个 `FrameUpMsg` 先调用 `Rec(roleID, seq, ack)`。只有 `UpMsgSeq` 前进时才进入 `Dispatcher`，重复 Seq 不会重复分发。
+6. Agent 持续 `FetchSome` 下行队列，写出 `FrameDownMsg`；客户端在后续上行帧携带 Ack，`Rec` 会确认对应下行消息。
+7. 服务端已经受理的 `FrameUpMsg.Seq` 也会得到确认：有业务响应时由 `FrameDownMsg.Ack` 捎带，没有响应或收到重复 Seq 时返回独立 `FrameAck`。
+
+客户端不能只保存三个 Seq/Ack 计数器来恢复会话。UpMsg 必须在首次发送前进入本地未确认队列；收到服务端累计 Ack 后
+释放已确认前缀；网络重连时复用同一逻辑 Session，并按原 Seq、原顺序和原只读 Payload 重放剩余帧。这样即使网络在
+UpMsg 写出前后任意位置中断，服务端也只会接受连续新序号，已经受理的重复帧只返回 Ack，不会再次进入 Dispatcher。
 
 Actor 已经定位并返回的请求级失败不应等同于连接故障。标准 txgame/txgameslg Agent 适配层会把 Actor `CallError`
 编码为生成的 `System_Error` 下行，其中 `RequestSeq` 指向原上行 Seq，`Code` 是供客户端多语言表使用的
@@ -800,14 +806,18 @@ const client = new AgentClient(session, new WebSocketTransport({
 
 client.onMessage(async (message) => {
   await handleMessage(message);
-  await client.acknowledge();
 });
 await client.connect(loginTicket);
 await client.send("Role_RenameReq", { roleId: 470001, name: "new-name" });
+
+await client.close();
+await client.reconnect(loginTicket); // 复用同一逻辑会话并重放未确认 UpMsg。
 ```
 
 `AgentClient` 与传输无关的 `AgentSession` 共同管理命令编码、路由、Seq/Ack 和下行串行消费；浏览器仅选择
-`WebSocketTransport`，Node.js CLI 选择 `TCPTransport`。Go 整数在 TypeScript 侧使用
+`WebSocketTransport`，Node.js CLI 选择 `TCPTransport`。普通 DownMsg 的确认由下一条 UpMsg 捎带；只有必须立即释放
+服务端积压时才显式调用 `client.acknowledge()`。`AgentClient` 同时持有未确认 UpMsg 队列，因此重连必须复用原实例，
+不能只用 `snapshot()` 中的计数器创建一个缺失重放载荷的新 Session。Go 整数在 TypeScript 侧使用
 `number`，因此业务协议值必须在 `-9,007,199,254,740,991` 到 `9,007,199,254,740,991` 之间；超界编码或解码
 会返回错误，避免悄悄丢失精度。客户端必须使用生成的 `resolveCommandRoute` 从请求对象取得 Frame 的静态命令号
 和可选路由键，不能手写这些传输字段：
@@ -819,9 +829,9 @@ import { encodeFrame, FrameKind } from "../src/protocol/frame.js";
 const request = { roleId: 470001, name: "new-name" };
 const route = resolveCommandRoute("Role_RenameReq", request);
 socket.send(encodeFrame({
-  kind: FrameKind.Business,
-  seq: nextBusinessSeq++,
-  ack: lastOutboundSeq,
+  kind: FrameKind.UpMsg,
+  seq: nextUpSeq++,
+  ack: lastDownSeq,
   restore: false,
   commandID: route.commandID,
   routeKey: route.routeKey,
@@ -853,23 +863,23 @@ Seq/Ack、静态命令号、路由键、恢复标记和最大长度，不能将�
 Frame 固定使用 32 字节头：第 0 字节是版本，第 1 字节是类型，第 2 字节是握手恢复标记，第 3 字节是路由键类型，
 `Seq` 位于第 4--11 字节，`Ack` 位于第 12--19 字节，静态命令号位于第 20--23 字节，路由键长度位于第 24--27
 字节，编码载荷长度位于第 28--31 字节，所有整数均为 big-endian。路由键紧随固定头，随后才是编码载荷。
-路由键只支持 `int64`、`uint64` 和 UTF-8 非空 `string`；它只出现在上行 `FrameBusiness`。
+路由键只支持 `int64`、`uint64` 和 UTF-8 非空 `string`；它只出现在上行 `FrameUpMsg`。
 
 | 类型 | Seq | Ack | 命令号和路由键 | Payload | 用途 |
 | --- | --- | --- | --- | --- | --- |
 | `FrameHandshake` | `0` | 新连必须为 `0`；重连为已确认下行序号 | 必须为空 | 登录 ticket | 建立或恢复会话 |
-| `FrameBusiness` | 严格递增正数 | 最近已处理的 `FrameOutbound.Seq` | 生成的非零命令号；可选强类型路由键 | BON 业务体 | 上行业务，同时确认下行 |
-| `FrameOutbound` | msgq 下行序号 | 服务端最近已受理的 `FrameBusiness.Seq` | 必须为空 | BON 业务体 | 服务端下行，同时确认上行 |
+| `FrameUpMsg` | 严格递增正数 | 最近已处理的 `FrameDownMsg.Seq` | 生成的非零命令号；可选强类型路由键 | BON 业务体 | 上行业务，同时确认下行 |
+| `FrameDownMsg` | msgq 下行序号 | 服务端最近已受理的 `FrameUpMsg.Seq` | 必须为空 | BON 业务体 | 服务端下行，同时确认上行 |
 | `FrameAck` | `0` | 发送方最近已连续处理的对端 `Seq` | 必须为空 | 必须为空 | 没有业务载荷可捎带时单独确认 |
 
-客户端收到 `FrameOutbound` 后应先完成编码载荷的处理，再更新本地 `lastOutboundSeq`。下一条业务帧直接携带该值，
+客户端收到 `FrameDownMsg` 后应先完成编码载荷的处理，再更新本地 `lastDownSeq`。下一条业务帧直接携带该值，
 无需额外 ACK 帧：
 
 ```ts
 socket.send(encodeFrame({
-  kind: FrameKind.Business,
-  seq: nextBusinessSeq++,
-  ack: lastOutboundSeq,
+  kind: FrameKind.UpMsg,
+  seq: nextUpSeq++,
+  ack: lastDownSeq,
   restore: false,
   commandID: route.commandID,
   routeKey: route.routeKey,
@@ -882,15 +892,15 @@ socket.send(encodeFrame({
 ```ts
 import { createAckFrame, encodeFrame } from "../src/protocol/frame.js";
 
-socket.send(encodeFrame(createAckFrame(lastOutboundSeq), maxFrameBytes));
+socket.send(encodeFrame(createAckFrame(lastDownSeq), maxFrameBytes));
 ```
 
 服务端只接受不倒退且不超过当前连接**已成功写出**的下行序号；超出范围的 Ack 会断开本次连接并保留未确认队列，
 不会错误清理未来消息。重连握手使用同一个最后确认号恢复未确认下行。客户端不得把“收到网络字节”当作已确认，
 必须在业务编码载荷已被本地处理后才推进 Ack。
 
-客户端与服务端的 `Seq` 是两条彼此独立的单调序列。客户端 `Business.Seq=8` 的响应可以是服务端
-`Outbound.Seq=5, Ack=8`；这里的 `Ack=8` 表示服务端已经连续受理到客户端序号 8，并不表示响应序号必须等于请求序号。
+客户端与服务端的 `Seq` 是两条彼此独立的单调序列。客户端 `UpMsg.Seq=8` 的响应可以是服务端
+`DownMsg.Seq=5, Ack=8`；这里的 `Ack=8` 表示服务端已经连续受理到客户端序号 8，并不表示响应序号必须等于请求序号。
 需要业务级请求与响应关联时，应在业务协议中定义独立的请求标识，不能复用传输层 Seq。
 
 ## 内部 gRPC 协议

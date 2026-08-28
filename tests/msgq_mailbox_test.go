@@ -15,7 +15,7 @@ import (
 	redis "github.com/redis/go-redis/v9"
 )
 
-func TestMsgQServerRestoresUnconfirmedOutboundMessages(t *testing.T) {
+func TestMsgQServerRestoresUnconfirmedDownMsgMessages(t *testing.T) {
 	store := newMailboxSessionStore()
 	server, err := msgq.NewServer(msgq.ServerOptions{
 		InstanceID:         "msgq-1",
@@ -32,8 +32,8 @@ func TestMsgQServerRestoresUnconfirmedOutboundMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	if init.ReceivedSeq != 0 {
-		t.Fatalf("received seq = %d, want 0", init.ReceivedSeq)
+	if init.UpMsgSeq != 0 {
+		t.Fatalf("upMsg seq = %d, want 0", init.UpMsgSeq)
 	}
 	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("first")}); err != nil {
 		t.Fatalf("publish first: %v", err)
@@ -77,7 +77,7 @@ func TestMsgQServerRestoresUnconfirmedOutboundMessages(t *testing.T) {
 	}
 }
 
-func TestMsgQServerSerializesInboundAndRejectsStaleConnection(t *testing.T) {
+func TestMsgQServerSerializesUpMsgAndRejectsStaleConnection(t *testing.T) {
 	server, err := msgq.NewServer(msgq.ServerOptions{
 		InstanceID:         "msgq-1",
 		Store:              newMailboxSessionStore(),
@@ -93,11 +93,11 @@ func TestMsgQServerSerializesInboundAndRejectsStaleConnection(t *testing.T) {
 	defer server.Close(context.Background(), current)
 
 	received, err := server.Rec(context.Background(), msgq.RecRequest{Header: current, Seq: 1})
-	if err != nil || received.ReceivedSeq != 1 {
+	if err != nil || received.UpMsgSeq != 1 {
 		t.Fatalf("rec = %#v, %v", received, err)
 	}
-	if _, err := server.Rec(context.Background(), msgq.RecRequest{Header: current, Seq: 3}); !errors.Is(err, msgq.ErrInboundSequence) {
-		t.Fatalf("over seq error = %v, want inbound sequence", err)
+	if _, err := server.Rec(context.Background(), msgq.RecRequest{Header: current, Seq: 3}); !errors.Is(err, msgq.ErrUpMsgSequence) {
+		t.Fatalf("over seq error = %v, want upMsg sequence", err)
 	}
 	if _, err := server.Rec(context.Background(), msgq.RecRequest{
 		Header: msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7},
@@ -107,7 +107,7 @@ func TestMsgQServerSerializesInboundAndRejectsStaleConnection(t *testing.T) {
 	}
 }
 
-func TestMsgQServerBoundsOutboundQueue(t *testing.T) {
+func TestMsgQServerBoundsDownMsgQueue(t *testing.T) {
 	server, err := msgq.NewServer(msgq.ServerOptions{
 		InstanceID:         "msgq-1",
 		Store:              newMailboxSessionStore(),
@@ -123,15 +123,15 @@ func TestMsgQServerBoundsOutboundQueue(t *testing.T) {
 	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("one")}); err != nil {
 		t.Fatalf("publish one: %v", err)
 	}
-	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("two")}); !errors.Is(err, msgq.ErrOutboundOverflow) {
-		t.Fatalf("publish overflow error = %v, want outbound overflow", err)
+	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("two")}); !errors.Is(err, msgq.ErrDownMsgOverflow) {
+		t.Fatalf("publish overflow error = %v, want downMsg overflow", err)
 	}
 	if server.SessionCount() != 0 {
 		t.Fatalf("session count after overflow = %d, want 0", server.SessionCount())
 	}
 }
 
-func TestMsgQServerBoundsOutboundQueueBytes(t *testing.T) {
+func TestMsgQServerBoundsDownMsgQueueBytes(t *testing.T) {
 	server, err := msgq.NewServer(msgq.ServerOptions{
 		InstanceID:         "msgq-1",
 		Store:              newMailboxSessionStore(),
@@ -148,15 +148,15 @@ func TestMsgQServerBoundsOutboundQueueBytes(t *testing.T) {
 	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Payload: []byte("123")}); err != nil {
 		t.Fatalf("publish first: %v", err)
 	}
-	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Payload: []byte("4")}); !errors.Is(err, msgq.ErrOutboundOverflow) {
-		t.Fatalf("publish byte overflow error = %v, want outbound overflow", err)
+	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Payload: []byte("4")}); !errors.Is(err, msgq.ErrDownMsgOverflow) {
+		t.Fatalf("publish byte overflow error = %v, want downMsg overflow", err)
 	}
 	if server.SessionCount() != 0 {
 		t.Fatalf("session count after byte overflow = %d, want 0", server.SessionCount())
 	}
 }
 
-func TestMsgQServerRejectsAcknowledgementBeyondSentOutbound(t *testing.T) {
+func TestMsgQServerRejectsAcknowledgementBeyondSentDownMsg(t *testing.T) {
 	server, err := msgq.NewServer(msgq.ServerOptions{InstanceID: "msgq-1", Store: newMailboxSessionStore(), MaxBacklogMessages: 4})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -168,7 +168,7 @@ func TestMsgQServerRejectsAcknowledgementBeyondSentOutbound(t *testing.T) {
 	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Payload: []byte("one")}); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	if err := server.Confirm(context.Background(), msgq.ConfirmRequest{Header: header, Ack: 1}); !errors.Is(err, msgq.ErrOutboundAcknowledgement) {
+	if err := server.Confirm(context.Background(), msgq.ConfirmRequest{Header: header, Ack: 1}); !errors.Is(err, msgq.ErrDownMsgAcknowledgement) {
 		t.Fatalf("confirm before fetch error = %v, want invalid acknowledgement", err)
 	}
 	message, err := server.Fetch(context.Background(), msgq.FetchRequest{Header: header})
@@ -248,7 +248,7 @@ func TestMsgQServerBroadcastTopicReportsPartialOverflow(t *testing.T) {
 		Topic:   "guild:9",
 		Payload: []byte("second"),
 	})
-	if !errors.Is(err, msgq.ErrOutboundOverflow) || secondBroadcast.Attempted != 2 || secondBroadcast.Delivered != 0 || secondBroadcast.Overflowed != 2 {
+	if !errors.Is(err, msgq.ErrDownMsgOverflow) || secondBroadcast.Attempted != 2 || secondBroadcast.Delivered != 0 || secondBroadcast.Overflowed != 2 {
 		t.Fatalf("second broadcast = %#v, %v", secondBroadcast, err)
 	}
 	if server.SessionCount() != 0 {
