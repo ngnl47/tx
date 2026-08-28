@@ -42,10 +42,10 @@
     <!-- Round glossy eyes, slightly hidden by hair. -->
     <circle cx="221" cy="239" r="15" fill="#020506"/>
     <circle cx="291" cy="239" r="15" fill="#020506"/>
-    <circle cx="218" cy="235" r="5" fill="#d8fbff"/>
-    <circle cx="288" cy="235" r="5" fill="#d8fbff"/>
-    <circle cx="224" cy="244" r="3" fill="#5ccde0" opacity="0.75"/>
-    <circle cx="294" cy="244" r="3" fill="#5ccde0" opacity="0.75"/>
+    <circle cx="218" cy="235" r="5" fill="#a9dfe7"/>
+    <circle cx="288" cy="235" r="5" fill="#a9dfe7"/>
+    <circle cx="224" cy="244" r="3" fill="#3aa6b8" opacity="0.62"/>
+    <circle cx="294" cy="244" r="3" fill="#3aa6b8" opacity="0.62"/>
 
     <!-- Compact muzzle and tiny puppy mouth. -->
     <path d="M218 276 C221 252 237 238 256 238 C275 238 291 252 294 276 C297 305 280 325 256 325 C232 325 215 305 218 276 Z" fill="#20343c"/>
