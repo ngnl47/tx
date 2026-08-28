@@ -3,7 +3,9 @@ package log
 import (
 	"context"
 	"log/slog"
+	"runtime"
 	"sync"
+	"time"
 )
 
 var (
@@ -28,35 +30,35 @@ func Default() *slog.Logger {
 }
 
 func Debug(msg string, args ...any) {
-	Default().Debug(msg, args...)
+	write(context.Background(), Default(), "", slog.LevelDebug, msg, args...)
 }
 
 func Info(msg string, args ...any) {
-	Default().Info(msg, args...)
+	write(context.Background(), Default(), "", slog.LevelInfo, msg, args...)
 }
 
 func Warn(msg string, args ...any) {
-	Default().Warn(msg, args...)
+	write(context.Background(), Default(), "", slog.LevelWarn, msg, args...)
 }
 
 func Error(msg string, args ...any) {
-	Default().Error(msg, args...)
+	write(context.Background(), Default(), "", slog.LevelError, msg, args...)
 }
 
 func DebugContext(ctx context.Context, msg string, args ...any) {
-	Default().DebugContext(ctx, msg, args...)
+	write(ctx, Default(), "", slog.LevelDebug, msg, args...)
 }
 
 func InfoContext(ctx context.Context, msg string, args ...any) {
-	Default().InfoContext(ctx, msg, args...)
+	write(ctx, Default(), "", slog.LevelInfo, msg, args...)
 }
 
 func WarnContext(ctx context.Context, msg string, args ...any) {
-	Default().WarnContext(ctx, msg, args...)
+	write(ctx, Default(), "", slog.LevelWarn, msg, args...)
 }
 
 func ErrorContext(ctx context.Context, msg string, args ...any) {
-	Default().ErrorContext(ctx, msg, args...)
+	write(ctx, Default(), "", slog.LevelError, msg, args...)
 }
 
 type Logger struct {
@@ -68,41 +70,51 @@ func NewLogger(name string) Logger {
 }
 
 func (l Logger) Debug(msg string, args ...any) {
-	l.defaultLogger().Debug(msg, args...)
+	write(context.Background(), Default(), l.name, slog.LevelDebug, msg, args...)
 }
 
 func (l Logger) Info(msg string, args ...any) {
-	l.defaultLogger().Info(msg, args...)
+	write(context.Background(), Default(), l.name, slog.LevelInfo, msg, args...)
 }
 
 func (l Logger) Warn(msg string, args ...any) {
-	l.defaultLogger().Warn(msg, args...)
+	write(context.Background(), Default(), l.name, slog.LevelWarn, msg, args...)
 }
 
 func (l Logger) Error(msg string, args ...any) {
-	l.defaultLogger().Error(msg, args...)
+	write(context.Background(), Default(), l.name, slog.LevelError, msg, args...)
 }
 
 func (l Logger) DebugContext(ctx context.Context, msg string, args ...any) {
-	l.defaultLogger().DebugContext(ctx, msg, args...)
+	write(ctx, Default(), l.name, slog.LevelDebug, msg, args...)
 }
 
 func (l Logger) InfoContext(ctx context.Context, msg string, args ...any) {
-	l.defaultLogger().InfoContext(ctx, msg, args...)
+	write(ctx, Default(), l.name, slog.LevelInfo, msg, args...)
 }
 
 func (l Logger) WarnContext(ctx context.Context, msg string, args ...any) {
-	l.defaultLogger().WarnContext(ctx, msg, args...)
+	write(ctx, Default(), l.name, slog.LevelWarn, msg, args...)
 }
 
 func (l Logger) ErrorContext(ctx context.Context, msg string, args ...any) {
-	l.defaultLogger().ErrorContext(ctx, msg, args...)
+	write(ctx, Default(), l.name, slog.LevelError, msg, args...)
 }
 
-func (l Logger) defaultLogger() *slog.Logger {
-	logger := Default()
-	if l.name == "" {
-		return logger
+func write(ctx context.Context, logger *slog.Logger, name string, level slog.Level, msg string, args ...any) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	return logger.With(slog.String("logger", l.name))
+	handler := logger.Handler()
+	if !handler.Enabled(ctx, level) {
+		return
+	}
+	var pcs [1]uintptr
+	runtime.Callers(3, pcs[:])
+	record := slog.NewRecord(time.Now(), level, msg, pcs[0])
+	if name != "" {
+		record.AddAttrs(slog.String("logger", name))
+	}
+	record.Add(args...)
+	_ = handler.Handle(ctx, record)
 }

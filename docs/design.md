@@ -2548,7 +2548,18 @@ result, err := mailbox.Pub(ctx, requestWithPayload)
 
 ### 日志
 
-`tx/log` 是基于 `slog` 的最小门面。库输出结构化事件，不持久化错误历史。项目可以替换默认 slog handler，实现级别、输出格式、日志中心和功能 logger。
+`tx/log` 是基于 `slog` 的最小门面。库输出结构化事件，不持久化错误历史，也不直接调用云日志 API。默认 Handler
+分为两类：本地 `console` 把时间、级别和实际调用位置放在左侧，右侧只保留一个 JSON 事件体；测试和生产 `json`
+让整行成为 JSON Lines。两种格式共享相同的 `message` 和业务属性语义，且一条事件只写一次。容器日志 Agent 或
+LogListener 负责旁路采集、批量上传、重试和留存，外部日志服务异常不会进入游戏请求链路。
+
+日志门面显式构造 `slog.Record` 并记录业务调用点，避免包装函数使 `source` 固定指向 `tx/log/log.go`。Handler 在写出
+前完成整行编码；console writer 串行提交完整行，不能让并发协程的 JSON 内容交错。项目仍可替换默认 slog Handler，
+但不得在业务请求中同步上传远端日志。
+
+Actor Runtime 创建 ActorSystem 时通过 ProtoActor 官方 LoggerFactory 注入当前 `tx/log` Handler。ProtoActor 仍直接生成
+自己的日志记录和 `lib`、`system` 等字段，tx 不转抄、不重复写出，只统一格式、级别过滤与输出目标。调试器和其他进程在
+应用外部写出的文本不属于该日志边界。
 
 高频错误需要限频，例如 Actor mailbox overflow；持续失败任务需要包含类型、记录键、attempt 和错误链，但不把无限错误字符串写回 Redis。
 

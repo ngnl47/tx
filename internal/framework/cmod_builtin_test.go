@@ -77,13 +77,13 @@ func TestStartLogsResolvedServicesAndCModsOnce(t *testing.T) {
 	})
 
 	text := output.String()
-	if !strings.Contains(text, "services=game") {
+	if !strings.Contains(text, `"services":"game"`) {
 		t.Fatalf("startup log = %q, want resolved services", text)
 	}
-	if !strings.Contains(text, "cmods=custom-runtime") {
+	if !strings.Contains(text, `"cmods":"custom-runtime"`) {
 		t.Fatalf("startup log = %q, want resolved CMods", text)
 	}
-	if strings.Count(text, "cmods=custom-runtime") != 1 {
+	if strings.Count(text, `"cmods":"custom-runtime"`) != 1 {
 		t.Fatalf("startup log = %q, want CMods once", text)
 	}
 }

@@ -18,10 +18,14 @@ func configureLogger(config LogConfig) error {
 	if err != nil {
 		return err
 	}
-	options := &slog.HandlerOptions{Level: level}
+	options := &slog.HandlerOptions{
+		AddSource:   true,
+		Level:       level,
+		ReplaceAttr: replaceJSONLogAttr,
+	}
 	switch strings.ToLower(strings.TrimSpace(config.Format)) {
-	case "", "text":
-		txlog.SetDefault(slog.New(slog.NewTextHandler(output, options)))
+	case "", "console":
+		txlog.SetDefault(slog.New(newConsoleHandler(output, level)))
 	case "json":
 		txlog.SetDefault(slog.New(slog.NewJSONHandler(output, options)))
 	default:

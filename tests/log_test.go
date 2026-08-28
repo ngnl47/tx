@@ -3,6 +3,9 @@ package tests
 import (
 	"context"
 	"log/slog"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
 
@@ -51,6 +54,10 @@ func TestLogPackageLevelShortcutsUseDefaultLogger(t *testing.T) {
 	}
 	if !recordHasInt64Attr(record, "id", 1001) || !recordHasStringAttr(record, "err", "temporary") {
 		t.Fatalf("record attrs = %#v", recordAttrs(record))
+	}
+	frame, _ := runtime.CallersFrames([]uintptr{record.PC}).Next()
+	if !strings.HasSuffix(filepath.ToSlash(frame.File), "/tests/log_test.go") {
+		t.Fatalf("record source = %s, want tests/log_test.go", frame.File)
 	}
 }
 

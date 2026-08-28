@@ -1881,7 +1881,29 @@ func (l Logger) WarnContext(ctx context.Context, msg string, args ...any)
 func (l Logger) ErrorContext(ctx context.Context, msg string, args ...any)
 ```
 
-默认返回 `slog.Default()`；传入 `nil` 会恢复默认 logger。实际项目可在启动期调用 `log.SetDefault(logger)` 注入自己的 `slog.Logger`，并通过 `slog.Handler` 对接文件日志、云日志或第三方日志实现。
+框架启动时根据 `LogConfig` 安装默认 Handler。`Format` 支持两种稳定值：
+
+- `console`：面向本地调试，在时间、级别和真实调用位置之后只输出一个 JSON 事件体。
+- `json`：面向测试和生产环境，整行都是可直接采集的 JSON 对象。
+
+```text
+2026-08-28 17:01:34.542 [ERROR] [actorcmd/command_actor.go:306] {"commandID":10006,"message":"dispatch actor command"}
+```
+
+```json
+{"time":"2026-08-28T17:01:34.542+08:00","level":"ERROR","source":"actorcmd/command_actor.go:306","commandID":10006,"message":"dispatch actor command"}
+```
+
+两种格式都严格保持一条事件一行；正文位于 `message`，业务属性保持调用方传入的结构化类型。日志门面会修正
+`slog.Record.PC`，因此 `source` 指向实际调用代码，不会落到 `tx/log/log.go`。
+
+Actor CMod 会通过 ProtoActor 官方的 LoggerFactory 复用同一 Handler，因此 Actor System、Remote 和 Cluster 日志也遵循
+当前环境的 `console` 或 `json` 格式，并保留 `lib=Proto.Actor`、`system` 等原生结构字段。GoLand/Delve 输出的
+`API server listening at ...` 位于应用进程之外，不受 tx 日志配置控制。
+
+默认输出目标是 `stdout`。生产环境由 TKE 日志 Agent、LogListener 或其他旁路采集器读取并上传，tx 不直接调用
+云日志 API，也不负责文件切割、上传重试和远端留存。高级项目仍可在启动期调用 `log.SetDefault(logger)` 注入自己的
+`slog.Logger`；传入 `nil` 会恢复到 `slog.Default()`。
 
 默认调用方式：
 
@@ -1905,7 +1927,7 @@ RoleLog.Error("role save failed", "roleId", roleID, "err", err)
 ```
 
 `NewLogger` 返回轻量代理，不是固定绑定的 `*slog.Logger`。代理值本身可以作为包级变量复用；
-每次输出时都会读取当前 `Default()`，再附加 `logger=<name>` 属性派生一次日志调用，避免包级变量早于项目日志初始化时绑定到初始化前的 logger。
+每次输出时都会读取当前 `Default()`，再向当前记录附加 `logger=<name>` 属性，避免包级变量早于项目日志初始化时绑定到初始化前的 logger。
 因此，项目启动后调用 `log.SetDefault(logger)`，此前已经声明的 `RoleLog` 也会使用新的 default logger。
 
 ## 元数据与字段名

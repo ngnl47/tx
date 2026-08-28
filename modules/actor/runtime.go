@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"strings"
 	"sync"
@@ -104,7 +105,7 @@ func (r *Runtime) Start(ctx context.Context) (err error) {
 	if err != nil {
 		return fmt.Errorf("actor: create etcd provider: %w", err)
 	}
-	system := protoactor.NewActorSystem()
+	system := newActorSystem()
 	system.Extensions.Register(&actorLifecycleExtension{context: ctx})
 	remoteConfig := remote.Configure(r.config.Host, r.config.Port)
 	clusterConfig := cluster.Configure(
@@ -133,6 +134,15 @@ func (r *Runtime) Start(ctx context.Context) (err error) {
 	r.responder = responder
 	r.started = true
 	return nil
+}
+
+func newActorSystem() *protoactor.ActorSystem {
+	return protoactor.NewActorSystem(protoactor.WithLoggerFactory(func(system *protoactor.ActorSystem) *slog.Logger {
+		return txlog.Default().With(
+			"lib", "Proto.Actor",
+			"system", system.ID,
+		)
+	}))
 }
 
 // Drain 停止接受新的 tx Delivery，并等待已经进入 Actor 邮箱的业务消息处理完成。

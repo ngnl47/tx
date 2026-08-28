@@ -35,7 +35,7 @@ type Config struct {
 type LogConfig struct {
 	// Level 是最低输出级别，例如 debug、info、warn 或 error。
 	Level string
-	// Format 是日志编码格式，例如 text 或 json。
+	// Format 是日志编码格式，可选 console 或 json；空值使用 console。
 	Format string
 	// Output 接收框架日志；为 nil 时由装配层选择默认输出。
 	Output io.Writer
