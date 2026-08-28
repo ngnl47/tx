@@ -519,6 +519,10 @@ _ = result.Delivered
 `Touch` 延长该活动时间；业务 `Pub` 不会让已经断开的会话常驻内存。即使客户端持续发送心跳，只要最早一条
 未确认下行已超过 `OfflineTimeout`，清理循环同样会移除会话，防止只收不确认的连接绕开积压保护。
 
+标准项目通过 YAML 的 `services.msgq.offlineTimeout` 配置该时长。TCP 与 WebSocket 客户端必须主动发送心跳；建议
+相邻两次 `System_Ping` 不超过 `15s`，使默认 `60s` 清理窗口能够容忍短暂网络抖动和少量心跳丢失。`System_Ping`
+仍是普通 UpMsg，会通过 `Rec` 刷新会话活动时间；服务端不会在没有客户端消息时替客户端续期。
+
 ```go
 mailbox, err := msgq.NewServer(msgq.ServerOptions{
     InstanceID:     instanceID,
@@ -704,10 +708,11 @@ if err != nil {
 1. 客户端先发送 `FrameHandshake`，其中 `Payload` 交给 `IdentityResolver`，`Restore/Ack` 交给会话恢复。
 2. Agent 按 `RoleID` 取得当前 msgq owner 并调用 `Init`；同进程 msgq 时直接复用本地 `SessionClient`，分进程时按 Redis owner 和服务目录复用 gRPC 连接。
 3. 新会话始终重置该 `SessionID` 的本地 Seq 与下行队列；恢复会话必须命中相同 `SessionID`，不存在或已被替换时明确失败，不能安装一份空会话。
-4. 恢复成功且服务端已经受理过 UpMsg 时，Agent 立即发送 `FrameAck` 报告当前 `UpMsgSeq`，客户端可据此释放已确认的重放前缀。
-5. 每个 `FrameUpMsg` 先调用 `Rec(roleID, seq, ack)`。只有 `UpMsgSeq` 前进时才进入 `Dispatcher`，重复 Seq 不会重复分发。
-6. Agent 持续 `FetchSome` 下行队列，写出 `FrameDownMsg`；客户端在后续上行帧携带 Ack，`Rec` 会确认对应下行消息。
-7. 服务端已经受理的 `FrameUpMsg.Seq` 也会得到确认：有业务响应时由 `FrameDownMsg.Ack` 捎带，没有响应或收到重复 Seq 时返回独立 `FrameAck`。
+4. `Init` 成功后，Agent 发送 `FrameReady` 报告当前 `UpMsgSeq`。客户端收到它之前只能处于连接中，不能发送业务帧；恢复失败时不会出现“先成功、再被关闭”的假状态。
+5. 客户端以 `FrameReady.Ack` 释放服务端已经受理的重放前缀，再按原序号重放剩余 UpMsg。
+6. 每个 `FrameUpMsg` 先调用 `Rec(roleID, seq, ack)`。只有 `UpMsgSeq` 前进时才进入 `Dispatcher`，重复 Seq 不会重复分发。
+7. Agent 持续 `FetchSome` 下行队列，写出 `FrameDownMsg`；客户端在后续上行帧携带 Ack，`Rec` 会确认对应下行消息。
+8. 服务端已经受理的 `FrameUpMsg.Seq` 也会得到确认：有业务响应时由 `FrameDownMsg.Ack` 捎带，没有响应或收到重复 Seq 时返回独立 `FrameAck`。
 
 客户端不能只保存三个 Seq/Ack 计数器来恢复会话。UpMsg 必须在首次发送前进入本地未确认队列；收到服务端累计 Ack 后
 释放已确认前缀；网络重连时复用同一逻辑 Session，并按原 Seq、原顺序和原只读 Payload 重放剩余帧。这样即使网络在
@@ -817,7 +822,8 @@ await client.reconnect(loginTicket); // 复用同一逻辑会话并重放未确�
 `AgentClient` 与传输无关的 `AgentSession` 共同管理命令编码、路由、Seq/Ack 和下行串行消费；浏览器仅选择
 `WebSocketTransport`，Node.js CLI 选择 `TCPTransport`。普通 DownMsg 的确认由下一条 UpMsg 捎带；只有必须立即释放
 服务端积压时才显式调用 `client.acknowledge()`。`AgentClient` 同时持有未确认 UpMsg 队列，因此重连必须复用原实例，
-不能只用 `snapshot()` 中的计数器创建一个缺失重放载荷的新 Session。Go 整数在 TypeScript 侧使用
+不能只用 `snapshot()` 中的计数器创建一个缺失重放载荷的新 Session。`connect/reconnect` 只有在收到服务端
+`FrameReady` 后才返回并进入可发送状态。Go 整数在 TypeScript 侧使用
 `number`，因此业务协议值必须在 `-9,007,199,254,740,991` 到 `9,007,199,254,740,991` 之间；超界编码或解码
 会返回错误，避免悄悄丢失精度。客户端必须使用生成的 `resolveCommandRoute` 从请求对象取得 Frame 的静态命令号
 和可选路由键，不能手写这些传输字段：
@@ -860,7 +866,7 @@ Seq/Ack、静态命令号、路由键、恢复标记和最大长度，不能将�
 
 ### Frame 与下行 Ack
 
-Frame 固定使用 32 字节头：第 0 字节是版本，第 1 字节是类型，第 2 字节是握手恢复标记，第 3 字节是路由键类型，
+Agent Frame 当前版本是 `v3`。Frame 固定使用 32 字节头：第 0 字节是版本，第 1 字节是类型，第 2 字节是握手恢复标记，第 3 字节是路由键类型，
 `Seq` 位于第 4--11 字节，`Ack` 位于第 12--19 字节，静态命令号位于第 20--23 字节，路由键长度位于第 24--27
 字节，编码载荷长度位于第 28--31 字节，所有整数均为 big-endian。路由键紧随固定头，随后才是编码载荷。
 路由键只支持 `int64`、`uint64` 和 UTF-8 非空 `string`；它只出现在上行 `FrameUpMsg`。
@@ -868,6 +874,7 @@ Frame 固定使用 32 字节头：第 0 字节是版本，第 1 字节是类型�
 | 类型 | Seq | Ack | 命令号和路由键 | Payload | 用途 |
 | --- | --- | --- | --- | --- | --- |
 | `FrameHandshake` | `0` | 新连必须为 `0`；重连为已确认下行序号 | 必须为空 | 登录 ticket | 建立或恢复会话 |
+| `FrameReady` | `0` | 服务端已经连续受理的 `FrameUpMsg.Seq`，新会话可为 `0` | 必须为空 | 必须为空 | 确认握手已经被服务端接受 |
 | `FrameUpMsg` | 严格递增正数 | 最近已处理的 `FrameDownMsg.Seq` | 生成的非零命令号；可选强类型路由键 | BON 业务体 | 上行业务，同时确认下行 |
 | `FrameDownMsg` | msgq 下行序号 | 服务端最近已受理的 `FrameUpMsg.Seq` | 必须为空 | BON 业务体 | 服务端下行，同时确认上行 |
 | `FrameAck` | `0` | 发送方最近已连续处理的对端 `Seq` | 必须为空 | 必须为空 | 没有业务载荷可捎带时单独确认 |

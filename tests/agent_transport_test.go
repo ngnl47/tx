@@ -39,19 +39,25 @@ func TestTCPAgentLogsConnectionLifecycle(t *testing.T) {
 		t.Fatalf("dial TCP agent: %v", err)
 	}
 	writeTCPAgentFrame(t, connection, txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")})
+	if ready := readTCPAgentFrame(t, connection); ready.Kind != txagent.FrameReady {
+		t.Fatalf("handshake response = %#v, want Ready", ready)
+	}
 	waitForMailboxSession(t, mailbox)
 	if err := connection.Close(); err != nil {
 		t.Fatalf("close TCP agent: %v", err)
 	}
 
 	records := waitForAgentLifecycleLogs(t, handler)
-	assertAgentLifecycleLog(t, records, "agent connection opened", slog.LevelInfo)
+	opened := assertAgentLifecycleLog(t, records, "agent connection opened", slog.LevelInfo)
+	if !recordHasInt64Attr(opened, "connectionID", 7) {
+		t.Fatalf("connection opened attrs = %#v", recordAttrs(opened))
+	}
 	established := assertAgentLifecycleLog(t, records, "agent session established", slog.LevelInfo)
 	if !recordHasInt64Attr(established, "roleID", 470001) || !recordHasInt64Attr(established, "sessionID", 99) {
 		t.Fatalf("session established attrs = %#v", recordAttrs(established))
 	}
 	closed := assertAgentLifecycleLog(t, records, "agent connection closed", slog.LevelInfo)
-	if !recordHasStringAttr(closed, "transport", "tcp") {
+	if !recordHasStringAttr(closed, "transport", "tcp") || !recordHasInt64Attr(closed, "connectionID", 7) {
 		t.Fatalf("connection closed attrs = %#v", recordAttrs(closed))
 	}
 }
@@ -81,7 +87,7 @@ func TestTCPAgentRoundTrip(t *testing.T) {
 	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("bon-response")}); err != nil {
 		t.Fatalf("publish downMsg: %v", err)
 	}
-	assertAgentTransportFrames(t, readTCPAgentFrame(t, connection), readTCPAgentFrame(t, connection))
+	assertAgentTransportFrames(t, readTCPAgentFrame(t, connection), readTCPAgentFrame(t, connection), readTCPAgentFrame(t, connection))
 }
 
 func TestWebSocketAgentRoundTrip(t *testing.T) {
@@ -108,14 +114,16 @@ func TestWebSocketAgentRoundTrip(t *testing.T) {
 	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("bon-response")}); err != nil {
 		t.Fatalf("publish downMsg: %v", err)
 	}
-	assertAgentTransportFrames(t, readWebSocketAgentFrame(t, ctx, connection), readWebSocketAgentFrame(t, ctx, connection))
+	assertAgentTransportFrames(t, readWebSocketAgentFrame(t, ctx, connection), readWebSocketAgentFrame(t, ctx, connection), readWebSocketAgentFrame(t, ctx, connection))
 }
 
-func assertAgentTransportFrames(t *testing.T, first, second txagent.Frame) {
+func assertAgentTransportFrames(t *testing.T, first, second, third txagent.Frame) {
 	t.Helper()
-	var acknowledgement, downMsg txagent.Frame
-	for _, frame := range [...]txagent.Frame{first, second} {
+	var ready, acknowledgement, downMsg txagent.Frame
+	for _, frame := range [...]txagent.Frame{first, second, third} {
 		switch frame.Kind {
+		case txagent.FrameReady:
+			ready = frame
 		case txagent.FrameAck:
 			acknowledgement = frame
 		case txagent.FrameDownMsg:
@@ -123,6 +131,9 @@ func assertAgentTransportFrames(t *testing.T, first, second txagent.Frame) {
 		default:
 			t.Fatalf("unexpected agent frame = %#v", frame)
 		}
+	}
+	if ready.Kind != txagent.FrameReady || ready.Ack != 0 {
+		t.Fatalf("ready frame = %#v, want ack=0", ready)
 	}
 	if acknowledgement.Ack != 1 {
 		t.Fatalf("acknowledgement frame = %#v, want ack=1", acknowledgement)

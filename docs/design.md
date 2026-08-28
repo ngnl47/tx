@@ -2287,9 +2287,10 @@ Agent 核心不依赖项目生成协议，因此不会自行构造业务错误�
 Seq 时发送独立 `FrameAck`。响应发送协程和独立确认共用连接级串行 writer，避免并发写同一个 TCP/WebSocket transport。
 
 客户端把未确认 UpMsg 保存在逻辑 Session 自己的重放队列中。Frame 在首次发送前入队，Ack 只释放连续前缀；队列内的
-Frame 和 Payload 在确认前只读。恢复连接复用原 Session，先发送带最后已处理 DownMsg Ack 的握手，再按原序号重放剩余
-UpMsg。msgq 的新建与恢复语义严格分离：新建总是安装空会话，恢复必须命中同一 SessionID。恢复成功后 Agent 立即回送
-当前 UpMsg Ack；即使客户端随后重放已经受理的 Frame，`Rec` 也只幂等返回当前序号，不会重复调用 Dispatcher。
+Frame 和 Payload 在确认前只读。恢复连接复用原 Session，先发送带最后已处理 DownMsg Ack 的握手。msgq 的新建与恢复
+语义严格分离：新建总是安装空会话，恢复必须命中同一 SessionID。只有 `Init` 成功后 Agent 才发送 `FrameReady`；客户端
+在收到它之前保持连接中状态，并以 `FrameReady.Ack` 释放服务端已经受理的重放前缀，再按原序号重放剩余 UpMsg。
+即使客户端随后重放已经受理的 Frame，`Rec` 也只幂等返回当前序号，不会重复调用 Dispatcher。
 
 ### Actor
 

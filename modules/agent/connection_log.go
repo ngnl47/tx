@@ -13,11 +13,23 @@ import (
 
 func serveConnection(ctx context.Context, transportName, remote string, server *Server, transport Transport) {
 	startedAt := time.Now()
-	txlog.InfoContext(ctx, "agent connection opened", "transport", transportName, "remote", remote)
-	err := server.Serve(ctx, transport)
+	connectionID, err := server.nextConnectionID()
+	if err != nil {
+		_ = transport.Close()
+		txlog.WarnContext(ctx, "agent connection closed unexpectedly",
+			"transport", transportName,
+			"remote", remote,
+			"durationMs", time.Since(startedAt).Milliseconds(),
+			"err", err,
+		)
+		return
+	}
+	txlog.InfoContext(ctx, "agent connection opened", "transport", transportName, "remote", remote, "connectionID", connectionID)
+	err = server.serve(ctx, transport, connectionID)
 	args := []any{
 		"transport", transportName,
 		"remote", remote,
+		"connectionID", connectionID,
 		"durationMs", time.Since(startedAt).Milliseconds(),
 	}
 	if normalConnectionClose(ctx, err) {

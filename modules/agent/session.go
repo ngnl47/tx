@@ -56,13 +56,21 @@ func NewServer(options ServerOptions) (*Server, error) {
 }
 
 // Serve 完成一条连接的身份解析、上行 Seq 校验、业务分发与下行发送。
-func (s *Server) Serve(ctx context.Context, transport Transport) (serveErr error) {
+func (s *Server) Serve(ctx context.Context, transport Transport) error {
 	if s == nil {
 		return ErrServerNil
 	}
 	if transport == nil {
 		return ErrTransportNil
 	}
+	connectionID, err := s.nextConnectionID()
+	if err != nil {
+		return err
+	}
+	return s.serve(ctx, transport, connectionID)
+}
+
+func (s *Server) serve(ctx context.Context, transport Transport, connectionID int64) (serveErr error) {
 	defer func() { _ = transport.Close() }()
 
 	handshake, err := transport.Read(ctx)
@@ -82,13 +90,6 @@ func (s *Server) Serve(ctx context.Context, transport Transport) (serveErr error
 	client, err := s.sessions.Acquire(ctx, identity.RoleID)
 	if err != nil {
 		return err
-	}
-	connectionID, err := s.connectionID()
-	if err != nil {
-		return err
-	}
-	if connectionID <= 0 {
-		return ErrInvalidServer
 	}
 	header := msgq.SessionHeader{RoleID: identity.RoleID, SessionID: identity.SessionID, ConnectionID: connectionID}
 	initialized, err := client.Init(ctx, msgq.InitRequest{Header: header, Restore: handshake.Restore, Ack: handshake.Ack})
@@ -112,11 +113,9 @@ func (s *Server) Serve(ctx context.Context, transport Transport) (serveErr error
 	}
 	var receivedUpSeq atomic.Int64
 	receivedUpSeq.Store(initialized.UpMsgSeq)
-	if handshake.Restore && initialized.UpMsgSeq > 0 {
-		if err := writer.Write(sessionCtx, Frame{Kind: FrameAck, Ack: initialized.UpMsgSeq}); err != nil {
-			cancel()
-			return err
-		}
+	if err := writer.Write(sessionCtx, Frame{Kind: FrameReady, Ack: initialized.UpMsgSeq}); err != nil {
+		cancel()
+		return err
 	}
 	writerResult := make(chan error, 1)
 	go func() {
@@ -163,6 +162,20 @@ func (s *Server) Serve(ctx context.Context, transport Transport) (serveErr error
 			}
 		}
 	}
+}
+
+func (s *Server) nextConnectionID() (int64, error) {
+	if s == nil {
+		return 0, ErrServerNil
+	}
+	connectionID, err := s.connectionID()
+	if err != nil {
+		return 0, err
+	}
+	if connectionID <= 0 {
+		return 0, ErrInvalidServer
+	}
+	return connectionID, nil
 }
 
 func (s *Server) dispatchUpMsg(ctx context.Context, client msgq.SessionClient, header msgq.SessionHeader, identity Identity, frame Frame, receivedUpSeq *atomic.Int64, confirmedDownSeq *int64) (bool, error) {

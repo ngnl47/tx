@@ -7,7 +7,7 @@ import (
 	txprotocol "github.com/ngnl47/tx/protocol"
 )
 
-// FrameKind 区分握手帧、上行业务帧、下行帧和确认帧。
+// FrameKind 区分握手帧、业务帧和控制帧。
 type FrameKind uint8
 
 const (
@@ -19,10 +19,12 @@ const (
 	FrameDownMsg
 	// FrameAck 在没有业务载荷可捎带时，单独确认对端已经连续处理的 Seq。
 	FrameAck
+	// FrameReady 表示服务端已经接受握手，Ack 是已经连续接收的上行 Seq。
+	FrameReady
 )
 
 const (
-	frameVersion     byte = 2
+	frameVersion     byte = 3
 	frameHeaderBytes      = 32
 	frameRestoreFlag byte = 1
 )
@@ -89,6 +91,10 @@ func (f Frame) validAck() bool {
 	return f.Kind == FrameAck && f.Seq == 0 && f.Ack > 0 && !f.Restore && len(f.Payload) == 0 && !f.hasCommandRoute()
 }
 
+func (f Frame) validReady() bool {
+	return f.Kind == FrameReady && f.Seq == 0 && f.Ack >= 0 && !f.Restore && len(f.Payload) == 0 && !f.hasCommandRoute()
+}
+
 func (f Frame) hasCommandRoute() bool {
 	return f.CommandID != 0 || f.RouteKey.Kind() != RouteKeyNone
 }
@@ -124,7 +130,7 @@ func EncodeFrame(frame Frame, maxFrameBytes int) ([]byte, error) {
 }
 
 func prepareFrame(frame Frame, maxFrameBytes int) (encodedFrame, error) {
-	if maxFrameBytes < frameHeaderBytes || (!frame.validHandshake() && !frame.validUpMsg() && !frame.validDownMsg() && !frame.validAck()) {
+	if maxFrameBytes < frameHeaderBytes || (!frame.validHandshake() && !frame.validUpMsg() && !frame.validDownMsg() && !frame.validAck() && !frame.validReady()) {
 		return encodedFrame{}, ErrInvalidFrame
 	}
 	routeKey, err := encodeRouteKey(frame.RouteKey)
@@ -206,7 +212,7 @@ func DecodeFrame(encoded []byte, maxFrameBytes int) (Frame, error) {
 		RouteKey:  routeKey,
 		Payload:   cloneBytes(encoded[frameHeaderBytes+routeKeySize:]),
 	}
-	if (!frame.validHandshake() && !frame.validUpMsg() && !frame.validDownMsg() && !frame.validAck()) || (frame.Restore && frame.Kind != FrameHandshake) {
+	if (!frame.validHandshake() && !frame.validUpMsg() && !frame.validDownMsg() && !frame.validAck() && !frame.validReady()) || (frame.Restore && frame.Kind != FrameHandshake) {
 		return Frame{}, ErrInvalidFrame
 	}
 	return frame, nil

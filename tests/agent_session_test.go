@@ -20,6 +20,7 @@ func TestAgentSessionAuthenticatesThenDispatchesAcceptedSequence(t *testing.T) {
 	go func() { result <- agent.Serve(context.Background(), transport) }()
 
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
+	assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
 	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 10001, RouteKey: txagent.Int64RouteKey(470001), Payload: []byte("bon-request")}
 	request := receiveDispatch(t, dispatched)
 	if request.Identity.RoleID != 470001 || request.Identity.SessionID != 99 || request.Seq != 1 || request.CommandID != 10001 || string(request.Payload) != "bon-request" {
@@ -53,6 +54,7 @@ func TestAgentSessionFetchesDownMsgAndConfirmsAckOnNextUpMsg(t *testing.T) {
 	go func() { result <- agent.Serve(context.Background(), transport) }()
 
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
+	assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
 	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("first")}
 	_ = receiveDispatch(t, dispatched)
 	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 1, "")
@@ -122,6 +124,7 @@ func TestAgentSessionPublishesDispatchResultToCurrentSession(t *testing.T) {
 	go func() { result <- agent.Serve(context.Background(), transport) }()
 
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
+	assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
 	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("bon-request")}
 	select {
 	case downMsg := <-transport.writes:
@@ -149,6 +152,7 @@ func TestAgentSessionAcknowledgesUpMsgWithoutDispatchResponse(t *testing.T) {
 	go func() { result <- agent.Serve(context.Background(), transport) }()
 
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
+	assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
 	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("bon-request")}
 	_ = receiveDispatch(t, dispatched)
 	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 1, "")
@@ -165,6 +169,7 @@ func TestAgentSessionConfirmsAckWithoutUpMsgFrame(t *testing.T) {
 	go func() { result <- agent.Serve(context.Background(), transport) }()
 
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
+	assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
 	waitForMailboxSession(t, mailbox)
 	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("bon-response")}); err != nil {
 		t.Fatalf("publish downMsg: %v", err)
@@ -203,6 +208,7 @@ func TestAgentSessionRejectsAcknowledgementBeyondWrittenDownMsg(t *testing.T) {
 	go func() { result <- agent.Serve(context.Background(), transport) }()
 
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
+	assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
 	waitForMailboxSession(t, mailbox)
 	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("bon-response")}); err != nil {
 		t.Fatalf("publish downMsg: %v", err)
@@ -233,6 +239,7 @@ func TestAgentSessionDoesNotDispatchDuplicateSequence(t *testing.T) {
 	go func() { result <- agent.Serve(context.Background(), transport) }()
 
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
+	assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
 	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("first")}
 	_ = receiveDispatch(t, dispatched)
 	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 1, "")
@@ -263,7 +270,7 @@ func TestAgentSessionRestoreAcknowledgesAcceptedUpMsgAndSkipsReplay(t *testing.T
 	result := make(chan error, 1)
 	go func() { result <- agent.Serve(context.Background(), transport) }()
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Restore: true, Payload: []byte("token")}
-	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 1, "")
+	assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 1, "")
 
 	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("replay")}
 	select {

@@ -18,6 +18,9 @@ func TestAgentFrameRoundTripsCommandRouteWithoutParsingPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EncodeFrame returned error: %v", err)
 	}
+	if encoded[0] != 3 {
+		t.Fatalf("encoded frame version = %d, want 3", encoded[0])
+	}
 	decoded, err := txagent.DecodeFrame(encoded, 1024)
 	if err != nil {
 		t.Fatalf("DecodeFrame returned error: %v", err)
@@ -39,5 +42,20 @@ func TestAgentFrameRejectsUpMsgWithoutCommandID(t *testing.T) {
 	}, 1024)
 	if err == nil {
 		t.Fatal("EncodeFrame accepted upMsg frame without CommandID")
+	}
+}
+
+func TestAgentFrameRoundTripsReadyControlFrame(t *testing.T) {
+	original := txagent.Frame{Kind: txagent.FrameReady, Ack: 7}
+	encoded, err := txagent.EncodeFrame(original, 1024)
+	if err != nil {
+		t.Fatalf("EncodeFrame returned error: %v", err)
+	}
+	decoded, err := txagent.DecodeFrame(encoded, 1024)
+	if err != nil {
+		t.Fatalf("DecodeFrame returned error: %v", err)
+	}
+	if decoded.Kind != txagent.FrameReady || decoded.Seq != 0 || decoded.Ack != 7 || len(decoded.Payload) != 0 {
+		t.Fatalf("decoded ready frame = %#v", decoded)
 	}
 }
