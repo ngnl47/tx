@@ -46,13 +46,15 @@ type Dependencies struct {
 type Options struct {
 	TCPListen       string
 	WebSocketListen string
-	MaxFrameBytes   int
-	FetchBatch      int
-	Identity        txagent.IdentityResolver
-	Dispatcher      txagent.Dispatcher
-	Sessions        txagent.SessionClientRouter
-	LocalMsgQ       LocalMsgQ
-	SessionStore    msgqredis.Options
+	// WebSocketOrigins 是允许跨域连接的完整浏览器 Origin 白名单。
+	WebSocketOrigins []string
+	MaxFrameBytes    int
+	FetchBatch       int
+	Identity         txagent.IdentityResolver
+	Dispatcher       txagent.Dispatcher
+	Sessions         txagent.SessionClientRouter
+	LocalMsgQ        LocalMsgQ
+	SessionStore     msgqredis.Options
 }
 
 // Service 承载玩家连接入口和会话邮箱客户端。
@@ -145,7 +147,9 @@ func (service *Service) startWebSocket(agentRuntime *txagent.Server, tcp *txagen
 	if service.options.WebSocketListen == "" {
 		return nil, nil, nil
 	}
-	handler, err := txagent.NewWebSocketHandler(agentRuntime, service.options.MaxFrameBytes)
+	handler, err := txagent.NewWebSocketHandler(agentRuntime, service.options.MaxFrameBytes, txagent.WebSocketOptions{
+		AllowedOrigins: service.options.WebSocketOrigins,
+	})
 	if err != nil {
 		if tcp != nil {
 			_ = tcp.Close()

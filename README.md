@@ -725,14 +725,17 @@ if err != nil {
 ```
 
 `txgame` 的最小配置如下。`agent` 被 `--services` 选中时至少配置一个监听地址，`maxFrameBytes` 和
-`fetchBatch` 必须为正数；`msgq` 的 Redis 会话 binding 参数也必须完整。服务选择只由 `--services` 决定，
-YAML 不使用 `enabled` 作为第二个启动开关：
+`fetchBatch` 必须为正数；`msgq` 的 Redis 会话 binding 参数也必须完整。浏览器跨域连接必须把完整的
+`http/https` Origin 写入 `webSocketOrigins`，不允许通配符；空列表沿用 WebSocket 同源校验。服务选择只由
+`--services` 决定，YAML 不使用 `enabled` 作为第二个启动开关：
 
 ```yaml
-runtime:
+services:
   agent:
     tcpListen: 0.0.0.0:9000
     webSocketListen: 0.0.0.0:9001
+    webSocketOrigins:
+      - http://127.0.0.1:5173
     maxFrameBytes: 1048576
     fetchBatch: 16
   msgq:
@@ -769,22 +772,25 @@ Agent 停止时先关闭 TCP/WebSocket listener，停止接收新连接；WebSoc
 和 Go 编解码字段名都是 `hi`，而不是 JSON 名 `headImg`。
 
 ```ts
-import { decodeEnvelope, encodeCommand } from "../src/protocol/codec.js";
-import { Schemas } from "../src/gen/schema.js";
+const session = new AgentSession({
+  schemas: Schemas,
+  resolveRoute: (command, body) => resolveCommandRoute(command as CommandName, body),
+});
+const client = new AgentClient(session, new WebSocketTransport({
+  url: "ws://127.0.0.1:9001",
+  maxFrameBytes: 1_048_576,
+}));
 
-const bytes = encodeCommand("Role_RenameReq", {
-  roleId: 470001,
-  name: "new-name",
-}, Schemas);
-
-const incoming = decodeEnvelope(bytes, Schemas);
-if (incoming.command === "Role_RenameReq") {
-  const request = incoming.body;
-  void request;
-}
+client.onMessage(async (message) => {
+  await handleMessage(message);
+  await client.acknowledge();
+});
+await client.connect(loginTicket);
+await client.send("Role_RenameReq", { roleId: 470001, name: "new-name" });
 ```
 
-这段 `bytes` 可以直接放进 Agent 的业务 Frame；Agent 仍保持不透明转发。Go 整数在 TypeScript 侧使用
+`AgentClient` 与传输无关的 `AgentSession` 共同管理命令编码、路由、Seq/Ack 和下行串行消费；浏览器仅选择
+`WebSocketTransport`，Node.js CLI 选择 `TCPTransport`。Go 整数在 TypeScript 侧使用
 `number`，因此业务协议值必须在 `-9,007,199,254,740,991` 到 `9,007,199,254,740,991` 之间；超界编码或解码
 会返回错误，避免悄悄丢失精度。客户端必须使用生成的 `resolveCommandRoute` 从请求对象取得 Frame 的静态命令号
 和可选路由键，不能手写这些传输字段：

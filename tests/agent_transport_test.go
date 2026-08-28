@@ -50,7 +50,7 @@ func TestTCPAgentRoundTrip(t *testing.T) {
 
 func TestWebSocketAgentRoundTrip(t *testing.T) {
 	agent, _, mailbox, dispatched := newAgentSessionFixture(t, nil)
-	handler, err := txagent.NewWebSocketHandler(agent, agentTransportMaxFrameBytes)
+	handler, err := txagent.NewWebSocketHandler(agent, agentTransportMaxFrameBytes, txagent.WebSocketOptions{})
 	if err != nil {
 		t.Fatalf("new WebSocket handler: %v", err)
 	}
