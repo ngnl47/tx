@@ -328,6 +328,14 @@ func configureKinds(config Config, kinds []Kind, lifecycle *mailboxLifecycle) ([
 		if kind.isFixed() {
 			baseProps = kind.props
 		}
+		if kind.idlePassivation == 0 {
+			if timeout := config.IdlePassivation[clusterKind.Kind]; timeout > 0 {
+				if kind.producer == nil {
+					return nil, nil, fmt.Errorf("%w: adapted Actor kind %q cannot apply runtime idle passivation", ErrInvalidConfig, clusterKind.Kind)
+				}
+				baseProps = protoactor.PropsFromProducer(idlePassivationProducer(kind.producer, timeout))
+			}
+		}
 		props := baseProps.Clone(
 			protoactor.WithMailbox(observedBoundedMailbox(config, clusterKind.Kind, lifecycle)),
 			protoactor.WithReceiverMiddleware(acceptanceReceiverMiddleware),

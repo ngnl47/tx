@@ -3,6 +3,7 @@ package actor
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	protoactor "github.com/asynkron/protoactor-go/actor"
 	"github.com/asynkron/protoactor-go/cluster"
@@ -11,9 +12,42 @@ import (
 // Kind 是业务 Actor 类型的声明。普通项目只需要提供名称和 Actor 构造函数，
 // Cluster 放置策略等底层细节由 Runtime 统一装配。
 type Kind struct {
-	cluster   *cluster.Kind
-	props     *protoactor.Props
-	placement kindPlacement
+	cluster         *cluster.Kind
+	props           *protoactor.Props
+	producer        func() protoactor.Actor
+	placement       kindPlacement
+	idlePassivation time.Duration
+}
+
+// KindOption 配置单个 Actor Kind 的生命周期策略。
+// 具体选项由本包提供，业务不能实现私有配置协议。
+type KindOption interface {
+	applyKind(*kindOptions) error
+}
+
+type kindOptions struct {
+	idlePassivation time.Duration
+}
+
+type kindOptionFunc func(*kindOptions) error
+
+func (option kindOptionFunc) applyKind(options *kindOptions) error {
+	if option == nil || options == nil {
+		return ErrInvalidConfig
+	}
+	return option(options)
+}
+
+// WithIdlePassivation 让该 Kind 的实体 Actor 在连续无业务消息达到 timeout 后停止。
+// 后续消息仍可通过 Virtual Actor placement 或固定 Kind 宿主惰性重建实体。
+func WithIdlePassivation(timeout time.Duration) KindOption {
+	return kindOptionFunc(func(options *kindOptions) error {
+		if timeout < time.Millisecond {
+			return fmt.Errorf("%w: idle passivation must be at least 1ms", ErrInvalidConfig)
+		}
+		options.idlePassivation = timeout
+		return nil
+	})
 }
 
 type kindPlacement uint8
@@ -24,32 +58,47 @@ const (
 )
 
 // NewKind 创建一个使用默认集群放置策略的 Actor Kind。
-func NewKind(name string, producer func() protoactor.Actor) (Kind, error) {
-	return newKind(name, producer, kindPlacementVirtual)
+func NewKind(name string, producer func() protoactor.Actor, options ...KindOption) (Kind, error) {
+	return newKind(name, producer, kindPlacementVirtual, options)
 }
 
 // NewFixedKind 创建固定归属的 Actor Kind。固定 Kind 不参与集群重平衡，
 // 业务通过稳定逻辑槽位选择宿主实例，Runtime 在该实例内按 RouteKey 惰性激活实体 Actor。
-func NewFixedKind(name string, producer func() protoactor.Actor) (Kind, error) {
-	return newKind(name, producer, kindPlacementFixed)
+func NewFixedKind(name string, producer func() protoactor.Actor, options ...KindOption) (Kind, error) {
+	return newKind(name, producer, kindPlacementFixed, options)
 }
 
-func newKind(name string, producer func() protoactor.Actor, placement kindPlacement) (Kind, error) {
+func newKind(name string, producer func() protoactor.Actor, placement kindPlacement, values []KindOption) (Kind, error) {
 	name = strings.TrimSpace(name)
 	if name == "" || producer == nil {
 		return Kind{}, ErrInvalidConfig
 	}
+	var options kindOptions
+	for _, value := range values {
+		if value == nil {
+			return Kind{}, ErrInvalidConfig
+		}
+		if err := value.applyKind(&options); err != nil {
+			return Kind{}, err
+		}
+	}
+	originalProducer := producer
+	if options.idlePassivation > 0 {
+		producer = idlePassivationProducer(producer, options.idlePassivation)
+	}
 	props := protoactor.PropsFromProducer(producer)
 	return Kind{
-		cluster:   cluster.NewKind(name, props),
-		props:     props,
-		placement: placement,
+		cluster:         cluster.NewKind(name, props),
+		props:           props,
+		producer:        originalProducer,
+		placement:       placement,
+		idlePassivation: options.idlePassivation,
 	}, nil
 }
 
 // MustKind 创建静态 Actor Kind，配置错误时立即终止启动。
-func MustKind(name string, producer func() protoactor.Actor) Kind {
-	kind, err := NewKind(name, producer)
+func MustKind(name string, producer func() protoactor.Actor, options ...KindOption) Kind {
+	kind, err := NewKind(name, producer, options...)
 	if err != nil {
 		panic(fmt.Sprintf("actor: create kind %q: %v", name, err))
 	}
@@ -57,8 +106,8 @@ func MustKind(name string, producer func() protoactor.Actor) Kind {
 }
 
 // MustFixedKind 创建静态固定归属 Actor Kind，配置错误时立即终止启动。
-func MustFixedKind(name string, producer func() protoactor.Actor) Kind {
-	kind, err := NewFixedKind(name, producer)
+func MustFixedKind(name string, producer func() protoactor.Actor, options ...KindOption) Kind {
+	kind, err := NewFixedKind(name, producer, options...)
 	if err != nil {
 		panic(fmt.Sprintf("actor: create fixed kind %q: %v", name, err))
 	}
@@ -96,6 +145,9 @@ func validateKinds(kinds []Kind) error {
 		name := kind.Name()
 		if name == "" || kind.cluster == nil || kind.cluster.Props == nil || kind.props == nil ||
 			(kind.placement != kindPlacementVirtual && kind.placement != kindPlacementFixed) {
+			return ErrInvalidConfig
+		}
+		if kind.idlePassivation > 0 && kind.idlePassivation < time.Millisecond {
 			return ErrInvalidConfig
 		}
 		if _, exists := names[name]; exists {

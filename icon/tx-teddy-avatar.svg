@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-labelledby="title desc">
+  <title id="title">tx black teddy poodle avatar icon</title>
+  <desc id="desc">A transparent-background black teddy poodle avatar icon for the tx Go library family.</desc>
+  <defs>
+    <linearGradient id="dog-white" x1="150" y1="116" x2="366" y2="392" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#27343a"/>
+      <stop offset="0.52" stop-color="#11191e"/>
+      <stop offset="1" stop-color="#070b0e"/>
+    </linearGradient>
+  </defs>
+
+  <g transform="translate(-192 -184) scale(1.75)">
+    <!-- Slim drooping ears placed behind the face, with scalloped curls instead of bulky side blocks. -->
+    <path d="M177 165 C151 169 132 198 129 236 C126 272 138 307 159 326 C176 341 192 334 197 311 C203 283 197 236 187 197 C183 180 181 169 177 165 Z" fill="#080e12" opacity="0.98"/>
+    <path d="M335 165 C361 169 380 198 383 236 C386 272 374 307 353 326 C336 341 320 334 315 311 C309 283 315 236 325 197 C329 180 331 169 335 165 Z" fill="#080e12" opacity="0.98"/>
+    <path d="M154 216 C164 205 181 209 184 225" fill="none" stroke="#3a5660" stroke-width="6" stroke-linecap="round" opacity="0.38"/>
+    <path d="M143 253 C153 242 170 247 173 263" fill="none" stroke="#2d4952" stroke-width="5" stroke-linecap="round" opacity="0.34"/>
+    <path d="M158 295 C168 286 183 291 185 306" fill="none" stroke="#213b44" stroke-width="5" stroke-linecap="round" opacity="0.3"/>
+    <path d="M358 216 C348 205 331 209 328 225" fill="none" stroke="#304d56" stroke-width="6" stroke-linecap="round" opacity="0.38"/>
+    <path d="M369 253 C359 242 342 247 339 263" fill="none" stroke="#263f48" stroke-width="5" stroke-linecap="round" opacity="0.34"/>
+    <path d="M354 295 C344 286 329 291 327 306" fill="none" stroke="#1e3640" stroke-width="5" stroke-linecap="round" opacity="0.3"/>
+    <path d="M187 183 C176 221 176 268 190 306" fill="none" stroke="#030709" stroke-width="6" stroke-linecap="round" opacity="0.22"/>
+    <path d="M325 183 C336 221 336 268 322 306" fill="none" stroke="#030709" stroke-width="6" stroke-linecap="round" opacity="0.22"/>
+
+    <!-- Curly head mass. Scalloped circles make the poodle cut read at icon size. -->
+    <path d="M256 129 C300 129 333 157 347 200 C367 222 371 259 354 292 C337 324 305 341 277 337 C270 358 263 369 256 369 C249 369 242 358 235 337 C207 341 175 324 158 292 C141 259 145 222 165 200 C179 157 212 129 256 129 Z" fill="url(#dog-white)"/>
+    <circle cx="186" cy="205" r="28" fill="#17252b"/>
+    <circle cx="206" cy="169" r="28" fill="#20333b"/>
+    <circle cx="238" cy="145" r="29" fill="#2b424b"/>
+    <circle cx="274" cy="145" r="29" fill="#243941"/>
+    <circle cx="306" cy="169" r="27" fill="#18272e"/>
+    <circle cx="326" cy="205" r="27" fill="#101b20"/>
+    <circle cx="188" cy="283" r="26" fill="#132127"/>
+    <circle cx="324" cy="283" r="26" fill="#0a1317"/>
+    <circle cx="217" cy="325" r="24" fill="#111d22"/>
+    <circle cx="295" cy="325" r="24" fill="#0a1216"/>
+
+    <!-- A smaller puppy face sits inside the curls. -->
+    <path d="M194 220 C209 187 232 171 256 171 C280 171 303 187 318 220 C307 246 285 261 256 261 C227 261 205 246 194 220 Z" fill="#1e3037" opacity="0.92"/>
+    <path d="M212 219 C223 200 237 191 256 191 C275 191 289 200 300 219 C290 237 274 246 256 246 C238 246 222 237 212 219 Z" fill="#142128" opacity="0.7"/>
+
+    <!-- Round glossy eyes, slightly hidden by hair. -->
+    <circle cx="221" cy="239" r="15" fill="#020506"/>
+    <circle cx="291" cy="239" r="15" fill="#020506"/>
+    <circle cx="218" cy="235" r="5" fill="#d8fbff"/>
+    <circle cx="288" cy="235" r="5" fill="#d8fbff"/>
+    <circle cx="224" cy="244" r="3" fill="#5ccde0" opacity="0.75"/>
+    <circle cx="294" cy="244" r="3" fill="#5ccde0" opacity="0.75"/>
+
+    <!-- Compact muzzle and tiny puppy mouth. -->
+    <path d="M218 276 C221 252 237 238 256 238 C275 238 291 252 294 276 C297 305 280 325 256 325 C232 325 215 305 218 276 Z" fill="#20343c"/>
+    <ellipse cx="256" cy="268" rx="20" ry="13" fill="#020405"/>
+    <path d="M250 265 C254 261 258 261 262 265" fill="none" stroke="#5f8790" stroke-width="3" stroke-linecap="round" opacity="0.65"/>
+    <path d="M256 281 C252 292 244 296 235 296" fill="none" stroke="#4f8791" stroke-width="3.2" stroke-linecap="round" opacity="0.34"/>
+    <path d="M256 281 C260 292 268 296 277 296" fill="none" stroke="#4f8791" stroke-width="3.2" stroke-linecap="round" opacity="0.34"/>
+    <path d="M240 309 C249 316 263 316 272 309" fill="none" stroke="#28464f" stroke-width="3.5" stroke-linecap="round" opacity="0.45"/>
+
+    <!-- Big readable curls, kept sparse enough for a library icon. -->
+    <path d="M203 187 C213 173 232 176 236 191" fill="none" stroke="#5a747c" stroke-width="6" stroke-linecap="round" opacity="0.56"/>
+    <path d="M241 168 C251 157 269 159 274 173" fill="none" stroke="#66818a" stroke-width="6" stroke-linecap="round" opacity="0.54"/>
+    <path d="M282 189 C292 177 309 181 313 196" fill="none" stroke="#435f68" stroke-width="6" stroke-linecap="round" opacity="0.5"/>
+    <path d="M174 259 C184 247 201 251 205 266" fill="none" stroke="#435f68" stroke-width="6" stroke-linecap="round" opacity="0.48"/>
+    <path d="M338 259 C328 247 311 251 307 266" fill="none" stroke="#314d56" stroke-width="6" stroke-linecap="round" opacity="0.48"/>
+
+    <!-- Small neck/base shape to read as an avatar head rather than a floating mask. -->
+    <path d="M213 353 C225 371 240 380 256 380 C272 380 287 371 299 353 C287 395 225 395 213 353 Z" fill="#0b1519" opacity="0.9"/>
+  </g>
+</svg>

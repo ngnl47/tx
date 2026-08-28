@@ -27,6 +27,9 @@ type Config struct {
 	MailboxCapacity int
 	// MaxPendingCalls 限制当前进程同时等待业务结果的 Future 数量；0 使用框架默认值。
 	MaxPendingCalls int
+	// IdlePassivation 按 Kind 名称配置实体 Actor 的空闲钝化时间。
+	// 显式 KindOption 优先于该运行时映射；空 map 表示不追加运行时策略。
+	IdlePassivation map[string]time.Duration
 	// Etcd 描述 Actor Cluster Provider 使用的 etcd 连接。
 	Etcd EtcdConfig
 }
@@ -52,6 +55,20 @@ func (c Config) Normalize() (Config, error) {
 	}
 	if c.MaxPendingCalls == 0 {
 		c.MaxPendingCalls = DefaultMaxPendingCalls
+	}
+	if len(c.IdlePassivation) > 0 {
+		idlePassivation := make(map[string]time.Duration, len(c.IdlePassivation))
+		for name, timeout := range c.IdlePassivation {
+			name = strings.TrimSpace(name)
+			if name == "" || timeout < time.Millisecond {
+				return Config{}, ErrInvalidConfig
+			}
+			if _, exists := idlePassivation[name]; exists {
+				return Config{}, ErrInvalidConfig
+			}
+			idlePassivation[name] = timeout
+		}
+		c.IdlePassivation = idlePassivation
 	}
 	etcd, err := c.Etcd.Normalize()
 	if err != nil {

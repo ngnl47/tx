@@ -100,6 +100,31 @@ func BenchmarkFixedActorExisting(b *testing.B) {
 	})
 }
 
+func BenchmarkFixedActorIdlePassivationExisting(b *testing.B) {
+	kind, err := NewFixedKind("role", func() protoactor.Actor {
+		return &benchmarkFixedActor{}
+	}, WithIdlePassivation(time.Hour))
+	if err != nil {
+		b.Fatalf("NewFixedKind() error = %v", err)
+	}
+	hostProps, err := newFixedHostProps("role", kind.props)
+	if err != nil {
+		b.Fatalf("newFixedHostProps() error = %v", err)
+	}
+	system := protoactor.NewActorSystem()
+	host := system.Root.Spawn(hostProps)
+	b.Cleanup(func() {
+		system.Root.StopFuture(host).Wait()
+		system.Shutdown()
+	})
+	requestFixedBenchmark(b, system, host, 470001)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		requestFixedBenchmark(b, system, host, 470001)
+	}
+}
+
 func BenchmarkFixedActorColdActivation(b *testing.B) {
 	b.Run("Serial", func(b *testing.B) {
 		system, host := newFixedBenchmarkHost(b, false, nil)

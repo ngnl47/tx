@@ -2381,6 +2381,47 @@ L4 服务在 Bee/Ant `ServiceSpec.ActorKinds` 中声明 Kind，L3 Server 自动�
 高级项目才使用 `actor.AdaptKind`。底层
 `ActorSystem` 保留为高级扩展面，不属于常规业务调用链。
 
+### Actor 空闲钝化与常驻缓存淘汰
+
+Actor 空闲钝化和 GD 常驻缓存淘汰是两条独立生命周期：
+
+```text
+Actor Kind 连续无消息
+  -> tx 私有钝化消息
+  -> 停止当前实体 Actor
+  -> placement 或 fixedHost 在后续消息到达时惰性重建
+
+GD 常驻缓存连续无业务读取
+  -> 扫描空闲候选
+  -> cache.Manager.Release 在同一实体锁下检查事务预留、pending 和 Store 变更
+  -> 释放成功且候选代次未变化
+  -> 删除 GD 引用
+```
+
+Core 通过 `actor.WithIdlePassivation(timeout)` 或 `actor.Config.IdlePassivation[kind]` 配置 Kind；没有配置的 Kind 不增加
+包装 Actor 或消息分支。启用后由通用包装维护独立 `time.Timer`，到期时向自身投递 tx 私有钝化消息；普通业务消息只重置
+该计时器，业务 Actor 自己的 `ReceiveTimeout` 仍原样接收。Virtual Actor 终止后由官方 placement 清除 activation；固定实体终止后
+`fixedHost` 根据 `Terminated` 删除旧 PID，下一条相同 RouteKey 消息创建新实体。两条路径都不会改写 etcd 成员或业务槽位。
+同一项目 yml 可以为多个可选服务声明 Kind 策略；Runtime 只消费本进程已注册 Kind，避免单服务实例被其他服务配置阻断启动。
+
+有状态模板的常驻缓存为每个条目保存最后访问时间和访问代次。命中路径仍使用共享读锁，时间和代次使用原子字段更新；
+每个缓存只运行一个扫描任务，不为每个 GD 创建 timer 或 goroutine。扫描在缓存锁外调用项目释放器，随后再次核对条目指针
+和 generation；候选快照使用 `generation -> lastAccess -> generation` 稳定读取，形成快照或执行释放期间的新访问都会使
+旧候选失效。`cache.ErrPendingRoot` 只表示延期重试，任何错误都保留对象。
+
+Actor Runtime 不依赖 GD、Store、Procedure、CacheManager 或 WAL，也不在超时回调执行存储 I/O。连接断开不直接停止
+Actor；普通心跳命令经过 RoleActor mailbox 即可续期。心跳不读取 GD 时，不延长常驻 GD 的空闲时间。
+
+钝化不提高消息投递可靠级别。Actor 从接收钝化消息到 placement 或 `fixedHost` 观察到终止之间存在短暂旧 PID 窗口；
+`Tell` 仍是无需确认、允许 dead letter 的基础投递。必须感知该窗口的业务使用 `TellAccepted` 或 `Call`，由调用方按既定错误
+策略重试；钝化层不把所有消息强制改成确认式投递。
+
+2026-08-28 使用 Go 1.27.0 在 x86_64 macOS、Intel i9-9880H 上运行固定 Actor 和常驻缓存基准。已有固定实体的串行
+投递在未启用钝化时为 `9.92-10.16 us/op, 728-739 B/op, 12 allocs/op`，启用一小时空闲钝化后为
+`10.48-10.93 us/op, 735-743 B/op, 12 allocs/op`，没有增加分配次数。常驻缓存命中在未启用淘汰时为
+`18.79-19.47 ns/op`；启用空闲续期后为 `102.4-105.0 ns/op`，两者均为 `0 B/op, 0 allocs/op`。额外耗时来自
+`time.Now` 和原子访问代次更新，用于阻止扫描任务删除正在并发使用的对象；普通无淘汰缓存不承担该成本。
+
 2026-08-25 使用 Go 1.26.5 在 x86_64 macOS 上运行 `BenchmarkPendingCallsRoundTrip`，单次本地
 `add -> resolve -> Await` 约为 `0.78-0.86 us/op, 408 B/op, 6 allocs/op`。该基线包含 Future、完成通知、
 `context.AfterFunc` 和结果只读复制，不包含 Actor Remote 网络 I/O。当前不为这条低于网络开销的边界引入对象池；

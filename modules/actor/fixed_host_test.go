@@ -40,6 +40,76 @@ func TestFixedHostReusesEntityActorByRouteKey(t *testing.T) {
 	}
 }
 
+func TestFixedHostRecreatesIdleEntityActor(t *testing.T) {
+	const idleTimeout = 30 * time.Millisecond
+	var starts atomic.Int32
+	kind, err := NewFixedKind("role", func() protoactor.Actor {
+		starts.Add(1)
+		return fixedHostProbeActor{}
+	}, WithIdlePassivation(idleTimeout))
+	if err != nil {
+		t.Fatalf("NewFixedKind returned error: %v", err)
+	}
+	hostProps, err := newFixedHostProps("role", kind.props)
+	if err != nil {
+		t.Fatalf("newFixedHostProps returned error: %v", err)
+	}
+
+	system := protoactor.NewActorSystem()
+	host := system.Root.Spawn(hostProps)
+	t.Cleanup(func() { system.Root.Stop(host) })
+
+	first := requestFixedHostProbe(t, system, host, actorpb.RouteKeyKind_ROUTE_KEY_UINT64, 470001, "")
+	waitForAtomicValue(t, &starts, 1, time.Second)
+	time.Sleep(3 * idleTimeout)
+	second := requestFixedHostProbe(t, system, host, actorpb.RouteKeyKind_ROUTE_KEY_UINT64, 470001, "")
+
+	if first == second {
+		t.Fatalf("idle route key reused stopped child %q", first)
+	}
+	if got := starts.Load(); got != 2 {
+		t.Fatalf("child starts = %d, want 2", got)
+	}
+}
+
+func TestFixedHostUsesRuntimeIdlePassivationForKind(t *testing.T) {
+	const idleTimeout = 30 * time.Millisecond
+	var starts atomic.Int32
+	kind, err := NewFixedKind("role", func() protoactor.Actor {
+		starts.Add(1)
+		return fixedHostProbeActor{}
+	})
+	if err != nil {
+		t.Fatalf("NewFixedKind returned error: %v", err)
+	}
+	mailboxes := &mailboxLifecycle{}
+	mailboxes.bind(lifecycle.NewWaitGroupContext(context.Background()))
+	_, fixed, err := configureKinds(Config{
+		ClusterName:     "test",
+		Host:            "127.0.0.1",
+		MailboxCapacity: 8,
+		IdlePassivation: map[string]time.Duration{"role": idleTimeout},
+	}, []Kind{kind}, mailboxes)
+	if err != nil {
+		t.Fatalf("configureKinds returned error: %v", err)
+	}
+	hostProps, err := newFixedHostProps("role", fixed[0].props)
+	if err != nil {
+		t.Fatalf("newFixedHostProps returned error: %v", err)
+	}
+
+	system := protoactor.NewActorSystem()
+	host := system.Root.Spawn(hostProps)
+	t.Cleanup(func() { system.Root.Stop(host) })
+
+	first := requestFixedHostProbe(t, system, host, actorpb.RouteKeyKind_ROUTE_KEY_UINT64, 470001, "")
+	time.Sleep(3 * idleTimeout)
+	second := requestFixedHostProbe(t, system, host, actorpb.RouteKeyKind_ROUTE_KEY_UINT64, 470001, "")
+	if first == second || starts.Load() != 2 {
+		t.Fatalf("runtime idle passivation children=(%q,%q) starts=%d, want two children", first, second, starts.Load())
+	}
+}
+
 func TestFixedKindPIDUsesStableKindHost(t *testing.T) {
 	first, err := FixedKindPID("127.0.0.1:9201", "role")
 	if err != nil {

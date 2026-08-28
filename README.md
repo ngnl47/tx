@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="icon/tx-teddy-avatar.png" alt="tx 项目图标" width="160" height="160">
+</p>
+
 # tx
 
 `tx` 是面向游戏服务端的 Go 运行时基础库，提供类型元数据、字段级变更追踪、Redis/Mongo/Fusion 存储适配、单机事务、生命周期以及可选的分布式服务模块。
@@ -1100,7 +1104,7 @@ tx 不重新实现 Actor 调度、Remote PID、成员发现或重平衡；它只
 ```go
 kind, err := txactor.NewKind("role", func() protoactor.Actor {
     return &roleActor{}
-})
+}, txactor.WithIdlePassivation(5*time.Minute))
 if err != nil {
     return err
 }
@@ -1115,6 +1119,17 @@ game := bee.ServiceRegistration{
     },
 }
 ```
+
+空闲时间属于具体 Kind。`WithIdlePassivation` 适合代码内的高级装配；标准模板也可以把 YAML 转换为
+`actor.Config.IdlePassivation["role"]`。显式 Kind 选项优先于运行时映射。连续没有业务消息达到阈值时，实体 Actor
+停止并释放邮箱；下一条消息会通过 Virtual Actor placement 或固定 Kind 宿主惰性重建。未配置时保持常驻行为。
+共享项目配置可以同时声明多个服务的 Kind；当前进程只应用自己实际注册的 Kind。
+
+玩家心跳应继续作为普通生成命令经过 RoleActor，它会像其他业务消息一样刷新空闲计时，不需要新增专用心跳帧。
+断开 TCP/WebSocket 连接不直接停止 Actor，因为实体仍可能接收服务间消息、延迟任务或重连请求。
+
+Actor 钝化只管理执行对象，不代表 GD 已刷盘或可从常驻缓存删除。有状态项目必须另行调用
+`cache.Manager.Release` 的安全检查；完整边界见 [设计文档](docs/design.md#actor-空闲钝化与常驻缓存淘汰)。
 
 L4 服务只声明业务 Kind，Server 会自动装配 `CModActor` 并管理 Runtime 生命周期。`CModActor` 只包含 ProtoActor
 Remote 和官方 etcd Cluster Provider，不依赖 tx 的普通 gRPC Host 或 `ServiceDirectory`；服务若还需要普通 RPC、
