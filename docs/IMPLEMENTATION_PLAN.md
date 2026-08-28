@@ -15,6 +15,12 @@
 2. 持续审计 Redis、Mongo、Fusion、WAL 和延迟任务的失败契约。未知返回值、矛盾文档状态、非法路径、路由错误和依赖缺失必须返回明确错误，不能静默成功、自动修复持久化数据或错误清理 Store 状态。
 3. 发现旧接口、过渡结构、淘汰测试或旧方案文档时，在确认没有生产调用后直接删除。生效文档只描述当前方案；必要的技术取舍只保留在设计文档。
 4. 新增或修改无状态持久化能力时优先使用 `txgame` 生成的真实 `GD*`/`GD*Store`；涉及 Procedure、CacheManager、WAL 或 checkpoint 时使用 `txgameslg` 的有状态生成模型，避免 runtime 测试与生成契约割裂。
+5. 当前首要里程碑是完成多进程真实集群闭环，不能用同进程聚合启动代替跨进程验收：
+   - `txgame` 分别启动 `agent`、`msgq` 和至少两个 `game` 实例，验证无状态服务发现、远程 Actor 投递、会话粘滞、下行邮箱和实例重启后的恢复行为；
+   - `txgameslg` 分别启动 `agent`、`msgq`、`slggame` 和 `slgworld`，验证固定逻辑槽位不漂移、RoleActor/WorldActor 远程投递、CacheManager、Fusion、WAL 与 Mongo checkpoint；
+   - 使用真实 etcd、Redis、MongoDB 和 `txclient` 同时回归 TCP、WebSocket、BON、Seq/Ack、断线恢复及业务错误不掉线；
+   - 分别停止并重启 `msgq`、无状态 `game`、固定槽位 `slggame/slgworld`，确认新请求的路由结果、已受理工作的 `WaitGroupContext` 等待、未完成请求的明确错误，以及 Redis/Mongo 中不存在重复覆盖或脏写；
+   - 可重复执行的进程编排和验收脚本属于 `txgame`、`txgameslg`、`txclient` 模板工程；`tx` 只保留通用运行时、测试辅助入口和不会绑定业务服务名的底层能力。
 
 ### P1：性能基线
 
@@ -23,6 +29,7 @@
 2. 热点优化必须记录对象规模、嵌套深度、变更密度、Go 版本、耗时和分配；没有基准证据时不引入 pool、`unsafe` 或新的中间批次。
 3. `MaxRootChanges` 继续只按变更位置数收敛 Store 状态树；进程 Heap 只用于告警，不能成为 cache Manager 拒绝业务的唯一依据。只有真实服务证明路径数和待刷根对象数不足以解释常驻内存时，才重新评审字节预算。
 4. Redis 大型整字段写入的安全整数检查只有在 profile 证明为热点后才优化；任何优化都不能降低整数精度保护。
+5. 多进程真实集群闭环完成后，记录 Agent 到远程 Actor 的请求往返、MsgQ 发布/拉取/Ack、服务发现缓存命中，以及多会话断线恢复的耗时、吞吐和分配；基线必须区分进程内调用与真实 gRPC 网络调用，避免用本地快捷路径掩盖生产成本。
 
 ## 待决策能力
 
