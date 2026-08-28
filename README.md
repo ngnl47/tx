@@ -1485,7 +1485,7 @@ go run ./cmd/txctl --endpoint 10.0.1.22:9100 promote-slot \
 服务启动成功时会输出一次解析后的服务集合和稳定 CMod 装配顺序，例如：
 
 ```text
-server initialized app=txgame services=game,msgq cmods=rpc,redis-storage,mongo-storage,fusion-storage components=fusion-storage(scheduler=delay) endpoint=10.0.1.21:9000
+{"app":"txgame","cmods":"rpc,redis-storage,mongo-storage,fusion-storage","components":"fusion-storage(scheduler=delay)","endpoint":"10.0.1.21:9000","message":"server started successfully","services":"game,msgq"}
 ```
 
 这条日志只描述本进程已经采用的静态装配结果，不包含 URI、密码或 token。CMod 不支持生产期动态装载；依赖缺失、

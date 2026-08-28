@@ -270,7 +270,7 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 	}
 	runtime.setInstanceStatus(discovery.StatusRunning)
 	txlog.Info(
-		"server initialized",
+		"server started successfully",
 		"app", server.config.AppID,
 		"services", strings.Join(selectedServiceNames(selected), ","),
 		"cmods", strings.Join(cmodIDStrings(graph.IDs()), ","),

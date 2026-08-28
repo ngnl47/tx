@@ -77,6 +77,9 @@ func TestStartLogsResolvedServicesAndCModsOnce(t *testing.T) {
 	})
 
 	text := output.String()
+	if !strings.Contains(text, `"message":"server started successfully"`) {
+		t.Fatalf("startup log = %q, want explicit success message", text)
+	}
 	if !strings.Contains(text, `"services":"game"`) {
 		t.Fatalf("startup log = %q, want resolved services", text)
 	}
