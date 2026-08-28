@@ -2563,7 +2563,9 @@ LogListener 负责旁路采集、批量上传、重试和留存，外部日志�
 但不得在业务请求中同步上传远端日志。
 
 Actor Runtime 创建 ActorSystem 时通过 ProtoActor 官方 LoggerFactory 注入当前 `tx/log` Handler。ProtoActor 仍直接生成
-自己的日志记录和 `lib`、`system` 等字段，tx 不转抄、不重复写出，只统一格式、级别过滤与输出目标。调试器和其他进程在
+自己的日志记录和 `lib`、`system` 等字段，tx 不转抄、不重复写出，只统一格式与输出目标。Actor Handler 外额外包裹一个
+模块级最低日志阈值：`actor.Config.LogLevel` 默认 `info`，与项目全局级别相互独立。这样项目可以开启 Debug 观察 msgq 和
+业务分派，同时避免 Gossip 心跳淹没控制台；专项排查 Actor Cluster 时可以显式启用 Actor Debug。调试器和其他进程在
 应用外部写出的文本不属于该日志边界。
 
 网络消息日志遵循“最接近完整语义的一层记录一次”：

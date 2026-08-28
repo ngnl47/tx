@@ -13,6 +13,20 @@ const (
 	DefaultMaxPendingCalls = 4096
 )
 
+// LogLevel 控制 ProtoActor 内部日志的最低输出级别，不改变项目全局日志级别。
+type LogLevel string
+
+const (
+	// LogLevelDebug 输出 Gossip、心跳和邮箱等高频内部状态，仅用于专项排查。
+	LogLevelDebug LogLevel = "debug"
+	// LogLevelInfo 输出成员加入、远程通信启动等生命周期信息，是默认级别。
+	LogLevelInfo LogLevel = "info"
+	// LogLevelWarn 仅输出 ProtoActor 的警告和错误。
+	LogLevelWarn LogLevel = "warn"
+	// LogLevelError 仅输出 ProtoActor 的错误。
+	LogLevelError LogLevel = "error"
+)
+
 var ErrInvalidConfig = errors.New("actor: invalid config")
 
 // Config 描述一个 Actor Cluster 成员。项目代码负责解析配置文件后构造该值。
@@ -27,6 +41,8 @@ type Config struct {
 	MailboxCapacity int
 	// MaxPendingCalls 限制当前进程同时等待业务结果的 Future 数量；0 使用框架默认值。
 	MaxPendingCalls int
+	// LogLevel 是 ProtoActor 内部日志的最低级别；空值使用 info。
+	LogLevel LogLevel
 	// IdlePassivation 按 Kind 名称配置实体 Actor 的空闲钝化时间。
 	// 显式 KindOption 优先于该运行时映射；空 map 表示不追加运行时策略。
 	IdlePassivation map[string]time.Duration
@@ -47,7 +63,16 @@ type EtcdConfig struct {
 func (c Config) Normalize() (Config, error) {
 	c.ClusterName = strings.TrimSpace(c.ClusterName)
 	c.Host = strings.TrimSpace(c.Host)
+	c.LogLevel = LogLevel(strings.ToLower(strings.TrimSpace(string(c.LogLevel))))
+	if c.LogLevel == "" {
+		c.LogLevel = LogLevelInfo
+	}
 	if c.ClusterName == "" || c.Host == "" || c.Port < 0 || c.Port > 65535 || c.MailboxCapacity < 0 || c.MaxPendingCalls < 0 {
+		return Config{}, ErrInvalidConfig
+	}
+	switch c.LogLevel {
+	case LogLevelDebug, LogLevelInfo, LogLevelWarn, LogLevelError:
+	default:
 		return Config{}, ErrInvalidConfig
 	}
 	if c.MailboxCapacity == 0 {

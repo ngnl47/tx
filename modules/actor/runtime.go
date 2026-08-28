@@ -105,7 +105,7 @@ func (r *Runtime) Start(ctx context.Context) (err error) {
 	if err != nil {
 		return fmt.Errorf("actor: create etcd provider: %w", err)
 	}
-	system := newActorSystem()
+	system := newActorSystem(r.config.LogLevel)
 	system.Extensions.Register(&actorLifecycleExtension{context: ctx})
 	remoteConfig := remote.Configure(r.config.Host, r.config.Port)
 	clusterConfig := cluster.Configure(
@@ -136,12 +136,9 @@ func (r *Runtime) Start(ctx context.Context) (err error) {
 	return nil
 }
 
-func newActorSystem() *protoactor.ActorSystem {
+func newActorSystem(level LogLevel) *protoactor.ActorSystem {
 	return protoactor.NewActorSystem(protoactor.WithLoggerFactory(func(system *protoactor.ActorSystem) *slog.Logger {
-		return txlog.Default().With(
-			"lib", "Proto.Actor",
-			"system", system.ID,
-		)
+		return newRuntimeLogger(system.ID, level)
 	}))
 }
 

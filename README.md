@@ -1908,8 +1908,9 @@ func (l Logger) ErrorContext(ctx context.Context, msg string, args ...any)
 `slog.Record.PC`，因此 `source` 指向实际调用代码，不会落到 `tx/log/log.go`。
 
 Actor CMod 会通过 ProtoActor 官方的 LoggerFactory 复用同一 Handler，因此 Actor System、Remote 和 Cluster 日志也遵循
-当前环境的 `console` 或 `json` 格式，并保留 `lib=Proto.Actor`、`system` 等原生结构字段。GoLand/Delve 输出的
-`API server listening at ...` 位于应用进程之外，不受 tx 日志配置控制。
+当前环境的 `console` 或 `json` 格式，并保留 `lib=Proto.Actor`、`system` 等原生结构字段。Actor 内部日志拥有独立的
+`actor.Config.LogLevel`，默认是 `info`；即使项目全局开启 `debug`，高频 Gossip 心跳也不会刷屏。只有专项排查集群时才应
+临时设置为 `debug`。GoLand/Delve 输出的 `API server listening at ...` 位于应用进程之外，不受 tx 日志配置控制。
 
 默认输出目标是 `stdout`。生产环境由 TKE 日志 Agent、LogListener 或其他旁路采集器读取并上传，tx 不直接调用
 云日志 API，也不负责文件切割、上传重试和远端留存。高级项目仍可在启动期调用 `log.SetDefault(logger)` 注入自己的

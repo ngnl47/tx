@@ -22,6 +22,9 @@ func TestConfigNormalizesIdlePassivationWithoutSharingCallerMap(t *testing.T) {
 	if got := config.IdlePassivation["role"]; got != 5*time.Minute {
 		t.Fatalf("normalized role idle passivation = %v, want 5m", got)
 	}
+	if config.LogLevel != LogLevelInfo {
+		t.Fatalf("normalized log level = %q, want %q", config.LogLevel, LogLevelInfo)
+	}
 }
 
 func TestConfigRejectsInvalidIdlePassivation(t *testing.T) {
@@ -35,5 +38,19 @@ func TestConfigRejectsInvalidIdlePassivation(t *testing.T) {
 	}).Normalize()
 	if err == nil {
 		t.Fatal("Normalize accepted zero role idle passivation")
+	}
+}
+
+func TestConfigRejectsInvalidLogLevel(t *testing.T) {
+	_, err := (Config{
+		ClusterName: "test",
+		Host:        "127.0.0.1",
+		LogLevel:    LogLevel("trace"),
+		Etcd: EtcdConfig{
+			Endpoints: []string{"127.0.0.1:2379"},
+		},
+	}).Normalize()
+	if err == nil {
+		t.Fatal("Normalize accepted invalid actor log level")
 	}
 }
