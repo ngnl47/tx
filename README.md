@@ -189,7 +189,7 @@ CMod，框架递归展开 `Requires` 依赖；`After` 仅调整已经选中门�
 | 服务 | 直接 CMod | 展开后的主要资源 |
 | --- | --- | --- |
 | `agent` | RPC、Redis；跨进程邮箱时增加 Discovery | 玩家 TCP/WebSocket 入口、共享 RPC、Redis 会话绑定 |
-| `msgq` | RPC、Redis | 共享 RPC 上的 MailboxService、Redis owner binding |
+| `msgq` | RPC、Redis、Discovery | 共享 RPC 上的 MailboxService、Redis owner binding 与独立进程 endpoint 注册 |
 | `txgame` 无状态 `game` | RPC、Fusion | 请求结束显式保存；Fusion 内部组合 Redis、Mongo 和 Delay Scheduler |
 | `txgameslg` 有状态 `slggame` | RPC、Fusion、CModProcedure | Procedure 提交后由 CModProcedure 的 Cache 组件分帧写 Fusion |
 | `txgameslg` 有状态 `slgworld` | RPC、Mongo、CModProcedure | CModProcedure 组合 Transaction、Cache 和按 `slgworld` 启用的 Mongo WAL |
@@ -483,6 +483,8 @@ if err := mailbox.Confirm(ctx, msgq.ConfirmRequest{Header: header, Ack: batch.Me
 
 Topic 是 **单个 msgq 实例的内存索引**，适合该实例已经承载的会话分组，例如同一个在线军团分片。它不是 Redis
 Pub/Sub，也不自动跨 msgq 实例传播；全服或跨实例广播必须先由业务分发到各实例，再在各实例调用本地广播。
+
+独立业务进程可使用 `Sender.JoinTopics` 管理角色当前连接的本地订阅，并用 `Sender.BroadcastTopic(ctx, ownerRoleID, request)` 选择该角色 owner 所在的单个 MsgQ 实例执行广播。`ownerRoleID` 只是实例路由锚点，不会把本地 Topic 提升为全局广播；需要覆盖多个 MsgQ 实例时，业务必须先枚举目标实例或分片，再分别调用。
 
 ```go
 import "errors"
@@ -794,9 +796,14 @@ Agent 停止时先关闭 TCP/WebSocket listener，停止接收新连接；WebSoc
 
 ### TypeScript 客户端协议
 
-`tx` 不依赖 TypeScript 运行时。项目通过 `txgen` 从同一份 data/cmd 输入生成
-`/Users/a47/workspace/txclient/src/gen/data.ts`、`cmd.ts` 和 `schema.ts`；`txclient` 的 codec 负责 BON
-编解码。BON 在 Go 侧和客户端侧都使用 `msgpack` tag 名，例如 `HeadImg` 使用 `msgpack:"hi"` 时，客户端字段名
+`tx` 不依赖 TypeScript 运行时。两个模板分别通过 `txgen` 从各自 data/cmd 输入生成服务端和客户端产物：
+
+```text
+txgame/gen     -> txgame/server/gen     + txclient/src/gen
+txgameslg/gen  -> txgameslg/server/gen  + txclientslg/src/gen
+```
+
+`txclient` 只消费 `txgame` 协议，`txclientslg` 只消费 `txgameslg` 协议；两个客户端独立维护，不能共享生成目录或手工复制生成文件。各客户端 codec 负责 BON 编解码。BON 在 Go 侧和客户端侧都使用 `msgpack` tag 名，例如 `HeadImg` 使用 `msgpack:"hi"` 时，客户端字段名
 和 Go 编解码字段名都是 `hi`，而不是 JSON 名 `headImg`。
 
 ```ts
@@ -1484,6 +1491,10 @@ go run ./cmd/txctl --endpoint 10.0.1.21:9100 drain
 # 最多等待五分钟，直到已受理 handler 完成。
 go run ./cmd/txctl --endpoint 10.0.1.21:9100 --timeout 5m wait-drained
 
+# 目标 runtime 已 running 后，创建 generation 1 的初始固定槽位。
+go run ./cmd/txctl --endpoint 10.0.1.21:9100 create-slot \
+  --slot slgworld-1 --instance pod-uid-a
+
 # 新实例已经注册为 running 后，以期望的旧 generation 执行槽位交接。
 go run ./cmd/txctl --endpoint 10.0.1.22:9100 promote-slot \
   --slot game-slot-1 \
@@ -1494,7 +1505,7 @@ go run ./cmd/txctl --endpoint 10.0.1.22:9100 promote-slot \
 ```
 
 三个生命周期命令输出稳定的 `state=running|draining|drained|failed`；服务返回诊断时还会输出 `error=...`。`failed`
-状态和 RPC 调用错误都会让 `txctl` 以非零状态退出。`promote-slot` 输出新的 `slot`、`runtimeInstance` 和
+状态和 RPC 调用错误都会让 `txctl` 以非零状态退出。`create-slot` 与 `promote-slot` 都输出新的 `slot`、`runtimeInstance` 和
 `generation`；陈旧脚本会因旧 generation 或旧实例不匹配得到 CAS conflict，不能覆盖后来已经发布的 assignment。
 因此发布脚本不能把失败调用当成已安全下线或已完成交接。当前控制端点使用项目部署
 提供的网络隔离；认证与 TLS/mTLS 后续作为独立控制面能力加入。

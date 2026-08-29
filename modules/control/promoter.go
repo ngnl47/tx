@@ -21,6 +21,15 @@ func NewSlotPromoter(store discovery.SlotStore, directory discovery.Directory) (
 	return &SlotPromoter{router: router}, nil
 }
 
+// CreateSlot 确认初始目标实例可用后，发布 generation 1 的槽位归属。
+func (promoter *SlotPromoter) CreateSlot(ctx context.Context, creation SlotCreation) error {
+	assignment, err := creation.InitialAssignment()
+	if err != nil {
+		return err
+	}
+	return promoter.router.CreateSlot(ctx, assignment)
+}
+
 // PromoteSlot 确认目标实例可用后，以 CAS 发布下一代槽位归属。
 func (promoter *SlotPromoter) PromoteSlot(ctx context.Context, promotion SlotPromotion) error {
 	next, err := promotion.NextAssignment()

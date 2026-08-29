@@ -43,12 +43,19 @@ func run(parent context.Context, arguments []string, output io.Writer, dialer di
 		return errors.New("--timeout must be greater than zero")
 	}
 	if flags.NArg() == 0 {
-		return errors.New("usage: txctl --endpoint host:port [--timeout 30s] status|drain|wait-drained|promote-slot")
+		return errors.New("usage: txctl --endpoint host:port [--timeout 30s] status|drain|wait-drained|create-slot|promote-slot")
 	}
 	command := flags.Arg(0)
 	commandArguments := flags.Args()[1:]
+	var creation *controlpb.CreateSlotRequest
 	var promotion *controlpb.PromoteSlotRequest
-	if command == "promote-slot" {
+	if command == "create-slot" {
+		var err error
+		creation, err = parseCreateSlot(commandArguments)
+		if err != nil {
+			return err
+		}
+	} else if command == "promote-slot" {
 		var err error
 		promotion, err = parsePromoteSlot(commandArguments)
 		if err != nil {
@@ -79,6 +86,16 @@ func run(parent context.Context, arguments []string, output io.Writer, dialer di
 		response, err = lifecycleClient.Drain(ctx, &controlpb.Empty{})
 	case "wait-drained":
 		response, err = lifecycleClient.WaitDrained(ctx, &controlpb.Empty{})
+	case "create-slot":
+		created, createErr := controlpb.NewSlotServiceClient(connection).CreateSlot(ctx, creation)
+		if createErr != nil {
+			return createErr
+		}
+		if created == nil || created.GetAssignment() == nil {
+			return errors.New("control service returned an empty slot assignment")
+		}
+		printSlotAssignment(output, created.GetAssignment())
+		return nil
 	case "promote-slot":
 		promoted, promoteErr := controlpb.NewSlotServiceClient(connection).PromoteSlot(ctx, promotion)
 		if promoteErr != nil {
@@ -87,11 +104,7 @@ func run(parent context.Context, arguments []string, output io.Writer, dialer di
 		if promoted == nil || promoted.GetAssignment() == nil {
 			return errors.New("control service returned an empty slot assignment")
 		}
-		if output == nil {
-			output = io.Discard
-		}
-		assignment := promoted.GetAssignment()
-		fmt.Fprintf(output, "slot=%s runtimeInstance=%s generation=%d\n", assignment.GetSlotId(), assignment.GetRuntimeInstanceId(), assignment.GetGeneration())
+		printSlotAssignment(output, promoted.GetAssignment())
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q", command)
@@ -114,6 +127,30 @@ func run(parent context.Context, arguments []string, output io.Writer, dialer di
 		return fmt.Errorf("lifecycle state failed: %s", response.GetError())
 	}
 	return nil
+}
+
+func parseCreateSlot(arguments []string) (*controlpb.CreateSlotRequest, error) {
+	flags := flag.NewFlagSet("create-slot", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	slotID := flags.String("slot", "", "logical slot ID")
+	instanceID := flags.String("instance", "", "initial running runtime instance ID")
+	if err := flags.Parse(arguments); err != nil {
+		return nil, err
+	}
+	if flags.NArg() != 0 {
+		return nil, errors.New("create-slot does not accept positional arguments")
+	}
+	if strings.TrimSpace(*slotID) == "" || strings.TrimSpace(*instanceID) == "" {
+		return nil, errors.New("create-slot requires --slot and --instance")
+	}
+	return &controlpb.CreateSlotRequest{SlotId: *slotID, RuntimeInstanceId: *instanceID}, nil
+}
+
+func printSlotAssignment(output io.Writer, assignment *controlpb.SlotAssignment) {
+	if output == nil {
+		output = io.Discard
+	}
+	fmt.Fprintf(output, "slot=%s runtimeInstance=%s generation=%d\n", assignment.GetSlotId(), assignment.GetRuntimeInstanceId(), assignment.GetGeneration())
 }
 
 func parsePromoteSlot(arguments []string) (*controlpb.PromoteSlotRequest, error) {

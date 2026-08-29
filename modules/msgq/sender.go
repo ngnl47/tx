@@ -22,6 +22,8 @@ var (
 // Connection 向一个已解析的 msgq 实例投递下行消息。
 type Connection interface {
 	Pub(context.Context, PubRequest) (PubResult, error)
+	JoinTopics(context.Context, TopicRequest) error
+	BroadcastTopic(context.Context, BroadcastTopicRequest) (BroadcastTopicResult, error)
 	Close() error
 }
 
@@ -95,6 +97,39 @@ func (c *grpcConnection) Pub(ctx context.Context, request PubRequest) (PubResult
 		return PubResult{}, ErrInvalidMailboxResponse
 	}
 	return PubResult{Seq: response.GetSeq()}, nil
+}
+
+func (c *grpcConnection) JoinTopics(ctx context.Context, request TopicRequest) error {
+	response, err := c.client.JoinTopics(ctx, &msgqpb.TopicRequest{
+		Header: headerToProto(request.Header),
+		Topics: request.Topics,
+	})
+	if err != nil {
+		return mailboxClientError(err)
+	}
+	if response == nil {
+		return ErrInvalidMailboxResponse
+	}
+	return nil
+}
+
+func (c *grpcConnection) BroadcastTopic(ctx context.Context, request BroadcastTopicRequest) (BroadcastTopicResult, error) {
+	response, err := c.client.BroadcastTopic(ctx, &msgqpb.BroadcastTopicRequest{
+		Topic:   request.Topic,
+		Payload: request.Payload,
+	})
+	if err != nil {
+		return BroadcastTopicResult{}, mailboxClientError(err)
+	}
+	if response == nil || response.GetAttempted() < 0 || response.GetDelivered() < 0 || response.GetSkipped() < 0 || response.GetOverflowed() < 0 {
+		return BroadcastTopicResult{}, ErrInvalidMailboxResponse
+	}
+	return BroadcastTopicResult{
+		Attempted:  int(response.GetAttempted()),
+		Delivered:  int(response.GetDelivered()),
+		Skipped:    int(response.GetSkipped()),
+		Overflowed: int(response.GetOverflowed()),
+	}, nil
 }
 
 func (c *grpcConnection) Init(ctx context.Context, request InitRequest) (InitResult, error) {
@@ -219,6 +254,46 @@ func (s *Sender) Pub(ctx context.Context, roleID int64, payload []byte) (PubResu
 		},
 		Payload: payload,
 	})
+}
+
+// JoinTopics 将角色的当前连接加入其 owner MsgQ 实例的本地 Topic 索引。
+func (s *Sender) JoinTopics(ctx context.Context, roleID int64, topics ...string) error {
+	if s == nil {
+		return ErrSenderClosed
+	}
+	target, err := s.router.Resolve(ctx, roleID, 0)
+	if err != nil {
+		return err
+	}
+	connection, err := s.connection(ctx, target.Instance)
+	if err != nil {
+		return err
+	}
+	return connection.JoinTopics(ctx, TopicRequest{
+		Header: SessionHeader{
+			RoleID:       target.Binding.RoleID,
+			SessionID:    target.Binding.SessionID,
+			ConnectionID: target.Binding.ConnectionID,
+		},
+		Topics: topics,
+	})
+}
+
+// BroadcastTopic 向 ownerRoleID 当前绑定的 MsgQ 实例执行本地 Topic 广播。
+// 该方法不会扫描其他 MsgQ 实例；跨实例分发必须由业务层显式完成。
+func (s *Sender) BroadcastTopic(ctx context.Context, ownerRoleID int64, request BroadcastTopicRequest) (BroadcastTopicResult, error) {
+	if s == nil {
+		return BroadcastTopicResult{}, ErrSenderClosed
+	}
+	target, err := s.router.Resolve(ctx, ownerRoleID, 0)
+	if err != nil {
+		return BroadcastTopicResult{}, err
+	}
+	connection, err := s.connection(ctx, target.Instance)
+	if err != nil {
+		return BroadcastTopicResult{}, err
+	}
+	return connection.BroadcastTopic(ctx, request)
 }
 
 // Close 关闭所有缓存 endpoint 的连接。

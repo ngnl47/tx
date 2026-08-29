@@ -197,6 +197,7 @@ var LifecycleService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
+	SlotService_CreateSlot_FullMethodName  = "/tx.control.v1.SlotService/CreateSlot"
 	SlotService_PromoteSlot_FullMethodName = "/tx.control.v1.SlotService/PromoteSlot"
 )
 
@@ -204,6 +205,7 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type SlotServiceClient interface {
+	CreateSlot(ctx context.Context, in *CreateSlotRequest, opts ...grpc.CallOption) (*CreateSlotResponse, error)
 	PromoteSlot(ctx context.Context, in *PromoteSlotRequest, opts ...grpc.CallOption) (*PromoteSlotResponse, error)
 }
 
@@ -213,6 +215,16 @@ type slotServiceClient struct {
 
 func NewSlotServiceClient(cc grpc.ClientConnInterface) SlotServiceClient {
 	return &slotServiceClient{cc}
+}
+
+func (c *slotServiceClient) CreateSlot(ctx context.Context, in *CreateSlotRequest, opts ...grpc.CallOption) (*CreateSlotResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateSlotResponse)
+	err := c.cc.Invoke(ctx, SlotService_CreateSlot_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *slotServiceClient) PromoteSlot(ctx context.Context, in *PromoteSlotRequest, opts ...grpc.CallOption) (*PromoteSlotResponse, error) {
@@ -229,6 +241,7 @@ func (c *slotServiceClient) PromoteSlot(ctx context.Context, in *PromoteSlotRequ
 // All implementations must embed UnimplementedSlotServiceServer
 // for forward compatibility.
 type SlotServiceServer interface {
+	CreateSlot(context.Context, *CreateSlotRequest) (*CreateSlotResponse, error)
 	PromoteSlot(context.Context, *PromoteSlotRequest) (*PromoteSlotResponse, error)
 	mustEmbedUnimplementedSlotServiceServer()
 }
@@ -240,6 +253,9 @@ type SlotServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedSlotServiceServer struct{}
 
+func (UnimplementedSlotServiceServer) CreateSlot(context.Context, *CreateSlotRequest) (*CreateSlotResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateSlot not implemented")
+}
 func (UnimplementedSlotServiceServer) PromoteSlot(context.Context, *PromoteSlotRequest) (*PromoteSlotResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PromoteSlot not implemented")
 }
@@ -262,6 +278,24 @@ func RegisterSlotServiceServer(s grpc.ServiceRegistrar, srv SlotServiceServer) {
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&SlotService_ServiceDesc, srv)
+}
+
+func _SlotService_CreateSlot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateSlotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SlotServiceServer).CreateSlot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SlotService_CreateSlot_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SlotServiceServer).CreateSlot(ctx, req.(*CreateSlotRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _SlotService_PromoteSlot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -289,6 +323,10 @@ var SlotService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "tx.control.v1.SlotService",
 	HandlerType: (*SlotServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "CreateSlot",
+			Handler:    _SlotService_CreateSlot_Handler,
+		},
 		{
 			MethodName: "PromoteSlot",
 			Handler:    _SlotService_PromoteSlot_Handler,

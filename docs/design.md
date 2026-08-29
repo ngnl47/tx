@@ -87,7 +87,7 @@ tx/
 │   ├── cache/              # 有状态根对象登记与分帧刷盘组件
 │   ├── control/            # 节点状态和逻辑槽位控制面
 │   ├── discovery/          # etcd 服务发现与本地快照
-│   ├── msgq/               # 会话邮箱及其 RPC、Redis 适配组件
+│   ├── msgq/               # 会话邮箱及其 RPC、Redis、Discovery 适配组件
 │   ├── rpc/                # 共享 gRPC Host 和调用基础能力
 │   └── txn/                # Procedure、锁、undo、savepoint 和死锁检测
 ├── anno/                   # 生成注解公共定义
@@ -155,6 +155,14 @@ Redis / Mongo / etcd / gRPC / Actor
 - 使用 Actor 作为运行期权威对象的唯一串行命令入口，使用 Procedure 和 CacheManager 管理单机事务与分帧保存；对象的实际缓存结构由项目 SPI 决定。
 - `slggame` 通过 Fusion 保存角色、军团等根对象；`slgworld` 通过 Mongo WAL 和 checkpoint 保存分区场景数据。
 - 只依赖 `tx`、`txgen` 及自身生成产物；配置、服务组合、业务 SPI 和测试均在本项目闭环。
+
+客户端协议工程与服务模板固定一一配对：
+
+- `txgame/gen` 生成 `txgame/server/gen` 和 `txclient/src/gen`；`txclient` 只验证无状态模板。
+- `txgameslg/gen` 生成 `txgameslg/server/gen` 和 `txclientslg/src/gen`；`txclientslg` 只验证有状态模板。
+- 两个客户端独立长期维护，不共享源码目录、符号链接或生成清单。公共 BON、Frame、Session、Seq/Ack 语义变化时分别回归。
+
+多进程真实集群是项目层验收，不改变依赖方向：`txgame + txclient` 与 `txgameslg + txclientslg` 是并行能力，允许在本地顺序执行并复用入口端口；Redis 通过不同 logical database 隔离，MongoDB 使用不同 database，etcd 使用不同 prefix。`tx` 不为隔离统一改写业务 key，也不保存项目服务名。
 
 两个模板的业务模块按稳定能力、领域实现和事务编排分层：`modules/*_service.go` 使用包级函数提供 Handler 与 Procedure
 共用的业务能力，`modules/internal/<domain>` 保存具体领域实现，`services/<name>/internal/procedure/P*.go` 负责编排

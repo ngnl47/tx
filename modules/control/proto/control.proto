@@ -25,6 +25,15 @@ message SlotAssignment {
   uint64 generation = 3;
 }
 
+message CreateSlotRequest {
+  string slot_id = 1;
+  string runtime_instance_id = 2;
+}
+
+message CreateSlotResponse {
+  SlotAssignment assignment = 1;
+}
+
 message PromoteSlotRequest {
   SlotAssignment current = 1;
   string next_runtime_instance_id = 2;
@@ -41,5 +50,6 @@ service LifecycleService {
 }
 
 service SlotService {
+  rpc CreateSlot(CreateSlotRequest) returns (CreateSlotResponse);
   rpc PromoteSlot(PromoteSlotRequest) returns (PromoteSlotResponse);
 }

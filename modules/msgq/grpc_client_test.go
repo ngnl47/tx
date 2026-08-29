@@ -33,6 +33,14 @@ func (*nilResponseMailboxClient) Confirm(context.Context, *msgqpb.ConfirmRequest
 	return nil, nil
 }
 
+func (*nilResponseMailboxClient) JoinTopics(context.Context, *msgqpb.TopicRequest, ...grpc.CallOption) (*msgqpb.Empty, error) {
+	return nil, nil
+}
+
+func (*nilResponseMailboxClient) BroadcastTopic(context.Context, *msgqpb.BroadcastTopicRequest, ...grpc.CallOption) (*msgqpb.BroadcastTopicResponse, error) {
+	return nil, nil
+}
+
 func (*nilResponseMailboxClient) Close(context.Context, *msgqpb.CloseRequest, ...grpc.CallOption) (*msgqpb.Empty, error) {
 	return nil, nil
 }
@@ -60,6 +68,13 @@ func TestGRPCConnectionRejectsNilSuccessResponses(t *testing.T) {
 		"confirm": func() error {
 			return connection.Confirm(context.Background(), ConfirmRequest{Header: header, Ack: 1})
 		},
+		"join topics": func() error {
+			return connection.JoinTopics(context.Background(), TopicRequest{Header: header, Topics: []string{"guild:1"}})
+		},
+		"broadcast topic": func() error {
+			_, err := connection.BroadcastTopic(context.Background(), BroadcastTopicRequest{Topic: "guild:1", Payload: []byte("body")})
+			return err
+		},
 		"close": func() error {
 			return connection.CloseSession(context.Background(), header)
 		},
@@ -70,6 +85,46 @@ func TestGRPCConnectionRejectsNilSuccessResponses(t *testing.T) {
 				t.Fatalf("error = %v, want %v", err, ErrInvalidMailboxResponse)
 			}
 		})
+	}
+}
+
+type recordingTopicMailboxClient struct {
+	msgqpb.MailboxServiceClient
+	joinRequest      *msgqpb.TopicRequest
+	broadcastRequest *msgqpb.BroadcastTopicRequest
+}
+
+func (client *recordingTopicMailboxClient) JoinTopics(_ context.Context, request *msgqpb.TopicRequest, _ ...grpc.CallOption) (*msgqpb.Empty, error) {
+	client.joinRequest = request
+	return &msgqpb.Empty{}, nil
+}
+
+func (client *recordingTopicMailboxClient) BroadcastTopic(_ context.Context, request *msgqpb.BroadcastTopicRequest, _ ...grpc.CallOption) (*msgqpb.BroadcastTopicResponse, error) {
+	client.broadcastRequest = request
+	return &msgqpb.BroadcastTopicResponse{Attempted: 3, Delivered: 2, Skipped: 1, Overflowed: 0}, nil
+}
+
+func TestGRPCConnectionConvertsTopicOperations(t *testing.T) {
+	client := &recordingTopicMailboxClient{}
+	connection := &grpcConnection{client: client}
+	header := SessionHeader{RoleID: 47, SessionID: 11, ConnectionID: 13}
+
+	if err := connection.JoinTopics(context.Background(), TopicRequest{Header: header, Topics: []string{"guild:1", "region:2"}}); err != nil {
+		t.Fatalf("JoinTopics returned error: %v", err)
+	}
+	if request := client.joinRequest; request.GetHeader().GetRoleId() != 47 || request.GetHeader().GetSessionId() != 11 || request.GetHeader().GetConnectionId() != 13 || len(request.GetTopics()) != 2 {
+		t.Fatalf("join request = %#v", request)
+	}
+
+	result, err := connection.BroadcastTopic(context.Background(), BroadcastTopicRequest{Topic: "guild:1", Payload: []byte("encoded-bon")})
+	if err != nil {
+		t.Fatalf("BroadcastTopic returned error: %v", err)
+	}
+	if result != (BroadcastTopicResult{Attempted: 3, Delivered: 2, Skipped: 1}) {
+		t.Fatalf("broadcast result = %#v", result)
+	}
+	if request := client.broadcastRequest; request.GetTopic() != "guild:1" || string(request.GetPayload()) != "encoded-bon" {
+		t.Fatalf("broadcast request = %#v", request)
 	}
 }
 

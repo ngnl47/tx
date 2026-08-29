@@ -46,7 +46,7 @@ func (service *Service) Registration() ant.ServiceRegistration {
 	return ant.ServiceRegistration{
 		Spec: ant.ServiceSpec{
 			Name:     ServiceName,
-			Requires: []ant.CModID{ant.CModRPC, ant.CModRedisStorage},
+			Requires: []ant.CModID{ant.CModRPC, ant.CModRedisStorage, ant.CModDiscovery},
 		},
 		Factory: service.factory,
 	}

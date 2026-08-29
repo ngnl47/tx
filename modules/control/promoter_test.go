@@ -47,16 +47,60 @@ func TestSlotPromoterRequiresRunningDestination(t *testing.T) {
 	}
 }
 
+func TestSlotPromoterCreatesInitialGeneration(t *testing.T) {
+	store := &testSlotStore{}
+	directory := discovery.NewServiceDirectory()
+	if err := directory.Replace([]discovery.Instance{{
+		ID:       "pod-a",
+		Endpoint: "127.0.0.1:9000",
+		Services: []string{"game"},
+		Status:   discovery.StatusRunning,
+	}}); err != nil {
+		t.Fatalf("replace directory: %v", err)
+	}
+	promoter, err := NewSlotPromoter(store, directory)
+	if err != nil {
+		t.Fatalf("NewSlotPromoter returned error: %v", err)
+	}
+
+	creation := SlotCreation{SlotID: "game-slot-1", RuntimeInstanceID: "pod-a"}
+	if err := promoter.CreateSlot(context.Background(), creation); err != nil {
+		t.Fatalf("CreateSlot returned error: %v", err)
+	}
+	want := discovery.SlotAssignment{SlotID: "game-slot-1", RuntimeInstanceID: "pod-a", Generation: 1}
+	if store.created != want {
+		t.Fatalf("created assignment = %#v, want %#v", store.created, want)
+	}
+}
+
+func TestSlotPromoterRejectsInvalidCreation(t *testing.T) {
+	store := &testSlotStore{}
+	directory := discovery.NewServiceDirectory()
+	promoter, err := NewSlotPromoter(store, directory)
+	if err != nil {
+		t.Fatalf("NewSlotPromoter returned error: %v", err)
+	}
+
+	if err := promoter.CreateSlot(context.Background(), SlotCreation{RuntimeInstanceID: "pod-a"}); !errors.Is(err, discovery.ErrInvalidSlotAssignment) {
+		t.Fatalf("CreateSlot error = %v, want ErrInvalidSlotAssignment", err)
+	}
+	if store.created != (discovery.SlotAssignment{}) {
+		t.Fatalf("created assignment = %#v for invalid request", store.created)
+	}
+}
+
 type testSlotStore struct {
 	current discovery.SlotAssignment
+	created discovery.SlotAssignment
 }
 
 func (store *testSlotStore) ResolveSlot(context.Context, string) (discovery.SlotAssignment, error) {
 	return store.current, nil
 }
 
-func (store *testSlotStore) CreateSlot(context.Context, discovery.SlotAssignment) error {
-	return errors.New("unexpected CreateSlot")
+func (store *testSlotStore) CreateSlot(_ context.Context, assignment discovery.SlotAssignment) error {
+	store.created = assignment
+	return nil
 }
 
 func (store *testSlotStore) PromoteSlot(_ context.Context, current, next discovery.SlotAssignment) error {

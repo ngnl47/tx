@@ -46,7 +46,7 @@ func (service *Service) Registration() bee.ServiceRegistration {
 	return bee.ServiceRegistration{
 		Spec: bee.ServiceSpec{
 			Name:     ServiceName,
-			Requires: []bee.CModID{bee.CModRPC, bee.CModRedisStorage},
+			Requires: []bee.CModID{bee.CModRPC, bee.CModRedisStorage, bee.CModDiscovery},
 		},
 		Factory: service.factory,
 	}

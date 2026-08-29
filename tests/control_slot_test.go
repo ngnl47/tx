@@ -43,6 +43,52 @@ func TestSlotControlPromotesExpectedAssignment(t *testing.T) {
 	}
 }
 
+func TestSlotControlCreatesInitialAssignment(t *testing.T) {
+	controller := &slotControllerFake{}
+	client, cleanup := newSlotControlClient(t, controller)
+	defer cleanup()
+
+	response, err := client.CreateSlot(context.Background(), &controlpb.CreateSlotRequest{
+		SlotId:            "game-slot-1",
+		RuntimeInstanceId: "pod-uid-a",
+	})
+	if err != nil {
+		t.Fatalf("CreateSlot returned error: %v", err)
+	}
+	if got, want := controller.creation, (control.SlotCreation{SlotID: "game-slot-1", RuntimeInstanceID: "pod-uid-a"}); got != want {
+		t.Fatalf("creation = %#v, want %#v", got, want)
+	}
+	assignment := response.GetAssignment()
+	if assignment.GetSlotId() != "game-slot-1" || assignment.GetRuntimeInstanceId() != "pod-uid-a" || assignment.GetGeneration() != 1 {
+		t.Fatalf("assignment = %#v", assignment)
+	}
+}
+
+func TestSlotControlRejectsInvalidAndConflictingCreation(t *testing.T) {
+	t.Run("invalid request", func(t *testing.T) {
+		client, cleanup := newSlotControlClient(t, &slotControllerFake{})
+		defer cleanup()
+
+		_, err := client.CreateSlot(context.Background(), &controlpb.CreateSlotRequest{RuntimeInstanceId: "pod-uid-a"})
+		if status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("CreateSlot error = %v, want InvalidArgument", err)
+		}
+	})
+
+	t.Run("assignment already exists", func(t *testing.T) {
+		client, cleanup := newSlotControlClient(t, &slotControllerFake{err: discovery.ErrSlotConflict})
+		defer cleanup()
+
+		_, err := client.CreateSlot(context.Background(), &controlpb.CreateSlotRequest{
+			SlotId:            "game-slot-1",
+			RuntimeInstanceId: "pod-uid-a",
+		})
+		if status.Code(err) != codes.AlreadyExists {
+			t.Fatalf("CreateSlot error = %v, want AlreadyExists", err)
+		}
+	})
+}
+
 func TestSlotControlRejectsInvalidAndConflictingPromotion(t *testing.T) {
 	t.Run("invalid request", func(t *testing.T) {
 		client, cleanup := newSlotControlClient(t, &slotControllerFake{})
@@ -74,8 +120,14 @@ func TestSlotControlRejectsInvalidAndConflictingPromotion(t *testing.T) {
 }
 
 type slotControllerFake struct {
+	creation  control.SlotCreation
 	promotion control.SlotPromotion
 	err       error
+}
+
+func (fake *slotControllerFake) CreateSlot(_ context.Context, creation control.SlotCreation) error {
+	fake.creation = creation
+	return fake.err
 }
 
 func (fake *slotControllerFake) PromoteSlot(_ context.Context, promotion control.SlotPromotion) error {

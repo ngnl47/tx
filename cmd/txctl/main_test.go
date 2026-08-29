@@ -68,6 +68,47 @@ func TestRunPromotesLogicalSlotAndPrintsNewAssignment(t *testing.T) {
 	}
 }
 
+func TestRunCreatesLogicalSlotAndPrintsInitialAssignment(t *testing.T) {
+	listener := bufconn.Listen(1024 * 1024)
+	server := grpc.NewServer()
+	recorder := &slotControlTestServer{}
+	controlpb.RegisterSlotServiceServer(server, recorder)
+	go func() { _ = server.Serve(listener) }()
+	defer server.Stop()
+
+	var output bytes.Buffer
+	err := run(context.Background(), []string{
+		"--endpoint", "control",
+		"create-slot",
+		"--slot", "game-slot-1",
+		"--instance", "pod-uid-a",
+	}, &output, bufconnDialer(listener))
+	if err != nil {
+		t.Fatalf("run create-slot returned error: %v", err)
+	}
+	if got, want := output.String(), "slot=game-slot-1 runtimeInstance=pod-uid-a generation=1\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+	request := recorder.createRequest
+	if request == nil || request.GetSlotId() != "game-slot-1" || request.GetRuntimeInstanceId() != "pod-uid-a" {
+		t.Fatalf("create request = %#v", request)
+	}
+}
+
+func TestRunRejectsIncompleteSlotCreation(t *testing.T) {
+	var output bytes.Buffer
+	err := run(context.Background(), []string{
+		"--endpoint", "control",
+		"create-slot",
+		"--slot", "game-slot-1",
+	}, &output, func(context.Context, string) (net.Conn, error) {
+		return nil, context.Canceled
+	})
+	if err == nil {
+		t.Fatal("run create-slot error = nil, want invalid arguments")
+	}
+}
+
 func TestRunRejectsIncompleteSlotPromotion(t *testing.T) {
 	var output bytes.Buffer
 	err := run(context.Background(), []string{
@@ -105,7 +146,17 @@ type controlTestServer struct {
 
 type slotControlTestServer struct {
 	controlpb.UnimplementedSlotServiceServer
-	request *controlpb.PromoteSlotRequest
+	createRequest *controlpb.CreateSlotRequest
+	request       *controlpb.PromoteSlotRequest
+}
+
+func (server *slotControlTestServer) CreateSlot(_ context.Context, request *controlpb.CreateSlotRequest) (*controlpb.CreateSlotResponse, error) {
+	server.createRequest = request
+	return &controlpb.CreateSlotResponse{Assignment: &controlpb.SlotAssignment{
+		SlotId:            request.GetSlotId(),
+		RuntimeInstanceId: request.GetRuntimeInstanceId(),
+		Generation:        1,
+	}}, nil
 }
 
 func (server *slotControlTestServer) PromoteSlot(_ context.Context, request *controlpb.PromoteSlotRequest) (*controlpb.PromoteSlotResponse, error) {

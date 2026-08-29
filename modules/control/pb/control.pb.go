@@ -224,6 +224,102 @@ func (x *SlotAssignment) GetGeneration() uint64 {
 	return 0
 }
 
+type CreateSlotRequest struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	SlotId            string                 `protobuf:"bytes,1,opt,name=slot_id,json=slotId,proto3" json:"slot_id,omitempty"`
+	RuntimeInstanceId string                 `protobuf:"bytes,2,opt,name=runtime_instance_id,json=runtimeInstanceId,proto3" json:"runtime_instance_id,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *CreateSlotRequest) Reset() {
+	*x = CreateSlotRequest{}
+	mi := &file_modules_control_proto_control_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateSlotRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateSlotRequest) ProtoMessage() {}
+
+func (x *CreateSlotRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_modules_control_proto_control_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateSlotRequest.ProtoReflect.Descriptor instead.
+func (*CreateSlotRequest) Descriptor() ([]byte, []int) {
+	return file_modules_control_proto_control_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *CreateSlotRequest) GetSlotId() string {
+	if x != nil {
+		return x.SlotId
+	}
+	return ""
+}
+
+func (x *CreateSlotRequest) GetRuntimeInstanceId() string {
+	if x != nil {
+		return x.RuntimeInstanceId
+	}
+	return ""
+}
+
+type CreateSlotResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Assignment    *SlotAssignment        `protobuf:"bytes,1,opt,name=assignment,proto3" json:"assignment,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateSlotResponse) Reset() {
+	*x = CreateSlotResponse{}
+	mi := &file_modules_control_proto_control_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateSlotResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateSlotResponse) ProtoMessage() {}
+
+func (x *CreateSlotResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_modules_control_proto_control_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateSlotResponse.ProtoReflect.Descriptor instead.
+func (*CreateSlotResponse) Descriptor() ([]byte, []int) {
+	return file_modules_control_proto_control_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *CreateSlotResponse) GetAssignment() *SlotAssignment {
+	if x != nil {
+		return x.Assignment
+	}
+	return nil
+}
+
 type PromoteSlotRequest struct {
 	state                 protoimpl.MessageState `protogen:"open.v1"`
 	Current               *SlotAssignment        `protobuf:"bytes,1,opt,name=current,proto3" json:"current,omitempty"`
@@ -234,7 +330,7 @@ type PromoteSlotRequest struct {
 
 func (x *PromoteSlotRequest) Reset() {
 	*x = PromoteSlotRequest{}
-	mi := &file_modules_control_proto_control_proto_msgTypes[3]
+	mi := &file_modules_control_proto_control_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -246,7 +342,7 @@ func (x *PromoteSlotRequest) String() string {
 func (*PromoteSlotRequest) ProtoMessage() {}
 
 func (x *PromoteSlotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_control_proto_control_proto_msgTypes[3]
+	mi := &file_modules_control_proto_control_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -259,7 +355,7 @@ func (x *PromoteSlotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PromoteSlotRequest.ProtoReflect.Descriptor instead.
 func (*PromoteSlotRequest) Descriptor() ([]byte, []int) {
-	return file_modules_control_proto_control_proto_rawDescGZIP(), []int{3}
+	return file_modules_control_proto_control_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *PromoteSlotRequest) GetCurrent() *SlotAssignment {
@@ -285,7 +381,7 @@ type PromoteSlotResponse struct {
 
 func (x *PromoteSlotResponse) Reset() {
 	*x = PromoteSlotResponse{}
-	mi := &file_modules_control_proto_control_proto_msgTypes[4]
+	mi := &file_modules_control_proto_control_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -297,7 +393,7 @@ func (x *PromoteSlotResponse) String() string {
 func (*PromoteSlotResponse) ProtoMessage() {}
 
 func (x *PromoteSlotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_control_proto_control_proto_msgTypes[4]
+	mi := &file_modules_control_proto_control_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -310,7 +406,7 @@ func (x *PromoteSlotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PromoteSlotResponse.ProtoReflect.Descriptor instead.
 func (*PromoteSlotResponse) Descriptor() ([]byte, []int) {
-	return file_modules_control_proto_control_proto_rawDescGZIP(), []int{4}
+	return file_modules_control_proto_control_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *PromoteSlotResponse) GetAssignment() *SlotAssignment {
@@ -334,7 +430,14 @@ const file_modules_control_proto_control_proto_rawDesc = "" +
 	"\x13runtime_instance_id\x18\x02 \x01(\tR\x11runtimeInstanceId\x12\x1e\n" +
 	"\n" +
 	"generation\x18\x03 \x01(\x04R\n" +
-	"generation\"\x86\x01\n" +
+	"generation\"\\\n" +
+	"\x11CreateSlotRequest\x12\x17\n" +
+	"\aslot_id\x18\x01 \x01(\tR\x06slotId\x12.\n" +
+	"\x13runtime_instance_id\x18\x02 \x01(\tR\x11runtimeInstanceId\"S\n" +
+	"\x12CreateSlotResponse\x12=\n" +
+	"\n" +
+	"assignment\x18\x01 \x01(\v2\x1d.tx.control.v1.SlotAssignmentR\n" +
+	"assignment\"\x86\x01\n" +
 	"\x12PromoteSlotRequest\x127\n" +
 	"\acurrent\x18\x01 \x01(\v2\x1d.tx.control.v1.SlotAssignmentR\acurrent\x127\n" +
 	"\x18next_runtime_instance_id\x18\x02 \x01(\tR\x15nextRuntimeInstanceId\"T\n" +
@@ -351,8 +454,10 @@ const file_modules_control_proto_control_proto_rawDesc = "" +
 	"\x10LifecycleService\x12>\n" +
 	"\x06Status\x12\x14.tx.control.v1.Empty\x1a\x1e.tx.control.v1.LifecycleStatus\x12=\n" +
 	"\x05Drain\x12\x14.tx.control.v1.Empty\x1a\x1e.tx.control.v1.LifecycleStatus\x12C\n" +
-	"\vWaitDrained\x12\x14.tx.control.v1.Empty\x1a\x1e.tx.control.v1.LifecycleStatus2c\n" +
-	"\vSlotService\x12T\n" +
+	"\vWaitDrained\x12\x14.tx.control.v1.Empty\x1a\x1e.tx.control.v1.LifecycleStatus2\xb6\x01\n" +
+	"\vSlotService\x12Q\n" +
+	"\n" +
+	"CreateSlot\x12 .tx.control.v1.CreateSlotRequest\x1a!.tx.control.v1.CreateSlotResponse\x12T\n" +
 	"\vPromoteSlot\x12!.tx.control.v1.PromoteSlotRequest\x1a\".tx.control.v1.PromoteSlotResponseB3Z1github.com/ngnl47/tx/modules/control/pb;controlpbb\x06proto3"
 
 var (
@@ -368,32 +473,37 @@ func file_modules_control_proto_control_proto_rawDescGZIP() []byte {
 }
 
 var file_modules_control_proto_control_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_modules_control_proto_control_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_modules_control_proto_control_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_modules_control_proto_control_proto_goTypes = []any{
 	(LifecycleState)(0),         // 0: tx.control.v1.LifecycleState
 	(*Empty)(nil),               // 1: tx.control.v1.Empty
 	(*LifecycleStatus)(nil),     // 2: tx.control.v1.LifecycleStatus
 	(*SlotAssignment)(nil),      // 3: tx.control.v1.SlotAssignment
-	(*PromoteSlotRequest)(nil),  // 4: tx.control.v1.PromoteSlotRequest
-	(*PromoteSlotResponse)(nil), // 5: tx.control.v1.PromoteSlotResponse
+	(*CreateSlotRequest)(nil),   // 4: tx.control.v1.CreateSlotRequest
+	(*CreateSlotResponse)(nil),  // 5: tx.control.v1.CreateSlotResponse
+	(*PromoteSlotRequest)(nil),  // 6: tx.control.v1.PromoteSlotRequest
+	(*PromoteSlotResponse)(nil), // 7: tx.control.v1.PromoteSlotResponse
 }
 var file_modules_control_proto_control_proto_depIdxs = []int32{
 	0, // 0: tx.control.v1.LifecycleStatus.state:type_name -> tx.control.v1.LifecycleState
-	3, // 1: tx.control.v1.PromoteSlotRequest.current:type_name -> tx.control.v1.SlotAssignment
-	3, // 2: tx.control.v1.PromoteSlotResponse.assignment:type_name -> tx.control.v1.SlotAssignment
-	1, // 3: tx.control.v1.LifecycleService.Status:input_type -> tx.control.v1.Empty
-	1, // 4: tx.control.v1.LifecycleService.Drain:input_type -> tx.control.v1.Empty
-	1, // 5: tx.control.v1.LifecycleService.WaitDrained:input_type -> tx.control.v1.Empty
-	4, // 6: tx.control.v1.SlotService.PromoteSlot:input_type -> tx.control.v1.PromoteSlotRequest
-	2, // 7: tx.control.v1.LifecycleService.Status:output_type -> tx.control.v1.LifecycleStatus
-	2, // 8: tx.control.v1.LifecycleService.Drain:output_type -> tx.control.v1.LifecycleStatus
-	2, // 9: tx.control.v1.LifecycleService.WaitDrained:output_type -> tx.control.v1.LifecycleStatus
-	5, // 10: tx.control.v1.SlotService.PromoteSlot:output_type -> tx.control.v1.PromoteSlotResponse
-	7, // [7:11] is the sub-list for method output_type
-	3, // [3:7] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	3, // 1: tx.control.v1.CreateSlotResponse.assignment:type_name -> tx.control.v1.SlotAssignment
+	3, // 2: tx.control.v1.PromoteSlotRequest.current:type_name -> tx.control.v1.SlotAssignment
+	3, // 3: tx.control.v1.PromoteSlotResponse.assignment:type_name -> tx.control.v1.SlotAssignment
+	1, // 4: tx.control.v1.LifecycleService.Status:input_type -> tx.control.v1.Empty
+	1, // 5: tx.control.v1.LifecycleService.Drain:input_type -> tx.control.v1.Empty
+	1, // 6: tx.control.v1.LifecycleService.WaitDrained:input_type -> tx.control.v1.Empty
+	4, // 7: tx.control.v1.SlotService.CreateSlot:input_type -> tx.control.v1.CreateSlotRequest
+	6, // 8: tx.control.v1.SlotService.PromoteSlot:input_type -> tx.control.v1.PromoteSlotRequest
+	2, // 9: tx.control.v1.LifecycleService.Status:output_type -> tx.control.v1.LifecycleStatus
+	2, // 10: tx.control.v1.LifecycleService.Drain:output_type -> tx.control.v1.LifecycleStatus
+	2, // 11: tx.control.v1.LifecycleService.WaitDrained:output_type -> tx.control.v1.LifecycleStatus
+	5, // 12: tx.control.v1.SlotService.CreateSlot:output_type -> tx.control.v1.CreateSlotResponse
+	7, // 13: tx.control.v1.SlotService.PromoteSlot:output_type -> tx.control.v1.PromoteSlotResponse
+	9, // [9:14] is the sub-list for method output_type
+	4, // [4:9] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_modules_control_proto_control_proto_init() }
@@ -407,7 +517,7 @@ func file_modules_control_proto_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_modules_control_proto_control_proto_rawDesc), len(file_modules_control_proto_control_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   5,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

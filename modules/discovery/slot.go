@@ -112,6 +112,24 @@ func (r *SlotRouter) lookupRouteInstance(instanceID string) (RouteInstance, bool
 	return routeInstance(instance), true
 }
 
+// CreateSlot 在写入初始 assignment 前确认目标实例已经进入 running。
+func (r *SlotRouter) CreateSlot(ctx context.Context, assignment SlotAssignment) error {
+	if r == nil || r.store == nil {
+		return ErrSlotStoreNil
+	}
+	if r.directory == nil {
+		return ErrSlotDirectoryNil
+	}
+	if err := assignment.Validate(); err != nil || assignment.Generation != 1 {
+		return ErrInvalidSlotAssignment
+	}
+	instance, ok := r.directory.LookupInstance(assignment.RuntimeInstanceID)
+	if !ok || instance.Status != StatusRunning {
+		return ErrSlotRuntimeUnavailable
+	}
+	return r.store.CreateSlot(ctx, assignment)
+}
+
 // PromoteSlot 在写入持久 assignment 前确认目标实例已进入 running。它不主动将旧实例
 // 切为 draining；发布控制面必须先关闭旧槽位的新命令准入并完成最终 Flush。
 func (r *SlotRouter) PromoteSlot(ctx context.Context, current, next SlotAssignment) error {

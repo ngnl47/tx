@@ -13,6 +13,25 @@ import (
 
 var ErrSlotControllerNil = errors.New("control: slot controller is nil")
 
+// SlotCreation 描述固定 generation 1 的初始逻辑槽位归属。
+type SlotCreation struct {
+	SlotID            string
+	RuntimeInstanceID string
+}
+
+// InitialAssignment 校验创建请求并返回初始 assignment。
+func (creation SlotCreation) InitialAssignment() (discovery.SlotAssignment, error) {
+	assignment := discovery.SlotAssignment{
+		SlotID:            creation.SlotID,
+		RuntimeInstanceID: creation.RuntimeInstanceID,
+		Generation:        1,
+	}
+	if err := assignment.Validate(); err != nil {
+		return discovery.SlotAssignment{}, err
+	}
+	return assignment, nil
+}
+
 // SlotPromotion 描述一次受 generation 保护的逻辑槽位交接。Current 必须匹配持久化 assignment；
 // 下一代 generation 由框架推导，不能由运维脚本独立提供。
 type SlotPromotion struct {
@@ -35,6 +54,7 @@ func (promotion SlotPromotion) NextAssignment() (discovery.SlotAssignment, error
 
 // SlotController 执行由存储保障的 CAS。实现必须在发布前确认目标运行实例已经就绪。
 type SlotController interface {
+	CreateSlot(context.Context, SlotCreation) error
 	PromoteSlot(context.Context, SlotPromotion) error
 }
 
@@ -52,6 +72,21 @@ type slotService struct {
 	controller SlotController
 }
 
+func (service *slotService) CreateSlot(ctx context.Context, request *controlpb.CreateSlotRequest) (*controlpb.CreateSlotResponse, error) {
+	creation, err := slotCreationFromProto(request)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	assignment, err := creation.InitialAssignment()
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := service.controller.CreateSlot(ctx, creation); err != nil {
+		return nil, slotCreationStatusFromError(err)
+	}
+	return &controlpb.CreateSlotResponse{Assignment: slotAssignmentToProto(assignment)}, nil
+}
+
 func (service *slotService) PromoteSlot(ctx context.Context, request *controlpb.PromoteSlotRequest) (*controlpb.PromoteSlotResponse, error) {
 	promotion, err := slotPromotionFromProto(request)
 	if err != nil {
@@ -65,6 +100,20 @@ func (service *slotService) PromoteSlot(ctx context.Context, request *controlpb.
 		return nil, slotStatusFromError(err)
 	}
 	return &controlpb.PromoteSlotResponse{Assignment: slotAssignmentToProto(assignment)}, nil
+}
+
+func slotCreationFromProto(request *controlpb.CreateSlotRequest) (SlotCreation, error) {
+	if request == nil {
+		return SlotCreation{}, discovery.ErrInvalidSlotAssignment
+	}
+	creation := SlotCreation{
+		SlotID:            request.GetSlotId(),
+		RuntimeInstanceID: request.GetRuntimeInstanceId(),
+	}
+	if _, err := creation.InitialAssignment(); err != nil {
+		return SlotCreation{}, err
+	}
+	return creation, nil
 }
 
 func slotPromotionFromProto(request *controlpb.PromoteSlotRequest) (SlotPromotion, error) {
@@ -111,4 +160,11 @@ func slotStatusFromError(err error) error {
 	default:
 		return status.Error(codes.Internal, err.Error())
 	}
+}
+
+func slotCreationStatusFromError(err error) error {
+	if errors.Is(err, discovery.ErrSlotConflict) {
+		return status.Error(codes.AlreadyExists, err.Error())
+	}
+	return slotStatusFromError(err)
 }
