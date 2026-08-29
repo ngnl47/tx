@@ -146,7 +146,7 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 			return err
 		}
 		if frame.validAck() {
-			if err := validateAcknowledgement(frame.Ack, confirmedDownSeq, writtenDownSeq.Load()); err != nil {
+			if err := writer.validateAcknowledgement(frame.Ack, confirmedDownSeq, &writtenDownSeq); err != nil {
 				return err
 			}
 			if err := client.Confirm(sessionCtx, msgq.ConfirmRequest{Header: header, Ack: frame.Ack}); err != nil {
@@ -158,7 +158,7 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 		if !frame.validUpMsg() {
 			return ErrInvalidFrame
 		}
-		if err := validateAcknowledgement(frame.Ack, confirmedDownSeq, writtenDownSeq.Load()); err != nil {
+		if err := writer.validateAcknowledgement(frame.Ack, confirmedDownSeq, &writtenDownSeq); err != nil {
 			return err
 		}
 		responseQueued, err := s.dispatchUpMsg(sessionCtx, client, header, identity, frame, &receivedUpSeq, &confirmedDownSeq)
@@ -230,10 +230,9 @@ func (s *Server) writeDownMsgs(ctx context.Context, client msgq.SessionClient, h
 			return err
 		}
 		for _, message := range batch.Messages {
-			if err := writer.Write(ctx, Frame{Kind: FrameDownMsg, Seq: message.Seq, Ack: receivedUpSeq.Load(), Payload: message.Payload}); err != nil {
+			if err := writer.writeDownMsg(ctx, Frame{Kind: FrameDownMsg, Seq: message.Seq, Ack: receivedUpSeq.Load(), Payload: message.Payload}, written); err != nil {
 				return err
 			}
-			written.Store(message.Seq)
 		}
 	}
 }
@@ -248,6 +247,22 @@ func (w *sessionFrameWriter) Write(ctx context.Context, frame Frame) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.transport.Write(ctx, frame)
+}
+
+func (w *sessionFrameWriter) writeDownMsg(ctx context.Context, frame Frame, written *atomic.Int64) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := w.transport.Write(ctx, frame); err != nil {
+		return err
+	}
+	written.Store(frame.Seq)
+	return nil
+}
+
+func (w *sessionFrameWriter) validateAcknowledgement(ack, confirmed int64, written *atomic.Int64) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return validateAcknowledgement(ack, confirmed, written.Load())
 }
 
 func validateAcknowledgement(ack, confirmed, written int64) error {

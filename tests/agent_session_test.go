@@ -202,6 +202,43 @@ func TestAgentSessionConfirmsAckWithoutUpMsgFrame(t *testing.T) {
 	}
 }
 
+func TestAgentSessionAcceptsAcknowledgementReturnedBeforeDownMsgWriteCompletes(t *testing.T) {
+	agent, _, mailbox, _ := newAgentSessionFixture(t, nil)
+	transport := newImmediateAckAgentTransport()
+	result := make(chan error, 1)
+	go func() { result <- agent.Serve(context.Background(), transport) }()
+
+	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
+	assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
+	waitForMailboxSession(t, mailbox)
+	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("bon-response")}); err != nil {
+		t.Fatalf("publish downMsg: %v", err)
+	}
+	select {
+	case <-transport.downWriteStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for downMsg write")
+	}
+	select {
+	case err := <-result:
+		t.Fatalf("serve returned while valid acknowledgement was in flight: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(transport.releaseDownWrite)
+
+	deadline, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := mailbox.FetchSome(deadline, msgq.FetchSomeRequest{Header: msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}, Max: 1})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("fetch after acknowledgement error = %v, want deadline exceeded", err)
+	}
+
+	transport.closeReads()
+	if err := <-result; !errors.Is(err, io.EOF) {
+		t.Fatalf("serve error = %v, want EOF", err)
+	}
+}
+
 func TestAgentSessionRejectsAcknowledgementBeyondWrittenDownMsg(t *testing.T) {
 	agent, transport, mailbox, _ := newAgentSessionFixture(t, nil)
 	result := make(chan error, 1)
@@ -430,6 +467,39 @@ type agentTransport struct {
 	writes    chan txagent.Frame
 	readDone  chan struct{}
 	closeOnce sync.Once
+}
+
+type immediateAckAgentTransport struct {
+	*agentTransport
+	downWriteStarted chan struct{}
+	releaseDownWrite chan struct{}
+}
+
+func newImmediateAckAgentTransport() *immediateAckAgentTransport {
+	return &immediateAckAgentTransport{
+		agentTransport:   newAgentTransport(),
+		downWriteStarted: make(chan struct{}),
+		releaseDownWrite: make(chan struct{}),
+	}
+}
+
+func (t *immediateAckAgentTransport) Write(ctx context.Context, frame txagent.Frame) error {
+	if frame.Kind != txagent.FrameDownMsg {
+		return t.agentTransport.Write(ctx, frame)
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case t.writes <- frame:
+	}
+	t.reads <- txagent.Frame{Kind: txagent.FrameAck, Ack: frame.Seq}
+	close(t.downWriteStarted)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.releaseDownWrite:
+		return nil
+	}
 }
 
 func newAgentTransport() *agentTransport {
