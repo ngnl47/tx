@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - tx runtime 不读取项目 yml、环境变量或 txgame 文件。
-- tx 与 txgen 源码、常规文档不得出现 `Mandarin/mandarin`。
+- tx 与 txgen 源码、常规文档不得出现无关的外部来源名称。
 - 业务 payload 始终为 BON bytes；不生成 protobuf 版 GD 或客户端 DTO。
 - TCP 和 WebSocket 使用同一 Agent Session 内核；一条普通物理连接对应一个逻辑 Session。
 - `Rec` 校验成功即消费上行 Seq；关键业务使用 `CommandID` 自行幂等。

@@ -77,7 +77,7 @@ Procedure 单向依赖并组合 `modules` 的稳定业务能力，`modules` 不�
 流程时，使用当前 `*txn.Tx.Call` 创建子 savepoint；根 Procedure 必须提前声明完整锁集。无状态 Handler 直接调用
 `modules` 业务能力，并在成功后显式保存根 GD。运行模型由 txgame 组合根在服务启动前确定，不能在单次请求中动态切换。
 
-该设计借鉴 rj3d 中“Procedure 组合稳定业务能力”的依赖方向，但保留 Go 侧显式区分根调用和子调用：tx 不依赖
+该设计采用“Procedure 组合稳定业务能力”的依赖方向，但保留 Go 侧显式区分根调用和子调用：tx 不依赖
 线程局部状态猜测当前事务，错误的嵌套根调用会直接返回错误。
 
 跨 L4 Service 的调用必须经过目标服务的 Actor/RPC client；每个目标服务在本地执行自己的 Procedure。即使多个 Service 聚合在同一进程，也不能借此扩大单机事务边界。

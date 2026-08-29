@@ -517,7 +517,7 @@ _ = result.Delivered
 ### 空闲会话清理
 
 `Server.Start` 使用服务全局 `WaitGroupContext` 启动后台清理循环。`OfflineTimeout` 是“最后一次客户端会话活动”到
-移除 Session 的时长，默认 `180s`，与 Mandarin 的生产实践值一致；`SweepInterval` 是扫描间隔，默认 `2s`。只有 `Init`、`Rec`、`Fetch`、`Confirm` 和
+移除 Session 的时长，默认 `180s`，采用既定的生产实践值；`SweepInterval` 是扫描间隔，默认 `2s`。只有 `Init`、`Rec`、`Fetch`、`Confirm` 和
 `Touch` 延长该活动时间；业务 `Pub` 不会让已经断开的会话常驻内存。即使客户端持续发送心跳，只要最早一条
 未确认下行已超过 `OfflineTimeout`，清理循环同样会移除会话，防止只收不确认的连接绕开积压保护。
 

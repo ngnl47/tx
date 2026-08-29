@@ -129,7 +129,7 @@ func TestMailboxRejectsStaleConnectionWithCurrentIdentityLog(t *testing.T) {
 	}
 }
 
-func TestDefaultOfflineTimeoutRetainsMandarinRecoveryWindow(t *testing.T) {
+func TestDefaultOfflineTimeoutRetainsWeakNetworkRecoveryWindow(t *testing.T) {
 	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: &testSessionStore{}, MaxBacklogMessages: 4})
 	if err != nil {
 		t.Fatalf("new server: %v", err)

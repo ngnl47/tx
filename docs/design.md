@@ -174,7 +174,7 @@ Procedure 单向依赖并组合 `modules` 的稳定业务能力，`modules` 禁�
 
 无状态 Handler 直接调用 `modules` 并显式保存根 GD；有状态 Handler 使用 `txn.Executor.Call` 启动根 Procedure。
 父 Procedure 需要复用另一事务流程时，使用当前 `*txn.Tx.Call` 创建子 savepoint。每个 Procedure 只声明自己直接访问的锁，
-子调用可以在运行时增加锁；错误的嵌套根调用仍会直接返回错误。该依赖方向借鉴 rj3d 的 Procedure 组合方式，但不依赖线程局部状态猜测根调用与子调用。
+子调用可以在运行时增加锁；错误的嵌套根调用仍会直接返回错误。该依赖方向采用组合式事务能力，但不依赖线程局部状态猜测根调用与子调用。
 
 跨 L4 Service 调用必须经过 Actor/RPC client，并在目标服务内执行自己的 Procedure；即使多个 Service 聚合在同一进程，
 也不扩大单机事务边界。运行模型属于整个 Service，进程启动后不能按请求切换。
@@ -2258,7 +2258,7 @@ Redis 只保存带 TTL 的 owner 绑定；下行正文保存在 msgq 实例内�
 
 `SessionID` 标识一次逻辑登录会话，`ConnectionID` 标识该会话下的一次物理 TCP/WebSocket 连接。弱网恢复必须命中
 同一 `SessionID`，同时分配新的 `ConnectionID` 以拒绝旧连接迟到的 Fetch、Confirm 和 Close；新 `SessionID` 或
-`Restore=false` 表示干净登录，不继承旧下行队列。默认恢复窗口为 `180s`，与 Mandarin 的生产实践值一致；超过窗口、
+`Restore=false` 表示干净登录，不继承旧下行队列。默认恢复窗口为 `180s`，采用既定的生产实践值；超过窗口、
 积压条数或积压字节上限时移除整个 Session，而不是无限保留未确认消息。
 
 gRPC client 只在同时得到合法响应时报告成功。空响应、非正数的下行 Seq、`Rec` 接收序号落后于请求、Ack 未原样
