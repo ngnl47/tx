@@ -11,19 +11,21 @@
 
 ### P0：正确性与跨工程回归
 
-1. 保持 `tx`、`txgen`、`txgame`、`txgameslg`、`txclient`、`txclientslg` 的行为同步。涉及生成 Store、集合、StoreView、字段名或存储边界的变更，必须同时检查生成器测试、两个模板的生成产物和业务侧真实 Redis/Mongo 回归；涉及 BON、Frame、路由或 Seq/Ack 时必须分别回归两个客户端。
-2. 持续审计 Redis、Mongo、Fusion、WAL 和延迟任务的失败契约。未知返回值、矛盾文档状态、非法路径、路由错误和依赖缺失必须返回明确错误，不能静默成功、自动修复持久化数据或错误清理 Store 状态。
-3. 发现旧接口、过渡结构、淘汰测试或旧方案文档时，在确认没有生产调用后直接删除。生效文档只描述当前方案；必要的技术取舍只保留在设计文档。
-4. 新增或修改无状态持久化能力时优先使用 `txgame` 生成的真实 `GD*`/`GD*Store`；涉及 Procedure、CacheManager、WAL 或 checkpoint 时使用 `txgameslg` 的有状态生成模型，避免 runtime 测试与生成契约割裂。
+1. 先完成 [WriteBackManager 与 EntityCache 设计](superpowers/specs/2026-08-29-writeback-entity-cache-design.md) 的两个独立阶段：[命名与配置迁移](superpowers/plans/2026-08-29-writeback-naming-migration.md) 和 [Otter v2 EntityCache](superpowers/plans/2026-08-29-otter-entity-cache.md)。两阶段之间必须停止供人工 review 和提交；完成后再恢复世界写性能主线。
+2. 保持 `tx`、`txgen`、`txgame`、`txgameslg`、`txclient`、`txclientslg` 的行为同步。涉及生成 Store、集合、StoreView、字段名或存储边界的变更，必须同时检查生成器测试、两个模板的生成产物和业务侧真实 Redis/Mongo 回归；涉及 BON、Frame、路由或 Seq/Ack 时必须分别回归两个客户端。
+3. 持续审计 Redis、Mongo、Fusion、WAL 和延迟任务的失败契约。未知返回值、矛盾文档状态、非法路径、路由错误和依赖缺失必须返回明确错误，不能静默成功、自动修复持久化数据或错误清理 Store 状态。
+4. 发现旧接口、过渡结构、淘汰测试或旧方案文档时，在确认没有生产调用后直接删除。生效文档只描述当前方案；必要的技术取舍只保留在设计文档。
+5. 新增或修改无状态持久化能力时优先使用 `txgame` 生成的真实 `GD*`/`GD*Store`；涉及 Procedure、事务写回、WAL 或 checkpoint 时使用 `txgameslg` 的有状态生成模型，避免 runtime 测试与生成契约割裂。
 
 ### P1：性能基线
 
-1. 继续以 `VisitChanges`、StoreView 捕获/合并、Redis/Mongo 变更文档构建、事务精确 Key 锁注册表、缓存服务发现路由和
+1. P0 两阶段完成后，以 `World_MoveUnit` 为核心记录世界写、WAL append、checkpoint、generation fence 和最终 Mongo 状态的并发变化曲线；保持每档独立准备数据、独立进程和真实外部依赖。
+2. 继续以 `VisitChanges`、StoreView 捕获/合并、Redis/Mongo 变更文档构建、事务精确 Key 锁注册表、缓存服务发现路由和
    Actor 解析/激活/销毁及滚动成员拓扑 benchmark 为热点基线。
-2. 热点优化必须记录对象规模、嵌套深度、变更密度、Go 版本、耗时和分配；没有基准证据时不引入 pool、`unsafe` 或新的中间批次。
-3. `MaxRootChanges` 继续只按变更位置数收敛 Store 状态树；进程 Heap 只用于告警，不能成为 cache Manager 拒绝业务的唯一依据。只有真实服务证明路径数和待刷根对象数不足以解释常驻内存时，才重新评审字节预算。
-4. Redis 大型整字段写入的安全整数检查只有在 profile 证明为热点后才优化；任何优化都不能降低整数精度保护。
-5. 基于现有多进程真实集群闭环，记录 Agent 到远程 Actor 的请求往返、MsgQ 发布/拉取/Ack、服务发现缓存命中，以及多会话断线恢复的耗时、吞吐和分配；基线必须区分进程内调用与真实 gRPC 网络调用，避免用本地快捷路径掩盖生产成本。
+3. 热点优化必须记录对象规模、嵌套深度、变更密度、Go 版本、耗时和分配；没有基准证据时不引入 pool、`unsafe` 或新的中间批次。
+4. `MaxRootChanges` 继续只按变更位置数收敛 Store 状态树；进程 Heap 只用于告警，不能成为 WriteBackManager 拒绝业务的唯一依据。只有真实服务证明路径数和待刷根对象数不足以解释常驻内存时，才重新评审字节预算。
+5. Redis 大型整字段写入的安全整数检查只有在 profile 证明为热点后才优化；任何优化都不能降低整数精度保护。
+6. 基于现有多进程真实集群闭环，记录 Agent 到远程 Actor 的请求往返、MsgQ 发布/拉取/Ack、服务发现缓存命中，以及多会话断线恢复的耗时、吞吐和分配；基线必须区分进程内调用与真实 gRPC 网络调用，避免用本地快捷路径掩盖生产成本。
 
 ## 待决策能力
 
