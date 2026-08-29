@@ -56,16 +56,16 @@ txgameslg/gen  -> txgameslg/server/gen  + txclientslg/src/gen
 ```text
 请求响应：
 txclient --UpMsg--> agent --Actor/RPC--> game-a / game-b
-game-a / game-b --Actor result--> agent --Pub--> msgq --Fetch--> agent --DownMsg--> txclient
+game-a / game-b --Actor result--> agent --Pub--> msgq-a / msgq-b --Fetch--> agent --DownMsg--> txclient
 
 业务主动下行：
-game-a / game-b --Pub/Broadcast--> msgq --Fetch--> agent --DownMsg--> txclient
+game-a / game-b --Pub/Broadcast--> msgq-a / msgq-b --Fetch--> agent --DownMsg--> txclient
 
 持久化：
 game-a / game-b -----------------> Redis/Mongo/Fusion
-msgq ----------------------------> Redis owner binding
+msgq-a / msgq-b ----------------> Redis owner binding
 
-agent / msgq / game-a / game-b 均为独立 OS 进程
+agent / msgq-a / msgq-b / game-a / game-b 均为独立 OS 进程
 ```
 
 至少启动以下实例：
@@ -74,6 +74,7 @@ agent / msgq / game-a / game-b 均为独立 OS 进程
 | --- | --- | --- |
 | `txgame-agent-a` | `agent` | 唯一玩家入口，监听 TCP 和 WebSocket。 |
 | `txgame-msgq-a` | `msgq` | 独立会话邮箱进程。 |
+| `txgame-msgq-b` | `msgq` | 第二个会话邮箱进程，用于分流与故障承接。 |
 | `txgame-game-a` | `game` | 第一个无状态业务实例。 |
 | `txgame-game-b` | `game` | 第二个无状态业务实例，用于成员变化和重启验证。 |
 
@@ -88,17 +89,17 @@ txclientslg --UpMsg--> agent --Actor/RPC--> slggame
 slggame -------------------------Actor/RPC--> slgworld
 
 请求响应下行：
-slggame / slgworld --Actor result--> agent --Pub--> msgq --Fetch--> agent --DownMsg--> txclientslg
+slggame / slgworld --Actor result--> agent --Pub--> msgq-a / msgq-b --Fetch--> agent --DownMsg--> txclientslg
 
 业务主动下行：
-slggame / slgworld --Pub/Broadcast--> msgq --Fetch--> agent --DownMsg--> txclientslg
+slggame / slgworld --Pub/Broadcast--> msgq-a / msgq-b --Fetch--> agent --DownMsg--> txclientslg
 
 持久化：
 slggame -------------------------> Fusion / Redis / Mongo
 slgworld ------------------------> CacheManager / Mongo WAL / Mongo checkpoint
-msgq ----------------------------> Redis owner binding
+msgq-a / msgq-b ----------------> Redis owner binding
 
-agent / msgq / slggame / slgworld 均为独立 OS 进程
+agent / msgq-a / msgq-b / slggame / slgworld 均为独立 OS 进程
 ```
 
 至少启动以下实例：
@@ -107,6 +108,7 @@ agent / msgq / slggame / slgworld 均为独立 OS 进程
 | --- | --- | --- |
 | `txgameslg-agent-a` | `agent` | 无 |
 | `txgameslg-msgq-a` | `msgq` | 无 |
+| `txgameslg-msgq-b` | `msgq` | 无 |
 | `txgameslg-game-a` | `slggame` | `slggame-1` |
 | `txgameslg-world-a` | `slgworld` | `slgworld-1` |
 
@@ -200,8 +202,9 @@ Ready 等待必须基于控制面状态、服务发现状态、端口握手或�
 2. 让 `game-a` 或 `game-b` 直接通过 MsgQ 向指定角色发布业务主动下行，确认不需要先经过 Agent Dispatcher。
 3. 使用至少两个在线会话验证一次本地 Topic 广播，并检查实际投递、跳过和积压结果；跨 MsgQ 实例广播仍由业务先做实例级分发，不把 Topic 当作全局 Pub/Sub。
 4. 正常断开 Agent 后复用同一 Session 恢复，确认 MsgQ owner 和邮箱状态允许连续会话。
-5. 优雅停止并重启 MsgQ，确认新会话可建立，旧会话结果符合当前明确契约。
-6. 异常终止 MsgQ 时，不把未确认下行无损恢复作为通过条件；测试必须记录旧会话是明确失败、被清理还是需要新 Session，且后续新会话能够恢复服务。
+5. 初始阶段以新角色证明两个 MsgQ 都拥有会话；停止其中一个实例后再次使用新角色，确认全部会话由存活实例承接。
+6. 使用新运行实例身份重启已停止的 MsgQ，再以新角色证明恢复双实例分流。每个阶段都把 Redis owner、SessionID 和 ConnectionID 写入 artifact，不能把恢复窗口内的旧 owner 粘性误判为新会话分流。
+7. 异常终止 MsgQ 时，不把未确认下行无损恢复作为通过条件；测试必须记录旧会话是明确失败、被清理还是需要新 Session，且后续新会话能够恢复服务。
 
 ## 有状态验收场景
 
@@ -275,8 +278,8 @@ P0 只有在以下条件全部满足时完成：
 1. 两套验收均由独立 OS 进程组成，并依次在同一台开发机上通过。
 2. 所有真实依赖检查均为硬失败，没有 skip。
 3. `txclient` 只消费 `txgame` 协议，`txclientslg` 只消费 `txgameslg` 协议；两套客户端测试和构建都通过。
-4. 无状态套件提供远程 Actor/RPC、MsgQ、Seq/Ack、断线恢复、成员变化和优雅关闭证据。
-5. 有状态套件提供固定槽位、跨 Role/World Actor、Fusion、CacheManager、WAL、checkpoint、generation fence、恢复和优雅关闭证据。
+4. 无状态套件提供远程 Actor/RPC、双 MsgQ 分流与单实例承接、Seq/Ack、断线恢复、成员变化和优雅关闭证据。
+5. 有状态套件提供双 MsgQ 分流与单实例承接、固定槽位、跨 Role/World Actor、Fusion、CacheManager、WAL、checkpoint、generation fence、恢复和优雅关闭证据。
 6. Redis、MongoDB 和 etcd 的准备与清理仅作用于专用 logical database、database 和 prefix，没有全局删除。
 7. 重复执行两套验收不会依赖上一次残留状态，失败后能够根据保留 artifacts 定位具体阶段。
 8. 六个工程执行各自受影响的全量测试、构建与 `git diff --check`，结果全部通过。

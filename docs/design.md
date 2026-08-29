@@ -162,7 +162,7 @@ Redis / Mongo / etcd / gRPC / Actor
 - `txgameslg/gen` 生成 `txgameslg/server/gen` 和 `txclientslg/src/gen`；`txclientslg` 只验证有状态模板。
 - 两个客户端独立长期维护，不共享源码目录、符号链接或生成清单。公共 BON、Frame、Session、Seq/Ack 语义变化时分别回归。
 
-多进程真实集群是项目层验收，不改变依赖方向：`txgame + txclient` 与 `txgameslg + txclientslg` 是并行能力，允许在本地顺序执行并复用入口端口；Redis 通过不同 logical database 隔离，MongoDB 使用不同 database，etcd 使用不同 prefix。`tx` 不为隔离统一改写业务 key，也不保存项目服务名。
+多进程真实集群是项目层验收，不改变依赖方向：`txgame + txclient` 与 `txgameslg + txclientslg` 是并行能力，允许在本地顺序执行并复用入口端口；Redis 通过不同 logical database 隔离，MongoDB 使用不同 database，etcd 使用不同 prefix。每套验收同时运行两个 MsgQ，使用新角色验证初始分流、单实例故障承接和重启后恢复分流；Redis owner binding 中的 SessionID、ConnectionID 与实例身份进入验收 artifact。Topic 仍只属于单个 owner MsgQ，跨实例覆盖由业务分别发起本地广播。`tx` 不为隔离统一改写业务 key，也不保存项目服务名。
 
 两个模板的业务模块按稳定能力、领域实现和事务编排分层：`modules/*_service.go` 使用包级函数提供 Handler 与 Procedure
 共用的业务能力，`modules/internal/<domain>` 保存具体领域实现，`services/<name>/internal/procedure/P*.go` 负责编排
