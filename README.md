@@ -517,12 +517,12 @@ _ = result.Delivered
 ### 空闲会话清理
 
 `Server.Start` 使用服务全局 `WaitGroupContext` 启动后台清理循环。`OfflineTimeout` 是“最后一次客户端会话活动”到
-移除 Session 的时长，默认 `60s`；`SweepInterval` 是扫描间隔，默认 `2s`。只有 `Init`、`Rec`、`Fetch`、`Confirm` 和
+移除 Session 的时长，默认 `180s`，与 Mandarin 的生产实践值一致；`SweepInterval` 是扫描间隔，默认 `2s`。只有 `Init`、`Rec`、`Fetch`、`Confirm` 和
 `Touch` 延长该活动时间；业务 `Pub` 不会让已经断开的会话常驻内存。即使客户端持续发送心跳，只要最早一条
 未确认下行已超过 `OfflineTimeout`，清理循环同样会移除会话，防止只收不确认的连接绕开积压保护。
 
 标准项目通过 YAML 的 `services.msgq.offlineTimeout` 配置该时长。TCP 与 WebSocket 客户端必须主动发送心跳；建议
-相邻两次 `System_Ping` 不超过 `15s`，使默认 `60s` 清理窗口能够容忍短暂网络抖动和少量心跳丢失。`System_Ping`
+相邻两次 `System_Ping` 不超过 `15s`，使默认 `180s` 清理窗口能够容忍电梯等短时弱网和少量心跳丢失。`System_Ping`
 仍是普通 UpMsg，会通过 `Rec` 刷新会话活动时间；服务端不会在没有客户端消息时替客户端续期。
 
 ```go
@@ -531,7 +531,7 @@ mailbox, err := msgq.NewServer(msgq.ServerOptions{
     Store:          bindings,
     MaxBacklogMessages:     1024,
     MaxBacklogBytes: 8 << 20,
-    OfflineTimeout: 60 * time.Second,
+    OfflineTimeout: 180 * time.Second,
     SweepInterval:  2 * time.Second,
 })
 if err != nil {
@@ -774,7 +774,7 @@ services:
     ttl: 48h
     maxBacklogMessages: 1024
     maxBacklogBytes: 8388608
-    offlineTimeout: 60s
+    offlineTimeout: 180s
     sweepInterval: 2s
 ```
 
@@ -1936,8 +1936,11 @@ Actor CMod 会通过 ProtoActor 官方的 LoggerFactory 复用同一 Handler，�
 
 Agent、msgq 和项目业务的消息日志按职责只记录一次：
 
-- Agent 在 Info 级别记录 TCP/WebSocket 连接建立、逻辑会话就绪和连接关闭，不逐条记录 `UpMsg/DownMsg`。
-- msgq 在 Debug 级别记录 `Init/Rec/Pub/Confirm` 成功后的 Seq、Ack 和积压状态，不记录编码载荷，也不记录空轮询。
+- Agent 在 Info 级别记录 TCP/WebSocket 连接建立、逻辑会话就绪和连接关闭；身份解析成功后的日志同时携带
+  `roleID`、`sessionID` 和 `connectionID`，不逐条记录 `UpMsg/DownMsg`。
+- msgq 在 Debug 级别记录 `Init/Rec/Pub/Confirm` 成功后的 Seq、Ack 和积压状态；恢复日志额外记录前后
+  `connectionID`，旧连接被栅栏拒绝时同时记录请求方与当前连接身份，淘汰和清理日志同样携带完整会话身份。
+  它不记录编码载荷，也不记录空轮询。
 - 玩家命令的协议名、业务结果和耗时由项目 Agent Dispatcher 记录；无状态模板可使用 Info，有状态高频模板可使用 Debug。
 
 例如一条成功的项目侧访问事件可以包含 `roleID`、`sessionID`、`seq`、`commandID`、`command`、`response`、

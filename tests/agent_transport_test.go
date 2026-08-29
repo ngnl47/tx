@@ -53,11 +53,11 @@ func TestTCPAgentLogsConnectionLifecycle(t *testing.T) {
 		t.Fatalf("connection opened attrs = %#v", recordAttrs(opened))
 	}
 	established := assertAgentLifecycleLog(t, records, "agent session established", slog.LevelInfo)
-	if !recordHasInt64Attr(established, "roleID", 470001) || !recordHasInt64Attr(established, "sessionID", 99) {
+	if !recordHasInt64Attr(established, "roleID", 470001) || !recordHasInt64Attr(established, "sessionID", 99) || !recordHasInt64Attr(established, "connectionID", 7) {
 		t.Fatalf("session established attrs = %#v", recordAttrs(established))
 	}
 	closed := assertAgentLifecycleLog(t, records, "agent connection closed", slog.LevelInfo)
-	if !recordHasStringAttr(closed, "transport", "tcp") || !recordHasInt64Attr(closed, "connectionID", 7) {
+	if !recordHasStringAttr(closed, "transport", "tcp") || !recordHasInt64Attr(closed, "roleID", 470001) || !recordHasInt64Attr(closed, "sessionID", 99) || !recordHasInt64Attr(closed, "connectionID", 7) {
 		t.Fatalf("connection closed attrs = %#v", recordAttrs(closed))
 	}
 }

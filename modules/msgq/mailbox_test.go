@@ -54,6 +54,148 @@ func TestMailboxLogsStateTransitionsAtDebug(t *testing.T) {
 		if record["roleID"] != float64(header.RoleID) {
 			t.Fatalf("%q roleID = %v, want %d", message, record["roleID"], header.RoleID)
 		}
+		if record["sessionID"] != float64(header.SessionID) || record["connectionID"] != float64(header.ConnectionID) {
+			t.Fatalf("%q session identity = %v/%v, want %d/%d", message, record["sessionID"], record["connectionID"], header.SessionID, header.ConnectionID)
+		}
+	}
+}
+
+func TestMailboxRestoreLogCorrelatesPreviousConnection(t *testing.T) {
+	var output bytes.Buffer
+	txlog.SetDefault(slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { txlog.SetDefault(nil) })
+
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: &testSessionStore{}, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	first := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	if _, err := server.Init(context.Background(), InitRequest{Header: first}); err != nil {
+		t.Fatalf("init first connection: %v", err)
+	}
+	restored := SessionHeader{RoleID: first.RoleID, SessionID: first.SessionID, ConnectionID: 8}
+	if _, err := server.Init(context.Background(), InitRequest{Header: restored, Restore: true}); err != nil {
+		t.Fatalf("restore connection: %v", err)
+	}
+
+	for _, record := range decodeJSONLogs(t, output.String()) {
+		if record["msg"] != "msgq session initialized" || record["connectionID"] != float64(restored.ConnectionID) {
+			continue
+		}
+		if record["roleID"] != float64(restored.RoleID) || record["sessionID"] != float64(restored.SessionID) || record["previousConnectionID"] != float64(first.ConnectionID) || record["restore"] != true {
+			t.Fatalf("restore log = %#v", record)
+		}
+		return
+	}
+	t.Fatalf("logs = %s, want restored session identity", output.String())
+}
+
+func TestMailboxRejectsStaleConnectionWithCurrentIdentityLog(t *testing.T) {
+	var output bytes.Buffer
+	txlog.SetDefault(slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { txlog.SetDefault(nil) })
+
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: &testSessionStore{}, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	stale := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	if _, err := server.Init(context.Background(), InitRequest{Header: stale}); err != nil {
+		t.Fatalf("init first connection: %v", err)
+	}
+	current := SessionHeader{RoleID: stale.RoleID, SessionID: stale.SessionID, ConnectionID: 8}
+	if _, err := server.Init(context.Background(), InitRequest{Header: current, Restore: true}); err != nil {
+		t.Fatalf("restore connection: %v", err)
+	}
+	if err := server.Touch(context.Background(), TouchRequest{Header: stale}); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("touch stale connection error = %v, want %v", err, ErrSessionChanged)
+	}
+	if err := server.Close(context.Background(), stale); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("close stale connection error = %v, want %v", err, ErrSessionChanged)
+	}
+
+	rejected := 0
+	for _, record := range decodeJSONLogs(t, output.String()) {
+		if record["msg"] != "msgq stale connection rejected" {
+			continue
+		}
+		rejected++
+		if record["roleID"] != float64(stale.RoleID) || record["sessionID"] != float64(stale.SessionID) || record["connectionID"] != float64(stale.ConnectionID) || record["currentSessionID"] != float64(current.SessionID) || record["currentConnectionID"] != float64(current.ConnectionID) {
+			t.Fatalf("stale connection log = %#v", record)
+		}
+	}
+	if rejected != 2 {
+		t.Fatalf("stale connection rejection logs = %d, want 2; logs = %s", rejected, output.String())
+	}
+}
+
+func TestDefaultOfflineTimeoutRetainsMandarinRecoveryWindow(t *testing.T) {
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: &testSessionStore{}, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	header := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	base := time.Now()
+	if removed, err := server.Reap(context.Background(), base.Add(61*time.Second)); err != nil || removed != 0 {
+		t.Fatalf("reap after 61s = %d, %v, want retained session", removed, err)
+	}
+	if removed, err := server.Reap(context.Background(), base.Add(181*time.Second)); err != nil || removed != 1 {
+		t.Fatalf("reap after 181s = %d, %v, want one expired session", removed, err)
+	}
+}
+
+func TestMailboxReapLogCorrelatesSessionAndConnection(t *testing.T) {
+	var output bytes.Buffer
+	txlog.SetDefault(slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { txlog.SetDefault(nil) })
+
+	server, err := NewServer(ServerOptions{
+		InstanceID:         "msgq-1",
+		Store:              &testSessionStore{},
+		MaxBacklogMessages: 4,
+		OfflineTimeout:     time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	header := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if removed, err := server.Reap(context.Background(), time.Now().Add(2*time.Second)); err != nil || removed != 1 {
+		t.Fatalf("reap = %d, %v", removed, err)
+	}
+	record := findJSONLog(t, decodeJSONLogs(t, output.String()), "msgq session reaped")
+	if record["roleID"] != float64(header.RoleID) || record["sessionID"] != float64(header.SessionID) || record["connectionID"] != float64(header.ConnectionID) {
+		t.Fatalf("reap log = %#v", record)
+	}
+}
+
+func TestMailboxOverflowLogCorrelatesSessionAndConnection(t *testing.T) {
+	var output bytes.Buffer
+	txlog.SetDefault(slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { txlog.SetDefault(nil) })
+
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: &testSessionStore{}, MaxBacklogMessages: 1})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	header := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Payload: []byte("first")}); err != nil {
+		t.Fatalf("publish first: %v", err)
+	}
+	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Payload: []byte("overflow")}); !errors.Is(err, ErrDownMsgOverflow) {
+		t.Fatalf("publish overflow error = %v, want %v", err, ErrDownMsgOverflow)
+	}
+	record := findJSONLog(t, decodeJSONLogs(t, output.String()), "msgq session evicted")
+	if record["roleID"] != float64(header.RoleID) || record["sessionID"] != float64(header.SessionID) || record["connectionID"] != float64(header.ConnectionID) || record["reason"] != "backlog_overflow" {
+		t.Fatalf("eviction log = %#v", record)
 	}
 }
 

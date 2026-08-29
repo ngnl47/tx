@@ -25,12 +25,16 @@ func serveConnection(ctx context.Context, transportName, remote string, server *
 		return
 	}
 	txlog.InfoContext(ctx, "agent connection opened", "transport", transportName, "remote", remote, "connectionID", connectionID)
-	err = server.serve(ctx, transport, connectionID)
+	trace := sessionTrace{}
+	err = server.serve(ctx, transport, connectionID, &trace)
 	args := []any{
 		"transport", transportName,
 		"remote", remote,
 		"connectionID", connectionID,
 		"durationMs", time.Since(startedAt).Milliseconds(),
+	}
+	if trace.roleID > 0 && trace.sessionID > 0 {
+		args = append(args, "roleID", trace.roleID, "sessionID", trace.sessionID)
 	}
 	if normalConnectionClose(ctx, err) {
 		txlog.InfoContext(ctx, "agent connection closed", args...)

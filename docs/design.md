@@ -2256,6 +2256,11 @@ Receiver，再按稳定消息元数据分发，不能让每个服务重复注册
 
 Redis 只保存带 TTL 的 owner 绑定；下行正文保存在 msgq 实例内存。实例崩溃允许丢失未确认下行，客户端重连后由业务状态重同步恢复。
 
+`SessionID` 标识一次逻辑登录会话，`ConnectionID` 标识该会话下的一次物理 TCP/WebSocket 连接。弱网恢复必须命中
+同一 `SessionID`，同时分配新的 `ConnectionID` 以拒绝旧连接迟到的 Fetch、Confirm 和 Close；新 `SessionID` 或
+`Restore=false` 表示干净登录，不继承旧下行队列。默认恢复窗口为 `180s`，与 Mandarin 的生产实践值一致；超过窗口、
+积压条数或积压字节上限时移除整个 Session，而不是无限保留未确认消息。
+
 gRPC client 只在同时得到合法响应时报告成功。空响应、非正数的下行 Seq、`Rec` 接收序号落后于请求、Ack 未原样
 确认、空批次和批量消息为空、非正数或乱序时统一返回 `ErrInvalidMailboxResponse`；它们不能退化为零值成功。该错误
 只说明本次传输确认不可信，框架不会自动重发业务载荷，避免在缺少幂等键时制造重复下行。
@@ -2580,9 +2585,12 @@ Actor Runtime 创建 ActorSystem 时通过 ProtoActor 官方 LoggerFactory 注�
 网络消息日志遵循“最接近完整语义的一层记录一次”：
 
 - `modules/agent` 拥有物理连接和逻辑会话生命周期，因此只记录连接建立、会话就绪、正常关闭和异常关闭。它不认识生成
-  命令，也不能逐条记录 `UpMsg/DownMsg`，否则项目层再次记录业务结果时会产生重复日志。
+  命令，也不能逐条记录 `UpMsg/DownMsg`，否则项目层再次记录业务结果时会产生重复日志。身份解析成功后的生命周期日志
+  同时记录 `roleID`、逻辑 `sessionID` 和物理 `connectionID`；握手前的连接建立日志只能记录当时已经生成的 `connectionID`。
 - `modules/msgq` 拥有 Seq、Ack 与下行积压状态，因此只在 Debug 记录成功提交后的 `Init/Rec/Pub/Confirm` 状态，不在锁内
-  执行日志输出，不记录载荷内容，也不为无消息的 `Fetch` 长轮询制造日志。
+  执行日志输出，不记录载荷内容，也不为无消息的 `Fetch` 长轮询制造日志。恢复日志同时记录前后 `connectionID`；队列
+  溢出淘汰和超时清理记录完整的 `roleID/sessionID/connectionID`；旧物理连接被栅栏拒绝时记录请求方与当前
+  `sessionID/connectionID`，用于关联同一逻辑会话的多条物理链路。
 - 项目 Agent Dispatcher 同时拥有会话身份、生成命令描述和最终 Actor 结果，是玩家协议访问日志的唯一业务切面。无状态
   服务模板使用 Info 便于线上请求排查；高频有状态服务模板使用 Debug，生产环境按需打开。主动推送在项目发布门面记录。
 

@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	defaultOfflineTimeout  = 60 * time.Second
+	defaultOfflineTimeout  = 180 * time.Second
 	defaultSweepInterval   = 2 * time.Second
 	defaultMaxBacklogBytes = 64 * 1024 * 1024
 	initLockShards         = 64
@@ -195,6 +195,7 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 	defer initLock.Unlock()
 
 	var session *mailboxSession
+	var previousConnectionID int64
 	if request.Restore {
 		current, found := s.lookup(request.Header.RoleID)
 		if !found {
@@ -214,6 +215,7 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 			return InitResult{}, err
 		}
 		session = current
+		previousConnectionID = current.connectionID
 	}
 	binding := SessionBinding{
 		RoleID:       request.Header.RoleID,
@@ -249,7 +251,7 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 	pending := session.downMsgs.len()
 	session.signal()
 	session.mu.Unlock()
-	txlog.DebugContext(ctx, "msgq session initialized",
+	logArgs := []any{
 		"roleID", request.Header.RoleID,
 		"sessionID", request.Header.SessionID,
 		"connectionID", request.Header.ConnectionID,
@@ -257,7 +259,11 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 		"upMsgSeq", upMsgSeq,
 		"downAck", request.Ack,
 		"pending", pending,
-	)
+	}
+	if request.Restore {
+		logArgs = append(logArgs, "previousConnectionID", previousConnectionID)
+	}
+	txlog.DebugContext(ctx, "msgq session initialized", logArgs...)
 	return InitResult{UpMsgSeq: upMsgSeq}, nil
 }
 
@@ -271,8 +277,10 @@ func (s *Server) Rec(ctx context.Context, request RecRequest) (RecResult, error)
 		return RecResult{}, err
 	}
 	session.mu.Lock()
-	if err := session.requireConnection(request.Header); err != nil {
+	current, err := session.checkConnection(request.Header)
+	if err != nil {
 		session.mu.Unlock()
+		s.logStaleConnection(ctx, request.Header, current, err)
 		return RecResult{}, err
 	}
 	if err := session.downMsgs.validateAck(request.Ack); err != nil {
@@ -361,8 +369,10 @@ func (s *Server) Fetch(ctx context.Context, request FetchRequest) (FetchResult, 
 			return FetchResult{}, err
 		}
 		session.mu.Lock()
-		if err := session.requireConnection(request.Header); err != nil {
+		current, err := session.checkConnection(request.Header)
+		if err != nil {
 			session.mu.Unlock()
+			s.logStaleConnection(ctx, request.Header, current, err)
 			return FetchResult{}, err
 		}
 		if entry, found := session.downMsgs.dequeue(); found {
@@ -391,8 +401,10 @@ func (s *Server) FetchSome(ctx context.Context, request FetchSomeRequest) (Fetch
 			return FetchSomeResult{}, err
 		}
 		session.mu.Lock()
-		if err := session.requireConnection(request.Header); err != nil {
+		current, err := session.checkConnection(request.Header)
+		if err != nil {
 			session.mu.Unlock()
+			s.logStaleConnection(ctx, request.Header, current, err)
 			return FetchSomeResult{}, err
 		}
 		entries := session.downMsgs.dequeueSome(request.Max)
@@ -425,8 +437,10 @@ func (s *Server) Confirm(ctx context.Context, request ConfirmRequest) error {
 		return err
 	}
 	session.mu.Lock()
-	if err := session.requireConnection(request.Header); err != nil {
+	current, err := session.checkConnection(request.Header)
+	if err != nil {
 		session.mu.Unlock()
+		s.logStaleConnection(ctx, request.Header, current, err)
 		return err
 	}
 	if err := session.downMsgs.confirm(request.Ack); err != nil {
@@ -454,8 +468,10 @@ func (s *Server) Touch(ctx context.Context, request TouchRequest) error {
 		return err
 	}
 	session.mu.Lock()
-	defer session.mu.Unlock()
-	return session.requireConnection(request.Header)
+	current, err := session.checkConnection(request.Header)
+	session.mu.Unlock()
+	s.logStaleConnection(ctx, request.Header, current, err)
+	return err
 }
 
 // JoinTopics 将当前连接加入本机 topic 索引。
@@ -468,8 +484,10 @@ func (s *Server) JoinTopics(ctx context.Context, request TopicRequest) error {
 		return err
 	}
 	session.mu.Lock()
-	defer session.mu.Unlock()
-	if err := session.requireConnection(request.Header); err != nil {
+	current, err := session.checkConnection(request.Header)
+	if err != nil {
+		session.mu.Unlock()
+		s.logStaleConnection(ctx, request.Header, current, err)
 		return err
 	}
 	for _, topic := range request.Topics {
@@ -479,6 +497,7 @@ func (s *Server) JoinTopics(ctx context.Context, request TopicRequest) error {
 		session.topics[topic] = struct{}{}
 		s.addTopicLocked(session, topic)
 	}
+	session.mu.Unlock()
 	return nil
 }
 
@@ -492,8 +511,10 @@ func (s *Server) LeaveTopics(ctx context.Context, request TopicRequest) error {
 		return err
 	}
 	session.mu.Lock()
-	defer session.mu.Unlock()
-	if err := session.requireConnection(request.Header); err != nil {
+	current, err := session.checkConnection(request.Header)
+	if err != nil {
+		session.mu.Unlock()
+		s.logStaleConnection(ctx, request.Header, current, err)
 		return err
 	}
 	for _, topic := range request.Topics {
@@ -503,6 +524,7 @@ func (s *Server) LeaveTopics(ctx context.Context, request TopicRequest) error {
 		delete(session.topics, topic)
 		s.removeTopicLocked(session, topic)
 	}
+	session.mu.Unlock()
 	return nil
 }
 
@@ -513,14 +535,17 @@ func (s *Server) Topics(ctx context.Context, request TopicRequest) (TopicsResult
 		return TopicsResult{}, err
 	}
 	session.mu.Lock()
-	defer session.mu.Unlock()
-	if err := session.requireConnection(request.Header); err != nil {
+	current, err := session.checkConnection(request.Header)
+	if err != nil {
+		session.mu.Unlock()
+		s.logStaleConnection(ctx, request.Header, current, err)
 		return TopicsResult{}, err
 	}
 	topics := make([]string, 0, len(session.topics))
 	for topic := range session.topics {
 		topics = append(topics, topic)
 	}
+	session.mu.Unlock()
 	sort.Strings(topics)
 	return TopicsResult{Topics: topics}, nil
 }
@@ -586,8 +611,10 @@ func (s *Server) Close(ctx context.Context, header SessionHeader) error {
 		return ErrSessionOffline
 	}
 	session.mu.Lock()
-	defer session.mu.Unlock()
-	if err := session.requireConnection(header); err != nil {
+	current, err := session.checkConnection(header)
+	if err != nil {
+		session.mu.Unlock()
+		s.logStaleConnection(ctx, header, current, err)
 		return err
 	}
 	binding := SessionBinding{
@@ -598,12 +625,15 @@ func (s *Server) Close(ctx context.Context, header SessionHeader) error {
 	}
 	removed, err := s.store.Unbind(ctx, binding)
 	if err != nil {
+		session.mu.Unlock()
 		return err
 	}
 	if !removed {
+		session.mu.Unlock()
 		return ErrSessionChanged
 	}
 	s.removeLocked(session)
+	session.mu.Unlock()
 	return nil
 }
 
@@ -634,7 +664,9 @@ func (s *Server) Reap(ctx context.Context, now time.Time) (int, error) {
 	var errs []error
 	for _, session := range sessions {
 		session.mu.Lock()
-		expired := now.Sub(session.lastActivity) >= s.offlineTimeout || session.downMsgs.expired(now, s.offlineTimeout)
+		activityExpired := now.Sub(session.lastActivity) >= s.offlineTimeout
+		backlogExpired := session.downMsgs.expired(now, s.offlineTimeout)
+		expired := activityExpired || backlogExpired
 		if !session.active || !expired {
 			session.mu.Unlock()
 			continue
@@ -649,7 +681,22 @@ func (s *Server) Reap(ctx context.Context, now time.Time) (int, error) {
 		s.removeLocked(session)
 		session.mu.Unlock()
 		removed++
+		txlog.DebugContext(ctx, "msgq session reaped",
+			"roleID", binding.RoleID,
+			"sessionID", binding.SessionID,
+			"connectionID", binding.ConnectionID,
+			"instanceID", binding.InstanceID,
+			"activityExpired", activityExpired,
+			"backlogExpired", backlogExpired,
+		)
 		if err != nil {
+			txlog.ErrorContext(ctx, "msgq reap session unbind failed",
+				"roleID", binding.RoleID,
+				"sessionID", binding.SessionID,
+				"connectionID", binding.ConnectionID,
+				"instanceID", binding.InstanceID,
+				"err", err,
+			)
 			errs = append(errs, err)
 		}
 	}
@@ -742,15 +789,33 @@ func (s *Server) evict(ctx context.Context, session *mailboxSession, header Sess
 	}
 	s.removeLocked(session)
 	session.mu.Unlock()
+	txlog.WarnContext(ctx, "msgq session evicted",
+		"roleID", header.RoleID,
+		"sessionID", header.SessionID,
+		"connectionID", header.ConnectionID,
+		"instanceID", s.instanceID,
+		"reason", "backlog_overflow",
+	)
 	removed, err := s.store.Unbind(ctx, SessionBinding{
 		RoleID: header.RoleID, SessionID: header.SessionID, ConnectionID: header.ConnectionID, InstanceID: s.instanceID,
 	})
 	if err != nil {
-		txlog.ErrorContext(ctx, "msgq evict session unbind failed", "roleID", header.RoleID, "err", err)
+		txlog.ErrorContext(ctx, "msgq evict session unbind failed",
+			"roleID", header.RoleID,
+			"sessionID", header.SessionID,
+			"connectionID", header.ConnectionID,
+			"instanceID", s.instanceID,
+			"err", err,
+		)
 		return
 	}
 	if !removed {
-		txlog.ErrorContext(ctx, "msgq evict session binding changed", "roleID", header.RoleID)
+		txlog.ErrorContext(ctx, "msgq evict session binding changed",
+			"roleID", header.RoleID,
+			"sessionID", header.SessionID,
+			"connectionID", header.ConnectionID,
+			"instanceID", s.instanceID,
+		)
 	}
 }
 
@@ -808,9 +873,10 @@ func (s *Server) touch(ctx context.Context, header SessionHeader) (*mailboxSessi
 		return nil, ErrSessionOffline
 	}
 	session.mu.Lock()
-	err := session.requireConnection(header)
+	current, err := session.checkConnection(header)
 	session.mu.Unlock()
 	if err != nil {
+		s.logStaleConnection(ctx, header, current, err)
 		return nil, err
 	}
 	refreshed, err := s.store.Refresh(ctx, SessionBinding{
@@ -827,8 +893,10 @@ func (s *Server) touch(ctx context.Context, header SessionHeader) (*mailboxSessi
 		return nil, ErrSessionChanged
 	}
 	session.mu.Lock()
-	if err := session.requireConnection(header); err != nil {
+	current, err = session.checkConnection(header)
+	if err != nil {
 		session.mu.Unlock()
+		s.logStaleConnection(ctx, header, current, err)
 		return nil, err
 	}
 	session.lastActivity = time.Now()
@@ -841,6 +909,21 @@ func (h SessionHeader) validateConnection() error {
 		return ErrInvalidHeader
 	}
 	return nil
+}
+
+// logStaleConnection 在释放 session.mu 后记录被栅栏拒绝的新旧连接身份。
+func (s *Server) logStaleConnection(ctx context.Context, requested, current SessionHeader, err error) {
+	if !errors.Is(err, ErrSessionChanged) {
+		return
+	}
+	txlog.DebugContext(ctx, "msgq stale connection rejected",
+		"roleID", requested.RoleID,
+		"sessionID", requested.SessionID,
+		"connectionID", requested.ConnectionID,
+		"currentSessionID", current.SessionID,
+		"currentConnectionID", current.ConnectionID,
+		"instanceID", s.instanceID,
+	)
 }
 
 type mailboxSession struct {
@@ -876,6 +959,15 @@ func (s *mailboxSession) requireConnection(header SessionHeader) error {
 		return ErrSessionChanged
 	}
 	return nil
+}
+
+// checkConnection 必须在持有 s.mu 时调用；发生错误时返回当前身份供解锁后记录。
+func (s *mailboxSession) checkConnection(header SessionHeader) (SessionHeader, error) {
+	err := s.requireConnection(header)
+	if err == nil {
+		return SessionHeader{}, nil
+	}
+	return s.header(), err
 }
 
 func (s *mailboxSession) signal() {

@@ -67,10 +67,15 @@ func (s *Server) Serve(ctx context.Context, transport Transport) error {
 	if err != nil {
 		return err
 	}
-	return s.serve(ctx, transport, connectionID)
+	return s.serve(ctx, transport, connectionID, nil)
 }
 
-func (s *Server) serve(ctx context.Context, transport Transport, connectionID int64) (serveErr error) {
+type sessionTrace struct {
+	roleID    int64
+	sessionID int64
+}
+
+func (s *Server) serve(ctx context.Context, transport Transport, connectionID int64, trace *sessionTrace) (serveErr error) {
 	defer func() { _ = transport.Close() }()
 
 	handshake, err := transport.Read(ctx)
@@ -86,6 +91,10 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 	}
 	if !identity.valid() {
 		return ErrInvalidIdentity
+	}
+	if trace != nil {
+		trace.roleID = identity.RoleID
+		trace.sessionID = identity.SessionID
 	}
 	client, err := s.sessions.Acquire(ctx, identity.RoleID)
 	if err != nil {
