@@ -1957,10 +1957,10 @@ go test ./modules/txn -run '^$' \
 
 默认 Manager 不复制 GD，也不把引用 GD 的变更状态交给无锁异步写队列。同一 Manager 内相同 `LockKey` 不允许绑定不同 Store；对象可以由业务自行创建或加载，不要求经过指定加载函数。Store 不是并发安全容器，业务不能在实体锁外轮询 `HasChanges` 观察后台 Flush。
 
-默认 Manager 不是完整的业务对象缓存，不定义 `LoadRole`、LRU、TTL 淘汰、Actor 归属、业务分片或二级索引。静态 `Config` 只保存调度和容量参数；writer 与写入闸门通过 `writeback.Dependencies` 在 CModProcedure 启动期注入。项目需要缓存能力时有两种边界：
+默认 Manager 不是完整的业务对象缓存，不定义 `LoadRole`、容量淘汰、Actor 归属、业务分片或二级索引。静态 `Config` 只保存调度和容量参数；writer 与写入闸门通过 `writeback.Dependencies` 在 CModProcedure 启动期注入。项目按下面的边界扩展：
 
-1. 普通项目直接使用默认 Manager，业务只通过项目 facade 调用 Procedure 和 `TryRelease`。
-2. 高级项目实现 `writeback.Runtime`，优先以装饰器包装默认 Manager，并在外层增加加载、淘汰、业务索引、WAL/checkpoint 或项目指标。`txgameslg` 的 WriteBack 组件通过 Factory 创建该实现，事务和生命周期仍只依赖 SPI。
+1. 业务对象加载、唯一实例和工作集淘汰属于项目 EntityCache；它独立于 WriteBack Runtime，只通过项目 facade 调用 `TryRelease`。
+2. 普通有状态项目直接使用默认 Manager；需要 WAL/checkpoint 或特殊 Writer 时实现 `writeback.Runtime`，优先以装饰器包装默认 Manager。`txgameslg` 的 WriteBack 组件通过 Factory 创建该实现，事务和生命周期仍只依赖 SPI。
 
 WriteBackManager 不绑定固定持久化目标。CModProcedure 启动期向项目 Factory 注入窄依赖，项目按已显式选择的服务组合决定 Writer：
 
@@ -2423,8 +2423,8 @@ Actor Kind 连续无消息
   -> 停止当前实体 Actor
   -> placement 或 fixedHost 在后续消息到达时惰性重建
 
-GD EntityCache 连续无业务读取
-  -> 扫描空闲候选
+GD EntityCache 达到容量或 access expiry
+  -> Otter 删除 policy token 并登记候选
   -> writeback.Manager.TryRelease 在同一实体锁下检查活跃事务、预留、pending 和 Store 变更
   -> 释放成功且候选代次未变化
   -> 删除 GD 引用
@@ -2436,10 +2436,18 @@ Core 通过 `actor.WithIdlePassivation(timeout)` 或 `actor.Config.IdlePassivati
 `fixedHost` 根据 `Terminated` 删除旧 PID，下一条相同 RouteKey 消息创建新实体。两条路径都不会改写 etcd 成员或业务槽位。
 同一项目 yml 可以为多个可选服务声明 Kind 策略；Runtime 只消费本进程已注册 Kind，避免单服务实例被其他服务配置阻断启动。
 
-有状态模板的 EntityCache 为每个条目保存最后访问时间和访问代次。命中路径仍使用共享读锁，时间和代次使用原子字段更新；
-每个缓存只运行一个扫描任务，不为每个 GD 创建 timer 或 goroutine。扫描在缓存锁外调用项目释放器，随后再次核对条目指针
-和 generation；候选快照使用 `generation -> lastAccess -> generation` 稳定读取，形成快照或执行释放期间的新访问都会使
-旧候选失效。`TryRelease` 返回 `false, nil` 表示延期重试；任何错误也会保留对象。
+有状态模板为 role 和 world bucket 分别创建 EntityCache。`values` map 是业务对象身份的唯一权威，Otter v2.3.0
+只保存指向同一 entry 的 policy token，并使用 adaptive W-TinyLFU 管理准入、热度和按条目数的软容量。默认
+`idleTimeout=0s`；正值使用 access expiry。统计、Loader、refresh、weight 和 persistence 扩展均未启用。
+
+启用 access expiry，或容量接近上限、Otter 频率 sketch 开始工作后，命中路径在共享读锁边界内推进原子 generation
+并记录 policy 热度；在此之前 Otter v2.3.0 本身不会消费读热度，EntityCache 也不承担无效果的 policy 查询和代次更新。
+Otter 原子删除回调不取得 EntityCache 主锁，不调用存储、实体锁或
+WriteBack，只按 key 合并候选并唤醒 worker。每个缓存只有一个 release worker 和一个 timer；worker 在所有缓存锁外调用
+项目 `TryRelease`，暂时不可释放或检查失败时按 `100ms` 起步、倍增到 `5s` 封顶的固定退避重试。释放成功后仍须核对
+entry 指针和 generation；回调登记后发生的访问、对象替换或重新加载都会让旧候选失效。脏对象不会为了满足容量数值被
+强制删除，因此 `values` 暂时超过 `maximumSize` 属于正确状态。生命周期取消时 worker 停止 Otter 后台任务；最终持久化
+仍由 WriteBackManager Drain、WAL 和 checkpoint 完成。
 
 Actor Runtime 不依赖 GD、Store、Procedure、WriteBackManager 或 WAL，也不在超时回调执行存储 I/O。连接断开不直接停止
 Actor；普通心跳命令经过 RoleActor mailbox 即可续期。心跳不读取 GD 时，不延长 EntityCache 中 GD 的空闲时间。
@@ -2452,9 +2460,11 @@ Actor；普通心跳命令经过 RoleActor mailbox 即可续期。心跳不读�
 投递在未启用钝化时为 `9.92-10.16 us/op, 728-739 B/op, 12 allocs/op`，启用一小时空闲钝化后为
 `10.48-10.93 us/op, 735-743 B/op, 12 allocs/op`，没有增加分配次数。2026-08-29 命名迁移后的 EntityCache
 串行命中在关闭 idle 淘汰时为 `19.37-19.81 ns/op`，启用 idle 淘汰时为 `96.95-100.2 ns/op`；同一预热 key 的
-16 路并行命中为 `49.89-50.33 ns/op`，三者均为 `0 B/op, 0 allocs/op`。额外耗时来自 `time.Now` 和原子访问代次
-更新，用于阻止扫描任务删除正在并发使用的对象；idle 关闭时不承担该成本。本阶段仍沿用当前 map 与 idle 扫描实现，
-Otter v2 容量淘汰属于下一独立阶段。
+16 路并行命中为 `49.89-50.33 ns/op`，三者均为 `0 B/op, 0 allocs/op`。该组数据是 Otter 接入前基线；接入后的
+同机 10 次 A/B 中，默认 `idleTimeout=0s` 的串行命中由中位 `20.46 ns/op` 降至 `19.59 ns/op`（`-4.23%`），
+16 路并行命中由 `89.26 ns/op` 降至 `57.60 ns/op`（`-35.47%`）；可选 access expiry 命中由 `107.3 ns/op`
+升至 `175.3 ns/op`（`+63.30%`）。三项继续保持 `0 B/op, 0 allocs/op`，几何均值变化 `+0.30%`。profile 显示
+可选 expiry 的额外开销来自每次访问更新时间和 Otter maintenance 调度；默认关闭该策略，不把该成本施加给容量工作集。
 
 2026-08-25 使用 Go 1.26.5 在 x86_64 macOS 上运行 `BenchmarkPendingCallsRoundTrip`，单次本地
 `add -> resolve -> Await` 约为 `0.78-0.86 us/op, 408 B/op, 6 allocs/op`。该基线包含 Future、完成通知、
