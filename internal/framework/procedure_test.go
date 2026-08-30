@@ -11,30 +11,30 @@ import (
 	"github.com/ngnl47/tx/wal"
 )
 
-type stateCacheComponentFake struct{}
+type stateWriteBackComponentFake struct{}
 
-func (stateCacheComponentFake) ComponentSpec() ComponentSpec {
-	return ComponentSpec{Role: "cache", Name: "test-cache"}
+func (stateWriteBackComponentFake) ComponentSpec() ComponentSpec {
+	return ComponentSpec{Role: "writeback", Name: "test-writeback"}
 }
 
-func (stateCacheComponentFake) Validate(ProcedureContext) error { return nil }
-func (stateCacheComponentFake) Start(ProcedureContext) error    { return nil }
-func (stateCacheComponentFake) Drain(context.Context) error     { return nil }
-func (stateCacheComponentFake) Stop(context.Context) error      { return nil }
+func (stateWriteBackComponentFake) Validate(ProcedureContext) error { return nil }
+func (stateWriteBackComponentFake) Start(ProcedureContext) error    { return nil }
+func (stateWriteBackComponentFake) Drain(context.Context) error     { return nil }
+func (stateWriteBackComponentFake) Stop(context.Context) error      { return nil }
 
-type invalidProcedureCacheFake struct {
+type invalidProcedureWriteBackFake struct {
 	spec ComponentSpec
 }
 
-func (fake invalidProcedureCacheFake) ComponentSpec() ComponentSpec { return fake.spec }
-func (invalidProcedureCacheFake) Validate(ProcedureContext) error   { return nil }
-func (invalidProcedureCacheFake) Start(ProcedureContext) error      { return nil }
-func (invalidProcedureCacheFake) Drain(context.Context) error       { return nil }
-func (invalidProcedureCacheFake) Stop(context.Context) error        { return nil }
+func (fake invalidProcedureWriteBackFake) ComponentSpec() ComponentSpec { return fake.spec }
+func (invalidProcedureWriteBackFake) Validate(ProcedureContext) error   { return nil }
+func (invalidProcedureWriteBackFake) Start(ProcedureContext) error      { return nil }
+func (invalidProcedureWriteBackFake) Drain(context.Context) error       { return nil }
+func (invalidProcedureWriteBackFake) Stop(context.Context) error        { return nil }
 
 func TestProcedureBuilderDescribesSelectedComponents(t *testing.T) {
 	mod, err := NewProcedureBuilder().
-		Cache(stateCacheComponentFake{}).
+		WriteBack(stateWriteBackComponentFake{}).
 		WAL(NewProcedureMongoWAL("slgworld")).
 		Build()
 	if err != nil {
@@ -48,8 +48,8 @@ func TestProcedureBuilderDescribesSelectedComponents(t *testing.T) {
 	want := []ComponentSpec{
 		{Role: "transaction", Name: "default"},
 		{
-			Role: "cache",
-			Name: "test-cache",
+			Role: "writeback",
+			Name: "test-writeback",
 			Components: []ComponentSpec{
 				{Role: "wal", Name: "mongo", Optional: true, Services: []string{"slgworld"}},
 			},
@@ -60,24 +60,24 @@ func TestProcedureBuilderDescribesSelectedComponents(t *testing.T) {
 	}
 }
 
-func TestProcedureBuilderRequiresCache(t *testing.T) {
+func TestProcedureBuilderRequiresWriteBack(t *testing.T) {
 	mod, err := NewProcedureBuilder().Build()
 	if mod != nil || err == nil {
-		t.Fatalf("Build = %#v, %v, want missing cache error", mod, err)
+		t.Fatalf("Build = %#v, %v, want missing writeback error", mod, err)
 	}
 }
 
-func TestProcedureBuilderRejectsTypedNilCache(t *testing.T) {
-	var cache *recordingProcedureCache
-	mod, err := NewProcedureBuilder().Cache(cache).Build()
+func TestProcedureBuilderRejectsTypedNilWriteBack(t *testing.T) {
+	var writeBack *recordingProcedureWriteBack
+	mod, err := NewProcedureBuilder().WriteBack(writeBack).Build()
 	if mod != nil || err == nil {
-		t.Fatalf("Build = %#v, %v, want typed nil cache error", mod, err)
+		t.Fatalf("Build = %#v, %v, want typed nil writeback error", mod, err)
 	}
 }
 
 func TestProcedureBuilderRejectsWALWithoutServices(t *testing.T) {
 	mod, err := NewProcedureBuilder().
-		Cache(stateCacheComponentFake{}).
+		WriteBack(stateWriteBackComponentFake{}).
 		WAL(NewProcedureMongoWAL()).
 		Build()
 	if mod != nil || err == nil {
@@ -87,7 +87,7 @@ func TestProcedureBuilderRejectsWALWithoutServices(t *testing.T) {
 
 func TestProcedureBuilderRejectsNilWALComponent(t *testing.T) {
 	mod, err := NewProcedureBuilder().
-		Cache(stateCacheComponentFake{}).
+		WriteBack(stateWriteBackComponentFake{}).
 		WAL(nil).
 		Build()
 	if mod != nil || err == nil {
@@ -97,18 +97,18 @@ func TestProcedureBuilderRejectsNilWALComponent(t *testing.T) {
 
 func TestProcedureBuilderRejectsInvalidComponentTopology(t *testing.T) {
 	tests := []struct {
-		name  string
-		cache ProcedureCache
-		wal   ProcedureWAL
+		name      string
+		writeBack ProcedureWriteBack
+		wal       ProcedureWAL
 	}{
 		{
-			name:  "empty role",
-			cache: invalidProcedureCacheFake{spec: ComponentSpec{Name: "cache"}},
+			name:      "empty role",
+			writeBack: invalidProcedureWriteBackFake{spec: ComponentSpec{Name: "writeback"}},
 		},
 		{
 			name: "duplicate child role",
-			cache: invalidProcedureCacheFake{spec: ComponentSpec{
-				Role: "cache",
+			writeBack: invalidProcedureWriteBackFake{spec: ComponentSpec{
+				Role: "writeback",
 				Name: "custom",
 				Components: []ComponentSpec{
 					{Role: "wal", Name: "custom"},
@@ -119,7 +119,7 @@ func TestProcedureBuilderRejectsInvalidComponentTopology(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			builder := NewProcedureBuilder().Cache(test.cache)
+			builder := NewProcedureBuilder().WriteBack(test.writeBack)
 			if test.wal != nil {
 				builder.WAL(test.wal)
 			}
@@ -145,44 +145,44 @@ func TestMongoWALComponentMatchesConfiguredServices(t *testing.T) {
 	}
 }
 
-type recordingProcedureCache struct {
+type recordingProcedureWriteBack struct {
 	events     *[]string
 	walEnabled []bool
 }
 
-func (*recordingProcedureCache) ComponentSpec() ComponentSpec {
-	return ComponentSpec{Role: "cache", Name: "recording"}
+func (*recordingProcedureWriteBack) ComponentSpec() ComponentSpec {
+	return ComponentSpec{Role: "writeback", Name: "recording"}
 }
 
-func (cache *recordingProcedureCache) Validate(runtime ProcedureContext) error {
-	*cache.events = append(*cache.events, "validate:cache")
-	cache.walEnabled = append(cache.walEnabled, runtime.WALEnabled())
+func (writeBack *recordingProcedureWriteBack) Validate(runtime ProcedureContext) error {
+	*writeBack.events = append(*writeBack.events, "validate:writeback")
+	writeBack.walEnabled = append(writeBack.walEnabled, runtime.WALEnabled())
 	return nil
 }
 
-func (cache *recordingProcedureCache) Start(runtime ProcedureContext) error {
-	*cache.events = append(*cache.events, "start:cache")
-	cache.walEnabled = append(cache.walEnabled, runtime.WALEnabled())
+func (writeBack *recordingProcedureWriteBack) Start(runtime ProcedureContext) error {
+	*writeBack.events = append(*writeBack.events, "start:writeback")
+	writeBack.walEnabled = append(writeBack.walEnabled, runtime.WALEnabled())
 	if runtime.Transaction() == nil {
 		return context.Canceled
 	}
 	return nil
 }
 
-func (cache *recordingProcedureCache) Drain(context.Context) error {
-	*cache.events = append(*cache.events, "drain:cache")
+func (writeBack *recordingProcedureWriteBack) Drain(context.Context) error {
+	*writeBack.events = append(*writeBack.events, "drain:writeback")
 	return nil
 }
 
-func (cache *recordingProcedureCache) Stop(context.Context) error {
-	*cache.events = append(*cache.events, "stop:cache")
+func (writeBack *recordingProcedureWriteBack) Stop(context.Context) error {
+	*writeBack.events = append(*writeBack.events, "stop:writeback")
 	return nil
 }
 
-func TestProcedureOwnsTransactionAndCacheLifecycle(t *testing.T) {
+func TestProcedureOwnsTransactionAndWriteBackLifecycle(t *testing.T) {
 	events := []string{}
-	cache := &recordingProcedureCache{events: &events}
-	mod, err := NewProcedureBuilder().Cache(cache).Build()
+	writeBack := &recordingProcedureWriteBack{events: &events}
+	mod, err := NewProcedureBuilder().WriteBack(writeBack).Build()
 	if err != nil {
 		t.Fatalf("Build returned error: %v", err)
 	}
@@ -211,18 +211,18 @@ func TestProcedureOwnsTransactionAndCacheLifecycle(t *testing.T) {
 	if err := mod.(CModStopper).Stop(context.Background()); err != nil {
 		t.Fatalf("Stop returned error: %v", err)
 	}
-	wantEvents := []string{"validate:cache", "start:cache", "drain:cache", "stop:cache"}
+	wantEvents := []string{"validate:writeback", "start:writeback", "drain:writeback", "stop:writeback"}
 	if !reflect.DeepEqual(events, wantEvents) {
 		t.Fatalf("events = %v, want %v", events, wantEvents)
 	}
-	if want := []bool{false, false}; !reflect.DeepEqual(cache.walEnabled, want) {
-		t.Fatalf("WAL enabled values = %v, want %v", cache.walEnabled, want)
+	if want := []bool{false, false}; !reflect.DeepEqual(writeBack.walEnabled, want) {
+		t.Fatalf("WAL enabled values = %v, want %v", writeBack.walEnabled, want)
 	}
 }
 
 func TestProcedureWALRequiresSelectedMongoCapability(t *testing.T) {
 	mod, err := NewProcedureBuilder().
-		Cache(stateCacheComponentFake{}).
+		WriteBack(stateWriteBackComponentFake{}).
 		WAL(NewProcedureMongoWAL("slgworld")).
 		Build()
 	if err != nil {
@@ -281,12 +281,12 @@ func (procedureWALStoreFake) Checkpoint(context.Context, wal.Stream, uint64, fun
 func TestProcedureOwnsCustomWALLifecycle(t *testing.T) {
 	events := []string{}
 	store := procedureWALStoreFake{}
-	cache := &recordingProcedureCache{events: &events}
+	writeBack := &recordingProcedureWriteBack{events: &events}
 	component := &recordingProcedureWAL{
 		events: &events,
 		store:  store,
 	}
-	mod, err := NewProcedureBuilder().Cache(cache).WAL(component).Build()
+	mod, err := NewProcedureBuilder().WriteBack(writeBack).WAL(component).Build()
 	if err != nil {
 		t.Fatalf("Build returned error: %v", err)
 	}
@@ -315,7 +315,7 @@ func TestProcedureOwnsCustomWALLifecycle(t *testing.T) {
 	if server.runtime.wal != nil {
 		t.Fatalf("WAL after Stop = %#v, want nil", server.runtime.wal)
 	}
-	wantEvents := []string{"validate:wal", "validate:cache", "start:wal", "start:cache", "stop:cache", "stop:wal"}
+	wantEvents := []string{"validate:wal", "validate:writeback", "start:wal", "start:writeback", "stop:writeback", "stop:wal"}
 	if !reflect.DeepEqual(events, wantEvents) {
 		t.Fatalf("events = %v, want %v", events, wantEvents)
 	}
@@ -328,7 +328,7 @@ func TestProcedureStopsCustomWALAfterFailedStart(t *testing.T) {
 		startErr: errors.New("start failed"),
 	}
 	mod, err := NewProcedureBuilder().
-		Cache(stateCacheComponentFake{}).
+		WriteBack(stateWriteBackComponentFake{}).
 		WAL(component).
 		Build()
 	if err != nil {
@@ -362,7 +362,7 @@ func TestProcedureDoesNotClearExistingWALAfterInstallConflict(t *testing.T) {
 	existing := procedureWALStoreFake{}
 	component := &recordingProcedureWAL{events: &events, store: &procedureWALStoreFake{}}
 	mod, err := NewProcedureBuilder().
-		Cache(stateCacheComponentFake{}).
+		WriteBack(stateWriteBackComponentFake{}).
 		WAL(component).
 		Build()
 	if err != nil {

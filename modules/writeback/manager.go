@@ -1,5 +1,5 @@
-// Package cache 提供有状态服务的根对象身份与延迟刷盘管理。
-package cache
+// Package writeback 提供有状态服务的根对象身份与延迟写回管理。
+package writeback
 
 import (
 	"context"
@@ -19,11 +19,10 @@ import (
 )
 
 var (
-	ErrIdentityConflict          = errors.New("cache manager: lock key is bound to a different Store")
-	ErrInvalidTarget             = errors.New("cache manager: invalid lock target")
-	ErrPendingRoot               = errors.New("cache manager: root still has pending changes")
-	ErrPendingRootCapacity       = errors.New("cache manager: pending root capacity reached")
-	ErrChangeCollapseUnsupported = errors.New("cache manager: persistent Store does not support change collapse")
+	ErrIdentityConflict          = errors.New("writeback manager: lock key is bound to a different Store")
+	ErrInvalidTarget             = errors.New("writeback manager: invalid lock target")
+	ErrPendingRootCapacity       = errors.New("writeback manager: pending root capacity reached")
+	ErrChangeCollapseUnsupported = errors.New("writeback manager: persistent Store does not support change collapse")
 )
 
 // WriteAdmission 在 Procedure 修改内存对象前检查外部存储是否允许产生新的待刷状态。
@@ -33,24 +32,24 @@ type WriteAdmission interface {
 	RequireWritable(targets []txn.LockTarget) error
 }
 
-// Dependencies 是缓存运行时启动时注入的基础能力，不属于静态配置。
+// Dependencies 是写回运行时启动时注入的基础能力，不属于静态配置。
 type Dependencies struct {
-	// Writer 接收缓存管理器最终刷出的根 Store 变更，通常由 Fusion 或 Mongo 能力提供。
+	// Writer 接收写回管理器最终刷出的根 Store 变更，通常由 Fusion 或 Mongo 能力提供。
 	Writer storage.ChangeApplier
 	// WriteAdmission 在 Procedure 修改内存对象前检查目标存储是否允许产生新的待刷状态；nil 表示不设置前置闸门。
 	WriteAdmission WriteAdmission
 }
 
-// Runtime 是 CModProcedure Cache 组件依赖的稳定 SPI。
+// Runtime 是 CModProcedure WriteBack 组件依赖的稳定 SPI。
 // 项目可以包装默认 Manager 扩展对象加载、淘汰和业务索引，也可以为高级场景提供完整实现。
 type Runtime interface {
 	txn.CommitParticipant
 	Start(lifecycle.Tasks) error
 	Shutdown(context.Context) error
-	Release(txn.LockTarget) error
+	TryRelease(txn.LockTarget) (bool, error)
 }
 
-// Config 描述缓存根对象的刷盘调度与资源边界。
+// Config 描述根对象的写回调度与资源边界。
 type Config struct {
 	// FlushInterval 是后台批量刷盘循环的触发间隔。
 	FlushInterval time.Duration
@@ -68,22 +67,22 @@ type Config struct {
 	ReadHeapBytes func() uint64
 }
 
-// Validate 校验缓存管理器完整生命周期所需的配置。
+// Validate 校验写回管理器完整生命周期所需的配置。
 func (config Config) Validate() error {
 	if config.FlushInterval <= 0 {
-		return errors.New("cache manager: flush interval must be greater than 0")
+		return errors.New("writeback manager: flush interval must be greater than 0")
 	}
 	if config.ShutdownFlushTimeout <= 0 {
-		return errors.New("cache manager: shutdown flush timeout must be greater than 0")
+		return errors.New("writeback manager: shutdown flush timeout must be greater than 0")
 	}
 	if config.MaxPendingRoots < 0 {
-		return errors.New("cache manager: pending root limit must be greater than or equal to 0")
+		return errors.New("writeback manager: pending root limit must be greater than or equal to 0")
 	}
 	if config.MaxRootChanges < 0 {
-		return errors.New("cache manager: root change limit must be greater than or equal to 0")
+		return errors.New("writeback manager: root change limit must be greater than or equal to 0")
 	}
 	if config.HeapSampleInterval < 0 {
-		return errors.New("cache manager: heap sample interval must be greater than or equal to 0")
+		return errors.New("writeback manager: heap sample interval must be greater than or equal to 0")
 	}
 	return nil
 }
@@ -97,7 +96,7 @@ type Manager struct {
 
 	mu         sync.Mutex
 	generation uint64
-	entries    map[txn.LockKey]cacheEntry
+	entries    map[txn.LockKey]rootEntry
 	pending    map[txn.LockKey]pendingEntry
 	reserved   map[txn.LockKey]int
 
@@ -109,7 +108,7 @@ type Manager struct {
 
 var _ Runtime = (*Manager)(nil)
 
-type cacheEntry struct {
+type rootEntry struct {
 	target   txn.LockTarget
 	retained bool
 }
@@ -119,7 +118,7 @@ type pendingEntry struct {
 	generation uint64
 }
 
-// NewManager 创建根对象缓存与延迟刷盘管理器。
+// NewManager 创建根对象身份与延迟写回管理器。
 func NewManager(dependencies Dependencies, config Config) *Manager {
 	if config.ReadHeapBytes == nil {
 		config.ReadHeapBytes = currentHeapBytes
@@ -131,7 +130,7 @@ func NewManager(dependencies Dependencies, config Config) *Manager {
 		writer:         dependencies.Writer,
 		writeAdmission: dependencies.WriteAdmission,
 		config:         config,
-		entries:        make(map[txn.LockKey]cacheEntry),
+		entries:        make(map[txn.LockKey]rootEntry),
 		pending:        make(map[txn.LockKey]pendingEntry),
 		reserved:       make(map[txn.LockKey]int),
 	}
@@ -140,7 +139,7 @@ func NewManager(dependencies Dependencies, config Config) *Manager {
 // Prepare 在 Procedure 修改前校验根对象身份并预留待刷容量。
 func (manager *Manager) Prepare(_ context.Context, targets []txn.LockTarget) (txn.CommitReservation, error) {
 	if manager == nil {
-		return nil, errors.New("cache manager: manager is nil")
+		return nil, errors.New("writeback manager: manager is nil")
 	}
 	for _, target := range targets {
 		if target.Key.Scope == "" || target.Key.Value == "" || isNil(target.Store) {
@@ -153,7 +152,7 @@ func (manager *Manager) Prepare(_ context.Context, targets []txn.LockTarget) (tx
 	}
 	if manager.writeAdmission != nil {
 		if err := manager.writeAdmission.RequireWritable(persistent); err != nil {
-			return nil, fmt.Errorf("cache manager: write admission rejected procedure: %w", err)
+			return nil, fmt.Errorf("writeback manager: write admission rejected procedure: %w", err)
 		}
 	}
 	manager.mu.Lock()
@@ -177,7 +176,7 @@ func (manager *Manager) Prepare(_ context.Context, targets []txn.LockTarget) (tx
 	for _, target := range persistent {
 		entry, exists := manager.entries[target.Key]
 		if !exists {
-			manager.entries[target.Key] = cacheEntry{target: target}
+			manager.entries[target.Key] = rootEntry{target: target}
 		} else if !entry.retained {
 			entry.target = target
 			manager.entries[target.Key] = entry
@@ -300,47 +299,51 @@ func (manager *Manager) Pending() int {
 	return len(manager.pending)
 }
 
-// Release 释放一个已经干净且没有事务预留的缓存根对象。
+// TryRelease 尝试释放一个已经干净且没有事务预留的写回根对象。
 // 它会取得与 Procedure 相同的实体锁，因此必须在 Procedure 外调用。
-func (manager *Manager) Release(target txn.LockTarget) error {
+func (manager *Manager) TryRelease(target txn.LockTarget) (bool, error) {
 	if manager == nil {
-		return errors.New("cache manager: manager is nil")
+		return false, errors.New("writeback manager: manager is nil")
 	}
 	if target.Key.Scope == "" || target.Key.Value == "" || isNil(target.Store) {
-		return ErrInvalidTarget
+		return false, ErrInvalidTarget
 	}
-	return txn.WithLocks(context.Background(), []txn.LockTarget{target}, func(context.Context) error {
-		return manager.releaseLocked(target)
+	var released bool
+	err := txn.WithLocks(context.Background(), []txn.LockTarget{target}, func(context.Context) error {
+		var err error
+		released, err = manager.tryReleaseLocked(target)
+		return err
 	})
+	return released, err
 }
 
-func (manager *Manager) releaseLocked(target txn.LockTarget) error {
+func (manager *Manager) tryReleaseLocked(target txn.LockTarget) (bool, error) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	entry, exists := manager.entries[target.Key]
 	if !exists {
-		return nil
+		return true, nil
 	}
 	if !sameStore(entry.target.Store, target.Store) {
-		return ErrIdentityConflict
+		return false, ErrIdentityConflict
 	}
 	if manager.reserved[target.Key] > 0 {
-		return ErrPendingRoot
+		return false, nil
 	}
 	if _, pending := manager.pending[target.Key]; pending {
-		return ErrPendingRoot
+		return false, nil
 	}
 	if store, ok := target.Store.(storage.ChangeStore); ok && store.HasChanges() {
-		return ErrPendingRoot
+		return false, nil
 	}
 	delete(manager.entries, target.Key)
-	return nil
+	return true, nil
 }
 
 // Flush 依次保存当前待刷根对象。失败对象保留，供后续重试。
 func (manager *Manager) Flush(ctx context.Context) error {
 	if manager == nil {
-		return errors.New("cache manager: manager is nil")
+		return errors.New("writeback manager: manager is nil")
 	}
 	if manager.writer == nil {
 		return storage.ErrNilChangeApplier
@@ -398,10 +401,10 @@ func (manager *Manager) clearPending(entry pendingEntry) {
 // Run 按固定间隔持续 Flush，直到 ctx 取消。
 func (manager *Manager) Run(ctx context.Context, interval time.Duration) error {
 	if manager == nil {
-		return errors.New("cache manager: manager is nil")
+		return errors.New("writeback manager: manager is nil")
 	}
 	if interval <= 0 {
-		return errors.New("cache manager: flush interval must be greater than 0")
+		return errors.New("writeback manager: flush interval must be greater than 0")
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -414,7 +417,7 @@ func (manager *Manager) Run(ctx context.Context, interval time.Duration) error {
 			return nil
 		case <-ticker.C:
 			if err := manager.Flush(ctx); err != nil {
-				txlog.ErrorContext(ctx, "cache manager flush failed", "err", err)
+				txlog.ErrorContext(ctx, "writeback manager flush failed", "err", err)
 			}
 		}
 	}
@@ -423,17 +426,17 @@ func (manager *Manager) Run(ctx context.Context, interval time.Duration) error {
 // Start 将后台刷盘循环登记到服务生命周期。
 func (manager *Manager) Start(ctx lifecycle.Tasks) error {
 	if manager == nil {
-		return errors.New("cache manager: manager is nil")
+		return errors.New("writeback manager: manager is nil")
 	}
 	if ctx == nil {
-		return errors.New("cache manager: lifecycle context is nil")
+		return errors.New("writeback manager: lifecycle context is nil")
 	}
 	if err := manager.config.Validate(); err != nil {
 		return err
 	}
 	return ctx.Go(func(ctx context.Context) {
 		if err := manager.Run(ctx, manager.config.FlushInterval); err != nil {
-			txlog.ErrorContext(ctx, "cache manager stopped", "err", err)
+			txlog.ErrorContext(ctx, "writeback manager stopped", "err", err)
 		}
 	})
 }
@@ -441,7 +444,7 @@ func (manager *Manager) Start(ctx lifecycle.Tasks) error {
 // Shutdown 在超时范围内反复 Flush，直到待刷集合为空。
 func (manager *Manager) Shutdown(ctx context.Context) error {
 	if manager == nil {
-		return errors.New("cache manager: manager is nil")
+		return errors.New("writeback manager: manager is nil")
 	}
 	if err := manager.config.Validate(); err != nil {
 		return err
@@ -457,11 +460,11 @@ func (manager *Manager) Shutdown(ctx context.Context) error {
 			return nil
 		}
 		if err != nil {
-			txlog.ErrorContext(ctx, "cache manager final flush failed, retry scheduled", "pending", manager.Pending(), "err", err)
+			txlog.ErrorContext(ctx, "writeback manager final flush failed, retry scheduled", "pending", manager.Pending(), "err", err)
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("cache manager: final flush stopped with %d pending roots: %w", manager.Pending(), ctx.Err())
+			return fmt.Errorf("writeback manager: final flush stopped with %d pending roots: %w", manager.Pending(), ctx.Err())
 		case <-time.After(manager.config.FlushInterval):
 		}
 	}
@@ -528,7 +531,7 @@ func (manager *Manager) warnHeapSoftLimitIfExceeded() {
 	limit := manager.config.HeapSoftLimitBytes
 	manager.heapMu.Unlock()
 	if shouldWarn {
-		txlog.Warn("cache manager heap soft limit exceeded", "heapBytes", heapBytes, "limitBytes", limit)
+		txlog.Warn("writeback manager heap soft limit exceeded", "heapBytes", heapBytes, "limitBytes", limit)
 	}
 }
 
@@ -538,7 +541,7 @@ func currentHeapBytes() uint64 {
 	return stats.HeapAlloc
 }
 
-var errChangeBudgetExceeded = errors.New("cache manager: change budget exceeded")
+var errChangeBudgetExceeded = errors.New("writeback manager: change budget exceeded")
 
 type changeBudgetStore struct {
 	storage.ChangeStore
@@ -578,7 +581,7 @@ func (manager *Manager) saveStore(ctx context.Context, target txn.LockTarget, st
 		return fmt.Errorf("%w: %s", ErrChangeCollapseUnsupported, target.Key.String())
 	}
 	collapser.CollapseChanges()
-	txlog.Warn("cache manager root changes collapsed", "scope", target.Key.Scope, "key", target.Key.Value, "budget", manager.config.MaxRootChanges)
+	txlog.Warn("writeback manager root changes collapsed", "scope", target.Key.Scope, "key", target.Key.Value, "budget", manager.config.MaxRootChanges)
 	return storage.Save(ctx, manager.writer, store)
 }
 

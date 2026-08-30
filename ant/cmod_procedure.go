@@ -7,12 +7,12 @@ import (
 
 	framework "github.com/ngnl47/tx/internal/framework"
 	"github.com/ngnl47/tx/lifecycle"
-	cachemodule "github.com/ngnl47/tx/modules/cache"
 	"github.com/ngnl47/tx/modules/txn"
+	writebackmodule "github.com/ngnl47/tx/modules/writeback"
 	"github.com/ngnl47/tx/wal"
 )
 
-// CModProcedureContext 是 Cache 和 WAL 组件可见的窄运行时边界。
+// CModProcedureContext 是 WriteBack 和 WAL 组件可见的窄运行时边界。
 // 组件不能取得 Ant Server、依赖图或其他 CMod 的生命周期所有权。
 type CModProcedureContext interface {
 	// Tasks 返回 CModProcedure 子生命周期的后台任务入口。
@@ -20,7 +20,7 @@ type CModProcedureContext interface {
 	// Storage 返回框架管理的文档读写能力。
 	Storage() Storage
 	// WriteAdmission 返回按事务目标存储模式检查健康状态的写入闸门。
-	WriteAdmission() cachemodule.WriteAdmission
+	WriteAdmission() writebackmodule.WriteAdmission
 	// WAL 返回当前 L4 服务实际启用的预写日志；未启用时返回 nil。
 	WAL() wal.Store
 	// Executor 返回 CModProcedure 独占装配的单机事务执行器。
@@ -31,8 +31,8 @@ type CModProcedureContext interface {
 	WALEnabled() bool
 }
 
-// CModProcedureCache 接收成功事务的脏根对象，并管理缓存刷盘生命周期。
-type CModProcedureCache interface {
+// CModProcedureWriteBack 接收成功事务的脏根对象，并管理延迟写回生命周期。
+type CModProcedureWriteBack interface {
 	ComponentSpec() ComponentSpec
 	Validate(CModProcedureContext) error
 	Start(CModProcedureContext) error
@@ -40,7 +40,7 @@ type CModProcedureCache interface {
 	Stop(context.Context) error
 }
 
-// CModProcedureWAL 是缓存保存管线可选使用的预写日志组件。
+// CModProcedureWAL 是写回管线可选使用的预写日志组件。
 type CModProcedureWAL interface {
 	ComponentSpec() ComponentSpec
 	Validate(CModProcedureContext) error
@@ -50,9 +50,9 @@ type CModProcedureWAL interface {
 
 // CModProcedureBuilder 以强类型组件组装 Ant 单机事务能力。
 type CModProcedureBuilder struct {
-	cache  CModProcedureCache
-	wal    CModProcedureWAL
-	walSet bool
+	writeBack CModProcedureWriteBack
+	wal       CModProcedureWAL
+	walSet    bool
 }
 
 // NewCModProcedureBuilder 创建 Procedure CMod Builder。
@@ -60,15 +60,15 @@ func NewCModProcedureBuilder() *CModProcedureBuilder {
 	return &CModProcedureBuilder{}
 }
 
-// Cache 设置事务提交后负责登记和刷盘根对象的缓存组件。
-func (builder *CModProcedureBuilder) Cache(cache CModProcedureCache) *CModProcedureBuilder {
+// WriteBack 设置事务提交后负责登记和刷盘根对象的写回组件。
+func (builder *CModProcedureBuilder) WriteBack(component CModProcedureWriteBack) *CModProcedureBuilder {
 	if builder != nil {
-		builder.cache = cache
+		builder.writeBack = component
 	}
 	return builder
 }
 
-// WAL 设置缓存保存管线可选使用的预写日志组件。
+// WAL 设置写回管线可选使用的预写日志组件。
 func (builder *CModProcedureBuilder) WAL(component CModProcedureWAL) *CModProcedureBuilder {
 	if builder != nil {
 		builder.wal = component
@@ -82,14 +82,14 @@ func (builder *CModProcedureBuilder) Build() (CMod, error) {
 	if builder == nil {
 		return nil, errors.New("ant: CModProcedure builder is nil")
 	}
-	if isNil(builder.cache) {
-		return nil, errors.New("ant: CModProcedure cache component is required")
+	if isNil(builder.writeBack) {
+		return nil, errors.New("ant: CModProcedure writeback component is required")
 	}
 	if builder.walSet && isNil(builder.wal) {
 		return nil, errors.New("ant: CModProcedure WAL component is required")
 	}
 
-	frameworkBuilder := framework.NewProcedureBuilder().Cache(procedureCacheAdapter{cache: builder.cache})
+	frameworkBuilder := framework.NewProcedureBuilder().WriteBack(procedureWriteBackAdapter{component: builder.writeBack})
 	if builder.walSet {
 		frameworkBuilder.WAL(procedureWALAdapter{component: builder.wal})
 	}
@@ -163,28 +163,28 @@ func (mod *procedureCMod) Stop(ctx context.Context) error {
 	return nil
 }
 
-type procedureCacheAdapter struct {
-	cache CModProcedureCache
+type procedureWriteBackAdapter struct {
+	component CModProcedureWriteBack
 }
 
-func (adapter procedureCacheAdapter) ComponentSpec() framework.ComponentSpec {
-	return toFrameworkComponentSpec(adapter.cache.ComponentSpec())
+func (adapter procedureWriteBackAdapter) ComponentSpec() framework.ComponentSpec {
+	return toFrameworkComponentSpec(adapter.component.ComponentSpec())
 }
 
-func (adapter procedureCacheAdapter) Validate(runtime framework.ProcedureContext) error {
-	return adapter.cache.Validate(procedureContextView{kernel: runtime})
+func (adapter procedureWriteBackAdapter) Validate(runtime framework.ProcedureContext) error {
+	return adapter.component.Validate(procedureContextView{kernel: runtime})
 }
 
-func (adapter procedureCacheAdapter) Start(runtime framework.ProcedureContext) error {
-	return adapter.cache.Start(procedureContextView{kernel: runtime})
+func (adapter procedureWriteBackAdapter) Start(runtime framework.ProcedureContext) error {
+	return adapter.component.Start(procedureContextView{kernel: runtime})
 }
 
-func (adapter procedureCacheAdapter) Drain(ctx context.Context) error {
-	return adapter.cache.Drain(ctx)
+func (adapter procedureWriteBackAdapter) Drain(ctx context.Context) error {
+	return adapter.component.Drain(ctx)
 }
 
-func (adapter procedureCacheAdapter) Stop(ctx context.Context) error {
-	return adapter.cache.Stop(ctx)
+func (adapter procedureWriteBackAdapter) Stop(ctx context.Context) error {
+	return adapter.component.Stop(ctx)
 }
 
 type procedureWALAdapter struct {
@@ -213,7 +213,7 @@ type procedureContextView struct {
 
 func (view procedureContextView) Tasks() lifecycle.Tasks { return view.kernel.Tasks() }
 func (view procedureContextView) Storage() Storage       { return view.kernel.Storage() }
-func (view procedureContextView) WriteAdmission() cachemodule.WriteAdmission {
+func (view procedureContextView) WriteAdmission() writebackmodule.WriteAdmission {
 	return view.kernel.WriteAdmission()
 }
 func (view procedureContextView) WAL() wal.Store         { return view.kernel.WAL() }

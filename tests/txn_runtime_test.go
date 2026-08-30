@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	cachemodule "github.com/ngnl47/tx/modules/cache"
 	"github.com/ngnl47/tx/modules/txn"
+	writebackmodule "github.com/ngnl47/tx/modules/writeback"
 )
 
 type rejectingAdmission struct {
@@ -150,10 +150,10 @@ func TestTxnRuntimeRejectsProcedureBeforeMutationWhenAdmissionIsClosed(t *testin
 	store := &runtimeTestStore{}
 	writer := &recordingChangeStoreApplier{}
 	admissionErr := errors.New("storage unavailable")
-	manager := cachemodule.NewManager(cachemodule.Dependencies{
+	manager := writebackmodule.NewManager(writebackmodule.Dependencies{
 		Writer:         writer,
 		WriteAdmission: rejectingAdmission{err: admissionErr},
-	}, cachemodule.Config{})
+	}, writebackmodule.Config{})
 	runtime := txn.NewRuntime()
 	if err := runtime.BindCommitParticipant(manager); err != nil {
 		t.Fatalf("BindCommitParticipant returned error: %v", err)
@@ -175,9 +175,9 @@ func TestTxnRuntimeRejectsProcedureBeforeMutationWhenAdmissionIsClosed(t *testin
 
 func TestTxnRuntimeAllowsPureMemoryProcedureWhenAdmissionIsClosed(t *testing.T) {
 	store := &runtimeMemoryStore{}
-	manager := cachemodule.NewManager(cachemodule.Dependencies{
+	manager := writebackmodule.NewManager(writebackmodule.Dependencies{
 		WriteAdmission: rejectingAdmission{err: errors.New("storage unavailable")},
-	}, cachemodule.Config{})
+	}, writebackmodule.Config{})
 	runtime := txn.NewRuntime()
 	if err := runtime.BindCommitParticipant(manager); err != nil {
 		t.Fatalf("BindCommitParticipant returned error: %v", err)
@@ -194,13 +194,13 @@ func TestTxnRuntimeAllowsPureMemoryProcedureWhenAdmissionIsClosed(t *testing.T) 
 	}
 }
 
-func TestCacheManagerTreatsTypedNilWriteAdmissionAsAbsent(t *testing.T) {
+func TestWriteBackManagerTreatsTypedNilWriteAdmissionAsAbsent(t *testing.T) {
 	store := &runtimeTestStore{}
 	var typedNil *rejectingAdmission
-	manager := cachemodule.NewManager(cachemodule.Dependencies{
+	manager := writebackmodule.NewManager(writebackmodule.Dependencies{
 		Writer:         &recordingChangeStoreApplier{},
 		WriteAdmission: typedNil,
-	}, cachemodule.Config{})
+	}, writebackmodule.Config{})
 	runtime := txn.NewRuntime()
 	if err := runtime.BindCommitParticipant(manager); err != nil {
 		t.Fatalf("BindCommitParticipant returned error: %v", err)

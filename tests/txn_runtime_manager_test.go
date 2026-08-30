@@ -8,8 +8,8 @@ import (
 
 	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/meta"
-	cachemodule "github.com/ngnl47/tx/modules/cache"
 	"github.com/ngnl47/tx/modules/txn"
+	writebackmodule "github.com/ngnl47/tx/modules/writeback"
 	"github.com/ngnl47/tx/storage"
 )
 
@@ -216,9 +216,9 @@ func (procedure observingRuntimeTestProcedure) Process(tx *txn.Tx) error {
 	return procedure.runtimeTestProcedure.Process(tx)
 }
 
-func newCacheRuntime(t *testing.T, writer storage.ChangeApplier, config cachemodule.Config) (*txn.Runtime, *cachemodule.Manager) {
+func newWriteBackRuntime(t *testing.T, writer storage.ChangeApplier, config writebackmodule.Config) (*txn.Runtime, *writebackmodule.Manager) {
 	t.Helper()
-	manager := cachemodule.NewManager(cachemodule.Dependencies{Writer: writer}, config)
+	manager := writebackmodule.NewManager(writebackmodule.Dependencies{Writer: writer}, config)
 	runtime := txn.NewRuntime()
 	if err := runtime.BindCommitParticipant(manager); err != nil {
 		t.Fatalf("BindCommitParticipant returned error: %v", err)
@@ -226,10 +226,10 @@ func newCacheRuntime(t *testing.T, writer storage.ChangeApplier, config cachemod
 	return runtime, manager
 }
 
-func TestCacheManagerDefersTransactionStoreUntilFlush(t *testing.T) {
+func TestWriteBackManagerDefersTransactionStoreUntilFlush(t *testing.T) {
 	store := &runtimeTestStore{}
 	writer := &recordingChangeStoreApplier{}
-	runtime, manager := newCacheRuntime(t, writer, cachemodule.Config{
+	runtime, manager := newWriteBackRuntime(t, writer, writebackmodule.Config{
 		FlushInterval:        time.Millisecond,
 		ShutdownFlushTimeout: time.Second,
 	})
@@ -263,10 +263,10 @@ func TestCacheManagerDefersTransactionStoreUntilFlush(t *testing.T) {
 	}
 }
 
-func TestCacheManagerBudgetedFlushVisitsOnceWhenWithinBudget(t *testing.T) {
+func TestWriteBackManagerBudgetedFlushVisitsOnceWhenWithinBudget(t *testing.T) {
 	store := &runtimeTestStore{}
 	writer := &recordingChangeStoreApplier{}
-	runtime, manager := newCacheRuntime(t, writer, cachemodule.Config{MaxRootChanges: 2})
+	runtime, manager := newWriteBackRuntime(t, writer, writebackmodule.Config{MaxRootChanges: 2})
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
 
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
@@ -282,13 +282,13 @@ func TestCacheManagerBudgetedFlushVisitsOnceWhenWithinBudget(t *testing.T) {
 	}
 }
 
-func TestCacheManagerAllowsAccumulatedChangesWhenCleanTargetCheckIsEnabled(t *testing.T) {
+func TestWriteBackManagerAllowsAccumulatedChangesWhenCleanTargetCheckIsEnabled(t *testing.T) {
 	previous := txn.CurrentConfig()
 	t.Cleanup(func() { txn.Configure(previous) })
 	txn.Configure(txn.Config{Debug: txn.DebugConfig{CheckCleanLockTargets: true}})
 
 	store := &runtimeTestStore{}
-	runtime, manager := newCacheRuntime(t, &recordingChangeStoreApplier{}, cachemodule.Config{})
+	runtime, manager := newWriteBackRuntime(t, &recordingChangeStoreApplier{}, writebackmodule.Config{})
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
 		t.Fatalf("first Call returned error: %v", err)
@@ -301,10 +301,10 @@ func TestCacheManagerAllowsAccumulatedChangesWhenCleanTargetCheckIsEnabled(t *te
 	}
 }
 
-func TestCacheManagerAllowsPendingRootWhenCapacityIsFull(t *testing.T) {
+func TestWriteBackManagerAllowsPendingRootWhenCapacityIsFull(t *testing.T) {
 	store := &runtimeTestStore{}
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
-	runtime, manager := newCacheRuntime(t, &recordingChangeStoreApplier{}, cachemodule.Config{MaxPendingRoots: 1})
+	runtime, manager := newWriteBackRuntime(t, &recordingChangeStoreApplier{}, writebackmodule.Config{MaxPendingRoots: 1})
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
 		t.Fatalf("first Call returned error: %v", err)
 	}
@@ -317,10 +317,10 @@ func TestCacheManagerAllowsPendingRootWhenCapacityIsFull(t *testing.T) {
 	}
 }
 
-func TestCacheManagerRejectsNewRootBeforeProcedureWhenCapacityIsFull(t *testing.T) {
+func TestWriteBackManagerRejectsNewRootBeforeProcedureWhenCapacityIsFull(t *testing.T) {
 	first := &runtimeTestStore{}
 	firstLock := txn.NewLockTarget(txn.NewLockKey("role", 1001), first)
-	runtime, manager := newCacheRuntime(t, &recordingChangeStoreApplier{}, cachemodule.Config{MaxPendingRoots: 1})
+	runtime, manager := newWriteBackRuntime(t, &recordingChangeStoreApplier{}, writebackmodule.Config{MaxPendingRoots: 1})
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: firstLock, store: first}); err != nil {
 		t.Fatalf("first Call returned error: %v", err)
 	}
@@ -332,7 +332,7 @@ func TestCacheManagerRejectsNewRootBeforeProcedureWhenCapacityIsFull(t *testing.
 		runtimeTestProcedure: runtimeTestProcedure{lock: secondLock, store: second},
 		called:               &called,
 	})
-	if !errors.Is(err, cachemodule.ErrPendingRootCapacity) {
+	if !errors.Is(err, writebackmodule.ErrPendingRootCapacity) {
 		t.Fatalf("Call error = %v, want ErrPendingRootCapacity", err)
 	}
 	if called || len(second.changes) != 0 {
@@ -343,20 +343,20 @@ func TestCacheManagerRejectsNewRootBeforeProcedureWhenCapacityIsFull(t *testing.
 	}
 }
 
-func TestCacheManagerReservesDynamicChildTargetBeforeChildProcess(t *testing.T) {
+func TestWriteBackManagerReservesDynamicChildTargetBeforeChildProcess(t *testing.T) {
 	first := &runtimeTestStore{}
 	second := &runtimeTestStore{}
 	firstLock := txn.NewLockTarget(txn.NewLockKey("role", 1001), first)
 	secondLock := txn.NewLockTarget(txn.NewLockKey("role", 1002), second)
 	childCalled := false
-	runtime, manager := newCacheRuntime(t, &recordingChangeStoreApplier{}, cachemodule.Config{MaxPendingRoots: 1})
+	runtime, manager := newWriteBackRuntime(t, &recordingChangeStoreApplier{}, writebackmodule.Config{MaxPendingRoots: 1})
 
 	err := runtime.Call(context.Background(), runtimeDynamicParentProcedure{
 		lock:  firstLock,
 		store: first,
 		child: runtimeDynamicChildProcedure{lock: secondLock, store: second, called: &childCalled},
 	})
-	if !errors.Is(err, cachemodule.ErrPendingRootCapacity) {
+	if !errors.Is(err, writebackmodule.ErrPendingRootCapacity) {
 		t.Fatalf("Call error = %v, want ErrPendingRootCapacity", err)
 	}
 	if childCalled {
@@ -367,12 +367,12 @@ func TestCacheManagerReservesDynamicChildTargetBeforeChildProcess(t *testing.T) 
 	}
 }
 
-func TestCacheManagerCommitsDynamicChildTarget(t *testing.T) {
+func TestWriteBackManagerCommitsDynamicChildTarget(t *testing.T) {
 	first := &runtimeTestStore{}
 	second := &runtimeTestStore{}
 	firstLock := txn.NewLockTarget(txn.NewLockKey("role", 1001), first)
 	secondLock := txn.NewLockTarget(txn.NewLockKey("role", 1002), second)
-	runtime, manager := newCacheRuntime(t, &recordingChangeStoreApplier{}, cachemodule.Config{MaxPendingRoots: 2})
+	runtime, manager := newWriteBackRuntime(t, &recordingChangeStoreApplier{}, writebackmodule.Config{MaxPendingRoots: 2})
 
 	if err := runtime.Call(context.Background(), runtimeDynamicParentProcedure{
 		lock:  firstLock,
@@ -386,10 +386,10 @@ func TestCacheManagerCommitsDynamicChildTarget(t *testing.T) {
 	}
 }
 
-func TestCacheManagerCollapsesOverBudgetRootChangesBeforeFlush(t *testing.T) {
+func TestWriteBackManagerCollapsesOverBudgetRootChangesBeforeFlush(t *testing.T) {
 	store := &runtimeTestStore{}
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
-	runtime, manager := newCacheRuntime(t, &recordingChangeStoreApplier{}, cachemodule.Config{
+	runtime, manager := newWriteBackRuntime(t, &recordingChangeStoreApplier{}, writebackmodule.Config{
 		MaxRootChanges: 1,
 	})
 
@@ -412,17 +412,17 @@ func TestCacheManagerCollapsesOverBudgetRootChangesBeforeFlush(t *testing.T) {
 	}
 }
 
-func TestCacheManagerRejectsNonCollapsiblePersistentTargetBeforeProcedure(t *testing.T) {
+func TestWriteBackManagerRejectsNonCollapsiblePersistentTargetBeforeProcedure(t *testing.T) {
 	store := &runtimeNonCollapsibleStore{}
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
-	runtime, manager := newCacheRuntime(t, &recordingChangeStoreApplier{}, cachemodule.Config{MaxRootChanges: 1})
+	runtime, manager := newWriteBackRuntime(t, &recordingChangeStoreApplier{}, writebackmodule.Config{MaxRootChanges: 1})
 	called := false
 
 	err := runtime.Call(context.Background(), runtimeNonCollapsibleProcedure{
 		lock:   lock,
 		called: &called,
 	})
-	if !errors.Is(err, cachemodule.ErrChangeCollapseUnsupported) {
+	if !errors.Is(err, writebackmodule.ErrChangeCollapseUnsupported) {
 		t.Fatalf("Call error = %v, want ErrChangeCollapseUnsupported", err)
 	}
 	if called || manager.Pending() != 0 {
@@ -430,9 +430,9 @@ func TestCacheManagerRejectsNonCollapsiblePersistentTargetBeforeProcedure(t *tes
 	}
 }
 
-func TestCacheManagerMemorySoftLimitWarnsButAcceptsNewPendingRoots(t *testing.T) {
+func TestWriteBackManagerMemorySoftLimitWarnsButAcceptsNewPendingRoots(t *testing.T) {
 	var heapBytes uint64
-	runtime, manager := newCacheRuntime(t, &recordingChangeStoreApplier{}, cachemodule.Config{
+	runtime, manager := newWriteBackRuntime(t, &recordingChangeStoreApplier{}, writebackmodule.Config{
 		HeapSoftLimitBytes: 1,
 		ReadHeapBytes:      func() uint64 { return heapBytes },
 	})
@@ -496,10 +496,10 @@ func (writer *blockingRuntimeWriter) ApplyChangesWithOptions(context.Context, me
 	return nil
 }
 
-func TestCacheManagerFlushHoldsTransactionLockUntilStorageWriteFinishes(t *testing.T) {
+func TestWriteBackManagerFlushHoldsTransactionLockUntilStorageWriteFinishes(t *testing.T) {
 	store := &runtimeTestStore{}
 	writer := &blockingRuntimeWriter{started: make(chan struct{}), release: make(chan struct{})}
-	runtime, manager := newCacheRuntime(t, writer, cachemodule.Config{})
+	runtime, manager := newWriteBackRuntime(t, writer, writebackmodule.Config{})
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
 		t.Fatalf("Call returned error: %v", err)
@@ -538,10 +538,10 @@ func TestCacheManagerFlushHoldsTransactionLockUntilStorageWriteFinishes(t *testi
 	}
 }
 
-func TestCacheManagerRunFlushesPendingStoresOnInterval(t *testing.T) {
+func TestWriteBackManagerRunFlushesPendingStoresOnInterval(t *testing.T) {
 	store := &runtimeTestStore{}
 	writer := &scheduledRuntimeWriter{called: make(chan struct{}, 1)}
-	runtime, manager := newCacheRuntime(t, writer, cachemodule.Config{})
+	runtime, manager := newWriteBackRuntime(t, writer, writebackmodule.Config{})
 	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
 		t.Fatalf("Call returned error: %v", err)
@@ -565,10 +565,10 @@ func TestCacheManagerRunFlushesPendingStoresOnInterval(t *testing.T) {
 	}
 }
 
-func TestCacheManagerShutdownRetriesUntilPendingStoreIsFlushed(t *testing.T) {
+func TestWriteBackManagerShutdownRetriesUntilPendingStoreIsFlushed(t *testing.T) {
 	store := &runtimeTestStore{}
 	writer := &retryingRuntimeWriter{}
-	runtime, manager := newCacheRuntime(t, writer, cachemodule.Config{
+	runtime, manager := newWriteBackRuntime(t, writer, writebackmodule.Config{
 		FlushInterval:        time.Millisecond,
 		ShutdownFlushTimeout: time.Second,
 	})

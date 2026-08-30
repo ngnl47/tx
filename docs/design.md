@@ -152,7 +152,7 @@ Redis / Mongo / etcd / gRPC / Actor
 `txgameslg`：
 
 - 是有状态 SLG/MMO 服务的独立生产模板，不依赖 `txgame`。
-- 使用 Actor 作为运行期权威对象的唯一串行命令入口，使用 Procedure 和 CacheManager 管理单机事务与分帧保存；对象的实际缓存结构由项目 SPI 决定。
+- 使用 Actor 作为运行期权威对象的唯一串行命令入口，使用 Procedure 和 WriteBackManager 管理单机事务与分帧保存；对象的实际缓存结构由项目 SPI 决定。
 - `slggame` 通过 Fusion 保存角色、军团等根对象；`slgworld` 通过 Mongo WAL 和 checkpoint 保存分区场景数据。
 - 只依赖 `tx`、`txgen` 及自身生成产物；配置、服务组合、业务 SPI 和测试均在本项目闭环。
 
@@ -245,8 +245,8 @@ storage contracts
 redis    mongo     fusion
 
 optional modules:
-lifecycle <- discovery / rpc / msgq / agent / actor / control / cache manager
-change <- txn runtime <- cache manager -> storage contracts
+lifecycle <- discovery / rpc / msgq / agent / actor / control / writeback manager
+change <- txn runtime <- writeback manager -> storage contracts
 
 process assembly:
 L0-L2 components -> internal/framework private kernel -> bee / ant -> project L4 services
@@ -258,7 +258,7 @@ L0-L2 components -> internal/framework private kernel -> bee / ant -> project L4
 - `storage` 通用契约不能依赖 Redis 或 Mongo adapter。
 - `modules/actor` 不代表 GD，不依赖 Store、Fusion 或 `txn.Runtime`。
 - `modules/txn` 只依赖 `change`，不持有 writer 或具体 backend。
-- `modules/cache` 依赖 `txn` 提交 SPI 和通用 `storage` 契约，不依赖 Redis、Mongo 或 Fusion 实现。
+- `modules/writeback` 依赖 `txn` 提交 SPI 和通用 `storage` 契约，不依赖 Redis、Mongo 或 Fusion 实现。
 - 项目业务可以组合 Actor、Procedure 和存储 runtime，模块之间不反向耦合。
 - `internal/framework` 可以编排中立组件，但不能成为项目可 import 的公共 API。
 - Bee 与 Ant 不能互相 import；Core 和私有装配内核不能反向 import Bee 或 Ant。
@@ -307,10 +307,10 @@ CMod 固定属于 L3，是带稳定身份、依赖关系和进程生命周期的
 ```text
 fusion-storage requires redis-storage, mongo-storage
 fusion-storage components: scheduler=delay
-procedure components: transaction=default, cache=<project>[checkpoint=<project>,wal=<backend>]
+procedure components: transaction=default, writeback=<project>[checkpoint=<project>,wal=<backend>]
 ```
 
-`procedure` 是项目注册的 L3 CMod。Transaction、Cache 和可选 WAL 都由它统一校验、启动、排水和停止；WAL 只在
+`procedure` 是项目注册的 L3 CMod。Transaction、WriteBack 和可选 WAL 都由它统一校验、启动、排水和停止；WAL 只在
 Builder 指定的 L4 服务被选择时生效。`fusion-storage` 统一拥有 Delay Scheduler，服务不再分别选择 producer 与 consumer。
 启动日志保留 CMod 拓扑顺序，同时输出过滤后的组件拓扑，便于核对当前进程实际创建了哪些组件。
 
@@ -318,7 +318,7 @@ Actor CMod 没有隐含普通 RPC 或服务发现依赖。ProtoActor Remote 与�
 自身的传输和成员能力；L4 服务若同时使用普通 gRPC 或 `ServiceDirectory`，必须显式声明对应 CMod，避免把两套
 独立通信拓扑错误耦合。
 
-组件职责仍保持正交。Transaction 只负责锁、undo、savepoint、死锁检测和提交参与者调度；Cache 只登记根 Store 并决定
+组件职责仍保持正交。Transaction 只负责锁、undo、savepoint、死锁检测和提交参与者调度；WriteBack 只登记根 Store 并决定
 何时 Flush；Fusion 与 Mongo 是可选目标 Writer；WAL 只提供追加、重放和 checkpoint 契约。正交不等于平级暴露：
 CModProcedure 负责把这些组件按明确顺序组合为一个进程能力门面。
 
@@ -327,8 +327,8 @@ CModProcedure 负责把这些组件按明确顺序组合为一个进程能力门
 | 服务形态 | 显式 CMod | 运行期调度 |
 | --- | --- | --- |
 | 无状态请求服务 | RPC、Fusion | Handler 修改 GD 后显式保存；Fusion 内部运行 Delay Scheduler |
-| 有状态逻辑服 | RPC、Fusion、CModProcedure | Procedure 只提交内存；CModProcedure 的 Cache 组件分帧写 Fusion |
-| 有状态大世界 | RPC、Mongo、CModProcedure | Cache 的 WAL 子组件先可靠追加，再异步推进 Mongo checkpoint |
+| 有状态逻辑服 | RPC、Fusion、CModProcedure | Procedure 只提交内存；CModProcedure 的 WriteBack 组件分帧写 Fusion |
+| 有状态大世界 | RPC、Mongo、CModProcedure | WriteBack 的 WAL 子组件先可靠追加，再异步推进 Mongo checkpoint |
 
 CModProcedure Builder 只组合组件，不隐式选择外部存储 CMod。启用 Mongo WAL 的服务仍须在自身 `Requires` 中显式声明
 Mongo；使用 Fusion Writer 的服务显式声明 Fusion。这样配置关系在 L4 仍然可见，组件生命周期又不会泄漏为一组平级 CMod。
@@ -336,12 +336,12 @@ Mongo；使用 Fusion Writer 的服务显式声明 Fusion。这样配置关系�
 项目组合根负责创建唯一的 CModProcedure 实例：
 
 ```go
-cacheComponent, err := cachemgr.NewComponent(config.CacheManagerConfig)
+writeBack, err := writeback.NewComponent(config.WriteBackManagerConfig)
 if err != nil {
 	return nil, err
 }
 procedure, err := ant.NewCModProcedureBuilder().
-	Cache(cacheComponent).
+	WriteBack(writeBack).
 	WAL(ant.NewCModProcedureMongoWAL("slgworld")).
 	Build()
 if err != nil {
@@ -354,7 +354,7 @@ return ant.New(config).
 	Build()
 ```
 
-`Cache` 接收 `CModProcedureCache` SPI，`WAL` 接收 `CModProcedureWAL` SPI。项目可以替换缓存或 WAL 实现，但组件只能看到
+`WriteBack` 接收 `CModProcedureWriteBack` SPI，`WAL` 接收 `CModProcedureWAL` SPI。项目可以替换写回或 WAL 实现，但组件只能看到
 `CModProcedureContext` 提供的 Tasks、Storage、目标感知 WriteAdmission、Transaction、WAL 和提交参与者绑定接口，不能取得
 `Server` 所有权。
 内置 `NewCModProcedureMongoWAL` 只是 `CModProcedureWAL` 的第一种实现。Builder 生成的组件拓扑为：
@@ -362,13 +362,13 @@ return ant.New(config).
 ```text
 procedure
 ├── transaction=default
-└── cache=txgameslg
+└── writeback=txgameslg
     ├── checkpoint=mongo  [仅 services 包含 slgworld 时生效]
     └── wal=mongo         [仅 services 包含 slgworld 时生效]
 ```
 
 启动时 CModProcedure 先根据本轮 `ServiceSelection` 判定 WAL 是否生效；生效时先校验并创建 WAL，再创建 Transaction，最后
-启动 Cache 并绑定提交参与者。排水与停止从 Cache 开始，Mongo/Fusion 等外部 CMod 因拓扑在 CModProcedure 之后反向关闭，
+启动 WriteBack 并绑定提交参与者。排水与停止从 WriteBack 开始，Mongo/Fusion 等外部 CMod 因拓扑在 CModProcedure 之后反向关闭，
 因此最终 Flush 期间依赖仍然可用。组件不能自行注册 CMod、修改全局依赖图或关闭外部 backend。
 
 启动固定执行“选择 L4 服务 -> 解析 CMod 闭包 -> 惰性转换闭包配置 -> 校验全部 CMod -> 按拓扑启动”。全部
@@ -788,8 +788,8 @@ Store 不保存第二份业务数据，也不保存每次操作的 value、时�
 | 延迟任务上下文 | 任务租约 | `task.DelayTaskLease`、busy 状态 | worker 在限定时间内取得一次任务处理权；不能简称为 Store 或事务锁 |
 | 延迟任务上下文 | 任务载荷 | Redis task backend 的 `payload` 字段 | 任务定位与执行参数的编码值；不是业务消息载荷，也不保存 GD 或 Store 变更状态 |
 | 延迟任务上下文 | 后续到期时间 | Redis task backend 的 `pending` 字段 | 任务已被租用期间再次入队时保存的新到期时间；不是待刷根对象 |
-| 有状态缓存上下文 | 缓存运行时 | `cache.Runtime` | CModProcedure Cache 组件依赖的提交、生命周期和实体释放 SPI；默认实现是 `cache.Manager`，不是业务对象缓存的固定形态 |
-| 有状态缓存上下文 | 待刷根对象 | 默认 `cache.Manager.Pending()` 管理的 root | 已发生受控修改且尚未成功 Flush 的持久化根对象；一个 root 的多条路径只计一个 |
+| 有状态缓存上下文 | 缓存运行时 | `writeback.Runtime` | CModProcedure WriteBack 组件依赖的提交、生命周期和实体释放 SPI；默认实现是 `writeback.Manager`，不是业务对象缓存的固定形态 |
+| 有状态缓存上下文 | 待刷根对象 | 默认 `writeback.Manager.Pending()` 管理的 root | 已发生受控修改且尚未成功 Flush 的持久化根对象；一个 root 的多条路径只计一个 |
 | 事务上下文 | 撤销记录 | `change.UndoRecorder`、`change.UndoFunc` | 恢复事务前 GD 值和 Store 状态；与帧内合并职责独立 |
 
 “帧内合并”中的“帧”表示一次业务合并窗口，不限定为 20ms；网络上下文中的“协议帧”才表示 Agent `Frame`。Store 状态本身是按位置归一化的集合，遍历顺序不构成业务契约；`Capture` 的调用顺序和 `Merge(next)` 的参数顺序都具有“后批次覆盖前批次”含义。
@@ -1111,7 +1111,7 @@ Slice：
 | Redis document patch | 约 1.47-1.54 ms/op，1.31 MB/op，4713 allocs/op | 约 0.88-0.90 ms/op，359 KB/op，4692 allocs/op | 耗时降低约 40%，分配字节降低约 73% |
 | Mongo update document | 约 13.37-14.55 ms/op，1.28 MB/op，5740 allocs/op | 约 0.98-1.00 ms/op，330 KB/op，5718 allocs/op | 避免中间批次、Clone、通用 Compact 和二次路径扫描，耗时降低约 93%，分配字节降低约 74% |
 
-因此 Redis/Mongo/Fusion adapter 与 `cache.Manager` 直接消费 `Source`。旧的 `Build*WithDeltas` 与显式批次类型已经删除，`storage.Save` 不得重新引入中间批次层。
+因此 Redis/Mongo/Fusion adapter 与 `writeback.Manager` 直接消费 `Source`。旧的 `Build*WithDeltas` 与显式批次类型已经删除，`storage.Save` 不得重新引入中间批次层。
 
 2026-08-22 删除显式批次 API 与过渡适配层后，使用 Go 1.26.5 在同一台 x86_64 macOS 设备复测：`VisitChanges1024` 为约 `0.082-0.088 ms/op, 0 B/op, 0 allocs/op`，`BuildDocument1024` 为约 `0.389-0.399 ms/op, 212 KB/op, 2996 allocs/op`，`MergeAndBuildFrameDocument` 为约 `0.167-0.174 ms/op, 37 KB/op, 17 allocs/op`。txgame 的真实生成结构边界中，Redis patch 为约 `0.873-0.928 ms/op, 359 KB/op, 4691 allocs/op`，Mongo update document 为约 `0.988-1.041 ms/op, 330 KB/op, 5717 allocs/op`。这些结果与删除前的同步遍历路径处于同一量级，说明精简公开 API 和运行时中间层没有引入可见性能回退。
 
@@ -1633,7 +1633,7 @@ checkpoint 成功而日志清理前进程退出，只会留下可安全跳过的
 
 `wal/checkpoint.Scheduler` 不缓存记录正文，只为每条 stream 保存最大的 `ThroughSeq`。同一 stream 严格串行，不同 stream
 按 `Workers` 有界并行；新请求到达时只推进目标序号。失败请求保留在调度器中，按有界指数退避重试并输出结构化错误日志。
-进程排水时，上层 CacheManager 先把仍然变脏的 Store 追加到 WAL，再调用 `WaitIdle` 等待已经登记的 checkpoint 完成；随后
+进程排水时，上层 WriteBackManager 先把仍然变脏的 Store 追加到 WAL，再调用 `WaitIdle` 等待已经登记的 checkpoint 完成；随后
 根 `WaitGroupContext` 才能取消。后台 handler 必须按页读取 WAL，不能为方便而把一条 stream 的全部正文一次聚合到内存。
 
 Go 1.26.5、Intel i9-9880H 下，`BenchmarkSchedulerSubmitCoalescedStream` 对正在执行的同一 stream 连续推进目标位置为
@@ -1642,7 +1642,7 @@ Mongo I/O 不包含在这个数字内。
 
 ```text
 Procedure.Commit
-  -> CacheManager 标记 root pending
+  -> WriteBackManager 标记 root pending
   -> 帧边界 Flush
   -> Store 生成不可变变更帧
   -> writer.Async.Append WAL
@@ -1662,7 +1662,7 @@ Mongo WAL 使用独立 collection，不复用 GD 文档 adapter，也不把 WAL 
 
 稳定哈希只保证输入身份不变时路由键不变，不保证 route table 改动后 endpoint 仍然相同。WAL 分片集合、顺序和范围规则属于持久化布局契约；已有日志时不能直接修改。第一版不建设 placement 元数据或自动迁移，变更布局必须由运维先封口 stream、迁移 WAL 与 checkpoint、验证后再切换配置。
 
-Ant 在 CModProcedure 启动期复用已经显式选择的 Mongo database 创建 WAL client，并为四元位置创建唯一索引；索引创建失败会使启动 fast-fail。Mongo WAL collection 强制使用 `majority + j:true` 写关注，不能继承更弱的 URI 默认值。第一版 Mongo WAL 要求 L4 服务同时声明 `CModMongoStorage` 和 `CModProcedure`，并由项目组合根通过 `NewCModProcedureMongoWAL` 把 WAL 挂到 Cache 组件下；Builder 不会隐式补齐 Mongo。框架只通过 `CModProcedureContext.WAL()` 向 Cache 组件提供后端无关的安全 `wal.Store`；普通 Service 不能取得 Mongo client、原始清理入口或连接关闭权。WAL 操作复用 Mongo 健康闸门和 backend generation，不在每次追加前执行 Ping。
+Ant 在 CModProcedure 启动期复用已经显式选择的 Mongo database 创建 WAL client，并为四元位置创建唯一索引；索引创建失败会使启动 fast-fail。Mongo WAL collection 强制使用 `majority + j:true` 写关注，不能继承更弱的 URI 默认值。第一版 Mongo WAL 要求 L4 服务同时声明 `CModMongoStorage` 和 `CModProcedure`，并由项目组合根通过 `NewCModProcedureMongoWAL` 把 WAL 挂到 WriteBack 组件下；Builder 不会隐式补齐 Mongo。框架只通过 `CModProcedureContext.WAL()` 向 WriteBack 组件提供后端无关的安全 `wal.Store`；普通 Service 不能取得 Mongo client、原始清理入口或连接关闭权。WAL 操作复用 Mongo 健康闸门和 backend generation，不在每次追加前执行 Ping。
 
 Mongo 服务不可用时，追加、读取和 checkpoint 都返回原始可识别错误，不 panic、不静默成功。WAL 是否阻止当前业务提交由上层状态模块决定；对于声明“先写 WAL 才提交”的路径，追加失败必须终止本次提交。进程排水时不再接受新的外部工作，已进入的 WAL 追加由全局 `WaitGroupContext` 等待完成。
 
@@ -1947,26 +1947,26 @@ go test ./modules/txn -run '^$' \
 
 `txn.Runtime` 是 Procedure 执行器，只负责锁、undo、savepoint、死锁检测和提交回调。最终变脏根对象在根事务仍持锁时确定，但不作为公共 API 暴露。Runtime 不持有 GD 缓存、存储 writer、Pending 集合或后台任务。
 
-`modules/cache.Runtime` 是 CModProcedure Cache 组件使用的稳定 SPI，组合 `txn.CommitParticipant`、后台生命周期、最终刷盘和实体释放契约。`modules/cache.Manager` 是 tx 提供的默认实现，项目 Cache 组件在启动期创建或注入 Runtime，并由 CModProcedure 把它绑定为 `txn.CommitParticipant`：
+`modules/writeback.Runtime` 是 CModProcedure WriteBack 组件使用的稳定 SPI，组合 `txn.CommitParticipant`、后台生命周期、最终刷盘和实体释放契约。`modules/writeback.Manager` 是 tx 提供的默认实现，项目 WriteBack 组件在启动期创建或注入 Runtime，并由 CModProcedure 把它绑定为 `txn.CommitParticipant`：
 
 1. `Prepare` 在 `Process` 前校验 `LockKey -> Store` 身份、存储准入和容量，并预留根对象。
 2. Procedure 回滚时 `Abort` 释放预留；提交时无失败地登记最终变脏根对象。
 3. 多次事务继续在同一 Store 状态树上累计，Pending 按根 `LockKey` 去重。
 4. Flush 再次取得相同实体锁，在锁内同步访问 Store 与 GD 当前值；写入成功才清理，失败保留。
-5. 根对象不再由 Actor 或场景持有时，必须在 Procedure 外调用 `Release`。它取得相同实体锁并在锁内确认 Pending、预留和 Store 状态，干净后解除身份并允许回收。
+5. 根对象不再由 Actor 或场景持有时，必须在 Procedure 外调用 `TryRelease`。它取得相同实体锁并在锁内确认 Pending、活跃事务、预留和 Store 状态；只有返回 `true, nil` 才解除身份并允许回收。
 
 默认 Manager 不复制 GD，也不把引用 GD 的变更状态交给无锁异步写队列。同一 Manager 内相同 `LockKey` 不允许绑定不同 Store；对象可以由业务自行创建或加载，不要求经过指定加载函数。Store 不是并发安全容器，业务不能在实体锁外轮询 `HasChanges` 观察后台 Flush。
 
-默认 Manager 不是完整的业务对象缓存，不定义 `LoadRole`、LRU、TTL 淘汰、Actor 归属、业务分片或二级索引。静态 `Config` 只保存调度和容量参数；writer 与写入闸门通过 `cache.Dependencies` 在 CModProcedure 启动期注入。项目需要缓存能力时有两种边界：
+默认 Manager 不是完整的业务对象缓存，不定义 `LoadRole`、LRU、TTL 淘汰、Actor 归属、业务分片或二级索引。静态 `Config` 只保存调度和容量参数；writer 与写入闸门通过 `writeback.Dependencies` 在 CModProcedure 启动期注入。项目需要缓存能力时有两种边界：
 
-1. 普通项目直接使用默认 Manager，业务只通过项目 facade 调用 Procedure 和 `Release`。
-2. 高级项目实现 `cache.Runtime`，优先以装饰器包装默认 Manager，并在外层增加加载、淘汰、业务索引、WAL/checkpoint 或项目指标。`txgameslg` 的 Cache 组件通过 Factory 创建该实现，事务和生命周期仍只依赖 SPI。
+1. 普通项目直接使用默认 Manager，业务只通过项目 facade 调用 Procedure 和 `TryRelease`。
+2. 高级项目实现 `writeback.Runtime`，优先以装饰器包装默认 Manager，并在外层增加加载、淘汰、业务索引、WAL/checkpoint 或项目指标。`txgameslg` 的 WriteBack 组件通过 Factory 创建该实现，事务和生命周期仍只依赖 SPI。
 
-CacheManager 不绑定固定持久化目标。CModProcedure 启动期向项目 Factory 注入窄依赖，项目按已显式选择的服务组合决定 Writer：
+WriteBackManager 不绑定固定持久化目标。CModProcedure 启动期向项目 Factory 注入窄依赖，项目按已显式选择的服务组合决定 Writer：
 
-| 服务形态 | L3 CMod | CacheManager Writer | 提交成功边界 |
+| 服务形态 | L3 CMod | WriteBackManager Writer | 提交成功边界 |
 | --- | --- | --- | --- |
-| 无状态请求服务 | Fusion，不选择 CModProcedure | 无 CacheManager；业务调用 `db.Save(role)` | Redis 热写和本地延迟任务登记成功 |
+| 无状态请求服务 | Fusion，不选择 CModProcedure | 无 WriteBackManager；业务调用 `db.Save(role)` | Redis 热写和本地延迟任务登记成功 |
 | 有状态逻辑服 | Fusion、CModProcedure | mode-aware Fusion Writer | Procedure 只提交内存；帧 Flush 成功写入 Fusion 后清理 Store |
 | 有状态大世界 | Mongo、CModProcedure | 项目 WAL Pipeline | Procedure 只提交内存；帧 Flush 追加 WAL 成功后清理 Store，Mongo checkpoint 异步完成 |
 
@@ -1976,25 +1976,25 @@ CModProcedure 不会自动选择 Fusion 或 Mongo；L4 服务必须显式列出�
 因此依赖方向固定为：
 
 ```text
-txn.Runtime -> txn.CommitParticipant <- cache.Runtime SPI
+txn.Runtime -> txn.CommitParticipant <- writeback.Runtime SPI
                                   ^
                                   |
-                     cache.Manager 默认实现
+                     writeback.Manager 默认实现
                                   ^
                                   |
-                    项目 cacheMgr 可选装饰器
+                    项目 writeback 可选装饰器
 ```
 
-CModProcedure 不持有具体 `*cache.Manager`，项目 facade 也不能要求调用方取得该指针。完整替换 Runtime 属于高级扩展面；实现必须保持 `Prepare` 先于业务修改、`Commit` 不失败、失败 Flush 不清理变更、同一实体锁内读取 Store 等契约。
+CModProcedure 不持有具体 `*writeback.Manager`，项目 facade 也不能要求调用方取得该指针。完整替换 Runtime 属于高级扩展面；实现必须保持 `Prepare` 先于业务修改、`Commit` 不失败、失败 Flush 不清理变更、同一实体锁内读取 Store 等契约。
 
-`txgameslg` 的 Cache 组件会先保留 facade 所有权，再绑定 CommitParticipant 并启动 Runtime；只有 `Runtime.Start` 成功后才开放业务 facade。开始 Drain 时先关闭 facade 准入并等待已经进入的调用完成，再执行 `Runtime.Shutdown`。`Start` 返回错误时组件会在 `ShutdownFlushTimeout` 内调用同一实例的 `Shutdown` 清理部分启动资源；本次 `Server.Start` 随即进入终止回滚，该 Server 实例不可再次启动。
+`txgameslg` 的 WriteBack 组件会先保留 facade 所有权，再绑定 CommitParticipant 并启动 Runtime；只有 `Runtime.Start` 成功后才开放业务 facade。开始 Drain 时先关闭 facade 准入并等待已经进入的调用完成，再执行 `Runtime.Shutdown`。`Start` 返回错误时组件会在 `ShutdownFlushTimeout` 内调用同一实例的 `Shutdown` 清理部分启动资源；本次 `Server.Start` 随即进入终止回滚，该 Server 实例不可再次启动。
 
-带 WAL 的缓存 Runtime 必须按下面的顺序管理生命周期：
+带 WAL 的写回 Runtime 必须按下面的顺序管理生命周期：
 
 ```text
-Start:    WAL backend -> Transaction -> checkpoint Scheduler -> CacheManager
+Start:    WAL backend -> Transaction -> checkpoint Scheduler -> WriteBackManager
 运行期:  Procedure -> pending root -> frame Flush -> Append WAL -> Submit checkpoint
-Drain:    封口外部输入 -> CacheManager 最终 Flush -> checkpoint WaitIdle
+Drain:    封口外部输入 -> WriteBackManager 最终 Flush -> checkpoint WaitIdle
 Stop:     取消根 WaitGroupContext -> 停 worker -> 关闭 WAL/Mongo backend
 ```
 
@@ -2126,7 +2126,7 @@ discovery -> draining
   -> 取消并等待各 Service 自有 Tasks
   -> 停止 Service
   -> project cleanup and generated storage unbind
-  -> cache manager final flush
+  -> writeback manager final flush
   -> shared RPC graceful stop
   -> fusion delay-task pending drain
   -> discovery stopping
@@ -2413,9 +2413,9 @@ L4 服务在 Bee/Ant `ServiceSpec.ActorKinds` 中声明 Kind，L3 Server 自动�
 高级项目才使用 `actor.AdaptKind`。底层
 `ActorSystem` 保留为高级扩展面，不属于常规业务调用链。
 
-### Actor 空闲钝化与常驻缓存淘汰
+### Actor 空闲钝化与 EntityCache 淘汰
 
-Actor 空闲钝化和 GD 常驻缓存淘汰是两条独立生命周期：
+Actor 空闲钝化和 GD EntityCache 淘汰是两条独立生命周期：
 
 ```text
 Actor Kind 连续无消息
@@ -2423,9 +2423,9 @@ Actor Kind 连续无消息
   -> 停止当前实体 Actor
   -> placement 或 fixedHost 在后续消息到达时惰性重建
 
-GD 常驻缓存连续无业务读取
+GD EntityCache 连续无业务读取
   -> 扫描空闲候选
-  -> cache.Manager.Release 在同一实体锁下检查事务预留、pending 和 Store 变更
+  -> writeback.Manager.TryRelease 在同一实体锁下检查活跃事务、预留、pending 和 Store 变更
   -> 释放成功且候选代次未变化
   -> 删除 GD 引用
 ```
@@ -2436,23 +2436,25 @@ Core 通过 `actor.WithIdlePassivation(timeout)` 或 `actor.Config.IdlePassivati
 `fixedHost` 根据 `Terminated` 删除旧 PID，下一条相同 RouteKey 消息创建新实体。两条路径都不会改写 etcd 成员或业务槽位。
 同一项目 yml 可以为多个可选服务声明 Kind 策略；Runtime 只消费本进程已注册 Kind，避免单服务实例被其他服务配置阻断启动。
 
-有状态模板的常驻缓存为每个条目保存最后访问时间和访问代次。命中路径仍使用共享读锁，时间和代次使用原子字段更新；
+有状态模板的 EntityCache 为每个条目保存最后访问时间和访问代次。命中路径仍使用共享读锁，时间和代次使用原子字段更新；
 每个缓存只运行一个扫描任务，不为每个 GD 创建 timer 或 goroutine。扫描在缓存锁外调用项目释放器，随后再次核对条目指针
 和 generation；候选快照使用 `generation -> lastAccess -> generation` 稳定读取，形成快照或执行释放期间的新访问都会使
-旧候选失效。`cache.ErrPendingRoot` 只表示延期重试，任何错误都保留对象。
+旧候选失效。`TryRelease` 返回 `false, nil` 表示延期重试；任何错误也会保留对象。
 
-Actor Runtime 不依赖 GD、Store、Procedure、CacheManager 或 WAL，也不在超时回调执行存储 I/O。连接断开不直接停止
-Actor；普通心跳命令经过 RoleActor mailbox 即可续期。心跳不读取 GD 时，不延长常驻 GD 的空闲时间。
+Actor Runtime 不依赖 GD、Store、Procedure、WriteBackManager 或 WAL，也不在超时回调执行存储 I/O。连接断开不直接停止
+Actor；普通心跳命令经过 RoleActor mailbox 即可续期。心跳不读取 GD 时，不延长 EntityCache 中 GD 的空闲时间。
 
 钝化不提高消息投递可靠级别。Actor 从接收钝化消息到 placement 或 `fixedHost` 观察到终止之间存在短暂旧 PID 窗口；
 `Tell` 仍是无需确认、允许 dead letter 的基础投递。必须感知该窗口的业务使用 `TellAccepted` 或 `Call`，由调用方按既定错误
 策略重试；钝化层不把所有消息强制改成确认式投递。
 
-2026-08-28 使用 Go 1.27.0 在 x86_64 macOS、Intel i9-9880H 上运行固定 Actor 和常驻缓存基准。已有固定实体的串行
+2026-08-28 使用 Go 1.27.0 在 x86_64 macOS、Intel i9-9880H 上运行固定 Actor 和 EntityCache 基准。已有固定实体的串行
 投递在未启用钝化时为 `9.92-10.16 us/op, 728-739 B/op, 12 allocs/op`，启用一小时空闲钝化后为
-`10.48-10.93 us/op, 735-743 B/op, 12 allocs/op`，没有增加分配次数。常驻缓存命中在未启用淘汰时为
-`18.79-19.47 ns/op`；启用空闲续期后为 `102.4-105.0 ns/op`，两者均为 `0 B/op, 0 allocs/op`。额外耗时来自
-`time.Now` 和原子访问代次更新，用于阻止扫描任务删除正在并发使用的对象；普通无淘汰缓存不承担该成本。
+`10.48-10.93 us/op, 735-743 B/op, 12 allocs/op`，没有增加分配次数。2026-08-29 命名迁移后的 EntityCache
+串行命中在关闭 idle 淘汰时为 `19.37-19.81 ns/op`，启用 idle 淘汰时为 `96.95-100.2 ns/op`；同一预热 key 的
+16 路并行命中为 `49.89-50.33 ns/op`，三者均为 `0 B/op, 0 allocs/op`。额外耗时来自 `time.Now` 和原子访问代次
+更新，用于阻止扫描任务删除正在并发使用的对象；idle 关闭时不承担该成本。本阶段仍沿用当前 map 与 idle 扫描实现，
+Otter v2 容量淘汰属于下一独立阶段。
 
 2026-08-25 使用 Go 1.26.5 在 x86_64 macOS 上运行 `BenchmarkPendingCallsRoundTrip`，单次本地
 `add -> resolve -> Await` 约为 `0.78-0.86 us/op, 408 B/op, 6 allocs/op`。该基线包含 Future、完成通知、

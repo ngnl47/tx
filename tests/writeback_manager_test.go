@@ -7,21 +7,21 @@ import (
 	"testing"
 	"time"
 
-	cachemodule "github.com/ngnl47/tx/modules/cache"
 	"github.com/ngnl47/tx/modules/txn"
+	writebackmodule "github.com/ngnl47/tx/modules/writeback"
 )
 
-func TestCacheManagerConfigValidateRequiresLifecycleDurations(t *testing.T) {
+func TestWriteBackManagerConfigValidateRequiresLifecycleDurations(t *testing.T) {
 	tests := []struct {
 		name   string
-		config cachemodule.Config
+		config writebackmodule.Config
 		want   string
 	}{
-		{name: "flush interval", config: cachemodule.Config{ShutdownFlushTimeout: time.Second}, want: "flush interval"},
-		{name: "shutdown timeout", config: cachemodule.Config{FlushInterval: time.Second}, want: "shutdown flush timeout"},
-		{name: "pending roots", config: cachemodule.Config{FlushInterval: time.Second, ShutdownFlushTimeout: time.Second, MaxPendingRoots: -1}, want: "pending root"},
-		{name: "root changes", config: cachemodule.Config{FlushInterval: time.Second, ShutdownFlushTimeout: time.Second, MaxRootChanges: -1}, want: "root change"},
-		{name: "heap interval", config: cachemodule.Config{FlushInterval: time.Second, ShutdownFlushTimeout: time.Second, HeapSampleInterval: -1}, want: "heap sample interval"},
+		{name: "flush interval", config: writebackmodule.Config{ShutdownFlushTimeout: time.Second}, want: "flush interval"},
+		{name: "shutdown timeout", config: writebackmodule.Config{FlushInterval: time.Second}, want: "shutdown flush timeout"},
+		{name: "pending roots", config: writebackmodule.Config{FlushInterval: time.Second, ShutdownFlushTimeout: time.Second, MaxPendingRoots: -1}, want: "pending root"},
+		{name: "root changes", config: writebackmodule.Config{FlushInterval: time.Second, ShutdownFlushTimeout: time.Second, MaxRootChanges: -1}, want: "root change"},
+		{name: "heap interval", config: writebackmodule.Config{FlushInterval: time.Second, ShutdownFlushTimeout: time.Second, HeapSampleInterval: -1}, want: "heap sample interval"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -31,16 +31,16 @@ func TestCacheManagerConfigValidateRequiresLifecycleDurations(t *testing.T) {
 			}
 		})
 	}
-	valid := cachemodule.Config{FlushInterval: time.Second, ShutdownFlushTimeout: time.Second}
+	valid := writebackmodule.Config{FlushInterval: time.Second, ShutdownFlushTimeout: time.Second}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("valid Config.Validate returned error: %v", err)
 	}
 }
 
-func TestCacheManagerRegistersCommittedRootAndFlushesChanges(t *testing.T) {
+func TestWriteBackManagerRegistersCommittedRootAndFlushesChanges(t *testing.T) {
 	store := &runtimeTestStore{}
 	writer := &recordingChangeStoreApplier{}
-	manager := cachemodule.NewManager(cachemodule.Dependencies{Writer: writer}, cachemodule.Config{})
+	manager := writebackmodule.NewManager(writebackmodule.Dependencies{Writer: writer}, writebackmodule.Config{})
 	runtime := txn.NewRuntime()
 	if err := runtime.BindCommitParticipant(manager); err != nil {
 		t.Fatalf("BindCommitParticipant returned error: %v", err)
@@ -61,10 +61,10 @@ func TestCacheManagerRegistersCommittedRootAndFlushesChanges(t *testing.T) {
 	}
 }
 
-func TestCacheManagerRejectsDifferentStoreForRetainedIdentity(t *testing.T) {
+func TestWriteBackManagerRejectsDifferentStoreForRetainedIdentity(t *testing.T) {
 	first := &runtimeTestStore{}
 	second := &runtimeTestStore{}
-	manager := cachemodule.NewManager(cachemodule.Dependencies{Writer: &recordingChangeStoreApplier{}}, cachemodule.Config{})
+	manager := writebackmodule.NewManager(writebackmodule.Dependencies{Writer: &recordingChangeStoreApplier{}}, writebackmodule.Config{})
 	runtime := txn.NewRuntime()
 	if err := runtime.BindCommitParticipant(manager); err != nil {
 		t.Fatalf("BindCommitParticipant returned error: %v", err)
@@ -84,7 +84,7 @@ func TestCacheManagerRejectsDifferentStoreForRetainedIdentity(t *testing.T) {
 		runtimeTestProcedure: runtimeTestProcedure{lock: secondLock, store: second},
 		called:               &called,
 	})
-	if !errors.Is(err, cachemodule.ErrIdentityConflict) {
+	if !errors.Is(err, writebackmodule.ErrIdentityConflict) {
 		t.Fatalf("second Call error = %v, want ErrIdentityConflict", err)
 	}
 	if called || second.HasChanges() {
@@ -92,10 +92,10 @@ func TestCacheManagerRejectsDifferentStoreForRetainedIdentity(t *testing.T) {
 	}
 }
 
-func TestCacheManagerAbortReleasesUncommittedIdentity(t *testing.T) {
+func TestWriteBackManagerAbortReleasesUncommittedIdentity(t *testing.T) {
 	first := &runtimeTestStore{}
 	second := &runtimeTestStore{}
-	manager := cachemodule.NewManager(cachemodule.Dependencies{Writer: &recordingChangeStoreApplier{}}, cachemodule.Config{})
+	manager := writebackmodule.NewManager(writebackmodule.Dependencies{Writer: &recordingChangeStoreApplier{}}, writebackmodule.Config{})
 	runtime := txn.NewRuntime()
 	if err := runtime.BindCommitParticipant(manager); err != nil {
 		t.Fatalf("BindCommitParticipant returned error: %v", err)
@@ -118,9 +118,9 @@ func TestCacheManagerAbortReleasesUncommittedIdentity(t *testing.T) {
 	}
 }
 
-func TestCacheManagerReleaseRequiresCleanRoot(t *testing.T) {
+func TestWriteBackManagerTryReleaseRequiresCleanRoot(t *testing.T) {
 	store := &runtimeTestStore{}
-	manager := cachemodule.NewManager(cachemodule.Dependencies{Writer: &recordingChangeStoreApplier{}}, cachemodule.Config{})
+	manager := writebackmodule.NewManager(writebackmodule.Dependencies{Writer: &recordingChangeStoreApplier{}}, writebackmodule.Config{})
 	runtime := txn.NewRuntime()
 	if err := runtime.BindCommitParticipant(manager); err != nil {
 		t.Fatalf("BindCommitParticipant returned error: %v", err)
@@ -129,25 +129,30 @@ func TestCacheManagerReleaseRequiresCleanRoot(t *testing.T) {
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	if err := manager.Release(lock); !errors.Is(err, cachemodule.ErrPendingRoot) {
-		t.Fatalf("Release dirty root error = %v, want ErrPendingRoot", err)
+	if released, err := manager.TryRelease(lock); err != nil || released {
+		t.Fatalf("TryRelease pending root = (%t, %v), want (false, nil)", released, err)
 	}
 	if err := manager.Flush(context.Background()); err != nil {
 		t.Fatalf("Flush returned error: %v", err)
 	}
-	if err := manager.Release(lock); err != nil {
-		t.Fatalf("Release clean root returned error: %v", err)
+	store.Set()
+	if released, err := manager.TryRelease(lock); err != nil || released {
+		t.Fatalf("TryRelease changed Store = (%t, %v), want (false, nil)", released, err)
+	}
+	store.ClearChanges()
+	if released, err := manager.TryRelease(lock); err != nil || !released {
+		t.Fatalf("TryRelease clean root = (%t, %v), want (true, nil)", released, err)
 	}
 	second := &runtimeTestStore{}
 	secondLock := txn.NewLockTarget(lock.Key, second)
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: secondLock, store: second}); err != nil {
-		t.Fatalf("Call with reloaded Store after Release returned error: %v", err)
+		t.Fatalf("Call with reloaded Store after TryRelease returned error: %v", err)
 	}
 }
 
-func TestCacheManagerReleaseWaitsForActiveProcedure(t *testing.T) {
+func TestWriteBackManagerTryReleaseWaitsForActiveProcedure(t *testing.T) {
 	store := &runtimeTestStore{}
-	manager := cachemodule.NewManager(cachemodule.Dependencies{Writer: &recordingChangeStoreApplier{}}, cachemodule.Config{})
+	manager := writebackmodule.NewManager(writebackmodule.Dependencies{Writer: &recordingChangeStoreApplier{}}, writebackmodule.Config{})
 	runtime := txn.NewRuntime()
 	if err := runtime.BindCommitParticipant(manager); err != nil {
 		t.Fatalf("BindCommitParticipant returned error: %v", err)
@@ -164,7 +169,7 @@ func TestCacheManagerReleaseWaitsForActiveProcedure(t *testing.T) {
 	releaseProcedure := make(chan struct{})
 	procedureDone := make(chan error, 1)
 	go func() {
-		procedureDone <- runtime.Call(context.Background(), blockingCacheProcedure{
+		procedureDone <- runtime.Call(context.Background(), blockingWriteBackProcedure{
 			lock:    lock,
 			store:   store,
 			started: started,
@@ -173,62 +178,111 @@ func TestCacheManagerReleaseWaitsForActiveProcedure(t *testing.T) {
 	}()
 	<-started
 
-	releaseDone := make(chan error, 1)
-	go func() { releaseDone <- manager.Release(lock) }()
+	type releaseResult struct {
+		released bool
+		err      error
+	}
+	releaseDone := make(chan releaseResult, 1)
+	go func() {
+		released, err := manager.TryRelease(lock)
+		releaseDone <- releaseResult{released: released, err: err}
+	}()
 	select {
-	case err := <-releaseDone:
-		t.Fatalf("Release returned while Procedure still held entity lock: %v", err)
+	case result := <-releaseDone:
+		t.Fatalf("TryRelease returned while Procedure still held entity lock: (%t, %v)", result.released, result.err)
 	case <-time.After(20 * time.Millisecond):
 	}
 	close(releaseProcedure)
 	if err := <-procedureDone; err != nil {
 		t.Fatalf("blocking Procedure returned error: %v", err)
 	}
-	if err := <-releaseDone; !errors.Is(err, cachemodule.ErrPendingRoot) {
-		t.Fatalf("Release after Procedure error = %v, want ErrPendingRoot", err)
+	if result := <-releaseDone; result.err != nil || result.released {
+		t.Fatalf("TryRelease after Procedure = (%t, %v), want (false, nil)", result.released, result.err)
 	}
 }
 
-type blockingCacheProcedure struct {
+type blockingWriteBackProcedure struct {
 	lock    txn.LockTarget
 	store   *runtimeTestStore
 	started chan<- struct{}
 	release <-chan struct{}
 }
 
-func (procedure blockingCacheProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
+func (procedure blockingWriteBackProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
 	return []txn.LockTarget{procedure.lock}, nil
 }
 
-func (procedure blockingCacheProcedure) Process(*txn.Tx) error {
+func (procedure blockingWriteBackProcedure) Process(*txn.Tx) error {
 	procedure.store.Set()
 	close(procedure.started)
 	<-procedure.release
 	return nil
 }
 
-func TestCacheManagerReleaseRejectsInvalidTarget(t *testing.T) {
-	manager := cachemodule.NewManager(cachemodule.Dependencies{}, cachemodule.Config{})
-	if err := manager.Release(txn.LockTarget{}); !errors.Is(err, cachemodule.ErrInvalidTarget) {
-		t.Fatalf("Release invalid target error = %v, want ErrInvalidTarget", err)
+func TestWriteBackManagerTryReleaseRejectsInvalidTarget(t *testing.T) {
+	manager := writebackmodule.NewManager(writebackmodule.Dependencies{}, writebackmodule.Config{})
+	if released, err := manager.TryRelease(txn.LockTarget{}); released || !errors.Is(err, writebackmodule.ErrInvalidTarget) {
+		t.Fatalf("TryRelease invalid target = (%t, %v), want (false, ErrInvalidTarget)", released, err)
 	}
 }
 
-func TestCacheManagerPrepareRejectsTypedNilStore(t *testing.T) {
-	manager := cachemodule.NewManager(cachemodule.Dependencies{}, cachemodule.Config{})
+func TestWriteBackManagerTryReleaseReturnsTrueForUnknownTarget(t *testing.T) {
+	manager := writebackmodule.NewManager(writebackmodule.Dependencies{}, writebackmodule.Config{})
+	target := txn.NewLockTarget(txn.NewLockKey("role", 1001), &runtimeTestStore{})
+	if released, err := manager.TryRelease(target); err != nil || !released {
+		t.Fatalf("TryRelease unknown target = (%t, %v), want (true, nil)", released, err)
+	}
+}
+
+func TestWriteBackManagerTryReleaseReturnsFalseForReservedTarget(t *testing.T) {
+	manager := writebackmodule.NewManager(writebackmodule.Dependencies{}, writebackmodule.Config{})
+	target := txn.NewLockTarget(txn.NewLockKey("role", 1001), &runtimeTestStore{})
+	reservation, err := manager.Prepare(context.Background(), []txn.LockTarget{target})
+	if err != nil {
+		t.Fatalf("Prepare returned error: %v", err)
+	}
+	t.Cleanup(reservation.Abort)
+	if released, err := manager.TryRelease(target); err != nil || released {
+		t.Fatalf("TryRelease reserved target = (%t, %v), want (false, nil)", released, err)
+	}
+}
+
+func TestWriteBackManagerTryReleaseRejectsIdentityConflict(t *testing.T) {
+	first := &runtimeTestStore{}
+	manager := writebackmodule.NewManager(writebackmodule.Dependencies{Writer: &recordingChangeStoreApplier{}}, writebackmodule.Config{})
+	runtime := txn.NewRuntime()
+	if err := runtime.BindCommitParticipant(manager); err != nil {
+		t.Fatalf("BindCommitParticipant returned error: %v", err)
+	}
+	key := txn.NewLockKey("role", 1001)
+	firstTarget := txn.NewLockTarget(key, first)
+	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: firstTarget, store: first}); err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if err := manager.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush returned error: %v", err)
+	}
+	secondTarget := txn.NewLockTarget(key, &runtimeTestStore{})
+	if released, err := manager.TryRelease(secondTarget); released || !errors.Is(err, writebackmodule.ErrIdentityConflict) {
+		t.Fatalf("TryRelease conflicting target = (%t, %v), want (false, ErrIdentityConflict)", released, err)
+	}
+}
+
+func TestWriteBackManagerPrepareRejectsTypedNilStore(t *testing.T) {
+	manager := writebackmodule.NewManager(writebackmodule.Dependencies{}, writebackmodule.Config{})
 	var store *runtimeTestStore
 	_, err := manager.Prepare(context.Background(), []txn.LockTarget{
 		txn.NewLockTarget(txn.NewLockKey("role", 1001), store),
 	})
-	if !errors.Is(err, cachemodule.ErrInvalidTarget) {
+	if !errors.Is(err, writebackmodule.ErrInvalidTarget) {
 		t.Fatalf("Prepare typed nil Store error = %v, want ErrInvalidTarget", err)
 	}
 }
 
-func TestCacheManagerKeepsFailedFlushPending(t *testing.T) {
+func TestWriteBackManagerKeepsFailedFlushPending(t *testing.T) {
 	store := &runtimeTestStore{}
 	writer := &recordingChangeStoreApplier{err: errors.New("storage unavailable")}
-	manager := cachemodule.NewManager(cachemodule.Dependencies{Writer: writer}, cachemodule.Config{})
+	manager := writebackmodule.NewManager(writebackmodule.Dependencies{Writer: writer}, writebackmodule.Config{})
 	runtime := txn.NewRuntime()
 	if err := runtime.BindCommitParticipant(manager); err != nil {
 		t.Fatalf("BindCommitParticipant returned error: %v", err)
@@ -246,9 +300,9 @@ func TestCacheManagerKeepsFailedFlushPending(t *testing.T) {
 	}
 }
 
-func TestCacheManagerIgnoresPureMemoryTransactionTarget(t *testing.T) {
+func TestWriteBackManagerIgnoresPureMemoryTransactionTarget(t *testing.T) {
 	store := &runtimeMemoryStore{}
-	manager := cachemodule.NewManager(cachemodule.Dependencies{Writer: &recordingChangeStoreApplier{}}, cachemodule.Config{})
+	manager := writebackmodule.NewManager(writebackmodule.Dependencies{Writer: &recordingChangeStoreApplier{}}, writebackmodule.Config{})
 	runtime := txn.NewRuntime()
 	if err := runtime.BindCommitParticipant(manager); err != nil {
 		t.Fatalf("BindCommitParticipant returned error: %v", err)
@@ -265,9 +319,9 @@ func TestCacheManagerIgnoresPureMemoryTransactionTarget(t *testing.T) {
 	}
 }
 
-func BenchmarkTxnRuntimeCommitToCacheManager(b *testing.B) {
+func BenchmarkTxnRuntimeCommitToWriteBackManager(b *testing.B) {
 	store := &runtimeTestStore{}
-	manager := cachemodule.NewManager(cachemodule.Dependencies{Writer: &recordingChangeStoreApplier{}}, cachemodule.Config{})
+	manager := writebackmodule.NewManager(writebackmodule.Dependencies{Writer: &recordingChangeStoreApplier{}}, writebackmodule.Config{})
 	runtime := txn.NewRuntime()
 	if err := runtime.BindCommitParticipant(manager); err != nil {
 		b.Fatalf("BindCommitParticipant returned error: %v", err)

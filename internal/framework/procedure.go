@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/ngnl47/tx/lifecycle"
-	cachemodule "github.com/ngnl47/tx/modules/cache"
 	"github.com/ngnl47/tx/modules/txn"
+	writebackmodule "github.com/ngnl47/tx/modules/writeback"
 	storageruntime "github.com/ngnl47/tx/storage/runtime"
 	"github.com/ngnl47/tx/wal"
 )
@@ -18,7 +18,7 @@ import (
 // CModProcedure 是有状态服务的 L3 运行时门面。
 const CModProcedure CModID = "procedure"
 
-// ProcedureContext 是缓存组件在 Procedure 内可见的窄上下文。
+// ProcedureContext 是写回组件在 Procedure 内可见的窄上下文。
 // 组件不能取得 CMod 身份、依赖图或 Server 生命周期所有权。
 type ProcedureContext interface {
 	// Tasks 返回 Procedure 子生命周期的后台任务入口。
@@ -26,7 +26,7 @@ type ProcedureContext interface {
 	// Storage 返回框架管理的文档读写能力。
 	Storage() Storage
 	// WriteAdmission 返回按本次事务目标存储模式检查健康状态的写入闸门。
-	WriteAdmission() cachemodule.WriteAdmission
+	WriteAdmission() writebackmodule.WriteAdmission
 	// WAL 返回当前 L4 服务实际启用的预写日志；未启用时返回 nil。
 	WAL() wal.Store
 	// Transaction 返回 Procedure 独占装配的单机事务执行器。
@@ -37,14 +37,14 @@ type ProcedureContext interface {
 	WALEnabled() bool
 }
 
-// ProcedureCache 是 Procedure 使用的缓存运行时组件。
+// ProcedureWriteBack 是 Procedure 使用的写回运行时组件。
 // 它由 Procedure 统一管理校验、启动、排水和停止顺序。
-type ProcedureCache interface {
-	// ComponentSpec 返回缓存组件的职责、实现和可选子组件拓扑。
+type ProcedureWriteBack interface {
+	// ComponentSpec 返回写回组件的职责、实现和可选子组件拓扑。
 	ComponentSpec() ComponentSpec
 	// Validate 在创建资源前校验组件配置和依赖。
 	Validate(ProcedureContext) error
-	// Start 绑定事务提交边界并启动缓存运行时。
+	// Start 绑定事务提交边界并启动写回运行时。
 	Start(ProcedureContext) error
 	// Drain 在依赖仍可用时刷空已接纳的待持久化对象。
 	Drain(context.Context) error
@@ -52,7 +52,7 @@ type ProcedureCache interface {
 	Stop(context.Context) error
 }
 
-// ProcedureWAL 是 Procedure Cache 管线使用的可选预写日志组件。
+// ProcedureWAL 是 Procedure WriteBack 管线使用的可选预写日志组件。
 // 组件创建安全 wal.Store，但不能安装全局能力或接管 Server 生命周期。
 type ProcedureWAL interface {
 	// ComponentSpec 返回 WAL 组件的职责、实现和适用 L4 服务。
@@ -123,9 +123,9 @@ func (*mongoProcedureWAL) Stop(context.Context) error { return nil }
 
 // ProcedureBuilder 以强类型组件组装有状态运行时 CMod。
 type ProcedureBuilder struct {
-	cache  ProcedureCache
-	wal    ProcedureWAL
-	walSet bool
+	writeBack ProcedureWriteBack
+	wal       ProcedureWAL
+	walSet    bool
 }
 
 // NewProcedureBuilder 创建有状态运行时 Builder。
@@ -133,10 +133,10 @@ func NewProcedureBuilder() *ProcedureBuilder {
 	return &ProcedureBuilder{}
 }
 
-// Cache 设置事务提交后负责登记和刷盘根对象的缓存组件。
-func (builder *ProcedureBuilder) Cache(cache ProcedureCache) *ProcedureBuilder {
+// WriteBack 设置事务提交后负责登记和刷盘根对象的写回组件。
+func (builder *ProcedureBuilder) WriteBack(component ProcedureWriteBack) *ProcedureBuilder {
 	if builder != nil {
-		builder.cache = cache
+		builder.writeBack = component
 	}
 	return builder
 }
@@ -155,33 +155,33 @@ func (builder *ProcedureBuilder) Build() (CMod, error) {
 	if builder == nil {
 		return nil, errors.New("framework: procedure builder is nil")
 	}
-	if isNilInterface(builder.cache) {
-		return nil, errors.New("framework: procedure cache component is required")
+	if isNilInterface(builder.writeBack) {
+		return nil, errors.New("framework: procedure writeback component is required")
 	}
 	if builder.walSet && isNilInterface(builder.wal) {
 		return nil, errors.New("framework: procedure WAL component is required")
 	}
-	cacheSpec := cloneComponentSpec(builder.cache.ComponentSpec())
+	writeBackSpec := cloneComponentSpec(builder.writeBack.ComponentSpec())
 	if builder.wal != nil {
 		walSpec := cloneComponentSpec(builder.wal.ComponentSpec())
-		cacheSpec.Components = append(cacheSpec.Components, walSpec)
+		writeBackSpec.Components = append(writeBackSpec.Components, walSpec)
 	}
 	components := []ComponentSpec{
 		{Role: "transaction", Name: "default"},
-		cacheSpec,
+		writeBackSpec,
 	}
 	if err := validateComponentSpecs("procedure", components); err != nil {
 		return nil, err
 	}
 	return &procedureCMod{
-		cache:      builder.cache,
+		writeBack:  builder.writeBack,
 		wal:        builder.wal,
 		components: components,
 	}, nil
 }
 
 type procedureCMod struct {
-	cache        ProcedureCache
+	writeBack    ProcedureWriteBack
 	wal          ProcedureWAL
 	components   []ComponentSpec
 	host         procedureHost
@@ -215,8 +215,8 @@ func (mod *procedureCMod) Validate(runtime CModContext) error {
 			return err
 		}
 	}
-	if err := mod.cache.Validate(procedureContext{CModContext: runtime, walEnabled: walEnabled}); err != nil {
-		return fmt.Errorf("framework: validate procedure cache: %w", err)
+	if err := mod.writeBack.Validate(procedureContext{CModContext: runtime, walEnabled: walEnabled}); err != nil {
+		return fmt.Errorf("framework: validate procedure writeback: %w", err)
 	}
 	return nil
 }
@@ -246,17 +246,17 @@ func (mod *procedureCMod) Start(runtime CModContext) error {
 	if err := host.startProcedureTransaction(); err != nil {
 		return err
 	}
-	if err := mod.cache.Start(procedureContext{CModContext: runtime, walEnabled: walEnabled}); err != nil {
-		return fmt.Errorf("framework: start procedure cache: %w", err)
+	if err := mod.writeBack.Start(procedureContext{CModContext: runtime, walEnabled: walEnabled}); err != nil {
+		return fmt.Errorf("framework: start procedure writeback: %w", err)
 	}
 	return nil
 }
 
 func (mod *procedureCMod) Drain(ctx context.Context) error {
-	if mod == nil || mod.cache == nil {
+	if mod == nil || mod.writeBack == nil {
 		return nil
 	}
-	return mod.cache.Drain(ctx)
+	return mod.writeBack.Drain(ctx)
 }
 
 func (mod *procedureCMod) Stop(ctx context.Context) error {
@@ -264,8 +264,8 @@ func (mod *procedureCMod) Stop(ctx context.Context) error {
 		return nil
 	}
 	var errs []error
-	if mod.cache != nil {
-		errs = append(errs, mod.cache.Stop(ctx))
+	if mod.writeBack != nil {
+		errs = append(errs, mod.writeBack.Stop(ctx))
 	}
 	if mod.walStarted {
 		if mod.walInstalled && mod.host != nil {
@@ -289,7 +289,7 @@ type procedureContext struct {
 }
 
 // WriteAdmission 返回按事务目标存储模式检查健康状态的 Procedure 专用闸门。
-func (runtime procedureContext) WriteAdmission() cachemodule.WriteAdmission {
+func (runtime procedureContext) WriteAdmission() writebackmodule.WriteAdmission {
 	context, ok := runtime.CModContext.(*cmodContext)
 	if !ok || context == nil || context.runtime == nil || context.runtime.storage == nil {
 		return nil

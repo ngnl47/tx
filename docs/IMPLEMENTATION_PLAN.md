@@ -11,7 +11,7 @@
 
 ### P0：正确性与跨工程回归
 
-1. 先完成 [WriteBackManager 与 EntityCache 设计](superpowers/specs/2026-08-29-writeback-entity-cache-design.md) 的两个独立阶段：[命名与配置迁移](superpowers/plans/2026-08-29-writeback-naming-migration.md) 和 [Otter v2 EntityCache](superpowers/plans/2026-08-29-otter-entity-cache.md)。两阶段之间必须停止供人工 review 和提交；完成后再恢复世界写性能主线。
+1. 下一阶段按 [WriteBackManager 与 EntityCache 设计](superpowers/specs/2026-08-29-writeback-entity-cache-design.md) 和 [Otter v2 EntityCache 计划](superpowers/plans/2026-08-29-otter-entity-cache.md) 接入容量淘汰。开始前必须确认本轮命名与配置迁移已经完成独立 review 和提交；Otter 阶段完成后再次停止，随后恢复世界写性能主线。
 2. 保持 `tx`、`txgen`、`txgame`、`txgameslg`、`txclient`、`txclientslg` 的行为同步。涉及生成 Store、集合、StoreView、字段名或存储边界的变更，必须同时检查生成器测试、两个模板的生成产物和业务侧真实 Redis/Mongo 回归；涉及 BON、Frame、路由或 Seq/Ack 时必须分别回归两个客户端。
 3. 持续审计 Redis、Mongo、Fusion、WAL 和延迟任务的失败契约。未知返回值、矛盾文档状态、非法路径、路由错误和依赖缺失必须返回明确错误，不能静默成功、自动修复持久化数据或错误清理 Store 状态。
 4. 发现旧接口、过渡结构、淘汰测试或旧方案文档时，在确认没有生产调用后直接删除。生效文档只描述当前方案；必要的技术取舍只保留在设计文档。

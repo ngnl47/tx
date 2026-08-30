@@ -26,7 +26,7 @@
 - `Set` 写入零值，`Replace` 整体覆盖复杂值，`Delete` 删除集合元素或存储路径，`Clear` 清空容器。
 - 保存失败时 Store 保留变更状态。业务必须处理返回的 `error`，不能把外部服务异常当成成功。
 - Fusion 同时要求 Redis 和 Mongo 健康；Redis 是热数据，Mongo 是持久化数据，Fusion 延迟任务队列只保存记录定位。
-- `delaySaveTime` 表示回写 Mongo 的延迟；`delayDelTime` 表示已确认回写后的热数据保留时间；`runtime.fusion.dirtyTTL` 是尚未确认回写时的安全 TTL。三者都不会删除 Mongo 数据。
+- `delaySaveTime` 表示回写 Mongo 的延迟；`delayDelTime` 表示已确认回写后的热数据保留时间；`runtime.cmods.fusionStorage.dirtyTTL` 是尚未确认回写时的安全 TTL。三者都不会删除 Mongo 数据。
 - 单机事务只回滚通过 Store 受控 API 发生的修改；事务内子流程使用 `tx.Call` 动态复用或增加直接锁，不能嵌套启动根事务。
 - `msgq` 管理客户端会话和下行邮箱；Actor 负责业务实体投递；普通 gRPC RPC 负责服务或实例调用，三者不是同一个中继层。
 - 需要理解内部变更追踪、锁注册表、Fusion 状态机或分布式拓扑时，阅读 [设计文档](docs/design.md)。
@@ -182,7 +182,7 @@ if err := storage.Save(ctx, fusionStore, role.Store()); err != nil {
 ## 能力模组与服务装配
 
 Bee 和 Ant 使用能力模组（Capability Module，简称 CMod）组合运行时。CMod 是带稳定身份、依赖关系和生命周期的装配单位，
-固定表示进程级 L3 能力门面。Transaction Runtime、Cache Runtime、WAL Store、checkpoint Scheduler 和 Delay Scheduler
+固定表示进程级 L3 能力门面。Transaction Runtime、WriteBack Runtime、WAL Store、checkpoint Scheduler 和 Delay Scheduler
 都是门面内部的强类型组件，不拥有独立 `CModID`，也不单独参与全局生命周期。`agent/msgq/game` 等 L4 服务只选择所需
 CMod，框架递归展开 `Requires` 依赖；`After` 仅调整已经选中门面的启动顺序，不会暗中启用能力。
 
@@ -191,14 +191,14 @@ CMod，框架递归展开 `Requires` 依赖；`After` 仅调整已经选中门�
 | `agent` | RPC、Redis；跨进程邮箱时增加 Discovery | 玩家 TCP/WebSocket 入口、共享 RPC、Redis 会话绑定 |
 | `msgq` | RPC、Redis、Discovery | 共享 RPC 上的 MailboxService、Redis owner binding 与独立进程 endpoint 注册 |
 | `txgame` 无状态 `game` | RPC、Fusion | 请求结束显式保存；Fusion 内部组合 Redis、Mongo 和 Delay Scheduler |
-| `txgameslg` 有状态 `slggame` | RPC、Fusion、CModProcedure | Procedure 提交后由 CModProcedure 的 Cache 组件分帧写 Fusion |
-| `txgameslg` 有状态 `slgworld` | RPC、Mongo、CModProcedure | CModProcedure 组合 Transaction、Cache 和按 `slgworld` 启用的 Mongo WAL |
+| `txgameslg` 有状态 `slggame` | RPC、Fusion、CModProcedure | Procedure 提交后由 CModProcedure 的 WriteBack 组件分帧写 Fusion |
+| `txgameslg` 有状态 `slgworld` | RPC、Mongo、CModProcedure | CModProcedure 组合 Transaction、WriteBack 和按 `slgworld` 启用的 Mongo WAL |
 
-有状态组合由 Builder 显式表达，项目可以为不同服务选择不同 Writer，并替换 `CModProcedureCache` SPI：
+有状态组合由 Builder 显式表达，项目可以为不同服务选择不同 Writer，并替换 `CModProcedureWriteBack` SPI：
 
 ```go
 procedure, err := ant.NewCModProcedureBuilder().
-	Cache(cacheComponent).
+	WriteBack(writeBackComponent).
 	WAL(ant.NewCModProcedureMongoWAL("slgworld")).
 	Build()
 if err != nil {
@@ -214,7 +214,7 @@ app, err := ant.New(config).
 Mongo WAL 只会在本轮选择 `slgworld` 时启用，并要求该服务同时选择 Mongo CMod；`slggame` 使用相同 CModProcedure 时不会创建
 WAL backend。高级项目可以实现 `CModProcedureWAL`，把 RocketMQ 等后端作为同一 Builder 插槽的替代组件，而不修改 CModProcedure。
 启动日志除稳定 `cmods` 顺序外，还输出实际生效的 `components`，例如
-`procedure(transaction=default,cache=txgameslg[checkpoint=mongo,wal=mongo])`。项目缓存组件声明的 checkpoint worker 与 Builder
+`procedure(transaction=default,writeback=txgameslg[checkpoint=mongo,wal=mongo])`。项目写回组件声明的 checkpoint worker 与 Builder
 选择的 WAL 都会进入同一拓扑，日志不会隐藏实际运行的后台组件。
 
 例如只启动一个 RPC-only 自定义服务时，`Context.Storage()` 保持 `nil`，框架不会校验 Redis/Mongo 配置，也不会连接
@@ -1179,8 +1179,8 @@ game := bee.ServiceRegistration{
 玩家心跳应继续作为普通生成命令经过 RoleActor，它会像其他业务消息一样刷新空闲计时，不需要新增专用心跳帧。
 断开 TCP/WebSocket 连接不直接停止 Actor，因为实体仍可能接收服务间消息、延迟任务或重连请求。
 
-Actor 钝化只管理执行对象，不代表 GD 已刷盘或可从常驻缓存删除。有状态项目必须另行调用
-`cache.Manager.Release` 的安全检查；完整边界见 [设计文档](docs/design.md#actor-空闲钝化与常驻缓存淘汰)。
+Actor 钝化只管理执行对象，不代表 GD 已刷盘或可从 EntityCache 删除。有状态项目必须另行调用
+`writeback.Manager.TryRelease` 的安全检查；完整边界见 [设计文档](docs/design.md#actor-空闲钝化与-entitycache-淘汰)。
 
 L4 服务只声明业务 Kind，Server 会自动装配 `CModActor` 并管理 Runtime 生命周期。`CModActor` 只包含 ProtoActor
 Remote 和官方 etcd Cluster Provider，不依赖 tx 的普通 gRPC Host 或 `ServiceDirectory`；服务若还需要普通 RPC、
@@ -2528,7 +2528,7 @@ err := txn.Run(ctx, txn.Locks(role), process)
 
 项目应在启动时把自己的 yml 配置转换为这项配置；`tx` 不读取项目文件。生产环境通常保持默认 `false`，避免每个事务入口递归遍历整棵 Store 状态树。开启后应先保存或 `ClearChanges()` 处理事务外已有的 Store 变更，再进入事务；不要把事务外修改混入本次提交边界。
 
-常驻内存实体由 `cache.Manager` 管理时，前一轮事务的变更会刻意保留到下一次 Flush，因此根过程必须使用已经绑定 CommitParticipant 的 `runtime.Call`。它会在内部允许同一 Store 的已有变更，普通业务代码不要直接调用 `txn.CallWithOptions` 绕过提交参与者。
+常驻内存实体由 `writeback.Manager` 管理时，前一轮事务的变更会刻意保留到下一次 Flush，因此根过程必须使用已经绑定 CommitParticipant 的 `runtime.Call`。它会在内部允许同一 Store 的已有变更，普通业务代码不要直接调用 `txn.CallWithOptions` 绕过提交参与者。
 
 锁等待通过调用方的 `context.Context` 统一控制。获取当前直接锁批次时发生超时或取消，框架会释放该批次中尚未交给业务使用的新锁，且不会执行对应回调：
 
@@ -2624,28 +2624,28 @@ if errors.As(err, &deadlock) {
 
 ### 有状态落盘调度
 
-`txn.Runtime` 只执行 Procedure、锁、undo、savepoint、死锁检测和提交回调。它不持有 writer、缓存根对象或后台任务，也不向业务暴露脏目标。项目若选择有状态运行模型，应由 CMod 在启动期把一个 `cache.Runtime` 绑定为 `txn.CommitParticipant`；`cache.Manager` 是 tx 提供的默认实现。无状态业务继续在请求末尾调用项目封装的 `db.Save(role)`。
+`txn.Runtime` 只执行 Procedure、锁、undo、savepoint、死锁检测和提交回调。它不持有 writer、缓存根对象或后台任务，也不向业务暴露脏目标。项目若选择有状态运行模型，应由 CMod 在启动期把一个 `writeback.Runtime` 绑定为 `txn.CommitParticipant`；`writeback.Manager` 是 tx 提供的默认实现。无状态业务继续在请求末尾调用项目封装的 `db.Save(role)`。
 
-`cache.Manager` 只管理提交身份、待刷根对象、代际隔离和延迟刷盘，不是完整的业务对象缓存。对象如何加载、查询、淘汰、分片以及建立业务索引由项目决定。项目需要扩展时应优先包装默认 Manager，复用已经验证的提交和刷盘规则，再在外层增加自己的对象缓存能力。
+`writeback.Manager` 只管理提交身份、待刷根对象、代际隔离和延迟刷盘，不是完整的业务对象缓存。对象如何加载、查询、淘汰、分片以及建立业务索引由项目决定。项目需要扩展时应优先包装默认 Manager，复用已经验证的提交和刷盘规则，再在外层增加自己的对象缓存能力。
 
 `CommitParticipant.Prepare` 在 `Procedure.Process` 前完成身份校验、容量预留和存储健康准入；写入准入只检查本次持久化目标的 `TypeSpec.Storage.Mode`：Redis-only 目标不受 Mongo 状态影响，Mongo-only 目标不依赖 Redis，Fusion 或同一事务内混合 Redis/Mongo 目标要求两端都可用。事务成功后的 `CommitReservation.Commit` 不得失败，只接收提交时仍真实变脏的根对象。回滚、panic 或死锁重试会调用 `Abort`，不会留下虚假的缓存身份。
 
 ```go
 runtime := txn.NewRuntime()
-manager := cache.NewManager(cache.Dependencies{
+writeBack := writeback.NewManager(writeback.Dependencies{
 	Writer:         fusionWriter,
 	WriteAdmission: storageAdmission,
-}, cache.Config{
+}, writeback.Config{
 	FlushInterval:        10 * time.Second,
 	ShutdownFlushTimeout: 30 * time.Second,
 	MaxRootChanges:       1024,
 	HeapSoftLimitBytes:   512 << 20,
 	HeapSampleInterval:   time.Second,
 })
-if err := runtime.BindCommitParticipant(manager); err != nil {
+if err := runtime.BindCommitParticipant(writeBack); err != nil {
 	return err
 }
-if err := manager.Start(waitGroupContext); err != nil {
+if err := writeBack.Start(waitGroupContext); err != nil {
 	return err
 }
 
@@ -2662,7 +2662,7 @@ if err := runtime.Call(ctx, &PGuildContribution{Guild: guild, Role: role}); err 
 Flush：  只写 role.Gold = 120
 ```
 
-Manager 不要求对象必须经特定 `LoadRole` 入口取得。业务自行创建或加载的 GD 只要通过生成的 `LockTarget()` 进入 Procedure，就会在修改前完成身份接纳；同一 Manager 内，相同 `LockKey` 绑定不同 Store 会在进入业务逻辑前返回 `cache.ErrIdentityConflict`，防止一份实体出现两个内存权威实例。
+Manager 不要求对象必须经特定 `LoadRole` 入口取得。业务自行创建或加载的 GD 只要通过生成的 `LockTarget()` 进入 Procedure，就会在修改前完成身份接纳；同一 Manager 内，相同 `LockKey` 绑定不同 Store 会在进入业务逻辑前返回 `writeback.ErrIdentityConflict`，防止一份实体出现两个内存权威实例。
 
 ```go
 role := data.NewGDRole()
@@ -2673,7 +2673,7 @@ if err := runtime.Call(ctx, &PUpdateRole{Role: role}); err != nil {
 }
 ```
 
-Actor、场景或其他所有者卸载根对象前，应在 Flush 成功后调用 `Manager.Release(role.LockTarget())`。Release 会取得与 Procedure 相同的实体锁，必须在 Procedure 外调用；业务不能在锁外轮询 `Store.HasChanges()` 判断后台 Flush 是否完成。仍有 Pending、Store 变更或事务预留时返回 `cache.ErrPendingRoot`，不会提前解除身份。项目可以把这个底层调用包装为 `cachemgr.Release(role)`；业务不需要取得 Manager 指针。
+Actor、场景或其他所有者卸载根对象前，应在 Procedure 外调用 `Manager.TryRelease(role.LockTarget())`。该方法取得与 Procedure 相同的实体锁；业务不能在锁外轮询 `Store.HasChanges()` 判断后台 Flush 是否完成。返回 `true, nil` 表示身份已经解除，`false, nil` 表示 Pending、活跃事务、Store 变更或预留仍要求保留；身份冲突等异常通过 error 返回。项目可以把底层调用包装为 `writeback.TryRelease(role)`；业务不需要取得 Manager 指针。
 
 `Manager.Run` 遇到单次写入错误会记录错误并保留目标，下一轮继续重试。`Manager.Shutdown` 在 `ShutdownFlushTimeout` 内立即 Flush 并按 `FlushInterval` 重试；截止时返回错误和剩余待刷数量。该超时只约束内存 Store 到 Redis 的最终刷盘，不等待 Fusion 延迟任务回写 Mongo。
 
@@ -2686,20 +2686,20 @@ second, _ := role.ItemsStore().Get(1002)
 second.SetQuantity(7)
 ```
 
-当预算为 `1` 时，两条位置收敛为一条完整 `Items` Replace；未修改的 `Name`、`Power` 不进入文档，部分加载对象的其他 Go 零值也不会覆盖数据库。收敛会记录 `cache manager root changes collapsed` 告警。真正需要全量落地整个对象时使用 `AllTouch()`，不要与容量收敛混用。
+当预算为 `1` 时，两条位置收敛为一条完整 `Items` Replace；未修改的 `Name`、`Power` 不进入文档，部分加载对象的其他 Go 零值也不会覆盖数据库。收敛会记录 `writeback manager root changes collapsed` 告警。真正需要全量落地整个对象时使用 `AllTouch()`，不要与容量收敛混用。
 
-txgen 生成的 Store 已实现 `storage.CollapsibleChangeStore`。高级用户若手写持久化 Store并启用 `MaxRootChanges`，也必须实现 `CollapseChanges()`；否则 Manager 会在 `Procedure.Process` 前返回 `cache.ErrChangeCollapseUnsupported`。配置为 `0` 时普通 `storage.ChangeStore` 仍可使用。
+txgen 生成的 Store 已实现 `storage.CollapsibleChangeStore`。高级用户若手写持久化 Store并启用 `MaxRootChanges`，也必须实现 `CollapseChanges()`；否则 Manager 会在 `Procedure.Process` 前返回 `writeback.ErrChangeCollapseUnsupported`。配置为 `0` 时普通 `storage.ChangeStore` 仍可使用。
 
 ```go
 err := runtime.Call(ctx, procedure)
-if errors.Is(err, cache.ErrChangeCollapseUnsupported) {
+if errors.Is(err, writeback.ErrChangeCollapseUnsupported) {
 	return fmt.Errorf("persistent store must support change collapse: %w", err)
 }
 ```
 
 `HeapSoftLimitBytes` 是进程 Heap 告警阈值。Manager 按 `HeapSampleInterval` 读取 `HeapAlloc`；超过阈值只记录告警，不拒绝新根对象，也不改变已提交事务。部署应通过 `GOMEMLIMIT` 约束整个进程，不能用进程级 Heap 采样作为拒绝业务的根因。
 
-`MaxPendingRoots` 是可选数量硬保护。容量满时仅拒绝新的待刷根对象并返回 `cache.ErrPendingRootCapacity`；已经 Pending 的对象仍可继续修改。设置为 `0` 表示不限制。不要在 setter 内加入隐式 Flush 或 I/O；由 cache Manager 的调度周期决定何时落盘。
+`MaxPendingRoots` 是可选数量硬保护。容量满时仅拒绝新的待刷根对象并返回 `writeback.ErrPendingRootCapacity`；已经 Pending 的对象仍可继续修改。设置为 `0` 表示不限制。不要在 setter 内加入隐式 Flush 或 I/O；由 WriteBackManager 的调度周期决定何时落盘。
 
 ### 零值和删除
 
@@ -3845,7 +3845,7 @@ Fusion 策略的当前保存路径：
 4. Redis 热写与本地登记完成后，`db.Save(role)` 返回 `nil`，Store 清理本轮变更。
 5. 后台分发器把唯一一条延迟保存任务写入 Redis delayed task backend。
 6. 发布失败时输出结构化 error 日志，并按有上限的指数退避持续重试；成功后移除本地 pending。
-7. 正常关闭时，服务入口和 Actor Delivery 邮箱先完成排空，CModProcedure 的 Cache 组件再最终保存内存 Store，Fusion CMod 随后限时发布全部本地 pending，最后才取消根 `WaitGroupContext`。
+7. 正常关闭时，服务入口和 Actor Delivery 邮箱先完成排空，CModProcedure 的 WriteBack 组件再最终保存内存 Store，Fusion CMod 随后限时发布全部本地 pending，最后才取消根 `WaitGroupContext`。
 8. Scheduler 到期 claim 任务，StorageTaskHandler 根据记录定位重新读取 Redis 当前热文档并 replace 到 Mongo。
 9. Mongo 保存成功后，handler 仅在 `@v` 未变化时原子地把所有热数据键的 TTL 收敛为 `delayDelTime`；版本变化则重新排一条保存任务。
 10. 任务成功后通过 Lua complete 删除该任务在 Redis 队列中的状态。
@@ -4218,17 +4218,17 @@ config.Storage.WAL = ant.WALConfig{
 
 ### 服务接入
 
-WAL 是 CModProcedure 中 Cache 组件的可选子组件，不是独立 CMod。需要第一版 Mongo WAL 的 L4 服务声明
+WAL 是 CModProcedure 中 WriteBack 组件的可选子组件，不是独立 CMod。需要第一版 Mongo WAL 的 L4 服务声明
 `CModMongoStorage` 与 `CModProcedure`；项目组合根再明确 WAL 对哪些服务启用：
 
 ```go
 func NewServer(
 	config ant.Config,
-	cacheComponent ant.CModProcedureCache,
+	writeBackComponent ant.CModProcedureWriteBack,
 	services ...ant.ServiceRegistration,
 ) (*ant.Server, error) {
 	procedure, err := ant.NewCModProcedureBuilder().
-		Cache(cacheComponent).
+		WriteBack(writeBackComponent).
 		WAL(ant.NewCModProcedureMongoWAL("slgworld")).
 		Build()
 	if err != nil {
@@ -4244,7 +4244,7 @@ func NewServer(
 
 Builder 只声明组件拓扑，不创建连接。启动选择包含 `slgworld` 时，CModProcedure 才复用进程已经装配的 Mongo 连接和 route
 table 创建 WAL；其他有状态服务复用同一 CModProcedure 也不会得到 WAL。WAL 只通过
-`CModProcedureContext.WAL()` 注入 Cache 组件，不暴露给普通 Service 或 Handler；组件不能关闭连接、替换索引或接管健康探针。
+`CModProcedureContext.WAL()` 注入 WriteBack 组件，不暴露给普通 Service 或 Handler；组件不能关闭连接、替换索引或接管健康探针。
 
 需要同步等待最终存储时使用 `wal/writer.Sync`；大世界等按帧提交的有状态服务使用 `wal/writer.Async` 与
 `wal/checkpoint.Scheduler`。异步调度器只合并同一 stream 的最大 `ThroughSeq`，不复制 WAL 正文；同流串行、跨流有界并行：
@@ -4272,7 +4272,7 @@ if err := writer.Write(ctx, record); err != nil {
 ```
 
 checkpoint handler 分批读取并应用 WAL，目标存储成功记录 `Generation + Seq` 后调用 `wal.Store.Checkpoint` 清理已覆盖记录。
-进程排水时先停止外部输入，再把 CacheManager 中仍然变脏的根 Store 追加到 WAL，最后 `WaitIdle`；根 context 不能在这之前取消。
+进程排水时先停止外部输入，再把 WriteBackManager 中仍然变脏的根 Store 追加到 WAL，最后 `WaitIdle`；根 context 不能在这之前取消。
 
 Mongo 状态 owner 换代时，项目可以使用 `storage/mongo.FencedChangeApplier` 让记录 ID 与 generation 字段在同一次 update
 中过滤。旧 generation 不匹配时返回 `mongo.ErrFenceRejected`；该窄接口只属于 Mongo 条件写入，不会把 CAS 字段塞入
@@ -4349,7 +4349,7 @@ Mongo 追加固定使用 `majority + j:true` 写关注，不能被项目 URI 中
 
 类型未配置正数 `delayDelTime` 时不执行 TTL 收敛，热数据继续保留本次写入设置的 `dirtyTTL` 并最终自然过期。该规则使历史上使用 `delayDelTime:"-1"` 表达长生命周期的 Fusion 类型也拥有项目级兜底，不会永久占用 Redis。
 
-Fusion 策略会把业务写入携带的 `ApplyOptions.TTL` 收敛为 `runtime.fusion.dirtyTTL`；高级调用方不能用显式 TTL 缩短可靠回写窗口。`dirtyTTL` 默认 30 天，配置期要求它严格大于所有 Fusion 类型的 `delaySaveTime` 和 `delayDelTime`。Mongo 回源并回填 Redis 时，缺少正数 `delayDelTime` 的类型也使用 `dirtyTTL`，避免纯净缓存永久占用内存。
+Fusion 策略会把业务写入携带的 `ApplyOptions.TTL` 收敛为 `runtime.cmods.fusionStorage.dirtyTTL`；高级调用方不能用显式 TTL 缩短可靠回写窗口。`dirtyTTL` 默认 30 天，配置期要求它严格大于所有 Fusion 类型的 `delaySaveTime` 和 `delayDelTime`。Mongo 回源并回填 Redis 时，缺少正数 `delayDelTime` 的类型也使用 `dirtyTTL`，避免纯净缓存永久占用内存。
 
 `delayDelTime` 不代表 Mongo 删除延迟，也不会触发 Mongo 删除。Fusion 根记录禁止物理删除；该参数只控制 Redis 热数据生命周期。
 
