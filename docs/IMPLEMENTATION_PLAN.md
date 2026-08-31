@@ -15,6 +15,8 @@
 2. 持续审计 Redis、Mongo、Fusion、WAL 和延迟任务的失败契约。未知返回值、矛盾文档状态、非法路径、路由错误和依赖缺失必须返回明确错误，不能静默成功、自动修复持久化数据或错误清理 Store 状态。
 3. 发现旧接口、过渡结构、淘汰测试或旧方案文档时，在确认没有生产调用后直接删除。生效文档只描述当前方案；必要的技术取舍只保留在设计文档。
 4. 新增或修改无状态持久化能力时优先使用 `txgame` 生成的真实 `GD*`/`GD*Store`；涉及 Procedure、事务写回、WAL 或 checkpoint 时使用 `txgameslg` 的有状态生成模型，避免 runtime 测试与生成契约割裂。
+5. 下一阶段在 `txgame + txclient` 接入 `Login_ServerList` 业务闭环，复用当前 Agent 非根路径 `HTTPHandler` 与 `Sender.Call`。
+   JSON/BON 绑定、请求 timeout、是否重试和错误正文继续由项目适配层决定；`tx` 主线不新增默认 timeout、自动重试或通用 HTTP Router。
 
 ### P1：性能基线
 

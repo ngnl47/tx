@@ -26,6 +26,12 @@ message Delivery {
   bytes payload = 4;
 }
 
+message Result {
+  string message_type = 1;
+  uint64 command_id = 2;
+  bytes payload = 3;
+}
+
 message DeliveryAck {
   bool accepted = 1;
   string error_code = 2;
@@ -33,4 +39,5 @@ message DeliveryAck {
 
 service DeliveryService {
   rpc Deliver(Delivery) returns (DeliveryAck);
+  rpc Call(Delivery) returns (Result);
 }

@@ -32,7 +32,7 @@ type LocalMsgQ interface {
 type Dependencies struct {
 	// Tasks 托管 TCP 与 WebSocket 监听任务。
 	Tasks lifecycle.Tasks
-	// Admission 在排水开始后拒绝新的外部业务帧。
+	// Admission 在排水开始后拒绝新的外部业务帧与项目普通 HTTP 请求。
 	Admission lifecycle.Admission
 	// Instance 用于判断当前进程是否同时承载 msgq 服务。
 	Instance discovery.Instance
@@ -48,13 +48,15 @@ type Options struct {
 	WebSocketListen string
 	// WebSocketOrigins 是允许跨域连接的完整浏览器 Origin 白名单。
 	WebSocketOrigins []string
-	MaxFrameBytes    int
-	FetchBatch       int
-	Identity         txagent.IdentityResolver
-	Dispatcher       txagent.Dispatcher
-	Sessions         txagent.SessionClientRouter
-	LocalMsgQ        LocalMsgQ
-	SessionStore     msgqredis.Options
+	// HTTPHandler 承载项目普通 HTTP 请求，根路径仍保留给 WebSocket。
+	HTTPHandler   http.Handler
+	MaxFrameBytes int
+	FetchBatch    int
+	Identity      txagent.IdentityResolver
+	Dispatcher    txagent.Dispatcher
+	Sessions      txagent.SessionClientRouter
+	LocalMsgQ     LocalMsgQ
+	SessionStore  msgqredis.Options
 }
 
 // Service 承载玩家连接入口和会话邮箱客户端。
@@ -147,7 +149,7 @@ func (service *Service) startWebSocket(agentRuntime *txagent.Server, tcp *txagen
 	if service.options.WebSocketListen == "" {
 		return nil, nil, nil
 	}
-	handler, err := txagent.NewWebSocketHandler(agentRuntime, service.options.MaxFrameBytes, txagent.WebSocketOptions{
+	websocketHandler, err := txagent.NewWebSocketHandler(agentRuntime, service.options.MaxFrameBytes, txagent.WebSocketOptions{
 		AllowedOrigins: service.options.WebSocketOrigins,
 	})
 	if err != nil {
@@ -165,7 +167,7 @@ func (service *Service) startWebSocket(agentRuntime *txagent.Server, tcp *txagen
 	}
 	httpServer := &http.Server{
 		Addr:    listener.Addr().String(),
-		Handler: handler,
+		Handler: service.composeHTTPHandler(websocketHandler),
 		BaseContext: func(net.Listener) context.Context {
 			return service.dependencies.Tasks
 		},
@@ -182,6 +184,27 @@ func (service *Service) startWebSocket(agentRuntime *txagent.Server, tcp *txagen
 		return nil, nil, err
 	}
 	return httpServer, listener, nil
+}
+
+// composeHTTPHandler 复用同一个 HTTP Server 承载根路径 WebSocket 和项目普通 HTTP Handler。
+func (service *Service) composeHTTPHandler(websocketHandler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			websocketHandler.ServeHTTP(w, r)
+			return
+		}
+		if service.options.HTTPHandler == nil {
+			http.NotFound(w, r)
+			return
+		}
+		done, err := service.dependencies.Admission.Enter()
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+			return
+		}
+		defer done()
+		service.options.HTTPHandler.ServeHTTP(w, r)
+	})
 }
 
 // Drain 关闭入口监听器，不中断已经接纳的业务工作。

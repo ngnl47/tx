@@ -75,20 +75,27 @@ func (r *admissionReceiver) Deliver(ctx context.Context, delivery Delivery) erro
 }
 
 // RegisterDeliveryService 将生成的 gRPC 服务注册到 registrar。
-func RegisterDeliveryService(registrar grpc.ServiceRegistrar, receiver Receiver) error {
-	if registrar == nil || receiver == nil {
+func RegisterDeliveryService(registrar grpc.ServiceRegistrar, receiver Receiver, callReceiver CallReceiver) error {
+	if registrar == nil || (receiver == nil && callReceiver == nil) {
 		return ErrReceiverNil
 	}
-	rpcpb.RegisterDeliveryServiceServer(registrar, &deliveryService{receiver: receiver})
+	rpcpb.RegisterDeliveryServiceServer(registrar, &deliveryService{
+		receiver:     receiver,
+		callReceiver: callReceiver,
+	})
 	return nil
 }
 
 type deliveryService struct {
 	rpcpb.UnimplementedDeliveryServiceServer
-	receiver Receiver
+	receiver     Receiver
+	callReceiver CallReceiver
 }
 
 func (s *deliveryService) Deliver(ctx context.Context, request *rpcpb.Delivery) (*rpcpb.DeliveryAck, error) {
+	if s.receiver == nil {
+		return nil, status.Error(codes.Unimplemented, "method Deliver not implemented")
+	}
 	delivery, err := deliveryFromProto(request)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -100,6 +107,28 @@ func (s *deliveryService) Deliver(ctx context.Context, request *rpcpb.Delivery) 
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return &rpcpb.DeliveryAck{Accepted: true}, nil
+}
+
+func (s *deliveryService) Call(ctx context.Context, request *rpcpb.Delivery) (*rpcpb.Result, error) {
+	if s.callReceiver == nil {
+		return nil, status.Error(codes.Unimplemented, "method Call not implemented")
+	}
+	delivery, err := deliveryFromProto(request)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	result, err := s.callReceiver.Call(ctx, delivery)
+	if err != nil {
+		if errors.Is(err, lifecycle.ErrDraining) || errors.Is(err, lifecycle.ErrStopping) {
+			return nil, status.Error(codes.Unavailable, err.Error())
+		}
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	response, err := resultToProto(result)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	return response, nil
 }
 
 func deliveryFromProto(request *rpcpb.Delivery) (Delivery, error) {

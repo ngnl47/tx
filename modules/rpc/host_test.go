@@ -19,6 +19,12 @@ func TestHostServesRegisteredServicesOnOneEndpoint(t *testing.T) {
 		t.Fatalf("NewHost returned error: %v", err)
 	}
 	var delivered Delivery
+	var called Delivery
+	expectedResult := Result{
+		MessageType: "Login_ServerListResp",
+		CommandID:   10153,
+		Payload:     []byte("result-body"),
+	}
 	if err := host.Register(func(registrar grpc.ServiceRegistrar) error {
 		healthpb.RegisterHealthServer(registrar, health.NewServer())
 		return nil
@@ -29,6 +35,9 @@ func TestHostServesRegisteredServicesOnOneEndpoint(t *testing.T) {
 		return RegisterDeliveryService(registrar, ReceiverFunc(func(_ context.Context, delivery Delivery) error {
 			delivered = delivery
 			return nil
+		}), CallReceiverFunc(func(_ context.Context, delivery Delivery) (Result, error) {
+			called = delivery
+			return expectedResult, nil
 		}))
 	}); err != nil {
 		t.Fatalf("register delivery service: %v", err)
@@ -63,6 +72,21 @@ func TestHostServesRegisteredServicesOnOneEndpoint(t *testing.T) {
 	}
 	if delivered.MessageType != "role.sync" || delivered.CommandID != 47001 || string(delivered.Payload) != "bon-body" {
 		t.Fatalf("delivered = %#v", delivered)
+	}
+	result, err := client.Call(context.Background(), &rpcpb.Delivery{
+		Route:       &rpcpb.Route{Kind: rpcpb.RouteKind_ROUTE_KIND_SERVICE, Service: "login"},
+		MessageType: "login.request",
+		CommandId:   10152,
+		Payload:     []byte("query-body"),
+	})
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if called.Route.Kind != RouteService || called.Route.Service != "login" || called.MessageType != "login.request" || called.CommandID != 10152 || string(called.Payload) != "query-body" {
+		t.Fatalf("called = %#v", called)
+	}
+	if result.GetMessageType() != expectedResult.MessageType || result.GetCommandId() != expectedResult.CommandID || string(result.GetPayload()) != string(expectedResult.Payload) {
+		t.Fatalf("result = %#v, want %#v", result, expectedResult)
 	}
 }
 

@@ -40,3 +40,32 @@ func TestRPCDeliveryKeepsRouteMetadataAndOpaquePayload(t *testing.T) {
 		t.Fatalf("payload = %x, want %x", received.GetPayload(), payload)
 	}
 }
+
+func TestRPCResultKeepsMetadataAndOpaquePayload(t *testing.T) {
+	payload := []byte{0x83, 0xa4, 'l', 'i', 's', 't', 0x92, 0x01, 0x02}
+	result := &rpcpb.Result{
+		MessageType: "Login_ServerListResp",
+		CommandId:   10153,
+		Payload:     payload,
+	}
+
+	wire, err := proto.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+
+	var received rpcpb.Result
+	if err := proto.Unmarshal(wire, &received); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+
+	if received.GetMessageType() != "Login_ServerListResp" {
+		t.Fatalf("message type = %q, want Login_ServerListResp", received.GetMessageType())
+	}
+	if received.GetCommandId() != 10153 {
+		t.Fatalf("command id = %d, want 10153", received.GetCommandId())
+	}
+	if !bytes.Equal(received.GetPayload(), payload) {
+		t.Fatalf("payload = %x, want %x", received.GetPayload(), payload)
+	}
+}

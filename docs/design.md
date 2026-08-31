@@ -2219,10 +2219,13 @@ assignment，也不能临时恢复成逐消息 etcd Get。该选择以不向错�
 
 - ServiceRoute：从 running 副本选择目标。
 - InstanceRoute：精确投递给已知实例。
-- protobuf envelope 的 `payload` 字段承载业务 BON 编码载荷。
+- `DeliveryService.Deliver` 返回投递结果，`DeliveryService.Call` 返回同步 `Result`。
+- protobuf envelope 的 `payload` 字段承载调用方自己编码的不透明业务载荷。
 
 它不实现 Actor mailbox、会话 Seq/Ack 或业务幂等。发送结果不确定时不能由框架盲目重试；业务必须有独立幂等键。
-客户端只接受 `Accepted=true` 且没有错误码的确认；成功位与错误码同时存在属于矛盾状态，统一按拒绝处理。
+`CallReceiver` 与 `Receiver` 分别承载同步和单向入口，并都可以用请求级 admission wrapper 封口。`Sender.Send` 与
+`Sender.Call` 都先校验 `Delivery`、只解析一次路由、按 endpoint 复用连接；`Sender.Call` 不自动重试，也不偷偷补默认
+timeout。客户端只接受 `Accepted=true` 且没有错误码的确认；成功位与错误码同时存在属于矛盾状态，统一按拒绝处理。
 
 `modules/rpc.Host` 实现“每个物理进程一个普通 gRPC Host”：它唯一持有 listener 与 `grpc.Server`，直接接入
 `lifecycle.WaitGroupContext`，并负责注册阶段、Serve 和幂等 Stop。Bee/Ant 的私有装配内核创建 Host，让所选服务在启动期
@@ -2272,6 +2275,9 @@ Agent 的会话来源是显式二选一：配置 `LocalMsgQ` 表示同进程复�
 ### Agent
 
 `modules/agent` 终止客户端 TCP/WebSocket 连接，处理 frame、握手身份、Seq/Ack 和路由描述。它不承载具体 game handler，也不要求所有命令先经过 game 中转。
+标准 `agentservice.Service` 在配置 `WebSocketListen` 时复用同一个 `http.Server`：根路径 `/` 固定保留给 WebSocket Upgrade，
+非根路径在请求级 admission 通过后才进入项目 `HTTPHandler`；未配置 `HTTPHandler` 返回 `404`，排水或停止后返回 `503`。
+如果未配置 `WebSocketListen`，当前阶段不会创建“纯 HTTP” Agent 服务。
 
 生成的 `CmdDescriptor` 提供静态 CommandID、目标服务、Actor kind 和 route key 类型；项目 resolver 根据身份和业务映射决定具体 PID 或实例。
 
@@ -2286,7 +2292,8 @@ Bee 或 Ant Context，因此可以使用本次 Server 已声明的 Actor、服�
 不能进入已经替换的新会话。通用 Actor Dispatcher 对无响应命令使用 `Tell`，对声明响应类型的命令使用带 deadline 的
 `Call`；Actor 返回的 BON bytes 不在 Agent 内反序列化。
 
-Agent 核心不依赖项目生成协议，因此不会自行构造业务错误包。项目 Agent 适配层负责把 Actor `CallError` 转换为
+Agent 核心不依赖项目生成协议，因此不会自行构造业务错误包，也不负责项目 HTTP 路由、JSON/BON 绑定、默认 timeout、
+自动重试或通用 HTTP Router。项目 Agent 适配层负责把 Actor `CallError` 转换为
 生成的 `System_Error{RequestSeq, Code, Message}`，并以普通 `DispatchResult` 进入 MsgQ；这类结果不会终止连接。
 `Code` 使用 `int32` 跨 Actor protobuf 边界传递，`0` 表示没有错误，`CallErrorCodeInternal=-1` 表示未分类内部错误，
 正数空间由项目错误码表分配。`CallErrorCodeDispatch=-2` 标识 Actor 解码、Handler 注册和投递模式等分派契约失败；
@@ -2304,6 +2311,7 @@ Frame 和 Payload 在确认前只读。恢复连接复用原 Session，先发送
 语义严格分离：新建总是安装空会话，恢复必须命中同一 SessionID。只有 `Init` 成功后 Agent 才发送 `FrameReady`；客户端
 在收到它之前保持连接中状态，并以 `FrameReady.Ack` 释放服务端已经受理的重放前缀，再按原序号重放剩余 UpMsg。
 即使客户端随后重放已经受理的 Frame，`Rec` 也只幂等返回当前序号，不会重复调用 Dispatcher。
+基于以上边界，下一阶段才在 `txgame + txclient` 接入 `Login_ServerList` 这类具体业务闭环。
 
 ### Actor
 

@@ -2,6 +2,9 @@ package agentservice
 
 import (
 	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -60,6 +63,204 @@ func TestServiceStartsWithExplicitDependenciesAndLocalMsgQ(t *testing.T) {
 	}
 	root.Cancel()
 	root.WaitDoneAndWaitGroupWait()
+}
+
+func TestServiceComposeHTTPHandlerRoutesRootToWebSocket(t *testing.T) {
+	root := lifecycle.NewWaitGroupContext(context.Background())
+	t.Cleanup(func() {
+		root.Cancel()
+		root.WaitDoneAndWaitGroupWait()
+	})
+
+	projectCalled := false
+	service := &Service{
+		options: Options{
+			HTTPHandler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				projectCalled = true
+			}),
+		},
+		dependencies: Dependencies{Admission: lifecycle.NewIngress(root)},
+	}
+
+	websocketCalled := false
+	handler := service.composeHTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		websocketCalled = true
+		w.WriteHeader(http.StatusSwitchingProtocols)
+	}))
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://example.com/", nil))
+
+	if !websocketCalled {
+		t.Fatal("root path did not route to WebSocket handler")
+	}
+	if projectCalled {
+		t.Fatal("root path unexpectedly routed to project handler")
+	}
+	if recorder.Code != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusSwitchingProtocols)
+	}
+}
+
+func TestServiceComposeHTTPHandlerRoutesProjectPathToHTTPHandler(t *testing.T) {
+	root := lifecycle.NewWaitGroupContext(context.Background())
+	t.Cleanup(func() {
+		root.Cancel()
+		root.WaitDoneAndWaitGroupWait()
+	})
+
+	projectCalled := false
+	service := &Service{
+		options: Options{
+			HTTPHandler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				projectCalled = true
+				if r.URL.Path != "/api/v1/login/server-list" {
+					t.Fatalf("path = %q, want /api/v1/login/server-list", r.URL.Path)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}),
+		},
+		dependencies: Dependencies{Admission: lifecycle.NewIngress(root)},
+	}
+
+	websocketCalled := false
+	handler := service.composeHTTPHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		websocketCalled = true
+	}))
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://example.com/api/v1/login/server-list", nil))
+
+	if !projectCalled {
+		t.Fatal("project path did not route to HTTP handler")
+	}
+	if websocketCalled {
+		t.Fatal("project path unexpectedly routed to WebSocket handler")
+	}
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNoContent)
+	}
+}
+
+func TestServiceComposeHTTPHandlerReturnsNotFoundWithoutProjectHandler(t *testing.T) {
+	root := lifecycle.NewWaitGroupContext(context.Background())
+	t.Cleanup(func() {
+		root.Cancel()
+		root.WaitDoneAndWaitGroupWait()
+	})
+
+	service := &Service{
+		dependencies: Dependencies{Admission: lifecycle.NewIngress(root)},
+	}
+
+	handler := service.composeHTTPHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("non-root path unexpectedly routed to WebSocket handler")
+	}))
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://example.com/api/v1/login/server-list", nil))
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
+	}
+}
+
+func TestServiceComposeHTTPHandlerReturnsServiceUnavailableAfterDrain(t *testing.T) {
+	root := lifecycle.NewWaitGroupContext(context.Background())
+	t.Cleanup(func() {
+		root.Cancel()
+		root.WaitDoneAndWaitGroupWait()
+	})
+
+	ingress := lifecycle.NewIngress(root)
+	ingress.BeginDrain()
+
+	projectCalled := false
+	service := &Service{
+		options: Options{
+			HTTPHandler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				projectCalled = true
+			}),
+		},
+		dependencies: Dependencies{Admission: ingress},
+	}
+
+	handler := service.composeHTTPHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("draining project path unexpectedly routed to WebSocket handler")
+	}))
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://example.com/api/v1/login/server-list", nil))
+
+	if projectCalled {
+		t.Fatal("draining request unexpectedly entered project handler")
+	}
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestServiceComposeHTTPHandlerKeepsPendingUntilProjectHandlerReturns(t *testing.T) {
+	root := lifecycle.NewWaitGroupContext(context.Background())
+	t.Cleanup(func() {
+		root.Cancel()
+		root.WaitDoneAndWaitGroupWait()
+	})
+
+	ingress := lifecycle.NewIngress(root)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	service := &Service{
+		options: Options{
+			HTTPHandler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				close(entered)
+				<-release
+				w.WriteHeader(http.StatusNoContent)
+			}),
+		},
+		dependencies: Dependencies{Admission: ingress},
+	}
+
+	handler := service.composeHTTPHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("project path unexpectedly routed to WebSocket handler")
+	}))
+
+	recorder := httptest.NewRecorder()
+	done := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseHandler := func() {
+		releaseOnce.Do(func() { close(release) })
+	}
+	go func() {
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://example.com/api/v1/login/server-list", nil))
+		close(done)
+	}()
+	defer releaseHandler()
+
+	<-entered
+	if pending := ingress.Pending(); pending != 1 {
+		t.Fatalf("pending = %d, want 1", pending)
+	}
+
+	ingress.BeginDrain()
+	waitCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := ingress.WaitContext(waitCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("WaitContext error = %v, want %v", err, context.DeadlineExceeded)
+	}
+
+	releaseHandler()
+	<-done
+
+	if err := ingress.WaitContext(context.Background()); err != nil {
+		t.Fatalf("WaitContext returned error after handler completion: %v", err)
+	}
+	if pending := ingress.Pending(); pending != 0 {
+		t.Fatalf("pending = %d, want 0", pending)
+	}
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNoContent)
+	}
 }
 
 type fixedLocalMsgQ struct{ client txmsgq.SessionClient }

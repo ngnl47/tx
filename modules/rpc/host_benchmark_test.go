@@ -102,7 +102,7 @@ func newLoopbackBenchmarkSender(b *testing.B, receiver Receiver) *Sender {
 		b.Fatalf("创建 loopback gRPC Host: %v", err)
 	}
 	if err := host.Register(func(registrar grpc.ServiceRegistrar) error {
-		return RegisterDeliveryService(registrar, receiver)
+		return RegisterDeliveryService(registrar, receiver, nil)
 	}); err != nil {
 		b.Fatalf("注册 DeliveryService: %v", err)
 	}

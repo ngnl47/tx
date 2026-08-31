@@ -778,6 +778,12 @@ services:
     sweepInterval: 2s
 ```
 
+项目如果在 `agentservice.Options` 中提供 `HTTPHandler`，同一个 `http.Server` 会固定按路径分派：根路径 `/`
+继续保留给 WebSocket Upgrade，非根路径请求在通过 admission 后交给项目 Handler；未配置 `HTTPHandler` 时返回 `404`，
+排水或停止后返回 `503`。项目 Handler 自己负责 `/api/...` 路由、method、认证、CORS、JSON/BON 编解码和错误正文；
+tx 不提供通用 HTTP Router，也不会在未配置 `WebSocketListen` 时创建“纯 HTTP” Agent 服务。基于这条边界，
+下一阶段才在 `txgame + txclient` 接入 `Login_ServerList` 的业务闭环。
+
 同一进程同时启动时，Agent 不建立额外的 gRPC 连接：
 
 ```bash
@@ -919,9 +925,9 @@ socket.send(encodeFrame(createAckFrame(lastDownSeq), maxFrameBytes));
 
 ## 内部 gRPC 协议
 
-`modules/rpc` 是独立的进程间 gRPC 调用层，长期只负责 Service/Instance 两种目标的请求投递、服务端
-Receiver 桥接与连接复用。它不替换客户端上下行协议，也不要求把 `GD*` 映射为 protobuf 消息；
-`Delivery.Payload` 始终是调用方已经编码完成的 BON 字节。
+`modules/rpc` 是独立的进程间 gRPC 调用层，长期只负责 Service/Instance 两种目标的请求投递、同步结果返回、
+服务端 Receiver 桥接与连接复用。它不替换客户端上下行协议，也不要求把 `GD*` 映射为 protobuf 消息；
+`Delivery.Payload` 与 `Result.Payload` 始终是调用方已经编码完成的不透明字节。
 
 例如，向指定 battle 实例投递时，将原有协议体直接放入 `Payload`：
 
@@ -942,7 +948,10 @@ delivery := &rpcpb.Delivery{
 才直接使用 `actor.FixedPID`。
 
 服务进程的宿主统一创建 gRPC server 后，先用该服务的 `Ingress` 包装接收器，再注册得到已校验的业务 `Delivery`。
-Receiver 返回错误时，调用方会收到 gRPC 错误，框架不会把投递失败伪装为已接受：
+`Deliver` 和 `Call` 是两个独立入口：前者只返回投递结果，后者返回一个 `MessageType` 非空且首尾无空白的 `Result`。
+两种 admission wrapper 都按请求粒度调用 `Admission.Enter()`；排水开始后新请求会被拒绝，已受理请求继续完成。
+任一入口未装配时，对应 RPC 方法返回 `Unimplemented`，不会用空实现掩盖装配错误。Receiver 返回错误时，调用方会收到
+gRPC 错误，框架不会把投递失败伪装为已接受：
 
 ```go
 grpcServer := grpc.NewServer()
@@ -951,11 +960,20 @@ businessReceiver := rpc.ReceiverFunc(
         return enqueueToMailbox(delivery)
     },
 )
+businessCallReceiver := rpc.CallReceiverFunc(
+    func(ctx context.Context, delivery rpc.Delivery) (rpc.Result, error) {
+        return handleQuery(delivery)
+    },
+)
 receiver, err := rpc.NewAdmissionReceiver(businessReceiver, app.Ingress)
 if err != nil {
     return err
 }
-err = rpc.RegisterDeliveryService(grpcServer, receiver)
+callReceiver, err := rpc.NewAdmissionCallReceiver(businessCallReceiver, app.Ingress)
+if err != nil {
+    return err
+}
+err = rpc.RegisterDeliveryService(grpcServer, receiver, callReceiver)
 if err != nil {
     return err
 }
@@ -977,8 +995,9 @@ if err != nil {
 
 发送端由 `GRPCDialer` 与 `Sender` 组成。Dialer 必须显式传入 TLS 或 `insecure` 凭证；tx 不会默认为
 明文连接。当前部署范围是本地调试或云私网组件服务，项目应显式使用 `insecure`，并通过 VPC、安全组、
-端口白名单和不暴露公网端口保护 RPC endpoint。Sender 按 endpoint 缓存 gRPC 连接，服务进程关闭时必须调用
-`Close`：
+端口白名单和不暴露公网端口保护 RPC endpoint。`Sender.Send` 与 `Sender.Call` 都先校验 `Delivery`，只解析一次
+路由，然后按 endpoint 复用已建立连接；`ServiceRoute` 继续只从当前 `running` 副本里选择目标。服务进程关闭时必须
+调用 `Close`：
 
 ```go
 dialer, err := rpc.NewGRPCDialer(insecure.NewCredentials()) // 仅本地可信网络示例
@@ -997,12 +1016,21 @@ err = sender.Send(ctx, rpc.Delivery{
     CommandID:   8001,
     Payload:     bonBody,
 })
+result, err := sender.Call(ctx, rpc.Delivery{
+    Route:       rpc.ServiceRoute("battle"),
+    MessageType: "Battle_Query",
+    CommandID:   8002,
+    Payload:     bonBody,
+})
+_ = result
 ```
 
-TLS/mTLS 的 yml 装配、证书加载和轮换不属于当前范围；未来引入时不改变 `Sender` 或 `Delivery` 的业务调用。
-`Sender.Send` 会返回路由不可用、建连、传输或 Receiver 拒绝等错误，不会自动重试或静默丢弃消息。gRPC 确认只有在
-`Accepted=true` 且 `ErrorCode` 为空时才算成功；例如 `{Accepted: true, ErrorCode: "queue-full"}` 属于矛盾响应，
-会返回 `rpc.ErrDeliveryRejected`，不能用成功位掩盖错误状态。
+TLS/mTLS 的 yml 装配、证书加载和轮换不属于当前范围；未来引入时不改变 `Sender`、`Delivery` 或 `Result` 的业务调用。
+`Sender.Send` 会返回路由不可用、建连、传输或 Receiver 拒绝等错误，不会自动重试或静默丢弃消息；`Sender.Call`
+同样只发起一次远端调用，不设置隐藏默认 timeout，超时后是否已经产生业务副作用由上层按幂等语义自行判断。gRPC
+确认只有在 `Accepted=true` 且 `ErrorCode` 为空时才算成功；例如 `{Accepted: true, ErrorCode: "queue-full"}`
+属于矛盾响应，会返回 `rpc.ErrDeliveryRejected`，不能用成功位掩盖错误状态。本阶段只补齐通用同步 RPC 与 Agent 入口能力，
+`txgame + txclient` 的 `Login_ServerList`、HTTP JSON/BON 绑定、项目默认 timeout 和重试策略仍留在下一阶段实现。
 
 ### 生成 proto
 
@@ -1014,28 +1042,33 @@ cd /Users/a47/workspace/tx
 # 查看可生成包。
 ./cmd/protoc/run.sh --list
 
+# 使用当前 PATH 中的 protoc，并在生成前校验 36.0 基线。
+PROTOC="$(command -v protoc)"
+test -n "$PROTOC"
+test "$("$PROTOC" --version)" = "libprotoc 36.0"
+
 # 仅生成 msgq 会话邮箱契约。
-PROTOC=/Users/a47/sdk/protoc-29.3/bin/protoc \
+PROTOC="$PROTOC" \
 GO_BIN=/Users/a47/sdk/go1.26.5/bin/go \
 ./cmd/protoc/run.sh msgq
 
 # 仅生成通用内部 RPC 契约。
-PROTOC=/Users/a47/sdk/protoc-29.3/bin/protoc \
+PROTOC="$PROTOC" \
 GO_BIN=/Users/a47/sdk/go1.26.5/bin/go \
 ./cmd/protoc/run.sh rpc
 
 # 仅生成 Actor 内部消息信封。
-PROTOC=/Users/a47/sdk/protoc-29.3/bin/protoc \
+PROTOC="$PROTOC" \
 GO_BIN=/Users/a47/sdk/go1.26.5/bin/go \
 ./cmd/protoc/run.sh actor
 
 # 仅生成运维控制面契约。
-PROTOC=/Users/a47/sdk/protoc-29.3/bin/protoc \
+PROTOC="$PROTOC" \
 GO_BIN=/Users/a47/sdk/go1.26.5/bin/go \
 ./cmd/protoc/run.sh control
 
 # 生成全部已注册包。
-PROTOC=/Users/a47/sdk/protoc-29.3/bin/protoc \
+PROTOC="$PROTOC" \
 GO_BIN=/Users/a47/sdk/go1.26.5/bin/go \
 ./cmd/protoc/run.sh --all
 ```
@@ -1044,7 +1077,7 @@ GO_BIN=/Users/a47/sdk/go1.26.5/bin/go \
 
 ```bash
 # 安装官方 Protocol Buffers 发行版后，将 protoc 路径传给脚本。
-# 当前生成产物使用 protoc 29.3。
+# 当前生成基线为 protoc 36.0；生成前必须看到 libprotoc 36.0。
 
 GOBIN="$HOME/go/bin" /Users/a47/sdk/go1.26.5/bin/go install \
   google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
@@ -1054,7 +1087,7 @@ GOBIN="$HOME/go/bin" /Users/a47/sdk/go1.26.5/bin/go install \
 
 将 `protoc`、`protoc-gen-go` 和 `protoc-gen-go-grpc` 放入 `PATH` 后，也可以不设置 `PROTOC` 与
 `GO_BIN`。生成的 `modules/actor/pb/*.pb.go`、`modules/control/pb/*.pb.go`、`modules/msgq/pb/*.pb.go` 与 `modules/rpc/pb/*.pb.go` 都属于版本化源文件，应与对应
-`.proto` 一起提交。
+`.proto` 一起提交。只重生成本次 `.proto` 有变更的包；未变更的 actor、msgq、control 生成头保留到对应 proto 源下次变更时再刷新，避免无关差异。
 
 ## Lifecycle 与运维排水
 
@@ -1094,7 +1127,7 @@ receiver, err := rpc.NewAdmissionReceiver(businessReceiver, ingress)
 if err != nil {
     return err
 }
-if err := rpc.RegisterDeliveryService(grpcServer, receiver); err != nil {
+if err := rpc.RegisterDeliveryService(grpcServer, receiver, nil); err != nil {
     return err
 }
 ```

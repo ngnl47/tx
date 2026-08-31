@@ -22,6 +22,7 @@ var (
 // Connection 通过已经解析的 endpoint 发送消息。
 type Connection interface {
 	Deliver(context.Context, Delivery) error
+	Call(context.Context, Delivery) (Result, error)
 	Close() error
 }
 
@@ -90,6 +91,18 @@ func (c *grpcConnection) Deliver(ctx context.Context, delivery Delivery) error {
 	return nil
 }
 
+func (c *grpcConnection) Call(ctx context.Context, delivery Delivery) (Result, error) {
+	request, err := deliveryToProto(delivery)
+	if err != nil {
+		return Result{}, err
+	}
+	response, err := c.client.Call(ctx, request)
+	if err != nil {
+		return Result{}, err
+	}
+	return resultFromProto(response)
+}
+
 func (c *grpcConnection) Close() error {
 	return c.connection.Close()
 }
@@ -136,6 +149,25 @@ func (s *Sender) Send(ctx context.Context, delivery Delivery) error {
 		return err
 	}
 	return connection.Deliver(ctx, delivery)
+}
+
+// Call 解析消息路由并将消息发送到选中的 endpoint，等待远端返回同步结果。
+func (s *Sender) Call(ctx context.Context, delivery Delivery) (Result, error) {
+	if s == nil {
+		return Result{}, ErrSenderClosed
+	}
+	if err := delivery.Validate(); err != nil {
+		return Result{}, err
+	}
+	instance, err := Resolve(s.directory, delivery.Route)
+	if err != nil {
+		return Result{}, err
+	}
+	connection, err := s.connection(ctx, instance)
+	if err != nil {
+		return Result{}, err
+	}
+	return connection.Call(ctx, delivery)
 }
 
 // Close 关闭全部缓存的 endpoint 连接。
