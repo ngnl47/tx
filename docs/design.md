@@ -2495,6 +2495,39 @@ Actor 实体 churn 与进程成员 churn 是两条不同路径。`TestVirtualPla
 继续只承载可恢复且允许漂移的实体，有状态实体继续使用 Fixed Kind。若生产规模证明滚动发布的 GC 或重建峰值不可接受，
 再评审上游优化或自定义 IdentityLookup；成员离开必须立即生效，不能用统一延迟继续向失效 owner 路由。
 
+#### Actor 与普通 RPC 传输基线
+
+Actor Remote 与 `modules/rpc` 是两套独立传输。`Instance.ActorEndpoint` 承载 Actor Remote，`Instance.Endpoint` 承载普通
+gRPC；基准必须分别命名和测量，不能把 Actor Remote 写作 gRPC Actor。测试代码只组装既有公开接口，不为采样增加生产
+计数器、回调、配置或状态查询 API。
+
+`BenchmarkActorCallLoopback` 使用真实 etcd，在同一测试进程启动 target 与 caller 两个 Runtime。同一个固定 Actor、PID 和
+256 B Payload 分别由 target 本地 `Runtime.Call` 与 caller 跨 Actor Remote 调用；每个子基准在计时前完成实体激活和
+Remote 建连。全部调用复用计时外创建的 30 秒 deadline context，使网络异常先返回到具体基准，同时不为每次请求增加
+context 分配。它证明真实 loopback Actor Remote 的传输差额，但不是独立进程集群吞吐，后者仍由项目级多进程验收负责。
+
+`BenchmarkDeliveryTransport` 使用同一份 256 B `Delivery` 对比直接 `Receiver.Deliver` 与复用连接的
+`Sender.Send -> loopback TCP gRPC -> Receiver -> DeliveryAck`。gRPC 路径同样复用计时外创建的 30 秒 deadline context。
+DirectReceiver 只是进程内调用下界；两者差额同时包含服务路由、protobuf 编解码、TCP、服务端接收和确认，不应解释为
+单一编解码器成本。
+
+2026-08-31 使用 Go 1.27.0 在 x86_64 macOS、Intel i9-9880H 上各运行五次，表中为中位数。复跑命令固定 `-cpu=16`，Parallel 使用 16 路
+`RunParallel`，其 `ns/op` 表示聚合吞吐成本，不是单请求尾延迟：
+
+| 路径 | 串行 ns/op | 串行 B/op | 串行 allocs/op | Parallel ns/op | Parallel B/op | Parallel allocs/op |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Actor Local `Runtime.Call` | 13,785 | 2,288 | 18 | 2,860 | 2,248 | 15 |
+| Actor Remote `Runtime.Call` | 75,318 | 5,653 | 66 | 8,505 | 4,128 | 33 |
+| RPC DirectReceiver | 17.89 | 0 | 0 | 2.020 | 0 | 0 |
+| RPC loopback TCP gRPC | 123,544 | 11,351 | 167 | 31,091 | 13,878 | 152 |
+
+复跑命令：
+
+```bash
+go test ./modules/rpc -run '^$' -bench '^BenchmarkDeliveryTransport$' -benchmem -benchtime=1s -count=5 -cpu=16
+TX_ETCD_ENDPOINT=127.0.0.1:2379 go test ./tests -run '^$' -bench '^BenchmarkActorCallLoopback$' -benchmem -benchtime=1s -count=5 -cpu=16
+```
+
 ### control 与滚动发布
 
 `modules/control` 提供受控运维接口：
