@@ -58,6 +58,16 @@ func TestRedisSessionStoreRejectsSubMillisecondTTLBeforeIO(t *testing.T) {
 	}
 }
 
+func TestRedisSessionStoreRefreshIntervalUsesHalfTTL(t *testing.T) {
+	store, err := NewRedisSessionStore(&recordingSessionRedisClient{}, SessionRedisOptions{Prefix: "tx:test", TTL: time.Minute})
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	if got := store.leaseRefreshInterval(); got != 30*time.Second {
+		t.Fatalf("lease refresh interval = %s, want 30s", got)
+	}
+}
+
 func TestRedisSessionStoreUsesVersionedSessionIDKeyAndCompleteRecord(t *testing.T) {
 	binding := SessionBinding{RoleID: 470001, SessionID: 99, ConnectionID: 7, InstanceID: "msgq-1"}
 	client := &recordingSessionRedisClient{

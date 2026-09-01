@@ -179,8 +179,8 @@ func (c *grpcConnection) Confirm(ctx context.Context, request ConfirmRequest) er
 	return nil
 }
 
-func (c *grpcConnection) CloseSession(ctx context.Context, header SessionHeader) error {
-	response, err := c.client.Close(ctx, &msgqpb.CloseRequest{Header: headerToProto(header)})
+func (c *grpcConnection) TerminateSession(ctx context.Context, header SessionHeader) error {
+	response, err := c.client.TerminateSession(ctx, &msgqpb.TerminateSessionRequest{Header: headerToProto(header)})
 	if err != nil {
 		return mailboxClientError(err)
 	}

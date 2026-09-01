@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package tx.agent.v1;
+
+option go_package = "github.com/ngnl47/tx/modules/agent/pb;agentpb";
+
+// SessionControlRequest 指定一个 Agent Session 及调用方记录的业务原因。
+message SessionControlRequest {
+  int64 session_id = 1;
+  string reason = 2;
+}
+
+// SessionControlResponse 返回当前 Agent 是否持有并处理了目标连接。
+message SessionControlResponse {
+  int64 session_id = 1;
+  int64 connection_id = 2;
+  bool handled = 3;
+}
+
+// AgentControlService 提供与业务 Kick 解耦的 Session 生命周期控制。
+service AgentControlService {
+  rpc DisconnectSession(SessionControlRequest) returns (SessionControlResponse);
+  rpc TerminateSession(SessionControlRequest) returns (SessionControlResponse);
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -24,6 +25,7 @@ type Server struct {
 	sessions         SessionClientRouter
 	connectionID     ConnectionIDGenerator
 	fetchBatch       int
+	activeSessions   *sessionRegistry
 }
 
 // NewServer 创建传输无关的 Agent Session 运行时。
@@ -53,6 +55,7 @@ func NewServer(options ServerOptions) (*Server, error) {
 		sessions:         options.Sessions,
 		connectionID:     options.ConnectionID,
 		fetchBatch:       options.FetchBatch,
+		activeSessions:   newSessionRegistry(),
 	}, nil
 }
 
@@ -103,14 +106,45 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 		return err
 	}
 	header := msgq.SessionHeader{RoleID: identity.RoleID, SessionID: identity.SessionID, ConnectionID: connectionID}
-	initialized, err := client.Init(ctx, msgq.InitRequest{
+	sessionCtx, cancel := context.WithCancel(ctx)
+	active := &activeSession{
+		identity:  identity,
+		header:    header,
+		client:    client,
+		cancel:    cancel,
+		transport: transport,
+	}
+	s.activeSessions.beginInitialization(active)
+	initialized, err := client.Init(sessionCtx, msgq.InitRequest{
 		Header:  header,
 		Restore: handshake.Restore,
 		Primary: identity.AccessMode == protocol.AccessModeNormal,
 		Ack:     handshake.Ack,
 	})
 	if err != nil {
+		_, _, terminateOnInitialization := s.activeSessions.completeInitialization(active, false)
+		if terminateOnInitialization {
+			terminateErr := terminateActiveSession(active)
+			active.completeTermination(terminateErr)
+			logInitializationTerminationError(ctx, active, terminateErr)
+			cancel()
+			return errors.Join(err, terminateErr)
+		}
+		cancel()
 		return err
+	}
+
+	previous, ready, terminateOnInitialization := s.activeSessions.completeInitialization(active, true)
+	if terminateOnInitialization {
+		terminateErr := terminateActiveSession(active)
+		active.completeTermination(terminateErr)
+		logInitializationTerminationError(ctx, active, terminateErr)
+		cancel()
+		return errors.Join(context.Canceled, terminateErr)
+	}
+	if !ready {
+		cancel()
+		return context.Canceled
 	}
 	txlog.InfoContext(ctx, "agent session established",
 		"roleID", identity.RoleID,
@@ -120,8 +154,10 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 		"upMsgSeq", initialized.UpMsgSeq,
 		"downAck", handshake.Ack,
 	)
-
-	sessionCtx, cancel := context.WithCancel(ctx)
+	if previous != nil {
+		previous.disconnect()
+	}
+	defer s.activeSessions.unbind(header.SessionID, header.ConnectionID)
 	writer := sessionFrameWriter{transport: transport}
 	var writtenDownSeq atomic.Int64
 	if handshake.Restore {
@@ -178,6 +214,18 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 			return err
 		}
 	}
+}
+
+func logInitializationTerminationError(ctx context.Context, session *activeSession, err error) {
+	if err == nil || errors.Is(err, msgq.ErrSessionOffline) {
+		return
+	}
+	txlog.ErrorContext(ctx, "agent session initialization termination failed",
+		"roleID", session.header.RoleID,
+		"sessionID", session.header.SessionID,
+		"connectionID", session.header.ConnectionID,
+		"err", err,
+	)
 }
 
 func (s *Server) nextConnectionID() (int64, error) {

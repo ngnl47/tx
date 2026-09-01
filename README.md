@@ -537,13 +537,18 @@ _ = result.Delivered
 会话，`Overflowed` 表示因条数或字节积压无法入队的会话数。广播出现积压返回 `ErrDownMsgOverflow`，对应会话会被移除，
 但结果保留已经成功投递的数量；框架不会伪造全量成功，也不会尝试回滚其他会话。
 
-### 空闲会话清理
+### 失活 Session 终止
 
-`Server.Start` 使用服务全局 `WaitGroupContext` 启动后台清理循环。`OfflineTimeout` 是“最后一次客户端会话活动”到
-移除 Session 的时长，默认 `180s`，采用既定的生产实践值；`SweepInterval` 是扫描间隔，默认 `2s`。经过当前
-ConnectionID 校验的 `Init`、`Rec`、`Fetch`、`FetchSome`、`Confirm`、`Touch` 和 Topic 管理等连接活动会续期；业务
+`Server.Start` 使用服务全局 `WaitGroupContext` 启动后台终止循环。`OfflineTimeout` 是“最后一次客户端会话活动”到
+终止 Session 的时长，默认 `180s`，采用既定的生产实践值；`TerminateDeadSessionInterval` 是检查本实例内存 Session
+的间隔，默认 `2s`。该任务不读取、遍历或扫描 Redis key。经过当前 ConnectionID 校验的 `Init`、`Rec`、`Fetch`、
+`FetchSome`、`Confirm`、`Touch` 和 Topic 管理等连接活动会更新本地活动时间；业务
 `PubSession`、`PubRole` 和 Router 读取不会让已经断开的会话常驻内存。即使客户端持续发送心跳，只要最早一条
-未确认下行已超过 `OfflineTimeout`，清理循环同样会移除会话，防止只收不确认的连接绕开积压保护。
+未确认下行已超过 `OfflineTimeout`，终止循环同样会移除会话，防止只收不确认的连接绕开积压保护。
+
+Redis binding 的 TTL 仍由合法客户端活动续期，但生产 `RedisSessionStore` 会在本地合并续期请求：`Init`、`Rebind`
+或一次成功续期后，只有达到 `TTL / 2` 的第一条活动才执行下一次精确续期，不会让每条心跳、上行、Ack 或 Fetch 都产生
+Redis I/O。
 
 标准项目通过 YAML 的 `services.msgq.offlineTimeout` 配置该时长。TCP 与 WebSocket 客户端必须主动发送心跳；建议
 相邻两次 `System_Ping` 不超过 `15s`，使默认 `180s` 清理窗口能够容忍电梯等短时弱网和少量心跳丢失。`System_Ping`
@@ -551,12 +556,12 @@ ConnectionID 校验的 `Init`、`Rec`、`Fetch`、`FetchSome`、`Confirm`、`Tou
 
 ```go
 mailbox, err := msgq.NewServer(msgq.ServerOptions{
-    InstanceID:     instanceID,
-    Store:          bindings,
-    MaxBacklogMessages:     1024,
-    MaxBacklogBytes: 8 << 20,
-    OfflineTimeout: 180 * time.Second,
-    SweepInterval:  2 * time.Second,
+    InstanceID:                   instanceID,
+    Store:                        bindings,
+    MaxBacklogMessages:           1024,
+    MaxBacklogBytes:              8 << 20,
+    OfflineTimeout:               180 * time.Second,
+    TerminateDeadSessionInterval: 2 * time.Second,
 })
 if err != nil {
     return err
@@ -566,15 +571,15 @@ if err := mailbox.Start(appContext); err != nil { // appContext 是 lifecycle.Wa
 }
 ```
 
-服务关闭时取消 `appContext` 并等待 `WaitDoneAndWaitGroupWait()`，清理循环会自然退出。需要测试或由项目自定义调度时，
-可直接调用 `Reap(ctx, now)`。清理会按完整 `(roleID, sessionID, connectionID, instanceID)` 条件解绑精确 binding，并仅在
-角色投影仍指向该 SessionID 时删除主会话投影。Redis 暂时不可用时 `Reap` 返回错误并记录日志，但仍删除本机过期会话，
-旧索引交由 Redis TTL 自动过期，避免本地内存因断线连接持续增长。
+服务关闭时取消 `appContext` 并等待 `WaitDoneAndWaitGroupWait()`，终止循环会自然退出。需要测试或由项目自定义调度时，
+可直接调用 `TerminateDeadSessions(ctx, now)`。终止会按完整 `(roleID, sessionID, connectionID, instanceID)` 条件解绑精确
+binding、释放本地邮箱和 Topic 关系，但不主动删除角色主会话投影。Redis 暂时不可用时该方法返回错误并记录日志，但仍
+删除本机失活会话；精确 binding 和主会话投影由各自 Redis TTL 兜底过期。
 
 ### msgq gRPC 传输
 
 `modules/msgq` 提供独立的 protobuf/gRPC `MailboxService`，不复用通用的 `modules/rpc`。连接侧可调用
-`Init`、`Rec`、`Fetch`、`FetchSome`、`Confirm`、`Touch`、Topic 和 `Close`；业务或其他服务最终调用精确的
+`Init`、`Rec`、`Fetch`、`FetchSome`、`Confirm`、`Touch`、Topic 和 `TerminateSession`；业务或其他服务最终调用精确的
 `PubSession` RPC。
 所有 `payload` 字段都承载已经编码完成的 BON 字节，统一称为编码载荷；服务不会解析或转换客户端协议体。
 
@@ -804,7 +809,7 @@ services:
     maxBacklogMessages: 1024
     maxBacklogBytes: 8388608
     offlineTimeout: 180s
-    sweepInterval: 2s
+    terminateDeadSessionInterval: 2s
 ```
 
 项目如果在 `agentservice.Options` 中提供 `HTTPHandler`，同一个 `http.Server` 会固定按路径分派：根路径 `/`
@@ -826,7 +831,17 @@ go run ./cmd/server --services=agent
 ```
 
 Agent 停止时先关闭 TCP/WebSocket listener，停止接收新连接；WebSocket 主动断开，TCP Session 随服务根
-`WaitGroupContext` 取消退出。断线不会主动调用 `CloseSession`，会话由 `OfflineTimeout` 和重连 `Init` 管理。
+`WaitGroupContext` 取消退出。普通断线不会主动调用 `TerminateSession`，会话由 `OfflineTimeout` 和重连 `Init` 管理。
+
+Agent 在调用 MsgQ `Init` 前登记初始化中的 `SessionID + ConnectionID`，成功后、发送 `FrameReady` 前原子晋升为已激活连接。
+控制请求会同时覆盖这两个状态；初始化期间收到终止时，无论 `Init` 成功还是因连接取消返回不确定结果，连接都不会收到
+Ready，并会使用独立有界上下文按新 `ConnectionID` 补偿一次精确终止。同一 `SessionID` 的并发终止请求共享一个本地操作，
+终止期间新登记的初始化连接自动加入；调用方取消只结束等待，不会取消后台收尾；任一精确终止的非幂等错误都会返回，
+不能被更早连接的成功结果掩盖。基础控制分为两层：
+`DisconnectSession` 只关闭物理连接并保留逻辑 Session，允许相同 `SessionID` 恢复；`TerminateSession` 先终止 MsgQ
+逻辑 Session，再关闭物理连接，原 `SessionID` 不能恢复。每个 Agent 都把专用控制服务注册到进程共享 gRPC Host。
+`SessionControlBroadcaster` 从服务发现内存快照取得全部运行中 Agent 并行广播，只有本地持有目标 Session 的实例处理；
+该流程不查询 Session owner、不访问 MsgQ 路由，也不依赖 Kubernetes。
 
 ### TypeScript 客户端协议
 

@@ -11,18 +11,20 @@ import (
 
 	"github.com/ngnl47/tx/lifecycle"
 	txagent "github.com/ngnl47/tx/modules/agent"
+	agentpb "github.com/ngnl47/tx/modules/agent/pb"
 	txmsgq "github.com/ngnl47/tx/modules/msgq"
 	"github.com/ngnl47/tx/protocol"
+	"google.golang.org/grpc"
 )
 
 func TestServiceStartsWithExplicitDependenciesAndLocalMsgQ(t *testing.T) {
 	root := lifecycle.NewWaitGroupContext(context.Background())
 	mailbox, err := txmsgq.NewServer(txmsgq.ServerOptions{
-		InstanceID:         "msgq-test",
-		Store:              newMemorySessionStore(),
-		MaxBacklogMessages: 8,
-		OfflineTimeout:     time.Minute,
-		SweepInterval:      time.Second,
+		InstanceID:                   "msgq-test",
+		Store:                        newMemorySessionStore(),
+		MaxBacklogMessages:           8,
+		OfflineTimeout:               time.Minute,
+		TerminateDeadSessionInterval: time.Second,
 	})
 	if err != nil {
 		t.Fatalf("NewServer returned error: %v", err)
@@ -55,6 +57,7 @@ func TestServiceStartsWithExplicitDependenciesAndLocalMsgQ(t *testing.T) {
 	}, Dependencies{
 		Tasks:     root,
 		Admission: lifecycle.NewIngress(root),
+		RPC:       newTestRPCRegistrar(),
 	})
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
@@ -65,11 +68,41 @@ func TestServiceStartsWithExplicitDependenciesAndLocalMsgQ(t *testing.T) {
 	if service.TCPAddress() == "" {
 		t.Fatal("TCPAddress is empty")
 	}
+	if _, found := service.dependencies.RPC.(*testRPCRegistrar).server.GetServiceInfo()[agentpb.AgentControlService_ServiceDesc.ServiceName]; !found {
+		t.Fatal("AgentControlService was not registered")
+	}
 	if err := service.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop returned error: %v", err)
 	}
 	root.Cancel()
 	root.WaitDoneAndWaitGroupWait()
+}
+
+func TestServiceRequiresRPCRegistrar(t *testing.T) {
+	root := lifecycle.NewWaitGroupContext(context.Background())
+	t.Cleanup(func() {
+		root.Cancel()
+		root.WaitDoneAndWaitGroupWait()
+	})
+
+	_, err := New(Options{
+		TCPListen:     "127.0.0.1:0",
+		MaxFrameBytes: 1024,
+		FetchBatch:    1,
+		Identity: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
+			return protocol.SessionPrincipal{}, nil
+		}),
+		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) (txagent.DispatchResult, error) {
+			return txagent.DispatchResult{}, nil
+		}),
+		Sessions: noopSessionRouter{},
+	}, Dependencies{
+		Tasks:     root,
+		Admission: lifecycle.NewIngress(root),
+	})
+	if err == nil {
+		t.Fatal("New returned nil error without RPC registrar")
+	}
 }
 
 func TestServiceComposeHTTPHandlerRoutesRootToWebSocket(t *testing.T) {
@@ -275,6 +308,26 @@ type fixedLocalMsgQ struct{ client txmsgq.SessionClient }
 func (msgq fixedLocalMsgQ) SessionClient() (txmsgq.SessionClient, error) {
 	return msgq.client, nil
 }
+
+type testRPCRegistrar struct{ server *grpc.Server }
+
+func newTestRPCRegistrar() *testRPCRegistrar {
+	return &testRPCRegistrar{server: grpc.NewServer()}
+}
+
+func (registrar *testRPCRegistrar) Register(register func(grpc.ServiceRegistrar) error) error {
+	return register(registrar.server)
+}
+
+func (*testRPCRegistrar) Endpoint() string { return "127.0.0.1:0" }
+
+type noopSessionRouter struct{}
+
+func (noopSessionRouter) Acquire(context.Context, txmsgq.AcquireSessionRequest) (txmsgq.SessionClient, error) {
+	return nil, nil
+}
+
+func (noopSessionRouter) Close() error { return nil }
 
 type memorySessionStore struct {
 	mu       sync.Mutex

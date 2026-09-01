@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -44,6 +45,72 @@ func TestAgentSessionAuthenticatesThenDispatchesAcceptedSequence(t *testing.T) {
 	transport.closeReads()
 	if err := <-result; !errors.Is(err, io.EOF) {
 		t.Fatalf("serve error = %v, want EOF", err)
+	}
+}
+
+func TestAgentDisconnectSessionPreservesLogicalSession(t *testing.T) {
+	agent, transport, mailbox, _ := newAgentSessionFixture(t, nil)
+	serveResult := make(chan error, 1)
+	go func() { serveResult <- agent.Serve(context.Background(), transport) }()
+	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
+	assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
+
+	result := agent.DisconnectSession(99)
+	if !result.Handled || result.SessionID != 99 || result.ConnectionID != 7 {
+		t.Fatalf("disconnect result = %#v", result)
+	}
+	select {
+	case <-serveResult:
+	case <-time.After(time.Second):
+		t.Fatal("disconnected connection did not stop")
+	}
+	if mailbox.SessionCount() != 1 {
+		t.Fatalf("mailbox session count = %d, want preserved session", mailbox.SessionCount())
+	}
+	restoredTransport := newAgentTransport()
+	restoredResult := make(chan error, 1)
+	go func() { restoredResult <- agent.Serve(context.Background(), restoredTransport) }()
+	restoredTransport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Restore: true, Payload: []byte("token")}
+	assertAgentFrame(t, restoredTransport.writes, txagent.FrameReady, 0, 0, "")
+	restoredTransport.closeReads()
+	if err := <-restoredResult; !errors.Is(err, io.EOF) {
+		t.Fatalf("restored Serve error = %v, want EOF", err)
+	}
+}
+
+func TestAgentTerminateSessionRemovesLogicalSession(t *testing.T) {
+	agent, transport, mailbox, _ := newAgentSessionFixture(t, nil)
+	serveResult := make(chan error, 1)
+	go func() { serveResult <- agent.Serve(context.Background(), transport) }()
+	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
+	assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
+
+	result, err := agent.TerminateSession(context.Background(), 99)
+	if err != nil {
+		t.Fatalf("terminate session: %v", err)
+	}
+	if !result.Handled || result.SessionID != 99 || result.ConnectionID != 7 {
+		t.Fatalf("terminate result = %#v", result)
+	}
+	select {
+	case <-serveResult:
+	case <-time.After(time.Second):
+		t.Fatal("terminated connection did not stop")
+	}
+	if mailbox.SessionCount() != 0 {
+		t.Fatalf("mailbox session count = %d, want terminated session", mailbox.SessionCount())
+	}
+	restoredTransport := newAgentTransport()
+	restoredResult := make(chan error, 1)
+	go func() { restoredResult <- agent.Serve(context.Background(), restoredTransport) }()
+	restoredTransport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Restore: true, Payload: []byte("token")}
+	if err := <-restoredResult; !errors.Is(err, msgq.ErrSessionOffline) {
+		t.Fatalf("restored Serve error = %v, want %v", err, msgq.ErrSessionOffline)
+	}
+	select {
+	case frame := <-restoredTransport.writes:
+		t.Fatalf("terminated Session unexpectedly restored with frame %#v", frame)
+	default:
 	}
 }
 
@@ -537,6 +604,8 @@ func newAgentSessionFixture(t *testing.T, dispatchErr error) (*txagent.Server, *
 		t.Fatalf("new session client router: %v", err)
 	}
 	dispatched := make(chan txagent.DispatchRequest, 4)
+	var nextConnectionID atomic.Int64
+	nextConnectionID.Store(6)
 	agent, err := txagent.NewServer(txagent.ServerOptions{
 		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
 			return testSessionPrincipal(), nil
@@ -546,7 +615,7 @@ func newAgentSessionFixture(t *testing.T, dispatchErr error) (*txagent.Server, *
 			return txagent.DispatchResult{ProcessedUpSeq: request.Seq}, dispatchErr
 		}),
 		Sessions:     router,
-		ConnectionID: func() (int64, error) { return 7, nil },
+		ConnectionID: func() (int64, error) { return nextConnectionID.Add(1), nil },
 	})
 	if err != nil {
 		t.Fatalf("new agent: %v", err)
@@ -635,7 +704,7 @@ func (*recordingAgentSessionClient) Confirm(context.Context, msgq.ConfirmRequest
 	return errors.New("unexpected Confirm")
 }
 
-func (*recordingAgentSessionClient) CloseSession(context.Context, msgq.SessionHeader) error {
+func (*recordingAgentSessionClient) TerminateSession(context.Context, msgq.SessionHeader) error {
 	return nil
 }
 

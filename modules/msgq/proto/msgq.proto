@@ -90,7 +90,7 @@ message BroadcastTopicResponse {
   int32 overflowed = 4;
 }
 
-message CloseRequest {
+message TerminateSessionRequest {
   SessionHeader header = 1;
 }
 
@@ -109,5 +109,5 @@ service MailboxService {
   rpc LeaveTopics(TopicRequest) returns (Empty);
   rpc Topics(TopicRequest) returns (TopicsResponse);
   rpc BroadcastTopic(BroadcastTopicRequest) returns (BroadcastTopicResponse);
-  rpc Close(CloseRequest) returns (Empty);
+  rpc TerminateSession(TerminateSessionRequest) returns (Empty);
 }

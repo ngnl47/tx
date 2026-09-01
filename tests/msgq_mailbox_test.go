@@ -25,7 +25,7 @@ func TestMsgQServerRestoresUnconfirmedDownMsgMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
-	defer server.Close(context.Background(), msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 8})
+	defer server.TerminateSession(context.Background(), msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 8})
 
 	first := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
 	init, err := server.Init(context.Background(), msgq.InitRequest{Header: first})
@@ -90,7 +90,7 @@ func TestMsgQServerSerializesUpMsgAndRejectsStaleConnection(t *testing.T) {
 	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: current}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	defer server.Close(context.Background(), current)
+	defer server.TerminateSession(context.Background(), current)
 
 	received, err := server.Rec(context.Background(), msgq.RecRequest{Header: current, Seq: 1})
 	if err != nil || received.UpMsgSeq != 1 {
@@ -193,7 +193,7 @@ func TestMsgQServerFetchSomeKeepsUnconfirmedSequence(t *testing.T) {
 	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	defer server.Close(context.Background(), header)
+	defer server.TerminateSession(context.Background(), header)
 	for _, message := range []string{"one", "two", "three"} {
 		if _, err := server.PubSession(context.Background(), header.SessionID, []byte(message)); err != nil {
 			t.Fatalf("publish %q: %v", message, err)
@@ -228,7 +228,7 @@ func TestMsgQServerBroadcastTopicReportsPartialOverflow(t *testing.T) {
 		if _, err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
 			t.Fatalf("init %#v: %v", header, err)
 		}
-		defer server.Close(context.Background(), header)
+		defer server.TerminateSession(context.Background(), header)
 		if err := server.JoinTopics(context.Background(), msgq.TopicRequest{Header: header, Topics: []string{"guild:9"}}); err != nil {
 			t.Fatalf("join topic: %v", err)
 		}
@@ -271,7 +271,7 @@ func TestMsgQServerRejectsOldConnectionCloseAfterRestore(t *testing.T) {
 	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: newHeader, Restore: true}); err != nil {
 		t.Fatalf("restore new connection: %v", err)
 	}
-	if err := server.Close(context.Background(), oldHeader); !errors.Is(err, msgq.ErrSessionChanged) {
+	if err := server.TerminateSession(context.Background(), oldHeader); !errors.Is(err, msgq.ErrSessionChanged) {
 		t.Fatalf("old close error = %v, want session changed", err)
 	}
 	if server.SessionCount() != 1 {
@@ -281,7 +281,7 @@ func TestMsgQServerRejectsOldConnectionCloseAfterRestore(t *testing.T) {
 	if err != nil || !found || binding.SessionID != 99 || binding.ConnectionID != 8 || binding.InstanceID != "msgq-1" {
 		t.Fatalf("binding after old close = %#v, found = %t, err = %v", binding, found, err)
 	}
-	if err := server.Close(context.Background(), newHeader); err != nil {
+	if err := server.TerminateSession(context.Background(), newHeader); err != nil {
 		t.Fatalf("close new connection: %v", err)
 	}
 }
@@ -321,7 +321,7 @@ func TestMsgQServerKeepsSameRoleSessionsIsolated(t *testing.T) {
 	if err != nil || string(secondMessage.Payload) != "second-only" {
 		t.Fatalf("second fetch = %#v, %v", secondMessage, err)
 	}
-	if err := server.Close(context.Background(), first); err != nil {
+	if err := server.TerminateSession(context.Background(), first); err != nil {
 		t.Fatalf("close first: %v", err)
 	}
 	if server.SessionCount() != 1 {
@@ -502,25 +502,25 @@ func TestMsgQServerPrimaryLifecycleUsesConditionalProjection(t *testing.T) {
 	if primary, found, err := store.FindPrimary(context.Background(), oldPrimary.RoleID); err != nil || !found || primary != newPrimary.SessionID {
 		t.Fatalf("primary after stale touch = %d, %t, %v", primary, found, err)
 	}
-	if err := server.Close(context.Background(), newPrimary); err != nil {
-		t.Fatalf("close new primary: %v", err)
+	if err := server.TerminateSession(context.Background(), newPrimary); err != nil {
+		t.Fatalf("terminate new primary: %v", err)
 	}
-	if _, found, err := store.FindPrimary(context.Background(), newPrimary.RoleID); err != nil || found {
-		t.Fatalf("primary after close = %t, %v", found, err)
+	if primary, found, err := store.FindPrimary(context.Background(), newPrimary.RoleID); err != nil || !found || primary != newPrimary.SessionID {
+		t.Fatalf("primary after terminate = %d, %t, %v, want %d", primary, found, err, newPrimary.SessionID)
 	}
 }
 
-func TestMsgQServerReapAndOverflowRemovePrimaryProjection(t *testing.T) {
+func TestMsgQServerDeadTerminationAndOverflowPreservePrimaryProjection(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		run  func(*testing.T, *msgq.Server, msgq.SessionHeader)
 	}{
 		{
-			name: "reap",
+			name: "dead termination",
 			run: func(t *testing.T, server *msgq.Server, _ msgq.SessionHeader) {
 				t.Helper()
-				if removed, err := server.Reap(context.Background(), time.Now().Add(2*time.Second)); err != nil || removed != 1 {
-					t.Fatalf("reap = %d, %v", removed, err)
+				if removed, err := server.TerminateDeadSessions(context.Background(), time.Now().Add(2*time.Second)); err != nil || removed != 1 {
+					t.Fatalf("terminate dead sessions = %d, %v", removed, err)
 				}
 			},
 		},
@@ -553,8 +553,8 @@ func TestMsgQServerReapAndOverflowRemovePrimaryProjection(t *testing.T) {
 				t.Fatalf("init primary: %v", err)
 			}
 			test.run(t, server, header)
-			if _, found, err := store.FindPrimary(context.Background(), header.RoleID); err != nil || found {
-				t.Fatalf("primary after %s = %t, %v", test.name, found, err)
+			if primary, found, err := store.FindPrimary(context.Background(), header.RoleID); err != nil || !found || primary != header.SessionID {
+				t.Fatalf("primary after %s = %d, %t, %v, want %d", test.name, primary, found, err, header.SessionID)
 			}
 			if _, found, err := store.Find(context.Background(), header.SessionID); err != nil || found {
 				t.Fatalf("binding after %s = %t, %v", test.name, found, err)
@@ -615,25 +615,25 @@ func TestMsgQServerRedisIntegration(t *testing.T) {
 	if err := server.Confirm(ctx, msgq.ConfirmRequest{Header: header, Ack: message.Seq}); err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
-	if removed, err := server.Reap(ctx, time.Now().Add(2*time.Minute)); err != nil || removed != 1 {
-		t.Fatalf("reap = %d, %v", removed, err)
+	if removed, err := server.TerminateDeadSessions(ctx, time.Now().Add(2*time.Minute)); err != nil || removed != 1 {
+		t.Fatalf("terminate dead sessions = %d, %v", removed, err)
 	}
 	if _, found, err := bindings.Find(ctx, header.SessionID); err != nil || found {
-		t.Fatalf("find owner after reap = %t, %v", found, err)
+		t.Fatalf("find owner after dead termination = %t, %v", found, err)
 	}
-	if _, found, err := bindings.FindPrimary(ctx, header.RoleID); err != nil || found {
-		t.Fatalf("find primary after reap = %t, %v", found, err)
+	if primary, found, err := bindings.FindPrimary(ctx, header.RoleID); err != nil || !found || primary != header.SessionID {
+		t.Fatalf("find primary after dead termination = %d, %t, %v, want %d", primary, found, err, header.SessionID)
 	}
 }
 
-func TestMsgQServerReapRemovesOfflineSessionAndBinding(t *testing.T) {
+func TestMsgQServerTerminateDeadSessionsRemovesOfflineSessionAndBinding(t *testing.T) {
 	store := newMailboxSessionStore()
 	server, err := msgq.NewServer(msgq.ServerOptions{
-		InstanceID:         "msgq-1",
-		Store:              store,
-		MaxBacklogMessages: 2,
-		OfflineTimeout:     time.Second,
-		SweepInterval:      time.Millisecond,
+		InstanceID:                   "msgq-1",
+		Store:                        store,
+		MaxBacklogMessages:           2,
+		OfflineTimeout:               time.Second,
+		TerminateDeadSessionInterval: time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -642,25 +642,25 @@ func TestMsgQServerReapRemovesOfflineSessionAndBinding(t *testing.T) {
 	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	removed, err := server.Reap(context.Background(), time.Now().Add(2*time.Second))
+	removed, err := server.TerminateDeadSessions(context.Background(), time.Now().Add(2*time.Second))
 	if err != nil || removed != 1 {
-		t.Fatalf("reap = %d, %v", removed, err)
+		t.Fatalf("terminate dead sessions = %d, %v", removed, err)
 	}
 	if server.SessionCount() != 0 {
 		t.Fatalf("session count = %d, want 0", server.SessionCount())
 	}
 	if _, found, err := store.Find(context.Background(), header.SessionID); err != nil || found {
-		t.Fatalf("binding after reap = found %t, err %v", found, err)
+		t.Fatalf("binding after dead termination = found %t, err %v", found, err)
 	}
 }
 
 func TestMsgQServerStartUsesLifecycleWorker(t *testing.T) {
 	server, err := msgq.NewServer(msgq.ServerOptions{
-		InstanceID:         "msgq-1",
-		Store:              newMailboxSessionStore(),
-		MaxBacklogMessages: 2,
-		OfflineTimeout:     time.Nanosecond,
-		SweepInterval:      time.Millisecond,
+		InstanceID:                   "msgq-1",
+		Store:                        newMailboxSessionStore(),
+		MaxBacklogMessages:           2,
+		OfflineTimeout:               time.Nanosecond,
+		TerminateDeadSessionInterval: time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -677,7 +677,7 @@ func TestMsgQServerStartUsesLifecycleWorker(t *testing.T) {
 	for server.SessionCount() != 0 {
 		select {
 		case <-deadline:
-			t.Fatal("session was not reaped by lifecycle worker")
+			t.Fatal("dead session was not terminated by lifecycle worker")
 		case <-time.After(time.Millisecond):
 		}
 	}

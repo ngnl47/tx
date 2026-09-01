@@ -19,7 +19,9 @@
 
 ### 可信会话后续 P0 顺序
 
-MsgQ 的 SessionID 精确邮箱与 RoleID 唯一主会话投影已经完成并进入稳定文档，不再列为待办。真实集群 P0 仍未整体完成；以下能力必须按顺序推进：
+MsgQ 的 SessionID 精确邮箱、RoleID 唯一主会话投影、Agent 物理断连/逻辑终止和全 Agent 控制广播已经完成并进入稳定文档，
+不再列为待办。控制广播只使用服务发现内存快照，不查询 Redis owner；失活终止只遍历 MsgQ 本地 Session。真实集群 P0
+仍未整体完成；以下能力必须按顺序推进：
 
 1. 完成可选无状态 Login 的剩余 P0：基于现有 HTTP 服务和公开服务器列表，补齐账号映射、RoleID 预分配、全局 `SessionID`、短期 ticket、AgentTarget 分配 SPI；Login 不依赖 MsgQ。
 2. `Create_Role` 使用预分配 `RoleID` 的标准 Actor 路由，成功后 Game 写 `(AccountID, ServerID) -> []RoleID` 投影；PendingRole 仅允许建角和心跳。

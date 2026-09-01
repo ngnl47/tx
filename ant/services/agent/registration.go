@@ -41,7 +41,8 @@ func Registration(provider OptionsProvider, local LocalMsgQ) (ant.ServiceRegistr
 				return nil, fmt.Errorf("ant agent: configure: %w", err)
 			}
 			options.LocalMsgQ = local
-			if _, err := runtime.CModRPC(); err != nil {
+			rpc, err := runtime.CModRPC()
+			if err != nil {
 				return nil, err
 			}
 			redis, err := runtime.CModRedisStorage()
@@ -58,6 +59,7 @@ func Registration(provider OptionsProvider, local LocalMsgQ) (ant.ServiceRegistr
 			return agentservice.New(options, agentservice.Dependencies{
 				Tasks:     runtime.Tasks(),
 				Admission: runtime.Admission(),
+				RPC:       rpc,
 				Instance:  runtime.Instance(),
 				Directory: directory,
 				Redis:     redis.ScriptRoutes(),

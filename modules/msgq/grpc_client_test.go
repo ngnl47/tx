@@ -41,7 +41,7 @@ func (*nilResponseMailboxClient) BroadcastTopic(context.Context, *msgqpb.Broadca
 	return nil, nil
 }
 
-func (*nilResponseMailboxClient) Close(context.Context, *msgqpb.CloseRequest, ...grpc.CallOption) (*msgqpb.Empty, error) {
+func (*nilResponseMailboxClient) TerminateSession(context.Context, *msgqpb.TerminateSessionRequest, ...grpc.CallOption) (*msgqpb.Empty, error) {
 	return nil, nil
 }
 
@@ -76,7 +76,7 @@ func TestGRPCConnectionRejectsNilSuccessResponses(t *testing.T) {
 			return err
 		},
 		"close": func() error {
-			return connection.CloseSession(context.Background(), header)
+			return connection.TerminateSession(context.Background(), header)
 		},
 	}
 	for name, run := range tests {

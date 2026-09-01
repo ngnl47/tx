@@ -32,13 +32,13 @@ type Dependencies struct {
 
 // Options 描述会话邮箱存储、积压边界和离线回收策略。
 type Options struct {
-	InstanceID         string
-	Store              txmsgq.SessionStore
-	SessionStore       msgqredis.Options
-	MaxBacklogMessages int
-	MaxBacklogBytes    int
-	OfflineTimeout     time.Duration
-	SweepInterval      time.Duration
+	InstanceID                   string
+	Store                        txmsgq.SessionStore
+	SessionStore                 msgqredis.Options
+	MaxBacklogMessages           int
+	MaxBacklogBytes              int
+	OfflineTimeout               time.Duration
+	TerminateDeadSessionInterval time.Duration
 }
 
 // Service 承载单个进程内的会话邮箱运行时。
@@ -82,12 +82,12 @@ func (service *Service) Start(context.Context) error {
 		}
 	}
 	mailbox, err := txmsgq.NewServer(txmsgq.ServerOptions{
-		InstanceID:         instanceID,
-		Store:              store,
-		MaxBacklogMessages: service.options.MaxBacklogMessages,
-		MaxBacklogBytes:    service.options.MaxBacklogBytes,
-		OfflineTimeout:     service.options.OfflineTimeout,
-		SweepInterval:      service.options.SweepInterval,
+		InstanceID:                   instanceID,
+		Store:                        store,
+		MaxBacklogMessages:           service.options.MaxBacklogMessages,
+		MaxBacklogBytes:              service.options.MaxBacklogBytes,
+		OfflineTimeout:               service.options.OfflineTimeout,
+		TerminateDeadSessionInterval: service.options.TerminateDeadSessionInterval,
 	})
 	if err != nil {
 		return err
@@ -145,7 +145,7 @@ func validateOptions(options Options) error {
 	if options.Store == nil && (strings.TrimSpace(options.SessionStore.RouteType) == "" || strings.TrimSpace(options.SessionStore.Prefix) == "" || options.SessionStore.TTL <= 0) {
 		return fmt.Errorf("msgq service: session store is not configured")
 	}
-	if options.MaxBacklogMessages <= 0 || options.MaxBacklogBytes < 0 || options.OfflineTimeout < 0 || options.SweepInterval < 0 {
+	if options.MaxBacklogMessages <= 0 || options.MaxBacklogBytes < 0 || options.OfflineTimeout < 0 || options.TerminateDeadSessionInterval < 0 {
 		return fmt.Errorf("msgq service: invalid options")
 	}
 	return nil

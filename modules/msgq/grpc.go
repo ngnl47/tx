@@ -110,8 +110,8 @@ func (s *mailboxService) BroadcastTopic(ctx context.Context, request *msgqpb.Bro
 	return response, nil
 }
 
-func (s *mailboxService) Close(ctx context.Context, request *msgqpb.CloseRequest) (*msgqpb.Empty, error) {
-	return emptyResponse(s.mailbox.Close(ctx, headerFromProto(request.GetHeader())))
+func (s *mailboxService) TerminateSession(ctx context.Context, request *msgqpb.TerminateSessionRequest) (*msgqpb.Empty, error) {
+	return emptyResponse(s.mailbox.TerminateSession(ctx, headerFromProto(request.GetHeader())))
 }
 
 func emptyResponse(err error) (*msgqpb.Empty, error) {

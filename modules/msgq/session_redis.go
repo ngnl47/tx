@@ -87,6 +87,13 @@ type RedisSessionStore struct {
 	ttl     time.Duration
 }
 
+func (s *RedisSessionStore) leaseRefreshInterval() time.Duration {
+	if s == nil {
+		return 0
+	}
+	return s.ttl / 2
+}
+
 // NewRedisSessionStore 创建 Redis 会话绑定存储。
 func NewRedisSessionStore(client SessionRedisClient, options SessionRedisOptions) (*RedisSessionStore, error) {
 	if client == nil {

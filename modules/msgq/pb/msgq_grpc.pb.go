@@ -19,18 +19,18 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	MailboxService_Init_FullMethodName           = "/tx.msgq.v1.MailboxService/Init"
-	MailboxService_Rec_FullMethodName            = "/tx.msgq.v1.MailboxService/Rec"
-	MailboxService_PubSession_FullMethodName     = "/tx.msgq.v1.MailboxService/PubSession"
-	MailboxService_Fetch_FullMethodName          = "/tx.msgq.v1.MailboxService/Fetch"
-	MailboxService_FetchSome_FullMethodName      = "/tx.msgq.v1.MailboxService/FetchSome"
-	MailboxService_Confirm_FullMethodName        = "/tx.msgq.v1.MailboxService/Confirm"
-	MailboxService_Touch_FullMethodName          = "/tx.msgq.v1.MailboxService/Touch"
-	MailboxService_JoinTopics_FullMethodName     = "/tx.msgq.v1.MailboxService/JoinTopics"
-	MailboxService_LeaveTopics_FullMethodName    = "/tx.msgq.v1.MailboxService/LeaveTopics"
-	MailboxService_Topics_FullMethodName         = "/tx.msgq.v1.MailboxService/Topics"
-	MailboxService_BroadcastTopic_FullMethodName = "/tx.msgq.v1.MailboxService/BroadcastTopic"
-	MailboxService_Close_FullMethodName          = "/tx.msgq.v1.MailboxService/Close"
+	MailboxService_Init_FullMethodName             = "/tx.msgq.v1.MailboxService/Init"
+	MailboxService_Rec_FullMethodName              = "/tx.msgq.v1.MailboxService/Rec"
+	MailboxService_PubSession_FullMethodName       = "/tx.msgq.v1.MailboxService/PubSession"
+	MailboxService_Fetch_FullMethodName            = "/tx.msgq.v1.MailboxService/Fetch"
+	MailboxService_FetchSome_FullMethodName        = "/tx.msgq.v1.MailboxService/FetchSome"
+	MailboxService_Confirm_FullMethodName          = "/tx.msgq.v1.MailboxService/Confirm"
+	MailboxService_Touch_FullMethodName            = "/tx.msgq.v1.MailboxService/Touch"
+	MailboxService_JoinTopics_FullMethodName       = "/tx.msgq.v1.MailboxService/JoinTopics"
+	MailboxService_LeaveTopics_FullMethodName      = "/tx.msgq.v1.MailboxService/LeaveTopics"
+	MailboxService_Topics_FullMethodName           = "/tx.msgq.v1.MailboxService/Topics"
+	MailboxService_BroadcastTopic_FullMethodName   = "/tx.msgq.v1.MailboxService/BroadcastTopic"
+	MailboxService_TerminateSession_FullMethodName = "/tx.msgq.v1.MailboxService/TerminateSession"
 )
 
 // MailboxServiceClient is the client API for MailboxService service.
@@ -50,7 +50,7 @@ type MailboxServiceClient interface {
 	LeaveTopics(ctx context.Context, in *TopicRequest, opts ...grpc.CallOption) (*Empty, error)
 	Topics(ctx context.Context, in *TopicRequest, opts ...grpc.CallOption) (*TopicsResponse, error)
 	BroadcastTopic(ctx context.Context, in *BroadcastTopicRequest, opts ...grpc.CallOption) (*BroadcastTopicResponse, error)
-	Close(ctx context.Context, in *CloseRequest, opts ...grpc.CallOption) (*Empty, error)
+	TerminateSession(ctx context.Context, in *TerminateSessionRequest, opts ...grpc.CallOption) (*Empty, error)
 }
 
 type mailboxServiceClient struct {
@@ -171,10 +171,10 @@ func (c *mailboxServiceClient) BroadcastTopic(ctx context.Context, in *Broadcast
 	return out, nil
 }
 
-func (c *mailboxServiceClient) Close(ctx context.Context, in *CloseRequest, opts ...grpc.CallOption) (*Empty, error) {
+func (c *mailboxServiceClient) TerminateSession(ctx context.Context, in *TerminateSessionRequest, opts ...grpc.CallOption) (*Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Empty)
-	err := c.cc.Invoke(ctx, MailboxService_Close_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, MailboxService_TerminateSession_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +198,7 @@ type MailboxServiceServer interface {
 	LeaveTopics(context.Context, *TopicRequest) (*Empty, error)
 	Topics(context.Context, *TopicRequest) (*TopicsResponse, error)
 	BroadcastTopic(context.Context, *BroadcastTopicRequest) (*BroadcastTopicResponse, error)
-	Close(context.Context, *CloseRequest) (*Empty, error)
+	TerminateSession(context.Context, *TerminateSessionRequest) (*Empty, error)
 	mustEmbedUnimplementedMailboxServiceServer()
 }
 
@@ -242,8 +242,8 @@ func (UnimplementedMailboxServiceServer) Topics(context.Context, *TopicRequest) 
 func (UnimplementedMailboxServiceServer) BroadcastTopic(context.Context, *BroadcastTopicRequest) (*BroadcastTopicResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method BroadcastTopic not implemented")
 }
-func (UnimplementedMailboxServiceServer) Close(context.Context, *CloseRequest) (*Empty, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Close not implemented")
+func (UnimplementedMailboxServiceServer) TerminateSession(context.Context, *TerminateSessionRequest) (*Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method TerminateSession not implemented")
 }
 func (UnimplementedMailboxServiceServer) mustEmbedUnimplementedMailboxServiceServer() {}
 func (UnimplementedMailboxServiceServer) testEmbeddedByValue()                        {}
@@ -464,20 +464,20 @@ func _MailboxService_BroadcastTopic_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
-func _MailboxService_Close_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CloseRequest)
+func _MailboxService_TerminateSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TerminateSessionRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(MailboxServiceServer).Close(ctx, in)
+		return srv.(MailboxServiceServer).TerminateSession(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: MailboxService_Close_FullMethodName,
+		FullMethod: MailboxService_TerminateSession_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(MailboxServiceServer).Close(ctx, req.(*CloseRequest))
+		return srv.(MailboxServiceServer).TerminateSession(ctx, req.(*TerminateSessionRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -534,8 +534,8 @@ var MailboxService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _MailboxService_BroadcastTopic_Handler,
 		},
 		{
-			MethodName: "Close",
-			Handler:    _MailboxService_Close_Handler,
+			MethodName: "TerminateSession",
+			Handler:    _MailboxService_TerminateSession_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

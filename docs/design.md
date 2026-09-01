@@ -2256,8 +2256,8 @@ TypeScript reader 使用无原型字典承载动态文档，并只从自有属�
 临时对象原型或用继承属性绕过信封校验。
 
 通用 `DeliveryService` 在同一个 gRPC server 中只能注册一次。聚合多个业务服务的进程应由项目提供一个进程级
-Receiver，再按稳定消息元数据分发，不能让每个服务重复注册同名协议。Actor Remote 和 control 属于独立通信或运维
-边界，继续使用专用入口，不因普通 RPC Host 合并而耦合生命周期或路由语义。
+Receiver，再按稳定消息元数据分发，不能让每个服务重复注册同名协议。Actor Remote 继续使用专用入口；Agent Session
+控制协议注册到普通共享 RPC Host，但保持独立 protobuf service，不与业务 Delivery、MsgQ 或 Actor 路由耦合。
 
 ### msgq
 
@@ -2276,7 +2276,7 @@ Redis 精确 binding key 为 `<prefix>:session:v2:{SessionID}`，保存完整四
 重同步恢复。
 
 `SessionID` 标识一次逻辑登录会话，`ConnectionID` 标识该会话下的一次物理 TCP/WebSocket 连接。弱网恢复必须命中
-同一 `SessionID`，同时分配新的 `ConnectionID` 以拒绝旧连接迟到的 Fetch、Confirm、Topic 管理和 Close。`Restore=false`
+同一 `SessionID`，同时分配新的 `ConnectionID` 以拒绝旧连接迟到的 Fetch、Confirm、Topic 管理和 TerminateSession。`Restore=false`
 的新建会话只在 running MsgQ 间轮转选择 owner，并用 `Create NX` 创建精确 binding；现存 SessionID 会明确冲突。
 `Restore=true` 的恢复会话只按
 SessionID 回到原 running owner，用完整旧 binding 条件 `Rebind` 到新 ConnectionID；失败时不迁移。同 SessionID 恢复
@@ -2285,11 +2285,14 @@ SessionID 回到原 running owner，用完整旧 binding 条件 `Rebind` 到新 
 只有正常可写会话是角色主会话。Agent 从可信 `SessionIdentity.AccessMode` 设置初始化属性，仅
 `AccessModeNormal` 使用 `Primary=true`；Borrow 只读会话使用独立 SessionID 和队列，但不写主会话投影，也不接收
 `PubRole`。同一 RoleID 的多个邮箱可以并存；新的正常会话替换主投影，但不继承或清空其他 SessionID 的队列。主会话
-活动条件续期 RoleID 投影；Close、超时、积压溢出只在投影仍指向自己时删除，不能影响同角色的其他 Session。
+活动按限频阈值条件续期 RoleID 投影；显式终止、失活终止和积压溢出都不主动删除主会话投影，不能影响同角色的其他
+Session。新主会话可以覆盖旧投影，遗留投影由 Redis TTL 兜底过期。
 
 `SessionRouter.ResolveSession/ResolveRole` 只读解析，不刷新 TTL。只有当前 ConnectionID 通过 owner 侧校验的连接活动
-才续期精确 binding 和对应的主会话投影；业务发布也不续期。默认离线保留窗口为 `180s`，采用既定的生产实践值；超过
-窗口、积压条数或积压字节上限时移除整个 Session，而不是无限保留未确认消息。
+才更新本地活动时间；业务发布不更新。生产 Redis store 在 `Init`、`Rebind` 或一次成功续期后等待 `TTL / 2`，达到
+阈值的第一条合法活动才续期精确 binding 和主会话投影，因此高频心跳、上行、Ack 和 Fetch 不会产生同频 Redis I/O。
+默认离线保留窗口为 `180s`，失活终止检查间隔为 `2s`；周期任务只遍历当前 MsgQ 的本地 Session 表，不扫描 Redis key。
+超过窗口、积压条数或积压字节上限时终止整个 Session，而不是无限保留未确认消息。
 
 公开投递只保留显式语义：`Sender.PubSession(SessionID, payload)` 精确投递到普通或 Borrow 会话，
 `Sender.PubRole(RoleID, payload)` 只投递到角色当前正常主会话；二者最终都调用同一个精确 `PubSession` RPC。Topic 仍是
@@ -2303,6 +2306,18 @@ gRPC client 只在同时得到合法响应时报告成功。空响应、非正�
 Agent 的会话来源是显式二选一：配置 `LocalMsgQ` 表示同进程复用，未配置时才通过 discovery 解析远端 msgq。
 本地 provider 返回错误时必须让 Agent 启动失败，不能回退远端；否则一次本地装配顺序错误会被误判成跨进程
 部署，并把半装配进程带入运行态。
+
+Agent 在调用 MsgQ `Init` 前把连接登记为初始化中，`Init` 成功后、发送 `FrameReady` 前原子晋升为已激活。注册表以
+`SessionID` 定位，以 `ConnectionID` 比较删除；旧连接退出不能移除已经恢复的新连接。控制请求会同时覆盖初始化中与
+已激活连接：初始化期间收到断开时不发送 Ready；收到终止时，无论 `Init` 成功还是因连接取消返回不确定结果，都会使用
+独立的有界上下文按新 ConnectionID 补偿一次精确终止，仍不发送 Ready。同一 SessionID 的并发终止请求共享一个本地操作，
+终止期间新登记的初始化连接自动加入；调用方取消只结束等待，不取消后台收尾；任一精确终止的非幂等错误都必须返回，
+不能由更早连接的成功结果掩盖。`DisconnectSession` 只关闭物理连接，保留
+MsgQ 邮箱并允许恢复；`TerminateSession` 使用登记时保存的完整 SessionHeader 精确终止 MsgQ 逻辑 Session，再关闭物理连接。
+
+所有独立 Agent 都在共享 RPC Host 上注册同一控制服务。调用方通过 `SessionControlBroadcaster` 读取服务发现内存快照，
+向全部运行中 Agent 并行广播；未持有目标 Session 的实例幂等返回未处理。至少一个实例确认处理即表示命中；全部未命中且
+存在调用错误表示结果不确定。该控制链路不查询 Redis owner，不认识 MsgQ，也不依赖 Kubernetes 或特定负载均衡器。
 
 ### Agent
 

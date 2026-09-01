@@ -349,7 +349,7 @@ func (*sessionClientFake) Confirm(context.Context, msgq.ConfirmRequest) error {
 	return nil
 }
 
-func (*sessionClientFake) CloseSession(context.Context, msgq.SessionHeader) error {
+func (*sessionClientFake) TerminateSession(context.Context, msgq.SessionHeader) error {
 	return nil
 }
 

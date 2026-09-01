@@ -21,7 +21,7 @@ type SessionClient interface {
 	PubSession(context.Context, int64, []byte) (PubResult, error)
 	FetchSome(context.Context, FetchSomeRequest) (FetchSomeResult, error)
 	Confirm(context.Context, ConfirmRequest) error
-	CloseSession(context.Context, SessionHeader) error
+	TerminateSession(context.Context, SessionHeader) error
 	Close() error
 }
 
@@ -97,8 +97,8 @@ func (c localSessionClient) Confirm(ctx context.Context, request ConfirmRequest)
 	return c.mailbox.Confirm(ctx, request)
 }
 
-func (c localSessionClient) CloseSession(ctx context.Context, header SessionHeader) error {
-	return c.mailbox.Close(ctx, header)
+func (c localSessionClient) TerminateSession(ctx context.Context, header SessionHeader) error {
+	return c.mailbox.TerminateSession(ctx, header)
 }
 
 func (localSessionClient) Close() error { return nil }

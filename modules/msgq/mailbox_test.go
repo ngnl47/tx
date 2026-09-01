@@ -111,7 +111,7 @@ func TestMailboxRejectsStaleConnectionWithCurrentIdentityLog(t *testing.T) {
 	if err := server.Touch(context.Background(), TouchRequest{Header: stale}); !errors.Is(err, ErrSessionChanged) {
 		t.Fatalf("touch stale connection error = %v, want %v", err, ErrSessionChanged)
 	}
-	if err := server.Close(context.Background(), stale); !errors.Is(err, ErrSessionChanged) {
+	if err := server.TerminateSession(context.Background(), stale); !errors.Is(err, ErrSessionChanged) {
 		t.Fatalf("close stale connection error = %v, want %v", err, ErrSessionChanged)
 	}
 
@@ -140,15 +140,68 @@ func TestDefaultOfflineTimeoutRetainsWeakNetworkRecoveryWindow(t *testing.T) {
 		t.Fatalf("init: %v", err)
 	}
 	base := time.Now()
-	if removed, err := server.Reap(context.Background(), base.Add(61*time.Second)); err != nil || removed != 0 {
+	if removed, err := server.TerminateDeadSessions(context.Background(), base.Add(61*time.Second)); err != nil || removed != 0 {
 		t.Fatalf("reap after 61s = %d, %v, want retained session", removed, err)
 	}
-	if removed, err := server.Reap(context.Background(), base.Add(181*time.Second)); err != nil || removed != 1 {
+	if removed, err := server.TerminateDeadSessions(context.Background(), base.Add(181*time.Second)); err != nil || removed != 1 {
 		t.Fatalf("reap after 181s = %d, %v, want one expired session", removed, err)
 	}
 }
 
-func TestMailboxReapLogCorrelatesSessionAndConnection(t *testing.T) {
+func TestTerminateSessionPreservesPrimaryProjection(t *testing.T) {
+	store := newStagedSessionStore()
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: store, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	header := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	if _, err := server.Init(context.Background(), InitRequest{Header: header, Primary: true}); err != nil {
+		t.Fatalf("init primary: %v", err)
+	}
+
+	if err := server.TerminateSession(context.Background(), header); err != nil {
+		t.Fatalf("terminate session: %v", err)
+	}
+	if server.SessionCount() != 0 {
+		t.Fatalf("session count = %d, want 0", server.SessionCount())
+	}
+	if _, found, err := store.Find(context.Background(), header.SessionID); err != nil || found {
+		t.Fatalf("exact binding after terminate = %t, %v", found, err)
+	}
+	if sessionID, found, err := store.FindPrimary(context.Background(), header.RoleID); err != nil || !found || sessionID != header.SessionID {
+		t.Fatalf("primary after terminate = %d, %t, %v, want %d", sessionID, found, err, header.SessionID)
+	}
+}
+
+func TestTerminateDeadSessionsPreservesPrimaryProjection(t *testing.T) {
+	store := newStagedSessionStore()
+	server, err := NewServer(ServerOptions{
+		InstanceID:         "msgq-1",
+		Store:              store,
+		MaxBacklogMessages: 4,
+		OfflineTimeout:     time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	header := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	if _, err := server.Init(context.Background(), InitRequest{Header: header, Primary: true}); err != nil {
+		t.Fatalf("init primary: %v", err)
+	}
+
+	terminated, err := server.TerminateDeadSessions(context.Background(), time.Now().Add(2*time.Second))
+	if err != nil || terminated != 1 {
+		t.Fatalf("terminate dead sessions = %d, %v, want 1", terminated, err)
+	}
+	if _, found, err := store.Find(context.Background(), header.SessionID); err != nil || found {
+		t.Fatalf("exact binding after dead termination = %t, %v", found, err)
+	}
+	if sessionID, found, err := store.FindPrimary(context.Background(), header.RoleID); err != nil || !found || sessionID != header.SessionID {
+		t.Fatalf("primary after dead termination = %d, %t, %v, want %d", sessionID, found, err, header.SessionID)
+	}
+}
+
+func TestMailboxDeadTerminationLogCorrelatesSessionAndConnection(t *testing.T) {
 	var output bytes.Buffer
 	txlog.SetDefault(slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { txlog.SetDefault(nil) })
@@ -166,12 +219,12 @@ func TestMailboxReapLogCorrelatesSessionAndConnection(t *testing.T) {
 	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	if removed, err := server.Reap(context.Background(), time.Now().Add(2*time.Second)); err != nil || removed != 1 {
-		t.Fatalf("reap = %d, %v", removed, err)
+	if removed, err := server.TerminateDeadSessions(context.Background(), time.Now().Add(2*time.Second)); err != nil || removed != 1 {
+		t.Fatalf("terminate dead sessions = %d, %v", removed, err)
 	}
-	record := findJSONLog(t, decodeJSONLogs(t, output.String()), "msgq session reaped")
+	record := findJSONLog(t, decodeJSONLogs(t, output.String()), "msgq dead session terminated")
 	if record["roleID"] != float64(header.RoleID) || record["sessionID"] != float64(header.SessionID) || record["connectionID"] != float64(header.ConnectionID) {
-		t.Fatalf("reap log = %#v", record)
+		t.Fatalf("dead termination log = %#v", record)
 	}
 }
 
@@ -408,7 +461,7 @@ func TestSlowSessionExpiresDespiteClientActivity(t *testing.T) {
 	session.lastActivity = time.Now()
 	session.downMsgs.entries[session.downMsgs.head].createdAt = time.Now().Add(-2 * time.Minute)
 	session.mu.Unlock()
-	removed, err := server.Reap(context.Background(), time.Now())
+	removed, err := server.TerminateDeadSessions(context.Background(), time.Now())
 	if err != nil || removed != 1 {
 		t.Fatalf("reap = %d, %v", removed, err)
 	}
@@ -462,6 +515,41 @@ func TestMailboxTouchFirstSerializesRefreshWithRestore(t *testing.T) {
 	}
 	if err := server.Touch(context.Background(), TouchRequest{Header: newHeader}); err != nil {
 		t.Fatalf("touch restored connection: %v", err)
+	}
+}
+
+func TestMailboxSessionActivityCoalescesStoreRefresh(t *testing.T) {
+	store := newLeaseCountingSessionStore(time.Hour)
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: store, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	header := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	if _, err := server.Init(context.Background(), InitRequest{Header: header, Primary: true}); err != nil {
+		t.Fatalf("init primary: %v", err)
+	}
+	session, found := server.lookup(header.SessionID)
+	if !found {
+		t.Fatal("session is missing")
+	}
+	if err := server.Touch(context.Background(), TouchRequest{Header: header}); err != nil {
+		t.Fatalf("touch before refresh threshold: %v", err)
+	}
+	if store.refreshCalls != 0 || store.refreshPrimaryCalls != 0 {
+		t.Fatalf("refresh calls before threshold = exact %d, primary %d, want 0/0", store.refreshCalls, store.refreshPrimaryCalls)
+	}
+	session.mu.Lock()
+	session.nextLeaseRefresh = time.Now().Add(-time.Second)
+	session.mu.Unlock()
+
+	if err := server.Touch(context.Background(), TouchRequest{Header: header}); err != nil {
+		t.Fatalf("first touch: %v", err)
+	}
+	if err := server.Touch(context.Background(), TouchRequest{Header: header}); err != nil {
+		t.Fatalf("second touch: %v", err)
+	}
+	if store.refreshCalls != 1 || store.refreshPrimaryCalls != 1 {
+		t.Fatalf("refresh calls = exact %d, primary %d, want 1/1", store.refreshCalls, store.refreshPrimaryCalls)
 	}
 }
 
@@ -860,6 +948,31 @@ type stagedSessionStore struct {
 	continueRefresh chan struct{}
 	createOnce      sync.Once
 	refreshOnce     sync.Once
+}
+
+type leaseCountingSessionStore struct {
+	*stagedSessionStore
+	interval            time.Duration
+	refreshCalls        int
+	refreshPrimaryCalls int
+}
+
+func newLeaseCountingSessionStore(interval time.Duration) *leaseCountingSessionStore {
+	return &leaseCountingSessionStore{stagedSessionStore: newStagedSessionStore(), interval: interval}
+}
+
+func (s *leaseCountingSessionStore) leaseRefreshInterval() time.Duration {
+	return s.interval
+}
+
+func (s *leaseCountingSessionStore) Refresh(ctx context.Context, binding SessionBinding) (bool, error) {
+	s.refreshCalls++
+	return s.stagedSessionStore.Refresh(ctx, binding)
+}
+
+func (s *leaseCountingSessionStore) RefreshPrimary(ctx context.Context, roleID, sessionID int64) (bool, error) {
+	s.refreshPrimaryCalls++
+	return s.stagedSessionStore.RefreshPrimary(ctx, roleID, sessionID)
 }
 
 func newStagedSessionStore() *stagedSessionStore {

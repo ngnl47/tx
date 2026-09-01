@@ -17,7 +17,9 @@ import (
 	"github.com/ngnl47/tx/modules/discovery"
 	txmsgq "github.com/ngnl47/tx/modules/msgq"
 	"github.com/ngnl47/tx/modules/msgq/msgqredis"
+	txrpc "github.com/ngnl47/tx/modules/rpc"
 	txredis "github.com/ngnl47/tx/storage/redis"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -34,6 +36,8 @@ type Dependencies struct {
 	Tasks lifecycle.Tasks
 	// Admission 在排水开始后拒绝新的外部业务帧与项目普通 HTTP 请求。
 	Admission lifecycle.Admission
+	// RPC 将 Agent 控制服务注册到进程共享的内部 gRPC Host。
+	RPC txrpc.Registrar
 	// Instance 用于判断当前进程是否同时承载 msgq 服务。
 	Instance discovery.Instance
 	// Directory 为远端 msgq 会话路由提供本地服务发现快照。
@@ -78,8 +82,8 @@ func New(options Options, dependencies Dependencies) (*Service, error) {
 	if err := validateOptions(options); err != nil {
 		return nil, err
 	}
-	if dependencies.Tasks == nil || dependencies.Admission == nil {
-		return nil, fmt.Errorf("agent service: lifecycle and ingress are required")
+	if dependencies.Tasks == nil || dependencies.Admission == nil || dependencies.RPC == nil {
+		return nil, fmt.Errorf("agent service: lifecycle, ingress, and RPC are required")
 	}
 	return &Service{options: options, dependencies: dependencies}, nil
 }
@@ -103,6 +107,12 @@ func (service *Service) Start(context.Context) error {
 	if err != nil {
 		_ = closer.Close()
 		return fmt.Errorf("agent service: create session runtime: %w", err)
+	}
+	if err := service.dependencies.RPC.Register(func(registrar grpc.ServiceRegistrar) error {
+		return txagent.RegisterControlService(registrar, agentRuntime)
+	}); err != nil {
+		_ = closer.Close()
+		return fmt.Errorf("agent service: register control RPC: %w", err)
 	}
 	var tcp *txagent.TCPServer
 	if service.options.TCPListen != "" {

@@ -906,27 +906,27 @@ func (x *BroadcastTopicResponse) GetOverflowed() int32 {
 	return 0
 }
 
-type CloseRequest struct {
+type TerminateSessionRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Header        *SessionHeader         `protobuf:"bytes,1,opt,name=header,proto3" json:"header,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *CloseRequest) Reset() {
-	*x = CloseRequest{}
+func (x *TerminateSessionRequest) Reset() {
+	*x = TerminateSessionRequest{}
 	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *CloseRequest) String() string {
+func (x *TerminateSessionRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*CloseRequest) ProtoMessage() {}
+func (*TerminateSessionRequest) ProtoMessage() {}
 
-func (x *CloseRequest) ProtoReflect() protoreflect.Message {
+func (x *TerminateSessionRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -938,12 +938,12 @@ func (x *CloseRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use CloseRequest.ProtoReflect.Descriptor instead.
-func (*CloseRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use TerminateSessionRequest.ProtoReflect.Descriptor instead.
+func (*TerminateSessionRequest) Descriptor() ([]byte, []int) {
 	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{17}
 }
 
-func (x *CloseRequest) GetHeader() *SessionHeader {
+func (x *TerminateSessionRequest) GetHeader() *SessionHeader {
 	if x != nil {
 		return x.Header
 	}
@@ -1047,10 +1047,10 @@ const file_modules_msgq_proto_msgq_proto_rawDesc = "" +
 	"\askipped\x18\x03 \x01(\x05R\askipped\x12\x1e\n" +
 	"\n" +
 	"overflowed\x18\x04 \x01(\x05R\n" +
-	"overflowed\"A\n" +
-	"\fCloseRequest\x121\n" +
+	"overflowed\"L\n" +
+	"\x17TerminateSessionRequest\x121\n" +
 	"\x06header\x18\x01 \x01(\v2\x19.tx.msgq.v1.SessionHeaderR\x06header\"\a\n" +
-	"\x05Empty2\x8e\x06\n" +
+	"\x05Empty2\xa4\x06\n" +
 	"\x0eMailboxService\x129\n" +
 	"\x04Init\x12\x17.tx.msgq.v1.InitRequest\x1a\x18.tx.msgq.v1.InitResponse\x126\n" +
 	"\x03Rec\x12\x16.tx.msgq.v1.RecRequest\x1a\x17.tx.msgq.v1.RecResponse\x12K\n" +
@@ -1064,8 +1064,8 @@ const file_modules_msgq_proto_msgq_proto_rawDesc = "" +
 	"JoinTopics\x12\x18.tx.msgq.v1.TopicRequest\x1a\x11.tx.msgq.v1.Empty\x12:\n" +
 	"\vLeaveTopics\x12\x18.tx.msgq.v1.TopicRequest\x1a\x11.tx.msgq.v1.Empty\x12>\n" +
 	"\x06Topics\x12\x18.tx.msgq.v1.TopicRequest\x1a\x1a.tx.msgq.v1.TopicsResponse\x12W\n" +
-	"\x0eBroadcastTopic\x12!.tx.msgq.v1.BroadcastTopicRequest\x1a\".tx.msgq.v1.BroadcastTopicResponse\x124\n" +
-	"\x05Close\x12\x18.tx.msgq.v1.CloseRequest\x1a\x11.tx.msgq.v1.EmptyB-Z+github.com/ngnl47/tx/modules/msgq/pb;msgqpbb\x06proto3"
+	"\x0eBroadcastTopic\x12!.tx.msgq.v1.BroadcastTopicRequest\x1a\".tx.msgq.v1.BroadcastTopicResponse\x12J\n" +
+	"\x10TerminateSession\x12#.tx.msgq.v1.TerminateSessionRequest\x1a\x11.tx.msgq.v1.EmptyB-Z+github.com/ngnl47/tx/modules/msgq/pb;msgqpbb\x06proto3"
 
 var (
 	file_modules_msgq_proto_msgq_proto_rawDescOnce sync.Once
@@ -1081,25 +1081,25 @@ func file_modules_msgq_proto_msgq_proto_rawDescGZIP() []byte {
 
 var file_modules_msgq_proto_msgq_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_modules_msgq_proto_msgq_proto_goTypes = []any{
-	(*SessionHeader)(nil),          // 0: tx.msgq.v1.SessionHeader
-	(*InitRequest)(nil),            // 1: tx.msgq.v1.InitRequest
-	(*InitResponse)(nil),           // 2: tx.msgq.v1.InitResponse
-	(*RecRequest)(nil),             // 3: tx.msgq.v1.RecRequest
-	(*RecResponse)(nil),            // 4: tx.msgq.v1.RecResponse
-	(*PubSessionRequest)(nil),      // 5: tx.msgq.v1.PubSessionRequest
-	(*PubSessionResponse)(nil),     // 6: tx.msgq.v1.PubSessionResponse
-	(*FetchRequest)(nil),           // 7: tx.msgq.v1.FetchRequest
-	(*FetchResponse)(nil),          // 8: tx.msgq.v1.FetchResponse
-	(*FetchSomeRequest)(nil),       // 9: tx.msgq.v1.FetchSomeRequest
-	(*FetchSomeResponse)(nil),      // 10: tx.msgq.v1.FetchSomeResponse
-	(*ConfirmRequest)(nil),         // 11: tx.msgq.v1.ConfirmRequest
-	(*TouchRequest)(nil),           // 12: tx.msgq.v1.TouchRequest
-	(*TopicRequest)(nil),           // 13: tx.msgq.v1.TopicRequest
-	(*TopicsResponse)(nil),         // 14: tx.msgq.v1.TopicsResponse
-	(*BroadcastTopicRequest)(nil),  // 15: tx.msgq.v1.BroadcastTopicRequest
-	(*BroadcastTopicResponse)(nil), // 16: tx.msgq.v1.BroadcastTopicResponse
-	(*CloseRequest)(nil),           // 17: tx.msgq.v1.CloseRequest
-	(*Empty)(nil),                  // 18: tx.msgq.v1.Empty
+	(*SessionHeader)(nil),           // 0: tx.msgq.v1.SessionHeader
+	(*InitRequest)(nil),             // 1: tx.msgq.v1.InitRequest
+	(*InitResponse)(nil),            // 2: tx.msgq.v1.InitResponse
+	(*RecRequest)(nil),              // 3: tx.msgq.v1.RecRequest
+	(*RecResponse)(nil),             // 4: tx.msgq.v1.RecResponse
+	(*PubSessionRequest)(nil),       // 5: tx.msgq.v1.PubSessionRequest
+	(*PubSessionResponse)(nil),      // 6: tx.msgq.v1.PubSessionResponse
+	(*FetchRequest)(nil),            // 7: tx.msgq.v1.FetchRequest
+	(*FetchResponse)(nil),           // 8: tx.msgq.v1.FetchResponse
+	(*FetchSomeRequest)(nil),        // 9: tx.msgq.v1.FetchSomeRequest
+	(*FetchSomeResponse)(nil),       // 10: tx.msgq.v1.FetchSomeResponse
+	(*ConfirmRequest)(nil),          // 11: tx.msgq.v1.ConfirmRequest
+	(*TouchRequest)(nil),            // 12: tx.msgq.v1.TouchRequest
+	(*TopicRequest)(nil),            // 13: tx.msgq.v1.TopicRequest
+	(*TopicsResponse)(nil),          // 14: tx.msgq.v1.TopicsResponse
+	(*BroadcastTopicRequest)(nil),   // 15: tx.msgq.v1.BroadcastTopicRequest
+	(*BroadcastTopicResponse)(nil),  // 16: tx.msgq.v1.BroadcastTopicResponse
+	(*TerminateSessionRequest)(nil), // 17: tx.msgq.v1.TerminateSessionRequest
+	(*Empty)(nil),                   // 18: tx.msgq.v1.Empty
 }
 var file_modules_msgq_proto_msgq_proto_depIdxs = []int32{
 	0,  // 0: tx.msgq.v1.InitRequest.header:type_name -> tx.msgq.v1.SessionHeader
@@ -1110,7 +1110,7 @@ var file_modules_msgq_proto_msgq_proto_depIdxs = []int32{
 	0,  // 5: tx.msgq.v1.ConfirmRequest.header:type_name -> tx.msgq.v1.SessionHeader
 	0,  // 6: tx.msgq.v1.TouchRequest.header:type_name -> tx.msgq.v1.SessionHeader
 	0,  // 7: tx.msgq.v1.TopicRequest.header:type_name -> tx.msgq.v1.SessionHeader
-	0,  // 8: tx.msgq.v1.CloseRequest.header:type_name -> tx.msgq.v1.SessionHeader
+	0,  // 8: tx.msgq.v1.TerminateSessionRequest.header:type_name -> tx.msgq.v1.SessionHeader
 	1,  // 9: tx.msgq.v1.MailboxService.Init:input_type -> tx.msgq.v1.InitRequest
 	3,  // 10: tx.msgq.v1.MailboxService.Rec:input_type -> tx.msgq.v1.RecRequest
 	5,  // 11: tx.msgq.v1.MailboxService.PubSession:input_type -> tx.msgq.v1.PubSessionRequest
@@ -1122,7 +1122,7 @@ var file_modules_msgq_proto_msgq_proto_depIdxs = []int32{
 	13, // 17: tx.msgq.v1.MailboxService.LeaveTopics:input_type -> tx.msgq.v1.TopicRequest
 	13, // 18: tx.msgq.v1.MailboxService.Topics:input_type -> tx.msgq.v1.TopicRequest
 	15, // 19: tx.msgq.v1.MailboxService.BroadcastTopic:input_type -> tx.msgq.v1.BroadcastTopicRequest
-	17, // 20: tx.msgq.v1.MailboxService.Close:input_type -> tx.msgq.v1.CloseRequest
+	17, // 20: tx.msgq.v1.MailboxService.TerminateSession:input_type -> tx.msgq.v1.TerminateSessionRequest
 	2,  // 21: tx.msgq.v1.MailboxService.Init:output_type -> tx.msgq.v1.InitResponse
 	4,  // 22: tx.msgq.v1.MailboxService.Rec:output_type -> tx.msgq.v1.RecResponse
 	6,  // 23: tx.msgq.v1.MailboxService.PubSession:output_type -> tx.msgq.v1.PubSessionResponse
@@ -1134,7 +1134,7 @@ var file_modules_msgq_proto_msgq_proto_depIdxs = []int32{
 	18, // 29: tx.msgq.v1.MailboxService.LeaveTopics:output_type -> tx.msgq.v1.Empty
 	14, // 30: tx.msgq.v1.MailboxService.Topics:output_type -> tx.msgq.v1.TopicsResponse
 	16, // 31: tx.msgq.v1.MailboxService.BroadcastTopic:output_type -> tx.msgq.v1.BroadcastTopicResponse
-	18, // 32: tx.msgq.v1.MailboxService.Close:output_type -> tx.msgq.v1.Empty
+	18, // 32: tx.msgq.v1.MailboxService.TerminateSession:output_type -> tx.msgq.v1.Empty
 	21, // [21:33] is the sub-list for method output_type
 	9,  // [9:21] is the sub-list for method input_type
 	9,  // [9:9] is the sub-list for extension type_name

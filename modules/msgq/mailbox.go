@@ -12,24 +12,25 @@ import (
 )
 
 const (
-	defaultOfflineTimeout    = 180 * time.Second
-	defaultSweepInterval     = 2 * time.Second
-	defaultMaxBacklogBytes   = 64 * 1024 * 1024
-	storeCompensationTimeout = 5 * time.Second
-	initLockShards           = 64
+	defaultOfflineTimeout               = 180 * time.Second
+	defaultTerminateDeadSessionInterval = 2 * time.Second
+	defaultMaxBacklogBytes              = 64 * 1024 * 1024
+	storeCompensationTimeout            = 5 * time.Second
+	initLockShards                      = 64
 )
 
 // Server 在本进程维护客户端会话与未确认下行消息。
 // Redis 只保存精确会话归属和角色主会话投影，不保存下行编码载荷。
 type Server struct {
-	instanceID         string
-	store              SessionStore
-	maxBacklogMessages int
-	maxBacklogBytes    int
-	offlineTimeout     time.Duration
-	sweepInterval      time.Duration
-	reaping            atomic.Bool
-	initLocks          [initLockShards]sync.Mutex
+	instanceID                   string
+	store                        SessionStore
+	maxBacklogMessages           int
+	maxBacklogBytes              int
+	offlineTimeout               time.Duration
+	terminateDeadSessionInterval time.Duration
+	leaseRefreshInterval         time.Duration
+	terminatingDeadSessions      atomic.Bool
+	initLocks                    [initLockShards]sync.Mutex
 	// beforeRestoreSessionLock 仅供包内测试观察 Restore 即将等待会话锁的阶段。
 	beforeRestoreSessionLock func()
 
@@ -46,9 +47,9 @@ type ServerOptions struct {
 	Store              SessionStore
 	MaxBacklogMessages int
 	// MaxBacklogBytes 限制每个会话中尚未确认编码载荷的总字节数。零值使用安全默认值。
-	MaxBacklogBytes int
-	OfflineTimeout  time.Duration
-	SweepInterval   time.Duration
+	MaxBacklogBytes              int
+	OfflineTimeout               time.Duration
+	TerminateDeadSessionInterval time.Duration
 }
 
 // SessionHeader 唯一标识一次客户端连接。
@@ -118,7 +119,7 @@ type ConfirmRequest struct {
 	Ack    int64
 }
 
-// TouchRequest 续期当前会话的 Redis 归属。
+// TouchRequest 记录当前会话活动，并在达到限频阈值时续期 Redis 归属。
 type TouchRequest struct {
 	Header SessionHeader
 }
@@ -151,7 +152,7 @@ type BroadcastTopicResult struct {
 
 // NewServer 创建一个有界的进程内会话邮箱。
 func NewServer(options ServerOptions) (*Server, error) {
-	if !validValue(options.InstanceID) || options.Store == nil || options.MaxBacklogMessages <= 0 || options.OfflineTimeout < 0 || options.SweepInterval < 0 {
+	if !validValue(options.InstanceID) || options.Store == nil || options.MaxBacklogMessages <= 0 || options.OfflineTimeout < 0 || options.TerminateDeadSessionInterval < 0 {
 		return nil, ErrInvalidServer
 	}
 	if options.OfflineTimeout == 0 {
@@ -163,18 +164,23 @@ func NewServer(options ServerOptions) (*Server, error) {
 	if options.MaxBacklogBytes < 0 {
 		return nil, ErrInvalidServer
 	}
-	if options.SweepInterval == 0 {
-		options.SweepInterval = defaultSweepInterval
+	if options.TerminateDeadSessionInterval == 0 {
+		options.TerminateDeadSessionInterval = defaultTerminateDeadSessionInterval
+	}
+	var leaseRefreshInterval time.Duration
+	if provider, ok := options.Store.(interface{ leaseRefreshInterval() time.Duration }); ok {
+		leaseRefreshInterval = provider.leaseRefreshInterval()
 	}
 	return &Server{
-		instanceID:         options.InstanceID,
-		store:              options.Store,
-		maxBacklogMessages: options.MaxBacklogMessages,
-		maxBacklogBytes:    options.MaxBacklogBytes,
-		offlineTimeout:     options.OfflineTimeout,
-		sweepInterval:      options.SweepInterval,
-		sessions:           make(map[int64]*mailboxSession),
-		topics:             make(map[string]map[*mailboxSession]struct{}),
+		instanceID:                   options.InstanceID,
+		store:                        options.Store,
+		maxBacklogMessages:           options.MaxBacklogMessages,
+		maxBacklogBytes:              options.MaxBacklogBytes,
+		offlineTimeout:               options.OfflineTimeout,
+		terminateDeadSessionInterval: options.TerminateDeadSessionInterval,
+		leaseRefreshInterval:         leaseRefreshInterval,
+		sessions:                     make(map[int64]*mailboxSession),
+		topics:                       make(map[string]map[*mailboxSession]struct{}),
 	}, nil
 }
 
@@ -291,8 +297,12 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 		session.mu.Unlock()
 		return InitResult{}, ErrSessionChanged
 	}
+	now := time.Now()
 	session.connectionID = request.Header.ConnectionID
-	session.lastActivity = time.Now()
+	session.lastActivity = now
+	if s.leaseRefreshInterval > 0 {
+		session.nextLeaseRefresh = now.Add(s.leaseRefreshInterval)
+	}
 	if request.Restore {
 		session.downMsgs.resetSent()
 		if err := session.downMsgs.confirm(request.Ack); err != nil {
@@ -640,8 +650,8 @@ func (s *Server) BroadcastTopic(ctx context.Context, request BroadcastTopicReque
 	return result, nil
 }
 
-// Close 删除当前会话。只有 Redis 仍保存完全相同 binding 时才会删除 owner。
-func (s *Server) Close(ctx context.Context, header SessionHeader) error {
+// TerminateSession 终止当前逻辑会话。只有 Redis 仍保存完全相同 binding 时才会删除 owner。
+func (s *Server) TerminateSession(ctx context.Context, header SessionHeader) error {
 	if s == nil {
 		return ErrServerNil
 	}
@@ -665,22 +675,15 @@ func (s *Server) Close(ctx context.Context, header SessionHeader) error {
 		ConnectionID: header.ConnectionID,
 		InstanceID:   s.instanceID,
 	}
-	removed, err := s.store.Unbind(ctx, binding)
+	removed, err := s.terminateSessionLocked(ctx, session, binding)
+	session.mu.Unlock()
 	if err != nil {
-		session.mu.Unlock()
 		return err
 	}
 	if !removed {
-		session.mu.Unlock()
 		return ErrSessionChanged
 	}
-	var primaryErr error
-	if session.primary {
-		_, primaryErr = s.store.UnbindPrimary(ctx, session.roleID, session.sessionID)
-	}
-	s.removeLocked(session)
-	session.mu.Unlock()
-	return primaryErr
+	return nil
 }
 
 // SessionCount 返回当前进程内活动会话数。
@@ -693,9 +696,9 @@ func (s *Server) SessionCount() int {
 	return len(s.sessions)
 }
 
-// Reap 移除超过 OfflineTimeout 未产生客户端会话活动的本地 Session。
+// TerminateDeadSessions 终止超过 OfflineTimeout 未产生客户端会话活动的本地 Session。
 // 即使 Redis 条件解绑失败，失活会话也会从本机移除，Redis TTL 会兜底清理旧 owner。
-func (s *Server) Reap(ctx context.Context, now time.Time) (int, error) {
+func (s *Server) TerminateDeadSessions(ctx context.Context, now time.Time) (int, error) {
 	if s == nil {
 		return 0, ErrServerNil
 	}
@@ -723,15 +726,10 @@ func (s *Server) Reap(ctx context.Context, now time.Time) (int, error) {
 			ConnectionID: session.connectionID,
 			InstanceID:   s.instanceID,
 		}
-		_, err := s.store.Unbind(ctx, binding)
-		var primaryErr error
-		if session.primary {
-			_, primaryErr = s.store.UnbindPrimary(ctx, binding.RoleID, binding.SessionID)
-		}
-		s.removeLocked(session)
+		_, err := s.terminateSessionLocked(ctx, session, binding)
 		session.mu.Unlock()
 		removed++
-		txlog.DebugContext(ctx, "msgq session reaped",
+		txlog.DebugContext(ctx, "msgq dead session terminated",
 			"roleID", binding.RoleID,
 			"sessionID", binding.SessionID,
 			"connectionID", binding.ConnectionID,
@@ -740,7 +738,7 @@ func (s *Server) Reap(ctx context.Context, now time.Time) (int, error) {
 			"backlogExpired", backlogExpired,
 		)
 		if err != nil {
-			txlog.ErrorContext(ctx, "msgq reap session unbind failed",
+			txlog.ErrorContext(ctx, "msgq terminate dead session unbind failed",
 				"roleID", binding.RoleID,
 				"sessionID", binding.SessionID,
 				"connectionID", binding.ConnectionID,
@@ -749,19 +747,11 @@ func (s *Server) Reap(ctx context.Context, now time.Time) (int, error) {
 			)
 			errs = append(errs, err)
 		}
-		if primaryErr != nil {
-			txlog.ErrorContext(ctx, "msgq reap primary unbind failed",
-				"roleID", binding.RoleID,
-				"sessionID", binding.SessionID,
-				"err", primaryErr,
-			)
-			errs = append(errs, primaryErr)
-		}
 	}
 	return removed, errors.Join(errs...)
 }
 
-// Start 将空闲会话清理循环绑定到服务的 WaitGroupContext。
+// Start 将失活会话终止循环绑定到服务的 WaitGroupContext。
 func (s *Server) Start(ctx waitGroupContext) error {
 	if s == nil {
 		return ErrServerNil
@@ -769,20 +759,20 @@ func (s *Server) Start(ctx waitGroupContext) error {
 	if ctx == nil {
 		return ErrLifecycleNil
 	}
-	if !s.reaping.CompareAndSwap(false, true) {
-		return ErrReaperRunning
+	if !s.terminatingDeadSessions.CompareAndSwap(false, true) {
+		return ErrDeadSessionTerminatorRunning
 	}
 	return ctx.Go(func(context.Context) {
-		defer s.reaping.Store(false)
-		ticker := time.NewTicker(s.sweepInterval)
+		defer s.terminatingDeadSessions.Store(false)
+		ticker := time.NewTicker(s.terminateDeadSessionInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case now := <-ticker.C:
-				if _, err := s.Reap(ctx, now); err != nil && ctx.Err() == nil {
-					txlog.ErrorContext(ctx, "msgq reap idle sessions failed", "err", err)
+				if _, err := s.TerminateDeadSessions(ctx, now); err != nil && ctx.Err() == nil {
+					txlog.ErrorContext(ctx, "msgq terminate dead sessions failed", "err", err)
 				}
 			}
 		}
@@ -851,13 +841,22 @@ func (s *Server) removeLocked(session *mailboxSession) {
 	session.signal()
 }
 
+// terminateSessionLocked 必须在持有 session.mu 时调用。
+func (s *Server) terminateSessionLocked(ctx context.Context, session *mailboxSession, binding SessionBinding) (bool, error) {
+	removed, err := s.store.Unbind(ctx, binding)
+	s.removeLocked(session)
+	return removed, err
+}
+
 func (s *Server) evict(ctx context.Context, session *mailboxSession, header SessionHeader) {
 	session.mu.Lock()
 	if !session.active || session.sessionID != header.SessionID || session.connectionID != header.ConnectionID {
 		session.mu.Unlock()
 		return
 	}
-	s.removeLocked(session)
+	removed, err := s.terminateSessionLocked(ctx, session, SessionBinding{
+		RoleID: header.RoleID, SessionID: header.SessionID, ConnectionID: header.ConnectionID, InstanceID: s.instanceID,
+	})
 	session.mu.Unlock()
 	txlog.WarnContext(ctx, "msgq session evicted",
 		"roleID", header.RoleID,
@@ -866,9 +865,6 @@ func (s *Server) evict(ctx context.Context, session *mailboxSession, header Sess
 		"instanceID", s.instanceID,
 		"reason", "backlog_overflow",
 	)
-	removed, err := s.store.Unbind(ctx, SessionBinding{
-		RoleID: header.RoleID, SessionID: header.SessionID, ConnectionID: header.ConnectionID, InstanceID: s.instanceID,
-	})
 	if err != nil {
 		txlog.ErrorContext(ctx, "msgq evict session unbind failed",
 			"roleID", header.RoleID,
@@ -884,15 +880,6 @@ func (s *Server) evict(ctx context.Context, session *mailboxSession, header Sess
 			"connectionID", header.ConnectionID,
 			"instanceID", s.instanceID,
 		)
-	}
-	if session.primary {
-		if _, err := s.store.UnbindPrimary(ctx, header.RoleID, header.SessionID); err != nil {
-			txlog.ErrorContext(ctx, "msgq evict primary unbind failed",
-				"roleID", header.RoleID,
-				"sessionID", header.SessionID,
-				"err", err,
-			)
-		}
 	}
 }
 
@@ -956,6 +943,12 @@ func (s *Server) touch(ctx context.Context, header SessionHeader) (*mailboxSessi
 		s.logStaleConnection(ctx, header, current, err)
 		return nil, err
 	}
+	now := time.Now()
+	if s.leaseRefreshInterval > 0 && now.Before(session.nextLeaseRefresh) {
+		session.lastActivity = now
+		session.mu.Unlock()
+		return session, nil
+	}
 	refreshed, err := s.store.Refresh(ctx, SessionBinding{
 		RoleID:       header.RoleID,
 		SessionID:    header.SessionID,
@@ -989,7 +982,10 @@ func (s *Server) touch(ctx context.Context, header SessionHeader) (*mailboxSessi
 			return nil, errors.Join(ErrSessionChanged, unbindErr)
 		}
 	}
-	session.lastActivity = time.Now()
+	session.lastActivity = now
+	if s.leaseRefreshInterval > 0 {
+		session.nextLeaseRefresh = now.Add(s.leaseRefreshInterval)
+	}
 	session.mu.Unlock()
 	return session, nil
 }
@@ -1017,17 +1013,18 @@ func (s *Server) logStaleConnection(ctx context.Context, requested, current Sess
 }
 
 type mailboxSession struct {
-	roleID       int64
-	sessionID    int64
-	connectionID int64
-	primary      bool
-	upMsgSeq     int64
-	active       bool
-	lastActivity time.Time
-	notify       chan struct{}
-	downMsgs     downMsgQueue
-	topics       map[string]struct{}
-	mu           sync.Mutex
+	roleID           int64
+	sessionID        int64
+	connectionID     int64
+	primary          bool
+	upMsgSeq         int64
+	active           bool
+	lastActivity     time.Time
+	nextLeaseRefresh time.Time
+	notify           chan struct{}
+	downMsgs         downMsgQueue
+	topics           map[string]struct{}
+	mu               sync.Mutex
 }
 
 func newMailboxSession(header SessionHeader, primary bool) *mailboxSession {
