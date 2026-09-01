@@ -72,6 +72,8 @@ func NewActorDispatcher(options ActorDispatcherOptions) (Dispatcher, error) {
 		if dispatch.Target == nil {
 			return DispatchResult{}, ErrActorTargetNil
 		}
+		dispatch.Delivery.Identity = &request.Identity
+		dispatch.Delivery.UpSeq = request.Seq
 		if !dispatch.WantsResult {
 			return DispatchResult{}, options.Messenger.Tell(dispatch.Target, dispatch.Delivery)
 		}

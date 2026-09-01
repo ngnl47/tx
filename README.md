@@ -666,13 +666,20 @@ WebSocket 只接受 binary message。两种传输共用同一套 `Frame`、身�
 
 Agent 不实现账号、JWT、游客登录或角色选择。项目必须在启动组合根提供 `HandlerProvider`：它接收当前
 Bee 或 Ant Context，组合身份解析器和项目 Actor 路由策略。这样项目不需要全局注册表，也不会在多测试、多 Server
-进程组合时共享可变状态。握手中的不透明数据由项目解析为逻辑 `RoleID` 和 `SessionID`：
+进程组合时共享可变状态。握手中的不透明数据由项目解析为 `protocol.SessionPrincipal`；Agent 校验主体后自行生成正
+`ConnectionID`，构造不可变的 `protocol.SessionIdentity`：
 
 ```go
 handlers := func(runtime bee.Context) (txagent.IdentityResolver, txagent.Dispatcher, error) {
-    identity := txagent.IdentityResolverFunc(func(ctx context.Context, req txagent.AuthRequest) (txagent.Identity, error) {
+    identity := txagent.IdentityResolverFunc(func(ctx context.Context, req txagent.AuthRequest) (txprotocol.SessionPrincipal, error) {
         // 项目在这里校验 token，或解析登录服签发的可信 ticket。
-        return txagent.Identity{RoleID: 470001, SessionID: 99}, nil
+        return txprotocol.SessionPrincipal{
+            AccountID: 470001,
+            ServerID:  1,
+            RoleID:    470001,
+            SessionID: 99,
+            AccessMode: txprotocol.AccessModeNormal,
+        }, nil
     })
     messenger, err := runtime.CModActor()
     if err != nil {
@@ -686,35 +693,22 @@ handlers := func(runtime bee.Context) (txagent.IdentityResolver, txagent.Dispatc
 }
 ```
 
-项目需要使用生成 cmd 时，可先在项目层创建类型化 Dispatcher；解码仍发生在 Agent 之后：
-
-```go
-dispatcher, err := appagent.NewBONDispatcher(func(ctx context.Context, identity txagent.Identity, descriptor cmd.CmdDescriptor, value any) error {
-    switch request := value.(type) {
-    case *cmd.Role_RenameReq:
-        return HandleRename(ctx, identity.RoleID, request)
-    default:
-        return fmt.Errorf("unsupported command %s", descriptor.Name)
-    }
-})
-if err != nil {
-    return err
-}
-```
-
-这里的 `cmd.DecodeBONCommand` 由 `txgen` 生成：它校验命令名并返回对应 `*cmd.X` 类型。Agent 只负责 Frame、
+项目 `ActorDispatchResolver` 只根据生成命令元数据选择目标 Actor、消息类型、命令号、路由键和载荷；通用
+`NewActorDispatcher` 在投递前以 Agent 的可信 `SessionIdentity` 与当前上行 `UpSeq` 覆盖 Delivery 对应字段。项目
+resolver 和客户端载荷均不能指定 `ConnectionID`，也不能伪造投递给 Actor 的身份或上行序号。Agent 只负责 Frame、
 身份和 Seq/Ack，不依赖任何项目生成包。
 
 一条连接的处理顺序固定如下：
 
 1. 客户端先发送 `FrameHandshake`，其中 `Payload` 交给 `IdentityResolver`，`Restore/Ack` 交给会话恢复。
-2. Agent 按 `RoleID` 取得当前 msgq owner 并调用 `Init`；同进程 msgq 时直接复用本地 `SessionClient`，分进程时按 Redis owner 和服务目录复用 gRPC 连接。
-3. 新会话始终重置该 `SessionID` 的本地 Seq 与下行队列；恢复会话必须命中相同 `SessionID`，不存在或已被替换时明确失败，不能安装一份空会话。
-4. `Init` 成功后，Agent 发送 `FrameReady` 报告当前 `UpMsgSeq`。客户端收到它之前只能处于连接中，不能发送业务帧；恢复失败时不会出现“先成功、再被关闭”的假状态。
-5. 客户端以 `FrameReady.Ack` 释放服务端已经受理的重放前缀，再按原序号重放剩余 UpMsg。
-6. 每个 `FrameUpMsg` 先调用 `Rec(roleID, seq, ack)`。只有 `UpMsgSeq` 前进时才进入 `Dispatcher`，重复 Seq 不会重复分发。
-7. Agent 持续 `FetchSome` 下行队列，写出 `FrameDownMsg`；客户端在后续上行帧携带 Ack，`Rec` 会确认对应下行消息。
-8. 服务端已经受理的 `FrameUpMsg.Seq` 也会得到确认：有业务响应时由 `FrameDownMsg.Ack` 捎带，没有响应或收到重复 Seq 时返回独立 `FrameAck`。
+2. `IdentityResolver` 返回 `SessionPrincipal`；Agent 验证主体、生成本次物理连接的正 `ConnectionID`，再构造 `SessionIdentity`。
+3. Agent 按 `RoleID` 取得当前 msgq owner 并调用 `Init`；同进程 msgq 时直接复用本地 `SessionClient`，分进程时按 Redis owner 和服务目录复用 gRPC 连接。
+4. 新会话始终重置该 `SessionID` 的本地 Seq 与下行队列；恢复会话必须命中相同 `SessionID`，不存在或已被替换时明确失败，不能安装一份空会话。
+5. `Init` 成功后，Agent 发送 `FrameReady` 报告当前 `UpMsgSeq`。客户端收到它之前只能处于连接中，不能发送业务帧；恢复失败时不会出现“先成功、再被关闭”的假状态。
+6. 客户端以 `FrameReady.Ack` 释放服务端已经受理的重放前缀，再按原序号重放剩余 UpMsg。
+7. 每个 `FrameUpMsg` 先调用 `Rec(roleID, seq, ack)`。只有 `UpMsgSeq` 前进时才进入 `Dispatcher`，重复 Seq 不会重复分发。
+8. Agent 持续 `FetchSome` 下行队列，写出 `FrameDownMsg`；客户端在后续上行帧携带 Ack，`Rec` 会确认对应下行消息。
+9. 当前服务端确认的是 MsgQ 已受理的 `FrameUpMsg.Seq`：有业务响应时由 Agent 发布的 `FrameDownMsg.Ack` 捎带，没有响应或收到重复 Seq 时返回独立 `FrameAck`。这不是 Actor 处理完成确认。
 
 客户端不能只保存三个 Seq/Ack 计数器来恢复会话。UpMsg 必须在首次发送前进入本地未确认队列；收到服务端累计 Ack 后
 释放已确认前缀；网络重连时复用同一逻辑 Session，并按原 Seq、原顺序和原只读 Payload 重放剩余帧。这样即使网络在
@@ -781,8 +775,7 @@ services:
 项目如果在 `agentservice.Options` 中提供 `HTTPHandler`，同一个 `http.Server` 会固定按路径分派：根路径 `/`
 继续保留给 WebSocket Upgrade，非根路径请求在通过 admission 后交给项目 Handler；未配置 `HTTPHandler` 时返回 `404`，
 排水或停止后返回 `503`。项目 Handler 自己负责 `/api/...` 路由、method、认证、CORS、JSON/BON 编解码和错误正文；
-tx 不提供通用 HTTP Router，也不会在未配置 `WebSocketListen` 时创建“纯 HTTP” Agent 服务。基于这条边界，
-下一阶段才在 `txgame + txclient` 接入 `Login_ServerList` 的业务闭环。
+tx 不提供通用 HTTP Router，也不会在未配置 `WebSocketListen` 时创建“纯 HTTP” Agent 服务。
 
 同一进程同时启动时，Agent 不建立额外的 gRPC 连接：
 
@@ -1029,8 +1022,7 @@ TLS/mTLS 的 yml 装配、证书加载和轮换不属于当前范围；未来引
 `Sender.Send` 会返回路由不可用、建连、传输或 Receiver 拒绝等错误，不会自动重试或静默丢弃消息；`Sender.Call`
 同样只发起一次远端调用，不设置隐藏默认 timeout，超时后是否已经产生业务副作用由上层按幂等语义自行判断。gRPC
 确认只有在 `Accepted=true` 且 `ErrorCode` 为空时才算成功；例如 `{Accepted: true, ErrorCode: "queue-full"}`
-属于矛盾响应，会返回 `rpc.ErrDeliveryRejected`，不能用成功位掩盖错误状态。本阶段只补齐通用同步 RPC 与 Agent 入口能力，
-`txgame + txclient` 的 `Login_ServerList`、HTTP JSON/BON 绑定、项目默认 timeout 和重试策略仍留在下一阶段实现。
+属于矛盾响应，会返回 `rpc.ErrDeliveryRejected`，不能用成功位掩盖错误状态。本阶段只补齐通用同步 RPC 与 Agent 入口能力。
 
 ### 生成 proto
 

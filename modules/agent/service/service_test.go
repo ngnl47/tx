@@ -12,6 +12,7 @@ import (
 	"github.com/ngnl47/tx/lifecycle"
 	txagent "github.com/ngnl47/tx/modules/agent"
 	txmsgq "github.com/ngnl47/tx/modules/msgq"
+	"github.com/ngnl47/tx/protocol"
 )
 
 func TestServiceStartsWithExplicitDependenciesAndLocalMsgQ(t *testing.T) {
@@ -38,8 +39,14 @@ func TestServiceStartsWithExplicitDependenciesAndLocalMsgQ(t *testing.T) {
 		TCPListen:     "127.0.0.1:0",
 		MaxFrameBytes: 1024,
 		FetchBatch:    1,
-		Identity: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (txagent.Identity, error) {
-			return txagent.Identity{RoleID: 1001, SessionID: 1}, nil
+		Identity: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
+			return protocol.SessionPrincipal{
+				AccountID:  100,
+				ServerID:   1,
+				RoleID:     1001,
+				SessionID:  1,
+				AccessMode: protocol.AccessModeNormal,
+			}, nil
 		}),
 		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) (txagent.DispatchResult, error) {
 			return txagent.DispatchResult{}, nil

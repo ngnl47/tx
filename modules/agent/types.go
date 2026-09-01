@@ -7,6 +7,7 @@ import (
 
 	"github.com/ngnl47/tx/lifecycle"
 	"github.com/ngnl47/tx/modules/msgq"
+	"github.com/ngnl47/tx/protocol"
 )
 
 var (
@@ -23,15 +24,8 @@ var (
 	ErrFrameTooLarge          = errors.New("agent: frame is too large")
 )
 
-// Identity 是项目解析后的逻辑玩家身份。
-type Identity struct {
-	RoleID    int64
-	SessionID int64
-}
-
-func (i Identity) valid() bool {
-	return i.RoleID > 0 && i.SessionID > 0
-}
+// Identity 是 Agent 为当前连接构造的可信会话身份。
+type Identity = protocol.SessionIdentity
 
 // AuthRequest 是握手传入项目身份解析回调的输入。
 type AuthRequest struct {
@@ -40,16 +34,16 @@ type AuthRequest struct {
 	Ack     int64
 }
 
-// IdentityResolver 将项目不透明握手数据解析为逻辑玩家身份。
+// IdentityResolver 将项目不透明握手数据解析为已认证的会话主体。
 // 它可以校验 token，也可以消费上游已认证的可信凭据。
 type IdentityResolver interface {
-	ResolveIdentity(context.Context, AuthRequest) (Identity, error)
+	ResolveIdentity(context.Context, AuthRequest) (protocol.SessionPrincipal, error)
 }
 
 // IdentityResolverFunc 适合以内联函数实现 IdentityResolver。
-type IdentityResolverFunc func(context.Context, AuthRequest) (Identity, error)
+type IdentityResolverFunc func(context.Context, AuthRequest) (protocol.SessionPrincipal, error)
 
-func (f IdentityResolverFunc) ResolveIdentity(ctx context.Context, request AuthRequest) (Identity, error) {
+func (f IdentityResolverFunc) ResolveIdentity(ctx context.Context, request AuthRequest) (protocol.SessionPrincipal, error) {
 	return f(ctx, request)
 }
 

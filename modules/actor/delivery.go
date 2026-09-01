@@ -22,6 +22,8 @@ type Delivery struct {
 	CommandID   uint64
 	RouteKey    txprotocol.RouteKey
 	Payload     []byte
+	Identity    *txprotocol.SessionIdentity
+	UpSeq       int64
 
 	mode      actorpb.DeliveryMode
 	requestID uint64
@@ -30,6 +32,13 @@ type Delivery struct {
 // Validate 校验跨进程投递所需的最小元数据。
 func (d Delivery) Validate() error {
 	if d.MessageType == "" || d.MessageType != strings.TrimSpace(d.MessageType) {
+		return ErrInvalidDelivery
+	}
+	if d.Identity == nil {
+		if d.UpSeq != 0 {
+			return ErrInvalidDelivery
+		}
+	} else if d.UpSeq <= 0 || d.Identity.Validate() != nil {
 		return ErrInvalidDelivery
 	}
 	return validateRouteKey(d.RouteKey)
@@ -48,6 +57,10 @@ func (d Delivery) toProto(mode actorpb.DeliveryMode, requestID uint64) (*actorpb
 	if err != nil {
 		return nil, err
 	}
+	identity, err := sessionIdentityToProto(d.Identity)
+	if err != nil {
+		return nil, err
+	}
 	return &actorpb.Delivery{
 		MessageType:     d.MessageType,
 		CommandId:       d.CommandID,
@@ -57,6 +70,8 @@ func (d Delivery) toProto(mode actorpb.DeliveryMode, requestID uint64) (*actorpb
 		RouteKeyNumeric: routeKeyNumeric,
 		RouteKeyString:  routeKeyString,
 		RequestId:       requestID,
+		Identity:        identity,
+		UpSeq:           d.UpSeq,
 	}, nil
 }
 
@@ -69,11 +84,17 @@ func DeliveryFromProto(message *actorpb.Delivery) (Delivery, error) {
 	if err != nil {
 		return Delivery{}, err
 	}
+	identity, err := sessionIdentityFromProto(message.GetIdentity())
+	if err != nil {
+		return Delivery{}, err
+	}
 	delivery := Delivery{
 		MessageType: message.GetMessageType(),
 		CommandID:   message.GetCommandId(),
 		RouteKey:    routeKey,
 		Payload:     append([]byte(nil), message.GetPayload()...),
+		Identity:    identity,
+		UpSeq:       message.GetUpSeq(),
 		mode:        message.GetMode(),
 		requestID:   message.GetRequestId(),
 	}
@@ -93,6 +114,70 @@ func DeliveryFromProto(message *actorpb.Delivery) (Delivery, error) {
 		return Delivery{}, ErrInvalidDelivery
 	}
 	return delivery, nil
+}
+
+func sessionIdentityToProto(identity *txprotocol.SessionIdentity) (*actorpb.SessionIdentity, error) {
+	if identity == nil {
+		return nil, nil
+	}
+	accessMode, err := accessModeToProto(identity.AccessMode)
+	if err != nil {
+		return nil, err
+	}
+	return &actorpb.SessionIdentity{
+		AccountId:       identity.AccountID,
+		BorrowAccountId: identity.BorrowAccountID,
+		ServerId:        identity.ServerID,
+		RoleId:          identity.RoleID,
+		SessionId:       identity.SessionID,
+		ConnectionId:    identity.ConnectionID,
+		AccessMode:      accessMode,
+		CanCreateRole:   identity.CanCreateRole,
+	}, nil
+}
+
+func sessionIdentityFromProto(message *actorpb.SessionIdentity) (*txprotocol.SessionIdentity, error) {
+	if message == nil {
+		return nil, nil
+	}
+	accessMode, err := accessModeFromProto(message.GetAccessMode())
+	if err != nil {
+		return nil, err
+	}
+	return &txprotocol.SessionIdentity{
+		SessionPrincipal: txprotocol.SessionPrincipal{
+			AccountID:       message.GetAccountId(),
+			BorrowAccountID: message.GetBorrowAccountId(),
+			ServerID:        message.GetServerId(),
+			RoleID:          message.GetRoleId(),
+			SessionID:       message.GetSessionId(),
+			AccessMode:      accessMode,
+			CanCreateRole:   message.GetCanCreateRole(),
+		},
+		ConnectionID: message.GetConnectionId(),
+	}, nil
+}
+
+func accessModeToProto(mode txprotocol.AccessMode) (actorpb.AccessMode, error) {
+	switch mode {
+	case txprotocol.AccessModeNormal:
+		return actorpb.AccessMode_ACCESS_MODE_NORMAL, nil
+	case txprotocol.AccessModeBorrowReadOnly:
+		return actorpb.AccessMode_ACCESS_MODE_BORROW_READ_ONLY, nil
+	default:
+		return actorpb.AccessMode_ACCESS_MODE_NORMAL, ErrInvalidDelivery
+	}
+}
+
+func accessModeFromProto(mode actorpb.AccessMode) (txprotocol.AccessMode, error) {
+	switch mode {
+	case actorpb.AccessMode_ACCESS_MODE_NORMAL:
+		return txprotocol.AccessModeNormal, nil
+	case actorpb.AccessMode_ACCESS_MODE_BORROW_READ_ONLY:
+		return txprotocol.AccessModeBorrowReadOnly, nil
+	default:
+		return txprotocol.AccessModeNormal, ErrInvalidDelivery
+	}
 }
 
 // WantsResult 判断当前消息是否由 Call 或 CallFuture 发起并要求业务结果。

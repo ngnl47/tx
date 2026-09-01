@@ -15,8 +15,19 @@
 2. 持续审计 Redis、Mongo、Fusion、WAL 和延迟任务的失败契约。未知返回值、矛盾文档状态、非法路径、路由错误和依赖缺失必须返回明确错误，不能静默成功、自动修复持久化数据或错误清理 Store 状态。
 3. 发现旧接口、过渡结构、淘汰测试或旧方案文档时，在确认没有生产调用后直接删除。生效文档只描述当前方案；必要的技术取舍只保留在设计文档。
 4. 新增或修改无状态持久化能力时优先使用 `txgame` 生成的真实 `GD*`/`GD*Store`；涉及 Procedure、事务写回、WAL 或 checkpoint 时使用 `txgameslg` 的有状态生成模型，避免 runtime 测试与生成契约割裂。
-5. 下一阶段在 `txgame + txclient` 接入 `Login_ServerList` 业务闭环，复用当前 Agent 非根路径 `HTTPHandler` 与 `Sender.Call`。
-   JSON/BON 绑定、请求 timeout、是否重试和错误正文继续由项目适配层决定；`tx` 主线不新增默认 timeout、自动重试或通用 HTTP Router。
+5. 按下列“可信会话后续 P0 顺序”推进会话投递、登录和两套项目客户端的真实多进程验收。
+
+### 可信会话后续 P0 顺序
+
+以下能力均尚未实现，必须按顺序推进：
+
+1. MsgQ 以 `SessionID` 为精确会话邮箱主键，新增 `PubSession(SessionID, payload)`。
+2. 增加 `RoleID` 到唯一主 `SessionID` 的路由和 `PubRole(RoleID, payload)`；只有正常可写会话成为主会话，Borrow 只读会话不进入主路由、不扇出。
+3. 把业务响应改为 Game/Actor 进程通过 MsgQ Sender 直接 `PubSession`；Actor 只向 Agent 返回处理完成状态；Agent 以 `processedUpSeq` 推进 Ack。该阶段单独实现并回归错误响应。
+4. 在项目层实现可选无状态 Login HTTP 服务：账号映射、服务器列表、RoleID 预分配、全局 `SessionID`、短期 ticket、AgentTarget 分配 SPI；Login 不依赖 MsgQ。
+5. `Create_Role` 使用预分配 `RoleID` 的标准 Actor 路由，成功后 Game 写 `(AccountID, ServerID) -> []RoleID` 投影；PendingRole 仅允许建角和心跳。
+6. Borrow 沿用同一 ticket、握手、Session 流程：主 `AccountID`、`BorrowAccountID`、目标 `RoleID`、只读 `AccessMode`、独立 `SessionID`，只响应发起 Session，不成为角色主会话。
+7. 同步 `txclient`、`txclientslg`，并依次完成无状态、有状态两套真实多进程验收。
 
 ### P1：性能基线
 

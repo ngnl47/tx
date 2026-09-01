@@ -12,6 +12,7 @@ import (
 	txagent "github.com/ngnl47/tx/modules/agent"
 	"github.com/ngnl47/tx/modules/discovery"
 	"github.com/ngnl47/tx/modules/msgq"
+	"github.com/ngnl47/tx/protocol"
 )
 
 func TestAgentSessionAuthenticatesThenDispatchesAcceptedSequence(t *testing.T) {
@@ -23,7 +24,17 @@ func TestAgentSessionAuthenticatesThenDispatchesAcceptedSequence(t *testing.T) {
 	assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
 	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 10001, RouteKey: txagent.Int64RouteKey(470001), Payload: []byte("bon-request")}
 	request := receiveDispatch(t, dispatched)
-	if request.Identity.RoleID != 470001 || request.Identity.SessionID != 99 || request.Seq != 1 || request.CommandID != 10001 || string(request.Payload) != "bon-request" {
+	wantIdentity := txagent.Identity{
+		SessionPrincipal: protocol.SessionPrincipal{
+			AccountID:     47,
+			ServerID:      1,
+			RoleID:        470001,
+			SessionID:     99,
+			CanCreateRole: true,
+		},
+		ConnectionID: 7,
+	}
+	if request.Identity != wantIdentity || request.Seq != 1 || request.CommandID != 10001 || string(request.Payload) != "bon-request" {
 		t.Fatalf("dispatch request = %#v", request)
 	}
 	if key, ok := request.RouteKey.Int64(); !ok || key != 470001 {
@@ -45,6 +56,31 @@ func TestAgentSessionRejectsUpMsgFrameBeforeHandshake(t *testing.T) {
 	err := <-result
 	if !errors.Is(err, txagent.ErrHandshakeRequired) {
 		t.Fatalf("serve error = %v, want handshake required", err)
+	}
+}
+
+func TestAgentSessionRejectsInvalidResolvedPrincipal(t *testing.T) {
+	sessionsAcquired := errors.New("sessions acquired")
+	agent, err := txagent.NewServer(txagent.ServerOptions{
+		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
+			return protocol.SessionPrincipal{ServerID: 1, RoleID: 470001, SessionID: 99}, nil
+		}),
+		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) (txagent.DispatchResult, error) {
+			t.Fatal("invalid identity must not be dispatched")
+			return txagent.DispatchResult{}, nil
+		}),
+		Sessions: agentSessionRouterFunc(func(context.Context, int64) (msgq.SessionClient, error) {
+			return nil, sessionsAcquired
+		}),
+		ConnectionID: func() (int64, error) { return 7, nil },
+	})
+	if err != nil {
+		t.Fatalf("new agent: %v", err)
+	}
+	transport := newAgentTransport()
+	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
+	if err := agent.Serve(context.Background(), transport); !errors.Is(err, txagent.ErrInvalidIdentity) {
+		t.Fatalf("Serve error = %v, want ErrInvalidIdentity", err)
 	}
 }
 
@@ -102,8 +138,8 @@ func TestAgentSessionPublishesDispatchResultToCurrentSession(t *testing.T) {
 		t.Fatalf("new fixed router: %v", err)
 	}
 	agent, err := txagent.NewServer(txagent.ServerOptions{
-		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (txagent.Identity, error) {
-			return txagent.Identity{RoleID: 470001, SessionID: 99}, nil
+		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
+			return testSessionPrincipal(), nil
 		}),
 		Dispatcher: txagent.DispatchFunc(func(_ context.Context, request txagent.DispatchRequest) (txagent.DispatchResult, error) {
 			if request.Seq != 1 {
@@ -354,8 +390,8 @@ func TestAgentSessionDoesNotAdvanceSequenceWhenAdmissionRejects(t *testing.T) {
 	}
 	drainErr := errors.New("agent is draining")
 	agent, err := txagent.NewServer(txagent.ServerOptions{
-		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (txagent.Identity, error) {
-			return txagent.Identity{RoleID: 470001, SessionID: 99}, nil
+		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
+			return testSessionPrincipal(), nil
 		}),
 		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) (txagent.DispatchResult, error) {
 			t.Fatal("dispatcher must not run when admission rejects")
@@ -403,8 +439,8 @@ func newAgentSessionFixture(t *testing.T, dispatchErr error) (*txagent.Server, *
 	}
 	dispatched := make(chan txagent.DispatchRequest, 4)
 	agent, err := txagent.NewServer(txagent.ServerOptions{
-		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (txagent.Identity, error) {
-			return txagent.Identity{RoleID: 470001, SessionID: 99}, nil
+		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
+			return testSessionPrincipal(), nil
 		}),
 		Dispatcher: txagent.DispatchFunc(func(_ context.Context, request txagent.DispatchRequest) (txagent.DispatchResult, error) {
 			dispatched <- request
@@ -417,6 +453,16 @@ func newAgentSessionFixture(t *testing.T, dispatchErr error) (*txagent.Server, *
 		t.Fatalf("new agent: %v", err)
 	}
 	return agent, newAgentTransport(), mailbox, dispatched
+}
+
+func testSessionPrincipal() protocol.SessionPrincipal {
+	return protocol.SessionPrincipal{
+		AccountID:     47,
+		ServerID:      1,
+		RoleID:        470001,
+		SessionID:     99,
+		CanCreateRole: true,
+	}
 }
 
 func receiveDispatch(t *testing.T, dispatched <-chan txagent.DispatchRequest) txagent.DispatchRequest {
@@ -456,6 +502,12 @@ func waitForMailboxSession(t *testing.T, mailbox *msgq.Server) {
 
 type agentSessionDialer struct {
 	client msgq.SessionClient
+}
+
+type agentSessionRouterFunc func(context.Context, int64) (msgq.SessionClient, error)
+
+func (f agentSessionRouterFunc) Acquire(ctx context.Context, roleID int64) (msgq.SessionClient, error) {
+	return f(ctx, roleID)
 }
 
 func (d agentSessionDialer) DialSession(context.Context, discovery.Instance) (msgq.SessionClient, error) {

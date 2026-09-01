@@ -2287,6 +2287,15 @@ Agent 的会话来源是显式二选一：配置 `LocalMsgQ` 表示同进程复�
 Bee 或 Ant Context，因此可以使用本次 Server 已声明的 Actor、服务目录，以及 Ant 的逻辑槽位；它不能依赖包级可变注册表。无状态项目通常
 解析 Virtual PID，有状态项目通常把业务槽位映射为固定 Kind 宿主 PID。
 
+`IdentityResolver` 只返回 `protocol.SessionPrincipal`，其中包含 `AccountID`、`BorrowAccountID`、`ServerID`、`RoleID`、
+`SessionID`、`AccessMode` 和 `CanCreateRole`。Agent 负责生成正 `ConnectionID`，校验并构造 `protocol.SessionIdentity`；
+项目 resolver 不能从 ticket 或客户端数据指定 `ConnectionID`。普通模式不携带 `BorrowAccountID`；只读借用模式必须携带正
+`BorrowAccountID`，且不能携带创建角色许可。
+
+通用 Actor Dispatcher 在调用 Messenger 前以 `DispatchRequest` 的可信 `SessionIdentity` 和当前上行序号覆盖 Delivery 的
+`Identity` 与 `UpSeq`。项目 Actor resolver 仍只负责目标、消息类型、命令号、路由键、载荷和是否等待结果，不能伪造身份或序号。
+Actor protobuf 在跨进程投递时保留完整身份和 `UpSeq`；内部 Actor 调用可以同时省略二者，只出现其中一个的 Delivery 无效。
+
 `Dispatcher` 返回 `DispatchResult`。`Payload == nil` 表示本次命令没有直接下行；非 nil payload 的所有权在返回后
 转移给 Agent，调用方不能再修改。Agent 使用当前连接的完整 `SessionHeader` 把响应发布到 MsgQ，旧连接产生的迟到响应
 不能进入已经替换的新会话。通用 Actor Dispatcher 对无响应命令使用 `Tell`，对声明响应类型的命令使用带 deadline 的
@@ -2310,8 +2319,8 @@ Seq 时发送独立 `FrameAck`。响应发送协程和独立确认共用连接�
 Frame 和 Payload 在确认前只读。恢复连接复用原 Session，先发送带最后已处理 DownMsg Ack 的握手。msgq 的新建与恢复
 语义严格分离：新建总是安装空会话，恢复必须命中同一 SessionID。只有 `Init` 成功后 Agent 才发送 `FrameReady`；客户端
 在收到它之前保持连接中状态，并以 `FrameReady.Ack` 释放服务端已经受理的重放前缀，再按原序号重放剩余 UpMsg。
-即使客户端随后重放已经受理的 Frame，`Rec` 也只幂等返回当前序号，不会重复调用 Dispatcher。
-基于以上边界，下一阶段才在 `txgame + txclient` 接入 `Login_ServerList` 这类具体业务闭环。
+即使客户端随后重放已经受理的 Frame，`Rec` 也只幂等返回当前序号，不会重复调用 Dispatcher。当前 Ack 仅随 MsgQ 已受理
+的上行序号推进；Game/Actor 尚未直接发布业务响应，也尚未以处理完成序号推进 Ack。
 
 ### Actor
 

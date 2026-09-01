@@ -18,6 +18,7 @@ import (
 	"github.com/ngnl47/tx/modules/discovery"
 	txprotocol "github.com/ngnl47/tx/protocol"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestActorConfigNormalize(t *testing.T) {
@@ -139,11 +140,24 @@ func TestActorRuntimeRequiresCallDeadline(t *testing.T) {
 }
 
 func TestActorDeliveryRoundTripCopiesPayload(t *testing.T) {
+	identity := txprotocol.SessionIdentity{
+		SessionPrincipal: txprotocol.SessionPrincipal{
+			AccountID:       47,
+			BorrowAccountID: 48,
+			ServerID:        1,
+			RoleID:          470001,
+			SessionID:       99,
+			AccessMode:      txprotocol.AccessModeBorrowReadOnly,
+		},
+		ConnectionID: 7,
+	}
 	delivery := txactor.Delivery{
 		MessageType: "role.rename",
 		CommandID:   470001,
 		RouteKey:    txprotocol.Int64RouteKey(470001),
 		Payload:     []byte{1, 2, 3},
+		Identity:    &identity,
+		UpSeq:       3,
 	}
 	message, err := delivery.ToProto()
 	if err != nil {
@@ -153,14 +167,82 @@ func TestActorDeliveryRoundTripCopiesPayload(t *testing.T) {
 	if message.GetPayload()[0] != 1 {
 		t.Fatalf("proto payload = %v, want defensive copy", message.GetPayload())
 	}
-	decoded, err := txactor.DeliveryFromProto(message)
+	wire, err := proto.Marshal(message)
+	if err != nil {
+		t.Fatalf("proto.Marshal() error = %v", err)
+	}
+	decodedMessage := &actorpb.Delivery{}
+	if err := proto.Unmarshal(wire, decodedMessage); err != nil {
+		t.Fatalf("proto.Unmarshal() error = %v", err)
+	}
+	decoded, err := txactor.DeliveryFromProto(decodedMessage)
 	if err != nil {
 		t.Fatalf("DeliveryFromProto() error = %v", err)
 	}
-	message.Payload[1] = 8
+	decodedMessage.Payload[1] = 8
 	key, ok := decoded.RouteKey.Int64()
-	if decoded.MessageType != "role.rename" || decoded.CommandID != 470001 || !ok || key != 470001 || string(decoded.Payload) != string([]byte{1, 2, 3}) {
+	if decoded.MessageType != "role.rename" || decoded.CommandID != 470001 || !ok || key != 470001 || string(decoded.Payload) != string([]byte{1, 2, 3}) || decoded.UpSeq != 3 {
 		t.Fatalf("decoded delivery = %#v", decoded)
+	}
+	if decoded.Identity == nil || *decoded.Identity != identity {
+		t.Fatalf("decoded identity = %#v, want %#v", decoded.Identity, identity)
+	}
+}
+
+func TestActorDeliveryRoundTripPreservesCanCreateRole(t *testing.T) {
+	identity := txprotocol.SessionIdentity{
+		SessionPrincipal: txprotocol.SessionPrincipal{
+			AccountID:     47,
+			ServerID:      1,
+			RoleID:        470001,
+			SessionID:     99,
+			CanCreateRole: true,
+		},
+		ConnectionID: 7,
+	}
+	message, err := (txactor.Delivery{MessageType: "role.create", Identity: &identity, UpSeq: 1}).ToProto()
+	if err != nil {
+		t.Fatalf("ToProto() error = %v", err)
+	}
+	wire, err := proto.Marshal(message)
+	if err != nil {
+		t.Fatalf("proto.Marshal() error = %v", err)
+	}
+	decodedMessage := &actorpb.Delivery{}
+	if err := proto.Unmarshal(wire, decodedMessage); err != nil {
+		t.Fatalf("proto.Unmarshal() error = %v", err)
+	}
+	decoded, err := txactor.DeliveryFromProto(decodedMessage)
+	if err != nil {
+		t.Fatalf("DeliveryFromProto() error = %v", err)
+	}
+	if decoded.Identity == nil || *decoded.Identity != identity {
+		t.Fatalf("decoded identity = %#v, want %#v", decoded.Identity, identity)
+	}
+}
+
+func TestActorDeliveryRequiresIdentityAndUpSeqTogether(t *testing.T) {
+	identity := txprotocol.SessionIdentity{
+		SessionPrincipal: txprotocol.SessionPrincipal{
+			AccountID: 47,
+			ServerID:  1,
+			RoleID:    470001,
+			SessionID: 99,
+		},
+		ConnectionID: 7,
+	}
+	tests := []txactor.Delivery{
+		{MessageType: "role.rename", Identity: &identity},
+		{MessageType: "role.rename", UpSeq: 1},
+		{MessageType: "role.rename", Identity: &identity, UpSeq: -1},
+	}
+	for _, delivery := range tests {
+		if _, err := delivery.ToProto(); !errors.Is(err, txactor.ErrInvalidDelivery) {
+			t.Fatalf("ToProto(%#v) error = %v, want ErrInvalidDelivery", delivery, err)
+		}
+	}
+	if _, err := (txactor.Delivery{MessageType: "role.rename"}).ToProto(); err != nil {
+		t.Fatalf("internal ToProto() error = %v", err)
 	}
 }
 

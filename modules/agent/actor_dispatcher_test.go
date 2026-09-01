@@ -8,6 +8,7 @@ import (
 
 	protoactor "github.com/asynkron/protoactor-go/actor"
 	txactor "github.com/ngnl47/tx/modules/actor"
+	"github.com/ngnl47/tx/protocol"
 )
 
 func TestActorDispatcherUsesTellForOneWayMessage(t *testing.T) {
@@ -68,6 +69,56 @@ func TestActorDispatcherCallsForBusinessResult(t *testing.T) {
 	}
 }
 
+func TestActorDispatcherOverridesResolverDeliveryIdentityAndUpSeq(t *testing.T) {
+	pid := protoactor.NewPID("127.0.0.1:12000", "role-470001")
+	forgedIdentity := protocol.SessionIdentity{
+		SessionPrincipal: protocol.SessionPrincipal{
+			AccountID: 99,
+			ServerID:  9,
+			RoleID:    990001,
+			SessionID: 999,
+		},
+		ConnectionID: 9999,
+	}
+	wantIdentity := protocol.SessionIdentity{
+		SessionPrincipal: protocol.SessionPrincipal{
+			AccountID:     47,
+			ServerID:      1,
+			RoleID:        470001,
+			SessionID:     99,
+			CanCreateRole: true,
+		},
+		ConnectionID: 7,
+	}
+	messenger := &actorMessengerStub{}
+	dispatcher, err := NewActorDispatcher(ActorDispatcherOptions{
+		Messenger: messenger,
+		Resolver: ActorDispatchResolverFunc(func(context.Context, DispatchRequest) (ActorDispatch, error) {
+			return ActorDispatch{
+				Target: pid,
+				Delivery: txactor.Delivery{
+					MessageType: "agent.command",
+					Identity:    &forgedIdentity,
+					UpSeq:       999,
+				},
+			}, nil
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewActorDispatcher returned error: %v", err)
+	}
+
+	if _, err := dispatcher.Dispatch(context.Background(), DispatchRequest{Identity: wantIdentity, Seq: 3}); err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+	if messenger.delivery.Identity == nil || *messenger.delivery.Identity != wantIdentity {
+		t.Fatalf("messenger delivery identity = %#v, want %#v", messenger.delivery.Identity, wantIdentity)
+	}
+	if messenger.delivery.UpSeq != 3 {
+		t.Fatalf("messenger delivery up seq = %d, want 3", messenger.delivery.UpSeq)
+	}
+}
+
 func TestActorDispatcherRejectsMissingDependenciesAndTarget(t *testing.T) {
 	resolver := ActorDispatchResolverFunc(func(context.Context, DispatchRequest) (ActorDispatch, error) {
 		return ActorDispatch{}, nil
@@ -89,6 +140,7 @@ func TestActorDispatcherRejectsMissingDependenciesAndTarget(t *testing.T) {
 
 type actorMessengerStub struct {
 	result          txactor.Result
+	delivery        txactor.Delivery
 	tellCalls       int
 	callCalls       int
 	callHadDeadline bool
@@ -96,8 +148,9 @@ type actorMessengerStub struct {
 
 func (*actorMessengerStub) VirtualPID(string, string) (*protoactor.PID, error) { return nil, nil }
 
-func (stub *actorMessengerStub) Tell(*protoactor.PID, txactor.Delivery) error {
+func (stub *actorMessengerStub) Tell(_ *protoactor.PID, delivery txactor.Delivery) error {
 	stub.tellCalls++
+	stub.delivery = delivery
 	return nil
 }
 
@@ -105,8 +158,9 @@ func (*actorMessengerStub) TellAccepted(context.Context, *protoactor.PID, txacto
 	return nil
 }
 
-func (stub *actorMessengerStub) Call(ctx context.Context, _ *protoactor.PID, _ txactor.Delivery) (txactor.Result, error) {
+func (stub *actorMessengerStub) Call(ctx context.Context, _ *protoactor.PID, delivery txactor.Delivery) (txactor.Result, error) {
 	stub.callCalls++
+	stub.delivery = delivery
 	_, stub.callHadDeadline = ctx.Deadline()
 	return stub.result, nil
 }

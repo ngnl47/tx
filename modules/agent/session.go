@@ -85,11 +85,12 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 	if !handshake.validHandshake() {
 		return ErrHandshakeRequired
 	}
-	identity, err := s.identityResolver.ResolveIdentity(ctx, AuthRequest{Token: cloneBytes(handshake.Payload), Restore: handshake.Restore, Ack: handshake.Ack})
+	principal, err := s.identityResolver.ResolveIdentity(ctx, AuthRequest{Token: cloneBytes(handshake.Payload), Restore: handshake.Restore, Ack: handshake.Ack})
 	if err != nil {
 		return err
 	}
-	if !identity.valid() {
+	identity := Identity{SessionPrincipal: principal, ConnectionID: connectionID}
+	if err := identity.Validate(); err != nil {
 		return ErrInvalidIdentity
 	}
 	if trace != nil {
