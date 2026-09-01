@@ -21,7 +21,7 @@
 
 MsgQ 的 SessionID 精确邮箱与 RoleID 唯一主会话投影已经完成并进入稳定文档，不再列为待办。真实集群 P0 仍未整体完成；以下能力必须按顺序推进：
 
-1. 在项目层实现可选无状态 Login HTTP 服务：账号映射、服务器列表、RoleID 预分配、全局 `SessionID`、短期 ticket、AgentTarget 分配 SPI；Login 不依赖 MsgQ。
+1. 完成可选无状态 Login 的剩余 P0：基于现有 HTTP 服务和公开服务器列表，补齐账号映射、RoleID 预分配、全局 `SessionID`、短期 ticket、AgentTarget 分配 SPI；Login 不依赖 MsgQ。
 2. `Create_Role` 使用预分配 `RoleID` 的标准 Actor 路由，成功后 Game 写 `(AccountID, ServerID) -> []RoleID` 投影；PendingRole 仅允许建角和心跳。
 3. Borrow 沿用同一 ticket、握手、Session 流程：主 `AccountID`、`BorrowAccountID`、目标 `RoleID`、只读 `AccessMode`、独立 `SessionID`，只响应发起 Session，不成为角色主会话。
 4. 同步 `txclient`、`txclientslg`，并依次完成无状态、有状态两套真实多进程验收。
