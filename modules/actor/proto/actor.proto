@@ -63,4 +63,6 @@ message Result {
   bytes payload = 4;
   int32 error_code = 5;
   string error_message = 6;
+  // processed_up_seq 是 Agent 上行专用的处理完成序号，不能与业务结果字段同时出现。
+  int64 processed_up_seq = 7;
 }

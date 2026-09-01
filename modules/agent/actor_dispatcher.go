@@ -16,14 +16,13 @@ var (
 	ErrActorDispatchResolverNil = errors.New("agent: actor dispatch resolver is nil")
 	ErrActorTargetNil           = errors.New("agent: actor target is nil")
 	ErrInvalidActorCallTimeout  = errors.New("agent: actor call timeout is invalid")
+	ErrInvalidDispatchResult    = errors.New("agent: invalid dispatch result")
 )
 
 // ActorDispatch 是项目路由策略解析出的单次 Actor 投递参数。
-// WantsResult 为 false 时使用 Tell；为 true 时使用 Call，并把业务结果作为当前会话响应返回。
 type ActorDispatch struct {
-	Target      *protoactor.PID
-	Delivery    txactor.Delivery
-	WantsResult bool
+	Target   *protoactor.PID
+	Delivery txactor.Delivery
 }
 
 // ActorDispatchResolver 将已经通过会话校验的业务帧转换为目标 Actor 投递参数。
@@ -43,14 +42,14 @@ func (resolver ActorDispatchResolverFunc) ResolveActorDispatch(ctx context.Conte
 type ActorDispatcherOptions struct {
 	// Messenger 是当前进程共享的 Actor 消息入口。
 	Messenger txactor.Messenger
-	// Resolver 由项目根据生成命令元数据选择目标 PID 和投递模式。
+	// Resolver 由项目根据生成命令元数据选择目标 PID 和投递内容。
 	Resolver ActorDispatchResolver
-	// CallTimeout 是等待业务结果的最长时间；零值使用 5 秒默认值。
+	// CallTimeout 是等待 Actor 处理完成确认的最长时间；零值使用 5 秒默认值。
 	CallTimeout time.Duration
 }
 
-// NewActorDispatcher 创建通用的 Agent 到 Actor 分发器。
-// 单向命令保持 Tell 路径；有直接响应的命令使用带 deadline 的 Call。
+// NewActorDispatcher 创建通用的 Agent 到 Actor 分发器。所有 Agent 上行均使用
+// 带 deadline 的 Call 等待处理完成确认，业务响应不经过 Agent 返回。
 func NewActorDispatcher(options ActorDispatcherOptions) (Dispatcher, error) {
 	if options.Messenger == nil {
 		return nil, ErrActorMessengerNil
@@ -74,15 +73,15 @@ func NewActorDispatcher(options ActorDispatcherOptions) (Dispatcher, error) {
 		}
 		dispatch.Delivery.Identity = &request.Identity
 		dispatch.Delivery.UpSeq = request.Seq
-		if !dispatch.WantsResult {
-			return DispatchResult{}, options.Messenger.Tell(dispatch.Target, dispatch.Delivery)
-		}
 		callCtx, cancel := context.WithTimeout(ctx, options.CallTimeout)
 		defer cancel()
 		result, err := options.Messenger.Call(callCtx, dispatch.Target, dispatch.Delivery)
 		if err != nil {
 			return DispatchResult{}, err
 		}
-		return DispatchResult{Payload: result.Payload}, nil
+		if result.ProcessedUpSeq != request.Seq || result.MessageType != "" || result.CommandID != 0 || len(result.Payload) != 0 {
+			return DispatchResult{}, ErrInvalidDispatchResult
+		}
+		return DispatchResult{ProcessedUpSeq: result.ProcessedUpSeq}, nil
 	}), nil
 }

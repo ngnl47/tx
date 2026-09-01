@@ -121,6 +121,32 @@ func TestPendingCallsRejectsEmptySuccessfulResult(t *testing.T) {
 	}
 }
 
+func TestActorResultWireContractIncludesProcessedUpSeq(t *testing.T) {
+	fields := (&actorpb.Result{}).ProtoReflect().Descriptor().Fields()
+	field := fields.ByName("processed_up_seq")
+	if field == nil || field.Number() != 7 {
+		t.Fatalf("processed_up_seq field = %#v, want field number 7", field)
+	}
+}
+
+func TestPendingCallsResolvesProcessedUpSeqConfirmation(t *testing.T) {
+	calls := newPendingCalls(1)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	requestID, future, err := calls.add(ctx, pendingResult, 7)
+	if err != nil {
+		t.Fatalf("add pending result: %v", err)
+	}
+	calls.resolve(&actorpb.Result{RequestId: requestID, ProcessedUpSeq: 11})
+	result, err := future.Await(ctx)
+	if err != nil {
+		t.Fatalf("Future.Await() error = %v", err)
+	}
+	if result.ProcessedUpSeq != 11 || result.MessageType != "" || result.CommandID != 0 || result.Payload != nil {
+		t.Fatalf("processed result = %#v", result)
+	}
+}
+
 func BenchmarkPendingCallsRoundTrip(b *testing.B) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 	defer cancel()

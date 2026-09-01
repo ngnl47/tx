@@ -11,9 +11,9 @@ import (
 	"github.com/ngnl47/tx/protocol"
 )
 
-func TestActorDispatcherUsesTellForOneWayMessage(t *testing.T) {
+func TestActorDispatcherWaitsForCompletionForEveryAgentMessage(t *testing.T) {
 	pid := protoactor.NewPID("127.0.0.1:12000", "role-470001")
-	messenger := &actorMessengerStub{}
+	messenger := &actorMessengerStub{result: txactor.Result{ProcessedUpSeq: 5}}
 	dispatcher, err := NewActorDispatcher(ActorDispatcherOptions{
 		Messenger: messenger,
 		Resolver: ActorDispatchResolverFunc(func(context.Context, DispatchRequest) (ActorDispatch, error) {
@@ -24,29 +24,28 @@ func TestActorDispatcherUsesTellForOneWayMessage(t *testing.T) {
 		t.Fatalf("NewActorDispatcher returned error: %v", err)
 	}
 
-	result, err := dispatcher.Dispatch(context.Background(), DispatchRequest{CommandID: 100001})
+	result, err := dispatcher.Dispatch(context.Background(), DispatchRequest{Seq: 5, CommandID: 100001})
 	if err != nil {
 		t.Fatalf("Dispatch returned error: %v", err)
 	}
-	if result.Payload != nil {
-		t.Fatalf("result payload = %v, want nil", result.Payload)
+	if result.ProcessedUpSeq != 5 {
+		t.Fatalf("processed seq = %d, want 5", result.ProcessedUpSeq)
 	}
-	if messenger.tellCalls != 1 || messenger.callCalls != 0 {
-		t.Fatalf("tell/call calls = %d/%d, want 1/0", messenger.tellCalls, messenger.callCalls)
+	if messenger.tellCalls != 0 || messenger.callCalls != 1 {
+		t.Fatalf("tell/call calls = %d/%d, want 0/1", messenger.tellCalls, messenger.callCalls)
 	}
 }
 
-func TestActorDispatcherCallsForBusinessResult(t *testing.T) {
+func TestActorDispatcherReturnsProcessedConfirmationWithoutBusinessPayload(t *testing.T) {
 	pid := protoactor.NewPID("127.0.0.1:12000", "role-470001")
-	messenger := &actorMessengerStub{result: txactor.Result{Payload: []byte("bon-response")}}
+	messenger := &actorMessengerStub{result: txactor.Result{ProcessedUpSeq: 7}}
 	dispatcher, err := NewActorDispatcher(ActorDispatcherOptions{
 		Messenger:   messenger,
 		CallTimeout: time.Second,
 		Resolver: ActorDispatchResolverFunc(func(context.Context, DispatchRequest) (ActorDispatch, error) {
 			return ActorDispatch{
-				Target:      pid,
-				Delivery:    txactor.Delivery{MessageType: "agent.command"},
-				WantsResult: true,
+				Target:   pid,
+				Delivery: txactor.Delivery{MessageType: "agent.command"},
 			}, nil
 		}),
 	})
@@ -54,18 +53,45 @@ func TestActorDispatcherCallsForBusinessResult(t *testing.T) {
 		t.Fatalf("NewActorDispatcher returned error: %v", err)
 	}
 
-	result, err := dispatcher.Dispatch(context.Background(), DispatchRequest{CommandID: 100001})
+	result, err := dispatcher.Dispatch(context.Background(), DispatchRequest{Seq: 7, CommandID: 100001})
 	if err != nil {
 		t.Fatalf("Dispatch returned error: %v", err)
 	}
-	if string(result.Payload) != "bon-response" {
-		t.Fatalf("result payload = %q", result.Payload)
+	if result.ProcessedUpSeq != 7 {
+		t.Fatalf("dispatch result = %#v, want processed seq 7", result)
 	}
 	if messenger.tellCalls != 0 || messenger.callCalls != 1 {
 		t.Fatalf("tell/call calls = %d/%d, want 0/1", messenger.tellCalls, messenger.callCalls)
 	}
 	if !messenger.callHadDeadline {
 		t.Fatal("Call context has no deadline")
+	}
+}
+
+func TestActorDispatcherRejectsInvalidProcessedConfirmation(t *testing.T) {
+	tests := []struct {
+		name   string
+		result txactor.Result
+	}{
+		{name: "mismatched sequence", result: txactor.Result{ProcessedUpSeq: 8}},
+		{name: "business payload", result: txactor.Result{ProcessedUpSeq: 7, Payload: []byte("unexpected")}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			pid := protoactor.NewPID("127.0.0.1:12000", "role-470001")
+			dispatcher, err := NewActorDispatcher(ActorDispatcherOptions{
+				Messenger: &actorMessengerStub{result: test.result},
+				Resolver: ActorDispatchResolverFunc(func(context.Context, DispatchRequest) (ActorDispatch, error) {
+					return ActorDispatch{Target: pid, Delivery: txactor.Delivery{MessageType: "agent.command"}}, nil
+				}),
+			})
+			if err != nil {
+				t.Fatalf("NewActorDispatcher returned error: %v", err)
+			}
+			if _, err := dispatcher.Dispatch(context.Background(), DispatchRequest{Seq: 7}); !errors.Is(err, ErrInvalidDispatchResult) {
+				t.Fatalf("Dispatch error = %v, want ErrInvalidDispatchResult", err)
+			}
+		})
 	}
 }
 
@@ -90,7 +116,7 @@ func TestActorDispatcherOverridesResolverDeliveryIdentityAndUpSeq(t *testing.T) 
 		},
 		ConnectionID: 7,
 	}
-	messenger := &actorMessengerStub{}
+	messenger := &actorMessengerStub{result: txactor.Result{ProcessedUpSeq: 3}}
 	dispatcher, err := NewActorDispatcher(ActorDispatcherOptions{
 		Messenger: messenger,
 		Resolver: ActorDispatchResolverFunc(func(context.Context, DispatchRequest) (ActorDispatch, error) {

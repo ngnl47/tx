@@ -732,20 +732,20 @@ resolver 和客户端载荷均不能指定 `ConnectionID`，也不能伪造投�
 3. `Restore=false` 的新建连接不查询旧 owner，只在 running MsgQ 间轮转选择一个实例；`Restore=true` 的恢复连接必须按 SessionID 命中原来的 running owner。同进程 msgq 时直接复用本地 `SessionClient`，分进程时按 Redis binding 和服务目录复用 gRPC 连接。
 4. 新建 `Init` 用 `Create NX` 安装空邮箱，SessionID 已存在时失败；恢复 `Init` 用旧完整 binding `Rebind` 到新 ConnectionID，保留相同 SessionID 的 Seq/Ack 与未确认队列。恢复 owner 不可用、邮箱不存在或主会话已经替换时明确失败，不能迁移或安装空会话。
 5. `Init` 成功后，Agent 发送 `FrameReady` 报告当前 `UpMsgSeq`。客户端收到它之前只能处于连接中，不能发送业务帧；恢复失败时不会出现“先成功、再被关闭”的假状态。
-6. 客户端以 `FrameReady.Ack` 释放服务端已经受理的重放前缀，再按原序号重放剩余 UpMsg。
+6. 客户端以 `FrameReady.Ack` 释放上次会话已经记录的重放前缀，再按原序号重放剩余 UpMsg。
 7. 每个 `FrameUpMsg` 先使用当前完整 `SessionHeader` 调用 `Rec`。只有 `UpMsgSeq` 前进时才进入 `Dispatcher`，重复 Seq 不会重复分发。
 8. Agent 持续 `FetchSome` 下行队列，写出 `FrameDownMsg`；客户端在后续上行帧携带 Ack，`Rec` 会确认对应下行消息。
-9. 当前服务端确认的是 MsgQ 已受理的 `FrameUpMsg.Seq`：Game/Actor 同步返回业务结果后仍由 Agent 调用
-   `PubSession` 投递到发起 Session，并在 `FrameDownMsg.Ack` 捎带确认；没有响应或收到重复 Seq 时返回独立
-   `FrameAck`。这不是 Actor 处理完成确认，`processedUpSeq` 尚未接入。
+9. Game/Actor 处理上行后，直接通过 MsgQ Sender 调用 `PubSession` 投递普通响应或 `System_Error`，随后只向 Agent
+   返回 `processedUpSeq` 处理完成确认。Agent 不接收业务响应载荷；它在后续 `FrameDownMsg.Ack` 捎带该序号，或发送
+   独立 `FrameAck`。Actor 未完成处理或响应发布失败时不会推进该连接的确认游标。
 
 客户端不能只保存三个 Seq/Ack 计数器来恢复会话。UpMsg 必须在首次发送前进入本地未确认队列；收到服务端累计 Ack 后
 释放已确认前缀；网络重连时复用同一逻辑 Session，并按原 Seq、原顺序和原只读 Payload 重放剩余帧。这样即使网络在
 UpMsg 写出前后任意位置中断，服务端也只会接受连续新序号，已经受理的重复帧只返回 Ack，不会再次进入 Dispatcher。
 
-Actor 已经定位并返回的请求级失败不应等同于连接故障。标准 txgame/txgameslg Agent 适配层会把 Actor `CallError`
-编码为生成的 `System_Error` 下行，其中 `RequestSeq` 指向原上行 Seq，`Code` 是供客户端多语言表使用的
-`int32` 稳定错误码；连接会继续处理后续请求。业务错误码 `0` 保留为“无错误”，未分类内部错误使用
+Actor 已经定位并返回的请求级失败不应等同于连接故障。标准 txgame/txgameslg Game/Actor 适配层会把 Handler 错误
+编码为生成的 `System_Error`，直接投递到发起 Session，投递成功后再返回处理完成确认。其中 `RequestSeq` 指向原上行
+Seq，`Code` 是供客户端多语言表使用的 `int32` 稳定错误码；连接会继续处理后续请求。业务错误码 `0` 保留为“无错误”，未分类内部错误使用
 `actor.CallErrorCodeInternal`。Handler 未注册、命令解码失败等 Actor 分派拒绝使用
 `actor.CallErrorCodeDispatch`，也会作为 `System_Error` 返回，不会关闭已经建立的客户端连接。例如：
 
@@ -1336,12 +1336,13 @@ if delivery.WantsResult() {
 `ErrPendingCallsFull`，不会继续扩大内存。每个 Runtime 只有一个响应 Actor 和一张有界 pending 表，context 通过
 定时回调清理请求，不为每个 Future 常驻等待 goroutine。Runtime 关闭时，所有 pending 都以
 `ErrRuntimeStopped` 完成。远端业务错误返回 `*actor.CallError`，`Code` 用于稳定分支，`Message` 用于日志。
-成功的 `Result` 必须携带非空且首尾无空白的 `MessageType`，用于调用方选择生成响应类型；即使响应没有业务字段，
-也应返回对应的空响应结构，而不是发送没有类型的成功信封。缺少 `MessageType` 的成功响应会以
+普通业务调用成功的 `Result` 必须携带非空且首尾无空白的 `MessageType`，用于调用方选择生成响应类型；即使响应没有业务字段，
+也应返回对应的空响应结构，而不是发送没有类型的成功信封。Agent 上行的处理完成确认是唯一例外：它只携带正
+`ProcessedUpSeq`，不能同时携带 `MessageType`、`CommandID` 或 `Payload`。不满足任一结果形态的响应会以
 `ErrInvalidResponse` 完成本地 Future，不会被当作成功。
 
 项目将 Agent 与业务服务分进程部署时，可在项目层把经握手、Seq/Ack 校验后的 BON body 投递给 Actor。项目 resolver
-只决定目标 PID；tx 的通用 Dispatcher 根据命令是否声明响应类型选择 `Tell` 或 `Call`：
+只决定目标 PID 和投递内容；tx 的通用 Dispatcher 始终使用带 deadline 的 `Call` 等待处理完成确认：
 
 ```go
 messenger, err := runtime.CModActor()
@@ -1361,8 +1362,10 @@ if err != nil {
 ```
 
 它投递 `MessageType: "agent.command"`、生成的静态 `CommandID`、可选 `RouteKey` 和原始 BON `Payload`。
-连接 `Seq` 只用于 Agent 重复帧抑制，不是业务幂等键。Actor 侧再通过生成的 `cmd.DecodeBONCommand` 解析编码载荷，
-核对外层命令号与路由键是否匹配请求字段；具体命令如需幂等，仍须定义独立业务幂等键。
+连接 `Seq` 同时用于 Agent 重复帧抑制和处理完成确认，不是业务幂等键。Actor 侧再通过生成的
+`cmd.DecodeBONCommand` 解析编码载荷，核对外层命令号与路由键是否匹配请求字段；具体命令如需幂等，仍须定义
+独立业务幂等键。普通响应和请求级错误由 Game/Actor 直接发布到可信身份中的 SessionID；返回 Agent 的 Result
+只携带 `ProcessedUpSeq`。
 
 上例的 `role` 是可恢复的 Virtual Actor。它的 `identity` 由集群根据成员视图路由，业务必须能在新节点上从
 Fusion 恢复状态。固定归属的内存权威对象使用固定 Kind：
@@ -1995,11 +1998,11 @@ Agent、msgq 和项目业务的消息日志按职责只记录一次：
 - msgq 在 Debug 级别记录 `Init/Rec/PubSession/Confirm` 成功后的 Seq、Ack 和积压状态；恢复日志额外记录前后
   `connectionID`，旧连接被栅栏拒绝时同时记录请求方与当前连接身份，淘汰和清理日志同样携带完整会话身份。
   它不记录编码载荷，也不记录空轮询。
-- 玩家命令的协议名、业务结果和耗时由项目 Agent Dispatcher 记录；无状态模板可使用 Info，有状态高频模板可使用 Debug。
+- 玩家命令的协议名、处理完成序号和耗时由项目 Agent Dispatcher 记录；无状态模板可使用 Info，有状态高频模板可使用 Debug。
 
-例如一条成功的项目侧访问事件可以包含 `roleID`、`sessionID`、`seq`、`commandID`、`command`、`response`、
-`responseBytes`、`status` 和 `durationMs`。主动推送没有对应 `UpMsg`，应在项目发布门面记录，不能为了补日志而让 Agent
-反序列化业务载荷。
+例如一条成功的项目侧访问事件可以包含 `roleID`、`sessionID`、`seq`、`commandID`、`command`、
+`processedUpSeq`、`status` 和 `durationMs`。业务响应和主动推送均在项目 Game/Actor 发布边界产生；不能为了补日志而让
+Agent 反序列化业务载荷。
 
 默认调用方式：
 

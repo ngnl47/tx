@@ -1,5 +1,7 @@
 # MsgQ 精确会话与角色主会话设计
 
+> 后续状态：Game/Actor 直接 Session 下行与 `ProcessedUpSeq` 处理完成确认已在下一阶段实现；本文以下“本阶段”描述保留该次原子迁移的原始边界。
+
 ## 目标与阶段边界
 
 本阶段把 MsgQ 的物理邮箱从角色维度迁移到逻辑会话维度，并同时建立角色的唯一主会话投影：
@@ -16,7 +18,7 @@ RoleID    -> PrimarySessionID -> SessionBinding -> MsgQ 实例 -> 主会话邮�
 
 计划中的 SessionID 邮箱和角色主会话原本是两个连续步骤。真实调用审计证明，若只删除旧的角色投递，两个示例工程已有的跨角色通知和有状态世界回推会立即失效。因此本阶段将两步作为一个原子迁移，不保留含义模糊的旧 `Pub` 兼容接口。
 
-本阶段不改变 Game/Actor 业务响应返回 Agent 的路径，不改变 `processedUpSeq`、Seq/Ack、客户端帧协议，也不实现 Login、创建角色或 Borrow 登录入口。
+该原子迁移提交时未同时改变 Game/Actor 业务响应路径、`processedUpSeq` 和 Seq/Ack；后续阶段已经完成这些变更。Login、创建角色和 Borrow 登录入口不属于本文范围。
 
 ## 身份和寻址
 
@@ -107,7 +109,7 @@ Topic 仍是单个 MsgQ 实例内的本地索引：
 
 - 跨角色通知和有状态世界回推只知道目标 RoleID，使用 `PubRole`。
 - 当前连接订阅 Topic，以及选择当前连接所在 MsgQ 做本地广播，使用 HandlerContext 中可信 Identity 的 SessionID。
-- 当前阶段的普通业务响应仍由 Agent 调用自身 SessionClient 的 `PubSession`；下一阶段再迁移为 Game/Actor 直接投递并引入处理完成确认。
+- 该原子迁移提交时普通业务响应仍由 Agent 发布；后续阶段已经改为 Game/Actor 直接投递并返回处理完成确认。
 
 客户端线协议不变。真实集群证据读取从 RoleID key 改为 SessionID key，并额外核对 record 中的 RoleID。
 
@@ -119,4 +121,3 @@ Topic 仍是单个 MsgQ 实例内的本地索引：
 - 干净登录使用新 SessionID，队列和 Seq 从零开始；旧主会话不能再次恢复或删除新主投影。
 - Redis Create/Rebind/主投影条件脚本通过真实 Redis 和竞态测试。
 - 两个示例工程的跨角色单播、本地 Topic 广播、有状态跨 Actor 推送继续通过。
-

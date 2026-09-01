@@ -56,14 +56,12 @@ type DispatchRequest struct {
 	Payload   []byte
 }
 
-// DispatchResult 是项目分发器返回给当前客户端会话的可选 BON 响应。
-// Payload 为 nil 表示当前命令不产生直接响应；非 nil 时，所有权在 Dispatch
-// 成功返回后移交给 Agent，调用方不得继续修改、append、复用或归还该切片。
+// DispatchResult 是项目分发器返回的上行处理完成确认。
 type DispatchResult struct {
-	Payload []byte
+	ProcessedUpSeq int64
 }
 
-// Dispatcher 由项目实现业务命令解码与投递，并可返回当前请求的直接响应。
+// Dispatcher 由项目实现业务命令路由，并返回当前上行的处理完成确认。
 type Dispatcher interface {
 	Dispatch(context.Context, DispatchRequest) (DispatchResult, error)
 }

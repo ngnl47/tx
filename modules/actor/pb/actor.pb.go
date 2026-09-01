@@ -442,15 +442,17 @@ func (x *Acceptance) GetRequestId() uint64 {
 
 // Result 是 Actor 完成业务处理后返回的不透明结果。
 type Result struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	MessageType   string                 `protobuf:"bytes,2,opt,name=message_type,json=messageType,proto3" json:"message_type,omitempty"`
-	CommandId     uint64                 `protobuf:"varint,3,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
-	Payload       []byte                 `protobuf:"bytes,4,opt,name=payload,proto3" json:"payload,omitempty"`
-	ErrorCode     int32                  `protobuf:"varint,5,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
-	ErrorMessage  string                 `protobuf:"bytes,6,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	RequestId    uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	MessageType  string                 `protobuf:"bytes,2,opt,name=message_type,json=messageType,proto3" json:"message_type,omitempty"`
+	CommandId    uint64                 `protobuf:"varint,3,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	Payload      []byte                 `protobuf:"bytes,4,opt,name=payload,proto3" json:"payload,omitempty"`
+	ErrorCode    int32                  `protobuf:"varint,5,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
+	ErrorMessage string                 `protobuf:"bytes,6,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	// processed_up_seq 是 Agent 上行专用的处理完成序号，不能与业务结果字段同时出现。
+	ProcessedUpSeq int64 `protobuf:"varint,7,opt,name=processed_up_seq,json=processedUpSeq,proto3" json:"processed_up_seq,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *Result) Reset() {
@@ -525,6 +527,13 @@ func (x *Result) GetErrorMessage() string {
 	return ""
 }
 
+func (x *Result) GetProcessedUpSeq() int64 {
+	if x != nil {
+		return x.ProcessedUpSeq
+	}
+	return 0
+}
+
 var File_modules_actor_proto_actor_proto protoreflect.FileDescriptor
 
 const file_modules_actor_proto_actor_proto_rawDesc = "" +
@@ -561,7 +570,7 @@ const file_modules_actor_proto_actor_proto_rawDesc = "" +
 	"\n" +
 	"command_id\x18\x01 \x01(\x04R\tcommandId\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x02 \x01(\x04R\trequestId\"\xc7\x01\n" +
+	"request_id\x18\x02 \x01(\x04R\trequestId\"\xf1\x01\n" +
 	"\x06Result\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x12!\n" +
@@ -571,7 +580,8 @@ const file_modules_actor_proto_actor_proto_rawDesc = "" +
 	"\apayload\x18\x04 \x01(\fR\apayload\x12\x1d\n" +
 	"\n" +
 	"error_code\x18\x05 \x01(\x05R\terrorCode\x12#\n" +
-	"\rerror_message\x18\x06 \x01(\tR\ferrorMessage*c\n" +
+	"\rerror_message\x18\x06 \x01(\tR\ferrorMessage\x12(\n" +
+	"\x10processed_up_seq\x18\a \x01(\x03R\x0eprocessedUpSeq*c\n" +
 	"\fRouteKeyKind\x12\x12\n" +
 	"\x0eROUTE_KEY_NONE\x10\x00\x12\x13\n" +
 	"\x0fROUTE_KEY_INT64\x10\x01\x12\x14\n" +

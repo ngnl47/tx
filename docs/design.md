@@ -2316,31 +2316,31 @@ Bee 或 Ant Context，因此可以使用本次 Server 已声明的 Actor、服�
 `Identity` 与 `UpSeq`。项目 Actor resolver 仍只负责目标、消息类型、命令号、路由键、载荷和是否等待结果，不能伪造身份或序号。
 Actor protobuf 在跨进程投递时保留完整身份和 `UpSeq`；内部 Actor 调用可以同时省略二者，只出现其中一个的 Delivery 无效。
 
-`Dispatcher` 返回 `DispatchResult`。`Payload == nil` 表示本次命令没有直接下行；非 nil payload 的所有权在返回后
-转移给 Agent，调用方不能再修改。当前 Agent 使用可信身份中的 SessionID 调用 `PubSession`，把 Game/Actor 同步返回的
-响应投递到发起会话；新 SessionID 不会继承旧会话的下行。通用 Actor Dispatcher 对无响应命令使用 `Tell`，对声明响应类型的命令使用带 deadline 的
-`Call`；Actor 返回的 BON bytes 不在 Agent 内反序列化。
+`Dispatcher` 返回只含 `ProcessedUpSeq` 的 `DispatchResult`。Game/Actor 先使用可信身份中的 SessionID 调用
+`PubSession` 发布普通响应或请求级错误，再返回与当前上行 Seq 完全相等的处理完成确认；新 SessionID 不会继承旧会话的
+下行。通用 Actor Dispatcher 对所有 Agent 上行使用带 deadline 的 `Call`，但 Actor 返回值不携带 BON 业务载荷。
 
-Agent 核心不依赖项目生成协议，因此不会自行构造业务错误包，也不负责项目 HTTP 路由、JSON/BON 绑定、默认 timeout、
-自动重试或通用 HTTP Router。项目 Agent 适配层负责把 Actor `CallError` 转换为
-生成的 `System_Error{RequestSeq, Code, Message}`，并以普通 `DispatchResult` 进入 MsgQ；这类结果不会终止连接。
+Agent 核心不依赖项目生成协议，因此不会自行构造业务错误包，也不负责项目 HTTP 路由、JSON/BON 绑定、自动重试或
+通用 HTTP Router。项目 Game/Actor 适配层负责把 Handler 错误转换为生成的
+`System_Error{RequestSeq, Code, Message}` 并直接发布到发起 Session；发布成功后同样返回处理完成确认，这类结果不会终止连接。
 `Code` 使用 `int32` 跨 Actor protobuf 边界传递，`0` 表示没有错误，`CallErrorCodeInternal=-1` 表示未分类内部错误，
 正数空间由项目错误码表分配。`CallErrorCodeDispatch=-2` 标识 Actor 解码、Handler 注册和投递模式等分派契约失败；
-目标 Actor 已经返回该错误时，项目适配层同样生成 `System_Error`，连接继续处理后续请求。握手、Frame、Seq/Ack、
-目标解析、Actor 调用超时、传输错误和其他没有取得 Actor 明确响应的基础设施错误仍沿 Agent 错误返回链关闭连接，
+目标 Actor 在解码或分派阶段识别该错误时，Actor 适配层同样生成 `System_Error`，连接继续处理后续请求。握手、Frame、Seq/Ack、
+目标解析、Actor 调用超时、响应发布错误、传输错误和其他没有取得处理完成确认的基础设施错误仍沿 Agent 错误返回链关闭连接，
 不能为了“不断连”把损坏协议状态或不可确定的投递结果吞成请求失败。
 
 连接上存在两条独立序列：客户端为 `FrameUpMsg` 分配 Seq，服务端为 `FrameDownMsg` 分配 Seq。帧中的 Ack
 始终确认对端序列，不承担请求与响应关联：`FrameUpMsg.Ack` 确认服务端下行，`FrameDownMsg.Ack` 确认客户端上行。
-服务端在 `msgq.Rec` 接受 Seq 后才推进确认游标；Dispatcher 有响应时把该游标捎带到 `FrameDownMsg`，无响应或重复
-Seq 时发送独立 `FrameAck`。响应发送协程和独立确认共用连接级串行 writer，避免并发写同一个 TCP/WebSocket transport。
+服务端分别维护 MsgQ 已接受序号与 Actor 已处理序号。只有收到匹配当前上行 Seq 的 `ProcessedUpSeq` 后才推进连接的
+确认游标；下行协程把该游标捎带到 `FrameDownMsg`，没有业务下行或收到重复 Seq 时发送独立 `FrameAck`。下行发送协程
+和独立确认共用连接级串行 writer，避免并发写同一个 TCP/WebSocket transport。
 
 客户端把未确认 UpMsg 保存在逻辑 Session 自己的重放队列中。Frame 在首次发送前入队，Ack 只释放连续前缀；队列内的
 Frame 和 Payload 在确认前只读。恢复连接复用原 Session，先发送带最后已处理 DownMsg Ack 的握手。msgq 的新建与恢复
 语义严格分离：新建总是安装空会话，恢复必须命中同一 SessionID。只有 `Init` 成功后 Agent 才发送 `FrameReady`；客户端
 在收到它之前保持连接中状态，并以 `FrameReady.Ack` 释放服务端已经受理的重放前缀，再按原序号重放剩余 UpMsg。
-即使客户端随后重放已经受理的 Frame，`Rec` 也只幂等返回当前序号，不会重复调用 Dispatcher。当前 Ack 仅随 MsgQ 已受理
-的上行序号推进；Game/Actor 尚未直接发布业务响应，也尚未以处理完成序号推进 Ack。
+即使客户端随后重放已经受理的 Frame，`Rec` 也只幂等返回当前序号，不会重复调用 Dispatcher。当前连接的 Ack 仅随
+Game/Actor 返回的处理完成序号推进；普通响应与 `System_Error` 均由 Game/Actor 直接发布到 Session 邮箱。
 
 ### Actor
 

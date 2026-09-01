@@ -127,15 +127,17 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 	if handshake.Restore {
 		writtenDownSeq.Store(handshake.Ack)
 	}
-	var receivedUpSeq atomic.Int64
-	receivedUpSeq.Store(initialized.UpMsgSeq)
+	var acceptedUpSeq atomic.Int64
+	acceptedUpSeq.Store(initialized.UpMsgSeq)
+	var processedUpSeq atomic.Int64
+	processedUpSeq.Store(initialized.UpMsgSeq)
 	if err := writer.Write(sessionCtx, Frame{Kind: FrameReady, Ack: initialized.UpMsgSeq}); err != nil {
 		cancel()
 		return err
 	}
 	writerResult := make(chan error, 1)
 	go func() {
-		writerResult <- s.writeDownMsgs(sessionCtx, client, header, &writer, &writtenDownSeq, &receivedUpSeq)
+		writerResult <- s.writeDownMsgs(sessionCtx, client, header, &writer, &writtenDownSeq, &processedUpSeq)
 		cancel()
 	}()
 	defer func() {
@@ -168,14 +170,12 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 		if err := writer.validateAcknowledgement(frame.Ack, confirmedDownSeq, &writtenDownSeq); err != nil {
 			return err
 		}
-		responseQueued, err := s.dispatchUpMsg(sessionCtx, client, header, identity, frame, &receivedUpSeq, &confirmedDownSeq)
+		err = s.dispatchUpMsg(sessionCtx, client, header, identity, frame, &acceptedUpSeq, &processedUpSeq, &confirmedDownSeq)
 		if err != nil {
 			return err
 		}
-		if !responseQueued {
-			if err := writer.Write(sessionCtx, Frame{Kind: FrameAck, Ack: receivedUpSeq.Load()}); err != nil {
-				return err
-			}
+		if err := writer.Write(sessionCtx, Frame{Kind: FrameAck, Ack: processedUpSeq.Load()}); err != nil {
+			return err
 		}
 	}
 }
@@ -194,25 +194,25 @@ func (s *Server) nextConnectionID() (int64, error) {
 	return connectionID, nil
 }
 
-func (s *Server) dispatchUpMsg(ctx context.Context, client msgq.SessionClient, header msgq.SessionHeader, identity Identity, frame Frame, receivedUpSeq *atomic.Int64, confirmedDownSeq *int64) (bool, error) {
+func (s *Server) dispatchUpMsg(ctx context.Context, client msgq.SessionClient, header msgq.SessionHeader, identity Identity, frame Frame, acceptedUpSeq, processedUpSeq *atomic.Int64, confirmedDownSeq *int64) error {
 	var done func()
 	if s.admission != nil {
 		var err error
 		done, err = s.admission.Enter()
 		if err != nil {
-			return false, err
+			return err
 		}
 		defer done()
 	}
 	result, err := client.Rec(ctx, msgq.RecRequest{Header: header, Seq: frame.Seq, Ack: frame.Ack})
 	if err != nil {
-		return false, err
+		return err
 	}
 	*confirmedDownSeq = frame.Ack
-	if result.UpMsgSeq <= receivedUpSeq.Load() {
-		return false, nil
+	if result.UpMsgSeq <= acceptedUpSeq.Load() {
+		return nil
 	}
-	receivedUpSeq.Store(result.UpMsgSeq)
+	acceptedUpSeq.Store(result.UpMsgSeq)
 	dispatched, err := s.dispatcher.Dispatch(ctx, DispatchRequest{
 		Identity:  identity,
 		Seq:       frame.Seq,
@@ -221,23 +221,23 @@ func (s *Server) dispatchUpMsg(ctx context.Context, client msgq.SessionClient, h
 		Payload:   cloneBytes(frame.Payload),
 	})
 	if err != nil {
-		return false, err
+		return err
 	}
-	if dispatched.Payload == nil {
-		return false, nil
+	if dispatched.ProcessedUpSeq != frame.Seq {
+		return ErrInvalidDispatchResult
 	}
-	_, err = client.PubSession(ctx, header.SessionID, dispatched.Payload)
-	return err == nil, err
+	processedUpSeq.Store(dispatched.ProcessedUpSeq)
+	return nil
 }
 
-func (s *Server) writeDownMsgs(ctx context.Context, client msgq.SessionClient, header msgq.SessionHeader, writer *sessionFrameWriter, written, receivedUpSeq *atomic.Int64) error {
+func (s *Server) writeDownMsgs(ctx context.Context, client msgq.SessionClient, header msgq.SessionHeader, writer *sessionFrameWriter, written, processedUpSeq *atomic.Int64) error {
 	for {
 		batch, err := client.FetchSome(ctx, msgq.FetchSomeRequest{Header: header, Max: s.fetchBatch})
 		if err != nil {
 			return err
 		}
 		for _, message := range batch.Messages {
-			if err := writer.writeDownMsg(ctx, Frame{Kind: FrameDownMsg, Seq: message.Seq, Ack: receivedUpSeq.Load(), Payload: message.Payload}, written); err != nil {
+			if err := writer.writeDownMsg(ctx, Frame{Kind: FrameDownMsg, Seq: message.Seq, Ack: processedUpSeq.Load(), Payload: message.Payload}, written); err != nil {
 				return err
 			}
 		}

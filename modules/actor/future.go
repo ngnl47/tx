@@ -26,11 +26,13 @@ var (
 	ErrResponseNotRequested    = errors.New("actor: delivery does not request a business result")
 )
 
-// Result 是 Actor 完成业务处理后返回的不透明结果。Payload 在发布后按只读字节使用。
+// Result 是 Actor 完成业务处理后返回的不透明结果。普通调用携带消息元数据和
+// Payload；Agent 上行处理完成确认只携带 ProcessedUpSeq。
 type Result struct {
-	MessageType string
-	CommandID   uint64
-	Payload     []byte
+	MessageType    string
+	CommandID      uint64
+	Payload        []byte
+	ProcessedUpSeq int64
 }
 
 // CallError 是远端业务返回的显式错误。
@@ -241,9 +243,10 @@ func (calls *pendingCalls) resolve(message *actorpb.Result) {
 		return
 	}
 	result := Result{
-		MessageType: message.GetMessageType(),
-		CommandID:   message.GetCommandId(),
-		Payload:     append([]byte(nil), message.GetPayload()...),
+		MessageType:    message.GetMessageType(),
+		CommandID:      message.GetCommandId(),
+		Payload:        append([]byte(nil), message.GetPayload()...),
+		ProcessedUpSeq: message.GetProcessedUpSeq(),
 	}
 	if message.GetErrorCode() == 0 && message.GetErrorMessage() != "" {
 		state.complete(Result{}, ErrInvalidResponse)
@@ -253,7 +256,15 @@ func (calls *pendingCalls) resolve(message *actorpb.Result) {
 		state.complete(Result{}, &CallError{Code: message.GetErrorCode(), Message: message.GetErrorMessage()})
 		return
 	}
-	if result.MessageType == "" || result.MessageType != strings.TrimSpace(result.MessageType) {
+	if result.ProcessedUpSeq > 0 {
+		if result.MessageType != "" || result.CommandID != 0 || len(result.Payload) != 0 {
+			state.complete(Result{}, ErrInvalidResponse)
+			return
+		}
+		state.complete(result, nil)
+		return
+	}
+	if result.ProcessedUpSeq < 0 || result.MessageType == "" || result.MessageType != strings.TrimSpace(result.MessageType) {
 		state.complete(Result{}, ErrInvalidResponse)
 		return
 	}
@@ -279,10 +290,11 @@ func Respond(ctx protoactor.Context, request Delivery, result Result, resultErr 
 		return ErrResponseNotRequested
 	}
 	message := &actorpb.Result{
-		RequestId:   request.requestID,
-		MessageType: result.MessageType,
-		CommandId:   result.CommandID,
-		Payload:     append([]byte(nil), result.Payload...),
+		RequestId:      request.requestID,
+		MessageType:    result.MessageType,
+		CommandId:      result.CommandID,
+		Payload:        append([]byte(nil), result.Payload...),
+		ProcessedUpSeq: result.ProcessedUpSeq,
 	}
 	if resultErr != nil {
 		message.ErrorCode, message.ErrorMessage = callErrorFields(resultErr)
