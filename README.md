@@ -75,17 +75,19 @@ func NewApplication(config bee.Config, services ...bee.ServiceRegistration) (*be
 
 func Run(ctx context.Context, app *bee.Server) error {
 	return app.Run(ctx, bee.RunOptions{
-		Services:         "game,msgq,agent",
-		InstanceID:       "pod-uid-43",
-		InstanceVersion:  "20260823.1",
-		InstanceEndpoint: "10.0.1.21:9000",
-		RPCListen:        "0.0.0.0:9000",
+		Services:          "game,msgq,agent",
+		InstanceID:        "pod-uid-43",
+		InstanceVersion:   "20260823.1",
+		InstanceEndpoint:  "10.0.1.21:9000",
+		InstanceEndpoints: map[string]string{"agent.tcp": "203.0.113.21:30000"},
+		RPCListen:         "0.0.0.0:9000",
 	})
 }
 ```
 
 `InstanceID` 只表示本次物理运行实例，例如 Kubernetes Pod UID；它不包含服务名或
-`LogicalSlot`。有状态服务通过独立的 `LogicalSlot` 保存稳定业务归属。
+`LogicalSlot`。有状态服务通过独立的 `LogicalSlot` 保存稳定业务归属。`InstanceEndpoint`
+只发布内部业务 gRPC 地址；`InstanceEndpoints` 由项目用稳定名称发布客户端或其他项目地址，框架不解释其中的名称。
 
 `Setup` 是项目组合根使用的装配扩展点，适合安装 `db` facade。回调拿到的是受控
 `bee.Context` 或 `ant.Context`：可以读取当前注册单元已经声明的能力，但不能取消根生命周期、关闭共享 gRPC Host、停止 Actor/Procedure，
@@ -327,6 +329,10 @@ roomOwner := candidates[uint64(roomID)%uint64(len(candidates))]
 // 会话等精确路由可继续解析 draining/stopping 实例，用于连接排空。
 msgq, ok := directory.LookupInstance("msgq-2")
 ```
+
+`Instance.Endpoint` 是内部业务 gRPC 地址，`Instance.ActorEndpoint` 是 Actor Remote 地址，
+`Instance.Endpoints` 是项目按稳定名称声明的其他公开地址。`ServiceDirectory` 会复制地址表，调用方不能通过修改输入值或
+查询结果改变目录快照；高频消息路由使用的 `RouteInstance` 不携带该地址表。
 
 `NextInstance` 是健康服务副本的轮转选择；`RunningInstances` 返回稳定排序、与目录内部隔离的健康实例
 快照，供业务实现随机、哈希或负载策略；`LookupInstance` 是已知实例的精确路由。`SessionID -> msgq 实例` 的精确会话

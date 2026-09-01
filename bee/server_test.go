@@ -38,6 +38,40 @@ func TestBuilderConstructsAndStartsStatelessServer(t *testing.T) {
 	}
 }
 
+func TestRunOptionsPublishClonedInstanceEndpoints(t *testing.T) {
+	var runtime Context
+	server, err := New(Config{AppID: "bee-test"}).Services(ServiceRegistration{
+		Spec: ServiceSpec{Name: "agent"},
+		Factory: func(current Context) (Service, error) {
+			runtime = current
+			return serviceFunc(func(context.Context) error { return nil }), nil
+		},
+	}).Build()
+	if err != nil {
+		t.Fatalf("Build returned error: %v", err)
+	}
+	endpoints := map[string]string{"agent.tcp": "10.0.0.7:9000"}
+	if err := server.Start(context.Background(), RunOptions{
+		Services:          "agent",
+		InstanceID:        "agent-a",
+		InstanceEndpoints: endpoints,
+	}); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	endpoints["agent.tcp"] = "tampered-input"
+	instance := runtime.Instance()
+	if got := instance.Endpoints["agent.tcp"]; got != "10.0.0.7:9000" {
+		t.Fatalf("agent.tcp = %q, want 10.0.0.7:9000", got)
+	}
+	instance.Endpoints["agent.tcp"] = "tampered-result"
+	if got := runtime.Instance().Endpoints["agent.tcp"]; got != "10.0.0.7:9000" {
+		t.Fatalf("second agent.tcp = %q, want 10.0.0.7:9000", got)
+	}
+	if err := server.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop returned error: %v", err)
+	}
+}
+
 func TestStorageReadersAdapterPreservesNilOnUnbind(t *testing.T) {
 	var readers framework.StorageReaders
 	if adapted := adaptStorageReaders(readers); adapted != nil {

@@ -123,6 +123,8 @@ type RunOptions struct {
 	InstanceVersion string
 	// InstanceEndpoint 是发布到服务发现的业务 RPC 地址。
 	InstanceEndpoint string
+	// InstanceEndpoints 是当前实例按稳定名称发布的客户端或项目公开地址。
+	InstanceEndpoints map[string]string
 	// RPCListen 是共享 gRPC Host 的本地监听地址。
 	RPCListen string
 	// ControlListen 是独立运维控制面的本地监听地址；空值表示禁用。
@@ -175,11 +177,12 @@ func (config Config) toFramework() framework.Config {
 
 func (options RunOptions) toFramework() framework.RunOptions {
 	return framework.RunOptions{
-		Services:         options.Services,
-		InstanceID:       options.InstanceID,
-		InstanceVersion:  options.InstanceVersion,
-		InstanceEndpoint: options.InstanceEndpoint,
-		RPCListen:        options.RPCListen,
-		ControlListen:    options.ControlListen,
+		Services:          options.Services,
+		InstanceID:        options.InstanceID,
+		InstanceVersion:   options.InstanceVersion,
+		InstanceEndpoint:  options.InstanceEndpoint,
+		InstanceEndpoints: options.InstanceEndpoints,
+		RPCListen:         options.RPCListen,
+		ControlListen:     options.ControlListen,
 	}
 }

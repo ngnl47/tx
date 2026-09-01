@@ -2171,7 +2171,7 @@ etcd
 
 `modules/discovery` 使用 etcd lease/watch 管理服务实例事实：
 
-- 注册实例 ID、endpoint、version、services 和 status。
+- 注册实例 ID、内部业务 RPC 地址、Actor 地址、项目命名公开地址、version、services 和 status。
 - keepalive 失效后自动摘除。
 - `ServiceDirectory` 维护本地快照。
 - 服务路由只选择 running 实例。
@@ -2204,9 +2204,10 @@ generation 后再放流。
 中断会同时清空实例目录、使槽位目录进入 unavailable，并按固定退避重新获取完整快照。此时路由默认失败，不能使用旧
 assignment，也不能临时恢复成逐消息 etcd Get。该选择以不向错误 owner 投递为最高优先级。
 
-`SlotRouter` 使用不含 `Services []string` 的 `RouteInstance` 值类型读取 endpoint，避免高频路由为防御性复制服务列表而
-分配内存。`SlotDirectory` 与 `ServiceDirectory` 的纯读取路径使用读锁；只有服务轮询游标、快照替换和失效操作使用写锁，
-避免并发 Agent 请求被互相串行化。
+`SlotRouter` 使用不含 `Services []string` 和 `Endpoints map[string]string` 的 `RouteInstance` 值类型读取内部业务 RPC
+地址，避免高频路由为防御性复制切片或地址表而分配内存。命名公开地址只属于低频实例发现元数据，由项目定义名称和用途；
+`ServiceDirectory` 在写入和返回完整实例时复制地址表，不能把可变 map 所有权泄露给调用方。`SlotDirectory` 与
+`ServiceDirectory` 的纯读取路径使用读锁；只有服务轮询游标、快照替换和失效操作使用写锁，避免并发 Agent 请求被互相串行化。
 
 2026-08-27 使用 Go 1.27.0 在 x86_64 macOS 上运行缓存槽位解析基准：单线程
 `BenchmarkSlotRouterCachedResolve` 为 `110.7-115.4 ns/op`；16 路并行
@@ -2412,10 +2413,11 @@ Actor 实体生命周期属于进程内数据面，不属于 etcd 控制面：
 `Runtime` 使用读写锁隔离本地生命周期状态。Start、Drain 和 Shutdown 独占写锁；互不相关的 `VirtualPID` 解析共享
 读锁并发进入 ProtoActor placement。Shutdown 等待已经进入的解析返回后再拆除 Cluster，不能让解析观察到半关闭状态。
 
-服务发现实例同时发布两个不可混用的地址：
+服务发现实例发布三类不可混用的地址：
 
 - `Instance.Endpoint`：当前进程共享 gRPC Host。
 - `Instance.ActorEndpoint`：ProtoActor Remote。
+- `Instance.Endpoints`：项目按稳定名称发布的客户端地址或其他项目公开地址；框架只负责透传和只读快照。
 
 `actor.NewKind` 声明 Virtual Actor；`actor.NewFixedKind` 声明固定实体。L4 服务仍统一放入
 `bee.ServiceSpec.ActorKinds` 或 `ant.ServiceSpec.ActorKinds`；Server 发现固定 Kind 后自动选择 Discovery CMod，并保证 Actor Remote 先启动、写入

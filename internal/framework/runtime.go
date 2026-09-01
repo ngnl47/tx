@@ -1,6 +1,7 @@
 package framework
 
 import (
+	"maps"
 	"sync"
 
 	"github.com/ngnl47/tx/lifecycle"
@@ -44,6 +45,7 @@ func (runtime *runtime) instanceSnapshot() discovery.Instance {
 	defer runtime.instanceMu.RUnlock()
 	instance := runtime.instance
 	instance.Services = append([]string(nil), instance.Services...)
+	instance.Endpoints = maps.Clone(instance.Endpoints)
 	return instance
 }
 

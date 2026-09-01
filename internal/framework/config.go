@@ -158,8 +158,10 @@ type RunOptions struct {
 	InstanceID string
 	// InstanceVersion 是当前实例发布的代码或镜像版本。
 	InstanceVersion string
-	// InstanceEndpoint 是服务发现对外发布的可达地址。
+	// InstanceEndpoint 是发布到服务发现的内部业务 RPC 地址。
 	InstanceEndpoint string
+	// InstanceEndpoints 是当前实例按稳定名称发布的客户端或项目公开地址。
+	InstanceEndpoints map[string]string
 	// LogicalSlot 是有状态服务稳定绑定的逻辑槽位；无状态服务可留空。框架不会把它
 	// 拼接到 InstanceID。
 	LogicalSlot string

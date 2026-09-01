@@ -3,6 +3,7 @@ package discovery
 
 import (
 	"errors"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -20,16 +21,17 @@ const (
 )
 
 type Instance struct {
-	ID            string   `json:"id"`
-	Services      []string `json:"services"`
-	Endpoint      string   `json:"endpoint"`
-	ActorEndpoint string   `json:"actorEndpoint,omitempty"`
-	Version       string   `json:"version,omitempty"`
-	Status        Status   `json:"status"`
+	ID            string            `json:"id"`
+	Services      []string          `json:"services"`
+	Endpoint      string            `json:"endpoint"`
+	ActorEndpoint string            `json:"actorEndpoint,omitempty"`
+	Endpoints     map[string]string `json:"endpoints,omitempty"`
+	Version       string            `json:"version,omitempty"`
+	Status        Status            `json:"status"`
 }
 
-// RouteInstance 是消息路由所需的只读实例视图。它刻意不携带 Services 切片，
-// 因而可以按值跨越高频路由边界且不产生防御性复制分配。
+// RouteInstance 是消息路由所需的只读实例视图。它刻意不携带 Services 切片和
+// Endpoints 地址表，因而可以按值跨越高频路由边界且不产生防御性复制分配。
 type RouteInstance struct {
 	ID            string
 	Endpoint      string
@@ -119,6 +121,7 @@ func (d *ServiceDirectory) Replace(instances []Instance) error {
 			return ErrInvalidInstance
 		}
 		instance.Services = append([]string(nil), instance.Services...)
+		instance.Endpoints = maps.Clone(instance.Endpoints)
 		byID[instance.ID] = instance
 		for _, service := range instance.Services {
 			byService[service] = append(byService[service], instance)
@@ -217,6 +220,7 @@ func (d *ServiceDirectory) LookupRouteInstance(id string) (RouteInstance, bool) 
 
 func cloneInstance(instance Instance) Instance {
 	instance.Services = append([]string(nil), instance.Services...)
+	instance.Endpoints = maps.Clone(instance.Endpoints)
 	return instance
 }
 

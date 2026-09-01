@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 
@@ -220,11 +221,12 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 		selectedCMods: newCModSelection(graph.IDs()...).ids,
 		actorKinds:    append([]txactor.Kind(nil), actorKinds...),
 		instance: discovery.Instance{
-			ID:       strings.TrimSpace(options.InstanceID),
-			Endpoint: strings.TrimSpace(options.InstanceEndpoint),
-			Version:  strings.TrimSpace(options.InstanceVersion),
-			Services: selectedServiceNames(selected),
-			Status:   discovery.StatusStarting,
+			ID:        strings.TrimSpace(options.InstanceID),
+			Endpoint:  strings.TrimSpace(options.InstanceEndpoint),
+			Endpoints: maps.Clone(options.InstanceEndpoints),
+			Version:   strings.TrimSpace(options.InstanceVersion),
+			Services:  selectedServiceNames(selected),
+			Status:    discovery.StatusStarting,
 		},
 	}
 	server.mu.Lock()
