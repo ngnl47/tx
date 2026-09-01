@@ -21,7 +21,7 @@ var (
 
 // Connection 向一个已解析的 msgq 实例投递下行消息。
 type Connection interface {
-	Pub(context.Context, PubRequest) (PubResult, error)
+	PubSession(context.Context, int64, []byte) (PubResult, error)
 	JoinTopics(context.Context, TopicRequest) error
 	BroadcastTopic(context.Context, BroadcastTopicRequest) (BroadcastTopicResult, error)
 	Close() error
@@ -81,15 +81,8 @@ type grpcConnection struct {
 	client     msgqpb.MailboxServiceClient
 }
 
-func (c *grpcConnection) Pub(ctx context.Context, request PubRequest) (PubResult, error) {
-	response, err := c.client.Pub(ctx, &msgqpb.PubRequest{
-		Header: &msgqpb.SessionHeader{
-			RoleId:       request.Header.RoleID,
-			SessionId:    request.Header.SessionID,
-			ConnectionId: request.Header.ConnectionID,
-		},
-		Payload: request.Payload,
-	})
+func (c *grpcConnection) PubSession(ctx context.Context, sessionID int64, payload []byte) (PubResult, error) {
+	response, err := c.client.PubSession(ctx, &msgqpb.PubSessionRequest{SessionId: sessionID, Payload: payload})
 	if err != nil {
 		return PubResult{}, mailboxClientError(err)
 	}
@@ -133,7 +126,7 @@ func (c *grpcConnection) BroadcastTopic(ctx context.Context, request BroadcastTo
 }
 
 func (c *grpcConnection) Init(ctx context.Context, request InitRequest) (InitResult, error) {
-	response, err := c.client.Init(ctx, &msgqpb.InitRequest{Header: headerToProto(request.Header), Restore: request.Restore, Ack: request.Ack})
+	response, err := c.client.Init(ctx, &msgqpb.InitRequest{Header: headerToProto(request.Header), Restore: request.Restore, Ack: request.Ack, Primary: request.Primary})
 	if err != nil {
 		return InitResult{}, mailboxClientError(err)
 	}
@@ -219,7 +212,7 @@ type Sender struct {
 	closed      bool
 }
 
-// NewSender 创建按 roleID 路由的 msgq 发送器。
+// NewSender 创建按 SessionID 或 RoleID 显式路由的 msgq 发送器。
 func NewSender(router *SessionRouter, dialer Dialer) (*Sender, error) {
 	if router == nil {
 		return nil, ErrSessionRouterNil
@@ -234,34 +227,36 @@ func NewSender(router *SessionRouter, dialer Dialer) (*Sender, error) {
 	}, nil
 }
 
-// Pub 向 roleID 当前会话投递 BON 编码载荷。
-func (s *Sender) Pub(ctx context.Context, roleID int64, payload []byte) (PubResult, error) {
+// PubSession 向精确 SessionID 投递 BON 编码载荷。
+func (s *Sender) PubSession(ctx context.Context, sessionID int64, payload []byte) (PubResult, error) {
 	if s == nil {
 		return PubResult{}, ErrSenderClosed
 	}
-	target, err := s.router.Resolve(ctx, roleID, 0)
+	target, err := s.router.ResolveSession(ctx, sessionID)
 	if err != nil {
 		return PubResult{}, err
 	}
-	connection, err := s.connection(ctx, target.Instance)
-	if err != nil {
-		return PubResult{}, err
-	}
-	return connection.Pub(ctx, PubRequest{
-		Header: SessionHeader{
-			RoleID:    target.Binding.RoleID,
-			SessionID: target.Binding.SessionID,
-		},
-		Payload: payload,
-	})
+	return s.publish(ctx, target, payload)
 }
 
-// JoinTopics 将角色的当前连接加入其 owner MsgQ 实例的本地 Topic 索引。
-func (s *Sender) JoinTopics(ctx context.Context, roleID int64, topics ...string) error {
+// PubRole 向 RoleID 当前主会话投递 BON 编码载荷。
+func (s *Sender) PubRole(ctx context.Context, roleID int64, payload []byte) (PubResult, error) {
+	if s == nil {
+		return PubResult{}, ErrSenderClosed
+	}
+	target, err := s.router.ResolveRole(ctx, roleID)
+	if err != nil {
+		return PubResult{}, err
+	}
+	return s.publish(ctx, target, payload)
+}
+
+// JoinTopics 将 ownerSessionID 的当前连接加入其 MsgQ 实例的本地 Topic 索引。
+func (s *Sender) JoinTopics(ctx context.Context, ownerSessionID int64, topics ...string) error {
 	if s == nil {
 		return ErrSenderClosed
 	}
-	target, err := s.router.Resolve(ctx, roleID, 0)
+	target, err := s.router.ResolveSession(ctx, ownerSessionID)
 	if err != nil {
 		return err
 	}
@@ -279,13 +274,13 @@ func (s *Sender) JoinTopics(ctx context.Context, roleID int64, topics ...string)
 	})
 }
 
-// BroadcastTopic 向 ownerRoleID 当前绑定的 MsgQ 实例执行本地 Topic 广播。
+// BroadcastTopic 向 ownerSessionID 当前绑定的 MsgQ 实例执行本地 Topic 广播。
 // 该方法不会扫描其他 MsgQ 实例；跨实例分发必须由业务层显式完成。
-func (s *Sender) BroadcastTopic(ctx context.Context, ownerRoleID int64, request BroadcastTopicRequest) (BroadcastTopicResult, error) {
+func (s *Sender) BroadcastTopic(ctx context.Context, ownerSessionID int64, request BroadcastTopicRequest) (BroadcastTopicResult, error) {
 	if s == nil {
 		return BroadcastTopicResult{}, ErrSenderClosed
 	}
-	target, err := s.router.Resolve(ctx, ownerRoleID, 0)
+	target, err := s.router.ResolveSession(ctx, ownerSessionID)
 	if err != nil {
 		return BroadcastTopicResult{}, err
 	}
@@ -294,6 +289,14 @@ func (s *Sender) BroadcastTopic(ctx context.Context, ownerRoleID int64, request 
 		return BroadcastTopicResult{}, err
 	}
 	return connection.BroadcastTopic(ctx, request)
+}
+
+func (s *Sender) publish(ctx context.Context, target SessionTarget, payload []byte) (PubResult, error) {
+	connection, err := s.connection(ctx, target.Instance)
+	if err != nil {
+		return PubResult{}, err
+	}
+	return connection.PubSession(ctx, target.Binding.SessionID, payload)
 }
 
 // Close 关闭所有缓存 endpoint 的连接。

@@ -19,15 +19,13 @@
 
 ### 可信会话后续 P0 顺序
 
-以下能力均尚未实现，必须按顺序推进：
+MsgQ 的 SessionID 精确邮箱与 RoleID 唯一主会话投影已经完成并进入稳定文档，不再列为待办。真实集群 P0 仍未整体完成；以下能力必须按顺序推进：
 
-1. MsgQ 以 `SessionID` 为精确会话邮箱主键，新增 `PubSession(SessionID, payload)`。
-2. 增加 `RoleID` 到唯一主 `SessionID` 的路由和 `PubRole(RoleID, payload)`；只有正常可写会话成为主会话，Borrow 只读会话不进入主路由、不扇出。
-3. 把业务响应改为 Game/Actor 进程通过 MsgQ Sender 直接 `PubSession`；Actor 只向 Agent 返回处理完成状态；Agent 以 `processedUpSeq` 推进 Ack。该阶段单独实现并回归错误响应。
-4. 在项目层实现可选无状态 Login HTTP 服务：账号映射、服务器列表、RoleID 预分配、全局 `SessionID`、短期 ticket、AgentTarget 分配 SPI；Login 不依赖 MsgQ。
-5. `Create_Role` 使用预分配 `RoleID` 的标准 Actor 路由，成功后 Game 写 `(AccountID, ServerID) -> []RoleID` 投影；PendingRole 仅允许建角和心跳。
-6. Borrow 沿用同一 ticket、握手、Session 流程：主 `AccountID`、`BorrowAccountID`、目标 `RoleID`、只读 `AccessMode`、独立 `SessionID`，只响应发起 Session，不成为角色主会话。
-7. 同步 `txclient`、`txclientslg`，并依次完成无状态、有状态两套真实多进程验收。
+1. 把业务响应改为 Game/Actor 进程通过 MsgQ Sender 直接 `PubSession`；Actor 只向 Agent 返回处理完成确认，不再返回业务响应载荷；Agent 仅以 `processedUpSeq` 推进 Ack。该阶段单独实现并回归普通响应与错误响应。
+2. 在项目层实现可选无状态 Login HTTP 服务：账号映射、服务器列表、RoleID 预分配、全局 `SessionID`、短期 ticket、AgentTarget 分配 SPI；Login 不依赖 MsgQ。
+3. `Create_Role` 使用预分配 `RoleID` 的标准 Actor 路由，成功后 Game 写 `(AccountID, ServerID) -> []RoleID` 投影；PendingRole 仅允许建角和心跳。
+4. Borrow 沿用同一 ticket、握手、Session 流程：主 `AccountID`、`BorrowAccountID`、目标 `RoleID`、只读 `AccessMode`、独立 `SessionID`，只响应发起 Session，不成为角色主会话。
+5. 同步 `txclient`、`txclientslg`，并依次完成无状态、有状态两套真实多进程验收。
 
 ### P1：性能基线
 

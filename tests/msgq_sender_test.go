@@ -13,7 +13,7 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 )
 
-func TestMsgQSenderResolvesSessionOwnerAndReusesConnection(t *testing.T) {
+func TestMsgQSenderPublishesExactAndPrimarySessionsWithReusedConnection(t *testing.T) {
 	store := newMailboxSessionStore()
 	mailbox, err := msgq.NewServer(msgq.ServerOptions{
 		InstanceID:         "msgq-1",
@@ -43,7 +43,7 @@ func TestMsgQSenderResolvesSessionOwnerAndReusesConnection(t *testing.T) {
 	defer clientConn.Close()
 	client := msgqpb.NewMailboxServiceClient(clientConn)
 	header := &msgqpb.SessionHeader{RoleId: 470001, SessionId: 99, ConnectionId: 7}
-	if _, err := client.Init(ctx, &msgqpb.InitRequest{Header: header}); err != nil {
+	if _, err := client.Init(ctx, &msgqpb.InitRequest{Header: header, Primary: true}); err != nil {
 		t.Fatalf("init mailbox: %v", err)
 	}
 
@@ -73,10 +73,11 @@ func TestMsgQSenderResolvesSessionOwnerAndReusesConnection(t *testing.T) {
 	}
 	defer sender.Close()
 
-	for _, message := range [][]byte{[]byte("first-bon"), []byte("second-bon")} {
-		if _, err := sender.Pub(ctx, 470001, message); err != nil {
-			t.Fatalf("publish %q: %v", message, err)
-		}
+	if _, err := sender.PubSession(ctx, 99, []byte("first-bon")); err != nil {
+		t.Fatalf("publish exact session: %v", err)
+	}
+	if _, err := sender.PubRole(ctx, 470001, []byte("second-bon")); err != nil {
+		t.Fatalf("publish primary session: %v", err)
 	}
 
 	batch, err := client.FetchSome(ctx, &msgqpb.FetchSomeRequest{Header: header, Max: 2})

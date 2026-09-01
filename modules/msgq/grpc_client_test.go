@@ -21,7 +21,7 @@ func (*nilResponseMailboxClient) Rec(context.Context, *msgqpb.RecRequest, ...grp
 	return nil, nil
 }
 
-func (*nilResponseMailboxClient) Pub(context.Context, *msgqpb.PubRequest, ...grpc.CallOption) (*msgqpb.PubResponse, error) {
+func (*nilResponseMailboxClient) PubSession(context.Context, *msgqpb.PubSessionRequest, ...grpc.CallOption) (*msgqpb.PubSessionResponse, error) {
 	return nil, nil
 }
 
@@ -57,8 +57,8 @@ func TestGRPCConnectionRejectsNilSuccessResponses(t *testing.T) {
 			_, err := connection.Rec(context.Background(), RecRequest{Header: header, Seq: 1})
 			return err
 		},
-		"pub": func() error {
-			_, err := connection.Pub(context.Background(), PubRequest{Header: header, Payload: []byte("body")})
+		"pub session": func() error {
+			_, err := connection.PubSession(context.Background(), header.SessionID, []byte("body"))
 			return err
 		},
 		"fetch some": func() error {
@@ -92,6 +92,41 @@ type recordingTopicMailboxClient struct {
 	msgqpb.MailboxServiceClient
 	joinRequest      *msgqpb.TopicRequest
 	broadcastRequest *msgqpb.BroadcastTopicRequest
+}
+
+type recordingSessionMailboxClient struct {
+	msgqpb.MailboxServiceClient
+	initRequest *msgqpb.InitRequest
+	pubRequest  *msgqpb.PubSessionRequest
+}
+
+func (client *recordingSessionMailboxClient) Init(_ context.Context, request *msgqpb.InitRequest, _ ...grpc.CallOption) (*msgqpb.InitResponse, error) {
+	client.initRequest = request
+	return &msgqpb.InitResponse{}, nil
+}
+
+func (client *recordingSessionMailboxClient) PubSession(_ context.Context, request *msgqpb.PubSessionRequest, _ ...grpc.CallOption) (*msgqpb.PubSessionResponse, error) {
+	client.pubRequest = request
+	return &msgqpb.PubSessionResponse{Seq: 3}, nil
+}
+
+func TestGRPCConnectionConvertsPrimaryInitAndExactPublish(t *testing.T) {
+	client := &recordingSessionMailboxClient{}
+	connection := &grpcConnection{client: client}
+	header := SessionHeader{RoleID: 47, SessionID: 11, ConnectionID: 13}
+	if _, err := connection.Init(context.Background(), InitRequest{Header: header, Primary: true}); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	if request := client.initRequest; !request.GetPrimary() || request.GetHeader().GetSessionId() != 11 {
+		t.Fatalf("init request = %#v", request)
+	}
+	result, err := connection.PubSession(context.Background(), 11, []byte("encoded-bon"))
+	if err != nil {
+		t.Fatalf("PubSession returned error: %v", err)
+	}
+	if result.Seq != 3 || client.pubRequest.GetSessionId() != 11 || string(client.pubRequest.GetPayload()) != "encoded-bon" {
+		t.Fatalf("publish result = %#v, request = %#v", result, client.pubRequest)
+	}
 }
 
 func (client *recordingTopicMailboxClient) JoinTopics(_ context.Context, request *msgqpb.TopicRequest, _ ...grpc.CallOption) (*msgqpb.Empty, error) {
@@ -140,8 +175,8 @@ func (*invalidSequenceMailboxClient) Rec(context.Context, *msgqpb.RecRequest, ..
 	return &msgqpb.RecResponse{ReceivedSeq: -1}, nil
 }
 
-func (*invalidSequenceMailboxClient) Pub(context.Context, *msgqpb.PubRequest, ...grpc.CallOption) (*msgqpb.PubResponse, error) {
-	return &msgqpb.PubResponse{}, nil
+func (*invalidSequenceMailboxClient) PubSession(context.Context, *msgqpb.PubSessionRequest, ...grpc.CallOption) (*msgqpb.PubSessionResponse, error) {
+	return &msgqpb.PubSessionResponse{}, nil
 }
 
 func (*invalidSequenceMailboxClient) FetchSome(context.Context, *msgqpb.FetchSomeRequest, ...grpc.CallOption) (*msgqpb.FetchSomeResponse, error) {
@@ -160,8 +195,8 @@ func TestGRPCConnectionRejectsInvalidResponseSequences(t *testing.T) {
 			_, err := connection.Rec(context.Background(), RecRequest{Header: header, Seq: 1})
 			return err
 		},
-		"pub": func() error {
-			_, err := connection.Pub(context.Background(), PubRequest{Header: header, Payload: []byte("body")})
+		"pub session": func() error {
+			_, err := connection.PubSession(context.Background(), header.SessionID, []byte("body"))
 			return err
 		},
 		"fetch some": func() error {

@@ -15,6 +15,7 @@ message InitRequest {
   SessionHeader header = 1;
   bool restore = 2;
   int64 ack = 3;
+  bool primary = 4;
 }
 
 message InitResponse {
@@ -32,12 +33,12 @@ message RecResponse {
   int64 ack = 2;
 }
 
-message PubRequest {
-  SessionHeader header = 1;
+message PubSessionRequest {
+  int64 session_id = 1;
   bytes payload = 2;
 }
 
-message PubResponse {
+message PubSessionResponse {
   int64 seq = 1;
 }
 
@@ -99,7 +100,7 @@ message Empty {}
 service MailboxService {
   rpc Init(InitRequest) returns (InitResponse);
   rpc Rec(RecRequest) returns (RecResponse);
-  rpc Pub(PubRequest) returns (PubResponse);
+  rpc PubSession(PubSessionRequest) returns (PubSessionResponse);
   rpc Fetch(FetchRequest) returns (FetchResponse);
   rpc FetchSome(FetchSomeRequest) returns (FetchSomeResponse);
   rpc Confirm(ConfirmRequest) returns (Empty);

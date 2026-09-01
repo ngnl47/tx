@@ -188,8 +188,8 @@ CMod，框架递归展开 `Requires` 依赖；`After` 仅调整已经选中门�
 
 | 服务 | 直接 CMod | 展开后的主要资源 |
 | --- | --- | --- |
-| `agent` | RPC、Redis；跨进程邮箱时增加 Discovery | 玩家 TCP/WebSocket 入口、共享 RPC、Redis 会话绑定 |
-| `msgq` | RPC、Redis、Discovery | 共享 RPC 上的 MailboxService、Redis owner binding 与独立进程 endpoint 注册 |
+| `agent` | RPC、Redis；跨进程邮箱时增加 Discovery | 玩家 TCP/WebSocket 入口、共享 RPC、SessionID binding 与主会话投影 |
+| `msgq` | RPC、Redis、Discovery | 共享 RPC 上的 MailboxService、精确会话/主会话索引与独立进程 endpoint 注册 |
 | `txgame` 无状态 `game` | RPC、Fusion | 请求结束显式保存；Fusion 内部组合 Redis、Mongo 和 Delay Scheduler |
 | `txgameslg` 有状态 `slggame` | RPC、Fusion、CModProcedure | Procedure 提交后由 CModProcedure 的 WriteBack 组件分帧写 Fusion |
 | `txgameslg` 有状态 `slgworld` | RPC、Mongo、CModProcedure | CModProcedure 组合 Transaction、WriteBack 和按 `slgworld` 启用的 Mongo WAL |
@@ -329,8 +329,8 @@ msgq, ok := directory.LookupInstance("msgq-2")
 ```
 
 `NextInstance` 是健康服务副本的轮转选择；`RunningInstances` 返回稳定排序、与目录内部隔离的健康实例
-快照，供业务实现随机、哈希或负载策略；`LookupInstance` 是已知实例的精确路由。`roleId -> msgq 实例` 的会话
-绑定、消息 Seq/Ack 和有界下行邮箱属于 `msgq`；Virtual Actor 的 `(kind, identity)` 路由属于 Actor Cluster；
+快照，供业务实现随机、哈希或负载策略；`LookupInstance` 是已知实例的精确路由。`SessionID -> msgq 实例` 的精确会话
+绑定、`RoleID -> 主 SessionID` 投影、消息 Seq/Ack 和有界下行邮箱属于 `msgq`；Virtual Actor 的 `(kind, identity)` 路由属于 Actor Cluster；
 固定 Kind Actor 的实体归属由业务槽位维护，不由服务发现包推断。
 
 本机或 CI 已启动 etcd 时，可显式执行真实 lease/watch 回归；未设置环境变量时该集成用例会跳过，
@@ -345,11 +345,16 @@ TX_ETCD_ENDPOINT=127.0.0.1:2379 \
 
 ## msgq 会话绑定
 
-`modules/msgq` 负责 `roleID -> (sessionID, connectionID, msgq instanceID)` 的短期绑定与精确 owner 解析，也提供本进程内的
-`Server` 管理 Session、下行队列和 Seq/Ack。它不把下行编码载荷写入 Redis；Redis 只保存带 TTL 的绑定 key，
-下行消息始终属于 msgq 实例内存，实例崩溃时未确认消息允许丢失。
+`modules/msgq` 以 `SessionID` 作为精确邮箱主键，负责
+`SessionID -> (RoleID, SessionID, ConnectionID, InstanceID)` 的短期 binding 与 owner 解析；同时维护
+`RoleID -> 唯一主 SessionID` 投影。只有正常可写会话是主会话；Borrow 只读会话拥有独立 SessionID 和队列，
+但不写主会话投影，也不会接收 `PubRole`。同一 RoleID 的多个邮箱可以并存，主投影始终只指向其中一个正常会话。
+`Server` 在本进程管理 Session、下行队列和 Seq/Ack。
 
-绑定 key 固定为 `<prefix>:session:{<roleID>}`，花括号保证本地原生 Redis Cluster 下 Lua 始终只访问同一 slot：
+Redis 精确 binding key 固定为 `<prefix>:session:v2:{SessionID}`，值保存完整
+`RoleID/SessionID/ConnectionID/InstanceID`；主会话投影 key 固定为 `<prefix>:primary:v1:{RoleID}`，值保存当前主
+`SessionID`。两个索引分别按自身花括号中的身份选择 Redis 分片，不承诺跨 key 事务。下行编码载荷始终只保存在
+msgq 实例内存，实例崩溃时未确认消息允许丢失：
 
 ```go
 import (
@@ -384,28 +389,40 @@ if err != nil {
 }
 
 header := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-_, err = mailbox.Init(ctx, msgq.InitRequest{Header: header})
+_, err = mailbox.Init(ctx, msgq.InitRequest{Header: header, Primary: true})
 if err != nil {
     return err
 }
 
-// expectedSessionID 为 0 表示接受当前连接；非零时拒绝陈旧连接。
-target, err := sessions.Resolve(ctx, 470001, 0)
+// 精确投递按 SessionID；角色通知则通过 ResolveRole 解析当前唯一主会话。
+target, err := sessions.ResolveSession(ctx, 99)
 if err != nil {
-    return err // 离线、连接已替换或 owner 不可用均显式返回错误。
+    return err // 离线或 owner 不可用均显式返回错误。
 }
 _ = target.Instance.Endpoint
+
+primary, err := sessions.ResolveRole(ctx, 470001)
+if err != nil {
+    return err
+}
+_ = primary.Binding.SessionID
 ```
 
-`Server.Init` 内部通过 `Bind` 以 Lua 原子覆盖 owner；`Touch`、`Rec`、`Fetch`、`Confirm` 会条件 `Refresh`，
-`Close` 会条件 `Unbind`。binding 比较完整 `(roleID, sessionID, connectionID, instanceID)`，所以旧连接不能续期、
-解绑或确认新连接的下行消息。`SessionRouter.Resolve` 先确认实例仍在目录中，
-再条件续期；实例已摘除时不会续期或删除 Redis 绑定，也不会随机退化到其他 msgq 副本。
+干净登录只在运行中的 MsgQ 间轮转选择 owner，并以 `Create` 的 Redis `SET NX PX` 创建 SessionID binding；现存
+SessionID 会明确冲突，不能覆盖旧邮箱。恢复只按 SessionID 找回原来的 running owner，用完整旧 binding 条件执行
+`Rebind` 并换成新的 ConnectionID；owner 不可用或条件不匹配时直接失败，不会迁移到其他实例。同 SessionID 恢复保留
+Seq/Ack 和未确认队列，新 SessionID 的干净登录始终从空队列开始。
+
+`SessionRouter.ResolveSession/ResolveRole` 都是只读解析，不刷新任何 TTL。只有经过当前 ConnectionID 校验的 owner 侧
+连接活动才会条件续期精确 binding；正常主会话还会条件续期主投影。binding 比较完整
+`(roleID, sessionID, connectionID, instanceID)`，所以旧连接不能续期、解绑、确认或管理新连接的 Topic。实例已摘除时
+Router 不会删除 Redis binding，也不会随机退化到其他 MsgQ 副本。
 
 ### 进程内会话邮箱
 
-`Server` 是单个 msgq 实例的本地邮箱。跨实例业务发送前先通过 `SessionRouter.Resolve` 找到 owner，再调用其
-`Instance.Endpoint` 上的独立 `MailboxService`；不要把 `Server` 当作全局消息队列。
+`Server` 是单个 msgq 实例的本地邮箱，并按 SessionID 隔离同一角色的多个逻辑会话。跨实例业务发送前先通过
+`SessionRouter.ResolveSession` 或 `ResolveRole` 找到 owner，再调用其 `Instance.Endpoint` 上的独立
+`MailboxService`；不要把 `Server` 当作全局消息队列。
 
 ```go
 // Agent 收到客户端上行：Seq 必须连续；重复 Seq 幂等返回当前 UpMsgSeq。
@@ -419,11 +436,8 @@ if err != nil {
 }
 _ = received.UpMsgSeq
 
-// 任意本地业务逻辑发布 BON 下行。只填写 RoleID 即投递给当前会话。
-published, err := mailbox.Pub(ctx, msgq.PubRequest{
-    Header:  msgq.SessionHeader{RoleID: 470001},
-    Payload: bonBody,
-})
+// 任意本地业务逻辑向一个确定的逻辑会话发布 BON 下行。
+published, err := mailbox.PubSession(ctx, header.SessionID, bonBody)
 if err != nil {
     return err // 队列到达 MaxBacklogMessages 时返回 msgq.ErrDownMsgOverflow。
 }
@@ -438,7 +452,7 @@ writeProtocolPacket(downMsg.Seq, downMsg.Payload)
 
 // 同一 SessionID 重连：重置发送游标并丢弃已经 Ack 的前缀，未确认消息会重发。
 nextHeader := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 8}
-_, err = mailbox.Init(ctx, msgq.InitRequest{Header: nextHeader, Restore: true, Ack: 41})
+_, err = mailbox.Init(ctx, msgq.InitRequest{Header: nextHeader, Restore: true, Primary: true, Ack: 41})
 if err != nil {
     return err
 }
@@ -448,7 +462,7 @@ if err != nil {
 `TTL: 500 * time.Microsecond` 会在创建 `RedisSessionStore` 时返回
 `msgq.ErrInvalidSessionOptions`，不会把截断后的 `0` 发送给 Redis。
 
-`Fetch` 不在持有会话锁时等待，因此同一会话的 `Pub` 不会被长轮询阻塞。`Pub` 和 `BroadcastTopic` 成功后，传入的
+`Fetch` 不在持有会话锁时等待，因此同一会话的 `PubSession` 不会被长轮询阻塞。`PubSession` 和 `BroadcastTopic` 成功后，传入的
 编码载荷的所有权移交给 msgq：调用方不得再修改、`append`、复用或归还该 `[]byte`，直至对应消息被确认或会话关闭；
 `Fetch`/`FetchSome` 返回的 `Message` 同样只读。这样本地 topic 广播只保留一份已编码 BON 正文，多个会话条目共享它；
 跨进程 gRPC 调用会在传输边界自然得到独立字节副本。`MaxBacklogMessages` 与 `MaxBacklogBytes` 分别限制未确认消息数量与
@@ -484,7 +498,10 @@ if err := mailbox.Confirm(ctx, msgq.ConfirmRequest{Header: header, Ack: batch.Me
 Topic 是 **单个 msgq 实例的内存索引**，适合该实例已经承载的会话分组，例如同一个在线军团分片。它不是 Redis
 Pub/Sub，也不自动跨 msgq 实例传播；全服或跨实例广播必须先由业务分发到各实例，再在各实例调用本地广播。
 
-独立业务进程可使用 `Sender.JoinTopics` 管理角色当前连接的本地订阅，并用 `Sender.BroadcastTopic(ctx, ownerRoleID, request)` 选择该角色 owner 所在的单个 MsgQ 实例执行广播。`ownerRoleID` 只是实例路由锚点，不会把本地 Topic 提升为全局广播；需要覆盖多个 MsgQ 实例时，业务必须先枚举目标实例或分片，再分别调用。
+独立业务进程可使用 `Sender.JoinTopics(ctx, ownerSessionID, topics...)` 管理当前连接的本地订阅，并用
+`Sender.BroadcastTopic(ctx, ownerSessionID, request)` 选择该 Session 所在的单个 MsgQ 实例执行广播。
+`ownerSessionID` 只是实例路由锚点，不会把本地 Topic 提升为全局广播；需要覆盖多个 MsgQ 实例时，业务必须先枚举
+目标实例或分片，并为每个实例选择一个当前 SessionID 分别调用。
 
 ```go
 import "errors"
@@ -517,8 +534,9 @@ _ = result.Delivered
 ### 空闲会话清理
 
 `Server.Start` 使用服务全局 `WaitGroupContext` 启动后台清理循环。`OfflineTimeout` 是“最后一次客户端会话活动”到
-移除 Session 的时长，默认 `180s`，采用既定的生产实践值；`SweepInterval` 是扫描间隔，默认 `2s`。只有 `Init`、`Rec`、`Fetch`、`Confirm` 和
-`Touch` 延长该活动时间；业务 `Pub` 不会让已经断开的会话常驻内存。即使客户端持续发送心跳，只要最早一条
+移除 Session 的时长，默认 `180s`，采用既定的生产实践值；`SweepInterval` 是扫描间隔，默认 `2s`。经过当前
+ConnectionID 校验的 `Init`、`Rec`、`Fetch`、`FetchSome`、`Confirm`、`Touch` 和 Topic 管理等连接活动会续期；业务
+`PubSession`、`PubRole` 和 Router 读取不会让已经断开的会话常驻内存。即使客户端持续发送心跳，只要最早一条
 未确认下行已超过 `OfflineTimeout`，清理循环同样会移除会话，防止只收不确认的连接绕开积压保护。
 
 标准项目通过 YAML 的 `services.msgq.offlineTimeout` 配置该时长。TCP 与 WebSocket 客户端必须主动发送心跳；建议
@@ -543,14 +561,15 @@ if err := mailbox.Start(appContext); err != nil { // appContext 是 lifecycle.Wa
 ```
 
 服务关闭时取消 `appContext` 并等待 `WaitDoneAndWaitGroupWait()`，清理循环会自然退出。需要测试或由项目自定义调度时，
-可直接调用 `Reap(ctx, now)`。清理会先按完整 `(roleID, sessionID, connectionID, instanceID)` 条件解绑 Redis owner；Redis
-暂时不可用时 `Reap` 返回错误并记录日志，但仍删除本机过期会话，旧 owner 交由 Redis TTL 自动过期，避免本地内存因断线
-连接持续增长。
+可直接调用 `Reap(ctx, now)`。清理会按完整 `(roleID, sessionID, connectionID, instanceID)` 条件解绑精确 binding，并仅在
+角色投影仍指向该 SessionID 时删除主会话投影。Redis 暂时不可用时 `Reap` 返回错误并记录日志，但仍删除本机过期会话，
+旧索引交由 Redis TTL 自动过期，避免本地内存因断线连接持续增长。
 
 ### msgq gRPC 传输
 
 `modules/msgq` 提供独立的 protobuf/gRPC `MailboxService`，不复用通用的 `modules/rpc`。连接侧可调用
-`Init`、`Rec`、`Fetch`、`FetchSome`、`Confirm`、`Touch`、Topic 和 `Close`；业务或其他服务可调用 `Pub`。
+`Init`、`Rec`、`Fetch`、`FetchSome`、`Confirm`、`Touch`、Topic 和 `Close`；业务或其他服务最终调用精确的
+`PubSession` RPC。
 所有 `payload` 字段都承载已经编码完成的 BON 字节，统一称为编码载荷；服务不会解析或转换客户端协议体。
 
 ```go
@@ -569,9 +588,9 @@ if err != nil {
 defer conn.Close()
 
 client := msgqpb.NewMailboxServiceClient(conn)
-_, err = client.Pub(ctx, &msgqpb.PubRequest{
-    Header:  &msgqpb.SessionHeader{RoleId: target.Binding.RoleID, SessionId: target.Binding.SessionID},
-    Payload: bonBody,
+_, err = client.PubSession(ctx, &msgqpb.PubSessionRequest{
+    SessionId: target.Binding.SessionID,
+    Payload:   bonBody,
 })
 if err != nil {
     return err
@@ -599,13 +618,13 @@ defer rpcHost.Stop(context.Background())
 
 `Fetch` 是 unary 长轮询，调用方必须传递自己的超时或连接 context。运行时错误会转为明确的 gRPC status：无效请求为
 `InvalidArgument`，离线会话为 `NotFound`，旧连接为 `Aborted`，队列满为 `ResourceExhausted`；不会静默丢失或伪造投递成功。
-客户端还会校验成功响应本身：空响应、`Pub.Seq <= 0`、负的 Init 序号、`Rec.UpMsgSeq` 落后于本次请求、
+客户端还会校验成功响应本身：空响应、`PubSession.Seq <= 0`、负的 Init 序号、`Rec.UpMsgSeq` 落后于本次请求、
 `Rec.Ack` 与本次请求不一致，以及 `FetchSome` 返回空批次、空消息、非正数或乱序消息，都会返回
 `msgq.ErrInvalidMailboxResponse`。这表示传输结果不可信，调用方应结束当前链路并记录错误，不能把零值当作成功或在
 没有业务幂等键时自动重发：
 
 ```go
-result, err := sender.Pub(ctx, roleID, bonBody)
+result, err := sender.PubRole(ctx, roleID, bonBody)
 if errors.Is(err, msgq.ErrInvalidMailboxResponse) {
     logger.Error("msgq 返回了无效确认", "roleID", roleID, "err", err)
     return err
@@ -619,8 +638,9 @@ useDownMsgSeq(result.Seq)
 `rpc.Host` 直接接入全局 `lifecycle.WaitGroupContext`。应用服务关闭时由项目宿主统一调用 `Stop`，未确认下行仍遵循
 msgq 的内存语义。
 
-业务 Actor 或其他服务不应自行读取 `SessionBinding`、拼接 endpoint 或维护每个 msgq 实例的连接。使用 `Sender` 即可按
-`roleID` 解析 Redis owner、校验当前 `SessionID`，并按 endpoint 复用 gRPC 连接：
+业务 Actor 或其他服务不应自行读取 `SessionBinding`、拼接 endpoint 或维护每个 msgq 实例的连接。`Sender.PubSession`
+按 SessionID 精确投递，`Sender.PubRole` 按 RoleID 解析当前主 Session；二者都按 endpoint 复用 gRPC 连接，并最终调用
+同一个 `PubSession` RPC：
 
 ```go
 router, err := msgq.NewSessionRouter(directory, sessionStore)
@@ -637,14 +657,19 @@ if err != nil {
 }
 defer sender.Close()
 
-// 例如 Battle Actor 为角色 470001 发送一个已完成 BON 编码的下行包。
-if _, err := sender.Pub(ctx, 470001, bonNotify); err != nil {
+// 当前请求的直接响应明确投递给发起它的逻辑会话。
+if _, err := sender.PubSession(ctx, identity.SessionID, bonResponse); err != nil {
+    return err
+}
+
+// 跨角色通知投递给角色 470001 当前唯一的正常可写主会话。
+if _, err := sender.PubRole(ctx, 470001, bonNotify); err != nil {
     // 离线、owner 改变、路由不可用、队列满或传输失败均明确返回错误。
     return err
 }
 ```
 
-`Sender` 不自动重试 `Pub`：连接异常时服务端是否已接受该消息无法确定，自动重发可能产生重复下行。调用方应按协议消息的
+`Sender` 不自动重试 `PubSession` 或 `PubRole`：连接异常时服务端是否已接受该消息无法确定，自动重发可能产生重复下行。调用方应按协议消息的
 幂等语义决定重试或重同步；关闭服务时必须调用 `Sender.Close()` 释放缓存连接。
 
 本机或 CI 已启动 Redis 时可执行真实回归；未设置变量时该用例会跳过：
@@ -696,19 +721,23 @@ handlers := func(runtime bee.Context) (txagent.IdentityResolver, txagent.Dispatc
 项目 `ActorDispatchResolver` 只根据生成命令元数据选择目标 Actor、消息类型、命令号、路由键和载荷；通用
 `NewActorDispatcher` 在投递前以 Agent 的可信 `SessionIdentity` 与当前上行 `UpSeq` 覆盖 Delivery 对应字段。项目
 resolver 和客户端载荷均不能指定 `ConnectionID`，也不能伪造投递给 Actor 的身份或上行序号。Agent 只负责 Frame、
-身份和 Seq/Ack，不依赖任何项目生成包。
+身份和 Seq/Ack，不依赖任何项目生成包。Agent 从这份可信身份设置 MsgQ 的主会话属性：只有
+`AccessModeNormal` 传入 `Primary=true`；Borrow 只读身份传入 `Primary=false`，因此保留独立 SessionID 和邮箱但不改写
+角色主会话投影。
 
 一条连接的处理顺序固定如下：
 
 1. 客户端先发送 `FrameHandshake`，其中 `Payload` 交给 `IdentityResolver`，`Restore/Ack` 交给会话恢复。
 2. `IdentityResolver` 返回 `SessionPrincipal`；Agent 验证主体、生成本次物理连接的正 `ConnectionID`，再构造 `SessionIdentity`。
-3. Agent 按 `RoleID` 取得当前 msgq owner 并调用 `Init`；同进程 msgq 时直接复用本地 `SessionClient`，分进程时按 Redis owner 和服务目录复用 gRPC 连接。
-4. 新会话始终重置该 `SessionID` 的本地 Seq 与下行队列；恢复会话必须命中相同 `SessionID`，不存在或已被替换时明确失败，不能安装一份空会话。
+3. `Restore=false` 的新建连接不查询旧 owner，只在 running MsgQ 间轮转选择一个实例；`Restore=true` 的恢复连接必须按 SessionID 命中原来的 running owner。同进程 msgq 时直接复用本地 `SessionClient`，分进程时按 Redis binding 和服务目录复用 gRPC 连接。
+4. 新建 `Init` 用 `Create NX` 安装空邮箱，SessionID 已存在时失败；恢复 `Init` 用旧完整 binding `Rebind` 到新 ConnectionID，保留相同 SessionID 的 Seq/Ack 与未确认队列。恢复 owner 不可用、邮箱不存在或主会话已经替换时明确失败，不能迁移或安装空会话。
 5. `Init` 成功后，Agent 发送 `FrameReady` 报告当前 `UpMsgSeq`。客户端收到它之前只能处于连接中，不能发送业务帧；恢复失败时不会出现“先成功、再被关闭”的假状态。
 6. 客户端以 `FrameReady.Ack` 释放服务端已经受理的重放前缀，再按原序号重放剩余 UpMsg。
-7. 每个 `FrameUpMsg` 先调用 `Rec(roleID, seq, ack)`。只有 `UpMsgSeq` 前进时才进入 `Dispatcher`，重复 Seq 不会重复分发。
+7. 每个 `FrameUpMsg` 先使用当前完整 `SessionHeader` 调用 `Rec`。只有 `UpMsgSeq` 前进时才进入 `Dispatcher`，重复 Seq 不会重复分发。
 8. Agent 持续 `FetchSome` 下行队列，写出 `FrameDownMsg`；客户端在后续上行帧携带 Ack，`Rec` 会确认对应下行消息。
-9. 当前服务端确认的是 MsgQ 已受理的 `FrameUpMsg.Seq`：有业务响应时由 Agent 发布的 `FrameDownMsg.Ack` 捎带，没有响应或收到重复 Seq 时返回独立 `FrameAck`。这不是 Actor 处理完成确认。
+9. 当前服务端确认的是 MsgQ 已受理的 `FrameUpMsg.Seq`：Game/Actor 同步返回业务结果后仍由 Agent 调用
+   `PubSession` 投递到发起 Session，并在 `FrameDownMsg.Ack` 捎带确认；没有响应或收到重复 Seq 时返回独立
+   `FrameAck`。这不是 Actor 处理完成确认，`processedUpSeq` 尚未接入。
 
 客户端不能只保存三个 Seq/Ack 计数器来恢复会话。UpMsg 必须在首次发送前进入本地未确认队列；收到服务端累计 Ack 后
 释放已确认前缀；网络重连时复用同一逻辑 Session，并按原 Seq、原顺序和原只读 Payload 重放剩余帧。这样即使网络在
@@ -1963,7 +1992,7 @@ Agent、msgq 和项目业务的消息日志按职责只记录一次：
 
 - Agent 在 Info 级别记录 TCP/WebSocket 连接建立、逻辑会话就绪和连接关闭；身份解析成功后的日志同时携带
   `roleID`、`sessionID` 和 `connectionID`，不逐条记录 `UpMsg/DownMsg`。
-- msgq 在 Debug 级别记录 `Init/Rec/Pub/Confirm` 成功后的 Seq、Ack 和积压状态；恢复日志额外记录前后
+- msgq 在 Debug 级别记录 `Init/Rec/PubSession/Confirm` 成功后的 Seq、Ack 和积压状态；恢复日志额外记录前后
   `connectionID`，旧连接被栅栏拒绝时同时记录请求方与当前连接身份，淘汰和清理日志同样携带完整会话身份。
   它不记录编码载荷，也不记录空轮询。
 - 玩家命令的协议名、业务结果和耗时由项目 Agent Dispatcher 记录；无状态模板可使用 Info，有状态高频模板可使用 Debug。

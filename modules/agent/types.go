@@ -84,7 +84,7 @@ type Transport interface {
 
 // SessionClientRouter 为认证后的角色选择当前可用 msgq 会话客户端。
 type SessionClientRouter interface {
-	Acquire(context.Context, int64) (msgq.SessionClient, error)
+	Acquire(context.Context, msgq.AcquireSessionRequest) (msgq.SessionClient, error)
 }
 
 // ConnectionIDGenerator 生成区分重连的正连接编号。

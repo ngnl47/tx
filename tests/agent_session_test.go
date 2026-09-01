@@ -47,6 +47,68 @@ func TestAgentSessionAuthenticatesThenDispatchesAcceptedSequence(t *testing.T) {
 	}
 }
 
+func TestAgentSessionAcquiresOwnerAndMarksPrimaryFromTrustedIdentity(t *testing.T) {
+	tests := map[string]struct {
+		principal   protocol.SessionPrincipal
+		restore     bool
+		wantPrimary bool
+	}{
+		"normal": {
+			principal: protocol.SessionPrincipal{
+				AccountID: 47, ServerID: 1, RoleID: 470001, SessionID: 99, AccessMode: protocol.AccessModeNormal, CanCreateRole: true,
+			},
+			wantPrimary: true,
+		},
+		"borrow readonly restore": {
+			principal: protocol.SessionPrincipal{
+				AccountID: 47, BorrowAccountID: 48, ServerID: 1, RoleID: 470001, SessionID: 100, AccessMode: protocol.AccessModeBorrowReadOnly,
+			},
+			restore: true,
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			client := &recordingAgentSessionClient{initRequests: make(chan msgq.InitRequest, 1)}
+			acquired := make(chan msgq.AcquireSessionRequest, 1)
+			agent, err := txagent.NewServer(txagent.ServerOptions{
+				IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
+					return test.principal, nil
+				}),
+				Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) (txagent.DispatchResult, error) {
+					return txagent.DispatchResult{}, nil
+				}),
+				Sessions: agentSessionRouterFunc(func(_ context.Context, request msgq.AcquireSessionRequest) (msgq.SessionClient, error) {
+					acquired <- request
+					return client, nil
+				}),
+				ConnectionID: func() (int64, error) { return 7, nil },
+			})
+			if err != nil {
+				t.Fatalf("new agent: %v", err)
+			}
+			transport := newAgentTransport()
+			result := make(chan error, 1)
+			go func() { result <- agent.Serve(context.Background(), transport) }()
+			transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Restore: test.restore, Payload: []byte("token")}
+
+			request := <-acquired
+			wantAcquire := msgq.AcquireSessionRequest{RoleID: test.principal.RoleID, SessionID: test.principal.SessionID, Restore: test.restore}
+			if request != wantAcquire {
+				t.Fatalf("acquire request = %#v, want %#v", request, wantAcquire)
+			}
+			initialized := <-client.initRequests
+			if initialized.Header.RoleID != test.principal.RoleID || initialized.Header.SessionID != test.principal.SessionID || initialized.Header.ConnectionID != 7 || initialized.Restore != test.restore || initialized.Primary != test.wantPrimary {
+				t.Fatalf("init request = %#v", initialized)
+			}
+			assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
+			transport.closeReads()
+			if err := <-result; !errors.Is(err, io.EOF) {
+				t.Fatalf("serve error = %v, want EOF", err)
+			}
+		})
+	}
+}
+
 func TestAgentSessionRejectsUpMsgFrameBeforeHandshake(t *testing.T) {
 	agent, transport, _, _ := newAgentSessionFixture(t, nil)
 	result := make(chan error, 1)
@@ -69,7 +131,7 @@ func TestAgentSessionRejectsInvalidResolvedPrincipal(t *testing.T) {
 			t.Fatal("invalid identity must not be dispatched")
 			return txagent.DispatchResult{}, nil
 		}),
-		Sessions: agentSessionRouterFunc(func(context.Context, int64) (msgq.SessionClient, error) {
+		Sessions: agentSessionRouterFunc(func(context.Context, msgq.AcquireSessionRequest) (msgq.SessionClient, error) {
 			return nil, sessionsAcquired
 		}),
 		ConnectionID: func() (int64, error) { return 7, nil },
@@ -95,7 +157,7 @@ func TestAgentSessionFetchesDownMsgAndConfirmsAckOnNextUpMsg(t *testing.T) {
 	_ = receiveDispatch(t, dispatched)
 	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 1, "")
 
-	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("bon-response")}); err != nil {
+	if _, err := mailbox.PubSession(context.Background(), 99, []byte("bon-response")); err != nil {
 		t.Fatalf("publish downMsg: %v", err)
 	}
 	select {
@@ -207,7 +269,7 @@ func TestAgentSessionConfirmsAckWithoutUpMsgFrame(t *testing.T) {
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
 	assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
 	waitForMailboxSession(t, mailbox)
-	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("bon-response")}); err != nil {
+	if _, err := mailbox.PubSession(context.Background(), 99, []byte("bon-response")); err != nil {
 		t.Fatalf("publish downMsg: %v", err)
 	}
 	select {
@@ -247,7 +309,7 @@ func TestAgentSessionAcceptsAcknowledgementReturnedBeforeDownMsgWriteCompletes(t
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
 	assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
 	waitForMailboxSession(t, mailbox)
-	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("bon-response")}); err != nil {
+	if _, err := mailbox.PubSession(context.Background(), 99, []byte("bon-response")); err != nil {
 		t.Fatalf("publish downMsg: %v", err)
 	}
 	select {
@@ -283,7 +345,7 @@ func TestAgentSessionRejectsAcknowledgementBeyondWrittenDownMsg(t *testing.T) {
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
 	assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
 	waitForMailboxSession(t, mailbox)
-	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("bon-response")}); err != nil {
+	if _, err := mailbox.PubSession(context.Background(), 99, []byte("bon-response")); err != nil {
 		t.Fatalf("publish downMsg: %v", err)
 	}
 	select {
@@ -297,7 +359,7 @@ func TestAgentSessionRejectsAcknowledgementBeyondWrittenDownMsg(t *testing.T) {
 	}
 
 	restored := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 8}
-	if _, err := mailbox.Init(context.Background(), msgq.InitRequest{Header: restored, Restore: true}); err != nil {
+	if _, err := mailbox.Init(context.Background(), msgq.InitRequest{Header: restored, Restore: true, Primary: true}); err != nil {
 		t.Fatalf("restore after rejected acknowledgement: %v", err)
 	}
 	message, err := mailbox.Fetch(context.Background(), msgq.FetchRequest{Header: restored})
@@ -333,7 +395,7 @@ func TestAgentSessionDoesNotDispatchDuplicateSequence(t *testing.T) {
 func TestAgentSessionRestoreAcknowledgesAcceptedUpMsgAndSkipsReplay(t *testing.T) {
 	agent, transport, mailbox, dispatched := newAgentSessionFixture(t, nil)
 	previous := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 6}
-	if _, err := mailbox.Init(context.Background(), msgq.InitRequest{Header: previous}); err != nil {
+	if _, err := mailbox.Init(context.Background(), msgq.InitRequest{Header: previous, Primary: true}); err != nil {
 		t.Fatalf("init previous session: %v", err)
 	}
 	if _, err := mailbox.Rec(context.Background(), msgq.RecRequest{Header: previous, Seq: 1}); err != nil {
@@ -504,11 +566,43 @@ type agentSessionDialer struct {
 	client msgq.SessionClient
 }
 
-type agentSessionRouterFunc func(context.Context, int64) (msgq.SessionClient, error)
+type agentSessionRouterFunc func(context.Context, msgq.AcquireSessionRequest) (msgq.SessionClient, error)
 
-func (f agentSessionRouterFunc) Acquire(ctx context.Context, roleID int64) (msgq.SessionClient, error) {
-	return f(ctx, roleID)
+func (f agentSessionRouterFunc) Acquire(ctx context.Context, request msgq.AcquireSessionRequest) (msgq.SessionClient, error) {
+	return f(ctx, request)
 }
+
+type recordingAgentSessionClient struct {
+	initRequests chan msgq.InitRequest
+}
+
+func (c *recordingAgentSessionClient) Init(_ context.Context, request msgq.InitRequest) (msgq.InitResult, error) {
+	c.initRequests <- request
+	return msgq.InitResult{}, nil
+}
+
+func (*recordingAgentSessionClient) Rec(context.Context, msgq.RecRequest) (msgq.RecResult, error) {
+	return msgq.RecResult{}, errors.New("unexpected Rec")
+}
+
+func (*recordingAgentSessionClient) PubSession(context.Context, int64, []byte) (msgq.PubResult, error) {
+	return msgq.PubResult{}, errors.New("unexpected PubSession")
+}
+
+func (*recordingAgentSessionClient) FetchSome(ctx context.Context, _ msgq.FetchSomeRequest) (msgq.FetchSomeResult, error) {
+	<-ctx.Done()
+	return msgq.FetchSomeResult{}, ctx.Err()
+}
+
+func (*recordingAgentSessionClient) Confirm(context.Context, msgq.ConfirmRequest) error {
+	return errors.New("unexpected Confirm")
+}
+
+func (*recordingAgentSessionClient) CloseSession(context.Context, msgq.SessionHeader) error {
+	return nil
+}
+
+func (*recordingAgentSessionClient) Close() error { return nil }
 
 func (d agentSessionDialer) DialSession(context.Context, discovery.Instance) (msgq.SessionClient, error) {
 	return d.client, nil

@@ -14,7 +14,6 @@ import (
 	"github.com/coder/websocket"
 	txlog "github.com/ngnl47/tx/log"
 	txagent "github.com/ngnl47/tx/modules/agent"
-	"github.com/ngnl47/tx/modules/msgq"
 )
 
 const agentTransportMaxFrameBytes = 256
@@ -84,7 +83,7 @@ func TestTCPAgentRoundTrip(t *testing.T) {
 	if string(request.Payload) != "bon-request" {
 		t.Fatalf("dispatch payload = %q", request.Payload)
 	}
-	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("bon-response")}); err != nil {
+	if _, err := mailbox.PubSession(context.Background(), 99, []byte("bon-response")); err != nil {
 		t.Fatalf("publish downMsg: %v", err)
 	}
 	assertAgentTransportFrames(t, readTCPAgentFrame(t, connection), readTCPAgentFrame(t, connection), readTCPAgentFrame(t, connection))
@@ -111,7 +110,7 @@ func TestWebSocketAgentRoundTrip(t *testing.T) {
 	if string(request.Payload) != "bon-request" {
 		t.Fatalf("dispatch payload = %q", request.Payload)
 	}
-	if _, err := mailbox.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("bon-response")}); err != nil {
+	if _, err := mailbox.PubSession(context.Background(), 99, []byte("bon-response")); err != nil {
 		t.Fatalf("publish downMsg: %v", err)
 	}
 	assertAgentTransportFrames(t, readWebSocketAgentFrame(t, ctx, connection), readWebSocketAgentFrame(t, ctx, connection), readWebSocketAgentFrame(t, ctx, connection))

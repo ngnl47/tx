@@ -35,10 +35,10 @@ func TestMsgQServerRestoresUnconfirmedDownMsgMessages(t *testing.T) {
 	if init.UpMsgSeq != 0 {
 		t.Fatalf("upMsg seq = %d, want 0", init.UpMsgSeq)
 	}
-	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("first")}); err != nil {
+	if _, err := server.PubSession(context.Background(), first.SessionID, []byte("first")); err != nil {
 		t.Fatalf("publish first: %v", err)
 	}
-	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("second")}); err != nil {
+	if _, err := server.PubSession(context.Background(), first.SessionID, []byte("second")); err != nil {
 		t.Fatalf("publish second: %v", err)
 	}
 
@@ -120,10 +120,10 @@ func TestMsgQServerBoundsDownMsgQueue(t *testing.T) {
 	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("one")}); err != nil {
+	if _, err := server.PubSession(context.Background(), header.SessionID, []byte("one")); err != nil {
 		t.Fatalf("publish one: %v", err)
 	}
-	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: 470001}, Payload: []byte("two")}); !errors.Is(err, msgq.ErrDownMsgOverflow) {
+	if _, err := server.PubSession(context.Background(), header.SessionID, []byte("two")); !errors.Is(err, msgq.ErrDownMsgOverflow) {
 		t.Fatalf("publish overflow error = %v, want downMsg overflow", err)
 	}
 	if server.SessionCount() != 0 {
@@ -145,10 +145,10 @@ func TestMsgQServerBoundsDownMsgQueueBytes(t *testing.T) {
 	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Payload: []byte("123")}); err != nil {
+	if _, err := server.PubSession(context.Background(), header.SessionID, []byte("123")); err != nil {
 		t.Fatalf("publish first: %v", err)
 	}
-	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Payload: []byte("4")}); !errors.Is(err, msgq.ErrDownMsgOverflow) {
+	if _, err := server.PubSession(context.Background(), header.SessionID, []byte("4")); !errors.Is(err, msgq.ErrDownMsgOverflow) {
 		t.Fatalf("publish byte overflow error = %v, want downMsg overflow", err)
 	}
 	if server.SessionCount() != 0 {
@@ -165,7 +165,7 @@ func TestMsgQServerRejectsAcknowledgementBeyondSentDownMsg(t *testing.T) {
 	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	if _, err := server.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Payload: []byte("one")}); err != nil {
+	if _, err := server.PubSession(context.Background(), header.SessionID, []byte("one")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	if err := server.Confirm(context.Background(), msgq.ConfirmRequest{Header: header, Ack: 1}); !errors.Is(err, msgq.ErrDownMsgAcknowledgement) {
@@ -195,10 +195,7 @@ func TestMsgQServerFetchSomeKeepsUnconfirmedSequence(t *testing.T) {
 	}
 	defer server.Close(context.Background(), header)
 	for _, message := range []string{"one", "two", "three"} {
-		if _, err := server.Pub(context.Background(), msgq.PubRequest{
-			Header:  msgq.SessionHeader{RoleID: header.RoleID},
-			Payload: []byte(message),
-		}); err != nil {
+		if _, err := server.PubSession(context.Background(), header.SessionID, []byte(message)); err != nil {
 			t.Fatalf("publish %q: %v", message, err)
 		}
 	}
@@ -280,12 +277,289 @@ func TestMsgQServerRejectsOldConnectionCloseAfterRestore(t *testing.T) {
 	if server.SessionCount() != 1 {
 		t.Fatalf("session count = %d, want 1", server.SessionCount())
 	}
-	binding, found, err := store.Find(context.Background(), 470001)
+	binding, found, err := store.Find(context.Background(), newHeader.SessionID)
 	if err != nil || !found || binding.SessionID != 99 || binding.ConnectionID != 8 || binding.InstanceID != "msgq-1" {
 		t.Fatalf("binding after old close = %#v, found = %t, err = %v", binding, found, err)
 	}
 	if err := server.Close(context.Background(), newHeader); err != nil {
 		t.Fatalf("close new connection: %v", err)
+	}
+}
+
+func TestMsgQServerKeepsSameRoleSessionsIsolated(t *testing.T) {
+	store := newMailboxSessionStore()
+	server, err := msgq.NewServer(msgq.ServerOptions{
+		InstanceID:         "msgq-1",
+		Store:              store,
+		MaxBacklogMessages: 4,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	first := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	second := msgq.SessionHeader{RoleID: 470001, SessionID: 100, ConnectionID: 8}
+	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: first}); err != nil {
+		t.Fatalf("init first: %v", err)
+	}
+	if _, err := server.PubSession(context.Background(), first.SessionID, []byte("first-only")); err != nil {
+		t.Fatalf("publish first: %v", err)
+	}
+	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: second}); err != nil {
+		t.Fatalf("init second: %v", err)
+	}
+	if _, err := server.PubSession(context.Background(), second.SessionID, []byte("second-only")); err != nil {
+		t.Fatalf("publish second: %v", err)
+	}
+	if server.SessionCount() != 2 {
+		t.Fatalf("session count = %d, want 2", server.SessionCount())
+	}
+	firstMessage, err := server.Fetch(context.Background(), msgq.FetchRequest{Header: first})
+	if err != nil || string(firstMessage.Payload) != "first-only" {
+		t.Fatalf("first fetch = %#v, %v", firstMessage, err)
+	}
+	secondMessage, err := server.Fetch(context.Background(), msgq.FetchRequest{Header: second})
+	if err != nil || string(secondMessage.Payload) != "second-only" {
+		t.Fatalf("second fetch = %#v, %v", secondMessage, err)
+	}
+	if err := server.Close(context.Background(), first); err != nil {
+		t.Fatalf("close first: %v", err)
+	}
+	if server.SessionCount() != 1 {
+		t.Fatalf("session count after first close = %d, want 1", server.SessionCount())
+	}
+	if _, found, err := store.Find(context.Background(), second.SessionID); err != nil || !found {
+		t.Fatalf("second binding after first close = %t, %v", found, err)
+	}
+}
+
+func TestMsgQServerInitializesSameRoleSessionsConcurrently(t *testing.T) {
+	server, err := msgq.NewServer(msgq.ServerOptions{
+		InstanceID:         "msgq-1",
+		Store:              newMailboxSessionStore(),
+		MaxBacklogMessages: 4,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	headers := []msgq.SessionHeader{
+		{RoleID: 470001, SessionID: 99, ConnectionID: 7},
+		{RoleID: 470001, SessionID: 100, ConnectionID: 8},
+	}
+	start := make(chan struct{})
+	results := make(chan error, len(headers))
+	for _, header := range headers {
+		go func() {
+			<-start
+			_, err := server.Init(context.Background(), msgq.InitRequest{Header: header})
+			results <- err
+		}()
+	}
+	close(start)
+	for range headers {
+		if err := <-results; err != nil {
+			t.Fatalf("concurrent init: %v", err)
+		}
+	}
+	if server.SessionCount() != len(headers) {
+		t.Fatalf("session count = %d, want %d", server.SessionCount(), len(headers))
+	}
+	for _, header := range headers {
+		if err := server.Touch(context.Background(), msgq.TouchRequest{Header: header}); err != nil {
+			t.Fatalf("touch session %d: %v", header.SessionID, err)
+		}
+	}
+}
+
+func TestMsgQServerFreshSessionDoesNotInheritMailboxState(t *testing.T) {
+	server, err := msgq.NewServer(msgq.ServerOptions{
+		InstanceID:         "msgq-1",
+		Store:              newMailboxSessionStore(),
+		MaxBacklogMessages: 4,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	first := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	second := msgq.SessionHeader{RoleID: 470001, SessionID: 100, ConnectionID: 8}
+	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: first}); err != nil {
+		t.Fatalf("init first: %v", err)
+	}
+	if _, err := server.Rec(context.Background(), msgq.RecRequest{Header: first, Seq: 1}); err != nil {
+		t.Fatalf("rec first: %v", err)
+	}
+	if _, err := server.PubSession(context.Background(), first.SessionID, []byte("old-pending")); err != nil {
+		t.Fatalf("publish first: %v", err)
+	}
+	result, err := server.Init(context.Background(), msgq.InitRequest{Header: second})
+	if err != nil {
+		t.Fatalf("init second: %v", err)
+	}
+	if result.UpMsgSeq != 0 {
+		t.Fatalf("fresh upMsg seq = %d, want 0", result.UpMsgSeq)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := server.Fetch(ctx, msgq.FetchRequest{Header: second}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("fresh fetch error = %v, want canceled empty queue", err)
+	}
+	oldMessage, err := server.Fetch(context.Background(), msgq.FetchRequest{Header: first})
+	if err != nil || string(oldMessage.Payload) != "old-pending" {
+		t.Fatalf("old fetch = %#v, %v", oldMessage, err)
+	}
+}
+
+func TestMsgQServerFreshInitRejectsExistingSessionID(t *testing.T) {
+	store := newMailboxSessionStore()
+	server, err := msgq.NewServer(msgq.ServerOptions{InstanceID: "msgq-1", Store: store, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	current := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: current}); err != nil {
+		t.Fatalf("init current: %v", err)
+	}
+	conflict := msgq.SessionHeader{RoleID: 470002, SessionID: current.SessionID, ConnectionID: 8}
+	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: conflict}); !errors.Is(err, msgq.ErrSessionChanged) {
+		t.Fatalf("init conflict error = %v, want %v", err, msgq.ErrSessionChanged)
+	}
+	if server.SessionCount() != 1 {
+		t.Fatalf("session count = %d, want 1", server.SessionCount())
+	}
+	if err := server.Touch(context.Background(), msgq.TouchRequest{Header: current}); err != nil {
+		t.Fatalf("touch current after conflict: %v", err)
+	}
+}
+
+func TestMsgQServerBorrowSessionDoesNotReplacePrimary(t *testing.T) {
+	store := newMailboxSessionStore()
+	server, err := msgq.NewServer(msgq.ServerOptions{InstanceID: "msgq-1", Store: store, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	primary := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	borrow := msgq.SessionHeader{RoleID: 470001, SessionID: 100, ConnectionID: 8}
+	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: primary, Primary: true}); err != nil {
+		t.Fatalf("init primary: %v", err)
+	}
+	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: borrow}); err != nil {
+		t.Fatalf("init borrow: %v", err)
+	}
+	if current, found, err := store.FindPrimary(context.Background(), primary.RoleID); err != nil || !found || current != primary.SessionID {
+		t.Fatalf("primary after borrow = %d, %t, %v", current, found, err)
+	}
+	if _, err := server.PubSession(context.Background(), borrow.SessionID, []byte("borrow-target")); err != nil {
+		t.Fatalf("publish borrow: %v", err)
+	}
+	message, err := server.Fetch(context.Background(), msgq.FetchRequest{Header: borrow})
+	if err != nil || string(message.Payload) != "borrow-target" {
+		t.Fatalf("borrow fetch = %#v, %v", message, err)
+	}
+}
+
+func TestMsgQServerRestoreRequiresStablePrimaryProperty(t *testing.T) {
+	store := newMailboxSessionStore()
+	server, err := msgq.NewServer(msgq.ServerOptions{InstanceID: "msgq-1", Store: store, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	first := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: first, Primary: true}); err != nil {
+		t.Fatalf("init first: %v", err)
+	}
+	restored := msgq.SessionHeader{RoleID: first.RoleID, SessionID: first.SessionID, ConnectionID: 8}
+	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: restored, Restore: true}); !errors.Is(err, msgq.ErrSessionChanged) {
+		t.Fatalf("restore with changed primary property error = %v, want %v", err, msgq.ErrSessionChanged)
+	}
+	replacement := msgq.SessionHeader{RoleID: first.RoleID, SessionID: 100, ConnectionID: 9}
+	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: replacement, Primary: true}); err != nil {
+		t.Fatalf("init replacement primary: %v", err)
+	}
+	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: restored, Restore: true, Primary: true}); !errors.Is(err, msgq.ErrSessionChanged) {
+		t.Fatalf("restore replaced primary error = %v, want %v", err, msgq.ErrSessionChanged)
+	}
+}
+
+func TestMsgQServerPrimaryLifecycleUsesConditionalProjection(t *testing.T) {
+	store := newMailboxSessionStore()
+	server, err := msgq.NewServer(msgq.ServerOptions{InstanceID: "msgq-1", Store: store, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	oldPrimary := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	newPrimary := msgq.SessionHeader{RoleID: 470001, SessionID: 100, ConnectionID: 8}
+	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: oldPrimary, Primary: true}); err != nil {
+		t.Fatalf("init old primary: %v", err)
+	}
+	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: newPrimary, Primary: true}); err != nil {
+		t.Fatalf("init new primary: %v", err)
+	}
+	if err := server.Touch(context.Background(), msgq.TouchRequest{Header: oldPrimary}); !errors.Is(err, msgq.ErrSessionChanged) {
+		t.Fatalf("touch replaced primary error = %v, want %v", err, msgq.ErrSessionChanged)
+	}
+	if _, found, err := store.Find(context.Background(), oldPrimary.SessionID); err != nil || found {
+		t.Fatalf("old exact binding after stale touch = %t, %v", found, err)
+	}
+	if primary, found, err := store.FindPrimary(context.Background(), oldPrimary.RoleID); err != nil || !found || primary != newPrimary.SessionID {
+		t.Fatalf("primary after stale touch = %d, %t, %v", primary, found, err)
+	}
+	if err := server.Close(context.Background(), newPrimary); err != nil {
+		t.Fatalf("close new primary: %v", err)
+	}
+	if _, found, err := store.FindPrimary(context.Background(), newPrimary.RoleID); err != nil || found {
+		t.Fatalf("primary after close = %t, %v", found, err)
+	}
+}
+
+func TestMsgQServerReapAndOverflowRemovePrimaryProjection(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		run  func(*testing.T, *msgq.Server, msgq.SessionHeader)
+	}{
+		{
+			name: "reap",
+			run: func(t *testing.T, server *msgq.Server, _ msgq.SessionHeader) {
+				t.Helper()
+				if removed, err := server.Reap(context.Background(), time.Now().Add(2*time.Second)); err != nil || removed != 1 {
+					t.Fatalf("reap = %d, %v", removed, err)
+				}
+			},
+		},
+		{
+			name: "overflow",
+			run: func(t *testing.T, server *msgq.Server, header msgq.SessionHeader) {
+				t.Helper()
+				if _, err := server.PubSession(context.Background(), header.SessionID, []byte("first")); err != nil {
+					t.Fatalf("publish first: %v", err)
+				}
+				if _, err := server.PubSession(context.Background(), header.SessionID, []byte("overflow")); !errors.Is(err, msgq.ErrDownMsgOverflow) {
+					t.Fatalf("publish overflow error = %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := newMailboxSessionStore()
+			server, err := msgq.NewServer(msgq.ServerOptions{
+				InstanceID:         "msgq-1",
+				Store:              store,
+				MaxBacklogMessages: 1,
+				OfflineTimeout:     time.Second,
+			})
+			if err != nil {
+				t.Fatalf("new server: %v", err)
+			}
+			header := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+			if _, err := server.Init(context.Background(), msgq.InitRequest{Header: header, Primary: true}); err != nil {
+				t.Fatalf("init primary: %v", err)
+			}
+			test.run(t, server, header)
+			if _, found, err := store.FindPrimary(context.Background(), header.RoleID); err != nil || found {
+				t.Fatalf("primary after %s = %t, %v", test.name, found, err)
+			}
+			if _, found, err := store.Find(context.Background(), header.SessionID); err != nil || found {
+				t.Fatalf("binding after %s = %t, %v", test.name, found, err)
+			}
+		})
 	}
 }
 
@@ -301,8 +575,9 @@ func TestMsgQServerRedisIntegration(t *testing.T) {
 		t.Fatalf("ping redis %q: %v", endpoint, err)
 	}
 	prefix := fmt.Sprintf("tx:test:msgq-mailbox:%d", time.Now().UnixNano())
-	key := prefix + ":session:{470001}"
-	defer raw.Del(ctx, key)
+	key := prefix + ":session:v2:{99}"
+	primaryKey := prefix + ":primary:v1:{470001}"
+	defer raw.Del(ctx, key, primaryKey)
 
 	bindings, err := msgq.NewRedisSessionStore(goredis.NewClient(raw), msgq.SessionRedisOptions{
 		Prefix: prefix,
@@ -315,18 +590,22 @@ func TestMsgQServerRedisIntegration(t *testing.T) {
 		InstanceID:         "msgq-1",
 		Store:              bindings,
 		MaxBacklogMessages: 2,
+		OfflineTimeout:     time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
 	header := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-	if _, err := server.Init(ctx, msgq.InitRequest{Header: header}); err != nil {
+	if _, err := server.Init(ctx, msgq.InitRequest{Header: header, Primary: true}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	if _, found, err := bindings.Find(ctx, header.RoleID); err != nil || !found {
+	if _, found, err := bindings.Find(ctx, header.SessionID); err != nil || !found {
 		t.Fatalf("find owner after init = %t, %v", found, err)
 	}
-	if _, err := server.Pub(ctx, msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Payload: []byte("notify")}); err != nil {
+	if primary, found, err := bindings.FindPrimary(ctx, header.RoleID); err != nil || !found || primary != header.SessionID {
+		t.Fatalf("find primary after init = %d, %t, %v", primary, found, err)
+	}
+	if _, err := server.PubSession(ctx, header.SessionID, []byte("notify")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	message, err := server.Fetch(ctx, msgq.FetchRequest{Header: header})
@@ -339,8 +618,11 @@ func TestMsgQServerRedisIntegration(t *testing.T) {
 	if removed, err := server.Reap(ctx, time.Now().Add(2*time.Minute)); err != nil || removed != 1 {
 		t.Fatalf("reap = %d, %v", removed, err)
 	}
-	if _, found, err := bindings.Find(ctx, header.RoleID); err != nil || found {
+	if _, found, err := bindings.Find(ctx, header.SessionID); err != nil || found {
 		t.Fatalf("find owner after reap = %t, %v", found, err)
+	}
+	if _, found, err := bindings.FindPrimary(ctx, header.RoleID); err != nil || found {
+		t.Fatalf("find primary after reap = %t, %v", found, err)
 	}
 }
 
@@ -367,7 +649,7 @@ func TestMsgQServerReapRemovesOfflineSessionAndBinding(t *testing.T) {
 	if server.SessionCount() != 0 {
 		t.Fatalf("session count = %d, want 0", server.SessionCount())
 	}
-	if _, found, err := store.Find(context.Background(), header.RoleID); err != nil || found {
+	if _, found, err := store.Find(context.Background(), header.SessionID); err != nil || found {
 		t.Fatalf("binding after reap = found %t, err %v", found, err)
 	}
 }
@@ -406,41 +688,90 @@ func TestMsgQServerStartUsesLifecycleWorker(t *testing.T) {
 type mailboxSessionStore struct {
 	mu       sync.Mutex
 	bindings map[int64]msgq.SessionBinding
+	primary  map[int64]int64
 }
 
 func newMailboxSessionStore() *mailboxSessionStore {
-	return &mailboxSessionStore{bindings: make(map[int64]msgq.SessionBinding)}
+	return &mailboxSessionStore{
+		bindings: make(map[int64]msgq.SessionBinding),
+		primary:  make(map[int64]int64),
+	}
 }
 
-func (s *mailboxSessionStore) Bind(_ context.Context, binding msgq.SessionBinding) (msgq.SessionBinding, bool, error) {
+func (s *mailboxSessionStore) Create(_ context.Context, binding msgq.SessionBinding) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	previous, replaced := s.bindings[binding.RoleID]
-	s.bindings[binding.RoleID] = binding
-	return previous, replaced, nil
+	if _, exists := s.bindings[binding.SessionID]; exists {
+		return false, nil
+	}
+	s.bindings[binding.SessionID] = binding
+	return true, nil
 }
 
-func (s *mailboxSessionStore) Find(_ context.Context, roleID int64) (msgq.SessionBinding, bool, error) {
+func (s *mailboxSessionStore) Rebind(_ context.Context, expected, replacement msgq.SessionBinding) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	binding, found := s.bindings[roleID]
+	current, found := s.bindings[expected.SessionID]
+	if !found || current != expected {
+		return false, nil
+	}
+	s.bindings[replacement.SessionID] = replacement
+	return true, nil
+}
+
+func (s *mailboxSessionStore) Find(_ context.Context, sessionID int64) (msgq.SessionBinding, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	binding, found := s.bindings[sessionID]
 	return binding, found, nil
 }
 
 func (s *mailboxSessionStore) Refresh(_ context.Context, binding msgq.SessionBinding) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	current, found := s.bindings[binding.RoleID]
+	current, found := s.bindings[binding.SessionID]
 	return found && current == binding, nil
 }
 
 func (s *mailboxSessionStore) Unbind(_ context.Context, binding msgq.SessionBinding) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	current, found := s.bindings[binding.RoleID]
+	current, found := s.bindings[binding.SessionID]
 	if !found || current != binding {
 		return false, nil
 	}
-	delete(s.bindings, binding.RoleID)
+	delete(s.bindings, binding.SessionID)
+	return true, nil
+}
+
+func (s *mailboxSessionStore) BindPrimary(_ context.Context, roleID, sessionID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.primary[roleID] = sessionID
+	return nil
+}
+
+func (s *mailboxSessionStore) FindPrimary(_ context.Context, roleID int64) (int64, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sessionID, found := s.primary[roleID]
+	return sessionID, found, nil
+}
+
+func (s *mailboxSessionStore) RefreshPrimary(_ context.Context, roleID, sessionID int64) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, found := s.primary[roleID]
+	return found && current == sessionID, nil
+}
+
+func (s *mailboxSessionStore) UnbindPrimary(_ context.Context, roleID, sessionID int64) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, found := s.primary[roleID]
+	if !found || current != sessionID {
+		return false, nil
+	}
+	delete(s.primary, roleID)
 	return true, nil
 }

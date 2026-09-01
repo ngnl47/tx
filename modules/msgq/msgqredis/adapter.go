@@ -37,8 +37,8 @@ type resolver struct {
 	routeType string
 }
 
-func (resolver resolver) ResolveSessionRedis(ctx context.Context, roleID int64) (txmsgq.SessionRedisClient, error) {
-	client, err := resolver.routes.ScriptClientFor(ctx, resolver.routeType, roleID)
+func (resolver resolver) ResolveSessionRedis(ctx context.Context, shardKey int64) (txmsgq.SessionRedisClient, error) {
+	client, err := resolver.routes.ScriptClientFor(ctx, resolver.routeType, shardKey)
 	if err != nil {
 		return nil, err
 	}

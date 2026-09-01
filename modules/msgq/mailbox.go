@@ -12,14 +12,15 @@ import (
 )
 
 const (
-	defaultOfflineTimeout  = 180 * time.Second
-	defaultSweepInterval   = 2 * time.Second
-	defaultMaxBacklogBytes = 64 * 1024 * 1024
-	initLockShards         = 64
+	defaultOfflineTimeout    = 180 * time.Second
+	defaultSweepInterval     = 2 * time.Second
+	defaultMaxBacklogBytes   = 64 * 1024 * 1024
+	storeCompensationTimeout = 5 * time.Second
+	initLockShards           = 64
 )
 
 // Server 在本进程维护客户端会话与未确认下行消息。
-// Redis 只保存角色到 msgq 实例的短期归属，不保存下行编码载荷。
+// Redis 只保存精确会话归属和角色主会话投影，不保存下行编码载荷。
 type Server struct {
 	instanceID         string
 	store              SessionStore
@@ -29,6 +30,8 @@ type Server struct {
 	sweepInterval      time.Duration
 	reaping            atomic.Bool
 	initLocks          [initLockShards]sync.Mutex
+	// beforeRestoreSessionLock 仅供包内测试观察 Restore 即将等待会话锁的阶段。
+	beforeRestoreSessionLock func()
 
 	mu       sync.RWMutex
 	sessions map[int64]*mailboxSession
@@ -59,6 +62,7 @@ type SessionHeader struct {
 type InitRequest struct {
 	Header  SessionHeader
 	Restore bool
+	Primary bool
 	Ack     int64
 }
 
@@ -78,14 +82,6 @@ type RecRequest struct {
 type RecResult struct {
 	UpMsgSeq int64
 	Ack      int64
-}
-
-// PubRequest 向一个角色的当前会话发布下行 BON 数据。
-// Header 仅填写 RoleID 时表示投递给该角色当前会话；同时填写 SessionID 时会校验会话一致性。
-type PubRequest struct {
-	Header SessionHeader
-	// Payload 在 Pub 成功后转交 msgq 只读持有，调用方不得修改、append、复用或归还该切片。
-	Payload []byte
 }
 
 // PubResult 返回下行消息序号，供 Agent 写入协议包。
@@ -190,23 +186,26 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 	if err := request.Header.validateConnection(); err != nil || request.Ack < 0 || (!request.Restore && request.Ack != 0) {
 		return InitResult{}, ErrInvalidHeader
 	}
-	initLock := &s.initLocks[uint64(request.Header.RoleID)%initLockShards]
+	initLock := &s.initLocks[uint64(request.Header.SessionID)%initLockShards]
 	initLock.Lock()
 	defer initLock.Unlock()
 
 	var session *mailboxSession
 	var previousConnectionID int64
 	if request.Restore {
-		current, found := s.lookup(request.Header.RoleID)
+		current, found := s.lookup(request.Header.SessionID)
 		if !found {
 			return InitResult{}, ErrSessionOffline
+		}
+		if s.beforeRestoreSessionLock != nil {
+			s.beforeRestoreSessionLock()
 		}
 		current.mu.Lock()
 		if !current.active {
 			current.mu.Unlock()
 			return InitResult{}, ErrSessionOffline
 		}
-		if current.sessionID != request.Header.SessionID {
+		if current.roleID != request.Header.RoleID || current.primary != request.Primary {
 			current.mu.Unlock()
 			return InitResult{}, ErrSessionChanged
 		}
@@ -216,6 +215,12 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 		}
 		session = current
 		previousConnectionID = current.connectionID
+	} else {
+		var reserved bool
+		session, reserved = s.reserveFresh(request.Header, request.Primary)
+		if !reserved {
+			return InitResult{}, ErrSessionChanged
+		}
 	}
 	binding := SessionBinding{
 		RoleID:       request.Header.RoleID,
@@ -223,16 +228,64 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 		ConnectionID: request.Header.ConnectionID,
 		InstanceID:   s.instanceID,
 	}
-	if _, _, err := s.store.Bind(ctx, binding); err != nil {
-		if request.Restore {
-			session.mu.Unlock()
+	if request.Restore {
+		expected := SessionBinding{
+			RoleID:       session.roleID,
+			SessionID:    session.sessionID,
+			ConnectionID: session.connectionID,
+			InstanceID:   s.instanceID,
 		}
-		return InitResult{}, err
-	}
-
-	if !request.Restore {
-		session = s.installFresh(request.Header)
-		session.mu.Lock()
+		rebound, err := s.store.Rebind(ctx, expected, binding)
+		if err != nil {
+			session.mu.Unlock()
+			return InitResult{}, err
+		}
+		if !rebound {
+			var primaryErr error
+			if session.primary {
+				primaryErr = s.unbindPrimaryForCompensation(ctx, session.roleID, session.sessionID)
+			}
+			s.removeLocked(session)
+			session.mu.Unlock()
+			return InitResult{}, errors.Join(ErrSessionChanged, primaryErr)
+		}
+		if session.primary {
+			refreshed, refreshErr := s.store.RefreshPrimary(ctx, session.roleID, session.sessionID)
+			if refreshErr != nil || !refreshed {
+				exactRemoved, exactErr := s.unbindExactForCompensation(ctx, binding)
+				primaryErr := s.unbindPrimaryForCompensation(ctx, session.roleID, session.sessionID)
+				s.removeLocked(session)
+				session.mu.Unlock()
+				if refreshErr == nil {
+					refreshErr = ErrSessionChanged
+				} else if !exactRemoved {
+					refreshErr = errors.Join(refreshErr, ErrSessionChanged)
+				}
+				return InitResult{}, errors.Join(refreshErr, exactErr, primaryErr)
+			}
+		}
+	} else {
+		created, err := s.store.Create(ctx, binding)
+		if err != nil {
+			s.abortFreshLocked(session)
+			return InitResult{}, err
+		}
+		if !created {
+			s.abortFreshLocked(session)
+			return InitResult{}, ErrSessionChanged
+		}
+		if request.Primary {
+			if err := s.store.BindPrimary(ctx, request.Header.RoleID, request.Header.SessionID); err != nil {
+				exactRemoved, exactErr := s.unbindExactForCompensation(ctx, binding)
+				primaryErr := s.unbindPrimaryForCompensation(ctx, request.Header.RoleID, request.Header.SessionID)
+				s.abortFreshLocked(session)
+				if !exactRemoved {
+					return InitResult{}, errors.Join(err, exactErr, primaryErr, ErrSessionChanged)
+				}
+				return InitResult{}, errors.Join(err, exactErr, primaryErr)
+			}
+		}
+		session.active = true
 	}
 	if !session.active || session.sessionID != request.Header.SessionID {
 		session.mu.Unlock()
@@ -313,18 +366,18 @@ func (s *Server) Rec(ctx context.Context, request RecRequest) (RecResult, error)
 	return RecResult{UpMsgSeq: upMsgSeq, Ack: request.Ack}, nil
 }
 
-// Pub 将数据追加到当前会话的未确认下行队列。
+// PubSession 将数据追加到精确会话的未确认下行队列。
 //
 // Message 的所有权在调用成功后移交给 msgq：调用方不得再修改、append、复用或归还该切片，直到对应会话关闭或消息被确认。
 // 该约束使本地广播可以让多个会话共享同一份已序列化正文；跨进程 gRPC 调用在传输边界自然拥有独立字节副本。
-func (s *Server) Pub(ctx context.Context, request PubRequest) (PubResult, error) {
+func (s *Server) PubSession(ctx context.Context, sessionID int64, payload []byte) (PubResult, error) {
 	if s == nil {
 		return PubResult{}, ErrServerNil
 	}
-	if request.Header.RoleID <= 0 || request.Header.SessionID < 0 || request.Header.ConnectionID < 0 {
+	if sessionID <= 0 {
 		return PubResult{}, ErrInvalidHeader
 	}
-	session, found := s.lookup(request.Header.RoleID)
+	session, found := s.lookup(sessionID)
 	if !found {
 		return PubResult{}, ErrSessionOffline
 	}
@@ -333,17 +386,13 @@ func (s *Server) Pub(ctx context.Context, request PubRequest) (PubResult, error)
 		session.mu.Unlock()
 		return PubResult{}, ErrSessionOffline
 	}
-	if request.Header.SessionID != 0 && request.Header.SessionID != session.sessionID {
-		session.mu.Unlock()
-		return PubResult{}, ErrSessionChanged
-	}
-	if session.downMsgs.exceeds(s.maxBacklogMessages, s.maxBacklogBytes, request.Payload) {
+	if session.downMsgs.exceeds(s.maxBacklogMessages, s.maxBacklogBytes, payload) {
 		header := session.header()
 		session.mu.Unlock()
 		s.evict(ctx, session, header)
 		return PubResult{}, ErrDownMsgOverflow
 	}
-	seq := session.downMsgs.enqueue(request.Payload)
+	seq := session.downMsgs.enqueue(payload)
 	pending := session.downMsgs.len()
 	pendingBytes := session.downMsgs.bytes
 	header := session.header()
@@ -354,14 +403,14 @@ func (s *Server) Pub(ctx context.Context, request PubRequest) (PubResult, error)
 		"sessionID", header.SessionID,
 		"connectionID", header.ConnectionID,
 		"seq", seq,
-		"bytes", len(request.Payload),
+		"bytes", len(payload),
 		"pending", pending,
 		"pendingBytes", pendingBytes,
 	)
 	return PubResult{Seq: seq}, nil
 }
 
-// Fetch 返回下一条尚未发送的下行消息；队列为空时等待 Pub 或 ctx 结束。
+// Fetch 返回下一条尚未发送的下行消息；队列为空时等待下行发布或 ctx 结束。
 func (s *Server) Fetch(ctx context.Context, request FetchRequest) (FetchResult, error) {
 	for {
 		session, err := s.touch(ctx, request.Header)
@@ -390,7 +439,7 @@ func (s *Server) Fetch(ctx context.Context, request FetchRequest) (FetchResult, 
 	}
 }
 
-// FetchSome 返回当前可发送的一批消息；队列为空时等待 Pub 或 ctx 结束。
+// FetchSome 返回当前可发送的一批消息；队列为空时等待下行发布或 ctx 结束。
 func (s *Server) FetchSome(ctx context.Context, request FetchSomeRequest) (FetchSomeResult, error) {
 	if request.Max < 0 {
 		return FetchSomeResult{}, ErrInvalidHeader
@@ -463,14 +512,7 @@ func (s *Server) Confirm(ctx context.Context, request ConfirmRequest) error {
 
 // Touch 仅续期会话 owner，供连接空闲但仍保持在线时调用。
 func (s *Server) Touch(ctx context.Context, request TouchRequest) error {
-	session, err := s.touch(ctx, request.Header)
-	if err != nil {
-		return err
-	}
-	session.mu.Lock()
-	current, err := session.checkConnection(request.Header)
-	session.mu.Unlock()
-	s.logStaleConnection(ctx, request.Header, current, err)
+	_, err := s.touch(ctx, request.Header)
 	return err
 }
 
@@ -606,7 +648,7 @@ func (s *Server) Close(ctx context.Context, header SessionHeader) error {
 	if err := header.validateConnection(); err != nil {
 		return err
 	}
-	session, found := s.lookup(header.RoleID)
+	session, found := s.lookup(header.SessionID)
 	if !found {
 		return ErrSessionOffline
 	}
@@ -632,9 +674,13 @@ func (s *Server) Close(ctx context.Context, header SessionHeader) error {
 		session.mu.Unlock()
 		return ErrSessionChanged
 	}
+	var primaryErr error
+	if session.primary {
+		_, primaryErr = s.store.UnbindPrimary(ctx, session.roleID, session.sessionID)
+	}
 	s.removeLocked(session)
 	session.mu.Unlock()
-	return nil
+	return primaryErr
 }
 
 // SessionCount 返回当前进程内活动会话数。
@@ -678,6 +724,10 @@ func (s *Server) Reap(ctx context.Context, now time.Time) (int, error) {
 			InstanceID:   s.instanceID,
 		}
 		_, err := s.store.Unbind(ctx, binding)
+		var primaryErr error
+		if session.primary {
+			_, primaryErr = s.store.UnbindPrimary(ctx, binding.RoleID, binding.SessionID)
+		}
 		s.removeLocked(session)
 		session.mu.Unlock()
 		removed++
@@ -698,6 +748,14 @@ func (s *Server) Reap(ctx context.Context, now time.Time) (int, error) {
 				"err", err,
 			)
 			errs = append(errs, err)
+		}
+		if primaryErr != nil {
+			txlog.ErrorContext(ctx, "msgq reap primary unbind failed",
+				"roleID", binding.RoleID,
+				"sessionID", binding.SessionID,
+				"err", primaryErr,
+			)
+			errs = append(errs, primaryErr)
 		}
 	}
 	return removed, errors.Join(errs...)
@@ -731,26 +789,44 @@ func (s *Server) Start(ctx waitGroupContext) error {
 	})
 }
 
-func (s *Server) installFresh(header SessionHeader) *mailboxSession {
+// reserveFresh 在返回成功时保持新 session.mu 锁定，直到 Init 完成或回滚。
+func (s *Server) reserveFresh(header SessionHeader, primary bool) (*mailboxSession, bool) {
+	session := newMailboxSession(header, primary)
+	session.active = false
+	session.mu.Lock()
 	s.mu.Lock()
-	current := s.sessions[header.RoleID]
-	session := newMailboxSession(header)
-	s.sessions[header.RoleID] = session
-	s.mu.Unlock()
-	if current != nil {
-		current.mu.Lock()
-		current.active = false
-		s.removeSessionTopicsLocked(current)
-		current.signal()
-		current.mu.Unlock()
+	if _, found := s.sessions[header.SessionID]; found {
+		s.mu.Unlock()
+		session.mu.Unlock()
+		return nil, false
 	}
-	return session
+	s.sessions[header.SessionID] = session
+	s.mu.Unlock()
+	return session, true
 }
 
-func (s *Server) lookup(roleID int64) (*mailboxSession, bool) {
+func (s *Server) abortFreshLocked(session *mailboxSession) {
+	s.removeLocked(session)
+	session.mu.Unlock()
+}
+
+func (s *Server) unbindExactForCompensation(ctx context.Context, binding SessionBinding) (bool, error) {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), storeCompensationTimeout)
+	defer cancel()
+	return s.store.Unbind(cleanupCtx, binding)
+}
+
+func (s *Server) unbindPrimaryForCompensation(ctx context.Context, roleID, sessionID int64) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), storeCompensationTimeout)
+	defer cancel()
+	_, err := s.store.UnbindPrimary(cleanupCtx, roleID, sessionID)
+	return err
+}
+
+func (s *Server) lookup(sessionID int64) (*mailboxSession, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	session, found := s.sessions[roleID]
+	session, found := s.sessions[sessionID]
 	return session, found
 }
 
@@ -764,16 +840,10 @@ func (s *Server) sessionSnapshot() []*mailboxSession {
 	return sessions
 }
 
-func (s *Server) remove(session *mailboxSession) {
-	session.mu.Lock()
-	defer session.mu.Unlock()
-	s.removeLocked(session)
-}
-
 func (s *Server) removeLocked(session *mailboxSession) {
 	s.mu.Lock()
-	if s.sessions[session.roleID] == session {
-		delete(s.sessions, session.roleID)
+	if s.sessions[session.sessionID] == session {
+		delete(s.sessions, session.sessionID)
 	}
 	s.mu.Unlock()
 	session.active = false
@@ -807,15 +877,22 @@ func (s *Server) evict(ctx context.Context, session *mailboxSession, header Sess
 			"instanceID", s.instanceID,
 			"err", err,
 		)
-		return
-	}
-	if !removed {
+	} else if !removed {
 		txlog.ErrorContext(ctx, "msgq evict session binding changed",
 			"roleID", header.RoleID,
 			"sessionID", header.SessionID,
 			"connectionID", header.ConnectionID,
 			"instanceID", s.instanceID,
 		)
+	}
+	if session.primary {
+		if _, err := s.store.UnbindPrimary(ctx, header.RoleID, header.SessionID); err != nil {
+			txlog.ErrorContext(ctx, "msgq evict primary unbind failed",
+				"roleID", header.RoleID,
+				"sessionID", header.SessionID,
+				"err", err,
+			)
+		}
 	}
 }
 
@@ -868,14 +945,14 @@ func (s *Server) touch(ctx context.Context, header SessionHeader) (*mailboxSessi
 	if err := header.validateConnection(); err != nil {
 		return nil, err
 	}
-	session, found := s.lookup(header.RoleID)
+	session, found := s.lookup(header.SessionID)
 	if !found {
 		return nil, ErrSessionOffline
 	}
 	session.mu.Lock()
 	current, err := session.checkConnection(header)
-	session.mu.Unlock()
 	if err != nil {
+		session.mu.Unlock()
 		s.logStaleConnection(ctx, header, current, err)
 		return nil, err
 	}
@@ -886,18 +963,31 @@ func (s *Server) touch(ctx context.Context, header SessionHeader) (*mailboxSessi
 		InstanceID:   s.instanceID,
 	})
 	if err != nil {
+		session.mu.Unlock()
 		return nil, err
 	}
 	if !refreshed {
-		s.remove(session)
+		s.removeLocked(session)
+		session.mu.Unlock()
 		return nil, ErrSessionChanged
 	}
-	session.mu.Lock()
-	current, err = session.checkConnection(header)
-	if err != nil {
-		session.mu.Unlock()
-		s.logStaleConnection(ctx, header, current, err)
-		return nil, err
+	if session.primary {
+		primaryRefreshed, err := s.store.RefreshPrimary(ctx, session.roleID, session.sessionID)
+		if err != nil {
+			session.mu.Unlock()
+			return nil, err
+		}
+		if !primaryRefreshed {
+			_, unbindErr := s.store.Unbind(ctx, SessionBinding{
+				RoleID:       session.roleID,
+				SessionID:    session.sessionID,
+				ConnectionID: session.connectionID,
+				InstanceID:   s.instanceID,
+			})
+			s.removeLocked(session)
+			session.mu.Unlock()
+			return nil, errors.Join(ErrSessionChanged, unbindErr)
+		}
 	}
 	session.lastActivity = time.Now()
 	session.mu.Unlock()
@@ -930,6 +1020,7 @@ type mailboxSession struct {
 	roleID       int64
 	sessionID    int64
 	connectionID int64
+	primary      bool
 	upMsgSeq     int64
 	active       bool
 	lastActivity time.Time
@@ -939,11 +1030,12 @@ type mailboxSession struct {
 	mu           sync.Mutex
 }
 
-func newMailboxSession(header SessionHeader) *mailboxSession {
+func newMailboxSession(header SessionHeader, primary bool) *mailboxSession {
 	return &mailboxSession{
 		roleID:       header.RoleID,
 		sessionID:    header.SessionID,
 		connectionID: header.ConnectionID,
+		primary:      primary,
 		active:       true,
 		lastActivity: time.Now(),
 		notify:       make(chan struct{}, 1),
@@ -955,7 +1047,7 @@ func (s *mailboxSession) requireConnection(header SessionHeader) error {
 	if !s.active {
 		return ErrSessionOffline
 	}
-	if s.sessionID != header.SessionID || s.connectionID != header.ConnectionID {
+	if s.roleID != header.RoleID || s.sessionID != header.SessionID || s.connectionID != header.ConnectionID {
 		return ErrSessionChanged
 	}
 	return nil

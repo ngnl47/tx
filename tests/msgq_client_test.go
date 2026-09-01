@@ -2,7 +2,9 @@ package tests
 
 import (
 	"context"
+	"errors"
 	"net"
+	"slices"
 	"testing"
 
 	"github.com/ngnl47/tx/modules/discovery"
@@ -12,17 +14,13 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 )
 
-func TestSessionClientRouterPrefersExistingOwner(t *testing.T) {
-	store := newMailboxSessionStore()
-	_, _, err := store.Bind(context.Background(), msgq.SessionBinding{
+func TestSessionClientRouterRestoreUsesExactSessionOwner(t *testing.T) {
+	store := &sessionStoreFake{binding: msgq.SessionBinding{
 		RoleID:       470001,
 		SessionID:    99,
 		ConnectionID: 7,
 		InstanceID:   "msgq-b",
-	})
-	if err != nil {
-		t.Fatalf("bind owner: %v", err)
-	}
+	}, found: true}
 	directory := sessionClientDirectory(t)
 	dialer := &sessionClientDialerFake{client: &sessionClientFake{}}
 	router, err := msgq.NewSessionClientRouter(directory, store, dialer)
@@ -30,26 +28,28 @@ func TestSessionClientRouterPrefersExistingOwner(t *testing.T) {
 		t.Fatalf("new client router: %v", err)
 	}
 
-	_, err = router.Acquire(context.Background(), 470001)
+	_, err = router.Acquire(context.Background(), msgq.AcquireSessionRequest{RoleID: 470001, SessionID: 99, Restore: true})
 	if err != nil {
 		t.Fatalf("acquire existing owner: %v", err)
 	}
 	if len(dialer.instances) != 1 || dialer.instances[0].ID != "msgq-b" {
 		t.Fatalf("dialed instances = %#v, want only msgq-b", dialer.instances)
 	}
+	if got := store.findSessionIDs; len(got) != 1 || got[0] != 99 {
+		t.Fatalf("store find session IDs = %#v, want [99]", got)
+	}
+	if !slices.Equal(store.operations, []string{"Find"}) {
+		t.Fatalf("store operations = %#v, want [Find]", store.operations)
+	}
 }
 
 func TestSessionClientRouterReusesEndpointClientAndClosesIt(t *testing.T) {
-	store := newMailboxSessionStore()
-	_, _, err := store.Bind(context.Background(), msgq.SessionBinding{
+	store := &sessionStoreFake{binding: msgq.SessionBinding{
 		RoleID:       470001,
 		SessionID:    99,
 		ConnectionID: 7,
 		InstanceID:   "msgq-b",
-	})
-	if err != nil {
-		t.Fatalf("bind owner: %v", err)
-	}
+	}, found: true}
 	client := &sessionClientFake{}
 	dialer := &sessionClientDialerFake{client: client}
 	router, err := msgq.NewSessionClientRouter(sessionClientDirectory(t), store, dialer)
@@ -57,12 +57,15 @@ func TestSessionClientRouterReusesEndpointClientAndClosesIt(t *testing.T) {
 		t.Fatalf("new client router: %v", err)
 	}
 	for range 2 {
-		if _, err := router.Acquire(context.Background(), 470001); err != nil {
+		if _, err := router.Acquire(context.Background(), msgq.AcquireSessionRequest{RoleID: 470001, SessionID: 99, Restore: true}); err != nil {
 			t.Fatalf("acquire existing owner: %v", err)
 		}
 	}
 	if len(dialer.instances) != 1 {
 		t.Fatalf("dial calls = %d, want 1", len(dialer.instances))
+	}
+	if !slices.Equal(store.operations, []string{"Find", "Find"}) {
+		t.Fatalf("store operations = %#v, want two exact reads", store.operations)
 	}
 	if err := router.Close(); err != nil {
 		t.Fatalf("close client router: %v", err)
@@ -72,22 +75,113 @@ func TestSessionClientRouterReusesEndpointClientAndClosesIt(t *testing.T) {
 	}
 }
 
-func TestSessionClientRouterSelectsRunningServiceWhenNoOwner(t *testing.T) {
+func TestSessionClientRouterFreshSelectsRunningServiceWithoutStoreLookup(t *testing.T) {
 	directory := sessionClientDirectory(t)
 	dialer := &sessionClientDialerFake{client: &sessionClientFake{}}
-	router, err := msgq.NewSessionClientRouter(directory, newMailboxSessionStore(), dialer)
+	store := &sessionStoreFake{findErr: errors.New("fresh acquire must not query store")}
+	router, err := msgq.NewSessionClientRouter(directory, store, dialer)
 	if err != nil {
 		t.Fatalf("new client router: %v", err)
 	}
 
-	for _, want := range []string{"msgq-a", "msgq-b"} {
-		_, err := router.Acquire(context.Background(), 470001)
+	for index, want := range []string{"msgq-a", "msgq-b"} {
+		_, err := router.Acquire(context.Background(), msgq.AcquireSessionRequest{RoleID: 470001, SessionID: int64(99 + index)})
 		if err != nil {
 			t.Fatalf("acquire running service: %v", err)
 		}
 		if got := dialer.instances[len(dialer.instances)-1].ID; got != want {
 			t.Fatalf("dialed instance = %q, want %q", got, want)
 		}
+	}
+	if len(store.operations) != 0 {
+		t.Fatalf("fresh acquire used session store: %#v", store.operations)
+	}
+}
+
+func TestSessionClientRouterRestoreDoesNotFallbackToAnotherInstance(t *testing.T) {
+	dialer := &sessionClientDialerFake{client: &sessionClientFake{}}
+	store := &sessionStoreFake{}
+	router, err := msgq.NewSessionClientRouter(sessionClientDirectory(t), store, dialer)
+	if err != nil {
+		t.Fatalf("new client router: %v", err)
+	}
+
+	_, err = router.Acquire(context.Background(), msgq.AcquireSessionRequest{RoleID: 470001, SessionID: 99, Restore: true})
+	if !errors.Is(err, msgq.ErrSessionOffline) {
+		t.Fatalf("restore error = %v, want session offline", err)
+	}
+	if len(dialer.instances) != 0 {
+		t.Fatalf("restore fallback dialed %#v", dialer.instances)
+	}
+	if _, err := router.Acquire(context.Background(), msgq.AcquireSessionRequest{RoleID: 470001, SessionID: 100}); err != nil {
+		t.Fatalf("fresh acquire after failed restore: %v", err)
+	}
+	if len(dialer.instances) != 1 || dialer.instances[0].ID != "msgq-a" {
+		t.Fatalf("fresh dialed instances = %#v, want msgq-a", dialer.instances)
+	}
+	if !slices.Equal(store.operations, []string{"Find"}) {
+		t.Fatalf("store operations = %#v, fresh must not add operations", store.operations)
+	}
+}
+
+func TestSessionClientRouterRestoreRejectsInvalidBindingOrOwner(t *testing.T) {
+	tests := map[string]struct {
+		binding   msgq.SessionBinding
+		instances []discovery.Instance
+		wantErr   error
+	}{
+		"mismatched role": {
+			binding: msgq.SessionBinding{RoleID: 470002, SessionID: 99, ConnectionID: 7, InstanceID: "msgq-b"},
+			wantErr: msgq.ErrSessionChanged,
+		},
+		"mismatched session record": {
+			binding: msgq.SessionBinding{RoleID: 470001, SessionID: 100, ConnectionID: 7, InstanceID: "msgq-b"},
+			wantErr: msgq.ErrSessionOffline,
+		},
+		"unavailable owner": {
+			binding: msgq.SessionBinding{RoleID: 470001, SessionID: 99, ConnectionID: 7, InstanceID: "msgq-missing"},
+			wantErr: msgq.ErrRouteUnavailable,
+		},
+		"draining owner": {
+			binding: msgq.SessionBinding{RoleID: 470001, SessionID: 99, ConnectionID: 7, InstanceID: "msgq-b"},
+			instances: []discovery.Instance{
+				{ID: "msgq-a", Services: []string{"msgq"}, Endpoint: "127.0.0.1:9101", Status: discovery.StatusRunning},
+				{ID: "msgq-b", Services: []string{"msgq"}, Endpoint: "127.0.0.1:9102", Status: discovery.StatusDraining},
+			},
+			wantErr: msgq.ErrRouteUnavailable,
+		},
+		"owner without msgq service": {
+			binding: msgq.SessionBinding{RoleID: 470001, SessionID: 99, ConnectionID: 7, InstanceID: "game-b"},
+			instances: []discovery.Instance{
+				{ID: "msgq-a", Services: []string{"msgq"}, Endpoint: "127.0.0.1:9101", Status: discovery.StatusRunning},
+				{ID: "game-b", Services: []string{"game"}, Endpoint: "127.0.0.1:9102", Status: discovery.StatusRunning},
+			},
+			wantErr: msgq.ErrRouteUnavailable,
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			store := &sessionStoreFake{binding: test.binding, found: true}
+			dialer := &sessionClientDialerFake{client: &sessionClientFake{}}
+			directory := sessionClientDirectory(t)
+			if test.instances != nil {
+				directory = newSessionClientDirectory(t, test.instances)
+			}
+			router, err := msgq.NewSessionClientRouter(directory, store, dialer)
+			if err != nil {
+				t.Fatalf("new client router: %v", err)
+			}
+			_, err = router.Acquire(context.Background(), msgq.AcquireSessionRequest{RoleID: 470001, SessionID: 99, Restore: true})
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("restore error = %v, want %v", err, test.wantErr)
+			}
+			if len(dialer.instances) != 0 {
+				t.Fatalf("restore dialed %#v", dialer.instances)
+			}
+			if !slices.Equal(store.operations, []string{"Find"}) {
+				t.Fatalf("store operations = %#v, want [Find]", store.operations)
+			}
+		})
 	}
 }
 
@@ -111,7 +205,7 @@ func TestLocalSessionClientDelegatesMailboxCalls(t *testing.T) {
 	if _, err := client.Rec(context.Background(), msgq.RecRequest{Header: header, Seq: 1}); err != nil {
 		t.Fatalf("record upMsg message: %v", err)
 	}
-	if _, err := client.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Payload: []byte("bon")}); err != nil {
+	if _, err := client.PubSession(context.Background(), header.SessionID, []byte("bon")); err != nil {
 		t.Fatalf("publish downMsg message: %v", err)
 	}
 	batch, err := client.FetchSome(context.Background(), msgq.FetchSomeRequest{Header: header, Max: 1})
@@ -133,7 +227,7 @@ func TestFixedSessionClientRouterAlwaysReturnsSharedLocalClient(t *testing.T) {
 		t.Fatalf("new fixed session client router: %v", err)
 	}
 	for range 2 {
-		got, err := router.Acquire(context.Background(), 470001)
+		got, err := router.Acquire(context.Background(), msgq.AcquireSessionRequest{RoleID: 470001, SessionID: 99})
 		if err != nil {
 			t.Fatalf("acquire fixed session client: %v", err)
 		}
@@ -146,6 +240,11 @@ func TestFixedSessionClientRouterAlwaysReturnsSharedLocalClient(t *testing.T) {
 	}
 	if client.closeCalls != 0 {
 		t.Fatalf("fixed router closed shared client %d times, want 0", client.closeCalls)
+	}
+	for _, request := range []msgq.AcquireSessionRequest{{SessionID: 99}, {RoleID: 470001}} {
+		if _, err := router.Acquire(context.Background(), request); !errors.Is(err, msgq.ErrInvalidSession) {
+			t.Fatalf("Acquire(%#v) error = %v, want invalid session", request, err)
+		}
 	}
 }
 
@@ -183,7 +282,7 @@ func TestGRPCSessionClientDelegatesMailboxCalls(t *testing.T) {
 	if _, err := client.Rec(context.Background(), msgq.RecRequest{Header: header, Seq: 1}); err != nil {
 		t.Fatalf("record upMsg message: %v", err)
 	}
-	if _, err := client.Pub(context.Background(), msgq.PubRequest{Header: msgq.SessionHeader{RoleID: header.RoleID}, Payload: []byte("bon")}); err != nil {
+	if _, err := client.PubSession(context.Background(), header.SessionID, []byte("bon")); err != nil {
 		t.Fatalf("publish downMsg message: %v", err)
 	}
 	batch, err := client.FetchSome(context.Background(), msgq.FetchSomeRequest{Header: header, Max: 1})
@@ -200,11 +299,16 @@ func TestGRPCSessionClientDelegatesMailboxCalls(t *testing.T) {
 
 func sessionClientDirectory(t *testing.T) *discovery.ServiceDirectory {
 	t.Helper()
-	directory := discovery.NewServiceDirectory()
-	err := directory.Replace([]discovery.Instance{
+	return newSessionClientDirectory(t, []discovery.Instance{
 		{ID: "msgq-a", Services: []string{"msgq"}, Endpoint: "127.0.0.1:9101", Status: discovery.StatusRunning},
 		{ID: "msgq-b", Services: []string{"msgq"}, Endpoint: "127.0.0.1:9102", Status: discovery.StatusRunning},
 	})
+}
+
+func newSessionClientDirectory(t *testing.T, instances []discovery.Instance) *discovery.ServiceDirectory {
+	t.Helper()
+	directory := discovery.NewServiceDirectory()
+	err := directory.Replace(instances)
 	if err != nil {
 		t.Fatalf("replace directory: %v", err)
 	}
@@ -233,7 +337,7 @@ func (*sessionClientFake) Rec(context.Context, msgq.RecRequest) (msgq.RecResult,
 	return msgq.RecResult{}, nil
 }
 
-func (*sessionClientFake) Pub(context.Context, msgq.PubRequest) (msgq.PubResult, error) {
+func (*sessionClientFake) PubSession(context.Context, int64, []byte) (msgq.PubResult, error) {
 	return msgq.PubResult{}, nil
 }
 

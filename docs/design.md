@@ -162,7 +162,7 @@ Redis / Mongo / etcd / gRPC / Actor
 - `txgameslg/gen` 生成 `txgameslg/server/gen` 和 `txclientslg/src/gen`；`txclientslg` 只验证有状态模板。
 - 两个客户端独立长期维护，不共享源码目录、符号链接或生成清单。公共 BON、Frame、Session、Seq/Ack 语义变化时分别回归。
 
-多进程真实集群是项目层验收，不改变依赖方向：`txgame + txclient` 与 `txgameslg + txclientslg` 是并行能力，允许在本地顺序执行并复用入口端口；Redis 通过不同 logical database 隔离，MongoDB 使用不同 database，etcd 使用不同 prefix。每套验收同时运行两个 MsgQ，使用新角色验证初始分流、单实例故障承接和重启后恢复分流；Redis owner binding 中的 SessionID、ConnectionID 与实例身份进入验收 artifact。Topic 仍只属于单个 owner MsgQ，跨实例覆盖由业务分别发起本地广播。`tx` 不为隔离统一改写业务 key，也不保存项目服务名。
+多进程真实集群是项目层验收，不改变依赖方向：`txgame + txclient` 与 `txgameslg + txclientslg` 是并行能力，允许在本地顺序执行并复用入口端口；Redis 通过不同 logical database 隔离，MongoDB 使用不同 database，etcd 使用不同 prefix。每套验收同时运行两个 MsgQ，使用新会话验证初始分流、单实例故障承接和重启后恢复分流；证据按 `<prefix>:session:v2:{SessionID}` 读取完整 binding，并核对其中的 RoleID、SessionID、ConnectionID 与实例身份。Topic 仍只属于单个 owner MsgQ，跨实例覆盖由业务以 SessionID 为锚点分别发起本地广播。`tx` 不为隔离统一改写业务 key，也不保存项目服务名。
 
 两个模板的业务模块按稳定能力、领域实现和事务编排分层：`modules/*_service.go` 使用包级函数提供 Handler 与 Procedure
 共用的业务能力，`modules/internal/<domain>` 保存具体领域实现，`services/<name>/internal/procedure/P*.go` 负责编排
@@ -778,7 +778,7 @@ Store 不保存第二份业务数据，也不保存每次操作的 value、时�
 | 容量上下文 | 容量收敛 | `storage.CollapsibleChangeStore`、`CollapseChanges()` | 单根变更位置超预算后，清理细粒度状态并只 Replace 实际变脏的顶层分支 |
 | 输出上下文 | 变更文档构建 | `Document(kind)`、`change.BuildDocument`、Redis/Mongo document builder | 转换字段名、解析值并形成目标边界需要的变更文档；不能简称为“投影” |
 | 输出上下文 | 编码载荷 | BON/JSON/BSON `[]byte` | 由视图、变更文档或其他独立对象编码而成；发布后按只读载荷使用 |
-| 发布上下文 | 只读发布 | `msgq.Pub` 等异步所有权交接 | 发布成功后调用方和消费方都不得修改、追加或复用载荷内存 |
+| 发布上下文 | 只读发布 | `msgq.PubSession`、`msgq.BroadcastTopic` 等异步所有权交接 | 发布成功后调用方和消费方都不得修改、追加或复用载荷内存 |
 | 持久化上下文 | 保存成功清理 | `storage.Save`、`Store.ClearChanges()` | 存储成功后递归清理 Store 状态，不修改 GD 数据 |
 | 持久化上下文 | 保存失败保留 | `storage.Save` 的错误路径 | I/O 或边界构建失败时保留全部状态，供后续重试 |
 | Fusion 上下文 | 纯净回源缓存 | Mongo 回源后写入 Redis、尚未承载业务变更的文档 | 可以使用有限 TTL；不是待回写事实 |
@@ -2251,18 +2251,38 @@ Receiver，再按稳定消息元数据分发，不能让每个服务重复注册
 
 `modules/msgq` 是客户端会话邮箱，不是所有服务消息的中心总线。它负责：
 
-- `roleID -> session/connection/msgq instance` 绑定。
+- `SessionID -> (RoleID, SessionID, ConnectionID, InstanceID)` 精确 binding。
+- `RoleID -> 唯一主 SessionID` 投影。
 - 上行 Seq 连续性。
 - 下行队列和 Ack。
 - 断线重连时重发未确认消息。
 - 本地 Topic 广播。
 
-Redis 只保存带 TTL 的 owner 绑定；下行正文保存在 msgq 实例内存。实例崩溃允许丢失未确认下行，客户端重连后由业务状态重同步恢复。
+Redis 精确 binding key 为 `<prefix>:session:v2:{SessionID}`，保存完整四元组；主会话投影 key 为
+`<prefix>:primary:v1:{RoleID}`，保存当前主 SessionID。二者分别按 SessionID 和 RoleID 选择分片，只保证各自单 key
+条件操作，不承诺跨 key 事务。下行正文只保存在 MsgQ 实例内存；实例崩溃允许丢失未确认下行，客户端重连后由业务状态
+重同步恢复。
 
 `SessionID` 标识一次逻辑登录会话，`ConnectionID` 标识该会话下的一次物理 TCP/WebSocket 连接。弱网恢复必须命中
-同一 `SessionID`，同时分配新的 `ConnectionID` 以拒绝旧连接迟到的 Fetch、Confirm 和 Close；新 `SessionID` 或
-`Restore=false` 表示干净登录，不继承旧下行队列。默认恢复窗口为 `180s`，采用既定的生产实践值；超过窗口、
-积压条数或积压字节上限时移除整个 Session，而不是无限保留未确认消息。
+同一 `SessionID`，同时分配新的 `ConnectionID` 以拒绝旧连接迟到的 Fetch、Confirm、Topic 管理和 Close。`Restore=false`
+的新建会话只在 running MsgQ 间轮转选择 owner，并用 `Create NX` 创建精确 binding；现存 SessionID 会明确冲突。
+`Restore=true` 的恢复会话只按
+SessionID 回到原 running owner，用完整旧 binding 条件 `Rebind` 到新 ConnectionID；失败时不迁移。同 SessionID 恢复
+保留 Seq/Ack 与未确认队列，新 SessionID 的干净登录不继承旧消息。
+
+只有正常可写会话是角色主会话。Agent 从可信 `SessionIdentity.AccessMode` 设置初始化属性，仅
+`AccessModeNormal` 使用 `Primary=true`；Borrow 只读会话使用独立 SessionID 和队列，但不写主会话投影，也不接收
+`PubRole`。同一 RoleID 的多个邮箱可以并存；新的正常会话替换主投影，但不继承或清空其他 SessionID 的队列。主会话
+活动条件续期 RoleID 投影；Close、超时、积压溢出只在投影仍指向自己时删除，不能影响同角色的其他 Session。
+
+`SessionRouter.ResolveSession/ResolveRole` 只读解析，不刷新 TTL。只有当前 ConnectionID 通过 owner 侧校验的连接活动
+才续期精确 binding 和对应的主会话投影；业务发布也不续期。默认离线保留窗口为 `180s`，采用既定的生产实践值；超过
+窗口、积压条数或积压字节上限时移除整个 Session，而不是无限保留未确认消息。
+
+公开投递只保留显式语义：`Sender.PubSession(SessionID, payload)` 精确投递到普通或 Borrow 会话，
+`Sender.PubRole(RoleID, payload)` 只投递到角色当前正常主会话；二者最终都调用同一个精确 `PubSession` RPC。Topic 仍是
+单个 MsgQ 的本地 SessionID 索引：`JoinTopics` 和 `BroadcastTopic` 以 SessionID 作为当前连接或实例路由锚点，跨实例覆盖
+必须由业务分别选择各实例上的 Session 发起。
 
 gRPC client 只在同时得到合法响应时报告成功。空响应、非正数的下行 Seq、`Rec` 接收序号落后于请求、Ack 未原样
 确认、空批次和批量消息为空、非正数或乱序时统一返回 `ErrInvalidMailboxResponse`；它们不能退化为零值成功。该错误
@@ -2290,15 +2310,15 @@ Bee 或 Ant Context，因此可以使用本次 Server 已声明的 Actor、服�
 `IdentityResolver` 只返回 `protocol.SessionPrincipal`，其中包含 `AccountID`、`BorrowAccountID`、`ServerID`、`RoleID`、
 `SessionID`、`AccessMode` 和 `CanCreateRole`。Agent 负责生成正 `ConnectionID`，校验并构造 `protocol.SessionIdentity`；
 项目 resolver 不能从 ticket 或客户端数据指定 `ConnectionID`。普通模式不携带 `BorrowAccountID`；只读借用模式必须携带正
-`BorrowAccountID`，且不能携带创建角色许可。
+`BorrowAccountID`，且不能携带创建角色许可。Agent 仅对 `AccessModeNormal` 设置 MsgQ `Primary=true`。
 
 通用 Actor Dispatcher 在调用 Messenger 前以 `DispatchRequest` 的可信 `SessionIdentity` 和当前上行序号覆盖 Delivery 的
 `Identity` 与 `UpSeq`。项目 Actor resolver 仍只负责目标、消息类型、命令号、路由键、载荷和是否等待结果，不能伪造身份或序号。
 Actor protobuf 在跨进程投递时保留完整身份和 `UpSeq`；内部 Actor 调用可以同时省略二者，只出现其中一个的 Delivery 无效。
 
 `Dispatcher` 返回 `DispatchResult`。`Payload == nil` 表示本次命令没有直接下行；非 nil payload 的所有权在返回后
-转移给 Agent，调用方不能再修改。Agent 使用当前连接的完整 `SessionHeader` 把响应发布到 MsgQ，旧连接产生的迟到响应
-不能进入已经替换的新会话。通用 Actor Dispatcher 对无响应命令使用 `Tell`，对声明响应类型的命令使用带 deadline 的
+转移给 Agent，调用方不能再修改。当前 Agent 使用可信身份中的 SessionID 调用 `PubSession`，把 Game/Actor 同步返回的
+响应投递到发起会话；新 SessionID 不会继承旧会话的下行。通用 Actor Dispatcher 对无响应命令使用 `Tell`，对声明响应类型的命令使用带 deadline 的
 `Call`；Actor 返回的 BON bytes 不在 Agent 内反序列化。
 
 Agent 核心不依赖项目生成协议，因此不会自行构造业务错误包，也不负责项目 HTTP 路由、JSON/BON 绑定、默认 timeout、
@@ -2585,7 +2605,7 @@ Ingress 等待已受理工作
 Go 没有只读 slice。所谓“零拷贝广播”依赖显式所有权转移：
 
 ```go
-result, err := mailbox.Pub(ctx, requestWithPayload)
+result, err := mailbox.PubSession(ctx, sessionID, payload)
 ```
 
 成功后：
@@ -2649,7 +2669,7 @@ Actor Runtime 创建 ActorSystem 时通过 ProtoActor 官方 LoggerFactory 注�
 - `modules/agent` 拥有物理连接和逻辑会话生命周期，因此只记录连接建立、会话就绪、正常关闭和异常关闭。它不认识生成
   命令，也不能逐条记录 `UpMsg/DownMsg`，否则项目层再次记录业务结果时会产生重复日志。身份解析成功后的生命周期日志
   同时记录 `roleID`、逻辑 `sessionID` 和物理 `connectionID`；握手前的连接建立日志只能记录当时已经生成的 `connectionID`。
-- `modules/msgq` 拥有 Seq、Ack 与下行积压状态，因此只在 Debug 记录成功提交后的 `Init/Rec/Pub/Confirm` 状态，不在锁内
+- `modules/msgq` 拥有 Seq、Ack 与下行积压状态，因此只在 Debug 记录成功提交后的 `Init/Rec/PubSession/Confirm` 状态，不在锁内
   执行日志输出，不记录载荷内容，也不为无消息的 `Fetch` 长轮询制造日志。恢复日志同时记录前后 `connectionID`；队列
   溢出淘汰和超时清理记录完整的 `roleID/sessionID/connectionID`；旧物理连接被栅栏拒绝时记录请求方与当前
   `sessionID/connectionID`，用于关联同一逻辑会话的多条物理链路。

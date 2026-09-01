@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,7 +30,7 @@ func TestMailboxLogsStateTransitionsAtDebug(t *testing.T) {
 	if _, err := server.Rec(context.Background(), RecRequest{Header: header, Seq: 1}); err != nil {
 		t.Fatalf("rec: %v", err)
 	}
-	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Payload: []byte("downMsg")}); err != nil {
+	if _, err := server.PubSession(context.Background(), header.SessionID, []byte("downMsg")); err != nil {
 		t.Fatalf("pub: %v", err)
 	}
 	downMsg, err := server.Fetch(context.Background(), FetchRequest{Header: header})
@@ -187,10 +188,10 @@ func TestMailboxOverflowLogCorrelatesSessionAndConnection(t *testing.T) {
 	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Payload: []byte("first")}); err != nil {
+	if _, err := server.PubSession(context.Background(), header.SessionID, []byte("first")); err != nil {
 		t.Fatalf("publish first: %v", err)
 	}
-	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Payload: []byte("overflow")}); !errors.Is(err, ErrDownMsgOverflow) {
+	if _, err := server.PubSession(context.Background(), header.SessionID, []byte("overflow")); !errors.Is(err, ErrDownMsgOverflow) {
 		t.Fatalf("publish overflow error = %v, want %v", err, ErrDownMsgOverflow)
 	}
 	record := findJSONLog(t, decodeJSONLogs(t, output.String()), "msgq session evicted")
@@ -205,7 +206,7 @@ func TestBroadcastTopicSharesImmutablePayload(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	first := SessionHeader{RoleID: 1, SessionID: 1, ConnectionID: 1}
-	second := SessionHeader{RoleID: 2, SessionID: 1, ConnectionID: 2}
+	second := SessionHeader{RoleID: 2, SessionID: 2, ConnectionID: 2}
 	for _, header := range []SessionHeader{first, second} {
 		if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
 			t.Fatalf("init %#v: %v", header, err)
@@ -218,8 +219,8 @@ func TestBroadcastTopicSharesImmutablePayload(t *testing.T) {
 	if _, err := server.BroadcastTopic(context.Background(), BroadcastTopicRequest{Topic: "guild:1", Payload: payload}); err != nil {
 		t.Fatalf("broadcast topic: %v", err)
 	}
-	firstSession, _ := server.lookup(first.RoleID)
-	secondSession, _ := server.lookup(second.RoleID)
+	firstSession, _ := server.lookup(first.SessionID)
+	secondSession, _ := server.lookup(second.SessionID)
 	firstSession.mu.Lock()
 	defer firstSession.mu.Unlock()
 	secondSession.mu.Lock()
@@ -277,14 +278,14 @@ func TestSlowSessionWithoutAcknowledgementHitsByteLimit(t *testing.T) {
 		t.Fatalf("init: %v", err)
 	}
 	for _, message := range [][]byte{[]byte("one!"), []byte("two!")} {
-		if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Payload: message}); err != nil {
+		if _, err := server.PubSession(context.Background(), header.SessionID, message); err != nil {
 			t.Fatalf("publish %q: %v", message, err)
 		}
 		if _, err := server.Fetch(context.Background(), FetchRequest{Header: header}); err != nil {
 			t.Fatalf("fetch %q: %v", message, err)
 		}
 	}
-	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Payload: []byte("more")}); !errors.Is(err, ErrDownMsgOverflow) {
+	if _, err := server.PubSession(context.Background(), header.SessionID, []byte("more")); !errors.Is(err, ErrDownMsgOverflow) {
 		t.Fatalf("publish after unacknowledged backlog error = %v, want %v", err, ErrDownMsgOverflow)
 	}
 	if server.SessionCount() != 0 {
@@ -306,7 +307,7 @@ func TestAcknowledgementReleasesDownMsgByteBudget(t *testing.T) {
 	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Payload: []byte("full")}); err != nil {
+	if _, err := server.PubSession(context.Background(), header.SessionID, []byte("full")); err != nil {
 		t.Fatalf("publish first: %v", err)
 	}
 	message, err := server.Fetch(context.Background(), FetchRequest{Header: header})
@@ -316,7 +317,7 @@ func TestAcknowledgementReleasesDownMsgByteBudget(t *testing.T) {
 	if err := server.Confirm(context.Background(), ConfirmRequest{Header: header, Ack: message.Seq}); err != nil {
 		t.Fatalf("confirm first: %v", err)
 	}
-	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Payload: []byte("next")}); err != nil {
+	if _, err := server.PubSession(context.Background(), header.SessionID, []byte("next")); err != nil {
 		t.Fatalf("publish after acknowledgement: %v", err)
 	}
 }
@@ -333,11 +334,11 @@ func TestInitWithoutRestoreAlwaysCreatesFreshSession(t *testing.T) {
 	if _, err := server.Rec(context.Background(), RecRequest{Header: first, Seq: 1}); err != nil {
 		t.Fatalf("rec first: %v", err)
 	}
-	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: first.RoleID}, Payload: []byte("pending")}); err != nil {
+	if _, err := server.PubSession(context.Background(), first.SessionID, []byte("pending")); err != nil {
 		t.Fatalf("publish first: %v", err)
 	}
 
-	second := SessionHeader{RoleID: 1, SessionID: 7, ConnectionID: 2}
+	second := SessionHeader{RoleID: 1, SessionID: 8, ConnectionID: 2}
 	result, err := server.Init(context.Background(), InitRequest{Header: second})
 	if err != nil {
 		t.Fatalf("init fresh: %v", err)
@@ -345,7 +346,7 @@ func TestInitWithoutRestoreAlwaysCreatesFreshSession(t *testing.T) {
 	if result.UpMsgSeq != 0 {
 		t.Fatalf("fresh upMsg seq = %d, want 0", result.UpMsgSeq)
 	}
-	session, found := server.lookup(second.RoleID)
+	session, found := server.lookup(second.SessionID)
 	if !found {
 		t.Fatal("fresh session is missing")
 	}
@@ -365,7 +366,7 @@ func TestInitRestoreRequiresExistingMatchingSession(t *testing.T) {
 	if _, err := server.Init(context.Background(), InitRequest{Header: missing, Restore: true}); !errors.Is(err, ErrSessionOffline) {
 		t.Fatalf("restore missing error = %v, want %v", err, ErrSessionOffline)
 	}
-	if _, found := server.lookup(missing.RoleID); found {
+	if _, found := server.lookup(missing.SessionID); found {
 		t.Fatal("restore missing installed an empty session")
 	}
 
@@ -374,8 +375,8 @@ func TestInitRestoreRequiresExistingMatchingSession(t *testing.T) {
 		t.Fatalf("init current: %v", err)
 	}
 	mismatch := SessionHeader{RoleID: 1, SessionID: 8, ConnectionID: 3}
-	if _, err := server.Init(context.Background(), InitRequest{Header: mismatch, Restore: true}); !errors.Is(err, ErrSessionChanged) {
-		t.Fatalf("restore mismatched error = %v, want %v", err, ErrSessionChanged)
+	if _, err := server.Init(context.Background(), InitRequest{Header: mismatch, Restore: true}); !errors.Is(err, ErrSessionOffline) {
+		t.Fatalf("restore mismatched error = %v, want %v", err, ErrSessionOffline)
 	}
 }
 
@@ -393,13 +394,13 @@ func TestSlowSessionExpiresDespiteClientActivity(t *testing.T) {
 	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	if _, err := server.Pub(context.Background(), PubRequest{Header: SessionHeader{RoleID: header.RoleID}, Payload: []byte("pending")}); err != nil {
+	if _, err := server.PubSession(context.Background(), header.SessionID, []byte("pending")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	if _, err := server.Fetch(context.Background(), FetchRequest{Header: header}); err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
-	session, found := server.lookup(header.RoleID)
+	session, found := server.lookup(header.SessionID)
 	if !found {
 		t.Fatal("session is missing")
 	}
@@ -416,10 +417,598 @@ func TestSlowSessionExpiresDespiteClientActivity(t *testing.T) {
 	}
 }
 
+func TestMailboxTouchFirstSerializesRefreshWithRestore(t *testing.T) {
+	store := newStagedSessionStore()
+	store.refreshEntered = make(chan struct{})
+	store.continueRefresh = make(chan struct{})
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: store, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	oldHeader := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	newHeader := SessionHeader{RoleID: oldHeader.RoleID, SessionID: oldHeader.SessionID, ConnectionID: 8}
+	if _, err := server.Init(context.Background(), InitRequest{Header: oldHeader}); err != nil {
+		t.Fatalf("init old connection: %v", err)
+	}
+	touchDone := make(chan error, 1)
+	touchStarted := make(chan struct{})
+	go func() {
+		close(touchStarted)
+		touchDone <- server.Touch(context.Background(), TouchRequest{Header: oldHeader})
+	}()
+	waitMailboxSignal(t, touchStarted)
+	waitMailboxSignal(t, store.refreshEntered)
+
+	restoreDone := make(chan error, 1)
+	restoreAtSessionLock := make(chan struct{})
+	server.beforeRestoreSessionLock = func() {
+		close(restoreAtSessionLock)
+	}
+	go func() {
+		_, err := server.Init(context.Background(), InitRequest{Header: newHeader, Restore: true})
+		restoreDone <- err
+	}()
+	waitMailboxSignal(t, restoreAtSessionLock)
+	close(store.continueRefresh)
+
+	if err := waitMailboxResult(t, touchDone); err != nil {
+		t.Fatalf("touch old connection: %v", err)
+	}
+	if err := waitMailboxResult(t, restoreDone); err != nil {
+		t.Fatalf("restore new connection: %v", err)
+	}
+	if server.SessionCount() != 1 {
+		t.Fatalf("session count = %d, want restored session", server.SessionCount())
+	}
+	if err := server.Touch(context.Background(), TouchRequest{Header: newHeader}); err != nil {
+		t.Fatalf("touch restored connection: %v", err)
+	}
+}
+
+func TestMailboxRestoreFirstRejectsOldTouchWithoutRemovingNewConnection(t *testing.T) {
+	store := newStagedSessionStore()
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: store, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	oldHeader := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	newHeader := SessionHeader{RoleID: oldHeader.RoleID, SessionID: oldHeader.SessionID, ConnectionID: 8}
+	if _, err := server.Init(context.Background(), InitRequest{Header: oldHeader}); err != nil {
+		t.Fatalf("init old connection: %v", err)
+	}
+	restoreStarted := make(chan struct{})
+	continueRestore := make(chan struct{})
+	restoreDone := make(chan error, 1)
+	go func() {
+		close(restoreStarted)
+		<-continueRestore
+		_, err := server.Init(context.Background(), InitRequest{Header: newHeader, Restore: true})
+		restoreDone <- err
+	}()
+	waitMailboxSignal(t, restoreStarted)
+	close(continueRestore)
+	if err := waitMailboxResult(t, restoreDone); err != nil {
+		t.Fatalf("restore new connection: %v", err)
+	}
+	if err := server.Touch(context.Background(), TouchRequest{Header: oldHeader}); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("touch old connection error = %v, want %v", err, ErrSessionChanged)
+	}
+	if _, err := server.PubSession(context.Background(), newHeader.SessionID, []byte("new-connection")); err != nil {
+		t.Fatalf("publish new connection: %v", err)
+	}
+	if err := server.Touch(context.Background(), TouchRequest{Header: newHeader}); err != nil {
+		t.Fatalf("touch new connection: %v", err)
+	}
+	message, err := server.Fetch(context.Background(), FetchRequest{Header: newHeader})
+	if err != nil || string(message.Payload) != "new-connection" {
+		t.Fatalf("fetch new connection = %#v, %v", message, err)
+	}
+	if err := server.Confirm(context.Background(), ConfirmRequest{Header: newHeader, Ack: message.Seq}); err != nil {
+		t.Fatalf("confirm new connection: %v", err)
+	}
+}
+
+func TestMailboxFreshReservationMakesPubWaitForCreate(t *testing.T) {
+	store := newStagedSessionStore()
+	store.createEntered = make(chan struct{})
+	store.continueCreate = make(chan struct{})
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: store, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	header := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	initDone := make(chan error, 1)
+	go func() {
+		_, err := server.Init(context.Background(), InitRequest{Header: header})
+		initDone <- err
+	}()
+	waitMailboxSignal(t, store.createEntered)
+	session, found := server.lookup(header.SessionID)
+	if !found {
+		t.Fatal("fresh reservation is missing while Create is blocked")
+	}
+	if session.mu.TryLock() {
+		session.mu.Unlock()
+		t.Fatal("fresh reservation was published without holding session.mu")
+	}
+	pubStarted := make(chan struct{})
+	pubDone := make(chan error, 1)
+	go func() {
+		close(pubStarted)
+		_, err := server.PubSession(context.Background(), header.SessionID, []byte("during-init"))
+		pubDone <- err
+	}()
+	waitMailboxSignal(t, pubStarted)
+	close(store.continueCreate)
+	if err := waitMailboxResult(t, initDone); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if err := waitMailboxResult(t, pubDone); err != nil {
+		t.Fatalf("publish during init: %v", err)
+	}
+	message, err := server.Fetch(context.Background(), FetchRequest{Header: header})
+	if err != nil || string(message.Payload) != "during-init" {
+		t.Fatalf("fetch = %#v, %v", message, err)
+	}
+}
+
+func TestMailboxFreshRejectsLocalSessionWhenStoreBindingIsMissing(t *testing.T) {
+	store := newStagedSessionStore()
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: store, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	header := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := server.PubSession(context.Background(), header.SessionID, []byte("kept")); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if err := server.JoinTopics(context.Background(), TopicRequest{Header: header, Topics: []string{"guild:1"}}); err != nil {
+		t.Fatalf("join topic: %v", err)
+	}
+	original, _ := server.lookup(header.SessionID)
+	store.dropBinding()
+	conflict := SessionHeader{RoleID: 470002, SessionID: header.SessionID, ConnectionID: 8}
+	if _, err := server.Init(context.Background(), InitRequest{Header: conflict}); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("fresh conflict error = %v, want %v", err, ErrSessionChanged)
+	}
+	current, found := server.lookup(header.SessionID)
+	if !found || current != original {
+		t.Fatalf("local session = %#v, %t, want original %#v", current, found, original)
+	}
+	current.mu.Lock()
+	if !current.active || current.downMsgs.len() != 1 {
+		current.mu.Unlock()
+		t.Fatalf("original session state changed: active=%t pending=%d", current.active, current.downMsgs.len())
+	}
+	if _, found := current.topics["guild:1"]; !found {
+		current.mu.Unlock()
+		t.Fatal("original topic was removed")
+	}
+	current.mu.Unlock()
+	if _, err := server.PubSession(context.Background(), header.SessionID, []byte("still-addressable")); err != nil {
+		t.Fatalf("publish original after conflict: %v", err)
+	}
+	if store.createCalls != 1 {
+		t.Fatalf("Create calls = %d, want no Redis Create for local conflict", store.createCalls)
+	}
+}
+
+func TestMailboxPrimaryBindFailureRollsBackExactBinding(t *testing.T) {
+	exactErr := errors.New("exact rollback failed")
+	primaryErr := errors.New("primary rollback failed")
+	store := &primaryFailureSessionStore{
+		err:          errors.New("primary unavailable"),
+		exactErr:     exactErr,
+		primaryErr:   primaryErr,
+		exactRemoved: false,
+	}
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: store, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	header := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	if _, err := server.Init(context.Background(), InitRequest{Header: header, Primary: true}); !errors.Is(err, store.err) {
+		t.Fatalf("init error = %v, want %v", err, store.err)
+	} else if !errors.Is(err, exactErr) || !errors.Is(err, primaryErr) || !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("init rollback error = %v, want exact/primary errors and %v", err, ErrSessionChanged)
+	}
+	want := SessionBinding{RoleID: header.RoleID, SessionID: header.SessionID, ConnectionID: header.ConnectionID, InstanceID: "msgq-1"}
+	if store.created != want || store.unbound != want || store.primaryUnboundRoleID != header.RoleID || store.primaryUnboundSessionID != header.SessionID {
+		t.Fatalf("rollback = created %#v, unbound %#v, primary %d/%d, want %#v", store.created, store.unbound, store.primaryUnboundRoleID, store.primaryUnboundSessionID, want)
+	}
+	if server.SessionCount() != 0 {
+		t.Fatalf("session count = %d, want 0", server.SessionCount())
+	}
+}
+
+func TestMailboxPrimaryBindFailureCompensatesAfterRequestCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	store := &cancelingPrimarySessionStore{stagedSessionStore: newStagedSessionStore(), cancel: cancel}
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: store, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	header := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	if _, err := server.Init(ctx, InitRequest{Header: header, Primary: true}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("init error = %v, want %v", err, context.Canceled)
+	}
+	if binding, found, err := store.Find(context.Background(), header.SessionID); err != nil || found {
+		t.Fatalf("exact binding after compensation = %#v, %t, %v", binding, found, err)
+	}
+	if sessionID, found, err := store.FindPrimary(context.Background(), header.RoleID); err != nil || found {
+		t.Fatalf("primary after compensation = %d, %t, %v", sessionID, found, err)
+	}
+	if server.SessionCount() != 0 {
+		t.Fatalf("session count = %d, want 0", server.SessionCount())
+	}
+}
+
+func TestMailboxPrimaryRestoreMissingExactRemovesDanglingState(t *testing.T) {
+	store := newStagedSessionStore()
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: store, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	oldHeader := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	if _, err := server.Init(context.Background(), InitRequest{Header: oldHeader, Primary: true}); err != nil {
+		t.Fatalf("init primary: %v", err)
+	}
+	store.dropBinding()
+	newHeader := SessionHeader{RoleID: oldHeader.RoleID, SessionID: oldHeader.SessionID, ConnectionID: 8}
+	if _, err := server.Init(context.Background(), InitRequest{Header: newHeader, Restore: true, Primary: true}); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("restore error = %v, want %v", err, ErrSessionChanged)
+	}
+	if sessionID, found, err := store.FindPrimary(context.Background(), oldHeader.RoleID); err != nil || found {
+		t.Fatalf("dangling primary = %d, %t, %v", sessionID, found, err)
+	}
+	if server.SessionCount() != 0 {
+		t.Fatalf("session count = %d, want 0", server.SessionCount())
+	}
+	if _, err := server.PubSession(context.Background(), oldHeader.SessionID, []byte("stale")); !errors.Is(err, ErrSessionOffline) {
+		t.Fatalf("publish removed session error = %v, want %v", err, ErrSessionOffline)
+	}
+}
+
+func TestMailboxPrimaryRestorePreservesReplacementPrimary(t *testing.T) {
+	store := newStagedSessionStore()
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: store, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	oldHeader := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	if _, err := server.Init(context.Background(), InitRequest{Header: oldHeader, Primary: true}); err != nil {
+		t.Fatalf("init primary: %v", err)
+	}
+	const replacementSessionID = 100
+	if err := store.BindPrimary(context.Background(), oldHeader.RoleID, replacementSessionID); err != nil {
+		t.Fatalf("replace primary: %v", err)
+	}
+	newHeader := SessionHeader{RoleID: oldHeader.RoleID, SessionID: oldHeader.SessionID, ConnectionID: 8}
+	if _, err := server.Init(context.Background(), InitRequest{Header: newHeader, Restore: true, Primary: true}); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("restore error = %v, want %v", err, ErrSessionChanged)
+	}
+	if sessionID, found, err := store.FindPrimary(context.Background(), oldHeader.RoleID); err != nil || !found || sessionID != replacementSessionID {
+		t.Fatalf("replacement primary = %d, %t, %v, want %d", sessionID, found, err, replacementSessionID)
+	}
+	if binding, found, err := store.Find(context.Background(), oldHeader.SessionID); err != nil || found {
+		t.Fatalf("old exact binding after failed restore = %#v, %t, %v", binding, found, err)
+	}
+	if server.SessionCount() != 0 {
+		t.Fatalf("session count = %d, want 0", server.SessionCount())
+	}
+}
+
+func TestMailboxPrimaryRestoreDoesNotDeleteChangedExactBinding(t *testing.T) {
+	store := newStagedSessionStore()
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: store, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	oldHeader := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	if _, err := server.Init(context.Background(), InitRequest{Header: oldHeader, Primary: true}); err != nil {
+		t.Fatalf("init primary: %v", err)
+	}
+	changed := SessionBinding{RoleID: 470002, SessionID: oldHeader.SessionID, ConnectionID: 17, InstanceID: "msgq-2"}
+	store.setBinding(changed)
+	newHeader := SessionHeader{RoleID: oldHeader.RoleID, SessionID: oldHeader.SessionID, ConnectionID: 8}
+	if _, err := server.Init(context.Background(), InitRequest{Header: newHeader, Restore: true, Primary: true}); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("restore error = %v, want %v", err, ErrSessionChanged)
+	}
+	if binding, found, err := store.Find(context.Background(), oldHeader.SessionID); err != nil || !found || binding != changed {
+		t.Fatalf("changed exact binding = %#v, %t, %v, want %#v", binding, found, err, changed)
+	}
+	if sessionID, found, err := store.FindPrimary(context.Background(), oldHeader.RoleID); err != nil || found {
+		t.Fatalf("stale primary = %d, %t, %v", sessionID, found, err)
+	}
+	if server.SessionCount() != 0 {
+		t.Fatalf("session count = %d, want 0", server.SessionCount())
+	}
+}
+
+func TestMailboxPrimaryRestoreRefreshErrorCompensatesReboundState(t *testing.T) {
+	refreshErr := errors.New("primary refresh failed")
+	store := &refreshPrimaryErrorSessionStore{stagedSessionStore: newStagedSessionStore(), err: refreshErr}
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: store, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	oldHeader := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	if _, err := server.Init(context.Background(), InitRequest{Header: oldHeader, Primary: true}); err != nil {
+		t.Fatalf("init primary: %v", err)
+	}
+	newHeader := SessionHeader{RoleID: oldHeader.RoleID, SessionID: oldHeader.SessionID, ConnectionID: 8}
+	if _, err := server.Init(context.Background(), InitRequest{Header: newHeader, Restore: true, Primary: true}); !errors.Is(err, refreshErr) {
+		t.Fatalf("restore error = %v, want %v", err, refreshErr)
+	}
+	if binding, found, err := store.Find(context.Background(), oldHeader.SessionID); err != nil || found {
+		t.Fatalf("exact binding after compensation = %#v, %t, %v", binding, found, err)
+	}
+	if sessionID, found, err := store.FindPrimary(context.Background(), oldHeader.RoleID); err != nil || found {
+		t.Fatalf("primary after compensation = %d, %t, %v", sessionID, found, err)
+	}
+	if server.SessionCount() != 0 {
+		t.Fatalf("session count = %d, want 0", server.SessionCount())
+	}
+}
+
+func TestMailboxTouchPrimaryUnbindErrorKeepsSessionChangedIdentity(t *testing.T) {
+	storeErr := errors.New("exact unbind failed")
+	store := &touchPrimaryUnbindFailureStore{stagedSessionStore: newStagedSessionStore(), err: storeErr}
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: store, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	header := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	if _, err := server.Init(context.Background(), InitRequest{Header: header, Primary: true}); err != nil {
+		t.Fatalf("init primary: %v", err)
+	}
+	if err := server.Touch(context.Background(), TouchRequest{Header: header}); !errors.Is(err, ErrSessionChanged) || !errors.Is(err, storeErr) {
+		t.Fatalf("touch error = %v, want %v and %v", err, ErrSessionChanged, storeErr)
+	}
+}
+
+type primaryFailureSessionStore struct {
+	testSessionStore
+	err                     error
+	exactErr                error
+	primaryErr              error
+	exactRemoved            bool
+	created                 SessionBinding
+	unbound                 SessionBinding
+	primaryUnboundRoleID    int64
+	primaryUnboundSessionID int64
+}
+
+func (s *primaryFailureSessionStore) Create(_ context.Context, binding SessionBinding) (bool, error) {
+	s.created = binding
+	return true, nil
+}
+
+func (s *primaryFailureSessionStore) BindPrimary(context.Context, int64, int64) error {
+	return s.err
+}
+
+func (s *primaryFailureSessionStore) Unbind(_ context.Context, binding SessionBinding) (bool, error) {
+	s.unbound = binding
+	return s.exactRemoved, s.exactErr
+}
+
+func (s *primaryFailureSessionStore) UnbindPrimary(_ context.Context, roleID, sessionID int64) (bool, error) {
+	s.primaryUnboundRoleID = roleID
+	s.primaryUnboundSessionID = sessionID
+	return false, s.primaryErr
+}
+
+type cancelingPrimarySessionStore struct {
+	*stagedSessionStore
+	cancel context.CancelFunc
+}
+
+func (s *cancelingPrimarySessionStore) BindPrimary(ctx context.Context, roleID, sessionID int64) error {
+	if err := s.stagedSessionStore.BindPrimary(context.Background(), roleID, sessionID); err != nil {
+		return err
+	}
+	s.cancel()
+	return ctx.Err()
+}
+
+func (s *cancelingPrimarySessionStore) Unbind(ctx context.Context, binding SessionBinding) (bool, error) {
+	if err := validCompensationContext(ctx); err != nil {
+		return false, err
+	}
+	return s.stagedSessionStore.Unbind(ctx, binding)
+}
+
+func (s *cancelingPrimarySessionStore) UnbindPrimary(ctx context.Context, roleID, sessionID int64) (bool, error) {
+	if err := validCompensationContext(ctx); err != nil {
+		return false, err
+	}
+	return s.stagedSessionStore.UnbindPrimary(ctx, roleID, sessionID)
+}
+
+func validCompensationContext(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, found := ctx.Deadline(); !found {
+		return errors.New("compensation context has no deadline")
+	}
+	return nil
+}
+
+type refreshPrimaryErrorSessionStore struct {
+	*stagedSessionStore
+	err error
+}
+
+func (s *refreshPrimaryErrorSessionStore) RefreshPrimary(context.Context, int64, int64) (bool, error) {
+	return false, s.err
+}
+
+type stagedSessionStore struct {
+	mu              sync.Mutex
+	binding         SessionBinding
+	found           bool
+	primary         map[int64]int64
+	createCalls     int
+	createEntered   chan struct{}
+	continueCreate  chan struct{}
+	refreshEntered  chan struct{}
+	continueRefresh chan struct{}
+	createOnce      sync.Once
+	refreshOnce     sync.Once
+}
+
+func newStagedSessionStore() *stagedSessionStore {
+	return &stagedSessionStore{primary: make(map[int64]int64)}
+}
+
+func (s *stagedSessionStore) Create(_ context.Context, binding SessionBinding) (bool, error) {
+	s.mu.Lock()
+	s.createCalls++
+	s.mu.Unlock()
+	if s.createEntered != nil {
+		s.createOnce.Do(func() { close(s.createEntered) })
+		<-s.continueCreate
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.found {
+		return false, nil
+	}
+	s.binding = binding
+	s.found = true
+	return true, nil
+}
+
+func (s *stagedSessionStore) Rebind(_ context.Context, expected, replacement SessionBinding) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.found || s.binding != expected {
+		return false, nil
+	}
+	s.binding = replacement
+	return true, nil
+}
+
+func (s *stagedSessionStore) Find(context.Context, int64) (SessionBinding, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.binding, s.found, nil
+}
+
+func (s *stagedSessionStore) Refresh(_ context.Context, binding SessionBinding) (bool, error) {
+	if s.refreshEntered != nil {
+		s.refreshOnce.Do(func() {
+			close(s.refreshEntered)
+			<-s.continueRefresh
+		})
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.found && s.binding == binding, nil
+}
+
+func (s *stagedSessionStore) Unbind(_ context.Context, binding SessionBinding) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.found || s.binding != binding {
+		return false, nil
+	}
+	s.found = false
+	return true, nil
+}
+
+func (s *stagedSessionStore) BindPrimary(_ context.Context, roleID, sessionID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.primary[roleID] = sessionID
+	return nil
+}
+
+func (s *stagedSessionStore) FindPrimary(_ context.Context, roleID int64) (int64, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sessionID, found := s.primary[roleID]
+	return sessionID, found, nil
+}
+
+func (s *stagedSessionStore) RefreshPrimary(_ context.Context, roleID, sessionID int64) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, found := s.primary[roleID]
+	return found && current == sessionID, nil
+}
+
+func (s *stagedSessionStore) UnbindPrimary(_ context.Context, roleID, sessionID int64) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, found := s.primary[roleID]
+	if !found || current != sessionID {
+		return false, nil
+	}
+	delete(s.primary, roleID)
+	return true, nil
+}
+
+func (s *stagedSessionStore) dropBinding() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.binding = SessionBinding{}
+	s.found = false
+}
+
+func (s *stagedSessionStore) setBinding(binding SessionBinding) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.binding = binding
+	s.found = true
+}
+
+func waitMailboxSignal(t *testing.T, signal <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for mailbox test stage")
+	}
+}
+
+func waitMailboxResult(t *testing.T, result <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-result:
+		return err
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for mailbox operation")
+		return nil
+	}
+}
+
+type touchPrimaryUnbindFailureStore struct {
+	*stagedSessionStore
+	err error
+}
+
+func (s *touchPrimaryUnbindFailureStore) RefreshPrimary(context.Context, int64, int64) (bool, error) {
+	return false, nil
+}
+
+func (s *touchPrimaryUnbindFailureStore) Unbind(context.Context, SessionBinding) (bool, error) {
+	return false, s.err
+}
+
 type testSessionStore struct{}
 
-func (*testSessionStore) Bind(context.Context, SessionBinding) (SessionBinding, bool, error) {
-	return SessionBinding{}, false, nil
+func (*testSessionStore) Create(context.Context, SessionBinding) (bool, error) {
+	return true, nil
+}
+
+func (*testSessionStore) Rebind(context.Context, SessionBinding, SessionBinding) (bool, error) {
+	return true, nil
 }
 
 func (*testSessionStore) Find(context.Context, int64) (SessionBinding, bool, error) {
@@ -431,6 +1020,20 @@ func (*testSessionStore) Refresh(context.Context, SessionBinding) (bool, error) 
 }
 
 func (*testSessionStore) Unbind(context.Context, SessionBinding) (bool, error) {
+	return true, nil
+}
+
+func (*testSessionStore) BindPrimary(context.Context, int64, int64) error { return nil }
+
+func (*testSessionStore) FindPrimary(context.Context, int64) (int64, bool, error) {
+	return 0, false, nil
+}
+
+func (*testSessionStore) RefreshPrimary(context.Context, int64, int64) (bool, error) {
+	return true, nil
+}
+
+func (*testSessionStore) UnbindPrimary(context.Context, int64, int64) (bool, error) {
 	return true, nil
 }
 

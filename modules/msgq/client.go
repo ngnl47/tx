@@ -18,11 +18,18 @@ var (
 type SessionClient interface {
 	Init(context.Context, InitRequest) (InitResult, error)
 	Rec(context.Context, RecRequest) (RecResult, error)
-	Pub(context.Context, PubRequest) (PubResult, error)
+	PubSession(context.Context, int64, []byte) (PubResult, error)
 	FetchSome(context.Context, FetchSomeRequest) (FetchSomeResult, error)
 	Confirm(context.Context, ConfirmRequest) error
 	CloseSession(context.Context, SessionHeader) error
 	Close() error
+}
+
+// AcquireSessionRequest 描述 Agent 为逻辑会话选择 MsgQ owner 所需的可信身份。
+type AcquireSessionRequest struct {
+	RoleID    int64
+	SessionID int64
+	Restore   bool
 }
 
 // SessionClientDialer 建立到一个指定 msgq 实例的会话客户端。
@@ -44,12 +51,12 @@ func NewFixedSessionClientRouter(client SessionClient) (*FixedSessionClientRoute
 	return &FixedSessionClientRouter{client: client}, nil
 }
 
-// Acquire 返回共享会话客户端。roleID 仍会校验，避免在接入层吞掉无效身份错误。
-func (r *FixedSessionClientRouter) Acquire(_ context.Context, roleID int64) (SessionClient, error) {
+// Acquire 返回共享会话客户端，并校验完整会话身份。
+func (r *FixedSessionClientRouter) Acquire(_ context.Context, request AcquireSessionRequest) (SessionClient, error) {
 	if r == nil || r.client == nil {
 		return nil, ErrSessionClientNil
 	}
-	if roleID <= 0 {
+	if request.RoleID <= 0 || request.SessionID <= 0 {
 		return nil, ErrInvalidSession
 	}
 	return r.client, nil
@@ -78,8 +85,8 @@ func (c localSessionClient) Rec(ctx context.Context, request RecRequest) (RecRes
 	return c.mailbox.Rec(ctx, request)
 }
 
-func (c localSessionClient) Pub(ctx context.Context, request PubRequest) (PubResult, error) {
-	return c.mailbox.Pub(ctx, request)
+func (c localSessionClient) PubSession(ctx context.Context, sessionID int64, payload []byte) (PubResult, error) {
+	return c.mailbox.PubSession(ctx, sessionID, payload)
 }
 
 func (c localSessionClient) FetchSome(ctx context.Context, request FetchSomeRequest) (FetchSomeResult, error) {
@@ -121,8 +128,8 @@ func NewSessionClientRouter(directory discovery.Directory, store SessionStore, d
 	return &SessionClientRouter{directory: directory, store: store, dialer: dialer, connections: make(map[string]SessionClient)}, nil
 }
 
-// Acquire 优先连接角色已有的 running msgq owner；没有可用 owner 时轮转选择 running msgq。
-func (r *SessionClientRouter) Acquire(ctx context.Context, roleID int64) (SessionClient, error) {
+// Acquire 为 fresh 会话轮转选择 running MsgQ，为 restore 会话连接精确旧 owner。
+func (r *SessionClientRouter) Acquire(ctx context.Context, request AcquireSessionRequest) (SessionClient, error) {
 	if r == nil || r.directory == nil {
 		return nil, ErrDirectoryNil
 	}
@@ -132,20 +139,28 @@ func (r *SessionClientRouter) Acquire(ctx context.Context, roleID int64) (Sessio
 	if r.dialer == nil {
 		return nil, ErrSessionClientDialerNil
 	}
-	if roleID <= 0 {
+	if request.RoleID <= 0 || request.SessionID <= 0 {
 		return nil, ErrInvalidSession
 	}
-	binding, found, err := r.store.Find(ctx, roleID)
+	if !request.Restore {
+		instance, available := r.directory.NextInstance("msgq")
+		if !available {
+			return nil, ErrRouteUnavailable
+		}
+		return r.connection(ctx, instance)
+	}
+	binding, found, err := r.store.Find(ctx, request.SessionID)
 	if err != nil {
 		return nil, err
 	}
-	if found && binding.Validate() == nil && binding.RoleID == roleID {
-		if instance, available := r.directory.LookupInstance(binding.InstanceID); available && instance.Status == discovery.StatusRunning && providesService(instance, "msgq") {
-			return r.connection(ctx, instance)
-		}
+	if !found || binding.Validate() != nil || binding.SessionID != request.SessionID {
+		return nil, ErrSessionOffline
 	}
-	instance, available := r.directory.NextInstance("msgq")
-	if !available {
+	if binding.RoleID != request.RoleID {
+		return nil, ErrSessionChanged
+	}
+	instance, available := r.directory.LookupInstance(binding.InstanceID)
+	if !available || instance.Status != discovery.StatusRunning || !providesService(instance, "msgq") {
 		return nil, ErrRouteUnavailable
 	}
 	return r.connection(ctx, instance)

@@ -43,12 +43,17 @@ func (b SessionBinding) Validate() error {
 	return nil
 }
 
-// SessionStore 持久化角色到实例的短期会话绑定。
+// SessionStore 持久化精确会话绑定和角色主会话投影。
 type SessionStore interface {
-	Bind(ctx context.Context, binding SessionBinding) (previous SessionBinding, replaced bool, err error)
-	Find(ctx context.Context, roleID int64) (binding SessionBinding, found bool, err error)
+	Create(ctx context.Context, binding SessionBinding) (created bool, err error)
+	Rebind(ctx context.Context, expected, replacement SessionBinding) (rebound bool, err error)
+	Find(ctx context.Context, sessionID int64) (binding SessionBinding, found bool, err error)
 	Refresh(ctx context.Context, binding SessionBinding) (refreshed bool, err error)
 	Unbind(ctx context.Context, binding SessionBinding) (removed bool, err error)
+	BindPrimary(ctx context.Context, roleID, sessionID int64) error
+	FindPrimary(ctx context.Context, roleID int64) (sessionID int64, found bool, err error)
+	RefreshPrimary(ctx context.Context, roleID, sessionID int64) (refreshed bool, err error)
+	UnbindPrimary(ctx context.Context, roleID, sessionID int64) (removed bool, err error)
 }
 
 // SessionTarget 是一次会话投递所需的绑定和目标实例。
@@ -57,7 +62,7 @@ type SessionTarget struct {
 	Instance discovery.Instance
 }
 
-// SessionRouter 将角色会话解析为唯一的消息服务归属实例。
+// SessionRouter 将精确会话或角色主会话解析为唯一的消息服务归属实例。
 type SessionRouter struct {
 	directory discovery.Directory
 	store     SessionStore
@@ -74,38 +79,59 @@ func NewSessionRouter(directory discovery.Directory, store SessionStore) (*Sessi
 	return &SessionRouter{directory: directory, store: store}, nil
 }
 
-// Resolve 解析当前会话归属。expectedSessionID 为零时接受当前任意会话。
-func (r *SessionRouter) Resolve(ctx context.Context, roleID, expectedSessionID int64) (SessionTarget, error) {
+// ResolveSession 按 SessionID 只读解析精确会话归属。
+func (r *SessionRouter) ResolveSession(ctx context.Context, sessionID int64) (SessionTarget, error) {
 	if r == nil || r.directory == nil {
 		return SessionTarget{}, ErrDirectoryNil
 	}
 	if r.store == nil {
 		return SessionTarget{}, ErrSessionStoreNil
 	}
-	if roleID <= 0 || expectedSessionID < 0 {
+	if sessionID <= 0 {
 		return SessionTarget{}, ErrInvalidSession
 	}
-
-	binding, found, err := r.store.Find(ctx, roleID)
+	binding, found, err := r.store.Find(ctx, sessionID)
 	if err != nil {
 		return SessionTarget{}, err
 	}
-	if !found || binding.Validate() != nil || binding.RoleID != roleID {
+	if !found || binding.Validate() != nil || binding.SessionID != sessionID {
 		return SessionTarget{}, ErrSessionOffline
 	}
-	if expectedSessionID != 0 && binding.SessionID != expectedSessionID {
-		return SessionTarget{}, ErrSessionChanged
+	return r.resolveBinding(binding)
+}
+
+// ResolveRole 按 RoleID 的主会话投影只读解析当前主会话归属。
+func (r *SessionRouter) ResolveRole(ctx context.Context, roleID int64) (SessionTarget, error) {
+	if r == nil || r.directory == nil {
+		return SessionTarget{}, ErrDirectoryNil
 	}
+	if r.store == nil {
+		return SessionTarget{}, ErrSessionStoreNil
+	}
+	if roleID <= 0 {
+		return SessionTarget{}, ErrInvalidSession
+	}
+	sessionID, found, err := r.store.FindPrimary(ctx, roleID)
+	if err != nil {
+		return SessionTarget{}, err
+	}
+	if !found || sessionID <= 0 {
+		return SessionTarget{}, ErrSessionOffline
+	}
+	binding, found, err := r.store.Find(ctx, sessionID)
+	if err != nil {
+		return SessionTarget{}, err
+	}
+	if !found || binding.Validate() != nil || binding.SessionID != sessionID || binding.RoleID != roleID {
+		return SessionTarget{}, ErrSessionOffline
+	}
+	return r.resolveBinding(binding)
+}
+
+func (r *SessionRouter) resolveBinding(binding SessionBinding) (SessionTarget, error) {
 	instance, found := r.directory.LookupInstance(binding.InstanceID)
 	if !found || !providesService(instance, "msgq") {
 		return SessionTarget{}, ErrRouteUnavailable
-	}
-	refreshed, err := r.store.Refresh(ctx, binding)
-	if err != nil {
-		return SessionTarget{}, err
-	}
-	if !refreshed {
-		return SessionTarget{}, ErrSessionChanged
 	}
 	return SessionTarget{Binding: binding, Instance: instance}, nil
 }

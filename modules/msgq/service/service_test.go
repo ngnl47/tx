@@ -44,33 +44,69 @@ func TestServiceStartsWithExplicitDependencies(t *testing.T) {
 
 type memoryStore struct {
 	bindings map[int64]txmsgq.SessionBinding
+	primary  map[int64]int64
 }
 
 func newMemoryStore() *memoryStore {
-	return &memoryStore{bindings: make(map[int64]txmsgq.SessionBinding)}
+	return &memoryStore{bindings: make(map[int64]txmsgq.SessionBinding), primary: make(map[int64]int64)}
 }
 
-func (store *memoryStore) Bind(_ context.Context, binding txmsgq.SessionBinding) (txmsgq.SessionBinding, bool, error) {
-	previous, exists := store.bindings[binding.RoleID]
-	store.bindings[binding.RoleID] = binding
-	return previous, exists, nil
+func (store *memoryStore) Create(_ context.Context, binding txmsgq.SessionBinding) (bool, error) {
+	if _, exists := store.bindings[binding.SessionID]; exists {
+		return false, nil
+	}
+	store.bindings[binding.SessionID] = binding
+	return true, nil
 }
 
-func (store *memoryStore) Find(_ context.Context, roleID int64) (txmsgq.SessionBinding, bool, error) {
-	binding, exists := store.bindings[roleID]
+func (store *memoryStore) Rebind(_ context.Context, expected, replacement txmsgq.SessionBinding) (bool, error) {
+	current, exists := store.bindings[expected.SessionID]
+	if !exists || current != expected {
+		return false, nil
+	}
+	store.bindings[replacement.SessionID] = replacement
+	return true, nil
+}
+
+func (store *memoryStore) Find(_ context.Context, sessionID int64) (txmsgq.SessionBinding, bool, error) {
+	binding, exists := store.bindings[sessionID]
 	return binding, exists, nil
 }
 
 func (store *memoryStore) Refresh(_ context.Context, binding txmsgq.SessionBinding) (bool, error) {
-	current, exists := store.bindings[binding.RoleID]
+	current, exists := store.bindings[binding.SessionID]
 	return exists && current == binding, nil
 }
 
 func (store *memoryStore) Unbind(_ context.Context, binding txmsgq.SessionBinding) (bool, error) {
-	current, exists := store.bindings[binding.RoleID]
+	current, exists := store.bindings[binding.SessionID]
 	if !exists || current != binding {
 		return false, nil
 	}
-	delete(store.bindings, binding.RoleID)
+	delete(store.bindings, binding.SessionID)
+	return true, nil
+}
+
+func (store *memoryStore) BindPrimary(_ context.Context, roleID, sessionID int64) error {
+	store.primary[roleID] = sessionID
+	return nil
+}
+
+func (store *memoryStore) FindPrimary(_ context.Context, roleID int64) (int64, bool, error) {
+	sessionID, found := store.primary[roleID]
+	return sessionID, found, nil
+}
+
+func (store *memoryStore) RefreshPrimary(_ context.Context, roleID, sessionID int64) (bool, error) {
+	current, found := store.primary[roleID]
+	return found && current == sessionID, nil
+}
+
+func (store *memoryStore) UnbindPrimary(_ context.Context, roleID, sessionID int64) (bool, error) {
+	current, found := store.primary[roleID]
+	if !found || current != sessionID {
+		return false, nil
+	}
+	delete(store.primary, roleID)
 	return true, nil
 }

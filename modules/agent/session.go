@@ -11,6 +11,7 @@ import (
 	"github.com/ngnl47/tx/lifecycle"
 	txlog "github.com/ngnl47/tx/log"
 	"github.com/ngnl47/tx/modules/msgq"
+	"github.com/ngnl47/tx/protocol"
 )
 
 const defaultFetchBatch = 1
@@ -97,12 +98,17 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 		trace.roleID = identity.RoleID
 		trace.sessionID = identity.SessionID
 	}
-	client, err := s.sessions.Acquire(ctx, identity.RoleID)
+	client, err := s.sessions.Acquire(ctx, msgq.AcquireSessionRequest{RoleID: identity.RoleID, SessionID: identity.SessionID, Restore: handshake.Restore})
 	if err != nil {
 		return err
 	}
 	header := msgq.SessionHeader{RoleID: identity.RoleID, SessionID: identity.SessionID, ConnectionID: connectionID}
-	initialized, err := client.Init(ctx, msgq.InitRequest{Header: header, Restore: handshake.Restore, Ack: handshake.Ack})
+	initialized, err := client.Init(ctx, msgq.InitRequest{
+		Header:  header,
+		Restore: handshake.Restore,
+		Primary: identity.AccessMode == protocol.AccessModeNormal,
+		Ack:     handshake.Ack,
+	})
 	if err != nil {
 		return err
 	}
@@ -220,7 +226,7 @@ func (s *Server) dispatchUpMsg(ctx context.Context, client msgq.SessionClient, h
 	if dispatched.Payload == nil {
 		return false, nil
 	}
-	_, err = client.Pub(ctx, msgq.PubRequest{Header: header, Payload: dispatched.Payload})
+	_, err = client.PubSession(ctx, header.SessionID, dispatched.Payload)
 	return err == nil, err
 }
 
