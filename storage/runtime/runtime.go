@@ -266,6 +266,22 @@ func (s *Runtime) MongoReader() txstorage.DocumentLoader {
 	return s.guardReader(meta.StorageModeMongo, s.mongo)
 }
 
+// MongoBackfiller 返回带 Mongo 健康闸门的条件回填器。
+func (s *Runtime) MongoBackfiller() txstorage.DocumentBackfiller {
+	if s == nil || s.mongo == nil {
+		return nil
+	}
+	return guardedMongoBackfiller{storage: s, next: s.mongo}
+}
+
+// MongoSequences 返回带 Mongo 健康闸门的命名序列分配器。
+func (s *Runtime) MongoSequences() txmongo.SequenceAllocator {
+	if s == nil || s.mongo == nil {
+		return nil
+	}
+	return guardedMongoSequences{storage: s, next: s.mongo}
+}
+
 func (s *Runtime) FusionReader() txstorage.DocumentLoader {
 	if s == nil {
 		return nil

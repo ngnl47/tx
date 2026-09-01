@@ -117,9 +117,9 @@ game := bee.ServiceRegistration{
 Ant 在同一基础 API 上增加 `CModProcedure/CModSlots/LogicalSlot`。这些能力视图都不授予连接关闭、
 runtime shutdown 或 discovery 快照写权限。
 
-三类存储 CMod 返回不同的窄接口：Redis 只暴露 `RedisReader`，MongoDB 只暴露 `MongoReader`，Fusion 只暴露
-`FusionReader`；对应 `ChangeWriter` 也只接受相同 `TypeSpec.Storage.Mode`。即使同一进程中的其他服务启用了更多后端，
-当前服务也不能越过 `ServiceSpec.Requires` 使用未声明存储。
+三类存储 CMod 返回不同的窄接口：Redis 暴露 `RedisReader` 和脚本路由，MongoDB 暴露 `MongoReader`、条件回填和命名
+`int64` 序列，Fusion 暴露 `FusionReader`；对应 `ChangeWriter` 也只接受相同 `TypeSpec.Storage.Mode`。这些接口不返回底层
+客户端或连接关闭权。即使同一进程中的其他服务启用了更多后端，当前服务也不能越过 `ServiceSpec.Requires` 使用未声明存储。
 
 `runtime.Instance()` 返回本进程身份和当前生命周期状态的只读快照，`Services` 切片也会复制，调用方修改
 返回值不会污染运行时。服务 `Start` 阶段看到 `starting`；共享 RPC Host、控制面和 discovery 全部就绪后
@@ -1660,7 +1660,7 @@ mongodb:"index,unique,expireAfter:0"
 `json`、`bson`、`msgpack` 分别决定对应后端的物理字段名。`alias` 只是输入侧语法糖，如果写了
 `alias:"rid"`，会同时作为 JSON、BSON、Msgpack、Redis 的默认字段名；写了 `alias` 的字段不能再写
 `json`、`bson` 或 `msgpack`。不写 `alias` 时，各后端 tag 可以各自命名，例如
-`json:"roleId,omitempty" bson:"_id,omitempty" msgpack:"roleId,omitempty"`。
+`json:"roleId,omitempty" bson:"roleId,omitempty" msgpack:"roleId,omitempty"`。
 
 ### type 注解字段表
 
@@ -1734,7 +1734,7 @@ type GDFriendRecord struct {
 // @redis:`routeType:"role" routeBy:"RoleId" idField:"RoleId" key:"role"`
 // @mongodb:`routeType:"role" routeBy:"RoleId" idField:"RoleId" collection:"roles"`
 type GDRole struct {
-	RoleId int64  `json:"roleId" bson:"_id" msgpack:"roleId"`
+	RoleId int64  `json:"roleId" bson:"roleId" msgpack:"roleId" mongodb:"index,unique"`
 	Name   string `json:"name" bson:"name" msgpack:"name"`
 }
 ```
@@ -1748,8 +1748,8 @@ Fusion 的 Redis 和 Mongo 共用一份 `RecordKey`，因此两边的 `idField` 
 ```
 
 如果 Mongo 改成 `idField:"AccountId"` 或 `routeBy:"ServerId"`，元数据校验和 txgen 都会失败，不会把 Redis
-构造的 ID、ShardKey 当成另一个 Mongo 字段的值。JSON/BSON/Msgpack 字段名仍然各自独立；例如同一个
-`RoleId` 可以写成 `json:"roleId" bson:"_id"`。
+构造的 ID、ShardKey 当成另一个 Mongo 字段的值。JSON/BSON/Msgpack 字段名仍然各自独立；常规业务标识应保留
+明确的 BSON 字段名，并通过唯一索引保证身份唯一。
 
 ### field tag 字段表
 
@@ -1780,7 +1780,7 @@ Fusion 的 Redis 和 Mongo 共用一份 `RecordKey`，因此两边的 `idField` 
 
 ```go
 // 合法：四套字段名可以不同，但都遵守同一命名规则。
-RoleId int64 `json:"roleId" bson:"_id" msgpack:"rid"`
+RoleId int64 `json:"roleId" bson:"roleId" msgpack:"rid"`
 
 // 非法：不要依赖 TypeScript 引号属性、Mongo 路径转义或其他边界兼容。
 DailyReward int32 `msgpack:"daily.reward"`
@@ -1794,8 +1794,8 @@ Name string `comment:"名字" json:"name,omitempty" bson:"name,omitempty" msgpac
 ```
 
 ```go
-// 业务主键直接绑定 Mongo _id。
-RoleId int64 `comment:"角色ID" json:"roleId" bson:"_id" msgpack:"roleId"`
+// 常规业务主键保留明确字段，并声明唯一索引。
+RoleId int64 `comment:"角色ID" json:"roleId" bson:"roleId" msgpack:"roleId" mongodb:"index,unique"`
 ```
 
 ```go
@@ -1924,15 +1924,13 @@ Name string `json:"name,omitempty,"`
 Role *GDRoleStore `json:"role"`
 ```
 
-`@mongodb.idField` 使用 Go 字段名，tx runtime 会通过该字段的 `bson` tag 得到 Mongo 过滤字段。
-业务 `idField` 可以直接绑定到 Mongo `_id`，也可以作为普通 BSON 字段保存。
-
-以 `RoleId = 1001`、`Name = "alice"` 为例，常见组合如下：
+`@mongodb.idField` 使用 Go 字段名，tx runtime 会通过该字段的 `bson` tag 得到 Mongo 过滤字段。常规业务 ID
+应保存为普通 BSON 字段，并建立单字段唯一索引；只有存储结构完全确定且确实需要复用 Mongo 物理主键时，才显式绑定 `_id`。
 
 | 配置组合 | Mongo 文档结构 | runtime 过滤条件 | 说明 |
 | --- | --- | --- | --- |
-| `idField:"RoleId"`，字段写 `bson:"_id"` | `{"_id": 1001, "name": "alice"}` | `{_id: 1001}` | Mongo 物理主键直接使用业务 ID。 |
-| `idField:"RoleId"`，字段写 `bson:"roleId"` 或缺省生成 `bson:"roleId"` | `{"_id": ObjectID, "roleId": 1001, "name": "alice"}` | `{roleId: 1001}` | Mongo `_id` 和业务 ID 分离，runtime 按业务字段查。 |
+| `idField:"RoleId"`，字段写 `bson:"roleId" mongodb:"index,unique"` | `{"_id": ObjectID, "roleId": 1001, "name": "alice"}` | `{roleId: 1001}` | 推荐方式；业务字段语义明确，并由唯一索引保证并发安全。 |
+| `idField:"SnapshotId"`，字段写 `bson:"_id"` | `{"_id": "world-1/7", "generation": 3}` | `{_id: "world-1/7"}` | 特殊方式；仅用于物理主键语义已经确定的存储结构。 |
 
 因此，`bson:"_id"` 是 Mongo 序列化层的字段绑定；`mongodb.idField` 是 tx 存储框架层的业务记录身份。
 两者配合后由 runtime 统一推导过滤字段，不再需要额外开关。
@@ -2067,12 +2065,12 @@ Msgpack 名或拼写错误的 `"Pwoer"`，都会在路由和 Redis/Mongo I/O 前
 例如：
 
 ```go
-RoleId int64 `json:"roleId,omitempty" bson:"_id,omitempty" msgpack:"roleId,omitempty"`
+RoleId int64 `json:"roleId,omitempty" bson:"roleId,omitempty" msgpack:"roleId,omitempty" mongodb:"index,unique"`
 ```
 
 Store 内部只保存 `RoleId` 对应的 `FieldID`，不保存字符串文档；`Document(change.FieldNameGo)`
 才输出 `RoleId`。完整 JSON 序列化使用 `roleId`；Redis 写入选择 JSON 名 `roleId`；Mongo
-filter/update 选择 BSON 名 `_id`；cmd Provider 下行 body 选择 Msgpack 名 `roleId`。
+filter/update 选择 BSON 名 `roleId`；cmd Provider 下行 body 选择 Msgpack 名 `roleId`。
 
 示例：
 
@@ -2081,7 +2079,7 @@ field := data.NewGDRoleStore(nil).FieldIndex(data.GDRoleFieldRoleId)
 
 data.GDRoleResolveFieldName(field, change.FieldNameGo)      // "RoleId"
 data.GDRoleResolveFieldName(field, change.FieldNameJSON)    // "roleId"
-data.GDRoleResolveFieldName(field, change.FieldNameBSON)    // "_id"
+data.GDRoleResolveFieldName(field, change.FieldNameBSON)    // "roleId"
 data.GDRoleResolveFieldName(field, change.FieldNameMsgpack) // "roleId"
 ```
 
@@ -3557,8 +3555,10 @@ Mongo adapter 当前支持：
 - `LoadDocument`：按记录键读取单条文档，可带 projection 字段。
 - `LoadDocuments`：按记录键批量读取并保持返回顺序。
 - `ReplaceDocument`：整文档替换，供 Fusion 延迟保存回写使用。
+- `BackfillDocumentWithOptions`：用单条 `$setOnInsert + upsert` 仅创建缺失文档；已存在时返回 `inserted=false`，不覆盖字段。
+- `NextSequence`：在固定 `tx_sequences` 集合用单条 `findOneAndUpdate` 递增命名 `int64` 序列并返回新值。
 - `ApplyDelete`：Mongo-only adapter 的显式物理删除能力；Fusion 不组合该能力。
-- `mongo.Cluster`：按 `routeType` 和 `storage.RecordKey.ShardKey` 路由到具体 Mongo adapter；批量读取会按 shard 分组并按输入顺序还原结果。
+- `mongo.Cluster`：按 `routeType` 和分片键路由到具体 Mongo adapter；批量读取会按 shard 分组并按输入顺序还原结果。
 
 项目装配时应传入同时实现所需读写能力的官方 driver 薄适配，而不是直接传任意对象：
 
@@ -3570,14 +3570,34 @@ if err != nil {
 }
 ```
 
-`txmongo.Client` 在编译期要求装配对象同时实现 `Updater`、`Replacer`、`Deleter`、`Finder` 和
-`BatchFinder`。官方 driver 的 `txmongodriver.Database` 已满足该契约；自定义 client 缺少任一能力时无法通过编译，
+`txmongo.Client` 在编译期要求装配对象同时实现 `Updater`、`Replacer`、`Deleter`、`Finder`、
+`BatchFinder` 和 `SequenceIncrementer`。官方 driver 的 `txmongodriver.Database` 已满足该契约；自定义 client 缺少任一能力时无法通过编译，
 nil 或 typed-nil 则由 `NewAdapter` 在启动装配阶段返回 `mongo.ErrClientNotConfigured`。运行期不再通过动态断言补能力，
 批量读取也不会退化为逐条查询。
 
 Mongo adapter 通过统一 filter 抽象调用底层 client：默认 filter 是 `{_id: id}`；配置
 `idField` 时 filter 字段由 `spec.BSONName(idField)` 推导。Mongo update 会遵守 `storage.ApplyOptions.Upsert`：
 生成 Store 的 Insert/Replace 路径会启用 upsert，Update 路径会关闭 upsert，避免普通更新意外创建缺失文档。
+`idField` 是不可变记录身份：普通增量更新不能修改它，upsert 会从 `$set` 排除该字段并由等值过滤条件写入。
+条件回填若使用普通 BSON 字段作为 `idField`，该字段必须声明单字段唯一索引；否则入口在发起 Mongo 写入前返回错误，
+避免并发首次创建形成重复业务身份。物理 `_id` 直接使用 Mongo 自带的唯一索引。
+
+Bee/Ant 服务声明 `CModMongoStorage` 后，可直接使用受路由与健康状态约束的原子能力：
+
+```go
+mongoStorage, err := runtime.CModMongoStorage()
+if err != nil {
+	return err
+}
+accountID, err := mongoStorage.NextSequence(ctx, "global", int64(1), "account_id")
+if err != nil {
+	return err
+}
+inserted, err := mongoStorage.BackfillDocumentWithOptions(ctx, spec, key, document, storage.ApplyOptions{})
+```
+
+同名序列只有落到同一 Mongo 分片时才属于同一个计数器。全局 `AccountID`、`RoleID`、`SessionID` 必须各自使用稳定名称和
+固定分片键；允许预分配产生空洞，不回收编号。不同名称互不影响，多个服务实例并发调用仍由 Mongo 原子递增串行化。
 
 Mongo TTL index 的字段级 `expireAfter` 会删除整条文档，不是删除单个字段。生成阶段应限制同一类型最多一个 TTL 字段。
 
@@ -3679,7 +3699,7 @@ stores, exists, err := data.LoadGDArenaRecordStores(ctx, mongoCluster, keys)
 ```go
 // @mongodb:`routeType:"role" routeBy:"RoleId" idField:"RoleId" collection:"roles"`
 type GDRole struct {
-	RoleId int64  `json:"roleId" bson:"_id" msgpack:"roleId"`
+	RoleId int64  `json:"roleId" bson:"roleId" msgpack:"roleId" mongodb:"index,unique"`
 	Name   string `json:"name" bson:"name" msgpack:"name"`
 }
 ```
@@ -3687,23 +3707,11 @@ type GDRole struct {
 读取、更新或删除 `RoleId=470001` 时，Mongo filter 是：
 
 ```go
-bson.M{"_id": int64(470001)}
-```
-
-如果字段写的是 `bson:"roleId"`：
-
-```go
-RoleId int64 `json:"roleId" bson:"roleId" msgpack:"roleId"`
-```
-
-Mongo filter 会变成：
-
-```go
 bson.M{"roleId": int64(470001)}
 ```
 
-因此，`bson:"_id"` 表示“这个 Go 字段绑定 Mongo 物理主键”；`idField:"RoleId"` 表示“tx 用这个 Go 字段作为业务记录身份”。
-两者可以配合，也可以分离。
+因此，`idField:"RoleId"` 表示“tx 用这个 Go 字段作为业务记录身份”，`bson:"roleId"` 决定实际查询字段。
+`bson:"_id"` 仍表示绑定 Mongo 物理主键，但只作为特殊存储结构的显式能力，不作为业务角色模型的默认写法。
 
 ### 写入示例
 
@@ -3812,6 +3820,10 @@ ExpireAt time.Time `json:"expireAt" bson:"expireAt" msgpack:"expireAt" mongodb:"
 汇总并创建当前服务 Mongo 路由表覆盖的索引。生成注册表可以包含其他服务使用的 GD 类型；其 `routeType` 未出现在
 本服务配置中时不会参与本次初始化。
 
+txgen 同时会在对应 GD 生成文件头部写出当前 `createIndexes` 目标状态语句。生产环境已有大集合需要新增索引时，应在
+停机维护期间先由运维执行该语句并确认完成，再发布依赖新索引的服务；服务启动阶段随后通过幂等 `createIndexes` 对齐
+同一份生成元数据。生成注释不记录索引迁移历史，也不会删除已经存在的索引。
+
 - `mongodb:"index"` 创建匿名单字段索引，名称根据最终 BSON 路径和顺序稳定生成，例如 `platformUId_1`。
 - 多个字段的 `mongodb:"index:p_id"` 按 Go 字段声明顺序合并为一个命名复合索引。
 - `mongodb:"index::areaId:1:deleted:1:roleId:1"` 直接声明 BSON 路径和顺序。
@@ -3842,7 +3854,7 @@ ExpireAt time.Time `json:"expireAt" bson:"expireAt" msgpack:"expireAt" mongodb:"
 ```go
 // 输入定义：JSON、BSON 字段名不同。
 type GDRole struct {
-	RoleId int64 `json:"roleId,omitempty" bson:"_id,omitempty"`
+	RoleId int64 `json:"roleId,omitempty" bson:"roleId,omitempty" mongodb:"index,unique"`
 	Power  int64 `json:"power,omitempty" bson:"p,omitempty"`
 }
 
@@ -3850,7 +3862,7 @@ type GDRole struct {
 doc, exists, err := mongoAdapter.LoadDocument(ctx, data.GDRoleTypeSpec(), key)
 // doc == map[string]any{"roleId": json.Number("1001"), "power": json.Number("47")}
 
-// 传给 Mongo replacer 仍写为 BSON 名：{_id: 1001, p: 47}。
+// 传给 Mongo replacer 仍写为 BSON 名：{roleId: 1001, p: 47}。
 err = mongoAdapter.ReplaceDocument(ctx, data.GDRoleTypeSpec(), key, doc)
 ```
 

@@ -23,7 +23,7 @@ type Base struct {
 // @mongodb:` + "`routeType:\"role\" routeBy:\"RoleID\" idField:\"RoleID\" collection:\"roles\" enableSharding:\"true\"`" + `
 type Role struct {
 	Base
-	RoleID int64 ` + "`json:\"roleId\" bson:\"_id\" msgpack:\"roleId\"`" + `
+	RoleID int64 ` + "`json:\"roleId\" bson:\"roleId\" msgpack:\"roleId\" mongodb:\"index,unique\"`" + `
 	Name string ` + "`json:\"name,omitempty\"`" + `
 	OwnerID int64 ` + "`bson:\"owner_id\"`" + `
 	privateNote string
@@ -51,7 +51,7 @@ func (r *Role) hidden() {}
 	}
 	assertField(t, spec, "Base", "base", "base", "base", "Base", true)
 	assertEmbeddedField(t, spec, "Base", true)
-	assertField(t, spec, "RoleID", "roleId", "_id", "roleId", "int64", true)
+	assertField(t, spec, "RoleID", "roleId", "roleId", "roleId", "int64", true)
 	assertField(t, spec, "Name", "name", "name", "name", "string", true)
 	assertField(t, spec, "OwnerID", "ownerID", "owner_id", "ownerID", "int64", true)
 	assertField(t, spec, "privateNote", "privateNote", "privateNote", "privateNote", "string", false)

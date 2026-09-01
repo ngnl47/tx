@@ -148,6 +148,30 @@ func TestFusionHealthGateRejectsBeforeRedisReadWhenMongoIsUnavailable(t *testing
 	}
 }
 
+func TestMongoAtomicCapabilitiesUseMongoHealthGate(t *testing.T) {
+	store := &Runtime{mongo: &txmongo.Cluster{}}
+	backfiller := store.MongoBackfiller()
+	sequences := store.MongoSequences()
+	if backfiller == nil || sequences == nil {
+		t.Fatal("Mongo atomic capabilities are nil for configured Mongo storage")
+	}
+	store.markBackendUnavailable(txstorage.BackendMongo, errors.New("mongo unavailable"))
+
+	_, err := backfiller.BackfillDocumentWithOptions(
+		context.Background(),
+		meta.TypeSpec{},
+		txstorage.RecordKey{ID: int64(1001)},
+		map[string]any{},
+		txstorage.ApplyOptions{},
+	)
+	if !errors.Is(err, ErrStorageUnavailable) {
+		t.Fatalf("Mongo backfill error = %v, want ErrStorageUnavailable", err)
+	}
+	if _, err := sequences.NextSequence(context.Background(), "global", int64(1), "account_id"); !errors.Is(err, ErrStorageUnavailable) {
+		t.Fatalf("Mongo sequence error = %v, want ErrStorageUnavailable", err)
+	}
+}
+
 func TestStorageHealthGateIsModeAware(t *testing.T) {
 	store := &Runtime{}
 	store.markBackendUnavailable(txstorage.BackendMongo, errors.New("mongo unavailable"))

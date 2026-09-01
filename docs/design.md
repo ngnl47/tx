@@ -205,7 +205,7 @@ ServiceSpec、CMod 和基础 Context；同名 API 具有相同签名和生命周
 | `Admission()` | Bee/Ant | 登记和封口本服务外部入口 | 进程排水顺序在 Service Host |
 | `Storage()` | Bee/Ant | 仅供项目组合根安装 mode-aware 业务 facade | client、健康状态、worker 和 Close 在存储 Runtime |
 | `CModRedisStorage()` | Bee/Ant | 取得仅允许 Redis TypeSpec 的 reader/writer 和脚本路由 | 连接池所有权在存储 Runtime |
-| `CModMongoStorage()` | Bee/Ant | 取得仅允许 MongoDB TypeSpec 的 reader/writer | 连接池所有权在存储 Runtime |
+| `CModMongoStorage()` | Bee/Ant | 取得仅允许 MongoDB TypeSpec 的 reader/writer、条件回填和命名序列 | 连接池所有权在存储 Runtime |
 | `CModFusionStorage()` | Bee/Ant | 取得仅允许 Fusion TypeSpec 的 reader/writer | Redis、Mongo 和延迟任务所有权在存储 Runtime |
 | `CModRPC()` | Bee/Ant | 启动前注册 protobuf service | Serve/Stop 在共享 RPC Host |
 | `CModDiscovery()` | Bee/Ant | 查询 running 或指定实例快照 | watch 与 Replace 在 discovery Runtime |
@@ -1193,11 +1193,19 @@ RecordKey 不等于事务 LockKey：
 - `DocumentLoader` / `BatchDocumentLoader`：读取公共文档。
 - `DocumentReplacer`：完整替换文档。
 - `DocumentBackfiller`：仅在目标不存在时原子回填文档，并显式报告是否插入。
+- `mongo.SequenceAllocator`：按 routeType 和稳定分片键递增命名 `int64` 序列。
 - `DeleteApplier`：Redis-only、Mongo-only adapter 的整记录删除能力。
 - `RecordLocker`：记录级互斥。
 - `RecordRevisionReader` / `RevisionDeleteApplier`：版本保护删除。
 
 Redis 与 Mongo adapter 通过组合这些接口表达单后端能力；Fusion 组合读、写、回填和延迟回写能力，但不实现 `DeleteApplier`。公共 API 可以保持 `storage.Save`，而不是暴露 `ApplyInsert/ApplyUpdate/ApplyReplace` 组合给业务。
+
+Mongo 条件回填使用单条 `$setOnInsert + upsert`；匹配现有文档时只报告 `inserted=false`，不能改写字段。命名序列固定存放在
+`tx_sequences` 集合，每次用一条 `findOneAndUpdate` 完成 `$inc`、缺失创建和返回新值。序列的全局范围由调用方选择的
+Mongo routeType 与稳定分片键决定；同名序列若被路由到不同分片就是不同计数器，因此全局编号必须固定分片键。编号允许空洞且不回收。
+条件回填的过滤字段必须具有唯一性。常规业务模型把 `idField` 保存为语义明确的普通 BSON 字段，并由生成元数据声明
+单字段唯一索引；否则 adapter 在写入前拒绝调用。仅有复合唯一索引不能保证按单个业务主键并发创建时唯一。
+物理 `_id` 自带唯一性，但只用于存储结构完全确定的特殊模型。
 
 Fusion 根记录代表玩家、军团等长期身份数据。Redis 与 Mongo 无法在一次原子事务中共同物理删除；任一侧成功、另一侧失败，都可能导致旧 Mongo 回填 Redis、旧 Redis 延迟回写 Mongo，或调用成功但数据丢失。因此框架在生成期和类型系统中禁止 Fusion 根记录物理删除，业务使用显式状态字段完成逻辑删除。该限制只作用于整条根记录，不影响 `ItemsStore().Delete(key)` 这类集合元素变更。
 
@@ -1306,7 +1314,10 @@ Mongo 文档主键必然是 `_id`，但业务 `idField`、`routeBy` 和 BSON `_i
 - `idField`：框架生成 RecordKey 和过滤条件所需业务字段。
 - `routeBy`：选择 Mongo endpoint/shard 的路由字段。
 
-同一字段可以同时承担这些角色，也可以分开。生成期必须校验 `_id` 绑定唯一，避免 routeBy/idField 与其他 `_id` 字段产生冲突。
+常规业务模型将三者分开：业务 ID 保留明确 BSON 字段并建立唯一索引，Mongo 自行维护物理 `_id`；只有物理主键语义
+完全确定的特殊模型才显式复用 `_id`。生成期必须校验 `_id` 绑定唯一，避免 routeBy/idField 与其他 `_id` 字段产生冲突。
+`idField` 在记录创建后不可变：普通 Mongo 增量更新拒绝修改它，upsert 从 `$set` 排除该字段并依靠等值过滤条件写入；
+生成 Store 折叠大量变更时也必须跳过记录身份字段。
 
 局部变更最终转换为 Mongo `$set` / `$unset` 文档。Replace 复杂对象时，边界读取当前完整值并整体写入该路径；不能按子字段 set 后遗留旧 BSON 字段。
 

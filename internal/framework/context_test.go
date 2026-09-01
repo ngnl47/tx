@@ -125,6 +125,23 @@ func TestModeStorageRejectsWriterForDifferentMode(t *testing.T) {
 	}
 }
 
+func TestModeStorageKeepsMongoAtomicCapabilitiesInsideMongoMode(t *testing.T) {
+	storage := modeStorageAccess{storage: &storageRuntime{}, mode: meta.StorageModeRedis}
+	_, err := storage.BackfillDocumentWithOptions(
+		context.Background(),
+		meta.TypeSpec{},
+		txstorage.RecordKey{ID: int64(1001)},
+		map[string]any{},
+		txstorage.ApplyOptions{},
+	)
+	if err == nil {
+		t.Fatal("Mongo backfill through Redis storage capability succeeded")
+	}
+	if _, err := storage.NextSequence(context.Background(), "global", int64(1), "account_id"); err == nil {
+		t.Fatal("Mongo sequence through Redis storage capability succeeded")
+	}
+}
+
 func TestCModContextBindsTransactionCommitParticipantWithoutExposingBusinessContext(t *testing.T) {
 	runtime := &runtime{transaction: txn.NewRuntime()}
 	service := newServiceContext(runtime, nil)

@@ -10,6 +10,7 @@ import (
 	"github.com/ngnl47/tx/modules/txn"
 	txstorage "github.com/ngnl47/tx/storage"
 	txfusion "github.com/ngnl47/tx/storage/fusion"
+	txmongo "github.com/ngnl47/tx/storage/mongo"
 	"github.com/ngnl47/tx/storage/task"
 	"github.com/ngnl47/tx/wal"
 )
@@ -152,6 +153,34 @@ func (reader guardedReader) LoadDocument(ctx context.Context, spec meta.TypeSpec
 type guardedBatchReader struct {
 	guardedReader
 	batch txstorage.BatchDocumentLoader
+}
+
+type guardedMongoBackfiller struct {
+	storage *Runtime
+	next    txstorage.DocumentBackfiller
+}
+
+func (backfiller guardedMongoBackfiller) BackfillDocumentWithOptions(ctx context.Context, spec meta.TypeSpec, key txstorage.RecordKey, doc map[string]any, options txstorage.ApplyOptions) (bool, error) {
+	if err := backfiller.storage.requireStorageMode(meta.StorageModeMongo); err != nil {
+		return false, err
+	}
+	inserted, err := backfiller.next.BackfillDocumentWithOptions(ctx, spec, key, doc, options)
+	backfiller.storage.observeStorageError(err)
+	return inserted, err
+}
+
+type guardedMongoSequences struct {
+	storage *Runtime
+	next    txmongo.SequenceAllocator
+}
+
+func (sequences guardedMongoSequences) NextSequence(ctx context.Context, routeType string, shardKey any, name string) (int64, error) {
+	if err := sequences.storage.requireStorageMode(meta.StorageModeMongo); err != nil {
+		return 0, err
+	}
+	value, err := sequences.next.NextSequence(ctx, routeType, shardKey, name)
+	sequences.storage.observeStorageError(err)
+	return value, err
 }
 
 func (reader guardedBatchReader) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []txstorage.RecordKey, fields ...string) ([]map[string]any, []bool, error) {

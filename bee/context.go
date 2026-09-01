@@ -13,6 +13,7 @@ import (
 	"github.com/ngnl47/tx/modules/discovery"
 	txrpc "github.com/ngnl47/tx/modules/rpc"
 	txstorage "github.com/ngnl47/tx/storage"
+	txmongo "github.com/ngnl47/tx/storage/mongo"
 	txredis "github.com/ngnl47/tx/storage/redis"
 )
 
@@ -48,6 +49,8 @@ type MongoStorage interface {
 	Storage
 	// MongoReader 返回带健康闸门的 MongoDB 文档读取器。
 	MongoReader() txstorage.DocumentLoader
+	txstorage.DocumentBackfiller
+	txmongo.SequenceAllocator
 }
 
 // FusionStorage 只暴露 Fusion 文档读写。
@@ -260,6 +263,14 @@ func (view modeStorageView) ChangeWriter() txstorage.ChangeApplier {
 type mongoStorageView struct{ modeStorageView }
 
 func (view mongoStorageView) MongoReader() txstorage.DocumentLoader { return view.storage.Reader() }
+
+func (view mongoStorageView) BackfillDocumentWithOptions(ctx context.Context, spec meta.TypeSpec, key txstorage.RecordKey, doc map[string]any, options txstorage.ApplyOptions) (bool, error) {
+	return view.storage.BackfillDocumentWithOptions(ctx, spec, key, doc, options)
+}
+
+func (view mongoStorageView) NextSequence(ctx context.Context, routeType string, shardKey any, name string) (int64, error) {
+	return view.storage.NextSequence(ctx, routeType, shardKey, name)
+}
 
 type fusionStorageView struct{ modeStorageView }
 

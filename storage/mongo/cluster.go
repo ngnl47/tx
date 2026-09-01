@@ -29,6 +29,8 @@ type Cluster struct {
 }
 
 var _ FencedChangeApplier = (*Cluster)(nil)
+var _ storage.DocumentBackfiller = (*Cluster)(nil)
+var _ SequenceAllocator = (*Cluster)(nil)
 
 // NewCluster 创建 Mongo route/cluster 适配器。
 func NewCluster(router Router, shards map[string]Client) (*Cluster, error) {
@@ -90,6 +92,24 @@ func (c *Cluster) ReplaceDocument(ctx context.Context, spec meta.TypeSpec, key s
 		return err
 	}
 	return adapter.ReplaceDocument(ctx, spec, key, doc)
+}
+
+// BackfillDocumentWithOptions 把 Mongo 条件回填路由到记录所属分片。
+func (c *Cluster) BackfillDocumentWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any, options storage.ApplyOptions) (bool, error) {
+	adapter, err := c.adapterFor(ctx, spec, key)
+	if err != nil {
+		return false, err
+	}
+	return adapter.BackfillDocumentWithOptions(ctx, spec, key, doc, options)
+}
+
+// NextSequence 按 routeType 和 shardKey 选择分片后递增命名序列。
+func (c *Cluster) NextSequence(ctx context.Context, routeType string, shardKey any, name string) (int64, error) {
+	adapter, err := c.adapterForRoute(ctx, routeType, shardKey)
+	if err != nil {
+		return 0, err
+	}
+	return adapter.NextSequence(ctx, name)
 }
 
 func (c *Cluster) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
@@ -157,6 +177,18 @@ func (c *Cluster) adapterFor(ctx context.Context, spec meta.TypeSpec, key storag
 	if err != nil {
 		return nil, err
 	}
+	return c.adapterByName(shard)
+}
+
+func (c *Cluster) adapterForRoute(ctx context.Context, routeType string, shardKey any) (*Adapter, error) {
+	shard, err := c.route(ctx, routeType, shardKey)
+	if err != nil {
+		return nil, err
+	}
+	return c.adapterByName(shard)
+}
+
+func (c *Cluster) adapterByName(shard string) (*Adapter, error) {
 	adapter, ok := c.shards[shard]
 	if !ok {
 		return nil, fmt.Errorf("mongo: shard %q is not configured", shard)
@@ -168,15 +200,19 @@ func (c *Cluster) shardName(ctx context.Context, spec meta.TypeSpec, key storage
 	if err := storage.ValidateRecordKey(spec, key); err != nil {
 		return "", err
 	}
+	return c.route(ctx, mongoRouteType(spec), recordShardKey(key))
+}
+
+func (c *Cluster) route(ctx context.Context, routeType string, shardKey any) (string, error) {
 	if c == nil || isNilRouter(c.router) {
 		return "", fmt.Errorf("mongo: router is not configured")
 	}
-	shard, err := c.router.RouteMongo(ctx, mongoRouteType(spec), recordShardKey(key))
+	shard, err := c.router.RouteMongo(ctx, routeType, shardKey)
 	if err != nil {
 		return "", err
 	}
 	if shard == "" {
-		return "", fmt.Errorf("mongo: route not found for routeType %q shardKey %v", mongoRouteType(spec), recordShardKey(key))
+		return "", fmt.Errorf("mongo: route not found for routeType %q shardKey %v", routeType, shardKey)
 	}
 	return shard, nil
 }

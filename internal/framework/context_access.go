@@ -96,6 +96,34 @@ func (access modeStorageAccess) ChangeWriter() txstorage.ChangeApplier {
 	return modeChangeWriter{mode: access.mode, next: next}
 }
 
+func (access modeStorageAccess) BackfillDocumentWithOptions(ctx context.Context, spec meta.TypeSpec, key txstorage.RecordKey, doc map[string]any, options txstorage.ApplyOptions) (bool, error) {
+	if access.mode != meta.StorageModeMongo {
+		return false, fmt.Errorf("framework: storage capability %q cannot backfill Mongo documents", access.mode)
+	}
+	if access.storage == nil {
+		return false, fmt.Errorf("framework: storage capability %q backfiller is unavailable", access.mode)
+	}
+	backfiller := access.storage.MongoBackfiller()
+	if backfiller == nil {
+		return false, fmt.Errorf("framework: storage capability %q backfiller is unavailable", access.mode)
+	}
+	return backfiller.BackfillDocumentWithOptions(ctx, spec, key, doc, options)
+}
+
+func (access modeStorageAccess) NextSequence(ctx context.Context, routeType string, shardKey any, name string) (int64, error) {
+	if access.mode != meta.StorageModeMongo {
+		return 0, fmt.Errorf("framework: storage capability %q cannot allocate Mongo sequences", access.mode)
+	}
+	if access.storage == nil {
+		return 0, fmt.Errorf("framework: storage capability %q sequences are unavailable", access.mode)
+	}
+	sequences := access.storage.MongoSequences()
+	if sequences == nil {
+		return 0, fmt.Errorf("framework: storage capability %q sequences are unavailable", access.mode)
+	}
+	return sequences.NextSequence(ctx, routeType, shardKey, name)
+}
+
 type modeChangeWriter struct {
 	mode meta.StorageMode
 	next txstorage.ChangeApplier

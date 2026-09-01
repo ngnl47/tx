@@ -107,6 +107,26 @@ func (d Database) UpdateOne(ctx context.Context, collection string, filter txmon
 	return txmongo.UpdateResult{MatchedCount: result.MatchedCount, UpsertedCount: result.UpsertedCount}, nil
 }
 
+// NextSequence 使用单条 findOneAndUpdate 原子递增并返回命名序列的新值。
+func (d Database) NextSequence(ctx context.Context, collection, name string) (int64, error) {
+	if d.db == nil {
+		return 0, errMongoDatabaseNotConfigured
+	}
+	var result struct {
+		Value int64 `bson:"value"`
+	}
+	err := d.db.Collection(collection).FindOneAndUpdate(
+		ctx,
+		bson.M{"_id": name},
+		bson.M{"$inc": bson.M{"value": int64(1)}},
+		options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.After),
+	).Decode(&result)
+	if err != nil {
+		return 0, mongoBackendError("next sequence", err)
+	}
+	return result.Value, nil
+}
+
 func (d Database) ReplaceOne(ctx context.Context, collection string, filter txmongo.Filter, doc map[string]any) (txmongo.ReplaceResult, error) {
 	if d.db == nil {
 		return txmongo.ReplaceResult{}, errMongoDatabaseNotConfigured

@@ -13,6 +13,8 @@ import (
 
 	"github.com/ngnl47/tx/ant"
 	"github.com/ngnl47/tx/bee"
+	txstorage "github.com/ngnl47/tx/storage"
+	txmongo "github.com/ngnl47/tx/storage/mongo"
 )
 
 func TestAntPackageDocumentDescribesStatefulFacade(t *testing.T) {
@@ -56,6 +58,15 @@ func TestStorageCapabilitiesExposeOnlyTheirDeclaredReaders(t *testing.T) {
 	assertStorageReaderMethods(t, reflect.TypeOf((*ant.RedisStorage)(nil)).Elem(), "RedisReader")
 	assertStorageReaderMethods(t, reflect.TypeOf((*ant.MongoStorage)(nil)).Elem(), "MongoReader")
 	assertStorageReaderMethods(t, reflect.TypeOf((*ant.FusionStorage)(nil)).Elem(), "FusionReader")
+}
+
+func TestMongoStorageExposesOnlyNarrowAtomicCapabilities(t *testing.T) {
+	var beeMongo bee.MongoStorage
+	var antMongo ant.MongoStorage
+	var _ txstorage.DocumentBackfiller = beeMongo
+	var _ txmongo.SequenceAllocator = beeMongo
+	var _ txstorage.DocumentBackfiller = antMongo
+	var _ txmongo.SequenceAllocator = antMongo
 }
 
 func assertStorageReaderMethods(t *testing.T, current reflect.Type, allowed ...string) {

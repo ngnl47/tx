@@ -66,6 +66,12 @@ func buildUpdateDocument(spec meta.TypeSpec, source change.Source, resolver chan
 			}
 			return fmt.Errorf("mongo: cannot update immutable _id field %s", goField)
 		}
+		if spec.Mongo != nil && spec.Mongo.IDField != "" && goField == spec.Mongo.IDField {
+			if skipUpsertID && len(bsonPath) == 1 && (op == change.OpSet || op == change.OpReplace) {
+				return nil
+			}
+			return fmt.Errorf("mongo: cannot update immutable record id field %s", goField)
+		}
 		name := bsonPath.String()
 		switch op {
 		case change.OpDelete:

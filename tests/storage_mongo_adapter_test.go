@@ -33,6 +33,10 @@ type recordingMongoUpdater struct {
 	manyFields     []string
 	manyDocs       []map[string]any
 	manyExists     []bool
+
+	sequenceCollection string
+	sequenceNames      []string
+	sequenceValues     map[string]int64
 }
 
 type recordingMongoRouter struct {
@@ -46,7 +50,7 @@ type recordingMongoRouteCall struct {
 }
 
 type mongoDocumentRole struct {
-	RoleID int64             `json:"roleId" bson:"_id"`
+	RoleID int64             `json:"roleId" bson:"roleId"`
 	Power  int64             `json:"power" bson:"p"`
 	Rank   mongoDocumentRank `json:"rank" bson:"rank"`
 }
@@ -58,10 +62,16 @@ type mongoDocumentRank struct {
 func mongoDocumentSpec() meta.TypeSpec {
 	return meta.TypeSpec{
 		Type: meta.Type{Fields: []meta.Field{
-			{Name: "RoleID", JSONName: "roleId", BSONName: "_id"},
+			{Name: "RoleID", JSONName: "roleId", BSONName: "roleId"},
 			{Name: "Power", JSONName: "power", BSONName: "p"},
 			{Name: "Rank", JSONName: "rank", BSONName: "rank"},
 		}},
+		Fields: map[string]meta.FieldSpec{
+			"RoleID": {Mongo: &meta.MongoFieldSpec{Indexes: []meta.IndexSpec{{
+				Keys:   []meta.IndexKeySpec{{Order: "1"}},
+				Unique: true,
+			}}}},
+		},
 		DocumentFactory: func() any { return new(mongoDocumentRole) },
 		Mongo:           &meta.MongoSpec{Collection: "roles", IDField: "RoleID"},
 	}
@@ -129,6 +139,16 @@ func (u *recordingMongoUpdater) FindMany(_ context.Context, collection string, f
 	u.manyFilter = txmongo.ValuesFilter{Field: filter.Field, Values: append([]any(nil), filter.Values...)}
 	u.manyFields = append([]string(nil), fields...)
 	return u.manyDocs, u.manyExists, nil
+}
+
+func (u *recordingMongoUpdater) NextSequence(_ context.Context, collection, name string) (int64, error) {
+	u.sequenceCollection = collection
+	u.sequenceNames = append(u.sequenceNames, name)
+	if u.sequenceValues == nil {
+		u.sequenceValues = make(map[string]int64)
+	}
+	u.sequenceValues[name]++
+	return u.sequenceValues[name], nil
 }
 
 func (r *recordingMongoRouter) RouteMongo(_ context.Context, routeType string, shardKey any) (string, error) {
@@ -353,6 +373,161 @@ func TestMongoAdapterRejectsUnexpectedReplacementResult(t *testing.T) {
 	}
 }
 
+func TestMongoAdapterBackfillsMissingDocumentWithSetOnInsert(t *testing.T) {
+	updater := &recordingMongoUpdater{updateResult: &txmongo.UpdateResult{UpsertedCount: 1}}
+	inserted, err := mustMongoAdapter(t, updater).BackfillDocumentWithOptions(
+		context.Background(),
+		mongoDocumentSpec(),
+		storage.RecordKey{ID: int64(1001)},
+		map[string]any{"roleId": int64(1001), "power": int64(9)},
+		storage.ApplyOptions{},
+	)
+	if err != nil {
+		t.Fatalf("BackfillDocumentWithOptions returned error: %v", err)
+	}
+	if !inserted {
+		t.Fatal("BackfillDocumentWithOptions inserted = false, want true")
+	}
+	if updater.collection != "roles" || updater.filter.Field != "roleId" || updater.filter.Value != int64(1001) || !updater.upsert {
+		t.Fatalf("collection/filter/upsert = %q/%#v/%t", updater.collection, updater.filter, updater.upsert)
+	}
+	setOnInsert, ok := updater.update["$setOnInsert"].(map[string]any)
+	if !ok || setOnInsert["roleId"] != int64(1001) || setOnInsert["p"] != int64(9) {
+		t.Fatalf("update = %#v, want BSON $setOnInsert document", updater.update)
+	}
+	if _, exists := updater.update["$set"]; exists {
+		t.Fatalf("update = %#v, must not overwrite an existing document", updater.update)
+	}
+}
+
+func TestMongoAdapterBackfillReportsExistingDocumentWithoutOverwrite(t *testing.T) {
+	updater := &recordingMongoUpdater{updateResult: &txmongo.UpdateResult{MatchedCount: 1}}
+	inserted, err := mustMongoAdapter(t, updater).BackfillDocumentWithOptions(
+		context.Background(),
+		mongoDocumentSpec(),
+		storage.RecordKey{ID: int64(1001)},
+		map[string]any{"roleId": int64(1001), "power": int64(9)},
+		storage.ApplyOptions{},
+	)
+	if err != nil {
+		t.Fatalf("BackfillDocumentWithOptions returned error: %v", err)
+	}
+	if inserted {
+		t.Fatal("BackfillDocumentWithOptions inserted = true, want false")
+	}
+	if _, exists := updater.update["$setOnInsert"]; !exists {
+		t.Fatalf("update = %#v, want insert-only update", updater.update)
+	}
+	if _, exists := updater.update["$set"]; exists {
+		t.Fatalf("update = %#v, must not overwrite existing fields", updater.update)
+	}
+}
+
+func TestMongoAdapterBackfillRejectsNilDocument(t *testing.T) {
+	_, err := mustMongoAdapter(t, &recordingMongoUpdater{}).BackfillDocumentWithOptions(
+		context.Background(),
+		mongoDocumentSpec(),
+		storage.RecordKey{ID: int64(1001)},
+		nil,
+		storage.ApplyOptions{},
+	)
+	if !errors.Is(err, storage.ErrNilDocument) {
+		t.Fatalf("BackfillDocumentWithOptions error = %v, want ErrNilDocument", err)
+	}
+}
+
+func TestMongoAdapterBackfillRejectsUnexpectedUpdateResult(t *testing.T) {
+	updater := &recordingMongoUpdater{updateResult: &txmongo.UpdateResult{MatchedCount: 1, UpsertedCount: 1}}
+	_, err := mustMongoAdapter(t, updater).BackfillDocumentWithOptions(
+		context.Background(),
+		mongoDocumentSpec(),
+		storage.RecordKey{ID: int64(1001)},
+		map[string]any{"roleId": int64(1001)},
+		storage.ApplyOptions{},
+	)
+	if err == nil || !strings.Contains(err.Error(), "unexpected backfill result") {
+		t.Fatalf("BackfillDocumentWithOptions error = %v, want unexpected result", err)
+	}
+}
+
+func TestMongoAdapterBackfillRequiresUniqueBusinessID(t *testing.T) {
+	updater := &recordingMongoUpdater{updateResult: &txmongo.UpdateResult{UpsertedCount: 1}}
+	spec := meta.TypeSpec{
+		Type: meta.Type{Fields: []meta.Field{
+			{Name: "AccountKey", JSONName: "accountKey", BSONName: "accountKey"},
+			{Name: "AccountID", JSONName: "accountId", BSONName: "accountId"},
+		}},
+		DocumentFactory: mongoMapDocumentFactory,
+		Mongo:           &meta.MongoSpec{Collection: "accounts", IDField: "AccountKey"},
+	}
+
+	_, err := mustMongoAdapter(t, updater).BackfillDocumentWithOptions(
+		context.Background(),
+		spec,
+		storage.RecordKey{ID: "wechat/open-id"},
+		map[string]any{"accountKey": "wechat/open-id", "accountId": int64(1001)},
+		storage.ApplyOptions{},
+	)
+	if err == nil || !strings.Contains(err.Error(), "unique single-field index") {
+		t.Fatalf("BackfillDocumentWithOptions error = %v, want unique business ID requirement", err)
+	}
+	if updater.update != nil {
+		t.Fatalf("Mongo update = %#v, want no write without unique business ID", updater.update)
+	}
+}
+
+func TestMongoAdapterBackfillAcceptsUniqueBusinessID(t *testing.T) {
+	updater := &recordingMongoUpdater{updateResult: &txmongo.UpdateResult{UpsertedCount: 1}}
+	spec := meta.TypeSpec{
+		Type: meta.Type{Fields: []meta.Field{
+			{Name: "AccountKey", JSONName: "accountKey", BSONName: "accountKey"},
+			{Name: "AccountID", JSONName: "accountId", BSONName: "accountId"},
+		}},
+		Fields: map[string]meta.FieldSpec{
+			"AccountKey": {Mongo: &meta.MongoFieldSpec{Indexes: []meta.IndexSpec{{
+				Keys:   []meta.IndexKeySpec{{Order: "1"}},
+				Unique: true,
+			}}}},
+		},
+		DocumentFactory: mongoMapDocumentFactory,
+		Mongo:           &meta.MongoSpec{Collection: "accounts", IDField: "AccountKey"},
+	}
+
+	inserted, err := mustMongoAdapter(t, updater).BackfillDocumentWithOptions(
+		context.Background(),
+		spec,
+		storage.RecordKey{ID: "wechat/open-id"},
+		map[string]any{"accountKey": "wechat/open-id", "accountId": int64(1001)},
+		storage.ApplyOptions{},
+	)
+	if err != nil || !inserted {
+		t.Fatalf("BackfillDocumentWithOptions inserted/error = %t/%v, want true/nil", inserted, err)
+	}
+}
+
+func TestMongoAdapterBackfillAcceptsExplicitMongoIDBinding(t *testing.T) {
+	updater := &recordingMongoUpdater{updateResult: &txmongo.UpdateResult{UpsertedCount: 1}}
+	spec := meta.TypeSpec{
+		Type:            meta.Type{Fields: []meta.Field{{Name: "SnapshotID", JSONName: "snapshotId", BSONName: "_id"}}},
+		DocumentFactory: mongoMapDocumentFactory,
+		Mongo:           &meta.MongoSpec{Collection: "snapshots", IDField: "SnapshotID"},
+	}
+
+	inserted, err := mustMongoAdapter(t, updater).BackfillDocumentWithOptions(
+		context.Background(),
+		spec,
+		storage.RecordKey{ID: "world-1/7"},
+		map[string]any{"snapshotId": "world-1/7"},
+		storage.ApplyOptions{},
+	)
+	if err != nil || !inserted {
+		t.Fatalf("BackfillDocumentWithOptions inserted/error = %t/%v, want true/nil", inserted, err)
+	}
+	if updater.filter.Field != "_id" || updater.filter.Value != "world-1/7" {
+		t.Fatalf("filter = %#v, want explicit Mongo _id binding", updater.filter)
+	}
+}
+
 func TestMongoAdapterAcceptsMissingDeleteAsIdempotent(t *testing.T) {
 	updater := &recordingMongoUpdater{deleteResult: &txmongo.DeleteResult{}}
 	err := mustMongoAdapter(t, updater).ApplyDelete(context.Background(), mongoDocumentSpec(), storage.RecordKey{ID: int64(1001)})
@@ -475,6 +650,71 @@ func TestMongoAdapterMapsUpdatePathToBSONName(t *testing.T) {
 	}
 }
 
+func TestMongoAdapterRejectsBusinessIDChange(t *testing.T) {
+	updater := &recordingMongoUpdater{}
+	adapter := mustMongoAdapter(t, updater)
+	spec := mongoDocumentSpec()
+	const mongoFieldRoleID change.FieldID = 5
+	changes := recordedChanges{{Path: changePath(fieldNode(mongoFieldRoleID)), Op: change.OpSet}}
+	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
+		change.FieldNameGo:   {mongoFieldRoleID: "RoleID"},
+		change.FieldNameBSON: {mongoFieldRoleID: "roleId"},
+	})
+
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, changes, resolver, change.ValueResolverFunc(func(path change.Path) (any, bool) {
+		if path.Equal(changePath(fieldNode(mongoFieldRoleID))) {
+			return int64(1002), true
+		}
+		return nil, false
+	}), storage.ApplyOptions{})
+	if err == nil || !strings.Contains(err.Error(), "immutable record id field RoleID") {
+		t.Fatalf("ApplyChangesWithOptions error = %v, want immutable business ID error", err)
+	}
+	if updater.update != nil {
+		t.Fatalf("update was sent despite immutable business ID error: %#v", updater.update)
+	}
+}
+
+func TestMongoAdapterUpsertSkipsBusinessIDChange(t *testing.T) {
+	updater := &recordingMongoUpdater{updateResult: &txmongo.UpdateResult{UpsertedCount: 1}}
+	adapter := mustMongoAdapter(t, updater)
+	spec := mongoDocumentSpec()
+	const (
+		mongoFieldRoleID change.FieldID = 5
+		mongoFieldPower  change.FieldID = 6
+	)
+	changes := recordedChanges{
+		{Path: changePath(fieldNode(mongoFieldRoleID)), Op: change.OpSet},
+		{Path: changePath(fieldNode(mongoFieldPower)), Op: change.OpSet},
+	}
+	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
+		change.FieldNameGo:   {mongoFieldRoleID: "RoleID", mongoFieldPower: "Power"},
+		change.FieldNameBSON: {mongoFieldRoleID: "roleId", mongoFieldPower: "p"},
+	})
+	values := change.ValueResolverFunc(func(path change.Path) (any, bool) {
+		switch path.Nodes[0].Field {
+		case mongoFieldRoleID:
+			return int64(1001), true
+		case mongoFieldPower:
+			return int64(9), true
+		default:
+			return nil, false
+		}
+	})
+
+	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, changes, resolver, values, storage.ApplyOptions{Upsert: true})
+	if err != nil {
+		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
+	}
+	setDoc := updater.update["$set"].(map[string]any)
+	if _, exists := setDoc["roleId"]; exists {
+		t.Fatalf("upsert update must not contain immutable business ID: %#v", updater.update)
+	}
+	if setDoc["p"] != int64(9) {
+		t.Fatalf("update = %#v, want p=9", updater.update)
+	}
+}
+
 func TestMongoAdapterUsesBSONIDFieldForFilter(t *testing.T) {
 	updater := &recordingMongoUpdater{}
 	adapter := mustMongoAdapter(t, updater)
@@ -531,8 +771,9 @@ func TestMongoAdapterMapsChangesToBSONName(t *testing.T) {
 func TestMongoAdapterConvertsWholeDocumentsBetweenJSONAndBSON(t *testing.T) {
 	client := &recordingMongoUpdater{
 		doc: map[string]any{
-			"_id": int64(1001),
-			"p":   int64(9),
+			"_id":    "mongo-generated-id",
+			"roleId": int64(1001),
+			"p":      int64(9),
 			"rank": map[string]any{
 				"lv": int64(4),
 			},
@@ -552,11 +793,11 @@ func TestMongoAdapterConvertsWholeDocumentsBetweenJSONAndBSON(t *testing.T) {
 	if err := adapter.ReplaceDocument(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, input); err != nil {
 		t.Fatalf("ReplaceDocument returned error: %v", err)
 	}
-	if client.replace["_id"] != int64(1001) || client.replace["p"] != int64(9) {
+	if client.replace["roleId"] != int64(1001) || client.replace["p"] != int64(9) {
 		t.Fatalf("mongo document = %#v, want BSON field names", client.replace)
 	}
-	if _, ok := client.replace["roleId"]; ok {
-		t.Fatalf("mongo document must not retain JSON roleId: %#v", client.replace)
+	if _, ok := client.replace["_id"]; ok {
+		t.Fatalf("mongo document must not synthesize BSON _id: %#v", client.replace)
 	}
 	rank, ok := client.replace["rank"].(map[string]any)
 	if !ok || rank["lv"] != int64(4) {
@@ -691,21 +932,21 @@ func TestMongoAdapterRejectsIDFieldUpdate(t *testing.T) {
 	spec := meta.TypeSpec{
 		Type: meta.Type{
 			Fields: []meta.Field{{
-				Name:     "RoleId",
+				Name:     "DocumentId",
 				BSONName: "_id",
 			}},
 		},
-		Mongo: &meta.MongoSpec{Collection: "roles", IDField: "RoleId"},
+		Mongo: &meta.MongoSpec{Collection: "snapshots", IDField: "DocumentId"},
 	}
-	const mongoFieldRoleID change.FieldID = 5
-	changes := recordedChanges{{Path: changePath(fieldNode(mongoFieldRoleID)), Op: change.OpSet}}
+	const mongoFieldDocumentID change.FieldID = 5
+	changes := recordedChanges{{Path: changePath(fieldNode(mongoFieldDocumentID)), Op: change.OpSet}}
 	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
-		change.FieldNameGo:   {mongoFieldRoleID: "RoleId"},
-		change.FieldNameBSON: {mongoFieldRoleID: "_id"},
+		change.FieldNameGo:   {mongoFieldDocumentID: "DocumentId"},
+		change.FieldNameBSON: {mongoFieldDocumentID: "_id"},
 	})
 
 	err := adapter.ApplyChangesWithOptions(context.Background(), spec, storage.RecordKey{ID: int64(1001)}, changes, resolver, change.ValueResolverFunc(func(path change.Path) (any, bool) {
-		if path.Equal(changePath(fieldNode(mongoFieldRoleID))) {
+		if path.Equal(changePath(fieldNode(mongoFieldDocumentID))) {
 			return int64(1002), true
 		}
 		return nil, false
@@ -713,7 +954,7 @@ func TestMongoAdapterRejectsIDFieldUpdate(t *testing.T) {
 	if err == nil {
 		t.Fatal("ApplyChangesWithOptions returned nil error, want immutable _id error")
 	}
-	if !strings.Contains(err.Error(), "RoleId") || !strings.Contains(err.Error(), "_id") {
+	if !strings.Contains(err.Error(), "DocumentId") || !strings.Contains(err.Error(), "_id") {
 		t.Fatalf("error = %v, want field context", err)
 	}
 	if updater.update != nil {
@@ -726,26 +967,26 @@ func TestMongoAdapterUpsertSkipsImmutableIDChange(t *testing.T) {
 	adapter := mustMongoAdapter(t, updater)
 	spec := meta.TypeSpec{
 		Type: meta.Type{Fields: []meta.Field{
-			{Name: "RoleId", BSONName: "_id"},
+			{Name: "DocumentId", BSONName: "_id"},
 			{Name: "Name", BSONName: "name"},
 		}},
-		Mongo: &meta.MongoSpec{Collection: "roles", IDField: "RoleId"},
+		Mongo: &meta.MongoSpec{Collection: "snapshots", IDField: "DocumentId"},
 	}
 	const (
-		mongoFieldRoleID change.FieldID = 5
-		mongoFieldName   change.FieldID = 6
+		mongoFieldDocumentID change.FieldID = 5
+		mongoFieldName       change.FieldID = 6
 	)
 	changes := recordedChanges{
-		{Path: changePath(fieldNode(mongoFieldRoleID)), Op: change.OpSet},
+		{Path: changePath(fieldNode(mongoFieldDocumentID)), Op: change.OpSet},
 		{Path: changePath(fieldNode(mongoFieldName)), Op: change.OpSet},
 	}
 	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
-		change.FieldNameGo:   {mongoFieldRoleID: "RoleId", mongoFieldName: "Name"},
-		change.FieldNameBSON: {mongoFieldRoleID: "_id", mongoFieldName: "name"},
+		change.FieldNameGo:   {mongoFieldDocumentID: "DocumentId", mongoFieldName: "Name"},
+		change.FieldNameBSON: {mongoFieldDocumentID: "_id", mongoFieldName: "name"},
 	})
 	values := change.ValueResolverFunc(func(path change.Path) (any, bool) {
 		switch path.Nodes[0].Field {
-		case mongoFieldRoleID:
+		case mongoFieldDocumentID:
 			return int64(1001), true
 		case mongoFieldName:
 			return "alice", true
@@ -774,17 +1015,17 @@ func TestMongoAdapterRejectsUpsertWithOnlyImmutableIDChange(t *testing.T) {
 	updater := &recordingMongoUpdater{}
 	adapter := mustMongoAdapter(t, updater)
 	spec := meta.TypeSpec{
-		Type:  meta.Type{Fields: []meta.Field{{Name: "RoleId", BSONName: "_id"}}},
-		Mongo: &meta.MongoSpec{Collection: "roles", IDField: "RoleId"},
+		Type:  meta.Type{Fields: []meta.Field{{Name: "DocumentId", BSONName: "_id"}}},
+		Mongo: &meta.MongoSpec{Collection: "snapshots", IDField: "DocumentId"},
 	}
-	const mongoFieldRoleID change.FieldID = 5
-	changes := recordedChanges{{Path: changePath(fieldNode(mongoFieldRoleID)), Op: change.OpSet}}
+	const mongoFieldDocumentID change.FieldID = 5
+	changes := recordedChanges{{Path: changePath(fieldNode(mongoFieldDocumentID)), Op: change.OpSet}}
 	resolver := testNamedFieldResolver(map[change.FieldNameKind]map[change.FieldID]string{
-		change.FieldNameGo:   {mongoFieldRoleID: "RoleId"},
-		change.FieldNameBSON: {mongoFieldRoleID: "_id"},
+		change.FieldNameGo:   {mongoFieldDocumentID: "DocumentId"},
+		change.FieldNameBSON: {mongoFieldDocumentID: "_id"},
 	})
 	values := change.ValueResolverFunc(func(path change.Path) (any, bool) {
-		if path.Equal(changePath(fieldNode(mongoFieldRoleID))) {
+		if path.Equal(changePath(fieldNode(mongoFieldDocumentID))) {
 			return int64(1001), true
 		}
 		return nil, false
@@ -1072,6 +1313,67 @@ func TestMongoClusterRoutesSingleWriteByShardKey(t *testing.T) {
 	}
 	if userShard.update != nil {
 		t.Fatalf("unexpected user shard update = %#v", userShard.update)
+	}
+}
+
+func TestMongoClusterRoutesBackfillByShardKey(t *testing.T) {
+	router := &recordingMongoRouter{names: map[any]string{int64(7): "role-shard"}}
+	client := &recordingMongoUpdater{updateResult: &txmongo.UpdateResult{UpsertedCount: 1}}
+	cluster := mustMongoCluster(t, router, map[string]txmongo.Client{"role-shard": client})
+	spec := mongoDocumentSpec()
+	spec.Mongo.Route.Type = "role"
+
+	inserted, err := cluster.BackfillDocumentWithOptions(
+		context.Background(),
+		spec,
+		storage.RecordKey{ID: int64(1001), ShardKey: int64(7)},
+		map[string]any{"roleId": int64(1001), "power": int64(9)},
+		storage.ApplyOptions{},
+	)
+	if err != nil {
+		t.Fatalf("BackfillDocumentWithOptions returned error: %v", err)
+	}
+	if !inserted {
+		t.Fatal("BackfillDocumentWithOptions inserted = false, want true")
+	}
+	if len(router.calls) != 1 || router.calls[0].routeType != "role" || router.calls[0].shardKey != int64(7) {
+		t.Fatalf("route calls = %#v, want role/7", router.calls)
+	}
+}
+
+func TestMongoClusterRoutesIndependentNamedSequences(t *testing.T) {
+	router := &recordingMongoRouter{names: map[any]string{int64(1): "global-shard"}}
+	client := &recordingMongoUpdater{}
+	cluster := mustMongoCluster(t, router, map[string]txmongo.Client{"global-shard": client})
+
+	firstAccountID, err := cluster.NextSequence(context.Background(), "global", int64(1), "account_id")
+	if err != nil {
+		t.Fatalf("first account sequence returned error: %v", err)
+	}
+	secondAccountID, err := cluster.NextSequence(context.Background(), "global", int64(1), "account_id")
+	if err != nil {
+		t.Fatalf("second account sequence returned error: %v", err)
+	}
+	firstSessionID, err := cluster.NextSequence(context.Background(), "global", int64(1), "session_id")
+	if err != nil {
+		t.Fatalf("first session sequence returned error: %v", err)
+	}
+	if firstAccountID != 1 || secondAccountID != 2 || firstSessionID != 1 {
+		t.Fatalf("sequence values = %d/%d/%d, want 1/2/1", firstAccountID, secondAccountID, firstSessionID)
+	}
+	if client.sequenceCollection != "tx_sequences" {
+		t.Fatalf("sequence collection = %q, want tx_sequences", client.sequenceCollection)
+	}
+	if len(client.sequenceNames) != 3 || client.sequenceNames[0] != "account_id" || client.sequenceNames[1] != "account_id" || client.sequenceNames[2] != "session_id" {
+		t.Fatalf("sequence names = %#v, want account_id/account_id/session_id", client.sequenceNames)
+	}
+	if len(router.calls) != 3 {
+		t.Fatalf("route calls = %#v, want three calls", router.calls)
+	}
+	for _, call := range router.calls {
+		if call.routeType != "global" || call.shardKey != int64(1) {
+			t.Fatalf("route call = %#v, want global/1", call)
+		}
 	}
 }
 

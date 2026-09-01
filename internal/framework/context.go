@@ -43,6 +43,10 @@ type ModeStorage interface {
 	Reader() txstorage.DocumentLoader
 	// ChangeWriter 返回只接受当前模式 TypeSpec 的变更写入器。
 	ChangeWriter() txstorage.ChangeApplier
+	// BackfillDocumentWithOptions 只允许 Mongo 模式执行仅缺失时写入。
+	BackfillDocumentWithOptions(context.Context, meta.TypeSpec, txstorage.RecordKey, map[string]any, txstorage.ApplyOptions) (bool, error)
+	// NextSequence 只允许 Mongo 模式按路由分片递增命名序列。
+	NextSequence(context.Context, string, any, string) (int64, error)
 }
 
 // Advanced 暴露第一版受支持的专家级扩展面。普通业务服务应直接使用 Context 的能力方法。

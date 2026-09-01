@@ -103,6 +103,16 @@ type BatchFinder interface {
 	FindMany(context.Context, string, ValuesFilter, ...string) ([]map[string]any, []bool, error)
 }
 
+// SequenceIncrementer 是单个 MongoDB 分片递增命名序列所需的最小接口。
+type SequenceIncrementer interface {
+	NextSequence(context.Context, string, string) (int64, error)
+}
+
+// SequenceAllocator 按 routeType 和 shardKey 选择分片后递增命名序列。
+type SequenceAllocator interface {
+	NextSequence(context.Context, string, any, string) (int64, error)
+}
+
 // IndexManager 创建由生成元数据声明的 Mongo 索引。
 type IndexManager interface {
 	EnsureIndexes(context.Context, string, []IndexModel) error
@@ -115,6 +125,7 @@ type Client interface {
 	Deleter
 	Finder
 	BatchFinder
+	SequenceIncrementer
 }
 
 // Adapter 把规范化变更流应用到 MongoDB 更新文档。
@@ -123,6 +134,9 @@ type Adapter struct {
 }
 
 var _ FencedChangeApplier = (*Adapter)(nil)
+var _ storage.DocumentBackfiller = (*Adapter)(nil)
+
+const sequenceCollection = "tx_sequences"
 
 // NewAdapter 创建 Mongo 变更适配器。
 func NewAdapter(client Client) (*Adapter, error) {
@@ -225,6 +239,71 @@ func (a *Adapter) ReplaceDocument(ctx context.Context, spec meta.TypeSpec, key s
 		return nil
 	}
 	return fmt.Errorf("mongo: unexpected replace result matched=%d upserted=%d", result.MatchedCount, result.UpsertedCount)
+}
+
+// BackfillDocumentWithOptions 仅当 Mongo 文档不存在时原子写入完整文档。
+func (a *Adapter) BackfillDocumentWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any, _ storage.ApplyOptions) (bool, error) {
+	if doc == nil {
+		return false, storage.ErrNilDocument
+	}
+	if err := storage.ValidateRecordKey(spec, key); err != nil {
+		return false, err
+	}
+	if err := validateBackfillIdentity(spec); err != nil {
+		return false, err
+	}
+	client, err := a.clientFor()
+	if err != nil {
+		return false, err
+	}
+	bsonDocument, err := bsonDocumentFromCanonical(spec, doc)
+	if err != nil {
+		return false, err
+	}
+	result, err := client.UpdateOne(
+		ctx,
+		mongoCollection(spec),
+		mongoRecordFilter(spec, key),
+		map[string]any{"$setOnInsert": bsonDocument},
+		storage.ApplyOptions{Upsert: true},
+	)
+	if err != nil {
+		return false, err
+	}
+	switch {
+	case result.MatchedCount == 0 && result.UpsertedCount == 1:
+		return true, nil
+	case result.MatchedCount == 1 && result.UpsertedCount == 0:
+		return false, nil
+	default:
+		return false, fmt.Errorf("mongo: unexpected backfill result matched=%d upserted=%d", result.MatchedCount, result.UpsertedCount)
+	}
+}
+
+func validateBackfillIdentity(spec meta.TypeSpec) error {
+	field := mongoRecordFilterField(spec)
+	if field == "_id" {
+		return nil
+	}
+	indexes, err := BuildIndexModels(spec)
+	if err != nil {
+		return err
+	}
+	for _, index := range indexes {
+		if index.Unique && len(index.Keys) == 1 && index.Keys[0].Path == field {
+			return nil
+		}
+	}
+	return fmt.Errorf("mongo: backfill business ID field %q requires a unique single-field index", field)
+}
+
+// NextSequence 在当前 MongoDB 分片递增命名序列。
+func (a *Adapter) NextSequence(ctx context.Context, name string) (int64, error) {
+	client, err := a.clientFor()
+	if err != nil {
+		return 0, err
+	}
+	return client.NextSequence(ctx, sequenceCollection, name)
 }
 
 // ApplyDelete 按记录键删除一条 Mongo 文档。

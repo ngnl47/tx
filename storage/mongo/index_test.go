@@ -11,13 +11,13 @@ import (
 func TestBuildIndexModelsGroupsNamedAndAnonymousIndexes(t *testing.T) {
 	spec := meta.TypeSpec{
 		Type: meta.Type{Fields: []meta.Field{
-			{Name: "RoleId", BSONName: "_id"},
+			{Name: "DocumentId", BSONName: "_id"},
 			{Name: "Platform", BSONName: "platform"},
 			{Name: "PlatformUId", BSONName: "platformUId"},
 		}},
 		Fields: map[string]meta.FieldSpec{
-			"RoleId":   {Mongo: &meta.MongoFieldSpec{Indexes: []meta.IndexSpec{{Keys: []meta.IndexKeySpec{{Order: "1"}}, Unique: true}}}},
-			"Platform": {Mongo: &meta.MongoFieldSpec{Indexes: []meta.IndexSpec{{Name: "p_id", Keys: []meta.IndexKeySpec{{Order: "1"}}}}}},
+			"DocumentId": {Mongo: &meta.MongoFieldSpec{Indexes: []meta.IndexSpec{{Keys: []meta.IndexKeySpec{{Order: "1"}}, Unique: true}}}},
+			"Platform":   {Mongo: &meta.MongoFieldSpec{Indexes: []meta.IndexSpec{{Name: "p_id", Keys: []meta.IndexKeySpec{{Order: "1"}}}}}},
 			"PlatformUId": {Mongo: &meta.MongoFieldSpec{Indexes: []meta.IndexSpec{
 				{Name: "p_id", Keys: []meta.IndexKeySpec{{Order: "1"}}},
 				{Keys: []meta.IndexKeySpec{{Order: "-1"}}},

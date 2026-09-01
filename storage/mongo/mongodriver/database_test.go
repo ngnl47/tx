@@ -11,6 +11,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/integration/mtest"
 
 	"github.com/ngnl47/tx/storage"
 	txmongo "github.com/ngnl47/tx/storage/mongo"
@@ -65,9 +66,60 @@ func TestDatabaseReturnsErrorWhenMongoDatabaseMissing(t *testing.T) {
 	if _, _, err := db.FindMany(context.Background(), "roles", txmongo.ValuesFilter{Field: "_id", Values: []any{int64(1001)}}); err == nil || !strings.Contains(err.Error(), "mongo database is not configured") {
 		t.Fatalf("FindMany error = %v, want missing database error", err)
 	}
+	if _, err := db.NextSequence(context.Background(), "tx_sequences", "account_id"); err == nil || !strings.Contains(err.Error(), "mongo database is not configured") {
+		t.Fatalf("NextSequence error = %v, want missing database error", err)
+	}
 	if err := db.EnsureIndexes(context.Background(), "roles", nil); err == nil || !strings.Contains(err.Error(), "mongo database is not configured") {
 		t.Fatalf("EnsureIndexes error = %v, want missing database error", err)
 	}
+}
+
+func TestDatabaseNextSequenceUsesSingleAtomicFindAndModify(t *testing.T) {
+	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
+	mt.Run("increment", func(mt *mtest.T) {
+		mt.AddMockResponses(mtest.CreateSuccessResponse(
+			bson.E{Key: "lastErrorObject", Value: bson.D{
+				{Key: "n", Value: int32(1)},
+				{Key: "updatedExisting", Value: false},
+				{Key: "upserted", Value: "account_id"},
+			}},
+			bson.E{Key: "value", Value: bson.D{
+				{Key: "_id", Value: "account_id"},
+				{Key: "value", Value: int64(1)},
+			}},
+		))
+
+		value, err := NewDatabase(mt.DB).NextSequence(context.Background(), "tx_sequences", "account_id")
+		if err != nil {
+			t.Fatalf("NextSequence returned error: %v", err)
+		}
+		if value != 1 {
+			t.Fatalf("NextSequence = %d, want 1", value)
+		}
+
+		event := mt.GetStartedEvent()
+		if event == nil || event.CommandName != "findAndModify" {
+			t.Fatalf("started event = %#v, want one findAndModify", event)
+		}
+		if extra := mt.GetStartedEvent(); extra != nil {
+			t.Fatalf("extra started event = %#v, want a single command", extra)
+		}
+		if got := event.Command.Lookup("findAndModify").StringValue(); got != "tx_sequences" {
+			t.Fatalf("collection = %q, want tx_sequences", got)
+		}
+		if !event.Command.Lookup("upsert").Boolean() || !event.Command.Lookup("new").Boolean() {
+			t.Fatalf("command = %v, want upsert and return-after", event.Command)
+		}
+		query := event.Command.Lookup("query").Document()
+		if got := query.Lookup("_id").StringValue(); got != "account_id" {
+			t.Fatalf("sequence name = %q, want account_id", got)
+		}
+		update := event.Command.Lookup("update").Document()
+		increment := update.Lookup("$inc").Document()
+		if got := increment.Lookup("value").Int64(); got != 1 {
+			t.Fatalf("increment = %d, want 1", got)
+		}
+	})
 }
 
 func TestMongoFilterDocumentIncludesRecordKeyAndFenceConditions(t *testing.T) {
