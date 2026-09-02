@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"math/rand/v2"
 	"sort"
 	"strings"
 	"sync"
@@ -80,6 +82,54 @@ func (r *EtcdRegistry) Register(ctx context.Context, instance Instance) (*EtcdRe
 	return registration, nil
 }
 
+// RegisterRuntime 申请进程 workSlot，并用同一租约注册自动生成 ID 的实例。
+func (r *EtcdRegistry) RegisterRuntime(ctx context.Context, appID string, descriptor Instance) (*EtcdRegistration, error) {
+	if descriptor.ID != "" {
+		return nil, ErrInvalidInstance
+	}
+	lease, err := r.client.Grant(ctx, r.config.LeaseTTL)
+	if err != nil {
+		return nil, err
+	}
+	identity, err := r.claimWorkSlot(ctx, lease, appID, uint16(rand.IntN(WorkSlotCount)+1))
+	if err != nil {
+		return nil, errors.Join(err, lease.Revoke(context.WithoutCancel(ctx)))
+	}
+	descriptor.ID = identity.InstanceID
+	if err := r.config.ValidateInstance(descriptor); err != nil {
+		return nil, errors.Join(err, lease.Revoke(context.WithoutCancel(ctx)))
+	}
+	registration := &EtcdRegistration{
+		registry: r,
+		identity: identity,
+		instance: cloneInstance(descriptor),
+		lease:    lease,
+		done:     make(chan struct{}),
+	}
+	if err := registration.write(ctx); err != nil {
+		return nil, errors.Join(err, lease.Revoke(context.WithoutCancel(ctx)))
+	}
+	go registration.keepAlive()
+	return registration, nil
+}
+
+func (r *EtcdRegistry) claimWorkSlot(ctx context.Context, lease *txetcd.Lease, appID string, start uint16) (RuntimeIdentity, error) {
+	if start == 0 || start > WorkSlotCount {
+		return RuntimeIdentity{}, ErrInvalidRuntimeIdentity
+	}
+	for offset := range WorkSlotCount {
+		slot := uint16((int(start)-1+offset)%WorkSlotCount + 1)
+		created, ok, err := lease.Create(ctx, r.workSlotKey(slot), []byte(appID))
+		if err != nil {
+			return RuntimeIdentity{}, err
+		}
+		if ok {
+			return newRuntimeIdentity(appID, slot, created.ModRevision)
+		}
+	}
+	return RuntimeIdentity{}, ErrWorkSlotExhausted
+}
+
 // Watch 持续用 etcd 快照更新目录，直到 ctx 取消或 etcd 返回错误。
 func (r *EtcdRegistry) Watch(ctx context.Context, directory *ServiceDirectory) error {
 	if directory == nil {
@@ -148,7 +198,9 @@ type EtcdRegistration struct {
 	registry *EtcdRegistry
 
 	mu       sync.Mutex
+	identity RuntimeIdentity
 	instance Instance
+	running  bool
 	lease    *txetcd.Lease
 	done     chan struct{}
 	doneOnce sync.Once
@@ -167,6 +219,20 @@ func (r *EtcdRegistration) Err() error {
 	return r.doneErr
 }
 
+// Identity 返回当前注册持有的运行身份。
+func (r *EtcdRegistration) Identity() RuntimeIdentity {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.identity
+}
+
+// Instance 返回当前注册的实例描述副本。
+func (r *EtcdRegistration) Instance() Instance {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return cloneInstance(r.instance)
+}
+
 func (r *EtcdRegistration) SetStatus(ctx context.Context, status Status) error {
 	if !status.Valid() {
 		return ErrInvalidInstance
@@ -177,15 +243,29 @@ func (r *EtcdRegistration) SetStatus(ctx context.Context, status Status) error {
 		return ErrRegistrationDone
 	}
 	r.instance.Status = status
-	return r.write(ctx)
+	if err := r.write(ctx); err != nil {
+		return err
+	}
+	if status == StatusRunning {
+		r.running = true
+	}
+	return nil
 }
 
 func (r *EtcdRegistration) Close(ctx context.Context) error {
 	r.close.Do(func() {
 		r.finish(ErrRegistrationDone)
-		deleteErr := r.registry.client.Delete(ctx, r.registry.instanceKey(r.instance.ID))
-		revokeErr := r.lease.Revoke(ctx)
-		r.closeErr = errors.Join(deleteErr, revokeErr)
+		r.mu.Lock()
+		instanceID := r.instance.ID
+		running := r.running
+		hasRuntimeIdentity := r.identity.WorkSlot != 0
+		r.mu.Unlock()
+		deleteErr := r.registry.client.Delete(ctx, r.registry.instanceKey(instanceID))
+		if hasRuntimeIdentity && running {
+			r.closeErr = errors.Join(deleteErr, r.lease.Stop())
+			return
+		}
+		r.closeErr = errors.Join(deleteErr, r.lease.Revoke(ctx))
 	})
 	return r.closeErr
 }
@@ -218,6 +298,11 @@ func (r *EtcdRegistration) write(ctx context.Context) error {
 
 func (r *EtcdRegistry) instanceKey(id string) string {
 	return r.config.Prefix + "/" + id
+}
+
+func (r *EtcdRegistry) workSlotKey(slot uint16) string {
+	root := strings.TrimSuffix(r.config.Prefix, "/instances")
+	return fmt.Sprintf("%s/work-slots/%d", root, slot)
 }
 
 func (r *EtcdRegistry) watchPrefix() string {

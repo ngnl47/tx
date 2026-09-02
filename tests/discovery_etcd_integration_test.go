@@ -260,6 +260,154 @@ func TestEtcdSlotStoreSurvivesRegistryClose(t *testing.T) {
 	}
 }
 
+func TestConcurrentRuntimeClaimsUseDifferentWorkSlots(t *testing.T) {
+	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("set TX_ETCD_ENDPOINT to run the etcd integration test")
+	}
+	prefix := uniqueDiscoveryPrefix(t, "concurrent-runtime")
+	type result struct {
+		runtime *discovery.Runtime
+		err     error
+	}
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			runtime, err := openIntegrationRuntime(t.Context(), endpoint, "txgame", prefix, 2*time.Second)
+			results <- result{runtime: runtime, err: err}
+		}()
+	}
+	first := <-results
+	second := <-results
+	if first.err != nil || second.err != nil {
+		if first.runtime != nil {
+			_ = first.runtime.Close(context.Background())
+		}
+		if second.runtime != nil {
+			_ = second.runtime.Close(context.Background())
+		}
+		t.Fatalf("runtime claims failed: first=%v second=%v", first.err, second.err)
+	}
+	t.Cleanup(func() {
+		_ = first.runtime.Close(context.Background())
+		_ = second.runtime.Close(context.Background())
+	})
+	if first.runtime.Identity().WorkSlot == second.runtime.Identity().WorkSlot {
+		t.Fatalf("workSlot duplicated: %d", first.runtime.Identity().WorkSlot)
+	}
+	if first.runtime.Instance().ID == second.runtime.Instance().ID {
+		t.Fatalf("InstanceID duplicated: %q", first.runtime.Instance().ID)
+	}
+}
+
+func TestEtcdRunningRuntimeCloseKeepsWorkSlotUntilTTL(t *testing.T) {
+	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("set TX_ETCD_ENDPOINT to run the etcd integration test")
+	}
+	prefix := uniqueDiscoveryPrefix(t, "runtime-close")
+	const leaseTTL = 2 * time.Second
+	runtime := newIntegrationRuntime(t, "txgame", prefix, leaseTTL)
+	if err := runtime.MarkRunning(t.Context()); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+	identity := runtime.Identity()
+	instance := runtime.Instance()
+	client, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: time.Second})
+	if err != nil {
+		t.Fatalf("create etcd assertion client: %v", err)
+	}
+	defer client.Close()
+	if err := runtime.Close(t.Context()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	instanceKey := prefix + "/instances/" + instance.ID
+	workSlotKey := fmt.Sprintf("%s/work-slots/%d", prefix, identity.WorkSlot)
+	if response, err := client.Get(t.Context(), instanceKey); err != nil || len(response.Kvs) != 0 {
+		t.Fatalf("instance key after Close: count=%d err=%v", len(response.Kvs), err)
+	}
+	if response, err := client.Get(t.Context(), workSlotKey); err != nil || len(response.Kvs) != 1 {
+		t.Fatalf("workSlot key immediately after Close: count=%d err=%v", len(response.Kvs), err)
+	}
+	waitWorkSlotReleased(t, client, workSlotKey, 2*leaseTTL)
+	if err := runtime.Err(); !errors.Is(err, discovery.ErrRuntimeClosed) {
+		t.Fatalf("Runtime.Err = %v, want ErrRuntimeClosed", err)
+	}
+}
+
+func TestEtcdStartingRuntimeCloseRevokesWorkSlotImmediately(t *testing.T) {
+	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("set TX_ETCD_ENDPOINT to run the etcd integration test")
+	}
+	prefix := uniqueDiscoveryPrefix(t, "runtime-start-failure")
+	runtime := newIntegrationRuntime(t, "txgame", prefix, 5*time.Second)
+	workSlotKey := fmt.Sprintf("%s/work-slots/%d", prefix, runtime.Identity().WorkSlot)
+	client, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: time.Second})
+	if err != nil {
+		t.Fatalf("create etcd assertion client: %v", err)
+	}
+	defer client.Close()
+	if err := runtime.Close(t.Context()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	response, err := client.Get(t.Context(), workSlotKey)
+	if err != nil {
+		t.Fatalf("read workSlot after Close: %v", err)
+	}
+	if len(response.Kvs) != 0 {
+		t.Fatal("starting Runtime retained workSlot after Close")
+	}
+}
+
+func uniqueDiscoveryPrefix(t *testing.T, suffix string) string {
+	t.Helper()
+	return fmt.Sprintf("/tx/tests/%s-%d", suffix, time.Now().UnixNano())
+}
+
+func newIntegrationRuntime(t *testing.T, appID, prefix string, leaseTTL time.Duration) *discovery.Runtime {
+	t.Helper()
+	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
+	runtime, err := openIntegrationRuntime(t.Context(), endpoint, appID, prefix, leaseTTL)
+	if err != nil {
+		t.Fatalf("NewRuntimeWithIdentity: %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+	return runtime
+}
+
+func openIntegrationRuntime(ctx context.Context, endpoint, appID, prefix string, leaseTTL time.Duration) (*discovery.Runtime, error) {
+	return discovery.NewRuntimeWithIdentity(ctx, discovery.EtcdConfig{
+		Endpoints:   []string{endpoint},
+		Prefix:      prefix,
+		LeaseTTL:    leaseTTL,
+		DialTimeout: time.Second,
+	}, appID, discovery.Instance{
+		Services: []string{"login"},
+		Endpoint: "127.0.0.1:9000",
+		Status:   discovery.StatusStarting,
+	})
+}
+
+func waitWorkSlotReleased(t *testing.T, client *clientv3.Client, key string, timeout time.Duration) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
+	defer cancel()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		response, err := client.Get(ctx, key)
+		if err == nil && len(response.Kvs) == 0 {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("wait workSlot %q release: %v", key, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
 func waitDirectory(t *testing.T, ctx context.Context, directory *discovery.ServiceDirectory, condition func() bool) {
 	t.Helper()
 	ticker := time.NewTicker(10 * time.Millisecond)

@@ -19,6 +19,12 @@ type Runtime struct {
 	directory       *ServiceDirectory
 	slotDirectory   *SlotDirectory
 	slots           *CachedSlotStore
+	identity        RuntimeIdentity
+	instance        Instance
+	done            chan struct{}
+	doneOnce        sync.Once
+	errMu           sync.Mutex
+	err             error
 	closeOnce       sync.Once
 	closeErr        error
 }
@@ -31,6 +37,10 @@ type runtimeRegistry interface {
 type runtimeRegistration interface {
 	SetStatus(context.Context, Status) error
 	Close(context.Context) error
+	Done() <-chan struct{}
+	Err() error
+	Identity() RuntimeIdentity
+	Instance() Instance
 }
 
 type runtimeSlotStore interface {
@@ -56,6 +66,24 @@ func NewRuntime(ctx context.Context, config EtcdConfig, instance Instance) (*Run
 	return runtime, nil
 }
 
+// NewRuntimeWithIdentity 申请运行身份、注册最终实例并创建只读缓存目录。
+func NewRuntimeWithIdentity(ctx context.Context, config EtcdConfig, appID string, descriptor Instance) (*Runtime, error) {
+	registry, err := NewEtcdRegistry(ctx, config)
+	if err != nil {
+		return nil, err
+	}
+	registration, err := registry.RegisterRuntime(ctx, appID, descriptor)
+	if err != nil {
+		return nil, errors.Join(err, registry.Close())
+	}
+	runtime, err := newRuntime(registry, registration, registry.Slots())
+	if err != nil {
+		_ = registration.Close(context.WithoutCancel(ctx))
+		return nil, errors.Join(err, registry.Close())
+	}
+	return runtime, nil
+}
+
 func newRuntime(registry runtimeRegistry, registration runtimeRegistration, slots runtimeSlotStore) (*Runtime, error) {
 	directory := NewServiceDirectory()
 	slotDirectory := NewSlotDirectory()
@@ -63,14 +91,53 @@ func newRuntime(registry runtimeRegistry, registration runtimeRegistration, slot
 	if err != nil {
 		return nil, err
 	}
-	return &Runtime{
+	runtime := &Runtime{
 		registry:        registry,
 		registration:    registration,
 		persistentSlots: slots,
 		directory:       directory,
 		slotDirectory:   slotDirectory,
 		slots:           cachedSlots,
-	}, nil
+		identity:        registration.Identity(),
+		instance:        registration.Instance(),
+		done:            make(chan struct{}),
+	}
+	go runtime.waitRegistration()
+	return runtime, nil
+}
+
+// Identity 返回当前进程不可变的运行身份快照。
+func (runtime *Runtime) Identity() RuntimeIdentity {
+	if runtime == nil {
+		return RuntimeIdentity{}
+	}
+	return runtime.identity
+}
+
+// Instance 返回使用最终 InstanceID 冻结的实例描述副本。
+func (runtime *Runtime) Instance() Instance {
+	if runtime == nil {
+		return Instance{}
+	}
+	return cloneInstance(runtime.instance)
+}
+
+// Done 在运行身份正常关闭或意外丢失时关闭。
+func (runtime *Runtime) Done() <-chan struct{} {
+	if runtime == nil {
+		return nil
+	}
+	return runtime.done
+}
+
+// Err 返回运行身份的最终结束原因；运行期间返回 nil。
+func (runtime *Runtime) Err() error {
+	if runtime == nil {
+		return nil
+	}
+	runtime.errMu.Lock()
+	defer runtime.errMu.Unlock()
+	return runtime.err
 }
 
 // Directory 返回由 Watch 维护的共享服务目录。
@@ -174,6 +241,9 @@ func (runtime *Runtime) Close(ctx context.Context) error {
 		var registrationErr error
 		if runtime.registration != nil {
 			registrationErr = runtime.registration.Close(ctx)
+			runtime.finishRegistration()
+		} else {
+			runtime.finish(ErrRuntimeClosed)
 		}
 		if runtime.registry == nil {
 			runtime.closeErr = registrationErr
@@ -182,4 +252,27 @@ func (runtime *Runtime) Close(ctx context.Context) error {
 		runtime.closeErr = errors.Join(registrationErr, runtime.registry.Close())
 	})
 	return runtime.closeErr
+}
+
+func (runtime *Runtime) waitRegistration() {
+	<-runtime.registration.Done()
+	runtime.finishRegistration()
+}
+
+func (runtime *Runtime) finishRegistration() {
+	err := runtime.registration.Err()
+	if errors.Is(err, ErrRegistrationDone) {
+		runtime.finish(ErrRuntimeClosed)
+		return
+	}
+	runtime.finish(errors.Join(ErrRuntimeIdentityLost, err))
+}
+
+func (runtime *Runtime) finish(err error) {
+	runtime.doneOnce.Do(func() {
+		runtime.errMu.Lock()
+		runtime.err = err
+		runtime.errMu.Unlock()
+		close(runtime.done)
+	})
 }

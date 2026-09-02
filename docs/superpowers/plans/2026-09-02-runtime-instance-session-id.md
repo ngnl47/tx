@@ -402,7 +402,7 @@ func (*Runtime) Err() error
 
 `NewRuntimeWithIdentity` 第三个参数是 `AppID`，第四个参数是 ID 为空的实例描述；函数内部填充 ID 后再执行既有 `Instance.Validate`。现有 `NewRuntime(ctx, config, instance)` 只作为 Task 4 到 Task 6 之间的短暂编译迁移入口，Task 6 完成 framework 调用方迁移后必须删除，最终 API 使用 `NewRuntime(ctx, config, appID, descriptor)`。
 
-- [ ] **Step 1: Write failing pure identity tests**
+- [x] **Step 1: Write failing pure identity tests**
 
 ```go
 func TestRuntimeIdentityFormatsInstanceID(t *testing.T) {
@@ -419,13 +419,13 @@ func TestWorkSlotAttemptsWrapWithinBoundedRange(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify failure**
+- [x] **Step 2: Run tests to verify failure**
 
 Run: `go test ./modules/discovery -run 'TestRuntimeIdentity|TestWorkSlot'`
 
 Expected: FAIL because identity helpers do not exist.
 
-- [ ] **Step 3: Implement bounded workSlot claim**
+- [x] **Step 3: Implement bounded workSlot claim**
 
 ```go
 func (r *EtcdRegistry) claimWorkSlot(ctx context.Context, lease *txetcd.Lease, appID string, start uint16) (RuntimeIdentity, error) {
@@ -441,7 +441,7 @@ func (r *EtcdRegistry) claimWorkSlot(ctx context.Context, lease *txetcd.Lease, a
 
 生产入口从随机起点调用该函数；单元测试直接传入固定起点。不得列出 workSlot 前缀后在内存挑选空位。
 
-- [ ] **Step 4: Make registration own one shared process lease**
+- [x] **Step 4: Make registration own one shared process lease**
 
 注册顺序固定为：Grant lease → Claim workSlot → build InstanceID → Put instance with same lease → KeepAlive already active。实例键为 `<root>/instances/<instance-id>`，workSlot 键为 `<root>/work-slots/<slot>`。
 
@@ -458,13 +458,13 @@ type EtcdRegistration struct {
 
 `SetStatus(StatusRunning)` 后 `running=true`。`Close` 删除实例键；未曾 running 的失败启动调用 `Revoke`，已经 running 的实例调用 `Stop` 让 workSlot 自然过期。
 
-- [ ] **Step 5: Expose immutable runtime identity and loss signal**
+- [x] **Step 5: Expose immutable runtime identity and loss signal**
 
 `Runtime.Done`、`Runtime.Err` 把注册租约状态映射为 Discovery 领域错误：正常关闭返回 `ErrRuntimeClosed`，意外续租终止返回 `ErrRuntimeIdentityLost` 并保留底层原因。`Identity`、`Instance` 返回值副本。Watch 中断仍走原有目录失效和重建，不关闭 `Done`。
 
 新路径使用 `EtcdRegistry.RegisterRuntime(ctx, appID, descriptor)`；旧 `Register(ctx, instance)` 在本任务内保持原行为以保证 framework 尚未迁移时仍可编译。Task 6 删除旧方法并把 `RegisterRuntime` 收敛为最终 `Register`。
 
-- [ ] **Step 6: Add real concurrent claim, reuse and close tests**
+- [x] **Step 6: Add real concurrent claim, reuse and close tests**
 
 ```go
 func TestConcurrentRuntimeClaimsUseDifferentWorkSlots(t *testing.T) {
@@ -493,7 +493,7 @@ func waitWorkSlotReleased(t *testing.T, client *clientv3.Client, key string, tim
 - 4095 个明确键预占后返回 `ErrWorkSlotExhausted`，不得扫描其他前缀；`workSlot=0` 永远不创建键。
 - 两个不同 Discovery prefix 可以取得相同 workSlot，明确其属于两个独立唯一性域。
 
-- [ ] **Step 7: Run focused tests**
+- [x] **Step 7: Run focused tests**
 
 Run: `go test ./modules/discovery`
 
