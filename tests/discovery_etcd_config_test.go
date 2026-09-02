@@ -1,11 +1,25 @@
 package tests
 
 import (
+	"bytes"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/ngnl47/tx/modules/discovery"
 )
+
+func TestDiscoveryDoesNotImportEtcdDriver(t *testing.T) {
+	for _, path := range []string{"../modules/discovery/etcd.go", "../modules/discovery/slot_etcd.go"} {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(content, []byte("go.etcd.io/etcd/client/v3")) {
+			t.Fatalf("%s imports the etcd driver directly", path)
+		}
+	}
+}
 
 func TestEtcdConfigNormalizesInstancePrefix(t *testing.T) {
 	cfg, err := (discovery.EtcdConfig{

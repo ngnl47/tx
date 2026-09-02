@@ -65,7 +65,7 @@ txclient、txclientslg 和 txgen 不属于服务端集群节点，不申请 `wor
 
 ### workSlot
 
-`workSlot` 是当前 etcd 集群租约保护下的短期数值槽位，范围为 `[0, 4095]`。槽位可以在旧租约自然过期后由新进程复用，但同一时刻只能有一个所有者。
+`workSlot` 是当前 etcd 集群租约保护下的短期数值槽位，范围为 `[1, 4095]`，共 4095 个可用槽位；`0` 保留为未分配零值。槽位可以在旧租约自然过期后由新进程复用，但同一时刻只能有一个所有者。
 
 ### InstanceID
 
@@ -94,16 +94,16 @@ Discovery etcd 配置继续使用同一个应用前缀。标准键空间为：
 Discovery 启动时：
 
 1. 通过 `tx/etcd` 创建一份进程租约，TTL 复用 Discovery 的 `LeaseTTL`。
-2. 从随机起点开始，在 `[0, 4095]` 内循环尝试明确的 workSlot 键。
+2. 从随机起点开始，在 `[1, 4095]` 内循环尝试明确的 workSlot 键。
 3. 每次使用 `CreateRevision(key) == 0` 的事务创建带租约的键，不扫描无边界键空间。
 4. 以成功事务的 `ModRevision` 和 workSlot 生成 `InstanceID`。
 5. 冻结本进程的运行实例快照，并使用同一租约注册实例键。
 6. 启动实例目录和逻辑槽位目录的首轮快照与 Watch。
 7. 全部前置条件满足后，才允许服务对外进入 running 状态。
 
-全部 4096 个槽位均被占用时，进程启动失败。etcd 不可用或租约在运行期间丢失时，本次运行实例身份立即失效；框架停止接受新的外部工作、触发整进程排水关闭，SessionID 分配器拒绝继续发号。原进程不得静默重新抢占 workSlot 后继续运行；重新加入集群必须经过一次新的进程启动并取得新的 `InstanceID`。
+全部 4095 个槽位均被占用时，进程启动失败。etcd 不可用或租约在运行期间丢失时，本次运行实例身份立即失效；框架停止接受新的外部工作、触发整进程排水关闭，SessionID 分配器拒绝继续发号。原进程不得静默重新抢占 workSlot 后继续运行；重新加入集群必须经过一次新的进程启动并取得新的 `InstanceID`。
 
-workSlot 分配只做最多 4096 次明确键的有界 Compare-And-Swap。它不读取全部 workSlot 快照后再选择，也不引入额外 Redis 读写。
+workSlot 分配只做最多 4095 次明确键的有界 Compare-And-Swap。它不读取全部 workSlot 快照后再选择，也不引入额外 Redis 读写。
 
 ## CMod 与启动顺序
 
@@ -142,11 +142,11 @@ sessionID = (timestamp << 24) | (workSlot << 12) | sequence
 
 - 纪元为 `2026-01-01T00:00:00Z`，纪元之前的时间拒绝发号。
 - `timestamp` 保存 `elapsed` 的低 29 位，每 `2^29` 秒自然回绕一次，周期约为 17.01 年。
-- `workSlot` 范围为 `[0, 4095]`。
+- `workSlot` 范围为 `[1, 4095]`，`0` 表示未分配，不参与租约抢占和 SessionID 生成。
 - `sequence` 范围为 `[0, 4095]`，每个 workSlot 每个原始 Unix 秒独立重置。
 - 最大 SessionID 为 `2^53-1`，TypeScript `number` 和 JSON 数值均可精确表示。
 - 单个 Login 实例最多生成 4096 个 SessionID/秒；多个 Login 实例按各自 workSlot 水平扩展。
-- 当 timestamp、workSlot、sequence 都为零时，分配器跳过该序列组合，保证 SessionID 始终为正数；只有 workSlot 0 在每次时间戳回绕后的首秒少一个可用编号。
+- 由于 workSlot 始终大于零，任何合法组合生成的 SessionID 都是正数，不需要额外跳过全零组合。
 
 同一原始 Unix 秒的序列耗尽时，调用等待到下一秒或调用上下文结束，不允许序列回绕。生成器保存上一发号使用的原始 Unix 秒；本机时钟回退到该秒之前时停止发号，直到时钟追平或调用上下文结束。回退检测不使用已截断的 29 位 timestamp，因此原始时间正常跨越回绕边界时不会被误判。
 
@@ -206,7 +206,7 @@ type SessionIDAllocator interface {
 - workSlot 耗尽、etcd 不可达和租约丢失均明确失败。
 - 未选择 `CModSessionID` 的 Discovery 节点不构造分配器。
 - 生成的 SessionID 为正数且不超过 `Number.MAX_SAFE_INTEGER`。
-- timestamp、workSlot、sequence 全零时跳过零值并返回下一个正 SessionID。
+- workSlot 0 和超出 12 位上限的值均被拒绝，合法 workSlot 生成的 SessionID 始终为正数。
 - 同秒并发生成不重复，4096 个序列耗尽后等待下一秒。
 - 不同 workSlot 在相同时间和序列下仍生成不同 SessionID。
 - 时钟回退和纪元前时间停止发号。

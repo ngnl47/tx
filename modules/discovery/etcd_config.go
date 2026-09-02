@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	txetcd "github.com/ngnl47/tx/etcd"
 )
 
 const defaultEtcdPrefix = "/tx/discovery/instances"
@@ -20,6 +22,13 @@ type EtcdConfig struct {
 	LeaseTTL time.Duration
 	// DialTimeout 是建立 etcd 连接的最长等待时间；非正值使用框架默认值。
 	DialTimeout time.Duration
+}
+
+func (c EtcdConfig) clientConfig() txetcd.Config {
+	return txetcd.Config{
+		Endpoints:   append([]string(nil), c.Endpoints...),
+		DialTimeout: c.DialTimeout,
+	}
 }
 
 func (c EtcdConfig) Normalize() (EtcdConfig, error) {

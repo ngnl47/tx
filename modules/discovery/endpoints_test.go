@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"go.etcd.io/etcd/api/v3/mvccpb"
+	txetcd "github.com/ngnl47/tx/etcd"
 )
 
 func TestServiceDirectoryClonesInstanceEndpoints(t *testing.T) {
@@ -68,8 +68,8 @@ func TestEtcdInstanceDecodePreservesPublicEndpoints(t *testing.T) {
 	}
 	registry := &EtcdRegistry{config: config}
 
-	decoded, err := registry.decodeInstance(&mvccpb.KeyValue{
-		Key:   []byte(config.Prefix + "/agent-a"),
+	decoded, err := registry.decodeInstance(txetcd.KeyValue{
+		Key:   config.Prefix + "/agent-a",
 		Value: payload,
 	})
 	if err != nil {

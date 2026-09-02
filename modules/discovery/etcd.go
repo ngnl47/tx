@@ -8,8 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"go.etcd.io/etcd/api/v3/mvccpb"
-	clientv3 "go.etcd.io/etcd/client/v3"
+	txetcd "github.com/ngnl47/tx/etcd"
 )
 
 var (
@@ -20,7 +19,7 @@ var (
 )
 
 type EtcdRegistry struct {
-	client *clientv3.Client
+	client *txetcd.Client
 	config EtcdConfig
 }
 
@@ -29,11 +28,7 @@ func NewEtcdRegistry(ctx context.Context, config EtcdConfig) (*EtcdRegistry, err
 	if err != nil {
 		return nil, err
 	}
-	client, err := clientv3.New(clientv3.Config{
-		Context:     ctx,
-		Endpoints:   config.Endpoints,
-		DialTimeout: config.DialTimeout,
-	})
+	client, err := txetcd.New(ctx, config.clientConfig())
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +40,7 @@ func NewEtcdRegistry(ctx context.Context, config EtcdConfig) (*EtcdRegistry, err
 	return registry, nil
 }
 
-func NewEtcdRegistryWithClient(client *clientv3.Client, config EtcdConfig) (*EtcdRegistry, error) {
+func NewEtcdRegistryWithClient(client *txetcd.Client, config EtcdConfig) (*EtcdRegistry, error) {
 	if client == nil {
 		return nil, ErrEtcdClientNil
 	}
@@ -67,29 +62,21 @@ func (r *EtcdRegistry) Register(ctx context.Context, instance Instance) (*EtcdRe
 	if err := r.config.ValidateInstance(instance); err != nil {
 		return nil, err
 	}
-	lease, err := r.client.Grant(ctx, int64(r.config.LeaseTTL.Seconds()))
+	lease, err := r.client.Grant(ctx, r.config.LeaseTTL)
 	if err != nil {
 		return nil, err
 	}
-	registrationCtx, cancel := context.WithCancel(ctx)
 	registration := &EtcdRegistration{
 		registry: r,
 		instance: instance,
-		leaseID:  lease.ID,
-		cancel:   cancel,
+		lease:    lease,
 		done:     make(chan struct{}),
 	}
 	if err := registration.write(ctx); err != nil {
-		cancel()
-		_, revokeErr := r.client.Revoke(context.WithoutCancel(ctx), lease.ID)
+		revokeErr := lease.Revoke(context.WithoutCancel(ctx))
 		return nil, errors.Join(err, revokeErr)
 	}
-	responses, err := r.client.KeepAlive(registrationCtx, lease.ID)
-	if err != nil {
-		_ = registration.Close(context.WithoutCancel(ctx))
-		return nil, err
-	}
-	go registration.keepAlive(responses)
+	go registration.keepAlive()
 	return registration, nil
 }
 
@@ -99,11 +86,11 @@ func (r *EtcdRegistry) Watch(ctx context.Context, directory *ServiceDirectory) e
 		return ErrInvalidInstance
 	}
 	prefix := r.watchPrefix()
-	response, err := r.client.Get(ctx, prefix, clientv3.WithPrefix())
+	snapshot, err := r.client.Snapshot(ctx, prefix)
 	if err != nil {
 		return err
 	}
-	instances, err := r.decodeSnapshot(response.Kvs)
+	instances, err := r.decodeSnapshot(snapshot.Values)
 	if err != nil {
 		return err
 	}
@@ -114,28 +101,34 @@ func (r *EtcdRegistry) Watch(ctx context.Context, directory *ServiceDirectory) e
 	for _, instance := range instances {
 		current[instance.ID] = instance
 	}
-	watch := r.client.Watch(ctx, prefix, clientv3.WithPrefix(), clientv3.WithRev(response.Header.Revision+1))
+	watch := r.client.WatchPrefix(ctx, prefix, snapshot.Revision+1)
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case response, ok := <-watch:
 			if !ok {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 				return ErrEtcdWatchClosed
 			}
-			if err := response.Err(); err != nil {
-				return err
+			if response.Err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				return mapEtcdWatchError(response.Err)
 			}
 			for _, event := range response.Events {
 				switch event.Type {
-				case clientv3.EventTypePut:
-					instance, err := r.decodeInstance(event.Kv)
+				case txetcd.EventPut:
+					instance, err := r.decodeInstance(event.Value)
 					if err != nil {
 						return err
 					}
 					current[instance.ID] = instance
-				case clientv3.EventTypeDelete:
-					delete(current, strings.TrimPrefix(string(event.Kv.Key), prefix))
+				case txetcd.EventDelete:
+					delete(current, strings.TrimPrefix(event.Value.Key, prefix))
 				default:
 					return ErrEtcdWatchClosed
 				}
@@ -156,8 +149,7 @@ type EtcdRegistration struct {
 
 	mu       sync.Mutex
 	instance Instance
-	leaseID  clientv3.LeaseID
-	cancel   context.CancelFunc
+	lease    *txetcd.Lease
 	done     chan struct{}
 	doneOnce sync.Once
 	doneErr  error
@@ -191,17 +183,20 @@ func (r *EtcdRegistration) SetStatus(ctx context.Context, status Status) error {
 func (r *EtcdRegistration) Close(ctx context.Context) error {
 	r.close.Do(func() {
 		r.finish(ErrRegistrationDone)
-		_, deleteErr := r.registry.client.Delete(ctx, r.registry.instanceKey(r.instance.ID))
-		_, revokeErr := r.registry.client.Revoke(ctx, r.leaseID)
+		deleteErr := r.registry.client.Delete(ctx, r.registry.instanceKey(r.instance.ID))
+		revokeErr := r.lease.Revoke(ctx)
 		r.closeErr = errors.Join(deleteErr, revokeErr)
 	})
 	return r.closeErr
 }
 
-func (r *EtcdRegistration) keepAlive(responses <-chan *clientv3.LeaseKeepAliveResponse) {
-	for range responses {
+func (r *EtcdRegistration) keepAlive() {
+	<-r.lease.Done()
+	if errors.Is(r.lease.Err(), txetcd.ErrLeaseLost) {
+		r.finish(ErrEtcdLeaseLost)
+		return
 	}
-	r.finish(ErrEtcdLeaseLost)
+	r.finish(ErrRegistrationDone)
 }
 
 func (r *EtcdRegistration) finish(err error) {
@@ -209,7 +204,6 @@ func (r *EtcdRegistration) finish(err error) {
 		r.mu.Lock()
 		r.doneErr = err
 		r.mu.Unlock()
-		r.cancel()
 		close(r.done)
 	})
 }
@@ -219,8 +213,7 @@ func (r *EtcdRegistration) write(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	_, err = r.registry.client.Put(ctx, r.registry.instanceKey(r.instance.ID), string(payload), clientv3.WithLease(r.leaseID))
-	return err
+	return r.lease.Put(ctx, r.registry.instanceKey(r.instance.ID), payload)
 }
 
 func (r *EtcdRegistry) instanceKey(id string) string {
@@ -231,7 +224,7 @@ func (r *EtcdRegistry) watchPrefix() string {
 	return r.config.Prefix + "/"
 }
 
-func (r *EtcdRegistry) decodeSnapshot(values []*mvccpb.KeyValue) ([]Instance, error) {
+func (r *EtcdRegistry) decodeSnapshot(values []txetcd.KeyValue) ([]Instance, error) {
 	instances := make([]Instance, 0, len(values))
 	for _, value := range values {
 		instance, err := r.decodeInstance(value)
@@ -246,16 +239,23 @@ func (r *EtcdRegistry) decodeSnapshot(values []*mvccpb.KeyValue) ([]Instance, er
 	return instances, nil
 }
 
-func (r *EtcdRegistry) decodeInstance(value *mvccpb.KeyValue) (Instance, error) {
+func (r *EtcdRegistry) decodeInstance(value txetcd.KeyValue) (Instance, error) {
 	var instance Instance
-	if value == nil || json.Unmarshal(value.Value, &instance) != nil {
+	if json.Unmarshal(value.Value, &instance) != nil {
 		return Instance{}, ErrInvalidInstance
 	}
 	if err := r.config.ValidateInstance(instance); err != nil {
 		return Instance{}, err
 	}
-	if r.instanceKey(instance.ID) != string(value.Key) {
+	if r.instanceKey(instance.ID) != value.Key {
 		return Instance{}, ErrInvalidInstance
 	}
 	return instance, nil
+}
+
+func mapEtcdWatchError(err error) error {
+	if errors.Is(err, txetcd.ErrWatchClosed) {
+		return ErrEtcdWatchClosed
+	}
+	return err
 }

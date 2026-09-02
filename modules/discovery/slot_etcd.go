@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	clientv3 "go.etcd.io/etcd/client/v3"
+	txetcd "github.com/ngnl47/tx/etcd"
 )
 
 // EtcdSlotStore 将逻辑槽位映射持久化在实例 lease 之外。运行实例消失不会删除
@@ -27,14 +27,14 @@ func (s *EtcdSlotStore) ResolveSlot(ctx context.Context, slotID string) (SlotAss
 	if err != nil {
 		return SlotAssignment{}, err
 	}
-	response, err := s.registry.client.Get(ctx, key)
+	value, ok, err := s.registry.client.Get(ctx, key)
 	if err != nil {
 		return SlotAssignment{}, err
 	}
-	if len(response.Kvs) == 0 {
+	if !ok {
 		return SlotAssignment{}, ErrSlotNotFound
 	}
-	return decodeSlotAssignment(key, response.Kvs[0].Value)
+	return decodeSlotAssignment(key, value.Value)
 }
 
 // Watch 先载入完整槽位快照，再持续把 etcd 变更写入本地目录。方法退出前会使
@@ -47,13 +47,13 @@ func (s *EtcdSlotStore) Watch(ctx context.Context, directory *SlotDirectory) err
 	if err != nil {
 		return err
 	}
-	response, err := s.registry.client.Get(ctx, prefix, clientv3.WithPrefix())
+	snapshot, err := s.registry.client.Snapshot(ctx, prefix)
 	if err != nil {
 		return err
 	}
-	current := make(map[string]SlotAssignment, len(response.Kvs))
-	for _, item := range response.Kvs {
-		assignment, decodeErr := decodeSlotAssignment(string(item.Key), item.Value)
+	current := make(map[string]SlotAssignment, len(snapshot.Values))
+	for _, item := range snapshot.Values {
+		assignment, decodeErr := decodeSlotAssignment(item.Key, item.Value)
 		if decodeErr != nil {
 			return decodeErr
 		}
@@ -64,28 +64,34 @@ func (s *EtcdSlotStore) Watch(ctx context.Context, directory *SlotDirectory) err
 	}
 	defer directory.Invalidate()
 
-	watch := s.registry.client.Watch(ctx, prefix, clientv3.WithPrefix(), clientv3.WithRev(response.Header.Revision+1))
+	watch := s.registry.client.WatchPrefix(ctx, prefix, snapshot.Revision+1)
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case response, ok := <-watch:
 			if !ok {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 				return ErrEtcdWatchClosed
 			}
-			if err := response.Err(); err != nil {
-				return err
+			if response.Err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				return mapEtcdWatchError(response.Err)
 			}
 			for _, event := range response.Events {
 				switch event.Type {
-				case clientv3.EventTypePut:
-					assignment, decodeErr := decodeSlotAssignment(string(event.Kv.Key), event.Kv.Value)
+				case txetcd.EventPut:
+					assignment, decodeErr := decodeSlotAssignment(event.Value.Key, event.Value.Value)
 					if decodeErr != nil {
 						return decodeErr
 					}
 					current[assignment.SlotID] = assignment
-				case clientv3.EventTypeDelete:
-					slotID := strings.TrimPrefix(string(event.Kv.Key), prefix)
+				case txetcd.EventDelete:
+					slotID := strings.TrimPrefix(event.Value.Key, prefix)
 					if !validSlotID(slotID) {
 						return ErrInvalidSlotAssignment
 					}
@@ -113,14 +119,11 @@ func (s *EtcdSlotStore) CreateSlot(ctx context.Context, assignment SlotAssignmen
 	if err != nil {
 		return err
 	}
-	response, err := s.registry.client.Txn(ctx).
-		If(clientv3.Compare(clientv3.CreateRevision(key), "=", 0)).
-		Then(clientv3.OpPut(key, string(payload))).
-		Commit()
+	_, ok, err := s.registry.client.Create(ctx, key, payload, 0)
 	if err != nil {
 		return err
 	}
-	if !response.Succeeded {
+	if !ok {
 		return ErrSlotConflict
 	}
 	return nil
@@ -134,14 +137,14 @@ func (s *EtcdSlotStore) PromoteSlot(ctx context.Context, current, next SlotAssig
 	if err != nil {
 		return err
 	}
-	currentResponse, err := s.registry.client.Get(ctx, key)
+	value, ok, err := s.registry.client.Get(ctx, key)
 	if err != nil {
 		return err
 	}
-	if len(currentResponse.Kvs) == 0 {
+	if !ok {
 		return ErrSlotNotFound
 	}
-	stored, err := decodeSlotAssignment(key, currentResponse.Kvs[0].Value)
+	stored, err := decodeSlotAssignment(key, value.Value)
 	if err != nil {
 		return err
 	}
@@ -152,14 +155,11 @@ func (s *EtcdSlotStore) PromoteSlot(ctx context.Context, current, next SlotAssig
 	if err != nil {
 		return err
 	}
-	response, err := s.registry.client.Txn(ctx).
-		If(clientv3.Compare(clientv3.ModRevision(key), "=", currentResponse.Kvs[0].ModRevision)).
-		Then(clientv3.OpPut(key, string(payload))).
-		Commit()
+	ok, err = s.registry.client.CompareAndSwap(ctx, key, value.ModRevision, payload)
 	if err != nil {
 		return err
 	}
-	if !response.Succeeded {
+	if !ok {
 		return ErrSlotConflict
 	}
 	return nil

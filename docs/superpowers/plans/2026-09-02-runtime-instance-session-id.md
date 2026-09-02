@@ -18,7 +18,7 @@
 - 不扫描 Redis，也不通过无边界 etcd 键扫描分配 workSlot。
 - `tx/etcd` 不认识 InstanceID、workSlot、SessionID、Discovery JSON 或 LogicalSlot。
 - ProtoActor 官方 etcd Cluster Provider 保持独立，不改接 `tx/etcd`。
-- workSlot 固定为 12 位 `[0, 4095]`；同进程多服务共享一个 workSlot 与 InstanceID。
+- workSlot 固定为 12 位 `[1, 4095]`，`0` 保留为未分配零值；同进程多服务共享一个 workSlot 与 InstanceID。
 - SessionID 固定为 29 位秒时间戳、12 位 workSlot、12 位秒内序列，纪元为 `2026-01-01T00:00:00Z`。
 - 时间戳低 29 位自然回绕；不实现纪元耗尽，不把 SessionID 当作永久主键或时间排序值。
 - 所有新增行为先写失败测试，再写最小实现；每个任务完成后运行聚焦测试与 `git diff --check`。
@@ -306,7 +306,7 @@ Expected: PASS and no diff errors.
 - Consumes: Task 1 `etcd.Client` and Task 2 `etcd.Lease`。
 - Produces: behavior-compatible `EtcdRegistry`、实例目录 Watch 与 `EtcdSlotStore`，但 `modules/discovery` 不再直接 import `clientv3` 或 `mvccpb`。
 
-- [ ] **Step 1: Add an architecture boundary test**
+- [x] **Step 1: Add an architecture boundary test**
 
 ```go
 func TestDiscoveryDoesNotImportEtcdDriver(t *testing.T) {
@@ -320,13 +320,13 @@ func TestDiscoveryDoesNotImportEtcdDriver(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the boundary and existing discovery tests to verify failure baseline**
+- [x] **Step 2: Run the boundary and existing discovery tests to verify failure baseline**
 
 Run: `go test ./tests -run 'TestDiscoveryDoesNotImportEtcdDriver|TestEtcdConfig|TestEtcdSlot'`
 
 Expected: new boundary test FAIL; existing behavior tests PASS.
 
-- [ ] **Step 3: Replace raw driver calls with L1 methods**
+- [x] **Step 3: Replace raw driver calls with L1 methods**
 
 ```go
 type EtcdRegistry struct {
@@ -341,11 +341,11 @@ func (c EtcdConfig) clientConfig() txetcd.Config {
 
 `EtcdRegistry.Watch` 和 `EtcdSlotStore.Watch` 消费 `WatchResponse`；`CreateSlot` 使用 `Client.Create(..., leaseID=0)`；`PromoteSlot` 使用 `Get + CompareAndSwap`。Discovery 继续负责 JSON 校验和领域错误映射。
 
-- [ ] **Step 4: Preserve prefix and logical-slot behavior**
+- [x] **Step 4: Preserve prefix and logical-slot behavior**
 
 实例前缀继续归一化为 `<root>/instances`，LogicalSlot 继续使用 `<root>/slots`。本任务不增加 workSlot 键，也不改变注册接口。
 
-- [ ] **Step 5: Run focused and real integration tests**
+- [x] **Step 5: Run focused and real integration tests**
 
 Run: `go test ./modules/discovery ./tests -run 'TestEtcd|TestDiscovery'`
 
@@ -353,7 +353,7 @@ Run with real dependency: `TX_ETCD_ENDPOINT=127.0.0.1:2379 go test ./tests -run 
 
 Expected: PASS；架构测试确认 Discovery 不再直接依赖 etcd driver。
 
-- [ ] **Step 6: Check the task diff without committing**
+- [x] **Step 6: Check the task diff without committing**
 
 Run: `gofmt -w modules/discovery/*.go tests/discovery_etcd_config_test.go tests/discovery_etcd_integration_test.go`
 
@@ -379,7 +379,7 @@ Expected: no output.
 - Produces:
 
 ```go
-const WorkSlotCount = 1 << 12
+const WorkSlotCount = 1<<12 - 1
 
 var (
 	ErrWorkSlotExhausted   = errors.New("discovery: workSlot exhausted")
@@ -413,7 +413,7 @@ func TestRuntimeIdentityFormatsInstanceID(t *testing.T) {
 
 func TestWorkSlotAttemptsWrapWithinBoundedRange(t *testing.T) {
 	got := workSlotAttempts(4094)
-	if len(got) != WorkSlotCount || got[0] != 4094 || got[1] != 4095 || got[2] != 0 {
+	if len(got) != WorkSlotCount || got[0] != 4094 || got[1] != 4095 || got[2] != 1 {
 		t.Fatalf("attempts = %v", got[:3])
 	}
 }
@@ -430,7 +430,7 @@ Expected: FAIL because identity helpers do not exist.
 ```go
 func (r *EtcdRegistry) claimWorkSlot(ctx context.Context, lease *txetcd.Lease, appID string, start uint16) (RuntimeIdentity, error) {
 	for offset := 0; offset < WorkSlotCount; offset++ {
-		slot := uint16((int(start) + offset) & (WorkSlotCount - 1))
+		slot := uint16((int(start)-1+offset)%WorkSlotCount + 1)
 		created, ok, err := lease.Create(ctx, r.workSlotKey(slot), []byte(appID))
 		if err != nil { return RuntimeIdentity{}, err }
 		if ok { return newRuntimeIdentity(appID, slot, created.ModRevision) }
@@ -490,7 +490,7 @@ func waitWorkSlotReleased(t *testing.T, client *clientv3.Client, key string, tim
 
 - running 实例关闭后实例键立即删除，workSlot 键在 TTL 内仍存在，TTL 后消失。
 - 新进程复用同一 workSlot 时 `ModRevision` 和 InstanceID 均变化。
-- 4096 个明确键预占后返回 `ErrWorkSlotExhausted`，不得扫描其他前缀。
+- 4095 个明确键预占后返回 `ErrWorkSlotExhausted`，不得扫描其他前缀；`workSlot=0` 永远不创建键。
 - 两个不同 Discovery prefix 可以取得相同 workSlot，明确其属于两个独立唯一性域。
 
 - [ ] **Step 7: Run focused tests**
@@ -558,7 +558,7 @@ func TestGeneratorWrapsTimestampBits(t *testing.T) {
 }
 ```
 
-同时添加：全零组合返回 1、不同 workSlot 不重复、同秒 4096 个序列唯一、序列耗尽等待下一秒、时钟回退等待追平、纪元前拒绝、并发分配无重复。
+同时添加：workSlot 0 和 4096 均被拒绝、不同 workSlot 不重复、同秒 4096 个序列唯一、序列耗尽等待下一秒、时钟回退等待追平、纪元前拒绝、并发分配无重复。
 
 测试文件使用 package `sessionid`，定义以下非生产辅助函数：
 
@@ -604,7 +604,7 @@ timestamp := elapsed & ((1 << 29) - 1)
 id := (timestamp << 24) | (int64(g.workSlot) << 12) | int64(sequence)
 ```
 
-序列按原始 Unix 秒重置。`rawSecond < lastSecond` 时等待时钟追平；同秒序列耗尽时等待下一秒；等待必须响应调用上下文。ID 为零时消耗 sequence 0 并继续返回 sequence 1。
+序列按原始 Unix 秒重置。`rawSecond < lastSecond` 时等待时钟追平；同秒序列耗尽时等待下一秒；等待必须响应调用上下文。构造器拒绝 workSlot 0，因此合法输入不可能生成零值 ID。
 
 - [ ] **Step 4: Run race and focused tests**
 
