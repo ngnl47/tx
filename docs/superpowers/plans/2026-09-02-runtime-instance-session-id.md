@@ -538,7 +538,7 @@ func New(workSlot uint16) (*Generator, error)
 func (*Generator) AllocateSessionID(context.Context) (int64, error)
 ```
 
-- [ ] **Step 1: Write failing layout and boundary tests**
+- [x] **Step 1: Write failing layout and boundary tests**
 
 ```go
 func TestGeneratorBuildsJavaScriptSafeID(t *testing.T) {
@@ -577,13 +577,13 @@ func newGeneratorWithClock(uint16, func() time.Time, func(context.Context, time.
 func timestampBits(int64) int64
 ```
 
-- [ ] **Step 2: Run tests to verify failure**
+- [x] **Step 2: Run tests to verify failure**
 
 Run: `go test ./sessionid`
 
 Expected: FAIL because package does not exist.
 
-- [ ] **Step 3: Implement the minimal synchronized generator**
+- [x] **Step 3: Implement the minimal synchronized generator**
 
 ```go
 type Generator struct {
@@ -606,13 +606,13 @@ id := (timestamp << 24) | (int64(g.workSlot) << 12) | int64(sequence)
 
 序列按原始 Unix 秒重置。`rawSecond < lastSecond` 时等待时钟追平；同秒序列耗尽时等待下一秒；等待必须响应调用上下文。构造器拒绝 workSlot 0，因此合法输入不可能生成零值 ID。
 
-- [ ] **Step 4: Run race and focused tests**
+- [x] **Step 4: Run race and focused tests**
 
 Run: `go test -race ./sessionid`
 
 Expected: PASS with no duplicate ID and no race report.
 
-- [ ] **Step 5: Check the task diff without committing**
+- [x] **Step 5: Check the task diff without committing**
 
 Run: `gofmt -w sessionid/*.go && git diff --check`
 
