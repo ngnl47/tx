@@ -159,6 +159,92 @@ func TestClientCompareAndSwapPreservesLease(t *testing.T) {
 	}
 }
 
+func TestLeaseStopExpiresKeyWithoutImmediateRevoke(t *testing.T) {
+	client := integrationClientFromEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	lease, err := client.Grant(ctx, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_ = lease.Revoke(cleanupCtx)
+	})
+
+	key := uniqueIntegrationKey(t, "lease-stop")
+	if err := lease.Put(ctx, key, []byte("value")); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	assertKeyExists(t, client, key)
+	assertKeyEventuallyMissing(t, client, key, 4*time.Second)
+	<-lease.Done()
+	if !errors.Is(lease.Err(), ErrLeaseStopped) {
+		t.Fatalf("lease error = %v, want ErrLeaseStopped", lease.Err())
+	}
+}
+
+func TestLeaseRevokeImmediatelyRemovesCreatedKey(t *testing.T) {
+	client := integrationClientFromEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	lease, err := client.Grant(ctx, 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.ID() == 0 {
+		t.Fatal("lease ID is zero")
+	}
+
+	key := uniqueIntegrationKey(t, "lease-revoke")
+	created, ok, err := lease.Create(ctx, key, []byte("value"))
+	if err != nil || !ok || created.LeaseID != lease.ID() {
+		t.Fatalf("create = %#v, %t, %v", created, ok, err)
+	}
+	if _, ok, err := lease.Create(ctx, key, []byte("duplicate")); err != nil || ok {
+		t.Fatalf("duplicate create = %t, %v, want false, nil", ok, err)
+	}
+	if err := lease.Revoke(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Revoke(ctx); err != nil {
+		t.Fatalf("second revoke: %v", err)
+	}
+	if _, ok, err := client.Get(ctx, key); err != nil || ok {
+		t.Fatalf("get revoked key = %t, %v, want false, nil", ok, err)
+	}
+	<-lease.Done()
+	if !errors.Is(lease.Err(), ErrLeaseStopped) {
+		t.Fatalf("lease error = %v, want ErrLeaseStopped", lease.Err())
+	}
+}
+
+func TestLeaseClientCloseReportsLeaseLost(t *testing.T) {
+	client := integrationClientFromEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	lease, err := client.Grant(ctx, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-lease.Done():
+		if !errors.Is(lease.Err(), ErrLeaseLost) {
+			t.Fatalf("lease error = %v, want ErrLeaseLost", lease.Err())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("lease did not report client closure")
+	}
+}
+
 func newIntegrationClient(t *testing.T, endpoint string) *Client {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -173,6 +259,42 @@ func newIntegrationClient(t *testing.T, endpoint string) *Client {
 		}
 	})
 	return client
+}
+
+func integrationClientFromEnv(t *testing.T) *Client {
+	t.Helper()
+	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("set TX_ETCD_ENDPOINT to run the etcd integration test")
+	}
+	return newIntegrationClient(t, endpoint)
+}
+
+func assertKeyExists(t *testing.T, client *Client, key string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, ok, err := client.Get(ctx, key); err != nil || !ok {
+		t.Fatalf("get existing key = %t, %v", ok, err)
+	}
+}
+
+func assertKeyEventuallyMissing(t *testing.T, client *Client, key string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		_, ok, err := client.Get(ctx, key)
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("key %q still exists after %s", key, timeout)
 }
 
 func uniqueIntegrationKey(t *testing.T, suffix string) string {

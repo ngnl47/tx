@@ -213,7 +213,7 @@ func (*Lease) Revoke(context.Context) error
 - `Revoke` 主动撤销租约，用于尚未进入 running 的失败启动。
 - 两者幂等；`Done` 只关闭一次，`Err` 返回最终原因。
 
-- [ ] **Step 1: Write failing lease state tests**
+- [x] **Step 1: Write failing lease state tests**
 
 ```go
 func TestLeaseStopIsIdempotent(t *testing.T) {
@@ -233,13 +233,13 @@ func newLeaseStateForTest() *Lease
 
 该函数只初始化 cancel、done 和同步字段，不连接 etcd。
 
-- [ ] **Step 2: Run tests to verify failure**
+- [x] **Step 2: Run tests to verify failure**
 
 Run: `go test ./etcd -run TestLease`
 
 Expected: FAIL because `Lease` and its state machine do not exist.
 
-- [ ] **Step 3: Implement Grant, KeepAlive, Stop and Revoke**
+- [x] **Step 3: Implement Grant, KeepAlive, Stop and Revoke**
 
 ```go
 type Lease struct {
@@ -255,7 +255,7 @@ type Lease struct {
 
 `Grant` 必须在返回前启动 `KeepAlive`；续租响应通道意外关闭时记录 `ErrLeaseLost`。调用 `Stop` 或 `Revoke` 时先写入明确的正常结束原因，不能被后台续租协程覆盖。
 
-- [ ] **Step 4: Add real etcd natural-expiry and revoke tests**
+- [x] **Step 4: Add real etcd natural-expiry and revoke tests**
 
 ```go
 func TestLeaseStopExpiresKeyWithoutImmediateRevoke(t *testing.T) {
@@ -280,7 +280,7 @@ func assertKeyExists(t *testing.T, client *Client, key string)
 func assertKeyEventuallyMissing(t *testing.T, client *Client, key string, timeout time.Duration)
 ```
 
-- [ ] **Step 5: Run focused tests and format**
+- [x] **Step 5: Run focused tests and format**
 
 Run: `go test ./etcd`
 
