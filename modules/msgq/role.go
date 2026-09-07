@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/maypok86/otter/v2"
 	"github.com/ngnl47/tx/modules/discovery"
@@ -27,6 +28,8 @@ func (b RoleBinding) Validate() error {
 // RoleStore 管理短期角色归属，不保存邮箱内容或 Session 集合。
 // ReleaseRole 只能由已排除并发初始化、且确认没有剩余邮箱的归属管理者调用。
 type RoleStore interface {
+	// RoleLeaseTTL 返回归属租期；本地有效期以续期请求开始时刻保守计算。
+	RoleLeaseTTL() time.Duration
 	ClaimRole(context.Context, RoleBinding) (RoleBinding, error)
 	FindRole(context.Context, int64) (RoleBinding, bool, error)
 	RefreshRole(context.Context, RoleBinding) (bool, error)

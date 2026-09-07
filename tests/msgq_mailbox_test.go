@@ -577,7 +577,7 @@ func TestMsgQServerRedisIntegration(t *testing.T) {
 	prefix := fmt.Sprintf("tx:test:msgq-mailbox:%d", time.Now().UnixNano())
 	key := prefix + ":session:v2:{99}"
 	primaryKey := prefix + ":primary:v1:{470001}"
-	defer raw.Del(ctx, key, primaryKey)
+	defer raw.Del(ctx, key, primaryKey, prefix+":role:{470001}")
 
 	bindings, err := msgq.NewRedisSessionStore(goredis.NewClient(raw), msgq.SessionRedisOptions{
 		Prefix: prefix,
@@ -686,6 +686,7 @@ func TestMsgQServerStartUsesLifecycleWorker(t *testing.T) {
 }
 
 type mailboxSessionStore struct {
+	roleTestStore
 	mu       sync.Mutex
 	bindings map[int64]msgq.SessionBinding
 	primary  map[int64]int64

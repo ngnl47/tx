@@ -432,7 +432,7 @@ if err != nil {
 _ = primary.Binding.SessionID
 ```
 
-干净登录只在运行中的 MsgQ 间轮转选择 owner，并以 `Create` 的 Redis `SET NX PX` 创建 SessionID binding；现存
+干净登录复用 RoleID 的 MsgQ 归属；首次归属在运行中的 MsgQ 间轮转提名并通过 Redis 原子确认，再以 `Create` 的 Redis `SET NX PX` 创建 SessionID binding；现存
 SessionID 会明确冲突，不能覆盖旧邮箱。恢复只按 SessionID 找回原来的 running owner，用完整旧 binding 条件执行
 `Rebind` 并换成新的 ConnectionID；owner 不可用或条件不匹配时直接失败，不会迁移到其他实例。同 SessionID 恢复保留
 Seq/Ack 和未确认队列，新 SessionID 的干净登录始终从空队列开始。
@@ -508,7 +508,7 @@ gRPC 错误通过状态详情保留服务端投递统计；发送方不能因错
 角色索引只在 Session 初始化成功后加入；重连沿用邮箱，终止、溢出和失活清理移除订阅，最后一个邮箱移除后删除空索引。
 新 Session 不复制已有邮箱的历史消息，已有 Session 恢复只重放自己的未确认消息。
 
-该方法目前是本地能力；Agent 的角色集中选址、归属续期和携带代际的远程角色投递尚未接入。
+该方法目前是本地能力；Agent 的角色集中选址和归属续期已接入，携带代际的远程角色投递尚未接入。
 现有 `Sender.PubRole` 仍使用主会话路由，不能将本地角色广播当成已经完成跨进程多 Session 下行。
 
 `FetchSome` 与 `Fetch` 的确认语义完全相同：批量读取只前进发送游标，不会删除队列内容；客户端 Ack 后必须调用
@@ -770,7 +770,7 @@ resolver 和客户端载荷均不能指定 `ConnectionID`，也不能伪造投�
 
 1. 客户端先发送 `FrameHandshake`，其中 `Payload` 交给 `IdentityResolver`，`Restore/Ack` 交给会话恢复。
 2. `IdentityResolver` 返回 `SessionPrincipal`；Agent 验证主体、生成本次物理连接的正 `ConnectionID`，再构造 `SessionIdentity`。
-3. `Restore=false` 的新建连接不查询旧 owner，只在 running MsgQ 间轮转选择一个实例；`Restore=true` 的恢复连接必须按 SessionID 命中原来的 running owner。同进程 msgq 时直接复用本地 `SessionClient`，分进程时按 Redis binding 和服务目录复用 gRPC 连接。
+3. `Restore=false` 的新建连接查询并复用角色归属；无归属时由 running MsgQ 轮转提名并原子确认，竞争失败者使用已确认归属。`Restore=true` 的恢复连接必须按 SessionID 命中原来的 running owner。同进程 msgq 时直接复用本地 `SessionClient`，但仍由邮箱初始化校验角色归属；分进程时按 Redis binding 和服务目录复用 gRPC 连接。
 4. 新建 `Init` 用 `Create NX` 安装空邮箱，SessionID 已存在时失败；恢复 `Init` 用旧完整 binding `Rebind` 到新 ConnectionID，保留相同 SessionID 的 Seq/Ack 与未确认队列。恢复 owner 不可用、邮箱不存在或主会话已经替换时明确失败，不能迁移或安装空会话。
 5. `Init` 成功后，Agent 发送 `FrameReady` 报告当前 `UpMsgSeq`。客户端收到它之前只能处于连接中，不能发送业务帧；恢复失败时不会出现“先成功、再被关闭”的假状态。
 6. 客户端以 `FrameReady.Ack` 释放上次会话已经记录的重放前缀，再按原序号重放剩余 UpMsg。
@@ -1440,7 +1440,7 @@ Actor；实体不会进入 `disthash`，成员变化不会把它改派到其他�
 
 #### 角色归属基础 API
 
-`msgq.RoleStore` 提供 `ClaimRole / FindRole / RefreshRole / ReleaseRole`。`RedisSessionStore` 实现此接口，
+`msgq.SessionStore` 包含 `RoleStore`，提供 `ClaimRole / FindRole / RefreshRole / ReleaseRole / RoleLeaseTTL`。`RedisSessionStore` 实现此接口，
 以带 TTL 的 `<prefix>:role:{RoleID}` 保存 `RoleBinding{RoleID, InstanceID, Generation}`。首次申请原子返回唯一赢家，
 续期与释放要求完整归属匹配；`Generation` 由申请者生成唯一令牌，同一实例重新申请也不能复用旧值。
 
@@ -1448,8 +1448,10 @@ Actor；实体不会进入 `disthash`，成员变化不会把它改派到其他�
 `Resolve` 热命中只读取本地缓存和服务发现，不查询 Redis。目标明确拒绝旧归属时调用 `Invalidate(expected)`，
 旧版本失效通知不会删除新版本缓存。网络超时不能当成未入队确认，路由器不自动重发业务载荷。
 
-这些基础 API 尚未接入现有 `SessionClientRouter` 和 `Sender`；当前运行入口的会话选址及下行行为未改变。
-同角色多 Session 的集中归属和本地分发接入进度见 [实施计划](docs/superpowers/plans/2026-09-08-msgq-role-routing.md)。
+`SessionClientRouter` 和邮箱初始化已接入角色归属。邮箱低频维护循环按半租期续期，最后一个邮箱移除后在下一轮维护条件释放归属。
+释放与同角色初始化串行交接；初始化中断留下的无邮箱归属由本地维护或 Redis TTL 清理。续期失败不延长本地有效期，
+超过有效期的邮箱拒绝活动和投递，并整体退出本地索引；旧代际不能删除新归属。所有维护只遍历本地记录，不扫描 Redis key。
+`RoleRouter` 缓存尚未接入 `Sender` 的远程角色发布；接入进度见 [实施计划](docs/superpowers/plans/2026-09-08-msgq-role-routing.md)。
 
 ### Actor 路由模式
 

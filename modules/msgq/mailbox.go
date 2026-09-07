@@ -20,7 +20,7 @@ const (
 )
 
 // Server 在本进程维护客户端会话与未确认下行消息。
-// Redis 只保存精确会话归属和角色主会话投影，不保存下行编码载荷。
+// Redis 保存角色归属租约、精确会话归属和角色主会话投影，不保存下行编码载荷。
 type Server struct {
 	instanceID                   string
 	store                        SessionStore
@@ -34,9 +34,10 @@ type Server struct {
 	// beforeRestoreSessionLock 仅供包内测试观察 Restore 即将等待会话锁的阶段。
 	beforeRestoreSessionLock func()
 
-	mu       sync.RWMutex
-	sessions map[int64]*mailboxSession
-	roles    map[int64]map[*mailboxSession]struct{}
+	mu         sync.RWMutex
+	sessions   map[int64]*mailboxSession
+	roles      map[int64]map[*mailboxSession]struct{}
+	roleLeases map[int64]roleLease
 
 	topicMu sync.RWMutex
 	topics  map[string]map[*mailboxSession]struct{}
@@ -169,6 +170,9 @@ func NewServer(options ServerOptions) (*Server, error) {
 	if options.TerminateDeadSessionInterval == 0 {
 		options.TerminateDeadSessionInterval = defaultTerminateDeadSessionInterval
 	}
+	if options.Store.RoleLeaseTTL() <= 0 {
+		return nil, ErrInvalidServer
+	}
 	var leaseRefreshInterval time.Duration
 	if provider, ok := options.Store.(interface{ leaseRefreshInterval() time.Duration }); ok {
 		leaseRefreshInterval = provider.leaseRefreshInterval()
@@ -183,6 +187,7 @@ func NewServer(options ServerOptions) (*Server, error) {
 		leaseRefreshInterval:         leaseRefreshInterval,
 		sessions:                     make(map[int64]*mailboxSession),
 		roles:                        make(map[int64]map[*mailboxSession]struct{}),
+		roleLeases:                   make(map[int64]roleLease),
 		topics:                       make(map[string]map[*mailboxSession]struct{}),
 	}, nil
 }
@@ -195,9 +200,21 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 	if err := request.Header.validateConnection(); err != nil || request.Ack < 0 || (!request.Restore && request.Ack != 0) {
 		return InitResult{}, ErrInvalidHeader
 	}
-	initLock := &s.initLocks[uint64(request.Header.SessionID)%initLockShards]
+	initLock := &s.initLocks[uint64(request.Header.RoleID)%initLockShards]
 	initLock.Lock()
 	defer initLock.Unlock()
+	if request.Restore {
+		previous, found := s.lookup(request.Header.SessionID)
+		if !found {
+			return InitResult{}, ErrSessionOffline
+		}
+		if previous.roleID != request.Header.RoleID {
+			return InitResult{}, ErrSessionChanged
+		}
+	}
+	if err := s.ensureRole(ctx, request.Header.RoleID); err != nil {
+		return InitResult{}, err
+	}
 
 	var session *mailboxSession
 	var previousConnectionID int64
@@ -296,6 +313,11 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 		}
 		session.active = true
 		s.addRoleLocked(session)
+	}
+	if !s.roleCurrent(request.Header.RoleID, time.Now()) {
+		s.removeLocked(session)
+		session.mu.Unlock()
+		return InitResult{}, ErrSessionChanged
 	}
 	if !session.active || session.sessionID != request.Header.SessionID {
 		session.mu.Unlock()
@@ -396,6 +418,10 @@ func (s *Server) PubSession(ctx context.Context, sessionID int64, payload []byte
 		return PubResult{}, ErrSessionOffline
 	}
 	session.mu.Lock()
+	if !s.roleCurrent(session.roleID, time.Now()) {
+		session.mu.Unlock()
+		return PubResult{}, ErrSessionChanged
+	}
 	if !session.active {
 		session.mu.Unlock()
 		return PubResult{}, ErrSessionOffline
@@ -627,6 +653,11 @@ func (s *Server) broadcastSessions(ctx context.Context, sessions []*mailboxSessi
 			return result, err
 		}
 		session.mu.Lock()
+		if !s.roleCurrent(session.roleID, time.Now()) {
+			result.Skipped++
+			session.mu.Unlock()
+			continue
+		}
 		if !session.active {
 			result.Skipped++
 			session.mu.Unlock()
@@ -755,6 +786,9 @@ func (s *Server) TerminateDeadSessions(ctx context.Context, now time.Time) (int,
 			)
 			errs = append(errs, err)
 		}
+	}
+	if err := s.maintainRoles(ctx, now); err != nil {
+		errs = append(errs, err)
 	}
 	return removed, errors.Join(errs...)
 }
@@ -945,6 +979,9 @@ func (s *Server) touch(ctx context.Context, header SessionHeader) (*mailboxSessi
 	}
 	if err := header.validateConnection(); err != nil {
 		return nil, err
+	}
+	if !s.roleCurrent(header.RoleID, time.Now()) {
+		return nil, ErrSessionChanged
 	}
 	session, found := s.lookup(header.SessionID)
 	if !found {

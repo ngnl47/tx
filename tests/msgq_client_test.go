@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"slices"
+	"sync"
 	"testing"
 
 	"github.com/ngnl47/tx/modules/discovery"
@@ -75,7 +76,7 @@ func TestSessionClientRouterReusesEndpointClientAndClosesIt(t *testing.T) {
 	}
 }
 
-func TestSessionClientRouterFreshSelectsRunningServiceWithoutStoreLookup(t *testing.T) {
+func TestSessionClientRouterFreshReusesRoleOwnerWithoutSessionLookup(t *testing.T) {
 	directory := sessionClientDirectory(t)
 	dialer := &sessionClientDialerFake{client: &sessionClientFake{}}
 	store := &sessionStoreFake{findErr: errors.New("fresh acquire must not query store")}
@@ -84,7 +85,7 @@ func TestSessionClientRouterFreshSelectsRunningServiceWithoutStoreLookup(t *test
 		t.Fatalf("new client router: %v", err)
 	}
 
-	for index, want := range []string{"msgq-a", "msgq-b"} {
+	for index, want := range []string{"msgq-a", "msgq-a"} {
 		_, err := router.Acquire(context.Background(), msgq.AcquireSessionRequest{RoleID: 470001, SessionID: int64(99 + index)})
 		if err != nil {
 			t.Fatalf("acquire running service: %v", err)
@@ -95,6 +96,29 @@ func TestSessionClientRouterFreshSelectsRunningServiceWithoutStoreLookup(t *test
 	}
 	if len(store.operations) != 0 {
 		t.Fatalf("fresh acquire used session store: %#v", store.operations)
+	}
+}
+
+func TestSessionClientRouterConcurrentFreshSessionsShareRoleOwner(t *testing.T) {
+	store := &sessionStoreFake{}
+	dialer := &sessionClientDialerFake{client: &sessionClientFake{}}
+	router, err := msgq.NewSessionClientRouter(sessionClientDirectory(t), store, dialer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer router.Close()
+	var group sync.WaitGroup
+	for index := range 32 {
+		group.Go(func() {
+			if _, err := router.Acquire(context.Background(), msgq.AcquireSessionRequest{RoleID: 47, SessionID: int64(index + 1)}); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	group.Wait()
+	owner, found, err := store.FindRole(context.Background(), 47)
+	if err != nil || !found || len(dialer.instances) != 1 || dialer.instances[0].ID != owner.InstanceID {
+		t.Fatalf("split role routing: owner=%+v, dialed=%+v, err=%v", owner, dialer.instances, err)
 	}
 }
 

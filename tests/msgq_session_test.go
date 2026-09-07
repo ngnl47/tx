@@ -474,6 +474,7 @@ func rpcSessionDirectory(t *testing.T, instanceID string) *discovery.ServiceDire
 }
 
 type sessionStoreFake struct {
+	roleTestStore
 	operations        []string
 	binding           msgq.SessionBinding
 	found             bool

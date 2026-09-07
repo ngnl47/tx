@@ -43,6 +43,7 @@ func TestServiceStartsWithExplicitDependencies(t *testing.T) {
 }
 
 type memoryStore struct {
+	roleTestStore
 	bindings map[int64]txmsgq.SessionBinding
 	primary  map[int64]int64
 }

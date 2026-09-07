@@ -4,7 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
+	"time"
 )
+
+// RoleLeaseTTL 返回角色归属使用的 Redis TTL。
+func (s *RedisSessionStore) RoleLeaseTTL() time.Duration { return s.ttl }
 
 const claimRoleScript = `
 local current = redis.call('GET', KEYS[1])

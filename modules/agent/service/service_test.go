@@ -330,6 +330,7 @@ func (noopSessionRouter) Acquire(context.Context, txmsgq.AcquireSessionRequest) 
 func (noopSessionRouter) Close() error { return nil }
 
 type memorySessionStore struct {
+	roleTestStore
 	mu       sync.Mutex
 	bindings map[int64]txmsgq.SessionBinding
 	primary  map[int64]int64

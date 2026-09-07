@@ -6,6 +6,7 @@ require (
 	github.com/Workiva/go-datastructures v1.1.3
 	github.com/asynkron/protoactor-go v0.0.0-20240822202345-3c0e61ca19c9
 	github.com/coder/websocket v1.8.15
+	github.com/google/uuid v1.6.0
 	github.com/maypok86/otter/v2 v2.3.0
 	github.com/redis/go-redis/v9 v9.17.3
 	go.etcd.io/etcd/api/v3 v3.7.1
@@ -31,7 +32,6 @@ require (
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/klauspost/compress v1.18.3 // indirect
 	github.com/lithammer/shortuuid/v4 v4.0.0 // indirect

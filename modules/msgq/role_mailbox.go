@@ -1,6 +1,9 @@
 package msgq
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // BroadcastRole 仅向本实例内绑定 roleID 的邮箱分发，不执行 Redis 寻址或跨实例广播。
 // 调用开始即交接只读 payload；即使返回错误，成功邮箱也可能已持有该载荷。
@@ -13,6 +16,10 @@ func (s *Server) BroadcastRole(ctx context.Context, roleID int64, payload []byte
 		return BroadcastResult{}, ErrInvalidHeader
 	}
 	s.mu.RLock()
+	if lease, found := s.roleLeases[roleID]; found && !time.Now().Before(lease.expires) {
+		s.mu.RUnlock()
+		return BroadcastResult{}, ErrSessionChanged
+	}
 	indexed := s.roles[roleID]
 	sessions := make([]*mailboxSession, 0, len(indexed))
 	for session := range indexed {

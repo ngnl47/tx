@@ -937,6 +937,7 @@ func (s *refreshPrimaryErrorSessionStore) RefreshPrimary(context.Context, int64,
 }
 
 type stagedSessionStore struct {
+	roleTestStore
 	mu              sync.Mutex
 	binding         SessionBinding
 	found           bool
@@ -1114,7 +1115,7 @@ func (s *touchPrimaryUnbindFailureStore) Unbind(context.Context, SessionBinding)
 	return false, s.err
 }
 
-type testSessionStore struct{}
+type testSessionStore struct{ roleTestStore }
 
 func (*testSessionStore) Create(context.Context, SessionBinding) (bool, error) {
 	return true, nil

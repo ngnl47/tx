@@ -280,6 +280,7 @@ func newSenderForTest(t *testing.T, connection Connection, binding SessionBindin
 }
 
 type senderStoreFake struct {
+	roleTestStore
 	binding            SessionBinding
 	bindings           map[int64]SessionBinding
 	found              bool

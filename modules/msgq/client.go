@@ -3,6 +3,7 @@ package msgq
 import (
 	"context"
 	"errors"
+	"github.com/google/uuid"
 	"sync"
 
 	"github.com/ngnl47/tx/modules/discovery"
@@ -128,7 +129,7 @@ func NewSessionClientRouter(directory discovery.Directory, store SessionStore, d
 	return &SessionClientRouter{directory: directory, store: store, dialer: dialer, connections: make(map[string]SessionClient)}, nil
 }
 
-// Acquire 为 fresh 会话轮转选择 running MsgQ，为 restore 会话连接精确旧 owner。
+// Acquire 为新会话复用角色归属；首次归属由运行中实例轮转提名并原子确认。恢复仍直达旧邮箱。
 func (r *SessionClientRouter) Acquire(ctx context.Context, request AcquireSessionRequest) (SessionClient, error) {
 	if r == nil || r.directory == nil {
 		return nil, ErrDirectoryNil
@@ -143,8 +144,25 @@ func (r *SessionClientRouter) Acquire(ctx context.Context, request AcquireSessio
 		return nil, ErrInvalidSession
 	}
 	if !request.Restore {
-		instance, available := r.directory.NextInstance("msgq")
-		if !available {
+		binding, found, err := r.store.FindRole(ctx, request.RoleID)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			candidate, available := r.directory.NextInstance("msgq")
+			if !available {
+				return nil, ErrRouteUnavailable
+			}
+			binding, err = r.store.ClaimRole(ctx, RoleBinding{RoleID: request.RoleID, InstanceID: candidate.ID, Generation: uuid.NewString()})
+			if err != nil {
+				return nil, err
+			}
+		}
+		if binding.Validate() != nil || binding.RoleID != request.RoleID {
+			return nil, ErrSessionStoreResponse
+		}
+		instance, available := r.directory.LookupInstance(binding.InstanceID)
+		if !available || instance.Status != discovery.StatusRunning || !providesService(instance, "msgq") {
 			return nil, ErrRouteUnavailable
 		}
 		return r.connection(ctx, instance)

@@ -43,8 +43,9 @@ func (b SessionBinding) Validate() error {
 	return nil
 }
 
-// SessionStore 持久化精确会话绑定和角色主会话投影。
+// SessionStore 持久化角色归属租约、精确会话绑定和角色主会话投影。
 type SessionStore interface {
+	RoleStore
 	Create(ctx context.Context, binding SessionBinding) (created bool, err error)
 	Rebind(ctx context.Context, expected, replacement SessionBinding) (rebound bool, err error)
 	Find(ctx context.Context, sessionID int64) (binding SessionBinding, found bool, err error)

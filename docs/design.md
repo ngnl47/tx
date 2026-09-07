@@ -2314,7 +2314,12 @@ Redis 单 key 原子申请使并发候选得到同一个归属；查询和重复
 路由缓存只用于寻址，不证明目标仍持有邮箱；后续投递协议必须携带归属版本，由目标拒绝旧版本。
 网络超时不触发自动业务重发；消息可能已入队，不能通过重新寻址推断发送失败。
 
-本节基础 API 已提供；下述现有运行链路尚未切换。切换和跨工程验收按角色归属实施计划推进，不能将缓存基准视为端到端链路验收。
+Agent 选址及邮箱初始化已经接入角色归属；`Sender` 的远程角色发布和跨工程真实验收继续按实施计划推进，不能将缓存基准视为端到端链路验收。
+
+邮箱用角色级初始化锁串行协调初始化和归属维护，不把多个 Session 的 Seq/Ack 合并。初始化第一次接管本地角色时先原子申请、再条件续期，
+本地租期从请求开始时刻计算，避免把网络耗时额外算入有效期。正常入队与会话活动只读本地租期，不访问 Redis 角色索引。
+低频清理循环只枚举本地归属：有邮箱且到达半租期时条件续期；无邮箱时条件释放；超期或明确失去归属时使该角色所有旧邮箱失效。
+续期 I/O 错误不会延长本地有效期；最后邮箱释放与新初始化共用角色锁，避免新邮箱继承被并发删除的绑定。
 
 `modules/msgq` 是客户端会话邮箱，不是所有服务消息的中心总线。它负责：
 
@@ -2332,7 +2337,7 @@ Redis 精确 binding key 为 `<prefix>:session:v2:{SessionID}`，保存完整四
 
 `SessionID` 标识一次逻辑登录会话，`ConnectionID` 标识该会话下的一次物理 TCP/WebSocket 连接。弱网恢复必须命中
 同一 `SessionID`，同时分配新的 `ConnectionID` 以拒绝旧连接迟到的 Fetch、Confirm、Topic 管理和 TerminateSession。`Restore=false`
-的新建会话只在 running MsgQ 间轮转选择 owner，并用 `Create NX` 创建精确 binding；现存 SessionID 会明确冲突。
+的新建会话复用 RoleID 的 owner，只有无归属时才在 running MsgQ 间轮转提名并原子确定 owner，然后用 `Create NX` 创建精确 binding；现存 SessionID 会明确冲突。
 `Restore=true` 的恢复会话只按
 SessionID 回到原 running owner，用完整旧 binding 条件 `Rebind` 到新 ConnectionID；失败时不迁移。同 SessionID 恢复
 保留 Seq/Ack 与未确认队列，新 SessionID 的干净登录不继承旧消息。
