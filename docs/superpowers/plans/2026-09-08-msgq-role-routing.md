@@ -33,10 +33,16 @@
 
 ## 第三批：示例与集群验收
 
-- [ ] 分别对接 txgame/txclient、txgameslg/txclientslg；业务不感知 Borrow，两个工程不交叉引用。
+- [x] 分别对接 txgame/txclient、txgameslg/txclientslg；业务不感知 Borrow，两个工程不交叉引用。
 - [x] 两套示例的命令适配层自动共享业务成功响应；携带 RequestSeq 的 System_Error 精确返回发起 Session，处理完成确认只返回原 Agent。业务 Handler 不增加分类标记。
 
 本批验证：两套 server 的全量 Go 测试通过；命令适配层关键测试覆盖角色寻址、精确错误和无业务载荷的处理完成确认。
 - [ ] 真实多 Agent、多 MsgQ 下验证同角色集中归属、不同角色分散、热缓存 Redis 查询计数、断线恢复及故障边界。
+
+阶段记录：两套示例均已通过跨 Agent 同角色双 Session 响应共享、独立确认和断线恢复验收。
+真实 Redis 生命周期用例增加客户端命令计数：角色冷寻址 1 次，100 次热寻址/角色双邮箱下行/Fetch/Rec/Confirm 额外命令 0 次，
+Session 续期到期后 100 次活动只续期 1 次。`TX_REDIS_ENDPOINT=127.0.0.1:6379 go test -race ./modules/msgq/... -count=1` 通过。
+该计数尚不是独立集群各进程的合并归因，不据此勾选整项完成。其他热点 I/O 检查与后续优先级见
+[热点路径 I/O 检查](../../audits/2026-09-08-hot-path-io.md)。
 
 本计划不引入全 MsgQ 广播、不实现可靠业务消息队列、不附带实施其余审计项。
