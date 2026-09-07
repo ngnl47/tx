@@ -110,18 +110,18 @@ func (access modeStorageAccess) BackfillDocumentWithOptions(ctx context.Context,
 	return backfiller.BackfillDocumentWithOptions(ctx, spec, key, doc, options)
 }
 
-func (access modeStorageAccess) NextSequence(ctx context.Context, routeType string, shardKey any, name string) (int64, error) {
+func (access modeStorageAccess) Reserve(ctx context.Context, routeType string, shardKey any, collection, key string, size int64) (int64, error) {
 	if access.mode != meta.StorageModeMongo {
-		return 0, fmt.Errorf("framework: storage capability %q cannot allocate Mongo sequences", access.mode)
+		return 0, fmt.Errorf("framework: storage capability %q cannot reserve Mongo counters", access.mode)
 	}
 	if access.storage == nil {
-		return 0, fmt.Errorf("framework: storage capability %q sequences are unavailable", access.mode)
+		return 0, fmt.Errorf("framework: storage capability %q counters are unavailable", access.mode)
 	}
-	sequences := access.storage.MongoSequences()
-	if sequences == nil {
-		return 0, fmt.Errorf("framework: storage capability %q sequences are unavailable", access.mode)
+	counters := access.storage.MongoCounters()
+	if counters == nil {
+		return 0, fmt.Errorf("framework: storage capability %q counters are unavailable", access.mode)
 	}
-	return sequences.NextSequence(ctx, routeType, shardKey, name)
+	return counters.Reserve(ctx, routeType, shardKey, collection, key, size)
 }
 
 type modeChangeWriter struct {

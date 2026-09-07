@@ -141,13 +141,13 @@ func (u *recordingMongoUpdater) FindMany(_ context.Context, collection string, f
 	return u.manyDocs, u.manyExists, nil
 }
 
-func (u *recordingMongoUpdater) NextSequence(_ context.Context, collection, name string) (int64, error) {
+func (u *recordingMongoUpdater) Reserve(_ context.Context, collection, name string, size int64) (int64, error) {
 	u.sequenceCollection = collection
 	u.sequenceNames = append(u.sequenceNames, name)
 	if u.sequenceValues == nil {
 		u.sequenceValues = make(map[string]int64)
 	}
-	u.sequenceValues[name]++
+	u.sequenceValues[name] += size
 	return u.sequenceValues[name], nil
 }
 
@@ -1341,31 +1341,31 @@ func TestMongoClusterRoutesBackfillByShardKey(t *testing.T) {
 	}
 }
 
-func TestMongoClusterRoutesIndependentNamedSequences(t *testing.T) {
+func TestMongoClusterRoutesCallerDefinedCounters(t *testing.T) {
 	router := &recordingMongoRouter{names: map[any]string{int64(1): "global-shard"}}
 	client := &recordingMongoUpdater{}
 	cluster := mustMongoCluster(t, router, map[string]txmongo.Client{"global-shard": client})
 
-	firstAccountID, err := cluster.NextSequence(context.Background(), "global", int64(1), "account_id")
+	firstAccountID, err := cluster.Reserve(context.Background(), "global", int64(1), "custom_counters", "account_id", 100)
 	if err != nil {
 		t.Fatalf("first account sequence returned error: %v", err)
 	}
-	secondAccountID, err := cluster.NextSequence(context.Background(), "global", int64(1), "account_id")
+	secondAccountID, err := cluster.Reserve(context.Background(), "global", int64(1), "custom_counters", "account_id", 50)
 	if err != nil {
 		t.Fatalf("second account sequence returned error: %v", err)
 	}
-	firstSessionID, err := cluster.NextSequence(context.Background(), "global", int64(1), "session_id")
+	firstRoleID, err := cluster.Reserve(context.Background(), "global", int64(1), "custom_counters", "role_id", 200)
 	if err != nil {
-		t.Fatalf("first session sequence returned error: %v", err)
+		t.Fatalf("first role counter returned error: %v", err)
 	}
-	if firstAccountID != 1 || secondAccountID != 2 || firstSessionID != 1 {
-		t.Fatalf("sequence values = %d/%d/%d, want 1/2/1", firstAccountID, secondAccountID, firstSessionID)
+	if firstAccountID != 100 || secondAccountID != 150 || firstRoleID != 200 {
+		t.Fatalf("counter values = %d/%d/%d, want 100/150/200", firstAccountID, secondAccountID, firstRoleID)
 	}
-	if client.sequenceCollection != "tx_sequences" {
-		t.Fatalf("sequence collection = %q, want tx_sequences", client.sequenceCollection)
+	if client.sequenceCollection != "custom_counters" {
+		t.Fatalf("counter collection = %q, want custom_counters", client.sequenceCollection)
 	}
-	if len(client.sequenceNames) != 3 || client.sequenceNames[0] != "account_id" || client.sequenceNames[1] != "account_id" || client.sequenceNames[2] != "session_id" {
-		t.Fatalf("sequence names = %#v, want account_id/account_id/session_id", client.sequenceNames)
+	if len(client.sequenceNames) != 3 || client.sequenceNames[0] != "account_id" || client.sequenceNames[1] != "account_id" || client.sequenceNames[2] != "role_id" {
+		t.Fatalf("counter keys = %#v, want account_id/account_id/role_id", client.sequenceNames)
 	}
 	if len(router.calls) != 3 {
 		t.Fatalf("route calls = %#v, want three calls", router.calls)

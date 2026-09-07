@@ -30,7 +30,7 @@ type Cluster struct {
 
 var _ FencedChangeApplier = (*Cluster)(nil)
 var _ storage.DocumentBackfiller = (*Cluster)(nil)
-var _ SequenceAllocator = (*Cluster)(nil)
+var _ CounterStore = (*Cluster)(nil)
 
 // NewCluster 创建 Mongo route/cluster 适配器。
 func NewCluster(router Router, shards map[string]Client) (*Cluster, error) {
@@ -103,13 +103,13 @@ func (c *Cluster) BackfillDocumentWithOptions(ctx context.Context, spec meta.Typ
 	return adapter.BackfillDocumentWithOptions(ctx, spec, key, doc, options)
 }
 
-// NextSequence 按 routeType 和 shardKey 选择分片后递增命名序列。
-func (c *Cluster) NextSequence(ctx context.Context, routeType string, shardKey any, name string) (int64, error) {
+// Reserve 按 routeType 和 shardKey 选择分片后原子预留计数区间。
+func (c *Cluster) Reserve(ctx context.Context, routeType string, shardKey any, collection, key string, size int64) (int64, error) {
 	adapter, err := c.adapterForRoute(ctx, routeType, shardKey)
 	if err != nil {
 		return 0, err
 	}
-	return adapter.NextSequence(ctx, name)
+	return adapter.Reserve(ctx, collection, key, size)
 }
 
 func (c *Cluster) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {

@@ -51,7 +51,7 @@ type MongoStorage interface {
 	// MongoReader 返回带健康闸门的 MongoDB 文档读取器。
 	MongoReader() txstorage.DocumentLoader
 	txstorage.DocumentBackfiller
-	txmongo.SequenceAllocator
+	txmongo.CounterStore
 }
 
 // FusionStorage 只暴露 Fusion 文档读写。
@@ -283,8 +283,8 @@ func (view mongoStorageView) BackfillDocumentWithOptions(ctx context.Context, sp
 	return view.storage.BackfillDocumentWithOptions(ctx, spec, key, doc, options)
 }
 
-func (view mongoStorageView) NextSequence(ctx context.Context, routeType string, shardKey any, name string) (int64, error) {
-	return view.storage.NextSequence(ctx, routeType, shardKey, name)
+func (view mongoStorageView) Reserve(ctx context.Context, routeType string, shardKey any, collection, key string, size int64) (int64, error) {
+	return view.storage.Reserve(ctx, routeType, shardKey, collection, key, size)
 }
 
 type fusionStorageView struct{ modeStorageView }

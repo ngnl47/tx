@@ -9,6 +9,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/mongo/writeconcern"
 
 	"github.com/ngnl47/tx/storage"
 	txmongo "github.com/ngnl47/tx/storage/mongo"
@@ -107,22 +108,29 @@ func (d Database) UpdateOne(ctx context.Context, collection string, filter txmon
 	return txmongo.UpdateResult{MatchedCount: result.MatchedCount, UpsertedCount: result.UpsertedCount}, nil
 }
 
-// NextSequence 使用单条 findOneAndUpdate 原子递增并返回命名序列的新值。
-func (d Database) NextSequence(ctx context.Context, collection, name string) (int64, error) {
+// Reserve 使用单条 majority 写关注的 findOneAndUpdate 预留区间并返回新上界。
+// collection、key 与区间大小由调用方定义；条件更新阻止 int64 溢出和负计数继续推进。
+func (d Database) Reserve(ctx context.Context, collection, key string, size int64) (int64, error) {
 	if d.db == nil {
 		return 0, errMongoDatabaseNotConfigured
+	}
+	if collection == "" || key == "" || size <= 0 {
+		return 0, errors.New("mongo: counter collection, key and positive size are required")
 	}
 	var result struct {
 		Value int64 `bson:"value"`
 	}
-	err := d.db.Collection(collection).FindOneAndUpdate(
+	err := d.db.Collection(collection, options.Collection().SetWriteConcern(writeconcern.Majority())).FindOneAndUpdate(
 		ctx,
-		bson.M{"_id": name},
-		bson.M{"$inc": bson.M{"value": int64(1)}},
+		bson.M{"_id": key, "value": bson.M{"$gte": int64(0), "$lte": math.MaxInt64 - size}},
+		bson.M{"$inc": bson.M{"value": size}},
 		options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.After),
 	).Decode(&result)
 	if err != nil {
-		return 0, mongoBackendError("next sequence", err)
+		return 0, mongoBackendError("reserve counter", err)
+	}
+	if result.Value < size {
+		return 0, errors.New("mongo: counter returned an invalid upper bound")
 	}
 	return result.Value, nil
 }

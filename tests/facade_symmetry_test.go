@@ -71,9 +71,9 @@ func TestMongoStorageExposesOnlyNarrowAtomicCapabilities(t *testing.T) {
 	var beeMongo bee.MongoStorage
 	var antMongo ant.MongoStorage
 	var _ txstorage.DocumentBackfiller = beeMongo
-	var _ txmongo.SequenceAllocator = beeMongo
+	var _ txmongo.CounterStore = beeMongo
 	var _ txstorage.DocumentBackfiller = antMongo
-	var _ txmongo.SequenceAllocator = antMongo
+	var _ txmongo.CounterStore = antMongo
 }
 
 func assertStorageReaderMethods(t *testing.T, current reflect.Type, allowed ...string) {

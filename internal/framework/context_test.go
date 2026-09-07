@@ -137,7 +137,7 @@ func TestModeStorageKeepsMongoAtomicCapabilitiesInsideMongoMode(t *testing.T) {
 	if err == nil {
 		t.Fatal("Mongo backfill through Redis storage capability succeeded")
 	}
-	if _, err := storage.NextSequence(context.Background(), "global", int64(1), "account_id"); err == nil {
+	if _, err := storage.Reserve(context.Background(), "global", int64(1), "custom_counters", "example", 100); err == nil {
 		t.Fatal("Mongo sequence through Redis storage capability succeeded")
 	}
 }

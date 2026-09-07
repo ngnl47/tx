@@ -206,7 +206,7 @@ ServiceSpec、CMod 和基础 Context；同名 API 具有相同签名和生命周
 | `Admission()` | Bee/Ant | 登记和封口本服务外部入口 | 进程排水顺序在 Service Host |
 | `Storage()` | Bee/Ant | 仅供项目组合根安装 mode-aware 业务 facade | client、健康状态、worker 和 Close 在存储 Runtime |
 | `CModRedisStorage()` | Bee/Ant | 取得仅允许 Redis TypeSpec 的 reader/writer 和脚本路由 | 连接池所有权在存储 Runtime |
-| `CModMongoStorage()` | Bee/Ant | 取得仅允许 MongoDB TypeSpec 的 reader/writer、条件回填和命名序列 | 连接池所有权在存储 Runtime |
+| `CModMongoStorage()` | Bee/Ant | 取得仅允许 MongoDB TypeSpec 的 reader/writer、条件回填和原子 CounterStore | 连接池所有权在存储 Runtime |
 | `CModFusionStorage()` | Bee/Ant | 取得仅允许 Fusion TypeSpec 的 reader/writer | Redis、Mongo 和延迟任务所有权在存储 Runtime |
 | `CModRPC()` | Bee/Ant | 启动前注册 protobuf service | Serve/Stop 在共享 RPC Host |
 | `CModDiscovery()` | Bee/Ant | 查询 running 或指定实例快照 | watch 与 Replace 在 discovery Runtime |
@@ -1196,16 +1196,19 @@ RecordKey 不等于事务 LockKey：
 - `DocumentLoader` / `BatchDocumentLoader`：读取公共文档。
 - `DocumentReplacer`：完整替换文档。
 - `DocumentBackfiller`：仅在目标不存在时原子回填文档，并显式报告是否插入。
-- `mongo.SequenceAllocator`：按 routeType 和稳定分片键递增命名 `int64` 序列。
+- `mongo.CounterStore`：按 routeType 和稳定分片键，为调用方指定 collection/key 原子增加 size，返回新上界。
 - `DeleteApplier`：Redis-only、Mongo-only adapter 的整记录删除能力。
 - `RecordLocker`：记录级互斥。
 - `RecordRevisionReader` / `RevisionDeleteApplier`：版本保护删除。
 
 Redis 与 Mongo adapter 通过组合这些接口表达单后端能力；Fusion 组合读、写、回填和延迟回写能力，但不实现 `DeleteApplier`。公共 API 可以保持 `storage.Save`，而不是暴露 `ApplyInsert/ApplyUpdate/ApplyReplace` 组合给业务。
 
-Mongo 条件回填使用单条 `$setOnInsert + upsert`；匹配现有文档时只报告 `inserted=false`，不能改写字段。命名序列固定存放在
-`tx_sequences` 集合，每次用一条 `findOneAndUpdate` 完成 `$inc`、缺失创建和返回新值。序列的全局范围由调用方选择的
-Mongo routeType 与稳定分片键决定；同名序列若被路由到不同分片就是不同计数器，因此全局编号必须固定分片键。编号允许空洞且不回收。
+Mongo 条件回填使用单条 `$setOnInsert + upsert`；匹配现有文档时只报告 `inserted=false`，不能改写字段。
+CounterStore 不定义业务 collection、计数键或号段缓存；驱动每次以 majority 写关注执行单条 `findOneAndUpdate`，
+用 `$inc`、缺失创建和返回新值预留调用方指定的正增量。过滤条件限制旧值在 `[0, MaxInt64-size]`，
+避免 Mongo 将溢出整数提升为浮点数；超界旧文档无法匹配，upsert 的同 `_id` 唯一约束使操作失败，不覆盖原值。
+全局范围由调用方的 Mongo routeType、稳定分片键、collection 和 key 共同决定。本地号段与空洞策略属于项目，
+SessionID 不消费此原语。
 条件回填的过滤字段必须具有唯一性。常规业务模型把 `idField` 保存为语义明确的普通 BSON 字段，并由生成元数据声明
 单字段唯一索引；否则 adapter 在写入前拒绝调用。仅有复合唯一索引不能保证按单个业务主键并发创建时唯一。
 物理 `_id` 自带唯一性，但只用于存储结构完全确定的特殊模型。

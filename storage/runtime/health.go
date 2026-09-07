@@ -169,17 +169,17 @@ func (backfiller guardedMongoBackfiller) BackfillDocumentWithOptions(ctx context
 	return inserted, err
 }
 
-type guardedMongoSequences struct {
+type guardedMongoCounters struct {
 	storage *Runtime
-	next    txmongo.SequenceAllocator
+	next    txmongo.CounterStore
 }
 
-func (sequences guardedMongoSequences) NextSequence(ctx context.Context, routeType string, shardKey any, name string) (int64, error) {
-	if err := sequences.storage.requireStorageMode(meta.StorageModeMongo); err != nil {
+func (counters guardedMongoCounters) Reserve(ctx context.Context, routeType string, shardKey any, collection, key string, size int64) (int64, error) {
+	if err := counters.storage.requireStorageMode(meta.StorageModeMongo); err != nil {
 		return 0, err
 	}
-	value, err := sequences.next.NextSequence(ctx, routeType, shardKey, name)
-	sequences.storage.observeStorageError(err)
+	value, err := counters.next.Reserve(ctx, routeType, shardKey, collection, key, size)
+	counters.storage.observeStorageError(err)
 	return value, err
 }
 

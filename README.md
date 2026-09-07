@@ -120,8 +120,8 @@ runtime shutdown 或 discovery 快照写权限。
 `CModSessionID` 依赖 Discovery 已取得的租约和 `workSlot`，只向确实需要发号的 Login Service 暴露
 `AllocateSessionID`；Agent、MsgQ、Game、SLGGame 和 SLGWorld 不应声明该能力，也不能读取 `workSlot`。
 
-三类存储 CMod 返回不同的窄接口：Redis 暴露 `RedisReader` 和脚本路由，MongoDB 暴露 `MongoReader`、条件回填和命名
-`int64` 序列，Fusion 暴露 `FusionReader`；对应 `ChangeWriter` 也只接受相同 `TypeSpec.Storage.Mode`。这些接口不返回底层
+三类存储 CMod 返回不同的窄接口：Redis 暴露 `RedisReader` 和脚本路由，MongoDB 暴露 `MongoReader`、条件回填和原子
+`CounterStore`，Fusion 暴露 `FusionReader`；对应 `ChangeWriter` 也只接受相同 `TypeSpec.Storage.Mode`。这些接口不返回底层
 客户端或连接关闭权。即使同一进程中的其他服务启用了更多后端，当前服务也不能越过 `ServiceSpec.Requires` 使用未声明存储。
 
 `runtime.Instance()` 返回本进程身份和当前生命周期状态的只读快照，`Services` 切片也会复制，调用方修改
@@ -3588,7 +3588,7 @@ Mongo adapter 当前支持：
 - `LoadDocuments`：按记录键批量读取并保持返回顺序。
 - `ReplaceDocument`：整文档替换，供 Fusion 延迟保存回写使用。
 - `BackfillDocumentWithOptions`：用单条 `$setOnInsert + upsert` 仅创建缺失文档；已存在时返回 `inserted=false`，不覆盖字段。
-- `NextSequence`：在固定 `tx_sequences` 集合用单条 `findOneAndUpdate` 递增命名 `int64` 序列并返回新值。
+- `Reserve`：在调用方指定的 collection/key 上用单条 `findOneAndUpdate` 增加正 `int64 size`，返回预留区间的新上界。
 - `ApplyDelete`：Mongo-only adapter 的显式物理删除能力；Fusion 不组合该能力。
 - `mongo.Cluster`：按 `routeType` 和分片键路由到具体 Mongo adapter；批量读取会按 shard 分组并按输入顺序还原结果。
 
@@ -3603,7 +3603,7 @@ if err != nil {
 ```
 
 `txmongo.Client` 在编译期要求装配对象同时实现 `Updater`、`Replacer`、`Deleter`、`Finder`、
-`BatchFinder` 和 `SequenceIncrementer`。官方 driver 的 `txmongodriver.Database` 已满足该契约；自定义 client 缺少任一能力时无法通过编译，
+`BatchFinder` 和 `CounterReserver`。官方 driver 的 `txmongodriver.Database` 已满足该契约；自定义 client 缺少任一能力时无法通过编译，
 nil 或 typed-nil 则由 `NewAdapter` 在启动装配阶段返回 `mongo.ErrClientNotConfigured`。运行期不再通过动态断言补能力，
 批量读取也不会退化为逐条查询。
 
@@ -3621,15 +3621,17 @@ mongoStorage, err := runtime.CModMongoStorage()
 if err != nil {
 	return err
 }
-accountID, err := mongoStorage.NextSequence(ctx, "global", int64(1), "account_id")
+high, err := mongoStorage.Reserve(ctx, "global", int64(1), "project_counters", "example", 100)
 if err != nil {
 	return err
 }
 inserted, err := mongoStorage.BackfillDocumentWithOptions(ctx, spec, key, document, storage.ApplyOptions{})
 ```
 
-同名序列只有落到同一 Mongo 分片时才属于同一个计数器。全局 `AccountID`、`RoleID`、`SessionID` 必须各自使用稳定名称和
-固定分片键；允许预分配产生空洞，不回收编号。不同名称互不影响，多个服务实例并发调用仍由 Mongo 原子递增串行化。
+此次调用预留 `[high-99, high]`。同一 collection/key 只有落到同一 Mongo 分片时才是同一个计数器。
+驱动使用 majority 写关注，并用计数上界条件阻止 `int64` 溢出；无效输入、区间耗尽或后端错误均返回失败。
+项目完整负责业务 collection、计数键、号段大小、本地缓存与编号区间，不由 tx 定义；未消费区间可以形成空洞。
+SessionID 使用独立的 `CModSessionID`，不通过 Mongo 计数器分配。
 
 Mongo TTL index 的字段级 `expireAfter` 会删除整条文档，不是删除单个字段。生成阶段应限制同一类型最多一个 TTL 字段。
 

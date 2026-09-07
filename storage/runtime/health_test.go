@@ -151,7 +151,7 @@ func TestFusionHealthGateRejectsBeforeRedisReadWhenMongoIsUnavailable(t *testing
 func TestMongoAtomicCapabilitiesUseMongoHealthGate(t *testing.T) {
 	store := &Runtime{mongo: &txmongo.Cluster{}}
 	backfiller := store.MongoBackfiller()
-	sequences := store.MongoSequences()
+	sequences := store.MongoCounters()
 	if backfiller == nil || sequences == nil {
 		t.Fatal("Mongo atomic capabilities are nil for configured Mongo storage")
 	}
@@ -167,7 +167,7 @@ func TestMongoAtomicCapabilitiesUseMongoHealthGate(t *testing.T) {
 	if !errors.Is(err, ErrStorageUnavailable) {
 		t.Fatalf("Mongo backfill error = %v, want ErrStorageUnavailable", err)
 	}
-	if _, err := sequences.NextSequence(context.Background(), "global", int64(1), "account_id"); !errors.Is(err, ErrStorageUnavailable) {
+	if _, err := sequences.Reserve(context.Background(), "global", int64(1), "custom_counters", "example", 100); !errors.Is(err, ErrStorageUnavailable) {
 		t.Fatalf("Mongo sequence error = %v, want ErrStorageUnavailable", err)
 	}
 }

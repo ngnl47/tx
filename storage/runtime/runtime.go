@@ -274,12 +274,12 @@ func (s *Runtime) MongoBackfiller() txstorage.DocumentBackfiller {
 	return guardedMongoBackfiller{storage: s, next: s.mongo}
 }
 
-// MongoSequences 返回带 Mongo 健康闸门的命名序列分配器。
-func (s *Runtime) MongoSequences() txmongo.SequenceAllocator {
+// MongoCounters 返回带 Mongo 健康闸门的原子计数存储。
+func (s *Runtime) MongoCounters() txmongo.CounterStore {
 	if s == nil || s.mongo == nil {
 		return nil
 	}
-	return guardedMongoSequences{storage: s, next: s.mongo}
+	return guardedMongoCounters{storage: s, next: s.mongo}
 }
 
 func (s *Runtime) FusionReader() txstorage.DocumentLoader {

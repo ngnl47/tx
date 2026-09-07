@@ -103,14 +103,14 @@ type BatchFinder interface {
 	FindMany(context.Context, string, ValuesFilter, ...string) ([]map[string]any, []bool, error)
 }
 
-// SequenceIncrementer 是单个 MongoDB 分片递增命名序列所需的最小接口。
-type SequenceIncrementer interface {
-	NextSequence(context.Context, string, string) (int64, error)
+// CounterReserver 是单个 MongoDB 分片原子预留计数区间的最小接口。
+type CounterReserver interface {
+	Reserve(context.Context, string, string, int64) (int64, error)
 }
 
-// SequenceAllocator 按 routeType 和 shardKey 选择分片后递增命名序列。
-type SequenceAllocator interface {
-	NextSequence(context.Context, string, any, string) (int64, error)
+// CounterStore 按路由选择分片，为调用方指定的 collection 和 key 原子增加 size 并返回新上界。
+type CounterStore interface {
+	Reserve(context.Context, string, any, string, string, int64) (int64, error)
 }
 
 // IndexManager 创建由生成元数据声明的 Mongo 索引。
@@ -125,7 +125,7 @@ type Client interface {
 	Deleter
 	Finder
 	BatchFinder
-	SequenceIncrementer
+	CounterReserver
 }
 
 // Adapter 把规范化变更流应用到 MongoDB 更新文档。
@@ -135,8 +135,6 @@ type Adapter struct {
 
 var _ FencedChangeApplier = (*Adapter)(nil)
 var _ storage.DocumentBackfiller = (*Adapter)(nil)
-
-const sequenceCollection = "tx_sequences"
 
 // NewAdapter 创建 Mongo 变更适配器。
 func NewAdapter(client Client) (*Adapter, error) {
@@ -297,13 +295,13 @@ func validateBackfillIdentity(spec meta.TypeSpec) error {
 	return fmt.Errorf("mongo: backfill business ID field %q requires a unique single-field index", field)
 }
 
-// NextSequence 在当前 MongoDB 分片递增命名序列。
-func (a *Adapter) NextSequence(ctx context.Context, name string) (int64, error) {
+// Reserve 在当前 MongoDB 分片原子预留调用方指定的计数区间。
+func (a *Adapter) Reserve(ctx context.Context, collection, key string, size int64) (int64, error) {
 	client, err := a.clientFor()
 	if err != nil {
 		return 0, err
 	}
-	return client.NextSequence(ctx, sequenceCollection, name)
+	return client.Reserve(ctx, collection, key, size)
 }
 
 // ApplyDelete 按记录键删除一条 Mongo 文档。

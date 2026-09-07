@@ -3,6 +3,7 @@ package mongodriver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"reflect"
 	"strings"
@@ -66,15 +67,15 @@ func TestDatabaseReturnsErrorWhenMongoDatabaseMissing(t *testing.T) {
 	if _, _, err := db.FindMany(context.Background(), "roles", txmongo.ValuesFilter{Field: "_id", Values: []any{int64(1001)}}); err == nil || !strings.Contains(err.Error(), "mongo database is not configured") {
 		t.Fatalf("FindMany error = %v, want missing database error", err)
 	}
-	if _, err := db.NextSequence(context.Background(), "tx_sequences", "account_id"); err == nil || !strings.Contains(err.Error(), "mongo database is not configured") {
-		t.Fatalf("NextSequence error = %v, want missing database error", err)
+	if _, err := db.Reserve(context.Background(), "custom_counters", "example", 100); err == nil || !strings.Contains(err.Error(), "mongo database is not configured") {
+		t.Fatalf("Reserve error = %v, want missing database error", err)
 	}
 	if err := db.EnsureIndexes(context.Background(), "roles", nil); err == nil || !strings.Contains(err.Error(), "mongo database is not configured") {
 		t.Fatalf("EnsureIndexes error = %v, want missing database error", err)
 	}
 }
 
-func TestDatabaseNextSequenceUsesSingleAtomicFindAndModify(t *testing.T) {
+func TestDatabaseReserveUsesSingleAtomicFindAndModify(t *testing.T) {
 	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
 	mt.Run("increment", func(mt *mtest.T) {
 		mt.AddMockResponses(mtest.CreateSuccessResponse(
@@ -85,16 +86,16 @@ func TestDatabaseNextSequenceUsesSingleAtomicFindAndModify(t *testing.T) {
 			}},
 			bson.E{Key: "value", Value: bson.D{
 				{Key: "_id", Value: "account_id"},
-				{Key: "value", Value: int64(1)},
+				{Key: "value", Value: int64(100)},
 			}},
 		))
 
-		value, err := NewDatabase(mt.DB).NextSequence(context.Background(), "tx_sequences", "account_id")
+		value, err := NewDatabase(mt.DB).Reserve(context.Background(), "custom_counters", "account_id", 100)
 		if err != nil {
-			t.Fatalf("NextSequence returned error: %v", err)
+			t.Fatalf("Reserve returned error: %v", err)
 		}
-		if value != 1 {
-			t.Fatalf("NextSequence = %d, want 1", value)
+		if value != 100 {
+			t.Fatalf("Reserve = %d, want 100", value)
 		}
 
 		event := mt.GetStartedEvent()
@@ -104,8 +105,8 @@ func TestDatabaseNextSequenceUsesSingleAtomicFindAndModify(t *testing.T) {
 		if extra := mt.GetStartedEvent(); extra != nil {
 			t.Fatalf("extra started event = %#v, want a single command", extra)
 		}
-		if got := event.Command.Lookup("findAndModify").StringValue(); got != "tx_sequences" {
-			t.Fatalf("collection = %q, want tx_sequences", got)
+		if got := event.Command.Lookup("findAndModify").StringValue(); got != "custom_counters" {
+			t.Fatalf("collection = %q, want custom_counters", got)
 		}
 		if !event.Command.Lookup("upsert").Boolean() || !event.Command.Lookup("new").Boolean() {
 			t.Fatalf("command = %v, want upsert and return-after", event.Command)
@@ -116,10 +117,46 @@ func TestDatabaseNextSequenceUsesSingleAtomicFindAndModify(t *testing.T) {
 		}
 		update := event.Command.Lookup("update").Document()
 		increment := update.Lookup("$inc").Document()
-		if got := increment.Lookup("value").Int64(); got != 1 {
-			t.Fatalf("increment = %d, want 1", got)
+		if got := increment.Lookup("value").Int64(); got != 100 {
+			t.Fatalf("increment = %d, want 100", got)
+		}
+		if got := event.Command.Lookup("writeConcern").Document().Lookup("w").StringValue(); got != "majority" {
+			t.Fatalf("write concern = %q, want majority", got)
+		}
+		if got := query.Lookup("value").Document().Lookup("$lte").Int64(); got != int64(1<<63-1)-100 {
+			t.Fatalf("counter upper bound = %d", got)
 		}
 	})
+}
+
+func TestDatabaseReserveRejectsInvalidArgumentsWithoutIO(t *testing.T) {
+	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
+	mt.Run("invalid arguments", func(mt *mtest.T) {
+		for _, input := range []struct {
+			collection string
+			key        string
+			size       int64
+		}{{"", "key", 1}, {"counters", "", 1}, {"counters", "key", 0}, {"counters", "key", -1}} {
+			if _, err := NewDatabase(mt.DB).Reserve(context.Background(), input.collection, input.key, input.size); err == nil {
+				t.Fatalf("Reserve(%+v) succeeded", input)
+			}
+		}
+		if event := mt.GetStartedEvent(); event != nil {
+			t.Fatalf("invalid reservation reached Mongo: %v", event.Command)
+		}
+	})
+}
+
+func TestDatabaseReserveRejectsInvalidUpperBound(t *testing.T) {
+	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
+	for _, high := range []int64{-1, 0, 99} {
+		mt.Run(fmt.Sprint(high), func(mt *mtest.T) {
+			mt.AddMockResponses(mtest.CreateSuccessResponse(bson.E{Key: "value", Value: bson.D{{Key: "value", Value: high}}}))
+			if value, err := NewDatabase(mt.DB).Reserve(context.Background(), "counters", "key", 100); err == nil || value != 0 {
+				t.Fatalf("Reserve returned %d, %v for invalid high %d", value, err, high)
+			}
+		})
+	}
 }
 
 func TestMongoFilterDocumentIncludesRecordKeyAndFenceConditions(t *testing.T) {
