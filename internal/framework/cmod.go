@@ -12,6 +12,7 @@ import (
 	"github.com/ngnl47/tx/modules/discovery"
 	txrpc "github.com/ngnl47/tx/modules/rpc"
 	"github.com/ngnl47/tx/modules/txn"
+	"github.com/ngnl47/tx/sessionid"
 	"github.com/ngnl47/tx/wal"
 )
 
@@ -205,6 +206,7 @@ type CModContext interface {
 	Directory() discovery.Directory
 	Actor() txactor.Messenger
 	Transaction() txn.Executor
+	SessionIDs() sessionid.Allocator
 	BindTransactionCommitParticipant(txn.CommitParticipant) error
 	HasCMod(CModID) bool
 	Advanced() Advanced

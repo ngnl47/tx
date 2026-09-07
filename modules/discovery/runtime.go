@@ -48,31 +48,13 @@ type runtimeSlotStore interface {
 	Watch(context.Context, *SlotDirectory) error
 }
 
-// NewRuntime 连接 etcd、注册当前实例并创建只读缓存目录。
-func NewRuntime(ctx context.Context, config EtcdConfig, instance Instance) (*Runtime, error) {
+// NewRuntime 申请运行身份、注册最终实例并创建只读缓存目录。
+func NewRuntime(ctx context.Context, config EtcdConfig, appID string, descriptor Instance) (*Runtime, error) {
 	registry, err := NewEtcdRegistry(ctx, config)
 	if err != nil {
 		return nil, err
 	}
-	registration, err := registry.Register(ctx, instance)
-	if err != nil {
-		return nil, errors.Join(err, registry.Close())
-	}
-	runtime, err := newRuntime(registry, registration, registry.Slots())
-	if err != nil {
-		_ = registration.Close(context.WithoutCancel(ctx))
-		return nil, errors.Join(err, registry.Close())
-	}
-	return runtime, nil
-}
-
-// NewRuntimeWithIdentity 申请运行身份、注册最终实例并创建只读缓存目录。
-func NewRuntimeWithIdentity(ctx context.Context, config EtcdConfig, appID string, descriptor Instance) (*Runtime, error) {
-	registry, err := NewEtcdRegistry(ctx, config)
-	if err != nil {
-		return nil, err
-	}
-	registration, err := registry.RegisterRuntime(ctx, appID, descriptor)
+	registration, err := registry.Register(ctx, appID, descriptor)
 	if err != nil {
 		return nil, errors.Join(err, registry.Close())
 	}

@@ -49,6 +49,13 @@ func TestBeeCommonFacadeMethodsAreCompatibleWithAnt(t *testing.T) {
 	assertMethodSetSubset(t, reflect.TypeOf((*bee.Server)(nil)), reflect.TypeOf((*ant.Server)(nil)))
 }
 
+func TestBeeAndAntExposeSessionIDAllocator(t *testing.T) {
+	assertMethodSetSubset(t, reflect.TypeOf((*bee.Context)(nil)).Elem(), reflect.TypeOf((*ant.Context)(nil)).Elem())
+	var _ interface {
+		AllocateSessionID(context.Context) (int64, error)
+	} = (bee.SessionIDAllocator)(nil)
+}
+
 func TestStorageCapabilitiesExposeOnlyTheirDeclaredReaders(t *testing.T) {
 	assertStorageReaderMethods(t, reflect.TypeOf((*bee.Storage)(nil)).Elem())
 	assertStorageReaderMethods(t, reflect.TypeOf((*bee.RedisStorage)(nil)).Elem(), "RedisReader")
@@ -107,6 +114,14 @@ func TestBeeCommonFacadeStructsAreCompatibleWithAnt(t *testing.T) {
 	}
 	for _, pair := range pairs {
 		assertStructFieldsSubset(t, reflect.TypeOf(pair.bee), reflect.TypeOf(pair.ant))
+	}
+}
+
+func TestRunOptionsDoNotExposeManualInstanceID(t *testing.T) {
+	for _, value := range []reflect.Type{reflect.TypeOf(bee.RunOptions{}), reflect.TypeOf(ant.RunOptions{})} {
+		if _, ok := value.FieldByName("InstanceID"); ok {
+			t.Fatalf("%s still exposes InstanceID", value)
+		}
 	}
 }
 

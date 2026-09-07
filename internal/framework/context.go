@@ -10,6 +10,7 @@ import (
 	"github.com/ngnl47/tx/modules/discovery"
 	txrpc "github.com/ngnl47/tx/modules/rpc"
 	"github.com/ngnl47/tx/modules/txn"
+	"github.com/ngnl47/tx/sessionid"
 	txstorage "github.com/ngnl47/tx/storage"
 	txredis "github.com/ngnl47/tx/storage/redis"
 	"github.com/ngnl47/tx/wal"
@@ -83,6 +84,8 @@ type Context interface {
 	Actor() txactor.Messenger
 	// Transaction 返回单机 Procedure 执行器；无状态服务返回 nil。
 	Transaction() txn.Executor
+	// SessionIDs 返回绑定当前 Discovery 运行身份的 SessionID 分配器；未启用时返回 nil。
+	SessionIDs() sessionid.Allocator
 	// LogicalSlot 返回当前有状态实例声明的稳定逻辑槽位。
 	LogicalSlot() (LogicalSlot, bool)
 	// HasCMod 判断能力模组是否进入本次启动闭包。
@@ -222,6 +225,13 @@ func (service *serviceContext) Transaction() txn.Executor {
 		return nil
 	}
 	return transactionAccess{runtime: service.runtime.transaction}
+}
+
+func (service *serviceContext) SessionIDs() sessionid.Allocator {
+	if service == nil || service.runtime == nil {
+		return nil
+	}
+	return service.runtime.sessionIDsSnapshot()
 }
 
 func (service *serviceContext) LogicalSlot() (LogicalSlot, bool) {

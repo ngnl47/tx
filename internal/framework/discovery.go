@@ -33,6 +33,6 @@ func newLogicalSlot(id, runtimeInstanceID string) (*LogicalSlot, error) {
 	return &LogicalSlot{ID: assignment.SlotID, RuntimeInstanceID: assignment.RuntimeInstanceID}, nil
 }
 
-func newDiscovery(ctx context.Context, config discovery.EtcdConfig, instance discovery.Instance) (*discoveryRuntime, error) {
-	return discovery.NewRuntime(ctx, config, instance)
+func newDiscovery(ctx context.Context, config discovery.EtcdConfig, appID string, descriptor discovery.Instance) (*discoveryRuntime, error) {
+	return discovery.NewRuntime(ctx, config, appID, descriptor)
 }

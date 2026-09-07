@@ -50,7 +50,7 @@
 1. 由生成工程输出 `server/gen/data` 和 `server/gen/cmd`。
 2. 项目读取本地 yml，严格解析后转换为只含 Go 值的 `bee.Config` 或 `ant.Config`；tx 不读取 yml、环境变量或命令行。
 3. 项目注册生成数据绑定、业务 facade 初始化函数和可选服务。
-4. 启动参数通过 `bee.RunOptions` 或 `ant.RunOptions` 选择本进程服务并注入部署身份。
+4. 启动参数通过 `bee.RunOptions` 或 `ant.RunOptions` 选择本进程服务并提供版本、监听和发布地址；选择 Discovery 的节点由运行时自动取得实例身份。
 5. Bee/Ant Server 解析所选服务的 CMod 依赖闭包，只创建本进程实际需要的外部连接、共享 Host 和后台任务。
 6. handler 使用 `db.Save(role)` 或项目事务 facade，不直接装配 writer/client。
 
@@ -76,7 +76,6 @@ func NewApplication(config bee.Config, services ...bee.ServiceRegistration) (*be
 func Run(ctx context.Context, app *bee.Server) error {
 	return app.Run(ctx, bee.RunOptions{
 		Services:          "game,msgq,agent",
-		InstanceID:        "pod-uid-43",
 		InstanceVersion:   "20260823.1",
 		InstanceEndpoint:  "10.0.1.21:9000",
 		InstanceEndpoints: map[string]string{"agent.tcp": "203.0.113.21:30000"},
@@ -85,9 +84,10 @@ func Run(ctx context.Context, app *bee.Server) error {
 }
 ```
 
-`InstanceID` 只表示本次物理运行实例，例如 Kubernetes Pod UID；它不包含服务名或
-`LogicalSlot`。有状态服务通过独立的 `LogicalSlot` 保存稳定业务归属。`InstanceEndpoint`
-只发布内部业务 gRPC 地址；`InstanceEndpoints` 由项目用稳定名称发布客户端或其他项目地址，框架不解释其中的名称。
+`RunOptions` 不接受人工 `InstanceID`。声明 `CModDiscovery` 的节点会在 Service Factory 运行前申请
+`workSlot`，并生成形如 `<AppID>-<workSlot>-<ModRevision>` 的本次启动身份；未选择 Discovery 的纯单机进程允许
+`runtime.Instance().ID` 为空。`LogicalSlot` 是独立的稳定业务归属，不能用会随租约复用的 `workSlot` 替代。
+`InstanceEndpoint` 只发布内部业务 gRPC 地址；`InstanceEndpoints` 由项目用稳定名称发布客户端或其他项目地址，框架不解释其中的名称。
 
 `Setup` 是项目组合根使用的装配扩展点，适合安装 `db` facade。回调拿到的是受控
 `bee.Context` 或 `ant.Context`：可以读取当前注册单元已经声明的能力，但不能取消根生命周期、关闭共享 gRPC Host、停止 Actor/Procedure，
@@ -112,10 +112,13 @@ game := bee.ServiceRegistration{
 }
 ```
 
-常规服务通过 `Tasks/Admission/CModRedisStorage/CModMongoStorage/CModFusionStorage/CModRPC/CModDiscovery/CModActor`
+常规服务通过 `Tasks/Admission/CModRedisStorage/CModMongoStorage/CModFusionStorage/CModRPC/CModDiscovery/CModSessionID/CModActor`
 等最小契约取得已经声明的能力；项目组合根才使用通用 `Storage()` 安装 `db.Save` facade。
 Ant 在同一基础 API 上增加 `CModProcedure/CModSlots/LogicalSlot`。这些能力视图都不授予连接关闭、
 runtime shutdown 或 discovery 快照写权限。
+
+`CModSessionID` 依赖 Discovery 已取得的租约和 `workSlot`，只向确实需要发号的 Login Service 暴露
+`AllocateSessionID`；Agent、MsgQ、Game、SLGGame 和 SLGWorld 不应声明该能力，也不能读取 `workSlot`。
 
 三类存储 CMod 返回不同的窄接口：Redis 暴露 `RedisReader` 和脚本路由，MongoDB 暴露 `MongoReader`、条件回填和命名
 `int64` 序列，Fusion 暴露 `FusionReader`；对应 `ChangeWriter` 也只接受相同 `TypeSpec.Storage.Mode`。这些接口不返回底层
@@ -251,12 +254,15 @@ Context 只在项目 Setup 和已声明依赖的 Service/CMod Factory 中短期�
 
 ## 服务发现
 
-`modules/discovery` 是可选的 etcd 服务发现基础模块。tx 只接收已经解析完成的
-`EtcdConfig` 和启动期构造的 `Instance`，不读取项目 yml、环境变量，也不启动 RPC、Actor 或消息队列。
+`tx/etcd` 是 L1 外部后端适配层，只提供客户端、租约、原子键、快照、Watch 和 CAS 等通用能力；它不知道
+`InstanceID`、`workSlot`、SessionID 或逻辑槽位。`modules/discovery` 是组合该适配层的 L2 运行时，拥有服务实例目录、
+`workSlot` 租约和自动 `InstanceID`。两层都只接收已经解析完成的配置，不读取项目 yml 或环境变量，也不启动 RPC、Actor 或消息队列。
 
-项目启动时先用 lease 注册本进程。实例应先以 `starting` 注册，等全部服务模块可用后再
+Discovery 从 `[1, 4095]` 随机起点开始，以有界 CAS 申请一个 `workSlot`，再用成功写入的 `ModRevision` 生成
+`<AppID>-<workSlot>-<ModRevision>`。实例先以 `starting` 注册，等全部服务模块可用后再
 切换 `running`。滚动发布的排水阶段先切 `draining`，此时普通服务路由不再选择该实例，
-但已有会话、固定归属 Actor 等精确路由仍可抵达它；排水完成后切 `stopping`，最后撤销租约：
+但已有会话、固定归属 Actor 等精确路由仍可抵达它；排水完成后切 `stopping`。正常关闭立即删除实例键并停止续租，
+让 `workSlot` 键等同一租约自然过期，避免退出窗口立即复用槽位：
 
 ```go
 registry, err := discovery.NewEtcdRegistry(appCtx, discovery.EtcdConfig{
@@ -269,8 +275,7 @@ if err != nil {
 }
 defer registry.Close()
 
-registration, err := registry.Register(appCtx, discovery.Instance{
-    ID:       "game-local-1",
+registration, err := registry.Register(appCtx, "txgame", discovery.Instance{
     Services: []string{"game"},
     Endpoint: "127.0.0.1:9000",
     Version:  "dev",
@@ -280,6 +285,7 @@ if err != nil {
     return err
 }
 defer registration.Close(context.Background())
+instanceID := registration.Instance().ID // txgame-<workSlot>-<ModRevision>
 
 if err := startModules(); err != nil {
     return err
@@ -287,21 +293,24 @@ if err := startModules(); err != nil {
 if err := registration.SetStatus(context.Background(), discovery.StatusRunning); err != nil {
     return err
 }
+// CModSessionID 的句柄可在模块/服务启动时取得，但只能在上述 running 状态提交成功后发号。
 
 // 发布控制面请求排水后，实例自己声明 draining。
 _ = registration.SetStatus(context.Background(), discovery.StatusDraining)
 _ = waitProceduresAndFlush()
 
-// 进入最终关闭窗口。精确路由仍可见，直到 lease 被撤销。
+// 进入最终关闭窗口；Close 删除实例键，但让已运行实例的 workSlot 随 TTL 过期。
 _ = registration.SetStatus(context.Background(), discovery.StatusStopping)
 _ = stopModules()
 return registration.Close(context.Background())
 ```
 
 `Prefix` 会规范化为以 `/instances` 结尾的目录；例如 `/txgame/local` 最终写入
-`/txgame/local/instances/<instance-id>`。`LeaseTTL` 必须是至少一秒的整数秒，实例 ID
-不能包含 `/`。租约 keepalive 中断后 `registration.Done()` 会关闭，`registration.Err()`
-返回 `ErrEtcdLeaseLost`；宿主应把该状态视为当前实例已被摘除并停止接受新请求。
+`/txgame/local/instances/<instance-id>`，并在同一根下使用 `/work-slots/<work-slot>`。
+`LeaseTTL` 必须是至少一秒的整数秒。租约 keepalive 中断后 `registration.Done()` 会关闭，
+`registration.Err()` 返回 `ErrEtcdLeaseLost`；宿主应把该状态视为当前实例已被摘除并停止接受新请求。
+`CModSessionID` 在启动期只发布尚未启用的分配器句柄；只有实例成功进入 `running` 后才开放发号。
+因此尚未进入 `running` 的失败启动没有发出 SessionID，可以主动撤销租约并释放槽位。
 
 需要消费全局实例目录时，使用 `Watch` 更新本地 `ServiceDirectory`。初始快照、任意 watch
 事件或事件内容不合法都会直接返回错误；调用方必须重启 watch 或把依赖它的服务标记为不可用，
@@ -327,7 +336,7 @@ if len(candidates) == 0 {
 roomOwner := candidates[uint64(roomID)%uint64(len(candidates))]
 
 // 会话等精确路由可继续解析 draining/stopping 实例，用于连接排空。
-msgq, ok := directory.LookupInstance("msgq-2")
+msgq, ok := directory.LookupInstance(binding.InstanceID)
 ```
 
 `Instance.Endpoint` 是内部业务 gRPC 地址，`Instance.ActorEndpoint` 是 Actor Remote 地址，
@@ -338,6 +347,9 @@ msgq, ok := directory.LookupInstance("msgq-2")
 快照，供业务实现随机、哈希或负载策略；`LookupInstance` 是已知实例的精确路由。`SessionID -> msgq 实例` 的精确会话
 绑定、`RoleID -> 主 SessionID` 投影、消息 Seq/Ack 和有界下行邮箱属于 `msgq`；Virtual Actor 的 `(kind, identity)` 路由属于 Actor Cluster；
 固定 Kind Actor 的实体归属由业务槽位维护，不由服务发现包推断。
+
+ProtoActor Remote 使用官方 etcd Cluster Provider 自己维护成员协议和客户端生命周期，不经过 `tx/etcd`；
+Discovery 与 Actor Cluster 即使指向同一个 etcd 集群，也仍是两条独立拓扑。
 
 本机或 CI 已启动 etcd 时，可显式执行真实 lease/watch 回归；未设置环境变量时该集成用例会跳过，
 不会要求所有开发机安装 etcd：
@@ -384,9 +396,10 @@ if err != nil {
     return err
 }
 
+localInstance := serviceContext.Instance()
 mailbox, err := msgq.NewServer(msgq.ServerOptions{
-    InstanceID:      "msgq-2",
-    Store:           bindings,
+    InstanceID:             localInstance.ID,
+    Store:                  bindings,
     MaxBacklogMessages:      1024,    // 未确认下行条数上限。
     MaxBacklogBytes: 8 << 20, // 未确认编码载荷总字节数上限；零值使用 64 MiB 默认值。
 })
@@ -556,7 +569,7 @@ Redis I/O。
 
 ```go
 mailbox, err := msgq.NewServer(msgq.ServerOptions{
-    InstanceID:                   instanceID,
+    InstanceID:                   serviceContext.Instance().ID,
     Store:                        bindings,
     MaxBacklogMessages:           1024,
     MaxBacklogBytes:              8 << 20,
@@ -1452,7 +1465,7 @@ if err != nil {
 }
 current := discovery.SlotAssignment{
 	SlotID:            "game-slot-1",
-	RuntimeInstanceID: "pod-uid-a",
+	RuntimeInstanceID: runtime.Instance().ID,
 	Generation:        42,
 }
 if err := slots.CreateSlot(ctx, current); err != nil {
@@ -1477,9 +1490,13 @@ if err != nil {
 	return err
 }
 
+nextInstance, ok := directory.LookupInstance(requestedRuntimeID)
+if !ok {
+	return discovery.ErrSlotRuntimeUnavailable
+}
 next := discovery.SlotAssignment{
 	SlotID:            current.SlotID,
-	RuntimeInstanceID: "pod-uid-b",
+	RuntimeInstanceID: nextInstance.ID,
 	Generation:        43,
 }
 if err := router.PromoteSlot(ctx, current, next); err != nil {
@@ -1533,15 +1550,15 @@ server, err := app.New(config, app.WithAgentHandlers(handlers))
 旧实例 draining -> 停止该槽位的新命令准入
 -> Ingress 等待已受理工作 -> Actor Delivery 邮箱排空
 -> 完成缓存管理器最终 Flush
--> 旧实例 stopping -> 取消 WaitGroupContext 并等待后台任务 -> 撤销成员 lease -> 停止进程
+-> 旧实例 stopping -> 取消 WaitGroupContext 并等待后台任务 -> 删除实例键并停止续租 -> 停止进程
 -> 新实例启动并完成依赖预检 -> CAS Promote(slot, old generation, new generation)
 -> 新 generation 接收该槽位请求
 ```
 
 `LogicalSlotID` 不是服务发现按实例数量生成的编号。原生部署由启动参数或环境变量注入；
 Kubernetes 有状态服务应使用 StatefulSet 的 ordinal，例如 Pod `game-1` 注入
-`TXGAME_LOGICAL_SLOT=game-1`，同时把本次 Pod UID 作为 `TXGAME_INSTANCE_ID`；每次
-Pod 重建只更换 `RuntimeInstanceID`，框架不会把两个值拼接起来。
+`TXGAME_LOGICAL_SLOT=game-1`。Discovery 为每次 Pod 启动自动申请 `workSlot` 并生成新的
+`RuntimeInstanceID`；短期 `workSlot` 不能替代稳定 `LogicalSlotID`，框架也不会把两者拼接起来。
 同一镜像复制出的普通 Deployment 副本不能共享写死的 SlotID。
 
 `WaitGroupContext` 只保证正常关闭路径。`SIGKILL`、OOM、机器故障和网络分区下的自动
@@ -1571,14 +1588,14 @@ go run ./cmd/txctl --endpoint 10.0.1.21:9100 --timeout 5m wait-drained
 
 # 目标 runtime 已 running 后，创建 generation 1 的初始固定槽位。
 go run ./cmd/txctl --endpoint 10.0.1.21:9100 create-slot \
-  --slot slgworld-1 --instance pod-uid-a
+  --slot slgworld-1 --instance txgameslg-17-291
 
-# 新实例已经注册为 running 后，以期望的旧 generation 执行槽位交接。
+# 新实例已经注册为 running 后，使用目录中自动生成的实例 ID 和期望的旧 generation 执行槽位交接。
 go run ./cmd/txctl --endpoint 10.0.1.22:9100 promote-slot \
   --slot game-slot-1 \
-  --current-instance pod-uid-a \
+  --current-instance txgameslg-17-291 \
   --current-generation 42 \
-  --next-instance pod-uid-b
+  --next-instance txgameslg-23-418
 
 ```
 

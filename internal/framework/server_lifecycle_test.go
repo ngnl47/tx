@@ -3,9 +3,23 @@ package framework
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestFatalDiscoveryLossDrainsAndStopsServer(t *testing.T) {
+	service := newBlockingServiceRecorder()
+	server := newStartedServerForFatalTest(t, service)
+	server.reportFatal(errors.New("workSlot ownership lost"))
+	waitClosed(t, server.stopDone)
+	if !service.drained || !service.stopped {
+		t.Fatalf("lifecycle = %#v", service)
+	}
+	if server.stopErr == nil || !strings.Contains(server.stopErr.Error(), "workSlot ownership lost") {
+		t.Fatalf("stop error = %v", server.stopErr)
+	}
+}
 
 func TestStopWaitsForConcurrentStartAndClosesStartedResources(t *testing.T) {
 	startEntered := make(chan struct{})
@@ -121,6 +135,55 @@ type blockingStartCMod struct {
 	releaseStart chan struct{}
 	stopped      chan struct{}
 	startErr     error
+}
+
+type blockingServiceRecorder struct {
+	drained bool
+	stopped bool
+}
+
+func newBlockingServiceRecorder() *blockingServiceRecorder {
+	return &blockingServiceRecorder{}
+}
+
+func (*blockingServiceRecorder) Spec() Spec {
+	return Spec{Name: "fatal-discovery-loss"}
+}
+
+func (*blockingServiceRecorder) Start(Context) error { return nil }
+
+func (service *blockingServiceRecorder) Drain(context.Context) error {
+	service.drained = true
+	return nil
+}
+
+func (service *blockingServiceRecorder) Stop(context.Context) error {
+	service.stopped = true
+	return nil
+}
+
+func newStartedServerForFatalTest(t *testing.T, service *blockingServiceRecorder) *Server {
+	t.Helper()
+	server, err := New(
+		Config{AppID: "fatal-discovery-loss"},
+		WithService(service),
+	)
+	if err != nil {
+		t.Fatalf("New = %v", err)
+	}
+	if err := server.Start(context.Background(), RunOptions{Services: "fatal-discovery-loss"}); err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	return server
+}
+
+func waitClosed(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("server did not stop")
+	}
 }
 
 type serviceTaskDrainCMod struct {

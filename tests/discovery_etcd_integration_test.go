@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ngnl47/tx/internal/framework"
 	"github.com/ngnl47/tx/modules/discovery"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
@@ -38,8 +39,7 @@ func TestEtcdRegistryLifecycleIntegration(t *testing.T) {
 		watchResult <- registry.Watch(watchCtx, directory)
 	}()
 
-	registration, err := registry.Register(ctx, discovery.Instance{
-		ID:       "game-integration",
+	registration, err := registry.Register(ctx, "txgame", discovery.Instance{
 		Services: []string{"game"},
 		Endpoint: "127.0.0.1:9000",
 		Version:  "test",
@@ -50,11 +50,12 @@ func TestEtcdRegistryLifecycleIntegration(t *testing.T) {
 		t.Fatalf("register etcd instance: %v", err)
 	}
 	defer registration.Close(context.Background())
+	instanceID := registration.Instance().ID
 
 	if _, ok := directory.NextInstance("game"); ok {
 		t.Fatal("starting instance must not be selected by service route")
 	}
-	if _, ok := directory.LookupInstance("game-integration"); ok {
+	if _, ok := directory.LookupInstance(instanceID); ok {
 		t.Fatal("starting instance must not be selected by exact route")
 	}
 
@@ -63,14 +64,14 @@ func TestEtcdRegistryLifecycleIntegration(t *testing.T) {
 	}
 	waitDirectory(t, ctx, directory, func() bool {
 		instance, ok := directory.NextInstance("game")
-		return ok && instance.ID == "game-integration"
+		return ok && instance.ID == instanceID
 	})
 
 	if err := registration.SetStatus(ctx, discovery.StatusStopping); err != nil {
 		t.Fatalf("mark instance stopping: %v", err)
 	}
 	waitDirectory(t, ctx, directory, func() bool {
-		instance, ok := directory.LookupInstance("game-integration")
+		instance, ok := directory.LookupInstance(instanceID)
 		return ok && instance.Status == discovery.StatusStopping
 	})
 	if _, ok := directory.NextInstance("game"); ok {
@@ -81,7 +82,7 @@ func TestEtcdRegistryLifecycleIntegration(t *testing.T) {
 		t.Fatalf("close registration: %v", err)
 	}
 	waitDirectory(t, ctx, directory, func() bool {
-		_, ok := directory.LookupInstance("game-integration")
+		_, ok := directory.LookupInstance(instanceID)
 		return !ok
 	})
 
@@ -300,6 +301,67 @@ func TestConcurrentRuntimeClaimsUseDifferentWorkSlots(t *testing.T) {
 	}
 }
 
+func TestFrameworkDiscoveryAutomaticIdentityAssignsDistinctInstanceIDs(t *testing.T) {
+	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("set TX_ETCD_ENDPOINT to run the etcd integration test")
+	}
+	prefix := uniqueDiscoveryPrefix(t, "framework-auto-identity")
+	first := newFrameworkDiscoveryServer(t, endpoint, prefix, "127.0.0.1:9101", &frameworkDiscoveryIdentityService{name: "game"})
+	second := newFrameworkDiscoveryServer(t, endpoint, prefix, "127.0.0.1:9102", &frameworkDiscoveryIdentityService{name: "game"})
+	if err := first.Start(t.Context(), framework.RunOptions{Services: "game", InstanceEndpoint: "127.0.0.1:9101"}); err != nil {
+		t.Fatalf("start first framework server: %v", err)
+	}
+	t.Cleanup(func() { _ = first.Stop(context.Background()) })
+	if err := second.Start(t.Context(), framework.RunOptions{Services: "game", InstanceEndpoint: "127.0.0.1:9102"}); err != nil {
+		t.Fatalf("start second framework server: %v", err)
+	}
+	t.Cleanup(func() { _ = second.Stop(context.Background()) })
+	firstID := first.Context().Instance().ID
+	secondID := second.Context().Instance().ID
+	assertGeneratedInstanceIDShape(t, firstID, "txgame")
+	assertGeneratedInstanceIDShape(t, secondID, "txgame")
+	if firstID == "" || secondID == "" {
+		t.Fatalf("automatic InstanceID values = %q, %q", firstID, secondID)
+	}
+	if firstID == secondID {
+		t.Fatalf("automatic InstanceID duplicated: %q", firstID)
+	}
+}
+
+func TestFrameworkDiscoveryAutomaticIdentityIsSharedAcrossServices(t *testing.T) {
+	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("set TX_ETCD_ENDPOINT to run the etcd integration test")
+	}
+	first := &frameworkDiscoveryIdentityService{name: "game"}
+	second := &frameworkDiscoveryIdentityService{name: "login"}
+	server := newFrameworkDiscoveryServer(t, endpoint, uniqueDiscoveryPrefix(t, "framework-shared-identity"), "127.0.0.1:9103", first, second)
+	if err := server.Start(t.Context(), framework.RunOptions{Services: "*", InstanceEndpoint: "127.0.0.1:9103"}); err != nil {
+		t.Fatalf("start framework server: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Stop(context.Background()) })
+	assertGeneratedInstanceIDShape(t, first.instanceID, "txgame")
+	assertGeneratedInstanceIDShape(t, second.instanceID, "txgame")
+	if first.instanceID == "" || second.instanceID == "" {
+		t.Fatalf("service InstanceID values = %q, %q", first.instanceID, second.instanceID)
+	}
+	if first.instanceID != second.instanceID {
+		t.Fatalf("service InstanceID values differ: %q, %q", first.instanceID, second.instanceID)
+	}
+}
+
+func assertGeneratedInstanceIDShape(t *testing.T, value, appID string) {
+	t.Helper()
+	var workSlot uint16
+	var modRevision int64
+	matched, err := fmt.Sscanf(value, appID+"-%d-%d", &workSlot, &modRevision)
+	if err != nil || matched != 2 || workSlot == 0 || workSlot > discovery.WorkSlotCount || modRevision <= 0 ||
+		value != fmt.Sprintf("%s-%d-%d", appID, workSlot, modRevision) {
+		t.Fatalf("InstanceID = %q, want %s-<workSlot>-<ModRevision>", value, appID)
+	}
+}
+
 func TestEtcdRunningRuntimeCloseKeepsWorkSlotUntilTTL(t *testing.T) {
 	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
 	if endpoint == "" {
@@ -370,14 +432,14 @@ func newIntegrationRuntime(t *testing.T, appID, prefix string, leaseTTL time.Dur
 	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
 	runtime, err := openIntegrationRuntime(t.Context(), endpoint, appID, prefix, leaseTTL)
 	if err != nil {
-		t.Fatalf("NewRuntimeWithIdentity: %v", err)
+		t.Fatalf("NewRuntime: %v", err)
 	}
 	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
 	return runtime
 }
 
 func openIntegrationRuntime(ctx context.Context, endpoint, appID, prefix string, leaseTTL time.Duration) (*discovery.Runtime, error) {
-	return discovery.NewRuntimeWithIdentity(ctx, discovery.EtcdConfig{
+	return discovery.NewRuntime(ctx, discovery.EtcdConfig{
 		Endpoints:   []string{endpoint},
 		Prefix:      prefix,
 		LeaseTTL:    leaseTTL,
@@ -387,6 +449,40 @@ func openIntegrationRuntime(ctx context.Context, endpoint, appID, prefix string,
 		Endpoint: "127.0.0.1:9000",
 		Status:   discovery.StatusStarting,
 	})
+}
+
+type frameworkDiscoveryIdentityService struct {
+	name       string
+	instanceID string
+}
+
+func (service *frameworkDiscoveryIdentityService) Spec() framework.Spec {
+	return framework.Spec{Name: service.name, Requires: []framework.CModID{framework.CModDiscovery}}
+}
+
+func (service *frameworkDiscoveryIdentityService) Start(ctx framework.Context) error {
+	service.instanceID = ctx.Instance().ID
+	return nil
+}
+
+func newFrameworkDiscoveryServer(t *testing.T, endpoint, prefix, instanceEndpoint string, services ...framework.Service) *framework.Server {
+	t.Helper()
+	server, err := framework.New(
+		framework.Config{
+			AppID: "txgame",
+			Discovery: framework.DiscoveryConfig{Etcd: discovery.EtcdConfig{
+				Endpoints:   []string{endpoint},
+				Prefix:      prefix,
+				LeaseTTL:    2 * time.Second,
+				DialTimeout: time.Second,
+			}},
+		},
+		framework.WithService(services...),
+	)
+	if err != nil {
+		t.Fatalf("new framework server for %s: %v", instanceEndpoint, err)
+	}
+	return server
 }
 
 func waitWorkSlotReleased(t *testing.T, client *clientv3.Client, key string, timeout time.Duration) {

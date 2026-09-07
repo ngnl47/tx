@@ -12,6 +12,7 @@ import (
 	txactor "github.com/ngnl47/tx/modules/actor"
 	"github.com/ngnl47/tx/modules/discovery"
 	txrpc "github.com/ngnl47/tx/modules/rpc"
+	"github.com/ngnl47/tx/sessionid"
 	txstorage "github.com/ngnl47/tx/storage"
 	txmongo "github.com/ngnl47/tx/storage/mongo"
 	txredis "github.com/ngnl47/tx/storage/redis"
@@ -82,6 +83,8 @@ type Context interface {
 	CModRPC() (txrpc.Registrar, error)
 	// CModDiscovery 返回 Watch 维护的只读服务实例目录。
 	CModDiscovery() (discovery.Directory, error)
+	// CModSessionID 返回已声明的 SessionID 分配能力。
+	CModSessionID() (SessionIDAllocator, error)
 	// CModActor 返回 Actor 消息解析和投递入口。
 	CModActor() (txactor.Messenger, error)
 }
@@ -95,6 +98,7 @@ type frameworkContext interface {
 	RPC() txrpc.Registrar
 	Directory() discovery.Directory
 	Actor() txactor.Messenger
+	SessionIDs() sessionid.Allocator
 	HasCMod(framework.CModID) bool
 	Advanced() framework.Advanced
 }
@@ -226,6 +230,17 @@ func (view *contextView) CModDiscovery() (discovery.Directory, error) {
 	value := view.kernel.Directory()
 	if value == nil {
 		return nil, view.unavailable(CModDiscovery)
+	}
+	return value, nil
+}
+
+func (view *contextView) CModSessionID() (SessionIDAllocator, error) {
+	if err := view.require(CModSessionID); err != nil {
+		return nil, err
+	}
+	value := view.kernel.SessionIDs()
+	if value == nil {
+		return nil, view.unavailable(CModSessionID)
 	}
 	return value, nil
 }

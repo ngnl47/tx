@@ -15,6 +15,8 @@ const (
 	CModRPC CModID = "rpc"
 	// CModDiscovery 提供 etcd 注册、发现和稳定槽位目录。
 	CModDiscovery CModID = "discovery"
+	// CModSessionID 提供绑定 Discovery 运行身份的 SessionID 分配能力。
+	CModSessionID CModID = "session-id"
 	// CModActor 提供基于服务发现的 Actor 投递能力。
 	CModActor CModID = "actor"
 )
@@ -64,6 +66,7 @@ func (server *Server) builtInCMods(options RunOptions) []CMod {
 		server.fusionCMod(),
 		server.rpcCMod(options),
 		server.discoveryCMod(options),
+		server.sessionIDCMod(),
 		server.actorCMod(),
 	}
 }

@@ -20,11 +20,18 @@ const (
 	CModRPC CModID = "rpc"
 	// CModDiscovery 提供 etcd 注册、发现和实例目录。
 	CModDiscovery CModID = "discovery"
+	// CModSessionID 提供绑定 Discovery 运行身份的 SessionID 分配能力。
+	CModSessionID CModID = "session-id"
 	// CModActor 提供 Actor 消息投递能力。
 	CModActor CModID = "actor"
 	// CModProcedure 组合单机事务、缓存提交参与者和可选 WAL。
 	CModProcedure CModID = "procedure"
 )
+
+// SessionIDAllocator 只分配当前集群内有效生命周期的 SessionID。
+type SessionIDAllocator interface {
+	AllocateSessionID(context.Context) (int64, error)
+}
 
 // CModSpec 声明能力模组的身份和依赖顺序。
 type CModSpec struct {

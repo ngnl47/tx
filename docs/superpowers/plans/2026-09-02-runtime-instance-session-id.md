@@ -637,7 +637,7 @@ Expected: no output.
 - Consumes: Task 4 `discovery.NewRuntimeWithIdentity(ctx, config, appID, descriptor)`、`Runtime.Instance`、`Runtime.Done`、`Runtime.Err`。
 - Produces: Discovery CMod 启动后冻结的自动 InstanceID，以及 workSlot 所有权失效触发的整进程排水关闭。
 
-- [ ] **Step 1: Write failing automatic identity tests**
+- [x] **Step 1: Write failing automatic identity tests**
 
 ```go
 func TestDiscoveryCModDoesNotRequireRunOptionInstanceID(t *testing.T) {
@@ -653,13 +653,13 @@ func TestDiscoveryCModDoesNotRequireRunOptionInstanceID(t *testing.T) {
 
 真实 etcd 框架测试以空 `RunOptions.InstanceID` 启动两个 Server，断言 `Context().Instance().ID` 非空且不同；另以一个 Server 同时选择两个服务，断言两个 Service Factory 观察到完全相同的 InstanceID。
 
-- [ ] **Step 2: Run tests to verify the old validation fails**
+- [x] **Step 2: Run tests to verify the old validation fails**
 
 Run: `go test ./internal/framework -run 'TestDiscoveryCModDoesNotRequireRunOptionInstanceID'`
 
 Expected: FAIL with `instance ID is required`.
 
-- [ ] **Step 3: Let Discovery assign and freeze runtime.instance**
+- [x] **Step 3: Let Discovery assign and freeze runtime.instance**
 
 `Server.Start` 初始只构造 ID 为空的实例描述。`startDiscovery` 调用新签名，把返回的 `Runtime.Instance()` 写入 `runtime`：
 
@@ -675,7 +675,7 @@ LogicalSlot 必须在最终 InstanceID 可见后创建。RPC 与 Actor 仍可先
 
 全部 framework 调用方迁移完成后，在本任务内删除旧 `NewRuntime(ctx, config, instance)` 与旧 `EtcdRegistry.Register(ctx, instance)`，将新入口分别命名为最终 `NewRuntime(ctx, config, appID, descriptor)` 和 `Register(ctx, appID, descriptor)`。不得把迁移入口留到任务结束。
 
-- [ ] **Step 4: Add a single fatal-error path for identity loss**
+- [x] **Step 4: Add a single fatal-error path for identity loss**
 
 ```go
 func (server *Server) reportFatal(err error) {
@@ -691,7 +691,7 @@ func (server *Server) reportFatal(err error) {
 
 `Server` 增加 `fatalOnce sync.Once` 和 `fatalErr error`。`startDiscovery` 监听 `Runtime.Done()`：`ErrRuntimeClosed` 不报告致命错误；`ErrRuntimeIdentityLost` 记录日志并调用 `reportFatal`。`shutdown` 返回值包含 `fatalErr`，使 `Run` 能把身份失效返回给进程入口。
 
-- [ ] **Step 5: Write and pass the fatal-drain lifecycle test**
+- [x] **Step 5: Write and pass the fatal-drain lifecycle test**
 
 ```go
 func TestFatalDiscoveryLossDrainsAndStopsServer(t *testing.T) {
@@ -714,7 +714,7 @@ func waitClosed(t *testing.T, done <-chan struct{})
 
 这些辅助函数只装配内存生命周期，不连接外部依赖。
 
-- [ ] **Step 6: Run focused and real etcd framework tests**
+- [x] **Step 6: Run focused and real etcd framework tests**
 
 Run: `go test ./internal/framework`
 
@@ -760,7 +760,7 @@ type Context interface {
 }
 ```
 
-- [ ] **Step 1: Write failing CMod dependency and facade symmetry tests**
+- [x] **Step 1: Write failing CMod dependency and facade symmetry tests**
 
 ```go
 func TestSessionIDCModRequiresDiscovery(t *testing.T) {
@@ -776,13 +776,13 @@ func TestBeeAndAntExposeSessionIDAllocator(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify failure**
+- [x] **Step 2: Run tests to verify failure**
 
 Run: `go test ./internal/framework ./tests -run 'TestSessionID|TestBeeAndAntExposeSessionIDAllocator'`
 
 Expected: FAIL because CMod and facade methods do not exist.
 
-- [ ] **Step 3: Implement a lease-bound allocator runtime**
+- [x] **Step 3: Implement a lease-bound allocator runtime**
 
 ```go
 var ErrSessionIDUnavailable = errors.New("framework: SessionID allocator is unavailable")
@@ -814,11 +814,11 @@ func (runtime *sessionIDRuntime) AllocateSessionID(ctx context.Context) (int64, 
 
 测试使用实现 `sessionIDIdentity` 的内存替身关闭 Done 通道并返回 `ErrRuntimeIdentityLost`；生产装配只传入当前进程的 `*discovery.Runtime`。
 
-- [ ] **Step 4: Add framework and facade accessors**
+- [x] **Step 4: Add framework and facade accessors**
 
 Framework `Context` 增加内部 `SessionIDs() sessionid.Allocator`。Bee/Ant `contextView.CModSessionID` 必须先检查 owner 是否声明 `CModSessionID`，未声明时返回与其他 CMod 一致的错误。
 
-- [ ] **Step 5: Test allocation, undeclared access and lease loss**
+- [x] **Step 5: Test allocation, undeclared access and lease loss**
 
 覆盖：
 
@@ -828,7 +828,7 @@ Framework `Context` 增加内部 `SessionIDs() sessionid.Allocator`。Bee/Ant `c
 - Discovery identity Done 后分配返回 `ErrSessionIDUnavailable`。
 - Drain 后不再发号。
 
-- [ ] **Step 6: Run facade and race tests**
+- [x] **Step 6: Run facade and race tests**
 
 Run: `go test -race ./internal/framework ./bee ./ant ./tests -run 'Test.*SessionID|TestBeeCommonFacadeMethodsAreCompatibleWithAnt|TestBuiltInCModsDeclareStableDependencies'`
 
@@ -856,7 +856,7 @@ Expected: PASS and no race report.
 - Consumes: Tasks 1–7 complete behavior。
 - Produces: 无人工 InstanceID 的 Bee、Ant 和 framework `RunOptions`，以及与代码一致的稳定文档。
 
-- [ ] **Step 1: Add a compile-time public-boundary test**
+- [x] **Step 1: Add a compile-time public-boundary test**
 
 ```go
 func TestRunOptionsDoNotExposeManualInstanceID(t *testing.T) {
@@ -866,21 +866,21 @@ func TestRunOptionsDoNotExposeManualInstanceID(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the boundary test to verify failure**
+- [x] **Step 2: Run the boundary test to verify failure**
 
 Run: `go test ./tests -run TestRunOptionsDoNotExposeManualInstanceID`
 
 Expected: FAIL because both facades still contain `InstanceID`.
 
-- [ ] **Step 3: Remove InstanceID from all three RunOptions types**
+- [x] **Step 3: Remove InstanceID from all three RunOptions types**
 
 删除字段、注释和 `toFramework` 映射。无 Discovery 的纯单机进程允许 `Context.Instance().ID` 为空；声明 Discovery 的节点必须在 Service Factory 运行前取得自动 ID。
 
-- [ ] **Step 4: Update tests to assert generated identity only where Discovery is selected**
+- [x] **Step 4: Update tests to assert generated identity only where Discovery is selected**
 
 RPC-only、Redis-only 和纯生命周期测试不再填充无意义 InstanceID。Discovery 测试改为真实 etcd 或可控 Discovery 替身，并断言 ID 形如 `<AppID>-<workSlot>-<ModRevision>`，不写死具体槽位和修订版本。
 
-- [ ] **Step 5: Update stable documentation**
+- [x] **Step 5: Update stable documentation**
 
 README 与 `docs/design.md` 必须说明：
 
@@ -893,7 +893,7 @@ README 与 `docs/design.md` 必须说明：
 
 `docs/implementation_plan.md` 更新 P0 状态，但不得提前标记 txgame、txgameslg 的项目接入已经完成。
 
-- [ ] **Step 6: Run full tx verification**
+- [x] **Step 6: Run full tx verification**
 
 Run: `go test ./...`
 
@@ -905,7 +905,7 @@ Run: `git diff --check`
 
 Expected: all PASS and no diff errors.
 
-- [ ] **Step 7: Produce the maintainer commit message without committing**
+- [x] **Step 7: Produce the maintainer commit message without committing**
 
 ```text
 feat(runtime): 自动分配运行实例身份与 SessionID

@@ -114,13 +114,13 @@ func TestEtcdRuntimeReportsIdentityLoss(t *testing.T) {
 	registry, raw, _ := newIdentityIntegrationRegistry(t, "identity-loss", 2*time.Second)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	registration, err := registry.RegisterRuntime(ctx, "txgame", Instance{
+	registration, err := registry.Register(ctx, "txgame", Instance{
 		Services: []string{"login"},
 		Endpoint: "127.0.0.1:9000",
 		Status:   StatusStarting,
 	})
 	if err != nil {
-		t.Fatalf("RegisterRuntime: %v", err)
+		t.Fatalf("Register: %v", err)
 	}
 	runtime, err := newRuntime(registry, registration, registry.Slots())
 	if err != nil {

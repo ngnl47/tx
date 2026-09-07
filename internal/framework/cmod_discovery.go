@@ -2,9 +2,7 @@ package framework
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"strings"
 )
 
 func (server *Server) discoveryCMod(options RunOptions) CMod {
@@ -13,9 +11,6 @@ func (server *Server) discoveryCMod(options RunOptions) CMod {
 		validate: func(CModContext) error {
 			if _, err := server.config.Discovery.Etcd.Normalize(); err != nil {
 				return fmt.Errorf("discovery config: %w", err)
-			}
-			if strings.TrimSpace(options.InstanceID) == "" {
-				return errors.New("instance ID is required")
 			}
 			return nil
 		},

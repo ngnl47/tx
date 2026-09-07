@@ -100,6 +100,8 @@ type Server struct {
 	cleanups  []func()
 	stopDone  chan struct{}
 	stopErr   error
+	fatalOnce sync.Once
+	fatalErr  error
 }
 
 func New(config Config, options ...Option) (*Server, error) {
@@ -221,7 +223,6 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 		selectedCMods: newCModSelection(graph.IDs()...).ids,
 		actorKinds:    append([]txactor.Kind(nil), actorKinds...),
 		instance: discovery.Instance{
-			ID:        strings.TrimSpace(options.InstanceID),
 			Endpoint:  strings.TrimSpace(options.InstanceEndpoint),
 			Endpoints: maps.Clone(options.InstanceEndpoints),
 			Version:   strings.TrimSpace(options.InstanceVersion),
@@ -270,6 +271,7 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 			return fmt.Errorf("framework: mark discovery running: %w", err)
 		}
 	}
+	runtime.enableSessionIDs()
 	runtime.setInstanceStatus(discovery.StatusRunning)
 	txlog.Info(
 		"server started successfully",
@@ -280,6 +282,18 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 		"endpoint", runtime.instanceSnapshot().Endpoint,
 	)
 	return nil
+}
+
+func (server *Server) reportFatal(err error) {
+	if server == nil || err == nil {
+		return
+	}
+	server.fatalOnce.Do(func() {
+		server.mu.Lock()
+		server.fatalErr = err
+		server.mu.Unlock()
+		go func() { _ = server.Stop(context.Background()) }()
+	})
 }
 
 // Context 在 Start 成功后返回已经装配且隔离所有权的能力视图。

@@ -148,12 +148,10 @@ type DiscoveryConfig struct {
 	Etcd discovery.EtcdConfig
 }
 
-// RunOptions 保存部署身份和本次进程服务选择。
+// RunOptions 保存本次进程服务选择和部署期发布参数。
 type RunOptions struct {
 	// Services 是本进程启动的 L4 服务表达式。
 	Services string
-	// InstanceID 是本次进程的唯一物理实例标识。
-	InstanceID string
 	// InstanceVersion 是发布版本或镜像版本，用于可观测和运维识别。
 	InstanceVersion string
 	// InstanceEndpoint 是发布到服务发现的业务 RPC 地址。
@@ -223,7 +221,6 @@ func (config Config) toFramework() framework.Config {
 func (options RunOptions) toFramework() framework.RunOptions {
 	return framework.RunOptions{
 		Services:          options.Services,
-		InstanceID:        options.InstanceID,
 		InstanceVersion:   options.InstanceVersion,
 		InstanceEndpoint:  options.InstanceEndpoint,
 		InstanceEndpoints: options.InstanceEndpoints,

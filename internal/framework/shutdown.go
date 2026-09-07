@@ -138,5 +138,8 @@ func (server *Server) shutdown(ctx context.Context, drain bool) error {
 	} else if discoveryRuntime != nil {
 		errs = append(errs, discoveryRuntime.Close(context.WithoutCancel(ctx)))
 	}
-	return errors.Join(errs...)
+	server.mu.Lock()
+	fatalErr := server.fatalErr
+	server.mu.Unlock()
+	return errors.Join(errors.Join(errs...), fatalErr)
 }

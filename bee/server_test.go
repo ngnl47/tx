@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	framework "github.com/ngnl47/tx/internal/framework"
+	"github.com/ngnl47/tx/sessionid"
 )
 
 func TestBuilderConstructsAndStartsStatelessServer(t *testing.T) {
@@ -53,7 +54,6 @@ func TestRunOptionsPublishClonedInstanceEndpoints(t *testing.T) {
 	endpoints := map[string]string{"agent.tcp": "10.0.0.7:9000"}
 	if err := server.Start(context.Background(), RunOptions{
 		Services:          "agent",
-		InstanceID:        "agent-a",
 		InstanceEndpoints: endpoints,
 	}); err != nil {
 		t.Fatalf("Start returned error: %v", err)
@@ -108,6 +108,53 @@ func TestServiceContextRejectsUndeclaredCMod(t *testing.T) {
 			t.Fatalf("Start error = %q, want fragment %q", err, fragment)
 		}
 	}
+}
+
+func TestServiceContextRequiresExplicitSessionIDCMod(t *testing.T) {
+	allocator, err := sessionid.New(17)
+	if err != nil {
+		t.Fatalf("new SessionID allocator: %v", err)
+	}
+	kernel := &sessionIDContextKernel{allocator: allocator}
+	view := newContextView(kernel, "service \"login\"", []CModID{CModDiscovery})
+
+	got, err := view.CModSessionID()
+	if got != nil {
+		t.Fatalf("CModSessionID = %#v, want nil", got)
+	}
+	if err == nil {
+		t.Fatal("CModSessionID error = nil, want undeclared CMod error")
+	}
+	for _, fragment := range []string{"login", string(CModSessionID), "declared"} {
+		if !strings.Contains(err.Error(), fragment) {
+			t.Fatalf("CModSessionID error = %q, want fragment %q", err, fragment)
+		}
+	}
+}
+
+func TestServiceContextExposesDeclaredSessionIDCMod(t *testing.T) {
+	allocator, err := sessionid.New(17)
+	if err != nil {
+		t.Fatalf("new SessionID allocator: %v", err)
+	}
+	view := newContextView(&sessionIDContextKernel{allocator: allocator}, "service \"login\"", []CModID{CModSessionID})
+
+	got, err := view.CModSessionID()
+	if err != nil {
+		t.Fatalf("CModSessionID: %v", err)
+	}
+	if id, err := got.AllocateSessionID(context.Background()); err != nil || id <= 0 || id > sessionid.MaxSessionID {
+		t.Fatalf("AllocateSessionID = %d, %v, want positive JavaScript-safe value", id, err)
+	}
+}
+
+type sessionIDContextKernel struct {
+	frameworkContext
+	allocator sessionid.Allocator
+}
+
+func (kernel *sessionIDContextKernel) SessionIDs() sessionid.Allocator {
+	return kernel.allocator
 }
 
 type serviceFunc func(context.Context) error

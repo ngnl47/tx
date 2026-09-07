@@ -81,6 +81,7 @@ tx/
 ├── protocol/               # 网络帧与 BON 等协议基础能力
 ├── storage/                # 通用存储契约、Redis、Mongo、Fusion 和延迟任务实现
 ├── wal/                    # WAL 契约、Mongo backend、writer 和 checkpoint 调度
+├── etcd/                   # 通用 etcd 客户端、租约、原子键、快照、Watch 与 CAS 适配
 ├── modules/
 │   ├── actor/              # Actor Runtime、寻址和消息投递
 │   ├── agent/              # 长连接、帧处理和会话入口组件
@@ -209,6 +210,7 @@ ServiceSpec、CMod 和基础 Context；同名 API 具有相同签名和生命周
 | `CModFusionStorage()` | Bee/Ant | 取得仅允许 Fusion TypeSpec 的 reader/writer | Redis、Mongo 和延迟任务所有权在存储 Runtime |
 | `CModRPC()` | Bee/Ant | 启动前注册 protobuf service | Serve/Stop 在共享 RPC Host |
 | `CModDiscovery()` | Bee/Ant | 查询 running 或指定实例快照 | watch 与 Replace 在 discovery Runtime |
+| `CModSessionID()` | Bee/Ant | 为 Login 分配集群内有效生命周期的 SessionID | workSlot、租约与停止发号在 discovery/session-id Runtime |
 | `CModActor()` | Bee/Ant | 解析 PID、投递和业务调用 | Start/Shutdown/ActorSystem 在 Actor Runtime |
 | `CModProcedure()` | Ant | 执行根 Procedure | CommitParticipant 和生命周期在 CModProcedure |
 | `CModSlots()` | Ant | 读写受控逻辑槽位门面 | etcd client、成员 lease 和 watch 在 discovery Runtime |
@@ -294,7 +296,7 @@ change/meta/storage contracts
 | 层级 | 职责 | 示例 |
 | --- | --- | --- |
 | L0 | 纯算法、基础结构和稳定契约 | `change`、`meta`、`lifecycle`、storage/WAL 契约 |
-| L1 | 外部 backend 与传输 adapter | Redis、Mongo、gRPC、etcd adapter |
+| L1 | 外部 backend 与传输 adapter | Redis、Mongo、gRPC、`tx/etcd` adapter |
 | L2 | 可复用运行时组件 | Fusion Strategy、RPC Host、Scheduler、Transaction Runtime、Actor Runtime |
 | L3 | 进程能力门面 | Bee/Ant CMod、受控 Context、由私有内核执行的依赖图和进程生命周期 |
 | L4 | 可由 `--services` 选择的服务 | agent、msgq、game、room、battlefield |
@@ -307,6 +309,7 @@ CMod 固定属于 L3，是带稳定身份、依赖关系和进程生命周期的
 ```text
 fusion-storage requires redis-storage, mongo-storage
 fusion-storage components: scheduler=delay
+session-id requires discovery
 procedure components: transaction=default, writeback=<project>[checkpoint=<project>,wal=<backend>]
 ```
 
@@ -316,7 +319,7 @@ Builder 指定的 L4 服务被选择时生效。`fusion-storage` 统一拥有 De
 
 Actor CMod 没有隐含普通 RPC 或服务发现依赖。ProtoActor Remote 与官方 etcd Cluster Provider 是 Actor Runtime
 自身的传输和成员能力；L4 服务若同时使用普通 gRPC 或 `ServiceDirectory`，必须显式声明对应 CMod，避免把两套
-独立通信拓扑错误耦合。
+独立通信拓扑错误耦合。ProtoActor Provider 不经过 `tx/etcd`，也不共享 Discovery 的客户端或租约生命周期。
 
 组件职责仍保持正交。Transaction 只负责锁、undo、savepoint、死锁检测和提交参与者调度；WriteBack 只登记根 Store 并决定
 何时 Flush；Fusion 与 Mongo 是可选目标 Writer；WAL 只提供追加、重放和 checkpoint 契约。正交不等于平级暴露：
@@ -2117,6 +2120,11 @@ project config parser
   -> RPC Serve + control ready + discovery running
 ```
 
+三个 `RunOptions` 都不暴露人工 `InstanceID`。未选择 Discovery 的纯单机进程保留空实例 ID；一旦依赖闭包选择
+`CModDiscovery`，Discovery 必须在任何 Service Factory 运行前完成 `workSlot` 申请，并把
+`<AppID>-<workSlot>-<ModRevision>` 冻结为本次进程身份。`workSlot` 是租约保护的短期资源，不得用于替代稳定
+`LogicalSlot`，后者仍由部署控制面维护 assignment 和 generation。
+
 项目不实现自己的 Host 或装配 Runtime。`txgame/server/internal/app` 与 `txgameslg/server/internal/app` 只是
 composition root：注册生成数据、安装 `db` facade、注入身份解析/业务分发回调和声明可选业务服务。项目专属 SPI 与业务
 逻辑随所属 L4 Service 放在 `server/services/<name>`；`bee/services/agent`、`bee/services/msgq` 及其 Ant 对称门面是 tx
@@ -2171,8 +2179,8 @@ Agent -----> msgq session mailbox
                                 +---- ProtoActor PID delivery
 
 etcd
-  +---- service instance lease/watch
-  +---- actor cluster provider
+  +---- tx/etcd ---- Discovery instance/workSlot lease/watch
+  +---- ProtoActor official etcd Cluster Provider（不经过 tx/etcd）
   +---- fixed logical slot assignment
 ```
 
@@ -2180,14 +2188,28 @@ etcd
 
 ### discovery
 
-`modules/discovery` 使用 etcd lease/watch 管理服务实例事实：
+`tx/etcd` 是 L1 外部后端适配层，只拥有通用客户端、租约、原子键、快照、Watch、Delete 和 CAS；它不认识
+`InstanceID`、`workSlot`、SessionID 或逻辑槽位。`modules/discovery` 是 L2 运行时，组合 `tx/etcd` 并拥有运行身份、
+服务目录和逻辑槽位目录的领域语义：
 
-- 注册实例 ID、内部业务 RPC 地址、Actor 地址、项目命名公开地址、version、services 和 status。
+- 用同一进程租约从 `[1, 4095]` 有界抢占 `workSlot`，并以成功创建键的 `ModRevision` 生成
+  `<AppID>-<workSlot>-<ModRevision>`。
+- 注册自动实例 ID、内部业务 RPC 地址、Actor 地址、项目命名公开地址、version、services 和 status。
 - keepalive 失效后自动摘除。
 - `ServiceDirectory` 维护本地快照。
 - 服务路由只选择 running 实例。
 - 精确实例路由可以看到 draining/stopping，用于排空既有绑定。
 - `SlotDirectory` 维护固定逻辑槽位的进程内快照，消息路由不读取 etcd。
+
+`CModSessionID` 依赖 `CModDiscovery`，复用其 `workSlot` 和租约有效性，不创建第二份租约，也不向业务暴露
+`workSlot`。标准服务组合只有需要发号的 Login 显式声明它；Agent、MsgQ、Game、SLGGame 和 SLGWorld 不声明。
+模块和服务在启动回调中可以取得分配器句柄，但只有 Discovery 成功把实例标记为 `running` 后才开放发号；
+启动期分配返回 unavailable。租约丢失或排水后分配器立即停止发号，且不能被启动末尾的启用动作重新打开。
+
+正常关闭把实例状态推进到 `stopping` 后删除实例键，但只停止租约续租，让 `workSlot` 键按 TTL 自然过期；这样新进程
+不能在旧进程退出的同一窗口立即复用短期槽位。由于 SessionID 在成功进入 `running` 前不会开放，启动尚未完成、
+从未进入 `running` 的失败回滚必然没有发号，可以主动撤销租约。
+持久 `LogicalSlot` assignment 不随实例关闭删除。
 
 实例 ID、endpoint、版本和服务列表在启动时动态构造，不写死在业务 yml。etcd 保存集群控制状态，不保存 GD 或业务地图数据。
 
@@ -2620,7 +2642,7 @@ Ingress 等待已受理工作
 取消 WaitGroupContext 并等待后台循环退出
        |
        v
-旧实例 stopping / 撤销 lease
+旧实例 stopping / 删除实例键并停止续租
        |
        v
 新 running 实例以 CAS 提升逻辑槽位 generation

@@ -30,6 +30,9 @@ func TestBuiltInCModsDeclareStableDependencies(t *testing.T) {
 		CModDiscovery: {
 			after: []CModID{CModRPC, CModActor},
 		},
+		CModSessionID: {
+			requires: []CModID{CModDiscovery},
+		},
 		CModActor: {},
 	}
 	for _, mod := range app.builtInCMods(RunOptions{}) {
@@ -98,9 +101,8 @@ func TestRPCOnlyServiceDoesNotRequireStorageOrGeneratedData(t *testing.T) {
 		t.Fatalf("new framework: %v", err)
 	}
 	if err := app.Start(context.Background(), RunOptions{
-		Services:   "rpc-only",
-		InstanceID: "rpc-only-1",
-		RPCListen:  "127.0.0.1:0",
+		Services:  "rpc-only",
+		RPCListen: "127.0.0.1:0",
 	}); err != nil {
 		t.Fatalf("start framework: %v", err)
 	}

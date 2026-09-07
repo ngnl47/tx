@@ -60,30 +60,8 @@ func (r *EtcdRegistry) Close() error {
 	return r.client.Close()
 }
 
-func (r *EtcdRegistry) Register(ctx context.Context, instance Instance) (*EtcdRegistration, error) {
-	if err := r.config.ValidateInstance(instance); err != nil {
-		return nil, err
-	}
-	lease, err := r.client.Grant(ctx, r.config.LeaseTTL)
-	if err != nil {
-		return nil, err
-	}
-	registration := &EtcdRegistration{
-		registry: r,
-		instance: instance,
-		lease:    lease,
-		done:     make(chan struct{}),
-	}
-	if err := registration.write(ctx); err != nil {
-		revokeErr := lease.Revoke(context.WithoutCancel(ctx))
-		return nil, errors.Join(err, revokeErr)
-	}
-	go registration.keepAlive()
-	return registration, nil
-}
-
-// RegisterRuntime 申请进程 workSlot，并用同一租约注册自动生成 ID 的实例。
-func (r *EtcdRegistry) RegisterRuntime(ctx context.Context, appID string, descriptor Instance) (*EtcdRegistration, error) {
+// Register 申请进程 workSlot，并用同一租约注册自动生成 ID 的实例。
+func (r *EtcdRegistry) Register(ctx context.Context, appID string, descriptor Instance) (*EtcdRegistration, error) {
 	if descriptor.ID != "" {
 		return nil, ErrInvalidInstance
 	}

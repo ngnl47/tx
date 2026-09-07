@@ -10,6 +10,7 @@ import (
 	"github.com/ngnl47/tx/lifecycle"
 	txlog "github.com/ngnl47/tx/log"
 	txactor "github.com/ngnl47/tx/modules/actor"
+	"github.com/ngnl47/tx/modules/discovery"
 	"github.com/ngnl47/tx/modules/txn"
 	txstorage "github.com/ngnl47/tx/storage"
 )
@@ -54,22 +55,38 @@ func selectedServiceNames(services []Service) []string {
 
 func (server *Server) startDiscovery(options RunOptions) error {
 	instance := server.runtime.instanceSnapshot()
-	if err := instance.Validate(); err != nil {
-		return fmt.Errorf("framework: discovery instance: %w", err)
-	}
-	discoveryRuntime, err := newDiscovery(server.runtime.lifecycle, server.config.Discovery.Etcd, instance)
+	discoveryRuntime, err := newDiscovery(server.runtime.lifecycle, server.config.Discovery.Etcd, server.config.AppID, instance)
 	if err != nil {
 		return fmt.Errorf("framework: initialize discovery: %w", err)
 	}
 	server.discovery = discoveryRuntime
+	server.runtime.setInstance(discoveryRuntime.Instance())
 	server.runtime.directory = discoveryRuntime.Directory()
 	server.runtime.slots = discoveryRuntime.Slots()
 	if strings.TrimSpace(options.LogicalSlot) != "" {
+		instance = server.runtime.instanceSnapshot()
 		logicalSlot, err := newLogicalSlot(options.LogicalSlot, instance.ID)
 		if err != nil {
 			return fmt.Errorf("framework: logical slot: %w", err)
 		}
 		server.runtime.logicalSlot = logicalSlot
+	}
+	if err := server.runtime.lifecycle.Go(func(ctx context.Context) {
+		select {
+		case <-ctx.Done():
+			return
+		case <-discoveryRuntime.Done():
+		}
+		err := discoveryRuntime.Err()
+		if errors.Is(err, discovery.ErrRuntimeClosed) {
+			return
+		}
+		if errors.Is(err, discovery.ErrRuntimeIdentityLost) {
+			txlog.ErrorContext(ctx, "service discovery runtime identity lost", "err", err)
+			server.reportFatal(err)
+		}
+	}); err != nil {
+		return fmt.Errorf("framework: observe discovery runtime: %w", err)
 	}
 	if err := server.runtime.lifecycle.Go(func(ctx context.Context) {
 		if err := discoveryRuntime.Watch(ctx); err != nil && !errors.Is(err, context.Canceled) {
