@@ -14,11 +14,11 @@ import (
 //
 // runtime 基建不直接依赖具体驱动；官方 MongoDB driver 适配见 storage/mongo/mongodriver。
 type Filter struct {
-	// Field 是记录主键在 BSON 文档中的字段名。
+	// Field 是首个等值条件的 BSON 字段名；按记录键操作时使用记录主键。
 	Field string
-	// Value 是主键字段必须匹配的值。
+	// Value 是首个字段必须匹配的值。
 	Value any
-	// Conditions 是与主键同时参与原子匹配的附加等值条件。
+	// Conditions 是同时参与匹配的附加等值条件。
 	Conditions []Equality
 }
 
@@ -354,6 +354,12 @@ func (a *Adapter) LoadDocument(ctx context.Context, spec meta.TypeSpec, key stor
 	if err := storage.ValidateRecordKey(spec, key); err != nil {
 		return nil, false, err
 	}
+	return a.FindDocument(ctx, spec, mongoRecordFilter(spec, key), fields...)
+}
+
+// FindDocument 按显式 BSON 等值条件读取文档，支持联合唯一索引查询。
+// 它不改变记录主键，也不负责跨数据库定位；调用方必须先选定存储目标。
+func (a *Adapter) FindDocument(ctx context.Context, spec meta.TypeSpec, filter Filter, fields ...string) (map[string]any, bool, error) {
 	if err := storage.ValidateLoadFields(spec, fields); err != nil {
 		return nil, false, err
 	}
@@ -361,7 +367,7 @@ func (a *Adapter) LoadDocument(ctx context.Context, spec meta.TypeSpec, key stor
 	if err != nil {
 		return nil, false, err
 	}
-	document, exists, err := client.FindOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), mongoProjectionFields(spec, fields)...)
+	document, exists, err := client.FindOne(ctx, mongoCollection(spec), filter, mongoProjectionFields(spec, fields)...)
 	if err != nil {
 		return nil, false, err
 	}
