@@ -24,7 +24,7 @@ var (
 type Connection interface {
 	PubSession(context.Context, int64, []byte) (PubResult, error)
 	JoinTopics(context.Context, TopicRequest) error
-	BroadcastTopic(context.Context, BroadcastTopicRequest) (BroadcastTopicResult, error)
+	BroadcastTopic(context.Context, BroadcastTopicRequest) (BroadcastResult, error)
 	Close() error
 }
 
@@ -107,7 +107,7 @@ func (c *grpcConnection) JoinTopics(ctx context.Context, request TopicRequest) e
 	return nil
 }
 
-func (c *grpcConnection) BroadcastTopic(ctx context.Context, request BroadcastTopicRequest) (BroadcastTopicResult, error) {
+func (c *grpcConnection) BroadcastTopic(ctx context.Context, request BroadcastTopicRequest) (BroadcastResult, error) {
 	response, err := c.client.BroadcastTopic(ctx, &msgqpb.BroadcastTopicRequest{
 		Topic:   request.Topic,
 		Payload: request.Payload,
@@ -121,16 +121,16 @@ func (c *grpcConnection) BroadcastTopic(ctx context.Context, request BroadcastTo
 		}
 		if response == nil {
 			// 未收到服务端统计时结果未知，不能把零值当成没有发生投递。
-			return BroadcastTopicResult{}, mailboxClientError(err)
+			return BroadcastResult{}, mailboxClientError(err)
 		}
 	}
 	if response == nil || response.GetAttempted() < 0 || response.GetDelivered() < 0 || response.GetSkipped() < 0 || response.GetOverflowed() < 0 {
-		return BroadcastTopicResult{}, ErrInvalidMailboxResponse
+		return BroadcastResult{}, ErrInvalidMailboxResponse
 	}
 	if int64(response.GetDelivered())+int64(response.GetSkipped())+int64(response.GetOverflowed()) > int64(response.GetAttempted()) {
-		return BroadcastTopicResult{}, ErrInvalidMailboxResponse
+		return BroadcastResult{}, ErrInvalidMailboxResponse
 	}
-	return BroadcastTopicResult{
+	return BroadcastResult{
 		Attempted:  int(response.GetAttempted()),
 		Delivered:  int(response.GetDelivered()),
 		Skipped:    int(response.GetSkipped()),
@@ -289,17 +289,17 @@ func (s *Sender) JoinTopics(ctx context.Context, ownerSessionID int64, topics ..
 
 // BroadcastTopic 向 ownerSessionID 当前绑定的 MsgQ 实例执行本地 Topic 广播。
 // 该方法不会扫描其他 MsgQ 实例；跨实例分发必须由业务层显式完成。
-func (s *Sender) BroadcastTopic(ctx context.Context, ownerSessionID int64, request BroadcastTopicRequest) (BroadcastTopicResult, error) {
+func (s *Sender) BroadcastTopic(ctx context.Context, ownerSessionID int64, request BroadcastTopicRequest) (BroadcastResult, error) {
 	if s == nil {
-		return BroadcastTopicResult{}, ErrSenderClosed
+		return BroadcastResult{}, ErrSenderClosed
 	}
 	target, err := s.router.ResolveSession(ctx, ownerSessionID)
 	if err != nil {
-		return BroadcastTopicResult{}, err
+		return BroadcastResult{}, err
 	}
 	connection, err := s.connection(ctx, target.Instance)
 	if err != nil {
-		return BroadcastTopicResult{}, err
+		return BroadcastResult{}, err
 	}
 	return connection.BroadcastTopic(ctx, request)
 }

@@ -155,7 +155,7 @@ func TestGRPCConnectionConvertsTopicOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BroadcastTopic returned error: %v", err)
 	}
-	if result != (BroadcastTopicResult{Attempted: 3, Delivered: 2, Skipped: 1}) {
+	if result != (BroadcastResult{Attempted: 3, Delivered: 2, Skipped: 1}) {
 		t.Fatalf("broadcast result = %#v", result)
 	}
 	if request := client.broadcastRequest; request.GetTopic() != "guild:1" || string(request.GetPayload()) != "encoded-bon" {

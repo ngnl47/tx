@@ -497,11 +497,19 @@ if err != nil {
 确认前缀后，msgq 会解除队列条目对编码载荷的引用；确认全部积压时直接释放条目数组，部分确认时按低水位整理剩余
 条目，避免一次广播高峰长期保留过大的条目数组。正文不会在本地广播时按会话复制。
 
-广播部分成功时不回滚健康邮箱，`ErrDownMsgOverflow` 与 `BroadcastTopicResult` 同时返回。
+广播部分成功时不回滚健康邮箱，`ErrDownMsgOverflow` 与 `BroadcastResult` 同时返回。
 gRPC 错误通过状态详情保留服务端投递统计；发送方不能因错误而向整组重发。
 网络断开或超时可能无法收到统计，此时零值结果表示未知，不表示所有目标都未入队。
 
 ### 批量下行与本地 Topic
+
+`Server.BroadcastRole(ctx, roleID, payload)` 向当前 MsgQ 内绑定该角色的邮箱分发，返回通用 `BroadcastResult`。
+它与 `BroadcastTopic` 共用分发循环，不访问 Redis 寻址、不向其他 MsgQ 广播，也不改变任一邮箱的上行序号。
+角色索引只在 Session 初始化成功后加入；重连沿用邮箱，终止、溢出和失活清理移除订阅，最后一个邮箱移除后删除空索引。
+新 Session 不复制已有邮箱的历史消息，已有 Session 恢复只重放自己的未确认消息。
+
+该方法目前是本地能力；Agent 的角色集中选址、归属续期和携带代际的远程角色投递尚未接入。
+现有 `Sender.PubRole` 仍使用主会话路由，不能将本地角色广播当成已经完成跨进程多 Session 下行。
 
 `FetchSome` 与 `Fetch` 的确认语义完全相同：批量读取只前进发送游标，不会删除队列内容；客户端 Ack 后必须调用
 `Confirm`，消息才会从重连恢复队列释放。
@@ -556,7 +564,7 @@ if err != nil {
 _ = result.Delivered
 ```
 
-`BroadcastTopicResult` 中 `Attempted` 是 topic 快照中的会话数，`Delivered` 是实际入队数，`Skipped` 表示快照后已关闭的
+`BroadcastResult` 中 `Attempted` 是接收者快照中的会话数，`Delivered` 是实际入队数，`Skipped` 表示快照后已关闭的
 会话，`Overflowed` 表示因条数或字节积压无法入队的会话数。广播出现积压返回 `ErrDownMsgOverflow`，对应会话会被移除，
 但结果保留已经成功投递的数量；框架不会伪造全量成功，也不会尝试回滚其他会话。
 

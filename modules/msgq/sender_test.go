@@ -66,7 +66,7 @@ func TestSenderJoinTopicsUsesOwnerSessionConnectionHeader(t *testing.T) {
 }
 
 func TestSenderBroadcastTopicUsesOwnerSessionMsgQInstance(t *testing.T) {
-	connection := &senderConnectionFake{broadcastResult: BroadcastTopicResult{
+	connection := &senderConnectionFake{broadcastResult: BroadcastResult{
 		Attempted: 3, Delivered: 2, Skipped: 1,
 	}}
 	sender, store, _ := newSenderForTest(t, connection, SessionBinding{
@@ -358,7 +358,7 @@ type senderConnectionFake struct {
 	pubCalls         int
 	topicRequest     TopicRequest
 	broadcastRequest BroadcastTopicRequest
-	broadcastResult  BroadcastTopicResult
+	broadcastResult  BroadcastResult
 }
 
 func (connection *senderConnectionFake) PubSession(_ context.Context, sessionID int64, payload []byte) (PubResult, error) {
@@ -374,7 +374,7 @@ func (connection *senderConnectionFake) JoinTopics(_ context.Context, request To
 	return nil
 }
 
-func (connection *senderConnectionFake) BroadcastTopic(_ context.Context, request BroadcastTopicRequest) (BroadcastTopicResult, error) {
+func (connection *senderConnectionFake) BroadcastTopic(_ context.Context, request BroadcastTopicRequest) (BroadcastResult, error) {
 	connection.broadcastRequest = request
 	return connection.broadcastResult, nil
 }

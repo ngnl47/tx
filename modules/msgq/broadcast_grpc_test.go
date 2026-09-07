@@ -53,7 +53,7 @@ func TestBroadcastTopicGRPCPreservesPartialDelivery(t *testing.T) {
 	if !errors.Is(err, ErrDownMsgOverflow) {
 		t.Fatalf("broadcast error = %v", err)
 	}
-	if result != (BroadcastTopicResult{Attempted: 2, Delivered: 1, Overflowed: 1}) {
+	if result != (BroadcastResult{Attempted: 2, Delivered: 1, Overflowed: 1}) {
 		t.Fatalf("partial result = %+v", result)
 	}
 	message, err := mailbox.Fetch(ctx, FetchRequest{Header: second})

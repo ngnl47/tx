@@ -36,6 +36,7 @@ type Server struct {
 
 	mu       sync.RWMutex
 	sessions map[int64]*mailboxSession
+	roles    map[int64]map[*mailboxSession]struct{}
 
 	topicMu sync.RWMutex
 	topics  map[string]map[*mailboxSession]struct{}
@@ -142,9 +143,9 @@ type BroadcastTopicRequest struct {
 	Payload []byte
 }
 
-// BroadcastTopicResult 说明一次本地广播的实际投递结果。
+// BroadcastResult 说明一次本地广播的实际投递结果。
 // 远程调用发生传输错误且没有服务端统计时，零值表示结果未知，不表示无人收到。
-type BroadcastTopicResult struct {
+type BroadcastResult struct {
 	Attempted  int
 	Delivered  int
 	Skipped    int
@@ -181,6 +182,7 @@ func NewServer(options ServerOptions) (*Server, error) {
 		terminateDeadSessionInterval: options.TerminateDeadSessionInterval,
 		leaseRefreshInterval:         leaseRefreshInterval,
 		sessions:                     make(map[int64]*mailboxSession),
+		roles:                        make(map[int64]map[*mailboxSession]struct{}),
 		topics:                       make(map[string]map[*mailboxSession]struct{}),
 	}, nil
 }
@@ -293,6 +295,7 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 			}
 		}
 		session.active = true
+		s.addRoleLocked(session)
 	}
 	if !session.active || session.sessionID != request.Header.SessionID {
 		session.mu.Unlock()
@@ -605,15 +608,19 @@ func (s *Server) Topics(ctx context.Context, request TopicRequest) (TopicsResult
 
 // BroadcastTopic 向当前实例内订阅 topic 的会话广播。
 // 部分会话队列满时，已成功投递的会话不会回滚，返回值会保留完整统计并返回 ErrDownMsgOverflow。
-func (s *Server) BroadcastTopic(ctx context.Context, request BroadcastTopicRequest) (BroadcastTopicResult, error) {
+func (s *Server) BroadcastTopic(ctx context.Context, request BroadcastTopicRequest) (BroadcastResult, error) {
 	if s == nil {
-		return BroadcastTopicResult{}, ErrServerNil
+		return BroadcastResult{}, ErrServerNil
 	}
 	if !validValue(request.Topic) {
-		return BroadcastTopicResult{}, ErrInvalidTopic
+		return BroadcastResult{}, ErrInvalidTopic
 	}
 	sessions := s.topicSnapshot(request.Topic)
-	result := BroadcastTopicResult{Attempted: len(sessions)}
+	return s.broadcastSessions(ctx, sessions, request.Payload)
+}
+
+func (s *Server) broadcastSessions(ctx context.Context, sessions []*mailboxSession, payload []byte) (BroadcastResult, error) {
+	result := BroadcastResult{Attempted: len(sessions)}
 	overflowed := make([]*mailboxSession, 0)
 	for _, session := range sessions {
 		if err := ctx.Err(); err != nil {
@@ -625,13 +632,13 @@ func (s *Server) BroadcastTopic(ctx context.Context, request BroadcastTopicReque
 			session.mu.Unlock()
 			continue
 		}
-		if session.downMsgs.exceeds(s.maxBacklogMessages, s.maxBacklogBytes, request.Payload) {
+		if session.downMsgs.exceeds(s.maxBacklogMessages, s.maxBacklogBytes, payload) {
 			result.Overflowed++
 			overflowed = append(overflowed, session)
 			session.mu.Unlock()
 			continue
 		}
-		session.downMsgs.enqueue(request.Payload)
+		session.downMsgs.enqueue(payload)
 		session.signal()
 		result.Delivered++
 		session.mu.Unlock()
@@ -835,6 +842,12 @@ func (s *Server) removeLocked(session *mailboxSession) {
 	s.mu.Lock()
 	if s.sessions[session.sessionID] == session {
 		delete(s.sessions, session.sessionID)
+	}
+	if sessions := s.roles[session.roleID]; sessions != nil {
+		delete(sessions, session)
+		if len(sessions) == 0 {
+			delete(s.roles, session.roleID)
+		}
 	}
 	s.mu.Unlock()
 	session.active = false
