@@ -138,11 +138,12 @@ type TopicsResult struct {
 // BroadcastTopicRequest 向当前 msgq 实例内订阅 topic 的会话发送 BON 数据。
 type BroadcastTopicRequest struct {
 	Topic string
-	// Payload 在 BroadcastTopic 成功后转交 msgq 只读持有，多个会话可能共享同一引用。
+	// Payload 从调用开始交给 msgq 只读持有；即使返回错误也可能已被部分邮箱引用，调用方不得修改或复用。
 	Payload []byte
 }
 
 // BroadcastTopicResult 说明一次本地广播的实际投递结果。
+// 远程调用发生传输错误且没有服务端统计时，零值表示结果未知，不表示无人收到。
 type BroadcastTopicResult struct {
 	Attempted  int
 	Delivered  int

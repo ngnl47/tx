@@ -781,7 +781,7 @@ Store 不保存第二份业务数据，也不保存每次操作的 value、时�
 | 容量上下文 | 容量收敛 | `storage.CollapsibleChangeStore`、`CollapseChanges()` | 单根变更位置超预算后，清理细粒度状态并只 Replace 实际变脏的顶层分支 |
 | 输出上下文 | 变更文档构建 | `Document(kind)`、`change.BuildDocument`、Redis/Mongo document builder | 转换字段名、解析值并形成目标边界需要的变更文档；不能简称为“投影” |
 | 输出上下文 | 编码载荷 | BON/JSON/BSON `[]byte` | 由视图、变更文档或其他独立对象编码而成；发布后按只读载荷使用 |
-| 发布上下文 | 只读发布 | `msgq.PubSession`、`msgq.BroadcastTopic` 等异步所有权交接 | 发布成功后调用方和消费方都不得修改、追加或复用载荷内存 |
+| 发布上下文 | 只读发布 | `msgq.PubSession`、`msgq.BroadcastTopic` 等异步所有权交接 | 单播成功后、广播调用开始后，不得修改、追加或复用载荷内存；广播错误也可能部分入队 |
 | 持久化上下文 | 保存成功清理 | `storage.Save`、`Store.ClearChanges()` | 存储成功后递归清理 Store 状态，不修改 GD 数据 |
 | 持久化上下文 | 保存失败保留 | `storage.Save` 的错误路径 | I/O 或边界构建失败时保留全部状态，供后续重试 |
 | Fusion 上下文 | 纯净回源缓存 | Mongo 回源后写入 Redis、尚未承载业务变更的文档 | 可以使用有限 TTL；不是待回写事实 |
@@ -2289,6 +2289,11 @@ Receiver，再按稳定消息元数据分发，不能让每个服务重复注册
 控制协议注册到普通共享 RPC Host，但保持独立 protobuf service，不与业务 Delivery、MsgQ 或 Actor 路由耦合。
 
 ### msgq
+
+广播的部分入队结果属于通信契约：本地调用同时返回统计和错误；gRPC 错误使用状态详情承载原有
+`BroadcastTopicResponse`，客户端还原投递统计和错误类型。不能返回普通响应加非空 gRPC error 并期待响应正文被传送。
+健康邮箱的入队不会因其他邮箱溢出而回滚；载荷从广播调用开始按只读共享处理，不以返回成功作为唯一交接条件。
+传输断开或超时可能使统计不可获得，此时结果未知，不能据此全组重发。
 
 #### 角色归属与路由缓存基础
 

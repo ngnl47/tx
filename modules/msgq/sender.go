@@ -9,6 +9,7 @@ import (
 	msgqpb "github.com/ngnl47/tx/modules/msgq/pb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/status"
 )
 
 var (
@@ -112,9 +113,21 @@ func (c *grpcConnection) BroadcastTopic(ctx context.Context, request BroadcastTo
 		Payload: request.Payload,
 	})
 	if err != nil {
-		return BroadcastTopicResult{}, mailboxClientError(err)
+		for _, detail := range status.Convert(err).Details() {
+			if result, ok := detail.(*msgqpb.BroadcastTopicResponse); ok {
+				response = result
+				break
+			}
+		}
+		if response == nil {
+			// 未收到服务端统计时结果未知，不能把零值当成没有发生投递。
+			return BroadcastTopicResult{}, mailboxClientError(err)
+		}
 	}
 	if response == nil || response.GetAttempted() < 0 || response.GetDelivered() < 0 || response.GetSkipped() < 0 || response.GetOverflowed() < 0 {
+		return BroadcastTopicResult{}, ErrInvalidMailboxResponse
+	}
+	if int64(response.GetDelivered())+int64(response.GetSkipped())+int64(response.GetOverflowed()) > int64(response.GetAttempted()) {
 		return BroadcastTopicResult{}, ErrInvalidMailboxResponse
 	}
 	return BroadcastTopicResult{
@@ -122,7 +135,7 @@ func (c *grpcConnection) BroadcastTopic(ctx context.Context, request BroadcastTo
 		Delivered:  int(response.GetDelivered()),
 		Skipped:    int(response.GetSkipped()),
 		Overflowed: int(response.GetOverflowed()),
-	}, nil
+	}, mailboxClientError(err)
 }
 
 func (c *grpcConnection) Init(ctx context.Context, request InitRequest) (InitResult, error) {

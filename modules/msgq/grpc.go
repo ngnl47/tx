@@ -105,7 +105,12 @@ func (s *mailboxService) BroadcastTopic(ctx context.Context, request *msgqpb.Bro
 		Overflowed: int32(result.Overflowed),
 	}
 	if err != nil {
-		return response, mailboxStatusError(err)
+		// gRPC 不会发送非 nil error 对应的普通响应，部分投递统计必须随状态详情返回。
+		failure, detailErr := status.Convert(mailboxStatusError(err)).WithDetails(response)
+		if detailErr != nil {
+			return nil, mailboxStatusError(detailErr)
+		}
+		return nil, failure.Err()
 	}
 	return response, nil
 }

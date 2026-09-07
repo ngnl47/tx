@@ -486,8 +486,9 @@ if err != nil {
 `TTL: 500 * time.Microsecond` 会在创建 `RedisSessionStore` 时返回
 `msgq.ErrInvalidSessionOptions`，不会把截断后的 `0` 发送给 Redis。
 
-`Fetch` 不在持有会话锁时等待，因此同一会话的 `PubSession` 不会被长轮询阻塞。`PubSession` 和 `BroadcastTopic` 成功后，传入的
-编码载荷的所有权移交给 msgq：调用方不得再修改、`append`、复用或归还该 `[]byte`，直至对应消息被确认或会话关闭；
+`Fetch` 不在持有会话锁时等待，因此同一会话的 `PubSession` 不会被长轮询阻塞。`PubSession` 成功后，传入的
+编码载荷的所有权移交给 msgq。`BroadcastTopic` 从调用开始即交接只读载荷，因为错误返回也可能已经部分入队。
+调用方不得再修改、`append`、复用或归还该 `[]byte`，直至所有引用它的消息被确认或会话关闭；
 `Fetch`/`FetchSome` 返回的 `Message` 同样只读。这样本地 topic 广播只保留一份已编码 BON 正文，多个会话条目共享它；
 跨进程 gRPC 调用会在传输边界自然得到独立字节副本。`MaxBacklogMessages` 与 `MaxBacklogBytes` 分别限制未确认消息数量与
 编码载荷总字节数；任一上限触发时当前会话会被移除并返回
@@ -495,6 +496,10 @@ if err != nil {
 
 确认前缀后，msgq 会解除队列条目对编码载荷的引用；确认全部积压时直接释放条目数组，部分确认时按低水位整理剩余
 条目，避免一次广播高峰长期保留过大的条目数组。正文不会在本地广播时按会话复制。
+
+广播部分成功时不回滚健康邮箱，`ErrDownMsgOverflow` 与 `BroadcastTopicResult` 同时返回。
+gRPC 错误通过状态详情保留服务端投递统计；发送方不能因错误而向整组重发。
+网络断开或超时可能无法收到统计，此时零值结果表示未知，不表示所有目标都未入队。
 
 ### 批量下行与本地 Topic
 
