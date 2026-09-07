@@ -509,6 +509,14 @@ func TestWriteBackManagerFlushHoldsTransactionLockUntilStorageWriteFinishes(t *t
 	go func() { flushDone <- manager.Flush(context.Background()) }()
 	<-writer.started
 
+	// 慢写只占用当前根对象锁，不能阻塞其他角色的内存事务。
+	other := txn.NewLockTarget(txn.NewLockKey("role", 1002), &runtimeTestStore{})
+	otherCtx, cancelOther := context.WithTimeout(context.Background(), time.Second)
+	defer cancelOther()
+	if err := txn.Run(otherCtx, []txn.LockTarget{other}, func(*txn.Tx) error { return nil }); err != nil {
+		t.Fatalf("independent root blocked by storage write: %v", err)
+	}
+
 	transactionEntered := make(chan struct{})
 	transactionDone := make(chan error, 1)
 	go func() {

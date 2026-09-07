@@ -13,6 +13,26 @@
 
 计数覆盖真实 Redis + 进程内 RoleRouter/MsgQ，不等于独立集群所有进程的总命令数，也不是吞吐或延迟基准。两套示例已有多 Agent、多 MsgQ 验收；跨进程统一命令归因仍待补齐。
 
+## 寻址延迟与写回隔离验证
+
+`BenchmarkRoutingRedisIO` 使用真实 Redis，分别测角色预热寻址和精确 Session 寻址；在客户端命令边界注入额外 5 ms 等待，不调整 Redis 服务配置。2026-09-08 本机 darwin/amd64、Intel i9-9880H，100 次操作采样：
+
+| 寻址路径 | 无注入 | 每命令额外等待 5 ms | Redis 命令/次 |
+| --- | ---: | ---: | ---: |
+| 角色热寻址 | 307 ns | 290 ns | 0 |
+| 精确 Session | 0.331 ms | 6.467 ms | 1 |
+
+这些数据证明延迟传播与命令次数，不代表生产吞吐；注入场景包含 Go 定时器调度开销，不能把差值全部归为 Redis 延迟。短采样下纳秒数差异不作性能提升结论。
+
+复用 `TestWriteBackManagerFlushHoldsTransactionLockUntilStorageWriteFinishes` 的阻塞存储注入，并补充独立角色事务验证：同根对象等待存储写入完成；另一个根对象的内存事务可继续。该测试不证明不同根对象的刷盘并行，当前 Flush 仍按队列串行保存。
+
+复现命令（在 tx 根目录）：
+
+```sh
+TX_REDIS_ENDPOINT=127.0.0.1:6379 go test ./modules/msgq -run '^$' -bench '^BenchmarkRoutingRedisIO$' -benchtime=100x -count=1
+go test -race ./tests -run '^TestWriteBackManagerFlushHoldsTransactionLockUntilStorageWriteFinishes$' -count=1
+```
+
 ## 优先跟进项
 
 ### P1：精确 Session 寻址逐次读取 Redis
