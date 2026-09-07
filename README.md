@@ -1425,6 +1425,19 @@ Actor；实体不会进入 `disthash`，成员变化不会把它改派到其他�
 重连、Topic 和广播。客户端上行业务 Payload 由 Agent 在完成会话序号校验后直接投递 Player/Game Actor；
 任意业务 Actor 的下行数据投递到 `msgq`，再由 Agent 发送给客户端。
 
+#### 角色归属基础 API
+
+`msgq.RoleStore` 提供 `ClaimRole / FindRole / RefreshRole / ReleaseRole`。`RedisSessionStore` 实现此接口，
+以带 TTL 的 `<prefix>:role:{RoleID}` 保存 `RoleBinding{RoleID, InstanceID, Generation}`。首次申请原子返回唯一赢家，
+续期与释放要求完整归属匹配；`Generation` 由申请者生成唯一令牌，同一实例重新申请也不能复用旧值。
+
+`msgq.NewRoleRouter(directory, store.FindRole, maximumSize)` 创建 Otter v2 有界路由缓存，合并并发冷查询；
+`Resolve` 热命中只读取本地缓存和服务发现，不查询 Redis。目标明确拒绝旧归属时调用 `Invalidate(expected)`，
+旧版本失效通知不会删除新版本缓存。网络超时不能当成未入队确认，路由器不自动重发业务载荷。
+
+这些基础 API 尚未接入现有 `SessionClientRouter` 和 `Sender`；当前运行入口的会话选址及下行行为未改变。
+同角色多 Session 的集中归属和本地分发接入进度见 [实施计划](docs/superpowers/plans/2026-09-08-msgq-role-routing.md)。
+
 ### Actor 路由模式
 
 Actor 间跨实例投递按 PID 直达目标，不经过 `msgq`；`msgq` 只管理客户端 Session、Seq/Ack 和下行邮箱。完整拓扑、消息时序和模块职责见 [分布式服务模块](docs/design.md#分布式服务模块)。
