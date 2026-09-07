@@ -22,7 +22,7 @@
 
 ### 可信会话后续 P0 顺序
 
-MsgQ 的 SessionID 精确邮箱、RoleID 唯一主会话投影、Agent 物理断连/逻辑终止和全 Agent 控制广播已经完成并进入稳定文档，
+MsgQ 的 SessionID 精确邮箱、RoleID 唯一 MsgQ 归属、Agent 物理断连/逻辑终止和全 Agent 控制广播已经完成并进入稳定文档，
 不再列为待办。控制广播只使用服务发现内存快照，不查询 Redis owner；失活终止只遍历 MsgQ 本地 Session。真实集群 P0
 仍未整体完成；以下能力必须按顺序推进：
 
@@ -30,7 +30,7 @@ txgameslg 仍需独立接入 Login 与可信票据客户端；不能把 tx runti
 
 1. 将 AccountID/RoleID 分段 SPI、LoginAccessGuard、`CModSessionID`、短期 ticket 和 AgentTarget 分配独立接入 txgameslg，并完成双 Login 生命周期与 txclientslg 真实票据登录验收；删除旧 MongoDB SessionID 流程，Login 不依赖 MsgQ。
 2. `Create_Role` 使用预分配 `RoleID` 的标准 Actor 路由，成功后 Game 写 `(AccountID, ServerID) -> []RoleID` 投影；PendingRole 仅允许建角和心跳。
-3. Borrow 沿用同一 ticket、握手、Session 流程：主 `AccountID`、`BorrowAccountID`、目标 `RoleID`、借用 `AccessMode`、独立 `SessionID`，只响应发起 Session，主会话属性由项目显式选择。
+3. Borrow 沿用同一 ticket、握手、Session 流程：主 `AccountID`、`BorrowAccountID`、目标 `RoleID`、借用 `AccessMode`、独立 `SessionID`，只响应发起 Session；角色共享下行按角色归属计划继续推进。
 4. 同步 `txclient`、`txclientslg`，并依次完成无状态、有状态两套真实多进程验收。
 
 ### P1：性能基线

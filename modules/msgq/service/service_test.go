@@ -45,11 +45,10 @@ func TestServiceStartsWithExplicitDependencies(t *testing.T) {
 type memoryStore struct {
 	roleTestStore
 	bindings map[int64]txmsgq.SessionBinding
-	primary  map[int64]int64
 }
 
 func newMemoryStore() *memoryStore {
-	return &memoryStore{bindings: make(map[int64]txmsgq.SessionBinding), primary: make(map[int64]int64)}
+	return &memoryStore{bindings: make(map[int64]txmsgq.SessionBinding)}
 }
 
 func (store *memoryStore) Create(_ context.Context, binding txmsgq.SessionBinding) (bool, error) {
@@ -85,29 +84,5 @@ func (store *memoryStore) Unbind(_ context.Context, binding txmsgq.SessionBindin
 		return false, nil
 	}
 	delete(store.bindings, binding.SessionID)
-	return true, nil
-}
-
-func (store *memoryStore) BindPrimary(_ context.Context, roleID, sessionID int64) error {
-	store.primary[roleID] = sessionID
-	return nil
-}
-
-func (store *memoryStore) FindPrimary(_ context.Context, roleID int64) (int64, bool, error) {
-	sessionID, found := store.primary[roleID]
-	return sessionID, found, nil
-}
-
-func (store *memoryStore) RefreshPrimary(_ context.Context, roleID, sessionID int64) (bool, error) {
-	current, found := store.primary[roleID]
-	return found && current == sessionID, nil
-}
-
-func (store *memoryStore) UnbindPrimary(_ context.Context, roleID, sessionID int64) (bool, error) {
-	current, found := store.primary[roleID]
-	if !found || current != sessionID {
-		return false, nil
-	}
-	delete(store.primary, roleID)
 	return true, nil
 }

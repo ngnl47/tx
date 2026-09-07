@@ -21,8 +21,8 @@ func TestSenderPubSessionUsesExactSession(t *testing.T) {
 	if result.Seq != 3 || connection.pubSessionID != 11 || string(connection.pubPayload) != "encoded-bon" {
 		t.Fatalf("publish = %#v, sessionID = %d, payload = %q", result, connection.pubSessionID, connection.pubPayload)
 	}
-	if len(store.findSessionIDs) != 1 || store.findSessionIDs[0] != 11 || len(store.findPrimaryRoleIDs) != 0 {
-		t.Fatalf("exact route finds = %#v, primary finds = %#v", store.findSessionIDs, store.findPrimaryRoleIDs)
+	if len(store.findSessionIDs) != 1 || store.findSessionIDs[0] != 11 {
+		t.Fatalf("exact route finds = %#v", store.findSessionIDs)
 	}
 }
 
@@ -42,8 +42,8 @@ func TestSenderJoinTopicsUsesOwnerSessionConnectionHeader(t *testing.T) {
 	if got := connection.topicRequest.Topics; len(got) != 2 || got[0] != "guild:1" || got[1] != "region:2" {
 		t.Fatalf("topics = %#v", got)
 	}
-	if len(store.findSessionIDs) != 1 || store.findSessionIDs[0] != 11 || len(store.findPrimaryRoleIDs) != 0 {
-		t.Fatalf("topic route finds = %#v, primary finds = %#v", store.findSessionIDs, store.findPrimaryRoleIDs)
+	if len(store.findSessionIDs) != 1 || store.findSessionIDs[0] != 11 {
+		t.Fatalf("topic route finds = %#v", store.findSessionIDs)
 	}
 }
 
@@ -66,8 +66,8 @@ func TestSenderBroadcastTopicUsesOwnerSessionMsgQInstance(t *testing.T) {
 	if connection.broadcastRequest.Topic != request.Topic || string(connection.broadcastRequest.Payload) != "encoded-bon" {
 		t.Fatalf("broadcast request = %#v", connection.broadcastRequest)
 	}
-	if len(store.findSessionIDs) != 1 || store.findSessionIDs[0] != 11 || len(store.findPrimaryRoleIDs) != 0 {
-		t.Fatalf("broadcast route finds = %#v, primary finds = %#v", store.findSessionIDs, store.findPrimaryRoleIDs)
+	if len(store.findSessionIDs) != 1 || store.findSessionIDs[0] != 11 {
+		t.Fatalf("broadcast route finds = %#v", store.findSessionIDs)
 	}
 }
 
@@ -114,10 +114,8 @@ func newSenderForTest(t *testing.T, connection Connection, binding SessionBindin
 		t.Fatalf("replace directory: %v", err)
 	}
 	store := &senderStoreFake{
-		binding:          binding,
-		found:            true,
-		primarySessionID: binding.SessionID,
-		primaryFound:     true,
+		binding: binding,
+		found:   true,
 	}
 	router, err := NewSessionRouter(directory, store)
 	if err != nil {
@@ -138,15 +136,11 @@ func newSenderForTest(t *testing.T, connection Connection, binding SessionBindin
 
 type senderStoreFake struct {
 	roleTestStore
-	roleReads          int
-	binding            SessionBinding
-	bindings           map[int64]SessionBinding
-	found              bool
-	primarySessionID   int64
-	primarySessionIDs  []int64
-	primaryFound       bool
-	findSessionIDs     []int64
-	findPrimaryRoleIDs []int64
+	roleReads      int
+	binding        SessionBinding
+	bindings       map[int64]SessionBinding
+	found          bool
+	findSessionIDs []int64
 }
 
 func (store *senderStoreFake) FindRole(ctx context.Context, roleID int64) (RoleBinding, bool, error) {
@@ -177,26 +171,6 @@ func (*senderStoreFake) Refresh(context.Context, SessionBinding) (bool, error) {
 
 func (senderStoreFake) Unbind(context.Context, SessionBinding) (bool, error) {
 	return false, errors.New("unexpected Unbind")
-}
-
-func (senderStoreFake) BindPrimary(context.Context, int64, int64) error {
-	return errors.New("unexpected BindPrimary")
-}
-
-func (store *senderStoreFake) FindPrimary(_ context.Context, roleID int64) (int64, bool, error) {
-	store.findPrimaryRoleIDs = append(store.findPrimaryRoleIDs, roleID)
-	if index := len(store.findPrimaryRoleIDs) - 1; index < len(store.primarySessionIDs) {
-		return store.primarySessionIDs[index], store.primaryFound, nil
-	}
-	return store.primarySessionID, store.primaryFound, nil
-}
-
-func (senderStoreFake) RefreshPrimary(context.Context, int64, int64) (bool, error) {
-	return false, errors.New("unexpected RefreshPrimary")
-}
-
-func (senderStoreFake) UnbindPrimary(context.Context, int64, int64) (bool, error) {
-	return false, errors.New("unexpected UnbindPrimary")
 }
 
 type senderDialerFake struct {
@@ -270,7 +244,7 @@ func TestSenderRoleCacheInvalidatesOnlyDefinitiveRejectionWithoutReplay(t *testi
 			if !errors.Is(err, failure) || result != connection.broadcastResult || len(connection.roleBindings) != 2 || store.roleReads != 1 {
 				t.Fatalf("publish result=%+v error=%v calls=%d reads=%d", result, err, len(connection.roleBindings), store.roleReads)
 			}
-			if len(store.findSessionIDs) != 0 || len(store.findPrimaryRoleIDs) != 0 {
+			if len(store.findSessionIDs) != 0 {
 				t.Fatal("role publish resolved a session")
 			}
 			if _, err := store.ReleaseRole(ctx, first); err != nil {

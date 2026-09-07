@@ -44,14 +44,11 @@ func TestMsgQGRPCServicePassesMailboxLifecycle(t *testing.T) {
 
 	client := msgqpb.NewMailboxServiceClient(conn)
 	header := &msgqpb.SessionHeader{RoleId: 470001, SessionId: 99, ConnectionId: 7}
-	if _, err := client.Init(ctx, &msgqpb.InitRequest{Header: header, Primary: true}); err != nil {
+	if _, err := client.Init(ctx, &msgqpb.InitRequest{Header: header}); err != nil {
 		t.Fatalf("init mailbox: %v", err)
 	}
-	if primary, found, err := store.FindPrimary(ctx, header.GetRoleId()); err != nil || !found || primary != header.GetSessionId() {
-		t.Fatalf("primary session = %d, found = %t, err = %v", primary, found, err)
-	}
 	restoredHeader := &msgqpb.SessionHeader{RoleId: header.GetRoleId(), SessionId: header.GetSessionId(), ConnectionId: 8}
-	if _, err := client.Init(ctx, &msgqpb.InitRequest{Header: restoredHeader, Restore: true, Primary: true}); err != nil {
+	if _, err := client.Init(ctx, &msgqpb.InitRequest{Header: restoredHeader, Restore: true}); err != nil {
 		t.Fatalf("restore mailbox: %v", err)
 	}
 	if _, err := client.PubSession(ctx, &msgqpb.PubSessionRequest{

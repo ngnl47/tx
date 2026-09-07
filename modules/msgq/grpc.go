@@ -26,7 +26,7 @@ type mailboxService struct {
 }
 
 func (s *mailboxService) Init(ctx context.Context, request *msgqpb.InitRequest) (*msgqpb.InitResponse, error) {
-	result, err := s.mailbox.Init(ctx, InitRequest{Header: headerFromProto(request.GetHeader()), Restore: request.GetRestore(), Primary: request.GetPrimary(), Ack: request.GetAck()})
+	result, err := s.mailbox.Init(ctx, InitRequest{Header: headerFromProto(request.GetHeader()), Restore: request.GetRestore(), Ack: request.GetAck()})
 	if err != nil {
 		return nil, mailboxStatusError(err)
 	}

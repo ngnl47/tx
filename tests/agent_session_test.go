@@ -32,7 +32,6 @@ func TestAgentSessionAuthenticatesThenDispatchesAcceptedSequence(t *testing.T) {
 			RoleID:        470001,
 			SessionID:     99,
 			CanCreateRole: true,
-			Primary:       true,
 		},
 		ConnectionID: 7,
 	}
@@ -115,17 +114,15 @@ func TestAgentTerminateSessionRemovesLogicalSession(t *testing.T) {
 	}
 }
 
-func TestAgentSessionAcquiresOwnerAndMarksPrimaryFromTrustedIdentity(t *testing.T) {
+func TestAgentSessionAcquiresOwnerFromTrustedIdentity(t *testing.T) {
 	tests := map[string]struct {
-		principal   protocol.SessionPrincipal
-		restore     bool
-		wantPrimary bool
+		principal protocol.SessionPrincipal
+		restore   bool
 	}{
 		"normal": {
 			principal: protocol.SessionPrincipal{
-				AccountID: 47, ServerID: 1, RoleID: 470001, SessionID: 99, AccessMode: protocol.AccessModeNormal, CanCreateRole: true, Primary: true,
+				AccountID: 47, ServerID: 1, RoleID: 470001, SessionID: 99, AccessMode: protocol.AccessModeNormal, CanCreateRole: true,
 			},
-			wantPrimary: true,
 		},
 		"borrow restore": {
 			principal: protocol.SessionPrincipal{
@@ -133,12 +130,8 @@ func TestAgentSessionAcquiresOwnerAndMarksPrimaryFromTrustedIdentity(t *testing.
 			},
 			restore: true,
 		},
-		"normal secondary": {
-			principal: protocol.SessionPrincipal{AccountID: 47, ServerID: 1, RoleID: 470001, SessionID: 101},
-		},
-		"borrow primary": {
-			principal:   protocol.SessionPrincipal{AccountID: 47, BorrowAccountID: 48, ServerID: 1, RoleID: 470001, SessionID: 102, AccessMode: protocol.AccessModeBorrow, Primary: true},
-			wantPrimary: true,
+		"borrow": {
+			principal: protocol.SessionPrincipal{AccountID: 47, BorrowAccountID: 48, ServerID: 1, RoleID: 470001, SessionID: 102, AccessMode: protocol.AccessModeBorrow},
 		},
 	}
 	for name, test := range tests {
@@ -172,7 +165,7 @@ func TestAgentSessionAcquiresOwnerAndMarksPrimaryFromTrustedIdentity(t *testing.
 				t.Fatalf("acquire request = %#v, want %#v", request, wantAcquire)
 			}
 			initialized := <-client.initRequests
-			if initialized.Header.RoleID != test.principal.RoleID || initialized.Header.SessionID != test.principal.SessionID || initialized.Header.ConnectionID != 7 || initialized.Restore != test.restore || initialized.Primary != test.wantPrimary {
+			if initialized.Header.RoleID != test.principal.RoleID || initialized.Header.SessionID != test.principal.SessionID || initialized.Header.ConnectionID != 7 || initialized.Restore != test.restore {
 				t.Fatalf("init request = %#v", initialized)
 			}
 			assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
@@ -471,7 +464,7 @@ func TestAgentSessionRejectsAcknowledgementBeyondWrittenDownMsg(t *testing.T) {
 	}
 
 	restored := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 8}
-	if _, err := mailbox.Init(context.Background(), msgq.InitRequest{Header: restored, Restore: true, Primary: true}); err != nil {
+	if _, err := mailbox.Init(context.Background(), msgq.InitRequest{Header: restored, Restore: true}); err != nil {
 		t.Fatalf("restore after rejected acknowledgement: %v", err)
 	}
 	message, err := mailbox.Fetch(context.Background(), msgq.FetchRequest{Header: restored})
@@ -507,7 +500,7 @@ func TestAgentSessionDoesNotDispatchDuplicateSequence(t *testing.T) {
 func TestAgentSessionRestoreAcknowledgesAcceptedUpMsgAndSkipsReplay(t *testing.T) {
 	agent, transport, mailbox, dispatched := newAgentSessionFixture(t, nil)
 	previous := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 6}
-	if _, err := mailbox.Init(context.Background(), msgq.InitRequest{Header: previous, Primary: true}); err != nil {
+	if _, err := mailbox.Init(context.Background(), msgq.InitRequest{Header: previous}); err != nil {
 		t.Fatalf("init previous session: %v", err)
 	}
 	if _, err := mailbox.Rec(context.Background(), msgq.RecRequest{Header: previous, Seq: 1}); err != nil {
@@ -638,7 +631,6 @@ func testSessionPrincipal() protocol.SessionPrincipal {
 		RoleID:        470001,
 		SessionID:     99,
 		CanCreateRole: true,
-		Primary:       true,
 	}
 }
 

@@ -153,7 +153,7 @@ func readBroadcastResponse(response *msgqpb.BroadcastResponse, err error) (Broad
 }
 
 func (c *grpcConnection) Init(ctx context.Context, request InitRequest) (InitResult, error) {
-	response, err := c.client.Init(ctx, &msgqpb.InitRequest{Header: headerToProto(request.Header), Restore: request.Restore, Ack: request.Ack, Primary: request.Primary})
+	response, err := c.client.Init(ctx, &msgqpb.InitRequest{Header: headerToProto(request.Header), Restore: request.Restore, Ack: request.Ack})
 	if err != nil {
 		return InitResult{}, mailboxClientError(err)
 	}

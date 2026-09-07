@@ -133,7 +133,6 @@ func sessionIdentityToProto(identity *txprotocol.SessionIdentity) (*actorpb.Sess
 		ConnectionId:    identity.ConnectionID,
 		AccessMode:      accessMode,
 		CanCreateRole:   identity.CanCreateRole,
-		Primary:         identity.Primary,
 	}, nil
 }
 
@@ -154,7 +153,6 @@ func sessionIdentityFromProto(message *actorpb.SessionIdentity) (*txprotocol.Ses
 			SessionID:       message.GetSessionId(),
 			AccessMode:      accessMode,
 			CanCreateRole:   message.GetCanCreateRole(),
-			Primary:         message.GetPrimary(),
 		},
 		ConnectionID: message.GetConnectionId(),
 	}, nil

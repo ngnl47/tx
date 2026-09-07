@@ -21,8 +21,6 @@ type SessionPrincipal struct {
 	SessionID       int64
 	AccessMode      AccessMode
 	CanCreateRole   bool
-	// Primary 由项目鉴权决定是否参与角色主会话投影，不表示独占操作权。
-	Primary bool
 }
 
 // SessionIdentity 表示可信会话携带的主体和访问方式。

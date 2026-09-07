@@ -23,8 +23,13 @@
 - [x] MsgQ 本地维护角色订阅索引，共享不可变载荷，各邮箱独立 Ack、恢复和容量限制；本地正常分发不查 Redis。
 - [x] 定向角色发布携带归属版本，保留部分成功统计，明确初始化失败、旧归属拒绝和宕机干净登录行为。真实 gRPC 验证错误实例/角色/版本拒绝、部分溢出及已入队但响应丢失不重发。
 - [x] 将 `Sender.PubRole` 切换到 RoleRouter 与版本化 RPC，返回 BroadcastResult；两套示例与客户端独立生成分发统计契约，不返回共同 Seq。
-- [x] 删除被替代的 `SessionRouter.ResolveRole` 和主会话下行专属测试、描述，不实现旧数据兼容。
-- [ ] 收敛不再参与下行寻址的主会话投影与 Primary 生命周期校验，连同身份、登录和恢复契约整体回归，避免保留仅写入的索引。
+- [x] 角色下行统一使用 RoleRouter，保留精确 Session 寻址；测试和说明仅覆盖当前接口。
+- [x] 身份、Login SPI 和邮箱生命周期统一为独立 Session，不维护会话优先级或仅写入的索引。
+
+本批验证：tx、txgame/server、txgameslg/server 的 `go test ./...` 通过；真实 Redis 下
+`go test -race ./modules/msgq/... ./modules/agent/... ./modules/actor/... ./tests -count=1` 通过。
+真实 Redis 用例覆盖同角色第二个 Session 登录后第一个仍可恢复、未确认消息保留、共享下行使用独立 Seq，
+以及最后一个邮箱退出后角色归属释放与换代。
 
 ## 第三批：示例与集群验收
 

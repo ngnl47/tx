@@ -15,12 +15,11 @@ const (
 	defaultOfflineTimeout               = 180 * time.Second
 	defaultTerminateDeadSessionInterval = 2 * time.Second
 	defaultMaxBacklogBytes              = 64 * 1024 * 1024
-	storeCompensationTimeout            = 5 * time.Second
 	initLockShards                      = 64
 )
 
 // Server 在本进程维护客户端会话与未确认下行消息。
-// Redis 保存角色归属租约、精确会话归属和角色主会话投影，不保存下行编码载荷。
+// Redis 保存角色归属租约和精确会话归属，不保存下行编码载荷。
 type Server struct {
 	instanceID                   string
 	store                        SessionStore
@@ -65,7 +64,6 @@ type SessionHeader struct {
 type InitRequest struct {
 	Header  SessionHeader
 	Restore bool
-	Primary bool
 	Ack     int64
 }
 
@@ -231,7 +229,7 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 			current.mu.Unlock()
 			return InitResult{}, ErrSessionOffline
 		}
-		if current.roleID != request.Header.RoleID || current.primary != request.Primary {
+		if current.roleID != request.Header.RoleID {
 			current.mu.Unlock()
 			return InitResult{}, ErrSessionChanged
 		}
@@ -243,7 +241,7 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 		previousConnectionID = current.connectionID
 	} else {
 		var reserved bool
-		session, reserved = s.reserveFresh(request.Header, request.Primary)
+		session, reserved = s.reserveFresh(request.Header)
 		if !reserved {
 			return InitResult{}, ErrSessionChanged
 		}
@@ -267,28 +265,9 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 			return InitResult{}, err
 		}
 		if !rebound {
-			var primaryErr error
-			if session.primary {
-				primaryErr = s.unbindPrimaryForCompensation(ctx, session.roleID, session.sessionID)
-			}
 			s.removeLocked(session)
 			session.mu.Unlock()
-			return InitResult{}, errors.Join(ErrSessionChanged, primaryErr)
-		}
-		if session.primary {
-			refreshed, refreshErr := s.store.RefreshPrimary(ctx, session.roleID, session.sessionID)
-			if refreshErr != nil || !refreshed {
-				exactRemoved, exactErr := s.unbindExactForCompensation(ctx, binding)
-				primaryErr := s.unbindPrimaryForCompensation(ctx, session.roleID, session.sessionID)
-				s.removeLocked(session)
-				session.mu.Unlock()
-				if refreshErr == nil {
-					refreshErr = ErrSessionChanged
-				} else if !exactRemoved {
-					refreshErr = errors.Join(refreshErr, ErrSessionChanged)
-				}
-				return InitResult{}, errors.Join(refreshErr, exactErr, primaryErr)
-			}
+			return InitResult{}, ErrSessionChanged
 		}
 	} else {
 		created, err := s.store.Create(ctx, binding)
@@ -299,17 +278,6 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 		if !created {
 			s.abortFreshLocked(session)
 			return InitResult{}, ErrSessionChanged
-		}
-		if request.Primary {
-			if err := s.store.BindPrimary(ctx, request.Header.RoleID, request.Header.SessionID); err != nil {
-				exactRemoved, exactErr := s.unbindExactForCompensation(ctx, binding)
-				primaryErr := s.unbindPrimaryForCompensation(ctx, request.Header.RoleID, request.Header.SessionID)
-				s.abortFreshLocked(session)
-				if !exactRemoved {
-					return InitResult{}, errors.Join(err, exactErr, primaryErr, ErrSessionChanged)
-				}
-				return InitResult{}, errors.Join(err, exactErr, primaryErr)
-			}
 		}
 		session.active = true
 		s.addRoleLocked(session)
@@ -822,8 +790,8 @@ func (s *Server) Start(ctx waitGroupContext) error {
 }
 
 // reserveFresh 在返回成功时保持新 session.mu 锁定，直到 Init 完成或回滚。
-func (s *Server) reserveFresh(header SessionHeader, primary bool) (*mailboxSession, bool) {
-	session := newMailboxSession(header, primary)
+func (s *Server) reserveFresh(header SessionHeader) (*mailboxSession, bool) {
+	session := newMailboxSession(header)
 	session.active = false
 	session.mu.Lock()
 	s.mu.Lock()
@@ -840,19 +808,6 @@ func (s *Server) reserveFresh(header SessionHeader, primary bool) (*mailboxSessi
 func (s *Server) abortFreshLocked(session *mailboxSession) {
 	s.removeLocked(session)
 	session.mu.Unlock()
-}
-
-func (s *Server) unbindExactForCompensation(ctx context.Context, binding SessionBinding) (bool, error) {
-	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), storeCompensationTimeout)
-	defer cancel()
-	return s.store.Unbind(cleanupCtx, binding)
-}
-
-func (s *Server) unbindPrimaryForCompensation(ctx context.Context, roleID, sessionID int64) error {
-	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), storeCompensationTimeout)
-	defer cancel()
-	_, err := s.store.UnbindPrimary(cleanupCtx, roleID, sessionID)
-	return err
 }
 
 func (s *Server) lookup(sessionID int64) (*mailboxSession, bool) {
@@ -1015,24 +970,6 @@ func (s *Server) touch(ctx context.Context, header SessionHeader) (*mailboxSessi
 		session.mu.Unlock()
 		return nil, ErrSessionChanged
 	}
-	if session.primary {
-		primaryRefreshed, err := s.store.RefreshPrimary(ctx, session.roleID, session.sessionID)
-		if err != nil {
-			session.mu.Unlock()
-			return nil, err
-		}
-		if !primaryRefreshed {
-			_, unbindErr := s.store.Unbind(ctx, SessionBinding{
-				RoleID:       session.roleID,
-				SessionID:    session.sessionID,
-				ConnectionID: session.connectionID,
-				InstanceID:   s.instanceID,
-			})
-			s.removeLocked(session)
-			session.mu.Unlock()
-			return nil, errors.Join(ErrSessionChanged, unbindErr)
-		}
-	}
 	session.lastActivity = now
 	if s.leaseRefreshInterval > 0 {
 		session.nextLeaseRefresh = now.Add(s.leaseRefreshInterval)
@@ -1067,7 +1004,6 @@ type mailboxSession struct {
 	roleID           int64
 	sessionID        int64
 	connectionID     int64
-	primary          bool
 	upMsgSeq         int64
 	active           bool
 	lastActivity     time.Time
@@ -1078,12 +1014,11 @@ type mailboxSession struct {
 	mu               sync.Mutex
 }
 
-func newMailboxSession(header SessionHeader, primary bool) *mailboxSession {
+func newMailboxSession(header SessionHeader) *mailboxSession {
 	return &mailboxSession{
 		roleID:       header.RoleID,
 		sessionID:    header.SessionID,
 		connectionID: header.ConnectionID,
-		primary:      primary,
 		active:       true,
 		lastActivity: time.Now(),
 		notify:       make(chan struct{}, 1),

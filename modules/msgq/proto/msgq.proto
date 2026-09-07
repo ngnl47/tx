@@ -15,7 +15,6 @@ message InitRequest {
   SessionHeader header = 1;
   bool restore = 2;
   int64 ack = 3;
-  bool primary = 4;
 }
 
 message InitResponse {

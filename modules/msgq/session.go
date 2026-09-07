@@ -43,7 +43,7 @@ func (b SessionBinding) Validate() error {
 	return nil
 }
 
-// SessionStore 持久化角色归属租约、精确会话绑定和角色主会话投影。
+// SessionStore 持久化角色归属租约和精确会话绑定。
 type SessionStore interface {
 	RoleStore
 	Create(ctx context.Context, binding SessionBinding) (created bool, err error)
@@ -51,10 +51,6 @@ type SessionStore interface {
 	Find(ctx context.Context, sessionID int64) (binding SessionBinding, found bool, err error)
 	Refresh(ctx context.Context, binding SessionBinding) (refreshed bool, err error)
 	Unbind(ctx context.Context, binding SessionBinding) (removed bool, err error)
-	BindPrimary(ctx context.Context, roleID, sessionID int64) error
-	FindPrimary(ctx context.Context, roleID int64) (sessionID int64, found bool, err error)
-	RefreshPrimary(ctx context.Context, roleID, sessionID int64) (refreshed bool, err error)
-	UnbindPrimary(ctx context.Context, roleID, sessionID int64) (removed bool, err error)
 }
 
 // SessionTarget 是一次会话投递所需的绑定和目标实例。

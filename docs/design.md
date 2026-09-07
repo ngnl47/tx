@@ -2329,14 +2329,14 @@ Agent 选址、邮箱初始化和 `Sender.PubRole` 已接入角色归属。Sende
 `modules/msgq` 是客户端会话邮箱，不是所有服务消息的中心总线。它负责：
 
 - `SessionID -> (RoleID, SessionID, ConnectionID, InstanceID)` 精确 binding。
-- `RoleID -> 唯一主 SessionID` 投影。
+- `RoleID -> 唯一 MsgQ 归属及版本` 投影。
 - 上行 Seq 连续性。
 - 下行队列和 Ack。
 - 断线重连时重发未确认消息。
 - 本地 Topic 广播。
 
-Redis 精确 binding key 为 `<prefix>:session:v2:{SessionID}`，保存完整四元组；主会话投影 key 为
-`<prefix>:primary:v1:{RoleID}`，保存当前主 SessionID。二者分别按 SessionID 和 RoleID 选择分片，只保证各自单 key
+Redis 精确 binding key 为 `<prefix>:session:v2:{SessionID}`，保存完整四元组；角色归属 key 为
+`<prefix>:role:{RoleID}`，保存 InstanceID 和 Generation。二者分别按 SessionID 和 RoleID 选择分片，只保证各自单 key
 条件操作，不承诺跨 key 事务。下行正文只保存在 MsgQ 实例内存；实例崩溃允许丢失未确认下行，客户端重连后由业务状态
 重同步恢复。
 
@@ -2347,15 +2347,13 @@ Redis 精确 binding key 为 `<prefix>:session:v2:{SessionID}`，保存完整四
 SessionID 回到原 running owner，用完整旧 binding 条件 `Rebind` 到新 ConnectionID；失败时不迁移。同 SessionID 恢复
 保留 Seq/Ack 与未确认队列，新 SessionID 的干净登录不继承旧消息。
 
-项目鉴权通过可信 `SessionIdentity.Primary` 明确选择主会话属性，与 AccessMode 无关。
-非主会话不写主投影，但会接收 `Sender.PubRole` 的角色下行；主会话属性不限制 Actor 数据操作。
-同一 RoleID 的多个邮箱可以并存；新的主会话替换主投影，但不继承或清空其他 SessionID 的队列。主会话
-活动按限频阈值条件续期 RoleID 投影；显式终止、失活终止和积压溢出都不主动删除主会话投影，不能影响同角色的其他
-Session。新主会话可以覆盖旧投影，遗留投影由 Redis TTL 兜底过期。
+授权的同一 RoleID 多个 Session 可以并存，并路由到同一 Actor。
+各邮箱独立维护 Seq/Ack 与未确认队列，新增、恢复或终止一个 Session 不影响其他 Session。
+`Sender.PubRole` 向该角色全部邮箱分发，框架不提供基于会话优先级的登录互斥策略。
 
 `SessionRouter.ResolveSession` 和 `RoleRouter.Resolve` 只读解析，不刷新 TTL。只有当前 ConnectionID 通过 owner 侧校验的连接活动
 才更新本地活动时间；业务发布不更新。生产 Redis store 在 `Init`、`Rebind` 或一次成功续期后等待 `TTL / 2`，达到
-阈值的第一条合法活动才续期精确 binding 和主会话投影，因此高频心跳、上行、Ack 和 Fetch 不会产生同频 Redis I/O。
+阈值的第一条合法活动才续期精确 binding，因此高频心跳、上行、Ack 和 Fetch 不会产生同频 Redis I/O。
 默认离线保留窗口为 `180s`，失活终止检查间隔为 `2s`；周期任务只遍历当前 MsgQ 的本地 Session 表，不扫描 Redis key。
 超过窗口、积压条数或积压字节上限时终止整个 Session，而不是无限保留未确认消息。
 
@@ -2402,7 +2400,7 @@ Bee 或 Ant Context，因此可以使用本次 Server 已声明的 Actor、服�
 `IdentityResolver` 只返回 `protocol.SessionPrincipal`，其中包含 `AccountID`、`BorrowAccountID`、`ServerID`、`RoleID`、
 `SessionID`、`AccessMode` 和 `CanCreateRole`。Agent 负责生成正 `ConnectionID`，校验并构造 `protocol.SessionIdentity`；
 项目 resolver 不能从 ticket 或客户端数据指定 `ConnectionID`。普通模式不携带 `BorrowAccountID`；借用模式必须携带正
-`BorrowAccountID`。借用读写权限与建角许可由业务决定，框架不拦截业务协议。Agent 透传可信的 `Primary` 属性。
+`BorrowAccountID`。借用读写权限与建角许可由业务决定，框架不拦截业务协议。各 Session 生命周期独立。
 
 通用 Actor Dispatcher 在调用 Messenger 前以 `DispatchRequest` 的可信 `SessionIdentity` 和当前上行序号覆盖 Delivery 的
 `Identity` 与 `UpSeq`。项目 Actor resolver 仍只负责目标、消息类型、命令号、路由键、载荷和是否等待结果，不能伪造身份或序号。

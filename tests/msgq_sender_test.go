@@ -44,7 +44,7 @@ func TestMsgQSenderPublishesExactAndSharedRoleWithReusedConnection(t *testing.T)
 	defer clientConn.Close()
 	client := msgqpb.NewMailboxServiceClient(clientConn)
 	header := &msgqpb.SessionHeader{RoleId: 470001, SessionId: 99, ConnectionId: 7}
-	if _, err := client.Init(ctx, &msgqpb.InitRequest{Header: header, Primary: true}); err != nil {
+	if _, err := client.Init(ctx, &msgqpb.InitRequest{Header: header}); err != nil {
 		t.Fatalf("init mailbox: %v", err)
 	}
 	second := &msgqpb.SessionHeader{RoleId: 470001, SessionId: 100, ConnectionId: 8}

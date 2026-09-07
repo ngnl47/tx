@@ -40,8 +40,8 @@
 - Produces: `SessionClient.TerminateSession(context.Context, SessionHeader) error`
 - Produces: `ServerOptions.TerminateDeadSessionInterval time.Duration`
 
-- [x] 写失败测试，证明显式终止删除精确 binding 和本地邮箱但不调用 `UnbindPrimary`。
-- [x] 写失败测试，证明 `TerminateDeadSessions` 只终止超过 `OfflineTimeout` 的本地 Session，且不调用 `UnbindPrimary`。
+- [x] 写失败测试，证明显式终止删除精确 binding 和本地邮箱但不影响同角色其他 Session。
+- [x] 写失败测试，证明 `TerminateDeadSessions` 只终止超过 `OfflineTimeout` 的本地 Session，且不影响同角色其他 Session。
 - [x] 运行 `go test ./modules/msgq/...`，确认测试因新 API 尚不存在而失败。
 - [x] 将 `Close/CloseSession/Reap/SweepInterval` 分别重命名并收敛到一个精确终止内部函数。
 - [x] 将 MsgQ protobuf 的 `Close` RPC 改为 `TerminateSession`，使用仓库脚本和 `protoc 36.0` 只重生成 msgq 包。
@@ -60,7 +60,7 @@
 - Consumes: Task 1 的 `TerminateSession` 与 `TerminateDeadSessions`。
 
 - [x] 写失败测试，连续两次 `Touch` 只触发第一次到期续期，未到阈值的活动不调用 Store `Refresh`。
-- [x] 写失败测试，到达 `TTL / 2` 后精确 binding 与主会话投影各续期一次。
+- [x] 写失败测试，到达 `TTL / 2` 后精确 binding 续期一次。
 - [x] 运行 `go test ./modules/msgq/...`，确认 Redis 调用计数断言失败。
 - [x] 在邮箱 Session 中保存下一次允许续期时间，并由 Redis store 的现有 TTL 推导间隔。
 - [x] 保持每次合法活动都更新本地 `lastActivity`；Store 续期失败继续沿用当前失败关闭语义。

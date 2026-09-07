@@ -13,8 +13,8 @@
 - `TerminateSession` 终止逻辑 Session，清理 MsgQ 本地邮箱和精确 Session binding，关闭物理连接，相同
   `SessionID` 不再允许恢复。
 - tx 不提供 `KickUser`、封禁、顶号等业务接口；项目只把业务策略映射为上述两项基础能力。
-- 终止 Session 不主动删除角色主会话投影。新主会话可以覆盖旧投影，旧投影由 Redis TTL 兜底过期。
-- Borrow 使用独立 Session，不依赖目标角色在线状态或角色主会话投影。
+- 终止 Session 不影响同角色的其他 Session；最后一个邮箱退出后，由维护循环协调释放角色归属。
+- Borrow 使用独立 Session，不依赖目标角色在线状态。
 - Login 不认识 MsgQ。任意 Login 可以向服务发现中的全部 Agent 广播，只有本地持有目标 `SessionID` 的
   Agent 执行操作。
 - 广播依赖 tx 服务发现内存快照与 Agent 内部 RPC，不依赖 Kubernetes、外部负载均衡或 Redis owner 查询。
@@ -78,7 +78,7 @@ TerminateDeadSessionInterval time.Duration
 - 条件删除精确 Session binding。
 - 从当前 MsgQ 本地 Session 表和 Topic 索引移除。
 - 释放未确认下行队列。
-- 不主动删除角色主会话投影。
+- 移除本地角色订阅；最后一个邮箱退出后，由维护循环排除并发初始化并释放角色归属。
 
 积压溢出属于同一逻辑终止结果，也使用相同的精确解绑语义。
 
@@ -98,8 +98,8 @@ services:
 MsgQ 每次合法上行、Ack、Fetch 或心跳仍更新本地 `lastActivity`，但不再每次执行 Redis `PEXPIRE`。
 
 `RedisSessionStore` 根据既有 TTL 提供续期间隔，默认取 `TTL / 2`。邮箱 Session 在 `Create`、`Rebind` 或一次
-成功续期后记录下一次允许续期的时间；在此之前的活动只更新本地时间。到达阈值后的第一条活动同时精确续期 binding
-和主会话投影。
+成功续期后记录下一次允许续期的时间；在此之前的活动只更新本地时间。到达阈值后的第一条活动精确续期 binding。
+角色归属由本地租约维护循环独立限频续期。
 
 该策略保证：
 
@@ -124,5 +124,5 @@ MsgQ 或 Agent 基础生命周期的正确性边界。
 - 广播到两个 Agent 时仅本地持有目标 Session 的实例报告命中，另一个 Session 不受影响。
 - 旧 ConnectionID 不能终止或移除新恢复连接。
 - 高频活动不会产生同频 Redis `PEXPIRE`。
-- 失活终止、显式终止和积压溢出都不扫描 Redis，也不主动删除主会话投影。
+- 失活终止、显式终止和积压溢出都不扫描 Redis，也不影响同角色其他 Session。
 - Bee 与 Ant 装配使用同一 Agent 控制能力。

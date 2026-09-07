@@ -333,11 +333,10 @@ type memorySessionStore struct {
 	roleTestStore
 	mu       sync.Mutex
 	bindings map[int64]txmsgq.SessionBinding
-	primary  map[int64]int64
 }
 
 func newMemorySessionStore() *memorySessionStore {
-	return &memorySessionStore{bindings: make(map[int64]txmsgq.SessionBinding), primary: make(map[int64]int64)}
+	return &memorySessionStore{bindings: make(map[int64]txmsgq.SessionBinding)}
 }
 
 func (store *memorySessionStore) Create(_ context.Context, binding txmsgq.SessionBinding) (bool, error) {
@@ -383,37 +382,5 @@ func (store *memorySessionStore) Unbind(_ context.Context, binding txmsgq.Sessio
 		return false, nil
 	}
 	delete(store.bindings, binding.SessionID)
-	return true, nil
-}
-
-func (store *memorySessionStore) BindPrimary(_ context.Context, roleID, sessionID int64) error {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	store.primary[roleID] = sessionID
-	return nil
-}
-
-func (store *memorySessionStore) FindPrimary(_ context.Context, roleID int64) (int64, bool, error) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	sessionID, found := store.primary[roleID]
-	return sessionID, found, nil
-}
-
-func (store *memorySessionStore) RefreshPrimary(_ context.Context, roleID, sessionID int64) (bool, error) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	current, found := store.primary[roleID]
-	return found && current == sessionID, nil
-}
-
-func (store *memorySessionStore) UnbindPrimary(_ context.Context, roleID, sessionID int64) (bool, error) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	current, found := store.primary[roleID]
-	if !found || current != sessionID {
-		return false, nil
-	}
-	delete(store.primary, roleID)
 	return true, nil
 }

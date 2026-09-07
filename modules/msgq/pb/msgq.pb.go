@@ -87,7 +87,6 @@ type InitRequest struct {
 	Header        *SessionHeader         `protobuf:"bytes,1,opt,name=header,proto3" json:"header,omitempty"`
 	Restore       bool                   `protobuf:"varint,2,opt,name=restore,proto3" json:"restore,omitempty"`
 	Ack           int64                  `protobuf:"varint,3,opt,name=ack,proto3" json:"ack,omitempty"`
-	Primary       bool                   `protobuf:"varint,4,opt,name=primary,proto3" json:"primary,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -141,13 +140,6 @@ func (x *InitRequest) GetAck() int64 {
 		return x.Ack
 	}
 	return 0
-}
-
-func (x *InitRequest) GetPrimary() bool {
-	if x != nil {
-		return x.Primary
-	}
-	return false
 }
 
 type InitResponse struct {
@@ -1065,12 +1057,11 @@ const file_modules_msgq_proto_msgq_proto_rawDesc = "" +
 	"\arole_id\x18\x01 \x01(\x03R\x06roleId\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x02 \x01(\x03R\tsessionId\x12#\n" +
-	"\rconnection_id\x18\x03 \x01(\x03R\fconnectionId\"\x86\x01\n" +
+	"\rconnection_id\x18\x03 \x01(\x03R\fconnectionId\"l\n" +
 	"\vInitRequest\x121\n" +
 	"\x06header\x18\x01 \x01(\v2\x19.tx.msgq.v1.SessionHeaderR\x06header\x12\x18\n" +
 	"\arestore\x18\x02 \x01(\bR\arestore\x12\x10\n" +
-	"\x03ack\x18\x03 \x01(\x03R\x03ack\x12\x18\n" +
-	"\aprimary\x18\x04 \x01(\bR\aprimary\"1\n" +
+	"\x03ack\x18\x03 \x01(\x03R\x03ack\"1\n" +
 	"\fInitResponse\x12!\n" +
 	"\freceived_seq\x18\x01 \x01(\x03R\vreceivedSeq\"c\n" +
 	"\n" +

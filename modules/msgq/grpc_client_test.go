@@ -118,14 +118,14 @@ func (client *recordingSessionMailboxClient) PubSession(_ context.Context, reque
 	return &msgqpb.PubSessionResponse{Seq: 3}, nil
 }
 
-func TestGRPCConnectionConvertsPrimaryInitAndExactPublish(t *testing.T) {
+func TestGRPCConnectionConvertsInitAndExactPublish(t *testing.T) {
 	client := &recordingSessionMailboxClient{}
 	connection := &grpcConnection{client: client}
 	header := SessionHeader{RoleID: 47, SessionID: 11, ConnectionID: 13}
-	if _, err := connection.Init(context.Background(), InitRequest{Header: header, Primary: true}); err != nil {
+	if _, err := connection.Init(context.Background(), InitRequest{Header: header}); err != nil {
 		t.Fatalf("Init returned error: %v", err)
 	}
-	if request := client.initRequest; !request.GetPrimary() || request.GetHeader().GetSessionId() != 11 {
+	if request := client.initRequest; request.GetHeader().GetSessionId() != 11 {
 		t.Fatalf("init request = %#v", request)
 	}
 	result, err := connection.PubSession(context.Background(), 11, []byte("encoded-bon"))

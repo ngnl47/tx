@@ -430,139 +430,6 @@ func TestMsgQServerFreshInitRejectsExistingSessionID(t *testing.T) {
 	}
 }
 
-func TestMsgQServerBorrowSessionDoesNotReplacePrimary(t *testing.T) {
-	store := newMailboxSessionStore()
-	server, err := msgq.NewServer(msgq.ServerOptions{InstanceID: "msgq-1", Store: store, MaxBacklogMessages: 4})
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
-	primary := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-	borrow := msgq.SessionHeader{RoleID: 470001, SessionID: 100, ConnectionID: 8}
-	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: primary, Primary: true}); err != nil {
-		t.Fatalf("init primary: %v", err)
-	}
-	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: borrow}); err != nil {
-		t.Fatalf("init borrow: %v", err)
-	}
-	if current, found, err := store.FindPrimary(context.Background(), primary.RoleID); err != nil || !found || current != primary.SessionID {
-		t.Fatalf("primary after borrow = %d, %t, %v", current, found, err)
-	}
-	if _, err := server.PubSession(context.Background(), borrow.SessionID, []byte("borrow-target")); err != nil {
-		t.Fatalf("publish borrow: %v", err)
-	}
-	message, err := server.Fetch(context.Background(), msgq.FetchRequest{Header: borrow})
-	if err != nil || string(message.Payload) != "borrow-target" {
-		t.Fatalf("borrow fetch = %#v, %v", message, err)
-	}
-}
-
-func TestMsgQServerRestoreRequiresStablePrimaryProperty(t *testing.T) {
-	store := newMailboxSessionStore()
-	server, err := msgq.NewServer(msgq.ServerOptions{InstanceID: "msgq-1", Store: store, MaxBacklogMessages: 4})
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
-	first := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: first, Primary: true}); err != nil {
-		t.Fatalf("init first: %v", err)
-	}
-	restored := msgq.SessionHeader{RoleID: first.RoleID, SessionID: first.SessionID, ConnectionID: 8}
-	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: restored, Restore: true}); !errors.Is(err, msgq.ErrSessionChanged) {
-		t.Fatalf("restore with changed primary property error = %v, want %v", err, msgq.ErrSessionChanged)
-	}
-	replacement := msgq.SessionHeader{RoleID: first.RoleID, SessionID: 100, ConnectionID: 9}
-	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: replacement, Primary: true}); err != nil {
-		t.Fatalf("init replacement primary: %v", err)
-	}
-	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: restored, Restore: true, Primary: true}); !errors.Is(err, msgq.ErrSessionChanged) {
-		t.Fatalf("restore replaced primary error = %v, want %v", err, msgq.ErrSessionChanged)
-	}
-}
-
-func TestMsgQServerPrimaryLifecycleUsesConditionalProjection(t *testing.T) {
-	store := newMailboxSessionStore()
-	server, err := msgq.NewServer(msgq.ServerOptions{InstanceID: "msgq-1", Store: store, MaxBacklogMessages: 4})
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
-	oldPrimary := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-	newPrimary := msgq.SessionHeader{RoleID: 470001, SessionID: 100, ConnectionID: 8}
-	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: oldPrimary, Primary: true}); err != nil {
-		t.Fatalf("init old primary: %v", err)
-	}
-	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: newPrimary, Primary: true}); err != nil {
-		t.Fatalf("init new primary: %v", err)
-	}
-	if err := server.Touch(context.Background(), msgq.TouchRequest{Header: oldPrimary}); !errors.Is(err, msgq.ErrSessionChanged) {
-		t.Fatalf("touch replaced primary error = %v, want %v", err, msgq.ErrSessionChanged)
-	}
-	if _, found, err := store.Find(context.Background(), oldPrimary.SessionID); err != nil || found {
-		t.Fatalf("old exact binding after stale touch = %t, %v", found, err)
-	}
-	if primary, found, err := store.FindPrimary(context.Background(), oldPrimary.RoleID); err != nil || !found || primary != newPrimary.SessionID {
-		t.Fatalf("primary after stale touch = %d, %t, %v", primary, found, err)
-	}
-	if err := server.TerminateSession(context.Background(), newPrimary); err != nil {
-		t.Fatalf("terminate new primary: %v", err)
-	}
-	if primary, found, err := store.FindPrimary(context.Background(), newPrimary.RoleID); err != nil || !found || primary != newPrimary.SessionID {
-		t.Fatalf("primary after terminate = %d, %t, %v, want %d", primary, found, err, newPrimary.SessionID)
-	}
-}
-
-func TestMsgQServerDeadTerminationAndOverflowPreservePrimaryProjection(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		run  func(*testing.T, *msgq.Server, msgq.SessionHeader)
-	}{
-		{
-			name: "dead termination",
-			run: func(t *testing.T, server *msgq.Server, _ msgq.SessionHeader) {
-				t.Helper()
-				if removed, err := server.TerminateDeadSessions(context.Background(), time.Now().Add(2*time.Second)); err != nil || removed != 1 {
-					t.Fatalf("terminate dead sessions = %d, %v", removed, err)
-				}
-			},
-		},
-		{
-			name: "overflow",
-			run: func(t *testing.T, server *msgq.Server, header msgq.SessionHeader) {
-				t.Helper()
-				if _, err := server.PubSession(context.Background(), header.SessionID, []byte("first")); err != nil {
-					t.Fatalf("publish first: %v", err)
-				}
-				if _, err := server.PubSession(context.Background(), header.SessionID, []byte("overflow")); !errors.Is(err, msgq.ErrDownMsgOverflow) {
-					t.Fatalf("publish overflow error = %v", err)
-				}
-			},
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			store := newMailboxSessionStore()
-			server, err := msgq.NewServer(msgq.ServerOptions{
-				InstanceID:         "msgq-1",
-				Store:              store,
-				MaxBacklogMessages: 1,
-				OfflineTimeout:     time.Second,
-			})
-			if err != nil {
-				t.Fatalf("new server: %v", err)
-			}
-			header := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-			if _, err := server.Init(context.Background(), msgq.InitRequest{Header: header, Primary: true}); err != nil {
-				t.Fatalf("init primary: %v", err)
-			}
-			test.run(t, server, header)
-			if primary, found, err := store.FindPrimary(context.Background(), header.RoleID); err != nil || !found || primary != header.SessionID {
-				t.Fatalf("primary after %s = %d, %t, %v, want %d", test.name, primary, found, err, header.SessionID)
-			}
-			if _, found, err := store.Find(context.Background(), header.SessionID); err != nil || found {
-				t.Fatalf("binding after %s = %t, %v", test.name, found, err)
-			}
-		})
-	}
-}
-
 func TestMsgQServerRedisIntegration(t *testing.T) {
 	endpoint := os.Getenv("TX_REDIS_ENDPOINT")
 	if endpoint == "" {
@@ -576,8 +443,7 @@ func TestMsgQServerRedisIntegration(t *testing.T) {
 	}
 	prefix := fmt.Sprintf("tx:test:msgq-mailbox:%d", time.Now().UnixNano())
 	key := prefix + ":session:v2:{99}"
-	primaryKey := prefix + ":primary:v1:{470001}"
-	defer raw.Del(ctx, key, primaryKey, prefix+":role:{470001}")
+	defer raw.Del(ctx, key, prefix+":role:{470001}")
 
 	bindings, err := msgq.NewRedisSessionStore(goredis.NewClient(raw), msgq.SessionRedisOptions{
 		Prefix: prefix,
@@ -596,14 +462,11 @@ func TestMsgQServerRedisIntegration(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	header := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-	if _, err := server.Init(ctx, msgq.InitRequest{Header: header, Primary: true}); err != nil {
+	if _, err := server.Init(ctx, msgq.InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	if _, found, err := bindings.Find(ctx, header.SessionID); err != nil || !found {
 		t.Fatalf("find owner after init = %t, %v", found, err)
-	}
-	if primary, found, err := bindings.FindPrimary(ctx, header.RoleID); err != nil || !found || primary != header.SessionID {
-		t.Fatalf("find primary after init = %d, %t, %v", primary, found, err)
 	}
 	if _, err := server.PubSession(ctx, header.SessionID, []byte("notify")); err != nil {
 		t.Fatalf("publish: %v", err)
@@ -620,9 +483,6 @@ func TestMsgQServerRedisIntegration(t *testing.T) {
 	}
 	if _, found, err := bindings.Find(ctx, header.SessionID); err != nil || found {
 		t.Fatalf("find owner after dead termination = %t, %v", found, err)
-	}
-	if primary, found, err := bindings.FindPrimary(ctx, header.RoleID); err != nil || !found || primary != header.SessionID {
-		t.Fatalf("find primary after dead termination = %d, %t, %v, want %d", primary, found, err, header.SessionID)
 	}
 }
 
@@ -689,13 +549,11 @@ type mailboxSessionStore struct {
 	roleTestStore
 	mu       sync.Mutex
 	bindings map[int64]msgq.SessionBinding
-	primary  map[int64]int64
 }
 
 func newMailboxSessionStore() *mailboxSessionStore {
 	return &mailboxSessionStore{
 		bindings: make(map[int64]msgq.SessionBinding),
-		primary:  make(map[int64]int64),
 	}
 }
 
@@ -742,37 +600,5 @@ func (s *mailboxSessionStore) Unbind(_ context.Context, binding msgq.SessionBind
 		return false, nil
 	}
 	delete(s.bindings, binding.SessionID)
-	return true, nil
-}
-
-func (s *mailboxSessionStore) BindPrimary(_ context.Context, roleID, sessionID int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.primary[roleID] = sessionID
-	return nil
-}
-
-func (s *mailboxSessionStore) FindPrimary(_ context.Context, roleID int64) (int64, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sessionID, found := s.primary[roleID]
-	return sessionID, found, nil
-}
-
-func (s *mailboxSessionStore) RefreshPrimary(_ context.Context, roleID, sessionID int64) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	current, found := s.primary[roleID]
-	return found && current == sessionID, nil
-}
-
-func (s *mailboxSessionStore) UnbindPrimary(_ context.Context, roleID, sessionID int64) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	current, found := s.primary[roleID]
-	if !found || current != sessionID {
-		return false, nil
-	}
-	delete(s.primary, roleID)
 	return true, nil
 }

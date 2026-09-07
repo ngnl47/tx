@@ -159,39 +159,6 @@ func TestRedisSessionStoreRebindOnlyChangesConnection(t *testing.T) {
 	}
 }
 
-func TestRedisSessionStorePrimaryUsesRoleIDKeyAndConditionalOperations(t *testing.T) {
-	client := &recordingSessionRedisClient{
-		getValue: "99",
-		getFound: true,
-		eval:     []redisEvalResult{{value: "1"}, {value: "1"}, {value: "1"}},
-	}
-	store, err := NewRedisSessionStore(client, SessionRedisOptions{Prefix: "tx:test", TTL: time.Minute})
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	if err := store.BindPrimary(context.Background(), 470001, 99); err != nil {
-		t.Fatalf("bind primary: %v", err)
-	}
-	if sessionID, found, err := store.FindPrimary(context.Background(), 470001); err != nil || !found || sessionID != 99 {
-		t.Fatalf("find primary = %d, %t, %v", sessionID, found, err)
-	}
-	if refreshed, err := store.RefreshPrimary(context.Background(), 470001, 99); err != nil || !refreshed {
-		t.Fatalf("refresh primary = %t, %v", refreshed, err)
-	}
-	if removed, err := store.UnbindPrimary(context.Background(), 470001, 99); err != nil || !removed {
-		t.Fatalf("unbind primary = %t, %v", removed, err)
-	}
-	wantKey := "tx:test:primary:v1:{470001}"
-	if !reflect.DeepEqual(client.getKeys, []string{wantKey}) {
-		t.Fatalf("get keys = %#v, want %q", client.getKeys, wantKey)
-	}
-	for _, call := range client.calls {
-		if !reflect.DeepEqual(call.keys, []string{wantKey}) {
-			t.Fatalf("eval keys = %#v, want %q", call.keys, wantKey)
-		}
-	}
-}
-
 func TestRedisSessionStoreRejectsUnknownConditionalResponse(t *testing.T) {
 	binding := SessionBinding{RoleID: 470001, SessionID: 99, ConnectionID: 7, InstanceID: "msgq-1"}
 	client := &recordingSessionRedisClient{eval: []redisEvalResult{{value: "unexpected"}}}

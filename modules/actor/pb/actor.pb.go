@@ -179,7 +179,6 @@ type SessionIdentity struct {
 	ConnectionId    int64                  `protobuf:"varint,6,opt,name=connection_id,json=connectionId,proto3" json:"connection_id,omitempty"`
 	AccessMode      AccessMode             `protobuf:"varint,7,opt,name=access_mode,json=accessMode,proto3,enum=tx.actor.v1.AccessMode" json:"access_mode,omitempty"`
 	CanCreateRole   bool                   `protobuf:"varint,8,opt,name=can_create_role,json=canCreateRole,proto3" json:"can_create_role,omitempty"`
-	Primary         bool                   `protobuf:"varint,9,opt,name=primary,proto3" json:"primary,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -266,13 +265,6 @@ func (x *SessionIdentity) GetAccessMode() AccessMode {
 func (x *SessionIdentity) GetCanCreateRole() bool {
 	if x != nil {
 		return x.CanCreateRole
-	}
-	return false
-}
-
-func (x *SessionIdentity) GetPrimary() bool {
-	if x != nil {
-		return x.Primary
 	}
 	return false
 }
@@ -546,7 +538,7 @@ var File_modules_actor_proto_actor_proto protoreflect.FileDescriptor
 
 const file_modules_actor_proto_actor_proto_rawDesc = "" +
 	"\n" +
-	"\x1fmodules/actor/proto/actor.proto\x12\vtx.actor.v1\"\xd2\x02\n" +
+	"\x1fmodules/actor/proto/actor.proto\x12\vtx.actor.v1\"\xb8\x02\n" +
 	"\x0fSessionIdentity\x12\x1d\n" +
 	"\n" +
 	"account_id\x18\x01 \x01(\x03R\taccountId\x12*\n" +
@@ -558,8 +550,7 @@ const file_modules_actor_proto_actor_proto_rawDesc = "" +
 	"\rconnection_id\x18\x06 \x01(\x03R\fconnectionId\x128\n" +
 	"\vaccess_mode\x18\a \x01(\x0e2\x17.tx.actor.v1.AccessModeR\n" +
 	"accessMode\x12&\n" +
-	"\x0fcan_create_role\x18\b \x01(\bR\rcanCreateRole\x12\x18\n" +
-	"\aprimary\x18\t \x01(\bR\aprimary\"\x9c\x03\n" +
+	"\x0fcan_create_role\x18\b \x01(\bR\rcanCreateRole\"\x9c\x03\n" +
 	"\bDelivery\x12!\n" +
 	"\fmessage_type\x18\x01 \x01(\tR\vmessageType\x12\x1d\n" +
 	"\n" +

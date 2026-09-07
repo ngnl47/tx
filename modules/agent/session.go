@@ -117,7 +117,6 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 	initialized, err := client.Init(sessionCtx, msgq.InitRequest{
 		Header:  header,
 		Restore: handshake.Restore,
-		Primary: identity.Primary,
 		Ack:     handshake.Ack,
 	})
 	if err != nil {

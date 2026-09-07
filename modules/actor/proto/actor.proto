@@ -32,7 +32,6 @@ message SessionIdentity {
   int64 connection_id = 6;
   AccessMode access_mode = 7;
   bool can_create_role = 8;
-  bool primary = 9;
 }
 
 // Delivery 是投递给 Actor 的内部消息，目标路由由 PID 承担。

@@ -199,26 +199,12 @@ func TestMsgQRoutedRedisSessionStoreResolvesExactOperationsBySessionID(t *testin
 	if removed, err := store.Unbind(context.Background(), binding); err != nil || !removed {
 		t.Fatalf("unbind = %t, err = %v", removed, err)
 	}
-	if err := store.BindPrimary(context.Background(), binding.RoleID, binding.SessionID); err != nil {
-		t.Fatalf("bind primary: %v", err)
-	}
-	if refreshed, err := store.RefreshPrimary(context.Background(), binding.RoleID, binding.SessionID); err != nil || !refreshed {
-		t.Fatalf("refresh primary = %t, %v", refreshed, err)
-	}
-	if removed, err := store.UnbindPrimary(context.Background(), binding.RoleID, binding.SessionID); err != nil || !removed {
-		t.Fatalf("unbind primary = %t, %v", removed, err)
-	}
-	if len(resolver.roleIDs) != 7 {
+	if len(resolver.roleIDs) != 4 {
 		t.Fatalf("resolver shard keys = %#v", resolver.roleIDs)
 	}
-	for _, sessionID := range resolver.roleIDs[:4] {
+	for _, sessionID := range resolver.roleIDs {
 		if sessionID != binding.SessionID {
 			t.Fatalf("resolver shard key = %d, want SessionID %d", sessionID, binding.SessionID)
-		}
-	}
-	for _, roleID := range resolver.roleIDs[4:] {
-		if roleID != binding.RoleID {
-			t.Fatalf("resolver shard key = %d, want RoleID %d", roleID, binding.RoleID)
 		}
 	}
 }
@@ -238,8 +224,7 @@ func TestMsgQRedisSessionStoreIntegration(t *testing.T) {
 	prefix := fmt.Sprintf("tx:test:rpc-session:%d", time.Now().UnixNano())
 	firstKey := prefix + ":session:v2:{99}"
 	secondKey := prefix + ":session:v2:{100}"
-	primaryKey := prefix + ":primary:v1:{470001}"
-	defer raw.Del(ctx, firstKey, secondKey, primaryKey)
+	defer raw.Del(ctx, firstKey, secondKey)
 	store, err := msgq.NewRedisSessionStore(goredis.NewClient(raw), msgq.SessionRedisOptions{
 		Prefix: prefix,
 		TTL:    time.Minute,
@@ -295,21 +280,6 @@ func TestMsgQRedisSessionStoreIntegration(t *testing.T) {
 	}
 	if found, exists, err := store.Find(ctx, second.SessionID); err != nil || !exists || found != second {
 		t.Fatalf("find second = %#v, %t, %v", found, exists, err)
-	}
-	if err := store.BindPrimary(ctx, first.RoleID, first.SessionID); err != nil {
-		t.Fatalf("bind primary first: %v", err)
-	}
-	if err := store.BindPrimary(ctx, second.RoleID, second.SessionID); err != nil {
-		t.Fatalf("replace primary: %v", err)
-	}
-	if refreshed, err := store.RefreshPrimary(ctx, first.RoleID, first.SessionID); err != nil || refreshed {
-		t.Fatalf("refresh stale primary = %t, %v", refreshed, err)
-	}
-	if removed, err := store.UnbindPrimary(ctx, first.RoleID, first.SessionID); err != nil || removed {
-		t.Fatalf("unbind stale primary = %t, %v", removed, err)
-	}
-	if primary, found, err := store.FindPrimary(ctx, first.RoleID); err != nil || !found || primary != second.SessionID {
-		t.Fatalf("find primary = %d, %t, %v", primary, found, err)
 	}
 }
 
@@ -401,19 +371,14 @@ func rpcSessionDirectory(t *testing.T, instanceID string) *discovery.ServiceDire
 
 type sessionStoreFake struct {
 	roleTestStore
-	operations        []string
-	binding           msgq.SessionBinding
-	found             bool
-	findErr           error
-	findSessionIDs    []int64
-	primarySessionID  int64
-	primaryFound      bool
-	findPrimaryErr    error
-	findPrimaryCalls  int
-	findPrimaryRoleID int64
-	refreshErr        error
-	refreshCalls      int
-	refreshed         msgq.SessionBinding
+	operations     []string
+	binding        msgq.SessionBinding
+	found          bool
+	findErr        error
+	findSessionIDs []int64
+	refreshErr     error
+	refreshCalls   int
+	refreshed      msgq.SessionBinding
 }
 
 type sessionRedisResolverFake struct {
@@ -452,28 +417,6 @@ func (s *sessionStoreFake) Refresh(_ context.Context, binding msgq.SessionBindin
 func (s *sessionStoreFake) Unbind(context.Context, msgq.SessionBinding) (bool, error) {
 	s.operations = append(s.operations, "Unbind")
 	return false, errors.New("unexpected unbind")
-}
-
-func (s *sessionStoreFake) BindPrimary(context.Context, int64, int64) error {
-	s.operations = append(s.operations, "BindPrimary")
-	return errors.New("unexpected bind primary")
-}
-
-func (s *sessionStoreFake) FindPrimary(_ context.Context, roleID int64) (int64, bool, error) {
-	s.operations = append(s.operations, "FindPrimary")
-	s.findPrimaryCalls++
-	s.findPrimaryRoleID = roleID
-	return s.primarySessionID, s.primaryFound, s.findPrimaryErr
-}
-
-func (s *sessionStoreFake) RefreshPrimary(context.Context, int64, int64) (bool, error) {
-	s.operations = append(s.operations, "RefreshPrimary")
-	return false, errors.New("unexpected refresh primary")
-}
-
-func (s *sessionStoreFake) UnbindPrimary(context.Context, int64, int64) (bool, error) {
-	s.operations = append(s.operations, "UnbindPrimary")
-	return false, errors.New("unexpected unbind primary")
 }
 
 type sessionRedisClientFake struct {

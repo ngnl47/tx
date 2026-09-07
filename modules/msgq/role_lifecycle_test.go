@@ -41,15 +41,44 @@ func TestRoleMailboxRedisOwnershipLifecycle(t *testing.T) {
 	if _, err := a.Init(ctx, InitRequest{Header: first}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := a.PubSession(ctx, first.SessionID, []byte("pending")); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := b.Init(ctx, InitRequest{Header: second}); !errors.Is(err, ErrSessionChanged) {
 		t.Fatalf("split owner accepted: %v", err)
 	}
 	if _, err := a.Init(ctx, InitRequest{Header: second}); err != nil {
 		t.Fatal(err)
 	}
+	first.ConnectionID = 4
+	if _, err := a.Init(ctx, InitRequest{Header: first, Restore: true}); err != nil {
+		t.Fatalf("peer login prevented first session restore: %v", err)
+	}
+	if err := a.Touch(ctx, TouchRequest{Header: second}); err != nil {
+		t.Fatalf("first restore affected peer activity: %v", err)
+	}
+	message, err := a.Fetch(ctx, FetchRequest{Header: first})
+	if err != nil || message.Seq != 1 || string(message.Payload) != "pending" {
+		t.Fatalf("restored queue = %+v, %v", message, err)
+	}
+	if err := a.Confirm(ctx, ConfirmRequest{Header: first, Ack: 1}); err != nil {
+		t.Fatal(err)
+	}
 	owner, found, err := store.FindRole(ctx, 47)
 	if err != nil || !found || owner.InstanceID != "msgq-a" {
 		t.Fatalf("owner = %+v, %t, %v", owner, found, err)
+	}
+	if result, err := a.PubRole(ctx, owner, []byte("shared")); err != nil || result.Delivered != 2 {
+		t.Fatalf("shared delivery = %+v, %v", result, err)
+	}
+	for _, item := range []struct {
+		header SessionHeader
+		seq    int64
+	}{{first, 2}, {second, 1}} {
+		message, err := a.Fetch(ctx, FetchRequest{Header: item.header})
+		if err != nil || message.Seq != item.seq || string(message.Payload) != "shared" {
+			t.Fatalf("independent mailbox = %+v, %v", message, err)
+		}
 	}
 	if err := a.TerminateSession(ctx, first); err != nil {
 		t.Fatal(err)

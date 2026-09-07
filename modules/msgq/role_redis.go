@@ -38,7 +38,7 @@ func (s *RedisSessionStore) ClaimRole(ctx context.Context, candidate RoleBinding
 	return decodeRoleBinding(candidate.RoleID, value)
 }
 
-// FindRole 按 RoleID 读取唯一 MsgQ 归属，不读取 Session 或主会话投影。
+// FindRole 按 RoleID 读取唯一 MsgQ 归属，不读取 Session 绑定。
 func (s *RedisSessionStore) FindRole(ctx context.Context, roleID int64) (RoleBinding, bool, error) {
 	if roleID <= 0 {
 		return RoleBinding{}, false, ErrInvalidSession
