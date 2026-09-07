@@ -29,7 +29,7 @@
 
 - [x] **Step 1: Write failing validation tests**
 
-覆盖普通身份、Borrow 只读身份、缺失正 ID、未知模式、普通模式带 BorrowAccountID、Borrow 模式缺少目标账号和 Borrow 模式带创建角色许可。
+覆盖普通身份、Borrow 身份、缺失正 ID、未知模式、普通模式带 BorrowAccountID、Borrow 模式缺少目标账号和 Borrow 模式带创建角色许可。
 
 - [x] **Step 2: Run tests and verify RED**
 
@@ -63,7 +63,7 @@ Run: `go test ./protocol -run 'TestSession' -count=1`
 - `actor.Delivery` 增加 `Identity *protocol.SessionIdentity` 和 `UpSeq int64`；二者必须同时存在或同时省略。
 - Agent 上行必须携带完整 Identity 与正 UpSeq；Actor 内部调用可以同时省略。
 - `NewActorDispatcher` 在调用 Messenger 前无条件以 `DispatchRequest.Identity` 与 `DispatchRequest.Seq` 覆盖 resolver 返回的 Delivery 字段。
-- protobuf `AccessMode` 使用 `ACCESS_MODE_NORMAL = 0` 与 `ACCESS_MODE_BORROW_READ_ONLY = 1`，`SessionIdentity` 的全部 ID 使用 `int64`。
+- protobuf `AccessMode` 使用 `ACCESS_MODE_NORMAL = 0` 与 `ACCESS_MODE_BORROW = 1`，`SessionIdentity` 的全部 ID 使用 `int64`。
 
 - [x] **Step 1: Write failing Agent and Actor contract tests**
 

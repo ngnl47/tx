@@ -365,8 +365,8 @@ TX_ETCD_ENDPOINT=127.0.0.1:2379 \
 
 `modules/msgq` 以 `SessionID` 作为精确邮箱主键，负责
 `SessionID -> (RoleID, SessionID, ConnectionID, InstanceID)` 的短期 binding 与 owner 解析；同时维护
-`RoleID -> 唯一主 SessionID` 投影。只有正常可写会话是主会话；Borrow 只读会话拥有独立 SessionID 和队列，
-但不写主会话投影，也不会接收 `PubRole`。同一 RoleID 的多个邮箱可以并存，主投影始终只指向其中一个正常会话。
+`RoleID -> 唯一主 SessionID` 投影。主会话由项目通过可信 `Primary` 属性选择，与访问模式无关。
+同一 RoleID 的多个邮箱可以并存，各自维护队列；`PubRole` 只投递给当前主会话。
 `Server` 在本进程管理 Session、下行队列和 Seq/Ack。
 
 Redis 精确 binding key 固定为 `<prefix>:session:v2:{SessionID}`，值保存完整
@@ -686,7 +686,7 @@ if _, err := sender.PubSession(ctx, identity.SessionID, bonResponse); err != nil
     return err
 }
 
-// 跨角色通知投递给角色 470001 当前唯一的正常可写主会话。
+// 跨角色通知投递给角色 470001 当前唯一的主会话。
 if _, err := sender.PubRole(ctx, 470001, bonNotify); err != nil {
     // 离线、owner 改变、路由不可用、队列满或传输失败均明确返回错误。
     return err
@@ -745,9 +745,8 @@ handlers := func(runtime bee.Context) (txagent.IdentityResolver, txagent.Dispatc
 项目 `ActorDispatchResolver` 只根据生成命令元数据选择目标 Actor、消息类型、命令号、路由键和载荷；通用
 `NewActorDispatcher` 在投递前以 Agent 的可信 `SessionIdentity` 与当前上行 `UpSeq` 覆盖 Delivery 对应字段。项目
 resolver 和客户端载荷均不能指定 `ConnectionID`，也不能伪造投递给 Actor 的身份或上行序号。Agent 只负责 Frame、
-身份和 Seq/Ack，不依赖任何项目生成包。Agent 从这份可信身份设置 MsgQ 的主会话属性：只有
-`AccessModeNormal` 传入 `Primary=true`；Borrow 只读身份传入 `Primary=false`，因此保留独立 SessionID 和邮箱但不改写
-角色主会话投影。
+身份和 Seq/Ack，不依赖任何项目生成包。Agent 将可信身份的 `Primary` 传给 MsgQ，不根据 AccessMode 推断。
+该属性由项目鉴权选择，只决定角色主会话投影和 `PubRole` 接收者，不表示独占操作权。
 
 一条连接的处理顺序固定如下：
 

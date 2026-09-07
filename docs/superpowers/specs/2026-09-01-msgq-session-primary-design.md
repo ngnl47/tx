@@ -13,8 +13,8 @@ RoleID    -> PrimarySessionID -> SessionBinding -> MsgQ 实例 -> 主会话邮�
 
 公开投递入口明确分为：
 
-- `PubSession(SessionID, payload)`：投递到一个确定的逻辑会话；普通会话和 Borrow 只读会话都可作为目标。
-- `PubRole(RoleID, payload)`：先解析该角色当前唯一主会话，再投递到该会话；只面向正常可写会话，不向 Borrow 会话扇出。
+- `PubSession(SessionID, payload)`：投递到一个确定的逻辑会话；普通会话和 Borrow 会话都可作为目标。
+- `PubRole(RoleID, payload)`：先解析该角色当前唯一主会话，再投递到该会话；只面向当前主会话，不向其他会话扇出。
 
 计划中的 SessionID 邮箱和角色主会话原本是两个连续步骤。真实调用审计证明，若只删除旧的角色投递，两个示例工程已有的跨角色通知和有状态世界回推会立即失效。因此本阶段将两步作为一个原子迁移，不保留含义模糊的旧 `Pub` 兼容接口。
 
@@ -52,7 +52,7 @@ Redis 使用两个独立索引：
 
 角色主会话投影提供：
 
-- `BindPrimary(roleID, sessionID)`：正常会话干净登录时替换角色主会话。
+- `BindPrimary(roleID, sessionID)`：主会话干净登录时替换角色主会话。
 - `FindPrimary(roleID)`：读取唯一主 SessionID。
 - `RefreshPrimary(roleID, sessionID)`、`UnbindPrimary(roleID, sessionID)`：仅在当前值仍相同时续期或删除，旧会话不能影响新主会话。
 
@@ -62,14 +62,11 @@ Router 只读解析，不刷新任何 TTL。只有经过当前 ConnectionID 校�
 
 ### 干净登录
 
-Agent 根据可信 `SessionIdentity.AccessMode` 设置 `InitRequest.Primary`：
-
-- `AccessModeNormal` 设置为 `true`，包括以后允许创建角色的 PendingRole 会话。
-- `AccessModeBorrowReadOnly` 设置为 `false`。
+Agent 将可信 `SessionIdentity.Primary` 传给 `InitRequest.Primary`，由项目鉴权决定，不依赖 AccessMode。
 
 MsgQ 按 SessionID 获取初始化锁，执行 `Create` 并安装空邮箱。相同 RoleID 的其他 SessionID 不会被替换、清队列或移除 Topic。
 
-正常会话在精确 binding 创建成功后执行 `BindPrimary`；Borrow 会话不写主会话投影。若主会话写入失败，MsgQ 条件删除本次新建的精确 binding，并且不安装本地邮箱。
+主会话在精确 binding 创建成功后执行 `BindPrimary`；非主会话不写主会话投影。若主会话写入失败，MsgQ 条件删除本次新建的精确 binding，并且不安装本地邮箱。
 
 ### 弱网恢复
 
@@ -78,7 +75,7 @@ Agent 的 owner 选择请求显式携带 `RoleID`、`SessionID` 和 `Restore`：
 - `Restore=false` 不查询旧 owner，从运行中的 MsgQ 轮转选择目标，最终由 `Create` 拒绝 SessionID 冲突。
 - `Restore=true` 必须按 SessionID 找到原 owner；owner 不可用时直接失败，不能转移到没有内存队列的新 MsgQ。
 
-MsgQ 恢复只接受同 RoleID、同 SessionID、相同主会话属性的本地邮箱。它用完整旧 binding 到新 ConnectionID 的 `Rebind` 保留未确认队列和 Seq/Ack 状态。正常会话还必须仍是该 RoleID 的主 Session；已被新干净登录替换的旧会话不能恢复。Borrow 会话只校验自己的精确 binding。
+MsgQ 恢复只接受同 RoleID、同 SessionID、相同主会话属性的本地邮箱。它用完整旧 binding 到新 ConnectionID 的 `Rebind` 保留未确认队列和 Seq/Ack 状态。主会话还必须仍是该 RoleID 的主 Session；已被新干净登录替换的旧会话不能恢复。非主会话只校验自己的精确 binding。
 
 ### 连接活动和清理
 
@@ -116,7 +113,7 @@ Topic 仍是单个 MsgQ 实例内的本地索引：
 ## 验收
 
 - 同一 RoleID 的两个不同 SessionID 可同时存在于同一或不同 MsgQ，精确投递、Topic、关闭、回收和溢出互不影响。
-- 正常会话会替换角色主投影；Borrow 会话不创建、不替换、不接收 `PubRole`。
+- 主会话会替换角色主投影；非主会话不创建、不替换、不接收 `PubRole`。
 - 同 SessionID 恢复保留下行队列并更换 ConnectionID；旧连接不能刷新、确认、管理 Topic 或删除恢复后的连接。
 - 干净登录使用新 SessionID，队列和 Seq 从零开始；旧主会话不能再次恢复或删除新主投影。
 - Redis Create/Rebind/主投影条件脚本通过真实 Redis 和竞态测试。

@@ -19,7 +19,7 @@ enum DeliveryMode {
 
 enum AccessMode {
   ACCESS_MODE_NORMAL = 0;
-  ACCESS_MODE_BORROW_READ_ONLY = 1;
+  ACCESS_MODE_BORROW = 1;
 }
 
 // SessionIdentity 表示由 Agent 为当前连接构造的可信会话身份。
@@ -32,6 +32,7 @@ message SessionIdentity {
   int64 connection_id = 6;
   AccessMode access_mode = 7;
   bool can_create_role = 8;
+  bool primary = 9;
 }
 
 // Delivery 是投递给 Actor 的内部消息，目标路由由 PID 承担。

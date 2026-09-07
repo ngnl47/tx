@@ -8,8 +8,8 @@ type AccessMode uint8
 const (
 	// AccessModeNormal 表示账号正常使用自身角色的会话。
 	AccessModeNormal AccessMode = iota
-	// AccessModeBorrowReadOnly 表示借用目标账号的只读会话。
-	AccessModeBorrowReadOnly
+	// AccessModeBorrow 表示借用目标账号的独立会话。
+	AccessModeBorrow
 )
 
 // SessionPrincipal 表示经过认证的账号和角色主体。
@@ -21,6 +21,8 @@ type SessionPrincipal struct {
 	SessionID       int64
 	AccessMode      AccessMode
 	CanCreateRole   bool
+	// Primary 由项目鉴权决定是否参与角色主会话投影，不表示独占操作权。
+	Primary bool
 }
 
 // SessionIdentity 表示可信会话携带的主体和访问方式。
@@ -52,12 +54,9 @@ func (identity SessionIdentity) Validate() error {
 		if identity.BorrowAccountID != 0 {
 			return errors.New("session identity: normal mode must not have borrow account ID")
 		}
-	case AccessModeBorrowReadOnly:
+	case AccessModeBorrow:
 		if identity.BorrowAccountID <= 0 {
 			return errors.New("session identity: borrow mode requires a borrow account ID")
-		}
-		if identity.CanCreateRole {
-			return errors.New("session identity: borrow mode must not create roles")
 		}
 	default:
 		return errors.New("session identity: unknown access mode")

@@ -24,7 +24,7 @@ func TestSessionIdentityValidate(t *testing.T) {
 			},
 		},
 		{
-			name: "接受 Borrow 只读身份",
+			name: "接受 Borrow 身份",
 			identity: SessionIdentity{
 				SessionPrincipal: SessionPrincipal{
 					AccountID:       1001,
@@ -32,7 +32,7 @@ func TestSessionIdentityValidate(t *testing.T) {
 					ServerID:        2001,
 					RoleID:          3001,
 					SessionID:       4001,
-					AccessMode:      AccessModeBorrowReadOnly,
+					AccessMode:      AccessModeBorrow,
 				},
 				ConnectionID: 5001,
 			},
@@ -95,18 +95,18 @@ func TestSessionIdentityValidate(t *testing.T) {
 		{
 			name: "拒绝 Borrow 模式缺少目标账号",
 			identity: SessionIdentity{
-				SessionPrincipal: SessionPrincipal{AccountID: 1001, ServerID: 2001, RoleID: 3001, SessionID: 4001, AccessMode: AccessModeBorrowReadOnly},
+				SessionPrincipal: SessionPrincipal{AccountID: 1001, ServerID: 2001, RoleID: 3001, SessionID: 4001, AccessMode: AccessModeBorrow},
 				ConnectionID:     5001,
 			},
 			wantErr: true,
 		},
 		{
-			name: "拒绝 Borrow 模式带创建角色许可",
+			name: "接受业务授予 Borrow 模式创建角色许可",
 			identity: SessionIdentity{
-				SessionPrincipal: SessionPrincipal{AccountID: 1001, BorrowAccountID: 1002, ServerID: 2001, RoleID: 3001, SessionID: 4001, AccessMode: AccessModeBorrowReadOnly, CanCreateRole: true},
+				SessionPrincipal: SessionPrincipal{AccountID: 1001, BorrowAccountID: 1002, ServerID: 2001, RoleID: 3001, SessionID: 4001, AccessMode: AccessModeBorrow, CanCreateRole: true},
 				ConnectionID:     5001,
 			},
-			wantErr: true,
+			wantErr: false,
 		},
 	}
 

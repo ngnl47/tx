@@ -147,7 +147,8 @@ func TestActorDeliveryRoundTripCopiesPayload(t *testing.T) {
 			ServerID:        1,
 			RoleID:          470001,
 			SessionID:       99,
-			AccessMode:      txprotocol.AccessModeBorrowReadOnly,
+			AccessMode:      txprotocol.AccessModeBorrow,
+			Primary:         true,
 		},
 		ConnectionID: 7,
 	}

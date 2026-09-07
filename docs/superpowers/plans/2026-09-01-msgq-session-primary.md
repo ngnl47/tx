@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 将 MsgQ 邮箱、Redis binding 和跨进程路由迁移到 SessionID，并建立只包含正常可写会话的 RoleID 主会话投影与显式 `PubRole`。
+**Goal:** 将 MsgQ 邮箱、Redis binding 和跨进程路由迁移到 SessionID，并建立由项目显式选择的 RoleID 主会话投影与显式 `PubRole`。
 
 **Architecture:** SessionID 精确 binding 与 RoleID 主 Session 投影使用两个单 key 条件索引；owner 负责活性续期，Router 只读；所有下行最终通过 `PubSession` 进入一个逻辑会话邮箱。
 
@@ -37,7 +37,7 @@
 - [x] 先增加失败测试：SessionID 分片/key、完整 record、Create NX、Rebind CAS、同 Role 多 Session、主会话条件替换/续期/删除。
 - [x] 修正真实 Redis mailbox 用例的显式 OfflineTimeout，确认旧失败原因。
 - [x] 实现 SessionID 精确 Store 和 RoleID 主会话 Store；使用版本化 key。
-- [x] 先增加失败测试：同 Role 双 Session 隔离、干净登录不继承、主会话替换、Borrow 不入主投影、恢复属性固定。
+- [x] 先增加失败测试：同 Role 双 Session 隔离、干净登录不继承、主会话替换、非主会话不入主投影、恢复属性固定。
 - [x] 增加确定性交错测试，复现旧 Touch 与 Restore 并发误删问题。
 - [x] 将 sessions、初始化锁、查找和删除全部改为 SessionID；fresh 使用 Create，restore 使用 Rebind。
 - [x] 将主会话 Bind/Refresh/Unbind 接入 Init、Touch、Close、Reap 和 overflow。
@@ -60,7 +60,7 @@
 - [x] 先增加失败测试：ResolveSession、ResolveRole、PubSession、PubRole、fresh/restore owner 选择和主会话 Init 标记。
 - [x] 将 protobuf `Pub` 替换为 `PubSession`，为 Init 增加 `primary`，使用 protoc 36.0 重新生成。
 - [x] 实现显式 Router/Sender API；Router 不刷新 TTL，gRPC 连接仍按 endpoint 复用且不自动重试发布。
-- [x] Agent 以 SessionID 选择/恢复 owner，并仅为 `AccessModeNormal` 设置 Primary。
+- [x] Agent 以 SessionID 选择/恢复 owner，并透传项目鉴权选择的 `Primary`。
 - [x] 运行 msgq、Agent、gRPC 和竞态测试。
 
 ### Task 3: 同步 txgame 与 txgameslg

@@ -38,7 +38,7 @@ type SessionPrincipal struct {
 `AccessMode` 只定义当前已经确认的两种模式：
 
 - `AccessModeNormal`：普通可写会话，`BorrowAccountID` 必须为零。
-- `AccessModeBorrowReadOnly`：主账号借用目标账号的只读会话，`BorrowAccountID` 必须为正，且不能携带创建角色许可。
+- `AccessModeBorrow`：主账号借用目标账号的独立会话，`BorrowAccountID` 必须为正；读写权限和建角许可由业务决定。
 
 `protocol.SessionIdentity` 在 `SessionPrincipal` 基础上增加正 `ConnectionID`。`ConnectionID` 只能由 Agent 为本次物理连接生成；项目身份解析器不能从票据或客户端数据指定它。
 
@@ -72,7 +72,7 @@ Identity() txprotocol.SessionIdentity
 UpSeq() int64
 ```
 
-txgame 与 txgameslg 的 `actorcmd.CommandContext` 返回 Delivery 中的只读值。这样业务 Handler 可以直接使用可信 `RoleID` 获取角色基础结构，也能在日志、幂等键和 Borrow 只读检查中使用 AccountID、SessionID、ConnectionID、AccessMode 与 UpSeq。
+txgame 与 txgameslg 的 `actorcmd.CommandContext` 返回 Delivery 中的只读值。这样业务 Handler 可以直接使用可信 `RoleID` 获取角色基础结构，也能在日志、幂等键和 Borrow 业务鉴权中使用 AccountID、SessionID、ConnectionID、AccessMode 与 UpSeq。
 
 Actor 内部调用未携带会话身份时返回零值；需要玩家身份的 Handler 必须由其业务入口明确要求。框架本阶段不为每个命令增加推测性的身份策略。
 
@@ -88,7 +88,7 @@ release 环境仍必须注入真实票据校验器。调试映射不构成正式
 
 ## 验收
 
-- Agent 将 SessionPrincipal 与服务端 ConnectionID 组装为 SessionIdentity 后统一校验，拒绝缺失主体、非法模式和 Borrow 写权限组合。
+- Agent 将 SessionPrincipal 与服务端 ConnectionID 组装为 SessionIdentity 后统一校验，拒绝缺失主体和非法模式。
 - Agent 生成并覆盖 ConnectionID；resolver 无法伪造 Actor Delivery 的身份或 UpSeq。
 - Actor protobuf 往返保留完整身份并复制 Payload。
 - txgen 生成 HandlerContext 的新接口，两个示例工程重新生成且 Handler 可读取身份与 UpSeq。

@@ -12,7 +12,6 @@ import (
 	"github.com/ngnl47/tx/lifecycle"
 	txlog "github.com/ngnl47/tx/log"
 	"github.com/ngnl47/tx/modules/msgq"
-	"github.com/ngnl47/tx/protocol"
 )
 
 const defaultFetchBatch = 1
@@ -118,7 +117,7 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 	initialized, err := client.Init(sessionCtx, msgq.InitRequest{
 		Header:  header,
 		Restore: handshake.Restore,
-		Primary: identity.AccessMode == protocol.AccessModeNormal,
+		Primary: identity.Primary,
 		Ack:     handshake.Ack,
 	})
 	if err != nil {

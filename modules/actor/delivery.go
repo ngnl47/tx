@@ -133,6 +133,7 @@ func sessionIdentityToProto(identity *txprotocol.SessionIdentity) (*actorpb.Sess
 		ConnectionId:    identity.ConnectionID,
 		AccessMode:      accessMode,
 		CanCreateRole:   identity.CanCreateRole,
+		Primary:         identity.Primary,
 	}, nil
 }
 
@@ -153,6 +154,7 @@ func sessionIdentityFromProto(message *actorpb.SessionIdentity) (*txprotocol.Ses
 			SessionID:       message.GetSessionId(),
 			AccessMode:      accessMode,
 			CanCreateRole:   message.GetCanCreateRole(),
+			Primary:         message.GetPrimary(),
 		},
 		ConnectionID: message.GetConnectionId(),
 	}, nil
@@ -162,8 +164,8 @@ func accessModeToProto(mode txprotocol.AccessMode) (actorpb.AccessMode, error) {
 	switch mode {
 	case txprotocol.AccessModeNormal:
 		return actorpb.AccessMode_ACCESS_MODE_NORMAL, nil
-	case txprotocol.AccessModeBorrowReadOnly:
-		return actorpb.AccessMode_ACCESS_MODE_BORROW_READ_ONLY, nil
+	case txprotocol.AccessModeBorrow:
+		return actorpb.AccessMode_ACCESS_MODE_BORROW, nil
 	default:
 		return actorpb.AccessMode_ACCESS_MODE_NORMAL, ErrInvalidDelivery
 	}
@@ -173,8 +175,8 @@ func accessModeFromProto(mode actorpb.AccessMode) (txprotocol.AccessMode, error)
 	switch mode {
 	case actorpb.AccessMode_ACCESS_MODE_NORMAL:
 		return txprotocol.AccessModeNormal, nil
-	case actorpb.AccessMode_ACCESS_MODE_BORROW_READ_ONLY:
-		return txprotocol.AccessModeBorrowReadOnly, nil
+	case actorpb.AccessMode_ACCESS_MODE_BORROW:
+		return txprotocol.AccessModeBorrow, nil
 	default:
 		return txprotocol.AccessModeNormal, ErrInvalidDelivery
 	}

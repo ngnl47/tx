@@ -32,6 +32,7 @@ func TestAgentSessionAuthenticatesThenDispatchesAcceptedSequence(t *testing.T) {
 			RoleID:        470001,
 			SessionID:     99,
 			CanCreateRole: true,
+			Primary:       true,
 		},
 		ConnectionID: 7,
 	}
@@ -122,15 +123,22 @@ func TestAgentSessionAcquiresOwnerAndMarksPrimaryFromTrustedIdentity(t *testing.
 	}{
 		"normal": {
 			principal: protocol.SessionPrincipal{
-				AccountID: 47, ServerID: 1, RoleID: 470001, SessionID: 99, AccessMode: protocol.AccessModeNormal, CanCreateRole: true,
+				AccountID: 47, ServerID: 1, RoleID: 470001, SessionID: 99, AccessMode: protocol.AccessModeNormal, CanCreateRole: true, Primary: true,
 			},
 			wantPrimary: true,
 		},
-		"borrow readonly restore": {
+		"borrow restore": {
 			principal: protocol.SessionPrincipal{
-				AccountID: 47, BorrowAccountID: 48, ServerID: 1, RoleID: 470001, SessionID: 100, AccessMode: protocol.AccessModeBorrowReadOnly,
+				AccountID: 47, BorrowAccountID: 48, ServerID: 1, RoleID: 470001, SessionID: 100, AccessMode: protocol.AccessModeBorrow,
 			},
 			restore: true,
+		},
+		"normal secondary": {
+			principal: protocol.SessionPrincipal{AccountID: 47, ServerID: 1, RoleID: 470001, SessionID: 101},
+		},
+		"borrow primary": {
+			principal:   protocol.SessionPrincipal{AccountID: 47, BorrowAccountID: 48, ServerID: 1, RoleID: 470001, SessionID: 102, AccessMode: protocol.AccessModeBorrow, Primary: true},
+			wantPrimary: true,
 		},
 	}
 	for name, test := range tests {
@@ -630,6 +638,7 @@ func testSessionPrincipal() protocol.SessionPrincipal {
 		RoleID:        470001,
 		SessionID:     99,
 		CanCreateRole: true,
+		Primary:       true,
 	}
 }
 
