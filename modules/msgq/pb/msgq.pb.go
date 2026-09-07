@@ -402,6 +402,75 @@ func (x *PubSessionResponse) GetSeq() int64 {
 	return 0
 }
 
+// PubRoleRequest 携带完整角色归属版本，只能投递到该归属的本地邮箱。
+type PubRoleRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RoleId        int64                  `protobuf:"varint,1,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`
+	InstanceId    string                 `protobuf:"bytes,2,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
+	Generation    string                 `protobuf:"bytes,3,opt,name=generation,proto3" json:"generation,omitempty"`
+	Payload       []byte                 `protobuf:"bytes,4,opt,name=payload,proto3" json:"payload,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PubRoleRequest) Reset() {
+	*x = PubRoleRequest{}
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PubRoleRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PubRoleRequest) ProtoMessage() {}
+
+func (x *PubRoleRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PubRoleRequest.ProtoReflect.Descriptor instead.
+func (*PubRoleRequest) Descriptor() ([]byte, []int) {
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *PubRoleRequest) GetRoleId() int64 {
+	if x != nil {
+		return x.RoleId
+	}
+	return 0
+}
+
+func (x *PubRoleRequest) GetInstanceId() string {
+	if x != nil {
+		return x.InstanceId
+	}
+	return ""
+}
+
+func (x *PubRoleRequest) GetGeneration() string {
+	if x != nil {
+		return x.Generation
+	}
+	return ""
+}
+
+func (x *PubRoleRequest) GetPayload() []byte {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
 type FetchRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Header        *SessionHeader         `protobuf:"bytes,1,opt,name=header,proto3" json:"header,omitempty"`
@@ -411,7 +480,7 @@ type FetchRequest struct {
 
 func (x *FetchRequest) Reset() {
 	*x = FetchRequest{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[7]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -423,7 +492,7 @@ func (x *FetchRequest) String() string {
 func (*FetchRequest) ProtoMessage() {}
 
 func (x *FetchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[7]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -436,7 +505,7 @@ func (x *FetchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FetchRequest.ProtoReflect.Descriptor instead.
 func (*FetchRequest) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{7}
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *FetchRequest) GetHeader() *SessionHeader {
@@ -456,7 +525,7 @@ type FetchResponse struct {
 
 func (x *FetchResponse) Reset() {
 	*x = FetchResponse{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[8]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -468,7 +537,7 @@ func (x *FetchResponse) String() string {
 func (*FetchResponse) ProtoMessage() {}
 
 func (x *FetchResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[8]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -481,7 +550,7 @@ func (x *FetchResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FetchResponse.ProtoReflect.Descriptor instead.
 func (*FetchResponse) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{8}
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *FetchResponse) GetSeq() int64 {
@@ -508,7 +577,7 @@ type FetchSomeRequest struct {
 
 func (x *FetchSomeRequest) Reset() {
 	*x = FetchSomeRequest{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[9]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -520,7 +589,7 @@ func (x *FetchSomeRequest) String() string {
 func (*FetchSomeRequest) ProtoMessage() {}
 
 func (x *FetchSomeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[9]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -533,7 +602,7 @@ func (x *FetchSomeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FetchSomeRequest.ProtoReflect.Descriptor instead.
 func (*FetchSomeRequest) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{9}
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *FetchSomeRequest) GetHeader() *SessionHeader {
@@ -559,7 +628,7 @@ type FetchSomeResponse struct {
 
 func (x *FetchSomeResponse) Reset() {
 	*x = FetchSomeResponse{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[10]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -571,7 +640,7 @@ func (x *FetchSomeResponse) String() string {
 func (*FetchSomeResponse) ProtoMessage() {}
 
 func (x *FetchSomeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[10]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -584,7 +653,7 @@ func (x *FetchSomeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FetchSomeResponse.ProtoReflect.Descriptor instead.
 func (*FetchSomeResponse) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{10}
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *FetchSomeResponse) GetMessages() []*FetchResponse {
@@ -604,7 +673,7 @@ type ConfirmRequest struct {
 
 func (x *ConfirmRequest) Reset() {
 	*x = ConfirmRequest{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[11]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -616,7 +685,7 @@ func (x *ConfirmRequest) String() string {
 func (*ConfirmRequest) ProtoMessage() {}
 
 func (x *ConfirmRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[11]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -629,7 +698,7 @@ func (x *ConfirmRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfirmRequest.ProtoReflect.Descriptor instead.
 func (*ConfirmRequest) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{11}
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ConfirmRequest) GetHeader() *SessionHeader {
@@ -655,7 +724,7 @@ type TouchRequest struct {
 
 func (x *TouchRequest) Reset() {
 	*x = TouchRequest{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[12]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -667,7 +736,7 @@ func (x *TouchRequest) String() string {
 func (*TouchRequest) ProtoMessage() {}
 
 func (x *TouchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[12]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -680,7 +749,7 @@ func (x *TouchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TouchRequest.ProtoReflect.Descriptor instead.
 func (*TouchRequest) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{12}
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *TouchRequest) GetHeader() *SessionHeader {
@@ -700,7 +769,7 @@ type TopicRequest struct {
 
 func (x *TopicRequest) Reset() {
 	*x = TopicRequest{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[13]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -712,7 +781,7 @@ func (x *TopicRequest) String() string {
 func (*TopicRequest) ProtoMessage() {}
 
 func (x *TopicRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[13]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -725,7 +794,7 @@ func (x *TopicRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TopicRequest.ProtoReflect.Descriptor instead.
 func (*TopicRequest) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{13}
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *TopicRequest) GetHeader() *SessionHeader {
@@ -751,7 +820,7 @@ type TopicsResponse struct {
 
 func (x *TopicsResponse) Reset() {
 	*x = TopicsResponse{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[14]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -763,7 +832,7 @@ func (x *TopicsResponse) String() string {
 func (*TopicsResponse) ProtoMessage() {}
 
 func (x *TopicsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[14]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -776,7 +845,7 @@ func (x *TopicsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TopicsResponse.ProtoReflect.Descriptor instead.
 func (*TopicsResponse) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{14}
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *TopicsResponse) GetTopics() []string {
@@ -796,7 +865,7 @@ type BroadcastTopicRequest struct {
 
 func (x *BroadcastTopicRequest) Reset() {
 	*x = BroadcastTopicRequest{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[15]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -808,7 +877,7 @@ func (x *BroadcastTopicRequest) String() string {
 func (*BroadcastTopicRequest) ProtoMessage() {}
 
 func (x *BroadcastTopicRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[15]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -821,7 +890,7 @@ func (x *BroadcastTopicRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BroadcastTopicRequest.ProtoReflect.Descriptor instead.
 func (*BroadcastTopicRequest) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{15}
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *BroadcastTopicRequest) GetTopic() string {
@@ -838,7 +907,7 @@ func (x *BroadcastTopicRequest) GetPayload() []byte {
 	return nil
 }
 
-type BroadcastTopicResponse struct {
+type BroadcastResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Attempted     int32                  `protobuf:"varint,1,opt,name=attempted,proto3" json:"attempted,omitempty"`
 	Delivered     int32                  `protobuf:"varint,2,opt,name=delivered,proto3" json:"delivered,omitempty"`
@@ -848,21 +917,21 @@ type BroadcastTopicResponse struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *BroadcastTopicResponse) Reset() {
-	*x = BroadcastTopicResponse{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[16]
+func (x *BroadcastResponse) Reset() {
+	*x = BroadcastResponse{}
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *BroadcastTopicResponse) String() string {
+func (x *BroadcastResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*BroadcastTopicResponse) ProtoMessage() {}
+func (*BroadcastResponse) ProtoMessage() {}
 
-func (x *BroadcastTopicResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[16]
+func (x *BroadcastResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -873,33 +942,33 @@ func (x *BroadcastTopicResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use BroadcastTopicResponse.ProtoReflect.Descriptor instead.
-func (*BroadcastTopicResponse) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{16}
+// Deprecated: Use BroadcastResponse.ProtoReflect.Descriptor instead.
+func (*BroadcastResponse) Descriptor() ([]byte, []int) {
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{17}
 }
 
-func (x *BroadcastTopicResponse) GetAttempted() int32 {
+func (x *BroadcastResponse) GetAttempted() int32 {
 	if x != nil {
 		return x.Attempted
 	}
 	return 0
 }
 
-func (x *BroadcastTopicResponse) GetDelivered() int32 {
+func (x *BroadcastResponse) GetDelivered() int32 {
 	if x != nil {
 		return x.Delivered
 	}
 	return 0
 }
 
-func (x *BroadcastTopicResponse) GetSkipped() int32 {
+func (x *BroadcastResponse) GetSkipped() int32 {
 	if x != nil {
 		return x.Skipped
 	}
 	return 0
 }
 
-func (x *BroadcastTopicResponse) GetOverflowed() int32 {
+func (x *BroadcastResponse) GetOverflowed() int32 {
 	if x != nil {
 		return x.Overflowed
 	}
@@ -915,7 +984,7 @@ type TerminateSessionRequest struct {
 
 func (x *TerminateSessionRequest) Reset() {
 	*x = TerminateSessionRequest{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[17]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -927,7 +996,7 @@ func (x *TerminateSessionRequest) String() string {
 func (*TerminateSessionRequest) ProtoMessage() {}
 
 func (x *TerminateSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[17]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -940,7 +1009,7 @@ func (x *TerminateSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminateSessionRequest.ProtoReflect.Descriptor instead.
 func (*TerminateSessionRequest) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{17}
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *TerminateSessionRequest) GetHeader() *SessionHeader {
@@ -958,7 +1027,7 @@ type Empty struct {
 
 func (x *Empty) Reset() {
 	*x = Empty{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[18]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -970,7 +1039,7 @@ func (x *Empty) String() string {
 func (*Empty) ProtoMessage() {}
 
 func (x *Empty) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[18]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -983,7 +1052,7 @@ func (x *Empty) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Empty.ProtoReflect.Descriptor instead.
 func (*Empty) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{18}
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{19}
 }
 
 var File_modules_msgq_proto_msgq_proto protoreflect.FileDescriptor
@@ -1017,7 +1086,15 @@ const file_modules_msgq_proto_msgq_proto_rawDesc = "" +
 	"session_id\x18\x01 \x01(\x03R\tsessionId\x12\x18\n" +
 	"\apayload\x18\x02 \x01(\fR\apayload\"&\n" +
 	"\x12PubSessionResponse\x12\x10\n" +
-	"\x03seq\x18\x01 \x01(\x03R\x03seq\"A\n" +
+	"\x03seq\x18\x01 \x01(\x03R\x03seq\"\x84\x01\n" +
+	"\x0ePubRoleRequest\x12\x17\n" +
+	"\arole_id\x18\x01 \x01(\x03R\x06roleId\x12\x1f\n" +
+	"\vinstance_id\x18\x02 \x01(\tR\n" +
+	"instanceId\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x03 \x01(\tR\n" +
+	"generation\x12\x18\n" +
+	"\apayload\x18\x04 \x01(\fR\apayload\"A\n" +
 	"\fFetchRequest\x121\n" +
 	"\x06header\x18\x01 \x01(\v2\x19.tx.msgq.v1.SessionHeaderR\x06header\";\n" +
 	"\rFetchResponse\x12\x10\n" +
@@ -1040,8 +1117,8 @@ const file_modules_msgq_proto_msgq_proto_rawDesc = "" +
 	"\x06topics\x18\x01 \x03(\tR\x06topics\"G\n" +
 	"\x15BroadcastTopicRequest\x12\x14\n" +
 	"\x05topic\x18\x01 \x01(\tR\x05topic\x12\x18\n" +
-	"\apayload\x18\x02 \x01(\fR\apayload\"\x8e\x01\n" +
-	"\x16BroadcastTopicResponse\x12\x1c\n" +
+	"\apayload\x18\x02 \x01(\fR\apayload\"\x89\x01\n" +
+	"\x11BroadcastResponse\x12\x1c\n" +
 	"\tattempted\x18\x01 \x01(\x05R\tattempted\x12\x1c\n" +
 	"\tdelivered\x18\x02 \x01(\x05R\tdelivered\x12\x18\n" +
 	"\askipped\x18\x03 \x01(\x05R\askipped\x12\x1e\n" +
@@ -1050,12 +1127,13 @@ const file_modules_msgq_proto_msgq_proto_rawDesc = "" +
 	"overflowed\"L\n" +
 	"\x17TerminateSessionRequest\x121\n" +
 	"\x06header\x18\x01 \x01(\v2\x19.tx.msgq.v1.SessionHeaderR\x06header\"\a\n" +
-	"\x05Empty2\xa4\x06\n" +
+	"\x05Empty2\xe5\x06\n" +
 	"\x0eMailboxService\x129\n" +
 	"\x04Init\x12\x17.tx.msgq.v1.InitRequest\x1a\x18.tx.msgq.v1.InitResponse\x126\n" +
 	"\x03Rec\x12\x16.tx.msgq.v1.RecRequest\x1a\x17.tx.msgq.v1.RecResponse\x12K\n" +
 	"\n" +
-	"PubSession\x12\x1d.tx.msgq.v1.PubSessionRequest\x1a\x1e.tx.msgq.v1.PubSessionResponse\x12<\n" +
+	"PubSession\x12\x1d.tx.msgq.v1.PubSessionRequest\x1a\x1e.tx.msgq.v1.PubSessionResponse\x12D\n" +
+	"\aPubRole\x12\x1a.tx.msgq.v1.PubRoleRequest\x1a\x1d.tx.msgq.v1.BroadcastResponse\x12<\n" +
 	"\x05Fetch\x12\x18.tx.msgq.v1.FetchRequest\x1a\x19.tx.msgq.v1.FetchResponse\x12H\n" +
 	"\tFetchSome\x12\x1c.tx.msgq.v1.FetchSomeRequest\x1a\x1d.tx.msgq.v1.FetchSomeResponse\x128\n" +
 	"\aConfirm\x12\x1a.tx.msgq.v1.ConfirmRequest\x1a\x11.tx.msgq.v1.Empty\x124\n" +
@@ -1063,8 +1141,8 @@ const file_modules_msgq_proto_msgq_proto_rawDesc = "" +
 	"\n" +
 	"JoinTopics\x12\x18.tx.msgq.v1.TopicRequest\x1a\x11.tx.msgq.v1.Empty\x12:\n" +
 	"\vLeaveTopics\x12\x18.tx.msgq.v1.TopicRequest\x1a\x11.tx.msgq.v1.Empty\x12>\n" +
-	"\x06Topics\x12\x18.tx.msgq.v1.TopicRequest\x1a\x1a.tx.msgq.v1.TopicsResponse\x12W\n" +
-	"\x0eBroadcastTopic\x12!.tx.msgq.v1.BroadcastTopicRequest\x1a\".tx.msgq.v1.BroadcastTopicResponse\x12J\n" +
+	"\x06Topics\x12\x18.tx.msgq.v1.TopicRequest\x1a\x1a.tx.msgq.v1.TopicsResponse\x12R\n" +
+	"\x0eBroadcastTopic\x12!.tx.msgq.v1.BroadcastTopicRequest\x1a\x1d.tx.msgq.v1.BroadcastResponse\x12J\n" +
 	"\x10TerminateSession\x12#.tx.msgq.v1.TerminateSessionRequest\x1a\x11.tx.msgq.v1.EmptyB-Z+github.com/ngnl47/tx/modules/msgq/pb;msgqpbb\x06proto3"
 
 var (
@@ -1079,7 +1157,7 @@ func file_modules_msgq_proto_msgq_proto_rawDescGZIP() []byte {
 	return file_modules_msgq_proto_msgq_proto_rawDescData
 }
 
-var file_modules_msgq_proto_msgq_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
+var file_modules_msgq_proto_msgq_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_modules_msgq_proto_msgq_proto_goTypes = []any{
 	(*SessionHeader)(nil),           // 0: tx.msgq.v1.SessionHeader
 	(*InitRequest)(nil),             // 1: tx.msgq.v1.InitRequest
@@ -1088,25 +1166,26 @@ var file_modules_msgq_proto_msgq_proto_goTypes = []any{
 	(*RecResponse)(nil),             // 4: tx.msgq.v1.RecResponse
 	(*PubSessionRequest)(nil),       // 5: tx.msgq.v1.PubSessionRequest
 	(*PubSessionResponse)(nil),      // 6: tx.msgq.v1.PubSessionResponse
-	(*FetchRequest)(nil),            // 7: tx.msgq.v1.FetchRequest
-	(*FetchResponse)(nil),           // 8: tx.msgq.v1.FetchResponse
-	(*FetchSomeRequest)(nil),        // 9: tx.msgq.v1.FetchSomeRequest
-	(*FetchSomeResponse)(nil),       // 10: tx.msgq.v1.FetchSomeResponse
-	(*ConfirmRequest)(nil),          // 11: tx.msgq.v1.ConfirmRequest
-	(*TouchRequest)(nil),            // 12: tx.msgq.v1.TouchRequest
-	(*TopicRequest)(nil),            // 13: tx.msgq.v1.TopicRequest
-	(*TopicsResponse)(nil),          // 14: tx.msgq.v1.TopicsResponse
-	(*BroadcastTopicRequest)(nil),   // 15: tx.msgq.v1.BroadcastTopicRequest
-	(*BroadcastTopicResponse)(nil),  // 16: tx.msgq.v1.BroadcastTopicResponse
-	(*TerminateSessionRequest)(nil), // 17: tx.msgq.v1.TerminateSessionRequest
-	(*Empty)(nil),                   // 18: tx.msgq.v1.Empty
+	(*PubRoleRequest)(nil),          // 7: tx.msgq.v1.PubRoleRequest
+	(*FetchRequest)(nil),            // 8: tx.msgq.v1.FetchRequest
+	(*FetchResponse)(nil),           // 9: tx.msgq.v1.FetchResponse
+	(*FetchSomeRequest)(nil),        // 10: tx.msgq.v1.FetchSomeRequest
+	(*FetchSomeResponse)(nil),       // 11: tx.msgq.v1.FetchSomeResponse
+	(*ConfirmRequest)(nil),          // 12: tx.msgq.v1.ConfirmRequest
+	(*TouchRequest)(nil),            // 13: tx.msgq.v1.TouchRequest
+	(*TopicRequest)(nil),            // 14: tx.msgq.v1.TopicRequest
+	(*TopicsResponse)(nil),          // 15: tx.msgq.v1.TopicsResponse
+	(*BroadcastTopicRequest)(nil),   // 16: tx.msgq.v1.BroadcastTopicRequest
+	(*BroadcastResponse)(nil),       // 17: tx.msgq.v1.BroadcastResponse
+	(*TerminateSessionRequest)(nil), // 18: tx.msgq.v1.TerminateSessionRequest
+	(*Empty)(nil),                   // 19: tx.msgq.v1.Empty
 }
 var file_modules_msgq_proto_msgq_proto_depIdxs = []int32{
 	0,  // 0: tx.msgq.v1.InitRequest.header:type_name -> tx.msgq.v1.SessionHeader
 	0,  // 1: tx.msgq.v1.RecRequest.header:type_name -> tx.msgq.v1.SessionHeader
 	0,  // 2: tx.msgq.v1.FetchRequest.header:type_name -> tx.msgq.v1.SessionHeader
 	0,  // 3: tx.msgq.v1.FetchSomeRequest.header:type_name -> tx.msgq.v1.SessionHeader
-	8,  // 4: tx.msgq.v1.FetchSomeResponse.messages:type_name -> tx.msgq.v1.FetchResponse
+	9,  // 4: tx.msgq.v1.FetchSomeResponse.messages:type_name -> tx.msgq.v1.FetchResponse
 	0,  // 5: tx.msgq.v1.ConfirmRequest.header:type_name -> tx.msgq.v1.SessionHeader
 	0,  // 6: tx.msgq.v1.TouchRequest.header:type_name -> tx.msgq.v1.SessionHeader
 	0,  // 7: tx.msgq.v1.TopicRequest.header:type_name -> tx.msgq.v1.SessionHeader
@@ -1114,29 +1193,31 @@ var file_modules_msgq_proto_msgq_proto_depIdxs = []int32{
 	1,  // 9: tx.msgq.v1.MailboxService.Init:input_type -> tx.msgq.v1.InitRequest
 	3,  // 10: tx.msgq.v1.MailboxService.Rec:input_type -> tx.msgq.v1.RecRequest
 	5,  // 11: tx.msgq.v1.MailboxService.PubSession:input_type -> tx.msgq.v1.PubSessionRequest
-	7,  // 12: tx.msgq.v1.MailboxService.Fetch:input_type -> tx.msgq.v1.FetchRequest
-	9,  // 13: tx.msgq.v1.MailboxService.FetchSome:input_type -> tx.msgq.v1.FetchSomeRequest
-	11, // 14: tx.msgq.v1.MailboxService.Confirm:input_type -> tx.msgq.v1.ConfirmRequest
-	12, // 15: tx.msgq.v1.MailboxService.Touch:input_type -> tx.msgq.v1.TouchRequest
-	13, // 16: tx.msgq.v1.MailboxService.JoinTopics:input_type -> tx.msgq.v1.TopicRequest
-	13, // 17: tx.msgq.v1.MailboxService.LeaveTopics:input_type -> tx.msgq.v1.TopicRequest
-	13, // 18: tx.msgq.v1.MailboxService.Topics:input_type -> tx.msgq.v1.TopicRequest
-	15, // 19: tx.msgq.v1.MailboxService.BroadcastTopic:input_type -> tx.msgq.v1.BroadcastTopicRequest
-	17, // 20: tx.msgq.v1.MailboxService.TerminateSession:input_type -> tx.msgq.v1.TerminateSessionRequest
-	2,  // 21: tx.msgq.v1.MailboxService.Init:output_type -> tx.msgq.v1.InitResponse
-	4,  // 22: tx.msgq.v1.MailboxService.Rec:output_type -> tx.msgq.v1.RecResponse
-	6,  // 23: tx.msgq.v1.MailboxService.PubSession:output_type -> tx.msgq.v1.PubSessionResponse
-	8,  // 24: tx.msgq.v1.MailboxService.Fetch:output_type -> tx.msgq.v1.FetchResponse
-	10, // 25: tx.msgq.v1.MailboxService.FetchSome:output_type -> tx.msgq.v1.FetchSomeResponse
-	18, // 26: tx.msgq.v1.MailboxService.Confirm:output_type -> tx.msgq.v1.Empty
-	18, // 27: tx.msgq.v1.MailboxService.Touch:output_type -> tx.msgq.v1.Empty
-	18, // 28: tx.msgq.v1.MailboxService.JoinTopics:output_type -> tx.msgq.v1.Empty
-	18, // 29: tx.msgq.v1.MailboxService.LeaveTopics:output_type -> tx.msgq.v1.Empty
-	14, // 30: tx.msgq.v1.MailboxService.Topics:output_type -> tx.msgq.v1.TopicsResponse
-	16, // 31: tx.msgq.v1.MailboxService.BroadcastTopic:output_type -> tx.msgq.v1.BroadcastTopicResponse
-	18, // 32: tx.msgq.v1.MailboxService.TerminateSession:output_type -> tx.msgq.v1.Empty
-	21, // [21:33] is the sub-list for method output_type
-	9,  // [9:21] is the sub-list for method input_type
+	7,  // 12: tx.msgq.v1.MailboxService.PubRole:input_type -> tx.msgq.v1.PubRoleRequest
+	8,  // 13: tx.msgq.v1.MailboxService.Fetch:input_type -> tx.msgq.v1.FetchRequest
+	10, // 14: tx.msgq.v1.MailboxService.FetchSome:input_type -> tx.msgq.v1.FetchSomeRequest
+	12, // 15: tx.msgq.v1.MailboxService.Confirm:input_type -> tx.msgq.v1.ConfirmRequest
+	13, // 16: tx.msgq.v1.MailboxService.Touch:input_type -> tx.msgq.v1.TouchRequest
+	14, // 17: tx.msgq.v1.MailboxService.JoinTopics:input_type -> tx.msgq.v1.TopicRequest
+	14, // 18: tx.msgq.v1.MailboxService.LeaveTopics:input_type -> tx.msgq.v1.TopicRequest
+	14, // 19: tx.msgq.v1.MailboxService.Topics:input_type -> tx.msgq.v1.TopicRequest
+	16, // 20: tx.msgq.v1.MailboxService.BroadcastTopic:input_type -> tx.msgq.v1.BroadcastTopicRequest
+	18, // 21: tx.msgq.v1.MailboxService.TerminateSession:input_type -> tx.msgq.v1.TerminateSessionRequest
+	2,  // 22: tx.msgq.v1.MailboxService.Init:output_type -> tx.msgq.v1.InitResponse
+	4,  // 23: tx.msgq.v1.MailboxService.Rec:output_type -> tx.msgq.v1.RecResponse
+	6,  // 24: tx.msgq.v1.MailboxService.PubSession:output_type -> tx.msgq.v1.PubSessionResponse
+	17, // 25: tx.msgq.v1.MailboxService.PubRole:output_type -> tx.msgq.v1.BroadcastResponse
+	9,  // 26: tx.msgq.v1.MailboxService.Fetch:output_type -> tx.msgq.v1.FetchResponse
+	11, // 27: tx.msgq.v1.MailboxService.FetchSome:output_type -> tx.msgq.v1.FetchSomeResponse
+	19, // 28: tx.msgq.v1.MailboxService.Confirm:output_type -> tx.msgq.v1.Empty
+	19, // 29: tx.msgq.v1.MailboxService.Touch:output_type -> tx.msgq.v1.Empty
+	19, // 30: tx.msgq.v1.MailboxService.JoinTopics:output_type -> tx.msgq.v1.Empty
+	19, // 31: tx.msgq.v1.MailboxService.LeaveTopics:output_type -> tx.msgq.v1.Empty
+	15, // 32: tx.msgq.v1.MailboxService.Topics:output_type -> tx.msgq.v1.TopicsResponse
+	17, // 33: tx.msgq.v1.MailboxService.BroadcastTopic:output_type -> tx.msgq.v1.BroadcastResponse
+	19, // 34: tx.msgq.v1.MailboxService.TerminateSession:output_type -> tx.msgq.v1.Empty
+	22, // [22:35] is the sub-list for method output_type
+	9,  // [9:22] is the sub-list for method input_type
 	9,  // [9:9] is the sub-list for extension type_name
 	9,  // [9:9] is the sub-list for extension extendee
 	0,  // [0:9] is the sub-list for field type_name
@@ -1153,7 +1234,7 @@ func file_modules_msgq_proto_msgq_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_modules_msgq_proto_msgq_proto_rawDesc), len(file_modules_msgq_proto_msgq_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   19,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

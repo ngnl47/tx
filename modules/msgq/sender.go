@@ -23,6 +23,7 @@ var (
 // Connection 向一个已解析的 msgq 实例投递下行消息。
 type Connection interface {
 	PubSession(context.Context, int64, []byte) (PubResult, error)
+	PubRole(context.Context, RoleBinding, []byte) (BroadcastResult, error)
 	JoinTopics(context.Context, TopicRequest) error
 	BroadcastTopic(context.Context, BroadcastTopicRequest) (BroadcastResult, error)
 	Close() error
@@ -112,9 +113,21 @@ func (c *grpcConnection) BroadcastTopic(ctx context.Context, request BroadcastTo
 		Topic:   request.Topic,
 		Payload: request.Payload,
 	})
+	return readBroadcastResponse(response, err)
+}
+
+func (c *grpcConnection) PubRole(ctx context.Context, binding RoleBinding, payload []byte) (BroadcastResult, error) {
+	response, err := c.client.PubRole(ctx, &msgqpb.PubRoleRequest{
+		RoleId: binding.RoleID, InstanceId: binding.InstanceID, Generation: binding.Generation, Payload: payload,
+	})
+	return readBroadcastResponse(response, err)
+}
+
+// readBroadcastResponse 对角色投递和 Topic 广播统一保留部分入队统计，不自动重试。
+func readBroadcastResponse(response *msgqpb.BroadcastResponse, err error) (BroadcastResult, error) {
 	if err != nil {
 		for _, detail := range status.Convert(err).Details() {
-			if result, ok := detail.(*msgqpb.BroadcastTopicResponse); ok {
+			if result, ok := detail.(*msgqpb.BroadcastResponse); ok {
 				response = result
 				break
 			}

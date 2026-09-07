@@ -49,6 +49,13 @@ func (s *mailboxService) PubSession(ctx context.Context, request *msgqpb.PubSess
 	return &msgqpb.PubSessionResponse{Seq: result.Seq}, nil
 }
 
+func (s *mailboxService) PubRole(ctx context.Context, request *msgqpb.PubRoleRequest) (*msgqpb.BroadcastResponse, error) {
+	result, err := s.mailbox.PubRole(ctx, RoleBinding{
+		RoleID: request.GetRoleId(), InstanceID: request.GetInstanceId(), Generation: request.GetGeneration(),
+	}, request.GetPayload())
+	return broadcastResponse(result, err)
+}
+
 func (s *mailboxService) Fetch(ctx context.Context, request *msgqpb.FetchRequest) (*msgqpb.FetchResponse, error) {
 	result, err := s.mailbox.Fetch(ctx, FetchRequest{Header: headerFromProto(request.GetHeader())})
 	if err != nil {
@@ -96,9 +103,13 @@ func (s *mailboxService) Topics(ctx context.Context, request *msgqpb.TopicReques
 	return &msgqpb.TopicsResponse{Topics: result.Topics}, nil
 }
 
-func (s *mailboxService) BroadcastTopic(ctx context.Context, request *msgqpb.BroadcastTopicRequest) (*msgqpb.BroadcastTopicResponse, error) {
+func (s *mailboxService) BroadcastTopic(ctx context.Context, request *msgqpb.BroadcastTopicRequest) (*msgqpb.BroadcastResponse, error) {
 	result, err := s.mailbox.BroadcastTopic(ctx, BroadcastTopicRequest{Topic: request.GetTopic(), Payload: request.GetPayload()})
-	response := &msgqpb.BroadcastTopicResponse{
+	return broadcastResponse(result, err)
+}
+
+func broadcastResponse(result BroadcastResult, err error) (*msgqpb.BroadcastResponse, error) {
+	response := &msgqpb.BroadcastResponse{
 		Attempted:  int32(result.Attempted),
 		Delivered:  int32(result.Delivered),
 		Skipped:    int32(result.Skipped),

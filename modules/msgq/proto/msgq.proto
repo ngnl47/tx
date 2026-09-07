@@ -42,6 +42,14 @@ message PubSessionResponse {
   int64 seq = 1;
 }
 
+// PubRoleRequest 携带完整角色归属版本，只能投递到该归属的本地邮箱。
+message PubRoleRequest {
+  int64 role_id = 1;
+  string instance_id = 2;
+  string generation = 3;
+  bytes payload = 4;
+}
+
 message FetchRequest {
   SessionHeader header = 1;
 }
@@ -83,7 +91,7 @@ message BroadcastTopicRequest {
   bytes payload = 2;
 }
 
-message BroadcastTopicResponse {
+message BroadcastResponse {
   int32 attempted = 1;
   int32 delivered = 2;
   int32 skipped = 3;
@@ -101,6 +109,7 @@ service MailboxService {
   rpc Init(InitRequest) returns (InitResponse);
   rpc Rec(RecRequest) returns (RecResponse);
   rpc PubSession(PubSessionRequest) returns (PubSessionResponse);
+  rpc PubRole(PubRoleRequest) returns (BroadcastResponse);
   rpc Fetch(FetchRequest) returns (FetchResponse);
   rpc FetchSome(FetchSomeRequest) returns (FetchSomeResponse);
   rpc Confirm(ConfirmRequest) returns (Empty);
@@ -108,6 +117,6 @@ service MailboxService {
   rpc JoinTopics(TopicRequest) returns (Empty);
   rpc LeaveTopics(TopicRequest) returns (Empty);
   rpc Topics(TopicRequest) returns (TopicsResponse);
-  rpc BroadcastTopic(BroadcastTopicRequest) returns (BroadcastTopicResponse);
+  rpc BroadcastTopic(BroadcastTopicRequest) returns (BroadcastResponse);
   rpc TerminateSession(TerminateSessionRequest) returns (Empty);
 }

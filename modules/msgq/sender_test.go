@@ -381,3 +381,7 @@ func (connection *senderConnectionFake) BroadcastTopic(_ context.Context, reques
 }
 
 func (*senderConnectionFake) Close() error { return nil }
+
+func (*senderConnectionFake) PubRole(context.Context, RoleBinding, []byte) (BroadcastResult, error) {
+	return BroadcastResult{}, errors.New("unexpected role publish")
+}

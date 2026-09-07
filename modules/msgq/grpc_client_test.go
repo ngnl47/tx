@@ -25,6 +25,10 @@ func (*nilResponseMailboxClient) PubSession(context.Context, *msgqpb.PubSessionR
 	return nil, nil
 }
 
+func (*nilResponseMailboxClient) PubRole(context.Context, *msgqpb.PubRoleRequest, ...grpc.CallOption) (*msgqpb.BroadcastResponse, error) {
+	return nil, nil
+}
+
 func (*nilResponseMailboxClient) FetchSome(context.Context, *msgqpb.FetchSomeRequest, ...grpc.CallOption) (*msgqpb.FetchSomeResponse, error) {
 	return nil, nil
 }
@@ -37,7 +41,7 @@ func (*nilResponseMailboxClient) JoinTopics(context.Context, *msgqpb.TopicReques
 	return nil, nil
 }
 
-func (*nilResponseMailboxClient) BroadcastTopic(context.Context, *msgqpb.BroadcastTopicRequest, ...grpc.CallOption) (*msgqpb.BroadcastTopicResponse, error) {
+func (*nilResponseMailboxClient) BroadcastTopic(context.Context, *msgqpb.BroadcastTopicRequest, ...grpc.CallOption) (*msgqpb.BroadcastResponse, error) {
 	return nil, nil
 }
 
@@ -59,6 +63,10 @@ func TestGRPCConnectionRejectsNilSuccessResponses(t *testing.T) {
 		},
 		"pub session": func() error {
 			_, err := connection.PubSession(context.Background(), header.SessionID, []byte("body"))
+			return err
+		},
+		"pub role": func() error {
+			_, err := connection.PubRole(context.Background(), RoleBinding{RoleID: 47, InstanceID: "msgq-a", Generation: "current"}, []byte("body"))
 			return err
 		},
 		"fetch some": func() error {
@@ -134,9 +142,9 @@ func (client *recordingTopicMailboxClient) JoinTopics(_ context.Context, request
 	return &msgqpb.Empty{}, nil
 }
 
-func (client *recordingTopicMailboxClient) BroadcastTopic(_ context.Context, request *msgqpb.BroadcastTopicRequest, _ ...grpc.CallOption) (*msgqpb.BroadcastTopicResponse, error) {
+func (client *recordingTopicMailboxClient) BroadcastTopic(_ context.Context, request *msgqpb.BroadcastTopicRequest, _ ...grpc.CallOption) (*msgqpb.BroadcastResponse, error) {
 	client.broadcastRequest = request
-	return &msgqpb.BroadcastTopicResponse{Attempted: 3, Delivered: 2, Skipped: 1, Overflowed: 0}, nil
+	return &msgqpb.BroadcastResponse{Attempted: 3, Delivered: 2, Skipped: 1, Overflowed: 0}, nil
 }
 
 func TestGRPCConnectionConvertsTopicOperations(t *testing.T) {

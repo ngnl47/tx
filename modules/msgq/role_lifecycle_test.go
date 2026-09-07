@@ -106,6 +106,9 @@ func TestExpiredRoleLeaseRejectsTrafficAndCannotReleaseNewOwner(t *testing.T) {
 	if _, err := server.BroadcastRole(ctx, 47, []byte("stale")); !errors.Is(err, ErrSessionChanged) {
 		t.Fatalf("stale role broadcast = %v", err)
 	}
+	if _, err := server.PubRole(ctx, lease.binding, []byte("stale")); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("stale versioned publish = %v", err)
+	}
 	if err := server.Touch(ctx, TouchRequest{Header: header}); !errors.Is(err, ErrSessionChanged) {
 		t.Fatalf("stale connection activity = %v", err)
 	}

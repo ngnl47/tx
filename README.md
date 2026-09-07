@@ -371,7 +371,7 @@ TX_ETCD_ENDPOINT=127.0.0.1:2379 \
 `modules/msgq` 以 `SessionID` 作为精确邮箱主键，负责
 `SessionID -> (RoleID, SessionID, ConnectionID, InstanceID)` 的短期 binding 与 owner 解析；同时维护
 `RoleID -> 唯一主 SessionID` 投影。主会话由项目通过可信 `Primary` 属性选择，与访问模式无关。
-同一 RoleID 的多个邮箱可以并存，各自维护队列；`PubRole` 只投递给当前主会话。
+同一 RoleID 的多个邮箱可以并存，各自维护队列；当前业务入口 `Sender.PubRole` 仍只投递给主会话，角色共享下行的接入进度见下文。
 `Server` 在本进程管理 Session、下行队列和 Seq/Ack。
 
 Redis 精确 binding key 固定为 `<prefix>:session:v2:{SessionID}`，值保存完整
@@ -508,8 +508,13 @@ gRPC 错误通过状态详情保留服务端投递统计；发送方不能因错
 角色索引只在 Session 初始化成功后加入；重连沿用邮箱，终止、溢出和失活清理移除订阅，最后一个邮箱移除后删除空索引。
 新 Session 不复制已有邮箱的历史消息，已有 Session 恢复只重放自己的未确认消息。
 
-该方法目前是本地能力；Agent 的角色集中选址和归属续期已接入，携带代际的远程角色投递尚未接入。
-现有 `Sender.PubRole` 仍使用主会话路由，不能将本地角色广播当成已经完成跨进程多 Session 下行。
+`Server.PubRole(ctx, binding, payload)` 与 `Connection.PubRole` 提供带完整 `RoleBinding` 的定向角色投递。
+远程请求携带 RoleID、InstanceID 和 Generation；接收端在同一个本地读锁内核对有效租期、完整版本并取得邮箱快照，
+不访问 Redis。缺失或过期归属、错误实例、旧版本返回 `ErrSessionChanged`，不会投递到后续换代的新邮箱。
+两个远程分发入口共用 `BroadcastResponse`，返回各邮箱入队统计而不是共同 Seq；错误响应也保留可获得的部分统计。
+
+Agent 的集中选址、归属续期及底层远程角色投递已接入；`Sender.PubRole` 仍使用主会话路由。
+下一步同时切换 Sender 的路由缓存和示例返回契约，不能将底层 RPC 验证当作完整多 Session 业务下行验收。
 
 `FetchSome` 与 `Fetch` 的确认语义完全相同：批量读取只前进发送游标，不会删除队列内容；客户端 Ack 后必须调用
 `Confirm`，消息才会从重连恢复队列释放。

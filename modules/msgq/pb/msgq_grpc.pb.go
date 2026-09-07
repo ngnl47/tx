@@ -22,6 +22,7 @@ const (
 	MailboxService_Init_FullMethodName             = "/tx.msgq.v1.MailboxService/Init"
 	MailboxService_Rec_FullMethodName              = "/tx.msgq.v1.MailboxService/Rec"
 	MailboxService_PubSession_FullMethodName       = "/tx.msgq.v1.MailboxService/PubSession"
+	MailboxService_PubRole_FullMethodName          = "/tx.msgq.v1.MailboxService/PubRole"
 	MailboxService_Fetch_FullMethodName            = "/tx.msgq.v1.MailboxService/Fetch"
 	MailboxService_FetchSome_FullMethodName        = "/tx.msgq.v1.MailboxService/FetchSome"
 	MailboxService_Confirm_FullMethodName          = "/tx.msgq.v1.MailboxService/Confirm"
@@ -42,6 +43,7 @@ type MailboxServiceClient interface {
 	Init(ctx context.Context, in *InitRequest, opts ...grpc.CallOption) (*InitResponse, error)
 	Rec(ctx context.Context, in *RecRequest, opts ...grpc.CallOption) (*RecResponse, error)
 	PubSession(ctx context.Context, in *PubSessionRequest, opts ...grpc.CallOption) (*PubSessionResponse, error)
+	PubRole(ctx context.Context, in *PubRoleRequest, opts ...grpc.CallOption) (*BroadcastResponse, error)
 	Fetch(ctx context.Context, in *FetchRequest, opts ...grpc.CallOption) (*FetchResponse, error)
 	FetchSome(ctx context.Context, in *FetchSomeRequest, opts ...grpc.CallOption) (*FetchSomeResponse, error)
 	Confirm(ctx context.Context, in *ConfirmRequest, opts ...grpc.CallOption) (*Empty, error)
@@ -49,7 +51,7 @@ type MailboxServiceClient interface {
 	JoinTopics(ctx context.Context, in *TopicRequest, opts ...grpc.CallOption) (*Empty, error)
 	LeaveTopics(ctx context.Context, in *TopicRequest, opts ...grpc.CallOption) (*Empty, error)
 	Topics(ctx context.Context, in *TopicRequest, opts ...grpc.CallOption) (*TopicsResponse, error)
-	BroadcastTopic(ctx context.Context, in *BroadcastTopicRequest, opts ...grpc.CallOption) (*BroadcastTopicResponse, error)
+	BroadcastTopic(ctx context.Context, in *BroadcastTopicRequest, opts ...grpc.CallOption) (*BroadcastResponse, error)
 	TerminateSession(ctx context.Context, in *TerminateSessionRequest, opts ...grpc.CallOption) (*Empty, error)
 }
 
@@ -85,6 +87,16 @@ func (c *mailboxServiceClient) PubSession(ctx context.Context, in *PubSessionReq
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(PubSessionResponse)
 	err := c.cc.Invoke(ctx, MailboxService_PubSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *mailboxServiceClient) PubRole(ctx context.Context, in *PubRoleRequest, opts ...grpc.CallOption) (*BroadcastResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BroadcastResponse)
+	err := c.cc.Invoke(ctx, MailboxService_PubRole_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -161,9 +173,9 @@ func (c *mailboxServiceClient) Topics(ctx context.Context, in *TopicRequest, opt
 	return out, nil
 }
 
-func (c *mailboxServiceClient) BroadcastTopic(ctx context.Context, in *BroadcastTopicRequest, opts ...grpc.CallOption) (*BroadcastTopicResponse, error) {
+func (c *mailboxServiceClient) BroadcastTopic(ctx context.Context, in *BroadcastTopicRequest, opts ...grpc.CallOption) (*BroadcastResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(BroadcastTopicResponse)
+	out := new(BroadcastResponse)
 	err := c.cc.Invoke(ctx, MailboxService_BroadcastTopic_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -190,6 +202,7 @@ type MailboxServiceServer interface {
 	Init(context.Context, *InitRequest) (*InitResponse, error)
 	Rec(context.Context, *RecRequest) (*RecResponse, error)
 	PubSession(context.Context, *PubSessionRequest) (*PubSessionResponse, error)
+	PubRole(context.Context, *PubRoleRequest) (*BroadcastResponse, error)
 	Fetch(context.Context, *FetchRequest) (*FetchResponse, error)
 	FetchSome(context.Context, *FetchSomeRequest) (*FetchSomeResponse, error)
 	Confirm(context.Context, *ConfirmRequest) (*Empty, error)
@@ -197,7 +210,7 @@ type MailboxServiceServer interface {
 	JoinTopics(context.Context, *TopicRequest) (*Empty, error)
 	LeaveTopics(context.Context, *TopicRequest) (*Empty, error)
 	Topics(context.Context, *TopicRequest) (*TopicsResponse, error)
-	BroadcastTopic(context.Context, *BroadcastTopicRequest) (*BroadcastTopicResponse, error)
+	BroadcastTopic(context.Context, *BroadcastTopicRequest) (*BroadcastResponse, error)
 	TerminateSession(context.Context, *TerminateSessionRequest) (*Empty, error)
 	mustEmbedUnimplementedMailboxServiceServer()
 }
@@ -217,6 +230,9 @@ func (UnimplementedMailboxServiceServer) Rec(context.Context, *RecRequest) (*Rec
 }
 func (UnimplementedMailboxServiceServer) PubSession(context.Context, *PubSessionRequest) (*PubSessionResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PubSession not implemented")
+}
+func (UnimplementedMailboxServiceServer) PubRole(context.Context, *PubRoleRequest) (*BroadcastResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PubRole not implemented")
 }
 func (UnimplementedMailboxServiceServer) Fetch(context.Context, *FetchRequest) (*FetchResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Fetch not implemented")
@@ -239,7 +255,7 @@ func (UnimplementedMailboxServiceServer) LeaveTopics(context.Context, *TopicRequ
 func (UnimplementedMailboxServiceServer) Topics(context.Context, *TopicRequest) (*TopicsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Topics not implemented")
 }
-func (UnimplementedMailboxServiceServer) BroadcastTopic(context.Context, *BroadcastTopicRequest) (*BroadcastTopicResponse, error) {
+func (UnimplementedMailboxServiceServer) BroadcastTopic(context.Context, *BroadcastTopicRequest) (*BroadcastResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method BroadcastTopic not implemented")
 }
 func (UnimplementedMailboxServiceServer) TerminateSession(context.Context, *TerminateSessionRequest) (*Empty, error) {
@@ -316,6 +332,24 @@ func _MailboxService_PubSession_Handler(srv interface{}, ctx context.Context, de
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(MailboxServiceServer).PubSession(ctx, req.(*PubSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _MailboxService_PubRole_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PubRoleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MailboxServiceServer).PubRole(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MailboxService_PubRole_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MailboxServiceServer).PubRole(ctx, req.(*PubRoleRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -500,6 +534,10 @@ var MailboxService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PubSession",
 			Handler:    _MailboxService_PubSession_Handler,
+		},
+		{
+			MethodName: "PubRole",
+			Handler:    _MailboxService_PubRole_Handler,
 		},
 		{
 			MethodName: "Fetch",
