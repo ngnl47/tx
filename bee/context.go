@@ -47,6 +47,7 @@ type RedisStorage interface {
 
 // MongoStorage 只暴露 MongoDB 文档读写。
 type MongoStorage interface {
+	txmongo.DocumentFinder
 	Storage
 	// MongoReader 返回带健康闸门的 MongoDB 文档读取器。
 	MongoReader() txstorage.DocumentLoader
@@ -276,6 +277,10 @@ func (view modeStorageView) ChangeWriter() txstorage.ChangeApplier {
 }
 
 type mongoStorageView struct{ modeStorageView }
+
+func (view mongoStorageView) FindDocument(ctx context.Context, spec meta.TypeSpec, shardKey any, filter txmongo.Filter, fields ...string) (map[string]any, bool, error) {
+	return view.storage.FindDocument(ctx, spec, shardKey, filter, fields...)
+}
 
 func (view mongoStorageView) MongoReader() txstorage.DocumentLoader { return view.storage.Reader() }
 

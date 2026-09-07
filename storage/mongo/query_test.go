@@ -36,3 +36,26 @@ func TestFindDocumentPreservesCompoundIdentityFilter(t *testing.T) {
 		t.Fatalf("document=%v exists=%v filter=%v err=%v", document, exists, client.filter, err)
 	}
 }
+
+func TestClusterFindDocumentUsesOnlySelectedRoute(t *testing.T) {
+	selected, other := &queryClient{}, &queryClient{}
+	cluster, err := NewCluster(RouterFunc(func(_ context.Context, route string, key any) (string, error) {
+		if route != "user" || key != int64(1) {
+			t.Fatalf("route=%q key=%v", route, key)
+		}
+		return "selected", nil
+	}), map[string]Client{"selected": selected, "other": other})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := meta.TypeSpec{Mongo: &meta.MongoSpec{Route: meta.RouteSpec{Type: "user"}, Collection: "users"}, DocumentFactory: func() any {
+		return &struct {
+			AccountID int64 `bson:"accountId" json:"accountId"`
+		}{}
+	}}
+	filter := Filter{Field: "platform", Value: "wechat", Conditions: []Equality{{Field: "platformUId", Value: "alice"}}}
+	_, exists, err := cluster.FindDocument(context.Background(), spec, int64(1), filter)
+	if err != nil || !exists || !reflect.DeepEqual(selected.filter, filter) || other.filter.Field != "" {
+		t.Fatalf("selected=%v other=%v exists=%v err=%v", selected.filter, other.filter, exists, err)
+	}
+}

@@ -157,6 +157,9 @@ func TestMongoAtomicCapabilitiesUseMongoHealthGate(t *testing.T) {
 	}
 	store.markBackendUnavailable(txstorage.BackendMongo, errors.New("mongo unavailable"))
 
+	if _, _, err := store.FindDocument(context.Background(), meta.TypeSpec{}, int64(1), txmongo.Filter{Field: "platform", Value: "test"}); !errors.Is(err, ErrStorageUnavailable) {
+		t.Fatalf("Mongo query error = %v, want ErrStorageUnavailable", err)
+	}
 	_, err := backfiller.BackfillDocumentWithOptions(
 		context.Background(),
 		meta.TypeSpec{},

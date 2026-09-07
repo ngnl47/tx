@@ -13,6 +13,7 @@ import (
 	txrpc "github.com/ngnl47/tx/modules/rpc"
 	"github.com/ngnl47/tx/modules/txn"
 	txstorage "github.com/ngnl47/tx/storage"
+	txmongo "github.com/ngnl47/tx/storage/mongo"
 	txredis "github.com/ngnl47/tx/storage/redis"
 	"google.golang.org/grpc"
 )
@@ -63,6 +64,13 @@ func (access storageAccess) ChangeWriter() txstorage.ChangeApplier {
 type modeStorageAccess struct {
 	storage *storageRuntime
 	mode    meta.StorageMode
+}
+
+func (access modeStorageAccess) FindDocument(ctx context.Context, spec meta.TypeSpec, shardKey any, filter txmongo.Filter, fields ...string) (map[string]any, bool, error) {
+	if access.mode != meta.StorageModeMongo || access.storage == nil {
+		return nil, false, fmt.Errorf("framework: storage capability %q cannot query Mongo documents", access.mode)
+	}
+	return access.storage.FindDocument(ctx, spec, shardKey, filter, fields...)
 }
 
 func (access modeStorageAccess) Context() context.Context {

@@ -12,6 +12,7 @@ import (
 	"github.com/ngnl47/tx/modules/txn"
 	"github.com/ngnl47/tx/sessionid"
 	txstorage "github.com/ngnl47/tx/storage"
+	txmongo "github.com/ngnl47/tx/storage/mongo"
 	txredis "github.com/ngnl47/tx/storage/redis"
 	"github.com/ngnl47/tx/wal"
 )
@@ -38,6 +39,7 @@ type Storage interface {
 // ModeStorage 是绑定到单一持久化模式的窄能力视图。
 // Reader 和 ChangeWriter 都拒绝跨模式访问，避免 L4 Service 越过 Requires 声明使用其他存储。
 type ModeStorage interface {
+	txmongo.DocumentFinder
 	// Context 返回由进程根生命周期派生的只读上下文。
 	Context() context.Context
 	// Reader 返回当前模式唯一的文档读取器。

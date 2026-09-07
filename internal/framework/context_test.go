@@ -11,6 +11,7 @@ import (
 	txrpc "github.com/ngnl47/tx/modules/rpc"
 	"github.com/ngnl47/tx/modules/txn"
 	txstorage "github.com/ngnl47/tx/storage"
+	txmongo "github.com/ngnl47/tx/storage/mongo"
 	"github.com/ngnl47/tx/wal"
 )
 
@@ -127,6 +128,9 @@ func TestModeStorageRejectsWriterForDifferentMode(t *testing.T) {
 
 func TestModeStorageKeepsMongoAtomicCapabilitiesInsideMongoMode(t *testing.T) {
 	storage := modeStorageAccess{storage: &storageRuntime{}, mode: meta.StorageModeRedis}
+	if _, _, err := storage.FindDocument(context.Background(), meta.TypeSpec{}, int64(1), txmongo.Filter{Field: "accountId", Value: int64(42)}); err == nil {
+		t.Fatal("Mongo query through Redis storage capability succeeded")
+	}
 	_, err := storage.BackfillDocumentWithOptions(
 		context.Background(),
 		meta.TypeSpec{},

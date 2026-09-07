@@ -141,6 +141,16 @@ type guardedReader struct {
 	next    txstorage.DocumentLoader
 }
 
+// FindDocument 在 Mongo 健康准入后执行指定存储目标上的等值查询。
+func (s *Runtime) FindDocument(ctx context.Context, spec meta.TypeSpec, shardKey any, filter txmongo.Filter, fields ...string) (map[string]any, bool, error) {
+	if err := s.requireStorageMode(meta.StorageModeMongo); err != nil {
+		return nil, false, err
+	}
+	document, exists, err := s.mongo.FindDocument(ctx, spec, shardKey, filter, fields...)
+	s.observeStorageError(err)
+	return document, exists, err
+}
+
 func (reader guardedReader) LoadDocument(ctx context.Context, spec meta.TypeSpec, key txstorage.RecordKey, fields ...string) (map[string]any, bool, error) {
 	if err := reader.storage.requireStorageMode(reader.mode); err != nil {
 		return nil, false, err

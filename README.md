@@ -120,9 +120,14 @@ runtime shutdown 或 discovery 快照写权限。
 `CModSessionID` 依赖 Discovery 已取得的租约和 `workSlot`，只向确实需要发号的 Login Service 暴露
 `AllocateSessionID`；Agent、MsgQ、Game、SLGGame 和 SLGWorld 不应声明该能力，也不能读取 `workSlot`。
 
-三类存储 CMod 返回不同的窄接口：Redis 暴露 `RedisReader` 和脚本路由，MongoDB 暴露 `MongoReader`、条件回填和原子
+三类存储 CMod 返回不同的窄接口：Redis 暴露 `RedisReader` 和脚本路由，MongoDB 暴露 `MongoReader`、`FindDocument`、条件回填和原子
 `CounterStore`，Fusion 暴露 `FusionReader`；对应 `ChangeWriter` 也只接受相同 `TypeSpec.Storage.Mode`。这些接口不返回底层
 客户端或连接关闭权。即使同一进程中的其他服务启用了更多后端，当前服务也不能越过 `ServiceSpec.Requires` 使用未声明存储。
+
+`MongoStorage.FindDocument(ctx, spec, shardKey, filter, fields...)` 使用显式路由键选择唯一 Mongo 目标，
+再按 `mongo.Filter` 中的 BSON 字段等值条件查询。联合查询使用 `Conditions`，例如平台与平台用户标识；
+查询经过 Mongo 健康准入，返回公共 JSON 字段名文档。该接口不扫描其他分片，也不更改记录主键；
+调用方必须保证该路由目标与记录写入位置一致，不能把查询字段自行当成另一套分片规则。
 
 `runtime.Instance()` 返回本进程身份和当前生命周期状态的只读快照，`Services` 切片也会复制，调用方修改
 返回值不会污染运行时。服务 `Start` 阶段看到 `starting`；共享 RPC Host、控制面和 discovery 全部就绪后

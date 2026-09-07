@@ -15,6 +15,20 @@ type Router interface {
 	RouteMongo(context.Context, string, any) (string, error)
 }
 
+// DocumentFinder 按显式路由键和 BSON 等值条件查询单条文档，不执行跨分片搜索。
+type DocumentFinder interface {
+	FindDocument(context.Context, meta.TypeSpec, any, Filter, ...string) (map[string]any, bool, error)
+}
+
+// FindDocument 先选择唯一存储目标，再执行联合条件查询。
+func (c *Cluster) FindDocument(ctx context.Context, spec meta.TypeSpec, shardKey any, filter Filter, fields ...string) (map[string]any, bool, error) {
+	adapter, err := c.adapterForRoute(ctx, mongoRouteType(spec), shardKey)
+	if err != nil {
+		return nil, false, err
+	}
+	return adapter.FindDocument(ctx, spec, filter, fields...)
+}
+
 // RouterFunc 允许用函数快速实现 Router。
 type RouterFunc func(context.Context, string, any) (string, error)
 
