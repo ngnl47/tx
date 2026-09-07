@@ -63,7 +63,7 @@ type SessionTarget struct {
 	Instance discovery.Instance
 }
 
-// SessionRouter 将精确会话或角色主会话解析为唯一的消息服务归属实例。
+// SessionRouter 将精确会话解析为唯一的消息服务归属实例。
 type SessionRouter struct {
 	directory discovery.Directory
 	store     SessionStore
@@ -96,34 +96,6 @@ func (r *SessionRouter) ResolveSession(ctx context.Context, sessionID int64) (Se
 		return SessionTarget{}, err
 	}
 	if !found || binding.Validate() != nil || binding.SessionID != sessionID {
-		return SessionTarget{}, ErrSessionOffline
-	}
-	return r.resolveBinding(binding)
-}
-
-// ResolveRole 按 RoleID 的主会话投影只读解析当前主会话归属。
-func (r *SessionRouter) ResolveRole(ctx context.Context, roleID int64) (SessionTarget, error) {
-	if r == nil || r.directory == nil {
-		return SessionTarget{}, ErrDirectoryNil
-	}
-	if r.store == nil {
-		return SessionTarget{}, ErrSessionStoreNil
-	}
-	if roleID <= 0 {
-		return SessionTarget{}, ErrInvalidSession
-	}
-	sessionID, found, err := r.store.FindPrimary(ctx, roleID)
-	if err != nil {
-		return SessionTarget{}, err
-	}
-	if !found || sessionID <= 0 {
-		return SessionTarget{}, ErrSessionOffline
-	}
-	binding, found, err := r.store.Find(ctx, sessionID)
-	if err != nil {
-		return SessionTarget{}, err
-	}
-	if !found || binding.Validate() != nil || binding.SessionID != sessionID || binding.RoleID != roleID {
 		return SessionTarget{}, ErrSessionOffline
 	}
 	return r.resolveBinding(binding)

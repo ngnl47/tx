@@ -50,37 +50,6 @@ func TestMsgQSessionRouterResolvesExactSessionWithoutRefreshing(t *testing.T) {
 	}
 }
 
-func TestMsgQSessionRouterResolvesRoleThroughPrimaryProjectionWithoutRefreshing(t *testing.T) {
-	directory := rpcSessionDirectory(t, "msgq-2")
-	store := &sessionStoreFake{
-		binding:          msgq.SessionBinding{RoleID: 470001, SessionID: 99, ConnectionID: 7, InstanceID: "msgq-2"},
-		found:            true,
-		primarySessionID: 99,
-		primaryFound:     true,
-	}
-	router, err := msgq.NewSessionRouter(directory, store)
-	if err != nil {
-		t.Fatalf("new session router: %v", err)
-	}
-
-	target, err := router.ResolveRole(context.Background(), 470001)
-	if err != nil {
-		t.Fatalf("resolve role: %v", err)
-	}
-	if target.Binding != store.binding || target.Instance.ID != "msgq-2" {
-		t.Fatalf("target = %#v", target)
-	}
-	if store.findPrimaryCalls != 1 || store.findPrimaryRoleID != 470001 {
-		t.Fatalf("primary find = %d calls for role %d", store.findPrimaryCalls, store.findPrimaryRoleID)
-	}
-	if len(store.findSessionIDs) != 1 || store.findSessionIDs[0] != 99 {
-		t.Fatalf("find session IDs = %#v", store.findSessionIDs)
-	}
-	if !slices.Equal(store.operations, []string{"FindPrimary", "Find"}) {
-		t.Fatalf("store operations = %#v, want [FindPrimary Find]", store.operations)
-	}
-}
-
 func TestMsgQSessionRouterDoesNotRefreshUnavailableInstance(t *testing.T) {
 	store := &sessionStoreFake{
 		binding: msgq.SessionBinding{RoleID: 470001, SessionID: 99, ConnectionID: 7, InstanceID: "msgq-missing"},
@@ -128,63 +97,20 @@ func TestMsgQSessionRouterRejectsNonMsgQInstance(t *testing.T) {
 	}
 }
 
-func TestMsgQSessionRouterRejectsMismatchedProjectionRecordsWithoutRefreshing(t *testing.T) {
-	tests := map[string]struct {
-		store   *sessionStoreFake
-		resolve func(*msgq.SessionRouter) error
-		wantOps []string
-	}{
-		"exact key record mismatch": {
-			store: &sessionStoreFake{
-				binding: msgq.SessionBinding{RoleID: 470001, SessionID: 100, ConnectionID: 7, InstanceID: "msgq-2"},
-				found:   true,
-			},
-			resolve: func(router *msgq.SessionRouter) error {
-				_, err := router.ResolveSession(context.Background(), 99)
-				return err
-			},
-			wantOps: []string{"Find"},
-		},
-		"primary role record mismatch": {
-			store: &sessionStoreFake{
-				binding:          msgq.SessionBinding{RoleID: 470002, SessionID: 99, ConnectionID: 7, InstanceID: "msgq-2"},
-				found:            true,
-				primarySessionID: 99,
-				primaryFound:     true,
-			},
-			resolve: func(router *msgq.SessionRouter) error {
-				_, err := router.ResolveRole(context.Background(), 470001)
-				return err
-			},
-			wantOps: []string{"FindPrimary", "Find"},
-		},
-		"primary session record mismatch": {
-			store: &sessionStoreFake{
-				binding:          msgq.SessionBinding{RoleID: 470001, SessionID: 100, ConnectionID: 7, InstanceID: "msgq-2"},
-				found:            true,
-				primarySessionID: 99,
-				primaryFound:     true,
-			},
-			resolve: func(router *msgq.SessionRouter) error {
-				_, err := router.ResolveRole(context.Background(), 470001)
-				return err
-			},
-			wantOps: []string{"FindPrimary", "Find"},
-		},
+func TestMsgQSessionRouterRejectsMismatchedSessionWithoutRefreshing(t *testing.T) {
+	store := &sessionStoreFake{
+		binding: msgq.SessionBinding{RoleID: 470001, SessionID: 100, ConnectionID: 7, InstanceID: "msgq-2"},
+		found:   true,
 	}
-	for name, test := range tests {
-		t.Run(name, func(t *testing.T) {
-			router, err := msgq.NewSessionRouter(rpcSessionDirectory(t, "msgq-2"), test.store)
-			if err != nil {
-				t.Fatalf("new session router: %v", err)
-			}
-			if err := test.resolve(router); !errors.Is(err, msgq.ErrSessionOffline) {
-				t.Fatalf("resolve error = %v, want session offline", err)
-			}
-			if !slices.Equal(test.store.operations, test.wantOps) {
-				t.Fatalf("store operations = %#v, want %#v", test.store.operations, test.wantOps)
-			}
-		})
+	router, err := msgq.NewSessionRouter(rpcSessionDirectory(t, "msgq-2"), store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := router.ResolveSession(context.Background(), 99); !errors.Is(err, msgq.ErrSessionOffline) {
+		t.Fatalf("mismatched session: %v", err)
+	}
+	if !slices.Equal(store.operations, []string{"Find"}) {
+		t.Fatalf("store operations = %#v", store.operations)
 	}
 }
 

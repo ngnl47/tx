@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/ngnl47/tx/modules/discovery"
 	"github.com/ngnl47/tx/modules/msgq"
@@ -13,7 +14,7 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 )
 
-func TestMsgQSenderPublishesExactAndPrimarySessionsWithReusedConnection(t *testing.T) {
+func TestMsgQSenderPublishesExactAndSharedRoleWithReusedConnection(t *testing.T) {
 	store := newMailboxSessionStore()
 	mailbox, err := msgq.NewServer(msgq.ServerOptions{
 		InstanceID:         "msgq-1",
@@ -46,6 +47,10 @@ func TestMsgQSenderPublishesExactAndPrimarySessionsWithReusedConnection(t *testi
 	if _, err := client.Init(ctx, &msgqpb.InitRequest{Header: header, Primary: true}); err != nil {
 		t.Fatalf("init mailbox: %v", err)
 	}
+	second := &msgqpb.SessionHeader{RoleId: 470001, SessionId: 100, ConnectionId: 8}
+	if _, err := client.Init(ctx, &msgqpb.InitRequest{Header: second}); err != nil {
+		t.Fatal(err)
+	}
 
 	directory := discovery.NewServiceDirectory()
 	if err := directory.Replace([]discovery.Instance{{
@@ -67,7 +72,11 @@ func TestMsgQSenderPublishesExactAndPrimarySessionsWithReusedConnection(t *testi
 		t.Fatalf("new msgq gRPC dialer: %v", err)
 	}
 	dialer := &countingMsgQDialer{delegate: grpcDialer}
-	sender, err := msgq.NewSender(router, dialer)
+	roles, err := msgq.NewRoleRouter(directory, store.FindRole, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender, err := msgq.NewSender(router, roles, dialer)
 	if err != nil {
 		t.Fatalf("new msgq sender: %v", err)
 	}
@@ -77,7 +86,7 @@ func TestMsgQSenderPublishesExactAndPrimarySessionsWithReusedConnection(t *testi
 		t.Fatalf("publish exact session: %v", err)
 	}
 	if _, err := sender.PubRole(ctx, 470001, []byte("second-bon")); err != nil {
-		t.Fatalf("publish primary session: %v", err)
+		t.Fatalf("publish role: %v", err)
 	}
 
 	batch, err := client.FetchSome(ctx, &msgqpb.FetchSomeRequest{Header: header, Max: 2})
@@ -89,6 +98,12 @@ func TestMsgQSenderPublishesExactAndPrimarySessionsWithReusedConnection(t *testi
 	}
 	if dialer.calls != 1 {
 		t.Fatalf("dial calls = %d, want 1", dialer.calls)
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	shared, err := client.FetchSome(fetchCtx, &msgqpb.FetchSomeRequest{Header: second, Max: 2})
+	if err != nil || len(shared.GetMessages()) != 1 || string(shared.GetMessages()[0].GetPayload()) != "second-bon" || shared.GetMessages()[0].GetSeq() != 1 {
+		t.Fatalf("second session shared role delivery = %v, %v", shared, err)
 	}
 }
 

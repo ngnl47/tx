@@ -2318,7 +2318,8 @@ Redis 单 key 原子申请使并发候选得到同一个归属；查询和重复
 角色投递与 Topic 广播共用 `BroadcastResponse`，只报告入队统计，不把多个邮箱的独立 Seq 合并为一个序号。
 网络超时不触发自动业务重发；消息可能已入队，不能通过重新寻址推断发送失败。
 
-Agent 选址及邮箱初始化已经接入角色归属；`Sender` 的远程角色发布和跨工程真实验收继续按实施计划推进，不能将缓存基准视为端到端链路验收。
+Agent 选址、邮箱初始化和 `Sender.PubRole` 已接入角色归属。Sender 使用有界 RoleRouter 缓存，明确归属拒绝时只清理对应版本，下一次调用重新寻址；不自动重发。
+跨工程真实验收继续按实施计划推进，不能将缓存基准视为端到端链路验收。
 
 邮箱用角色级初始化锁串行协调初始化和归属维护，不把多个 Session 的 Seq/Ack 合并。初始化第一次接管本地角色时先原子申请、再条件续期，
 本地租期从请求开始时刻计算，避免把网络耗时额外算入有效期。正常入队与会话活动只读本地租期，不访问 Redis 角色索引。
@@ -2347,19 +2348,19 @@ SessionID 回到原 running owner，用完整旧 binding 条件 `Rebind` 到新 
 保留 Seq/Ack 与未确认队列，新 SessionID 的干净登录不继承旧消息。
 
 项目鉴权通过可信 `SessionIdentity.Primary` 明确选择主会话属性，与 AccessMode 无关。
-非主会话不写主投影，也不接收当前 `Sender.PubRole` 的主会话下行；这不限制其操作角色数据。
+非主会话不写主投影，但会接收 `Sender.PubRole` 的角色下行；主会话属性不限制 Actor 数据操作。
 同一 RoleID 的多个邮箱可以并存；新的主会话替换主投影，但不继承或清空其他 SessionID 的队列。主会话
 活动按限频阈值条件续期 RoleID 投影；显式终止、失活终止和积压溢出都不主动删除主会话投影，不能影响同角色的其他
 Session。新主会话可以覆盖旧投影，遗留投影由 Redis TTL 兜底过期。
 
-`SessionRouter.ResolveSession/ResolveRole` 只读解析，不刷新 TTL。只有当前 ConnectionID 通过 owner 侧校验的连接活动
+`SessionRouter.ResolveSession` 和 `RoleRouter.Resolve` 只读解析，不刷新 TTL。只有当前 ConnectionID 通过 owner 侧校验的连接活动
 才更新本地活动时间；业务发布不更新。生产 Redis store 在 `Init`、`Rebind` 或一次成功续期后等待 `TTL / 2`，达到
 阈值的第一条合法活动才续期精确 binding 和主会话投影，因此高频心跳、上行、Ack 和 Fetch 不会产生同频 Redis I/O。
 默认离线保留窗口为 `180s`，失活终止检查间隔为 `2s`；周期任务只遍历当前 MsgQ 的本地 Session 表，不扫描 Redis key。
 超过窗口、积压条数或积压字节上限时终止整个 Session，而不是无限保留未确认消息。
 
 公开投递只保留显式语义：`Sender.PubSession(SessionID, payload)` 精确投递到普通或 Borrow 会话，
-`Sender.PubRole(RoleID, payload)` 只投递到角色当前正常主会话；二者最终都调用同一个精确 `PubSession` RPC。Topic 仍是
+`Sender.PubRole(RoleID, payload)` 通过角色缓存定向调用版本化 `PubRole` RPC，向该角色全部邮箱分发并返回 BroadcastResult，不返回共同 Seq。Topic 仍是
 单个 MsgQ 的本地 SessionID 索引：`JoinTopics` 和 `BroadcastTopic` 以 SessionID 作为当前连接或实例路由锚点，跨实例覆盖
 必须由业务分别选择各实例上的 Session 发起。
 

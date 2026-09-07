@@ -371,7 +371,7 @@ TX_ETCD_ENDPOINT=127.0.0.1:2379 \
 `modules/msgq` 以 `SessionID` 作为精确邮箱主键，负责
 `SessionID -> (RoleID, SessionID, ConnectionID, InstanceID)` 的短期 binding 与 owner 解析；同时维护
 `RoleID -> 唯一主 SessionID` 投影。主会话由项目通过可信 `Primary` 属性选择，与访问模式无关。
-同一 RoleID 的多个邮箱可以并存，各自维护队列；当前业务入口 `Sender.PubRole` 仍只投递给主会话，角色共享下行的接入进度见下文。
+同一 RoleID 的多个邮箱可以并存，各自维护队列；`Sender.PubRole` 定向投递到角色归属 MsgQ，由其向该角色全部邮箱分发。
 `Server` 在本进程管理 Session、下行队列和 Seq/Ack。
 
 Redis 精确 binding key 固定为 `<prefix>:session:v2:{SessionID}`，值保存完整
@@ -418,18 +418,22 @@ if err != nil {
     return err
 }
 
-// 精确投递按 SessionID；角色通知则通过 ResolveRole 解析当前唯一主会话。
+// 精确投递按 SessionID；角色通知通过 RoleRouter 解析角色归属。
 target, err := sessions.ResolveSession(ctx, 99)
 if err != nil {
     return err // 离线或 owner 不可用均显式返回错误。
 }
 _ = target.Instance.Endpoint
 
-primary, err := sessions.ResolveRole(ctx, 470001)
+roles, err := msgq.NewRoleRouter(directory, bindings.FindRole, 65536)
 if err != nil {
     return err
 }
-_ = primary.Binding.SessionID
+role, err := roles.Resolve(ctx, 470001)
+if err != nil {
+    return err
+}
+_ = role.Binding.Generation
 ```
 
 干净登录复用 RoleID 的 MsgQ 归属；首次归属在运行中的 MsgQ 间轮转提名并通过 Redis 原子确认，再以 `Create` 的 Redis `SET NX PX` 创建 SessionID binding；现存
@@ -437,7 +441,7 @@ SessionID 会明确冲突，不能覆盖旧邮箱。恢复只按 SessionID 找�
 `Rebind` 并换成新的 ConnectionID；owner 不可用或条件不匹配时直接失败，不会迁移到其他实例。同 SessionID 恢复保留
 Seq/Ack 和未确认队列，新 SessionID 的干净登录始终从空队列开始。
 
-`SessionRouter.ResolveSession/ResolveRole` 都是只读解析，不刷新任何 TTL。只有经过当前 ConnectionID 校验的 owner 侧
+`SessionRouter.ResolveSession` 和 `RoleRouter.Resolve` 都是只读解析，不刷新任何 TTL。只有经过当前 ConnectionID 校验的 owner 侧
 连接活动才会条件续期精确 binding；正常主会话还会条件续期主投影。binding 比较完整
 `(roleID, sessionID, connectionID, instanceID)`，所以旧连接不能续期、解绑、确认或管理新连接的 Topic。实例已摘除时
 Router 不会删除 Redis binding，也不会随机退化到其他 MsgQ 副本。
@@ -445,7 +449,7 @@ Router 不会删除 Redis binding，也不会随机退化到其他 MsgQ 副本�
 ### 进程内会话邮箱
 
 `Server` 是单个 msgq 实例的本地邮箱，并按 SessionID 隔离同一角色的多个逻辑会话。跨实例业务发送前先通过
-`SessionRouter.ResolveSession` 或 `ResolveRole` 找到 owner，再调用其 `Instance.Endpoint` 上的独立
+`SessionRouter.ResolveSession` 或 `RoleRouter.Resolve` 找到 owner，再调用其 `Instance.Endpoint` 上的独立
 `MailboxService`；不要把 `Server` 当作全局消息队列。
 
 ```go
@@ -513,8 +517,8 @@ gRPC 错误通过状态详情保留服务端投递统计；发送方不能因错
 不访问 Redis。缺失或过期归属、错误实例、旧版本返回 `ErrSessionChanged`，不会投递到后续换代的新邮箱。
 两个远程分发入口共用 `BroadcastResponse`，返回各邮箱入队统计而不是共同 Seq；错误响应也保留可获得的部分统计。
 
-Agent 的集中选址、归属续期及底层远程角色投递已接入；`Sender.PubRole` 仍使用主会话路由。
-下一步同时切换 Sender 的路由缓存和示例返回契约，不能将底层 RPC 验证当作完整多 Session 业务下行验收。
+Agent 的集中选址、归属续期及 `Sender.PubRole` 已接入版本化角色投递。两套示例分别装配有界角色缓存，
+`System_PublishNotifyResp` 返回分发统计。普通请求响应的共享下行和完整多进程验收继续按实施计划推进。
 
 `FetchSome` 与 `Fetch` 的确认语义完全相同：批量读取只前进发送游标，不会删除队列内容；客户端 Ack 后必须调用
 `Confirm`，消息才会从重连恢复队列释放。
@@ -679,15 +683,15 @@ if errors.Is(err, msgq.ErrInvalidMailboxResponse) {
 if err != nil {
     return err
 }
-useDownMsgSeq(result.Seq)
+recordDeliveredSessions(result.Delivered)
 ```
 
 `rpc.Host` 直接接入全局 `lifecycle.WaitGroupContext`。应用服务关闭时由项目宿主统一调用 `Stop`，未确认下行仍遵循
 msgq 的内存语义。
 
 业务 Actor 或其他服务不应自行读取 `SessionBinding`、拼接 endpoint 或维护每个 msgq 实例的连接。`Sender.PubSession`
-按 SessionID 精确投递，`Sender.PubRole` 按 RoleID 解析当前主 Session；二者都按 endpoint 复用 gRPC 连接，并最终调用
-同一个 `PubSession` RPC：
+按 SessionID 精确投递；`Sender.PubRole` 通过有界 RoleRouter 缓存定位归属 MsgQ，携带完整版本调用 `PubRole` RPC。
+两种投递都按 endpoint 复用 gRPC 连接，角色热寻址不查询 Redis，也不向其他 MsgQ 广播：
 
 ```go
 router, err := msgq.NewSessionRouter(directory, sessionStore)
@@ -698,7 +702,11 @@ dialer, err := msgq.NewGRPCDialer(insecure.NewCredentials()) // 仅可信私网�
 if err != nil {
     return err
 }
-sender, err := msgq.NewSender(router, dialer)
+roles, err := msgq.NewRoleRouter(directory, sessionStore.FindRole, 65536)
+if err != nil {
+    return err
+}
+sender, err := msgq.NewSender(router, roles, dialer)
 if err != nil {
     return err
 }
@@ -709,7 +717,7 @@ if _, err := sender.PubSession(ctx, identity.SessionID, bonResponse); err != nil
     return err
 }
 
-// 跨角色通知投递给角色 470001 当前唯一的主会话。
+// 跨角色通知投递给角色 470001 的全部邮箱。
 if _, err := sender.PubRole(ctx, 470001, bonNotify); err != nil {
     // 离线、owner 改变、路由不可用、队列满或传输失败均明确返回错误。
     return err
@@ -717,7 +725,8 @@ if _, err := sender.PubRole(ctx, 470001, bonNotify); err != nil {
 ```
 
 `Sender` 不自动重试 `PubSession` 或 `PubRole`：连接异常时服务端是否已接受该消息无法确定，自动重发可能产生重复下行。调用方应按协议消息的
-幂等语义决定重试或重同步；关闭服务时必须调用 `Sender.Close()` 释放缓存连接。
+幂等语义决定重试或重同步；明确收到 `ErrSessionChanged` 时仅使对应版本缓存失效，下一次调用重新寻址。
+超时、断连或部分溢出不触发缓存失效或整组重发；关闭服务时必须调用 `Sender.Close()` 释放缓存连接。
 
 本机或 CI 已启动 Redis 时可执行真实回归；未设置变量时该用例会跳过：
 
@@ -769,7 +778,7 @@ handlers := func(runtime bee.Context) (txagent.IdentityResolver, txagent.Dispatc
 `NewActorDispatcher` 在投递前以 Agent 的可信 `SessionIdentity` 与当前上行 `UpSeq` 覆盖 Delivery 对应字段。项目
 resolver 和客户端载荷均不能指定 `ConnectionID`，也不能伪造投递给 Actor 的身份或上行序号。Agent 只负责 Frame、
 身份和 Seq/Ack，不依赖任何项目生成包。Agent 将可信身份的 `Primary` 传给 MsgQ，不根据 AccessMode 推断。
-该属性由项目鉴权选择，只决定角色主会话投影和 `PubRole` 接收者，不表示独占操作权。
+该属性由项目鉴权选择，用于主会话投影与恢复校验，不影响 `PubRole` 接收者，也不表示 Actor 独占操作权。
 
 一条连接的处理顺序固定如下：
 
@@ -1456,7 +1465,7 @@ Actor；实体不会进入 `disthash`，成员变化不会把它改派到其他�
 `SessionClientRouter` 和邮箱初始化已接入角色归属。邮箱低频维护循环按半租期续期，最后一个邮箱移除后在下一轮维护条件释放归属。
 释放与同角色初始化串行交接；初始化中断留下的无邮箱归属由本地维护或 Redis TTL 清理。续期失败不延长本地有效期，
 超过有效期的邮箱拒绝活动和投递，并整体退出本地索引；旧代际不能删除新归属。所有维护只遍历本地记录，不扫描 Redis key。
-`RoleRouter` 缓存尚未接入 `Sender` 的远程角色发布；接入进度见 [实施计划](docs/superpowers/plans/2026-09-08-msgq-role-routing.md)。
+`Sender.PubRole` 已使用 `RoleRouter` 缓存；完整共享业务响应与集群验收进度见 [实施计划](docs/superpowers/plans/2026-09-08-msgq-role-routing.md)。
 
 ### Actor 路由模式
 

@@ -15,6 +15,7 @@ import (
 var (
 	ErrDialerNil               = errors.New("msgq: dialer is nil")
 	ErrSessionRouterNil        = errors.New("msgq: session router is nil")
+	ErrRoleRouterNil           = errors.New("msgq: role router is nil")
 	ErrTransportCredentialsNil = errors.New("msgq: transport credentials are nil")
 	ErrSenderClosed            = errors.New("msgq: sender is closed")
 	ErrInvalidMailboxResponse  = errors.New("msgq: invalid mailbox response")
@@ -231,6 +232,7 @@ func headerToProto(header SessionHeader) *msgqpb.SessionHeader {
 // Sender 按当前会话 owner 路由下行消息，并复用每个 endpoint 的连接直到 Close。
 type Sender struct {
 	router *SessionRouter
+	roles  *RoleRouter
 	dialer Dialer
 
 	mu          sync.Mutex
@@ -239,15 +241,19 @@ type Sender struct {
 }
 
 // NewSender 创建按 SessionID 或 RoleID 显式路由的 msgq 发送器。
-func NewSender(router *SessionRouter, dialer Dialer) (*Sender, error) {
+func NewSender(router *SessionRouter, roles *RoleRouter, dialer Dialer) (*Sender, error) {
 	if router == nil {
 		return nil, ErrSessionRouterNil
+	}
+	if roles == nil {
+		return nil, ErrRoleRouterNil
 	}
 	if dialer == nil {
 		return nil, ErrDialerNil
 	}
 	return &Sender{
 		router:      router,
+		roles:       roles,
 		dialer:      dialer,
 		connections: make(map[string]Connection),
 	}, nil
@@ -265,16 +271,25 @@ func (s *Sender) PubSession(ctx context.Context, sessionID int64, payload []byte
 	return s.publish(ctx, target, payload)
 }
 
-// PubRole 向 RoleID 当前主会话投递 BON 编码载荷。
-func (s *Sender) PubRole(ctx context.Context, roleID int64, payload []byte) (PubResult, error) {
+// PubRole 向 RoleID 归属 MsgQ 的全部角色邮箱投递，热路由不查询 Redis。
+// 明确拒绝旧归属时只清理对应缓存，留待下一次调用重新寻址；任何错误均不自动重发。
+func (s *Sender) PubRole(ctx context.Context, roleID int64, payload []byte) (BroadcastResult, error) {
 	if s == nil {
-		return PubResult{}, ErrSenderClosed
+		return BroadcastResult{}, ErrSenderClosed
 	}
-	target, err := s.router.ResolveRole(ctx, roleID)
+	target, err := s.roles.Resolve(ctx, roleID)
 	if err != nil {
-		return PubResult{}, err
+		return BroadcastResult{}, err
 	}
-	return s.publish(ctx, target, payload)
+	connection, err := s.connection(ctx, target.Instance)
+	if err != nil {
+		return BroadcastResult{}, err
+	}
+	result, err := connection.PubRole(ctx, target.Binding, payload)
+	if errors.Is(err, ErrSessionChanged) {
+		s.roles.Invalidate(target.Binding)
+	}
+	return result, err
 }
 
 // JoinTopics 将 ownerSessionID 的当前连接加入其 MsgQ 实例的本地 Topic 索引。

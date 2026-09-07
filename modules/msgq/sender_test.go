@@ -26,24 +26,6 @@ func TestSenderPubSessionUsesExactSession(t *testing.T) {
 	}
 }
 
-func TestSenderPubRoleUsesPrimarySession(t *testing.T) {
-	connection := &senderConnectionFake{pubResult: PubResult{Seq: 5}}
-	sender, store, _ := newSenderForTest(t, connection, SessionBinding{
-		RoleID: 47, SessionID: 11, ConnectionID: 13, InstanceID: "msgq-a",
-	})
-
-	result, err := sender.PubRole(context.Background(), 47, []byte("encoded-bon"))
-	if err != nil {
-		t.Fatalf("PubRole returned error: %v", err)
-	}
-	if result.Seq != 5 || connection.pubSessionID != 11 || string(connection.pubPayload) != "encoded-bon" {
-		t.Fatalf("publish = %#v, sessionID = %d, payload = %q", result, connection.pubSessionID, connection.pubPayload)
-	}
-	if len(store.findPrimaryRoleIDs) != 1 || store.findPrimaryRoleIDs[0] != 47 || len(store.findSessionIDs) != 1 || store.findSessionIDs[0] != 11 {
-		t.Fatalf("primary finds = %#v, exact finds = %#v", store.findPrimaryRoleIDs, store.findSessionIDs)
-	}
-}
-
 func TestSenderJoinTopicsUsesOwnerSessionConnectionHeader(t *testing.T) {
 	connection := &senderConnectionFake{}
 	sender, store, _ := newSenderForTest(t, connection, SessionBinding{
@@ -89,151 +71,22 @@ func TestSenderBroadcastTopicUsesOwnerSessionMsgQInstance(t *testing.T) {
 	}
 }
 
-func TestSenderPubRoleUsesFirstPrimaryReadAsBoundary(t *testing.T) {
-	first := SessionBinding{RoleID: 47, SessionID: 11, ConnectionID: 13, InstanceID: "msgq-a"}
-	second := SessionBinding{RoleID: 47, SessionID: 12, ConnectionID: 14, InstanceID: "msgq-b"}
-	directory := discovery.NewServiceDirectory()
-	if err := directory.Replace([]discovery.Instance{
-		{ID: "msgq-a", Endpoint: "msgq-a:9000", Services: []string{"msgq"}, Status: discovery.StatusRunning},
-		{ID: "msgq-b", Endpoint: "msgq-b:9000", Services: []string{"msgq"}, Status: discovery.StatusRunning},
-	}); err != nil {
-		t.Fatalf("replace directory: %v", err)
-	}
-	store := &senderStoreFake{
-		bindings:          map[int64]SessionBinding{11: first, 12: second},
-		primarySessionIDs: []int64{11, 12},
-		primaryFound:      true,
-	}
-	firstConnection := &senderConnectionFake{pubResult: PubResult{Seq: 1}}
-	secondConnection := &senderConnectionFake{pubResult: PubResult{Seq: 1}}
-	dialer := &senderDialerFake{connections: map[string]Connection{
-		"msgq-a:9000": firstConnection,
-		"msgq-b:9000": secondConnection,
-	}}
-	router, err := NewSessionRouter(directory, store)
-	if err != nil {
-		t.Fatalf("NewSessionRouter returned error: %v", err)
-	}
-	sender, err := NewSender(router, dialer)
-	if err != nil {
-		t.Fatalf("NewSender returned error: %v", err)
-	}
-	t.Cleanup(func() { _ = sender.Close() })
-
-	if _, err := sender.PubRole(context.Background(), 47, []byte("first")); err != nil {
-		t.Fatalf("first PubRole returned error: %v", err)
-	}
-	if _, err := sender.PubRole(context.Background(), 47, []byte("second")); err != nil {
-		t.Fatalf("second PubRole returned error: %v", err)
-	}
-	if firstConnection.pubSessionID != 11 || secondConnection.pubSessionID != 12 {
-		t.Fatalf("published session IDs = %d, %d", firstConnection.pubSessionID, secondConnection.pubSessionID)
-	}
-	if len(store.findPrimaryRoleIDs) != 2 || store.findPrimaryRoleIDs[0] != 47 || store.findPrimaryRoleIDs[1] != 47 {
-		t.Fatalf("primary role reads = %#v", store.findPrimaryRoleIDs)
-	}
-	if len(store.findSessionIDs) != 2 || store.findSessionIDs[0] != 11 || store.findSessionIDs[1] != 12 {
-		t.Fatalf("exact session reads = %#v", store.findSessionIDs)
-	}
-}
-
-func TestSenderPubRoleUpdatesSessionOnReusedEndpoint(t *testing.T) {
-	first := SessionBinding{RoleID: 47, SessionID: 11, ConnectionID: 13, InstanceID: "msgq-a"}
-	second := SessionBinding{RoleID: 47, SessionID: 12, ConnectionID: 14, InstanceID: "msgq-a"}
-	directory := discovery.NewServiceDirectory()
-	if err := directory.Replace([]discovery.Instance{{
-		ID: "msgq-a", Endpoint: "msgq-a:9000", Services: []string{"msgq"}, Status: discovery.StatusRunning,
-	}}); err != nil {
-		t.Fatalf("replace directory: %v", err)
-	}
-	store := &senderStoreFake{
-		bindings:          map[int64]SessionBinding{11: first, 12: second},
-		primarySessionIDs: []int64{11, 12},
-		primaryFound:      true,
-	}
-	connection := &senderConnectionFake{pubResult: PubResult{Seq: 1}}
-	dialer := &senderDialerFake{connection: connection}
-	router, err := NewSessionRouter(directory, store)
-	if err != nil {
-		t.Fatalf("NewSessionRouter returned error: %v", err)
-	}
-	sender, err := NewSender(router, dialer)
-	if err != nil {
-		t.Fatalf("NewSender returned error: %v", err)
-	}
-	t.Cleanup(func() { _ = sender.Close() })
-
-	for _, payload := range [][]byte{[]byte("first"), []byte("second")} {
-		if _, err := sender.PubRole(context.Background(), 47, payload); err != nil {
-			t.Fatalf("PubRole returned error: %v", err)
-		}
-	}
-	if len(connection.pubSessionIDs) != 2 || connection.pubSessionIDs[0] != 11 || connection.pubSessionIDs[1] != 12 {
-		t.Fatalf("published session IDs = %#v", connection.pubSessionIDs)
-	}
-	if dialer.calls != 1 {
-		t.Fatalf("dial calls = %d, want 1", dialer.calls)
-	}
-}
-
-func TestSenderPubRoleDoesNotRereadPrimaryWhenExactBindingIsMissing(t *testing.T) {
-	directory := discovery.NewServiceDirectory()
-	if err := directory.Replace([]discovery.Instance{{
-		ID: "msgq-a", Endpoint: "msgq-a:9000", Services: []string{"msgq"}, Status: discovery.StatusRunning,
-	}}); err != nil {
-		t.Fatalf("replace directory: %v", err)
-	}
-	store := &senderStoreFake{
-		bindings: map[int64]SessionBinding{
-			12: {RoleID: 47, SessionID: 12, ConnectionID: 14, InstanceID: "msgq-a"},
-		},
-		primarySessionIDs: []int64{11, 12},
-		primaryFound:      true,
-	}
-	dialer := &senderDialerFake{connection: &senderConnectionFake{}}
-	router, err := NewSessionRouter(directory, store)
-	if err != nil {
-		t.Fatalf("NewSessionRouter returned error: %v", err)
-	}
-	sender, err := NewSender(router, dialer)
-	if err != nil {
-		t.Fatalf("NewSender returned error: %v", err)
-	}
-
-	if _, err := sender.PubRole(context.Background(), 47, []byte("encoded-bon")); !errors.Is(err, ErrSessionOffline) {
-		t.Fatalf("PubRole error = %v, want ErrSessionOffline", err)
-	}
-	if len(store.findPrimaryRoleIDs) != 1 || len(store.findSessionIDs) != 1 || store.findSessionIDs[0] != 11 || dialer.calls != 0 {
-		t.Fatalf("primary reads = %#v, exact reads = %#v, dial calls = %d", store.findPrimaryRoleIDs, store.findSessionIDs, dialer.calls)
-	}
-}
-
-func TestSenderDoesNotRetryFailedPublish(t *testing.T) {
-	pubErr := errors.New("publish response lost")
-	connection := &senderConnectionFake{pubErr: pubErr}
-	sender, store, dialer := newSenderForTest(t, connection, SessionBinding{
-		RoleID: 47, SessionID: 11, ConnectionID: 13, InstanceID: "msgq-a",
-	})
-
-	if _, err := sender.PubRole(context.Background(), 47, []byte("encoded-bon")); !errors.Is(err, pubErr) {
-		t.Fatalf("PubRole error = %v, want publish error", err)
-	}
-	if connection.pubCalls != 1 || dialer.calls != 1 || len(store.findPrimaryRoleIDs) != 1 || len(store.findSessionIDs) != 1 {
-		t.Fatalf("pub calls = %d, dial calls = %d, primary reads = %d, exact reads = %d", connection.pubCalls, dialer.calls, len(store.findPrimaryRoleIDs), len(store.findSessionIDs))
-	}
-}
-
 func TestSenderTopicOperationsRejectOfflineOwnerBeforeDial(t *testing.T) {
 	directory := discovery.NewServiceDirectory()
 	if err := directory.Replace(nil); err != nil {
 		t.Fatalf("replace directory: %v", err)
 	}
-	router, err := NewSessionRouter(directory, &senderStoreFake{})
+	store := &senderStoreFake{}
+	router, err := NewSessionRouter(directory, store)
 	if err != nil {
 		t.Fatalf("NewSessionRouter returned error: %v", err)
 	}
 	dialer := &senderDialerFake{connection: &senderConnectionFake{}}
-	sender, err := NewSender(router, dialer)
+	roles, err := NewRoleRouter(directory, store.FindRole, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender, err := NewSender(router, roles, dialer)
 	if err != nil {
 		t.Fatalf("NewSender returned error: %v", err)
 	}
@@ -271,7 +124,11 @@ func newSenderForTest(t *testing.T, connection Connection, binding SessionBindin
 		t.Fatalf("NewSessionRouter returned error: %v", err)
 	}
 	dialer := &senderDialerFake{connection: connection}
-	sender, err := NewSender(router, dialer)
+	roles, err := NewRoleRouter(directory, store.FindRole, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender, err := NewSender(router, roles, dialer)
 	if err != nil {
 		t.Fatalf("NewSender returned error: %v", err)
 	}
@@ -281,6 +138,7 @@ func newSenderForTest(t *testing.T, connection Connection, binding SessionBindin
 
 type senderStoreFake struct {
 	roleTestStore
+	roleReads          int
 	binding            SessionBinding
 	bindings           map[int64]SessionBinding
 	found              bool
@@ -289,6 +147,11 @@ type senderStoreFake struct {
 	primaryFound       bool
 	findSessionIDs     []int64
 	findPrimaryRoleIDs []int64
+}
+
+func (store *senderStoreFake) FindRole(ctx context.Context, roleID int64) (RoleBinding, bool, error) {
+	store.roleReads++
+	return store.roleTestStore.FindRole(ctx, roleID)
 }
 
 func (senderStoreFake) Create(context.Context, SessionBinding) (bool, error) {
@@ -351,6 +214,7 @@ func (dialer *senderDialerFake) Dial(_ context.Context, instance discovery.Insta
 }
 
 type senderConnectionFake struct {
+	roleBindings     []RoleBinding
 	pubSessionID     int64
 	pubSessionIDs    []int64
 	pubPayload       []byte
@@ -382,6 +246,52 @@ func (connection *senderConnectionFake) BroadcastTopic(_ context.Context, reques
 
 func (*senderConnectionFake) Close() error { return nil }
 
-func (*senderConnectionFake) PubRole(context.Context, RoleBinding, []byte) (BroadcastResult, error) {
-	return BroadcastResult{}, errors.New("unexpected role publish")
+func (connection *senderConnectionFake) PubRole(_ context.Context, binding RoleBinding, payload []byte) (BroadcastResult, error) {
+	connection.roleBindings = append(connection.roleBindings, binding)
+	connection.pubPayload = payload
+	return connection.broadcastResult, connection.pubErr
+}
+
+func TestSenderRoleCacheInvalidatesOnlyDefinitiveRejectionWithoutReplay(t *testing.T) {
+	for _, failure := range []error{ErrSessionChanged, context.DeadlineExceeded, ErrRouteUnavailable, ErrDownMsgOverflow} {
+		t.Run(failure.Error(), func(t *testing.T) {
+			ctx := context.Background()
+			connection := &senderConnectionFake{broadcastResult: BroadcastResult{Attempted: 2, Delivered: 1, Overflowed: 1}}
+			sender, store, _ := newSenderForTest(t, connection, SessionBinding{RoleID: 47, SessionID: 11, ConnectionID: 13, InstanceID: "msgq-a"})
+			first := RoleBinding{RoleID: 47, InstanceID: "msgq-a", Generation: "first"}
+			if _, err := store.ClaimRole(ctx, first); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sender.PubRole(ctx, 47, []byte("warm")); err != nil {
+				t.Fatal(err)
+			}
+			connection.pubErr = failure
+			result, err := sender.PubRole(ctx, 47, []byte("ambiguous"))
+			if !errors.Is(err, failure) || result != connection.broadcastResult || len(connection.roleBindings) != 2 || store.roleReads != 1 {
+				t.Fatalf("publish result=%+v error=%v calls=%d reads=%d", result, err, len(connection.roleBindings), store.roleReads)
+			}
+			if len(store.findSessionIDs) != 0 || len(store.findPrimaryRoleIDs) != 0 {
+				t.Fatal("role publish resolved a session")
+			}
+			if _, err := store.ReleaseRole(ctx, first); err != nil {
+				t.Fatal(err)
+			}
+			second := first
+			second.Generation = "second"
+			if _, err := store.ClaimRole(ctx, second); err != nil {
+				t.Fatal(err)
+			}
+			connection.pubErr = nil
+			if _, err := sender.PubRole(ctx, 47, []byte("next")); err != nil {
+				t.Fatal(err)
+			}
+			wantBinding, wantReads := first, 1
+			if errors.Is(failure, ErrSessionChanged) {
+				wantBinding, wantReads = second, 2
+			}
+			if len(connection.roleBindings) != 3 || connection.roleBindings[2] != wantBinding || store.roleReads != wantReads {
+				t.Fatalf("next binding=%+v reads=%d", connection.roleBindings, store.roleReads)
+			}
+		})
+	}
 }
