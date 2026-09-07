@@ -46,8 +46,9 @@ type Service struct {
 	options      Options
 	dependencies Dependencies
 
-	mu     sync.RWMutex
-	client txmsgq.SessionClient
+	mu      sync.RWMutex
+	client  txmsgq.SessionClient
+	mailbox *txmsgq.Server
 }
 
 // New 校验配置和显式依赖，构造时不启动 goroutine。
@@ -106,6 +107,7 @@ func (service *Service) Start(context.Context) error {
 	}
 	service.mu.Lock()
 	service.client = client
+	service.mailbox = mailbox
 	service.mu.Unlock()
 	txlog.Info(
 		"msgq service initialized",
@@ -116,14 +118,19 @@ func (service *Service) Start(context.Context) error {
 	return nil
 }
 
-// Stop 清理本地会话客户端引用；邮箱后台任务由 Tasks 生命周期等待退出。
-func (service *Service) Stop(context.Context) error {
+// Stop 停止邮箱并释放本地角色归属；后台任务由 Tasks 生命周期等待退出。
+func (service *Service) Stop(ctx context.Context) error {
 	if service == nil {
 		return nil
 	}
 	service.mu.Lock()
 	service.client = nil
+	mailbox := service.mailbox
+	service.mailbox = nil
 	service.mu.Unlock()
+	if mailbox != nil {
+		return mailbox.Stop(ctx)
+	}
 	return nil
 }
 

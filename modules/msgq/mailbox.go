@@ -29,6 +29,7 @@ type Server struct {
 	terminateDeadSessionInterval time.Duration
 	leaseRefreshInterval         time.Duration
 	terminatingDeadSessions      atomic.Bool
+	stopped                      atomic.Bool
 	initLocks                    [initLockShards]sync.Mutex
 	// beforeRestoreSessionLock 仅供包内测试观察 Restore 即将等待会话锁的阶段。
 	beforeRestoreSessionLock func()
@@ -201,6 +202,9 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 	initLock := &s.initLocks[uint64(request.Header.RoleID)%initLockShards]
 	initLock.Lock()
 	defer initLock.Unlock()
+	if s.stopped.Load() {
+		return InitResult{}, ErrSessionOffline
+	}
 	if request.Restore {
 		previous, found := s.lookup(request.Header.SessionID)
 		if !found {

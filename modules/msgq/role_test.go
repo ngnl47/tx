@@ -50,6 +50,13 @@ func TestRoleRouteCacheReusesOwnerAndInvalidatesExactGeneration(t *testing.T) {
 	if reads.Load() != 2 {
 		t.Fatalf("old invalidation evicted current owner: %d reads", reads.Load())
 	}
+	owner = RoleBinding{RoleID: 47, InstanceID: "msgq-b", Generation: "third"}
+	if err := directory.Replace([]discovery.Instance{{ID: "msgq-b", Endpoint: "localhost:9002", Services: []string{"msgq"}, Status: discovery.StatusRunning}}); err != nil {
+		t.Fatal(err)
+	}
+	if target, err := cache.Resolve(ctx, 47); err != nil || target.Binding != owner {
+		t.Fatalf("stale instance cache prevented new owner routing: %+v, %v", target, err)
+	}
 	directory.Invalidate()
 	if _, err := cache.Resolve(ctx, 47); !errors.Is(err, ErrRouteUnavailable) {
 		t.Fatalf("removed owner: %v", err)

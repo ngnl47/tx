@@ -75,6 +75,10 @@ func NewRoleRouter(directory discovery.Directory, load RoleLoader, maximumSize i
 
 // Resolve 命中缓存时不访问绑定存储；归属不存在时返回 ErrSessionOffline。
 func (r *RoleRouter) Resolve(ctx context.Context, roleID int64) (RoleTarget, error) {
+	return r.resolve(ctx, roleID, true)
+}
+
+func (r *RoleRouter) resolve(ctx context.Context, roleID int64, reload bool) (RoleTarget, error) {
 	if roleID <= 0 {
 		return RoleTarget{}, ErrInvalidSession
 	}
@@ -112,9 +116,14 @@ func (r *RoleRouter) Resolve(ctx context.Context, roleID int64) (RoleTarget, err
 			binding = result.Val.(RoleBinding)
 		}
 	}
+	cached := found
 	instance, found := r.directory.LookupInstance(binding.InstanceID)
 	if !found || instance.Status != discovery.StatusRunning || !providesService(instance, "msgq") {
 		r.Invalidate(binding)
+		// 仅在发送前重新寻址一次，不重发已经投递的业务载荷。
+		if cached && reload {
+			return r.resolve(ctx, roleID, false)
+		}
 		return RoleTarget{}, ErrRouteUnavailable
 	}
 	return RoleTarget{Binding: binding, Instance: instance}, nil

@@ -107,6 +107,12 @@ func TestRoleMailboxRedisOwnershipLifecycle(t *testing.T) {
 	if current, found, err := store.FindRole(ctx, 47); err != nil || !found || current.InstanceID != "msgq-b" || current.Generation == owner.Generation {
 		t.Fatalf("new owner = %+v, %t, %v", current, found, err)
 	}
+	if err := b.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := store.FindRole(ctx, 47); err != nil || found {
+		t.Fatalf("stopped owner retained: %t, %v", found, err)
+	}
 }
 
 func TestExpiredRoleLeaseRejectsTrafficAndCannotReleaseNewOwner(t *testing.T) {

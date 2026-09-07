@@ -617,6 +617,13 @@ binding、释放本地邮箱和 Topic 关系，最后一个邮箱退出后由维
 
 ### msgq gRPC 传输
 
+标准 MsgQ 服务正常停止时调用 `Server.Stop(ctx)`：阻止后续初始化，使本地邮箱及未确认队列失效，
+再按 `RoleID/InstanceID/Generation` 条件释放本地持有的角色归属。只遍历本地记录，不扫描 Redis。
+因此新 Session 可以重新申请归属，旧 Session 不能在新实例恢复。进程强制终止或 Redis 释放失败时，
+归属仍由原 TTL 兜底；服务发现暂时缺失不会触发抢占。
+角色缓存命中已不可用实例时，`RoleRouter` 在发送前至多重新读取一次权威归属；若新归属已建立即可直接寻址。
+该操作不分配归属，也不重试已发送的业务消息；稳定热路径仍不访问 Redis。
+
 `modules/msgq` 提供独立的 protobuf/gRPC `MailboxService`，不复用通用的 `modules/rpc`。连接侧可调用
 `Init`、`Rec`、`Fetch`、`FetchSome`、`Confirm`、`Touch`、Topic 和 `TerminateSession`；业务或其他服务最终调用精确的
 `PubSession` RPC。

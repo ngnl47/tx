@@ -14,6 +14,34 @@ type roleLease struct {
 	refreshAt time.Time
 }
 
+// Stop 拒绝新初始化，使本地邮箱失效并按完整版本释放角色归属。
+// 仅处理本地持有的角色，不扫描 Redis；存储失败由租期兜底。
+func (s *Server) Stop(ctx context.Context) error {
+	for i := range s.initLocks {
+		s.initLocks[i].Lock()
+	}
+	defer func() {
+		for i := len(s.initLocks) - 1; i >= 0; i-- {
+			s.initLocks[i].Unlock()
+		}
+	}()
+	s.stopped.Store(true)
+	s.mu.RLock()
+	leases := make([]roleLease, 0, len(s.roleLeases))
+	for _, lease := range s.roleLeases {
+		leases = append(leases, lease)
+	}
+	s.mu.RUnlock()
+	var errs []error
+	for _, lease := range leases {
+		s.retireRole(lease)
+		if _, err := s.store.ReleaseRole(ctx, lease.binding); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // ensureRole 与维护循环共用角色初始化锁，防止最后邮箱释放与新登录交错。
 func (s *Server) ensureRole(ctx context.Context, roleID int64) error {
 	started := time.Now()
