@@ -2406,8 +2406,8 @@ Bee 或 Ant Context，因此可以使用本次 Server 已声明的 Actor、服�
 `Identity` 与 `UpSeq`。项目 Actor resolver 仍只负责目标、消息类型、命令号、路由键、载荷和是否等待结果，不能伪造身份或序号。
 Actor protobuf 在跨进程投递时保留完整身份和 `UpSeq`；内部 Actor 调用可以同时省略二者，只出现其中一个的 Delivery 无效。
 
-`Dispatcher` 返回只含 `ProcessedUpSeq` 的 `DispatchResult`。Game/Actor 先使用可信身份中的 SessionID 调用
-`PubSession` 发布普通响应或请求级错误，再返回与当前上行 Seq 完全相等的处理完成确认；新 SessionID 不会继承旧会话的
+`Dispatcher` 返回只含 `ProcessedUpSeq` 的 `DispatchResult`。Game/Actor 先使用可信身份中的 RoleID 调用
+`PubRole` 共享普通业务响应；请求级错误使用 SessionID 调用 `PubSession` 精确发布，再返回与当前上行 Seq 完全相等的处理完成确认；新 SessionID 不会继承旧会话的
 下行。通用 Actor Dispatcher 对所有 Agent 上行使用带 deadline 的 `Call`，但 Actor 返回值不携带 BON 业务载荷。
 
 Agent 核心不依赖项目生成协议，因此不会自行构造业务错误包，也不负责项目 HTTP 路由、JSON/BON 绑定、自动重试或

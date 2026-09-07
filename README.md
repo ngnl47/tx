@@ -711,8 +711,8 @@ if err != nil {
 }
 defer sender.Close()
 
-// 当前请求的直接响应明确投递给发起它的逻辑会话。
-if _, err := sender.PubSession(ctx, identity.SessionID, bonResponse); err != nil {
+// 当前请求的业务响应共享给目标角色的全部逻辑会话。
+if _, err := sender.PubRole(ctx, identity.RoleID, bonResponse); err != nil {
     return err
 }
 
@@ -788,7 +788,7 @@ resolver 和客户端载荷均不能指定 `ConnectionID`，也不能伪造投�
 6. 客户端以 `FrameReady.Ack` 释放上次会话已经记录的重放前缀，再按原序号重放剩余 UpMsg。
 7. 每个 `FrameUpMsg` 先使用当前完整 `SessionHeader` 调用 `Rec`。只有 `UpMsgSeq` 前进时才进入 `Dispatcher`，重复 Seq 不会重复分发。
 8. Agent 持续 `FetchSome` 下行队列，写出 `FrameDownMsg`；客户端在后续上行帧携带 Ack，`Rec` 会确认对应下行消息。
-9. Game/Actor 处理上行后，直接通过 MsgQ Sender 调用 `PubSession` 投递普通响应或 `System_Error`，随后只向 Agent
+9. Game/Actor 处理上行后，直接通过 MsgQ Sender 调用 `PubRole` 共享普通业务响应，调用 `PubSession` 精确投递携带请求序号的 `System_Error`，随后只向 Agent
    返回 `processedUpSeq` 处理完成确认。Agent 不接收业务响应载荷；它在后续 `FrameDownMsg.Ack` 捎带该序号，或发送
    独立 `FrameAck`。Actor 未完成处理或响应发布失败时不会推进该连接的确认游标。
 
