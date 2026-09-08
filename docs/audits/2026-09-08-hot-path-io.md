@@ -55,6 +55,12 @@ go test -race ./tests -run '^TestWriteBackManagerFlushHoldsTransactionLockUntilS
 
 角色租约维护只遍历本地角色，按 TTL/2 续期，不扫描 Redis。维护循环逐角色等待 Redis；需通过延迟注入检查大量角色同步续期时的尾延迟，不宜仅因存在网络操作就改为无限并发。
 
+已复现邮箱阻塞范围：`TestSlowRenewalKeepsOtherMailboxesUsable` 在 SessionStore.Refresh 边界暂停续期，执行真实邮箱分发逻辑。相同角色的另一邮箱、不同角色邮箱均可完成精确下行；固定共享快照为“续期邮箱在前”时，共享分发至少等待 20 ms，释放续期后两个邮箱均成功入队。该等待是人工注入，不是 Redis 实测慢查询；实际角色快照来自 map，其他邮箱是否已经入队取决于遍历顺序，但整次共享调用仍会等待受阻邮箱。
+
+测试只将其他邮箱隔离与最终分发正确性作为稳定断言，等待时间作为诊断输出，不把阻塞固定为必须保留的契约。
+
+据此优先考虑将续期网络等待与队列锁分离：保留每 Session 的续期合并，并在续期返回后重新校验 ConnectionID 与邮箱活动状态；恢复、终止和旧续期失败不得误删新连接。不能只在 Refresh 前后机械地解锁/加锁，也不通过逐邮箱创建无界 goroutine 绕开等待。该生产改造尚未实施。
+
 ### P2：开启逐消息调试日志时有同步输出风险
 
 `modules/msgq/mailbox.go` 的接收、发布和确认路径调用 Debug 日志。`log/log.go` 同步执行 Handler；实际是否磁盘或标准输出等待取决于装配的 Handler。关闭 Debug 时会在 Enabled 判断后返回。本轮未测日志设备延迟，不建议因此引入无界异步日志队列。
