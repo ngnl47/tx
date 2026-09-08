@@ -16,6 +16,8 @@
 - 分布式服务：按需阅读“服务发现”“内部 gRPC 协议”“msgq”“Agent”和“Actor Cluster”。
 - 框架维护：转到 [docs/design.md](docs/design.md)，不要仅根据公共 API 示例推断内部实现。
 
+`feature/goakt-runtime-evaluation` 的候选运行时实验见 [GoAkt 评估](evaluation/goakt/README.md)。它使用独立 Go 模块，尚未替换本文描述的生产运行时。
+
 ## 核心使用约定
 
 - `bee` 提供无状态服务门面，`ant` 提供有状态服务门面；两者共有 Builder、Server、Service 和基础 CMod API 同名同义。项目只读取配置并转换为对应的强类型 `Config`，再注入生成包和业务服务。
