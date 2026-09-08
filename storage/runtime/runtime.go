@@ -46,6 +46,7 @@ type Config struct {
 }
 
 type Runtime struct {
+	io              ioStats
 	ctx             context.Context
 	redis           *txredis.Cluster
 	mongo           *txmongo.Cluster
@@ -81,7 +82,7 @@ func (s *Runtime) StartRedis(ctx context.Context, cfg storageconfig.RouteTableCo
 	if s == nil {
 		return ErrNotConfigured
 	}
-	redisCluster, redisClients, redisShards, err := buildRedisCluster(ctx, cfg)
+	redisCluster, redisClients, redisShards, err := buildRedisCluster(ctx, cfg, &s.io)
 	if err != nil {
 		return err
 	}
@@ -96,7 +97,7 @@ func (s *Runtime) StartMongo(ctx context.Context, cfg storageconfig.RouteTableCo
 	if s == nil {
 		return ErrNotConfigured
 	}
-	mongoCluster, mongoClients, mongoWALShards, mongoIndexers, err := buildMongoCluster(ctx, cfg)
+	mongoCluster, mongoClients, mongoWALShards, mongoIndexers, err := buildMongoCluster(ctx, cfg, &s.io)
 	if err != nil {
 		return err
 	}
@@ -433,7 +434,7 @@ func (writer storageChangeWriter) ApplyChangesWithFence(ctx context.Context, spe
 	return nil
 }
 
-func buildRedisCluster(ctx context.Context, cfg storageconfig.RouteTableConfig) (*txredis.Cluster, []*goredis.Client, map[string]txgoredis.Client, error) {
+func buildRedisCluster(ctx context.Context, cfg storageconfig.RouteTableConfig, stats *ioStats) (*txredis.Cluster, []*goredis.Client, map[string]txgoredis.Client, error) {
 	routeTable, err := cfg.RouteTable()
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("storage runtime: build redis route table: %w", err)
@@ -448,6 +449,7 @@ func buildRedisCluster(ctx context.Context, cfg storageconfig.RouteTableConfig) 
 			return nil, nil, nil, fmt.Errorf("storage runtime: parse redis endpoint %s: %w", endpoint, err)
 		}
 		client := goredis.NewClient(options)
+		client.AddHook(stats.redisHook())
 		if err := client.Ping(ctx).Err(); err != nil {
 			_ = client.Close()
 			closeRedisClients(clients)
@@ -466,7 +468,7 @@ func buildRedisCluster(ctx context.Context, cfg storageconfig.RouteTableConfig) 
 	return cluster, clients, runtimeClients, nil
 }
 
-func buildMongoCluster(ctx context.Context, cfg storageconfig.RouteTableConfig) (*txmongo.Cluster, []*mongodriver.Client, map[string]walmongo.Client, map[string]txmongo.IndexManager, error) {
+func buildMongoCluster(ctx context.Context, cfg storageconfig.RouteTableConfig, stats *ioStats) (*txmongo.Cluster, []*mongodriver.Client, map[string]walmongo.Client, map[string]txmongo.IndexManager, error) {
 	routeTable, err := cfg.RouteTable()
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("storage runtime: build mongo route table: %w", err)
@@ -476,7 +478,7 @@ func buildMongoCluster(ctx context.Context, cfg storageconfig.RouteTableConfig) 
 	indexers := map[string]txmongo.IndexManager{}
 	clients := make([]*mongodriver.Client, 0, len(cfg.Endpoints()))
 	for _, endpoint := range sortedEndpointValues(cfg.Endpoints()) {
-		client, err := mongodriver.Connect(ctx, options.Client().ApplyURI(endpoint))
+		client, err := mongodriver.Connect(ctx, options.Client().ApplyURI(endpoint).SetMonitor(stats.mongoMonitor()))
 		if err != nil {
 			disconnectMongoClients(ctx, clients)
 			return nil, nil, nil, nil, fmt.Errorf("storage runtime: connect mongo endpoint %s: %w", endpoint, err)

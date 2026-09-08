@@ -368,6 +368,10 @@ TX_ETCD_ENDPOINT=127.0.0.1:2379 \
 
 ## msgq 会话绑定
 
+存储运行时提供 `Runtime.IOStats()` 累计驱动快照，按固定 Redis/Mongo 操作类别统计调用数、命令数、失败数和耗时，
+不记录 key 或业务数据。该快照当前未暴露到控制面；统计口径、重试与 Pipeline 边界见
+[热点路径 I/O 检查](docs/audits/2026-09-08-hot-path-io.md)。
+
 `modules/msgq` 以 `SessionID` 作为精确邮箱主键，负责
 `SessionID -> (RoleID, SessionID, ConnectionID, InstanceID)` 的短期 binding 与 owner 解析；同时维护
 `RoleID -> (InstanceID, Generation)` 角色归属，授权的多个 Session 共享归属并独立维护生命周期。

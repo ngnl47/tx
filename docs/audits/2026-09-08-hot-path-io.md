@@ -84,6 +84,21 @@ go test -race ./tests -run '^TestWriteBackManagerFlushHoldsTransactionLockUntilS
 
 ## 后续验收顺序
 
+### 已接入：存储运行时累计快照
+
+`storage/runtime.Runtime.IOStats()` 返回该运行时创建的 Redis/Mongo 客户端累计统计。固定类别记录 `Calls`、`Commands`、`Errors`、
+`TotalDuration` 和 `MaxDuration`；不保存端点、key、载荷、账号或命令参数。未知命令归入 `other`，标签数有固定上限。
+Redis 启动 Ping 前安装 Hook，Mongo Connect 时安装命令 Monitor，因此包含启动协商和后台 Ping；关闭连接不清空累计数据。
+
+- Redis 单条 Hook 计一次调用，底层透明重试不能按此推算网络发送次数。Pipeline 单列，Calls 为批次数，Commands 为批内命令数，耗时为整批等待。
+- Redis `Nil` 是正常缺失结果，不计失败；其他错误按驱动返回记录，包含可选启动协商或脚本回退中的失败，不能直接解释为业务失败。
+- Mongo 按驱动命令完成事件计数，含驱动重试产生的各次命令事件；耗时口径不同于 Redis，不能直接比较为两个数据库的服务端执行耗时。
+- 两次快照可对调用数、命令数、失败数和累计耗时作差；最大耗时是运行期最大值，不能相减得到阶段最大值。不提供清零操作，避免并发采样丢计数。
+- 内存互斥仅保护固定统计项更新和快照复制，不包围网络 I/O。计数核心并发基准约 68 ns/次、0 分配（本机 i9-9880H），不含完整 Hook 的计时开销。
+
+真实 Redis/Mongo 验证覆盖运行时客户端装配、Ping 和只读 GET。统计仅覆盖由该 Runtime 创建的客户端，不包括项目自行创建的外部客户端。
+当前还未接入控制面读取，集群编排器尚不能远程获取此快照；不据此宣称分阶段集群 I/O 验收完成。
+
 1. 补独立集群的进程级存储命令计数，分别记录 Game、Agent、MsgQ 的冷启动、稳定请求和续期窗口。
 2. 精确 Session 下行和邮箱续期注入延迟，测量阻塞范围。
 3. 写回注入慢 Redis/Mongo，测量同对象、不同对象的等待，再确定改造范围。
