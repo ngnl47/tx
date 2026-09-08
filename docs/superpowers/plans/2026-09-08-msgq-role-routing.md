@@ -52,6 +52,10 @@ Session 续期到期后 100 次活动只续期 1 次。`TX_REDIS_ENDPOINT=127.0.
 - 有状态示例 txgameslg `b61999f`：`/private/tmp/txgameslg-renewal-unlocked-e2e/20260908-095601.185435000`。
   同角色 Session `362505587466240`、`362505587466243` 分别连接两个 Agent，角色/世界响应共享及恢复通过；WAL 恢复、world/slggame generation 2 接管、checkpoint、MsgQ 故障重启和最终排水通过。
 
-两套均使用各自已有 ownership 隔离范围，未修改生产配置。此回归不替代进程级 I/O 计数或慢 I/O 注入；精确 Session 寻址优化仍待推进。
+两套均使用各自已有 ownership 隔离范围，未修改生产配置。此回归不替代进程级 I/O 计数或慢 I/O 注入。
+
+精确 Session 下行已增加有界邮箱归属缓存：`ResolveMailbox` 只缓存 MsgQ InstanceID，Topic 的 `ResolveSession` 仍读取当前完整绑定。
+两套示例独立接入显式 65536 容量，真实 Redis 热邮箱基准为 0 命令/次。tx 与两套 server 全量测试通过；
+这一新增缓存尚未重跑上述独立集群套件，进程级 I/O 归因仍待完成。
 
 本计划不引入全 MsgQ 广播、不实现可靠业务消息队列、不附带实施其余审计项。

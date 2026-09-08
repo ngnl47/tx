@@ -21,8 +21,59 @@ func TestSenderPubSessionUsesExactSession(t *testing.T) {
 	if result.Seq != 3 || connection.pubSessionID != 11 || string(connection.pubPayload) != "encoded-bon" {
 		t.Fatalf("publish = %#v, sessionID = %d, payload = %q", result, connection.pubSessionID, connection.pubPayload)
 	}
+	for range 100 {
+		if _, err := sender.PubSession(context.Background(), 11, []byte("next")); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if len(store.findSessionIDs) != 1 || store.findSessionIDs[0] != 11 {
 		t.Fatalf("exact route finds = %#v", store.findSessionIDs)
+	}
+	// 恢复只更新物理连接，Topic 必须重新读取绑定，不能使用精确投递缓存中的旧身份。
+	store.binding.ConnectionID = 14
+	if err := sender.JoinTopics(context.Background(), 11, "guild:1"); err != nil {
+		t.Fatal(err)
+	}
+	if connection.topicRequest.Header.ConnectionID != 14 {
+		t.Fatal("Topic 使用了旧 ConnectionID")
+	}
+	directory := sender.router.directory.(*discovery.ServiceDirectory)
+	if err := directory.Replace(nil); err != nil {
+		t.Fatal(err)
+	}
+	before := connection.pubCalls
+	if _, err := sender.PubSession(context.Background(), 11, []byte("departed")); !errors.Is(err, ErrRouteUnavailable) {
+		t.Fatal(err)
+	}
+	if connection.pubCalls != before {
+		t.Fatal("向已退出的 MsgQ 发送了载荷")
+	}
+}
+
+func TestSenderMailboxCacheInvalidationDoesNotRetryPayload(t *testing.T) {
+	connection := &senderConnectionFake{pubResult: PubResult{Seq: 1}}
+	sender, store, _ := newSenderForTest(t, connection, SessionBinding{RoleID: 47, SessionID: 11, ConnectionID: 13, InstanceID: "msgq-a"})
+	ctx := context.Background()
+	if _, err := sender.PubSession(ctx, 11, []byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	connection.pubErr = context.DeadlineExceeded
+	if _, err := sender.PubSession(ctx, 11, []byte("unknown")); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal(err)
+	}
+	connection.pubErr = ErrSessionOffline
+	if _, err := sender.PubSession(ctx, 11, []byte("offline")); !errors.Is(err, ErrSessionOffline) {
+		t.Fatal(err)
+	}
+	if connection.pubCalls != 3 || len(store.findSessionIDs) != 1 {
+		t.Fatal("错误触发了重发或超时误清缓存")
+	}
+	store.found = false
+	if _, err := sender.PubSession(ctx, 11, []byte("after")); !errors.Is(err, ErrSessionOffline) {
+		t.Fatal(err)
+	}
+	if connection.pubCalls != 3 || len(store.findSessionIDs) != 2 {
+		t.Fatal("明确离线后未重新读取绑定")
 	}
 }
 
@@ -77,7 +128,7 @@ func TestSenderTopicOperationsRejectOfflineOwnerBeforeDial(t *testing.T) {
 		t.Fatalf("replace directory: %v", err)
 	}
 	store := &senderStoreFake{}
-	router, err := NewSessionRouter(directory, store)
+	router, err := NewSessionRouter(directory, store, 128)
 	if err != nil {
 		t.Fatalf("NewSessionRouter returned error: %v", err)
 	}
@@ -117,7 +168,7 @@ func newSenderForTest(t *testing.T, connection Connection, binding SessionBindin
 		binding: binding,
 		found:   true,
 	}
-	router, err := NewSessionRouter(directory, store)
+	router, err := NewSessionRouter(directory, store, 128)
 	if err != nil {
 		t.Fatalf("NewSessionRouter returned error: %v", err)
 	}

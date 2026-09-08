@@ -30,7 +30,7 @@ func TestMsgQSessionRouterResolvesExactSessionWithoutRefreshing(t *testing.T) {
 		binding: msgq.SessionBinding{RoleID: 470001, SessionID: 99, ConnectionID: 7, InstanceID: "msgq-2"},
 		found:   true,
 	}
-	router, err := msgq.NewSessionRouter(directory, store)
+	router, err := msgq.NewSessionRouter(directory, store, 128)
 	if err != nil {
 		t.Fatalf("new session router: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestMsgQSessionRouterDoesNotRefreshUnavailableInstance(t *testing.T) {
 		binding: msgq.SessionBinding{RoleID: 470001, SessionID: 99, ConnectionID: 7, InstanceID: "msgq-missing"},
 		found:   true,
 	}
-	router, err := msgq.NewSessionRouter(discovery.NewServiceDirectory(), store)
+	router, err := msgq.NewSessionRouter(discovery.NewServiceDirectory(), store, 128)
 	if err != nil {
 		t.Fatalf("new session router: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestMsgQSessionRouterRejectsNonMsgQInstance(t *testing.T) {
 		binding: msgq.SessionBinding{RoleID: 470001, SessionID: 99, ConnectionID: 7, InstanceID: "game-1"},
 		found:   true,
 	}
-	router, err := msgq.NewSessionRouter(directory, store)
+	router, err := msgq.NewSessionRouter(directory, store, 128)
 	if err != nil {
 		t.Fatalf("new session router: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestMsgQSessionRouterRejectsMismatchedSessionWithoutRefreshing(t *testing.T
 		binding: msgq.SessionBinding{RoleID: 470001, SessionID: 100, ConnectionID: 7, InstanceID: "msgq-2"},
 		found:   true,
 	}
-	router, err := msgq.NewSessionRouter(rpcSessionDirectory(t, "msgq-2"), store)
+	router, err := msgq.NewSessionRouter(rpcSessionDirectory(t, "msgq-2"), store, 128)
 	if err != nil {
 		t.Fatal(err)
 	}

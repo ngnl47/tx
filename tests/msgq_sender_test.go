@@ -61,7 +61,7 @@ func TestMsgQSenderPublishesExactAndSharedRoleWithReusedConnection(t *testing.T)
 	}}); err != nil {
 		t.Fatalf("replace directory: %v", err)
 	}
-	router, err := msgq.NewSessionRouter(directory, store)
+	router, err := msgq.NewSessionRouter(directory, store, 128)
 	if err != nil {
 		t.Fatalf("new session router: %v", err)
 	}

@@ -4,9 +4,12 @@ package msgq
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 
+	"github.com/maypok86/otter/v2"
 	"github.com/ngnl47/tx/modules/discovery"
+	"golang.org/x/sync/singleflight"
 )
 
 var (
@@ -63,17 +66,75 @@ type SessionTarget struct {
 type SessionRouter struct {
 	directory discovery.Directory
 	store     SessionStore
+	mailboxes *otter.Cache[int64, string]
+	loads     singleflight.Group
 }
 
-// NewSessionRouter 创建使用实例目录和绑定存储的会话路由器。
-func NewSessionRouter(directory discovery.Directory, store SessionStore) (*SessionRouter, error) {
+// NewSessionRouter 创建会话路由器，maximumSize 限制精确下行的邮箱归属缓存容量。
+func NewSessionRouter(directory discovery.Directory, store SessionStore, maximumSize int) (*SessionRouter, error) {
 	if directory == nil {
 		return nil, ErrDirectoryNil
 	}
 	if store == nil {
 		return nil, ErrSessionStoreNil
 	}
-	return &SessionRouter{directory: directory, store: store}, nil
+	if maximumSize <= 0 {
+		return nil, ErrInvalidSessionOptions
+	}
+	cache, err := otter.New(&otter.Options[int64, string]{MaximumSize: maximumSize, InitialCapacity: min(maximumSize, 16)})
+	if err != nil {
+		return nil, err
+	}
+	return &SessionRouter{directory: directory, store: store, mailboxes: cache}, nil
+}
+
+// ResolveMailbox 缓存逻辑 Session 的 MsgQ 实例，不缓存物理 ConnectionID。
+// 同一 Session 不跨 MsgQ 迁移；MsgQ 丢失邮箱后须建立新 Session。
+func (r *SessionRouter) ResolveMailbox(ctx context.Context, sessionID int64) (discovery.Instance, error) {
+	if sessionID <= 0 {
+		return discovery.Instance{}, ErrInvalidSession
+	}
+	if err := ctx.Err(); err != nil {
+		return discovery.Instance{}, err
+	}
+	id, found := r.mailboxes.GetIfPresent(sessionID)
+	if !found {
+		loaded := r.loads.DoChan(strconv.FormatInt(sessionID, 10), func() (any, error) {
+			if current, found := r.mailboxes.GetIfPresent(sessionID); found {
+				return current, nil
+			}
+			target, err := r.ResolveSession(ctx, sessionID)
+			if err != nil {
+				return nil, err
+			}
+			r.mailboxes.Set(sessionID, target.Instance.ID)
+			return target.Instance.ID, nil
+		})
+		select {
+		case <-ctx.Done():
+			return discovery.Instance{}, ctx.Err()
+		case result := <-loaded:
+			if result.Err != nil {
+				return discovery.Instance{}, result.Err
+			}
+			id = result.Val.(string)
+		}
+	}
+	instance, found := r.directory.LookupInstance(id)
+	if !found || instance.Status != discovery.StatusRunning || !providesService(instance, "msgq") {
+		r.invalidateMailbox(sessionID, id)
+		return discovery.Instance{}, ErrRouteUnavailable
+	}
+	return instance, nil
+}
+
+func (r *SessionRouter) invalidateMailbox(sessionID int64, instanceID string) {
+	r.mailboxes.Compute(sessionID, func(current string, found bool) (string, otter.ComputeOp) {
+		if found && current == instanceID {
+			return current, otter.InvalidateOp
+		}
+		return current, otter.CancelOp
+	})
 }
 
 // ResolveSession 按 SessionID 只读解析精确会话归属。

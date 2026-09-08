@@ -35,11 +35,19 @@ go test -race ./tests -run '^TestWriteBackManagerFlushHoldsTransactionLockUntilS
 
 ## 优先跟进项
 
-### P1：精确 Session 寻址逐次读取 Redis
+### 已处理：精确邮箱下行缓存归属
 
-`modules/msgq/session.go` 的 `ResolveSession` 每次调用 `store.Find`。`Sender.PubSession`、`JoinTopics`、`BroadcastTopic` 都经过它。普通成功业务响应走 RoleRouter，不受此影响；精确错误响应或高频使用这些接口时会放大 Redis 读负载。
+`SessionRouter.ResolveMailbox` 使用有界 Otter 缓存 SessionID 对应的 MsgQ InstanceID，合并同键冷查询。
+`Sender.PubSession` 使用该边界：命中时不查询 Redis，不缓存 ConnectionID；每次从本地发现目录核对实例可用性。
+同一 Session 不跨 MsgQ 迁移，邮箱丢失后建立新 Session。实例退出或明确邮箱失效时清缓存，传输超时不清缓存且不重发载荷。
 
-建议下一批先测错误响应压力与精确下行量，再选择复用已知绑定或增加有界缓存。不能直接套用角色缓存而忽略 ConnectionID 在恢复时变化，以及 Topic 操作需要当前连接的约束。
+`ResolveSession` 仍读取完整当前绑定，供 `JoinTopics` 与 `BroadcastTopic` 使用，避免把过期连接身份或已经终止的会话当成 Topic 操作锚点。
+这条低频控制路径仍有每次一次 Redis 读取，不宣称所有 Session 接口均零 I/O。
+两套示例独立传入 65536 个邮箱归属的容量上限，`NewSessionRouter` 要求显式容量。
+
+真实 Redis 基准（同机、100 次操作）新增 `mailbox-warm`：无注入约 280 ns/次、注入 5 ms 后约 412 ns/次，均为 0 命令/次。
+`session-current` 仍约 0.325 ms/次、注入后约 6.270 ms/次，均为 1 命令/次。
+纳秒级短采样只用于说明不随 Redis 延迟等待，不作吞吐承诺。
 
 ### P1：后台持久化仍会占用 GD 根对象锁
 

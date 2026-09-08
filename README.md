@@ -381,6 +381,9 @@ Game/Actor；世界请求仍按经业务校验的世界路由键选择 WorldActo
 若业务需要其他策略，应在项目适配层明确实现，避免自动响应与手动下行重复发送。
 同一 RoleID 的多个邮箱可以并存，各自维护队列；`Sender.PubRole` 定向投递到角色归属 MsgQ，由其向该角色全部邮箱分发。
 `Server` 在本进程管理 Session、下行队列和 Seq/Ack。
+`NewSessionRouter` 要求显式设置邮箱归属缓存容量；`ResolveMailbox` 只缓存 MsgQ InstanceID，供 `PubSession` 使用，热路径不查询 Redis。
+`ResolveSession` 始终读取当前完整绑定，Topic 操作沿用该边界以获取当前 ConnectionID 和有效会话锚点。
+精确下行遇到明确邮箱失效时清缓存，遇到传输超时不自动重发；MsgQ 丢失邮箱后须建立新 Session，不能把旧 Session 迁往另一实例。
 
 Redis 精确 binding key 固定为 `<prefix>:session:v2:{SessionID}`，值保存完整
 `RoleID/SessionID/ConnectionID/InstanceID`；角色归属 key 固定为 `<prefix>:role:{RoleID}`，值保存 `InstanceID/Generation`。两个索引分别按自身花括号中的身份选择 Redis 分片，不承诺跨 key 事务。下行编码载荷始终只保存在
@@ -403,7 +406,7 @@ bindings, err := msgq.NewRedisSessionStore(goredis.NewClient(rawRedis), msgq.Ses
 if err != nil {
     return err
 }
-sessions, err := msgq.NewSessionRouter(directory, bindings)
+sessions, err := msgq.NewSessionRouter(directory, bindings, 65536)
 if err != nil {
     return err
 }
@@ -708,7 +711,7 @@ msgq 的内存语义。
 两种投递都按 endpoint 复用 gRPC 连接，角色热寻址不查询 Redis，也不向其他 MsgQ 广播：
 
 ```go
-router, err := msgq.NewSessionRouter(directory, sessionStore)
+router, err := msgq.NewSessionRouter(directory, sessionStore, 65536)
 if err != nil {
     return err
 }

@@ -45,14 +45,17 @@ func BenchmarkRoutingRedisIO(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
-			sessions, err := NewSessionRouter(directory, store)
+			sessions, err := NewSessionRouter(directory, store, 128)
 			if err != nil {
 				b.Fatal(err)
 			}
 			if _, err := roles.Resolve(ctx, 47); err != nil {
 				b.Fatal(err)
 			}
-			for _, name := range []string{"role-warm", "session"} {
+			if _, err := sessions.ResolveMailbox(ctx, 11); err != nil {
+				b.Fatal(err)
+			}
+			for _, name := range []string{"role-warm", "mailbox-warm", "session-current"} {
 				b.Run(name, func(b *testing.B) {
 					before := hook.count.Load()
 					b.ReportAllocs()
@@ -60,6 +63,8 @@ func BenchmarkRoutingRedisIO(b *testing.B) {
 					for range b.N {
 						if name == "role-warm" {
 							_, err = roles.Resolve(ctx, 47)
+						} else if name == "mailbox-warm" {
+							_, err = sessions.ResolveMailbox(ctx, 11)
 						} else {
 							_, err = sessions.ResolveSession(ctx, 11)
 						}
@@ -68,7 +73,11 @@ func BenchmarkRoutingRedisIO(b *testing.B) {
 						}
 					}
 					b.StopTimer()
-					b.ReportMetric(float64(hook.count.Load()-before)/float64(b.N), "redis-cmd/op")
+					commands := hook.count.Load() - before
+					if name != "session-current" && commands != 0 {
+						b.Fatalf("热寻址产生 %d 条 Redis 命令", commands)
+					}
+					b.ReportMetric(float64(commands)/float64(b.N), "redis-cmd/op")
 				})
 			}
 		})

@@ -2356,7 +2356,9 @@ Borrow 和旁路挂机只是应用场景：前者由授权操作者访问目标�
 各邮箱独立维护 Seq/Ack 与未确认队列，新增、恢复或终止一个 Session 不影响其他 Session。
 `Sender.PubRole` 向该角色全部邮箱分发，框架不提供基于会话优先级的登录互斥策略。
 
-`SessionRouter.ResolveSession` 和 `RoleRouter.Resolve` 只读解析，不刷新 TTL。只有当前 ConnectionID 通过 owner 侧校验的连接活动
+`SessionRouter.ResolveMailbox` 有界缓存 SessionID 到 MsgQ InstanceID 的归属，合并冷查询，供 `PubSession` 使用；不缓存 ConnectionID。
+同一 Session 的 MsgQ 归属不迁移，实例丢失后使用新 Session。缓存命中仍核对本地服务发现，明确邮箱失效时清缓存，传输超时不自动重发。
+`SessionRouter.ResolveSession` 始终读取当前绑定，Topic 操作保留此边界。它与 `ResolveMailbox`、`RoleRouter.Resolve` 都只读解析，不刷新 TTL。只有当前 ConnectionID 通过 owner 侧校验的连接活动
 才更新本地活动时间；业务发布不更新。生产 Redis store 在 `Init`、`Rebind` 或一次成功续期后等待 `TTL / 2`，达到
 阈值的第一条合法活动才续期精确 binding，因此高频心跳、上行、Ack 和 Fetch 不会产生同频 Redis I/O。
 续期网络等待不持有邮箱队列锁，同邮箱到期活动合并等待；等待者可独立取消。恢复或终止可与在途续期交错，

@@ -259,16 +259,25 @@ func NewSender(router *SessionRouter, roles *RoleRouter, dialer Dialer) (*Sender
 	}, nil
 }
 
-// PubSession 向精确 SessionID 投递 BON 编码载荷。
+// PubSession 向精确 SessionID 投递 BON 编码载荷，热邮箱路由不查询 Redis。
+// 明确邮箱失效时清缓存；任何投递错误都不自动重发。
 func (s *Sender) PubSession(ctx context.Context, sessionID int64, payload []byte) (PubResult, error) {
 	if s == nil {
 		return PubResult{}, ErrSenderClosed
 	}
-	target, err := s.router.ResolveSession(ctx, sessionID)
+	instance, err := s.router.ResolveMailbox(ctx, sessionID)
 	if err != nil {
 		return PubResult{}, err
 	}
-	return s.publish(ctx, target, payload)
+	connection, err := s.connection(ctx, instance)
+	if err != nil {
+		return PubResult{}, err
+	}
+	result, err := connection.PubSession(ctx, sessionID, payload)
+	if errors.Is(err, ErrSessionOffline) || errors.Is(err, ErrSessionChanged) {
+		s.router.invalidateMailbox(sessionID, instance.ID)
+	}
+	return result, err
 }
 
 // PubRole 向 RoleID 归属 MsgQ 的全部角色邮箱投递，热路由不查询 Redis。
@@ -330,14 +339,6 @@ func (s *Sender) BroadcastTopic(ctx context.Context, ownerSessionID int64, reque
 		return BroadcastResult{}, err
 	}
 	return connection.BroadcastTopic(ctx, request)
-}
-
-func (s *Sender) publish(ctx context.Context, target SessionTarget, payload []byte) (PubResult, error) {
-	connection, err := s.connection(ctx, target.Instance)
-	if err != nil {
-		return PubResult{}, err
-	}
-	return connection.PubSession(ctx, target.Binding.SessionID, payload)
 }
 
 // Close 关闭所有缓存 endpoint 的连接。
