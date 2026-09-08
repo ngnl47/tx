@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ngnl47/tx/lifecycle"
 	"github.com/ngnl47/tx/modules/control"
 )
 
@@ -40,7 +41,8 @@ func TestDrainCoordinatorWaitsForHost(t *testing.T) {
 }
 
 func TestDrainCoordinatorFailsWhenServerDrainTimesOut(t *testing.T) {
-	coordinator := newDrainCoordinator(contextDrainHost{}, 5*time.Millisecond)
+	host := &contextDrainHost{}
+	coordinator := newDrainCoordinator(host, 5*time.Millisecond)
 	if err := coordinator.BeginDrain(context.Background()); err != nil {
 		t.Fatalf("BeginDrain returned error: %v", err)
 	}
@@ -52,11 +54,50 @@ func TestDrainCoordinatorFailsWhenServerDrainTimesOut(t *testing.T) {
 	if status.State != control.StateFailed || status.Error == "" {
 		t.Fatalf("status = %#v, want failed with diagnostic", status)
 	}
+	host.recovered = true
+	if err := coordinator.BeginDrain(context.Background()); err != nil {
+		t.Fatalf("retry BeginDrain: %v", err)
+	}
+	if err := coordinator.WaitDrained(context.Background()); err != nil {
+		t.Fatalf("retry WaitDrained: %v", err)
+	}
+	if coordinator.Status().State != control.StateDrained {
+		t.Fatal("retry did not finish drain")
+	}
 }
 
-type contextDrainHost struct{}
+type contextDrainHost struct{ recovered bool }
 
-func (contextDrainHost) Drain(ctx context.Context) error {
+func TestServiceDrainCallbackFailureCanBeRetried(t *testing.T) {
+	calls := 0
+	want := errors.New("drain temporarily unavailable")
+	root := lifecycle.NewWaitGroupContext(context.Background())
+	defer root.Cancel()
+	host := &serviceHost{started: []startedService{{ingress: lifecycle.NewIngress(root), service: testService{
+		spec: Spec{Name: "game"},
+		drain: func(context.Context) error {
+			calls++
+			if calls == 1 {
+				return want
+			}
+			return nil
+		},
+	}}}}
+	if err := host.drain(context.Background()); !errors.Is(err, want) {
+		t.Fatalf("first drain: %v", err)
+	}
+	if err := host.drain(context.Background()); err != nil {
+		t.Fatalf("retry drain: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("drain calls = %d", calls)
+	}
+}
+
+func (host *contextDrainHost) Drain(ctx context.Context) error {
+	if host.recovered {
+		return nil
+	}
 	<-ctx.Done()
 	return ctx.Err()
 }

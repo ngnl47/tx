@@ -13,10 +13,9 @@ type serviceHost struct {
 	registry *registry
 	runtime  *runtime
 
-	mu        sync.Mutex
-	started   []startedService
-	drainDone chan struct{}
-	drainErr  error
+	mu           sync.Mutex
+	started      []startedService
+	drainAttempt *drainAttempt
 }
 
 type startedService struct {
@@ -80,6 +79,17 @@ func (host *serviceHost) rollbackStart(startErr error) error {
 	return errors.Join(append([]error{startErr}, errs...)...)
 }
 
+func (host *serviceHost) beginDrain() {
+	if host == nil {
+		return
+	}
+	host.mu.Lock()
+	defer host.mu.Unlock()
+	for _, service := range host.started {
+		service.ingress.BeginDrain()
+	}
+}
+
 func (host *serviceHost) drain(ctx context.Context) error {
 	if host == nil {
 		return nil
@@ -89,21 +99,18 @@ func (host *serviceHost) drain(ctx context.Context) error {
 	}
 	host.mu.Lock()
 	services := append([]startedService(nil), host.started...)
-	if host.drainDone != nil {
-		done := host.drainDone
+	if host.drainAttempt != nil {
+		attempt := host.drainAttempt
 		host.mu.Unlock()
 		select {
-		case <-done:
-			host.mu.Lock()
-			err := host.drainErr
-			host.mu.Unlock()
-			return errors.Join(err, waitServiceIngress(ctx, services))
+		case <-attempt.done:
+			return errors.Join(attempt.err, waitServiceIngress(ctx, services))
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
-	host.drainDone = make(chan struct{})
-	done := host.drainDone
+	attempt := &drainAttempt{done: make(chan struct{})}
+	host.drainAttempt = attempt
 	host.mu.Unlock()
 
 	var errs []error
@@ -118,9 +125,12 @@ func (host *serviceHost) drain(ctx context.Context) error {
 		}
 	}
 	host.mu.Lock()
-	host.drainErr = errors.Join(errs...)
-	close(done)
-	err := host.drainErr
+	attempt.err = errors.Join(errs...)
+	if attempt.err != nil {
+		host.drainAttempt = nil
+	}
+	close(attempt.done)
+	err := attempt.err
 	host.mu.Unlock()
 	return errors.Join(err, waitServiceIngress(ctx, services))
 }

@@ -7,7 +7,7 @@ import (
 	"github.com/ngnl47/tx/modules/discovery"
 )
 
-// Drain 将实例移出普通路由，并等待服务入口已经接受的工作完成。
+// Drain 先关闭服务和 Actor 准入，再摘除普通路由并等待已接受的工作完成。
 // 它不会取消后台任务或关闭 RPC。
 func (server *Server) Drain(ctx context.Context) error {
 	if server == nil {
@@ -25,6 +25,11 @@ func (server *Server) Drain(ctx context.Context) error {
 	if !ready {
 		return nil
 	}
+	host.beginDrain()
+	var actorErr error
+	if runtime != nil && runtime.actor != nil {
+		actorErr = runtime.actor.BeginDrain()
+	}
 	var discoveryErr error
 	if discoveryRuntime != nil {
 		discoveryErr = discoveryRuntime.MarkDraining(ctx)
@@ -36,7 +41,10 @@ func (server *Server) Drain(ctx context.Context) error {
 	if host != nil {
 		hostErr = host.drain(ctx)
 	}
-	return errors.Join(discoveryErr, hostErr)
+	if runtime != nil && runtime.actor != nil && actorErr == nil {
+		actorErr = runtime.actor.Drain(ctx)
+	}
+	return errors.Join(discoveryErr, hostErr, actorErr)
 }
 
 // Stop 具备幂等性，并负责完整的逆序关闭流程。
@@ -104,12 +112,9 @@ func (server *Server) shutdown(ctx context.Context, drain bool) error {
 		controlServer.stop()
 	}
 	if drain {
-		errs = append(errs, server.Drain(ctx))
-		if runtime != nil && runtime.actor != nil {
-			actorDrainCtx, cancel := context.WithTimeout(ctx, effectiveDrainTimeout(server.config.Runtime.Lifecycle.DrainTimeout))
-			errs = append(errs, runtime.actor.Drain(actorDrainCtx))
-			cancel()
-		}
+		drainCtx, cancel := context.WithTimeout(ctx, effectiveDrainTimeout(server.config.Runtime.Lifecycle.DrainTimeout))
+		errs = append(errs, server.Drain(drainCtx))
+		cancel()
 	}
 	if host != nil {
 		errs = append(errs, host.stop(ctx))

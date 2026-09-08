@@ -148,23 +148,29 @@ func (r *Runtime) Drain(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	r.mu.Lock()
-	if r.stopped {
-		r.mu.Unlock()
-		return ErrRuntimeStopped
+	if err := r.BeginDrain(); err != nil {
+		return err
 	}
-	if !r.started || r.cluster == nil {
-		r.mu.Unlock()
-		return ErrRuntimeNotStarted
-	}
-	r.draining = true
-	r.lifecycle.beginDrain()
-	r.mu.Unlock()
 	if err := r.lifecycle.waitDrained(ctx); err != nil {
 		pending := r.lifecycle.pending()
 		txlog.Error("actor runtime drain failed", "pending", pending, "err", err)
 		return fmt.Errorf("actor: drain %d pending deliveries: %w", pending, err)
 	}
+	return nil
+}
+
+// BeginDrain 立即关闭新业务准入，不等待邮箱排空，也不停止控制消息。
+func (r *Runtime) BeginDrain() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped {
+		return ErrRuntimeStopped
+	}
+	if !r.started || r.cluster == nil {
+		return ErrRuntimeNotStarted
+	}
+	r.draining = true
+	r.lifecycle.beginDrain()
 	return nil
 }
 

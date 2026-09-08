@@ -14,7 +14,7 @@ Fusion 已按确认的最终纠正边界完成异常重新登记修补，见本�
 | P0 认证身份贯穿 | 角色入口已有校验；世界业务授权待复核 | `modules/agent/actor_dispatcher.go` 注入 Identity/UpSeq；有状态示例 `cmd/server.debugSlotID` 校验 role 路由等于可信 Identity.RoleID，不能仅看 Handler 宣布越权。显式世界目标与其中操作主体分开评审。 |
 | P0 Topic 部分成功 | 已有针对性修复与证据 | `modules/msgq/broadcast_grpc_test.go` 覆盖远程部分结果，当前共享不可变载荷契约和角色分发已进入稳定文档；最近真实 Redis race 与双集群回归通过。不重复改造成 UDP 或全 MsgQ 广播。 |
 | P1 Discovery Watch 联合就绪 | 已修补并通过受控时序回归 | 每轮独立快照写入入口，任一 Watch 返回即废弃本轮并清空目录，拒绝迟到发布；WaitReady 仅接受当前轮次两份快照。Discovery race 重复 10 轮通过。 |
-| P1 Actor provider 竞态 | 依赖风险仍在，需重新运行针对性 race | 当前仍直接使用锁定版本的 etcd provider；本地依赖中的 shutdown 为普通 bool，Shutdown 写、keepalive 循环读。常规非 race 集群通过不能关闭此项。 |
+| P1 Actor provider 竞态 | 真实 etcd 已复现，并发现成员目录并发问题 | 锁定依赖的 Shutdown 写 shutdown，与 keepAliveForever 读取冲突；同一生命周期用例还报告 MemberList.BroadcastEvent 与 UpdateClusterTopology 竞争。需要依赖级修补决策，tx 外部关闭锁不能覆盖内部协程。 |
 | P1 TryRelease 取消链 | 风险路径仍在 | `modules/writeback/manager.go` 的 SPI 仍无 context，内部用 Background 等待实体锁。下一步需组合实体释放任务与关闭顺序复现，不仅测试手动解锁。 |
 | P1 World_StartMarch 内外契约复用 | 身份与响应路径已分离 | 公开请求仅携带世界、单位目标；操作角色来自 Identity。内部调用透传可信身份但使用 UpSeq=0，MessageType 区分响应路径；两条路径经真实多进程验收。无需为相同行军语义新增一套内部协议。 |
 | P1 Promote 后本地可见性 | 屏障缺口仍在 | `txgameslg/server/internal/clustere2e/suite.go` 晋升后读取 dependencies.Slot；该方法读取 etcd 持久值，不是 Agent/owner 本地 Watch 快照。需可控 Watch 延迟复现。 |
@@ -209,3 +209,26 @@ tx、txgame/server、txgameslg/server 全量 Go 回归通过；txclientslg 96 �
 新增一个组合回归 TestRuntimeWatchRejectsLateSnapshotAndRequiresCurrentPair：旧实现上复现“目录仍可用、WaitReady 返回 nil”；修复后覆盖取消后的迟到 Replace、另一条 Watch 延迟退出、下一轮仅槽位就绪仍等待、两份就绪后恢复。`go test -race ./modules/discovery -count=10` 通过；tx、txgame/server、txgameslg/server 的全量 Go 测试通过。本轮未执行真实 etcd 断网或多进程故障注入，不将受控时序结果描述为实际网络故障验证。
 
 下一步复核 Actor etcd provider 的关闭与续租并发风险，先运行针对性竞态复现，再决定是否需要修补；不扩展本次 Watch 修复为通用快照事务系统。
+
+## Actor provider 真实竞态复核
+
+本地锁定依赖为 protoactor-go `v0.0.0-20240822202345-3c0e61ca19c9`。复用既有 TestActorRuntimeLifecycleIntegration，连接真实 etcd `127.0.0.1:2379`，使用用例生成的唯一 `/tx/tests/actor-<时间戳>` 前缀；未新增用例、未关闭 etcd、未修改模块缓存。
+
+执行：`TX_ETCD_ENDPOINT=127.0.0.1:2379 GORACE='log_path=/private/tmp/tx-actor-provider-race history_size=0' go test -race ./tests -run '^TestActorRuntimeLifecycleIntegration$' -count=1 -timeout 30s`。结果失败，3.131s；精确竞态报告保留在 `/private/tmp/tx-actor-provider-race.90459`。
+
+- provider 的 Shutdown 在 etcd_provider.go:117 写普通 bool shutdown，与 keepAliveForever 在 :168 读取发生竞争。tx Runtime 自身关闭锁无法保护第三方后台协程。
+- 同次报告还发现 MemberList.BroadcastEvent（member_list.go:228 附近）与 UpdateClusterTopology（:147 附近）并发访问拓扑状态；来自 etcd Watch 的拓扑更新与 Actor 终止广播交错。该问题不是把 shutdown 改成原子变量就能一并解决。
+
+此前宽范围 `^TestActorRuntime` 执行也报告竞态，同时日志测试出现预期日志与初始化日志不匹配；本轮用单个生命周期用例排除了该额外日志断言对上述结论的干扰，不顺带修改日志测试。
+
+本轮只更新审计记录，不宣称修复完成。后续需评估依赖级补丁范围：至少包括 provider 关闭标记同步和 MemberList 拓扑读取同步；不直接复制整套依赖，不修改 Go 模块缓存，不通过延时关闭或关闭 race 检测掩盖问题。是否采用固定修订的依赖分支，需要明确维护方式后再实施。
+
+## 严格排水第一步：统一准入与可重试等待
+
+当前决策：不维护第三方补丁分支，暂缓替代 Actor 库评估；允许滚动更新期间请求失败、断线重连，先完成现有运行时的严格排水闭环。
+
+已将 Actor BeginDrain 拆成不阻塞的准入封口，Server.Drain 先关闭服务和 Actor 本地新业务准入，再发布 draining，最后等待服务与 Actor 已接收工作完成。控制面 WaitDrained 因此包含 Actor 邮箱工作，不再仅在 Stop 阶段等待。控制面及服务 Drain 回调失败后允许重试；每轮独立保存结果，成功回调不因仅等待在途请求超时而重复执行。
+
+验证：控制面超时后重试的既有测试先失败后通过；新增一个服务回调失败后重试测试；既有真实 etcd Actor 排水用例补充 BeginDrain 后立即拒绝新请求、等待超时后保留原工作并再次排空成功。`TX_ETCD_ENDPOINT=127.0.0.1:2379 go test ./tests -run '^TestActorRuntimeDrainWaitsForQueuedMessages$' -count=1 -timeout 30s` 通过。framework 与 actor 包 race 三轮通过，未声称第三方真实集群竞态已消失。
+
+本阶段尚未完成严格关闭全链路：Server.Stop 仍会收集错误并继续关闭，组件 Drain 的失败缓存、Run 返回导致进程退出也需一并处理。下一步只处理这些失败后阻止正常退出、保留重试能力的路径，并区分正常更新与运行身份丢失后的异常终止；在此之前不能把本阶段结果当成完整严格交接验收。

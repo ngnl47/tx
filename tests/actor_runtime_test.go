@@ -570,6 +570,17 @@ func TestActorRuntimeDrainWaitsForQueuedMessages(t *testing.T) {
 	if err := runtime.Tell(pid, txactor.Delivery{MessageType: "role.second", CommandID: 2}); err != nil {
 		t.Fatalf("Tell() second message error = %v", err)
 	}
+	if err := runtime.BeginDrain(); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Tell(pid, txactor.Delivery{MessageType: "role.rejected"}); !errors.Is(err, txactor.ErrRuntimeDraining) {
+		t.Fatalf("new request during drain = %v", err)
+	}
+	timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	if err := runtime.Drain(timeoutCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("blocked drain = %v", err)
+	}
+	timeoutCancel()
 
 	drained := make(chan error, 1)
 	go func() {

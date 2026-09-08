@@ -1251,7 +1251,9 @@ if err := control.RegisterLifecycleService(grpcServer, coordinator); err != nil 
 }
 ```
 
-`Drain` 只启动“目录标记为 `draining` + 严格入口封口”；`WaitDrained` 只等待已受理请求结束。最终资源关闭、根 context 取消、缓存管理器 Flush、Actor 与 discovery 注销仍由宿主负责。
+`Drain` 启动服务与 Actor 本地准入封口，再将目录标记为 `draining`；`WaitDrained` 等待服务入口与 Actor 邮箱已受理工作结束。目录尚未传播到其他节点时，旧实例仍会在本地拒绝新业务。最终资源关闭、根 context 取消、缓存管理器 Flush、Actor 与 discovery 注销仍由宿主负责。
+
+控制面 `failed` 后可以重新调用 `Drain` 并等待新一轮结果；重试不重新开放入口。每次等待绑定自己的排水结果，不会被后续重试覆盖。服务 Drain 回调失败时会在重试中重新执行，因此回调必须支持重复调用。
 
 进程排水的单阶段上限由 `server.RuntimeConfig.Lifecycle.DrainTimeout` 设置，零值默认 5 分钟。入口已受理工作等待和 Fusion 本地 pending 排空分别使用这项上限；它与 `txctl --timeout`
 不是同一个参数，后者只限制运维客户端等待 RPC 的时间。入口等待达到服务端上限时，控制状态转为 `failed` 并输出错误日志，
