@@ -62,7 +62,7 @@ Session 续期到期后 100 次活动只续期 1 次。`TX_REDIS_ENDPOINT=127.0.
 - txgameslg `b1cf87d`：`/private/tmp/txgameslg-mailbox-cache-e2e/20260908-101418.653127000`，完整套件 `status=passed`，WAL 恢复与 checkpoint 通过。
 
 两套均验证跨 Agent 多 Session 共享下行、独立确认、断线恢复、节点故障或排水重启与最终优雅关闭。
-进程级 I/O 归因仍待完成：接入点是 `storage/runtime/runtime.go` 创建真实存储客户端的位置，不能用 MsgQ 方法调用数替代实际命令数。
-后续采样需按进程区分冷启动、稳定请求、后台续期/健康探测，不使用 Redis 全局 MONITOR、KEYS、SCAN 或重置全局统计。
+进程级 I/O 采样已从存储运行时客户端接入，通过控制面提供累计快照；两套编排器分别采样首轮及故障后、重启后的客户端场景。每阶段仅包含当前存活进程，不跨实例重启相减，不能用 MsgQ 方法调用数替代实际命令数。
+稳定请求与登录初始化、后台续期/健康探测的分离归因仍待完成，不使用 Redis 全局 MONITOR、KEYS、SCAN 或重置全局统计。
 
 本计划不引入全 MsgQ 广播、不实现可靠业务消息队列、不附带实施其余审计项。
