@@ -238,3 +238,17 @@ tx、txgame/server、txgameslg/server 全量 Go 回归通过；txclientslg 96 �
 本轮验证：关闭失败保留资源、Run 恢复成功与重试耗尽、组件失败位置续刷、关闭期间运行身份丢失四类核心回归覆盖；`go test -race ./internal/framework ./component -count=2`、tx 全量 `go test ./... -count=1` 与两套示例 server 全量测试均通过。重试不是固定三秒退出承诺，各轮等待仍使用对应阶段的超时。
 
 后续重评条件：有限重试是当前 protoActor 方案的明确基线。若决定采用 GoAkt，且验证其生命周期机制能解决上述排水状态协调问题，再按 GoAkt 的方案重构关闭策略，不为旧策略保留兼容分支。评估须覆盖滚动更新、故障恢复及状态交接，并单独确认最终持久化失败的处理与日志留存；目前不据此启动选型替换，下一步仍是真实多进程验收。
+
+## 真实多进程关闭验收（2026-09-08）
+
+串行执行三套验收，均使用真实 etcd、Redis、Mongo 和对应客户端，结果均为 passed：
+
+- 无状态标准集群：`/private/tmp/txgame-strict-drain-e2e/20260908-192531.677555000/summary.json`。覆盖双 Agent/Login/MsgQ、Game 重启、消息链路与优雅退出。
+- 有状态标准集群：`/private/tmp/txgameslg-strict-drain-e2e/20260908-192658.685850000/summary.json`。覆盖 World 故障后的 WAL 恢复、generation 2 接管、checkpoint 及正常进程排水退出。
+- 有状态关闭失败分支：`/private/tmp/txgameslg-shutdown-failure-e2e/20260908-192902.944193000/summary.json`。通过 `go run ./cmd/cluster-e2e --shutdown-failure --artifact-root /private/tmp/txgameslg-shutdown-failure-e2e --timeout 8m` 执行。
+
+新增分支只复用专用 Mongo world_buckets validator 阻断 checkpoint，不停止共享 Mongo 服务。向旧 slgworld-a 发送 SIGTERM，最终刷盘每轮 15 秒；日志在 19:30:10.517、19:30:26.521、19:30:42.527、19:30:58.533 记录 attempt 1～4，最后记录重试耗尽与未刷盘数据风险，进程自行返回 exit status 1。编排器未向此进程发送 SIGKILL。解除 validator 后 slgworld-b 恢复 WAL，摘要记录 shutdownRetries=3、walRecovered=true、worldGeneration=2、worldCheckpointSeq=1。全部原始日志和退出码保留在同目录 processes 中。
+
+补充真实 etcd 用例 `TestActorRuntimeDrainWaitsForQueuedMessages` 通过，验证封口后新请求拒绝、已接受的排队工作继续完成；该精确用例是单进程运行时验证，不冒充跨进程在途消息故障注入。txgameslg/server 全量测试与 diff 检查通过。三套集群成功后由既有 ownership 校验流程清理专用外部测试数据，artifact 保留。
+
+本节点完成正常滚动关闭与 checkpoint 失败重试耗尽的真实进程验收；未证明网络分区下全局唯一 Actor，未消除已记录的第三方竞态，也未新增真实进程“中途恢复后重试成功”故障分支（该路径目前由生命周期回归覆盖）。下一步进入 GoAkt 替代可行性讨论：先核实生命周期保证、路由/激活能力与固定槽位适配，再评估迁移成本，不直接更换依赖。
