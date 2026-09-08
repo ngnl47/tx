@@ -29,6 +29,8 @@ GoAkt 原生 TellGrain 也等待接收端确认，外部调用方没有可直接
 
 单次 Await 超时不撤销 Future；原始请求期限限制整个 Ask 等待。Tell 使用 GoAkt 默认的 5 秒请求等待期限。业务 Handler 使用启动时传入的生命周期 Context，不随调用方取消等待而取消；项目应自行给业务 I/O 设置期限。这不是持久化必达机制，也不自动重投超时消息。
 
+RPC 不承诺服务异常时必达。投递、接收确认和执行结果用于表达不同完成阶段，不是持久化可靠投递；需要异常后必达的业务应使用持久化 MQ。本评估不引入 MQ，也不增加自动重投或去重结果库。
+
 消息在提交返回前复制，业务响应在离开 Handler 时复制，多次 Await 也不共享可变结果。复用 protobuf Delivery/Result/Acceptance 数据结构，但 RequestId 清零，关联交给 GoAkt；不声明与原运行时的关联协议互通。
 
 ## 已验证
@@ -48,13 +50,14 @@ GoAkt 原生 TellGrain 也等待接收端确认，外部调用方没有可直接
 
 四种入口新增四个关键用例，全部 11 个用例以 `-race -count=3` 通过：接收确认后取消等待不取消业务且排水仍等待；Tell 不等待激活且消息所有权独立；Future 单次等待超时、容量拒绝和结果隔离；业务错误码保留。
 
-这里的余额是加载函数创建的实验内存状态；持久化失败采用回调注入，不是生成 GD、Mongo、WAL 或 checkpoint 验收。本轮未启用集群；此前独立进程探针的通过不能替代本适配的跨进程验收。
+这里的余额是加载函数创建的实验内存状态；持久化失败采用回调注入，不是生成 GD、Mongo、WAL 或 checkpoint 验收。上述 11 个用例覆盖本地行为；下面的独立双进程场景验证本适配的真实远程通道。
 
 ```sh
 cd evaluation/goakt
 go test -tags=hashicorpmetrics ./... -v -count=3 -timeout 30s
 go test -race -tags=hashicorpmetrics ./... -count=3 -timeout 60s
 go test -tags=hashicorpmetrics ./... -run '^$' -bench '^BenchmarkLocalRoleCall$' -benchmem -count=3 -benchtime=300ms
+GOAKT_EVAL_ETCD=127.0.0.1:2379 go test -race -tags=hashicorpmetrics ./... -v -count=3 -timeout 120s
 ```
 
 在 tx 根目录执行 `go test ./...` 不会遍历本独立模块，必须另行执行上述命令。初始基线 `go test ./modules/actor ./modules/rpc` 和主模块 `go test ./... -count=1` 已通过；外部依赖专项用例是否运行仍由它们各自的环境开关决定。
@@ -85,9 +88,30 @@ go test -tags=hashicorpmetrics ./... -run '^$' -bench '^BenchmarkLocalRoleCall$'
 
 确认消息也受普通邮箱容量和 deadline 限制；满队列或超时会使本次关闭失败，不能跳过。活跃实体很多时，逐个确认的关闭耗时需要评估。它不是通过重写热路径邮箱实现的通用排水算法。
 
+## 双进程投递与排水缺口
+
+`cluster_test.go` 只在显式设置 `GOAKT_EVAL_ETCD` 时启动两个独立操作系统进程；每轮使用唯一 ActorSystemName 隔离 etcd 发现，动态本地端口和独立临时工作目录。HTTP 仅控制探针，业务由 Runtime 经 GoAkt 集群通信，不经 HTTP 代替远程 Actor 通道。不读写 Redis/Mongo 业务数据。
+
+实验配置 replica=1、minimumPeersQuorum=1、partitionCount=17、发现租约 TTL=5s，仅用于双节点功能验证，不是生产配置。本轮没有验证异常宕机、网络分区或归属交接。
+
+实测结果：
+
+- A 先激活 RoleID=1001，B 使用另一 Session 调用该角色；响应 PID 指向 A，确认没有退化为 B 的本地执行。
+- Tell、TellAccepted、CallFuture、Call 正常远程入口可用；业务错误码 17 和错误消息能够回传。这里没有扩大为所有模式在网络故障下的完整契约验收。
+- 未加保护时，A 的 Drain 返回成功后，B 的请求仍在 A 执行，观测 `targetPID=19613`、`callerPID=19620`、后续响应 `19613:6`。
+- 第二个失败断言进一步确认：原 Shutdown 会执行持久化回调后停止系统，输出 `err=<nil> flushed=true running=false`，不能证明回调期间没有新的远端业务。
+
+根因是当前 Ingress 只记录本进程发起的请求。B 的请求进入 A 的 Grain，不经过 A 的 Runtime.submit。FIFO 确认只能证明前面的消息已经处理，不能阻止确认之后的新消息；此外 GoAkt 的 Grains 在集群模式聚合远端目录，并非本地快照。
+
+当前保护：集群模式下 Drain 先关闭本地发起入口，然后返回 `ErrClusterDrainUnsupported`。Shutdown 不进入持久化回调、不停止系统。**这是阻止错误宣布排水成功，不是接收端排水实现；远端业务仍能执行。** Raw Stop 仍仅用于实验资源清理，不能拿来绕过持久化关闭策略。
+
+加入保护后，11 个本地用例和一个双进程场景以 `-race -count=3` 运行通过；两个子进程均正常退出并检查退出码。测试辅助入口在父进程中跳过，实际在两个子进程中运行。双进程场景确认未执行持久化回调、运行时保留且远程调用仍到达同一 PID。
+
+下一项需要设计接收节点的业务准入与执行完成边界，覆盖激活和已排队工作，同时保留本地已验收语义；不通过 RPC 自动重投解决，不增加持久化 MQ。这一方案确定并通过后才能移除上述限制。
+
 ## 尚不能得出的结论
 
-- 不支持直接替代现有 Messenger：四种入口仅验证本地行为，跨网络错误、归属变化和远端准入尚未验收。
+- 不支持直接替代现有 Messenger：四种入口完成本地和正常双进程投递验证，归属变化、异常网络及接收端排水尚未验收。
 - 有界等待协程是新增成本；减少关联表不等于减少总资源消耗。原生 Ask 等待结束释放容量，也不代表业务已经完成。
 - Runtime.Stop 仅用于实验清理；评估关闭使用 Shutdown。系统停止仍不能作为持久化成功的证明。
 - Factory 只是存储衔接位置，不是落库实现。不能在 OnDeactivate 中直接保存后就当作已有失败保留、重试和最终关闭能力。
@@ -101,7 +125,8 @@ go test -tags=hashicorpmetrics ./... -run '^$' -bench '^BenchmarkLocalRoleCall$'
 - [x] 验证单进程 Call 范围的排水：不漏算排队消息、未完成激活或已超时业务；持久化回调失败时保留运行时。
 - [ ] 将排水验证扩展到跨节点入站、内部再投递及实际持久化生命周期；不得把当前结果当作归属交接验收。
 - [x] 本地映射四种投递语义及等待容量，保持排水边界；识别有界异步等待的新增成本。
+- [x] 使用真实 etcd 和两个独立进程验证正常远程投递与业务错误回传，复现接收端排水缺口并禁止错误收尾。
 - [ ] 使用真实 etcd、多进程与项目生成 GD 进行适配验收；世界固定槽位独立评审。
 - [ ] 在等价契约下比较基准与净代码量，再决定是否替换主模块。
 
-下一阶段使用真实 etcd 和两个独立进程验证本适配的投递、错误回传及跨节点排水准入，先确定远端关闭边界；不直接迁移存储、MsgQ 或改用自定义 BON。之后再接入项目生成 GD 和实际持久化生命周期。
+下一阶段先评估接收端排水准入方案，确定如何保留已接收/排队业务的完成边界，再进行双进程关闭验收；不直接迁移存储、MsgQ 或改用自定义 BON。之后再接入项目生成 GD 和实际持久化生命周期。

@@ -35,11 +35,12 @@ type Runtime struct {
 	slots    chan struct{}
 }
 
-func Start(ctx context.Context, name string, capacity int64, maxPending int, idle time.Duration, factory Factory) (*Runtime, error) {
+func Start(ctx context.Context, name string, capacity int64, maxPending int, idle time.Duration, factory Factory, options ...actor.Option) (*Runtime, error) {
 	if maxPending <= 0 {
 		return nil, errors.New("positive pending capacity required")
 	}
-	system, err := actor.NewActorSystem(name, actor.WithLogger(nil), actor.WithExtensions(&bindings{factory: factory, context: ctx}))
+	options = append(options, actor.WithLogger(nil), actor.WithExtensions(&bindings{factory: factory, context: ctx}))
+	system, err := actor.NewActorSystem(name, options...)
 	if err != nil {
 		return nil, err
 	}

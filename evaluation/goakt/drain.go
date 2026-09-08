@@ -16,6 +16,8 @@ type shutdownState struct {
 	err     error
 }
 
+var ErrClusterDrainUnsupported = errors.New("goakt evaluation: cluster receive-side drain is not implemented")
+
 // Drain 只验证本进程经四种投递入口进入、没有后台消息生产者的 Role Grain。
 // 它不停止运行时、不执行持久化，也不允许重新打开准入。
 func (r *Runtime) Drain(ctx context.Context) error {
@@ -24,6 +26,10 @@ func (r *Runtime) Drain(ctx context.Context) error {
 		return errors.New("drain deadline required")
 	}
 	r.ingress.BeginDrain()
+	// 本地发送闸门挡不住远端入站；在接收侧方案验收前禁止进入持久化收尾。
+	if r.system.InCluster() {
+		return ErrClusterDrainUnsupported
+	}
 	if err := r.ingress.WaitContext(ctx); err != nil {
 		return err
 	}
