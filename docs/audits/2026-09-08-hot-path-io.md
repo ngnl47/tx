@@ -61,6 +61,15 @@ go test -race ./tests -run '^TestWriteBackManagerFlushHoldsTransactionLockUntilS
 
 建议先用慢存储注入测量同根对象阻塞与跨根对象排队，再讨论有界并行刷盘或不可变变更快照；快照方案必须同时解决失败重试、版本与清理已保存变更的边界。本轮不实施。
 
+真实适配器写回基准（2026-09-08）：`txgameslg/server/tests/integration/BenchmarkWriteBackStorageIO` 使用生成的 `GDRoleStore`、两个根对象和默认串行 Manager，结束后从数据库回读验证最终名称。每组 20 轮，同机 darwin/amd64、Intel i9-9880H：
+
+| 后端 | 无注入（每轮两角色） | 每次适配器调用前等待 5ms |
+| --- | ---: | ---: |
+| Redis | 0.877ms | 13.265ms |
+| Mongo | 1.081ms | 13.461ms |
+
+计时包含变更登记和 Flush；每轮两次等待累加，另含调度及真实存储耗时。该微基准不是数据库服务端慢查询、网络故障或 Fusion/WAL 全链路注入，不提供生产吞吐和延迟分位数结论。两组均完成真实写入、回读及精确记录清理；有状态示例全量 Go 测试通过。复现命令与专用范围见 txgameslg README 的“有状态写性能基线”。
+
 ### 已处理：邮箱续期与队列锁分离
 
 `modules/msgq/mailbox.go` 的 `touch` 只在队列锁内检查身份和登记在途续期，Redis Refresh 在锁外执行。
