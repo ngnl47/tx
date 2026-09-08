@@ -142,6 +142,31 @@ func TestHostConcurrentStopSharesResult(t *testing.T) {
 	}
 }
 
+func TestHostDrainRetriesFailedComponentBeforeItsDependencies(t *testing.T) {
+	events := []string{}
+	wantErr := errors.New("flush unavailable")
+	fusion := &hostTestComponent{id: "fusion", events: &events, drainErr: wantErr}
+	host := NewHost(nil, mustResolve(t, []Component{
+		&hostTestComponent{id: "redis", events: &events}, fusion,
+		&hostTestComponent{id: "procedure", events: &events},
+	}))
+	t.Cleanup(func() { _ = host.Stop(context.Background()) })
+	if err := host.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Drain(context.Background()); !errors.Is(err, wantErr) {
+		t.Fatalf("Drain = %v", err)
+	}
+	fusion.drainErr = nil
+	if err := host.Drain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"start:redis", "start:fusion", "start:procedure", "drain:procedure", "drain:fusion", "drain:fusion", "drain:redis"}
+	if !slices.Equal(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
 func TestHostRejectsStartAfterStop(t *testing.T) {
 	host := NewHost(nil, mustResolve(t, []Component{
 		&hostTestComponent{id: "only", events: &[]string{}},
@@ -172,6 +197,7 @@ type hostTestComponent struct {
 	events      *[]string
 	validateErr error
 	startErr    error
+	drainErr    error
 	stopErr     error
 	stopCalls   int
 }
@@ -191,7 +217,7 @@ func (component *hostTestComponent) Start(Context) error {
 
 func (component *hostTestComponent) Drain(context.Context) error {
 	*component.events = append(*component.events, "drain:"+string(component.id))
-	return nil
+	return component.drainErr
 }
 
 func (component *hostTestComponent) Stop(context.Context) error {

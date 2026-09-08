@@ -24,8 +24,7 @@ type Host struct {
 
 	startOnce sync.Once
 	startErr  error
-	drainOnce sync.Once
-	drainErr  error
+	drained   int
 	stopOnce  sync.Once
 	stopErr   error
 }
@@ -116,7 +115,7 @@ func (host *Host) rollback(startErr error) error {
 	return errors.Join(errs...)
 }
 
-// Drain 逆序通知已经启动的组件停止接收新工作或冲刷状态。并发调用共享第一次结果。
+// Drain 逆序冲刷组件，失败即停止；重试从失败组件继续，不重复已成功的组件。
 func (host *Host) Drain(ctx context.Context) error {
 	if host == nil {
 		return nil
@@ -124,21 +123,19 @@ func (host *Host) Drain(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	host.drainOnce.Do(func() {
-		host.transition.Lock()
-		defer host.transition.Unlock()
-		var errs []error
-		for index := len(host.started) - 1; index >= 0; index-- {
-			current := host.started[index]
-			if drainer, ok := current.entry.component.(Drainer); ok {
-				if err := drainer.Drain(ctx); err != nil {
-					errs = append(errs, fmt.Errorf("component: drain %q: %w", current.entry.spec.ID, err))
-				}
+	host.transition.Lock()
+	defer host.transition.Unlock()
+	for host.drained < len(host.started) {
+		index := len(host.started) - 1 - host.drained
+		current := host.started[index]
+		if drainer, ok := current.entry.component.(Drainer); ok {
+			if err := drainer.Drain(ctx); err != nil {
+				return fmt.Errorf("component: drain %q: %w", current.entry.spec.ID, err)
 			}
 		}
-		host.drainErr = errors.Join(errs...)
-	})
-	return host.drainErr
+		host.drained++
+	}
+	return nil
 }
 
 // Stop 逆序取消组件任务并释放资源。并发调用共享第一次结果。

@@ -7,6 +7,8 @@ import (
 	"github.com/ngnl47/tx/modules/discovery"
 )
 
+var errStopDeferred = errors.New("framework: shutdown deferred; resources retained for retry")
+
 // Drain 先关闭服务和 Actor 准入，再摘除普通路由并等待已接受的工作完成。
 // 它不会取消后台任务或关闭 RPC。
 func (server *Server) Drain(ctx context.Context) error {
@@ -73,9 +75,16 @@ func (server *Server) stop(ctx context.Context, drain bool) error {
 		}
 		if server.stopping {
 			done := server.stopDone
+			attempt := server.stopAttempt
+			if attempt != nil {
+				done = attempt.done
+			}
 			server.mu.Unlock()
 			select {
 			case <-done:
+				if attempt != nil {
+					return attempt.err
+				}
 				server.mu.Lock()
 				err := server.stopErr
 				server.mu.Unlock()
@@ -85,6 +94,7 @@ func (server *Server) stop(ctx context.Context, drain bool) error {
 			}
 		}
 		server.stopping = true
+		server.stopAttempt = &drainAttempt{done: make(chan struct{})}
 		server.mu.Unlock()
 		break
 	}
@@ -92,8 +102,14 @@ func (server *Server) stop(ctx context.Context, drain bool) error {
 	err := server.shutdown(ctx, drain)
 	server.mu.Lock()
 	server.stopErr = err
-	server.clearRuntimeLocked()
-	close(server.stopDone)
+	server.stopAttempt.err = err
+	close(server.stopAttempt.done)
+	if errors.Is(err, errStopDeferred) {
+		server.stopping = false
+	} else {
+		server.clearRuntimeLocked()
+		close(server.stopDone)
+	}
 	server.mu.Unlock()
 	return err
 }
@@ -105,16 +121,31 @@ func (server *Server) shutdown(ctx context.Context, drain bool) error {
 	cmodHost := server.cmodHost
 	discoveryRuntime := server.discovery
 	controlServer := server.control
+	fatal := server.fatalErr != nil
 	server.mu.Unlock()
 
 	var errs []error
-	if controlServer != nil {
-		controlServer.stop()
-	}
 	if drain {
 		drainCtx, cancel := context.WithTimeout(ctx, effectiveDrainTimeout(server.config.Runtime.Lifecycle.DrainTimeout))
-		errs = append(errs, server.Drain(drainCtx))
+		err := server.Drain(drainCtx)
 		cancel()
+		if err != nil && !fatal {
+			return errors.Join(errStopDeferred, err)
+		}
+		errs = append(errs, err)
+	}
+	if host != nil {
+		host.quiesceTasks()
+	}
+	if cmodHost != nil {
+		err := cmodHost.drain(ctx)
+		if err != nil && drain && !fatal {
+			return errors.Join(errStopDeferred, err)
+		}
+		errs = append(errs, err)
+	}
+	if controlServer != nil {
+		controlServer.stop()
 	}
 	if host != nil {
 		errs = append(errs, host.stop(ctx))
@@ -124,9 +155,6 @@ func (server *Server) shutdown(ctx context.Context, drain bool) error {
 	}
 	if server.bindStorage != nil {
 		server.bindStorage(nil)
-	}
-	if cmodHost != nil {
-		errs = append(errs, cmodHost.drain(ctx))
 	}
 	if runtime != nil {
 		runtime.setInstanceStatus(discovery.StatusStopping)

@@ -2097,8 +2097,8 @@ Actor 业务工作在 mailbox 成功接收 tx `Delivery` 前调用 `WaitGroupCon
 mailbox 溢出时立即回滚登记。只有 tx `Delivery` 属于业务工作，ProtoActor 的 `PoisonPill`、监督和集群控制消息不能
 受根生命周期准入限制，否则 Runtime 关闭时会拒绝自身停止消息。ActorSystem 保存同一个只读标准 `context.Context`，
 项目命令适配层把它嵌入生成的 `HandlerContext`；业务可将其传给下游 I/O，但不能取得 `WaitGroupContext.Cancel/Wait`。
-正常关闭先调用 Actor `Drain` 封闭新 Delivery 并等待 mailbox 排空，此时根 context 保持有效；随后才能停止业务服务和
-执行缓存管理器最终 Flush。Actor 排空受统一 `runtime.lifecycle.drainTimeout` 限制，超时错误包含剩余 Delivery 数量。
+正常关闭先调用 Actor `Drain` 封闭新 Delivery 并等待 mailbox 排空，此时根 context 保持有效；随后停止业务后台任务、
+执行缓存管理器最终 Flush，成功后才释放业务服务。Actor 排空受统一 `runtime.lifecycle.drainTimeout` 限制，超时错误包含剩余 Delivery 数量。
 
 ### 排水与关闭的区别
 
@@ -2144,15 +2144,15 @@ composition root：注册生成数据、安装 `db` facade、注入身份解析/
 `Stop` 解除 listener 等资源阻塞，最后等待任务退出；正常退出因 Drain 已先封口入口，顺序固定为：
 
 ```text
-discovery -> draining
-  -> service ingress drain and accepted-work wait
-  -> actor Delivery admission close and mailbox drain
+service ingress + actor Delivery admission close
+  -> discovery draining
+  -> service accepted-work wait + actor mailbox drain
   -> 取消并等待各 Service 自有 Tasks
-  -> 停止 Service
-  -> project cleanup and generated storage unbind
   -> writeback manager final flush
   -> shared RPC graceful stop
   -> fusion delay-task pending drain
+  -> 停止控制面与 Service
+  -> project cleanup and generated storage unbind
   -> discovery stopping
   -> root WaitGroupContext cancel and wait
   -> actor shutdown
@@ -2161,12 +2161,18 @@ discovery -> draining
 ```
 
 Drain 期间不会提前取消根 `WaitGroupContext`，也不会关闭 msgq 下行所需的共享 RPC Host。只有服务入口和 Actor
-业务邮箱完成封口并等待已受理工作后，Stop 才取消并等待各 Service 通过 `Tasks()` 登记的后台任务，然后停止项目服务并进入
-最终 Flush 与资源关闭阶段。这样 Service 后台任务不能在 CModProcedure 最终刷盘后再次提交内存变更。
+业务邮箱完成封口并等待已受理工作后，Stop 才取消并等待各 Service 通过 `Tasks()` 登记的后台任务，然后进入
+最终 Flush，成功后才停止项目服务与释放资源。这样 Service 后台任务不能在 CModProcedure 最终刷盘后再次提交内存变更。
+
+正常 Stop 在入口排水或组件 Drain 失败时返回错误，不继续释放资源或注销运行身份，入口也不重新开放。组件 Drain
+按逆依赖顺序执行，失败即暂停；再次调用从失败组件继续，不重复已成功的组件。Run 在首次失败后间隔 1 秒重试三次，
+各轮记录 AppID、尝试次数和具体错误。全部失败后记录数据丢失风险并返回错误，进程入口打印错误并以非零状态退出，
+不再尝试无限关闭；这属于异常退出，不是安全交接成功。直接 Stop 不负责退出进程。启动回滚及运行身份租约丢失的
+异常终止允许带错误释放资源，不套用正常更新时保留资源重试的规则。
 
 实例只有在共享 RPC Host 和可选控制面都成功启动、discovery 成功发布 `running` 后，才把本地
 `Context.Instance().Status` 切为 `running`。任一步失败都不会发布 `running`，而会进入启动回滚并转为
-`stopping`；不能让服务在控制面尚不可用时提前进入普通路由。Drain 先向 discovery 发布 `draining`，再同步本地快照并封口入口；即使远端
+`stopping`；不能让服务在控制面尚不可用时提前进入普通路由。Drain 先封口本地服务与 Actor 入口，再向 discovery 发布 `draining` 并同步本地快照；即使远端
 状态更新失败，本地入口仍会排水且错误会明确返回，调用方不能把结果当成成功。
 
 ### 总体拓扑

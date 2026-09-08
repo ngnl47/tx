@@ -7,6 +7,7 @@ import (
 	"maps"
 	"strings"
 	"sync"
+	"time"
 
 	txlog "github.com/ngnl47/tx/log"
 	txactor "github.com/ngnl47/tx/modules/actor"
@@ -87,21 +88,22 @@ type Server struct {
 	bindStorage    func(StorageReaders)
 	setups         []func(Context) (func(), error)
 
-	mu        sync.Mutex
-	starting  bool
-	started   bool
-	stopping  bool
-	startDone chan struct{}
-	runtime   *runtime
-	host      *serviceHost
-	cmodHost  *cmodHost
-	discovery *discoveryRuntime
-	control   *controlServer
-	cleanups  []func()
-	stopDone  chan struct{}
-	stopErr   error
-	fatalOnce sync.Once
-	fatalErr  error
+	mu          sync.Mutex
+	starting    bool
+	started     bool
+	stopping    bool
+	startDone   chan struct{}
+	runtime     *runtime
+	host        *serviceHost
+	cmodHost    *cmodHost
+	discovery   *discoveryRuntime
+	control     *controlServer
+	cleanups    []func()
+	stopDone    chan struct{}
+	stopErr     error
+	stopAttempt *drainAttempt
+	fatalOnce   sync.Once
+	fatalErr    error
 }
 
 func New(config Config, options ...Option) (*Server, error) {
@@ -124,7 +126,8 @@ func New(config Config, options ...Option) (*Server, error) {
 	return server, nil
 }
 
-// Run 启动选中的服务、等待 ctx 取消，并执行完整的排水和关闭流程。
+// Run 启动服务并等待退出信号。关闭失败后间隔一秒重试三次，仍失败则返回错误，
+// 由进程入口记录并非零退出；不会把未完成的持久化视为成功。
 func (server *Server) Run(ctx context.Context, options RunOptions) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -135,14 +138,24 @@ func (server *Server) Run(ctx context.Context, options RunOptions) error {
 	server.mu.Lock()
 	runtime := server.runtime
 	server.mu.Unlock()
-	if runtime == nil || runtime.lifecycle == nil {
-		return server.Stop(context.Background())
+	if runtime != nil && runtime.lifecycle != nil {
+		select {
+		case <-ctx.Done():
+		case <-runtime.lifecycle.Done():
+		}
 	}
-	select {
-	case <-ctx.Done():
-	case <-runtime.lifecycle.Done():
+	for attempt := 0; ; attempt++ {
+		err := server.Stop(context.Background())
+		if !errors.Is(err, errStopDeferred) {
+			return err
+		}
+		txlog.Error("server shutdown failed", "app", server.config.AppID, "attempt", attempt+1, "error", err)
+		if attempt == 3 {
+			txlog.Error("server shutdown retries exhausted; process must exit with failure; unflushed data may be lost", "app", server.config.AppID, "error", err)
+			return fmt.Errorf("framework: shutdown failed after three retries: %w", err)
+		}
+		time.Sleep(time.Second)
 	}
-	return server.Stop(context.Background())
 }
 
 // Start 装配框架资源并启动选中的服务。传入 context 的值会被保留，但取消信号会被刻意分离；
@@ -292,7 +305,13 @@ func (server *Server) reportFatal(err error) {
 		server.mu.Lock()
 		server.fatalErr = err
 		server.mu.Unlock()
-		go func() { _ = server.Stop(context.Background()) }()
+		go func() {
+			// 若加入的是租约失效前已经开始的普通关闭，须再执行异常终止，
+			// 不能让该轮保留资源的结果把身份已失效的进程留在运行中。
+			if err := server.Stop(context.Background()); errors.Is(err, errStopDeferred) {
+				_ = server.Stop(context.Background())
+			}
+		}()
 	})
 }
 

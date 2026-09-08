@@ -150,6 +150,19 @@ func waitServiceIngress(ctx context.Context, services []startedService) error {
 	return errors.Join(errs...)
 }
 
+// quiesceTasks 停止业务后台任务，但保留服务资源供最终持久化及失败重试使用。
+func (host *serviceHost) quiesceTasks() {
+	host.mu.Lock()
+	services := append([]startedService(nil), host.started...)
+	host.mu.Unlock()
+	for index := len(services) - 1; index >= 0; index-- {
+		if tasks := services[index].tasks; tasks != nil {
+			tasks.Cancel()
+			tasks.WaitDoneAndWaitGroupWait()
+		}
+	}
+}
+
 func (host *serviceHost) stop(ctx context.Context) error {
 	if host == nil {
 		return nil

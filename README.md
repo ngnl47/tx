@@ -1267,6 +1267,10 @@ server drain failed timeout=5m0s err="server: drain service \"game\" with pendin
 对应 handler，不能继续执行正常滚动步骤。超时不会重新开放入口或丢弃 pending 账本；若运维随后显式停止进程，
 `Server.Stop` 仍会使用调用方提供的 context 重新等待已受理工作，而不是复用控制面的超时结果并跳过等待。
 
+正常 `Stop` 在入口排水或组件最终持久化失败时立即返回错误，保持入口关闭并保留服务、Actor、存储和运行身份资源；再次调用可继续尝试。组件按逆依赖顺序排水，失败处暂停，重试不重复已成功的组件。项目 Drain 回调必须可重试，后台任务不能在最终 Flush 后继续写入。
+
+`Run` 在首次关闭失败后，每隔 1 秒自动重试，最多再试三次。每次失败记录 AppID、尝试次数和错误阶段；仍失败则记录未刷盘数据可能丢失的错误并返回。进程入口必须打印错误并非零退出（两个示例工程均如此），不继续无限等待，也不能视为正常交接成功。直接调用 `Stop` 只执行一轮，不隐式退出进程。运行身份租约丢失仍走异常终止路径，不适用保留旧身份等待恢复的规则。
+
 启用 discovery 的进程还可以注册独立的 `SlotService`。它接收完整旧 assignment 和下一运行实例 ID；下一
 generation 由框架按 `current.Generation + 1` 推导。项目侧 `SlotController` 必须确认目标实例为 `running`，再以
 完整旧值执行 CAS：

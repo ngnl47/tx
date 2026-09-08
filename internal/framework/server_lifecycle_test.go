@@ -3,6 +3,7 @@ package framework
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,40 @@ func TestFatalDiscoveryLossDrainsAndStopsServer(t *testing.T) {
 	}
 	if server.stopErr == nil || !strings.Contains(server.stopErr.Error(), "workSlot ownership lost") {
 		t.Fatalf("stop error = %v", server.stopErr)
+	}
+}
+
+func TestFatalDiscoveryLossDuringDeferredStopStillTerminates(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	app, err := New(Config{AppID: "fatal-during-stop"}, WithService(testService{
+		spec: Spec{Name: "game"},
+		drain: func(context.Context) error {
+			select {
+			case <-entered:
+			default:
+				close(entered)
+			}
+			<-release
+			return errors.New("drain failed")
+		},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Start(context.Background(), RunOptions{Services: "game"}); err != nil {
+		t.Fatal(err)
+	}
+	stopped := make(chan error, 1)
+	go func() { stopped <- app.Stop(context.Background()) }()
+	<-entered
+	want := errors.New("workSlot ownership lost")
+	app.reportFatal(want)
+	close(release)
+	<-stopped
+	waitClosed(t, app.stopDone)
+	if !errors.Is(app.stopErr, want) {
+		t.Fatalf("Stop = %v", app.stopErr)
 	}
 }
 
@@ -129,6 +164,105 @@ func TestStopFinishesServiceTasksBeforeCModDrain(t *testing.T) {
 		t.Fatal("CMod Drain ran before the service task exited")
 	}
 }
+
+func TestStopRetainsResourcesUntilDrainAndPersistenceSucceed(t *testing.T) {
+	for _, phase := range []string{"ingress", "persistence"} {
+		t.Run(phase, func(t *testing.T) {
+			failed := true
+			stopped := false
+			want := errors.New("temporarily blocked")
+			mod := &retryFlushCMod{flush: func() error {
+				if failed && phase == "persistence" {
+					return want
+				}
+				return nil
+			}}
+			app, err := New(Config{AppID: "strict-stop"}, WithCMod(mod), WithService(testService{
+				spec: Spec{Name: "game", Requires: []CModID{mod.Spec().ID}},
+				drain: func(context.Context) error {
+					if failed && phase == "ingress" {
+						return want
+					}
+					return nil
+				},
+				stop: func(context.Context) error { stopped = true; return nil },
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := app.Start(context.Background(), RunOptions{Services: "game"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := app.Stop(context.Background()); !errors.Is(err, want) {
+				t.Fatalf("Stop = %v", err)
+			}
+			if stopped || mod.stopped {
+				t.Fatal("failed shutdown released resources")
+			}
+			select {
+			case <-app.stopDone:
+				t.Fatal("failed shutdown reported final exit")
+			default:
+			}
+			failed = false
+			if err := app.Stop(context.Background()); err != nil {
+				t.Fatalf("retry Stop = %v", err)
+			}
+			if !stopped || !mod.stopped {
+				t.Fatal("retry did not close resources")
+			}
+		})
+	}
+}
+
+func TestRunRetriesFailedPersistenceBeforeReturning(t *testing.T) {
+	for _, recoverOn := range []int{3, 0} {
+		t.Run(fmt.Sprint(recoverOn), func(t *testing.T) {
+			attempts := 0
+			want := errors.New("database unavailable")
+			mod := &retryFlushCMod{flush: func() error {
+				attempts++
+				if recoverOn != 0 && attempts >= recoverOn {
+					return nil
+				}
+				return want
+			}}
+			app, err := New(Config{AppID: "run-retry"}, WithCMod(mod), WithService(testService{
+				spec: Spec{Name: "game", Requires: []CModID{mod.Spec().ID}},
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			err = app.Run(ctx, RunOptions{Services: "game"})
+			if recoverOn != 0 {
+				if err != nil || attempts != 3 || !mod.stopped {
+					t.Fatalf("Run = %v, attempts=%d, stopped=%v", err, attempts, mod.stopped)
+				}
+			} else {
+				if !errors.Is(err, want) || attempts != 4 || mod.stopped {
+					t.Fatalf("Run = %v, attempts=%d, stopped=%v", err, attempts, mod.stopped)
+				}
+				// 测试进程不退出，恢复依赖后释放本用例资源。
+				mod.flush = func() error { return nil }
+				if err := app.Stop(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+type retryFlushCMod struct {
+	flush   func() error
+	stopped bool
+}
+
+func (*retryFlushCMod) Spec() CModSpec                  { return CModSpec{ID: "retry-flush"} }
+func (*retryFlushCMod) Start(CModContext) error         { return nil }
+func (mod *retryFlushCMod) Drain(context.Context) error { return mod.flush() }
+func (mod *retryFlushCMod) Stop(context.Context) error  { mod.stopped = true; return nil }
 
 type blockingStartCMod struct {
 	startEntered chan struct{}
