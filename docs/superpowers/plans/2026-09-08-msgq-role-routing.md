@@ -45,4 +45,13 @@ Session 续期到期后 100 次活动只续期 1 次。`TX_REDIS_ENDPOINT=127.0.
 该计数尚不是独立集群各进程的合并归因，不据此勾选整项完成。其他热点 I/O 检查与后续优先级见
 [热点路径 I/O 检查](../../audits/2026-09-08-hot-path-io.md)。
 
+续期锁拆分后的独立集群回归（2026-09-08）：使用 tx `d7e34ce`，依次运行两套完整 `cluster-e2e`，均返回 `status=passed`。
+
+- 无状态示例 txgame `1d75084`：`/private/tmp/txgame-renewal-unlocked-e2e/20260908-095442.103996000`。
+  同角色 Session `362503841943552`、`362503841943555` 分别连接两个 Agent，共享下行及恢复通过；Game 重启、MsgQ 排水重启、Login 停止期间既有连接和最终排水通过。
+- 有状态示例 txgameslg `b61999f`：`/private/tmp/txgameslg-renewal-unlocked-e2e/20260908-095601.185435000`。
+  同角色 Session `362505587466240`、`362505587466243` 分别连接两个 Agent，角色/世界响应共享及恢复通过；WAL 恢复、world/slggame generation 2 接管、checkpoint、MsgQ 故障重启和最终排水通过。
+
+两套均使用各自已有 ownership 隔离范围，未修改生产配置。此回归不替代进程级 I/O 计数或慢 I/O 注入；精确 Session 寻址优化仍待推进。
+
 本计划不引入全 MsgQ 广播、不实现可靠业务消息队列、不附带实施其余审计项。
