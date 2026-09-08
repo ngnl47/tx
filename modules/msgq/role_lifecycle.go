@@ -12,6 +12,13 @@ type roleLease struct {
 	binding   RoleBinding
 	expires   time.Time
 	refreshAt time.Time
+	renewal   *roleRenewal
+}
+
+// roleRenewal 合并同一归属的在途续期；err 在 done 关闭后读取。
+type roleRenewal struct {
+	done chan struct{}
+	err  error
 }
 
 // Stop 拒绝新初始化，使本地邮箱失效并按完整版本释放角色归属。
@@ -104,17 +111,20 @@ func (s *Server) maintainRoles(ctx context.Context, now time.Time) error {
 	s.mu.RUnlock()
 	var errs []error
 	for _, id := range ids {
-		lock := &s.initLocks[uint64(id)%initLockShards]
-		lock.Lock()
 		if err := s.maintainRole(ctx, id, now); err != nil {
 			errs = append(errs, err)
 		}
-		lock.Unlock()
 	}
 	return errors.Join(errs...)
 }
 
-func (s *Server) maintainRole(ctx context.Context, roleID int64, now time.Time) error {
+func (s *Server) maintainRole(ctx context.Context, roleID int64, now time.Time) (result error) {
+	lock := &s.initLocks[uint64(roleID)%initLockShards]
+	lock.Lock()
+	defer lock.Unlock()
+	if s.stopped.Load() {
+		return ErrSessionOffline
+	}
 	s.mu.RLock()
 	lease, found := s.roleLeases[roleID]
 	count := len(s.roles[roleID])
@@ -130,8 +140,46 @@ func (s *Server) maintainRole(ctx context.Context, roleID int64, now time.Time) 
 	if now.Before(lease.refreshAt) {
 		return nil
 	}
+	if renewal := lease.renewal; renewal != nil {
+		lock.Unlock()
+		select {
+		case <-ctx.Done():
+			result = ctx.Err()
+		case <-renewal.done:
+			result = renewal.err
+		}
+		lock.Lock()
+		return result
+	}
+	renewal := &roleRenewal{done: make(chan struct{})}
+	lease.renewal = renewal
+	s.mu.Lock()
+	s.roleLeases[roleID] = lease
+	s.mu.Unlock()
+	defer func() { renewal.err = result; close(renewal.done) }()
 	started := time.Now()
+	lock.Unlock()
 	refreshed, err := s.store.RefreshRole(ctx, lease.binding)
+	lock.Lock()
+	if s.stopped.Load() {
+		return ErrSessionOffline
+	}
+	s.mu.Lock()
+	current, found := s.roleLeases[roleID]
+	matched := found && current.binding == lease.binding && current.renewal == renewal
+	if matched {
+		current.renewal = nil
+		s.roleLeases[roleID] = current
+	}
+	s.mu.Unlock()
+	if !matched {
+		return ErrSessionChanged
+	}
+	// 已过期的本地归属不能靠迟到结果复活；新初始化仍需重新申请归属。
+	if !time.Now().Before(current.expires) {
+		s.retireRole(current)
+		return ErrSessionChanged
+	}
 	if err != nil {
 		return err
 	}

@@ -149,6 +149,17 @@ func TestSlowRoleRenewalKeepsDeliveryUsable(t *testing.T) {
 	if got := store.calls.Load(); got != 1 {
 		t.Fatalf("maintenance unexpectedly advanced while first renewal blocked: %d", got)
 	}
+	// 两个分片都验证，避免依赖角色 map 的维护顺序；同角色新邮箱不能等待续期。
+	for id := int64(1); id <= 2; id++ {
+		initialized := make(chan error, 1)
+		go func() {
+			_, err := server.Init(ctx, InitRequest{Header: SessionHeader{RoleID: id, SessionID: id + 10, ConnectionID: id + 10}})
+			initialized <- err
+		}()
+		if err := waitMailboxResult(t, initialized); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 type blockedRoleRenewalStore struct {
@@ -159,6 +170,7 @@ type blockedRoleRenewalStore struct {
 }
 
 func (s *blockedRoleRenewalStore) RefreshRole(ctx context.Context, binding RoleBinding) (bool, error) {
+	refreshed, err := s.roleTestStore.RefreshRole(ctx, binding)
 	if s.block.Load() && s.calls.Add(1) == 1 {
 		close(s.entered)
 		select {
@@ -167,7 +179,81 @@ func (s *blockedRoleRenewalStore) RefreshRole(ctx context.Context, binding RoleB
 		case <-s.release:
 		}
 	}
-	return s.roleTestStore.RefreshRole(ctx, binding)
+	return refreshed, err
+}
+
+func TestLateRoleRenewalCannotRestoreRetiredOwnership(t *testing.T) {
+	for _, stop := range []bool{false, true} {
+		t.Run(map[bool]string{false: "replacement", true: "stop"}[stop], func(t *testing.T) {
+			store := &blockedRoleRenewalStore{entered: make(chan struct{}), release: make(chan struct{})}
+			server, err := NewServer(ServerOptions{InstanceID: "msgq-a", Store: store, MaxBacklogMessages: 8})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := context.Background()
+			header := SessionHeader{RoleID: 1, SessionID: 1, ConnectionID: 1}
+			if _, err := server.Init(ctx, InitRequest{Header: header}); err != nil {
+				t.Fatal(err)
+			}
+			lease := server.roleLeases[1]
+			lease.refreshAt = time.Now().Add(-time.Second)
+			server.roleLeases[1] = lease
+			store.block.Store(true)
+			done := make(chan error, 1)
+			go func() { done <- server.maintainRoles(ctx, time.Now()) }()
+			waitMailboxSignal(t, store.entered)
+			defer func() {
+				select {
+				case <-store.release:
+				default:
+					close(store.release)
+				}
+			}()
+			waitCtx, cancel := context.WithTimeout(ctx, 10*time.Millisecond)
+			defer cancel()
+			if err := server.maintainRole(waitCtx, 1, time.Now()); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("shared renewal waiter = %v", err)
+			}
+			if store.calls.Load() != 1 {
+				t.Fatal("duplicate role renewal reached storage")
+			}
+			if stop {
+				if err := server.Stop(ctx); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := server.TerminateSession(ctx, header); err != nil {
+					t.Fatal(err)
+				}
+				if err := server.maintainRoles(ctx, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := server.Init(ctx, InitRequest{Header: SessionHeader{RoleID: 1, SessionID: 2, ConnectionID: 2}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			close(store.release)
+			want := ErrSessionChanged
+			if stop {
+				want = ErrSessionOffline
+			}
+			if err := waitMailboxResult(t, done); !errors.Is(err, want) {
+				t.Fatalf("late renewal = %v, want %v", err, want)
+			}
+			if stop {
+				if server.SessionCount() != 0 || server.roleCurrent(1, time.Now()) {
+					t.Fatal("stopped ownership reactivated")
+				}
+			} else {
+				if _, err := server.PubSession(ctx, 2, []byte("replacement")); err != nil {
+					t.Fatal(err)
+				}
+				if server.roleLeases[1].binding.Generation == lease.binding.Generation {
+					t.Fatal("old generation restored")
+				}
+			}
+		})
+	}
 }
 
 func (s *blockedRenewalStore) Refresh(ctx context.Context, binding SessionBinding) (bool, error) {
