@@ -4,14 +4,14 @@
 
 ## 优先结论
 
-下一项优先复现 Fusion 旧任务覆盖新 Mongo 数据的交错。它属于持久化正确性，不是低频 I/O 吞吐优化。先用可控阻塞验证旧写晚于新写完成的结果，再确定条件写入与版本模型，不能只延长 Redis 锁或增加写前检查。
+Fusion 已按确认的最终纠正边界完成异常重新登记修补，见本文末尾验收。角色路由复核发现有状态示例启动入口已经校验绑定身份，不因 Handler 内没有重复校验就判定可绕过；后续重点为公开世界命令与内部调用的身份边界。下文复现章节保留各次实验条件，当前决策以最后的复核结论为准。
 
 ## 逐项状态
 
 | 原项 | 当前状态 | 当前代码证据与下一动作 |
 | --- | --- | --- |
-| P0 Fusion 旧任务覆盖 | 高风险路径仍在 | `storage/runtime/runtime.go` 直接把 Mongo 适配器传给延迟 handler；`storage/fusion/handler.go` 仍调用普通 `ReplaceDocument`，只有正 DelayDelete 才读取 revision；`storage/mongo/adapter.go` 使用记录键过滤替换，未带版本条件。优先做确定性交错复现。 |
-| P0 认证身份贯穿 | 信封已补齐，授权闭环待复核 | `modules/agent/actor_dispatcher.go` 注入 Identity/UpSeq，`modules/actor/delivery.go` 跨进程编码，示例 `CommandContext.Identity()` 可读；但 `commandroute.ValidatePayloadRoute` 只比较载荷与路由键，不能据此宣布越权问题已解决。需核对当前角色路由的绑定/授权边界，与允许显式跨世界路由区分。 |
+| P0 Fusion 旧任务覆盖 | 按最终纠正边界完成 | 失效 Retry 返回 ErrLeaseLost，Fusion 复用 Enqueue 恢复任务；真实交错中补登记失败一次后最终值恢复。不承诺禁止短暂回退或连续入队失败后的恢复。 |
+| P0 认证身份贯穿 | 角色入口已有校验；世界业务授权待复核 | `modules/agent/actor_dispatcher.go` 注入 Identity/UpSeq；有状态示例 `cmd/server.debugSlotID` 校验 role 路由等于可信 Identity.RoleID，不能仅看 Handler 宣布越权。显式世界目标与其中操作主体分开评审。 |
 | P0 Topic 部分成功 | 已有针对性修复与证据 | `modules/msgq/broadcast_grpc_test.go` 覆盖远程部分结果，当前共享不可变载荷契约和角色分发已进入稳定文档；最近真实 Redis race 与双集群回归通过。不重复改造成 UDP 或全 MsgQ 广播。 |
 | P1 Discovery Watch 联合就绪 | 风险结构仍在 | `modules/discovery/runtime.go` 的 watchOnce 仍等待第二个 Watch 返回，外层再失效目录；WaitReady 仍分别等待两份 Ready。需重现延迟退出和跨轮次就绪交错。 |
 | P1 Actor provider 竞态 | 依赖风险仍在，需重新运行针对性 race | 当前仍直接使用锁定版本的 etcd provider；本地依赖中的 shutdown 为普通 bool，Shutdown 写、keepalive 循环读。常规非 race 集群通过不能关闭此项。 |
@@ -167,3 +167,14 @@ TX_WRITEBACK_IO=1 <对应版本的测试二进制> \
 相同真实依赖探针在 `-race` 下复跑通过：正常组与注入一次补登记失败组均为 `repairTasks=1 repairedValue=new redisValue=new taskKeys=0`，没有 Go 竞态报告。失败组首次 Enqueue 错误后，失效 Retry 触发重新登记并成功；不等同于任意网络故障保证。tx、txgame/server、txgameslg/server 的 `go test ./... -count=1` 全部通过。
 
 本项按已确认的最终纠正边界完成。下一任务尚需重新检查剩余审计项优先级，不继续扩展本问题的故障组合。
+
+## Session 绑定角色与显式路由复核
+
+本轮沿实际装配重新检查，修正仅观察 Handler 得出的风险判断：txgameslg 的 debug/test 入口通过 `debugAgentHandlers` 安装 `debugSlotID`，它对 actor=role 要求帧头 int64 路由键等于可信 `Identity.RoleID`。随后业务入口再确认载荷路由键与帧头一致。因而客户端同时篡改帧头和 Role_Rename.RoleId 仍会被前一层拒绝。release 不安装该开发 SPI，需要项目自行注入；不将开发入口结论外推到任意自定义 SPI。
+
+复用已有测试，无新增用例或生产实现：
+
+- txgameslg/server：`go test -race ./cmd/server -run 'TestDebugAgentEntryAcceptsOnlyLoginTickets|TestDebugSlotIDUsesTargetIdentityAndRequestedWorld' -count=3 -v` 通过。覆盖可信票据、普通/多 Session 目标身份、错误角色目标拒绝以及 WorldID=1001/1002 显式路由允许。
+- txgame/server：`go test -race ./services/agent -run 'TestVirtualTargetResolverUsesRoleForDefaultGameRoute|TestVirtualTargetResolverUsesGeneratedActorAndRouteKey|TestTicketIdentityResolverUsesTicketPrincipalInsteadOfClientClaims' -count=3 -v` 通过。默认无显式路由键时使用可信 RoleID，room 等业务目标保持显式路由。
+
+这是入口组件级验证，不是一次完整网络登录及数据库越权攻击测试，也不代表所有 handler 业务权限已审计。当前没有证据支持为 Role_Rename 再增加一套重复校验。下一项独立评估 World_StartMarch 的载荷 RoleId 与可信操作主体，以及 RoleActor→WorldActor 内部调用身份传递；允许跨 WorldID 不等于允许伪造操作主体，不将这两类字段混为一谈。
