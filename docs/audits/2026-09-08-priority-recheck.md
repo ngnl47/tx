@@ -48,3 +48,30 @@ late old worker overwrote new document: final="old"
 临时复现源保留于 `/private/tmp/tx-fusion-stale-probe.SHWkMe/fusion_stale_write_probe_test.go`，已移出常规测试目录；它断言正确行为并故意暴露当前缺陷，不把“旧值覆盖成功”固化成绿色回归契约。生产代码未修改。正式修复时复用该交错，扩展到真实生成模型及 Mongo 条件写入。
 
 下一步明确为修复设计：先核对 Redis 热数据过期/回填时的版本连续性，再确定 Mongo 持久版本、条件写入、冲突重试和变更清理的闭环。不能直接把可能随热键回收的 Redis revision 当作全生命周期版本，也不能把一次 Mongo 冲突无条件当作任务成功。设计确认后再实施。
+
+## 真实租约、超时与最终纠正复核
+
+采用 txgameslg 生成的 GDRole（DelaySave=1s、DelayDelete=24h）、真实 Redis DB 15、真实 Mongo `txgameslg_fusion_lease_probe`、默认 30s 延迟任务租约和默认 10s 记录锁。旧 worker 在调用 Mongo 适配器前受控暂停，实际等待 31s 后由第二个 Scheduler 重新领取；没有停止 Mongo，没有伪造时钟或缩短租约。服务端进程暂停/客户端调用前停顿是本次注入点，不等同于 Mongo 服务端执行阻塞或已发请求的网络超时。
+
+运行 `go test ./tests/integration -run '^TestProbeFusionRealLeaseLateWrite$' -count=1 -v`，得到：
+
+```text
+delaySave=1s delayDelete=24h0m0s reclaimed=1 before=new after=old oldErr=<nil>
+repairTasks=1 repairErr=<nil> repairedValue=new
+FAIL: late old write overwrote Mongo: old
+```
+
+结论：Mongo 全程在线也能出现旧写回退，不要求 Mongo 服务下线；但当前正 DelayDelete 且 Redis 热数据仍在时，旧 worker 的 revision 比较会补登记一次保存，随后确实纠正为 new。这支持“后续保存可最终纠正”的判断。本次没有证明该配置下永久丢失，也未测量实际环境出现长暂停的概率。不能把受支持零 DelayDelete 分支的替身复现等同于当前角色配置的永久丢失结论。
+
+超时与闸门代码事实：
+
+- `storage/fusion/scheduler.go` 将服务生命周期 context 传给 handler，没有单任务 deadline，也没有自动续任务租约。
+- `storage/runtime/runtime.go` 的 Mongo 装配使用 URI 与 Monitor；当前本地 URI 没有 timeoutMS/socketTimeoutMS。锁定驱动 v1.17.9 的默认 ServerSelectionTimeout 为 30s，但这是选服等待，不是所有操作总时限；默认 SocketTimeout=0、Client Timeout=nil。
+- 健康探测有独立超时；`requireStorageMode(Fusion)` 同时要求 Redis/Mongo 健康，项目有状态写入准入使用该闸门。它可拒绝后续写入，不会撤销已在途的 Mongo 替换；后端存活也不代表某个 worker 不会暂停。
+- 旧任务的 Complete/Retry 由 token 条件保护，不会结算新租约，但这不能撤销已经完成的 Mongo 写入。
+
+本次测试精确删除了唯一角色记录和唯一任务前缀下六个已知 key，未扫描或清空数据库。临时源位于 `/private/tmp/tx-fusion-real-lease.PDn54w/fusion_lease_probe_test.go`，未加入常规用例；生产实现未修改。
+
+另一个独立诊断发现：首次以 RoleID=1788843635943283 运行时，Redis 热文档回读后 Mongo canonical 解码报 `cannot unmarshal number 1.7888436359433e+15 ... into ... int64`，阻止写回；改用 UnixMilli 范围的唯一 ID 后上述交错完成。该现象需单独核对整数转换路径，尚未确定是表示转换还是伴随精度损失，不应混入本次旧写修复。
+
+下一步先评审“禁止 Mongo 暂时回退”所需的最小条件写入方案，并单独评估新发现的大整数落库失败。操作超时属于资源边界，不能把超时取消当作 Mongo 原子版本保护的替代品；不增加外部服务故障补救系统或并行写回机制。
