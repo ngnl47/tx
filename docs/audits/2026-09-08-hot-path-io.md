@@ -84,6 +84,11 @@ go test -race ./tests -run '^TestWriteBackManagerFlushHoldsTransactionLockUntilS
 角色租约维护仍只遍历本地角色，按 TTL/2 续期，不扫描 Redis。维护循环逐角色等待 Redis；
 大量角色同步续期时的尾延迟仍需独立验收。重连 Rebind 和终止 Unbind 的存储等待不属于本次 Refresh 锁拆分范围。
 
+角色归属续期阻塞复现：`TestSlowRoleRenewalKeepsDeliveryUsable` 在两个本地角色都到达续期时刻后阻塞首个 `RefreshRole`。
+阻塞期间两个角色均可精确下行，但维护循环尚未调用第二个角色的续期；释放后两个角色均完成续期。
+这是存储 SPI 阻塞验证，不是完整 48h 租期实测。初始化分片锁在续期 I/O 期间仍被持有，按代码路径分析，同分片的新初始化也会等待；该初始化影响尚未做独立实测。
+因此当前结论是业务队列访问与续期等待隔离，而非整个 MsgQ 不受慢续期影响。后续优先评估有界续期执行与初始化锁边界，保留版本条件续期、过期拒绝及最后邮箱释放的串行协调，不增加逐消息 Redis 查询。
+
 ### P2：开启逐消息调试日志时有同步输出风险
 
 `modules/msgq/mailbox.go` 的接收、发布和确认路径调用 Debug 日志。`log/log.go` 同步执行 Handler；实际是否磁盘或标准输出等待取决于装配的 Handler。关闭 Debug 时会在 Enabled 判断后返回。本轮未测日志设备延迟，不建议因此引入无界异步日志队列。

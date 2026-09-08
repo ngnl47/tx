@@ -3,6 +3,7 @@ package msgq
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -105,6 +106,68 @@ type blockedRenewalStore struct {
 	testSessionStore
 	entered chan struct{}
 	release chan struct{}
+}
+
+// TestSlowRoleRenewalKeepsDeliveryUsable 明确维护队列等待与业务下行的隔离边界。
+func TestSlowRoleRenewalKeepsDeliveryUsable(t *testing.T) {
+	store := &blockedRoleRenewalStore{entered: make(chan struct{}), release: make(chan struct{})}
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-a", Store: store, MaxBacklogMessages: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for i := int64(1); i <= 2; i++ {
+		if _, err := server.Init(ctx, InitRequest{Header: SessionHeader{RoleID: i, SessionID: i, ConnectionID: i}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 仅把本地续期时刻置为到期，不改变生产 TTL 或等待完整租期。
+	for id, lease := range server.roleLeases {
+		lease.refreshAt = time.Now().Add(-time.Second)
+		server.roleLeases[id] = lease
+	}
+	store.block.Store(true)
+	done := make(chan error, 1)
+	go func() { done <- server.maintainRoles(ctx, time.Now()) }()
+	waitMailboxSignal(t, store.entered)
+	defer func() {
+		close(store.release)
+		if err := waitMailboxResult(t, done); err != nil {
+			t.Error(err)
+		}
+		if got := store.calls.Load(); got != 2 {
+			t.Errorf("renewed roles = %d, want 2", got)
+		}
+	}()
+	for id := int64(1); id <= 2; id++ {
+		published := make(chan error, 1)
+		go func() { _, err := server.PubSession(ctx, id, []byte("during-renewal")); published <- err }()
+		if err := waitMailboxResult(t, published); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := store.calls.Load(); got != 1 {
+		t.Fatalf("maintenance unexpectedly advanced while first renewal blocked: %d", got)
+	}
+}
+
+type blockedRoleRenewalStore struct {
+	testSessionStore
+	block            atomic.Bool
+	calls            atomic.Int32
+	entered, release chan struct{}
+}
+
+func (s *blockedRoleRenewalStore) RefreshRole(ctx context.Context, binding RoleBinding) (bool, error) {
+	if s.block.Load() && s.calls.Add(1) == 1 {
+		close(s.entered)
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-s.release:
+		}
+	}
+	return s.roleTestStore.RefreshRole(ctx, binding)
 }
 
 func (s *blockedRenewalStore) Refresh(ctx context.Context, binding SessionBinding) (bool, error) {
