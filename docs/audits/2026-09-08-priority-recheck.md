@@ -75,3 +75,36 @@ FAIL: late old write overwrote Mongo: old
 另一个独立诊断发现：首次以 RoleID=1788843635943283 运行时，Redis 热文档回读后 Mongo canonical 解码报 `cannot unmarshal number 1.7888436359433e+15 ... into ... int64`，阻止写回；改用 UnixMilli 范围的唯一 ID 后上述交错完成。该现象需单独核对整数转换路径，尚未确定是表示转换还是伴随精度损失，不应混入本次旧写修复。
 
 下一步先评审“禁止 Mongo 暂时回退”所需的最小条件写入方案，并单独评估新发现的大整数落库失败。操作超时属于资源边界，不能把超时取消当作 Mongo 原子版本保护的替代品；不增加外部服务故障补救系统或并行写回机制。
+
+## 大整数精度根因与优先级调整
+
+真实 Redis 无 key 读写的 Lua 编解码诊断已确认：
+
+```text
+input=1788843635943283 encoded={"roleId":1.7888436359433e+15} precision=14 decodedInteger=1788843635943283
+input=9007199254740991 encoded={"roleId":9.007199254741e+15} precision=14 decodedInteger=9007199254740991
+input=1788843635943 encoded={"roleId":1788843635943} precision=14 decodedInteger=1788843635943
+```
+
+这里 decodedInteger 是 cjson 解码后、重新编码前用整数格式输出的值，说明 Lua number 在这组安全整数上仍精确，损失发生在 cjson.encode 的十进制输出。第一个编码结果实际表示 1788843635943300，与原值相差 17；第二个结果表示 9007199254741000，甚至超出约定安全范围。诊断源为 `/private/tmp/tx-cjson-number-probe.go`。
+
+生产 `storage/redis/scripts/update_document.lua` 对 loaded 文档调用 cjson.encode；局部变更会重新编码同一文档中没有修改的其他数值。因此不只是 RoleID 字段新写入时有风险，修改 Name 也可能改变已有的大整数。`storage/redis/document.go` 只按 2^53-1 检查输入，无法阻止此处 14 位十进制编码损失。此前真实 Mongo 回写解码错误是这条链路的后果，不能仅通过允许科学计数法解决。
+
+优先级调整：先设计并修复 Redis JSON 增量更新的安全整数保真，再推进 Fusion 旧写条件保护。不得缩小已约定的 53 位安全整数范围，不把业务整数改成字符串，不在 Mongo 解码时吞掉格式错误或对已损失的值取整。最小修复应限定在脚本序列化边界，并用真实生成对象验证未修改字段、正负边界和最终 Mongo 数值；还需比较既有增量基准，避免为精度引入整条写链路重构。
+
+Fusion 版本设计仍有待确认的关键约束：当前 Redis `@v` 与热数据一起过期，回填脚本只 INCR 当前键，不从 Mongo 恢复持久版本。不能直接以 `@v` 大小做全生命周期排序；需要先决定持久版本与一次 Redis 热数据驻留期间版本之间的关系。该项尚未进入实现。
+
+## 安全整数修复与验收
+
+`update_document.lua` 在增量文档序列化时，将 ±(2^53−1) 内的整数按完整十进制输出；字符串转义、非整数和空容器继续使用 cjson。未调整业务类型、安全整数范围、Mongo 解码契约或写入路径。空容器保留原生编码是必要边界：本地 Redis 的空数组带内部元表，但不暴露 `cjson.array_mt`，不能仅按 table 和首元素判断后重新编码。
+
+新增一个真实生成角色回归 `TestRedisPartialUpdatePreservesSafeIntegers`，覆盖修改普通字段后未修改的大整数、正负安全边界、subKey 数值更新和 Mongo 最终 BSON 值。该用例先在旧实现上复现精度错误，再在修复后通过。复用无状态示例已有用例验证空数组，不增加重复测试矩阵。
+
+最终验证通过：
+
+- tx：`go test ./... -count=1`。
+- txgame/server：`go test ./... -count=1`，包含真实存储集成与空数组回归。
+- txgameslg/server：`TX_WRITEBACK_IO=1 go test ./... -count=1`。
+- 新增真实整数回归：`TX_WRITEBACK_IO=1 go test -race ./tests/integration -run '^TestRedisPartialUpdatePreservesSafeIntegers$' -count=3`。
+
+性能记录：既有 `BenchmarkWriteBackStorageIO/redis/0s` 的修复前 100 次采样为 768530 ns/op，修复后同规模为 845102 ns/op，均为 19100 B/op、212 allocs/op。最终代码另做 1000 次、3 轮采样，为 846206 / 854779 / 839327 ns/op。短样本提示存在编码成本，不能据此声称性能无回退；尚缺同规模、交替运行的前后对照。下一步先补齐此项对照，确认成本，再继续 Fusion 持久版本及旧写条件保护设计。

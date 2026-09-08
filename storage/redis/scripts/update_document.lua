@@ -42,6 +42,32 @@ local function get_type(v)
   return t
 end
 
+-- cjson 默认只输出 14 位有效数字；安全整数必须按完整十进制写回。
+-- 字符串转义、非整数及空容器仍委托 cjson，保留其空数组元表语义。
+local function encode_document(value)
+  local kind = get_type(value)
+  if kind == "number" and value == math.floor(value) and math.abs(value) <= 9007199254740991 then
+    return string.format("%.0f", value)
+  end
+  if kind ~= "table" and kind ~= "array" then
+    return cjson.encode(value)
+  end
+  if next(value) == nil then
+    return cjson.encode(value)
+  end
+  local parts = {}
+  if kind == "array" then
+    for i = 1, #value do
+      parts[i] = encode_document(value[i])
+    end
+    return "[" .. table.concat(parts, ",") .. "]"
+  end
+  for k, v in pairs(value) do
+    parts[#parts + 1] = cjson.encode(tostring(k)) .. ":" .. encode_document(v)
+  end
+  return "{" .. table.concat(parts, ",") .. "}"
+end
+
 local function is_empty_table(v)
   if type(v) ~= "table" then
     return false
@@ -267,7 +293,7 @@ end
 
 for k, v in pairs(loaded) do
   if save[k] == nil then
-    save[k] = cjson.encode(v)
+    save[k] = encode_document(v)
   end
 end
 
