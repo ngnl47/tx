@@ -18,7 +18,10 @@ import (
 type Handler func(context.Context, *actorpb.Delivery) (*actorpb.Result, error)
 type Factory func(context.Context, int64) (Handler, error)
 
-type bindings struct{ factory Factory }
+type bindings struct {
+	factory Factory
+	context context.Context
+}
 
 func (*bindings) ID() string { return "tx-role-bindings" }
 
@@ -26,66 +29,52 @@ type Runtime struct {
 	system   actor.ActorSystem
 	capacity int64
 	idle     time.Duration
-	// 只统计 Call 的提交/等待阶段，不能代替邮箱完成确认。
+	// 统计四种入口的提交/等待阶段，不能代替邮箱完成确认。
 	ingress  *lifecycle.Ingress
 	shutdown shutdownState
+	slots    chan struct{}
 }
 
-func Start(ctx context.Context, name string, capacity int64, idle time.Duration, factory Factory) (*Runtime, error) {
-	system, err := actor.NewActorSystem(name, actor.WithLogger(nil), actor.WithExtensions(&bindings{factory: factory}))
+func Start(ctx context.Context, name string, capacity int64, maxPending int, idle time.Duration, factory Factory) (*Runtime, error) {
+	if maxPending <= 0 {
+		return nil, errors.New("positive pending capacity required")
+	}
+	system, err := actor.NewActorSystem(name, actor.WithLogger(nil), actor.WithExtensions(&bindings{factory: factory, context: ctx}))
 	if err != nil {
 		return nil, err
 	}
 	if err = system.Start(ctx); err != nil {
 		return nil, err
 	}
-	return &Runtime{system: system, capacity: capacity, idle: idle, ingress: lifecycle.NewIngress(nil)}, nil
+	return &Runtime{system: system, capacity: capacity, idle: idle, ingress: lifecycle.NewIngress(nil), slots: make(chan struct{}, maxPending)}, nil
 }
 
 // Call 使用现有 protobuf 数据信封；请求关联交给 GoAkt，不维护第二份等待表。
-// 这不是现有 Messenger 的完整替代：四种投递模式及排水仍需独立验收。
+// 四种入口目前仅完成本地映射，跨节点投递及排水仍需独立验收。
 func (r *Runtime) Call(ctx context.Context, message *actorpb.Delivery) (*actorpb.Result, error) {
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		return nil, errors.New("request deadline required")
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if message == nil || message.RouteKeyKind != actorpb.RouteKeyKind_ROUTE_KEY_INT64 || int64(message.RouteKeyNumeric) <= 0 {
-		return nil, errors.New("positive role route required")
-	}
-	if err := r.ingress.BeginWork(); err != nil {
-		return nil, err
-	}
-	defer r.ingress.EndWork()
-	id, err := actor.GrainOf[*roleGrain](ctx, r.system, strconv.FormatInt(int64(message.RouteKeyNumeric), 10),
-		actor.WithGrainMailboxCapacity(r.capacity), actor.WithGrainDeactivateAfter(r.idle))
+	f, err := r.CallFuture(ctx, message)
 	if err != nil {
 		return nil, err
 	}
-	response, err := r.system.AskGrain(ctx, id, proto.Clone(message), time.Until(deadline))
-	if err != nil {
-		return nil, err
-	}
-	result, ok := response.(*actorpb.Result)
-	if !ok {
-		return nil, errors.New("invalid role response")
-	}
-	return proto.Clone(result).(*actorpb.Result), nil
+	return f.Await(ctx)
 }
 
 // Stop 仅供评估资源清理，不是持久化排水入口，不得接入 Bee/Ant 关闭流程。
 func (r *Runtime) Stop(ctx context.Context) error { return r.system.Stop(ctx) }
 
-type roleGrain struct{ handle Handler }
+type roleGrain struct {
+	handle  Handler
+	context context.Context
+}
 
 func (g *roleGrain) OnActivate(ctx context.Context, props *actor.GrainProps) error {
 	id, err := strconv.ParseInt(props.Identity().Name(), 10, 64)
 	if err != nil {
 		return err
 	}
-	g.handle, err = props.ActorSystem().Extension("tx-role-bindings").(*bindings).factory(ctx, id)
+	bound := props.ActorSystem().Extension("tx-role-bindings").(*bindings)
+	g.context = bound.context
+	g.handle, err = bound.factory(ctx, id)
 	return err
 }
 func (g *roleGrain) OnReceive(ctx *actor.GrainContext) {
@@ -99,11 +88,23 @@ func (g *roleGrain) OnReceive(ctx *actor.GrainContext) {
 		ctx.Err(errors.New("invalid role delivery"))
 		return
 	}
-	result, err := g.handle(ctx.Context(), message)
-	if err != nil {
-		ctx.Err(err)
+	if message.Mode != actorpb.DeliveryMode_DELIVERY_MODE_CALL {
+		ctx.Response(&actorpb.Acceptance{CommandId: message.CommandId})
+		_, err := g.handle(g.context, message)
+		if err != nil {
+			reportDeliveryError(message, err)
+		}
 		return
 	}
-	ctx.Response(result)
+	result, err := g.handle(g.context, message)
+	if err != nil {
+		ctx.Response(errorResult(err))
+		return
+	}
+	if result == nil {
+		ctx.Err(ErrInvalidResponse)
+		return
+	}
+	ctx.Response(proto.Clone(result))
 }
 func (*roleGrain) OnDeactivate(context.Context, *actor.GrainProps) error { return nil }

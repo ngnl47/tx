@@ -22,7 +22,7 @@ func request(session int64) *actorpb.Delivery {
 func TestBoundedMailboxRejectsOverload(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	var executions atomic.Int32
-	r, err := Start(context.Background(), "overload", 1, time.Hour, func(context.Context, int64) (Handler, error) {
+	r, err := Start(context.Background(), "overload", 1, 64, time.Hour, func(context.Context, int64) (Handler, error) {
 		return func(context.Context, *actorpb.Delivery) (*actorpb.Result, error) {
 			if executions.Add(1) == 1 {
 				close(entered)
@@ -67,7 +67,7 @@ func TestBoundedMailboxRejectsOverload(t *testing.T) {
 // 路由若包含 SessionID，同一 RoleID 会分裂为多个状态，最终余额不是 2000。
 func TestSessionsShareRole(t *testing.T) {
 	var loads atomic.Int32
-	r, err := Start(context.Background(), "sessions", 32, time.Hour, func(_ context.Context, id int64) (Handler, error) {
+	r, err := Start(context.Background(), "sessions", 32, 64, time.Hour, func(_ context.Context, id int64) (Handler, error) {
 		if id != 1001 {
 			return nil, errors.New("wrong role")
 		}
@@ -116,7 +116,7 @@ func TestSessionsShareRole(t *testing.T) {
 // 等待超时不能撤销已开始的业务；调用方不能把超时等同于可以关闭持久化资源。
 func TestTimeoutDoesNotFinishBusiness(t *testing.T) {
 	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	r, err := Start(context.Background(), "timeout", 4, time.Hour, func(context.Context, int64) (Handler, error) {
+	r, err := Start(context.Background(), "timeout", 4, 64, time.Hour, func(context.Context, int64) (Handler, error) {
 		return func(context.Context, *actorpb.Delivery) (*actorpb.Result, error) {
 			close(entered)
 			<-release
@@ -157,7 +157,7 @@ func TestTimeoutDoesNotFinishBusiness(t *testing.T) {
 // 内建钝化后必须重新执行加载边界，不沿用已停用的 Handler。
 func TestPassivationReloadsRole(t *testing.T) {
 	var loads atomic.Int32
-	r, err := Start(context.Background(), "passivation", 4, 50*time.Millisecond, func(context.Context, int64) (Handler, error) {
+	r, err := Start(context.Background(), "passivation", 4, 64, 50*time.Millisecond, func(context.Context, int64) (Handler, error) {
 		generation := loads.Add(1)
 		return func(context.Context, *actorpb.Delivery) (*actorpb.Result, error) {
 			return &actorpb.Result{MessageType: "generation", Payload: []byte(strconv.Itoa(int(generation)))}, nil
@@ -185,7 +185,7 @@ func TestPassivationReloadsRole(t *testing.T) {
 // 固定本地 Call 的评估基线；不代表与主库 Messenger 的等价性能比较。
 func BenchmarkLocalRoleCall(b *testing.B) {
 	response := &actorpb.Result{MessageType: "done", Payload: make([]byte, 256)}
-	r, err := Start(context.Background(), "bench-role", 1024, time.Hour, func(context.Context, int64) (Handler, error) {
+	r, err := Start(context.Background(), "bench-role", 1024, 64, time.Hour, func(context.Context, int64) (Handler, error) {
 		return func(context.Context, *actorpb.Delivery) (*actorpb.Result, error) { return response, nil }, nil
 	})
 	if err != nil {

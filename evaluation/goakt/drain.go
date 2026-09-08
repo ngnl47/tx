@@ -16,7 +16,7 @@ type shutdownState struct {
 	err     error
 }
 
-// Drain 只验证本进程经 Call 进入、没有后台消息生产者的 Role Grain。
+// Drain 只验证本进程经四种投递入口进入、没有后台消息生产者的 Role Grain。
 // 它不停止运行时、不执行持久化，也不允许重新打开准入。
 func (r *Runtime) Drain(ctx context.Context) error {
 	deadline, ok := ctx.Deadline()
@@ -30,7 +30,7 @@ func (r *Runtime) Drain(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// Call 均已完成提交或返回错误，此后不会再注册新角色或投递业务。
+	// 已准入调用均已完成提交或返回错误，此后不会再注册新角色或投递业务。
 	// 当前系统没有启用集群：Grains 只读取 GoAkt 的进程内目录，不查询 etcd。
 	for _, id := range r.system.Grains(ctx, time.Until(deadline)) {
 		if err := ctx.Err(); err != nil {

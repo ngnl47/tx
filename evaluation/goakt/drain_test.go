@@ -16,7 +16,7 @@ func TestDrainWaitsForTimedOutAndQueuedWork(t *testing.T) {
 	first, second := make(chan struct{}), make(chan struct{})
 	releaseFirst, releaseSecond := make(chan struct{}), make(chan struct{})
 	var completed atomic.Int32
-	r, err := Start(context.Background(), "drain-queued", 4, time.Hour, func(context.Context, int64) (Handler, error) {
+	r, err := Start(context.Background(), "drain-queued", 4, 64, time.Hour, func(context.Context, int64) (Handler, error) {
 		return func(_ context.Context, d *actorpb.Delivery) (*actorpb.Result, error) {
 			if d.Identity.SessionId == 1 {
 				close(first)
@@ -94,7 +94,7 @@ func TestDrainWaitsForTimedOutAndQueuedWork(t *testing.T) {
 // 加载仍在进行时不能先取得一个不含该 Grain 的快照并宣布排水成功。
 func TestDrainWaitsForActivation(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
-	r, err := Start(context.Background(), "drain-activation", 4, time.Hour, func(context.Context, int64) (Handler, error) {
+	r, err := Start(context.Background(), "drain-activation", 4, 64, time.Hour, func(context.Context, int64) (Handler, error) {
 		close(entered)
 		<-release
 		return func(context.Context, *actorpb.Delivery) (*actorpb.Result, error) {
@@ -128,7 +128,7 @@ func TestDrainWaitsForActivation(t *testing.T) {
 // 持久化失败后运行时必须保留且关闭准入；第二次收尾成功后才能停掉系统。
 func TestShutdownRetainsSystemWhenFlushFails(t *testing.T) {
 	var completed atomic.Bool
-	r, err := Start(context.Background(), "drain-flush", 4, time.Hour, func(context.Context, int64) (Handler, error) {
+	r, err := Start(context.Background(), "drain-flush", 4, 64, time.Hour, func(context.Context, int64) (Handler, error) {
 		return func(context.Context, *actorpb.Delivery) (*actorpb.Result, error) {
 			completed.Store(true)
 			return &actorpb.Result{MessageType: "done"}, nil
