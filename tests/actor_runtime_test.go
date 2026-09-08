@@ -502,6 +502,67 @@ func TestActorLifecycleDoesNotRewriteEtcdTopology(t *testing.T) {
 	}
 }
 
+func TestActorRuntimeRemoteDrainRejection(t *testing.T) {
+	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("set TX_ETCD_ENDPOINT to run the actor integration test")
+	}
+	prefix := fmt.Sprintf("/tx/tests/remote-drain-%d", time.Now().UnixNano())
+	var runtimes [2]*txactor.Runtime
+	for i := range runtimes {
+		root := lifecycle.NewWaitGroupContext(context.Background())
+		runtime, err := txactor.New(txactor.Config{
+			ClusterName: "tx-remote-drain", Host: "127.0.0.1", Port: 0,
+			Etcd: txactor.EtcdConfig{Endpoints: []string{endpoint}, Prefix: prefix, DialTimeout: time.Second},
+		}, txactor.MustFixedKind("probe", func() protoactor.Actor { return actorChurnProbe{} }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.Start(root); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := runtime.Shutdown(); err != nil {
+				t.Error(err)
+			}
+			root.Cancel()
+			root.WaitDoneAndWaitGroupWait()
+		})
+		runtimes[i] = runtime
+	}
+	address, err := runtimes[1].Endpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := txactor.FixedKindPID(address, "probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivery := txactor.Delivery{MessageType: "actor.churn", CommandID: 7, RouteKey: txprotocol.Uint64RouteKey(1)}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := runtimes[0].Call(ctx, pid, delivery); err != nil {
+		t.Fatalf("before drain: %v", err)
+	}
+	if err := runtimes[1].BeginDrain(); err != nil {
+		t.Fatal(err)
+	}
+	for _, accepted := range []bool{false, true} {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		var err error
+		if accepted {
+			err = runtimes[0].TellAccepted(ctx, pid, delivery)
+		} else {
+			_, err = runtimes[0].Call(ctx, pid, delivery)
+		}
+		cancel()
+		var rejection *txactor.CallError
+		if !errors.As(err, &rejection) || rejection.Code != txactor.CallErrorCodeRejected {
+			t.Fatalf("accepted=%v: expected remote admission rejection, got %v", accepted, err)
+		}
+	}
+}
+
 func TestActorRuntimeStartRequiresWaitGroupContext(t *testing.T) {
 	runtime, err := txactor.New(txactor.Config{
 		ClusterName: "tx-actor-lifecycle-required",

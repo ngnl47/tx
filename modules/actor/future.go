@@ -17,6 +17,8 @@ const (
 	CallErrorCodeInternal int32 = -1
 	// CallErrorCodeDispatch 表示 Actor 命令无法通过框架分派契约校验。
 	CallErrorCodeDispatch int32 = -2
+	// CallErrorCodeRejected 表示目标在入队前拒绝准入，业务尚未执行。
+	CallErrorCodeRejected int32 = -3
 )
 
 var (
@@ -236,6 +238,11 @@ func (calls *pendingCalls) resolve(message *actorpb.Result) {
 	}
 	state, ok := calls.take(message.GetRequestId())
 	if !ok {
+		return
+	}
+	// 准入拒绝同时终结接收确认和执行结果等待，但不冒充接收成功。
+	if message.GetErrorCode() == CallErrorCodeRejected && message.GetCommandId() == state.commandID {
+		state.complete(Result{}, &CallError{Code: message.GetErrorCode(), Message: message.GetErrorMessage()})
 		return
 	}
 	if state.expected != pendingResult {

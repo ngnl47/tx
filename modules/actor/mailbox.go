@@ -103,6 +103,7 @@ func (m *boundedMailbox) PostUserMessage(message interface{}) {
 	if tracked {
 		if err := m.lifecycle.begin(); err != nil {
 			m.overflow.reportRejected(err)
+			m.rejectRequest(message, err)
 			return
 		}
 	}
@@ -116,6 +117,24 @@ func (m *boundedMailbox) PostUserMessage(message interface{}) {
 	}
 	m.userMessages.Add(1)
 	m.schedule()
+}
+
+// rejectRequest 只报告入队前的准入失败，不为普通 Tell 增加回执。
+func (m *boundedMailbox) rejectRequest(message interface{}, err error) {
+	envelope, ok := message.(*protoactor.MessageEnvelope)
+	if !ok || envelope.Sender == nil {
+		return
+	}
+	delivery, ok := envelope.Message.(*actorpb.Delivery)
+	if !ok || (delivery.GetMode() != actorpb.DeliveryMode_DELIVERY_MODE_CALL && delivery.GetMode() != actorpb.DeliveryMode_DELIVERY_MODE_ACCEPTED) {
+		return
+	}
+	// 只读取 ActorSystem，不从邮箱线程访问 Actor 的当前消息上下文。
+	system := m.invoker.(actorSystemContext).ActorSystem()
+	system.Root.Send(envelope.Sender, &actorpb.Result{
+		RequestId: delivery.GetRequestId(), CommandId: delivery.GetCommandId(),
+		ErrorCode: CallErrorCodeRejected, ErrorMessage: err.Error(),
+	})
 }
 
 func (m *boundedMailbox) PostSystemMessage(message interface{}) {

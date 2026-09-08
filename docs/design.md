@@ -2565,6 +2565,11 @@ Actor 对外固定四种投递语义：
 `CallFuture + Await`，不能另建第二套请求协议。所有等待入口必须带 deadline，超时表示结果不确定，不能自动
 重试或切换 PID。取消一次 `Await` 只终止本地等待，不撤销已经投递的远端处理。
 
+目标邮箱关闭准入后，尚未接受的 `TellAccepted`、`CallFuture` 和 `Call` 请求通过现有 Result 信封返回
+`CallErrorCodeRejected=-3`，表示该请求没有进入业务处理。调用方不必等待整个 deadline；普通 `Tell` 不增加回执。
+已接受、排队和执行中的请求继续排水，不因关闭准入改成拒绝。拒绝回传仍依赖正常通信，目标已经停止或网络故障时
+仍可能超时；此机制不提供自动重投或持久化 MQ 保证。
+
 protobuf `Delivery` 使用内部 `DeliveryMode` 和 `request_id` 区分三类线上信封；业务结果使用 `Result` 信封，错误由
 稳定 `int32` code 和诊断 message 表达。每个 Runtime 创建一个本地响应 Actor，把 Acceptance/Result 按 request ID 投递到
 有界 pending 表。pending 容量由 `MaxPendingCalls` 限制，context 使用 `AfterFunc` 到期清理，不为每个 Future 常驻
