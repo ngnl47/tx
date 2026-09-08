@@ -7,9 +7,11 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/ngnl47/tx/lifecycle"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 	"github.com/tochemey/goakt/v4/actor"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // Handler 在每次激活时由项目加载边界创建；运行时不认识 GD 或存储。
@@ -24,6 +26,9 @@ type Runtime struct {
 	system   actor.ActorSystem
 	capacity int64
 	idle     time.Duration
+	// 只统计 Call 的提交/等待阶段，不能代替邮箱完成确认。
+	ingress  *lifecycle.Ingress
+	shutdown shutdownState
 }
 
 func Start(ctx context.Context, name string, capacity int64, idle time.Duration, factory Factory) (*Runtime, error) {
@@ -34,7 +39,7 @@ func Start(ctx context.Context, name string, capacity int64, idle time.Duration,
 	if err = system.Start(ctx); err != nil {
 		return nil, err
 	}
-	return &Runtime{system: system, capacity: capacity, idle: idle}, nil
+	return &Runtime{system: system, capacity: capacity, idle: idle, ingress: lifecycle.NewIngress(nil)}, nil
 }
 
 // Call 使用现有 protobuf 数据信封；请求关联交给 GoAkt，不维护第二份等待表。
@@ -50,6 +55,10 @@ func (r *Runtime) Call(ctx context.Context, message *actorpb.Delivery) (*actorpb
 	if message == nil || message.RouteKeyKind != actorpb.RouteKeyKind_ROUTE_KEY_INT64 || int64(message.RouteKeyNumeric) <= 0 {
 		return nil, errors.New("positive role route required")
 	}
+	if err := r.ingress.BeginWork(); err != nil {
+		return nil, err
+	}
+	defer r.ingress.EndWork()
 	id, err := actor.GrainOf[*roleGrain](ctx, r.system, strconv.FormatInt(int64(message.RouteKeyNumeric), 10),
 		actor.WithGrainMailboxCapacity(r.capacity), actor.WithGrainDeactivateAfter(r.idle))
 	if err != nil {
@@ -80,6 +89,11 @@ func (g *roleGrain) OnActivate(ctx context.Context, props *actor.GrainProps) err
 	return err
 }
 func (g *roleGrain) OnReceive(ctx *actor.GrainContext) {
+	// 排水确认与业务使用同一 FIFO 邮箱；不得放到优先系统消息通道。
+	if _, ok := ctx.Message().(*emptypb.Empty); ok {
+		ctx.Response(&emptypb.Empty{})
+		return
+	}
 	message, ok := ctx.Message().(*actorpb.Delivery)
 	if !ok {
 		ctx.Err(errors.New("invalid role delivery"))

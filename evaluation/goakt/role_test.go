@@ -181,3 +181,28 @@ func TestPassivationReloadsRole(t *testing.T) {
 		t.Fatalf("generation=%s loads=%d", got.Payload, loads.Load())
 	}
 }
+
+// 固定本地 Call 的评估基线；不代表与主库 Messenger 的等价性能比较。
+func BenchmarkLocalRoleCall(b *testing.B) {
+	response := &actorpb.Result{MessageType: "done", Payload: make([]byte, 256)}
+	r, err := Start(context.Background(), "bench-role", 1024, time.Hour, func(context.Context, int64) (Handler, error) {
+		return func(context.Context, *actorpb.Delivery) (*actorpb.Result, error) { return response, nil }, nil
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer r.Stop(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	d := request(1)
+	d.Payload = make([]byte, 256)
+	if _, err = r.Call(ctx, d); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err = r.Call(ctx, d); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
