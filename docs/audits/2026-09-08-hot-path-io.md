@@ -93,7 +93,15 @@ go test -race ./tests -run '^TestWriteBackManagerFlushHoldsTransactionLockUntilS
 
 两套 Agent/MsgQ 在两组窗口均仅观测到 Redis PING，没有 GET 等寻址命令；该结论只覆盖当前负载、窗口和 Runtime 客户端，不代表所有协议永远零存储访问。
 无状态两个 Game 的每组窗口分别约 120 次 EVAL。有状态 slggame 空闲窗口 139 次 EVAL、2 次 Mongo update，正式窗口 144 次 EVAL；说明预热写回可落在空闲期，不能把两组计数直接相减后认定为业务开销。
-延迟任务 ClaimDue 逐桶执行脚本是后台固定开销的后续归因候选；尚未按调用来源标记，不能仅凭 EVAL 数量断言全部来自该路径。世界移动负载和更长周期续期仍需单独验证，本批不调整后台调度或生产配置。
+延迟任务 ClaimDue 对空队列也逐桶执行脚本。验收配置使用 8 桶、200ms 轮询，3s 约 15 轮，即每实例 120 次 EVAL，与无状态观测一致。此为代码与配置归因，尚未逐调用标记，不能据此断言所有负载的 EVAL 都来自该路径。本批不调整后台调度或生产配置。
+
+双世界负载已接入同一组屏障与采样器，按实际拓扑覆盖两台 slgworld。真实验收目录为 `/private/tmp/txgameslg-world-io-windows/20260908-111522.768321000`，并发 2、预热 1s、空闲及正式窗口各 10s；完成 17851 次移动，失败 0，两个世界最终 Mongo 数据、checkpoint、代际隔离及 WAL 清理通过。7 个进程的前后 InstanceID、计数增量已复核。
+
+- Agent/MsgQ：两组窗口均仅 Redis PING，各 20 次，没有逐消息 GET。
+- slggame：两组均为 400 次 EVAL，与空轮询量级一致；正式窗口另有 pipeline/other 计数，不从类别推断具体业务来源。
+- 每个 slgworld：空闲窗口 Mongo find/insert/delete 各 1 次、update 2 次；正式窗口分别为 20/20/20/40 次，说明预热持久化尾部也会落在空闲窗口。
+
+本轮仍不覆盖完整 Session 续期周期；后续应按真实租期安排更长窗口，不缩短生产租期来替代验收。
 
 ### 运行时快照接口
 
