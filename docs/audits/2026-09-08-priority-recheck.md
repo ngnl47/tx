@@ -140,3 +140,30 @@ TX_WRITEBACK_IO=1 <对应版本的测试二进制> \
 八轮均通过；随后当前二进制运行 `TestRedisPartialUpdatePreservesSafeIntegers` 三次均通过，真实 Redis→Mongo 保真契约仍成立。本轮没有新增测试、生产代码或存储格式。
 
 结论：现有证据不支持为了这次整数修复扩大到 MessagePack 或存储链路重构，保留局部正确性修复。下一任务明确为 Fusion 持久版本与旧写条件保护的最小设计评估；先解决热数据版本跨过期/回填的连续性，再确认实现，不直接复用会过期的 `@v` 作为全生命周期版本。
+
+## 旧租约失效后补登记失败的对照验证
+
+后续决策调整：接受现有异常重新登记实现最终纠正，暂不采用新增 Mongo 持久版本及每次写回前读取；`DelayDelete=0` 作为测试配置不扩展生产补偿。本轮仅验证旧租约失效后的补登记失败，不改变 30s 任务租约、24h 角色热数据保留期或生产逻辑。
+
+执行 `go test -race /private/tmp/fusion_requeue_failure_probe_test.go -run '^TestProbeFusionRequeueFailure$' -count=1 -v`。使用真实 Redis DB 15、Mongo `txgameslg_fusion_lease_probe`、生成 GDRole 和两个 Scheduler 对象（同一测试进程，不是两台独立服务）。旧 worker 在 Mongo 适配器调用前暂停，实际等待 31s 后由新 worker 重领并落库；确认新 worker 完成后该任务六个已知 Redis 队列 key 均不存在，再释放旧 worker。失败组只在旧 worker 的补登记调用进入 Redis 前注入错误一次；没有制造真实 Redis 断网、停止 Mongo 或伪造租约时钟。
+
+| 组别 | 新 worker 完成后的 Mongo | 旧 worker 返回后的 Mongo | 后续领取数 | 最终 Mongo / Redis | 剩余任务 key |
+| --- | --- | --- | ---: | --- | ---: |
+| 补登记正常 | new | old | 1 | new / new | 0 |
+| 补登记失败一次 | new | old | 0 | old / new | 0 |
+
+失败组 `failedEnqueueCalls=1`，旧 Scheduler 的 `RunOnce` 返回 nil，日志却输出 `delay task failed, retry scheduled`。根因是 `retry.lua` 拒绝旧 token 并返回 stale，Backend.Retry 将 stale 映射为 nil；因此本次并未实际安排重试。用例最终断言 Mongo 应为 new，失败组按预期暴露缺陷；没有 Go 竞态报告。只运行一轮对照，不据此估计生产故障概率，也不宣称已测试真实网络故障。
+
+结论：正常补登记路径有效；但“失效旧任务迟到落库 + 补登记失败”确实可能留下 Redis 新值而没有后续任务，不能认为下一实例总能重领。仍有最新 Redis 数据，尚未证明数据已永久丢失；后续业务写入可能重新触发落库。本轮精确清理两组创建的角色记录及已知 key，无扫描、无清库，诊断源保留在临时目录，不加入常规测试集。
+
+下一步仅评审异常路径最小修补：区分 Retry 实际安排成功与旧租约失效，明确失效旧任务的重新登记责任，避免虚报重试成功；不直接取消 token 隔离，不新增正常写回 Mongo I/O。修复尚未实施。
+
+### 异常重新登记修复验收
+
+上述修补已实现：Redis/内存任务后端 Retry 对失效租约返回 `task.ErrLeaseLost`；Fusion Scheduler 仅在 handler 失败且遇到该错误时，通过现有 Enqueue 重新登记，并使用当前时间计算退避。成功写回路径、租约时长、热数据 TTL、Mongo 操作均未改变。连续入队失败仅如实报告，未新增常驻补偿系统。
+
+新增一个三分支核心回归 `TestFusionLostLeaseRecovery`，先在旧实现上全部失败，再验证：已完成任务恢复、当前新 owner 不受干扰且保留后续任务、再次入队失败返回原始错误。未把临时 64 秒交错探针加入常规测试集。
+
+相同真实依赖探针在 `-race` 下复跑通过：正常组与注入一次补登记失败组均为 `repairTasks=1 repairedValue=new redisValue=new taskKeys=0`，没有 Go 竞态报告。失败组首次 Enqueue 错误后，失效 Retry 触发重新登记并成功；不等同于任意网络故障保证。tx、txgame/server、txgameslg/server 的 `go test ./... -count=1` 全部通过。
+
+本项按已确认的最终纠正边界完成。下一任务尚需重新检查剩余审计项优先级，不继续扩展本问题的故障组合。

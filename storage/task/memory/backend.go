@@ -153,7 +153,7 @@ func (b *Backend) Retry(ctx context.Context, lease task.DelayTaskLease, next tim
 	key := lease.Task.IdempotencyKey()
 	item := b.leased[key]
 	if item == nil || item.token != lease.Token {
-		return nil
+		return task.ErrLeaseLost
 	}
 	delete(b.leased, key)
 	if item.hasFollowup {

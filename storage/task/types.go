@@ -13,6 +13,7 @@ import (
 var (
 	ErrInvalidDelayTask      = errors.New("task: invalid delayed task")
 	ErrInvalidDelayTaskLease = errors.New("task: invalid delayed task lease")
+	ErrLeaseLost             = errors.New("task: delayed task lease lost")
 )
 
 type DelayTask struct {
@@ -86,7 +87,7 @@ type DelayTaskLease struct {
 }
 
 // ValidateDelayTaskLease 校验 Complete 与 Retry 使用的租约定位信息。
-// 已过期但格式完整的租约仍由后端按幂等 no-op 处理；这里仅拒绝无法定位的调用。
+// 这里仅拒绝无法定位的调用；租约所有权由后端判断。
 func ValidateDelayTaskLease(lease DelayTaskLease) error {
 	if err := ValidateDelayTask(lease.Task); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidDelayTaskLease, err)
@@ -106,5 +107,6 @@ type DelayTaskBackend interface {
 	Enqueue(ctx context.Context, task DelayTask) error
 	ClaimDue(ctx context.Context, now time.Time, limit int) ([]DelayTaskLease, error)
 	Complete(ctx context.Context, lease DelayTaskLease) error
+	// Retry 在租约已失效时返回 ErrLeaseLost，不修改当前所有者的任务。
 	Retry(ctx context.Context, lease DelayTaskLease, next time.Time, reason error) error
 }

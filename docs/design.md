@@ -1474,6 +1474,8 @@ t6  新 worker 重新读取 Redis，Replace Mongo(during-worker)
 
 `Complete` 表示旧处理周期成功，后续任务进入新的尝试周期，下一次 `Attempts` 从 1 开始。`Retry` 表示当前存储故障仍未解除，会采用最新任务载荷、清除单独的后续到期时间标记，并沿当前次数和退避时间继续重试。任务租约超时恢复同样清除后续到期时间标记，立即以最新任务载荷恢复当前任务，避免同一新写入被执行两次。
 
+失效旧租约的 `Complete` 不改变当前任务；`Retry` 则返回 `task.ErrLeaseLost`，不能把未安排重试当作成功。Fusion Scheduler 在 handler 失败且 Retry 返回该错误时，按当前时间加退避间隔调用已有 Enqueue，重新登记记录身份而非旧文档快照。若已有新 owner，沿用后续任务标记，不修改其租约；否则恢复待执行任务。下一次执行重新读取 Redis 最新数据。再次 Enqueue 失败会返回聚合错误，不输出“已安排重试”。该恢复仅增加异常分支 Redis 入队，不增加正常保存或 Mongo 写回 I/O；它不保证连续入队失败、旧写后进程退出或最新 Redis 数据已丢失时仍能纠正。
+
 lease 的 Redis score 使用毫秒时间戳，因此显式 `LeaseTimeout` 必须至少为 `1ms` 且使用整毫秒。亚毫秒值或
 带纳秒余数的值若直接截断，可能让新 lease 提前到期并被另一 worker 并发重领；标准 server 在启动校验阶段拒绝，
 底层 backend 也在任何脚本调用前复用同一错误防线。

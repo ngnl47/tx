@@ -144,7 +144,16 @@ func (s *Scheduler) RunOnce(ctx context.Context, now time.Time) (int, error) {
 	for _, lease := range leases {
 		if err := s.handle(ctx, lease.Task); err != nil {
 			retryAt := now.Add(s.retryDelay(lease.Attempts))
-			if retryErr := s.backend.Retry(ctx, lease, retryAt, err); retryErr != nil {
+			retryErr := s.backend.Retry(ctx, lease, retryAt, err)
+			if errors.Is(retryErr, task.ErrLeaseLost) {
+				// 旧任务可能已落库，不能把失效租约视为已重试。重新登记记录身份，
+				// 由后续任务读取最新 Redis 文档；Enqueue 保留当前所有者及后续执行。
+				retryAt = s.now().Add(s.retryDelay(lease.Attempts))
+				item := lease.Task
+				item.DueAt = retryAt
+				retryErr = s.backend.Enqueue(ctx, item)
+			}
+			if retryErr != nil {
 				runErr = errors.Join(runErr, fmt.Errorf(
 					"settle delayed task type=%s id=%v action=%s: %w",
 					lease.Task.Type,

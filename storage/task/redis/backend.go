@@ -193,7 +193,10 @@ func (b *Backend) Retry(ctx context.Context, lease task.DelayTaskLease, next tim
 	if err != nil {
 		return fmt.Errorf("redis task: retry %s: %w", lease.Task.IdempotencyKey(), err)
 	}
-	if result == scriptResultStale || result == scriptResultOK {
+	if result == scriptResultStale {
+		return task.ErrLeaseLost
+	}
+	if result == scriptResultOK {
 		return nil
 	}
 	return fmt.Errorf("redis task: retry %s: unexpected script result %q", lease.Task.IdempotencyKey(), result)
