@@ -31,3 +31,20 @@
 4. 生成器与客户端协议契约；独立维护两套示例，不交叉引用。
 
 此顺序是评估优先级，不构成对全部方案的批量实现授权。具体 API/存储版本设计需在复现后确认。本文未执行新的测试，不把代码检查标记为实测失败或全量审计完成。
+
+## Fusion 交错复现补充
+
+后续诊断已执行：`go test -race ./tests -run '^TestProbeFusionLateWriteMustNotOverwriteNewDocument$' -count=3 -v`，三次均因最终数据错误失败，未报告 Go 数据竞态。
+
+```text
+new-write-completed="new" final="old" old-error=<nil> new-error=<nil>
+late old worker overwrote new document: final="old"
+```
+
+复现使用生产 `StorageTaskHandler`，受控 loader/replacer 和记录锁替身模拟锁已过期、两个 worker 均可执行的状态；旧 worker 在执行替换前等待，新 worker 完成后才释放旧 worker。场景使用 `DelayDelete=0`，没有后续 revision/TTL 检查，两次 handler 都返回成功。此结果不是实际 Redis 租约过期或 Mongo 网络故障实测。
+
+代码核对表明实际装配没有外层补救：`storage/runtime/runtime.go` 直接把 Mongo 适配器传给 handler；`storage/mongo/adapter.go` 按记录键替换；`storage/mongo/mongodriver/database.go` 以 `upsert=true` 调用 ReplaceOne，没有单调版本条件。旧写隔离应落到 Mongo 原子写入边界，不能只在发送前检查 Redis 锁。
+
+临时复现源保留于 `/private/tmp/tx-fusion-stale-probe.SHWkMe/fusion_stale_write_probe_test.go`，已移出常规测试目录；它断言正确行为并故意暴露当前缺陷，不把“旧值覆盖成功”固化成绿色回归契约。生产代码未修改。正式修复时复用该交错，扩展到真实生成模型及 Mongo 条件写入。
+
+下一步明确为修复设计：先核对 Redis 热数据过期/回填时的版本连续性，再确定 Mongo 持久版本、条件写入、冲突重试和变更清理的闭环。不能直接把可能随热键回收的 Redis revision 当作全生命周期版本，也不能把一次 Mongo 冲突无条件当作任务成功。设计确认后再实施。
