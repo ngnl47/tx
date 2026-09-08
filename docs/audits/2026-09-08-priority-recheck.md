@@ -13,7 +13,7 @@ Fusion 已按确认的最终纠正边界完成异常重新登记修补，见本�
 | P0 Fusion 旧任务覆盖 | 按最终纠正边界完成 | 失效 Retry 返回 ErrLeaseLost，Fusion 复用 Enqueue 恢复任务；真实交错中补登记失败一次后最终值恢复。不承诺禁止短暂回退或连续入队失败后的恢复。 |
 | P0 认证身份贯穿 | 角色入口已有校验；世界业务授权待复核 | `modules/agent/actor_dispatcher.go` 注入 Identity/UpSeq；有状态示例 `cmd/server.debugSlotID` 校验 role 路由等于可信 Identity.RoleID，不能仅看 Handler 宣布越权。显式世界目标与其中操作主体分开评审。 |
 | P0 Topic 部分成功 | 已有针对性修复与证据 | `modules/msgq/broadcast_grpc_test.go` 覆盖远程部分结果，当前共享不可变载荷契约和角色分发已进入稳定文档；最近真实 Redis race 与双集群回归通过。不重复改造成 UDP 或全 MsgQ 广播。 |
-| P1 Discovery Watch 联合就绪 | 风险结构仍在 | `modules/discovery/runtime.go` 的 watchOnce 仍等待第二个 Watch 返回，外层再失效目录；WaitReady 仍分别等待两份 Ready。需重现延迟退出和跨轮次就绪交错。 |
+| P1 Discovery Watch 联合就绪 | 已修补并通过受控时序回归 | 每轮独立快照写入入口，任一 Watch 返回即废弃本轮并清空目录，拒绝迟到发布；WaitReady 仅接受当前轮次两份快照。Discovery race 重复 10 轮通过。 |
 | P1 Actor provider 竞态 | 依赖风险仍在，需重新运行针对性 race | 当前仍直接使用锁定版本的 etcd provider；本地依赖中的 shutdown 为普通 bool，Shutdown 写、keepalive 循环读。常规非 race 集群通过不能关闭此项。 |
 | P1 TryRelease 取消链 | 风险路径仍在 | `modules/writeback/manager.go` 的 SPI 仍无 context，内部用 Background 等待实体锁。下一步需组合实体释放任务与关闭顺序复现，不仅测试手动解锁。 |
 | P1 World_StartMarch 内外契约复用 | 身份与响应路径已分离 | 公开请求仅携带世界、单位目标；操作角色来自 Identity。内部调用透传可信身份但使用 UpSeq=0，MessageType 区分响应路径；两条路径经真实多进程验收。无需为相同行军语义新增一套内部协议。 |
@@ -190,3 +190,22 @@ TX_WRITEBACK_IO=1 <对应版本的测试二进制> \
 tx、txgame/server、txgameslg/server 全量 Go 回归通过；txclientslg 96 项测试与构建通过。本轮复用现有测试，不增加测试数量。以上不代表任意世界单位的业务所有权均已授权，目标单位权限仍由具体业务实现。
 
 下一步复现 Discovery Watch 联合就绪的失效窗口；先确认取消与就绪跨轮次交错，再决定最小修补，不以本轮普通集群成功替代竞态验证。
+
+## Discovery Watch 联合就绪窗口复现
+
+使用临时包内探针驱动真实 Runtime、ServiceDirectory、SlotDirectory，只替换 Watch 数据源。以通道控制先后顺序，不停止 etcd、不模拟网络故障、不使用随机等待。执行 `go test ./modules/discovery -run '^TestProbeRuntime' -count=1 -timeout 10s`，两项均按预期失败：
+
+1. 槽位 Watch 完成空快照后持续运行；服务 Watch 返回错误；槽位 Watch 收到取消后暂停退出。此时 ResolveSlot 返回 ErrSlotNotFound 而非 ErrSlotDirectoryUnavailable，说明失效的联合目录仍被视为可用。空快照用于直接区分“同步完成但没有目标”与“目录不可用”，不宣称已发生实际错误投递。
+2. 服务目录 Replace 完成后使两份目录 Invalidate，再仅让槽位目录 Replace。WaitReady 返回 nil，错误组合了服务目录的历史 Ready 与槽位后来的 Ready。根因是 Ready 只关闭一次，Invalidate 不重置首轮同步信号。
+
+进一步代码检查：另一条 Watch 接到取消前可能已取出快照、正在 Replace；仅提前 Invalidate 无法阻止该旧快照稍后重新填充目录。因此下一步修补需要同一 Watch 轮次的写入有效性和联合就绪约束，不能仅改清空顺序。
+
+本轮没有修改生产代码；临时失败探针已移除，不把失败测试加入常规套件。修补时保留覆盖上述关键窗口的精简回归。建议边界：首次 Watch 退出即让联合目录不可用，旧轮次不能再次发布快照；新一轮必须两份快照均完成后才能让 Runtime.WaitReady 成功。重试间隔、etcd 租约及业务路由 API 不变，不增加 Redis/Mongo I/O。
+
+### Watch 轮次隔离修补验收
+
+已按上述边界实现。两条 Watch 使用本轮专属目录写入入口，通过 Runtime 的发布锁写入共享目录；第一条返回后，在同一锁内关闭本轮发布资格并清空目录，再取消并等待另一条 Watch。Runtime 单独记录本轮联合就绪，不改变独立目录 Ready 的首次同步语义。未增加高频路由读锁或外部 I/O。
+
+新增一个组合回归 TestRuntimeWatchRejectsLateSnapshotAndRequiresCurrentPair：旧实现上复现“目录仍可用、WaitReady 返回 nil”；修复后覆盖取消后的迟到 Replace、另一条 Watch 延迟退出、下一轮仅槽位就绪仍等待、两份就绪后恢复。`go test -race ./modules/discovery -count=10` 通过；tx、txgame/server、txgameslg/server 的全量 Go 测试通过。本轮未执行真实 etcd 断网或多进程故障注入，不将受控时序结果描述为实际网络故障验证。
+
+下一步复核 Actor etcd provider 的关闭与续租并发风险，先运行针对性竞态复现，再决定是否需要修补；不扩展本次 Watch 修复为通用快照事务系统。

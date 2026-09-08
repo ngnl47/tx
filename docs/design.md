@@ -2246,6 +2246,10 @@ generation 后再放流。
 中断会同时清空实例目录、使槽位目录进入 unavailable，并按固定退避重新获取完整快照。此时路由默认失败，不能使用旧
 assignment，也不能临时恢复成逐消息 etcd Get。该选择以不向错误 owner 投递为最高优先级。
 
+Runtime 为每轮 Watch 创建独立快照写入入口。观察到任一 Watch 返回时，先将本轮标记失效并清空两份目录，再取消和等待
+另一条 Watch；失效轮次的迟到 Replace 不再发布。快照发布与轮次失效由同一把锁串行化，该锁不参与业务路由读取。
+`Runtime.WaitReady` 只接受当前有效轮次的两份快照，不拼接各目录历史上的首次 Ready；这不是跨目录同一 etcd revision 的原子快照承诺。
+
 `SlotRouter` 使用不含 `Services []string` 和 `Endpoints map[string]string` 的 `RouteInstance` 值类型读取内部业务 RPC
 地址，避免高频路由为防御性复制切片或地址表而分配内存。命名公开地址只属于低频实例发现元数据，由项目定义名称和用途；
 `ServiceDirectory` 在写入和返回完整实例时复制地址表，不能把可变 map 所有权泄露给调用方。`SlotDirectory` 与

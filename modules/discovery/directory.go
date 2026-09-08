@@ -68,6 +68,8 @@ func (s Status) Valid() bool {
 }
 
 type ServiceDirectory struct {
+	// publish 仅用于 Runtime 单轮 Watch 的写入入口，不参与路由读取。
+	publish   func([]Instance) error
 	mu        sync.RWMutex
 	ready     chan struct{}
 	readyOnce sync.Once
@@ -111,6 +113,9 @@ func (d *ServiceDirectory) Ready() <-chan struct{} {
 
 // Replace 应用一份完整的发现快照。
 func (d *ServiceDirectory) Replace(instances []Instance) error {
+	if d.publish != nil {
+		return d.publish(instances)
+	}
 	byID := make(map[string]Instance, len(instances))
 	byService := make(map[string][]Instance)
 	for _, instance := range instances {

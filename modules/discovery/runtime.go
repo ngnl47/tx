@@ -21,6 +21,9 @@ type Runtime struct {
 	slots           *CachedSlotStore
 	identity        RuntimeIdentity
 	instance        Instance
+	watchMu         sync.Mutex
+	watchReady      bool
+	watchChanged    chan struct{}
 	done            chan struct{}
 	doneOnce        sync.Once
 	errMu           sync.Mutex
@@ -82,6 +85,7 @@ func newRuntime(registry runtimeRegistry, registration runtimeRegistration, slot
 		slots:           cachedSlots,
 		identity:        registration.Identity(),
 		instance:        registration.Instance(),
+		watchChanged:    make(chan struct{}),
 		done:            make(chan struct{}),
 	}
 	go runtime.waitRegistration()
@@ -145,8 +149,6 @@ func (runtime *Runtime) Watch(ctx context.Context) error {
 	}
 	for {
 		err := runtime.watchOnce(ctx)
-		runtime.directory.Invalidate()
-		runtime.slotDirectory.Invalidate()
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -165,30 +167,70 @@ func (runtime *Runtime) Watch(ctx context.Context) error {
 
 func (runtime *Runtime) watchOnce(ctx context.Context) error {
 	watchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	// 每轮使用独立写入入口；失效与快照发布共享同一把锁，阻止迟到写入。
+	active, servicesReady, slotsReady := true, false, false
+	services, slots := NewServiceDirectory(), NewSlotDirectory()
+	publish := func(apply func() error, ready *bool) error {
+		runtime.watchMu.Lock()
+		defer runtime.watchMu.Unlock()
+		if !active || watchCtx.Err() != nil {
+			return context.Canceled
+		}
+		if err := apply(); err != nil {
+			return err
+		}
+		*ready = true
+		if servicesReady && slotsReady && !runtime.watchReady {
+			runtime.watchReady = true
+			close(runtime.watchChanged)
+			runtime.watchChanged = make(chan struct{})
+		}
+		return nil
+	}
+	services.publish = func(values []Instance) error {
+		return publish(func() error { return runtime.directory.Replace(values) }, &servicesReady)
+	}
+	slots.publish = func(values []SlotAssignment) error {
+		return publish(func() error { return runtime.slotDirectory.Replace(values) }, &slotsReady)
+	}
 	results := make(chan error, 2)
-	go func() { results <- runtime.registry.Watch(watchCtx, runtime.directory) }()
-	go func() { results <- runtime.persistentSlots.Watch(watchCtx, runtime.slotDirectory) }()
+	go func() { results <- runtime.registry.Watch(watchCtx, services) }()
+	go func() { results <- runtime.persistentSlots.Watch(watchCtx, slots) }()
 	first := <-results
+	runtime.watchMu.Lock()
+	active = false
+	runtime.watchReady = false
+	runtime.directory.Invalidate()
+	runtime.slotDirectory.Invalidate()
+	close(runtime.watchChanged)
+	runtime.watchChanged = make(chan struct{})
+	runtime.watchMu.Unlock()
 	cancel()
 	second := <-results
 	return errors.Join(first, second)
 }
 
-// WaitReady 等待服务实例和逻辑槽位两份初始快照就绪。
+// WaitReady 等待当前有效 Watch 轮次的服务实例和逻辑槽位快照同时就绪。
 func (runtime *Runtime) WaitReady(ctx context.Context) error {
 	if runtime == nil || runtime.directory == nil || runtime.slotDirectory == nil {
 		return errors.New("discovery runtime: dependencies are not configured")
 	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-runtime.directory.Ready():
-	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-runtime.slotDirectory.Ready():
-		return nil
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		runtime.watchMu.Lock()
+		ready, changed := runtime.watchReady, runtime.watchChanged
+		runtime.watchMu.Unlock()
+		if ready {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-changed:
+		}
 	}
 }
 

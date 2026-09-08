@@ -8,6 +8,7 @@ import (
 // SlotDirectory 保存由服务发现 Watch 维护的逻辑槽位内存快照。
 // ResolveSlot 只读本地内存，不会回源持久 SlotStore。
 type SlotDirectory struct {
+	publish     func([]SlotAssignment) error // Runtime 单轮 Watch 写入入口。
 	mu          sync.RWMutex
 	ready       chan struct{}
 	readyOnce   sync.Once
@@ -34,6 +35,9 @@ func (d *SlotDirectory) Ready() <-chan struct{} {
 func (d *SlotDirectory) Replace(assignments []SlotAssignment) error {
 	if d == nil {
 		return ErrSlotDirectoryNil
+	}
+	if d.publish != nil {
+		return d.publish(assignments)
 	}
 	next := make(map[string]SlotAssignment, len(assignments))
 	for _, assignment := range assignments {

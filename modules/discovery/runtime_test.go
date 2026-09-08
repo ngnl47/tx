@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestRuntimeStatusAndCloseOwnership(t *testing.T) {
@@ -61,6 +62,101 @@ func TestRuntimeWaitReadyRequiresBothSnapshots(t *testing.T) {
 		t.Fatalf("WaitReady error = %v, want context canceled", err)
 	}
 }
+
+func TestRuntimeWatchRejectsLateSnapshotAndRequiresCurrentPair(t *testing.T) {
+	serviceReady, slotReady := make(chan struct{}), make(chan struct{})
+	fail, canceled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	registry := &watchRegistry{watch: func(ctx context.Context, d *ServiceDirectory) error {
+		_ = d.Replace(nil)
+		close(serviceReady)
+		<-fail
+		return errors.New("watch interrupted")
+	}}
+	slots := &watchSlots{runtimeSlotStoreFake: newRuntimeSlotStoreFake(), watch: func(ctx context.Context, d *SlotDirectory) error {
+		_ = d.Replace(nil)
+		close(slotReady)
+		<-ctx.Done()
+		_ = d.Replace(nil) // 取消后到达的旧轮次快照不得重新发布。
+		close(canceled)
+		<-release
+		return ctx.Err()
+	}}
+	r, err := newRuntime(registry, newRuntimeRegistrationFake(), slots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- r.watchOnce(t.Context()) }()
+	<-serviceReady
+	<-slotReady
+	if err := r.WaitReady(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	close(fail)
+	<-canceled
+	_, resolveErr := r.Slots().ResolveSlot(t.Context(), "world-1")
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	readyErr := r.WaitReady(ctx)
+	cancel()
+	close(release)
+	<-done
+	if !errors.Is(resolveErr, ErrSlotDirectoryUnavailable) || !errors.Is(readyErr, context.DeadlineExceeded) {
+		t.Fatalf("invalidated round: resolve=%v ready=%v", resolveErr, readyErr)
+	}
+	// 新轮次仅槽位同步完成，不得复用上一轮服务目录的 Ready。
+	nextSlot, allowService := make(chan struct{}), make(chan struct{})
+	registry.watch = func(ctx context.Context, d *ServiceDirectory) error {
+		select {
+		case <-allowService:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if err := d.Replace(nil); err != nil {
+			return err
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	slots.watch = func(ctx context.Context, d *SlotDirectory) error {
+		if err := d.Replace(nil); err != nil {
+			return err
+		}
+		close(nextSlot)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	nextCtx, stop := context.WithCancel(t.Context())
+	defer stop()
+	go func() { done <- r.watchOnce(nextCtx) }()
+	<-nextSlot
+	partialCtx, partialCancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	partialErr := r.WaitReady(partialCtx)
+	partialCancel()
+	close(allowService)
+	readyCtx, readyCancel := context.WithTimeout(t.Context(), time.Second)
+	nextErr := r.WaitReady(readyCtx)
+	readyCancel()
+	stop()
+	<-done
+	if !errors.Is(partialErr, context.DeadlineExceeded) || nextErr != nil {
+		t.Fatalf("next round readiness: partial=%v complete=%v", partialErr, nextErr)
+	}
+}
+
+type watchRegistry struct {
+	runtimeRegistryFake
+	watch func(context.Context, *ServiceDirectory) error
+}
+
+func (r *watchRegistry) Watch(ctx context.Context, d *ServiceDirectory) error { return r.watch(ctx, d) }
+
+type watchSlots struct {
+	*runtimeSlotStoreFake
+	watch func(context.Context, *SlotDirectory) error
+}
+
+func (s *watchSlots) Watch(ctx context.Context, d *SlotDirectory) error { return s.watch(ctx, d) }
 
 func TestRuntimeExposesImmutableIdentityAndInstance(t *testing.T) {
 	registration := newRuntimeRegistrationFake()
