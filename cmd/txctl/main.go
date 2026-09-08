@@ -15,6 +15,7 @@ import (
 	controlpb "github.com/ngnl47/tx/modules/control/pb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 const defaultTimeout = 30 * time.Second
@@ -43,7 +44,7 @@ func run(parent context.Context, arguments []string, output io.Writer, dialer di
 		return errors.New("--timeout must be greater than zero")
 	}
 	if flags.NArg() == 0 {
-		return errors.New("usage: txctl --endpoint host:port [--timeout 30s] status|drain|wait-drained|create-slot|promote-slot")
+		return errors.New("usage: txctl --endpoint host:port [--timeout 30s] status|drain|wait-drained|create-slot|promote-slot|storage-io")
 	}
 	command := flags.Arg(0)
 	commandArguments := flags.Args()[1:]
@@ -80,6 +81,20 @@ func run(parent context.Context, arguments []string, output io.Writer, dialer di
 	lifecycleClient := controlpb.NewLifecycleServiceClient(connection)
 	var response *controlpb.LifecycleStatus
 	switch command {
+	case "storage-io":
+		snapshot, err := controlpb.NewStorageIOServiceClient(connection).Snapshot(ctx, &controlpb.Empty{})
+		if err != nil {
+			return err
+		}
+		encoded, err := (protojson.MarshalOptions{EmitUnpopulated: true}).Marshal(snapshot)
+		if err != nil {
+			return err
+		}
+		if output == nil {
+			output = io.Discard
+		}
+		_, err = fmt.Fprintln(output, string(encoded))
+		return err
 	case "status":
 		response, err = lifecycleClient.Status(ctx, &controlpb.Empty{})
 	case "drain":

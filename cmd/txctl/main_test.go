@@ -6,10 +6,40 @@ import (
 	"net"
 	"testing"
 
+	"github.com/ngnl47/tx/modules/control"
 	controlpb "github.com/ngnl47/tx/modules/control/pb"
+	"github.com/ngnl47/tx/storage"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/encoding/protojson"
 )
+
+func TestRunStorageIOPrintsLosslessSnapshot(t *testing.T) {
+	listener := bufconn.Listen(1024 * 1024)
+	server := grpc.NewServer()
+	if err := control.RegisterStorageIOService(server, cliIOProvider{}); err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = server.Serve(listener) }()
+	defer server.Stop()
+	var output bytes.Buffer
+	if err := run(context.Background(), []string{"--endpoint", "control", "storage-io"}, &output, bufconnDialer(listener)); err != nil {
+		t.Fatal(err)
+	}
+	var snapshot controlpb.StorageIOSnapshot
+	if err := protojson.Unmarshal(output.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.GetInstanceId() != "instance-1" || len(snapshot.GetStats()) != 1 || snapshot.GetStats()[0].GetCalls() != 9007199254740993 {
+		t.Fatalf("snapshot = %+v", &snapshot)
+	}
+}
+
+type cliIOProvider struct{}
+
+func (cliIOProvider) StorageIOStats() control.StorageIOSnapshot {
+	return control.StorageIOSnapshot{InstanceID: "instance-1", Stats: []storage.IOStat{{Backend: "redis", Operation: "get", Calls: 9007199254740993}}}
+}
 
 func TestRunCallsDrainAndPrintsLifecycleState(t *testing.T) {
 	listener, server := newControlTestServer(t, controlpb.LifecycleState_LIFECYCLE_STATE_DRAINING, "")

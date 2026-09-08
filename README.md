@@ -369,7 +369,7 @@ TX_ETCD_ENDPOINT=127.0.0.1:2379 \
 ## msgq 会话绑定
 
 存储运行时提供 `Runtime.IOStats()` 累计驱动快照，按固定 Redis/Mongo 操作类别统计调用数、命令数、失败数和耗时，
-不记录 key 或业务数据。该快照当前未暴露到控制面；统计口径、重试与 Pipeline 边界见
+不记录 key 或业务数据。开启控制端口后，可通过 `StorageIOService.Snapshot` 或 `txctl storage-io` 读取；统计口径、重试与 Pipeline 边界见
 [热点路径 I/O 检查](docs/audits/2026-09-08-hot-path-io.md)。
 
 `modules/msgq` 以 `SessionID` 作为精确邮箱主键，负责
@@ -1645,6 +1645,9 @@ cd /Users/a47/workspace/tx
 
 # 查看当前状态。
 go run ./cmd/txctl --endpoint 10.0.1.21:9100 status
+
+# 只读存储累计快照，不清零计数，不产生 Redis/Mongo 查询。
+go run ./cmd/txctl --endpoint 10.0.1.21:9100 storage-io
 
 # 实例进入 draining，普通服务路由不再选择它。
 go run ./cmd/txctl --endpoint 10.0.1.21:9100 drain

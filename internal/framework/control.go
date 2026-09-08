@@ -12,6 +12,11 @@ type controlServer struct {
 
 type controlServerOptions = control.ServerOptions
 
+// StorageIOStats 只复制当前运行时内存中的统计，不触发存储命令。
+func (server *Server) StorageIOStats() control.StorageIOSnapshot {
+	return control.StorageIOSnapshot{InstanceID: server.runtime.instanceSnapshot().ID, Stats: server.runtime.storage.IOStats()}
+}
+
 func startControlServer(root *lifecycle.WaitGroupContext, endpoint string, options controlServerOptions) (*controlServer, error) {
 	server, err := control.StartServer(root, endpoint, options)
 	if err != nil {

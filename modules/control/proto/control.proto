@@ -53,3 +53,23 @@ service SlotService {
   rpc CreateSlot(CreateSlotRequest) returns (CreateSlotResponse);
   rpc PromoteSlot(PromoteSlotRequest) returns (PromoteSlotResponse);
 }
+
+// 存储统计查询不改变生命周期，也不清零累计计数。
+message StorageIOStat {
+  string backend = 1;
+  string operation = 2;
+  uint64 calls = 3;
+  uint64 commands = 4;
+  uint64 errors = 5;
+  int64 total_duration_ns = 6;
+  int64 max_duration_ns = 7;
+}
+
+message StorageIOSnapshot {
+  string instance_id = 1;
+  repeated StorageIOStat stats = 2;
+}
+
+service StorageIOService {
+  rpc Snapshot(Empty) returns (StorageIOSnapshot);
+}

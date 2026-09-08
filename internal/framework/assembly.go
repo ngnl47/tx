@@ -30,6 +30,7 @@ func (server *Server) startControl(endpoint string) error {
 	controlServer, err := startControlServer(server.runtime.lifecycle, endpoint, controlServerOptions{
 		Lifecycle: newDrainCoordinator(server, server.config.Runtime.Lifecycle.DrainTimeout),
 		Slots:     slots,
+		StorageIO: server,
 	})
 	if err != nil {
 		return fmt.Errorf("framework: start control endpoint: %w", err)
