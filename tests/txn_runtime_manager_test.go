@@ -464,6 +464,7 @@ func TestWriteBackManagerMemorySoftLimitWarnsButAcceptsNewPendingRoots(t *testin
 type blockingRuntimeWriter struct {
 	started chan struct{}
 	release chan struct{}
+	calls   int
 }
 
 type scheduledRuntimeWriter struct {
@@ -491,8 +492,11 @@ func (writer *retryingRuntimeWriter) ApplyChangesWithOptions(context.Context, me
 }
 
 func (writer *blockingRuntimeWriter) ApplyChangesWithOptions(context.Context, meta.TypeSpec, storage.RecordKey, change.Source, change.FieldNameResolver, change.ValueResolver, storage.ApplyOptions) error {
-	close(writer.started)
-	<-writer.release
+	writer.calls++
+	if writer.calls == 1 {
+		close(writer.started)
+		<-writer.release
+	}
 	return nil
 }
 
@@ -505,15 +509,32 @@ func TestWriteBackManagerFlushHoldsTransactionLockUntilStorageWriteFinishes(t *t
 		t.Fatalf("Call returned error: %v", err)
 	}
 
+	otherStore := &runtimeTestStore{}
+	other := txn.NewLockTarget(txn.NewLockKey("role", 1002), otherStore)
+	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: other, store: otherStore}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		select {
+		case <-writer.release:
+		default:
+			close(writer.release)
+		}
+	}()
 	flushDone := make(chan error, 1)
 	go func() { flushDone <- manager.Flush(context.Background()) }()
 	<-writer.started
 
 	// 慢写只占用当前根对象锁，不能阻塞其他角色的内存事务。
-	other := txn.NewLockTarget(txn.NewLockKey("role", 1002), &runtimeTestStore{})
 	otherCtx, cancelOther := context.WithTimeout(context.Background(), time.Second)
 	defer cancelOther()
-	if err := txn.Run(otherCtx, []txn.LockTarget{other}, func(*txn.Tx) error { return nil }); err != nil {
+	if err := txn.Run(otherCtx, []txn.LockTarget{other}, func(*txn.Tx) error {
+		// 同一批 Flush 尚未刷到第二个根对象，其变更仍完整保留。
+		if !otherStore.HasChanges() {
+			t.Error("queued root was cleared before first storage write finished")
+		}
+		return nil
+	}); err != nil {
 		t.Fatalf("independent root blocked by storage write: %v", err)
 	}
 
@@ -535,6 +556,9 @@ func TestWriteBackManagerFlushHoldsTransactionLockUntilStorageWriteFinishes(t *t
 	close(writer.release)
 	if err := <-flushDone; err != nil {
 		t.Fatalf("Flush returned error: %v", err)
+	}
+	if writer.calls != 2 || manager.Pending() != 0 || otherStore.HasChanges() {
+		t.Fatalf("flush did not drain both roots: calls=%d pending=%d", writer.calls, manager.Pending())
 	}
 	select {
 	case err := <-transactionDone:
