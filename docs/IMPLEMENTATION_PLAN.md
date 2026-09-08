@@ -11,27 +11,15 @@
 
 ### P0：正确性与跨工程回归
 
-当前优先执行 [MsgQ 角色归属计划](superpowers/plans/2026-09-08-msgq-role-routing.md)：接入同角色单 MsgQ 归属、
-独立 Session 邮箱、本地角色分发和 Otter 路由缓存。完成基础 API 不等于完成运行入口切换；必须验证发送端和接收端均无逐消息 Redis 寻址。
+下一阶段先核对生效文档、审计结论与当前实现，清理已完成待办和淘汰方案描述；不能根据旧审计条目直接重复改造。
+MsgQ 角色归属、独立邮箱及双集群功能验收的证据见 [角色归属计划](superpowers/plans/2026-09-08-msgq-role-routing.md) 和
+[热点 I/O 检查](audits/2026-09-08-hot-path-io.md)。细粒度性能归因与完整自然租期测量不作为这些功能重新判为未完成的依据。
 
 1. 保持 `tx`、`txgen`、`txgame`、`txgameslg`、`txclient`、`txclientslg` 的行为同步。涉及生成 Store、集合、StoreView、字段名或存储边界的变更，必须同时检查生成器测试、两个模板的生成产物和业务侧真实 Redis/Mongo 回归；涉及 BON、Frame、路由或 Seq/Ack 时必须分别回归两个客户端。
 2. 持续审计 Redis、Mongo、Fusion、WAL 和延迟任务的失败契约。未知返回值、矛盾文档状态、非法路径、路由错误和依赖缺失必须返回明确错误，不能静默成功、自动修复持久化数据或错误清理 Store 状态。
 3. 发现旧接口、过渡结构、淘汰测试或旧方案文档时，在确认没有生产调用后直接删除。生效文档只描述当前方案；必要的技术取舍只保留在设计文档。
 4. 新增或修改无状态持久化能力时优先使用 `txgame` 生成的真实 `GD*`/`GD*Store`；涉及 Procedure、事务写回、WAL 或 checkpoint 时使用 `txgameslg` 的有状态生成模型，避免 runtime 测试与生成契约割裂。
-5. 按下列“可信会话后续 P0 顺序”推进会话投递、登录和两套项目客户端的真实多进程验收。
-
-### 可信会话后续 P0 顺序
-
-MsgQ 的 SessionID 精确邮箱、RoleID 唯一 MsgQ 归属、Agent 物理断连/逻辑终止和全 Agent 控制广播已经完成并进入稳定文档，
-不再列为待办。控制广播只使用服务发现内存快照，不查询 Redis owner；失活终止只遍历 MsgQ 本地 Session。真实集群 P0
-仍未整体完成；以下能力必须按顺序推进：
-
-txgameslg 仍需独立接入 Login 与可信票据客户端；不能把 tx runtime 或无状态项目的登录验收视为两套项目链路均已完成。
-
-1. 将 AccountID/RoleID 分段 SPI、LoginAccessGuard、`CModSessionID`、短期 ticket 和 AgentTarget 分配独立接入 txgameslg，并完成双 Login 生命周期与 txclientslg 真实票据登录验收；删除旧 MongoDB SessionID 流程，Login 不依赖 MsgQ。
-2. `Create_Role` 使用预分配 `RoleID` 的标准 Actor 路由，成功后 Game 写 `(AccountID, ServerID) -> []RoleID` 投影；PendingRole 仅允许建角和心跳。
-3. Borrow 沿用同一 ticket、握手、Session 流程：主 `AccountID`、`BorrowAccountID`、目标 `RoleID`、借用 `AccessMode`、独立 `SessionID`，只响应发起 Session；角色共享下行按角色归属计划继续推进。
-4. 同步 `txclient`、`txclientslg`，并依次完成无状态、有状态两套真实多进程验收。
+5. 对旧审计发现逐项核对当前调用链与回归证据，再确定剩余 P0/P1；历史严重级别不代表当前仍有同一缺陷。
 
 ### P1：性能基线
 
@@ -40,7 +28,8 @@ txgameslg 仍需独立接入 Login 与可信票据客户端；不能把 tx runti
 2. 热点优化必须记录对象规模、嵌套深度、变更密度、Go 版本、耗时和分配；没有基准证据时不引入 pool、`unsafe` 或新的中间批次。
 3. `MaxRootChanges` 继续只按变更位置数收敛 Store 状态树；进程 Heap 只用于告警，不能成为 WriteBackManager 拒绝业务的唯一依据。只有真实服务证明路径数和待刷根对象数不足以解释常驻内存时，才重新评审字节预算。
 4. Redis 大型整字段写入的安全整数检查只有在 profile 证明为热点后才优化；任何优化都不能降低整数精度保护。
-5. 下一阶段补齐 MsgQ 进程内与真实 gRPC 的发布、拉取和 Ack 对照基线，以及服务发现缓存命中和多会话断线恢复的耗时、吞吐与分配。真实网络与恢复数据复用现有多进程集群闭环采集，不增加生产监控 API、配置或常驻采集任务，也不能用本地快捷路径数据代替真实网络结果。
+5. MsgQ 进程内与真实 gRPC 的发布、拉取和 Ack 对照基线，以及多会话恢复耗时仍可按实际压测需求补充；不得把可选性能测量自动提升为正确性 P0。已有路由缓存基准及集群 I/O 采样不重复建设，不引入无需求的生产监控 API、配置或常驻采集任务。
+6. 当前角色归属 TTL 为 48h、按半租期维护，低频续期不继续做吞吐优化。有界并行续期、并行写回均需实际规模与延迟证据支持后重新评审。
 
 ## 待决策能力
 
