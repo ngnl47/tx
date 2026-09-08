@@ -939,47 +939,80 @@ func (s *Server) touch(ctx context.Context, header SessionHeader) (*mailboxSessi
 	if err := header.validateConnection(); err != nil {
 		return nil, err
 	}
-	if !s.roleCurrent(header.RoleID, time.Now()) {
-		return nil, ErrSessionChanged
-	}
 	session, found := s.lookup(header.SessionID)
 	if !found {
 		return nil, ErrSessionOffline
 	}
-	session.mu.Lock()
-	current, err := session.checkConnection(header)
-	if err != nil {
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		session.mu.Lock()
+		current, err := session.checkConnection(header)
+		if err != nil {
+			session.mu.Unlock()
+			s.logStaleConnection(ctx, header, current, err)
+			return nil, err
+		}
+		if !s.roleCurrent(header.RoleID, time.Now()) {
+			session.mu.Unlock()
+			return nil, ErrSessionChanged
+		}
+		now := time.Now()
+		if s.leaseRefreshInterval > 0 && now.Before(session.nextLeaseRefresh) {
+			session.lastActivity = now
+			session.mu.Unlock()
+			return session, nil
+		}
+		if pending := session.renewal; pending != nil {
+			session.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-pending:
+				continue
+			}
+		}
+		pending := make(chan struct{})
+		session.renewal = pending
 		session.mu.Unlock()
-		s.logStaleConnection(ctx, header, current, err)
-		return nil, err
-	}
-	now := time.Now()
-	if s.leaseRefreshInterval > 0 && now.Before(session.nextLeaseRefresh) {
+
+		// 网络等待不占用队列锁；同邮箱到期活动合并等待，恢复和下行仍可继续。
+		refreshed, refreshErr := s.store.Refresh(ctx, SessionBinding{
+			RoleID: header.RoleID, SessionID: header.SessionID,
+			ConnectionID: header.ConnectionID, InstanceID: s.instanceID,
+		})
+
+		session.mu.Lock()
+		session.renewal = nil
+		close(pending)
+		// 旧连接的续期结果不能改变重连后的活动时间，也不能删除新连接。
+		current, err = session.checkConnection(header)
+		if err != nil {
+			session.mu.Unlock()
+			s.logStaleConnection(ctx, header, current, err)
+			return nil, err
+		}
+		if !s.roleCurrent(header.RoleID, time.Now()) {
+			session.mu.Unlock()
+			return nil, ErrSessionChanged
+		}
+		if refreshErr != nil {
+			session.mu.Unlock()
+			return nil, refreshErr
+		}
+		if !refreshed {
+			s.removeLocked(session)
+			session.mu.Unlock()
+			return nil, ErrSessionChanged
+		}
 		session.lastActivity = now
+		if s.leaseRefreshInterval > 0 {
+			session.nextLeaseRefresh = now.Add(s.leaseRefreshInterval)
+		}
 		session.mu.Unlock()
 		return session, nil
 	}
-	refreshed, err := s.store.Refresh(ctx, SessionBinding{
-		RoleID:       header.RoleID,
-		SessionID:    header.SessionID,
-		ConnectionID: header.ConnectionID,
-		InstanceID:   s.instanceID,
-	})
-	if err != nil {
-		session.mu.Unlock()
-		return nil, err
-	}
-	if !refreshed {
-		s.removeLocked(session)
-		session.mu.Unlock()
-		return nil, ErrSessionChanged
-	}
-	session.lastActivity = now
-	if s.leaseRefreshInterval > 0 {
-		session.nextLeaseRefresh = now.Add(s.leaseRefreshInterval)
-	}
-	session.mu.Unlock()
-	return session, nil
 }
 
 func (h SessionHeader) validateConnection() error {
@@ -1012,6 +1045,7 @@ type mailboxSession struct {
 	active           bool
 	lastActivity     time.Time
 	nextLeaseRefresh time.Time
+	renewal          chan struct{} // 由 mu 保护；关闭后唤醒等待续期的活动。
 	notify           chan struct{}
 	downMsgs         downMsgQueue
 	topics           map[string]struct{}

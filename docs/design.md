@@ -2359,6 +2359,8 @@ Borrow 和旁路挂机只是应用场景：前者由授权操作者访问目标�
 `SessionRouter.ResolveSession` 和 `RoleRouter.Resolve` 只读解析，不刷新 TTL。只有当前 ConnectionID 通过 owner 侧校验的连接活动
 才更新本地活动时间；业务发布不更新。生产 Redis store 在 `Init`、`Rebind` 或一次成功续期后等待 `TTL / 2`，达到
 阈值的第一条合法活动才续期精确 binding，因此高频心跳、上行、Ack 和 Fetch 不会产生同频 Redis I/O。
+续期网络等待不持有邮箱队列锁，同邮箱到期活动合并等待；等待者可独立取消。恢复或终止可与在途续期交错，
+续期返回后重新核对活动状态、ConnectionID 与角色归属有效期，旧续期结果不能删除或更新新连接。
 默认离线保留窗口为 `180s`，失活终止检查间隔为 `2s`；周期任务只遍历当前 MsgQ 的本地 Session 表，不扫描 Redis key。
 超过窗口、积压条数或积压字节上限时终止整个 Session，而不是无限保留未确认消息。
 

@@ -2,12 +2,12 @@ package msgq
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
 
-// TestSlowRenewalKeepsOtherMailboxesUsable 验证慢续期不占用其他邮箱锁。
-// 共享分发的等待时间仅记录为诊断，不把当前阻塞行为固定为接口契约。
+// TestSlowRenewalKeepsOtherMailboxesUsable 验证慢续期不阻塞精确下行和角色共享下行。
 func TestSlowRenewalKeepsOtherMailboxesUsable(t *testing.T) {
 	store := &blockedRenewalStore{entered: make(chan struct{}), release: make(chan struct{})}
 	server, err := NewServer(ServerOptions{InstanceID: "msgq-a", Store: store, MaxBacklogMessages: 8})
@@ -46,7 +46,6 @@ func TestSlowRenewalKeepsOtherMailboxesUsable(t *testing.T) {
 	first, _ := server.lookup(11)
 	peer, _ := server.lookup(12)
 	sharedDone := make(chan error, 1)
-	started := time.Now()
 	// 固定快照顺序，排除 map 遍历顺序对诊断的影响；使用生产共享分发实现。
 	go func() {
 		result, err := server.broadcastSessions(ctx, []*mailboxSession{first, peer}, []byte("shared"))
@@ -60,14 +59,45 @@ func TestSlowRenewalKeepsOtherMailboxesUsable(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Log("共享分发在续期完成前已返回")
-	case <-time.After(20 * time.Millisecond):
-		t.Logf("续期受阻时，共享分发至少等待 %s；其他邮箱精确下行已完成", time.Since(started))
-		// 先释放存储再等待分发，不遗留测试 goroutine。
+	case <-time.After(time.Second):
 		store.release <- struct{}{}
-		if err := waitMailboxResult(t, sharedDone); err != nil {
-			t.Fatal(err)
-		}
+		_ = waitMailboxResult(t, sharedDone)
+		t.Fatal("共享下行被续期网络等待阻塞")
+	}
+}
+
+func TestTerminationDuringRenewalCannotReactivateMailbox(t *testing.T) {
+	store := &blockedRenewalStore{entered: make(chan struct{}), release: make(chan struct{})}
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-a", Store: store, MaxBacklogMessages: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := SessionHeader{RoleID: 47, SessionID: 11, ConnectionID: 1}
+	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.Touch(context.Background(), TouchRequest{Header: header}) }()
+	waitMailboxSignal(t, store.entered)
+	// 等待同一次续期的调用可以独立取消，不取消已经在途的请求。
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if err := server.Touch(ctx, TouchRequest{Header: header}); !errors.Is(err, context.DeadlineExceeded) {
+		close(store.release)
+		t.Fatalf("renewal waiter cancellation = %v", err)
+	}
+	terminated := make(chan error, 1)
+	go func() { terminated <- server.TerminateSession(context.Background(), header) }()
+	err = waitMailboxResult(t, terminated)
+	close(store.release)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := waitMailboxResult(t, done); !errors.Is(err, ErrSessionOffline) {
+		t.Fatalf("old renewal = %v", err)
+	}
+	if server.SessionCount() != 0 {
+		t.Fatal("旧续期重新激活了已终止邮箱")
 	}
 }
 

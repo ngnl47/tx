@@ -417,7 +417,7 @@ func TestSlowSessionExpiresDespiteClientActivity(t *testing.T) {
 	}
 }
 
-func TestMailboxTouchFirstSerializesRefreshWithRestore(t *testing.T) {
+func TestMailboxRestoreRejectsOldInflightRefresh(t *testing.T) {
 	store := newStagedSessionStore()
 	store.refreshEntered = make(chan struct{})
 	store.continueRefresh = make(chan struct{})
@@ -449,13 +449,14 @@ func TestMailboxTouchFirstSerializesRefreshWithRestore(t *testing.T) {
 		restoreDone <- err
 	}()
 	waitMailboxSignal(t, restoreAtSessionLock)
+	if err := waitMailboxResult(t, restoreDone); err != nil {
+		close(store.continueRefresh)
+		t.Fatalf("restore new connection: %v", err)
+	}
 	close(store.continueRefresh)
 
-	if err := waitMailboxResult(t, touchDone); err != nil {
-		t.Fatalf("touch old connection: %v", err)
-	}
-	if err := waitMailboxResult(t, restoreDone); err != nil {
-		t.Fatalf("restore new connection: %v", err)
+	if err := waitMailboxResult(t, touchDone); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("old refresh result = %v, want ErrSessionChanged", err)
 	}
 	if server.SessionCount() != 1 {
 		t.Fatalf("session count = %d, want restored session", server.SessionCount())
@@ -489,12 +490,15 @@ func TestMailboxSessionActivityCoalescesStoreRefresh(t *testing.T) {
 	session.nextLeaseRefresh = time.Now().Add(-time.Second)
 	session.mu.Unlock()
 
-	if err := server.Touch(context.Background(), TouchRequest{Header: header}); err != nil {
-		t.Fatalf("first touch: %v", err)
+	var activities sync.WaitGroup
+	for range 32 {
+		activities.Go(func() {
+			if err := server.Touch(context.Background(), TouchRequest{Header: header}); err != nil {
+				t.Errorf("concurrent touch: %v", err)
+			}
+		})
 	}
-	if err := server.Touch(context.Background(), TouchRequest{Header: header}); err != nil {
-		t.Fatalf("second touch: %v", err)
-	}
+	activities.Wait()
 	if store.refreshCalls != 1 {
 		t.Fatalf("refresh calls = exact %d, want 1", store.refreshCalls)
 	}
