@@ -350,7 +350,7 @@ msgq, ok := directory.LookupInstance(binding.InstanceID)
 
 `NextInstance` 是健康服务副本的轮转选择；`RunningInstances` 返回稳定排序、与目录内部隔离的健康实例
 快照，供业务实现随机、哈希或负载策略；`LookupInstance` 是已知实例的精确路由。`SessionID -> msgq 实例` 的精确会话
-绑定、`RoleID -> 主 SessionID` 投影、消息 Seq/Ack 和有界下行邮箱属于 `msgq`；Virtual Actor 的 `(kind, identity)` 路由属于 Actor Cluster；
+绑定、`RoleID -> (InstanceID, Generation)` 角色归属、消息 Seq/Ack 和有界下行邮箱属于 `msgq`；Virtual Actor 的 `(kind, identity)` 路由属于 Actor Cluster；
 固定 Kind Actor 的实体归属由业务槽位维护，不由服务发现包推断。
 
 ProtoActor Remote 使用官方 etcd Cluster Provider 自己维护成员协议和客户端生命周期，不经过 `tx/etcd`；
@@ -371,6 +371,14 @@ TX_ETCD_ENDPOINT=127.0.0.1:2379 \
 `modules/msgq` 以 `SessionID` 作为精确邮箱主键，负责
 `SessionID -> (RoleID, SessionID, ConnectionID, InstanceID)` 的短期 binding 与 owner 解析；同时维护
 `RoleID -> (InstanceID, Generation)` 角色归属，授权的多个 Session 共享归属并独立维护生命周期。
+
+这一能力称为“多个 Session 操作同一业务身份”，不定义主、副 Session。Borrow（授权账号操作目标账号角色）和旁路挂机
+（外部服务驱动角色行为，玩家可同时在线观察或操作）只是应用场景，不是两套会话流程。角色请求按 RoleID 汇聚到同一
+Game/Actor；世界请求仍按经业务校验的世界路由键选择 WorldActor。
+业务 Handler 可通过 `ctx.Identity()` 获取可信 AccountID、BorrowAccountID、RoleID、SessionID、ConnectionID 和 AccessMode，
+识别操作者与目标身份。SessionID 区分会话，但不自动表示真人、管理员或挂机服务；这些来源权限由项目认证与授权策略确定。
+下行可使用 `PubRole` 共享到角色邮箱，或 `PubSession` 精确投递。两套示例的自动响应适配层默认共享成功业务响应、精确投递请求错误；
+若业务需要其他策略，应在项目适配层明确实现，避免自动响应与手动下行重复发送。
 同一 RoleID 的多个邮箱可以并存，各自维护队列；`Sender.PubRole` 定向投递到角色归属 MsgQ，由其向该角色全部邮箱分发。
 `Server` 在本进程管理 Session、下行队列和 Seq/Ack。
 

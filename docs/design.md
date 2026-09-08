@@ -2347,7 +2347,12 @@ Redis 精确 binding key 为 `<prefix>:session:v2:{SessionID}`，保存完整四
 SessionID 回到原 running owner，用完整旧 binding 条件 `Rebind` 到新 ConnectionID；失败时不迁移。同 SessionID 恢复
 保留 Seq/Ack 与未确认队列，新 SessionID 的干净登录不继承旧消息。
 
-授权的同一 RoleID 多个 Session 可以并存，并路由到同一 Actor。
+#### 多个 Session 操作同一业务身份
+
+授权的同一 RoleID 多个 Session 可以并存，并路由到同一 Game/Actor。这是通用多会话能力，不定义主、副 Session 或会话优先级。
+Borrow 和旁路挂机只是应用场景：前者由授权操作者访问目标角色，后者由外部服务运行行为树并发送行动请求，
+玩家自己的 Session 可同时在线观察或操作。世界模拟与权威校验仍在服务端，不因外移行为树决策而取消。
+世界请求按业务认可的路由键定位 WorldActor，不以操作者账号替代目标世界身份。
 各邮箱独立维护 Seq/Ack 与未确认队列，新增、恢复或终止一个 Session 不影响其他 Session。
 `Sender.PubRole` 向该角色全部邮箱分发，框架不提供基于会话优先级的登录互斥策略。
 
@@ -2357,7 +2362,7 @@ SessionID 回到原 running owner，用完整旧 binding 条件 `Rebind` 到新 
 默认离线保留窗口为 `180s`，失活终止检查间隔为 `2s`；周期任务只遍历当前 MsgQ 的本地 Session 表，不扫描 Redis key。
 超过窗口、积压条数或积压字节上限时终止整个 Session，而不是无限保留未确认消息。
 
-公开投递只保留显式语义：`Sender.PubSession(SessionID, payload)` 精确投递到普通或 Borrow 会话，
+公开投递只保留显式语义：`Sender.PubSession(SessionID, payload)` 精确投递到指定会话，
 `Sender.PubRole(RoleID, payload)` 通过角色缓存定向调用版本化 `PubRole` RPC，向该角色全部邮箱分发并返回 BroadcastResult，不返回共同 Seq。Topic 仍是
 单个 MsgQ 的本地 SessionID 索引：`JoinTopics` 和 `BroadcastTopic` 以 SessionID 作为当前连接或实例路由锚点，跨实例覆盖
 必须由业务分别选择各实例上的 Session 发起。
@@ -2400,7 +2405,13 @@ Bee 或 Ant Context，因此可以使用本次 Server 已声明的 Actor、服�
 `IdentityResolver` 只返回 `protocol.SessionPrincipal`，其中包含 `AccountID`、`BorrowAccountID`、`ServerID`、`RoleID`、
 `SessionID`、`AccessMode` 和 `CanCreateRole`。Agent 负责生成正 `ConnectionID`，校验并构造 `protocol.SessionIdentity`；
 项目 resolver 不能从 ticket 或客户端数据指定 `ConnectionID`。普通模式不携带 `BorrowAccountID`；借用模式必须携带正
-`BorrowAccountID`。借用读写权限与建角许可由业务决定，框架不拦截业务协议。各 Session 生命周期独立。
+`BorrowAccountID`。这些字段描述当前身份契约，不构成独立的会话生命周期；目标身份的读写权限与建角许可由业务决定，框架不拦截业务协议。各 Session 生命周期独立。
+
+业务 Handler 使用 `ctx.Identity()` 读取可信身份：`AccountID` 是认证操作者；目标账号在 `BorrowAccountID != 0` 时为该值，
+否则为 `AccountID`；`RoleID` 是操作的目标角色，`SessionID` 区分请求来自哪个会话，`ConnectionID` 区分其当前物理连接。
+因此可区分不同账号的授权访问，但不能仅凭 SessionID 或 AccessMode 判断真人、管理员、挂机服务。
+尤其当两个 Session 使用同一账号、同一访问方式时，当前公共身份字段没有额外的“挂机来源”标签；需要这种分类时由项目认证/授权上下文提供，
+不能信任请求正文中自报的管理员或旁路标志。业务不需要维护主、副会话关系。
 
 通用 Actor Dispatcher 在调用 Messenger 前以 `DispatchRequest` 的可信 `SessionIdentity` 和当前上行序号覆盖 Delivery 的
 `Identity` 与 `UpSeq`。项目 Actor resolver 仍只负责目标、消息类型、命令号、路由键、载荷和是否等待结果，不能伪造身份或序号。
