@@ -84,7 +84,18 @@ go test -race ./tests -run '^TestWriteBackManagerFlushHoldsTransactionLockUntilS
 
 ## 后续验收顺序
 
-### 已接入：存储运行时累计快照
+### 预热后空闲与稳定请求对照（2026-09-08）
+
+两套角色/消息压测已使用客户端屏障，将预热、空闲、正式请求和关闭分开。并发 2、预热 1s、空闲及正式窗口各 3s 的真实依赖验收均通过：
+
+- txgame：`/private/tmp/txgame-io-windows/20260908-110459.434136000`，正式完成 5664 次 System_Ping。
+- txgameslg：`/private/tmp/txgameslg-io-windows/20260908-110615.838334000`，正式完成 6210 次 Role_Rename，Fusion/Mongo 最终角色验证通过。
+
+两套 Agent/MsgQ 在两组窗口均仅观测到 Redis PING，没有 GET 等寻址命令；该结论只覆盖当前负载、窗口和 Runtime 客户端，不代表所有协议永远零存储访问。
+无状态两个 Game 的每组窗口分别约 120 次 EVAL。有状态 slggame 空闲窗口 139 次 EVAL、2 次 Mongo update，正式窗口 144 次 EVAL；说明预热写回可落在空闲期，不能把两组计数直接相减后认定为业务开销。
+延迟任务 ClaimDue 逐桶执行脚本是后台固定开销的后续归因候选；尚未按调用来源标记，不能仅凭 EVAL 数量断言全部来自该路径。世界移动负载和更长周期续期仍需单独验证，本批不调整后台调度或生产配置。
+
+### 运行时快照接口
 
 `storage/runtime.Runtime.IOStats()` 返回该运行时创建的 Redis/Mongo 客户端累计统计。固定类别记录 `Calls`、`Commands`、`Errors`、
 `TotalDuration` 和 `MaxDuration`；不保存端点、key、载荷、账号或命令参数。未知命令归入 `other`，标签数有固定上限。
