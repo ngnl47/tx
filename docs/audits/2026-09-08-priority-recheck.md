@@ -16,7 +16,7 @@ Fusion 已按确认的最终纠正边界完成异常重新登记修补，见本�
 | P1 Discovery Watch 联合就绪 | 风险结构仍在 | `modules/discovery/runtime.go` 的 watchOnce 仍等待第二个 Watch 返回，外层再失效目录；WaitReady 仍分别等待两份 Ready。需重现延迟退出和跨轮次就绪交错。 |
 | P1 Actor provider 竞态 | 依赖风险仍在，需重新运行针对性 race | 当前仍直接使用锁定版本的 etcd provider；本地依赖中的 shutdown 为普通 bool，Shutdown 写、keepalive 循环读。常规非 race 集群通过不能关闭此项。 |
 | P1 TryRelease 取消链 | 风险路径仍在 | `modules/writeback/manager.go` 的 SPI 仍无 context，内部用 Background 等待实体锁。下一步需组合实体释放任务与关闭顺序复现，不仅测试手动解锁。 |
-| P1 World_StartMarch 内外契约复用 | 仍存在 | `txgameslg/server/services/slggame/world_caller.go` 仍构造公开 World_StartMarch 并经 Actor Call 消费公开响应；调用没有携带 Session Identity。是否拆分需结合上一项身份授权闭环评审，公开客户端协议本身不应删除。 |
+| P1 World_StartMarch 内外契约复用 | 身份与响应路径已分离 | 公开请求仅携带世界、单位目标；操作角色来自 Identity。内部调用透传可信身份但使用 UpSeq=0，MessageType 区分响应路径；两条路径经真实多进程验收。无需为相同行军语义新增一套内部协议。 |
 | P1 Promote 后本地可见性 | 屏障缺口仍在 | `txgameslg/server/internal/clustere2e/suite.go` 晋升后读取 dependencies.Slot；该方法读取 etcd 持久值，不是 Agent/owner 本地 Watch 快照。需可控 Watch 延迟复现。 |
 | P1 TS null/omitempty | 模型缺口仍在 | `txgen/gen/ts_model.go` 的 schema 递归剥掉指针；需重新执行合法 Go null/零值响应的客户端交叉用例。修复保持语言无关输入语义，不把 TS 约束反绑 Go。 |
 | P1 TS 整数位宽/符号 | 校验缺口仍在 | 两客户端 `src/protocol/codec.ts` 的整数分支仍统一使用 requireSafeInteger，没有按 scalar 位宽和符号拒绝值。需复现 uint32 负数与窄整数越界。 |
@@ -178,3 +178,15 @@ TX_WRITEBACK_IO=1 <对应版本的测试二进制> \
 - txgame/server：`go test -race ./services/agent -run 'TestVirtualTargetResolverUsesRoleForDefaultGameRoute|TestVirtualTargetResolverUsesGeneratedActorAndRouteKey|TestTicketIdentityResolverUsesTicketPrincipalInsteadOfClientClaims' -count=3 -v` 通过。默认无显式路由键时使用可信 RoleID，room 等业务目标保持显式路由。
 
 这是入口组件级验证，不是一次完整网络登录及数据库越权攻击测试，也不代表所有 handler 业务权限已审计。当前没有证据支持为 Role_Rename 再增加一套重复校验。下一项独立评估 World_StartMarch 的载荷 RoleId 与可信操作主体，以及 RoleActor→WorldActor 内部调用身份传递；允许跨 WorldID 不等于允许伪造操作主体，不将这两类字段混为一谈。
+
+## 世界命令可信身份真实集群验收
+
+公开 World_StartMarch 已移除操作角色字段，RoleActor 内部调用透传 HandlerContext.Identity，两个示例的命令入口按服务端 MessageType 决定响应路径，不以是否携带 Identity 判断来源。
+
+第一轮真实运行在内部行军路径等待通知超时：`/private/tmp/txgameslg-cluster-e2e/20260908-165802.080860000`。定位为 tx Delivery.Validate 仍将 Identity 与正 UpSeq 强绑定，内部调用在序列化前即失败。现允许合法身份配合 UpSeq=0，保留负序号及无身份携带序号的拒绝；既有信封回归增加真实往返断言，先失败后通过。
+
+修复后完整套件通过，证据目录：`/private/tmp/txgameslg-cluster-e2e/20260908-170128.842179000`。generation 1、2 均记录 `role_world_call` 与 `direct_world_call` 成功，使用不同角色到达同一世界，分别收到通知与业务响应；多 Session 跨两个 Agent 的共享世界响应与恢复也通过。四轮客户端探针全部通过，套件覆盖 WAL 恢复、MsgQ 故障重启、存储断言和优雅关闭。
+
+tx、txgame/server、txgameslg/server 全量 Go 回归通过；txclientslg 96 项测试与构建通过。本轮复用现有测试，不增加测试数量。以上不代表任意世界单位的业务所有权均已授权，目标单位权限仍由具体业务实现。
+
+下一步复现 Discovery Watch 联合就绪的失效窗口；先确认取消与就绪跨轮次交错，再决定最小修补，不以本轮普通集群成功替代竞态验证。

@@ -23,7 +23,7 @@ type Delivery struct {
 	RouteKey    txprotocol.RouteKey
 	Payload     []byte
 	Identity    *txprotocol.SessionIdentity
-	UpSeq       int64
+	UpSeq       int64 // 客户端上行序号；仅传递操作身份的内部调用使用 0。
 
 	mode      actorpb.DeliveryMode
 	requestID uint64
@@ -38,7 +38,7 @@ func (d Delivery) Validate() error {
 		if d.UpSeq != 0 {
 			return ErrInvalidDelivery
 		}
-	} else if d.UpSeq <= 0 || d.Identity.Validate() != nil {
+	} else if d.UpSeq < 0 || d.Identity.Validate() != nil {
 		return ErrInvalidDelivery
 	}
 	return validateRouteKey(d.RouteKey)

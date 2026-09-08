@@ -800,6 +800,8 @@ handlers := func(runtime bee.Context) (txagent.IdentityResolver, txagent.Dispatc
 resolver 和客户端载荷均不能指定 `ConnectionID`，也不能伪造投递给 Actor 的身份或上行序号。Agent 只负责 Frame、
 身份和 Seq/Ack，不依赖任何项目生成包。授权的各 Session 独立维护邮箱和恢复状态，共享 RoleID 时路由到同一 Actor，并接收角色下行。
 
+内部 Actor 调用可以继续传递可信 `Identity`，同时使用 `UpSeq=0`，表示不是新的一条客户端上行；身份本身不决定请求来源或响应路径。非零 `UpSeq` 必须为正且同时携带合法身份，Agent 入口仍使用当前真实上行序号。
+
 一条连接的处理顺序固定如下：
 
 1. 客户端先发送 `FrameHandshake`，其中 `Payload` 交给 `IdentityResolver`，`Restore/Ack` 交给会话恢复。

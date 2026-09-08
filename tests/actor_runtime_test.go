@@ -221,7 +221,7 @@ func TestActorDeliveryRoundTripPreservesCanCreateRole(t *testing.T) {
 	}
 }
 
-func TestActorDeliveryRequiresIdentityAndUpSeqTogether(t *testing.T) {
+func TestActorDeliveryAllowsInternalIdentityWithoutUpSeq(t *testing.T) {
 	identity := txprotocol.SessionIdentity{
 		SessionPrincipal: txprotocol.SessionPrincipal{
 			AccountID: 47,
@@ -232,7 +232,6 @@ func TestActorDeliveryRequiresIdentityAndUpSeqTogether(t *testing.T) {
 		ConnectionID: 7,
 	}
 	tests := []txactor.Delivery{
-		{MessageType: "role.rename", Identity: &identity},
 		{MessageType: "role.rename", UpSeq: 1},
 		{MessageType: "role.rename", Identity: &identity, UpSeq: -1},
 	}
@@ -243,6 +242,14 @@ func TestActorDeliveryRequiresIdentityAndUpSeqTogether(t *testing.T) {
 	}
 	if _, err := (txactor.Delivery{MessageType: "role.rename"}).ToProto(); err != nil {
 		t.Fatalf("internal ToProto() error = %v", err)
+	}
+	message, err := (txactor.Delivery{MessageType: "role.rename", Identity: &identity}).ToProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := txactor.DeliveryFromProto(message)
+	if err != nil || decoded.Identity == nil || *decoded.Identity != identity || decoded.UpSeq != 0 {
+		t.Fatalf("internal identity round trip = %#v, %v", decoded, err)
 	}
 }
 
