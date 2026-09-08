@@ -56,6 +56,13 @@ Session 续期到期后 100 次活动只续期 1 次。`TX_REDIS_ENDPOINT=127.0.
 
 精确 Session 下行已增加有界邮箱归属缓存：`ResolveMailbox` 只缓存 MsgQ InstanceID，Topic 的 `ResolveSession` 仍读取当前完整绑定。
 两套示例独立接入显式 65536 容量，真实 Redis 热邮箱基准为 0 命令/次。tx 与两套 server 全量测试通过；
-这一新增缓存尚未重跑上述独立集群套件，进程级 I/O 归因仍待完成。
+新增缓存的独立集群回归已通过（tx `f8141dd`）：
+
+- txgame `9630604`：`/private/tmp/txgame-mailbox-cache-e2e/20260908-101308.507973000`，完整套件 `status=passed`。
+- txgameslg `b1cf87d`：`/private/tmp/txgameslg-mailbox-cache-e2e/20260908-101418.653127000`，完整套件 `status=passed`，WAL 恢复与 checkpoint 通过。
+
+两套均验证跨 Agent 多 Session 共享下行、独立确认、断线恢复、节点故障或排水重启与最终优雅关闭。
+进程级 I/O 归因仍待完成：接入点是 `storage/runtime/runtime.go` 创建真实存储客户端的位置，不能用 MsgQ 方法调用数替代实际命令数。
+后续采样需按进程区分冷启动、稳定请求、后台续期/健康探测，不使用 Redis 全局 MONITOR、KEYS、SCAN 或重置全局统计。
 
 本计划不引入全 MsgQ 广播、不实现可靠业务消息队列、不附带实施其余审计项。
