@@ -1907,7 +1907,7 @@ CModProcedure 不持有具体 `*writeback.Manager`，项目 facade 也不能要�
 `txgameslg` 的 WriteBack 组件会先保留 facade 所有权，再绑定 CommitParticipant 并启动 Runtime；只有 `Runtime.Start` 成功后才开放业务 facade。开始 Drain 时先关闭 facade 准入并等待已经进入的调用完成，再执行 `Runtime.Shutdown`。`Start` 返回错误时组件会在 `ShutdownFlushTimeout` 内调用同一实例的 `Shutdown` 清理部分启动资源；本次 `Server.Start` 随即进入终止回滚，该 Server 实例不可再次启动。
 
 直接写回按“存储 -> Transaction -> WriteBackManager”启动；排水封口并完成已接纳业务后，WriteBackManager 最终 Flush，成功后才停止依赖。
-失败保留 Store 与 pending，按既定有限关闭重试处理。新所有者确认槽位代次后声明 Mongo 所有权，再加载数据并开放 Actor。
+失败保留 Store 与 pending，按既定有限关闭重试处理。新实例确认槽位归属后加载数据并开放 Actor，不向 Mongo 声明集群所有权；后续写回使用临时读取的文档版本条件。
 缺失记录必须由业务创建；存储层不凭空创建场景数据。
 
 ### 容量保护
