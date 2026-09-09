@@ -1287,6 +1287,9 @@ if err := control.RegisterSlotService(grpcServer, slotController); err != nil {
 ```
 
 `PromoteSlot` 不创建首个槽位、不修改实例 lease，也不迁移 Actor 内存；首个 assignment 仍由业务部署流程显式创建。
+
+晋升成功只确认持久归属已更新，不表示所有进程的 Watch 目录同步完成或业务恢复已经结束。
+切换窗口内请求可以明确失败或超时；不得把超时当作未执行而自动重投。直读 etcd 的归属检查不能替代端到端业务验收。
 目标未进入 `running` 返回 unavailable，旧 assignment 已变化返回 CAS conflict，所有不确定结果都按失败处理。
 
 ## Actor Cluster 与 msgq

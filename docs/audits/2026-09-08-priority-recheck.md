@@ -17,13 +17,31 @@ Fusion 已按确认的最终纠正边界完成异常重新登记修补，见本�
 | P1 Actor provider 竞态 | 已知依赖风险，关闭边界已定案 | 保留已复现的依赖竞态事实，不修改第三方源码；按[运行时决策](2026-09-08-actor-runtime-decision.md)及严格排水验收处理，不重复要求依赖级改造。 |
 | P1 TryRelease 取消链 | 已修复并组合验证 | 缓存维护 context 贯通项目回调、写回 SPI 与实体锁等待；取消后后台任务退出且保留对象，正常事务与待刷数据不受影响。库、示例全量回归及定向竞态检测通过，见[取消链复核](2026-09-09-release-cancellation.md)。 |
 | P1 World_StartMarch 内外契约复用 | 身份与响应路径已分离 | 公开请求仅携带世界、单位目标；操作角色来自 Identity。内部调用透传可信身份但使用 UpSeq=0，MessageType 区分响应路径；两条路径经真实多进程验收。无需为相同行军语义新增一套内部协议。 |
-| P1 Promote 后本地可见性 | 屏障缺口仍在 | `txgameslg/server/internal/clustere2e/suite.go` 晋升后读取 dependencies.Slot；该方法读取 etcd 持久值，不是 Agent/owner 本地 Watch 快照。需可控 Watch 延迟复现。 |
+| P1 Promote 后本地可见性 | 按异步切换契约收敛 | dependencies.Slot 只证明持久归属；受控目录发布验证晋升成功后仍可读旧本地归属，Watch 更新后才切换，且无热路径回源。短暂失败符合当前 RPC 边界，不新增生产屏障；后续业务探针成功才证明该次路径可用。 |
 | P1 TS null/omitempty | 已修复并回归 | 生成器保留可空语义，并按 Go 输出统一 omitempty 的契约生成可选字段；两客户端编解码及 JSON 表单保留 null、缺省与显式零值。真实 Go 字节探针、生成器全量测试及客户端测试与构建通过，见[空值契约复核](2026-09-09-client-null-contract.md)。 |
 | P1 TS 整数位宽/符号 | 已修复并双向验证 | 两客户端按 scalar 范围校验编码、解码、map key 与表单；同时修复 Go uint32 上半区转负数问题。真实双向 BON 探针及全量回归通过，见[整数契约复核](2026-09-09-integer-contract.md)。 |
 | P1 失败生成消耗 CommandID | 保留名校验顺序已修复 | TypeScript 保留名校验前移到 prepareCmdRoutes 之前，仅检查客户端可见请求/响应，不影响 Go 生成规则。既有四个冲突用例复现错误登记后验证清单与产物原样保留，txgen 全量测试通过。磁盘写入失败不承诺清单与产物跨文件回滚；同名协议仍复用已登记 ID。 |
 | P1 nil 日志输出 | 已复现并修复 | 未扫描到的客户端数据类型触发提示时，nil writer 导致 panic；提示函数现已尊重 nil 关闭输出的契约。公开生成入口回归验证启用/关闭日志的类型产物一致，txgen 全量测试通过。 |
 
+## 槽位晋升可见性复核
+
+扩展既有 `TestCachedSlotStoreResolveDoesNotReadBackingStore`：持久层晋升成功后、本地目录发布前仍解析到旧归属；
+模拟 Watch 发布新快照后解析到新归属，整个解析过程不回源持久层。这是已有异步契约的验证，不是新增生产行为。
+`dependencies.Slot` 的直读只能确认持久归属；验收中的后续客户端请求成功与 checkpoint 断言才是该次业务路径的证据，
+均不代表所有节点在同一时刻完成切换。
+
+本轮验证：
+
+- tx：`go test -race ./tests -run 'TestCachedSlotStore|TestSlotRouter' -count=3` 通过。
+- txgameslg/server：`go test ./services/agent ./services/slgworld -run 'TestFixedSlotTargetResolver|TestWriteBackRuntimePromotesBucketToOwnedSlotGeneration|TestWriteBackRuntimeRejectsInstanceThatDoesNotOwnSlot' -count=3` 通过。
+
+本轮未注入真实 etcd 网络延迟，未重新运行完整集群。已有排水拒绝和实例归属校验保持不变；
+切换窗口允许明确失败或超时，超时不得解释为未执行并自动重投，不新增生产屏障。
+
 ## 工作顺序
+
+本表当前列出的修复项已完成，或按已确认边界收敛；第三方 Provider 竞态仍是明确保留的依赖风险。
+下方工作顺序和分阶段实验是原审计追踪记录，不构成新的重复实施任务。
 
 1. Fusion 旧写覆盖的确定性交错复现与修复设计。
 2. 认证身份与当前角色路由授权闭环，明确哪些跨业务身份操作交给项目 SPI。

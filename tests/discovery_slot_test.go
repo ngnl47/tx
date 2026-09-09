@@ -100,6 +100,22 @@ func TestCachedSlotStoreResolveDoesNotReadBackingStore(t *testing.T) {
 	if backing.resolutions != 0 {
 		t.Fatalf("backing ResolveSlot calls = %d, want 0", backing.resolutions)
 	}
+	next := assignment
+	next.RuntimeInstanceID = "pod-uid-b"
+	next.Generation++
+	if err := store.PromoteSlot(context.Background(), assignment, next); err != nil {
+		t.Fatal(err)
+	}
+	// 持久写入成功不代表本地 Watch 已发布新快照，也不能触发热路径回源。
+	if got, err := store.ResolveSlot(context.Background(), assignment.SlotID); err != nil || got != assignment {
+		t.Fatalf("Watch 更新前 = (%+v, %v), want 旧归属", got, err)
+	}
+	if err := directory.Replace([]discovery.SlotAssignment{next}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.ResolveSlot(context.Background(), assignment.SlotID); err != nil || got != next || backing.resolutions != 0 {
+		t.Fatalf("Watch 更新后 = (%+v, %v), backing reads=%d", got, err, backing.resolutions)
+	}
 }
 
 func TestSlotDirectoryReadyClosesAfterInitialSnapshot(t *testing.T) {
