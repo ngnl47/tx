@@ -1367,7 +1367,7 @@ Redis Lua：patch + @v 递增 + 刷新 dirtyTTL
 到期 worker
       |
       v
-claim save task -> 读取 @v 和 Redis 当前完整文档 -> Replace Mongo
+claim save task -> 获取记录锁 -> 读取 Mongo 版本 -> 读取 @v 和 Redis 当前完整文档 -> 条件 Replace Mongo
       |
       +---- revision 未变化 -> 原子设置 delayDelTime TTL -> complete
       |
@@ -1375,6 +1375,10 @@ claim save task -> 读取 @v 和 Redis 当前完整文档 -> Replace Mongo
 ```
 
 延迟任务不保存 GD 快照，也不保存每次变更。十分钟内修改同一角色多次，任务到期只读取一次 Redis 最终状态。
+
+Mongo 版本基线必须在读取 Redis 快照之前取得。条件替换在同一文档写入中匹配 `_tx.version` 并递增，迟到旧请求不能覆盖已推进版本的新文档。文档不存在时使用插入并依赖记录标识唯一索引；已存在但尚无版本时以 0 为基线。更新不允许 upsert 绕过冲突。该元数据仅属于存储层，不包含世界、实例、操作标识，也不要求业务 GD 声明。
+
+超时、条件冲突或确认丢失均沿现有延迟任务重试，从 Mongo 版本读取开始重新执行，再获取 Redis 最新数据。不缓存版本、不保留第二份业务快照，也不在旧快照上修改版本后重发。每次正常后台落地增加一次按记录索引读取 Mongo 元数据的 I/O，Procedure 和 Redis 增量热写不变。此保证要求该记录遵守统一 Fusion 写入路径；绕过框架直接修改 Mongo 不在保护契约内。
 
 ### 热写与任务发布
 
@@ -1528,8 +1532,8 @@ RecordLock 以 Redis `PX` 保存租约，运行时只接受至少 `1ms` 的 TTL�
 
 延迟保存和 TTL 收敛必须：
 
-1. 读取当前 `@v`。
-2. 读取 Redis 当前热文档并回写 Mongo。
+1. 获取记录锁后，先读取 Mongo 版本基线，再读取当前 `@v`。
+2. 读取 Redis 当前热文档，按基线条件回写 Mongo 并递增持久化版本。
 3. Lua 比较读取时 revision。
 4. revision 未变化才把 main/subKey/version 的 TTL 一起设置为 `delayDelTime`。
 5. revision 已变化说明有新写入，保留新写入刷新的 `dirtyTTL` 并重新排保存任务。

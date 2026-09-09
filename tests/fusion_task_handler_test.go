@@ -14,10 +14,52 @@ import (
 )
 
 type recordingDocumentReplacer struct {
-	calls int
-	spec  meta.TypeSpec
-	key   storage.RecordKey
-	doc   map[string]any
+	calls       int
+	spec        meta.TypeSpec
+	key         storage.RecordKey
+	doc         map[string]any
+	readVersion func()
+}
+
+func (r *recordingDocumentReplacer) ReadDocumentVersion(context.Context, meta.TypeSpec, storage.RecordKey) (storage.DocumentVersion, error) {
+	if r.readVersion != nil {
+		r.readVersion()
+	}
+	return storage.DocumentVersion{Exists: true, Value: 7}, nil
+}
+
+func (r *recordingDocumentReplacer) ReplaceDocumentAtVersion(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any, version storage.DocumentVersion) error {
+	if version.Value != 7 {
+		return errors.New("wrong write baseline")
+	}
+	return r.ReplaceDocument(ctx, spec, key, doc)
+}
+
+func TestFusionReadsMongoVersionBeforeRedisSnapshot(t *testing.T) {
+	registry := meta.NewRegistry()
+	spec := meta.TypeSpec{Type: meta.Type{Ref: meta.TypeRef{FullName: "probe.Record"}}}
+	if err := registry.RegisterType(spec); err != nil {
+		t.Fatal(err)
+	}
+	versionRead := false
+	loader := &versionOrderedLoader{versionRead: &versionRead}
+	mongo := &recordingDocumentReplacer{readVersion: func() { versionRead = true }}
+	handler := newRecordingDelayTaskHandler(registry, loader, mongo, &recordingRecordLocker{lock: &recordingRecordLock{}})
+	if err := handler.HandleDelayTask(context.Background(), task.DelayTask{Type: "probe.Record", ID: int64(1), Action: "save"}); err != nil {
+		t.Fatal(err)
+	}
+	if mongo.calls != 1 {
+		t.Fatalf("replacements=%d", mongo.calls)
+	}
+}
+
+type versionOrderedLoader struct{ versionRead *bool }
+
+func (l *versionOrderedLoader) LoadDocument(context.Context, meta.TypeSpec, storage.RecordKey, ...string) (map[string]any, bool, error) {
+	if !*l.versionRead {
+		return nil, false, errors.New("Redis snapshot read before Mongo version")
+	}
+	return map[string]any{"value": 120}, true, nil
 }
 
 type recordingRevisionReader struct {
@@ -79,7 +121,7 @@ func (l *contextRecordingRecordLock) Unlock(ctx context.Context) error {
 	return l.unlockContextErr
 }
 
-func newRecordingDelayTaskHandler(types fusion.TypeRegistry, redis storage.DocumentLoader, mongo storage.DocumentReplacer, locker storage.RecordLocker) *fusion.StorageTaskHandler {
+func newRecordingDelayTaskHandler(types fusion.TypeRegistry, redis storage.DocumentLoader, mongo storage.VersionedDocumentReplacer, locker storage.RecordLocker) *fusion.StorageTaskHandler {
 	return fusion.NewDelayTaskHandlerWithOptions(types, redis, mongo, fusion.DelayTaskHandlerOptions{
 		RedisRevisionReader: &recordingRevisionReader{revision: "1"},
 		RedisRevisionTTL:    &recordingRevisionTTLApplier{applied: true},

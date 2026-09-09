@@ -17,7 +17,7 @@ type TypeRegistry interface {
 type StorageTaskHandler struct {
 	types               TypeRegistry
 	redisLoader         storage.DocumentLoader
-	mongoReplace        storage.DocumentReplacer
+	mongoReplace        storage.VersionedDocumentReplacer
 	redisRevisionReader storage.RecordRevisionReader
 	redisRevisionTTL    storage.RevisionTTLApplier
 	redisLocker         storage.RecordLocker
@@ -31,7 +31,7 @@ type DelayTaskHandlerOptions struct {
 	DelayedSaveQueue    DelayedSaveQueue
 }
 
-func NewDelayTaskHandler(types TypeRegistry, redisLoader storage.DocumentLoader, mongoReplace storage.DocumentReplacer, redisLocker storage.RecordLocker) *StorageTaskHandler {
+func NewDelayTaskHandler(types TypeRegistry, redisLoader storage.DocumentLoader, mongoReplace storage.VersionedDocumentReplacer, redisLocker storage.RecordLocker) *StorageTaskHandler {
 	revisionReader, _ := redisLoader.(storage.RecordRevisionReader)
 	revisionTTL, _ := redisLoader.(storage.RevisionTTLApplier)
 	return NewDelayTaskHandlerWithOptions(types, redisLoader, mongoReplace, DelayTaskHandlerOptions{
@@ -41,7 +41,7 @@ func NewDelayTaskHandler(types TypeRegistry, redisLoader storage.DocumentLoader,
 	})
 }
 
-func NewDelayTaskHandlerWithOptions(types TypeRegistry, redisLoader storage.DocumentLoader, mongoReplace storage.DocumentReplacer, options DelayTaskHandlerOptions) *StorageTaskHandler {
+func NewDelayTaskHandlerWithOptions(types TypeRegistry, redisLoader storage.DocumentLoader, mongoReplace storage.VersionedDocumentReplacer, options DelayTaskHandlerOptions) *StorageTaskHandler {
 	return &StorageTaskHandler{
 		types:               types,
 		redisLoader:         redisLoader,
@@ -90,6 +90,11 @@ func (h *StorageTaskHandler) handleSave(ctx context.Context, spec meta.TypeSpec,
 		return fmt.Errorf("%w: delayed save received nil record lock", ErrDelayTaskDependenciesNotConfigured)
 	}
 	defer func() { releaseRecordLock(ctx, lock, &err) }()
+	// 基线必须早于 Redis 快照；冲突后重新执行完整任务，不能给旧快照换新版本。
+	version, err := h.mongoReplace.ReadDocumentVersion(ctx, spec, key)
+	if err != nil {
+		return err
+	}
 	var revision string
 	if convergeTTL {
 		revision, err = h.redisRevisionReader.ReadRecordRevision(ctx, spec, key)
@@ -107,7 +112,7 @@ func (h *StorageTaskHandler) handleSave(ctx context.Context, spec meta.TypeSpec,
 	if !exists {
 		return fmt.Errorf("fusion: delayed save redis document: %w", storage.ErrNotExists)
 	}
-	if err := h.mongoReplace.ReplaceDocument(ctx, spec, key, doc); err != nil {
+	if err := h.mongoReplace.ReplaceDocumentAtVersion(ctx, spec, key, doc, version); err != nil {
 		return err
 	}
 	if !convergeTTL {

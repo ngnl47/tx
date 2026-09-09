@@ -4033,7 +4033,7 @@ Fusion 策略的当前保存路径：
 5. 后台分发器把唯一一条延迟保存任务写入 Redis delayed task backend。
 6. 发布失败时输出结构化 error 日志，并按有上限的指数退避持续重试；成功后移除本地 pending。
 7. 正常关闭时，服务入口和 Actor Delivery 邮箱先完成排空，CModProcedure 的 WriteBack 组件再最终保存内存 Store，Fusion CMod 随后限时发布全部本地 pending，最后才取消根 `WaitGroupContext`。
-8. Scheduler 到期 claim 任务，StorageTaskHandler 根据记录定位重新读取 Redis 当前热文档并 replace 到 Mongo。
+8. Scheduler 到期 claim 任务，StorageTaskHandler 获取记录锁后先读取 Mongo 文档版本，再读取 Redis 当前热文档，按该版本条件替换 Mongo，并原子递增版本；冲突或失败沿现有任务重试重新执行。
 9. Mongo 保存成功后，handler 仅在 `@v` 未变化时原子地把所有热数据键的 TTL 收敛为 `delayDelTime`；版本变化则重新排一条保存任务。
 10. 任务成功后通过 Lua complete 删除该任务在 Redis 队列中的状态。
 
@@ -4042,6 +4042,7 @@ Fusion 策略的当前保存路径：
 Redis 热写与持久化任务发布不是分布式事务。当前设计优先保证业务调用语义明确：Redis 热写失败返回错误；Redis 已成功后，任务 backend 的短时故障由后台日志和重试处理，不让调用方因模糊错误重放业务。正常关闭会补发本地 pending；若进程恰好在热写成功、任务持久化前异常崩溃，或排空超时后仍被运维终止，本地 pending 仍会丢失。框架不为这个低概率窗口增加同槽索引、全槽扫描和额外 Redis I/O。外部日志系统应对 `fusion delay task publish failed` 和关闭返回错误告警，运维人员据此检查和修复集群状态。
 
 延迟任务队列使用 bucket hash tag，支持多个服务实例并发消费。语义是 at-least-once，Mongo 回写必须保持存储幂等。
+Fusion 的 Mongo 接口使用 `storage.VersionedDocumentReplacer`。Mongo 内部 `_tx.version` 仅记录持久化版本，不包含实例或槽位信息，也不要求 GD 增加字段。首次落地使用插入，由 GD 记录标识的唯一索引防止并发创建；版本冲突不能用 upsert 覆盖。正常后台落地增加一次 Mongo 元数据读取，不增加业务到 Redis 的热写 I/O。
 任务失败重试时，Scheduler 会输出结构化错误日志；失败原因不写入 Redis 任务状态，避免错误字符串占用队列内存。重试间隔由 lease 的持久化 `Attempts` 计算：`retryInitialDelay` 按 `retryMultiplier` 递增至 `retryMaxDelay`，并可施加不超过最大值的 `retryJitter`。达到上限后任务持续重试，不会因次数耗尽被丢弃。
 Scheduler 循环中的 claim、complete、retry 等 backend 错误也会输出结构化错误日志；服务关闭导致的 context 结束不会额外记录错误。
 
