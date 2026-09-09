@@ -8,6 +8,8 @@
 
 本文是 `tx` 使用者的主手册，记录当前已经实现并验证的公共能力、配置方式和业务示例。框架维护者需要理解内部数据结构、并发模型、状态机或技术选型时，请阅读 [设计文档](docs/design.md)；当前进度和后续任务见 [实施计划](docs/IMPLEMENTATION_PLAN.md)，架构质量要求见 [审计标准](docs/architecture_audit_standard.md)。
 
+README 回答“怎么使用”，不记录施工步骤、逐轮进度或本机验收流水账。设计文档回答“为什么这样设计”，实施计划回答“接下来做什么”；阶段验收证据保存在 `docs/audits/`。
+
 ## 阅读路径
 
 - 初次接入：从“定位”和“快速接入流程”开始。
@@ -1195,7 +1197,7 @@ GOBIN="$HOME/go/bin" /Users/a47/sdk/go1.26.5/bin/go install \
 
 将 `protoc`、`protoc-gen-go` 和 `protoc-gen-go-grpc` 放入 `PATH` 后，也可以不设置 `PROTOC` 与
 `GO_BIN`。生成的 `modules/actor/pb/*.pb.go`、`modules/control/pb/*.pb.go`、`modules/msgq/pb/*.pb.go` 与 `modules/rpc/pb/*.pb.go` 都属于版本化源文件，应与对应
-`.proto` 一起提交。只重生成本次 `.proto` 有变更的包；未变更的 actor、msgq、control 生成头保留到对应 proto 源下次变更时再刷新，避免无关差异。
+`.proto` 一起提交。仅重生成协议源有变更的包，避免无关生成差异。
 
 ## Lifecycle 与运维排水
 
@@ -1494,7 +1496,7 @@ Actor；实体不会进入 `disthash`，成员变化不会把它改派到其他�
 角色续期 I/O 不持有初始化分片锁，有效归属上的新 Session 可在续期期间初始化。同角色在途续期合并等待，等待者可独立取消；迟到结果不能恢复已停止、已过期或已换代的归属。维护循环仍串行执行，不增加逐消息 Redis 查询。
 释放与同角色初始化串行交接；初始化中断留下的无邮箱归属由本地维护或 Redis TTL 清理。续期失败不延长本地有效期，
 超过有效期的邮箱拒绝活动和投递，并整体退出本地索引；旧代际不能删除新归属。所有维护只遍历本地记录，不扫描 Redis key。
-`Sender.PubRole` 已使用 `RoleRouter` 缓存；完整共享业务响应与集群验收进度见 [实施计划](docs/superpowers/plans/2026-09-08-msgq-role-routing.md)。
+`Sender.PubRole` 使用 `RoleRouter` 缓存，向角色当前归属的 MsgQ 发布共享业务响应。
 
 ### Actor 路由模式
 
@@ -1615,7 +1617,7 @@ server, err := app.New(config, app.WithAgentHandlers(handlers))
 
 ### 滚动重启
 
-重启 `game1`、`game2` 不要求其他服务组停机，但必须先 Drain。第一阶段只处理能够
+重启 `game1`、`game2` 不要求其他服务组停机，但必须先 Drain。当前支持能够
 执行优雅关闭的发布：旧 generation 先进入 `draining`，停止该逻辑槽位的新命令准入；
 服务入口与 Actor 邮箱等待已受理工作完成，再执行缓存管理器最终 Flush；随后将旧实例发布为 `stopping`，再取消全局
 `WaitGroupContext`、等待后台任务退出并注销。固定槽位在这个窗口内不得改派到其他 game 实例，调用方只能等待
@@ -1637,7 +1639,7 @@ Kubernetes 有状态服务应使用 StatefulSet 的 ordinal，例如 Pod `game-1
 同一镜像复制出的普通 Deployment 副本不能共享写死的 SlotID。
 
 `WaitGroupContext` 只保证正常关闭路径。`SIGKILL`、OOM、机器故障和网络分区下的自动
-安全接管需要 Lease 与存储 fencing，这是后续独立能力，当前不能假定已经提供。
+安全接管不属于当前受控关闭的保证范围，不能仅凭成员离线就确认旧实例停止写入。
 
 ProtoActor 的成员变更不会迁移业务内存状态；Virtual Actor 的业务状态必须可恢复。固定 Kind 由业务槽位决定目标实例，
 Runtime 只负责该实例内的惰性激活和串行邮箱。下行 msgq 实例崩溃时允许丢失尚未确认的内存消息，客户端重连和业务幂等负责恢复；内部命令
@@ -1681,7 +1683,7 @@ go run ./cmd/txctl --endpoint 10.0.1.22:9100 promote-slot \
 状态和 RPC 调用错误都会让 `txctl` 以非零状态退出。`create-slot` 与 `promote-slot` 都输出新的 `slot`、`runtimeInstance` 和
 `generation`；陈旧脚本会因旧 generation 或旧实例不匹配得到 CAS conflict，不能覆盖后来已经发布的 assignment。
 因此发布脚本不能把失败调用当成已安全下线或已完成交接。当前控制端点使用项目部署
-提供的网络隔离；认证与 TLS/mTLS 后续作为独立控制面能力加入。
+提供的网络隔离；当前不提供完整的控制面认证、证书轮换和权限管理。
 
 服务启动成功时会输出一次解析后的服务集合和稳定 CMod 装配顺序，例如：
 
@@ -3092,9 +3094,7 @@ map、slice 或 struct 指针，具体字段值在最终编码时仍会交给对
 
 Redis 使用 string JSON 文档模型。
 
-当前主线选择普通 Redis string 存储 JSON 文档，并通过 Lua 在写入时合并或替换文档。RedisJSON/ReJSON
-可以作为后续可选 backend 单独评估，但不是当前默认路径；引入前需要确认目标云 Redis、测试环境和
-Redis Cluster 行为都支持对应 JSON 命令。
+当前使用普通 Redis string 存储 JSON 文档，并通过 Lua 在写入时合并或替换文档，不依赖 RedisJSON/ReJSON。
 
 ### key 结构
 
