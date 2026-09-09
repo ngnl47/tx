@@ -21,7 +21,7 @@ Fusion 已按确认的最终纠正边界完成异常重新登记修补，见本�
 | P1 TS null/omitempty | 模型缺口仍在 | `txgen/gen/ts_model.go` 的 schema 递归剥掉指针；需重新执行合法 Go null/零值响应的客户端交叉用例。修复保持语言无关输入语义，不把 TS 约束反绑 Go。 |
 | P1 TS 整数位宽/符号 | 校验缺口仍在 | 两客户端 `src/protocol/codec.ts` 的整数分支仍统一使用 requireSafeInteger，没有按 scalar 位宽和符号拒绝值。需复现 uint32 负数与窄整数越界。 |
 | P1 失败生成消耗 CommandID | 顺序问题仍在 | `txgen/gen/render_ts.go` 仍先 prepareCmdRoutes，再做模型和保留名校验。需验证失败前后 manifest 不变；相同命令名重复失败不等于每次消耗新 ID。 |
-| P1 nil 日志输出 | 缺口仍在 | `reportTypeScriptFallbackTypes` 没有 nil 检查，README 仍承诺 nil 关闭提示。需用存在 fallback 的输入复现；不增加额外配置容错框架。 |
+| P1 nil 日志输出 | 已复现并修复 | 未扫描到的客户端数据类型触发提示时，nil writer 导致 panic；提示函数现已尊重 nil 关闭输出的契约。公开生成入口回归验证启用/关闭日志的类型产物一致，txgen 全量测试通过。 |
 
 ## 工作顺序
 
