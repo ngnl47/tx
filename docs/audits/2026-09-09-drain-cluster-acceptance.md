@@ -102,6 +102,25 @@ TXGAMESLG_SHUTDOWN_TEST=1 go test ./tests/integration -run '^TestSLGGameShutdown
 代码核对：`internal/framework/shutdown.go` 先执行 Server.Drain，再执行 cmodHost.drain，
 成功后才清理服务并执行 cmodHost.stop；这属于源码顺序证据，不是测试的逐阶段事件记录。
 
+## 关闭顺序核对与节点收敛
+
+增强既有 `TestStopRetainsResourcesUntilDrainAndPersistenceSucceed`，未增加新用例或生产接口：
+入口排水失败时最终刷盘调用数必须为 0；持久化失败时不能释放资源；重试成功必须完成刷盘后才能进入服务 Stop。
+临时将 cmodHost.drain 提前到 Server.Drain 前的反向验证按预期失败，日志为
+`/private/tmp/tx-shutdown-order-negative.log`；该临时修改已移除。
+
+| 关键契约 | 对应证据 |
+| --- | --- |
+| 关闸后拒绝新请求，已准入工作继续完成 | Actor 双进程窗口验收 |
+| 同实例短期拒绝缓存减少真实 Call | Agent 双进程缓存验收 |
+| 排水未成功不得先刷盘，刷盘未成功不得释放资源 | 框架关闭顺序与失败保留测试 |
+| 关闭确实执行最终写回 | txgameslg 真实组合根与 Redis 验收 |
+| 有限失败重试、正常退出后的路由恢复与 WAL 恢复 | 两套独立真实集群验收 |
+
+判断：在已确认的 RPC 非必达边界下，当前严格排水验收节点可以结束。
+单个用例不需要同时承担所有层次的证明；不为拼接完整时序再增加业务协议或生产测试接口。
+下列未覆盖场景仍如实保留，但不自动成为新增测试的 P0 任务。
+
 ## 证据边界
 
 - 本轮使用正常构建，不是 `-race` 验收；已知第三方 Provider 关闭竞态仍保留为依赖风险。

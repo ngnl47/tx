@@ -170,11 +170,15 @@ func TestStopRetainsResourcesUntilDrainAndPersistenceSucceed(t *testing.T) {
 		t.Run(phase, func(t *testing.T) {
 			failed := true
 			stopped := false
+			flushCalls := 0
+			flushed := false
 			want := errors.New("temporarily blocked")
 			mod := &retryFlushCMod{flush: func() error {
+				flushCalls++
 				if failed && phase == "persistence" {
 					return want
 				}
+				flushed = true
 				return nil
 			}}
 			app, err := New(Config{AppID: "strict-stop"}, WithCMod(mod), WithService(testService{
@@ -185,7 +189,13 @@ func TestStopRetainsResourcesUntilDrainAndPersistenceSucceed(t *testing.T) {
 					}
 					return nil
 				},
-				stop: func(context.Context) error { stopped = true; return nil },
+				stop: func(context.Context) error {
+					if !flushed {
+						t.Error("service stopped before final persistence succeeded")
+					}
+					stopped = true
+					return nil
+				},
 			}))
 			if err != nil {
 				t.Fatal(err)
@@ -199,6 +209,13 @@ func TestStopRetainsResourcesUntilDrainAndPersistenceSucceed(t *testing.T) {
 			if stopped || mod.stopped {
 				t.Fatal("failed shutdown released resources")
 			}
+			wantFlushCalls := 0
+			if phase == "persistence" {
+				wantFlushCalls = 1
+			}
+			if flushCalls != wantFlushCalls || flushed {
+				t.Fatalf("failed shutdown persistence: calls=%d, succeeded=%v", flushCalls, flushed)
+			}
 			select {
 			case <-app.stopDone:
 				t.Fatal("failed shutdown reported final exit")
@@ -210,6 +227,9 @@ func TestStopRetainsResourcesUntilDrainAndPersistenceSucceed(t *testing.T) {
 			}
 			if !stopped || !mod.stopped {
 				t.Fatal("retry did not close resources")
+			}
+			if flushCalls != wantFlushCalls+1 || !flushed {
+				t.Fatalf("retry persistence: calls=%d, succeeded=%v", flushCalls, flushed)
 			}
 		})
 	}
