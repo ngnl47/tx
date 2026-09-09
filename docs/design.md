@@ -2570,6 +2570,13 @@ Actor 对外固定四种投递语义：
 已接受、排队和执行中的请求继续排水，不因关闭准入改成拒绝。拒绝回传仍依赖正常通信，目标已经停止或网络故障时
 仍可能超时；此机制不提供自动重投或持久化 MQ 保证。
 
+Agent 通过服务发现的本地 `ActorEndpoint → InstanceID` 索引关联目标 PID；索引随原快照一起替换、清空，
+地址未知或同时被多个实例声明时不使用排水缓存。收到明确的准入拒绝后，按调用前确定的实例 ID 缓存 1 秒，
+命中只返回失败、不续期、不发起 Actor Call；到期允许再次调用。普通业务错误和超时不登记排水状态。
+缓存复用 Otter，最多保留 4096 个实例记录，容量淘汰只减少优化效果；过期判断在读取时完成，不启动额外清理协程。
+目标路由解析仍照常执行，该优化只省去已知排水实例的业务 Call，不承诺消除路由解析自身的 I/O。
+实例身份来自异步服务发现，缓存不承担归属交接或一致性屏障，不改变 Seq/Ack、断线恢复和既有关闭流程。
+
 protobuf `Delivery` 使用内部 `DeliveryMode` 和 `request_id` 区分三类线上信封；业务结果使用 `Result` 信封，错误由
 稳定 `int32` code 和诊断 message 表达。每个 Runtime 创建一个本地响应 Actor，把 Acceptance/Result 按 request ID 投递到
 有界 pending 表。pending 容量由 `MaxPendingCalls` 限制，context 使用 `AfterFunc` 到期清理，不为每个 Future 常驻

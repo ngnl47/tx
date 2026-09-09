@@ -69,13 +69,14 @@ func (s Status) Valid() bool {
 
 type ServiceDirectory struct {
 	// publish 仅用于 Runtime 单轮 Watch 的写入入口，不参与路由读取。
-	publish   func([]Instance) error
-	mu        sync.RWMutex
-	ready     chan struct{}
-	readyOnce sync.Once
-	byID      map[string]Instance
-	byService map[string][]Instance
-	next      map[string]uint64
+	publish         func([]Instance) error
+	mu              sync.RWMutex
+	ready           chan struct{}
+	readyOnce       sync.Once
+	byID            map[string]Instance
+	byActorEndpoint map[string]string
+	byService       map[string][]Instance
+	next            map[string]uint64
 }
 
 // Directory 是路由器和应用模块使用的只读服务发现契约，快照替换仍由 discovery runtime 负责。
@@ -89,6 +90,19 @@ type Directory interface {
 // SlotRouter 会回退到普通 LookupInstance 契约。
 type RouteDirectory interface {
 	LookupRouteInstance(id string) (RouteInstance, bool)
+}
+
+// ActorEndpointDirectory 从同一服务发现快照查找地址唯一对应的运行实例。
+type ActorEndpointDirectory interface {
+	LookupActorInstance(endpoint string) (string, bool)
+}
+
+// LookupActorInstance 在地址未知或被多个实例同时声明时返回未找到。
+func (d *ServiceDirectory) LookupActorInstance(endpoint string) (string, bool) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	id := d.byActorEndpoint[endpoint]
+	return id, id != ""
 }
 
 var _ Directory = (*ServiceDirectory)(nil)
@@ -117,6 +131,7 @@ func (d *ServiceDirectory) Replace(instances []Instance) error {
 		return d.publish(instances)
 	}
 	byID := make(map[string]Instance, len(instances))
+	byActorEndpoint := make(map[string]string, len(instances))
 	byService := make(map[string][]Instance)
 	for _, instance := range instances {
 		if err := instance.Validate(); err != nil {
@@ -128,6 +143,13 @@ func (d *ServiceDirectory) Replace(instances []Instance) error {
 		instance.Services = append([]string(nil), instance.Services...)
 		instance.Endpoints = maps.Clone(instance.Endpoints)
 		byID[instance.ID] = instance
+		if instance.ActorEndpoint != "" {
+			if _, exists := byActorEndpoint[instance.ActorEndpoint]; exists {
+				byActorEndpoint[instance.ActorEndpoint] = ""
+			} else {
+				byActorEndpoint[instance.ActorEndpoint] = instance.ID
+			}
+		}
 		for _, service := range instance.Services {
 			byService[service] = append(byService[service], instance)
 		}
@@ -140,6 +162,7 @@ func (d *ServiceDirectory) Replace(instances []Instance) error {
 
 	d.mu.Lock()
 	d.byID = byID
+	d.byActorEndpoint = byActorEndpoint
 	d.byService = byService
 	for service := range d.next {
 		if _, exists := byService[service]; !exists {
@@ -158,6 +181,7 @@ func (d *ServiceDirectory) Invalidate() {
 	}
 	d.mu.Lock()
 	d.byID = make(map[string]Instance)
+	d.byActorEndpoint = nil
 	d.byService = make(map[string][]Instance)
 	d.next = make(map[string]uint64)
 	d.mu.Unlock()

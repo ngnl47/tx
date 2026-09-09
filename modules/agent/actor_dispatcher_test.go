@@ -165,6 +165,8 @@ func TestActorDispatcherRejectsMissingDependenciesAndTarget(t *testing.T) {
 }
 
 type actorMessengerStub struct {
+	err             error
+	onCall          func()
 	result          txactor.Result
 	delivery        txactor.Delivery
 	tellCalls       int
@@ -186,9 +188,12 @@ func (*actorMessengerStub) TellAccepted(context.Context, *protoactor.PID, txacto
 
 func (stub *actorMessengerStub) Call(ctx context.Context, _ *protoactor.PID, delivery txactor.Delivery) (txactor.Result, error) {
 	stub.callCalls++
+	if stub.onCall != nil {
+		stub.onCall()
+	}
 	stub.delivery = delivery
 	_, stub.callHadDeadline = ctx.Deadline()
-	return stub.result, nil
+	return stub.result, stub.err
 }
 
 func (*actorMessengerStub) CallFuture(context.Context, *protoactor.PID, txactor.Delivery) (*txactor.Future, error) {

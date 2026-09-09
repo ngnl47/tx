@@ -6,7 +6,9 @@ import (
 	"time"
 
 	protoactor "github.com/asynkron/protoactor-go/actor"
+	"github.com/maypok86/otter/v2"
 	txactor "github.com/ngnl47/tx/modules/actor"
+	"github.com/ngnl47/tx/modules/discovery"
 )
 
 const defaultActorCallTimeout = 5 * time.Second
@@ -40,6 +42,8 @@ func (resolver ActorDispatchResolverFunc) ResolveActorDispatch(ctx context.Conte
 
 // ActorDispatcherOptions 配置通用 Agent 到 Actor 的投递适配器。
 type ActorDispatcherOptions struct {
+	// Directory 提供本地地址身份查询；不支持该能力时跳过排水缓存。
+	Directory discovery.Directory
 	// Messenger 是当前进程共享的 Actor 消息入口。
 	Messenger txactor.Messenger
 	// Resolver 由项目根据生成命令元数据选择目标 PID 和投递内容。
@@ -63,6 +67,12 @@ func NewActorDispatcher(options ActorDispatcherOptions) (Dispatcher, error) {
 	if options.CallTimeout == 0 {
 		options.CallTimeout = defaultActorCallTimeout
 	}
+	lookup, _ := options.Directory.(discovery.ActorEndpointDirectory)
+	// 仅保存短期拒绝时间；容量淘汰只减少优化效果，不改变准入语义。
+	var draining *otter.Cache[string, time.Time]
+	if lookup != nil {
+		draining = otter.Must(&otter.Options[string, time.Time]{MaximumSize: 4096, InitialCapacity: 16})
+	}
 	return DispatchFunc(func(ctx context.Context, request DispatchRequest) (DispatchResult, error) {
 		dispatch, err := options.Resolver.ResolveActorDispatch(ctx, request)
 		if err != nil {
@@ -71,12 +81,28 @@ func NewActorDispatcher(options ActorDispatcherOptions) (Dispatcher, error) {
 		if dispatch.Target == nil {
 			return DispatchResult{}, ErrActorTargetNil
 		}
+		// 固定本次调用的实例身份，迟到的旧响应不得污染同地址的新实例。
+		var instanceID string
+		if lookup != nil {
+			if id, found := lookup.LookupActorInstance(dispatch.Target.Address); found {
+				instanceID = id
+			}
+			if instanceID != "" {
+				if until, ok := draining.GetIfPresent(instanceID); ok && time.Now().Before(until) {
+					return DispatchResult{}, &txactor.CallError{Code: txactor.CallErrorCodeRejected, Message: txactor.ErrRuntimeDraining.Error()}
+				}
+			}
+		}
 		dispatch.Delivery.Identity = &request.Identity
 		dispatch.Delivery.UpSeq = request.Seq
 		callCtx, cancel := context.WithTimeout(ctx, options.CallTimeout)
 		defer cancel()
 		result, err := options.Messenger.Call(callCtx, dispatch.Target, dispatch.Delivery)
 		if err != nil {
+			var failure *txactor.CallError
+			if instanceID != "" && errors.As(err, &failure) && failure.Code == txactor.CallErrorCodeRejected {
+				draining.Set(instanceID, time.Now().Add(time.Second))
+			}
 			return DispatchResult{}, err
 		}
 		if result.ProcessedUpSeq != request.Seq || result.MessageType != "" || result.CommandID != 0 || len(result.Payload) != 0 {
