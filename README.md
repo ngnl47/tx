@@ -949,7 +949,8 @@ await client.reconnect(loginTicket); // 复用同一逻辑会话并重放未确�
 不能只用 `snapshot()` 中的计数器创建一个缺失重放载荷的新 Session。`connect/reconnect` 只有在收到服务端
 `FrameReady` 后才返回并进入可发送状态。Go 整数在 TypeScript 侧使用
 `number`，因此业务协议值必须在 `-9,007,199,254,740,991` 到 `9,007,199,254,740,991` 之间；超界编码或解码
-会返回错误，避免悄悄丢失精度。客户端必须使用生成的 `resolveCommandRoute` 从请求对象取得 Frame 的静态命令号
+会返回错误，避免悄悄丢失精度。整数还受具体 scalar 的位宽和符号约束；uint32 的上半区使用 BON 已有的
+64 位整数编码，保持 0..4294967295 的数值语义。客户端必须使用生成的 `resolveCommandRoute` 从请求对象取得 Frame 的静态命令号
 和可选路由键，不能手写这些传输字段：
 
 ```ts

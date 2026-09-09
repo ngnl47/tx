@@ -153,8 +153,14 @@ func (writer *writer) writeReflect(value reflect.Value) error {
 		writer.writeInt(int32(value.Int()))
 	case reflect.Int, reflect.Int64:
 		writer.writeLong(value.Int(), typeLong)
-	case reflect.Uint8, reflect.Uint16, reflect.Uint32:
+	case reflect.Uint8, reflect.Uint16:
 		writer.writeInt(int32(value.Uint()))
+	case reflect.Uint32:
+		if value.Uint() <= math.MaxInt32 {
+			writer.writeInt(int32(value.Uint()))
+		} else {
+			writer.writeLong(int64(value.Uint()), typeLong)
+		}
 	case reflect.Uint, reflect.Uint64:
 		if value.Uint() > math.MaxInt64 {
 			return fmt.Errorf("bon: %s value %d exceeds int64", value.Type(), value.Uint())

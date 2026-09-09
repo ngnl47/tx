@@ -76,6 +76,22 @@ func TestBONEnvelopeMatchesClientPrimitiveLayout(t *testing.T) {
 	}
 }
 
+func TestBONUint32PreservesUpperHalf(t *testing.T) {
+	for _, want := range []uint32{0, 2_147_483_647, 2_147_483_648, 4_294_967_295} {
+		payload, err := bon.Marshal(want)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got uint32
+		if err := bon.Unmarshal(payload, &got); err != nil {
+			t.Fatalf("uint32 %d 解码失败: %v", want, err)
+		}
+		if got != want {
+			t.Fatalf("uint32 = %d, want %d", got, want)
+		}
+	}
+}
+
 func TestBONRejectsMalformedEnvelope(t *testing.T) {
 	if _, _, err := bon.UnmarshalEnvelope([]byte{8, 1, 5, 1, 99}); err == nil {
 		t.Fatal("UnmarshalEnvelope returned nil error for truncated payload")
