@@ -129,18 +129,18 @@ func TestWriteBackManagerTryReleaseRequiresCleanRoot(t *testing.T) {
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	if released, err := manager.TryRelease(lock); err != nil || released {
+	if released, err := manager.TryRelease(context.Background(), lock); err != nil || released {
 		t.Fatalf("TryRelease pending root = (%t, %v), want (false, nil)", released, err)
 	}
 	if err := manager.Flush(context.Background()); err != nil {
 		t.Fatalf("Flush returned error: %v", err)
 	}
 	store.Set()
-	if released, err := manager.TryRelease(lock); err != nil || released {
+	if released, err := manager.TryRelease(context.Background(), lock); err != nil || released {
 		t.Fatalf("TryRelease changed Store = (%t, %v), want (false, nil)", released, err)
 	}
 	store.ClearChanges()
-	if released, err := manager.TryRelease(lock); err != nil || !released {
+	if released, err := manager.TryRelease(context.Background(), lock); err != nil || !released {
 		t.Fatalf("TryRelease clean root = (%t, %v), want (true, nil)", released, err)
 	}
 	second := &runtimeTestStore{}
@@ -183,8 +183,10 @@ func TestWriteBackManagerTryReleaseWaitsForActiveProcedure(t *testing.T) {
 		err      error
 	}
 	releaseDone := make(chan releaseResult, 1)
+	releaseCtx, cancelRelease := context.WithCancel(context.Background())
+	defer cancelRelease()
 	go func() {
-		released, err := manager.TryRelease(lock)
+		released, err := manager.TryRelease(releaseCtx, lock)
 		releaseDone <- releaseResult{released: released, err: err}
 	}()
 	select {
@@ -192,12 +194,23 @@ func TestWriteBackManagerTryReleaseWaitsForActiveProcedure(t *testing.T) {
 		t.Fatalf("TryRelease returned while Procedure still held entity lock: (%t, %v)", result.released, result.err)
 	case <-time.After(20 * time.Millisecond):
 	}
+	cancelRelease()
+	select {
+	case result := <-releaseDone:
+		if result.released || !errors.Is(result.err, context.Canceled) {
+			t.Fatalf("取消等待应保留对象: %+v", result)
+		}
+	case <-time.After(time.Second):
+		close(releaseProcedure)
+		<-procedureDone
+		t.Fatal("取消后实体锁等待未退出")
+	}
 	close(releaseProcedure)
 	if err := <-procedureDone; err != nil {
 		t.Fatalf("blocking Procedure returned error: %v", err)
 	}
-	if result := <-releaseDone; result.err != nil || result.released {
-		t.Fatalf("TryRelease after Procedure = (%t, %v), want (false, nil)", result.released, result.err)
+	if released, err := manager.TryRelease(context.Background(), lock); err != nil || released {
+		t.Fatalf("TryRelease after Procedure = (%t, %v), want (false, nil)", released, err)
 	}
 }
 
@@ -221,7 +234,7 @@ func (procedure blockingWriteBackProcedure) Process(*txn.Tx) error {
 
 func TestWriteBackManagerTryReleaseRejectsInvalidTarget(t *testing.T) {
 	manager := writebackmodule.NewManager(writebackmodule.Dependencies{}, writebackmodule.Config{})
-	if released, err := manager.TryRelease(txn.LockTarget{}); released || !errors.Is(err, writebackmodule.ErrInvalidTarget) {
+	if released, err := manager.TryRelease(context.Background(), txn.LockTarget{}); released || !errors.Is(err, writebackmodule.ErrInvalidTarget) {
 		t.Fatalf("TryRelease invalid target = (%t, %v), want (false, ErrInvalidTarget)", released, err)
 	}
 }
@@ -229,7 +242,7 @@ func TestWriteBackManagerTryReleaseRejectsInvalidTarget(t *testing.T) {
 func TestWriteBackManagerTryReleaseReturnsTrueForUnknownTarget(t *testing.T) {
 	manager := writebackmodule.NewManager(writebackmodule.Dependencies{}, writebackmodule.Config{})
 	target := txn.NewLockTarget(txn.NewLockKey("role", 1001), &runtimeTestStore{})
-	if released, err := manager.TryRelease(target); err != nil || !released {
+	if released, err := manager.TryRelease(context.Background(), target); err != nil || !released {
 		t.Fatalf("TryRelease unknown target = (%t, %v), want (true, nil)", released, err)
 	}
 }
@@ -242,7 +255,7 @@ func TestWriteBackManagerTryReleaseReturnsFalseForReservedTarget(t *testing.T) {
 		t.Fatalf("Prepare returned error: %v", err)
 	}
 	t.Cleanup(reservation.Abort)
-	if released, err := manager.TryRelease(target); err != nil || released {
+	if released, err := manager.TryRelease(context.Background(), target); err != nil || released {
 		t.Fatalf("TryRelease reserved target = (%t, %v), want (false, nil)", released, err)
 	}
 }
@@ -263,7 +276,7 @@ func TestWriteBackManagerTryReleaseRejectsIdentityConflict(t *testing.T) {
 		t.Fatalf("Flush returned error: %v", err)
 	}
 	secondTarget := txn.NewLockTarget(key, &runtimeTestStore{})
-	if released, err := manager.TryRelease(secondTarget); released || !errors.Is(err, writebackmodule.ErrIdentityConflict) {
+	if released, err := manager.TryRelease(context.Background(), secondTarget); released || !errors.Is(err, writebackmodule.ErrIdentityConflict) {
 		t.Fatalf("TryRelease conflicting target = (%t, %v), want (false, ErrIdentityConflict)", released, err)
 	}
 }

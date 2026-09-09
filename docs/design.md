@@ -2593,6 +2593,10 @@ L4 服务在 Bee/Ant `ServiceSpec.ActorKinds` 中声明 Kind，L3 Server 自动�
 
 ### Actor 空闲钝化与 EntityCache 淘汰
 
+缓存淘汰属于运行期维护，不是停服清缓存流程。后台任务的 context 经项目释放回调、写回 SPI 传给实体锁等待；
+取消后结束维护，不再领取新候选，取消失败不会解除写回身份。正在执行的 Procedure 不被抢占，必要的持久化收尾
+仍按 WAL、写回和 checkpoint 的既有生命周期完成，不等待清理无变更的内存对象。
+
 Actor 空闲钝化和 GD EntityCache 淘汰是两条独立生命周期：
 
 ```text

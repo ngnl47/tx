@@ -2847,7 +2847,7 @@ if err := runtime.Call(ctx, &PUpdateRole{Role: role}); err != nil {
 }
 ```
 
-Actor、场景或其他所有者卸载根对象前，应在 Procedure 外调用 `Manager.TryRelease(role.LockTarget())`。该方法取得与 Procedure 相同的实体锁；业务不能在锁外轮询 `Store.HasChanges()` 判断后台 Flush 是否完成。返回 `true, nil` 表示身份已经解除，`false, nil` 表示 Pending、活跃事务、Store 变更或预留仍要求保留；身份冲突等异常通过 error 返回。项目可以把底层调用包装为 `writeback.TryRelease(role)`；业务不需要取得 Manager 指针。
+Actor、场景或其他所有者卸载根对象前，应在 Procedure 外调用 `Manager.TryRelease(ctx, role.LockTarget())`。该方法取得与 Procedure 相同的实体锁；业务不能在锁外轮询 `Store.HasChanges()` 判断后台 Flush 是否完成。返回 `true, nil` 表示身份已经解除，`false, nil` 表示 Pending、Store 变更或预留仍要求保留；身份冲突等异常通过 error 返回。ctx 可取消实体锁等待，取消失败不会解除身份。项目可以包装为 `writeback.TryRelease(ctx, role)`；业务不需要取得 Manager 指针。
 
 `Manager.Run` 遇到单次写入错误会记录错误并保留目标，下一轮继续重试。`Manager.Shutdown` 在 `ShutdownFlushTimeout` 内立即 Flush 并按 `FlushInterval` 重试；截止时返回错误和剩余待刷数量。该超时只约束内存 Store 到 Redis 的最终刷盘，不等待 Fusion 延迟任务回写 Mongo。
 

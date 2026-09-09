@@ -46,7 +46,7 @@ type Runtime interface {
 	txn.CommitParticipant
 	Start(lifecycle.Tasks) error
 	Shutdown(context.Context) error
-	TryRelease(txn.LockTarget) (bool, error)
+	TryRelease(context.Context, txn.LockTarget) (bool, error)
 }
 
 // Config 描述根对象的写回调度与资源边界。
@@ -301,7 +301,8 @@ func (manager *Manager) Pending() int {
 
 // TryRelease 尝试释放一个已经干净且没有事务预留的写回根对象。
 // 它会取得与 Procedure 相同的实体锁，因此必须在 Procedure 外调用。
-func (manager *Manager) TryRelease(target txn.LockTarget) (bool, error) {
+// ctx 取消可以终止实体锁等待；取消失败不会解除对象的写回身份。
+func (manager *Manager) TryRelease(ctx context.Context, target txn.LockTarget) (bool, error) {
 	if manager == nil {
 		return false, errors.New("writeback manager: manager is nil")
 	}
@@ -309,7 +310,7 @@ func (manager *Manager) TryRelease(target txn.LockTarget) (bool, error) {
 		return false, ErrInvalidTarget
 	}
 	var released bool
-	err := txn.WithLocks(context.Background(), []txn.LockTarget{target}, func(context.Context) error {
+	err := txn.WithLocks(ctx, []txn.LockTarget{target}, func(context.Context) error {
 		var err error
 		released, err = manager.tryReleaseLocked(target)
 		return err

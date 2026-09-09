@@ -11,11 +11,11 @@ Fusion 已按确认的最终纠正边界完成异常重新登记修补，见本�
 | 原项 | 当前状态 | 当前代码证据与下一动作 |
 | --- | --- | --- |
 | P0 Fusion 旧任务覆盖 | 按最终纠正边界完成 | 失效 Retry 返回 ErrLeaseLost，Fusion 复用 Enqueue 恢复任务；真实交错中补登记失败一次后最终值恢复。不承诺禁止短暂回退或连续入队失败后的恢复。 |
-| P0 认证身份贯穿 | 角色入口已有校验；世界业务授权待复核 | `modules/agent/actor_dispatcher.go` 注入 Identity/UpSeq；有状态示例 `cmd/server.debugSlotID` 校验 role 路由等于可信 Identity.RoleID，不能仅看 Handler 宣布越权。显式世界目标与其中操作主体分开评审。 |
+| P0 认证身份贯穿 | 已有角色校验与世界可信身份集群证据 | 角色路由校验可信 RoleID；公开世界命令移除操作角色字段，内部调用透传 Identity 并使用 UpSeq=0。本文世界命令章节已有真实集群验收，不再标为待复核；任意业务单位所有权仍由具体业务授权。 |
 | P0 Topic 部分成功 | 已有针对性修复与证据 | `modules/msgq/broadcast_grpc_test.go` 覆盖远程部分结果，当前共享不可变载荷契约和角色分发已进入稳定文档；最近真实 Redis race 与双集群回归通过。不重复改造成 UDP 或全 MsgQ 广播。 |
 | P1 Discovery Watch 联合就绪 | 已修补并通过受控时序回归 | 每轮独立快照写入入口，任一 Watch 返回即废弃本轮并清空目录，拒绝迟到发布；WaitReady 仅接受当前轮次两份快照。Discovery race 重复 10 轮通过。 |
-| P1 Actor provider 竞态 | 真实 etcd 已复现，并发现成员目录并发问题 | 锁定依赖的 Shutdown 写 shutdown，与 keepAliveForever 读取冲突；同一生命周期用例还报告 MemberList.BroadcastEvent 与 UpdateClusterTopology 竞争。需要依赖级修补决策，tx 外部关闭锁不能覆盖内部协程。 |
-| P1 TryRelease 取消链 | 风险路径仍在 | `modules/writeback/manager.go` 的 SPI 仍无 context，内部用 Background 等待实体锁。下一步需组合实体释放任务与关闭顺序复现，不仅测试手动解锁。 |
+| P1 Actor provider 竞态 | 已知依赖风险，关闭边界已定案 | 保留已复现的依赖竞态事实，不修改第三方源码；按[运行时决策](2026-09-08-actor-runtime-decision.md)及严格排水验收处理，不重复要求依赖级改造。 |
+| P1 TryRelease 取消链 | 已修复并组合验证 | 缓存维护 context 贯通项目回调、写回 SPI 与实体锁等待；取消后后台任务退出且保留对象，正常事务与待刷数据不受影响。库、示例全量回归及定向竞态检测通过，见[取消链复核](2026-09-09-release-cancellation.md)。 |
 | P1 World_StartMarch 内外契约复用 | 身份与响应路径已分离 | 公开请求仅携带世界、单位目标；操作角色来自 Identity。内部调用透传可信身份但使用 UpSeq=0，MessageType 区分响应路径；两条路径经真实多进程验收。无需为相同行军语义新增一套内部协议。 |
 | P1 Promote 后本地可见性 | 屏障缺口仍在 | `txgameslg/server/internal/clustere2e/suite.go` 晋升后读取 dependencies.Slot；该方法读取 etcd 持久值，不是 Agent/owner 本地 Watch 快照。需可控 Watch 延迟复现。 |
 | P1 TS null/omitempty | 已修复并回归 | 生成器保留可空语义，并按 Go 输出统一 omitempty 的契约生成可选字段；两客户端编解码及 JSON 表单保留 null、缺省与显式零值。真实 Go 字节探针、生成器全量测试及客户端测试与构建通过，见[空值契约复核](2026-09-09-client-null-contract.md)。 |
