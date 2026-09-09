@@ -4042,7 +4042,7 @@ Fusion 策略的当前保存路径：
 Redis 热写与持久化任务发布不是分布式事务。当前设计优先保证业务调用语义明确：Redis 热写失败返回错误；Redis 已成功后，任务 backend 的短时故障由后台日志和重试处理，不让调用方因模糊错误重放业务。正常关闭会补发本地 pending；若进程恰好在热写成功、任务持久化前异常崩溃，或排空超时后仍被运维终止，本地 pending 仍会丢失。框架不为这个低概率窗口增加同槽索引、全槽扫描和额外 Redis I/O。外部日志系统应对 `fusion delay task publish failed` 和关闭返回错误告警，运维人员据此检查和修复集群状态。
 
 延迟任务队列使用 bucket hash tag，支持多个服务实例并发消费。语义是 at-least-once，Mongo 回写必须保持存储幂等。
-Fusion 的 Mongo 接口使用 `storage.VersionedDocumentReplacer`。Mongo 内部 `_tx.version` 仅记录持久化版本，不包含实例或槽位信息，也不要求 GD 增加字段。首次落地使用插入，由 GD 记录标识的唯一索引防止并发创建；版本冲突不能用 upsert 覆盖。正常后台落地增加一次 Mongo 元数据读取，不增加业务到 Redis 的热写 I/O。
+Fusion 的 Mongo 接口使用 `storage.VersionedDocumentReplacer`。Mongo 内部 `_tx_version` 仅记录持久化版本，不包含实例或槽位信息，也不要求 GD 增加字段。首次落地使用插入，由 GD 记录标识的唯一索引防止并发创建；版本冲突不能用 upsert 覆盖。正常后台落地增加一次 Mongo 元数据读取，不增加业务到 Redis 的热写 I/O。
 任务失败重试时，Scheduler 会输出结构化错误日志；失败原因不写入 Redis 任务状态，避免错误字符串占用队列内存。重试间隔由 lease 的持久化 `Attempts` 计算：`retryInitialDelay` 按 `retryMultiplier` 递增至 `retryMaxDelay`，并可施加不超过最大值的 `retryJitter`。达到上限后任务持续重试，不会因次数耗尽被丢弃。
 Scheduler 循环中的 claim、complete、retry 等 backend 错误也会输出结构化错误日志；服务关闭导致的 context 结束不会额外记录错误。
 
@@ -4320,14 +4320,9 @@ doc, exists, err := fusionStore.LoadDocumentWithOptions(
 WriteBackManager 合并内存变更，定时调用 Mongo Writer；成功后清除脏状态，失败保留并在后续 Flush 重试。
 业务响应表示内存事务执行成功，不表示已持久化。异常退出可能丢失最后一次成功写回之后的内存变化；优雅关闭必须等待最终写回。
 
-需要所有权保护的根对象使用 `storage/mongo.OwnedWriter`。项目先确认逻辑槽位归属，再调用 `Claim` 并重新加载数据。
-一个 Writer 绑定一个固定正整数代次；同一代次只能由控制面指定的实例持有。GD 不需要增加基础设施字段或逐类型 Binding。
-Mongo 文档的保留字段 `_tx.owner` 与 `_tx.sequence` 分别记录所有者代次和已接受的写入序号，不属于业务 GD。
+Mongo 普通更新使用文档级乐观锁：在根对象锁内先读取 `_tx_version`，再生成当前 GD 字段增量，按基线条件更新并原子推进版本，使用 `majority + j:true` 确认。失败保留变更，后续 Flush 重新读取版本与当前变更，不给旧快照换版本重发。
 
-写回将业务增量、所有者条件及递增序号合并在一次原子 UpdateOne 中，固定使用 `majority + j:true`。
-只有所有者匹配且数据库序号小于本次序号才接受更新。失败后的下一次保存携带全部未确认变更，使用更大序号。
-例如序号 8 超时，序号 9 已写入最新坐标，则迟到的 8 被拒绝；代次 2 接管后，代次 1 的写入也被拒绝。
-热路径不增加写前读取；所有权声明及重新加载只发生在对象加载阶段。
+GD 不需要基础设施字段或逐类型绑定；Mongo 不记录世界槽位、实例身份等部署信息。每次后台写回增加一次版本读取，Redis/Fusion 热写不受影响。路由归属与排水负责约束业务执行者，文档版本不能代替集群归属校验。
 
 该机制不提供跨文档事务或跨服务消息必达。可靠业务消息的消费确认与持久化衔接由后续独立设计负责。
 

@@ -1378,7 +1378,7 @@ claim save task -> 获取记录锁 -> 读取 Mongo 版本 -> 读取 @v 和 Redis
 
 延迟任务不保存 GD 快照，也不保存每次变更。十分钟内修改同一角色多次，任务到期只读取一次 Redis 最终状态。
 
-Mongo 版本基线必须在读取 Redis 快照之前取得。条件替换在同一文档写入中匹配 `_tx.version` 并递增，迟到旧请求不能覆盖已推进版本的新文档。文档不存在时使用插入并依赖记录标识唯一索引；已存在但尚无版本时以 0 为基线。更新不允许 upsert 绕过冲突。该元数据仅属于存储层，不包含世界、实例、操作标识，也不要求业务 GD 声明。
+Mongo 版本基线必须在读取 Redis 快照之前取得。条件替换在同一文档写入中匹配 `_tx_version` 并递增，迟到旧请求不能覆盖已推进版本的新文档。文档不存在时使用插入并依赖记录标识唯一索引；已存在但尚无版本时以 0 为基线。更新不允许 upsert 绕过冲突。该元数据仅属于存储层，不包含世界、实例、操作标识，也不要求业务 GD 声明。
 
 超时、条件冲突或确认丢失均沿现有延迟任务重试，从 Mongo 版本读取开始重新执行，再获取 Redis 最新数据。不缓存版本、不保留第二份业务快照，也不在旧快照上修改版本后重发。每次正常后台落地增加一次按记录索引读取 Mongo 元数据的 I/O，Procedure 和 Redis 增量热写不变。此保证要求该记录遵守统一 Fusion 写入路径；绕过框架直接修改 Mongo 不在保护契约内。
 
@@ -1575,14 +1575,9 @@ BSON、JSON、Lua 协议等本地语义错误同样不能把全局 backend 标�
 WriteBackManager 合并内存变更，定时调用 Mongo Writer；成功后清除脏状态，失败保留并在后续 Flush 重试。
 业务响应表示内存事务执行成功，不表示已持久化。异常退出可能丢失最后一次成功写回之后的内存变化；优雅关闭必须等待最终写回。
 
-需要所有权保护的根对象使用 `storage/mongo.OwnedWriter`。项目先确认逻辑槽位归属，再调用 `Claim` 并重新加载数据。
-一个 Writer 绑定一个固定正整数代次；同一代次只能由控制面指定的实例持有。GD 不需要增加基础设施字段或逐类型 Binding。
-Mongo 文档的保留字段 `_tx.owner` 与 `_tx.sequence` 分别记录所有者代次和已接受的写入序号，不属于业务 GD。
+Mongo 普通更新使用文档级乐观锁：在根对象锁内先读取 `_tx_version`，再生成当前 GD 字段增量，按基线条件更新并原子推进版本，使用 `majority + j:true` 确认。失败保留变更，后续 Flush 重新读取版本与当前变更，不给旧快照换版本重发。
 
-写回将业务增量、所有者条件及递增序号合并在一次原子 UpdateOne 中，固定使用 `majority + j:true`。
-只有所有者匹配且数据库序号小于本次序号才接受更新。失败后的下一次保存携带全部未确认变更，使用更大序号。
-例如序号 8 超时，序号 9 已写入最新坐标，则迟到的 8 被拒绝；代次 2 接管后，代次 1 的写入也被拒绝。
-热路径不增加写前读取；所有权声明及重新加载只发生在对象加载阶段。
+GD 不需要基础设施字段或逐类型绑定；Mongo 不记录世界槽位、实例身份等部署信息。每次后台写回增加一次版本读取，Redis/Fusion 热写不受影响。路由归属与排水负责约束业务执行者，文档版本不能代替集群归属校验。
 
 该机制不提供跨文档事务或跨服务消息必达。可靠业务消息的消费确认与持久化衔接由后续独立设计负责。
 
@@ -1880,7 +1875,7 @@ go test ./modules/txn -run '^$' \
 默认 Manager 不是完整的业务对象缓存，不定义 `LoadRole`、容量淘汰、Actor 归属、业务分片或二级索引。静态 `Config` 只保存调度和容量参数；writer 与写入闸门通过 `writeback.Dependencies` 在 CModProcedure 启动期注入。项目按下面的边界扩展：
 
 1. 业务对象加载、唯一实例和工作集淘汰属于项目 EntityCache；它独立于 WriteBack Runtime，只通过项目 facade 调用 `TryRelease`。
-2. 普通有状态项目使用默认 Manager；需要 Mongo 所有权保护时组合 OwnedWriter。特殊生命周期仍可通过 writeback.Runtime SPI 装配。
+2. 有状态项目使用默认 Manager，按 GD 存储模式选择通用 Writer。特殊生命周期仍可通过 writeback.Runtime SPI 装配。
 
 WriteBackManager 不绑定固定持久化目标。CModProcedure 启动期向项目 Factory 注入窄依赖，项目按已显式选择的服务组合决定 Writer：
 
@@ -1888,7 +1883,7 @@ WriteBackManager 不绑定固定持久化目标。CModProcedure 启动期向项�
 | --- | --- | --- | --- |
 | 无状态请求服务 | Fusion，不选择 CModProcedure | 无 WriteBackManager；业务调用 `db.Save(role)` | Redis 热写和本地延迟任务登记成功 |
 | 有状态逻辑服 | Fusion、CModProcedure | mode-aware Fusion Writer | Procedure 只提交内存；帧 Flush 成功写入 Fusion 后清理 Store |
-| 有状态大世界 | Mongo、CModProcedure | tx Mongo OwnedWriter | Procedure 只提交内存；帧 Flush 直接写 Mongo 成功后清理 Store |
+| 有状态大世界 | Mongo、CModProcedure | tx Mongo 版本条件增量更新 | Procedure 只提交内存；帧 Flush 直接写 Mongo 成功后清理 Store |
 
 项目 Factory 只能取得 Writer 与写入准入，不取得私有装配内核、Mongo client 或生命周期所有权。
 CModProcedure 不会自动选择 Fusion 或 Mongo；L4 服务必须显式列出作为目标 Writer 的存储 CMod。

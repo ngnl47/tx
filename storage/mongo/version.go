@@ -17,6 +17,11 @@ type VersionedChangeApplier interface {
 	ApplyVersionedChanges(context.Context, meta.TypeSpec, storage.RecordKey, change.Source, change.FieldNameResolver, change.ValueResolver) error
 }
 
+// DurableUpdater 要求 Mongo 确认持久化后才确认增量更新完成。
+type DurableUpdater interface {
+	UpdateOneDurable(context.Context, string, Filter, map[string]any, storage.ApplyOptions) (UpdateResult, error)
+}
+
 // ApplyVersionedChanges 对已有文档执行乐观锁增量更新；调用方须在根对象锁内调用。
 // 失败不清理变更，下次由调用方携带最新未确认变更重新执行，不在内部重投旧快照。
 func (a *Adapter) ApplyVersionedChanges(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver) error {
@@ -45,7 +50,7 @@ func (a *Adapter) ApplyVersionedChanges(ctx context.Context, spec meta.TypeSpec,
 		set = make(map[string]any)
 		update["$set"] = set
 	}
-	set["_tx.version"] = version.Value + 1
+	set["_tx_version"] = version.Value + 1
 	client, err := a.clientFor()
 	if err != nil {
 		return err
@@ -82,34 +87,30 @@ func (a *Adapter) ReadDocumentVersion(ctx context.Context, spec meta.TypeSpec, k
 		return storage.DocumentVersion{}, err
 	}
 	for _, field := range spec.Type.Fields {
-		if spec.BSONName(field.Name) == "_tx" {
-			return storage.DocumentVersion{}, fmt.Errorf("mongo: _tx is reserved for storage metadata")
+		if spec.BSONName(field.Name) == "_tx_version" {
+			return storage.DocumentVersion{}, fmt.Errorf("mongo: _tx_version is reserved for storage metadata")
 		}
 	}
 	client, err := a.clientFor()
 	if err != nil {
 		return storage.DocumentVersion{}, err
 	}
-	doc, exists, err := client.FindOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), "_tx")
+	doc, exists, err := client.FindOne(ctx, mongoCollection(spec), mongoRecordFilter(spec, key), "_tx_version")
 	if err != nil || !exists {
 		return storage.DocumentVersion{}, err
 	}
-	var position struct {
-		Version int64 `bson:"version"`
-	}
-	if value, ok := doc["_tx"]; ok {
-		encoded, err := bson.Marshal(value)
-		if err != nil {
-			return storage.DocumentVersion{}, err
-		}
-		if err := bson.Unmarshal(encoded, &position); err != nil {
-			return storage.DocumentVersion{}, err
+	var version int64
+	if value, exists := doc["_tx_version"]; exists {
+		var ok bool
+		version, ok = value.(int64)
+		if !ok {
+			return storage.DocumentVersion{}, fmt.Errorf("mongo: document version must be int64, got %T", value)
 		}
 	}
-	if position.Version < 0 || position.Version == math.MaxInt64 {
-		return storage.DocumentVersion{}, fmt.Errorf("mongo: invalid or exhausted document version %d", position.Version)
+	if version < 0 || version == math.MaxInt64 {
+		return storage.DocumentVersion{}, fmt.Errorf("mongo: invalid or exhausted document version %d", version)
 	}
-	return storage.DocumentVersion{Exists: true, Value: position.Version}, nil
+	return storage.DocumentVersion{Exists: true, Value: version}, nil
 }
 
 func (a *Adapter) ReplaceDocumentAtVersion(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any, version storage.DocumentVersion) error {
@@ -123,8 +124,8 @@ func (a *Adapter) ReplaceDocumentAtVersion(ctx context.Context, spec meta.TypeSp
 		return fmt.Errorf("mongo: invalid document version %+v", version)
 	}
 	for _, field := range spec.Type.Fields {
-		if spec.BSONName(field.Name) == "_tx" {
-			return fmt.Errorf("mongo: _tx is reserved for storage metadata")
+		if spec.BSONName(field.Name) == "_tx_version" {
+			return fmt.Errorf("mongo: _tx_version is reserved for storage metadata")
 		}
 	}
 	client, err := a.clientFor()
@@ -139,7 +140,7 @@ func (a *Adapter) ReplaceDocumentAtVersion(ctx context.Context, spec meta.TypeSp
 	if err != nil {
 		return err
 	}
-	document["_tx"] = bson.M{"version": version.Value + 1}
+	document["_tx_version"] = version.Value + 1
 	if !version.Exists {
 		return backend.InsertDocument(ctx, mongoCollection(spec), document)
 	}
@@ -159,7 +160,7 @@ func documentVersionFilter(spec meta.TypeSpec, key storage.RecordKey, version st
 	if version.Value == 0 {
 		expected = bson.M{"$in": bson.A{nil, int64(0)}}
 	}
-	filter.Conditions = append(filter.Conditions, Equality{Field: "_tx.version", Value: expected})
+	filter.Conditions = append(filter.Conditions, Equality{Field: "_tx_version", Value: expected})
 	return filter
 }
 

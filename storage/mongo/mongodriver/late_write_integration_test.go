@@ -272,24 +272,22 @@ func testLateMongoWrite(t *testing.T, address, mode string) {
 		var doc struct {
 			Coins     int    `bson:"coins"`
 			Untouched string `bson:"untouched"`
-			TX        struct {
-				Version int `bson:"version"`
-			} `bson:"_tx"`
+			Version   int64  `bson:"_tx_version"`
 		}
 		if err := db.Collection("records").FindOne(ctx, bson.M{"_id": marker}).Decode(&doc); err != nil {
 			t.Fatal(err)
 		}
-		wantVersion := 1
+		wantVersion := int64(1)
 		if ackLoss {
 			wantVersion = 2
 		}
-		if doc.Coins != 120 || doc.TX.Version != wantVersion {
+		if doc.Coins != 120 || doc.Version != wantVersion {
 			t.Fatalf("conditional write lost: %+v", doc)
 		}
 		if (mode == "incremental" || mode == "incremental-ack-loss") && doc.Untouched != "keep" {
 			t.Fatal("incremental write replaced an untouched field")
 		}
-		t.Logf("confirmed: coins=120 version=%d", doc.TX.Version)
+		t.Logf("confirmed: coins=120 version=%d", doc.Version)
 		return
 	}
 	for {
