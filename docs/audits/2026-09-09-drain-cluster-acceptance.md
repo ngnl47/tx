@@ -86,6 +86,22 @@ TX_ETCD_ENDPOINT=127.0.0.1:2379 go test ./modules/agent -run '^TestActorDispatch
 恢复后通过。反向验证日志：`/private/tmp/tx-agent-drain-cache-negative.log`，测试源码不保留该临时改动。
 原单元测试移除上述重复场景及等待，保留未知身份、普通超时和迟到响应身份变化的独立边界。
 
+## txgameslg 组合根最终写回补充验收
+
+在 txgameslg/server 执行：
+
+```sh
+TXGAMESLG_SHUTDOWN_TEST=1 go test ./tests/integration -run '^TestSLGGameShutdownFlushesPendingRole$' -count=3 -v -timeout=60s
+```
+
+使用真实项目组合根、生成 Role_Rename 协议、RoleActor、Procedure 和 Fusion，周期写回间隔设为 1 小时。
+改名响应成功后直接读取 Redis，名称仍为空；Server.Stop 成功返回后再次读取，名称为 `shutdown-role`，
+保存的 Messenger 再调用则返回 `ErrRuntimeStopped`。这证明关闭承担了最终写回，而非短周期后台任务提前完成。
+测试替换原有周期刷盘用例，不新增生产接口。日志：`/private/tmp/txgameslg-shutdown-flush.log`。
+
+代码核对：`internal/framework/shutdown.go` 先执行 Server.Drain，再执行 cmodHost.drain，
+成功后才清理服务并执行 cmodHost.stop；这属于源码顺序证据，不是测试的逐阶段事件记录。
+
 ## 证据边界
 
 - 本轮使用正常构建，不是 `-race` 验收；已知第三方 Provider 关闭竞态仍保留为依赖风险。
@@ -95,5 +111,6 @@ TX_ETCD_ENDPOINT=127.0.0.1:2379 go test ./modules/agent -run '^TestActorDispatch
 - 缓存补充验收的计数位于 Runtime.Call 边界，不是网络包数；调用方直接进入 ActorDispatcher，不经过客户端登录、Agent 网络入口或 MsgQ。
 - 实例身份变化由本地 ServiceDirectory 快照注入，不是实际 Watch 更新或在 1 秒内重启目标进程；不能将它描述为完整滚动重启验收。
 - 到期后目标仍处于排水状态，因此这里只证明重新尝试远端调用，不声称目标恢复业务成功。完整关闭后的路由恢复由两套示例验收另行覆盖。
+- 组合根最终写回用例在同一测试进程中运行 slggame，业务调用已完成后才启动关闭；不代表执行中的业务与关闭并发窗口已完整覆盖，也不声称同一时刻已完成 Mongo 延迟落地。
 
 未覆盖项的优先级、实施范围和后续安排由 [实施计划](../IMPLEMENTATION_PLAN.md) 统一维护，本报告只保留本次证据及其边界。
