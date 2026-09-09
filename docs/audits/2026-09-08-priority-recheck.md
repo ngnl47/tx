@@ -18,7 +18,7 @@ Fusion 已按确认的最终纠正边界完成异常重新登记修补，见本�
 | P1 TryRelease 取消链 | 风险路径仍在 | `modules/writeback/manager.go` 的 SPI 仍无 context，内部用 Background 等待实体锁。下一步需组合实体释放任务与关闭顺序复现，不仅测试手动解锁。 |
 | P1 World_StartMarch 内外契约复用 | 身份与响应路径已分离 | 公开请求仅携带世界、单位目标；操作角色来自 Identity。内部调用透传可信身份但使用 UpSeq=0，MessageType 区分响应路径；两条路径经真实多进程验收。无需为相同行军语义新增一套内部协议。 |
 | P1 Promote 后本地可见性 | 屏障缺口仍在 | `txgameslg/server/internal/clustere2e/suite.go` 晋升后读取 dependencies.Slot；该方法读取 etcd 持久值，不是 Agent/owner 本地 Watch 快照。需可控 Watch 延迟复现。 |
-| P1 TS null/omitempty | 模型缺口仍在 | `txgen/gen/ts_model.go` 的 schema 递归剥掉指针；需重新执行合法 Go null/零值响应的客户端交叉用例。修复保持语言无关输入语义，不把 TS 约束反绑 Go。 |
+| P1 TS null/omitempty | 已跨语言复现，待分步修复 | Go BON 的 nil 指针、切片、map 及 nil 指针元素被两个客户端拒绝；omitempty 解码保留缺省，但生成类型错误地声明必有值。见[空值契约复核](2026-09-09-client-null-contract.md)，先处理可空值，再处理可选字段，不反绑 Go。 |
 | P1 TS 整数位宽/符号 | 校验缺口仍在 | 两客户端 `src/protocol/codec.ts` 的整数分支仍统一使用 requireSafeInteger，没有按 scalar 位宽和符号拒绝值。需复现 uint32 负数与窄整数越界。 |
 | P1 失败生成消耗 CommandID | 保留名校验顺序已修复 | TypeScript 保留名校验前移到 prepareCmdRoutes 之前，仅检查客户端可见请求/响应，不影响 Go 生成规则。既有四个冲突用例复现错误登记后验证清单与产物原样保留，txgen 全量测试通过。磁盘写入失败不承诺清单与产物跨文件回滚；同名协议仍复用已登记 ID。 |
 | P1 nil 日志输出 | 已复现并修复 | 未扫描到的客户端数据类型触发提示时，nil writer 导致 panic；提示函数现已尊重 nil 关闭输出的契约。公开生成入口回归验证启用/关闭日志的类型产物一致，txgen 全量测试通过。 |
