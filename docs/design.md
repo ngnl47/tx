@@ -88,7 +88,7 @@ tx/
 ├── modules/
 │   ├── actor/              # Actor Runtime、寻址和消息投递
 │   ├── agent/              # 长连接、帧处理和会话入口组件
-│   ├── cache/              # 有状态根对象登记与分帧刷盘组件
+│   ├── writeback/          # 有状态根对象登记与分帧刷盘组件
 │   ├── control/            # 节点状态和逻辑槽位控制面
 │   ├── discovery/          # etcd 服务发现与本地快照
 │   ├── msgq/               # 会话邮箱及其 RPC、Redis、Discovery 适配组件
@@ -1421,13 +1421,13 @@ sequenceDiagram
 
 发布失败日志固定为 `fusion delay task publish failed`，包含 pending 数、重试等待和完整错误链，供外部日志中心告警。退避从一秒开始，倍增到一分钟后持续按封顶间隔重试，并使用随机扰动错开实例压力。业务不配置本地 pending 容量；相同根记录不会膨胀条数，剩余容量由进程内存和运行监控负责。
 
-后台发布循环与关闭排空共享一个可被 context 中断的发布闸门，同一时刻只有一个执行者向 delayed task backend 发布快照。正常关闭时，CMod 依赖逆序保证 cache Manager 先完成内存 Store 的最终保存，Fusion 随后调用 `DelayTaskDispatcher.Drain`；每条任务只有在 backend 确认接收后才从 pending 删除。排空复用 `runtime.lifecycle.drainTimeout`，超时错误包含剩余 pending 数量，`Server.Stop` 汇总错误后继续释放资源，不能无限阻塞关闭。
+后台发布循环与关闭排空共享一个可被 context 中断的发布闸门，同一时刻只有一个执行者向 delayed task backend 发布快照。正常关闭时，先停止业务入口、等待已受理工作并完成必要的最终保存，Fusion 随后调用 `DelayTaskDispatcher.Drain`；每条任务只有在 backend 确认接收后才从 pending 删除。排空复用 `runtime.lifecycle.drainTimeout`，超时错误包含剩余 pending 数量。正常关闭遇到排水或必要持久化失败时，`Server.Stop` 保留资源并返回错误；`Server.Run` 间隔一秒自主重试三次，仍失败则记录日志并返回错误，由进程入口非零退出，不把未完成持久化视为成功。租约丢失等致命故障走强制终止路径，不适用保留资源等待重试。
 
 ```text
 停止业务入口并等待已受理工作
         |
         v
-cache Manager final Flush -> 新增本地 pending
+业务最终保存（使用 Fusion 时）-> 新增本地 pending
         |
         v
 Fusion Drain -> Redis delayed task backend 确认接收
