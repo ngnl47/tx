@@ -89,6 +89,15 @@ func mongoIndexOrder(order string) any {
 }
 
 func (d Database) UpdateOne(ctx context.Context, collection string, filter txmongo.Filter, update map[string]any, applyOptions storage.ApplyOptions) (txmongo.UpdateResult, error) {
+	return d.updateOne(ctx, collection, filter, update, applyOptions, false)
+}
+
+// UpdateOneDurable 在 majority 与 journal 确认后才报告成功，用于有状态直接写回。
+func (d Database) UpdateOneDurable(ctx context.Context, collection string, filter txmongo.Filter, update map[string]any, applyOptions storage.ApplyOptions) (txmongo.UpdateResult, error) {
+	return d.updateOne(ctx, collection, filter, update, applyOptions, true)
+}
+
+func (d Database) updateOne(ctx context.Context, collection string, filter txmongo.Filter, update map[string]any, applyOptions storage.ApplyOptions, durable bool) (txmongo.UpdateResult, error) {
 	if d.db == nil {
 		return txmongo.UpdateResult{}, errMongoDatabaseNotConfigured
 	}
@@ -96,7 +105,12 @@ func (d Database) UpdateOne(ctx context.Context, collection string, filter txmon
 	if err != nil {
 		return txmongo.UpdateResult{}, err
 	}
-	result, err := d.db.Collection(collection).UpdateOne(
+	target := d.db.Collection(collection)
+	if durable {
+		journal := true
+		target = d.db.Collection(collection, options.Collection().SetWriteConcern(&writeconcern.WriteConcern{W: "majority", Journal: &journal}))
+	}
+	result, err := target.UpdateOne(
 		ctx,
 		query,
 		update,

@@ -5,8 +5,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/ngnl47/tx/wal"
 )
 
 func TestCModProcedureBuilderRequiresWriteBack(t *testing.T) {
@@ -25,17 +23,11 @@ func TestCModProcedureBuilderRejectsTypedNilComponents(t *testing.T) {
 		t.Fatalf("typed-nil writeBack Build() = %#v, %v", mod, err)
 	}
 
-	writeBack = &procedureWriteBackFake{}
-	var log *procedureWALFake
-	if mod, err := NewCModProcedureBuilder().WriteBack(writeBack).WAL(log).Build(); err == nil || mod != nil {
-		t.Fatalf("typed-nil WAL Build() = %#v, %v", mod, err)
-	}
 }
 
 func TestCModProcedureDeclaresStableTopology(t *testing.T) {
 	mod, err := NewCModProcedureBuilder().
 		WriteBack(&procedureWriteBackFake{}).
-		WAL(&procedureWALFake{}).
 		Build()
 	if err != nil {
 		t.Fatalf("Build returned error: %v", err)
@@ -46,9 +38,6 @@ func TestCModProcedureDeclaresStableTopology(t *testing.T) {
 	}
 	if len(spec.Components) != 2 || spec.Components[0].Role != "transaction" || spec.Components[1].Role != "writeback" {
 		t.Fatalf("components = %#v", spec.Components)
-	}
-	if len(spec.Components[1].Components) != 1 || spec.Components[1].Components[0].Role != "wal" {
-		t.Fatalf("writeback components = %#v", spec.Components[1].Components)
 	}
 }
 
@@ -120,18 +109,6 @@ func (writeBack *procedureWriteBackFake) Stop(context.Context) error {
 	writeBack.events.add("writeback:stop")
 	return nil
 }
-
-type procedureWALFake struct{}
-
-func (*procedureWALFake) ComponentSpec() ComponentSpec {
-	return ComponentSpec{Role: "wal", Name: "test", Optional: true, Services: []string{"world"}}
-}
-
-func (*procedureWALFake) Validate(CModProcedureContext) error { return nil }
-func (*procedureWALFake) Start(CModProcedureContext) (wal.Store, error) {
-	return nil, nil
-}
-func (*procedureWALFake) Stop(context.Context) error { return nil }
 
 type procedureEvents struct {
 	mu     sync.Mutex

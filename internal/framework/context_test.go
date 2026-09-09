@@ -12,10 +12,7 @@ import (
 	"github.com/ngnl47/tx/modules/txn"
 	txstorage "github.com/ngnl47/tx/storage"
 	txmongo "github.com/ngnl47/tx/storage/mongo"
-	"github.com/ngnl47/tx/wal"
 )
-
-type contextWAL struct{}
 
 type contextCommitParticipant struct{}
 
@@ -27,17 +24,6 @@ type contextCommitReservation struct{}
 
 func (contextCommitReservation) Commit([]txn.LockTarget) {}
 func (contextCommitReservation) Abort()                  {}
-
-func (contextWAL) Append(context.Context, wal.Record) error { return nil }
-func (contextWAL) Read(context.Context, wal.Stream, uint64, int) ([]wal.Record, error) {
-	return nil, nil
-}
-func (contextWAL) Replay(context.Context, wal.Stream, uint64, func(context.Context, wal.Record) error) (uint64, error) {
-	return 0, nil
-}
-func (contextWAL) Checkpoint(context.Context, wal.Stream, uint64, func(context.Context) error) error {
-	return nil
-}
 
 func TestServiceContextExposesCModsWithoutLifecycleOwnership(t *testing.T) {
 	root := lifecycle.NewWaitGroupContext(context.Background())
@@ -57,7 +43,6 @@ func TestServiceContextExposesCModsWithoutLifecycleOwnership(t *testing.T) {
 			CModProcedure:    {},
 		},
 	}
-	runtime.wal = contextWAL{}
 	serviceContext := newServiceContext(runtime, ingress)
 
 	if got := serviceContext.AppID(); got != "context-test" {
@@ -71,7 +56,7 @@ func TestServiceContextExposesCModsWithoutLifecycleOwnership(t *testing.T) {
 	if !serviceContext.HasCMod(CModProcedure) {
 		t.Fatal("HasCMod(procedure) = false")
 	}
-	if serviceContext.Admission() == nil || serviceContext.Tasks() == nil || serviceContext.Storage() == nil || serviceContext.WAL() == nil || serviceContext.RPC() == nil || serviceContext.Transaction() == nil || serviceContext.Directory() == nil {
+	if serviceContext.Admission() == nil || serviceContext.Tasks() == nil || serviceContext.Storage() == nil || serviceContext.RPC() == nil || serviceContext.Transaction() == nil || serviceContext.Directory() == nil {
 		t.Fatal("service context omitted an assembled capability")
 	}
 
@@ -88,9 +73,6 @@ func TestServiceContextExposesCModsWithoutLifecycleOwnership(t *testing.T) {
 		Replace([]discovery.Instance) error
 	}); ok {
 		t.Fatal("Directory exposes discovery snapshot mutation")
-	}
-	if _, ok := any(serviceContext.WAL()).(interface{ Close(context.Context) error }); ok {
-		t.Fatal("WAL exposes shared Mongo connection ownership")
 	}
 }
 

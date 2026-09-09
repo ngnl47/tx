@@ -19,7 +19,7 @@ import (
 type Config struct {
 	// AppID 是当前应用的稳定身份，用于隔离同一基础设施上的不同项目。
 	AppID string
-	// Storage 描述 Redis、MongoDB 和可选 WAL 的连接路由。
+	// Storage 描述 Redis 和 MongoDB 的连接路由。
 	Storage StorageConfig
 	// Runtime 描述生命周期、存储调度和事务等进程运行参数。
 	Runtime RuntimeConfig
@@ -41,36 +41,12 @@ type LogConfig struct {
 	Output io.Writer
 }
 
-// StorageConfig 描述进程可装配的持久化连接和 WAL backend。
+// StorageConfig 描述进程可装配的持久化连接。
 type StorageConfig struct {
 	// Redis 是按 routeType 索引的 Redis 连接路由表。
 	Redis storageconfig.RouteTableConfig
 	// MongoDB 是按 routeType 索引的 MongoDB 连接路由表。
 	MongoDB storageconfig.RouteTableConfig
-	// WAL 描述可选 WAL backend；只有装配 WAL CMod 时才会校验和创建。
-	WAL WALConfig
-}
-
-// WALBackend 标识 WAL 的持久化实现。
-type WALBackend string
-
-// WALBackendMongo 使用项目已经装配的 Mongo route table 和连接。
-const WALBackendMongo WALBackend = "mongo"
-
-// WALConfig 配置可选的预写日志。当前仅实现 Mongo backend。
-type WALConfig struct {
-	// Backend 选择 WAL 持久化实现。
-	Backend WALBackend
-	// Mongo 是 Mongo WAL backend 的连接路由和 collection 参数。
-	Mongo WALMongoConfig
-}
-
-// WALMongoConfig 指定 WAL 使用的 Mongo routeType 和独立 collection。
-type WALMongoConfig struct {
-	// RouteType 引用 Storage.MongoDB 中已经配置的路由。
-	RouteType string
-	// Collection 是 WAL 记录使用的独立 MongoDB collection。
-	Collection string
 }
 
 // RuntimeConfig 描述进程运行期的通用组件参数。
@@ -202,31 +178,6 @@ func (config Config) clone() Config {
 	cloned.Actor.Runtime.Etcd.Endpoints = append([]string(nil), config.Actor.Runtime.Etcd.Endpoints...)
 	cloned.Discovery.Etcd.Endpoints = append([]string(nil), config.Discovery.Etcd.Endpoints...)
 	return cloned
-}
-
-func (config WALConfig) validate(routes storageconfig.RouteTableConfig) error {
-	backend := WALBackend(strings.TrimSpace(string(config.Backend)))
-	if config.Backend != "" && backend != config.Backend {
-		return fmt.Errorf("framework: WAL backend must not contain surrounding whitespace")
-	}
-	if backend != "" && backend != WALBackendMongo {
-		return fmt.Errorf("framework: unsupported WAL backend %q", config.Backend)
-	}
-	if backend == "" {
-		return fmt.Errorf("framework: WAL backend is required")
-	}
-	routeType := strings.TrimSpace(config.Mongo.RouteType)
-	if routeType == "" || routeType != config.Mongo.RouteType {
-		return fmt.Errorf("framework: WAL Mongo route type is empty or contains surrounding whitespace")
-	}
-	if _, ok := routes.Routes[routeType]; !ok {
-		return fmt.Errorf("framework: WAL Mongo route %q is not configured", routeType)
-	}
-	collection := strings.TrimSpace(config.Mongo.Collection)
-	if collection == "" || collection != config.Mongo.Collection {
-		return fmt.Errorf("framework: WAL Mongo collection is empty or contains surrounding whitespace")
-	}
-	return nil
 }
 
 func (config DelayTaskConfig) validate() error {

@@ -2,13 +2,11 @@ package framework
 
 import (
 	"context"
-	"errors"
 	"reflect"
 	"testing"
 
 	"github.com/ngnl47/tx/lifecycle"
 	"github.com/ngnl47/tx/modules/discovery"
-	"github.com/ngnl47/tx/wal"
 )
 
 type stateWriteBackComponentFake struct{}
@@ -35,7 +33,6 @@ func (invalidProcedureWriteBackFake) Stop(context.Context) error        { return
 func TestProcedureBuilderDescribesSelectedComponents(t *testing.T) {
 	mod, err := NewProcedureBuilder().
 		WriteBack(stateWriteBackComponentFake{}).
-		WAL(NewProcedureMongoWAL("slgworld")).
 		Build()
 	if err != nil {
 		t.Fatalf("Build returned error: %v", err)
@@ -50,9 +47,6 @@ func TestProcedureBuilderDescribesSelectedComponents(t *testing.T) {
 		{
 			Role: "writeback",
 			Name: "test-writeback",
-			Components: []ComponentSpec{
-				{Role: "wal", Name: "mongo", Optional: true, Services: []string{"slgworld"}},
-			},
 		},
 	}
 	if !equalComponentSpecs(spec.Components, want) {
@@ -75,31 +69,10 @@ func TestProcedureBuilderRejectsTypedNilWriteBack(t *testing.T) {
 	}
 }
 
-func TestProcedureBuilderRejectsWALWithoutServices(t *testing.T) {
-	mod, err := NewProcedureBuilder().
-		WriteBack(stateWriteBackComponentFake{}).
-		WAL(NewProcedureMongoWAL()).
-		Build()
-	if mod != nil || err == nil {
-		t.Fatalf("Build = %#v, %v, want empty WAL services error", mod, err)
-	}
-}
-
-func TestProcedureBuilderRejectsNilWALComponent(t *testing.T) {
-	mod, err := NewProcedureBuilder().
-		WriteBack(stateWriteBackComponentFake{}).
-		WAL(nil).
-		Build()
-	if mod != nil || err == nil {
-		t.Fatalf("Build = %#v, %v, want nil WAL component error", mod, err)
-	}
-}
-
 func TestProcedureBuilderRejectsInvalidComponentTopology(t *testing.T) {
 	tests := []struct {
 		name      string
 		writeBack ProcedureWriteBack
-		wal       ProcedureWAL
 	}{
 		{
 			name:      "empty role",
@@ -111,18 +84,15 @@ func TestProcedureBuilderRejectsInvalidComponentTopology(t *testing.T) {
 				Role: "writeback",
 				Name: "custom",
 				Components: []ComponentSpec{
-					{Role: "wal", Name: "custom"},
+					{Role: "child", Name: "first"},
+					{Role: "child", Name: "second"},
 				},
 			}},
-			wal: NewProcedureMongoWAL("slgworld"),
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			builder := NewProcedureBuilder().WriteBack(test.writeBack)
-			if test.wal != nil {
-				builder.WAL(test.wal)
-			}
 			mod, err := builder.Build()
 			if mod != nil || err == nil {
 				t.Fatalf("Build = %#v, %v, want invalid component topology error", mod, err)
@@ -131,23 +101,8 @@ func TestProcedureBuilderRejectsInvalidComponentTopology(t *testing.T) {
 	}
 }
 
-func TestMongoWALComponentMatchesConfiguredServices(t *testing.T) {
-	component := NewProcedureMongoWAL("slgworld", "battlefield")
-	if !componentEnabled(component.ComponentSpec(), newServiceSelection([]Service{
-		testService{spec: Spec{Name: "slgworld"}},
-	})) {
-		t.Fatal("WAL component was not enabled for slgworld")
-	}
-	if componentEnabled(component.ComponentSpec(), newServiceSelection([]Service{
-		testService{spec: Spec{Name: "slggame"}},
-	})) {
-		t.Fatal("WAL component was enabled for unrelated service")
-	}
-}
-
 type recordingProcedureWriteBack struct {
-	events     *[]string
-	walEnabled []bool
+	events *[]string
 }
 
 func (*recordingProcedureWriteBack) ComponentSpec() ComponentSpec {
@@ -156,13 +111,11 @@ func (*recordingProcedureWriteBack) ComponentSpec() ComponentSpec {
 
 func (writeBack *recordingProcedureWriteBack) Validate(runtime ProcedureContext) error {
 	*writeBack.events = append(*writeBack.events, "validate:writeback")
-	writeBack.walEnabled = append(writeBack.walEnabled, runtime.WALEnabled())
 	return nil
 }
 
 func (writeBack *recordingProcedureWriteBack) Start(runtime ProcedureContext) error {
 	*writeBack.events = append(*writeBack.events, "start:writeback")
-	writeBack.walEnabled = append(writeBack.walEnabled, runtime.WALEnabled())
 	if runtime.Transaction() == nil {
 		return context.Canceled
 	}
@@ -214,184 +167,6 @@ func TestProcedureOwnsTransactionAndWriteBackLifecycle(t *testing.T) {
 	wantEvents := []string{"validate:writeback", "start:writeback", "drain:writeback", "stop:writeback"}
 	if !reflect.DeepEqual(events, wantEvents) {
 		t.Fatalf("events = %v, want %v", events, wantEvents)
-	}
-	if want := []bool{false, false}; !reflect.DeepEqual(writeBack.walEnabled, want) {
-		t.Fatalf("WAL enabled values = %v, want %v", writeBack.walEnabled, want)
-	}
-}
-
-func TestProcedureWALRequiresSelectedMongoCapability(t *testing.T) {
-	mod, err := NewProcedureBuilder().
-		WriteBack(stateWriteBackComponentFake{}).
-		WAL(NewProcedureMongoWAL("slgworld")).
-		Build()
-	if err != nil {
-		t.Fatalf("Build returned error: %v", err)
-	}
-	server := &Server{runtime: &runtime{
-		instance: testServiceInstance("slgworld"),
-		selectedCMods: map[CModID]struct{}{
-			CModProcedure: {},
-		},
-	}}
-	err = mod.(CModValidator).Validate(newCModContext(server))
-	if err == nil {
-		t.Fatal("Validate returned nil without Mongo capability")
-	}
-}
-
-type recordingProcedureWAL struct {
-	events   *[]string
-	store    wal.Store
-	startErr error
-}
-
-func (*recordingProcedureWAL) ComponentSpec() ComponentSpec {
-	return ComponentSpec{Role: "wal", Name: "recording", Optional: true, Services: []string{"custom-state"}}
-}
-
-func (component *recordingProcedureWAL) Validate(ProcedureContext) error {
-	*component.events = append(*component.events, "validate:wal")
-	return nil
-}
-
-func (component *recordingProcedureWAL) Start(ProcedureContext) (wal.Store, error) {
-	*component.events = append(*component.events, "start:wal")
-	return component.store, component.startErr
-}
-
-func (component *recordingProcedureWAL) Stop(context.Context) error {
-	*component.events = append(*component.events, "stop:wal")
-	return nil
-}
-
-type procedureWALStoreFake struct{}
-
-func (procedureWALStoreFake) Append(context.Context, wal.Record) error { return nil }
-func (procedureWALStoreFake) Read(context.Context, wal.Stream, uint64, int) ([]wal.Record, error) {
-	return nil, nil
-}
-func (procedureWALStoreFake) Replay(context.Context, wal.Stream, uint64, func(context.Context, wal.Record) error) (uint64, error) {
-	return 0, nil
-}
-func (procedureWALStoreFake) Checkpoint(context.Context, wal.Stream, uint64, func(context.Context) error) error {
-	return nil
-}
-
-func TestProcedureOwnsCustomWALLifecycle(t *testing.T) {
-	events := []string{}
-	store := procedureWALStoreFake{}
-	writeBack := &recordingProcedureWriteBack{events: &events}
-	component := &recordingProcedureWAL{
-		events: &events,
-		store:  store,
-	}
-	mod, err := NewProcedureBuilder().WriteBack(writeBack).WAL(component).Build()
-	if err != nil {
-		t.Fatalf("Build returned error: %v", err)
-	}
-	root := lifecycle.NewWaitGroupContext(context.Background())
-	server := &Server{runtime: &runtime{
-		lifecycle: root,
-		storage:   newStorageRuntime(root),
-		instance:  testServiceInstance("custom-state"),
-		selectedCMods: map[CModID]struct{}{
-			CModProcedure: {},
-		},
-	}}
-	ctx := newCModContext(server)
-	if err := mod.(CModValidator).Validate(ctx); err != nil {
-		t.Fatalf("Validate returned error: %v", err)
-	}
-	if err := mod.Start(ctx); err != nil {
-		t.Fatalf("Start returned error: %v", err)
-	}
-	if server.runtime.wal != store {
-		t.Fatalf("installed WAL = %#v, want %#v", server.runtime.wal, store)
-	}
-	if err := mod.(CModStopper).Stop(context.Background()); err != nil {
-		t.Fatalf("Stop returned error: %v", err)
-	}
-	if server.runtime.wal != nil {
-		t.Fatalf("WAL after Stop = %#v, want nil", server.runtime.wal)
-	}
-	wantEvents := []string{"validate:wal", "validate:writeback", "start:wal", "start:writeback", "stop:writeback", "stop:wal"}
-	if !reflect.DeepEqual(events, wantEvents) {
-		t.Fatalf("events = %v, want %v", events, wantEvents)
-	}
-}
-
-func TestProcedureStopsCustomWALAfterFailedStart(t *testing.T) {
-	events := []string{}
-	component := &recordingProcedureWAL{
-		events:   &events,
-		startErr: errors.New("start failed"),
-	}
-	mod, err := NewProcedureBuilder().
-		WriteBack(stateWriteBackComponentFake{}).
-		WAL(component).
-		Build()
-	if err != nil {
-		t.Fatalf("Build returned error: %v", err)
-	}
-	root := lifecycle.NewWaitGroupContext(context.Background())
-	server := &Server{runtime: &runtime{
-		lifecycle: root,
-		instance:  testServiceInstance("custom-state"),
-		selectedCMods: map[CModID]struct{}{
-			CModProcedure: {},
-		},
-	}}
-	ctx := newCModContext(server)
-	if err := mod.(CModValidator).Validate(ctx); err != nil {
-		t.Fatalf("Validate returned error: %v", err)
-	}
-	if err := mod.Start(ctx); err == nil {
-		t.Fatal("Start returned nil")
-	}
-	if err := mod.(CModStopper).Stop(context.Background()); err != nil {
-		t.Fatalf("Stop returned error: %v", err)
-	}
-	if want := []string{"validate:wal", "start:wal", "stop:wal"}; !reflect.DeepEqual(events, want) {
-		t.Fatalf("events = %v, want %v", events, want)
-	}
-}
-
-func TestProcedureDoesNotClearExistingWALAfterInstallConflict(t *testing.T) {
-	events := []string{}
-	existing := procedureWALStoreFake{}
-	component := &recordingProcedureWAL{events: &events, store: &procedureWALStoreFake{}}
-	mod, err := NewProcedureBuilder().
-		WriteBack(stateWriteBackComponentFake{}).
-		WAL(component).
-		Build()
-	if err != nil {
-		t.Fatalf("Build returned error: %v", err)
-	}
-	root := lifecycle.NewWaitGroupContext(context.Background())
-	server := &Server{runtime: &runtime{
-		lifecycle: root,
-		wal:       existing,
-		instance:  testServiceInstance("custom-state"),
-		selectedCMods: map[CModID]struct{}{
-			CModProcedure: {},
-		},
-	}}
-	ctx := newCModContext(server)
-	if err := mod.(CModValidator).Validate(ctx); err != nil {
-		t.Fatalf("Validate returned error: %v", err)
-	}
-	if err := mod.Start(ctx); err == nil {
-		t.Fatal("Start returned nil")
-	}
-	if err := mod.(CModStopper).Stop(context.Background()); err != nil {
-		t.Fatalf("Stop returned error: %v", err)
-	}
-	if server.runtime.wal != existing {
-		t.Fatalf("WAL after rollback = %#v, want existing %#v", server.runtime.wal, existing)
-	}
-	if want := []string{"validate:wal", "start:wal", "stop:wal"}; !reflect.DeepEqual(events, want) {
-		t.Fatalf("events = %v, want %v", events, want)
 	}
 }
 

@@ -129,6 +129,22 @@ func TestDatabaseReserveUsesSingleAtomicFindAndModify(t *testing.T) {
 	})
 }
 
+func TestDurableUpdateUsesMajorityJournal(t *testing.T) {
+	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
+	mt.Run("durable update", func(mt *mtest.T) {
+		mt.AddMockResponses(mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 1}, bson.E{Key: "nModified", Value: 1}))
+		_, err := NewDatabase(mt.DB).UpdateOneDurable(context.Background(), "units", txmongo.Filter{Field: "_id", Value: 7}, map[string]any{"$set": map[string]any{"value": 100}}, storage.ApplyOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		command := mt.GetStartedEvent().Command
+		concern := command.Lookup("writeConcern").Document()
+		if concern.Lookup("w").StringValue() != "majority" || !concern.Lookup("j").Boolean() {
+			t.Fatalf("write concern = %s", concern)
+		}
+	})
+}
+
 func TestDatabaseReserveRejectsInvalidArgumentsWithoutIO(t *testing.T) {
 	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
 	mt.Run("invalid arguments", func(mt *mtest.T) {

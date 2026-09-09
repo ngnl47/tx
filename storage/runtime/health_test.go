@@ -13,7 +13,6 @@ import (
 	txmongo "github.com/ngnl47/tx/storage/mongo"
 	txredis "github.com/ngnl47/tx/storage/redis"
 	"github.com/ngnl47/tx/storage/task"
-	"github.com/ngnl47/tx/wal"
 )
 
 type recordingLoader struct{ calls int }
@@ -39,31 +38,6 @@ func (applier *recordingFencedApplier) ApplyChangesWithFence(_ context.Context, 
 	applier.calls++
 	applier.fence = fence
 	return nil
-}
-
-type recordingWAL struct {
-	calls int
-	err   error
-}
-
-func (store *recordingWAL) Append(context.Context, wal.Record) error {
-	store.calls++
-	return store.err
-}
-
-func (store *recordingWAL) Read(context.Context, wal.Stream, uint64, int) ([]wal.Record, error) {
-	store.calls++
-	return nil, store.err
-}
-
-func (store *recordingWAL) Replay(context.Context, wal.Stream, uint64, func(context.Context, wal.Record) error) (uint64, error) {
-	store.calls++
-	return 0, store.err
-}
-
-func (store *recordingWAL) Checkpoint(context.Context, wal.Stream, uint64, func(context.Context) error) error {
-	store.calls++
-	return store.err
 }
 
 type staticSource struct{}
@@ -238,32 +212,6 @@ func TestOnlyBackendErrorsCloseStorageHealthGate(t *testing.T) {
 	store.observeStorageError(txstorage.NewBackendError(txstorage.BackendRedis, "eval", errors.New("connection refused")))
 	if err := store.requireStorageMode(meta.StorageModeFusion); !errors.Is(err, ErrStorageUnavailable) {
 		t.Fatalf("backend error did not close health gate: %v", err)
-	}
-}
-
-func TestWALUsesMongoHealthGateAndReportsBackendFailure(t *testing.T) {
-	storage := &Runtime{}
-	storage.markBackendUnavailable(txstorage.BackendMongo, errors.New("mongo unavailable"))
-	next := &recordingWAL{}
-	guarded := healthAwareWAL{storage: storage, next: next}
-	if err := guarded.Checkpoint(context.Background(), wal.Stream{Namespace: "world", StreamKey: "47", Generation: 1}, 1, func(context.Context) error { return nil }); !errors.Is(err, ErrStorageUnavailable) || next.calls != 0 {
-		t.Fatalf("unhealthy WAL checkpoint error/calls = %v/%d, want unavailable/0", err, next.calls)
-	}
-	if _, err := guarded.Replay(context.Background(), wal.Stream{Namespace: "world", StreamKey: "47", Generation: 1}, 0, func(context.Context, wal.Record) error { return nil }); !errors.Is(err, ErrStorageUnavailable) || next.calls != 0 {
-		t.Fatalf("unhealthy WAL replay error/calls = %v/%d, want unavailable/0", err, next.calls)
-	}
-
-	storage.recoverBackendHealth(txstorage.BackendMongo, storage.backendHealthGeneration(txstorage.BackendMongo))
-	next.err = txstorage.NewBackendError(txstorage.BackendMongo, "append WAL", errors.New("connection refused"))
-	record, err := wal.NewRecord(wal.Stream{Namespace: "world", StreamKey: "47", Generation: 1}, 1, 1, []byte("frame"))
-	if err != nil {
-		t.Fatalf("NewRecord returned error: %v", err)
-	}
-	if err := guarded.Append(context.Background(), record); err == nil {
-		t.Fatal("Append error = nil, want backend failure")
-	}
-	if err := storage.requireStorageMode(meta.StorageModeMongo); !errors.Is(err, ErrStorageUnavailable) {
-		t.Fatalf("WAL backend error did not close Mongo gate: %v", err)
 	}
 }
 

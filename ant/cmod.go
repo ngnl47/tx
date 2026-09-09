@@ -24,7 +24,7 @@ const (
 	CModSessionID CModID = "session-id"
 	// CModActor 提供 Actor 消息投递能力。
 	CModActor CModID = "actor"
-	// CModProcedure 组合单机事务、缓存提交参与者和可选 WAL。
+	// CModProcedure 组合单机事务、缓存提交参与者与直接写回。
 	CModProcedure CModID = "procedure"
 )
 

@@ -16,7 +16,7 @@ import (
 type Config struct {
 	// AppID 是当前应用在共享基础设施中的稳定隔离标识。
 	AppID string
-	// Storage 描述可由本进程选择的 Redis、MongoDB 和 WAL 连接路由。
+	// Storage 描述可由本进程选择的 Redis 和 MongoDB 连接路由。
 	Storage StorageConfig
 	// Runtime 描述生命周期、Fusion、Procedure 和后台调度参数。
 	Runtime RuntimeConfig
@@ -44,32 +44,6 @@ type StorageConfig struct {
 	Redis storageconfig.RouteTableConfig
 	// MongoDB 是按 routeType 组织的 MongoDB 连接路由。
 	MongoDB storageconfig.RouteTableConfig
-	// WAL 仅在 CModProcedure Builder 启用 WAL 组件时生效。
-	WAL WALConfig
-}
-
-// WALBackend 标识 Ant 预写日志的持久化实现。
-type WALBackend string
-
-const (
-	// WALBackendMongo 使用项目已经装配的 MongoDB 路由和连接。
-	WALBackendMongo WALBackend = "mongo"
-)
-
-// WALConfig 描述 CModProcedure 可选使用的预写日志后端。
-type WALConfig struct {
-	// Backend 选择 WAL 持久化实现；空值表示未配置。
-	Backend WALBackend
-	// Mongo 是 MongoDB WAL backend 的路由和 collection 参数。
-	Mongo WALMongoConfig
-}
-
-// WALMongoConfig 指定 MongoDB WAL 使用的路由和独立集合。
-type WALMongoConfig struct {
-	// RouteType 引用 Storage.MongoDB 中已配置的路由。
-	RouteType string
-	// Collection 是 WAL 记录使用的独立 MongoDB collection。
-	Collection string
 }
 
 // RuntimeConfig 描述有状态进程的公共运行参数。
@@ -177,13 +151,6 @@ func (config Config) toFramework() framework.Config {
 		Storage: framework.StorageConfig{
 			Redis:   config.Storage.Redis,
 			MongoDB: config.Storage.MongoDB,
-			WAL: framework.WALConfig{
-				Backend: framework.WALBackend(config.Storage.WAL.Backend),
-				Mongo: framework.WALMongoConfig{
-					RouteType:  config.Storage.WAL.Mongo.RouteType,
-					Collection: config.Storage.WAL.Mongo.Collection,
-				},
-			},
 		},
 		Runtime: framework.RuntimeConfig{
 			Lifecycle: framework.LifecycleConfig{DrainTimeout: config.Runtime.Lifecycle.DrainTimeout},

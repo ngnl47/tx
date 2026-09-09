@@ -11,7 +11,7 @@
 
 ### P0：正确性与跨工程回归
 
-两套真实多进程功能回归已通过，包括 Game 排水后的路由恢复、有限关闭重试及 WAL 恢复，见
+两套真实多进程功能回归已通过，包括 Game 排水后的路由恢复、有限关闭重试，见
 [排水验收报告](audits/2026-09-09-drain-cluster-acceptance.md)。该结论不代表第三方 Provider 关闭竞态已修复。
 
 严格排水验收节点已按当前 RPC 边界收敛：Actor 双进程窗口、实例拒绝缓存、框架关闭阶段顺序、
@@ -40,9 +40,9 @@
 [热点 I/O 检查](audits/2026-09-08-hot-path-io.md)；细粒度性能归因与完整自然租期测量不作为功能重新判为未完成的依据。
 
 1. 保持 `tx`、`txgen`、`txgame`、`txgameslg`、`txclient`、`txclientslg` 的行为同步。涉及生成 Store、集合、StoreView、字段名或存储边界的变更，必须同时检查生成器测试、两个模板的生成产物和业务侧真实 Redis/Mongo 回归；涉及 BON、Frame、路由或 Seq/Ack 时必须分别回归两个客户端。
-2. 持续审计 Redis、Mongo、Fusion、WAL 和延迟任务的失败契约。未知返回值、矛盾文档状态、非法路径、路由错误和依赖缺失必须返回明确错误，不能静默成功、自动修复持久化数据或错误清理 Store 状态。
+2. 持续审计 Redis、Mongo、Fusion 和延迟任务的失败契约。未知返回值、矛盾文档状态、非法路径、路由错误和依赖缺失必须返回明确错误，不能静默成功、自动修复持久化数据或错误清理 Store 状态。
 3. 发现旧接口、过渡结构、淘汰测试或旧方案文档时，在确认没有生产调用后直接删除。生效文档只描述当前方案；必要的技术取舍只保留在设计文档。
-4. 新增或修改无状态持久化能力时优先使用 `txgame` 生成的真实 `GD*`/`GD*Store`；涉及 Procedure、事务写回、WAL 或 checkpoint 时使用 `txgameslg` 的有状态生成模型，避免 runtime 测试与生成契约割裂。
+4. 新增或修改无状态持久化能力时优先使用 `txgame` 生成的真实 `GD*`/`GD*Store`；涉及 Procedure、事务写回 时使用 `txgameslg` 的有状态生成模型，避免 runtime 测试与生成契约割裂。
 5. 对旧审计发现逐项核对当前调用链与回归证据，再确定剩余 P0/P1；历史严重级别不代表当前仍有同一缺陷。
 
 ### P1：性能基线
@@ -77,13 +77,9 @@ txgame 当前使用项目维护的类型化配置最小契约；txgameslg 的 Lo
 
 ### 可靠业务消息
 
-付费发奖、跨服务必达命令和 SLG 跨服务关键操作需要发布、消费确认、重试、幂等与死信语义。`modules/msgq` 是客户端会话邮箱，WAL 是有状态内存变更的预写日志，二者都不能代替可靠业务消息。
+付费发奖、跨服务必达命令和 SLG 跨服务关键操作需要发布、消费确认、重试、幂等与死信语义。`modules/msgq` 是客户端会话邮箱，它不能代替可靠业务消息。
 
 后续单独评审 RocketMQ 5.x 等成熟实现。进入实现前必须提供真实服务用于链路测试，并确定消息身份、生产确认、消费组、重试、死信、排水和业务幂等边界。
-
-### WAL 其他 backend
-
-当前 WAL 只实现 Mongo backend。只有 SLG 等项目明确引入消息中间件后，才增加 RocketMQ backend；新实现必须复用 `wal.Store` 的追加、连续读取、checkpoint 和 generation 契约，不能把 RocketMQ 配置提前塞入当前 Mongo 装配。
 
 ### 控制面认证与 TLS/mTLS
 
@@ -91,7 +87,7 @@ txgame 当前使用项目维护的类型化配置最小契约；txgameslg 的 Lo
 
 ### 异常接管与 fencing
 
-逻辑槽位支持受控排水后的 generation CAS 交接；`slgworld` 示例也已用 Mongo generation fence 阻止旧 checkpoint 覆盖新
+逻辑槽位支持受控排水后的 generation CAS 交接；`slgworld` 示例也已用 Mongo generation fence 阻止旧写入 覆盖新
 owner。尚未完成的是异常宕机、网络分区和自动接管的通用 Lease/placement 策略，以及由业务枚举恢复 stream 的组织方式。
 不能假定 `WaitGroupContext`、etcd 成员过期或单次 Mongo CAS 已经独立保证单 owner。
 
@@ -108,7 +104,7 @@ RedisJSON/ReJSON、SQL 和其他存储后端不进入当前主线。评审时必
 - 不在 tx 内实现分布式事务、跨实例锁或 Redis/Mongo 原子双写。
 - 不为 Fusion 热写与延迟任务发布增加同槽持久交接索引、启动全槽扫描或容量闸门；进程存活期由本地去重重试和结构化错误日志保障任务发布。
 - 不允许 Fusion 根记录物理删除；业务使用状态字段逻辑删除。
-- 不把 Store、StoreView、变更文档或 WAL 记录声明为业务协议字段。
+- 不把 Store、StoreView、变更文档声明为业务协议字段。
 - 不把 Actor 与 GD、Store、Procedure 或持久化 Runtime 强绑定。
 - 不在普通持久化链路重新引入字符串路径变更批次或操作重放日志。
 - 不为尚未确定的 backend、协议或运维能力保留无效配置。

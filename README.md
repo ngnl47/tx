@@ -41,7 +41,7 @@ README 回答“怎么使用”，不记录施工步骤、逐轮进度或本机�
 - 追踪字段级变更。
 - 将生成 Store 的同步变更遍历结果落地到 Redis、Mongo 或 Fusion 策略。
 - 提供 Redis 延迟任务 backend 和 Fusion 后台回写所需组件。
-- 通过 Bee 或 Ant 统一装配 Storage、共享 gRPC Host、Discovery、Actor、健康探针、后台 worker 与服务生命周期；Ant 额外提供 CModProcedure、缓存运行时、可选 WAL 和逻辑槽位。
+- 通过 Bee 或 Ant 统一装配 Storage、共享 gRPC Host、Discovery、Actor、健康探针、后台 worker 与服务生命周期；Ant 额外提供 CModProcedure、缓存运行时 和逻辑槽位。
 
 生成代码依赖 `tx`，`tx` 不依赖生成器工程。
 
@@ -194,7 +194,7 @@ if err := storage.Save(ctx, fusionStore, role.Store()); err != nil {
 ## 能力模组与服务装配
 
 Bee 和 Ant 使用能力模组（Capability Module，简称 CMod）组合运行时。CMod 是带稳定身份、依赖关系和生命周期的装配单位，
-固定表示进程级 L3 能力门面。Transaction Runtime、WriteBack Runtime、WAL Store、checkpoint Scheduler 和 Delay Scheduler
+固定表示进程级 L3 能力门面。Transaction Runtime、WriteBack Runtime 和 Delay Scheduler
 都是门面内部的强类型组件，不拥有独立 `CModID`，也不单独参与全局生命周期。`agent/msgq/game` 等 L4 服务只选择所需
 CMod，框架递归展开 `Requires` 依赖；`After` 仅调整已经选中门面的启动顺序，不会暗中启用能力。
 
@@ -204,14 +204,13 @@ CMod，框架递归展开 `Requires` 依赖；`After` 仅调整已经选中门�
 | `msgq` | RPC、Redis、Discovery | 共享 RPC 上的 MailboxService、精确会话/角色归属索引与独立进程 endpoint 注册 |
 | `txgame` 无状态 `game` | RPC、Fusion | 请求结束显式保存；Fusion 内部组合 Redis、Mongo 和 Delay Scheduler |
 | `txgameslg` 有状态 `slggame` | RPC、Fusion、CModProcedure | Procedure 提交后由 CModProcedure 的 WriteBack 组件分帧写 Fusion |
-| `txgameslg` 有状态 `slgworld` | RPC、Mongo、CModProcedure | CModProcedure 组合 Transaction、WriteBack 和按 `slgworld` 启用的 Mongo WAL |
+| `txgameslg` 有状态 `slgworld` | RPC、Mongo、CModProcedure | CModProcedure 组合 Transaction 与直接 Mongo WriteBack |
 
 有状态组合由 Builder 显式表达，项目可以为不同服务选择不同 Writer，并替换 `CModProcedureWriteBack` SPI：
 
 ```go
 procedure, err := ant.NewCModProcedureBuilder().
 	WriteBack(writeBackComponent).
-	WAL(ant.NewCModProcedureMongoWAL("slgworld")).
 	Build()
 if err != nil {
 	return err
@@ -223,11 +222,8 @@ app, err := ant.New(config).
 	Build()
 ```
 
-Mongo WAL 只会在本轮选择 `slgworld` 时启用，并要求该服务同时选择 Mongo CMod；`slggame` 使用相同 CModProcedure 时不会创建
-WAL backend。高级项目可以实现 `CModProcedureWAL`，把 RocketMQ 等后端作为同一 Builder 插槽的替代组件，而不修改 CModProcedure。
-启动日志除稳定 `cmods` 顺序外，还输出实际生效的 `components`，例如
-`procedure(transaction=default,writeback=txgameslg[checkpoint=mongo,wal=mongo])`。项目写回组件声明的 checkpoint worker 与 Builder
-选择的 WAL 都会进入同一拓扑，日志不会隐藏实际运行的后台组件。
+项目 Factory 按服务选择 Fusion 或 Mongo Writer，不改变事务与写回 SPI。
+启动日志输出实际生效的组件，例如 `procedure(transaction=default,writeback=txgameslg)`。
 
 例如只启动一个 RPC-only 自定义服务时，`Context.Storage()` 保持 `nil`，框架不会校验 Redis/Mongo 配置，也不会连接
 对应外部服务。项目需要从 yml 字符串惰性转换强类型配置时，在组合根注册配置提供者：
@@ -4318,216 +4314,21 @@ doc, exists, err := fusionStore.LoadDocumentWithOptions(
 
 这个路径只从 Mongo 读取请求字段，不写 Redis。
 
-## WAL
+## 有状态 Mongo 直接写回
 
-### WAL 解决什么问题
+WriteBackManager 合并内存变更，定时调用 Mongo Writer；成功后清除脏状态，失败保留并在后续 Flush 重试。
+业务响应表示内存事务执行成功，不表示已持久化。异常退出可能丢失最后一次成功写回之后的内存变化；优雅关闭必须等待最终写回。
 
-WAL 是 Write-Ahead Log（预写日志）的缩写。它用于保护有状态服务中“内存已经接受变更，但较重的持久化快照尚未写完”这一段故障窗口。
+需要所有权保护的根对象使用 `storage/mongo.OwnedWriter`。项目先确认逻辑槽位归属，再调用 `Claim` 并重新加载数据。
+一个 Writer 绑定一个固定正整数代次；同一代次只能由控制面指定的实例持有。GD 不需要增加基础设施字段或逐类型 Binding。
+Mongo 文档的保留字段 `_tx.owner` 与 `_tx.sequence` 分别记录所有者代次和已接受的写入序号，不属于业务 GD。
 
-例如，一个 SLG 大世界服务可能把每个逻辑世界长期保存在内存中，并持续修改建筑、资源点、怪物和行军单位。如果每次修改都同步重写整个世界快照，Mongo I/O 会进入业务热路径；如果只在后台定时保存，进程又可能在下一次保存前退出，导致已经确认的内存变更丢失。WAL 在两者之间增加一层较小、严格有序的可靠记录：
+写回将业务增量、所有者条件及递增序号合并在一次原子 UpdateOne 中，固定使用 `majority + j:true`。
+只有所有者匹配且数据库序号小于本次序号才接受更新。失败后的下一次保存携带全部未确认变更，使用更大序号。
+例如序号 8 超时，序号 9 已写入最新坐标，则迟到的 8 被拒绝；代次 2 接管后，代次 1 的写入也被拒绝。
+热路径不增加写前读取；所有权声明及重新加载只发生在对象加载阶段。
 
-1. 状态 owner 在自己的串行边界内完成本轮计算，并把合并后的变化编码为只读字节。
-2. 业务同步追加 WAL。对于声明“先写 WAL 才确认”的流程，追加成功是本轮变化具备崩溃恢复依据的时刻。
-3. 后台按业务策略异步保存 checkpoint；checkpoint 成功后，才清理已经被它覆盖的旧 WAL。
-4. 进程异常退出后，先加载最近一次 checkpoint，再按序重放其后的 WAL，恢复到退出前已经可靠记录的状态。
-
-这里的几个术语分别表示：
-
-| 术语 | 含义 |
-| --- | --- |
-| 状态 owner | 串行修改某份内存权威状态的业务执行边界，可以是 Actor、场景循环或其他单 owner 调度器，由项目决定 |
-| WAL record | 一批已经合并、已经编码且追加期间不可修改的状态变化 |
-| stream | 一条可独立恢复的有序日志流，由 `Namespace + StreamKey + Generation` 标识 |
-| `Seq` | 当前 generation 内严格递增的日志位置 |
-| checkpoint | 业务定期保存的持久化状态快照，同时记录已经覆盖到的 `Generation + Seq` |
-
-WAL 的正常写入与 checkpoint 流程如下：
-
-```mermaid
-flowchart TD
-    A[业务请求或定时 Tick] --> B[状态 owner 串行修改内存状态]
-    B --> C[合并本轮变化并生成只读编码载荷]
-    C --> D[同步 Append WAL]
-    D -->|失败| E[本轮不能确认可靠提交<br/>业务返回错误、回滚或停止推进]
-    D -->|成功| F[本轮变化具备崩溃恢复依据]
-    F --> G[后台按策略保存 checkpoint]
-    G -->|失败| H[保留 WAL 并稍后重试 checkpoint]
-    G -->|成功| I[记录已覆盖的 Generation 和 Seq]
-    I --> J[清理不大于该 Seq 的旧 WAL]
-```
-
-崩溃恢复流程如下：
-
-```mermaid
-flowchart TD
-    A[服务启动或状态 owner 重建] --> B[加载最近一次 checkpoint]
-    B --> C[取得 checkpoint 已覆盖的 Generation 和 Seq]
-    C --> D[从 Seq + 1 开始分批读取 WAL]
-    D --> E{记录是否连续且编码载荷有效}
-    E -->|否| F[停止恢复并返回明确错误]
-    E -->|是| G[按 Seq 顺序重放到内存状态]
-    G --> H{是否还有后续记录}
-    H -->|是| D
-    H -->|否| I[恢复完成后开放业务入口]
-```
-
-例如，checkpoint 已覆盖 `Seq=100`，随后 WAL 成功追加了 `101`、`102`、`103`，但进程在保存下一份 checkpoint 前退出。重启时加载 checkpoint 100，再顺序重放 101 到 103；新的 checkpoint 成功覆盖 103 后，才可以清理不大于 103 的日志。这样无需为每次变化同步重写大型快照，也不会把 checkpoint 之间已经可靠确认的变化只留在内存中。
-
-WAL 不持有 GD、Store 或 StoreView，也不替业务划分 world、bucket、Actor、stream 或 checkpoint。以上大世界服务只是典型使用示例，不是启用 WAL 的前置结构。
-
-WAL 不是可靠业务消息队列。付费发奖和跨服务必达命令需要发布、消费确认、重试与死信语义，应由后续独立的可靠消息模块承担；`modules/msgq` 仍只是允许实例崩溃后丢失未确认下行的会话邮箱。
-
-### 项目配置
-
-tx 只接收强类型配置，不读取 yml。项目可在自己的严格 yml 模型中配置：
-
-```yaml
-storage:
-  mongodb:
-    main: mongodb://127.0.0.1:27017/txgame
-    wal: mongodb://127.0.0.1:27017/txgame
-  wal:
-    backend: mongo
-    mongo:
-      routeType: wal
-      collection: tx_wal
-```
-
-然后转换为框架配置：
-
-```go
-config.Storage.WAL = ant.WALConfig{
-	Backend: ant.WALBackendMongo,
-	Mongo: ant.WALMongoConfig{
-		RouteType:  "wal",
-		Collection: "tx_wal",
-	},
-}
-```
-
-当前只支持 `mongo`。配置其他 backend 会在启动期返回错误，不会静默回退。未来实现 RocketMQ backend 前，需要先提供可真实测试的 RocketMQ 5.x 服务；当前配置结构不保留无效的 RocketMQ 占位字段。
-
-### 服务接入
-
-WAL 是 CModProcedure 中 WriteBack 组件的可选子组件，不是独立 CMod。需要第一版 Mongo WAL 的 L4 服务声明
-`CModMongoStorage` 与 `CModProcedure`；项目组合根再明确 WAL 对哪些服务启用：
-
-```go
-func NewServer(
-	config ant.Config,
-	writeBackComponent ant.CModProcedureWriteBack,
-	services ...ant.ServiceRegistration,
-) (*ant.Server, error) {
-	procedure, err := ant.NewCModProcedureBuilder().
-		WriteBack(writeBackComponent).
-		WAL(ant.NewCModProcedureMongoWAL("slgworld")).
-		Build()
-	if err != nil {
-		return nil, err
-	}
-
-	return ant.New(config).
-		CMods(procedure).
-		Services(services...).
-		Build()
-}
-```
-
-Builder 只声明组件拓扑，不创建连接。启动选择包含 `slgworld` 时，CModProcedure 才复用进程已经装配的 Mongo 连接和 route
-table 创建 WAL；其他有状态服务复用同一 CModProcedure 也不会得到 WAL。WAL 只通过
-`CModProcedureContext.WAL()` 注入 WriteBack 组件，不暴露给普通 Service 或 Handler；组件不能关闭连接、替换索引或接管健康探针。
-
-需要同步等待最终存储时使用 `wal/writer.Sync`；大世界等按帧提交的有状态服务使用 `wal/writer.Async` 与
-`wal/checkpoint.Scheduler`。异步调度器只合并同一 stream 的最大 `ThroughSeq`，不复制 WAL 正文；同流串行、跨流有界并行：
-
-```go
-checkpoints, err := checkpoint.New(handler, checkpoint.Config{
-	Workers:         4,
-	RetryInitial:    100 * time.Millisecond,
-	RetryMultiplier: 2,
-	RetryMax:        time.Minute,
-})
-if err != nil {
-	return err
-}
-if err := checkpoints.Start(waitGroupContext); err != nil {
-	return err
-}
-writer, err := walwriter.NewAsync(log, checkpoints)
-if err != nil {
-	return err
-}
-if err := writer.Write(ctx, record); err != nil {
-	return err // Append 或登记失败，本轮 Store 变更不能清理。
-}
-```
-
-checkpoint handler 分批读取并应用 WAL，目标存储成功记录 `Generation + Seq` 后调用 `wal.Store.Checkpoint` 清理已覆盖记录。
-进程排水时先停止外部输入，再把 WriteBackManager 中仍然变脏的根 Store 追加到 WAL，最后 `WaitIdle`；根 context 不能在这之前取消。
-
-Mongo 状态 owner 换代时，项目可以使用 `storage/mongo.FencedChangeApplier` 让记录 ID 与 generation 字段在同一次 update
-中过滤。旧 generation 不匹配时返回 `mongo.ErrFenceRejected`；该窄接口只属于 Mongo 条件写入，不会把 CAS 字段塞入
-通用 `storage.ApplyOptions`，也不会改变 Redis、Fusion、Transaction 或 WAL 的契约。
-
-### 追加与恢复 API
-
-一条恢复流由 `Namespace + StreamKey + Generation` 标识，`Seq` 在当前 generation 内从 1 开始严格递增。序号由该 stream 的单一 owner 串行分配，WAL 不自动抢号或填补缺口：
-
-```go
-stream := wal.Stream{
-	Namespace:  "slgworld",
-	StreamKey:  "world:47",
-	Generation: 3,
-}
-
-payload := encodeWorldFrame(frame)
-record, err := wal.NewRecord(stream, 101, 1, payload)
-if err != nil {
-	return err
-}
-if err := service.log.Append(ctx, record); err != nil {
-	return err
-}
-```
-
-`NewRecord` 会计算编码载荷哈希，但不会复制编码载荷。调用方必须保证从创建记录到 `Append` 返回期间不修改、append、复用或归还该字节缓冲；同步追加返回后，调用方可以自行复用原缓冲区。单条编码载荷上限是 `wal.MaxPayloadBytes`，当前为 4 MiB；更大的场景状态必须先按 bucket 或业务恢复单元拆分，不能用一条超大日志绕过边界。
-
-相同位置、相同版本和相同编码载荷的重复追加按幂等成功处理；相同位置出现不同内容时返回 `wal.ErrConflict`，旧记录不会被覆盖。
-
-普通业务通过 `Replay` 从 checkpoint 已覆盖的序号之后连续恢复。分页大小和空批次判断由 WAL 内部处理：
-
-```go
-lastSeq, err := service.log.Replay(ctx, stream, checkpointSeq, func(ctx context.Context, record wal.Record) error {
-	return applyWorldFrame(record.PayloadVersion, record.Payload)
-})
-if err != nil {
-	return err
-}
-```
-
-`Replay` 按 `Seq` 顺序调用回放函数，只在回调成功后推进 `lastSeq`。只有 `err == nil` 时，返回位置才表示整条可见 WAL 已经完整重放；发生缺号、context 取消或业务回放错误时，内存状态可能只应用了前缀，调用方必须丢弃本次未完成状态并从 checkpoint 重新构建，不能用部分 `lastSeq` 开放业务或推进 checkpoint。
-
-`Read` 继续作为高级分页入口。它会校验返回记录属于同一条 stream，并且从 `afterSeq+1` 开始连续；缺号返回 `wal.ErrSequenceGap`，不能跳过后继续恢复。单次读取数量必须在 `1..wal.MaxReadBatch` 范围内，当前上限是 `4096`；返回编码载荷总量最多 `wal.MaxReadBatchBytes`，当前为 64 MiB。字节预算可能让一批记录少于请求的 `limit`，因此自行分页时不能用 `len(records) < limit` 判断恢复结束，必须用最后一个 `Seq` 继续读取，直到返回空批次。
-
-多 Mongo 分片配置下，WAL 会根据 `Namespace + StreamKey` 生成稳定的 `int64` 路由键。同一状态流的所有 generation 必须落在同一个分片，业务不能传入另一个分片键改变其归属。该路由键只用于选择 Mongo endpoint，不写入 WAL 文档，也不改变恢复身份。
-
-WAL route table 是持久化布局的一部分。已有日志后不能直接增加、删除、重排分片或修改范围规则，否则同一稳定路由键可能解析到另一个 endpoint，表现为旧日志不可见。确需变更时必须先停止对应 stream 写入、迁移日志和 checkpoint、验证新布局，再切换配置；第一版不提供自动 placement 迁移。
-
-checkpoint 与清理通过一个安全入口完成：
-
-```go
-if err := service.log.Checkpoint(ctx, stream, lastSeq, func(ctx context.Context) error {
-	return checkpoint.Save(ctx, world, stream.Generation, lastSeq)
-}); err != nil {
-	return err
-}
-```
-
-`Checkpoint` 只有在回调成功后才会让 backend 清理不大于 `lastSeq` 的日志。checkpoint 成功而清理失败只会留下可重复读取的旧日志；回调失败时不会执行清理，因此不会制造不可恢复缺口。普通服务取得的 `wal.Store` 不暴露原始 `Trim`；只有实现自定义 backend 的高级用户才会接触 `wal.Backend.Trim`。第一版不自动设置 WAL TTL。
-
-同一进程内重叠执行的同一 stream checkpoint 会被串行化；较大位置成功后，仍在排队的较小位置返回 `wal.ErrCheckpointRegression`，等待期间会响应 context 取消。调用全部结束后顺序状态立即释放，不随历史 stream 或 generation 累积。非重叠调用和跨进程仍遵循单一 stream owner 规则；checkpoint 回调必须以 `Generation + Seq` 做单调更新或 CAS，不能让旧 owner 或迟到任务覆盖新位置。
-
-Mongo 追加固定使用 `majority + j:true` 写关注，不能被项目 URI 中更弱的默认写关注降级。Mongo 服务波动时，`Append`、`Read` 和 `Checkpoint` 返回错误而不 panic。WAL 与普通 Mongo 操作共用后台健康状态：已知 Mongo 不可用时会在 I/O 前拒绝新操作，探针确认恢复后重新开放。
+该机制不提供跨文档事务或跨服务消息必达。可靠业务消息的消费确认与持久化衔接由后续独立设计负责。
 
 ## TTL 与删除
 

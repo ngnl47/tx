@@ -14,7 +14,6 @@ import (
 	txstorage "github.com/ngnl47/tx/storage"
 	txmongo "github.com/ngnl47/tx/storage/mongo"
 	txredis "github.com/ngnl47/tx/storage/redis"
-	"github.com/ngnl47/tx/wal"
 )
 
 // StorageReaders 是生成 data 包使用的读取契约。
@@ -76,8 +75,6 @@ type Context interface {
 	Storage() Storage
 	// StorageFor 返回绑定到单一持久化模式的窄存储能力；未装配时返回 nil。
 	StorageFor(meta.StorageMode) ModeStorage
-	// WAL 返回当前 L4 服务选中的预写日志；未启用时返回 nil。
-	WAL() wal.Store
 	// RPC 返回共享 gRPC Host 的注册入口；未启用时返回 nil。
 	RPC() txrpc.Registrar
 	// Directory 返回服务发现维护的只读实例目录；未启用时返回 nil。
@@ -192,13 +189,6 @@ func (service *serviceContext) StorageFor(mode meta.StorageMode) ModeStorage {
 		return nil
 	}
 	return modeStorageAccess{storage: service.runtime.storage, mode: mode}
-}
-
-func (service *serviceContext) WAL() wal.Store {
-	if service == nil || service.runtime == nil {
-		return nil
-	}
-	return service.runtime.wal
 }
 
 func (service *serviceContext) RPC() txrpc.Registrar {

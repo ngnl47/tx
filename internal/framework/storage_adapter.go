@@ -15,13 +15,3 @@ type storageOptions = storageruntime.Config
 func newStorageRuntime(ctx context.Context) *storageRuntime {
 	return storageruntime.New(ctx)
 }
-
-func storageWALConfig(config WALConfig) storageruntime.WALConfig {
-	return storageruntime.WALConfig{
-		Backend: storageruntime.WALBackend(config.Backend),
-		Mongo: storageruntime.WALMongoConfig{
-			RouteType:  config.Mongo.RouteType,
-			Collection: config.Mongo.Collection,
-		},
-	}
-}

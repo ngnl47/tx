@@ -13,7 +13,6 @@ import (
 	txrpc "github.com/ngnl47/tx/modules/rpc"
 	"github.com/ngnl47/tx/modules/txn"
 	"github.com/ngnl47/tx/sessionid"
-	"github.com/ngnl47/tx/wal"
 )
 
 // CModID 是能力模组的稳定身份，用于依赖解析和启动日志。
@@ -201,7 +200,6 @@ type CModContext interface {
 	Tasks() lifecycle.Tasks
 	Storage() Storage
 	StorageFor(meta.StorageMode) ModeStorage
-	WAL() wal.Store
 	RPC() txrpc.Registrar
 	Directory() discovery.Directory
 	Actor() txactor.Messenger

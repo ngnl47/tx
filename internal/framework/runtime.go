@@ -10,7 +10,6 @@ import (
 	txrpc "github.com/ngnl47/tx/modules/rpc"
 	"github.com/ngnl47/tx/modules/txn"
 	"github.com/ngnl47/tx/sessionid"
-	"github.com/ngnl47/tx/wal"
 )
 
 type runtime struct {
@@ -21,7 +20,6 @@ type runtime struct {
 	actor         *txactor.Runtime
 	actorKinds    []txactor.Kind
 	transaction   *txn.Runtime
-	wal           wal.Store
 	directory     *discovery.ServiceDirectory
 	slots         discovery.SlotStore
 	sessionIDMu   sync.RWMutex
