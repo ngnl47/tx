@@ -61,12 +61,39 @@ TX_ETCD_ENDPOINT=127.0.0.1:2379 go test ./modules/actor -run '^TestActorDrainAcr
 - 此时跨进程发起的迟到 Call 和 TellAccepted 均返回 `CallErrorCodeRejected`，不进入业务处理。
 - 释放屏障后，目标核对请求 1、2 顺序完成，Drain 成功；调用方收到两条成功响应后才允许目标关闭，子进程退出码为 0。
 
+## Agent 实例拒绝缓存补充验收
+
+在 tx 工程执行：
+
+```sh
+TX_ETCD_ENDPOINT=127.0.0.1:2379 go test ./modules/agent -run '^TestActorDispatcherDrainCacheAcrossProcesses$' -count=3 -v -timeout=90s
+```
+
+三次均通过，本地日志：`/private/tmp/tx-agent-drain-cache-acceptance.log`。
+调用方使用真实 ActorDispatcher 与 Runtime，目标为独立进程中两个不同 PID 的固定 Kind 宿主，依赖真实 etcd 与 Actor Remote。
+测试包装器仅在调用真实 Runtime.Call 前计数，不制造成功或拒绝响应，不添加生产监控接口。
+
+| 阶段 | 累计 Runtime.Call 次数 | 结果 |
+| --- | ---: | --- |
+| 分别预热两个 Actor | 2 | 均收到正确的处理完成确认 |
+| 目标关闸后首次请求 | 3 | 远端明确拒绝 |
+| 请求同实例另一个 Actor | 3 | 本地缓存拒绝，没有再次调用远端 |
+| 真实等待缓存到期后请求 | 4 | 重新调用远端，仍收到排水拒绝 |
+| 同地址发现快照改为新实例身份 | 5 | 不沿用旧身份缓存，重新调用远端 |
+| 快照切回旧身份 | 5 | 旧身份刚刷新的缓存仍生效 |
+
+反向验证曾仅在测试装配中移除 Directory，跨 Actor 步骤以 `Runtime.Call count = 4, want 3` 失败；
+恢复后通过。反向验证日志：`/private/tmp/tx-agent-drain-cache-negative.log`，测试源码不保留该临时改动。
+原单元测试移除上述重复场景及等待，保留未知身份、普通超时和迟到响应身份变化的独立边界。
+
 ## 证据边界
 
 - 本轮使用正常构建，不是 `-race` 验收；已知第三方 Provider 关闭竞态仍保留为依赖风险。
 - 示例套件在 Game 排水关闭后继续客户端场景；上面的窗口补充验收直接验证 tx Actor Runtime，
   不经过客户端、Agent 或框架持久化收尾，不能据此声称已验证“同一排水窗口内的最终刷盘与进程退出顺序”。
 - 窗口用例使用 Runtime 配置后的固定实体邮箱与直连 PID，刻意排除虚拟 Actor 放置变化；不证明网络分区下的唯一所有权。
-- 新增的 1 秒拒绝缓存随真实 Agent 装配运行，但套件没有断言缓存命中次数或远端调用减少量；缓存行为的直接证据仍是上一轮核心测试。
+- 缓存补充验收的计数位于 Runtime.Call 边界，不是网络包数；调用方直接进入 ActorDispatcher，不经过客户端登录、Agent 网络入口或 MsgQ。
+- 实例身份变化由本地 ServiceDirectory 快照注入，不是实际 Watch 更新或在 1 秒内重启目标进程；不能将它描述为完整滚动重启验收。
+- 到期后目标仍处于排水状态，因此这里只证明重新尝试远端调用，不声称目标恢复业务成功。完整关闭后的路由恢复由两套示例验收另行覆盖。
 
 未覆盖项的优先级、实施范围和后续安排由 [实施计划](../IMPLEMENTATION_PLAN.md) 统一维护，本报告只保留本次证据及其边界。

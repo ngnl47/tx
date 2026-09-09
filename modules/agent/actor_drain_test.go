@@ -5,14 +5,13 @@ import (
 	"errors"
 	"strconv"
 	"testing"
-	"time"
 
 	protoactor "github.com/asynkron/protoactor-go/actor"
 	txactor "github.com/ngnl47/tx/modules/actor"
 	"github.com/ngnl47/tx/modules/discovery"
 )
 
-func TestActorDispatcherCachesRejectionByInstance(t *testing.T) {
+func TestActorDispatcherDoesNotCacheUncertainInstanceFailures(t *testing.T) {
 	directory := discovery.NewServiceDirectory()
 	instance := discovery.Instance{ID: "a", Services: []string{"game"}, Endpoint: "host:1", ActorEndpoint: "host:2", Status: discovery.StatusRunning}
 	setInstance := func(id string) {
@@ -46,31 +45,21 @@ func TestActorDispatcherCachesRejectionByInstance(t *testing.T) {
 			t.Fatalf("remote calls = %d, want %d", messenger.callCalls, wantCalls)
 		}
 	}
-	call(1)
-	call(1)
-	setInstance("b")
-	call(2)
-	setInstance("a")
-	call(2)
-	time.Sleep(600 * time.Millisecond)
-	call(2)
-	time.Sleep(500 * time.Millisecond)
-	call(3)
 	directory.Invalidate()
-	call(4)
-	call(5)
+	call(1)
+	call(2)
 	setInstance("c")
 	messenger.err = context.DeadlineExceeded
 	for range 2 {
 		_, _ = dispatcher.Dispatch(context.Background(), DispatchRequest{Seq: 1})
 	}
-	if messenger.callCalls != 7 {
+	if messenger.callCalls != 4 {
 		t.Fatal("timeout incorrectly cached as draining")
 	}
 	setInstance("d")
 	messenger.err = &txactor.CallError{Code: txactor.CallErrorCodeRejected}
 	messenger.onCall = func() { setInstance("e") }
-	call(8)
+	call(5)
 	messenger.onCall = nil
-	call(9)
+	call(6)
 }
