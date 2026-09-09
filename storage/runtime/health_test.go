@@ -24,6 +24,44 @@ func (loader *recordingLoader) LoadDocument(context.Context, meta.TypeSpec, txst
 
 type recordingApplier struct{ calls int }
 
+// Mongo 更新必须走版本条件入口，不能退回无条件写入；创建仍走独立路径。
+func TestMongoWriterUsesVersionedUpdatesAndKeepsCreationSeparate(t *testing.T) {
+	backend := &versionedRecordingApplier{}
+	runtime := &Runtime{mongo: &txmongo.Cluster{}}
+	writer := storageChangeWriter{storage: runtime, mongo: backend}
+	spec := meta.TypeSpec{Storage: meta.StorageSpec{Mode: meta.StorageModeMongo}}
+	ctx := context.Background()
+	if err := writer.ApplyChangesWithOptions(ctx, spec, txstorage.RecordKey{ID: int64(1)}, staticSource{}, nil, nil, txstorage.ApplyOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if backend.versioned != 1 || backend.calls != 0 {
+		t.Fatalf("update: versioned=%d plain=%d", backend.versioned, backend.calls)
+	}
+	if err := writer.ApplyChangesWithOptions(ctx, spec, txstorage.RecordKey{ID: int64(1)}, staticSource{}, nil, nil, txstorage.ApplyOptions{Upsert: true}); err != nil {
+		t.Fatal(err)
+	}
+	if backend.versioned != 1 || backend.calls != 1 {
+		t.Fatalf("create: versioned=%d plain=%d", backend.versioned, backend.calls)
+	}
+	runtime.markBackendUnavailable(txstorage.BackendMongo, errors.New("offline"))
+	if err := writer.ApplyChangesWithOptions(ctx, spec, txstorage.RecordKey{ID: int64(1)}, staticSource{}, nil, nil, txstorage.ApplyOptions{}); !errors.Is(err, ErrStorageUnavailable) {
+		t.Fatalf("gate = %v", err)
+	}
+	if backend.versioned != 1 {
+		t.Fatal("closed gate reached Mongo")
+	}
+}
+
+type versionedRecordingApplier struct {
+	recordingApplier
+	versioned int
+}
+
+func (applier *versionedRecordingApplier) ApplyVersionedChanges(context.Context, meta.TypeSpec, txstorage.RecordKey, change.Source, change.FieldNameResolver, change.ValueResolver) error {
+	applier.versioned++
+	return nil
+}
+
 func (applier *recordingApplier) ApplyChangesWithOptions(context.Context, meta.TypeSpec, txstorage.RecordKey, change.Source, change.FieldNameResolver, change.ValueResolver, txstorage.ApplyOptions) error {
 	applier.calls++
 	return nil

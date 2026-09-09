@@ -382,7 +382,17 @@ func (writer storageChangeWriter) ApplyChangesWithOptions(ctx context.Context, s
 	if applier == nil {
 		return fmt.Errorf("storage runtime: %s writer is not configured", mode)
 	}
-	if err := applier.ApplyChangesWithOptions(ctx, spec, key, source, resolver, values, options); err != nil {
+	var err error
+	if mode == meta.StorageModeMongo && !options.Upsert {
+		versioned, ok := applier.(txmongo.VersionedChangeApplier)
+		if !ok {
+			return fmt.Errorf("storage runtime: mongo versioned updates are not configured")
+		}
+		err = versioned.ApplyVersionedChanges(ctx, spec, key, source, resolver, values)
+	} else {
+		err = applier.ApplyChangesWithOptions(ctx, spec, key, source, resolver, values, options)
+	}
+	if err != nil {
 		writer.storage.observeStorageError(err)
 		return err
 	}

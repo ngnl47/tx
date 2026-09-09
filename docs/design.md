@@ -1334,6 +1334,8 @@ Mongo 批量读取用 BSON 类型与编码值构造内部回序身份，不直�
 
 ## Fusion 后端
 
+普通 Mongo 更新与 Fusion 延迟落地共用文档级乐观锁原则，但不共用业务数据源：前者在根对象锁内读取 Mongo 版本后生成内存 GD 增量，后者读取 Mongo 版本后加载 Redis 最新完整文档。通用 storage runtime 的 Mongo 非 Upsert 更新要求 `VersionedChangeApplier`；显式 Upsert 走独立原路径。条件失败返回调用方，不自动给旧变更换版本重发。Redis 与 Fusion 热写不经过 Mongo 增量入口。
+
 ### 职责
 
 Fusion 是 Redis 热数据与 Mongo 冷数据的组合策略：

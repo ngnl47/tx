@@ -11,6 +11,12 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 )
 
+// VersionedChangeApplier 为已有文档提供版本预读与原子条件增量更新。
+// 与创建分离，调用方负责根对象互斥及失败后保留变更。
+type VersionedChangeApplier interface {
+	ApplyVersionedChanges(context.Context, meta.TypeSpec, storage.RecordKey, change.Source, change.FieldNameResolver, change.ValueResolver) error
+}
+
 // ApplyVersionedChanges 对已有文档执行乐观锁增量更新；调用方须在根对象锁内调用。
 // 失败不清理变更，下次由调用方携带最新未确认变更重新执行，不在内部重投旧快照。
 func (a *Adapter) ApplyVersionedChanges(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver) error {
