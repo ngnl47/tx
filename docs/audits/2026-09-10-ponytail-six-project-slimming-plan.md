@@ -206,3 +206,57 @@ net: -103～108 lines, -0 deps possible.（静态候选估算，未实施、非�
 - 改动前 `TestWorldPerf*` 通过；改动后 `go test ./internal/clustere2e -count=1` 全包通过，使用 `GOCACHE=/private/tmp/tx-go-build`。首次全包运行被沙箱的本地端口监听限制中断，获准在沙箱外重跑后通过。
 - 代码两行替换、净行数变化为 0；未做 benchmark，不宣称分配次数或吞吐改善。未运行 server 全量或真实集群，未新增测试及采集代码。
 - diff 检查通过，后置 ponytail-review 无新增收敛项。本批未提交，提交建议仅包含本批新变更；下一项仍需评估，不自动重开暂缓项。
+
+## S06：压测参数测试使用标准库（2026-09-10）
+
+- 上批已提交，六工程起始工作区均干净。本轮定向检查测试 helper，确认 `containsArgument` 只有角色与世界压测客户端测试的两处调用，主体仅逐项字符串相等判断。
+- 两处改用 `slices.Contains` 并删除 helper，与本机标准库源码核对语义一致；保留参数断言、测试桩、相邻参数判断和事件顺序判断，不合并各自职责。
+- 改动前两类客户端定向测试通过；改动后使用 `GOCACHE=/private/tmp/tx-go-build go test ./internal/clustere2e -count=1`，获准在沙箱外运行的全包测试通过。未运行 server 全量或真实集群。
+- 仅测试代码净减 7 行，没有新增测试或生产采集逻辑；未做 benchmark，不宣称性能改善。diff 检查与后置 ponytail-review 通过，本批未提交。
+- 下一项候选为 `txgen/gen/templates/type_registry.go.tmpl` 中的 `containsStoreField`；需要继续核对全部模板、手写调用及生成产物，尚未确认可删除，不把生成文件中的声明数量当作调用依据。
+
+## containsStoreField 评估结论（2026-09-10）
+
+- 不作为死代码删除：`store.go.tmpl` 有 ID 与分片字段两处调用，用于部分加载时补齐 RecordKey 投影。当前 txgen 测试产物、txgame、txgameslg 分别有 3/33/4 个调用文件和 4/34/5 处调用，共 40 个文件、43 处调用。
+- 例：角色只请求 `Name` 时仍补齐 `RoleId`；竞技记录只请求 `IsWin` 时仍补齐 `Id` 与 `RoleId`，已有字段不重复追加。该 helper 位于各独立生成包的私有基础层，不是无调用残留。
+- 直接使用 `slices.Contains` 可保持成员判断语义，但目前 40 个调用文件均未导入 `slices`，需要扩散导入和调用修改；现有短 helper 已集中复用，本轮没有足够维护收益支持迁移。保留结论不表示标准库存在功能缺陷，也不构成性能优劣结论。
+- 本轮执行 `GOCACHE=/private/tmp/tx-go-build go test ./tests -run '^TestGeneratedPackage(Batch)?LoadFields' -count=1` 通过，覆盖投影、RecordKey 补齐和不匹配拒绝等现有契约。未修改模板或产物，因此未重生成、未跑六工程全量及真实存储集成测试。
+- 仅更新评估文档；diff 检查与后置 ponytail-review 通过。本批代码净变化 0，连同未提交 S06 仍净减 7 行；无 benchmark。下一项尚需新证据评估，不为继续实施制造删除项。
+
+## S07：Store 导入组装分支收敛（2026-09-10）
+
+- 定向核对 `importsForStoreFile`：原 time 分支重建基础导入列表，并重复处理 RecordKey、reflect、txn 和最终合并；现改为基础列表按条件补充，保留原有导入顺序、空行分组及 ExtraImports 去重入口。不新增公共导入构建器。
+- 例如同时具有 time 字段与 RecordKey 的 Store，仍获得时间、存储及元数据依赖；不改变模板、类型判定、加载和写回契约。
+- 改动前后分别运行 `GOCACHE=/private/tmp/tx-go-build go run .` 与 `go test ./... -count=1`（测试使用相同 GOCACHE），txgen 全量生成和测试通过；测试产物无 Git 差异。改动后另运行 txgame、txgameslg 的 `gen/run.sh`，两套 Go 及 TypeScript 产物均无差异。
+- 本批只改 `txgen/gen/model.go`，净减 25 行；连同未提交 S06，代码累计净减 32 行。未新增测试或生产采集；未做 benchmark，不承诺生成耗时或分配次数改善，未重跑两套 server 和客户端全量测试。
+- diff 检查通过，后置 ponytail-review 无新增收敛项。全部变更保持未提交，提交建议按工程累积 S06、保留结论及 S07。
+- 下一项候选为相邻 `importsForDataFile` 的重复分支，需要核对标准库与外部导入的空行分组契约后再决定实施；不顺带改动 `mergeFileImports`。
+
+## S08：Data 导入组装分支收敛（2026-09-10）
+
+- `importsForDataFile` 使用一次 `hasTime` 判定，按条件前置 time 导入，RecordKey 导入和最终合并只保留一处；不重建外部依赖列表，不增加公共抽象。
+- 保留原有分组：需要 time 时在 change 导入前插入空行；只有 RecordKey 而没有 time 时不新增空行。context、time、外部依赖的顺序和 ExtraImports 去重语义保持不变。
+- 改动前后分别运行 `GOCACHE=/private/tmp/tx-go-build go run .` 与 `go test ./... -count=1`（测试使用相同 GOCACHE），全部通过；测试产物无差异。改动后运行两套示例 `gen/run.sh` 成功，Go/TypeScript 产物均无差异。
+- 本批代码净减 8 行；当前 txgen 未提交代码净减 33 行，连同 txgameslg 的 S06 合计净减 40 行，不含文档。未新增测试、依赖或生产采集，未做 benchmark，不宣称生成速度或分配改善；未重跑两套 server 和客户端全量测试。
+- diff 检查与后置 ponytail-review 通过。全部未提交变更保留，累计提交建议包含 S06–S08 及 helper 保留结论；下一项尚需评估具体候选。
+
+## S09：导入拼接使用标准库（2026-09-10）
+
+- `mergeFileImports` 的双层 append 复制拼接替换为 `slices.Concat(base, extra)`。保留输入切片不被修改、base 优先、同 Path 首次出现生效以及首项分组标记；去重循环未改，不新增依赖或公共抽象。
+- 改动前后 txgen 全量测试通过；改动后 `go run .` 和两套示例 `gen/run.sh` 均成功，测试及示例 Go/TypeScript 产物无差异。txgen 命令使用 `GOCACHE=/private/tmp/tx-go-build`，测试使用 `-count=1`。
+- 本批因标准库 import 净增 1 行，是表达简化，不计删行收益；当前 txgen 未提交代码净减 32 行，连同 S06 累计净减 39 行。未做 benchmark，不承诺分配或速度改善，未重跑两套 server 和客户端全量测试。
+- diff 检查与后置 ponytail-review 通过，全部变更未提交；下一项仍需具体候选评估，不扩展为通用导入框架。
+
+## 累计性能验证与 S07 调整（2026-09-10）
+
+- 已按 HEAD、原未提交版本、单独 S07 和修正版本完成隔离对照，详见 [基准报告](2026-09-10-import-benchmark.md)。基准源码、overlay、输入副本、二进制和原始日志均在临时目录，不进入生产路径。
+- 确认 S07 在无 time、带 RecordKey 的普通 Store 上令分配字节从 1288 增至 1784 B/op；分配次数虽从 20 降为 19，仍有明确的内存成本退化。已恢复一次性列表构造，只合并重复尾部，S08/S09 保留。
+- 修正后 40 个组合的分配字节和次数中位数均不高于 HEAD；敏感场景加长复测耗时中位数 +0.4%，分布重叠。两轮三套完整生成产物哈希始终一致，未确认整体耗时退化，不承诺所有输入零退化。
+- 当前 txgen 全量测试及后置 ponytail-review、diff 检查通过。S07 原净减 25 行的方案已被本次实测调整取代；当前 txgen 净减 13 行，连同未提交 S06 累计代码净减 20 行，不含文档。全部变更未提交。
+
+## S10：取消导入合并的临时拼接（2026-09-10）
+
+- 在临时 overlay 中先验证候选，再应用：`mergeFileImports` 直接依次遍历 base、extra，删除 `slices.Concat` 及 import；保留去重、首项分组标记、输入隔离和空结果契约，不新增公共抽象。
+- 40 组微基准交错 6 轮，每组均少一次分配。普通 RecordKey Store 从 1288 B/op、20 次降至 1064 B/op、19 次。一个初测耗时 +6.4% 的组合经 10 轮 300ms 加长复测未重现退化，详情及原始波动见 [基准报告 S10](2026-09-10-import-benchmark.md#s10直接遍历导入列表的后续对照)。
+- 修改前后临时契约检查通过；应用后 txgen 全量测试通过。两版三套预编译生成入口各预热一次并交错 8 轮，产物哈希与 HEAD 一致；完整生成中位数变化为 -0.64%、+0.97%、+1.37%，不据此承诺整体生成提速。
+- 本批净增 1 行，当前未提交代码累计净减 19 行（txgen 12、txgameslg 测试 7），不含文档。后置 ponytail-review 与 diff 检查通过，全部变更未提交；下一项尚需具体候选评估。
