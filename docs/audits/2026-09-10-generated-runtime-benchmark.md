@@ -347,3 +347,112 @@ GDItem 两项约慢 25%/62%，不能用 GDRole 局部收益覆盖。原始基准
 恢复后重新生成 fixture，与本轮起始快照逐文件完全一致；txgen 全量测试重新通过。两个示例和客户端本轮未修改，未重跑 server、客户端或真实集群测试。后置 ponytail-review 检查取舍记录，无新增简化项，diff 检查通过。本轮保留代码净变化 0 行，累计未提交 S37–S42 生成物仍净减 1459 行，提交建议包含此前代码和本轮 S43 取舍记录。
 
 证据在 `/private/tmp/tx-has-changes-20260910`：before.tmpl 是起始版本，candidate-helper.tmpl / candidate-checks.tmpl 为被否决的两版模板；results.json 为第一版，final-results.json 为第二版候选（不是交付代码），bench-*.txt/final-*.txt 为原始输出，tests-restored.log 为恢复后验证。采集与试验不进入生产路径。下一项需评估其他生成物候选，不再重复这组 HasChanges 抽取。
+
+## S44：嵌套字段判断合并静态 case
+
+六工程起始均干净，S37–S43 已提交；本轮基线为 tx bbd3053、txgen dd6a695、txgame f3e6a93、txgameslg a7b3aa3。StoreView 的 hasNestedField 原先对每个嵌套字段重复生成 case 与 return true，本轮静态合并为一个多值 case，保留原字段集合与 default false；无新增运行时循环、公共接口或依赖。例如 GDRole 的 Items/DailyTask/Heroes/Tags/Dress 共用同一返回分支，普通标量和无效字段仍返回 false。
+
+实际生成 GDRole helper 的旧/新两版临时检查覆盖字段 0–11，结果一致；Go 1.27.0 darwin/amd64、GOMAXPROCS=1，预编译后二百毫秒六轮交错测量，全部样本两版均 0 B/op、0 allocs/op：
+
+| 字段编号 | 原实现 ns/op | 合并后 ns/op |
+|---|---:|---:|
+| 0（未命中） | 2.1735 | 1.319 |
+| 6（Items） | 1.3005 | 1.425 |
+| 8（Heroes） | 1.200 | 1.423 |
+| 10（Dress） | 1.684 | 1.4125 |
+| 11（未命中） | 2.3135 | 1.279 |
+
+Items/Heroes 命中增加约 0.12/0.22ns（约 10%/19%），两个默认分支样本更快；接受少量命中成本以减少生成分支重复，不宣称所有查询提速，不外推完整视图或业务吞吐。脚本、旧源码、overlay、bench-*.txt/results.json 和验证日志位于 `/private/tmp/tx-nested-cases-20260910`，不进入生产路径。
+
+重新生成后三个 Go 工程的本轮全量测试通过：txgen、txgame/server、txgameslg/server。逐文件比较确认变化只包含同值 case 合并，字段集合不变。fixture 2 个文件净减 10 行，txgame 41 个文件净减 248 行，共减 258 行；模板净行数不变，SLG 与两个客户端生成物无变化。后置 ponytail-review 无新增简化项，diff 检查通过；未另跑客户端或真实集群。全部本轮变更未提交，提交建议仅含 S44，不累计已提交的 S37–S43；下一项具体候选尚需评估。
+
+## S45：无嵌套追踪字段的视图裁剪 HasChanges 分支
+
+保留未提交 S44。复用既有 HasViewNestedFields 生成条件：无可追踪嵌套字段的 StoreView 将 HasChanges 生成成 nil 检查与操作码扫描的布尔表达式，含嵌套追踪字段的实现逐字保留。此处指视图追踪结构，不代表业务 GD 没有集合字段。没有新增运行时分类、参数、helper 或接口；例如空视图仍为 false，任意字段变脏为 true，清除后恢复 false。
+
+实际生成 viewStateGDItem 的旧/新两版临时检查覆盖 nil、干净、逐字段变脏与清除，行为一致；Go 1.27.0 darwin/amd64、GOMAXPROCS=1，预编译后 200ms 六轮交错测量，全部样本两版均 0 B/op、0 allocs/op：
+
+| 状态 | S44 ns/op | S45 ns/op |
+|---|---:|---:|
+| nil | 1.3095 | 1.318 |
+| 干净 | 3.7345 | 3.777 |
+| 首字段变脏 | 1.303 | 1.1905 |
+| 末字段变脏 | 3.393 | 3.322 |
+
+变化约 −0.11 至 +0.04ns，未见明显退化；本轮目的为减少生成分支，不宣称业务提速。脚本、旧源码、overlay、bench-*.txt/results.json 与回归日志位于 `/private/tmp/tx-leaf-view-20260910`，采集不进入生产路径。
+
+重新生成后 txgen、txgame/server、txgameslg/server 本轮全量测试通过。逐文件验证确认仅无嵌套追踪字段的 HasChanges 被裁剪，嵌套类型只保留 S44 已有改动。本轮 fixture 4 个视图减 24 行、txgame 78 个减 468 行、txgameslg 3 个减 18 行，共减 510 行，模板增加 1 行。累计未提交 S44–S45 三套生成物净减 768 行；客户端无变化，无新增正式测试或生产采集，未另跑真实集群。后置 ponytail-review 无新增简化项，diff 检查通过；本轮未提交，提交建议累计 S44–S45，下一项具体候选尚需评估。
+
+## S46：无嵌套追踪字段视图的 hasField 分支裁剪
+
+保留未提交 S44–S45。按已有 HasViewNestedFields 条件，将无嵌套追踪字段视图的 hasField 生成成 nil 检查与操作码读取的布尔表达式；含嵌套追踪字段的实现不变。字段未变脏、编号无效或视图为 nil 时仍为 false；例如字段 2 变脏后仅该字段返回 true。
+
+同轮尝试将 contains 的外层路径校验并入已有 leaf helper，但候选基准中，空路径 10.35→16.44ns，nil 视图合法路径 4.504→5.1815ns；虽非 nil 合法路径 22.29→18.375ns 更快，仍因缺少真实调用分布而恢复 contains。未引入分支特例或削弱路径校验。
+
+恢复 contains 后重新编译最终版本，与 S45 六轮交错测量，每项 200ms、Go 1.27.0 darwin/amd64、GOMAXPROCS=1。实际生成 viewStateGDItem 的 hasField 中位数如下，两版全部 0 B/op、0 allocs/op：
+
+| 视图 / 字段 | S45 ns/op | S46 ns/op |
+|---|---:|---:|
+| nil / 0 | 1.072 | 1.0925 |
+| nil / 2 | 1.0685 | 1.081 |
+| nil / 4 | 1.062 | 1.075 |
+| 字段 2 变脏 / 0 | 1.300 | 1.2925 |
+| 字段 2 变脏 / 2 | 1.309 | 1.2875 |
+| 字段 2 变脏 / 4 | 1.3135 | 1.2945 |
+
+变化约 −0.02 至 +0.02ns，未见明显退化，不宣称业务提速。临时前后对照覆盖 nil、有效及无效字段、空/有效/多层/带 key 路径，候选及最终实现均符合原有结果。证据在 `/private/tmp/tx-leaf-queries-20260910`：results.json/bench-*.txt 为包含路径改动的被筛选候选；final-results.json/final-*.txt 为最终字段查询版本，旧源码、overlay 和测试日志同目录。采集不进入生产路径。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过。范围检查发现并恢复嵌套类型无关的空白行变化后，重新生成三套产物，并再次通过 txgen 全量测试；最终逐文件比较确认只含已确认的 S44–S46 变更，contains 与嵌套类型 hasField 保持原实现。
+
+本轮 85 个视图的 hasField 共减 425 行（255 行 nil 分支、170 行该分支移除后多余空白）；fixture / txgame / txgameslg 分别减 20/390/15 行，模板净行数不变。累计未提交 S44–S46 三套生成物净减 1193 行。后置 ponytail-review 无新增简化项，diff 检查通过；客户端无变化，未另跑真实集群。本轮未提交，提交建议累计 S44–S46；下一项具体候选尚需评估，不重复被否决的路径校验合并。
+
+## S47：视图捕获源使用已知具体类型
+
+保留未提交 S44–S46。capture 中 source 的两个赋值来源分别是接收者 s 与 selectionCopy，均为同一生成 Store 指针；将局部 change.Source 声明改为 source := s。选择逻辑、公开 change.Source 实现与 Visitor 契约保留，不删除 SPI，不引入新接口或 wrapper。例如选择 Quantity 时仍只捕获该字段，捕获值与后续 Store 修改隔离，Capture 仍可向同源视图追加。
+
+临时前后检查覆盖全量捕获、字段选择、值隔离和追加捕获，全部通过。实际生成 GDItemStore.View 完整调用（根 identity 在计时前初始化），Go 1.27.0 darwin/amd64、GOMAXPROCS=1，每项 200ms 六轮交错，中位数如下：
+
+| 源状态 / 选择 | S46 ns/op | S47 ns/op | 两版 B/op | 两版 allocs/op |
+|---|---:|---:|---:|---:|
+| 干净 / 无选择回调 | 91.915 | 94.8 | 96 | 3 |
+| 干净 / 选择 Quantity | 241.4 | 233.05 | 160 | 4 |
+| 变脏 / 无选择回调 | 297 | 282.75 | 96 | 3 |
+| 变脏 / 选择 Quantity | 238.3 | 240.65 | 160 | 4 |
+
+耗时变化约 −4.8% 至 +3.1%，分配不变；接受干净全量捕获约 +2.89ns 的样本成本，以明确局部实际类型。不宣称所有场景提速，亦未证明旧版编译器去虚拟化情况或将全部变化归因于接口派发。旧源码、overlay、基准脚本、bench-*.txt/results.json 与验证日志位于 `/private/tmp/tx-capture-source-20260910`，采集不进入生产路径。
+
+重新生成后 txgen、txgame/server、txgameslg/server 本轮全量测试通过。最终逐文件比较确认仅含此前 S44–S46 变更及本轮 source 类型替换：fixture 12、txgame 163、txgameslg 7 个 Store 调整，模板及生成物净行数不变。累计未提交 S44–S47 生成物仍净减 1193 行。后置 ponytail-review 无新增简化项，diff 检查通过；客户端无变化，未另跑真实集群，无新增正式测试或生产采集。本轮未提交，提交建议累计 S44–S47；下一项具体候选尚需评估。
+
+## S48：可直接复制的集合元素不生成快照错误分支
+
+保留未提交 S44–S47。复用 MapValueSnapshotDirect / SliceValueSnapshotDirect，视图复制对可直接复制的元素生成赋值，不再调用仅返回 value, nil 的 snapshotClone…Item，并停止生成这些私有 helper。标记与可复制类型规则不变；需深拷贝的 GD 指针和 JSON 兜底仍保留错误处理。目标 map 分配、slice 扩容、源元素存在性检查及删除行为保持不变。例如复制 Tasks[1] 的整数或 Tags[1] 的字符串仍写入独立目标容器，不共享容器。
+
+临时前后对照覆盖 map/slice 复制、目标分配/扩容、缺失源元素错误、map 删除及容器隔离，全部通过。实际生成 copyGDDailyTaskStoreViewPath / copyGDRoleStoreViewPath 两版预编译后交错六轮，每项 200ms、Go 1.27.0 darwin/amd64、GOMAXPROCS=1，中位数如下：
+
+| 场景 | S47 ns/op | S48 ns/op | 两版 B/op | 两版 allocs/op |
+|---|---:|---:|---:|---:|
+| map 目标已存在 | 17.13 | 16.945 | 0 | 0 |
+| slice 目标已存在 | 8.7175 | 8.705 | 0 | 0 |
+| map 每次分配目标 | 113.6 | 112.75 | 192 | 2 |
+| slice 每次扩容目标 | 50.915 | 50.42 | 32 | 1 |
+
+变化约 −1.1% 至 −0.1%，分配不变；主要收益是减少生成 helper 与不可能返回错误的分支，不外推业务吞吐。证据保留在 `/private/tmp/tx-direct-elements-20260910`，包含旧源码、overlay、scope-before.json、bench-*.txt/results.json 与测试日志；测量不进入生产路径。
+
+重新生成后 txgen、txgame/server、txgameslg/server 本轮全量测试通过，保留原有深拷贝、快照和视图可靠性回归。逐文件从本轮起始快照替换对照，确认仅删除直接返回 helper 并改写对应调用，其他代码一致。本轮删除 97 个直接返回 helper，fixture 2 文件减 14 行，txgame 50 文件减 649 行，txgameslg 1 文件减 7 行，共净减 670 行；模板净行数不变。累计未提交 S44–S48 生成物净减 1863 行。后置 ponytail-review 无新增简化项，diff 检查通过；客户端无变化，未另跑真实集群。本轮未提交，提交建议累计 S44–S48，下一项具体候选尚需评估。
+
+## S49：直接复制 map 元素省去中间别名
+
+保留未提交 S44–S48。对已标记为可直接复制的 map 元素，去掉 cloned := item，在完成目标容器初始化后直接写入已读取的 item；非直接复制元素保留 cloned 与错误处理。没有改变源元素读取顺序、缺失校验或容器分配。
+
+slice 的 cloned 临时值保留：源/目标可能共享底层数组，必须在目标扩容写零前取得源元素。本轮临时检查以源 Tags 为 [a,b]、目标 Tags 为同一数组的前一项，复制第二项后仍为 b，验证保留顺序的意义；不把 map 的别名消除机械扩展到 slice。
+
+实际生成 copyGDDailyTaskStoreViewPath 两版预编译后交错六轮，每项 200ms、Go 1.27.0 darwin/amd64、GOMAXPROCS=1，中位数如下：
+
+| 场景 | S48 ns/op | S49 ns/op | 两版 B/op | 两版 allocs/op |
+|---|---:|---:|---:|---:|
+| 已有目标 map | 16.71 | 16.63 | 0 | 0 |
+| 每次新建目标 map | 111.95 | 112.70 | 192 | 2 |
+
+变化约 −0.5% 至 +0.7%，分配不变，不宣称提速。前后 map/slice 复制、缺失元素、删除及容器隔离对照通过；采集、旧源码、overlay、scope-before.json、bench-*.txt/results.json 及测试日志位于 `/private/tmp/tx-map-copy-value-20260910`，不进入生产路径。
+
+重新生成后 txgen、txgame/server、txgameslg/server 本轮全量测试通过。逐文件增量对照确认仅省去 map 中间别名并改变对应赋值，slice 及非直接复制链路不变。本轮 fixture 减 1 行、txgame 27 个文件减 57 行、txgameslg 减 1 行，生成物共净减 59 行，模板净减 1 行。累计未提交 S44–S49 生成物净减 1922 行。后置 ponytail-review 无新增简化项，diff 检查通过；客户端无变化，未另跑真实集群。本轮未提交，提交建议累计 S44–S49；下一项具体候选尚需评估。
