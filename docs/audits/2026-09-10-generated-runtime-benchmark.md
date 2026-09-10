@@ -753,3 +753,97 @@ Go 1.27.0 darwin/amd64、GOMAXPROCS=1，预编译后交错六轮、每项 200ms�
 分配不变，样本中位数增加约 0.0275ns、0.200ns；实际被测函数体未改，不宣称提速。复用 S64 临时测试的逻辑但重新快照、编译和测量；证据位于 /private/tmp/tx-leaf-op-method-20260910，包含旧源码、overlay、契约测试、六轮数据/results.json、范围检查和回归日志，采集不进入生产路径。
 
 本轮 txgen、txgame/server、txgameslg/server 全量测试通过。由 HEAD 逐文件核对仅含 S61–S67：本轮 fixture 4 类型减 28 行、txgame 76 类型减 532 行、txgameslg 3 类型减 21 行，共 83 个方法净减 581 行，模板增加 1 行。累计生成物净减 3323 行（fixture 168、txgame 3035、txgameslg 120）。后置 ponytail-review 无新增简化项，diff 检查通过；客户端无变化，未另跑真实集群。全部未提交，提交建议累计 S61–S67；下一项具体候选尚需评估。
+
+## S68：StoreView 字段操作设置短路返回
+
+六工程起始干净，S61–S67 已提交。嵌套 StoreView 状态的 setFieldOp 使用 s != nil && setStoreViewFieldOp(...)，替代先判 nil 再返回共享函数结果。短路保证 nil 不访问 ops，字段边界检查及返回值保持原样，不修改 record 状态机或 SPI。
+
+临时前后验证 nil、零/越界字段、设置与清零以及实际 record/contains 路径通过。Go 1.27.0 darwin/amd64、GOMAXPROCS=1，两版实际 viewStateGDRole.record 预编译后交替六轮、每项 200ms，中位数如下：
+
+| 字段 | S67 ns/op | S68 ns/op | 两版 B/op | 两版 allocs/op |
+|---|---:|---:|---:|---:|
+| Name | 12.095 | 11.965 | 0 | 0 |
+| Tags | 12.440 | 12.480 | 0 | 0 |
+
+均零分配，样本变化约 −0.130ns、+0.040ns，未见明显退化，不宣称业务提速。状态与路径在计时前创建，每轮记录字段整体替换；证据位于 /private/tmp/tx-view-set-op-20260910，包含旧源码、overlay、契约测试、六轮数据/results.json、范围检查与回归日志，采集不进入生产路径。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过。由 HEAD 逐文件核对仅改变 setFieldOp：fixture 8 类型减 24 行、txgame 85 类型减 255 行、txgameslg 4 类型减 12 行，共 97 类型净减 291 行，模板另减 3 行。后置 ponytail-review 无新增简化项，diff 检查通过；客户端无变化，未另跑真实集群。本轮未提交，提交建议仅含 S68；下一项具体候选尚需评估。
+
+## S69：不可追踪 key 的 map 不生成单项复制 helper（2026-09-11）
+
+保留未提交 S68。单项 snapshotClone…Item 的调用位于 MapKeyTrackable 分支，将生成条件补齐为 MapCollection && MapKeyTrackable && !MapValueSnapshotDirect。不可追踪 key 的 map 仍通过整字段 snapshotClone 深拷贝；slice 及所有有调用的单项复制保留。按各工程实际定义核对，不将 txgame 与 fixture 的同名类型视为同一结构。
+
+前后直接在 txgame 验证 GDRankLegion.Nameplate 整字段复制，嵌套 map 及 GDNameplate 对象均独立。全量回归完成后，Go 1.27.0 darwin/amd64、GOMAXPROCS=1，两版实际 snapshotCopy 预编译后交替六轮、每项 200ms，中位数如下：
+
+| 场景 | S68 ns/op | S69 ns/op | 两版 B/op | 两版 allocs/op |
+|---|---:|---:|---:|---:|
+| 空 Nameplate | 84.845 | 83.965 | 112 | 1 |
+| 单项嵌套 map | 2647.5 | 2611.5 | 608 | 17 |
+
+分配不变，样本中位数减少约 0.88ns、36ns；实际整字段复制函数体未改，不宣称业务提速。数据在计时前准备，副本写入包变量；证据位于 /private/tmp/tx-untracked-clone-item-20260910（本轮开始时创建，跨日沿用），包含八个旧源码文件、overlay、隔离测试、六轮数据/results.json、范围检查和回归日志，采集不进入生产路径。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过。由 HEAD 逐文件核对仅含 S68–S69：仅 txgame 删除 8 个无调用 helper 净减 56 行，模板净行数不变；fixture 和 txgameslg 无本轮生成差异。累计生成物净减 347 行（fixture 24、txgame 311、txgameslg 12）。后置 ponytail-review 无新增简化项，diff 检查通过；客户端无变化，未另跑真实集群。全部未提交，提交建议累计 S68–S69；下一项具体候选尚需评估。
+
+## S70：JSON 快照复制统一返回解码结果（2026-09-11）
+
+保留未提交 S68–S69。snapshotCloneJSON 在 json.Marshal 成功后，先将 json.Unmarshal 错误赋给 err，再统一返回 cloned, err，省去重复返回分支。必须先完成解码再读取 cloned，不能写成 return cloned, json.Unmarshal(...)；错误时可能已有部分结果，仍需与错误一起返回。编码失败的原分支保留。
+
+临时前后验证自定义 UnmarshalJSON 写入部分结果后返回错误，以及实际 snapshotCloneGDRoleTags 的复制隔离通过。Go 1.27.0 darwin/amd64、GOMAXPROCS=1，两版实际生成 slice 快照复制预编译后交替六轮、每项 200ms，中位数如下：
+
+| 场景 | S69 ns/op | S70 ns/op | 两版 B/op | 两版 allocs/op |
+|---|---:|---:|---:|---:|
+| 空 slice | 433.60 | 437.90 | 80 | 4 |
+| 两项 slice | 792.50 | 798.25 | 136 | 6 |
+
+分配不变，样本中位数增加约 4.3ns（1.0%）、5.75ns（0.7%），记录并接受这一微基准成本，不宣称提速。输入预先创建，副本写入包变量；证据位于 /private/tmp/tx-json-clone-return-20260911，包含旧 registry、overlay、错误语义/隔离测试、六轮数据/results.json、范围检查和回归日志，采集不进入生产路径。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过。由 HEAD 逐文件核对仅含 S68–S70：本轮三套 registry 各减 2 行，共净减 6 行，模板另减 2 行。累计生成物净减 353 行（fixture 26、txgame 313、txgameslg 14）。后置 ponytail-review 无新增简化项，diff 检查通过；客户端无变化，未另跑真实集群。全部未提交，提交建议累计 S68–S70；下一项具体候选尚需评估。
+
+
+## S71：生成 Store 直接调用撤销记录 SPI（2026-09-11）
+
+保留未提交 S68–S70。逐处核对模板中的 13 个 recordUndo 调用点，均已在 undoRecorder 非 nil 分支内，参数均为现场创建的非 nil 撤销闭包。删除生成 Store 私有转发方法，调用处直接执行 undoRecorder.RecordUndo；保留 UndoRecorder SPI、原有守卫、闭包内容和登记顺序。例如 SetDailyTask 仍先记录原指针、操作及子 Store，再替换字段值，回滚时恢复原状态。用于其他生成分支的 $hasSelectionChildren 保留。
+
+临时前后测试覆盖指针替换/清除、slice 修改、map 新增/覆盖/删除的值和操作恢复。现有全量测试继续覆盖嵌套对象、集合和事务前已有增量的回滚。Go 1.27.0 darwin/amd64、GOMAXPROCS=1，预编译两版实际 fixture 生成物，交替六轮、每项 200ms，写入后执行撤销，中位数如下：
+
+| 场景 | S70 ns/op | S71 ns/op | 两版 B/op | 两版 allocs/op |
+|---|---:|---:|---:|---:|
+| 指针 SetDailyTask | 86.990 | 85.965 | 48 | 1 |
+| map Set | 166.3 | 165.7 | 48 | 1 |
+| slice SetAt | 227.1 | 220.7 | 80 | 2 |
+
+分配不变，中位数分别约下降 1.2%、0.4%、2.8%，本轮样本未发现退化，不外推业务整体提速。Store、输入及预分配撤销记录器在计时前准备，每次反序回滚并复用记录 slice；基准包含闭包登记和撤销成本。证据位于 /private/tmp/tx-direct-undo-20260911，包含改前 fixture、overlay、隔离测试、六轮原始结果/results.json、范围校验及回归日志，采集不进入生产路径。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过。逐文件从 HEAD 核对生成物仅包含 S68–S71：本轮删除 99 个私有方法，fixture 减 48 行、txgame 减 522 行、txgameslg 减 24 行，共 594 行，模板另减 7 行。累计生成物净减 947 行（fixture 74、txgame 835、txgameslg 38）。后置 ponytail-review 无新增简化项，diff 检查通过；客户端无变化，未另跑真实集群或 race。全部未提交，提交建议累计 S68–S71；下一项具体候选尚需评估。
+
+
+## S72：生成包统一路径深度告警格式（2026-09-11）
+
+保留未提交 S68–S71。182 个 Store 的 reportPathDepthFallback 保留 nil 守卫和各类型独立 sync.Once，闭包改为调用生成包内 warnStorePathDepth，统一同一条日志正文及 type/maxDepth 字段。三个独立生成包分别包含该私有函数，Store 文件不再导入 txlog；导入模型同步清理。深路径回退仍在原调用点触发，不改变最近祖先替换与访问次数。启用源码定位时，日志来源会集中到 type_registry.go 的公共输出函数，类型仍通过 type 字段区分。
+
+临时前后测试验证 nil Store 不输出、同类型重复调用仅输出一次、不同类型各输出一次且包含对应类型名称。txgen 全量回归覆盖深层子节点/快照回退及最近祖先仅访问一次。Go 1.27.0 darwin/amd64、GOMAXPROCS=1，两版预编译后交替六轮、每项 200ms，中位数如下：
+
+| 场景 | S71 ns/op | S72 ns/op | 两版 B/op | 两版 allocs/op |
+|---|---:|---:|---:|---:|
+| 已告警后的调用 | 1.919 | 1.929 | 0 | 0 |
+| 首次告警，JSON handler 输出至 io.Discard | 1039 | 1049 | 16 | 1 |
+
+分配不变，中位数约增加 0.010ns（0.5%）、10ns（1.0%）；接受此次微基准成本，不宣称提速。首次场景每次重置该类型 Once，重置成本包含在内；仅用于隔离采集，不进入生产代码。证据目录 /private/tmp/tx-depth-warning-20260911 包含旧生成物、overlay、语义测试、六轮数据/results.json、生成范围检查与全量回归日志。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过。由 HEAD 逐文件核对仅含 S68–S72。本轮生成物净减 880 行（fixture 50、txgame 805、txgameslg 25），模板与导入模型合计净增 3 行；累计生成物净减 1827 行（fixture 124、txgame 1640、txgameslg 63）。后置 ponytail-review 无新增简化项，diff 检查通过。两个客户端无变化，未另跑真实集群或 race。全部未提交，提交建议累计 S68–S72；下一项具体候选尚需评估。
+
+
+## S73：无记录键类型不生成加载标记方法（2026-09-11）
+
+保留未提交 S68–S72。markLoadedFields、markAllFieldsLoaded 的加载入口与 codec 回调仅在 RecordKey.Has 条件内生成；markFieldLoaded 仅由 markLoadedFields 调用。将三个私有方法的生成条件与调用方对齐，无记录键的 142 个类型不再输出这组无调用代码。公开 LoadedFields、IsFieldLoaded、字段查询方法及 loadedFields 状态保持不变；有记录键类型的加载/投影与标记代码全部保留。例如 GDRole 仍能记录 RoleId/Name 已加载，GDItem 的查询仍返回未加载状态。
+
+临时前后验证字段顺序、未知/重复字段处理、结果切片隔离、无记录键类型及 nil 查询通过。Go 1.27.0 darwin/amd64、GOMAXPROCS=1，预编译两版 fixture，交替六轮、每项 200ms，实际 LoadedFields 查询中位数如下：
+
+| 场景 | S72 ns/op | S73 ns/op | 两版 B/op | 两版 allocs/op |
+|---|---:|---:|---:|---:|
+| GDRole，两字段已加载 | 51.865 | 54.300 | 32 | 1 |
+| GDItem，未加载 | 5.288 | 5.267 | 0 | 0 |
+
+首组记录类型耗时增加约 4.7%，因此进一步交替六轮、每项 1s 复测该场景，得到 51.915 → 52.535ns（约 +1.2%），仍为 32B/1 次分配。两组结果均保留，接受复测中的小幅成本，不宣称提速或零退化。GDRoleStore.go 与共享 type_registry.go 经字节比较和范围检查确认未发生本轮变化；无法由微基准确定差异原因。Store 和加载字段在计时前准备，结果写入包变量。证据位于 /private/tmp/tx-loaded-markers-20260911，包含旧生成物、overlay、隔离测试、两组数据/results.json 与 repeat-results.json、范围校验和回归日志，采集不进入生产路径。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过，包括现有投影和加载状态测试。由 HEAD 逐文件核对生成物仅含 S68–S73，并验证有记录键类型保留三个方法、无记录键类型不再生成。删除 426 个私有方法，生成物净减 2556 行（fixture 162、txgame 2340、txgameslg 54），模板增加 2 行条件；累计生成物净减 4383 行（fixture 286、txgame 3980、txgameslg 117）。后置 ponytail-review 无新增简化项，diff 检查通过；客户端无变化，未另跑真实集群或 race。全部未提交，提交建议累计 S68–S73；下一项具体候选尚需评估。
