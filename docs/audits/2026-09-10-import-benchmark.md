@@ -1,6 +1,6 @@
 # 生成模型与导入组装性能对照（2026-09-10）
 
-前半部分记录 S07–S09 的首次性能验证；S10–S24 的后续对照及当前状态见文末。
+前半部分记录 S07–S09 的首次性能验证；S10–S28 的后续对照及当前状态见文末。
 
 ## 结论与处置
 
@@ -456,3 +456,106 @@ S24 的扫描及扫描＋准备微基准各版本交错 6 轮、100ms，耗时�
 两轮所有生成产物 SHA256 一致：fixture 40、txgame 1134、txgameslg 55 个文件。应用最终源码后 `GOCACHE=/private/tmp/tx-go-build go run .` 和相同 GOCACHE 的 `go test ./... -count=1` 通过；固定产物无差异，后置 ponytail-review 和 diff 检查通过。未重跑两套 server、客户端全量或真实集群。
 
 S24 净减 1 行，累计未提交 S20–S24 的 Go 代码净减 18 行。源码快照、编译入口、计时与哈希数据位于 [累计完整生成证据目录](/private/tmp/tx-cmd-cumulative-20260910)，采集与生产路径隔离；全部变更未提交。后续关联小修改合批实施并统一验证，下一项候选仍需评估。
+
+## S25：TypeScript 模型字符串组装
+
+基线为已提交 txgen `d5a6121`。本批合并两项关联修改：两处 `strings.Split` 取末段改为 `strings.LastIndex` 后取子串；三处仅含字符串的 `fmt.Sprintf` 改为拼接和 `strconv.Quote`。保留最后一段语义（包括多点和尾点）、空输入、data 限定、递归集合、unknown 回退与转义规则。
+
+沿用此前 Go/硬件环境，固定 `GOMAXPROCS=1`，通过临时 overlay 注入旧实现及基准，每版每组交错 6 轮、100ms。九种输入分别测两种限定模式的类型转换和 schema，共 27 组；计时前与完整旧递归实现核对结果。Quoted 场景使用带引号和换行的标量映射，专门核对转义。以下为中位数。
+
+| 场景 | 原 ns/op | 新 ns/op | 原 B/op → 新 B/op | 原 allocs/op → 新 allocs/op |
+| --- | ---: | ---: | ---: | ---: |
+| type/int64/qualifyfalse | 9.00 | 8.92 | 0 → 0 | 0 → 0 |
+| type/int64/qualifytrue | 8.70 | 8.73 | 0 → 0 | 0 → 0 |
+| schema/int64 | 168.95 | 87.82 | 32 → 16 | 2 → 1 |
+| type/EMState/qualifyfalse | 45.57 | 15.59 | 16 → 0 | 1 → 0 |
+| type/EMState/qualifytrue | 47.70 | 16.38 | 16 → 0 | 1 → 0 |
+| schema/EMState | 243.80 | 112.15 | 48 → 16 | 3 → 1 |
+| type/data.GDRole/qualifyfalse | 62.67 | 15.16 | 32 → 0 | 1 → 0 |
+| type/data.GDRole/qualifytrue | 10.17 | 10.04 | 0 → 0 | 0 → 0 |
+| schema/data.GDRole | 290.55 | 140.15 | 64 → 16 | 3 → 1 |
+| type/pkg.inner.GDRole/qualifyfalse | 75.75 | 14.58 | 48 → 0 | 1 → 0 |
+| type/pkg.inner.GDRole/qualifytrue | 79.53 | 15.71 | 48 → 0 | 1 → 0 |
+| schema/pkg.inner.GDRole | 308.15 | 137.50 | 80 → 16 | 3 → 1 |
+| type/map[string][]*data.GDRole/qualifyfalse | 258.95 | 197.90 | 128 → 96 | 4 → 3 |
+| type/map[string][]*data.GDRole/qualifytrue | 195.15 | 192.45 | 120 → 120 | 3 → 3 |
+| schema/map[string][]*data.GDRole | 703.45 | 467.20 | 256 → 192 | 8 → 5 |
+| type/[4]data.GDRole/qualifyfalse | 118.75 | 67.87 | 48 → 16 | 2 → 1 |
+| type/[4]data.GDRole/qualifytrue | 63.64 | 63.78 | 24 → 24 | 1 → 1 |
+| schema/[4]data.GDRole | 376.90 | 220.85 | 88 → 40 | 4 → 2 |
+| type/Quoted/qualifyfalse | 45.47 | 15.18 | 16 → 0 | 1 → 0 |
+| type/Quoted/qualifytrue | 47.48 | 16.18 | 16 → 0 | 1 → 0 |
+| schema/Quoted | 237.65 | 144.20 | 48 → 32 | 3 → 2 |
+| type/空名称/qualifyfalse | 38.25 | 9.11 | 16 → 0 | 1 → 0 |
+| type/空名称/qualifytrue | 38.10 | 9.65 | 16 → 0 | 1 → 0 |
+| schema/空名称 | 72.97 | 38.88 | 16 → 0 | 1 → 0 |
+| type/unknown./qualifyfalse | 60.20 | 11.46 | 32 → 0 | 1 → 0 |
+| type/unknown./qualifytrue | 61.34 | 12.29 | 32 → 0 | 1 → 0 |
+| schema/unknown. | 96.47 | 43.00 | 32 → 0 | 1 → 0 |
+
+分配均不增加。`data.GDRole` 普通类型名转换从 1 次分配降为 0，schema 从 3 次降为 1；嵌套 map schema 从 8 次降为 5。两个不经过修改分支的类型转换场景约 +0.2%/+0.4%，不作为明确退化证据；本轮未发现明确耗时退化，不保证任意输入或完整生成同幅提速。
+
+两版三套隔离生成入口各运行一次，fixture 40、txgame 1134、txgameslg 55 个产物文件名及内容 SHA256 一致。应用后 `GOCACHE=/private/tmp/tx-go-build go run .` 和相同 GOCACHE 的 `go test ./... -count=1` 通过。两个客户端 `npm test` 与 `npm run build` 均通过：txclient 79 项、txclientslg 101 项测试，无跳过。首次客户端测试因沙箱阻止 tsx 创建本地 IPC 管道未启动，在允许本地 IPC 后重跑原命令通过。未重跑两套 server 或真实集群，未做完整生成计时。
+
+本批 Go 代码净减 2 行，后置 ponytail-review 和 diff 检查通过，无新增依赖、正式测试或生产采集。源码快照、overlay、旧实现对照及全部日志位于 [S25 临时证据目录](/private/tmp/tx-ts-model-20260910)。全部本批变更未提交，不累计已提交的 S20–S24；下一组候选尚需评估。
+
+## S26：依赖标识符复用分词结果
+
+基线为 `d5a6121` 加未提交 S25。先评估 TypeScript 命令与辅助 Data 字段循环抽取：每版每组交错 6 轮、100ms 后，对辅助 Data 加长 10 轮、300ms 复测。0/1/16 字段中位数分别为 118.55 → 122ns、365.4 → 373.3ns、4061 → 4108ns，分配不变；保留直接实现，候选未应用。证据在 [字段循环评估目录](/private/tmp/tx-ts-fields-20260910)。
+
+实际采用的改动是 `typeIdentifiers` 复用 FieldsFunc 独立结果切片，逐项通过最后一个点提取名称，删除中间结果切片与逐项 Split。原分词字符规则、顺序及空结果保持不变；旧实现对照八组输入，结果一致。
+
+沿用此前 Go/硬件环境，固定 `GOMAXPROCS=1`，每版每组交错 6 轮、100ms，以下为标识符解析中位数。
+
+| 输入 | 原 ns/op | 新 ns/op | 原 B/op → 新 B/op | 原 allocs/op → 新 allocs/op |
+| --- | ---: | ---: | ---: | ---: |
+| 空字符串 | 15.95 | 14.74 | 0 → 0 | 0 → 0 |
+| int64 | 116.90 | 59.65 | 48 → 16 | 3 → 1 |
+| data.GDRole | 162.05 | 87.78 | 64 → 16 | 3 → 1 |
+| map[string][]*data.GDRole | 357.85 | 180.15 | 160 → 48 | 5 → 1 |
+| map[data.Key]map[string][]pkg.inner.GDRole | 567.50 | 276.55 | 288 → 80 | 7 → 1 |
+| [4]*pkg.Role | 219.05 | 108.80 | 112 → 32 | 4 → 1 |
+| data. | 135.00 | 65.19 | 64 → 16 | 3 → 1 |
+| 空白及非 ASCII 字符 | 47.65 | 44.91 | 0 → 0 | 0 → 0 |
+
+八组分配均不增加；有标识符场景减少中间切片，嵌套 map 从 7 次分配降为 1。未发现局部耗时退化，不将其视为完整生成提速比例，也不与 S25 百分比相加。
+
+两版三套隔离生成入口各运行一次，fixture 40、txgame 1134、txgameslg 55 个产物文件名及内容 SHA256 一致。应用后 `GOCACHE=/private/tmp/tx-go-build go run .` 和相同 GOCACHE 的 `go test ./... -count=1` 通过。txclient 79 项、txclientslg 101 项测试及两边构建均通过，无跳过；客户端测试在允许 tsx 本地 IPC 的权限下执行。未重跑两套 server 或真实集群，未做完整生成计时。
+
+本批 Go 代码净减 2 行，累计未提交 S25–S26 净减 4 行。后置 ponytail-review 与 diff 检查通过，无新增依赖、正式测试或生产采集。源码快照、overlay、旧实现对照和全部日志位于 [S26 临时证据目录](/private/tmp/tx-type-identifiers-20260910)。全部变更未提交，下一组候选尚需评估。
+
+## S27：可见类型索引复用输入对象
+
+基线为 txgen `d5a6121` 加未提交 S25–S26。局部名称表由 `map[string]DataType` 改为 `map[string]*DataType`，直接引用输入切片元素，避免复制大结构体；表不逃出函数，也不通过指针修改输入。可见性闭包、忽略规则、输出值复制和排序保持原样。
+
+临时 Go overlay 保留旧函数对照，三套真实扫描输入的输出 DeepEqual 一致。扫描在计时外，预编译测试二进制，Go 1.27.0 darwin/amd64、GOMAXPROCS=1，每版交错 6 轮、100ms，中位数如下：
+
+| 输入 | ns/op 前 → 后 | B/op 前 → 后 | allocs/op 前 → 后 |
+|---|---:|---:|---:|
+| fixture | 13803 → 10327 | 7507 → 3475 | 78 → 64 |
+| txgame | 704102 → 589907 | 189862.5 → 132221.5 | 3936.5 → 3761.5 |
+| txgameslg | 5128.5 → 3587.5 | 2664 → 648 | 47 → 40 |
+
+局部耗时中位数分别下降 25.2%、16.2%、30.0%。闭包原有 map 遍历顺序会影响重复扫描量，txgame 分配数字存在轮间波动；这些是样本中位数，不是固定分配契约。没有进行完整生成计时，不将局部百分比外推或与 S25–S26 相加。
+
+两版三套隔离生成入口各执行一次，40/1134/55 个文件路径与内容哈希一致。应用后 txgen 生成及全量测试通过，两客户端 79/101 项测试与构建通过。未重跑 server 全量或真实存储集成。所有基准、旧函数与输出采集仅在 `/private/tmp/tx-ts-visible-20260910`；原始记录为 `micro-*.txt`、`summary.json`、`generation-check.json` 和测试日志，生产路径无采集代码。
+
+本批 Go 净行数不变，累计未提交 S25–S27 净减 4 行。后置 ponytail-review 无新增简化项。
+
+## S28：S25–S27 累计完整生成验收
+
+本轮没有新增代码改动。对照 txgen HEAD `d5a6121c15f3ff73825c002993c395c2f4ec435a` 与包含未提交 S25–S27 的工作区，唯一代码差异为 `gen/ts_model.go`。两版源码通过临时 Go overlay 分别编译；三套入口均从当前工程构建，输入目录重新从当前工作区复制，生成与采集全部在独立临时目录中完成，不向生产路径添加计时逻辑。
+
+Go 1.27.0 darwin/amd64，GOMAXPROCS=1。每版每入口预热一次，再交错运行 8 轮并逐轮交换先后顺序。计时包含进程启动、扫描、生成模型、渲染及写盘，不含编译和产物哈希计算；采样期间不并行编译或运行测试。下面为毫秒中位数及最小—最大范围：
+
+| 入口 | HEAD 中位数（范围） | S25–S27 中位数（范围） | 中位数变化 |
+|---|---:|---:|---:|
+| fixture，仅 Go 生成对照 | 162.86（159.25–165.99） | 163.22（158.03–167.41） | +0.22% |
+| txgame，Go＋TypeScript | 4292.33（4254.38–4401.02） | 4321.26（4258.24–4506.67） | +0.67% |
+| txgameslg，Go＋TypeScript | 181.08（178.09–200.08） | 181.27（179.71–187.52） | +0.10% |
+
+两个覆盖 TypeScript 的入口中位数均小幅上浮，采样范围重叠，本次样本未确认明确整体退化或提速；范围重叠本身不证明性能等价，也不能排除更小幅变化。fixture 的 `main.go` 只调用 GenerateData/GenerateCmd，不能作为 TypeScript 性能证据。S25–S27 的局部分配收益保留，但不将微基准百分比相加或外推完整生成耗时，不与此前不同轮次的绝对时间横向比较。
+
+所有预热和正式轮次均检查相对文件路径与内容 SHA256：fixture 40、txgame 1134、txgameslg 55 个文件，各入口两版及各轮一致。原始计时、文件数及哈希在 `/private/tmp/tx-ts-cumulative-20260910/generation-head-working.json`，源码、overlay、构建与运行脚本和日志在同目录。实际工作区源码与 working 快照再次比对一致。
+
+计时结束后重新执行 `GOCACHE=/private/tmp/tx-go-build go test ./... -count=1`，txgen 全量测试通过。本轮只补文档，未重跑客户端、server 或真实存储测试，不将上一轮客户端结果作为本轮验证。后置 ponytail-review 检查累计代码差异与本轮记录，无新增简化项；diff 检查通过。Go 本轮净变化 0 行，累计未提交仍净减 4 行。下一项需要评估新的具体候选，不自动重开此前因性能或契约边界保留的项目。
