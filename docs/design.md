@@ -2329,7 +2329,8 @@ Agent 核心不依赖项目生成协议，因此不会自行构造业务错误�
 始终确认对端序列，不承担请求与响应关联：`FrameUpMsg.Ack` 确认服务端下行，`FrameDownMsg.Ack` 确认客户端上行。
 服务端分别维护 MsgQ 已接受序号与 Actor 已处理序号。只有收到匹配当前上行 Seq 的 `ProcessedUpSeq` 后才推进连接的
 确认游标；下行协程把该游标捎带到 `FrameDownMsg`，没有业务下行或收到重复 Seq 时发送独立 `FrameAck`。下行发送协程
-和独立确认共用连接级串行 writer，避免并发写同一个 TCP/WebSocket transport。
+和独立确认共用连接级串行 writer，避免并发写同一个 TCP/WebSocket transport。writer 在取得发送锁后才采样确认游标，
+使 Ack 的采样顺序与帧写出顺序一致，不能在组帧阶段预取 Ack 后排队发送。
 
 客户端把未确认 UpMsg 保存在逻辑 Session 自己的重放队列中。Frame 在首次发送前入队，Ack 只释放连续前缀；队列内的
 Frame 和 Payload 在确认前只读。恢复连接复用原 Session，先发送带最后已处理 DownMsg Ack 的握手。msgq 的新建与恢复

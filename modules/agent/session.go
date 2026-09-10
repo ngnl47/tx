@@ -156,7 +156,6 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 		previous.disconnect()
 	}
 	defer s.activeSessions.unbind(header.SessionID, header.ConnectionID)
-	writer := sessionFrameWriter{transport: transport}
 	var writtenDownSeq atomic.Int64
 	if handshake.Restore {
 		writtenDownSeq.Store(handshake.Ack)
@@ -165,13 +164,14 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 	acceptedUpSeq.Store(initialized.UpMsgSeq)
 	var processedUpSeq atomic.Int64
 	processedUpSeq.Store(initialized.UpMsgSeq)
-	if err := writer.Write(sessionCtx, Frame{Kind: FrameReady, Ack: initialized.UpMsgSeq}); err != nil {
+	writer := sessionFrameWriter{transport: transport, processedUpSeq: &processedUpSeq}
+	if err := writer.Write(sessionCtx, Frame{Kind: FrameReady}); err != nil {
 		cancel()
 		return err
 	}
 	writerResult := make(chan error, 1)
 	go func() {
-		writerResult <- s.writeDownMsgs(sessionCtx, client, header, &writer, &writtenDownSeq, &processedUpSeq)
+		writerResult <- s.writeDownMsgs(sessionCtx, client, header, &writer, &writtenDownSeq)
 		cancel()
 	}()
 	defer func() {
@@ -208,7 +208,7 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 		if err != nil {
 			return err
 		}
-		if err := writer.Write(sessionCtx, Frame{Kind: FrameAck, Ack: processedUpSeq.Load()}); err != nil {
+		if err := writer.Write(sessionCtx, Frame{Kind: FrameAck}); err != nil {
 			return err
 		}
 	}
@@ -276,35 +276,38 @@ func (s *Server) dispatchUpMsg(ctx context.Context, client msgq.SessionClient, h
 	return nil
 }
 
-func (s *Server) writeDownMsgs(ctx context.Context, client msgq.SessionClient, header msgq.SessionHeader, writer *sessionFrameWriter, written, processedUpSeq *atomic.Int64) error {
+func (s *Server) writeDownMsgs(ctx context.Context, client msgq.SessionClient, header msgq.SessionHeader, writer *sessionFrameWriter, written *atomic.Int64) error {
 	for {
 		batch, err := client.FetchSome(ctx, msgq.FetchSomeRequest{Header: header, Max: s.fetchBatch})
 		if err != nil {
 			return err
 		}
 		for _, message := range batch.Messages {
-			if err := writer.writeDownMsg(ctx, Frame{Kind: FrameDownMsg, Seq: message.Seq, Ack: processedUpSeq.Load(), Payload: message.Payload}, written); err != nil {
+			if err := writer.writeDownMsg(ctx, Frame{Kind: FrameDownMsg, Seq: message.Seq, Payload: message.Payload}, written); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-// sessionFrameWriter 保证一条连接上的响应帧与控制帧串行写入。
+// sessionFrameWriter 在同一发送锁内采样确认号并写帧，避免并发组帧导致确认号回退。
 type sessionFrameWriter struct {
-	transport Transport
-	mu        sync.Mutex
+	transport      Transport
+	mu             sync.Mutex
+	processedUpSeq *atomic.Int64
 }
 
 func (w *sessionFrameWriter) Write(ctx context.Context, frame Frame) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	frame.Ack = w.processedUpSeq.Load()
 	return w.transport.Write(ctx, frame)
 }
 
 func (w *sessionFrameWriter) writeDownMsg(ctx context.Context, frame Frame, written *atomic.Int64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	frame.Ack = w.processedUpSeq.Load()
 	if err := w.transport.Write(ctx, frame); err != nil {
 		return err
 	}
