@@ -1,6 +1,6 @@
 # 生成模型与导入组装性能对照（2026-09-10）
 
-前半部分记录 S07–S09 的首次性能验证；S10–S14 的后续对照及当前状态见文末。
+前半部分记录 S07–S09 的首次性能验证；S10–S19 的后续对照及当前状态见文末。
 
 ## 结论与处置
 
@@ -215,3 +215,111 @@ Go 1.27.0、darwin/amd64、Intel i9-9880H，固定 `GOMAXPROCS=1`；通过临时
 耗时中位数变化约 -1.9% 至 +0.6%，分配全部不变；未发现明确退化，不宣称整体生成提速。两版三套隔离生成入口各运行一次，fixture 40、txgame 1134、txgameslg 55 个产物文件名与内容 SHA256 完全一致。当前源码应用后 `GOCACHE=/private/tmp/tx-go-build go run .` 与使用相同 GOCACHE 的 `go test ./... -count=1` 通过，固定生成产物无差异。
 
 本批 Go 代码净减 4 行，diff 检查及后置 ponytail-review 通过；未重跑两套 server、客户端全量或真实集群，未做整体生成计时。基准源码、overlay、编译器输出及原始结果均位于 [S14 临时证据目录](/private/tmp/tx-map-alias-20260910)，采集逻辑与生产路径隔离。全部本轮变更未提交，下一项尚需评估。
+
+## S15：快照类型分类移除重复排除分支
+
+基线为已提交 txgen `ff046ab`。删除 `snapshotDirectType` 的两段提前排除分支，保留已有允许名单及前缀判断；所有被提前排除的输入在后续判断中仍返回 false。临时旧实现对照检查基础类型、time/枚举、对象、空字符串及指针、数组、切片、map、空白组合，结果一致。
+
+沿用 S14 的 Go/硬件环境与七个真实类型模型构建基准，固定 `GOMAXPROCS=1`；扫描输入在计时外，预编译后每版每类型交错 6 轮、100ms，以下为中位数。
+
+| 类型 | 原 ns/op | 新 ns/op | B/op（前后相同） | allocs/op（前后相同） |
+| --- | ---: | ---: | ---: | ---: |
+| fixture/GDArenaRecord | 36207.5 | 35958.0 | 24697 | 309 |
+| fixture/GDItem | 9360.0 | 8977.5 | 5488 | 83 |
+| fixture/GDRole | 39390.5 | 39494.5 | 27281 | 346 |
+| txgame/GDArenaRecord | 57275.0 | 56068.5 | 27737 | 424 |
+| txgame/GDRole | 344189.0 | 328872.0 | 196580 | 2262 |
+| txgameslg/GDRole | 23740.5 | 23246.5 | 14696 | 206 |
+| txgameslg/GDWorldBucket | 16406.0 | 16566.5 | 8968 | 150 |
+
+分配全部不变，耗时中位数变化约 -4.5% 至 +1.0%，未发现明确退化；不承诺任意输入或完整生成提速。两版三套隔离生成入口各运行一次，fixture 40、txgame 1134、txgameslg 55 个产物的文件名与内容 SHA256 一致。应用后 `GOCACHE=/private/tmp/tx-go-build go run .` 及相同 GOCACHE 的 `go test ./... -count=1` 通过，固定产物无差异。
+
+本批 Go 代码净减 6 行，diff 检查及后置 ponytail-review 通过；未重跑两套 server、客户端全量或真实集群，未做整体生成计时。源码快照、overlay、临时契约检查与基准日志保存在 [S15 临时证据目录](/private/tmp/tx-snapshot-classify-20260910)，采集与生产路径隔离。全部本轮变更未提交，下一项尚需评估。
+
+## S16：字段模型复用局部派生值
+
+基线是 `ff046ab` 加未提交 S15 的源码快照，本项不重新计入 S15 收益。字段模型构建在循环内复用小驼峰名称及快照直接类型分类结果，分别替代四次和三次相同输入调用。临时基准在计时前比较七个真实类型的完整 Data 模型与复制的旧实现，结果一致。
+
+沿用 S15 的 Go/硬件环境和 Store 模型构建范围，固定 `GOMAXPROCS=1`；输入扫描位于计时外，预编译后每版每类型交错 6 轮、100ms，以下为中位数。
+
+| 类型 | 原 ns/op | 新 ns/op | 原 B/op → 新 B/op | 原 allocs/op → 新 allocs/op |
+| --- | ---: | ---: | ---: | ---: |
+| fixture/GDArenaRecord | 35772.5 | 33004.0 | 24697 → 24393 | 309 → 276 |
+| fixture/GDItem | 9252.5 | 8530.0 | 5488 → 5424 | 83 → 74 |
+| fixture/GDRole | 39207.5 | 36477.5 | 27281 → 27057 | 346 → 316 |
+| txgame/GDArenaRecord | 55048.5 | 51746.0 | 27737 → 27273 | 424 → 376 |
+| txgame/GDRole | 331821.5 | 307940.0 | 196580 → 193765 | 2262 → 2010 |
+| txgameslg/GDRole | 22519.0 | 21300.5 | 14696 → 14552 | 206 → 188 |
+| txgameslg/GDWorldBucket | 16054.5 | 15271.0 | 8968 → 8904 | 150 → 138 |
+
+耗时中位数下降约 4.9%–7.8%，每次构建减少 9–252 次分配；名称转换复用避免了重复字符串分配，不更改命名规则。不据此承诺完整生成同幅提速，也不把本轮百分比与 S15 相加。
+
+两版三套隔离生成入口各运行一次，fixture 40、txgame 1134、txgameslg 55 个产物的文件名与内容 SHA256 一致。应用后 `GOCACHE=/private/tmp/tx-go-build go run .` 和相同 GOCACHE 的 `go test ./... -count=1` 通过；固定产物无差异。未重跑两套 server、客户端全量或真实集群，未做整体生成计时。
+
+本批 Go 代码净增 2 行，未提交 S15–S16 累计净减 4 行；diff 检查及后置 ponytail-review 通过。源码快照、旧模型对照、overlay 和原始日志位于 [S16 临时证据目录](/private/tmp/tx-field-locals-20260910)，无生产采集或新增依赖。下一项尚需评估。
+
+## S17：字段 tag 直接拼接
+
+基线是 `ff046ab` 加未提交 S15–S16 的工作区快照，本项只将 `fieldTag` 的纯字符串格式化替换为拼接。保留 `strconv.Quote` 转义及 tag 顺序、空格、omitempty 规则；临时旧实现对照覆盖空名称、`-`、中文、引号、反斜杠、换行与制表符，并核对七个真实类型的完整 Data 模型，结果一致。
+
+沿用 S16 的 Go/硬件环境与 Store 模型构建范围，固定 `GOMAXPROCS=1`；扫描输入在计时外，预编译后每版每类型交错 6 轮、100ms，以下为中位数。
+
+| 类型 | 原 ns/op | 新 ns/op | 原 B/op → 新 B/op | 原 allocs/op → 新 allocs/op |
+| --- | ---: | ---: | ---: | ---: |
+| fixture/GDArenaRecord | 32656.0 | 26503.0 | 24393 → 22440 | 276 → 171 |
+| fixture/GDItem | 8432.0 | 7027.5 | 5424 → 4944 | 74 → 47 |
+| fixture/GDRole | 36324.0 | 29859.0 | 27057 → 25048 | 316 → 205 |
+| txgame/GDArenaRecord | 50117.5 | 41098.0 | 27273 → 24472 | 376 → 227 |
+| txgame/GDRole | 301339.0 | 248027.5 | 193765 → 177912 | 2010 → 1164 |
+| txgameslg/GDRole | 21373.0 | 17570.0 | 14552 → 13376 | 188 → 122 |
+| txgameslg/GDWorldBucket | 15012.5 | 12759.5 | 8904 → 8160 | 138 → 96 |
+
+耗时中位数下降约 15.0%–18.8%，每次构建减少 27–846 次分配；不代表完整生成同幅提速，不与前轮百分比相加。两版三套隔离生成入口各运行一次，fixture 40、txgame 1134、txgameslg 55 个产物文件名与内容 SHA256 一致。应用后 `GOCACHE=/private/tmp/tx-go-build go run .` 和相同 GOCACHE 的 `go test ./... -count=1` 通过，固定产物无差异。未重跑两套 server、客户端全量或真实集群，未做整体生成计时。
+
+本批净行数不变，未提交 S15–S17 累计 Go 代码净减 4 行。diff 检查与后置 ponytail-review 通过；源码快照、overlay、特殊字符及旧模型对照、基准日志均位于 [S17 临时证据目录](/private/tmp/tx-field-tags-20260910)，无生产采集或新增依赖。下一项尚需评估。
+
+## S18：命令集合分类条件收敛
+
+基线是 `ff046ab` 加未提交 S15–S17 的工作区快照。最终仅将 `isCmdCollectionType` 的切片或非切片数组条件合并为 `[` 前缀，map 与去空白规则保持不变。临时旧实现对照覆盖普通类型、指针、数组、切片、map、空值、空白及不完整前缀，结果一致。
+
+最初同时删除 `cmdFieldViewInputType` 别名的候选未采用：普通 int 入参名称场景加长复测为 12.11ns → 12.36ns，没有支持删除的明确收益。保留别名后重新编译并测量最终候选；沿用此前 Go/硬件环境，固定 `GOMAXPROCS=1`，每版每场景交错 6 轮、100ms。以下为最终候选中位数。
+
+| 场景 | 原 ns/op | 新 ns/op | B/op（前后相同） | allocs/op（前后相同） |
+| --- | ---: | ---: | ---: | ---: |
+| Collection/int | 6.397 | 5.101 | 0 | 0 |
+| Collection/[]data.GDRole | 5.119 | 4.917 | 0 | 0 |
+| Collection/[4]data.GDRole | 6.579 | 4.937 | 0 | 0 |
+| Collection/map[string][]data.GDRole | 5.449 | 5.044 | 0 | 0 |
+| Collection/_[4]data.GDRole_ | 8.593 | 6.347 | 0 | 0 |
+| ViewName/int | 11.715 | 12.495 | 0 | 0 |
+| ViewName/data.GDRole | 207.800 | 207.600 | 40 | 3 |
+| ViewName/[]data.GDRole | 280.200 | 275.500 | 80 | 4 |
+| ViewName/[4]data.GDRole | 310.400 | 301.750 | 80 | 4 |
+| ViewName/map[string][]data.GDRole | 370.650 | 369.000 | 128 | 5 |
+
+分类场景中位数下降约 3.9%–26.1%，分配不变。最终候选的 ViewName/int 中位数上浮约 0.78ns，但该路径提前返回、不执行修改的集合判断；无法将该变化归因于条件简化，也不能用这些纳秒级结果承诺全路径或完整生成无退化。初始候选数据以 `alias-` 前缀保留，与最终数据分开。
+
+两版三套隔离生成入口各运行一次，fixture 40、txgame 1134、txgameslg 55 个产物文件名及内容 SHA256 一致。应用后 `GOCACHE=/private/tmp/tx-go-build go run .` 和相同 GOCACHE 的 `go test ./... -count=1` 通过，固定产物无差异。未重跑两套 server、客户端全量或真实集群，未做整体生成计时。
+
+本批净行数不变，未提交 S15–S18 累计 Go 代码净减 4 行；diff 检查及后置 ponytail-review 通过。源码快照、overlay、基准和复测记录在 [S18 临时证据目录](/private/tmp/tx-cmd-types-20260910)，采集与生产路径隔离。下一项尚需评估。
+
+## S19：命令字段复用视图模型解析
+
+基线是 `ff046ab` 加未提交 S15–S18 的工作区快照。扫描与类型重写共用私有视图模型填充方法，一次递归计算 ViewInputType，复用于集合判断和入参名称；完整覆盖五个相关属性，避免重写时保留旧状态。三个失去调用的私有计算函数删除，递归解析器与解析别名保留。
+
+沿用此前 Go/硬件环境，固定 `GOMAXPROCS=1`，每版每场景交错 6 轮、100ms。计时范围为单字段 `rewriteCmdFieldsForDataPackage`，使用已知 GDRoleStore/StoreView 类型表、空导入及辅助类型表；计时前与复制的旧函数对照完整输出和 usesData，输入预置旧属性，确保普通字段会清除旧视图信息。以下为中位数。
+
+| 字段类型 | 原 ns/op | 新 ns/op | 原 B/op → 新 B/op | 原 allocs/op → 新 allocs/op |
+| --- | ---: | ---: | ---: | ---: |
+| int | 365.95 | 338.30 | 328 → 328 | 3 → 3 |
+| data.GDRole | 718.15 | 565.05 | 392 → 368 | 7 → 6 |
+| *data.GDRoleStore | 441.60 | 387.45 | 328 → 328 | 3 → 3 |
+| []data.GDRole | 1181.00 | 551.95 | 552 → 392 | 13 → 6 |
+| [4]data.GDRole | 1256.00 | 572.60 | 552 → 392 | 13 → 6 |
+| map[string][]data.GDRole | 1554.00 | 644.25 | 744 → 440 | 17 → 7 |
+
+六种场景耗时中位数下降约 7.6%–58.5%；普通 int、Store 字段分配不变，集合减少重复构造 ViewInputType 的分配。不代表含导入重写或完整生成同幅提速，不与此前批次百分比相加。
+
+两版三套隔离生成入口各运行一次，fixture 40、txgame 1134、txgameslg 55 个产物文件名及内容 SHA256 一致。应用后 `GOCACHE=/private/tmp/tx-go-build go run .` 和相同 GOCACHE 的 `go test ./... -count=1` 通过，固定产物无差异。未重跑两套 server、客户端全量或真实集群，未做整体生成计时。
+
+本批 Go 代码净减 19 行，未提交 S15–S19 累计净减 23 行。diff 检查及后置 ponytail-review 通过；源码快照、overlay、旧实现对照和原始日志位于 [S19 临时证据目录](/private/tmp/tx-cmd-view-model-20260910)，无生产采集或新增依赖。下一项尚需评估。
