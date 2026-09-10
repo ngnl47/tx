@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -611,7 +612,7 @@ func TestRedisAdapterUsesShardKeyAsHashTagWhenRouteByDiffersFromID(t *testing.T)
 	if len(client.evals) != 1 {
 		t.Fatalf("eval calls = %#v, want exactly one", client.evals)
 	}
-	if got, want := client.evals[0].keys, []string{"role:{7}:1001"}; !sameStrings(got, want) {
+	if got, want := client.evals[0].keys, []string{"role:{7}:1001"}; !slices.Equal(got, want) {
 		t.Fatalf("eval keys = %#v, want %#v", got, want)
 	}
 }
@@ -782,7 +783,7 @@ func TestRedisAdapterApplyDeleteDeletesMainSubKeysAndVersion(t *testing.T) {
 		t.Fatalf("eval calls = %#v, want one", client.evals)
 	}
 	want := []string{"role:{1001}", "role:{1001}:heroes", "role:{1001}:items", "role:{1001}@v"}
-	if got := client.evals[0].keys; !sameStrings(got, want) {
+	if got := client.evals[0].keys; !slices.Equal(got, want) {
 		t.Fatalf("delete keys = %#v, want %#v", got, want)
 	}
 	if len(client.evals[0].args) != 0 {
@@ -819,7 +820,7 @@ func TestRedisAdapterReadRecordRevisionUsesVersionKey(t *testing.T) {
 	if revision != "7" {
 		t.Fatalf("revision = %q, want 7", revision)
 	}
-	if got, want := client.evals[0].keys, []string{"role:{1001}@v"}; !sameStrings(got, want) {
+	if got, want := client.evals[0].keys, []string{"role:{1001}@v"}; !slices.Equal(got, want) {
 		t.Fatalf("revision keys = %#v, want %#v", got, want)
 	}
 }
@@ -847,7 +848,7 @@ func TestRedisAdapterApplyTTLWithRevisionUpdatesAllDocumentKeys(t *testing.T) {
 	if !applied || current != "" {
 		t.Fatalf("ApplyTTLWithRevision applied/current = %v/%q, want applied", applied, current)
 	}
-	if got, want := client.evals[0].keys, []string{"role:{1001}", "role:{1001}:items", "role:{1001}@v"}; !sameStrings(got, want) {
+	if got, want := client.evals[0].keys, []string{"role:{1001}", "role:{1001}:items", "role:{1001}@v"}; !slices.Equal(got, want) {
 		t.Fatalf("TTL keys = %#v, want %#v", got, want)
 	}
 	if got := client.evals[0].args; len(got) != 2 || got[0] != "5" || got[1] != int64(1500) {
@@ -949,7 +950,7 @@ func TestRedisAdapterLockRecordUsesMainKeyHashTag(t *testing.T) {
 	if len(client.evals) != 1 {
 		t.Fatalf("eval calls = %#v, want one lock call", client.evals)
 	}
-	if got, want := client.evals[0].keys, []string{"arena_record:{470001}:90001@lock"}; !sameStrings(got, want) {
+	if got, want := client.evals[0].keys, []string{"arena_record:{470001}:90001@lock"}; !slices.Equal(got, want) {
 		t.Fatalf("lock keys = %#v, want %#v", got, want)
 	}
 	if len(client.evals[0].args) != 2 || client.evals[0].args[1] != int64(10000) {
@@ -962,7 +963,7 @@ func TestRedisAdapterLockRecordUsesMainKeyHashTag(t *testing.T) {
 	if len(client.evals) != 2 {
 		t.Fatalf("eval calls = %#v, want lock and unlock", client.evals)
 	}
-	if got, want := client.evals[1].keys, []string{"arena_record:{470001}:90001@lock"}; !sameStrings(got, want) {
+	if got, want := client.evals[1].keys, []string{"arena_record:{470001}:90001@lock"}; !slices.Equal(got, want) {
 		t.Fatalf("unlock keys = %#v, want %#v", got, want)
 	}
 }
@@ -1284,7 +1285,7 @@ func TestRedisAdapterLoadsStringDocumentWithSubKeys(t *testing.T) {
 	if len(client.evals) != 1 {
 		t.Fatalf("eval calls = %#v, want exactly one", client.evals)
 	}
-	if got, want := client.evals[0].keys, []string{"role:{1001}", "role:{1001}:items"}; !sameStrings(got, want) {
+	if got, want := client.evals[0].keys, []string{"role:{1001}", "role:{1001}:items"}; !slices.Equal(got, want) {
 		t.Fatalf("eval keys = %#v, want %#v", got, want)
 	}
 	if doc["name"] != "alice" {
@@ -1318,7 +1319,7 @@ func TestRedisAdapterLoadDocumentReadsSubKeyOnly(t *testing.T) {
 	if !exists {
 		t.Fatal("LoadDocument exists = false, want true")
 	}
-	if got, want := client.evals[0].keys, []string{"role:{1001}:items"}; !sameStrings(got, want) {
+	if got, want := client.evals[0].keys, []string{"role:{1001}:items"}; !slices.Equal(got, want) {
 		t.Fatalf("eval keys = %#v, want %#v", got, want)
 	}
 	items := doc["items"].(map[string]any)
@@ -1385,10 +1386,10 @@ func TestRedisAdapterLoadDocumentsReadsSubKeyOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadDocuments returned error: %v", err)
 	}
-	if got, want := client.mgets[0], []string{"role:{1001}:items", "role:{1002}:items"}; !sameStrings(got, want) {
+	if got, want := client.mgets[0], []string{"role:{1001}:items", "role:{1002}:items"}; !slices.Equal(got, want) {
 		t.Fatalf("mget keys = %#v, want %#v", got, want)
 	}
-	if got, want := exists, []bool{true, false}; !sameBools(got, want) {
+	if got, want := exists, []bool{true, false}; !slices.Equal(got, want) {
 		t.Fatalf("exists = %#v, want %#v", got, want)
 	}
 	items := docs[0]["items"].(map[string]any)
@@ -1446,10 +1447,10 @@ func TestRedisAdapterLoadsStringDocumentsWithSubKeys(t *testing.T) {
 	if len(client.mgets) != 1 {
 		t.Fatalf("mget calls = %#v, want exactly one", client.mgets)
 	}
-	if got, want := client.mgets[0], []string{"role:{1001}", "role:{1001}:items", "role:{1002}", "role:{1002}:items"}; !sameStrings(got, want) {
+	if got, want := client.mgets[0], []string{"role:{1001}", "role:{1001}:items", "role:{1002}", "role:{1002}:items"}; !slices.Equal(got, want) {
 		t.Fatalf("mget keys = %#v, want %#v", got, want)
 	}
-	if got, want := exists, []bool{true, false}; !sameBools(got, want) {
+	if got, want := exists, []bool{true, false}; !slices.Equal(got, want) {
 		t.Fatalf("exists = %#v, want %#v", got, want)
 	}
 	if docs[1] != nil {
@@ -1490,13 +1491,13 @@ func TestRedisAdapterLoadDocumentsFallsBackToEval(t *testing.T) {
 	if len(client.evals) != 2 {
 		t.Fatalf("eval calls = %#v, want two calls", client.evals)
 	}
-	if got, want := client.evals[0].keys, []string{"role:{1001}", "role:{1001}:items"}; !sameStrings(got, want) {
+	if got, want := client.evals[0].keys, []string{"role:{1001}", "role:{1001}:items"}; !slices.Equal(got, want) {
 		t.Fatalf("first eval keys = %#v, want %#v", got, want)
 	}
-	if got, want := client.evals[1].keys, []string{"role:{1002}", "role:{1002}:items"}; !sameStrings(got, want) {
+	if got, want := client.evals[1].keys, []string{"role:{1002}", "role:{1002}:items"}; !slices.Equal(got, want) {
 		t.Fatalf("second eval keys = %#v, want %#v", got, want)
 	}
-	if got, want := exists, []bool{true, false}; !sameBools(got, want) {
+	if got, want := exists, []bool{true, false}; !slices.Equal(got, want) {
 		t.Fatalf("exists = %#v, want %#v", got, want)
 	}
 	if docs[1] != nil {
@@ -1546,13 +1547,13 @@ func TestRedisAdapterLoadDocumentsWithOptionsChunksMGet(t *testing.T) {
 	if len(client.mgets) != 2 {
 		t.Fatalf("mget calls = %#v, want two calls", client.mgets)
 	}
-	if got, want := client.mgets[0], []string{"role:{1001}", "role:{1001}:items", "role:{1002}", "role:{1002}:items"}; !sameStrings(got, want) {
+	if got, want := client.mgets[0], []string{"role:{1001}", "role:{1001}:items", "role:{1002}", "role:{1002}:items"}; !slices.Equal(got, want) {
 		t.Fatalf("first mget keys = %#v, want %#v", got, want)
 	}
-	if got, want := client.mgets[1], []string{"role:{1003}", "role:{1003}:items"}; !sameStrings(got, want) {
+	if got, want := client.mgets[1], []string{"role:{1003}", "role:{1003}:items"}; !slices.Equal(got, want) {
 		t.Fatalf("second mget keys = %#v, want %#v", got, want)
 	}
-	if got, want := exists, []bool{true, true, true}; !sameBools(got, want) {
+	if got, want := exists, []bool{true, true, true}; !slices.Equal(got, want) {
 		t.Fatalf("exists = %#v, want %#v", got, want)
 	}
 	if docs[2]["name"] != "carl" {
@@ -1589,7 +1590,7 @@ func TestRedisClusterRoutesSingleWriteByShardKey(t *testing.T) {
 	if len(router.calls) != 1 || router.calls[0].routeType != "role" || router.calls[0].shardKey != int64(7) {
 		t.Fatalf("router calls = %#v, want role shard key 7", router.calls)
 	}
-	if len(roleShard.evals) != 1 || !sameStrings(roleShard.evals[0].keys, []string{"role:{7}:1001"}) {
+	if len(roleShard.evals) != 1 || !slices.Equal(roleShard.evals[0].keys, []string{"role:{7}:1001"}) {
 		t.Fatalf("role shard evals = %#v, want one write for role:{7}:1001", roleShard.evals)
 	}
 	if len(userShard.evals) != 0 {
@@ -1627,7 +1628,7 @@ func TestRedisClusterRoutesConditionalBackfillByShardKey(t *testing.T) {
 	if len(router.calls) != 1 || router.calls[0].routeType != "role" || router.calls[0].shardKey != int64(7) {
 		t.Fatalf("router calls = %#v, want role shard key 7", router.calls)
 	}
-	if len(roleShard.evals) != 1 || !sameStrings(roleShard.evals[0].keys, []string{"role:{7}:1001"}) {
+	if len(roleShard.evals) != 1 || !slices.Equal(roleShard.evals[0].keys, []string{"role:{7}:1001"}) {
 		t.Fatalf("role shard evals = %#v, want one conditional backfill", roleShard.evals)
 	}
 	if len(userShard.evals) != 0 {
@@ -1734,7 +1735,7 @@ func TestRedisClusterRoutesRecordLockByShardKey(t *testing.T) {
 	if len(router.calls) != 1 || router.calls[0].routeType != "role" || router.calls[0].shardKey != int64(7) {
 		t.Fatalf("router calls = %#v, want role shard key 7", router.calls)
 	}
-	if len(roleShard.evals) != 1 || !sameStrings(roleShard.evals[0].keys, []string{"role:{7}:1001@lock"}) {
+	if len(roleShard.evals) != 1 || !slices.Equal(roleShard.evals[0].keys, []string{"role:{7}:1001@lock"}) {
 		t.Fatalf("role shard evals = %#v, want one lock for role:{7}:1001@lock", roleShard.evals)
 	}
 	if len(userShard.evals) != 0 {
@@ -1765,7 +1766,7 @@ func TestRedisClusterRoutesRecordRevisionByShardKey(t *testing.T) {
 	if revision != "9" {
 		t.Fatalf("revision = %q, want 9", revision)
 	}
-	if len(roleShard.evals) != 1 || !sameStrings(roleShard.evals[0].keys, []string{"role:{7}:1001@v"}) {
+	if len(roleShard.evals) != 1 || !slices.Equal(roleShard.evals[0].keys, []string{"role:{7}:1001@v"}) {
 		t.Fatalf("role shard evals = %#v, want one read for role:{7}:1001@v", roleShard.evals)
 	}
 	if len(userShard.evals) != 0 {
@@ -1819,10 +1820,10 @@ func TestRedisClusterBatchLoadsByShardGroupAndRestoresOrder(t *testing.T) {
 	if !exists[0] || docs[0]["name"] != "alice" || exists[1] || docs[1] != nil || !exists[2] || docs[2]["name"] != "carol" {
 		t.Fatalf("docs=%#v exists=%#v, want original order", docs, exists)
 	}
-	if len(shardA.mgets) != 1 || !sameStrings(shardA.mgets[0], []string{"role:{7}:1001", "role:{7}:1001:items", "role:{7}:1003", "role:{7}:1003:items"}) {
+	if len(shardA.mgets) != 1 || !slices.Equal(shardA.mgets[0], []string{"role:{7}:1001", "role:{7}:1001:items", "role:{7}:1003", "role:{7}:1003:items"}) {
 		t.Fatalf("shard A mgets = %#v, want one endpoint-level MGET", shardA.mgets)
 	}
-	if len(shardB.mgets) != 1 || !sameStrings(shardB.mgets[0], []string{"role:{8}:1002", "role:{8}:1002:items"}) {
+	if len(shardB.mgets) != 1 || !slices.Equal(shardB.mgets[0], []string{"role:{8}:1002", "role:{8}:1002:items"}) {
 		t.Fatalf("shard B mgets = %#v, want one endpoint-level MGET", shardB.mgets)
 	}
 }
@@ -2027,33 +2028,9 @@ func normalizeJSONNull(value any) any {
 	}
 }
 
-func sameStrings(got []string, want []string) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	for i := range got {
-		if got[i] != want[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func sameBools(got []bool, want []bool) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	for i := range got {
-		if got[i] != want[i] {
-			return false
-		}
-	}
-	return true
-}
-
 func hasMGetCall(calls [][]string, want []string) bool {
 	for _, call := range calls {
-		if sameStrings(call, want) {
+		if slices.Equal(call, want) {
 			return true
 		}
 	}

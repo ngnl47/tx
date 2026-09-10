@@ -1,6 +1,6 @@
 # 六工程 Ponytail 瘦身审计与补充计划（2026-09-10）
 
-本轮显式使用 Ponytail 4.9.0 的 `ponytail-audit`，串行扫描六工程。仅补充审计与计划文档，不实施下述代码候选，不提交 Git。原分层审计的完成项不重复计入本轮收益。
+审计阶段显式使用 Ponytail 4.9.0 的 `ponytail-audit`，串行扫描六工程，仅补充文档。下文候选与行号保留审计时基线，后续实施状态见文末；不提交 Git。原分层审计的完成项不重复计入本轮收益。
 
 ## 结论
 
@@ -153,3 +153,49 @@ Ponytail 负责发现复杂度，最终筛选仍服从工程边界。单实现�
 S01 和 S03 按静态删除与替代 import 可计 60 行；S02 和 S04 为局部抽取草案估算约 43–48 行。四项合计预计净减 103–108 行，不含未来新增的必要测试；S05 文档、暂缓项、已完成的 RouteKey 及 GD 模板收益不计。实施可能因合理测试和注释增量降低净值，不以达到该数字作为验收条件。
 
 net: -103～108 lines, -0 deps possible.（静态候选估算，未实施、非性能收益。）
+
+## S01 实施结果（2026-09-10）
+
+- 已删除 `buildDataStructModel`、`buildStoreModel`、`serializationTagNames`、`serializationTagNameKeys`，实施前精确检索均只有声明。`WithKnownTypes` 构建入口及当前标签校验保留。
+- `txgen/gen/model.go` 净减 8 行，`gen/validate.go` 净减 29 行，共 37 行；没有新增替代实现或测试。
+- 本轮执行 `GOCACHE=/private/tmp/tx-go-build go run .`，成功后执行 `GOCACHE=/private/tmp/tx-go-build go test ./... -count=1`，全部通过；`tests/output` 无 Git 差异。
+- 生成时仍提示夹具 `Role_SyncResp.Payload` 为动态 `any`，不属于本次清理范围。未重跑两套示例生成、server 测试或集群压测；本次没有模板及产物变化。
+- 无当前运行调用，未做 benchmark，不承诺性能提升。后置 ponytail-review 未发现新增冗余；diff 检查通过。
+- S01 完成，下一批建议 S03，待确认后实施；其他候选保持未实施。
+
+## S03 实施结果（2026-09-10）
+
+- `tx/tests/storage_redis_adapter_test.go` 的 25 处比较改用 `slices.Equal`，删除 `sameStrings`、`sameBools`；`hasMGetCall` 的外层查找仍保留。
+- 原有 63 个测试函数及全部断言、记录调用的测试桩保留；差异仅包括标准库 import、调用替换和两个 helper 删除，净减 23 行。
+- 本轮执行 `GOCACHE=/private/tmp/tx-go-build go test ./... -count=1`，全部通过；diff 检查通过，后置 ponytail-review 无新增收敛项。
+- 仅改变测试比较实现，生产代码及生成产物未改；未做 benchmark，不宣称测试耗时改善。
+- 保留 S01 未提交改动，累计代码净减 60 行；S01、S03 完成，下一批建议 S04，待确认后实施。
+
+## S04 实施结果（2026-09-10）
+
+- `WritePerfSummary`、`WriteWorldPerfSummary` 保留各自强类型入口，共用同包私有 `writePerfSummary[T]`；原子写入主体原样保留，不合并 schema 或运行时注入点。
+- 保留同目录临时文件、Encode、Sync、Close、Rename、错误返回和临时文件清理。既有角色摘要测试增加编码失败检查，确认旧文件原样保留且临时文件清除；世界摘要仍有独立格式验证。
+- 改动前两项摘要测试通过；改动后执行 `GOCACHE=/private/tmp/tx-go-build go test ./... -count=1`，server 全量测试通过，包含集成测试包。
+- 工具实现净减 21 行，测试净增 9 行，合计净减 12 行。没有修改生产服务和生成产物；未做 benchmark，不承诺吞吐或测试耗时提升，也未注入文件系统 Sync/Close 故障。
+- diff 检查通过，后置 ponytail-review 无新增收敛项；既有未提交变更保留，S01/S03/S04 累计代码净减 72 行。
+- 下一批建议 S02，待确认后实施；S05 文档纠偏保持未实施。
+
+## S02 实施结果（2026-09-10）
+
+- 两类客户端压测入口共用 `src/cli/perf-files.ts` 中的 `waitForFile`、`writeJSONAtomic`，原函数体与私有缺失文件判定原样抽取；保留文件轮询间隔、超时和错误传播、JSON 缩进及末尾换行、临时文件命名和 Rename。
+- 角色与世界的测量循环、失败统计、独立结果 schema 和依赖注入接口保持原样；共享工具只由两个压测入口引用，不进入普通客户端生产路径，也不跨独立示例复用。
+- 新增两项真实临时目录测试，覆盖文件屏障等待、JSON 格式及成功后临时文件消失、超时、非 ENOENT 错误传播和写入失败；未增加文件系统故障矩阵。
+- 本轮定向测试 2 项通过；随后 `npm test` 全部 101 项通过、无跳过，`npm run build` 的类型检查及构建通过。未运行真实集群压测，未重跑本批未改动的 Go 工程。
+- 工具实现净减 25 行，必要测试新增 29 行，本批代码净增 4 行；四批累计代码净减 68 行，不含文档。未做 benchmark，不宣称吞吐、分配次数或耗时改善。
+- diff 检查通过，后置 ponytail-review 无新增收敛项。全部变更保持未提交；交付中的提交建议按工程累积当前未提交内容。
+- S01/S03/S04/S02 完成；下一批建议 S05，核对 Mongo 最终状态与七进程拓扑，纠正仍生效的旧验收说明，待确认后实施。
+
+## S05 实施结果（2026-09-10）
+
+- 修正 txclientslg README 与 AGENTS 中仍生效的 WAL/checkpoint 验收说明，改为 Mongo 最终状态、文档版本与槽位 assignment；保留客户端只驱动协议、服务端负责真实存储验收的边界。
+- 对照 `suite.go`：晋升前后分别发送 `(47,83)` 与 `(48,84)`，晋升后检查 Mongo 最终坐标及文档版本；不描述为 WAL 重放或 checkpoint 恢复，也不承诺异常退出的内存修改必不丢失。
+- 对照 `statefulWorldPerfProcessSpecs` 及发现数量检查，将世界压测拓扑与关闭证据修正为七进程。对照 `waitForWorldPerfPersistence`，准确描述最终坐标与非零文档版本检查；目标实例和槽位 generation 单独核对，不作为 Mongo 持久化字段。
+- 本轮执行 `GOCACHE=/private/tmp/tx-go-build go test ./internal/clustere2e -run '^TestWorldPerf' -count=1` 通过，覆盖世界压测拓扑、持久化等待及编排。仅改文档，未重跑客户端测试、全量 Go 测试或真实集群；没有新增测试、压测采集或生产代码。
+- 生效文档定向旧术语检索、diff 检查通过；后置 ponytail-review 无新增收敛项。历史审计和设计记录保持原样。
+- 本批代码行数变化为 0，累计未提交代码仍净减 68 行（含测试、不含文档）；未做 benchmark，无新增性能结论。所有变更保持未提交。
+- S01–S05 完成。下一项尚需评估具体收益与契约风险，不自动重开暂缓项。核对时另发现世界拓扑测试名称仍含 `SixProcess`（断言已包含七进程），以及进程列表容量预分配仍为 6；本批遵守纯文档范围未修改，不影响本轮拓扑结论。
