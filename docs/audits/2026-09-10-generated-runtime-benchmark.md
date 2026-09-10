@@ -102,3 +102,46 @@ txgen 与两个 server 全量测试通过，server 验证允许本地回环端�
 从模板重新生成三套产物，仅各包 type_registry.go 增加 maps import 并替换复制循环。本轮各净减 3 行，共 9 行；累计生成物 fixture -40、txgame -1224、txgameslg -39，共净减 1303 行。模板另净减 3 行，不并入产物统计。
 
 证据在 `/private/tmp/tx-ops-clone-20260910`：direct-*.txt/direct-raw.json 是有效复制基准，bench-*.txt/raw.json 是捕获对照；临时校验、overlay、二进制及日志均不进入生产路径。txgen 与两个 server 全量测试通过，保留现有视图隔离及事务撤销行为测试。未另跑客户端或真实集群；TypeScript 产物不变。后置 ponytail-review 无新增简化项，diff 检查通过。全部变更未提交，下一项仍需评估具体生产候选。
+
+## S33：集合解绑 nil 判断评估后保留
+
+六工程起始工作区均干净，S25–S32 已提交。当前 txgen 基线为 4ae32de，txgame 为 1b7d26a，txgameslg 为 1b13ead。本轮候选删除 map/slice 子 Store 的 detachStore 在 delete 前对 stores 和 dirtyChildren 的 nil 判断；Go 的 delete 对 nil map 是安全空操作，但语义冗余不等于运行成本冗余。
+
+临时 overlay 直接测实际生成的 GDRoleItemsMapStore，覆盖 nil 表解绑，以及重新放入已有子项和脏标记后解绑。临时行为校验确认解绑后两个表不再包含该项、子 Store 的 dirty hook 被清除，重复解绑安全。两版预编译，Go 1.27.0 darwin/amd64、GOMAXPROCS=1；先交错 6 轮、200ms，再交错 10 轮、300ms 复测：
+
+| 场景 | 首轮 ns/op 前 → 后 | 加长复测 ns/op 前 → 后 | 分配 |
+|---|---:|---:|---:|
+| nil 表 | 4.4055 → 5.833 | 4.4845 → 5.8855 | 两版均 0 B / 0 次 |
+| 已绑定子项 | 68.33 → 66.34 | 67.925 → 66.5 | 两版均 0 B / 0 次 |
+
+空表路径稳定增加约 1.4ns（31%），已有子项路径减少约 1.4ns（2.1%）。没有真实调用占比证据，不能据此确认整体收益，候选未采用。结果限于该生成 map 子 Store 的两个样本，不外推到所有集合或业务吞吐。保留现有 nil 判断，不以标准库语义允许省略为唯一依据删代码。
+
+已恢复本轮前模板，通过生成器重新生成 fixture；txgen 工作区恢复干净，txgame/txgameslg 未生成候选且保持干净。恢复后 txgen 全量测试通过。最终生产代码与产物无变更，本轮只记录取舍；未重跑 server、客户端或真实集群。后置 ponytail-review 无新增简化项，diff 检查通过。原始基准、overlay、校验、前后二进制与恢复日志仅位于 `/private/tmp/tx-detach-20260910`，生产路径无采集逻辑。
+
+本轮净行数变化 0，已提交的 1303 行生成物删减不再计作本轮收益。下一项需评估其他生成物候选；对这类极小热路径优先判断实际成本，不自动去掉 nil 快路径。
+
+## S34：无子 GD 的字段路径解析只生成一次返回
+
+保留未提交 S33 文档，代码基线仍为 txgen 4ae32de、txgame 1b7d26a、txgameslg 1b13ead。对没有直接子 GD、map 子 GD 或 slice 子 GD 的类型，PathFieldName 原有 index==0 分支和空 switch 的 default 返回完全相同。模板按原三个 case 条件确定是否需要子解析器；不需要时保留深度/索引校验，仅生成一次字段名解析返回。没有扩大 HasViewNestedFields 的含义，也没有增加公共 API 或运行时状态。
+
+例如 GDItem 的顶层节点和合法索引下的回退解析均调用 GDItemResolveFieldName；包含子 GD 的 GDRole 仍保留原直接子路径构造，不引入 S31 否决的 helper。非法深度、索引、FieldID 和命名方式仍由原校验与字段名解析处理。
+
+临时 overlay 使用真实生成 GDItem，对深度 0/1/2/4/5、索引 -1/0/1/3/4 和 Go/JSON/BSON/Msgpack 名称进行前后行为校验；两版结果一致。直接解析基准为深度 2、JSON 字段名、index 0/1，Go 1.27.0 darwin/amd64、GOMAXPROCS=1，预编译后交错 6 轮、200ms，中位数如下：
+
+| index | 原实现 ns/op | 收敛后 ns/op | B/op | allocs/op |
+|---|---:|---:|---:|---:|
+| 0 | 5.710 | 4.173 | 两版 0 | 两版 0 |
+| 1 | 5.7515 | 4.1345 | 两版 0 | 两版 0 |
+
+该类型两个直接场景约快 27%–28%，不外推完整文档构建或业务吞吐；本项同时有生成代码减少的明确收益。
+
+| 生成工程 | 改动文件数 | 本轮净行数 |
+|---|---:|---:|
+| txgen fixture | 5 | -30 |
+| txgame server | 116 | -696 |
+| txgameslg server | 4 | -24 |
+| 合计 | 125 | -750 |
+
+模板净增 2 行，不计入产物删减；已提交的 1303 行不再作为本轮收益。所有生成文件相对 HEAD 均精确匹配上述一次分支替换，无额外格式变化；有子 GD 类型保持不变，TypeScript 产物不变。
+
+重新生成后 txgen 和两个 server 全量测试通过，server 测试允许本地回环端口。未另跑客户端或真实集群。后置 ponytail-review 无新增简化项，diff 检查通过。临时校验、overlay、原始基准和测试日志在 `/private/tmp/tx-leaf-field-20260910`，采集不进入生产路径。全部变更未提交；下一项需继续评估具体生成物候选。
