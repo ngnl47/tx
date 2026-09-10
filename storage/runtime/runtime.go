@@ -436,7 +436,7 @@ func buildRedisCluster(ctx context.Context, cfg storageconfig.RouteTableConfig, 
 			return nil, nil, nil, fmt.Errorf("storage runtime: parse redis endpoint %s: %w", endpoint, err)
 		}
 		client := goredis.NewClient(options)
-		client.AddHook(stats.redisHook())
+		stats.attachRedis(client)
 		if err := client.Ping(ctx).Err(); err != nil {
 			_ = client.Close()
 			closeRedisClients(clients)

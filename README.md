@@ -366,7 +366,8 @@ TX_ETCD_ENDPOINT=127.0.0.1:2379 \
 
 ## msgq 会话绑定
 
-存储运行时提供 `Runtime.IOStats()` 累计驱动快照，按固定 Redis/Mongo 操作类别统计调用数、命令数、失败数和耗时，
+仅带 `-tags=txbench` 的验收构建启用存储 I/O 采集；普通构建不安装 Redis 计时钩子或 Mongo 统计回调，`Runtime.IOStats()` 返回空快照。
+验收构建的 `Runtime.IOStats()` 提供累计驱动快照，按固定 Redis/Mongo 操作类别统计调用数、命令数、失败数和耗时，
 不记录 key 或业务数据。开启控制端口后，可通过 `StorageIOService.Snapshot` 或 `txctl storage-io` 读取；统计口径、重试与 Pipeline 边界见
 [热点路径 I/O 检查](docs/audits/2026-09-08-hot-path-io.md)。
 

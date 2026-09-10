@@ -1,3 +1,5 @@
+//go:build txbench
+
 package runtime
 
 import (
@@ -73,6 +75,8 @@ func redisOperation(name string) int {
 }
 
 type redisIOHook struct{ stats *ioStats }
+
+func (s *ioStats) attachRedis(client *redis.Client) { client.AddHook(s.redisHook()) }
 
 func (s *ioStats) redisHook() redis.Hook                          { return redisIOHook{stats: s} }
 func (h redisIOHook) DialHook(next redis.DialHook) redis.DialHook { return next }
