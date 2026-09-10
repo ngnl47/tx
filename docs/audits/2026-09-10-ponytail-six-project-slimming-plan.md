@@ -742,3 +742,30 @@ net: -103～108 lines, -0 deps possible.（静态候选估算，未实施、非�
 - 94 处生成比较调整，输出净行数不变；累计未提交生成物仍净增 740 行。提交建议累计日志还原、S74、S76 和评估记录；下一项具体候选尚需评估。
 
 本轮 txgen、txgame/server、txgameslg/server 全量测试通过，前后语义与浮点边界验证通过；生成范围及六工程 diff 检查通过。后置 ponytail-review 无新增简化项。客户端无变化，未另跑真实集群或 race。
+
+
+## S77：内置标量 slice 的外层比较使用 slices.Equal（2026-09-11）
+
+- 前批次已提交，六工程起始干净。仅内置整数/bool/string slice 使用 slices.Equal 并显式保留 nil/空区别，浮点、复数、时间、指针、复杂值、别名和 map 保留原反射；不新增运行时包装。
+- 前后 nil/空、内容和长度变化验证通过；扩展原有类型边界回归。六轮实际 snapshotDiffFrom 的变化/相等/共享数组场景中位耗时分别下降约 60.6%、71.7%、33.9%，均从 48B/2 次分配降为零，见 [运行时报告 S77](2026-09-10-generated-runtime-benchmark.md#s77内置标量-slice-的外层比较使用-slicesequal2026-09-11)。
+- 34 处比较调整，生成物因导入净增 18 行。txgameslg 及两个客户端无变更；本轮未提交，提交建议从新基线统计。下一项具体候选尚需评估。
+
+本轮 txgen、txgame/server、txgameslg/server 全量回归通过；导入分组修正后重新生成，并复跑 txgen 全量测试和两个 server 生成包编译，均通过。生成范围及六工程 diff 检查通过，后置 ponytail-review 无新增简化项。未另跑真实集群或 race。
+
+
+## S78：内置标量 map 的外层比较使用 maps.Equal（2026-09-11）
+
+- 保留未提交 S77。仅内置整数/bool/string 键值 map 使用 maps.Equal，先以 reflect.Value.Pointer 保留身份快速路径，再保留 nil/空区别；特殊类型继续 DeepEqual，不新增运行时 helper。
+- 类型边界和前后语义验证通过，实际 GDDailyTask 差异入口六轮变化/相等/共享 map 中位耗时分别约下降 52.8%、83.9%、89.0%，分配均为零，见 [运行时报告 S78](2026-09-10-generated-runtime-benchmark.md#s78内置标量-map-的外层比较使用-mapsequal2026-09-11)。
+- 本轮 50 处 map 比较调整，导入增加使生成物净增 25 行；累计 S77–S78 生成物净增 43 行。提交建议累计两轮；下一项具体候选尚需评估。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过；生成范围及六工程 diff 检查通过。后置 ponytail-review 无新增简化项；两个客户端无变化，未另跑真实集群或 race。
+
+
+## S79：浮点值 map 复用身份检查与 maps.Equal（2026-09-11）
+
+- 保留未提交 S77–S78，仅值扩展到 float32/float64，复用 map 身份与 nil 检查；浮点键、复数、时间、浮点 slice 等不扩展，不新增运行时包装。
+- 前后 GDHero 浮点边界及类型生成回归通过。实际 100 项浮点值 map 差异入口六轮变化/相等/共享场景中位耗时下降约 49.9%、77.9%、10.1%，入口剩余 192B/8 次分配，见 [运行时报告 S79](2026-09-10-generated-runtime-benchmark.md#s79浮点值-map-复用身份检查与-mapsequal2026-09-11)。
+- 本轮 txgame 9 处比较变化，生成物因导入净增 4 行；累计 S77–S79 净增 47 行。提交建议累计三轮，下一项具体候选尚需评估。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过；生成范围及六工程 diff 检查通过，后置 ponytail-review 无新增简化项。两个客户端无变化，未另跑真实集群或 race。

@@ -921,3 +921,68 @@ Go 1.27.0 darwin/amd64、GOMAXPROCS=1，预建旧值/当前值和复用的 Store
 94 处逐项比较改为直接比较（fixture 2、txgame 91、txgameslg 1）。生成文件与模板净行数不变；增加一个生成类型边界回归测试，不以删行为目标。累计未提交生成物仍净增 740 行（fixture 36、txgame 685、txgameslg 19）。从 HEAD 逐文件核对仅包含日志还原、S74、S76。S75 原代码保留。本批不提交，提交建议累计实际变更及评估记录；下一项具体候选尚需评估。
 
 本轮 txgen、txgame/server、txgameslg/server 全量测试通过，前后语义与浮点边界验证通过；生成范围及六工程 diff 检查通过。后置 ponytail-review 无新增简化项。客户端无变化，未另跑真实集群或 race。
+
+
+## S77：内置标量 slice 的外层比较使用 slices.Equal（2026-09-11）
+
+本轮起始六工程干净，前批次已提交（tx c8aeb73、txgen 47ef186、txgame aa05465、txgameslg 87a9c6e）。在生成模型中明确选择内置整数、bool、string 元素的 slice，其外层 snapshotDiffFrom 比较改为 nil 状态不同或 !slices.Equal。nil 与空 slice 仍触发整字段替换；相同内容、相同底层数组均无变化。浮点/复数因 NaN、time.* 因深比较语义、指针和复杂值、别名及 map 均保留原反射路径。不改变 S76 已采用的逐项比较，也不增加运行时 helper。
+
+选择规则用于模板和导入决策；仅需 typed slice 比较的 Store 可去掉 reflect，slices 导入归入标准库组。扩展现有类型边界测试，改前失败、改后通过，确认 string slice 选用标准库，float/time/嵌套集合保留深比较。临时前后测试覆盖 nil、nil/空互换、空集合、内容相等/变化和长度改变，核对变化及整字段替换。
+
+Go 1.27.0 darwin/amd64、GOMAXPROCS=1，实际 GDRole snapshotDiffFrom，32 项 string slice，两版预编译后交替六轮、每项 200ms。旧值、当前值和 Store 在计时前创建，操作表预热复用；不包含快照创建和持久化，中位数如下：
+
+| 场景 | S76 ns/op | S77 ns/op | B/op 前→后 | allocs/op 前→后 |
+|---|---:|---:|---:|---:|
+| 第 17 项变化 | 683.55 | 269.65 | 48→0 | 2→0 |
+| 内容相等，独立数组 | 786.75 | 222.75 | 48→0 | 2→0 |
+| 共享底层数组 | 336.20 | 222.20 | 48→0 | 2→0 |
+
+中位耗时分别约下降 60.6%、71.7%、33.9%，三个场景分配均降为零。证据目录 /private/tmp/tx-slice-equal-20260911 包含旧 fixture、overlay、语义测试、六轮原始数据/results.json、范围核对和回归日志。之后仅修正 slices 的导入分组并重新生成，比较函数体未变；采集逻辑不进入生产路径。
+
+34 处外层比较调整（fixture 1、txgame 33）。因标准库导入生成物净增 18 行（fixture 1、txgame 17），不以删行数为目标。txgameslg 与两个客户端生成物无变化。按 HEAD 逐文件核对仅含预期比较及导入变化。本轮不提交，提交建议从此次干净基线重新统计；下一项具体候选尚需评估，不能将该规则直接扩大到包含 NaN 或复杂值的集合。
+
+本轮 txgen、txgame/server、txgameslg/server 全量回归通过；导入分组修正后重新生成，并复跑 txgen 全量测试和两个 server 生成包编译，均通过。生成范围及六工程 diff 检查通过，后置 ponytail-review 无新增简化项。未另跑真实集群或 race。
+
+
+## S78：内置标量 map 的外层比较使用 maps.Equal（2026-09-11）
+
+保留未提交 S77。仅 map 的键和值均为内置整数、bool 或 string 时采用 typed 比较；生成模型与 slice 复用内置标量分类规则。浮点/复数键值、时间、指针、别名和复杂类型继续 DeepEqual。生成表达式先比较 reflect.ValueOf(map).Pointer()，保留同一 map 的身份快速路径；身份不同时，nil 状态不同或 !maps.Equal 才触发原差异处理。不新增运行时包装函数。
+
+Go 1.27 maps.Equal 源码按键遍历，没有同一 map 立即返回的分支；reflect.DeepEqual 有该快速路径，故不能只替换函数名后忽略共享 map 性能。使用标准 reflect.Value.Pointer 读取 map 标识，不访问运行时内部布局；只去掉外层 DeepEqual 的深反射比较，仍保留身份判断所需的反射。nil/空区别、新增/删除/覆盖项的原逐项差异逻辑和深度回退不变。
+
+扩展既有生成边界测试，确认整数 map 选择身份检查和 maps.Equal，浮点键和值保留 DeepEqual：改前失败，改后通过。临时前后测试覆盖 nil、nil/空互换、空 map、相同内容、值变化及键集合变化。先在临时 overlay 验证表达式，再应用模板；最终 GDDailyTaskStore.go 与格式化后的基准候选逐字节一致。
+
+Go 1.27.0 darwin/amd64、GOMAXPROCS=1，实际 GDDailyTask snapshotDiffFrom，100 项 int32→int map；旧值、当前值与 Store 预先创建，操作表预热复用。两版预编译后交替六轮，每项 200ms，中位数如下：
+
+| 场景 | S77 ns/op | S78 ns/op | B/op 前→后 | allocs/op 前→后 |
+|---|---:|---:|---:|---:|
+| 一项值变化 | 8930 | 4212.5 | 1214.5→0 | 151→0 |
+| 内容相等，独立 map | 10622 | 1710 | 2400→0 | 300→0 |
+| 同一个 map | 99.72 | 10.93 | 0→0 | 0→0 |
+
+耗时分别约下降 52.8%、83.9%、89.0%，变化和相等场景的分配降为零。改前变化场景受 map 遍历提前结束影响，表中为六轮中位数，并非固定分配量。计时不含 BeginChange 复制和实际持久化，不能外推整条存储链路。证据在 /private/tmp/tx-map-equal-20260911，包含旧 fixture、候选、overlay、前后语义测试、六轮原始数据/results.json、字节一致性核对及范围/回归日志，采集不进入生产路径。
+
+本轮 50 处 map 比较调整（fixture 1、txgame 48、txgameslg 1），新增标准库导入使生成物净增 25 行。累计 S77–S78 共 34 处 slice 和 50 处 map 比较，生成物净增 43 行（fixture 2、txgame 40、txgameslg 1）。按 HEAD 逐文件核对仅含上述比较与导入变化。全部未提交，提交建议累计 S77–S78；下一项具体候选尚需评估，不直接扩大特殊类型范围。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过；生成范围及六工程 diff 检查通过。后置 ponytail-review 无新增简化项；两个客户端无变化，未另跑真实集群或 race。
+
+
+## S79：浮点值 map 复用身份检查与 maps.Equal（2026-09-11）
+
+保留未提交 S77–S78。本轮仅扩展 snapshotMapEqualType 的值类型，允许 float32/float64；键仍限定为内置整数、bool、string。继续复用 S78 的身份检查、nil 状态判断和 maps.Equal 表达式，不新增运行时 helper，也不改模板。浮点键、复数、时间、指针、别名和浮点 slice 均保持原范围。
+
+核对当前 Go reflect.DeepEqual：map 先检查 nil、长度和身份，再查找键并深比较值；浮点值使用 ==。因此同一个含 NaN 的 map 在原实现中相等，而两个独立 map 的 NaN 值不相等；已有身份快速路径使本次扩展保持这一差异。原有类型边界回归扩展 float32/float64 map 值，继续断言浮点键和浮点 slice 使用反射，改前失败、改后通过。实际 GDHero 前后验证独立 NaN、共享 NaN、正负零、无穷、普通值变化和 nil/空区别均通过。
+
+Go 1.27.0 darwin/amd64、GOMAXPROCS=1，实际 txgame GDHero.snapshotDiffFrom，Attribute 为 100 项 int32→float64 map。旧值、当前值和 Store 在计时前创建，操作表预热复用；两版预编译后交替六轮，每项 200ms，中位数如下：
+
+| 场景 | S78 ns/op | S79 ns/op | B/op 前→后 | allocs/op 前→后 |
+|---|---:|---:|---:|---:|
+| 一项值变化 | 10808.5 | 5413.5 | 1388→192 | 157→8 |
+| 内容相等，独立 map | 12889.5 | 2845.5 | 2592→192 | 308→8 |
+| 同一个 map | 1045.5 | 939.85 | 192→192 | 8→8 |
+
+实际差异入口中位耗时分别约下降 49.9%、77.9%、10.1%。GDHero 整体入口仍有 192B/8 次分配，本轮没有继续归因或修改其他字段。改前变化场景因 map 遍历顺序而波动，表中为六轮中位数。计时不含 BeginChange 和持久化；有限数值用于基准，NaN 等特殊值单独验证行为，不由吞吐样本代替正确性验证。证据目录 /private/tmp/tx-float-map-equal-20260911 包含旧 GDHeroStore、overlay、前后测试、六轮数据/results.json、范围及回归日志，采集与生产路径隔离。
+
+本轮仅 txgame 的 9 处浮点值 map 比较变化，导入使生成物净增 4 行；fixture 和 txgameslg 无本轮生成差异。累计 S77–S79 共 34 处 slice 与 59 处 map 比较，生成物净增 47 行（fixture 2、txgame 44、txgameslg 1）。按 HEAD 逐文件核对仅包含上述比较与导入变化。全批未提交，提交建议累计 S77–S79；下一项具体候选尚需评估。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过；生成范围及六工程 diff 检查通过，后置 ponytail-review 无新增简化项。两个客户端无变化，未另跑真实集群或 race。
