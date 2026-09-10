@@ -1171,3 +1171,155 @@ CPU 样本中 runtime.kevent 与 runtime.madvise 占比约 56.7% 和 9.7%，不�
 三套基础层各替换一个已有方法，本轮生成物及模板行数均不变；累计 S86–S87 生成物净增 18 行，S81 的 49 处比较继续保留。提交建议累计 S81–S87；下一项具体候选尚需评估，不自动扩大路径 API。
 
 本轮 txgen、txgame/server、txgameslg/server 全量测试通过；候选逐值对照、最终生成物一致性和六工程 diff 检查通过。后置 ponytail-review：Lean already. Ship. 无新增简化项。两个客户端无变化，未另跑真实集群或 race；全部变更未提交。
+
+
+## S88：文档路径按实际段数预留容量（2026-09-11）
+
+S81–S87 已提交，本轮起始六工程干净。Path.FullPath 原来按 Depth*2 预留 DocumentPath 容量，普通字段节点也预留了不存在的 key 段。现在在原深度校验后统计非 KeyNone 的节点，以 Depth+keyCount 预分配；字段解析、key 转换、错误返回和最终段顺序保持不变。例如 Items.1001.Quantity 需要三段，原来按两层预留四段，现在预留三段，返回数据仍独立持有。
+
+这是公共运行时容量调整，不新增 helper 或配置项；只遍历至多四个节点，不改变生成契约。未知 key 类型仍交由原转换路径拒绝，深度非法或字段解析失败仍返回 nil。既有后端字段名、嵌套字段和非法 key/路径测试保留。
+
+实际 fixture 的既有文档构建基准，Go 1.27.0 darwin/amd64、GOMAXPROCS=1；两版预编译交替六轮、每项 200ms，无 profile，帧参数 16 批各 64 项，中位数：
+
+| 场景 | ns/op 前→后 | B/op 前→后 | allocs/op 前→后 |
+|---|---:|---:|---:|
+| CaptureMergeAndBuildFrameDocument | 767967.5→775739 | 439259→439243 | 3614→3614 |
+| BuildCapturedFrameDocument | 489.5→481.25 | 480→464 | 5→5 |
+| BuildCapturedLeafFrameDocument | 612734→617197.5 | 263043→246676 | 3765→3765 |
+
+耗时变化约 +1.0%、-1.7%、+0.7%，不宣称提速，也不能据此确认绝对无耗时成本。收益是每个普通字段层少预留一个字符串槽：本样本叶子帧约少 16KiB（约 6.2%）分配字节；map 分配字节波动使表中差额不必恰好等于 16*1024。分配次数不变。普通帧最终整体替换只有一条输出路径，叶子帧逐路径构建，不能将两者耗时直接横向比较；不外推业务或持久化吞吐。
+
+证据在 /private/tmp/tx-path-capacity-20260911，包含原实现、候选、overlay、六轮数据/bench-results.json 和验证日志；最终 path.go 与实测候选 gofmt 后字节一致，采集不进入生产路径。本轮公共 Go 实现净增 6 行，生成物变化 0 行，仅 tx 有变更。下一项具体候选尚需评估。
+
+本轮 tx、txgen、txgame/server、txgameslg/server 全量测试通过，路径解析定向测试、实测候选一致性与六工程 diff 检查通过。后置 ponytail-review：Lean already. Ship. 无新增简化项。未另跑真实集群或 race；仅 tx 有未提交变更。
+
+
+## S89：FullPath 解析分支外提未采用（2026-09-11）
+
+保留未提交 S88。临时 overlay 将 PathFieldNameResolver 类型判断移到 FullPath 循环外，并将普通/嵌套字段名解析分支直接放入循环；保留 FieldNone 拒绝和公开 FieldNameAt。目的是减少每层调用中的重复检查，但会让两处维护相近的解析规则。候选未进入生产代码。
+
+实际 fixture 的既有文档基准，Go 1.27.0 darwin/amd64、GOMAXPROCS=1；两版预编译交替六轮、每项 200ms，无 profile，中位数：
+
+| 场景 | ns/op 前→后 | B/op 前→后 | allocs/op 前→后 |
+|---|---:|---:|---:|
+| CaptureMergeAndBuildFrameDocument | 760359→766178.5 | 439243→439243 | 3614→3614 |
+| BuildCapturedFrameDocument | 500.8→506.2 | 464→464 | 5→5 |
+| BuildCapturedLeafFrameDocument | 601136→612527 | 246634→246664 | 3765→3765 |
+
+耗时分别上浮约 0.8%、1.1%、1.9%，分配次数不变；叶子场景分配字节的微小变化不认定为固定变化。未显示收益，且增加解析逻辑重复，因此不采用；不把类型断言外提视为必然优化。本轮只验证性能取舍，未对未采用候选做完整行为回归。
+
+证据在 /private/tmp/tx-path-resolver-20260911，包含 S88 起点 path.go、候选、overlay、六轮原始数据/bench-results.json 与原实现定向验证日志，采集不进入生产路径。本轮生产代码及生成物净变化 0 行，提交建议累计 S88–S89；下一项具体候选尚需评估。
+
+本轮原实现路径/文档构建定向测试、S88 起点字节一致性和六工程 diff 检查通过。后置 ponytail-review：Lean already. Ship. 无新增简化项。仅补评估文档，未重复全量回归、真实集群或 race；保留 S88 全部未提交变更。
+
+
+## S90：文档路径相等比较使用标准库（2026-09-11）
+
+保留未提交 S88–S89。DocumentPath.Equal 的手写长度检查与逐项字符串比较，与本机标准库 slices.Equal 的算法一致，改为直接调用 slices.Equal；公开方法和分段相等契约保留。例如 nil 与空切片仍相等，而 {"a.b", "c"} 与 {"a", "b.c"} 虽然点连接结果相同，仍不相等。未改为字符串比较，未引入依赖。
+
+实际公开方法前后编译对照，Go 1.27.0 darwin/amd64、GOMAXPROCS=1，交替六轮、每项 200ms，中位数：
+
+| 场景 | ns/op 前→后 | B/op | allocs/op |
+|---|---:|---:|---:|
+| nil/空 | 1.2775→1.2845 | 均 0 | 均 0 |
+| 三段相等 | 6.789→6.668 | 均 0 | 均 0 |
+| 末段不同 | 5.4285→5.3995 | 均 0 | 均 0 |
+
+差异约 0.12ns 以内，未发现明显退化，不宣称提速或业务收益；本项为标准库替代重复维护。临时语义检查覆盖 nil/空、相等、分段边界差异和长度差异，两版均通过。最终 types.go 与实测候选 gofmt 后字节一致。
+
+证据位于 /private/tmp/tx-document-equal-20260911，含原实现、候选、overlay、前后测试、六轮原始数据/bench-results.json 与回归日志，采集不进入生产路径。本轮公共 Go 文件含导入调整净减 5 行；累计 S88–S90 公共实现净增 1 行，生成物无变化，仅 tx 有变更。下一项具体候选尚需评估。
+
+本轮 tx、txgen、txgame/server、txgameslg/server 全量测试通过，前后语义测试、实测候选一致性与六工程 diff 检查通过。后置 ponytail-review：Lean already. Ship. 无新增简化项。未另跑真实集群或 race；仅 tx 有未提交变更，提交建议累计 S88–S90。
+
+
+## S91：Mongo unset 表延迟分配未采用（2026-09-11）
+
+保留未提交 S88–S90。临时 overlay 将 buildUpdateDocument 的 unsetDoc 改为 nil，首次 OpDelete 才 make；期望避免纯设置时创建未使用表。不修改 setDoc、ID 保护、unsafe key 回退或文档操作顺序。候选未进入生产代码。
+
+实际 BuildUpdateDocument，Go 1.27.0 darwin/amd64、GOMAXPROCS=1；输入预建，前后预编译交替六轮、每项 200ms，中位数：
+
+| 场景 | ns/op 前→后 | B/op 前→后 | allocs/op 前→后 |
+|---|---:|---:|---:|
+| 一项设置 | 1161.5→1143 | 1056→1016 | 10→10 |
+| 一项删除 | 1147.5→1153.5 | 1056→1064 | 10→11 |
+| 设置和删除混合 | 1631→1662.5 | 1360→1368 | 12→13 |
+
+纯设置只少 40B，未减少分配次数；删除和混合场景增加 8B/1 次分配。候选 -m=2 逃逸分析明确报告 unsetDoc 被闭包按引用捕获、宽度 8，并 moved to heap；这解释了延迟创建 map 同时引入变量逃逸的额外成本。没有充分收益抵消新增分支和删除场景退化，保留预先创建表的原实现。不继续增加 holder、二次 map 查询或专用 helper 来规避这一成本。
+
+六轮对照同时运行既有 TestMongoBuildUpdateDocument 系列，覆盖 BSON 字段名、嵌套清空类型、ID 保护、非法路径/操作、nil 值和 unsafe key 回退，两版均通过；这不是实际 Mongo I/O 测试。证据位于 /private/tmp/tx-mongo-unset-20260911，含原实现、候选、overlay、六轮数据/bench-results.json 和 escape-after.log。采集不进入生产路径。本轮生产代码与生成物净变化 0 行，提交建议累计 S88–S91，下一项具体候选尚需评估。
+
+本轮原实现 Mongo 文档定向复测、候选前后测试、起点字节一致性及六工程 diff 检查通过。后置 ponytail-review：Lean already. Ship. 无新增简化项。仅补评估文档，未重复全量回归、真实集群或 race；保留全部未提交变更。
+
+
+## S92：GD 完整加载直接覆盖目标对象（2026-09-11）
+
+保留未提交 S88–S91。GD.Load 在 store.Value != gd 时，原先通过 value 临时结构清空 state 后覆盖 gd；现在直接 `*gd = *store.Value`，再 `gd.state = nil`，随后按原顺序 gd.attachStore(store)、store.Value = gd。少一行临时赋值，保留原对象地址、Store 绑定和加载位图；不改变 LoadFields、缺失/错误返回或公开 API。
+
+这只是现有同步加载块内的改写，没有新增并发保证，也不把源码赋值次数当作机器复制次数。临时前后测试验证原 Store 与原 GD 地址保持、字段值更新、已加载状态、无残留脏状态以及后续 Setter 能记录变更，两版通过。
+
+实际 fixture 的 GD.Load 入口使用预建 recordingDocumentLoader，返回 RoleId/Name/Power 三个字段；Go 1.27.0 darwin/amd64、GOMAXPROCS=1，前后预编译交替六轮、每项 200ms，中位 2907.5→2862ns/op，两版均 768B/20 次分配。约 -1.6% 的耗时变化不认定明确提速；该样本含现有加载解码链路，不含实际数据库 I/O，不能外推真实存储延迟。证据在 /private/tmp/tx-load-copy-20260911，含旧生成物、候选、overlay、前后测试、六轮数据/bench-results.json 与回归日志；最终 fixture 与实测候选字节一致，采集不进入生产路径。
+
+三套生成物分别减少：fixture 3 行/3 文件、txgame 33 行/33 文件、txgameslg 4 行/4 文件，合计净减 40 行；模板净减 1 行。逐文件反向还原该赋值块后与 HEAD 一致。首次全量回归仅因旧生成文本断言要求 *gd=value 而失败，同步为新写法后重跑；保留原 Copy 的独立 state 清空断言。
+
+本轮只改生成完整加载入口；S88–S90 公共运行时累计净增 1 行继续保留。提交建议累计 S88–S92，下一项具体候选尚需评估。
+
+同步生成文本断言后，本轮 txgen、txgame/server、txgameslg/server 全量测试通过；前后加载语义、生成范围、候选一致性及六工程 diff 检查通过。后置 ponytail-review：Lean already. Ship. 无新增简化项。未另跑真实集群或 race，两个客户端无变化；全部变更未提交。
+
+
+## S93：投影加载删除只读字段列表副本（2026-09-11）
+
+保留未提交 S88–S92。loadStoreFields/loadStoresFields 原来分别复制 requestedFields 和 loadFields；前者仅交给私有 finishLoadedStore，通过生成 InitFields 只读遍历，后者才传给 loader 并补齐 RecordKey。删除前者的复制，直接使用原 fields；保留 loadFields 的独立副本。生成初始化逻辑不写字段列表，因此无需第二份数组；不删除 loader 入参隔离或主键补齐，不改变公开加载接口。
+
+例如投影 Name、Items 时，仍只初始化请求的可初始化字段，loader 收到独立的 Name、Items、RoleId 列表；调用方切片及备用容量不被主键追加修改。单条与批量既有 DoesNotMutateProjectionSlice 测试在前后六轮中均通过，生成文本断言同步新参数名。
+
+实际 fixture 的单条与两条批量投影入口，预建 recordingDocumentLoader 和两字段投影 Name/Items；Go 1.27.0 darwin/amd64、GOMAXPROCS=1，前后预编译交替六轮、每项 200ms，中位数：
+
+| 场景 | ns/op 前→后 | B/op 前→后 | allocs/op 前→后 |
+|---|---:|---:|---:|
+| 单条投影加载 | 1871.5→1786.5 | 736→704 | 13→12 |
+| 两条批量投影加载 | 3503.5→3362 | 1368→1336 | 24→23 |
+
+耗时分别约下降 4.5%、4.0%，两场景每次少 32B/1 次分配，符合删除两字符串副本；批量只减少每批的一份字段列表，不是每条记录各省一份。样本包含现有加载解码与初始化，不含真实数据库 I/O，不外推存储延迟。证据在 /private/tmp/tx-projection-copy-20260911，含旧基础层、候选、overlay、前后投影隔离测试、六轮原始数据/bench-results.json 和回归日志；最终 fixture 与实测候选字节一致，采集不进入生产路径。
+
+三套 type_registry.go 各净减 2 行，共 6 行；模板净减 2 行。逐文件与 HEAD 核对仅为删除两处副本及替换传参。累计 S92–S93 生成物净减 46 行，S88–S90 公共运行时净增 1 行继续保留；提交建议累计 S88–S93，下一项具体候选尚需评估。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过，前后投影隔离测试、生成范围、候选一致性及六工程 diff 检查通过。后置 ponytail-review：Lean already. Ship. 无新增简化项。两个客户端无变化，未另跑真实集群或 race；全部变更未提交。
+
+
+## S94：局部加载复用已生成的加载位图（2026-09-11）
+
+Store.LoadFields 的临时 Store 已经标记请求字段和补齐的主键。合并值后逐字 OR 其 loadedFields，删除重复的字段列表复制、主键追加和名称查找。保留 loader 的隔离列表、请求字段初始化、未请求字段和变更记录；失败或不存在仍直接返回，不改标记。按整个位图数组遍历，不引入 64 字段上限。
+
+例如先加载 Name/Items，再加载 Power，最终标记仍为 RoleId/Name/Power/Items。既有加载跟踪测试增加这一次连续投影断言，防止误用位图覆盖。没有增加公共 helper 或运行时采集逻辑。
+
+实际 fixture Store.LoadFields，预建 loader、目标 Store 和 Name/Items 投影；Go 1.27.0 darwin/amd64、GOMAXPROCS=1，前后预编译交替六轮，每轮 200ms，中位数：
+
+| 场景 | ns/op 前→后 | B/op 前→后 | allocs/op 前→后 |
+|---|---:|---:|---:|
+| 合并局部加载 | 2023.5→1798.5 | 808→712 | 15→13 |
+
+样本耗时下降约 11.1%，少 96B/2 次分配；不含真实数据库 I/O，不外推数据库延迟。临时测试、overlay、前后源码、原始六轮数据与回归日志在 /private/tmp/tx-loaded-union-20260911；最终 GDRoleStore 与实测候选字节一致。
+
+40 个生成 Store 各增加 2 行：fixture +6、txgame +66、txgameslg +8，共 +80 行；模板 +2 行，关键行为测试 +8 行。累计 S92–S94 生成物净增 34 行，S88–S90 公共运行时仍净增 1 行。接受这两行循环换取删除重复分配，不以删行数为目标。全部变更未提交，提交建议累计 S88–S94；下一项具体候选尚需评估。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过，gen/run.sh 已执行，生成 Store 差异逐文件核对及六工程 diff 检查通过。后置 ponytail-review：Lean already. Ship. 无新增简化项。本轮未重复执行未修改的 tx 全量测试，未运行真实集群或 race；两个客户端无变化。
+
+
+## S95：加载入口移除被覆盖的 GD 分配（2026-09-11）
+
+私有 codec.newStore 通过 NewStore(nil) 创建空 GD，decodeDocument 随后又用 NewGD 创建解码对象并覆盖 Value，第一份 GD 无使用者。单条和批量加载直接 new(S)，删除 codec 构造回调及 40 个生成闭包。解码仍负责 NewGD、JSON 解码和 Value 赋值，随后主键补齐、初始化及加载标记顺序不变；公开 NewStore(nil) 契约保留。不存在及解码失败的返回边界不变，没有新增公共 SPI 或采集逻辑。
+
+例如加载 Name/Items 时，从“空 GD + 解码 GD”变成只创建解码 GD；每条成功加载记录减少一个无效对象。
+
+沿用实际 fixture 单条与两条批量投影场景，预建 recordingDocumentLoader 与 Name/Items 投影；Go 1.27.0 darwin/amd64、GOMAXPROCS=1，前后预编译交替六轮，每项 200ms，中位数：
+
+| 场景 | ns/op 前→后 | B/op 前→后 | allocs/op 前→后 |
+|---|---:|---:|---:|
+| 单条投影加载 | 1714→1699 | 704→544 | 12→11 |
+| 两条批量投影加载 | 3354.5→3271.5 | 1336→1016 | 23→21 |
+
+耗时中位数分别低约 0.9%、2.5%，不据此宣称明显提速；每条记录减少 160B/1 次分配是主要收益。未包含真实数据库 I/O。证据位于 /private/tmp/tx-load-allocation-20260911，包含修改前后源码、overlay、临时基准、六轮原始数据与回归日志；候选经 gofmt 后与最终 fixture 字节一致。前后投影切片隔离测试随基准运行并通过。
+
+本轮 40 个 Store 各减 1 行，三套基础层各减 1 行，共净减 43 行；两模板净减 2 行，删除一条过时构造闭包文本断言，复用现有完整/投影/批量加载和状态测试。累计 S92–S95 生成物净减 9 行，S88–S90 公共运行时净增 1 行保留。全部未提交，提交建议累计 S88–S95；下一项具体候选尚需评估。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过，gen/run.sh 已执行，候选一致性、加载构造链路及六工程 diff 检查通过。后置 ponytail-review：Lean already. Ship. 无新增简化项。未重跑未修改的 tx 全量测试，未运行真实集群或 race；两个客户端无变化。

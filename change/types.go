@@ -1,6 +1,9 @@
 package change
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // FieldID 是由 txgen 为结构体字段生成的稳定编号。
 type FieldID uint16
@@ -69,13 +72,5 @@ func (p DocumentPath) String() string {
 
 // Equal 判断两个路径是否逐段相等。
 func (p DocumentPath) Equal(other DocumentPath) bool {
-	if len(p) != len(other) {
-		return false
-	}
-	for i := range p {
-		if p[i] != other[i] {
-			return false
-		}
-	}
-	return true
+	return slices.Equal(p, other)
 }

@@ -111,7 +111,13 @@ func (p Path) FullPath(resolver FieldNameResolver, kind FieldNameKind) DocumentP
 	if p.Depth == 0 || int(p.Depth) > len(p.Nodes) || resolver == nil {
 		return nil
 	}
-	out := make(DocumentPath, 0, int(p.Depth)*2)
+	size := int(p.Depth)
+	for _, node := range p.Nodes[:p.Depth] {
+		if node.Key.Kind != KeyNone {
+			size++
+		}
+	}
+	out := make(DocumentPath, 0, size)
 	for i := 0; i < int(p.Depth); i++ {
 		node := p.Nodes[i]
 		name := p.FieldNameAt(resolver, i, kind)
