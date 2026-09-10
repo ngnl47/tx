@@ -1,6 +1,6 @@
 # 生成模型与导入组装性能对照（2026-09-10）
 
-前半部分记录 S07–S09 的首次性能验证；S10–S13 的后续对照及当前状态见文末。
+前半部分记录 S07–S09 的首次性能验证；S10–S14 的后续对照及当前状态见文末。
 
 ## 结论与处置
 
@@ -195,3 +195,23 @@ Go 1.27.0、darwin/amd64、Intel i9-9880H，固定 `GOMAXPROCS=1`；通过临时
 应用后 `GOCACHE=/private/tmp/tx-go-build go test ./... -count=1` 全量通过。两版三套预编译生成入口各运行一次，使用临时输入副本及输出目录；fixture 40、txgame 1134、txgameslg 55 个产物的文件名与内容 SHA256 完全一致。本轮未重复完整生成计时，未重跑两套 server、客户端全量或真实集群。
 
 本批 Go 代码净减 1 行；diff 检查与后置 ponytail-review 通过，全部变更未提交。基准源码、overlay、日志及 `generation-check.json` 均在 [S13 临时证据目录](/private/tmp/tx-document-names-perf-20260910)，采集逻辑未进入生产路径。下一项尚需评估具体候选。
+
+## S14：统一 map 类型解析入口
+
+基线为已提交 txgen `d3d3355`。唯一调用方改为直接调用 `splitMapType`，删除无独立职责的 `mapFieldTypes` 别名。编译器 `-m` 确认旧包装已内联；`-S` 对照发现栈位置变化，未获得机器码一致的证据，因此补测真实模型，而不以“只有一行转发”推断性能不变。
+
+沿用 S13 的 Go/硬件环境，固定 `GOMAXPROCS=1`；扫描真实输入位于计时外，通过临时 overlay 注入基准与两版源码。预编译后每版每类型交错 6 轮、每轮 100ms，计时内构建 Store 模型（包含本次修改的 Data 模型构建），使用 `testing.B.Loop`。以下为中位数。
+
+| 类型 | 原 ns/op | 新 ns/op | B/op（前后相同） | allocs/op（前后相同） |
+| --- | ---: | ---: | ---: | ---: |
+| fixture/GDArenaRecord | 36456.0 | 35763.5 | 24697 | 309 |
+| fixture/GDItem | 9140.0 | 9173.0 | 5488 | 83 |
+| fixture/GDRole | 38805.0 | 39042.0 | 27281 | 346 |
+| txgame/GDArenaRecord | 56126.0 | 55731.5 | 27737 | 424 |
+| txgame/GDRole | 336762.5 | 336027.5 | 196580 | 2262 |
+| txgameslg/GDRole | 22641.5 | 22781.5 | 14696 | 206 |
+| txgameslg/GDWorldBucket | 16165.5 | 15973.5 | 8968 | 150 |
+
+耗时中位数变化约 -1.9% 至 +0.6%，分配全部不变；未发现明确退化，不宣称整体生成提速。两版三套隔离生成入口各运行一次，fixture 40、txgame 1134、txgameslg 55 个产物文件名与内容 SHA256 完全一致。当前源码应用后 `GOCACHE=/private/tmp/tx-go-build go run .` 与使用相同 GOCACHE 的 `go test ./... -count=1` 通过，固定生成产物无差异。
+
+本批 Go 代码净减 4 行，diff 检查及后置 ponytail-review 通过；未重跑两套 server、客户端全量或真实集群，未做整体生成计时。基准源码、overlay、编译器输出及原始结果均位于 [S14 临时证据目录](/private/tmp/tx-map-alias-20260910)，采集逻辑与生产路径隔离。全部本轮变更未提交，下一项尚需评估。
