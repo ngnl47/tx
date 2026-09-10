@@ -769,3 +769,12 @@ net: -103～108 lines, -0 deps possible.（静态候选估算，未实施、非�
 - 本轮 txgame 9 处比较变化，生成物因导入净增 4 行；累计 S77–S79 净增 47 行。提交建议累计三轮，下一项具体候选尚需评估。
 
 本轮 txgen、txgame/server、txgameslg/server 全量测试通过；生成范围及六工程 diff 检查通过，后置 ponytail-review 无新增简化项。两个客户端无变化，未另跑真实集群或 race。
+
+
+## S80：纯标量 GD 值先直接判等（2026-09-11）
+
+- S77–S79 已提交。本轮仅对已知且全部字段为内置整数/bool/string 的 GD 值增加相等快速判断，不等时保留 DeepEqual，避免内部 state 地址不同导致误报；不新增运行时 helper。
+- 实际 GDHero 六轮相等/单技能变化/同址场景中位耗时约下降 86.6%、67.8%、86.6%，分配由 8 次分别降为 0/2/0，详见 [运行时报告 S80](2026-09-10-generated-runtime-benchmark.md#s80纯标量-gd-值先直接判等2026-09-11)。按地址反射 helper 因小幅变慢和额外语义复杂度未采用。
+- txgame 7 处比较变化，生成物净增 0 行；生成器实现和测试净增 28 行。下一项具体候选尚需评估。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过；收紧复杂 GD 类型的生成断言后复跑 txgen 全量测试通过。生成范围与六工程 diff 检查通过；后置 ponytail-review：Lean already. Ship. 未新增可删减项。未另跑真实集群或 race，全部变更未提交。

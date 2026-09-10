@@ -986,3 +986,24 @@ Go 1.27.0 darwin/amd64、GOMAXPROCS=1，实际 txgame GDHero.snapshotDiffFrom，
 本轮仅 txgame 的 9 处浮点值 map 比较变化，导入使生成物净增 4 行；fixture 和 txgameslg 无本轮生成差异。累计 S77–S79 共 34 处 slice 与 59 处 map 比较，生成物净增 47 行（fixture 2、txgame 44、txgameslg 1）。按 HEAD 逐文件核对仅包含上述比较与导入变化。全批未提交，提交建议累计 S77–S79；下一项具体候选尚需评估。
 
 本轮 txgen、txgame/server、txgameslg/server 全量测试通过；生成范围及六工程 diff 检查通过，后置 ponytail-review 无新增简化项。两个客户端无变化，未另跑真实集群或 race。
+
+
+## S80：纯标量 GD 值先直接判等（2026-09-11）
+
+S77–S79 已提交，本轮起始六工程干净。GDHero 四个 GDSkill 值字段的反射装箱产生 192B/8 次分配。仅对本次数据扫描中全部字段均为内置整数、bool、string 的 GD 值生成 `old.Skill != current.Skill && !reflect.DeepEqual(old.Skill, current.Skill)`。内部 state 指针也参与直接比较，因此不等时必须保留深比较；两个 state 地址不同但内容相等不能误报变更。浮点数、接口、集合、未知类型不进入此规则；命令辅助类型保持原比较路径，不新增运行时 helper。
+
+先评估的按地址反射 helper 虽消除装箱，但相等/变化场景耗时约增 3–4%，且需处理同址语义，未采用。原始数据保留在 results.json；最终直接判断方案见 direct-results.json。
+
+Go 1.27.0 darwin/amd64、GOMAXPROCS=1，实际 GDHero snapshotDiffFrom，四个技能值及其他字段为预建数据，操作表预热；两版预编译、交替六轮，每项 200ms，中位数如下：
+
+| 场景 | 改前 ns/op | 改后 ns/op | B/op 前→后 | allocs/op 前→后 |
+|---|---:|---:|---:|---:|
+| 技能相等 | 995.85 | 133.15 | 192→0 | 8→0 |
+| 一个技能 Level 变化 | 912.5 | 294 | 192→48 | 8→2 |
+| 同一个 Hero | 1006 | 135.05 | 192→0 | 8→0 |
+
+耗时分别约下降 86.6%、67.8%、86.6%。此样本不含非空 Attribute map、BeginChange 复制或持久化，不能与 S79 的 100 项 map 样本直接比较，也不代表端到端收益。变化字段仍反射比较，收益主要来自相等字段跳过装箱。采集代码仅位于 /private/tmp/tx-value-diff-20260911，包含两个候选、overlay、前后语义测试、六轮数据与回归日志。最终 GDHeroStore 与实测候选 gofmt 后字节一致。
+
+生成器类型边界测试改前失败、改后通过；实际 GDHero 前后验证技能变更、同址值和不同 state 地址但内容相等。txgame 三个文件共 7 处比较增加相等快速判断，逐文件还原这 7 处后与 HEAD 一致，生成物净增 0 行；txgen 实现和测试净增 28 行。fixture、txgameslg 和两个客户端无生成变化。下一项具体候选尚需评估。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过；收紧复杂 GD 类型的生成断言后复跑 txgen 全量测试通过。生成范围与六工程 diff 检查通过；后置 ponytail-review：Lean already. Ship. 未新增可删减项。未另跑真实集群或 race，全部变更未提交。
