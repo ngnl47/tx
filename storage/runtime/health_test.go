@@ -67,17 +67,6 @@ func (applier *recordingApplier) ApplyChangesWithOptions(context.Context, meta.T
 	return nil
 }
 
-type recordingFencedApplier struct {
-	recordingApplier
-	fence txmongo.Fence
-}
-
-func (applier *recordingFencedApplier) ApplyChangesWithFence(_ context.Context, _ meta.TypeSpec, _ txstorage.RecordKey, _ change.Source, _ change.FieldNameResolver, _ change.ValueResolver, fence txmongo.Fence, _ txstorage.ApplyOptions) error {
-	applier.calls++
-	applier.fence = fence
-	return nil
-}
-
 type staticSource struct{}
 
 func (staticSource) VisitChanges(visitor change.Visitor) error {
@@ -201,32 +190,6 @@ func TestStorageHealthGateIsModeAware(t *testing.T) {
 	}
 	if redisWriter.calls != 1 {
 		t.Fatalf("redis writer calls = %d, want 1", redisWriter.calls)
-	}
-}
-
-func TestStorageChangeWriterForwardsMongoFence(t *testing.T) {
-	store := &Runtime{}
-	mongoWriter := &recordingFencedApplier{}
-	writer := storageChangeWriter{storage: store, mongo: mongoWriter}
-	path := change.Path{Depth: 1}
-	path.Nodes[0].Field = 1
-	fence := txmongo.Fence{Path: path, Expected: uint64(3)}
-
-	err := writer.ApplyChangesWithFence(
-		context.Background(),
-		meta.TypeSpec{Storage: meta.StorageSpec{Mode: meta.StorageModeMongo}},
-		txstorage.RecordKey{ID: "world-1/7"},
-		staticSource{},
-		nil,
-		nil,
-		fence,
-		txstorage.ApplyOptions{},
-	)
-	if err != nil {
-		t.Fatalf("ApplyChangesWithFence returned error: %v", err)
-	}
-	if mongoWriter.calls != 1 || mongoWriter.fence.Expected != uint64(3) {
-		t.Fatalf("mongo fence calls/value = %d/%#v, want 1/3", mongoWriter.calls, mongoWriter.fence.Expected)
 	}
 }
 

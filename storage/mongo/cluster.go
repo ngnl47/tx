@@ -42,7 +42,6 @@ type Cluster struct {
 	shards map[string]*Adapter
 }
 
-var _ FencedChangeApplier = (*Cluster)(nil)
 var _ storage.DocumentBackfiller = (*Cluster)(nil)
 var _ CounterStore = (*Cluster)(nil)
 
@@ -83,21 +82,6 @@ func (c *Cluster) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 		return err
 	}
 	return adapter.ApplyChangesWithOptions(ctx, spec, key, source, resolver, values, options)
-}
-
-// ApplyChangesWithFence 把 Mongo 条件写入路由到记录所属分片。
-func (c *Cluster) ApplyChangesWithFence(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver, fence Fence, options storage.ApplyOptions) error {
-	if err := change.ValidateSource(source); err != nil {
-		return err
-	}
-	if !source.HasChanges() {
-		return nil
-	}
-	adapter, err := c.adapterFor(ctx, spec, key)
-	if err != nil {
-		return err
-	}
-	return adapter.ApplyChangesWithFence(ctx, spec, key, source, resolver, values, fence, options)
 }
 
 func (c *Cluster) ReplaceDocument(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any) error {

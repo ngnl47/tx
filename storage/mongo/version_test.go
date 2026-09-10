@@ -18,7 +18,7 @@ func TestVersionedChangesRefreshBaselineAfterConflict(t *testing.T) {
 	resolver := change.FieldNameResolverFunc(func(change.FieldID, change.FieldNameKind) string { return "value" })
 	source := versionSource{}
 	err := adapter.ApplyVersionedChanges(context.Background(), spec, storage.RecordKey{ID: int64(7)}, source, resolver, source)
-	if !errors.Is(err, ErrFenceRejected) {
+	if !errors.Is(err, ErrVersionConflict) {
 		t.Fatalf("conflict = %v", err)
 	}
 	client.document["_tx_version"] = int64(6)

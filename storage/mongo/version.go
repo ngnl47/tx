@@ -63,7 +63,17 @@ func (a *Adapter) ApplyVersionedChanges(ctx context.Context, spec meta.TypeSpec,
 	if err != nil {
 		return err
 	}
-	return validateFencedUpdateResult(result, false)
+	return validateVersionedUpdateResult(result)
+}
+
+func validateVersionedUpdateResult(result UpdateResult) error {
+	if result.MatchedCount == 1 && result.UpsertedCount == 0 {
+		return nil
+	}
+	if result.MatchedCount == 0 && result.UpsertedCount == 0 {
+		return ErrVersionConflict
+	}
+	return fmt.Errorf("mongo: unexpected versioned update result matched=%d upserted=%d", result.MatchedCount, result.UpsertedCount)
 }
 
 // ApplyVersionedChanges 在选定的 Mongo 分片内完成版本读取与增量写回。
@@ -149,7 +159,7 @@ func (a *Adapter) ReplaceDocumentAtVersion(ctx context.Context, spec meta.TypeSp
 		return err
 	}
 	if result.MatchedCount != 1 || result.UpsertedCount != 0 {
-		return ErrFenceRejected
+		return ErrVersionConflict
 	}
 	return nil
 }

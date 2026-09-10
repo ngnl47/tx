@@ -399,28 +399,6 @@ func (writer storageChangeWriter) ApplyChangesWithOptions(ctx context.Context, s
 	return nil
 }
 
-// ApplyChangesWithFence 只为 Mongo 条件更新开放窄入口，Redis 与 Fusion 不伪造代际语义。
-func (writer storageChangeWriter) ApplyChangesWithFence(ctx context.Context, spec meta.TypeSpec, key txstorage.RecordKey, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver, fence txmongo.Fence, options txstorage.ApplyOptions) error {
-	if writer.storage == nil {
-		return ErrNotConfigured
-	}
-	if spec.Storage.Mode != meta.StorageModeMongo {
-		return fmt.Errorf("storage runtime: fenced changes require mongo storage mode, got %q", spec.Storage.Mode)
-	}
-	if err := writer.storage.requireStorageMode(meta.StorageModeMongo); err != nil {
-		return err
-	}
-	applier, ok := writer.mongo.(txmongo.FencedChangeApplier)
-	if !ok || applier == nil {
-		return errors.New("storage runtime: mongo writer does not support fenced changes")
-	}
-	if err := applier.ApplyChangesWithFence(ctx, spec, key, source, resolver, values, fence, options); err != nil {
-		writer.storage.observeStorageError(err)
-		return err
-	}
-	return nil
-}
-
 func buildRedisCluster(ctx context.Context, cfg storageconfig.RouteTableConfig, stats *ioStats) (*txredis.Cluster, []*goredis.Client, map[string]txgoredis.Client, error) {
 	routeTable, err := cfg.RouteTable()
 	if err != nil {
