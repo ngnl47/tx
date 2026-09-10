@@ -456,3 +456,94 @@ slice 的 cloned 临时值保留：源/目标可能共享底层数组，必须�
 变化约 −0.5% 至 +0.7%，分配不变，不宣称提速。前后 map/slice 复制、缺失元素、删除及容器隔离对照通过；采集、旧源码、overlay、scope-before.json、bench-*.txt/results.json 及测试日志位于 `/private/tmp/tx-map-copy-value-20260910`，不进入生产路径。
 
 重新生成后 txgen、txgame/server、txgameslg/server 本轮全量测试通过。逐文件增量对照确认仅省去 map 中间别名并改变对应赋值，slice 及非直接复制链路不变。本轮 fixture 减 1 行、txgame 27 个文件减 57 行、txgameslg 减 1 行，生成物共净减 59 行，模板净减 1 行。累计未提交 S44–S49 生成物净减 1922 行。后置 ponytail-review 无新增简化项，diff 检查通过；客户端无变化，未另跑真实集群。本轮未提交，提交建议累计 S44–S49；下一项具体候选尚需评估。
+
+## S50：新建子 Store 直接继承 selector
+
+六工程起始均干净，S44–S49 已提交；基线为 tx dba0332、txgen 2a2c272、txgame a94f71d、txgameslg f55d4bf。本轮只在新建或重绑子 Store 的分支中，将 if parent.selector { child.selector = true } 改为布尔直接赋值。NewStore 保证返回新对象，selector 默认 false；缓存复用分支不变，undo recorder 与 dirty hook 装配顺序保留。指针、map、slice 三条链路分别生成，不合并独立示例或增加公共抽象。
+
+临时实际 GDRole 检查覆盖 selector 为 false/true 时的子 Store 创建、缓存复用与值变化重绑，结果一致。例如选择器父 Store 新建子节点后仍限制业务值写入，普通父 Store 新建子节点保持普通模式；未改变模式检查入口。
+
+Go 1.27.0 darwin/amd64、GOMAXPROCS=1，预编译后交错六轮、每项 200ms。新建样本在循环内清除对应缓存槽，map/slice 容器在计时前创建；数字包含槽位清理和子节点创建成本，不是整个业务请求。中位数如下：
+
+| 新建路径 / selector | 原 ns/op | 修改后 ns/op | 两版 B/op | 两版 allocs/op |
+|---|---:|---:|---:|---:|
+| 指针 / false | 68.005 | 68.515 | 96 | 2 |
+| map / false | 87.385 | 86.285 | 88 | 2 |
+| slice / false | 87.3 | 85.9 | 88 | 2 |
+| 指针 / true | 68.2 | 68.415 | 96 | 2 |
+| map / true | 86.22 | 87.135 | 88 | 2 |
+| slice / true | 86.08 | 87.145 | 88 | 2 |
+
+六个缓存复用样本均零分配，中位数变化约 −0.104 至 +0.116ns；新建样本约 −1.4 至 +1.1ns，未见明显退化，不宣称业务提速。证据位于 `/private/tmp/tx-child-selector-20260910`，含旧源码、overlay、契约测试、bench-*.txt/results.json 和回归日志，采集不进入生产路径。
+
+重新生成后 txgen、txgame/server、txgameslg/server 本轮全量测试通过。逐文件从 HEAD 对照，确认仅将 123 处新建分支改为直接赋值；fixture 7 文件减 22 行、txgame 47 文件减 218 行、txgameslg 3 文件减 6 行，生成物共净减 246 行，模板另减 6 行。本轮独立起算，不累计已提交改动。后置 ponytail-review 无新增简化项，diff 检查通过；客户端无变化，未另跑真实集群，无新增正式测试或生产采集。全部本轮变更未提交，下一项具体候选尚需评估。
+
+## S51：全字段直接复制类型简化 snapshotCopy
+
+保留未提交 S50。模板根据已有字段 SnapshotDirect 标记静态判定：全部字段可直接复制时生成 return gd.Copy(), nil，省去中间变量及空白；需要深拷贝的类型保持原函数体。判定只发生在生成期，不新增运行时分类或公共接口。Copy 仍负责清除私有 Store 状态；例如已绑定 Store 的 GDHero 复制后保留字段值，副本不携带原 state，也不与源对象共享可写字段。
+
+实际生成 GDHero.snapshotCopy 的前后对照覆盖 nil、绑定状态清除、字段内容与副本隔离，结果一致。Go 1.27.0 darwin/amd64、GOMAXPROCS=1，两版预编译后交错六轮、每项 200ms，中位数如下：
+
+| 源对象 | S50 ns/op | S51 ns/op | 两版 B/op | 两版 allocs/op |
+|---|---:|---:|---:|---:|
+| nil | 1.0455 | 1.0495 | 0 | 0 |
+| 普通对象 | 24.755 | 24.700 | 16 | 1 |
+| 已绑定 Store | 24.940 | 25.405 | 16 | 1 |
+
+非 nil 样本变化约 −0.06 至 +0.47ns，分配不变；接受已绑定样本约 +1.9% 的成本，不宣称提速。证据位于 `/private/tmp/tx-direct-snapshot-20260910`，包含旧源码、overlay、契约测试、bench-*.txt/results.json 与回归日志，采集不进入生产路径。
+
+重新生成后 txgen、txgame/server、txgameslg/server 本轮全量测试通过。逐文件对照确认只有可直接复制类型的函数体被裁剪，深拷贝类型不变；其他差异仅为未提交 S50。fixture 3 类型减 6 行、txgame 67 类型减 134 行、txgameslg 3 类型减 6 行，共减 146 行（含 73 行空白），模板增加 2 行。累计未提交 S50–S51 生成物净减 392 行。后置 ponytail-review 无新增简化项，diff 检查通过；客户端无变化，未另跑真实集群。本轮未提交，提交建议累计 S50–S51；下一项具体候选尚需评估。
+
+## S52：集合子 Store 缓存由绑定入口初始化
+
+保留未提交 S50–S51。map/slice storeFor 直接读取可为 nil 的 stores map，移除前置初始化；需要创建或重绑子 Store 时，已有 bindStore 负责初始化并绑定。NewStore 返回非 nil 新对象，缓存读取、模式/undo recorder 继承及 dirty hook 绑定顺序保持一致；指针子 Store 不受本轮改动影响。没有新增公共接口或 helper。
+
+临时对照覆盖两种 selector 模式的创建、缓存复用和值变化重绑，结果一致。实际生成 GDRole 集合子 Store 两版预编译后交错六轮，每项 200ms、Go 1.27.0 darwin/amd64、GOMAXPROCS=1，中位数如下：
+
+| 场景 | S51 ns/op | S52 ns/op | 两版 B/op | 两版 allocs/op |
+|---|---:|---:|---:|---:|
+| map 缓存已存在，新建子 Store，selector=false | 89.835 | 89.705 | 88 | 2 |
+| slice 缓存已存在，新建子 Store，selector=false | 88.415 | 90.35 | 88 | 2 |
+| map 缓存已存在，新建子 Store，selector=true | 90.25 | 87.52 | 88 | 2 |
+| slice 缓存已存在，新建子 Store，selector=true | 89.835 | 88.71 | 88 | 2 |
+| map 缓存也需新建 | 191.9 | 188.8 | 280 | 4 |
+| slice 缓存也需新建 | 190.1 | 197.1 | 280 | 4 |
+
+四个 map/slice 已有子 Store 复用样本均零分配，变化约 −0.308 至 +0.289ns；普通 map 复用约 +4.7%。接受 slice 首次创建约 +7ns（3.7%）的样本成本，以收敛重复初始化责任，不宣称全部路径提速或实际业务吞吐改善。指针路径作为未修改对照保留在原始数据中。
+
+证据位于 `/private/tmp/tx-child-cache-20260910`，包含旧源码、overlay、契约测试、bench-*.txt/results.json 与回归日志；首次创建样本每轮将缓存置 nil，已存在缓存的新建样本只清理对应槽位，容器与 parent 在计时前创建，采集不进入生产路径。
+
+重新生成后 txgen、txgame/server、txgameslg/server 本轮全量测试通过。逐文件从 HEAD 对照确认仅包含 S50–S51 已有改动和 storeFor 前置初始化移除，bindStore 未改动。本轮 fixture 删除 7 处初始化减 21 行、txgame 64 处减 192 行、txgameslg 3 处减 9 行，共减 222 行，模板另减 6 行。累计未提交 S50–S52 生成物净减 614 行。后置 ponytail-review 无新增简化项，diff 检查通过；客户端无变化，未另跑真实集群。本轮未提交，提交建议累计 S50–S52；下一项具体候选尚需评估。
+
+## S53：集合撤销记录直接读取操作 map
+
+保留未提交 S50–S52。删除内部 storeCollectionOps.get，它仅转发 map 双返回值读取；五处模板调用直接使用 s.ops[key] 或 s.ops[index]。操作读取位置、值及存在标志保持一致，命名 map 类型、克隆/恢复入口和 UndoRecorder SPI 保留。例如依次 Set、Touch、Delete 后逆序撤销，仍恢复原值及原操作状态；nil map 首次 Set 后撤销仍恢复 nil。
+
+临时对照在修改前后验证 map 缺失/已有键、nil map、已有/缺失操作记录，以及 slice 连续 SetAt/TouchAt 的值和脏状态恢复。实际生成的 GDDailyTaskTasksMapStore.Set 与 GDRoleTagsSliceStore.SetAt 两版预编译后交替六轮，每项 200ms，Go 1.27.0 darwin/amd64、GOMAXPROCS=1，中位数如下：
+
+| 场景 | S52 ns/op | S53 ns/op | 两版 B/op | 两版 allocs/op |
+|---|---:|---:|---:|---:|
+| map / 无撤销记录器 | 26.145 | 26.310 | 0 | 0 |
+| slice / 无撤销记录器 | 12.230 | 12.605 | 0 | 0 |
+| map / 有撤销记录器 | 59.520 | 60.140 | 48 | 1 |
+| slice / 有撤销记录器 | 95.560 | 94.455 | 80 | 2 |
+
+分配不变，命中替换分支的样本变化 −1.105 至 +0.620ns；无记录器 slice 未经过替换分支，仍有 +0.375ns 波动。不宣称提速或业务吞吐改善，保留以语言原语替代包装的简化。基准记录器丢弃闭包以避免日志增长，契约验证使用实际收集与逆序执行的记录器；容器预先创建，采集只在 /private/tmp/tx-collection-get-20260910，包含旧源码、overlay、契约测试、六轮原始数据/results.json 与回归日志。
+
+本轮重新生成，txgen、txgame/server、txgameslg/server 全量测试通过。逐文件由 HEAD 对照确认差异仅为 S50–S53：fixture 25 处、txgame 431 处、txgameslg 12 处调用替换，三套生成物各删一个 5 行 helper，本轮共减 15 行，模板另减 5 行。累计未提交生成物净减 629 行（fixture 54、txgame 549、txgameslg 26）。后置 ponytail-review 无新增简化项，diff 检查通过；客户端无变化，未另跑真实集群，无生产采集或新增正式测试。全部未提交，提交建议累计 S50–S53；下一项具体候选尚需评估。
+
+## S54：集合操作重置与恢复直接赋值
+
+保留未提交 S50–S53。删除只包装赋值的 storeCollectionOps.clear/restore，八处模板调用改为 ops = nil 或 ops = previousOps。保留克隆和单项恢复，维持原赋值时机与 nil 检查。例如 UnTouch 后旧 map 的内容不变，当前集合释放其引用；逆序撤销后重新恢复操作记录，不能用 clear(map) 替代这一语义。
+
+临时前后验证覆盖 map/slice 取消标记、原 map 内容保留、操作记录恢复、map 整体替换和 slice 删除后的回滚。真实生成方法两版预编译后交替六轮，每项 200ms，Go 1.27.0 darwin/amd64、GOMAXPROCS=1，中位数如下：
+
+| 场景 | S53 ns/op | S54 ns/op | 两版 B/op | 两版 allocs/op |
+|---|---:|---:|---:|---:|
+| map / UnTouch 无记录器 | 2.557 | 2.593 | 0 | 0 |
+| map / UnTouch 并撤销 | 131.650 | 132.400 | 160 | 3 |
+| slice / UnTouch 并撤销 | 150.300 | 152.950 | 224 | 3 |
+
+分配不变，样本成本分别增加约 0.036、0.750、2.650ns；接受最大约 1.8% 的中位数差异，以移除仅转发赋值的包装，不宣称提速。记录器真实收集并逆序执行闭包，容器和日志容量预先创建；无记录器样本每轮恢复同一操作 map 后调用 UnTouch。证据位于 /private/tmp/tx-collection-assign-20260910，包含旧源码、overlay、契约测试、六轮原始数据/results.json、范围检查与回归日志，采集不进入生产路径。
+
+本轮重新生成，txgen、txgame/server、txgameslg/server 全量测试通过。由 HEAD 逐文件核对确认仅包含 S50–S54：fixture 38 处、txgame 742 处、txgameslg 16 处调用替换，共 796 处；各套生成物删除 8 行 helper，本轮净减 24 行，模板另减 8 行。累计未提交生成物净减 653 行（fixture 62、txgame 557、txgameslg 34）。后置 ponytail-review 无新增简化项，diff 检查通过；客户端无变化，未另跑真实集群。全部未提交，提交建议累计 S50–S54；下一项具体候选尚需评估。
