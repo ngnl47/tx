@@ -647,3 +647,109 @@ Go 1.27.0 darwin/amd64、GOMAXPROCS=1，预编译后交错六轮、每项 200ms�
 分配不变，样本中位数变化约 −1.5 至 +0.02ns，未见明显退化，不外推为业务吞吐提升。容器与操作表预先准备，结果写入包变量；证据位于 /private/tmp/tx-direct-selection-20260910，包含旧源码、overlay、契约测试、六轮数据/results.json、范围检查和回归日志，采集不进入生产路径。
 
 本轮 txgen、txgame/server、txgameslg/server 全量测试通过。由 HEAD 逐文件核对仅包含 S55–S60：本轮 fixture 2 集合减 3 行、txgame 111 集合减 185 行、txgameslg 1 集合减 2 行，共 114 集合净减 190 行（含 76 行 map 空白），模板增加 2 行。累计未提交生成物净减 4859 行（fixture 286、txgame 4409、txgameslg 164）。后置 ponytail-review 无新增简化项，diff 检查通过；客户端无变化，未另跑真实集群。全部未提交，提交建议累计 S55–S60；下一项具体候选尚需评估。
+
+## S61：无需子节点绑定的 Store 直接返回选择副本
+
+六工程起始干净，S55–S60 已提交。selectionCopy 在没有 GeneratedPointer/MapCollection/SliceCollection 字段时直接返回结构体字面量；需要子节点绑定的类型保持原函数体。分类使用已有字段标记，只发生在生成期，不新增运行时判断或公共元数据。Value 仍共享引用，ops/loadedFields 按值复制，selector 仍为 true，不携带原 recorder/hook。
+
+临时前后验证 GDHeroStore 的 nil、Value 引用、状态数组隔离以及 selector 拒绝修改均通过。Go 1.27.0 darwin/amd64、GOMAXPROCS=1，两版实际生成 selectionCopy 预编译后交替六轮、每项 200ms，中位数如下：
+
+| 场景 | S60 ns/op | S61 ns/op | 两版 B/op | 两版 allocs/op |
+|---|---:|---:|---:|---:|
+| 无操作记录 | 34.265 | 34.550 | 64 | 1 |
+| 有操作记录与加载标记 | 34.400 | 34.230 | 64 | 1 |
+
+分配不变，中位数变化 +0.285ns、−0.170ns，未见明显退化，不宣称业务提速。Store 预先创建，副本写入包变量；证据位于 /private/tmp/tx-leaf-store-selection-20260910，包含旧源码、overlay、契约测试、六轮数据/results.json、范围检查和回归日志，采集不进入生产路径。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过。由 HEAD 逐文件核对：fixture 4 类型、txgame 76 类型、txgameslg 3 类型各减一行，共净减 83 行；模板增加 1 行，需要子节点绑定的函数体未变。后置 ponytail-review 无新增简化项，diff 检查通过；客户端无变化，未另跑真实集群。本轮未提交，提交建议仅含 S61；下一项具体候选尚需评估。
+
+## S62：加载字段标记直接遍历输入
+
+保留未提交 S61。markLoadedFields 移除循环前的 len(fields)==0 返回；Go range 对 nil/空切片自然不执行，字段名解析与加载位标记逻辑保持不变。当前唯一模板调用来自 LoadFields，其空输入已提前转到 Load，因此生产调用传入非空列表；保留空输入的等价无操作行为，不将它升级为前置条件。
+
+临时前后验证 nil Store 的空输入、普通空列表、重复/未知字段及加载标记通过。Go 1.27.0 darwin/amd64、GOMAXPROCS=1，两版实际生成 GDHeroStore.markLoadedFields 预编译后交替六轮、每项 200ms，中位数如下：
+
+| 输入 | S61 ns/op | S62 ns/op | 两版 B/op | 两版 allocs/op |
+|---|---:|---:|---:|---:|
+| 空列表 | 1.5615 | 1.8165 | 0 | 0 |
+| Level | 6.4720 | 6.6015 | 0 | 0 |
+| HeroId、Level、未知字段 | 14.7950 | 15.0400 | 0 | 0 |
+
+分配均为零，中位数增加 0.255ns（空列表约 16.3%）、0.1295ns（约 2.0%）、0.245ns（约 1.7%）。明确接受这项微基准成本，以删除重复的空集合判断；当前生产入口已过滤空输入，不宣称提速或业务吞吐无损。输入和 Store 在计时前创建，测量重复标记同一列表；证据位于 /private/tmp/tx-loaded-loop-20260910，包含旧源码、overlay、契约测试、六轮数据/results.json、范围检查和回归日志，采集不进入生产路径。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过。由 HEAD 逐文件核对仅含 S61–S62：本轮 fixture 12 类型减 36 行、txgame 163 类型减 489 行、txgameslg 7 类型减 21 行，共净减 546 行，模板另减 3 行。累计生成物净减 629 行（fixture 40、txgame 565、txgameslg 24）。后置 ponytail-review 无新增简化项，diff 检查通过；客户端无变化，未另跑真实集群。全部未提交，提交建议累计 S61–S62；下一项具体候选尚需评估。
+
+## S63：无嵌套 StoreView 状态停止生成无调用方法
+
+保留未提交 S61–S62。fieldOp/setFieldOp 的全部模板调用都位于 HasViewNestedFields 分支；无嵌套状态的 record/hasField/contains 已直接使用共享函数，因此将两个方法也纳入该生成条件。含嵌套状态的实现与现有 SPI 保留，不删除运行时校验或可靠性测试。
+
+临时前后验证 viewStateGDHero 记录、包含查询、非法路径拒绝与 nil 状态行为通过。Go 1.27.0 darwin/amd64、GOMAXPROCS=1，两版实际 record/contains 预编译后交替六轮、每项 200ms，中位数如下：
+
+| 场景 | S62 ns/op | S63 ns/op | 两版 B/op | 两版 allocs/op |
+|---|---:|---:|---:|---:|
+| 记录单字段 OpSet | 18.705 | 19.165 | 0 | 0 |
+| 包含查询 | 23.640 | 25.280 | 0 | 0 |
+
+均零分配，样本中位数增加 0.460ns（约 2.5%）、1.640ns（约 6.9%）。实际运行函数体逐字不变，删除的是无调用私有方法；保留删除，但不将采样差异归因为已证实的原因，也不宣称提速或性能无损。基准复用预先构造的状态与路径，查询结果写入包变量；证据位于 /private/tmp/tx-leaf-view-methods-20260910，包含旧源码、overlay、契约测试、六轮数据/results.json、范围检查和回归日志，采集不进入生产路径。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过。由 HEAD 逐文件核对仅含 S61–S63：本轮 fixture 4 类型减 56 行、txgame 78 类型减 1092 行、txgameslg 3 类型减 42 行，合计 85 类型的 170 个私有方法净减 1190 行，模板净行数不变。累计生成物净减 1819 行（fixture 96、txgame 1657、txgameslg 66）。后置 ponytail-review 无新增简化项，diff 检查通过；客户端无变化，未另跑真实集群。全部未提交，提交建议累计 S61–S63；下一项具体候选尚需评估。
+
+## S64：无子 Store 类型不生成无调用 recordUndo
+
+保留未提交 S61–S63。私有 recordUndo 只由指针子 Store 与集合的撤销闭包调用；无这些字段的类型通过 recordStoreFieldUndo/setStoreFieldValue 共享函数记录撤销。复用 S61 已有的字段分类条件，停止为无调用类型生成该方法；公开 SetUndoRecorder、共享函数及所有实际撤销调用保持不变。
+
+临时前后验证 GDHeroStore 设置、清除、逆序撤销恢复值与操作码，以及解除记录器绑定通过。Go 1.27.0 darwin/amd64、GOMAXPROCS=1，两版实际生成字段路径预编译后交替六轮、每项 200ms，中位数如下：
+
+| 场景 | S63 ns/op | S64 ns/op | 两版 B/op | 两版 allocs/op |
+|---|---:|---:|---:|---:|
+| 普通设置 | 5.403 | 5.431 | 0 | 0 |
+| 设置并逆序撤销 | 56.680 | 57.375 | 80 | 1 |
+
+分配不变，样本增加约 0.028ns、0.695ns（约 0.5%、1.2%），实际被测函数体未改，不宣称提速。撤销样本预先创建 Store 与日志容量，每轮真实调用撤销闭包；证据位于 /private/tmp/tx-leaf-undo-method-20260910，包含旧源码、overlay、契约测试、六轮数据/results.json、范围检查和回归日志，采集不进入生产路径。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过。由 HEAD 逐文件核对仅含 S61–S64：本轮 fixture 4 类型减 24 行、txgame 76 类型减 456 行、txgameslg 3 类型减 18 行，合计 83 个无调用方法净减 498 行，模板增加 1 行。累计生成物净减 2317 行（fixture 120、txgame 2113、txgameslg 84）。后置 ponytail-review 无新增简化项，diff 检查通过；客户端无变化，未另跑真实集群。全部未提交，提交建议累计 S61–S64；下一项具体候选尚需评估。
+
+## S65：无子 Store 类型不生成无调用 rootOp
+
+保留未提交 S61–S64。rootOp 仅供子 Store/集合覆盖状态判断使用；没有相关字段的类型不再生成此私有方法，复用已有字段分类条件。有调用类型的方法和所有覆盖检查保持不变，不重试 S43 已否决的检查移除。公开 Source、根操作码扫描和通知逻辑保留。
+
+临时前后验证 GDHeroStore 的 nil、设置、取消标记、全字段标记与清除状态通过。Go 1.27.0 darwin/amd64、GOMAXPROCS=1，两版实际 HasChanges 预编译后交替六轮、每项 200ms，中位数如下：
+
+| 场景 | S64 ns/op | S65 ns/op | 两版 B/op | 两版 allocs/op |
+|---|---:|---:|---:|---:|
+| 干净 | 3.0470 | 3.0010 | 0 | 0 |
+| 有操作记录 | 1.5635 | 1.5200 | 0 | 0 |
+
+均零分配，样本中位数减少约 0.046ns、0.0435ns；实际被测函数体未改，不宣称业务提速。状态预先创建，结果写入包变量；证据位于 /private/tmp/tx-leaf-root-op-20260910，包含旧源码、overlay、契约测试、六轮数据/results.json、范围检查和回归日志，采集不进入生产路径。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过。由 HEAD 逐文件核对仅含 S61–S65：本轮 fixture 4 类型减 20 行、txgame 76 类型减 380 行、txgameslg 3 类型减 15 行，共 83 个方法净减 415 行，模板增加 1 行。累计生成物净减 2732 行（fixture 140、txgame 2493、txgameslg 99）。后置 ponytail-review 无本轮新增简化项，diff 检查通过；客户端无变化，未另跑真实集群。全部未提交，提交建议累计 S61–S65。范围核对另发现部分不可追踪 key 集合类型的 rootOp 也没有调用，本轮未扩大分类；下一项评估其生成条件和删除边界。
+
+## S66：按实际子变更条件生成 rootOp
+
+保留未提交 S61–S65。rootOp 的生成条件收窄为 GeneratedPointer、SliceCollection 或 MapCollection 且（MapKeyTrackable 或 MapValueGeneratedPtr），与实际模板调用一致。不能直接使用 HasViewNestedFields 替代，因为不可追踪 key、但值为生成子 Store 的 map 仍使用覆盖检查。仅删除 txgame 的 GDRankLegionStore/GDRoleTeamStore 两个无调用方法；状态判断、集合更新及所有有调用类型保持原样。
+
+修改前后直接在 txgame 生成包验证两个类型的初始、AllTouch、ClearChanges 状态通过。全量测试结束后，Go 1.27.0 darwin/amd64、GOMAXPROCS=1，两版实际 HasChanges 预编译后交替六轮、每项 200ms，中位数如下：
+
+| 有操作记录的类型 | S65 ns/op | S66 ns/op | 两版 B/op | 两版 allocs/op |
+|---|---:|---:|---:|---:|
+| GDRankLegion | 1.3515 | 1.3190 | 0 | 0 |
+| GDRoleTeam | 1.6330 | 1.6505 | 0 | 0 |
+
+零分配，样本变化约 −0.0325ns、+0.0175ns；实际被测函数体未改，不宣称提速。Store 在计时前设置为有变更状态，查询结果写入包变量；证据位于 /private/tmp/tx-untracked-root-op-20260910，包含两个旧源码文件、overlay、契约测试、六轮数据/results.json、范围检查与回归日志，采集不进入生产路径。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过。由 HEAD 逐文件核对仅含 S61–S66：本轮仅 txgame 两个方法净减 10 行，模板增加 1 行；fixture 和 txgameslg 无本轮生成差异。累计生成物净减 2742 行（fixture 140、txgame 2503、txgameslg 99）。后置 ponytail-review 无新增简化项，diff 检查通过；客户端无变化，未另跑真实集群。全部未提交，提交建议累计 S61–S66；下一项具体候选尚需评估。
+
+## S67：无子 Store 类型不生成无调用 op
+
+保留未提交 S61–S66。无子 Store 类型的 rootOp 删除后，私有 op 也没有调用；普通字段撤销由共享函数处理。复用已有字段分类停止生成该方法，保留 restoreOp、公开接口及所有有调用类型的 op 方法。实际设置、清除、撤销函数体不变。
+
+本轮重新执行临时前后验证，覆盖 GDHeroStore 设置、清除、逆序撤销和解除记录器绑定，结果通过。Go 1.27.0 darwin/amd64、GOMAXPROCS=1，两版实际字段路径预编译后交替六轮、每项 200ms，中位数如下：
+
+| 场景 | S66 ns/op | S67 ns/op | 两版 B/op | 两版 allocs/op |
+|---|---:|---:|---:|---:|
+| 普通设置 | 5.3860 | 5.4135 | 0 | 0 |
+| 设置并逆序撤销 | 55.420 | 55.620 | 80 | 1 |
+
+分配不变，样本中位数增加约 0.0275ns、0.200ns；实际被测函数体未改，不宣称提速。复用 S64 临时测试的逻辑但重新快照、编译和测量；证据位于 /private/tmp/tx-leaf-op-method-20260910，包含旧源码、overlay、契约测试、六轮数据/results.json、范围检查和回归日志，采集不进入生产路径。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过。由 HEAD 逐文件核对仅含 S61–S67：本轮 fixture 4 类型减 28 行、txgame 76 类型减 532 行、txgameslg 3 类型减 21 行，共 83 个方法净减 581 行，模板增加 1 行。累计生成物净减 3323 行（fixture 168、txgame 3035、txgameslg 120）。后置 ponytail-review 无新增简化项，diff 检查通过；客户端无变化，未另跑真实集群。全部未提交，提交建议累计 S61–S67；下一项具体候选尚需评估。
