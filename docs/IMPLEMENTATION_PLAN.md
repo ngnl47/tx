@@ -36,11 +36,13 @@
 本批旧审计 P0/P1 已修复或按确认边界收敛，第三方 Provider 竞态仍作为已知风险保留。
 当前没有已确认的下一项编码任务；下一阶段需依据具体缺陷或需求重新评估，不按历史状态重复实施。
 
-六工程新一轮 Ponytail 瘦身候选、误报过滤与分批验证要求见 [2026-09-10 补充计划](audits/2026-09-10-ponytail-six-project-slimming-plan.md)。S01–S11 及七进程残留收尾已完成；`containsStoreField` 已核对为有调用的生成包内部 helper，保留。当前没有新的确认实施项，后续需依据具体候选评估，不自动重开暂缓项。
+六工程新一轮 Ponytail 瘦身候选、误报过滤与分批验证要求见 [2026-09-10 补充计划](audits/2026-09-10-ponytail-six-project-slimming-plan.md)。S01–S12 及七进程残留收尾已完成；`containsStoreField` 已核对为有调用的生成包内部 helper，保留。下一项评估 `documentFieldNames` 的四候选名称去重，尚未确认实施，不自动重开暂缓项。
 
 S07–S10 的性能对照已完成，见 [导入组装基准](audits/2026-09-10-import-benchmark.md)。S07 的无 time RecordKey Store 分配字节退化已修正；保留整份列表构造及共用尾部，后续不能仅凭删行数重新引入逐步追加。S10 直接遍历两组导入，取消临时拼接切片，40 个微基准组合均减少一次分配。
 
 S11 在 Store 模型中复用同一次 Data 模型构建的 RecordKey，避免重复扫描字段和组装键模型；真实类型微基准及完整生成对照见同一基准报告。不扩展为跨次生成缓存。
+
+S12 的 RecordKey 字段类型查找复用 `TypeSpec.FieldByName`，不再构建全字段 map。已覆盖真实类型及键字段在末尾的对照，生成产物一致；不改变既有字段唯一性校验。
 
 存储解耦节点已完成：Mongo 使用顶层 `_tx_version` 保护条件写入，世界路由不再进入持久化契约；常规多进程及关闭失败有限重试验收均通过，见 [Mongo 写回验证](audits/2026-09-09-mongo-late-write.md)。不重复实现版本缓存、所有权写入或关闭重试机制。
 
