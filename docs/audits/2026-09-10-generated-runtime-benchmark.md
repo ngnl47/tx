@@ -1007,3 +1007,167 @@ Go 1.27.0 darwin/amd64、GOMAXPROCS=1，实际 GDHero snapshotDiffFrom，四个�
 生成器类型边界测试改前失败、改后通过；实际 GDHero 前后验证技能变更、同址值和不同 state 地址但内容相等。txgame 三个文件共 7 处比较增加相等快速判断，逐文件还原这 7 处后与 HEAD 一致，生成物净增 0 行；txgen 实现和测试净增 28 行。fixture、txgameslg 和两个客户端无生成变化。下一项具体候选尚需评估。
 
 本轮 txgen、txgame/server、txgameslg/server 全量测试通过；收紧复杂 GD 类型的生成断言后复跑 txgen 全量测试通过。生成范围与六工程 diff 检查通过；后置 ponytail-review：Lean already. Ship. 未新增可删减项。未另跑真实集群或 race，全部变更未提交。
+
+
+## S81：直接生成对象指针字段先比较身份（2026-09-11）
+
+S80 已提交，本轮起始六工程干净。复用现有 GeneratedPointer 模板标记，在直接生成对象指针字段的 DeepEqual 前增加 `old.Field != current.Field`；同为 nil 或同指针时跳过反射，不同指针继续深比较。指针相等本来就满足 reflect.DeepEqual，不扩大到结构值或接口；未修改集合元素比较，不新增 helper、模型字段或导入。
+
+例如活动对象引用未变化时直接跳过，两个独立但内容相等的活动对象仍由 DeepEqual 判等；BeginChange 的深拷贝保留，之后原地修改子对象仍能被检测。生成类型边界断言改前失败、改后通过，现有嵌套指针快照复制测试保留。实际 GDActivity 前后验证 nil、同指针、独立相等、内容变化、新增和移除六种情况通过。
+
+Go 1.27.0 darwin/amd64、GOMAXPROCS=1，实际 GDActivity snapshotDiffFrom；旧值、当前值和 Store 预先创建，操作表预热，两版预编译交替六轮，每项 200ms，中位数如下：
+
+| 场景 | 改前 ns/op | 改后 ns/op | B/op 前→后 | allocs/op 前→后 |
+|---|---:|---:|---:|---:|
+| 三个指针均 nil | 84.805 | 6.283 | 0→0 | 0→0 |
+| ActNewbie 同指针 | 153.7 | 6.2125 | 0→0 | 0→0 |
+| ActNewbie 独立且相等 | 322.05 | 260.65 | 0→0 | 0→0 |
+| ActNewbie.StartTime 变化 | 198.15 | 132.1 | 0→0 | 0→0 |
+
+后三种场景另外两个字段均 nil；耗时分别约下降 92.6%、96.0%、19.1%、33.3%，分配不变。计时不含 BeginChange 复制和持久化，不能外推端到端收益，也不代表所有字段均为独立非空对象时的收益。证据在 /private/tmp/tx-pointer-diff-20260911，包含 overlay、前后语义测试、六轮原始数据/bench-results.json、范围核对和回归日志，采集不进入生产路径。最终 GDActivityStore 与实测候选 gofmt 后字节一致。
+
+本轮 fixture 4 处、txgame 45 处比较更新，共 49 处，生成物净增 0 行；模板行数不变，生成边界测试净增 2 行。逐文件移除新增身份判断后与 HEAD 一致，且每处字段均为已生成对象指针。txgameslg 和两个客户端无变化。下一项评估集合元素的同指针比较，尚需独立 benchmark 后决定。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过；前后指针语义验证、最终候选一致性和六工程 diff 检查通过。后置 ponytail-review：Lean already. Ship. 无新增简化项。未另跑真实集群或 race；全部变更未提交。
+
+
+## S82：集合元素身份判断未采用（2026-09-11）
+
+保留未提交 S81。本轮在临时 overlay 中评估 map 的 `oldItem == currentItem || reflect.DeepEqual(...)` 和 slice 的 `oldItem != currentItem && !reflect.DeepEqual(...)`，仅涉及生成对象指针元素。候选未进入模板和生成物，不新增运行时抽象。
+
+fixture 的实际 GDRoleStore，100 项集合，Go 1.27.0 darwin/amd64、GOMAXPROCS=1，前后预编译交替六轮、每项 200ms。直接调用集合差异方法，中位 ns/op：
+
+| 场景 | map 前→后 | slice 前→后 |
+|---|---:|---:|
+| 全部共享元素 | 12693→3387.5 | 8418→84.515 |
+| 全部独立且相等 | 21876→22263.5 | 15607.5→16119.5 |
+| 99 项共享、1 项变化 | 12907.5→3762 | 8634.5→327.95 |
+
+相等场景均为 0B/0 次分配；变化场景均为 88B/2 次分配。共享元素明显受益，但独立相等元素耗时分别上浮约 1.8%、3.3%。当前 BeginChange 的 snapshotCopy 会逐元素复制非 nil 生成对象，普通保存路径以独立对象为主，不能仅凭共享元素微基准扩大优化。
+
+补测完整 GDRoleStore.snapshotDiffFrom 入口：旧集合和当前集合全部使用独立对象；其他字段为零值，操作表预热。计时不含 BeginChange 和实际持久化，中位数如下：
+
+| 场景 | ns/op 前→后 | B/op 前→后 | allocs/op 前→后 |
+|---|---:|---:|---:|
+| map 相等 | 34480→34358.5 | 10712→10712 | 109→109 |
+| map 一项变化 | 42654→41977 | 6863.5→6528.5 | 59→59 |
+| slice 相等 | 23808.5→23819 | 10360→10360 | 11→11 |
+| slice 一项变化 | 28470.5→28851 | 5040→5040 | 11→11 |
+
+完整入口耗时变化约 -1.6% 至 +1.3%，未显示稳定收益。map 变化场景受反射提前结束和随机遍历影响，B/op 差异不能据此认定固定分配收益；分配次数保持不变。综合调用方式与结果，本轮不采用候选，避免给普遍的独立指针路径增加判断。之后只有实际 profile 证明大量共享或 nil 元素进入集合差异循环时才重开。
+
+证据在 /private/tmp/tx-collection-pointer-20260911：S81 起点生成物副本、候选 overlay、前后语义测试、bench-results.json 与 entry-results.json 和各六轮原始数据。nil、独立相等、变更、nil 转换以及 map 同指针含 NaN 的语义测试通过；全部采集与生产路径隔离。本轮生产代码及生成物净变化 0 行，提交建议累计 S81 代码及 S82 评估文档。下一项具体生成物候选尚需评估。
+
+本轮 txgen 全量测试、前后候选语义测试和六工程 diff 检查通过；182 个 Store 生成文件与 S81 起点字节一致。后置 ponytail-review：Lean already. Ship. 无新增简化项。本轮未重复两个 server 全量回归，未另跑真实集群或 race；保留 S81 全部未提交变更。
+
+
+## S83：完整加载字段复制快速路径未采用（2026-09-11）
+
+保留未提交 S81–S82。loadedStoreFields 已计算置位数量，候选在全部字段加载时直接复制字段名表，跳过逐项位图检查。分别评估 slices.Clone 与复用分配后 copy 两种写法；只使用临时 overlay，未改模板或生成物。公开 LoadedFields 契约及其返回副本隔离保持不变，不因缺少当前业务调用而删除 API。
+
+实际 fixture 的生成包 helper，Go 1.27.0 darwin/amd64、GOMAXPROCS=1；两组分别预编译并交替六轮、每项 200ms，字段名与位图预建，返回值写入测试专用 sink。中位 ns/op：
+
+| 字段数/加载状态 | 原实现→slices.Clone | 原实现→copy |
+|---|---:|---:|
+| 16/完整 | 164.2→176.35 | 167.35→166.65 |
+| 16/稀疏一项 | 50.905→52.43 | 52.76→56.68 |
+| 16/空 | 5.163→5.414 | 5.2585→5.114 |
+| 130/完整 | 867.05→826.65 | 893→815.1 |
+| 130/稀疏一项 | 180.35→173 | 172.3→207.7 |
+| 130/空 | 6.3995→6.378 | 6.405→6.4985 |
+
+完整加载两版均为 256B/1 次（16 字段）或 2304B/1 次（130 字段），稀疏均为 16B/1 次，空均为 0B/0 次。slices.Clone 使小结构完整加载慢约 7.4%；copy 虽使 130 字段完整加载快约 8.7%，但稀疏加载慢约 20.5%。两组基线各自交错测量，不跨组计算收益。
+
+当前 tx、txgame/server、txgameslg/server 的非生成、非测试 Go 代码未发现 .LoadedFields() 调用；这不排除外部业务使用，但缺少当前热点依据。因此不为此查询增加分支，保留原实现，下一项先依据实际调用或 profile 筛选。
+
+前后候选验证 0/1/64/65/130 字段、尾字高位忽略、声明顺序、空返回非 nil 和返回副本隔离通过。证据位于 /private/tmp/tx-loaded-full-20260911，含两个候选、overlay、bench-results.json、copy-results.json 和六轮原始数据。采集不进入生产路径。本轮生产代码与生成物净变化 0 行，提交建议累计 S81–S83；具体下一候选尚未确认。
+
+本轮 txgen 全量测试、候选前后语义验证与六工程 diff 检查通过，生成物保持 S81 状态。后置 ponytail-review：Lean already. Ship. 无新增简化项。未重复两个 server 全量回归，未另跑真实集群或 race；全部变更未提交。
+
+
+## S84：StoreView 捕获链路 profile 与后续依据（2026-09-11）
+
+保留未提交 S81–S83。本轮没有试改生产代码，转向现有 BenchmarkGeneratedStoreDirtyRuntime 的生成物捕获链路：16 批、每批 64 项，包含业务对象创建、Store Set、捕获和 ClearChanges；叶子场景使用已有子 Store 修改路径。这是 fixture 负载，不能声称代表真实业务流量或线上占比。
+
+Go 1.27.0 darwin/amd64、GOMAXPROCS=1，预编译测试二进制；不带 profile 的六轮、每项 200ms 中位基线：
+
+| 既有场景 | ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| CaptureFrameOnly | 501876 | 282290 | 2273 |
+| CaptureAndBuildFrameDocument | 513423 | 282770 | 2278 |
+| CaptureLeafFrameOnly | 1032282 | 491806 | 5391 |
+
+以上是本轮定位基线，不是前后对照或提速结论。另对 CaptureFrameOnly 采集 3 秒 CPU 与分配 profile；该采样运行约 533µs，未与无采样结果混算。Go 安装无预编译 pprof，使用本机 `go run cmd/pprof` 分析，未安装新依赖。
+
+alloc_space 的主要平面归因：ItemsMapStore.Set 约 26.1%、copyGDRoleStoreViewPath 约 25.2%、基准中的业务对象创建约 17.0%、GDItem.Copy 约 16.9%、ItemsMapStore.recordOp 约 13.3%。alloc_objects 中，业务对象创建约 45.0%、GDItem.Copy 约 44.6%，recordOp 约 7.4%。这些是采样估计，包含基准的业务对象构造，不能把全部分配当成可删框架开销。recordOp 的分配主要在 map 写入扩容；不是每次方法调用都分配。
+
+CPU 样本中 runtime.kevent 与 runtime.madvise 占比约 56.7% 和 9.7%，不据此给业务函数排序或推断调用耗时；本轮主要使用分配 profile 定位。原 profile、文本报告、无采样六轮数据/baseline.json 与验证日志仅位于 /private/tmp/tx-frame-profile-20260911，采集与生产路径隔离。
+
+本轮保留两项可靠性边界：捕获副本保障之后修改业务对象不污染已捕获视图；S54 的操作表引用替换保障撤销恢复，不能把所有 ops=nil 机械改成 clear(map)。下一候选为集合操作表容量管理，需要同时评估有/无 UndoRecorder、历史引用与回滚、持续多帧分配和峰值后内存保留；尚未确认具体方案，不新增池、固定容量或配置项。本轮生产代码及生成物净变化 0 行，提交建议累计 S81–S84。
+
+本轮 txgen 全量测试、六工程 diff 检查通过，182 个 Store 生成文件与 S81 状态一致。后置 ponytail-review：Lean already. Ship. 无新增简化项。未重复两个 server 全量回归，未另跑真实集群或 race；全部变更未提交。
+
+
+## S85：操作表无限期复用未采用（2026-09-11）
+
+保留未提交 S81–S84。本轮临时 overlay 仅改 GDRoleItemsMapStore.clearChanges：无 UndoRecorder 时 clear(s.ops)，有记录器仍置 nil；dirtyChildren 等路径不动。未改模板和生成物。候选只用于测量容量复用的代价，不宣称已完成所有回滚组合审查。
+
+实际生成 helper，Go 1.27.0 darwin/amd64、GOMAXPROCS=1；同一 Store 持续写操作表并 clearChanges，先预热一次，前后预编译交替六轮、每项 200ms，中位数：
+
+| 每轮操作数 | ns/op 前→后 | B/op 前→后 | allocs/op 前→后 |
+|---|---:|---:|---:|
+| 1 | 103.45→35.285 | 128→0 | 2→0 |
+| 64 | 4299→950.75 | 2424→0 | 11→0 |
+| 1024 | 63441.5→15432 | 38184→0 | 22→0 |
+
+微基准只覆盖操作记录与清除，不包含捕获复制、业务对象创建和数据库；不能直接当作帧吞吐收益。复用确实降低稳态成本，但会保留 map 的历史容量。
+
+峰值后内存独立验证：64 个活 Store，每个操作表插入 4096 项，再清除并强制 GC，保留 Store 引用；业务 Items map 保持空，隔离操作表容量。每版独立进程重复三次，HeapAlloc 相对创建前 GC 基线增加均为：原实现 22448B，候选 4895664B，差额 4873216B（约 4.65MiB）。这不是泄漏判定，但说明只清空内容会让闲置 Store 保留峰值容量。
+
+仅以 len(ops) 设置释放阈值不能准确约束容量：删除条目后 len 可能很小，而底层表仍大。引入额外容量记录、固定阈值或池需要真实集合峰值分布与驻留 Store 规模作为依据。本轮不引入这些机制，保持置 nil 释放引用；也不扩大到 UnTouch、detach 或撤销恢复路径。
+
+临时验证操作清除、下一轮记录，以及有记录器路径保留旧 map 内容通过；证据在 /private/tmp/tx-ops-reuse-20260911，包含候选、overlay、六轮原始数据/bench-results.json、三次峰值内存日志与验证日志。采集不进入生产路径。本轮生产代码及生成物净变化 0 行，提交建议累计 S81–S85。下一步需真实负载依据，尚无已确认的新编码方案。
+
+本轮 txgen 全量测试、临时候选语义测试与六工程 diff 检查通过，生成物保持 S81 状态。后置 ponytail-review：Lean already. Ship. 无新增简化项。未重复两个 server 全量回归，未另跑真实集群或 race；全部变更未提交。
+
+
+## S86：单节点追加省去临时子路径（2026-09-11）
+
+保留未提交 S81–S85。S84 CPU profile 的生成侧热点包含 appendStorePathNode，本轮只优化已有私有 helper：原来构造完整 child Path 再调用通用 JoinPathLimited，现在复制 prefix 的有效节点并直接写入一个节点。仍使用零值输出以清空尾部槽位，深度达到或超过上限时返回截断祖先和 false；不新增公共 API，不改 JoinPathLimited、appendStoreViewPath 或路径有效性契约。这是有实测依据的单节点特化，不将通用路径拼接逻辑复制到各类型。
+
+临时逐值对照覆盖 uint8 全部深度、带非零尾槽的父路径和不同 key 节点，完整返回 Path 与 complete 均与 JoinPathLimited(prefix, 单节点child) 相同。现有深层子变更截断、祖先只访问一次和快照深度回退测试通过；例如父路径已达四层时仍返回该祖先整体替换，不继续追加。
+
+实际生成 fixture 的既有帧基准，Go 1.27.0 darwin/amd64、GOMAXPROCS=1；前后预编译交替六轮、每项 200ms，无 profile，16 批各 64 项，中位数：
+
+| 场景 | ns/op 前→后 | B/op 前→后 | allocs/op 前→后 |
+|---|---:|---:|---:|
+| CaptureAndBuildFrameDocument | 519219.5→456174.5 | 282770→282770 | 2278→2278 |
+| CaptureFrameOnly | 508544→459038 | 282290→282290 | 2273→2273 |
+| CaptureLeafFrameOnly | 1012587→899730.5 | 491806→491806 | 5391→5391 |
+
+耗时分别下降约 12.1%、9.7%、11.1%，分配不变。这是 fixture 捕获负载收益，不外推线上或数据库吞吐。最终 fixture 与实测候选格式化后字节一致（补充解释注释不改变执行代码）。证据目录 /private/tmp/tx-append-node-20260911 包含旧基础层、候选、对照测试、overlay、六轮数据/bench-results.json 和验证日志；采集不进入生产路径。
+
+三套生成 type_registry.go 各净增 6 行，合计 18 行；模板净增 6 行，不新增运行时 helper。逐文件还原本函数与注释后和 HEAD 一致，S81 的其他生成改动保持不变。本批代码累计仍含 S81 的 49 处比较变化；提交建议累计 S81–S86。下一项评估 StoreView 路径追加的同类成本，尚需单独实测，不能把不同溢出返回语义直接合并。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过；模板格式整理后重新生成 fixture，复跑 txgen 全量测试并核对实测候选一致性通过。六工程 diff 检查通过，后置 ponytail-review：Lean already. Ship. 无新增简化项。两个客户端无变化，未另跑真实集群或 race；全部变更未提交。
+
+
+## S87：StoreView 单节点追加复用已有实现（2026-09-11）
+
+保留未提交 S81–S86。appendStoreViewPath 原来构造完整 child Path 再调用 JoinPath，本轮先检查 prefix.Depth >= MaxPathDepth，超限直接返回空 Path/false；未超限时调用 S86 的 appendStorePathNode。复用已有节点追加实现，不新增公共 API、helper 或状态。不能直接无条件转发：StoreView 溢出返回空路径，Store 溢出返回截断祖先，两者契约不同。
+
+临时逐值对照覆盖 uint8 全部深度、带非零尾槽的父路径以及不同 key 节点，完整 Path 与 bool 均和 JoinPath(prefix, 单节点child) 一致；例如三层父路径可追加为四层，四层父路径返回空路径/false。最终 fixture 与实测候选 gofmt 后字节一致。
+
+实际 fixture 的既有 StoreView 基准，Go 1.27.0 darwin/amd64、GOMAXPROCS=1；两版预编译交替六轮、每项 200ms，无 profile，帧参数 16 批各 64 项，中位数：
+
+| 场景 | ns/op 前→后 | B/op 前→后 | allocs/op 前→后 |
+|---|---:|---:|---:|
+| CaptureMergeAndBuildFrameDocument | 813779.5→772985 | 439259→439259 | 3614→3614 |
+| BuildCapturedFrameDocument | 562.6→503.4 | 480→480 | 5→5 |
+| BuildCapturedLeafFrameDocument | 756936.5→615129 | 263044→263054 | 3765→3765 |
+
+耗时分别下降约 5.0%、10.5%、18.7%，分配次数不变。叶子文档 B/op 中位差 10B，不视为固定分配变化；包含 map 构建的样本存在分配字节波动。普通帧样本最终是整体字段替换，叶子帧则逐路径构建文档，成本不能直接横向比较。这些结果限于 fixture，不外推线上或持久化吞吐。证据在 /private/tmp/tx-view-append-20260911，包含旧基础层、候选、overlay、逐值测试、六轮原始数据/bench-results.json 与回归日志，采集不进入生产路径。
+
+三套基础层各替换一个已有方法，本轮生成物及模板行数均不变；累计 S86–S87 生成物净增 18 行，S81 的 49 处比较继续保留。提交建议累计 S81–S87；下一项具体候选尚需评估，不自动扩大路径 API。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过；候选逐值对照、最终生成物一致性和六工程 diff 检查通过。后置 ponytail-review：Lean already. Ship. 无新增简化项。两个客户端无变化，未另跑真实集群或 race；全部变更未提交。

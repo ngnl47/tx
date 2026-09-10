@@ -778,3 +778,66 @@ net: -103～108 lines, -0 deps possible.（静态候选估算，未实施、非�
 - txgame 7 处比较变化，生成物净增 0 行；生成器实现和测试净增 28 行。下一项具体候选尚需评估。
 
 本轮 txgen、txgame/server、txgameslg/server 全量测试通过；收紧复杂 GD 类型的生成断言后复跑 txgen 全量测试通过。生成范围与六工程 diff 检查通过；后置 ponytail-review：Lean already. Ship. 未新增可删减项。未另跑真实集群或 race，全部变更未提交。
+
+
+## S81：直接生成对象指针字段先比较身份（2026-09-11）
+
+- S80 已提交。复用 GeneratedPointer 标记，在直接指针字段 DeepEqual 前增加身份判断，同为 nil 或同指针时跳过反射；不同指针仍深比较，不新增运行时抽象。
+- 实际 GDActivity 六轮空指针/共享/独立相等/变化场景中位耗时下降约 92.6%、96.0%、19.1%、33.3%，均为零分配，见 [运行时报告 S81](2026-09-10-generated-runtime-benchmark.md#s81直接生成对象指针字段先比较身份2026-09-11)。
+- fixture 4 处、txgame 45 处比较更新，生成物行数不变，边界测试净增 2 行。下一项集合元素身份比较尚需实测评估。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过；前后指针语义验证、最终候选一致性和六工程 diff 检查通过。后置 ponytail-review：Lean already. Ship. 无新增简化项。未另跑真实集群或 race；全部变更未提交。
+
+
+## S82：集合元素身份判断未采用（2026-09-11）
+
+- 保留未提交 S81。只在临时 overlay 评估生成指针 map/slice 元素的身份判断；共享元素受益，但全部独立相等元素微基准耗时约增加 1.8%、3.3%。
+- 普通 BeginChange 会深拷贝非 nil 子对象，完整差异入口四种场景变化约 -1.6% 至 +1.3%，分配次数不变，缺少稳定收益，候选未采用。详见 [运行时报告 S82](2026-09-10-generated-runtime-benchmark.md#s82集合元素身份判断未采用2026-09-11)。
+- 本轮仅补充评估文档，生产代码及生成物净变化 0 行；提交建议累计 S81–S82。下一项具体生成物候选尚需评估，不自动扩大身份判断范围。
+
+本轮 txgen 全量测试、前后候选语义测试和六工程 diff 检查通过；182 个 Store 生成文件与 S81 起点字节一致。后置 ponytail-review：Lean already. Ship. 无新增简化项。本轮未重复两个 server 全量回归，未另跑真实集群或 race；保留 S81 全部未提交变更。
+
+
+## S83：完整加载字段复制快速路径未采用（2026-09-11）
+
+- 保留 S81–S82。LoadedFields 全字段返回评估 slices.Clone 与 copy；前者使 16 字段完整加载慢约 7.4%，后者使 130 字段稀疏加载慢约 20.5%，分配均不变，候选未采用。
+- 当前非生成、非测试业务代码未发现直接调用，缺少热点依据；保留公开 API 与原算法，见 [运行时报告 S83](2026-09-10-generated-runtime-benchmark.md#s83完整加载字段复制快速路径未采用2026-09-11)。
+- 本轮仅补充评估记录，代码及生成物净变化 0 行，提交建议累计 S81–S83。下一项从实际调用或 profile 筛选，具体候选尚未确认。
+
+本轮 txgen 全量测试、候选前后语义验证与六工程 diff 检查通过，生成物保持 S81 状态。后置 ponytail-review：Lean already. Ship. 无新增简化项。未重复两个 server 全量回归，未另跑真实集群或 race；全部变更未提交。
+
+
+## S84：StoreView 捕获链路 profile 与后续依据（2026-09-11）
+
+- 保留未提交 S81–S83；使用既有 fixture 帧捕获负载采集分配 profile 和独立六轮基线，不将其描述为线上流量。
+- 主要分配来自业务对象、隔离副本与 map 存储；保留捕获隔离和撤销引用语义，不能直接删除复制或统一 clear(map)。数据见 [运行时报告 S84](2026-09-10-generated-runtime-benchmark.md#s84storeview-捕获链路-profile-与后续依据2026-09-11)。
+- 下一候选为集合操作表容量管理，尚需撤销可靠性、持续帧收益与峰值后内存保留证据。本轮代码及生成物净变化 0 行，提交建议累计 S81–S84。
+
+本轮 txgen 全量测试、六工程 diff 检查通过，182 个 Store 生成文件与 S81 状态一致。后置 ponytail-review：Lean already. Ship. 无新增简化项。未重复两个 server 全量回归，未另跑真实集群或 race；全部变更未提交。
+
+
+## S85：操作表无限期复用未采用（2026-09-11）
+
+- 保留未提交 S81–S84。无 UndoRecorder 时复用操作表，64 项微基准由 4299ns/11 次分配降为 950.75ns/0 次，但 64 个 Store 各经历 4096 项峰值后，GC 后保留堆增量由 22448B 变为 4895664B。
+- 不用稳态收益掩盖峰值容量驻留，不新增缺乏负载依据的阈值、容量字段或池；保留释放行为，见 [运行时报告 S85](2026-09-10-generated-runtime-benchmark.md#s85操作表无限期复用未采用2026-09-11)。
+- 本轮代码及生成物净变化 0 行，提交建议累计 S81–S85。后续需真实集合峰值分布与驻留 Store 规模，尚无已确认的新编码方案。
+
+本轮 txgen 全量测试、临时候选语义测试与六工程 diff 检查通过，生成物保持 S81 状态。后置 ponytail-review：Lean already. Ship. 无新增简化项。未重复两个 server 全量回归，未另跑真实集群或 race；全部变更未提交。
+
+
+## S86：单节点追加省去临时子路径（2026-09-11）
+
+- 保留未提交 S81–S85。已有 appendStorePathNode 直接复制父节点并追加一个节点，省去完整临时 child Path；保留尾部清零和深度截断，不新增公共 API 或 runtime helper。
+- 完整 Path 逐值对照及既有深度回归通过；捕获相关三个样本六轮中位耗时下降约 9.7%–12.1%，分配不变，见 [运行时报告 S86](2026-09-10-generated-runtime-benchmark.md#s86单节点追加省去临时子路径2026-09-11)。
+- 三套生成基础层共净增 18 行，模板净增 6 行，提交建议累计 S81–S86。下一项 StoreView 路径追加尚需独立评估，不自动改变溢出语义。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过；模板格式整理后重新生成 fixture，复跑 txgen 全量测试并核对实测候选一致性通过。六工程 diff 检查通过，后置 ponytail-review：Lean already. Ship. 无新增简化项。两个客户端无变化，未另跑真实集群或 race；全部变更未提交。
+
+
+## S87：StoreView 单节点追加复用已有实现（2026-09-11）
+
+- 保留未提交 S81–S86。StoreView 先拒绝超深路径并返回空路径，再复用 appendStorePathNode；保持与 Store 截断祖先不同的溢出语义，无新增 helper 或状态。
+- 完整返回值对照通过，三个既有捕获合并/文档样本中位耗时下降约 5.0%–18.7%，分配次数不变，见 [运行时报告 S87](2026-09-10-generated-runtime-benchmark.md#s87storeview-单节点追加复用已有实现2026-09-11)。
+- 本轮模板及生成物行数不变，累计 S86–S87 生成物净增 18 行，提交建议累计 S81–S87。下一项具体生成物候选尚需评估。
+
+本轮 txgen、txgame/server、txgameslg/server 全量测试通过；候选逐值对照、最终生成物一致性和六工程 diff 检查通过。后置 ponytail-review：Lean already. Ship. 无新增简化项。两个客户端无变化，未另跑真实集群或 race；全部变更未提交。
