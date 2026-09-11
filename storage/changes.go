@@ -42,7 +42,7 @@ type ChangeStore interface {
 }
 
 // CollapsibleChangeStore 描述能把细粒度变更收敛为顶层字段替换的持久化 Store。
-// txn.Runtime 配置单根变更容量上限时要求持久化 Store 实现该契约。
+// writeback.Manager 启用 MaxRootChanges 时要求持久化 Store 实现该契约。
 type CollapsibleChangeStore interface {
 	ChangeStore
 	CollapseChanges()

@@ -72,3 +72,31 @@ func (store *routerSlotStore) CreateSlot(_ context.Context, assignment SlotAssig
 func (store *routerSlotStore) PromoteSlot(context.Context, SlotAssignment, SlotAssignment) error {
 	return errors.New("unexpected PromoteSlot")
 }
+
+type readOnlySlot struct{ assignment SlotAssignment }
+
+func (reader readOnlySlot) ResolveSlot(context.Context, string) (SlotAssignment, error) {
+	return reader.assignment, nil
+}
+
+func TestSlotResolverAcceptsReadOnlyReaderAndRejectsUnavailableTarget(t *testing.T) {
+	assignment := SlotAssignment{SlotID: "world-1", RuntimeInstanceID: "world-a", Generation: 2}
+	directory := NewServiceDirectory()
+	resolver, err := NewSlotResolver(readOnlySlot{assignment}, directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range []Status{StatusStarting, StatusRunning, StatusDraining, StatusStopping} {
+		if err := directory.Replace([]Instance{{ID: "world-a", Endpoint: "127.0.0.1:9000", Services: []string{"world"}, Status: status}}); err != nil {
+			t.Fatal(err)
+		}
+		target, err := resolver.ResolveSlot(context.Background(), assignment.SlotID)
+		if status == StatusRunning {
+			if err != nil || target.Assignment != assignment || target.Instance.ID != "world-a" {
+				t.Fatalf("解析结果 = %+v, %v", target, err)
+			}
+		} else if !errors.Is(err, ErrSlotRuntimeUnavailable) {
+			t.Fatalf("状态 %v 的解析错误 = %v", status, err)
+		}
+	}
+}

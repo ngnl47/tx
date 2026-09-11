@@ -89,8 +89,8 @@ type Context interface {
 	CModSessionID() (SessionIDAllocator, error)
 	// CModActor 返回 Actor 消息解析和投递入口。
 	CModActor() (txactor.Messenger, error)
-	// CModSlots 返回 Discovery CMod 管理的固定逻辑槽位目录。
-	CModSlots() (discovery.SlotStore, error)
+	// CModSlots 返回 Discovery CMod 管理的只读槽位归属，不提供创建或晋升。
+	CModSlots() (discovery.SlotReader, error)
 	// CModProcedure 返回 Ant 管理的单机 Procedure 执行器。
 	CModProcedure() (txn.Executor, error)
 	// LogicalSlot 返回当前进程声明的稳定逻辑槽位。
@@ -273,8 +273,8 @@ func (view *contextView) CModActor() (txactor.Messenger, error) {
 	return value, nil
 }
 
-// CModSlots 返回 Discovery CMod 管理的固定槽位目录。
-func (view *contextView) CModSlots() (discovery.SlotStore, error) {
+// CModSlots 返回 Discovery CMod 管理的只读槽位归属。
+func (view *contextView) CModSlots() (discovery.SlotReader, error) {
 	if err := view.require(CModDiscovery); err != nil {
 		return nil, err
 	}

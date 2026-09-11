@@ -215,18 +215,19 @@ ServiceSpec、CMod 和基础 Context；同名 API 具有相同签名和生命周
 | `CModSessionID()` | Bee/Ant | 为 Login 分配集群内有效生命周期的 SessionID | workSlot、租约与停止发号在 discovery/session-id Runtime |
 | `CModActor()` | Bee/Ant | 解析 PID、投递和业务调用 | Start/Shutdown/ActorSystem 在 Actor Runtime |
 | `CModProcedure()` | Ant | 执行根 Procedure | CommitParticipant 和生命周期在 CModProcedure |
-| `CModSlots()` | Ant | 读写受控逻辑槽位门面 | etcd client、成员 lease 和 watch 在 discovery Runtime |
+| `CModSlots()` | Ant | 只读 SlotReader 槽位归属 | etcd client、成员 lease 和 watch 在 discovery Runtime |
 | `LogicalSlot()` | Ant | 读取当前稳定逻辑槽位和物理实例身份 | 槽位迁移由控制面负责 |
 
-Context 返回专用 wrapper，而不是把具体指针仅仅窄化成接口，因此调用方不能通过类型断言重新取得
-`Cancel`、`Stop`、`Shutdown`、`Replace` 或 `Flush`。`Context.Instance()` 返回 ownership-safe 的本地实例快照，
+Context 对生命周期、目录替换和刷盘能力返回专用 wrapper，调用方不能通过这些视图重新取得
+`Cancel`、`Stop`、`Shutdown`、`Replace` 或 `Flush`。槽位读取另以 SlotReader 声明编译期职责，不承诺类型断言隔离。`Context.Instance()` 返回 ownership-safe 的本地实例快照，
 状态顺序固定为 `starting -> running -> draining -> stopping`。
 
 普通 Handler 不应保存 Bee/Ant Context。项目组合根通过 `Builder.Setup` 把 `Storage()` 包装成 `db.Save(role)` 等业务
 facade；Service 和 CMod Factory 只在构造期间取得自己通过 `Requires` 声明的窄能力。Redis、MongoDB、Fusion 三类
 存储 accessor 的 reader 方法集互不重叠，writer 也会在第一次 I/O 前校验 `TypeSpec.Storage.Mode`，不能借进程内其他
-Service 已选择的后端跨越能力边界。高级使用者需要 Redis 脚本或槽位管理时，
-使用命名明确的 `CModRedisStorage()` 与 `CModSlots()`，不通过字符串 service locator 或全局 Runtime 查找能力。
+Service 已选择的后端跨越能力边界。高级使用者需要 Redis 脚本时使用 `CModRedisStorage()`；
+槽位创建和晋升由组合根显式注入完整 `SlotStore`，不从只读 `CModSlots()` 断言取得写能力，
+也不通过字符串 service locator 或全局 Runtime 查找能力。
 
 ## 依赖方向
 
@@ -2121,7 +2122,7 @@ Agent ResolveSlot -> CachedSlotStore -> SlotDirectory -> ServiceDirectory
                                 本地内存          本地内存
 ```
 
-`EtcdRegistry.Slots()` 是直接访问 etcd 的低级持久 Store；Server 对业务暴露的是组合后的 `CachedSlotStore`。缓存门面只把
+`EtcdRegistry.Slots()` 是直接访问 etcd 的低级持久 Store；Server 对业务通过 `SlotReader` 暴露组合后的缓存读取能力。缓存门面只把
 创建和迁移委托给持久 Store，读取永远不回源。持久提交与 Watch 可见之间允许存在短暂收敛窗口，发布控制面必须观察目标
 generation 后再放流。
 
@@ -2133,7 +2134,7 @@ Runtime 为每轮 Watch 创建独立快照写入入口。观察到任一 Watch �
 另一条 Watch；失效轮次的迟到 Replace 不再发布。快照发布与轮次失效由同一把锁串行化，该锁不参与业务路由读取。
 `Runtime.WaitReady` 只接受当前有效轮次的两份快照，不拼接各目录历史上的首次 Ready；这不是跨目录同一 etcd revision 的原子快照承诺。
 
-`SlotRouter` 使用不含 `Services []string` 和 `Endpoints map[string]string` 的 `RouteInstance` 值类型读取内部业务 RPC
+`SlotResolver` 使用不含 `Services []string` 和 `Endpoints map[string]string` 的 `RouteInstance` 值类型读取内部业务 RPC
 地址，避免高频路由为防御性复制切片或地址表而分配内存。命名公开地址只属于低频实例发现元数据，由项目定义名称和用途；
 `ServiceDirectory` 在写入和返回完整实例时复制地址表，不能把可变 map 所有权泄露给调用方。`SlotDirectory` 与
 `ServiceDirectory` 的纯读取路径使用读锁；只有服务轮询游标、快照替换和失效操作使用写锁，避免并发 Agent 请求被互相串行化。
@@ -2764,3 +2765,7 @@ go tool pprof /tmp/tx-mem.pprof
 - `快照`只描述快照差分、服务发现快照等真实副本；StoreView 统一称为“视图”。`载荷`只描述编码后或协议传输的数据；StoreView 不是载荷。
 - `投影`只在数据库读取字段投影等已有领域术语中使用。Store 到 `Path + Op` 的过程称“同步遍历”，生成 `change.Document` 的过程称“变更文档构建”。
 - benchmark 数字必须注明日期、机器或链接到审计报告，不能表现成跨环境性能承诺。
+
+## 槽位读取与高级管理 API
+
+业务通过 ant.Context.CModSlots 取得 SlotReader，使用 SlotResolver 解析 running 目标或在 World loader 中校验归属。SlotStore 嵌入 SlotReader 并保留 CreateSlot/PromoteSlot；SlotRouter 保留原有高级读写 API，读取复用 SlotResolver。game 侧高级组件和控制面可由组合根显式注入完整 SlotStore，不转移其连接生命周期。不会把只读上下文作为获取写入能力的入口，也不把 Go 接口收窄当作安全沙箱。

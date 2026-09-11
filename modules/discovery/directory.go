@@ -87,7 +87,7 @@ type Directory interface {
 }
 
 // RouteDirectory 是内置目录提供的高频只读路由扩展。自定义 Directory 可以不实现，
-// SlotRouter 会回退到普通 LookupInstance 契约。
+// SlotResolver 会回退到普通 LookupInstance 契约。
 type RouteDirectory interface {
 	LookupRouteInstance(id string) (RouteInstance, bool)
 }

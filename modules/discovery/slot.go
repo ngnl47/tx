@@ -45,10 +45,15 @@ func ValidateSlotPromotion(current, next SlotAssignment) error {
 	return nil
 }
 
+// SlotReader 只读取槽位归属，供业务路由和加载前校验使用。
+type SlotReader interface {
+	ResolveSlot(context.Context, string) (SlotAssignment, error)
+}
+
 // SlotStore 保存稳定逻辑槽位的当前归属。它不负责启动实例、不观察 Actor，也不替
 // 业务决定 SlotID；Promote 必须使用当前完整 assignment 执行 Compare-And-Swap。
 type SlotStore interface {
-	ResolveSlot(ctx context.Context, slotID string) (SlotAssignment, error)
+	SlotReader
 	CreateSlot(ctx context.Context, assignment SlotAssignment) error
 	PromoteSlot(ctx context.Context, current, next SlotAssignment) error
 }
@@ -61,29 +66,30 @@ type SlotTarget struct {
 	Instance   RouteInstance
 }
 
-// SlotRouter 将 Watch assignment 和当前服务成员视图组合为可调用目标。它只接受
+// SlotResolver 将 Watch assignment 和当前服务成员视图组合为可调用目标。它只接受
 // running 实例，draining/stopping/丢失实例一律返回明确错误，避免静默改派。
-type SlotRouter struct {
-	store          SlotStore
+type SlotResolver struct {
+	store          SlotReader
 	directory      Directory
 	routeDirectory RouteDirectory
 }
 
-func NewSlotRouter(store SlotStore, directory Directory) (*SlotRouter, error) {
+// NewSlotResolver 创建只读路由解析器，不要求调用方提供槽位写入能力。
+func NewSlotResolver(store SlotReader, directory Directory) (*SlotResolver, error) {
 	if store == nil {
 		return nil, ErrSlotStoreNil
 	}
 	if directory == nil {
 		return nil, ErrSlotDirectoryNil
 	}
-	router := &SlotRouter{store: store, directory: directory}
+	router := &SlotResolver{store: store, directory: directory}
 	if routeDirectory, ok := directory.(RouteDirectory); ok {
 		router.routeDirectory = routeDirectory
 	}
 	return router, nil
 }
 
-func (r *SlotRouter) ResolveSlot(ctx context.Context, slotID string) (SlotTarget, error) {
+func (r *SlotResolver) ResolveSlot(ctx context.Context, slotID string) (SlotTarget, error) {
 	if r == nil || r.store == nil {
 		return SlotTarget{}, ErrSlotStoreNil
 	}
@@ -101,7 +107,7 @@ func (r *SlotRouter) ResolveSlot(ctx context.Context, slotID string) (SlotTarget
 	return SlotTarget{Assignment: assignment, Instance: instance}, nil
 }
 
-func (r *SlotRouter) lookupRouteInstance(instanceID string) (RouteInstance, bool) {
+func (r *SlotResolver) lookupRouteInstance(instanceID string) (RouteInstance, bool) {
 	if r.routeDirectory != nil {
 		return r.routeDirectory.LookupRouteInstance(instanceID)
 	}
@@ -112,18 +118,41 @@ func (r *SlotRouter) lookupRouteInstance(instanceID string) (RouteInstance, bool
 	return routeInstance(instance), true
 }
 
+// SlotRouter 是高级槽位路由与管理 API，保留目标就绪检查和完整 SlotStore 写入能力。
+// 普通业务读取使用 SlotResolver；项目控制面或高级组件可显式注入 SlotStore 使用本类型。
+type SlotRouter struct {
+	resolver SlotResolver
+	store    SlotStore
+}
+
+func NewSlotRouter(store SlotStore, directory Directory) (*SlotRouter, error) {
+	resolver, err := NewSlotResolver(store, directory)
+	if err != nil {
+		return nil, err
+	}
+	return &SlotRouter{resolver: *resolver, store: store}, nil
+}
+
+// ResolveSlot 复用只读解析逻辑，不执行创建或晋升。
+func (r *SlotRouter) ResolveSlot(ctx context.Context, slotID string) (SlotTarget, error) {
+	if r == nil {
+		return SlotTarget{}, ErrSlotStoreNil
+	}
+	return r.resolver.ResolveSlot(ctx, slotID)
+}
+
 // CreateSlot 在写入初始 assignment 前确认目标实例已经进入 running。
 func (r *SlotRouter) CreateSlot(ctx context.Context, assignment SlotAssignment) error {
 	if r == nil || r.store == nil {
 		return ErrSlotStoreNil
 	}
-	if r.directory == nil {
+	if r.resolver.directory == nil {
 		return ErrSlotDirectoryNil
 	}
 	if err := assignment.Validate(); err != nil || assignment.Generation != 1 {
 		return ErrInvalidSlotAssignment
 	}
-	instance, ok := r.directory.LookupInstance(assignment.RuntimeInstanceID)
+	instance, ok := r.resolver.directory.LookupInstance(assignment.RuntimeInstanceID)
 	if !ok || instance.Status != StatusRunning {
 		return ErrSlotRuntimeUnavailable
 	}
@@ -136,13 +165,13 @@ func (r *SlotRouter) PromoteSlot(ctx context.Context, current, next SlotAssignme
 	if r == nil || r.store == nil {
 		return ErrSlotStoreNil
 	}
-	if r.directory == nil {
+	if r.resolver.directory == nil {
 		return ErrSlotDirectoryNil
 	}
 	if err := ValidateSlotPromotion(current, next); err != nil {
 		return err
 	}
-	instance, ok := r.directory.LookupInstance(next.RuntimeInstanceID)
+	instance, ok := r.resolver.directory.LookupInstance(next.RuntimeInstanceID)
 	if !ok || instance.Status != StatusRunning {
 		return ErrSlotRuntimeUnavailable
 	}
