@@ -10,7 +10,9 @@ import (
 	"github.com/ngnl47/tx/modules/msgq"
 	msgqpb "github.com/ngnl47/tx/modules/msgq/pb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -105,6 +107,48 @@ func TestMsgQSenderPublishesExactAndSharedRoleWithReusedConnection(t *testing.T)
 	if err != nil || len(shared.GetMessages()) != 1 || string(shared.GetMessages()[0].GetPayload()) != "second-bon" || shared.GetMessages()[0].GetSeq() != 1 {
 		t.Fatalf("second session shared role delivery = %v, %v", shared, err)
 	}
+	// 共享 Role 的两个 Session 各自从上行 Seq=1 开始。
+	for _, current := range []*msgqpb.SessionHeader{header, second} {
+		result, err := client.Rec(fetchCtx, &msgqpb.RecRequest{Header: current, Seq: 1})
+		if err != nil || result.GetReceivedSeq() != 1 {
+			t.Fatalf("session %d Rec = %v, %v", current.SessionId, result, err)
+		}
+	}
+	restored := &msgqpb.SessionHeader{RoleId: header.RoleId, SessionId: header.SessionId, ConnectionId: 9}
+	state, err := client.Init(fetchCtx, &msgqpb.InitRequest{Header: restored, Restore: true, Ack: 1})
+	if err != nil || state.GetReceivedSeq() != 1 {
+		t.Fatalf("restore = %v, %v", state, err)
+	}
+	if _, err := client.Confirm(fetchCtx, &msgqpb.ConfirmRequest{Header: header, Ack: 2}); status.Code(err) != codes.Aborted {
+		t.Fatalf("old Ack = %v, want Aborted", err)
+	}
+	if _, err := client.Rec(fetchCtx, &msgqpb.RecRequest{Header: header, Seq: 2}); status.Code(err) != codes.Aborted {
+		t.Fatalf("old Rec = %v, want Aborted", err)
+	}
+	if _, err := client.TerminateSession(fetchCtx, &msgqpb.TerminateSessionRequest{Header: header}); status.Code(err) != codes.Aborted {
+		t.Fatalf("old terminate = %v, want Aborted", err)
+	}
+	replay, err := client.FetchSome(fetchCtx, &msgqpb.FetchSomeRequest{Header: restored, Max: 2})
+	if err != nil || len(replay.GetMessages()) != 1 || replay.Messages[0].Seq != 2 || string(replay.Messages[0].Payload) != "second-bon" {
+		t.Fatalf("restored replay = %v, %v", replay, err)
+	}
+	if _, err := client.Confirm(fetchCtx, &msgqpb.ConfirmRequest{Header: restored, Ack: 2}); err != nil {
+		t.Fatal(err)
+	}
+	// 第一会话确认完毕，第二会话重连仍重放自己的未确认 Seq=1。
+	secondRestored := &msgqpb.SessionHeader{RoleId: second.RoleId, SessionId: second.SessionId, ConnectionId: 10}
+	if _, err := client.Init(fetchCtx, &msgqpb.InitRequest{Header: secondRestored, Restore: true}); err != nil {
+		t.Fatal(err)
+	}
+	replay, err = client.FetchSome(fetchCtx, &msgqpb.FetchSomeRequest{Header: secondRestored, Max: 2})
+	if err != nil || len(replay.GetMessages()) != 1 || replay.Messages[0].Seq != 1 || string(replay.Messages[0].Payload) != "second-bon" {
+		t.Fatalf("other session replay = %v, %v", replay, err)
+	}
+	result, err := client.Rec(fetchCtx, &msgqpb.RecRequest{Header: restored, Seq: 2, Ack: 2})
+	if err != nil || result.GetReceivedSeq() != 2 {
+		t.Fatalf("new connection Rec = %v, %v", result, err)
+	}
+
 }
 
 type countingMsgQDialer struct {

@@ -230,3 +230,174 @@ func (actor *drainProcessActor) Receive(ctx protoactor.Context) {
 	actor.processed <- message.CommandId
 	ctx.Respond(&actorpb.Result{MessageType: "drain.done", CommandId: message.CommandId, RequestId: message.RequestId})
 }
+
+// 验证本地等待、请求截止时间与 Runtime 关闭各自的远端调用边界。
+func TestActorRemoteCallLifecycle(t *testing.T) {
+	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("set TX_ETCD_ENDPOINT to run the remote integration test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/tx/tests/call-contract-%d", time.Now().UnixNano())
+	started, release := make(chan struct{}, 1), make(chan struct{}, 1)
+	processed := make(chan uint64, 4)
+	target := startDrainRuntime(t, endpoint, prefix, MustFixedKind("call-probe", func() protoactor.Actor {
+		return &remoteCallContractActor{started: started, release: release, processed: processed}
+	}))
+	defer target.Shutdown()
+	// 失败退出时也解除业务屏障，再关闭 Runtime。
+	defer close(release)
+	system, err := target.ActorSystem()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := system.Root.SpawnNamed(target.fixed[0].props, "call-probe"); err != nil {
+		t.Fatal(err)
+	}
+	caller := startDrainRuntime(t, endpoint, prefix)
+	defer caller.Shutdown()
+	pid := protoactor.NewPID(system.Address(), "call-probe")
+	future, err := caller.CallFuture(ctx, pid, Delivery{MessageType: "call.probe", CommandID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	waitCtx, stopWait := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer stopWait()
+	if _, err := future.Await(waitCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("timed out Await = %v", err)
+	}
+	release <- struct{}{}
+	result, err := future.Await(ctx)
+	if err != nil || result.CommandID != 1 || result.MessageType != "call.done" || string(result.Payload) != "completed" {
+		t.Fatalf("Await after timeout: result=%+v err=%v", result, err)
+	}
+	_, err = caller.Call(ctx, pid, Delivery{MessageType: "call.probe", CommandID: 2})
+	var businessErr *CallError
+	if !errors.As(err, &businessErr) || businessErr.Code != 47 || businessErr.Message != "business rejected" {
+		t.Fatalf("remote business error = %v", err)
+	}
+	// 第二个响应形成邮箱顺序屏障，两次显式调用应各执行一次。
+	for _, want := range []uint64{1, 2} {
+		select {
+		case got := <-processed:
+			if got != want {
+				t.Fatalf("processed=%d, want %d", got, want)
+			}
+		default:
+			t.Fatal("response preceded processing")
+		}
+	}
+	select {
+	case got := <-processed:
+		t.Fatalf("unexpected replay: %d", got)
+	default:
+	}
+
+	// 使用独立的 Await context，确保观察的是请求截止时间清理，而非等待超时。
+	requestCtx, stopRequest := context.WithTimeout(ctx, 300*time.Millisecond)
+	defer stopRequest()
+	expired, err := caller.CallFuture(requestCtx, pid, Delivery{MessageType: "call.probe", CommandID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if _, err := expired.Await(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expired request = %v", err)
+	}
+	caller.pending.mu.Lock()
+	pending := len(caller.pending.pending)
+	caller.pending.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("expired request retained %d pending calls", pending)
+	}
+	// 旧响应与新请求同时在途；旧请求号不得结束新 Future。
+	next, err := caller.CallFuture(ctx, pid, Delivery{MessageType: "call.probe", CommandID: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release <- struct{}{}
+	if _, err := next.Await(ctx); !errors.As(err, &businessErr) || businessErr.Code != 47 {
+		t.Fatalf("new request after late response = %v", err)
+	}
+	if _, err := expired.Await(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("late response changed expired result: %v", err)
+	}
+
+	stopped, err := caller.CallFuture(ctx, pid, Delivery{MessageType: "call.probe", CommandID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if err := caller.Shutdown(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stopped.Await(ctx); !errors.Is(err, ErrRuntimeStopped) {
+		t.Fatalf("pending call on shutdown = %v", err)
+	}
+	caller.pending.mu.Lock()
+	pending = len(caller.pending.pending)
+	caller.pending.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("shutdown retained %d pending calls", pending)
+	}
+	if _, err := caller.CallFuture(ctx, pid, Delivery{MessageType: "call.probe", CommandID: 2}); !errors.Is(err, ErrRuntimeStopped) {
+		t.Fatalf("call after shutdown = %v", err)
+	}
+	// 调用方关闭不撤销已准入的远端业务，目标仍须完成排水。
+	release <- struct{}{}
+	if err := target.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []uint64{1, 2, 1} {
+		select {
+		case got := <-processed:
+			if got != want {
+				t.Fatalf("processed=%d, want %d", got, want)
+			}
+		default:
+			t.Fatal("drained before remote work completed")
+		}
+	}
+
+}
+
+type remoteCallContractActor struct {
+	started   chan<- struct{}
+	release   <-chan struct{}
+	processed chan<- uint64
+}
+
+func (a *remoteCallContractActor) Receive(ctx protoactor.Context) {
+	message, ok := ctx.Message().(*actorpb.Delivery)
+	if !ok {
+		return
+	}
+	if message.CommandId == 1 {
+		a.started <- struct{}{}
+		<-a.release
+	}
+	a.processed <- message.CommandId
+	request, err := DeliveryFromProto(message)
+	if err != nil {
+		panic(err)
+	}
+	if message.CommandId == 2 {
+		_ = Respond(ctx, request, Result{}, NewCallError(47, errors.New("business rejected")))
+		return
+	}
+	_ = Respond(ctx, request, Result{MessageType: "call.done", CommandID: message.CommandId, Payload: []byte("completed")}, nil)
+}

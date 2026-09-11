@@ -585,6 +585,90 @@ func TestAgentSessionDoesNotAdvanceSequenceWhenAdmissionRejects(t *testing.T) {
 	}
 }
 
+func TestAgentSameRoleSessionsPreserveIdentityAndIsolateDownMessages(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	mailbox, err := msgq.NewServer(msgq.ServerOptions{InstanceID: "msgq-local", Store: newMailboxSessionStore(), MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := msgq.NewLocalSessionClient(mailbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := msgq.NewFixedSessionClientRouter(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatched := make(chan txagent.DispatchRequest, 2)
+	dispatcher := txagent.DispatchFunc(func(_ context.Context, request txagent.DispatchRequest) (txagent.DispatchResult, error) {
+		dispatched <- request
+		return txagent.DispatchResult{ProcessedUpSeq: request.Seq}, nil
+	})
+	transports := []*agentTransport{newAgentTransport(), newAgentTransport()}
+	results := []chan error{make(chan error, 1), make(chan error, 1)}
+	for i, transport := range transports {
+		principal := testSessionPrincipal()
+		principal.SessionID += int64(i)
+		connectionID := int64(7 + i)
+		agent, err := txagent.NewServer(txagent.ServerOptions{
+			IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) { return principal, nil }),
+			Dispatcher:       dispatcher, Sessions: router,
+			ConnectionID: func() (int64, error) { return connectionID, nil },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(transport.closeReads)
+		go func() { results[i] <- agent.Serve(ctx, transport) }()
+		transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
+		assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
+	}
+	// 两条连接可并发接收相同的上行 Seq，身份来自各自认证结果。
+	for _, transport := range transports {
+		transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 10001, RouteKey: txagent.Int64RouteKey(470001), Payload: []byte("request")}
+	}
+	seen := make(map[int64]bool)
+	for range transports {
+		request := receiveDispatch(t, dispatched)
+		id := request.Identity
+		if id.SessionID != 99 && id.SessionID != 100 {
+			t.Fatalf("unexpected identity: %+v", id)
+		}
+		want := testSessionPrincipal()
+		want.SessionID = id.SessionID
+		if id.SessionPrincipal != want || id.ConnectionID != 7+(id.SessionID-99) || request.Seq != 1 || seen[id.SessionID] {
+			t.Fatalf("mixed dispatch identity or sequence: %+v", request)
+		}
+		seen[id.SessionID] = true
+	}
+	for _, transport := range transports {
+		assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 1, "")
+	}
+	// 测试只提供不透明业务载荷，精确错误下行不能进入另一会话。
+	if _, err := mailbox.PubSession(ctx, 99, []byte("request-error")); err != nil {
+		t.Fatal(err)
+	}
+	broadcast, err := mailbox.BroadcastRole(ctx, 470001, []byte("role-update"))
+	if err != nil || broadcast.Delivered != 2 {
+		t.Fatalf("shared publish = %+v, %v", broadcast, err)
+	}
+	assertAgentFrame(t, transports[0].writes, txagent.FrameDownMsg, 1, 1, "request-error")
+	assertAgentFrame(t, transports[0].writes, txagent.FrameDownMsg, 2, 1, "role-update")
+	assertAgentFrame(t, transports[1].writes, txagent.FrameDownMsg, 1, 1, "role-update")
+	for i, transport := range transports {
+		transport.closeReads()
+		select {
+		case err := <-results[i]:
+			if !errors.Is(err, io.EOF) {
+				t.Fatalf("Serve = %v, want EOF", err)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+}
+
 func newAgentSessionFixture(t *testing.T, dispatchErr error) (*txagent.Server, *agentTransport, *msgq.Server, <-chan txagent.DispatchRequest) {
 	t.Helper()
 	store := newMailboxSessionStore()

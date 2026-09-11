@@ -778,6 +778,9 @@ func (handler actorLogHandler) Enabled(context.Context, slog.Level) bool {
 }
 
 func (handler actorLogHandler) Handle(_ context.Context, record slog.Record) error {
+	if record.Message != "actor mailbox overflow" {
+		return nil
+	}
 	select {
 	case handler.records <- record:
 	default:

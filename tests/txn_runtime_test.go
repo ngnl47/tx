@@ -3,8 +3,10 @@ package tests
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ngnl47/tx/modules/txn"
 	writebackmodule "github.com/ngnl47/tx/modules/writeback"
@@ -211,5 +213,61 @@ func TestWriteBackManagerTreatsTypedNilWriteAdmissionAsAbsent(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Call with typed nil write admission returned error: %v", err)
+	}
+}
+
+// 子过程先完成受控修改，再模拟业务 panic。
+type panickingRuntimeProcedure struct{ runtimeTestProcedure }
+
+func (procedure panickingRuntimeProcedure) Process(tx *txn.Tx) error {
+	if err := procedure.runtimeTestProcedure.Process(tx); err != nil {
+		return err
+	}
+	panic("child panic")
+}
+
+func TestTxnRuntimeChildPanicRestoresPendingChangesAndAbortsReservations(t *testing.T) {
+	parent, child := &runtimeTestStore{}, &runtimeTestStore{}
+	parent.SetField(7)
+	child.SetField(8)
+	parentBefore, childBefore := parent.changes.clone(), child.changes.clone()
+	parentLock := txn.NewLockTarget(txn.NewLockKey(t.Name(), "parent"), parent)
+	childLock := txn.NewLockTarget(txn.NewLockKey(t.Name(), "child"), child)
+	sink := &recordingCommitParticipant{}
+	runtime := txn.NewRuntime()
+	if err := runtime.BindCommitParticipant(sink); err != nil {
+		t.Fatal(err)
+	}
+	procedure := runtimeDynamicParentProcedure{
+		lock: parentLock, store: parent,
+		child: panickingRuntimeProcedure{runtimeTestProcedure{lock: childLock, store: child}},
+	}
+	func() {
+		defer func() {
+			if got := recover(); got != "child panic" {
+				t.Fatalf("panic = %v, want child panic", got)
+			}
+		}()
+		_ = runtime.Call(context.Background(), procedure)
+		t.Fatal("Call did not propagate child panic")
+	}()
+	if !reflect.DeepEqual(parent.changes, parentBefore) || !reflect.DeepEqual(child.changes, childBefore) {
+		t.Fatalf("panic lost prior pending changes: parent=%v child=%v", parent.changes, child.changes)
+	}
+	if parent.recorder != nil || child.recorder != nil {
+		t.Fatal("panic left undo recorder bound")
+	}
+	if sink.aborts != 2 || len(sink.commits) != 0 {
+		t.Fatalf("reservations after panic: aborts=%d commits=%d, want 2/0", sink.aborts, len(sink.commits))
+	}
+	// 同一运行时重新进入父子过程，验证两把锁已释放且预约可以重新提交。
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	procedure.child = runtimeTestProcedure{lock: childLock, store: child}
+	if err := runtime.Call(ctx, procedure); err != nil {
+		t.Fatalf("Call after panic: %v", err)
+	}
+	if sink.aborts != 2 || len(sink.commits) != 2 {
+		t.Fatalf("reservations after recovery: aborts=%d commits=%d, want 2/2", sink.aborts, len(sink.commits))
 	}
 }
