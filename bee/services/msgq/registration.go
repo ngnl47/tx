@@ -60,14 +60,8 @@ func (service *Service) factory(runtime bee.Context) (bee.Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bee msgq: configure: %w", err)
 	}
-	rpc, err := runtime.CModRPC()
-	if err != nil {
-		return nil, err
-	}
-	redis, err := runtime.CModRedisStorage()
-	if err != nil {
-		return nil, err
-	}
+	rpc := runtime.CModRPC()
+	redis := runtime.CModRedisStorage()
 	core, err := msgqservice.New(options, msgqservice.Dependencies{
 		Tasks:    runtime.Tasks(),
 		RPC:      rpc,

@@ -12,7 +12,7 @@
 ### 2026-09-11 后续顺序与决策
 
 1. GD 标脏、StoreView 合并与真实叶子路径回测已完成，见 [本次 benchmark](audits/2026-09-11-gd-dirty-merge-benchmark.md)。有收益的重路径保留，不据此恢复边际微优化。
-2. 已进行 P0 对外 API/SPI 职责与易用性首轮审阅，见 [审阅报告](audits/2026-09-11-public-api-spi-review.md)。已收窄业务槽位读取能力并修正公开 GoDoc；高级 SlotStore、SlotRouter 和控制面接口保留，game 侧可显式注入使用。
+2. 已进行 P0 对外 API/SPI 职责与易用性首轮审阅，见 [审阅报告](audits/2026-09-11-public-api-spi-review.md)。已收窄业务槽位读取能力并修正公开 GoDoc；高级 SlotStore、SlotRouter 和控制面接口保留，game 侧可显式注入使用。Context 能力已改为直接取得，声明/阶段错误由同步装配边界转为启动错误并回滚；示例采用 CModSlotResolver，高级接口继续保留。
 3. 可靠业务消息后续讨论 Go 生态选型，比较 RocketMQ、Kafka 等候选的真实需求适配；本次未选型、未引入依赖。
 4. 业务配置生成偏业务侧，降低优先级；生产认证与证书体系暂缓至后期部署验证。
 5. 常规排水失败沿用闸门关闭、资源保留、有限重试和最终非零退出；异常实例隔离、替换与故障排查交给运维，不扩展库内自动接管。详见 AGENTS.md。

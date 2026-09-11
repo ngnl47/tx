@@ -1,5 +1,7 @@
 # tx 对外 API/SPI 职责与易用性首轮审阅（2026-09-11）
 
+> 后续接口迁移：Context 的 Storage/CMod 能力现已改为单返回值，增加 CModSlotResolver，由同步装配边界处理能力错误。下文保留首轮审阅和槽位拆分阶段记录；当前签名、失败语义和迁移方式见 [README](../../README.md)。
+
 ## 范围与结论
 
 基于 tx f4f3d38 的当前代码，以四项 P0 的外部接入面为范围：ant 组合根/能力上下文、storage/change、txn/writeback、Actor/RPC、Agent/MsgQ、Discovery/Control/Lifecycle，并追踪 txgame、txgameslg 的实际接入。不是全库正确性或安全认证；日志、BON 编解码及可选 util 工具未做逐项深审。

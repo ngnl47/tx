@@ -63,6 +63,8 @@ type FusionStorage interface {
 }
 
 // Context 只在 Service 或 CMod 构造边界读取已经声明的无状态能力。
+// 能力直接返回；未声明、不可用或在 Validate 阶段读取时由框架报告装配错误。
+// Service、Setup 和 CMod 构造边界将能力错误转为启动错误，普通业务 panic 不被吞掉。
 type Context interface {
 	// AppID 返回当前应用的稳定集群标识。
 	AppID() string
@@ -73,21 +75,21 @@ type Context interface {
 	// Admission 返回进程外部工作准入状态。
 	Admission() lifecycle.Admission
 	// Storage 返回当前 owner 已声明的最强文档存储能力。
-	Storage() (Storage, error)
+	Storage() Storage
 	// CModRedisStorage 返回已声明的 Redis 文档和脚本路由能力。
-	CModRedisStorage() (RedisStorage, error)
+	CModRedisStorage() RedisStorage
 	// CModMongoStorage 返回已声明的 MongoDB 文档能力。
-	CModMongoStorage() (MongoStorage, error)
+	CModMongoStorage() MongoStorage
 	// CModFusionStorage 返回已声明的 Fusion 文档能力。
-	CModFusionStorage() (FusionStorage, error)
+	CModFusionStorage() FusionStorage
 	// CModRPC 返回共享 gRPC Host 的服务注册入口。
-	CModRPC() (txrpc.Registrar, error)
+	CModRPC() txrpc.Registrar
 	// CModDiscovery 返回 Watch 维护的只读服务实例目录。
-	CModDiscovery() (discovery.Directory, error)
+	CModDiscovery() discovery.Directory
 	// CModSessionID 返回已声明的 SessionID 分配能力。
-	CModSessionID() (SessionIDAllocator, error)
+	CModSessionID() SessionIDAllocator
 	// CModActor 返回 Actor 消息解析和投递入口。
-	CModActor() (txactor.Messenger, error)
+	CModActor() txactor.Messenger
 }
 
 type frameworkContext interface {
@@ -105,12 +107,13 @@ type frameworkContext interface {
 }
 
 type contextView struct {
-	kernel  frameworkContext
-	owner   string
-	allowed map[CModID]struct{}
+	kernel     frameworkContext
+	owner      string
+	allowed    map[CModID]struct{}
+	validating bool
 }
 
-func newContextView(kernel frameworkContext, owner string, ids []CModID) Context {
+func newContextView(kernel frameworkContext, owner string, ids []CModID) *contextView {
 	allowed := make(map[CModID]struct{}, len(ids))
 	for _, id := range ids {
 		allowed[id] = struct{}{}
@@ -157,33 +160,33 @@ func (view *contextView) Admission() lifecycle.Admission {
 }
 
 // Storage 返回当前 owner 已声明的最强存储能力，优先级为 Fusion、MongoDB、Redis。
-func (view *contextView) Storage() (Storage, error) {
+func (view *contextView) Storage() Storage {
+	if view != nil && view.validating {
+		panic(framework.CapabilityError{Err: fmt.Errorf("bee: %s cannot read storage during Validate", view.ownerName())})
+	}
 	if view != nil && view.kernel != nil && view.allowed == nil {
 		if value := view.kernel.Storage(); value != nil {
-			return value, nil
+			return value
 		}
 	}
 	for _, id := range []CModID{CModFusionStorage, CModMongoStorage, CModRedisStorage} {
 		if view.canUse(id) && view.kernel.HasCMod(toFrameworkCModID(id)) {
 			value := view.kernel.StorageFor(storageMode(id))
 			if value != nil {
-				return modeStorageView{storage: value}, nil
+				return modeStorageView{storage: value}
 			}
 		}
 	}
-	return nil, fmt.Errorf("bee: %s has no declared storage CMod", view.ownerName())
+	panic(framework.CapabilityError{Err: fmt.Errorf("bee: %s has no declared storage CMod", view.ownerName())})
 }
 
-func (view *contextView) CModRedisStorage() (RedisStorage, error) {
-	storage, err := view.modeStorage(CModRedisStorage, meta.StorageModeRedis)
-	if err != nil {
-		return nil, err
-	}
+func (view *contextView) CModRedisStorage() RedisStorage {
+	storage := view.modeStorage(CModRedisStorage, meta.StorageModeRedis)
 	advanced := view.kernel.Advanced()
 	if advanced == nil || advanced.Redis() == nil {
-		return nil, view.unavailable(CModRedisStorage)
+		panic(framework.CapabilityError{Err: view.unavailable(CModRedisStorage)})
 	}
-	return redisStorageView{modeStorageView: modeStorageView{storage: storage}, routes: advanced.Redis()}, nil
+	return redisStorageView{modeStorageView: modeStorageView{storage: storage}, routes: advanced.Redis()}
 }
 
 type redisStorageView struct {
@@ -197,75 +200,59 @@ func (view redisStorageView) ScriptRoutes() txredis.ScriptRoutes {
 	return view.routes
 }
 
-func (view *contextView) CModMongoStorage() (MongoStorage, error) {
-	storage, err := view.modeStorage(CModMongoStorage, meta.StorageModeMongo)
-	if err != nil {
-		return nil, err
-	}
-	return mongoStorageView{modeStorageView{storage: storage}}, nil
+func (view *contextView) CModMongoStorage() MongoStorage {
+	storage := view.modeStorage(CModMongoStorage, meta.StorageModeMongo)
+	return mongoStorageView{modeStorageView{storage: storage}}
 }
 
-func (view *contextView) CModFusionStorage() (FusionStorage, error) {
-	storage, err := view.modeStorage(CModFusionStorage, meta.StorageModeFusion)
-	if err != nil {
-		return nil, err
-	}
-	return fusionStorageView{modeStorageView{storage: storage}}, nil
+func (view *contextView) CModFusionStorage() FusionStorage {
+	storage := view.modeStorage(CModFusionStorage, meta.StorageModeFusion)
+	return fusionStorageView{modeStorageView{storage: storage}}
 }
 
-func (view *contextView) CModRPC() (txrpc.Registrar, error) {
-	if err := view.require(CModRPC); err != nil {
-		return nil, err
-	}
+func (view *contextView) CModRPC() txrpc.Registrar {
+	view.require(CModRPC)
 	value := view.kernel.RPC()
 	if value == nil {
-		return nil, view.unavailable(CModRPC)
+		panic(framework.CapabilityError{Err: view.unavailable(CModRPC)})
 	}
-	return value, nil
+	return value
 }
 
-func (view *contextView) CModDiscovery() (discovery.Directory, error) {
-	if err := view.require(CModDiscovery); err != nil {
-		return nil, err
-	}
+func (view *contextView) CModDiscovery() discovery.Directory {
+	view.require(CModDiscovery)
 	value := view.kernel.Directory()
 	if value == nil {
-		return nil, view.unavailable(CModDiscovery)
+		panic(framework.CapabilityError{Err: view.unavailable(CModDiscovery)})
 	}
-	return value, nil
+	return value
 }
 
-func (view *contextView) CModSessionID() (SessionIDAllocator, error) {
-	if err := view.require(CModSessionID); err != nil {
-		return nil, err
-	}
+func (view *contextView) CModSessionID() SessionIDAllocator {
+	view.require(CModSessionID)
 	value := view.kernel.SessionIDs()
 	if value == nil {
-		return nil, view.unavailable(CModSessionID)
+		panic(framework.CapabilityError{Err: view.unavailable(CModSessionID)})
 	}
-	return value, nil
+	return value
 }
 
-func (view *contextView) CModActor() (txactor.Messenger, error) {
-	if err := view.require(CModActor); err != nil {
-		return nil, err
-	}
+func (view *contextView) CModActor() txactor.Messenger {
+	view.require(CModActor)
 	value := view.kernel.Actor()
 	if value == nil {
-		return nil, view.unavailable(CModActor)
+		panic(framework.CapabilityError{Err: view.unavailable(CModActor)})
 	}
-	return value, nil
+	return value
 }
 
-func (view *contextView) modeStorage(id CModID, mode meta.StorageMode) (framework.ModeStorage, error) {
-	if err := view.require(id); err != nil {
-		return nil, err
-	}
+func (view *contextView) modeStorage(id CModID, mode meta.StorageMode) framework.ModeStorage {
+	view.require(id)
 	value := view.kernel.StorageFor(mode)
 	if value == nil {
-		return nil, view.unavailable(id)
+		panic(framework.CapabilityError{Err: view.unavailable(id)})
 	}
-	return value, nil
+	return value
 }
 
 type modeStorageView struct{ storage framework.ModeStorage }
@@ -309,25 +296,28 @@ func storageMode(id CModID) meta.StorageMode {
 	}
 }
 
-func (view *contextView) require(id CModID) error {
+func (view *contextView) require(id CModID) {
+	if view != nil && view.validating {
+		panic(framework.CapabilityError{Err: fmt.Errorf("bee: %s cannot read CMod %q during Validate", view.ownerName(), id)})
+	}
 	if view == nil || view.kernel == nil {
-		return fmt.Errorf("bee: %s context is unavailable", view.ownerName())
+		panic(framework.CapabilityError{Err: fmt.Errorf("bee: %s context is unavailable", view.ownerName())})
 	}
 	if view.allowed == nil {
 		if view.kernel.HasCMod(toFrameworkCModID(id)) {
-			return nil
+			return
 		}
-		return view.unavailable(id)
+		panic(framework.CapabilityError{Err: view.unavailable(id)})
 	}
 	if _, ok := view.allowed[id]; ok {
-		return nil
+		return
 	}
 	ids := make([]string, 0, len(view.allowed))
 	for current := range view.allowed {
 		ids = append(ids, string(current))
 	}
 	slices.Sort(ids)
-	return fmt.Errorf("bee: %s requested CMod %q but declared CMods are [%s]", view.ownerName(), id, strings.Join(ids, ","))
+	panic(framework.CapabilityError{Err: fmt.Errorf("bee: %s requested CMod %q but declared CMods are [%s]", view.ownerName(), id, strings.Join(ids, ","))})
 }
 
 func (view *contextView) canUse(id CModID) bool {

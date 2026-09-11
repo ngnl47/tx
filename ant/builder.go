@@ -149,7 +149,8 @@ func (builder *Builder) Build() (*Server, error) {
 	}
 	for _, setup := range builder.setups {
 		current := setup
-		options = append(options, framework.WithSetup(func(runtime framework.Context) (func(), error) {
+		options = append(options, framework.WithSetup(func(runtime framework.Context) (cleanup func(), err error) {
+			defer framework.RecoverCapability(&err)
 			return current(newSetupContext(runtime))
 		}))
 	}

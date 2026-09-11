@@ -79,10 +79,14 @@ func TestStorageReadersAdapterPreservesNilOnUnbind(t *testing.T) {
 	}
 }
 
-func TestSetupContextStorageReturnsErrorWhenKernelIsUnavailable(t *testing.T) {
-	runtime := newSetupContext(nil)
-	if _, err := runtime.Storage(); err == nil {
-		t.Fatal("Storage error = nil, want unavailable context error")
+func TestSetupContextStorageReportsUnavailableKernel(t *testing.T) {
+	err := func() (err error) {
+		defer framework.RecoverCapability(&err)
+		newSetupContext(nil).Storage()
+		return nil
+	}()
+	if err == nil {
+		t.Fatal("缺少能力错误")
 	}
 }
 
@@ -90,8 +94,8 @@ func TestServiceContextRejectsUndeclaredCMod(t *testing.T) {
 	registration := ServiceRegistration{
 		Spec: ServiceSpec{Name: "game"},
 		Factory: func(runtime Context) (Service, error) {
-			_, err := runtime.CModActor()
-			return nil, err
+			_ = runtime.CModActor()
+			return nil, nil
 		},
 	}
 
@@ -118,12 +122,13 @@ func TestServiceContextRequiresExplicitSessionIDCMod(t *testing.T) {
 	kernel := &sessionIDContextKernel{allocator: allocator}
 	view := newContextView(kernel, "service \"login\"", []CModID{CModDiscovery})
 
-	got, err := view.CModSessionID()
-	if got != nil {
-		t.Fatalf("CModSessionID = %#v, want nil", got)
-	}
+	err = func() (err error) {
+		defer framework.RecoverCapability(&err)
+		view.CModSessionID()
+		return nil
+	}()
 	if err == nil {
-		t.Fatal("CModSessionID error = nil, want undeclared CMod error")
+		t.Fatal("缺少未声明能力错误")
 	}
 	for _, fragment := range []string{"login", string(CModSessionID), "declared"} {
 		if !strings.Contains(err.Error(), fragment) {
@@ -139,10 +144,7 @@ func TestServiceContextExposesDeclaredSessionIDCMod(t *testing.T) {
 	}
 	view := newContextView(&sessionIDContextKernel{allocator: allocator}, "service \"login\"", []CModID{CModSessionID})
 
-	got, err := view.CModSessionID()
-	if err != nil {
-		t.Fatalf("CModSessionID: %v", err)
-	}
+	got := view.CModSessionID()
 	if id, err := got.AllocateSessionID(context.Background()); err != nil || id <= 0 || id > sessionid.MaxSessionID {
 		t.Fatalf("AllocateSessionID = %d, %v, want positive JavaScript-safe value", id, err)
 	}

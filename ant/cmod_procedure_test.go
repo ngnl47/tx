@@ -52,9 +52,7 @@ func TestCModProcedureStartsBeforeServiceFactoryAndDrainsWriteBack(t *testing.T)
 		Services(ServiceRegistration{
 			Spec: ServiceSpec{Name: "game", Requires: []CModID{CModProcedure}},
 			Factory: func(runtime Context) (Service, error) {
-				if _, err := runtime.CModProcedure(); err != nil {
-					return nil, err
-				}
+				_ = runtime.CModProcedure()
 				events.add("factory")
 				return serviceFunc(func(context.Context) error {
 					events.add("service:start")

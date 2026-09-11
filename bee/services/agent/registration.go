@@ -41,21 +41,9 @@ func Registration(provider OptionsProvider, local LocalMsgQ) (bee.ServiceRegistr
 				return nil, fmt.Errorf("bee agent: configure: %w", err)
 			}
 			options.LocalMsgQ = local
-			rpc, err := runtime.CModRPC()
-			if err != nil {
-				return nil, err
-			}
-			redis, err := runtime.CModRedisStorage()
-			if err != nil {
-				return nil, err
-			}
-			directory, err := runtime.CModDiscovery()
-			if err != nil {
-				return nil, err
-			}
-			if _, err := runtime.CModActor(); err != nil {
-				return nil, err
-			}
+			rpc := runtime.CModRPC()
+			redis := runtime.CModRedisStorage()
+			directory := runtime.CModDiscovery()
 			return agentservice.New(options, agentservice.Dependencies{
 				Tasks:     runtime.Tasks(),
 				Admission: runtime.Admission(),

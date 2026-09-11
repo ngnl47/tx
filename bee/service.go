@@ -63,7 +63,8 @@ func (adapter *serviceAdapter) Spec() framework.Spec {
 	}
 }
 
-func (adapter *serviceAdapter) Start(runtime framework.Context) error {
+func (adapter *serviceAdapter) Start(runtime framework.Context) (err error) {
+	defer framework.RecoverCapability(&err)
 	view := newContextView(runtime, "service "+fmt.Sprintf("%q", adapter.registration.Spec.Name), adapter.registration.Spec.Requires)
 	instance, err := adapter.registration.Factory(view)
 	if err != nil {

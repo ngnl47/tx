@@ -20,16 +20,20 @@ func (adapter *cmodAdapter) Spec() framework.CModSpec {
 	}
 }
 
-func (adapter *cmodAdapter) Validate(runtime framework.CModContext) error {
+func (adapter *cmodAdapter) Validate(runtime framework.CModContext) (err error) {
+	defer framework.RecoverCapability(&err)
 	validator, ok := adapter.mod.(CModValidator)
 	if !ok || isNil(validator) {
 		return nil
 	}
 	spec := adapter.mod.Spec()
-	return validator.Validate(newContextView(runtime, "CMod \""+string(spec.ID)+"\"", spec.Requires))
+	view := newContextView(runtime, "CMod \""+string(spec.ID)+"\"", spec.Requires)
+	view.validating = true
+	return validator.Validate(view)
 }
 
-func (adapter *cmodAdapter) Start(runtime framework.CModContext) error {
+func (adapter *cmodAdapter) Start(runtime framework.CModContext) (err error) {
+	defer framework.RecoverCapability(&err)
 	spec := adapter.mod.Spec()
 	return adapter.mod.Start(newContextView(runtime, "CMod \""+string(spec.ID)+"\"", spec.Requires))
 }

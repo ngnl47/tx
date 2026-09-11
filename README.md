@@ -65,10 +65,7 @@ func NewApplication(config bee.Config, services ...bee.ServiceRegistration) (*be
 			data.RegisterStorageRuntime(runtime)
 		}).
 		Setup(func(runtime bee.Context) (func(), error) {
-			storage, err := runtime.Storage()
-			if err != nil {
-				return nil, err
-			}
+			storage := runtime.Storage()
 			return db.Install(storage)
 		}).
 		Services(services...).
@@ -105,14 +102,20 @@ game := bee.ServiceRegistration{
 		Requires: []bee.CModID{bee.CModRPC, bee.CModFusionStorage},
 	},
 	Factory: func(runtime bee.Context) (bee.Service, error) {
-		rpc, err := runtime.CModRPC()
-		if err != nil {
-			return nil, err
-		}
+		rpc := runtime.CModRPC()
 		return newGameService(rpc), nil
 	},
 }
 ```
+
+`Requires` 负责启用依赖并保证服务 Factory 在依赖 CMod 启动成功后执行。`Storage()` 和 `CMod*()` 直接返回能力，
+未声明、不可用或在自定义 CMod `Validate` 阶段读取运行时能力时，tx 立即报告带 owner 的能力错误。
+Service 构造/启动、Setup、CMod Validate/Start 的同步回调边界把该专用错误转回启动 error，沿既有流程回滚已托管资源；普通业务 panic 不会被当作能力错误吞掉。
+Context 仅在装配回调内取得依赖，不应保存到 Handler 或传入后台 goroutine；绕过框架直接调用 Factory 时，能力错误会直接 panic。
+配置、I/O、业务构造继续返回并处理 error。工厂在返回前创建但尚未交给框架的私有资源，仍须用 defer 在失败时释放；框架无法清理未交接的对象。
+
+接口迁移：`actors, err := runtime.CModActor()` 改为 `actors := runtime.CModActor()`，测试桩同步改成单返回值；
+`LogicalSlot()` 的可选 `(LogicalSlot, bool)` 契约不变。Ant 常规槽位路由使用 `runtime.CModSlotResolver()`，底层 `SlotReader`、`NewSlotResolver` 和高级 `SlotStore/SlotRouter` 保留。
 
 常规服务通过 `Tasks/Admission/CModRedisStorage/CModMongoStorage/CModFusionStorage/CModRPC/CModDiscovery/CModSessionID/CModActor`
 等最小契约取得已经声明的能力；项目组合根才使用通用 `Storage()` 安装 `db.Save` facade。
@@ -225,7 +228,7 @@ app, err := ant.New(config).
 项目 Factory 按服务选择 Fusion 或 Mongo Writer，不改变事务与写回 SPI。
 启动日志输出实际生效的组件，例如 `procedure(transaction=default,writeback=txgameslg)`。
 
-例如只启动一个 RPC-only 自定义服务时，`Context.Storage()` 保持 `nil`，框架不会校验 Redis/Mongo 配置，也不会连接
+例如只启动一个 RPC-only 自定义服务时，调用 `Context.Storage()` 会报告未声明存储能力的装配错误，框架不会校验 Redis/Mongo 配置，也不会连接
 对应外部服务。项目需要从 yml 字符串惰性转换强类型配置时，在组合根注册配置提供者：
 
 ```go
@@ -782,10 +785,7 @@ handlers := func(runtime bee.Context) (txagent.IdentityResolver, txagent.Dispatc
             AccessMode: txprotocol.AccessModeNormal,
         }, nil
     })
-    messenger, err := runtime.CModActor()
-    if err != nil {
-        return nil, nil, err
-    }
+    messenger := runtime.CModActor()
     dispatcher, err := txagent.NewActorDispatcher(txagent.ActorDispatcherOptions{
         Messenger: messenger,
         Resolver:  projectActorResolver,
@@ -1341,10 +1341,7 @@ Remote 和官方 etcd Cluster Provider，不依赖 tx 的普通 gRPC Host 或 `S
 服务 Factory 通过受控 `Context.CModActor()` 取得 `actor.Messenger`：
 
 ```go
-runtime, err := serviceContext.CModActor()
-if err != nil {
-    return err
-}
+runtime := serviceContext.CModActor()
 pid, err := runtime.VirtualPID("role", "470001")
 if err != nil {
     return err
@@ -1441,10 +1438,7 @@ if delivery.WantsResult() {
 只决定目标 PID 和投递内容；tx 的通用 Dispatcher 始终使用带 deadline 的 `Call` 等待处理完成确认：
 
 ```go
-messenger, err := runtime.CModActor()
-if err != nil {
-    return err
-}
+messenger := runtime.CModActor()
 dispatcher, err := txagent.NewActorDispatcher(txagent.ActorDispatcherOptions{
     Messenger: messenger,
     Resolver: txagent.ActorDispatchResolverFunc(func(ctx context.Context, request txagent.DispatchRequest) (txagent.ActorDispatch, error) {
@@ -1535,18 +1529,7 @@ Actor 不代表 GD，也不提供分布式事务。同一 Actor 内需要修改�
 `stopping` 时返回 `ErrSlotRuntimeUnavailable`，绝不随机改派。
 
 ```go
-slots, err := runtime.CModSlots()
-if err != nil {
-    return err
-}
-directory, err := runtime.CModDiscovery()
-if err != nil {
-    return err
-}
-router, err := discovery.NewSlotResolver(slots, directory)
-if err != nil {
-	return err
-}
+router := runtime.CModSlotResolver()
 target, err := router.ResolveSlot(ctx, "game-slot-1")
 if err != nil {
 	return err // 目标不是 running 时明确失败
@@ -1563,6 +1546,8 @@ game 侧高级组件或项目控制面在组合根显式接收完整 `SlotStore`
 
 ```go
 // slotStore 由拥有其生命周期的组合根注入，不从业务只读 Context 断言取得。
+directory := runtime.CModDiscovery()
+slots := runtime.CModSlots()
 manager, err := discovery.NewSlotRouter(slotStore, directory)
 if err != nil {
     return err
@@ -3692,10 +3677,7 @@ Mongo adapter 通过统一 filter 抽象调用底层 client：默认 filter 是 
 Bee/Ant 服务声明 `CModMongoStorage` 后，可直接使用受路由与健康状态约束的原子能力：
 
 ```go
-mongoStorage, err := runtime.CModMongoStorage()
-if err != nil {
-	return err
-}
+mongoStorage := runtime.CModMongoStorage()
 high, err := mongoStorage.Reserve(ctx, "global", int64(1), "project_counters", "example", 100)
 if err != nil {
 	return err

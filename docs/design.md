@@ -216,6 +216,7 @@ ServiceSpec、CMod 和基础 Context；同名 API 具有相同签名和生命周
 | `CModActor()` | Bee/Ant | 解析 PID、投递和业务调用 | Start/Shutdown/ActorSystem 在 Actor Runtime |
 | `CModProcedure()` | Ant | 执行根 Procedure | CommitParticipant 和生命周期在 CModProcedure |
 | `CModSlots()` | Ant | 只读 SlotReader 槽位归属 | etcd client、成员 lease 和 watch 在 discovery Runtime |
+| `CModSlotResolver()` | Ant | 解析槽位当前 running 目标 | Watch 和连接生命周期在 discovery Runtime |
 | `LogicalSlot()` | Ant | 读取当前稳定逻辑槽位和物理实例身份 | 槽位迁移由控制面负责 |
 
 Context 对生命周期、目录替换和刷盘能力返回专用 wrapper，调用方不能通过这些视图重新取得
@@ -228,6 +229,10 @@ facade；Service 和 CMod Factory 只在构造期间取得自己通过 `Requires
 Service 已选择的后端跨越能力边界。高级使用者需要 Redis 脚本时使用 `CModRedisStorage()`；
 槽位创建和晋升由组合根显式注入完整 `SlotStore`，不从只读 `CModSlots()` 断言取得写能力，
 也不通过字符串 service locator 或全局 Runtime 查找能力。
+
+Context 的 `Storage/CMod*` 直接返回能力；声明检查和不可用检查由 tx 维护。公开视图使用内部 CapabilityError 标记能力错误，Service 构造/启动、Setup、CMod Validate/Start 的同步边界仅恢复该标记并返回启动 error，复用既有回滚。普通业务 panic 原样传播，不增加全局 recover 或重试。自定义 CMod Validate 只校验配置，读取运行时能力会立即失败；Start 才读取已就绪前置能力。Context 不用于后台任务或装配回调以外的能力查找；工厂尚未交接的私有资源由其 defer 清理。
+
+Ant 的 CModSlotResolver 在构造期组合已有 SlotReader 与 Directory，业务保存解析器即可。SlotResolver 使用现有 Watch 缓存读取算法，高级 SlotStore/SlotRouter 和只读 SlotReader SPI 保留；不在消息热路径创建解析器。
 
 ## 依赖方向
 
