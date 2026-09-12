@@ -11,9 +11,17 @@
 
 ### 2026-09-12 NATS 与本地 Actor 运行时分支试验
 
-三个工程均在 `feature/nats-actor-runtime`；T3a 已提交为 tx=4a92907，txgame=3afc074、txgameslg=2fd67a6。本批仅 tx 的 T3b/T3c 测试驱动、报告和计划尚未提交。[T1–T2d](audits/2026-09-12-nats-actor-runtime-trial.md) 保留原型正确性证据；[T3a](audits/2026-09-12-nats-shared-replies.md) 收敛共享响应与失败清理，[T3b](audits/2026-09-12-nats-aggregate-throughput.md) 完成多实例聚合评估，同机三 broker 未反超，固定到达率业务预算未确认。
+三个工程均在 `feature/nats-actor-runtime`；T3a–T3c 已提交，T3d 起点 tx=974146c，六工程工作区干净。当前仅 tx 的 T3d–T3f 实验及 T3g 共用路由/直连上行内部节点尚未提交，其余五工程仍干净。[T1–T2d](audits/2026-09-12-nats-actor-runtime-trial.md) 保留原型正确性证据；[T3a](audits/2026-09-12-nats-shared-replies.md) 收敛共享响应与失败清理，[T3b](audits/2026-09-12-nats-aggregate-throughput.md) 完成多实例聚合评估，同机三 broker 未反超，固定到达率业务预算未确认。
 
-[T3c 分层归因](audits/2026-09-12-nats-layered-cost.md) 已完成：官方 128B Pub/Sub 订阅速率中位数约 99.5 万条/s；108 个 RPC 窗口完成 721.83 万次调用、0 返回错误。三端 profile 指向调度同步开销，单变量五轮复测中，将测试进程 GOMAXPROCS 从 4 改为 1，完整 NATS 吞吐从 1.50 万提高至 2.42 万次/s（+61.4%）；同配置 ProtoActor 为 3.09 万。结果证明配置影响明显，不是 NATS 通用容量上限，但仍未达到既定筛选线。**T4 正式替换继续暂停**，保留 Core 候选，不修改生产默认值，不继续空回显的零碎微优化。下一项建议评估含 GD/Procedure 的代表业务链路、CPU 预算及业务延迟/吞吐目标；具体负载与预算尚需评估。正式 GD/实例租约接线、示例迁移和 JetStream 均未完成，公共行为继续以现行 README 为准。
+[T3c 分层归因](audits/2026-09-12-nats-layered-cost.md) 已完成：官方 128B Pub/Sub 订阅速率中位数约 99.5 万条/s；108 个 RPC 窗口完成 721.83 万次调用、0 返回错误。三端 profile 指向调度同步开销，单变量五轮复测中，将测试进程 GOMAXPROCS 从 4 改为 1，完整 NATS 吞吐从 1.50 万提高至 2.42 万次/s（+61.4%）；同配置 ProtoActor 为 3.09 万。结果证明配置影响明显，不是 NATS 通用容量上限，但仍未达到既定筛选线。**T4 正式替换继续暂停**，保留 Core 候选，不修改生产默认值，不继续空回显的零碎微优化。后续按用户确认先进行下述链路差异对照；GD/Procedure 代表业务与预算仍待评估。正式 GD/实例租约接线、示例迁移和 JetStream 均未完成，公共行为继续以现行 README 为准。
+
+[T3d 链路差异](audits/2026-09-12-nats-rpc-path-differences.md) 已完成三组五轮对照及独立写入诊断：单 P、64 并发下，ProtoActor 关闭消息批处理后吞吐下降约 38%，分配从约 49 增至 113 次/RPC；当前 NATS 两端几乎逐消息 Write，四 P 时会合并到约 3 条/次。固定回复主题虽大幅减少了订阅树匹配，省去 Receive context/Future 也减少了分配，但均没有稳定吞吐收益，因此不改运行时。固定发送协程的后续验证见 T3e。
+
+[T3e 固定发送协程](audits/2026-09-12-nats-fixed-sender.md) 已完成 60 个正式窗口和 8 个独立写入诊断窗口：单 P、64 并发的消息/Write 提高到约 63～64，但吞吐中位数下降 28.2%；四 P、64 并发吞吐提升 18.8%，五轮均提高，P99 中位数下降 19.4%。每 RPC 多约 6 次分配、0.5KiB，CPU/RPC 降低；这是局部收益，不能覆盖单 P 退化，因此不接入运行时或新增条件配置。不继续微调本批发送队列。T4 继续暂停，既定筛选线不变。
+
+[T3f 请求封包实验](audits/2026-09-13-nats-request-batch.md) 已完成隔离候选、真实依赖 race 及三组五轮对照：314.51 万次正式 RPC 无返回错误，诊断另计 76.05 万次。单 P 实际约 1 项/包，吞吐中位数 -4.7%、P99 +14.2%；四 P 约 2.91 项/包，消息数减少 32.8%，吞吐仅 +3.2% 且五轮有升有降。没有稳定收益，不接入默认运行时，不继续双向合批或调参；保留独立 Reply、批次错误清理和排水边界的测试证据。随后用户已确认传输分工与共用路由，并批准下述 T3g；T4 正式替换门槛尚未改写。
+
+[T3g 共用路由与直连上行](audits/2026-09-13-actor-shared-routing.md) 内部节点已完成：复用 SlotResolver、rpc Host/Sender 和同一个 Runtime，直连 Agent 完成 ACK 与 NATS Actor Call 共用归属、邮箱和排水。真实交接及 race 通过，tx 全量测试 1147 pass / 61 skip；正式示例未迁移。五轮缓存路由中位 187.5ns、8B/1 alloc，1KiB 单机顺序直连 Call 约 151μs、199 alloc，不作为跨机吞吐承诺。下一项评估完整上行同环境对照与部署流量预算，分别核算网络字节、计费流量和组件成本。
 
 顺序为：共同基线 → 最小本地实体运行时 → NATS RPC → 正确性/性能评审 → 两示例接入 → JetStream 任务。最小本地运行时为优先验证方向，保留本地 ProtoActor 是备选；不预设必须替换成功。etcd 暂留身份、租约和槽位交接，msgq 传输整合及 etcd 替代分别评估，不计入已实现收益。
 

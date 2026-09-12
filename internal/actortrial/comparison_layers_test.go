@@ -8,6 +8,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -43,7 +45,18 @@ func newComparisonLayer(config comparisonConfig) (*comparisonPeer, error) {
 			return err
 		}}
 	} else {
-		_, err = conn.Subscribe(p.inbox+"*", func(msg *nats.Msg) { p.finishRequest(msg.Subject, msg, nil) })
+		replyTrial := config.Backend == "nats-reply-unique" || config.Backend == "nats-reply-fixed"
+		_, err = conn.Subscribe(p.inbox+"*", func(msg *nats.Msg) {
+			key := msg.Subject
+			if replyTrial {
+				// 两组同样解码关联 ID，再复用原型清理路径；额外解码不能算作原型成本。
+				var result actorpb.Result
+				if err := proto.Unmarshal(msg.Data, &result); err == nil && result.RequestId != 0 {
+					key = p.inbox + strconv.FormatUint(result.RequestId, 10)
+				}
+			}
+			p.finishRequest(key, msg, nil)
+		})
 		receive = func(msg *nats.Msg) {
 			var id Identity
 			identity, err := base64.RawURLEncoding.DecodeString(msg.Header.Get("Actor-Identity"))
@@ -66,6 +79,17 @@ func newComparisonLayer(config comparisonConfig) (*comparisonPeer, error) {
 			}
 			result := comparisonReply(request)
 			response := &actorpb.Result{MessageType: result.MessageType, CommandId: result.CommandID, Payload: append([]byte(nil), result.Payload...)}
+			if replyTrial {
+				// 仅正常回复改变主题；原请求仍有唯一 Reply，broker 的 503 可以精确关联。
+				end := strings.LastIndexByte(msg.Reply, '.')
+				response.RequestId, err = strconv.ParseUint(msg.Reply[end+1:], 10, 64)
+				if err != nil {
+					panic(err)
+				}
+				if config.Backend == "nats-reply-fixed" {
+					msg.Reply = msg.Reply[:end+1] + "shared"
+				}
+			}
 			p.reply(msg, response, resultError(response))
 		}
 		peer = comparisonTransportPeer(p, config.Target)

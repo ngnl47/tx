@@ -188,7 +188,7 @@ type comparisonPeer struct {
 }
 
 func newComparisonPeer(config comparisonConfig) (*comparisonPeer, error) {
-	if config.Backend == "nats-native" || config.Backend == "nats-envelope" {
+	if config.Backend == "nats-native" || config.Backend == "nats-envelope" || config.Backend == "nats-reply-unique" || config.Backend == "nats-reply-fixed" {
 		return newComparisonLayer(config)
 	}
 	if config.Backend == "proto" {

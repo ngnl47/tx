@@ -15,7 +15,7 @@ import (
 
 func TestComparisonLayersRealNATS(t *testing.T) {
 	url := natsURL(t)
-	for _, backend := range []string{"nats-native", "nats-envelope", "nats"} {
+	for _, backend := range []string{"nats-native", "nats-envelope", "nats-reply-unique", "nats-reply-fixed", "nats"} {
 		t.Run(backend, func(t *testing.T) {
 			config := comparisonConfig{Backend: backend, Mode: "server", Namespace: nats.NewInbox(), URL: url}
 			server, err := newComparisonPeer(config)
@@ -47,6 +47,21 @@ func TestComparisonLayersRealNATS(t *testing.T) {
 			cancel()
 			if err := client.call(ctx, 0, []byte("取消")); !errors.Is(err, context.Canceled) {
 				t.Fatalf("取消返回 %v", err)
+			}
+			config.Target += "-missing"
+			missing, err := newComparisonPeer(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := missing.close(); err != nil {
+					t.Error(err)
+				}
+			})
+			ctx, cancel = context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			if err := missing.call(ctx, 0, []byte("无接收者")); !errors.Is(err, nats.ErrNoResponders) {
+				t.Fatalf("无接收者返回 %v", err)
 			}
 		})
 	}
