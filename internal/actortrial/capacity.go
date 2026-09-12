@@ -97,6 +97,33 @@ func (r *Runtime) statusLocked(id Identity) ActivationStatus {
 }
 
 func (r *Runtime) reserveLocked(id Identity) (int64, error) {
+	bytes, err := r.estimateLocked(id)
+	if err != nil {
+		return 0, err
+	}
+	r.usage.ReservedBytes += bytes
+	r.usage.Initializing++
+	return bytes, nil
+}
+
+// CheckActivationCapacity 只为低频选址提供快照，不能替代激活时的原子预留。
+func (r *Runtime) CheckActivationCapacity(id Identity) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.draining {
+		return ErrDraining
+	}
+	if e := r.entries[id]; e != nil {
+		if e.closed {
+			return ErrDeactivated
+		}
+		return nil
+	}
+	_, err := r.estimateLocked(id)
+	return err
+}
+
+func (r *Runtime) estimateLocked(id Identity) (int64, error) {
 	l := r.limits
 	if (l.Initializations > 0 && r.usage.Initializing >= l.Initializations) || (l.Admit != nil && !l.Admit()) {
 		return 0, ErrCapacity
@@ -111,8 +138,6 @@ func (r *Runtime) reserveLocked(id Identity) (int64, error) {
 			return 0, ErrCapacity
 		}
 	}
-	r.usage.ReservedBytes += bytes
-	r.usage.Initializing++
 	return bytes, nil
 }
 
