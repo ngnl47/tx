@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -29,24 +31,38 @@ type Transport struct {
 	conn                *nats.Conn
 	runtime             *Runtime
 	namespace, instance string
-	pending             chan struct{}
+	inbox               string
+	mu                  sync.Mutex
+	nextRequest         uint64
+	maxPending          int
+	pending             map[string]*pendingCall
+}
+
+type pendingCall struct {
+	future *Future
+	stop   func() bool
 }
 
 func Connect(url, namespace, instance string, runtime *Runtime, maxPending int) (*Transport, error) {
 	if namespace == "" || instance == "" || runtime == nil || maxPending < 1 {
 		panic("actortrial: invalid transport configuration")
 	}
+	p := &Transport{runtime: runtime, namespace: namespace, instance: instance, inbox: nats.NewInbox() + ".",
+		maxPending: maxPending, pending: make(map[string]*pendingCall)}
 	// 不在断线期间缓存 RPC；重连恢复的是后续请求，不重发已发请求。
-	// v1.53.1 的共享响应表在 publish 失败分支未删除 token，暂用 SDK 原生独立 inbox 路径。
-	conn, err := nats.Connect(url, nats.Timeout(time.Second), nats.ReconnectBufSize(-1), nats.UseOldRequestStyle(),
+	conn, err := nats.Connect(url, nats.Timeout(time.Second), nats.ReconnectBufSize(-1),
+		nats.ClosedHandler(func(*nats.Conn) { p.closeRequests() }),
 		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
 			slog.Error("actortrial NATS asynchronous error", "err", err)
 		}))
 	if err != nil {
 		return nil, err
 	}
-	p := &Transport{conn: conn, runtime: runtime, namespace: namespace, instance: instance, pending: make(chan struct{}, maxPending)}
-	if _, err = conn.Subscribe(p.subject(instance), p.receive); err == nil {
+	p.conn = conn
+	if _, err = conn.Subscribe(p.inbox+"*", func(msg *nats.Msg) { p.finishRequest(msg.Subject, msg, nil) }); err == nil {
+		_, err = conn.Subscribe(p.subject(instance), p.receive)
+	}
+	if err == nil {
 		err = conn.FlushTimeout(time.Second)
 	}
 	if err != nil {
@@ -114,26 +130,61 @@ func (p *Transport) CallFuture(ctx context.Context, target Target, delivery *act
 }
 
 func (p *Transport) requestFuture(ctx context.Context, msg *nats.Msg) (*ResultFuture, error) {
-	select {
-	case p.pending <- struct{}{}:
-	default:
+	p.mu.Lock()
+	if p.conn.IsClosed() {
+		p.mu.Unlock()
+		return nil, nats.ErrConnectionClosed
+	}
+	if len(p.pending) >= p.maxPending {
+		p.mu.Unlock()
 		return nil, ErrPendingFull
 	}
+	p.nextRequest++
+	reply := p.inbox + strconv.FormatUint(p.nextRequest, 10)
 	f := &Future{done: make(chan struct{})}
-	// 复用 SDK 的独立 inbox，不另建相关 ID 表；goroutine 数受 pending 限制。
-	go func() {
-		response, err := p.conn.RequestMsgWithContext(ctx, msg)
-		var result actorpb.Result
-		if err == nil {
+	// 取消回调与响应、发送失败共用删除边界；成功后停止回调，不为每个请求保留等待 goroutine。
+	p.pending[reply] = &pendingCall{future: f, stop: context.AfterFunc(ctx, func() { p.finishRequest(reply, nil, ctx.Err()) })}
+	p.mu.Unlock()
+	msg.Reply = reply
+	if err := p.conn.PublishMsg(msg); err != nil {
+		p.finishRequest(reply, nil, err)
+	}
+	return &ResultFuture{f, ctx}, nil
+}
+
+func (p *Transport) finishRequest(reply string, response *nats.Msg, err error) {
+	p.mu.Lock()
+	call := p.pending[reply]
+	if call != nil {
+		delete(p.pending, reply)
+		call.stop()
+	}
+	p.mu.Unlock()
+	if call == nil {
+		return
+	}
+	var result actorpb.Result
+	if err == nil {
+		if len(response.Data) == 0 && response.Header.Get("Status") == "503" {
+			err = nats.ErrNoResponders
+		} else {
 			err = proto.Unmarshal(response.Data, &result)
 			if err == nil && result.ErrorCode != 0 {
 				err = &RemoteError{Code: result.ErrorCode, Message: result.ErrorMessage, Kind: response.Header.Get("Actor-Error")}
 			}
 		}
-		<-p.pending
-		f.finish(&result, err)
-	}()
-	return &ResultFuture{f, ctx}, nil
+	}
+	call.future.finish(&result, err)
+}
+
+func (p *Transport) closeRequests() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for reply, call := range p.pending {
+		delete(p.pending, reply)
+		call.stop()
+		call.future.finish(nil, nats.ErrConnectionClosed)
+	}
 }
 
 // Tell 只投递本地 NATS 客户端，不等待服务端确认。异步投递失败在接收端记录。

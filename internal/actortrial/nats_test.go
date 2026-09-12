@@ -253,8 +253,8 @@ func TestNATSTimeoutAndSendFailureReleaseWaiters(t *testing.T) {
 	if _, err := a.Call(ctx, target, &actorpb.Delivery{MessageType: "after"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(a.pending) != 0 || a.conn.NumSubscriptions() != 1 {
-		t.Fatalf("残留等待: pending=%d subscriptions=%d", len(a.pending), a.conn.NumSubscriptions())
+	if pendingCount(a) != 0 || a.conn.NumSubscriptions() != 2 {
+		t.Fatalf("残留等待: pending=%d subscriptions=%d", pendingCount(a), a.conn.NumSubscriptions())
 	}
 	large := &actorpb.Delivery{MessageType: "oversize", Payload: make([]byte, int(a.conn.MaxPayload())+1)}
 	for range 16 {
@@ -262,7 +262,7 @@ func TestNATSTimeoutAndSendFailureReleaseWaiters(t *testing.T) {
 			t.Fatalf("oversize: %v", err)
 		}
 	}
-	if len(a.pending) != 0 || a.conn.NumSubscriptions() != 1 {
+	if pendingCount(a) != 0 || a.conn.NumSubscriptions() != 2 {
 		t.Fatal("发送失败泄漏等待记录或订阅")
 	}
 	if err := b.Drain(ctx, nil); err != nil {
@@ -271,6 +271,82 @@ func TestNATSTimeoutAndSendFailureReleaseWaiters(t *testing.T) {
 	if err := a.Drain(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestNATSSharedRepliesStayBoundedAndClose(t *testing.T) {
+	url, ctx := natsURL(t), trialContext(t)
+	ns := nats.NewInbox()
+	started, release := make(chan struct{}, 32), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
+	r := New(4, time.Second, func(Context) (*Behavior, error) {
+		return &Behavior{Receive: func(_ Context, value any) (any, error) {
+			started <- struct{}{}
+			<-release
+			d := value.(*actorpb.Delivery)
+			return &actorpb.Result{MessageType: "ok", CommandId: d.CommandId}, nil
+		}}, nil
+	})
+	b := peer(t, url, ns, "b", r)
+	a := peer(t, url, ns, "a", echoRuntime())
+	var futures []*ResultFuture
+	var cancels []context.CancelFunc
+	for i := range 32 {
+		callCtx, cancel := context.WithCancel(ctx)
+		t.Cleanup(cancel)
+		f, err := a.CallFuture(callCtx, Target{"b", Identity{"room", strconv.Itoa(i)}}, &actorpb.Delivery{CommandId: uint64(i + 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		futures, cancels = append(futures, f), append(cancels, cancel)
+	}
+	for range futures {
+		signal(t, ctx, started)
+	}
+	// 等待数达到上限时，响应订阅仍只有一个，另一个订阅是实例业务入口。
+	if got := a.conn.NumSubscriptions(); got != 2 {
+		t.Fatalf("32 个等待请求应复用响应订阅，实际订阅=%d", got)
+	}
+	if _, err := a.CallFuture(ctx, Target{"b", Identity{"room", "overflow"}}, &actorpb.Delivery{}); !errors.Is(err, ErrPendingFull) {
+		t.Fatalf("等待上限: %v", err)
+	}
+	for _, cancel := range cancels[:16] {
+		cancel()
+	}
+	eventually(t, ctx, func() bool { return pendingCount(a) == 16 })
+	// 提前取消的响应随后到达，不得完成其他请求；每个结果仍对应原请求号。
+	unblock()
+	for i, f := range futures[16:] {
+		result, err := f.Await(ctx)
+		if err != nil || result.CommandId != uint64(i+17) {
+			t.Fatalf("请求 %d: %v %v", i+17, result, err)
+		}
+	}
+	eventually(t, ctx, func() bool { return pendingCount(a) == 0 })
+	// 有订阅但不响应，确保关闭连接真正唤醒未完成的 Future。
+	if _, err := b.conn.Subscribe(ns+".silent", func(*nats.Msg) {}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.conn.FlushWithContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	f, err := a.requestFuture(ctx, &nats.Msg{Subject: ns + ".silent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.conn.Close()
+	if _, err = f.Await(ctx); !errors.Is(err, nats.ErrConnectionClosed) {
+		t.Fatalf("连接关闭: %v", err)
+	}
+	if err = b.Drain(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func pendingCount(p *Transport) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.pending)
 }
 
 func TestNATSCrossProcess(t *testing.T) {
@@ -453,7 +529,7 @@ func TestNATSDisconnectDoesNotReplayRPC(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	a.pending = make(chan struct{}, 1)
+	a.maxPending = 1
 	callCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer cancel()
 	returned := make(chan error, 1)
@@ -473,14 +549,14 @@ func TestNATSDisconnectDoesNotReplayRPC(t *testing.T) {
 		t.Fatal(ctx.Err())
 	}
 	eventually(t, ctx, func() bool { return !a.conn.IsConnected() })
-	// Future 的 deadline 先结束调用方等待，SDK 随后完成独立 inbox 清理；等待有界回收后再测后续发送。
-	eventually(t, ctx, func() bool { return len(a.pending) == 0 && a.conn.NumSubscriptions() == 1 })
+	// Future 的 deadline 先结束调用方等待，取消回调随后回收等待项；等待有界回收后再测后续发送。
+	eventually(t, ctx, func() bool { return pendingCount(a) == 0 && a.conn.NumSubscriptions() == 2 })
 	for range 8 {
 		if _, err = a.Call(ctx, target, &actorpb.Delivery{MessageType: "disconnected"}); err == nil {
 			t.Fatal("断线请求被缓存")
 		}
 	}
-	if len(a.pending) != 0 || a.conn.NumSubscriptions() != 1 {
+	if pendingCount(a) != 0 || a.conn.NumSubscriptions() != 2 {
 		t.Fatal("断线请求残留等待或订阅")
 	}
 	unblock()

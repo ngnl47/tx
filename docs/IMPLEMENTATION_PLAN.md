@@ -11,7 +11,7 @@
 
 ### 2026-09-12 NATS 与本地 Actor 运行时分支试验
 
-三个工程均在 `feature/nats-actor-runtime`；T3 开始时六工程干净，tx=8760c99、txgame=3afc074、txgameslg=2fd67a6 已提交。本批仅 tx 保留测试与报告变更。[T1–T2d 记录](audits/2026-09-12-nats-actor-runtime-trial.md) 保留已完成的原型正确性证据；[T3 共同负载筛选](audits/2026-09-12-nats-protoactor-comparison.md) 显示当前 NATS 原型的跨进程吞吐与 P99 稳定退化超过门槛，**暂停 T4 正式替换**。临时共享响应表对照确认一部分请求维护成本，但发布失败清理缺陷仍在，未采用。下一项先评估请求等待与失败清理的收敛，再复测决定是否恢复示例接入。正式 GD/实例租约接线、两个示例迁移和 JetStream 均未完成；公共行为继续以现行 README 为准。
+三个工程均在 `feature/nats-actor-runtime`；T3 已提交为 tx=cdddf92，T3a 开始时六工程干净，txgame=3afc074、txgameslg=2fd67a6。本批仅 tx 保留原型、测试与报告变更。[T1–T2d 记录](audits/2026-09-12-nats-actor-runtime-trial.md) 保留原型正确性证据；[T3 共同负载筛选](audits/2026-09-12-nats-protoactor-comparison.md) 后已完成 [T3a 共享响应与等待清理](audits/2026-09-12-nats-shared-replies.md)：复用单个响应订阅，以有界等待表和标准库取消回调替代逐请求订阅/等待 goroutine，发送失败可回收。代表点中位吞吐提高约 40%，分配减少约 5 次，但仍明显落后于同批 ProtoActor，低负载 P99 也有退化。补测同机三节点的固定调用对未出现反超，不能代表多业务实例的聚合扩容上限。**T4 正式替换仍暂停**；下一项需评估聚合负载及业务性能预算，不自动放宽现有 10% 筛选线。正式 GD/实例租约接线、两个示例迁移和 JetStream 均未完成；公共行为继续以现行 README 为准。
 
 顺序为：共同基线 → 最小本地实体运行时 → NATS RPC → 正确性/性能评审 → 两示例接入 → JetStream 任务。最小本地运行时为优先验证方向，保留本地 ProtoActor 是备选；不预设必须替换成功。etcd 暂留身份、租约和槽位交接，msgq 传输整合及 etcd 替代分别评估，不计入已实现收益。
 
