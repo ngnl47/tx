@@ -11,7 +11,7 @@
 
 ### 2026-09-12 NATS 与本地 Actor 运行时分支试验
 
-三个工程均在 `feature/nats-actor-runtime`；T2d 开始时六工程干净，tx=96fd69a、txgame=3afc074、txgameslg=2fd67a6 已提交。本批只在 tx 保留新未提交变更。[试验记录](audits/2026-09-12-nats-actor-runtime-trial.md) 保留 T1–T2c 历史证据；[T2d 节点](superpowers/plans/2026-09-12-nats-actor-runtime-trial.md#t2d动态归属与正常交接) 已验证稳定首次分配、容量预检与原子预留、全实例排空后逐槽 CAS 交接及未知结果不改派。真实 NATS/etcd/Redis 夹具、race、三个 Go 模块回归和增量基准已完成；下一项为 T3 的 ProtoActor 共同负载性能选型。正式 GD/实例租约接线与两示例接入仍在 T4，当前尚未替换正式运行时；业务代码和 API 继续以现行 README 为准。其余三工程按生成或协议实际影响纳入。
+三个工程均在 `feature/nats-actor-runtime`；T3 开始时六工程干净，tx=8760c99、txgame=3afc074、txgameslg=2fd67a6 已提交。本批仅 tx 保留测试与报告变更。[T1–T2d 记录](audits/2026-09-12-nats-actor-runtime-trial.md) 保留已完成的原型正确性证据；[T3 共同负载筛选](audits/2026-09-12-nats-protoactor-comparison.md) 显示当前 NATS 原型的跨进程吞吐与 P99 稳定退化超过门槛，**暂停 T4 正式替换**。临时共享响应表对照确认一部分请求维护成本，但发布失败清理缺陷仍在，未采用。下一项先评估请求等待与失败清理的收敛，再复测决定是否恢复示例接入。正式 GD/实例租约接线、两个示例迁移和 JetStream 均未完成；公共行为继续以现行 README 为准。
 
 顺序为：共同基线 → 最小本地实体运行时 → NATS RPC → 正确性/性能评审 → 两示例接入 → JetStream 任务。最小本地运行时为优先验证方向，保留本地 ProtoActor 是备选；不预设必须替换成功。etcd 暂留身份、租约和槽位交接，msgq 传输整合及 etcd 替代分别评估，不计入已实现收益。
 
