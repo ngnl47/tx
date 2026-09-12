@@ -11,7 +11,7 @@
 
 ### 2026-09-12 NATS 与本地 Actor 运行时分支试验
 
-三个工程均在 `feature/nats-actor-runtime`；T3a–T3c 已提交，T3d 起点 tx=974146c，六工程工作区干净。当前仅 tx 的 T3d–T3f 实验及 T3g 共用路由/直连上行内部节点尚未提交，其余五工程仍干净。[T1–T2d](audits/2026-09-12-nats-actor-runtime-trial.md) 保留原型正确性证据；[T3a](audits/2026-09-12-nats-shared-replies.md) 收敛共享响应与失败清理，[T3b](audits/2026-09-12-nats-aggregate-throughput.md) 完成多实例聚合评估，同机三 broker 未反超，固定到达率业务预算未确认。
+三个工程均在 `feature/nats-actor-runtime`；T3a–T3g 已提交，本次设计细化起点 tx=dd07b29，六工程工作区干净。本轮仅补归属组件设计与后续接线计划。[T1–T2d](audits/2026-09-12-nats-actor-runtime-trial.md) 保留原型正确性证据；[T3a](audits/2026-09-12-nats-shared-replies.md) 收敛共享响应与失败清理，[T3b](audits/2026-09-12-nats-aggregate-throughput.md) 完成多实例聚合评估，同机三 broker 未反超，固定到达率业务预算未确认。
 
 [T3c 分层归因](audits/2026-09-12-nats-layered-cost.md) 已完成：官方 128B Pub/Sub 订阅速率中位数约 99.5 万条/s；108 个 RPC 窗口完成 721.83 万次调用、0 返回错误。三端 profile 指向调度同步开销，单变量五轮复测中，将测试进程 GOMAXPROCS 从 4 改为 1，完整 NATS 吞吐从 1.50 万提高至 2.42 万次/s（+61.4%）；同配置 ProtoActor 为 3.09 万。结果证明配置影响明显，不是 NATS 通用容量上限，但仍未达到既定筛选线。**T4 正式替换继续暂停**，保留 Core 候选，不修改生产默认值，不继续空回显的零碎微优化。后续按用户确认先进行下述链路差异对照；GD/Procedure 代表业务与预算仍待评估。正式 GD/实例租约接线、示例迁移和 JetStream 均未完成，公共行为继续以现行 README 为准。
 
@@ -21,7 +21,9 @@
 
 [T3f 请求封包实验](audits/2026-09-13-nats-request-batch.md) 已完成隔离候选、真实依赖 race 及三组五轮对照：314.51 万次正式 RPC 无返回错误，诊断另计 76.05 万次。单 P 实际约 1 项/包，吞吐中位数 -4.7%、P99 +14.2%；四 P 约 2.91 项/包，消息数减少 32.8%，吞吐仅 +3.2% 且五轮有升有降。没有稳定收益，不接入默认运行时，不继续双向合批或调参；保留独立 Reply、批次错误清理和排水边界的测试证据。随后用户已确认传输分工与共用路由，并批准下述 T3g；T4 正式替换门槛尚未改写。
 
-[T3g 共用路由与直连上行](audits/2026-09-13-actor-shared-routing.md) 内部节点已完成：复用 SlotResolver、rpc Host/Sender 和同一个 Runtime，直连 Agent 完成 ACK 与 NATS Actor Call 共用归属、邮箱和排水。真实交接及 race 通过，tx 全量测试 1147 pass / 61 skip；正式示例未迁移。五轮缓存路由中位 187.5ns、8B/1 alloc，1KiB 单机顺序直连 Call 约 151μs、199 alloc，不作为跨机吞吐承诺。下一项评估完整上行同环境对照与部署流量预算，分别核算网络字节、计费流量和组件成本。
+[T3g 共用路由与直连上行](audits/2026-09-13-actor-shared-routing.md) 内部节点已完成：复用 SlotResolver、rpc Host/Sender 和同一个 Runtime，直连 Agent 完成 ACK 与 NATS Actor Call 共用归属、邮箱和排水。该批真实交接及 race 通过，tx 全量测试 1147 pass / 61 skip；正式示例未迁移。五轮缓存路由中位 187.5ns、8B/1 alloc，1KiB 单机顺序直连 Call 约 151μs、199 alloc，不作为跨机吞吐承诺，也不是本轮验证。
+
+T3h 已完成 [归属组件设计](superpowers/specs/2026-09-13-actor-ownership-design.md) 与 [接线计划](superpowers/plans/2026-09-13-actor-ownership-integration.md)：复用 Discovery/SlotStore，不整体抽离第三方集群；明确当前 StateDrained 不含最终 GD 写回、原型按源实例整体排空、高级 ProtoActor API 需要逐项承接。下一实施节点建议在试验区组合真实事务写回和实例租约；随后完成完整上行同环境对照与部署流量预算，再评审 T4。文档完成不代表正式宿主、生成 GD 或示例验收完成，原性能门槛仍有效。
 
 顺序为：共同基线 → 最小本地实体运行时 → NATS RPC → 正确性/性能评审 → 两示例接入 → JetStream 任务。最小本地运行时为优先验证方向，保留本地 ProtoActor 是备选；不预设必须替换成功。etcd 暂留身份、租约和槽位交接，msgq 传输整合及 etcd 替代分别评估，不计入已实现收益。
 
