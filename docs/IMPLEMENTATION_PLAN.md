@@ -11,7 +11,9 @@
 
 ### 2026-09-12 NATS 与本地 Actor 运行时分支试验
 
-三个工程均在 `feature/nats-actor-runtime`；T3 已提交为 tx=cdddf92，T3a 开始时六工程干净，txgame=3afc074、txgameslg=2fd67a6。本批仅 tx 保留原型、测试与报告变更。[T1–T2d 记录](audits/2026-09-12-nats-actor-runtime-trial.md) 保留原型正确性证据；[T3 共同负载筛选](audits/2026-09-12-nats-protoactor-comparison.md) 后已完成 [T3a 共享响应与等待清理](audits/2026-09-12-nats-shared-replies.md)：复用单个响应订阅，以有界等待表和标准库取消回调替代逐请求订阅/等待 goroutine，发送失败可回收。代表点中位吞吐提高约 40%，分配减少约 5 次，但仍明显落后于同批 ProtoActor，低负载 P99 也有退化。补测同机三节点的固定调用对未出现反超，不能代表多业务实例的聚合扩容上限。**T4 正式替换仍暂停**；下一项需评估聚合负载及业务性能预算，不自动放宽现有 10% 筛选线。正式 GD/实例租约接线、两个示例迁移和 JetStream 均未完成；公共行为继续以现行 README 为准。
+三个工程均在 `feature/nats-actor-runtime`；T3a 已提交为 tx=4a92907，txgame=3afc074、txgameslg=2fd67a6。本批仅 tx 的 T3b/T3c 测试驱动、报告和计划尚未提交。[T1–T2d](audits/2026-09-12-nats-actor-runtime-trial.md) 保留原型正确性证据；[T3a](audits/2026-09-12-nats-shared-replies.md) 收敛共享响应与失败清理，[T3b](audits/2026-09-12-nats-aggregate-throughput.md) 完成多实例聚合评估，同机三 broker 未反超，固定到达率业务预算未确认。
+
+[T3c 分层归因](audits/2026-09-12-nats-layered-cost.md) 已完成：官方 128B Pub/Sub 订阅速率中位数约 99.5 万条/s；108 个 RPC 窗口完成 721.83 万次调用、0 返回错误。三端 profile 指向调度同步开销，单变量五轮复测中，将测试进程 GOMAXPROCS 从 4 改为 1，完整 NATS 吞吐从 1.50 万提高至 2.42 万次/s（+61.4%）；同配置 ProtoActor 为 3.09 万。结果证明配置影响明显，不是 NATS 通用容量上限，但仍未达到既定筛选线。**T4 正式替换继续暂停**，保留 Core 候选，不修改生产默认值，不继续空回显的零碎微优化。下一项建议评估含 GD/Procedure 的代表业务链路、CPU 预算及业务延迟/吞吐目标；具体负载与预算尚需评估。正式 GD/实例租约接线、示例迁移和 JetStream 均未完成，公共行为继续以现行 README 为准。
 
 顺序为：共同基线 → 最小本地实体运行时 → NATS RPC → 正确性/性能评审 → 两示例接入 → JetStream 任务。最小本地运行时为优先验证方向，保留本地 ProtoActor 是备选；不预设必须替换成功。etcd 暂留身份、租约和槽位交接，msgq 传输整合及 etcd 替代分别评估，不计入已实现收益。
 

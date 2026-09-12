@@ -26,12 +26,13 @@ import (
 )
 
 // 此文件仅编入测试二进制。外部编排器负责隔离进程、依赖、采样顺序和资源清理。
-type comparisonConfig struct{ Backend, Mode, Namespace, URL, Etcd, Target string }
+type comparisonConfig struct{ Backend, Mode, Namespace, URL, Etcd, Target, Profile string }
 type comparisonLoad struct {
 	Action                                         string
 	Payload, Entities, Concurrency, Requests, Rate int
 	Duration                                       time.Duration
 	Profile                                        string
+	StartAt                                        int64
 }
 type comparisonResources struct {
 	CPUSeconds                              float64
@@ -55,6 +56,8 @@ type comparisonStats struct {
 	P50Ns, P99Ns, ScheduledP99Ns           int64
 	Errors                                 map[string]int
 	Before, After                          comparisonResources
+	StartedAt, FinishedAt                  int64
+	Samples, ScheduledSamples              []int64 `json:"-"`
 }
 
 // 分位数仅含通过结果校验的请求。精确样本记录属于驱动成本，分配与 CPU 也计入报告。
@@ -104,8 +107,12 @@ func runComparison(load comparisonLoad, call func(context.Context, int) error) c
 			}
 		})
 	}
+	if wait := time.Until(time.Unix(0, load.StartAt)); wait > 0 {
+		time.Sleep(wait)
+	}
 	stats := comparisonStats{Errors: map[string]int{}, Before: comparisonSnapshot()}
 	start = time.Now()
+	stats.StartedAt = start.UnixNano()
 	close(ready)
 	if load.Rate > 0 {
 		stats.Offered = int(load.Duration.Seconds() * float64(load.Rate))
@@ -123,7 +130,9 @@ func runComparison(load comparisonLoad, call func(context.Context, int) error) c
 		close(jobs)
 	}
 	group.Wait()
-	stats.Seconds = time.Since(start).Seconds()
+	finish := time.Now()
+	stats.Seconds = finish.Sub(start).Seconds()
+	stats.FinishedAt = finish.UnixNano()
 	stats.After = comparisonSnapshot()
 	var all, scheduled []int64
 	for _, sample := range samples {
@@ -141,6 +150,7 @@ func runComparison(load comparisonLoad, call func(context.Context, int) error) c
 	}
 	slices.Sort(all)
 	slices.Sort(scheduled)
+	stats.Samples, stats.ScheduledSamples = all, scheduled
 	if len(all) > 0 {
 		stats.P50Ns = all[(len(all)*50+99)/100-1]
 		stats.P99Ns = all[(len(all)*99+99)/100-1]
@@ -178,6 +188,9 @@ type comparisonPeer struct {
 }
 
 func newComparisonPeer(config comparisonConfig) (*comparisonPeer, error) {
+	if config.Backend == "nats-native" || config.Backend == "nats-envelope" {
+		return newComparisonLayer(config)
+	}
 	if config.Backend == "proto" {
 		root := lifecycle.NewWaitGroupContext(context.Background())
 		var kinds []txactor.Kind
@@ -246,7 +259,17 @@ func newComparisonPeer(config comparisonConfig) (*comparisonPeer, error) {
 	if config.Mode != "client" {
 		target = instance
 	}
-	return &comparisonPeer{endpoint: instance, call: func(ctx context.Context, id int, payload []byte) error {
+	peer := comparisonTransportPeer(p, target)
+	peer.close = func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return p.Drain(ctx, nil)
+	}
+	return peer, nil
+}
+
+func comparisonTransportPeer(p *Transport, target string) *comparisonPeer {
+	return &comparisonPeer{endpoint: p.instance, call: func(ctx context.Context, id int, payload []byte) error {
 		result, err := p.Call(ctx, Target{target, Identity{"comparison", strconv.Itoa(id + 1)}}, &actorpb.Delivery{MessageType: "comparison.call", CommandId: 47, RouteKeyKind: actorpb.RouteKeyKind_ROUTE_KEY_UINT64, RouteKeyNumeric: uint64(id + 1), Payload: payload, RequestId: 1})
 		// 对齐正式 Future.Await 返回给调用方的副本隔离；原型内部仍走自身协议。
 		if err == nil {
@@ -256,11 +279,7 @@ func newComparisonPeer(config comparisonConfig) (*comparisonPeer, error) {
 			}
 		}
 		return err
-	}, close: func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return p.Drain(ctx, nil)
-	}}, nil
+	}}
 }
 
 // TestRPCComparisonProcess 通过标准输入接收采样命令；环境未显式设置时不启动任何外部依赖。
@@ -272,6 +291,18 @@ func TestRPCComparisonProcess(t *testing.T) {
 	var config comparisonConfig
 	if err := json.Unmarshal([]byte(raw), &config); err != nil {
 		t.Fatal(err)
+	}
+	// 目标端独立诊断进程从启动采到退出；调用端的 Profile 仍只包围负载窗口。
+	if config.Profile != "" {
+		file, err := os.Create(config.Profile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer file.Close()
+		if err = pprof.StartCPUProfile(file); err != nil {
+			t.Fatal(err)
+		}
+		defer pprof.StopCPUProfile()
 	}
 	peer, err := newComparisonPeer(config)
 	if err != nil {
@@ -290,6 +321,7 @@ func TestRPCComparisonProcess(t *testing.T) {
 	}
 	emit(map[string]any{"Ready": peer.endpoint, "Resources": comparisonSnapshot()})
 	input := json.NewDecoder(os.Stdin)
+	var last comparisonStats
 	for {
 		var load comparisonLoad
 		if err = input.Decode(&load); err == io.EOF {
@@ -302,8 +334,14 @@ func TestRPCComparisonProcess(t *testing.T) {
 			emit(comparisonSnapshot())
 			continue
 		case "gc":
+			last = comparisonStats{}
 			runtime.GC()
 			emit(comparisonSnapshot())
+			continue
+		case "samples":
+			// 聚合器在全部资源快照之后取样，避免 JSON 导出成本混入 RPC 测量。
+			emit(map[string]any{"Samples": last.Samples, "ScheduledSamples": last.ScheduledSamples})
+			last = comparisonStats{}
 			continue
 		case "stop":
 			emit(map[string]bool{"Stopped": true})
@@ -326,14 +364,14 @@ func TestRPCComparisonProcess(t *testing.T) {
 				_ = file.Close()
 				t.Fatal(err)
 			}
-			stats := runComparison(load, call)
+			last = runComparison(load, call)
 			pprof.StopCPUProfile()
 			if err = file.Close(); err != nil {
 				t.Fatal(err)
 			}
-			emit(stats)
 		} else {
-			emit(runComparison(load, call))
+			last = runComparison(load, call)
 		}
+		emit(last)
 	}
 }
