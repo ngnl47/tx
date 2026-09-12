@@ -11,7 +11,7 @@
 
 ### 2026-09-12 NATS 与本地 Actor 运行时分支试验
 
-已确认先更新计划，在 `feature/nats-actor-runtime` 分支进行隔离尝试；本轮未创建分支、未实施。详见 [试验实施计划](superpowers/plans/2026-09-12-nats-actor-runtime-trial.md) 与 [生命周期及任务草案](superpowers/specs/2026-09-11-actor-lifecycle-reliable-task-design.md)。先为 tx、txgame、txgameslg 建同名分支，其余三工程按生成或协议实际影响纳入。
+三个工程已在 `feature/nats-actor-runtime` 保留未提交试验。已完成 T1、T2a 和 T2b 本地部分的历史证据见 [试验记录](audits/2026-09-12-nats-actor-runtime-trial.md)。后续讨论已确认：四种新通信语义、初始化期间探测、game/slgworld 实例池独立伸缩、重型实体按容量懒激活、正常排水后交接。[T2c 节点](superpowers/plans/2026-09-12-nats-actor-runtime-trial.md#t2c新语义懒激活状态与容量准入) 已完成原型功能、race 与增量基准验证；下一项为 T2d 跨实例稳定归属及正常交接，随后进行 T3 完整性能选型，尚未替换正式运行时。正式业务代码和 API 继续以现行 README 为准，不能把原型能力写成示例已支持。tx、txgame、txgameslg 使用同名分支，其余三工程按生成或协议实际影响纳入。
 
 顺序为：共同基线 → 最小本地实体运行时 → NATS RPC → 正确性/性能评审 → 两示例接入 → JetStream 任务。最小本地运行时为优先验证方向，保留本地 ProtoActor 是备选；不预设必须替换成功。etcd 暂留身份、租约和槽位交接，msgq 传输整合及 etcd 替代分别评估，不计入已实现收益。
 

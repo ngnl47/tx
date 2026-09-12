@@ -12,6 +12,8 @@
 
 ## 当前状态与分支
 
+本轮实施后：tx、txgame、txgameslg 均在 `feature/nats-actor-runtime` 且保留累计未提交变更；其余三工程干净。T2c 已完成，下一项 T2d。以下分支创建信息是准备阶段快照，不代表当前工作区仍干净。
+
 2026-09-12 检查：六工程均在主分支。tx/main=638d04a4525cfcec15327ac07bfdbaba4a2d59da；txgame/master=b611ebb80af3908d62660d9dd551f434265a5c12；txgameslg/main=0b465210ef878cbc39039a36a228bd7b1dfff085。tx 已有未跟踪的生命周期草案，本轮另更新总计划并新增本文；其余五工程干净。实施起点必须重新核对，以上仅为计划快照。
 
 统一分支名：`feature/nats-actor-runtime`。
@@ -25,7 +27,7 @@
 | txclient | 否，按需 | 首先作为现有外部协议验收工具；协议或测试驱动必须变更时加入 |
 | txclientslg | 否，按需 | 同上；生成链仍由 txgameslg/gen 管理 |
 
-分支尚未创建。三个同名分支是独立 Git 仓库分支，不会自动固定跨仓库版本。开始时记录所有 HEAD、工作区差异、Go replace/模块解析路径和客户端版本；测试报告必须说明实际使用哪份 tx。已有未提交文档带入 tx 分支，不 reset、clean 或自动提交。只在分支不存在且工作区仍符合记录时执行：
+2026-09-12 已确认三个同名分支创建完成且开始时干净，基线与本批证据见 [试验记录](../../audits/2026-09-12-nats-actor-runtime-trial.md)。以下创建命令仅供尚未准备的其他工作区使用，不在当前分支重复执行。三个同名分支是独立 Git 仓库分支，不会自动固定跨仓库版本。开始时记录所有 HEAD、工作区差异、Go replace/模块解析路径和客户端版本；测试报告必须说明实际使用哪份 tx。已有未提交文档带入 tx 分支，不 reset、clean 或自动提交。只在分支不存在且工作区仍符合记录时执行：
 
 ```bash
 git -C /Users/a47/workspace/tx switch -c feature/nats-actor-runtime
@@ -35,10 +37,10 @@ git -C /Users/a47/workspace/txgameslg switch -c feature/nats-actor-runtime
 
 ## 全局边界
 
-- 本轮授权是更新计划；执行从分支准备开始，当前不安装依赖、不启动原型、不替换生产代码。
+- 用户已确认分支并授权实施；按阶段串行推进，示例/正式替换受 T3 评审门槛约束，不预先推广。
 - 不保留历史 API 兼容负担，但保留实际需要的高级 SPI；不能把底层组装和空值检查重新推给 game。
 - 五个事件名保持 OnInitAfter、OnActivateBefore、OnActivateAfter、OnDeactivateBefore、OnDeactivateAfter。卸载前 RPC 尽力执行，错误记 error 后继续卸载；否决在发起卸载前判断。回调有界且协作取消，不并发释放仍被回调使用的对象。
-- RPC 超时不代表未执行，不自动重发；区分投递接受、目标取出与业务结果。保留排水的真实工作计数及必要持久化安全收尾。
+- RPC 超时不代表未执行，不自动重发。新原型 Tell 只确认本地，TellAccepted 只确认到达 NATS，CallFuture/Call 共用业务结果；历史 T2a 的目标取出确认在 T2c 删除。保留排水的真实工作计数及必要持久化安全收尾。
 - 业务明确“无法处理并结束”可以 ACK；永久加载拒绝进入死信，临时加载失败重试。ACK 不等待 GD 刷盘；成功后结果/ACK 丢失只记录可观察错误，不建完成表。
 - 默认并发消费不保证业务顺序；可保留产品有序入口，声明保证时必须限定范围和失败边界。
 - etcd、GD、Procedure、Redis/Mongo/Fusion 和外部 BON/Frame/Seq/Ack 不随第一阶段替换。消除 etcd 是独立后续决策。
@@ -49,9 +51,9 @@ git -C /Users/a47/workspace/txgameslg switch -c feature/nats-actor-runtime
 
 涉及：三个仓库根、tx/modules/actor、tx/modules/discovery、tx/internal/framework、两示例服务及集群入口；新增证据记录 `tx/docs/audits/2026-09-12-nats-actor-runtime-trial.md`（开始采集时创建）。
 
-- [ ] 创建上述分支并保留未提交材料；记录模块解析实际路径，避免新示例误连主线 tx。
-- [ ] 从现行代码提取必须保持的行为：虚拟/固定寻址、并发激活、Tell/TellAccepted/Call、错误码、排水、实例身份和世界归属；标记目前尚不存在的生命周期能力。
-- [ ] 固定原实现源码快照或只读 checkout，先编译基线；原型与基线使用相同负载，不直接比较不同机器的历史报告。
+- [x] 创建上述分支并保留未提交材料；记录模块解析实际路径，避免新示例误连主线 tx。
+- [x] 从现行代码提取必须保持的行为：虚拟/固定寻址、并发激活、Tell/TellAccepted/Call、错误码、排水、实例身份和世界归属；标记目前尚不存在的生命周期能力。
+- [x] 固定原实现源码快照或只读 checkout，先编译基线；原型与基线使用相同负载，不直接比较不同机器的历史报告。
 - [ ] 记录版本、硬件、GOMAXPROCS、消息大小、并发、目标分布、网络/TLS、采样时长与失败计数。NATS 数据目录使用独立临时目录，结束只清理本次拥有的进程和资源。
 
 交付：可复现的对照起点及行为矩阵，不产生性能改善结论。
@@ -60,11 +62,11 @@ git -C /Users/a47/workspace/txgameslg switch -c feature/nats-actor-runtime
 
 拟新增：`tx/internal/actortrial/runtime.go`、`runtime_test.go`；这些是试验文件，不是最终公共 API。参考 `modules/actor/{kind,mailbox,lifecycle,fixed_host,passivation}.go`；不复制第三方实现。
 
-- [ ] 先写关键状态测试：同身份并发首请求只创建一次、不同实体不互相串行阻塞、准入永久/暂时拒绝可区分、激活失败清理。
-- [ ] 实现限定的实体映射、有界队列与串行调度；明确锁与回调不互相等待，同步回调不得自调用等待同一邮箱。
-- [ ] 加入五个生命周期事件、关闸后拒绝、已准入请求排空、重复卸载合并、旧定时器隔离。卸载前错误不得取消卸载。
-- [ ] 用可控时间完成 60s 战斗结束、65s 卸载与迟到 Buff 的场景；不用真实睡眠替代时序控制。
-- [ ] 实施最小 panic 清理和等待者错误返回，不直接复制通用监督树；验证没有半激活实例、孤立等待者或明显 goroutine 泄漏。
+- [x] 先写关键状态测试：同身份并发首请求只创建一次、不同实体不互相串行阻塞、准入永久/暂时拒绝可区分、激活失败清理。
+- [x] 实现限定的实体映射、有界队列与串行调度；明确锁与回调不互相等待，同步回调不得自调用等待同一邮箱。
+- [x] 加入五个生命周期事件、关闸后拒绝、已准入请求排空、重复卸载合并、旧定时器隔离。卸载前错误不得取消卸载。
+- [x] 用可控时间完成 60s 战斗结束、65s 卸载与迟到 Buff 的场景；不用真实睡眠替代时序控制。
+- [x] 实施最小 panic 清理和等待者错误返回，不直接复制通用监督树；验证没有半激活实例、孤立等待者或明显 goroutine 泄漏。
 
 验证入口：`go test ./internal/actortrial -count=1`，随后单独 `go test -race ./internal/actortrial -count=1`。预期相关状态断言全部通过；原 ProtoActor 的已知 race 不得拿来解释新运行时失败。
 
@@ -72,15 +74,45 @@ git -C /Users/a47/workspace/txgameslg switch -c feature/nats-actor-runtime
 
 ## T2：NATS Core RPC 与归属集成
 
+2026-09-12：T2a 真实传输节点完成，T2 整体未完成。已固定 nats.go v1.53.1 与 nats-server 2.14.6，完成真实双进程、断连、响应清理及收尾顺序验证。固定槽位在试验夹具中复用现有 SlotResolver；虚拟角色的成员变化与旧 owner 卸载串联留在 T2b，不把显式实例寻址称为全局归属实现。详见试验记录的 T2a 节。
+
 拟新增：`tx/internal/actortrial/nats.go`、`nats_test.go`；修改 tx/go.mod、go.sum 仅用于固定依赖。参考现有 `modules/actor/{delivery,future}.go` 和 discovery 接口。
 
-- [ ] 先验证真实 nats-server 下的双进程调用、目标不在线、连接中断、超时后业务仍可能完成、迟到响应清理。
-- [ ] 每运行实例设置入口 Subject，载荷携带稳定实体身份和命令。固定世界沿用 SlotResolver；角色虚拟实体的 owner 选择与重建先明确沿用的规则，不能以普通 Queue Group 随机分配冒充唯一归属。
-- [ ] 把取出确认与业务完成分开；本地调用走相同实体队列但不强制绕 NATS。NATS handler 入队后返回不代表排水已经完成。
-- [ ] 处理永久准入拒绝、邮箱满和 draining 的显式错误；业务结果编码沿用现行载荷契约，普通业务不直接操作 NATS 连接。
-- [ ] 验证关闸、在途工作、卸载前 RPC、最终写回与连接关闭次序。复用现行工作计数，不增加第二套全局屏障。
+- [x] 先验证真实 nats-server 下的双进程调用、目标不在线、连接中断、超时后业务仍可能完成、迟到响应清理。
+- [x] 每运行实例设置入口 Subject，载荷携带稳定实体身份和命令；固定世界通过现有 SlotResolver 和加载前校验完成试验交接。
+- [x] T2b 本地部分：不可变 Kind 成员快照选择 owner；快照更新与本地准入共用锁，失去归属即关闭旧激活，排空后清理，同进程重获归属不绕过清理占位。
+- [x] T2b 决策已收敛：正常排水保持旧归属直至排空和必要写回完成；新增成员不能立即激活原有实体的新副本。采用稳定逻辑归属及显式交接，不推广按成员变化直接重算的 Placement。旧试验继续作为重叠风险证据，不作为新调度实现。
+- [x] 初期取出确认验证已由 T2c 新语义取代：TellAccepted 改为服务端到达确认，Call/CallFuture 等业务结果。本地 Call 走相同实体队列但不强制绕 NATS。NATS handler 入队后返回不代表排水已经完成。
+- [x] 处理永久准入拒绝、邮箱满和 draining 的显式错误；业务结果编码沿用现行载荷契约，普通业务不直接操作 NATS 连接。
+- [x] 验证关闸、在途工作、卸载前 RPC、最终收尾回调与连接关闭次序。复用实体 worker 排水计数，收尾回调失败保留连接并允许重试。
+- [ ] T2b/T4：将上述顺序接到真实 GD 写回及实例租约生命周期。当前收尾回调夹具不是 Mongo/Redis/Fusion 持久化验收。
 
 验证：T1 命令加双进程集成入口；真实依赖缺失必须显式失败。测试启动器和配置仅在试验目录，不能依靠开发机已有 NATS 掩盖前置条件。
+
+## T2c：新语义、懒激活状态与容量准入
+
+目标：完成可独立验收的运行时和 NATS 边界，再接跨实例分配。用户已授权串行实施，不自动提交。本节点限定内部原型，不修改正式 ProtoActor API 或生成协议。
+
+1. `internal/actortrial/nats.go`、`nats_test.go`：先用无订阅目标及阻塞初始化复现旧 TellAccepted 的错误边界；再补 Tell、CallFuture，Call 复用 Future。TellAccepted 使用 Publish + Flush，只表示当前连接服务端处理过发布，不作逐条存储确认；即使目标在同一实例，也走 NATS 以保持这项含义。Call 保留本地直达邮箱。
+2. `internal/actortrial/runtime.go`、新增 `activation_test.go`：运行时提供不触发业务的状态查询与确保激活入口，区分未加载、初始化中、就绪、关闭中及初始化失败。通过通道阻塞工厂，验证查询不会等待初始化、同身份并发不会重复加载、其他实体仍可执行。
+3. 新增 `internal/actortrial/capacity.go` 及相关测试：可选预算配置包含字节上限、并发初始化上限和轻量估算函数。工厂在锁外运行；占位建立、预算预留与准入关闸在同一锁下完成。失败及卸载收尾完成后释放额度；未知世界由业务返回明确错误。压力水位用于新激活准入，不中断已接受业务。
+4. `nats.go` 增加运行时探测入口，返回状态快照；远端初始化失败保留可观察结果，不能每次 PING 自动重新执行失败初始化。显式重试与查询分开；原型最多保留 1024 条失败诊断，淘汰后仅回到未加载状态；后续显式 Ensure 或业务请求可再尝试，业务准入仍须判断真实存在性。
+5. 新增 `internal/actortrial/benchmark_test.go`：测本地调用、状态查询、容量预留及真实 NATS Call；采集代码只在 `_test.go` 或 `/private/tmp/tx-nats-lazy-capacity-*`。本节点报告对修改前原型的变化，T3 才做完整 ProtoActor 选型对照。
+
+检查项：
+
+- [x] 更新共识、运行时状态和容量边界文档。
+- [x] 新语义失败证据与真实 NATS 功能回归。
+- [x] 状态、并发激活、容量及清理关键测试。
+- [x] 本节点功能、race、基准、跨工程编译/测试及 ponytail-review。
+
+T2c 本轮结果与局限见 [试验记录](../../audits/2026-09-12-nats-actor-runtime-trial.md#t2c新通信语义懒激活与容量准入)。增量基准不替代 T3 的 ProtoActor 共同负载对照；远端 Future 每次调用增加 5 次分配，保留为 T3 资源成本输入。
+
+## T2d：动态归属与正常交接
+
+T2c 的实例准入原语通过后，继续复用 `discovery.SlotStore` 的归属记录与 CAS，验证多个实例和调用方竞争首次激活、容量不足的明确拒绝、旧 owner 正常卸载后重新放置及滚动交接。NATS 根据逻辑主题或已解析实例订阅转发，不能靠 Queue Group 决定同一世界的每条业务归属。分配方不得以超时推断旧 owner 未激活，只有明确未接受才能选择其他候选。
+
+game/slgworld 实例池比例不固定，一个实例可持多个世界；世界数量不是内存预算。正式 txgameslg 现有一进程一槽位约束在 T4 变更前仍有效。世界新加载需预留容量；重型世界可使用容量选择，普通实体可按固定逻辑分区，均保持已有激活的归属。实例增减由部署控制面发起，不在此实现 Kubernetes operator、自动故障接管或实时 CPU 搬迁。
 
 ## T3：共同负载性能及是否进入示例的决策
 
