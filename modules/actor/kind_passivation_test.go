@@ -27,7 +27,7 @@ func TestIdlePassivationRestartsAfterUserMessage(t *testing.T) {
 		t.Fatalf("NewKind returned error: %v", err)
 	}
 	system := protoactor.NewActorSystem()
-	pid := system.Root.Spawn(kind.props)
+	pid := system.Root.Spawn(testKindProps(t, kind))
 	t.Cleanup(func() { system.Root.Stop(pid) })
 
 	time.Sleep(idleTimeout / 2)
@@ -50,7 +50,7 @@ func TestIdlePassivationPreservesInnerReceiveTimeout(t *testing.T) {
 		t.Fatalf("NewKind returned error: %v", err)
 	}
 	system := protoactor.NewActorSystem()
-	pid := system.Root.Spawn(kind.props)
+	pid := system.Root.Spawn(testKindProps(t, kind))
 	t.Cleanup(func() { system.Root.Stop(pid) })
 
 	waitForAtomicValue(t, &receiveTimeouts, 1, idleTimeout/2)

@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 
 	protoactor "github.com/asynkron/protoactor-go/actor"
 	"github.com/asynkron/protoactor-go/cluster"
@@ -329,6 +330,25 @@ func startMember(cluster *cluster.Cluster) (err error) {
 	return nil
 }
 
+// protoProps 只在后端装配时构造 Props，Kind 显式选项优先于运行时默认值。
+func (kind Kind) protoProps(defaultIdle time.Duration) (*protoactor.Props, error) {
+	timeout := kind.idlePassivation
+	if timeout == 0 {
+		timeout = defaultIdle
+	}
+	if kind.producer == nil {
+		if timeout > 0 {
+			return nil, fmt.Errorf("%w: adapted Actor kind %q cannot apply runtime idle passivation", ErrInvalidConfig, kind.Name())
+		}
+		return kind.cluster.Props, nil
+	}
+	producer := kind.producer
+	if timeout > 0 {
+		producer = idlePassivationProducer(producer, timeout)
+	}
+	return protoactor.PropsFromProducer(producer), nil
+}
+
 func configureKinds(config Config, kinds []Kind, lifecycle *mailboxLifecycle) ([]*cluster.Kind, []fixedKind, error) {
 	if err := validateKinds(kinds); err != nil {
 		return nil, nil, err
@@ -336,32 +356,27 @@ func configureKinds(config Config, kinds []Kind, lifecycle *mailboxLifecycle) ([
 	configured := make([]*cluster.Kind, 0, len(kinds))
 	fixed := make([]fixedKind, 0, len(kinds))
 	for _, kind := range kinds {
-		clusterKind := kind.cluster
-		baseProps := clusterKind.Props
-		if kind.isFixed() {
-			baseProps = kind.props
+		name := kind.Name()
+		baseProps, err := kind.protoProps(config.IdlePassivation[name])
+		if err != nil {
+			return nil, nil, err
 		}
-		if kind.idlePassivation == 0 {
-			if timeout := config.IdlePassivation[clusterKind.Kind]; timeout > 0 {
-				if kind.producer == nil {
-					return nil, nil, fmt.Errorf("%w: adapted Actor kind %q cannot apply runtime idle passivation", ErrInvalidConfig, clusterKind.Kind)
-				}
-				baseProps = protoactor.PropsFromProducer(idlePassivationProducer(kind.producer, timeout))
-			}
+		if !kind.isFixed() && kind.cluster == nil {
+			baseProps = cluster.NewKind(name, baseProps).Props
 		}
 		props := baseProps.Clone(
-			protoactor.WithMailbox(observedBoundedMailbox(config, clusterKind.Kind, lifecycle)),
+			protoactor.WithMailbox(observedBoundedMailbox(config, name, lifecycle)),
 			protoactor.WithReceiverMiddleware(acceptanceReceiverMiddleware),
 		)
 		if kind.isFixed() {
-			fixed = append(fixed, fixedKind{name: clusterKind.Kind, props: props})
+			fixed = append(fixed, fixedKind{name: name, props: props})
 			continue
 		}
-		configured = append(configured, &cluster.Kind{
-			Kind:            clusterKind.Kind,
-			Props:           props,
-			StrategyBuilder: clusterKind.StrategyBuilder,
-		})
+		configuredKind := &cluster.Kind{Kind: name, Props: props}
+		if kind.cluster != nil {
+			configuredKind.StrategyBuilder = kind.cluster.StrategyBuilder
+		}
+		configured = append(configured, configuredKind)
 	}
 	return configured, fixed, nil
 }

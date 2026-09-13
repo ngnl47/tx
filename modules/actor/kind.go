@@ -10,10 +10,10 @@ import (
 )
 
 // Kind 是业务 Actor 类型的声明。普通项目只需要提供名称和 Actor 构造函数，
-// Cluster 放置策略等底层细节由 Runtime 统一装配。
+// 声明不创建后端 Props 或 Cluster Kind；放置与生命周期包装由 Runtime 统一装配。
 type Kind struct {
+	name            string
 	cluster         *cluster.Kind
-	props           *protoactor.Props
 	producer        func() protoactor.Actor
 	placement       kindPlacement
 	idlePassivation time.Duration
@@ -82,15 +82,9 @@ func newKind(name string, producer func() protoactor.Actor, placement kindPlacem
 			return Kind{}, err
 		}
 	}
-	originalProducer := producer
-	if options.idlePassivation > 0 {
-		producer = idlePassivationProducer(producer, options.idlePassivation)
-	}
-	props := protoactor.PropsFromProducer(producer)
 	return Kind{
-		cluster:         cluster.NewKind(name, props),
-		props:           props,
-		producer:        originalProducer,
+		name:            name,
+		producer:        producer,
 		placement:       placement,
 		idlePassivation: options.idlePassivation,
 	}, nil
@@ -119,7 +113,7 @@ func AdaptKind(kind *cluster.Kind) (Kind, error) {
 	if kind == nil || strings.TrimSpace(kind.Kind) == "" || kind.Props == nil {
 		return Kind{}, ErrInvalidConfig
 	}
-	return Kind{cluster: kind, props: kind.Props, placement: kindPlacementVirtual}, nil
+	return Kind{cluster: kind, placement: kindPlacementVirtual}, nil
 }
 
 func (kind Kind) isFixed() bool {
@@ -133,17 +127,17 @@ func (kind Kind) IsFixed() bool {
 
 // Name 返回 Kind 的稳定名称。
 func (kind Kind) Name() string {
-	if kind.cluster == nil {
-		return ""
+	if kind.cluster != nil {
+		return kind.cluster.Kind
 	}
-	return kind.cluster.Kind
+	return kind.name
 }
 
 func validateKinds(kinds []Kind) error {
 	names := make(map[string]struct{}, len(kinds))
 	for _, kind := range kinds {
 		name := kind.Name()
-		if name == "" || kind.cluster == nil || kind.cluster.Props == nil || kind.props == nil ||
+		if name == "" || (kind.producer == nil && (kind.cluster == nil || kind.cluster.Props == nil)) ||
 			(kind.placement != kindPlacementVirtual && kind.placement != kindPlacementFixed) {
 			return ErrInvalidConfig
 		}

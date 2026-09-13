@@ -2505,6 +2505,8 @@ protobuf `Delivery` 使用内部 `DeliveryMode` 和 `request_id` 区分三类线
 等待 goroutine；Runtime 关闭会用 `ErrRuntimeStopped` 一次性完成所有 pending。成功 Result 必须携带非空
 `MessageType`；空类型无法建立生成响应类型契约，响应 Actor 会将其判定为 `ErrInvalidResponse`。
 
+普通 Kind 的声明只保存名称、业务工厂、放置类型和生命周期选项，不提前创建后端 Props 或 Cluster Kind。Runtime 在装配时统一构建 Props，Kind 显式空闲卸载选项优先于运行时默认值；工厂仅在实际激活时调用。原生 `AdaptKind` 保留已有 Props 和 Strategy，装配时克隆 Props，不重复追加集群初始化中间件。
+
 L4 服务在 Bee/Ant `ServiceSpec.ActorKinds` 中声明 Kind，L3 Server 自动将 Actor CMod 加入依赖闭包并在启动前拒绝重名。
 普通可恢复实体使用 `actor.NewKind`，固定归属实体使用 `actor.NewFixedKind`；只有需要 ProtoActor 自定义 Strategy 的
 高级项目才使用 `actor.AdaptKind`。底层

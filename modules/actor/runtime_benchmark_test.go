@@ -107,7 +107,7 @@ func BenchmarkFixedActorIdlePassivationExisting(b *testing.B) {
 	if err != nil {
 		b.Fatalf("NewFixedKind() error = %v", err)
 	}
-	hostProps, err := newFixedHostProps("role", kind.props)
+	hostProps, err := newFixedHostProps("role", testKindProps(b, kind))
 	if err != nil {
 		b.Fatalf("newFixedHostProps() error = %v", err)
 	}

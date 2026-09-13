@@ -50,7 +50,7 @@ func TestFixedHostRecreatesIdleEntityActor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFixedKind returned error: %v", err)
 	}
-	hostProps, err := newFixedHostProps("role", kind.props)
+	hostProps, err := newFixedHostProps("role", testKindProps(t, kind))
 	if err != nil {
 		t.Fatalf("newFixedHostProps returned error: %v", err)
 	}

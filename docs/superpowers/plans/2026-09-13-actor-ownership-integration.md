@@ -73,6 +73,7 @@ go test -race ./internal/actortrial -run 'TestOwnershipIntegration|TestSlotRolli
 - [x] I3e：Discovery Runtime 装配并持有归属组件，Actor 装配接收 Ownership 而非存储/目录；control.NewHandoffClient 统一请求构造和响应身份校验，CLI 与正式交接集成复用。普通 game Context 不增加底层装配入口，见 [封装记录](../../audits/2026-09-13-ownership-composition.md)。
 - [x] I3f：本地激活、邮箱、容量、排水与生命周期迁到私有 `internal/actorhost`；试验传输通过别名复用唯一实现，框架后续无需依赖 actortrial。保留既有试验 Placement 供历史对照，正式稳定归属仍使用 L2 SlotOwnership。未切换默认框架运行时，见 [宿主提取记录](../../audits/2026-09-13-local-actor-host.md)。
 - [x] I3g：直连 Call/Receiver 和共用信封校验迁入私有 `internal/actorrpc`，复用 RPC Sender/Host 与 actorhost；以真实 gRPC 验证多个 Kind 共用一个 DeliveryService、相同 key 状态隔离及统一排水。正式 Kind 工厂仍返回 ProtoActor Actor，尚未切换默认运行时，见 [直连迁入记录](../../audits/2026-09-13-private-actor-rpc.md)。
+- [x] I3h：普通 Kind 声明与 ProtoActor 后端对象创建分离，Runtime 统一装配 Props、生命周期包装和集群 Kind；保留原生高级适配、固定实体及选项优先级，验证集群初始化只发生一次。此节点未替换业务工厂的原生 Actor 返回类型，见 [Kind 装配记录](../../audits/2026-09-13-kind-backend-assembly.md)。
 - [ ] 将实体宿主迁入正式 framework（I3b 已把原型的加载校验移到 Runtime.BindSlots，独立直连测试无需先创建 NATS）；复用共享 RPC Host 注册 Actor Call，检查同进程所选服务的注册组合，确保 DeliveryService 仅注册一次；两种入口仍共享同一 Runtime。
 - [ ] 调整启动顺序：绑定直连端点 → Discovery 启动身份与 Watch 就绪 → 装配 Actor 入口 → 服务与控制面就绪 → 标记 running。移除对旧 ActorEndpoint 的启动依赖，不增加绕环的可空中间对象供业务处理。
 - [x] I3a：先写框架生命周期测试，实现正式 PrepareHandoff 与 Stop 共享收尾进度；共享 RPC 和租约保留到 Stop。保留 CMod 逆序收尾、失败阶段重试、fatal 身份丢失分支；StateDrained 不冒充持久化成功。NATS 宿主尚未迁入，待后续绑定同一流程。
