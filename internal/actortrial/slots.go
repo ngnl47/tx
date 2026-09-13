@@ -14,42 +14,20 @@ import (
 	"github.com/ngnl47/tx/modules/discovery"
 )
 
-// SlotHostConfig 由组合根提供权威槽位读取和实例最终收尾；不要注入可能落后的 Watch 缓存。
-// SlotID 在宿主和分配方使用同一规则；普通实体映射到稳定分区，重型世界可各占一个槽位。
-type SlotHostConfig struct {
-	Store  discovery.SlotReader
-	SlotID func(Identity) string
-	Flush  func(context.Context) error
-}
-
 // SlotHost 为独立实例控制订阅和业务运行时持有同一连接。
 type SlotHost struct {
 	*Transport
-	config   SlotHostConfig
+	flush    func(context.Context) error
 	mu       sync.Mutex
 	quiesced bool
 }
 
-func ConnectSlotHost(url, namespace, instance string, runtime *Runtime, maxPending int, config SlotHostConfig) (*SlotHost, error) {
-	if config.Store == nil || config.SlotID == nil {
-		panic("actortrial: invalid slot host configuration")
-	}
-	factory := runtime.factory
-	runtime.factory = func(c Context) (*Behavior, error) {
-		assignment, err := config.Store.ResolveSlot(c, config.SlotID(c.Identity))
-		if err != nil {
-			return nil, err
-		}
-		if assignment.RuntimeInstanceID != instance {
-			return nil, ErrNotOwner
-		}
-		return factory(c)
-	}
+func ConnectSlotHost(url, namespace, instance string, runtime *Runtime, maxPending int, flush func(context.Context) error) (*SlotHost, error) {
 	p, err := Connect(url, namespace, instance, runtime, maxPending)
 	if err != nil {
 		return nil, err
 	}
-	h := &SlotHost{Transport: p, config: config}
+	h := &SlotHost{Transport: p, flush: flush}
 	if _, err = p.conn.Subscribe(p.slotSubject(instance), h.receiveControl); err == nil {
 		err = p.conn.FlushTimeout(runtime.timeout)
 	}
@@ -78,8 +56,8 @@ func (h *SlotHost) quiesce(ctx context.Context) error {
 	if err := h.runtime.Drain(ctx); err != nil {
 		return err
 	}
-	if h.config.Flush != nil {
-		if err := h.config.Flush(ctx); err != nil {
+	if h.flush != nil {
+		if err := h.flush(ctx); err != nil {
 			return err
 		}
 	}

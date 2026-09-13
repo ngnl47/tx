@@ -215,7 +215,7 @@ func TestComparisonBatchCanceledFirstAndOuterFailure(t *testing.T) {
 func TestComparisonBatchQuiesceRetainsControlConnection(t *testing.T) {
 	ctx := trialContext(t)
 	p := peer(t, natsURL(t), nats.NewInbox(), "a", echoRuntime())
-	h := &SlotHost{Transport: p, config: SlotHostConfig{Flush: func(context.Context) error { return errors.New("预期持久化失败") }}}
+	h := &SlotHost{Transport: p, flush: func(context.Context) error { return errors.New("预期持久化失败") }}
 	if err := h.quiesce(ctx); err == nil {
 		t.Fatal("丢失收尾错误")
 	}

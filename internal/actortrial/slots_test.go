@@ -259,7 +259,8 @@ func worldMembers(t *testing.T, directory *discovery.ServiceDirectory, ids ...st
 
 func slotPeer(t *testing.T, url, ns, name string, r *Runtime, store discovery.SlotStore, flush func(context.Context) error) *SlotHost {
 	t.Helper()
-	host, err := ConnectSlotHost(url, ns, name, r, 64, SlotHostConfig{Store: store, SlotID: worldSlot, Flush: flush})
+	r.BindSlots(name, store, worldSlot)
+	host, err := ConnectSlotHost(url, ns, name, r, 64, flush)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -98,7 +98,7 @@ type ownershipPeer struct {
 	leaseDone chan struct{}
 }
 
-func newOwnershipPeer(t *testing.T, url, namespace string, config discovery.EtcdConfig, store discovery.SlotStore, local *Runtime, flush func(context.Context) error) *ownershipPeer {
+func newOwnershipPeer(t *testing.T, url, namespace string, config discovery.EtcdConfig, local *Runtime, flush func(context.Context) error) *ownershipPeer {
 	t.Helper()
 	root := lifecycle.NewWaitGroupContext(context.Background())
 	host, err := rpc.NewHost("127.0.0.1:0")
@@ -142,7 +142,7 @@ func newOwnershipPeer(t *testing.T, url, namespace string, config discovery.Etcd
 		t.Fatal("入口就绪前发布 running")
 	}
 	p := &ownershipPeer{discovery: directory, rpc: host, leaseDone: make(chan struct{})}
-	p.SlotHost = slotPeer(t, url, namespace, directory.Instance().ID, local, store, flush)
+	p.SlotHost = slotPeer(t, url, namespace, directory.Instance().ID, local, directory.AuthoritativeSlots(), flush)
 	if err := host.Register(func(registrar grpc.ServiceRegistrar) error {
 		return rpc.RegisterDeliveryService(registrar, nil, NewDirectReceiver(directory.Instance().ID, local))
 	}); err != nil {
@@ -255,7 +255,7 @@ func TestOwnershipIntegrationWritebackHandoff(t *testing.T) {
 			return &actorpb.Result{MessageType: "value", Payload: []byte(fmt.Sprint(root.value))}, nil
 		}, OnDeactivateBefore: func(Context) error { notifications.Add(1); return nil }}, nil
 	})
-	a := newOwnershipPeer(t, url, namespace, config, store, local, manager.Shutdown)
+	a := newOwnershipPeer(t, url, namespace, config, local, manager.Shutdown)
 	caller := peer(t, url, namespace, "caller", echoRuntime())
 	eventually(t, ctx, func() bool { return len(a.discovery.Directory().RunningInstances("world")) == 1 })
 	allocator := NewSlotAllocator(store, a.discovery.Directory(), caller, "world", worldSlot)
@@ -296,7 +296,7 @@ func TestOwnershipIntegrationWritebackHandoff(t *testing.T) {
 		t.Fatalf("业务完成前 ACK: %v", err)
 	default:
 	}
-	b := newOwnershipPeer(t, url, namespace, config, store, New(8, 5*time.Second, func(c Context) (*Behavior, error) {
+	b := newOwnershipPeer(t, url, namespace, config, New(8, 5*time.Second, func(c Context) (*Behavior, error) {
 		doc, found, err := adapter.LoadDocument(c, root.TypeSpec(), root.RecordKey())
 		if err != nil || !found {
 			return nil, fmt.Errorf("加载持久值: found=%v err=%v", found, err)
@@ -374,7 +374,7 @@ func TestOwnershipIntegrationLeaseLoss(t *testing.T) {
 	url, ctx := natsURL(t), trialContext(t)
 	registry, config := trialSlotRegistry(t)
 	store, namespace := registry.Slots(), nats.NewInbox()
-	a := newOwnershipPeer(t, url, namespace, config, store, echoRuntime(), nil)
+	a := newOwnershipPeer(t, url, namespace, config, echoRuntime(), nil)
 	caller := peer(t, url, namespace, "caller", echoRuntime())
 	eventually(t, ctx, func() bool { return len(a.discovery.Directory().RunningInstances("world")) == 1 })
 	allocator := NewSlotAllocator(store, a.discovery.Directory(), caller, "world", worldSlot)
@@ -407,7 +407,7 @@ func TestOwnershipIntegrationLeaseLoss(t *testing.T) {
 			t.Fatalf("租约失效后旧入口仍接收: %v", err)
 		}
 	}
-	b := newOwnershipPeer(t, url, namespace, config, store, echoRuntime(), nil)
+	b := newOwnershipPeer(t, url, namespace, config, echoRuntime(), nil)
 	eventually(t, ctx, func() bool {
 		_, old := b.discovery.Directory().LookupInstance(a.instance)
 		return !old && len(b.discovery.Directory().RunningInstances("world")) == 1

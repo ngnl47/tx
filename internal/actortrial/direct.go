@@ -60,7 +60,7 @@ func (d *DirectTransport) Call(ctx context.Context, target Target, delivery *act
 	return &result, resultError(&result)
 }
 
-// NewDirectReceiver 注册到现有 DeliveryService，复用 SlotHost 所绑定的同一个 Runtime。
+// NewDirectReceiver 注册到现有 DeliveryService，复用组合根已绑定归属的同一个 Runtime。
 // 实例身份在入队前验证，防止旧连接地址被新进程复用；归属与容量仍在实体加载入口验证。
 func NewDirectReceiver(instance string, runtime *Runtime) rpc.CallReceiver {
 	return rpc.CallReceiverFunc(func(ctx context.Context, request rpc.Delivery) (rpc.Result, error) {

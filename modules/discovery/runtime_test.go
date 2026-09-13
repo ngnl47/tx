@@ -389,3 +389,27 @@ func (*runtimeSlotStoreFake) Watch(ctx context.Context, _ *SlotDirectory) error 
 	<-ctx.Done()
 	return ctx.Err()
 }
+
+// Watch 可滞后于 CAS；实体加载必须读到持久层当前归属。
+func TestRuntimeAuthoritativeSlotsBypassesStaleCache(t *testing.T) {
+	store := newRuntimeSlotStoreFake()
+	r, err := newRuntime(&runtimeRegistryFake{}, newRuntimeRegistrationFake(), store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close(context.Background())
+	old := SlotAssignment{SlotID: "world-51", RuntimeInstanceID: "old", Generation: 1}
+	next := SlotAssignment{SlotID: "world-51", RuntimeInstanceID: "new", Generation: 2}
+	if err := r.slotDirectory.Replace([]SlotAssignment{old}); err != nil {
+		t.Fatal(err)
+	}
+	store.assignments[old.SlotID] = next
+	cached, err := r.Slots().ResolveSlot(t.Context(), old.SlotID)
+	if err != nil || cached != old {
+		t.Fatalf("cache = %v, %v", cached, err)
+	}
+	actual, err := r.AuthoritativeSlots().ResolveSlot(t.Context(), old.SlotID)
+	if err != nil || actual != next {
+		t.Fatalf("authority = %v, %v", actual, err)
+	}
+}

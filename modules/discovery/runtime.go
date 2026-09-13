@@ -142,6 +142,15 @@ func (runtime *Runtime) Slots() SlotStore {
 	return runtime.slots
 }
 
+// AuthoritativeSlots 提供首次分配、加载校验和交接复核所需的权威存储。
+// 复用当前运行时的连接；普通消息路由继续使用 Slots 的 Watch 缓存。
+func (runtime *Runtime) AuthoritativeSlots() SlotStore {
+	if runtime == nil {
+		return nil
+	}
+	return runtime.persistentSlots
+}
+
 // Watch 持续维护实例与槽位目录。任一 Watch 中断都会同时废弃两份快照并重建。
 func (runtime *Runtime) Watch(ctx context.Context) error {
 	if runtime == nil || runtime.registry == nil || runtime.directory == nil || runtime.persistentSlots == nil || runtime.slotDirectory == nil {

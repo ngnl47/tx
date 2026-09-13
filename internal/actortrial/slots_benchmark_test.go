@@ -30,7 +30,9 @@ func BenchmarkSlotHostRemoteCall(b *testing.B) {
 	}
 	ns := nats.NewInbox()
 	reader := &countedSlotReader{assignment: discovery.SlotAssignment{SlotID: "world-1", RuntimeInstanceID: "world", Generation: 1}}
-	host, err := ConnectSlotHost(url, ns, "world", echoRuntime(), 32, SlotHostConfig{Store: reader, SlotID: worldSlot})
+	runtime := echoRuntime()
+	runtime.BindSlots("world", reader, worldSlot)
+	host, err := ConnectSlotHost(url, ns, "world", runtime, 32, nil)
 	if err != nil {
 		b.Fatal(err)
 	}

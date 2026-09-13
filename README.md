@@ -1534,6 +1534,10 @@ Actor 不代表 GD，也不提供分布式事务。同一 Actor 内需要修改�
 `PromoteSlot`。后者同时校验 generation 连续递增并以 etcd `ModRevision` 做 Compare-And-Swap，过期发布流程不能覆盖
 已经完成的交接。持久写入成功与所有进程观察到新 generation 是两个时刻；控制面必须等待 Watch 缓存可见后再放流。
 
+组合根需要加载前归属校验或 CAS 后复核时，可使用 `discovery.Runtime.AuthoritativeSlots()`，
+它复用当前 Runtime 的持久存储连接，读取不经过 Watch 缓存。普通 `Runtime.Slots()`、
+`CModSlots` 和 `SlotResolver` 仍走缓存；加载器只需接收 `discovery.SlotReader`，不需要 etcd 客户端。
+
 业务决定 `SlotID` 的计算规则，框架不解析 GD、不推断同服/战区归属，也不创建业务 Actor。解析时通过 `SlotResolver`
 将持久 assignment 与当前成员目录组合，只有目标运行实例是 `running` 才能返回 endpoint；目标缺失、`draining` 或
 `stopping` 时返回 `ErrSlotRuntimeUnavailable`，绝不随机改派。

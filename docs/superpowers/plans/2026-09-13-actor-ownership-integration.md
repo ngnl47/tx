@@ -27,7 +27,7 @@
 
 实际文件：新增 `internal/actortrial/ownership_integration_test.go`，从 `slots_test.go` 提取共享 registry 夹具；未发现需要修改 slots.go 或 routing.go 的缺陷。参考 `modules/discovery/runtime.go`、`modules/writeback/manager.go`、`tests/writeback_manager_test.go`。本节点不迁移 `modules/actor` 或两个示例。
 
-接口：继续通过 `SlotHostConfig{Store, SlotID, Flush}` 接入收尾，`Flush(context.Context) error` 绑定实际事务写回流程；成员与槽位缓存来自 `discovery.NewRuntime`、`Watch`、`WaitReady`、`Directory`、`Slots`。现有 Runtime.Slots() 只提供缓存读取，不能注入 SlotHost 或用作分配冲突后的权威复核；试验夹具可用相同 etcd 命名空间的 `EtcdRegistry.Slots()` 取得权威存储，不另建归属。正式 Runtime 的权威访问边界列入 I3。
+接口（I3b 更新）：组合根先用 `Runtime.BindSlots(instanceID, discoveryRuntime.AuthoritativeSlots(), slotID)` 绑定实体加载校验，再开放直连或 NATS 入口；`ConnectSlotHost` 只接入连接与最终 `Flush(context.Context) error`。成员与槽位缓存仍来自 `discovery.NewRuntime`、`Watch`、`WaitReady`、`Directory`、`Slots`。`AuthoritativeSlots` 复用同一个 Runtime 的持久存储连接，普通 `Slots` 不改变缓存读取契约。
 
 - [x] 写组合测试：A 的双入口访问同一实体，事务登记脏根；已接受事务结束前不能 ACK/交接，首次写回失败不晋升，重试成功后 B 加载最后状态。使用实际 txn/writeback/存储适配，不以 `Redis.Set(JSON)` 代替管道。
 - [x] 在 tx 内使用最小 Store/Procedure 契约夹具验证管道；涉及生成 GD 的完整契约留在 I4 的独立示例验收，报告明确区分，未 import 示例 internal 包。
@@ -68,8 +68,8 @@ go test -race ./internal/actortrial -run 'TestOwnershipIntegration|TestSlotRolli
 主要文件：`modules/actor/{runtime,kind,delivery}.go` 及迁入的运行时/适配文件，`internal/framework/{assembly,cmod_actor,cmod_discovery,cmod_rpc,context_access,shutdown,drain}.go`，`modules/control/lifecycle.go`、`modules/control/proto/control.proto`；生成物经原生成入口更新。
 
 - [ ] 先核对设计中的 PID、Props、Context、ActorSystem 实际调用清单，明确新 Identity、Kind factory 和生命周期能力；必要能力无替代时停在该项，不通过删 SPI 消除编译错误。
-- [ ] 为宿主装配提供权威槽位访问，加载前只注入 SlotReader；普通 CModSlots/SlotResolver 继续缓存读取，不为此对业务暴露 etcd 客户端或再创建一套连接。
-- [ ] 加载前权威校验在唯一实体宿主绑定；复用共享 RPC Host 注册 Actor Call，检查同进程所选服务的注册组合，确保 DeliveryService 仅注册一次；两种入口仍共享同一 Runtime。
+- [x] I3b：Discovery.Runtime 提供 AuthoritativeSlots；真实归属集成夹具从自身 Runtime 取得权威存储，加载前只注入 SlotReader。普通 CModSlots/SlotResolver 保持缓存读取，不暴露 etcd 客户端或再创建连接。正式 framework 实体宿主的消费接线仍属下一条。
+- [ ] 将实体宿主迁入正式 framework（I3b 已把原型的加载校验移到 Runtime.BindSlots，独立直连测试无需先创建 NATS）；复用共享 RPC Host 注册 Actor Call，检查同进程所选服务的注册组合，确保 DeliveryService 仅注册一次；两种入口仍共享同一 Runtime。
 - [ ] 调整启动顺序：绑定直连端点 → Discovery 启动身份与 Watch 就绪 → 装配 Actor 入口 → 服务与控制面就绪 → 标记 running。移除对旧 ActorEndpoint 的启动依赖，不增加绕环的可空中间对象供业务处理。
 - [x] I3a：先写框架生命周期测试，实现正式 PrepareHandoff 与 Stop 共享收尾进度；共享 RPC 和租约保留到 Stop。保留 CMod 逆序收尾、失败阶段重试、fatal 身份丢失分支；StateDrained 不冒充持久化成功。NATS 宿主尚未迁入，待后续绑定同一流程。
 - [ ] 验证 PrepareHandoff/Stop 并发、持久化失败重试、旧启动身份、成功回复丢失，以及多个槽位部分晋升；业务退出 RPC 失败不能否决卸载。
@@ -78,7 +78,7 @@ go test -race ./internal/actortrial -run 'TestOwnershipIntegration|TestSlotRolli
 
 完成标准：正式宿主取得框架所有权，原型连接内不再暗藏共享准入；维护成本可解释，无第二份归属、写回管理器或永久后端开关。
 
-I3a 实施起点 `fe8656f`，六工程干净；本节点只改 tx，详见 [正式交接准备与基线记录](../../audits/2026-09-13-framework-handoff-preparation.md)。下一节点继续权威槽位访问、实体宿主与高级 API/SPI 的迁入；不重新请求临时预算授权，也不把 I3a 完成等同于已移除 ProtoActor。
+I3a 实施起点 `fe8656f`，六工程干净；本节点只改 tx，详见 [正式交接准备与基线记录](../../audits/2026-09-13-framework-handoff-preparation.md)。I3b 从 `f082cea` 继续，已完成权威访问与传输无关的加载绑定，见 [接线记录](../../audits/2026-09-13-actor-ownership-binding.md)。下一节点继续正式实体宿主与高级 API/SPI 的迁入；不重新请求临时预算授权，也不把 I3a 完成等同于已移除 ProtoActor。
 
 ## I4：两个独立示例与依赖收敛
 

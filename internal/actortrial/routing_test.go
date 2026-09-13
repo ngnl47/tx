@@ -436,3 +436,47 @@ func TestSharedRoutingDecodesBusinessDelivery(t *testing.T) {
 		t.Fatal("Tell 未通过业务解码", ctx.Err())
 	}
 }
+
+// 直连独立启动，不依赖 NATS Connect 的副作用来保护加载。
+func TestDirectActorOwnershipBeforeNATS(t *testing.T) {
+	ctx := trialContext(t)
+	reader := &countedSlotReader{assignment: discovery.SlotAssignment{SlotID: "world-1", RuntimeInstanceID: "new", Generation: 2}}
+	var loads atomic.Int32
+	r := New(8, time.Second, func(Context) (*Behavior, error) {
+		loads.Add(1)
+		return &Behavior{Receive: func(Context, any) (any, error) { return &actorpb.Result{MessageType: "ok"}, nil }}, nil
+	})
+	r.BindSlots("old", reader, worldSlot)
+	t.Cleanup(func() {
+		if err := r.Drain(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	host := directPeer(t, "old", r)
+	directory := discovery.NewServiceDirectory()
+	routeMembers(t, directory, map[string]*rpc.Host{"old": host})
+	caller := directSender(t, directory)
+	_, err := caller.Call(ctx, Target{"old", Identity{"world", "1"}}, &actorpb.Delivery{MessageType: "move"})
+	if !errors.Is(err, ErrNotOwner) || loads.Load() != 0 || reader.reads.Load() != 1 {
+		t.Fatalf("wrong owner: err=%v loads=%d reads=%d", err, loads.Load(), reader.reads.Load())
+	}
+
+	// 正确归属的首次请求完成校验，后续消息复用同一激活。
+	current := echoRuntime()
+	current.BindSlots("new", reader, worldSlot)
+	t.Cleanup(func() {
+		if err := current.Drain(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	nextHost := directPeer(t, "new", current)
+	routeMembers(t, directory, map[string]*rpc.Host{"old": host, "new": nextHost})
+	for range 2 {
+		if _, err := caller.Call(ctx, Target{"new", Identity{"world", "1"}}, &actorpb.Delivery{MessageType: "move"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if reader.reads.Load() != 2 {
+		t.Fatalf("重复读取权威归属: %d", reader.reads.Load())
+	}
+}
