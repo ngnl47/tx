@@ -202,7 +202,7 @@ func TestResolveCModGraphAddsActorForDeclaredKinds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("collect Actor kinds: %v", err)
 	}
-	if len(kinds) != 1 || kinds[0].Name() != "room" {
+	if len(kinds) != 1 || kinds["room"].kind.Name() != "room" {
 		t.Fatalf("Actor kinds = %#v", kinds)
 	}
 }
@@ -226,7 +226,7 @@ func TestResolveCModGraphAddsActorForFixedKinds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("collect Actor kinds: %v", err)
 	}
-	if len(kinds) != 1 || kinds[0].Name() != "role" {
+	if len(kinds) != 1 || kinds["role"].kind.Name() != "role" {
 		t.Fatalf("Actor kinds = %#v", kinds)
 	}
 }

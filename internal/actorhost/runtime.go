@@ -236,14 +236,20 @@ func (r *Runtime) closeLocked(e *activation) {
 	}
 }
 
-// Drain 关闸并等待所有实体；超时不并发释放仍在执行的业务资源。
-func (r *Runtime) Drain(ctx context.Context) error {
+// BeginDrain 同步关闭所有实体准入，不等待已接受工作与卸载回调，也不关闭传输。
+// 与激活、入队共用同一锁；重复调用不会重新开放或重复关闭邮箱。
+func (r *Runtime) BeginDrain() {
 	r.mu.Lock()
 	r.draining = true
 	for _, e := range r.entries {
 		r.closeLocked(e)
 	}
 	r.mu.Unlock()
+}
+
+// Drain 关闸并等待所有实体；超时不并发释放仍在执行的业务资源。
+func (r *Runtime) Drain(ctx context.Context) error {
+	r.BeginDrain()
 	done := make(chan struct{})
 	go func() { r.workers.Wait(); close(done) }()
 	select {

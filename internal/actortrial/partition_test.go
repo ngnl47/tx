@@ -39,17 +39,17 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []Identi
 		}}, nil
 	})
 	runtime.BindSlots("a", store, mapping)
-	host, err := ConnectSlotHost(url, ns, "a", runtime, 32, nil)
+	host, err := actorrpc.ConnectNATS(url, ns, "a", runtime, 32)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		c, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		if err := host.Drain(c); err != nil {
+		if err := runtime.Drain(c); err != nil {
 			t.Error(err)
 		}
-		host.conn.Close()
+		host.Close()
 	})
 	direct := directPeer(t, "a", runtime)
 	directory := discovery.NewServiceDirectory()
@@ -57,9 +57,32 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []Identi
 	if err := directory.Replace([]discovery.Instance{a}); err != nil {
 		t.Fatal(err)
 	}
-	caller := peer(t, url, ns, "caller", echoRuntime())
-	allocator := NewSlotAllocator(slotOwnership(t, store, directory), caller, "game", mapping)
-	assignment, _, err := allocator.Ensure(ctx, ids[0])
+	callerRuntime := echoRuntime()
+	caller, err := actorrpc.ConnectNATS(url, ns, "caller", callerRuntime, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer caller.Close()
+	defer callerRuntime.Drain(ctx)
+	resolver, _ := watchedRoutes(t, store, directory)
+	allocator := &actorrpc.EntityRouter{Resolver: resolver, Ownership: slotOwnership(t, store, directory), Transport: caller, Service: "game", SlotID: mapping}
+	// 拒绝容量时不得先写 assignment 或触发业务加载。
+	runtime.SetActivationLimits(ActivationLimits{Admit: func() bool { return false }})
+	if _, _, err := allocator.Ensure(ctx, ids[0]); !errors.Is(err, ErrCapacity) {
+		t.Fatalf("容量预检: %v", err)
+	}
+	if _, err := store.ResolveSlot(ctx, slot); !errors.Is(err, discovery.ErrSlotNotFound) {
+		t.Fatalf("容量拒绝仍创建归属: %v", err)
+	}
+	if runtime.Probe(ids[0]).State != Unloaded {
+		t.Fatal("容量预检触发了加载")
+	}
+	runtime.SetActivationLimits(ActivationLimits{})
+	cold := &actorrpc.RoutedCaller{Router: allocator, Transport: directSender(t, directory)}
+	if result, err := cold.Call(ctx, ids[0], &actorpb.Delivery{MessageType: "increment"}); err != nil || result.CommandId != 1 {
+		t.Fatalf("首次直连调用: %+v %v", result, err)
+	}
+	assignment, err := store.ResolveSlot(ctx, slot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +97,6 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []Identi
 	if err != nil || second != assignment {
 		t.Fatalf("partition reassigned: %+v %v", second, err)
 	}
-	resolver, _ := watchedRoutes(t, store, directory)
 	routes := []*RoutedCaller{{Resolver: resolver, SlotID: mapping, Transport: directSender(t, directory)}, {Resolver: resolver, SlotID: mapping, Transport: caller}}
 	for round, route := range routes {
 		for _, id := range ids {
@@ -82,18 +104,40 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []Identi
 			if err != nil {
 				t.Fatal(err)
 			}
-			if result.CommandId != uint64(round+1) {
+			want := uint64(round + 1)
+			if id == ids[0] {
+				want++
+			}
+			if result.CommandId != want {
 				t.Fatalf("entity state mixed: %+v %+v", id, result)
 			}
 		}
 	}
-	current := &actorrpc.RoutedCaller{Resolver: resolver, SlotID: mapping, Transport: caller}
+	// 使用独立快照验证热路由与失效行为，避免 Watch 推进干扰断言。
+	cache := discovery.NewSlotDirectory()
+	cached, err := discovery.NewCachedSlotStore(store, cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hotResolver, err := discovery.NewSlotResolver(cached, directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.Replace([]discovery.SlotAssignment{assignment}); err != nil {
+		t.Fatal(err)
+	}
+	hot := &actorrpc.EntityRouter{Resolver: hotResolver, SlotID: mapping}
+	current := &actorrpc.RoutedCaller{Router: hot, Transport: caller}
 	for _, id := range ids {
 		result, err := current.Call(ctx, id, &actorpb.Delivery{MessageType: "increment"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result.CommandId != 3 {
+		want := uint64(3)
+		if id == ids[0] {
+			want++
+		}
+		if result.CommandId != want {
 			t.Fatalf("migrated routing changed owner: %+v", result)
 		}
 	}
@@ -105,6 +149,10 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []Identi
 		if runtime.Probe(unknown).State != Unloaded {
 			t.Fatal("missing group activated an entity")
 		}
+	}
+	cache.Invalidate()
+	if _, err := hot.Resolve(ctx, ids[0]); !errors.Is(err, discovery.ErrSlotDirectoryUnavailable) {
+		t.Fatalf("失效快照触发了分配: %v", err)
 	}
 	// 指向错误实例的加载仍被权威记录拒绝，不能因共享分区而另建实体。
 	wrong := echoRuntime()

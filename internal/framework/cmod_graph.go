@@ -122,12 +122,17 @@ func componentIDs(ids []CModID) []component.ID {
 	return result
 }
 
-func collectActorKinds(services []Service) ([]txactor.Kind, error) {
-	var kinds []txactor.Kind
-	owners := make(map[string]string)
+// actorKindSpec 保留应用内 Kind 的服务归属和原始声明；不构造业务实例。
+type actorKindSpec struct {
+	service string
+	kind    txactor.Kind
+}
+
+func collectActorKinds(services []Service) (map[string]actorKindSpec, error) {
+	kinds := make(map[string]actorKindSpec)
 	for _, service := range services {
 		if service == nil {
-			return nil, errors.New("framework: selected service is nil")
+			return nil, errors.New("framework: registered service is nil")
 		}
 		spec := service.Spec()
 		for _, kind := range spec.ActorKinds {
@@ -135,11 +140,10 @@ func collectActorKinds(services []Service) ([]txactor.Kind, error) {
 			if name == "" {
 				return nil, fmt.Errorf("framework: service %q declares invalid Actor kind", spec.Name)
 			}
-			if owner, exists := owners[name]; exists {
-				return nil, fmt.Errorf("framework: duplicate Actor kind %q declared by services %q and %q", name, owner, spec.Name)
+			if owner, exists := kinds[name]; exists {
+				return nil, fmt.Errorf("framework: duplicate Actor kind %q declared by services %q and %q", name, owner.service, spec.Name)
 			}
-			owners[name] = spec.Name
-			kinds = append(kinds, kind)
+			kinds[name] = actorKindSpec{service: spec.Name, kind: kind}
 		}
 	}
 	return kinds, nil

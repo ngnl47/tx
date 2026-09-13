@@ -201,9 +201,9 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 	if err != nil {
 		return err
 	}
-	actorKinds, err := collectActorKinds(selected)
-	if err != nil {
-		return err
+	var actorKinds []txactor.Kind
+	for _, service := range selected {
+		actorKinds = append(actorKinds, service.Spec().ActorKinds...)
 	}
 	allCMods := append(server.builtInCMods(options), server.cmods...)
 	graph, err := resolveCModGraph(allCMods, selected)
@@ -236,7 +236,8 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 		config:        server.config,
 		lifecycle:     root,
 		selectedCMods: newCModSelection(graph.IDs()...).ids,
-		actorKinds:    append([]txactor.Kind(nil), actorKinds...),
+		actorKinds:    actorKinds,
+		actorCatalog:  registry.actorCatalog,
 		instance: discovery.Instance{
 			Endpoint:  strings.TrimSpace(options.InstanceEndpoint),
 			Endpoints: maps.Clone(options.InstanceEndpoints),

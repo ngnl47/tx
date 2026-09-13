@@ -144,6 +144,9 @@ func (server *Server) shutdown(ctx context.Context, drain bool) error {
 	if host != nil {
 		errs = append(errs, host.stop(ctx))
 	}
+	if runtime != nil && runtime.actorRPC != nil {
+		runtime.actorRPC.Close()
+	}
 	for index := len(server.cleanups) - 1; index >= 0; index-- {
 		server.cleanups[index]()
 	}
@@ -172,10 +175,10 @@ func (server *Server) shutdown(ctx context.Context, drain bool) error {
 }
 
 // finishWork 由交接准备与最终关闭串行复用；成功的组件阶段由 component.Host 记住。
-// 这里只停止业务任务和冲刷状态，租约、存储绑定及通信连接留给 shutdown 释放。
+// 这里停止业务任务、冲刷状态并确认传输输出；租约、存储绑定及连接留给 shutdown 释放。
 func (server *Server) finishWork(ctx context.Context, drain bool) error {
 	server.mu.Lock()
-	host, cmodHost := server.host, server.cmodHost
+	host, cmodHost, runtime := server.host, server.cmodHost, server.runtime
 	prepared, fatal := server.prepared, server.fatalErr != nil
 	server.mu.Unlock()
 	if prepared {
@@ -196,6 +199,14 @@ func (server *Server) finishWork(ctx context.Context, drain bool) error {
 	}
 	if cmodHost != nil {
 		err := cmodHost.drain(ctx)
+		if err != nil && drain && !fatal {
+			return errors.Join(errStopDeferred, err)
+		}
+		errs = append(errs, err)
+	}
+	// 已完成的写回阶段由 cmodHost 保留；传输确认失败只重试确认，不重复写回。
+	if runtime != nil && runtime.actorRPC != nil {
+		err := runtime.actorRPC.Flush(ctx)
 		if err != nil && drain && !fatal {
 			return errors.Join(errStopDeferred, err)
 		}

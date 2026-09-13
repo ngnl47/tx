@@ -17,7 +17,8 @@ type ServiceSpec struct {
 	Name string
 	// Requires 是服务构造前必须就绪的直接 CMod 依赖。
 	Requires []CModID
-	// ActorKinds 列出由本服务承载的 Actor 种类。
+	// ActorKinds 列出由本服务承载的多个 Actor 种类；Kind 名称在应用全部注册中唯一。
+	// 未选中服务只提供规格，不启动其工厂。
 	ActorKinds []txactor.Kind
 }
 

@@ -67,9 +67,7 @@ func TestDirectSharedHostKinds(t *testing.T) {
 			}
 		}
 	}
-	if err := local.Drain(ctx); err != nil {
-		t.Fatal(err)
-	}
+	local.BeginDrain()
 	for _, kind := range []string{"role", "world"} {
 		_, err := transport.Call(ctx, actorhost.Target{Instance: "a", Identity: txactor.Identity{Kind: kind, Key: "same-key"}}, &actorpb.Delivery{MessageType: "ping"})
 		if !errors.Is(err, actorhost.ErrDraining) {

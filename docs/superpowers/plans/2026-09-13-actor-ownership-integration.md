@@ -79,6 +79,20 @@ go test -race ./internal/actortrial -run 'TestOwnershipIntegration|TestSlotRolli
 - [x] I3k：用户确认普通 Kind 的 v1 固定 1024 分区；唯一布局函数已被路由、首次分配和加载校验复用，真实依赖测试覆盖同分区的实体隔离和扩容不改派。世界保留独立槽位，并明确后续解除单实例单世界限制。详见 [Kind 切换方案](2026-09-13-actor-kind-cutover.md) 与 [布局验证](../../audits/2026-09-13-actor-partition-layout.md)。正式宿主接线尚未完成。
 - [x] I3l：保留稳定分服/分战区 SlotMapping SPI，默认 1024 分区与自定义映射共用唯一解析入口；真实用例验证同战区共用归属、实体状态独立及缺失分组不回退。正式 Kind 声明装配仍待迁入，见 [稳定映射记录](../../audits/2026-09-13-stable-slot-mapping.md)。
 - [x] I3m：Core NATS 传输与缓存路由迁入私有 actorrpc，复用唯一宿主；试验包全部转为测试专用，保留基线与 overlay。新传输仅暴露 Flush/Close，排水和写回由框架编排；槽位试验控制面未冒充正式控制面。见 [NATS 迁入记录](../../audits/2026-09-13-private-nats-transport.md)。默认 framework 尚未切换。
+本轮排水接线核验（起点 `e26df80`）：私有宿主新增同步 `BeginDrain`，复用原有入队锁和邮箱关闭，`Drain` 继续等待同一 worker 屏障。验证同步关闸后拒绝已有/未加载实体及本地 Post，已接受消息、回包和卸载清理继续完成；取消等待后可重试排水。真实 gRPC 入口在关闸后拒绝调用；真实 NATS 验证已接受请求仍能回包，OnDeactivateBefore 仍能出站 RPC，目标不存在时错误日志不阻止 OnDeactivateAfter。tx 全量回归通过，actorhost/actorrpc 的 race 回归通过（设置本地 NATS 地址，未跳过对应测试）。未运行 benchmark，消息热路径未改动，不作性能收益声明。后置 ponytail-review 无需删除项；正式框架仍未切换，下面接线项保持未完成。
+
+首次分配接线进展：`internal/actorrpc.EntityRouter` 已承接容量预检 → L2 Ownership.Ensure/CAS → 激活状态返回，复用现有 NATS 元数据控制入口，不迁入试验专属 slot-control 订阅或 quiesce 编排。普通 RoutedCaller 与首次分配共用 EntityRouter 的映射，尚未由正式 Kind 自动绑定。真实 etcd/NATS 用例已改用新适配，验证默认分区、自定义战区、同槽独立实体、新成员不改派、容量拒绝不落归属/不加载，以及缺失分组不回退；宿主预检不预留额度，激活仍执行原子容量预留。tx 全量回归及相关 race 通过，未运行 benchmark。后置 ponytail-review 无新增冗余项，测试基线保留。
+
+首次业务调用闭环：EntityRouter.Resolve 优先读缓存，仅 ErrSlotNotFound 进入权威分配/激活；本次使用权威结果转发，不等待 Watch 回显或向缓存写入第二份归属。快照不可用、已有 owner 非 running 或业务 RPC 失败时只返回错误，不分配替代者、不重投。真实用例覆盖冷启动 gRPC 调用、后续缓存路由与缓存失效拒绝；默认布局和业务战区映射均通过。全量与相关 race 验证通过，未运行 benchmark，不声称性能收益。正式 Kind/宿主切换仍待实施。
+
+正式框架交接组合验证：新增 TestActorHostPrepareHandoffRetainsTransportUntilStop，以测试服务挂接新 actorhost 与 actorrpc，使用真实 NATS 和共享 gRPC 验证已接受业务/卸载清理先完成、最终写回失败保留连接、同源重试成功后不重复写回、Stop 才释放传输。tx 全量通过，新增用例 race 连续三次通过。测试仅隔离注入源启动身份，真实租约仍由既有 etcd 交接测试覆盖；未切换默认 CModActor，当时尚未自动执行 NATS Flush（已由下述收尾阶段接线补齐）。本轮仅新增集成验证及计划说明，没有新增生产抽象。后置 ponytail-review 无需删除项，未运行 benchmark。
+
+传输收尾接线：framework 私有持有实体传输 Flush/Close 能力，finishWork 在已接受工作和 CMod 最终写回成功后执行 Flush；失败沿用 errStopDeferred 保留资源，PrepareHandoff 不确认交接，Stop 不释放连接。component.Host 保留成功写回进度，重试不会重新写回；shutdown 在业务服务停止后统一 Close。集成测试已移除测试服务代办 Close/显式 Flush，注入两次 Flush 失败验证 PrepareHandoff 与 Stop 均保留资源，同一真实连接恢复后成功。默认 CModActor 尚未创建并绑定该传输，不能宣称正式后端切换完成。相关框架 race 通过；无新增公共 SPI、后台采集或性能声明。
+
+应用级规格接线：用户确认 Kind 在应用全部注册中唯一，多个 Kind 可共同指向同一服务类型（world、seasonWorld → slgworld）。framework 注册目录保留完整 Kind 声明及服务归属，并在构造时拒绝重名；启动阶段只把选中服务的 Kind 交给本地后端。测试验证 Agent 单独启动可保留远端规格，且不启动远端服务/Actor 工厂。tx、txgame/server、txgameslg/server 全量测试命令通过；修改集中于注册装配，未运行 benchmark。后置 ponytail-review 无新增可删除项。正式 Kind/新宿主仍未自动消费该目录，下一步绑定统一规格，而非要求业务重复声明映射。
+
+共享 gRPC 注册核对：Agent 注册 ControlService，MsgQ 注册 MailboxService，与 Actor DeliveryService 名称不同；无需增加通用多路分派层。Actor 的多个 Kind 由唯一宿主接收，DeliveryService 仍须由装配层统一注册一次。
+
 - [ ] 将实体宿主迁入正式 framework（I3b 已把原型的加载校验移到 Runtime.BindSlots，独立直连测试无需先创建 NATS）；复用共享 RPC Host 注册 Actor Call，检查同进程所选服务的注册组合，确保 DeliveryService 仅注册一次；两种入口仍共享同一 Runtime。
 - [ ] 调整启动顺序：绑定直连端点 → Discovery 启动身份与 Watch 就绪 → 装配 Actor 入口 → 服务与控制面就绪 → 标记 running。移除对旧 ActorEndpoint 的启动依赖，不增加绕环的可空中间对象供业务处理。
 - [x] I3a：先写框架生命周期测试，实现正式 PrepareHandoff 与 Stop 共享收尾进度；共享 RPC 和租约保留到 Stop。保留 CMod 逆序收尾、失败阶段重试、fatal 身份丢失分支；StateDrained 不冒充持久化成功。NATS 宿主尚未迁入，待后续绑定同一流程。

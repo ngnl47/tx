@@ -1,6 +1,7 @@
 package framework
 
 import (
+	"context"
 	"maps"
 	"sync"
 
@@ -12,13 +13,21 @@ import (
 	"github.com/ngnl47/tx/sessionid"
 )
 
+// actorTransport 是框架持有的实体传输收尾能力，不向业务开放连接所有权。
+type actorTransport interface {
+	Flush(context.Context) error
+	Close()
+}
+
 type runtime struct {
 	config        Config
 	lifecycle     *lifecycle.WaitGroupContext
 	storage       *storageRuntime
 	rpc           *txrpc.Host
 	actor         *txactor.Runtime
+	actorRPC      actorTransport
 	actorKinds    []txactor.Kind
+	actorCatalog  map[string]actorKindSpec
 	transaction   *txn.Runtime
 	directory     *discovery.ServiceDirectory
 	slots         discovery.SlotStore

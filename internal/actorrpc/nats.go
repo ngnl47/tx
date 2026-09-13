@@ -300,6 +300,13 @@ func (p *NATSTransport) RetryActivation(ctx context.Context, target actorhost.Ta
 	return p.control(ctx, target, "retry")
 }
 
+// CheckActivationCapacity 仅查询准入快照，不加载实体或预留容量。
+// 复用实例控制入口；预检成功后仍须由激活路径原子预留。
+func (p *NATSTransport) CheckActivationCapacity(ctx context.Context, target actorhost.Target) error {
+	_, err := p.control(ctx, target, "capacity")
+	return err
+}
+
 func (p *NATSTransport) control(ctx context.Context, target actorhost.Target, command string) (actorhost.ActivationStatus, error) {
 	if err := ValidateRequest(ctx, target, true); err != nil {
 		return actorhost.ActivationStatus{}, err
@@ -329,6 +336,8 @@ func (p *NATSTransport) control(ctx context.Context, target actorhost.Target, co
 
 func (p *NATSTransport) activationControl(id actorhost.Identity, command string) (actorhost.ActivationStatus, error) {
 	switch command {
+	case "capacity":
+		return actorhost.ActivationStatus{}, p.runtime.CheckActivationCapacity(id)
 	case "probe":
 		return p.runtime.Probe(id), nil
 	case "ensure":

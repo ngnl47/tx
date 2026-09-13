@@ -328,3 +328,62 @@ func TestPanicFailsQueuedWorkWithoutNormalExitRPC(t *testing.T) {
 		}
 	})
 }
+
+// 先同步关闸，框架才可等待其他入口；已接受任务与回包仍属于排水范围。
+func TestBeginDrainRetainsAcceptedWork(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		release, reply := make(chan struct{}), make(chan struct{})
+		var handle Context
+		r := New(2, time.Second, func(ctx Context) (*Behavior, error) {
+			handle = ctx
+			return &Behavior{Receive: func(_ Context, msg any) (any, error) { <-release; return msg, nil }}, nil
+		})
+		first, err := r.Submit(Identity{"role", "1"}, "first")
+		if err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		second, err := r.SubmitWithReply(handle.Identity, "second", func(any, error) { <-reply })
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.BeginDrain()
+		r.BeginDrain()
+		if !r.Draining() {
+			t.Fatal("关闸状态未生效")
+		}
+		for _, id := range []Identity{handle.Identity, {"role", "2"}} {
+			if _, err := r.Submit(id, nil); !errors.Is(err, ErrDraining) {
+				t.Fatalf("关闸后准入: %v", err)
+			}
+		}
+		if _, err := handle.Post(nil); !errors.Is(err, ErrDeactivated) {
+			t.Fatalf("本地投递: %v", err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := r.Drain(ctx); !errors.Is(err, context.Canceled) {
+			t.Fatalf("排水取消: %v", err)
+		}
+		close(release)
+		synctest.Wait()
+		if value, err := first.Await(context.Background()); err != nil || value != "first" {
+			t.Fatalf("已接收任务: %v %v", value, err)
+		}
+		drained := make(chan error, 1)
+		go func() { drained <- r.Drain(context.Background()) }()
+		synctest.Wait()
+		select {
+		case err := <-drained:
+			t.Fatalf("回包完成前排水返回: %v", err)
+		default:
+		}
+		close(reply)
+		if err := <-drained; err != nil {
+			t.Fatal(err)
+		}
+		if value, err := second.Await(context.Background()); err != nil || value != "second" {
+			t.Fatalf("已排队任务: %v %v", value, err)
+		}
+	})
+}

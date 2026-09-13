@@ -7,8 +7,9 @@ import (
 )
 
 type registry struct {
-	services []Service
-	byName   map[string]Service
+	services     []Service
+	byName       map[string]Service
+	actorCatalog map[string]actorKindSpec
 }
 
 func newRegistry(services ...Service) (*registry, error) {
@@ -31,6 +32,11 @@ func newRegistry(services ...Service) (*registry, error) {
 		result.services = append(result.services, service)
 		result.byName[name] = service
 	}
+	catalog, err := collectActorKinds(result.services)
+	if err != nil {
+		return nil, err
+	}
+	result.actorCatalog = catalog
 	return result, nil
 }
 

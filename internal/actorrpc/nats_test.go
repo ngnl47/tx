@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,6 +37,7 @@ func TestNATSSharedHostSemantics(t *testing.T) {
 			return &actorpb.Result{MessageType: "count", CommandId: count}, nil
 		}}, nil
 	})
+	runtime.SetActivationLimits(actorhost.ActivationLimits{Bytes: 1, Estimate: func(actorhost.Identity) int64 { return 1 }})
 	server, err := ConnectNATS(url, ns, "server", runtime, 32)
 	if err != nil {
 		t.Fatal(err)
@@ -50,6 +52,13 @@ func TestNATSSharedHostSemantics(t *testing.T) {
 	defer client.Close()
 	defer clientRuntime.Drain(ctx)
 	target := actorhost.Target{Instance: "server", Identity: actorhost.Identity{Kind: "role", Key: "1"}}
+	if err := client.CheckActivationCapacity(ctx, target); err != nil {
+		t.Fatal(err)
+	}
+	// 预检不创建实体，也不预留容量。
+	if usage := runtime.ActivationUsage(); usage.ReservedBytes != 0 || usage.Initializing != 0 {
+		t.Fatalf("预检预留了容量: %+v", usage)
+	}
 	if status, err := client.Probe(ctx, target); err != nil || status.State != actorhost.Unloaded {
 		t.Fatalf("probe: %+v %v", status, err)
 	}
@@ -59,6 +68,10 @@ func TestNATSSharedHostSemantics(t *testing.T) {
 	result, err := client.Call(ctx, target, &actorpb.Delivery{MessageType: "increment"})
 	if err != nil || result.CommandId != 2 {
 		t.Fatalf("NATS count: %+v %v", result, err)
+	}
+	other := actorhost.Target{Instance: "server", Identity: actorhost.Identity{Kind: "role", Key: "2"}}
+	if err := client.CheckActivationCapacity(ctx, other); !errors.Is(err, actorhost.ErrCapacity) {
+		t.Fatalf("容量不足: %v", err)
 	}
 	// 直连接收入口复用同一宿主，不能创建第二份实体状态。
 	data, err := proto.Marshal(&actorpb.Delivery{MessageType: "increment", RequestId: 1})
@@ -87,6 +100,9 @@ func TestNATSSharedHostSemantics(t *testing.T) {
 	}
 	if _, err := client.Call(ctx, target, &actorpb.Delivery{MessageType: "late"}); !errors.Is(err, actorhost.ErrDraining) {
 		t.Fatalf("drain rejection: %v", err)
+	}
+	if err := client.CheckActivationCapacity(ctx, target); !errors.Is(err, actorhost.ErrDraining) {
+		t.Fatalf("关闸后容量预检: %v", err)
 	}
 	// Broker 到达确认不要求目标在线；Call 则必须报告无接收者。
 	target.Instance = "absent"
@@ -168,5 +184,87 @@ func testNATSPendingCleanup(t *testing.T, mode string) {
 	client.mu.Unlock()
 	if pending != 0 {
 		t.Fatalf("pending retained: %d", pending)
+	}
+}
+
+func TestNATSDeactivateBeforeKeepsOutboundRPC(t *testing.T) {
+	for _, destination := range []string{"online", "absent"} {
+		t.Run(destination, func(t *testing.T) {
+			url, ctx := natsTestContext(t)
+			ns := nats.NewInbox()
+			peerRuntime := actorhost.New(2, time.Second, func(actorhost.Context) (*actorhost.Behavior, error) {
+				return &actorhost.Behavior{Receive: func(actorhost.Context, any) (any, error) { return &actorpb.Result{MessageType: "notified"}, nil }}, nil
+			})
+			peer, err := ConnectNATS(url, ns, "online", peerRuntime, 8)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer peer.Close()
+			defer peerRuntime.Drain(ctx)
+			entered, release := make(chan struct{}), make(chan struct{})
+			releaseWork := sync.OnceFunc(func() { close(release) })
+			before, after := make(chan error, 1), make(chan struct{})
+			var source *NATSTransport
+			runtime := actorhost.New(2, time.Second, func(actorhost.Context) (*actorhost.Behavior, error) {
+				return &actorhost.Behavior{
+					Receive: func(actorhost.Context, any) (any, error) {
+						close(entered)
+						<-release
+						return &actorpb.Result{MessageType: "completed"}, nil
+					},
+					OnDeactivateBefore: func(hook actorhost.Context) error {
+						_, err := source.Call(hook, actorhost.Target{Instance: destination, Identity: actorhost.Identity{Kind: "role", Key: "peer"}}, &actorpb.Delivery{})
+						before <- err
+						return err
+					},
+					OnDeactivateAfter: func(actorhost.Context) error { close(after); return nil },
+				}, nil
+			})
+			source, err = ConnectNATS(url, ns, "source", runtime, 8)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer source.Close()
+			defer runtime.Drain(ctx)
+			defer releaseWork()
+			target := actorhost.Target{Instance: "source", Identity: actorhost.Identity{Kind: "room", Key: "1"}}
+			future, err := peer.CallFuture(ctx, target, &actorpb.Delivery{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-entered:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			runtime.BeginDrain()
+			if _, err := peer.Call(ctx, target, &actorpb.Delivery{}); !errors.Is(err, actorhost.ErrDraining) {
+				t.Fatalf("关闸后 NATS 准入: %v", err)
+			}
+			releaseWork()
+			if err := runtime.Drain(ctx); err != nil {
+				t.Fatal(err)
+			}
+			// 已接受请求的回包及退出 RPC 都须在断开 NATS 前完成。
+			if err := source.Flush(ctx); err != nil {
+				t.Fatal(err)
+			}
+			result, err := future.Await(ctx)
+			if err != nil || result.MessageType != "completed" {
+				t.Fatalf("已接受请求回包: %v %v", result, err)
+			}
+			hookErr := <-before
+			if destination == "online" && hookErr != nil {
+				t.Fatalf("退出 RPC: %v", hookErr)
+			}
+			if destination == "absent" && !errors.Is(hookErr, nats.ErrNoResponders) {
+				t.Fatalf("退出 RPC 失败: %v", hookErr)
+			}
+			select {
+			case <-after:
+			default:
+				t.Fatal("退出 RPC 失败阻止了卸载清理")
+			}
+		})
 	}
 }
