@@ -1,0 +1,183 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2500" height="1900" viewBox="0 0 2500 1900"><defs>
+<filter id="shadow" x="-15%" y="-15%" width="135%" height="145%"><feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#172e46" flood-opacity=".10"/></filter>
+<linearGradient id="metal" x2="1" y2="1"><stop stop-color="#f5f8fc"/><stop offset="1" stop-color="#bccbdc"/></linearGradient>
+<marker id="blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0L8 4L0 8" fill="#c44d58"/></marker>
+<marker id="purple" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0L8 4L0 8" fill="#7652b4"/></marker>
+<marker id="green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0L8 4L0 8" fill="#388d72"/></marker>
+<marker id="amber" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0L8 4L0 8" fill="#b97c24"/></marker>
+</defs><style>text{font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;fill:#23374e} .title{font-weight:700} .small{fill:#587087}</style><rect width="2500" height="1900" fill="#f7f9fc"/>
+<text x="65" y="59" font-size="38" text-anchor="start" class="title">tx 游戏服务集群 · 完成态网络拓扑</text>
+<text x="65" y="99" font-size="23" text-anchor="start" style="fill:#587087">直连上下行与高频计算；NATS 扩展实体协作与可靠任务</text>
+<rect x="1790" y="85" width="550" height="125" rx="18" fill="#e6f3ed" stroke="#c6ded1" stroke-dasharray=""/>
+<text x="1820" y="127" font-size="29" text-anchor="start" class="title">客户端群</text>
+<text x="1820" y="164" font-size="21" text-anchor="start">PC / 移动端 · 多 Session / 同一 Role</text>
+<g filter="url(#shadow)">
+<rect x="1880" y="440" width="360" height="282" rx="18" fill="#e2effa" stroke="#d7e0ec" stroke-dasharray=""/>
+</g>
+<text x="1900" y="474" font-size="25" text-anchor="start" class="title">Agent × A</text>
+<text x="1900" y="500" font-size="16" text-anchor="start" style="fill:#597087">基础节点 · 连接与命令分派</text>
+<g transform="translate(1902,518)"><path d="M0 12L23 0L61 10L39 23Z" fill="#e3eaf3" stroke="#8da1b7"/><path d="M0 12L39 23V87L0 74Z" fill="url(#metal)" stroke="#8da1b7"/><path d="M39 23L61 10V73L39 87Z" fill="#aebfd2" stroke="#8da1b7"/><path d="M8 34L30 40M8 47L30 53" stroke="#8096af" stroke-width="3"/><circle cx="29" cy="70" r="3" fill="#3bad8b"/></g>
+<g transform="translate(1981,518)"><path d="M0 12L23 0L61 10L39 23Z" fill="#e3eaf3" stroke="#8da1b7"/><path d="M0 12L39 23V87L0 74Z" fill="url(#metal)" stroke="#8da1b7"/><path d="M39 23L61 10V73L39 87Z" fill="#aebfd2" stroke="#8da1b7"/><path d="M8 34L30 40M8 47L30 53" stroke="#8096af" stroke-width="3"/><circle cx="29" cy="70" r="3" fill="#3bad8b"/></g>
+<text x="2066" y="575" font-size="28" text-anchor="start" style="fill:#718498">···</text>
+<text x="1900" y="631" font-size="18" text-anchor="start">验票、连接、上行 Seq / Ack</text>
+<text x="1900" y="658" font-size="18" text-anchor="start">按命令直达所属业务服务</text>
+<text x="1900" y="685" font-size="18" text-anchor="start">读取 MsgQ 后发送下行帧</text>
+<g filter="url(#shadow)">
+<rect x="1880" y="780" width="360" height="282" rx="18" fill="#e2effa" stroke="#d7e0ec" stroke-dasharray=""/>
+</g>
+<text x="1900" y="814" font-size="25" text-anchor="start" class="title">MsgQ × Q</text>
+<text x="1900" y="840" font-size="16" text-anchor="start" style="fill:#597087">基础节点 · 会话下行邮箱</text>
+<g transform="translate(1902,858)"><path d="M0 12L23 0L61 10L39 23Z" fill="#e3eaf3" stroke="#8da1b7"/><path d="M0 12L39 23V87L0 74Z" fill="url(#metal)" stroke="#8da1b7"/><path d="M39 23L61 10V73L39 87Z" fill="#aebfd2" stroke="#8da1b7"/><path d="M8 34L30 40M8 47L30 53" stroke="#8096af" stroke-width="3"/><circle cx="29" cy="70" r="3" fill="#3bad8b"/></g>
+<g transform="translate(1981,858)"><path d="M0 12L23 0L61 10L39 23Z" fill="#e3eaf3" stroke="#8da1b7"/><path d="M0 12L39 23V87L0 74Z" fill="url(#metal)" stroke="#8da1b7"/><path d="M39 23L61 10V73L39 87Z" fill="#aebfd2" stroke="#8da1b7"/><path d="M8 34L30 40M8 47L30 53" stroke="#8096af" stroke-width="3"/><circle cx="29" cy="70" r="3" fill="#3bad8b"/></g>
+<text x="2066" y="915" font-size="28" text-anchor="start" style="fill:#718498">···</text>
+<text x="1900" y="971" font-size="18" text-anchor="start">PubRole / PubSession</text>
+<text x="1900" y="998" font-size="18" text-anchor="start">会话缓冲、Fetch / Ack</text>
+<text x="1900" y="1025" font-size="18" text-anchor="start">与可靠业务任务队列分工独立</text>
+<g filter="url(#shadow)">
+<rect x="1880" y="1430" width="360" height="282" rx="18" fill="#e2effa" stroke="#d7e0ec" stroke-dasharray=""/>
+</g>
+<text x="1900" y="1464" font-size="25" text-anchor="start" class="title">Login × L</text>
+<text x="1900" y="1490" font-size="16" text-anchor="start" style="fill:#597087">基础节点 · 登录认证</text>
+<g transform="translate(1902,1508)"><path d="M0 12L23 0L61 10L39 23Z" fill="#e3eaf3" stroke="#8da1b7"/><path d="M0 12L39 23V87L0 74Z" fill="url(#metal)" stroke="#8da1b7"/><path d="M39 23L61 10V73L39 87Z" fill="#aebfd2" stroke="#8da1b7"/><path d="M8 34L30 40M8 47L30 53" stroke="#8096af" stroke-width="3"/><circle cx="29" cy="70" r="3" fill="#3bad8b"/></g>
+<g transform="translate(1981,1508)"><path d="M0 12L23 0L61 10L39 23Z" fill="#e3eaf3" stroke="#8da1b7"/><path d="M0 12L39 23V87L0 74Z" fill="url(#metal)" stroke="#8da1b7"/><path d="M39 23L61 10V73L39 87Z" fill="#aebfd2" stroke="#8da1b7"/><path d="M8 34L30 40M8 47L30 53" stroke="#8096af" stroke-width="3"/><circle cx="29" cy="70" r="3" fill="#3bad8b"/></g>
+<text x="2066" y="1565" font-size="28" text-anchor="start" style="fill:#718498">···</text>
+<text x="1900" y="1621" font-size="18" text-anchor="start">平台凭证 → 账号 / 角色</text>
+<text x="1900" y="1648" font-size="18" text-anchor="start">签发票据与 SessionID</text>
+<text x="1900" y="1675" font-size="18" text-anchor="start">返回目标 Agent 地址</text>
+<g filter="url(#shadow)">
+<rect x="1140" y="440" width="340" height="282" rx="18" fill="#e2effa" stroke="#d7e0ec" stroke-dasharray=""/>
+</g>
+<text x="1160" y="474" font-size="25" text-anchor="start" class="title">Game × G</text>
+<text x="1160" y="500" font-size="16" text-anchor="start" style="fill:#597087">基础节点 · 角色业务</text>
+<g transform="translate(1162,518)"><path d="M0 12L23 0L61 10L39 23Z" fill="#e3eaf3" stroke="#8da1b7"/><path d="M0 12L39 23V87L0 74Z" fill="url(#metal)" stroke="#8da1b7"/><path d="M39 23L61 10V73L39 87Z" fill="#aebfd2" stroke="#8da1b7"/><path d="M8 34L30 40M8 47L30 53" stroke="#8096af" stroke-width="3"/><circle cx="29" cy="70" r="3" fill="#3bad8b"/></g>
+<g transform="translate(1241,518)"><path d="M0 12L23 0L61 10L39 23Z" fill="#e3eaf3" stroke="#8da1b7"/><path d="M0 12L39 23V87L0 74Z" fill="url(#metal)" stroke="#8da1b7"/><path d="M39 23L61 10V73L39 87Z" fill="#aebfd2" stroke="#8da1b7"/><path d="M8 34L30 40M8 47L30 53" stroke="#8096af" stroke-width="3"/><circle cx="29" cy="70" r="3" fill="#3bad8b"/></g>
+<text x="1326" y="575" font-size="28" text-anchor="start" style="fill:#718498">···</text>
+<text x="1160" y="631" font-size="18" text-anchor="start">Role 实体 / Procedure / GD</text>
+<text x="1160" y="658" font-size="18" text-anchor="start">执行业务、直接发布下行</text>
+<text x="1160" y="685" font-size="18" text-anchor="start">可调用 Battle 计算服务</text>
+<g filter="url(#shadow)">
+<rect x="600" y="160" width="360" height="282" rx="18" fill="#eee5f7" stroke="#d7e0ec" stroke-dasharray=""/>
+</g>
+<text x="620" y="194" font-size="25" text-anchor="start" class="title">SLGWorld × W</text>
+<text x="620" y="220" font-size="16" text-anchor="start" style="fill:#597087">扩展节点 · 大世界</text>
+<g transform="translate(622,238)"><path d="M0 12L23 0L61 10L39 23Z" fill="#e3eaf3" stroke="#8da1b7"/><path d="M0 12L39 23V87L0 74Z" fill="url(#metal)" stroke="#8da1b7"/><path d="M39 23L61 10V73L39 87Z" fill="#aebfd2" stroke="#8da1b7"/><path d="M8 34L30 40M8 47L30 53" stroke="#8096af" stroke-width="3"/><circle cx="29" cy="70" r="3" fill="#3bad8b"/></g>
+<g transform="translate(701,238)"><path d="M0 12L23 0L61 10L39 23Z" fill="#e3eaf3" stroke="#8da1b7"/><path d="M0 12L39 23V87L0 74Z" fill="url(#metal)" stroke="#8da1b7"/><path d="M39 23L61 10V73L39 87Z" fill="#aebfd2" stroke="#8da1b7"/><path d="M8 34L30 40M8 47L30 53" stroke="#8096af" stroke-width="3"/><circle cx="29" cy="70" r="3" fill="#3bad8b"/></g>
+<text x="786" y="295" font-size="28" text-anchor="start" style="fill:#718498">···</text>
+<text x="620" y="351" font-size="18" text-anchor="start">多个 World 实体、独立容量</text>
+<text x="620" y="378" font-size="18" text-anchor="start">接收 Agent 直达的上行</text>
+<text x="620" y="405" font-size="18" text-anchor="start">直接向 MsgQ 发布下行</text>
+<g filter="url(#shadow)">
+<rect x="600" y="1330" width="360" height="282" rx="18" fill="#eee5f7" stroke="#d7e0ec" stroke-dasharray=""/>
+</g>
+<text x="620" y="1364" font-size="25" text-anchor="start" class="title">FightRoom × F</text>
+<text x="620" y="1390" font-size="16" text-anchor="start" style="fill:#597087">扩展节点 · 房间战斗</text>
+<g transform="translate(622,1408)"><path d="M0 12L23 0L61 10L39 23Z" fill="#e3eaf3" stroke="#8da1b7"/><path d="M0 12L39 23V87L0 74Z" fill="url(#metal)" stroke="#8da1b7"/><path d="M39 23L61 10V73L39 87Z" fill="#aebfd2" stroke="#8da1b7"/><path d="M8 34L30 40M8 47L30 53" stroke="#8096af" stroke-width="3"/><circle cx="29" cy="70" r="3" fill="#3bad8b"/></g>
+<g transform="translate(701,1408)"><path d="M0 12L23 0L61 10L39 23Z" fill="#e3eaf3" stroke="#8da1b7"/><path d="M0 12L39 23V87L0 74Z" fill="url(#metal)" stroke="#8da1b7"/><path d="M39 23L61 10V73L39 87Z" fill="#aebfd2" stroke="#8da1b7"/><path d="M8 34L30 40M8 47L30 53" stroke="#8096af" stroke-width="3"/><circle cx="29" cy="70" r="3" fill="#3bad8b"/></g>
+<text x="786" y="1465" font-size="28" text-anchor="start" style="fill:#718498">···</text>
+<text x="620" y="1521" font-size="18" text-anchor="start">懒加载、自定义结束与卸载</text>
+<text x="620" y="1548" font-size="18" text-anchor="start">可复用 Battle 计算服务</text>
+<text x="620" y="1575" font-size="18" text-anchor="start">直接向 MsgQ 发布下行</text>
+<g filter="url(#shadow)">
+<rect x="65" y="690" width="360" height="308" rx="18" fill="#eee5f7" stroke="#d7e0ec" stroke-dasharray=""/>
+</g>
+<text x="85" y="724" font-size="25" text-anchor="start" class="title">Battle × B</text>
+<text x="85" y="750" font-size="16" text-anchor="start" style="fill:#597087">扩展节点 · 高频计算（非 Actor）</text>
+<g transform="translate(87,768)"><path d="M0 12L23 0L61 10L39 23Z" fill="#e3eaf3" stroke="#8da1b7"/><path d="M0 12L39 23V87L0 74Z" fill="url(#metal)" stroke="#8da1b7"/><path d="M39 23L61 10V73L39 87Z" fill="#aebfd2" stroke="#8da1b7"/><path d="M8 34L30 40M8 47L30 53" stroke="#8096af" stroke-width="3"/><circle cx="29" cy="70" r="3" fill="#3bad8b"/></g>
+<g transform="translate(166,768)"><path d="M0 12L23 0L61 10L39 23Z" fill="#e3eaf3" stroke="#8da1b7"/><path d="M0 12L39 23V87L0 74Z" fill="url(#metal)" stroke="#8da1b7"/><path d="M39 23L61 10V73L39 87Z" fill="#aebfd2" stroke="#8da1b7"/><path d="M8 34L30 40M8 47L30 53" stroke="#8096af" stroke-width="3"/><circle cx="29" cy="70" r="3" fill="#3bad8b"/></g>
+<text x="251" y="825" font-size="28" text-anchor="start" style="fill:#718498">···</text>
+<text x="85" y="881" font-size="18" text-anchor="start">统一战斗公式 / 数值计算</text>
+<text x="85" y="908" font-size="18" text-anchor="start">关键计算通过 gRPC 直连</text>
+<text x="85" y="935" font-size="18" text-anchor="start">客户端经 Agent 调用</text>
+<text x="85" y="962" font-size="18" text-anchor="start">不经过 NATS</text>
+<path d="M2010 210 V440" fill="none" stroke="#388d72" stroke-width="3" stroke-linejoin="round" stroke-dasharray="" marker-end="url(#green)"/>
+<rect x="1743" y="297" width="119" height="29" rx="3" fill="#f7f9fc" stroke="none" stroke-dasharray=""/>
+<text x="1750" y="318" font-size="21" text-anchor="start" style="fill:#388d72" class="title">长连接上行</text>
+<path d="M2050 440 V210" fill="none" stroke="#c44d58" stroke-width="3" stroke-linejoin="round" stroke-dasharray="" marker-end="url(#blue)"/>
+<rect x="2063" y="345" width="119" height="29" rx="3" fill="#f7f9fc" stroke="none" stroke-dasharray=""/>
+<text x="2070" y="366" font-size="21" text-anchor="start" style="fill:#c44d58" class="title">客户端下行</text>
+<path d="M2340 143 H2420 V1540 H2240" fill="none" stroke="#388d72" stroke-width="3" stroke-linejoin="round" stroke-dasharray="" marker-end="url(#green)"/>
+<text x="2300" y="920" font-size="21" text-anchor="start" style="fill:#388d72">HTTPS</text>
+<text x="2267" y="948" font-size="20" text-anchor="start" style="fill:#388d72">登录 / 票据</text>
+<path d="M1695 250 V1430" fill="none" stroke="#388d72" stroke-width="3" stroke-linejoin="round"/>
+<path d="M1880 485 H1695" fill="none" stroke="#388d72" stroke-width="3" stroke-linejoin="round"/>
+<path d="M1695 485 H1480" fill="none" stroke="#388d72" stroke-width="3" stroke-linejoin="round" stroke-dasharray="" marker-end="url(#green)"/>
+<rect x="1503" y="443" width="153.92000000000002" height="30" rx="3" fill="#f7f9fc" stroke="none" stroke-dasharray=""/>
+<text x="1510" y="465" font-size="22" text-anchor="start" style="fill:#388d72" class="title">上行 → Game</text>
+<path d="M1695 250 H960" fill="none" stroke="#388d72" stroke-width="3" stroke-linejoin="round" stroke-dasharray="" marker-end="url(#green)"/>
+<rect x="1213" y="208" width="355.44" height="30" rx="3" fill="#f7f9fc" stroke="none" stroke-dasharray=""/>
+<text x="1220" y="230" font-size="22" text-anchor="start" style="fill:#388d72" class="title">上行 → SLGWorld · gRPC 直达</text>
+<path d="M1695 1430 H960" fill="none" stroke="#388d72" stroke-width="3" stroke-linejoin="round" stroke-dasharray="" marker-end="url(#green)"/>
+<rect x="1203" y="1389" width="367.76" height="30" rx="3" fill="#f7f9fc" stroke="none" stroke-dasharray=""/>
+<text x="1210" y="1411" font-size="22" text-anchor="start" style="fill:#388d72" class="title">上行 → FightRoom · gRPC 直达</text>
+<circle cx="1695" cy="485" r="5" fill="#388d72"/>
+<text x="1495" y="565" font-size="18" text-anchor="start" style="fill:#587087">完成 Seq 沿上行 Call 返回</text>
+<path d="M1725 280 V1465" fill="none" stroke="#c44d58" stroke-width="3" stroke-linejoin="round"/>
+<path d="M960 280 H1725" fill="none" stroke="#c44d58" stroke-width="3" stroke-linejoin="round"/>
+<rect x="1193" y="288" width="168.88" height="30" rx="3" fill="#f7f9fc" stroke="none" stroke-dasharray=""/>
+<text x="1200" y="310" font-size="22" text-anchor="start" style="fill:#c44d58" class="title">SLGWorld 下行</text>
+<path d="M1480 515 H1725" fill="none" stroke="#c44d58" stroke-width="3" stroke-linejoin="round"/>
+<rect x="1488" y="521" width="114.80000000000001" height="29" rx="3" fill="#f7f9fc" stroke="none" stroke-dasharray=""/>
+<text x="1495" y="542" font-size="21" text-anchor="start" style="fill:#c44d58" class="title">Game 下行</text>
+<path d="M960 1465 H1725" fill="none" stroke="#c44d58" stroke-width="3" stroke-linejoin="round"/>
+<rect x="1243" y="1474" width="181.2" height="30" rx="3" fill="#f7f9fc" stroke="none" stroke-dasharray=""/>
+<text x="1250" y="1496" font-size="22" text-anchor="start" style="fill:#c44d58" class="title">FightRoom 下行</text>
+<circle cx="1725" cy="515" r="5" fill="#c44d58"/>
+<circle cx="1725" cy="880" r="5" fill="#c44d58"/>
+<path d="M1725 880 H1880" fill="none" stroke="#c44d58" stroke-width="3" stroke-linejoin="round" stroke-dasharray="" marker-end="url(#blue)"/>
+<rect x="1758" y="841" width="54" height="28" rx="3" fill="#f7f9fc" stroke="none" stroke-dasharray=""/>
+<text x="1765" y="861" font-size="20" text-anchor="start" style="fill:#c44d58" class="title">下行</text>
+<path d="M2080 722 V780" fill="none" stroke="#388d72" stroke-width="3" stroke-linejoin="round" stroke-dasharray="" marker-end="url(#green)"/>
+<rect x="2113" y="727" width="170.96000000000004" height="26" rx="3" fill="#f7f9fc" stroke="none" stroke-dasharray=""/>
+<text x="2120" y="745" font-size="18" text-anchor="start" style="fill:#388d72" class="title">Fetch / Ack 请求</text>
+<path d="M2040 780 V722" fill="none" stroke="#c44d58" stroke-width="3" stroke-linejoin="round" stroke-dasharray="" marker-end="url(#blue)"/>
+<rect x="2113" y="752" width="122" height="26" rx="3" fill="#f7f9fc" stroke="none" stroke-dasharray=""/>
+<text x="2120" y="770" font-size="18" text-anchor="start" style="fill:#c44d58" class="title">下行批次返回</text>
+<path d="M1140 614 H1045 V750 H425" fill="none" stroke="#b97c24" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 7" marker-end="url(#amber)"/>
+<rect x="708" y="716" width="229.88000000000002" height="29" rx="3" fill="#f7f9fc" stroke="none" stroke-dasharray=""/>
+<text x="715" y="737" font-size="21" text-anchor="start" style="fill:#b97c24" class="title">Game → Battle 计算</text>
+<path d="M600 359 H495 V804 H425" fill="none" stroke="#b97c24" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 7" marker-end="url(#amber)"/>
+<text x="505" y="580" font-size="21" text-anchor="start" style="fill:#b97c24">World → Battle</text>
+<path d="M600 1460 H485 V920 H425" fill="none" stroke="#b97c24" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 7" marker-end="url(#amber)"/>
+<text x="150" y="1190" font-size="21" text-anchor="start" style="fill:#b97c24">FightRoom → Battle</text>
+<path d="M1695 885 H425" fill="none" stroke="#388d72" stroke-width="3" stroke-linejoin="round" stroke-dasharray="" marker-end="url(#green)"/>
+<circle cx="1695" cy="885" r="5" fill="#388d72"/>
+<rect x="1083" y="845" width="339.08000000000004" height="29" rx="3" fill="#f7f9fc" stroke="none" stroke-dasharray=""/>
+<text x="1090" y="866" font-size="21" text-anchor="start" style="fill:#388d72" class="title">上行 → Battle：客户端计算请求</text>
+<rect x="1045" y="1050" width="600" height="258" rx="18" fill="#f4f0f9" stroke="#d7cae7" stroke-dasharray=""/>
+<text x="1070" y="1090" font-size="27" text-anchor="start" style="fill:#674596" class="title">NATS 集群 · 实体协作层</text>
+<text x="1070" y="1122" font-size="22" text-anchor="start">Core：非持久化 Actor RPC</text>
+<text x="1070" y="1150" font-size="19" text-anchor="start">Tell / TellAccepted / CallFuture / Call</text>
+<text x="1070" y="1185" font-size="22" text-anchor="start" style="fill:#99681e">JetStream：持久化可靠业务任务</text>
+<text x="1070" y="1217" font-size="18" text-anchor="start">业务消费 ACK / 重试 / 死信；ACK 不等 GD 刷盘</text>
+<text x="1070" y="1250" font-size="19" text-anchor="start" style="fill:#587087">两种完成语义；同一 NATS 服务端体系</text>
+<text x="1070" y="1280" font-size="19" text-anchor="start" style="fill:#674596">不承接客户端上下行或 Battle 高频计算</text>
+<path d="M1260 722 V1050" fill="none" stroke="#7652b4" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 7" marker-end="url(#purple)"/>
+<rect x="1273" y="944" width="172.4" height="28" rx="3" fill="#f7f9fc" stroke="none" stroke-dasharray=""/>
+<text x="1280" y="964" font-size="20" text-anchor="start" style="fill:#7652b4" class="title">实体 RPC / 任务</text>
+<path d="M790 442 V1015 H1125 V1050" fill="none" stroke="#7652b4" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 7" marker-end="url(#purple)"/>
+<rect x="583" y="1018" width="157.20000000000002" height="28" rx="3" fill="#f7f9fc" stroke="none" stroke-dasharray=""/>
+<text x="590" y="1038" font-size="20" text-anchor="start" style="fill:#7652b4" class="title">World → NATS</text>
+<path d="M960 1365 H1000 V1240 H1045" fill="none" stroke="#7652b4" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 7" marker-end="url(#purple)"/>
+<rect x="648" y="1268" width="146.0" height="28" rx="3" fill="#f7f9fc" stroke="none" stroke-dasharray=""/>
+<text x="655" y="1288" font-size="20" text-anchor="start" style="fill:#7652b4" class="title">Room → NATS</text>
+<path d="M1580 1050 V755 H1420 V722" fill="none" stroke="#7652b4" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 7" marker-end="url(#purple)"/>
+<rect x="1353" y="765" width="172.84" height="27" rx="3" fill="#f7f9fc" stroke="none" stroke-dasharray=""/>
+<text x="1360" y="784" font-size="19" text-anchor="start" style="fill:#7652b4" class="title">NATS → 目标实体</text>
+<text x="1090" y="1355" font-size="19" text-anchor="start" style="fill:#674596">同理可投递到 World / Room；归属由 tx 解析</text>
+<rect x="55" y="1660" width="1710" height="183" rx="20" fill="#edf2f6" stroke="#d6e0e7" stroke-dasharray=""/>
+<text x="80" y="1698" font-size="24" text-anchor="start" class="title">共享基础能力</text>
+<text x="80" y="1737" font-size="23" text-anchor="start" class="title">Discovery / etcd</text>
+<text x="80" y="1769" font-size="19" text-anchor="start">成员、归属、Watch 缓存与 CAS</text>
+<text x="80" y="1803" font-size="18" text-anchor="start" style="fill:#587087">控制面不逐条中转业务消息</text>
+<text x="655" y="1737" font-size="23" text-anchor="start" class="title">本地实体宿主</text>
+<text x="655" y="1769" font-size="19" text-anchor="start">两入口共用加载、邮箱与生命周期</text>
+<text x="655" y="1803" font-size="18" text-anchor="start" style="fill:#587087">关闸 → 排空与持久化 → 交接</text>
+<text x="1230" y="1737" font-size="23" text-anchor="start" class="title">Redis / Mongo / Fusion</text>
+<text x="1230" y="1769" font-size="19" text-anchor="start">GD 管道与网络拓扑独立</text>
+<text x="1230" y="1803" font-size="18" text-anchor="start" style="fill:#587087">Fusion 为存储模式，非独立服务</text>
+<text x="65" y="1869" font-size="21" text-anchor="start">浅蓝 = 基础节点   浅紫 = 扩展节点   绿 = 上行   红 = 下行   橙 = 计算 gRPC   紫 = NATS</text>
+<text x="1840" y="1770" font-size="20" text-anchor="start" style="fill:#587087">箭头单向表达请求 / 发布</text>
+<text x="1840" y="1800" font-size="19" text-anchor="start" style="fill:#587087">普通 RPC 结果沿同次调用返回</text>
+<text x="1840" y="1830" font-size="19" text-anchor="start" style="fill:#587087">上下行实线；计算与实体互调虚线</text>
+<text x="1840" y="1860" font-size="18" text-anchor="start" style="fill:#587087">汇线仅为绘图简化，无额外中转节点</text>
+</svg>

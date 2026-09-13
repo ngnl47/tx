@@ -2062,25 +2062,57 @@ Actor 运行时的状态协调不能自动替代业务最终持久化，刷盘�
 
 ### 总体拓扑
 
-```text
-Client
-  |
-  v
-Agent -----> msgq session mailbox
-  |
-  +---- command route ----> game / room / battlefield service
-                                |
-                                +---- gRPC service call
-                                |
-                                +---- ProtoActor PID delivery
+架构以两条通信路径组织：基础会话层使用直连 gRPC 承接所有业务服务的高流量上行、处理完成确认和会话下行；实体扩展层使用 Core NATS 承接按实体身份寻址的 RPC，并以 JetStream 可靠任务扩展异常后仍需消费的业务。两者共享 tx 的实体归属、加载准入和本地宿主，不让业务处理传输主题或实例交接细节。
 
-etcd
-  +---- tx/etcd ---- Discovery instance/workSlot lease/watch
-  +---- ProtoActor official etcd Cluster Provider（不经过 tx/etcd）
-  +---- fixed logical slot assignment
-```
+本节描述完成态分层拓扑，不记录建设进度；实现与验收状态单独维护在[归属接线计划](superpowers/plans/2026-09-13-actor-ownership-integration.md)。
 
-模块化意味着这些服务可以同进程启动，也可以独立部署。进程内组合不能改变跨进程语义；例如 msgq 编码载荷的只读所有权规则在两种部署下都成立。
+![tx 游戏服务集群双通信层拓扑](images/server-topology.png)
+
+[可编辑 SVG](images/server-topology.svg)。图采用分散的服务池布局，基础四类节点统一浅蓝，扩展节点统一浅紫；绿色表示上行、红色表示下行、橙色表示计算 gRPC、紫色表示 NATS；所有上下行相关链路均使用实线，包括集群内部的直连上下行与会话确认；业务服务间计算调用和实体互调使用虚线。上行由 Agent 引出主线后分支指向各目标；Game、SLGWorld、FightRoom 的下行先在图中汇线，再用一个箭头指向 MsgQ。上下行主线相邻布置，汇线仅简化直连关系的画法，不增加中转节点或广播总线。箭头分别表达单向请求或发布，普通 RPC 结果沿同次调用返回；圆点标记有意汇线，其他交叉不连接。框中的多个服务器代表实例集合，不代表固定数量、实例一一配对或消息广播。Core 与 JetStream 是同一 NATS 服务端体系的两种消息能力，图中分框用于区分完成语义，不要求部署两套独立 broker。
+
+#### 基础四类服务与会话数据流
+
+Login、Agent、MsgQ、Game 是基础组合中的四类逻辑服务，可以同进程组合，也可以独立多实例部署；不是 tx 内核硬编码必须启动的四个进程。Login 与 Game 的认证策略、账号角色模型和业务处理由项目侧提供，tx 提供通用服务宿主与通信能力。
+
+1. 客户端通过 HTTP 登录入口完成认证；生产可在入口终止 TLS。Login 返回绑定目标 Agent 的短期票据、SessionID 和公开地址。这里不要求 Login 先通过 RPC 创建 Game Actor。
+2. 客户端与所选 Agent 建立 TCP/WebSocket 长连接；Agent 验票并通过 MsgQ 初始化会话。Login 不进入后续每条业务消息的数据路径。
+3. Agent 按生成命令及路由键解析实体归属，通过 gRPC 直达 Game、SLGWorld、FightRoom 等命令所属服务，不经 NATS，也不要求 Game 中转。目标完成处理后，在同一次 Call 响应中返回 `ProcessedUpSeq`，不另开完成 ACK RPC。
+4. Game、SLGWorld、FightRoom 等业务服务分别通过 gRPC 直接向 MsgQ 发布下行，不经 NATS，也不要求回到 Game：普通角色响应使用 `PubRole` 扇出到该角色的多个 Session，请求级错误使用 `PubSession` 精确发布。Agent 通过 MsgQ 的 Rec/Ack/Fetch 等接口协调序号与下行读取，再发送客户端帧。
+
+服务池之间可以多对多通信，但某个 Session 的当前 Agent 连接和 MsgQ owner、某个 Actor 的当前归属均是明确的。多 Session 向同一 Role 扇入时由目标实体邮箱串行化，不把 Agent 设成全局串行器。相同 Role 的多个会话下行由 MsgQ 会话机制扇出。
+
+MsgQ 是客户端会话邮箱，正文保存在实例内存中；它不承担 JetStream 的持久化业务任务职责。**直连上下行是所有业务服务共同遵守的边界**：新增实体服务只需接入相同的上行分派与下行发布能力，不因此增加 broker 跳数。可靠任务触发了客户端通知时，任务消费之后的通知仍走业务服务→MsgQ→Agent 的直连下行链路。
+
+#### 实体扩展层与可靠任务
+
+增加 SLGWorld、FightRoom、公会或匹配等服务池时，项目声明实体类型、路由键、业务加载与生命周期策略；tx 维护身份到槽位/实例的解析、容量准入、邮箱及排水，NATS 承担向已选定实例传输消息。订阅不取代 tx 的权威归属，也不把实体随机分配给 Queue Group 中任一消费者。
+
+例如 Role 消耗加速道具后，按 World 的身份调用行军加速；Game 与 SLGWorld 实例池可按各自负载独立扩缩容，不绑定一比一，也不按每实例固定世界数限制扩展。SLGWorld、FightRoom、公会与匹配等是按业务职责扩展服务池的例子。实体扩展不意味着每种业务都必须再建一个服务，基础 Game 也可以承载多个 Kind。
+
+| 路径 | 完成语义 | 适用职责 |
+| --- | --- | --- |
+| 直连 gRPC 上行 | 等待业务处理完成确认，保持既有 Session Seq/Ack 契约 | 高频客户端命令，减少 broker 转发流量 |
+| 直连 gRPC 下行 | 业务服务直接发布到 MsgQ，Agent 协调 Fetch/Ack 并发送客户端 | Game、SLGWorld、FightRoom 等共用；不经 NATS 或 Game 中转 |
+| Core NATS Actor RPC | Tell 本地投递；TellAccepted 仅确认到达 NATS；CallFuture/Call 等待远端执行结果 | 正常运行期间的实体交互，不保证持久化或失败后必达 |
+| JetStream 可靠任务 | 发布持久化确认与消费 ACK 分开；业务执行后确认，失败按既定重试/死信策略处理 | 需要利用 MQ 持久化能力跨重启继续消费的任务 |
+
+可靠任务可以复用实体路由和业务分派，但不能简单把普通 RPC 加上持久化开关就宣称可靠完成。既定任务 ACK 不等待 GD 刷盘，也不通过新增完成表或 GD 字段消除执行成功后 ACK 丢失的重复窗口。普通 RPC 的超时也不能证明业务未执行。
+
+#### 高频计算服务也可通过 gRPC 扩展
+
+扩展服务不必全部采用 Actor 模型。Battle 负责战斗公式或独立数值计算，与持有战斗状态和生命周期的 FightRoom 分工不同：Game、SLGWorld、FightRoom 可以直接通过 gRPC 调用 Battle，客户端计算请求也可以由 Agent 的命令适配入口转为同类调用。该高频链路不经 Core NATS 或 JetStream，也不要求先创建 Actor。
+
+现有扩展点是 `CModRPC().Register`：服务在启动期向共享 Host 注册自定义 protobuf service，声明 RPC 与所需 Discovery 能力。调用侧可以使用普通 `rpc.Sender.Call` 的 `ServiceRoute` / `InstanceRoute` 与 `CallReceiver` 接入通用信封，也可以使用独立 protobuf service 和对应客户端。后者的连接/选址装配需由服务组合根明确提供，不能将普通 Sender 当作任意生成客户端的自动工厂；同一 Host 上的通用 DeliveryService 仍只能注册一次。
+
+Battle 的纯计算结果沿同一次 gRPC 返回调用方，不必理解 Session 或承担客户端消息发布。客户端经 Agent 调用时，命令适配负责认证、参数校验及既有下行发布/完成确认契约，不能把纯计算 Result 冒充 `ProcessedUpSeq`。计算服务也可以按业务需要提供独立对外 API，但这不等于可以跳过入口鉴权或直接开放内部 gRPC 端口。此处约定计算服务的扩展方式，不额外实现公式或 Battle 服务。
+
+Battle 集中处理哪些关键计算、前端保留哪些本地计算属于业务侧取舍，本拓扑不要求前端统一经 Battle 获取所有计算结果，也不展开公式复用与精度策略。
+
+#### 共享控制与存储边界
+
+Discovery L2 复用 etcd 的成员、租约、Watch 与槽位 CAS，提供稳定归属和缓存；它不是每条业务消息必经的中转节点。gRPC 与 NATS 两入口共享本地实体宿主，正常交接先关闭旧方准入、等已接受工作及必要持久化完成，再晋升归属，最终注销和释放旧实例。实体发现与传输解耦，归属权不由 NATS 订阅或 gRPC 连接决定。
+
+GD 的 Redis/Mongo/Fusion 管道与通信路径独立。图中 Redis/Mongo 是按职责使用的共享后端示意，不要求为每个服务实例单独建库；Fusion 是存储模式，不是额外部署的数据库服务。
 
 ### discovery
 
