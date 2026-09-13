@@ -6,8 +6,8 @@ import (
 	"github.com/ngnl47/tx/modules/discovery"
 )
 
-// SlotPromoter 将槽位存储和实时服务目录适配为控制面的交接契约。
-// 它不创建初始 assignment，也不修改服务发现 lease。
+// SlotPromoter 将显式槽位写入适配为控制面协议，不负责选址、排水或修改服务发现租约。
+// 常规交接由 discovery.SlotOwnership 编排；直接使用本接口时，调用方必须先完成源实例收尾。
 type SlotPromoter struct {
 	router *discovery.SlotRouter
 }

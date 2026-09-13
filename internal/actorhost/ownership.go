@@ -1,6 +1,10 @@
-package actortrial
+package actorhost
 
-import "github.com/ngnl47/tx/modules/discovery"
+import (
+	"errors"
+
+	"github.com/ngnl47/tx/modules/discovery"
+)
 
 // BindSlots 在开放任何入口前绑定权威加载校验，两种传输共用同一实体运行时。
 // Store 不得是 Watch 缓存；只在首次加载时读取，不为每条业务消息访问 etcd。
@@ -15,12 +19,12 @@ func (r *Runtime) BindSlots(instance string, store discovery.SlotReader, slotID 
 	}
 	factory := r.factory
 	r.factory = func(c Context) (*Behavior, error) {
-		assignment, err := store.ResolveSlot(c, slotID(c.Identity))
+		err := discovery.CheckSlotOwner(c, store, slotID(c.Identity), instance)
+		if errors.Is(err, discovery.ErrSlotNotOwner) {
+			return nil, ErrNotOwner
+		}
 		if err != nil {
 			return nil, err
-		}
-		if assignment.RuntimeInstanceID != instance {
-			return nil, ErrNotOwner
 		}
 		return factory(c)
 	}

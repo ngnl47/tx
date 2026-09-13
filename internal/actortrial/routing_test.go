@@ -272,7 +272,7 @@ func TestSharedRoutingDirectAgentAndNATSHandoff(t *testing.T) {
 	aRPC, bRPC := directPeer(t, "a", a.runtime), directPeer(t, "b", b.runtime)
 	routeMembers(t, directory, map[string]*rpc.Host{"a": aRPC})
 	id := Identity{"world", "51"}
-	allocator := NewSlotAllocator(store, directory, caller, "world", worldSlot)
+	allocator := NewSlotAllocator(slotOwnership(t, store, directory), caller, "world", worldSlot)
 	current, _, err := allocator.Ensure(ctx, id)
 	if err != nil {
 		t.Fatal(err)
@@ -324,18 +324,16 @@ func TestSharedRoutingDirectAgentAndNATSHandoff(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, ctx, func() bool {
-		a.runtime.mu.Lock()
-		defer a.runtime.mu.Unlock()
-		return len(a.runtime.entries[id].queue) == 1
+		return a.runtime.Probe(id).PendingMessages == 1
 	})
 	select {
-	case <-queued.future.done:
+	case <-queued.future.Done():
 		t.Fatal("NATS 绕过了直连占用的同一邮箱")
 	default:
 	}
 	handoff := make(chan error, 1)
 	go func() { _, _, err := allocator.Handoff(ctx, id, current, "b"); handoff <- err }()
-	eventually(t, ctx, func() bool { a.runtime.mu.Lock(); defer a.runtime.mu.Unlock(); return a.runtime.draining })
+	eventually(t, ctx, a.runtime.Draining)
 	for _, client := range []*RoutedCaller{up, remote} {
 		if _, err := client.Call(ctx, id, &actorpb.Delivery{MessageType: "late"}); !errors.Is(err, ErrDraining) {
 			t.Fatalf("共用闸门未拒绝: %v", err)

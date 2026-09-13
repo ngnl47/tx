@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -19,12 +18,6 @@ import (
 )
 
 var ErrPendingFull = errors.New("actortrial: too many pending calls")
-
-// Target 使用启动时唯一实例 ID；路由层负责解析，传输不以 Queue Group 猜测归属。
-type Target struct {
-	Instance string
-	Identity Identity
-}
 
 // Transport 是隔离试验适配器。业务载荷复用现行 protobuf，调用方不共享连接所有权。
 type Transport struct {
@@ -83,16 +76,17 @@ type ResultFuture struct {
 
 func (f *ResultFuture) Await(ctx context.Context) (*actorpb.Result, error) {
 	select {
-	case <-f.future.done:
+	case <-f.future.Done():
 	case <-f.ctx.Done():
 		return nil, f.ctx.Err()
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	if f.future.result.err != nil {
-		return nil, f.future.result.err
+	value, err := f.future.Await(context.Background())
+	if err != nil {
+		return nil, err
 	}
-	result, _ := f.future.result.value.(*actorpb.Result)
+	result, _ := value.(*actorpb.Result)
 	return result, resultError(result)
 }
 
@@ -143,7 +137,7 @@ func (p *Transport) requestFuture(ctx context.Context, msg *nats.Msg) (*ResultFu
 	}
 	p.nextRequest++
 	reply := p.inbox + strconv.FormatUint(p.nextRequest, 10)
-	f := &Future{done: make(chan struct{})}
+	f := NewFuture(nil)
 	// 取消回调与响应、发送失败共用删除边界；成功后停止回调，不为每个请求保留等待 goroutine。
 	p.pending[reply] = &pendingCall{future: f, stop: context.AfterFunc(ctx, func() { p.finishRequest(reply, nil, ctx.Err()) })}
 	p.mu.Unlock()
@@ -176,7 +170,7 @@ func (p *Transport) finishRequest(reply string, response *nats.Msg, err error) {
 			}
 		}
 	}
-	call.future.finish(&result, err)
+	call.future.Complete(&result, err)
 }
 
 func (p *Transport) closeRequests() {
@@ -185,7 +179,7 @@ func (p *Transport) closeRequests() {
 	for reply, call := range p.pending {
 		delete(p.pending, reply)
 		call.stop()
-		call.future.finish(nil, nats.ErrConnectionClosed)
+		call.future.Complete(nil, nats.ErrConnectionClosed)
 	}
 }
 
@@ -276,46 +270,6 @@ func resultError(result *actorpb.Result) error {
 	return nil
 }
 
-// RemoteError 保留业务错误码；框架拒绝仍可用 errors.Is 分类。
-type RemoteError struct {
-	Code    int32
-	Message string
-	Kind    string
-}
-
-func (e *RemoteError) Error() string {
-	return fmt.Sprintf("actortrial remote (%d): %s", e.Code, e.Message)
-}
-func (e *RemoteError) ErrorCode() int32 { return e.Code }
-func (e *RemoteError) Is(target error) bool {
-	switch target {
-	case ErrActivationDenied, ErrDeactivated, ErrMailboxFull, ErrDraining, ErrPanicked, ErrNotOwner, ErrCapacity:
-		return e.Kind == target.Error()
-	}
-	return false
-}
-func remoteError(err error) *RemoteError {
-	if previous, ok := err.(*RemoteError); ok {
-		copy := *previous
-		return &copy
-	}
-	failure := &RemoteError{Code: -1, Message: err.Error()}
-	for _, kind := range []error{ErrActivationDenied, ErrDeactivated, ErrMailboxFull, ErrDraining, ErrPanicked, ErrNotOwner, ErrCapacity} {
-		if errors.Is(err, kind) {
-			failure.Kind = kind.Error()
-			if kind != ErrPanicked {
-				failure.Code = -3
-			}
-			break
-		}
-	}
-	var coded interface{ ErrorCode() int32 }
-	if errors.As(err, &coded) {
-		failure.Code = coded.ErrorCode()
-	}
-	return failure
-}
-
 func (p *Transport) reply(msg *nats.Msg, result *actorpb.Result, err error) {
 	if msg.Reply == "" {
 		if err != nil {
@@ -360,7 +314,7 @@ func (p *Transport) receive(msg *nats.Msg) {
 		p.reply(msg, nil, errors.New("actortrial: invalid request"))
 		return
 	}
-	_, err = p.runtime.submitRequest(id, &delivery, func(value any, err error) {
+	_, err = p.runtime.SubmitWithReply(id, &delivery, func(value any, err error) {
 		result, _ := value.(*actorpb.Result)
 		if err == nil && (msg.Reply != "" || value != nil) {
 			err = resultError(result)

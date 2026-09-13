@@ -1,5 +1,5 @@
-// Package actortrial 验证最小本地实体运行时，不是稳定公共 API。
-package actortrial
+// Package actorhost 提供私有的本地实体宿主，统一激活、邮箱和生命周期，不持有传输连接。
+package actorhost
 
 import (
 	"context"
@@ -73,6 +73,12 @@ type Future struct {
 	onDone func(any, error)
 }
 
+// NewFuture 和 Complete 供库内传输适配完成同一结果协议；每个 Future 只能完成一次。
+func NewFuture(onDone func(any, error)) *Future {
+	return &Future{done: make(chan struct{}), onDone: onDone}
+}
+func (f *Future) Done() <-chan struct{} { return f.done }
+
 func (f *Future) Await(ctx context.Context) (any, error) {
 	select {
 	case <-f.done:
@@ -82,7 +88,7 @@ func (f *Future) Await(ctx context.Context) (any, error) {
 	}
 }
 
-func (f *Future) finish(value any, err error) {
+func (f *Future) Complete(value any, err error) {
 	if f.onDone != nil {
 		f.onDone(value, err)
 	}
@@ -138,11 +144,11 @@ func (r *Runtime) Call(ctx context.Context, id Identity, message any) (any, erro
 	return f.Await(ctx)
 }
 func (r *Runtime) Submit(id Identity, message any) (*Future, error) {
-	return r.submitRequest(id, message, nil)
+	return r.SubmitWithReply(id, message, nil)
 }
 
 // 响应回调在实体 worker 内完成，纳入已有排水屏障。
-func (r *Runtime) submitRequest(id Identity, message any, done func(any, error)) (*Future, error) {
+func (r *Runtime) SubmitWithReply(id Identity, message any, done func(any, error)) (*Future, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	e, err := r.ensureLocked(id)
@@ -195,7 +201,7 @@ func (r *Runtime) enqueue(e *activation, message any, done func(any, error)) (*F
 	if e.closed {
 		return nil, ErrDeactivated
 	}
-	f := &Future{done: make(chan struct{}), onDone: done}
+	f := NewFuture(done)
 	select {
 	case e.queue <- request{message, f}:
 		return f, nil
@@ -327,7 +333,7 @@ func (e *activation) run() {
 		if timer != nil {
 			timer.Reset(behavior.IdlePassivation)
 		}
-		req.future.finish(value, err)
+		req.future.Complete(value, err)
 		if errors.Is(err, ErrPanicked) {
 			failure = err
 			activated = false // 异常状态只清理，不执行正常退出前业务通知。
@@ -339,7 +345,7 @@ func (e *activation) run() {
 func (e *activation) failPending(err error) {
 	e.runtime.close(e)
 	for req := range e.queue {
-		req.future.finish(nil, err)
+		req.future.Complete(nil, err)
 	}
 }
 func (e *activation) report(hook func(Context) error) {
@@ -347,3 +353,9 @@ func (e *activation) report(hook func(Context) error) {
 		slog.Error("actortrial lifecycle callback failed", "identity", e.identity, "err", err)
 	}
 }
+
+// Timeout 返回宿主回调期限，供内部控制入口保持同一超时边界。
+func (r *Runtime) Timeout() time.Duration { return r.timeout }
+
+// Draining 返回本地准入状态，不等待排水完成。
+func (r *Runtime) Draining() bool { r.mu.Lock(); defer r.mu.Unlock(); return r.draining }

@@ -258,7 +258,7 @@ func TestOwnershipIntegrationWritebackHandoff(t *testing.T) {
 	a := newOwnershipPeer(t, url, namespace, config, local, manager.Shutdown)
 	caller := peer(t, url, namespace, "caller", echoRuntime())
 	eventually(t, ctx, func() bool { return len(a.discovery.Directory().RunningInstances("world")) == 1 })
-	allocator := NewSlotAllocator(store, a.discovery.Directory(), caller, "world", worldSlot)
+	allocator := NewSlotAllocator(a.discovery.Ownership(), caller, "world", worldSlot)
 	id := Identity{"world", "51"}
 	current, _, err := allocator.Ensure(ctx, id)
 	if err != nil {
@@ -290,7 +290,7 @@ func TestOwnershipIntegrationWritebackHandoff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, ctx, func() bool { local.mu.Lock(); defer local.mu.Unlock(); return len(local.entries[id].queue) == 1 })
+	eventually(t, ctx, func() bool { return local.Probe(id).PendingMessages == 1 })
 	select {
 	case err := <-ack:
 		t.Fatalf("业务完成前 ACK: %v", err)
@@ -311,7 +311,7 @@ func TestOwnershipIntegrationWritebackHandoff(t *testing.T) {
 	}
 	handoff := make(chan error, 1)
 	go func() { _, _, err := allocator.Handoff(ctx, id, current, b.instance); handoff <- err }()
-	eventually(t, ctx, func() bool { local.mu.Lock(); defer local.mu.Unlock(); return local.draining })
+	eventually(t, ctx, local.Draining)
 	if err := a.discovery.MarkDraining(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +377,7 @@ func TestOwnershipIntegrationLeaseLoss(t *testing.T) {
 	a := newOwnershipPeer(t, url, namespace, config, echoRuntime(), nil)
 	caller := peer(t, url, namespace, "caller", echoRuntime())
 	eventually(t, ctx, func() bool { return len(a.discovery.Directory().RunningInstances("world")) == 1 })
-	allocator := NewSlotAllocator(store, a.discovery.Directory(), caller, "world", worldSlot)
+	allocator := NewSlotAllocator(a.discovery.Ownership(), caller, "world", worldSlot)
 	id := Identity{"world", "51"}
 	current, _, err := allocator.Ensure(ctx, id)
 	if err != nil {
@@ -412,7 +412,7 @@ func TestOwnershipIntegrationLeaseLoss(t *testing.T) {
 		_, old := b.discovery.Directory().LookupInstance(a.instance)
 		return !old && len(b.discovery.Directory().RunningInstances("world")) == 1
 	})
-	allocator = NewSlotAllocator(store, b.discovery.Directory(), caller, "world", worldSlot)
+	allocator = NewSlotAllocator(b.discovery.Ownership(), caller, "world", worldSlot)
 	if got, _, err := allocator.Ensure(ctx, id); !errors.Is(err, discovery.ErrSlotRuntimeUnavailable) || got != current {
 		t.Fatalf("租约丢失被解释为可自动接管: %+v %v", got, err)
 	}

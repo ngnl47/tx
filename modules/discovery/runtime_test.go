@@ -408,6 +408,13 @@ func TestRuntimeAuthoritativeSlotsBypassesStaleCache(t *testing.T) {
 	if err != nil || cached != old {
 		t.Fatalf("cache = %v, %v", cached, err)
 	}
+	if err := r.directory.Replace([]Instance{{ID: "new", Endpoint: "new:1", Services: []string{"world"}, Status: StatusRunning}}); err != nil {
+		t.Fatal(err)
+	}
+	assigned, created, err := r.Ownership().Ensure(t.Context(), "world", old.SlotID, nil)
+	if err != nil || created || assigned != next {
+		t.Fatalf("Runtime 归属门面使用了缓存: %v %v %v", assigned, created, err)
+	}
 	actual, err := r.AuthoritativeSlots().ResolveSlot(t.Context(), old.SlotID)
 	if err != nil || actual != next {
 		t.Fatalf("authority = %v, %v", actual, err)

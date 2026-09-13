@@ -1538,6 +1538,23 @@ Actor 不代表 GD，也不提供分布式事务。同一 Actor 内需要修改�
 它复用当前 Runtime 的持久存储连接，读取不经过 Watch 缓存。普通 `Runtime.Slots()`、
 `CModSlots` 和 `SlotResolver` 仍走缓存；加载器只需接收 `discovery.SlotReader`，不需要 etcd 客户端。
 
+归属决策集中在 L2 `discovery.SlotOwnership`。Discovery Runtime 已绑定权威存储和成员目录，框架组合根直接取得能力：
+
+```go
+ownership := discoveryRuntime.Ownership()
+assignment, created, err := ownership.Ensure(ctx, "slgworld", "world-51", checkCapacity)
+```
+
+`checkCapacity(ctx, instanceID) (bool, error)` 必须是无加载副作用的预检：`false, nil` 表示明确容量不足或已关闸，
+可尝试下一个候选；返回错误则停止操作。已有 assignment 不重新选址，`created` 只表示本次成功创建，不表示 Actor 已加载。
+
+`ownership.Handoff` 接收当前完整 assignment、目标实例、容量预检及 `prepare(ctx, sourceInstanceID) error`。
+prepare 必须确认该启动身份的源实例完成全量排水和必要持久化后才返回 nil。
+使用控制面 gRPC 时，直接传入 `control.NewHandoffClient(connection).PrepareHandoff`；客户端负责协议构造及响应启动身份校验，连接仍由调用方管理。
+晋升成功后由 Actor 宿主执行加载；出错不自动回滚、接管或重投。`CheckSlotOwner` 集中提供加载前权威校验。
+上述能力面向框架和独立控制工具，普通 game 服务仍声明 Kind 和业务加载策略，不组装这些回调。
+独立后端/测试可用 `NewSlotOwnership` 显式构造；低层 CAS SPI 保留，不等同于已经执行上述交接流程。
+
 业务决定 `SlotID` 的计算规则，框架不解析 GD、不推断同服/战区归属，也不创建业务 Actor。解析时通过 `SlotResolver`
 将持久 assignment 与当前成员目录组合，只有目标运行实例是 `running` 才能返回 endpoint；目标缺失、`draining` 或
 `stopping` 时返回 `ErrSlotRuntimeUnavailable`，绝不随机改派。

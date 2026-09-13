@@ -5,10 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"slices"
 	"sync"
 
-	"github.com/cespare/xxhash/v2"
 	"github.com/nats-io/nats.go"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 	"github.com/ngnl47/tx/modules/discovery"
@@ -29,7 +27,7 @@ func ConnectSlotHost(url, namespace, instance string, runtime *Runtime, maxPendi
 	}
 	h := &SlotHost{Transport: p, flush: flush}
 	if _, err = p.conn.Subscribe(p.slotSubject(instance), h.receiveControl); err == nil {
-		err = p.conn.FlushTimeout(runtime.timeout)
+		err = p.conn.FlushTimeout(runtime.Timeout())
 	}
 	if err != nil {
 		p.conn.Close()
@@ -101,7 +99,7 @@ func (h *SlotHost) receiveControl(msg *nats.Msg) {
 		case "capacity":
 			err = h.runtime.CheckActivationCapacity(command.Identity)
 		case "quiesce":
-			ctx, cancel := context.WithTimeout(context.Background(), h.runtime.timeout)
+			ctx, cancel := context.WithTimeout(context.Background(), h.runtime.Timeout())
 			defer cancel()
 			err = h.quiesce(ctx)
 		default:
@@ -113,65 +111,34 @@ func (h *SlotHost) receiveControl(msg *nats.Msg) {
 	h.reply(msg, &actorpb.Result{MessageType: "actor.slot"}, err)
 }
 
-// SlotAllocator 只负责低频首次选址和滚动交接。业务消息继续使用缓存路由及 Transport。
+// SlotAllocator 绑定 Actor 身份和执行入口；归属规则统一由 Discovery 的 L2 组件维护。
 type SlotAllocator struct {
-	store     discovery.SlotStore
-	directory discovery.Directory
-	router    *discovery.SlotRouter
+	ownership *discovery.SlotOwnership
 	transport *Transport
 	service   string
 	slotID    func(Identity) string
 }
 
-func NewSlotAllocator(store discovery.SlotStore, directory discovery.Directory, transport *Transport, service string, slotID func(Identity) string) *SlotAllocator {
-	if transport == nil || service == "" || slotID == nil {
+func NewSlotAllocator(ownership *discovery.SlotOwnership, transport *Transport, service string, slotID func(Identity) string) *SlotAllocator {
+	if ownership == nil || transport == nil || service == "" || slotID == nil {
 		panic("actortrial: invalid slot allocator configuration")
 	}
-	router, err := discovery.NewSlotRouter(store, directory)
-	if err != nil {
-		panic(err)
-	}
-	return &SlotAllocator{store, directory, router, transport, service, slotID}
+	return &SlotAllocator{ownership, transport, service, slotID}
 }
 
-// Ensure 保持已有 assignment。仅无归属时选址；容量快照变化导致的最终拒绝不会触发改派。
 func (a *SlotAllocator) Ensure(ctx context.Context, id Identity) (discovery.SlotAssignment, ActivationStatus, error) {
-	slotID := a.slotID(id)
-	current, err := a.store.ResolveSlot(ctx, slotID)
-	created := false
-	if errors.Is(err, discovery.ErrSlotNotFound) {
-		candidates := a.directory.RunningInstances(a.service)
-		if len(candidates) == 0 {
-			return current, ActivationStatus{}, discovery.ErrSlotRuntimeUnavailable
+	current, created, err := a.ownership.Ensure(ctx, a.service, a.slotID(id), func(ctx context.Context, instance string) (bool, error) {
+		err := a.transport.slotCommand(ctx, instance, "capacity", id)
+		if errors.Is(err, ErrCapacity) || errors.Is(err, ErrDraining) {
+			return false, nil
 		}
-		// 哈希只决定首次选址的起点；成员增减不重算已存在的归属。
-		start := int(xxhash.Sum64String(slotID) % uint64(len(candidates)))
+		return err == nil, err
+	})
+	if errors.Is(err, discovery.ErrSlotCapacityUnavailable) {
 		err = ErrCapacity
-		for i := range candidates {
-			candidate := candidates[(start+i)%len(candidates)].ID
-			check := a.transport.slotCommand(ctx, candidate, "capacity", id)
-			if errors.Is(check, ErrCapacity) || errors.Is(check, ErrDraining) {
-				continue
-			}
-			if check != nil {
-				return current, ActivationStatus{}, check
-			}
-			current = discovery.SlotAssignment{SlotID: slotID, RuntimeInstanceID: candidate, Generation: 1}
-			err = a.router.CreateSlot(ctx, current)
-			if errors.Is(err, discovery.ErrSlotConflict) {
-				current, err = a.store.ResolveSlot(ctx, slotID)
-			} else if err == nil {
-				created = true
-			}
-			break // CAS 或响应结果未知时不能尝试另一个候选。
-		}
 	}
 	if err != nil {
 		return current, ActivationStatus{}, err
-	}
-	instance, ok := a.directory.LookupInstance(current.RuntimeInstanceID)
-	if !ok || instance.Status != discovery.StatusRunning || !slices.Contains(instance.Services, a.service) {
-		return current, ActivationStatus{}, discovery.ErrSlotRuntimeUnavailable
 	}
 	target := Target{current.RuntimeInstanceID, id}
 	var status ActivationStatus
@@ -183,32 +150,18 @@ func (a *SlotAllocator) Ensure(ctx context.Context, id Identity) (discovery.Slot
 	return current, status, err
 }
 
-// Handoff 是实例滚动交接：第一次调用排空旧实例的所有实体，之后逐槽 CAS。
-// 源响应或 CAS 结果未知时返回错误，由下一次显式操作重新读取归属，不重投业务请求。
 func (a *SlotAllocator) Handoff(ctx context.Context, id Identity, current discovery.SlotAssignment, nextInstance string) (discovery.SlotAssignment, ActivationStatus, error) {
-	next := discovery.SlotAssignment{SlotID: current.SlotID, RuntimeInstanceID: nextInstance, Generation: current.Generation + 1}
-	if current.SlotID != a.slotID(id) || discovery.ValidateSlotPromotion(current, next) != nil {
+	if current.SlotID != a.slotID(id) {
 		return current, ActivationStatus{}, discovery.ErrInvalidSlotPromotion
 	}
-	stored, err := a.store.ResolveSlot(ctx, current.SlotID)
+	next, err := a.ownership.Handoff(ctx, a.service, current, nextInstance, func(ctx context.Context, instance string) (bool, error) {
+		err := a.transport.slotCommand(ctx, instance, "capacity", id)
+		return err == nil, err
+	}, func(ctx context.Context, instance string) error {
+		return a.transport.slotCommand(ctx, instance, "quiesce", id)
+	})
 	if err != nil {
-		return current, ActivationStatus{}, err
-	}
-	if stored != current {
-		return stored, ActivationStatus{}, discovery.ErrSlotConflict
-	}
-	destination, ok := a.directory.LookupInstance(nextInstance)
-	if !ok || destination.Status != discovery.StatusRunning || !slices.Contains(destination.Services, a.service) {
-		return current, ActivationStatus{}, discovery.ErrSlotRuntimeUnavailable
-	}
-	if err = a.transport.slotCommand(ctx, nextInstance, "capacity", id); err != nil {
-		return current, ActivationStatus{}, err
-	}
-	if err = a.transport.slotCommand(ctx, current.RuntimeInstanceID, "quiesce", id); err != nil {
-		return current, ActivationStatus{}, err
-	}
-	if err = a.router.PromoteSlot(ctx, current, next); err != nil {
-		return discovery.SlotAssignment{}, ActivationStatus{}, err
+		return next, ActivationStatus{}, err
 	}
 	status, err := a.transport.RetryActivation(ctx, Target{nextInstance, id})
 	return next, status, err

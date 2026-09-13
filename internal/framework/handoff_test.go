@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ngnl47/tx/modules/control"
 	controlpb "github.com/ngnl47/tx/modules/control/pb"
 	"github.com/ngnl47/tx/modules/discovery"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -248,6 +249,48 @@ func TestPrepareHandoffWithEtcdRetainsLeaseUntilStop(t *testing.T) {
 		response, err := caller.PrepareHandoff(ctx, &controlpb.PrepareHandoffRequest{RuntimeInstanceId: id})
 		if err != nil || response.GetRuntimeInstanceId() != id {
 			t.Fatalf("准备结果: %v %v", response, err)
+		}
+	}
+	// L2 归属组件通过正式控制面复用源实例收尾；同一源实例可以逐槽晋升。
+	target := newDiscoveryIdentityTestServer(t, endpoint, prefix, "", testService{spec: Spec{Name: "game", Requires: []CModID{CModDiscovery, CModRPC}}})
+	if err := target.Start(ctx, RunOptions{Services: "game"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := target.Stop(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	targetID := target.Context().Instance().ID
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if instance, ok := app.discovery.Directory().LookupInstance(targetID); ok && instance.Status == discovery.StatusRunning {
+			break
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	store := app.discovery.AuthoritativeSlots()
+	ownership := app.discovery.Ownership()
+	preparer := control.NewHandoffClient(conn)
+	for _, slot := range []string{"game-1", "game-2"} {
+		current := discovery.SlotAssignment{SlotID: slot, RuntimeInstanceID: id, Generation: 1}
+		if err := store.CreateSlot(ctx, current); err != nil {
+			t.Fatal(err)
+		}
+		next, err := ownership.Handoff(ctx, "game", current, targetID,
+			func(context.Context, string) (bool, error) { return true, nil },
+			preparer.PrepareHandoff)
+		if err != nil {
+			t.Fatal(err)
+		}
+		actual, err := store.ResolveSlot(ctx, slot)
+		if err != nil || actual != next || next.RuntimeInstanceID != targetID || next.Generation != 2 {
+			t.Fatalf("晋升结果: %v %v %v", actual, next, err)
 		}
 	}
 	after, err := client.Get(ctx, key)

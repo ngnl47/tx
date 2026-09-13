@@ -170,7 +170,7 @@ func TestNATSAcceptanceAndMailbox(t *testing.T) {
 	signal(t, ctx, started)
 	pending := make(chan error, 1)
 	go func() { _, err := a.Call(ctx, target, &actorpb.Delivery{MessageType: "slow"}); pending <- err }()
-	eventually(t, ctx, func() bool { r.mu.Lock(); defer r.mu.Unlock(); return len(r.entries[target.Identity].queue) == 1 })
+	eventually(t, ctx, func() bool { return r.Probe(target.Identity).PendingMessages == 1 })
 	if _, err := a.Call(ctx, target, &actorpb.Delivery{MessageType: "overflow"}); !errors.Is(err, ErrMailboxFull) {
 		t.Fatalf("overflow: %v", err)
 	}
@@ -653,7 +653,7 @@ func TestNATSSlotResolverAndOwnerHandoff(t *testing.T) {
 	if !errors.As(err, &rejected) || rejected.Code != -3 {
 		t.Fatalf("wrong owner: %v", err)
 	}
-	eventually(t, ctx, func() bool { b.runtime.mu.Lock(); defer b.runtime.mu.Unlock(); return len(b.runtime.entries) == 0 })
+	eventually(t, ctx, func() bool { return b.runtime.Probe(wrong.Identity).State == Failed })
 	instances[0].Status = discovery.StatusDraining
 	if err = directory.Replace(instances); err != nil {
 		t.Fatal(err)

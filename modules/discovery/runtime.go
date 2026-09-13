@@ -19,6 +19,7 @@ type Runtime struct {
 	directory       *ServiceDirectory
 	slotDirectory   *SlotDirectory
 	slots           *CachedSlotStore
+	ownership       *SlotOwnership
 	identity        RuntimeIdentity
 	instance        Instance
 	watchMu         sync.Mutex
@@ -76,6 +77,10 @@ func newRuntime(registry runtimeRegistry, registration runtimeRegistration, slot
 	if err != nil {
 		return nil, err
 	}
+	ownership, err := NewSlotOwnership(slots, directory)
+	if err != nil {
+		return nil, err
+	}
 	runtime := &Runtime{
 		registry:        registry,
 		registration:    registration,
@@ -83,6 +88,7 @@ func newRuntime(registry runtimeRegistry, registration runtimeRegistration, slot
 		directory:       directory,
 		slotDirectory:   slotDirectory,
 		slots:           cachedSlots,
+		ownership:       ownership,
 		identity:        registration.Identity(),
 		instance:        registration.Instance(),
 		watchChanged:    make(chan struct{}),
@@ -149,6 +155,15 @@ func (runtime *Runtime) AuthoritativeSlots() SlotStore {
 		return nil
 	}
 	return runtime.persistentSlots
+}
+
+// Ownership 返回本运行时装配的归属能力，内部使用权威存储和同一成员目录。
+// 调用方无需选择缓存/持久层，也不取得连接生命周期所有权。
+func (runtime *Runtime) Ownership() *SlotOwnership {
+	if runtime == nil {
+		return nil
+	}
+	return runtime.ownership
 }
 
 // Watch 持续维护实例与槽位目录。任一 Watch 中断都会同时废弃两份快照并重建。

@@ -59,7 +59,7 @@ func TestSlotRollingHandoffWaitsForRedisFlush(t *testing.T) {
 	}))
 	directory := discovery.NewServiceDirectory()
 	worldMembers(t, directory, "a")
-	allocator := NewSlotAllocator(store, directory, caller, "world", worldSlot)
+	allocator := NewSlotAllocator(slotOwnership(t, store, directory), caller, "world", worldSlot)
 	entered, release := make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
 	defer releaseOnce.Do(func() { close(release) })
@@ -138,10 +138,10 @@ func TestSlotRollingHandoffWaitsForRedisFlush(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, ctx, func() bool { r.mu.Lock(); defer r.mu.Unlock(); return len(r.entries[ids[0]].queue) == 1 })
+	eventually(t, ctx, func() bool { return r.Probe(ids[0]).PendingMessages == 1 })
 	done := make(chan error, 1)
 	go func() { _, _, err := allocator.Handoff(ctx, ids[0], current[0], "b"); done <- err }()
-	eventually(t, ctx, func() bool { r.mu.Lock(); defer r.mu.Unlock(); return r.draining })
+	eventually(t, ctx, r.Draining)
 	if _, err = caller.Call(ctx, Target{"a", ids[1]}, &actorpb.Delivery{MessageType: "late"}); !errors.Is(err, ErrDraining) {
 		t.Fatal("实例关闸未拒绝另一世界", err)
 	}
@@ -297,7 +297,7 @@ func TestSlotAllocationKeepsOwnerAndRespectsCapacity(t *testing.T) {
 	caller := peer(t, url, ns, "caller", echoRuntime())
 	directory := discovery.NewServiceDirectory()
 	worldMembers(t, directory, "a")
-	allocator := NewSlotAllocator(store, directory, caller, "world", worldSlot)
+	allocator := NewSlotAllocator(slotOwnership(t, store, directory), caller, "world", worldSlot)
 	id := Identity{"world", "51"}
 	first, _, err := allocator.Ensure(ctx, id)
 	if err != nil || first.RuntimeInstanceID != "a" {
@@ -308,7 +308,7 @@ func TestSlotAllocationKeepsOwnerAndRespectsCapacity(t *testing.T) {
 	}
 	worldMembers(t, directory, "a", "b")
 	other := peer(t, url, ns, "caller-2", echoRuntime())
-	secondAllocator := NewSlotAllocator(store, directory, other, "world", worldSlot)
+	secondAllocator := NewSlotAllocator(slotOwnership(t, store, directory), other, "world", worldSlot)
 	secondID := Identity{"world", "52"}
 	var group sync.WaitGroup
 	for i := range 24 {
@@ -427,7 +427,7 @@ func TestSlotCASReplyLossDoesNotReassign(t *testing.T) {
 	caller := peer(t, url, ns, "caller", echoRuntime())
 	directory := discovery.NewServiceDirectory()
 	worldMembers(t, directory, "a")
-	allocator := NewSlotAllocator(store, directory, caller, "world", worldSlot)
+	allocator := NewSlotAllocator(slotOwnership(t, store, directory), caller, "world", worldSlot)
 	id := Identity{"world", "51"}
 	store.createLost.Store(true)
 	if _, _, err := allocator.Ensure(ctx, id); !errors.Is(err, context.DeadlineExceeded) {
@@ -483,7 +483,7 @@ func TestSlotCapacityChangeAfterCASDoesNotFallback(t *testing.T) {
 	caller := peer(t, url, ns, "caller", echoRuntime())
 	directory := discovery.NewServiceDirectory()
 	worldMembers(t, directory, "a", "b")
-	allocator := NewSlotAllocator(store, directory, caller, "world", worldSlot)
+	allocator := NewSlotAllocator(slotOwnership(t, store, directory), caller, "world", worldSlot)
 	store.afterCreate = func() { pressure.Store(true) }
 	id := Identity{"world", "51"}
 	attempted, _, err := allocator.Ensure(ctx, id)
@@ -521,7 +521,7 @@ func TestSlotQuiesceReplyLossDoesNotPromote(t *testing.T) {
 	}
 	directory := discovery.NewServiceDirectory()
 	worldMembers(t, directory, "a", "b")
-	allocator := NewSlotAllocator(store, directory, caller, "world", worldSlot)
+	allocator := NewSlotAllocator(slotOwnership(t, store, directory), caller, "world", worldSlot)
 	id := Identity{"world", "51"}
 	current := discovery.SlotAssignment{SlotID: worldSlot(id), RuntimeInstanceID: "a", Generation: 1}
 	if err = store.CreateSlot(ctx, current); err != nil {
@@ -552,7 +552,7 @@ func TestConcurrentSlotHandoffHasOneWinner(t *testing.T) {
 	directory := discovery.NewServiceDirectory()
 	worldMembers(t, directory, "a")
 	caller := peer(t, url, ns, "caller", echoRuntime())
-	allocator := NewSlotAllocator(store, directory, caller, "world", worldSlot)
+	allocator := NewSlotAllocator(slotOwnership(t, store, directory), caller, "world", worldSlot)
 	id := Identity{"world", "51"}
 	current, _, err := allocator.Ensure(ctx, id)
 	if err != nil {
@@ -562,7 +562,7 @@ func TestConcurrentSlotHandoffHasOneWinner(t *testing.T) {
 		t.Fatal(err)
 	}
 	worldMembers(t, directory, "a", "b", "c")
-	other := NewSlotAllocator(store, directory, peer(t, url, ns, "caller-2", echoRuntime()), "world", worldSlot)
+	other := NewSlotAllocator(slotOwnership(t, store, directory), peer(t, url, ns, "caller-2", echoRuntime()), "world", worldSlot)
 	var group sync.WaitGroup
 	var winners atomic.Int32
 	for i, next := range []string{"b", "c"} {
@@ -623,7 +623,7 @@ func TestSlotFirstAssignmentCompetingCandidates(t *testing.T) {
 	directories := []*discovery.ServiceDirectory{discovery.NewServiceDirectory(), discovery.NewServiceDirectory()}
 	worldMembers(t, directories[0], "a")
 	worldMembers(t, directories[1], "b")
-	allocators := []*SlotAllocator{NewSlotAllocator(store, directories[0], caller, "world", worldSlot), NewSlotAllocator(store, directories[1], peer(t, url, ns, "caller-2", echoRuntime()), "world", worldSlot)}
+	allocators := []*SlotAllocator{NewSlotAllocator(slotOwnership(t, store, directories[0]), caller, "world", worldSlot), NewSlotAllocator(slotOwnership(t, store, directories[1]), peer(t, url, ns, "caller-2", echoRuntime()), "world", worldSlot)}
 	results := make(chan error, 2)
 	for _, allocator := range allocators {
 		go func() { _, _, err := allocator.Ensure(ctx, id); results <- err }()
@@ -662,4 +662,14 @@ func TestSlotFirstAssignmentCompetingCandidates(t *testing.T) {
 	if loads.Load() != 1 {
 		t.Fatal("竞争者重复加载", loads.Load())
 	}
+}
+
+// 独立测试夹具显式构造底层能力；正式组合根直接使用 Discovery Runtime.Ownership。
+func slotOwnership(t testing.TB, store discovery.SlotStore, directory discovery.Directory) *discovery.SlotOwnership {
+	t.Helper()
+	ownership, err := discovery.NewSlotOwnership(store, directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ownership
 }

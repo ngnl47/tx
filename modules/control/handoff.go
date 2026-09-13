@@ -11,13 +11,13 @@ import (
 )
 
 var (
-	// ErrHandoffInstanceMismatch 表示请求不属于当前启动实例，不能执行交接准备。
+	// ErrHandoffInstanceMismatch 表示请求或确认响应的启动身份不匹配，不能继续交接。
 	ErrHandoffInstanceMismatch = errors.New("control: handoff runtime instance mismatch")
 	// ErrHandoffUnavailable 表示宿主尚未就绪、已经停止或身份失效。
 	ErrHandoffUnavailable = errors.New("control: handoff unavailable")
 )
 
-// HandoffController 由宿主保证最终写回及资源保留，不执行槽位晋升。
+// HandoffController 提供交接准备确认：宿主执行最终写回并保留资源，客户端校验远程确认；不执行槽位晋升。
 type HandoffController interface {
 	PrepareHandoff(context.Context, string) error
 }
@@ -48,4 +48,24 @@ func (s *handoffService) PrepareHandoff(ctx context.Context, request *controlpb.
 		return nil, statusFromError(err)
 	}
 	return &controlpb.PrepareHandoffResponse{RuntimeInstanceId: instanceID}, nil
+}
+
+// NewHandoffClient 复用调用方的连接，返回确认源实例收尾的窄能力；不接管连接或执行槽位晋升。
+func NewHandoffClient(connection grpc.ClientConnInterface) HandoffController {
+	return handoffClient{controlpb.NewHandoffServiceClient(connection)}
+}
+
+type handoffClient struct {
+	client controlpb.HandoffServiceClient
+}
+
+func (c handoffClient) PrepareHandoff(ctx context.Context, instance string) error {
+	response, err := c.client.PrepareHandoff(ctx, &controlpb.PrepareHandoffRequest{RuntimeInstanceId: instance})
+	if err != nil {
+		return err
+	}
+	if instance == "" || response.GetRuntimeInstanceId() != instance {
+		return ErrHandoffInstanceMismatch
+	}
+	return nil
 }

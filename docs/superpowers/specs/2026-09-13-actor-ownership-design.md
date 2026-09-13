@@ -19,7 +19,7 @@
 | `internal/actortrial/routing.go` 的 RoutedCaller 读取 SlotResolver；未分配直接返回错误 | 保持高频调用只读缓存；首次分配由低频建服、开房或预热流程显式调用 tx 能力 |
 | I3b 已提供 `Discovery.Runtime.AuthoritativeSlots()`；`Slots()` 的 ResolveSlot 仍只读 Watch | 正式组合根需取得权威存储供首次分配、交接复核和加载准入；不能把现有 Slots() 直接注入 SlotHost，或改变普通读取的缓存语义 |
 | I3b 已由 `Runtime.BindSlots` 在入口启动前包装 factory；直连和 NATS 使用同一 Runtime | 正式 framework 继续绑定此加载准入；不在两个 Receiver 重复检查或逐消息查 etcd |
-| SlotAllocator 已组合 SlotStore、SlotRouter、Directory 与容量探测 | 保留首次分配与交接组合；归属真相仍在 Discovery，不新增通用调度框架 |
+| I3d：Discovery SlotOwnership 已接管分配与交接规则，SlotAllocator 仅绑定容量/收尾执行及激活 | 保留首次分配与交接组合；归属真相仍在 Discovery，不新增通用调度框架 |
 | SlotHost.quiesce 排空整个 Runtime，再调用注入的 Flush；现有 Redis 测试写自定义快照 | 接入实际 Procedure/writeback 与 GD；现有测试不能证明正式 GD 收尾完成 |
 | `Server.Drain` 等待服务和 Actor 已接纳工作，不停止后台任务，也不最终冲刷 CMod | 控制面的 StateDrained 不能直接作为持久化完成或槽位晋升许可 |
 | `Server.shutdown` 停服务任务后调用 CMod Drain；`component.Host` 记住成功阶段，失败从原阶段重试 | 交接复用该收尾顺序和重试进度，不另造完成表或第二个 writeback.Manager |
@@ -39,6 +39,8 @@
 | `internal/framework` | 按 Kind 组装路由、共享 Receiver、实例宿主和控制面；衔接生命周期与持久化收尾 | 业务 Registration 不再手工组装连接、发现和一串依赖检查 |
 | `modules/control` | 复用现有运维 gRPC 入口传递交接准备请求与槽位操作 | 协议层不理解具体 GD；低层 CAS SPI 继续可用 |
 | game 侧 factory / Procedure / writeback 组件 | 实体存在性与加载规则、处理业务、声明容量估计及卸载策略；遵守既有写回 SPI | 不选 NATS subject、不决定重试改派、不维护第二份 owner |
+
+I3d 决策与实现：归属基座集中在 `modules/discovery` 的 L2 组件，不新增独立权威服务。`SlotOwnership` 编排首次分配与交接，`CheckSlotOwner` 提供权威校验，既有 `SlotResolver` 负责缓存解析。Actor/传输层只绑定执行能力，不复制这些规则；以后发现边界不合适时先提出证据和取舍，决策后迭代。
 
 这是正式迁移的目标位置，不要求将每一行表格做成新包或 Interface。`SlotHost` 当前混合连接、准入和收尾，不能整体搬进公共 API；已有 `RoutedCaller` 的组合足够支撑 Call，不再增加 RouterFactory、通用策略注册表或永久双后端配置。
 

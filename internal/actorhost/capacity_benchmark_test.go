@@ -1,4 +1,4 @@
-package actortrial
+package actorhost
 
 import (
 	"context"

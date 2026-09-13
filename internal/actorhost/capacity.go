@@ -1,4 +1,4 @@
-package actortrial
+package actorhost
 
 import "errors"
 
@@ -16,9 +16,11 @@ const (
 
 // ActivationStatus 仅含运行时元数据，查询不读取业务对象或未初始化的 GD。
 type ActivationStatus struct {
-	State         ActivationState
-	ReservedBytes int64
-	Failure       *RemoteError `json:",omitempty"`
+	State ActivationState
+	// PendingMessages 只在探测时读取队列长度，不添加消息路径采集计数。
+	PendingMessages int `json:",omitempty"`
+	ReservedBytes   int64
+	Failure         *RemoteError `json:",omitempty"`
 }
 
 // ActivationLimits 的零上限表示不限制。估算包含加载峰值，激活存续期间保留额度。
@@ -87,7 +89,7 @@ func (r *Runtime) statusLocked(id Identity) ActivationStatus {
 		if e.closed {
 			state = Closing
 		}
-		return ActivationStatus{State: state, ReservedBytes: e.reservedBytes}
+		return ActivationStatus{State: state, ReservedBytes: e.reservedBytes, PendingMessages: len(e.queue)}
 	}
 	if failure := r.failures[id]; failure != nil {
 		copy := *failure
@@ -153,5 +155,5 @@ func (r *Runtime) rememberFailureLocked(id Identity, err error) {
 			break
 		}
 	}
-	r.failures[id] = remoteError(err)
+	r.failures[id] = RemoteErrorFrom(err)
 }

@@ -202,11 +202,10 @@ func TestComparisonBatchCanceledFirstAndOuterFailure(t *testing.T) {
 				t.Fatalf("首项取消=%d", canceled)
 			}
 			batchEmpty(t, a)
-			a.runtime.mu.Lock()
-			loaded := len(a.runtime.entries)
-			a.runtime.mu.Unlock()
-			if loaded != 0 {
-				t.Fatalf("外层损坏仍执行了业务: %d", loaded)
+			for i := range 3 {
+				if state := a.runtime.Probe(Identity{"room", strconv.Itoa(i)}).State; state != Unloaded {
+					t.Fatalf("外层损坏仍加载实体: %v", state)
+				}
 			}
 		})
 	}
@@ -225,7 +224,7 @@ func TestComparisonBatchQuiesceRetainsControlConnection(t *testing.T) {
 	if closed || p.conn.IsClosed() {
 		t.Fatal("持久化失败提前释放发送资源")
 	}
-	h.config.Flush = nil
+	h.flush = nil
 	if err := h.quiesce(ctx); err != nil {
 		t.Fatal(err)
 	}

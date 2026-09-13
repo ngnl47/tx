@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ngnl47/tx/modules/control"
 	controlpb "github.com/ngnl47/tx/modules/control/pb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -93,12 +94,9 @@ func run(parent context.Context, arguments []string, output io.Writer, dialer di
 	var response *controlpb.LifecycleStatus
 	switch command {
 	case "prepare-handoff":
-		prepared, err := controlpb.NewHandoffServiceClient(connection).PrepareHandoff(ctx, &controlpb.PrepareHandoffRequest{RuntimeInstanceId: handoffInstance})
+		err := control.NewHandoffClient(connection).PrepareHandoff(ctx, handoffInstance)
 		if err != nil {
 			return err
-		}
-		if prepared.GetRuntimeInstanceId() != handoffInstance {
-			return errors.New("control service returned a different handoff instance")
 		}
 		if output == nil {
 			output = io.Discard

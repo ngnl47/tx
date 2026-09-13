@@ -2097,6 +2097,16 @@ etcd
 - 精确实例路由可以看到 draining/stopping，用于排空既有绑定。
 - `SlotDirectory` 维护固定逻辑槽位的进程内快照，消息路由不读取 etcd。
 
+集群归属统一由本模块的 L2 组件承担：`SlotResolver` 提供缓存路由，`CheckSlotOwner` 执行加载前权威校验，
+`SlotOwnership` 编排首次分配和正常交接。首次分配先无副作用容量预检，再 CAS 建立归属；交接先复核当前代次、
+预检目标容量，再等待源实例全量排水及持久化成功，最后 CAS 晋升。容量预检和排水通过执行回调接入，组件不依赖 Actor、NATS 或控制面协议。
+
+Actor 保留身份到槽位的绑定、实际加载、容量预留、邮箱和生命周期；framework 执行实例排水与持久化收尾；
+NATS/gRPC 只传递执行请求。回调错误立即结束本次操作，不自动改派或重投；低层 SlotStore/SlotRouter 与控制面 CAS SPI 保留。
+这是一套进程内复用组件，没有新增权威服务进程或租约。
+Discovery Runtime 统一创建归属组件，通过 Ownership 返回已绑定权威存储的能力；Actor 装配不再自行选择存储门面。
+control.NewHandoffClient 将控制协议和响应身份校验封装为已有 HandoffController 契约，可直接绑定到交接执行入口，连接所有权不转移。
+
 `CModSessionID` 依赖 `CModDiscovery`，复用其 `workSlot` 和租约有效性，不创建第二份租约，也不向业务暴露
 `workSlot`。标准服务组合只有需要发号的 Login 显式声明它；Agent、MsgQ、Game、SLGGame 和 SLGWorld 不声明。
 模块和服务在启动回调中可以取得分配器句柄，但只有 Discovery 成功把实例标记为 `running` 后才开放发号；
