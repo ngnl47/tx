@@ -1,6 +1,6 @@
 # Kind 与正式实体宿主切换前的分区决策
 
-状态：用户已确认普通 Kind 固定 1024 分区，以及 slgworld 实例按容量承载多个独立世界的迁移目标；本文件不代表正式运行时已经切换。
+状态：默认 CModActor、统一 Kind 与两个示例已切换，真实集群及单轮完整上下行对照通过；冻结 I2 正式入口验收和逐世界容量声明仍未完成。下文保留历次阶段记录，以末尾最新进展为准。
 
 核对起点：tx `021bb2f`，六工程工作区干净。上一轮行为契约与示例命令执行变更已提交。
 
@@ -39,7 +39,7 @@
 
 1. 固定布局函数与关键映射测试，绑定同一份 Kind/服务规格供普通路由、首次分配和宿主权威加载校验消费，普通 handler 只提供 Kind/Key。
 2. 将 NATS 传输与正式装配所需逻辑移出试验包；保留隔离的比较/overlay 驱动和原始基线，不把压测代码迁入生产路径。
-3. NewKind/NewFixedKind 工厂承接 BehaviorFactory，两个示例的命令适配返回业务结果；必要的本地控制和自定义世界映射保留，不模拟整套 ProtoActor Context。
+3. NewKind/MustKind 工厂承接 BehaviorFactory，删除 NewFixedKind/MustFixedKind/IsFixed；通过 WithSlotMapping 保留自定义归属。两个示例的命令适配返回业务结果，保留必要本地控制，不模拟整套 ProtoActor Context。
 4. 同步接入唯一宿主和共享 gRPC 接收入口，启动顺序改为 RPC 绑定、Discovery 就绪、Actor 入口、服务就绪、running。上下行保持 gRPC 直连，Actor RPC 使用 NATS。
 5. 验证身份、准入、排水、持久化收尾、NATS 连接关闭和 Discovery 注销顺序；失败不得自动接管或提前移除旧归属。
 6. 两示例与必要高级能力承接后清理旧 ProtoActor 生产路径，运行真实集群回归与既定 I2 proto/hybrid 基线。未通过之前不宣称替换完成。
@@ -101,3 +101,47 @@ EntityRouter 的单一 Service 字符串改为 Kind 到服务的解析函数，�
 本轮同时补齐启动失败的收尾：已经接受消息的新宿主先关闭准入并等待卸载；超时保留资源，不允许重复 Start；Stop 可继续收尾，Run 复用原有有限重试并仍报告启动失败。最终 NATS Flush 使用框架排水期限，业务无需为 Stop(context.Background()) 额外了解 SDK 的 deadline 要求。正常写回与 Flush 失败保持可重试、不会重开准入。
 
 框架已生产导入 actorrpc，两个示例补齐与 tx 一致的 NATS 间接依赖及校验和，未升级版本。默认 CModActor 与公开 Kind 工厂仍是 ProtoActor；当前装配入口由框架集成夹具显式调用，不能描述为默认切换完成。下一阶段继续把公开 Kind 的工厂、映射和应用目录绑定到该入口，不新增后端选择开关。
+
+## 已确认：统一 Kind 构造入口
+
+核对起点：tx `29c5f63`，六工程工作区干净。用户已确认以下对原计划第 3 步的调整；公开 API 与默认后端尚未修改。
+
+原 NewKind 表示 ProtoActor 虚拟放置，NewFixedKind 表示固定宿主，两者的区别会随旧放置实现退出而消失。新架构所有 Kind 都使用稳定 assignment：默认采用 1024 分区，自定义映射直接返回稳定业务槽位。因此统一为 NewKind/MustKind，删除 NewFixedKind、MustFixedKind、IsFixed；不保留同义兼容包装。
+
+已确认调用形态（WithSlotMapping 尚待实现）：
+
+```go
+actor.NewKind("role", roleFactory)
+actor.NewKind("world", worldFactory, actor.WithSlotMapping(worldSlot))
+actor.NewKind("seasonWorld", seasonFactory, actor.WithSlotMapping(seasonSlot))
+```
+
+- 工厂统一使用现有 BehaviorFactory 契约，生命周期事件仍由宿主执行。
+- WithSlotMapping 是必要业务 SPI：可表达独立世界、稳定分服和分战区；未设置时使用默认布局，映射缺失不回退。
+- Kind 的服务池仍来自 ServiceSpec 所属服务，不另加 ServiceName 配置，不要求调用方重复声明。
+- 已有 WithIdlePassivation 保留；定时卸载和显式生命周期策略仍使用 Context.After/Post/Deactivate，不把卸载定死为空闲策略。
+- txgameslg 的 NewFixedCommandKind 与内部 fixed 布尔分支同步合并到 NewCommandKind，通过 KindOption 传递映射。txgame 的普通命令 Kind 使用同一构造入口。
+- 框架不再根据 IsFixed 决定 Discovery 依赖；新宿主统一依赖 Discovery 与共享 RPC，现行 ProtoActor 分支在整体切换前保持不动。
+- 固定归属、槽位 CAS、世界路由和关键生命周期测试保留；只删除旧构造分支的专属断言。
+
+构造入口、两个示例适配和默认 CMod 接线作为连续实施批次，不能先发布只有声明却不能执行的新 Kind。NewKind 返回声明错误，MustKind 对同一声明错误 panic；懒加载工厂的业务错误仍按运行时错误处理。
+
+## 已确认并落实：初始化不附加统一执行期限
+
+用户确认 Actor 初始化不能沿用试验夹具的一秒期限，大世界加载可能需要更长时间。本次调整限于工厂、OnInitAfter、OnActivateBefore、OnActivateAfter；Receive 与卸载回调保留新宿主原有期限，不能将本次确认扩大为移除全部回调期限。
+
+新宿主以上四个初始化阶段使用激活生命周期派生的可取消 Context，不附加统一 deadline，回调返回时仍取消当前 Context。加载前的权威归属查询单独保留原查询期限，不向业务工厂传播该 deadline。具体数据库查询或下游 RPC 保留各自超时，调用方等待超时不撤销已开始的加载。正常排水仍限时等待实际加载、已接受消息和卸载回调结束；排水超时不提前释放激活或容量预留，也不自动交接。
+
+例如框架试验宿主使用一秒回调期限，而世界工厂和三个激活事件分别耗时两秒，加载仍可完成。新增 synctest 回归用虚拟时间覆盖该场景，同时验证调用方等待超时、排水超时后保留容量、已接受消息继续执行、回调结束取消 Context，以及最终排水释放容量。WithTimeout 本身不能强制停止不检查 Context 的业务；工作完成仍以实际回调返回为边界。
+
+这项调整尚未切换默认 CModActor。下一步继续已确认的统一 Kind 工厂、业务映射、两个示例及默认宿主接线，生产配置不得把调用方 CallTimeout 或 DrainTimeout 直接当作初始化期限。原始性能基线不变，正式切换后仍需同口径上下行验收。
+
+本轮验证：新增回归先复现初始化超时，分离权威查询期限时再次验证缺少查询 deadline 的失败，最终均通过。最终 tx 全量功能回归通过（部分既有测试复用 Go 缓存）；启用本机 NATS/etcd 的 actorhost、actorrpc、framework 三包 race 回归通过。扩大检查旧 modules/actor 时，ProtoActor 成员更新、远程通信和关闭路径报告数据竞争，因此全范围 race 未通过，不将功能通过等同于 race 通过。日志分别为 `/private/tmp/tx-init-deadline-final-full.log`、`/private/tmp/tx-init-deadline-final-race.log` 与 `/private/tmp/tx-init-deadline-race.log`。
+
+后置 ponytail-review：未发现需要删除的新增抽象；复用同一回调执行器，仅按阶段选择上下文期限，一条虚拟时间回归覆盖加载与排水边界。未运行 benchmark，不声明性能收益或无回退。未修改两个示例或客户端，未提交 Git。
+
+## 默认后端与两个示例已接线
+
+本轮完成 NewKind/MustKind(BehaviorFactory)、WithSlotMapping、应用目录自动装配、唯一宿主和共享 gRPC/NATS 双入口。删除生产 PID、FixedKind 与 ProtoActor 配置；旧运行时隔离为历史测试基线。Agent 通过 CModActorDirect 直连，业务只解析 Identity；初始化期限调整一并保留。
+
+最终全量、相关 race、两客户端测试构建、两个真实 cluster-e2e 均通过；同机 Ping/Pong 对照无退化。未重写冻结 I2 基线，也不把单轮闭环测试称为固定到达率验收。完整原因、版本矩阵、性能与下一项见 [默认切换记录](../../audits/2026-09-13-default-actor-cutover.md)。本轮未提交。

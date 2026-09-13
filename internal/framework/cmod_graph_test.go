@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	protoactor "github.com/asynkron/protoactor-go/actor"
 	txactor "github.com/ngnl47/tx/modules/actor"
 )
 
@@ -185,7 +184,9 @@ func TestResolveCModGraphEvaluatesConditionalRequirementsForSelectedServices(t *
 }
 
 func TestResolveCModGraphAddsActorForDeclaredKinds(t *testing.T) {
-	roomKind := txactor.MustKind("room", func() protoactor.Actor { return cmodActorFake{} })
+	roomKind := txactor.MustKind("room", func(txactor.Context) (*txactor.Behavior, error) {
+		return &txactor.Behavior{Receive: func(txactor.Context, any) (any, error) { return nil, nil }}, nil
+	})
 	selected := []Service{cmodServiceFake{spec: Spec{Name: "room", ActorKinds: []txactor.Kind{roomKind}}}}
 	cmods := []CMod{
 		cmodGraphFake{id: CModActor},
@@ -207,32 +208,10 @@ func TestResolveCModGraphAddsActorForDeclaredKinds(t *testing.T) {
 	}
 }
 
-func TestResolveCModGraphAddsActorForFixedKinds(t *testing.T) {
-	roleKind := txactor.MustFixedKind("role", func() protoactor.Actor { return cmodActorFake{} })
-	selected := []Service{cmodServiceFake{spec: Spec{Name: "slggame", ActorKinds: []txactor.Kind{roleKind}}}}
-	cmods := []CMod{
-		cmodGraphFake{id: CModActor},
-		cmodGraphFake{id: CModDiscovery, after: []CModID{CModActor}},
-	}
-
-	graph, err := resolveCModGraph(cmods, selected)
-	if err != nil {
-		t.Fatalf("resolve CMod graph: %v", err)
-	}
-	if want := []CModID{CModActor, CModDiscovery}; !slices.Equal(graph.IDs(), want) {
-		t.Fatalf("CMod order = %v, want %v", graph.IDs(), want)
-	}
-	kinds, err := collectActorKinds(selected)
-	if err != nil {
-		t.Fatalf("collect Actor kinds: %v", err)
-	}
-	if len(kinds) != 1 || kinds["role"].kind.Name() != "role" {
-		t.Fatalf("Actor kinds = %#v", kinds)
-	}
-}
-
 func TestCollectActorKindsRejectsDuplicateNames(t *testing.T) {
-	kind := txactor.MustKind("room", func() protoactor.Actor { return cmodActorFake{} })
+	kind := txactor.MustKind("room", func(txactor.Context) (*txactor.Behavior, error) {
+		return &txactor.Behavior{Receive: func(txactor.Context, any) (any, error) { return nil, nil }}, nil
+	})
 	services := []Service{
 		cmodServiceFake{spec: Spec{Name: "room-a", ActorKinds: []txactor.Kind{kind}}},
 		cmodServiceFake{spec: Spec{Name: "room-b", ActorKinds: []txactor.Kind{kind}}},
@@ -275,7 +254,3 @@ func (fake *cmodConditionalServiceFake) RequiredCMods(ServiceSelection) ([]CModI
 	fake.calls++
 	return nil, fake.err
 }
-
-type cmodActorFake struct{}
-
-func (cmodActorFake) Receive(protoactor.Context) {}

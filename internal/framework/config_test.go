@@ -37,14 +37,14 @@ func TestConfigCloneOwnsMutableRoutesAndEndpoints(t *testing.T) {
 			Redis:   routes,
 			MongoDB: routes,
 		},
-		Actor:     ActorConfig{Runtime: txactor.Config{Etcd: txactor.EtcdConfig{Endpoints: []string{"actor-1"}}}},
+		Actor:     ActorConfig{Runtime: txactor.Config{IdlePassivation: map[string]time.Duration{"role": time.Second}}},
 		Discovery: DiscoveryConfig{Etcd: discovery.EtcdConfig{Endpoints: []string{"discovery-1"}}},
 	}
 	cloned := config.clone()
 
 	config.Storage.Redis.Routes["main"] = storageconfig.RouteTarget{}
 	config.Storage.MongoDB.Routes["main"] = storageconfig.RouteTarget{}
-	config.Actor.Runtime.Etcd.Endpoints[0] = "actor-2"
+	config.Actor.Runtime.IdlePassivation["role"] = 2 * time.Second
 	config.Discovery.Etcd.Endpoints[0] = "discovery-2"
 
 	if got := cloned.Storage.Redis.Routes["main"].Rules[0].Shards[0]; got != "endpoint-1" {
@@ -53,7 +53,7 @@ func TestConfigCloneOwnsMutableRoutesAndEndpoints(t *testing.T) {
 	if got := cloned.Storage.MongoDB.Routes["main"].Rules[0].Shards[0]; got != "endpoint-1" {
 		t.Fatalf("cloned Mongo endpoint = %q", got)
 	}
-	if got := cloned.Actor.Runtime.Etcd.Endpoints[0]; got != "actor-1" {
+	if got := cloned.Actor.Runtime.IdlePassivation["role"]; got != time.Second {
 		t.Fatalf("cloned actor endpoint = %q", got)
 	}
 	if got := cloned.Discovery.Etcd.Endpoints[0]; got != "discovery-1" {

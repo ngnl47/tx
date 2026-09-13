@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
-	txactor "github.com/ngnl47/tx/modules/actor"
+	txactor "github.com/ngnl47/tx/internal/actortrial/testdata/protoactor"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 	"google.golang.org/protobuf/proto"
 )

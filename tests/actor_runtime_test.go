@@ -13,7 +13,7 @@ import (
 	protoactor "github.com/asynkron/protoactor-go/actor"
 	"github.com/ngnl47/tx/lifecycle"
 	txlog "github.com/ngnl47/tx/log"
-	txactor "github.com/ngnl47/tx/modules/actor"
+	txactor "github.com/ngnl47/tx/internal/actortrial/testdata/protoactor"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 	"github.com/ngnl47/tx/modules/discovery"
 	txprotocol "github.com/ngnl47/tx/protocol"

@@ -132,3 +132,9 @@ I3a 实施起点 `fe8656f`，六工程干净；本节点只改 tx，详见 [正�
 ## 框架宿主启动与交接闭环补充
 
 已将新宿主双入口注册与连接所有权移入框架私有装配，并连续补齐启动失败保留资源、Stop/Run 收尾重试、无 deadline 的有限 NATS Flush。真实两个 Server 的 etcd/NATS/gRPC 回归覆盖共享实体状态、源卸载、逐槽晋升、新 owner 懒加载与租约最后注销；不等于公开 Kind 或默认后端已替换。细节见 [Kind 切换方案](2026-09-13-actor-kind-cutover.md)。
+
+## 最新进展：默认后端切换（未提交）
+
+统一 Kind、私有 actorCatalog、L2 稳定归属、本地宿主及 gRPC/NATS 已成为 CModActor 默认实现。两个示例、配置、README 和现有集群验收同步迁移；正式 Bee/Ant 不再导入 ProtoActor，旧后端仅在隔离测试中保留。
+
+三仓全量、相关 race、两客户端测试/build 及真实集群通过；默认后端的 Ping/Pong 单轮同机对照通过。I3/I4 不整体勾完：冻结 I2 在正式入口的固定到达率/GD 回读验收、逐世界容量声明及 world 子协程完成边界仍待完成。详见 [本轮记录](../../audits/2026-09-13-default-actor-cutover.md)。下一项先完成正式入口性能验收，不进入 JetStream。

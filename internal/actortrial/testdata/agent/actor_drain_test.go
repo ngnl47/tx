@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	protoactor "github.com/asynkron/protoactor-go/actor"
-	txactor "github.com/ngnl47/tx/modules/actor"
+	txactor "github.com/ngnl47/tx/internal/actortrial/testdata/protoactor"
 	"github.com/ngnl47/tx/modules/discovery"
 )
 

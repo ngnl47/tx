@@ -325,9 +325,7 @@ procedure components: transaction=default, writeback=<project>
 `procedure` 是项目注册的 L3 CMod。Transaction 与 WriteBack 由它统一校验、启动、排水和停止。`fusion-storage` 统一拥有 Delay Scheduler，服务不再分别选择 producer 与 consumer。
 启动日志保留 CMod 拓扑顺序，同时输出过滤后的组件拓扑，便于核对当前进程实际创建了哪些组件。
 
-Actor CMod 没有隐含普通 RPC 或服务发现依赖。ProtoActor Remote 与官方 etcd Cluster Provider 是 Actor Runtime
-自身的传输和成员能力；L4 服务若同时使用普通 gRPC 或 `ServiceDirectory`，必须显式声明对应 CMod，避免把两套
-独立通信拓扑错误耦合。ProtoActor Provider 不经过 `tx/etcd`，也不共享 Discovery 的客户端或租约生命周期。
+Actor CMod 依赖共享 RPC 与 Discovery；业务声明 Kind 后自动纳入依赖闭包，复用同一实例身份、槽位 Watch 和生命周期。NATS 只承担传输，不另建成员表。
 
 组件职责仍保持正交。Transaction 只负责锁、undo、savepoint、死锁检测和提交参与者调度；WriteBack 只登记根 Store 并决定
 何时 Flush；Fusion 与 Mongo 是可选目标 Writer。正交不等于平级暴露：
@@ -1970,13 +1968,7 @@ HeapAlloc 受整个进程影响，不能作为 Manager 拒绝服务的唯一依�
 `Server.Stop` 仍会使用自己的 context 重新等待 pending 清零。排水失败后不能继续正常滚动发布，避免在仍有已受理
 工作时把失败误判成安全关闭。
 
-Actor 业务工作在 mailbox 成功接收 tx `Delivery` 前调用 `WaitGroupContext.BeginWork`，在 handler 同步返回后调用
-`EndWork`。这一对低层入口避免为每条高频消息分配完成闭包，并使排队消息与执行中消息共享同一生命周期账本；
-mailbox 溢出时立即回滚登记。只有 tx `Delivery` 属于业务工作，ProtoActor 的 `PoisonPill`、监督和集群控制消息不能
-受根生命周期准入限制，否则 Runtime 关闭时会拒绝自身停止消息。ActorSystem 保存同一个只读标准 `context.Context`，
-项目命令适配层把它嵌入生成的 `HandlerContext`；业务可将其传给下游 I/O，但不能取得 `WaitGroupContext.Cancel/Wait`。
-正常关闭先调用 Actor `Drain` 封闭新 Delivery 并等待 mailbox 排空，此时根 context 保持有效；随后停止业务后台任务、
-执行缓存管理器最终 Flush，成功后才释放业务服务。Actor 排空受统一 `runtime.lifecycle.drainTimeout` 限制，超时错误包含剩余 Delivery 数量。
+Actor 宿主在同一锁边界登记准入与 pending，覆盖加载、邮箱排队、处理和卸载。正常关闭先封闭新入口并等待真实工作返回，随后完成业务后台任务和最终持久化，再释放通信资源。超时保留资源供既定有限重试，不撤销已接受工作。
 
 ### 排水与关闭的区别
 
@@ -2338,13 +2330,12 @@ MsgQ 邮箱并允许恢复；`TerminateSession` 使用登记时保存的完整 S
 非根路径在请求级 admission 通过后才进入项目 `HTTPHandler`；未配置 `HTTPHandler` 返回 `404`，排水或停止后返回 `503`。
 如果未配置 `WebSocketListen`，当前阶段不会创建“纯 HTTP” Agent 服务。
 
-生成的 `CmdDescriptor` 提供静态 CommandID、目标服务、Actor kind 和 route key 类型；项目 resolver 根据身份和业务映射决定具体 PID 或实例。
+生成的 `CmdDescriptor` 提供静态 CommandID、目标服务、Actor kind 和 route key 类型；项目 resolver 根据认证身份解析 Kind/Key，实例归属由 tx 统一解析。
 
 连接入口可以是真实客户端，也可以由项目扩展为本地驱动或旁路模拟连接。tx 提供基础网络 Agent，同时保持 dispatcher 接口开放。
 
 项目通过自身 `services/agent.HandlerProvider` 在组合根注入认证与 Actor 路由。Provider 接收当前
-Bee 或 Ant Context，因此可以使用本次 Server 已声明的 Actor、服务目录，以及 Ant 的逻辑槽位；它不能依赖包级可变注册表。无状态项目通常
-解析 Virtual PID，有状态项目通常把业务槽位映射为固定 Kind 宿主 PID。
+Bee 或 Ant Context，使用 CModActorDirect 完成直连；稳定分区或业务槽位在 Kind 声明，Provider 不组装发现连接或 PID。
 
 `IdentityResolver` 只返回 `protocol.SessionPrincipal`，其中包含 `AccountID`、`BorrowAccountID`、`ServerID`、`RoleID`、
 `SessionID`、`AccessMode` 和 `CanCreateRole`。Agent 负责生成正 `ConnectionID`，校验并构造 `protocol.SessionIdentity`；
@@ -2390,128 +2381,32 @@ Game/Actor 返回的处理完成序号推进；普通响应与 `System_Error` �
 
 ### Actor
 
-`modules/actor` 基于 ProtoActor-go 和官方 etcd Cluster Provider。它提供两类定位：
-
-- Virtual Actor：按 `(kind, identity)` 由集群定位，适合无状态或可恢复实体。
-- Fixed Kind：业务槽位确定物理实例，Runtime 在该实例内按 `Delivery.RouteKey` 惰性激活实体 Actor。
-
-#### Virtual Actor 与 Fixed Kind 的归属模型
-
-Fixed Kind 不是为 Virtual Actor 更换另一种 Hash 算法，而是绕开基于动态成员集合的 Actor 放置，改用稳定逻辑槽位和
-显式 assignment。两种模型可以分别写成：
+默认后端由 tx 本地实体宿主、L2 Discovery 归属和 Core NATS 构成。公开 Kind 工厂统一接收 BehaviorFactory，不再区分 Virtual/Fixed 构造入口，不暴露 ProtoActor PID、Props 或 ActorSystem。
 
 ```text
-Virtual Actor:
-owner = Rendezvous(kind, identity, currentMembers)
-
-Fixed Kind:
-slot       = BusinessRoute(actorKey)
-assignment = PersistedAssignment(slot)
-owner      = assignment.RuntimeInstanceID
+Identity(Kind, Key)
+  -> Kind.SlotMapping（默认 v1 1024 分区，或业务稳定映射）
+  -> SlotDirectory + ServiceDirectory 缓存
+  -> assignment(RuntimeInstanceID, Generation)
+       -> Agent: gRPC 共享 Endpoint
+       -> Actor 间: NATS 实例主题
+  -> 同一本地实体宿主 -> 同一实体邮箱 -> Behavior.Receive
+业务下行 -> gRPC -> owner MsgQ -> Agent -> 客户端
 ```
 
-Virtual Actor 没有集中保存全部 Actor 位置的主管节点。每个集群成员根据同一份 MemberList 独立计算 owner；目标实例的
-placement Actor 只维护本机的 `identity -> PID`。成员离开或加入后，Rendezvous 归属会重新计算，受影响的 Actor 在原
-实例停止，并在后续请求到达新 owner 时惰性重建。优雅关闭负责排空已受理消息和安全释放状态，不能消除滚动发布期间的
-多次成员归属重算。
+NATS 不决定实体归属，也不按实体创建订阅。首次缺少 assignment 时，L2 Ownership 执行容量预检与 CAS；已有归属不随新成员入环变化。懒加载前单独读取权威槽位，不能用 Watch 缓存替代。默认分区只共享 owner，每个实体仍独立加载、串行处理、卸载和预留容量；世界与 seasonWorld 可共享 slgworld 服务池并保留独立业务槽位。
 
-Fixed Kind 使用两级稳定映射：
-
-```text
-actorKey，例如 roleId/serverId/worldId
-        |
-        v 业务规则
-稳定 SlotID，例如 game-slot-1
-        |
-        v 本地 Watch 缓存的 etcd assignment
-RuntimeInstanceID + Generation + ActorEndpoint
-        |
-        v Fixed Kind 宿主
-RouteKey -> child PID
-```
-
-etcd 只持久化 `SlotID -> RuntimeInstanceID + Generation`，不会保存每个 Actor 的 PID。Agent 或其他调用服务通过本地
-`SlotDirectory` 缓存解析槽位，不持有逐 Actor 位置表；具体 `RouteKey -> child PID` 只存在于目标进程的固定宿主
-Actor 中，进程重启后按首条消息惰性重建。
-
-业务可以使用 Hash 计算逻辑槽位，但槽位集合必须稳定，例如 `hash(roleID) % 1024`。禁止使用
-`hash(roleID) % len(currentRunningInstances)` 直接选择有状态宿主，否则实例扩缩容会重新引入数据漂移。槽位到运行
-实例的 assignment 只能由发布控制面显式创建或通过 CAS `PromoteSlot` 换代，不能随 MemberList 变化自动改派。
-
-Actor 间跨实例通信是网状直连，不经过 msgq 中继。msgq 只负责客户端会话链路。
-
-有状态 SLG/MMO 实体不能因为成员变化随机漂移。业务使用逻辑槽位和 generation 固定宿主；节点重启期间该槽位短暂不可用，恢复后原位重建。无状态轻量 Actor 才允许成员哈希变化后惰性重建。
-
-每个固定 Kind 在进程内只有一个稳定宿主 Actor。外部 PID 只定位这个宿主，实体 ID 不拼进 PID，而是保留在强类型
-`RouteKey` 中。宿主邮箱串行完成 `RouteKey -> child PID` 的 O(1) 查找；首次访问时创建并监视 child，后续消息保留原
-sender 转发给同一 child。child 使用与 Virtual Actor 相同的有界邮箱、Acceptance 和生命周期统计，但不安装
-ProtoActor ClusterIdentity 中间件，也不注册到 `disthash`。
-
-Actor 实体生命周期属于进程内数据面，不属于 etcd 控制面：
-
-- Virtual Actor 的 identity 与 PID 由 ProtoActor `disthash` placement Actor 在本地维护，成员拓扑变化通过
-  ProtoActor MemberList 传播；单个 identity 的创建和停止不会注册 etcd key。
-- Fixed Kind 的 `RouteKey -> child PID` 只保存在固定宿主 Actor 的本地 map 中；child 停止后由 `Terminated` 清理。
-- etcd 只保存进程成员 lease 和业务显式创建的固定槽位 assignment。玩家上线/下线、Room 创建/销毁不会写 etcd，
-  也不会触发对应的 watch 风暴。
-
-`Runtime` 使用读写锁隔离本地生命周期状态。Start、Drain 和 Shutdown 独占写锁；互不相关的 `VirtualPID` 解析共享
-读锁并发进入 ProtoActor placement。Shutdown 等待已经进入的解析返回后再拆除 Cluster，不能让解析观察到半关闭状态。
-
-服务发现实例发布三类不可混用的地址：
-
-- `Instance.Endpoint`：当前进程共享 gRPC Host。
-- `Instance.ActorEndpoint`：ProtoActor Remote。
-- `Instance.Endpoints`：项目按稳定名称发布的客户端地址或其他项目公开地址；框架只负责透传和只读快照。
-
-`actor.NewKind` 声明 Virtual Actor；`actor.NewFixedKind` 声明固定实体。L4 服务仍统一放入
-`bee.ServiceSpec.ActorKinds` 或 `ant.ServiceSpec.ActorKinds`；Server 发现固定 Kind 后自动选择 Discovery CMod，并保证 Actor Remote 先启动、写入
-`ActorEndpoint`，随后才注册实例 lease。固定宿主邮箱接入同一排水生命周期；进入排水后新 Delivery 不会创建实体，
-已经转发到 child 的消息仍由 WaitGroupContext 等待完成。
+ServiceSpec.ActorKinds 构成应用目录，Kind 名称应用内唯一；仅选中服务执行本地工厂。CModActor 依赖 RPC 和 Discovery，绑定共享接收入口与 NATS，服务 ready 后才发布 running。连接和关闭权限在框架内，业务通过 CModActor 或 CModActorDirect 的窄接口使用。
 
 ### Actor mailbox
 
-默认 Actor mailbox 有界且非阻塞：满时丢弃新消息，并在目标实例限频记录 overflow。普通 `Tell` 只表示本地 runtime 接受投递，不确认远端业务完成。
+Tell 完成寻址后仅确认本地投递；TellAccepted 确认到达当前连接的 NATS 服务端，不确认持久化或目标收取。CallFuture 返回异步 Future，Call 同步等待相同结果。等待超时不撤销已接受业务，也不自动重投。普通结果必须有 MessageType；Agent 完成确认仅有正 ProcessedUpSeq，业务下行独立走 MsgQ。JetStream 可靠任务尚未实现。
 
-Actor 对外固定四种投递语义：
+有界邮箱将准入与生命周期登记放在同一边界；关闸后拒绝新消息，已接受的初始化、排队和处理继续完成。远端错误经 Result 协议传播，普通 Tell 不增加执行回执。远程 pending 由响应、Context 到期或连接关闭清理，不为每个 Future 常驻等待 goroutine。Agent 先使用归属目录检查 running 状态，不再维护依赖 PID 的第二份短期排水缓存。
 
-| API | 完成条件 | 适用场景 |
-| --- | --- | --- |
-| `Tell` | 本地 Runtime 接受投递 | 可丢通知、可由业务恢复的刷新 |
-| `TellAccepted` | 目标 Actor 从邮箱取出消息 | 少量需要确认送达邮箱、但不等待业务完成的命令 |
-| `CallFuture` | 立即返回本地 Future，稍后等待业务结果 | 可以并行完成其他工作的请求 |
-| `Call` | 等待业务结果 | 必须取得 RoomReady、创建结果或查询结果后才能继续的流程 |
+Behavior.Receive 接收公开 Delivery，返回 Result/error；Context.Post/After/Deactivate 用于本地串行工作与业务自定义卸载。工厂、OnInitAfter、OnActivateBefore、OnActivateAfter 不附加统一 deadline；回调完成时取消 Context。Receive、卸载和权威查询保留 CallbackTimeout（默认 30 秒），具体加载 I/O 使用自身期限。调用方等待或排水超时不会提前释放尚未完成的加载与容量。
 
-`TellAccepted` 的 Acceptance 在 receiver middleware 调用业务 Actor 之前返回；它不能代表业务成功。`Call` 复用
-`CallFuture + Await`，不能另建第二套请求协议。所有等待入口必须带 deadline，超时表示结果不确定，不能自动
-重试或切换 PID。取消一次 `Await` 只终止本地等待，不撤销已经投递的远端处理。
-
-目标邮箱关闭准入后，尚未接受的 `TellAccepted`、`CallFuture` 和 `Call` 请求通过现有 Result 信封返回
-`CallErrorCodeRejected=-3`，表示该请求没有进入业务处理。调用方不必等待整个 deadline；普通 `Tell` 不增加回执。
-已接受、排队和执行中的请求继续排水，不因关闭准入改成拒绝。拒绝回传仍依赖正常通信，目标已经停止或网络故障时
-仍可能超时；此机制不提供自动重投或持久化 MQ 保证。
-
-Agent 通过服务发现的本地 `ActorEndpoint → InstanceID` 索引关联目标 PID；索引随原快照一起替换、清空，
-地址未知或同时被多个实例声明时不使用排水缓存。收到明确的准入拒绝后，按调用前确定的实例 ID 缓存 1 秒，
-命中只返回失败、不续期、不发起 Actor Call；到期允许再次调用。普通业务错误和超时不登记排水状态。
-缓存复用 Otter，最多保留 4096 个实例记录，容量淘汰只减少优化效果；过期判断在读取时完成，不启动额外清理协程。
-目标路由解析仍照常执行，该优化只省去已知排水实例的业务 Call，不承诺消除路由解析自身的 I/O。
-实例身份来自异步服务发现，缓存不承担归属交接或一致性屏障，不改变 Seq/Ack、断线恢复和既有关闭流程。
-
-protobuf `Delivery` 使用内部 `DeliveryMode` 和 `request_id` 区分三类线上信封；业务结果使用 `Result` 信封，错误由
-稳定 `int32` code 和诊断 message 表达。每个 Runtime 创建一个本地响应 Actor，把 Acceptance/Result 按 request ID 投递到
-有界 pending 表。pending 容量由 `MaxPendingCalls` 限制，context 使用 `AfterFunc` 到期清理，不为每个 Future 常驻
-等待 goroutine；Runtime 关闭会用 `ErrRuntimeStopped` 一次性完成所有 pending。成功 Result 必须携带非空
-`MessageType`；空类型无法建立生成响应类型契约，响应 Actor 会将其判定为 `ErrInvalidResponse`。
-
-普通 Kind 的声明只保存名称、业务工厂、放置类型和生命周期选项，不提前创建后端 Props 或 Cluster Kind。Runtime 在装配时统一构建 Props，Kind 显式空闲卸载选项优先于运行时默认值；工厂仅在实际激活时调用。原生 `AdaptKind` 保留已有 Props 和 Strategy，装配时克隆 Props，不重复追加集群初始化中间件。
-
-NATS 迁入中的实体行为契约由 `actor.Behavior`、`BehaviorFactory`、`Context` 和 `Identity` 表达，直接复用私有宿主类型，不复制生命周期。Context 的期限属于当前回调，Post/After/Deactivate 绑定本次激活；Post 返回只读的 LocalFuture，不能在同一实体回调内等待自己的消息。该契约目前由新宿主和直连适配验证使用，尚不能传入现行 ProtoActor NewKind 工厂；工厂与正式宿主须一并切换。
-
-L4 服务在 Bee/Ant `ServiceSpec.ActorKinds` 中声明 Kind，L3 Server 自动将 Actor CMod 加入依赖闭包并在启动前拒绝重名。
-普通可恢复实体使用 `actor.NewKind`，固定归属实体使用 `actor.NewFixedKind`；只有需要 ProtoActor 自定义 Strategy 的
-高级项目才使用 `actor.AdaptKind`。底层
-`ActorSystem` 保留为高级扩展面，不属于常规业务调用链。
+正常交接先关闸、排空及必要持久化，PrepareHandoff 返回带源实例身份的确认，控制面再逐槽 CAS 晋升，最后停止旧实例。Stop 本身不推断替代 owner。故障接管继续由运维处理，不能以成员离线证明旧实例不再执行。
 
 ### Actor 空闲钝化与 EntityCache 淘汰
 
@@ -2525,7 +2420,7 @@ Actor 空闲钝化和 GD EntityCache 淘汰是两条独立生命周期：
 Actor Kind 连续无消息
   -> tx 私有钝化消息
   -> 停止当前实体 Actor
-  -> placement 或 fixedHost 在后续消息到达时惰性重建
+  -> 同一实体宿主在后续消息到达时惰性重建
 
 GD EntityCache 达到容量或 access expiry
   -> Otter 删除 policy token 并登记候选
@@ -2534,11 +2429,7 @@ GD EntityCache 达到容量或 access expiry
   -> 删除 GD 引用
 ```
 
-Core 通过 `actor.WithIdlePassivation(timeout)` 或 `actor.Config.IdlePassivation[kind]` 配置 Kind；没有配置的 Kind 不增加
-包装 Actor 或消息分支。启用后由通用包装维护独立 `time.Timer`，到期时向自身投递 tx 私有钝化消息；普通业务消息只重置
-该计时器，业务 Actor 自己的 `ReceiveTimeout` 仍原样接收。Virtual Actor 终止后由官方 placement 清除 activation；固定实体终止后
-`fixedHost` 根据 `Terminated` 删除旧 PID，下一条相同 RouteKey 消息创建新实体。两条路径都不会改写 etcd 成员或业务槽位。
-同一项目 yml 可以为多个可选服务声明 Kind 策略；Runtime 只消费本进程已注册 Kind，避免单服务实例被其他服务配置阻断启动。
+Kind 显式 `WithIdlePassivation` 优先于运行时策略，宿主在同一激活内维护空闲期限，卸载与消息准入共用锁边界。清理完成后才移除本地实体，下次请求按同一稳定 assignment 懒加载；卸载不修改持久槽位。运行时只消费本地注册 Kind 的策略。
 
 有状态模板为 role 和 world bucket 分别创建 EntityCache。`values` map 是业务对象身份的唯一权威，Otter v2.3.0
 只保存指向同一 entry 的 policy token，并使用 adaptive W-TinyLFU 管理准入、热度和按条目数的软容量。默认
@@ -2556,9 +2447,9 @@ entry 指针和 generation；回调登记后发生的访问、对象替换或重
 Actor Runtime 不依赖 GD、Store、Procedure或 WriteBackManager，也不在超时回调执行存储 I/O。连接断开不直接停止
 Actor；普通心跳命令经过 RoleActor mailbox 即可续期。心跳不读取 GD 时，不延长 EntityCache 中 GD 的空闲时间。
 
-钝化不提高消息投递可靠级别。Actor 从接收钝化消息到 placement 或 `fixedHost` 观察到终止之间存在短暂旧 PID 窗口；
-`Tell` 仍是无需确认、允许 dead letter 的基础投递。必须感知该窗口的业务使用 `TellAccepted` 或 `Call`，由调用方按既定错误
-策略重试；钝化层不把所有消息强制改成确认式投递。
+钝化不提高消息可靠级别。正在卸载的激活拒绝新准入，清理完成后才可重建；TellAccepted 仅确认 NATS 到达，不能检测业务已卸载或不允许重建。需要业务结果时使用 Call，不自动重试结果未知的请求。
+
+以下 Actor 性能数字属于迁移前历史基线，不是当前后端的实测结论。
 
 2026-08-28 使用 Go 1.27.0 在 x86_64 macOS、Intel i9-9880H 上运行固定 Actor 和 EntityCache 基准。已有固定实体的串行
 投递在未启用钝化时为 `9.92-10.16 us/op, 728-739 B/op, 12 allocs/op`，启用一小时空闲钝化后为
@@ -2599,7 +2490,9 @@ Actor 实体 churn 与进程成员 churn 是两条不同路径。`TestVirtualPla
 继续只承载可恢复且允许漂移的实体，有状态实体继续使用 Fixed Kind。若生产规模证明滚动发布的 GC 或重建峰值不可接受，
 再评审上游优化或自定义 IdentityLookup；成员离开必须立即生效，不能用统一延迟继续向失效 owner 路由。
 
-#### Actor 与普通 RPC 传输基线
+#### 历史 ProtoActor 与普通 RPC 传输基线
+
+以下为旧后端历史数据；源代码与关键测试保留在 internal/actortrial/testdata/protoactor，不属于当前默认运行时，不能作为本轮性能结论。
 
 Actor Remote 与 `modules/rpc` 是两套独立传输。`Instance.ActorEndpoint` 承载 Actor Remote，`Instance.Endpoint` 承载普通
 gRPC；基准必须分别命名和测量，不能把 Actor Remote 写作 gRPC Actor。测试代码只组装既有公开接口，不为采样增加生产
@@ -2725,11 +2618,7 @@ LogListener 负责旁路采集、批量上传、重试和留存，外部日志�
 前完成整行编码；console writer 串行提交完整行，不能让并发协程的 JSON 内容交错。项目仍可替换默认 slog Handler，
 但不得在业务请求中同步上传远端日志。
 
-Actor Runtime 创建 ActorSystem 时通过 ProtoActor 官方 LoggerFactory 注入当前 `tx/log` Handler。ProtoActor 仍直接生成
-自己的日志记录和 `lib`、`system` 等字段，tx 不转抄、不重复写出，只统一格式与输出目标。Actor Handler 外额外包裹一个
-模块级最低日志阈值：`actor.Config.LogLevel` 默认 `info`，与项目全局级别相互独立。这样项目可以开启 Debug 观察 msgq 和
-业务分派，同时避免 Gossip 心跳淹没控制台；专项排查 Actor Cluster 时可以显式启用 Actor Debug。调试器和其他进程在
-应用外部写出的文本不属于该日志边界。
+Actor 生产后端不再启动 ProtoActor，也不保留独立 Gossip 日志级别；宿主、传输与业务继续遵守现有结构化日志边界。
 
 网络消息日志遵循“最接近完整语义的一层记录一次”：
 

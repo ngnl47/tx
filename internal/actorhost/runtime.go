@@ -34,6 +34,7 @@ type Behavior struct {
 }
 
 // BehaviorFactory 在每次激活时判断加载条件并创建独立行为；失败时返回错误。
+// 工厂与初始化、激活事件不附加统一 deadline；具体 I/O 由其调用方设置期限。
 type BehaviorFactory func(Context) (*Behavior, error)
 
 // Context 绑定本次激活，过期句柄不能投递到重建实例。
@@ -142,6 +143,7 @@ type Runtime struct {
 }
 
 // New 的工厂先做业务加载准入再构造对象；返回对象后由运行时负责清理。
+// timeout 限制权威归属查询、Receive 和卸载回调的上下文，不限制业务初始化耗时。
 func New(capacity int, timeout time.Duration, factory BehaviorFactory) *Runtime {
 	if capacity < 1 || timeout <= 0 || factory == nil {
 		panic("actortrial: invalid runtime configuration")
@@ -260,11 +262,17 @@ func (r *Runtime) Drain(ctx context.Context) error {
 	}
 }
 
-func (e *activation) invoke(fn func(Context) error) (err error) {
+func (e *activation) invoke(timeout time.Duration, fn func(Context) error) (err error) {
 	if fn == nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(e.life, e.runtime.timeout)
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(e.life, timeout)
+	} else {
+		ctx, cancel = context.WithCancel(e.life)
+	}
 	defer cancel()
 	defer func() {
 		if value := recover(); value != nil {
@@ -298,7 +306,7 @@ func (e *activation) run() {
 		}
 		e.runtime.mu.Unlock()
 	}()
-	err := e.invoke(func(ctx Context) error {
+	err := e.invoke(0, func(ctx Context) error {
 		var err error
 		behavior, err = e.runtime.factory(ctx)
 		return err
@@ -310,7 +318,7 @@ func (e *activation) run() {
 			err = errors.New("actortrial: negative idle passivation")
 		} else {
 			for _, hook := range []func(Context) error{behavior.OnInitAfter, behavior.OnActivateBefore, behavior.OnActivateAfter} {
-				if err = e.invoke(hook); err != nil {
+				if err = e.invoke(0, hook); err != nil {
 					break
 				}
 			}
@@ -350,7 +358,7 @@ func (e *activation) run() {
 			return
 		}
 		var value any
-		err := e.invoke(func(ctx Context) error { var err error; value, err = behavior.Receive(ctx, req.message); return err })
+		err := e.invoke(e.runtime.timeout, func(ctx Context) error { var err error; value, err = behavior.Receive(ctx, req.message); return err })
 		if timer != nil {
 			timer.Reset(behavior.IdlePassivation)
 		}
@@ -370,12 +378,12 @@ func (e *activation) failPending(err error) {
 	}
 }
 func (e *activation) report(hook func(Context) error) {
-	if err := e.invoke(hook); err != nil {
+	if err := e.invoke(e.runtime.timeout, hook); err != nil {
 		slog.Error("actortrial lifecycle callback failed", "identity", e.identity, "err", err)
 	}
 }
 
-// Timeout 返回宿主回调期限，供内部控制入口保持同一超时边界。
+// Timeout 返回 Receive 和卸载回调的上下文期限，不代表初始化的最长耗时。
 func (r *Runtime) Timeout() time.Duration { return r.timeout }
 
 // Draining 返回本地准入状态，不等待排水完成。

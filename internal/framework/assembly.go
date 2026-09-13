@@ -9,7 +9,6 @@ import (
 
 	"github.com/ngnl47/tx/lifecycle"
 	txlog "github.com/ngnl47/tx/log"
-	txactor "github.com/ngnl47/tx/modules/actor"
 	"github.com/ngnl47/tx/modules/discovery"
 	"github.com/ngnl47/tx/modules/txn"
 	txstorage "github.com/ngnl47/tx/storage"
@@ -98,24 +97,6 @@ func (server *Server) startDiscovery() error {
 	if err := discoveryRuntime.WaitReady(readyCtx); err != nil {
 		return fmt.Errorf("framework: wait discovery snapshot: %w", err)
 	}
-	return nil
-}
-
-func (server *Server) startActor() error {
-	runtime, err := txactor.New(server.config.Actor.Runtime, server.runtime.actorKinds...)
-	if err != nil {
-		return fmt.Errorf("framework: initialize actor runtime: %w", err)
-	}
-	if err := runtime.Start(server.runtime.lifecycle); err != nil {
-		return fmt.Errorf("framework: start actor runtime: %w", err)
-	}
-	endpoint, err := runtime.Endpoint()
-	if err != nil {
-		_ = runtime.Shutdown()
-		return fmt.Errorf("framework: resolve actor endpoint: %w", err)
-	}
-	server.runtime.actor = runtime
-	server.runtime.setActorEndpoint(endpoint)
 	return nil
 }
 

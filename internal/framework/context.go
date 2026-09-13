@@ -81,6 +81,8 @@ type Context interface {
 	Directory() discovery.Directory
 	// Actor 返回 Actor 消息投递入口；未启用时返回 nil。
 	Actor() txactor.Messenger
+	// DirectActor 返回使用相同实体归属的 gRPC 直连调用入口。
+	DirectActor() txactor.Caller
 	// Transaction 返回单机 Procedure 执行器；无状态服务返回 nil。
 	Transaction() txn.Executor
 	// SessionIDs 返回绑定当前 Discovery 运行身份的 SessionID 分配器；未启用时返回 nil。
@@ -207,7 +209,7 @@ func (service *serviceContext) Actor() txactor.Messenger {
 	if service == nil || service.runtime == nil || service.runtime.actor == nil {
 		return nil
 	}
-	return actorAccess{runtime: service.runtime.actor}
+	return service.runtime.actor
 }
 
 func (service *serviceContext) Transaction() txn.Executor {
@@ -233,4 +235,11 @@ func (service *serviceContext) Advanced() Advanced {
 		return nil
 	}
 	return advancedAccess{runtime: service.runtime}
+}
+
+func (service *serviceContext) DirectActor() txactor.Caller {
+	if service == nil || service.runtime == nil {
+		return nil
+	}
+	return service.runtime.actorDirect
 }

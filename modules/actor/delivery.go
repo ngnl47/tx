@@ -1,12 +1,10 @@
 package actor
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"unicode/utf8"
 
-	protoactor "github.com/asynkron/protoactor-go/actor"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 	txprotocol "github.com/ngnl47/tx/protocol"
 )
@@ -15,7 +13,7 @@ var (
 	ErrInvalidDelivery = errors.New("actor: invalid delivery")
 )
 
-// Delivery 是投递给目标 Actor 的内部消息。目标位置由 PID 决定，Payload 保持调用方
+// Delivery 是投递给目标 Actor 的内部消息。目标位置由实体身份解析，Payload 保持调用方
 // 编码后的 BON 字节，不在 Actor 运行时中反序列化为业务对象。
 type Delivery struct {
 	MessageType string
@@ -44,7 +42,7 @@ func (d Delivery) Validate() error {
 	return validateRouteKey(d.RouteKey)
 }
 
-// ToProto 将 Delivery 转换为 ProtoActor 可跨节点传输的 protobuf 信封。
+// ToProto 将 Delivery 转换为 跨节点传输的 protobuf 信封。
 func (d Delivery) ToProto() (*actorpb.Delivery, error) {
 	return d.toProto(actorpb.DeliveryMode_DELIVERY_MODE_TELL, 0)
 }
@@ -254,62 +252,4 @@ func routeKeyFromProto(kind actorpb.RouteKeyKind, numeric uint64, text string) (
 	default:
 		return txprotocol.RouteKey{}, ErrInvalidDelivery
 	}
-}
-
-// TellAccepted 投递消息并等待目标 Actor 从邮箱取出。它不等待业务处理完成。
-func (r *Runtime) TellAccepted(ctx context.Context, pid *protoactor.PID, delivery Delivery) error {
-	future, err := r.sendRequest(ctx, pid, delivery, actorpb.DeliveryMode_DELIVERY_MODE_ACCEPTED, pendingAccepted)
-	if err != nil {
-		return err
-	}
-	_, err = future.Await(ctx)
-	return err
-}
-
-// CallFuture 投递业务请求并立即返回 Future。
-func (r *Runtime) CallFuture(ctx context.Context, pid *protoactor.PID, delivery Delivery) (*Future, error) {
-	return r.sendRequest(ctx, pid, delivery, actorpb.DeliveryMode_DELIVERY_MODE_CALL, pendingResult)
-}
-
-// Call 投递业务请求并等待结果。它与 CallFuture 共用同一套 pending 和响应协议。
-func (r *Runtime) Call(ctx context.Context, pid *protoactor.PID, delivery Delivery) (Result, error) {
-	future, err := r.CallFuture(ctx, pid, delivery)
-	if err != nil {
-		return Result{}, err
-	}
-	return future.Await(ctx)
-}
-
-func (r *Runtime) sendRequest(ctx context.Context, pid *protoactor.PID, delivery Delivery, mode actorpb.DeliveryMode, expected pendingKind) (*Future, error) {
-	if err := requireDeadline(ctx); err != nil {
-		return nil, err
-	}
-	if pid == nil {
-		return nil, ErrInvalidPID
-	}
-	if err := delivery.Validate(); err != nil {
-		return nil, err
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.stopped {
-		return nil, ErrRuntimeStopped
-	}
-	if r.draining {
-		return nil, ErrRuntimeDraining
-	}
-	if !r.started || r.cluster == nil || r.responder == nil {
-		return nil, ErrRuntimeNotStarted
-	}
-	requestID, future, err := r.pending.add(ctx, expected, delivery.CommandID)
-	if err != nil {
-		return nil, err
-	}
-	message, err := delivery.toProto(mode, requestID)
-	if err != nil {
-		r.pending.fail(requestID, err)
-		return nil, err
-	}
-	r.cluster.ActorSystem.Root.RequestWithCustomSender(pid, message, r.responder)
-	return future, nil
 }

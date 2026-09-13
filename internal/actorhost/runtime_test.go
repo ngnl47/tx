@@ -9,6 +9,8 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/ngnl47/tx/modules/discovery"
 )
 
 func TestActivationSharedAndIndependent(t *testing.T) {
@@ -386,4 +388,80 @@ func TestBeginDrainRetainsAcceptedWork(t *testing.T) {
 			t.Fatalf("已排队任务: %v %v", value, err)
 		}
 	})
+}
+
+// 初始化没有统一执行期限；调用方和排水超时不能提前释放仍在加载的实体。
+func TestSlowInitializationSurvivesWaitAndDrainTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var callbacks []Context
+		var ownershipContext context.Context
+		load := func(ctx Context) error {
+			callbacks = append(callbacks, ctx)
+			time.Sleep(2 * time.Second)
+			return ctx.Err()
+		}
+		r := New(2, time.Second, func(ctx Context) (*Behavior, error) {
+			if err := load(ctx); err != nil {
+				return nil, err
+			}
+			return &Behavior{
+				OnInitAfter: load, OnActivateBefore: load, OnActivateAfter: load,
+				Receive: func(ctx Context, message any) (any, error) {
+					if _, ok := ctx.Deadline(); !ok {
+						t.Error("业务处理期限被意外移除")
+					}
+					return message, nil
+				},
+			}, nil
+		})
+		defer r.Drain(context.Background())
+		r.SetActivationLimits(ActivationLimits{Bytes: 100, Estimate: func(Identity) int64 { return 100 }})
+		r.BindSlots("world-host", initializationSlotReader(func(ctx context.Context, slot string) (discovery.SlotAssignment, error) {
+			ownershipContext = ctx
+			return discovery.SlotAssignment{SlotID: slot, RuntimeInstanceID: "world-host"}, nil
+		}), nil)
+		future, err := r.Submit(Identity{"world", "1"}, "ready")
+		if err != nil {
+			t.Fatal(err)
+		}
+		wait, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		if _, err := future.Await(wait); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("等待超时: %v", err)
+		}
+		drain, cancelDrain := context.WithTimeout(context.Background(), time.Second)
+		defer cancelDrain()
+		if err := r.Drain(drain); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("排水应等待加载完成: %v", err)
+		}
+		if usage := r.ActivationUsage(); usage.Initializing != 1 || usage.ReservedBytes != 100 {
+			t.Fatalf("加载未结束就释放容量: %+v", usage)
+		}
+		if value, err := future.Await(context.Background()); err != nil || value != "ready" {
+			t.Fatalf("慢初始化后的已接受消息: %v, %v", value, err)
+		}
+		if err := r.Drain(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := ownershipContext.Deadline(); !ok || !errors.Is(ownershipContext.Err(), context.Canceled) {
+			t.Fatalf("归属查询应独立限时并及时取消: deadline=%v, err=%v", ok, ownershipContext.Err())
+		}
+		if len(callbacks) != 4 {
+			t.Fatalf("初始化回调次数: %d", len(callbacks))
+		}
+		for _, ctx := range callbacks {
+			if _, ok := ctx.Deadline(); ok || !errors.Is(ctx.Err(), context.Canceled) {
+				t.Fatalf("初始化回调应只在结束时取消: deadline=%v, err=%v", ok, ctx.Err())
+			}
+		}
+		if usage := r.ActivationUsage(); usage != (ActivationUsage{}) {
+			t.Fatalf("排水后容量未释放: %+v", usage)
+		}
+	})
+}
+
+type initializationSlotReader func(context.Context, string) (discovery.SlotAssignment, error)
+
+func (read initializationSlotReader) ResolveSlot(ctx context.Context, slot string) (discovery.SlotAssignment, error) {
+	return read(ctx, slot)
 }

@@ -18,8 +18,10 @@ import (
 	"time"
 
 	protoactor "github.com/asynkron/protoactor-go/actor"
+	legacyagent "github.com/ngnl47/tx/internal/actortrial/testdata/agent"
+	txactor "github.com/ngnl47/tx/internal/actortrial/testdata/protoactor"
 	"github.com/ngnl47/tx/lifecycle"
-	txactor "github.com/ngnl47/tx/modules/actor"
+	publicactor "github.com/ngnl47/tx/modules/actor"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 	"github.com/ngnl47/tx/modules/agent"
 	"github.com/ngnl47/tx/modules/discovery"
@@ -471,8 +473,8 @@ func newUplinkPeer(base comparisonConfig) (peer *comparisonPeer, err error) {
 			if e != nil {
 				return nil, e
 			}
-			dispatch, e = agent.NewActorDispatcher(agent.ActorDispatcherOptions{Messenger: r, CallTimeout: time.Second, Resolver: agent.ActorDispatchResolverFunc(func(_ context.Context, req agent.DispatchRequest) (agent.ActorDispatch, error) {
-				return agent.ActorDispatch{Target: pid, Delivery: txactor.Delivery{MessageType: "game.up", CommandID: uint64(req.CommandID), RouteKey: req.RouteKey, Payload: req.Payload}}, nil
+			dispatch, e = legacyagent.NewActorDispatcher(legacyagent.ActorDispatcherOptions{Messenger: r, CallTimeout: time.Second, Resolver: legacyagent.ActorDispatchResolverFunc(func(_ context.Context, req agent.DispatchRequest) (legacyagent.ActorDispatch, error) {
+				return legacyagent.ActorDispatch{Target: pid, Delivery: txactor.Delivery{MessageType: "game.up", CommandID: uint64(req.CommandID), RouteKey: req.RouteKey, Payload: req.Payload}}, nil
 			})})
 			if e != nil {
 				return nil, e
@@ -554,8 +556,8 @@ func newUplinkPeer(base comparisonConfig) (peer *comparisonPeer, err error) {
 				transport = &DirectTransport{Sender: sender}
 			}
 			caller := &RoutedCaller{Resolver: resolver, SlotID: func(Identity) string { return "game" }, Transport: transport}
-			dispatch = NewAgentDispatcher(caller, func(_ context.Context, req agent.DispatchRequest) (Identity, txactor.Delivery, error) {
-				return Identity{"game", strconv.FormatInt(req.Identity.RoleID, 10)}, txactor.Delivery{MessageType: "game.up", CommandID: uint64(req.CommandID), RouteKey: req.RouteKey, Payload: req.Payload}, nil
+			dispatch = NewAgentDispatcher(caller, func(_ context.Context, req agent.DispatchRequest) (Identity, publicactor.Delivery, error) {
+				return Identity{"game", strconv.FormatInt(req.Identity.RoleID, 10)}, publicactor.Delivery{MessageType: "game.up", CommandID: uint64(req.CommandID), RouteKey: req.RouteKey, Payload: req.Payload}, nil
 			}, time.Second)
 		}
 	}

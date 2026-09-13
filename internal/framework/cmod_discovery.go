@@ -7,7 +7,7 @@ import (
 
 func (server *Server) discoveryCMod() CMod {
 	return &builtInCMod{
-		spec: CModSpec{ID: CModDiscovery, After: []CModID{CModRPC, CModActor}},
+		spec: CModSpec{ID: CModDiscovery, After: []CModID{CModRPC}},
 		validate: func(CModContext) error {
 			if _, err := server.config.Discovery.Etcd.Normalize(); err != nil {
 				return fmt.Errorf("discovery config: %w", err)

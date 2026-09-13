@@ -5,12 +5,14 @@ import (
 	"strings"
 	"testing"
 
-	protoactor "github.com/asynkron/protoactor-go/actor"
 	txactor "github.com/ngnl47/tx/modules/actor"
 )
 
 func TestActorCatalogIncludesUnselectedServicesWithoutStartingThem(t *testing.T) {
-	factory := func() protoactor.Actor { t.Error("未选中服务却创建 Actor"); return cmodActorFake{} }
+	factory := func(txactor.Context) (*txactor.Behavior, error) {
+		t.Error("未选中服务却创建 Actor")
+		return nil, txactor.ErrActivationDenied
+	}
 	app, err := New(Config{AppID: "catalog"}, WithService(
 		testService{spec: Spec{Name: "agent"}},
 		testService{spec: Spec{Name: "slgworld", ActorKinds: []txactor.Kind{txactor.MustKind("world", factory), txactor.MustKind("seasonWorld", factory)}}, start: func(Context) error { t.Error("启动了未选中服务"); return nil }},
@@ -34,7 +36,9 @@ func TestActorCatalogIncludesUnselectedServicesWithoutStartingThem(t *testing.T)
 }
 
 func TestActorCatalogRejectsDuplicateInUnselectedServices(t *testing.T) {
-	kind := txactor.MustKind("world", func() protoactor.Actor { return cmodActorFake{} })
+	kind := txactor.MustKind("world", func(txactor.Context) (*txactor.Behavior, error) {
+		return &txactor.Behavior{Receive: func(txactor.Context, any) (any, error) { return nil, nil }}, nil
+	})
 	_, err := New(Config{AppID: "catalog"}, WithService(
 		testService{spec: Spec{Name: "agent"}},
 		testService{spec: Spec{Name: "slgworld", ActorKinds: []txactor.Kind{kind}}},

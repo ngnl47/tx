@@ -32,9 +32,6 @@ func (server *Server) Drain(ctx context.Context) error {
 		runtime.entities.BeginDrain()
 	}
 	var actorErr error
-	if runtime != nil && runtime.actor != nil {
-		actorErr = runtime.actor.BeginDrain()
-	}
 	var discoveryErr error
 	if discoveryRuntime != nil {
 		discoveryErr = discoveryRuntime.MarkDraining(ctx)
@@ -46,11 +43,8 @@ func (server *Server) Drain(ctx context.Context) error {
 	if host != nil {
 		hostErr = host.drain(ctx)
 	}
-	if runtime != nil && runtime.actor != nil && actorErr == nil {
-		actorErr = runtime.actor.Drain(ctx)
-	}
 	if runtime != nil && runtime.entities != nil {
-		actorErr = errors.Join(actorErr, runtime.entities.Drain(ctx))
+		actorErr = runtime.entities.Drain(ctx)
 	}
 	return errors.Join(discoveryErr, hostErr, actorErr)
 }
@@ -152,6 +146,9 @@ func (server *Server) shutdown(ctx context.Context, drain bool) error {
 	}
 	if runtime != nil && runtime.actorRPC != nil {
 		runtime.actorRPC.Close()
+	}
+	if runtime != nil && runtime.actorSender != nil {
+		errs = append(errs, runtime.actorSender.Close())
 	}
 	for index := len(server.cleanups) - 1; index >= 0; index-- {
 		server.cleanups[index]()

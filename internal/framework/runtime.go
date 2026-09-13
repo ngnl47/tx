@@ -25,7 +25,9 @@ type runtime struct {
 	lifecycle     *lifecycle.WaitGroupContext
 	storage       *storageRuntime
 	rpc           *txrpc.Host
-	actor         *txactor.Runtime
+	actor         txactor.Messenger
+	actorDirect   txactor.Caller
+	actorSender   *txrpc.Sender
 	entities      *actorhost.Runtime
 	actorRPC      actorTransport
 	actorKinds    []txactor.Kind
@@ -84,15 +86,6 @@ func (runtime *runtime) setInstanceEndpoint(endpoint string) {
 	}
 	runtime.instanceMu.Lock()
 	runtime.instance.Endpoint = endpoint
-	runtime.instanceMu.Unlock()
-}
-
-func (runtime *runtime) setActorEndpoint(endpoint string) {
-	if runtime == nil {
-		return
-	}
-	runtime.instanceMu.Lock()
-	runtime.instance.ActorEndpoint = endpoint
 	runtime.instanceMu.Unlock()
 }
 

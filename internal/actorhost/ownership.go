@@ -1,6 +1,7 @@
 package actorhost
 
 import (
+	"context"
 	"errors"
 
 	"github.com/ngnl47/tx/modules/discovery"
@@ -20,7 +21,10 @@ func (r *Runtime) BindSlots(instance string, store discovery.SlotReader, slotID 
 	}
 	factory := r.factory
 	r.factory = func(c Context) (*Behavior, error) {
-		err := discovery.CheckSlotOwner(c, store, slotID.Resolve(c.Identity), instance)
+		// 权威查询单独限时，不能把其 deadline 带入后续业务初始化。
+		query, cancel := context.WithTimeout(c.Context, r.timeout)
+		err := discovery.CheckSlotOwner(query, store, slotID.Resolve(c.Identity), instance)
+		cancel()
 		if errors.Is(err, discovery.ErrSlotNotOwner) {
 			return nil, ErrNotOwner
 		}

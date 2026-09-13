@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	protoactor "github.com/asynkron/protoactor-go/actor"
 	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/lifecycle"
 	"github.com/ngnl47/tx/meta"
@@ -179,28 +178,6 @@ func (access directoryAccess) LookupInstance(id string) (discovery.Instance, boo
 
 func (access directoryAccess) LookupRouteInstance(id string) (discovery.RouteInstance, bool) {
 	return access.directory.LookupRouteInstance(id)
-}
-
-type actorAccess struct{ runtime *txactor.Runtime }
-
-func (access actorAccess) VirtualPID(kind, identity string) (*protoactor.PID, error) {
-	return access.runtime.VirtualPID(kind, identity)
-}
-
-func (access actorAccess) Tell(pid *protoactor.PID, delivery txactor.Delivery) error {
-	return access.runtime.Tell(pid, delivery)
-}
-
-func (access actorAccess) TellAccepted(ctx context.Context, pid *protoactor.PID, delivery txactor.Delivery) error {
-	return access.runtime.TellAccepted(ctx, pid, delivery)
-}
-
-func (access actorAccess) Call(ctx context.Context, pid *protoactor.PID, delivery txactor.Delivery) (txactor.Result, error) {
-	return access.runtime.Call(ctx, pid, delivery)
-}
-
-func (access actorAccess) CallFuture(ctx context.Context, pid *protoactor.PID, delivery txactor.Delivery) (*txactor.Future, error) {
-	return access.runtime.CallFuture(ctx, pid, delivery)
 }
 
 type transactionAccess struct{ runtime *txn.Runtime }

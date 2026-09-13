@@ -91,6 +91,8 @@ type Context interface {
 	CModSessionID() SessionIDAllocator
 	// CModActor 返回 Actor 消息解析和投递入口。
 	CModActor() txactor.Messenger
+	// CModActorDirect 返回共享归属下的 gRPC 实体调用入口，供 Agent 等直连适配使用。
+	CModActorDirect() txactor.Caller
 	// CModSlots 返回 Discovery CMod 管理的只读槽位归属，不提供创建或晋升。
 	CModSlots() discovery.SlotReader
 	// CModSlotResolver 返回使用本进程 Watch 缓存的只读槽位解析器。
@@ -108,6 +110,7 @@ type frameworkContext interface {
 	RPC() txrpc.Registrar
 	Directory() discovery.Directory
 	Actor() txactor.Messenger
+	DirectActor() txactor.Caller
 	SessionIDs() sessionid.Allocator
 	Transaction() txn.Executor
 	HasCMod(framework.CModID) bool
@@ -377,4 +380,13 @@ func (view *contextView) ownerName() string {
 		return "unknown owner"
 	}
 	return view.owner
+}
+
+func (view *contextView) CModActorDirect() txactor.Caller {
+	view.require(CModActor)
+	value := view.kernel.DirectActor()
+	if value == nil {
+		panic(framework.CapabilityError{Err: view.unavailable(CModActor)})
+	}
+	return value
 }

@@ -203,6 +203,7 @@ type CModContext interface {
 	RPC() txrpc.Registrar
 	Directory() discovery.Directory
 	Actor() txactor.Messenger
+	DirectActor() txactor.Caller
 	Transaction() txn.Executor
 	SessionIDs() sessionid.Allocator
 	BindTransactionCommitParticipant(txn.CommitParticipant) error

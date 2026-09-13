@@ -346,17 +346,15 @@ roomOwner := candidates[uint64(roomID)%uint64(len(candidates))]
 msgq, ok := directory.LookupInstance(binding.InstanceID)
 ```
 
-`Instance.Endpoint` 是内部业务 gRPC 地址，`Instance.ActorEndpoint` 是 Actor Remote 地址，
+`Instance.Endpoint` 是普通 RPC 和实体直连共用的 gRPC 地址，
 `Instance.Endpoints` 是项目按稳定名称声明的其他公开地址。`ServiceDirectory` 会复制地址表，调用方不能通过修改输入值或
 查询结果改变目录快照；高频消息路由使用的 `RouteInstance` 不携带该地址表。
 
 `NextInstance` 是健康服务副本的轮转选择；`RunningInstances` 返回稳定排序、与目录内部隔离的健康实例
 快照，供业务实现随机、哈希或负载策略；`LookupInstance` 是已知实例的精确路由。`SessionID -> msgq 实例` 的精确会话
-绑定、`RoleID -> (InstanceID, Generation)` 角色归属、消息 Seq/Ack 和有界下行邮箱属于 `msgq`；Virtual Actor 的 `(kind, identity)` 路由属于 Actor Cluster；
-固定 Kind Actor 的实体归属由业务槽位维护，不由服务发现包推断。
+绑定、`RoleID -> (InstanceID, Generation)` 角色归属、消息 Seq/Ack 和有界下行邮箱属于 `msgq`；Actor 的 `(kind, key)` 经 Kind 映射得到稳定槽位，再由 L2 Discovery 解析归属。
 
-ProtoActor Remote 使用官方 etcd Cluster Provider 自己维护成员协议和客户端生命周期，不经过 `tx/etcd`；
-Discovery 与 Actor Cluster 即使指向同一个 etcd 集群，也仍是两条独立拓扑。
+Actor 与普通 gRPC 共用 Discovery 实例身份，不另建 Actor Provider 租约。
 
 本机或 CI 已启动 etcd 时，可显式执行真实 lease/watch 回归；未设置环境变量时该集成用例会跳过，
 不会要求所有开发机安装 etcd：
@@ -786,9 +784,9 @@ handlers := func(runtime bee.Context) (txagent.IdentityResolver, txagent.Dispatc
             AccessMode: txprotocol.AccessModeNormal,
         }, nil
     })
-    messenger := runtime.CModActor()
+    caller := runtime.CModActorDirect()
     dispatcher, err := txagent.NewActorDispatcher(txagent.ActorDispatcherOptions{
-        Messenger: messenger,
+        Caller: caller,
         Resolver:  projectActorResolver,
     })
     return identity, dispatcher, err
@@ -1054,8 +1052,7 @@ delivery := &rpcpb.Delivery{
 ```
 
 新增业务可以使用该包进行明确的服务/实例调用，但不应依赖生成的 `pb` 类型定义客户端 DTO。会话 owner 由
-`msgq.SessionRouter` 解析；Actor 消息由 `actor.VirtualPID` 或 `actor.FixedKindPID` 投递。自行管理本地 Actor ID 的高级扩展
-才直接使用 `actor.FixedPID`。
+`msgq.SessionRouter` 解析；Actor 使用 `actor.Identity{Kind, Key}`，通过 `CModActor()` 或 `CModActorDirect()` 调用。
 
 服务进程的宿主统一创建 gRPC server 后，先用该服务的 `Ingress` 包装接收器，再注册得到已校验的业务 `Delivery`。
 `Deliver` 和 `Call` 是两个独立入口：前者只返回投递结果，后者返回一个 `MessageType` 非空且首尾无空白的 `Result`。
@@ -1300,193 +1297,76 @@ if err := control.RegisterSlotService(grpcServer, slotController); err != nil {
 切换窗口内请求可以明确失败或超时；不得把超时当作未执行而自动重投。直读 etcd 的归属检查不能替代端到端业务验收。
 目标未进入 `running` 返回 unavailable，旧 assignment 已变化返回 CAS conflict，所有不确定结果都按失败处理。
 
-## Actor Cluster 与 msgq
+## Actor 实体与 msgq
 
-`modules/actor` 已提供可选的 Actor Cluster 装配，直接使用 `protoactor-go` 与官方 etcd Cluster Provider。
-tx 不重新实现 Actor 调度、Remote PID、成员发现或重平衡；它只在 ProtoActor mailbox 外包一层有界容量、溢出日志和
-业务生命周期登记。项目将 yml 转换为模块配置，并由服务全局 `WaitGroupContext` 编排启动与优雅停止。ProtoActor
-内部使用 protobuf 信封，但业务 Payload 保持 BON 字节，因此不会生成 protobuf 版 GD 或客户端 DTO。
+`modules/actor` 提供 BehaviorFactory、Kind、Identity 和四种调用契约。框架统一装配本地实体宿主、Discovery 归属、共享 gRPC 接收入口及 Core NATS；业务只声明类型与路由键，不处理 PID、连接或底层订阅。
 
-### Actor Cluster 装配
-
-项目读取 yml 后构造 `actor.Config`。`ClusterName`、etcd endpoint、prefix 和超时属于静态集群配置；实例
-监听地址属于部署运行时信息，建议由环境变量或容器注入。`Port: 0` 让底层 Remote 自动选择可用端口，并将实际
-地址发布给集群，适合本地调试和弹性实例。
+### Kind 与宿主装配
 
 ```go
-kind, err := txactor.NewKind("role", func() protoactor.Actor {
-    return &roleActor{}
+kind := txactor.MustKind("role", func(c txactor.Context) (*txactor.Behavior, error) {
+    role, err := loadRole(c.Context, c.Identity.Key)
+    if err != nil { return nil, err }
+    return &txactor.Behavior{
+        Receive: func(c txactor.Context, message any) (any, error) {
+            return role.Handle(c.Context, message.(txactor.Delivery))
+        },
+    }, nil
 }, txactor.WithIdlePassivation(5*time.Minute))
-if err != nil {
-    return err
-}
 
-game := bee.ServiceRegistration{
-    Spec: bee.ServiceSpec{
-        Name:       "game",
-        ActorKinds: []txactor.Kind{kind},
-    },
-    Factory: func(bee.Context) (bee.Service, error) {
-        return &roleService{}, nil
-    },
+registration := bee.ServiceRegistration{
+    Spec: bee.ServiceSpec{Name: "game", ActorKinds: []txactor.Kind{kind}},
+    Factory: newGameService,
 }
 ```
 
-空闲时间属于具体 Kind。`WithIdlePassivation` 适合代码内的高级装配；标准模板也可以把 YAML 转换为
-`actor.Config.IdlePassivation["role"]`。显式 Kind 选项优先于运行时映射。连续没有业务消息达到阈值时，实体 Actor
-停止并释放邮箱；下一条消息会通过 Virtual Actor placement 或固定 Kind 宿主惰性重建。未配置时保持常驻行为。
-共享项目配置可以同时声明多个服务的 Kind；当前进程只应用自己实际注册的 Kind。
+`NewKind` 返回声明错误，`MustKind` 对同一声明错误 panic；二者都不会执行工厂。工厂仅在实体懒加载时运行，业务加载失败通过运行时返回。`NewFixedKind`、`MustFixedKind`、`IsFixed` 和原生 `AdaptKind` 已移除，稳定业务归属使用 `WithSlotMapping`。
 
-玩家心跳应继续作为普通生成命令经过 RoleActor，它会像其他业务消息一样刷新空闲计时，不需要新增专用心跳帧。
-断开 TCP/WebSocket 连接不直接停止 Actor，因为实体仍可能接收服务间消息、延迟任务或重连请求。
+普通 Kind 默认使用 1024 个稳定分区；独立世界、分服或分战区使用 `actor.WithSlotMapping(mapping)`。一个 Kind 对应声明它的服务类型，一个服务可声明多个 Kind；应用全部声明中的 Kind 名称必须唯一。Agent 与 Actor 调用、首次分配和加载前权威校验共用同一映射。显式映射返回空值即失败，不回退默认分区。
 
-Actor 钝化只管理执行对象，不代表 GD 已刷盘或可从 EntityCache 删除。有状态项目必须另行调用
-`writeback.Manager.TryRelease` 的安全检查；完整边界见 [设计文档](docs/design.md#actor-空闲钝化与-entitycache-淘汰)。
+`CModActor` 自动依赖共享 RPC 和 Discovery。启动顺序为 RPC、Discovery、Actor 入口、业务服务、running；没有独立 Actor 监听端口或第二套成员租约。`actor.Config` 使用 `NATSURL`、`Namespace`（空时用 AppID）、`MailboxCapacity`（默认 1024）、`MaxPendingCalls`（默认 4096）、`CallbackTimeout`（默认 30 秒）和 `IdlePassivation`。
 
-L4 服务只声明业务 Kind，Server 会自动装配 `CModActor` 并管理 Runtime 生命周期。`CModActor` 只包含 ProtoActor
-Remote 和官方 etcd Cluster Provider，不依赖 tx 的普通 gRPC Host 或 `ServiceDirectory`；服务若还需要普通 RPC、
-服务目录或存储，应继续在 `Spec.Requires` 中显式声明。重复 Kind 会在任何外部连接建立前返回错误。
-标准项目不直接启动 Runtime；高级项目独立使用时，`Runtime.Start` 必须传入 `lifecycle.WaitGroupContext` 或其子上下文，
-传入普通 `context.Background()` 会返回 `actor.ErrLifecycleContextRequired`，避免看似启动成功却无法保证邮箱排空。
+工厂、`OnInitAfter`、`OnActivateBefore`、`OnActivateAfter` 不附加统一执行 deadline；加载 I/O 自行设置期限。`CallbackTimeout` 限制 Receive、卸载回调及权威查询的 Context，不会强制中断忽略 Context 的业务。调用方等待超时不取消已开始的加载，排水超时不提前释放容量或允许交接。回调完成后取消其 Context。
 
-服务 Factory 通过受控 `Context.CModActor()` 取得 `actor.Messenger`：
+卸载可使用空闲策略，或在生命周期中使用 `Context.After/Post/Deactivate`。本地工作仍进入同一邮箱；不能在实体回调内同步等待自己 Post 的 Future。Kind 显式空闲选项优先于运行时配置，无配置时保持常驻。Actor 卸载不等于 GD 淘汰或已刷盘，仍须遵守 `writeback.Manager.TryRelease` 的检查。
+
+### 两种调用路径
+
+Actor 间使用 `CModActor()`，上下行使用直连 gRPC；两条入口进入同一实体邮箱。
 
 ```go
-runtime := serviceContext.CModActor()
-pid, err := runtime.VirtualPID("role", "470001")
-if err != nil {
-    return err
-}
-if err := runtime.Tell(pid, txactor.Delivery{
-    MessageType: "role.rename",
-    CommandID:   470001,
-    Payload:     bonBody,
-}); err != nil {
-    return err
-}
-```
-
-`Tell` 是默认的单向投递入口：返回 `nil` 只表示本地 Runtime 接受投递，不表示远端邮箱接收或业务完成。它不会
-自动重试；业务需要重试时必须定义独立幂等键，不能把静态 `CommandID` 兼作幂等键。
-
-通过 tx `Delivery` 进入目标 mailbox 的业务消息会从成功入队开始登记到全局 `WaitGroupContext`，直到 Actor handler
-返回才完成登记。因此正常 `Server.Stop` 会先封闭 Actor 业务准入并等待已经排队和正在执行的消息，再停止业务服务和
-执行缓存管理器最终 Flush；根 context 此时仍然有效。排水后到达的新 `Delivery` 会被拒绝并输出结构化错误；ProtoActor
-自身的停止和监督消息仍然放行，避免优雅关闭阻塞。
-自定义 Kind 若绕过 `Delivery` 直接向底层 ActorSystem 投递私有消息，其生命周期由高级扩展自行管理。
-
-必须知道目标 Actor 已从邮箱取出消息时使用 `TellAccepted`。它会多一条 `Acceptance` 回执，但不等待业务 handler：
-
-```go
-acceptedCtx, cancel := context.WithTimeout(ctx, time.Second)
-defer cancel()
-if err := runtime.TellAccepted(acceptedCtx, pid, txactor.Delivery{
-    MessageType: "battle.enqueue",
-    CommandID:   8001,
-    Payload:     bonBody,
-}); err != nil {
-    return err
-}
-```
-
-需要业务结果时使用 `Call`；需要先继续本地工作、稍后等待时使用 `CallFuture`。`Call` 只是
-`CallFuture + Await` 的同步入口，两者共用同一套请求号和响应协议：
-
-```go
-callCtx, cancel := context.WithTimeout(ctx, time.Second)
-defer cancel()
-future, err := runtime.CallFuture(callCtx, pid, txactor.Delivery{
-    MessageType: "room.create",
-    CommandID:   8101,
-    Payload:     bonRequest,
+id := txactor.Identity{Kind: "role", Key: "i:470001"}
+result, err := runtime.CModActor().Call(ctx, id, txactor.Delivery{
+    MessageType: "role.rename", CommandID: 470001, Payload: bonBody,
 })
-if err != nil {
-    return err
-}
-result, err := future.Await(callCtx)
-if err != nil {
-    return err
-}
-_ = result.MessageType
-_ = result.Payload
 ```
 
-`TellAccepted`、`CallFuture`、`Call` 和 `Future.Await` 必须使用带 deadline 的 context。一次 `Await` 超时只停止
-本次本地等待，不撤销远端业务；原请求仍会在创建 Future 时的 deadline 到达、Runtime 关闭或收到响应时清理。
-超时代表结果不确定，框架不会自动重试或改派目标。
+Key 的编码由项目统一约定，tx 不推断整数或业务分组。两个示例使用 `i:`、`u:`、`s:` 等明确类型前缀。
 
-每个 Kind 使用有界用户邮箱。`Config.MailboxCapacity` 缺省为 `1024`；满时不会阻塞 `Tell`，新消息会被丢弃，
-目标实例限频记录 `actor mailbox overflow`。因此 `Tell` 只适合允许丢失或可由业务幂等恢复的通知。
+| API | 返回条件 |
+| --- | --- |
+| Tell | 完成寻址并提交本地传输，不等待 NATS 确认 |
+| TellAccepted | 确认到达当前连接的 NATS 服务端，不确认持久化、目标收取或执行 |
+| CallFuture | 完成寻址后返回 Future，异步等待执行结果 |
+| Call | 同步等待同一 Future 的执行结果 |
 
-业务 Actor 收到 `*actorpb.Delivery`，在业务边界转换后处理。`TellAccepted` 的回执由 Runtime 中间件自动发送；
-只有 Call 请求需要业务返回结果：
+`Tell` 冷寻址由 tx 提供有限查询期限。`TellAccepted`、`CallFuture`、`Call` 使用带 deadline 的 Context；取消等待不撤销业务。失败不自动改派或重投。Core NATS 不保证异常后的必达，JetStream 可靠任务仍属于后续建设。
 
-```go
-message, ok := ctx.Message().(*actorpb.Delivery)
-if !ok {
-    return
-}
-delivery, err := txactor.DeliveryFromProto(message)
-if err != nil {
-    return
-}
-result, resultErr := handle(delivery)
-if delivery.WantsResult() {
-    _ = txactor.Respond(ctx, delivery, result, resultErr)
-}
-```
-
-`Config.MaxPendingCalls` 缺省为 `4096`，限制当前进程尚未完成的 `CallFuture` 和 `TellAccepted`。达到上限时返回
-`ErrPendingCallsFull`，不会继续扩大内存。每个 Runtime 只有一个响应 Actor 和一张有界 pending 表，context 通过
-定时回调清理请求，不为每个 Future 常驻等待 goroutine。Runtime 关闭时，所有 pending 都以
-`ErrRuntimeStopped` 完成。远端业务错误返回 `*actor.CallError`，`Code` 用于稳定分支，`Message` 用于日志。
-普通业务调用成功的 `Result` 必须携带非空且首尾无空白的 `MessageType`，用于调用方选择生成响应类型；即使响应没有业务字段，
-也应返回对应的空响应结构，而不是发送没有类型的成功信封。Agent 上行的处理完成确认是唯一例外：它只携带正
-`ProcessedUpSeq`，不能同时携带 `MessageType`、`CommandID` 或 `Payload`。不满足任一结果形态的响应会以
-`ErrInvalidResponse` 完成本地 Future，不会被当作成功。
-
-项目将 Agent 与业务服务分进程部署时，可在项目层把经握手、Seq/Ack 校验后的 BON body 投递给 Actor。项目 resolver
-只决定目标 PID 和投递内容；tx 的通用 Dispatcher 始终使用带 deadline 的 `Call` 等待处理完成确认：
+业务 Receive 接收公开 `actor.Delivery`，Call 返回 `actor.Result` 或 error，不需要手动解码内部 protobuf 或调用 Respond。普通成功结果需有非空 `MessageType`；Agent 完成确认只携带正 `ProcessedUpSeq`，不混入业务载荷。业务错误可返回 `actor.NewCallError(code, err)`。远程结果等待表有界，超时、响应和连接关闭都会清理等待项；本地调用受实体邮箱容量限制。
 
 ```go
-messenger := runtime.CModActor()
 dispatcher, err := txagent.NewActorDispatcher(txagent.ActorDispatcherOptions{
-    Messenger: messenger,
+    Caller: runtime.CModActorDirect(),
     Resolver: txagent.ActorDispatchResolverFunc(func(ctx context.Context, request txagent.DispatchRequest) (txagent.ActorDispatch, error) {
-        pid, err := resolveProjectActor(ctx, request)
-        return txagent.ActorDispatch{Target: pid, Delivery: buildDelivery(request)}, err
+        id, err := resolveProjectActor(ctx, request)
+        return txagent.ActorDispatch{Target: id, Delivery: buildDelivery(request)}, err
     }),
 })
-if err != nil {
-    return err
-}
 ```
 
-它投递 `MessageType: "agent.command"`、生成的静态 `CommandID`、可选 `RouteKey` 和原始 BON `Payload`。
-连接 `Seq` 同时用于 Agent 重复帧抑制和处理完成确认，不是业务幂等键。Actor 侧再通过生成的
-`cmd.DecodeBONCommand` 解析编码载荷，核对外层命令号与路由键是否匹配请求字段；具体命令如需幂等，仍须定义
-独立业务幂等键。普通响应和请求级错误由 Game/Actor 直接发布到可信身份中的 SessionID；返回 Agent 的 Result
-只携带 `ProcessedUpSeq`。
+Agent 校验可信会话和 Seq/Ack，Resolver 只解析业务身份；tx 统一查找归属并通过共享 gRPC 直达目标，不经 NATS 或 Game 中转。Game、SLGWorld、FightRoom 等业务下行均直接发布到 owner MsgQ，再由 Agent 拉取发送客户端。`msgq` 是会话邮箱，不是 Actor RPC 中继。
 
-上例的 `role` 是可恢复的 Virtual Actor。它的 `identity` 由集群根据成员视图路由，业务必须能在新节点上从
-Fusion 恢复状态。固定归属的内存权威对象使用固定 Kind：
-
-```go
-kind := txactor.MustFixedKind("battlefield", newBattlefieldActor)
-pid, err := txactor.FixedKindPID(target.Instance.ActorEndpoint, kind.Name())
-```
-
-Runtime 会为每个固定 Kind 创建一个稳定本地宿主。消息到达宿主后，按强类型 `Delivery.RouteKey` 惰性创建或复用实体
-Actor；实体不会进入 `disthash`，成员变化不会把它改派到其他进程。`FixedPID` 仍是自行管理本地 Actor ID 和生命周期的
-高级直连接口，普通固定实体不使用它。
-
-`Runtime.Start` 只加入集群，**不会**因 `ctx` 取消立即注销成员。宿主的正确顺序是先停止入口新业务、等待已受理的
-服务 handler、完成缓存管理器最终 Flush，再调用 `Runtime.Shutdown` 退出成员表。`txgame` 的 Lifecycle 已按这个顺序将
-缓存管理器最终 Flush 放在 Actor Shutdown 之前。真实 etcd 回归可通过 `TX_ETCD_ENDPOINT=127.0.0.1:2379` 启用。
-
-`msgq` 是客户端会话邮箱，不是所有业务 Actor 的中心中继。它维护在线 Session、下行 `sndQueue`、Seq/Ack、
-重连、Topic 和广播。客户端上行业务 Payload 由 Agent 在完成会话序号校验后直接投递 Player/Game Actor；
-任意业务 Actor 的下行数据投递到 `msgq`，再由 Agent 发送给客户端。
+关闸后不再接受新业务；已接受的加载、排队、执行和卸载工作继续完成，随后完成后台任务与最终持久化，成功后才释放运行时资源。成员离线不自动删除稳定 assignment；正常滚动发布使用 PrepareHandoff 确认收尾后逐槽 CAS，再停止旧实例。槽位与容量高级 SPI 保留在相应模块，业务不持有宿主关闭权。
 
 #### 角色归属基础 API
 
@@ -1506,22 +1386,9 @@ Actor；实体不会进入 `disthash`，成员变化不会把它改派到其他�
 
 ### Actor 路由模式
 
-Actor 间跨实例投递按 PID 直达目标，不经过 `msgq`；`msgq` 只管理客户端 Session、Seq/Ack 和下行邮箱。完整拓扑、消息时序和模块职责见 [分布式服务模块](docs/design.md#分布式服务模块)。
+业务 Identity 经 Kind 稳定映射得到逻辑分区或业务槽位，再由 L2 Discovery 的本地 Watch 缓存查找 owner。仅明确不存在 assignment 时执行容量预检和首次 CAS 分配；已有 owner 下线、排水或请求超时不自动改派。NATS 按实例主题转发，gRPC 按同一 owner 的共享 Endpoint 直达。
 
-可从外部存储恢复、允许成员变化后重新定位的实体使用 Virtual Actor：
-
-```go
-pid, err := runtime.VirtualPID("role", strconv.FormatInt(roleID, 10))
-```
-
-Battle、SLG 城市和 MMO 场景等内存权威对象使用固定逻辑槽位与固定 Kind。业务维护
-`entityID -> logicalSlot -> runtimeInstance` 归属；目标节点重启时返回明确的暂时不可用错误，不能自动改派到其他节点：
-
-```go
-pid, err := txactor.FixedKindPID(target.Instance.ActorEndpoint, "scene")
-```
-
-Actor 不代表 GD，也不提供分布式事务。同一 Actor 内需要修改多个 GD 时，仍使用单机 `Procedure`。
+Actor 不代表 GD，也不提供分布式事务；多个 GD 的原子修改继续使用单机 Procedure。完整边界见 [设计文档](docs/design.md#actor)。
 
 ### 固定逻辑槽位
 
@@ -1556,7 +1423,7 @@ prepare 必须确认该启动身份的源实例完成全量排水和必要持久
 上述能力面向框架和独立控制工具，普通 game 服务仍声明 Kind 和业务加载策略，不组装这些回调。
 独立后端/测试可用 `NewSlotOwnership` 显式构造；低层 CAS SPI 保留，不等同于已经执行上述交接流程。
 
-业务决定 `SlotID` 的计算规则，框架不解析 GD、不推断同服/战区归属，也不创建业务 Actor。解析时通过 `SlotResolver`
+业务决定 `SlotID` 的计算规则，L2 不解析 GD、不推断同服/战区归属，也不创建业务 Actor；懒加载由实体宿主执行。解析时通过 `SlotResolver`
 将持久 assignment 与当前成员目录组合，只有目标运行实例是 `running` 才能返回 endpoint；目标缺失、`draining` 或
 `stopping` 时返回 `ErrSlotRuntimeUnavailable`，绝不随机改派。
 
@@ -1566,12 +1433,7 @@ target, err := router.ResolveSlot(ctx, "game-slot-1")
 if err != nil {
 	return err // 目标不是 running 时明确失败
 }
-pid, err := actor.FixedKindPID(target.Instance.ActorEndpoint, "scene")
-if err != nil {
-	return err
-}
-
-_ = pid
+_ = target.Instance.Endpoint // 高级诊断；普通业务使用 Identity 调用，不手工拼目标。
 ```
 
 game 侧高级组件或项目控制面在组合根显式接收完整 `SlotStore`，使用原有管理 API：
@@ -1611,23 +1473,7 @@ Server 会在标记实例 `running` 前完成实例目录和槽位目录的首�
 一致性域立即失败关闭，`ResolveSlot` 返回 `ErrSlotDirectoryUnavailable`，不会用旧归属继续投递，也不会退化为逐消息
 etcd Get。后台重新载入完整快照后自动恢复。
 
-`txgameslg/server/services/agent` 的 `NewFixedSlotHandlers` 是 Agent 到固定 Actor 的项目侧组合器。业务只提供身份到
-`SlotID` 的规则；Actor kind 来自 txgen 生成的命令路由描述，固定宿主 PID 由框架生成。它在启动时复用当前 Server 的
-`SlotResolver`，因此目标处于 `draining`、`stopping` 或缺失时会保留
-`ErrSlotRuntimeUnavailable` 错误链，调用方用 `errors.Is` 判断，不能改派其他 game：
-
-```go
-handlers, err := appagent.NewFixedSlotHandlers(
-    identityResolver,
-    appagent.SlotIDResolverFunc(func(ctx context.Context, route appagent.CommandRoute) (string, error) {
-        return realmSlot(route.Identity.RoleID), nil // 项目决定同服/战区归属。
-    }),
-)
-if err != nil {
-    return err
-}
-server, err := app.New(config, app.WithAgentHandlers(handlers))
-```
+`txgameslg/server/services/agent.NewTicketActorHandlers` 在组合根接收票据校验器和业务 Identity 解析器。Kind 的 `WithSlotMapping` 统一决定稳定归属，Agent 不再创建 SlotResolver 或 PID；`CModActorDirect` 在 tx 内复用只读目录并保留错误链。
 
 ### 滚动重启
 
@@ -1651,8 +1497,7 @@ server, err := app.New(config, app.WithAgentHandlers(handlers))
 `WaitGroupContext` 只保证正常关闭路径。`SIGKILL`、OOM、机器故障和网络分区下的自动
 安全接管不属于当前受控关闭的保证范围，不能仅凭成员离线就确认旧实例停止写入。
 
-ProtoActor 的成员变更不会迁移业务内存状态；Virtual Actor 的业务状态必须可恢复。固定 Kind 由业务槽位决定目标实例，
-Runtime 只负责该实例内的惰性激活和串行邮箱。下行 msgq 实例崩溃时允许丢失尚未确认的内存消息，客户端重连和业务幂等负责恢复；内部命令
+成员变更不迁移业务内存状态，也不重算已有分区归属；目标实例按新 assignment 懒加载可恢复状态。下行 msgq 实例崩溃时允许丢失尚未确认的内存消息，客户端重连和业务幂等负责恢复；内部命令
 若需要重试，必须自行定义业务幂等键与幂等契约，框架不盲目重试。
 
 ### 运维控制命令
@@ -2108,10 +1953,7 @@ func (l Logger) ErrorContext(ctx context.Context, msg string, args ...any)
 两种格式都严格保持一条事件一行；正文位于 `message`，业务属性保持调用方传入的结构化类型。日志门面会修正
 `slog.Record.PC`，因此 `source` 指向实际调用代码，不会落到 `tx/log/log.go`。
 
-Actor CMod 会通过 ProtoActor 官方的 LoggerFactory 复用同一 Handler，因此 Actor System、Remote 和 Cluster 日志也遵循
-当前环境的 `console` 或 `json` 格式，并保留 `lib=Proto.Actor`、`system` 等原生结构字段。Actor 内部日志拥有独立的
-`actor.Config.LogLevel`，默认是 `info`；即使项目全局开启 `debug`，高频 Gossip 心跳也不会刷屏。只有专项排查集群时才应
-临时设置为 `debug`。GoLand/Delve 输出的 `API server listening at ...` 位于应用进程之外，不受 tx 日志配置控制。
+Actor 宿主与传输使用框架现有日志设施；不再配置 ProtoActor 独立日志级别。GoLand/Delve 等进程外输出不受 tx 日志配置控制。
 
 默认输出目标是 `stdout`。生产环境由 TKE 日志 Agent、LogListener 或其他旁路采集器读取并上传，tx 不直接调用
 云日志 API，也不负责文件切割、上传重试和远端留存。高级项目仍可在启动期调用 `log.SetDefault(logger)` 注入自己的

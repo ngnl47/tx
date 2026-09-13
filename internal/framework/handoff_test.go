@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	txactor "github.com/ngnl47/tx/modules/actor"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -234,26 +235,21 @@ func TestPrepareHandoffWithEtcdRetainsLeaseUntilStop(t *testing.T) {
 	})
 	var unloaded atomic.Int32
 	newServer := func() *Server {
-		var app *Server
-		app = newDiscoveryIdentityTestServer(t, endpoint, prefix, "", testService{
-			spec: Spec{Name: "game", Requires: []CModID{CModDiscovery, CModRPC}},
-			start: func(Context) error {
-				local := actorhost.New(8, time.Second, func(actorhost.Context) (*actorhost.Behavior, error) {
-					var count uint64
-					return &actorhost.Behavior{
-						Receive: func(actorhost.Context, any) (any, error) {
-							count++
-							return &actorpb.Result{MessageType: "count", CommandId: count}, nil
-						},
-						OnDeactivateAfter: func(actorhost.Context) error { unloaded.Add(1); return nil },
-					}, nil
-				})
-				local.BindSlots(app.runtime.instanceSnapshot().ID, app.discovery.AuthoritativeSlots(), func(id actorhost.Identity) string { return "game-" + id.Key })
-				return app.startEntityTransport(local, url, owner, 8)
-			},
-		})
+		kind := txactor.MustKind("role", func(txactor.Context) (*txactor.Behavior, error) {
+			var count uint64
+			return &txactor.Behavior{
+				Receive: func(txactor.Context, any) (any, error) {
+					count++
+					return txactor.Result{MessageType: "count", CommandID: count}, nil
+				},
+				OnDeactivateAfter: func(txactor.Context) error { unloaded.Add(1); return nil },
+			}, nil
+		}, txactor.WithSlotMapping(func(id txactor.Identity) string { return "game-" + id.Key }))
+		app := newDiscoveryIdentityTestServer(t, endpoint, prefix, "", testService{spec: Spec{Name: "game", ActorKinds: []txactor.Kind{kind}}})
+		app.config.Actor.Runtime = txactor.Config{NATSURL: url, Namespace: owner}
 		return app
 	}
+
 	app := newServer()
 	if err := app.Start(ctx, RunOptions{Services: "game", ControlListen: "127.0.0.1:0"}); err != nil {
 		t.Fatal(err)
@@ -302,11 +298,11 @@ func TestPrepareHandoffWithEtcdRetainsLeaseUntilStop(t *testing.T) {
 			t.Fatal(err)
 		}
 		destination := actorhost.Target{Instance: id, Identity: actorhost.Identity{Kind: "role", Key: key}}
-		result, err := remote.Call(ctx, destination, &actorpb.Delivery{})
+		result, err := remote.Call(ctx, destination, &actorpb.Delivery{MessageType: "counter"})
 		if err != nil || result.CommandId != 1 {
 			t.Fatalf("远端 NATS 激活: %+v %v", result, err)
 		}
-		result, err = direct.Call(ctx, destination, &actorpb.Delivery{})
+		result, err = direct.Call(ctx, destination, &actorpb.Delivery{MessageType: "counter"})
 		if err != nil || result.CommandId != 2 {
 			t.Fatalf("gRPC 未共用实体状态: %+v %v", result, err)
 		}
@@ -351,12 +347,12 @@ func TestPrepareHandoffWithEtcdRetainsLeaseUntilStop(t *testing.T) {
 	}
 	for _, key := range []string{"1", "2"} {
 		destination := actorhost.Target{Instance: targetID, Identity: actorhost.Identity{Kind: "role", Key: key}}
-		result, err := app.runtime.actorRPC.(*actorrpc.NATSTransport).Call(ctx, destination, &actorpb.Delivery{})
+		result, err := app.runtime.actorRPC.(*actorrpc.NATSTransport).Call(ctx, destination, &actorpb.Delivery{MessageType: "counter"})
 		if err != nil || result.CommandId != 1 {
 			t.Fatalf("新 owner 懒加载失败: %+v %v", result, err)
 		}
 		destination.Instance = id
-		if _, err := remote.Call(ctx, destination, &actorpb.Delivery{}); !errors.Is(err, actorhost.ErrDraining) {
+		if _, err := remote.Call(ctx, destination, &actorpb.Delivery{MessageType: "counter"}); !errors.Is(err, actorhost.ErrDraining) {
 			t.Fatalf("旧 owner 重新开放: %v", err)
 		}
 	}

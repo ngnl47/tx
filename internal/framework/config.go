@@ -3,6 +3,7 @@ package framework
 import (
 	"fmt"
 	"io"
+	"maps"
 	"strings"
 	"time"
 
@@ -170,9 +171,9 @@ func validateStorageRoutes(name string, routes storageconfig.RouteTableConfig) e
 
 func (config Config) clone() Config {
 	cloned := config
+	cloned.Actor.Runtime.IdlePassivation = maps.Clone(config.Actor.Runtime.IdlePassivation)
 	cloned.Storage.Redis = storageconfig.NewRouteTableConfig(config.Storage.Redis.Routes)
 	cloned.Storage.MongoDB = storageconfig.NewRouteTableConfig(config.Storage.MongoDB.Routes)
-	cloned.Actor.Runtime.Etcd.Endpoints = append([]string(nil), config.Actor.Runtime.Etcd.Endpoints...)
 	cloned.Discovery.Etcd.Endpoints = append([]string(nil), config.Discovery.Etcd.Endpoints...)
 	return cloned
 }

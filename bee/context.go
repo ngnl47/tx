@@ -90,6 +90,8 @@ type Context interface {
 	CModSessionID() SessionIDAllocator
 	// CModActor 返回 Actor 消息解析和投递入口。
 	CModActor() txactor.Messenger
+	// CModActorDirect 返回共享归属下的 gRPC 实体调用入口，供 Agent 等直连适配使用。
+	CModActorDirect() txactor.Caller
 }
 
 type frameworkContext interface {
@@ -101,6 +103,7 @@ type frameworkContext interface {
 	RPC() txrpc.Registrar
 	Directory() discovery.Directory
 	Actor() txactor.Messenger
+	DirectActor() txactor.Caller
 	SessionIDs() sessionid.Allocator
 	HasCMod(framework.CModID) bool
 	Advanced() framework.Advanced
@@ -340,4 +343,13 @@ func (view *contextView) ownerName() string {
 		return "unknown owner"
 	}
 	return view.owner
+}
+
+func (view *contextView) CModActorDirect() txactor.Caller {
+	view.require(CModActor)
+	value := view.kernel.DirectActor()
+	if value == nil {
+		panic(framework.CapabilityError{Err: view.unavailable(CModActor)})
+	}
+	return value
 }
