@@ -126,21 +126,34 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []Identi
 	if err := cache.Replace([]discovery.SlotAssignment{assignment}); err != nil {
 		t.Fatal(err)
 	}
-	hot := &actorrpc.EntityRouter{Resolver: hotResolver, SlotID: mapping}
-	current := &actorrpc.RoutedCaller{Router: hot, Transport: caller}
+	hot := &actorrpc.EntityRouter{Resolver: hotResolver, SlotID: mapping, Transport: caller}
+	current := &actorrpc.NATSMessenger{Router: hot}
 	for _, id := range ids {
-		result, err := current.Call(ctx, id, &actorpb.Delivery{MessageType: "increment"})
+		message := &actorpb.Delivery{MessageType: "increment"}
+		if err := current.Tell(ctx, id, message); err != nil {
+			t.Fatal(err)
+		}
+		if err := current.TellAccepted(ctx, id, message); err != nil {
+			t.Fatal(err)
+		}
+		future, err := current.CallFuture(ctx, id, message)
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := uint64(3)
+		result, err := future.Await(ctx)
+		want := uint64(5)
 		if id == ids[0] {
 			want++
 		}
-		if result.CommandId != want {
-			t.Fatalf("migrated routing changed owner: %+v", result)
+		if err != nil || result.CommandId != want {
+			t.Fatalf("四种语义未共用归属或发生重投: %+v %v", result, err)
+		}
+		result, err = current.Call(ctx, id, message)
+		if err != nil || result.CommandId != want+1 {
+			t.Fatalf("同步结果: %+v %v", result, err)
 		}
 	}
+
 	if mapping != nil {
 		unknown := Identity{"role", "missing-zone"}
 		if _, _, err := allocator.Ensure(ctx, unknown); err == nil {

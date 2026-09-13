@@ -136,8 +136,6 @@ type RunOptions struct {
 	RPCListen string
 	// ControlListen 是独立运维控制面的本地监听地址；空值表示禁用。
 	ControlListen string
-	// LogicalSlot 是有状态进程声明的稳定业务槽位；空值表示未绑定。
-	LogicalSlot string
 }
 
 // Validate 校验不依赖本轮服务选择的基础配置。
@@ -193,6 +191,5 @@ func (options RunOptions) toFramework() framework.RunOptions {
 		InstanceEndpoints: options.InstanceEndpoints,
 		RPCListen:         options.RPCListen,
 		ControlListen:     options.ControlListen,
-		LogicalSlot:       options.LogicalSlot,
 	}
 }

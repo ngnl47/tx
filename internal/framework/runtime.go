@@ -5,6 +5,7 @@ import (
 	"maps"
 	"sync"
 
+	"github.com/ngnl47/tx/internal/actorhost"
 	"github.com/ngnl47/tx/lifecycle"
 	txactor "github.com/ngnl47/tx/modules/actor"
 	"github.com/ngnl47/tx/modules/discovery"
@@ -25,6 +26,7 @@ type runtime struct {
 	storage       *storageRuntime
 	rpc           *txrpc.Host
 	actor         *txactor.Runtime
+	entities      *actorhost.Runtime
 	actorRPC      actorTransport
 	actorKinds    []txactor.Kind
 	actorCatalog  map[string]actorKindSpec
@@ -35,7 +37,6 @@ type runtime struct {
 	sessionIDs    *sessionIDRuntime
 	instanceMu    sync.RWMutex
 	instance      discovery.Instance
-	logicalSlot   *LogicalSlot
 	selectedCMods map[CModID]struct{}
 }
 

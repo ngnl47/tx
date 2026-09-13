@@ -28,6 +28,9 @@ func (server *Server) Drain(ctx context.Context) error {
 		return nil
 	}
 	host.beginDrain()
+	if runtime != nil && runtime.entities != nil {
+		runtime.entities.BeginDrain()
+	}
 	var actorErr error
 	if runtime != nil && runtime.actor != nil {
 		actorErr = runtime.actor.BeginDrain()
@@ -45,6 +48,9 @@ func (server *Server) Drain(ctx context.Context) error {
 	}
 	if runtime != nil && runtime.actor != nil && actorErr == nil {
 		actorErr = runtime.actor.Drain(ctx)
+	}
+	if runtime != nil && runtime.entities != nil {
+		actorErr = errors.Join(actorErr, runtime.entities.Drain(ctx))
 	}
 	return errors.Join(discoveryErr, hostErr, actorErr)
 }

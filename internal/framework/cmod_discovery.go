@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-func (server *Server) discoveryCMod(options RunOptions) CMod {
+func (server *Server) discoveryCMod() CMod {
 	return &builtInCMod{
 		spec: CModSpec{ID: CModDiscovery, After: []CModID{CModRPC, CModActor}},
 		validate: func(CModContext) error {
@@ -14,7 +14,7 @@ func (server *Server) discoveryCMod(options RunOptions) CMod {
 			}
 			return nil
 		},
-		start: func(CModContext) error { return server.startDiscovery(options) },
+		start: func(CModContext) error { return server.startDiscovery() },
 		stop: func(ctx context.Context) error {
 			if server.discovery == nil {
 				return nil

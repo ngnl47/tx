@@ -85,7 +85,7 @@ func Run(ctx context.Context, app *bee.Server) error {
 
 `RunOptions` 不接受人工 `InstanceID`。声明 `CModDiscovery` 的节点会在 Service Factory 运行前申请
 `workSlot`，并生成形如 `<AppID>-<workSlot>-<ModRevision>` 的本次启动身份；未选择 Discovery 的纯单机进程允许
-`runtime.Instance().ID` 为空。`LogicalSlot` 是独立的稳定业务归属，不能用会随租约复用的 `workSlot` 替代。
+`runtime.Instance().ID` 为空。`SlotAssignment` 维护独立的稳定业务归属，不能用会随租约复用的 `workSlot` 替代。
 `InstanceEndpoint` 只发布内部业务 gRPC 地址；`InstanceEndpoints` 由项目用稳定名称发布客户端或其他项目地址，框架不解释其中的名称。
 
 `Setup` 是项目组合根使用的装配扩展点，适合安装 `db` facade。回调拿到的是受控
@@ -115,11 +115,11 @@ Context 仅在装配回调内取得依赖，不应保存到 Handler 或传入后
 配置、I/O、业务构造继续返回并处理 error。工厂在返回前创建但尚未交给框架的私有资源，仍须用 defer 在失败时释放；框架无法清理未交接的对象。
 
 接口迁移：`actors, err := runtime.CModActor()` 改为 `actors := runtime.CModActor()`，测试桩同步改成单返回值；
-`LogicalSlot()` 的可选 `(LogicalSlot, bool)` 契约不变。Ant 常规槽位路由使用 `runtime.CModSlotResolver()`，底层 `SlotReader`、`NewSlotResolver` 和高级 `SlotStore/SlotRouter` 保留。
+Ant 常规槽位路由使用 `runtime.CModSlotResolver()`，底层 `SlotReader`、`NewSlotResolver` 和高级 `SlotStore/SlotRouter` 保留。
 
 常规服务通过 `Tasks/Admission/CModRedisStorage/CModMongoStorage/CModFusionStorage/CModRPC/CModDiscovery/CModSessionID/CModActor`
 等最小契约取得已经声明的能力；项目组合根才使用通用 `Storage()` 安装 `db.Save` facade。
-Ant 在同一基础 API 上增加 `CModProcedure/CModSlots/LogicalSlot`。这些能力视图都不授予连接关闭、
+Ant 在同一基础 API 上增加 `CModProcedure/CModSlots`。这些能力视图都不授予连接关闭、
 runtime shutdown 或 discovery 快照写权限。
 
 `CModSessionID` 依赖 Discovery 已取得的租约和 `workSlot`，只向确实需要发号的 Login Service 暴露
@@ -1645,11 +1645,7 @@ server, err := app.New(config, app.WithAgentHandlers(handlers))
 -> 新 generation 接收该槽位请求
 ```
 
-`LogicalSlotID` 不是服务发现按实例数量生成的编号。原生部署由启动参数或环境变量注入；
-Kubernetes 有状态服务应使用 StatefulSet 的 ordinal，例如 Pod `game-1` 注入
-`TXGAME_LOGICAL_SLOT=game-1`。Discovery 为每次 Pod 启动自动申请 `workSlot` 并生成新的
-`RuntimeInstanceID`；短期 `workSlot` 不能替代稳定 `LogicalSlotID`，框架也不会把两者拼接起来。
-同一镜像复制出的普通 Deployment 副本不能共享写死的 SlotID。
+稳定业务槽位由实体映射规则决定，`SlotAssignment` 指向当前 `RuntimeInstanceID`，并由控制面通过 CAS 交接。进程不声明单个槽位，可承载多个归属本实例的槽位；短期 `workSlot` 不替代稳定槽位。
 
 `WaitGroupContext` 只保证正常关闭路径。`SIGKILL`、OOM、机器故障和网络分区下的自动
 安全接管不属于当前受控关闭的保证范围，不能仅凭成员离线就确认旧实例停止写入。

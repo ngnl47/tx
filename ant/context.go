@@ -97,16 +97,6 @@ type Context interface {
 	CModSlotResolver() *discovery.SlotResolver
 	// CModProcedure 返回 Ant 管理的单机 Procedure 执行器。
 	CModProcedure() txn.Executor
-	// LogicalSlot 返回当前进程声明的稳定逻辑槽位。
-	LogicalSlot() (LogicalSlot, bool)
-}
-
-// LogicalSlot 是有状态服务声明的稳定业务槽位及其当前物理实例身份。
-type LogicalSlot struct {
-	// ID 是业务稳定槽位，物理进程替换时保持不变。
-	ID string
-	// RuntimeInstanceID 是当前承载该槽位的唯一物理进程标识。
-	RuntimeInstanceID string
 }
 
 type frameworkContext interface {
@@ -291,24 +281,6 @@ func (view *contextView) CModProcedure() txn.Executor {
 		panic(framework.CapabilityError{Err: view.unavailable(CModProcedure)})
 	}
 	return value
-}
-
-// LogicalSlot 返回当前有状态实例声明的稳定逻辑槽位。
-func (view *contextView) LogicalSlot() (LogicalSlot, bool) {
-	if view == nil || view.kernel == nil {
-		return LogicalSlot{}, false
-	}
-	provider, ok := view.kernel.(interface {
-		LogicalSlot() (framework.LogicalSlot, bool)
-	})
-	if !ok {
-		return LogicalSlot{}, false
-	}
-	value, ok := provider.LogicalSlot()
-	if !ok {
-		return LogicalSlot{}, false
-	}
-	return LogicalSlot{ID: value.ID, RuntimeInstanceID: value.RuntimeInstanceID}, true
 }
 
 func (view *contextView) modeStorage(id CModID, mode meta.StorageMode) framework.ModeStorage {

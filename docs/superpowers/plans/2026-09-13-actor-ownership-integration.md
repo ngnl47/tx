@@ -91,6 +91,10 @@ go test -race ./internal/actortrial -run 'TestOwnershipIntegration|TestSlotRolli
 
 应用级规格接线：用户确认 Kind 在应用全部注册中唯一，多个 Kind 可共同指向同一服务类型（world、seasonWorld → slgworld）。framework 注册目录保留完整 Kind 声明及服务归属，并在构造时拒绝重名；启动阶段只把选中服务的 Kind 交给本地后端。测试验证 Agent 单独启动可保留远端规格，且不启动远端服务/Actor 工厂。tx、txgame/server、txgameslg/server 全量测试命令通过；修改集中于注册装配，未运行 benchmark。后置 ponytail-review 无新增可删除项。正式 Kind/新宿主仍未自动消费该目录，下一步绑定统一规格，而非要求业务重复声明映射。
 
+新宿主排水所有权接线（起点 `79d10ef`）：framework 私有持有 actorhost.Runtime，Server.Drain 在服务排水前同步关闭实体准入，并在最终写回前等待宿主已接受工作及卸载回调。集成测试已删除测试服务代办宿主 Drain 的逻辑，增加取消等待仍保留业务资源、禁止提前写回和后续重试的断言；真实 NATS 用例 race 连续三次通过。默认 CModActor 尚未创建该宿主，当前只完成框架收尾消费能力，Kind/目录自动装配仍未完成。没有新增业务侧 SPI、后台采集或消息热路径修改；未运行 benchmark。
+
+四种调用的寻址接线：私有 NATSMessenger 将 Tell、TellAccepted、CallFuture、Call 绑定到同一 EntityRouter 和 NATS 连接，业务身份不再需要预先转成物理 Target；直连上行保留仅 Call 的 RoutedCaller。寻址失败直接返回，传输失败不重寻址、不重投。首次寻址可能涉及容量预检、归属分配和激活控制，CallFuture 在寻址完成后返回 Future；不能将冷启动控制开销解释为零等待。真实默认分区与战区映射用例验证四种调用和 gRPC 共用实体状态，race 连续三次通过。未新增订阅、调度 goroutine 或后台采集，未运行 benchmark；公开 Messenger、Kind 工厂与默认 CModActor 的切换仍未完成。
+
 共享 gRPC 注册核对：Agent 注册 ControlService，MsgQ 注册 MailboxService，与 Actor DeliveryService 名称不同；无需增加通用多路分派层。Actor 的多个 Kind 由唯一宿主接收，DeliveryService 仍须由装配层统一注册一次。
 
 - [ ] 将实体宿主迁入正式 framework（I3b 已把原型的加载校验移到 Runtime.BindSlots，独立直连测试无需先创建 NATS）；复用共享 RPC Host 注册 Actor Call，检查同进程所选服务的注册组合，确保 DeliveryService 仅注册一次；两种入口仍共享同一 Runtime。
@@ -105,6 +109,8 @@ go test -race ./internal/actortrial -run 'TestOwnershipIntegration|TestSlotRolli
 I3a 实施起点 `fe8656f`，六工程干净；本节点只改 tx，详见 [正式交接准备与基线记录](../../audits/2026-09-13-framework-handoff-preparation.md)。I3b 从 `f082cea` 继续，已完成权威访问与传输无关的加载绑定，见 [接线记录](../../audits/2026-09-13-actor-ownership-binding.md)。下一节点继续正式实体宿主与高级 API/SPI 的迁入；不重新请求临时预算授权，也不把 I3a 完成等同于已移除 ProtoActor。
 
 ## I4：两个独立示例与依赖收敛
+
+多世界准备已推进：txgameslg 去除服务工厂和 Handler 的单世界 logical-slot 绑定，复用逐世界归属校验；一个实例可处理多个已分配世界。单实例双世界真实 Mongo 写入与版本保护回归通过，详见 [Kind 切换方案](2026-09-13-actor-kind-cutover.md)。这不代表 I4 或默认 NATS 后端切换完成，逐世界容量准入和新宿主自动装配仍待接线。
 
 修改 txgame/server 的 `services/{game,agent,internal/actorcmd}`、txgameslg/server 的 `services/{slggame,slgworld,agent,internal/actorcmd}` 及两个工程已有 `internal/writeback` 接线；配置、go.mod、README 与集群测试按实际依赖调整。
 

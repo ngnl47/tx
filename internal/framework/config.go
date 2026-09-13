@@ -135,9 +135,6 @@ type RunOptions struct {
 	InstanceEndpoint string
 	// InstanceEndpoints 是当前实例按稳定名称发布的客户端或项目公开地址。
 	InstanceEndpoints map[string]string
-	// LogicalSlot 是有状态服务稳定绑定的逻辑槽位；无状态服务可留空。框架不会把它
-	// 拼接到 InstanceID。
-	LogicalSlot string
 	// RPCListen 是进程共享 gRPC Host 的监听地址。
 	RPCListen string
 	// ControlListen 是健康检查和排水控制面的监听地址。

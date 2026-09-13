@@ -55,7 +55,7 @@ func selectedServiceNames(services []Service) []string {
 	return names
 }
 
-func (server *Server) startDiscovery(options RunOptions) error {
+func (server *Server) startDiscovery() error {
 	instance := server.runtime.instanceSnapshot()
 	discoveryRuntime, err := newDiscovery(server.runtime.lifecycle, server.config.Discovery.Etcd, server.config.AppID, instance)
 	if err != nil {
@@ -65,14 +65,6 @@ func (server *Server) startDiscovery(options RunOptions) error {
 	server.runtime.setInstance(discoveryRuntime.Instance())
 	server.runtime.directory = discoveryRuntime.Directory()
 	server.runtime.slots = discoveryRuntime.Slots()
-	if strings.TrimSpace(options.LogicalSlot) != "" {
-		instance = server.runtime.instanceSnapshot()
-		logicalSlot, err := newLogicalSlot(options.LogicalSlot, instance.ID)
-		if err != nil {
-			return fmt.Errorf("framework: logical slot: %w", err)
-		}
-		server.runtime.logicalSlot = logicalSlot
-	}
 	if err := server.runtime.lifecycle.Go(func(ctx context.Context) {
 		select {
 		case <-ctx.Done():

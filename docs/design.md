@@ -219,7 +219,6 @@ ServiceSpec、CMod 和基础 Context；同名 API 具有相同签名和生命周
 | `CModProcedure()` | Ant | 执行根 Procedure | CommitParticipant 和生命周期在 CModProcedure |
 | `CModSlots()` | Ant | 只读 SlotReader 槽位归属 | etcd client、成员 lease 和 watch 在 discovery Runtime |
 | `CModSlotResolver()` | Ant | 解析槽位当前 running 目标 | Watch 和连接生命周期在 discovery Runtime |
-| `LogicalSlot()` | Ant | 读取当前稳定逻辑槽位和物理实例身份 | 槽位迁移由控制面负责 |
 
 Context 对生命周期、目录替换和刷盘能力返回专用 wrapper，调用方不能通过这些视图重新取得
 `Cancel`、`Stop`、`Shutdown`、`Replace` 或 `Flush`。槽位读取另以 SlotReader 声明编译期职责，不承诺类型断言隔离。`Context.Instance()` 返回 ownership-safe 的本地实例快照，
@@ -2007,7 +2006,7 @@ project config parser
 三个 `RunOptions` 都不暴露人工 `InstanceID`。未选择 Discovery 的纯单机进程保留空实例 ID；一旦依赖闭包选择
 `CModDiscovery`，Discovery 必须在任何 Service Factory 运行前完成 `workSlot` 申请，并把
 `<AppID>-<workSlot>-<ModRevision>` 冻结为本次进程身份。`workSlot` 是租约保护的短期资源，不得用于替代稳定
-`LogicalSlot`，后者仍由部署控制面维护 assignment 和 generation。
+稳定业务槽位，后者仍由部署控制面维护 assignment 和 generation。
 
 项目不实现自己的 Host 或装配 Runtime。`txgame/server/internal/app` 与 `txgameslg/server/internal/app` 只是
 composition root：注册生成数据、安装 `db` facade、注入身份解析/业务分发回调和声明可选业务服务。项目专属 SPI 与业务
@@ -2151,7 +2150,7 @@ Login 关闭只停止签发新票据，不拥有或终止 Agent/MsgQ 上已经�
 正常关闭把实例状态推进到 `stopping` 后删除实例键，但只停止租约续租，让 `workSlot` 键按 TTL 自然过期；这样新进程
 不能在旧进程退出的同一窗口立即复用短期槽位。由于 SessionID 在成功进入 `running` 前不会开放，启动尚未完成、
 从未进入 `running` 的失败回滚必然没有发号，可以主动撤销租约。
-持久 `LogicalSlot` assignment 不随实例关闭删除。
+持久 `SlotAssignment` 不随实例关闭删除。
 
 实例 ID、endpoint、版本和服务列表在启动时动态构造，不写死在业务 yml。etcd 保存集群控制状态，不保存 GD 或业务地图数据。
 

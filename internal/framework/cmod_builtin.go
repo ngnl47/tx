@@ -65,7 +65,7 @@ func (server *Server) builtInCMods(options RunOptions) []CMod {
 		server.mongoCMod(),
 		server.fusionCMod(),
 		server.rpcCMod(options),
-		server.discoveryCMod(options),
+		server.discoveryCMod(),
 		server.sessionIDCMod(),
 		server.actorCMod(),
 	}

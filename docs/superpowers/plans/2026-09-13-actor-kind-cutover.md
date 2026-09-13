@@ -52,7 +52,7 @@
 
 ## 布局落地
 
-唯一布局函数已实现于 `internal/actorhost.PartitionSlot`，普通路由、首次分配与宿主权威加载校验在未提供自定义映射时复用它。世界的显式映射保持不变；正式 framework 和多世界实例装配仍待后续接线。
+唯一布局函数已实现于 `internal/actorhost.PartitionSlot`，普通路由、首次分配与宿主权威加载校验在未提供自定义映射时复用它。世界的显式映射保持不变；正式 framework 的新宿主装配仍待后续接线，多世界示例进展见下文。
 
 ## 稳定分服与分战区 SPI
 
@@ -69,3 +69,15 @@
 已确认：一个 Kind 对应一个服务类型，一个服务类型可承载多个 Kind；例如 world、seasonWorld 均对应 slgworld。名称在同一应用的全部服务注册中唯一，而非仅本次选中服务唯一。共用服务池不意味着实体落在同一实例，各 Kind 保留自身映射与工厂。
 
 framework 已从全部注册规格建立私有 actorCatalog，并在构造时拒绝重名；本地 actorKinds 与 CMod 依赖仍只收集选中服务。只启动 Agent 时可保留世界规格，但不调用世界服务或 Actor 工厂。目录尚未绑定到新的公开 Kind/EntityRouter 自动装配，不能把规格可用解释为默认后端已切换。
+
+## 示例单实例承载多个世界
+
+txgameslg 的 slgworld 服务不再要求启动时声明一个世界 logical-slot。命令入口和桶加载前通过共享世界映射查询目标槽位，检查归属实例及非零 Generation；缓存命中仍执行入口校验。桶缓存继续按 worldID、bucketID 隔离，Procedure 默认写回和 Mongo 版本条件保护不变。
+
+例如 slgworld-490001、slgworld-490002 的 assignment 均指向同一次启动的实例 ID，该实例可处理两个世界；未知槽位或归属其他实例的世界拒绝处理。真实 Mongo 集成测试已在不传 logical-slot 的单实例上验证两个世界写入及旧版本覆盖拒绝；slgworld 单测、race 和 server 全量测试通过。
+
+当前检查使用现行 CModSlots 读取接口；这不替代新宿主激活时的权威校验。逐世界预估内存准入、自动分配接线和正式 Kind 后端切换仍未完成；现有缓存容量限制仍按实例生效。本轮未做 benchmark，入口新增槽位查询，不宣称性能无变化。
+
+## 清理闲置进程槽位声明
+
+解除单世界绑定后，六工程已无业务读取 `LogicalSlot()`；删除 `--logical-slot`、`TXGAMESLG_LOGICAL_SLOT`、Ant/框架 RunOptions 字段、Context 访问器及专属装配测试，同步清理压测进程参数。保留实际承载多槽位归属的 SlotAssignment、查询与 CAS 交接测试。旧设计中的进程声明方式仅为历史记录，不再是当前 API。

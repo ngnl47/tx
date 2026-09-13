@@ -12,7 +12,7 @@ import (
 
 func TestDiscoveryCModDoesNotRequireManualInstanceID(t *testing.T) {
 	server := &Server{config: Config{AppID: "txgame", Discovery: validDiscoveryConfig()}}
-	mod := server.discoveryCMod(RunOptions{})
+	mod := server.discoveryCMod()
 	validator, ok := mod.(CModValidator)
 	if !ok {
 		t.Fatal("discovery CMod does not implement CModValidator")
@@ -88,33 +88,6 @@ func TestDiscoveryAutomaticIdentityIsSharedByServicesWithEtcd(t *testing.T) {
 	}
 }
 
-func TestDiscoveryAutomaticIdentityBindsLogicalSlotWithEtcd(t *testing.T) {
-	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
-	if endpoint == "" {
-		t.Skip("set TX_ETCD_ENDPOINT to run the etcd integration test")
-	}
-	server := newDiscoveryIdentityTestServer(
-		t,
-		endpoint,
-		fmt.Sprintf("/tx/tests/framework-logical-slot-%d", time.Now().UnixNano()),
-		"127.0.0.1:9104",
-		testService{spec: Spec{Name: "game", Requires: []CModID{CModDiscovery}}},
-	)
-	if err := server.Start(t.Context(), RunOptions{
-		Services:         "game",
-		InstanceEndpoint: "127.0.0.1:9104",
-		LogicalSlot:      "game-1",
-	}); err != nil {
-		t.Fatalf("start server: %v", err)
-	}
-	t.Cleanup(func() { _ = server.Stop(context.Background()) })
-	assertGeneratedInstanceIDShape(t, server.Context().Instance().ID, "txgame")
-	slot, ok := server.Context().LogicalSlot()
-	if !ok || slot.RuntimeInstanceID == "" || slot.RuntimeInstanceID != server.Context().Instance().ID {
-		t.Fatalf("logical slot = %#v, InstanceID = %q", slot, server.Context().Instance().ID)
-	}
-}
-
 func assertGeneratedInstanceIDShape(t *testing.T, value, appID string) {
 	t.Helper()
 	var workSlot uint16
@@ -141,20 +114,4 @@ func newDiscoveryIdentityTestServer(t *testing.T, endpoint, prefix, instanceEndp
 		t.Fatalf("new server for %s: %v", instanceEndpoint, err)
 	}
 	return server
-}
-
-func TestNewLogicalSlotBindsStableSlotToRuntimeInstance(t *testing.T) {
-	slot, err := newLogicalSlot("game-1", "pod-uid-a")
-	if err != nil {
-		t.Fatalf("NewLogicalSlot returned error: %v", err)
-	}
-	if slot.ID != "game-1" || slot.RuntimeInstanceID != "pod-uid-a" {
-		t.Fatalf("slot = %#v", slot)
-	}
-	if _, err := newLogicalSlot("game/1", "pod-uid-a"); err == nil {
-		t.Fatal("NewLogicalSlot accepted invalid slot ID")
-	}
-	if _, err := newLogicalSlot("game-1", ""); err == nil {
-		t.Fatal("NewLogicalSlot accepted empty runtime instance ID")
-	}
 }

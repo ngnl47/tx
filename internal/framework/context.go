@@ -85,8 +85,6 @@ type Context interface {
 	Transaction() txn.Executor
 	// SessionIDs 返回绑定当前 Discovery 运行身份的 SessionID 分配器；未启用时返回 nil。
 	SessionIDs() sessionid.Allocator
-	// LogicalSlot 返回当前有状态实例声明的稳定逻辑槽位。
-	LogicalSlot() (LogicalSlot, bool)
 	// HasCMod 判断能力模组是否进入本次启动闭包。
 	HasCMod(CModID) bool
 	// Advanced 返回受支持的专家级扩展面。
@@ -224,13 +222,6 @@ func (service *serviceContext) SessionIDs() sessionid.Allocator {
 		return nil
 	}
 	return service.runtime.sessionIDsSnapshot()
-}
-
-func (service *serviceContext) LogicalSlot() (LogicalSlot, bool) {
-	if service == nil || service.runtime == nil || service.runtime.logicalSlot == nil {
-		return LogicalSlot{}, false
-	}
-	return *service.runtime.logicalSlot, true
 }
 
 func (service *serviceContext) HasCMod(id CModID) bool {

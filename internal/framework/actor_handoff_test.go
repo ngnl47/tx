@@ -65,7 +65,12 @@ func TestActorHostPrepareHandoffRetainsTransportUntilStop(t *testing.T) {
 		}
 		return nil
 	}}
-	closeAdmission := sync.OnceFunc(func() { local.BeginDrain(); close(draining) })
+	observeDrain := sync.OnceFunc(func() {
+		if !local.Draining() {
+			t.Error("框架未在服务排水前关闭实体准入")
+		}
+		close(draining)
+	})
 	app, err := New(Config{AppID: "actor-handoff"}, WithCMod(mod), WithService(testService{
 		spec: Spec{Name: "game", Requires: []CModID{CModRPC, mod.Spec().ID}},
 		start: func(c Context) error {
@@ -73,7 +78,7 @@ func TestActorHostPrepareHandoffRetainsTransportUntilStop(t *testing.T) {
 				return rpc.RegisterDeliveryService(r, nil, actorrpc.NewDirectReceiver("source", local))
 			})
 		},
-		drain: func(ctx context.Context) error { closeAdmission(); return local.Drain(ctx) },
+		drain: func(context.Context) error { observeDrain(); return nil },
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -91,6 +96,7 @@ func TestActorHostPrepareHandoffRetainsTransportUntilStop(t *testing.T) {
 	app.runtime.setInstance(discovery.Instance{ID: "source"})
 	output := &handoffFlushTransport{NATSTransport: transport, stored: &flushes}
 	app.runtime.actorRPC = output
+	app.runtime.entities = local
 	target := actorhost.Target{Instance: "source", Identity: actorhost.Identity{Kind: "role", Key: "1"}}
 	future, err := client.CallFuture(ctx, target, &actorpb.Delivery{})
 	if err != nil {
@@ -100,6 +106,15 @@ func TestActorHostPrepareHandoffRetainsTransportUntilStop(t *testing.T) {
 	case <-entered:
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
+	}
+	// 排水等待取消不能越过宿主屏障或释放仍在执行业务的资源。
+	cancelled, stopWait := context.WithCancel(ctx)
+	stopWait()
+	if err := app.Stop(cancelled); !errors.Is(err, errStopDeferred) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("取消排水: %v", err)
+	}
+	if app.Context() == nil || cleaned.Load() || flushes.Load() != 0 || mod.stopped {
+		t.Fatal("取消等待释放了业务资源或执行了最终写回")
 	}
 	prepared := make(chan error, 1)
 	go func() { prepared <- app.PrepareHandoff(ctx, "source") }()
