@@ -49,6 +49,19 @@ service LifecycleService {
   rpc WaitDrained(Empty) returns (LifecycleStatus);
 }
 
+// 成功仅确认指定源实例完成收尾，不执行槽位 CAS 或停止进程。
+message PrepareHandoffRequest {
+  string runtime_instance_id = 1;
+}
+
+message PrepareHandoffResponse {
+  string runtime_instance_id = 1;
+}
+
+service HandoffService {
+  rpc PrepareHandoff(PrepareHandoffRequest) returns (PrepareHandoffResponse);
+}
+
 service SlotService {
   rpc CreateSlot(CreateSlotRequest) returns (CreateSlotResponse);
   rpc PromoteSlot(PromoteSlotRequest) returns (PromoteSlotResponse);

@@ -10,7 +10,7 @@ import (
 var errStopDeferred = errors.New("framework: shutdown deferred; resources retained for retry")
 
 // Drain 先关闭服务和 Actor 准入，再摘除普通路由并等待已接受的工作完成。
-// 它不会取消后台任务或关闭 RPC。
+// 它不会取消后台任务、完成最终写回或关闭 RPC；槽位交接应先调用 PrepareHandoff。
 func (server *Server) Drain(ctx context.Context) error {
 	if server == nil {
 		return nil
@@ -93,6 +93,16 @@ func (server *Server) stop(ctx context.Context, drain bool) error {
 				return ctx.Err()
 			}
 		}
+		if server.prepareAttempt != nil {
+			done := server.prepareAttempt.done
+			server.mu.Unlock()
+			select {
+			case <-done:
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 		server.stopping = true
 		server.stopAttempt = &drainAttempt{done: make(chan struct{})}
 		server.mu.Unlock()
@@ -115,35 +125,19 @@ func (server *Server) stop(ctx context.Context, drain bool) error {
 }
 
 func (server *Server) shutdown(ctx context.Context, drain bool) error {
+	err := server.finishWork(ctx, drain)
+	if errors.Is(err, errStopDeferred) {
+		return err
+	}
 	server.mu.Lock()
 	runtime := server.runtime
 	host := server.host
 	cmodHost := server.cmodHost
 	discoveryRuntime := server.discovery
 	controlServer := server.control
-	fatal := server.fatalErr != nil
 	server.mu.Unlock()
 
-	var errs []error
-	if drain {
-		drainCtx, cancel := context.WithTimeout(ctx, effectiveDrainTimeout(server.config.Runtime.Lifecycle.DrainTimeout))
-		err := server.Drain(drainCtx)
-		cancel()
-		if err != nil && !fatal {
-			return errors.Join(errStopDeferred, err)
-		}
-		errs = append(errs, err)
-	}
-	if host != nil {
-		host.quiesceTasks()
-	}
-	if cmodHost != nil {
-		err := cmodHost.drain(ctx)
-		if err != nil && drain && !fatal {
-			return errors.Join(errStopDeferred, err)
-		}
-		errs = append(errs, err)
-	}
+	errs := []error{err}
 	if controlServer != nil {
 		controlServer.stop()
 	}
@@ -175,4 +169,37 @@ func (server *Server) shutdown(ctx context.Context, drain bool) error {
 	fatalErr := server.fatalErr
 	server.mu.Unlock()
 	return errors.Join(errors.Join(errs...), fatalErr)
+}
+
+// finishWork 由交接准备与最终关闭串行复用；成功的组件阶段由 component.Host 记住。
+// 这里只停止业务任务和冲刷状态，租约、存储绑定及通信连接留给 shutdown 释放。
+func (server *Server) finishWork(ctx context.Context, drain bool) error {
+	server.mu.Lock()
+	host, cmodHost := server.host, server.cmodHost
+	prepared, fatal := server.prepared, server.fatalErr != nil
+	server.mu.Unlock()
+	if prepared {
+		return nil
+	}
+	var errs []error
+	if drain {
+		drainCtx, cancel := context.WithTimeout(ctx, effectiveDrainTimeout(server.config.Runtime.Lifecycle.DrainTimeout))
+		err := server.Drain(drainCtx)
+		cancel()
+		if err != nil && !fatal {
+			return errors.Join(errStopDeferred, err)
+		}
+		errs = append(errs, err)
+	}
+	if host != nil {
+		host.quiesceTasks()
+	}
+	if cmodHost != nil {
+		err := cmodHost.drain(ctx)
+		if err != nil && drain && !fatal {
+			return errors.Join(errStopDeferred, err)
+		}
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }

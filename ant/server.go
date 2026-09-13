@@ -37,6 +37,14 @@ func (server *Server) Drain(ctx context.Context) error {
 	return server.kernel.Drain(ctx)
 }
 
+// PrepareHandoff 完成已接受工作与最终写回，保留资源供槽位交接；源身份必须属于本次启动。
+func (server *Server) PrepareHandoff(ctx context.Context, expectedInstanceID string) error {
+	if server == nil || server.kernel == nil {
+		return errors.New("ant: server is nil")
+	}
+	return server.kernel.PrepareHandoff(ctx, expectedInstanceID)
+}
+
 // Stop 执行一次排水和停止；常规排水或最终持久化失败时保留资源并返回错误，允许再次调用。
 // 需要有限重试与进程生命周期编排时使用 Run。
 func (server *Server) Stop(ctx context.Context) error {

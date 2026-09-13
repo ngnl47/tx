@@ -1,5 +1,7 @@
 # Actor 归属组件正式接线设计
 
+**2026-09-13 最新决策：** 用户已接受 I2 的临时业务预算，允许进入 I3 正式接线。原 10% 比较线保留为迁移偏移的排查提示，不再单独阻止本次接线；不等同于生产验收放行。优先保持去掉 ProtoActor 后的上下行完成链路性能，不重复全 NATS 上行测试。固定基线见 [迁移前基线](../../audits/baselines/2026-09-13-uplink.json)。I3 先完成交接准备与 Stop 共享收尾，再迁入实体宿主及适配，最终以相同业务负载复测。下文 I2 未放行表述保留其评审时点，以下最新决策为准。
+
 日期：2026-09-13。代码基线：tx `dd07b29`；本轮开始六工程工作区干净。本文是设计细化，不表示正式运行时已替换，也不把历史测试当作本轮验证。实施顺序见 [接线计划](../plans/2026-09-13-actor-ownership-integration.md)。
 
 ## 目标与取舍
@@ -21,7 +23,7 @@
 | SlotHost.quiesce 排空整个 Runtime，再调用注入的 Flush；现有 Redis 测试写自定义快照 | 接入实际 Procedure/writeback 与 GD；现有测试不能证明正式 GD 收尾完成 |
 | `Server.Drain` 等待服务和 Actor 已接纳工作，不停止后台任务，也不最终冲刷 CMod | 控制面的 StateDrained 不能直接作为持久化完成或槽位晋升许可 |
 | `Server.shutdown` 停服务任务后调用 CMod Drain；`component.Host` 记住成功阶段，失败从原阶段重试 | 交接复用该收尾顺序和重试进度，不另造完成表或第二个 writeback.Manager |
-| `rpcCMod.Drain` 当前会 Stop RPC Host | 正式接线须把必要通信资源关闭留到最终 Stop；不能原样调用全部 CMod Drain 后声称连接仍可用 |
+| I3a 已将 RPC Host 关闭移出 CMod Drain，根生命周期最终取消会唤醒 Serve 退出 | 交接准备可保留共享 RPC；后续 NATS 宿主必须沿用相同资源边界 |
 | 当前 CModDiscovery 在 CModActor 之后启动，Discovery 才申请 RuntimeInstanceID | 新宿主先获得租约身份及 Watch 快照，再开放两种入口；修改依赖顺序时消除旧 ActorEndpoint 依赖，不能形成环 |
 | `modules/control/SlotPromoter` 执行归属 CAS 和目标就绪检查 | 继续作为高级低层能力；安全交接组合负责先确认源方收尾，不能宣称任意 PromoteSlot 调用都有排水保护 |
 
@@ -44,7 +46,7 @@
 
 ## 正常交接时序
 
-交接单位维持“先排空源实例，再逐槽晋升”，不实现运行中单实体热迁移。拟在既有控制面增加 `PrepareHandoff` 操作；此名称和协议尚未实施，含义如下：
+交接单位维持“先排空源实例，再逐槽晋升”，不实现运行中单实体热迁移。I3a 已在正式框架与既有控制端口提供 `PrepareHandoff` 操作；以下完整 Actor 迁移时序仍需后续宿主接线验收：
 
 1. 调用方带预期源 RuntimeInstanceID，接收方验证本次启动身份；端点复用不能获得旧实例的成功确认。
 2. 源方关闭服务及实体准入并标记 draining；等待已准入、排队、执行中的工作结束。停止会产生后续业务写入的受管理任务，再进行必要持久化收尾。

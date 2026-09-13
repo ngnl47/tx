@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/ngnl47/tx/modules/control"
@@ -13,6 +14,39 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/encoding/protojson"
 )
+
+func TestRunPrepareHandoffRequiresMatchingConfirmation(t *testing.T) {
+	for _, responseID := range []string{"startup-a", "startup-other"} {
+		t.Run(responseID, func(t *testing.T) {
+			listener := bufconn.Listen(1024 * 1024)
+			server := grpc.NewServer()
+			controlpb.RegisterHandoffServiceServer(server, cliHandoffServer{responseID: responseID})
+			go func() { _ = server.Serve(listener) }()
+			defer server.Stop()
+			var output bytes.Buffer
+			err := run(t.Context(), []string{"--endpoint", "control", "prepare-handoff", "--instance", "startup-a"}, &output, bufconnDialer(listener))
+			if responseID == "startup-a" {
+				if err != nil || !strings.Contains(output.String(), "runtimeInstance=startup-a") {
+					t.Fatalf("确认未输出: %q %v", output.String(), err)
+				}
+			} else if err == nil || output.Len() != 0 {
+				t.Fatalf("错误实例被确认为准备完成: %q %v", output.String(), err)
+			}
+		})
+	}
+}
+
+type cliHandoffServer struct {
+	controlpb.UnimplementedHandoffServiceServer
+	responseID string
+}
+
+func (s cliHandoffServer) PrepareHandoff(_ context.Context, request *controlpb.PrepareHandoffRequest) (*controlpb.PrepareHandoffResponse, error) {
+	if request.GetRuntimeInstanceId() != "startup-a" {
+		return nil, context.Canceled
+	}
+	return &controlpb.PrepareHandoffResponse{RuntimeInstanceId: s.responseID}, nil
+}
 
 func TestRunStorageIOPrintsLosslessSnapshot(t *testing.T) {
 	listener := bufconn.Listen(1024 * 1024)

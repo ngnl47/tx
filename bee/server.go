@@ -36,6 +36,14 @@ func (server *Server) Drain(ctx context.Context) error {
 	return server.kernel.Drain(ctx)
 }
 
+// PrepareHandoff 完成已接受工作与最终写回，保留资源供槽位交接；源身份必须属于本次启动。
+func (server *Server) PrepareHandoff(ctx context.Context, expectedInstanceID string) error {
+	if server == nil || server.kernel == nil {
+		return errors.New("bee: server is nil")
+	}
+	return server.kernel.PrepareHandoff(ctx, expectedInstanceID)
+}
+
 // Stop 执行排水并释放全部物理资源。
 func (server *Server) Stop(ctx context.Context) error {
 	if server == nil || server.kernel == nil {

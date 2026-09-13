@@ -416,6 +416,95 @@ func (x *PromoteSlotResponse) GetAssignment() *SlotAssignment {
 	return nil
 }
 
+// 成功仅确认指定源实例完成收尾，不执行槽位 CAS 或停止进程。
+type PrepareHandoffRequest struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	RuntimeInstanceId string                 `protobuf:"bytes,1,opt,name=runtime_instance_id,json=runtimeInstanceId,proto3" json:"runtime_instance_id,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *PrepareHandoffRequest) Reset() {
+	*x = PrepareHandoffRequest{}
+	mi := &file_modules_control_proto_control_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PrepareHandoffRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PrepareHandoffRequest) ProtoMessage() {}
+
+func (x *PrepareHandoffRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_modules_control_proto_control_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PrepareHandoffRequest.ProtoReflect.Descriptor instead.
+func (*PrepareHandoffRequest) Descriptor() ([]byte, []int) {
+	return file_modules_control_proto_control_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *PrepareHandoffRequest) GetRuntimeInstanceId() string {
+	if x != nil {
+		return x.RuntimeInstanceId
+	}
+	return ""
+}
+
+type PrepareHandoffResponse struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	RuntimeInstanceId string                 `protobuf:"bytes,1,opt,name=runtime_instance_id,json=runtimeInstanceId,proto3" json:"runtime_instance_id,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *PrepareHandoffResponse) Reset() {
+	*x = PrepareHandoffResponse{}
+	mi := &file_modules_control_proto_control_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PrepareHandoffResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PrepareHandoffResponse) ProtoMessage() {}
+
+func (x *PrepareHandoffResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_modules_control_proto_control_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PrepareHandoffResponse.ProtoReflect.Descriptor instead.
+func (*PrepareHandoffResponse) Descriptor() ([]byte, []int) {
+	return file_modules_control_proto_control_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *PrepareHandoffResponse) GetRuntimeInstanceId() string {
+	if x != nil {
+		return x.RuntimeInstanceId
+	}
+	return ""
+}
+
 // 存储统计查询不改变生命周期，也不清零累计计数。
 type StorageIOStat struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
@@ -432,7 +521,7 @@ type StorageIOStat struct {
 
 func (x *StorageIOStat) Reset() {
 	*x = StorageIOStat{}
-	mi := &file_modules_control_proto_control_proto_msgTypes[7]
+	mi := &file_modules_control_proto_control_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -444,7 +533,7 @@ func (x *StorageIOStat) String() string {
 func (*StorageIOStat) ProtoMessage() {}
 
 func (x *StorageIOStat) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_control_proto_control_proto_msgTypes[7]
+	mi := &file_modules_control_proto_control_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -457,7 +546,7 @@ func (x *StorageIOStat) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StorageIOStat.ProtoReflect.Descriptor instead.
 func (*StorageIOStat) Descriptor() ([]byte, []int) {
-	return file_modules_control_proto_control_proto_rawDescGZIP(), []int{7}
+	return file_modules_control_proto_control_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *StorageIOStat) GetBackend() string {
@@ -519,7 +608,7 @@ type StorageIOSnapshot struct {
 
 func (x *StorageIOSnapshot) Reset() {
 	*x = StorageIOSnapshot{}
-	mi := &file_modules_control_proto_control_proto_msgTypes[8]
+	mi := &file_modules_control_proto_control_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -531,7 +620,7 @@ func (x *StorageIOSnapshot) String() string {
 func (*StorageIOSnapshot) ProtoMessage() {}
 
 func (x *StorageIOSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_control_proto_control_proto_msgTypes[8]
+	mi := &file_modules_control_proto_control_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -544,7 +633,7 @@ func (x *StorageIOSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StorageIOSnapshot.ProtoReflect.Descriptor instead.
 func (*StorageIOSnapshot) Descriptor() ([]byte, []int) {
-	return file_modules_control_proto_control_proto_rawDescGZIP(), []int{8}
+	return file_modules_control_proto_control_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *StorageIOSnapshot) GetInstanceId() string {
@@ -589,7 +678,11 @@ const file_modules_control_proto_control_proto_rawDesc = "" +
 	"\x13PromoteSlotResponse\x12=\n" +
 	"\n" +
 	"assignment\x18\x01 \x01(\v2\x1d.tx.control.v1.SlotAssignmentR\n" +
-	"assignment\"\xe5\x01\n" +
+	"assignment\"G\n" +
+	"\x15PrepareHandoffRequest\x12.\n" +
+	"\x13runtime_instance_id\x18\x01 \x01(\tR\x11runtimeInstanceId\"H\n" +
+	"\x16PrepareHandoffResponse\x12.\n" +
+	"\x13runtime_instance_id\x18\x01 \x01(\tR\x11runtimeInstanceId\"\xe5\x01\n" +
 	"\rStorageIOStat\x12\x18\n" +
 	"\abackend\x18\x01 \x01(\tR\abackend\x12\x1c\n" +
 	"\toperation\x18\x02 \x01(\tR\toperation\x12\x14\n" +
@@ -611,7 +704,9 @@ const file_modules_control_proto_control_proto_rawDesc = "" +
 	"\x10LifecycleService\x12>\n" +
 	"\x06Status\x12\x14.tx.control.v1.Empty\x1a\x1e.tx.control.v1.LifecycleStatus\x12=\n" +
 	"\x05Drain\x12\x14.tx.control.v1.Empty\x1a\x1e.tx.control.v1.LifecycleStatus\x12C\n" +
-	"\vWaitDrained\x12\x14.tx.control.v1.Empty\x1a\x1e.tx.control.v1.LifecycleStatus2\xb6\x01\n" +
+	"\vWaitDrained\x12\x14.tx.control.v1.Empty\x1a\x1e.tx.control.v1.LifecycleStatus2o\n" +
+	"\x0eHandoffService\x12]\n" +
+	"\x0ePrepareHandoff\x12$.tx.control.v1.PrepareHandoffRequest\x1a%.tx.control.v1.PrepareHandoffResponse2\xb6\x01\n" +
 	"\vSlotService\x12Q\n" +
 	"\n" +
 	"CreateSlot\x12 .tx.control.v1.CreateSlotRequest\x1a!.tx.control.v1.CreateSlotResponse\x12T\n" +
@@ -632,39 +727,43 @@ func file_modules_control_proto_control_proto_rawDescGZIP() []byte {
 }
 
 var file_modules_control_proto_control_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_modules_control_proto_control_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_modules_control_proto_control_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_modules_control_proto_control_proto_goTypes = []any{
-	(LifecycleState)(0),         // 0: tx.control.v1.LifecycleState
-	(*Empty)(nil),               // 1: tx.control.v1.Empty
-	(*LifecycleStatus)(nil),     // 2: tx.control.v1.LifecycleStatus
-	(*SlotAssignment)(nil),      // 3: tx.control.v1.SlotAssignment
-	(*CreateSlotRequest)(nil),   // 4: tx.control.v1.CreateSlotRequest
-	(*CreateSlotResponse)(nil),  // 5: tx.control.v1.CreateSlotResponse
-	(*PromoteSlotRequest)(nil),  // 6: tx.control.v1.PromoteSlotRequest
-	(*PromoteSlotResponse)(nil), // 7: tx.control.v1.PromoteSlotResponse
-	(*StorageIOStat)(nil),       // 8: tx.control.v1.StorageIOStat
-	(*StorageIOSnapshot)(nil),   // 9: tx.control.v1.StorageIOSnapshot
+	(LifecycleState)(0),            // 0: tx.control.v1.LifecycleState
+	(*Empty)(nil),                  // 1: tx.control.v1.Empty
+	(*LifecycleStatus)(nil),        // 2: tx.control.v1.LifecycleStatus
+	(*SlotAssignment)(nil),         // 3: tx.control.v1.SlotAssignment
+	(*CreateSlotRequest)(nil),      // 4: tx.control.v1.CreateSlotRequest
+	(*CreateSlotResponse)(nil),     // 5: tx.control.v1.CreateSlotResponse
+	(*PromoteSlotRequest)(nil),     // 6: tx.control.v1.PromoteSlotRequest
+	(*PromoteSlotResponse)(nil),    // 7: tx.control.v1.PromoteSlotResponse
+	(*PrepareHandoffRequest)(nil),  // 8: tx.control.v1.PrepareHandoffRequest
+	(*PrepareHandoffResponse)(nil), // 9: tx.control.v1.PrepareHandoffResponse
+	(*StorageIOStat)(nil),          // 10: tx.control.v1.StorageIOStat
+	(*StorageIOSnapshot)(nil),      // 11: tx.control.v1.StorageIOSnapshot
 }
 var file_modules_control_proto_control_proto_depIdxs = []int32{
 	0,  // 0: tx.control.v1.LifecycleStatus.state:type_name -> tx.control.v1.LifecycleState
 	3,  // 1: tx.control.v1.CreateSlotResponse.assignment:type_name -> tx.control.v1.SlotAssignment
 	3,  // 2: tx.control.v1.PromoteSlotRequest.current:type_name -> tx.control.v1.SlotAssignment
 	3,  // 3: tx.control.v1.PromoteSlotResponse.assignment:type_name -> tx.control.v1.SlotAssignment
-	8,  // 4: tx.control.v1.StorageIOSnapshot.stats:type_name -> tx.control.v1.StorageIOStat
+	10, // 4: tx.control.v1.StorageIOSnapshot.stats:type_name -> tx.control.v1.StorageIOStat
 	1,  // 5: tx.control.v1.LifecycleService.Status:input_type -> tx.control.v1.Empty
 	1,  // 6: tx.control.v1.LifecycleService.Drain:input_type -> tx.control.v1.Empty
 	1,  // 7: tx.control.v1.LifecycleService.WaitDrained:input_type -> tx.control.v1.Empty
-	4,  // 8: tx.control.v1.SlotService.CreateSlot:input_type -> tx.control.v1.CreateSlotRequest
-	6,  // 9: tx.control.v1.SlotService.PromoteSlot:input_type -> tx.control.v1.PromoteSlotRequest
-	1,  // 10: tx.control.v1.StorageIOService.Snapshot:input_type -> tx.control.v1.Empty
-	2,  // 11: tx.control.v1.LifecycleService.Status:output_type -> tx.control.v1.LifecycleStatus
-	2,  // 12: tx.control.v1.LifecycleService.Drain:output_type -> tx.control.v1.LifecycleStatus
-	2,  // 13: tx.control.v1.LifecycleService.WaitDrained:output_type -> tx.control.v1.LifecycleStatus
-	5,  // 14: tx.control.v1.SlotService.CreateSlot:output_type -> tx.control.v1.CreateSlotResponse
-	7,  // 15: tx.control.v1.SlotService.PromoteSlot:output_type -> tx.control.v1.PromoteSlotResponse
-	9,  // 16: tx.control.v1.StorageIOService.Snapshot:output_type -> tx.control.v1.StorageIOSnapshot
-	11, // [11:17] is the sub-list for method output_type
-	5,  // [5:11] is the sub-list for method input_type
+	8,  // 8: tx.control.v1.HandoffService.PrepareHandoff:input_type -> tx.control.v1.PrepareHandoffRequest
+	4,  // 9: tx.control.v1.SlotService.CreateSlot:input_type -> tx.control.v1.CreateSlotRequest
+	6,  // 10: tx.control.v1.SlotService.PromoteSlot:input_type -> tx.control.v1.PromoteSlotRequest
+	1,  // 11: tx.control.v1.StorageIOService.Snapshot:input_type -> tx.control.v1.Empty
+	2,  // 12: tx.control.v1.LifecycleService.Status:output_type -> tx.control.v1.LifecycleStatus
+	2,  // 13: tx.control.v1.LifecycleService.Drain:output_type -> tx.control.v1.LifecycleStatus
+	2,  // 14: tx.control.v1.LifecycleService.WaitDrained:output_type -> tx.control.v1.LifecycleStatus
+	9,  // 15: tx.control.v1.HandoffService.PrepareHandoff:output_type -> tx.control.v1.PrepareHandoffResponse
+	5,  // 16: tx.control.v1.SlotService.CreateSlot:output_type -> tx.control.v1.CreateSlotResponse
+	7,  // 17: tx.control.v1.SlotService.PromoteSlot:output_type -> tx.control.v1.PromoteSlotResponse
+	11, // 18: tx.control.v1.StorageIOService.Snapshot:output_type -> tx.control.v1.StorageIOSnapshot
+	12, // [12:19] is the sub-list for method output_type
+	5,  // [5:12] is the sub-list for method input_type
 	5,  // [5:5] is the sub-list for extension type_name
 	5,  // [5:5] is the sub-list for extension extendee
 	0,  // [0:5] is the sub-list for field type_name
@@ -681,9 +780,9 @@ func file_modules_control_proto_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_modules_control_proto_control_proto_rawDesc), len(file_modules_control_proto_control_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   9,
+			NumMessages:   11,
 			NumExtensions: 0,
-			NumServices:   3,
+			NumServices:   4,
 		},
 		GoTypes:           file_modules_control_proto_control_proto_goTypes,
 		DependencyIndexes: file_modules_control_proto_control_proto_depIdxs,

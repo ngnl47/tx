@@ -108,6 +108,9 @@ func (host *Host) Start(root *lifecycle.WaitGroupContext) error {
 	host.mu.Unlock()
 
 	if err := root.Go(func(ctx context.Context) {
+		// 最终取消必须唤醒 Serve，宿主才能等完根任务后执行组件 Stop。
+		stop := context.AfterFunc(ctx, server.Stop)
+		defer stop()
 		err := server.Serve(listener)
 		host.mu.Lock()
 		if err != nil && !errors.Is(err, grpc.ErrServerStopped) && ctx.Err() == nil {

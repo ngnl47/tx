@@ -1,5 +1,7 @@
 # NATS 与最小本地 Actor 运行时试验实施计划
 
+**2026-09-13 最新决策：** 用户已接受 I2 的临时业务预算，允许进入 I3 正式接线。原 10% 比较线保留为迁移偏移的排查提示，不再单独阻止本次接线；不等同于生产验收放行。优先保持去掉 ProtoActor 后的上下行完成链路性能，不重复全 NATS 上行测试。固定基线见 [迁移前基线](../../audits/baselines/2026-09-13-uplink.json)。I3 先完成交接准备与 Stop 共享收尾，再迁入实体宿主及适配，最终以相同业务负载复测。下文 I2 未放行表述保留其评审时点，以下最新决策为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. 串行执行，不使用子代理，不自动提交。
 
 **Goal:** 在 feature 分支验证 NATS Core + 最小本地实体运行时能否替代 ProtoActor，并以 JetStream 衔接可靠任务；以正确性、维护复杂度和性能决定是否推广。

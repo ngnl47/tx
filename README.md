@@ -1253,6 +1253,16 @@ if err := control.RegisterLifecycleService(grpcServer, coordinator); err != nil 
 
 `Drain` 启动服务与 Actor 本地准入封口，再将目录标记为 `draining`；`WaitDrained` 等待服务入口与 Actor 邮箱已受理工作结束。目录尚未传播到其他节点时，旧实例仍会在本地拒绝新业务。最终资源关闭、根 context 取消、缓存管理器 Flush、Actor 与 discovery 注销仍由宿主负责。
 
+槽位晋升前应调用源宿主的 `PrepareHandoff(ctx, expectedInstanceID)`，Bee/Ant Server 均提供该入口。它验证本次启动身份，等待入口排水、业务后台任务退出及 CMod 最终写回；成功后继续保留共享 RPC、控制端口、存储与租约。它与 Stop 串行共享收尾进度，写回失败保留资源，显式重试不重复已成功的组件阶段；失败、取消或响应未知时不能执行下一次 CAS。
+
+框架控制端口同时提供 `HandoffService`，独立宿主可实现 `control.HandoffController` 并调用 `RegisterHandoffService`。例如在取得真实源实例 ID 后：
+
+```bash
+go run ./cmd/txctl --endpoint 127.0.0.1:19001 --timeout 30s prepare-handoff --instance txgame-1-12345
+```
+
+返回 `prepared=true runtimeInstance=txgame-1-12345` 只确认该源实例收尾；随后仍需用完整旧 assignment 调用 `promote-slot`，全部计划槽位处理完再停止源进程。旧启动身份或停止中的宿主返回 FailedPrecondition。Lifecycle 的 Status/WaitDrained 仍描述其 Drain 操作，`drained` 本身不等于持久化成功；交接以 PrepareHandoff 的成功响应为准。该操作不提供异常接管、自动晋升或业务重投。
+
 控制面 `failed` 后可以重新调用 `Drain` 并等待新一轮结果；重试不重新开放入口。每次等待绑定自己的排水结果，不会被后续重试覆盖。服务 Drain 回调失败时会在重试中重新执行，因此回调必须支持重复调用。
 
 进程排水的单阶段上限由 `server.RuntimeConfig.Lifecycle.DrainTimeout` 设置，零值默认 5 分钟。入口已受理工作等待和 Fusion 本地 pending 排空分别使用这项上限；它与 `txctl --timeout`

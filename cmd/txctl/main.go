@@ -44,12 +44,13 @@ func run(parent context.Context, arguments []string, output io.Writer, dialer di
 		return errors.New("--timeout must be greater than zero")
 	}
 	if flags.NArg() == 0 {
-		return errors.New("usage: txctl --endpoint host:port [--timeout 30s] status|drain|wait-drained|create-slot|promote-slot|storage-io")
+		return errors.New("usage: txctl --endpoint host:port [--timeout 30s] status|drain|wait-drained|prepare-handoff|create-slot|promote-slot|storage-io")
 	}
 	command := flags.Arg(0)
 	commandArguments := flags.Args()[1:]
 	var creation *controlpb.CreateSlotRequest
 	var promotion *controlpb.PromoteSlotRequest
+	var handoffInstance string
 	if command == "create-slot" {
 		var err error
 		creation, err = parseCreateSlot(commandArguments)
@@ -61,6 +62,16 @@ func run(parent context.Context, arguments []string, output io.Writer, dialer di
 		promotion, err = parsePromoteSlot(commandArguments)
 		if err != nil {
 			return err
+		}
+	} else if command == "prepare-handoff" {
+		options := flag.NewFlagSet(command, flag.ContinueOnError)
+		options.SetOutput(io.Discard)
+		options.StringVar(&handoffInstance, "instance", "", "预期源运行实例 ID")
+		if err := options.Parse(commandArguments); err != nil {
+			return err
+		}
+		if options.NArg() != 0 || strings.TrimSpace(handoffInstance) == "" {
+			return errors.New("prepare-handoff requires --instance and no positional arguments")
 		}
 	} else if len(commandArguments) != 0 {
 		return fmt.Errorf("command %q does not accept arguments", command)
@@ -81,6 +92,19 @@ func run(parent context.Context, arguments []string, output io.Writer, dialer di
 	lifecycleClient := controlpb.NewLifecycleServiceClient(connection)
 	var response *controlpb.LifecycleStatus
 	switch command {
+	case "prepare-handoff":
+		prepared, err := controlpb.NewHandoffServiceClient(connection).PrepareHandoff(ctx, &controlpb.PrepareHandoffRequest{RuntimeInstanceId: handoffInstance})
+		if err != nil {
+			return err
+		}
+		if prepared.GetRuntimeInstanceId() != handoffInstance {
+			return errors.New("control service returned a different handoff instance")
+		}
+		if output == nil {
+			output = io.Discard
+		}
+		_, err = fmt.Fprintf(output, "prepared=true runtimeInstance=%s\n", handoffInstance)
+		return err
 	case "storage-io":
 		snapshot, err := controlpb.NewStorageIOServiceClient(connection).Snapshot(ctx, &controlpb.Empty{})
 		if err != nil {

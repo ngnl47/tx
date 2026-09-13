@@ -13,9 +13,10 @@ import (
 )
 
 // ServerOptions 声明同一控制端口暴露的运维接口。
-// Lifecycle 必须提供；Slots 和只读 StorageIO 按宿主能力选择提供。
+// Lifecycle 必须提供；Handoff、Slots 和只读 StorageIO 按宿主能力选择提供。
 type ServerOptions struct {
 	Lifecycle LifecycleController
+	Handoff   HandoffController
 	Slots     SlotController
 	StorageIO StorageIOProvider
 }
@@ -45,6 +46,12 @@ func StartServer(tasks lifecycle.Tasks, endpoint string, options ServerOptions) 
 		return nil, fmt.Errorf("control: listen %s: %w", endpoint, err)
 	}
 	grpcServer := grpc.NewServer()
+	if options.Handoff != nil {
+		if err := RegisterHandoffService(grpcServer, options.Handoff); err != nil {
+			_ = listener.Close()
+			return nil, err
+		}
+	}
 	if options.StorageIO != nil {
 		if err := RegisterStorageIOService(grpcServer, options.StorageIO); err != nil {
 			_ = listener.Close()

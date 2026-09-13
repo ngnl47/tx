@@ -29,6 +29,7 @@ func (server *Server) startControl(endpoint string) error {
 	}
 	controlServer, err := startControlServer(server.runtime.lifecycle, endpoint, controlServerOptions{
 		Lifecycle: newDrainCoordinator(server, server.config.Runtime.Lifecycle.DrainTimeout),
+		Handoff:   server,
 		Slots:     slots,
 		StorageIO: server,
 	})

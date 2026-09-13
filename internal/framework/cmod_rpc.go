@@ -28,12 +28,6 @@ func (server *Server) rpcCMod(options RunOptions) CMod {
 			}
 			return nil
 		},
-		drain: func(ctx context.Context) error {
-			if server.runtime == nil || server.runtime.rpc == nil {
-				return nil
-			}
-			return server.runtime.rpc.Stop(ctx)
-		},
 		stop: func(ctx context.Context) error {
 			if server.runtime == nil || server.runtime.rpc == nil {
 				return nil

@@ -1,6 +1,8 @@
 # Actor 归属接线实施计划
 
-> 使用 superpowers:executing-plans 串行执行，不使用子代理，不提交 Git。设计已提交到 `8de6005`，用户确认继续后完成 I1 与 I2；I3–I4 尚未执行，性能预算等待决策。
+**2026-09-13 最新决策：** 用户已接受 I2 的临时业务预算，允许进入 I3 正式接线。原 10% 比较线保留为迁移偏移的排查提示，不再单独阻止本次接线；不等同于生产验收放行。优先保持去掉 ProtoActor 后的上下行完成链路性能，不重复全 NATS 上行测试。固定基线见 [迁移前基线](../../audits/baselines/2026-09-13-uplink.json)。I3 先完成交接准备与 Stop 共享收尾，再迁入实体宿主及适配，最终以相同业务负载复测。下文 I2 未放行表述保留其评审时点，以下最新决策为准。
+
+> 使用 superpowers:executing-plans 串行执行，不使用子代理，不提交 Git。设计已提交到 `8de6005`，用户确认继续后完成 I1 与 I2；I3 已获准并开始实施，I4 随正式接线验收推进。
 
 **目标：** 先补真实持久化与实例生命周期证据，再按既定评审门槛迁入正式组件，保持两种传输共用实体与归属。
 
@@ -46,7 +48,7 @@ go test -race ./internal/actortrial -run 'TestOwnershipIntegration|TestSlotRolli
 
 完成标准：真实租约与实际事务持久化组合成立，明确哪些仍是 Store 夹具而非示例生成 GD；失败不能通过关闭依赖或重新选 owner 掩盖。此节点不宣称正式 framework 已接线。
 
-## I2：完整上行与业务负载采用评审（已完成，门槛未放行）
+## I2：完整上行与业务负载采用评审（已完成，临时预算已接受）
 
 文件：复用 `internal/actortrial/benchmark_test.go`、`routing_test.go` 与现有隔离测量驱动，新增结果报告到 `docs/audits/`；只按测量需要增加测试夹具，不扩展生产统计。
 
@@ -59,9 +61,9 @@ go test -race ./internal/actortrial -run 'TestOwnershipIntegration|TestSlotRolli
 
 本轮新增隔离的完整 TCP/Session/MsgQ/生成 GD 对照夹具，修复原型两种 Call 信封缺少非零标记及 Tell 沿用旧标记的问题，见 [I2 报告](../../audits/2026-09-13-uplink-business-comparison.md)。60 个正式窗口和独立字节诊断已完成；不将同相位探索批算入最终结果。1 KiB 中位完成吞吐为 ProtoActor 5661/s、hybrid 4642/s、NATS 4264/s，hybrid 未证明满足原 10% 筛选线。1000/s 到达全部完成，3000/s 仍有驱动未发送。后端连接字节 hybrid 比全 NATS 低约 14.6%（反向计算为 NATS 高 17.1%），broker 收发量低约 96.2%。
 
-下一项需要决策：是否以报告中的“单组按 1000 请求/s 投递且全部完成、计划到达 P99 ≤100ms、零错误/未发送、最终 GD 一致”的临时预算进入 I3；这不是生产 SLA。未确认前继续保留正式 ProtoActor，不默认迁入新宿主或继续发送器微优化。
+用户已接受报告中的“单组按 1000 请求/s 投递且全部完成、计划到达 P99 ≤100ms、零错误/未发送、最终 GD 一致”的临时预算进入 I3；这不是生产 SLA。正式 ProtoActor 在必要能力承接之前保留，不继续发送器微优化。
 
-## I3：正式组件与框架接线（T4 门槛通过后）
+## I3：正式组件与框架接线（临时预算已接受，实施中）
 
 主要文件：`modules/actor/{runtime,kind,delivery}.go` 及迁入的运行时/适配文件，`internal/framework/{assembly,cmod_actor,cmod_discovery,cmod_rpc,context_access,shutdown,drain}.go`，`modules/control/lifecycle.go`、`modules/control/proto/control.proto`；生成物经原生成入口更新。
 
@@ -69,12 +71,14 @@ go test -race ./internal/actortrial -run 'TestOwnershipIntegration|TestSlotRolli
 - [ ] 为宿主装配提供权威槽位访问，加载前只注入 SlotReader；普通 CModSlots/SlotResolver 继续缓存读取，不为此对业务暴露 etcd 客户端或再创建一套连接。
 - [ ] 加载前权威校验在唯一实体宿主绑定；复用共享 RPC Host 注册 Actor Call，检查同进程所选服务的注册组合，确保 DeliveryService 仅注册一次；两种入口仍共享同一 Runtime。
 - [ ] 调整启动顺序：绑定直连端点 → Discovery 启动身份与 Watch 就绪 → 装配 Actor 入口 → 服务与控制面就绪 → 标记 running。移除对旧 ActorEndpoint 的启动依赖，不增加绕环的可空中间对象供业务处理。
-- [ ] 先写框架生命周期测试，再实现 PrepareHandoff 与 Stop 共享收尾进度；RPC/NATS/租约的最终关闭留在 Stop。保留 CMod 逆序收尾、失败阶段重试、fatal 身份丢失分支；当前 StateDrained 不冒充持久化成功。
+- [x] I3a：先写框架生命周期测试，实现正式 PrepareHandoff 与 Stop 共享收尾进度；共享 RPC 和租约保留到 Stop。保留 CMod 逆序收尾、失败阶段重试、fatal 身份丢失分支；StateDrained 不冒充持久化成功。NATS 宿主尚未迁入，待后续绑定同一流程。
 - [ ] 验证 PrepareHandoff/Stop 并发、持久化失败重试、旧启动身份、成功回复丢失，以及多个槽位部分晋升；业务退出 RPC 失败不能否决卸载。
 - [ ] 核对 world 子协程完成边界：若处理异步返回，实际写入任务必须可被生命周期等待；在此之前不能把 Receive 返回等同于整个业务完成。
 - [ ] 运行相关单测、真实依赖回归与必要 race，再更新 README 的正式 API 和 design.md；不在本文设计完成时提前改写公开 API 文档。
 
 完成标准：正式宿主取得框架所有权，原型连接内不再暗藏共享准入；维护成本可解释，无第二份归属、写回管理器或永久后端开关。
+
+I3a 实施起点 `fe8656f`，六工程干净；本节点只改 tx，详见 [正式交接准备与基线记录](../../audits/2026-09-13-framework-handoff-preparation.md)。下一节点继续权威槽位访问、实体宿主与高级 API/SPI 的迁入；不重新请求临时预算授权，也不把 I3a 完成等同于已移除 ProtoActor。
 
 ## I4：两个独立示例与依赖收敛
 

@@ -197,6 +197,108 @@ var LifecycleService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
+	HandoffService_PrepareHandoff_FullMethodName = "/tx.control.v1.HandoffService/PrepareHandoff"
+)
+
+// HandoffServiceClient is the client API for HandoffService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type HandoffServiceClient interface {
+	PrepareHandoff(ctx context.Context, in *PrepareHandoffRequest, opts ...grpc.CallOption) (*PrepareHandoffResponse, error)
+}
+
+type handoffServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewHandoffServiceClient(cc grpc.ClientConnInterface) HandoffServiceClient {
+	return &handoffServiceClient{cc}
+}
+
+func (c *handoffServiceClient) PrepareHandoff(ctx context.Context, in *PrepareHandoffRequest, opts ...grpc.CallOption) (*PrepareHandoffResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PrepareHandoffResponse)
+	err := c.cc.Invoke(ctx, HandoffService_PrepareHandoff_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// HandoffServiceServer is the server API for HandoffService service.
+// All implementations must embed UnimplementedHandoffServiceServer
+// for forward compatibility.
+type HandoffServiceServer interface {
+	PrepareHandoff(context.Context, *PrepareHandoffRequest) (*PrepareHandoffResponse, error)
+	mustEmbedUnimplementedHandoffServiceServer()
+}
+
+// UnimplementedHandoffServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedHandoffServiceServer struct{}
+
+func (UnimplementedHandoffServiceServer) PrepareHandoff(context.Context, *PrepareHandoffRequest) (*PrepareHandoffResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PrepareHandoff not implemented")
+}
+func (UnimplementedHandoffServiceServer) mustEmbedUnimplementedHandoffServiceServer() {}
+func (UnimplementedHandoffServiceServer) testEmbeddedByValue()                        {}
+
+// UnsafeHandoffServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to HandoffServiceServer will
+// result in compilation errors.
+type UnsafeHandoffServiceServer interface {
+	mustEmbedUnimplementedHandoffServiceServer()
+}
+
+func RegisterHandoffServiceServer(s grpc.ServiceRegistrar, srv HandoffServiceServer) {
+	// If the following call pancis, it indicates UnimplementedHandoffServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&HandoffService_ServiceDesc, srv)
+}
+
+func _HandoffService_PrepareHandoff_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PrepareHandoffRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HandoffServiceServer).PrepareHandoff(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HandoffService_PrepareHandoff_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HandoffServiceServer).PrepareHandoff(ctx, req.(*PrepareHandoffRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// HandoffService_ServiceDesc is the grpc.ServiceDesc for HandoffService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var HandoffService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "tx.control.v1.HandoffService",
+	HandlerType: (*HandoffServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "PrepareHandoff",
+			Handler:    _HandoffService_PrepareHandoff_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "modules/control/proto/control.proto",
+}
+
+const (
 	SlotService_CreateSlot_FullMethodName  = "/tx.control.v1.SlotService/CreateSlot"
 	SlotService_PromoteSlot_FullMethodName = "/tx.control.v1.SlotService/PromoteSlot"
 )

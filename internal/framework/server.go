@@ -88,22 +88,24 @@ type Server struct {
 	bindStorage    func(StorageReaders)
 	setups         []func(Context) (func(), error)
 
-	mu          sync.Mutex
-	starting    bool
-	started     bool
-	stopping    bool
-	startDone   chan struct{}
-	runtime     *runtime
-	host        *serviceHost
-	cmodHost    *cmodHost
-	discovery   *discoveryRuntime
-	control     *controlServer
-	cleanups    []func()
-	stopDone    chan struct{}
-	stopErr     error
-	stopAttempt *drainAttempt
-	fatalOnce   sync.Once
-	fatalErr    error
+	mu             sync.Mutex
+	starting       bool
+	started        bool
+	stopping       bool
+	startDone      chan struct{}
+	runtime        *runtime
+	host           *serviceHost
+	cmodHost       *cmodHost
+	discovery      *discoveryRuntime
+	control        *controlServer
+	cleanups       []func()
+	stopDone       chan struct{}
+	stopErr        error
+	stopAttempt    *drainAttempt
+	prepareAttempt *drainAttempt
+	prepared       bool
+	fatalOnce      sync.Once
+	fatalErr       error
 }
 
 func New(config Config, options ...Option) (*Server, error) {
