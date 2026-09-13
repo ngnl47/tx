@@ -1,6 +1,9 @@
 package actortrial
 
-import "github.com/ngnl47/tx/internal/actorhost"
+import (
+	"github.com/ngnl47/tx/internal/actorhost"
+	"github.com/ngnl47/tx/internal/actorrpc"
+)
 
 // 试验与基准继续使用原名称，所有行为来自私有宿主；正式代码不引用本试验包。
 type Runtime = actorhost.Runtime
@@ -37,3 +40,10 @@ const (
 	Closing      = actorhost.Closing
 	Failed       = actorhost.Failed
 )
+
+// 直连与 NATS 试验复用同一内部协议校验，正式接线不依赖试验包。
+type DirectTransport = actorrpc.DirectTransport
+
+var NewDirectReceiver = actorrpc.NewDirectReceiver
+var validateRequest = actorrpc.ValidateRequest
+var resultError = actorrpc.ResultError

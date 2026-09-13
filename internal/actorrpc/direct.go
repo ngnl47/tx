@@ -1,10 +1,12 @@
-package actortrial
+// Package actorrpc 提供私有实体传输适配，复用现有 RPC 连接和本地宿主。
+package actorrpc
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 
+	"github.com/ngnl47/tx/internal/actorhost"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 	"github.com/ngnl47/tx/modules/rpc"
 	"google.golang.org/grpc/metadata"
@@ -15,8 +17,8 @@ import (
 // 仅提供完成结果 Call，不回退到 NATS，也不自动重投失败业务。
 type DirectTransport struct{ Sender *rpc.Sender }
 
-func (d *DirectTransport) Call(ctx context.Context, target Target, delivery *actorpb.Delivery) (*actorpb.Result, error) {
-	if err := validateRequest(ctx, target, true); err != nil {
+func (d *DirectTransport) Call(ctx context.Context, target actorhost.Target, delivery *actorpb.Delivery) (*actorpb.Result, error) {
+	if err := ValidateRequest(ctx, target, true); err != nil {
 		return nil, err
 	}
 	if delivery == nil {
@@ -44,7 +46,7 @@ func (d *DirectTransport) Call(ctx context.Context, target Target, delivery *act
 		return nil, err
 	}
 	if response.MessageType == "actor.error" {
-		var failure RemoteError
+		var failure actorhost.RemoteError
 		if err := json.Unmarshal(response.Payload, &failure); err != nil {
 			return nil, err
 		}
@@ -57,12 +59,12 @@ func (d *DirectTransport) Call(ctx context.Context, target Target, delivery *act
 	if err := proto.Unmarshal(response.Payload, &result); err != nil {
 		return nil, err
 	}
-	return &result, resultError(&result)
+	return &result, ResultError(&result)
 }
 
-// NewDirectReceiver 注册到现有 DeliveryService，复用组合根已绑定归属的同一个 Runtime。
+// NewDirectReceiver 注册到现有 DeliveryService，复用组合根已绑定归属的同一个 actorhost.Runtime。
 // 实例身份在入队前验证，防止旧连接地址被新进程复用；归属与容量仍在实体加载入口验证。
-func NewDirectReceiver(instance string, runtime *Runtime) rpc.CallReceiver {
+func NewDirectReceiver(instance string, runtime *actorhost.Runtime) rpc.CallReceiver {
 	return rpc.CallReceiverFunc(func(ctx context.Context, request rpc.Delivery) (rpc.Result, error) {
 		var result *actorpb.Result
 		var err error
@@ -70,12 +72,12 @@ func NewDirectReceiver(instance string, runtime *Runtime) rpc.CallReceiver {
 		keys := metadata.ValueFromIncomingContext(ctx, "actor-key-bin")
 		switch {
 		case request.Route.Kind != rpc.RouteInstance || request.Route.InstanceID != instance:
-			err = ErrNotOwner
+			err = actorhost.ErrNotOwner
 		case request.MessageType != "actor.call" || len(kinds) != 1 || len(keys) != 1:
 			err = errors.New("actortrial: invalid direct request")
 		default:
-			target := Target{instance, Identity{kinds[0], keys[0]}}
-			err = validateRequest(ctx, target, true)
+			target := actorhost.Target{instance, actorhost.Identity{kinds[0], keys[0]}}
+			err = ValidateRequest(ctx, target, true)
 			var delivery actorpb.Delivery
 			if err == nil {
 				err = proto.Unmarshal(request.Payload, &delivery)
@@ -86,13 +88,13 @@ func NewDirectReceiver(instance string, runtime *Runtime) rpc.CallReceiver {
 				value, err = runtime.Call(ctx, target.Identity, &delivery)
 				result, _ = value.(*actorpb.Result)
 				if err == nil {
-					err = resultError(result)
+					err = ResultError(result)
 				}
 			}
 		}
 		// 业务和框架错误独立编码，避免普通 RPC 的 gRPC 状态包装丢失分类；正常载荷仍为 protobuf。
 		if err != nil {
-			data, encodeErr := json.Marshal(remoteError(err))
+			data, encodeErr := json.Marshal(actorhost.RemoteErrorFrom(err))
 			return rpc.Result{MessageType: "actor.error", Payload: data}, encodeErr
 		}
 		data, err := proto.Marshal(result)

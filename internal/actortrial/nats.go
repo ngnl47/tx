@@ -7,10 +7,8 @@ import (
 	"errors"
 	"log/slog"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/nats-io/nats.go"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
@@ -220,19 +218,6 @@ func (p *Transport) publish(ctx context.Context, target Target, delivery *actorp
 	return nil
 }
 
-func validateRequest(ctx context.Context, target Target, deadline bool) error {
-	if _, ok := ctx.Deadline(); deadline && !ok {
-		return errors.New("actortrial: RPC requires deadline")
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if target.Instance == "" || target.Identity.Kind == "" || target.Identity.Key == "" {
-		return errors.New("actortrial: invalid request")
-	}
-	return nil
-}
-
 func (p *Transport) message(target Target, delivery *actorpb.Delivery) (*nats.Msg, error) {
 	data, err := proto.Marshal(delivery)
 	if err != nil {
@@ -242,32 +227,6 @@ func (p *Transport) message(target Target, delivery *actorpb.Delivery) (*nats.Ms
 	msg := &nats.Msg{Subject: p.subject(target.Instance), Data: data, Header: nats.Header{}}
 	msg.Header.Set("Actor-Identity", base64.RawURLEncoding.EncodeToString(identity))
 	return msg, nil
-}
-
-// resultError 保持现行上行 ACK 与业务结果互斥，非法结果明确失败而不是等超时。
-func resultError(result *actorpb.Result) error {
-	if result == nil {
-		return errors.New("actortrial: handler returned invalid result")
-	}
-	if !utf8.ValidString(result.MessageType) || !utf8.ValidString(result.ErrorMessage) {
-		return errors.New("actortrial: invalid result text")
-	}
-	if result.ErrorCode != 0 {
-		return &RemoteError{Code: result.ErrorCode, Message: result.ErrorMessage}
-	}
-	if result.ErrorMessage != "" {
-		return errors.New("actortrial: error message without code")
-	}
-	if result.ProcessedUpSeq > 0 {
-		if result.MessageType != "" || result.CommandId != 0 || len(result.Payload) != 0 {
-			return errors.New("actortrial: mixed acknowledgement and result")
-		}
-		return nil
-	}
-	if result.ProcessedUpSeq < 0 || result.MessageType == "" || result.MessageType != strings.TrimSpace(result.MessageType) {
-		return errors.New("actortrial: invalid result")
-	}
-	return nil
 }
 
 func (p *Transport) reply(msg *nats.Msg, result *actorpb.Result, err error) {
