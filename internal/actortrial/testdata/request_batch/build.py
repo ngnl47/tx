@@ -6,8 +6,8 @@ from pathlib import Path
 import subprocess
 
 TX = Path(__file__).resolve().parents[4]
-SOURCE = TX / 'internal/actortrial/nats.go'
-SLOTS = TX / 'internal/actortrial/slots.go'
+SOURCE = TX / 'internal/actortrial/nats_baseline_test.go'
+SLOTS = TX / 'internal/actortrial/slots_baseline_test.go'
 
 
 def replace(source, old, new):

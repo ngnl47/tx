@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/nats-io/nats.go"
+	"github.com/ngnl47/tx/internal/actorhost"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 	"github.com/ngnl47/tx/modules/discovery"
 )
@@ -116,18 +117,19 @@ type SlotAllocator struct {
 	ownership *discovery.SlotOwnership
 	transport *Transport
 	service   string
-	slotID    func(Identity) string
+	slotID    actorhost.SlotMapping
 }
 
-func NewSlotAllocator(ownership *discovery.SlotOwnership, transport *Transport, service string, slotID func(Identity) string) *SlotAllocator {
-	if ownership == nil || transport == nil || service == "" || slotID == nil {
+// NewSlotAllocator 的空 slotID 使用普通实体固定分区；显式映射用于世界等独立槽位。
+func NewSlotAllocator(ownership *discovery.SlotOwnership, transport *Transport, service string, slotID actorhost.SlotMapping) *SlotAllocator {
+	if ownership == nil || transport == nil || service == "" {
 		panic("actortrial: invalid slot allocator configuration")
 	}
 	return &SlotAllocator{ownership, transport, service, slotID}
 }
 
 func (a *SlotAllocator) Ensure(ctx context.Context, id Identity) (discovery.SlotAssignment, ActivationStatus, error) {
-	current, created, err := a.ownership.Ensure(ctx, a.service, a.slotID(id), func(ctx context.Context, instance string) (bool, error) {
+	current, created, err := a.ownership.Ensure(ctx, a.service, a.slotID.Resolve(id), func(ctx context.Context, instance string) (bool, error) {
 		err := a.transport.slotCommand(ctx, instance, "capacity", id)
 		if errors.Is(err, ErrCapacity) || errors.Is(err, ErrDraining) {
 			return false, nil
@@ -151,7 +153,7 @@ func (a *SlotAllocator) Ensure(ctx context.Context, id Identity) (discovery.Slot
 }
 
 func (a *SlotAllocator) Handoff(ctx context.Context, id Identity, current discovery.SlotAssignment, nextInstance string) (discovery.SlotAssignment, ActivationStatus, error) {
-	if current.SlotID != a.slotID(id) {
+	if current.SlotID != a.slotID.Resolve(id) {
 		return current, ActivationStatus{}, discovery.ErrInvalidSlotPromotion
 	}
 	next, err := a.ownership.Handoff(ctx, a.service, current, nextInstance, func(ctx context.Context, instance string) (bool, error) {

@@ -76,6 +76,9 @@ go test -race ./internal/actortrial -run 'TestOwnershipIntegration|TestSlotRolli
 - [x] I3h：普通 Kind 声明与 ProtoActor 后端对象创建分离，Runtime 统一装配 Props、生命周期包装和集群 Kind；保留原生高级适配、固定实体及选项优先级，验证集群初始化只发生一次。此节点未替换业务工厂的原生 Actor 返回类型，见 [Kind 装配记录](../../audits/2026-09-13-kind-backend-assembly.md)。
 - [x] I3i：两个独立示例的命令执行改为标准 Context + Delivery → Result/error；ProtoActor Receive 仅做信封适配与回包。保留下行发布成功后才返回 ProcessedUpSeq 的边界，未替换公开 Kind factory 或默认宿主，见 [命令执行解耦记录](../../audits/2026-09-13-command-execution-boundary.md)。
 - [x] I3j：公开 Behavior/BehaviorFactory、Context、Identity 和只读 LocalFuture，复用唯一 actorhost 实现；直连测试使用公开行为契约，验证回调期限与实体句柄寿命分离。旧 Kind 工厂未切换，不提供无法执行的新 Kind，见 [行为契约记录](../../audits/2026-09-13-public-actor-behavior.md)。
+- [x] I3k：用户确认普通 Kind 的 v1 固定 1024 分区；唯一布局函数已被路由、首次分配和加载校验复用，真实依赖测试覆盖同分区的实体隔离和扩容不改派。世界保留独立槽位，并明确后续解除单实例单世界限制。详见 [Kind 切换方案](2026-09-13-actor-kind-cutover.md) 与 [布局验证](../../audits/2026-09-13-actor-partition-layout.md)。正式宿主接线尚未完成。
+- [x] I3l：保留稳定分服/分战区 SlotMapping SPI，默认 1024 分区与自定义映射共用唯一解析入口；真实用例验证同战区共用归属、实体状态独立及缺失分组不回退。正式 Kind 声明装配仍待迁入，见 [稳定映射记录](../../audits/2026-09-13-stable-slot-mapping.md)。
+- [x] I3m：Core NATS 传输与缓存路由迁入私有 actorrpc，复用唯一宿主；试验包全部转为测试专用，保留基线与 overlay。新传输仅暴露 Flush/Close，排水和写回由框架编排；槽位试验控制面未冒充正式控制面。见 [NATS 迁入记录](../../audits/2026-09-13-private-nats-transport.md)。默认 framework 尚未切换。
 - [ ] 将实体宿主迁入正式 framework（I3b 已把原型的加载校验移到 Runtime.BindSlots，独立直连测试无需先创建 NATS）；复用共享 RPC Host 注册 Actor Call，检查同进程所选服务的注册组合，确保 DeliveryService 仅注册一次；两种入口仍共享同一 Runtime。
 - [ ] 调整启动顺序：绑定直连端点 → Discovery 启动身份与 Watch 就绪 → 装配 Actor 入口 → 服务与控制面就绪 → 标记 running。移除对旧 ActorEndpoint 的启动依赖，不增加绕环的可空中间对象供业务处理。
 - [x] I3a：先写框架生命周期测试，实现正式 PrepareHandoff 与 Stop 共享收尾进度；共享 RPC 和租约保留到 Stop。保留 CMod 逆序收尾、失败阶段重试、fatal 身份丢失分支；StateDrained 不冒充持久化成功。NATS 宿主尚未迁入，待后续绑定同一流程。

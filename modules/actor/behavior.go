@@ -30,3 +30,9 @@ var (
 	// ErrMailboxFull 表示本地邮箱已满，消息尚未入队。
 	ErrMailboxFull = actorhost.ErrMailboxFull
 )
+
+// SlotMapping 是稳定分服、分战区或独立世界的归属映射 SPI；零值使用 1024 分区。
+// 自定义槽位应带业务命名空间，不能使用保留的 actor-v1. 前缀。
+// 同一槽位内的实体共用 owner，仍有独立状态与邮箱；不得在线变更分组来模拟热迁移。
+// 当前由新宿主组合根使用，正式 Kind 声明入口随宿主切换接入。
+type SlotMapping = actorhost.SlotMapping

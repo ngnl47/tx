@@ -7,9 +7,10 @@ import (
 )
 
 // BindSlots 在开放任何入口前绑定权威加载校验，两种传输共用同一实体运行时。
+// slotID 为空时使用普通实体的固定分区；世界可提供独立槽位映射。
 // Store 不得是 Watch 缓存；只在首次加载时读取，不为每条业务消息访问 etcd。
-func (r *Runtime) BindSlots(instance string, store discovery.SlotReader, slotID func(Identity) string) {
-	if instance == "" || store == nil || slotID == nil {
+func (r *Runtime) BindSlots(instance string, store discovery.SlotReader, slotID SlotMapping) {
+	if instance == "" || store == nil {
 		panic("actortrial: invalid slot ownership configuration")
 	}
 	r.mu.Lock()
@@ -19,7 +20,7 @@ func (r *Runtime) BindSlots(instance string, store discovery.SlotReader, slotID 
 	}
 	factory := r.factory
 	r.factory = func(c Context) (*Behavior, error) {
-		err := discovery.CheckSlotOwner(c, store, slotID(c.Identity), instance)
+		err := discovery.CheckSlotOwner(c, store, slotID.Resolve(c.Identity), instance)
 		if errors.Is(err, discovery.ErrSlotNotOwner) {
 			return nil, ErrNotOwner
 		}
