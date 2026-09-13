@@ -2507,6 +2507,8 @@ protobuf `Delivery` 使用内部 `DeliveryMode` 和 `request_id` 区分三类线
 
 普通 Kind 的声明只保存名称、业务工厂、放置类型和生命周期选项，不提前创建后端 Props 或 Cluster Kind。Runtime 在装配时统一构建 Props，Kind 显式空闲卸载选项优先于运行时默认值；工厂仅在实际激活时调用。原生 `AdaptKind` 保留已有 Props 和 Strategy，装配时克隆 Props，不重复追加集群初始化中间件。
 
+NATS 迁入中的实体行为契约由 `actor.Behavior`、`BehaviorFactory`、`Context` 和 `Identity` 表达，直接复用私有宿主类型，不复制生命周期。Context 的期限属于当前回调，Post/After/Deactivate 绑定本次激活；Post 返回只读的 LocalFuture，不能在同一实体回调内等待自己的消息。该契约目前由新宿主和直连适配验证使用，尚不能传入现行 ProtoActor NewKind 工厂；工厂与正式宿主须一并切换。
+
 L4 服务在 Bee/Ant `ServiceSpec.ActorKinds` 中声明 Kind，L3 Server 自动将 Actor CMod 加入依赖闭包并在启动前拒绝重名。
 普通可恢复实体使用 `actor.NewKind`，固定归属实体使用 `actor.NewFixedKind`；只有需要 ProtoActor 自定义 Strategy 的
 高级项目才使用 `actor.AdaptKind`。底层

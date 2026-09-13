@@ -8,6 +8,7 @@ import (
 
 	"github.com/ngnl47/tx/internal/actorhost"
 	"github.com/ngnl47/tx/lifecycle"
+	txactor "github.com/ngnl47/tx/modules/actor"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 	"github.com/ngnl47/tx/modules/discovery"
 	"github.com/ngnl47/tx/modules/rpc"
@@ -19,9 +20,9 @@ import (
 func TestDirectSharedHostKinds(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	local := actorhost.New(8, time.Second, func(c actorhost.Context) (*actorhost.Behavior, error) {
+	local := actorhost.New(8, time.Second, func(c txactor.Context) (*txactor.Behavior, error) {
 		count := 0
-		return &actorhost.Behavior{Receive: func(_ actorhost.Context, _ any) (any, error) {
+		return &txactor.Behavior{Receive: func(_ txactor.Context, _ any) (any, error) {
 			count++
 			return &actorpb.Result{MessageType: c.Identity.Kind, CommandId: uint64(count)}, nil
 		}}, nil
@@ -57,7 +58,7 @@ func TestDirectSharedHostKinds(t *testing.T) {
 	transport := DirectTransport{Sender: sender}
 	for round := 1; round <= 2; round++ {
 		for _, kind := range []string{"role", "world"} {
-			result, err := transport.Call(ctx, actorhost.Target{Instance: "a", Identity: actorhost.Identity{Kind: kind, Key: "same-key"}}, &actorpb.Delivery{MessageType: "ping"})
+			result, err := transport.Call(ctx, actorhost.Target{Instance: "a", Identity: txactor.Identity{Kind: kind, Key: "same-key"}}, &actorpb.Delivery{MessageType: "ping"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -70,7 +71,7 @@ func TestDirectSharedHostKinds(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, kind := range []string{"role", "world"} {
-		_, err := transport.Call(ctx, actorhost.Target{Instance: "a", Identity: actorhost.Identity{Kind: kind, Key: "same-key"}}, &actorpb.Delivery{MessageType: "ping"})
+		_, err := transport.Call(ctx, actorhost.Target{Instance: "a", Identity: txactor.Identity{Kind: kind, Key: "same-key"}}, &actorpb.Delivery{MessageType: "ping"})
 		if !errors.Is(err, actorhost.ErrDraining) {
 			t.Fatalf("排水未覆盖 %s: %v", kind, err)
 		}

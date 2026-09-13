@@ -33,6 +33,9 @@ type Behavior struct {
 	OnDeactivateAfter  func(Context) error
 }
 
+// BehaviorFactory 在每次激活时判断加载条件并创建独立行为；失败时返回错误。
+type BehaviorFactory func(Context) (*Behavior, error)
+
 // Context 绑定本次激活，过期句柄不能投递到重建实例。
 type Context struct {
 	context.Context
@@ -40,7 +43,19 @@ type Context struct {
 	entry    *activation
 }
 
-func (c Context) Post(message any) (*Future, error) { return c.entry.runtime.submit(c.entry, message) }
+// Post 投递到本次激活的邮箱，不受当前回调 Context 结束影响。
+// 不要在同一实体回调内等待它完成，否则会阻塞处理该消息的邮箱。
+func (c Context) Post(message any) (LocalFuture, error) {
+	future, err := c.entry.runtime.submit(c.entry, message)
+	return LocalFuture{future}, err
+}
+
+// LocalFuture 只开放等待能力，完成结果由运行时持有；取消等待不撤销已投递消息。
+// 仅在 Post 成功后使用。它与跨实体 RPC 的 Future 不是同一种结果协议。
+type LocalFuture struct{ future *Future }
+
+func (f LocalFuture) Await(ctx context.Context) (any, error) { return f.future.Await(ctx) }
+func (f LocalFuture) Done() <-chan struct{}                  { return f.future.Done() }
 
 // Deactivate 由串行业务处理或定时消息触发；关闭后仍处理已经入队的消息。
 func (c Context) Deactivate() { c.entry.runtime.close(c.entry) }
@@ -120,14 +135,14 @@ type Runtime struct {
 	workers   sync.WaitGroup
 	capacity  int
 	timeout   time.Duration
-	factory   func(Context) (*Behavior, error)
+	factory   BehaviorFactory
 	limits    ActivationLimits
 	usage     ActivationUsage
 	failures  map[Identity]*RemoteError
 }
 
 // New 的工厂先做业务加载准入再构造对象；返回对象后由运行时负责清理。
-func New(capacity int, timeout time.Duration, factory func(Context) (*Behavior, error)) *Runtime {
+func New(capacity int, timeout time.Duration, factory BehaviorFactory) *Runtime {
 	if capacity < 1 || timeout <= 0 || factory == nil {
 		panic("actortrial: invalid runtime configuration")
 	}
