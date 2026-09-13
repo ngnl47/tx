@@ -67,7 +67,7 @@ go test -race ./internal/actortrial -run 'TestOwnershipIntegration|TestSlotRolli
 
 主要文件：`modules/actor/{runtime,kind,delivery}.go` 及迁入的运行时/适配文件，`internal/framework/{assembly,cmod_actor,cmod_discovery,cmod_rpc,context_access,shutdown,drain}.go`，`modules/control/lifecycle.go`、`modules/control/proto/control.proto`；生成物经原生成入口更新。
 
-- [ ] 先核对设计中的 PID、Props、Context、ActorSystem 实际调用清单，明确新 Identity、Kind factory 和生命周期能力；必要能力无替代时停在该项，不通过删 SPI 消除编译错误。
+- [x] I3c：核对 PID、Props、Context、ActorSystem 实际调用清单，记录 Identity、Kind factory、生命周期和高级能力的承接边界，补齐原型的可选空闲卸载。见 [API 核对记录](../../audits/2026-09-13-actor-api-migration-inventory.md)。这是迁入清单完成，不表示所有正式接口已替换；必要能力无替代时不删除 SPI。
 - [x] I3b：Discovery.Runtime 提供 AuthoritativeSlots；真实归属集成夹具从自身 Runtime 取得权威存储，加载前只注入 SlotReader。普通 CModSlots/SlotResolver 保持缓存读取，不暴露 etcd 客户端或再创建连接。正式 framework 实体宿主的消费接线仍属下一条。
 - [ ] 将实体宿主迁入正式 framework（I3b 已把原型的加载校验移到 Runtime.BindSlots，独立直连测试无需先创建 NATS）；复用共享 RPC Host 注册 Actor Call，检查同进程所选服务的注册组合，确保 DeliveryService 仅注册一次；两种入口仍共享同一 Runtime。
 - [ ] 调整启动顺序：绑定直连端点 → Discovery 启动身份与 Watch 就绪 → 装配 Actor 入口 → 服务与控制面就绪 → 标记 running。移除对旧 ActorEndpoint 的启动依赖，不增加绕环的可空中间对象供业务处理。

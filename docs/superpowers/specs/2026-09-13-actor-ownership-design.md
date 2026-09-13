@@ -17,7 +17,7 @@
 | 当前事实 | 正式接线要求 |
 | --- | --- |
 | `internal/actortrial/routing.go` 的 RoutedCaller 读取 SlotResolver；未分配直接返回错误 | 保持高频调用只读缓存；首次分配由低频建服、开房或预热流程显式调用 tx 能力 |
-| `Discovery.Runtime.Slots()` 返回 CachedSlotStore，ResolveSlot 只读 Watch；权威存储未从该 Runtime 暴露 | 正式组合根需取得权威存储供首次分配、交接复核和加载准入；不能把现有 Slots() 直接注入 SlotHost，或改变普通读取的缓存语义 |
+| I3b 已提供 `Discovery.Runtime.AuthoritativeSlots()`；`Slots()` 的 ResolveSlot 仍只读 Watch | 正式组合根需取得权威存储供首次分配、交接复核和加载准入；不能把现有 Slots() 直接注入 SlotHost，或改变普通读取的缓存语义 |
 | I3b 已由 `Runtime.BindSlots` 在入口启动前包装 factory；直连和 NATS 使用同一 Runtime | 正式 framework 继续绑定此加载准入；不在两个 Receiver 重复检查或逐消息查 etcd |
 | SlotAllocator 已组合 SlotStore、SlotRouter、Directory 与容量探测 | 保留首次分配与交接组合；归属真相仍在 Discovery，不新增通用调度框架 |
 | SlotHost.quiesce 排空整个 Runtime，再调用注入的 Flush；现有 Redis 测试写自定义快照 | 接入实际 Procedure/writeback 与 GD；现有测试不能证明正式 GD 收尾完成 |

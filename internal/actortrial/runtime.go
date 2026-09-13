@@ -23,6 +23,8 @@ type Identity struct{ Kind, Key string }
 
 // Behavior 每次激活独立创建；缺省事件不需要空实现。
 type Behavior struct {
+	// IdlePassivation 是完成上一次处理后的空闲卸载时间；零值禁用，不替代显式生命周期策略。
+	IdlePassivation    time.Duration
 	Receive            func(Context, any) (any, error)
 	OnInitAfter        func(Context) error
 	OnActivateBefore   func(Context) error
@@ -277,6 +279,8 @@ func (e *activation) run() {
 	if err == nil {
 		if behavior == nil || behavior.Receive == nil {
 			err = errors.New("actortrial: factory returned no receiver")
+		} else if behavior.IdlePassivation < 0 {
+			err = errors.New("actortrial: negative idle passivation")
 		} else {
 			for _, hook := range []func(Context) error{behavior.OnInitAfter, behavior.OnActivateBefore, behavior.OnActivateAfter} {
 				if err = e.invoke(hook); err != nil {
@@ -295,9 +299,34 @@ func (e *activation) run() {
 	e.initializing = false
 	e.runtime.usage.Initializing--
 	e.runtime.mu.Unlock()
-	for req := range e.queue {
+	var timer *time.Timer
+	if behavior.IdlePassivation > 0 {
+		timer = time.NewTimer(behavior.IdlePassivation)
+		defer timer.Stop()
+	}
+	for {
+		var req request
+		var ok bool
+		if timer == nil {
+			req, ok = <-e.queue
+		} else {
+			select {
+			case req, ok = <-e.queue:
+			case <-timer.C:
+				// 到期只关闭准入，已接受消息继续沿同一邮箱排空。
+				e.runtime.close(e)
+				timer = nil
+				continue
+			}
+		}
+		if !ok {
+			return
+		}
 		var value any
 		err := e.invoke(func(ctx Context) error { var err error; value, err = behavior.Receive(ctx, req.message); return err })
+		if timer != nil {
+			timer.Reset(behavior.IdlePassivation)
+		}
 		req.future.finish(value, err)
 		if errors.Is(err, ErrPanicked) {
 			failure = err
