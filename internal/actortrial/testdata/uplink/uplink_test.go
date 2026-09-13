@@ -45,6 +45,7 @@ import (
 type uplinkConfig struct {
 	comparisonConfig
 	Redis, MsgQ, World string
+	Formal             bool // 仅夹具开关：通过 Bee 默认 CModActor 装配 hybrid。
 	Sessions           int
 }
 
@@ -480,6 +481,13 @@ func newUplinkPeer(base comparisonConfig) (peer *comparisonPeer, err error) {
 				return nil, e
 			}
 		}
+	} else if config.Formal {
+		endpoint, dispatcher, call, stop, e := startFormalUplink(config, factory)
+		if e != nil {
+			return nil, e
+		}
+		peer.endpoint, dispatch, cross = endpoint, dispatcher, call
+		closers = append(closers, stop)
 	} else {
 		local := New(1024, time.Second, func(Context) (*Behavior, error) {
 			receive := factory()

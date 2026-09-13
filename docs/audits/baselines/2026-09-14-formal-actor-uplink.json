@@ -1,0 +1,1156 @@
+{
+  "date": "2026-09-14",
+  "commits": {
+    "tx": "eef61a5e7f479c20a191c8f484e08d552afe8ee3",
+    "txgen": "8bc6c97334da8e34b207ce8dcdf05cd8132f491f",
+    "txgame": "c305eabaa2832097ec636cdac5de1d0e4972405c",
+    "txgameslg": "2b99d1f713d0ac6628c7786e8782208aa832368d",
+    "txclient": "5514f2ac0b13c59dbb9f361aa40816212a886496",
+    "txclientslg": "9f2d571a9bafa84865674a46bedaf59d6e85c4b8"
+  },
+  "evidence": {
+    "archive": "/Users/a47/workspace/tx-artifacts/nats-migration-eef61a5/formal-uplink-20260914/evidence.tar.gz",
+    "sha256": "38c6d114dce4b8b75fbfe8f41c9ebff79d9ff84d0122f823c97dba0d94e96fec",
+    "bytes": 39334661,
+    "binary_sha256": "4760b81eeef926285e1db3d30befe9b2ccfb9ea73f55c953b707805b9cfe3935"
+  },
+  "acceptance": {
+    "windows": 40,
+    "formal_budget_windows": 5,
+    "completed": 20000,
+    "scheduled_p99_ms_max": 38.591409,
+    "errors": 0,
+    "not_sent": 0,
+    "gd_verified_windows": 40,
+    "status": "passed"
+  },
+  "main": {
+    "('hybrid', 128, 0)": {
+      "n": 5,
+      "metrics": {
+        "rps": {
+          "median": 5048.394046841797,
+          "min": 3674.396771886694,
+          "max": 5296.152560407697
+        },
+        "p99ms": {
+          "median": 36.382482,
+          "min": 30.228969,
+          "max": 62.442101
+        },
+        "scheduledms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "drop": {
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        "errors": {
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        "cpu_us": {
+          "median": 1949.8482301759936,
+          "min": 1833.8437161046922,
+          "max": 2556.6662158506897
+        },
+        "alloc_bytes": {
+          "median": 55844.48080995919,
+          "min": 55803.48710209856,
+          "max": 55980.216391668924
+        },
+        "mallocs": {
+          "median": 763.8405909396147,
+          "min": 763.3693940108465,
+          "max": 764.4214903976197
+        },
+        "rss_mib": {
+          "median": 337.796875,
+          "min": 332.12109375,
+          "max": 345.43359375
+        },
+        "completed": {
+          "median": 20228,
+          "min": 14788,
+          "max": 21205
+        },
+        "offered": {
+          "median": 20228,
+          "min": 14788,
+          "max": 21205
+        }
+      },
+      "rounds": [
+        {
+          "round": 1,
+          "rps": 4827.864054574433,
+          "p99ms": 33.205658,
+          "scheduledms": 0.0,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 2089.764398987551,
+          "alloc_bytes": 55844.48080995919,
+          "mallocs": 763.8405909396147,
+          "rss_mib": 332.12109375,
+          "completed": 19359,
+          "offered": 19359
+        },
+        {
+          "round": 2,
+          "rps": 3674.396771886694,
+          "p99ms": 62.442101,
+          "scheduledms": 0.0,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 2556.6662158506897,
+          "alloc_bytes": 55980.216391668924,
+          "mallocs": 764.4214903976197,
+          "rss_mib": 337.796875,
+          "completed": 14788,
+          "offered": 14788
+        },
+        {
+          "round": 3,
+          "rps": 5208.648158718626,
+          "p99ms": 37.743071,
+          "scheduledms": 0.0,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 1883.9621233859398,
+          "alloc_bytes": 55820.461406025825,
+          "mallocs": 763.5912003825921,
+          "rss_mib": 333.80078125,
+          "completed": 20910,
+          "offered": 20910
+        },
+        {
+          "round": 4,
+          "rps": 5048.394046841797,
+          "p99ms": 36.382482,
+          "scheduledms": 0.0,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 1949.8482301759936,
+          "alloc_bytes": 55873.45857227605,
+          "mallocs": 763.8517401621515,
+          "rss_mib": 345.43359375,
+          "completed": 20228,
+          "offered": 20228
+        },
+        {
+          "round": 5,
+          "rps": 5296.152560407697,
+          "p99ms": 30.228969,
+          "scheduledms": 0.0,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 1833.8437161046922,
+          "alloc_bytes": 55803.48710209856,
+          "mallocs": 763.3693940108465,
+          "rss_mib": 340.4609375,
+          "completed": 21205,
+          "offered": 21205
+        }
+      ]
+    },
+    "('hybrid', 1024, 0)": {
+      "n": 5,
+      "metrics": {
+        "rps": {
+          "median": 4153.208603871324,
+          "min": 3703.3125227718615,
+          "max": 4573.184581934866
+        },
+        "p99ms": {
+          "median": 41.298986,
+          "min": 37.064776,
+          "max": 53.797239
+        },
+        "scheduledms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "drop": {
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        "errors": {
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        "cpu_us": {
+          "median": 2372.5239282745515,
+          "min": 2155.420412393629,
+          "max": 2703.816189323652
+        },
+        "alloc_bytes": {
+          "median": 80070.28286426791,
+          "min": 80001.58498799913,
+          "max": 80187.69718972704
+        },
+        "mallocs": {
+          "median": 762.0918536990856,
+          "min": 762.0207287802749,
+          "max": 762.7304692752454
+        },
+        "rss_mib": {
+          "median": 331.95703125,
+          "min": 329.578125,
+          "max": 343.46484375
+        },
+        "completed": {
+          "median": 16656,
+          "min": 14874,
+          "max": 18332
+        },
+        "offered": {
+          "median": 16656,
+          "min": 14874,
+          "max": 18332
+        }
+      },
+      "rounds": [
+        {
+          "round": 1,
+          "rps": 4153.208603871324,
+          "p99ms": 41.298986,
+          "scheduledms": 0.0,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 2417.5638808837657,
+          "alloc_bytes": 80031.14217098943,
+          "mallocs": 762.0794308357349,
+          "rss_mib": 331.95703125,
+          "completed": 16656,
+          "offered": 16656
+        },
+        {
+          "round": 2,
+          "rps": 3703.3125227718615,
+          "p99ms": 42.533326,
+          "scheduledms": 0.0,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 2703.816189323652,
+          "alloc_bytes": 80187.69718972704,
+          "mallocs": 762.7304692752454,
+          "rss_mib": 343.46484375,
+          "completed": 14874,
+          "offered": 14874
+        },
+        {
+          "round": 3,
+          "rps": 4150.912753133269,
+          "p99ms": 53.797239,
+          "scheduledms": 0.0,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 2363.9937447371585,
+          "alloc_bytes": 80109.47335498617,
+          "mallocs": 762.3356790568988,
+          "rss_mib": 329.578125,
+          "completed": 16626,
+          "offered": 16626
+        },
+        {
+          "round": 4,
+          "rps": 4193.395532752733,
+          "p99ms": 38.9438,
+          "scheduledms": 0.0,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 2372.5239282745515,
+          "alloc_bytes": 80070.28286426791,
+          "mallocs": 762.0918536990856,
+          "rss_mib": 330.87109375,
+          "completed": 16842,
+          "offered": 16842
+        },
+        {
+          "round": 5,
+          "rps": 4573.184581934866,
+          "p99ms": 37.064776,
+          "scheduledms": 0.0,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 2155.420412393629,
+          "alloc_bytes": 80001.58498799913,
+          "mallocs": 762.0207287802749,
+          "rss_mib": 340.87890625,
+          "completed": 18332,
+          "offered": 18332
+        }
+      ]
+    },
+    "('hybrid', 1024, 1000)": {
+      "n": 5,
+      "metrics": {
+        "rps": {
+          "median": 998.4152479254635,
+          "min": 997.4893151544267,
+          "max": 998.7329414740718
+        },
+        "p99ms": {
+          "median": 25.782399,
+          "min": 23.316697,
+          "max": 31.727855
+        },
+        "scheduledms": {
+          "median": 33.836269,
+          "min": 30.618454,
+          "max": 38.591409
+        },
+        "drop": {
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        "errors": {
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        "cpu_us": {
+          "median": 7124.2785,
+          "min": 6794.7225,
+          "max": 7577.069
+        },
+        "alloc_bytes": {
+          "median": 83178.22,
+          "min": 83137.992,
+          "max": 83204.864
+        },
+        "mallocs": {
+          "median": 800.23375,
+          "min": 798.2745,
+          "max": 803.41375
+        },
+        "rss_mib": {
+          "median": 343.3984375,
+          "min": 340.6875,
+          "max": 350.625
+        },
+        "completed": {
+          "median": 4000,
+          "min": 4000,
+          "max": 4000
+        },
+        "offered": {
+          "median": 4000,
+          "min": 4000,
+          "max": 4000
+        }
+      },
+      "rounds": [
+        {
+          "round": 1,
+          "rps": 998.4944792602453,
+          "p99ms": 25.745402,
+          "scheduledms": 33.836269,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 7201.867,
+          "alloc_bytes": 83178.22,
+          "mallocs": 800.23375,
+          "rss_mib": 340.6875,
+          "completed": 4000,
+          "offered": 4000
+        },
+        {
+          "round": 2,
+          "rps": 997.4893151544267,
+          "p99ms": 25.782399,
+          "scheduledms": 34.743987,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 7577.069,
+          "alloc_bytes": 83204.864,
+          "mallocs": 798.2745,
+          "rss_mib": 341.46484375,
+          "completed": 4000,
+          "offered": 4000
+        },
+        {
+          "round": 3,
+          "rps": 998.4152479254635,
+          "p99ms": 29.651544,
+          "scheduledms": 31.701792,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 7013.772,
+          "alloc_bytes": 83197.712,
+          "mallocs": 801.33625,
+          "rss_mib": 343.3984375,
+          "completed": 4000,
+          "offered": 4000
+        },
+        {
+          "round": 4,
+          "rps": 998.3525657681282,
+          "p99ms": 31.727855,
+          "scheduledms": 38.591409,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 7124.2785,
+          "alloc_bytes": 83137.992,
+          "mallocs": 800.21225,
+          "rss_mib": 349.38671875,
+          "completed": 4000,
+          "offered": 4000
+        },
+        {
+          "round": 5,
+          "rps": 998.7329414740718,
+          "p99ms": 23.316697,
+          "scheduledms": 30.618454,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 6794.7225,
+          "alloc_bytes": 83162.462,
+          "mallocs": 803.41375,
+          "rss_mib": 350.625,
+          "completed": 4000,
+          "offered": 4000
+        }
+      ]
+    },
+    "('hybrid', 1024, 3000)": {
+      "n": 5,
+      "metrics": {
+        "rps": {
+          "median": 2964.032398208264,
+          "min": 2902.236459797171,
+          "max": 2977.9489200691323
+        },
+        "p99ms": {
+          "median": 43.514074,
+          "min": 36.333253,
+          "max": 50.138006
+        },
+        "scheduledms": {
+          "median": 50.104399,
+          "min": 45.524567,
+          "max": 75.940915
+        },
+        "drop": {
+          "median": 123,
+          "min": 66,
+          "max": 371
+        },
+        "errors": {
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        "cpu_us": {
+          "median": 3169.666953306389,
+          "min": 3004.800791445651,
+          "max": 3242.25532450109
+        },
+        "alloc_bytes": {
+          "median": 80807.41203428668,
+          "min": 80613.23696126111,
+          "max": 80956.51282051283
+        },
+        "mallocs": {
+          "median": 770.7364847661886,
+          "min": 768.8906590642295,
+          "max": 773.6204960616725
+        },
+        "rss_mib": {
+          "median": 345.69921875,
+          "min": 336.01953125,
+          "max": 347.09375
+        },
+        "completed": {
+          "median": 11877,
+          "min": 11629,
+          "max": 11934
+        },
+        "offered": {
+          "median": 12000,
+          "min": 12000,
+          "max": 12000
+        }
+      },
+      "rounds": [
+        {
+          "round": 1,
+          "rps": 2972.5443999767213,
+          "p99ms": 38.984835,
+          "scheduledms": 46.749074,
+          "drop": 74,
+          "errors": 0,
+          "cpu_us": 3242.25532450109,
+          "alloc_bytes": 80613.23696126111,
+          "mallocs": 768.8906590642295,
+          "rss_mib": 337.57421875,
+          "completed": 11926,
+          "offered": 12000
+        },
+        {
+          "round": 2,
+          "rps": 2902.236459797171,
+          "p99ms": 50.138006,
+          "scheduledms": 75.940915,
+          "drop": 371,
+          "errors": 0,
+          "cpu_us": 3169.666953306389,
+          "alloc_bytes": 80684.94900679337,
+          "mallocs": 769.060882277066,
+          "rss_mib": 336.01953125,
+          "completed": 11629,
+          "offered": 12000
+        },
+        {
+          "round": 3,
+          "rps": 2977.9489200691323,
+          "p99ms": 36.333253,
+          "scheduledms": 45.524567,
+          "drop": 66,
+          "errors": 0,
+          "cpu_us": 3077.55756661639,
+          "alloc_bytes": 80956.51282051283,
+          "mallocs": 773.6204960616725,
+          "rss_mib": 345.69921875,
+          "completed": 11934,
+          "offered": 12000
+        },
+        {
+          "round": 4,
+          "rps": 2939.52638769954,
+          "p99ms": 43.514074,
+          "scheduledms": 63.60511,
+          "drop": 217,
+          "errors": 0,
+          "cpu_us": 3192.999575659849,
+          "alloc_bytes": 80807.41203428668,
+          "mallocs": 770.7364847661886,
+          "rss_mib": 346.484375,
+          "completed": 11783,
+          "offered": 12000
+        },
+        {
+          "round": 5,
+          "rps": 2964.032398208264,
+          "p99ms": 44.689757,
+          "scheduledms": 50.104399,
+          "drop": 123,
+          "errors": 0,
+          "cpu_us": 3004.800791445651,
+          "alloc_bytes": 80889.33501726025,
+          "mallocs": 772.3234823608656,
+          "rss_mib": 347.09375,
+          "completed": 11877,
+          "offered": 12000
+        }
+      ]
+    },
+    "('proto', 128, 0)": {
+      "n": 5,
+      "metrics": {
+        "rps": {
+          "median": 6745.77954990839,
+          "min": 5909.5011948337005,
+          "max": 9821.92854783537
+        },
+        "p99ms": {
+          "median": 23.510406,
+          "min": 15.229936,
+          "max": 26.370151
+        },
+        "scheduledms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "drop": {
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        "errors": {
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        "cpu_us": {
+          "median": 1451.1585951940851,
+          "min": 984.505493387589,
+          "max": 1745.6266261192768
+        },
+        "alloc_bytes": {
+          "median": 43742.91046210721,
+          "min": 43647.77416073245,
+          "max": 43802.61598242947
+        },
+        "mallocs": {
+          "median": 611.5759704251386,
+          "min": 610.8762461851475,
+          "max": 612.5721405642845
+        },
+        "rss_mib": {
+          "median": 352.671875,
+          "min": 344.88671875,
+          "max": 367.4296875
+        },
+        "completed": {
+          "median": 27050,
+          "min": 23676,
+          "max": 39320
+        },
+        "offered": {
+          "median": 27050,
+          "min": 23676,
+          "max": 39320
+        }
+      },
+      "rounds": [
+        {
+          "round": 1,
+          "rps": 5909.5011948337005,
+          "p99ms": 25.608652,
+          "scheduledms": 0.0,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 1745.6266261192768,
+          "alloc_bytes": 43802.61598242947,
+          "mallocs": 612.5721405642845,
+          "rss_mib": 344.88671875,
+          "completed": 23676,
+          "offered": 23676
+        },
+        {
+          "round": 2,
+          "rps": 6560.937370743268,
+          "p99ms": 26.370151,
+          "scheduledms": 0.0,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 1485.2734886553983,
+          "alloc_bytes": 43771.13019643673,
+          "mallocs": 612.0489949748744,
+          "rss_mib": 354.39453125,
+          "completed": 26268,
+          "offered": 26268
+        },
+        {
+          "round": 3,
+          "rps": 7264.687097860481,
+          "p99ms": 21.209769,
+          "scheduledms": 0.0,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 1351.142130758924,
+          "alloc_bytes": 43721.96791149895,
+          "mallocs": 611.2007764455286,
+          "rss_mib": 352.140625,
+          "completed": 29107,
+          "offered": 29107
+        },
+        {
+          "round": 4,
+          "rps": 6745.77954990839,
+          "p99ms": 23.510406,
+          "scheduledms": 0.0,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 1451.1585951940851,
+          "alloc_bytes": 43742.91046210721,
+          "mallocs": 611.5759704251386,
+          "rss_mib": 367.4296875,
+          "completed": 27050,
+          "offered": 27050
+        },
+        {
+          "round": 5,
+          "rps": 9821.92854783537,
+          "p99ms": 15.229936,
+          "scheduledms": 0.0,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 984.505493387589,
+          "alloc_bytes": 43647.77416073245,
+          "mallocs": 610.8762461851475,
+          "rss_mib": 352.671875,
+          "completed": 39320,
+          "offered": 39320
+        }
+      ]
+    },
+    "('proto', 1024, 0)": {
+      "n": 5,
+      "metrics": {
+        "rps": {
+          "median": 6240.770386740463,
+          "min": 4667.159633020342,
+          "max": 8298.369957747705
+        },
+        "p99ms": {
+          "median": 25.677298,
+          "min": 17.496508,
+          "max": 34.750479
+        },
+        "scheduledms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "drop": {
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        "errors": {
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        "cpu_us": {
+          "median": 1642.1089630931458,
+          "min": 1251.6511026204157,
+          "max": 2202.1074313840886
+        },
+        "alloc_bytes": {
+          "median": 68632.59065860574,
+          "min": 68119.8062516923,
+          "max": 68732.20991896822
+        },
+        "mallocs": {
+          "median": 615.4477556043015,
+          "min": 614.2281055386744,
+          "max": 615.5456942003515
+        },
+        "rss_mib": {
+          "median": 427.40625,
+          "min": 421.48828125,
+          "max": 437.3046875
+        },
+        "completed": {
+          "median": 25036,
+          "min": 18691,
+          "max": 33239
+        },
+        "offered": {
+          "median": 25036,
+          "min": 18691,
+          "max": 33239
+        }
+      },
+      "rounds": [
+        {
+          "round": 1,
+          "rps": 4667.159633020342,
+          "p99ms": 34.750479,
+          "scheduledms": 0.0,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 2202.1074313840886,
+          "alloc_bytes": 68632.59065860574,
+          "mallocs": 615.4477556043015,
+          "rss_mib": 421.48828125,
+          "completed": 18691,
+          "offered": 18691
+        },
+        {
+          "round": 2,
+          "rps": 5879.088677862237,
+          "p99ms": 29.52057,
+          "scheduledms": 0.0,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 1749.1717788808282,
+          "alloc_bytes": 68732.20991896822,
+          "mallocs": 615.1156505875864,
+          "rss_mib": 424.734375,
+          "completed": 23571,
+          "offered": 23571
+        },
+        {
+          "round": 3,
+          "rps": 6329.218098831072,
+          "p99ms": 24.770497,
+          "scheduledms": 0.0,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 1639.3724189664022,
+          "alloc_bytes": 68633.78925342493,
+          "mallocs": 615.4518141261005,
+          "rss_mib": 427.40625,
+          "completed": 25329,
+          "offered": 25329
+        },
+        {
+          "round": 4,
+          "rps": 6240.770386740463,
+          "p99ms": 25.677298,
+          "scheduledms": 0.0,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 1642.1089630931458,
+          "alloc_bytes": 68439.27656175107,
+          "mallocs": 615.5456942003515,
+          "rss_mib": 437.3046875,
+          "completed": 25036,
+          "offered": 25036
+        },
+        {
+          "round": 5,
+          "rps": 8298.369957747705,
+          "p99ms": 17.496508,
+          "scheduledms": 0.0,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 1251.6511026204157,
+          "alloc_bytes": 68119.8062516923,
+          "mallocs": 614.2281055386744,
+          "rss_mib": 437.13671875,
+          "completed": 33239,
+          "offered": 33239
+        }
+      ]
+    },
+    "('proto', 1024, 1000)": {
+      "n": 5,
+      "metrics": {
+        "rps": {
+          "median": 999.0772544956717,
+          "min": 998.3234413194766,
+          "max": 999.4782678465318
+        },
+        "p99ms": {
+          "median": 23.465888,
+          "min": 14.348047,
+          "max": 31.798689
+        },
+        "scheduledms": {
+          "median": 29.927148,
+          "min": 20.130657,
+          "max": 34.410662
+        },
+        "drop": {
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        "errors": {
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        "cpu_us": {
+          "median": 6758.5655,
+          "min": 6246.16475,
+          "max": 7507.2365
+        },
+        "alloc_bytes": {
+          "median": 72731.548,
+          "min": 72395.276,
+          "max": 72814.628
+        },
+        "mallocs": {
+          "median": 704.27225,
+          "min": 694.19125,
+          "max": 710.86
+        },
+        "rss_mib": {
+          "median": 401.08984375,
+          "min": 397.2421875,
+          "max": 411.6796875
+        },
+        "completed": {
+          "median": 4000,
+          "min": 4000,
+          "max": 4000
+        },
+        "offered": {
+          "median": 4000,
+          "min": 4000,
+          "max": 4000
+        }
+      },
+      "rounds": [
+        {
+          "round": 1,
+          "rps": 998.3234413194766,
+          "p99ms": 31.798689,
+          "scheduledms": 34.403979,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 7507.2365,
+          "alloc_bytes": 72395.276,
+          "mallocs": 694.19125,
+          "rss_mib": 401.08984375,
+          "completed": 4000,
+          "offered": 4000
+        },
+        {
+          "round": 2,
+          "rps": 998.6174343840983,
+          "p99ms": 30.754198,
+          "scheduledms": 34.410662,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 7054.4075,
+          "alloc_bytes": 72523.47,
+          "mallocs": 700.7225,
+          "rss_mib": 410.3203125,
+          "completed": 4000,
+          "offered": 4000
+        },
+        {
+          "round": 3,
+          "rps": 999.0772544956717,
+          "p99ms": 23.465888,
+          "scheduledms": 25.884723,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 6750.96,
+          "alloc_bytes": 72739.582,
+          "mallocs": 704.27225,
+          "rss_mib": 411.6796875,
+          "completed": 4000,
+          "offered": 4000
+        },
+        {
+          "round": 4,
+          "rps": 999.163991245422,
+          "p99ms": 21.212974,
+          "scheduledms": 29.927148,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 6758.5655,
+          "alloc_bytes": 72731.548,
+          "mallocs": 704.9955,
+          "rss_mib": 397.2421875,
+          "completed": 4000,
+          "offered": 4000
+        },
+        {
+          "round": 5,
+          "rps": 999.4782678465318,
+          "p99ms": 14.348047,
+          "scheduledms": 20.130657,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 6246.16475,
+          "alloc_bytes": 72814.628,
+          "mallocs": 710.86,
+          "rss_mib": 400.04296875,
+          "completed": 4000,
+          "offered": 4000
+        }
+      ]
+    },
+    "('proto', 1024, 3000)": {
+      "n": 5,
+      "metrics": {
+        "rps": {
+          "median": 2989.6839401767397,
+          "min": 2926.88067009247,
+          "max": 2995.424269265014
+        },
+        "p99ms": {
+          "median": 31.523942,
+          "min": 16.118458,
+          "max": 45.604737
+        },
+        "scheduledms": {
+          "median": 36.164554,
+          "min": 25.167645,
+          "max": 66.852113
+        },
+        "drop": {
+          "median": 23,
+          "min": 0,
+          "max": 264
+        },
+        "errors": {
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        "cpu_us": {
+          "median": 3031.632899549205,
+          "min": 2731.7324166666667,
+          "max": 3273.5274369461486
+        },
+        "alloc_bytes": {
+          "median": 69606.25941992005,
+          "min": 69212.57464212678,
+          "max": 70128.20933333333
+        },
+        "mallocs": {
+          "median": 647.5093136004083,
+          "min": 636.9341342876619,
+          "max": 663.90975
+        },
+        "rss_mib": {
+          "median": 400.00390625,
+          "min": 395.171875,
+          "max": 422.91796875
+        },
+        "completed": {
+          "median": 11977,
+          "min": 11736,
+          "max": 12000
+        },
+        "offered": {
+          "median": 12000,
+          "min": 12000,
+          "max": 12000
+        }
+      },
+      "rounds": [
+        {
+          "round": 1,
+          "rps": 2926.88067009247,
+          "p99ms": 45.604737,
+          "scheduledms": 66.668359,
+          "drop": 264,
+          "errors": 0,
+          "cpu_us": 3273.5274369461486,
+          "alloc_bytes": 69212.57464212678,
+          "mallocs": 636.9341342876619,
+          "rss_mib": 412.109375,
+          "completed": 11736,
+          "offered": 12000
+        },
+        {
+          "round": 2,
+          "rps": 2989.6839401767397,
+          "p99ms": 31.523942,
+          "scheduledms": 36.164554,
+          "drop": 23,
+          "errors": 0,
+          "cpu_us": 3072.523419888119,
+          "alloc_bytes": 69521.56299574184,
+          "mallocs": 647.2058111380145,
+          "rss_mib": 422.91796875,
+          "completed": 11977,
+          "offered": 12000
+        },
+        {
+          "round": 3,
+          "rps": 2934.4451373313,
+          "p99ms": 44.976076,
+          "scheduledms": 66.852113,
+          "drop": 243,
+          "errors": 0,
+          "cpu_us": 3031.632899549205,
+          "alloc_bytes": 69606.25941992005,
+          "mallocs": 647.5093136004083,
+          "rss_mib": 400.00390625,
+          "completed": 11757,
+          "offered": 12000
+        },
+        {
+          "round": 4,
+          "rps": 2992.595065404602,
+          "p99ms": 27.583316,
+          "scheduledms": 34.223291,
+          "drop": 12,
+          "errors": 0,
+          "cpu_us": 2778.0226059392726,
+          "alloc_bytes": 69632.4958291625,
+          "mallocs": 655.1793460126794,
+          "rss_mib": 395.578125,
+          "completed": 11988,
+          "offered": 12000
+        },
+        {
+          "round": 5,
+          "rps": 2995.424269265014,
+          "p99ms": 16.118458,
+          "scheduledms": 25.167645,
+          "drop": 0,
+          "errors": 0,
+          "cpu_us": 2731.7324166666667,
+          "alloc_bytes": 70128.20933333333,
+          "mallocs": 663.90975,
+          "rss_mib": 395.171875,
+          "completed": 12000,
+          "offered": 12000
+        }
+      ]
+    }
+  },
+  "diagnostic": {
+    "rounds": {
+      "1": {
+        "trial": {
+          "rps": 7076.900614044605,
+          "p99ms": 21.882993,
+          "alloc_bytes": 79639.2441499859,
+          "mallocs": 755.7051381449112
+        },
+        "formal": {
+          "rps": 5900.269038428292,
+          "p99ms": 27.238201,
+          "alloc_bytes": 79927.86847555048,
+          "mallocs": 761.7049575250412
+        }
+      },
+      "2": {
+        "formal": {
+          "rps": 4485.706955985726,
+          "p99ms": 42.864298,
+          "alloc_bytes": 80047.07217410616,
+          "mallocs": 762.1641128136798
+        },
+        "trial": {
+          "rps": 4401.087082633215,
+          "p99ms": 35.456681,
+          "alloc_bytes": 79805.0802290639,
+          "mallocs": 756.4972500992233
+        }
+      },
+      "3": {
+        "trial": {
+          "rps": 4369.442438316505,
+          "p99ms": 44.801046,
+          "alloc_bytes": 79791.75386722987,
+          "mallocs": 756.4275358182545
+        },
+        "formal": {
+          "rps": 4389.083730152674,
+          "p99ms": 41.936309,
+          "alloc_bytes": 80073.78945572428,
+          "mallocs": 761.9306147983848
+        }
+      }
+    },
+    "pairs": [
+      {
+        "round": 1,
+        "rps_change_percent": -16.626368516200518,
+        "alloc_bytes_added": 288.62432556458225,
+        "mallocs_added": 5.99981938013002
+      },
+      {
+        "round": 2,
+        "rps_change_percent": 1.9227039084598774,
+        "alloc_bytes_added": 241.99194504226034,
+        "mallocs_added": 5.666862714456556
+      },
+      {
+        "round": 3,
+        "rps_change_percent": 0.4495148320053488,
+        "alloc_bytes_added": 282.0355884944147,
+        "mallocs_added": 5.50307898013034
+      }
+    ],
+    "median_rps_change_percent": 0.4495148320053488,
+    "median_alloc_bytes_added": 282.0355884944147,
+    "median_mallocs_added": 5.666862714456556
+  },
+  "frozen_baseline": "2026-09-13-uplink.json",
+  "scope": "测试夹具变更；主表仅 final，正式 hybrid 对照历史 ProtoActor；诊断为同二进制 trial/formal hybrid。"
+}

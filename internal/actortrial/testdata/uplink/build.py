@@ -38,7 +38,8 @@ def main():
         text = text.replace('case "snapshot":', 'case "wire": emit(map[string]any{"Wire":net.TxTrialWire()}); continue\n case "snapshot":')
     (out / source.name).write_text(text)
     mapping = {str(source): str(out / source.name),
-               str(TX / 'internal/actortrial/uplink_process_test.go'): str(HERE / 'uplink_test.go')}
+               str(TX / 'internal/actortrial/uplink_process_test.go'): str(HERE / 'uplink_test.go'),
+               str(TX / 'internal/actortrial/uplink_formal_test.go'): str(HERE / 'formal_test.go')}
     if args.wire:
         goroot = Path(subprocess.check_output(['go', 'env', 'GOROOT'], text=True).strip())
         for name, needles in [('net.go', [('n, err := c.fd.Read(b)', False), ('n, err := c.fd.Write(b)', True)]),

@@ -25,6 +25,14 @@ python3 internal/actortrial/testdata/uplink/build.py /private/tmp/tx-uplink/wire
 
 事务使用 txgame 现有 Redis 类型 `ResRankItem`，预置 16 个 `ResourceRank` 子项；每次修改一个根字段及四个子项。writeback 每 100ms 写 Redis，完成 ACK 对应内存提交和下行入队，最终 Redis 核验另外计量。Redis AOF、Mongo/Fusion 和大世界计算不在此夹具范围内。
 
-成员与 assignment 是固定的测试快照，使用现有 SlotResolver；不把此性能布局当作正式 framework 接线或真实租约验收。后者由 I1 及正式接线计划覆盖。初始化握手、首次建档、最终 Flush/回读均排除在稳态吞吐窗口之外。
+默认历史模式的成员与 assignment 是固定测试快照。`Formal: true` 的 hybrid 则通过 Bee 启动正式 CModActor，使用应用 Kind 目录、真实 Discovery 租约与 Watch、默认 1024 分区、首次 CAS 和加载前权威校验；Agent 使用 CModActorDirect，跨 Actor 使用 CModActor。该开关仅存在于隔离测试配置，不是生产后端选择项。初始化握手、首次建档、最终 Flush/回读均排除在稳态吞吐窗口之外。
 
 本次隔离编排脚本、版本/hash、原始样本、独立汇总和失败日志见 [I2 报告](../../../../docs/audits/2026-09-13-uplink-business-comparison.md)。依赖由编排器创建并用随机 label 标明 ownership；不得用共享开发 Redis 执行本夹具建档、清空或销毁依赖。
+
+## 正式默认入口复测
+
+在 `TX_RPC_COMPARISON` 中为 `uplink-hybrid` 设置 `Formal: true`；proto 对照保持原历史后端。`formal_test.go` 只负责 Bee 装配及公开契约适配，事务、生成 GD、会话与完成判定均复用原夹具。RPCListen 使用零端口时，不能再显式发布 `InstanceEndpoint: 127.0.0.1:0`，应让 RPC Host 提供实际地址。
+
+正式复测仍使用 1024 Session / 512 实体、64 worker、每窗 4 秒、每窗前 1024 次预热，保留原四档负载和五轮交替顺序。准入只按已接受的 1024 B padding、1000/s 档判定：4000 次全部完成、零错误与未发送、计划到达 P99 不超过 100ms，最后用生成 Load 回读一致。3000/s 档是边界探测，不能放宽 1000/s 的阈值。
+
+五轮结果、同二进制装配诊断、证据归档与复现说明见 [正式入口 I2 验收](../../../../docs/audits/2026-09-14-formal-actor-uplink-acceptance.md)。冻结旧基线保持不变。

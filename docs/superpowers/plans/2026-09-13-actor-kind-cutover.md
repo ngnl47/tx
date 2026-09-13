@@ -145,3 +145,9 @@ actor.NewKind("seasonWorld", seasonFactory, actor.WithSlotMapping(seasonSlot))
 本轮完成 NewKind/MustKind(BehaviorFactory)、WithSlotMapping、应用目录自动装配、唯一宿主和共享 gRPC/NATS 双入口。删除生产 PID、FixedKind 与 ProtoActor 配置；旧运行时隔离为历史测试基线。Agent 通过 CModActorDirect 直连，业务只解析 Identity；初始化期限调整一并保留。
 
 最终全量、相关 race、两客户端测试构建、两个真实 cluster-e2e 均通过；同机 Ping/Pong 对照无退化。未重写冻结 I2 基线，也不把单轮闭环测试称为固定到达率验收。完整原因、版本矩阵、性能与下一项见 [默认切换记录](../../audits/2026-09-13-default-actor-cutover.md)。本轮未提交。
+
+## 2026-09-14：正式入口 I2 验收完成
+
+默认后端迁移已提交（tx eef61a5、txgame c305eab、txgameslg 2b99d1f）。正式入口五轮 1000/s 共完成 20,000 次，零错误/未发送，计划到达 P99 最差 38.59ms，生成 GD 回读通过。闭环吞吐较冻结 hybrid 下降 10.53%；同二进制三组补充诊断未稳定复现额外装配损失，不宣称无退化。冻结基线保持不变，详见 [正式入口验收](../../audits/2026-09-14-formal-actor-uplink-acceptance.md)。
+
+I3/I4 不整体勾完；下一项为正式 Kind 容量声明、逐世界估算与状态探测 SPI，继续明确业务子协程实际完成边界。暂不进入 JetStream。本次仅修改隔离夹具和证据文档，未提交。
