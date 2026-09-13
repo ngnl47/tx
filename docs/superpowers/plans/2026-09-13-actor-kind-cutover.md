@@ -81,3 +81,9 @@ txgameslg 的 slgworld 服务不再要求启动时声明一个世界 logical-slo
 ## 清理闲置进程槽位声明
 
 解除单世界绑定后，六工程已无业务读取 `LogicalSlot()`；删除 `--logical-slot`、`TXGAMESLG_LOGICAL_SLOT`、Ant/框架 RunOptions 字段、Context 访问器及专属装配测试，同步清理压测进程参数。保留实际承载多槽位归属的 SlotAssignment、查询与 CAS 交接测试。旧设计中的进程声明方式仅为历史记录，不再是当前 API。
+
+## 按 Kind 解析服务池
+
+EntityRouter 的单一 Service 字符串改为 Kind 到服务的解析函数，由装配方提供查询；首次分配和缓存寻址都会先拒绝未知 Kind。真实 NATS/etcd 回归验证同一入口处理 role→game、world/seasonWorld→slgworld，三类实体状态与默认分区归属独立；未知 Kind 不创建 assignment。原默认分区和自定义战区测试继续覆盖四种 NATS 调用及 gRPC 共用实体。
+
+当前完成的是路由器契约，验证夹具仍显式装配；正式框架应从已有 actorCatalog 绑定查询，默认 CModActor 尚未接入。后置审查删除了仅供测试调用的预留框架查询方法，待正式装配时一并实现。正式 Kind 的工厂、业务 SlotMapping 和新宿主必须继续一起切换，不能把本轮描述为生产后端已替换。

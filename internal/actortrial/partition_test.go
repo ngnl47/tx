@@ -65,7 +65,7 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []Identi
 	defer caller.Close()
 	defer callerRuntime.Drain(ctx)
 	resolver, _ := watchedRoutes(t, store, directory)
-	allocator := &actorrpc.EntityRouter{Resolver: resolver, Ownership: slotOwnership(t, store, directory), Transport: caller, Service: "game", SlotID: mapping}
+	allocator := &actorrpc.EntityRouter{Resolver: resolver, Ownership: slotOwnership(t, store, directory), Transport: caller, Service: func(string) (string, error) { return "game", nil }, SlotID: mapping}
 	// 拒绝容量时不得先写 assignment 或触发业务加载。
 	runtime.SetActivationLimits(ActivationLimits{Admit: func() bool { return false }})
 	if _, _, err := allocator.Ensure(ctx, ids[0]); !errors.Is(err, ErrCapacity) {
@@ -126,7 +126,7 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []Identi
 	if err := cache.Replace([]discovery.SlotAssignment{assignment}); err != nil {
 		t.Fatal(err)
 	}
-	hot := &actorrpc.EntityRouter{Resolver: hotResolver, SlotID: mapping, Transport: caller}
+	hot := &actorrpc.EntityRouter{Resolver: hotResolver, SlotID: mapping, Transport: caller, Service: allocator.Service}
 	current := &actorrpc.NATSMessenger{Router: hot}
 	for _, id := range ids {
 		message := &actorpb.Delivery{MessageType: "increment"}
