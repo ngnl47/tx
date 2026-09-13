@@ -11,7 +11,7 @@
 
 ### 2026-09-12 NATS 与本地 Actor 运行时分支试验
 
-三个工程均在 `feature/nats-actor-runtime`；T3a–T3g 已提交，本次设计细化起点 tx=dd07b29，六工程工作区干净。本轮仅补归属组件设计与后续接线计划。[T1–T2d](audits/2026-09-12-nats-actor-runtime-trial.md) 保留原型正确性证据；[T3a](audits/2026-09-12-nats-shared-replies.md) 收敛共享响应与失败清理，[T3b](audits/2026-09-12-nats-aggregate-throughput.md) 完成多实例聚合评估，同机三 broker 未反超，固定到达率业务预算未确认。
+三个工程均在 `feature/nats-actor-runtime`；T3a–T3g 及归属设计已提交，本轮 I1 起点 tx=8de6005，六工程工作区干净。本轮累计完成 tx 的 I1 归属组合测试和 I2 完整上行业务对照，修复试验区的信封模式标记，未迁移正式运行时。[T1–T2d](audits/2026-09-12-nats-actor-runtime-trial.md) 保留原型正确性证据；[T3a](audits/2026-09-12-nats-shared-replies.md) 收敛共享响应与失败清理，[T3b](audits/2026-09-12-nats-aggregate-throughput.md) 完成多实例聚合评估，同机三 broker 未反超，固定到达率业务预算未确认。
 
 [T3c 分层归因](audits/2026-09-12-nats-layered-cost.md) 已完成：官方 128B Pub/Sub 订阅速率中位数约 99.5 万条/s；108 个 RPC 窗口完成 721.83 万次调用、0 返回错误。三端 profile 指向调度同步开销，单变量五轮复测中，将测试进程 GOMAXPROCS 从 4 改为 1，完整 NATS 吞吐从 1.50 万提高至 2.42 万次/s（+61.4%）；同配置 ProtoActor 为 3.09 万。结果证明配置影响明显，不是 NATS 通用容量上限，但仍未达到既定筛选线。**T4 正式替换继续暂停**，保留 Core 候选，不修改生产默认值，不继续空回显的零碎微优化。后续按用户确认先进行下述链路差异对照；GD/Procedure 代表业务与预算仍待评估。正式 GD/实例租约接线、示例迁移和 JetStream 均未完成，公共行为继续以现行 README 为准。
 
@@ -23,7 +23,9 @@
 
 [T3g 共用路由与直连上行](audits/2026-09-13-actor-shared-routing.md) 内部节点已完成：复用 SlotResolver、rpc Host/Sender 和同一个 Runtime，直连 Agent 完成 ACK 与 NATS Actor Call 共用归属、邮箱和排水。该批真实交接及 race 通过，tx 全量测试 1147 pass / 61 skip；正式示例未迁移。五轮缓存路由中位 187.5ns、8B/1 alloc，1KiB 单机顺序直连 Call 约 151μs、199 alloc，不作为跨机吞吐承诺，也不是本轮验证。
 
-T3h 已完成 [归属组件设计](superpowers/specs/2026-09-13-actor-ownership-design.md) 与 [接线计划](superpowers/plans/2026-09-13-actor-ownership-integration.md)：复用 Discovery/SlotStore，不整体抽离第三方集群；明确当前 StateDrained 不含最终 GD 写回、原型按源实例整体排空、高级 ProtoActor API 需要逐项承接。下一实施节点建议在试验区组合真实事务写回和实例租约；随后完成完整上行同环境对照与部署流量预算，再评审 T4。文档完成不代表正式宿主、生成 GD 或示例验收完成，原性能门槛仍有效。
+T3h 的 [归属组件设计](superpowers/specs/2026-09-13-actor-ownership-design.md) 与 [接线计划](superpowers/plans/2026-09-13-actor-ownership-integration.md) 已提交到 `8de6005`。本轮完成 [I1 事务写回与租约组合验证](audits/2026-09-13-actor-ownership-integration.md)：真实 Redis 写回失败保留待刷根、响应未知不晋升，显式重试后新 owner 读到最后值；真实租约撤销后双入口关闸且不自动改派。定向 race 12 pass；tx 全量 1147 pass/63 skip，真实依赖试验包 71 pass/1 性能入口 skip。以上为 I1 验证记录。随后完成 [I2 完整上行评审](audits/2026-09-13-uplink-business-comparison.md)：使用现有生成 Redis GD、真实 Procedure/writeback 和完整 Session/MsgQ 链路，修复原型 Call/Tell 信封标记。1 KiB 中位完成吞吐为 ProtoActor 5661/s、hybrid 4642/s、NATS 4264/s；hybrid 的 broker 收发字节比全 NATS 低约 96.2%。原 10% 门槛尚未放行；下一项先决定是否接受 I2 提出的临时业务容量预算，再进入 I3 正式宿主接线。两个示例及 Mongo/Fusion 仍待 I4 验收。
+
+I2 数据采集后，用户已因转发流量成本排除“上行也经 NATS”。后续只比较现有 ProtoActor 与 Agent 上行直连 gRPC、Actor 间 NATS 的组合，已有全 NATS 数据保留为历史对照，不继续测试该方案。
 
 顺序为：共同基线 → 最小本地实体运行时 → NATS RPC → 正确性/性能评审 → 两示例接入 → JetStream 任务。最小本地运行时为优先验证方向，保留本地 ProtoActor 是备选；不预设必须替换成功。etcd 暂留身份、租约和槽位交接，msgq 传输整合及 etcd 替代分别评估，不计入已实现收益。
 

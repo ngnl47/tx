@@ -388,3 +388,51 @@ func TestSharedRoutingDirectAgentAndNATSHandoff(t *testing.T) {
 		}
 	}
 }
+
+// 两种传输都必须生成业务解码器接受的信封；请求关联仍由各传输自行维护。
+func TestSharedRoutingDecodesBusinessDelivery(t *testing.T) {
+	url, ctx := natsURL(t), trialContext(t)
+	received := make(chan txactor.Delivery, 8)
+	local := New(8, time.Second, func(Context) (*Behavior, error) {
+		return &Behavior{Receive: func(_ Context, value any) (any, error) {
+			d, err := txactor.DeliveryFromProto(value.(*actorpb.Delivery))
+			if err != nil {
+				return nil, err
+			}
+			received <- d
+			return &actorpb.Result{MessageType: "decoded", Payload: d.Payload}, nil
+		}}, nil
+	})
+	server := peer(t, url, nats.NewInbox(), "decode", local)
+	host := directPeer(t, server.instance, local)
+	directory := discovery.NewServiceDirectory()
+	routeMembers(t, directory, map[string]*rpc.Host{server.instance: host})
+	remote := peer(t, url, server.namespace, "caller", echoRuntime())
+	delivery, err := (txactor.Delivery{MessageType: "decode", Payload: []byte("业务")}).ToProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := Target{server.instance, Identity{"world", "51"}}
+	for name, caller := range map[string]Caller{"direct": directSender(t, directory), "nats-remote": remote, "nats-local": server} {
+		t.Run(name, func(t *testing.T) {
+			result, err := caller.Call(ctx, target, delivery)
+			if err != nil || result.MessageType != "decoded" {
+				t.Fatalf("业务解码失败: %v %v", result, err)
+			}
+			<-received
+			if delivery.Mode != actorpb.DeliveryMode_DELIVERY_MODE_TELL || delivery.RequestId != 0 {
+				t.Fatal("修改了调用方信封")
+			}
+		})
+	}
+	// 传输模式由入口决定，不沿用入参中另一种模式的关联标记。
+	delivery.RequestId = 99
+	if err := remote.Tell(ctx, target, delivery); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-received:
+	case <-ctx.Done():
+		t.Fatal("Tell 未通过业务解码", ctx.Err())
+	}
+}

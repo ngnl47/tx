@@ -4,7 +4,7 @@
 
 **Goal:** 在 feature 分支验证 NATS Core + 最小本地实体运行时能否替代 ProtoActor，并以 JetStream 衔接可靠任务；以正确性、维护复杂度和性能决定是否推广。
 
-**Architecture:** 先隔离原型，再逐步接入两个独立 game 示例。本地实体管理负责身份、激活、邮箱及生命周期；高流量 Agent 上行优先直连 gRPC、Actor 间 RPC 使用 NATS，二者共用实体路由；JetStream 负责任务存储与消费进度；etcd 暂留实例身份、租约和槽位交接。原型可被否决，不预设必须迁移成功。
+**Architecture:** 先隔离原型，再逐步接入两个独立 game 示例。本地实体管理负责身份、激活、邮箱及生命周期；Agent 上行直连 gRPC、Actor 间 RPC 使用 NATS，二者共用实体路由；JetStream 负责任务存储与消费进度；etcd 暂留实例身份、租约和槽位交接。上行也经 NATS 已因转发流量成本退出候选，后续不再测试该方案。原型可被否决，不预设必须迁移成功。
 
 **Tech Stack:** 当前仓库锁定的 Go 工具链、NATS 官方 Go 客户端、nats-server、现有 etcd/Redis/Mongo；执行前固定版本和镜像摘要，不用浮动 latest 做结果依据。
 
@@ -12,7 +12,7 @@
 
 ## 当前状态与分支
 
-T3a–T3g 已提交，归属设计细化开始前 tx=dd07b29，六工程工作区干净。tx、txgame、txgameslg 均位于 `feature/nats-actor-runtime`。T3f 无稳定收益，候选不接入默认运行时；随后用户确认传输分工，T3g 共用路由与内部直连上行节点已完成。本轮仅补 T3h 设计与接线计划；T4 正式迁移继续暂停。以下分支创建信息是准备阶段快照。
+T3a–T3g 及 T3h 设计已提交，本轮 I1 开始前 tx=8de6005，六工程工作区干净。tx、txgame、txgameslg 均位于 `feature/nats-actor-runtime`。本轮累计完成 I1 事务写回/真实租约组合及 I2 完整上行评审，修复试验区信封标记；正式运行时未修改，T4 正式迁移继续暂停。以下分支创建信息是准备阶段快照。
 
 2026-09-12 检查：六工程均在主分支。tx/main=638d04a4525cfcec15327ac07bfdbaba4a2d59da；txgame/master=b611ebb80af3908d62660d9dd551f434265a5c12；txgameslg/main=0b465210ef878cbc39039a36a228bd7b1dfff085。tx 已有未跟踪的生命周期草案，本轮另更新总计划并新增本文；其余五工程干净。实施起点必须重新核对，以上仅为计划快照。
 
@@ -238,7 +238,7 @@ T2d 本批证据见 [试验记录](../../audits/2026-09-12-nats-actor-runtime-tr
 - [x] 内部 RoutedCaller 复用 SlotResolver 缓存，直连和 NATS 使用同一 assignment；保持低频首次分配和滚动交接。
 - [x] 复用 rpc Host/Sender 增加直接 Call 和 Agent Dispatcher，保留可信会话身份、完成 ACK、取消和错误分类；两个接收入口进入同一个 Runtime。
 - [x] 真实 TCP/NATS/etcd 验证共用邮箱、加载前归属、旧实例身份、收尾失败不晋升、交接后 Watch 更新及失效缓存拒绝；必要 race、全量 tx 回归、基准与后置 ponytail-review。
-- [ ] 完整上行在同环境下的直连/NATS 成本和部署流量预算仍待验证，纳入 T3h 接线计划 I2。当前 1KiB 单机顺序基准不代表生产吞吐；T4 示例接线、GD、实例租约、JetStream 均未完成。
+- [x] 完整上行同环境对照、生成 Redis GD 代表负载与连接字节预算已在 [I2](../../audits/2026-09-13-uplink-business-comparison.md) 完成；原 10% 门槛尚未放行。正式宿主、示例接线及 Mongo/Fusion、JetStream 均未完成，不用短窗口推算生产吞吐。
 
 ### T3h：归属组件职责与正式接线准备
 
@@ -246,8 +246,8 @@ T2d 本批证据见 [试验记录](../../audits/2026-09-12-nats-actor-runtime-tr
 
 - [x] 核对共享加载准入、SlotAllocator、框架 Drain/Stop、Procedure/writeback 和租约启动顺序；列出高级 PID/Props/Context/ActorSystem 能力的迁移要求。
 - [x] 明确复用现有目录、CAS、框架收尾进度和控制端点；不整体复制第三方集群模块，不新增第二份归属或通用调度框架。
-- [ ] I1：试验区补实际事务写回与 Discovery.Runtime 租约组合，验证失败保留资源及重试；生成 GD 和正式宿主另外验收。
-- [ ] I2：完成代表业务、完整上行、固定到达率和流量预算评审。原 10% 筛选线保持，调整为业务容量门槛需依据结果单独确认。
+- [x] I1：试验区补实际事务写回与 Discovery.Runtime 租约组合，验证失败保留资源、显式重试和租约失效不自动改派，见 [报告](../../audits/2026-09-13-actor-ownership-integration.md)；生成 GD 和正式宿主另外验收。
+- [x] I2：完成代表业务、完整上行、固定到达率和流量预算评审，见 [报告](../../audits/2026-09-13-uplink-business-comparison.md)。hybrid 的 1 KiB 中位吞吐较 ProtoActor 低 18.0%；原 10% 筛选线保持，是否改用报告中的临时业务预算需单独确认。
 - [ ] I3/I4：T4 门槛通过后接正式宿主与两个独立示例。PrepareHandoff 是设计中的新操作，当前 StateDrained 不能替代最终持久化成功许可。
 
 ## T4：接入两个独立示例并评估正式 API

@@ -1,6 +1,6 @@
 # Actor 归属接线实施计划
 
-> 使用 superpowers:executing-plans 串行执行，不使用子代理，不提交 Git。用户当前授权的是设计细化；下列编码任务均未执行。
+> 使用 superpowers:executing-plans 串行执行，不使用子代理，不提交 Git。设计已提交到 `8de6005`，用户确认继续后完成 I1 与 I2；I3–I4 尚未执行，性能预算等待决策。
 
 **目标：** 先补真实持久化与实例生命周期证据，再按既定评审门槛迁入正式组件，保持两种传输共用实体与归属。
 
@@ -14,24 +14,25 @@
 
 - 每个节点先检查六工程状态、相关 AGENTS 与实际配置；保留未提交变更，交付累计提交建议。
 - 不逐消息查 etcd，不在高频入口自动分配、回退传输或重投业务；失败不宣称未执行。
+- 上行固定直连 gRPC，Actor 间 RPC 使用 NATS；用户因转发流量成本排除上行也经 NATS，后续测试仅保留既有 ProtoActor 基线与 hybrid 候选，已采集的全 NATS 数据作为历史对照。
 - 先全实例收尾，再逐槽晋升；失败保留资源并有限重试，异常实例处置交给运维。
 - 沿用各工程测试资源 ownership 和清理约束；两示例真实集群串行。采集及故障注入只在测试夹具或临时覆盖构建。
 - 每节点完成相应验证后执行一次 ponytail-review；不为测试计数、删行数或小幅波动追加工作。
 
-## I1：真实持久化与租约组合验证（建议下一实施节点）
+## I1：真实持久化与租约组合验证（已完成）
 
 范围仅 tx 试验与测试。已有 `slots_test.go` 的 Redis 自定义快照、`routing_test.go` 的手工成员目录继续作为定向测试，不把它们改名成真实 GD 验收。
 
-文件：新增 `internal/actortrial/ownership_integration_test.go`；按实际缺口修改 `internal/actortrial/slots.go`、`routing_test.go`。参考 `modules/discovery/runtime.go`、`modules/writeback/manager.go`、`tests/writeback_manager_test.go`。本节点不迁移 `modules/actor` 或两个示例。
+实际文件：新增 `internal/actortrial/ownership_integration_test.go`，从 `slots_test.go` 提取共享 registry 夹具；未发现需要修改 slots.go 或 routing.go 的缺陷。参考 `modules/discovery/runtime.go`、`modules/writeback/manager.go`、`tests/writeback_manager_test.go`。本节点不迁移 `modules/actor` 或两个示例。
 
 接口：继续通过 `SlotHostConfig{Store, SlotID, Flush}` 接入收尾，`Flush(context.Context) error` 绑定实际事务写回流程；成员与槽位缓存来自 `discovery.NewRuntime`、`Watch`、`WaitReady`、`Directory`、`Slots`。现有 Runtime.Slots() 只提供缓存读取，不能注入 SlotHost 或用作分配冲突后的权威复核；试验夹具可用相同 etcd 命名空间的 `EtcdRegistry.Slots()` 取得权威存储，不另建归属。正式 Runtime 的权威访问边界列入 I3。
 
-- [ ] 写组合测试：A 的双入口访问同一实体，事务登记脏根；已接受事务结束前不能 ACK/交接，首次写回失败不晋升，重试成功后 B 加载最后状态。使用实际 txn/writeback/存储适配，不以 `Redis.Set(JSON)` 代替管道。
-- [ ] 先在 tx 内复用现有 Store/Procedure 测试夹具验证管道；涉及生成 GD 的完整契约留在 I4 的独立示例验收，报告明确区分，禁止 tx import 示例的 internal 包。
-- [ ] 用真实 Discovery.Runtime 取代组合夹具的手工实例 ID/目录：快照就绪前不发布 running，B 加入不改已存在 assignment；旧端点复用拒绝旧启动身份。租约失效后源方停止接纳新业务，不据此自动晋升。
-- [ ] 注入第一次写回失败及准备响应丢失；检查待刷根、writer、有效 context 和控制连接仍可用；成功阶段重试不重复执行退出回调。租约失败与正常排水失败分开断言。
-- [ ] 运行测试，定位确实缺少的接线；只补试验区组合，复用现有同步边界。若必须改正式 API/关闭语义才可继续，记录明确缺口交给 I3，不越过 T4 门槛。
-- [ ] 运行相关无外部依赖测试及显式启用的真实依赖测试；真实依赖定向 race 单列。输出 pass/skip/fail、依赖版本和清理记录，不复用历史结果。
+- [x] 写组合测试：A 的双入口访问同一实体，事务登记脏根；已接受事务结束前不能 ACK/交接，首次写回失败不晋升，重试成功后 B 加载最后状态。使用实际 txn/writeback/存储适配，不以 `Redis.Set(JSON)` 代替管道。
+- [x] 在 tx 内使用最小 Store/Procedure 契约夹具验证管道；涉及生成 GD 的完整契约留在 I4 的独立示例验收，报告明确区分，未 import 示例 internal 包。
+- [x] 用真实 Discovery.Runtime 取代组合夹具的手工实例 ID/目录：快照就绪前不发布 running，B 加入不改已存在 assignment；模拟旧端点抵达新实例时拒绝旧身份。租约失效后源方停止接纳新业务，不据此自动晋升。
+- [x] 注入第一次写回失败及交接方取消等待，使源方成功结果不再被交接方接收；检查待刷根、writer、有效 context 和控制连接仍可用；成功阶段重试不重复执行退出回调。租约失败与正常排水失败分开断言。
+- [x] 运行测试，只补测试组合与共享夹具，复用现有同步边界；正式 API/关闭语义的接线仍交给 I3，不越过 T4 门槛。
+- [x] 运行相关基线、tx 全量、显式启用的真实依赖试验包及定向 race；输出 pass/skip/fail、依赖版本和清理记录，详见 [本轮报告](../../audits/2026-09-13-actor-ownership-integration.md)。
 
 命令入口（在 tx 下执行；真实端点从当前环境核对后设置，未设置时产生的 skip 不算通过）：
 
@@ -41,20 +42,24 @@ go test ./internal/actortrial -run 'TestOwnershipIntegration|TestSlotRollingHand
 go test -race ./internal/actortrial -run 'TestOwnershipIntegration|TestSlotRollingHandoff|TestSharedRouting' -count=1
 ```
 
-`TestOwnershipIntegration` 是拟新增测试前缀。现有真实依赖开关为 `TX_ACTORTRIAL_NATS_URL`、`TX_ACTORTRIAL_ETCD_ENDPOINT`、`TX_ACTORTRIAL_REDIS_ADDR`；新增存储场景先复用工程既有测试配置，需新开关时说明理由。
+`TestOwnershipIntegration` 是本节点新增测试前缀。实际使用现有开关 `TX_ACTORTRIAL_NATS_URL`、`TX_ACTORTRIAL_ETCD_ENDPOINT`、`TX_ACTORTRIAL_REDIS_ADDR`，未新增测试配置开关。
 
 完成标准：真实租约与实际事务持久化组合成立，明确哪些仍是 Store 夹具而非示例生成 GD；失败不能通过关闭依赖或重新选 owner 掩盖。此节点不宣称正式 framework 已接线。
 
-## I2：完整上行与业务负载采用评审
+## I2：完整上行与业务负载采用评审（已完成，门槛未放行）
 
 文件：复用 `internal/actortrial/benchmark_test.go`、`routing_test.go` 与现有隔离测量驱动，新增结果报告到 `docs/audits/`；只按测量需要增加测试夹具，不扩展生产统计。
 
-- [ ] 先固定载荷、身份数、多 Session 分布、业务处理与持久化完成口径；对照当前 ProtoActor、Agent 直连 gRPC + Actor NATS、上行也经 NATS。同环境比较成功完成吞吐、固定到达率 P99、错误、CPU、内存和网络字节。
-- [ ] 代表负载含 Procedure/GD，不能只用空回显或单向 Pub/Sub；计数/profile 单独构建，禁止混入吞吐样本。
-- [ ] 列出调用端、业务实例与 broker 每段字节量，按实际部署位置另算计费流量；没有云区域和同区/跨区拓扑时仅给公式及情景，不填写虚构账单。
-- [ ] 用结果评审 T4。原 10% 筛选线继续有效；若建议改为明确业务容量/P99/成本门槛，给出数字与余量后由用户确认，不把已确认传输方向解释为自动通过性能验收。
+- [x] 固定载荷、身份数、多 Session 分布、业务处理与持久化完成口径；已对照当前 ProtoActor、Agent 直连 gRPC + Actor NATS、上行也经 NATS。同环境比较成功完成吞吐、固定到达率 P99、错误、CPU、内存和网络字节。完成后用户明确排除第三组，后续不再运行该组。
+- [x] 代表负载含 Procedure/GD，不能只用空回显或单向 Pub/Sub；计数/profile 单独构建，禁止混入吞吐样本。
+- [x] 列出调用端、业务实例与 broker 每段字节量，按实际部署位置另算计费流量；没有云区域和同区/跨区拓扑时仅给公式及情景，不填写虚构账单。
+- [x] 用结果评审 T4。原 10% 筛选线继续有效；若建议改为明确业务容量/P99/成本门槛，给出数字与余量后由用户确认，不把已确认传输方向解释为自动通过性能验收。
 
 完成标准：给出可采用或应保留现状的证据与门槛决策；不继续收益很小的封包或发送协程微优化。
+
+本轮新增隔离的完整 TCP/Session/MsgQ/生成 GD 对照夹具，修复原型两种 Call 信封缺少非零标记及 Tell 沿用旧标记的问题，见 [I2 报告](../../audits/2026-09-13-uplink-business-comparison.md)。60 个正式窗口和独立字节诊断已完成；不将同相位探索批算入最终结果。1 KiB 中位完成吞吐为 ProtoActor 5661/s、hybrid 4642/s、NATS 4264/s，hybrid 未证明满足原 10% 筛选线。1000/s 到达全部完成，3000/s 仍有驱动未发送。后端连接字节 hybrid 比全 NATS 低约 14.6%（反向计算为 NATS 高 17.1%），broker 收发量低约 96.2%。
+
+下一项需要决策：是否以报告中的“单组按 1000 请求/s 投递且全部完成、计划到达 P99 ≤100ms、零错误/未发送、最终 GD 一致”的临时预算进入 I3；这不是生产 SLA。未确认前继续保留正式 ProtoActor，不默认迁入新宿主或继续发送器微优化。
 
 ## I3：正式组件与框架接线（T4 门槛通过后）
 

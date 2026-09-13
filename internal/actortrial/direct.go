@@ -24,6 +24,8 @@ func (d *DirectTransport) Call(ctx context.Context, target Target, delivery *act
 	}
 	delivery = proto.Clone(delivery).(*actorpb.Delivery)
 	delivery.Mode = actorpb.DeliveryMode_DELIVERY_MODE_CALL
+	// 复用现有业务信封的非零 Call 标记；响应关联由 Future/inbox 或 gRPC 请求承担。
+	delivery.RequestId = 1
 	data, err := proto.Marshal(delivery)
 	if err != nil {
 		return nil, err

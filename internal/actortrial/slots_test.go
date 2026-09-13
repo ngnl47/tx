@@ -189,6 +189,11 @@ func TestSlotRollingHandoffWaitsForRedisFlush(t *testing.T) {
 }
 
 func trialSlots(t *testing.T) discovery.SlotStore {
+	registry, _ := trialSlotRegistry(t)
+	return registry.Slots()
+}
+
+func trialSlotRegistry(t *testing.T) (*discovery.EtcdRegistry, discovery.EtcdConfig) {
 	t.Helper()
 	endpoint := os.Getenv("TX_ACTORTRIAL_ETCD_ENDPOINT")
 	if endpoint == "" {
@@ -231,11 +236,12 @@ func trialSlots(t *testing.T) discovery.SlotStore {
 			}
 		}
 	})
-	registry, err := discovery.NewEtcdRegistryWithClient(client, discovery.EtcdConfig{Endpoints: []string{endpoint}, Prefix: prefix, LeaseTTL: 5 * time.Second})
+	config := discovery.EtcdConfig{Endpoints: []string{endpoint}, Prefix: prefix, LeaseTTL: 5 * time.Second, DialTimeout: time.Second}
+	registry, err := discovery.NewEtcdRegistryWithClient(client, config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return registry.Slots()
+	return registry, config
 }
 
 func worldSlot(id Identity) string { return "world-" + id.Key }
