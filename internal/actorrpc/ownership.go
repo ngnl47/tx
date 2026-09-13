@@ -51,10 +51,11 @@ func (a *EntityRouter) Ensure(ctx context.Context, id actorhost.Identity) (disco
 // Resolve 优先读取 Watch 缓存，仅明确缺少归属时回源并分配。
 // 快照不可用、旧 owner 下线或调用失败均不触发自动改派或业务重投。
 func (a *EntityRouter) Resolve(ctx context.Context, id actorhost.Identity) (actorhost.Target, error) {
-	if _, err := a.Service(id.Kind); err != nil {
+	service, err := a.Service(id.Kind)
+	if err != nil {
 		return actorhost.Target{}, err
 	}
-	current, err := a.Resolver.ResolveSlot(ctx, a.SlotID.Resolve(id))
+	current, err := a.Resolver.ResolveServiceSlot(ctx, service, a.SlotID.Resolve(id))
 	if err == nil {
 		return actorhost.Target{Instance: current.Assignment.RuntimeInstanceID, Identity: id}, nil
 	}

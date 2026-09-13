@@ -14,7 +14,6 @@ import (
 	"github.com/ngnl47/tx/internal/actorrpc"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 	"github.com/ngnl47/tx/modules/discovery"
-	"github.com/ngnl47/tx/modules/rpc"
 	rpcpb "github.com/ngnl47/tx/modules/rpc/pb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -44,11 +43,6 @@ func TestActorHostPrepareHandoffRetainsTransportUntilStop(t *testing.T) {
 		}, nil
 	})
 	ns := nats.NewInbox()
-	transport, err := actorrpc.ConnectNATS(url, ns, "source", local, 8)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer transport.Close()
 	client, err := actorrpc.ConnectNATS(url, ns, "caller", local, 8)
 	if err != nil {
 		t.Fatal(err)
@@ -71,12 +65,13 @@ func TestActorHostPrepareHandoffRetainsTransportUntilStop(t *testing.T) {
 		}
 		close(draining)
 	})
-	app, err := New(Config{AppID: "actor-handoff"}, WithCMod(mod), WithService(testService{
+	var app *Server
+	app, err = New(Config{AppID: "actor-handoff"}, WithCMod(mod), WithService(testService{
 		spec: Spec{Name: "game", Requires: []CModID{CModRPC, mod.Spec().ID}},
-		start: func(c Context) error {
-			return c.RPC().Register(func(r grpc.ServiceRegistrar) error {
-				return rpc.RegisterDeliveryService(r, nil, actorrpc.NewDirectReceiver("source", local))
-			})
+		start: func(Context) error {
+			// 隔离身份；真实 Discovery 租约由 etcd 交接测试覆盖。
+			app.runtime.setInstance(discovery.Instance{ID: "source"})
+			return app.startEntityTransport(local, url, ns, 8)
 		},
 		drain: func(context.Context) error { observeDrain(); return nil },
 	}))
@@ -92,11 +87,9 @@ func TestActorHostPrepareHandoffRetainsTransportUntilStop(t *testing.T) {
 		}
 	}()
 	defer releaseWork()
-	// 隔离注册身份，真实 Discovery 租约保留由现有 etcd 交接测试覆盖。
-	app.runtime.setInstance(discovery.Instance{ID: "source"})
+	transport := app.runtime.actorRPC.(*actorrpc.NATSTransport)
 	output := &handoffFlushTransport{NATSTransport: transport, stored: &flushes}
 	app.runtime.actorRPC = output
-	app.runtime.entities = local
 	target := actorhost.Target{Instance: "source", Identity: actorhost.Identity{Kind: "role", Key: "1"}}
 	future, err := client.CallFuture(ctx, target, &actorpb.Delivery{})
 	if err != nil {

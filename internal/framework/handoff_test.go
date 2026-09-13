@@ -10,9 +10,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ngnl47/tx/internal/actorhost"
+	"github.com/ngnl47/tx/internal/actorrpc"
+	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 	"github.com/ngnl47/tx/modules/control"
 	controlpb "github.com/ngnl47/tx/modules/control/pb"
 	"github.com/ngnl47/tx/modules/discovery"
+	"github.com/ngnl47/tx/modules/rpc"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -189,6 +193,10 @@ func TestPrepareHandoffIdentityLossNeverConfirms(t *testing.T) {
 }
 
 func TestPrepareHandoffWithEtcdRetainsLeaseUntilStop(t *testing.T) {
+	url := os.Getenv("TX_ACTORTRIAL_NATS_URL")
+	if url == "" {
+		t.Skip("设置 TX_ACTORTRIAL_NATS_URL 验证正式宿主双入口交接")
+	}
 	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
 	if endpoint == "" {
 		t.Skip("设置 TX_ETCD_ENDPOINT 验证正式宿主交接租约")
@@ -224,7 +232,29 @@ func TestPrepareHandoffWithEtcdRetainsLeaseUntilStop(t *testing.T) {
 			t.Errorf("测试范围仍有残留: %v", err)
 		}
 	})
-	app := newDiscoveryIdentityTestServer(t, endpoint, prefix, "", testService{spec: Spec{Name: "game", Requires: []CModID{CModDiscovery, CModRPC}}})
+	var unloaded atomic.Int32
+	newServer := func() *Server {
+		var app *Server
+		app = newDiscoveryIdentityTestServer(t, endpoint, prefix, "", testService{
+			spec: Spec{Name: "game", Requires: []CModID{CModDiscovery, CModRPC}},
+			start: func(Context) error {
+				local := actorhost.New(8, time.Second, func(actorhost.Context) (*actorhost.Behavior, error) {
+					var count uint64
+					return &actorhost.Behavior{
+						Receive: func(actorhost.Context, any) (any, error) {
+							count++
+							return &actorpb.Result{MessageType: "count", CommandId: count}, nil
+						},
+						OnDeactivateAfter: func(actorhost.Context) error { unloaded.Add(1); return nil },
+					}, nil
+				})
+				local.BindSlots(app.runtime.instanceSnapshot().ID, app.discovery.AuthoritativeSlots(), func(id actorhost.Identity) string { return "game-" + id.Key })
+				return app.startEntityTransport(local, url, owner, 8)
+			},
+		})
+		return app
+	}
+	app := newServer()
 	if err := app.Start(ctx, RunOptions{Services: "game", ControlListen: "127.0.0.1:0"}); err != nil {
 		t.Fatal(err)
 	}
@@ -244,15 +274,8 @@ func TestPrepareHandoffWithEtcdRetainsLeaseUntilStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	caller := controlpb.NewHandoffServiceClient(conn)
-	for range 2 {
-		response, err := caller.PrepareHandoff(ctx, &controlpb.PrepareHandoffRequest{RuntimeInstanceId: id})
-		if err != nil || response.GetRuntimeInstanceId() != id {
-			t.Fatalf("准备结果: %v %v", response, err)
-		}
-	}
 	// L2 归属组件通过正式控制面复用源实例收尾；同一源实例可以逐槽晋升。
-	target := newDiscoveryIdentityTestServer(t, endpoint, prefix, "", testService{spec: Spec{Name: "game", Requires: []CModID{CModDiscovery, CModRPC}}})
+	target := newServer()
 	if err := target.Start(ctx, RunOptions{Services: "game"}); err != nil {
 		t.Fatal(err)
 	}
@@ -261,6 +284,40 @@ func TestPrepareHandoffWithEtcdRetainsLeaseUntilStop(t *testing.T) {
 			t.Error(err)
 		}
 	})
+
+	store := app.discovery.AuthoritativeSlots()
+	dialer, err := rpc.NewGRPCDialer(insecure.NewCredentials())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender, err := rpc.NewSender(app.discovery.Directory(), dialer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Close()
+	direct := &actorrpc.DirectTransport{Sender: sender}
+	remote := target.runtime.actorRPC.(*actorrpc.NATSTransport)
+	for _, key := range []string{"1", "2"} {
+		if err := store.CreateSlot(ctx, discovery.SlotAssignment{SlotID: "game-" + key, RuntimeInstanceID: id, Generation: 1}); err != nil {
+			t.Fatal(err)
+		}
+		destination := actorhost.Target{Instance: id, Identity: actorhost.Identity{Kind: "role", Key: key}}
+		result, err := remote.Call(ctx, destination, &actorpb.Delivery{})
+		if err != nil || result.CommandId != 1 {
+			t.Fatalf("远端 NATS 激活: %+v %v", result, err)
+		}
+		result, err = direct.Call(ctx, destination, &actorpb.Delivery{})
+		if err != nil || result.CommandId != 2 {
+			t.Fatalf("gRPC 未共用实体状态: %+v %v", result, err)
+		}
+	}
+	caller := controlpb.NewHandoffServiceClient(conn)
+	for range 2 {
+		response, err := caller.PrepareHandoff(ctx, &controlpb.PrepareHandoffRequest{RuntimeInstanceId: id})
+		if err != nil || response.GetRuntimeInstanceId() != id {
+			t.Fatalf("准备结果: %v %v", response, err)
+		}
+	}
 	targetID := target.Context().Instance().ID
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
@@ -274,13 +331,12 @@ func TestPrepareHandoffWithEtcdRetainsLeaseUntilStop(t *testing.T) {
 			t.Fatal(ctx.Err())
 		}
 	}
-	store := app.discovery.AuthoritativeSlots()
 	ownership := app.discovery.Ownership()
 	preparer := control.NewHandoffClient(conn)
 	for _, slot := range []string{"game-1", "game-2"} {
 		current := discovery.SlotAssignment{SlotID: slot, RuntimeInstanceID: id, Generation: 1}
-		if err := store.CreateSlot(ctx, current); err != nil {
-			t.Fatal(err)
+		if unloaded.Load() != 2 {
+			t.Fatal("旧实体未卸载就晋升槽位")
 		}
 		next, err := ownership.Handoff(ctx, "game", current, targetID,
 			func(context.Context, string) (bool, error) { return true, nil },
@@ -291,6 +347,17 @@ func TestPrepareHandoffWithEtcdRetainsLeaseUntilStop(t *testing.T) {
 		actual, err := store.ResolveSlot(ctx, slot)
 		if err != nil || actual != next || next.RuntimeInstanceID != targetID || next.Generation != 2 {
 			t.Fatalf("晋升结果: %v %v %v", actual, next, err)
+		}
+	}
+	for _, key := range []string{"1", "2"} {
+		destination := actorhost.Target{Instance: targetID, Identity: actorhost.Identity{Kind: "role", Key: key}}
+		result, err := app.runtime.actorRPC.(*actorrpc.NATSTransport).Call(ctx, destination, &actorpb.Delivery{})
+		if err != nil || result.CommandId != 1 {
+			t.Fatalf("新 owner 懒加载失败: %+v %v", result, err)
+		}
+		destination.Instance = id
+		if _, err := remote.Call(ctx, destination, &actorpb.Delivery{}); !errors.Is(err, actorhost.ErrDraining) {
+			t.Fatalf("旧 owner 重新开放: %v", err)
 		}
 	}
 	after, err := client.Get(ctx, key)

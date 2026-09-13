@@ -4,6 +4,7 @@ package discovery
 import (
 	"errors"
 	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -235,13 +236,25 @@ func (d *ServiceDirectory) LookupInstance(id string) (Instance, bool) {
 
 // LookupRouteInstance 返回不含可变切片的路由视图。
 func (d *ServiceDirectory) LookupRouteInstance(id string) (RouteInstance, bool) {
+	return d.lookupRouteInstance("", id)
+}
+
+// LookupServiceRouteInstance 在同一快照中检查服务归属，返回不复制切片的路由视图。
+func (d *ServiceDirectory) LookupServiceRouteInstance(service, id string) (RouteInstance, bool) {
+	if service == "" {
+		return RouteInstance{}, false
+	}
+	return d.lookupRouteInstance(service, id)
+}
+
+func (d *ServiceDirectory) lookupRouteInstance(service, id string) (RouteInstance, bool) {
 	if d == nil {
 		return RouteInstance{}, false
 	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	instance, ok := d.byID[id]
-	if !ok || (instance.Status != StatusRunning && instance.Status != StatusDraining && instance.Status != StatusStopping) {
+	if !ok || (service != "" && !slices.Contains(instance.Services, service)) || (instance.Status != StatusRunning && instance.Status != StatusDraining && instance.Status != StatusStopping) {
 		return RouteInstance{}, false
 	}
 	return routeInstance(instance), true

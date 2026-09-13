@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 )
 
@@ -90,6 +91,18 @@ func NewSlotResolver(store SlotReader, directory Directory) (*SlotResolver, erro
 }
 
 func (r *SlotResolver) ResolveSlot(ctx context.Context, slotID string) (SlotTarget, error) {
+	return r.resolveSlot(ctx, "", slotID)
+}
+
+// ResolveServiceSlot 同时校验目标实例承载指定服务；不因服务不匹配改派归属。
+func (r *SlotResolver) ResolveServiceSlot(ctx context.Context, service, slotID string) (SlotTarget, error) {
+	if service == "" {
+		return SlotTarget{}, ErrSlotRuntimeUnavailable
+	}
+	return r.resolveSlot(ctx, service, slotID)
+}
+
+func (r *SlotResolver) resolveSlot(ctx context.Context, service, slotID string) (SlotTarget, error) {
 	if r == nil || r.store == nil {
 		return SlotTarget{}, ErrSlotStoreNil
 	}
@@ -100,19 +113,25 @@ func (r *SlotResolver) ResolveSlot(ctx context.Context, slotID string) (SlotTarg
 	if err != nil {
 		return SlotTarget{}, err
 	}
-	instance, ok := r.lookupRouteInstance(assignment.RuntimeInstanceID)
+	instance, ok := r.lookupRouteInstance(service, assignment.RuntimeInstanceID)
 	if !ok || instance.Status != StatusRunning {
 		return SlotTarget{}, ErrSlotRuntimeUnavailable
 	}
 	return SlotTarget{Assignment: assignment, Instance: instance}, nil
 }
 
-func (r *SlotResolver) lookupRouteInstance(instanceID string) (RouteInstance, bool) {
-	if r.routeDirectory != nil {
+func (r *SlotResolver) lookupRouteInstance(service, instanceID string) (RouteInstance, bool) {
+	if service != "" {
+		if directory, ok := r.directory.(interface {
+			LookupServiceRouteInstance(string, string) (RouteInstance, bool)
+		}); ok {
+			return directory.LookupServiceRouteInstance(service, instanceID)
+		}
+	} else if r.routeDirectory != nil {
 		return r.routeDirectory.LookupRouteInstance(instanceID)
 	}
 	instance, ok := r.directory.LookupInstance(instanceID)
-	if !ok {
+	if !ok || (service != "" && !slices.Contains(instance.Services, service)) {
 		return RouteInstance{}, false
 	}
 	return routeInstance(instance), true

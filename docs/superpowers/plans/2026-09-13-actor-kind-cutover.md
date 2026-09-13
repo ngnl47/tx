@@ -87,3 +87,17 @@ txgameslg 的 slgworld 服务不再要求启动时声明一个世界 logical-slo
 EntityRouter 的单一 Service 字符串改为 Kind 到服务的解析函数，由装配方提供查询；首次分配和缓存寻址都会先拒绝未知 Kind。真实 NATS/etcd 回归验证同一入口处理 role→game、world/seasonWorld→slgworld，三类实体状态与默认分区归属独立；未知 Kind 不创建 assignment。原默认分区和自定义战区测试继续覆盖四种 NATS 调用及 gRPC 共用实体。
 
 当前完成的是路由器契约，验证夹具仍显式装配；正式框架应从已有 actorCatalog 绑定查询，默认 CModActor 尚未接入。后置审查删除了仅供测试调用的预留框架查询方法，待正式装配时一并实现。正式 Kind 的工厂、业务 SlotMapping 和新宿主必须继续一起切换，不能把本轮描述为生产后端已替换。
+
+## 缓存路由服务池一致性
+
+接线检查复现了冷热路径不一致：Ensure 检查 owner 是否属于 Kind 对应服务，而 Resolve 的缓存路径只检查在线状态。现在 EntityRouter 使用 L2 SlotResolver.ResolveServiceSlot，未知或不承载目标服务的 owner 返回 ErrSlotRuntimeUnavailable，不发送业务、不触发重新分配。内置 ServiceDirectory 在同一读锁内检查服务归属并返回只读视图；自定义 Directory 回退到基础 LookupInstance 契约。
+
+真实 NATS/etcd 三轮 race 回归通过，覆盖已有归属不匹配、默认分区和业务战区映射。本地只读寻址微基准五次中位数：不检查服务 109.6 ns/op，检查服务 115.1 ns/op，均 0 B/op、0 allocs/op；这是同轮两个入口的开销比较，不是端到端吞吐结论。采集仅在测试中。正式宿主装配仍待完成，本轮只修复其前置路由契约。
+
+## 框架双入口装配与失败收尾
+
+框架私有 startEntityTransport 已统一共享 gRPC 接收注册、NATS 连接和实体宿主所有权；使用 Discovery 给出的本次启动身份，不给业务开放连接关闭权。现有框架交接夹具改为调用该装配入口，真实 etcd 用例中两个 Server 通过 NATS 与 gRPC 操作同一实体，源实例卸载后逐槽 CAS 晋升，新实例按权威归属懒加载，源租约直到 Stop 才注销。
+
+本轮同时补齐启动失败的收尾：已经接受消息的新宿主先关闭准入并等待卸载；超时保留资源，不允许重复 Start；Stop 可继续收尾，Run 复用原有有限重试并仍报告启动失败。最终 NATS Flush 使用框架排水期限，业务无需为 Stop(context.Background()) 额外了解 SDK 的 deadline 要求。正常写回与 Flush 失败保持可重试、不会重开准入。
+
+框架已生产导入 actorrpc，两个示例补齐与 tx 一致的 NATS 间接依赖及校验和，未升级版本。默认 CModActor 与公开 Kind 工厂仍是 ProtoActor；当前装配入口由框架集成夹具显式调用，不能描述为默认切换完成。下一阶段继续把公开 Kind 的工厂、映射和应用目录绑定到该入口，不新增后端选择开关。

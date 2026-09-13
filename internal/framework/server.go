@@ -134,13 +134,14 @@ func (server *Server) Run(ctx context.Context, options RunOptions) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := server.Start(context.WithoutCancel(ctx), options); err != nil {
-		return err
+	startErr := server.Start(context.WithoutCancel(ctx), options)
+	if startErr != nil && !errors.Is(startErr, errStopDeferred) {
+		return startErr
 	}
 	server.mu.Lock()
 	runtime := server.runtime
 	server.mu.Unlock()
-	if runtime != nil && runtime.lifecycle != nil {
+	if startErr == nil && runtime != nil && runtime.lifecycle != nil {
 		select {
 		case <-ctx.Done():
 		case <-runtime.lifecycle.Done():
@@ -149,12 +150,12 @@ func (server *Server) Run(ctx context.Context, options RunOptions) error {
 	for attempt := 0; ; attempt++ {
 		err := server.Stop(context.Background())
 		if !errors.Is(err, errStopDeferred) {
-			return err
+			return errors.Join(startErr, err)
 		}
 		txlog.Error("server shutdown failed", "app", server.config.AppID, "attempt", attempt+1, "error", err)
 		if attempt == 3 {
 			txlog.Error("server shutdown retries exhausted; process must exit with failure; unflushed data may be lost", "app", server.config.AppID, "error", err)
-			return fmt.Errorf("framework: shutdown failed after three retries: %w", err)
+			return errors.Join(startErr, fmt.Errorf("framework: shutdown failed after three retries: %w", err))
 		}
 		time.Sleep(time.Second)
 	}
@@ -167,7 +168,7 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 		return errors.New("framework: server is nil")
 	}
 	server.mu.Lock()
-	if server.starting || server.started || server.stopping {
+	if server.starting || server.started || server.stopping || server.runtime != nil {
 		server.mu.Unlock()
 		return errors.New("framework: server is already started or stopping")
 	}
@@ -184,7 +185,7 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 		server.starting = false
 		if err == nil {
 			server.started = true
-		} else {
+		} else if !errors.Is(cleanupErr, errStopDeferred) {
 			server.stopping = true
 			server.stopErr = cleanupErr
 			server.clearRuntimeLocked()

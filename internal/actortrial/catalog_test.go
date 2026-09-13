@@ -76,6 +76,16 @@ func TestEntityRouterSelectsKindService(t *testing.T) {
 	if _, err := store.ResolveSlot(ctx, actorhost.PartitionSlot(unknown)); !errors.Is(err, discovery.ErrSlotNotFound) {
 		t.Fatalf("未知 Kind 写入归属: %v", err)
 	}
+	// 已有世界归属仍在线，但不承载目录要求的服务；冷、热路径均应拒绝。
+	services["world"] = "game"
+	world := Identity{Kind: "world", Key: "1"}
+	if _, _, err := router.Ensure(ctx, world); !errors.Is(err, discovery.ErrSlotRuntimeUnavailable) {
+		t.Fatalf("冷路径服务池校验: %v", err)
+	}
+	if _, err := router.Resolve(ctx, world); !errors.Is(err, discovery.ErrSlotRuntimeUnavailable) {
+		t.Fatalf("缓存路径绕过服务池校验: %v", err)
+	}
+
 	// 即使残留 assignment 可解析，目录移除 Kind 后也不能继续投递。
 	delete(services, "world")
 	if _, err := router.Resolve(ctx, Identity{Kind: "world", Key: "1"}); err == nil {

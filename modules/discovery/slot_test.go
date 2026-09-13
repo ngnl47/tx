@@ -100,3 +100,58 @@ func TestSlotResolverAcceptsReadOnlyReaderAndRejectsUnavailableTarget(t *testing
 		}
 	}
 }
+
+func TestSlotResolverChecksServiceForNativeAndCustomDirectory(t *testing.T) {
+	directory := NewServiceDirectory()
+	assignment := SlotAssignment{SlotID: "world-1", RuntimeInstanceID: "a", Generation: 1}
+	for _, status := range []Status{StatusRunning, StatusDraining} {
+		if err := directory.Replace([]Instance{{ID: "a", Endpoint: "127.0.0.1:1", Services: []string{"slgworld", "battle"}, Status: status}}); err != nil {
+			t.Fatal(err)
+		}
+		// 包装只开放基础 Directory 契约，验证高级只读 SPI 的回退路径。
+		for _, source := range []Directory{directory, struct{ Directory }{directory}} {
+			resolver, err := NewSlotResolver(readOnlySlot{assignment}, source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, service := range []string{"slgworld", "battle", "game", ""} {
+				target, err := resolver.ResolveServiceSlot(t.Context(), service, assignment.SlotID)
+				accepted := status == StatusRunning && (service == "slgworld" || service == "battle")
+				if accepted {
+					if err != nil || target.Assignment != assignment {
+						t.Fatalf("目标: %+v %v", target, err)
+					}
+				} else if !errors.Is(err, ErrSlotRuntimeUnavailable) {
+					t.Fatalf("service=%q status=%s: %v", service, status, err)
+				}
+			}
+		}
+	}
+}
+
+func BenchmarkSlotResolverServiceCheck(b *testing.B) {
+	directory := NewServiceDirectory()
+	if err := directory.Replace([]Instance{{ID: "a", Endpoint: "127.0.0.1:1", Services: []string{"slgworld", "battle"}, Status: StatusRunning}}); err != nil {
+		b.Fatal(err)
+	}
+	resolver, err := NewSlotResolver(readOnlySlot{SlotAssignment{SlotID: "world-1", RuntimeInstanceID: "a", Generation: 1}}, directory)
+	if err != nil {
+		b.Fatal(err)
+	}
+	for _, service := range []string{"", "slgworld"} {
+		b.Run("service="+service, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				var err error
+				if service == "" {
+					_, err = resolver.ResolveSlot(b.Context(), "world-1")
+				} else {
+					_, err = resolver.ResolveServiceSlot(b.Context(), service, "world-1")
+				}
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

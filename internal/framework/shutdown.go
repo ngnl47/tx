@@ -185,7 +185,7 @@ func (server *Server) shutdown(ctx context.Context, drain bool) error {
 func (server *Server) finishWork(ctx context.Context, drain bool) error {
 	server.mu.Lock()
 	host, cmodHost, runtime := server.host, server.cmodHost, server.runtime
-	prepared, fatal := server.prepared, server.fatalErr != nil
+	prepared, fatal, ready := server.prepared, server.fatalErr != nil, server.started
 	server.mu.Unlock()
 	if prepared {
 		return nil
@@ -200,6 +200,17 @@ func (server *Server) finishWork(ctx context.Context, drain bool) error {
 		}
 		errs = append(errs, err)
 	}
+	if !ready && runtime != nil && runtime.entities != nil {
+		// 启动失败也可能已有定向消息到达；卸载完成前不能释放业务依赖。
+		drainCtx, cancel := context.WithTimeout(ctx, effectiveDrainTimeout(server.config.Runtime.Lifecycle.DrainTimeout))
+		err := runtime.entities.Drain(drainCtx)
+		cancel()
+		if err != nil && !fatal {
+			return errors.Join(errStopDeferred, err)
+		}
+		errs = append(errs, err)
+		drain = true // 后续写回或传输失败同样保留启动资源，复用 Stop 重试。
+	}
 	if host != nil {
 		host.quiesceTasks()
 	}
@@ -212,7 +223,9 @@ func (server *Server) finishWork(ctx context.Context, drain bool) error {
 	}
 	// 已完成的写回阶段由 cmodHost 保留；传输确认失败只重试确认，不重复写回。
 	if runtime != nil && runtime.actorRPC != nil {
-		err := runtime.actorRPC.Flush(ctx)
+		flushCtx, cancel := context.WithTimeout(ctx, effectiveDrainTimeout(server.config.Runtime.Lifecycle.DrainTimeout))
+		err := runtime.actorRPC.Flush(flushCtx)
+		cancel()
 		if err != nil && drain && !fatal {
 			return errors.Join(errStopDeferred, err)
 		}

@@ -128,3 +128,7 @@ I3a 实施起点 `fe8656f`，六工程干净；本节点只改 tx，详见 [正�
 - 各业务服务通过 gRPC 直接向 MsgQ 发布下行；Agent 通过会话链路协调 Fetch/Ack 并发送客户端。上下行均不经过 NATS，不强制 Game 中转。
 - I4 除角色上行外，须验证扩展服务直连上行与直接下行、多 Session 扇出、可信身份和 Seq/Ack 契约；FightRoom 可先用集成夹具验证，不因拓扑示意额外实现整套战斗业务。
 - Core NATS 只承接实体间普通 RPC，JetStream 承接可靠业务任务；任务产生的客户端通知仍走直连下行。图与 design 只表达完成态，本计划保留实现进度与性能验收。
+
+## 框架宿主启动与交接闭环补充
+
+已将新宿主双入口注册与连接所有权移入框架私有装配，并连续补齐启动失败保留资源、Stop/Run 收尾重试、无 deadline 的有限 NATS Flush。真实两个 Server 的 etcd/NATS/gRPC 回归覆盖共享实体状态、源卸载、逐槽晋升、新 owner 懒加载与租约最后注销；不等于公开 Kind 或默认后端已替换。细节见 [Kind 切换方案](2026-09-13-actor-kind-cutover.md)。

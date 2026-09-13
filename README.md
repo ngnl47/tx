@@ -116,6 +116,7 @@ Context 仅在装配回调内取得依赖，不应保存到 Handler 或传入后
 
 接口迁移：`actors, err := runtime.CModActor()` 改为 `actors := runtime.CModActor()`，测试桩同步改成单返回值；
 Ant 常规槽位路由使用 `runtime.CModSlotResolver()`，底层 `SlotReader`、`NewSlotResolver` 和高级 `SlotStore/SlotRouter` 保留。
+知道目标服务时使用 `ResolveServiceSlot(ctx, service, slotID)`，同时检查 owner 在线且承载该服务；不匹配返回 `ErrSlotRuntimeUnavailable`，不自动改派。`ResolveSlot` 保留仅按槽位查询的高级入口。内置目录在本地快照内完成检查，自定义 Directory 无需实现额外接口。
 
 常规服务通过 `Tasks/Admission/CModRedisStorage/CModMongoStorage/CModFusionStorage/CModRPC/CModDiscovery/CModSessionID/CModActor`
 等最小契约取得已经声明的能力；项目组合根才使用通用 `Storage()` 安装 `db.Save` facade。
