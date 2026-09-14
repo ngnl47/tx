@@ -1,5 +1,7 @@
 # NATS 与最小本地 Actor 运行时试验实施计划
 
+**2026-09-14 当前状态：默认 Core NATS 后端迁移范围已完成整体验证，进入 T5 JetStream 最小闭环准备。历史测试依赖保留，自动 Pod 交接编排延期；以下历史记录以本次 [收口记录](../../audits/2026-09-14-nats-default-closeout.md) 为准。**
+
 **2026-09-13 最新决策：** 用户已接受 I2 的临时业务预算，允许进入 I3 正式接线。原 10% 比较线保留为迁移偏移的排查提示，不再单独阻止本次接线；不等同于生产验收放行。优先保持去掉 ProtoActor 后的上下行完成链路性能，不重复全 NATS 上行测试。固定基线见 [迁移前基线](../../audits/baselines/2026-09-13-uplink.json)。I3 先完成交接准备与 Stop 共享收尾，再迁入实体宿主及适配，最终以相同业务负载复测。下文 I2 未放行表述保留其评审时点，以下最新决策为准。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. 串行执行，不使用子代理，不自动提交。
@@ -250,17 +252,17 @@ T2d 本批证据见 [试验记录](../../audits/2026-09-12-nats-actor-runtime-tr
 - [x] 明确复用现有目录、CAS、框架收尾进度和控制端点；不整体复制第三方集群模块，不新增第二份归属或通用调度框架。
 - [x] I1：试验区补实际事务写回与 Discovery.Runtime 租约组合，验证失败保留资源、显式重试和租约失效不自动改派，见 [报告](../../audits/2026-09-13-actor-ownership-integration.md)；生成 GD 和正式宿主另外验收。
 - [x] I2：完成代表业务、完整上行、固定到达率和流量预算评审，见 [报告](../../audits/2026-09-13-uplink-business-comparison.md)。hybrid 的 1 KiB 中位吞吐较 ProtoActor 低 18.0%；原 10% 筛选线保持，是否改用报告中的临时业务预算需单独确认。
-- [ ] I3/I4：T4 门槛通过后接正式宿主与两个独立示例。PrepareHandoff 是设计中的新操作，当前 StateDrained 不能替代最终持久化成功许可。
+- [x] I3/I4：用户接受临时业务预算后，正式宿主与两个独立示例已接入；PrepareHandoff 已实现，StateDrained 仍不能替代最终持久化成功许可。历史性能筛选记录保留，当前边界见迁移收口记录。
 
 ## T4：接入两个独立示例并评估正式 API
 
 修改范围：tx/modules/actor、tx/internal/framework/cmod_actor.go 及相关能力装配；txgame/server/services/game/service.go、services/internal/actorcmd；txgameslg/server/services/{slggame,slgworld}/service.go、services/internal/actorcmd、server/internal/placement；两个 server/go.mod 与运行配置、README、集群验收入口按实际依赖更新。
 
-- [ ] T3 通过后才整理正式包位置，收敛试验 API；必要高级能力给 game 使用，不把通用运行时细节暴露到示例。
-- [ ] 先接 txgame 的角色请求和多 Session，再接 txgameslg 的固定世界与跨世界侦查；保留独立示例，不互相 import。
-- [ ] 在现有 cmd/cluster-e2e 中验证真实网络、实例变化、关闸、槽位代次、重建、GD 写回及多会话下行。沿用工程固定 DB/database/prefix 和 ownership 清理约束，两个套件串行运行。
-- [ ] 外部协议不变时直接使用原客户端；若必须修改生成输入，先为相关生成器/客户端建同名分支，再经原生成入口生成，禁止手改产物。
-- [ ] 在 tx 与两个 server 模块运行 `go test ./... -count=1`；两个客户端运行 `npm test`、`npm run build` 并驱动真实集群。集成命令参数从各工程当时 README 核对，不盲用历史环境。
+- [x] T3 通过后才整理正式包位置，收敛试验 API；必要高级能力给 game 使用，不把通用运行时细节暴露到示例。
+- [x] 先接 txgame 的角色请求和多 Session，再接 txgameslg 的固定世界与跨世界侦查；保留独立示例，不互相 import。
+- [x] 在现有 cmd/cluster-e2e 中验证真实网络、实例变化、关闸、槽位代次、重建、GD 写回及多会话下行。沿用工程固定 DB/database/prefix 和 ownership 清理约束，两个套件串行运行。
+- [x] 外部协议不变时直接使用原客户端；若必须修改生成输入，先为相关生成器/客户端建同名分支，再经原生成入口生成，禁止手改产物。
+- [x] 在 tx 与两个 server 模块运行 `go test ./... -count=1`；两个客户端运行 `npm test`、`npm run build` 并驱动真实集群。集成命令参数从各工程当时 README 核对，不盲用历史环境。
 
 交付：三仓版本矩阵、实际配置入口、功能与性能报告；失败不伪装为既有行为等价。不需要永久双后端开关，原实现由基线快照提供对照。
 
@@ -284,3 +286,7 @@ T2d 本批证据见 [试验记录](../../audits/2026-09-12-nats-actor-runtime-tr
 - [ ] 确认采用后才删除被替代 ProtoActor 代码和依赖；重新核验高级 SPI、两示例和客户端。未采用则保留报告，不合并原型，旧分支和未提交工作不得自动删除。
 
 最终交付为“采用 / 局部采用 / 不采用”及证据，不以完成代码量作为成功标准。每轮按累计未提交变更给中文 Angular Commit Message，提交由用户操作。
+
+## 2026-09-14：默认迁移收口与 T5 入口
+
+两个正式 server 依赖闭包均无 ProtoActor/actortrial。三工程全量、两客户端测试构建、相关五包 race 和两套真实集群串行通过；本轮只更新文档，不修改冻结基线，不重复性能声明。I3/I4/T4 在默认切换范围收口，保留旧测试与对照所需依赖。下一项先验证 JetStream 持久投递、正式 Actor 执行后 ACK 与消费重启续领；死信、重试和背压仍须完成完整 T5 验收。详见 [收口记录](../../audits/2026-09-14-nats-default-closeout.md)。未提交 Git。

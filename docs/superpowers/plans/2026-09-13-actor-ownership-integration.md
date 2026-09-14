@@ -1,5 +1,7 @@
 # Actor 归属接线实施计划
 
+**2026-09-14 当前状态：默认 Core NATS 后端迁移范围已完成整体验证，进入 T5 JetStream 最小闭环准备。历史测试依赖保留，自动 Pod 交接编排延期；以下历史记录以本次 [收口记录](../../audits/2026-09-14-nats-default-closeout.md) 为准。**
+
 **2026-09-13 最新决策：** 用户已接受 I2 的临时业务预算，允许进入 I3 正式接线。原 10% 比较线保留为迁移偏移的排查提示，不再单独阻止本次接线；不等同于生产验收放行。优先保持去掉 ProtoActor 后的上下行完成链路性能，不重复全 NATS 上行测试。固定基线见 [迁移前基线](../../audits/baselines/2026-09-13-uplink.json)。I3 先完成交接准备与 Stop 共享收尾，再迁入实体宿主及适配，最终以相同业务负载复测。下文 I2 未放行表述保留其评审时点，以下最新决策为准。
 
 > 使用 superpowers:executing-plans 串行执行，不使用子代理，不提交 Git。设计已提交到 `8de6005`，用户确认继续后完成 I1 与 I2；I3 已获准并开始实施，I4 随正式接线验收推进。
@@ -63,7 +65,7 @@ go test -race ./internal/actortrial -run 'TestOwnershipIntegration|TestSlotRolli
 
 用户已接受报告中的“单组按 1000 请求/s 投递且全部完成、计划到达 P99 ≤100ms、零错误/未发送、最终 GD 一致”的临时预算进入 I3；这不是生产 SLA。正式 ProtoActor 在必要能力承接之前保留，不继续发送器微优化。
 
-## I3：正式组件与框架接线（临时预算已接受，实施中）
+## I3：正式组件与框架接线（默认后端已接线）
 
 主要文件：`modules/actor/{runtime,kind,delivery}.go` 及迁入的运行时/适配文件，`internal/framework/{assembly,cmod_actor,cmod_discovery,cmod_rpc,context_access,shutdown,drain}.go`，`modules/control/lifecycle.go`、`modules/control/proto/control.proto`；生成物经原生成入口更新。
 
@@ -97,28 +99,28 @@ go test -race ./internal/actortrial -run 'TestOwnershipIntegration|TestSlotRolli
 
 共享 gRPC 注册核对：Agent 注册 ControlService，MsgQ 注册 MailboxService，与 Actor DeliveryService 名称不同；无需增加通用多路分派层。Actor 的多个 Kind 由唯一宿主接收，DeliveryService 仍须由装配层统一注册一次。
 
-- [ ] 将实体宿主迁入正式 framework（I3b 已把原型的加载校验移到 Runtime.BindSlots，独立直连测试无需先创建 NATS）；复用共享 RPC Host 注册 Actor Call，检查同进程所选服务的注册组合，确保 DeliveryService 仅注册一次；两种入口仍共享同一 Runtime。
-- [ ] 调整启动顺序：绑定直连端点 → Discovery 启动身份与 Watch 就绪 → 装配 Actor 入口 → 服务与控制面就绪 → 标记 running。移除对旧 ActorEndpoint 的启动依赖，不增加绕环的可空中间对象供业务处理。
+- [x] 将实体宿主迁入正式 framework（I3b 已把原型的加载校验移到 Runtime.BindSlots，独立直连测试无需先创建 NATS）；复用共享 RPC Host 注册 Actor Call，检查同进程所选服务的注册组合，确保 DeliveryService 仅注册一次；两种入口仍共享同一 Runtime。
+- [x] 调整启动顺序：绑定直连端点 → Discovery 启动身份与 Watch 就绪 → 装配 Actor 入口 → 服务与控制面就绪 → 标记 running。移除对旧 ActorEndpoint 的启动依赖，不增加绕环的可空中间对象供业务处理。
 - [x] I3a：先写框架生命周期测试，实现正式 PrepareHandoff 与 Stop 共享收尾进度；共享 RPC 和租约保留到 Stop。保留 CMod 逆序收尾、失败阶段重试、fatal 身份丢失分支；StateDrained 不冒充持久化成功。NATS 宿主尚未迁入，待后续绑定同一流程。
 - [x] 验证 PrepareHandoff/Stop 并发、持久化失败重试、旧启动身份、成功回复丢失，以及多个槽位部分晋升；业务退出 RPC 失败不能否决卸载。当前测试与故障注入边界见 [交接可靠性证据](../../audits/2026-09-14-handoff-reliability.md)。
-- [ ] 核对 world 子协程完成边界：若处理异步返回，实际写入任务必须可被生命周期等待；在此之前不能把 Receive 返回等同于整个业务完成。
-- [ ] 运行相关单测、真实依赖回归与必要 race，再更新 README 的正式 API 和 design.md；不在本文设计完成时提前改写公开 API 文档。
+- [x] 核对 world 完成边界：当前 Handler 同步等待 Procedure，没有脱离 Receive 的世界子协程池。未来异步业务必须另行接入实际完成计数；不宣称支持未实现的异步完成机制。
+- [x] 运行相关单测、真实依赖回归与必要 race，再更新 README 的正式 API 和 design.md；不在本文设计完成时提前改写公开 API 文档。
 
 完成标准：正式宿主取得框架所有权，原型连接内不再暗藏共享准入；维护成本可解释，无第二份归属、写回管理器或永久后端开关。
 
 I3a 实施起点 `fe8656f`，六工程干净；本节点只改 tx，详见 [正式交接准备与基线记录](../../audits/2026-09-13-framework-handoff-preparation.md)。I3b 从 `f082cea` 继续，已完成权威访问与传输无关的加载绑定，见 [接线记录](../../audits/2026-09-13-actor-ownership-binding.md)。下一节点继续正式实体宿主与高级 API/SPI 的迁入；不重新请求临时预算授权，也不把 I3a 完成等同于已移除 ProtoActor。
 
-## I4：两个独立示例与依赖收敛
+## I4：两个独立示例与生产依赖核验
 
 多世界准备已推进：txgameslg 去除服务工厂和 Handler 的单世界 logical-slot 绑定，复用逐世界归属校验；一个实例可处理多个已分配世界。单实例双世界真实 Mongo 写入与版本保护回归通过，详见 [Kind 切换方案](2026-09-13-actor-kind-cutover.md)。这不代表 I4 或默认 NATS 后端切换完成，逐世界容量准入和新宿主自动装配仍待接线。
 
 修改 txgame/server 的 `services/{game,agent,internal/actorcmd}`、txgameslg/server 的 `services/{slggame,slgworld,agent,internal/actorcmd}` 及两个工程已有 `internal/writeback` 接线；配置、go.mod、README 与集群测试按实际依赖调整。
 
-- [ ] 普通实体稳定分区先确定编码与数量；世界维持独立槽位，演示多个世界分布在独立 slgworld 实例池，新增实例不自动搬走已存在归属。
-- [ ] 先 txgame 角色多 Session，再 txgameslg 世界与跨世界侦查；factory 保持业务加载与生命周期声明，通用装配由 tx 提供。
-- [ ] 沿用真实生成 GD 与默认写回组件，验证 Redis/Mongo/Fusion 各自既定持久化边界、失败收尾和有限关闭重试；不修改客户端协议，不将 Fusion 改为同步 Mongo 落盘。
-- [ ] 完成 tx、两个 server 的 `go test ./... -count=1`，两客户端的 `npm test`、`npm run build` 及各自 README 指定的真实集群验收；报告三仓版本矩阵。
-- [ ] 仅在必要 SPI 和行为有承接、原型对照证据可复现后删除被替代 ProtoActor 生产路径与依赖；若测试仍依赖它，先明确测试基线的保存方式，不宣称已完全移除。
+- [x] 普通实体稳定分区先确定编码与数量；世界维持独立槽位，演示多个世界分布在独立 slgworld 实例池，新增实例不自动搬走已存在归属。
+- [x] 先 txgame 角色多 Session，再 txgameslg 世界与跨世界侦查；factory 保持业务加载与生命周期声明，通用装配由 tx 提供。
+- [x] 沿用真实生成 GD 与默认写回组件，验证 Redis/Mongo/Fusion 各自既定持久化边界、失败收尾和有限关闭重试；不修改客户端协议，不将 Fusion 改为同步 Mongo 落盘。
+- [x] 完成 tx、两个 server 的 `go test ./... -count=1`，两客户端的 `npm test`、`npm run build` 及各自 README 指定的真实集群验收；报告三仓版本矩阵。
+- [x] 仅在必要 SPI 和行为有承接、原型对照证据可复现后删除被替代 ProtoActor 生产路径与依赖；若测试仍依赖它，先明确测试基线的保存方式，不宣称已完全移除。
 
 此后才按总试验计划进入 JetStream。etcd 替代、MsgQ 传输整合、运行中单实体热迁移均不随本计划实施。
 
@@ -172,3 +174,7 @@ I3/I4 不整体勾完；下一项为正式 Kind 容量声明、逐世界估算�
 基于 tx 8ff9bbb、txgameslg 93e734f 继续。真实套件验证空闲实例接纳第二世界，原世界归属不变；同一角色会话访问两个世界，NATS 间接调用与 gRPC 直连通知来源均匹配各自 owner，两个世界独立写回 Mongo。SLG 全量、编排 race、客户端 101 项测试与构建通过。详见 [验收记录](../../audits/2026-09-14-world-pool-routing.md)。
 
 用户确认：自动等待新 Pod、选址和续作滚动交接的运维编排后续完善，当前保留显式控制原语。下一项收口默认后端迁移清单，核对生产依赖与遗留入口，再评估 JetStream 首个实施节点。本轮未提交，不修改冻结基线。
+
+## 2026-09-14：默认迁移收口与 T5 入口
+
+两个正式 server 依赖闭包均无 ProtoActor/actortrial。三工程全量、两客户端测试构建、相关五包 race 和两套真实集群串行通过；本轮只更新文档，不修改冻结基线，不重复性能声明。I3/I4/T4 在默认切换范围收口，保留旧测试与对照所需依赖。下一项先验证 JetStream 持久投递、正式 Actor 执行后 ACK 与消费重启续领；死信、重试和背压仍须完成完整 T5 验收。详见 [收口记录](../../audits/2026-09-14-nats-default-closeout.md)。未提交 Git。
