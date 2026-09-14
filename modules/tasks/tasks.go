@@ -22,6 +22,9 @@ type Config struct {
 	Consumer string
 	// DeadLetter 是永久加载拒绝的死信主题，必须匹配文件存储流。
 	DeadLetter string
+	// RecoveryStream 与 RecoveryConsumer 绑定预先捕获耗尽通知的专用文件流和 durable。
+	// 源消费者设置有限 MaxDeliver 时必填；通知消费者自身不能限制投递次数。
+	RecoveryStream, RecoveryConsumer string
 	// Timeout 是单次消费等待上限；不代表远端业务已停止。
 	Timeout time.Duration
 }

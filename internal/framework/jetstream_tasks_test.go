@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -440,13 +441,66 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 	}
 	assertEmpty(5)
 
+	// 有限投递必须先部署通知捕获。失败启动不能悄悄开启缺少恢复能力的消费。
+	ci, err = consumer.Info(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limited := ci.Config
+	limited.MaxDeliver = 1
+	if _, err := stream.UpdateConsumer(ctx, limited); err != nil {
+		t.Fatal(err)
+	}
+	missingRecovery := newDiscoveryIdentityTestServer(t, endpoint, prefix, "", services...)
+	missingRecovery.config.Actor.Runtime = txactor.Config{NATSURL: url, Namespace: owner}
+	missingRecovery.config.TaskQueue = tasks.Config{URL: url, Stream: streamName, Subject: streamName, Consumer: "worker", DeadLetter: deadName, Timeout: 10 * time.Second}
+	if err := missingRecovery.Start(ctx, RunOptions{Services: "taskworker", RPCListen: "127.0.0.1:0"}); err == nil || !strings.Contains(err.Error(), "finite max deliver requires recovery") {
+		missingRecovery.Stop(context.Background())
+		t.Fatalf("有限 MaxDeliver 应因缺少恢复配置拒绝启动: %v", err)
+	}
+	eventName := streamName + "_events"
+	eventSubject := taskqueue.MaxDeliverySubject(streamName, "worker")
+	events, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: eventName, Subjects: []string{eventSubject}, Storage: jetstream.FileStorage, Retention: jetstream.WorkQueuePolicy, Metadata: map[string]string{"owner": owner}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if t.Failed() {
+			t.Log("保留失败通知流", eventName)
+			return
+		}
+		c, end := context.WithTimeout(context.Background(), time.Second)
+		defer end()
+		info, err := events.Info(c)
+		if err != nil || info.Config.Metadata["owner"] != owner {
+			t.Errorf("通知流归属校验: %v", err)
+			return
+		}
+		if err := js.DeleteStream(c, eventName); err != nil {
+			t.Error(err)
+		}
+	}()
+	if _, err := events.CreateConsumer(ctx, jetstream.ConsumerConfig{Durable: "recovery", AckPolicy: jetstream.AckExplicitPolicy, AckWait: time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	publish("exhausted-before-start")
+	if _, err := next.Next(jetstream.FetchMaxWait(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := next.Next(jetstream.FetchMaxWait(3 * time.Second)); !errors.Is(err, nats.ErrTimeout) {
+		t.Fatalf("耗尽后继续投递: %v", err)
+	}
+	eventInfo, err := events.Info(ctx)
+	if err != nil || eventInfo.State.Msgs != 1 {
+		t.Fatalf("恢复服务离线通知未捕获: %+v %v", eventInfo, err)
+	}
 	// 正式 CMod 与本地 Game 共址，验证 Server.Stop 先排消费，再关闭 Actor 准入。
 	if err := game.Stop(ctx); err != nil {
 		t.Fatal(err)
 	}
 	app := newDiscoveryIdentityTestServer(t, endpoint, prefix, "", services...)
 	app.config.Actor.Runtime = txactor.Config{NATSURL: url, Namespace: owner}
-	app.config.TaskQueue = tasks.Config{URL: url, Stream: streamName, Subject: streamName, Consumer: "worker", DeadLetter: deadName, Timeout: 10 * time.Second}
+	app.config.TaskQueue = tasks.Config{URL: url, Stream: streamName, Subject: streamName, Consumer: "worker", DeadLetter: deadName, Timeout: 10 * time.Second, RecoveryStream: eventName, RecoveryConsumer: "recovery"}
 	if err := app.Start(ctx, RunOptions{Services: "game,taskworker", RPCListen: "127.0.0.1:0"}); err != nil {
 		t.Fatal(err)
 	}
@@ -456,6 +510,21 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 			t.Error(err)
 		}
 	}()
+	// 恢复消费者处理启动前积压的通知，不执行该任务业务。
+	for {
+		info, err := events.Info(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.State.Msgs == 0 {
+			break
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
 	id := txactor.Identity{Kind: "role", Key: "framework-drain"}
 	if err := newServiceContext(app.runtime, nil).TaskQueue().Publish(ctx, id, txactor.Delivery{MessageType: "reward"}); err != nil {
 		t.Fatal(err)
@@ -483,6 +552,11 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertEmpty(6)
+	deadInfo, err = dead.Info(ctx)
+	if err != nil || deadInfo.State.Msgs != 2 {
+		t.Fatalf("框架恢复未转存耗尽任务: %+v %v", deadInfo, err)
+	}
+	t.Log("CMod 启动校验和离线积压通知恢复通过")
 	t.Log("CMod 持久发布、同实例 Actor 消费、Stop 超时保留及再次 Stop 收尾均通过")
 	t.Log("InProgress 跨 AckWait 续期、共享在途背压及排水后替代消费者续领均通过")
 	t.Log("业务明确结束、临时失败重投、永久加载拒绝先转存再确认均通过")

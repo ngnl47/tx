@@ -282,6 +282,8 @@ T2d 本批证据见 [试验记录](../../audits/2026-09-12-nats-actor-runtime-tr
 
 - [x] 框架能力接线：Bee/Ant `CModTaskQueue`、`TaskQueue` 配置和窄发布入口；绑定已有文件流与 durable，服务初始化完成后开始消费，Server.Drain/Stop/PrepareHandoff 先排消费再关闭 Actor 准入。真实同实例 Actor 验证 Stop 超时保留资源与重试完成。README 提供使用示例，未默认启用两个游戏示例。
 
+- [x] MaxDeliver 应用恢复：预部署专用文件流捕获通知，有限投递缺少捕获配置拒绝启动；独立 durable 恢复先转存死信、再删源残留、最后确认通知。真实验证处理端离线、转存失败保留、重复通知及旧代次保护。通知流不可写/Broker 故障的捕获缺口与容量仍待部署验收。
+
 - [ ] 文件流、共享 durable pull consumer、显式确认；业务 Handler 与 RPC 复用分派，投递和确认归 MQ 适配。
 - [ ] 测试执行后确认、业务明确结束、永久加载拒绝转死信、临时错误恢复、进程重启接管和排水停止领取。
 - [ ] 死信先持久转存确认再结束原任务；转存失败保留原消息。捕获 MaxDeliver 通知并持久保存，验证处理端离线与残留源消息恢复。不把 Term 或重试耗尽当成已自动转存。

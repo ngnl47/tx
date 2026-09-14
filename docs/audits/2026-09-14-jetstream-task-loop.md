@@ -120,3 +120,25 @@ README 提供声明、配置和发布示例。两个游戏示例没有默认开�
 
 
 本轮最终验证：tx `go test ./...` 通过；设置真实 NATS/etcd 地址运行 framework/taskqueue/bee/ant 的 `-race -count=1` 通过（framework 16.674s）。正确性复查给任务排水读取 runtime 增加 Server 锁保护后，目标闭环与内置依赖契约 `-race` 再次通过（10.878s）。txgame/server 和 txgameslg/server 的 `go test ./...` 均通过；未单独启动两套客户端真实集群 e2e，不把条件跳过的外部服务用例算作本轮实跑证据。后置 ponytail-review 无需精简项，差异检查通过。
+
+
+## 后续：MaxDeliver 通知与源残留恢复
+
+基于已提交的 `d59ccd2`。按 [NATS 官方耗尽通知 schema](https://raw.githubusercontent.com/nats-io/jsm.go/main/schemas/jetstream/advisory/v1/max_deliver.json) 使用类型、时间戳、流名、消费者和 stream_seq 定位源任务，不把通知本身当任务内容。
+
+配置新增 RecoveryStream/RecoveryConsumer，绑定预部署的专用 FileStorage/WorkQueuePolicy 通知流和无限投递的显式 ACK durable。源消费者有限 MaxDeliver 时缺少恢复配置会阻止实例启动；无限投递可不配置。恢复消费者先于普通任务消费者启动，排水先排普通任务、再排恢复回调，最后沿框架关闭连接。框架不自行修改共享流。
+
+恢复处理按顺序执行：读取原任务、确认死信持久发布、删除源消息、DoubleAck 通知。任何失败返回并由消费层记录 error，未确认通知留待重投。转存成功但后续响应丢失仍可能重复转存，不维护完成表。恢复路径不调用 Actor、不重放业务。重复通知发现源已不存在时记录 error 并确认通知；不能区分前次已清理和保留策略删除，也不能因此认定业务成功。
+
+通知早于当前源流或消费者创建时间时记录 error 并结束通知，避免明显的旧代次误删。该检查不是删除操作的跨资源 CAS；运维不能在恢复运行中删除并重建同名流/消费者，需要先停消费并处理积压。
+
+独立真实 NATS 验证：先创建通知捕获流，不启动恢复 Worker，制造 MaxDeliver=1 耗尽；确认通知与源任务均保留。死信流不可用时处理失败，源任务与通知不丢；创建死信流并启动恢复后转存、清理源残留并确认通知。检查原内容与源序号保留，重放同一通知不再产生死信；旧代次通知不会删除新任务。目标测试通过（0.552s）。
+
+正式框架验证有限投递缺少恢复配置拒绝启动，以及恢复启动前已积压的通知；同实例 Actor、自动续期及 Stop 重试原场景仍通过（12.865s）。测试开始时曾有一个未使用导入导致编译失败，清理后通过。
+
+当前证据覆盖应用处理端离线和恢复，不覆盖通知流磁盘满、保留淘汰或 Broker 故障。通知流只有成功捕获后才有持久性，不能把 advisory 生成与落盘宣称为跨资源原子保证。原任务已丢失无法重建；这些边界需通过部署配置和监控处理。没有 benchmark 或吞吐结论。
+
+下一项：资源保留/容量及部署示例，随后接入游戏业务演示。自动业务补偿不在本轮范围。
+
+
+本轮最终验证：设置真实 NATS/etcd 地址的 `go test -race ./internal/taskqueue ./internal/framework ./bee ./ant -count=1` 全部通过，taskqueue 1.603s、framework 19.639s；`go test ./...` 全量通过。后置 ponytail-review 未发现需精简项，普通任务与恢复消费者共用 SDK 消费包装；`git diff --check` 通过。仅 tx 有变更，其余五工程工作区干净，本轮不提交 Git。

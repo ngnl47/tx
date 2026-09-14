@@ -12,11 +12,14 @@ import (
 )
 
 type taskRuntime struct {
-	conn     *nats.Conn
-	js       jetstream.JetStream
-	config   tasks.Config
-	consumer jetstream.Consumer
-	worker   *taskqueue.Worker
+	conn             *nats.Conn
+	js               jetstream.JetStream
+	config           tasks.Config
+	consumer         jetstream.Consumer
+	worker           *taskqueue.Worker
+	recoveryConsumer jetstream.Consumer
+	recovery         taskqueue.Recovery
+	recoveryWorker   *taskqueue.Worker
 }
 
 func (r *taskRuntime) Publish(ctx context.Context, id actor.Identity, delivery actor.Delivery) error {
@@ -91,6 +94,33 @@ func (server *Server) tasksCMod() CMod {
 			if deadInfo.Config.Storage != jetstream.FileStorage || deadInfo.Config.Retention != jetstream.LimitsPolicy {
 				return errors.New("tasks: file-backed limits retention dead letter stream required")
 			}
+			infoConsumer, err := r.consumer.Info(ctx)
+			if err != nil {
+				return err
+			}
+			if config.RecoveryStream == "" && config.RecoveryConsumer == "" && infoConsumer.Config.MaxDeliver <= 0 {
+				return nil
+			}
+			if config.RecoveryStream == "" || config.RecoveryConsumer == "" {
+				return errors.New("tasks: finite max deliver requires recovery stream and consumer")
+			}
+			events, err := r.js.Stream(ctx, config.RecoveryStream)
+			if err != nil {
+				return err
+			}
+			eventInfo, err := events.Info(ctx)
+			if err != nil {
+				return err
+			}
+			eventSubject := taskqueue.MaxDeliverySubject(config.Stream, config.Consumer)
+			if eventInfo.Config.Storage != jetstream.FileStorage || eventInfo.Config.Retention != jetstream.WorkQueuePolicy || len(eventInfo.Config.Subjects) != 1 || eventInfo.Config.Subjects[0] != eventSubject {
+				return errors.New("tasks: dedicated file work queue for max delivery advisories required")
+			}
+			r.recoveryConsumer, err = events.Consumer(ctx, config.RecoveryConsumer)
+			if err != nil {
+				return err
+			}
+			r.recovery = taskqueue.Recovery{JetStream: r.js, Source: stream, Consumer: r.consumer, DeadLetter: config.DeadLetter}
 			return nil
 		},
 		stop: func(context.Context) error {
@@ -108,6 +138,13 @@ func (server *Server) startTaskConsumer(ctx context.Context) error {
 	if r == nil || r.consumer == nil {
 		return nil
 	}
+	if r.recoveryConsumer != nil {
+		worker, err := taskqueue.StartRecovery(ctx, r.recoveryConsumer, r.recovery, r.config.Timeout)
+		r.recoveryWorker = worker
+		if err != nil {
+			return err
+		}
+	}
 	worker, err := taskqueue.Start(ctx, r.consumer, taskqueue.Processor{Actor: server.runtime.actor, JetStream: r.js, DeadLetter: r.config.DeadLetter, Timeout: r.config.Timeout})
 	r.worker = worker
 	return err
@@ -117,8 +154,16 @@ func (server *Server) drainTaskConsumer(ctx context.Context) error {
 	server.mu.Lock()
 	r := server.runtime
 	server.mu.Unlock()
-	if r == nil || r.taskQueue == nil || r.taskQueue.worker == nil {
+	if r == nil || r.taskQueue == nil {
 		return nil
 	}
-	return r.taskQueue.worker.Drain(ctx)
+	if r.taskQueue.worker != nil {
+		if err := r.taskQueue.worker.Drain(ctx); err != nil {
+			return err
+		}
+	}
+	if r.taskQueue.recoveryWorker != nil {
+		return r.taskQueue.recoveryWorker.Drain(ctx)
+	}
+	return nil
 }
