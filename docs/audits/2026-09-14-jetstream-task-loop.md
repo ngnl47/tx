@@ -55,3 +55,18 @@ TX_ACTORTRIAL_NATS_URL=nats://127.0.0.1:4222 TX_ETCD_ENDPOINT=127.0.0.1:2379 \
 本轮目标测试实跑通过（6.186s）；相同服务环境下 `go test -race ./internal/framework -count=1` 整包通过（12.909s）。原有消费进程退出续领断言同时通过。没有测量性能，生产热路径未变。后置 ponytail-review 未发现需要删除的冗余。
 
 当前仅验证上述顺序，不承诺死信写入与源 ACK 跨流原子性；转存成功但源确认丢失可能产生重复死信。不建成功完成表，不把 Term 当转存。MaxDeliver 通知持久捕获、残留源任务恢复、排水停止领取与慢任务续期仍未完成；下一项继续消费生命周期与排水验证。
+
+
+## 后续：SDK 消费生命周期与排水
+
+基于已提交的 `c14ced5`，复用同一正式 Actor 夹具与 durable，使用 nats.go v1.53.1 原生 `Consumer.Consume`、`ConsumeContext.Drain` 和 `Closed`。不增加第二套 worker 完成计数。SDK Drain 会处理已进入消费缓冲的消息；不能把调用 Drain 的瞬间宣称为跨进程停止所有在途投递的原子边界。
+
+实测让 Actor 业务阻塞后启动消费 Drain：`Closed` 不提前关闭；调用方等待超时后保留消费连接与正在执行的业务，释放业务后回调完成 DoubleAck，消费排水才结束。随后关闭该消费连接，发布下一条任务，由新连接绑定的同一 durable 首次领取并完成，投递次数为 1。
+
+目标真实集成测试通过（6.313s），原有持久投递、进程续领、结果分类和死信顺序断言仍通过。当前 MaxAckPending=1 / PullMaxMessages=1；不据此宣称批量预取、慢任务续期、多 Worker 并发排水已通过，也未接入框架 Stop。等待超时用独立等待 Context，Actor 执行 Context 没有被取消。
+
+后续正式接线必须在关闭 Actor 运行时前完成消费排水，并保留超时后继续收尾所需的连接。SDK Closed 表示消费回调结束，不能替代应用对回调错误、ACK 结果和持久化收尾的处理。当前仍是测试内适配，不新增业务死信补偿 SPI，没有性能测量或生产热路径变更。
+
+下一项：慢任务 InProgress 续期与消费背压边界，再收敛正式消费运行时；MaxDeliver 通知持久捕获及残留源消息恢复仍保留为 T5 未完成项。
+
+本轮补充验证：framework 整包 `-race` 通过（13.052s）；后置 ponytail-review 删除一处重复 Closed 断言后，目标闭环 `-race` 再次通过。最终差异检查通过。

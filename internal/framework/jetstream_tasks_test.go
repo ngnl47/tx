@@ -144,12 +144,17 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 	unblock := sync.OnceFunc(func() { close(release) })
 	var completed atomic.Int32
 	var recoverBusiness atomic.Bool
+	drainEntered, drainRelease := make(chan struct{}), make(chan struct{})
+	finishDrain := sync.OnceFunc(func() { close(drainRelease) })
 	kind := txactor.MustKind("role", func(c txactor.Context) (*txactor.Behavior, error) {
 		if c.Identity.Key == "expired" {
 			return nil, txactor.ErrActivationDenied
 		}
 		return &txactor.Behavior{Receive: func(_ txactor.Context, _ any) (any, error) {
 			switch c.Identity.Key {
+			case "drain":
+				close(drainEntered)
+				<-drainRelease
 			case "finished":
 				return txactor.Result{MessageType: "task.finished"}, nil
 			case "temporary":
@@ -179,6 +184,7 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 	worker := start("worker")
 	defer worker.Stop(context.Background())
 	defer unblock()
+	defer finishDrain()
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
 	for len(worker.discovery.Directory().RunningInstances("game")) != 1 {
@@ -368,6 +374,80 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 	if string(stored.Data) != string(msg.Data()) || stored.Header.Get("Task-Failure") != txactor.ErrActivationDenied.Error() {
 		t.Fatalf("死信丢失原任务或拒绝原因: %+v", stored)
 	}
+
+	// 使用 SDK 原生 Drain 等待正在执行的 Actor 及其 ACK；不另建 worker 计数屏障。
+	drainingConn, err := nats.Connect(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer drainingConn.Close()
+	drainingJS, err := jetstream.New(drainingConn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainingConsumer, err := drainingJS.Consumer(ctx, streamName, "worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	publish("drain")
+	handled := make(chan error, 1)
+	consuming, err := drainingConsumer.Consume(func(msg jetstream.Msg) {
+		handled <- executeTrialTask(ctx, access, msg)
+	}, jetstream.PullMaxMessages(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer consuming.Stop()
+	select {
+	case <-drainEntered:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	consuming.Drain()
+	closed := consuming.Closed()
+	// 等待排水超时仅结束调用方等待，不能关闭连接或取消在执行业务。
+	waitCtx, stopWait := context.WithTimeout(ctx, 20*time.Millisecond)
+	select {
+	case <-closed:
+		t.Fatal("阻塞业务未完成却关闭消费")
+	case <-waitCtx.Done():
+	}
+	stopWait()
+	finishDrain()
+	select {
+	case <-closed:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	select {
+	case err := <-handled:
+		if err != nil {
+			t.Fatal(err)
+		}
+	default:
+		t.Fatal("消费关闭早于回调完成")
+	}
+	assertEmpty(4)
+	drainingConn.Close()
+	// 已完成消费排水后才投递，旧消费者不再领取；同一 durable 由替代消费者继续。
+	publish("temporary")
+	info, err = stream.Info(ctx)
+	if err != nil || info.State.Msgs != 1 {
+		t.Fatalf("排水后新任务丢失: %+v %v", info, err)
+	}
+	msg, err = next.Next(jetstream.FetchMaxWait(5 * time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, err = msg.Metadata()
+	if err != nil || meta.NumDelivered != 1 {
+		t.Fatalf("排水后新任务被旧消费者领取: %+v %v", meta, err)
+	}
+	if err := executeTrialTask(ctx, access, msg); err != nil {
+		t.Fatal(err)
+	}
+	assertEmpty(5)
+	t.Log("SDK Drain 等待 Actor 完成及 ACK、等待超时不取消业务、关闭后新任务由替代消费者领取均通过")
 	t.Log("业务明确结束、临时失败重投、永久加载拒绝先转存再确认均通过")
 	t.Log("FileStorage 无消费者保留、正式 Actor 完成后 ACK、消费进程退出后 durable 重投均通过")
 }
