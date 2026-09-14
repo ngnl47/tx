@@ -170,3 +170,9 @@ I3/I4 不整体勾完；下一项为正式 Kind 容量声明、逐世界估算�
 不预绑定 worldId、不恢复 logical-slot。默认 etcd 复用现有 assignment 与实例规格原子检查数量，不另建配额归属表；卸载不释放世界名额，正常晋升在排水前预检、写入时再次检查，迁出成功后才释放源名额。新增空闲实例可接纳新世界，全部满载报容量不足。普通分区不按槽位数量限制 Actor。
 
 两个示例开放 YAML 数量配置，合并调试默认无限制；独立 slgworld 可配 assignment=1，FightRoom 可配 activation=1000。世界 GD 的独立缓存和直接 Mongo 写回保持原职责，不再以估算 GD 大小作为下一项。自动扩 Pod、世界注销控制、CPU/内存阈值及故障接管不随本次实现。完成项与验证见 [本轮记录](../../audits/2026-09-14-actor-activation-api.md)。
+
+## 2026-09-14：数量配额真实集群与正常世界交接
+
+基于已提交的 tx bbdd202、txgame 6ab2f20、txgameslg c3c76db 继续。SLG 套件通过独立 YAML 发布 assignment=1，首次客户端请求自动分配世界，满载返回 ResourceExhausted 且无归属副作用；保留故障恢复到第二代，再验证 PrepareHandoff 收尾确认、源租约保留、CAS 晋升第三代与客户端重载/Mongo 写回。两个真实集群、SLG server 全量与控制面 race 均通过；未改冻结压测负载。详见 [本轮验收](../../audits/2026-09-14-world-capacity-cluster.md)。
+
+下一项集中核对 I3/I4 剩余交接可靠性证据（并发 Stop、确认回复丢失、多槽部分晋升），先复用现有回归，缺口再补。单世界正常交接不等同于多世界规模验收；不整体勾完 I3/I4，不开始自动扩 Pod 或 JetStream。本轮未提交。

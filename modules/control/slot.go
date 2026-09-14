@@ -155,6 +155,8 @@ func slotStatusFromError(err error) error {
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, discovery.ErrSlotConflict):
 		return status.Error(codes.Aborted, err.Error())
+	case errors.Is(err, discovery.ErrSlotCapacityUnavailable):
+		return status.Error(codes.ResourceExhausted, err.Error())
 	case errors.Is(err, discovery.ErrSlotRuntimeUnavailable):
 		return status.Error(codes.Unavailable, err.Error())
 	default:
