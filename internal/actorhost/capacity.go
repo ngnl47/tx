@@ -18,28 +18,25 @@ const (
 type ActivationStatus struct {
 	State ActivationState
 	// PendingMessages 只在探测时读取队列长度，不添加消息路径采集计数。
-	PendingMessages int `json:",omitempty"`
-	ReservedBytes   int64
+	PendingMessages int          `json:",omitempty"`
 	Failure         *RemoteError `json:",omitempty"`
 }
 
-// ActivationLimits 的零上限表示不限制。估算包含加载峰值，激活存续期间保留额度。
-// Estimate、Admit 是锁内的轻量纯查询，不得加载世界、访问网络或回调 Runtime。
-// Admit 可读取外部已有压力采样；预算不是独立 Go 堆，也不能保证进程不会 OOM。
+// ActivationLimits 的零上限不限制；Actors 包含初始化、运行和清理中的全部激活。
+// Admit 是锁内轻量只读准入，不能执行 I/O 或回调 Runtime；不阻断已有激活。
 type ActivationLimits struct {
-	Bytes           int64
+	Actors          int
 	Initializations int
-	Estimate        func(Identity) int64
 	Admit           func() bool
 }
 
 type ActivationUsage struct {
-	ReservedBytes int64
-	Initializing  int
+	Actors       int
+	Initializing int
 }
 
 func (r *Runtime) SetActivationLimits(limits ActivationLimits) {
-	if limits.Bytes < 0 || limits.Initializations < 0 || (limits.Bytes > 0 && limits.Estimate == nil) {
+	if limits.Actors < 0 || limits.Initializations < 0 {
 		panic("actortrial: invalid activation limits")
 	}
 	r.mu.Lock()
@@ -53,7 +50,7 @@ func (r *Runtime) SetActivationLimits(limits ActivationLimits) {
 func (r *Runtime) ActivationUsage() ActivationUsage {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.usage
+	return ActivationUsage{Actors: len(r.entries), Initializing: r.initializing}
 }
 
 // Probe 不加载也不重试，未加载不等同于业务实体不存在。
@@ -89,23 +86,13 @@ func (r *Runtime) statusLocked(id Identity) ActivationStatus {
 		if e.closed {
 			state = Closing
 		}
-		return ActivationStatus{State: state, ReservedBytes: e.reservedBytes, PendingMessages: len(e.queue)}
+		return ActivationStatus{State: state, PendingMessages: len(e.queue)}
 	}
 	if failure := r.failures[id]; failure != nil {
 		copy := *failure
 		return ActivationStatus{State: Failed, Failure: &copy}
 	}
 	return ActivationStatus{State: Unloaded}
-}
-
-func (r *Runtime) reserveLocked(id Identity) (int64, error) {
-	bytes, err := r.estimateLocked(id)
-	if err != nil {
-		return 0, err
-	}
-	r.usage.ReservedBytes += bytes
-	r.usage.Initializing++
-	return bytes, nil
 }
 
 // CheckActivationCapacity 只为低频选址提供快照，不能替代激活时的原子预留。
@@ -121,26 +108,15 @@ func (r *Runtime) CheckActivationCapacity(id Identity) error {
 		}
 		return nil
 	}
-	_, err := r.estimateLocked(id)
-	return err
+	return r.checkCapacityLocked()
 }
 
-func (r *Runtime) estimateLocked(id Identity) (int64, error) {
+func (r *Runtime) checkCapacityLocked() error {
 	l := r.limits
-	if (l.Initializations > 0 && r.usage.Initializing >= l.Initializations) || (l.Admit != nil && !l.Admit()) {
-		return 0, ErrCapacity
+	if (l.Actors > 0 && len(r.entries) >= l.Actors) || (l.Initializations > 0 && r.initializing >= l.Initializations) || (l.Admit != nil && !l.Admit()) {
+		return ErrCapacity
 	}
-	var bytes int64
-	if l.Bytes > 0 {
-		bytes = l.Estimate(id)
-		if bytes <= 0 {
-			panic("actortrial: non-positive activation estimate")
-		}
-		if bytes > l.Bytes-r.usage.ReservedBytes {
-			return 0, ErrCapacity
-		}
-	}
-	return bytes, nil
+	return nil
 }
 
 func (r *Runtime) rememberFailureLocked(id Identity, err error) {

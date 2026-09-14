@@ -2396,6 +2396,10 @@ Identity(Kind, Key)
 
 NATS 不决定实体归属，也不按实体创建订阅。首次缺少 assignment 时，L2 Ownership 执行容量预检与 CAS；已有归属不随新成员入环变化。懒加载前单独读取权威槽位，不能用 Watch 缓存替代。默认分区只共享 owner，每个实体仍独立加载、串行处理、卸载和预留容量；世界与 seasonWorld 可共享 slgworld 服务池并保留独立业务槽位。
 
+实例通过 `actor.Config.Capacity` 声明全部本地 Kind 共用的数量上限。默认 `activation` 模式统计初始化、运行及清理中的 Actor，清理完成才释放；`assignment` 模式用于独立实体槽位，统计持久归属，卸载或 GD 缓存淘汰不释放名额，同一世界重新加载复用名额。独立 slgworld 实例可配置 Maximum=1，承载任意首个被分配的世界，不绑定 worldId；临时房间可按业务估算配置 Maximum=1000。Initializations 独立限制同时加载数量，不给初始化设置统一超时。
+
+默认 EtcdSlotStore 在创建或晋升归属时原子检查稳定名额，交接前先预检目标容量。有限容量的冷分配读取现有目录快照并执行范围比较与单键 CAS，不维护第二份权威计数表；普通消息路由不扫描目录。该路径成本随目录规模增长，后续按真实规模验证。此数量限制不等于内存保证，不负责自动扩 Pod 或资源采样；GD 缓存释放仍由 cache manager 管理。
+
 ServiceSpec.ActorKinds 构成应用目录，Kind 名称应用内唯一；仅选中服务执行本地工厂。CModActor 依赖 RPC 和 Discovery，绑定共享接收入口与 NATS，服务 ready 后才发布 running。连接和关闭权限在框架内，业务通过 CModActor 或 CModActorDirect 的窄接口使用。
 
 ### Actor mailbox

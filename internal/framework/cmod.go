@@ -202,7 +202,7 @@ type CModContext interface {
 	StorageFor(meta.StorageMode) ModeStorage
 	RPC() txrpc.Registrar
 	Directory() discovery.Directory
-	Actor() txactor.Messenger
+	Actor() txactor.Runtime
 	DirectActor() txactor.Caller
 	Transaction() txn.Executor
 	SessionIDs() sessionid.Allocator

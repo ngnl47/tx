@@ -89,7 +89,7 @@ type Context interface {
 	// CModSessionID 返回已声明的 SessionID 分配能力。
 	CModSessionID() SessionIDAllocator
 	// CModActor 返回 Actor 消息解析和投递入口。
-	CModActor() txactor.Messenger
+	CModActor() txactor.Runtime
 	// CModActorDirect 返回共享归属下的 gRPC 实体调用入口，供 Agent 等直连适配使用。
 	CModActorDirect() txactor.Caller
 }
@@ -102,7 +102,7 @@ type frameworkContext interface {
 	StorageFor(meta.StorageMode) framework.ModeStorage
 	RPC() txrpc.Registrar
 	Directory() discovery.Directory
-	Actor() txactor.Messenger
+	Actor() txactor.Runtime
 	DirectActor() txactor.Caller
 	SessionIDs() sessionid.Allocator
 	HasCMod(framework.CModID) bool
@@ -240,7 +240,7 @@ func (view *contextView) CModSessionID() SessionIDAllocator {
 	return value
 }
 
-func (view *contextView) CModActor() txactor.Messenger {
+func (view *contextView) CModActor() txactor.Runtime {
 	view.require(CModActor)
 	value := view.kernel.Actor()
 	if value == nil {

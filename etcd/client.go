@@ -243,3 +243,17 @@ func sendWatchError(ctx context.Context, responses chan<- WatchResponse, err err
 	case <-ctx.Done():
 	}
 }
+
+// CompareAndSwapWithinSnapshot 写入无租约键，同时确认前缀内现存键没有快照之后的写入。
+// 删除不使检查失败；调用方仅可将它用于删除不会导致超额的计数准入。
+// expectedRevision 为零表示创建，非零表示更新已有键。
+func (c *Client) CompareAndSwapWithinSnapshot(ctx context.Context, prefix string, revision int64, key string, expectedRevision int64, value []byte) (bool, error) {
+	response, err := c.raw.Txn(ctx).If(
+		clientv3.Compare(clientv3.ModRevision(prefix), "<", revision+1).WithPrefix(),
+		clientv3.Compare(clientv3.ModRevision(key), "=", expectedRevision),
+	).Then(clientv3.OpPut(key, string(value))).Commit()
+	if err != nil {
+		return false, err
+	}
+	return response.Succeeded, nil
+}

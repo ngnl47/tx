@@ -100,3 +100,6 @@ func KindFactory(kinds []Kind, idle map[string]time.Duration) (BehaviorFactory, 
 		return behavior, err
 	}, nil
 }
+
+// HasIndependentSlots 表示业务显式提供槽位映射；一实体一槽位的唯一性由业务映射保证。
+func HasIndependentSlots(k Kind) bool { return k.slot != nil }

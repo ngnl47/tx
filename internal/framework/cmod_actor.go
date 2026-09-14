@@ -15,9 +15,22 @@ import (
 
 func (server *Server) actorCMod() CMod {
 	return &builtInCMod{
-		spec:     CModSpec{ID: CModActor, Requires: []CModID{CModRPC, CModDiscovery}},
-		validate: func(CModContext) error { _, err := server.config.Actor.Runtime.Normalize(); return err },
-		start:    func(CModContext) error { return server.startActor() },
+		spec: CModSpec{ID: CModActor, Requires: []CModID{CModRPC, CModDiscovery}},
+		validate: func(CModContext) error {
+			config, err := server.config.Actor.Runtime.Normalize()
+			if err != nil {
+				return err
+			}
+			if config.Capacity.Scope == txactor.CapacityAssignments && config.Capacity.Maximum > 0 {
+				for _, kind := range server.runtime.actorKinds {
+					if !actorhost.HasIndependentSlots(kind) {
+						return fmt.Errorf("actor: assignment capacity requires independent slots for kind %q", kind.Name())
+					}
+				}
+			}
+			return nil
+		},
+		start: func(CModContext) error { return server.startActor() },
 	}
 }
 func (server *Server) startActor() error {
@@ -62,6 +75,7 @@ func (server *Server) startActor() error {
 		}
 		return b, err
 	})
+	local.SetActivationLimits(actorhost.ActivationLimits{Actors: config.Capacity.Maximum, Initializations: config.Capacity.Initializations})
 	mapping := func(id actorhost.Identity) string { return actorhost.SlotFor(r.actorCatalog[id.Kind].kind, id) }
 	local.BindSlots(r.instanceSnapshot().ID, server.discovery.AuthoritativeSlots(), mapping)
 	if err := server.startEntityTransport(local, config.NATSURL, config.Namespace, config.MaxPendingCalls); err != nil {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/ngnl47/tx/lifecycle"
 	txlog "github.com/ngnl47/tx/log"
+	txactor "github.com/ngnl47/tx/modules/actor"
 	"github.com/ngnl47/tx/modules/discovery"
 	"github.com/ngnl47/tx/modules/txn"
 	txstorage "github.com/ngnl47/tx/storage"
@@ -56,6 +57,9 @@ func selectedServiceNames(services []Service) []string {
 
 func (server *Server) startDiscovery() error {
 	instance := server.runtime.instanceSnapshot()
+	if server.runtime.hasCMod(CModActor) && server.config.Actor.Runtime.Capacity.Scope == txactor.CapacityAssignments {
+		instance.MaxSlotAssignments = server.config.Actor.Runtime.Capacity.Maximum
+	}
 	discoveryRuntime, err := newDiscovery(server.runtime.lifecycle, server.config.Discovery.Etcd, server.config.AppID, instance)
 	if err != nil {
 		return fmt.Errorf("framework: initialize discovery: %w", err)

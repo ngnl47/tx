@@ -290,7 +290,7 @@ func TestSlotAllocationKeepsOwnerAndRespectsCapacity(t *testing.T) {
 				return &actorpb.Result{MessageType: "ok"}, nil
 			}}, nil
 		})
-		r.SetActivationLimits(ActivationLimits{Bytes: 100, Initializations: 8, Estimate: func(Identity) int64 { return 60 }})
+		r.SetActivationLimits(ActivationLimits{Actors: 1, Initializations: 8})
 		return r
 	}
 	a, b := slotPeer(t, url, ns, "a", makeRuntime(), store, nil), slotPeer(t, url, ns, "b", makeRuntime(), store, nil)
@@ -349,14 +349,14 @@ func TestSlotAllocationKeepsOwnerAndRespectsCapacity(t *testing.T) {
 	if _, err = caller.Call(ctx, Target{"a", id}, &actorpb.Delivery{MessageType: "ping"}); err != nil {
 		t.Fatal(err)
 	}
-	if loads.Load() != 3 || b.runtime.ActivationUsage().ReservedBytes != 60 {
+	if loads.Load() != 3 || b.runtime.ActivationUsage().Actors != 1 {
 		t.Fatal("重建或预算错误")
 	}
 }
 
 func TestCapacityPreflightDoesNotReserve(t *testing.T) {
 	r := echoRuntime()
-	r.SetActivationLimits(ActivationLimits{Bytes: 100, Initializations: 1, Estimate: func(Identity) int64 { return 60 }})
+	r.SetActivationLimits(ActivationLimits{Actors: 1, Initializations: 1})
 	for i := range 3 {
 		if err := r.CheckActivationCapacity(Identity{"world", fmt.Sprint(i)}); err != nil {
 			t.Fatal(err)

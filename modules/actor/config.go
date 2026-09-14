@@ -24,12 +24,19 @@ type Config struct {
 	// 不限制业务初始化时间，也不替代调用方等待或框架排水期限。
 	CallbackTimeout time.Duration
 	IdlePassivation map[string]time.Duration
+	Capacity        Capacity
 }
 
 func (c Config) Normalize() (Config, error) {
 	c.NATSURL = strings.TrimSpace(c.NATSURL)
 	c.Namespace = strings.TrimSpace(c.Namespace)
-	if c.NATSURL == "" || c.MailboxCapacity < 0 || c.MaxPendingCalls < 0 || c.CallbackTimeout < 0 {
+	if c.NATSURL == "" || c.MailboxCapacity < 0 || c.MaxPendingCalls < 0 || c.CallbackTimeout < 0 || c.Capacity.Maximum < 0 || c.Capacity.Initializations < 0 {
+		return Config{}, ErrInvalidConfig
+	}
+	if c.Capacity.Scope == "" {
+		c.Capacity.Scope = CapacityActivations
+	}
+	if c.Capacity.Scope != CapacityActivations && c.Capacity.Scope != CapacityAssignments {
 		return Config{}, ErrInvalidConfig
 	}
 	if c.MailboxCapacity == 0 {

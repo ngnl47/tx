@@ -144,3 +144,15 @@ I3a 实施起点 `fe8656f`，六工程干净；本节点只改 tx，详见 [正�
 默认后端迁移已提交（tx eef61a5、txgame c305eab、txgameslg 2b99d1f）。正式入口五轮 1000/s 共完成 20,000 次，零错误/未发送，计划到达 P99 最差 38.59ms，生成 GD 回读通过。闭环吞吐较冻结 hybrid 下降 10.53%；同二进制三组补充诊断未稳定复现额外装配损失，不宣称无退化。冻结基线保持不变，详见 [正式入口验收](../../audits/2026-09-14-formal-actor-uplink-acceptance.md)。
 
 I3/I4 不整体勾完；下一项为正式 Kind 容量声明、逐世界估算与状态探测 SPI，继续明确业务子协程实际完成边界。暂不进入 JetStream。本次仅修改隔离夹具和证据文档，未提交。
+
+## 2026-09-14：容量与状态正式 API 已接线
+
+复用宿主已有预算和状态机，增加 Kind 估算声明、实例预算与 CModActor 激活控制；Probe 只读权威解析，普通消息仍走缓存。详见 [Kind 进展](2026-09-13-actor-kind-cutover.md#2026-09-14正式容量与激活状态入口)。I3/I4 尚不整体完成：下一项先明确 txgameslg 世界 GD 缓存与 Actor 的独立资源生命周期，再接入世界预算，不提前宣布具备按世界内存调度的能力。
+
+## 2026-09-14 决策修订：数量配额替代字节估算
+
+以本节覆盖此前容量估算方案：删除本轮未提交的 ActivationBudget、WithActivationEstimate 及宿主字节预留。保留三个激活控制 API。容量配置统一为 Maximum / Scope / Initializations：activation 用于临时房间，assignment 用于一世界一稳定槽位的重型世界，多个本地 Kind 共用实例上限。
+
+不预绑定 worldId、不恢复 logical-slot。默认 etcd 复用现有 assignment 与实例规格原子检查数量，不另建配额归属表；卸载不释放世界名额，正常晋升在排水前预检、写入时再次检查，迁出成功后才释放源名额。新增空闲实例可接纳新世界，全部满载报容量不足。普通分区不按槽位数量限制 Actor。
+
+两个示例开放 YAML 数量配置，合并调试默认无限制；独立 slgworld 可配 assignment=1，FightRoom 可配 activation=1000。世界 GD 的独立缓存和直接 Mongo 写回保持原职责，不再以估算 GD 大小作为下一项。自动扩 Pod、世界注销控制、CPU/内存阈值及故障接管不随本次实现。完成项与验证见 [本轮记录](../../audits/2026-09-14-actor-activation-api.md)。

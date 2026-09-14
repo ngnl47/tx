@@ -117,29 +117,28 @@ type request struct {
 	future  *Future
 }
 type activation struct {
-	runtime       *Runtime
-	identity      Identity
-	queue         chan request
-	closed        bool // 由 Runtime.mu 保护；关闭通道与入队使用同一锁。
-	life          context.Context
-	cancel        context.CancelFunc
-	initializing  bool
-	reservedBytes int64
+	runtime      *Runtime
+	identity     Identity
+	queue        chan request
+	closed       bool // 由 Runtime.mu 保护；关闭通道与入队使用同一锁。
+	life         context.Context
+	cancel       context.CancelFunc
+	initializing bool
 }
 
 // Runtime 只管理本进程实体，不做发现或跨实例归属判定。
 type Runtime struct {
-	mu        sync.Mutex
-	entries   map[Identity]*activation
-	draining  bool
-	placement *Placement
-	workers   sync.WaitGroup
-	capacity  int
-	timeout   time.Duration
-	factory   BehaviorFactory
-	limits    ActivationLimits
-	usage     ActivationUsage
-	failures  map[Identity]*RemoteError
+	mu           sync.Mutex
+	entries      map[Identity]*activation
+	draining     bool
+	placement    *Placement
+	workers      sync.WaitGroup
+	capacity     int
+	timeout      time.Duration
+	factory      BehaviorFactory
+	limits       ActivationLimits
+	initializing int
+	failures     map[Identity]*RemoteError
 }
 
 // New 的工厂先做业务加载准入再构造对象；返回对象后由运行时负责清理。
@@ -197,14 +196,14 @@ func (r *Runtime) ensureLocked(id Identity) (*activation, error) {
 	if r.failures[id] != nil {
 		return nil, nil
 	}
-	bytes, err := r.reserveLocked(id)
-	if err != nil {
+	if err := r.checkCapacityLocked(); err != nil {
 		return nil, err
 	}
 	life, cancel := context.WithCancel(context.Background())
 	e := &activation{runtime: r, identity: id, queue: make(chan request, r.capacity), life: life, cancel: cancel,
-		initializing: true, reservedBytes: bytes}
+		initializing: true}
 	r.entries[id] = e
+	r.initializing++
 	r.workers.Add(1)
 	go e.run()
 	return e, nil
@@ -297,9 +296,8 @@ func (e *activation) run() {
 		e.cancel()
 		e.runtime.mu.Lock()
 		delete(e.runtime.entries, e.identity)
-		e.runtime.usage.ReservedBytes -= e.reservedBytes
 		if e.initializing {
-			e.runtime.usage.Initializing--
+			e.runtime.initializing--
 		}
 		if failure != nil {
 			e.runtime.rememberFailureLocked(e.identity, failure)
@@ -332,7 +330,7 @@ func (e *activation) run() {
 	activated = true
 	e.runtime.mu.Lock()
 	e.initializing = false
-	e.runtime.usage.Initializing--
+	e.runtime.initializing--
 	e.runtime.mu.Unlock()
 	var timer *time.Timer
 	if behavior.IdlePassivation > 0 {

@@ -61,3 +61,22 @@ func (a directActorAccess) Call(ctx context.Context, id txactor.Identity, d txac
 	result, err := a.caller.Call(ctx, id, msg)
 	return actorresult.FromProto(result, err)
 }
+
+// 激活控制是低频请求，使用有限查询期限；不传递给异步业务初始化。
+func (a actorAccess) Probe(ctx context.Context, id txactor.Identity) (txactor.ActivationStatus, error) {
+	ctx, cancel := context.WithTimeout(ctx, a.routeTimeout)
+	defer cancel()
+	return a.messenger.Router.Probe(ctx, id)
+}
+func (a actorAccess) EnsureActivation(ctx context.Context, id txactor.Identity) (txactor.ActivationStatus, error) {
+	ctx, cancel := context.WithTimeout(ctx, a.routeTimeout)
+	defer cancel()
+	_, state, err := a.messenger.Router.Ensure(ctx, id)
+	return state, err
+}
+func (a actorAccess) RetryActivation(ctx context.Context, id txactor.Identity) (txactor.ActivationStatus, error) {
+	ctx, cancel := context.WithTimeout(ctx, a.routeTimeout)
+	defer cancel()
+	_, state, err := a.messenger.Router.Retry(ctx, id)
+	return state, err
+}

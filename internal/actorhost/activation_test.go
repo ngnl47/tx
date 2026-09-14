@@ -13,7 +13,7 @@ import (
 
 func TestConcurrentActivationReservation(t *testing.T) {
 	for name, limits := range map[string]ActivationLimits{
-		"bytes":           {Bytes: 100, Estimate: func(Identity) int64 { return 60 }},
+		"actors":          {Actors: 1},
 		"initializations": {Initializations: 1},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -63,8 +63,7 @@ func TestActivationProbeAndCapacity(t *testing.T) {
 				OnDeactivateAfter: func(Context) error { <-cleanup; return nil },
 			}, nil
 		})
-		r.SetActivationLimits(ActivationLimits{Bytes: 100, Initializations: 1,
-			Estimate: func(Identity) int64 { return 60 }, Admit: func() bool { return !pressure.Load() }})
+		r.SetActivationLimits(ActivationLimits{Actors: 1, Initializations: 1, Admit: func() bool { return !pressure.Load() }})
 		id, other := Identity{"world", "51"}, Identity{"world", "52"}
 		if r.Probe(id).State != Unloaded || loads.Load() != 0 {
 			t.Fatal("只读探测不能加载")
@@ -82,7 +81,7 @@ func TestActivationProbeAndCapacity(t *testing.T) {
 		if _, err := r.EnsureActivation(other); !errors.Is(err, ErrCapacity) {
 			t.Fatal(err)
 		}
-		if got := r.ActivationUsage(); got.ReservedBytes != 60 || got.Initializing != 1 {
+		if got := r.ActivationUsage(); got.Actors != 1 || got.Initializing != 1 {
 			t.Fatal(got)
 		}
 		close(load)
@@ -91,19 +90,19 @@ func TestActivationProbeAndCapacity(t *testing.T) {
 			t.Fatal("完成初始化后未释放初始化并发额度")
 		}
 		if _, err := r.EnsureActivation(other); !errors.Is(err, ErrCapacity) {
-			t.Fatal("就绪世界仍占内存预算", err)
+			t.Fatal("就绪实体仍占承载名额", err)
 		}
 		pressure.Store(true)
 		if _, err := r.Call(context.Background(), id, "finish"); err != nil {
 			t.Fatal("压力不应阻断已激活实体", err)
 		}
 		synctest.Wait()
-		if r.Probe(id).State != Closing || r.ActivationUsage().ReservedBytes != 60 {
+		if r.Probe(id).State != Closing || r.ActivationUsage().Actors != 1 {
 			t.Fatal("清理完成前归还了预算")
 		}
 		close(cleanup)
 		synctest.Wait()
-		if r.ActivationUsage().ReservedBytes != 0 || r.Probe(id).State != Unloaded {
+		if r.ActivationUsage().Actors != 0 || r.Probe(id).State != Unloaded {
 			t.Fatal("清理后预算未归还")
 		}
 		if _, err := r.EnsureActivation(other); !errors.Is(err, ErrCapacity) {
@@ -130,7 +129,7 @@ func TestFailedActivationIsObservableAndRetryIsExplicit(t *testing.T) {
 			return &Behavior{Receive: func(Context, any) (any, error) { return "ok", nil },
 				OnInitAfter: func(Context) error { return ErrActivationDenied }}, nil
 		})
-		r.SetActivationLimits(ActivationLimits{Bytes: 100, Initializations: 1, Estimate: func(Identity) int64 { return 100 }})
+		r.SetActivationLimits(ActivationLimits{Actors: 1, Initializations: 1})
 		id := Identity{"room", "ended"}
 		f, err := r.Submit(id, "buff")
 		if err != nil {
@@ -149,7 +148,7 @@ func TestFailedActivationIsObservableAndRetryIsExplicit(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if loads.Load() != 1 || r.ActivationUsage().ReservedBytes != 0 || r.ActivationUsage().Initializing != 0 {
+		if loads.Load() != 1 || r.ActivationUsage().Actors != 0 || r.ActivationUsage().Initializing != 0 {
 			t.Fatal("反复初始化失败或额度泄漏")
 		}
 		if status, err := r.RetryActivation(id); err != nil || status.State != Initializing {

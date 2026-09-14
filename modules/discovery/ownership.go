@@ -65,6 +65,9 @@ func (a *SlotOwnership) Ensure(ctx context.Context, service, slotID string, chec
 			}
 			current = SlotAssignment{SlotID: slotID, RuntimeInstanceID: candidate, Generation: 1}
 			err = a.router.CreateSlot(ctx, current)
+			if errors.Is(err, ErrSlotCapacityUnavailable) {
+				continue
+			}
 			if errors.Is(err, ErrSlotConflict) {
 				current, err = a.store.ResolveSlot(ctx, slotID)
 			} else if err == nil {
@@ -107,6 +110,14 @@ func (a *SlotOwnership) Handoff(ctx context.Context, service string, current Slo
 	if !available {
 		return current, ErrSlotCapacityUnavailable
 	}
+	// 默认持久存储在排水前先检查稳定占位，晋升写入时仍做原子复核。
+	if capacity, ok := a.store.(interface {
+		CheckSlotCapacity(context.Context, SlotAssignment) error
+	}); ok {
+		if err := capacity.CheckSlotCapacity(ctx, next); err != nil {
+			return current, err
+		}
+	}
 	if err = prepare(ctx, current.RuntimeInstanceID); err != nil {
 		return current, err
 	}
@@ -119,4 +130,9 @@ func (a *SlotOwnership) Handoff(ctx context.Context, service string, current Slo
 func (a *SlotOwnership) available(service, instanceID string) bool {
 	instance, ok := a.directory.LookupInstance(instanceID)
 	return ok && instance.Status == StatusRunning && slices.Contains(instance.Services, service)
+}
+
+// Resolve 读取权威归属并校验服务成员状态，供低频控制查询使用；不创建或改派槽位。
+func (a *SlotOwnership) Resolve(ctx context.Context, service, slotID string) (SlotTarget, error) {
+	return a.router.resolver.ResolveServiceSlot(ctx, service, slotID)
 }

@@ -25,7 +25,7 @@ type runtime struct {
 	lifecycle     *lifecycle.WaitGroupContext
 	storage       *storageRuntime
 	rpc           *txrpc.Host
-	actor         txactor.Messenger
+	actor         txactor.Runtime
 	actorDirect   txactor.Caller
 	actorSender   *txrpc.Sender
 	entities      *actorhost.Runtime

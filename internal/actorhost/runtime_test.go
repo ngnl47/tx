@@ -415,7 +415,7 @@ func TestSlowInitializationSurvivesWaitAndDrainTimeout(t *testing.T) {
 			}, nil
 		})
 		defer r.Drain(context.Background())
-		r.SetActivationLimits(ActivationLimits{Bytes: 100, Estimate: func(Identity) int64 { return 100 }})
+		r.SetActivationLimits(ActivationLimits{Actors: 1})
 		r.BindSlots("world-host", initializationSlotReader(func(ctx context.Context, slot string) (discovery.SlotAssignment, error) {
 			ownershipContext = ctx
 			return discovery.SlotAssignment{SlotID: slot, RuntimeInstanceID: "world-host"}, nil
@@ -434,7 +434,7 @@ func TestSlowInitializationSurvivesWaitAndDrainTimeout(t *testing.T) {
 		if err := r.Drain(drain); !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("排水应等待加载完成: %v", err)
 		}
-		if usage := r.ActivationUsage(); usage.Initializing != 1 || usage.ReservedBytes != 100 {
+		if usage := r.ActivationUsage(); usage.Initializing != 1 || usage.Actors != 1 {
 			t.Fatalf("加载未结束就释放容量: %+v", usage)
 		}
 		if value, err := future.Await(context.Background()); err != nil || value != "ready" {

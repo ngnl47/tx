@@ -21,6 +21,18 @@ type EntityRouter struct {
 // Ensure 先无副作用预检、CAS 确立归属，再发起激活；失败不会重投业务或改派。
 // 状态可能仍在初始化中，不把控制请求成功当作业务对象已经加载完成。
 func (a *EntityRouter) Ensure(ctx context.Context, id actorhost.Identity) (discovery.SlotAssignment, actorhost.ActivationStatus, error) {
+	return a.ensure(ctx, id, false)
+}
+
+// Retry 重试业务明确要求恢复的失败加载，归属仍由同一控制路径校验。
+func (a *EntityRouter) Retry(ctx context.Context, id actorhost.Identity) (discovery.SlotAssignment, actorhost.ActivationStatus, error) {
+	return a.ensure(ctx, id, true)
+}
+
+func (a *EntityRouter) ensure(ctx context.Context, id actorhost.Identity, retry bool) (discovery.SlotAssignment, actorhost.ActivationStatus, error) {
+	if id.Key == "" {
+		return discovery.SlotAssignment{}, actorhost.ActivationStatus{}, errors.New("actor: empty identity key")
+	}
 	service, err := a.Service(id.Kind)
 	if err != nil {
 		return discovery.SlotAssignment{}, actorhost.ActivationStatus{}, err
@@ -40,7 +52,7 @@ func (a *EntityRouter) Ensure(ctx context.Context, id actorhost.Identity) (disco
 	}
 	target := actorhost.Target{Instance: current.RuntimeInstanceID, Identity: id}
 	var state actorhost.ActivationStatus
-	if created {
+	if created || retry {
 		state, err = a.Transport.RetryActivation(ctx, target)
 	} else {
 		state, err = a.Transport.EnsureActivation(ctx, target)
@@ -68,4 +80,23 @@ func (a *EntityRouter) Resolve(ctx context.Context, id actorhost.Identity) (acto
 	}
 	// 不等待 Watch 回显，也不向只读缓存手写归属；本次复用权威结果。
 	return actorhost.Target{Instance: assignment.RuntimeInstanceID, Identity: id}, nil
+}
+
+// Probe 走只读权威解析，避免 Watch 尚未回显时把刚创建的归属误报为未加载。
+func (a *EntityRouter) Probe(ctx context.Context, id actorhost.Identity) (actorhost.ActivationStatus, error) {
+	if id.Key == "" {
+		return actorhost.ActivationStatus{}, errors.New("actor: empty identity key")
+	}
+	service, err := a.Service(id.Kind)
+	if err != nil {
+		return actorhost.ActivationStatus{}, err
+	}
+	target, err := a.Ownership.Resolve(ctx, service, a.SlotID.Resolve(id))
+	if errors.Is(err, discovery.ErrSlotNotFound) {
+		return actorhost.ActivationStatus{State: actorhost.Unloaded}, nil
+	}
+	if err != nil {
+		return actorhost.ActivationStatus{}, err
+	}
+	return a.Transport.Probe(ctx, actorhost.Target{Instance: target.Assignment.RuntimeInstanceID, Identity: id})
 }

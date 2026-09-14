@@ -80,7 +80,7 @@ type Context interface {
 	// Directory 返回服务发现维护的只读实例目录；未启用时返回 nil。
 	Directory() discovery.Directory
 	// Actor 返回 Actor 消息投递入口；未启用时返回 nil。
-	Actor() txactor.Messenger
+	Actor() txactor.Runtime
 	// DirectActor 返回使用相同实体归属的 gRPC 直连调用入口。
 	DirectActor() txactor.Caller
 	// Transaction 返回单机 Procedure 执行器；无状态服务返回 nil。
@@ -205,7 +205,7 @@ func (service *serviceContext) Directory() discovery.Directory {
 	return directoryAccess{directory: service.runtime.directory}
 }
 
-func (service *serviceContext) Actor() txactor.Messenger {
+func (service *serviceContext) Actor() txactor.Runtime {
 	if service == nil || service.runtime == nil || service.runtime.actor == nil {
 		return nil
 	}

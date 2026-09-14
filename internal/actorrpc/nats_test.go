@@ -37,7 +37,7 @@ func TestNATSSharedHostSemantics(t *testing.T) {
 			return &actorpb.Result{MessageType: "count", CommandId: count}, nil
 		}}, nil
 	})
-	runtime.SetActivationLimits(actorhost.ActivationLimits{Bytes: 1, Estimate: func(actorhost.Identity) int64 { return 1 }})
+	runtime.SetActivationLimits(actorhost.ActivationLimits{Actors: 1})
 	server, err := ConnectNATS(url, ns, "server", runtime, 32)
 	if err != nil {
 		t.Fatal(err)
@@ -56,7 +56,7 @@ func TestNATSSharedHostSemantics(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 预检不创建实体，也不预留容量。
-	if usage := runtime.ActivationUsage(); usage.ReservedBytes != 0 || usage.Initializing != 0 {
+	if usage := runtime.ActivationUsage(); usage.Actors != 0 || usage.Initializing != 0 {
 		t.Fatalf("预检预留了容量: %+v", usage)
 	}
 	if status, err := client.Probe(ctx, target); err != nil || status.State != actorhost.Unloaded {

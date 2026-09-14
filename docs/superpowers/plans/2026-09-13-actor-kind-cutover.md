@@ -1,6 +1,6 @@
 # Kind 与正式实体宿主切换前的分区决策
 
-状态：默认 CModActor、统一 Kind 与两个示例已切换，真实集群及单轮完整上下行对照通过；冻结 I2 正式入口验收和逐世界容量声明仍未完成。下文保留历次阶段记录，以末尾最新进展为准。
+状态：默认 CModActor、统一 Kind 与两个示例已切换，真实集群及单轮完整上下行对照通过；冻结 I2 正式入口验收已完成，正式数量配额/状态入口本轮接线，两个示例开放数量配置；以末尾数量决策为准。下文保留历次阶段记录，以末尾最新进展为准。
 
 核对起点：tx `021bb2f`，六工程工作区干净。上一轮行为契约与示例命令执行变更已提交。
 
@@ -151,3 +151,22 @@ actor.NewKind("seasonWorld", seasonFactory, actor.WithSlotMapping(seasonSlot))
 默认后端迁移已提交（tx eef61a5、txgame c305eab、txgameslg 2b99d1f）。正式入口五轮 1000/s 共完成 20,000 次，零错误/未发送，计划到达 P99 最差 38.59ms，生成 GD 回读通过。闭环吞吐较冻结 hybrid 下降 10.53%；同二进制三组补充诊断未稳定复现额外装配损失，不宣称无退化。冻结基线保持不变，详见 [正式入口验收](../../audits/2026-09-14-formal-actor-uplink-acceptance.md)。
 
 I3/I4 不整体勾完；下一项为正式 Kind 容量声明、逐世界估算与状态探测 SPI，继续明确业务子协程实际完成边界。暂不进入 JetStream。本次仅修改隔离夹具和证据文档，未提交。
+
+## 2026-09-14：正式容量与激活状态入口
+
+- 实例 `ActivationBudget` 与 Kind `WithActivationEstimate` 接入唯一宿主的已有原子预算；启动前检查本地声明，未选中服务不占用预算。
+- Bee/Ant 的 CModActor 返回 `actor.Runtime`，组合现有 Messenger 和三个激活控制方法；保留小接口供普通业务注入。
+- Probe 只读权威归属，不创建槽位，也不因 Watch 延迟误报未加载；Ensure/Retry 复用 L2 分配与现有 NATS 控制。普通消息热路由不变。
+- 正式双实例覆盖加载阻塞期间探测、预算拒绝无归属副作用、卸载释放、业务拒绝与显式重试；原宿主并发初始化/清理可靠性测试保留。
+
+下一项：txgameslg 的世界 GD 存在于独立实体缓存，生命周期长于 Actor；先明确逐世界缓存的持有与安全释放，再接入业务估算。当前容量只约束激活声明覆盖的资源，不能把 Actor 卸载描述为缓存内存全部归还。world Handler 当前同步等待 Procedure 完成，没有子协程池；以后引入并行工作时必须纳入实际业务完成和排水边界。本节点不新增自动迁移或 JetStream。
+
+本轮验证及性能原始记录见 [容量与状态入口验收](../../audits/2026-09-14-actor-activation-api.md)。
+
+## 2026-09-14 决策修订：数量配额替代字节估算
+
+以本节覆盖此前容量估算方案：删除本轮未提交的 ActivationBudget、WithActivationEstimate 及宿主字节预留。保留三个激活控制 API。容量配置统一为 Maximum / Scope / Initializations：activation 用于临时房间，assignment 用于一世界一稳定槽位的重型世界，多个本地 Kind 共用实例上限。
+
+不预绑定 worldId、不恢复 logical-slot。默认 etcd 复用现有 assignment 与实例规格原子检查数量，不另建配额归属表；卸载不释放世界名额，正常晋升在排水前预检、写入时再次检查，迁出成功后才释放源名额。新增空闲实例可接纳新世界，全部满载报容量不足。普通分区不按槽位数量限制 Actor。
+
+两个示例开放 YAML 数量配置，合并调试默认无限制；独立 slgworld 可配 assignment=1，FightRoom 可配 activation=1000。世界 GD 的独立缓存和直接 Mongo 写回保持原职责，不再以估算 GD 大小作为下一项。自动扩 Pod、世界注销控制、CPU/内存阈值及故障接管不随本次实现。完成项与验证见 [本轮记录](../../audits/2026-09-14-actor-activation-api.md)。

@@ -36,7 +36,7 @@ func BenchmarkActivationCycle(b *testing.B) {
 				return &Behavior{Receive: func(c Context, v any) (any, error) { c.Deactivate(); return v, nil }}, nil
 			})
 			if limited {
-				r.SetActivationLimits(ActivationLimits{Bytes: 100, Initializations: 1, Estimate: func(Identity) int64 { return 60 }})
+				r.SetActivationLimits(ActivationLimits{Actors: 1, Initializations: 1})
 			}
 			defer r.Drain(context.Background())
 			id := Identity{"world", "51"}

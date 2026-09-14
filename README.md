@@ -1330,6 +1330,49 @@ registration := bee.ServiceRegistration{
 
 卸载可使用空闲策略，或在生命周期中使用 `Context.After/Post/Deactivate`。本地工作仍进入同一邮箱；不能在实体回调内同步等待自己 Post 的 Future。Kind 显式空闲选项优先于运行时配置，无配置时保持常驻。Actor 卸载不等于 GD 淘汰或已刷盘，仍须遵守 `writeback.Manager.TryRelease` 的检查。
 
+### 数量配额与状态控制
+
+`CModActor()` 返回 `actor.Runtime`：保留 Messenger 的四种调用，并增加 `Probe`、`EnsureActivation`、`RetryActivation`。只发送消息的业务仍依赖较小的 Messenger / Caller。容量不再按 GD 字节估算，也不绑定 worldId 或要求 Kubernetes。
+
+```go
+// 独立大世界实例：全部本地 Kind 共用一个稳定归属名额。
+config.Actor.Runtime.Capacity = txactor.Capacity{
+    Maximum: 1, Scope: txactor.CapacityAssignments, Initializations: 1,
+}
+worldKind := txactor.MustKind("world", newWorldBehavior,
+    txactor.WithSlotMapping(worldSlots), // 业务保证一实体一槽位。
+)
+
+// 小房间实例可改为：Maximum: 1000, Scope: txactor.CapacityActivations。
+state, err := runtime.CModActor().EnsureActivation(ctx,
+    txactor.Identity{Kind: "world", Key: "i:490001"})
+if err != nil { return err }
+if state.State == txactor.Initializing { /* 提示场景准备中 */ }
+```
+
+| Capacity 配置 | 含义 |
+| --- | --- |
+| Maximum | 实例内共用的数量上限；0 不限制 |
+| Scope = activation（默认） | 初始化、运行及清理中的 Actor 都占名额；清理实际结束后释放 |
+| Scope = assignment | 以现有稳定槽位归属占位；卸载、加载失败、懒重载及 GD 淘汰均不释放归属名额 |
+| Initializations | 单独限制同时初始化数量；0 不限制，不附加初始化执行 deadline |
+
+assignment 配额只能用于显式的一实体一槽位映射，不能把默认 1024 分区当作 1024 个实体。启动前检查本地 Kind 都有显式映射，映射的一对一性质仍由业务保证。world 和 seasonWorld 同实例共用上限，槽位命名必须互不冲突。普通角色和房间使用 activation 配额；已有分区 owner 满载时不自动迁移其中的单个实体。
+
+新世界先找候选、预检、原子写归属，再由本地宿主原子准入初始化。多个候选请求同时争抢最后一个名额时，默认 etcd Store 在同一事务内复核 assignment 数量与写入；明确名额不足可以继续候选选择，写入结果未知不能改派。没有第二张归属或名额表，已有 assignment 直接纳入统计，Actor 卸载不会改变占位。同一世界再次加载仍找原 owner。
+
+有限 assignment 的冷分配会扫描当前发现命名空间快照，并比较快照后的新增/修改；删除只会减少占用，不会引起超额。此成本不进入普通消息热路由。正常交接在源排水前预检目标归属容量，最终 Promote 再原子复核；只有成功迁出才归还源名额。世界注销的控制流程、自动扩 Pod、CPU/内存采集阈值和故障自动接管不在本接口内。低级自定义 SlotStore 实现必须自行满足同样的原子容量约束，不能把默认 etcd 实现的保证套用到任意存储插件。
+
+数量不是内存/CPU 保证。GD 缓存与 Actor 生命周期独立：Cache Manager 选择淘汰，WriteBack Manager 确认持久化安全，世界 GD 直接写 Mongo；不将 Actor 卸载当成 GD 清空，也不经过 Fusion 存入 Redis。
+
+| 控制 API | 行为 |
+| --- | --- |
+| Probe | 只读权威归属与运行时元数据，不创建 assignment、不触发加载、不进入业务邮箱 |
+| EnsureActivation | 首次分配或复用归属，发起/共享加载并返回状态；不等待初始化完成、不自动重试已缓存失败 |
+| RetryActivation | 显式重试已结束失败；不替换正在加载或关闭的激活，不改变已有归属 |
+
+状态有 Unloaded、Initializing、Ready、Closing、Failed。Unloaded 不证明业务实体不存在；Failed 的 Failure 保留错误码，可用 `errors.Is(..., txactor.ErrActivationDenied)` 分类。失败诊断最多缓存 1024 条、可被淘汰，不是持久存在性登记。控制调用非 nil error 时不得解释状态：容量不足、owner 离线或超时都不是“世界不存在”。控制查询由调用 Context 和 CallbackTimeout 限时，异步初始化仍无统一 deadline。状态快照不保证下一次业务调用一定成功。
+
 ### 两种调用路径
 
 Actor 间使用 `CModActor()`，上下行使用直连 gRPC；两条入口进入同一实体邮箱。

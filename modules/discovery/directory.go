@@ -22,13 +22,15 @@ const (
 )
 
 type Instance struct {
-	ID            string            `json:"id"`
-	Services      []string          `json:"services"`
-	Endpoint      string            `json:"endpoint"`
-	ActorEndpoint string            `json:"actorEndpoint,omitempty"`
-	Endpoints     map[string]string `json:"endpoints,omitempty"`
-	Version       string            `json:"version,omitempty"`
-	Status        Status            `json:"status"`
+	// MaxSlotAssignments 限制本次启动身份持有的稳定归属总数；零值不限制，生命周期内不修改。
+	MaxSlotAssignments int               `json:"maxSlotAssignments,omitempty"`
+	ID                 string            `json:"id"`
+	Services           []string          `json:"services"`
+	Endpoint           string            `json:"endpoint"`
+	ActorEndpoint      string            `json:"actorEndpoint,omitempty"`
+	Endpoints          map[string]string `json:"endpoints,omitempty"`
+	Version            string            `json:"version,omitempty"`
+	Status             Status            `json:"status"`
 }
 
 // RouteInstance 是消息路由所需的只读实例视图。它刻意不携带 Services 切片和
@@ -42,7 +44,7 @@ type RouteInstance struct {
 }
 
 func (i Instance) Validate() error {
-	if i.ID == "" || i.ID != strings.TrimSpace(i.ID) ||
+	if i.MaxSlotAssignments < 0 || i.ID == "" || i.ID != strings.TrimSpace(i.ID) ||
 		i.Endpoint == "" || i.Endpoint != strings.TrimSpace(i.Endpoint) ||
 		i.ActorEndpoint != strings.TrimSpace(i.ActorEndpoint) ||
 		!i.Status.Valid() {

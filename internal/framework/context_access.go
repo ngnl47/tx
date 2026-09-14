@@ -23,7 +23,7 @@ var (
 	_ ModeStorage          = modeStorageAccess{}
 	_ txrpc.Registrar      = rpcAccess{}
 	_ discovery.Directory  = directoryAccess{}
-	_ txactor.Messenger    = actorAccess{}
+	_ txactor.Runtime      = actorAccess{}
 	_ txn.Executor         = transactionAccess{}
 	_ Advanced             = advancedAccess{}
 	_ txredis.ScriptRoutes = redisRoutesAccess{}
