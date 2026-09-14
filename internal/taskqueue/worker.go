@@ -85,8 +85,8 @@ func Start(ctx context.Context, consumer jetstream.Consumer, processor Processor
 	if len(info.Config.BackOff) != 0 {
 		ackWait = info.Config.BackOff[0]
 	}
-	if info.Config.AckPolicy != jetstream.AckExplicitPolicy || ackWait <= 0 {
-		return nil, errors.New("taskqueue: explicit ack and positive ack wait required")
+	if info.Config.Durable == "" || info.Config.AckPolicy != jetstream.AckExplicitPolicy || ackWait <= 0 {
+		return nil, errors.New("taskqueue: durable consumer, explicit ack and positive ack wait required")
 	}
 	consumption, err := consumer.Consume(func(msg jetstream.Msg) {
 		// 启动请求结束不取消已经领取的业务，关闭由 Drain 协调。

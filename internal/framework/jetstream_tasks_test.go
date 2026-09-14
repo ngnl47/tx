@@ -16,6 +16,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/ngnl47/tx/internal/taskqueue"
 	txactor "github.com/ngnl47/tx/modules/actor"
+	"github.com/ngnl47/tx/modules/tasks"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -118,12 +119,17 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 	var recoverBusiness atomic.Bool
 	drainEntered, drainRelease := make(chan struct{}), make(chan struct{})
 	finishDrain := sync.OnceFunc(func() { close(drainRelease) })
+	frameworkEntered, frameworkRelease := make(chan struct{}), make(chan struct{})
+	finishFramework := sync.OnceFunc(func() { close(frameworkRelease) })
 	kind := txactor.MustKind("role", func(c txactor.Context) (*txactor.Behavior, error) {
 		if c.Identity.Key == "expired" {
 			return nil, txactor.ErrActivationDenied
 		}
 		return &txactor.Behavior{Receive: func(_ txactor.Context, _ any) (any, error) {
 			switch c.Identity.Key {
+			case "framework-drain":
+				close(frameworkEntered)
+				<-frameworkRelease
 			case "drain":
 				close(drainEntered)
 				<-drainRelease
@@ -142,7 +148,7 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 		}}, nil
 	})
 	var access txactor.Runtime
-	services := []Service{testService{spec: Spec{Name: "game", ActorKinds: []txactor.Kind{kind}}}, testService{spec: Spec{Name: "worker", Requires: []CModID{CModActor}}, start: func(c Context) error { access = c.Actor(); return nil }}}
+	services := []Service{testService{spec: Spec{Name: "taskworker", Requires: []CModID{CModTaskQueue}}}, testService{spec: Spec{Name: "game", ActorKinds: []txactor.Kind{kind}}}, testService{spec: Spec{Name: "worker", Requires: []CModID{CModActor}}, start: func(c Context) error { access = c.Actor(); return nil }}}
 	start := func(service string) *Server {
 		app := newDiscoveryIdentityTestServer(t, endpoint, prefix, "", services...)
 		app.config.Actor.Runtime = txactor.Config{NATSURL: url, Namespace: owner}
@@ -157,6 +163,7 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 	defer worker.Stop(context.Background())
 	defer unblock()
 	defer finishDrain()
+	defer finishFramework()
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
 	for len(worker.discovery.Directory().RunningInstances("game")) != 1 {
@@ -432,6 +439,51 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertEmpty(5)
+
+	// 正式 CMod 与本地 Game 共址，验证 Server.Stop 先排消费，再关闭 Actor 准入。
+	if err := game.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	app := newDiscoveryIdentityTestServer(t, endpoint, prefix, "", services...)
+	app.config.Actor.Runtime = txactor.Config{NATSURL: url, Namespace: owner}
+	app.config.TaskQueue = tasks.Config{URL: url, Stream: streamName, Subject: streamName, Consumer: "worker", DeadLetter: deadName, Timeout: 10 * time.Second}
+	if err := app.Start(ctx, RunOptions{Services: "game,taskworker", RPCListen: "127.0.0.1:0"}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		finishFramework()
+		if err := app.Stop(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}()
+	id := txactor.Identity{Kind: "role", Key: "framework-drain"}
+	if err := newServiceContext(app.runtime, nil).TaskQueue().Publish(ctx, id, txactor.Delivery{MessageType: "reward"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-frameworkEntered:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	local := app.runtime.entities.Probe(id)
+	if local.State != txactor.Ready {
+		t.Fatalf("任务未由同实例 Actor 执行: %+v", local)
+	}
+	stopCtx, cancelStop := context.WithTimeout(ctx, 20*time.Millisecond)
+	err = app.Stop(stopCtx)
+	cancelStop()
+	if !errors.Is(err, errStopDeferred) {
+		t.Fatalf("未结束任务应保留关闭资源: %v", err)
+	}
+	if app.runtime == nil || app.runtime.taskQueue.conn.IsClosed() {
+		t.Fatal("排水超时提前关闭任务连接")
+	}
+	finishFramework()
+	if err := app.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertEmpty(6)
+	t.Log("CMod 持久发布、同实例 Actor 消费、Stop 超时保留及再次 Stop 收尾均通过")
 	t.Log("InProgress 跨 AckWait 续期、共享在途背压及排水后替代消费者续领均通过")
 	t.Log("业务明确结束、临时失败重投、永久加载拒绝先转存再确认均通过")
 	t.Log("FileStorage 无消费者保留、正式 Actor 完成后 ACK、消费进程退出后 durable 重投均通过")

@@ -3,6 +3,7 @@ package framework
 import (
 	"context"
 	"fmt"
+	"github.com/ngnl47/tx/modules/tasks"
 	"slices"
 	"strings"
 
@@ -195,6 +196,7 @@ type CModStopper interface {
 // CModContext 向能力模组提供只读运行时能力，不暴露 Server 所有权。
 // Validate 阶段只能读取身份和配置；Start 阶段可以使用依赖图中已经启动的前置能力。
 type CModContext interface {
+	TaskQueue() tasks.Publisher
 	AppID() string
 	Instance() discovery.Instance
 	Tasks() lifecycle.Tasks

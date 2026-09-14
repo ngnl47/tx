@@ -3,6 +3,7 @@ package framework
 import (
 	"context"
 	"errors"
+	"github.com/ngnl47/tx/modules/tasks"
 
 	"github.com/ngnl47/tx/lifecycle"
 	"github.com/ngnl47/tx/meta"
@@ -63,6 +64,8 @@ type Advanced interface {
 // Context 是传递给选中服务的稳定能力视图，并隔离资源所有权。
 // 它可以执行业务工作，但返回的模块契约均不包含进程启动或停止权限。
 type Context interface {
+	// TaskQueue 返回持久任务发布入口，未启用时为 nil。
+	TaskQueue() tasks.Publisher
 	// AppID 返回当前应用的稳定集群标识。
 	AppID() string
 	// Instance 返回当前进程已经注册的实例快照。
@@ -242,4 +245,11 @@ func (service *serviceContext) DirectActor() txactor.Caller {
 		return nil
 	}
 	return service.runtime.actorDirect
+}
+
+func (service *serviceContext) TaskQueue() tasks.Publisher {
+	if service == nil || service.runtime == nil || service.runtime.taskQueue == nil {
+		return nil
+	}
+	return service.runtime.taskQueue
 }

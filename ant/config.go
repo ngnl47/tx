@@ -1,6 +1,7 @@
 package ant
 
 import (
+	"github.com/ngnl47/tx/modules/tasks"
 	"io"
 	"time"
 
@@ -14,6 +15,8 @@ import (
 
 // Config 是项目配置源转换后的 Ant 强类型配置。
 type Config struct {
+	// TaskQueue 绑定可靠任务资源；未选择该能力时不使用。
+	TaskQueue tasks.Config
 	// AppID 是当前应用在共享基础设施中的稳定隔离标识。
 	AppID string
 	// Storage 描述可由本进程选择的 Redis 和 MongoDB 连接路由。
@@ -179,6 +182,7 @@ func (config Config) toFramework() framework.Config {
 			Output: config.Log.Output,
 		},
 		Actor:     framework.ActorConfig{Runtime: config.Actor.Runtime},
+		TaskQueue: config.TaskQueue,
 		Discovery: framework.DiscoveryConfig{Etcd: config.Discovery.Etcd},
 	}
 }

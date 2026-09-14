@@ -2,6 +2,7 @@ package framework
 
 import (
 	"fmt"
+	"github.com/ngnl47/tx/modules/tasks"
 	"io"
 	"maps"
 	"strings"
@@ -18,6 +19,8 @@ import (
 // Config 是项目解析本地配置源后得到的框架配置。
 // 私有装配内核不读取 YAML、环境变量或命令行参数。
 type Config struct {
+	// TaskQueue 绑定可靠任务资源；未选择该能力时不使用。
+	TaskQueue tasks.Config
 	// AppID 是当前应用的稳定身份，用于隔离同一基础设施上的不同项目。
 	AppID string
 	// Storage 描述 Redis 和 MongoDB 的连接路由。

@@ -4323,3 +4323,31 @@ env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp /Users/a47/sdk/go1.26
 - 默认批量读取面向单节点或云 Redis 代理 endpoint，直接使用原生 `MGET`。
 - 本地原生 Redis Cluster 或直连 cluster 节点调试时，使用 `redis.LoadOptions{ClusterSafe: true}`。
 - 不要把跨记录批量读取包进 Lua；Lua 脚本的 `KEYS` 必须在同一个 slot，云代理也不能可靠拆分自定义脚本。
+
+
+### JetStream 可靠 Actor 任务
+
+Bee/Ant 服务通过 `Requires: []bee.CModID{bee.CModTaskQueue}` 声明能力（Ant 使用对应常量），在 Factory 中取得 `publisher := runtime.CModTaskQueue()` 并保存该窄能力。它不暴露 NATS 连接、ACK 或消费者控制。
+
+```go
+config.TaskQueue = tasks.Config{
+    URL: "nats://127.0.0.1:4222",
+    Stream: "GAME_TASKS", Subject: "game.tasks",
+    Consumer: "game-workers", DeadLetter: "game.tasks.dead",
+    Timeout: 30 * time.Second,
+}
+
+// 业务 Handler 中持久投递；payload 是业务协议编码后的内容。
+err := publisher.Publish(ctx,
+    actor.Identity{Kind: "role", Key: "i:10001"},
+    actor.Delivery{MessageType: "reward", Payload: payload},
+)
+```
+
+这里 `tasks`、`actor` 分别来自 `github.com/ngnl47/tx/modules/tasks`、`github.com/ngnl47/tx/modules/actor`。Publish 成功表示 JetStream 已确认发布，不表示奖励已经执行；它不是 TellAccepted。消费者复用正式 Actor 归属和业务加载准入，业务成功后 ACK；永久加载拒绝先持久转存死信，普通错误保留任务。客户端通知仍走 gRPC 下行。
+
+资源需预先部署：源流使用 FileStorage/WorkQueuePolicy 并匹配投递主题；Consumer 为已有 durable、显式 ACK，过滤规则必须覆盖投递主题；死信主题匹配另一条 FileStorage/LimitsPolicy 流。框架不自动创建、扩容、修改或删除这些共享资源。部署侧配置 AckWait、MaxAckPending、保留时间、磁盘/消息上限和满额策略。Consumer 留空时仅发布，不启动消费；选择消费时必须配置 DeadLetter 和正数 Timeout。
+
+消费者在服务与 RPC 初始化完成后启动。排水先关闭服务外部准入，再等待消费回调完成，然后关闭 Actor 准入并继续原有 Actor 排水、写回和连接收尾；因此消费排水期间 Actor 准入仍保留。等待超时保留资源，可以重试 Stop/PrepareHandoff。消费错误不等于排水失败：未成功处理的任务仍保留在 JetStream。Timeout 只限制消费等待，不保证远端业务停止，续期与 ACK 也不提供幂等保证。
+
+当前已经提供框架能力及真实集成验证；两个游戏示例尚未默认启用。MaxDeliver 通知持久捕获、残留源消息恢复和业务死信补偿尚未完成，不作为完整生产可靠任务方案验收。

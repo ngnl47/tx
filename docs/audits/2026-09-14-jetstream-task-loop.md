@@ -100,3 +100,23 @@ Worker 的启动 Context 仅用于启动查询，消费使用独立、带期限�
 下一项：收敛框架任务声明与资源配置，接入服务启动/排水顺序及一个业务示例；保持业务不直接操作 NATS SDK。死信自动补偿 SPI 继续延期。
 
 本轮最终验证：`go test -race ./internal/framework ./internal/taskqueue -count=1` 通过，framework 包耗时 16.342s；taskqueue 的真实行为由 framework 集成夹具覆盖，包内没有另建重复测试。后置 ponytail-review 未发现需精简项；`git diff --check` 通过。
+
+
+## 后续：框架能力、配置与生命周期接线
+
+基于已提交的 `448dc87`，新增 `modules/tasks.Publisher` 和资源配置，由 Bee/Ant 的 `CModTaskQueue` 暴露。服务通过 Requires 声明能力；工厂只取得窄 Publisher，业务发布 Actor 身份与 Delivery，发布成功表示 JetStream 已确认，不等待业务执行。
+
+源流、durable 和死信流由部署侧预先配置。启动绑定并检查源流 FileStorage/WorkQueuePolicy、死信独立 FileStorage/LimitsPolicy，正式 Worker 要求 durable 与显式 ACK。Consumer 为空时仅发布。不会自动创建或修改共享资源；过滤主题、资源额度、保留与满额策略仍需部署配置。配置资源错误会使启动失败，已打开连接沿 CMod 回滚关闭。
+
+消费在服务初始化、RPC 启动和发现标记 Running 后启动。Server.Drain 先关闭服务外部准入，完成消费回调排水后再关闭 Actor 准入；Stop 与 PrepareHandoff 复用该路径。启动失败清理同样先等待已启动消费，再清理 Actor。任务连接由 CMod 逆序关闭，业务没有关闭权限。这个顺序意味着任务消费排水期间仍保留 Actor 准入，不宣称一开始就同时封闭所有 Actor 请求。
+
+真实测试让 Game 与 TaskWorker 共址，通过框架发布入口投递并阻塞本地 Actor；短期限 Stop 返回保留资源的错误，连接未关闭；释放业务后再次 Stop 成功、任务确认且队列清空。SDK 自动续期、死信、竞争领取和进程续领原断言保留。目标测试通过（9.844s）。
+
+编译检查先发现 CModContext 漏加新能力方法，补齐后通过。全量回归先指出内置 CMod 依赖表缺少 task-queue，补齐 task-queue → actor 契约断言后，`go test ./...` 通过。期间一次命令在 workspace 而非 tx 模块目录执行，未找到 go.mod，改到模块目录后执行。
+
+README 提供声明、配置和发布示例。两个游戏示例没有默认开启任务消费，本轮仅修改 tx；生产部署的资源配置与游戏协议任务仍待具体接线。MaxDeliver 通知/残留源消息恢复、资源容量验收未完成，不宣布完整 T5 达标，没有 benchmark 结论。
+
+下一项：补齐 MaxDeliver 通知持久捕获及源消息残留恢复，再完善游戏示例和资源部署验收。死信业务补偿仍留给后续业务需求。
+
+
+本轮最终验证：tx `go test ./...` 通过；设置真实 NATS/etcd 地址运行 framework/taskqueue/bee/ant 的 `-race -count=1` 通过（framework 16.674s）。正确性复查给任务排水读取 runtime 增加 Server 锁保护后，目标闭环与内置依赖契约 `-race` 再次通过（10.878s）。txgame/server 和 txgameslg/server 的 `go test ./...` 均通过；未单独启动两套客户端真实集群 e2e，不把条件跳过的外部服务用例算作本轮实跑证据。后置 ponytail-review 无需精简项，差异检查通过。

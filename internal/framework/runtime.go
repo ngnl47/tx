@@ -21,6 +21,7 @@ type actorTransport interface {
 }
 
 type runtime struct {
+	taskQueue     *taskRuntime
 	config        Config
 	lifecycle     *lifecycle.WaitGroupContext
 	storage       *storageRuntime

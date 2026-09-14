@@ -33,7 +33,8 @@ func TestBuiltInCModsDeclareStableDependencies(t *testing.T) {
 		CModSessionID: {
 			requires: []CModID{CModDiscovery},
 		},
-		CModActor: {requires: []CModID{CModRPC, CModDiscovery}},
+		CModActor:     {requires: []CModID{CModRPC, CModDiscovery}},
+		CModTaskQueue: {requires: []CModID{CModActor}},
 	}
 	for _, mod := range app.builtInCMods(RunOptions{}) {
 		spec := mod.Spec()

@@ -288,6 +288,9 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 			return fmt.Errorf("framework: mark discovery running: %w", err)
 		}
 	}
+	if err := server.startTaskConsumer(root); err != nil {
+		return err
+	}
 	runtime.enableSessionIDs()
 	runtime.setInstanceStatus(discovery.StatusRunning)
 	txlog.Info(

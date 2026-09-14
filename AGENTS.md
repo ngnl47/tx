@@ -32,7 +32,7 @@
 
 - 已确认传输分工方向：Agent 上行通过 gRPC 直达 Game、SLGWorld、FightRoom 等命令所属服务；各业务服务的下行通过 gRPC 直接发布到 MsgQ，再由 Agent 读取并发送客户端。上下行均不得经 NATS 转发，也不要求经 Game 中转。Actor 间 RPC 使用 Core NATS，可靠业务任务使用 JetStream；任务消费后产生的客户端通知仍走上述直连下行。两种传输共用实体路由、加载准入和生命周期，业务只提供类型与路由键。拓扑图描述完成态，建设进度在实施计划中维护。
 - 优先复用现有 Discovery、SlotResolver 和第三方哈希库，不自建成员协议或第二份归属。稳定 assignment 以 SlotStore 为准；哈希不替代正常排水交接。转发跳数、链路字节量和云上计费流量分别评估，单向 Pub/Sub 跑分不能替代上行完成吞吐。
-- 正式 Actor 的 Tell 只确认本地投递；TellAccepted 确认消息到达当前连接的 NATS 服务端，不确认持久化、目标收取或业务执行；CallFuture 返回异步结果句柄，Call 同步等待同一结果协议。Core NATS 不代表持久化，JetStream 任务仍待实施。
+- 正式 Actor 的 Tell 只确认本地投递；TellAccepted 确认消息到达当前连接的 NATS 服务端，不确认持久化、目标收取或业务执行；CallFuture 返回异步结果句柄，Call 同步等待同一结果协议。Core NATS 不代表持久化；JetStream 已提供可选 CModTaskQueue，完整故障恢复仍待 T5 验收。
 - game 与 slgworld 实例池独立伸缩，不绑定一对一关系，也不按固定世界数量限定每个实例。业务负责世界身份、存在性、加载与实例承载数量配置；tx 负责通用归属、数量准入、状态探测和生命周期。
 - 初始化期间的探测由运行时元数据入口处理，不排在业务邮箱后，也不并发读取未就绪 GD。未加载、容量不足、超时或暂时加载失败不能伪装成世界不存在。
 - Actor 工厂及初始化、激活事件不附加统一执行 deadline；具体加载 I/O 使用自身超时，回调结束取消当前 Context。调用方等待或排水超时不撤销已开始的加载，不提前释放容量或交接；不据此移除 Receive 和卸载回调的现有期限。
@@ -64,3 +64,9 @@
 
 - 扩展服务不限定 Actor/NATS：Battle 等无实体状态的高频计算服务使用普通 gRPC，Game、SLGWorld、FightRoom 或 Agent 命令适配直接调用；不绕经 NATS，也不为了调用建立 Actor。复用共享 RPC Host 与已有服务发现扩展点。
 - 客户端调用计算能力保留入口认证和既有下行/完成确认契约；纯计算结果不等同于上行 ProcessedUpSeq。Battle 统一哪些关键计算及前端保留哪些本地计算属于业务侧权衡，不在网络拓扑讨论中扩展。
+
+## JetStream 任务接线
+
+- Bee/Ant 的 CModTaskQueue 绑定预先部署的源文件流、durable 和独立死信文件流，不自动修改或删除共享资源；业务只取得 Publisher，持久投递确认不等于执行完成。
+- 消费晚于服务和 RPC 初始化。启用消费后，先关闭服务外部准入并排空消费回调，再关闭 Actor 准入、排水和写回；期间保留 Actor 与连接供已领取任务执行，超时保留资源重试。消费失败任务不 ACK，不能把回调结束或 Server.Stop 成功解释成所有任务业务成功。
+- 永久加载拒绝由业务工厂返回 ErrActivationDenied，消费适配器负责先转存死信后 ACK；业务补偿不放入 tx。MaxDeliver 恢复和存储容量验收未完成前，不宣称完整可靠任务建设结束。

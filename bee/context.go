@@ -3,6 +3,7 @@ package bee
 import (
 	"context"
 	"fmt"
+	"github.com/ngnl47/tx/modules/tasks"
 	"slices"
 	"strings"
 
@@ -90,11 +91,14 @@ type Context interface {
 	CModSessionID() SessionIDAllocator
 	// CModActor 返回 Actor 消息解析和投递入口。
 	CModActor() txactor.Runtime
+	// CModTaskQueue 返回持久任务发布入口。
+	CModTaskQueue() tasks.Publisher
 	// CModActorDirect 返回共享归属下的 gRPC 实体调用入口，供 Agent 等直连适配使用。
 	CModActorDirect() txactor.Caller
 }
 
 type frameworkContext interface {
+	TaskQueue() tasks.Publisher
 	AppID() string
 	Instance() discovery.Instance
 	Tasks() lifecycle.Tasks
@@ -350,6 +354,15 @@ func (view *contextView) CModActorDirect() txactor.Caller {
 	value := view.kernel.DirectActor()
 	if value == nil {
 		panic(framework.CapabilityError{Err: view.unavailable(CModActor)})
+	}
+	return value
+}
+
+func (view *contextView) CModTaskQueue() tasks.Publisher {
+	view.require(CModTaskQueue)
+	value := view.kernel.TaskQueue()
+	if value == nil {
+		panic(framework.CapabilityError{Err: view.unavailable(CModTaskQueue)})
 	}
 	return value
 }

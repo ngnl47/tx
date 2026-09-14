@@ -28,6 +28,9 @@ func (server *Server) Drain(ctx context.Context) error {
 		return nil
 	}
 	host.beginDrain()
+	if err := server.drainTaskConsumer(ctx); err != nil {
+		return err
+	}
 	if runtime != nil && runtime.entities != nil {
 		runtime.entities.BeginDrain()
 	}
@@ -196,6 +199,11 @@ func (server *Server) finishWork(ctx context.Context, drain bool) error {
 			return errors.Join(errStopDeferred, err)
 		}
 		errs = append(errs, err)
+	}
+	if !ready {
+		if err := server.drainTaskConsumer(ctx); err != nil && !fatal {
+			return errors.Join(errStopDeferred, err)
+		}
 	}
 	if !ready && runtime != nil && runtime.entities != nil {
 		// 启动失败也可能已有定向消息到达；卸载完成前不能释放业务依赖。
