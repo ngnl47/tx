@@ -83,3 +83,20 @@ TX_ACTORTRIAL_NATS_URL=nats://127.0.0.1:4222 TX_ETCD_ENDPOINT=127.0.0.1:2379 \
 本轮真实目标集成测试通过（9.631s），相同服务环境下 framework 整包 `-race` 通过（16.337s）；后置 ponytail-review 未发现需精简项，差异检查通过。没有 benchmark，没有生产热路径变更。当前续期由测试控制，尚未实现生产自动续期、续期失败日志与终止策略；也未验证多条预取、多 Actor 并发或整个集群限流。原排水测试调整为在排水期间积压后续任务，释放名额后再由替代消费者领取。
 
 下一项：根据上述实测边界收敛正式消费适配与关闭顺序；继续保留 MaxDeliver 通知持久捕获、残留源消息恢复和存储资源上限为未完成验收项。死信自动补偿 SPI 仍不扩展。
+
+
+## 后续：内部消费适配落地
+
+基于已提交的 `7720fbb`，新增 `internal/taskqueue`，把测试内任务协议、Actor 调用和死信分支迁入内部适配。`Processor` 接受正式 Actor Caller、已有 JetStream、死信主题与任务等待期限；`Worker` 使用已有 durable，读取有效 AckWait（存在 BackOff 时取首项），按其三分之一自动 InProgress，复用 SDK 单条拉取与 Drain/Closed。
+
+Actor 调用、转存及 ACK 错误返回消费层并记录 error；续期错误记录 error，不据此取消已开始业务或重新调用 Actor。普通错误及解码错误不确认，永久加载拒绝先确认死信转存再确认源任务。不创建完成表或第二份实体归属。超时仅结束本次等待，不保证远端业务已结束，消息随后可能重投；具体业务执行上限仍沿用 Actor/业务自己的契约。
+
+Worker 的启动 Context 仅用于启动查询，消费使用独立、带期限的 Context；排水等待超时不关闭连接、不取消已领取业务，可以再次 Drain。Drain 成功表示回调已结束，不等于每条任务业务成功：失败任务仍由 JetStream 保存。适配器不持有连接关闭权限，宿主必须先完成消费排水，再关闭 Actor 及连接。
+
+真实夹具已移除手写 InProgress，切换到正式 Worker 自动续期，并以短等待 Drain 超时后继续运行、再次 Drain 成功验证生命周期。原持久投递、错误分类、死信转存失败保留、消费进程退出续领与竞争领取断言保留。首次命令误在 workspace 根目录运行而未找到 go.mod，改到 tx 模块后目标集成测试通过（9.627s）。
+
+这是内部可复用实现，尚未向业务公开配置/API，未接入默认框架 Stop 或两个示例。MaxDeliver 通知与残留恢复、存储资源上限仍未实现，不能据此宣布 T5 完成。没有性能测量；线上默认 RPC 路径没有改动，但新增消费适配的开销尚未评估。
+
+下一项：收敛框架任务声明与资源配置，接入服务启动/排水顺序及一个业务示例；保持业务不直接操作 NATS SDK。死信自动补偿 SPI 继续延期。
+
+本轮最终验证：`go test -race ./internal/framework ./internal/taskqueue -count=1` 通过，framework 包耗时 16.342s；taskqueue 的真实行为由 framework 集成夹具覆盖，包内没有另建重复测试。后置 ponytail-review 未发现需精简项；`git diff --check` 通过。

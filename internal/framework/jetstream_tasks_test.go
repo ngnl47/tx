@@ -14,41 +14,13 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/ngnl47/tx/internal/taskqueue"
 	txactor "github.com/ngnl47/tx/modules/actor"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-// 仅用于闭环验证；公共任务协议与消费运行时留待完整 T5 收敛。
-type trialTask struct {
-	Identity txactor.Identity
-	Delivery txactor.Delivery
-}
-
 func executeTrialTask(ctx context.Context, actor txactor.Caller, msg jetstream.Msg) error {
-	var task trialTask
-	if err := json.Unmarshal(msg.Data(), &task); err != nil {
-		return err
-	}
-	if _, err := actor.Call(ctx, task.Identity, task.Delivery); err != nil {
-		return err
-	}
-	return msg.DoubleAck(ctx)
-}
-
-// 只有明确的永久加载拒绝转死信；其他错误保留原任务等待消费策略处理。
-// 转存成功而源 ACK 丢失仍可重复，不建立完成表或宣称跨流原子事务。
-func executeTrialTaskWithDeadLetter(ctx context.Context, actor txactor.Caller, js jetstream.JetStream, subject string, msg jetstream.Msg) error {
-	err := executeTrialTask(ctx, actor, msg)
-	if !errors.Is(err, txactor.ErrActivationDenied) {
-		return err
-	}
-	dead := &nats.Msg{Subject: subject, Data: msg.Data(), Header: nats.Header{}}
-	dead.Header.Set("Task-Failure", txactor.ErrActivationDenied.Error())
-	dead.Header.Set("Task-Source", msg.Subject())
-	if _, err := js.PublishMsg(ctx, dead); err != nil {
-		return err
-	}
-	return msg.DoubleAck(ctx)
+	return (taskqueue.Processor{Actor: actor, Timeout: 10 * time.Second}).Process(ctx, msg, 400*time.Millisecond)
 }
 
 // 子进程领取后直接退出，不执行业务、不 ACK；同一 durable 应允许替代进程续领。
@@ -195,7 +167,7 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 		}
 	}
 	publish := func(key string) {
-		data, err := json.Marshal(trialTask{Identity: txactor.Identity{Kind: "role", Key: key}, Delivery: txactor.Delivery{MessageType: "reward"}})
+		data, err := json.Marshal(taskqueue.Task{Identity: txactor.Identity{Kind: "role", Key: key}, Delivery: txactor.Delivery{MessageType: "reward"}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -326,7 +298,7 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 	}
 	deadName := streamName + "_dead"
 	attemptCtx, endAttempt := context.WithTimeout(ctx, 200*time.Millisecond)
-	err = executeTrialTaskWithDeadLetter(attemptCtx, access, js, deadName, msg)
+	err = (taskqueue.Processor{Actor: access, JetStream: js, DeadLetter: deadName, Timeout: 10 * time.Second}).Process(attemptCtx, msg, 400*time.Millisecond)
 	endAttempt()
 	if err == nil {
 		t.Fatal("死信转存失败却确认源任务")
@@ -359,7 +331,7 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := executeTrialTaskWithDeadLetter(ctx, access, js, deadName, msg); err != nil {
+	if err := (taskqueue.Processor{Actor: access, JetStream: js, DeadLetter: deadName, Timeout: 10 * time.Second}).Process(ctx, msg, 400*time.Millisecond); err != nil {
 		t.Fatal(err)
 	}
 	assertEmpty(3)
@@ -375,7 +347,7 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 		t.Fatalf("死信丢失原任务或拒绝原因: %+v", stored)
 	}
 
-	// 使用 SDK 原生 Drain 等待正在执行的 Actor 及其 ACK；不另建 worker 计数屏障。
+	// 正式消费适配复用 SDK Drain，自动续期不暴露给业务。
 	drainingConn, err := nats.Connect(url)
 	if err != nil {
 		t.Fatal(err)
@@ -390,26 +362,30 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	publish("drain")
-	handled := make(chan error, 1)
-	inFlight := make(chan jetstream.Msg, 1)
-	consuming, err := drainingConsumer.Consume(func(msg jetstream.Msg) {
-		inFlight <- msg
-		handled <- executeTrialTask(ctx, access, msg)
-	}, jetstream.PullMaxMessages(1))
+	consuming, err := taskqueue.Start(ctx, drainingConsumer, taskqueue.Processor{Actor: access, JetStream: js, DeadLetter: deadName, Timeout: 10 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer consuming.Stop()
+	defer func() {
+		finishDrain()
+		if err := consuming.Drain(ctx); err != nil {
+			t.Error(err)
+		}
+	}()
 	select {
 	case <-drainEntered:
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	consuming.Drain()
-	closed := consuming.Closed()
-	slowTask := <-inFlight
+	// 等待超时不撤销业务，自动续期必须在消费排水期间继续运行。
+	waitCtx, stopWait := context.WithTimeout(ctx, 20*time.Millisecond)
+	err = consuming.Drain(waitCtx)
+	stopWait()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("排水应等待未结束业务: %v", err)
+	}
 	publish("temporary")
-	// 续期由消费适配侧负责；不要求业务处理器调用 NATS API。
+	// 续期由正式 Worker 自动执行，测试仅发起竞争领取。
 	// 跨过 AckWait 后仍不能领取原任务或下一条任务，验证续期与共享在途上限。
 	renewal := time.NewTicker(400 * time.Millisecond)
 	defer renewal.Stop()
@@ -419,12 +395,6 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 		case <-renewal.C:
 		case <-ctx.Done():
 			t.Fatal(ctx.Err())
-		}
-		if err := slowTask.InProgress(); err != nil {
-			t.Fatal(err)
-		}
-		if err := drainingConn.FlushWithContext(ctx); err != nil {
-			t.Fatal(err)
 		}
 		unexpected, err := next.Next(jetstream.FetchMaxWait(100 * time.Millisecond))
 		if !errors.Is(err, nats.ErrTimeout) {
@@ -436,27 +406,9 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 	if err != nil || ci.NumAckPending != 1 || ci.NumPending != 1 || completed.Load() != 3 {
 		t.Fatalf("慢任务期间消费状态: %+v %v completed=%d", ci, err, completed.Load())
 	}
-	// 等待排水超时仅结束调用方等待，不能关闭连接或取消在执行业务。
-	waitCtx, stopWait := context.WithTimeout(ctx, 20*time.Millisecond)
-	select {
-	case <-closed:
-		t.Fatal("阻塞业务未完成却关闭消费")
-	case <-waitCtx.Done():
-	}
-	stopWait()
 	finishDrain()
-	select {
-	case <-closed:
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	select {
-	case err := <-handled:
-		if err != nil {
-			t.Fatal(err)
-		}
-	default:
-		t.Fatal("消费关闭早于回调完成")
+	if err := consuming.Drain(ctx); err != nil {
+		t.Fatal(err)
 	}
 	ci, err = next.Info(ctx)
 	if err != nil || ci.NumAckPending != 0 || ci.NumPending != 1 || completed.Load() != 4 {
