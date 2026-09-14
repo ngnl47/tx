@@ -100,7 +100,7 @@ go test -race ./internal/actortrial -run 'TestOwnershipIntegration|TestSlotRolli
 - [ ] 将实体宿主迁入正式 framework（I3b 已把原型的加载校验移到 Runtime.BindSlots，独立直连测试无需先创建 NATS）；复用共享 RPC Host 注册 Actor Call，检查同进程所选服务的注册组合，确保 DeliveryService 仅注册一次；两种入口仍共享同一 Runtime。
 - [ ] 调整启动顺序：绑定直连端点 → Discovery 启动身份与 Watch 就绪 → 装配 Actor 入口 → 服务与控制面就绪 → 标记 running。移除对旧 ActorEndpoint 的启动依赖，不增加绕环的可空中间对象供业务处理。
 - [x] I3a：先写框架生命周期测试，实现正式 PrepareHandoff 与 Stop 共享收尾进度；共享 RPC 和租约保留到 Stop。保留 CMod 逆序收尾、失败阶段重试、fatal 身份丢失分支；StateDrained 不冒充持久化成功。NATS 宿主尚未迁入，待后续绑定同一流程。
-- [ ] 验证 PrepareHandoff/Stop 并发、持久化失败重试、旧启动身份、成功回复丢失，以及多个槽位部分晋升；业务退出 RPC 失败不能否决卸载。
+- [x] 验证 PrepareHandoff/Stop 并发、持久化失败重试、旧启动身份、成功回复丢失，以及多个槽位部分晋升；业务退出 RPC 失败不能否决卸载。当前测试与故障注入边界见 [交接可靠性证据](../../audits/2026-09-14-handoff-reliability.md)。
 - [ ] 核对 world 子协程完成边界：若处理异步返回，实际写入任务必须可被生命周期等待；在此之前不能把 Receive 返回等同于整个业务完成。
 - [ ] 运行相关单测、真实依赖回归与必要 race，再更新 README 的正式 API 和 design.md；不在本文设计完成时提前改写公开 API 文档。
 
@@ -162,3 +162,7 @@ I3/I4 不整体勾完；下一项为正式 Kind 容量声明、逐世界估算�
 基于已提交的 tx bbdd202、txgame 6ab2f20、txgameslg c3c76db 继续。SLG 套件通过独立 YAML 发布 assignment=1，首次客户端请求自动分配世界，满载返回 ResourceExhausted 且无归属副作用；保留故障恢复到第二代，再验证 PrepareHandoff 收尾确认、源租约保留、CAS 晋升第三代与客户端重载/Mongo 写回。两个真实集群、SLG server 全量与控制面 race 均通过；未改冻结压测负载。详见 [本轮验收](../../audits/2026-09-14-world-capacity-cluster.md)。
 
 下一项集中核对 I3/I4 剩余交接可靠性证据（并发 Stop、确认回复丢失、多槽部分晋升），先复用现有回归，缺口再补。单世界正常交接不等同于多世界规模验收；不整体勾完 I3/I4，不开始自动扩 Pod 或 JetStream。本轮未提交。
+
+## 2026-09-14：交接可靠性证据收敛
+
+复用已有并发 Stop、写回重试与身份失效回归，增强真实 NATS/etcd 双实例测试中的成功确认丢失和多槽部分晋升，并补齐 L2 晋升已提交但结果未知的存储故障注入。相关四包完整功能与 race 通过，生产实现不变，未提交。详见 [证据记录](../../audits/2026-09-14-handoff-reliability.md)。下一项为 I4 多世界实例池及跨世界访问的正式示例验收，不整体宣称迁移完成。

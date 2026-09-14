@@ -265,7 +265,20 @@ func TestPrepareHandoffWithEtcdRetainsLeaseUntilStop(t *testing.T) {
 	if err != nil || len(before.Kvs) != 1 {
 		t.Fatalf("实例注册不存在: %v", err)
 	}
-	conn, err := grpc.NewClient(app.control.endpoint(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// 在真实 RPC 成功返回后注入调用方可见的确认丢失，不改生产控制服务。
+	var loseConfirmation atomic.Bool
+	var confirmations atomic.Int32
+	conn, err := grpc.NewClient(app.control.endpoint(), grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoke grpc.UnaryInvoker, options ...grpc.CallOption) error {
+			err := invoke(ctx, method, req, reply, cc, options...)
+			if err == nil && method == controlpb.HandoffService_PrepareHandoff_FullMethodName {
+				confirmations.Add(1)
+				if loseConfirmation.Swap(false) {
+					return status.Error(codes.Unavailable, "测试注入：成功确认丢失")
+				}
+			}
+			return err
+		}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,13 +320,6 @@ func TestPrepareHandoffWithEtcdRetainsLeaseUntilStop(t *testing.T) {
 			t.Fatalf("gRPC 未共用实体状态: %+v %v", result, err)
 		}
 	}
-	caller := controlpb.NewHandoffServiceClient(conn)
-	for range 2 {
-		response, err := caller.PrepareHandoff(ctx, &controlpb.PrepareHandoffRequest{RuntimeInstanceId: id})
-		if err != nil || response.GetRuntimeInstanceId() != id {
-			t.Fatalf("准备结果: %v %v", response, err)
-		}
-	}
 	targetID := target.Context().Instance().ID
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
@@ -331,9 +337,35 @@ func TestPrepareHandoffWithEtcdRetainsLeaseUntilStop(t *testing.T) {
 	preparer := control.NewHandoffClient(conn)
 	for _, slot := range []string{"game-1", "game-2"} {
 		current := discovery.SlotAssignment{SlotID: slot, RuntimeInstanceID: id, Generation: 1}
-		if unloaded.Load() != 2 {
-			t.Fatal("旧实体未卸载就晋升槽位")
+		// 第一槽丢确认时不能晋升；第二槽丢确认时不能回滚已完成的第一槽。
+		loseConfirmation.Store(true)
+		_, err := ownership.Handoff(ctx, "game", current, targetID,
+			func(context.Context, string) (bool, error) { return true, nil }, preparer.PrepareHandoff)
+		if status.Code(err) != codes.Unavailable {
+			t.Fatalf("确认丢失被掩盖: %v", err)
 		}
+		if unloaded.Load() != 2 {
+			t.Fatal("确认丢失前源实体未完成卸载")
+		}
+		for _, pendingSlot := range []string{"game-1", "game-2"} {
+			want := discovery.SlotAssignment{SlotID: pendingSlot, RuntimeInstanceID: id, Generation: 1}
+			if slot == "game-2" && pendingSlot == "game-1" {
+				want.RuntimeInstanceID, want.Generation = targetID, 2
+			}
+			actual, err := store.ResolveSlot(ctx, pendingSlot)
+			if err != nil || actual != want {
+				t.Fatalf("确认丢失后归属错误: %+v，期望 %+v: %v", actual, want, err)
+			}
+		}
+		member, err := client.Get(ctx, key)
+		if err != nil || len(member.Kvs) != 1 || member.Kvs[0].Lease != before.Kvs[0].Lease {
+			t.Fatalf("部分交接提前释放源租约: %v", err)
+		}
+		destination := actorhost.Target{Instance: id, Identity: actorhost.Identity{Kind: "role", Key: "2"}}
+		if _, err := remote.Call(ctx, destination, &actorpb.Delivery{MessageType: "counter"}); !errors.Is(err, actorhost.ErrDraining) {
+			t.Fatalf("失败交接重新开放源: %v", err)
+		}
+		// 编排方显式重试同一源；运行时复用成功收尾，不重复卸载或重投业务。
 		next, err := ownership.Handoff(ctx, "game", current, targetID,
 			func(context.Context, string) (bool, error) { return true, nil },
 			preparer.PrepareHandoff)
@@ -344,6 +376,9 @@ func TestPrepareHandoffWithEtcdRetainsLeaseUntilStop(t *testing.T) {
 		if err != nil || actual != next || next.RuntimeInstanceID != targetID || next.Generation != 2 {
 			t.Fatalf("晋升结果: %v %v %v", actual, next, err)
 		}
+	}
+	if confirmations.Load() != 4 || unloaded.Load() != 2 {
+		t.Fatalf("交接隐式重试或重复卸载: confirmations=%d unloaded=%d", confirmations.Load(), unloaded.Load())
 	}
 	for _, key := range []string{"1", "2"} {
 		destination := actorhost.Target{Instance: targetID, Identity: actorhost.Identity{Kind: "role", Key: key}}

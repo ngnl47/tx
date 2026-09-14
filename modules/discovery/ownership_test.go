@@ -119,6 +119,42 @@ func TestSlotOwnershipHandoffRequiresPreparation(t *testing.T) {
 	}
 }
 
+// CAS 已写入但结果未知时，只读回权威状态；不得自动重试、回滚或继续晋升。
+func TestSlotOwnershipHandoffUnknownPromotion(t *testing.T) {
+	store := &ownershipStore{runtimeSlotStoreFake: newRuntimeSlotStoreFake()}
+	directory := NewServiceDirectory()
+	if err := directory.Replace([]Instance{{ID: "b", Endpoint: "b:1", Services: []string{"world"}, Status: StatusRunning}}); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := NewSlotOwnership(store, directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := SlotAssignment{SlotID: "world-51", RuntimeInstanceID: "a", Generation: 1}
+	store.assignments[current.SlotID] = current
+	writes, prepares := 0, 0
+	store.promote = func(_, next SlotAssignment) error {
+		writes++
+		store.assignments[next.SlotID] = next
+		return context.DeadlineExceeded
+	}
+	prepare := func(context.Context, string) error { prepares++; return nil }
+	check := func(context.Context, string) (bool, error) { return true, nil }
+	got, err := owner.Handoff(t.Context(), "world", current, "b", check, prepare)
+	if !errors.Is(err, context.DeadlineExceeded) || got != (SlotAssignment{}) || writes != 1 || prepares != 1 {
+		t.Fatalf("未知结果被掩盖或自动重试: %+v %v writes=%d prepares=%d", got, err, writes, prepares)
+	}
+	actual, err := store.ResolveSlot(t.Context(), current.SlotID)
+	want := SlotAssignment{SlotID: current.SlotID, RuntimeInstanceID: "b", Generation: 2}
+	if err != nil || actual != want {
+		t.Fatalf("未知结果回滚归属: %+v %v", actual, err)
+	}
+	got, err = owner.Handoff(t.Context(), "world", current, "b", check, prepare)
+	if !errors.Is(err, ErrSlotConflict) || got != want || writes != 1 || prepares != 1 {
+		t.Fatalf("旧代次重复晋升: %+v %v writes=%d prepares=%d", got, err, writes, prepares)
+	}
+}
+
 type ownershipStore struct {
 	*runtimeSlotStoreFake
 	create  func(SlotAssignment) error
