@@ -1,6 +1,6 @@
 # NATS 与最小本地 Actor 运行时试验实施计划
 
-**2026-09-14 当前状态：默认 Core NATS 后端迁移范围已完成整体验证，进入 T5 JetStream 最小闭环准备。历史测试依赖保留，自动 Pod 交接编排延期；以下历史记录以本次 [收口记录](../../audits/2026-09-14-nats-default-closeout.md) 为准。**
+**2026-09-14 当前状态：默认 Core NATS 后端迁移范围已完成整体验证，T5 JetStream 最小闭环已进入正式框架夹具验证。历史测试依赖保留，自动 Pod 交接编排延期；以下历史记录以本次 [收口记录](../../audits/2026-09-14-nats-default-closeout.md) 为准。**
 
 **2026-09-13 最新决策：** 用户已接受 I2 的临时业务预算，允许进入 I3 正式接线。原 10% 比较线保留为迁移偏移的排查提示，不再单独阻止本次接线；不等同于生产验收放行。优先保持去掉 ProtoActor 后的上下行完成链路性能，不重复全 NATS 上行测试。固定基线见 [迁移前基线](../../audits/baselines/2026-09-13-uplink.json)。I3 先完成交接准备与 Stop 共享收尾，再迁入实体宿主及适配，最终以相同业务负载复测。下文 I2 未放行表述保留其评审时点，以下最新决策为准。
 
@@ -268,7 +268,9 @@ T2d 本批证据见 [试验记录](../../audits/2026-09-12-nats-actor-runtime-tr
 
 ## T5：JetStream 可靠任务闭环
 
-位置：先在 `tx/internal/actortrial/tasks.go`、`tasks_test.go` 验证，采用后再收敛正式适配目录；示例以现有命令或试验内部消息构造任务，不为演示改变客户端协议。
+位置：最小闭环在 `tx/internal/framework/jetstream_tasks_test.go` 复用正式双实例夹具验证，不再向历史 `actortrial` 增加运行时。当前仅测试内部任务，不新增公共 API 或改变客户端协议；完整消费适配仍待收敛。
+
+- [x] 最小验证：FileStorage、共享 durable pull consumer、正式 Actor 完成后 DoubleAck，以及领取进程退出后的续领；详见 [闭环记录](../../audits/2026-09-14-jetstream-task-loop.md)。这不代表完整 T5 或生产消费运行时完成。
 
 - [ ] 文件流、共享 durable pull consumer、显式确认；业务 Handler 与 RPC 复用分派，投递和确认归 MQ 适配。
 - [ ] 测试执行后确认、业务明确结束、永久加载拒绝转死信、临时错误恢复、进程重启接管和排水停止领取。
