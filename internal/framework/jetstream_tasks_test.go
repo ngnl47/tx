@@ -391,7 +391,9 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 	}
 	publish("drain")
 	handled := make(chan error, 1)
+	inFlight := make(chan jetstream.Msg, 1)
 	consuming, err := drainingConsumer.Consume(func(msg jetstream.Msg) {
+		inFlight <- msg
 		handled <- executeTrialTask(ctx, access, msg)
 	}, jetstream.PullMaxMessages(1))
 	if err != nil {
@@ -405,6 +407,35 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 	}
 	consuming.Drain()
 	closed := consuming.Closed()
+	slowTask := <-inFlight
+	publish("temporary")
+	// 续期由消费适配侧负责；不要求业务处理器调用 NATS API。
+	// 跨过 AckWait 后仍不能领取原任务或下一条任务，验证续期与共享在途上限。
+	renewal := time.NewTicker(400 * time.Millisecond)
+	defer renewal.Stop()
+	holdUntil := time.Now().Add(3 * time.Second)
+	for time.Now().Before(holdUntil) {
+		select {
+		case <-renewal.C:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+		if err := slowTask.InProgress(); err != nil {
+			t.Fatal(err)
+		}
+		if err := drainingConn.FlushWithContext(ctx); err != nil {
+			t.Fatal(err)
+		}
+		unexpected, err := next.Next(jetstream.FetchMaxWait(100 * time.Millisecond))
+		if !errors.Is(err, nats.ErrTimeout) {
+			t.Fatalf("续期或在途背压失效: msg=%v err=%v", unexpected, err)
+		}
+	}
+	renewal.Stop()
+	ci, err = next.Info(ctx)
+	if err != nil || ci.NumAckPending != 1 || ci.NumPending != 1 || completed.Load() != 3 {
+		t.Fatalf("慢任务期间消费状态: %+v %v completed=%d", ci, err, completed.Load())
+	}
 	// 等待排水超时仅结束调用方等待，不能关闭连接或取消在执行业务。
 	waitCtx, stopWait := context.WithTimeout(ctx, 20*time.Millisecond)
 	select {
@@ -427,10 +458,12 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 	default:
 		t.Fatal("消费关闭早于回调完成")
 	}
-	assertEmpty(4)
+	ci, err = next.Info(ctx)
+	if err != nil || ci.NumAckPending != 0 || ci.NumPending != 1 || completed.Load() != 4 {
+		t.Fatalf("慢任务完成后的消费状态: %+v %v completed=%d", ci, err, completed.Load())
+	}
 	drainingConn.Close()
-	// 已完成消费排水后才投递，旧消费者不再领取；同一 durable 由替代消费者继续。
-	publish("temporary")
+	// 慢任务释放在途名额后，排水期间积压的任务由替代消费者首次领取。
 	info, err = stream.Info(ctx)
 	if err != nil || info.State.Msgs != 1 {
 		t.Fatalf("排水后新任务丢失: %+v %v", info, err)
@@ -447,7 +480,7 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertEmpty(5)
-	t.Log("SDK Drain 等待 Actor 完成及 ACK、等待超时不取消业务、关闭后新任务由替代消费者领取均通过")
+	t.Log("InProgress 跨 AckWait 续期、共享在途背压及排水后替代消费者续领均通过")
 	t.Log("业务明确结束、临时失败重投、永久加载拒绝先转存再确认均通过")
 	t.Log("FileStorage 无消费者保留、正式 Actor 完成后 ACK、消费进程退出后 durable 重投均通过")
 }
