@@ -219,3 +219,54 @@ Ponytail review：本轮仅迁移既有断言与测试文件，没有新增运�
 日志及 summary：/tmp/tx-paced-20260920、/tmp/tx-paced-closed-20260920、/tmp/tx-paced-overload-20260920；测试日志 /tmp/txclient-paced-{test,build}.log、/tmp/txgame-paced-test.log。未重跑 tx/txgameslg 全量与 race，未采集 pprof，不宣称性能提升。本轮扩大的是可复现负载能力，不是生产路径瘦身。
 
 后置 ponytail-review 无新增框架或业务包装：复用既有负载循环、客户端和正式服务，仅增加目标频率与必要结果计数。两个服务端工程 AGENTS 明确长期压测功能边界。当前仍依次登录后统一建连，没有完成一万连接、连接爬升、全链路指标或 Actor RPC/JetStream 服务端发生器；下一项先检查大规模连接建立、票据时效及 ready 等待预算，再逐级扩大，避免立即将本机推至满载。需要服务端发生器时作为对应服务的可选业务 modules 实现，目标端仍调用正式业务。
+
+
+## 接续：渐进建连、即时握手与准备阶段预算
+
+本轮起点六工程 git status 均干净，前批变更已提交。txgame 新增 --connect-rate（默认每秒 10 次登录，0 为顺序不限速），每个角色完成登录后立即握手，再申请下一张票据，避免全部登录完成前囤积 5 分钟有效票据。握手单独受 request-timeout 约束，超时后清理连接；ready 与 Session 证据收集改用整轮 timeout 预算，不再复用 5 秒单请求预算。
+
+准备期间每 10 秒对已连接角色发送正式 System_Ping 保活，不另造协议或业务 Handler。进入预热前取消等待并显式 await 所有在途保活完成；失败与结束也清理，正式统计不包含准备请求。空闲 I/O 对照仍不保活。负载发生器保持独立于生产服务实现，未修改登录访问控制或票据 TTL。较大连接规模必须自行给足整轮预算，速率也不能绕过实际 Login 限流。
+
+验证：txclient npm test 83 项通过、npm run build 通过，新增即时握手顺序与握手无响应清理检查；txgame internal/clustere2e、cmd/cluster-perf 测试通过。本轮无共享协议或生产 tx 代码修改，未重复全库与 race，未采集 pprof。
+
+真实集群 GOMAXPROCS=4：
+
+- 40 角色、每秒 1 次登录，准备爬升超过旧的 5 秒预算和 30 秒空闲期限；随后每会话 10 次/s、3 秒窗口，计划与完成均 1200，未发送和失败均 0，两个 Agent 各 20 会话。
+- 256 角色、每秒 10 次登录，同样 10 次/s、3 秒窗口，计划与完成均 7680，未发送和失败均 0，两个 Agent 各 128 会话，P99 5.054ms。
+- 512 角色、每秒 10 次登录，计划 15360，实际发起并完成 15334，未发送 26、失败 0，两个 Agent 各 256 会话，P99 73.314ms。建连及已发送请求检查通过，但目标负载没有完整发出，不称为容量达标；不据单个短窗口给出回退归因。
+
+全部档位的八个服务进程正常排水退出。证据：/tmp/tx-ramp-20260920/20260920-190553.745329000/summary.json、/tmp/tx-ramp-scale-20260920/20260920-190729.952267000/summary.json，及对应客户端、I/O 和进程日志；单元验证日志 /tmp/txclient-ramp-{test,build}.log、/tmp/txgame-ramp-test.log。
+
+后置 ponytail-review 无额外删减建议：没有新增测试专用业务实现，保活复用正式 Ping，停止时等待完成而非仅取消，未添加公共框架抽象。README 已同步默认速率与超时口径，差异检查通过。一万连接、长期容量、全链路分段统计尚未验收；下一项评估并复用正式 Actor RPC/JetStream 业务入口，需要的服务端发生器放入示例服务可选 modules，不继续无目标微优化。
+
+
+## 接续：正式业务模块的 Actor RPC 与可靠任务发生器
+
+前批爬升变更未提交，本轮继续累积。txgame 在 services/loadgen 实现可选业务服务，cmd/service-perf 经 app.WithLoadGenerator 显式装配；普通 app.New 与 cmd/server 不注册发生器。加载自身只准备 CMod 能力，Server.Start 后才显式 Run。目标 Game 是独立的正式服务，没有压测专用 Handler，也未新增生成协议。
+
+rpc 复用 System_Ping 与正式 Core NATS Caller，验证 Pong 才计入 rpcCompleted；task 复用 System_StorageProbe 与 CModTaskQueue.Publisher，publishAcknowledged 仅表示 PubAck。角色目标轮转，任务探针 ID 使用专属起始 ID 加计划序号。任务发生器关闭自己的 Consumer，资源仍由部署工具预创建。速率是总速率，最大在途受 workers 约束，错过或名额不足记为 notSent，不积压补发。取消停止新增工作，WaitGroup 等待已交出的工作按单次超时返回后再关闭运行时；不把本地 Call 超时当作远端停止。
+
+首次真实运行发现首个时间槽因固定 worker 尚未接收而漏发：6 次任务发出 5 次、60 次 RPC 发出 59 次，均如实记录。改为有界在途名额后复验，保留首轮证据，不为压测补发漏掉的业务。新增测试覆盖单次计划不因启动时序漏发，以及取消后仍等待在途发布、不把发布确认记成消费完成；loadgen 和 app 定向 race 通过。txgame/server 全量 go test ./... 通过，随后对调度修复重跑定向 race 与真实链路。未重复客户端上一轮验证及 tx/SLG 全库测试。
+
+实际验收使用本机现有依赖、独立应用/发现前缀和本轮独立队列 LG20260920A_TASKS、LG20260920A_TASK_DEAD、LG20260920A_TASK_EVENTS，不修改共享依赖配置。配置副本在 /tmp，所有目标与发生器使用正式二进制：
+
+- Game 离线时发布 6/6 个任务，failed=0、notSent=0；源流保留 6 条，待消费 6、待 ACK 0，对应独立 Mongo 库尚无探针记录。
+- 启动实际 Game 后，源流、待消费、待 ACK 均为 0，Mongo 对应范围出现 6 条记录。这里只证明本轮独占资源内的低负载闭环，不以汇总队列状态推导一般情况下的逐任务业务结果。
+- Actor RPC 计划并完成 60/60 次、failed=0、notSent=0。
+- SIGTERM 中途停止 30 秒发送窗口：planned=600，attempted/rpcCompleted=39，notSent=561、failed=0、stopped=true；发生器正常退出，目标 Game 继续运行，最后单独正常排水关闭。
+
+最终证据 /tmp/tx-loadgen-20260920-b（offline-task.log、rpc.log、stopped-rpc.log、before.json、after.json、game.log）；首轮证据在同名 -a 目录。只读验收脚本是测试夹具，不是业务发生器实现。独立队列和专属 Mongo/Redis 测试记录保留；所有临时业务进程已退出。测试日志 /tmp/tx-loadgen-full.log、/tmp/tx-service-perf-race.log。
+
+后置 ponytail-review 无额外删减建议：复用正式 Caller/Publisher 与 Handler，使用标准库计时器、原子计数和 WaitGroup，不增加 tx 公共接口或通用管理平台。本轮功能验证不是性能提升或容量验收。下一项评估接入现有集群编排及消费证据采集，SLG 的真实跨世界业务负载保持独立，尚未自动实现。
+
+
+### 发生器目录归属修正
+
+loadgen 拥有独立 ServiceSpec、注册和生命周期，将其从 game/modules 迁至 services/loadgen，与 game 同级；同步组合根、命令入口引用及 txgame 目录约定。仅移动现有实现和测试，不增加模块包装或修改运行行为。迁移后 go test -race ./services/loadgen ./internal/app ./cmd/service-perf -count=1 通过（命令包无测试，完成编译）；差异检查通过，后置 ponytail-review 无额外删减建议。本次未重跑真实集群压测，不产生新的性能结论。
+
+
+### 旁路压测服务命名统一
+
+服务及包名统一为 loadtest，目录为 txgame/server/services/loadtest；组合根选项为 WithLoadTest，RPC 消息类型同步为 loadtest.command，命令入口保留 service-perf。中文统一使用“旁路压测服务”，同步 README、目录约定和当前实施计划。此前段落中的 loadgen 为当时名称，历史证据路径及测试日志保持原样。
+
+重命名后 go test -race ./services/loadtest ./internal/app ./cmd/service-perf -count=1 通过；txgame 内旧名称引用已清理，差异检查通过。后置 ponytail-review 无额外删减建议；没有增加兼容别名或公共抽象。本次仅调整命名，未重跑集群压测。
