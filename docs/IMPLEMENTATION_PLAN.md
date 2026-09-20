@@ -9,7 +9,7 @@
 
 ## 当前主线
 
-当前接续点（2026-09-20）：NATS 正式迁移后的 T5 可靠任务验收，以下较早条目保留其阶段背景。已完成 MaxDeliver 持久通知恢复及流满额边界验证；已提供原生 API 的只读残留核对步骤；已在 sync_interval=always / R1 下完成隔离 Broker SIGKILL 重启恢复验证；R3 隔离单节点故障、失去多数派及恢复追平已有验证；已建立逐次同步下 R1/R3 的框架任务链路基线；已完成 50/100/200 条每秒的固定计划到达率观测；下一项评估任务速率与同步/部署存储的匹配，暂不改生产实现。真实 GD 业务、长期稳态、物理故障域与掉电验收仍未完成。见 [任务部署说明](deployment/jetstream-tasks.md) 与 [T5 计划](superpowers/plans/2026-09-12-nats-actor-runtime-trial.md#t5jetstream-可靠任务闭环)。Agent/MsgQ 保持现有可组合部署架构，不开展传输替换。性能口径与限制见 [任务基线](audits/2026-09-20-jetstream-task-baseline.md) 和 [固定到达率记录](audits/2026-09-20-jetstream-task-arrival.md)。
+当前接续点（2026-09-20）：NATS 正式迁移后的 T5 可靠任务验收，以下较早条目保留其阶段背景。已完成 MaxDeliver 持久通知恢复及流满额边界验证；已提供原生 API 的只读残留核对步骤；已在 sync_interval=always / R1 下完成隔离 Broker SIGKILL 重启恢复验证；R3 隔离单节点故障、失去多数派及恢复追平已有验证；已建立逐次同步下 R1/R3 的框架任务链路基线；已完成 50/100/200 条每秒的固定计划到达率观测；已完成 always→2m→always 同步策略对照，确认本机 R3 积压随策略显著变化；已完成五组强同步分层对照，原生/Actor 路径均受限，扩大窗口没有数量级改善，本地性能定位收口，不改生产实现。下一项评估 T5 示例接线与真实业务任务验收；生产候选同步策略、允许丢失窗口与目标任务负载仍待决策。真实 GD 业务、长期稳态、物理故障域与掉电验收仍未完成。见 [任务部署说明](deployment/jetstream-tasks.md) 与 [T5 计划](superpowers/plans/2026-09-12-nats-actor-runtime-trial.md#t5jetstream-可靠任务闭环)。Agent/MsgQ 保持现有可组合部署架构，不开展传输替换。性能口径与限制见 [任务基线](audits/2026-09-20-jetstream-task-baseline.md)、[固定到达率记录](audits/2026-09-20-jetstream-task-arrival.md)、[同步策略对照](audits/2026-09-20-jetstream-task-sync.md) 和 [分层对照](audits/2026-09-20-jetstream-task-layers.md)。
 
 ### 2026-09-12 NATS 与本地 Actor 运行时分支试验
 

@@ -31,7 +31,23 @@ func TestJetStreamTaskBaseline(t *testing.T) {
 	if url == "" || endpoint == "" {
 		t.Fatal("基线必须提供隔离 NATS 和 etcd 地址")
 	}
-	const roles, parallel = 32, 4
+	const roles = 32
+	parallel, batch, native := 4, 1, false
+	profile := os.Getenv("TX_TASK_PROFILE")
+	switch profile {
+	case "", "actor4":
+		profile = "actor4"
+	case "native4":
+		native = true
+	case "native32":
+		parallel, native = 32, true
+	case "native32batch":
+		parallel, batch, native = 32, 16, true
+	case "actor32batch":
+		parallel, batch = 32, 16
+	default:
+		t.Fatal("未知 TX_TASK_PROFILE")
+	}
 	count, rate := 1000, 0
 	if value := os.Getenv("TX_TASK_RATE"); value != "" {
 		var err error
@@ -120,7 +136,7 @@ func TestJetStreamTaskBaseline(t *testing.T) {
 				t.Fatal(err)
 			}
 			runErr := func() error {
-				consumer, err := stream.CreateConsumer(ctx, jetstream.ConsumerConfig{Durable: "worker", AckPolicy: jetstream.AckExplicitPolicy, AckWait: 30 * time.Second, MaxAckPending: parallel, Replicas: replicas})
+				consumer, err := stream.CreateConsumer(ctx, jetstream.ConsumerConfig{Durable: "worker", AckPolicy: jetstream.AckExplicitPolicy, AckWait: 30 * time.Second, MaxAckPending: parallel * batch, Replicas: replicas})
 				if err != nil {
 					return err
 				}
@@ -148,7 +164,19 @@ func TestJetStreamTaskBaseline(t *testing.T) {
 				}()
 				for i := 0; i < parallel; i++ {
 					c, err := consumer.Consume(func(msg jetstream.Msg) {
-						if err := processor.Process(ctx, msg, 10*time.Second); err != nil {
+						// 原生对照保留相同信封解码和逐条确认，只移除 Actor 调用及其续期适配。
+						var processErr error
+						if native {
+							var task taskqueue.Task
+							processErr = json.Unmarshal(msg.Data(), &task)
+							if processErr == nil {
+								executions.Add(1)
+								processErr = msg.DoubleAck(ctx)
+							}
+						} else {
+							processErr = processor.Process(ctx, msg, 10*time.Second)
+						}
+						if err := processErr; err != nil {
 							failures <- err
 							return
 						}
@@ -185,7 +213,7 @@ func TestJetStreamTaskBaseline(t *testing.T) {
 						if finished == count {
 							close(completed)
 						}
-					}, jetstream.PullMaxMessages(1))
+					}, jetstream.PullMaxMessages(batch))
 					if err != nil {
 						return err
 					}
@@ -295,7 +323,7 @@ func TestJetStreamTaskBaseline(t *testing.T) {
 				percentile := func(values []time.Duration, p int) float64 {
 					return float64(values[(len(values)*p+99)/100-1]) / float64(time.Millisecond)
 				}
-				record := map[string]any{"round": round + 1, "replicas": replicas, "tasks": count, "roles": roles, "payload_bytes": 256, "publishers": parallel, "consumers": parallel, "publish_per_second": float64(count) / publishedAt.Sub(begin).Seconds(), "complete_per_second": float64(count) / elapsed.Seconds(), "publish_p50_ms": percentile(pubTimes, 50), "publish_p99_ms": percentile(pubTimes, 99), "complete_p50_ms": percentile(doneTimes, 50), "complete_p99_ms": percentile(doneTimes, 99), "executions": executions.Load() - before, "remaining": info.State.Msgs}
+				record := map[string]any{"profile": profile, "pull_batch": batch, "max_ack_pending": parallel * batch, "round": round + 1, "replicas": replicas, "tasks": count, "roles": roles, "payload_bytes": 256, "publishers": parallel, "consumers": parallel, "publish_per_second": float64(count) / publishedAt.Sub(begin).Seconds(), "complete_per_second": float64(count) / elapsed.Seconds(), "publish_p50_ms": percentile(pubTimes, 50), "publish_p99_ms": percentile(pubTimes, 99), "complete_p50_ms": percentile(doneTimes, 50), "complete_p99_ms": percentile(doneTimes, 99), "executions": executions.Load() - before, "remaining": info.State.Msgs}
 				if rate > 0 {
 					<-windowObserved
 					slices.Sort(plannedTimes)
