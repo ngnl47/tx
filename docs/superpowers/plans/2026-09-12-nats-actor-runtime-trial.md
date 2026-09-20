@@ -268,7 +268,7 @@ T2d 本批证据见 [试验记录](../../audits/2026-09-12-nats-actor-runtime-tr
 
 ## T5：JetStream 可靠任务闭环
 
-位置：最小闭环在 `tx/internal/framework/jetstream_tasks_test.go` 复用正式双实例夹具验证，不再向历史 `actortrial` 增加运行时。当前仅测试内部任务，不新增公共 API 或改变客户端协议；完整消费适配仍待收敛。
+位置：正式闭环在 `tx/internal/framework/jetstream_tasks_test.go`，生产消费适配位于 `internal/taskqueue`，由 Bee/Ant CModTaskQueue 装配；两个独立示例提供可选配置。下面逐项记录保留历史阶段背景，末尾总表按当前证据结算；工程功能闭环不代表生产部署验收。
 
 - [x] 最小验证：FileStorage、共享 durable pull consumer、正式 Actor 完成后 DoubleAck，以及领取进程退出后的续领；详见 [闭环记录](../../audits/2026-09-14-jetstream-task-loop.md)。这不代表完整 T5 或生产消费运行时完成。
 
@@ -304,11 +304,18 @@ T2d 本批证据见 [试验记录](../../audits/2026-09-12-nats-actor-runtime-tr
 
 - [x] 项目可选队列配置：txgame runtime.taskQueue / txgameslg runtime.cmods.taskQueue 默认 null；非空时仅选中业务服务引入 CModTaskQueue，支持纯发布或已有 durable 消费。两工程全量与定向 race 通过，项目配置驱动的真实生成命令重投验收通过。具体 GD 业务入口仍待后续，见 [接续记录](../../audits/2026-09-20-generated-task-command.md#接续项目可选任务配置)。
 
-- [ ] 文件流、共享 durable pull consumer、显式确认；业务 Handler 与 RPC 复用分派，投递和确认归 MQ 适配。
-- [ ] 测试执行后确认、业务明确结束、永久加载拒绝转死信、临时错误恢复、进程重启接管和排水停止领取。
-- [ ] 死信先持久转存确认再结束原任务；转存失败保留原消息。捕获 MaxDeliver 通知并持久保存，验证处理端离线与残留源消息恢复。不把 Term 或重试耗尽当成已自动转存。
-- [ ] 不建成功完成表；结果或 ACK 丢失仅记录可观察 error，接受重复窗口。慢任务续期与背压按真实版本验证。
-- [ ] 用确定的磁盘同步与副本配置单独测任务链路；单机多容器不宣称高可用。对同一次激活的重复、旧计时器、过期战斗作明确分类断言。
+- [x] txgame 真实 GD 任务：复用 System_StorageProbe 与实际 Game 组合根；Game 启动前持久待消费，启动后 ACK、Redis 生成 GD 回读及 Mongo 最终存盘通过，死信为空。定向 race 与 server 全量通过，见 [记录](../../audits/2026-09-20-generated-task-command.md#接续真实-game-与-fusion-gd)。下一项评估 SLG 世界 Procedure/直接 Mongo 任务，不把最终存盘纳入 ACK 条件。
+
+- [x] SLG 世界 GD 任务：实际 World_MoveUnit 经 Procedure 提交后 ACK，Mongo 保持旧值至正常 Stop 写回；发现并修复 RouteKey JSON 丢值，协议边界与世界验收 race 通过，见 [记录](../../audits/2026-09-20-generated-task-command.md#接续世界-procedure-与任务路由键)。下一项评估任务上下文与失败分类的剩余覆盖。
+
+- [x] 调用上下文复核：既有正式闭环改用生产 Publisher，校验命令号、RouteKey、载荷和操作身份经过持久化、跨实例、重投与本地排水后完整保留；PubAck 后结束发布 Context 不撤销任务。真实闭环 race 通过，见 [记录](../../audits/2026-09-20-generated-task-command.md#接续调用上下文与失败分类收敛)。
+
+- [x] 文件流、共享 durable pull consumer、显式确认；业务 Handler 与 RPC 复用分派，投递和确认归 MQ 适配。
+- [x] 测试执行后确认、业务明确结束、永久加载拒绝转死信、临时错误恢复、进程重启接管和排水停止领取。
+- [x] 死信先持久转存确认再结束原任务；转存失败保留原消息。捕获 MaxDeliver 通知并持久保存，验证处理端离线与残留源消息恢复。不把 Term 或重试耗尽当成已自动转存。
+- [x] 不建成功完成表；结果或 ACK 丢失仅记录可观察 error，接受重复窗口。慢任务续期与背压按真实版本验证。
+- [x] 用确定的磁盘同步与副本配置单独测任务链路：R1/R3 always 基线已有记录，单机多容器不宣称高可用。并发激活共享、旧计时器不得唤醒替代实体、战斗到期及卸载后的拒绝已有 actorhost 用例，本轮定向 race 复核通过；任务永久拒绝转死信由真实闭环验证。
+- [ ] 生产部署验收：候选同步策略、目标业务负载、长期稳态与物理故障域/掉电。通知流不可写的捕获缺口仍须运维核对，不承诺自动恢复。
 
 交付：符合既定边界的任务演示与失败恢复证据。JetStream 不通过不应迫使采用 Core RPC；通信和 MQ 可分别决定。
 

@@ -1,9 +1,9 @@
 package framework
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -18,6 +18,7 @@ import (
 	"github.com/ngnl47/tx/internal/taskqueue"
 	txactor "github.com/ngnl47/tx/modules/actor"
 	"github.com/ngnl47/tx/modules/tasks"
+	txprotocol "github.com/ngnl47/tx/protocol"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -122,11 +123,27 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 	finishDrain := sync.OnceFunc(func() { close(drainRelease) })
 	frameworkEntered, frameworkRelease := make(chan struct{}), make(chan struct{})
 	finishFramework := sync.OnceFunc(func() { close(frameworkRelease) })
+	// 操作身份是业务输入快照，不要求任务执行时原连接仍在线。
+	wantDelivery := txactor.Delivery{
+		MessageType: "reward", CommandID: 47,
+		RouteKey: txprotocol.StringRouteKey("season.世界.490001"), Payload: []byte{0, 1, 255},
+		Identity: &txprotocol.SessionIdentity{SessionPrincipal: txprotocol.SessionPrincipal{
+			AccountID: 11, BorrowAccountID: 12, ServerID: 13, RoleID: 14, SessionID: 15,
+			AccessMode: txprotocol.AccessModeBorrow, CanCreateRole: true,
+		}, ConnectionID: 16},
+	}
 	kind := txactor.MustKind("role", func(c txactor.Context) (*txactor.Behavior, error) {
 		if c.Identity.Key == "expired" {
 			return nil, txactor.ErrActivationDenied
 		}
-		return &txactor.Behavior{Receive: func(_ txactor.Context, _ any) (any, error) {
+		return &txactor.Behavior{Receive: func(_ txactor.Context, message any) (any, error) {
+			delivery, ok := message.(txactor.Delivery)
+			if !ok || !delivery.WantsResult() || delivery.MessageType != wantDelivery.MessageType ||
+				delivery.CommandID != wantDelivery.CommandID || delivery.RouteKey != wantDelivery.RouteKey ||
+				!bytes.Equal(delivery.Payload, wantDelivery.Payload) || delivery.Identity == nil ||
+				*delivery.Identity != *wantDelivery.Identity || delivery.UpSeq != 0 {
+				return nil, errors.New("持久任务丢失调用上下文或混入客户端上行序号")
+			}
 			switch c.Identity.Key {
 			case "framework-drain":
 				close(frameworkEntered)
@@ -174,12 +191,12 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 			t.Fatal(ctx.Err())
 		}
 	}
+	publisher := &taskRuntime{js: js, config: tasks.Config{Stream: streamName, Subject: streamName}}
 	publish := func(key string) {
-		data, err := json.Marshal(taskqueue.Task{Identity: txactor.Identity{Kind: "role", Key: key}, Delivery: txactor.Delivery{MessageType: "reward"}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := js.Publish(ctx, streamName, data); err != nil {
+		// 发布请求结束不能撤销已经持久化的任务，后续执行使用消费上下文。
+		request, end := context.WithCancel(ctx)
+		defer end()
+		if err := publisher.Publish(request, txactor.Identity{Kind: "role", Key: key}, wantDelivery); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -526,7 +543,7 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 		}
 	}
 	id := txactor.Identity{Kind: "role", Key: "framework-drain"}
-	if err := newServiceContext(app.runtime, nil).TaskQueue().Publish(ctx, id, txactor.Delivery{MessageType: "reward"}); err != nil {
+	if err := newServiceContext(app.runtime, nil).TaskQueue().Publish(ctx, id, wantDelivery); err != nil {
 		t.Fatal(err)
 	}
 	select {
