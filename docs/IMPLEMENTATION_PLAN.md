@@ -9,6 +9,8 @@
 
 ## 当前主线
 
+当前接续点（2026-09-20）：NATS 正式迁移后的 T5 可靠任务验收，以下较早条目保留其阶段背景。已完成 MaxDeliver 持久通知恢复及流满额边界验证；已提供原生 API 的只读残留核对步骤；已在 sync_interval=always / R1 下完成隔离 Broker SIGKILL 重启恢复验证；下一项评估 R3 多副本故障验收配置，任务性能验收仍待完成。见 [任务部署说明](deployment/jetstream-tasks.md) 与 [T5 计划](superpowers/plans/2026-09-12-nats-actor-runtime-trial.md#t5jetstream-可靠任务闭环)。Agent/MsgQ 保持现有可组合部署架构，不开展传输替换。
+
 ### 2026-09-12 NATS 与本地 Actor 运行时分支试验
 
 三个工程均在 `feature/nats-actor-runtime`；T3a–T3g 及归属设计已提交，本轮 I1 起点 tx=8de6005，六工程工作区干净。本轮累计完成 tx 的 I1 归属组合测试和 I2 完整上行业务对照，修复试验区的信封模式标记，未迁移正式运行时。[T1–T2d](audits/2026-09-12-nats-actor-runtime-trial.md) 保留原型正确性证据；[T3a](audits/2026-09-12-nats-shared-replies.md) 收敛共享响应与失败清理，[T3b](audits/2026-09-12-nats-aggregate-throughput.md) 完成多实例聚合评估，同机三 broker 未反超，固定到达率业务预算未确认。

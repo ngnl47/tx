@@ -142,3 +142,37 @@ README 提供声明、配置和发布示例。两个游戏示例没有默认开�
 
 
 本轮最终验证：设置真实 NATS/etcd 地址的 `go test -race ./internal/taskqueue ./internal/framework ./bee ./ant -count=1` 全部通过，taskqueue 1.603s、framework 19.639s；`go test ./...` 全量通过。后置 ponytail-review 未发现需精简项，普通任务与恢复消费者共用 SDK 消费包装；`git diff --check` 通过。仅 tx 有变更，其余五工程工作区干净，本轮不提交 Git。
+
+## 2026-09-20：满额边界与部署约束
+
+基线 `e535335`，六工程起始工作区干净。本轮仅扩展 `TestMaxDeliverRecovery` 并补充 [部署说明](../deployment/jetstream-tasks.md)，生产实现和现有共享流配置不变。遵循已确认串行执行、不提交 Git；复用既有测试夹具，未引入新管理 API。
+
+在 NATS Server 2.14.6 / nats.go 1.53.1 的独立随机 FileStorage 流中，以 MaxMsgs=1、DiscardNew 验证：源流满后发布失败但原任务仍在；死信流满后恢复失败，源任务和未确认通知仍在；释放死信容量后原内容和源序号成功转存，源残留删除。单独用 Core 订阅确认真实耗尽通知已发出，同时通知流只保留此前占位消息；释放容量后 300ms 观察窗口没有补发，源任务仍然存在。这个窗口不是任意时间范围的形式证明，也不覆盖 Broker 重启。
+
+验证：`TX_ACTORTRIAL_NATS_URL=nats://127.0.0.1:4222 go test ./internal/taskqueue -run TestMaxDeliverRecovery -count=1 -v` 通过；启用本地 NATS/etcd 的 `go test -race ./internal/taskqueue ./internal/framework -run 'TestMaxDeliverRecovery|TestJetStreamFormalActorTaskLoop' -count=1 -v` 两项均执行并通过，正式任务闭环 13.18s；`go test ./...` 全量回归通过（未设置环境的外部依赖测试仍遵循原有 skip，不计入真实依赖验收）。故意注入的旧通知、源缺失记录 error，未报告 race。
+
+判定：有限 MaxDeliver 捕获路径仍存在通知不可写的恢复缺口。源任务保留不等于自动恢复；本轮只明确边界，不增加自动扫描、完成表或业务重放。下一步评估只读源残留核对入口；真实磁盘故障、同步/副本配置和任务性能仍待验收，不宣布 T5 完成。本轮没有 benchmark，生产热路径没有改动。
+
+交付前人工正确性检查及 Ponytail review：复用同一隔离夹具，无新抽象、依赖或生产配置项；保留关键持久化失败断言，未发现可直接删除的过度设计。
+
+## 2026-09-20：原生只读残留核对
+
+接续未提交满额验证，复用 NATS 原生 INFO / STREAM.MSG.GET，不扩展 txctl 或公开 SPI。向同一隔离源流发送 MSG.GET 请求，核对真实源序号及原始内容；前后 consumer 的 Delivered、AckFloor 两类序号和 NumPending/NumAckPending/NumRedelivered 均保持一致。观察到源序号 3 仍在、通知流为空、三个计数均为 0，说明 consumer 零积压不能作为无源残留的证据。
+
+本轮 `TX_ACTORTRIAL_NATS_URL=nats://127.0.0.1:4222 go test -race ./internal/taskqueue -run TestMaxDeliverRecovery -count=1 -v` 执行通过（用例 1.48s）。未重复上一轮全量测试和正式 Actor 闭环；本轮新增内容仅为隔离测试及文档，生产路径未改，无性能变化结论。NATS CLI 未安装，文档中的请求由同一原生 API 经 Go SDK RequestWithContext 实测，未宣称 CLI 命令现场执行过。
+
+取舍：仅给出有界人工查询步骤，不用全流扫描或计数推断构造“已耗尽任务清单”；原始消息不能证明业务未执行，运行中读操作也不是一致性快照。无通知情况下的自动逐条判定和处置仍未实现。下一项是隔离部署下的文件同步配置与 Broker 重启恢复；不对共享服务做故障注入。
+
+本轮交付前重新检查累计差异并执行 Ponytail review：原生能力满足只读入口，无需新增管理层；未发现可直接删除的过度设计。未提交 Git。
+
+## 2026-09-20：隔离 Broker 强制终止与重启
+
+接续累计未提交变更，新增仅测试使用的 Docker 夹具，复用原恢复用例；不引入生产依赖或改变共享 Broker 配置。显式 `sync_interval=always`、FileStorage、R1，镜像为本地 NATS 2.14.6（`sha256:ad7a43eb7e3337c3c38ce5d784d1461791f95f730f252d2b25eee699752a0ca3`）。在源流有新任务、死信流有已转存任务、通知流有待消费重复通知时执行 SIGKILL，再启动同一容器；持久记录与 durable 可继续使用，后续满额与耗尽恢复通过。
+
+首次试验因 Docker 动态端口在重启后改变而连接超时，日志已显示三条流各恢复一条消息；修正为先选择 loopback 空闲端口并显式绑定，使重启地址稳定，未修改生产连接逻辑。失败容器 `2f3d58220e0672d410236bca77d8528cdff092e065ce2a94522337dd2b5b3986` 已停止但保留数据/日志，配置位于 `/var/folders/gq/xxck3g710bq4w3q85kq21jfm0000gn/T/tx-task-restart-1815085798`；成功试验自动清理其独立容器和配置。
+
+验证：同时设置 TX_TASKQUEUE_RESTART_IMAGE 与 TX_ACTORTRIAL_NATS_URL 后，`go test -race ./internal/taskqueue -run TestMaxDeliverRecovery -count=1 -v` 两项执行并通过（既有场景 1.48s、重启场景 2.80s）；本轮 `go test ./...` 全量通过，未显式启用的外部依赖用例按原有约定跳过。`git diff --check` 通过。没有 benchmark，不据此评价强同步的吞吐开销。
+
+证据只覆盖同一容器的 Broker 进程终止，未覆盖容器删除、宿主/Docker VM 掉电、真实磁盘故障、业务执行中 Broker 崩溃或多副本容灾。下一项评估 R3 隔离故障验收配置，完整 T5 仍未结束。
+
+正确性检查与 Ponytail review：故障注入限定新建容器，复用既有恢复断言，无生产配置项或管理抽象；未发现可直接删除的过度设计。未提交 Git。
