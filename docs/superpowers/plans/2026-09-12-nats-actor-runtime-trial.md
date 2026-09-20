@@ -300,6 +300,8 @@ T2d 本批证据见 [试验记录](../../audits/2026-09-12-nats-actor-runtime-tr
 
 - [x] 强同步分层对照：五组原生/Actor、4/32 并发与单条/16 条拉取，30000 条正式任务与 12000 条 race 任务通过。原生路径也只有同一量级，扩大窗口未带来数量级改善，停止本机微优化；见 [记录](../../audits/2026-09-20-jetstream-task-layers.md)。下一项评估示例业务接线，生产存储与长期容量另行验收。
 
+- [x] 示例命令任务契约：txgame/txgameslg 约定 task.command 等待 Handler 完成，即使业务仅返回 error；成功时由适配器提供 task.completed 信封，失败传回任务消费者。真实 JetStream 经 txgame 生成命令与懒加载 Actor 验证失败保留、重投成功才 ACK；普通 RPC 形态约束保留。项目队列配置和具体业务启用尚待后续接线，见 [验收记录](../../audits/2026-09-20-generated-task-command.md)。
+
 - [ ] 文件流、共享 durable pull consumer、显式确认；业务 Handler 与 RPC 复用分派，投递和确认归 MQ 适配。
 - [ ] 测试执行后确认、业务明确结束、永久加载拒绝转死信、临时错误恢复、进程重启接管和排水停止领取。
 - [ ] 死信先持久转存确认再结束原任务；转存失败保留原消息。捕获 MaxDeliver 通知并持久保存，验证处理端离线与残留源消息恢复。不把 Term 或重试耗尽当成已自动转存。
