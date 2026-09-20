@@ -4367,3 +4367,7 @@ err := publisher.Publish(ctx,
 隔离 Broker 的 `sync_interval=always` / FileStorage / R1 强制终止与重启恢复已验证，复现入口见部署说明；不代表宿主掉电、多副本容灾或生产同步策略已验收。
 
 R3 隔离测试进一步覆盖单节点故障期间的新发布和耗尽恢复、失去多数派时不能成功确认、故障节点重返后的副本追平。该证据来自同机三容器，不替代跨宿主容灾或生产负载验收。
+
+独立任务性能入口为 `TestJetStreamTaskBaseline`，只有设置 `TX_TASK_BASELINE=1` 才启用。它复用正式发布与 Actor 消费适配，采集不进入生产路径；准备条件、R1/R3 数据及适用范围见 [任务链路基线](docs/audits/2026-09-20-jetstream-task-baseline.md)。
+
+该入口设置 `TX_TASK_RATE` 后按固定计划到达率运行 5 秒窗口，报告计划到达至完成延迟、发布调度落后、窗口末未完成数及排空时间；见 [固定到达率记录](docs/audits/2026-09-20-jetstream-task-arrival.md)。它保留未能准时发出的任务，不将本地等待隐藏为较低实际到达率。
