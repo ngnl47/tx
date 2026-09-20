@@ -27,7 +27,6 @@ type Instance struct {
 	ID                 string            `json:"id"`
 	Services           []string          `json:"services"`
 	Endpoint           string            `json:"endpoint"`
-	ActorEndpoint      string            `json:"actorEndpoint,omitempty"`
 	Endpoints          map[string]string `json:"endpoints,omitempty"`
 	Version            string            `json:"version,omitempty"`
 	Status             Status            `json:"status"`
@@ -36,17 +35,15 @@ type Instance struct {
 // RouteInstance 是消息路由所需的只读实例视图。它刻意不携带 Services 切片和
 // Endpoints 地址表，因而可以按值跨越高频路由边界且不产生防御性复制分配。
 type RouteInstance struct {
-	ID            string
-	Endpoint      string
-	ActorEndpoint string
-	Version       string
-	Status        Status
+	ID       string
+	Endpoint string
+	Version  string
+	Status   Status
 }
 
 func (i Instance) Validate() error {
 	if i.MaxSlotAssignments < 0 || i.ID == "" || i.ID != strings.TrimSpace(i.ID) ||
 		i.Endpoint == "" || i.Endpoint != strings.TrimSpace(i.Endpoint) ||
-		i.ActorEndpoint != strings.TrimSpace(i.ActorEndpoint) ||
 		!i.Status.Valid() {
 		return ErrInvalidInstance
 	}
@@ -72,14 +69,13 @@ func (s Status) Valid() bool {
 
 type ServiceDirectory struct {
 	// publish 仅用于 Runtime 单轮 Watch 的写入入口，不参与路由读取。
-	publish         func([]Instance) error
-	mu              sync.RWMutex
-	ready           chan struct{}
-	readyOnce       sync.Once
-	byID            map[string]Instance
-	byActorEndpoint map[string]string
-	byService       map[string][]Instance
-	next            map[string]uint64
+	publish   func([]Instance) error
+	mu        sync.RWMutex
+	ready     chan struct{}
+	readyOnce sync.Once
+	byID      map[string]Instance
+	byService map[string][]Instance
+	next      map[string]uint64
 }
 
 // Directory 是路由器和应用模块使用的只读服务发现契约，快照替换仍由 discovery runtime 负责。
@@ -93,19 +89,6 @@ type Directory interface {
 // SlotResolver 会回退到普通 LookupInstance 契约。
 type RouteDirectory interface {
 	LookupRouteInstance(id string) (RouteInstance, bool)
-}
-
-// ActorEndpointDirectory 从同一服务发现快照查找地址唯一对应的运行实例。
-type ActorEndpointDirectory interface {
-	LookupActorInstance(endpoint string) (string, bool)
-}
-
-// LookupActorInstance 在地址未知或被多个实例同时声明时返回未找到。
-func (d *ServiceDirectory) LookupActorInstance(endpoint string) (string, bool) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	id := d.byActorEndpoint[endpoint]
-	return id, id != ""
 }
 
 var _ Directory = (*ServiceDirectory)(nil)
@@ -134,7 +117,6 @@ func (d *ServiceDirectory) Replace(instances []Instance) error {
 		return d.publish(instances)
 	}
 	byID := make(map[string]Instance, len(instances))
-	byActorEndpoint := make(map[string]string, len(instances))
 	byService := make(map[string][]Instance)
 	for _, instance := range instances {
 		if err := instance.Validate(); err != nil {
@@ -146,13 +128,6 @@ func (d *ServiceDirectory) Replace(instances []Instance) error {
 		instance.Services = append([]string(nil), instance.Services...)
 		instance.Endpoints = maps.Clone(instance.Endpoints)
 		byID[instance.ID] = instance
-		if instance.ActorEndpoint != "" {
-			if _, exists := byActorEndpoint[instance.ActorEndpoint]; exists {
-				byActorEndpoint[instance.ActorEndpoint] = ""
-			} else {
-				byActorEndpoint[instance.ActorEndpoint] = instance.ID
-			}
-		}
 		for _, service := range instance.Services {
 			byService[service] = append(byService[service], instance)
 		}
@@ -165,7 +140,6 @@ func (d *ServiceDirectory) Replace(instances []Instance) error {
 
 	d.mu.Lock()
 	d.byID = byID
-	d.byActorEndpoint = byActorEndpoint
 	d.byService = byService
 	for service := range d.next {
 		if _, exists := byService[service]; !exists {
@@ -184,7 +158,6 @@ func (d *ServiceDirectory) Invalidate() {
 	}
 	d.mu.Lock()
 	d.byID = make(map[string]Instance)
-	d.byActorEndpoint = nil
 	d.byService = make(map[string][]Instance)
 	d.next = make(map[string]uint64)
 	d.mu.Unlock()
@@ -270,10 +243,9 @@ func cloneInstance(instance Instance) Instance {
 
 func routeInstance(instance Instance) RouteInstance {
 	return RouteInstance{
-		ID:            instance.ID,
-		Endpoint:      instance.Endpoint,
-		ActorEndpoint: instance.ActorEndpoint,
-		Version:       instance.Version,
-		Status:        instance.Status,
+		ID:       instance.ID,
+		Endpoint: instance.Endpoint,
+		Version:  instance.Version,
+		Status:   instance.Status,
 	}
 }

@@ -160,10 +160,6 @@ func (access rpcAccess) Endpoint() string {
 
 type directoryAccess struct{ directory *discovery.ServiceDirectory }
 
-func (access directoryAccess) LookupActorInstance(endpoint string) (string, bool) {
-	return access.directory.LookupActorInstance(endpoint)
-}
-
 func (access directoryAccess) NextInstance(service string) (discovery.Instance, bool) {
 	return access.directory.NextInstance(service)
 }

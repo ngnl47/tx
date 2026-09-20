@@ -1,9 +1,7 @@
-# Actor 迁移比较夹具
+# Actor 归属与 NATS 集成测试
 
-本目录仅包含 Go 测试和隔离的测量工具，不提供可被正式框架导入的运行时代码。
+本目录仅提供 NATS、实体路由、槽位交接、真实写回和租约失效的测试及夹具，不提供生产运行时。正式代码位于 internal/actorhost、internal/actorrpc 和 modules/discovery。
 
-- `*_baseline_test.go` 保留迁入前的试验传输、槽位控制和 Agent 适配，供现有回归、合批 overlay 与完整上下行比较使用。它们只进入测试二进制；本地宿主继续复用唯一 `internal/actorhost` 实现。
-- 正式接线使用 `internal/actorrpc` 的 NATS/直连传输与路由。不要为新增生产需求维护第二份试验实现；新行为应在私有传输包验证。
-- 原有测试命令仍为 `go test ./internal/actortrial`。合批 overlay 的输入已改为测试专用源文件，完整上行构建入口保持原路径。
-- I2 原始基线和二进制保留在既有独立 artifact 中。后续比较只运行 proto/hybrid；不恢复全 NATS 上行采集，也不把本轮构建成功当成吞吐验收。
-- 完成正式接线和必要回归迁入后，再按已记录的基线归档评估删除被替代的试验源代码。本次保留是比较用途，不是双后端生产开关。
+ProtoActor 旧运行时、旧 Agent 适配、后端比较程序及其构建脚本已删除，当前工程不支持 ProtoActor。历史实现仅保存在 Git 提交 cc7c569445b583e0f46343365f37ffcb6c5fb300；性能结论与复现边界见 docs/design.md 的历史性能部分。
+
+现有 *_baseline_test.go 是 NATS 测试夹具，仍服务于归属、排水和持久化断言。生产需求不应在此追加实现；测试执行入口为 go test ./internal/actortrial，真实依赖按用例要求显式提供。四项公共 Delivery 协议契约位于 tests/actor_delivery_test.go，直接验证 modules/actor。

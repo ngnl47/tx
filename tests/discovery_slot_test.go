@@ -317,11 +317,10 @@ func newBenchmarkSlotRouter(b *testing.B) (*discovery.SlotRouter, *slotStoreFake
 	}
 	instances := discovery.NewServiceDirectory()
 	if err := instances.Replace([]discovery.Instance{{
-		ID:            assignment.RuntimeInstanceID,
-		Services:      []string{"game"},
-		Endpoint:      "127.0.0.1:9000",
-		ActorEndpoint: "127.0.0.1:9010",
-		Status:        discovery.StatusRunning,
+		ID:       assignment.RuntimeInstanceID,
+		Services: []string{"game"},
+		Endpoint: "127.0.0.1:9000",
+		Status:   discovery.StatusRunning,
 	}}); err != nil {
 		b.Fatalf("Replace instances: %v", err)
 	}
@@ -349,11 +348,10 @@ func TestSlotRouterCachedResolveDoesNotAllocate(t *testing.T) {
 	}
 	instances := discovery.NewServiceDirectory()
 	if err := instances.Replace([]discovery.Instance{{
-		ID:            assignment.RuntimeInstanceID,
-		Services:      []string{"game"},
-		Endpoint:      "127.0.0.1:9000",
-		ActorEndpoint: "127.0.0.1:9010",
-		Status:        discovery.StatusRunning,
+		ID:       assignment.RuntimeInstanceID,
+		Services: []string{"game"},
+		Endpoint: "127.0.0.1:9000",
+		Status:   discovery.StatusRunning,
 	}}); err != nil {
 		t.Fatalf("Replace instances: %v", err)
 	}

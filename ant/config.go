@@ -115,7 +115,7 @@ type HealthConfig struct {
 
 // ActorConfig 描述 Actor 集群运行时。
 type ActorConfig struct {
-	// Runtime 描述 ProtoActor 集群、远程传输和邮箱参数。
+	// Runtime 描述本地实体宿主、Core NATS 传输和邮箱参数。
 	Runtime txactor.Config
 }
 
