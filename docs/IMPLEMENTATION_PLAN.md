@@ -9,7 +9,7 @@
 
 ## 当前主线
 
-当前接续点（2026-09-20）：NATS 正式迁移后的 T5 可靠任务验收，以下较早条目保留其阶段背景。已完成 MaxDeliver 持久通知恢复及流满额边界验证；已提供原生 API 的只读残留核对步骤；已在 sync_interval=always / R1 下完成隔离 Broker SIGKILL 重启恢复验证；R3 隔离单节点故障、失去多数派及恢复追平已有验证；已建立逐次同步下 R1/R3 的框架任务链路基线；已完成 50/100/200 条每秒的固定计划到达率观测；已完成 always→2m→always 同步策略对照，确认本机 R3 积压随策略显著变化；已完成五组强同步分层对照，原生/Actor 路径均受限，扩大窗口没有数量级改善，本地性能定位收口，不改生产实现。示例接线已补齐 task.command 对无响应体 Handler 的执行确认，真实生成命令任务失败保留与成功确认已验证；两个项目已接入默认关闭的可选队列配置，按选中业务服务声明任务能力；txgame 已通过实际 Game/Fusion GD 的持久任务验收，覆盖离线待消费、ACK、Redis 生成物回读与 Mongo 最终存盘；txgameslg 世界任务已验证 ACK 先于 Mongo 写回、正常 Stop 保存最终状态，并修复任务 RouteKey JSON 丢值；调用上下文与既有失败分类闭环已带 race 复核；并发激活、战斗到期和旧计时器隔离已复核，T5 工程功能总表收敛；下一项评估 T6 整合收益与 API/SPI 收口；生产候选同步策略、允许丢失窗口与目标任务负载仍待决策。长期稳态、物理故障域与掉电验收仍未完成。见 [任务部署说明](deployment/jetstream-tasks.md) 与 [T5 计划](superpowers/plans/2026-09-12-nats-actor-runtime-trial.md#t5jetstream-可靠任务闭环)。Agent/MsgQ 保持现有可组合部署架构，不开展传输替换。性能口径与限制见 [任务基线](audits/2026-09-20-jetstream-task-baseline.md)、[固定到达率记录](audits/2026-09-20-jetstream-task-arrival.md)、[同步策略对照](audits/2026-09-20-jetstream-task-sync.md) 和 [分层对照](audits/2026-09-20-jetstream-task-layers.md)。
+当前接续点（2026-09-20）：NATS 正式迁移后的 T5 可靠任务验收，以下较早条目保留其阶段背景。已完成 MaxDeliver 持久通知恢复及流满额边界验证；已提供原生 API 的只读残留核对步骤；已在 sync_interval=always / R1 下完成隔离 Broker SIGKILL 重启恢复验证；R3 隔离单节点故障、失去多数派及恢复追平已有验证；已建立逐次同步下 R1/R3 的框架任务链路基线；已完成 50/100/200 条每秒的固定计划到达率观测；已完成 always→2m→always 同步策略对照，确认本机 R3 积压随策略显著变化；已完成五组强同步分层对照，原生/Actor 路径均受限，扩大窗口没有数量级改善，本地性能定位收口，不改生产实现。示例接线已补齐 task.command 对无响应体 Handler 的执行确认，真实生成命令任务失败保留与成功确认已验证；两个项目已接入默认关闭的可选队列配置，按选中业务服务声明任务能力；txgame 已通过实际 Game/Fusion GD 的持久任务验收，覆盖离线待消费、ACK、Redis 生成物回读与 Mongo 最终存盘；txgameslg 世界任务已验证 ACK 先于 Mongo 写回、正常 Stop 保存最终状态，并修复任务 RouteKey JSON 丢值；调用上下文与既有失败分类闭环已带 race 复核；并发激活、战斗到期和旧计时器隔离已复核，T5 工程功能总表收敛；T6 已结算整合收益和 API/SPI 边界，保留 MsgQ、etcd 和历史基线；旧虚拟 Placement 已评估为隔离收益不足，保留历史行为证据并停止该方向；已补齐隔离 demo 部署、资源预创建和配置副本，实际入口及可靠任务验收通过；已补充独立 Game demo 投递入口并验证离线持久等待、启动消费和 Mongo 存盘；本节点收口，下一实施项尚未确认；生产候选同步策略、允许丢失窗口与目标任务负载仍待决策。长期稳态、物理故障域与掉电验收仍未完成。见 [任务部署说明](deployment/jetstream-tasks.md) 与 [T5 计划](superpowers/plans/2026-09-12-nats-actor-runtime-trial.md#t5jetstream-可靠任务闭环)。Agent/MsgQ 保持现有可组合部署架构，不开展传输替换。性能口径与限制见 [任务基线](audits/2026-09-20-jetstream-task-baseline.md)、[固定到达率记录](audits/2026-09-20-jetstream-task-arrival.md)、[同步策略对照](audits/2026-09-20-jetstream-task-sync.md) 和 [分层对照](audits/2026-09-20-jetstream-task-layers.md)。
 
 ### 2026-09-12 NATS 与本地 Actor 运行时分支试验
 
@@ -181,3 +181,5 @@ RedisJSON/ReJSON、SQL 和其他存储后端不进入当前主线。评审时必
 3. 运行 `git diff --check`，并对受影响工程执行完整 `go test ./... -count=1`。
 4. 涉及热点结构时补 benchmark；涉及 Redis、Mongo、etcd 或 gRPC 时优先补真实链路验证。
 5. 阶段性报告必须给出具体使用示例和符合 Angular 规范的中文 Commit Message。
+
+T6 当前结算见 [NATS 整合收益与 API/SPI 收口](audits/2026-09-20-nats-integration-closeout.md)。正式 server 依赖闭包无 ProtoActor，历史测试依赖仍保留；不把这一结论扩大为旧代码已全部删除。

@@ -1,0 +1,136 @@
+{
+  "streams": [
+    {
+      "name": "GAME_TASKS",
+      "subjects": [
+        "game.tasks"
+      ],
+      "retention": "workqueue",
+      "storage": "file",
+      "num_replicas": 1,
+      "discard": "new",
+      "max_msgs": 100000,
+      "max_bytes": 268435456
+    },
+    {
+      "name": "GAME_TASK_DEAD",
+      "subjects": [
+        "game.tasks.dead"
+      ],
+      "retention": "limits",
+      "storage": "file",
+      "num_replicas": 1,
+      "discard": "new",
+      "max_msgs": 10000,
+      "max_bytes": 67108864
+    },
+    {
+      "name": "GAME_TASK_EVENTS",
+      "subjects": [
+        "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.GAME_TASKS.workers"
+      ],
+      "retention": "workqueue",
+      "storage": "file",
+      "num_replicas": 1,
+      "discard": "new",
+      "max_msgs": 10000,
+      "max_bytes": 16777216
+    },
+    {
+      "name": "SLG_TASKS",
+      "subjects": [
+        "slg.tasks"
+      ],
+      "retention": "workqueue",
+      "storage": "file",
+      "num_replicas": 1,
+      "discard": "new",
+      "max_msgs": 100000,
+      "max_bytes": 268435456
+    },
+    {
+      "name": "SLG_TASK_DEAD",
+      "subjects": [
+        "slg.tasks.dead"
+      ],
+      "retention": "limits",
+      "storage": "file",
+      "num_replicas": 1,
+      "discard": "new",
+      "max_msgs": 10000,
+      "max_bytes": 67108864
+    },
+    {
+      "name": "SLG_TASK_EVENTS",
+      "subjects": [
+        "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.SLG_TASKS.workers"
+      ],
+      "retention": "workqueue",
+      "storage": "file",
+      "num_replicas": 1,
+      "discard": "new",
+      "max_msgs": 10000,
+      "max_bytes": 16777216
+    }
+  ],
+  "consumers": [
+    {
+      "stream": "GAME_TASK_EVENTS",
+      "config": {
+        "durable_name": "recovery",
+        "ack_policy": "explicit",
+        "ack_wait": 30000000000,
+        "max_deliver": -1,
+        "max_ack_pending": 1,
+        "filter_subject": "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.GAME_TASKS.workers"
+      }
+    },
+    {
+      "stream": "GAME_TASKS",
+      "config": {
+        "durable_name": "workers",
+        "ack_policy": "explicit",
+        "ack_wait": 30000000000,
+        "max_deliver": 5,
+        "max_ack_pending": 32,
+        "backoff": [
+          30000000000,
+          60000000000,
+          300000000000,
+          900000000000,
+          1800000000000
+        ],
+        "filter_subject": "game.tasks"
+      }
+    },
+    {
+      "stream": "SLG_TASK_EVENTS",
+      "config": {
+        "durable_name": "recovery",
+        "ack_policy": "explicit",
+        "ack_wait": 30000000000,
+        "max_deliver": -1,
+        "max_ack_pending": 1,
+        "filter_subject": "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.SLG_TASKS.workers"
+      }
+    },
+    {
+      "stream": "SLG_TASKS",
+      "config": {
+        "durable_name": "workers",
+        "ack_policy": "explicit",
+        "ack_wait": 30000000000,
+        "max_deliver": 5,
+        "max_ack_pending": 32,
+        "backoff": [
+          30000000000,
+          60000000000,
+          300000000000,
+          900000000000,
+          1800000000000
+        ],
+        "filter_subject": "slg.tasks"
+      }
+    }
+  ]
+}

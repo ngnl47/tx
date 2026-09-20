@@ -1,0 +1,46 @@
+# 仅本地演示；不复用默认服务端口，不代表生产高可用配置。
+name: tx-task-demo
+services:
+  nats:
+    image: nats:2.14.6-alpine
+    command: ["-c", "/etc/nats/demo.conf"]
+    ports: ["127.0.0.1:14222:4222", "127.0.0.1:18222:8222"]
+    volumes: ["./nats.conf:/etc/nats/demo.conf:ro", "nats:/data"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8222/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  redis:
+    image: redis:8.8
+    ports: ["127.0.0.1:16379:6379"]
+    volumes: ["redis:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  mongo:
+    image: mongo:8.0
+    ports: ["127.0.0.1:17017:27017"]
+    volumes: ["mongo:/data/db"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand({ping:1})"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.15
+    command: ["/usr/local/bin/etcd", "--data-dir=/data", "--listen-client-urls=http://0.0.0.0:2379", "--advertise-client-urls=http://127.0.0.1:2379"]
+    ports: ["127.0.0.1:12379:2379"]
+    volumes: ["etcd:/data"]
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+volumes:
+  nats:
+  redis:
+  mongo:
+  etcd:

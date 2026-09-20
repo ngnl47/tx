@@ -321,10 +321,12 @@ T2d 本批证据见 [试验记录](../../audits/2026-09-12-nats-actor-runtime-tr
 
 ## T6：五项整合收益逐项结算，不扩大本轮范围
 
-- [ ] 汇总通信配套、请求等待逻辑、发现拓扑和非 Actor 接入的实际收益；没有删除或验证的收益标为未实现。
-- [ ] msgq 仅在前述阶段有收益后单独立项：对等比较现有 PubSession/PubRole→邮箱→Fetch/Ack，不将 Core pub/sub 当完整邮箱。Seq/Ack、连接隔离、Topic owner 范围必须保持；无收益就不替换传输。
-- [ ] etcd 替代只给独立评估输入：WorkSlot/SessionID、租约失效、持久槽位 CAS、快照 Watch、旧代次隔离。不在本试验中自动实施 KV 迁移。
-- [ ] 确认采用后才删除被替代 ProtoActor 代码和依赖；重新核验高级 SPI、两示例和客户端。未采用则保留报告，不合并原型，旧分支和未提交工作不得自动删除。
+- [x] 汇总通信配套、请求等待、共享归属、RPC/任务及扩展观察五项实际收益；保留项与未实现项明确列出，见 [T6 收口](../../audits/2026-09-20-nats-integration-closeout.md)。
+- [x] MsgQ 按用户既定决定保留，允许与 Agent 同进程组合；本次不立项传输替换，不将 Core pub/sub 当完整邮箱。
+- [x] etcd 保留；未来若立项需评估 WorkSlot/SessionID、租约失效、持久槽位 CAS、快照 Watch 和旧代次隔离。本次不实施 KV 迁移。
+- [x] 历史代码保留取舍已评估：正式迁移已采用，两个 server 生产闭包均无 ProtoActor；旧 Placement 仍用于历史行为反例，隔离需要扩大宿主 SPI、复制实现或改写证据，当前收益不足，保留并停止该方向。其他历史依赖与冻结基线继续保留，不宣称全部源码清除；见 [取舍](../../audits/2026-09-20-nats-integration-closeout.md#接续旧虚拟-placement-隔离取舍)。
+
+- [x] 本地 demo 配套：隔离 Compose、资源预创建、配置副本及两个正式服务启动通过；txgame 的重复队列准备仅在测试辅助包收敛；独立 task-demo 发布命令与真实 Game 进程使用预创建流完成离线持久等待、消费及存盘。独立示例和关键断言保留，见 [部署入口](../../../deploy/task-demo/README.md)。
 
 最终交付为“采用 / 局部采用 / 不采用”及证据，不以完成代码量作为成功标准。每轮按累计未提交变更给中文 Angular Commit Message，提交由用户操作。
 
