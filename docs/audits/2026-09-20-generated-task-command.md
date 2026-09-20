@@ -31,3 +31,18 @@ go test ./services/internal/actorcmd \
 本轮失败前缀 `/txgame/tests/tasks/PYZ7E32NRCVAPQC56GQ6JZYMVU`（装配缺声明）及 `/txgame/tests/tasks/ATESMTOXDGI6HDDYFYRKHY2S3R`（空结果非法）保留，对应源流/死信流分别为 `txgame_tasks_<后缀>`、`txgame_dead_<后缀>`。隔离网络 `tx-task-baseline-j3s2mbsc` 与三个容器保留并停止；配置及日志位于 `/var/folders/gq/xxck3g710bq4w3q85kq21jfm0000gn/T/tx-task-baseline-j3s2mbsc`。成功测试自己的资源已清理，未修改共享 NATS 或此前性能试验现场。
 
 下一项评估项目可选队列配置与具体业务入口。基础契约已可接入无响应体任务，队列资源仍由部署侧预创建；不为了示例接线自动创建共享流或改变普通启动依赖。
+
+
+## 接续：项目可选任务配置
+
+在上述命令契约之后，两个独立示例已接入项目配置转换。txgame 使用 `runtime.taskQueue`，txgameslg 沿用分层布局使用 `runtime.cmods.taskQueue`；debug/test/release 均显式为 null。非空对象让选中的 game 或 slggame/slgworld 声明 CModTaskQueue，未选中的业务服务不引入依赖；同进程能力仍由 tx 统一装配一次。未新增空壳 worker 服务或第二套消费生命周期。
+
+八个资源/超时字段直接映射到现有 tasks.Config：url、stream、subject、consumer、deadLetter、recoveryStream、recoveryConsumer、timeout。Consumer 留空为纯发布，配置对象为空不是关闭。配置仅在能力被选中时解析；流存在性、durable、有限 MaxDeliver 恢复绑定等仍由现有 tx 契约验证，不在项目层复制实现。资源由部署侧预创建，两个 README 完整记录 YAML 路径和独立项目的主题隔离。
+
+验证：配置绑定测试在修改前失败，框架 TaskQueue 全为空；修改后两工程分别覆盖完整映射、未选中不解析、选中拒绝非法超时、纯发布省略消费超时，以及组合根为业务服务选择任务能力。txgame 的真实队列测试改为通过项目 Framework 配置提供器组装，并在隔离 JetStream 下带 race 通过（用例 0.48s、包 1.565s），仍验证业务失败保留、成功才确认。
+
+两个 server 全量 `go test ./... -count=1` 均通过，配置和组合根定向 race 均通过；全量中的未启用外部依赖测试仍按约定跳过。本轮测试网络 tx-task-baseline-v3kwmwwe、三个容器与临时配置已清理，成功用例的流和 etcd 归属范围已清理。未触碰此前失败现场。
+
+交付前 Ponytail review 检查本轮差异：复用能力选择与配置提供器，不新增业务 facade、自动资源创建器或能力开关布尔值；独立示例各自维护配置，不跨项目耦合。未发现需调整项，git diff --check 通过。tx 本轮仅更新文档，不重复库全量或性能基准。
+
+下一项评估并接入具体 GD 业务任务入口；本次没有自动投递任务、默认消费或新增玩家奖励协议。可选配置已具备条件，GD 业务验收尚未完成。
