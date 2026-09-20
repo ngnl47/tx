@@ -4365,3 +4365,5 @@ err := publisher.Publish(ctx,
 无通知残留可使用部署说明中的 NATS 原生 INFO / STREAM.MSG.GET 只读核对，不需要新的 tx 管理接口。消费者 pending/ack_pending/redelivered 均为零也不证明源流为空；按序号读取不会领取任务或发送 ACK，但也无法单凭原记录判定业务是否执行。
 
 隔离 Broker 的 `sync_interval=always` / FileStorage / R1 强制终止与重启恢复已验证，复现入口见部署说明；不代表宿主掉电、多副本容灾或生产同步策略已验收。
+
+R3 隔离测试进一步覆盖单节点故障期间的新发布和耗尽恢复、失去多数派时不能成功确认、故障节点重返后的副本追平。该证据来自同机三容器，不替代跨宿主容灾或生产负载验收。

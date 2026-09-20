@@ -114,3 +114,24 @@ TX_TASKQUEUE_RESTART_IMAGE='sha256:<本地镜像ID>' \
 先完成一次死信转存，再保存新源任务与待消费的重复恢复通知，执行容器 SIGKILL 并启动同一容器。验证新源任务、既有死信、通知与 durable 均可继续访问；旧通知不重复转存，随后真实耗尽、满额恢复和只读核对继续通过。用例成功清理本次容器及配置，失败保留并输出定位信息；未设置镜像变量时跳过，显式启用后 Docker/镜像不可用则失败。
 
 2026-09-20 在 NATS 2.14.6 实测通过。这是 Broker 进程强制终止后的恢复证据，宿主和 Docker VM 仍在运行，不能替代掉电、磁盘损坏或 R3 多副本故障验证；也未在本用例验证业务执行中 Broker 崩溃后的重复执行窗口。
+
+## R3 单节点与多数派故障验收
+
+`TestRecoveryAfterClusterLeaderLoss` 在新建 Docker 网络内启动三个 NATS 节点，节点使用独立 `/data` 和 `sync_interval: always`；源流、死信流、通知流及两个 durable 均显式配置 Replicas=3。客户端使用三个 loopback 固定端口，忽略容器网络内的发现地址；后者只是本机夹具连接方式，不是生产客户端默认配置。
+
+```sh
+TX_TASKQUEUE_RESTART_IMAGE='sha256:<本地镜像ID>' \
+  go test -race ./internal/taskqueue -run '^TestRecoveryAfterClusterLeaderLoss$' -count=1 -v
+```
+
+验收顺序：
+
+1. 等待三个流和两个 durable 的全部 follower 报告 Current，保存耗尽源任务、未确认通知及已有死信。
+2. 查询源流实际 leader，仅对该测试节点执行 SIGKILL；等待剩余流/consumer 选出可用 leader。
+3. 用剩余两节点确认新任务发布，并执行现有 Recovery：转存死信、删除源残留、确认通知。
+4. 再终止一个节点，确认发布不能返回成功。错误/超时属于结果不确定，不自动补发，不据此断言消息未写入。
+5. 启动两故障节点，等待三个流和两个 durable 的 follower 全部追平；核对多数派可用期间已确认的源任务、死信内容和通知清理结果。
+
+成功按本测试持有的容器 ID 清理容器、网络及配置，失败保留并输出定位信息。现有共享 NATS、etcd 和业务资源不参与故障注入。源流 leader 不必同时是其他流或 consumer 的 leader；用例分别等待各组恢复，不以一次客户端重连替代 JetStream 各组就绪。
+
+本机三容器只验证复制/选举协议及恢复适配行为，不是三个物理故障域。没有覆盖宿主掉电、网络分区、磁盘损坏、流量峰值或多数派丢失期间每个任务的最终执行结果。生产仍需规划独立故障域、持久卷、资源容量及同步策略，不据此承诺无损或 exactly-once。
