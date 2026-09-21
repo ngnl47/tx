@@ -3,6 +3,7 @@ package msgq
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/ngnl47/tx/modules/discovery"
@@ -239,6 +240,7 @@ func (dialer *senderDialerFake) Dial(_ context.Context, instance discovery.Insta
 }
 
 type senderConnectionFake struct {
+	rolePublish      func(RoleBinding) (BroadcastResult, error)
 	roleBindings     []RoleBinding
 	pubSessionID     int64
 	pubSessionIDs    []int64
@@ -274,6 +276,9 @@ func (*senderConnectionFake) Close() error { return nil }
 func (connection *senderConnectionFake) PubRole(_ context.Context, binding RoleBinding, payload []byte) (BroadcastResult, error) {
 	connection.roleBindings = append(connection.roleBindings, binding)
 	connection.pubPayload = payload
+	if connection.rolePublish != nil {
+		return connection.rolePublish(binding)
+	}
 	return connection.broadcastResult, connection.pubErr
 }
 
@@ -316,6 +321,50 @@ func TestSenderRoleCacheInvalidatesOnlyDefinitiveRejectionWithoutReplay(t *testi
 			}
 			if len(connection.roleBindings) != 3 || connection.roleBindings[2] != wantBinding || store.roleReads != wantReads {
 				t.Fatalf("next binding=%+v reads=%d", connection.roleBindings, store.roleReads)
+			}
+		})
+	}
+}
+
+func TestSenderRoleBindingRefreshRetriesOnce(t *testing.T) {
+	for _, finalErr := range []error{nil, ErrRoleBindingChanged, context.DeadlineExceeded} {
+		t.Run(fmt.Sprint(finalErr), func(t *testing.T) {
+			ctx := context.Background()
+			connection := &senderConnectionFake{}
+			sender, store, _ := newSenderForTest(t, connection, SessionBinding{RoleID: 47, SessionID: 11, ConnectionID: 13, InstanceID: "msgq-a"})
+			first := RoleBinding{RoleID: 47, InstanceID: "msgq-a", Generation: "first"}
+			if _, err := store.ClaimRole(ctx, first); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sender.PubRole(ctx, 47, []byte("warm")); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.ReleaseRole(ctx, first); err != nil {
+				t.Fatal(err)
+			}
+			second := first
+			second.Generation = "second"
+			if _, err := store.ClaimRole(ctx, second); err != nil {
+				t.Fatal(err)
+			}
+			connection.rolePublish = func(binding RoleBinding) (BroadcastResult, error) {
+				if binding == first {
+					return BroadcastResult{}, mailboxClientError(mailboxStatusError(ErrRoleBindingChanged))
+				}
+				if binding != second {
+					t.Fatalf("unexpected binding: %+v", binding)
+				}
+				if finalErr != nil {
+					return BroadcastResult{}, finalErr
+				}
+				return BroadcastResult{Attempted: 1, Delivered: 1}, nil
+			}
+			result, err := sender.PubRole(ctx, 47, []byte("login-response"))
+			if !errors.Is(err, finalErr) || len(connection.roleBindings) != 3 || store.roleReads != 2 || string(connection.pubPayload) != "login-response" {
+				t.Fatalf("result=%+v err=%v calls=%d reads=%d", result, err, len(connection.roleBindings), store.roleReads)
+			}
+			if finalErr == nil && result.Delivered != 1 {
+				t.Fatal(result)
 			}
 		})
 	}

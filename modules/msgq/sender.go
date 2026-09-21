@@ -281,24 +281,29 @@ func (s *Sender) PubSession(ctx context.Context, sessionID int64, payload []byte
 }
 
 // PubRole 向 RoleID 归属 MsgQ 的全部角色邮箱投递，热路由不查询 Redis。
-// 明确拒绝旧归属时只清理对应缓存，留待下一次调用重新寻址；任何错误均不自动重发。
+// 仅在明确尚未入队的归属拒绝后重新寻址并重试一次；其他错误不重发。
 func (s *Sender) PubRole(ctx context.Context, roleID int64, payload []byte) (BroadcastResult, error) {
 	if s == nil {
 		return BroadcastResult{}, ErrSenderClosed
 	}
-	target, err := s.roles.Resolve(ctx, roleID)
-	if err != nil {
-		return BroadcastResult{}, err
+	for attempt := 0; ; attempt++ {
+		target, err := s.roles.Resolve(ctx, roleID)
+		if err != nil {
+			return BroadcastResult{}, err
+		}
+		connection, err := s.connection(ctx, target.Instance)
+		if err != nil {
+			return BroadcastResult{}, err
+		}
+		result, err := connection.PubRole(ctx, target.Binding, payload)
+		if errors.Is(err, ErrSessionChanged) {
+			s.roles.Invalidate(target.Binding)
+		}
+		if attempt == 0 && errors.Is(err, ErrRoleBindingChanged) {
+			continue
+		}
+		return result, err
 	}
-	connection, err := s.connection(ctx, target.Instance)
-	if err != nil {
-		return BroadcastResult{}, err
-	}
-	result, err := connection.PubRole(ctx, target.Binding, payload)
-	if errors.Is(err, ErrSessionChanged) {
-		s.roles.Invalidate(target.Binding)
-	}
-	return result, err
 }
 
 // JoinTopics 将 ownerSessionID 的当前连接加入其 MsgQ 实例的本地 Topic 索引。

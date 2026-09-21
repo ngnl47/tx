@@ -33,6 +33,9 @@ func (s *Server) broadcastRole(ctx context.Context, roleID int64, expected *Role
 	lease, found := s.roleLeases[roleID]
 	if (expected != nil && (!found || lease.binding != *expected)) || (found && !time.Now().Before(lease.expires)) {
 		s.mu.RUnlock()
+		if expected != nil {
+			return BroadcastResult{}, ErrRoleBindingChanged
+		}
 		return BroadcastResult{}, ErrSessionChanged
 	}
 	indexed := s.roles[roleID]

@@ -84,7 +84,7 @@ func testBroadcastGRPC(t *testing.T, rolePublish bool) {
 			_, rejectErr := client.client.PubRole(ctx, &msgqpb.PubRoleRequest{
 				RoleId: invalid.RoleID, InstanceId: invalid.InstanceID, Generation: invalid.Generation, Payload: []byte("rejected"),
 			})
-			if status.Code(rejectErr) != codes.Aborted {
+			if status.Code(rejectErr) != codes.Aborted || !errors.Is(mailboxClientError(rejectErr), ErrRoleBindingChanged) {
 				t.Fatalf("invalid role binding = %+v, error = %v", invalid, rejectErr)
 			}
 		}

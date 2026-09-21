@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	msgqpb "github.com/ngnl47/tx/modules/msgq/pb"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -163,6 +164,9 @@ func mailboxStatusError(err error) error {
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, ErrSessionOffline):
 		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, ErrRoleBindingChanged):
+		st, _ := status.New(codes.Aborted, err.Error()).WithDetails(&errdetails.ErrorInfo{Reason: "ROLE_BINDING_CHANGED", Domain: "tx.msgq"})
+		return st.Err()
 	case errors.Is(err, ErrSessionChanged):
 		return status.Error(codes.Aborted, err.Error())
 	case errors.Is(err, ErrDownMsgOverflow):
@@ -193,6 +197,11 @@ func mailboxClientError(err error) error {
 	case codes.NotFound:
 		return fmt.Errorf("%w: %v", ErrSessionOffline, err)
 	case codes.Aborted:
+		for _, detail := range status.Convert(err).Details() {
+			if info, ok := detail.(*errdetails.ErrorInfo); ok && info.Domain == "tx.msgq" && info.Reason == "ROLE_BINDING_CHANGED" {
+				return fmt.Errorf("%w: %v", ErrRoleBindingChanged, err)
+			}
+		}
 		return fmt.Errorf("%w: %v", ErrSessionChanged, err)
 	case codes.ResourceExhausted:
 		return fmt.Errorf("%w: %v", ErrDownMsgOverflow, err)

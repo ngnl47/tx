@@ -4,6 +4,7 @@ package msgq
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -13,10 +14,12 @@ import (
 )
 
 var (
-	ErrDirectoryNil                 = errors.New("msgq: service directory is nil")
-	ErrSessionStoreNil              = errors.New("msgq: session store is nil")
-	ErrInvalidSession               = errors.New("msgq: invalid session binding")
-	ErrSessionOffline               = errors.New("msgq: session is offline")
+	ErrDirectoryNil    = errors.New("msgq: service directory is nil")
+	ErrSessionStoreNil = errors.New("msgq: session store is nil")
+	ErrInvalidSession  = errors.New("msgq: invalid session binding")
+	ErrSessionOffline  = errors.New("msgq: session is offline")
+	// ErrRoleBindingChanged 表示角色归属校验失败，尚未向任何邮箱投递，可重新寻址。
+	ErrRoleBindingChanged           = fmt.Errorf("msgq: role binding changed: %w", ErrSessionChanged)
 	ErrSessionChanged               = errors.New("msgq: session has changed")
 	ErrRouteUnavailable             = errors.New("msgq: session instance is unavailable")
 	ErrServerNil                    = errors.New("msgq: server is nil")
