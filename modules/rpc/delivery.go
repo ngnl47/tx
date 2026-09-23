@@ -3,7 +3,9 @@ package rpc
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
+	"sync"
 
 	"github.com/ngnl47/tx/lifecycle"
 	rpcpb "github.com/ngnl47/tx/modules/rpc/pb"
@@ -46,6 +48,16 @@ type ReceiverFunc func(context.Context, Delivery) error
 
 func (f ReceiverFunc) Deliver(ctx context.Context, delivery Delivery) error {
 	return f(ctx, delivery)
+}
+
+// BatchCallReceiver 逐项发送批内结果，不让慢调用阻塞已完成的调用。
+type BatchCallReceiver interface {
+	CallBatch(context.Context, Delivery, func(Result) error) error
+}
+
+// StreamCallReceiver 处理长流上的独立调用；每项仍按自己的结果完成。
+type StreamCallReceiver interface {
+	CallStream(context.Context, Delivery) (Result, error)
 }
 
 type admissionReceiver struct {
@@ -129,6 +141,117 @@ func (s *deliveryService) Call(ctx context.Context, request *rpcpb.Delivery) (*r
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	return response, nil
+}
+
+func (s *deliveryService) CallBatch(request *rpcpb.Delivery, stream grpc.ServerStreamingServer[rpcpb.Result]) error {
+	receiver, ok := s.callReceiver.(BatchCallReceiver)
+	if !ok {
+		return status.Error(codes.Unimplemented, "method CallBatch not implemented")
+	}
+	delivery, err := deliveryFromProto(request)
+	if err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+	return receiver.CallBatch(stream.Context(), delivery, func(result Result) error {
+		response, err := resultToProto(result)
+		if err != nil {
+			return status.Error(codes.InvalidArgument, err.Error())
+		}
+		return stream.Send(response)
+	})
+}
+
+func (s *deliveryService) CallStream(stream grpc.BidiStreamingServer[rpcpb.StreamCallRequest, rpcpb.StreamCallResponse]) error {
+	receiver, ok := s.callReceiver.(StreamCallReceiver)
+	if !ok {
+		return status.Error(codes.Unimplemented, "method CallStream not implemented")
+	}
+	var workers sync.WaitGroup
+	var sendMu sync.Mutex
+	var sendErr error
+	var callsMu sync.Mutex
+	calls := make(map[uint64]context.CancelFunc)
+	defer func() {
+		callsMu.Lock()
+		for _, cancel := range calls {
+			cancel()
+		}
+		callsMu.Unlock()
+	}()
+	// 停止读取即可把 gRPC 流控传回发送方，避免无限创建等待 Actor 的 goroutine。
+	slots := make(chan struct{}, 1024)
+	for {
+		request, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			workers.Wait()
+			return sendErr
+		}
+		if err != nil {
+			return err
+		}
+		if request.GetId() == 0 {
+			return status.Error(codes.InvalidArgument, "stream call id is zero")
+		}
+		if request.GetCancel() {
+			callsMu.Lock()
+			cancel := calls[request.GetId()]
+			callsMu.Unlock()
+			if cancel != nil {
+				cancel()
+			}
+			continue
+		}
+		delivery, err := deliveryFromProto(request.GetDelivery())
+		if err != nil {
+			return status.Error(codes.InvalidArgument, err.Error())
+		}
+		select {
+		case slots <- struct{}{}:
+		case <-stream.Context().Done():
+			return stream.Context().Err()
+		}
+		itemCtx, cancel := context.WithCancel(stream.Context())
+		callsMu.Lock()
+		if calls[request.GetId()] != nil {
+			callsMu.Unlock()
+			cancel()
+			<-slots
+			return status.Error(codes.InvalidArgument, "duplicate stream call id")
+		}
+		calls[request.GetId()] = cancel
+		callsMu.Unlock()
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			defer func() { <-slots }()
+			defer func() {
+				callsMu.Lock()
+				delete(calls, request.GetId())
+				callsMu.Unlock()
+				cancel()
+			}()
+			result, callErr := receiver.CallStream(itemCtx, delivery)
+			response := &rpcpb.StreamCallResponse{Id: request.GetId()}
+			if callErr != nil {
+				response.ErrorCode = int32(codes.Internal)
+				if errors.Is(callErr, lifecycle.ErrDraining) || errors.Is(callErr, lifecycle.ErrStopping) {
+					response.ErrorCode = int32(codes.Unavailable)
+				}
+				response.ErrorMessage = callErr.Error()
+			} else {
+				response.Result, callErr = resultToProto(result)
+				if callErr != nil {
+					response.ErrorCode = int32(codes.InvalidArgument)
+					response.ErrorMessage = callErr.Error()
+				}
+			}
+			sendMu.Lock()
+			if sendErr == nil {
+				sendErr = stream.Send(response)
+			}
+			sendMu.Unlock()
+		}()
+	}
 }
 
 func deliveryFromProto(request *rpcpb.Delivery) (Delivery, error) {

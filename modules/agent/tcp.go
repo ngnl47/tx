@@ -70,6 +70,7 @@ func (s *TCPServer) Close() error {
 type tcpTransport struct {
 	connection    net.Conn
 	maxFrameBytes int
+	readBuffer    [256]byte
 	closeOnce     sync.Once
 	closeErr      error
 }
@@ -93,7 +94,12 @@ func (t *tcpTransport) Read(ctx context.Context) (Frame, error) {
 	if size > t.maxFrameBytes {
 		return Frame{}, ErrFrameTooLarge
 	}
-	encoded := make([]byte, size)
+	encoded := t.readBuffer[:]
+	if size > len(encoded) {
+		encoded = make([]byte, size)
+	} else {
+		encoded = encoded[:size]
+	}
 	if _, err := io.ReadFull(t.connection, encoded); err != nil {
 		return Frame{}, err
 	}

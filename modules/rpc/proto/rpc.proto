@@ -37,7 +37,26 @@ message DeliveryAck {
   string error_code = 2;
 }
 
+// StreamCallRequest 在一条长流中标识一项独立调用。
+message StreamCallRequest {
+  uint64 id = 1;
+  Delivery delivery = 2;
+  bool cancel = 3;
+}
+
+// StreamCallResponse 逐项返回调用结果；错误只作用于本项。
+message StreamCallResponse {
+  uint64 id = 1;
+  Result result = 2;
+  int32 error_code = 3;
+  string error_message = 4;
+}
+
 service DeliveryService {
   rpc Deliver(Delivery) returns (DeliveryAck);
   rpc Call(Delivery) returns (Result);
+  // CallBatch 一次接收请求批次，逐项流式返回完成结果。
+  rpc CallBatch(Delivery) returns (stream Result);
+  // CallStream 在同一目标实例的长流上承载多项独立调用。
+  rpc CallStream(stream StreamCallRequest) returns (stream StreamCallResponse);
 }

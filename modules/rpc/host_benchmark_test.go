@@ -44,6 +44,81 @@ func BenchmarkDeliveryTransport(b *testing.B) {
 	})
 }
 
+// BenchmarkCallTransport 对比相同同步调用在进程内与复用连接的 loopback gRPC 上的成本。
+func BenchmarkCallTransport(b *testing.B) {
+	delivery := benchmarkDelivery()
+	receiver := benchmarkDeliveryReceiver{expected: delivery}
+	result := Result{MessageType: "benchmark.result", Payload: delivery.Payload}
+
+	b.Run("DirectReceiver", func(b *testing.B) {
+		benchmarkCallSerial(b, func(ctx context.Context) (Result, error) {
+			return receiver.Call(ctx, delivery)
+		}, result)
+	})
+	b.Run("LoopbackGRPC", func(b *testing.B) {
+		sender := newLoopbackBenchmarkSender(b, receiver)
+		ctx := b.Context()
+		if _, err := sender.Call(ctx, delivery); err != nil {
+			b.Fatalf("预热 loopback gRPC 调用: %v", err)
+		}
+		call := func(ctx context.Context) (Result, error) {
+			return sender.Call(ctx, delivery)
+		}
+		b.Run("Serial", func(b *testing.B) { benchmarkCallSerial(b, call, result) })
+		b.Run("Parallel", func(b *testing.B) { benchmarkCallParallel(b, call, result) })
+	})
+}
+
+// BenchmarkCallBatchUpperBound 只测单次 gRPC 承载多项载荷的传输上界，不模拟逐项结果、排队或 Actor 邮箱。
+func BenchmarkCallBatchUpperBound(b *testing.B) {
+	for _, items := range []int{1, 10, 20} {
+		b.Run(fmt.Sprintf("Items=%d", items), func(b *testing.B) {
+			delivery := benchmarkDelivery()
+			delivery.Payload = bytes.Repeat(delivery.Payload, items)
+			receiver := benchmarkDeliveryReceiver{expected: delivery}
+			sender := newLoopbackBenchmarkSender(b, receiver)
+			if _, err := sender.Call(b.Context(), delivery); err != nil {
+				b.Fatalf("预热批量载荷调用: %v", err)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				result, err := sender.Call(b.Context(), delivery)
+				if err != nil || !bytes.Equal(result.Payload, delivery.Payload) {
+					b.Fatalf("批量载荷结果异常: err=%v", err)
+				}
+			}
+			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*items), "ns/item")
+		})
+	}
+}
+
+func benchmarkCallSerial(b *testing.B, call func(context.Context) (Result, error), expected Result) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		result, err := call(b.Context())
+		if err != nil || result.MessageType != expected.MessageType || !bytes.Equal(result.Payload, expected.Payload) {
+			b.Fatalf("同步调用结果异常: result=%+v err=%v", result, err)
+		}
+	}
+}
+
+func benchmarkCallParallel(b *testing.B, call func(context.Context) (Result, error), expected Result) {
+	b.ReportAllocs()
+	ctx := b.Context()
+	b.ResetTimer()
+	b.RunParallel(func(parallel *testing.PB) {
+		for parallel.Next() {
+			result, err := call(ctx)
+			if err != nil || result.MessageType != expected.MessageType || !bytes.Equal(result.Payload, expected.Payload) {
+				b.Errorf("同步调用结果异常: result=%+v err=%v", result, err)
+				return
+			}
+		}
+	})
+}
+
 func benchmarkDirectDeliverySerial(b *testing.B, receiver Receiver, delivery Delivery) {
 	b.SetBytes(int64(len(delivery.Payload)))
 	b.ReportAllocs()
@@ -94,7 +169,7 @@ func benchmarkSenderDeliveryParallel(b *testing.B, sender *Sender, ctx context.C
 	})
 }
 
-func newLoopbackBenchmarkSender(b *testing.B, receiver Receiver) *Sender {
+func newLoopbackBenchmarkSender(b *testing.B, receiver benchmarkDeliveryReceiver) *Sender {
 	b.Helper()
 	root := lifecycle.NewWaitGroupContext(context.Background())
 	host, err := NewHost("127.0.0.1:0")
@@ -102,7 +177,7 @@ func newLoopbackBenchmarkSender(b *testing.B, receiver Receiver) *Sender {
 		b.Fatalf("创建 loopback gRPC Host: %v", err)
 	}
 	if err := host.Register(func(registrar grpc.ServiceRegistrar) error {
-		return RegisterDeliveryService(registrar, receiver, nil)
+		return RegisterDeliveryService(registrar, receiver, receiver)
 	}); err != nil {
 		b.Fatalf("注册 DeliveryService: %v", err)
 	}
@@ -165,4 +240,11 @@ func (receiver benchmarkDeliveryReceiver) Deliver(_ context.Context, delivery De
 		return fmt.Errorf("收到的 benchmark Delivery 与预期不一致")
 	}
 	return nil
+}
+
+func (receiver benchmarkDeliveryReceiver) Call(ctx context.Context, delivery Delivery) (Result, error) {
+	if err := receiver.Deliver(ctx, delivery); err != nil {
+		return Result{}, err
+	}
+	return Result{MessageType: "benchmark.result", Payload: delivery.Payload}, nil
 }

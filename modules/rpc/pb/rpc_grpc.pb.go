@@ -19,8 +19,10 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	DeliveryService_Deliver_FullMethodName = "/tx.rpc.v1.DeliveryService/Deliver"
-	DeliveryService_Call_FullMethodName    = "/tx.rpc.v1.DeliveryService/Call"
+	DeliveryService_Deliver_FullMethodName    = "/tx.rpc.v1.DeliveryService/Deliver"
+	DeliveryService_Call_FullMethodName       = "/tx.rpc.v1.DeliveryService/Call"
+	DeliveryService_CallBatch_FullMethodName  = "/tx.rpc.v1.DeliveryService/CallBatch"
+	DeliveryService_CallStream_FullMethodName = "/tx.rpc.v1.DeliveryService/CallStream"
 )
 
 // DeliveryServiceClient is the client API for DeliveryService service.
@@ -29,6 +31,10 @@ const (
 type DeliveryServiceClient interface {
 	Deliver(ctx context.Context, in *Delivery, opts ...grpc.CallOption) (*DeliveryAck, error)
 	Call(ctx context.Context, in *Delivery, opts ...grpc.CallOption) (*Result, error)
+	// CallBatch 一次接收请求批次，逐项流式返回完成结果。
+	CallBatch(ctx context.Context, in *Delivery, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Result], error)
+	// CallStream 在同一目标实例的长流上承载多项独立调用。
+	CallStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[StreamCallRequest, StreamCallResponse], error)
 }
 
 type deliveryServiceClient struct {
@@ -59,12 +65,48 @@ func (c *deliveryServiceClient) Call(ctx context.Context, in *Delivery, opts ...
 	return out, nil
 }
 
+func (c *deliveryServiceClient) CallBatch(ctx context.Context, in *Delivery, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Result], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &DeliveryService_ServiceDesc.Streams[0], DeliveryService_CallBatch_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[Delivery, Result]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type DeliveryService_CallBatchClient = grpc.ServerStreamingClient[Result]
+
+func (c *deliveryServiceClient) CallStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[StreamCallRequest, StreamCallResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &DeliveryService_ServiceDesc.Streams[1], DeliveryService_CallStream_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[StreamCallRequest, StreamCallResponse]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type DeliveryService_CallStreamClient = grpc.BidiStreamingClient[StreamCallRequest, StreamCallResponse]
+
 // DeliveryServiceServer is the server API for DeliveryService service.
 // All implementations must embed UnimplementedDeliveryServiceServer
 // for forward compatibility.
 type DeliveryServiceServer interface {
 	Deliver(context.Context, *Delivery) (*DeliveryAck, error)
 	Call(context.Context, *Delivery) (*Result, error)
+	// CallBatch 一次接收请求批次，逐项流式返回完成结果。
+	CallBatch(*Delivery, grpc.ServerStreamingServer[Result]) error
+	// CallStream 在同一目标实例的长流上承载多项独立调用。
+	CallStream(grpc.BidiStreamingServer[StreamCallRequest, StreamCallResponse]) error
 	mustEmbedUnimplementedDeliveryServiceServer()
 }
 
@@ -80,6 +122,12 @@ func (UnimplementedDeliveryServiceServer) Deliver(context.Context, *Delivery) (*
 }
 func (UnimplementedDeliveryServiceServer) Call(context.Context, *Delivery) (*Result, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Call not implemented")
+}
+func (UnimplementedDeliveryServiceServer) CallBatch(*Delivery, grpc.ServerStreamingServer[Result]) error {
+	return status.Errorf(codes.Unimplemented, "method CallBatch not implemented")
+}
+func (UnimplementedDeliveryServiceServer) CallStream(grpc.BidiStreamingServer[StreamCallRequest, StreamCallResponse]) error {
+	return status.Errorf(codes.Unimplemented, "method CallStream not implemented")
 }
 func (UnimplementedDeliveryServiceServer) mustEmbedUnimplementedDeliveryServiceServer() {}
 func (UnimplementedDeliveryServiceServer) testEmbeddedByValue()                         {}
@@ -138,6 +186,24 @@ func _DeliveryService_Call_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DeliveryService_CallBatch_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(Delivery)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(DeliveryServiceServer).CallBatch(m, &grpc.GenericServerStream[Delivery, Result]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type DeliveryService_CallBatchServer = grpc.ServerStreamingServer[Result]
+
+func _DeliveryService_CallStream_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(DeliveryServiceServer).CallStream(&grpc.GenericServerStream[StreamCallRequest, StreamCallResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type DeliveryService_CallStreamServer = grpc.BidiStreamingServer[StreamCallRequest, StreamCallResponse]
+
 // DeliveryService_ServiceDesc is the grpc.ServiceDesc for DeliveryService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -154,6 +220,18 @@ var DeliveryService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _DeliveryService_Call_Handler,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "CallBatch",
+			Handler:       _DeliveryService_CallBatch_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "CallStream",
+			Handler:       _DeliveryService_CallStream_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
+		},
+	},
 	Metadata: "modules/rpc/proto/rpc.proto",
 }

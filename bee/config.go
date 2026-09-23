@@ -108,6 +108,10 @@ type HealthConfig struct {
 type ActorConfig struct {
 	// Runtime 描述本地实体宿主、Core NATS 传输和邮箱参数。
 	Runtime txactor.Config
+	// DirectCallBatch 为 Agent 直连 Actor Call 启用短窗口合批试验。
+	DirectCallBatch bool
+	// DirectCallStream 为 Agent 直连 Actor Call 启用长流试验。
+	DirectCallStream bool
 }
 
 // DiscoveryConfig 描述服务注册、租约和实例目录。
@@ -171,7 +175,7 @@ func (config Config) toFramework() framework.Config {
 			Format: config.Log.Format,
 			Output: config.Log.Output,
 		},
-		Actor:     framework.ActorConfig{Runtime: config.Actor.Runtime},
+		Actor:     framework.ActorConfig{Runtime: config.Actor.Runtime, DirectCallBatch: config.Actor.DirectCallBatch, DirectCallStream: config.Actor.DirectCallStream},
 		TaskQueue: config.TaskQueue,
 		Discovery: framework.DiscoveryConfig{Etcd: config.Discovery.Etcd},
 	}

@@ -66,3 +66,36 @@ message Result {
   // processed_up_seq 是 Agent 上行专用的处理完成序号，不能与业务结果字段同时出现。
   int64 processed_up_seq = 7;
 }
+
+// DirectCallBatch 仅用于 Agent 到实体宿主的 gRPC 直连合批，按项目逐条返回结果。
+message DirectCallBatch {
+  repeated DirectCallItem items = 1;
+}
+
+message DirectCallItem {
+  string kind = 1;
+  string key = 2;
+  Delivery delivery = 3;
+  int64 deadline_slack_nano = 4;
+}
+
+message DirectCallOutcome {
+  oneof outcome {
+    Result result = 1;
+    DirectCallFailure failure = 2;
+  }
+}
+
+message DirectCallFailure {
+  int32 code = 1;
+  string message = 2;
+  string kind = 3;
+}
+
+// DirectStreamCall 携带单项实体调用及本项剩余等待时间。
+message DirectStreamCall {
+  string kind = 1;
+  string key = 2;
+  Delivery delivery = 3;
+  int64 timeout_nano = 4;
+}

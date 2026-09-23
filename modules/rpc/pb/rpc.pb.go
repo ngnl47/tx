@@ -313,6 +313,136 @@ func (x *DeliveryAck) GetErrorCode() string {
 	return ""
 }
 
+// StreamCallRequest 在一条长流中标识一项独立调用。
+type StreamCallRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	Delivery      *Delivery              `protobuf:"bytes,2,opt,name=delivery,proto3" json:"delivery,omitempty"`
+	Cancel        bool                   `protobuf:"varint,3,opt,name=cancel,proto3" json:"cancel,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StreamCallRequest) Reset() {
+	*x = StreamCallRequest{}
+	mi := &file_modules_rpc_proto_rpc_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StreamCallRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StreamCallRequest) ProtoMessage() {}
+
+func (x *StreamCallRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_modules_rpc_proto_rpc_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StreamCallRequest.ProtoReflect.Descriptor instead.
+func (*StreamCallRequest) Descriptor() ([]byte, []int) {
+	return file_modules_rpc_proto_rpc_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *StreamCallRequest) GetId() uint64 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+func (x *StreamCallRequest) GetDelivery() *Delivery {
+	if x != nil {
+		return x.Delivery
+	}
+	return nil
+}
+
+func (x *StreamCallRequest) GetCancel() bool {
+	if x != nil {
+		return x.Cancel
+	}
+	return false
+}
+
+// StreamCallResponse 逐项返回调用结果；错误只作用于本项。
+type StreamCallResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	Result        *Result                `protobuf:"bytes,2,opt,name=result,proto3" json:"result,omitempty"`
+	ErrorCode     int32                  `protobuf:"varint,3,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
+	ErrorMessage  string                 `protobuf:"bytes,4,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StreamCallResponse) Reset() {
+	*x = StreamCallResponse{}
+	mi := &file_modules_rpc_proto_rpc_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StreamCallResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StreamCallResponse) ProtoMessage() {}
+
+func (x *StreamCallResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_modules_rpc_proto_rpc_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StreamCallResponse.ProtoReflect.Descriptor instead.
+func (*StreamCallResponse) Descriptor() ([]byte, []int) {
+	return file_modules_rpc_proto_rpc_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *StreamCallResponse) GetId() uint64 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+func (x *StreamCallResponse) GetResult() *Result {
+	if x != nil {
+		return x.Result
+	}
+	return nil
+}
+
+func (x *StreamCallResponse) GetErrorCode() int32 {
+	if x != nil {
+		return x.ErrorCode
+	}
+	return 0
+}
+
+func (x *StreamCallResponse) GetErrorMessage() string {
+	if x != nil {
+		return x.ErrorMessage
+	}
+	return ""
+}
+
 var File_modules_rpc_proto_rpc_proto protoreflect.FileDescriptor
 
 const file_modules_rpc_proto_rpc_proto_rawDesc = "" +
@@ -337,14 +467,27 @@ const file_modules_rpc_proto_rpc_proto_rawDesc = "" +
 	"\vDeliveryAck\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x1d\n" +
 	"\n" +
-	"error_code\x18\x02 \x01(\tR\terrorCode*X\n" +
+	"error_code\x18\x02 \x01(\tR\terrorCode\"l\n" +
+	"\x11StreamCallRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\x04R\x02id\x12/\n" +
+	"\bdelivery\x18\x02 \x01(\v2\x13.tx.rpc.v1.DeliveryR\bdelivery\x12\x16\n" +
+	"\x06cancel\x18\x03 \x01(\bR\x06cancel\"\x93\x01\n" +
+	"\x12StreamCallResponse\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\x04R\x02id\x12)\n" +
+	"\x06result\x18\x02 \x01(\v2\x11.tx.rpc.v1.ResultR\x06result\x12\x1d\n" +
+	"\n" +
+	"error_code\x18\x03 \x01(\x05R\terrorCode\x12#\n" +
+	"\rerror_message\x18\x04 \x01(\tR\ferrorMessage*X\n" +
 	"\tRouteKind\x12\x1a\n" +
 	"\x16ROUTE_KIND_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12ROUTE_KIND_SERVICE\x10\x01\x12\x17\n" +
-	"\x13ROUTE_KIND_INSTANCE\x10\x022y\n" +
+	"\x13ROUTE_KIND_INSTANCE\x10\x022\xff\x01\n" +
 	"\x0fDeliveryService\x126\n" +
 	"\aDeliver\x12\x13.tx.rpc.v1.Delivery\x1a\x16.tx.rpc.v1.DeliveryAck\x12.\n" +
-	"\x04Call\x12\x13.tx.rpc.v1.Delivery\x1a\x11.tx.rpc.v1.ResultB+Z)github.com/ngnl47/tx/modules/rpc/pb;rpcpbb\x06proto3"
+	"\x04Call\x12\x13.tx.rpc.v1.Delivery\x1a\x11.tx.rpc.v1.Result\x125\n" +
+	"\tCallBatch\x12\x13.tx.rpc.v1.Delivery\x1a\x11.tx.rpc.v1.Result0\x01\x12M\n" +
+	"\n" +
+	"CallStream\x12\x1c.tx.rpc.v1.StreamCallRequest\x1a\x1d.tx.rpc.v1.StreamCallResponse(\x010\x01B+Z)github.com/ngnl47/tx/modules/rpc/pb;rpcpbb\x06proto3"
 
 var (
 	file_modules_rpc_proto_rpc_proto_rawDescOnce sync.Once
@@ -359,26 +502,34 @@ func file_modules_rpc_proto_rpc_proto_rawDescGZIP() []byte {
 }
 
 var file_modules_rpc_proto_rpc_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_modules_rpc_proto_rpc_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_modules_rpc_proto_rpc_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_modules_rpc_proto_rpc_proto_goTypes = []any{
-	(RouteKind)(0),      // 0: tx.rpc.v1.RouteKind
-	(*Route)(nil),       // 1: tx.rpc.v1.Route
-	(*Delivery)(nil),    // 2: tx.rpc.v1.Delivery
-	(*Result)(nil),      // 3: tx.rpc.v1.Result
-	(*DeliveryAck)(nil), // 4: tx.rpc.v1.DeliveryAck
+	(RouteKind)(0),             // 0: tx.rpc.v1.RouteKind
+	(*Route)(nil),              // 1: tx.rpc.v1.Route
+	(*Delivery)(nil),           // 2: tx.rpc.v1.Delivery
+	(*Result)(nil),             // 3: tx.rpc.v1.Result
+	(*DeliveryAck)(nil),        // 4: tx.rpc.v1.DeliveryAck
+	(*StreamCallRequest)(nil),  // 5: tx.rpc.v1.StreamCallRequest
+	(*StreamCallResponse)(nil), // 6: tx.rpc.v1.StreamCallResponse
 }
 var file_modules_rpc_proto_rpc_proto_depIdxs = []int32{
 	0, // 0: tx.rpc.v1.Route.kind:type_name -> tx.rpc.v1.RouteKind
 	1, // 1: tx.rpc.v1.Delivery.route:type_name -> tx.rpc.v1.Route
-	2, // 2: tx.rpc.v1.DeliveryService.Deliver:input_type -> tx.rpc.v1.Delivery
-	2, // 3: tx.rpc.v1.DeliveryService.Call:input_type -> tx.rpc.v1.Delivery
-	4, // 4: tx.rpc.v1.DeliveryService.Deliver:output_type -> tx.rpc.v1.DeliveryAck
-	3, // 5: tx.rpc.v1.DeliveryService.Call:output_type -> tx.rpc.v1.Result
-	4, // [4:6] is the sub-list for method output_type
-	2, // [2:4] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	2, // 2: tx.rpc.v1.StreamCallRequest.delivery:type_name -> tx.rpc.v1.Delivery
+	3, // 3: tx.rpc.v1.StreamCallResponse.result:type_name -> tx.rpc.v1.Result
+	2, // 4: tx.rpc.v1.DeliveryService.Deliver:input_type -> tx.rpc.v1.Delivery
+	2, // 5: tx.rpc.v1.DeliveryService.Call:input_type -> tx.rpc.v1.Delivery
+	2, // 6: tx.rpc.v1.DeliveryService.CallBatch:input_type -> tx.rpc.v1.Delivery
+	5, // 7: tx.rpc.v1.DeliveryService.CallStream:input_type -> tx.rpc.v1.StreamCallRequest
+	4, // 8: tx.rpc.v1.DeliveryService.Deliver:output_type -> tx.rpc.v1.DeliveryAck
+	3, // 9: tx.rpc.v1.DeliveryService.Call:output_type -> tx.rpc.v1.Result
+	3, // 10: tx.rpc.v1.DeliveryService.CallBatch:output_type -> tx.rpc.v1.Result
+	6, // 11: tx.rpc.v1.DeliveryService.CallStream:output_type -> tx.rpc.v1.StreamCallResponse
+	8, // [8:12] is the sub-list for method output_type
+	4, // [4:8] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_modules_rpc_proto_rpc_proto_init() }
@@ -392,7 +543,7 @@ func file_modules_rpc_proto_rpc_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_modules_rpc_proto_rpc_proto_rawDesc), len(file_modules_rpc_proto_rpc_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   4,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
