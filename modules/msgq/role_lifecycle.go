@@ -3,6 +3,7 @@ package msgq
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -112,7 +113,7 @@ func (s *Server) maintainRoles(ctx context.Context, now time.Time) error {
 	var errs []error
 	for _, id := range ids {
 		if err := s.maintainRole(ctx, id, now); err != nil {
-			errs = append(errs, err)
+			errs = append(errs, fmt.Errorf("role %d: %w", id, err))
 		}
 	}
 	return errors.Join(errs...)
@@ -173,24 +174,24 @@ func (s *Server) maintainRole(ctx context.Context, roleID int64, now time.Time) 
 	}
 	s.mu.Unlock()
 	if !matched {
-		return ErrSessionChanged
+		return fmt.Errorf("renewal superseded: %w", ErrSessionChanged)
 	}
 	// 已过期的本地归属不能靠迟到结果复活；新初始化仍需重新申请归属。
 	if !time.Now().Before(current.expires) {
 		s.retireRole(current)
-		return ErrSessionChanged
+		return fmt.Errorf("local lease expired during renewal: %w", ErrSessionChanged)
 	}
 	if err != nil {
 		return err
 	}
 	if !refreshed {
 		s.retireRole(lease)
-		return ErrSessionChanged
+		return fmt.Errorf("stored ownership no longer matches generation %s: %w", lease.binding.Generation, ErrSessionChanged)
 	}
 	updated := s.newRoleLease(lease.binding, started)
 	if !time.Now().Before(updated.expires) {
 		s.retireRole(lease)
-		return ErrSessionChanged
+		return fmt.Errorf("renewal exceeded lease duration: %w", ErrSessionChanged)
 	}
 	s.mu.Lock()
 	s.roleLeases[roleID] = updated
