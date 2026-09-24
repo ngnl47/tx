@@ -48,3 +48,5 @@ Mac、Go 1.26.5、`GOMAXPROCS=4`，同一 Actor+gRPC 夹具，`-benchtime=3s -co
 ## 后续验收
 
 本地真实 Host 断流测试覆盖了在途调用失败及新流恢复；四机测试覆盖了 Agent→Game 网络中断后，业务失败可见和网络恢复后新会话继续运行。两者均不能代替生产滚动排水、实例异常或原会话自动恢复的验证。不能把 1:1 Ping/Pong 容量外推到 MMO 上行 20/s、下行 50/s；该不对称负载继续独立评估。
+
+后续四机真实上下行不对称回测见 [2026-09-24-asymmetric-downlink.md](2026-09-24-asymmetric-downlink.md)。
