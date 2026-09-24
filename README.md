@@ -857,6 +857,8 @@ if err != nil {
 `http/https` Origin 写入 `webSocketOrigins`，不允许通配符；空列表沿用 WebSocket 同源校验。服务选择只由
 `--services` 决定，YAML 不使用 `enabled` 作为第二个启动开关：
 
+远端 Agent 每个 Session 使用一条 MsgQ gRPC 下行流；`fetchBatch` 仅限制一次读取的最大消息数，不引入等待凑批。Agent 与 MsgQ 同进程时继续直接读取本地邮箱。断线恢复仍由原 SessionID、ConnectionID 和 Ack 契约处理。分批部署新版本时先升级 MsgQ、再升级 Agent；旧 MsgQ 不提供 `StreamFetch`。
+
 ```yaml
 services:
   agent:

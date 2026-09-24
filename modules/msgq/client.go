@@ -26,6 +26,16 @@ type SessionClient interface {
 	Close() error
 }
 
+// FetchSomeStream 持续读取同一会话的下行批次，连接关闭时由传入的 Context 取消。
+type FetchSomeStream interface {
+	Recv() (FetchSomeResult, error)
+}
+
+// StreamingSessionClient 是支持持续下行读取的会话客户端。
+type StreamingSessionClient interface {
+	StreamFetch(context.Context, FetchSomeRequest) (FetchSomeStream, error)
+}
+
 // AcquireSessionRequest 描述 Agent 为逻辑会话选择 MsgQ owner 所需的可信身份。
 type AcquireSessionRequest struct {
 	RoleID    int64

@@ -111,6 +111,7 @@ service MailboxService {
   rpc PubRole(PubRoleRequest) returns (BroadcastResponse);
   rpc Fetch(FetchRequest) returns (FetchResponse);
   rpc FetchSome(FetchSomeRequest) returns (FetchSomeResponse);
+  rpc StreamFetch(FetchSomeRequest) returns (stream FetchSomeResponse);
   rpc Confirm(ConfirmRequest) returns (Empty);
   rpc Touch(TouchRequest) returns (Empty);
   rpc JoinTopics(TopicRequest) returns (Empty);

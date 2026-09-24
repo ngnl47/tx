@@ -277,8 +277,18 @@ func (s *Server) dispatchUpMsg(ctx context.Context, client msgq.SessionClient, h
 }
 
 func (s *Server) writeDownMsgs(ctx context.Context, client msgq.SessionClient, header msgq.SessionHeader, writer *sessionFrameWriter, written *atomic.Int64) error {
+	receive := func() (msgq.FetchSomeResult, error) {
+		return client.FetchSome(ctx, msgq.FetchSomeRequest{Header: header, Max: s.fetchBatch})
+	}
+	if streaming, ok := client.(msgq.StreamingSessionClient); ok {
+		stream, err := streaming.StreamFetch(ctx, msgq.FetchSomeRequest{Header: header, Max: s.fetchBatch})
+		if err != nil {
+			return err
+		}
+		receive = stream.Recv
+	}
 	for {
-		batch, err := client.FetchSome(ctx, msgq.FetchSomeRequest{Header: header, Max: s.fetchBatch})
+		batch, err := receive()
 		if err != nil {
 			return err
 		}

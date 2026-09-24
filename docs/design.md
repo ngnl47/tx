@@ -2070,7 +2070,7 @@ Login、Agent、MsgQ、Game 是基础组合中的四类逻辑服务，可以同�
 1. 客户端通过 HTTP 登录入口完成认证；生产可在入口终止 TLS。Login 返回绑定目标 Agent 的短期票据、SessionID 和公开地址。这里不要求 Login 先通过 RPC 创建 Game Actor。
 2. 客户端与所选 Agent 建立 TCP/WebSocket 长连接；Agent 验票并通过 MsgQ 初始化会话。Login 不进入后续每条业务消息的数据路径。
 3. Agent 按生成命令及路由键解析实体归属，通过 gRPC 直达 Game、SLGWorld、FightRoom 等命令所属服务，不经 NATS，也不要求 Game 中转。目标完成处理后，在同一次 Call 响应中返回 `ProcessedUpSeq`，不另开完成 ACK RPC。
-4. Game、SLGWorld、FightRoom 等业务服务分别通过 gRPC 直接向 MsgQ 发布下行，不经 NATS，也不要求回到 Game：普通角色响应使用 `PubRole` 扇出到该角色的多个 Session，请求级错误使用 `PubSession` 精确发布。Agent 通过 MsgQ 的 Rec/Ack/Fetch 等接口协调序号与下行读取，再发送客户端帧。
+4. Game、SLGWorld、FightRoom 等业务服务分别通过 gRPC 直接向 MsgQ 发布下行，不经 NATS，也不要求回到 Game：普通角色响应使用 `PubRole` 扇出到该角色的多个 Session，请求级错误使用 `PubSession` 精确发布。Agent 通过 MsgQ 的 Rec/Ack 接口协调序号，并对远端 MsgQ 每个 Session 建立一条 gRPC 下行读取流，再发送客户端帧；同进程 MsgQ 继续直接读取本地邮箱。
 
 服务池之间可以多对多通信，但某个 Session 的当前 Agent 连接和 MsgQ owner、某个 Actor 的当前归属均是明确的。多 Session 向同一 Role 扇入时由目标实体邮箱串行化，不把 Agent 设成全局串行器。相同 Role 的多个会话下行由 MsgQ 会话机制扇出。
 
@@ -2138,7 +2138,7 @@ control.NewHandoffClient 将控制协议和响应身份校验封装为已有 Han
 启动期分配返回 unavailable。租约丢失或排水后分配器立即停止发号，且不能被启动末尾的启用动作重新打开。
 
 Login 是项目侧无状态 HTTP 服务；通过认证和访问检查后，将 SessionID 与业务身份写入绑定 Agent 实例的短期票据。
-客户端按 Login 返回的公开地址连接 Agent，Agent 验票建立 Session；恢复复用原票据和 Session，不重新向 Login 取号。
+客户端按 Login 返回的公开地址连接 Agent，Agent 验票建立 Session。新建握手仍校验票据所指的运行 `InstanceID` 与有效期；恢复握手验签后沿用票据中的原主体和 SessionID，不要求目标运行 `InstanceID` 相同或票据仍在新建有效期。客户端意外断线时保留原票据、地址、序号及待发送队列，限次恢复；新 Agent 若在原地址重启、使用同一票据验签密钥且原 MsgQ 邮箱仍存在，MsgQ 将原 Session 重绑到新的 ConnectionID 并续接 Seq/Ack 与未确认下行。原邮箱不存在时恢复失败，不能静默改建新 Session；原地址已变化时，当前客户端不能凭旧地址自动发现新 Agent。重新 Login 则取得新票据、新 SessionID 并重新认证授权，Seq/Ack、未确认下行与旧 Session 无关；是否重新从存储读取玩家 GD 由 Role Actor 与缓存生命周期决定，不由 SessionID 保证。
 Login 关闭只停止签发新票据，不拥有或终止 Agent/MsgQ 上已经建立的 Session。业务账号、角色号段与账号角色投影由项目维护。
 
 正常关闭把实例状态推进到 `stopping` 后删除实例键，但只停止租约续租，让 `workSlot` 键按 TTL 自然过期；这样新进程
@@ -2268,6 +2268,8 @@ Agent 选址、邮箱初始化和 `Sender.PubRole` 已接入角色归属。Sende
 - 下行队列和 Ack。
 - 断线重连时重发未确认消息。
 - 本地 Topic 广播。
+
+远端下行流只复用传输，不改变邮箱出队、Seq/Ack 和重连重放的权威边界。每次读取仍校验当前 `ConnectionID`；Agent 断开后取消流，新连接通过 `Restore` 按已有 Ack 重置发送游标。流式发送不额外等待凑批，也不把 MsgQ 内存下行变成持久化消息。
 
 Redis 精确 binding key 为 `<prefix>:session:v2:{SessionID}`，保存完整四元组；角色归属 key 为
 `<prefix>:role:{RoleID}`，保存 InstanceID 和 Generation。二者分别按 SessionID 和 RoleID 选择分片，只保证各自单 key

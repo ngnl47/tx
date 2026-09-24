@@ -179,6 +179,30 @@ func (c *grpcConnection) FetchSome(ctx context.Context, request FetchSomeRequest
 	if err != nil {
 		return FetchSomeResult{}, mailboxClientError(err)
 	}
+	return fetchSomeFromProto(response)
+}
+
+func (c *grpcConnection) StreamFetch(ctx context.Context, request FetchSomeRequest) (FetchSomeStream, error) {
+	stream, err := c.client.StreamFetch(ctx, &msgqpb.FetchSomeRequest{Header: headerToProto(request.Header), Max: int32(request.Max)})
+	if err != nil {
+		return nil, mailboxClientError(err)
+	}
+	return grpcFetchStream{stream: stream}, nil
+}
+
+type grpcFetchStream struct {
+	stream grpc.ServerStreamingClient[msgqpb.FetchSomeResponse]
+}
+
+func (s grpcFetchStream) Recv() (FetchSomeResult, error) {
+	response, err := s.stream.Recv()
+	if err != nil {
+		return FetchSomeResult{}, mailboxClientError(err)
+	}
+	return fetchSomeFromProto(response)
+}
+
+func fetchSomeFromProto(response *msgqpb.FetchSomeResponse) (FetchSomeResult, error) {
 	if response == nil || len(response.GetMessages()) == 0 {
 		return FetchSomeResult{}, ErrInvalidMailboxResponse
 	}

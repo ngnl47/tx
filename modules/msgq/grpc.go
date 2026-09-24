@@ -70,11 +70,27 @@ func (s *mailboxService) FetchSome(ctx context.Context, request *msgqpb.FetchSom
 	if err != nil {
 		return nil, mailboxStatusError(err)
 	}
+	return fetchSomeToProto(result), nil
+}
+
+func (s *mailboxService) StreamFetch(request *msgqpb.FetchSomeRequest, stream grpc.ServerStreamingServer[msgqpb.FetchSomeResponse]) error {
+	for {
+		result, err := s.mailbox.FetchSome(stream.Context(), FetchSomeRequest{Header: headerFromProto(request.GetHeader()), Max: int(request.GetMax())})
+		if err != nil {
+			return mailboxStatusError(err)
+		}
+		if err := stream.Send(fetchSomeToProto(result)); err != nil {
+			return err
+		}
+	}
+}
+
+func fetchSomeToProto(result FetchSomeResult) *msgqpb.FetchSomeResponse {
 	messages := make([]*msgqpb.FetchResponse, len(result.Messages))
 	for index, message := range result.Messages {
 		messages[index] = fetchResultToProto(message)
 	}
-	return &msgqpb.FetchSomeResponse{Messages: messages}, nil
+	return &msgqpb.FetchSomeResponse{Messages: messages}
 }
 
 func (s *mailboxService) Confirm(ctx context.Context, request *msgqpb.ConfirmRequest) (*msgqpb.Empty, error) {

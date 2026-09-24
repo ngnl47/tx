@@ -1118,7 +1118,7 @@ const file_modules_msgq_proto_msgq_proto_rawDesc = "" +
 	"overflowed\"L\n" +
 	"\x17TerminateSessionRequest\x121\n" +
 	"\x06header\x18\x01 \x01(\v2\x19.tx.msgq.v1.SessionHeaderR\x06header\"\a\n" +
-	"\x05Empty2\xe5\x06\n" +
+	"\x05Empty2\xb3\a\n" +
 	"\x0eMailboxService\x129\n" +
 	"\x04Init\x12\x17.tx.msgq.v1.InitRequest\x1a\x18.tx.msgq.v1.InitResponse\x126\n" +
 	"\x03Rec\x12\x16.tx.msgq.v1.RecRequest\x1a\x17.tx.msgq.v1.RecResponse\x12K\n" +
@@ -1126,7 +1126,8 @@ const file_modules_msgq_proto_msgq_proto_rawDesc = "" +
 	"PubSession\x12\x1d.tx.msgq.v1.PubSessionRequest\x1a\x1e.tx.msgq.v1.PubSessionResponse\x12D\n" +
 	"\aPubRole\x12\x1a.tx.msgq.v1.PubRoleRequest\x1a\x1d.tx.msgq.v1.BroadcastResponse\x12<\n" +
 	"\x05Fetch\x12\x18.tx.msgq.v1.FetchRequest\x1a\x19.tx.msgq.v1.FetchResponse\x12H\n" +
-	"\tFetchSome\x12\x1c.tx.msgq.v1.FetchSomeRequest\x1a\x1d.tx.msgq.v1.FetchSomeResponse\x128\n" +
+	"\tFetchSome\x12\x1c.tx.msgq.v1.FetchSomeRequest\x1a\x1d.tx.msgq.v1.FetchSomeResponse\x12L\n" +
+	"\vStreamFetch\x12\x1c.tx.msgq.v1.FetchSomeRequest\x1a\x1d.tx.msgq.v1.FetchSomeResponse0\x01\x128\n" +
 	"\aConfirm\x12\x1a.tx.msgq.v1.ConfirmRequest\x1a\x11.tx.msgq.v1.Empty\x124\n" +
 	"\x05Touch\x12\x18.tx.msgq.v1.TouchRequest\x1a\x11.tx.msgq.v1.Empty\x129\n" +
 	"\n" +
@@ -1187,28 +1188,30 @@ var file_modules_msgq_proto_msgq_proto_depIdxs = []int32{
 	7,  // 12: tx.msgq.v1.MailboxService.PubRole:input_type -> tx.msgq.v1.PubRoleRequest
 	8,  // 13: tx.msgq.v1.MailboxService.Fetch:input_type -> tx.msgq.v1.FetchRequest
 	10, // 14: tx.msgq.v1.MailboxService.FetchSome:input_type -> tx.msgq.v1.FetchSomeRequest
-	12, // 15: tx.msgq.v1.MailboxService.Confirm:input_type -> tx.msgq.v1.ConfirmRequest
-	13, // 16: tx.msgq.v1.MailboxService.Touch:input_type -> tx.msgq.v1.TouchRequest
-	14, // 17: tx.msgq.v1.MailboxService.JoinTopics:input_type -> tx.msgq.v1.TopicRequest
-	14, // 18: tx.msgq.v1.MailboxService.LeaveTopics:input_type -> tx.msgq.v1.TopicRequest
-	14, // 19: tx.msgq.v1.MailboxService.Topics:input_type -> tx.msgq.v1.TopicRequest
-	16, // 20: tx.msgq.v1.MailboxService.BroadcastTopic:input_type -> tx.msgq.v1.BroadcastTopicRequest
-	18, // 21: tx.msgq.v1.MailboxService.TerminateSession:input_type -> tx.msgq.v1.TerminateSessionRequest
-	2,  // 22: tx.msgq.v1.MailboxService.Init:output_type -> tx.msgq.v1.InitResponse
-	4,  // 23: tx.msgq.v1.MailboxService.Rec:output_type -> tx.msgq.v1.RecResponse
-	6,  // 24: tx.msgq.v1.MailboxService.PubSession:output_type -> tx.msgq.v1.PubSessionResponse
-	17, // 25: tx.msgq.v1.MailboxService.PubRole:output_type -> tx.msgq.v1.BroadcastResponse
-	9,  // 26: tx.msgq.v1.MailboxService.Fetch:output_type -> tx.msgq.v1.FetchResponse
-	11, // 27: tx.msgq.v1.MailboxService.FetchSome:output_type -> tx.msgq.v1.FetchSomeResponse
-	19, // 28: tx.msgq.v1.MailboxService.Confirm:output_type -> tx.msgq.v1.Empty
-	19, // 29: tx.msgq.v1.MailboxService.Touch:output_type -> tx.msgq.v1.Empty
-	19, // 30: tx.msgq.v1.MailboxService.JoinTopics:output_type -> tx.msgq.v1.Empty
-	19, // 31: tx.msgq.v1.MailboxService.LeaveTopics:output_type -> tx.msgq.v1.Empty
-	15, // 32: tx.msgq.v1.MailboxService.Topics:output_type -> tx.msgq.v1.TopicsResponse
-	17, // 33: tx.msgq.v1.MailboxService.BroadcastTopic:output_type -> tx.msgq.v1.BroadcastResponse
-	19, // 34: tx.msgq.v1.MailboxService.TerminateSession:output_type -> tx.msgq.v1.Empty
-	22, // [22:35] is the sub-list for method output_type
-	9,  // [9:22] is the sub-list for method input_type
+	10, // 15: tx.msgq.v1.MailboxService.StreamFetch:input_type -> tx.msgq.v1.FetchSomeRequest
+	12, // 16: tx.msgq.v1.MailboxService.Confirm:input_type -> tx.msgq.v1.ConfirmRequest
+	13, // 17: tx.msgq.v1.MailboxService.Touch:input_type -> tx.msgq.v1.TouchRequest
+	14, // 18: tx.msgq.v1.MailboxService.JoinTopics:input_type -> tx.msgq.v1.TopicRequest
+	14, // 19: tx.msgq.v1.MailboxService.LeaveTopics:input_type -> tx.msgq.v1.TopicRequest
+	14, // 20: tx.msgq.v1.MailboxService.Topics:input_type -> tx.msgq.v1.TopicRequest
+	16, // 21: tx.msgq.v1.MailboxService.BroadcastTopic:input_type -> tx.msgq.v1.BroadcastTopicRequest
+	18, // 22: tx.msgq.v1.MailboxService.TerminateSession:input_type -> tx.msgq.v1.TerminateSessionRequest
+	2,  // 23: tx.msgq.v1.MailboxService.Init:output_type -> tx.msgq.v1.InitResponse
+	4,  // 24: tx.msgq.v1.MailboxService.Rec:output_type -> tx.msgq.v1.RecResponse
+	6,  // 25: tx.msgq.v1.MailboxService.PubSession:output_type -> tx.msgq.v1.PubSessionResponse
+	17, // 26: tx.msgq.v1.MailboxService.PubRole:output_type -> tx.msgq.v1.BroadcastResponse
+	9,  // 27: tx.msgq.v1.MailboxService.Fetch:output_type -> tx.msgq.v1.FetchResponse
+	11, // 28: tx.msgq.v1.MailboxService.FetchSome:output_type -> tx.msgq.v1.FetchSomeResponse
+	11, // 29: tx.msgq.v1.MailboxService.StreamFetch:output_type -> tx.msgq.v1.FetchSomeResponse
+	19, // 30: tx.msgq.v1.MailboxService.Confirm:output_type -> tx.msgq.v1.Empty
+	19, // 31: tx.msgq.v1.MailboxService.Touch:output_type -> tx.msgq.v1.Empty
+	19, // 32: tx.msgq.v1.MailboxService.JoinTopics:output_type -> tx.msgq.v1.Empty
+	19, // 33: tx.msgq.v1.MailboxService.LeaveTopics:output_type -> tx.msgq.v1.Empty
+	15, // 34: tx.msgq.v1.MailboxService.Topics:output_type -> tx.msgq.v1.TopicsResponse
+	17, // 35: tx.msgq.v1.MailboxService.BroadcastTopic:output_type -> tx.msgq.v1.BroadcastResponse
+	19, // 36: tx.msgq.v1.MailboxService.TerminateSession:output_type -> tx.msgq.v1.Empty
+	23, // [23:37] is the sub-list for method output_type
+	9,  // [9:23] is the sub-list for method input_type
 	9,  // [9:9] is the sub-list for extension type_name
 	9,  // [9:9] is the sub-list for extension extendee
 	0,  // [0:9] is the sub-list for field type_name

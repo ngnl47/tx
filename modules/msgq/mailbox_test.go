@@ -380,6 +380,29 @@ func TestInitRestoreRequiresExistingMatchingSession(t *testing.T) {
 	}
 }
 
+func TestRestoreReturnsAcceptedUpSeqBeforeBusinessCompletion(t *testing.T) {
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: &testSessionStore{}, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := SessionHeader{RoleID: 1, SessionID: 7, ConnectionID: 1}
+	if _, err := server.Init(context.Background(), InitRequest{Header: first}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.Rec(context.Background(), RecRequest{Header: first, Seq: 1}); err != nil {
+		t.Fatal(err)
+	}
+	restored := first
+	restored.ConnectionID = 2
+	result, err := server.Init(context.Background(), InitRequest{Header: restored, Restore: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.UpMsgSeq != 1 {
+		t.Fatalf("restored UpMsgSeq = %d, want accepted seq 1", result.UpMsgSeq)
+	}
+}
+
 func TestSlowSessionExpiresDespiteClientActivity(t *testing.T) {
 	server, err := NewServer(ServerOptions{
 		InstanceID:         "msgq-1",
