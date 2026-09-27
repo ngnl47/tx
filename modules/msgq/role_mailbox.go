@@ -3,6 +3,8 @@ package msgq
 import (
 	"context"
 	"time"
+
+	txmetrics "github.com/ngnl47/tx/metrics"
 )
 
 // BroadcastRole 仅向本实例内绑定 roleID 的邮箱分发，不执行 Redis 寻址或跨实例广播。
@@ -22,7 +24,11 @@ func (s *Server) PubRole(ctx context.Context, binding RoleBinding, payload []byt
 	return s.broadcastRole(ctx, binding.RoleID, &binding, payload)
 }
 
-func (s *Server) broadcastRole(ctx context.Context, roleID int64, expected *RoleBinding, payload []byte) (BroadcastResult, error) {
+func (s *Server) broadcastRole(ctx context.Context, roleID int64, expected *RoleBinding, payload []byte) (result BroadcastResult, err error) {
+	started := time.Now()
+	defer func() {
+		txmetrics.RecordMsgQPublish(txmetrics.PublishRole, result.Delivered, time.Since(started), err)
+	}()
 	if s == nil {
 		return BroadcastResult{}, ErrServerNil
 	}

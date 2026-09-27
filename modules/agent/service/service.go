@@ -55,7 +55,6 @@ type Options struct {
 	// HTTPHandler 承载项目普通 HTTP 请求，根路径仍保留给 WebSocket。
 	HTTPHandler   http.Handler
 	MaxFrameBytes int
-	FetchBatch    int
 	Identity      txagent.IdentityResolver
 	Dispatcher    txagent.Dispatcher
 	Sessions      txagent.SessionClientRouter
@@ -69,6 +68,7 @@ type Service struct {
 	dependencies Dependencies
 
 	mu                sync.RWMutex
+	runtime           *txagent.Server
 	tcp               *txagent.TCPServer
 	websocket         *http.Server
 	websocketListener net.Listener
@@ -102,7 +102,6 @@ func (service *Service) Start(context.Context) error {
 		Dispatcher:       service.options.Dispatcher,
 		Admission:        service.dependencies.Admission,
 		Sessions:         sessions,
-		FetchBatch:       service.options.FetchBatch,
 	})
 	if err != nil {
 		_ = closer.Close()
@@ -142,6 +141,7 @@ func (service *Service) Start(context.Context) error {
 		}
 	}
 	service.mu.Lock()
+	service.runtime = agentRuntime
 	service.tcp = tcp
 	service.websocket = websocket
 	service.websocketListener = listener
@@ -151,7 +151,7 @@ func (service *Service) Start(context.Context) error {
 	service.sessionCloser = closer
 	service.draining = false
 	service.mu.Unlock()
-	txlog.Info("agent service initialized", "tcp", service.TCPAddress(), "webSocket", service.WebSocketAddress(), "fetchBatch", service.options.FetchBatch)
+	txlog.Info("agent service initialized", "tcp", service.TCPAddress(), "webSocket", service.WebSocketAddress())
 	return nil
 }
 
@@ -218,7 +218,7 @@ func (service *Service) composeHTTPHandler(websocketHandler http.Handler) http.H
 }
 
 // Drain 关闭入口监听器，不中断已经接纳的业务工作。
-func (service *Service) Drain(context.Context) error {
+func (service *Service) Drain(ctx context.Context) error {
 	if service == nil {
 		return nil
 	}
@@ -246,6 +246,7 @@ func (service *Service) Stop(context.Context) error {
 	service.mu.Lock()
 	tcp, websocket, listener, closer := service.tcp, service.websocket, service.websocketListener, service.sessionCloser
 	service.tcp = nil
+	service.runtime = nil
 	service.websocket = nil
 	service.websocketListener = nil
 	service.websocketAddr = ""
@@ -346,7 +347,7 @@ func validateOptions(options Options) error {
 	if strings.TrimSpace(options.TCPListen) == "" && strings.TrimSpace(options.WebSocketListen) == "" {
 		return fmt.Errorf("agent service: at least one TCP or WebSocket listen address is required")
 	}
-	if options.MaxFrameBytes <= 0 || options.FetchBatch <= 0 || options.Identity == nil || options.Dispatcher == nil {
+	if options.MaxFrameBytes <= 0 || options.Identity == nil || options.Dispatcher == nil {
 		return fmt.Errorf("agent service: frame limits and command handlers are required")
 	}
 	if options.Sessions == nil && options.LocalMsgQ == nil && (strings.TrimSpace(options.SessionStore.RouteType) == "" || strings.TrimSpace(options.SessionStore.Prefix) == "" || options.SessionStore.TTL <= 0) {

@@ -23,7 +23,7 @@ func ValidateRequest(ctx context.Context, target actorhost.Target, deadline bool
 	return nil
 }
 
-// ResultError 保持现行上行 ACK 与业务结果互斥，非法结果明确失败而不是等超时。
+// ResultError 校验内部 Actor 结果信封，非法结果明确失败而不是等超时。
 func ResultError(result *actorpb.Result) error {
 	if result == nil {
 		return errors.New("actortrial: handler returned invalid result")

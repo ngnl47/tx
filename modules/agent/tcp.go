@@ -123,6 +123,38 @@ func (t *tcpTransport) Write(ctx context.Context, frame Frame) error {
 	return writeBuffersFull(t.connection, net.Buffers{prefix[:], prepared.routeKey, frame.Payload})
 }
 
+func (t *tcpTransport) writeDownBatch(ctx context.Context, frames []Frame) error {
+	if t == nil || t.connection == nil {
+		return ErrTransportNil
+	}
+	var prefixes [immediateDownBatchLimit][4 + frameHeaderBytes]byte
+	if len(frames) == 0 || len(frames) > len(prefixes) {
+		return ErrInvalidFrame
+	}
+	var parts [immediateDownBatchLimit * 2][]byte
+	buffers := net.Buffers(parts[:0])
+	for index, frame := range frames {
+		if frame.Kind != FrameDownMsg {
+			return ErrInvalidFrame
+		}
+		prepared, err := prepareFrame(frame, t.maxFrameBytes)
+		if err != nil {
+			return err
+		}
+		prefix := prefixes[index][:]
+		binary.BigEndian.PutUint32(prefix[:4], uint32(prepared.size))
+		encodeFrameHeader(prefix[4:], frame, 0)
+		buffers = append(buffers, prefix)
+		if len(frame.Payload) > 0 {
+			buffers = append(buffers, frame.Payload)
+		}
+	}
+	stop := context.AfterFunc(ctx, func() { _ = t.connection.SetWriteDeadline(time.Now()) })
+	defer stop()
+	defer func() { _ = t.connection.SetWriteDeadline(time.Time{}) }()
+	return writeBuffersFull(t.connection, buffers)
+}
+
 func (t *tcpTransport) Close() error {
 	if t == nil || t.connection == nil {
 		return nil

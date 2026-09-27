@@ -20,14 +20,10 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	MailboxService_Init_FullMethodName             = "/tx.msgq.v1.MailboxService/Init"
-	MailboxService_Rec_FullMethodName              = "/tx.msgq.v1.MailboxService/Rec"
 	MailboxService_PubSession_FullMethodName       = "/tx.msgq.v1.MailboxService/PubSession"
 	MailboxService_PubRole_FullMethodName          = "/tx.msgq.v1.MailboxService/PubRole"
-	MailboxService_Fetch_FullMethodName            = "/tx.msgq.v1.MailboxService/Fetch"
-	MailboxService_FetchSome_FullMethodName        = "/tx.msgq.v1.MailboxService/FetchSome"
-	MailboxService_StreamFetch_FullMethodName      = "/tx.msgq.v1.MailboxService/StreamFetch"
-	MailboxService_Confirm_FullMethodName          = "/tx.msgq.v1.MailboxService/Confirm"
-	MailboxService_Touch_FullMethodName            = "/tx.msgq.v1.MailboxService/Touch"
+	MailboxService_MailboxStream_FullMethodName    = "/tx.msgq.v1.MailboxService/MailboxStream"
+	MailboxService_PublishStream_FullMethodName    = "/tx.msgq.v1.MailboxService/PublishStream"
 	MailboxService_JoinTopics_FullMethodName       = "/tx.msgq.v1.MailboxService/JoinTopics"
 	MailboxService_LeaveTopics_FullMethodName      = "/tx.msgq.v1.MailboxService/LeaveTopics"
 	MailboxService_Topics_FullMethodName           = "/tx.msgq.v1.MailboxService/Topics"
@@ -42,14 +38,10 @@ const (
 // MailboxService 是 msgq 专用传输服务，Payload 字节保持为 BON 数据。
 type MailboxServiceClient interface {
 	Init(ctx context.Context, in *InitRequest, opts ...grpc.CallOption) (*InitResponse, error)
-	Rec(ctx context.Context, in *RecRequest, opts ...grpc.CallOption) (*RecResponse, error)
 	PubSession(ctx context.Context, in *PubSessionRequest, opts ...grpc.CallOption) (*PubSessionResponse, error)
 	PubRole(ctx context.Context, in *PubRoleRequest, opts ...grpc.CallOption) (*BroadcastResponse, error)
-	Fetch(ctx context.Context, in *FetchRequest, opts ...grpc.CallOption) (*FetchResponse, error)
-	FetchSome(ctx context.Context, in *FetchSomeRequest, opts ...grpc.CallOption) (*FetchSomeResponse, error)
-	StreamFetch(ctx context.Context, in *FetchSomeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[FetchSomeResponse], error)
-	Confirm(ctx context.Context, in *ConfirmRequest, opts ...grpc.CallOption) (*Empty, error)
-	Touch(ctx context.Context, in *TouchRequest, opts ...grpc.CallOption) (*Empty, error)
+	MailboxStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[MailboxStreamRequest, MailboxStreamResponse], error)
+	PublishStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[PublishRequest, PublishRoleRejection], error)
 	JoinTopics(ctx context.Context, in *TopicRequest, opts ...grpc.CallOption) (*Empty, error)
 	LeaveTopics(ctx context.Context, in *TopicRequest, opts ...grpc.CallOption) (*Empty, error)
 	Topics(ctx context.Context, in *TopicRequest, opts ...grpc.CallOption) (*TopicsResponse, error)
@@ -69,16 +61,6 @@ func (c *mailboxServiceClient) Init(ctx context.Context, in *InitRequest, opts .
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(InitResponse)
 	err := c.cc.Invoke(ctx, MailboxService_Init_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *mailboxServiceClient) Rec(ctx context.Context, in *RecRequest, opts ...grpc.CallOption) (*RecResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(RecResponse)
-	err := c.cc.Invoke(ctx, MailboxService_Rec_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -105,64 +87,31 @@ func (c *mailboxServiceClient) PubRole(ctx context.Context, in *PubRoleRequest, 
 	return out, nil
 }
 
-func (c *mailboxServiceClient) Fetch(ctx context.Context, in *FetchRequest, opts ...grpc.CallOption) (*FetchResponse, error) {
+func (c *mailboxServiceClient) MailboxStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[MailboxStreamRequest, MailboxStreamResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(FetchResponse)
-	err := c.cc.Invoke(ctx, MailboxService_Fetch_FullMethodName, in, out, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &MailboxService_ServiceDesc.Streams[0], MailboxService_MailboxStream_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
-}
-
-func (c *mailboxServiceClient) FetchSome(ctx context.Context, in *FetchSomeRequest, opts ...grpc.CallOption) (*FetchSomeResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(FetchSomeResponse)
-	err := c.cc.Invoke(ctx, MailboxService_FetchSome_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *mailboxServiceClient) StreamFetch(ctx context.Context, in *FetchSomeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[FetchSomeResponse], error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &MailboxService_ServiceDesc.Streams[0], MailboxService_StreamFetch_FullMethodName, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	x := &grpc.GenericClientStream[FetchSomeRequest, FetchSomeResponse]{ClientStream: stream}
-	if err := x.ClientStream.SendMsg(in); err != nil {
-		return nil, err
-	}
-	if err := x.ClientStream.CloseSend(); err != nil {
-		return nil, err
-	}
+	x := &grpc.GenericClientStream[MailboxStreamRequest, MailboxStreamResponse]{ClientStream: stream}
 	return x, nil
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type MailboxService_StreamFetchClient = grpc.ServerStreamingClient[FetchSomeResponse]
+type MailboxService_MailboxStreamClient = grpc.BidiStreamingClient[MailboxStreamRequest, MailboxStreamResponse]
 
-func (c *mailboxServiceClient) Confirm(ctx context.Context, in *ConfirmRequest, opts ...grpc.CallOption) (*Empty, error) {
+func (c *mailboxServiceClient) PublishStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[PublishRequest, PublishRoleRejection], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(Empty)
-	err := c.cc.Invoke(ctx, MailboxService_Confirm_FullMethodName, in, out, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &MailboxService_ServiceDesc.Streams[1], MailboxService_PublishStream_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	x := &grpc.GenericClientStream[PublishRequest, PublishRoleRejection]{ClientStream: stream}
+	return x, nil
 }
 
-func (c *mailboxServiceClient) Touch(ctx context.Context, in *TouchRequest, opts ...grpc.CallOption) (*Empty, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(Empty)
-	err := c.cc.Invoke(ctx, MailboxService_Touch_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type MailboxService_PublishStreamClient = grpc.BidiStreamingClient[PublishRequest, PublishRoleRejection]
 
 func (c *mailboxServiceClient) JoinTopics(ctx context.Context, in *TopicRequest, opts ...grpc.CallOption) (*Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -221,14 +170,10 @@ func (c *mailboxServiceClient) TerminateSession(ctx context.Context, in *Termina
 // MailboxService 是 msgq 专用传输服务，Payload 字节保持为 BON 数据。
 type MailboxServiceServer interface {
 	Init(context.Context, *InitRequest) (*InitResponse, error)
-	Rec(context.Context, *RecRequest) (*RecResponse, error)
 	PubSession(context.Context, *PubSessionRequest) (*PubSessionResponse, error)
 	PubRole(context.Context, *PubRoleRequest) (*BroadcastResponse, error)
-	Fetch(context.Context, *FetchRequest) (*FetchResponse, error)
-	FetchSome(context.Context, *FetchSomeRequest) (*FetchSomeResponse, error)
-	StreamFetch(*FetchSomeRequest, grpc.ServerStreamingServer[FetchSomeResponse]) error
-	Confirm(context.Context, *ConfirmRequest) (*Empty, error)
-	Touch(context.Context, *TouchRequest) (*Empty, error)
+	MailboxStream(grpc.BidiStreamingServer[MailboxStreamRequest, MailboxStreamResponse]) error
+	PublishStream(grpc.BidiStreamingServer[PublishRequest, PublishRoleRejection]) error
 	JoinTopics(context.Context, *TopicRequest) (*Empty, error)
 	LeaveTopics(context.Context, *TopicRequest) (*Empty, error)
 	Topics(context.Context, *TopicRequest) (*TopicsResponse, error)
@@ -247,29 +192,17 @@ type UnimplementedMailboxServiceServer struct{}
 func (UnimplementedMailboxServiceServer) Init(context.Context, *InitRequest) (*InitResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Init not implemented")
 }
-func (UnimplementedMailboxServiceServer) Rec(context.Context, *RecRequest) (*RecResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Rec not implemented")
-}
 func (UnimplementedMailboxServiceServer) PubSession(context.Context, *PubSessionRequest) (*PubSessionResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PubSession not implemented")
 }
 func (UnimplementedMailboxServiceServer) PubRole(context.Context, *PubRoleRequest) (*BroadcastResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PubRole not implemented")
 }
-func (UnimplementedMailboxServiceServer) Fetch(context.Context, *FetchRequest) (*FetchResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Fetch not implemented")
+func (UnimplementedMailboxServiceServer) MailboxStream(grpc.BidiStreamingServer[MailboxStreamRequest, MailboxStreamResponse]) error {
+	return status.Errorf(codes.Unimplemented, "method MailboxStream not implemented")
 }
-func (UnimplementedMailboxServiceServer) FetchSome(context.Context, *FetchSomeRequest) (*FetchSomeResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method FetchSome not implemented")
-}
-func (UnimplementedMailboxServiceServer) StreamFetch(*FetchSomeRequest, grpc.ServerStreamingServer[FetchSomeResponse]) error {
-	return status.Errorf(codes.Unimplemented, "method StreamFetch not implemented")
-}
-func (UnimplementedMailboxServiceServer) Confirm(context.Context, *ConfirmRequest) (*Empty, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Confirm not implemented")
-}
-func (UnimplementedMailboxServiceServer) Touch(context.Context, *TouchRequest) (*Empty, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Touch not implemented")
+func (UnimplementedMailboxServiceServer) PublishStream(grpc.BidiStreamingServer[PublishRequest, PublishRoleRejection]) error {
+	return status.Errorf(codes.Unimplemented, "method PublishStream not implemented")
 }
 func (UnimplementedMailboxServiceServer) JoinTopics(context.Context, *TopicRequest) (*Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method JoinTopics not implemented")
@@ -325,24 +258,6 @@ func _MailboxService_Init_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
-func _MailboxService_Rec_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(RecRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(MailboxServiceServer).Rec(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: MailboxService_Rec_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(MailboxServiceServer).Rec(ctx, req.(*RecRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _MailboxService_PubSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(PubSessionRequest)
 	if err := dec(in); err != nil {
@@ -379,88 +294,19 @@ func _MailboxService_PubRole_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
-func _MailboxService_Fetch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(FetchRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(MailboxServiceServer).Fetch(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: MailboxService_Fetch_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(MailboxServiceServer).Fetch(ctx, req.(*FetchRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _MailboxService_FetchSome_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(FetchSomeRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(MailboxServiceServer).FetchSome(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: MailboxService_FetchSome_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(MailboxServiceServer).FetchSome(ctx, req.(*FetchSomeRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _MailboxService_StreamFetch_Handler(srv interface{}, stream grpc.ServerStream) error {
-	m := new(FetchSomeRequest)
-	if err := stream.RecvMsg(m); err != nil {
-		return err
-	}
-	return srv.(MailboxServiceServer).StreamFetch(m, &grpc.GenericServerStream[FetchSomeRequest, FetchSomeResponse]{ServerStream: stream})
+func _MailboxService_MailboxStream_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(MailboxServiceServer).MailboxStream(&grpc.GenericServerStream[MailboxStreamRequest, MailboxStreamResponse]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type MailboxService_StreamFetchServer = grpc.ServerStreamingServer[FetchSomeResponse]
+type MailboxService_MailboxStreamServer = grpc.BidiStreamingServer[MailboxStreamRequest, MailboxStreamResponse]
 
-func _MailboxService_Confirm_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ConfirmRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(MailboxServiceServer).Confirm(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: MailboxService_Confirm_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(MailboxServiceServer).Confirm(ctx, req.(*ConfirmRequest))
-	}
-	return interceptor(ctx, in, info, handler)
+func _MailboxService_PublishStream_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(MailboxServiceServer).PublishStream(&grpc.GenericServerStream[PublishRequest, PublishRoleRejection]{ServerStream: stream})
 }
 
-func _MailboxService_Touch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(TouchRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(MailboxServiceServer).Touch(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: MailboxService_Touch_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(MailboxServiceServer).Touch(ctx, req.(*TouchRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type MailboxService_PublishStreamServer = grpc.BidiStreamingServer[PublishRequest, PublishRoleRejection]
 
 func _MailboxService_JoinTopics_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(TopicRequest)
@@ -564,32 +410,12 @@ var MailboxService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _MailboxService_Init_Handler,
 		},
 		{
-			MethodName: "Rec",
-			Handler:    _MailboxService_Rec_Handler,
-		},
-		{
 			MethodName: "PubSession",
 			Handler:    _MailboxService_PubSession_Handler,
 		},
 		{
 			MethodName: "PubRole",
 			Handler:    _MailboxService_PubRole_Handler,
-		},
-		{
-			MethodName: "Fetch",
-			Handler:    _MailboxService_Fetch_Handler,
-		},
-		{
-			MethodName: "FetchSome",
-			Handler:    _MailboxService_FetchSome_Handler,
-		},
-		{
-			MethodName: "Confirm",
-			Handler:    _MailboxService_Confirm_Handler,
-		},
-		{
-			MethodName: "Touch",
-			Handler:    _MailboxService_Touch_Handler,
 		},
 		{
 			MethodName: "JoinTopics",
@@ -614,9 +440,16 @@ var MailboxService_ServiceDesc = grpc.ServiceDesc{
 	},
 	Streams: []grpc.StreamDesc{
 		{
-			StreamName:    "StreamFetch",
-			Handler:       _MailboxService_StreamFetch_Handler,
+			StreamName:    "MailboxStream",
+			Handler:       _MailboxService_MailboxStream_Handler,
 			ServerStreams: true,
+			ClientStreams: true,
+		},
+		{
+			StreamName:    "PublishStream",
+			Handler:       _MailboxService_PublishStream_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
 		},
 	},
 	Metadata: "modules/msgq/proto/msgq.proto",

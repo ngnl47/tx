@@ -230,7 +230,7 @@ func TestAgentSessionFetchesDownMsgAndConfirmsAckOnNextUpMsg(t *testing.T) {
 	}
 	select {
 	case downMsg := <-transport.writes:
-		if downMsg.Kind != txagent.FrameDownMsg || downMsg.Seq != 1 || downMsg.Ack != 1 || string(downMsg.Payload) != "bon-response" {
+		if downMsg.Kind != txagent.FrameDownMsg || downMsg.Seq != 1 || downMsg.Ack != 0 || string(downMsg.Payload) != "bon-response" {
 			t.Fatalf("downMsg frame = %#v", downMsg)
 		}
 	case <-time.After(time.Second):
@@ -276,7 +276,7 @@ func TestAgentSessionDoesNotAcknowledgeAcceptedUpMsgBeforeDispatcherCompletes(t 
 		Dispatcher: txagent.DispatchFunc(func(_ context.Context, request txagent.DispatchRequest) (txagent.DispatchResult, error) {
 			close(dispatchStarted)
 			<-releaseDispatch
-			return txagent.DispatchResult{ProcessedUpSeq: request.Seq}, nil
+			return txagent.DispatchResult{AcceptedUpSeq: request.Seq}, nil
 		}),
 		Sessions:     router,
 		ConnectionID: func() (int64, error) { return 7, nil },
@@ -331,7 +331,7 @@ func TestAgentSessionRejectsMismatchedProcessedSequence(t *testing.T) {
 			if request.Seq != 1 {
 				t.Fatalf("dispatch seq = %d, want 1", request.Seq)
 			}
-			return txagent.DispatchResult{ProcessedUpSeq: request.Seq + 1}, nil
+			return txagent.DispatchResult{AcceptedUpSeq: request.Seq + 1}, nil
 		}),
 		Sessions: router,
 		ConnectionID: func() (int64, error) {
@@ -497,6 +497,33 @@ func TestAgentSessionDoesNotDispatchDuplicateSequence(t *testing.T) {
 	}
 }
 
+func TestAgentSessionDispatchesIncreasingSequenceWithGap(t *testing.T) {
+	agent, transport, _, dispatched := newAgentSessionFixture(t, nil)
+	result := make(chan error, 1)
+	go func() { result <- agent.Serve(context.Background(), transport) }()
+
+	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
+	assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
+	for _, seq := range []int64{1, 5} {
+		transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: seq, CommandID: 1}
+		if request := receiveDispatch(t, dispatched); request.Seq != seq {
+			t.Fatalf("dispatched seq = %d, want %d", request.Seq, seq)
+		}
+		assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, seq, "")
+	}
+	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 3, CommandID: 1}
+	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 5, "")
+	select {
+	case request := <-dispatched:
+		t.Fatalf("old sequence dispatched = %#v", request)
+	case <-time.After(20 * time.Millisecond):
+	}
+	transport.closeReads()
+	if err := <-result; !errors.Is(err, io.EOF) {
+		t.Fatalf("serve error = %v, want EOF", err)
+	}
+}
+
 func TestAgentSessionRestoreAcknowledgesAcceptedUpMsgAndSkipsReplay(t *testing.T) {
 	agent, transport, mailbox, dispatched := newAgentSessionFixture(t, nil)
 	previous := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 6}
@@ -603,7 +630,7 @@ func TestAgentSameRoleSessionsPreserveIdentityAndIsolateDownMessages(t *testing.
 	dispatched := make(chan txagent.DispatchRequest, 2)
 	dispatcher := txagent.DispatchFunc(func(_ context.Context, request txagent.DispatchRequest) (txagent.DispatchResult, error) {
 		dispatched <- request
-		return txagent.DispatchResult{ProcessedUpSeq: request.Seq}, nil
+		return txagent.DispatchResult{AcceptedUpSeq: request.Seq}, nil
 	})
 	transports := []*agentTransport{newAgentTransport(), newAgentTransport()}
 	results := []chan error{make(chan error, 1), make(chan error, 1)}
@@ -697,7 +724,7 @@ func newAgentSessionFixture(t *testing.T, dispatchErr error) (*txagent.Server, *
 		}),
 		Dispatcher: txagent.DispatchFunc(func(_ context.Context, request txagent.DispatchRequest) (txagent.DispatchResult, error) {
 			dispatched <- request
-			return txagent.DispatchResult{ProcessedUpSeq: request.Seq}, dispatchErr
+			return txagent.DispatchResult{AcceptedUpSeq: request.Seq}, dispatchErr
 		}),
 		Sessions:     router,
 		ConnectionID: func() (int64, error) { return nextConnectionID.Add(1), nil },
@@ -731,10 +758,22 @@ func receiveDispatch(t *testing.T, dispatched <-chan txagent.DispatchRequest) tx
 
 func assertAgentFrame(t *testing.T, frames <-chan txagent.Frame, kind txagent.FrameKind, seq, ack int64, payload string) {
 	t.Helper()
+	if kind == txagent.FrameAck {
+		select {
+		case frame := <-frames:
+			t.Fatalf("unexpected server frame while checking removed FrameAck: %#v", frame)
+		case <-time.After(5 * time.Millisecond):
+			return
+		}
+	}
 	select {
 	case frame := <-frames:
-		if frame.Kind != kind || frame.Seq != seq || frame.Ack != ack || string(frame.Payload) != payload {
-			t.Fatalf("frame = %#v, want kind=%d seq=%d ack=%d payload=%q", frame, kind, seq, ack, payload)
+		wantAck := ack
+		if kind == txagent.FrameReady || kind == txagent.FrameDownMsg {
+			wantAck = 0
+		}
+		if frame.Kind != kind || frame.Seq != seq || frame.Ack != wantAck || string(frame.Payload) != payload {
+			t.Fatalf("frame = %#v, want kind=%d seq=%d ack=%d payload=%q", frame, kind, seq, wantAck, payload)
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("timed out waiting for kind=%d seq=%d ack=%d", kind, seq, ack)
@@ -772,22 +811,20 @@ func (c *recordingAgentSessionClient) Init(_ context.Context, request msgq.InitR
 	return msgq.InitResult{}, nil
 }
 
-func (*recordingAgentSessionClient) Rec(context.Context, msgq.RecRequest) (msgq.RecResult, error) {
-	return msgq.RecResult{}, errors.New("unexpected Rec")
+func (*recordingAgentSessionClient) OpenMailboxStream(ctx context.Context, _ msgq.SessionHeader) (msgq.MailboxStreamSession, error) {
+	return &recordingMailboxStream{ctx: ctx}, nil
 }
 
-func (*recordingAgentSessionClient) PubSession(context.Context, int64, []byte) (msgq.PubResult, error) {
-	return msgq.PubResult{}, errors.New("unexpected PubSession")
-}
+type recordingMailboxStream struct{ ctx context.Context }
 
-func (*recordingAgentSessionClient) FetchSome(ctx context.Context, _ msgq.FetchSomeRequest) (msgq.FetchSomeResult, error) {
-	<-ctx.Done()
-	return msgq.FetchSomeResult{}, ctx.Err()
+func (s *recordingMailboxStream) Context() context.Context { return s.ctx }
+func (s *recordingMailboxStream) Recv() (msgq.FetchResult, error) {
+	<-s.ctx.Done()
+	return msgq.FetchResult{}, s.ctx.Err()
 }
-
-func (*recordingAgentSessionClient) Confirm(context.Context, msgq.ConfirmRequest) error {
-	return errors.New("unexpected Confirm")
-}
+func (s *recordingMailboxStream) Ack(context.Context, int64, int64) error { return nil }
+func (s *recordingMailboxStream) Renew(context.Context) error             { return nil }
+func (s *recordingMailboxStream) Close() error                            { return nil }
 
 func (*recordingAgentSessionClient) TerminateSession(context.Context, msgq.SessionHeader) error {
 	return nil

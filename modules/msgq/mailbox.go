@@ -9,6 +9,7 @@ import (
 	"time"
 
 	txlog "github.com/ngnl47/tx/log"
+	txmetrics "github.com/ngnl47/tx/metrics"
 )
 
 const (
@@ -328,7 +329,7 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 	return InitResult{UpMsgSeq: upMsgSeq}, nil
 }
 
-// Rec 串行确认一条客户端上行消息。重复序号幂等返回当前已接收序号。
+// Rec 接受严格递增的客户端上行序号；旧序号幂等返回当前已接收序号。
 func (s *Server) Rec(ctx context.Context, request RecRequest) (RecResult, error) {
 	if request.Seq <= 0 || request.Ack < 0 {
 		return RecResult{}, ErrUpMsgSequence
@@ -348,12 +349,8 @@ func (s *Server) Rec(ctx context.Context, request RecRequest) (RecResult, error)
 		session.mu.Unlock()
 		return RecResult{}, err
 	}
-	if request.Seq > session.upMsgSeq+1 {
-		session.mu.Unlock()
-		return RecResult{}, ErrUpMsgSequence
-	}
-	if request.Seq == session.upMsgSeq+1 {
-		session.upMsgSeq++
+	if request.Seq > session.upMsgSeq {
+		session.upMsgSeq = request.Seq
 	}
 	if err := session.downMsgs.confirm(request.Ack); err != nil {
 		session.mu.Unlock()
@@ -378,7 +375,15 @@ func (s *Server) Rec(ctx context.Context, request RecRequest) (RecResult, error)
 //
 // Message 的所有权在调用成功后移交给 msgq：调用方不得再修改、append、复用或归还该切片，直到对应会话关闭或消息被确认。
 // 该约束使本地广播可以让多个会话共享同一份已序列化正文；跨进程 gRPC 调用在传输边界自然拥有独立字节副本。
-func (s *Server) PubSession(ctx context.Context, sessionID int64, payload []byte) (PubResult, error) {
+func (s *Server) PubSession(ctx context.Context, sessionID int64, payload []byte) (result PubResult, err error) {
+	started := time.Now()
+	defer func() {
+		delivered := 0
+		if err == nil {
+			delivered = 1
+		}
+		txmetrics.RecordMsgQPublish(txmetrics.PublishSession, delivered, time.Since(started), err)
+	}()
 	if s == nil {
 		return PubResult{}, ErrServerNil
 	}
@@ -705,6 +710,24 @@ func (s *Server) SessionCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.sessions)
+}
+
+// BacklogSnapshot 在采集时读取会话与未确认下行总量，不在消息热路径维护第二份计数。
+func (s *Server) BacklogSnapshot() (sessions, messages, bytes int) {
+	if s == nil {
+		return 0, 0, 0
+	}
+	items := s.sessionSnapshot()
+	for _, session := range items {
+		session.mu.Lock()
+		if session.active {
+			sessions++
+			messages += session.downMsgs.len()
+			bytes += session.downMsgs.bytes
+		}
+		session.mu.Unlock()
+	}
+	return sessions, messages, bytes
 }
 
 // TerminateDeadSessions 终止超过 OfflineTimeout 未产生客户端会话活动的本地 Session。

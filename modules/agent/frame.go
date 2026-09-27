@@ -17,9 +17,9 @@ const (
 	FrameUpMsg
 	// FrameDownMsg 携带服务端下行消息。
 	FrameDownMsg
-	// FrameAck 在没有业务载荷可捎带时，单独确认对端已经连续处理的 Seq。
+	// FrameAck 由客户端在没有业务载荷可捎带时，单独确认服务端下行 Seq。
 	FrameAck
-	// FrameReady 表示服务端已经接受握手，Ack 是已经连续接收的上行 Seq。
+	// FrameReady 表示服务端已经接受握手。
 	FrameReady
 )
 
@@ -63,7 +63,7 @@ type Frame struct {
 	Kind FrameKind
 	// Seq 是当前方向从 1 开始递增的消息序号。
 	Seq int64
-	// Ack 是发送方已经连续处理完成的对端消息序号。
+	// Ack 仅用于客户端确认下行消息；服务端发出的帧不使用此字段。
 	Ack int64
 	// Restore 只用于握手帧，表示恢复既有逻辑会话。
 	Restore bool
@@ -84,7 +84,7 @@ func (f Frame) validUpMsg() bool {
 }
 
 func (f Frame) validDownMsg() bool {
-	return f.Kind == FrameDownMsg && f.Seq > 0 && f.Ack >= 0 && !f.Restore && !f.hasCommandRoute()
+	return f.Kind == FrameDownMsg && f.Seq > 0 && f.Ack == 0 && !f.Restore && !f.hasCommandRoute()
 }
 
 func (f Frame) validAck() bool {
@@ -92,7 +92,7 @@ func (f Frame) validAck() bool {
 }
 
 func (f Frame) validReady() bool {
-	return f.Kind == FrameReady && f.Seq == 0 && f.Ack >= 0 && !f.Restore && len(f.Payload) == 0 && !f.hasCommandRoute()
+	return f.Kind == FrameReady && f.Seq == 0 && f.Ack == 0 && !f.Restore && len(f.Payload) == 0 && !f.hasCommandRoute()
 }
 
 func (f Frame) hasCommandRoute() bool {

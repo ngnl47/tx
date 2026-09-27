@@ -5,7 +5,7 @@ import (
 	"github.com/ngnl47/tx/internal/actorresult"
 )
 
-// Result 是普通业务结果或仅包含 ProcessedUpSeq 的上行完成确认。
+// Result 是远程 Actor 调用的业务结果；客户端上行使用独立的邮箱接纳确认。
 type Result = actorresult.Result
 
 // Future 只提供结果等待，取消等待不撤销已接受工作。

@@ -40,7 +40,6 @@ func TestServiceStartsWithExplicitDependenciesAndLocalMsgQ(t *testing.T) {
 	service, err := New(Options{
 		TCPListen:     "127.0.0.1:0",
 		MaxFrameBytes: 1024,
-		FetchBatch:    1,
 		Identity: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
 			return protocol.SessionPrincipal{
 				AccountID:  100,
@@ -88,7 +87,6 @@ func TestServiceRequiresRPCRegistrar(t *testing.T) {
 	_, err := New(Options{
 		TCPListen:     "127.0.0.1:0",
 		MaxFrameBytes: 1024,
-		FetchBatch:    1,
 		Identity: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
 			return protocol.SessionPrincipal{}, nil
 		}),

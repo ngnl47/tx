@@ -6,8 +6,11 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ngnl47/tx/lifecycle"
+	txlog "github.com/ngnl47/tx/log"
+	txmetrics "github.com/ngnl47/tx/metrics"
 	rpcpb "github.com/ngnl47/tx/modules/rpc/pb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -50,14 +53,15 @@ func (f ReceiverFunc) Deliver(ctx context.Context, delivery Delivery) error {
 	return f(ctx, delivery)
 }
 
-// BatchCallReceiver 逐项发送批内结果，不让慢调用阻塞已完成的调用。
-type BatchCallReceiver interface {
-	CallBatch(context.Context, Delivery, func(Result) error) error
-}
-
 // StreamCallReceiver 处理长流上的独立调用；每项仍按自己的结果完成。
 type StreamCallReceiver interface {
 	CallStream(context.Context, Delivery) (Result, error)
+}
+
+// StreamSubmitReceiver 只在消息进入本地接收队列后返回，不等待业务执行。
+// 服务端在读取循环中同步调用它，以保持同一条流的入队顺序。
+type StreamSubmitReceiver interface {
+	SubmitStream(context.Context, Delivery) error
 }
 
 type admissionReceiver struct {
@@ -143,24 +147,6 @@ func (s *deliveryService) Call(ctx context.Context, request *rpcpb.Delivery) (*r
 	return response, nil
 }
 
-func (s *deliveryService) CallBatch(request *rpcpb.Delivery, stream grpc.ServerStreamingServer[rpcpb.Result]) error {
-	receiver, ok := s.callReceiver.(BatchCallReceiver)
-	if !ok {
-		return status.Error(codes.Unimplemented, "method CallBatch not implemented")
-	}
-	delivery, err := deliveryFromProto(request)
-	if err != nil {
-		return status.Error(codes.InvalidArgument, err.Error())
-	}
-	return receiver.CallBatch(stream.Context(), delivery, func(result Result) error {
-		response, err := resultToProto(result)
-		if err != nil {
-			return status.Error(codes.InvalidArgument, err.Error())
-		}
-		return stream.Send(response)
-	})
-}
-
 func (s *deliveryService) CallStream(stream grpc.BidiStreamingServer[rpcpb.StreamCallRequest, rpcpb.StreamCallResponse]) error {
 	receiver, ok := s.callReceiver.(StreamCallReceiver)
 	if !ok {
@@ -205,6 +191,19 @@ func (s *deliveryService) CallStream(stream grpc.BidiStreamingServer[rpcpb.Strea
 		if err != nil {
 			return status.Error(codes.InvalidArgument, err.Error())
 		}
+		if request.GetOneWay() {
+			submitter, ok := s.callReceiver.(StreamSubmitReceiver)
+			if !ok {
+				return status.Error(codes.Unimplemented, "method SubmitStream not implemented")
+			}
+			started := time.Now()
+			err := submitter.SubmitStream(stream.Context(), delivery)
+			txmetrics.RecordRPCSubmit(err, time.Since(started))
+			if err != nil {
+				txlog.Error("one-way stream delivery failed", "message_type", delivery.MessageType, "err", err)
+			}
+			continue
+		}
 		select {
 		case slots <- struct{}{}:
 		case <-stream.Context().Done():
@@ -233,11 +232,7 @@ func (s *deliveryService) CallStream(stream grpc.BidiStreamingServer[rpcpb.Strea
 			result, callErr := receiver.CallStream(itemCtx, delivery)
 			response := &rpcpb.StreamCallResponse{Id: request.GetId()}
 			if callErr != nil {
-				response.ErrorCode = int32(codes.Internal)
-				if errors.Is(callErr, lifecycle.ErrDraining) || errors.Is(callErr, lifecycle.ErrStopping) {
-					response.ErrorCode = int32(codes.Unavailable)
-				}
-				response.ErrorMessage = callErr.Error()
+				setStreamCallError(response, callErr)
 			} else {
 				response.Result, callErr = resultToProto(result)
 				if callErr != nil {
@@ -252,6 +247,14 @@ func (s *deliveryService) CallStream(stream grpc.BidiStreamingServer[rpcpb.Strea
 			sendMu.Unlock()
 		}()
 	}
+}
+
+func setStreamCallError(response *rpcpb.StreamCallResponse, err error) {
+	response.ErrorCode = int32(codes.Internal)
+	if errors.Is(err, lifecycle.ErrDraining) || errors.Is(err, lifecycle.ErrStopping) {
+		response.ErrorCode = int32(codes.Unavailable)
+	}
+	response.ErrorMessage = err.Error()
 }
 
 func deliveryFromProto(request *rpcpb.Delivery) (Delivery, error) {

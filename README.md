@@ -468,7 +468,7 @@ Router 不会删除 Redis binding，也不会随机退化到其他 MsgQ 副本�
 `MailboxService`；不要把 `Server` 当作全局消息队列。
 
 ```go
-// Agent 收到客户端上行：Seq 必须连续；重复 Seq 幂等返回当前 UpMsgSeq。
+// Agent 收到客户端上行：Seq 必须递增但可跳号；旧 Seq 幂等返回当前 UpMsgSeq。
 received, err := mailbox.Rec(ctx, msgq.RecRequest{
     Header: header,
     Seq:    12,
@@ -640,10 +640,7 @@ binding、释放本地邮箱和 Topic 关系，最后一个邮箱退出后由维
 角色缓存命中已不可用实例时，`RoleRouter` 在发送前至多重新读取一次权威归属；若新归属已建立即可直接寻址。
 该操作不分配归属，也不重试已发送的业务消息；稳定热路径仍不访问 Redis。
 
-`modules/msgq` 提供独立的 protobuf/gRPC `MailboxService`，不复用通用的 `modules/rpc`。连接侧可调用
-`Init`、`Rec`、`Fetch`、`FetchSome`、`Confirm`、`Touch`、Topic 和 `TerminateSession`；业务或其他服务最终调用精确的
-`PubSession` RPC。
-所有 `payload` 字段都承载已经编码完成的 BON 字节，统一称为编码载荷；服务不会解析或转换客户端协议体。
+`modules/msgq` 提供独立的 protobuf/gRPC `MailboxService`，不复用通用的 `modules/rpc`。Agent 用 `Init` 建立或恢复会话，与每个 MsgQ 实例复用一条承载多 Session 的 `MailboxStream`；上行游标和下行 Ack 沿该流发送，MsgQ 沿流推送下行。业务下行使用 `PublishStream`，Topic 和 `TerminateSession` 是独立控制操作；显式等待发布结果的 `PubSession`/`PubRole` 仍保留独立语义，不在高频业务链路使用。所有 `payload` 均为已编码 BON 字节。
 
 ```go
 grpcServer := grpc.NewServer()
@@ -689,24 +686,7 @@ if err := rpcHost.Start(rootWaitGroupContext); err != nil {
 defer rpcHost.Stop(context.Background())
 ```
 
-`Fetch` 是 unary 长轮询，调用方必须传递自己的超时或连接 context。运行时错误会转为明确的 gRPC status：无效请求为
-`InvalidArgument`，离线会话为 `NotFound`，旧连接为 `Aborted`，队列满为 `ResourceExhausted`；不会静默丢失或伪造投递成功。
-客户端还会校验成功响应本身：空响应、`PubSession.Seq <= 0`、负的 Init 序号、`Rec.UpMsgSeq` 落后于本次请求、
-`Rec.Ack` 与本次请求不一致，以及 `FetchSome` 返回空批次、空消息、非正数或乱序消息，都会返回
-`msgq.ErrInvalidMailboxResponse`。这表示传输结果不可信，调用方应结束当前链路并记录错误，不能把零值当作成功或在
-没有业务幂等键时自动重发：
-
-```go
-result, err := sender.PubRole(ctx, roleID, bonBody)
-if errors.Is(err, msgq.ErrInvalidMailboxResponse) {
-    logger.Error("msgq 返回了无效确认", "roleID", roleID, "err", err)
-    return err
-}
-if err != nil {
-    return err
-}
-recordDeliveredSessions(result.Delivered)
-```
+`MailboxStream` 保留每个 Session 独立的上行游标、未确认下行和恢复状态。`Init` 成功响应中的上行序号不能为负；流内旧连接、队列满或失效会话会收到对应错误。业务下行经 `PublishStream` 写入本地 gRPC 流，发送成功不代表 MsgQ 已入队；旧角色归属拒绝由流异步反馈，发送方清理缓存但不自动重投。
 
 `rpc.Host` 直接接入全局 `lifecycle.WaitGroupContext`。应用服务关闭时由项目宿主统一调用 `Stop`，未确认下行仍遵循
 msgq 的内存语义。
@@ -764,7 +744,7 @@ GOMODCACHE=/private/tmp/tx-go-modcache GOTOOLCHAIN=local \
 ## Agent 玩家接入
 
 `modules/agent` 是可选的玩家连接运行时，提供两种默认传输：TCP 使用 4 字节 big-endian 长度前缀加二进制帧，
-WebSocket 只接受 binary message。两种传输共用同一套 `Frame`、身份解析、Seq/Ack 和下行 Fetch 循环；业务 body
+WebSocket 只接受 binary message。两种传输共用同一套 `Frame`、身份解析、Seq/Ack 和 `MailboxStream` 下行接收；业务 body
 始终是 BON bytes，不转换为 protobuf 或 JSON。
 
 Agent 不实现账号、JWT、游客登录或角色选择。项目必须在启动组合根提供 `HandlerProvider`：它接收当前
@@ -805,21 +785,17 @@ resolver 和客户端载荷均不能指定 `ConnectionID`，也不能伪造投�
 1. 客户端先发送 `FrameHandshake`，其中 `Payload` 交给 `IdentityResolver`，`Restore/Ack` 交给会话恢复。
 2. `IdentityResolver` 返回 `SessionPrincipal`；Agent 验证主体、生成本次物理连接的正 `ConnectionID`，再构造 `SessionIdentity`。
 3. `Restore=false` 的新建连接查询并复用角色归属；无归属时由 running MsgQ 轮转提名并原子确认，竞争失败者使用已确认归属。`Restore=true` 的恢复连接必须按 SessionID 命中原来的 running owner。同进程 msgq 时直接复用本地 `SessionClient`，但仍由邮箱初始化校验角色归属；分进程时按 Redis binding 和服务目录复用 gRPC 连接。
-4. 新建 `Init` 用 `Create NX` 安装空邮箱，SessionID 已存在时失败；恢复 `Init` 用旧完整 binding `Rebind` 到新 ConnectionID，保留相同 SessionID 的 Seq/Ack 与未确认队列。恢复 owner 不可用、邮箱不存在或完整绑定校验失败时明确失败，不能迁移或安装空会话。
-5. `Init` 成功后，Agent 发送 `FrameReady` 报告当前 `UpMsgSeq`。客户端收到它之前只能处于连接中，不能发送业务帧；恢复失败时不会出现“先成功、再被关闭”的假状态。
-6. 客户端以 `FrameReady.Ack` 释放上次会话已经记录的重放前缀，再按原序号重放剩余 UpMsg。
-7. 每个 `FrameUpMsg` 先使用当前完整 `SessionHeader` 调用 `Rec`。只有 `UpMsgSeq` 前进时才进入 `Dispatcher`，重复 Seq 不会重复分发。
+4. 新建 `Init` 用 `Create NX` 安装空邮箱，SessionID 已存在时失败；恢复 `Init` 用旧完整 binding `Rebind` 到新 ConnectionID，保留相同 SessionID 的 Rec 游标、下行 Ack 与未确认下行队列。恢复 owner 不可用、邮箱不存在或完整绑定校验失败时明确失败，不能迁移或安装空会话。
+5. `Init` 成功后，Agent 发送 `FrameReady`，其 `Ack` 固定为 `0`。客户端收到它之前只能处于连接中，不能发送业务帧；恢复失败时不会出现“先成功、再被关闭”的假状态。
+6. 客户端按 socket 写入顺序发送递增的 UpMsg 序号；允许跳号，不维护未确认上行重放队列。较旧或重复序号不会再次分发。
+7. Agent 按连接读取顺序，逐条等待目标 Actor 邮箱接纳确认后再继续；该确认只表示消息已入邮箱，不等业务执行。接纳后，Agent 更新本地 Rec lease，或用当前完整 `SessionHeader` 调用 MsgQ `Rec` 同步游标。
 8. Agent 持续 `FetchSome` 下行队列，写出 `FrameDownMsg`；客户端在后续上行帧携带 Ack，`Rec` 会确认对应下行消息。
-9. Game/Actor 处理上行后，直接通过 MsgQ Sender 调用 `PubRole` 共享普通业务响应，调用 `PubSession` 精确投递携带请求序号的 `System_Error`，随后只向 Agent
-   返回 `processedUpSeq` 处理完成确认。Agent 不接收业务响应载荷；它在后续 `FrameDownMsg.Ack` 捎带该序号，或发送
-   独立 `FrameAck`。Actor 未完成处理或响应发布失败时不会推进该连接的确认游标。
+9. Game/Actor 处理上行后，直接通过 MsgQ Sender 调用 `PubRole` 共享普通业务响应，调用 `PubSession` 精确投递携带请求序号的 `System_Error`。这些是独立下行消息，不作为上行 RPC 返回值；Actor 业务处理失败不会产生客户端上行 ACK。
 
-客户端不能只保存三个 Seq/Ack 计数器来恢复会话。UpMsg 必须在首次发送前进入本地未确认队列；收到服务端累计 Ack 后
-释放已确认前缀；网络重连时复用同一逻辑 Session，并按原 Seq、原顺序和原只读 Payload 重放剩余帧。这样即使网络在
-UpMsg 写出前后任意位置中断，服务端也只会接受连续新序号，已经受理的重复帧只返回 Ack，不会再次进入 Dispatcher。
+客户端只维护递增的 UpSeq 与已处理的 DownSeq。上行发送失败或连接中断时不自动重放，结果可能未知；恢复原 Session 只恢复 MsgQ 中未确认的下行，不恢复上行命令。客户端后续新命令继续使用更大的 UpSeq。Agent 的内部邮箱接纳确认只推进服务端 Rec 状态，不发给客户端。
 
-Actor 已经定位并返回的请求级失败不应等同于连接故障。标准 txgame/txgameslg Game/Actor 适配层会把 Handler 错误
-编码为生成的 `System_Error`，直接投递到发起 Session，投递成功后再返回处理完成确认。其中 `RequestSeq` 指向原上行
+Actor 已经接纳的请求级失败不应等同于连接故障。标准 txgame/txgameslg Game/Actor 适配层会把 Handler 错误
+编码为生成的 `System_Error`，直接投递到发起 Session。其中 `RequestSeq` 指向原上行
 Seq，`Code` 是供客户端多语言表使用的 `int32` 稳定错误码；连接会继续处理后续请求。业务错误码 `0` 保留为“无错误”，未分类内部错误使用
 `actor.CallErrorCodeInternal`。Handler 未注册、命令解码失败等 Actor 分派拒绝使用
 `actor.CallErrorCodeDispatch`，也会作为 `System_Error` 返回，不会关闭已经建立的客户端连接。例如：
@@ -830,11 +806,10 @@ const ErrorCodeNameExists int32 = 41001
 return nil, txactor.NewCallError(ErrorCodeNameExists, errors.New("name already exists"))
 ```
 
-Agent 核心仍把握手失败、非法 Frame、Seq/Ack 违约、Actor 目标解析失败、Actor 调用超时或不可达等没有取得
-Actor 明确响应的基础设施错误视为会话失败并关闭连接。这样 Actor 请求失败不会迫使玩家重连，损坏的协议状态
+Agent 核心仍把握手失败、非法 Frame、Seq/Ack 违约、Actor 目标解析失败、邮箱拒绝接纳或 Actor 服务不可达等基础设施错误视为会话失败并关闭连接。邮箱接纳后的业务错误通过 MsgQ 下行；损坏的协议状态
 也不会被继续使用。
 
-`Rec` 在业务分发之前前进上行 Seq。因此业务处理失败或进程在 `Rec` 之后崩溃时，该条上行不会被框架自动重放。
+逐条 `Rec` 模式下，Agent 在 Actor 邮箱接纳消息后才推进 MsgQ 上行游标；业务处理失败或进程在游标同步后崩溃时，该条上行不会被框架自动重放。启用 Rec lease 时，尚未同步到 MsgQ 的接纳游标仍可能在恢复后被再次分派。
 普通游戏操作接受这个语义；不能重复执行的命令必须由项目定义独立的业务幂等键。Frame 的静态 `CommandID`
 只标识生成的命令类型，不能用作一次业务操作的幂等令牌。
 
@@ -853,11 +828,11 @@ if err != nil {
 ```
 
 `txgame` 的最小配置如下。`agent` 被 `--services` 选中时至少配置一个监听地址，`maxFrameBytes` 和
-`fetchBatch` 必须为正数；`msgq` 的 Redis 会话 binding 参数也必须完整。浏览器跨域连接必须把完整的
+`msgq` 的 Redis 会话 binding 参数也必须完整。浏览器跨域连接必须把完整的
 `http/https` Origin 写入 `webSocketOrigins`，不允许通配符；空列表沿用 WebSocket 同源校验。服务选择只由
 `--services` 决定，YAML 不使用 `enabled` 作为第二个启动开关：
 
-远端 Agent 每个 Session 使用一条 MsgQ gRPC 下行流；`fetchBatch` 仅限制一次读取的最大消息数，不引入等待凑批。Agent 与 MsgQ 同进程时继续直接读取本地邮箱。断线恢复仍由原 SessionID、ConnectionID 和 Ack 契约处理。分批部署新版本时先升级 MsgQ、再升级 Agent；旧 MsgQ 不提供 `StreamFetch`。
+Agent 与每个 MsgQ 实例复用一条 `MailboxStream` 双向流承载多个 Session。下行由 MsgQ 推送，Agent 沿该流同步 Seq/Ack；同进程部署走本地邮箱。断线恢复沿用原 SessionID 和下行 Ack。
 
 ```yaml
 services:
@@ -867,7 +842,6 @@ services:
     webSocketOrigins:
       - http://127.0.0.1:5173
     maxFrameBytes: 1048576
-    fetchBatch: 16
   msgq:
     routeType: fusion
     prefix: txgame:msgq
@@ -938,13 +912,13 @@ await client.connect(loginTicket);
 await client.send("Role_RenameReq", { roleId: 470001, name: "new-name" });
 
 await client.close();
-await client.reconnect(loginTicket); // 复用同一逻辑会话并重放未确认 UpMsg。
+await client.reconnect(loginTicket); // 复用同一逻辑会话，继续使用递增的上行 Seq。
 ```
 
 `AgentClient` 与传输无关的 `AgentSession` 共同管理命令编码、路由、Seq/Ack 和下行串行消费；浏览器仅选择
-`WebSocketTransport`，Node.js CLI 选择 `TCPTransport`。普通 DownMsg 的确认由下一条 UpMsg 捎带；只有必须立即释放
-服务端积压时才显式调用 `client.acknowledge()`。`AgentClient` 同时持有未确认 UpMsg 队列，因此重连必须复用原实例，
-不能只用 `snapshot()` 中的计数器创建一个缺失重放载荷的新 Session。`connect/reconnect` 只有在收到服务端
+`WebSocketTransport`，Node.js CLI 选择 `TCPTransport`。普通 DownMsg 的确认优先由下一条 UpMsg 捎带；持续没有上行时，
+`AgentClient` 每 5 秒检查一次并发送尚未捎带的独立 Ack，也可以显式调用 `client.acknowledge()`。客户端不保存未确认
+UpMsg 队列；重连复用原 Session，但不自动重投结果未知的旧请求。`connect/reconnect` 只有在收到服务端
 `FrameReady` 后才返回并进入可发送状态。Go 整数在 TypeScript 侧使用
 `number`，因此业务协议值必须在 `-9,007,199,254,740,991` 到 `9,007,199,254,740,991` 之间；超界编码或解码
 会返回错误，避免悄悄丢失精度。整数还受具体 scalar 的位宽和符号约束；uint32 的上半区使用 BON 已有的
@@ -997,10 +971,10 @@ Agent Frame 当前版本是 `v3`。Frame 固定使用 32 字节头：第 0 字�
 | 类型 | Seq | Ack | 命令号和路由键 | Payload | 用途 |
 | --- | --- | --- | --- | --- | --- |
 | `FrameHandshake` | `0` | 新连必须为 `0`；重连为已确认下行序号 | 必须为空 | 登录 ticket | 建立或恢复会话 |
-| `FrameReady` | `0` | 服务端已经连续受理的 `FrameUpMsg.Seq`，新会话可为 `0` | 必须为空 | 必须为空 | 确认握手已经被服务端接受 |
-| `FrameUpMsg` | 严格递增正数 | 最近已处理的 `FrameDownMsg.Seq` | 生成的非零命令号；可选强类型路由键 | BON 业务体 | 上行业务，同时确认下行 |
-| `FrameDownMsg` | msgq 下行序号 | 服务端最近已受理的 `FrameUpMsg.Seq` | 必须为空 | BON 业务体 | 服务端下行，同时确认上行 |
-| `FrameAck` | `0` | 发送方最近已连续处理的对端 `Seq` | 必须为空 | 必须为空 | 没有业务载荷可捎带时单独确认 |
+| `FrameReady` | `0` | 固定为 `0` | 必须为空 | 必须为空 | 确认握手已经被服务端接受 |
+| `FrameUpMsg` | 严格递增正数，可跳号 | 最近已处理的 `FrameDownMsg.Seq` | 生成的非零命令号；可选强类型路由键 | BON 业务体 | 上行业务，同时确认下行 |
+| `FrameDownMsg` | msgq 下行序号 | 固定为 `0` | 必须为空 | BON 业务体 | 服务端下行 |
+| `FrameAck` | `0` | 客户端最近已处理的下行 `Seq` | 必须为空 | 必须为空 | 客户端独立确认下行；服务端不发送此帧 |
 
 客户端收到 `FrameDownMsg` 后应先完成编码载荷的处理，再更新本地 `lastDownSeq`。下一条业务帧直接携带该值，
 无需额外 ACK 帧：
@@ -1017,7 +991,7 @@ socket.send(encodeFrame({
 }, maxFrameBytes));
 ```
 
-客户端空闲但已经处理新的下行时，才发送编码载荷为空的 `FrameAck`：
+客户端空闲但已经处理新的下行时，发送编码载荷为空的 `FrameAck`。服务端也可在后续 `FrameUpMsg.Ack` 中收到同一游标：
 
 ```ts
 import { createAckFrame, encodeFrame } from "../src/protocol/frame.js";
@@ -1029,8 +1003,8 @@ socket.send(encodeFrame(createAckFrame(lastDownSeq), maxFrameBytes));
 不会错误清理未来消息。重连握手使用同一个最后确认号恢复未确认下行。客户端不得把“收到网络字节”当作已确认，
 必须在业务编码载荷已被本地处理后才推进 Ack。
 
-客户端与服务端的 `Seq` 是两条彼此独立的单调序列。客户端 `UpMsg.Seq=8` 的响应可以是服务端
-`DownMsg.Seq=5, Ack=8`；这里的 `Ack=8` 表示服务端已经连续受理到客户端序号 8，并不表示响应序号必须等于请求序号。
+客户端与服务端的 `Seq` 是两条彼此独立的递增序列。客户端 `UpMsg.Seq=8` 的业务响应可以是服务端
+`DownMsg.Seq=5`；下行 `Ack` 固定为 `0`，因为服务端不会回传客户端上行进度。
 需要业务级请求与响应关联时，应在业务协议中定义独立的请求标识，不能复用传输层 Seq。
 
 ## 内部 gRPC 协议
@@ -1397,7 +1371,7 @@ Key 的编码由项目统一约定，tx 不推断整数或业务分组。两个�
 
 `Tell` 冷寻址由 tx 提供有限查询期限。`TellAccepted`、`CallFuture`、`Call` 使用带 deadline 的 Context；取消等待不撤销业务。失败不自动改派或重投。Core NATS 不保证异常后的必达，JetStream 可靠任务仍属于后续建设。
 
-业务 Receive 接收公开 `actor.Delivery`，Call 返回 `actor.Result` 或 error，不需要手动解码内部 protobuf 或调用 Respond。普通成功结果需有非空 `MessageType`；Agent 完成确认只携带正 `ProcessedUpSeq`，不混入业务载荷。业务错误可返回 `actor.NewCallError(code, err)`。远程结果等待表有界，超时、响应和连接关闭都会清理等待项；本地调用受实体邮箱容量限制。
+业务 Receive 接收公开 `actor.Delivery`，Call 返回 `actor.Result` 或 error，不需要手动解码内部 protobuf 或调用 Respond。普通成功结果需有非空 `MessageType`；Agent 上行通过邮箱接纳确认，不等待 Actor 业务结果。业务错误可返回 `actor.NewCallError(code, err)`。远程结果等待表有界，超时、响应和连接关闭都会清理等待项；本地调用受实体邮箱容量限制。
 
 ```go
 dispatcher, err := txagent.NewActorDispatcher(txagent.ActorDispatcherOptions{
@@ -1953,6 +1927,21 @@ txgen 会在生成阶段校验 `bson:"_id"` 的归属：同一 data 类型最多
 
 ## 日志
 
+### 消息链路指标
+
+`metrics` 包提供独立的 Prometheus `/metrics` Handler。示例服务入口只有在设置
+`TX_METRICS_LISTEN` 时才启动采集端口，例如 `TX_METRICS_LISTEN=127.0.0.1:19200`；
+同一宿主机的多个进程应使用不同端口。常规运行无需开启 pprof 或 Channelz。
+
+`tx_agent_uplink_total` 统计 Agent 向目标服务写入上行流的接受或失败次数；
+`tx_rpc_stream_submit_total` 统计目标服务入邮箱结果，两者不能解释为业务执行完成。
+`tx_msgq_downlink_published_total` 统计实际入队数，其中 `kind="role"` 按成功投递的邮箱计数；
+`tx_agent_downlink_sent_total` 只统计成功写入客户端 Socket 的帧。
+相应的 `*_seconds` 直方图描述分段耗时，`tx_msgq_backlog_messages`、
+`tx_msgq_backlog_bytes` 与 `tx_msgq_sessions` 在抓取时读取邮箱状态。
+这些指标没有 SessionID、RoleID 或 ActorID 标签；进程 CPU 和 Go 内存由标准采集器提供。
+
+
 `tx/log` 基于标准库 `log/slog` 提供最小 logger 注入入口：
 
 ```go
@@ -2011,10 +2000,10 @@ Agent、msgq 和项目业务的消息日志按职责只记录一次：
 - msgq 在 Debug 级别记录 `Init/Rec/PubSession/Confirm` 成功后的 Seq、Ack 和积压状态；恢复日志额外记录前后
   `connectionID`，旧连接被栅栏拒绝时同时记录请求方与当前连接身份，淘汰和清理日志同样携带完整会话身份。
   它不记录编码载荷，也不记录空轮询。
-- 玩家命令的协议名、处理完成序号和耗时由项目 Agent Dispatcher 记录；无状态模板可使用 Info，有状态高频模板可使用 Debug。
+- 玩家命令的协议名、邮箱接纳序号和耗时由项目 Agent Dispatcher 记录；无状态模板可使用 Info，有状态高频模板可使用 Debug。
 
 例如一条成功的项目侧访问事件可以包含 `roleID`、`sessionID`、`seq`、`commandID`、`command`、
-`processedUpSeq`、`status` 和 `durationMs`。业务响应和主动推送均在项目 Game/Actor 发布边界产生；不能为了补日志而让
+`acceptedUpSeq`、`status` 和 `durationMs`。业务响应和主动推送均在项目 Game/Actor 发布边界产生；不能为了补日志而让
 Agent 反序列化业务载荷。
 
 默认调用方式：

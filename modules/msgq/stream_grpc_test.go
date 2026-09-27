@@ -2,16 +2,19 @@ package msgq
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net"
 	"testing"
 	"time"
 
+	"github.com/ngnl47/tx/modules/discovery"
 	msgqpb "github.com/ngnl47/tx/modules/msgq/pb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-func TestStreamFetchRestoresUnconfirmedDownlink(t *testing.T) {
+func TestMailboxStreamMultiplexesSessionsAndKeepsAckIsolated(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	mailbox, err := NewServer(ServerOptions{InstanceID: "msgq-a", Store: &testSessionStore{}, MaxBacklogMessages: 4})
@@ -33,39 +36,237 @@ func TestStreamFetchRestoresUnconfirmedDownlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = transport.Close() })
-	client := &grpcConnection{client: msgqpb.NewMailboxServiceClient(transport)}
-	header := SessionHeader{RoleID: 47, SessionID: 11, ConnectionID: 1}
-	if _, err := client.Init(ctx, InitRequest{Header: header}); err != nil {
-		t.Fatal(err)
-	}
-	streamCtx, stopStream := context.WithCancel(ctx)
-	stream, err := client.StreamFetch(streamCtx, FetchSomeRequest{Header: header, Max: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for seq := int64(1); seq <= 2; seq++ {
-		if _, err := mailbox.PubSession(ctx, header.SessionID, []byte{byte(seq)}); err != nil {
+	client := msgqpb.NewMailboxServiceClient(transport)
+	first := SessionHeader{RoleID: 47, SessionID: 11, ConnectionID: 1}
+	second := SessionHeader{RoleID: 48, SessionID: 12, ConnectionID: 1}
+	for _, header := range []SessionHeader{first, second} {
+		if _, err := mailbox.Init(ctx, InitRequest{Header: header}); err != nil {
 			t.Fatal(err)
 		}
-		batch, err := stream.Recv()
-		if err != nil || len(batch.Messages) != 1 || batch.Messages[0].Seq != seq || len(batch.Messages[0].Payload) != 1 || batch.Messages[0].Payload[0] != byte(seq) {
-			t.Fatalf("stream batch %d = %+v, %v", seq, batch, err)
-		}
 	}
-	stopStream()
-	header.ConnectionID = 2
-	if _, err := client.Init(ctx, InitRequest{Header: header, Restore: true, Ack: 1}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := mailbox.PubSession(ctx, header.SessionID, []byte{3}); err != nil {
-		t.Fatal(err)
-	}
-	replayed, err := client.StreamFetch(ctx, FetchSomeRequest{Header: header, Max: 2})
+	streamCtx, stopStream := context.WithCancel(ctx)
+	stream, err := client.MailboxStream(streamCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	batch, err := replayed.Recv()
-	if err != nil || len(batch.Messages) != 2 || batch.Messages[0].Seq != 2 || batch.Messages[1].Seq != 3 {
-		t.Fatalf("restored batch = %+v, %v", batch, err)
+	for _, header := range []SessionHeader{first, second} {
+		if err := stream.Send(&msgqpb.MailboxStreamRequest{Header: headerToProto(header), Kind: msgqpb.MailboxStreamRequest_KIND_OPEN, Max: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := mailbox.PubSession(ctx, first.SessionID, []byte("one")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mailbox.PubSession(ctx, first.SessionID, []byte("one-more")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mailbox.PubSession(ctx, second.SessionID, []byte("two")); err != nil {
+		t.Fatal(err)
+	}
+	seen := make(map[int64][]string)
+	for range 3 {
+		response, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("receive mailbox item: %v", err)
+		}
+		sessionID := response.GetHeader().GetSessionId()
+		seen[sessionID] = append(seen[sessionID], string(response.GetMessage().GetPayload()))
+	}
+	if len(seen[first.SessionID]) != 2 || seen[first.SessionID][0] != "one" || seen[first.SessionID][1] != "one-more" || len(seen[second.SessionID]) != 1 || seen[second.SessionID][0] != "two" {
+		t.Fatalf("shared stream mixed Sessions: %v", seen)
+	}
+	if err := stream.Send(&msgqpb.MailboxStreamRequest{Header: headerToProto(first), Kind: msgqpb.MailboxStreamRequest_KIND_ACK, Ack: 1, ReceivedSeq: 17}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		session, found := mailbox.lookup(first.SessionID)
+		if found {
+			session.mu.Lock()
+			confirmed := session.downMsgs.confirmedSeq
+			accepted := session.upMsgSeq
+			session.mu.Unlock()
+			if confirmed == 1 && accepted == 17 {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("第一会话 Ack 未由共享流处理")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	stopStream()
+	first.ConnectionID = 2
+	second.ConnectionID = 2
+	if restored, err := mailbox.Init(ctx, InitRequest{Header: first, Restore: true, Ack: 1}); err != nil || restored.UpMsgSeq != 17 {
+		t.Fatalf("restored up message cursor = %+v, %v; want 17", restored, err)
+	}
+	if _, err := mailbox.Init(ctx, InitRequest{Header: second, Restore: true, Ack: 0}); err != nil {
+		t.Fatal(err)
+	}
+	firstPending, err := mailbox.FetchSome(ctx, FetchSomeRequest{Header: first, Max: 1})
+	if err != nil || len(firstPending.Messages) != 1 || firstPending.Messages[0].Seq != 2 {
+		t.Fatalf("第一会话确认后待恢复消息 = %+v, %v", firstPending, err)
+	}
+	secondPending, err := mailbox.FetchSome(ctx, FetchSomeRequest{Header: second, Max: 1})
+	if err != nil || len(secondPending.Messages) != 1 || secondPending.Messages[0].Seq != 1 {
+		t.Fatalf("第二会话未确认消息 = %+v, %v", secondPending, err)
+	}
+}
+
+func TestPublishStreamProcessesSessionAndRoleMessagesInOrder(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	store := &testSessionStore{}
+	mailbox, err := NewServer(ServerOptions{InstanceID: "msgq-a", Store: store, MaxBacklogMessages: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := SessionHeader{RoleID: 47, SessionID: 11, ConnectionID: 1}
+	if _, err := mailbox.Init(ctx, InitRequest{Header: header}); err != nil {
+		t.Fatal(err)
+	}
+	binding, found, err := store.FindRole(ctx, header.RoleID)
+	if err != nil || !found {
+		t.Fatalf("FindRole = %+v, %v, found=%v", binding, err, found)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	if err := RegisterMailboxService(server, mailbox); err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { server.Stop(); _ = listener.Close() })
+	transport, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = transport.Close() })
+	stream, err := msgqpb.NewMailboxServiceClient(transport).PublishStream(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := []*msgqpb.PublishRequest{
+		{Kind: msgqpb.PublishRequest_KIND_SESSION, SessionId: header.SessionID, Payload: []byte("first")},
+		{Kind: msgqpb.PublishRequest_KIND_ROLE, RoleId: binding.RoleID, InstanceId: binding.InstanceID, Generation: binding.Generation, Payload: []byte("role")},
+		{Kind: msgqpb.PublishRequest_KIND_SESSION, SessionId: header.SessionID, Payload: []byte("last")},
+	}
+	for _, request := range requests {
+		if err := stream.Send(request); err != nil {
+			t.Fatalf("send publish request: %v", err)
+		}
+	}
+	if err := stream.CloseSend(); err != nil {
+		t.Fatalf("finish publish stream: %v", err)
+	}
+	if _, err := stream.Recv(); !errors.Is(err, io.EOF) {
+		t.Fatalf("successful publish returned feedback: %v", err)
+	}
+	pending, err := mailbox.FetchSome(ctx, FetchSomeRequest{Header: header, Max: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending.Messages) != 3 {
+		t.Fatalf("published message count = %d, want 3", len(pending.Messages))
+	}
+	for index, want := range []string{"first", "role", "last"} {
+		if got := string(pending.Messages[index].Payload); got != want {
+			t.Fatalf("message[%d] = %q, want %q", index, got, want)
+		}
+	}
+}
+
+func TestPublishStreamRoleRejectionRefreshesSenderRouteWithoutReplayingPayload(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	store := &testSessionStore{}
+	mailbox, err := NewServer(ServerOptions{InstanceID: "msgq-a", Store: store, MaxBacklogMessages: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := SessionHeader{RoleID: 47, SessionID: 11, ConnectionID: 1}
+	if _, err := mailbox.Init(ctx, InitRequest{Header: first}); err != nil {
+		t.Fatal(err)
+	}
+	oldBinding, found, err := store.FindRole(ctx, first.RoleID)
+	if err != nil || !found {
+		t.Fatalf("old role binding = %+v, found=%v, err=%v", oldBinding, found, err)
+	}
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	if err := RegisterMailboxService(server, mailbox); err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { server.Stop(); _ = listener.Close() })
+	directory := discovery.NewServiceDirectory()
+	if err := directory.Replace([]discovery.Instance{{
+		ID: "msgq-a", Endpoint: listener.Addr().String(), Services: []string{"msgq"}, Status: discovery.StatusRunning,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := NewSessionRouter(directory, store, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles, err := NewRoleRouter(directory, store.FindRole, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dialer, err := NewGRPCDialer(insecure.NewCredentials())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender, err := NewSender(sessions, roles, dialer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sender.Close() })
+	if err := sender.SendRole(ctx, first.RoleID, []byte("warm")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mailbox.FetchSome(ctx, FetchSomeRequest{Header: first, Max: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mailbox.TerminateSession(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := mailbox.maintainRole(ctx, first.RoleID, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	second := SessionHeader{RoleID: first.RoleID, SessionID: 12, ConnectionID: 2}
+	if _, err := mailbox.Init(ctx, InitRequest{Header: second}); err != nil {
+		t.Fatal(err)
+	}
+	newBinding, found, err := store.FindRole(ctx, second.RoleID)
+	if err != nil || !found || newBinding == oldBinding {
+		t.Fatalf("new role binding = %+v, found=%v, err=%v", newBinding, found, err)
+	}
+
+	if err := sender.SendRole(ctx, second.RoleID, []byte("stale")); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, found := roles.cache.GetIfPresent(second.RoleID); !found {
+			break
+		}
+		if ctx.Err() != nil {
+			t.Fatal("角色归属拒绝后旧路由仍留在缓存")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := sender.SendRole(ctx, second.RoleID, []byte("next")); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := mailbox.FetchSome(ctx, FetchSomeRequest{Header: second, Max: 2})
+	if err != nil || len(pending.Messages) != 1 || string(pending.Messages[0].Payload) != "next" {
+		t.Fatalf("new session mailbox = %+v, err=%v; want only next", pending, err)
 	}
 }

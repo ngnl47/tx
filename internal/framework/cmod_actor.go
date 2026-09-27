@@ -107,12 +107,6 @@ func (server *Server) startActor() error {
 	}
 	r.actorSender = sender
 	r.actor = actorAccess{messenger: &actorrpc.NATSMessenger{Router: router}, routeTimeout: config.CallbackTimeout}
-	var direct actorrpc.Caller = &actorrpc.DirectTransport{Sender: sender}
-	if server.config.Actor.DirectCallStream {
-		direct = &actorrpc.StreamingDirectTransport{Sender: sender}
-	} else if server.config.Actor.DirectCallBatch {
-		direct = actorrpc.NewBatchingDirectTransport(sender)
-	}
-	r.actorDirect = directActorAccess{caller: &actorrpc.RoutedCaller{Router: router, Transport: direct}}
+	r.actorDirect = directActorAccess{caller: &actorrpc.RoutedCaller{Router: router, Transport: &actorrpc.DirectTransport{Sender: sender}}}
 	return nil
 }

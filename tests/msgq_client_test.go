@@ -3,16 +3,12 @@ package tests
 import (
 	"context"
 	"errors"
-	"net"
 	"slices"
 	"sync"
 	"testing"
 
 	"github.com/ngnl47/tx/modules/discovery"
 	"github.com/ngnl47/tx/modules/msgq"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/test/bufconn"
 )
 
 func TestSessionClientRouterRestoreUsesExactSessionOwner(t *testing.T) {
@@ -209,41 +205,6 @@ func TestSessionClientRouterRestoreRejectsInvalidBindingOrOwner(t *testing.T) {
 	}
 }
 
-func TestLocalSessionClientDelegatesMailboxCalls(t *testing.T) {
-	mailbox, err := msgq.NewServer(msgq.ServerOptions{
-		InstanceID:         "msgq-local",
-		Store:              newMailboxSessionStore(),
-		MaxBacklogMessages: 4,
-	})
-	if err != nil {
-		t.Fatalf("new mailbox: %v", err)
-	}
-	client, err := msgq.NewLocalSessionClient(mailbox)
-	if err != nil {
-		t.Fatalf("new local client: %v", err)
-	}
-	header := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-	if _, err := client.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
-		t.Fatalf("init: %v", err)
-	}
-	if _, err := client.Rec(context.Background(), msgq.RecRequest{Header: header, Seq: 1}); err != nil {
-		t.Fatalf("record upMsg message: %v", err)
-	}
-	if _, err := client.PubSession(context.Background(), header.SessionID, []byte("bon")); err != nil {
-		t.Fatalf("publish downMsg message: %v", err)
-	}
-	batch, err := client.FetchSome(context.Background(), msgq.FetchSomeRequest{Header: header, Max: 1})
-	if err != nil {
-		t.Fatalf("fetch downMsg message: %v", err)
-	}
-	if len(batch.Messages) != 1 || batch.Messages[0].Seq != 1 || string(batch.Messages[0].Payload) != "bon" {
-		t.Fatalf("fetched batch = %#v", batch)
-	}
-	if err := client.Confirm(context.Background(), msgq.ConfirmRequest{Header: header, Ack: 1}); err != nil {
-		t.Fatalf("confirm downMsg message: %v", err)
-	}
-}
-
 func TestFixedSessionClientRouterAlwaysReturnsSharedLocalClient(t *testing.T) {
 	client := &sessionClientFake{}
 	router, err := msgq.NewFixedSessionClientRouter(client)
@@ -269,55 +230,6 @@ func TestFixedSessionClientRouterAlwaysReturnsSharedLocalClient(t *testing.T) {
 		if _, err := router.Acquire(context.Background(), request); !errors.Is(err, msgq.ErrInvalidSession) {
 			t.Fatalf("Acquire(%#v) error = %v, want invalid session", request, err)
 		}
-	}
-}
-
-func TestGRPCSessionClientDelegatesMailboxCalls(t *testing.T) {
-	mailbox, err := msgq.NewServer(msgq.ServerOptions{
-		InstanceID:         "msgq-remote",
-		Store:              newMailboxSessionStore(),
-		MaxBacklogMessages: 4,
-	})
-	if err != nil {
-		t.Fatalf("new mailbox: %v", err)
-	}
-	listener := bufconn.Listen(1024 * 1024)
-	server := grpc.NewServer()
-	defer server.Stop()
-	if err := msgq.RegisterMailboxService(server, mailbox); err != nil {
-		t.Fatalf("register mailbox service: %v", err)
-	}
-	go func() { _ = server.Serve(listener) }()
-	dialer, err := msgq.NewGRPCDialer(insecure.NewCredentials(), grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
-		return listener.Dial()
-	}))
-	if err != nil {
-		t.Fatalf("new gRPC dialer: %v", err)
-	}
-	client, err := dialer.DialSession(context.Background(), discovery.Instance{ID: "msgq-remote", Services: []string{"msgq"}, Endpoint: "bufnet", Status: discovery.StatusRunning})
-	if err != nil {
-		t.Fatalf("dial session client: %v", err)
-	}
-	defer client.Close()
-	header := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-	if _, err := client.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
-		t.Fatalf("init: %v", err)
-	}
-	if _, err := client.Rec(context.Background(), msgq.RecRequest{Header: header, Seq: 1}); err != nil {
-		t.Fatalf("record upMsg message: %v", err)
-	}
-	if _, err := client.PubSession(context.Background(), header.SessionID, []byte("bon")); err != nil {
-		t.Fatalf("publish downMsg message: %v", err)
-	}
-	batch, err := client.FetchSome(context.Background(), msgq.FetchSomeRequest{Header: header, Max: 1})
-	if err != nil {
-		t.Fatalf("fetch downMsg message: %v", err)
-	}
-	if len(batch.Messages) != 1 || batch.Messages[0].Seq != 1 || string(batch.Messages[0].Payload) != "bon" {
-		t.Fatalf("fetched batch = %#v", batch)
-	}
-	if err := client.Confirm(context.Background(), msgq.ConfirmRequest{Header: header, Ack: 1}); err != nil {
-		t.Fatalf("confirm downMsg message: %v", err)
 	}
 }
 
@@ -357,20 +269,8 @@ func (*sessionClientFake) Init(context.Context, msgq.InitRequest) (msgq.InitResu
 	return msgq.InitResult{}, nil
 }
 
-func (*sessionClientFake) Rec(context.Context, msgq.RecRequest) (msgq.RecResult, error) {
-	return msgq.RecResult{}, nil
-}
-
-func (*sessionClientFake) PubSession(context.Context, int64, []byte) (msgq.PubResult, error) {
-	return msgq.PubResult{}, nil
-}
-
-func (*sessionClientFake) FetchSome(context.Context, msgq.FetchSomeRequest) (msgq.FetchSomeResult, error) {
-	return msgq.FetchSomeResult{}, nil
-}
-
-func (*sessionClientFake) Confirm(context.Context, msgq.ConfirmRequest) error {
-	return nil
+func (*sessionClientFake) OpenMailboxStream(context.Context, msgq.SessionHeader) (msgq.MailboxStreamSession, error) {
+	return nil, errors.New("unexpected MailboxStream")
 }
 
 func (*sessionClientFake) TerminateSession(context.Context, msgq.SessionHeader) error {

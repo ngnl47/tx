@@ -51,6 +51,27 @@ func TestSenderPubSessionUsesExactSession(t *testing.T) {
 	}
 }
 
+func TestSenderStreamPublishesToExactSessionAndRoleOwnerWithoutResult(t *testing.T) {
+	connection := &senderConnectionFake{}
+	sender, store, _ := newSenderForTest(t, connection, SessionBinding{RoleID: 47, SessionID: 11, ConnectionID: 13, InstanceID: "msgq-a"})
+	role := RoleBinding{RoleID: 47, InstanceID: "msgq-a", Generation: "generation-1"}
+	if _, err := store.ClaimRole(context.Background(), role); err != nil {
+		t.Fatal(err)
+	}
+	if err := sender.SendSession(context.Background(), 11, []byte("session")); err != nil {
+		t.Fatal(err)
+	}
+	if err := sender.SendRole(context.Background(), 47, []byte("role")); err != nil {
+		t.Fatal(err)
+	}
+	if connection.streamSession != 11 || connection.streamRole != role || connection.streamPayloads[0] != "session" || connection.streamPayloads[1] != "role" {
+		t.Fatalf("stream publications session=%d role=%+v payloads=%v", connection.streamSession, connection.streamRole, connection.streamPayloads)
+	}
+	if connection.pubCalls != 0 || len(connection.roleBindings) != 0 {
+		t.Fatal("stream publication unexpectedly used unary publish")
+	}
+}
+
 func TestSenderMailboxCacheInvalidationDoesNotRetryPayload(t *testing.T) {
 	connection := &senderConnectionFake{pubResult: PubResult{Seq: 1}}
 	sender, store, _ := newSenderForTest(t, connection, SessionBinding{RoleID: 47, SessionID: 11, ConnectionID: 13, InstanceID: "msgq-a"})
@@ -251,6 +272,26 @@ type senderConnectionFake struct {
 	topicRequest     TopicRequest
 	broadcastRequest BroadcastTopicRequest
 	broadcastResult  BroadcastResult
+	streamSession    int64
+	streamRole       RoleBinding
+	streamPayloads   []string
+	rejectRole       func(RoleBinding)
+}
+
+func (connection *senderConnectionFake) OnRoleRejection(reject func(RoleBinding)) {
+	connection.rejectRole = reject
+}
+
+func (connection *senderConnectionFake) SendSession(_ context.Context, sessionID int64, payload []byte) error {
+	connection.streamSession = sessionID
+	connection.streamPayloads = append(connection.streamPayloads, string(payload))
+	return nil
+}
+
+func (connection *senderConnectionFake) SendRole(_ context.Context, binding RoleBinding, payload []byte) error {
+	connection.streamRole = binding
+	connection.streamPayloads = append(connection.streamPayloads, string(payload))
+	return nil
 }
 
 func (connection *senderConnectionFake) PubSession(_ context.Context, sessionID int64, payload []byte) (PubResult, error) {

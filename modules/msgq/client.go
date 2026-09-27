@@ -3,9 +3,9 @@ package msgq
 import (
 	"context"
 	"errors"
-	"github.com/google/uuid"
-	"sync"
 
+	"github.com/google/uuid"
+	"github.com/ngnl47/tx/internal/instanceconn"
 	"github.com/ngnl47/tx/modules/discovery"
 )
 
@@ -18,22 +18,9 @@ var (
 // SessionClient 是 Agent 访问单个 msgq 实例所需的会话操作。
 type SessionClient interface {
 	Init(context.Context, InitRequest) (InitResult, error)
-	Rec(context.Context, RecRequest) (RecResult, error)
-	PubSession(context.Context, int64, []byte) (PubResult, error)
-	FetchSome(context.Context, FetchSomeRequest) (FetchSomeResult, error)
-	Confirm(context.Context, ConfirmRequest) error
+	OpenMailboxStream(context.Context, SessionHeader) (MailboxStreamSession, error)
 	TerminateSession(context.Context, SessionHeader) error
 	Close() error
-}
-
-// FetchSomeStream 持续读取同一会话的下行批次，连接关闭时由传入的 Context 取消。
-type FetchSomeStream interface {
-	Recv() (FetchSomeResult, error)
-}
-
-// StreamingSessionClient 是支持持续下行读取的会话客户端。
-type StreamingSessionClient interface {
-	StreamFetch(context.Context, FetchSomeRequest) (FetchSomeStream, error)
 }
 
 // AcquireSessionRequest 描述 Agent 为逻辑会话选择 MsgQ owner 所需的可信身份。
@@ -92,24 +79,15 @@ func (c localSessionClient) Init(ctx context.Context, request InitRequest) (Init
 	return c.mailbox.Init(ctx, request)
 }
 
-func (c localSessionClient) Rec(ctx context.Context, request RecRequest) (RecResult, error) {
-	return c.mailbox.Rec(ctx, request)
-}
-
-func (c localSessionClient) PubSession(ctx context.Context, sessionID int64, payload []byte) (PubResult, error) {
-	return c.mailbox.PubSession(ctx, sessionID, payload)
-}
-
-func (c localSessionClient) FetchSome(ctx context.Context, request FetchSomeRequest) (FetchSomeResult, error) {
-	return c.mailbox.FetchSome(ctx, request)
-}
-
-func (c localSessionClient) Confirm(ctx context.Context, request ConfirmRequest) error {
-	return c.mailbox.Confirm(ctx, request)
-}
-
 func (c localSessionClient) TerminateSession(ctx context.Context, header SessionHeader) error {
 	return c.mailbox.TerminateSession(ctx, header)
+}
+
+func (c localSessionClient) OpenMailboxStream(ctx context.Context, header SessionHeader) (MailboxStreamSession, error) {
+	if err := c.mailbox.Touch(ctx, TouchRequest{Header: header}); err != nil {
+		return nil, err
+	}
+	return newLocalMailboxSession(ctx, c.mailbox, header), nil
 }
 
 func (localSessionClient) Close() error { return nil }
@@ -120,9 +98,7 @@ type SessionClientRouter struct {
 	store     SessionStore
 	dialer    SessionClientDialer
 
-	mu          sync.Mutex
-	connections map[string]SessionClient
-	closed      bool
+	connections *instanceconn.Cache[SessionClient]
 }
 
 // NewSessionClientRouter 创建基于既有 owner 和服务目录的会话客户端路由器。
@@ -136,7 +112,7 @@ func NewSessionClientRouter(directory discovery.Directory, store SessionStore, d
 	if dialer == nil {
 		return nil, ErrSessionClientDialerNil
 	}
-	return &SessionClientRouter{directory: directory, store: store, dialer: dialer, connections: make(map[string]SessionClient)}, nil
+	return &SessionClientRouter{directory: directory, store: store, dialer: dialer, connections: instanceconn.New[SessionClient](directory)}, nil
 }
 
 // Acquire 为新会话复用角色归属；首次归属由运行中实例轮转提名并原子确认。恢复仍直达旧邮箱。
@@ -194,54 +170,21 @@ func (r *SessionClientRouter) Acquire(ctx context.Context, request AcquireSessio
 	return r.connection(ctx, instance)
 }
 
-// Close 关闭按 endpoint 缓存的远端会话客户端。
+// Close 关闭按 endpoint 和实例身份缓存的远端会话客户端。
 func (r *SessionClientRouter) Close() error {
 	if r == nil {
 		return nil
 	}
-	r.mu.Lock()
-	if r.closed {
-		r.mu.Unlock()
-		return nil
-	}
-	r.closed = true
-	connections := r.connections
-	r.connections = nil
-	r.mu.Unlock()
-
-	var errs []error
-	for _, client := range connections {
-		errs = append(errs, client.Close())
-	}
-	return errors.Join(errs...)
+	return r.connections.Close()
 }
 
 func (r *SessionClientRouter) connection(ctx context.Context, instance discovery.Instance) (SessionClient, error) {
-	r.mu.Lock()
-	if r.closed {
-		r.mu.Unlock()
+	client, err := r.connections.Get(ctx, instance, r.dialer.DialSession)
+	if errors.Is(err, instanceconn.ErrClosed) {
 		return nil, ErrSessionClientRouterClosed
 	}
-	if client := r.connections[instance.Endpoint]; client != nil {
-		r.mu.Unlock()
-		return client, nil
+	if errors.Is(err, instanceconn.ErrStaleInstance) {
+		return nil, ErrRouteUnavailable
 	}
-	r.mu.Unlock()
-
-	created, err := r.dialer.DialSession(ctx, instance)
-	if err != nil {
-		return nil, err
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.closed {
-		_ = created.Close()
-		return nil, ErrSessionClientRouterClosed
-	}
-	if client := r.connections[instance.Endpoint]; client != nil {
-		_ = created.Close()
-		return client, nil
-	}
-	r.connections[instance.Endpoint] = created
-	return created, nil
+	return client, err
 }

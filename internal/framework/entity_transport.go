@@ -19,7 +19,8 @@ func (server *Server) startEntityTransport(local *actorhost.Runtime, url, namesp
 	}
 	// 先注册尚未监听的共享 gRPC，失败时不创建 NATS 连接。
 	if err := runtime.rpc.Register(func(registrar grpc.ServiceRegistrar) error {
-		return rpc.RegisterDeliveryService(registrar, nil, actorrpc.NewDirectReceiver(instance, local))
+		receiver := actorrpc.NewDirectReceiver(instance, local)
+		return rpc.RegisterDeliveryService(registrar, receiver, receiver)
 	}); err != nil {
 		return err
 	}

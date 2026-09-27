@@ -33,6 +33,6 @@ func NewAgentDispatcher(caller *RoutedCaller, resolve func(context.Context, agen
 		if result.ProcessedUpSeq != request.Seq || result.MessageType != "" || result.CommandId != 0 || len(result.Payload) != 0 {
 			return agent.DispatchResult{}, agent.ErrInvalidDispatchResult
 		}
-		return agent.DispatchResult{ProcessedUpSeq: result.ProcessedUpSeq}, nil
+		return agent.DispatchResult{AcceptedUpSeq: result.ProcessedUpSeq}, nil
 	})
 }

@@ -534,261 +534,6 @@ func (x *Result) GetProcessedUpSeq() int64 {
 	return 0
 }
 
-// DirectCallBatch 仅用于 Agent 到实体宿主的 gRPC 直连合批，按项目逐条返回结果。
-type DirectCallBatch struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Items         []*DirectCallItem      `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *DirectCallBatch) Reset() {
-	*x = DirectCallBatch{}
-	mi := &file_modules_actor_proto_actor_proto_msgTypes[4]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *DirectCallBatch) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*DirectCallBatch) ProtoMessage() {}
-
-func (x *DirectCallBatch) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_actor_proto_actor_proto_msgTypes[4]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use DirectCallBatch.ProtoReflect.Descriptor instead.
-func (*DirectCallBatch) Descriptor() ([]byte, []int) {
-	return file_modules_actor_proto_actor_proto_rawDescGZIP(), []int{4}
-}
-
-func (x *DirectCallBatch) GetItems() []*DirectCallItem {
-	if x != nil {
-		return x.Items
-	}
-	return nil
-}
-
-type DirectCallItem struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	Kind              string                 `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
-	Key               string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
-	Delivery          *Delivery              `protobuf:"bytes,3,opt,name=delivery,proto3" json:"delivery,omitempty"`
-	DeadlineSlackNano int64                  `protobuf:"varint,4,opt,name=deadline_slack_nano,json=deadlineSlackNano,proto3" json:"deadline_slack_nano,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
-}
-
-func (x *DirectCallItem) Reset() {
-	*x = DirectCallItem{}
-	mi := &file_modules_actor_proto_actor_proto_msgTypes[5]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *DirectCallItem) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*DirectCallItem) ProtoMessage() {}
-
-func (x *DirectCallItem) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_actor_proto_actor_proto_msgTypes[5]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use DirectCallItem.ProtoReflect.Descriptor instead.
-func (*DirectCallItem) Descriptor() ([]byte, []int) {
-	return file_modules_actor_proto_actor_proto_rawDescGZIP(), []int{5}
-}
-
-func (x *DirectCallItem) GetKind() string {
-	if x != nil {
-		return x.Kind
-	}
-	return ""
-}
-
-func (x *DirectCallItem) GetKey() string {
-	if x != nil {
-		return x.Key
-	}
-	return ""
-}
-
-func (x *DirectCallItem) GetDelivery() *Delivery {
-	if x != nil {
-		return x.Delivery
-	}
-	return nil
-}
-
-func (x *DirectCallItem) GetDeadlineSlackNano() int64 {
-	if x != nil {
-		return x.DeadlineSlackNano
-	}
-	return 0
-}
-
-type DirectCallOutcome struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// Types that are valid to be assigned to Outcome:
-	//
-	//	*DirectCallOutcome_Result
-	//	*DirectCallOutcome_Failure
-	Outcome       isDirectCallOutcome_Outcome `protobuf_oneof:"outcome"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *DirectCallOutcome) Reset() {
-	*x = DirectCallOutcome{}
-	mi := &file_modules_actor_proto_actor_proto_msgTypes[6]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *DirectCallOutcome) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*DirectCallOutcome) ProtoMessage() {}
-
-func (x *DirectCallOutcome) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_actor_proto_actor_proto_msgTypes[6]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use DirectCallOutcome.ProtoReflect.Descriptor instead.
-func (*DirectCallOutcome) Descriptor() ([]byte, []int) {
-	return file_modules_actor_proto_actor_proto_rawDescGZIP(), []int{6}
-}
-
-func (x *DirectCallOutcome) GetOutcome() isDirectCallOutcome_Outcome {
-	if x != nil {
-		return x.Outcome
-	}
-	return nil
-}
-
-func (x *DirectCallOutcome) GetResult() *Result {
-	if x != nil {
-		if x, ok := x.Outcome.(*DirectCallOutcome_Result); ok {
-			return x.Result
-		}
-	}
-	return nil
-}
-
-func (x *DirectCallOutcome) GetFailure() *DirectCallFailure {
-	if x != nil {
-		if x, ok := x.Outcome.(*DirectCallOutcome_Failure); ok {
-			return x.Failure
-		}
-	}
-	return nil
-}
-
-type isDirectCallOutcome_Outcome interface {
-	isDirectCallOutcome_Outcome()
-}
-
-type DirectCallOutcome_Result struct {
-	Result *Result `protobuf:"bytes,1,opt,name=result,proto3,oneof"`
-}
-
-type DirectCallOutcome_Failure struct {
-	Failure *DirectCallFailure `protobuf:"bytes,2,opt,name=failure,proto3,oneof"`
-}
-
-func (*DirectCallOutcome_Result) isDirectCallOutcome_Outcome() {}
-
-func (*DirectCallOutcome_Failure) isDirectCallOutcome_Outcome() {}
-
-type DirectCallFailure struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Code          int32                  `protobuf:"varint,1,opt,name=code,proto3" json:"code,omitempty"`
-	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
-	Kind          string                 `protobuf:"bytes,3,opt,name=kind,proto3" json:"kind,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *DirectCallFailure) Reset() {
-	*x = DirectCallFailure{}
-	mi := &file_modules_actor_proto_actor_proto_msgTypes[7]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *DirectCallFailure) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*DirectCallFailure) ProtoMessage() {}
-
-func (x *DirectCallFailure) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_actor_proto_actor_proto_msgTypes[7]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use DirectCallFailure.ProtoReflect.Descriptor instead.
-func (*DirectCallFailure) Descriptor() ([]byte, []int) {
-	return file_modules_actor_proto_actor_proto_rawDescGZIP(), []int{7}
-}
-
-func (x *DirectCallFailure) GetCode() int32 {
-	if x != nil {
-		return x.Code
-	}
-	return 0
-}
-
-func (x *DirectCallFailure) GetMessage() string {
-	if x != nil {
-		return x.Message
-	}
-	return ""
-}
-
-func (x *DirectCallFailure) GetKind() string {
-	if x != nil {
-		return x.Kind
-	}
-	return ""
-}
-
 // DirectStreamCall 携带单项实体调用及本项剩余等待时间。
 type DirectStreamCall struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -802,7 +547,7 @@ type DirectStreamCall struct {
 
 func (x *DirectStreamCall) Reset() {
 	*x = DirectStreamCall{}
-	mi := &file_modules_actor_proto_actor_proto_msgTypes[8]
+	mi := &file_modules_actor_proto_actor_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -814,7 +559,7 @@ func (x *DirectStreamCall) String() string {
 func (*DirectStreamCall) ProtoMessage() {}
 
 func (x *DirectStreamCall) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_actor_proto_actor_proto_msgTypes[8]
+	mi := &file_modules_actor_proto_actor_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -827,7 +572,7 @@ func (x *DirectStreamCall) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DirectStreamCall.ProtoReflect.Descriptor instead.
 func (*DirectStreamCall) Descriptor() ([]byte, []int) {
-	return file_modules_actor_proto_actor_proto_rawDescGZIP(), []int{8}
+	return file_modules_actor_proto_actor_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *DirectStreamCall) GetKind() string {
@@ -905,22 +650,7 @@ const file_modules_actor_proto_actor_proto_rawDesc = "" +
 	"\n" +
 	"error_code\x18\x05 \x01(\x05R\terrorCode\x12#\n" +
 	"\rerror_message\x18\x06 \x01(\tR\ferrorMessage\x12(\n" +
-	"\x10processed_up_seq\x18\a \x01(\x03R\x0eprocessedUpSeq\"D\n" +
-	"\x0fDirectCallBatch\x121\n" +
-	"\x05items\x18\x01 \x03(\v2\x1b.tx.actor.v1.DirectCallItemR\x05items\"\x99\x01\n" +
-	"\x0eDirectCallItem\x12\x12\n" +
-	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x10\n" +
-	"\x03key\x18\x02 \x01(\tR\x03key\x121\n" +
-	"\bdelivery\x18\x03 \x01(\v2\x15.tx.actor.v1.DeliveryR\bdelivery\x12.\n" +
-	"\x13deadline_slack_nano\x18\x04 \x01(\x03R\x11deadlineSlackNano\"\x89\x01\n" +
-	"\x11DirectCallOutcome\x12-\n" +
-	"\x06result\x18\x01 \x01(\v2\x13.tx.actor.v1.ResultH\x00R\x06result\x12:\n" +
-	"\afailure\x18\x02 \x01(\v2\x1e.tx.actor.v1.DirectCallFailureH\x00R\afailureB\t\n" +
-	"\aoutcome\"U\n" +
-	"\x11DirectCallFailure\x12\x12\n" +
-	"\x04code\x18\x01 \x01(\x05R\x04code\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage\x12\x12\n" +
-	"\x04kind\x18\x03 \x01(\tR\x04kind\"\x8e\x01\n" +
+	"\x10processed_up_seq\x18\a \x01(\x03R\x0eprocessedUpSeq\"\x8e\x01\n" +
 	"\x10DirectStreamCall\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\tR\x03key\x121\n" +
@@ -953,36 +683,28 @@ func file_modules_actor_proto_actor_proto_rawDescGZIP() []byte {
 }
 
 var file_modules_actor_proto_actor_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_modules_actor_proto_actor_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_modules_actor_proto_actor_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_modules_actor_proto_actor_proto_goTypes = []any{
-	(RouteKeyKind)(0),         // 0: tx.actor.v1.RouteKeyKind
-	(DeliveryMode)(0),         // 1: tx.actor.v1.DeliveryMode
-	(AccessMode)(0),           // 2: tx.actor.v1.AccessMode
-	(*SessionIdentity)(nil),   // 3: tx.actor.v1.SessionIdentity
-	(*Delivery)(nil),          // 4: tx.actor.v1.Delivery
-	(*Acceptance)(nil),        // 5: tx.actor.v1.Acceptance
-	(*Result)(nil),            // 6: tx.actor.v1.Result
-	(*DirectCallBatch)(nil),   // 7: tx.actor.v1.DirectCallBatch
-	(*DirectCallItem)(nil),    // 8: tx.actor.v1.DirectCallItem
-	(*DirectCallOutcome)(nil), // 9: tx.actor.v1.DirectCallOutcome
-	(*DirectCallFailure)(nil), // 10: tx.actor.v1.DirectCallFailure
-	(*DirectStreamCall)(nil),  // 11: tx.actor.v1.DirectStreamCall
+	(RouteKeyKind)(0),        // 0: tx.actor.v1.RouteKeyKind
+	(DeliveryMode)(0),        // 1: tx.actor.v1.DeliveryMode
+	(AccessMode)(0),          // 2: tx.actor.v1.AccessMode
+	(*SessionIdentity)(nil),  // 3: tx.actor.v1.SessionIdentity
+	(*Delivery)(nil),         // 4: tx.actor.v1.Delivery
+	(*Acceptance)(nil),       // 5: tx.actor.v1.Acceptance
+	(*Result)(nil),           // 6: tx.actor.v1.Result
+	(*DirectStreamCall)(nil), // 7: tx.actor.v1.DirectStreamCall
 }
 var file_modules_actor_proto_actor_proto_depIdxs = []int32{
-	2,  // 0: tx.actor.v1.SessionIdentity.access_mode:type_name -> tx.actor.v1.AccessMode
-	1,  // 1: tx.actor.v1.Delivery.mode:type_name -> tx.actor.v1.DeliveryMode
-	0,  // 2: tx.actor.v1.Delivery.route_key_kind:type_name -> tx.actor.v1.RouteKeyKind
-	3,  // 3: tx.actor.v1.Delivery.identity:type_name -> tx.actor.v1.SessionIdentity
-	8,  // 4: tx.actor.v1.DirectCallBatch.items:type_name -> tx.actor.v1.DirectCallItem
-	4,  // 5: tx.actor.v1.DirectCallItem.delivery:type_name -> tx.actor.v1.Delivery
-	6,  // 6: tx.actor.v1.DirectCallOutcome.result:type_name -> tx.actor.v1.Result
-	10, // 7: tx.actor.v1.DirectCallOutcome.failure:type_name -> tx.actor.v1.DirectCallFailure
-	4,  // 8: tx.actor.v1.DirectStreamCall.delivery:type_name -> tx.actor.v1.Delivery
-	9,  // [9:9] is the sub-list for method output_type
-	9,  // [9:9] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	2, // 0: tx.actor.v1.SessionIdentity.access_mode:type_name -> tx.actor.v1.AccessMode
+	1, // 1: tx.actor.v1.Delivery.mode:type_name -> tx.actor.v1.DeliveryMode
+	0, // 2: tx.actor.v1.Delivery.route_key_kind:type_name -> tx.actor.v1.RouteKeyKind
+	3, // 3: tx.actor.v1.Delivery.identity:type_name -> tx.actor.v1.SessionIdentity
+	4, // 4: tx.actor.v1.DirectStreamCall.delivery:type_name -> tx.actor.v1.Delivery
+	5, // [5:5] is the sub-list for method output_type
+	5, // [5:5] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_modules_actor_proto_actor_proto_init() }
@@ -990,17 +712,13 @@ func file_modules_actor_proto_actor_proto_init() {
 	if File_modules_actor_proto_actor_proto != nil {
 		return
 	}
-	file_modules_actor_proto_actor_proto_msgTypes[6].OneofWrappers = []any{
-		(*DirectCallOutcome_Result)(nil),
-		(*DirectCallOutcome_Failure)(nil),
-	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_modules_actor_proto_actor_proto_rawDesc), len(file_modules_actor_proto_actor_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   9,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

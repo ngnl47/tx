@@ -21,7 +21,7 @@ const (
 var ErrInvalidResponse = errors.New("actor: invalid response")
 
 // Result 是 Actor 完成业务处理后返回的不透明结果。普通调用携带消息元数据和
-// Payload；Agent 上行处理完成确认只携带 ProcessedUpSeq。
+// Payload；Agent 上行不使用 Actor 业务结果作为确认。
 type Result struct {
 	MessageType    string
 	CommandID      uint64

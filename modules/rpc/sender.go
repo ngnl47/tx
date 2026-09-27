@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"sync"
 
+	"github.com/ngnl47/tx/internal/instanceconn"
 	"github.com/ngnl47/tx/modules/discovery"
 	rpcpb "github.com/ngnl47/tx/modules/rpc/pb"
 	"google.golang.org/grpc"
@@ -20,8 +20,8 @@ var (
 	ErrTransportCredentialsNil = errors.New("rpc: transport credentials are nil")
 	ErrSenderClosed            = errors.New("rpc: sender is closed")
 	ErrDeliveryRejected        = errors.New("rpc: delivery rejected")
-	ErrBatchCallUnsupported    = errors.New("rpc: batch call is unsupported by connection")
 	ErrStreamCallUnsupported   = errors.New("rpc: stream call is unsupported by connection")
+	ErrStreamSendUnsupported   = errors.New("rpc: stream send is unsupported by connection")
 )
 
 // Connection 通过已经解析的 endpoint 发送消息。
@@ -31,14 +31,14 @@ type Connection interface {
 	Close() error
 }
 
-// BatchCallConnection 是支持逐项流式结果的连接能力。
-type BatchCallConnection interface {
-	CallBatch(context.Context, Delivery, func(Result) error) error
-}
-
 // StreamCallConnection 在目标连接上复用一条双向流完成独立调用。
 type StreamCallConnection interface {
 	CallStream(context.Context, Delivery) (Result, error)
+}
+
+// StreamSendConnection 将消息写入长流，不等待远端逐项响应。
+type StreamSendConnection interface {
+	SendStream(context.Context, Delivery) error
 }
 
 // Dialer 建立到指定服务实例的连接。
@@ -121,33 +121,6 @@ func (c *grpcConnection) Call(ctx context.Context, delivery Delivery) (Result, e
 	return resultFromProto(response)
 }
 
-func (c *grpcConnection) CallBatch(ctx context.Context, delivery Delivery, accept func(Result) error) error {
-	request, err := deliveryToProto(delivery)
-	if err != nil {
-		return err
-	}
-	stream, err := c.client.CallBatch(ctx, request)
-	if err != nil {
-		return err
-	}
-	for {
-		response, err := stream.Recv()
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		result, err := resultFromProto(response)
-		if err != nil {
-			return err
-		}
-		if err := accept(result); err != nil {
-			return err
-		}
-	}
-}
-
 func (c *grpcConnection) Close() error {
 	c.streamMu.Lock()
 	c.closed = true
@@ -179,38 +152,47 @@ type callStream struct {
 }
 
 func (c *grpcConnection) CallStream(ctx context.Context, delivery Delivery) (Result, error) {
+	return c.streamRequest(ctx, delivery)
+}
+
+func (c *grpcConnection) SendStream(ctx context.Context, delivery Delivery) error {
+	request, err := deliveryToProto(delivery)
+	if err != nil {
+		return err
+	}
+	stream, err := c.getCallStream()
+	if err != nil {
+		return err
+	}
+	stream.sendMu.Lock()
+	defer stream.sendMu.Unlock()
+	stream.mu.Lock()
+	if stream.closed {
+		stream.mu.Unlock()
+		return status.Error(codes.Unavailable, "rpc stream closed")
+	}
+	stream.nextID++
+	id := stream.nextID
+	stream.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := stream.client.Send(&rpcpb.StreamCallRequest{Id: id, Delivery: request, OneWay: true}); err != nil {
+		stream.fail(err)
+		return err
+	}
+	return nil
+}
+
+func (c *grpcConnection) streamRequest(ctx context.Context, delivery Delivery) (Result, error) {
 	request, err := deliveryToProto(delivery)
 	if err != nil {
 		return Result{}, err
 	}
-	c.streamMu.Lock()
-	if c.closed {
-		c.streamMu.Unlock()
-		return Result{}, ErrSenderClosed
+	stream, err := c.getCallStream()
+	if err != nil {
+		return Result{}, err
 	}
-	stream := c.stream
-	if stream == nil {
-		streamCtx, cancel := context.WithCancel(context.Background())
-		client, openErr := c.client.CallStream(streamCtx)
-		if openErr != nil {
-			cancel()
-			c.streamMu.Unlock()
-			return Result{}, openErr
-		}
-		stream = &callStream{client: client, ctx: streamCtx, cancel: cancel, cancelQueue: make(chan uint64, 1024), pending: make(map[uint64]chan streamCallReply)}
-		stream.onClose = func(current *callStream) {
-			c.streamMu.Lock()
-			if c.stream == current {
-				c.stream = nil
-			}
-			c.streamMu.Unlock()
-		}
-		c.stream = stream
-		go stream.receive()
-		go stream.sendCancels()
-	}
-	c.streamMu.Unlock()
-
 	reply := make(chan streamCallReply, 1)
 	stream.mu.Lock()
 	if stream.closed {
@@ -253,6 +235,37 @@ func (c *grpcConnection) CallStream(ctx context.Context, delivery Delivery) (Res
 		}
 		return Result{}, ctx.Err()
 	}
+}
+
+func (c *grpcConnection) getCallStream() (*callStream, error) {
+	c.streamMu.Lock()
+	if c.closed {
+		c.streamMu.Unlock()
+		return nil, ErrSenderClosed
+	}
+	stream := c.stream
+	if stream == nil {
+		streamCtx, cancel := context.WithCancel(context.Background())
+		client, openErr := c.client.CallStream(streamCtx)
+		if openErr != nil {
+			cancel()
+			c.streamMu.Unlock()
+			return nil, openErr
+		}
+		stream = &callStream{client: client, ctx: streamCtx, cancel: cancel, cancelQueue: make(chan uint64, 1024), pending: make(map[uint64]chan streamCallReply)}
+		stream.onClose = func(current *callStream) {
+			c.streamMu.Lock()
+			if c.stream == current {
+				c.stream = nil
+			}
+			c.streamMu.Unlock()
+		}
+		c.stream = stream
+		go stream.receive()
+		go stream.sendCancels()
+	}
+	c.streamMu.Unlock()
+	return stream, nil
 }
 
 func (stream *callStream) sendCancels() {
@@ -312,14 +325,11 @@ func (stream *callStream) fail(err error) {
 	}
 }
 
-// Sender 解析路由，并在 Close 前为每个 endpoint 复用同一连接。
+// Sender 解析路由，并为每个实例身份复用连接。
 type Sender struct {
-	directory discovery.Directory
-	dialer    Dialer
-
-	mu          sync.Mutex
-	connections map[string]Connection
-	closed      bool
+	directory   discovery.Directory
+	dialer      Dialer
+	connections *instanceconn.Cache[Connection]
 }
 
 // NewSender 创建支持路由的消息发送器。
@@ -333,7 +343,7 @@ func NewSender(directory discovery.Directory, dialer Dialer) (*Sender, error) {
 	return &Sender{
 		directory:   directory,
 		dialer:      dialer,
-		connections: make(map[string]Connection),
+		connections: instanceconn.New[Connection](directory),
 	}, nil
 }
 
@@ -375,29 +385,6 @@ func (s *Sender) Call(ctx context.Context, delivery Delivery) (Result, error) {
 	return connection.Call(ctx, delivery)
 }
 
-// CallBatch 复用目标实例连接发送一个批次，并逐项交付已经完成的结果。
-func (s *Sender) CallBatch(ctx context.Context, delivery Delivery, accept func(Result) error) error {
-	if s == nil {
-		return ErrSenderClosed
-	}
-	if err := delivery.Validate(); err != nil {
-		return err
-	}
-	instance, err := Resolve(s.directory, delivery.Route)
-	if err != nil {
-		return err
-	}
-	connection, err := s.connection(ctx, instance)
-	if err != nil {
-		return err
-	}
-	batch, ok := connection.(BatchCallConnection)
-	if !ok {
-		return ErrBatchCallUnsupported
-	}
-	return batch.CallBatch(ctx, delivery, accept)
-}
-
 // CallStream 在目标实例的长流上发送单项调用，不在断流后重投结果未知的请求。
 func (s *Sender) CallStream(ctx context.Context, delivery Delivery) (Result, error) {
 	if s == nil {
@@ -421,57 +408,46 @@ func (s *Sender) CallStream(ctx context.Context, delivery Delivery) (Result, err
 	return stream.CallStream(ctx, delivery)
 }
 
-// Close 关闭全部缓存的 endpoint 连接。
+// SendStream 将消息写入目标实例的 CallStream，不等待远端逐项响应。
+func (s *Sender) SendStream(ctx context.Context, delivery Delivery) error {
+	if s == nil {
+		return ErrSenderClosed
+	}
+	if err := delivery.Validate(); err != nil {
+		return err
+	}
+	instance, err := Resolve(s.directory, delivery.Route)
+	if err != nil {
+		return err
+	}
+	connection, err := s.connection(ctx, instance)
+	if err != nil {
+		return err
+	}
+	stream, ok := connection.(StreamSendConnection)
+	if !ok {
+		return ErrStreamSendUnsupported
+	}
+	return stream.SendStream(ctx, delivery)
+}
+
+// Close 关闭全部缓存的实例连接。
 func (s *Sender) Close() error {
 	if s == nil {
 		return nil
 	}
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return nil
-	}
-	s.closed = true
-	connections := s.connections
-	s.connections = nil
-	s.mu.Unlock()
-
-	var errs []error
-	for _, connection := range connections {
-		errs = append(errs, connection.Close())
-	}
-	return errors.Join(errs...)
+	return s.connections.Close()
 }
 
 func (s *Sender) connection(ctx context.Context, instance discovery.Instance) (Connection, error) {
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
+	connection, err := s.connections.Get(ctx, instance, s.dialer.Dial)
+	if errors.Is(err, instanceconn.ErrClosed) {
 		return nil, ErrSenderClosed
 	}
-	if connection := s.connections[instance.Endpoint]; connection != nil {
-		s.mu.Unlock()
-		return connection, nil
+	if errors.Is(err, instanceconn.ErrStaleInstance) {
+		return nil, ErrRouteUnavailable
 	}
-	s.mu.Unlock()
-
-	created, err := s.dialer.Dial(ctx, instance)
-	if err != nil {
-		return nil, err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		_ = created.Close()
-		return nil, ErrSenderClosed
-	}
-	if connection := s.connections[instance.Endpoint]; connection != nil {
-		_ = created.Close()
-		return connection, nil
-	}
-	s.connections[instance.Endpoint] = created
-	return created, nil
+	return connection, err
 }
 
 func deliveryToProto(delivery Delivery) (*rpcpb.Delivery, error) {

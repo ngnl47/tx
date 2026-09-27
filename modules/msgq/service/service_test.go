@@ -2,9 +2,12 @@ package msgqservice
 
 import (
 	"context"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/ngnl47/tx/lifecycle"
+	txmetrics "github.com/ngnl47/tx/metrics"
 	"github.com/ngnl47/tx/modules/discovery"
 	txmsgq "github.com/ngnl47/tx/modules/msgq"
 	txrpc "github.com/ngnl47/tx/modules/rpc"
@@ -37,8 +40,25 @@ func TestServiceStartsWithExplicitDependencies(t *testing.T) {
 	if _, err := service.SessionClient(); err != nil {
 		t.Fatalf("SessionClient returned error: %v", err)
 	}
+	header := txmsgq.SessionHeader{RoleID: 1, SessionID: 2, ConnectionID: 3}
+	if _, err := service.mailbox.Init(context.Background(), txmsgq.InitRequest{Header: header}); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	if _, err := service.mailbox.PubSession(context.Background(), header.SessionID, []byte("down")); err != nil {
+		t.Fatalf("PubSession returned error: %v", err)
+	}
+	response := httptest.NewRecorder()
+	txmetrics.Handler().ServeHTTP(response, httptest.NewRequest("GET", "/metrics", nil))
+	if !strings.Contains(response.Body.String(), "tx_msgq_backlog_messages 1") {
+		t.Fatal("started mailbox backlog is absent from metrics")
+	}
 	if err := service.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop returned error: %v", err)
+	}
+	response = httptest.NewRecorder()
+	txmetrics.Handler().ServeHTTP(response, httptest.NewRequest("GET", "/metrics", nil))
+	if !strings.Contains(response.Body.String(), "tx_msgq_backlog_messages 0") {
+		t.Fatal("stopped mailbox remains registered in metrics")
 	}
 }
 

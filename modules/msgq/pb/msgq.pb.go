@@ -21,6 +21,110 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type MailboxStreamRequest_Kind int32
+
+const (
+	MailboxStreamRequest_KIND_UNSPECIFIED MailboxStreamRequest_Kind = 0
+	MailboxStreamRequest_KIND_OPEN        MailboxStreamRequest_Kind = 1
+	MailboxStreamRequest_KIND_CLOSE       MailboxStreamRequest_Kind = 2
+	MailboxStreamRequest_KIND_ACK         MailboxStreamRequest_Kind = 3
+	MailboxStreamRequest_KIND_RENEW       MailboxStreamRequest_Kind = 4
+)
+
+// Enum value maps for MailboxStreamRequest_Kind.
+var (
+	MailboxStreamRequest_Kind_name = map[int32]string{
+		0: "KIND_UNSPECIFIED",
+		1: "KIND_OPEN",
+		2: "KIND_CLOSE",
+		3: "KIND_ACK",
+		4: "KIND_RENEW",
+	}
+	MailboxStreamRequest_Kind_value = map[string]int32{
+		"KIND_UNSPECIFIED": 0,
+		"KIND_OPEN":        1,
+		"KIND_CLOSE":       2,
+		"KIND_ACK":         3,
+		"KIND_RENEW":       4,
+	}
+)
+
+func (x MailboxStreamRequest_Kind) Enum() *MailboxStreamRequest_Kind {
+	p := new(MailboxStreamRequest_Kind)
+	*p = x
+	return p
+}
+
+func (x MailboxStreamRequest_Kind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (MailboxStreamRequest_Kind) Descriptor() protoreflect.EnumDescriptor {
+	return file_modules_msgq_proto_msgq_proto_enumTypes[0].Descriptor()
+}
+
+func (MailboxStreamRequest_Kind) Type() protoreflect.EnumType {
+	return &file_modules_msgq_proto_msgq_proto_enumTypes[0]
+}
+
+func (x MailboxStreamRequest_Kind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use MailboxStreamRequest_Kind.Descriptor instead.
+func (MailboxStreamRequest_Kind) EnumDescriptor() ([]byte, []int) {
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{12, 0}
+}
+
+type PublishRequest_Kind int32
+
+const (
+	PublishRequest_KIND_UNSPECIFIED PublishRequest_Kind = 0
+	PublishRequest_KIND_SESSION     PublishRequest_Kind = 1
+	PublishRequest_KIND_ROLE        PublishRequest_Kind = 2
+)
+
+// Enum value maps for PublishRequest_Kind.
+var (
+	PublishRequest_Kind_name = map[int32]string{
+		0: "KIND_UNSPECIFIED",
+		1: "KIND_SESSION",
+		2: "KIND_ROLE",
+	}
+	PublishRequest_Kind_value = map[string]int32{
+		"KIND_UNSPECIFIED": 0,
+		"KIND_SESSION":     1,
+		"KIND_ROLE":        2,
+	}
+)
+
+func (x PublishRequest_Kind) Enum() *PublishRequest_Kind {
+	p := new(PublishRequest_Kind)
+	*p = x
+	return p
+}
+
+func (x PublishRequest_Kind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (PublishRequest_Kind) Descriptor() protoreflect.EnumDescriptor {
+	return file_modules_msgq_proto_msgq_proto_enumTypes[1].Descriptor()
+}
+
+func (PublishRequest_Kind) Type() protoreflect.EnumType {
+	return &file_modules_msgq_proto_msgq_proto_enumTypes[1]
+}
+
+func (x PublishRequest_Kind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use PublishRequest_Kind.Descriptor instead.
+func (PublishRequest_Kind) EnumDescriptor() ([]byte, []int) {
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{14, 0}
+}
+
 // SessionHeader 标识一条具体的客户端连接。
 type SessionHeader struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -186,118 +290,6 @@ func (x *InitResponse) GetReceivedSeq() int64 {
 	return 0
 }
 
-type RecRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Header        *SessionHeader         `protobuf:"bytes,1,opt,name=header,proto3" json:"header,omitempty"`
-	Seq           int64                  `protobuf:"varint,2,opt,name=seq,proto3" json:"seq,omitempty"`
-	Ack           int64                  `protobuf:"varint,3,opt,name=ack,proto3" json:"ack,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *RecRequest) Reset() {
-	*x = RecRequest{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[3]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *RecRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*RecRequest) ProtoMessage() {}
-
-func (x *RecRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[3]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use RecRequest.ProtoReflect.Descriptor instead.
-func (*RecRequest) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{3}
-}
-
-func (x *RecRequest) GetHeader() *SessionHeader {
-	if x != nil {
-		return x.Header
-	}
-	return nil
-}
-
-func (x *RecRequest) GetSeq() int64 {
-	if x != nil {
-		return x.Seq
-	}
-	return 0
-}
-
-func (x *RecRequest) GetAck() int64 {
-	if x != nil {
-		return x.Ack
-	}
-	return 0
-}
-
-type RecResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ReceivedSeq   int64                  `protobuf:"varint,1,opt,name=received_seq,json=receivedSeq,proto3" json:"received_seq,omitempty"`
-	Ack           int64                  `protobuf:"varint,2,opt,name=ack,proto3" json:"ack,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *RecResponse) Reset() {
-	*x = RecResponse{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[4]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *RecResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*RecResponse) ProtoMessage() {}
-
-func (x *RecResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[4]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use RecResponse.ProtoReflect.Descriptor instead.
-func (*RecResponse) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{4}
-}
-
-func (x *RecResponse) GetReceivedSeq() int64 {
-	if x != nil {
-		return x.ReceivedSeq
-	}
-	return 0
-}
-
-func (x *RecResponse) GetAck() int64 {
-	if x != nil {
-		return x.Ack
-	}
-	return 0
-}
-
 type PubSessionRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SessionId     int64                  `protobuf:"varint,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -308,7 +300,7 @@ type PubSessionRequest struct {
 
 func (x *PubSessionRequest) Reset() {
 	*x = PubSessionRequest{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[5]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -320,7 +312,7 @@ func (x *PubSessionRequest) String() string {
 func (*PubSessionRequest) ProtoMessage() {}
 
 func (x *PubSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[5]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -333,7 +325,7 @@ func (x *PubSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PubSessionRequest.ProtoReflect.Descriptor instead.
 func (*PubSessionRequest) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{5}
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *PubSessionRequest) GetSessionId() int64 {
@@ -359,7 +351,7 @@ type PubSessionResponse struct {
 
 func (x *PubSessionResponse) Reset() {
 	*x = PubSessionResponse{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[6]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -371,7 +363,7 @@ func (x *PubSessionResponse) String() string {
 func (*PubSessionResponse) ProtoMessage() {}
 
 func (x *PubSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[6]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -384,7 +376,7 @@ func (x *PubSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PubSessionResponse.ProtoReflect.Descriptor instead.
 func (*PubSessionResponse) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{6}
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *PubSessionResponse) GetSeq() int64 {
@@ -407,7 +399,7 @@ type PubRoleRequest struct {
 
 func (x *PubRoleRequest) Reset() {
 	*x = PubRoleRequest{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[7]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -419,7 +411,7 @@ func (x *PubRoleRequest) String() string {
 func (*PubRoleRequest) ProtoMessage() {}
 
 func (x *PubRoleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[7]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -432,7 +424,7 @@ func (x *PubRoleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PubRoleRequest.ProtoReflect.Descriptor instead.
 func (*PubRoleRequest) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{7}
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *PubRoleRequest) GetRoleId() int64 {
@@ -463,50 +455,6 @@ func (x *PubRoleRequest) GetPayload() []byte {
 	return nil
 }
 
-type FetchRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Header        *SessionHeader         `protobuf:"bytes,1,opt,name=header,proto3" json:"header,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *FetchRequest) Reset() {
-	*x = FetchRequest{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[8]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *FetchRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*FetchRequest) ProtoMessage() {}
-
-func (x *FetchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[8]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use FetchRequest.ProtoReflect.Descriptor instead.
-func (*FetchRequest) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{8}
-}
-
-func (x *FetchRequest) GetHeader() *SessionHeader {
-	if x != nil {
-		return x.Header
-	}
-	return nil
-}
-
 type FetchResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Seq           int64                  `protobuf:"varint,1,opt,name=seq,proto3" json:"seq,omitempty"`
@@ -517,7 +465,7 @@ type FetchResponse struct {
 
 func (x *FetchResponse) Reset() {
 	*x = FetchResponse{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[9]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -529,7 +477,7 @@ func (x *FetchResponse) String() string {
 func (*FetchResponse) ProtoMessage() {}
 
 func (x *FetchResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[9]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -542,7 +490,7 @@ func (x *FetchResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FetchResponse.ProtoReflect.Descriptor instead.
 func (*FetchResponse) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{9}
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *FetchResponse) GetSeq() int64 {
@@ -559,198 +507,6 @@ func (x *FetchResponse) GetPayload() []byte {
 	return nil
 }
 
-type FetchSomeRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Header        *SessionHeader         `protobuf:"bytes,1,opt,name=header,proto3" json:"header,omitempty"`
-	Max           int32                  `protobuf:"varint,2,opt,name=max,proto3" json:"max,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *FetchSomeRequest) Reset() {
-	*x = FetchSomeRequest{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[10]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *FetchSomeRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*FetchSomeRequest) ProtoMessage() {}
-
-func (x *FetchSomeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[10]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use FetchSomeRequest.ProtoReflect.Descriptor instead.
-func (*FetchSomeRequest) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{10}
-}
-
-func (x *FetchSomeRequest) GetHeader() *SessionHeader {
-	if x != nil {
-		return x.Header
-	}
-	return nil
-}
-
-func (x *FetchSomeRequest) GetMax() int32 {
-	if x != nil {
-		return x.Max
-	}
-	return 0
-}
-
-type FetchSomeResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Messages      []*FetchResponse       `protobuf:"bytes,1,rep,name=messages,proto3" json:"messages,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *FetchSomeResponse) Reset() {
-	*x = FetchSomeResponse{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[11]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *FetchSomeResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*FetchSomeResponse) ProtoMessage() {}
-
-func (x *FetchSomeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[11]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use FetchSomeResponse.ProtoReflect.Descriptor instead.
-func (*FetchSomeResponse) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{11}
-}
-
-func (x *FetchSomeResponse) GetMessages() []*FetchResponse {
-	if x != nil {
-		return x.Messages
-	}
-	return nil
-}
-
-type ConfirmRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Header        *SessionHeader         `protobuf:"bytes,1,opt,name=header,proto3" json:"header,omitempty"`
-	Ack           int64                  `protobuf:"varint,2,opt,name=ack,proto3" json:"ack,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ConfirmRequest) Reset() {
-	*x = ConfirmRequest{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[12]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ConfirmRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ConfirmRequest) ProtoMessage() {}
-
-func (x *ConfirmRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[12]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ConfirmRequest.ProtoReflect.Descriptor instead.
-func (*ConfirmRequest) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{12}
-}
-
-func (x *ConfirmRequest) GetHeader() *SessionHeader {
-	if x != nil {
-		return x.Header
-	}
-	return nil
-}
-
-func (x *ConfirmRequest) GetAck() int64 {
-	if x != nil {
-		return x.Ack
-	}
-	return 0
-}
-
-type TouchRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Header        *SessionHeader         `protobuf:"bytes,1,opt,name=header,proto3" json:"header,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *TouchRequest) Reset() {
-	*x = TouchRequest{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[13]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *TouchRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*TouchRequest) ProtoMessage() {}
-
-func (x *TouchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[13]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use TouchRequest.ProtoReflect.Descriptor instead.
-func (*TouchRequest) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{13}
-}
-
-func (x *TouchRequest) GetHeader() *SessionHeader {
-	if x != nil {
-		return x.Header
-	}
-	return nil
-}
-
 type TopicRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Header        *SessionHeader         `protobuf:"bytes,1,opt,name=header,proto3" json:"header,omitempty"`
@@ -761,7 +517,7 @@ type TopicRequest struct {
 
 func (x *TopicRequest) Reset() {
 	*x = TopicRequest{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[14]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -773,7 +529,7 @@ func (x *TopicRequest) String() string {
 func (*TopicRequest) ProtoMessage() {}
 
 func (x *TopicRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[14]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -786,7 +542,7 @@ func (x *TopicRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TopicRequest.ProtoReflect.Descriptor instead.
 func (*TopicRequest) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{14}
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *TopicRequest) GetHeader() *SessionHeader {
@@ -812,7 +568,7 @@ type TopicsResponse struct {
 
 func (x *TopicsResponse) Reset() {
 	*x = TopicsResponse{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[15]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -824,7 +580,7 @@ func (x *TopicsResponse) String() string {
 func (*TopicsResponse) ProtoMessage() {}
 
 func (x *TopicsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[15]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -837,7 +593,7 @@ func (x *TopicsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TopicsResponse.ProtoReflect.Descriptor instead.
 func (*TopicsResponse) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{15}
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *TopicsResponse) GetTopics() []string {
@@ -857,7 +613,7 @@ type BroadcastTopicRequest struct {
 
 func (x *BroadcastTopicRequest) Reset() {
 	*x = BroadcastTopicRequest{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[16]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -869,7 +625,7 @@ func (x *BroadcastTopicRequest) String() string {
 func (*BroadcastTopicRequest) ProtoMessage() {}
 
 func (x *BroadcastTopicRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[16]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -882,7 +638,7 @@ func (x *BroadcastTopicRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BroadcastTopicRequest.ProtoReflect.Descriptor instead.
 func (*BroadcastTopicRequest) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{16}
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *BroadcastTopicRequest) GetTopic() string {
@@ -911,7 +667,7 @@ type BroadcastResponse struct {
 
 func (x *BroadcastResponse) Reset() {
 	*x = BroadcastResponse{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[17]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -923,7 +679,7 @@ func (x *BroadcastResponse) String() string {
 func (*BroadcastResponse) ProtoMessage() {}
 
 func (x *BroadcastResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[17]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -936,7 +692,7 @@ func (x *BroadcastResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BroadcastResponse.ProtoReflect.Descriptor instead.
 func (*BroadcastResponse) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{17}
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *BroadcastResponse) GetAttempted() int32 {
@@ -976,7 +732,7 @@ type TerminateSessionRequest struct {
 
 func (x *TerminateSessionRequest) Reset() {
 	*x = TerminateSessionRequest{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[18]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -988,7 +744,7 @@ func (x *TerminateSessionRequest) String() string {
 func (*TerminateSessionRequest) ProtoMessage() {}
 
 func (x *TerminateSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[18]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1001,7 +757,7 @@ func (x *TerminateSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminateSessionRequest.ProtoReflect.Descriptor instead.
 func (*TerminateSessionRequest) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{18}
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *TerminateSessionRequest) GetHeader() *SessionHeader {
@@ -1009,6 +765,287 @@ func (x *TerminateSessionRequest) GetHeader() *SessionHeader {
 		return x.Header
 	}
 	return nil
+}
+
+type MailboxStreamRequest struct {
+	state         protoimpl.MessageState    `protogen:"open.v1"`
+	Header        *SessionHeader            `protobuf:"bytes,1,opt,name=header,proto3" json:"header,omitempty"`
+	Kind          MailboxStreamRequest_Kind `protobuf:"varint,2,opt,name=kind,proto3,enum=tx.msgq.v1.MailboxStreamRequest_Kind" json:"kind,omitempty"`
+	Ack           int64                     `protobuf:"varint,3,opt,name=ack,proto3" json:"ack,omitempty"`
+	Max           int32                     `protobuf:"varint,4,opt,name=max,proto3" json:"max,omitempty"`
+	ReceivedSeq   int64                     `protobuf:"varint,5,opt,name=received_seq,json=receivedSeq,proto3" json:"received_seq,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MailboxStreamRequest) Reset() {
+	*x = MailboxStreamRequest{}
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MailboxStreamRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MailboxStreamRequest) ProtoMessage() {}
+
+func (x *MailboxStreamRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MailboxStreamRequest.ProtoReflect.Descriptor instead.
+func (*MailboxStreamRequest) Descriptor() ([]byte, []int) {
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *MailboxStreamRequest) GetHeader() *SessionHeader {
+	if x != nil {
+		return x.Header
+	}
+	return nil
+}
+
+func (x *MailboxStreamRequest) GetKind() MailboxStreamRequest_Kind {
+	if x != nil {
+		return x.Kind
+	}
+	return MailboxStreamRequest_KIND_UNSPECIFIED
+}
+
+func (x *MailboxStreamRequest) GetAck() int64 {
+	if x != nil {
+		return x.Ack
+	}
+	return 0
+}
+
+func (x *MailboxStreamRequest) GetMax() int32 {
+	if x != nil {
+		return x.Max
+	}
+	return 0
+}
+
+func (x *MailboxStreamRequest) GetReceivedSeq() int64 {
+	if x != nil {
+		return x.ReceivedSeq
+	}
+	return 0
+}
+
+type MailboxStreamResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Header        *SessionHeader         `protobuf:"bytes,1,opt,name=header,proto3" json:"header,omitempty"`
+	Message       *FetchResponse         `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	ErrorMessage  string                 `protobuf:"bytes,3,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MailboxStreamResponse) Reset() {
+	*x = MailboxStreamResponse{}
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MailboxStreamResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MailboxStreamResponse) ProtoMessage() {}
+
+func (x *MailboxStreamResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MailboxStreamResponse.ProtoReflect.Descriptor instead.
+func (*MailboxStreamResponse) Descriptor() ([]byte, []int) {
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *MailboxStreamResponse) GetHeader() *SessionHeader {
+	if x != nil {
+		return x.Header
+	}
+	return nil
+}
+
+func (x *MailboxStreamResponse) GetMessage() *FetchResponse {
+	if x != nil {
+		return x.Message
+	}
+	return nil
+}
+
+func (x *MailboxStreamResponse) GetErrorMessage() string {
+	if x != nil {
+		return x.ErrorMessage
+	}
+	return ""
+}
+
+type PublishRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Kind          PublishRequest_Kind    `protobuf:"varint,1,opt,name=kind,proto3,enum=tx.msgq.v1.PublishRequest_Kind" json:"kind,omitempty"`
+	SessionId     int64                  `protobuf:"varint,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	RoleId        int64                  `protobuf:"varint,3,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`
+	InstanceId    string                 `protobuf:"bytes,4,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
+	Generation    string                 `protobuf:"bytes,5,opt,name=generation,proto3" json:"generation,omitempty"`
+	Payload       []byte                 `protobuf:"bytes,6,opt,name=payload,proto3" json:"payload,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PublishRequest) Reset() {
+	*x = PublishRequest{}
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PublishRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PublishRequest) ProtoMessage() {}
+
+func (x *PublishRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PublishRequest.ProtoReflect.Descriptor instead.
+func (*PublishRequest) Descriptor() ([]byte, []int) {
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *PublishRequest) GetKind() PublishRequest_Kind {
+	if x != nil {
+		return x.Kind
+	}
+	return PublishRequest_KIND_UNSPECIFIED
+}
+
+func (x *PublishRequest) GetSessionId() int64 {
+	if x != nil {
+		return x.SessionId
+	}
+	return 0
+}
+
+func (x *PublishRequest) GetRoleId() int64 {
+	if x != nil {
+		return x.RoleId
+	}
+	return 0
+}
+
+func (x *PublishRequest) GetInstanceId() string {
+	if x != nil {
+		return x.InstanceId
+	}
+	return ""
+}
+
+func (x *PublishRequest) GetGeneration() string {
+	if x != nil {
+		return x.Generation
+	}
+	return ""
+}
+
+func (x *PublishRequest) GetPayload() []byte {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+// PublishRoleRejection 只报告未进入邮箱的旧角色归属，不确认成功发布。
+type PublishRoleRejection struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RoleId        int64                  `protobuf:"varint,1,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`
+	InstanceId    string                 `protobuf:"bytes,2,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
+	Generation    string                 `protobuf:"bytes,3,opt,name=generation,proto3" json:"generation,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PublishRoleRejection) Reset() {
+	*x = PublishRoleRejection{}
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PublishRoleRejection) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PublishRoleRejection) ProtoMessage() {}
+
+func (x *PublishRoleRejection) ProtoReflect() protoreflect.Message {
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PublishRoleRejection.ProtoReflect.Descriptor instead.
+func (*PublishRoleRejection) Descriptor() ([]byte, []int) {
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *PublishRoleRejection) GetRoleId() int64 {
+	if x != nil {
+		return x.RoleId
+	}
+	return 0
+}
+
+func (x *PublishRoleRejection) GetInstanceId() string {
+	if x != nil {
+		return x.InstanceId
+	}
+	return ""
+}
+
+func (x *PublishRoleRejection) GetGeneration() string {
+	if x != nil {
+		return x.Generation
+	}
+	return ""
 }
 
 type Empty struct {
@@ -1019,7 +1056,7 @@ type Empty struct {
 
 func (x *Empty) Reset() {
 	*x = Empty{}
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[19]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1031,7 +1068,7 @@ func (x *Empty) String() string {
 func (*Empty) ProtoMessage() {}
 
 func (x *Empty) ProtoReflect() protoreflect.Message {
-	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[19]
+	mi := &file_modules_msgq_proto_msgq_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1044,7 +1081,7 @@ func (x *Empty) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Empty.ProtoReflect.Descriptor instead.
 func (*Empty) Descriptor() ([]byte, []int) {
-	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{19}
+	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{16}
 }
 
 var File_modules_msgq_proto_msgq_proto protoreflect.FileDescriptor
@@ -1063,15 +1100,7 @@ const file_modules_msgq_proto_msgq_proto_rawDesc = "" +
 	"\arestore\x18\x02 \x01(\bR\arestore\x12\x10\n" +
 	"\x03ack\x18\x03 \x01(\x03R\x03ack\"1\n" +
 	"\fInitResponse\x12!\n" +
-	"\freceived_seq\x18\x01 \x01(\x03R\vreceivedSeq\"c\n" +
-	"\n" +
-	"RecRequest\x121\n" +
-	"\x06header\x18\x01 \x01(\v2\x19.tx.msgq.v1.SessionHeaderR\x06header\x12\x10\n" +
-	"\x03seq\x18\x02 \x01(\x03R\x03seq\x12\x10\n" +
-	"\x03ack\x18\x03 \x01(\x03R\x03ack\"B\n" +
-	"\vRecResponse\x12!\n" +
-	"\freceived_seq\x18\x01 \x01(\x03R\vreceivedSeq\x12\x10\n" +
-	"\x03ack\x18\x02 \x01(\x03R\x03ack\"L\n" +
+	"\freceived_seq\x18\x01 \x01(\x03R\vreceivedSeq\"L\n" +
 	"\x11PubSessionRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\x03R\tsessionId\x12\x18\n" +
@@ -1085,22 +1114,10 @@ const file_modules_msgq_proto_msgq_proto_rawDesc = "" +
 	"\n" +
 	"generation\x18\x03 \x01(\tR\n" +
 	"generation\x12\x18\n" +
-	"\apayload\x18\x04 \x01(\fR\apayload\"A\n" +
-	"\fFetchRequest\x121\n" +
-	"\x06header\x18\x01 \x01(\v2\x19.tx.msgq.v1.SessionHeaderR\x06header\";\n" +
+	"\apayload\x18\x04 \x01(\fR\apayload\";\n" +
 	"\rFetchResponse\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\x03R\x03seq\x12\x18\n" +
-	"\apayload\x18\x02 \x01(\fR\apayload\"W\n" +
-	"\x10FetchSomeRequest\x121\n" +
-	"\x06header\x18\x01 \x01(\v2\x19.tx.msgq.v1.SessionHeaderR\x06header\x12\x10\n" +
-	"\x03max\x18\x02 \x01(\x05R\x03max\"J\n" +
-	"\x11FetchSomeResponse\x125\n" +
-	"\bmessages\x18\x01 \x03(\v2\x19.tx.msgq.v1.FetchResponseR\bmessages\"U\n" +
-	"\x0eConfirmRequest\x121\n" +
-	"\x06header\x18\x01 \x01(\v2\x19.tx.msgq.v1.SessionHeaderR\x06header\x12\x10\n" +
-	"\x03ack\x18\x02 \x01(\x03R\x03ack\"A\n" +
-	"\fTouchRequest\x121\n" +
-	"\x06header\x18\x01 \x01(\v2\x19.tx.msgq.v1.SessionHeaderR\x06header\"Y\n" +
+	"\apayload\x18\x02 \x01(\fR\apayload\"Y\n" +
 	"\fTopicRequest\x121\n" +
 	"\x06header\x18\x01 \x01(\v2\x19.tx.msgq.v1.SessionHeaderR\x06header\x12\x16\n" +
 	"\x06topics\x18\x02 \x03(\tR\x06topics\"(\n" +
@@ -1117,19 +1134,55 @@ const file_modules_msgq_proto_msgq_proto_rawDesc = "" +
 	"overflowed\x18\x04 \x01(\x05R\n" +
 	"overflowed\"L\n" +
 	"\x17TerminateSessionRequest\x121\n" +
-	"\x06header\x18\x01 \x01(\v2\x19.tx.msgq.v1.SessionHeaderR\x06header\"\a\n" +
-	"\x05Empty2\xb3\a\n" +
+	"\x06header\x18\x01 \x01(\v2\x19.tx.msgq.v1.SessionHeaderR\x06header\"\xa6\x02\n" +
+	"\x14MailboxStreamRequest\x121\n" +
+	"\x06header\x18\x01 \x01(\v2\x19.tx.msgq.v1.SessionHeaderR\x06header\x129\n" +
+	"\x04kind\x18\x02 \x01(\x0e2%.tx.msgq.v1.MailboxStreamRequest.KindR\x04kind\x12\x10\n" +
+	"\x03ack\x18\x03 \x01(\x03R\x03ack\x12\x10\n" +
+	"\x03max\x18\x04 \x01(\x05R\x03max\x12!\n" +
+	"\freceived_seq\x18\x05 \x01(\x03R\vreceivedSeq\"Y\n" +
+	"\x04Kind\x12\x14\n" +
+	"\x10KIND_UNSPECIFIED\x10\x00\x12\r\n" +
+	"\tKIND_OPEN\x10\x01\x12\x0e\n" +
+	"\n" +
+	"KIND_CLOSE\x10\x02\x12\f\n" +
+	"\bKIND_ACK\x10\x03\x12\x0e\n" +
+	"\n" +
+	"KIND_RENEW\x10\x04\"\xa4\x01\n" +
+	"\x15MailboxStreamResponse\x121\n" +
+	"\x06header\x18\x01 \x01(\v2\x19.tx.msgq.v1.SessionHeaderR\x06header\x123\n" +
+	"\amessage\x18\x02 \x01(\v2\x19.tx.msgq.v1.FetchResponseR\amessage\x12#\n" +
+	"\rerror_message\x18\x03 \x01(\tR\ferrorMessage\"\x97\x02\n" +
+	"\x0ePublishRequest\x123\n" +
+	"\x04kind\x18\x01 \x01(\x0e2\x1f.tx.msgq.v1.PublishRequest.KindR\x04kind\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x02 \x01(\x03R\tsessionId\x12\x17\n" +
+	"\arole_id\x18\x03 \x01(\x03R\x06roleId\x12\x1f\n" +
+	"\vinstance_id\x18\x04 \x01(\tR\n" +
+	"instanceId\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x05 \x01(\tR\n" +
+	"generation\x12\x18\n" +
+	"\apayload\x18\x06 \x01(\fR\apayload\"=\n" +
+	"\x04Kind\x12\x14\n" +
+	"\x10KIND_UNSPECIFIED\x10\x00\x12\x10\n" +
+	"\fKIND_SESSION\x10\x01\x12\r\n" +
+	"\tKIND_ROLE\x10\x02\"p\n" +
+	"\x14PublishRoleRejection\x12\x17\n" +
+	"\arole_id\x18\x01 \x01(\x03R\x06roleId\x12\x1f\n" +
+	"\vinstance_id\x18\x02 \x01(\tR\n" +
+	"instanceId\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x03 \x01(\tR\n" +
+	"generation\"\a\n" +
+	"\x05Empty2\xe2\x05\n" +
 	"\x0eMailboxService\x129\n" +
-	"\x04Init\x12\x17.tx.msgq.v1.InitRequest\x1a\x18.tx.msgq.v1.InitResponse\x126\n" +
-	"\x03Rec\x12\x16.tx.msgq.v1.RecRequest\x1a\x17.tx.msgq.v1.RecResponse\x12K\n" +
+	"\x04Init\x12\x17.tx.msgq.v1.InitRequest\x1a\x18.tx.msgq.v1.InitResponse\x12K\n" +
 	"\n" +
 	"PubSession\x12\x1d.tx.msgq.v1.PubSessionRequest\x1a\x1e.tx.msgq.v1.PubSessionResponse\x12D\n" +
-	"\aPubRole\x12\x1a.tx.msgq.v1.PubRoleRequest\x1a\x1d.tx.msgq.v1.BroadcastResponse\x12<\n" +
-	"\x05Fetch\x12\x18.tx.msgq.v1.FetchRequest\x1a\x19.tx.msgq.v1.FetchResponse\x12H\n" +
-	"\tFetchSome\x12\x1c.tx.msgq.v1.FetchSomeRequest\x1a\x1d.tx.msgq.v1.FetchSomeResponse\x12L\n" +
-	"\vStreamFetch\x12\x1c.tx.msgq.v1.FetchSomeRequest\x1a\x1d.tx.msgq.v1.FetchSomeResponse0\x01\x128\n" +
-	"\aConfirm\x12\x1a.tx.msgq.v1.ConfirmRequest\x1a\x11.tx.msgq.v1.Empty\x124\n" +
-	"\x05Touch\x12\x18.tx.msgq.v1.TouchRequest\x1a\x11.tx.msgq.v1.Empty\x129\n" +
+	"\aPubRole\x12\x1a.tx.msgq.v1.PubRoleRequest\x1a\x1d.tx.msgq.v1.BroadcastResponse\x12X\n" +
+	"\rMailboxStream\x12 .tx.msgq.v1.MailboxStreamRequest\x1a!.tx.msgq.v1.MailboxStreamResponse(\x010\x01\x12Q\n" +
+	"\rPublishStream\x12\x1a.tx.msgq.v1.PublishRequest\x1a .tx.msgq.v1.PublishRoleRejection(\x010\x01\x129\n" +
 	"\n" +
 	"JoinTopics\x12\x18.tx.msgq.v1.TopicRequest\x1a\x11.tx.msgq.v1.Empty\x12:\n" +
 	"\vLeaveTopics\x12\x18.tx.msgq.v1.TopicRequest\x1a\x11.tx.msgq.v1.Empty\x12>\n" +
@@ -1149,72 +1202,63 @@ func file_modules_msgq_proto_msgq_proto_rawDescGZIP() []byte {
 	return file_modules_msgq_proto_msgq_proto_rawDescData
 }
 
-var file_modules_msgq_proto_msgq_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
+var file_modules_msgq_proto_msgq_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_modules_msgq_proto_msgq_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_modules_msgq_proto_msgq_proto_goTypes = []any{
-	(*SessionHeader)(nil),           // 0: tx.msgq.v1.SessionHeader
-	(*InitRequest)(nil),             // 1: tx.msgq.v1.InitRequest
-	(*InitResponse)(nil),            // 2: tx.msgq.v1.InitResponse
-	(*RecRequest)(nil),              // 3: tx.msgq.v1.RecRequest
-	(*RecResponse)(nil),             // 4: tx.msgq.v1.RecResponse
+	(MailboxStreamRequest_Kind)(0),  // 0: tx.msgq.v1.MailboxStreamRequest.Kind
+	(PublishRequest_Kind)(0),        // 1: tx.msgq.v1.PublishRequest.Kind
+	(*SessionHeader)(nil),           // 2: tx.msgq.v1.SessionHeader
+	(*InitRequest)(nil),             // 3: tx.msgq.v1.InitRequest
+	(*InitResponse)(nil),            // 4: tx.msgq.v1.InitResponse
 	(*PubSessionRequest)(nil),       // 5: tx.msgq.v1.PubSessionRequest
 	(*PubSessionResponse)(nil),      // 6: tx.msgq.v1.PubSessionResponse
 	(*PubRoleRequest)(nil),          // 7: tx.msgq.v1.PubRoleRequest
-	(*FetchRequest)(nil),            // 8: tx.msgq.v1.FetchRequest
-	(*FetchResponse)(nil),           // 9: tx.msgq.v1.FetchResponse
-	(*FetchSomeRequest)(nil),        // 10: tx.msgq.v1.FetchSomeRequest
-	(*FetchSomeResponse)(nil),       // 11: tx.msgq.v1.FetchSomeResponse
-	(*ConfirmRequest)(nil),          // 12: tx.msgq.v1.ConfirmRequest
-	(*TouchRequest)(nil),            // 13: tx.msgq.v1.TouchRequest
-	(*TopicRequest)(nil),            // 14: tx.msgq.v1.TopicRequest
-	(*TopicsResponse)(nil),          // 15: tx.msgq.v1.TopicsResponse
-	(*BroadcastTopicRequest)(nil),   // 16: tx.msgq.v1.BroadcastTopicRequest
-	(*BroadcastResponse)(nil),       // 17: tx.msgq.v1.BroadcastResponse
-	(*TerminateSessionRequest)(nil), // 18: tx.msgq.v1.TerminateSessionRequest
-	(*Empty)(nil),                   // 19: tx.msgq.v1.Empty
+	(*FetchResponse)(nil),           // 8: tx.msgq.v1.FetchResponse
+	(*TopicRequest)(nil),            // 9: tx.msgq.v1.TopicRequest
+	(*TopicsResponse)(nil),          // 10: tx.msgq.v1.TopicsResponse
+	(*BroadcastTopicRequest)(nil),   // 11: tx.msgq.v1.BroadcastTopicRequest
+	(*BroadcastResponse)(nil),       // 12: tx.msgq.v1.BroadcastResponse
+	(*TerminateSessionRequest)(nil), // 13: tx.msgq.v1.TerminateSessionRequest
+	(*MailboxStreamRequest)(nil),    // 14: tx.msgq.v1.MailboxStreamRequest
+	(*MailboxStreamResponse)(nil),   // 15: tx.msgq.v1.MailboxStreamResponse
+	(*PublishRequest)(nil),          // 16: tx.msgq.v1.PublishRequest
+	(*PublishRoleRejection)(nil),    // 17: tx.msgq.v1.PublishRoleRejection
+	(*Empty)(nil),                   // 18: tx.msgq.v1.Empty
 }
 var file_modules_msgq_proto_msgq_proto_depIdxs = []int32{
-	0,  // 0: tx.msgq.v1.InitRequest.header:type_name -> tx.msgq.v1.SessionHeader
-	0,  // 1: tx.msgq.v1.RecRequest.header:type_name -> tx.msgq.v1.SessionHeader
-	0,  // 2: tx.msgq.v1.FetchRequest.header:type_name -> tx.msgq.v1.SessionHeader
-	0,  // 3: tx.msgq.v1.FetchSomeRequest.header:type_name -> tx.msgq.v1.SessionHeader
-	9,  // 4: tx.msgq.v1.FetchSomeResponse.messages:type_name -> tx.msgq.v1.FetchResponse
-	0,  // 5: tx.msgq.v1.ConfirmRequest.header:type_name -> tx.msgq.v1.SessionHeader
-	0,  // 6: tx.msgq.v1.TouchRequest.header:type_name -> tx.msgq.v1.SessionHeader
-	0,  // 7: tx.msgq.v1.TopicRequest.header:type_name -> tx.msgq.v1.SessionHeader
-	0,  // 8: tx.msgq.v1.TerminateSessionRequest.header:type_name -> tx.msgq.v1.SessionHeader
-	1,  // 9: tx.msgq.v1.MailboxService.Init:input_type -> tx.msgq.v1.InitRequest
-	3,  // 10: tx.msgq.v1.MailboxService.Rec:input_type -> tx.msgq.v1.RecRequest
-	5,  // 11: tx.msgq.v1.MailboxService.PubSession:input_type -> tx.msgq.v1.PubSessionRequest
-	7,  // 12: tx.msgq.v1.MailboxService.PubRole:input_type -> tx.msgq.v1.PubRoleRequest
-	8,  // 13: tx.msgq.v1.MailboxService.Fetch:input_type -> tx.msgq.v1.FetchRequest
-	10, // 14: tx.msgq.v1.MailboxService.FetchSome:input_type -> tx.msgq.v1.FetchSomeRequest
-	10, // 15: tx.msgq.v1.MailboxService.StreamFetch:input_type -> tx.msgq.v1.FetchSomeRequest
-	12, // 16: tx.msgq.v1.MailboxService.Confirm:input_type -> tx.msgq.v1.ConfirmRequest
-	13, // 17: tx.msgq.v1.MailboxService.Touch:input_type -> tx.msgq.v1.TouchRequest
-	14, // 18: tx.msgq.v1.MailboxService.JoinTopics:input_type -> tx.msgq.v1.TopicRequest
-	14, // 19: tx.msgq.v1.MailboxService.LeaveTopics:input_type -> tx.msgq.v1.TopicRequest
-	14, // 20: tx.msgq.v1.MailboxService.Topics:input_type -> tx.msgq.v1.TopicRequest
-	16, // 21: tx.msgq.v1.MailboxService.BroadcastTopic:input_type -> tx.msgq.v1.BroadcastTopicRequest
-	18, // 22: tx.msgq.v1.MailboxService.TerminateSession:input_type -> tx.msgq.v1.TerminateSessionRequest
-	2,  // 23: tx.msgq.v1.MailboxService.Init:output_type -> tx.msgq.v1.InitResponse
-	4,  // 24: tx.msgq.v1.MailboxService.Rec:output_type -> tx.msgq.v1.RecResponse
-	6,  // 25: tx.msgq.v1.MailboxService.PubSession:output_type -> tx.msgq.v1.PubSessionResponse
-	17, // 26: tx.msgq.v1.MailboxService.PubRole:output_type -> tx.msgq.v1.BroadcastResponse
-	9,  // 27: tx.msgq.v1.MailboxService.Fetch:output_type -> tx.msgq.v1.FetchResponse
-	11, // 28: tx.msgq.v1.MailboxService.FetchSome:output_type -> tx.msgq.v1.FetchSomeResponse
-	11, // 29: tx.msgq.v1.MailboxService.StreamFetch:output_type -> tx.msgq.v1.FetchSomeResponse
-	19, // 30: tx.msgq.v1.MailboxService.Confirm:output_type -> tx.msgq.v1.Empty
-	19, // 31: tx.msgq.v1.MailboxService.Touch:output_type -> tx.msgq.v1.Empty
-	19, // 32: tx.msgq.v1.MailboxService.JoinTopics:output_type -> tx.msgq.v1.Empty
-	19, // 33: tx.msgq.v1.MailboxService.LeaveTopics:output_type -> tx.msgq.v1.Empty
-	15, // 34: tx.msgq.v1.MailboxService.Topics:output_type -> tx.msgq.v1.TopicsResponse
-	17, // 35: tx.msgq.v1.MailboxService.BroadcastTopic:output_type -> tx.msgq.v1.BroadcastResponse
-	19, // 36: tx.msgq.v1.MailboxService.TerminateSession:output_type -> tx.msgq.v1.Empty
-	23, // [23:37] is the sub-list for method output_type
-	9,  // [9:23] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	2,  // 0: tx.msgq.v1.InitRequest.header:type_name -> tx.msgq.v1.SessionHeader
+	2,  // 1: tx.msgq.v1.TopicRequest.header:type_name -> tx.msgq.v1.SessionHeader
+	2,  // 2: tx.msgq.v1.TerminateSessionRequest.header:type_name -> tx.msgq.v1.SessionHeader
+	2,  // 3: tx.msgq.v1.MailboxStreamRequest.header:type_name -> tx.msgq.v1.SessionHeader
+	0,  // 4: tx.msgq.v1.MailboxStreamRequest.kind:type_name -> tx.msgq.v1.MailboxStreamRequest.Kind
+	2,  // 5: tx.msgq.v1.MailboxStreamResponse.header:type_name -> tx.msgq.v1.SessionHeader
+	8,  // 6: tx.msgq.v1.MailboxStreamResponse.message:type_name -> tx.msgq.v1.FetchResponse
+	1,  // 7: tx.msgq.v1.PublishRequest.kind:type_name -> tx.msgq.v1.PublishRequest.Kind
+	3,  // 8: tx.msgq.v1.MailboxService.Init:input_type -> tx.msgq.v1.InitRequest
+	5,  // 9: tx.msgq.v1.MailboxService.PubSession:input_type -> tx.msgq.v1.PubSessionRequest
+	7,  // 10: tx.msgq.v1.MailboxService.PubRole:input_type -> tx.msgq.v1.PubRoleRequest
+	14, // 11: tx.msgq.v1.MailboxService.MailboxStream:input_type -> tx.msgq.v1.MailboxStreamRequest
+	16, // 12: tx.msgq.v1.MailboxService.PublishStream:input_type -> tx.msgq.v1.PublishRequest
+	9,  // 13: tx.msgq.v1.MailboxService.JoinTopics:input_type -> tx.msgq.v1.TopicRequest
+	9,  // 14: tx.msgq.v1.MailboxService.LeaveTopics:input_type -> tx.msgq.v1.TopicRequest
+	9,  // 15: tx.msgq.v1.MailboxService.Topics:input_type -> tx.msgq.v1.TopicRequest
+	11, // 16: tx.msgq.v1.MailboxService.BroadcastTopic:input_type -> tx.msgq.v1.BroadcastTopicRequest
+	13, // 17: tx.msgq.v1.MailboxService.TerminateSession:input_type -> tx.msgq.v1.TerminateSessionRequest
+	4,  // 18: tx.msgq.v1.MailboxService.Init:output_type -> tx.msgq.v1.InitResponse
+	6,  // 19: tx.msgq.v1.MailboxService.PubSession:output_type -> tx.msgq.v1.PubSessionResponse
+	12, // 20: tx.msgq.v1.MailboxService.PubRole:output_type -> tx.msgq.v1.BroadcastResponse
+	15, // 21: tx.msgq.v1.MailboxService.MailboxStream:output_type -> tx.msgq.v1.MailboxStreamResponse
+	17, // 22: tx.msgq.v1.MailboxService.PublishStream:output_type -> tx.msgq.v1.PublishRoleRejection
+	18, // 23: tx.msgq.v1.MailboxService.JoinTopics:output_type -> tx.msgq.v1.Empty
+	18, // 24: tx.msgq.v1.MailboxService.LeaveTopics:output_type -> tx.msgq.v1.Empty
+	10, // 25: tx.msgq.v1.MailboxService.Topics:output_type -> tx.msgq.v1.TopicsResponse
+	12, // 26: tx.msgq.v1.MailboxService.BroadcastTopic:output_type -> tx.msgq.v1.BroadcastResponse
+	18, // 27: tx.msgq.v1.MailboxService.TerminateSession:output_type -> tx.msgq.v1.Empty
+	18, // [18:28] is the sub-list for method output_type
+	8,  // [8:18] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_modules_msgq_proto_msgq_proto_init() }
@@ -1227,13 +1271,14 @@ func file_modules_msgq_proto_msgq_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_modules_msgq_proto_msgq_proto_rawDesc), len(file_modules_msgq_proto_msgq_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   20,
+			NumEnums:      2,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_modules_msgq_proto_msgq_proto_goTypes,
 		DependencyIndexes: file_modules_msgq_proto_msgq_proto_depIdxs,
+		EnumInfos:         file_modules_msgq_proto_msgq_proto_enumTypes,
 		MessageInfos:      file_modules_msgq_proto_msgq_proto_msgTypes,
 	}.Build()
 	File_modules_msgq_proto_msgq_proto = out.File

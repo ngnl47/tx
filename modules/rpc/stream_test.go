@@ -3,15 +3,109 @@ package rpc
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ngnl47/tx/lifecycle"
 	"github.com/ngnl47/tx/modules/discovery"
+	rpcpb "github.com/ngnl47/tx/modules/rpc/pb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+type streamSubmitReceiver struct {
+	mu       sync.Mutex
+	messages []string
+}
+
+func (r *streamSubmitReceiver) Call(context.Context, Delivery) (Result, error) {
+	return Result{}, errors.New("不应调用 Unary")
+}
+
+func (r *streamSubmitReceiver) CallStream(context.Context, Delivery) (Result, error) {
+	return Result{}, errors.New("不应调用 CallStream")
+}
+
+func (r *streamSubmitReceiver) SubmitStream(_ context.Context, delivery Delivery) error {
+	r.mu.Lock()
+	r.messages = append(r.messages, delivery.MessageType)
+	r.mu.Unlock()
+	return nil
+}
+
+type countStreamSends struct {
+	grpc.ServerStream
+	sends *atomic.Int32
+}
+
+func (s *countStreamSends) SendMsg(message any) error {
+	s.sends.Add(1)
+	return s.ServerStream.SendMsg(message)
+}
+
+// 无回执流项在发送端不等待服务端逐项响应，服务端仍按读取顺序入队。
+func TestSendStreamEnqueuesInOrderWithoutPerItemResponse(t *testing.T) {
+	receiver := &streamSubmitReceiver{}
+	var sends atomic.Int32
+	host, err := NewHost("127.0.0.1:0", grpc.StreamInterceptor(func(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo, next grpc.StreamHandler) error {
+		if info.FullMethod == rpcpb.DeliveryService_CallStream_FullMethodName {
+			stream = &countStreamSends{ServerStream: stream, sends: &sends}
+		}
+		return next(srv, stream)
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := lifecycle.NewWaitGroupContext(context.Background())
+	defer func() { _ = host.Stop(context.Background()); root.Cancel(); root.Wait() }()
+	if err := host.Register(func(registrar grpc.ServiceRegistrar) error {
+		return RegisterDeliveryService(registrar, nil, receiver)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Start(root); err != nil {
+		t.Fatal(err)
+	}
+	directory := discovery.NewServiceDirectory()
+	if err := directory.Replace([]discovery.Instance{{ID: "game-a", Services: []string{"game"}, Endpoint: host.Endpoint(), Status: discovery.StatusRunning}}); err != nil {
+		t.Fatal(err)
+	}
+	dialer, err := NewGRPCDialer(insecure.NewCredentials())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender, err := NewSender(directory, dialer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Close()
+	for _, messageType := range []string{"one", "two", "three"} {
+		if err := sender.SendStream(context.Background(), Delivery{Route: InstanceRoute("game-a"), MessageType: messageType}); err != nil {
+			t.Fatalf("send %q: %v", messageType, err)
+		}
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		receiver.mu.Lock()
+		got := append([]string(nil), receiver.messages...)
+		receiver.mu.Unlock()
+		if len(got) == 3 {
+			if got[0] != "one" || got[1] != "two" || got[2] != "three" {
+				t.Fatalf("接收顺序 = %v", got)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("消息未全部进入接收端: %v", got)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := sends.Load(); got != 0 {
+		t.Fatalf("无回执流项产生了 %d 个逐项响应", got)
+	}
+}
 
 type cancelStreamReceiver struct {
 	cancelled chan struct{}
@@ -159,9 +253,11 @@ func TestCallStreamHostFailureAndReconnect(t *testing.T) {
 	if got := receiver.calls.Load(); got != 2 {
 		t.Fatalf("断流后自动重投了旧请求: calls=%d", got)
 	}
-	sender.mu.Lock()
-	connection := sender.connections[endpoint].(*grpcConnection)
-	sender.mu.Unlock()
+	connectionValue, err := sender.connection(context.Background(), discovery.Instance{ID: "game-a", Endpoint: endpoint})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection := connectionValue.(*grpcConnection)
 	connection.streamMu.Lock()
 	broken := connection.stream
 	connection.streamMu.Unlock()

@@ -7,6 +7,11 @@ type Caller interface {
 	Call(context.Context, Identity, Delivery) (Result, error)
 }
 
+// Enqueuer 将消息交给本地运行时或写入远端流；远端路径不等待邮箱接收或业务执行。
+type Enqueuer interface {
+	Enqueue(context.Context, Identity, Delivery) error
+}
+
 // Messenger 是实体间 Core NATS 调用契约，不开放连接和进程关闭权限。
 type Messenger interface {
 	Caller

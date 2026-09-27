@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/ngnl47/tx/internal/instanceconn"
 	"github.com/ngnl47/tx/modules/discovery"
 	msgqpb "github.com/ngnl47/tx/modules/msgq/pb"
 	"google.golang.org/grpc"
@@ -25,6 +26,9 @@ var (
 type Connection interface {
 	PubSession(context.Context, int64, []byte) (PubResult, error)
 	PubRole(context.Context, RoleBinding, []byte) (BroadcastResult, error)
+	SendSession(context.Context, int64, []byte) error
+	SendRole(context.Context, RoleBinding, []byte) error
+	OnRoleRejection(func(RoleBinding))
 	JoinTopics(context.Context, TopicRequest) error
 	BroadcastTopic(context.Context, BroadcastTopicRequest) (BroadcastResult, error)
 	Close() error
@@ -73,15 +77,49 @@ func (d *GRPCDialer) dial(instance discovery.Instance) (*grpcConnection, error) 
 	if err != nil {
 		return nil, err
 	}
-	return &grpcConnection{
+	result := &grpcConnection{
 		connection: connection,
 		client:     msgqpb.NewMailboxServiceClient(connection),
-	}, nil
+	}
+	return result, nil
 }
 
 type grpcConnection struct {
-	connection *grpc.ClientConn
-	client     msgqpb.MailboxServiceClient
+	connection  *grpc.ClientConn
+	client      msgqpb.MailboxServiceClient
+	mailboxMu   sync.Mutex
+	mailbox     *grpcMailboxStream
+	publisherMu sync.Mutex
+	publisher   *grpcPublishStream
+	rejectRole  func(RoleBinding)
+}
+
+// OnRoleRejection 在连接开始发布前设置旧角色归属的异步失效回调。
+func (c *grpcConnection) OnRoleRejection(reject func(RoleBinding)) {
+	c.rejectRole = reject
+}
+
+func (c *grpcConnection) OpenMailboxStream(ctx context.Context, header SessionHeader) (MailboxStreamSession, error) {
+	c.mailboxMu.Lock()
+	stream := c.mailbox
+	if stream != nil {
+		select {
+		case <-stream.done:
+			stream = nil
+		default:
+		}
+	}
+	if stream == nil {
+		var err error
+		stream, err = newGRPCMailboxStream(c.client)
+		if err != nil {
+			c.mailboxMu.Unlock()
+			return nil, err
+		}
+		c.mailbox = stream
+	}
+	c.mailboxMu.Unlock()
+	return stream.open(ctx, header)
 }
 
 func (c *grpcConnection) PubSession(ctx context.Context, sessionID int64, payload []byte) (PubResult, error) {
@@ -163,73 +201,6 @@ func (c *grpcConnection) Init(ctx context.Context, request InitRequest) (InitRes
 	return InitResult{UpMsgSeq: response.GetReceivedSeq()}, nil
 }
 
-func (c *grpcConnection) Rec(ctx context.Context, request RecRequest) (RecResult, error) {
-	response, err := c.client.Rec(ctx, &msgqpb.RecRequest{Header: headerToProto(request.Header), Seq: request.Seq, Ack: request.Ack})
-	if err != nil {
-		return RecResult{}, mailboxClientError(err)
-	}
-	if response == nil || response.GetReceivedSeq() < request.Seq || response.GetAck() != request.Ack {
-		return RecResult{}, ErrInvalidMailboxResponse
-	}
-	return RecResult{UpMsgSeq: response.GetReceivedSeq(), Ack: response.GetAck()}, nil
-}
-
-func (c *grpcConnection) FetchSome(ctx context.Context, request FetchSomeRequest) (FetchSomeResult, error) {
-	response, err := c.client.FetchSome(ctx, &msgqpb.FetchSomeRequest{Header: headerToProto(request.Header), Max: int32(request.Max)})
-	if err != nil {
-		return FetchSomeResult{}, mailboxClientError(err)
-	}
-	return fetchSomeFromProto(response)
-}
-
-func (c *grpcConnection) StreamFetch(ctx context.Context, request FetchSomeRequest) (FetchSomeStream, error) {
-	stream, err := c.client.StreamFetch(ctx, &msgqpb.FetchSomeRequest{Header: headerToProto(request.Header), Max: int32(request.Max)})
-	if err != nil {
-		return nil, mailboxClientError(err)
-	}
-	return grpcFetchStream{stream: stream}, nil
-}
-
-type grpcFetchStream struct {
-	stream grpc.ServerStreamingClient[msgqpb.FetchSomeResponse]
-}
-
-func (s grpcFetchStream) Recv() (FetchSomeResult, error) {
-	response, err := s.stream.Recv()
-	if err != nil {
-		return FetchSomeResult{}, mailboxClientError(err)
-	}
-	return fetchSomeFromProto(response)
-}
-
-func fetchSomeFromProto(response *msgqpb.FetchSomeResponse) (FetchSomeResult, error) {
-	if response == nil || len(response.GetMessages()) == 0 {
-		return FetchSomeResult{}, ErrInvalidMailboxResponse
-	}
-	messages := response.GetMessages()
-	result := FetchSomeResult{Messages: make([]FetchResult, len(messages))}
-	var previousSeq int64
-	for index, message := range messages {
-		if message == nil || message.GetSeq() <= previousSeq {
-			return FetchSomeResult{}, ErrInvalidMailboxResponse
-		}
-		result.Messages[index] = FetchResult{Seq: message.GetSeq(), Payload: message.GetPayload()}
-		previousSeq = message.GetSeq()
-	}
-	return result, nil
-}
-
-func (c *grpcConnection) Confirm(ctx context.Context, request ConfirmRequest) error {
-	response, err := c.client.Confirm(ctx, &msgqpb.ConfirmRequest{Header: headerToProto(request.Header), Ack: request.Ack})
-	if err != nil {
-		return mailboxClientError(err)
-	}
-	if response == nil {
-		return ErrInvalidMailboxResponse
-	}
-	return nil
-}
-
 func (c *grpcConnection) TerminateSession(ctx context.Context, header SessionHeader) error {
 	response, err := c.client.TerminateSession(ctx, &msgqpb.TerminateSessionRequest{Header: headerToProto(header)})
 	if err != nil {
@@ -242,6 +213,17 @@ func (c *grpcConnection) TerminateSession(ctx context.Context, header SessionHea
 }
 
 func (c *grpcConnection) Close() error {
+	c.mailboxMu.Lock()
+	mailbox := c.mailbox
+	c.mailbox = nil
+	c.mailboxMu.Unlock()
+	if mailbox != nil {
+		mailbox.fail(ErrSenderClosed)
+	}
+	if err := c.closePublisher(); err != nil {
+		_ = c.connection.Close()
+		return err
+	}
 	return c.connection.Close()
 }
 
@@ -253,15 +235,13 @@ func headerToProto(header SessionHeader) *msgqpb.SessionHeader {
 	}
 }
 
-// Sender 按当前会话 owner 路由下行消息，并复用每个 endpoint 的连接直到 Close。
+// Sender 按当前会话 owner 路由下行消息，并复用当前实例的连接。
 type Sender struct {
 	router *SessionRouter
 	roles  *RoleRouter
 	dialer Dialer
 
-	mu          sync.Mutex
-	connections map[string]Connection
-	closed      bool
+	connections *instanceconn.Cache[Connection]
 }
 
 // NewSender 创建按 SessionID 或 RoleID 显式路由的 msgq 发送器。
@@ -279,7 +259,7 @@ func NewSender(router *SessionRouter, roles *RoleRouter, dialer Dialer) (*Sender
 		router:      router,
 		roles:       roles,
 		dialer:      dialer,
-		connections: make(map[string]Connection),
+		connections: instanceconn.New[Connection](router.directory),
 	}, nil
 }
 
@@ -302,6 +282,22 @@ func (s *Sender) PubSession(ctx context.Context, sessionID int64, payload []byte
 		s.router.invalidateMailbox(sessionID, instance.ID)
 	}
 	return result, err
+}
+
+// SendSession 将下行载荷写入实际邮箱 owner 的发布流，不等待 MsgQ 逐项回执。
+func (s *Sender) SendSession(ctx context.Context, sessionID int64, payload []byte) error {
+	if s == nil {
+		return ErrSenderClosed
+	}
+	instance, err := s.router.ResolveMailbox(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	connection, err := s.connection(ctx, instance)
+	if err != nil {
+		return err
+	}
+	return connection.SendSession(ctx, sessionID, payload)
 }
 
 // PubRole 向 RoleID 归属 MsgQ 的全部角色邮箱投递，热路由不查询 Redis。
@@ -328,6 +324,23 @@ func (s *Sender) PubRole(ctx context.Context, roleID int64, payload []byte) (Bro
 		}
 		return result, err
 	}
+}
+
+// SendRole 将下行载荷写入角色归属 MsgQ 的发布流，不等待逐项回执。
+// MsgQ 明确拒绝旧归属时异步清除缓存，被拒消息不重投。
+func (s *Sender) SendRole(ctx context.Context, roleID int64, payload []byte) error {
+	if s == nil {
+		return ErrSenderClosed
+	}
+	target, err := s.roles.Resolve(ctx, roleID)
+	if err != nil {
+		return err
+	}
+	connection, err := s.connection(ctx, target.Instance)
+	if err != nil {
+		return err
+	}
+	return connection.SendRole(ctx, target.Binding, payload)
 }
 
 // JoinTopics 将 ownerSessionID 的当前连接加入其 MsgQ 实例的本地 Topic 索引。
@@ -370,55 +383,27 @@ func (s *Sender) BroadcastTopic(ctx context.Context, ownerSessionID int64, reque
 	return connection.BroadcastTopic(ctx, request)
 }
 
-// Close 关闭所有缓存 endpoint 的连接。
+// Close 关闭所有缓存的实例连接。
 func (s *Sender) Close() error {
 	if s == nil {
 		return nil
 	}
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return nil
-	}
-	s.closed = true
-	connections := s.connections
-	s.connections = nil
-	s.mu.Unlock()
-
-	var errs []error
-	for _, connection := range connections {
-		errs = append(errs, connection.Close())
-	}
-	return errors.Join(errs...)
+	return s.connections.Close()
 }
 
 func (s *Sender) connection(ctx context.Context, instance discovery.Instance) (Connection, error) {
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
+	connection, err := s.connections.Get(ctx, instance, func(ctx context.Context, instance discovery.Instance) (Connection, error) {
+		connection, err := s.dialer.Dial(ctx, instance)
+		if err == nil {
+			connection.OnRoleRejection(s.roles.Invalidate)
+		}
+		return connection, err
+	})
+	if errors.Is(err, instanceconn.ErrClosed) {
 		return nil, ErrSenderClosed
 	}
-	if connection := s.connections[instance.Endpoint]; connection != nil {
-		s.mu.Unlock()
-		return connection, nil
+	if errors.Is(err, instanceconn.ErrStaleInstance) {
+		return nil, ErrRouteUnavailable
 	}
-	s.mu.Unlock()
-
-	created, err := s.dialer.Dial(ctx, instance)
-	if err != nil {
-		return nil, err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		_ = created.Close()
-		return nil, ErrSenderClosed
-	}
-	if connection := s.connections[instance.Endpoint]; connection != nil {
-		_ = created.Close()
-		return connection, nil
-	}
-	s.connections[instance.Endpoint] = created
-	return created, nil
+	return connection, err
 }

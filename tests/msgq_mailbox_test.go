@@ -96,12 +96,12 @@ func TestMsgQServerSerializesUpMsgAndRejectsStaleConnection(t *testing.T) {
 	if err != nil || received.UpMsgSeq != 1 {
 		t.Fatalf("rec = %#v, %v", received, err)
 	}
-	if _, err := server.Rec(context.Background(), msgq.RecRequest{Header: current, Seq: 3}); !errors.Is(err, msgq.ErrUpMsgSequence) {
-		t.Fatalf("over seq error = %v, want upMsg sequence", err)
+	if received, err := server.Rec(context.Background(), msgq.RecRequest{Header: current, Seq: 3}); err != nil || received.UpMsgSeq != 3 {
+		t.Fatalf("gapped rec = %#v, %v", received, err)
 	}
 	if _, err := server.Rec(context.Background(), msgq.RecRequest{
 		Header: msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7},
-		Seq:    2,
+		Seq:    4,
 	}); !errors.Is(err, msgq.ErrSessionChanged) {
 		t.Fatalf("stale rec error = %v, want session changed", err)
 	}

@@ -121,10 +121,6 @@ type TransactionConfig struct {
 type ActorConfig struct {
 	// Runtime 是 Actor 集群、远程通信和邮箱容量参数。
 	Runtime txactor.Config
-	// DirectCallBatch 为 Agent 直连 Actor Call 启用短窗口合批试验。
-	DirectCallBatch bool
-	// DirectCallStream 为 Agent 直连 Actor Call 启用长流试验。
-	DirectCallStream bool
 }
 
 // DiscoveryConfig 描述可选服务发现运行时。

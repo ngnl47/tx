@@ -62,6 +62,14 @@ func (a directActorAccess) Call(ctx context.Context, id txactor.Identity, d txac
 	return actorresult.FromProto(result, err)
 }
 
+func (a directActorAccess) Enqueue(ctx context.Context, id txactor.Identity, d txactor.Delivery) error {
+	msg, err := d.ToProto()
+	if err != nil {
+		return err
+	}
+	return a.caller.Enqueue(ctx, id, msg)
+}
+
 // 激活控制是低频请求，使用有限查询期限；不传递给异步业务初始化。
 func (a actorAccess) Probe(ctx context.Context, id txactor.Identity) (txactor.ActivationStatus, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.routeTimeout)

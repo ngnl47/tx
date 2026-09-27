@@ -280,7 +280,7 @@ func TestOwnershipIntegrationWritebackHandoff(t *testing.T) {
 		result, err := dispatcher.Dispatch(ctx, agent.DispatchRequest{Seq: 7, Identity: protocol.SessionIdentity{
 			SessionPrincipal: protocol.SessionPrincipal{AccountID: 1, ServerID: 1, RoleID: 2, SessionID: 3}, ConnectionID: 4,
 		}})
-		if err == nil && result.ProcessedUpSeq != 7 {
+		if err == nil && result.AcceptedUpSeq != 7 {
 			err = fmt.Errorf("错误 ACK: %+v", result)
 		}
 		ack <- err

@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,102 +11,193 @@ import (
 	"github.com/ngnl47/tx/protocol"
 )
 
-// TestAcceptedUpMsgRecoveryBoundary 固定当前“MsgQ 已接受，但业务未执行”的恢复边界。
-func TestAcceptedUpMsgRecoveryBoundary(t *testing.T) {
-	client := &acceptedRecClient{committed: make(chan struct{})}
+func TestAgentUsesMailboxStreamForAckAndDownlink(t *testing.T) {
+	client := &streamOnlySessionClient{down: make(chan msgq.FetchResult, 1), acks: make(chan streamCursor, 4)}
+	client.down <- msgq.FetchResult{Seq: 1, Payload: []byte("down")}
 	var dispatched atomic.Int64
 	var connectionID atomic.Int64
-	options := ServerOptions{
+	server, err := NewServer(ServerOptions{
 		IdentityResolver: IdentityResolverFunc(func(context.Context, AuthRequest) (protocol.SessionPrincipal, error) {
 			return protocol.SessionPrincipal{AccountID: 47, ServerID: 1, RoleID: 470001, SessionID: 99}, nil
 		}),
-		Dispatcher: DispatchFunc(func(context.Context, DispatchRequest) (DispatchResult, error) {
+		Dispatcher: DispatchFunc(func(_ context.Context, request DispatchRequest) (DispatchResult, error) {
+			if request.Seq != 5 {
+				t.Errorf("dispatch seq = %d, want 5", request.Seq)
+			}
 			dispatched.Add(1)
-			return DispatchResult{ProcessedUpSeq: 1}, nil
+			return DispatchResult{AcceptedUpSeq: request.Seq}, nil
 		}),
-		Sessions: sessionControlRouter{client: client},
-		ConnectionID: func() (int64, error) {
-			return connectionID.Add(1), nil
-		},
-	}
-	server, err := NewServer(options)
+		Sessions:     sessionControlRouter{client: client},
+		ConnectionID: func() (int64, error) { return connectionID.Add(1), nil },
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	first := newInitializingSessionTransport()
-	firstCtx, cancelFirst := context.WithCancel(context.Background())
-	firstDone := make(chan error, 1)
-	go func() { firstDone <- server.Serve(firstCtx, first) }()
+	transport := newInitializingSessionTransport()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx, transport) }()
 	select {
-	case ready := <-first.writes:
-		if ready.Kind != FrameReady || ready.Ack != 0 {
-			t.Fatalf("fresh Ready = %+v", ready)
+	case frame := <-transport.writes:
+		if frame.Kind != FrameReady {
+			t.Fatalf("first frame = %+v, want Ready", frame)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("fresh Ready timeout")
+		t.Fatal("Ready timeout")
 	}
-	first.reads <- Frame{Kind: FrameUpMsg, Seq: 1, CommandID: 1}
 	select {
-	case <-client.committed:
-	case <-time.After(time.Second):
-		t.Fatal("Rec commit timeout")
-	}
-	cancelFirst()
-	if err := <-firstDone; !errors.Is(err, context.Canceled) {
-		t.Fatalf("first Serve = %v", err)
-	}
-
-	replacement, err := NewServer(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	restored := newInitializingSessionTransport()
-	<-restored.reads
-	restored.reads <- Frame{Kind: FrameHandshake, Restore: true, Payload: []byte("ticket")}
-	restoreCtx, cancelRestore := context.WithCancel(context.Background())
-	restoreDone := make(chan error, 1)
-	go func() { restoreDone <- replacement.Serve(restoreCtx, restored) }()
-	select {
-	case ready := <-restored.writes:
-		if ready.Kind != FrameReady || ready.Ack != 1 {
-			t.Fatalf("restored Ready = %+v, want Ack 1", ready)
+	case frame := <-transport.writes:
+		if frame.Kind != FrameDownMsg || frame.Seq != 1 || string(frame.Payload) != "down" {
+			t.Fatalf("downlink = %+v", frame)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("restored Ready timeout")
+		t.Fatal("MailboxStream downlink timeout")
 	}
-	if got := dispatched.Load(); got != 0 {
-		t.Fatalf("business dispatch = %d, want 0", got)
+	transport.reads <- Frame{Kind: FrameUpMsg, Seq: 5, Ack: 1, CommandID: 1}
+	deadline := time.After(time.Second)
+	for dispatched.Load() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("upstream message was not dispatched")
+		default:
+			time.Sleep(time.Millisecond)
+		}
 	}
-	cancelRestore()
-	if err := <-restoreDone; !errors.Is(err, context.Canceled) {
-		t.Fatalf("restored Serve = %v", err)
+	select {
+	case cursor := <-client.acks:
+		if cursor.ack != 1 || cursor.receivedSeq != 5 {
+			t.Fatalf("piggybacked cursor = %+v, want receivedSeq 5 and Ack 1", cursor)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("upstream Ack was not sent over MailboxStream")
+	}
+
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Serve = %v, want context canceled", err)
 	}
 }
 
-type acceptedRecClient struct {
+type streamOnlySessionClient struct {
 	sessionControlClient
-	mu        sync.Mutex
-	upSeq     int64
-	committed chan struct{}
+	fail context.CancelCauseFunc
+	down chan msgq.FetchResult
+	acks chan streamCursor
 }
 
-func (client *acceptedRecClient) Init(_ context.Context, _ msgq.InitRequest) (msgq.InitResult, error) {
-	client.mu.Lock()
-	defer client.mu.Unlock()
-	return msgq.InitResult{UpMsgSeq: client.upSeq}, nil
+type streamCursor struct {
+	receivedSeq int64
+	ack         int64
 }
 
-func (client *acceptedRecClient) Rec(ctx context.Context, request msgq.RecRequest) (msgq.RecResult, error) {
-	client.mu.Lock()
-	client.upSeq = request.Seq
-	client.mu.Unlock()
-	close(client.committed)
+func (client *streamOnlySessionClient) Init(context.Context, msgq.InitRequest) (msgq.InitResult, error) {
+	return msgq.InitResult{}, nil
+}
+
+func (client *streamOnlySessionClient) OpenMailboxStream(ctx context.Context, _ msgq.SessionHeader) (msgq.MailboxStreamSession, error) {
+	sessionCtx, cancel := context.WithCancelCause(ctx)
+	client.fail = cancel
+	return &streamOnlyMailboxSession{client: client, ctx: sessionCtx}, nil
+}
+
+type streamOnlyMailboxSession struct {
+	client *streamOnlySessionClient
+	ctx    context.Context
+}
+
+func (stream *streamOnlyMailboxSession) Recv() (msgq.FetchResult, error) {
+	select {
+	case message := <-stream.client.down:
+		return message, nil
+	case <-stream.ctx.Done():
+		return msgq.FetchResult{}, stream.ctx.Err()
+	}
+}
+
+func (stream *streamOnlyMailboxSession) Ack(_ context.Context, receivedSeq, ack int64) error {
+	stream.client.acks <- streamCursor{receivedSeq: receivedSeq, ack: ack}
+	return nil
+}
+
+func (*streamOnlyMailboxSession) Renew(context.Context) error { return nil }
+func (*streamOnlyMailboxSession) Close() error                { return nil }
+
+type blockedDownTransport struct {
+	*initializingSessionTransport
+	writing chan struct{}
+}
+
+func (transport *blockedDownTransport) Write(ctx context.Context, frame Frame) error {
+	if frame.Kind != FrameDownMsg {
+		return transport.initializingSessionTransport.Write(ctx, frame)
+	}
+	close(transport.writing)
 	<-ctx.Done()
-	return msgq.RecResult{}, ctx.Err()
+	return ctx.Err()
+}
+func TestMailboxFailureInterruptsBlockedSocketWrite(t *testing.T) {
+	client := &streamOnlySessionClient{down: make(chan msgq.FetchResult, 1), acks: make(chan streamCursor, 4)}
+	client.down <- msgq.FetchResult{Seq: 1, Payload: []byte("slow socket")}
+	server, err := NewServer(ServerOptions{
+		IdentityResolver: IdentityResolverFunc(func(context.Context, AuthRequest) (protocol.SessionPrincipal, error) {
+			return protocol.SessionPrincipal{AccountID: 47, ServerID: 1, RoleID: 47, SessionID: 99}, nil
+		}),
+		Dispatcher: DispatchFunc(func(context.Context, DispatchRequest) (DispatchResult, error) { return DispatchResult{}, nil }),
+		Sessions:   sessionControlRouter{client: client}, ConnectionID: func() (int64, error) { return 1, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	transport := &blockedDownTransport{initializingSessionTransport: newInitializingSessionTransport(), writing: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx, transport) }()
+	select {
+	case <-transport.writing:
+	case <-time.After(time.Second):
+		t.Fatal("未开始下行写入")
+	}
+	client.fail(msgq.ErrMailboxBackpressure)
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		cancel()
+		<-done
+		t.Fatal("邮箱失败后 Socket 写入仍阻塞")
+	}
 }
 
-func (*acceptedRecClient) FetchSome(ctx context.Context, _ msgq.FetchSomeRequest) (msgq.FetchSomeResult, error) {
-	<-ctx.Done()
-	return msgq.FetchSomeResult{}, ctx.Err()
+func (stream *streamOnlyMailboxSession) Context() context.Context { return stream.ctx }
+
+type failedMailboxClient struct{ sessionControlClient }
+
+func (*failedMailboxClient) OpenMailboxStream(context.Context, msgq.SessionHeader) (msgq.MailboxStreamSession, error) {
+	return nil, msgq.ErrRouteUnavailable
+}
+func TestMailboxOpenFailureUnbindsInitializedSession(t *testing.T) {
+	server, err := NewServer(ServerOptions{
+		IdentityResolver: IdentityResolverFunc(func(context.Context, AuthRequest) (protocol.SessionPrincipal, error) {
+			return protocol.SessionPrincipal{AccountID: 47, ServerID: 1, RoleID: 47, SessionID: 99}, nil
+		}),
+		Dispatcher: DispatchFunc(func(context.Context, DispatchRequest) (DispatchResult, error) { return DispatchResult{}, nil }),
+		Sessions:   sessionControlRouter{client: &failedMailboxClient{}}, ConnectionID: func() (int64, error) { return 1, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := server.Serve(ctx, newInitializingSessionTransport()); !errors.Is(err, msgq.ErrRouteUnavailable) {
+		t.Fatalf("开流错误: %v", err)
+	}
+	server.activeSessions.mu.Lock()
+	remaining := len(server.activeSessions.sessions)
+	server.activeSessions.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("开流失败遗留 %d 个活动会话", remaining)
+	}
+}
+func (*failedMailboxClient) Init(context.Context, msgq.InitRequest) (msgq.InitResult, error) {
+	return msgq.InitResult{}, nil
 }

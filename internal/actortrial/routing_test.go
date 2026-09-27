@@ -190,10 +190,10 @@ func TestDirectAgentRejectsInvalidCompletion(t *testing.T) {
 			request.Payload = []byte(payload)
 			result, err := dispatcher.Dispatch(ctx, request)
 			if payload == "valid" {
-				if err != nil || result.ProcessedUpSeq != 7 {
+				if err != nil || result.AcceptedUpSeq != 7 {
 					t.Fatalf("合法 ACK: %v %v", result, err)
 				}
-			} else if err == nil || result.ProcessedUpSeq != 0 {
+			} else if err == nil || result.AcceptedUpSeq != 0 {
 				t.Fatalf("失败推进 ACK: %v %v", result, err)
 			}
 			if payload == "failure" {
@@ -302,7 +302,7 @@ func TestSharedRoutingDirectAgentAndNATSHandoff(t *testing.T) {
 	ack := make(chan error, 1)
 	go func() {
 		result, err := dispatcher.Dispatch(ctx, agent.DispatchRequest{Identity: agent.Identity{SessionPrincipal: protocol.SessionPrincipal{AccountID: 1, ServerID: 1, RoleID: 2, SessionID: 3}, ConnectionID: 4}, Seq: 7, CommandID: 10})
-		if err == nil && result.ProcessedUpSeq != 7 {
+		if err == nil && result.AcceptedUpSeq != 7 {
 			err = fmt.Errorf("错误 ACK: %v", result)
 		}
 		ack <- err

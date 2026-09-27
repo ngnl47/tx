@@ -10,6 +10,7 @@ import (
 
 	"github.com/ngnl47/tx/lifecycle"
 	txlog "github.com/ngnl47/tx/log"
+	txmetrics "github.com/ngnl47/tx/metrics"
 	"github.com/ngnl47/tx/modules/discovery"
 	txmsgq "github.com/ngnl47/tx/modules/msgq"
 	"github.com/ngnl47/tx/modules/msgq/msgqredis"
@@ -46,9 +47,10 @@ type Service struct {
 	options      Options
 	dependencies Dependencies
 
-	mu      sync.RWMutex
-	client  txmsgq.SessionClient
-	mailbox *txmsgq.Server
+	mu            sync.RWMutex
+	client        txmsgq.SessionClient
+	mailbox       *txmsgq.Server
+	removeMetrics func()
 }
 
 // New 校验配置和显式依赖，构造时不启动 goroutine。
@@ -105,9 +107,11 @@ func (service *Service) Start(context.Context) error {
 	if err := mailbox.Start(service.dependencies.Tasks); err != nil {
 		return err
 	}
+	removeMetrics := txmetrics.RegisterMailboxSnapshot(mailbox.BacklogSnapshot)
 	service.mu.Lock()
 	service.client = client
 	service.mailbox = mailbox
+	service.removeMetrics = removeMetrics
 	service.mu.Unlock()
 	txlog.Info(
 		"msgq service initialized",
@@ -127,7 +131,12 @@ func (service *Service) Stop(ctx context.Context) error {
 	service.client = nil
 	mailbox := service.mailbox
 	service.mailbox = nil
+	removeMetrics := service.removeMetrics
+	service.removeMetrics = nil
 	service.mu.Unlock()
+	if removeMetrics != nil {
+		removeMetrics()
+	}
 	if mailbox != nil {
 		return mailbox.Stop(ctx)
 	}

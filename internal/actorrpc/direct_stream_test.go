@@ -2,6 +2,8 @@ package actorrpc
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/ngnl47/tx/modules/discovery"
 	"github.com/ngnl47/tx/modules/rpc"
 	rpcpb "github.com/ngnl47/tx/modules/rpc/pb"
+	txprotocol "github.com/ngnl47/tx/protocol"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -49,7 +52,7 @@ func TestDirectStreamMultiplexesCallsWithoutBatching(t *testing.T) {
 			return next(ctx, req)
 		}),
 		grpc.StreamInterceptor(func(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo, next grpc.StreamHandler) error {
-			if info.FullMethod == rpcpb.DeliveryService_CallBatch_FullMethodName {
+			if info.FullMethod == "/tx.rpc.v1.DeliveryService/CallBatch" {
 				batch.Add(1)
 			}
 			if info.FullMethod == rpcpb.DeliveryService_CallStream_FullMethodName {
@@ -83,7 +86,7 @@ func TestDirectStreamMultiplexesCallsWithoutBatching(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sender.Close()
-	transport := &StreamingDirectTransport{Sender: sender}
+	transport := &DirectTransport{Sender: sender}
 	type reply struct {
 		result *actorpb.Result
 		err    error
@@ -102,12 +105,120 @@ func TestDirectStreamMultiplexesCallsWithoutBatching(t *testing.T) {
 	if err != nil || fast == nil || fast.MessageType != "fast" {
 		t.Fatalf("快请求被阻塞或结果错配: result=%v err=%v", fast, err)
 	}
+	local.BeginDrain()
+	if _, err := transport.Call(ctx, actorhost.Target{Instance: "game-a", Identity: txactor.Identity{Kind: "role", Key: "fast"}}, &actorpb.Delivery{MessageType: "ping"}); !errors.Is(err, actorhost.ErrDraining) {
+		t.Fatalf("排水关闸后仍接受新调用: %v", err)
+	}
+	drained := make(chan error, 1)
+	go func() { drained <- local.Drain(ctx) }()
+	select {
+	case err := <-drained:
+		t.Fatalf("排水未等待已接受调用: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
 	close(release)
 	answer := <-slow
 	if answer.err != nil || answer.result == nil || answer.result.MessageType != "slow" {
 		t.Fatalf("慢请求结果异常: %+v", answer)
 	}
+	if err := <-drained; err != nil {
+		t.Fatalf("已接受调用完成后排水失败: %v", err)
+	}
 	if unary.Load() != 0 || batch.Load() != 0 || streams.Load() != 1 {
 		t.Fatalf("期望只建立一条双向流: unary=%d batch=%d stream=%d", unary.Load(), batch.Load(), streams.Load())
+	}
+}
+
+// 入隊確認应在业务处理前返回，且同一条 gRPC 长流按收到顺序进入实体邮箱。
+func TestDirectStreamEnqueuePreservesMailboxOrderWithoutWaitingForBusiness(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	entered := make(chan int64, 3)
+	identity := txprotocol.SessionIdentity{SessionPrincipal: txprotocol.SessionPrincipal{
+		AccountID: 1, ServerID: 1, RoleID: 42, SessionID: 99, AccessMode: txprotocol.AccessModeNormal,
+	}, ConnectionID: 7}
+	local := actorhost.New(8, time.Second, func(txactor.Context) (*txactor.Behavior, error) {
+		return &txactor.Behavior{Receive: func(_ txactor.Context, message any) (any, error) {
+			delivery, ok := message.(txactor.Delivery)
+			if !ok {
+				return nil, txactor.ErrInvalidDelivery
+			}
+			entered <- delivery.UpSeq
+			if delivery.UpSeq == 1 {
+				<-release
+			}
+			return nil, nil
+		}}, nil
+	})
+	defer local.Drain(ctx)
+	var streams atomic.Int64
+	host, err := rpc.NewHost("127.0.0.1:0", grpc.StreamInterceptor(func(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo, next grpc.StreamHandler) error {
+		if info.FullMethod == rpcpb.DeliveryService_CallStream_FullMethodName {
+			streams.Add(1)
+		}
+		return next(srv, stream)
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := lifecycle.NewWaitGroupContext(context.Background())
+	defer func() { _ = host.Stop(context.Background()); root.Cancel(); root.Wait() }()
+	if err := host.Register(func(registrar grpc.ServiceRegistrar) error {
+		return rpc.RegisterDeliveryService(registrar, NewDirectReceiver("game-a", local), NewDirectReceiver("game-a", local))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Start(root); err != nil {
+		t.Fatal(err)
+	}
+	directory := discovery.NewServiceDirectory()
+	if err := directory.Replace([]discovery.Instance{{ID: "game-a", Services: []string{"game"}, Endpoint: host.Endpoint(), Status: discovery.StatusRunning}}); err != nil {
+		t.Fatal(err)
+	}
+	dialer, err := rpc.NewGRPCDialer(insecure.NewCredentials())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender, err := rpc.NewSender(directory, dialer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Close()
+	transport := &DirectTransport{Sender: sender}
+	for seq := int64(1); seq <= 3; seq++ {
+		delivery, err := (txactor.Delivery{MessageType: "agent.command", Identity: &identity, UpSeq: seq}).ToProto()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := transport.Enqueue(ctx, actorhost.Target{Instance: "game-a", Identity: txactor.Identity{Kind: "role", Key: "i:42"}}, delivery); err != nil {
+			t.Fatalf("enqueue %d: %v", seq, err)
+		}
+		if seq == 1 {
+			select {
+			case got := <-entered:
+				if got != 1 {
+					t.Fatalf("first mailbox item = %d, want 1", got)
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+		}
+	}
+	releaseOnce.Do(func() { close(release) })
+	for want := int64(2); want <= 3; want++ {
+		select {
+		case got := <-entered:
+			if got != want {
+				t.Fatalf("mailbox item = %d, want %d", got, want)
+			}
+		case <-ctx.Done():
+			t.Fatalf("wait mailbox item %d: %v", want, ctx.Err())
+		}
+	}
+	if streams.Load() != 1 {
+		t.Fatalf("stream count = %d, want 1", streams.Load())
 	}
 }

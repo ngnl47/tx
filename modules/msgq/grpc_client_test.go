@@ -17,23 +17,11 @@ func (*nilResponseMailboxClient) Init(context.Context, *msgqpb.InitRequest, ...g
 	return nil, nil
 }
 
-func (*nilResponseMailboxClient) Rec(context.Context, *msgqpb.RecRequest, ...grpc.CallOption) (*msgqpb.RecResponse, error) {
-	return nil, nil
-}
-
 func (*nilResponseMailboxClient) PubSession(context.Context, *msgqpb.PubSessionRequest, ...grpc.CallOption) (*msgqpb.PubSessionResponse, error) {
 	return nil, nil
 }
 
 func (*nilResponseMailboxClient) PubRole(context.Context, *msgqpb.PubRoleRequest, ...grpc.CallOption) (*msgqpb.BroadcastResponse, error) {
-	return nil, nil
-}
-
-func (*nilResponseMailboxClient) FetchSome(context.Context, *msgqpb.FetchSomeRequest, ...grpc.CallOption) (*msgqpb.FetchSomeResponse, error) {
-	return nil, nil
-}
-
-func (*nilResponseMailboxClient) Confirm(context.Context, *msgqpb.ConfirmRequest, ...grpc.CallOption) (*msgqpb.Empty, error) {
 	return nil, nil
 }
 
@@ -57,10 +45,6 @@ func TestGRPCConnectionRejectsNilSuccessResponses(t *testing.T) {
 			_, err := connection.Init(context.Background(), InitRequest{Header: header})
 			return err
 		},
-		"rec": func() error {
-			_, err := connection.Rec(context.Background(), RecRequest{Header: header, Seq: 1})
-			return err
-		},
 		"pub session": func() error {
 			_, err := connection.PubSession(context.Background(), header.SessionID, []byte("body"))
 			return err
@@ -68,13 +52,6 @@ func TestGRPCConnectionRejectsNilSuccessResponses(t *testing.T) {
 		"pub role": func() error {
 			_, err := connection.PubRole(context.Background(), RoleBinding{RoleID: 47, InstanceID: "msgq-a", Generation: "current"}, []byte("body"))
 			return err
-		},
-		"fetch some": func() error {
-			_, err := connection.FetchSome(context.Background(), FetchSomeRequest{Header: header, Max: 1})
-			return err
-		},
-		"confirm": func() error {
-			return connection.Confirm(context.Background(), ConfirmRequest{Header: header, Ack: 1})
 		},
 		"join topics": func() error {
 			return connection.JoinTopics(context.Background(), TopicRequest{Header: header, Topics: []string{"guild:1"}})
@@ -179,16 +156,8 @@ func (*invalidSequenceMailboxClient) Init(context.Context, *msgqpb.InitRequest, 
 	return &msgqpb.InitResponse{ReceivedSeq: -1}, nil
 }
 
-func (*invalidSequenceMailboxClient) Rec(context.Context, *msgqpb.RecRequest, ...grpc.CallOption) (*msgqpb.RecResponse, error) {
-	return &msgqpb.RecResponse{ReceivedSeq: -1}, nil
-}
-
 func (*invalidSequenceMailboxClient) PubSession(context.Context, *msgqpb.PubSessionRequest, ...grpc.CallOption) (*msgqpb.PubSessionResponse, error) {
 	return &msgqpb.PubSessionResponse{}, nil
-}
-
-func (*invalidSequenceMailboxClient) FetchSome(context.Context, *msgqpb.FetchSomeRequest, ...grpc.CallOption) (*msgqpb.FetchSomeResponse, error) {
-	return &msgqpb.FetchSomeResponse{Messages: []*msgqpb.FetchResponse{{Seq: 2}, {Seq: 1}}}, nil
 }
 
 func TestGRPCConnectionRejectsInvalidResponseSequences(t *testing.T) {
@@ -199,16 +168,8 @@ func TestGRPCConnectionRejectsInvalidResponseSequences(t *testing.T) {
 			_, err := connection.Init(context.Background(), InitRequest{Header: header})
 			return err
 		},
-		"rec": func() error {
-			_, err := connection.Rec(context.Background(), RecRequest{Header: header, Seq: 1})
-			return err
-		},
 		"pub session": func() error {
 			_, err := connection.PubSession(context.Background(), header.SessionID, []byte("body"))
-			return err
-		},
-		"fetch some": func() error {
-			_, err := connection.FetchSome(context.Background(), FetchSomeRequest{Header: header, Max: 2})
 			return err
 		},
 	}
@@ -218,49 +179,5 @@ func TestGRPCConnectionRejectsInvalidResponseSequences(t *testing.T) {
 				t.Fatalf("error = %v, want %v", err, ErrInvalidMailboxResponse)
 			}
 		})
-	}
-}
-
-type contradictorySequenceMailboxClient struct {
-	msgqpb.MailboxServiceClient
-	upMsgSeq int64
-	ack      int64
-}
-
-func (c *contradictorySequenceMailboxClient) Rec(context.Context, *msgqpb.RecRequest, ...grpc.CallOption) (*msgqpb.RecResponse, error) {
-	return &msgqpb.RecResponse{ReceivedSeq: c.upMsgSeq, Ack: c.ack}, nil
-}
-
-func TestGRPCConnectionRejectsContradictoryRecResponse(t *testing.T) {
-	header := SessionHeader{RoleID: 47, SessionID: 1, ConnectionID: 2}
-	tests := map[string]*contradictorySequenceMailboxClient{
-		"upMsg seq behind request": {upMsgSeq: 6, ack: 3},
-		"ack differs from request": {upMsgSeq: 7, ack: 2},
-	}
-	for name, client := range tests {
-		t.Run(name, func(t *testing.T) {
-			connection := &grpcConnection{client: client}
-			_, err := connection.Rec(context.Background(), RecRequest{Header: header, Seq: 7, Ack: 3})
-			if !errors.Is(err, ErrInvalidMailboxResponse) {
-				t.Fatalf("Rec error = %v, want %v", err, ErrInvalidMailboxResponse)
-			}
-		})
-	}
-}
-
-type emptyFetchSomeMailboxClient struct {
-	msgqpb.MailboxServiceClient
-}
-
-func (*emptyFetchSomeMailboxClient) FetchSome(context.Context, *msgqpb.FetchSomeRequest, ...grpc.CallOption) (*msgqpb.FetchSomeResponse, error) {
-	return &msgqpb.FetchSomeResponse{}, nil
-}
-
-func TestGRPCConnectionRejectsEmptyFetchSomeResponse(t *testing.T) {
-	connection := &grpcConnection{client: &emptyFetchSomeMailboxClient{}}
-	header := SessionHeader{RoleID: 47, SessionID: 1, ConnectionID: 2}
-	_, err := connection.FetchSome(context.Background(), FetchSomeRequest{Header: header, Max: 1})
-	if !errors.Is(err, ErrInvalidMailboxResponse) {
-		t.Fatalf("FetchSome error = %v, want %v", err, ErrInvalidMailboxResponse)
 	}
 }

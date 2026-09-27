@@ -61,6 +61,35 @@ func TestMailboxLogsStateTransitionsAtDebug(t *testing.T) {
 	}
 }
 
+func TestBacklogSnapshotCountsUnconfirmedMessages(t *testing.T) {
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: &testSessionStore{}, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
+	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
+		t.Fatal(err)
+	}
+	for _, payload := range []string{"abc", "12345"} {
+		if _, err := server.PubSession(context.Background(), header.SessionID, []byte(payload)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if sessions, messages, bytes := server.BacklogSnapshot(); sessions != 1 || messages != 2 || bytes != 8 {
+		t.Fatalf("snapshot = %d/%d/%d, want 1/2/8", sessions, messages, bytes)
+	}
+	first, err := server.Fetch(context.Background(), FetchRequest{Header: header})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Confirm(context.Background(), ConfirmRequest{Header: header, Ack: first.Seq}); err != nil {
+		t.Fatal(err)
+	}
+	if sessions, messages, bytes := server.BacklogSnapshot(); sessions != 1 || messages != 1 || bytes != 5 {
+		t.Fatalf("snapshot after Ack = %d/%d/%d, want 1/1/5", sessions, messages, bytes)
+	}
+}
+
 func TestMailboxRestoreLogCorrelatesPreviousConnection(t *testing.T) {
 	var output bytes.Buffer
 	txlog.SetDefault(slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug})))
@@ -400,6 +429,32 @@ func TestRestoreReturnsAcceptedUpSeqBeforeBusinessCompletion(t *testing.T) {
 	}
 	if result.UpMsgSeq != 1 {
 		t.Fatalf("restored UpMsgSeq = %d, want accepted seq 1", result.UpMsgSeq)
+	}
+}
+
+func TestRecAcceptsIncreasingSequenceWithGaps(t *testing.T) {
+	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: &testSessionStore{}, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := SessionHeader{RoleID: 1, SessionID: 7, ConnectionID: 1}
+	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
+		t.Fatal(err)
+	}
+	for _, seq := range []int64{1, 5, 3, 5, 9} {
+		result, err := server.Rec(context.Background(), RecRequest{Header: header, Seq: seq})
+		if err != nil {
+			t.Fatalf("Rec(%d): %v", seq, err)
+		}
+		want := int64(5)
+		if seq == 1 {
+			want = 1
+		} else if seq == 9 {
+			want = 9
+		}
+		if result.UpMsgSeq != want {
+			t.Fatalf("Rec(%d) accepted seq = %d, want %d", seq, result.UpMsgSeq, want)
+		}
 	}
 }
 

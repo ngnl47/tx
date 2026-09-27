@@ -56,12 +56,12 @@ type DispatchRequest struct {
 	Payload   []byte
 }
 
-// DispatchResult 是项目分发器返回的上行处理完成确认。
+// DispatchResult 记录 Agent 已完成本地投递或写流的上行序号，不代表远端接收成功。
 type DispatchResult struct {
-	ProcessedUpSeq int64
+	AcceptedUpSeq int64
 }
 
-// Dispatcher 由项目实现业务命令路由，并返回当前上行的处理完成确认。
+// Dispatcher 由项目实现业务命令路由；远端投递返回只代表本地写流完成。
 type Dispatcher interface {
 	Dispatch(context.Context, DispatchRequest) (DispatchResult, error)
 }
@@ -95,5 +95,4 @@ type ServerOptions struct {
 	Admission        lifecycle.Admission
 	Sessions         SessionClientRouter
 	ConnectionID     ConnectionIDGenerator
-	FetchBatch       int
 }

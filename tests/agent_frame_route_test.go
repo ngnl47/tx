@@ -46,7 +46,7 @@ func TestAgentFrameRejectsUpMsgWithoutCommandID(t *testing.T) {
 }
 
 func TestAgentFrameRoundTripsReadyControlFrame(t *testing.T) {
-	original := txagent.Frame{Kind: txagent.FrameReady, Ack: 7}
+	original := txagent.Frame{Kind: txagent.FrameReady}
 	encoded, err := txagent.EncodeFrame(original, 1024)
 	if err != nil {
 		t.Fatalf("EncodeFrame returned error: %v", err)
@@ -55,7 +55,7 @@ func TestAgentFrameRoundTripsReadyControlFrame(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeFrame returned error: %v", err)
 	}
-	if decoded.Kind != txagent.FrameReady || decoded.Seq != 0 || decoded.Ack != 7 || len(decoded.Payload) != 0 {
+	if decoded.Kind != txagent.FrameReady || decoded.Seq != 0 || decoded.Ack != 0 || len(decoded.Payload) != 0 {
 		t.Fatalf("decoded ready frame = %#v", decoded)
 	}
 }

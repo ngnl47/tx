@@ -21,17 +21,6 @@ message InitResponse {
   int64 received_seq = 1;
 }
 
-message RecRequest {
-  SessionHeader header = 1;
-  int64 seq = 2;
-  int64 ack = 3;
-}
-
-message RecResponse {
-  int64 received_seq = 1;
-  int64 ack = 2;
-}
-
 message PubSessionRequest {
   int64 session_id = 1;
   bytes payload = 2;
@@ -49,31 +38,9 @@ message PubRoleRequest {
   bytes payload = 4;
 }
 
-message FetchRequest {
-  SessionHeader header = 1;
-}
-
 message FetchResponse {
   int64 seq = 1;
   bytes payload = 2;
-}
-
-message FetchSomeRequest {
-  SessionHeader header = 1;
-  int32 max = 2;
-}
-
-message FetchSomeResponse {
-  repeated FetchResponse messages = 1;
-}
-
-message ConfirmRequest {
-  SessionHeader header = 1;
-  int64 ack = 2;
-}
-
-message TouchRequest {
-  SessionHeader header = 1;
 }
 
 message TopicRequest {
@@ -101,19 +68,57 @@ message TerminateSessionRequest {
   SessionHeader header = 1;
 }
 
+message MailboxStreamRequest {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_OPEN = 1;
+    KIND_CLOSE = 2;
+    KIND_ACK = 3;
+    KIND_RENEW = 4;
+  }
+  SessionHeader header = 1;
+  Kind kind = 2;
+  int64 ack = 3;
+  int32 max = 4;
+  int64 received_seq = 5;
+}
+
+message MailboxStreamResponse {
+  SessionHeader header = 1;
+  FetchResponse message = 2;
+  string error_message = 3;
+}
+
+message PublishRequest {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_SESSION = 1;
+    KIND_ROLE = 2;
+  }
+  Kind kind = 1;
+  int64 session_id = 2;
+  int64 role_id = 3;
+  string instance_id = 4;
+  string generation = 5;
+  bytes payload = 6;
+}
+
+// PublishRoleRejection 只报告未进入邮箱的旧角色归属，不确认成功发布。
+message PublishRoleRejection {
+  int64 role_id = 1;
+  string instance_id = 2;
+  string generation = 3;
+}
+
 message Empty {}
 
 // MailboxService 是 msgq 专用传输服务，Payload 字节保持为 BON 数据。
 service MailboxService {
   rpc Init(InitRequest) returns (InitResponse);
-  rpc Rec(RecRequest) returns (RecResponse);
   rpc PubSession(PubSessionRequest) returns (PubSessionResponse);
   rpc PubRole(PubRoleRequest) returns (BroadcastResponse);
-  rpc Fetch(FetchRequest) returns (FetchResponse);
-  rpc FetchSome(FetchSomeRequest) returns (FetchSomeResponse);
-  rpc StreamFetch(FetchSomeRequest) returns (stream FetchSomeResponse);
-  rpc Confirm(ConfirmRequest) returns (Empty);
-  rpc Touch(TouchRequest) returns (Empty);
+  rpc MailboxStream(stream MailboxStreamRequest) returns (stream MailboxStreamResponse);
+  rpc PublishStream(stream PublishRequest) returns (stream PublishRoleRejection);
   rpc JoinTopics(TopicRequest) returns (Empty);
   rpc LeaveTopics(TopicRequest) returns (Empty);
   rpc Topics(TopicRequest) returns (TopicsResponse);

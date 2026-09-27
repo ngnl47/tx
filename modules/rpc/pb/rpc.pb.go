@@ -315,10 +315,12 @@ func (x *DeliveryAck) GetErrorCode() string {
 
 // StreamCallRequest 在一条长流中标识一项独立调用。
 type StreamCallRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
-	Delivery      *Delivery              `protobuf:"bytes,2,opt,name=delivery,proto3" json:"delivery,omitempty"`
-	Cancel        bool                   `protobuf:"varint,3,opt,name=cancel,proto3" json:"cancel,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Id       uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	Delivery *Delivery              `protobuf:"bytes,2,opt,name=delivery,proto3" json:"delivery,omitempty"`
+	Cancel   bool                   `protobuf:"varint,3,opt,name=cancel,proto3" json:"cancel,omitempty"`
+	// one_way 在服务端按流顺序投递，不为本项发送响应。
+	OneWay        bool `protobuf:"varint,5,opt,name=one_way,json=oneWay,proto3" json:"one_way,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -370,6 +372,13 @@ func (x *StreamCallRequest) GetDelivery() *Delivery {
 func (x *StreamCallRequest) GetCancel() bool {
 	if x != nil {
 		return x.Cancel
+	}
+	return false
+}
+
+func (x *StreamCallRequest) GetOneWay() bool {
+	if x != nil {
+		return x.OneWay
 	}
 	return false
 }
@@ -467,25 +476,25 @@ const file_modules_rpc_proto_rpc_proto_rawDesc = "" +
 	"\vDeliveryAck\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x1d\n" +
 	"\n" +
-	"error_code\x18\x02 \x01(\tR\terrorCode\"l\n" +
+	"error_code\x18\x02 \x01(\tR\terrorCode\"\x8b\x01\n" +
 	"\x11StreamCallRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12/\n" +
 	"\bdelivery\x18\x02 \x01(\v2\x13.tx.rpc.v1.DeliveryR\bdelivery\x12\x16\n" +
-	"\x06cancel\x18\x03 \x01(\bR\x06cancel\"\x93\x01\n" +
+	"\x06cancel\x18\x03 \x01(\bR\x06cancel\x12\x17\n" +
+	"\aone_way\x18\x05 \x01(\bR\x06oneWayJ\x04\b\x04\x10\x05\"\x99\x01\n" +
 	"\x12StreamCallResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12)\n" +
 	"\x06result\x18\x02 \x01(\v2\x11.tx.rpc.v1.ResultR\x06result\x12\x1d\n" +
 	"\n" +
 	"error_code\x18\x03 \x01(\x05R\terrorCode\x12#\n" +
-	"\rerror_message\x18\x04 \x01(\tR\ferrorMessage*X\n" +
+	"\rerror_message\x18\x04 \x01(\tR\ferrorMessageJ\x04\b\x05\x10\x06*X\n" +
 	"\tRouteKind\x12\x1a\n" +
 	"\x16ROUTE_KIND_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12ROUTE_KIND_SERVICE\x10\x01\x12\x17\n" +
-	"\x13ROUTE_KIND_INSTANCE\x10\x022\xff\x01\n" +
+	"\x13ROUTE_KIND_INSTANCE\x10\x022\xc8\x01\n" +
 	"\x0fDeliveryService\x126\n" +
 	"\aDeliver\x12\x13.tx.rpc.v1.Delivery\x1a\x16.tx.rpc.v1.DeliveryAck\x12.\n" +
-	"\x04Call\x12\x13.tx.rpc.v1.Delivery\x1a\x11.tx.rpc.v1.Result\x125\n" +
-	"\tCallBatch\x12\x13.tx.rpc.v1.Delivery\x1a\x11.tx.rpc.v1.Result0\x01\x12M\n" +
+	"\x04Call\x12\x13.tx.rpc.v1.Delivery\x1a\x11.tx.rpc.v1.Result\x12M\n" +
 	"\n" +
 	"CallStream\x12\x1c.tx.rpc.v1.StreamCallRequest\x1a\x1d.tx.rpc.v1.StreamCallResponse(\x010\x01B+Z)github.com/ngnl47/tx/modules/rpc/pb;rpcpbb\x06proto3"
 
@@ -519,14 +528,12 @@ var file_modules_rpc_proto_rpc_proto_depIdxs = []int32{
 	3, // 3: tx.rpc.v1.StreamCallResponse.result:type_name -> tx.rpc.v1.Result
 	2, // 4: tx.rpc.v1.DeliveryService.Deliver:input_type -> tx.rpc.v1.Delivery
 	2, // 5: tx.rpc.v1.DeliveryService.Call:input_type -> tx.rpc.v1.Delivery
-	2, // 6: tx.rpc.v1.DeliveryService.CallBatch:input_type -> tx.rpc.v1.Delivery
-	5, // 7: tx.rpc.v1.DeliveryService.CallStream:input_type -> tx.rpc.v1.StreamCallRequest
-	4, // 8: tx.rpc.v1.DeliveryService.Deliver:output_type -> tx.rpc.v1.DeliveryAck
-	3, // 9: tx.rpc.v1.DeliveryService.Call:output_type -> tx.rpc.v1.Result
-	3, // 10: tx.rpc.v1.DeliveryService.CallBatch:output_type -> tx.rpc.v1.Result
-	6, // 11: tx.rpc.v1.DeliveryService.CallStream:output_type -> tx.rpc.v1.StreamCallResponse
-	8, // [8:12] is the sub-list for method output_type
-	4, // [4:8] is the sub-list for method input_type
+	5, // 6: tx.rpc.v1.DeliveryService.CallStream:input_type -> tx.rpc.v1.StreamCallRequest
+	4, // 7: tx.rpc.v1.DeliveryService.Deliver:output_type -> tx.rpc.v1.DeliveryAck
+	3, // 8: tx.rpc.v1.DeliveryService.Call:output_type -> tx.rpc.v1.Result
+	6, // 9: tx.rpc.v1.DeliveryService.CallStream:output_type -> tx.rpc.v1.StreamCallResponse
+	7, // [7:10] is the sub-list for method output_type
+	4, // [4:7] is the sub-list for method input_type
 	4, // [4:4] is the sub-list for extension type_name
 	4, // [4:4] is the sub-list for extension extendee
 	0, // [0:4] is the sub-list for field type_name

@@ -160,7 +160,6 @@ func TestServeRegistersInitializingSessionBeforeMsgQInitCompletes(t *testing.T) 
 		}),
 		Sessions:     sessionControlRouter{client: client},
 		ConnectionID: func() (int64, error) { return 8, nil },
-		FetchBatch:   1,
 	})
 	if err != nil {
 		t.Fatalf("NewServer returned error: %v", err)
@@ -201,7 +200,6 @@ func TestTerminateSessionCompensatesCanceledMsgQInit(t *testing.T) {
 		}),
 		Sessions:     sessionControlRouter{client: client},
 		ConnectionID: func() (int64, error) { return 8, nil },
-		FetchBatch:   1,
 	})
 	if err != nil {
 		t.Fatalf("NewServer returned error: %v", err)
@@ -267,20 +265,8 @@ func (client *sessionControlClient) Init(ctx context.Context, _ msgq.InitRequest
 	}
 }
 
-func (*sessionControlClient) Rec(context.Context, msgq.RecRequest) (msgq.RecResult, error) {
-	return msgq.RecResult{}, errors.New("unexpected Rec")
-}
-
-func (*sessionControlClient) PubSession(context.Context, int64, []byte) (msgq.PubResult, error) {
-	return msgq.PubResult{}, errors.New("unexpected PubSession")
-}
-
-func (*sessionControlClient) FetchSome(context.Context, msgq.FetchSomeRequest) (msgq.FetchSomeResult, error) {
-	return msgq.FetchSomeResult{}, errors.New("unexpected FetchSome")
-}
-
-func (*sessionControlClient) Confirm(context.Context, msgq.ConfirmRequest) error {
-	return errors.New("unexpected Confirm")
+func (*sessionControlClient) OpenMailboxStream(context.Context, msgq.SessionHeader) (msgq.MailboxStreamSession, error) {
+	return nil, errors.New("unexpected MailboxStream")
 }
 
 func (client *sessionControlClient) TerminateSession(context.Context, msgq.SessionHeader) error {

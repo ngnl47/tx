@@ -86,7 +86,7 @@ func TestTCPAgentRoundTrip(t *testing.T) {
 	if _, err := mailbox.PubSession(context.Background(), 99, []byte("bon-response")); err != nil {
 		t.Fatalf("publish downMsg: %v", err)
 	}
-	assertAgentTransportFrames(t, readTCPAgentFrame(t, connection), readTCPAgentFrame(t, connection), readTCPAgentFrame(t, connection))
+	assertAgentTransportFrames(t, readTCPAgentFrame(t, connection), readTCPAgentFrame(t, connection))
 }
 
 func TestWebSocketAgentRoundTrip(t *testing.T) {
@@ -113,18 +113,16 @@ func TestWebSocketAgentRoundTrip(t *testing.T) {
 	if _, err := mailbox.PubSession(context.Background(), 99, []byte("bon-response")); err != nil {
 		t.Fatalf("publish downMsg: %v", err)
 	}
-	assertAgentTransportFrames(t, readWebSocketAgentFrame(t, ctx, connection), readWebSocketAgentFrame(t, ctx, connection), readWebSocketAgentFrame(t, ctx, connection))
+	assertAgentTransportFrames(t, readWebSocketAgentFrame(t, ctx, connection), readWebSocketAgentFrame(t, ctx, connection))
 }
 
-func assertAgentTransportFrames(t *testing.T, first, second, third txagent.Frame) {
+func assertAgentTransportFrames(t *testing.T, first, second txagent.Frame) {
 	t.Helper()
-	var ready, acknowledgement, downMsg txagent.Frame
-	for _, frame := range [...]txagent.Frame{first, second, third} {
+	var ready, downMsg txagent.Frame
+	for _, frame := range [...]txagent.Frame{first, second} {
 		switch frame.Kind {
 		case txagent.FrameReady:
 			ready = frame
-		case txagent.FrameAck:
-			acknowledgement = frame
 		case txagent.FrameDownMsg:
 			downMsg = frame
 		default:
@@ -134,10 +132,7 @@ func assertAgentTransportFrames(t *testing.T, first, second, third txagent.Frame
 	if ready.Kind != txagent.FrameReady || ready.Ack != 0 {
 		t.Fatalf("ready frame = %#v, want ack=0", ready)
 	}
-	if acknowledgement.Ack != 1 {
-		t.Fatalf("acknowledgement frame = %#v, want ack=1", acknowledgement)
-	}
-	if downMsg.Seq != 1 || downMsg.Ack != 1 || string(downMsg.Payload) != "bon-response" {
+	if downMsg.Seq != 1 || downMsg.Ack != 0 || string(downMsg.Payload) != "bon-response" {
 		t.Fatalf("downMsg frame = %#v", downMsg)
 	}
 }

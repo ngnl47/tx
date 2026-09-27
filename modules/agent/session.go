@@ -8,13 +8,13 @@ import (
 	"math"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/ngnl47/tx/lifecycle"
 	txlog "github.com/ngnl47/tx/log"
+	txmetrics "github.com/ngnl47/tx/metrics"
 	"github.com/ngnl47/tx/modules/msgq"
 )
-
-const defaultFetchBatch = 1
 
 // Server 运行一条玩家连接对应的逻辑会话。
 type Server struct {
@@ -23,7 +23,6 @@ type Server struct {
 	admission        lifecycle.Admission
 	sessions         SessionClientRouter
 	connectionID     ConnectionIDGenerator
-	fetchBatch       int
 	activeSessions   *sessionRegistry
 }
 
@@ -38,12 +37,6 @@ func NewServer(options ServerOptions) (*Server, error) {
 	if options.Sessions == nil {
 		return nil, ErrSessionRouterNil
 	}
-	if options.FetchBatch < 0 {
-		return nil, ErrInvalidServer
-	}
-	if options.FetchBatch == 0 {
-		options.FetchBatch = defaultFetchBatch
-	}
 	if options.ConnectionID == nil {
 		options.ConnectionID = randomConnectionID
 	}
@@ -53,7 +46,6 @@ func NewServer(options ServerOptions) (*Server, error) {
 		admission:        options.Admission,
 		sessions:         options.Sessions,
 		connectionID:     options.ConnectionID,
-		fetchBatch:       options.FetchBatch,
 		activeSessions:   newSessionRegistry(),
 	}, nil
 }
@@ -114,13 +106,12 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 		transport: transport,
 	}
 	s.activeSessions.beginInitialization(active)
-	initialized, err := client.Init(sessionCtx, msgq.InitRequest{
+	initialized, previous, ready, terminateOnInitialization, err := s.initializeSession(sessionCtx, active, msgq.InitRequest{
 		Header:  header,
 		Restore: handshake.Restore,
 		Ack:     handshake.Ack,
 	})
 	if err != nil {
-		_, _, terminateOnInitialization := s.activeSessions.completeInitialization(active, false)
 		if terminateOnInitialization {
 			terminateErr := terminateActiveSession(active)
 			active.completeTermination(terminateErr)
@@ -132,7 +123,6 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 		return err
 	}
 
-	previous, ready, terminateOnInitialization := s.activeSessions.completeInitialization(active, true)
 	if terminateOnInitialization {
 		terminateErr := terminateActiveSession(active)
 		active.completeTermination(terminateErr)
@@ -152,36 +142,45 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 		"upMsgSeq", initialized.UpMsgSeq,
 		"downAck", handshake.Ack,
 	)
+	defer s.activeSessions.unbind(header.SessionID, header.ConnectionID)
 	if previous != nil {
 		previous.disconnect()
 	}
-	defer s.activeSessions.unbind(header.SessionID, header.ConnectionID)
+	mailboxStream, err := client.OpenMailboxStream(sessionCtx, header)
+	if err != nil {
+		cancel()
+		return err
+	}
+	// 邮箱失败必须能中断正在写 Socket 的协程，不能等下一次 Recv 才感知。
+	stopMailbox := context.AfterFunc(mailboxStream.Context(), active.disconnect)
+	defer stopMailbox()
+	defer func() { serveErr = errors.Join(serveErr, mailboxStream.Close()) }()
 	var writtenDownSeq atomic.Int64
 	if handshake.Restore {
 		writtenDownSeq.Store(handshake.Ack)
 	}
 	var acceptedUpSeq atomic.Int64
 	acceptedUpSeq.Store(initialized.UpMsgSeq)
-	var processedUpSeq atomic.Int64
-	processedUpSeq.Store(initialized.UpMsgSeq)
-	writer := sessionFrameWriter{transport: transport, processedUpSeq: &processedUpSeq}
+	writer := sessionFrameWriter{transport: transport}
 	if err := writer.Write(sessionCtx, Frame{Kind: FrameReady}); err != nil {
 		cancel()
 		return err
 	}
 	writerResult := make(chan error, 1)
 	go func() {
-		writerResult <- s.writeDownMsgs(sessionCtx, client, header, &writer, &writtenDownSeq)
+		writerResult <- s.writeDownMsgs(sessionCtx, mailboxStream, &writer, &writtenDownSeq)
 		cancel()
 	}()
 	defer func() {
 		cancel()
 		writerErr := <-writerResult
+		if cause := context.Cause(mailboxStream.Context()); cause != nil && !errors.Is(cause, context.Canceled) {
+			serveErr = errors.Join(serveErr, cause)
+		}
 		if serveErr == nil && writerErr != nil && writerErr != context.Canceled {
 			serveErr = writerErr
 		}
 	}()
-
 	confirmedDownSeq := handshake.Ack
 	for {
 		frame, err := transport.Read(sessionCtx)
@@ -192,7 +191,7 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 			if err := writer.validateAcknowledgement(frame.Ack, confirmedDownSeq, &writtenDownSeq); err != nil {
 				return err
 			}
-			if err := client.Confirm(sessionCtx, msgq.ConfirmRequest{Header: header, Ack: frame.Ack}); err != nil {
+			if err := mailboxStream.Ack(sessionCtx, acceptedUpSeq.Load(), frame.Ack); err != nil {
 				return err
 			}
 			confirmedDownSeq = frame.Ack
@@ -204,14 +203,16 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 		if err := writer.validateAcknowledgement(frame.Ack, confirmedDownSeq, &writtenDownSeq); err != nil {
 			return err
 		}
-		err = s.dispatchUpMsg(sessionCtx, client, header, identity, frame, &acceptedUpSeq, &processedUpSeq, &confirmedDownSeq)
-		if err != nil {
-			return err
-		}
-		if err := writer.Write(sessionCtx, Frame{Kind: FrameAck}); err != nil {
+		if err := s.dispatchUpMsg(sessionCtx, mailboxStream, identity, frame, &acceptedUpSeq, &confirmedDownSeq); err != nil {
 			return err
 		}
 	}
+}
+
+func (s *Server) initializeSession(ctx context.Context, active *activeSession, request msgq.InitRequest) (msgq.InitResult, *activeSession, bool, bool, error) {
+	result, err := active.client.Init(ctx, request)
+	previous, ready, terminate := s.activeSessions.completeInitialization(active, err == nil)
+	return result, previous, ready, terminate, err
 }
 
 func logInitializationTerminationError(ctx context.Context, session *activeSession, err error) {
@@ -240,7 +241,7 @@ func (s *Server) nextConnectionID() (int64, error) {
 	return connectionID, nil
 }
 
-func (s *Server) dispatchUpMsg(ctx context.Context, client msgq.SessionClient, header msgq.SessionHeader, identity Identity, frame Frame, acceptedUpSeq, processedUpSeq *atomic.Int64, confirmedDownSeq *int64) error {
+func (s *Server) dispatchUpMsg(ctx context.Context, mailboxStream msgq.MailboxStreamSession, identity Identity, frame Frame, acceptedUpSeq *atomic.Int64, confirmedDownSeq *int64) error {
 	var done func()
 	if s.admission != nil {
 		var err error
@@ -250,15 +251,11 @@ func (s *Server) dispatchUpMsg(ctx context.Context, client msgq.SessionClient, h
 		}
 		defer done()
 	}
-	result, err := client.Rec(ctx, msgq.RecRequest{Header: header, Seq: frame.Seq, Ack: frame.Ack})
-	if err != nil {
-		return err
-	}
 	*confirmedDownSeq = frame.Ack
-	if result.UpMsgSeq <= acceptedUpSeq.Load() {
-		return nil
+	if frame.Seq <= acceptedUpSeq.Load() {
+		return mailboxStream.Ack(ctx, acceptedUpSeq.Load(), frame.Ack)
 	}
-	acceptedUpSeq.Store(result.UpMsgSeq)
+	started := time.Now()
 	dispatched, err := s.dispatcher.Dispatch(ctx, DispatchRequest{
 		Identity:  identity,
 		Seq:       frame.Seq,
@@ -266,62 +263,100 @@ func (s *Server) dispatchUpMsg(ctx context.Context, client msgq.SessionClient, h
 		RouteKey:  frame.RouteKey,
 		Payload:   cloneBytes(frame.Payload),
 	})
+	txmetrics.RecordAgentUplink(err == nil && dispatched.AcceptedUpSeq == frame.Seq, time.Since(started))
 	if err != nil {
 		return err
 	}
-	if dispatched.ProcessedUpSeq != frame.Seq {
+	if dispatched.AcceptedUpSeq != frame.Seq {
 		return ErrInvalidDispatchResult
 	}
-	processedUpSeq.Store(dispatched.ProcessedUpSeq)
-	return nil
+	acceptedUpSeq.Store(frame.Seq)
+	return mailboxStream.Ack(ctx, frame.Seq, frame.Ack)
 }
 
-func (s *Server) writeDownMsgs(ctx context.Context, client msgq.SessionClient, header msgq.SessionHeader, writer *sessionFrameWriter, written *atomic.Int64) error {
-	receive := func() (msgq.FetchSomeResult, error) {
-		return client.FetchSome(ctx, msgq.FetchSomeRequest{Header: header, Max: s.fetchBatch})
-	}
-	if streaming, ok := client.(msgq.StreamingSessionClient); ok {
-		stream, err := streaming.StreamFetch(ctx, msgq.FetchSomeRequest{Header: header, Max: s.fetchBatch})
-		if err != nil {
-			return err
-		}
-		receive = stream.Recv
-	}
+const immediateDownBatchLimit = 5
+
+func (s *Server) writeDownMsgs(ctx context.Context, mailboxStream msgq.MailboxStreamSession, writer *sessionFrameWriter, written *atomic.Int64) error {
 	for {
-		batch, err := receive()
+		message, err := mailboxStream.Recv()
 		if err != nil {
 			return err
 		}
-		for _, message := range batch.Messages {
-			if err := writer.writeDownMsg(ctx, Frame{Kind: FrameDownMsg, Seq: message.Seq, Payload: message.Payload}, written); err != nil {
-				return err
+		var frames [immediateDownBatchLimit]Frame
+		frames[0] = Frame{Kind: FrameDownMsg, Seq: message.Seq, Payload: message.Payload}
+		count := 1
+		var receiveErr error
+		if tcp, ok := writer.transport.(*tcpTransport); ok {
+			if available, ok := mailboxStream.(interface {
+				TryRecv() (msgq.FetchResult, bool, error)
+			}); ok {
+				for count < immediateDownBatchLimit {
+					next, ready, err := available.TryRecv()
+					if err != nil {
+						receiveErr = err
+						break
+					}
+					if !ready {
+						break
+					}
+					frames[count] = Frame{Kind: FrameDownMsg, Seq: next.Seq, Payload: next.Payload}
+					count++
+				}
 			}
+			if count > 1 {
+				started := time.Now()
+				err = writer.writeTCPDownBatch(ctx, tcp, frames[:count], written)
+				txmetrics.RecordAgentDownlink(count, time.Since(started), err)
+			}
+		}
+		if count == 1 {
+			started := time.Now()
+			err = writer.writeDownMsg(ctx, frames[0], written)
+			txmetrics.RecordAgentDownlink(1, time.Since(started), err)
+		}
+		if err != nil {
+			return err
+		}
+		if receiveErr != nil {
+			return receiveErr
 		}
 	}
 }
 
 // sessionFrameWriter 在同一发送锁内采样确认号并写帧，避免并发组帧导致确认号回退。
 type sessionFrameWriter struct {
-	transport      Transport
-	mu             sync.Mutex
-	processedUpSeq *atomic.Int64
+	transport Transport
+	mu        sync.Mutex
 }
 
 func (w *sessionFrameWriter) Write(ctx context.Context, frame Frame) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	frame.Ack = w.processedUpSeq.Load()
+	frame.Ack = 0
 	return w.transport.Write(ctx, frame)
 }
 
 func (w *sessionFrameWriter) writeDownMsg(ctx context.Context, frame Frame, written *atomic.Int64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	frame.Ack = w.processedUpSeq.Load()
+	frame.Ack = 0
 	if err := w.transport.Write(ctx, frame); err != nil {
 		return err
 	}
 	written.Store(frame.Seq)
+	return nil
+}
+
+func (w *sessionFrameWriter) writeTCPDownBatch(ctx context.Context, transport *tcpTransport, frames []Frame, written *atomic.Int64) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for index := range frames {
+		frames[index].Ack = 0
+	}
+	if err := transport.writeDownBatch(ctx, frames); err != nil {
+		return err
+	}
+	written.Store(frames[len(frames)-1].Seq)
 	return nil
 }
 
