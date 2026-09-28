@@ -2399,7 +2399,7 @@ ServiceSpec.ActorKinds 构成应用目录，Kind 名称应用内唯一；仅选�
 
 ### Actor mailbox
 
-Tell 完成寻址后仅确认本地投递；TellAccepted 确认到达当前连接的 NATS 服务端，不确认持久化或目标收取。CallFuture 返回异步 Future，Call 同步等待相同结果。等待超时不撤销已接受业务，也不自动重投。普通结果必须有 MessageType；Agent 上行通过邮箱接纳确认，业务下行独立走 MsgQ。JetStream 可靠任务尚未实现。
+Tell 完成寻址后仅确认本地投递；TellAccepted 确认到达当前连接的 NATS 服务端，不确认持久化或目标收取。CallFuture 返回异步 Future，Call 同步等待相同结果。等待超时不撤销已接受业务，也不自动重投。普通结果必须有 MessageType；Agent 上行通过直连 `CallStream` 单向投递，不等待逐项邮箱确认，业务下行独立走 MsgQ。
 
 有界邮箱将准入与生命周期登记放在同一边界；关闸后拒绝新消息，已接受的初始化、排队和处理继续完成。远端错误经 Result 协议传播，普通 Tell 不增加执行回执。远程 pending 由响应、Context 到期或连接关闭清理，不为每个 Future 常驻等待 goroutine。Agent 先使用归属目录检查 running 状态，不再维护依赖 PID 的第二份短期排水缓存。
 
@@ -2448,11 +2448,7 @@ Actor；普通心跳命令经过 RoleActor mailbox 即可续期。心跳不读�
 
 钝化不提高消息可靠级别。正在卸载的激活拒绝新准入，清理完成后才可重建；TellAccepted 仅确认 NATS 到达，不能检测业务已卸载或不允许重建。需要业务结果时使用 Call，不自动重试结果未知的请求。
 
-以下 Actor 性能数字属于迁移前历史基线，不是当前后端的实测结论。
-
-2026-08-28 使用 Go 1.27.0 在 x86_64 macOS、Intel i9-9880H 上运行固定 Actor 和 EntityCache 基准。已有固定实体的串行
-投递在未启用钝化时为 `9.92-10.16 us/op, 728-739 B/op, 12 allocs/op`，启用一小时空闲钝化后为
-`10.48-10.93 us/op, 735-743 B/op, 12 allocs/op`，没有增加分配次数。2026-08-29 命名迁移后的 EntityCache
+2026-08-29 命名迁移后的 EntityCache
 串行命中在关闭 idle 淘汰时为 `19.37-19.81 ns/op`，启用 idle 淘汰时为 `96.95-100.2 ns/op`；同一预热 key 的
 16 路并行命中为 `49.89-50.33 ns/op`，三者均为 `0 B/op, 0 allocs/op`。该组数据是 Otter 接入前基线；接入后的
 同机 10 次 A/B 中，默认 `idleTimeout=0s` 的串行命中由中位 `20.46 ns/op` 降至 `19.59 ns/op`（`-4.23%`），
@@ -2465,87 +2461,7 @@ Actor；普通心跳命令经过 RoleActor mailbox 即可续期。心跳不读�
 `context.AfterFunc` 和结果只读复制，不包含 Actor Remote 网络 I/O。当前不为这条低于网络开销的边界引入对象池；
 只有实际 profile 证明 pending 生命周期成为瓶颈时，才评审更复杂的复用方案。
 
-以下生命周期和 Rendezvous 数据属于已删除的 ProtoActor 后端，保留作历史选型依据，不代表当前支持 VirtualPID、Fixed Kind 或该分配策略。
-
-2026-08-27 使用 Go 1.27.0 在 x86_64 macOS 上运行 Actor 生命周期基准。`VirtualPID` 使用 ProtoActor 官方内存
-Cluster Provider 和真实 `disthash`；将外层全局互斥改为读写隔离后，已有 identity 的 16 路并行解析中位数从
-`9.12 us/op` 降至 `2.03 us/op`，分配从 `19` 降至 `18 allocs/op`。冷 identity 的并行中位数从
-`12.92 us/op` 降至 `9.38 us/op`；串行结果仍在约 `9.38-16.43 us/op` 波动，说明主要成本来自 placement，不能继续
-用本地锁微调掩盖底层成本。
-
-固定宿主的已有实体串行为 `11.22-11.55 us/op`，16 路并行为 `1.43-2.23 us/op`；冷激活串行为
-`12.70-14.71 us/op`，并行为 `3.13-3.65 us/op`；创建、响应、停止完整 churn 为 `21.20-22.32 us/op`。
-当时没有证据支持把每个 Kind 的单宿主 Actor 拆成分片宿主。`TestActorLifecycleDoesNotRewriteEtcdTopology` 在真实 etcd
-上连续创建并停止 64 个 Virtual Actor 和 64 个 Fixed Actor，成员键和槽位键的数量、值、`ModRevision` 均保持不变。
-
-Actor 实体 churn 与进程成员 churn 是两条不同路径。`TestVirtualPlacementRollingReplacementCanMoveIdentityMoreThanOnce`
-使用 ProtoActor 原生 Rendezvous，对 10 个成员和 10,000 个活跃 identity 逐台执行离开、加入：完整替换后累计发生
-20,115 次 owner 变化，其中 6,526 个 identity 变化超过一次。这证明 Rendezvous 只限制单次拓扑变化的影响范围，不能
-消除完整滚动发布期间的重复归属变化。
-
-同环境运行 `BenchmarkVirtualPlacementRollingReplacement`，每次处理一对离开、加入拓扑；每份拓扑按 10,000 个
-集群活跃 identity 的宿主合计扫描量计算，耗时约 `12.86-14.21 ms/op`，产生约
-`5.11 MB/op, 100,093-100,095 allocs/op`，平均改变约
-`2,012-2,095` 个 owner。分配主要来自 ProtoActor `Rendezvous.GetByIdentity` 在每个 identity 查找中按 Kind 构造成员
-切片。该成本只发生在旧后端的进程成员拓扑变化时，不属于普通消息热路径。当前运行时使用稳定归属与正常交接，不保留旧 Virtual/Fixed 后端，也不承诺继续维护其 IdentityLookup。
-
-#### 历史 ProtoActor 与普通 RPC 传输基线
-
-以下为旧后端历史数据。ProtoActor 实现、专属测试和比较工具已从当前工程删除，仅保留在 Git 提交 `cc7c569445b583e0f46343365f37ffcb6c5fb300`；当前不支持切换到 ProtoActor。复现旧结果须在该提交的独立检出中按当时文档准备依赖，不能在当前目录直接运行已删除的测试。
-
-旧版 Actor Remote 与 `modules/rpc` 是两套独立传输。已删除的 `Instance.ActorEndpoint` 曾承载 Actor Remote，`Instance.Endpoint` 承载普通
-gRPC；基准必须分别命名和测量，不能把 Actor Remote 写作 gRPC Actor。测试代码只组装既有公开接口，不为采样增加生产
-计数器、回调、配置或状态查询 API。
-
-`BenchmarkActorCallLoopback` 使用真实 etcd，在同一测试进程启动 target 与 caller 两个 Runtime。同一个固定 Actor、PID 和
-256 B Payload 分别由 target 本地 `Runtime.Call` 与 caller 跨 Actor Remote 调用；每个子基准在计时前完成实体激活和
-Remote 建连。全部调用复用计时外创建的 30 秒 deadline context，使网络异常先返回到具体基准，同时不为每次请求增加
-context 分配。它证明真实 loopback Actor Remote 的传输差额，但不是独立进程集群吞吐，后者仍由项目级多进程验收负责。
-
-`BenchmarkDeliveryTransport` 使用同一份 256 B `Delivery` 对比直接 `Receiver.Deliver` 与复用连接的
-`Sender.Send -> loopback TCP gRPC -> Receiver -> DeliveryAck`。gRPC 路径同样复用计时外创建的 30 秒 deadline context。
-DirectReceiver 只是进程内调用下界；两者差额同时包含服务路由、protobuf 编解码、TCP、服务端接收和确认，不应解释为
-单一编解码器成本。
-
-2026-08-31 使用 Go 1.27.0 在 x86_64 macOS、Intel i9-9880H 上各运行五次，表中为中位数。复跑命令固定 `-cpu=16`，Parallel 使用 16 路
-`RunParallel`，其 `ns/op` 表示聚合吞吐成本，不是单请求尾延迟：
-
-| 路径 | 串行 ns/op | 串行 B/op | 串行 allocs/op | Parallel ns/op | Parallel B/op | Parallel allocs/op |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Actor Local `Runtime.Call` | 13,785 | 2,288 | 18 | 2,860 | 2,248 | 15 |
-| Actor Remote `Runtime.Call` | 75,318 | 5,653 | 66 | 8,505 | 4,128 | 33 |
-| RPC DirectReceiver | 17.89 | 0 | 0 | 2.020 | 0 | 0 |
-| RPC loopback TCP gRPC | 123,544 | 11,351 | 167 | 31,091 | 13,878 | 152 |
-
-以下命令用于上述历史提交的独立检出，当前版本不提供旧 Actor 基准：
-
-```bash
-go test ./modules/rpc -run '^$' -bench '^BenchmarkDeliveryTransport$' -benchmem -benchtime=1s -count=5 -cpu=16
-TX_ETCD_ENDPOINT=127.0.0.1:2379 go test ./tests -run '^$' -bench '^BenchmarkActorCallLoopback$' -benchmem -benchtime=1s -count=5 -cpu=16
-```
-
-#### NATS 迁移的历史完整链路对照
-
-2026-09-13 I2 在同一 Docker Linux VM 内以 Go 1.27.0、各进程 GOMAXPROCS=4、五轮采样比较完整业务链路；包含生成 GD、Procedure、Session/MsgQ，1 KiB padding。以下为当时原型中位数，不是当前生产容量或本轮重新测量：
-
-| 历史路径 | 完成吞吐 /s | 调用 P99 ms | CPU μs/完成 |
-| --- | ---: | ---: | ---: |
-| ProtoActor | 5661 | 29.42 | 1811.7 |
-| 直连上行＋Core NATS 实体 RPC（当时称 hybrid） | 4642 | 38.24 | 2189.7 |
-| 上行也经 NATS 的对照 | 4264 | 45.53 | 2274.2 |
-
-1000 请求/s 的三组固定到达率窗口全部完成且零错误、零未发送；3000/s 三组均有未发送，因此不能用成功请求延迟宣称达到该容量。最终采用直连上下行＋Core NATS 实体 RPC，接受当时明确的临时业务预算，不宣称 NATS 吞吐胜过 ProtoActor。全 NATS 上行已否决，不再提供该模式代码。
-
-详细环境、波动范围与字节口径见 [历史报告](audits/2026-09-13-uplink-business-comparison.md)。报告中的源码路径和执行命令属于历史版本；旧代码只从上述 Git 提交复现，文档和基线数据的保留不构成后端支持。
-
-#### 退役旧发现字段后的局部验证
-
-2026-09-20 删除旧 ActorEndpoint 字段和反查索引。对缓存槽位路由用临时 Go overlay 恢复清理前 directory.go 作对照，其他代码与输入相同；反向顺序、每项五轮、500ms、-cpu=4 中位数：串行 163.4→160.7 ns/op，并行 86.52→100.7 ns/op，两者前后均 0 B/op、0 allocs/op。首轮短窗口也观察到并行变慢，因此记录局部回退，不将删代码描述为性能提升；随后正式 Ping/Pong 链路对照未确认稳定退化，结果与限制见下文。源码退役的收益是维护边界明确和依赖减少。详见 [清理记录](audits/2026-09-20-nats-integration-closeout.md#最终决定protoactor-代码仅保留于-git-历史)。
-
-
-2026-09-20 继续用 txgame 的现有 cluster-perf 验证：32 个 TCP 会话、每会话一个在途 Ping、GOMAXPROCS=4，八个正式服务进程及本机依赖；旧目录实现仅通过临时 overlay 对照。10 秒 ABBA 四窗口吞吐为清理前 8607.1、清理后 8637.1、清理后 4626.9、清理前 5770.9 请求/s，均零失败，版本内波动明显。修复客户端样本数组展开的参数数量限制后，同版采集器的 20 秒配对为 8198.8→8404.15 请求/s，P99 10.084→9.672 ms，共完成 332059 次、零失败，服务均正常排水退出。不能从单组 +2.5% 宣称提速；也未确认微基准回退造成稳定的完整链路退化，当前不为它恢复旧字段或调整生产实现。
-
-此负载覆盖上下行、Session 与 MsgQ，不含 GD 数据 I/O、SLG 重业务或生产跨机条件。两次 30 秒尝试分别遇到采集器样本展开失败、等长空闲窗口触发 Agent 读取超时，均排除出性能样本并保留证据。后续已将测试侧空闲对照限制为最多 10 秒，45 秒正式窗口完成 229678 次请求、零失败并正常排水，未调整生产超时或增加保活流量；两窗口累计 I/O 不直接比较。完整日志、参数、来源哈希和 comparison.json 在 /tmp/tx-route-impact-20260920。
+ProtoActor 后端及其性能对照已退役；当前实体宿主使用稳定归属、直连上行与 Core NATS Actor RPC。
 
 ### control 与滚动发布
 

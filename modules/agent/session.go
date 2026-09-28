@@ -168,7 +168,7 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 	}
 	writerResult := make(chan error, 1)
 	go func() {
-		writerResult <- s.writeDownMsgs(sessionCtx, mailboxStream, &writer, &writtenDownSeq, identity.RoleID)
+		writerResult <- s.writeDownMsgs(sessionCtx, mailboxStream, &writer, &writtenDownSeq)
 		cancel()
 	}()
 	defer func() {
@@ -276,7 +276,7 @@ func (s *Server) dispatchUpMsg(ctx context.Context, mailboxStream msgq.MailboxSt
 
 const immediateDownBatchLimit = 5
 
-func (s *Server) writeDownMsgs(ctx context.Context, mailboxStream msgq.MailboxStreamSession, writer *sessionFrameWriter, written *atomic.Int64, roleID int64) error {
+func (s *Server) writeDownMsgs(ctx context.Context, mailboxStream msgq.MailboxStreamSession, writer *sessionFrameWriter, written *atomic.Int64) error {
 	for {
 		message, err := mailboxStream.Recv()
 		if err != nil {
@@ -308,9 +308,6 @@ func (s *Server) writeDownMsgs(ctx context.Context, mailboxStream msgq.MailboxSt
 				err = writer.writeTCPDownBatch(ctx, tcp, frames[:count], written)
 				ended := time.Now()
 				txmetrics.RecordAgentDownlink(count, ended.Sub(started), err)
-				if err == nil {
-					traceAgentDownlink(roleID, frames[:count], started, ended)
-				}
 			}
 		}
 		if count == 1 {
@@ -318,9 +315,6 @@ func (s *Server) writeDownMsgs(ctx context.Context, mailboxStream msgq.MailboxSt
 			err = writer.writeDownMsg(ctx, frames[0], written)
 			ended := time.Now()
 			txmetrics.RecordAgentDownlink(1, ended.Sub(started), err)
-			if err == nil {
-				traceAgentDownlink(roleID, frames[:1], started, ended)
-			}
 		}
 		if err != nil {
 			return err

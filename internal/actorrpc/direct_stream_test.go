@@ -129,13 +129,16 @@ func TestDirectStreamMultiplexesCallsWithoutBatching(t *testing.T) {
 	}
 }
 
-// 入隊確認应在业务处理前返回，且同一条 gRPC 长流按收到顺序进入实体邮箱。
-func TestDirectStreamEnqueuePreservesMailboxOrderWithoutWaitingForBusiness(t *testing.T) {
+// 单向流按接收顺序入邮箱；排水等待已接收工作，关闸后不再执行新消息。
+func TestDirectStreamEnqueuePreservesMailboxOrderAndDrain(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	defer releaseOnce.Do(func() { close(release) })
+	releaseLast := make(chan struct{})
+	var releaseLastOnce sync.Once
+	defer releaseLastOnce.Do(func() { close(releaseLast) })
 	entered := make(chan int64, 3)
 	identity := txprotocol.SessionIdentity{SessionPrincipal: txprotocol.SessionPrincipal{
 		AccountID: 1, ServerID: 1, RoleID: 42, SessionID: 99, AccessMode: txprotocol.AccessModeNormal,
@@ -149,6 +152,9 @@ func TestDirectStreamEnqueuePreservesMailboxOrderWithoutWaitingForBusiness(t *te
 			entered <- delivery.UpSeq
 			if delivery.UpSeq == 1 {
 				<-release
+			}
+			if delivery.UpSeq == 3 {
+				<-releaseLast
 			}
 			return nil, nil
 		}}, nil
@@ -220,5 +226,32 @@ func TestDirectStreamEnqueuePreservesMailboxOrderWithoutWaitingForBusiness(t *te
 	}
 	if streams.Load() != 1 {
 		t.Fatalf("stream count = %d, want 1", streams.Load())
+	}
+	local.BeginDrain()
+	drained := make(chan error, 1)
+	go func() { drained <- local.Drain(ctx) }()
+	select {
+	case err := <-drained:
+		t.Fatalf("排水未等待已接收的单向消息: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	delivery, err := (txactor.Delivery{MessageType: "agent.command", Identity: &identity, UpSeq: 4}).ToProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := transport.Enqueue(ctx, actorhost.Target{Instance: "game-a", Identity: txactor.Identity{Kind: "role", Key: "i:42"}}, delivery); err != nil {
+		t.Fatalf("单向流写入应保持无逐项回执: %v", err)
+	}
+	if _, err := transport.Call(ctx, actorhost.Target{Instance: "game-a", Identity: txactor.Identity{Kind: "role", Key: "i:42"}}, delivery); !errors.Is(err, actorhost.ErrDraining) {
+		t.Fatalf("关闸后同步探针未被拒绝: %v", err)
+	}
+	releaseLastOnce.Do(func() { close(releaseLast) })
+	if err := <-drained; err != nil {
+		t.Fatalf("已接收工作完成后排水失败: %v", err)
+	}
+	select {
+	case got := <-entered:
+		t.Fatalf("关闸后的消息仍被执行: %d", got)
+	default:
 	}
 }
