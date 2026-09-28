@@ -43,7 +43,7 @@ func TestWriteDownMsgsBatchesAvailableTCPFramesInOrder(t *testing.T) {
 	var written atomic.Int64
 	result := make(chan error, 1)
 	go func() {
-		result <- (&Server{}).writeDownMsgs(ctx, stream, &writer, &written)
+		result <- (&Server{}).writeDownMsgs(ctx, stream, &writer, &written, 42)
 	}()
 	reader := &tcpTransport{connection: client, maxFrameBytes: 1024}
 	for seq := int64(1); seq <= 5; seq++ {

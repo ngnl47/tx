@@ -284,7 +284,7 @@ func (s *Sender) PubSession(ctx context.Context, sessionID int64, payload []byte
 	return result, err
 }
 
-// SendSession 将下行载荷写入实际邮箱 owner 的发布流，不等待 MsgQ 逐项回执。
+// SendSession 将下行载荷交给实际邮箱 owner 的本地有界发布队列，不等待写流或 MsgQ 逐项回执。
 func (s *Sender) SendSession(ctx context.Context, sessionID int64, payload []byte) error {
 	if s == nil {
 		return ErrSenderClosed
@@ -326,7 +326,7 @@ func (s *Sender) PubRole(ctx context.Context, roleID int64, payload []byte) (Bro
 	}
 }
 
-// SendRole 将下行载荷写入角色归属 MsgQ 的发布流，不等待逐项回执。
+// SendRole 将下行载荷交给角色归属 MsgQ 的本地有界发布队列，不等待写流或逐项回执。
 // MsgQ 明确拒绝旧归属时异步清除缓存，被拒消息不重投。
 func (s *Sender) SendRole(ctx context.Context, roleID int64, payload []byte) error {
 	if s == nil {

@@ -53,6 +53,33 @@ var (
 	rpcSubmitSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name: "tx_rpc_stream_submit_seconds", Help: "目标服务流式消息入邮箱耗时。", Buckets: buckets,
 	})
+	rpcStreamSendLockSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name: "tx_rpc_stream_send_lock_seconds", Help: "单向流消息等待发送锁耗时，每 64 条抽样一条。", Buckets: buckets,
+	})
+	rpcStreamSendSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name: "tx_rpc_stream_send_seconds", Help: "单向流消息调用 gRPC Send 的耗时，每 64 条抽样一条。", Buckets: buckets,
+	})
+	mailboxSendQueueSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name: "tx_msgq_mailbox_send_queue_seconds", Help: "MsgQ 下行消息在共享流发送队列中的等待耗时，每 64 条抽样一条。", Buckets: buckets,
+	})
+	mailboxSendSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name: "tx_msgq_mailbox_send_seconds", Help: "MsgQ 下行消息调用 gRPC Send 的耗时，每 64 条抽样一条。", Buckets: buckets,
+	})
+	mailboxReceiveQueueSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name: "tx_agent_mailbox_receive_queue_seconds", Help: "Agent 收到下行消息后在 Session 队列中的等待耗时，每 64 条抽样一条。", Buckets: buckets,
+	})
+	actorMailboxWaitSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name: "tx_actor_mailbox_wait_seconds", Help: "Actor 消息入邮箱后到开始执行的等待耗时，每 64 条抽样一条。", Buckets: buckets,
+	})
+	publishStreamQueueSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name: "tx_msgq_publish_stream_queue_seconds", Help: "下行消息在发布流本地队列中的等待耗时，每 64 条抽样一条。", Buckets: buckets,
+	})
+	publishStreamSendSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name: "tx_msgq_publish_stream_send_seconds", Help: "下行消息调用发布流 gRPC Send 的耗时，每 64 条抽样一条。", Buckets: buckets,
+	})
+	publishStreamErrors = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "tx_msgq_publish_stream_errors_total", Help: "下行发布流异步写入失败事件数。",
+	})
 
 	uplinkAccepted        = agentUplink.WithLabelValues("accepted")
 	uplinkError           = agentUplink.WithLabelValues("error")
@@ -77,6 +104,9 @@ func init() {
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		agentUplink, agentUplinkSeconds, agentDownSent, agentDownErrors, agentDownSeconds,
 		msgqPublished, msgqPublishErrors, msgqPublishSeconds, rpcSubmit, rpcSubmitSeconds,
+		rpcStreamSendLockSeconds, rpcStreamSendSeconds,
+		mailboxSendQueueSeconds, mailboxSendSeconds, mailboxReceiveQueueSeconds,
+		actorMailboxWaitSeconds, publishStreamQueueSeconds, publishStreamSendSeconds, publishStreamErrors,
 		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "tx_msgq_sessions", Help: "本进程 MsgQ 会话数。"}, func() float64 {
 			if source := mailboxSnapshot.Load(); source != nil {
 				sessions, _, _ := source.read()
@@ -161,3 +191,34 @@ func RecordRPCSubmit(err error, duration time.Duration) {
 	}
 	rpcSubmitSeconds.Observe(duration.Seconds())
 }
+
+// RecordRPCStreamSend 记录单向流消息的抽样锁等待和写入耗时。
+func RecordRPCStreamSend(lockWait, send time.Duration) {
+	rpcStreamSendLockSeconds.Observe(lockWait.Seconds())
+	rpcStreamSendSeconds.Observe(send.Seconds())
+}
+
+// RecordMailboxSend 记录 MsgQ 下行共享流的抽样排队和发送耗时。
+func RecordMailboxSend(queue, send time.Duration) {
+	mailboxSendQueueSeconds.Observe(queue.Seconds())
+	mailboxSendSeconds.Observe(send.Seconds())
+}
+
+// RecordMailboxReceiveQueue 记录 Agent 下行消息在 Session 队列中的抽样等待耗时。
+func RecordMailboxReceiveQueue(wait time.Duration) {
+	mailboxReceiveQueueSeconds.Observe(wait.Seconds())
+}
+
+// RecordActorMailboxWait 记录 Actor 邮箱的抽样等待耗时。
+func RecordActorMailboxWait(wait time.Duration) {
+	actorMailboxWaitSeconds.Observe(wait.Seconds())
+}
+
+// RecordPublishStream 记录下行发布流的抽样排队和发送耗时。
+func RecordPublishStream(queue, send time.Duration) {
+	publishStreamQueueSeconds.Observe(queue.Seconds())
+	publishStreamSendSeconds.Observe(send.Seconds())
+}
+
+// RecordPublishStreamError 统计异步写流失败。
+func RecordPublishStreamError() { publishStreamErrors.Inc() }

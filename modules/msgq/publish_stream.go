@@ -1,20 +1,25 @@
 package msgq
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	txlog "github.com/ngnl47/tx/log"
+	txmetrics "github.com/ngnl47/tx/metrics"
 	msgqpb "github.com/ngnl47/tx/modules/msgq/pb"
 	"google.golang.org/grpc"
 )
 
 type grpcPublishItem struct {
-	request *msgqpb.PublishRequest
-	close   bool
-	done    chan error
+	request  *msgqpb.PublishRequest
+	close    bool
+	done     chan error
+	queuedAt time.Time
 }
 
 type grpcPublishStream struct {
@@ -28,6 +33,7 @@ type grpcPublishStream struct {
 	closed   bool
 	once     sync.Once
 	closeErr error
+	samples  atomic.Uint64
 }
 
 func newGRPCPublishStream(client msgqpb.MailboxServiceClient, reject func(RoleBinding)) (*grpcPublishStream, error) {
@@ -47,11 +53,29 @@ func newGRPCPublishStream(client msgqpb.MailboxServiceClient, reject func(RoleBi
 }
 
 func (publisher *grpcPublishStream) send(ctx context.Context, request *msgqpb.PublishRequest) error {
-	item := grpcPublishItem{request: request, done: make(chan error, 1)}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	queued := *request
+	queued.Payload = bytes.Clone(request.Payload)
+	item := grpcPublishItem{request: &queued}
+	if publisher.samples.Add(1)&63 == 0 {
+		item.queuedAt = time.Now()
+	}
 	publisher.closeMu.Lock()
 	if publisher.closed {
 		publisher.closeMu.Unlock()
 		return ErrSenderClosed
+	}
+	if err := ctx.Err(); err != nil {
+		publisher.closeMu.Unlock()
+		return err
+	}
+	select {
+	case <-publisher.done:
+		publisher.closeMu.Unlock()
+		return ErrRouteUnavailable
+	default:
 	}
 	select {
 	case <-ctx.Done():
@@ -62,19 +86,7 @@ func (publisher *grpcPublishStream) send(ctx context.Context, request *msgqpb.Pu
 		return ErrRouteUnavailable
 	case publisher.items <- item:
 		publisher.closeMu.Unlock()
-	}
-	select {
-	case err := <-item.done:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-publisher.done:
-		select {
-		case err := <-item.done:
-			return err
-		default:
-			return ErrRouteUnavailable
-		}
+		return nil
 	}
 }
 
@@ -97,12 +109,18 @@ func (publisher *grpcPublishStream) writeLoop() {
 				item.done <- publisher.closeErr
 				return
 			}
+			var started time.Time
+			if !item.queuedAt.IsZero() {
+				started = time.Now()
+			}
 			err := publisher.client.Send(item.request)
+			if !started.IsZero() {
+				txmetrics.RecordPublishStream(started.Sub(item.queuedAt), time.Since(started))
+			}
 			if err != nil {
 				err = mailboxClientError(err)
-			}
-			item.done <- err
-			if err != nil {
+				txmetrics.RecordPublishStreamError()
+				txlog.Error("async downlink publish stream send failed", "err", err, "queued", len(publisher.items))
 				publisher.finish(err)
 				return
 			}

@@ -19,6 +19,7 @@ func TestHandlerExposesMessageMetricsAndMailboxSnapshot(t *testing.T) {
 	RecordAgentDownlink(2, time.Millisecond, nil)
 	RecordMsgQPublish(PublishSession, 1, time.Millisecond, nil)
 	RecordRPCSubmit(nil, time.Millisecond)
+	RecordRPCStreamSend(time.Millisecond, 2*time.Millisecond)
 
 	response := httptest.NewRecorder()
 	Handler().ServeHTTP(response, httptest.NewRequest("GET", "/metrics", nil))
@@ -31,6 +32,8 @@ func TestHandlerExposesMessageMetricsAndMailboxSnapshot(t *testing.T) {
 		`tx_agent_downlink_sent_total `,
 		`tx_msgq_downlink_published_total{kind="session"} `,
 		`tx_rpc_stream_submit_total{outcome="accepted"} `,
+		`tx_rpc_stream_send_lock_seconds_count 1`,
+		`tx_rpc_stream_send_seconds_count 1`,
 		`tx_msgq_sessions 3`,
 		`tx_msgq_backlog_messages 7`,
 		`tx_msgq_backlog_bytes 1024`,

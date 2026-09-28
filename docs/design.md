@@ -2306,7 +2306,7 @@ Borrow 和旁路挂机只是应用场景：前者由授权操作者访问目标�
 默认离线保留窗口为 `180s`，失活终止检查间隔为 `2s`；周期任务只遍历当前 MsgQ 的本地 Session 表，不扫描 Redis key。
 超过窗口、积压条数或积压字节上限时终止整个 Session，而不是无限保留未确认消息。
 
-公开业务下行使用 `Sender.SendSession(SessionID, payload)` 与 `Sender.SendRole(RoleID, payload)`：复用指向 MsgQ owner 的 `PublishStream`，写入本地 gRPC 流后返回，不等待目标邮箱逐项确认。旧归属拒绝异步清理角色缓存，已发送消息不自动重投。需要明确入队结果的调用方仍可显式使用同步 `PubSession`/`PubRole`，不得将它们的结果语义套用于异步发布。Topic 是单个 MsgQ 的本地 SessionID 索引：`JoinTopics` 和 `BroadcastTopic` 以 SessionID 作为当前连接或实例路由锚点，跨实例覆盖须由业务分别选择各实例上的 Session。
+公开业务下行使用 `Sender.SendSession(SessionID, payload)` 与 `Sender.SendRole(RoleID, payload)`：复用指向 MsgQ owner 的 `PublishStream`，进入本地有界发布队列后返回，不等待写流或目标邮箱逐项确认。队列满时等待空位，并受调用方 Context 或流关闭约束；入队后的写流失败只记录错误，不自动重投。关闭发布流时按顺序排空已入队消息。旧归属拒绝异步清理角色缓存，已发送消息不自动重投。需要明确入队结果的调用方仍可显式使用同步 `PubSession`/`PubRole`，不得将它们的结果语义套用于异步发布。`SendRole` 到达归属 MsgQ 后向该角色的全部会话邮箱扇出，各邮箱独立分配下行 Seq。Topic 是单个 MsgQ 的本地 SessionID 索引：`JoinTopics` 和 `BroadcastTopic` 以 SessionID 作为当前连接或实例路由锚点，跨实例覆盖须由业务分别选择各实例上的 Session。
 
 会话控制的 `Init` 仅在得到合法响应后报告成功。`MailboxStream` 承载每个 Session 的下行推送和 Seq/Ack，同一条流可复用多个 Session；旧连接与过期会话的错误只终止对应逻辑会话。异步发布的写流成功不等于目标邮箱入队，失败或断流时结果可能未知，框架不会自动重发业务载荷。
 

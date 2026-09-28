@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync/atomic"
+	"time"
 
 	txlog "github.com/ngnl47/tx/log"
+	txmetrics "github.com/ngnl47/tx/metrics"
 	msgqpb "github.com/ngnl47/tx/modules/msgq/pb"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
@@ -60,17 +63,30 @@ func (s *mailboxService) MailboxStream(stream grpc.BidiStreamingServer[msgqpb.Ma
 		header SessionHeader
 		cancel context.CancelFunc
 	}
+	type downlink struct {
+		response *msgqpb.MailboxStreamResponse
+		queuedAt time.Time
+	}
 	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
 	requests := make(chan incoming, 1)
-	downlinks := make(chan *msgqpb.MailboxStreamResponse, 128)
+	downlinks := make(chan downlink, 128)
+	var sendSamples atomic.Uint64
 	// 一条流只由一个协程写出；流控等待不占用会话控制循环。
 	sendResult := make(chan error, 1)
 	go func() {
 		for {
 			select {
-			case response := <-downlinks:
-				if err := stream.Send(response); err != nil {
+			case item := <-downlinks:
+				var started time.Time
+				if !item.queuedAt.IsZero() {
+					started = time.Now()
+				}
+				err := stream.Send(item.response)
+				if !started.IsZero() {
+					txmetrics.RecordMailboxSend(started.Sub(item.queuedAt), time.Since(started))
+				}
+				if err != nil {
 					sendResult <- err
 					return
 				}
@@ -121,7 +137,7 @@ func (s *mailboxService) MailboxStream(stream grpc.BidiStreamingServer[msgqpb.Ma
 				}
 				if err := s.mailbox.Touch(ctx, TouchRequest{Header: header}); err != nil {
 					select {
-					case downlinks <- &msgqpb.MailboxStreamResponse{Header: request.GetHeader(), ErrorMessage: mailboxStatusError(err).Error()}:
+					case downlinks <- downlink{response: &msgqpb.MailboxStreamResponse{Header: request.GetHeader(), ErrorMessage: mailboxStatusError(err).Error()}}:
 					default:
 						return status.Error(codes.ResourceExhausted, "mailbox stream response queue full")
 					}
@@ -147,16 +163,19 @@ func (s *mailboxService) MailboxStream(stream grpc.BidiStreamingServer[msgqpb.Ma
 						if err != nil {
 							if !errors.Is(err, context.Canceled) {
 								select {
-								case downlinks <- &msgqpb.MailboxStreamResponse{Header: headerToProto(header), ErrorMessage: mailboxStatusError(err).Error()}:
+								case downlinks <- downlink{response: &msgqpb.MailboxStreamResponse{Header: headerToProto(header), ErrorMessage: mailboxStatusError(err).Error()}}:
 								case <-sessionCtx.Done():
 								}
 							}
 							return
 						}
 						for _, message := range batch.Messages {
-							response := &msgqpb.MailboxStreamResponse{Header: headerToProto(header), Message: fetchResultToProto(message)}
+							item := downlink{response: &msgqpb.MailboxStreamResponse{Header: headerToProto(header), Message: fetchResultToProto(message)}}
+							if sendSamples.Add(1)&63 == 0 {
+								item.queuedAt = time.Now()
+							}
 							select {
-							case downlinks <- response:
+							case downlinks <- item:
 							case <-sessionCtx.Done():
 								return
 							}

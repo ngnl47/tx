@@ -33,11 +33,11 @@ func testMailboxStream() *grpcMailboxStream {
 func TestMailboxSessionTryRecvOnlyTakesQueuedMessage(t *testing.T) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(context.Canceled)
-	session := &grpcMailboxSession{ctx: ctx, cancel: cancel, items: make(chan *msgqpb.MailboxStreamResponse, 1)}
+	session := &grpcMailboxSession{ctx: ctx, cancel: cancel, items: make(chan mailboxResponse, 1)}
 	if _, ready, err := session.TryRecv(); err != nil || ready {
 		t.Fatalf("empty TryRecv = %t, %v", ready, err)
 	}
-	session.items <- &msgqpb.MailboxStreamResponse{Message: &msgqpb.FetchResponse{Seq: 7, Payload: []byte("down")}}
+	session.items <- mailboxResponse{response: &msgqpb.MailboxStreamResponse{Message: &msgqpb.FetchResponse{Seq: 7, Payload: []byte("down")}}}
 	message, ready, err := session.TryRecv()
 	if err != nil || !ready || message.Seq != 7 || string(message.Payload) != "down" {
 		t.Fatalf("queued TryRecv = %+v, %t, %v", message, ready, err)

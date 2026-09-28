@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
+	txmetrics "github.com/ngnl47/tx/metrics"
 	msgqpb "github.com/ngnl47/tx/modules/msgq/pb"
 	"google.golang.org/grpc"
 )
@@ -20,14 +22,20 @@ type MailboxStreamSession interface {
 }
 
 type grpcMailboxStream struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	client   grpc.BidiStreamingClient[msgqpb.MailboxStreamRequest, msgqpb.MailboxStreamResponse]
-	requests chan *msgqpb.MailboxStreamRequest
-	done     chan struct{}
-	mu       sync.Mutex
-	sessions map[int64]*grpcMailboxSession
-	once     sync.Once
+	ctx            context.Context
+	cancel         context.CancelFunc
+	client         grpc.BidiStreamingClient[msgqpb.MailboxStreamRequest, msgqpb.MailboxStreamResponse]
+	requests       chan *msgqpb.MailboxStreamRequest
+	done           chan struct{}
+	mu             sync.Mutex
+	sessions       map[int64]*grpcMailboxSession
+	once           sync.Once
+	receiveSamples uint64
+}
+
+type mailboxResponse struct {
+	response *msgqpb.MailboxStreamResponse
+	queuedAt time.Time
 }
 
 type grpcMailboxSession struct {
@@ -35,7 +43,7 @@ type grpcMailboxSession struct {
 	cancel context.CancelCauseFunc
 	stream *grpcMailboxStream
 	header SessionHeader
-	items  chan *msgqpb.MailboxStreamResponse
+	items  chan mailboxResponse
 	done   chan struct{}
 	once   sync.Once
 	mu     sync.Mutex
@@ -61,7 +69,7 @@ func newGRPCMailboxStream(client msgqpb.MailboxServiceClient) (*grpcMailboxStrea
 
 func (stream *grpcMailboxStream) open(ctx context.Context, header SessionHeader) (MailboxStreamSession, error) {
 	sessionCtx, cancel := context.WithCancelCause(ctx)
-	session := &grpcMailboxSession{ctx: sessionCtx, cancel: cancel, stream: stream, header: header, items: make(chan *msgqpb.MailboxStreamResponse, 64), done: make(chan struct{})}
+	session := &grpcMailboxSession{ctx: sessionCtx, cancel: cancel, stream: stream, header: header, items: make(chan mailboxResponse, 64), done: make(chan struct{})}
 	stream.mu.Lock()
 	if err := stream.ctx.Err(); err != nil {
 		stream.mu.Unlock()
@@ -140,8 +148,13 @@ func (stream *grpcMailboxStream) readLoop() {
 			session.finish(ErrInvalidMailboxResponse)
 			continue
 		}
+		item := mailboxResponse{response: response}
+		stream.receiveSamples++
+		if stream.receiveSamples&63 == 0 {
+			item.queuedAt = time.Now()
+		}
 		select {
-		case session.items <- response:
+		case session.items <- item:
 		case <-session.done:
 		case <-stream.done:
 			return
@@ -185,11 +198,14 @@ func (session *grpcMailboxSession) Recv() (FetchResult, error) {
 		return FetchResult{}, err
 	}
 	select {
-	case response := <-session.items:
+	case item := <-session.items:
 		if err := session.receiveError(); err != nil {
 			return FetchResult{}, err
 		}
-		message := response.GetMessage()
+		if !item.queuedAt.IsZero() {
+			txmetrics.RecordMailboxReceiveQueue(time.Since(item.queuedAt))
+		}
+		message := item.response.GetMessage()
 		return FetchResult{Seq: message.GetSeq(), Payload: message.GetPayload()}, nil
 	case <-session.ctx.Done():
 		return FetchResult{}, context.Cause(session.ctx)
@@ -203,11 +219,14 @@ func (session *grpcMailboxSession) TryRecv() (FetchResult, bool, error) {
 		return FetchResult{}, false, err
 	}
 	select {
-	case response := <-session.items:
+	case item := <-session.items:
 		if err := session.receiveError(); err != nil {
 			return FetchResult{}, false, err
 		}
-		message := response.GetMessage()
+		if !item.queuedAt.IsZero() {
+			txmetrics.RecordMailboxReceiveQueue(time.Since(item.queuedAt))
+		}
+		message := item.response.GetMessage()
 		return FetchResult{Seq: message.GetSeq(), Payload: message.GetPayload()}, true, nil
 	default:
 		return FetchResult{}, false, nil

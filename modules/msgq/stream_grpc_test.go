@@ -2,8 +2,6 @@ package msgq
 
 import (
 	"context"
-	"errors"
-	"io"
 	"net"
 	"testing"
 	"time"
@@ -126,6 +124,10 @@ func TestPublishStreamProcessesSessionAndRoleMessagesInOrder(t *testing.T) {
 	if _, err := mailbox.Init(ctx, InitRequest{Header: header}); err != nil {
 		t.Fatal(err)
 	}
+	peer := SessionHeader{RoleID: 47, SessionID: 12, ConnectionID: 2}
+	if _, err := mailbox.Init(ctx, InitRequest{Header: peer}); err != nil {
+		t.Fatal(err)
+	}
 	binding, found, err := store.FindRole(ctx, header.RoleID)
 	if err != nil || !found {
 		t.Fatalf("FindRole = %+v, %v, found=%v", binding, err, found)
@@ -145,7 +147,7 @@ func TestPublishStreamProcessesSessionAndRoleMessagesInOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = transport.Close() })
-	stream, err := msgqpb.NewMailboxServiceClient(transport).PublishStream(ctx)
+	publisher, err := newGRPCPublishStream(msgqpb.NewMailboxServiceClient(transport), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,15 +157,12 @@ func TestPublishStreamProcessesSessionAndRoleMessagesInOrder(t *testing.T) {
 		{Kind: msgqpb.PublishRequest_KIND_SESSION, SessionId: header.SessionID, Payload: []byte("last")},
 	}
 	for _, request := range requests {
-		if err := stream.Send(request); err != nil {
+		if err := publisher.send(ctx, request); err != nil {
 			t.Fatalf("send publish request: %v", err)
 		}
 	}
-	if err := stream.CloseSend(); err != nil {
-		t.Fatalf("finish publish stream: %v", err)
-	}
-	if _, err := stream.Recv(); !errors.Is(err, io.EOF) {
-		t.Fatalf("successful publish returned feedback: %v", err)
+	if err := publisher.Close(); err != nil {
+		t.Fatalf("排空发布队列: %v", err)
 	}
 	pending, err := mailbox.FetchSome(ctx, FetchSomeRequest{Header: header, Max: 3})
 	if err != nil {
@@ -176,6 +175,10 @@ func TestPublishStreamProcessesSessionAndRoleMessagesInOrder(t *testing.T) {
 		if got := string(pending.Messages[index].Payload); got != want {
 			t.Fatalf("message[%d] = %q, want %q", index, got, want)
 		}
+	}
+	peerPending, err := mailbox.FetchSome(ctx, FetchSomeRequest{Header: peer, Max: 1})
+	if err != nil || len(peerPending.Messages) != 1 || string(peerPending.Messages[0].Payload) != "role" {
+		t.Fatalf("角色消息没有扇出到同角色的第二邮箱: %+v, %v", peerPending, err)
 	}
 }
 
@@ -232,8 +235,15 @@ func TestPublishStreamRoleRejectionRefreshesSenderRouteWithoutReplayingPayload(t
 	if err := sender.SendRole(ctx, first.RoleID, []byte("warm")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mailbox.FetchSome(ctx, FetchSomeRequest{Header: first, Max: 1}); err != nil {
-		t.Fatal(err)
+	for {
+		pending, err := mailbox.FetchSome(ctx, FetchSomeRequest{Header: first, Max: 1})
+		if err == nil && len(pending.Messages) == 1 {
+			break
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("等待首条异步角色消息: %v", err)
+		}
+		time.Sleep(time.Millisecond)
 	}
 	if err := mailbox.TerminateSession(ctx, first); err != nil {
 		t.Fatal(err)
@@ -265,8 +275,17 @@ func TestPublishStreamRoleRejectionRefreshesSenderRouteWithoutReplayingPayload(t
 	if err := sender.SendRole(ctx, second.RoleID, []byte("next")); err != nil {
 		t.Fatal(err)
 	}
-	pending, err := mailbox.FetchSome(ctx, FetchSomeRequest{Header: second, Max: 2})
-	if err != nil || len(pending.Messages) != 1 || string(pending.Messages[0].Payload) != "next" {
-		t.Fatalf("new session mailbox = %+v, err=%v; want only next", pending, err)
+	for {
+		pending, err := mailbox.FetchSome(ctx, FetchSomeRequest{Header: second, Max: 2})
+		if err == nil && len(pending.Messages) == 1 && string(pending.Messages[0].Payload) == "next" {
+			break
+		}
+		if err == nil && len(pending.Messages) != 0 {
+			t.Fatalf("new session mailbox = %+v; want only next", pending)
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("等待新的异步角色消息: %v", err)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

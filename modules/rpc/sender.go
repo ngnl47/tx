@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/ngnl47/tx/internal/instanceconn"
+	txmetrics "github.com/ngnl47/tx/metrics"
 	"github.com/ngnl47/tx/modules/discovery"
 	rpcpb "github.com/ngnl47/tx/modules/rpc/pb"
 	"google.golang.org/grpc"
@@ -147,6 +150,7 @@ type callStream struct {
 	mu          sync.Mutex
 	pending     map[uint64]chan streamCallReply
 	nextID      uint64
+	sendSamples atomic.Uint64
 	closed      bool
 	onClose     func(*callStream)
 }
@@ -164,8 +168,24 @@ func (c *grpcConnection) SendStream(ctx context.Context, delivery Delivery) erro
 	if err != nil {
 		return err
 	}
+	sample := stream.sendSamples.Add(1)&63 == 0
+	var lockStarted time.Time
+	if sample {
+		lockStarted = time.Now()
+	}
 	stream.sendMu.Lock()
-	defer stream.sendMu.Unlock()
+	var lockWait time.Duration
+	var sendDuration time.Duration
+	var recorded bool
+	defer func() {
+		stream.sendMu.Unlock()
+		if recorded {
+			txmetrics.RecordRPCStreamSend(lockWait, sendDuration)
+		}
+	}()
+	if sample {
+		lockWait = time.Since(lockStarted)
+	}
 	stream.mu.Lock()
 	if stream.closed {
 		stream.mu.Unlock()
@@ -177,7 +197,16 @@ func (c *grpcConnection) SendStream(ctx context.Context, delivery Delivery) erro
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := stream.client.Send(&rpcpb.StreamCallRequest{Id: id, Delivery: request, OneWay: true}); err != nil {
+	var sendStarted time.Time
+	if sample {
+		sendStarted = time.Now()
+	}
+	err = stream.client.Send(&rpcpb.StreamCallRequest{Id: id, Delivery: request, OneWay: true})
+	if sample {
+		sendDuration = time.Since(sendStarted)
+		recorded = true
+	}
+	if err != nil {
 		stream.fail(err)
 		return err
 	}

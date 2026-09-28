@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	txmetrics "github.com/ngnl47/tx/metrics"
 )
 
 var (
@@ -116,6 +118,11 @@ type request struct {
 	message any
 	future  *Future
 }
+
+type sampledMessage struct {
+	value    any
+	queuedAt time.Time
+}
 type activation struct {
 	runtime      *Runtime
 	identity     Identity
@@ -128,17 +135,18 @@ type activation struct {
 
 // Runtime 只管理本进程实体，不做发现或跨实例归属判定。
 type Runtime struct {
-	mu           sync.Mutex
-	entries      map[Identity]*activation
-	draining     bool
-	placement    *Placement
-	workers      sync.WaitGroup
-	capacity     int
-	timeout      time.Duration
-	factory      BehaviorFactory
-	limits       ActivationLimits
-	initializing int
-	failures     map[Identity]*RemoteError
+	mailboxSamples uint64
+	mu             sync.Mutex
+	entries        map[Identity]*activation
+	draining       bool
+	placement      *Placement
+	workers        sync.WaitGroup
+	capacity       int
+	timeout        time.Duration
+	factory        BehaviorFactory
+	limits         ActivationLimits
+	initializing   int
+	failures       map[Identity]*RemoteError
 }
 
 // New 的工厂先做业务加载准入再构造对象；返回对象后由运行时负责清理。
@@ -218,6 +226,10 @@ func (r *Runtime) enqueue(e *activation, message any, done func(any, error)) (*F
 		return nil, ErrDeactivated
 	}
 	f := NewFuture(done)
+	r.mailboxSamples++
+	if r.mailboxSamples&63 == 0 {
+		message = sampledMessage{value: message, queuedAt: time.Now()}
+	}
 	select {
 	case e.queue <- request{message, f}:
 		return f, nil
@@ -356,7 +368,12 @@ func (e *activation) run() {
 			return
 		}
 		var value any
-		err := e.invoke(e.runtime.timeout, func(ctx Context) error { var err error; value, err = behavior.Receive(ctx, req.message); return err })
+		message := req.message
+		if sampled, ok := message.(sampledMessage); ok {
+			txmetrics.RecordActorMailboxWait(time.Since(sampled.queuedAt))
+			message = sampled.value
+		}
+		err := e.invoke(e.runtime.timeout, func(ctx Context) error { var err error; value, err = behavior.Receive(ctx, message); return err })
 		if timer != nil {
 			timer.Reset(behavior.IdlePassivation)
 		}
