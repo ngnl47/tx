@@ -788,11 +788,11 @@ resolver 和客户端载荷均不能指定 `ConnectionID`，也不能伪造投�
 4. 新建 `Init` 用 `Create NX` 安装空邮箱，SessionID 已存在时失败；恢复 `Init` 用旧完整 binding `Rebind` 到新 ConnectionID，保留相同 SessionID 的 Rec 游标、下行 Ack 与未确认下行队列。恢复 owner 不可用、邮箱不存在或完整绑定校验失败时明确失败，不能迁移或安装空会话。
 5. `Init` 成功后，Agent 发送 `FrameReady`，其 `Ack` 固定为 `0`。客户端收到它之前只能处于连接中，不能发送业务帧；恢复失败时不会出现“先成功、再被关闭”的假状态。
 6. 客户端按 socket 写入顺序发送递增的 UpMsg 序号；允许跳号，不维护未确认上行重放队列。较旧或重复序号不会再次分发。
-7. Agent 按连接读取顺序，逐条等待目标 Actor 邮箱接纳确认后再继续；该确认只表示消息已入邮箱，不等业务执行。接纳后，Agent 更新本地 Rec lease，或用当前完整 `SessionHeader` 调用 MsgQ `Rec` 同步游标。
-8. Agent 持续 `FetchSome` 下行队列，写出 `FrameDownMsg`；客户端在后续上行帧携带 Ack，`Rec` 会确认对应下行消息。
-9. Game/Actor 处理上行后，直接通过 MsgQ Sender 调用 `PubRole` 共享普通业务响应，调用 `PubSession` 精确投递携带请求序号的 `System_Error`。这些是独立下行消息，不作为上行 RPC 返回值；Actor 业务处理失败不会产生客户端上行 ACK。
+7. Agent 按连接读取顺序将上行写入目标实例的 `CallStream`，不等待远端邮箱接纳或业务完成。提交成功后更新本地上行游标，并通过 `MailboxStream` 异步发送上行游标及下行 Ack；不等待 MsgQ 逐项回执。
+8. Agent 从共享 `MailboxStream` 接收下行，写出 `FrameDownMsg`；客户端在上行或独立 `FrameAck` 携带 Ack，Agent 经同一双向流同步给 MsgQ 裁剪邮箱。
+9. Game/Actor 处理上行后，直接通过 MsgQ Sender 调用 `SendRole` 共享普通业务响应，调用 `SendSession` 精确投递携带请求序号的 `System_Error`。这些是独立下行消息，不作为上行 RPC 返回值；Actor 业务处理失败不会产生客户端上行 ACK。
 
-客户端只维护递增的 UpSeq 与已处理的 DownSeq。上行发送失败或连接中断时不自动重放，结果可能未知；恢复原 Session 只恢复 MsgQ 中未确认的下行，不恢复上行命令。客户端后续新命令继续使用更大的 UpSeq。Agent 的内部邮箱接纳确认只推进服务端 Rec 状态，不发给客户端。
+客户端只维护递增的 UpSeq 与已处理的 DownSeq。上行发送失败或连接中断时不自动重放，结果可能未知；恢复原 Session 只恢复 MsgQ 中未确认的下行，不恢复上行命令。客户端后续新命令继续使用更大的 UpSeq。Agent 不接收远端邮箱逐项接纳确认，也不向客户端发送上行确认帧。
 
 Actor 已经接纳的请求级失败不应等同于连接故障。标准 txgame/txgameslg Game/Actor 适配层会把 Handler 错误
 编码为生成的 `System_Error`，直接投递到发起 Session。其中 `RequestSeq` 指向原上行
@@ -806,10 +806,13 @@ const ErrorCodeNameExists int32 = 41001
 return nil, txactor.NewCallError(ErrorCodeNameExists, errors.New("name already exists"))
 ```
 
-Agent 核心仍把握手失败、非法 Frame、Seq/Ack 违约、Actor 目标解析失败、邮箱拒绝接纳或 Actor 服务不可达等基础设施错误视为会话失败并关闭连接。邮箱接纳后的业务错误通过 MsgQ 下行；损坏的协议状态
-也不会被继续使用。
+Agent 核心把握手失败、非法 Frame、Seq/Ack 违约，以及本地观察到的目标解析或写流错误视为会话失败并关闭连接。远端 Actor 邮箱拒收没有逐项回执，由接收端记录错误，Agent 不能据此立即关闭连接；邮箱接纳后的业务错误通过 MsgQ 下行。损坏的协议状态不会被继续使用。
 
-逐条 `Rec` 模式下，Agent 在 Actor 邮箱接纳消息后才推进 MsgQ 上行游标；业务处理失败或进程在游标同步后崩溃时，该条上行不会被框架自动重放。启用 Rec lease 时，尚未同步到 MsgQ 的接纳游标仍可能在恢复后被再次分派。
+Game 关闭发布流时，开始关闭之前已结束的流只记录历史 error，不阻断服务停止；本次排水中新发生的断流或超时仍返回失败。清理历史故障流不表示故障期间消息已送达，也不触发补发。
+
+当前没有 Agent Rec lease：活动连接本地检查 UpSeq 与 Ack，每次上行提交及客户端 Ack 都经 `MailboxStream` 更新 MsgQ；这是异步同步，不是定时低频同步。MsgQ 的 Redis 会话 TTL 与角色归属租约是另外的生命周期机制。游标同步不证明 Game 已收取或执行；框架不重放上行。
+
+重新 Login 创建新 SessionID，旧会话游标不用于新会话。同 Session 的 Restore 使用新 ConnectionID，通过 MsgQ 完整绑定 CAS 接管并唤醒旧订阅；旧连接不能更新、裁剪或终止新连接的邮箱。Agent 收到旧订阅错误后关闭旧 socket。该隔离不撤销已经发往 Game 的上行，也不提供跨 Agent 上行的全局接管屏障；同一角色多 Session 可并存，互踢属于业务策略。
 普通游戏操作接受这个语义；不能重复执行的命令必须由项目定义独立的业务幂等键。Frame 的静态 `CommandID`
 只标识生成的命令类型，不能用作一次业务操作的幂等令牌。
 

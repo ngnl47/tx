@@ -2,6 +2,7 @@ package msgq
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -93,7 +94,8 @@ func TestMailboxStreamMultiplexesSessionsAndKeepsAckIsolated(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	stopStream()
+	defer stopStream()
+	oldFirst := first
 	first.ConnectionID = 2
 	second.ConnectionID = 2
 	if restored, err := mailbox.Init(ctx, InitRequest{Header: first, Restore: true, Ack: 1}); err != nil || restored.UpMsgSeq != 17 {
@@ -101,6 +103,24 @@ func TestMailboxStreamMultiplexesSessionsAndKeepsAckIsolated(t *testing.T) {
 	}
 	if _, err := mailbox.Init(ctx, InitRequest{Header: second, Restore: true, Ack: 0}); err != nil {
 		t.Fatal(err)
+	}
+	// 接管后旧连接不能推进游标、裁剪下行或终止新连接。
+	if _, err := mailbox.Rec(ctx, RecRequest{Header: oldFirst, Seq: 100, Ack: 2}); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("旧连接 Rec: %v", err)
+	}
+	if err := mailbox.TerminateSession(ctx, oldFirst); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("旧连接 Terminate: %v", err)
+	}
+	retired := make(map[int64]bool)
+	for range 2 {
+		response, err := stream.Recv()
+		if err != nil || response.GetErrorMessage() == "" || response.GetHeader().GetConnectionId() != 1 {
+			t.Fatalf("旧订阅应收到接管错误: %+v, %v", response, err)
+		}
+		retired[response.GetHeader().GetSessionId()] = true
+	}
+	if !retired[first.SessionID] || !retired[second.SessionID] {
+		t.Fatalf("未隔离全部旧订阅: %v", retired)
 	}
 	firstPending, err := mailbox.FetchSome(ctx, FetchSomeRequest{Header: first, Max: 1})
 	if err != nil || len(firstPending.Messages) != 1 || firstPending.Messages[0].Seq != 2 {
@@ -288,5 +308,81 @@ func TestPublishStreamRoleRejectionReaddressesOnlyRejectedPayload(t *testing.T) 
 			t.Fatalf("等待新的异步角色消息: %v", err)
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+// 历史断流只记录日志，不阻断最终关闭；后续发布可新建流，但不重投旧消息。
+func TestPublishStreamHistoricalDisconnectDoesNotBlockClose(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	mailbox, err := NewServer(ServerOptions{InstanceID: "msgq-a", Store: &testSessionStore{}, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := SessionHeader{RoleID: 47, SessionID: 11, ConnectionID: 1}
+	if _, err := mailbox.Init(ctx, InitRequest{Header: header}); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	if err := RegisterMailboxService(server, mailbox); err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = server.Serve(listener) }()
+	defer server.Stop()
+	transport, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer transport.Close()
+	connection := &grpcConnection{client: msgqpb.NewMailboxServiceClient(transport)}
+	if err := connection.SendSession(ctx, header.SessionID, []byte("before")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mailbox.Fetch(ctx, FetchRequest{Header: header}); err != nil {
+		t.Fatal(err)
+	}
+	previous := connection.publisher
+	server.Stop()
+	select {
+	case <-previous.done:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if !errors.Is(previous.closeErr, ErrRouteUnavailable) {
+		t.Fatalf("未记录历史断流: %v", previous.closeErr)
+	}
+	for range 2 {
+		if err := previous.Close(); err != nil {
+			t.Fatalf("历史断流不能阻断关闭: %v", err)
+		}
+	}
+	// 同址恢复服务，模拟底层连接重建；真实实例身份轮换由连接缓存另外覆盖。
+	listener, err = net.Listen("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := grpc.NewServer()
+	if err := RegisterMailboxService(replacement, mailbox); err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = replacement.Serve(listener) }()
+	defer replacement.Stop()
+	transport.ResetConnectBackoff()
+	if err := connection.SendSession(ctx, header.SessionID, []byte("after")); err != nil {
+		t.Fatal(err)
+	}
+	if connection.publisher == previous {
+		t.Fatal("新发布仍复用已断开的流")
+	}
+	if err := connection.closePublisher(); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := mailbox.FetchSome(ctx, FetchSomeRequest{Header: header, Max: 2})
+	if err != nil || len(pending.Messages) != 1 || string(pending.Messages[0].Payload) != "after" {
+		t.Fatalf("新发布结果: %+v, %v", pending, err)
 	}
 }

@@ -23,17 +23,18 @@ type grpcPublishItem struct {
 }
 
 type grpcPublishStream struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	client   grpc.BidiStreamingClient[msgqpb.PublishRequest, msgqpb.PublishRoleRejection]
-	reject   func(context.Context, RoleBinding, []byte)
-	items    chan grpcPublishItem
-	done     chan struct{}
-	closeMu  sync.Mutex
-	closed   bool
-	once     sync.Once
-	closeErr error
-	samples  atomic.Uint64
+	ctx             context.Context
+	cancel          context.CancelFunc
+	client          grpc.BidiStreamingClient[msgqpb.PublishRequest, msgqpb.PublishRoleRejection]
+	reject          func(context.Context, RoleBinding, []byte)
+	items           chan grpcPublishItem
+	done            chan struct{}
+	closeMu         sync.Mutex
+	closed          bool
+	historicalClose bool
+	once            sync.Once
+	closeErr        error
+	samples         atomic.Uint64
 }
 
 func newGRPCPublishStream(client msgqpb.MailboxServiceClient, reject func(context.Context, RoleBinding, []byte)) (*grpcPublishStream, error) {
@@ -159,17 +160,36 @@ func (publisher *grpcPublishStream) Close() error {
 }
 
 func (publisher *grpcPublishStream) closeContext(ctx context.Context) error {
+	// 只把进入关闭前已经结束的流归为历史故障，不能吞掉本次排水期间的错误。
+	historical := false
+	select {
+	case <-publisher.done:
+		historical = true
+	default:
+	}
 	// 截止时取消底层流，也唤醒持有关闭锁、等待队列空间的发送者。
 	stop := context.AfterFunc(ctx, func() { publisher.finish(ctx.Err()) })
 	defer stop()
 
 	publisher.closeMu.Lock()
 	if publisher.closed {
+		historical = publisher.historicalClose
 		publisher.closeMu.Unlock()
 		<-publisher.done
+		if historical {
+			return nil
+		}
 		return publisher.closeErr
 	}
 	publisher.closed = true
+	if historical {
+		publisher.historicalClose = true
+		publisher.closeMu.Unlock()
+		if publisher.closeErr != nil {
+			txlog.Error("closing previously failed downlink publish stream", "err", publisher.closeErr)
+		}
+		return nil
+	}
 	item := grpcPublishItem{close: true, done: make(chan error, 1)}
 	select {
 	case publisher.items <- item:

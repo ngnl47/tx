@@ -90,6 +90,9 @@ func TestPublishStreamCloseUnblocksWhenReaderEndsBeforeCloseItem(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("远端流结束后 Close 仍在等待已退出的写入者")
 	}
+	if err := publisher.Close(); !errors.Is(err, want) {
+		t.Fatalf("重复关闭不能把本次排水失败降为历史日志: %v", err)
+	}
 }
 
 func TestPublishStreamCloseDeadlineUnblocksFullQueue(t *testing.T) {

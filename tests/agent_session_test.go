@@ -912,3 +912,68 @@ func (t *agentTransport) Close() error {
 func (t *agentTransport) closeReads() {
 	t.closeOnce.Do(func() { close(t.readDone) })
 }
+
+// 同角色三次新登录按 Agent1→Agent2→Agent1 分配，不能沿用旧会话游标。
+func TestAgentNewLoginReturningToPreviousAgentStartsIndependentCursors(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	mailbox, err := msgq.NewServer(msgq.ServerOptions{InstanceID: "msgq-local", Store: newMailboxSessionStore(), MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := msgq.NewLocalSessionClient(mailbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := msgq.NewFixedSessionClientRouter(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatched := make(chan txagent.DispatchRequest, 3)
+	agents := make([]*txagent.Server, 2)
+	for i := range agents {
+		agents[i], err = txagent.NewServer(txagent.ServerOptions{
+			IdentityResolver: txagent.IdentityResolverFunc(func(_ context.Context, request txagent.AuthRequest) (protocol.SessionPrincipal, error) {
+				principal := testSessionPrincipal()
+				principal.SessionID = int64(request.Token[0])
+				return principal, nil
+			}),
+			Sessions: router,
+			Dispatcher: txagent.DispatchFunc(func(_ context.Context, request txagent.DispatchRequest) (txagent.DispatchResult, error) {
+				dispatched <- request
+				return txagent.DispatchResult{AcceptedUpSeq: request.Seq}, nil
+			}),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, agentIndex := range []int{0, 1, 0} {
+		transport := newAgentTransport()
+		result := make(chan error, 1)
+		go func() { result <- agents[agentIndex].Serve(ctx, transport) }()
+		sessionID := int64(99 + i)
+		transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte{byte(sessionID)}}
+		assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
+		// 第一会话先推进较大序号，第三会话仍必须接受从 1 开始的新命令。
+		seq := int64(1)
+		if i == 0 {
+			seq = 100
+		}
+		transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: seq, CommandID: 10001}
+		request := receiveDispatch(t, dispatched)
+		if request.Identity.SessionID != sessionID || request.Seq != seq {
+			t.Fatalf("串用了旧会话: %+v", request)
+		}
+		if _, err := mailbox.PubSession(ctx, sessionID, []byte("new-session")); err != nil {
+			t.Fatal(err)
+		}
+		assertAgentFrame(t, transport.writes, txagent.FrameDownMsg, 1, 0, "new-session")
+		transport.closeReads()
+		select {
+		case <-result:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+}

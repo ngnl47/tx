@@ -2368,11 +2368,17 @@ Agent 核心不依赖项目生成协议，因此不会自行构造业务错误�
 
 连接上存在两条独立序列：客户端为 `FrameUpMsg` 分配 Seq，服务端为 `FrameDownMsg` 分配 Seq。每条连接按 socket 读写顺序处理帧，Seq 只要求递增，不要求相邻两条相差 1；旧号不会重复分派。帧中的 Ack 只由客户端发送，用于确认已经处理的服务端下行：`FrameUpMsg.Ack` 或 `FrameAck.Ack` 推进 MsgQ 裁剪游标。`FrameReady.Ack` 和 `FrameDownMsg.Ack` 固定为零，服务端不发送上行 `FrameAck`。
 
-Agent 等待 Game 长流确认目标邮箱已接纳该消息后，才推进本地 Rec 游标；无租约时逐条调用 MsgQ `Rec`，启用租约时由 Agent 暂存游标并按间隔同步。Game 长流服务端在接收循环中同步入队，保证同一条 Agent 流上的消息按序进入 Actor 邮箱；邮箱 worker 可以继续独立消费，Agent 不等待业务执行。
+Agent 将上行提交给 Game 长流后推进本地游标，不等待远端邮箱接纳或业务完成。每次上行提交及客户端 Ack 都经共享 `MailboxStream` 异步同步 MsgQ，不等待逐项回执；没有 Agent Rec lease 或定时低频游标同步。Game 长流服务端在接收循环中同步入队，保证同一条 Agent 流上的消息按序进入 Actor 邮箱；邮箱 worker 可以继续独立消费，Agent 不等待业务执行。
 
 客户端不保存未确认 UpMsg 队列；发送失败或连接中断后的请求结果可能未知，框架不会自动重投。恢复连接复用原 Session，只恢复 MsgQ 中未确认下行。msgq 的新建与恢复语义严格分离：新建总是安装空会话，恢复必须命中同一 SessionID。只有 `Init` 成功后 Agent 才发送 `FrameReady`；客户端在收到它之前保持连接中状态。恢复后新命令继续使用客户端本地递增的 Seq，不回拨也不重投旧命令。`Rec` 对小于等于已记录最大值的旧 Seq 幂等返回；普通响应与 `System_Error` 均由 Game/Actor 直接发布到 Session 邮箱。
 
 客户端成功处理下行后，优先在下一条上行捎带最大已处理下行 Seq；若持续没有上行，参考客户端每 5 秒检查一次未发送的 Ack 并发送独立 `FrameAck`。MsgQ 据 Ack 裁剪队列；两套示例的单会话 1024 条与 8 MiB 配置上限保持不变，触限按现有溢出处理。定时确认不承诺任何时刻的精确积压量，容量评测在上下行主链路验收后进行。
+
+### 会话隔离边界
+
+新 Login 分配新 SessionID，Agent 的游标属于该连接处理过程，不按 RoleID 在进程间共享；返回原 Agent 也不会沿用旧 Session 的游标。Restore 则保留 SessionID、MsgQ owner 和未确认下行，通过完整 binding CAS 更新 ConnectionID。MsgQ 拒绝旧连接的 Rec/Ack、读取和终止操作，并唤醒旧订阅使 Agent 断开旧 socket。
+
+这不是有到期、续租和跨服务 fencing 的 Agent 租约；它不撤销已提交到 Game 的旧上行，也不承诺两条跨 Agent 连接间的全局顺序。客户端不应同时用两条 socket 提交同 Session 的新命令。正常排水由既有准入与完成屏障管理，不为意外退出增加上行重放。角色归属租约和会话 TTL 继续由 MsgQ/Redis 管理，下行序号仍由 MsgQ 分配。
 
 ### Actor
 
