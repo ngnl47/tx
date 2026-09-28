@@ -26,7 +26,7 @@ type grpcPublishStream struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	client   grpc.BidiStreamingClient[msgqpb.PublishRequest, msgqpb.PublishRoleRejection]
-	reject   func(RoleBinding)
+	reject   func(context.Context, RoleBinding, []byte)
 	items    chan grpcPublishItem
 	done     chan struct{}
 	closeMu  sync.Mutex
@@ -36,7 +36,7 @@ type grpcPublishStream struct {
 	samples  atomic.Uint64
 }
 
-func newGRPCPublishStream(client msgqpb.MailboxServiceClient, reject func(RoleBinding)) (*grpcPublishStream, error) {
+func newGRPCPublishStream(client msgqpb.MailboxServiceClient, reject func(context.Context, RoleBinding, []byte)) (*grpcPublishStream, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	stream, err := client.PublishStream(ctx)
 	if err != nil {
@@ -147,7 +147,7 @@ func (publisher *grpcPublishStream) readLoop() {
 			return
 		}
 		if publisher.reject != nil {
-			publisher.reject(binding)
+			publisher.reject(publisher.ctx, binding, rejection.GetPayload())
 		}
 	}
 }

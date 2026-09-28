@@ -182,7 +182,7 @@ func TestPublishStreamProcessesSessionAndRoleMessagesInOrder(t *testing.T) {
 	}
 }
 
-func TestPublishStreamRoleRejectionRefreshesSenderRouteWithoutReplayingPayload(t *testing.T) {
+func TestPublishStreamRoleRejectionReaddressesOnlyRejectedPayload(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	store := &testSessionStore{}
@@ -264,11 +264,12 @@ func TestPublishStreamRoleRejectionRefreshesSenderRouteWithoutReplayingPayload(t
 		t.Fatal(err)
 	}
 	for {
-		if _, found := roles.cache.GetIfPresent(second.RoleID); !found {
+		pending, err := mailbox.FetchSome(ctx, FetchSomeRequest{Header: second, Max: 2})
+		if err == nil && len(pending.Messages) == 1 && pending.Messages[0].Seq == 1 && string(pending.Messages[0].Payload) == "stale" {
 			break
 		}
 		if ctx.Err() != nil {
-			t.Fatal("角色归属拒绝后旧路由仍留在缓存")
+			t.Fatalf("旧归属明确拒绝后的消息未到新邮箱: %+v, %v", pending, err)
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -277,11 +278,11 @@ func TestPublishStreamRoleRejectionRefreshesSenderRouteWithoutReplayingPayload(t
 	}
 	for {
 		pending, err := mailbox.FetchSome(ctx, FetchSomeRequest{Header: second, Max: 2})
-		if err == nil && len(pending.Messages) == 1 && string(pending.Messages[0].Payload) == "next" {
+		if err == nil && len(pending.Messages) == 1 && pending.Messages[0].Seq == 2 && string(pending.Messages[0].Payload) == "next" {
 			break
 		}
 		if err == nil && len(pending.Messages) != 0 {
-			t.Fatalf("new session mailbox = %+v; want only next", pending)
+			t.Fatalf("new session mailbox = %+v; want next", pending)
 		}
 		if ctx.Err() != nil {
 			t.Fatalf("等待新的异步角色消息: %v", err)

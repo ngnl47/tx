@@ -987,12 +987,13 @@ func (x *PublishRequest) GetPayload() []byte {
 	return nil
 }
 
-// PublishRoleRejection 只报告未进入邮箱的旧角色归属，不确认成功发布。
+// PublishRoleRejection 回带明确未入邮箱的旧归属载荷，不确认成功发布。
 type PublishRoleRejection struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RoleId        int64                  `protobuf:"varint,1,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`
 	InstanceId    string                 `protobuf:"bytes,2,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
 	Generation    string                 `protobuf:"bytes,3,opt,name=generation,proto3" json:"generation,omitempty"`
+	Payload       []byte                 `protobuf:"bytes,4,opt,name=payload,proto3" json:"payload,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1046,6 +1047,13 @@ func (x *PublishRoleRejection) GetGeneration() string {
 		return x.Generation
 	}
 	return ""
+}
+
+func (x *PublishRoleRejection) GetPayload() []byte {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
 }
 
 type Empty struct {
@@ -1167,14 +1175,15 @@ const file_modules_msgq_proto_msgq_proto_rawDesc = "" +
 	"\x04Kind\x12\x14\n" +
 	"\x10KIND_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fKIND_SESSION\x10\x01\x12\r\n" +
-	"\tKIND_ROLE\x10\x02\"p\n" +
+	"\tKIND_ROLE\x10\x02\"\x8a\x01\n" +
 	"\x14PublishRoleRejection\x12\x17\n" +
 	"\arole_id\x18\x01 \x01(\x03R\x06roleId\x12\x1f\n" +
 	"\vinstance_id\x18\x02 \x01(\tR\n" +
 	"instanceId\x12\x1e\n" +
 	"\n" +
 	"generation\x18\x03 \x01(\tR\n" +
-	"generation\"\a\n" +
+	"generation\x12\x18\n" +
+	"\apayload\x18\x04 \x01(\fR\apayload\"\a\n" +
 	"\x05Empty2\xe2\x05\n" +
 	"\x0eMailboxService\x129\n" +
 	"\x04Init\x12\x17.tx.msgq.v1.InitRequest\x1a\x18.tx.msgq.v1.InitResponse\x12K\n" +

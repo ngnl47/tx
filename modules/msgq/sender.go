@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/ngnl47/tx/internal/instanceconn"
+	txlog "github.com/ngnl47/tx/log"
 	"github.com/ngnl47/tx/modules/discovery"
 	msgqpb "github.com/ngnl47/tx/modules/msgq/pb"
 	"google.golang.org/grpc"
@@ -28,7 +29,7 @@ type Connection interface {
 	PubRole(context.Context, RoleBinding, []byte) (BroadcastResult, error)
 	SendSession(context.Context, int64, []byte) error
 	SendRole(context.Context, RoleBinding, []byte) error
-	OnRoleRejection(func(RoleBinding))
+	OnRoleRejection(func(context.Context, RoleBinding, []byte))
 	JoinTopics(context.Context, TopicRequest) error
 	BroadcastTopic(context.Context, BroadcastTopicRequest) (BroadcastResult, error)
 	Close() error
@@ -91,11 +92,11 @@ type grpcConnection struct {
 	mailbox     *grpcMailboxStream
 	publisherMu sync.Mutex
 	publisher   *grpcPublishStream
-	rejectRole  func(RoleBinding)
+	rejectRole  func(context.Context, RoleBinding, []byte)
 }
 
-// OnRoleRejection 在连接开始发布前设置旧角色归属的异步失效回调。
-func (c *grpcConnection) OnRoleRejection(reject func(RoleBinding)) {
+// OnRoleRejection 在连接开始发布前设置明确未入邮箱的角色消息回调。
+func (c *grpcConnection) OnRoleRejection(reject func(context.Context, RoleBinding, []byte)) {
 	c.rejectRole = reject
 }
 
@@ -327,7 +328,7 @@ func (s *Sender) PubRole(ctx context.Context, roleID int64, payload []byte) (Bro
 }
 
 // SendRole 将下行载荷交给角色归属 MsgQ 的本地有界发布队列，不等待写流或逐项回执。
-// MsgQ 明确拒绝旧归属时异步清除缓存，被拒消息不重投。
+// MsgQ 明确拒绝旧归属且确认未入邮箱时，后台重新寻址并单次投递该载荷。
 func (s *Sender) SendRole(ctx context.Context, roleID int64, payload []byte) error {
 	if s == nil {
 		return ErrSenderClosed
@@ -341,6 +342,25 @@ func (s *Sender) SendRole(ctx context.Context, roleID int64, payload []byte) err
 		return err
 	}
 	return connection.SendRole(ctx, target.Binding, payload)
+}
+
+func (s *Sender) readdressRejectedRole(ctx context.Context, rejected RoleBinding, payload []byte) {
+	s.roles.Invalidate(rejected)
+	if len(payload) == 0 {
+		txlog.ErrorContext(ctx, "async role publish rejection lacks payload", "roleID", rejected.RoleID)
+		return
+	}
+	target, err := s.roles.Resolve(ctx, rejected.RoleID)
+	if err == nil {
+		var connection Connection
+		connection, err = s.connection(ctx, target.Instance)
+		if err == nil {
+			_, err = connection.PubRole(ctx, target.Binding, payload)
+		}
+	}
+	if err != nil {
+		txlog.ErrorContext(ctx, "async role publish readdress failed", "roleID", rejected.RoleID, "err", err)
+	}
 }
 
 // JoinTopics 将 ownerSessionID 的当前连接加入其 MsgQ 实例的本地 Topic 索引。
@@ -395,7 +415,7 @@ func (s *Sender) connection(ctx context.Context, instance discovery.Instance) (C
 	connection, err := s.connections.Get(ctx, instance, func(ctx context.Context, instance discovery.Instance) (Connection, error) {
 		connection, err := s.dialer.Dial(ctx, instance)
 		if err == nil {
-			connection.OnRoleRejection(s.roles.Invalidate)
+			connection.OnRoleRejection(s.readdressRejectedRole)
 		}
 		return connection, err
 	})

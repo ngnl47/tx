@@ -103,11 +103,12 @@ message PublishRequest {
   bytes payload = 6;
 }
 
-// PublishRoleRejection 只报告未进入邮箱的旧角色归属，不确认成功发布。
+// PublishRoleRejection 回带明确未入邮箱的旧归属载荷，不确认成功发布。
 message PublishRoleRejection {
   int64 role_id = 1;
   string instance_id = 2;
   string generation = 3;
+  bytes payload = 4;
 }
 
 message Empty {}

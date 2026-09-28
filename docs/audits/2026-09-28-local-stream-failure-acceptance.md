@@ -19,6 +19,6 @@ Go 侧 `modules/rpc`、`modules/msgq`、`modules/agent`、`internal/actorrpc`、
 
 Agent 强制退出轮的最终通过摘要位于 `/private/tmp/txgame-cluster-e2e-20260928/20260928-221033.684425000/summary.json`；`client/agent-restart.jsonl` 记录 `pendingDelivered: true`。该测试在旧 Agent 已关闭客户端连接、下行已交给 MsgQ 后杀死进程；不覆盖杀进程瞬间仍在途的上行命令。
 
-重复回归时发现两条独立边界。第一，`msgq-restarted` 的实例探针复用先前已终止邮箱的角色 470203，新 Session 生成新角色归属代次，Game 的旧 `RoleRouter` 缓存使第一条异步响应被拒；夹具改用未参与前序故障场景的 470215 起始探针角色，默认排水轮通过。这是 `SendRole` 明确拒绝后只失效缓存、不重投该条消息的既有契约，不能将探针规避解释为生产登录无丢失。第二，一次强杀轮在全部业务阶段通过后，最终关闭 `game-b` 报 MsgQ 流 `EOF`，整套摘要为 failed；相同最终代码的下一轮通过。失败现场位于 `/private/tmp/txgame-cluster-e2e-20260928/20260928-220800.852092000/`，尚未证明该清理失败的根因，不把它归咎于 Agent 强杀。
+重复回归时发现两条独立边界。第一，`msgq-restarted` 的实例探针复用先前已终止邮箱的角色 470203，新 Session 生成新角色归属代次，Game 的旧 `RoleRouter` 缓存使第一条异步响应被拒；夹具曾改用未参与前序故障场景的 470215 起始探针角色，默认排水轮通过。该结果不能将探针规避解释为生产登录无丢失。后续用本地 gRPC 定向测试复现并修复：只有 MsgQ 明确证明旧归属消息尚未进入任何邮箱时，拒绝帧回带该条载荷，Sender 清缓存并向新归属单次投递；结果未知或部分成功不重投。再将探针恢复到 470203，八进程本地验收通过；`msgq-b` 日志记录了旧归属拒绝，客户端随后收到 `GlobalNotify` 和 `System_PublishNotifyResp`。证据位于 `/private/tmp/txgame-cluster-e2e-role-readdress/20260928-235633.500051000/`。第二，一次强杀轮在全部业务阶段通过后，最终关闭 `game-b` 报 MsgQ 流 `EOF`，整套摘要为 failed；相同最终代码的下一轮通过。失败现场位于 `/private/tmp/txgame-cluster-e2e-20260928/20260928-220800.852092000/`，尚未证明该清理失败的根因，不把它归咎于 Agent 强杀。
 
 这不是跨机器故障恢复或长期稳态验收。Agent 异常退出已在上述固定边界验证；真实 Redis/MsgQ 故障和较长稳态仍待后续环境验证。

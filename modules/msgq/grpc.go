@@ -245,7 +245,7 @@ func (s *mailboxService) PublishStream(stream grpc.BidiStreamingServer[msgqpb.Pu
 				)
 				if errors.Is(err, ErrRoleBindingChanged) {
 					if err := stream.Send(&msgqpb.PublishRoleRejection{
-						RoleId: binding.RoleID, InstanceId: binding.InstanceID, Generation: binding.Generation,
+						RoleId: binding.RoleID, InstanceId: binding.InstanceID, Generation: binding.Generation, Payload: request.GetPayload(),
 					}); err != nil {
 						return err
 					}

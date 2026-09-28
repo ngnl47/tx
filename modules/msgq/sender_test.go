@@ -72,6 +72,22 @@ func TestSenderStreamPublishesToExactSessionAndRoleOwnerWithoutResult(t *testing
 	}
 }
 
+func TestSenderDoesNotReplayRoleRejectionWithoutPayload(t *testing.T) {
+	connection := &senderConnectionFake{}
+	sender, store, _ := newSenderForTest(t, connection, SessionBinding{RoleID: 47, SessionID: 11, ConnectionID: 13, InstanceID: "msgq-a"})
+	role := RoleBinding{RoleID: 47, InstanceID: "msgq-a", Generation: "generation-1"}
+	if _, err := store.ClaimRole(context.Background(), role); err != nil {
+		t.Fatal(err)
+	}
+	if err := sender.SendRole(context.Background(), 47, []byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	connection.rejectRole(context.Background(), role, nil)
+	if len(connection.roleBindings) != 0 {
+		t.Fatal("缺少原载荷的拒绝被重投")
+	}
+}
+
 func TestSenderMailboxCacheInvalidationDoesNotRetryPayload(t *testing.T) {
 	connection := &senderConnectionFake{pubResult: PubResult{Seq: 1}}
 	sender, store, _ := newSenderForTest(t, connection, SessionBinding{RoleID: 47, SessionID: 11, ConnectionID: 13, InstanceID: "msgq-a"})
@@ -275,10 +291,10 @@ type senderConnectionFake struct {
 	streamSession    int64
 	streamRole       RoleBinding
 	streamPayloads   []string
-	rejectRole       func(RoleBinding)
+	rejectRole       func(context.Context, RoleBinding, []byte)
 }
 
-func (connection *senderConnectionFake) OnRoleRejection(reject func(RoleBinding)) {
+func (connection *senderConnectionFake) OnRoleRejection(reject func(context.Context, RoleBinding, []byte)) {
 	connection.rejectRole = reject
 }
 
