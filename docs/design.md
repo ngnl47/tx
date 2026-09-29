@@ -184,6 +184,26 @@ Procedure 单向依赖并组合 `modules` 的稳定业务能力，`modules` 禁�
 跨 L4 Service 调用必须经过 Actor/RPC client，并在目标服务内执行自己的 Procedure；即使多个 Service 聚合在同一进程，
 也不扩大单机事务边界。运行模型属于整个 Service，进程启动后不能按请求切换。
 
+### 示例工程的运行配置组织
+
+YAML 属于 txgame/txgameslg 的组合根，tx 只接收类型化配置，不读取文件路径或解释锚点。
+每个 debug/test/release 环境独立维护 `app.yml` 与 `runtime.yml`，允许策略冗余和环境定制，不建立公共默认值继承层。
+`app.yml` 声明部署值并 include 同目录 `runtime.yml`；先展开文件，再解析 YAML 锚点，引用单向流入运行策略。
+
+| runtime 分组 | 归属与作用 |
+| --- | --- |
+| `lifecycle`、`log` | 进程排水与日志，不归属单个 CMod |
+| `storageHealth` | Redis/Mongo 后端共用探针，不是服务发现或玩家心跳 |
+| `cmods.actor` | CModActor：实体邮箱、生命周期与 Core NATS 通信 |
+| `cmods.discovery` | CModDiscovery：etcd 服务注册、成员查询与租约 |
+| `cmods.taskQueue` | CModTaskQueue：预部署 JetStream 资源绑定 |
+| `cmods.fusionStorage` | CModFusionStorage：热数据 TTL、内部延迟任务及调度器 |
+| `cmods.procedure` | CModProcedure：事务与根对象写回，仅有状态示例使用 |
+
+组件内部使用短字段名，由配置层级表达职责；跨文件锚点携带组件/职责前缀和必要单位。
+配置项不承担能力选择职责，实际装配仍取决于服务 Requires 闭包；可靠任务的非空绑定由示例组合根转换为能力声明。
+字段取值、默认值与 YAML 示例分别维护在 [txgame 配置参考](../../txgame/README.md#yaml-配置参考) 和 [txgameslg 配置参考](../../txgameslg/README.md#yaml-配置参考)，此处不重复维护字段表。
+
 ### API 分层
 
 同一个能力可能有三层入口：
