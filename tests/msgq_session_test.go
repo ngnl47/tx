@@ -19,7 +19,7 @@ func TestMsgQSessionRouterResolvesExactSessionWithoutRefreshing(t *testing.T) {
 	directory := discovery.NewServiceDirectory()
 	if err := directory.Replace([]discovery.Instance{{
 		ID:       "msgq-2",
-		Services: []string{"msgq"},
+		Services: []string{"project-mailbox"},
 		Endpoint: "127.0.0.1:9202",
 		Status:   discovery.StatusRunning,
 	}}); err != nil {
@@ -30,7 +30,7 @@ func TestMsgQSessionRouterResolvesExactSessionWithoutRefreshing(t *testing.T) {
 		binding: msgq.SessionBinding{RoleID: 470001, SessionID: 99, ConnectionID: 7, InstanceID: "msgq-2"},
 		found:   true,
 	}
-	router, err := msgq.NewSessionRouter(directory, store, 128)
+	router, err := msgq.NewSessionRouter("project-mailbox", directory, store, 128)
 	if err != nil {
 		t.Fatalf("new session router: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestMsgQSessionRouterDoesNotRefreshUnavailableInstance(t *testing.T) {
 		binding: msgq.SessionBinding{RoleID: 470001, SessionID: 99, ConnectionID: 7, InstanceID: "msgq-missing"},
 		found:   true,
 	}
-	router, err := msgq.NewSessionRouter(discovery.NewServiceDirectory(), store, 128)
+	router, err := msgq.NewSessionRouter("project-mailbox", discovery.NewServiceDirectory(), store, 128)
 	if err != nil {
 		t.Fatalf("new session router: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestMsgQSessionRouterRejectsNonMsgQInstance(t *testing.T) {
 		binding: msgq.SessionBinding{RoleID: 470001, SessionID: 99, ConnectionID: 7, InstanceID: "game-1"},
 		found:   true,
 	}
-	router, err := msgq.NewSessionRouter(directory, store, 128)
+	router, err := msgq.NewSessionRouter("project-mailbox", directory, store, 128)
 	if err != nil {
 		t.Fatalf("new session router: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestMsgQSessionRouterRejectsMismatchedSessionWithoutRefreshing(t *testing.T
 		binding: msgq.SessionBinding{RoleID: 470001, SessionID: 100, ConnectionID: 7, InstanceID: "msgq-2"},
 		found:   true,
 	}
-	router, err := msgq.NewSessionRouter(rpcSessionDirectory(t, "msgq-2"), store, 128)
+	router, err := msgq.NewSessionRouter("project-mailbox", rpcSessionDirectory(t, "msgq-2"), store, 128)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +360,7 @@ func rpcSessionDirectory(t *testing.T, instanceID string) *discovery.ServiceDire
 	directory := discovery.NewServiceDirectory()
 	if err := directory.Replace([]discovery.Instance{{
 		ID:       instanceID,
-		Services: []string{"msgq"},
+		Services: []string{"project-mailbox"},
 		Endpoint: "127.0.0.1:9202",
 		Status:   discovery.StatusRunning,
 	}}); err != nil {

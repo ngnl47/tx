@@ -52,9 +52,11 @@ README 回答“怎么使用”，不记录施工步骤、逐轮进度或本机�
 1. 由生成工程输出 `server/gen/data` 和 `server/gen/cmd`。
 2. 项目读取本地 yml，严格解析后转换为只含 Go 值的 `bee.Config` 或 `ant.Config`；tx 不读取 yml、环境变量或命令行。
 3. 项目注册生成数据绑定、业务 facade 初始化函数和可选服务。
-4. 启动参数通过 `bee.RunOptions` 或 `ant.RunOptions` 选择本进程服务并提供版本、监听和发布地址；选择 Discovery 的节点由运行时自动取得实例身份。
+4. 项目先决定本进程服务及启动顺序，再通过 `bee.RunOptions` 或 `ant.RunOptions` 传入明确名称清单，并提供版本、监听和发布地址；选择 Discovery 的节点由运行时自动取得实例身份。
 5. Bee/Ant Server 解析所选服务的 CMod 依赖闭包，只创建本进程实际需要的外部连接、共享 Host 和后台任务。
 6. handler 使用 `db.Save(role)` 或项目事务 facade，不直接装配 writer/client。
+
+`RunOptions.Services` 不解析 `*`、`!name` 或命令行语法；这些部署选择由项目负责。完整注册清单保留远端 Actor Kind 目录，本地只启动选定的服务。项目选择同进程 Agent/MsgQ 时显式注入 `agent.Options.LocalMsgQ` 并先启动 MsgQ；框架不再根据实例服务标签猜测部署关系。
 
 一个简化的项目组合根如下：
 
@@ -74,7 +76,7 @@ func NewApplication(config bee.Config, services ...bee.ServiceRegistration) (*be
 
 func Run(ctx context.Context, app *bee.Server) error {
 	return app.Run(ctx, bee.RunOptions{
-		Services:          "game,msgq,agent",
+		Services:          []string{"msgq", "game", "agent"},
 		InstanceVersion:   "20260823.1",
 		InstanceEndpoint:  "10.0.1.21:9000",
 		InstanceEndpoints: map[string]string{"agent.tcp": "203.0.113.21:30000"},
@@ -386,7 +388,8 @@ Game/Actor；世界请求仍按经业务校验的世界路由键选择 WorldActo
 若业务需要其他策略，应在项目适配层明确实现，避免自动响应与手动下行重复发送。
 同一 RoleID 的多个邮箱可以并存，各自维护队列；`Sender.PubRole` 定向投递到角色归属 MsgQ，由其向该角色全部邮箱分发。
 `Server` 在本进程管理 Session、下行队列和 Seq/Ack。
-`NewSessionRouter` 要求显式设置邮箱归属缓存容量；`ResolveMailbox` 只缓存 MsgQ InstanceID，供 `PubSession` 使用，热路径不查询 Redis。
+`NewSessionRouter`、`NewRoleRouter`、`NewSessionClientRouter` 的首个参数均为项目定义的目标邮箱服务名，必须与注册名称一致；下面的 `"msgq"` 只是示例取值。Agent 远端路由通过 `Options.MsgQService` 接收同一名称。
+`NewSessionRouter` 还要求显式设置邮箱归属缓存容量；`ResolveMailbox` 只缓存 MsgQ InstanceID，供 `PubSession` 使用，热路径不查询 Redis。
 `ResolveSession` 始终读取当前完整绑定，Topic 操作沿用该边界以获取当前 ConnectionID 和有效会话锚点。
 精确下行遇到明确邮箱失效时清缓存，遇到传输超时不自动重发；MsgQ 丢失邮箱后须建立新 Session，不能把旧 Session 迁往另一实例。
 
@@ -411,7 +414,7 @@ bindings, err := msgq.NewRedisSessionStore(goredis.NewClient(rawRedis), msgq.Ses
 if err != nil {
     return err
 }
-sessions, err := msgq.NewSessionRouter(directory, bindings, 65536)
+sessions, err := msgq.NewSessionRouter("msgq", directory, bindings, 65536)
 if err != nil {
     return err
 }
@@ -440,7 +443,7 @@ if err != nil {
 }
 _ = target.Instance.Endpoint
 
-roles, err := msgq.NewRoleRouter(directory, bindings.FindRole, 65536)
+roles, err := msgq.NewRoleRouter("msgq", directory, bindings.FindRole, 65536)
 if err != nil {
     return err
 }
@@ -696,7 +699,7 @@ msgq 的内存语义。
 两种投递都按 endpoint 复用 gRPC 连接，角色热寻址不查询 Redis，也不向其他 MsgQ 广播：
 
 ```go
-router, err := msgq.NewSessionRouter(directory, sessionStore, 65536)
+router, err := msgq.NewSessionRouter("msgq", directory, sessionStore, 65536)
 if err != nil {
     return err
 }
@@ -704,7 +707,7 @@ dialer, err := msgq.NewGRPCDialer(insecure.NewCredentials()) // 仅可信私网�
 if err != nil {
     return err
 }
-roles, err := msgq.NewRoleRouter(directory, sessionStore.FindRole, 65536)
+roles, err := msgq.NewRoleRouter("msgq", directory, sessionStore.FindRole, 65536)
 if err != nil {
     return err
 }
@@ -1396,7 +1399,7 @@ Agent 校验可信会话和 Seq/Ack，Resolver 只解析业务身份；tx 统一
 以带 TTL 的 `<prefix>:role:{RoleID}` 保存 `RoleBinding{RoleID, InstanceID, Generation}`。首次申请原子返回唯一赢家，
 续期与释放要求完整归属匹配；`Generation` 由申请者生成唯一令牌，同一实例重新申请也不能复用旧值。
 
-`msgq.NewRoleRouter(directory, store.FindRole, maximumSize)` 创建 Otter v2 有界路由缓存，合并并发冷查询；
+`msgq.NewRoleRouter("msgq", directory, store.FindRole, maximumSize)` 创建 Otter v2 有界路由缓存，合并并发冷查询；
 `Resolve` 热命中只读取本地缓存和服务发现，不查询 Redis。目标明确拒绝旧归属时调用 `Invalidate(expected)`，
 旧版本失效通知不会删除新版本缓存。网络超时不能当成未入队确认，路由器不自动重发业务载荷。
 

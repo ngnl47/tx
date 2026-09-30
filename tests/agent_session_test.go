@@ -711,7 +711,7 @@ func newAgentSessionFixture(t *testing.T, dispatchErr error) (*txagent.Server, *
 	if err := directory.Replace([]discovery.Instance{{ID: "msgq-local", Services: []string{"msgq"}, Endpoint: "local", Status: discovery.StatusRunning}}); err != nil {
 		t.Fatalf("replace directory: %v", err)
 	}
-	router, err := msgq.NewSessionClientRouter(directory, store, agentSessionDialer{client: client})
+	router, err := msgq.NewSessionClientRouter("msgq", directory, store, agentSessionDialer{client: client})
 	if err != nil {
 		t.Fatalf("new session client router: %v", err)
 	}

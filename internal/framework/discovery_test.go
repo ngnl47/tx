@@ -38,11 +38,11 @@ func TestDiscoveryAutomaticIdentityWithEtcd(t *testing.T) {
 	prefix := fmt.Sprintf("/tx/tests/framework-identity-%d", time.Now().UnixNano())
 	first := newDiscoveryIdentityTestServer(t, endpoint, prefix, "127.0.0.1:9101", testService{spec: Spec{Name: "game", Requires: []CModID{CModDiscovery}}})
 	second := newDiscoveryIdentityTestServer(t, endpoint, prefix, "127.0.0.1:9102", testService{spec: Spec{Name: "game", Requires: []CModID{CModDiscovery}}})
-	if err := first.Start(t.Context(), RunOptions{Services: "game", InstanceEndpoint: "127.0.0.1:9101"}); err != nil {
+	if err := first.Start(t.Context(), RunOptions{Services: []string{"game"}, InstanceEndpoint: "127.0.0.1:9101"}); err != nil {
 		t.Fatalf("start first server: %v", err)
 	}
 	t.Cleanup(func() { _ = first.Stop(context.Background()) })
-	if err := second.Start(t.Context(), RunOptions{Services: "game", InstanceEndpoint: "127.0.0.1:9102"}); err != nil {
+	if err := second.Start(t.Context(), RunOptions{Services: []string{"game"}, InstanceEndpoint: "127.0.0.1:9102"}); err != nil {
 		t.Fatalf("start second server: %v", err)
 	}
 	t.Cleanup(func() { _ = second.Stop(context.Background()) })
@@ -77,7 +77,7 @@ func TestDiscoveryAutomaticIdentityIsSharedByServicesWithEtcd(t *testing.T) {
 			},
 		},
 	)
-	if err := server.Start(t.Context(), RunOptions{Services: "*", InstanceEndpoint: "127.0.0.1:9103"}); err != nil {
+	if err := server.Start(t.Context(), RunOptions{Services: []string{"game", "login"}, InstanceEndpoint: "127.0.0.1:9103"}); err != nil {
 		t.Fatalf("start server: %v", err)
 	}
 	t.Cleanup(func() { _ = server.Stop(context.Background()) })

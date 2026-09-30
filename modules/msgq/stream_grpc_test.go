@@ -235,11 +235,11 @@ func TestPublishStreamRoleRejectionReaddressesOnlyRejectedPayload(t *testing.T) 
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	sessions, err := NewSessionRouter(directory, store, 8)
+	sessions, err := NewSessionRouter("msgq", directory, store, 8)
 	if err != nil {
 		t.Fatal(err)
 	}
-	roles, err := NewRoleRouter(directory, store.FindRole, 8)
+	roles, err := NewRoleRouter("msgq", directory, store.FindRole, 8)
 	if err != nil {
 		t.Fatal(err)
 	}

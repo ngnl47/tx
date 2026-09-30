@@ -309,11 +309,11 @@ func TestFrameworkDiscoveryAutomaticIdentityAssignsDistinctInstanceIDs(t *testin
 	prefix := uniqueDiscoveryPrefix(t, "framework-auto-identity")
 	first := newFrameworkDiscoveryServer(t, endpoint, prefix, "127.0.0.1:9101", &frameworkDiscoveryIdentityService{name: "game"})
 	second := newFrameworkDiscoveryServer(t, endpoint, prefix, "127.0.0.1:9102", &frameworkDiscoveryIdentityService{name: "game"})
-	if err := first.Start(t.Context(), framework.RunOptions{Services: "game", InstanceEndpoint: "127.0.0.1:9101"}); err != nil {
+	if err := first.Start(t.Context(), framework.RunOptions{Services: []string{"game"}, InstanceEndpoint: "127.0.0.1:9101"}); err != nil {
 		t.Fatalf("start first framework server: %v", err)
 	}
 	t.Cleanup(func() { _ = first.Stop(context.Background()) })
-	if err := second.Start(t.Context(), framework.RunOptions{Services: "game", InstanceEndpoint: "127.0.0.1:9102"}); err != nil {
+	if err := second.Start(t.Context(), framework.RunOptions{Services: []string{"game"}, InstanceEndpoint: "127.0.0.1:9102"}); err != nil {
 		t.Fatalf("start second framework server: %v", err)
 	}
 	t.Cleanup(func() { _ = second.Stop(context.Background()) })
@@ -337,7 +337,7 @@ func TestFrameworkDiscoveryAutomaticIdentityIsSharedAcrossServices(t *testing.T)
 	first := &frameworkDiscoveryIdentityService{name: "game"}
 	second := &frameworkDiscoveryIdentityService{name: "login"}
 	server := newFrameworkDiscoveryServer(t, endpoint, uniqueDiscoveryPrefix(t, "framework-shared-identity"), "127.0.0.1:9103", first, second)
-	if err := server.Start(t.Context(), framework.RunOptions{Services: "*", InstanceEndpoint: "127.0.0.1:9103"}); err != nil {
+	if err := server.Start(t.Context(), framework.RunOptions{Services: []string{"game", "login"}, InstanceEndpoint: "127.0.0.1:9103"}); err != nil {
 		t.Fatalf("start framework server: %v", err)
 	}
 	t.Cleanup(func() { _ = server.Stop(context.Background()) })

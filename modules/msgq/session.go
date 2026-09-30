@@ -14,10 +14,12 @@ import (
 )
 
 var (
-	ErrDirectoryNil    = errors.New("msgq: service directory is nil")
-	ErrSessionStoreNil = errors.New("msgq: session store is nil")
-	ErrInvalidSession  = errors.New("msgq: invalid session binding")
-	ErrSessionOffline  = errors.New("msgq: session is offline")
+	// ErrServiceNameRequired 表示项目未指定目标邮箱服务名。
+	ErrServiceNameRequired = errors.New("msgq: target service name is required")
+	ErrDirectoryNil        = errors.New("msgq: service directory is nil")
+	ErrSessionStoreNil     = errors.New("msgq: session store is nil")
+	ErrInvalidSession      = errors.New("msgq: invalid session binding")
+	ErrSessionOffline      = errors.New("msgq: session is offline")
 	// ErrRoleBindingChanged 表示角色归属校验失败，尚未向任何邮箱投递，可重新寻址。
 	ErrRoleBindingChanged           = fmt.Errorf("msgq: role binding changed: %w", ErrSessionChanged)
 	ErrSessionChanged               = errors.New("msgq: session has changed")
@@ -67,14 +69,18 @@ type SessionTarget struct {
 
 // SessionRouter 将精确会话解析为唯一的消息服务归属实例。
 type SessionRouter struct {
-	directory discovery.Directory
-	store     SessionStore
-	mailboxes *otter.Cache[int64, string]
-	loads     singleflight.Group
+	serviceName string
+	directory   discovery.Directory
+	store       SessionStore
+	mailboxes   *otter.Cache[int64, string]
+	loads       singleflight.Group
 }
 
 // NewSessionRouter 创建会话路由器，maximumSize 限制精确下行的邮箱归属缓存容量。
-func NewSessionRouter(directory discovery.Directory, store SessionStore, maximumSize int) (*SessionRouter, error) {
+func NewSessionRouter(serviceName string, directory discovery.Directory, store SessionStore, maximumSize int) (*SessionRouter, error) {
+	if serviceName == "" {
+		return nil, ErrServiceNameRequired
+	}
 	if directory == nil {
 		return nil, ErrDirectoryNil
 	}
@@ -88,7 +94,7 @@ func NewSessionRouter(directory discovery.Directory, store SessionStore, maximum
 	if err != nil {
 		return nil, err
 	}
-	return &SessionRouter{directory: directory, store: store, mailboxes: cache}, nil
+	return &SessionRouter{serviceName: serviceName, directory: directory, store: store, mailboxes: cache}, nil
 }
 
 // ResolveMailbox 缓存逻辑 Session 的 MsgQ 实例，不缓存物理 ConnectionID。
@@ -124,7 +130,7 @@ func (r *SessionRouter) ResolveMailbox(ctx context.Context, sessionID int64) (di
 		}
 	}
 	instance, found := r.directory.LookupInstance(id)
-	if !found || instance.Status != discovery.StatusRunning || !providesService(instance, "msgq") {
+	if !found || instance.Status != discovery.StatusRunning || !providesService(instance, r.serviceName) {
 		r.invalidateMailbox(sessionID, id)
 		return discovery.Instance{}, ErrRouteUnavailable
 	}
@@ -163,7 +169,7 @@ func (r *SessionRouter) ResolveSession(ctx context.Context, sessionID int64) (Se
 
 func (r *SessionRouter) resolveBinding(binding SessionBinding) (SessionTarget, error) {
 	instance, found := r.directory.LookupInstance(binding.InstanceID)
-	if !found || !providesService(instance, "msgq") {
+	if !found || !providesService(instance, r.serviceName) {
 		return SessionTarget{}, ErrRouteUnavailable
 	}
 	return SessionTarget{Binding: binding, Instance: instance}, nil

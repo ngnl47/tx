@@ -132,7 +132,7 @@ type DiscoveryConfig struct {
 // RunOptions 保存进程服务选择和部署期发布参数。这些值通常来自命令行参数或编排系统，而不是应用 YAML。
 type RunOptions struct {
 	// Services 是本进程需要启动的 L4 服务选择表达式。
-	Services string
+	Services []string
 	// InstanceVersion 是当前实例发布的代码或镜像版本。
 	InstanceVersion string
 	// InstanceEndpoint 是发布到服务发现的内部业务 RPC 地址。

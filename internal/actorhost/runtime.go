@@ -63,17 +63,26 @@ func (f LocalFuture) Done() <-chan struct{}                  { return f.future.D
 // Deactivate 由串行业务处理或定时消息触发；关闭后仍处理已经入队的消息。
 func (c Context) Deactivate() { c.entry.runtime.close(c.entry) }
 
-// After 只投递，不在后台修改业务状态；激活结束取消等待。
+// After 只投递，不在后台修改业务状态；邮箱暂满时保留待投递消息，关闸后放弃。
 func (c Context) After(delay time.Duration, message any) {
 	go func() {
 		timer := time.NewTimer(delay)
 		defer timer.Stop()
-		select {
-		case <-c.entry.life.Done():
-			return
-		case <-timer.C:
-			if _, err := c.Post(message); err != nil && !errors.Is(err, ErrDeactivated) {
-				slog.Error("actortrial timer delivery failed", "identity", c.Identity, "err", err)
+		for {
+			select {
+			case <-c.entry.life.Done():
+				return
+			case <-timer.C:
+				_, err := c.Post(message)
+				if errors.Is(err, ErrMailboxFull) {
+					// 只重试尚未入队的本地定时消息，不重投业务 RPC，也不占用 Actor 消费协程。
+					timer.Reset(10 * time.Millisecond)
+					continue
+				}
+				if err != nil && !errors.Is(err, ErrDeactivated) {
+					slog.Error("actortrial timer delivery failed", "identity", c.Identity, "err", err)
+				}
+				return
 			}
 		}
 	}()

@@ -28,8 +28,8 @@ func newServiceHost(registry *registry, runtime *runtime) *serviceHost {
 	return &serviceHost{registry: registry, runtime: runtime}
 }
 
-func (host *serviceHost) start(expression string) error {
-	services, err := host.registry.selectServices(expression)
+func (host *serviceHost) start(names []string) error {
+	services, err := host.registry.selectServices(names)
 	if err != nil {
 		return err
 	}

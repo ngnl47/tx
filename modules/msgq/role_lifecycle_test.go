@@ -92,7 +92,7 @@ func TestRoleMailboxRedisOwnershipLifecycle(t *testing.T) {
 	if err := directory.Replace([]discovery.Instance{{ID: "msgq-a", Endpoint: "localhost:9001", Services: []string{"msgq"}, Status: discovery.StatusRunning}}); err != nil {
 		t.Fatal(err)
 	}
-	router, err := NewRoleRouter(directory, store.FindRole, 128)
+	router, err := NewRoleRouter("msgq", directory, store.FindRole, 128)
 	if err != nil {
 		t.Fatal(err)
 	}

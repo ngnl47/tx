@@ -106,7 +106,7 @@ func TestJetStreamTaskBaseline(t *testing.T) {
 	start := func(name string) *Server {
 		app := newDiscoveryIdentityTestServer(t, endpoint, prefix, "", services...)
 		app.config.Actor.Runtime = actor.Config{NATSURL: url, Namespace: owner}
-		if err := app.Start(ctx, RunOptions{Services: name, RPCListen: "127.0.0.1:0"}); err != nil {
+		if err := app.Start(ctx, RunOptions{Services: []string{name}, RPCListen: "127.0.0.1:0"}); err != nil {
 			t.Fatal(err)
 		}
 		return app

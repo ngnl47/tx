@@ -94,15 +94,19 @@ func (localSessionClient) Close() error { return nil }
 
 // SessionClientRouter 为认证后的 Agent 选择可用 msgq 实例。
 type SessionClientRouter struct {
-	directory discovery.Directory
-	store     SessionStore
-	dialer    SessionClientDialer
+	serviceName string
+	directory   discovery.Directory
+	store       SessionStore
+	dialer      SessionClientDialer
 
 	connections *instanceconn.Cache[SessionClient]
 }
 
 // NewSessionClientRouter 创建基于既有 owner 和服务目录的会话客户端路由器。
-func NewSessionClientRouter(directory discovery.Directory, store SessionStore, dialer SessionClientDialer) (*SessionClientRouter, error) {
+func NewSessionClientRouter(serviceName string, directory discovery.Directory, store SessionStore, dialer SessionClientDialer) (*SessionClientRouter, error) {
+	if serviceName == "" {
+		return nil, ErrServiceNameRequired
+	}
 	if directory == nil {
 		return nil, ErrDirectoryNil
 	}
@@ -112,7 +116,7 @@ func NewSessionClientRouter(directory discovery.Directory, store SessionStore, d
 	if dialer == nil {
 		return nil, ErrSessionClientDialerNil
 	}
-	return &SessionClientRouter{directory: directory, store: store, dialer: dialer, connections: instanceconn.New[SessionClient](directory)}, nil
+	return &SessionClientRouter{serviceName: serviceName, directory: directory, store: store, dialer: dialer, connections: instanceconn.New[SessionClient](directory)}, nil
 }
 
 // Acquire 为新会话复用角色归属；首次归属由运行中实例轮转提名并原子确认。恢复仍直达旧邮箱。
@@ -135,7 +139,7 @@ func (r *SessionClientRouter) Acquire(ctx context.Context, request AcquireSessio
 			return nil, err
 		}
 		if !found {
-			candidate, available := r.directory.NextInstance("msgq")
+			candidate, available := r.directory.NextInstance(r.serviceName)
 			if !available {
 				return nil, ErrRouteUnavailable
 			}
@@ -148,7 +152,7 @@ func (r *SessionClientRouter) Acquire(ctx context.Context, request AcquireSessio
 			return nil, ErrSessionStoreResponse
 		}
 		instance, available := r.directory.LookupInstance(binding.InstanceID)
-		if !available || instance.Status != discovery.StatusRunning || !providesService(instance, "msgq") {
+		if !available || instance.Status != discovery.StatusRunning || !providesService(instance, r.serviceName) {
 			return nil, ErrRouteUnavailable
 		}
 		return r.connection(ctx, instance)
@@ -164,7 +168,7 @@ func (r *SessionClientRouter) Acquire(ctx context.Context, request AcquireSessio
 		return nil, ErrSessionChanged
 	}
 	instance, available := r.directory.LookupInstance(binding.InstanceID)
-	if !available || instance.Status != discovery.StatusRunning || !providesService(instance, "msgq") {
+	if !available || instance.Status != discovery.StatusRunning || !providesService(instance, r.serviceName) {
 		return nil, ErrRouteUnavailable
 	}
 	return r.connection(ctx, instance)

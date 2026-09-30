@@ -44,7 +44,7 @@ func TestServerEnablesSessionIDsOnlyAfterSuccessfulStart(t *testing.T) {
 		duringStartValue, duringStartErr = handle.AllocateSessionID(context.Background())
 		return nil
 	})
-	if err := server.Start(context.Background(), RunOptions{Services: "login"}); err != nil {
+	if err := server.Start(context.Background(), RunOptions{Services: []string{"login"}}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	t.Cleanup(func() {
@@ -74,7 +74,7 @@ func TestServerStartupFailureNeverEnablesSessionIDs(t *testing.T) {
 		duringStartValue, duringStartErr = handle.AllocateSessionID(context.Background())
 		return wantErr
 	})
-	err := server.Start(context.Background(), RunOptions{Services: "login"})
+	err := server.Start(context.Background(), RunOptions{Services: []string{"login"}})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Start error = %v, want %v", err, wantErr)
 	}

@@ -229,8 +229,8 @@ func TestBeeAndAntRunTheSameServiceLifecycle(t *testing.T) {
 		t.Fatalf("build Ant: %v", err)
 	}
 
-	runLifecycle(t, beeServer.Start, beeServer.Drain, beeServer.Stop, bee.RunOptions{Services: "game"})
-	runLifecycle(t, antServer.Start, antServer.Drain, antServer.Stop, ant.RunOptions{Services: "game"})
+	runLifecycle(t, beeServer.Start, beeServer.Drain, beeServer.Stop, bee.RunOptions{Services: []string{"game"}})
+	runLifecycle(t, antServer.Start, antServer.Drain, antServer.Stop, ant.RunOptions{Services: []string{"game"}})
 	if !slices.Equal(beeEvents.values(), antEvents.values()) {
 		t.Fatalf("service lifecycle differs: Bee=%v Ant=%v", beeEvents.values(), antEvents.values())
 	}

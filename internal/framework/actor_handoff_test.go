@@ -78,7 +78,7 @@ func TestActorHostPrepareHandoffRetainsTransportUntilStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Start(ctx, RunOptions{Services: "game"}); err != nil {
+	if err := app.Start(ctx, RunOptions{Services: []string{"game"}}); err != nil {
 		t.Fatal(err)
 	}
 	defer func() {

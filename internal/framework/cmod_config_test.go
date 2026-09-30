@@ -30,7 +30,7 @@ func TestCModConfigProviderReceivesResolvedDependencyClosure(t *testing.T) {
 	if selected.CModIDs() != nil || selected.ServiceNames() != nil {
 		t.Fatalf("provider ran before Start: %#v", selected)
 	}
-	if err := app.Start(context.Background(), RunOptions{Services: "test"}); err != nil {
+	if err := app.Start(context.Background(), RunOptions{Services: []string{"test"}}); err != nil {
 		t.Fatalf("Start returned error: %v", err)
 	}
 	t.Cleanup(func() { _ = app.Stop(context.Background()) })

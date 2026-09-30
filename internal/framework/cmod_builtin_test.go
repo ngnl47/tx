@@ -71,7 +71,7 @@ func TestStartLogsResolvedServicesAndCModsOnce(t *testing.T) {
 		t.Fatalf("new framework: %v", err)
 	}
 	t.Cleanup(func() { txlog.SetDefault(nil) })
-	if err := app.Start(context.Background(), RunOptions{Services: "*"}); err != nil {
+	if err := app.Start(context.Background(), RunOptions{Services: []string{"game"}}); err != nil {
 		t.Fatalf("start framework: %v", err)
 	}
 	t.Cleanup(func() {
@@ -102,7 +102,7 @@ func TestRPCOnlyServiceDoesNotRequireStorageOrGeneratedData(t *testing.T) {
 		t.Fatalf("new framework: %v", err)
 	}
 	if err := app.Start(context.Background(), RunOptions{
-		Services:  "rpc-only",
+		Services:  []string{"rpc-only"},
 		RPCListen: "127.0.0.1:0",
 	}); err != nil {
 		t.Fatalf("start framework: %v", err)
@@ -126,7 +126,7 @@ func TestRedisCModRequiresRoutesOnlyWhenSelected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new framework: %v", err)
 	}
-	err = app.Start(context.Background(), RunOptions{Services: "redis-only"})
+	err = app.Start(context.Background(), RunOptions{Services: []string{"redis-only"}})
 	if err == nil || !strings.Contains(err.Error(), "redis routes are required") {
 		t.Fatalf("start error = %v, want missing Redis routes", err)
 	}

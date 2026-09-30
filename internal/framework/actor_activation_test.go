@@ -75,7 +75,7 @@ func testFormalActorActivationControl(t *testing.T, scope txactor.CapacityScope)
 	start := func(service string) *Server {
 		app := newDiscoveryIdentityTestServer(t, endpoint, prefix, "", registrations...)
 		app.config.Actor.Runtime = txactor.Config{NATSURL: url, Namespace: owner, Capacity: txactor.Capacity{Maximum: 1, Scope: scope, Initializations: 1}}
-		if err := app.Start(ctx, RunOptions{Services: service, RPCListen: "127.0.0.1:0"}); err != nil {
+		if err := app.Start(ctx, RunOptions{Services: []string{service}, RPCListen: "127.0.0.1:0"}); err != nil {
 			t.Fatal(err)
 		}
 		return app
@@ -182,7 +182,7 @@ func TestAssignmentCapacityRequiresIndependentSlotsBeforeConnecting(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = app.Start(t.Context(), RunOptions{Services: "world"}); err == nil || !strings.Contains(err.Error(), "independent slots") {
+	if err = app.Start(t.Context(), RunOptions{Services: []string{"world"}}); err == nil || !strings.Contains(err.Error(), "independent slots") {
 		t.Fatalf("应在连接前拒绝缺失独立映射: %v", err)
 	}
 }

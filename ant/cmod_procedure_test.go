@@ -64,7 +64,7 @@ func TestCModProcedureStartsBeforeServiceFactoryAndDrainsWriteBack(t *testing.T)
 	if err != nil {
 		t.Fatalf("Build Ant server: %v", err)
 	}
-	if err := server.Start(context.Background(), RunOptions{Services: "game"}); err != nil {
+	if err := server.Start(context.Background(), RunOptions{Services: []string{"game"}}); err != nil {
 		t.Fatalf("Start Ant server: %v", err)
 	}
 	if err := server.Drain(context.Background()); err != nil {

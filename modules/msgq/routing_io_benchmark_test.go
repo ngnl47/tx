@@ -41,11 +41,11 @@ func BenchmarkRoutingRedisIO(b *testing.B) {
 			if err := directory.Replace([]discovery.Instance{{ID: "msgq-a", Endpoint: "localhost:9001", Services: []string{"msgq"}, Status: discovery.StatusRunning}}); err != nil {
 				b.Fatal(err)
 			}
-			roles, err := NewRoleRouter(directory, store.FindRole, 128)
+			roles, err := NewRoleRouter("msgq", directory, store.FindRole, 128)
 			if err != nil {
 				b.Fatal(err)
 			}
-			sessions, err := NewSessionRouter(directory, store, 128)
+			sessions, err := NewSessionRouter("msgq", directory, store, 128)
 			if err != nil {
 				b.Fatal(err)
 			}

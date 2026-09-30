@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"slices"
 	"strings"
 	"sync"
 
@@ -23,8 +22,6 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-const msgqServiceName = "msgq"
-
 // LocalMsgQ 提供同进程 msgq 的会话客户端，避免绕行服务发现和网络 RPC。
 type LocalMsgQ interface {
 	SessionClient() (txmsgq.SessionClient, error)
@@ -38,8 +35,6 @@ type Dependencies struct {
 	Admission lifecycle.Admission
 	// RPC 将 Agent 控制服务注册到进程共享的内部 gRPC Host。
 	RPC txrpc.Registrar
-	// Instance 用于判断当前进程是否同时承载 msgq 服务。
-	Instance discovery.Instance
 	// Directory 为远端 msgq 会话路由提供本地服务发现快照。
 	Directory discovery.Directory
 	// Redis 为远端 msgq 会话 owner 绑定提供脚本路由。
@@ -59,7 +54,9 @@ type Options struct {
 	Dispatcher    txagent.Dispatcher
 	Sessions      txagent.SessionClientRouter
 	LocalMsgQ     LocalMsgQ
-	SessionStore  msgqredis.Options
+	// MsgQService 是项目声明的远端邮箱服务名；使用自定义或本地 Sessions 时不参与查找。
+	MsgQService  string
+	SessionStore msgqredis.Options
 }
 
 // Service 承载玩家连接入口和会话邮箱客户端。
@@ -300,8 +297,7 @@ func (service *Service) resolveSessions() (txagent.SessionClientRouter, interfac
 		}
 		return service.options.Sessions, noOpCloser{}, nil
 	}
-	selectedServices := service.dependencies.Instance.Services
-	usesLocal := service.options.LocalMsgQ != nil && (len(selectedServices) == 0 || slices.Contains(selectedServices, msgqServiceName))
+	usesLocal := service.options.LocalMsgQ != nil
 	if usesLocal {
 		client, err := service.options.LocalMsgQ.SessionClient()
 		if err != nil {
@@ -327,7 +323,7 @@ func (service *Service) resolveSessions() (txagent.SessionClientRouter, interfac
 	if err != nil {
 		return nil, nil, err
 	}
-	router, err := txmsgq.NewSessionClientRouter(service.dependencies.Directory, store, dialer)
+	router, err := txmsgq.NewSessionClientRouter(service.options.MsgQService, service.dependencies.Directory, store, dialer)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -14,9 +14,9 @@ func TestRegistrationDeclaresMsgQDependencies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewConfigured returned error: %v", err)
 	}
-	registration := service.Registration()
+	registration := service.Registration("project-mailbox")
 	want := []bee.CModID{bee.CModRPC, bee.CModRedisStorage, bee.CModDiscovery}
-	if registration.Spec.Name != ServiceName || !slices.Equal(registration.Spec.Requires, want) {
+	if registration.Spec.Name != "project-mailbox" || !slices.Equal(registration.Spec.Requires, want) {
 		t.Fatalf("registration spec = %#v", registration.Spec)
 	}
 }

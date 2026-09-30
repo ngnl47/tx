@@ -20,7 +20,7 @@ func TestActorCatalogIncludesUnselectedServicesWithoutStartingThem(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Start(t.Context(), RunOptions{Services: "agent"}); err != nil {
+	if err := app.Start(t.Context(), RunOptions{Services: []string{"agent"}}); err != nil {
 		t.Fatal(err)
 	}
 	defer app.Stop(context.Background())

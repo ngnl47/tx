@@ -40,7 +40,7 @@ func TestFatalDiscoveryLossDuringDeferredStopStillTerminates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Start(context.Background(), RunOptions{Services: "game"}); err != nil {
+	if err := app.Start(context.Background(), RunOptions{Services: []string{"game"}}); err != nil {
 		t.Fatal(err)
 	}
 	stopped := make(chan error, 1)
@@ -75,7 +75,7 @@ func TestStopWaitsForConcurrentStartAndClosesStartedResources(t *testing.T) {
 	}
 	startResult := make(chan error, 1)
 	go func() {
-		startResult <- app.Start(context.Background(), RunOptions{Services: "game"})
+		startResult <- app.Start(context.Background(), RunOptions{Services: []string{"game"}})
 	}()
 	<-startEntered
 	if runtime := app.Context(); runtime != nil {
@@ -117,7 +117,7 @@ func TestContextStaysUnavailableAfterStartFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
 	}
-	err = app.Start(context.Background(), RunOptions{Services: "game"})
+	err = app.Start(context.Background(), RunOptions{Services: []string{"game"}})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Start error = %v, want %v", err, wantErr)
 	}
@@ -148,7 +148,7 @@ func TestStopFinishesServiceTasksBeforeCModDrain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
 	}
-	if err := app.Start(context.Background(), RunOptions{Services: "game"}); err != nil {
+	if err := app.Start(context.Background(), RunOptions{Services: []string{"game"}}); err != nil {
 		t.Fatalf("Start returned error: %v", err)
 	}
 	select {
@@ -200,7 +200,7 @@ func TestStopRetainsResourcesUntilDrainAndPersistenceSucceed(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := app.Start(context.Background(), RunOptions{Services: "game"}); err != nil {
+			if err := app.Start(context.Background(), RunOptions{Services: []string{"game"}}); err != nil {
 				t.Fatal(err)
 			}
 			if err := app.Stop(context.Background()); !errors.Is(err, want) {
@@ -255,7 +255,7 @@ func TestRunRetriesFailedPersistenceBeforeReturning(t *testing.T) {
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
-			err = app.Run(ctx, RunOptions{Services: "game"})
+			err = app.Run(ctx, RunOptions{Services: []string{"game"}})
 			if recoverOn != 0 {
 				if err != nil || attempts != 3 || !mod.stopped {
 					t.Fatalf("Run = %v, attempts=%d, stopped=%v", err, attempts, mod.stopped)
@@ -325,7 +325,7 @@ func newStartedServerForFatalTest(t *testing.T, service *blockingServiceRecorder
 	if err != nil {
 		t.Fatalf("New = %v", err)
 	}
-	if err := server.Start(context.Background(), RunOptions{Services: "fatal-discovery-loss"}); err != nil {
+	if err := server.Start(context.Background(), RunOptions{Services: []string{"fatal-discovery-loss"}}); err != nil {
 		t.Fatalf("Start = %v", err)
 	}
 	return server

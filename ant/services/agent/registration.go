@@ -8,9 +8,6 @@ import (
 	agentservice "github.com/ngnl47/tx/modules/agent/service"
 )
 
-// ServiceName 是 Agent 在启动参数和服务发现中的稳定名称。
-const ServiceName = "agent"
-
 // Options 是标准玩家入口的强类型配置。
 type Options = agentservice.Options
 
@@ -20,14 +17,14 @@ type LocalMsgQ = agentservice.LocalMsgQ
 // OptionsProvider 在 Agent 服务构造边界创建项目身份解析器、分发器和监听配置。
 type OptionsProvider func(ant.Context) (Options, error)
 
-// Registration 创建标准 Ant Agent 服务注册。
-func Registration(provider OptionsProvider, local LocalMsgQ) (ant.ServiceRegistration, error) {
+// Registration 使用项目指定的名称创建标准 Ant Agent 服务注册。
+func Registration(name string, provider OptionsProvider) (ant.ServiceRegistration, error) {
 	if provider == nil {
 		return ant.ServiceRegistration{}, fmt.Errorf("ant agent: options provider is nil")
 	}
 	return ant.ServiceRegistration{
 		Spec: ant.ServiceSpec{
-			Name: ServiceName,
+			Name: name,
 			Requires: []ant.CModID{
 				ant.CModRPC,
 				ant.CModRedisStorage,
@@ -40,7 +37,6 @@ func Registration(provider OptionsProvider, local LocalMsgQ) (ant.ServiceRegistr
 			if err != nil {
 				return nil, fmt.Errorf("ant agent: configure: %w", err)
 			}
-			options.LocalMsgQ = local
 			rpc := runtime.CModRPC()
 			redis := runtime.CModRedisStorage()
 			directory := runtime.CModDiscovery()
@@ -48,7 +44,6 @@ func Registration(provider OptionsProvider, local LocalMsgQ) (ant.ServiceRegistr
 				Tasks:     runtime.Tasks(),
 				Admission: runtime.Admission(),
 				RPC:       rpc,
-				Instance:  runtime.Instance(),
 				Directory: directory,
 				Redis:     redis.ScriptRoutes(),
 			})

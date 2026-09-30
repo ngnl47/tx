@@ -21,7 +21,7 @@ func TestCapabilityFailureRollsBackStartedService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = server.Start(context.Background(), RunOptions{Services: "first,second"})
+	err = server.Start(context.Background(), RunOptions{Services: []string{"first", "second"}})
 	if err == nil || !strings.Contains(err.Error(), "second") || !strings.Contains(err.Error(), "actor") {
 		t.Fatalf("启动错误 = %v", err)
 	}
@@ -54,7 +54,7 @@ func TestCapabilityFailureAtAssemblyBoundaries(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			err = server.Start(context.Background(), RunOptions{Services: "game"})
+			err = server.Start(context.Background(), RunOptions{Services: []string{"game"}})
 			if err == nil || !strings.Contains(err.Error(), "actor") {
 				t.Fatalf("启动错误 = %v", err)
 			}

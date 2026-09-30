@@ -11,9 +11,6 @@ import (
 	msgqservice "github.com/ngnl47/tx/modules/msgq/service"
 )
 
-// ServiceName 是 msgq 在启动参数和服务发现中的稳定名称。
-const ServiceName = "msgq"
-
 // Options 是标准会话邮箱的强类型配置。
 type Options = msgqservice.Options
 
@@ -41,11 +38,11 @@ func NewConfigured(provider OptionsProvider) (*Service, error) {
 	return &Service{provider: provider}, nil
 }
 
-// Registration 返回可交给 bee.Builder.Services 的静态注册信息。
-func (service *Service) Registration() bee.ServiceRegistration {
+// Registration 使用项目指定的名称返回可交给 bee.Builder.Services 的静态注册信息。
+func (service *Service) Registration(name string) bee.ServiceRegistration {
 	return bee.ServiceRegistration{
 		Spec: bee.ServiceSpec{
-			Name:     ServiceName,
+			Name:     name,
 			Requires: []bee.CModID{bee.CModRPC, bee.CModRedisStorage, bee.CModDiscovery},
 		},
 		Factory: service.factory,

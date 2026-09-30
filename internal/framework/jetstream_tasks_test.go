@@ -170,7 +170,7 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 	start := func(service string) *Server {
 		app := newDiscoveryIdentityTestServer(t, endpoint, prefix, "", services...)
 		app.config.Actor.Runtime = txactor.Config{NATSURL: url, Namespace: owner}
-		if err := app.Start(ctx, RunOptions{Services: service, RPCListen: "127.0.0.1:0"}); err != nil {
+		if err := app.Start(ctx, RunOptions{Services: []string{service}, RPCListen: "127.0.0.1:0"}); err != nil {
 			t.Fatal(err)
 		}
 		return app
@@ -471,7 +471,7 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 	missingRecovery := newDiscoveryIdentityTestServer(t, endpoint, prefix, "", services...)
 	missingRecovery.config.Actor.Runtime = txactor.Config{NATSURL: url, Namespace: owner}
 	missingRecovery.config.TaskQueue = tasks.Config{URL: url, Stream: streamName, Subject: streamName, Consumer: "worker", DeadLetter: deadName, Timeout: 10 * time.Second}
-	if err := missingRecovery.Start(ctx, RunOptions{Services: "taskworker", RPCListen: "127.0.0.1:0"}); err == nil || !strings.Contains(err.Error(), "finite max deliver requires recovery") {
+	if err := missingRecovery.Start(ctx, RunOptions{Services: []string{"taskworker"}, RPCListen: "127.0.0.1:0"}); err == nil || !strings.Contains(err.Error(), "finite max deliver requires recovery") {
 		missingRecovery.Stop(context.Background())
 		t.Fatalf("有限 MaxDeliver 应因缺少恢复配置拒绝启动: %v", err)
 	}
@@ -518,7 +518,7 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 	app := newDiscoveryIdentityTestServer(t, endpoint, prefix, "", services...)
 	app.config.Actor.Runtime = txactor.Config{NATSURL: url, Namespace: owner}
 	app.config.TaskQueue = tasks.Config{URL: url, Stream: streamName, Subject: streamName, Consumer: "worker", DeadLetter: deadName, Timeout: 10 * time.Second, RecoveryStream: eventName, RecoveryConsumer: "recovery"}
-	if err := app.Start(ctx, RunOptions{Services: "game,taskworker", RPCListen: "127.0.0.1:0"}); err != nil {
+	if err := app.Start(ctx, RunOptions{Services: []string{"game", "taskworker"}, RPCListen: "127.0.0.1:0"}); err != nil {
 		t.Fatal(err)
 	}
 	defer func() {

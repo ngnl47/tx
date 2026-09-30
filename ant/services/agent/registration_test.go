@@ -8,9 +8,9 @@ import (
 )
 
 func TestRegistrationDeclaresAgentDependencies(t *testing.T) {
-	registration, err := Registration(func(ant.Context) (Options, error) {
+	registration, err := Registration("project-gateway", func(ant.Context) (Options, error) {
 		return Options{}, nil
-	}, nil)
+	})
 	if err != nil {
 		t.Fatalf("Registration returned error: %v", err)
 	}
@@ -20,7 +20,7 @@ func TestRegistrationDeclaresAgentDependencies(t *testing.T) {
 		ant.CModDiscovery,
 		ant.CModActor,
 	}
-	if registration.Spec.Name != ServiceName || !slices.Equal(registration.Spec.Requires, want) {
+	if registration.Spec.Name != "project-gateway" || !slices.Equal(registration.Spec.Requires, want) {
 		t.Fatalf("registration spec = %#v", registration.Spec)
 	}
 }

@@ -7,7 +7,6 @@ import (
 )
 
 type registry struct {
-	services     []Service
 	byName       map[string]Service
 	actorCatalog map[string]actorKindSpec
 }
@@ -29,10 +28,9 @@ func newRegistry(services ...Service) (*registry, error) {
 		if _, exists := result.byName[name]; exists {
 			return nil, fmt.Errorf("framework: duplicate service %q", name)
 		}
-		result.services = append(result.services, service)
 		result.byName[name] = service
 	}
-	catalog, err := collectActorKinds(result.services)
+	catalog, err := collectActorKinds(services)
 	if err != nil {
 		return nil, err
 	}
@@ -40,43 +38,23 @@ func newRegistry(services ...Service) (*registry, error) {
 	return result, nil
 }
 
-func (registry *registry) selectServices(expression string) ([]Service, error) {
-	if registry == nil {
-		return nil, errors.New("framework: service registry is nil")
+// selectServices 校验项目传入的明确启动清单，并保持项目指定的依赖顺序。
+func (registry *registry) selectServices(names []string) ([]Service, error) {
+	if len(names) == 0 {
+		return nil, errors.New("framework: no services selected")
 	}
-	include := make(map[string]bool, len(registry.services))
-	exclude := make(map[string]bool, len(registry.services))
-	for _, token := range strings.Split(expression, ",") {
-		token = strings.TrimSpace(token)
-		if token == "" {
-			continue
-		}
-		if token == "*" {
-			for _, service := range registry.services {
-				include[service.Spec().Name] = true
-			}
-			continue
-		}
-		negative := strings.HasPrefix(token, "!")
-		name := strings.TrimSpace(strings.TrimPrefix(token, "!"))
-		if _, exists := registry.byName[name]; !exists {
+	selected := make([]Service, 0, len(names))
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		service, ok := registry.byName[name]
+		if !ok {
 			return nil, fmt.Errorf("framework: unknown service %q", name)
 		}
-		if negative {
-			exclude[name] = true
-		} else {
-			include[name] = true
+		if seen[name] {
+			return nil, fmt.Errorf("framework: duplicate selected service %q", name)
 		}
-	}
-	selected := make([]Service, 0, len(include))
-	for _, service := range registry.services {
-		name := service.Spec().Name
-		if include[name] && !exclude[name] {
-			selected = append(selected, service)
-		}
-	}
-	if len(selected) == 0 {
-		return nil, errors.New("framework: no services selected")
+		seen[name] = true
+		selected = append(selected, service)
 	}
 	return selected, nil
 }

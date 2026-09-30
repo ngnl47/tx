@@ -11,7 +11,7 @@ import (
 	"github.com/ngnl47/tx/lifecycle"
 )
 
-func TestRegistrySelectsServicesInRegistrationOrder(t *testing.T) {
+func TestRegistrySelectsExplicitServices(t *testing.T) {
 	registry, err := newRegistry(
 		testService{spec: Spec{Name: "game"}},
 		testService{spec: Spec{Name: "room"}},
@@ -20,7 +20,7 @@ func TestRegistrySelectsServicesInRegistrationOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newRegistry returned error: %v", err)
 	}
-	selected, err := registry.selectServices("*,!room")
+	selected, err := registry.selectServices([]string{"game", "task"})
 	if err != nil {
 		t.Fatalf("selectServices returned error: %v", err)
 	}
@@ -44,10 +44,10 @@ func TestRegistryRejectsUnknownAndEmptySelection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newRegistry returned error: %v", err)
 	}
-	if _, err := registry.selectServices("unknown"); err == nil {
+	if _, err := registry.selectServices([]string{"unknown"}); err == nil {
 		t.Fatal("unknown service error = nil, want error")
 	}
-	if _, err := registry.selectServices("!game"); err == nil {
+	if _, err := registry.selectServices([]string{"!game"}); err == nil {
 		t.Fatal("empty selection error = nil, want error")
 	}
 }
@@ -80,7 +80,7 @@ func TestServiceHostRollsBackAndStopsInReverseOrder(t *testing.T) {
 		t.Fatalf("newRegistry returned error: %v", err)
 	}
 	host := newServiceHost(registry, runtime)
-	if err := host.start("game,task"); err == nil {
+	if err := host.start([]string{"game", "task"}); err == nil {
 		t.Fatal("start error = nil, want failure")
 	}
 	if want := []string{"start:game", "start:task", "stop:task", "stop:game"}; !reflect.DeepEqual(calls, want) {
@@ -118,7 +118,7 @@ func TestServiceHostRollbackStopsResourcesBeforeWaitingForTasks(t *testing.T) {
 	}
 	host := newServiceHost(registry, runtime)
 	started := make(chan error, 1)
-	go func() { started <- host.start("agent,failure") }()
+	go func() { started <- host.start([]string{"agent", "failure"}) }()
 	select {
 	case err := <-started:
 		if err == nil {
@@ -158,7 +158,7 @@ func TestServiceHostDrainWaitsForAcceptedWork(t *testing.T) {
 		t.Fatalf("newRegistry returned error: %v", err)
 	}
 	host := newServiceHost(registry, runtime)
-	if err := host.start("agent"); err != nil {
+	if err := host.start([]string{"agent"}); err != nil {
 		t.Fatalf("start returned error: %v", err)
 	}
 	<-started
@@ -197,7 +197,7 @@ func TestServiceHostDrainTimeoutReportsServiceAndPendingWork(t *testing.T) {
 		t.Fatalf("newRegistry returned error: %v", err)
 	}
 	host := newServiceHost(registry, runtime)
-	if err := host.start("game"); err != nil {
+	if err := host.start([]string{"game"}); err != nil {
 		t.Fatalf("start returned error: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
@@ -233,7 +233,7 @@ func TestServiceHostDrainCanWaitAgainAfterTimeout(t *testing.T) {
 		t.Fatalf("newRegistry returned error: %v", err)
 	}
 	host := newServiceHost(registry, runtime)
-	if err := host.start("game"); err != nil {
+	if err := host.start([]string{"game"}); err != nil {
 		t.Fatalf("start returned error: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)

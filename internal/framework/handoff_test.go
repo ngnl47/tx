@@ -58,7 +58,7 @@ func TestPrepareHandoffRetainsRPCAndRetriesPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = app.Start(t.Context(), RunOptions{Services: "game", ControlListen: "127.0.0.1:0"}); err != nil {
+	if err = app.Start(t.Context(), RunOptions{Services: []string{"game"}, ControlListen: "127.0.0.1:0"}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -139,7 +139,7 @@ func TestPrepareHandoffCancellationKeepsCompletedFlushForStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Start(t.Context(), RunOptions{Services: "game"}); err != nil {
+	if err := app.Start(t.Context(), RunOptions{Services: []string{"game"}}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { unblock.Do(func() { close(release) }); _ = app.Stop(context.Background()) })
@@ -180,7 +180,7 @@ func TestPrepareHandoffIdentityLossNeverConfirms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Start(t.Context(), RunOptions{Services: "game"}); err != nil {
+	if err := app.Start(t.Context(), RunOptions{Services: []string{"game"}}); err != nil {
 		t.Fatal(err)
 	}
 	app.runtime.setInstance(discovery.Instance{ID: "startup-a"})
@@ -251,7 +251,7 @@ func TestPrepareHandoffWithEtcdRetainsLeaseUntilStop(t *testing.T) {
 	}
 
 	app := newServer()
-	if err := app.Start(ctx, RunOptions{Services: "game", ControlListen: "127.0.0.1:0"}); err != nil {
+	if err := app.Start(ctx, RunOptions{Services: []string{"game"}, ControlListen: "127.0.0.1:0"}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -285,7 +285,7 @@ func TestPrepareHandoffWithEtcdRetainsLeaseUntilStop(t *testing.T) {
 	defer conn.Close()
 	// L2 归属组件通过正式控制面复用源实例收尾；同一源实例可以逐槽晋升。
 	target := newServer()
-	if err := target.Start(ctx, RunOptions{Services: "game"}); err != nil {
+	if err := target.Start(ctx, RunOptions{Services: []string{"game"}}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {

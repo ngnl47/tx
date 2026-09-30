@@ -28,7 +28,7 @@ func TestBuilderConstructsAndStartsServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build returned error: %v", err)
 	}
-	if err := server.Start(context.Background(), RunOptions{Services: "game"}); err != nil {
+	if err := server.Start(context.Background(), RunOptions{Services: []string{"game"}}); err != nil {
 		t.Fatalf("Start returned error: %v", err)
 	}
 	if !started {
@@ -53,7 +53,7 @@ func TestRunOptionsPublishClonedInstanceEndpoints(t *testing.T) {
 	}
 	endpoints := map[string]string{"agent.tcp": "10.0.0.7:9000"}
 	if err := server.Start(context.Background(), RunOptions{
-		Services:          "agent",
+		Services:          []string{"agent"},
 		InstanceEndpoints: endpoints,
 	}); err != nil {
 		t.Fatalf("Start returned error: %v", err)
@@ -103,7 +103,7 @@ func TestServiceContextRejectsUndeclaredCMod(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build returned error: %v", err)
 	}
-	err = server.Start(context.Background(), RunOptions{Services: "game"})
+	err = server.Start(context.Background(), RunOptions{Services: []string{"game"}})
 	if err == nil {
 		t.Fatal("Start succeeded")
 	}

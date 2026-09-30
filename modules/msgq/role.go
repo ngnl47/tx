@@ -47,16 +47,20 @@ type RoleTarget struct {
 
 // RoleRouter 缓存角色归属并合并冷查询；不发送消息，不自动重试业务投递。
 type RoleRouter struct {
-	directory discovery.Directory
-	cache     *otter.Cache[int64, RoleBinding]
-	loader    RoleLoader
-	loads     singleflight.Group
+	serviceName string
+	directory   discovery.Directory
+	cache       *otter.Cache[int64, RoleBinding]
+	loader      RoleLoader
+	loads       singleflight.Group
 	// 冷加载与失效串行交接，防止已失效的在途读取重新填入缓存。
 	loading sync.RWMutex
 }
 
 // NewRoleRouter 创建容量有界的角色路由缓存。实例状态始终从本地服务发现读取。
-func NewRoleRouter(directory discovery.Directory, load RoleLoader, maximumSize int) (*RoleRouter, error) {
+func NewRoleRouter(serviceName string, directory discovery.Directory, load RoleLoader, maximumSize int) (*RoleRouter, error) {
+	if serviceName == "" {
+		return nil, ErrServiceNameRequired
+	}
 	if directory == nil {
 		return nil, ErrDirectoryNil
 	}
@@ -70,7 +74,7 @@ func NewRoleRouter(directory discovery.Directory, load RoleLoader, maximumSize i
 	if err != nil {
 		return nil, err
 	}
-	return &RoleRouter{directory: directory, cache: cache, loader: load}, nil
+	return &RoleRouter{serviceName: serviceName, directory: directory, cache: cache, loader: load}, nil
 }
 
 // Resolve 命中缓存时不访问绑定存储；归属不存在时返回 ErrSessionOffline。
@@ -118,7 +122,7 @@ func (r *RoleRouter) resolve(ctx context.Context, roleID int64, reload bool) (Ro
 	}
 	cached := found
 	instance, found := r.directory.LookupInstance(binding.InstanceID)
-	if !found || instance.Status != discovery.StatusRunning || !providesService(instance, "msgq") {
+	if !found || instance.Status != discovery.StatusRunning || !providesService(instance, r.serviceName) {
 		r.Invalidate(binding)
 		// 仅在发送前重新寻址一次，不重发已经投递的业务载荷。
 		if cached && reload {

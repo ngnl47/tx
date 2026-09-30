@@ -20,7 +20,7 @@ func TestSessionClientRouterRestoreUsesExactSessionOwner(t *testing.T) {
 	}, found: true}
 	directory := sessionClientDirectory(t)
 	dialer := &sessionClientDialerFake{client: &sessionClientFake{}}
-	router, err := msgq.NewSessionClientRouter(directory, store, dialer)
+	router, err := msgq.NewSessionClientRouter("project-mailbox", directory, store, dialer)
 	if err != nil {
 		t.Fatalf("new client router: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestSessionClientRouterReusesEndpointClientAndClosesIt(t *testing.T) {
 	}, found: true}
 	client := &sessionClientFake{}
 	dialer := &sessionClientDialerFake{client: client}
-	router, err := msgq.NewSessionClientRouter(sessionClientDirectory(t), store, dialer)
+	router, err := msgq.NewSessionClientRouter("project-mailbox", sessionClientDirectory(t), store, dialer)
 	if err != nil {
 		t.Fatalf("new client router: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestSessionClientRouterFreshReusesRoleOwnerWithoutSessionLookup(t *testing.
 	directory := sessionClientDirectory(t)
 	dialer := &sessionClientDialerFake{client: &sessionClientFake{}}
 	store := &sessionStoreFake{findErr: errors.New("fresh acquire must not query store")}
-	router, err := msgq.NewSessionClientRouter(directory, store, dialer)
+	router, err := msgq.NewSessionClientRouter("project-mailbox", directory, store, dialer)
 	if err != nil {
 		t.Fatalf("new client router: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestSessionClientRouterFreshReusesRoleOwnerWithoutSessionLookup(t *testing.
 func TestSessionClientRouterConcurrentFreshSessionsShareRoleOwner(t *testing.T) {
 	store := &sessionStoreFake{}
 	dialer := &sessionClientDialerFake{client: &sessionClientFake{}}
-	router, err := msgq.NewSessionClientRouter(sessionClientDirectory(t), store, dialer)
+	router, err := msgq.NewSessionClientRouter("project-mailbox", sessionClientDirectory(t), store, dialer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestSessionClientRouterConcurrentFreshSessionsShareRoleOwner(t *testing.T) 
 func TestSessionClientRouterRestoreDoesNotFallbackToAnotherInstance(t *testing.T) {
 	dialer := &sessionClientDialerFake{client: &sessionClientFake{}}
 	store := &sessionStoreFake{}
-	router, err := msgq.NewSessionClientRouter(sessionClientDirectory(t), store, dialer)
+	router, err := msgq.NewSessionClientRouter("project-mailbox", sessionClientDirectory(t), store, dialer)
 	if err != nil {
 		t.Fatalf("new client router: %v", err)
 	}
@@ -165,15 +165,15 @@ func TestSessionClientRouterRestoreRejectsInvalidBindingOrOwner(t *testing.T) {
 		"draining owner": {
 			binding: msgq.SessionBinding{RoleID: 470001, SessionID: 99, ConnectionID: 7, InstanceID: "msgq-b"},
 			instances: []discovery.Instance{
-				{ID: "msgq-a", Services: []string{"msgq"}, Endpoint: "127.0.0.1:9101", Status: discovery.StatusRunning},
-				{ID: "msgq-b", Services: []string{"msgq"}, Endpoint: "127.0.0.1:9102", Status: discovery.StatusDraining},
+				{ID: "msgq-a", Services: []string{"project-mailbox"}, Endpoint: "127.0.0.1:9101", Status: discovery.StatusRunning},
+				{ID: "msgq-b", Services: []string{"project-mailbox"}, Endpoint: "127.0.0.1:9102", Status: discovery.StatusDraining},
 			},
 			wantErr: msgq.ErrRouteUnavailable,
 		},
 		"owner without msgq service": {
 			binding: msgq.SessionBinding{RoleID: 470001, SessionID: 99, ConnectionID: 7, InstanceID: "game-b"},
 			instances: []discovery.Instance{
-				{ID: "msgq-a", Services: []string{"msgq"}, Endpoint: "127.0.0.1:9101", Status: discovery.StatusRunning},
+				{ID: "msgq-a", Services: []string{"project-mailbox"}, Endpoint: "127.0.0.1:9101", Status: discovery.StatusRunning},
 				{ID: "game-b", Services: []string{"game"}, Endpoint: "127.0.0.1:9102", Status: discovery.StatusRunning},
 			},
 			wantErr: msgq.ErrRouteUnavailable,
@@ -187,7 +187,7 @@ func TestSessionClientRouterRestoreRejectsInvalidBindingOrOwner(t *testing.T) {
 			if test.instances != nil {
 				directory = newSessionClientDirectory(t, test.instances)
 			}
-			router, err := msgq.NewSessionClientRouter(directory, store, dialer)
+			router, err := msgq.NewSessionClientRouter("project-mailbox", directory, store, dialer)
 			if err != nil {
 				t.Fatalf("new client router: %v", err)
 			}
@@ -236,8 +236,8 @@ func TestFixedSessionClientRouterAlwaysReturnsSharedLocalClient(t *testing.T) {
 func sessionClientDirectory(t *testing.T) *discovery.ServiceDirectory {
 	t.Helper()
 	return newSessionClientDirectory(t, []discovery.Instance{
-		{ID: "msgq-a", Services: []string{"msgq"}, Endpoint: "127.0.0.1:9101", Status: discovery.StatusRunning},
-		{ID: "msgq-b", Services: []string{"msgq"}, Endpoint: "127.0.0.1:9102", Status: discovery.StatusRunning},
+		{ID: "msgq-a", Services: []string{"project-mailbox"}, Endpoint: "127.0.0.1:9101", Status: discovery.StatusRunning},
+		{ID: "msgq-b", Services: []string{"project-mailbox"}, Endpoint: "127.0.0.1:9102", Status: discovery.StatusRunning},
 	})
 }
 

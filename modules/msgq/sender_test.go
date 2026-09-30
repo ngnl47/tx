@@ -166,12 +166,12 @@ func TestSenderTopicOperationsRejectOfflineOwnerBeforeDial(t *testing.T) {
 		t.Fatalf("replace directory: %v", err)
 	}
 	store := &senderStoreFake{}
-	router, err := NewSessionRouter(directory, store, 128)
+	router, err := NewSessionRouter("msgq", directory, store, 128)
 	if err != nil {
 		t.Fatalf("NewSessionRouter returned error: %v", err)
 	}
 	dialer := &senderDialerFake{connection: &senderConnectionFake{}}
-	roles, err := NewRoleRouter(directory, store.FindRole, 16)
+	roles, err := NewRoleRouter("msgq", directory, store.FindRole, 16)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,12 +206,12 @@ func newSenderForTest(t *testing.T, connection Connection, binding SessionBindin
 		binding: binding,
 		found:   true,
 	}
-	router, err := NewSessionRouter(directory, store, 128)
+	router, err := NewSessionRouter("msgq", directory, store, 128)
 	if err != nil {
 		t.Fatalf("NewSessionRouter returned error: %v", err)
 	}
 	dialer := &senderDialerFake{connection: connection}
-	roles, err := NewRoleRouter(directory, store.FindRole, 16)
+	roles, err := NewRoleRouter("msgq", directory, store.FindRole, 16)
 	if err != nil {
 		t.Fatal(err)
 	}

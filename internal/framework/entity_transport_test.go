@@ -86,13 +86,13 @@ func TestEntityTransportStartupFailureUnloadsBeforeDependencies(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	if err := app.Start(ctx, RunOptions{Services: "game"}); !errors.Is(err, failure) || !errors.Is(err, errStopDeferred) {
+	if err := app.Start(ctx, RunOptions{Services: []string{"game"}}); !errors.Is(err, failure) || !errors.Is(err, errStopDeferred) {
 		t.Fatalf("启动结果: %v", err)
 	}
 	if unloaded.Load() || mod.stopped || app.runtime == nil || !local.Draining() {
 		t.Fatal("启动失败等待超时释放了依赖")
 	}
-	if err := app.Start(ctx, RunOptions{Services: "game"}); err == nil {
+	if err := app.Start(ctx, RunOptions{Services: []string{"game"}}); err == nil {
 		t.Fatal("失败资源未回收却允许再次启动")
 	}
 	releaseWork()
@@ -136,7 +136,7 @@ func TestRunRetriesEntityStartupCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Run(t.Context(), RunOptions{Services: "game"}); !errors.Is(err, failure) {
+	if err := app.Run(t.Context(), RunOptions{Services: []string{"game"}}); !errors.Is(err, failure) {
 		t.Fatalf("Run 丢失启动错误: %v", err)
 	}
 	if attempts != 2 || !mod.stopped || app.runtime != nil {

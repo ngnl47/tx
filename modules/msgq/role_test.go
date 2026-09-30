@@ -13,12 +13,12 @@ import (
 func TestRoleRouteCacheReusesOwnerAndInvalidatesExactGeneration(t *testing.T) {
 	ctx := context.Background()
 	directory := discovery.NewServiceDirectory()
-	if err := directory.Replace([]discovery.Instance{{ID: "msgq-a", Endpoint: "localhost:9001", Services: []string{"msgq"}, Status: discovery.StatusRunning}}); err != nil {
+	if err := directory.Replace([]discovery.Instance{{ID: "msgq-a", Endpoint: "localhost:9001", Services: []string{"project-mailbox"}, Status: discovery.StatusRunning}}); err != nil {
 		t.Fatal(err)
 	}
 	owner := RoleBinding{RoleID: 47, InstanceID: "msgq-a", Generation: "first"}
 	var reads atomic.Int64
-	cache, err := NewRoleRouter(directory, func(context.Context, int64) (RoleBinding, bool, error) {
+	cache, err := NewRoleRouter("project-mailbox", directory, func(context.Context, int64) (RoleBinding, bool, error) {
 		reads.Add(1)
 		return owner, true, nil
 	}, 128)
@@ -51,7 +51,7 @@ func TestRoleRouteCacheReusesOwnerAndInvalidatesExactGeneration(t *testing.T) {
 		t.Fatalf("old invalidation evicted current owner: %d reads", reads.Load())
 	}
 	owner = RoleBinding{RoleID: 47, InstanceID: "msgq-b", Generation: "third"}
-	if err := directory.Replace([]discovery.Instance{{ID: "msgq-b", Endpoint: "localhost:9002", Services: []string{"msgq"}, Status: discovery.StatusRunning}}); err != nil {
+	if err := directory.Replace([]discovery.Instance{{ID: "msgq-b", Endpoint: "localhost:9002", Services: []string{"project-mailbox"}, Status: discovery.StatusRunning}}); err != nil {
 		t.Fatal(err)
 	}
 	if target, err := cache.Resolve(ctx, 47); err != nil || target.Binding != owner {
@@ -65,11 +65,11 @@ func TestRoleRouteCacheReusesOwnerAndInvalidatesExactGeneration(t *testing.T) {
 
 func TestRoleRouteCacheCoalescesColdQueries(t *testing.T) {
 	directory := discovery.NewServiceDirectory()
-	if err := directory.Replace([]discovery.Instance{{ID: "msgq-a", Endpoint: "localhost:9001", Services: []string{"msgq"}, Status: discovery.StatusRunning}}); err != nil {
+	if err := directory.Replace([]discovery.Instance{{ID: "msgq-a", Endpoint: "localhost:9001", Services: []string{"project-mailbox"}, Status: discovery.StatusRunning}}); err != nil {
 		t.Fatal(err)
 	}
 	var reads atomic.Int64
-	cache, err := NewRoleRouter(directory, func(context.Context, int64) (RoleBinding, bool, error) {
+	cache, err := NewRoleRouter("project-mailbox", directory, func(context.Context, int64) (RoleBinding, bool, error) {
 		reads.Add(1)
 		return RoleBinding{RoleID: 47, InstanceID: "msgq-a", Generation: "first"}, true, nil
 	}, 128)
@@ -92,11 +92,11 @@ func TestRoleRouteCacheCoalescesColdQueries(t *testing.T) {
 
 func BenchmarkRoleRouterWarm(b *testing.B) {
 	directory := discovery.NewServiceDirectory()
-	if err := directory.Replace([]discovery.Instance{{ID: "msgq-a", Endpoint: "localhost:9001", Services: []string{"msgq"}, Status: discovery.StatusRunning}}); err != nil {
+	if err := directory.Replace([]discovery.Instance{{ID: "msgq-a", Endpoint: "localhost:9001", Services: []string{"project-mailbox"}, Status: discovery.StatusRunning}}); err != nil {
 		b.Fatal(err)
 	}
 	var reads atomic.Int64
-	router, err := NewRoleRouter(directory, func(context.Context, int64) (RoleBinding, bool, error) {
+	router, err := NewRoleRouter("project-mailbox", directory, func(context.Context, int64) (RoleBinding, bool, error) {
 		reads.Add(1)
 		return RoleBinding{RoleID: 47, InstanceID: "msgq-a", Generation: "first"}, true, nil
 	}, 128)
