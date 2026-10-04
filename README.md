@@ -4280,6 +4280,15 @@ err := db.Save(role)
 env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp /Users/a47/sdk/go1.26.5/bin/go test ./... -count=1
 ```
 
+`tests/storage_backend_integration_test.go` 承接真实 Redis/Mongo 的 TTL、并发回填、延迟落库及发布失败恢复回归，使用固定存储 SPI 变更源，不依赖示例工程的生成类型：
+
+```bash
+TX_REDIS_ENDPOINT=127.0.0.1:6379 TX_MONGO_URI=mongodb://127.0.0.1:27017 \
+go test ./tests -run 'Test(RedisVersionKey|RedisConditionalTTL|RedisCollectionElementSet|RedisNestedSet|FusionDelayedSaveRequeues|FusionDispatcherRecoversRedis|FusionConcurrentRedisMiss|FusionBackfillDoesNotOverwrite|FusionBatchRedisMiss|FusionConcurrentBatchBackfill)' -race -count=1
+```
+
+未设置对应变量时跳过；显式指定后依赖不可达会失败。仅使用 Redis `tx:test:storage:*`、本轮 `tx:test:fusion-*` 任务键及 Mongo `tx_storage_integration.storage_integration` 中本轮记录，结束时清理本轮数据，不清空共享库。
+
 ## 排查清单
 
 ### 读取不到数据
