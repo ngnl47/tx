@@ -2614,6 +2614,27 @@ Actor 生产后端不再启动 ProtoActor，也不保留独立 Gossip 日志级�
 
 ### 必跑验证
 
+Actor 测试按正式实现的职责放置，不再保留 `internal/actortrial` 试验包：
+
+| 位置 | 覆盖边界 |
+| --- | --- |
+| `internal/actorhost` | 邮箱、激活、生命周期及本地调用基准 |
+| `internal/actorrpc` | 正式 NATS/gRPC 传输、跨进程调用、断线不重投、容量竞争与分区路由 |
+| `modules/discovery` | 归属 CAS、交接结果未知及并发交接唯一获胜者 |
+| `internal/framework` | 正式 Server 排水、真实事务写回后的交接、etcd 租约失效关闭 |
+
+旧 Agent 完成 ACK 适配、独立 SlotHost 控制协议及新旧试验传输互通用例已删除；历史审计中的路径和数据仅代表当时版本。测试环境变量暂沿用现有入口，可在本机 NATS、etcd、Redis 上运行：
+
+```bash
+TX_ACTORTRIAL_NATS_URL=nats://127.0.0.1:4222 \
+TX_ACTORTRIAL_ETCD_ENDPOINT=127.0.0.1:2379 \
+TX_ETCD_ENDPOINT=127.0.0.1:2379 \
+TX_ACTORTRIAL_REDIS_ADDR=127.0.0.1:6379 \
+go test ./internal/actorhost ./internal/actorrpc ./internal/framework ./modules/discovery -count=1
+```
+
+未设置依赖地址时，真实依赖用例会跳过，不能将普通 `go test` 成功视为这些场景已验收。
+
 核心变更至少运行：
 
 ```bash

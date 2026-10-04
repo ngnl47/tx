@@ -14,14 +14,12 @@ import (
 	"github.com/ngnl47/tx/internal/actorrpc"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 	"github.com/ngnl47/tx/modules/discovery"
-	rpcpb "github.com/ngnl47/tx/modules/rpc/pb"
+	"github.com/ngnl47/tx/modules/rpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/protobuf/proto"
 )
 
-// 使用正式 Server 收尾流程与新宿主；测试服务仅承担待迁入 CModActor 的装配。
+// 使用正式 Server 收尾流程；测试服务只提供独立宿主与故障注入。
 func TestActorHostPrepareHandoffRetainsTransportUntilStop(t *testing.T) {
 	url := os.Getenv("TX_ACTORTRIAL_NATS_URL")
 	if url == "" {
@@ -158,19 +156,22 @@ func TestActorHostPrepareHandoffRetainsTransportUntilStop(t *testing.T) {
 		t.Fatalf("重复传输确认: %d", output.attempts)
 	}
 	// 成功准备之后，共享 gRPC 仍返回明确拒绝，而不是连接消失。
-	conn, err := grpc.NewClient(app.runtime.rpc.Endpoint(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	dialer, err := rpc.NewGRPCDialer(insecure.NewCredentials(), grpc.WithDisableRetry())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
-	data, err := proto.Marshal(&actorpb.Delivery{})
+	directory := discovery.NewServiceDirectory()
+	if err := directory.Replace([]discovery.Instance{{ID: "source", Endpoint: app.runtime.rpc.Endpoint(), Services: []string{"game"}, Status: discovery.StatusRunning}}); err != nil {
+		t.Fatal(err)
+	}
+	sender, err := rpc.NewSender(directory, dialer)
 	if err != nil {
 		t.Fatal(err)
 	}
-	callCtx := metadata.NewOutgoingContext(ctx, metadata.Pairs("actor-kind-bin", "role", "actor-key-bin", "1"))
-	response, err := rpcpb.NewDeliveryServiceClient(conn).Call(callCtx, &rpcpb.Delivery{Route: &rpcpb.Route{Kind: rpcpb.RouteKind_ROUTE_KIND_INSTANCE, InstanceId: "source"}, MessageType: "actor.call", Payload: data})
-	if err != nil || response.GetMessageType() != "actor.error" {
-		t.Fatalf("交接准备关闭共享 gRPC: %+v %v", response, err)
+	defer sender.Close()
+	direct := &actorrpc.DirectTransport{Sender: sender}
+	if _, err := direct.Call(ctx, target, &actorpb.Delivery{}); !errors.Is(err, actorhost.ErrDraining) {
+		t.Fatalf("交接准备关闭共享 gRPC: %v", err)
 	}
 	if err := app.Stop(ctx); err != nil {
 		t.Fatal(err)

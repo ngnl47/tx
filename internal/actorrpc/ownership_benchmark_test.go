@@ -1,4 +1,4 @@
-package actortrial
+package actorrpc
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/ngnl47/tx/internal/actorhost"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 	"github.com/ngnl47/tx/modules/discovery"
 )
@@ -23,7 +24,7 @@ func (s *countedSlotReader) ResolveSlot(context.Context, string) (discovery.Slot
 }
 
 // 只度量已激活世界的消息路径；权威读取计数应保持为首次加载的一次。
-func BenchmarkSlotHostRemoteCall(b *testing.B) {
+func BenchmarkOwnedNATSCall(b *testing.B) {
 	url := os.Getenv("TX_ACTORTRIAL_NATS_URL")
 	if url == "" {
 		b.Skip("需要显式指定 TX_ACTORTRIAL_NATS_URL")
@@ -32,19 +33,21 @@ func BenchmarkSlotHostRemoteCall(b *testing.B) {
 	reader := &countedSlotReader{assignment: discovery.SlotAssignment{SlotID: "world-1", RuntimeInstanceID: "world", Generation: 1}}
 	runtime := echoRuntime()
 	runtime.BindSlots("world", reader, worldSlot)
-	host, err := ConnectSlotHost(url, ns, "world", runtime, 32, nil)
+	host, err := ConnectNATS(url, ns, "world", runtime, 32)
 	if err != nil {
 		b.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 	defer cancel()
-	defer host.Drain(ctx)
-	caller, err := Connect(url, ns, "caller", echoRuntime(), 32)
+	defer host.Close()
+	defer runtime.Drain(ctx)
+	caller, err := ConnectNATS(url, ns, "caller", echoRuntime(), 32)
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer caller.Drain(ctx, nil)
-	target := Target{"world", Identity{"world", "1"}}
+	defer caller.Close()
+	defer caller.runtime.Drain(ctx)
+	target := actorhost.Target{Instance: "world", Identity: actorhost.Identity{Kind: "world", Key: "1"}}
 	delivery := &actorpb.Delivery{MessageType: "move", Payload: make([]byte, 128)}
 	if _, err = caller.Call(ctx, target, delivery); err != nil {
 		b.Fatal(err)

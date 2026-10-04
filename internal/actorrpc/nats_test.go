@@ -12,7 +12,6 @@ import (
 	"github.com/ngnl47/tx/internal/actorhost"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 	"github.com/ngnl47/tx/modules/rpc"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -74,12 +73,11 @@ func TestNATSSharedHostSemantics(t *testing.T) {
 		t.Fatalf("容量不足: %v", err)
 	}
 	// 直连接收入口复用同一宿主，不能创建第二份实体状态。
-	data, err := proto.Marshal(&actorpb.Delivery{MessageType: "increment", RequestId: 1})
+	data, err := proto.Marshal(&actorpb.DirectStreamCall{Kind: "role", Key: "1", TimeoutNano: int64(time.Second), Delivery: &actorpb.Delivery{MessageType: "increment", RequestId: 1, Mode: actorpb.DeliveryMode_DELIVERY_MODE_CALL}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	directCtx := metadata.NewIncomingContext(ctx, metadata.Pairs("actor-kind-bin", "role", "actor-key-bin", "1"))
-	response, err := NewDirectReceiver("server", runtime).Call(directCtx, rpc.Delivery{Route: rpc.InstanceRoute("server"), MessageType: "actor.call", Payload: data})
+	response, err := NewDirectReceiver("server", runtime).CallStream(ctx, rpc.Delivery{Route: rpc.InstanceRoute("server"), MessageType: "actor.streamcall", Payload: data})
 	if err != nil {
 		t.Fatal(err)
 	}

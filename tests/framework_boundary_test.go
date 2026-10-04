@@ -17,7 +17,6 @@ func TestCorePackagesDoNotDependOnFrameworkFacade(t *testing.T) {
 		"./modules/...",
 		"./protocol/...",
 		"./storage/...",
-		"./wal/...",
 	}
 	for _, pattern := range patterns {
 		for _, imported := range packageImports(t, pattern) {

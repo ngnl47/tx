@@ -75,3 +75,66 @@ func TestEtcdSlotCapacityIsAtomicAndFollowsOwnership(t *testing.T) {
 		t.Fatalf("归属未更新: %+v %v", got, err)
 	}
 }
+
+// 同一代归属并发交接到不同目标时，真实 etcd CAS 只允许一个结果生效。
+func TestEtcdConcurrentHandoffHasOneWinner(t *testing.T) {
+	registry, _, _ := newIdentityIntegrationRegistry(t, "handoff-competition", time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	store := registry.Slots()
+	directory := NewServiceDirectory()
+	if err := directory.Replace([]Instance{{ID: "a", Endpoint: "a:1", Services: []string{"world"}, Status: StatusRunning}, {ID: "b", Endpoint: "b:1", Services: []string{"world"}, Status: StatusRunning}, {ID: "c", Endpoint: "c:1", Services: []string{"world"}, Status: StatusRunning}}); err != nil {
+		t.Fatal(err)
+	}
+	current := SlotAssignment{SlotID: "world-51", RuntimeInstanceID: "a", Generation: 1}
+	if err := store.CreateSlot(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := NewSlotOwnership(store, directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}, 2), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
+	results := make(chan error, 2)
+	for _, target := range []string{"b", "c"} {
+		go func() {
+			_, err := owner.Handoff(ctx, "world", current, target, func(context.Context, string) (bool, error) { return true, nil }, func(c context.Context, _ string) error {
+				entered <- struct{}{}
+				select {
+				case <-release:
+					return nil
+				case <-c.Done():
+					return c.Err()
+				}
+			})
+			results <- err
+		}()
+	}
+	for range 2 {
+		select {
+		case <-entered:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	unblock()
+	winners := 0
+	for range 2 {
+		select {
+		case err := <-results:
+			if err == nil {
+				winners++
+			} else if !errors.Is(err, ErrSlotConflict) {
+				t.Fatal(err)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	got, err := store.ResolveSlot(ctx, current.SlotID)
+	if err != nil || winners != 1 || got.Generation != 2 || (got.RuntimeInstanceID != "b" && got.RuntimeInstanceID != "c") {
+		t.Fatalf("并发交接: winners=%d assignment=%+v err=%v", winners, got, err)
+	}
+}

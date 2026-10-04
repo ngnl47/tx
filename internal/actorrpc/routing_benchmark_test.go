@@ -1,10 +1,11 @@
-package actortrial
+package actorrpc
 
 import (
 	"context"
 	"testing"
 	"time"
 
+	"github.com/ngnl47/tx/internal/actorhost"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 	"github.com/ngnl47/tx/modules/discovery"
 	"github.com/ngnl47/tx/modules/rpc"
@@ -12,7 +13,7 @@ import (
 
 type routeBenchmarkCaller struct{ result *actorpb.Result }
 
-func (c routeBenchmarkCaller) Call(context.Context, Target, *actorpb.Delivery) (*actorpb.Result, error) {
+func (c routeBenchmarkCaller) Call(context.Context, actorhost.Target, *actorpb.Delivery) (*actorpb.Result, error) {
 	return c.result, nil
 }
 
@@ -36,8 +37,8 @@ func BenchmarkSharedCachedRoute(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	caller := &RoutedCaller{Resolver: resolver, SlotID: worldSlot, Transport: routeBenchmarkCaller{&actorpb.Result{MessageType: "ok"}}}
-	id, delivery := Identity{"world", "51"}, &actorpb.Delivery{MessageType: "read"}
+	caller := &RoutedCaller{Router: &EntityRouter{Resolver: resolver, SlotID: worldSlot, Service: func(string) (string, error) { return "world", nil }}, Transport: routeBenchmarkCaller{&actorpb.Result{MessageType: "ok"}}}
+	id, delivery := actorhost.Identity{Kind: "world", Key: "51"}, &actorpb.Delivery{MessageType: "read"}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -63,7 +64,7 @@ func BenchmarkDirectActorCall(b *testing.B) {
 	caller := directSender(b, directory)
 	ctx, cancel := context.WithTimeout(b.Context(), time.Minute)
 	defer cancel()
-	target, delivery := Target{"a", Identity{"world", "51"}}, &actorpb.Delivery{MessageType: "ack", UpSeq: 7, Payload: make([]byte, 1024)}
+	target, delivery := actorhost.Target{Instance: "a", Identity: actorhost.Identity{Kind: "world", Key: "51"}}, &actorpb.Delivery{MessageType: "ack", UpSeq: 7, Payload: make([]byte, 1024)}
 	if _, err := caller.Call(ctx, target, delivery); err != nil {
 		b.Fatal(err)
 	}

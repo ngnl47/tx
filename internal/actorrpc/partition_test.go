@@ -1,4 +1,4 @@
-package actortrial
+package actorrpc
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"github.com/ngnl47/tx/internal/actorrpc"
+	"github.com/ngnl47/tx/internal/actorhost"
 	txactor "github.com/ngnl47/tx/modules/actor"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 	"github.com/ngnl47/tx/modules/discovery"
@@ -18,28 +18,30 @@ func TestPartitionRoutingSharesAssignmentNotEntity(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		mapping txactor.SlotMapping
-		ids     []Identity
+		ids     []actorhost.Identity
 		slot    string
 	}{
-		{"default", nil, []Identity{{"role", "8"}, {"role", "26"}}, "actor-v1.cm9sZQ.p100"},
-		{"zone", func(id Identity) string { return map[string]string{"1": "role-zone-10", "2": "role-zone-10"}[id.Key] }, []Identity{{"role", "1"}, {"role", "2"}}, "role-zone-10"},
+		{"default", nil, []actorhost.Identity{{Kind: "role", Key: "8"}, {Kind: "role", Key: "26"}}, "actor-v1.cm9sZQ.p100"},
+		{"zone", func(id actorhost.Identity) string {
+			return map[string]string{"1": "role-zone-10", "2": "role-zone-10"}[id.Key]
+		}, []actorhost.Identity{{Kind: "role", Key: "1"}, {Kind: "role", Key: "2"}}, "role-zone-10"},
 	} {
 		t.Run(tc.name, func(t *testing.T) { testSharedPartition(t, tc.mapping, tc.ids, tc.slot) })
 	}
 }
 
-func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []Identity, slot string) {
-	url, ctx := natsURL(t), trialContext(t)
-	store, ns := trialSlots(t), nats.NewInbox()
-	runtime := New(8, time.Second, func(Context) (*Behavior, error) {
+func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []actorhost.Identity, slot string) {
+	url, ctx := natsURL(t), actorTestContext(t)
+	store, ns := actorTestSlots(t), nats.NewInbox()
+	runtime := actorhost.New(8, time.Second, func(actorhost.Context) (*actorhost.Behavior, error) {
 		count := uint64(0)
-		return &Behavior{Receive: func(Context, any) (any, error) {
+		return &actorhost.Behavior{Receive: func(actorhost.Context, any) (any, error) {
 			count++
 			return &actorpb.Result{MessageType: "count", CommandId: count}, nil
 		}}, nil
 	})
 	runtime.BindSlots("a", store, mapping)
-	host, err := actorrpc.ConnectNATS(url, ns, "a", runtime, 32)
+	host, err := ConnectNATS(url, ns, "a", runtime, 32)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,27 +60,27 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []Identi
 		t.Fatal(err)
 	}
 	callerRuntime := echoRuntime()
-	caller, err := actorrpc.ConnectNATS(url, ns, "caller", callerRuntime, 32)
+	caller, err := ConnectNATS(url, ns, "caller", callerRuntime, 32)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer caller.Close()
 	defer callerRuntime.Drain(ctx)
 	resolver, _ := watchedRoutes(t, store, directory)
-	allocator := &actorrpc.EntityRouter{Resolver: resolver, Ownership: slotOwnership(t, store, directory), Transport: caller, Service: func(string) (string, error) { return "game", nil }, SlotID: mapping}
+	allocator := &EntityRouter{Resolver: resolver, Ownership: slotOwnership(t, store, directory), Transport: caller, Service: func(string) (string, error) { return "game", nil }, SlotID: mapping}
 	// 拒绝容量时不得先写 assignment 或触发业务加载。
-	runtime.SetActivationLimits(ActivationLimits{Admit: func() bool { return false }})
-	if _, _, err := allocator.Ensure(ctx, ids[0]); !errors.Is(err, ErrCapacity) {
+	runtime.SetActivationLimits(actorhost.ActivationLimits{Admit: func() bool { return false }})
+	if _, _, err := allocator.Ensure(ctx, ids[0]); !errors.Is(err, actorhost.ErrCapacity) {
 		t.Fatalf("容量预检: %v", err)
 	}
 	if _, err := store.ResolveSlot(ctx, slot); !errors.Is(err, discovery.ErrSlotNotFound) {
 		t.Fatalf("容量拒绝仍创建归属: %v", err)
 	}
-	if runtime.Probe(ids[0]).State != Unloaded {
+	if runtime.Probe(ids[0]).State != actorhost.Unloaded {
 		t.Fatal("容量预检触发了加载")
 	}
-	runtime.SetActivationLimits(ActivationLimits{})
-	cold := &actorrpc.RoutedCaller{Router: allocator, Transport: directSender(t, directory)}
+	runtime.SetActivationLimits(actorhost.ActivationLimits{})
+	cold := &RoutedCaller{Router: allocator, Transport: directSender(t, directory)}
 	if result, err := cold.Call(ctx, ids[0], &actorpb.Delivery{MessageType: "increment"}); err != nil || result.CommandId != 1 {
 		t.Fatalf("首次直连调用: %+v %v", result, err)
 	}
@@ -97,7 +99,7 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []Identi
 	if err != nil || second != assignment {
 		t.Fatalf("partition reassigned: %+v %v", second, err)
 	}
-	routes := []*RoutedCaller{{Resolver: resolver, SlotID: mapping, Transport: directSender(t, directory)}, {Resolver: resolver, SlotID: mapping, Transport: caller}}
+	routes := []*RoutedCaller{{Router: allocator, Transport: directSender(t, directory)}, {Router: allocator, Transport: caller}}
 	for round, route := range routes {
 		for _, id := range ids {
 			result, err := route.Call(ctx, id, &actorpb.Delivery{MessageType: "increment"})
@@ -126,8 +128,8 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []Identi
 	if err := cache.Replace([]discovery.SlotAssignment{assignment}); err != nil {
 		t.Fatal(err)
 	}
-	hot := &actorrpc.EntityRouter{Resolver: hotResolver, SlotID: mapping, Transport: caller, Service: allocator.Service}
-	current := &actorrpc.NATSMessenger{Router: hot}
+	hot := &EntityRouter{Resolver: hotResolver, SlotID: mapping, Transport: caller, Service: allocator.Service}
+	current := &NATSMessenger{Router: hot}
 	for _, id := range ids {
 		message := &actorpb.Delivery{MessageType: "increment"}
 		if err := current.Tell(ctx, id, message); err != nil {
@@ -155,11 +157,11 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []Identi
 	}
 
 	if mapping != nil {
-		unknown := Identity{"role", "missing-zone"}
+		unknown := actorhost.Identity{Kind: "role", Key: "missing-zone"}
 		if _, _, err := allocator.Ensure(ctx, unknown); err == nil {
 			t.Fatal("missing group fell back to default partition")
 		}
-		if runtime.Probe(unknown).State != Unloaded {
+		if runtime.Probe(unknown).State != actorhost.Unloaded {
 			t.Fatal("missing group activated an entity")
 		}
 	}
@@ -171,7 +173,7 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []Identi
 	wrong := echoRuntime()
 	wrong.BindSlots("b", store, mapping)
 	defer wrong.Drain(ctx)
-	if _, err := wrong.Call(ctx, ids[0], &actorpb.Delivery{}); !errors.Is(err, ErrNotOwner) {
+	if _, err := wrong.Call(ctx, ids[0], &actorpb.Delivery{}); !errors.Is(err, actorhost.ErrNotOwner) {
 		t.Fatalf("wrong owner activated: %v", err)
 	}
 }
