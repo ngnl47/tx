@@ -333,12 +333,19 @@ change/meta/storage contracts
 CMod 固定属于 L3，是带稳定身份、依赖关系和进程生命周期的能力门面。L0-L2 的算法、backend、Runtime 和 Scheduler
 只能作为强类型组件被 CMod Builder 组合，不拥有全局 `CModID`。L4 服务只声明直接 `CModID`，Bee/Ant 复用私有内核中的同一个解析器
 得到依赖闭包、稳定拓扑顺序、循环路径和缺失依赖。`Requires` 会选择依赖，`After` 只对已经选中的门面增加顺序边。
-当前内置关系为：
+共有内置 CMod 的完整依赖图及接入示例见 [README：CMod 依赖与服务能力声明](../README.md#cmod-依赖与服务能力声明)。这里区分两个边界：
+
+- **运行依赖**：`CModSpec.Requires` 由能力实现方声明，负责自动启用、启动顺序及反向关闭。`After` 不扩展能力选择。
+- **直接使用依赖**：`ServiceSpec.Requires` 由业务 Registration 声明，同时决定该服务可从 Context 取得哪些能力。间接依赖即使已启动，也不自动成为服务可读取的能力；例如 Actor 自动启用 Discovery，但服务自行查询目录仍须声明 Discovery。
+
+保留这两层边界，是为了让 CMod 的内部实现可以调整，而不让业务意外依赖其传递依赖。服务声明不需要复制整张依赖图；同一服务直接使用 Actor 和 Discovery 时，两者同时出现是对真实调用关系的声明。其他服务启用更多能力，也不能扩大当前服务的访问范围。
+
+声明 ActorKinds 会隐式启用 Actor 及其运行依赖，服务自身要调用 Actor 门面仍须显式声明 Actor。所有所选服务共享按 CModID 去重后的进程能力；Registration 列表顺序不能替代拓扑关系。缺失依赖、重复身份和依赖环由装配内核统一报错，不由业务补救。
+
+门面内部的组件组合保持如下边界：
 
 ```text
-fusion-storage requires redis-storage, mongo-storage
 fusion-storage components: scheduler=delay
-session-id requires discovery
 procedure components: transaction=default, writeback=<project>
 ```
 

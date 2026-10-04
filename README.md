@@ -204,11 +204,55 @@ Bee 和 Ant 使用能力模组（Capability Module，简称 CMod）组合运行�
 都是门面内部的强类型组件，不拥有独立 `CModID`，也不单独参与全局生命周期。`agent/msgq/game` 等 L4 服务只选择所需
 CMod，框架递归展开 `Requires` 依赖；`After` 仅调整已经选中门面的启动顺序，不会暗中启用能力。
 
+### CMod 依赖与服务能力声明
+
+`Requires` 有两处声明，分别由模块作者和业务服务作者维护：
+
+| 声明位置 | 含义 | 谁维护 |
+| --- | --- | --- |
+| `CModSpec.Requires` | 该能力运行所必需的前置 CMod，自动递归启用并先启动 | 内置 CMod 由 tx 维护；自定义 CMod 由其实现方维护 |
+| `ServiceSpec.Requires` | 服务直接依赖、需要在构造或启动时取得的能力，也是依赖闭包的入口 | 项目的服务 Registration |
+
+以下是 Bee/Ant 共有的内置 CMod 关系。实线箭头从依赖方指向前置能力，表示 `Requires`；虚线表示仅影响顺序的 `After`：
+
+```mermaid
+flowchart LR
+    task[TaskQueue] --> actor[Actor]
+    actor --> rpc[RPC]
+    actor --> discovery[Discovery]
+    session[SessionID] --> discovery
+    fusion[FusionStorage] --> redis[RedisStorage]
+    fusion --> mongo[MongoStorage]
+    discovery -. "After：仅在 RPC 已选中时" .-> rpc
+```
+
+RPC、RedisStorage、MongoStorage 没有前置 CMod；Discovery 没有强依赖。自定义 CMod 通过 `Builder.CMods(...)` 注册实现，再由服务或其他 CMod 的 `Requires` 选择；只有注册、不在所选服务的依赖闭包内时不会启动。
+
+**自动启用间接依赖，不会扩大服务的直接访问范围。** 例如：
+
+```go
+// 服务只调用 runtime.CModActor()：框架自动启用 RPC、Discovery、Actor。
+Requires: []bee.CModID{bee.CModActor}
+
+// 服务还要自行查询目录 runtime.CModDiscovery()：显式声明这项直接依赖。
+Requires: []bee.CModID{bee.CModActor, bee.CModDiscovery}
+```
+
+同样，只使用 `CModFusionStorage()` 的服务不必再列 Redis/Mongo；如果还要通过 `CModRedisStorage()` 取得脚本路由，则必须显式声明 RedisStorage。不能因为同进程另一个服务启用了某项能力，就直接读取它。
+
+`ActorKinds` 会自动将 Actor 纳入启动闭包，但不会自动授予服务 `CModActor()` 的访问能力；服务自身需要发送 Actor 消息时仍须在 `Requires` 中声明 Actor。`CModActorDirect()` 也使用 Actor 的声明，不是另一个 CMod。
+
+启动时对选中服务的依赖取并集、递归展开并按 CModID 去重；同一进程只启动一份共享能力。列表书写顺序不是启动顺序，框架按依赖拓扑先启动前置能力，再执行服务 Factory/Start。缺失依赖、重复 CModID 或依赖环会报错。正常关闭先收尾服务，再反向排水和关闭 CMod，避免先释放仍被依赖的资源。
+
+依赖定义位于 `internal/framework/cmod_*.go`；`cmod_graph.go` 调用 `component.Resolve` 解析拓扑，`bee/context.go` 和 Ant 门面检查直接能力声明。修改内置关系时应同步本图与 `internal/framework/cmod_builtin_test.go` 中的依赖契约。
+
+### 服务组合示例
+
 | 服务 | 直接 CMod | 展开后的主要资源 |
 | --- | --- | --- |
-| `agent` | RPC、Redis；跨进程邮箱时增加 Discovery | 玩家 TCP/WebSocket 入口、共享 RPC、SessionID binding 与角色归属 |
+| Bee 标准 `agent` | RPC、Redis、Discovery、Actor | 玩家 TCP/WebSocket 入口、共享 RPC、会话绑定与 Actor 直连分派 |
 | `msgq` | RPC、Redis、Discovery | 共享 RPC 上的 MailboxService、精确会话/角色归属索引与独立进程 endpoint 注册 |
-| `txgame` 无状态 `game` | RPC、Fusion | 请求结束显式保存；Fusion 内部组合 Redis、Mongo 和 Delay Scheduler |
+| `txgame` 无状态 `game` | RPC、Redis、Discovery、Fusion、Actor；按任务配置增加 TaskQueue | Actor 命令处理、MsgQ 下行路由及显式保存；Fusion 内部组合 Redis、Mongo 和 Delay Scheduler |
 | `txgameslg` 有状态 `slggame` | RPC、Fusion、CModProcedure | Procedure 提交后由 CModProcedure 的 WriteBack 组件分帧写 Fusion |
 | `txgameslg` 有状态 `slgworld` | RPC、Mongo、CModProcedure | CModProcedure 组合 Transaction 与直接 Mongo WriteBack |
 
