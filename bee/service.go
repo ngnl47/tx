@@ -15,7 +15,8 @@ import (
 type ServiceSpec struct {
 	// Name 是启动参数和服务发现中使用的稳定 L4 服务名。
 	Name string
-	// Requires 是服务构造前必须就绪的直接 CMod 依赖。
+	// Requires 声明服务直接使用的 CMod，构造前由框架递归启用依赖并按拓扑启动。
+	// Context 只允许取得显式声明的能力；间接依赖已启动不代表服务可以直接访问。
 	Requires []CModID
 	// ActorKinds 列出由本服务承载的多个 Actor 种类；Kind 名称在应用全部注册中唯一。
 	// 未选中服务只提供规格，不启动其工厂。

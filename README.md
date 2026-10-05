@@ -252,7 +252,7 @@ Requires: []bee.CModID{bee.CModActor, bee.CModDiscovery}
 | --- | --- | --- |
 | Bee 标准 `agent` | RPC、Redis、Discovery、Actor | 玩家 TCP/WebSocket 入口、共享 RPC、会话绑定与 Actor 直连分派 |
 | `msgq` | RPC、Redis、Discovery | 共享 RPC 上的 MailboxService、精确会话/角色归属索引与独立进程 endpoint 注册 |
-| `txgame` 无状态 `game` | RPC、Redis、Discovery、Fusion、Actor；按任务配置增加 TaskQueue | Actor 命令处理、MsgQ 下行路由及显式保存；Fusion 内部组合 Redis、Mongo 和 Delay Scheduler |
+| `txgame` 无状态 `game` | Redis、Discovery、Fusion、Actor；按任务配置增加 TaskQueue | Actor 自动启用共享 RPC；MsgQ 下行路由及显式保存；Fusion 内部组合 Redis、Mongo 和 Delay Scheduler |
 | `txgameslg` 有状态 `slggame` | RPC、Fusion、CModProcedure | Procedure 提交后由 CModProcedure 的 WriteBack 组件分帧写 Fusion |
 | `txgameslg` 有状态 `slgworld` | RPC、Mongo、CModProcedure | CModProcedure 组合 Transaction 与直接 Mongo WriteBack |
 

@@ -37,7 +37,8 @@ type SessionIDAllocator interface {
 type CModSpec struct {
 	// ID 是参与依赖解析、去重和启动日志的稳定能力标识。
 	ID CModID
-	// Requires 会把依赖加入启动闭包，并要求它们先启动。
+	// Requires 声明本 CMod 的直接前置能力，递归加入启动闭包并要求它们先启动。
+	// 本 CMod 从 Context 取得的能力须在此显式声明，不因间接依赖已启动而开放访问。
 	Requires []CModID
 	// After 只对已被选中的 CMod 增加启动顺序，不会隐式启用它们。
 	After []CModID
