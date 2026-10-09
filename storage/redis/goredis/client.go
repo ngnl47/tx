@@ -26,6 +26,9 @@ func NewClient(client redis.Cmdable) Client {
 	return Client{client: client}
 }
 
+// Commands 返回共享客户端的原生命令接口，不转移连接生命周期。
+func (c Client) Commands() redis.Cmdable { return c.client }
+
 func (c Client) Get(ctx context.Context, key string) (string, bool, error) {
 	if c.client == nil {
 		return "", false, errRedisClientNotConfigured

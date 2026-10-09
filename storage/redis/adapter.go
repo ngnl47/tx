@@ -18,10 +18,10 @@ import (
 	"github.com/ngnl47/tx/storage"
 )
 
-// ScriptClient 是 Redis Lua 写入所需的最小接口。
+// LuaClient 是 Redis Lua 写入所需的最小接口。
 //
 // runtime 基建不直接依赖具体驱动；官方 go-redis 适配见 storage/redis/goredis。
-type ScriptClient interface {
+type LuaClient interface {
 	Eval(context.Context, string, []string, ...any) (string, error)
 }
 
@@ -43,7 +43,7 @@ type BatchClient interface {
 }
 
 type recordLock struct {
-	client ScriptClient
+	client LuaClient
 	key    string
 	token  string
 }
@@ -56,13 +56,13 @@ type LoadOptions struct {
 
 // Adapter 把规范化变更流应用到 Redis string JSON 文档。
 type Adapter struct {
-	client ScriptClient
+	client LuaClient
 }
 
 var _ storage.DocumentBackfiller = (*Adapter)(nil)
 
 // NewAdapter 创建 Redis 变更适配器。
-func NewAdapter(client ScriptClient) (*Adapter, error) {
+func NewAdapter(client LuaClient) (*Adapter, error) {
 	if isNilScriptClient(client) {
 		return nil, ErrClientNotConfigured
 	}
@@ -566,14 +566,14 @@ func (a *Adapter) loadDocumentsByHashTagMGet(ctx context.Context, spec meta.Type
 	return docs, exists, nil
 }
 
-func (a *Adapter) scriptClient() (ScriptClient, error) {
+func (a *Adapter) scriptClient() (LuaClient, error) {
 	if a == nil || isNilScriptClient(a.client) {
 		return nil, ErrClientNotConfigured
 	}
 	return a.client, nil
 }
 
-func isNilScriptClient(client ScriptClient) bool {
+func isNilScriptClient(client LuaClient) bool {
 	if client == nil {
 		return true
 	}

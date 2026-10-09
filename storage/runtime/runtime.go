@@ -45,7 +45,7 @@ type Config struct {
 type Runtime struct {
 	io              ioStats
 	ctx             context.Context
-	redis           *txredis.Cluster
+	redis           *txredis.Stores
 	mongo           *txmongo.Cluster
 	fusion          txfusion.Strategy
 	delayBackend    *txtaskredis.Backend
@@ -53,7 +53,7 @@ type Runtime struct {
 	delayWorker     *txfusion.Scheduler
 	delayDispatcher *txfusion.DelayTaskDispatcher
 
-	redisShards    map[string]txgoredis.Client
+	redisByName    map[string]txgoredis.Client
 	mongoIndexers  map[string]txmongo.IndexManager
 	redisClients   []*goredis.Client
 	mongoClients   []*mongodriver.Client
@@ -73,18 +73,18 @@ func New(ctx context.Context) *Runtime {
 	return &Runtime{ctx: ctx}
 }
 
-// StartRedis 建立 Redis 路由和连接。
-func (s *Runtime) StartRedis(ctx context.Context, cfg storageconfig.RouteTableConfig) error {
+// StartRedis 建立具名 Redis 存储和共享连接。
+func (s *Runtime) StartRedis(ctx context.Context, cfg storageconfig.RedisConfig) error {
 	if s == nil {
 		return ErrNotConfigured
 	}
-	redisCluster, redisClients, redisShards, err := buildRedisCluster(ctx, cfg, &s.io)
+	redisStores, redisClients, redisByName, err := buildRedisStores(ctx, cfg, &s.io)
 	if err != nil {
 		return err
 	}
-	s.redis = redisCluster
+	s.redis = redisStores
 	s.redisClients = redisClients
-	s.redisShards = redisShards
+	s.redisByName = redisByName
 	return nil
 }
 
@@ -147,7 +147,7 @@ func (s *Runtime) InitializeMongoIndexes(ctx context.Context, cfg storageconfig.
 }
 
 // StartFusion 组装 Redis 热数据、Mongo 冷数据和延迟任务队列。
-func (s *Runtime) StartFusion(ctx context.Context, redisConfig storageconfig.RouteTableConfig, opts Config, types txfusion.TypeRegistry) error {
+func (s *Runtime) StartFusion(ctx context.Context, opts Config, types txfusion.TypeRegistry) error {
 	if s == nil {
 		return ErrNotConfigured
 	}
@@ -157,7 +157,7 @@ func (s *Runtime) StartFusion(ctx context.Context, redisConfig storageconfig.Rou
 	if s.redis == nil || s.mongo == nil {
 		return fmt.Errorf("storage runtime: Redis and Mongo storage must start before Fusion")
 	}
-	delayBackend, delayedSaveQueue, err := buildDelayedSaveQueue(ctx, redisConfig, s.redisShards, opts)
+	delayBackend, delayedSaveQueue, err := buildDelayedSaveQueue(s.redisByName, opts)
 	if err != nil {
 		return err
 	}
@@ -267,13 +267,17 @@ func (s *Runtime) FusionReader() txstorage.DocumentLoader {
 	return s.guardReader(meta.StorageModeFusion, s.fusion)
 }
 
-// RedisScriptClientFor 返回 routeType/shardKey 对应的既有 Redis 客户端。
-// 仅限会话绑定等项目基础设施复用；GD 数据读写仍通过 Storage 的类型化入口完成。
-func (s *Runtime) RedisScriptClientFor(ctx context.Context, routeType string, shardKey any) (txredis.ScriptClient, error) {
+// RedisClient 返回具名存储的原生命令接口，沿用 go-redis 的结果与错误语义。
+// 调用方借用连接，不负责创建、重新配置或关闭连接。
+func (s *Runtime) RedisClient(name string) (goredis.Cmdable, error) {
 	if s == nil || s.redis == nil {
 		return nil, ErrNotConfigured
 	}
-	return s.redis.ScriptClientFor(ctx, routeType, shardKey)
+	client, ok := s.redisByName[name]
+	if !ok {
+		return nil, fmt.Errorf("storage runtime: Redis store %q is not configured", name)
+	}
+	return client.Commands(), nil
 }
 
 // ProbeBackend 检查指定 backend 的全部端点，并在无新失败时恢复健康闸门。
@@ -399,12 +403,11 @@ func (writer storageChangeWriter) ApplyChangesWithOptions(ctx context.Context, s
 	return nil
 }
 
-func buildRedisCluster(ctx context.Context, cfg storageconfig.RouteTableConfig, stats *ioStats) (*txredis.Cluster, []*goredis.Client, map[string]txgoredis.Client, error) {
-	routeTable, err := cfg.RouteTable()
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("storage runtime: build redis route table: %w", err)
+func buildRedisStores(ctx context.Context, cfg storageconfig.RedisConfig, stats *ioStats) (*txredis.Stores, []*goredis.Client, map[string]txgoredis.Client, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, nil, nil, err
 	}
-	shards := map[string]txredis.ScriptClient{}
+	namedClients := map[string]txredis.LuaClient{}
 	runtimeClients := map[string]txgoredis.Client{}
 	clients := make([]*goredis.Client, 0, len(cfg.Endpoints()))
 	for _, endpoint := range sortedEndpointValues(cfg.Endpoints()) {
@@ -423,14 +426,18 @@ func buildRedisCluster(ctx context.Context, cfg storageconfig.RouteTableConfig, 
 		runtimeClient := txgoredis.NewClient(client)
 		clients = append(clients, client)
 		runtimeClients[endpoint] = runtimeClient
-		shards[endpoint] = runtimeClient
 	}
-	cluster, err := txredis.NewCluster(routeTable, shards)
+	byName := make(map[string]txgoredis.Client, len(cfg.Stores))
+	for name, endpoint := range cfg.Stores {
+		namedClients[name] = runtimeClients[endpoint]
+		byName[name] = runtimeClients[endpoint]
+	}
+	stores, err := txredis.NewStores(namedClients)
 	if err != nil {
 		closeRedisClients(clients)
-		return nil, nil, nil, fmt.Errorf("storage runtime: build redis cluster: %w", err)
+		return nil, nil, nil, fmt.Errorf("storage runtime: build Redis stores: %w", err)
 	}
-	return cluster, clients, runtimeClients, nil
+	return stores, clients, byName, nil
 }
 
 func buildMongoCluster(ctx context.Context, cfg storageconfig.RouteTableConfig, stats *ioStats) (*txmongo.Cluster, []*mongodriver.Client, map[string]txmongo.IndexManager, error) {
@@ -472,22 +479,14 @@ func buildMongoCluster(ctx context.Context, cfg storageconfig.RouteTableConfig, 
 	return cluster, clients, indexers, nil
 }
 
-func buildDelayedSaveQueue(ctx context.Context, cfg storageconfig.RouteTableConfig, clients map[string]txgoredis.Client, opts Config) (*txtaskredis.Backend, *txfusion.TaskQueue, error) {
+func buildDelayedSaveQueue(clients map[string]txgoredis.Client, opts Config) (*txtaskredis.Backend, *txfusion.TaskQueue, error) {
 	routeType := opts.DelayTaskRouteType
 	if routeType == "" {
 		routeType = defaultDelayTaskRouteType
 	}
-	routeTable, err := cfg.RouteTable()
-	if err != nil {
-		return nil, nil, fmt.Errorf("storage runtime: build delayed save queue route table: %w", err)
-	}
-	endpoint, err := routeTable.RouteRedis(ctx, routeType, int64(1))
-	if err != nil {
-		return nil, nil, fmt.Errorf("storage runtime: route delayed save queue redis endpoint %q: %w", routeType, err)
-	}
-	client, ok := clients[endpoint]
+	client, ok := clients[routeType]
 	if !ok {
-		return nil, nil, fmt.Errorf("storage runtime: delayed save queue redis endpoint %q is not configured", endpoint)
+		return nil, nil, fmt.Errorf("storage runtime: delayed save Redis store %q is not configured", routeType)
 	}
 	backend := txtaskredis.NewBackend(client, txtaskredis.Options{
 		Prefix:       opts.DelayTaskPrefix,

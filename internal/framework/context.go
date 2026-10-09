@@ -14,7 +14,7 @@ import (
 	"github.com/ngnl47/tx/sessionid"
 	txstorage "github.com/ngnl47/tx/storage"
 	txmongo "github.com/ngnl47/tx/storage/mongo"
-	txredis "github.com/ngnl47/tx/storage/redis"
+	txgoredis "github.com/ngnl47/tx/storage/redis/goredis"
 )
 
 // StorageReaders 是生成 data 包使用的读取契约。
@@ -54,8 +54,8 @@ type ModeStorage interface {
 
 // Advanced 暴露第一版受支持的专家级扩展面。普通业务服务应直接使用 Context 的能力方法。
 type Advanced interface {
-	// Redis 返回 Redis 脚本路由能力；普通 GD 读写不应使用该入口。
-	Redis() txredis.ScriptRoutes
+	// Redis 返回 Redis 具名命令接口；普通 GD 读写不应使用该入口。
+	Redis() txgoredis.ClientProvider
 	// Slots 返回有状态服务逻辑槽位门面。读取只访问 Watch 内存目录，创建和迁移
 	// 仍通过 etcd CAS 持久化；业务消息热路径不会执行 etcd Get。
 	Slots() discovery.SlotStore

@@ -7,7 +7,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// RouteTableConfig 表示 redis.yml 或 mongodb.yml 中的 routeType 路由表。
+// RouteTableConfig 表示 mongodb.yml 中的 routeType 路由表。
 type RouteTableConfig struct {
 	// Routes 按 routeType 保存一组稳定分片规则。
 	Routes map[string]RouteTarget `yaml:",inline" json:"routes"`

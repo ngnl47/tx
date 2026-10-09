@@ -17,7 +17,7 @@ import (
 	txmsgq "github.com/ngnl47/tx/modules/msgq"
 	"github.com/ngnl47/tx/modules/msgq/msgqredis"
 	txrpc "github.com/ngnl47/tx/modules/rpc"
-	txredis "github.com/ngnl47/tx/storage/redis"
+	txgoredis "github.com/ngnl47/tx/storage/redis/goredis"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -38,7 +38,7 @@ type Dependencies struct {
 	// Directory 为远端 msgq 会话路由提供本地服务发现快照。
 	Directory discovery.Directory
 	// Redis 为远端 msgq 会话 owner 绑定提供脚本路由。
-	Redis txredis.ScriptRoutes
+	Redis txgoredis.ClientProvider
 }
 
 // Options 描述 Agent 监听地址、帧限制和业务处理器。
@@ -313,7 +313,7 @@ func (service *Service) resolveSessions() (txagent.SessionClientRouter, interfac
 		return nil, nil, fmt.Errorf("agent service: remote msgq requires service discovery")
 	}
 	if service.dependencies.Redis == nil {
-		return nil, nil, fmt.Errorf("agent service: Redis routes are unavailable")
+		return nil, nil, fmt.Errorf("agent service: Redis clients are unavailable")
 	}
 	store, err := msgqredis.New(service.dependencies.Redis, service.options.SessionStore)
 	if err != nil {
@@ -346,7 +346,7 @@ func validateOptions(options Options) error {
 	if options.MaxFrameBytes <= 0 || options.Identity == nil || options.Dispatcher == nil {
 		return fmt.Errorf("agent service: frame limits and command handlers are required")
 	}
-	if options.Sessions == nil && options.LocalMsgQ == nil && (strings.TrimSpace(options.SessionStore.RouteType) == "" || strings.TrimSpace(options.SessionStore.Prefix) == "" || options.SessionStore.TTL <= 0) {
+	if options.Sessions == nil && options.LocalMsgQ == nil && (strings.TrimSpace(options.SessionStore.StoreName) == "" || strings.TrimSpace(options.SessionStore.Prefix) == "" || options.SessionStore.TTL <= 0) {
 		return fmt.Errorf("agent service: session routing is not configured")
 	}
 	return nil

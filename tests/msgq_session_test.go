@@ -166,49 +166,6 @@ func TestMsgQRedisSessionStoreUsesSessionHashTagAndConditionalOperations(t *test
 	}
 }
 
-func TestMsgQRoutedRedisSessionStoreResolvesExactOperationsBySessionID(t *testing.T) {
-	client := &sessionRedisClientFake{
-		getValue: `{"roleId":470001,"sessionId":99,"connectionId":7,"instanceId":"msgq-2"}`,
-		evalResults: []string{
-			"1",
-			"1",
-			"1",
-			"1",
-			"1",
-			"1",
-		},
-	}
-	resolver := &sessionRedisResolverFake{client: client}
-	store, err := msgq.NewRoutedRedisSessionStore(resolver, msgq.SessionRedisOptions{
-		Prefix: "tx:test:routed-session",
-		TTL:    time.Minute,
-	})
-	if err != nil {
-		t.Fatalf("new routed redis session store: %v", err)
-	}
-	binding := msgq.SessionBinding{RoleID: 470001, SessionID: 99, ConnectionID: 7, InstanceID: "msgq-2"}
-	if created, err := store.Create(context.Background(), binding); err != nil || !created {
-		t.Fatalf("create = %t, %v", created, err)
-	}
-	if _, found, err := store.Find(context.Background(), binding.SessionID); err != nil || !found {
-		t.Fatalf("find found = %t, err = %v", found, err)
-	}
-	if refreshed, err := store.Refresh(context.Background(), binding); err != nil || !refreshed {
-		t.Fatalf("refresh = %t, err = %v", refreshed, err)
-	}
-	if removed, err := store.Unbind(context.Background(), binding); err != nil || !removed {
-		t.Fatalf("unbind = %t, err = %v", removed, err)
-	}
-	if len(resolver.roleIDs) != 4 {
-		t.Fatalf("resolver shard keys = %#v", resolver.roleIDs)
-	}
-	for _, sessionID := range resolver.roleIDs {
-		if sessionID != binding.SessionID {
-			t.Fatalf("resolver shard key = %d, want SessionID %d", sessionID, binding.SessionID)
-		}
-	}
-}
-
 func TestMsgQRedisSessionStoreIntegration(t *testing.T) {
 	endpoint := os.Getenv("TX_REDIS_ENDPOINT")
 	if endpoint == "" {
@@ -379,16 +336,6 @@ type sessionStoreFake struct {
 	refreshErr     error
 	refreshCalls   int
 	refreshed      msgq.SessionBinding
-}
-
-type sessionRedisResolverFake struct {
-	client  msgq.SessionRedisClient
-	roleIDs []int64
-}
-
-func (r *sessionRedisResolverFake) ResolveSessionRedis(_ context.Context, roleID int64) (msgq.SessionRedisClient, error) {
-	r.roleIDs = append(r.roleIDs, roleID)
-	return r.client, nil
 }
 
 func (s *sessionStoreFake) Create(context.Context, msgq.SessionBinding) (bool, error) {

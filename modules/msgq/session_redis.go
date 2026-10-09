@@ -49,12 +49,6 @@ type SessionRedisClient interface {
 	Eval(ctx context.Context, script string, keys []string, args ...any) (string, error)
 }
 
-// SessionRedisResolver 按索引身份选择会话数据所在的 Redis 客户端。
-// 精确绑定使用 SessionID，角色归属使用 RoleID。
-type SessionRedisResolver interface {
-	ResolveSessionRedis(context.Context, int64) (SessionRedisClient, error)
-}
-
 // SessionRedisOptions 配置一个短期会话绑定命名空间。
 type SessionRedisOptions struct {
 	Prefix string
@@ -63,9 +57,9 @@ type SessionRedisOptions struct {
 
 // RedisSessionStore 在 Redis 中保存精确会话绑定和角色 MsgQ 归属。
 type RedisSessionStore struct {
-	resolve func(context.Context, int64) (SessionRedisClient, error)
-	prefix  string
-	ttl     time.Duration
+	redis  SessionRedisClient
+	prefix string
+	ttl    time.Duration
 }
 
 func (s *RedisSessionStore) leaseRefreshInterval() time.Duration {
@@ -80,22 +74,10 @@ func NewRedisSessionStore(client SessionRedisClient, options SessionRedisOptions
 	if client == nil {
 		return nil, ErrSessionRedisClientNil
 	}
-	return newRedisSessionStore(func(context.Context, int64) (SessionRedisClient, error) { return client, nil }, options)
-}
-
-// NewRoutedRedisSessionStore 创建按索引身份路由 Redis 分片的会话存储。
-func NewRoutedRedisSessionStore(resolver SessionRedisResolver, options SessionRedisOptions) (*RedisSessionStore, error) {
-	if resolver == nil {
-		return nil, ErrSessionRedisClientNil
-	}
-	return newRedisSessionStore(resolver.ResolveSessionRedis, options)
-}
-
-func newRedisSessionStore(resolve func(context.Context, int64) (SessionRedisClient, error), options SessionRedisOptions) (*RedisSessionStore, error) {
 	if options.Prefix == "" || options.Prefix != strings.TrimSpace(options.Prefix) || strings.ContainsAny(options.Prefix, "{}") || options.TTL < time.Millisecond {
 		return nil, ErrInvalidSessionOptions
 	}
-	return &RedisSessionStore{resolve: resolve, prefix: options.Prefix, ttl: options.TTL}, nil
+	return &RedisSessionStore{redis: client, prefix: options.Prefix, ttl: options.TTL}, nil
 }
 
 // Create 仅在 SessionID 尚未占用时创建精确绑定。
@@ -107,7 +89,7 @@ func (s *RedisSessionStore) Create(ctx context.Context, binding SessionBinding) 
 	if err != nil {
 		return false, err
 	}
-	client, err := s.client(ctx, binding.SessionID)
+	client, err := s.client()
 	if err != nil {
 		return false, err
 	}
@@ -137,7 +119,7 @@ func (s *RedisSessionStore) Rebind(ctx context.Context, expected, replacement Se
 	if err != nil {
 		return false, err
 	}
-	client, err := s.client(ctx, expected.SessionID)
+	client, err := s.client()
 	if err != nil {
 		return false, err
 	}
@@ -153,7 +135,7 @@ func (s *RedisSessionStore) Find(ctx context.Context, sessionID int64) (SessionB
 	if sessionID <= 0 {
 		return SessionBinding{}, false, ErrInvalidSession
 	}
-	client, err := s.client(ctx, sessionID)
+	client, err := s.client()
 	if err != nil {
 		return SessionBinding{}, false, err
 	}
@@ -189,7 +171,7 @@ func (s *RedisSessionStore) Unbind(ctx context.Context, binding SessionBinding) 
 	if err != nil {
 		return false, err
 	}
-	client, err := s.client(ctx, binding.SessionID)
+	client, err := s.client()
 	if err != nil {
 		return false, err
 	}
@@ -201,7 +183,7 @@ func (s *RedisSessionStore) Unbind(ctx context.Context, binding SessionBinding) 
 }
 
 func (s *RedisSessionStore) evalConditional(ctx context.Context, script string, binding SessionBinding, encoded string) (bool, error) {
-	client, err := s.client(ctx, binding.SessionID)
+	client, err := s.client()
 	if err != nil {
 		return false, err
 	}
@@ -212,18 +194,11 @@ func (s *RedisSessionStore) evalConditional(ctx context.Context, script string, 
 	return conditionalResult(result)
 }
 
-func (s *RedisSessionStore) client(ctx context.Context, shardKey int64) (SessionRedisClient, error) {
-	if s == nil || s.resolve == nil {
+func (s *RedisSessionStore) client() (SessionRedisClient, error) {
+	if s == nil || s.redis == nil {
 		return nil, ErrSessionRedisClientNil
 	}
-	client, err := s.resolve(ctx, shardKey)
-	if err != nil {
-		return nil, err
-	}
-	if client == nil {
-		return nil, ErrSessionRedisClientNil
-	}
-	return client, nil
+	return s.redis, nil
 }
 
 func (s *RedisSessionStore) sessionKey(sessionID int64) string {

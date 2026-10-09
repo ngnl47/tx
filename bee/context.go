@@ -16,7 +16,7 @@ import (
 	"github.com/ngnl47/tx/sessionid"
 	txstorage "github.com/ngnl47/tx/storage"
 	txmongo "github.com/ngnl47/tx/storage/mongo"
-	txredis "github.com/ngnl47/tx/storage/redis"
+	txgoredis "github.com/ngnl47/tx/storage/redis/goredis"
 )
 
 // StorageReaders 是生成 data 包使用的读取契约。
@@ -37,13 +37,13 @@ type Storage interface {
 	ChangeWriter() txstorage.ChangeApplier
 }
 
-// RedisStorage 只暴露 Redis 文档读写与高级脚本路由。
+// RedisStorage 只暴露 Redis 文档读写与具名命令接口。
 type RedisStorage interface {
 	Storage
 	// RedisReader 返回带健康闸门的 Redis 文档读取器。
 	RedisReader() txstorage.DocumentLoader
-	// ScriptRoutes 返回高级 Redis Lua 脚本路由，不转移 client 所有权。
-	ScriptRoutes() txredis.ScriptRoutes
+	// Clients 返回按存储名称选择的 go-redis 命令接口，不转移 client 所有权。
+	Clients() txgoredis.ClientProvider
 }
 
 // MongoStorage 只暴露 MongoDB 文档读写。
@@ -77,7 +77,7 @@ type Context interface {
 	Admission() lifecycle.Admission
 	// Storage 返回当前 owner 已声明的最强文档存储能力。
 	Storage() Storage
-	// CModRedisStorage 返回已声明的 Redis 文档和脚本路由能力。
+	// CModRedisStorage 返回已声明的 Redis 文档和具名命令接口。
 	CModRedisStorage() RedisStorage
 	// CModMongoStorage 返回已声明的 MongoDB 文档能力。
 	CModMongoStorage() MongoStorage
@@ -193,18 +193,18 @@ func (view *contextView) CModRedisStorage() RedisStorage {
 	if advanced == nil || advanced.Redis() == nil {
 		panic(framework.CapabilityError{Err: view.unavailable(CModRedisStorage)})
 	}
-	return redisStorageView{modeStorageView: modeStorageView{storage: storage}, routes: advanced.Redis()}
+	return redisStorageView{modeStorageView: modeStorageView{storage: storage}, clients: advanced.Redis()}
 }
 
 type redisStorageView struct {
 	modeStorageView
-	routes txredis.ScriptRoutes
+	clients txgoredis.ClientProvider
 }
 
 func (view redisStorageView) RedisReader() txstorage.DocumentLoader { return view.storage.Reader() }
 
-func (view redisStorageView) ScriptRoutes() txredis.ScriptRoutes {
-	return view.routes
+func (view redisStorageView) Clients() txgoredis.ClientProvider {
+	return view.clients
 }
 
 func (view *contextView) CModMongoStorage() MongoStorage {

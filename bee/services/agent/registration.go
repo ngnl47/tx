@@ -45,7 +45,7 @@ func Registration(name string, provider OptionsProvider) (bee.ServiceRegistratio
 				Admission: runtime.Admission(),
 				RPC:       rpc,
 				Directory: directory,
-				Redis:     redis.ScriptRoutes(),
+				Redis:     redis.Clients(),
 			})
 		},
 	}, nil

@@ -31,7 +31,7 @@ func (server *Server) fusionCMod() CMod {
 			if store == nil {
 				return errors.New("storage runtime is not configured")
 			}
-			if err := store.StartFusion(server.runtime.lifecycle, server.config.Storage.Redis, server.config.Runtime.storageOptions(), server.types); err != nil {
+			if err := store.StartFusion(server.runtime.lifecycle, server.config.Runtime.storageOptions(), server.types); err != nil {
 				return err
 			}
 			if err := store.StartDelayTaskDispatcher(server.runtime.lifecycle); err != nil {

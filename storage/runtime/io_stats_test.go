@@ -73,7 +73,7 @@ func TestIOStatsRuntimeRealBackends(t *testing.T) {
 	config := func(endpoint string) storageconfig.RouteTableConfig {
 		return storageconfig.RouteTableConfig{Routes: map[string]storageconfig.RouteTarget{"test": {Rules: []storageconfig.RouteRule{{Min: 1, Shards: []string{endpoint}}}}}}
 	}
-	if err := runtime.StartRedis(ctx, config(redisURI)); err != nil {
+	if err := runtime.StartRedis(ctx, storageconfig.NewRedisConfig(map[string]string{"test": redisURI})); err != nil {
 		t.Fatal(err)
 	}
 	defer runtime.CloseRedis()

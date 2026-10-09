@@ -5,39 +5,36 @@ import (
 	"testing"
 	"time"
 
-	txredis "github.com/ngnl47/tx/storage/redis"
+	redis "github.com/redis/go-redis/v9"
 )
 
-func TestNewRoutesSessionLookupThroughConfiguredRedisRoute(t *testing.T) {
+func TestNewSelectsNamedRedisStore(t *testing.T) {
 	client := &sessionClient{}
 	routes := &recordingRoutes{client: client}
-	store, err := New(routes, Options{RouteType: "role", Prefix: "tx:test", TTL: time.Minute})
+	store, err := New(routes, Options{StoreName: "role", Prefix: "tx:test", TTL: time.Minute})
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
 	}
 	if _, found, err := store.Find(context.Background(), 47001); err != nil || found {
 		t.Fatalf("Find = found %v, err %v", found, err)
 	}
-	if routes.routeType != "role" || routes.shardKey != int64(47001) {
-		t.Fatalf("route = (%q, %#v)", routes.routeType, routes.shardKey)
+	if routes.routeType != "role" {
+		t.Fatalf("store = %q", routes.routeType)
 	}
 }
 
 type recordingRoutes struct {
-	client    txredis.ScriptClient
+	client    redis.Cmdable
 	routeType string
-	shardKey  any
 }
 
-func (routes *recordingRoutes) ScriptClientFor(_ context.Context, routeType string, shardKey any) (txredis.ScriptClient, error) {
+func (routes *recordingRoutes) Client(routeType string) (redis.Cmdable, error) {
 	routes.routeType = routeType
-	routes.shardKey = shardKey
 	return routes.client, nil
 }
 
-type sessionClient struct{}
+type sessionClient struct{ redis.Cmdable }
 
-func (*sessionClient) Get(context.Context, string) (string, bool, error) { return "", false, nil }
-func (*sessionClient) Eval(context.Context, string, []string, ...any) (string, error) {
-	return "", nil
+func (*sessionClient) Get(context.Context, string) *redis.StringCmd {
+	return redis.NewStringResult("", redis.Nil)
 }

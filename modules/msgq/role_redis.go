@@ -23,7 +23,7 @@ func (s *RedisSessionStore) ClaimRole(ctx context.Context, candidate RoleBinding
 	if err := candidate.Validate(); err != nil {
 		return RoleBinding{}, err
 	}
-	client, err := s.client(ctx, candidate.RoleID)
+	client, err := s.client()
 	if err != nil {
 		return RoleBinding{}, err
 	}
@@ -43,7 +43,7 @@ func (s *RedisSessionStore) FindRole(ctx context.Context, roleID int64) (RoleBin
 	if roleID <= 0 {
 		return RoleBinding{}, false, ErrInvalidSession
 	}
-	client, err := s.client(ctx, roleID)
+	client, err := s.client()
 	if err != nil {
 		return RoleBinding{}, false, err
 	}
@@ -69,7 +69,7 @@ func (s *RedisSessionStore) mutateRole(ctx context.Context, script string, expec
 	if err := expected.Validate(); err != nil {
 		return false, err
 	}
-	client, err := s.client(ctx, expected.RoleID)
+	client, err := s.client()
 	if err != nil {
 		return false, err
 	}

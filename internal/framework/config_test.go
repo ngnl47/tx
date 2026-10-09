@@ -34,7 +34,7 @@ func TestConfigCloneOwnsMutableRoutesAndEndpoints(t *testing.T) {
 	})
 	config := Config{
 		Storage: StorageConfig{
-			Redis:   routes,
+			Redis:   storageconfig.NewRedisConfig(map[string]string{"main": "endpoint-1"}),
 			MongoDB: routes,
 		},
 		Actor:     ActorConfig{Runtime: txactor.Config{IdlePassivation: map[string]time.Duration{"role": time.Second}}},
@@ -42,12 +42,12 @@ func TestConfigCloneOwnsMutableRoutesAndEndpoints(t *testing.T) {
 	}
 	cloned := config.clone()
 
-	config.Storage.Redis.Routes["main"] = storageconfig.RouteTarget{}
+	config.Storage.Redis.Stores["main"] = "changed"
 	config.Storage.MongoDB.Routes["main"] = storageconfig.RouteTarget{}
 	config.Actor.Runtime.IdlePassivation["role"] = 2 * time.Second
 	config.Discovery.Etcd.Endpoints[0] = "discovery-2"
 
-	if got := cloned.Storage.Redis.Routes["main"].Rules[0].Shards[0]; got != "endpoint-1" {
+	if got := cloned.Storage.Redis.Stores["main"]; got != "endpoint-1" {
 		t.Fatalf("cloned Redis endpoint = %q", got)
 	}
 	if got := cloned.Storage.MongoDB.Routes["main"].Rules[0].Shards[0]; got != "endpoint-1" {

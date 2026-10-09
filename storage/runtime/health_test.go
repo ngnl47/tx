@@ -93,7 +93,7 @@ func admissionTarget(scope string, mode meta.StorageMode) txn.LockTarget {
 }
 
 func TestStorageWriteAdmissionChecksTargetStorageModes(t *testing.T) {
-	storage := &Runtime{redis: &txredis.Cluster{}, mongo: &txmongo.Cluster{}}
+	storage := &Runtime{redis: &txredis.Stores{}, mongo: &txmongo.Cluster{}}
 	storage.markBackendUnavailable(txstorage.BackendMongo, errors.New("mongo unavailable"))
 	admission := WriteAdmission{storage: storage}
 
@@ -115,7 +115,7 @@ func TestStorageWriteAdmissionChecksTargetStorageModes(t *testing.T) {
 }
 
 func TestStorageWriteAdmissionDoesNotRequireUnrelatedBackend(t *testing.T) {
-	redisOnly := WriteAdmission{storage: &Runtime{redis: &txredis.Cluster{}}}
+	redisOnly := WriteAdmission{storage: &Runtime{redis: &txredis.Stores{}}}
 	if err := redisOnly.RequireWritable([]txn.LockTarget{
 		admissionTarget("redis-role", meta.StorageModeRedis),
 	}); err != nil {

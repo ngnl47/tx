@@ -120,14 +120,14 @@ func TestRPCOnlyServiceDoesNotRequireStorageOrGeneratedData(t *testing.T) {
 	}
 }
 
-func TestRedisCModRequiresRoutesOnlyWhenSelected(t *testing.T) {
+func TestRedisCModRequiresStoresOnlyWhenSelected(t *testing.T) {
 	service := testService{spec: Spec{Name: "redis-only", Requires: []CModID{CModRedisStorage}}}
 	app, err := New(Config{AppID: "redis-only-test"}, WithService(service))
 	if err != nil {
 		t.Fatalf("new framework: %v", err)
 	}
 	err = app.Start(context.Background(), RunOptions{Services: []string{"redis-only"}})
-	if err == nil || !strings.Contains(err.Error(), "redis routes are required") {
-		t.Fatalf("start error = %v, want missing Redis routes", err)
+	if err == nil || !strings.Contains(err.Error(), "redis stores are required") {
+		t.Fatalf("start error = %v, want missing Redis stores", err)
 	}
 }

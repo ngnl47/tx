@@ -13,7 +13,7 @@ type RouteRule struct {
 	Shards []string `json:"shards"`
 }
 
-// RouteTable 按 routeType 和 shardKey 选择 Redis 或 Mongo 端点名称。
+// RouteTable 按 routeType 和 shardKey 选择 Mongo 端点名称。
 type RouteTable struct {
 	routes map[string][]RouteRule
 }
@@ -58,11 +58,6 @@ func (t *RouteTable) Route(_ context.Context, routeType string, shardKey any) (s
 		return rule.Shards[routeBy%int64(len(rule.Shards))], nil
 	}
 	return "", fmt.Errorf("storage: route %q not found for shardKey %v", routeType, shardKey)
-}
-
-// RouteRedis 让 RouteTable 可直接作为 Redis cluster router 使用。
-func (t *RouteTable) RouteRedis(ctx context.Context, routeType string, shardKey any) (string, error) {
-	return t.Route(ctx, routeType, shardKey)
 }
 
 // RouteMongo 让 RouteTable 可直接作为 Mongo cluster router 使用。

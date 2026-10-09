@@ -57,17 +57,7 @@ func (c *recordingRedisBatchClient) EvalBatch(_ context.Context, calls []txredis
 	return append([]string(nil), c.results...), c.err
 }
 
-type recordingRedisRouter struct {
-	names map[any]string
-	calls []recordingRedisRouteCall
-}
-
-type recordingRedisRouteCall struct {
-	routeType string
-	shardKey  any
-}
-
-func mustRedisAdapter(t testing.TB, client txredis.ScriptClient) *txredis.Adapter {
+func mustRedisAdapter(t testing.TB, client txredis.LuaClient) *txredis.Adapter {
 	t.Helper()
 	adapter, err := txredis.NewAdapter(client)
 	if err != nil {
@@ -76,11 +66,11 @@ func mustRedisAdapter(t testing.TB, client txredis.ScriptClient) *txredis.Adapte
 	return adapter
 }
 
-func mustRedisCluster(t testing.TB, router txredis.Router, shards map[string]txredis.ScriptClient) *txredis.Cluster {
+func mustRedisStores(t testing.TB, shards map[string]txredis.LuaClient) *txredis.Stores {
 	t.Helper()
-	cluster, err := txredis.NewCluster(router, shards)
+	cluster, err := txredis.NewStores(shards)
 	if err != nil {
-		t.Fatalf("NewCluster returned error: %v", err)
+		t.Fatalf("NewStores returned error: %v", err)
 	}
 	return cluster
 }
@@ -150,11 +140,6 @@ func (c *recordingRedisEvalOnlyClient) Eval(_ context.Context, script string, ke
 	result := c.results[0]
 	c.results = c.results[1:]
 	return result, nil
-}
-
-func (r *recordingRedisRouter) RouteRedis(_ context.Context, routeType string, shardKey any) (string, error) {
-	r.calls = append(r.calls, recordingRedisRouteCall{routeType: routeType, shardKey: shardKey})
-	return r.names[shardKey], nil
 }
 
 func TestRedisAdapterAppliesChangesWithSingleLuaEval(t *testing.T) {
@@ -1566,14 +1551,11 @@ func TestRedisAdapterLoadDocumentsWithOptionsChunksMGet(t *testing.T) {
 	}
 }
 
-func TestRedisClusterRoutesSingleWriteByShardKey(t *testing.T) {
+func TestRedisStoresSelectsNamedStoreForSingleWrite(t *testing.T) {
 	roleShard := &recordingRedisStringClient{}
 	userShard := &recordingRedisStringClient{}
-	router := &recordingRedisRouter{names: map[any]string{
-		int64(7): "role-shard",
-	}}
-	cluster := mustRedisCluster(t, router, map[string]txredis.ScriptClient{
-		"role-shard": roleShard,
+	cluster := mustRedisStores(t, map[string]txredis.LuaClient{
+		"role":       roleShard,
 		"user-shard": userShard,
 	})
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{
@@ -1587,9 +1569,6 @@ func TestRedisClusterRoutesSingleWriteByShardKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyChangesWithOptions returned error: %v", err)
 	}
-	if len(router.calls) != 1 || router.calls[0].routeType != "role" || router.calls[0].shardKey != int64(7) {
-		t.Fatalf("router calls = %#v, want role shard key 7", router.calls)
-	}
 	if len(roleShard.evals) != 1 || !slices.Equal(roleShard.evals[0].keys, []string{"role:{7}:1001"}) {
 		t.Fatalf("role shard evals = %#v, want one write for role:{7}:1001", roleShard.evals)
 	}
@@ -1598,12 +1577,11 @@ func TestRedisClusterRoutesSingleWriteByShardKey(t *testing.T) {
 	}
 }
 
-func TestRedisClusterRoutesConditionalBackfillByShardKey(t *testing.T) {
+func TestRedisStoresSelectsNamedStoreForBackfill(t *testing.T) {
 	roleShard := &recordingRedisStringClient{}
 	userShard := &recordingRedisStringClient{}
-	router := &recordingRedisRouter{names: map[any]string{int64(7): "role-shard"}}
-	cluster := mustRedisCluster(t, router, map[string]txredis.ScriptClient{
-		"role-shard": roleShard,
+	cluster := mustRedisStores(t, map[string]txredis.LuaClient{
+		"role":       roleShard,
 		"user-shard": userShard,
 	})
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{
@@ -1624,9 +1602,6 @@ func TestRedisClusterRoutesConditionalBackfillByShardKey(t *testing.T) {
 	}
 	if !inserted {
 		t.Fatal("BackfillDocumentWithOptions inserted = false, want true")
-	}
-	if len(router.calls) != 1 || router.calls[0].routeType != "role" || router.calls[0].shardKey != int64(7) {
-		t.Fatalf("router calls = %#v, want role shard key 7", router.calls)
 	}
 	if len(roleShard.evals) != 1 || !slices.Equal(roleShard.evals[0].keys, []string{"role:{7}:1001"}) {
 		t.Fatalf("role shard evals = %#v, want one conditional backfill", roleShard.evals)
@@ -1654,28 +1629,22 @@ func TestRedisAdapterRejectsMissingDistinctRouteShardKey(t *testing.T) {
 	}
 }
 
-func TestRedisNewClusterRejectsIncompleteConfiguration(t *testing.T) {
-	if _, err := txredis.NewCluster(nil, nil); err == nil || !strings.Contains(err.Error(), "router is not configured") {
-		t.Fatalf("NewCluster error = %v, want router configuration error", err)
+func TestRedisStoresRejectsIncompleteConfiguration(t *testing.T) {
+	if _, err := txredis.NewStores(nil); err == nil {
+		t.Fatal("缺少存储应返回错误")
 	}
-
-	router := &recordingRedisRouter{}
-	if _, err := txredis.NewCluster(router, nil); err == nil || !strings.Contains(err.Error(), "shards are not configured") {
-		t.Fatalf("NewCluster error = %v, want shards configuration error", err)
+	if _, err := txredis.NewStores(map[string]txredis.LuaClient{"": &recordingRedisStringClient{}}); err == nil {
+		t.Fatal("空名称应返回错误")
 	}
-	if _, err := txredis.NewCluster(router, map[string]txredis.ScriptClient{"": &recordingRedisStringClient{}}); err == nil || !strings.Contains(err.Error(), "shard name is empty") {
-		t.Fatalf("NewCluster error = %v, want empty shard name error", err)
-	}
-
 	var typedNil *recordingRedisStringClient
-	if _, err := txredis.NewCluster(router, map[string]txredis.ScriptClient{"role": typedNil}); !errors.Is(err, txredis.ErrClientNotConfigured) {
-		t.Fatalf("NewCluster typed-nil shard error = %v, want ErrClientNotConfigured", err)
+	if _, err := txredis.NewStores(map[string]txredis.LuaClient{"role": typedNil}); !errors.Is(err, txredis.ErrClientNotConfigured) {
+		t.Fatalf("typed nil: %v", err)
 	}
+
 }
 
-func TestRedisClusterSkipsEmptyChangesWithoutRouting(t *testing.T) {
-	router := &recordingRedisRouter{}
-	cluster := mustRedisCluster(t, router, map[string]txredis.ScriptClient{"role": &recordingRedisStringClient{}})
+func TestRedisStoresSkipsEmptyChangesWithoutRouting(t *testing.T) {
+	cluster := mustRedisStores(t, map[string]txredis.LuaClient{"role": &recordingRedisStringClient{}})
 
 	err := cluster.ApplyChangesWithOptions(
 		context.Background(),
@@ -1691,9 +1660,8 @@ func TestRedisClusterSkipsEmptyChangesWithoutRouting(t *testing.T) {
 	}
 }
 
-func TestRedisClusterRejectsNilChangeSource(t *testing.T) {
-	router := &recordingRedisRouter{}
-	cluster := mustRedisCluster(t, router, map[string]txredis.ScriptClient{"role": &recordingRedisStringClient{}})
+func TestRedisStoresRejectsNilChangeSource(t *testing.T) {
+	cluster := mustRedisStores(t, map[string]txredis.LuaClient{"role": &recordingRedisStringClient{}})
 
 	err := cluster.ApplyChangesWithOptions(context.Background(), meta.TypeSpec{}, storage.RecordKey{}, nil, nil, nil, storage.ApplyOptions{})
 	if !errors.Is(err, change.ErrNilSource) {
@@ -1701,22 +1669,11 @@ func TestRedisClusterRejectsNilChangeSource(t *testing.T) {
 	}
 }
 
-func TestRedisNewClusterRejectsTypedNilRouter(t *testing.T) {
-	var router *recordingRedisRouter
-	_, err := txredis.NewCluster(router, map[string]txredis.ScriptClient{"role": &recordingRedisStringClient{}})
-	if err == nil || !strings.Contains(err.Error(), "router is not configured") {
-		t.Fatalf("NewCluster error = %v, want router configuration error", err)
-	}
-}
-
-func TestRedisClusterRoutesRecordLockByShardKey(t *testing.T) {
+func TestRedisStoresSelectsNamedStoreForLock(t *testing.T) {
 	roleShard := &recordingRedisStringClient{}
 	userShard := &recordingRedisStringClient{}
-	router := &recordingRedisRouter{names: map[any]string{
-		int64(7): "role-shard",
-	}}
-	cluster := mustRedisCluster(t, router, map[string]txredis.ScriptClient{
-		"role-shard": roleShard,
+	cluster := mustRedisStores(t, map[string]txredis.LuaClient{
+		"role":       roleShard,
 		"user-shard": userShard,
 	})
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{
@@ -1732,9 +1689,6 @@ func TestRedisClusterRoutesRecordLockByShardKey(t *testing.T) {
 	if lock == nil {
 		t.Fatal("LockRecord returned nil lock")
 	}
-	if len(router.calls) != 1 || router.calls[0].routeType != "role" || router.calls[0].shardKey != int64(7) {
-		t.Fatalf("router calls = %#v, want role shard key 7", router.calls)
-	}
 	if len(roleShard.evals) != 1 || !slices.Equal(roleShard.evals[0].keys, []string{"role:{7}:1001@lock"}) {
 		t.Fatalf("role shard evals = %#v, want one lock for role:{7}:1001@lock", roleShard.evals)
 	}
@@ -1743,14 +1697,11 @@ func TestRedisClusterRoutesRecordLockByShardKey(t *testing.T) {
 	}
 }
 
-func TestRedisClusterRoutesRecordRevisionByShardKey(t *testing.T) {
+func TestRedisStoresSelectsNamedStoreForRevision(t *testing.T) {
 	roleShard := &recordingRedisStringClient{evalResult: "9", hasResult: true}
 	userShard := &recordingRedisStringClient{}
-	router := &recordingRedisRouter{names: map[any]string{
-		int64(7): "role-shard",
-	}}
-	cluster := mustRedisCluster(t, router, map[string]txredis.ScriptClient{
-		"role-shard": roleShard,
+	cluster := mustRedisStores(t, map[string]txredis.LuaClient{
+		"role":       roleShard,
 		"user-shard": userShard,
 	})
 	spec := meta.TypeSpec{Redis: &meta.RedisSpec{
@@ -1774,25 +1725,20 @@ func TestRedisClusterRoutesRecordRevisionByShardKey(t *testing.T) {
 	}
 }
 
-func TestRedisClusterBatchLoadsByShardGroupAndRestoresOrder(t *testing.T) {
+func TestRedisStoresBatchLoadsDifferentHashTagsThroughSameEndpoint(t *testing.T) {
 	shardA := &recordingRedisStringClient{
 		mgetValues: []string{
 			`{"roleId":1001,"name":"alice"}`,
 			`{"items":{"1001":{"quantity":3}}}`,
+			"", "",
 			`{"roleId":1003,"name":"carol"}`,
 			`{"items":{"1001":{"quantity":5}}}`,
 		},
 	}
-	shardB := &recordingRedisStringClient{
-		mgetValues: []string{"", ""},
-	}
-	router := &recordingRedisRouter{names: map[any]string{
-		int64(7): "a",
-		int64(8): "b",
-	}}
-	cluster := mustRedisCluster(t, router, map[string]txredis.ScriptClient{
-		"a": shardA,
-		"b": shardB,
+	shardB := &recordingRedisStringClient{}
+	cluster := mustRedisStores(t, map[string]txredis.LuaClient{
+		"role": shardA,
+		"b":    shardB,
 	})
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{
@@ -1820,15 +1766,15 @@ func TestRedisClusterBatchLoadsByShardGroupAndRestoresOrder(t *testing.T) {
 	if !exists[0] || docs[0]["name"] != "alice" || exists[1] || docs[1] != nil || !exists[2] || docs[2]["name"] != "carol" {
 		t.Fatalf("docs=%#v exists=%#v, want original order", docs, exists)
 	}
-	if len(shardA.mgets) != 1 || !slices.Equal(shardA.mgets[0], []string{"role:{7}:1001", "role:{7}:1001:items", "role:{7}:1003", "role:{7}:1003:items"}) {
+	if len(shardA.mgets) != 1 || !slices.Equal(shardA.mgets[0], []string{"role:{7}:1001", "role:{7}:1001:items", "role:{8}:1002", "role:{8}:1002:items", "role:{7}:1003", "role:{7}:1003:items"}) {
 		t.Fatalf("shard A mgets = %#v, want one endpoint-level MGET", shardA.mgets)
 	}
-	if len(shardB.mgets) != 1 || !slices.Equal(shardB.mgets[0], []string{"role:{8}:1002", "role:{8}:1002:items"}) {
-		t.Fatalf("shard B mgets = %#v, want one endpoint-level MGET", shardB.mgets)
+	if len(shardB.mgets) != 0 {
+		t.Fatalf("unused store MGETs = %#v, want none", shardB.mgets)
 	}
 }
 
-func TestRedisClusterBatchLoadClusterSafeGroupsByHashTag(t *testing.T) {
+func TestRedisStoresBatchLoadClusterSafeGroupsByHashTag(t *testing.T) {
 	shard := &recordingRedisStringClient{
 		values: map[string]string{
 			"role:{7}:1001":       `{"roleId":1001,"name":"alice"}`,
@@ -1839,11 +1785,7 @@ func TestRedisClusterBatchLoadClusterSafeGroupsByHashTag(t *testing.T) {
 			"role:{7}:1003:items": `{"items":{"1001":{"quantity":5}}}`,
 		},
 	}
-	router := &recordingRedisRouter{names: map[any]string{
-		int64(7): "role",
-		int64(8): "role",
-	}}
-	cluster := mustRedisCluster(t, router, map[string]txredis.ScriptClient{"role": shard})
+	cluster := mustRedisStores(t, map[string]txredis.LuaClient{"role": shard})
 	spec := meta.TypeSpec{
 		Redis: &meta.RedisSpec{
 			Key:     "role",

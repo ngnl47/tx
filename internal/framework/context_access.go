@@ -13,20 +13,21 @@ import (
 	"github.com/ngnl47/tx/modules/txn"
 	txstorage "github.com/ngnl47/tx/storage"
 	txmongo "github.com/ngnl47/tx/storage/mongo"
-	txredis "github.com/ngnl47/tx/storage/redis"
+	txgoredis "github.com/ngnl47/tx/storage/redis/goredis"
+	redis "github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 )
 
 var (
-	_ lifecycle.Tasks      = taskAccess{}
-	_ Storage              = storageAccess{}
-	_ ModeStorage          = modeStorageAccess{}
-	_ txrpc.Registrar      = rpcAccess{}
-	_ discovery.Directory  = directoryAccess{}
-	_ txactor.Runtime      = actorAccess{}
-	_ txn.Executor         = transactionAccess{}
-	_ Advanced             = advancedAccess{}
-	_ txredis.ScriptRoutes = redisRoutesAccess{}
+	_ lifecycle.Tasks          = taskAccess{}
+	_ Storage                  = storageAccess{}
+	_ ModeStorage              = modeStorageAccess{}
+	_ txrpc.Registrar          = rpcAccess{}
+	_ discovery.Directory      = directoryAccess{}
+	_ txactor.Runtime          = actorAccess{}
+	_ txn.Executor             = transactionAccess{}
+	_ Advanced                 = advancedAccess{}
+	_ txgoredis.ClientProvider = redisClientsAccess{}
 )
 
 type taskAccess struct {
@@ -184,11 +185,11 @@ func (access transactionAccess) Call(ctx context.Context, procedure txn.Procedur
 
 type advancedAccess struct{ runtime *runtime }
 
-func (access advancedAccess) Redis() txredis.ScriptRoutes {
+func (access advancedAccess) Redis() txgoredis.ClientProvider {
 	if access.runtime == nil || access.runtime.storage == nil {
 		return nil
 	}
-	return redisRoutesAccess{storage: access.runtime.storage}
+	return redisClientsAccess{storage: access.runtime.storage}
 }
 
 func (access advancedAccess) Slots() discovery.SlotStore {
@@ -198,8 +199,8 @@ func (access advancedAccess) Slots() discovery.SlotStore {
 	return access.runtime.slots
 }
 
-type redisRoutesAccess struct{ storage *storageRuntime }
+type redisClientsAccess struct{ storage *storageRuntime }
 
-func (access redisRoutesAccess) ScriptClientFor(ctx context.Context, routeType string, shardKey any) (txredis.ScriptClient, error) {
-	return access.storage.RedisScriptClientFor(ctx, routeType, shardKey)
+func (access redisClientsAccess) Client(name string) (redis.Cmdable, error) {
+	return access.storage.RedisClient(name)
 }

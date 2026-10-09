@@ -63,7 +63,7 @@ func (service *Service) factory(runtime bee.Context) (bee.Service, error) {
 		Tasks:    runtime.Tasks(),
 		RPC:      rpc,
 		Instance: runtime.Instance(),
-		Redis:    redis.ScriptRoutes(),
+		Redis:    redis.Clients(),
 	})
 	if err != nil {
 		return nil, err

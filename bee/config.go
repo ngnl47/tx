@@ -42,8 +42,8 @@ type LogConfig struct {
 
 // StorageConfig 描述 Redis 与 MongoDB 连接路由。
 type StorageConfig struct {
-	// Redis 是按 routeType 组织的 Redis 连接路由。
-	Redis storageconfig.RouteTableConfig
+	// Redis 是按存储名称组织的单节点或云代理连接配置。
+	Redis storageconfig.RedisConfig
 	// MongoDB 是按 routeType 组织的 MongoDB 连接路由。
 	MongoDB storageconfig.RouteTableConfig
 }

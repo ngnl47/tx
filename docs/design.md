@@ -229,7 +229,7 @@ ServiceSpec、CMod 和基础 Context；同名 API 具有相同签名和生命周
 | `Tasks()` | Bee/Ant | 注册本服务后台任务、读取取消信号 | 每个 Service 独立子生命周期，`Cancel/Wait` 在私有装配内核 |
 | `Admission()` | Bee/Ant | 登记和封口本服务外部入口 | 进程排水顺序在 Service Host |
 | `Storage()` | Bee/Ant | 仅供项目组合根安装 mode-aware 业务 facade | client、健康状态、worker 和 Close 在存储 Runtime |
-| `CModRedisStorage()` | Bee/Ant | 取得仅允许 Redis TypeSpec 的 reader/writer 和脚本路由 | 连接池所有权在存储 Runtime |
+| `CModRedisStorage()` | Bee/Ant | 取得仅允许 Redis TypeSpec 的 reader/writer 和具名命令接口 | 连接池所有权在存储 Runtime |
 | `CModMongoStorage()` | Bee/Ant | 取得仅允许 MongoDB TypeSpec 的 reader/writer、条件回填和原子 CounterStore | 连接池所有权在存储 Runtime |
 | `CModFusionStorage()` | Bee/Ant | 取得仅允许 Fusion TypeSpec 的 reader/writer | Redis、Mongo 和延迟任务所有权在存储 Runtime |
 | `CModRPC()` | Bee/Ant | 启动前注册 protobuf service | Serve/Stop 在共享 RPC Host |
@@ -247,7 +247,7 @@ Context 对生命周期、目录替换和刷盘能力返回专用 wrapper，调�
 普通 Handler 不应保存 Bee/Ant Context。项目组合根通过 `Builder.Setup` 把 `Storage()` 包装成 `db.Save(role)` 等业务
 facade；Service 和 CMod Factory 只在构造期间取得自己通过 `Requires` 声明的窄能力。Redis、MongoDB、Fusion 三类
 存储 accessor 的 reader 方法集互不重叠，writer 也会在第一次 I/O 前校验 `TypeSpec.Storage.Mode`，不能借进程内其他
-Service 已选择的后端跨越能力边界。高级使用者需要 Redis 脚本时使用 `CModRedisStorage()`；
+Service 已选择的后端跨越能力边界。业务需要直接使用 Redis 命令时使用 `CModRedisStorage()`；
 槽位创建和晋升由组合根显式注入完整 `SlotStore`，不从只读 `CModSlots()` 断言取得写能力，
 也不通过字符串 service locator 或全局 Runtime 查找能力。
 
@@ -312,7 +312,7 @@ change/meta/storage contracts
 - 基础模块声明最小消费契约。路由器依赖 `discovery.Directory`，不能依赖具体
   `*ServiceDirectory`；服务注册只依赖 `rpc.Registrar`，不能取得 `*rpc.Host`。
 - 跨能力胶水必须有中立归属。例如 `modules/msgq/msgqredis` 只把
-  `redis.ScriptRoutes` 适配成 `msgq.SessionStore`，不启动 msgq，也不拥有 Redis client。
+  `goredis.ClientProvider` 适配成 `msgq.SessionStore`，不启动 msgq，也不拥有 Redis client。
 - 标准服务组件只负责本服务的配置、协议注册和资源启停。`agent` 不导入 msgq 门面；同进程复用通过
   `LocalMsgQ` 契约，跨进程会话解析通过 `modules/msgq` 与中立 Redis adapter 完成。
 - 私有装配内核可以实例化和编排下层模块，但下层模块不能反向访问其内部 Runtime。
@@ -1202,7 +1202,7 @@ Mongo adapter 通过生成的 `DocumentFactory` 把公共文档还原为 GD，�
 
 RecordKey 不等于事务 LockKey：
 
-- RecordKey 面向 Redis/Mongo 路由。
+- RecordKey 面向记录身份、Redis Hash Tag 和 Mongo 路由。
 - LockKey 面向单机一致性域。
 - 纯内存 GD 可以有 LockKey 而没有存储注解。
 
@@ -1264,32 +1264,59 @@ Replacer：
 
 未知 Lua 返回值、损坏 JSON、无有效变更、字段路径无法解析等都返回错误。不能把“不知道发生了什么”归类为成功。
 
-## 存储路由
+## Redis 具名存储与云服务边界
 
-`storage.RouteTable` 是 Redis 与 Mongo 共用的启动期只读路由内核。数字 `routeBy` 直接转换为 `int64`；字符串
-`routeBy` 使用 FNV-1a 32 位哈希，哈希值为零时归一化为 `1`。实现直接遍历字符串字节，不创建 hasher 或
-`[]byte`，使高频路由保持零分配。相同输入必须在不同进程和不同存储 backend 得到相同路由值。
+Redis 配置采用 `storage/config.RedisConfig`：每个存储名称只对应一个 URI。`role`、`rank`、`msgq`、`fusion` 是用途名称，
+不是节点名或槽位号。多个名称可以指向相同 URI，runtime 只为每个不同 URI 创建一套连接池，并负责探活与关闭。
+`Clients().Client("rank")` 返回共享连接的 go-redis `redis.Cmdable`，不接收 serverID、RoleID 或 SessionID。
+业务命令保留 go-redis 的参数、结果、`redis.Nil` 和 Pipeline 语义。连接由 tx 创建、配置和关闭，业务只借用；
+此接口是生命周期职责约定，不是命令权限沙箱。框架内部的 GD/会话 Lua 适配器继续承接各自的结果与错误转换。
 
-允许的 `routeBy` Go 类型由 `meta.Validate` 统一定义为内建整数、`byte`、`rune` 和 `string`。AST 扫描、txgen
-和高级手工元数据都复用该入口；txgen 不维护第二份类型列表。这样不支持的类型会在扫描、生成或启动装配期失败，
-不会拖到首次 Redis/Mongo 路由。`RouteTable` 仍保留运行期具体值校验，作为高级调用方绕过元数据后的最后防线。
+业务身份保留在 Key 中：排行榜以 `{serverID}` 组织同服的 ZSet/Hash；GD 的 `idField` 与 `routeBy` 构造记录 Key
+及 Hash Tag。`RecordKey.ShardKey` 在 Redis 中只用于 Hash Tag，不参与选连接。不同服的榜单仍相互隔离。
+GD 读写和业务原生命令共用连接，但保持数据职责边界；业务命令不自动进入 Fusion 回写流程。
 
-路由按两步执行：先用路由值选择 `min/max` 区间，再用 `路由值 % len(shards)` 选择该区间的 endpoint。
-FNV-1a 算法、字符串零值规则、区间和 shard 顺序共同组成持久化布局契约。字符串即使只含数字也按字符串哈希，
-不能因为表现形式相同而与数值 ID 混用。
+职责划分：
 
-Fusion 只有一份 `RecordKey.ID` 和 `RecordKey.ShardKey`。`meta.Validate` 因此要求 Redis 与 Mongo 的 `idField`
-引用相同 Go 字段，`routeBy` 也引用相同 Go 字段；否则生成层若优先取一侧字段，另一侧会把同一个值解释成不同
-业务身份并产生错读写。`routeType` 不属于记录身份，可以在两个 backend 上不同。JSON、BSON、Msgpack 字段名
-也不参与这项比较，它们继续由同一个 Go 字段在各自输出边界独立映射。
+| 层级 | 职责 |
+| --- | --- |
+| tx | 按存储名称取共享连接；执行命令；维护连接生命周期、健康状态和既有 GD 存储语义 |
+| 业务 | Key 命名、Hash Tag 原子边界、Lua 内容、数据模型与业务错误处理 |
+| 云 Redis / 运维 | 内部节点选择、槽位分布、扩缩容、数据迁移、主从切换、容量与备份策略 |
 
-路由配置表达的是应用层独立存储终端，不展开终端内部拓扑。一条包含多个副本集成员或 `mongos` 地址的 Mongo URI
-仍是一个 endpoint；云 Redis 代理后的节点和 slot 也不进入 `RouteTable`。原生集群内部扩缩容由驱动和云服务处理，
-通常不修改应用配置。
+tx 不再提供 Redis 的区间或取模分片，不接受 URI 数组及 `min/max/shards`。连接 URI 变更只是连接目标变更，
+不代表数据已经迁移；更换独立集群前，由部署方使用云迁移工具完成数据迁移与切换验证。旧的分片部署不能直接
+删除数组后上线，必须先完成迁移。本地示例原本只有一个 endpoint，此次只改配置形态，Key 和数据位置不变。
 
-已有数据后直接增加、删除或重排同一区间的 shard 会改变取模结果。tx 不热更新路由表，也不提供自动双读、双写
-或数据迁移。应用层布局变更必须先封口写入、迁移并验证数据，再切换配置。单调递增数字 ID 可以通过保留旧区间、
-为未来 ID 增加新区间来避免旧数据漂移；字符串哈希不具备时间或大小单调性，不能使用该方法区分新旧记录。
+### 云服务接入要求
+
+1. 提供稳定、兼容普通 Redis 客户端的代理入口。当前 runtime 使用 `go-redis.NewClient`，不接管节点拓扑，
+   不承诺原生 Redis Cluster 节点直连、Sentinel 发现或客户端槽位路由。扩容后代理入口应保持稳定。
+2. 支持框架实际使用的原生命令与 Lua，包括 GET、SET 的 NX/PX 语义、MGET、EVAL、过期与删除，以及所用业务脚本的命令。
+   GD 默认跨记录批量读取使用原生 MGET，代理须负责跨槽分发并按请求顺序聚合结果；这不表示跨槽事务或一致性快照。
+3. 支持同槽 Lua 原子执行。脚本访问的相关 Key 必须使用一致 Hash Tag；不能假设代理会自动拆分跨槽 Lua。
+   选用产品版本后，应以该版本的脚本限制验收 GD、Fusion 延迟任务、MsgQ 绑定与排行榜脚本。
+4. Session 绑定和条件写入依赖及时读取已写入状态，接入主节点读写入口，避免透明读副本造成陈旧读取。
+5. URI 中的鉴权、TLS 和 logical DB 必须符合目标产品能力；本地示例 DB14/DB15 不是云产品要求。
+   原生 Cluster 通常只支持 DB0，带代理产品的多 DB 能力需单独确认。容量、驱逐和持久化策略按数据用途配置。
+6. 扩容或故障切换期间仍可能产生超时与连接错误；tx 返回真实结果，不把代理扩容解释为零错误或盲目重放业务写入。
+
+腾讯云的代理架构提供跨槽 MGET 聚合，但集群 Lua 仍有同槽要求。接入时以具体实例版本为准：
+[命令参考](https://cloud.tencent.com/document/product/239/76287)、
+[标准架构迁移集群架构](https://cloud.tencent.com/document/product/239/109862)、
+[Proxy 与直连差异](https://cloud.tencent.com/document/product/239/122026)。
+
+`LoadOptions.ClusterSafe` 只为高级手动装配客户端提供按 Hash Tag 分组的 MGET；它不是 Cluster 驱动，不能补齐
+NewClient 的节点发现与重定向。默认云代理路径无需启用。
+
+## Mongo 存储路由
+
+`storage.RouteTable` 和 `RouteTableConfig` 保留为 Mongo 静态端点布局：先选 `min/max` 区间，再对 endpoint 数量取模；
+字符串使用稳定 FNV-1a 32 位哈希。路由规则、哈希和端点顺序属于已有数据布局，不能直接修改后宣称完成迁移。
+Mongo 集群内部扩容仍应使用稳定入口；tx 不提供跨独立存储集群的数据搬迁、双读或双写。
+
+Fusion 的 Redis/Mongo 共用 `RecordKey.ID` 与 `RecordKey.ShardKey`，元数据仍要求双方使用相同的 `idField` 与
+`routeBy` 字段。Redis 用于 Key/Hash Tag，Mongo 用于既有记录定位；本轮不改变生成身份、字段类型和文档编码。
 
 ## Redis 后端
 

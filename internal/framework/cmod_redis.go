@@ -2,6 +2,7 @@ package framework
 
 import (
 	"context"
+	"fmt"
 
 	txstorage "github.com/ngnl47/tx/storage"
 )
@@ -10,7 +11,10 @@ func (server *Server) redisCMod() CMod {
 	return &builtInCMod{
 		spec: CModSpec{ID: CModRedisStorage},
 		validate: func(CModContext) error {
-			if err := validateStorageRoutes("redis", server.config.Storage.Redis); err != nil {
+			if len(server.config.Storage.Redis.Stores) == 0 {
+				return fmt.Errorf("framework: redis stores are required")
+			}
+			if err := server.config.Storage.Redis.Validate(); err != nil {
 				return err
 			}
 			return server.config.Runtime.Health.validate()

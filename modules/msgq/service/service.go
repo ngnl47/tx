@@ -15,7 +15,7 @@ import (
 	txmsgq "github.com/ngnl47/tx/modules/msgq"
 	"github.com/ngnl47/tx/modules/msgq/msgqredis"
 	txrpc "github.com/ngnl47/tx/modules/rpc"
-	txredis "github.com/ngnl47/tx/storage/redis"
+	txgoredis "github.com/ngnl47/tx/storage/redis/goredis"
 	"google.golang.org/grpc"
 )
 
@@ -27,8 +27,8 @@ type Dependencies struct {
 	RPC txrpc.Registrar
 	// Instance 提供未显式配置时使用的当前物理实例 ID。
 	Instance discovery.Instance
-	// Redis 在未显式提供 Store 时创建路由会话存储。
-	Redis txredis.ScriptRoutes
+	// Redis 在未显式提供 Store 时创建具名 Redis 会话存储。
+	Redis txgoredis.ClientProvider
 }
 
 // Options 描述会话邮箱存储、积压边界和离线回收策略。
@@ -62,7 +62,7 @@ func New(options Options, dependencies Dependencies) (*Service, error) {
 		return nil, fmt.Errorf("msgq service: lifecycle and RPC host are required")
 	}
 	if options.Store == nil && dependencies.Redis == nil {
-		return nil, fmt.Errorf("msgq service: Redis routes are unavailable")
+		return nil, fmt.Errorf("msgq service: Redis clients are unavailable")
 	}
 	return &Service{options: options, dependencies: dependencies}, nil
 }
@@ -158,7 +158,7 @@ func (service *Service) SessionClient() (txmsgq.SessionClient, error) {
 }
 
 func validateOptions(options Options) error {
-	if options.Store == nil && (strings.TrimSpace(options.SessionStore.RouteType) == "" || strings.TrimSpace(options.SessionStore.Prefix) == "" || options.SessionStore.TTL <= 0) {
+	if options.Store == nil && (strings.TrimSpace(options.SessionStore.StoreName) == "" || strings.TrimSpace(options.SessionStore.Prefix) == "" || options.SessionStore.TTL <= 0) {
 		return fmt.Errorf("msgq service: session store is not configured")
 	}
 	if options.MaxBacklogMessages <= 0 || options.MaxBacklogBytes < 0 || options.OfflineTimeout < 0 || options.TerminateDeadSessionInterval < 0 {

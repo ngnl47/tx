@@ -438,7 +438,7 @@ Game/Actor；世界请求仍按经业务校验的世界路由键选择 WorldActo
 精确下行遇到明确邮箱失效时清缓存，遇到传输超时不自动重发；MsgQ 丢失邮箱后须建立新 Session，不能把旧 Session 迁往另一实例。
 
 Redis 精确 binding key 固定为 `<prefix>:session:v2:{SessionID}`，值保存完整
-`RoleID/SessionID/ConnectionID/InstanceID`；角色归属 key 固定为 `<prefix>:role:{RoleID}`，值保存 `InstanceID/Generation`。两个索引分别按自身花括号中的身份选择 Redis 分片，不承诺跨 key 事务。下行编码载荷始终只保存在
+`RoleID/SessionID/ConnectionID/InstanceID`；角色归属 key 固定为 `<prefix>:role:{RoleID}`，值保存 `InstanceID/Generation`。两个索引共用配置指定的 Redis 存储，花括号中的身份用于 Redis Hash Tag，不承诺跨 key 事务。下行编码载荷始终只保存在
 msgq 实例内存，实例崩溃时未确认消息允许丢失：
 
 ```go
@@ -3242,8 +3242,8 @@ type RecordKey struct {
 
 - `ID` 来自 `idField`。
 - `ShardKey` 来自 `routeBy`，仅在 `routeBy != idField` 时需要。
-- 元数据校验要求 `routeBy` 使用 Go 内建整数类型、`byte`、`rune` 或 `string`；不支持 `bool`、浮点、容器、结构体和自定义具名类型。txgen 复用同一校验，字符串由 `RouteTable` 使用稳定 FNV-1a 路由。
-- 批量读取必须保证每条记录携带正确路由字段，才能构造正确 `RecordKey`、Redis endpoint 和 hash tag。
+- 元数据校验要求 `routeBy` 使用 Go 内建整数类型、`byte`、`rune` 或 `string`；不支持 `bool`、浮点、容器、结构体和自定义具名类型。txgen 复用同一校验，Mongo 字符串路由由 `RouteTable` 使用稳定 FNV-1a 哈希；Redis 不按此值选端点。
+- 批量读取必须保证每条记录携带正确路由字段，才能构造正确 `RecordKey` 和 Redis hash tag。
 - 存储入口会校验 `RecordKey`：`ID` 不能是 nil、typed-nil 或空白字符串；当 `routeBy != idField` 时，缺少 `ShardKey` 返回 `storage.ErrInvalidRecordKey`，不会回退使用 `ID` 路由或生成错误 Redis hash tag。
 - txgen 生成的加载入口还会按 `idField` 和 `routeBy` 对应的 Go 字段校验动态类型。业务应优先使用 `GDRoleRecordKey(roleID)` 这类类型化 helper；高级调用方手工构造 key 时，`int64` 字段不能传入字符串。类型不匹配返回 `storage.ErrInvalidRecordKey`，不会做隐式转换或返回身份字段为零值的对象。
 
@@ -3272,14 +3272,14 @@ key := storage.RecordKey{
 }
 ```
 
-这里 `ID=90001` 是记录主键，`ShardKey=470001` 用于选择 Redis/Mongo endpoint 和生成 Redis hash tag。
+这里 `ID=90001` 是记录主键，`ShardKey=470001` 用于选择 Mongo endpoint 和生成 Redis hash tag。
 
 读取部分字段时，生成代码会自动补充 `idField`；当 `routeBy != idField` 时也会补充 `routeBy`。这样即使业务只请求
 `Name`，加载回来的对象仍然保留后续保存所需的记录定位信息。
 
-## RouteTable
+## Mongo RouteTable
 
-`storage.RouteTable` 是 Redis 和 Mongo 共用的运行时路由表，可同时作为 `redis.Cluster` 和 `mongo.Cluster` 的 router 使用。
+`storage.RouteTable` 是 Mongo 静态端点路由表，作为 `mongo.Cluster` 的 router 使用；Redis 使用独立的具名存储。
 
 ### 直接用代码构造
 
@@ -3301,7 +3301,7 @@ router := storage.NewRouteTable(map[string][]storage.RouteRule{
 ```
 
 `NewRouteTable` 会复制规则和每条规则的 `Shards` 切片。构造完成后，调用方继续复用或修改原配置对象，
-不会改变已经运行的 Redis/Mongo 路由。
+不会改变已经运行的 Mongo 路由。
 
 路由规则：
 
@@ -3325,52 +3325,52 @@ router := storage.NewRouteTable(map[string][]storage.RouteRule{
 endpoint, err := router.Route(ctx, "user", "open-id-470001")
 ```
 
-相同字符串在不同进程、Redis 路由和 Mongo 路由中始终得到相同的 FNV-1a 路由值。字符串的 `min/max`
+相同字符串在不同进程、Mongo 路由中始终得到相同的 FNV-1a 路由值。字符串的 `min/max`
 针对哈希结果，不是字典顺序，也不能用来表达“某个时间之后创建的字符串 ID”。
 
 ### 从 yml 配置构造
 
-`storage/config.RouteTableConfig` 用于承接项目 yml 解析后的 Redis/Mongo 路由配置。项目负责读取文件和处理 include，随后把 yml 反序列化到该类型：
+`storage/config.RouteTableConfig` 用于承接项目 yml 解析后的 Mongo 路由配置。项目负责读取文件和处理 include，随后把 yml 反序列化到该类型：
 
 ```yaml
-main: "redis://main"
+main: "mongodb://main"
 role:
   - min: 1
     shards:
-      - "redis://role-a"
-      - "redis://role-b"
+      - "mongodb://role-a"
+      - "mongodb://role-b"
 rank:
-  - "redis://rank-a"
-  - "redis://rank-b"
+  - "mongodb://rank-a"
+  - "mongodb://rank-b"
 arena:
   - min: 1
     max: 999999
     shards:
-      - "redis://arena-a"
-      - "redis://arena-b"
+      - "mongodb://arena-a"
+      - "mongodb://arena-b"
   - min: 1000000
     shards:
-      - "redis://arena-c"
+      - "mongodb://arena-c"
 ```
 
 支持的 routeType 值形态：
 
-- 标量 endpoint：归一化为单 shard 规则，例如 `main: "redis://main"`。
-- endpoint 数组：归一化为一个多 shard 规则，例如 `rank: ["redis://rank-a", "redis://rank-b"]`。
+- 标量 endpoint：归一化为单 shard 规则，例如 `main: "mongodb://main"`。
+- endpoint 数组：归一化为一个多 shard 规则，例如 `rank: ["mongodb://rank-a", "mongodb://rank-b"]`。
 - 规则数组：保留 `min/max/shards` 区间规则，例如上面的 `arena`。
 
 规则对象只允许 `min`、`max`、`shards` 三个属性。未知属性（例如把 `shards` 写成 `shardz`）会在 yml
 解析时返回错误，不能带着拼写错误继续启动。routeType 名必须是非空、无首尾空白的标量，且同一张表中不能
-重复。每个 endpoint 也必须非空且不含首尾空白；URI 的协议、地址和鉴权参数仍由项目适配层在创建 Redis/Mongo
+重复。每个 endpoint 也必须非空且不含首尾空白；URI 的协议、地址和鉴权参数仍由项目适配层在创建 Mongo
 client 时解析。因此下面这些配置都会在解析期失败，而不会以后面的 `role` 覆盖前面的规则或把错误留到 client 装配：
 
 ```yaml
-role: redis://first
-role: redis://second
+role: mongodb://first
+role: mongodb://second
 
-" role ": redis://main
+" role ": mongodb://main
 
-rank: " redis://rank.example.com:6379 "
+rank: " mongodb://rank.example.com:6379 "
 ```
 
 同一 `routeType` 的规范化区间不能相交，边界相同也属于重叠。例如下面两个规则都包含 `1000000`，
@@ -3380,9 +3380,9 @@ rank: " redis://rank.example.com:6379 "
 role:
   - min: 1
     max: 1000000
-    shards: ["redis://role-a"]
+    shards: ["mongodb://role-a"]
   - min: 1000000
-    shards: ["redis://role-b"]
+    shards: ["mongodb://role-b"]
 ```
 
 连续但不重叠的写法应把前一区间结束在 `999999`，后一区间从 `1000000` 开始。区间可以留空，
@@ -3391,15 +3391,15 @@ role:
 配置对象可直接构造运行时路由表：
 
 ```go
-var redisRoutes config.RouteTableConfig
-if err := yaml.Unmarshal(body, &redisRoutes); err != nil {
+var mongoRoutes config.RouteTableConfig
+if err := yaml.Unmarshal(body, &mongoRoutes); err != nil {
 	return err
 }
-table, err := redisRoutes.RouteTable()
+table, err := mongoRoutes.RouteTable()
 if err != nil {
 	return err
 }
-endpoints := redisRoutes.Endpoints()
+endpoints := mongoRoutes.Endpoints()
 ```
 
 `Endpoints()` 返回配置中出现过的 endpoint URI 集合；当前 key 和 value 都是 URI，运行时装配可按 URI 创建并复用客户端。
@@ -3410,7 +3410,7 @@ endpoints := redisRoutes.Endpoints()
 `shards` 会改变取模结果，例如从两个 endpoint 扩成三个 endpoint 时，大量已有记录会被路由到新位置。tx 不会自动
 双读、双写或从旧 endpoint 回查，这类修改必须先停止对应写入、迁移数据、验证后再切换配置。
 
-生产环境优先把一个云 Redis 或 Mongo 集群的稳定代理地址配置成一个 endpoint，让云服务在该 endpoint 后完成节点、
+生产环境优先把一个 Mongo 集群的稳定代理地址配置成一个 endpoint，让云服务在该 endpoint 后完成节点、
 副本和数据 shard 的扩缩容。例如下面的 Mongo 多地址连接串在 `RouteTable` 中仍然只是一个标量 endpoint：
 
 ```yaml
@@ -3432,144 +3432,57 @@ role:
 role:
   - min: 1
     max: 999999
-    shards: ["redis://role-a"]
+    shards: ["mongodb://role-a"]
   - min: 1000000
-    shards: ["redis://role-a", "redis://role-b"]
+    shards: ["mongodb://role-a", "mongodb://role-b"]
 ```
 
 这只是静态布局能力，不是自动扩容。它只适用于能保证未来 ID 落入新区间的数字字段；字符串路由值是哈希结果，
 不能用这种方式区分新旧数据。
 
-tx 提供官方 driver 的薄适配层，业务工程仍负责读取本地配置、创建具体 client，再传给 tx runtime：
+## Redis 具名存储
 
-```go
-redisClient := txgoredis.NewClient(goRedisClient)
-mongoDB := txmongodriver.NewDatabase(mongoDriverDatabase)
-```
-
-对应 import 路径：
-
-- `github.com/ngnl47/tx/storage/redis/goredis`
-- `github.com/ngnl47/tx/storage/mongo/mongodriver`
-
-## Redis Route/Cluster Adapter
-
-`redis.Cluster` 按 `routeType` 和 `storage.RecordKey.ShardKey` 路由到具体 Redis adapter。
-
-- 单条写入、替换、删除和读取会先选择 endpoint，再调用对应 adapter。
-- 批量读取会先按 endpoint 分组，每个 endpoint 内仍使用客户端层原生 `MGET` 读取 main/subKey keys，然后按输入顺序还原结果。
-- 默认策略贴合云 Redis 代理能力，不在 endpoint 内继续按 slot 拆分；本地原生 Redis Cluster 可显式打开 `LoadOptions.ClusterSafe` 调试模式。
-- 写入和整文档替换直接接收 `storage.ApplyOptions`，不再暴露 Redis 专用 `ApplyOptions` 别名；`redis.LoadOptions` 仍是 Redis 批量读取的专用选项。
-
-不同 Redis 环境下的批量读取策略：
-
-- Redis 单节点：直接使用客户端层原生 `MGET`。
-- 云 Redis 代理或云集群 endpoint：默认直接使用客户端层原生 `MGET`，由云代理负责跨 slot 分发和结果聚合。
-- 本地原生 Redis Cluster 或直连 cluster 节点：显式设置 `LoadOptions.ClusterSafe: true` 后，运行时会按 hash tag 分组后多次 `MGET`；当前默认路径不做该拆分。
-
-### 场景一：本地单节点 Redis
-
-yml 可以只写一个 endpoint：
+`storage/config.RedisConfig` 只表达“存储名称 → 单个 URI”。本地可使用单节点，生产使用云 Redis 的稳定代理地址：
 
 ```yaml
-role: "redis://127.0.0.1:6379/15"
-global: "redis://127.0.0.1:6379/15"
+main: &main redis://127.0.0.1:6379?db=14
+role: *main
+msgq: *main
+fusion: *main
+rank: redis://rank-proxy.example.com:6379
 ```
 
-初始化时把所有 endpoint 映射到同一个 go-redis client 即可：
+多个名称可指向同一 URI；runtime 按 URI 创建并复用连接池。旧的 URI 数组与 `min/max/shards` 配置直接报错，
+不保留应用层取模分片。切换 URI 不会复制旧数据，必须由部署方安排迁移后再切换。
+
+GD 元数据的 `routeType` 在 Redis 中是存储名称；`RecordKey.ShardKey` 只参与 Key/Hash Tag 构造，不选择连接。
+`redis.Stores` 的单条操作与批量读取都按该名称选择 adapter，批量读取保持输入顺序，使用原生 `MGET`。
+
+业务直接操作 Redis 时使用共享命令接口，不接管连接生命周期：
 
 ```go
-routeTable, err := redisRoutes.RouteTable()
-if err != nil {
-	return err
-}
+client, err := runtime.CModRedisStorage().Clients().Client("rank")
+if err != nil { return err }
+result, err := client.Eval(ctx, script, keys, args...).Result()
+```
 
-client := redis.NewClient(&redis.Options{
-	Addr: "127.0.0.1:6379",
-	DB:   15,
+返回值是 go-redis 的 `redis.Cmdable`，支持 String、Hash、List、Set、ZSet、Stream、Lua 和 Pipeline 等原生命令。保留原生参数、结果类型和 `redis.Nil`，无需逐个包装命令；业务不得创建或关闭共享连接。GD 读写仍使用 `RedisReader` 和存储写入入口，两者复用底层连接。
+需要手动装配适配器的测试或基础设施可直接传入具名客户端：
+
+```go
+client := txgoredis.NewClient(goRedisClient)
+stores, err := txredis.NewStores(map[string]txredis.LuaClient{
+    "role": client,
+    "rank": client,
 })
-
-redisCluster, err := txredis.NewCluster(routeTable, map[string]txredis.ScriptClient{
-	"redis://127.0.0.1:6379/15": txgoredis.NewClient(client),
-})
-if err != nil {
-	return err
-}
 ```
 
-批量读取时不需要特殊选项：
+`NewStores` 校验空配置、空名称及 nil/typed-nil 客户端，未知名称在访问时返回错误。它不发现 Redis 节点、不管理槽位，
+也不自动扩容或迁移。框架 runtime 使用 `go-redis.NewClient`，生产依赖兼容单端点访问的代理，而不是原生 Cluster 节点直连。
 
-```go
-docs, exists, err := redisCluster.LoadDocuments(ctx, GDRoleTypeSpec(), keys)
-```
-
-### 场景二：云 Redis 代理或云集群 endpoint
-
-生产环境通常会把一个 endpoint 暴露为云代理地址。yml 可以按业务 routeType 配置多个云 endpoint：
-
-```yaml
-role:
-  - "redis://role-cache-a.example.com:6379"
-  - "redis://role-cache-b.example.com:6379"
-rank: "redis://rank-cache.example.com:6379"
-```
-
-初始化时每个 endpoint 创建一个 go-redis client，并交给 `redis.Cluster`：
-
-```go
-routeTable, err := redisRoutes.RouteTable()
-if err != nil {
-	return err
-}
-
-shards := map[string]txredis.ScriptClient{}
-for endpoint := range redisRoutes.Endpoints() {
-	opt, err := redis.ParseURL(endpoint)
-	if err != nil {
-		return err
-	}
-	shards[endpoint] = txgoredis.NewClient(redis.NewClient(opt))
-}
-
-redisCluster, err := txredis.NewCluster(routeTable, shards)
-if err != nil {
-	return err
-}
-```
-
-`NewAdapter` 和 `NewCluster` 在启动装配阶段校验 client、router、shard 名称与 shard 集合。shard 映射使用
-`txredis.ScriptClient` 强类型约束，不能把任意对象塞入 Redis endpoint；nil 或接口中包装的 typed-nil client 会直接返回
-`txredis.ErrClientNotConfigured`，不会等到第一次业务 I/O 才暴露半装配状态。
-
-```go
-adapter, err := txredis.NewAdapter(nil)
-// errors.Is(err, txredis.ErrClientNotConfigured) == true
-// adapter == nil
-```
-
-写入口接收 `nil change.Source` 时返回 `change.ErrNilSource`。一个有效 Source 的 `HasChanges()` 返回 `false` 才表示合法
-no-op，此时不会执行路由或 Redis I/O；空批量读取也返回对应长度的空结果。
-
-默认批量读取会先按 endpoint 分组，再在每个 endpoint 内使用原生 `MGET`。云代理能识别 `MGET` 的参数都是 key，
-可以在代理层完成跨 slot 分发和聚合。不要把跨记录批量读取包进自定义 Lua：云代理不能可靠判断 Lua 的
-`ARGV` 中哪些值是 key，也不能安全拆分一个要求原子执行的脚本。
-
-### 场景三：本地原生 Redis Cluster 或直连节点
-
-本地 debug 如果直连原生 Redis Cluster 节点，普通跨 slot `MGET` 可能报错。此时仍使用同一份 yml，但批量读取时显式打开
-`ClusterSafe`：
-
-```go
-docs, exists, err := redisCluster.LoadDocumentsWithOptions(
-	ctx,
-	GDRoleTypeSpec(),
-	keys,
-	txredis.LoadOptions{ClusterSafe: true},
-)
-```
-
-`ClusterSafe` 会在 endpoint 内继续按 hash tag 分组，多次执行 `MGET` 后按输入顺序还原结果。它适合本地原生 Redis Cluster
-和问题排查；生产云 Redis 默认不需要打开，避免不必要的客户端侧拆分。
+云代理必须支持原生跨槽 `MGET` 及同槽 Lua。Lua 操作的 Key 必须有明确的同槽边界，代理不会拆分任意脚本。
+`LoadOptions.ClusterSafe` 仅是高级手动装配客户端的按 Hash Tag 拆分读取选项，不会让普通 `NewClient` 获得 Cluster
+节点发现或 MOVED/ASK 重定向能力。完整云服务要求见 [设计文档](docs/design.md#redis-具名存储与云服务边界)。
 
 ### routeBy、idField 和 hash tag
 
@@ -3648,7 +3561,7 @@ Mongo TTL index 的字段级 `expireAfter` 会删除整条文档，不是删除�
 
 ### Mongo 配置与装配示例
 
-Mongo 和 Redis 共用 `storage/config.RouteTableConfig` 这套 routeType 配置结构。最简单的本地配置可以把多个 routeType 指向同一个 Mongo endpoint：
+Mongo 使用 `storage/config.RouteTableConfig`，Redis 则使用独立的 `RedisConfig`。最简单的本地配置可以把多个 routeType 指向同一个 Mongo endpoint：
 
 ```yaml
 main: "mongodb://127.0.0.1:27017/txgame"
@@ -4348,7 +4261,7 @@ go test ./tests -run 'Test(RedisVersionKey|RedisConditionalTTL|RedisCollectionEl
 
 - Redis mode 或 Fusion mode 写入后才会产生 Redis 热数据；Mongo-only 类型不会写 Redis。
 - Fusion 读取 Mongo 后默认会回填 Redis，但 `LoadOptions.SkipRedisBackfill` 会关闭回填。
-- 检查 Redis routeType 是否能在 yml 路由表中找到 endpoint。
+- 检查 Redis 元数据的 routeType 是否能在 yml 存储名称映射中找到 endpoint。
 - 检查 `RecordKey.ShardKey` 是否正确；`routeBy != idField` 时缺少 ShardKey 会导致路由或 hash tag 不符合预期。
 - 如果只是 Mongo 回源后的纯净缓存，检查 `delayDelTime`，Redis key 可能已经按 TTL 过期。
 - 如果已经发生 Fusion 业务写入，对应 main/subKey/`@v` 应带有 `dirtyTTL`；提前缺失通常表示安全窗口耗尽、人工删除、错误淘汰或路由变化，应结合 Scheduler 的 `storage.ErrNotExists` 日志排查。

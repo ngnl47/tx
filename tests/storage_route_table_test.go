@@ -39,20 +39,12 @@ func TestRouteTableRoutesByRangeAndModulo(t *testing.T) {
 	}
 }
 
-func TestRouteTableImplementsRedisAndMongoRouter(t *testing.T) {
+func TestRouteTableImplementsMongoRouter(t *testing.T) {
 	table := storage.NewRouteTable(map[string][]storage.RouteRule{
 		"global": {
 			{Shards: []string{"main"}},
 		},
 	})
-
-	redisShard, err := table.RouteRedis(context.Background(), "global", "string-id")
-	if err != nil {
-		t.Fatalf("RouteRedis returned error: %v", err)
-	}
-	if redisShard != "main" {
-		t.Fatalf("RouteRedis = %q, want main", redisShard)
-	}
 
 	mongoShard, err := table.RouteMongo(context.Background(), "global", "string-id")
 	if err != nil {

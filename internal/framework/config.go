@@ -47,8 +47,8 @@ type LogConfig struct {
 
 // StorageConfig 描述进程可装配的持久化连接。
 type StorageConfig struct {
-	// Redis 是按 routeType 索引的 Redis 连接路由表。
-	Redis storageconfig.RouteTableConfig
+	// Redis 是按存储名称索引的单节点或云代理连接配置。
+	Redis storageconfig.RedisConfig
 	// MongoDB 是按 routeType 索引的 MongoDB 连接路由表。
 	MongoDB storageconfig.RouteTableConfig
 }
@@ -175,7 +175,7 @@ func validateStorageRoutes(name string, routes storageconfig.RouteTableConfig) e
 func (config Config) clone() Config {
 	cloned := config
 	cloned.Actor.Runtime.IdlePassivation = maps.Clone(config.Actor.Runtime.IdlePassivation)
-	cloned.Storage.Redis = storageconfig.NewRouteTableConfig(config.Storage.Redis.Routes)
+	cloned.Storage.Redis = storageconfig.NewRedisConfig(config.Storage.Redis.Stores)
 	cloned.Storage.MongoDB = storageconfig.NewRouteTableConfig(config.Storage.MongoDB.Routes)
 	cloned.Discovery.Etcd.Endpoints = append([]string(nil), config.Discovery.Etcd.Endpoints...)
 	return cloned

@@ -12,7 +12,7 @@ type CModID string
 const (
 	// CModTaskQueue 提供持久任务投递与可选消费。
 	CModTaskQueue CModID = "task-queue"
-	// CModRedisStorage 提供 Redis 文档读写与脚本路由能力。
+	// CModRedisStorage 提供 Redis 文档读写与具名命令接口。
 	CModRedisStorage CModID = "redis-storage"
 	// CModMongoStorage 提供 MongoDB 文档读写能力。
 	CModMongoStorage CModID = "mongo-storage"
