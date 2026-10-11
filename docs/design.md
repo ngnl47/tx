@@ -1618,8 +1618,7 @@ Fusion 发布侧只有延迟保存一种合法语义，因此 `DelayedSaveQueue.
 启动时探活并 fast-fail；Fusion 还必须完成 Redis/Mongo、延迟任务 backend、分发器和 Scheduler 的完整装配，任何组件缺失都不能启动业务服务。
 运行期由真实 I/O 错误和后台探针维护 backend generation。每次业务调用不额外 Ping。
 
-Redis 与 Mongo 的 Adapter/Cluster 构造器都在启动装配阶段校验完整 client、router 和 shard 集合，不能创建一个等待首次
-业务 I/O 才失败的半装配对象。变更写入口把 nil 或 typed-nil `change.Source` 视为调用契约错误；有效 Source 明确返回
+Redis 与 Mongo 在启动装配阶段校验各自的 client 与路由配置；Redis 按名称指向单 backend，分片和迁移由部署侧代理负责，不能创建等待首次业务 I/O 才失败的半装配对象。变更写入口把 nil 或 typed-nil `change.Source` 视为调用契约错误；有效 Source 明确返回
 `HasChanges() == false` 时才执行无 I/O no-op。该区分避免“未提供输入”和“输入确实没有变化”被折叠成同一种成功结果。
 
 Fusion 任一端已知不可用时，新业务读写返回 `ErrStorageUnavailable`，避免继续接受无法可靠持久化的状态。已经存在的延迟任务不被删除，worker 仍可继续重试，Mongo 恢复后正常消费。
@@ -2192,7 +2191,7 @@ control.NewHandoffClient 将控制协议和响应身份校验封装为已有 Han
 启动期分配返回 unavailable。租约丢失或排水后分配器立即停止发号，且不能被启动末尾的启用动作重新打开。
 
 Login 是项目侧无状态 HTTP 服务；通过认证和访问检查后，将 SessionID 与业务身份写入绑定 Agent 实例的短期票据。
-客户端按 Login 返回的公开地址连接 Agent，Agent 验票建立 Session。新建握手仍校验票据所指的运行 `InstanceID` 与有效期；恢复握手验签后沿用票据中的原主体和 SessionID，不要求目标运行 `InstanceID` 相同或票据仍在新建有效期。客户端意外断线时保留原票据、地址、序号及待发送队列，限次恢复；新 Agent 若在原地址重启、使用同一票据验签密钥且原 MsgQ 邮箱仍存在，MsgQ 将原 Session 重绑到新的 ConnectionID 并续接 Seq/Ack 与未确认下行。原邮箱不存在时恢复失败，不能静默改建新 Session；原地址已变化时，当前客户端不能凭旧地址自动发现新 Agent。重新 Login 则取得新票据、新 SessionID 并重新认证授权，Seq/Ack、未确认下行与旧 Session 无关；是否重新从存储读取玩家 GD 由 Role Actor 与缓存生命周期决定，不由 SessionID 保证。
+客户端按 Login 返回的公开地址连接 Agent，Agent 验票建立 Session。新建握手仍校验票据所指的运行 `InstanceID` 与有效期；恢复握手验签后沿用票据中的原主体和 SessionID，不要求目标运行 `InstanceID` 相同或票据仍在新建有效期。客户端意外断线时保留原票据、地址与序号，限次恢复；新 Agent 若在原地址重启、使用同一票据验签密钥且原 MsgQ 邮箱仍存在，MsgQ 将原 Session 重绑到新的 ConnectionID 并续接 Seq/Ack 与未确认下行。原邮箱不存在时恢复失败，不能静默改建新 Session；原地址已变化时，当前客户端不能凭旧地址自动发现新 Agent。重新 Login 则取得新票据、新 SessionID 并重新认证授权，Seq/Ack、未确认下行与旧 Session 无关；是否重新从存储读取玩家 GD 由 Role Actor 与缓存生命周期决定，不由 SessionID 保证。
 Login 关闭只停止签发新票据，不拥有或终止 Agent/MsgQ 上已经建立的 Session。业务账号、角色号段与账号角色投影由项目维护。
 
 正常关闭把实例状态推进到 `stopping` 后删除实例键，但只停止租约续租，让 `workSlot` 键按 TTL 自然过期；这样新进程
@@ -2409,7 +2408,7 @@ Bee 或 Ant Context，使用 CModActorDirect 完成直连；稳定分区或业�
 `Identity` 与 `UpSeq`。项目 Actor resolver 仍只负责目标、消息类型、命令号、路由键和载荷，不能伪造身份或序号。
 Actor protobuf 在跨进程投递时保留完整身份和 `UpSeq`；内部 Actor 调用可以同时省略二者，只出现其中一个的 Delivery 无效。
 
-`Dispatcher` 在目标 Actor 邮箱接纳消息后返回 `AcceptedUpSeq`；该值只供 Agent 内部确认已入队前缀，不回传客户端。Game/Actor 在后续处理命令时，使用可信身份中的 RoleID 调用 `PubRole` 共享普通业务响应；请求级错误使用 SessionID 调用 `PubSession` 精确发布。业务消息和 System_Error 都作为独立 MsgQ 下行，新 SessionID 不会继承旧会话的下行。通用 Actor Dispatcher 使用直连 `Enqueue`，不等待业务完成。
+`Dispatcher` 通过直连 `Enqueue` 将上行提交给目标实例的长流后返回 `AcceptedUpSeq`；该值只表示本地传输提交成功，不是远端 Actor 邮箱接纳或业务执行成功的回执，也不回传客户端。Game/Actor 后续通过 `SendRole` 向角色会话扇出普通响应，请求级错误通过 `SendSession` 精确发布。两者进入本地有界发布队列后返回，不等待 MsgQ 逐项入队确认；新 SessionID 不继承旧会话下行。
 
 Agent 核心不依赖项目生成协议，因此不会自行构造业务错误包，也不负责项目 HTTP 路由、JSON/BON 绑定、自动重试或
 通用 HTTP Router。项目 Game/Actor 适配层负责把 Handler 错误转换为生成的
@@ -2417,8 +2416,7 @@ Agent 核心不依赖项目生成协议，因此不会自行构造业务错误�
 `Code` 使用 `int32` 跨 Actor protobuf 边界传递，`0` 表示没有错误，`CallErrorCodeInternal=-1` 表示未分类内部错误，
 正数空间由项目错误码表分配。`CallErrorCodeDispatch=-2` 标识 Actor 解码、Handler 注册和投递模式等分派契约失败；
 目标 Actor 在解码或分派阶段识别该错误时，Actor 适配层同样生成 `System_Error`，连接继续处理后续请求。握手、Frame、Seq/Ack、
-目标解析、邮箱接纳失败、Actor 服务不可达、传输错误和其他基础设施错误仍沿 Agent 错误返回链关闭连接，
-不能为了“不断连”把损坏协议状态或不可确定的投递结果吞成请求失败。
+目标解析和本地传输提交等同步返回的基础设施错误仍沿 Agent 错误返回链关闭连接。远端 Actor 邮箱拒收不提供逐项成功或失败回执，可能表现为该次操作无响应；不能把本地提交成功解释为业务执行成功。
 
 连接上存在两条独立序列：客户端为 `FrameUpMsg` 分配 Seq，服务端为 `FrameDownMsg` 分配 Seq。每条连接按 socket 读写顺序处理帧，Seq 只要求递增，不要求相邻两条相差 1；旧号不会重复分派。帧中的 Ack 只由客户端发送，用于确认已经处理的服务端下行：`FrameUpMsg.Ack` 或 `FrameAck.Ack` 推进 MsgQ 裁剪游标。`FrameReady.Ack` 和 `FrameDownMsg.Ack` 固定为零，服务端不发送上行 `FrameAck`。
 

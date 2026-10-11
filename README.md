@@ -733,7 +733,7 @@ if err := rpcHost.Start(rootWaitGroupContext); err != nil {
 defer rpcHost.Stop(context.Background())
 ```
 
-`MailboxStream` 保留每个 Session 独立的上行游标、未确认下行和恢复状态。`Init` 成功响应中的上行序号不能为负；流内旧连接、队列满或失效会话会收到对应错误。业务下行经 `PublishStream` 写入本地 gRPC 流，发送成功不代表 MsgQ 已入队；旧角色归属拒绝由流异步反馈，发送方清理缓存但不自动重投。
+`MailboxStream` 保留每个 Session 独立的上行游标、未确认下行和恢复状态。`Init` 成功响应中的上行序号不能为负；流内旧连接、队列满或失效会话会收到对应错误。业务下行经 `PublishStream` 写入本地 gRPC 流，发送成功不代表 MsgQ 已入队；旧角色归属拒绝由流异步反馈，仅在 MsgQ 明确证明该载荷尚未进入任何邮箱时，发送方清理缓存并重新寻址、单次投递；结果未知或部分成功不重投。
 
 `rpc.Host` 直接接入全局 `lifecycle.WaitGroupContext`。应用服务关闭时由项目宿主统一调用 `Stop`，未确认下行仍遵循
 msgq 的内存语义。
@@ -4314,7 +4314,7 @@ err := publisher.Publish(ctx,
 
 消费者在服务与 RPC 初始化完成后启动。排水先关闭服务外部准入，再等待消费回调完成，然后关闭 Actor 准入并继续原有 Actor 排水、写回和连接收尾；因此消费排水期间 Actor 准入仍保留。等待超时保留资源，可以重试 Stop/PrepareHandoff。消费错误不等于排水失败：未成功处理的任务仍保留在 JetStream。Timeout 只限制消费等待，不保证远端业务停止，续期与 ACK 也不提供幂等保证。
 
-当前已经提供框架能力及真实集成验证；两个游戏示例尚未默认启用。MaxDeliver 通知捕获与残留恢复已接线；满额边界已有真实验证；磁盘故障、副本与同步策略验收、业务死信补偿尚未完成，不作为完整生产可靠任务方案验收。
+当前已经提供框架能力及真实集成验证；两个游戏示例尚未默认启用。MaxDeliver 通知捕获与残留恢复已接线；满额边界已有真实验证；生产物理故障域、磁盘同步策略与容量验收、业务死信补偿尚未完成，不作为完整生产可靠任务方案验收。
 
 
 任务消费者设置有限 `MaxDeliver` 时，必须配置 RecoveryStream/RecoveryConsumer。部署侧提前创建专用 FileStorage/WorkQueuePolicy 通知流，只订阅 `$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.<源流名>.<源消费者名>`；其恢复 durable 使用显式 ACK，不能设置有限 MaxDeliver。这样恢复处理器离线时通知仍会保存，实例启动后再续领。若源消费者无限重投，可不配置恢复流；保留的通知不能跨同名资源的删除重建直接套用。
