@@ -4237,11 +4237,15 @@ err := db.Save(role)
 env GOCACHE=/private/tmp/tx-go-build GOTMPDIR=/private/tmp /Users/a47/sdk/go1.26.5/bin/go test ./... -count=1
 ```
 
-`tests/storage_backend_integration_test.go` 承接真实 Redis/Mongo 的 TTL、并发回填、延迟落库及发布失败恢复回归，使用固定存储 SPI 变更源，不依赖示例工程的生成类型：
+真实 Redis/Mongo 回归统一由 tx 承接，使用固定存储 SPI 变更源，不依赖生成器或示例工程的生成类型：
+
+- `tests/storage_backend_integration_test.go`：TTL、并发回填、延迟落库及发布失败恢复。
+- `tests/storage_document_contract_integration_test.go`：特殊 Map Key、数组元素增量、嵌套集合清空、子键替换、TTL 与批量投影。
+- `tests/storage_fusion_writeback_integration_test.go`：事务回滚保留已提交状态、写回失败保留待写状态、恢复后经 Fusion 落库。
 
 ```bash
 TX_REDIS_ENDPOINT=127.0.0.1:6379 TX_MONGO_URI=mongodb://127.0.0.1:27017 \
-go test ./tests -run 'Test(RedisVersionKey|RedisConditionalTTL|RedisCollectionElementSet|RedisNestedSet|FusionDelayedSaveRequeues|FusionDispatcherRecoversRedis|FusionConcurrentRedisMiss|FusionBackfillDoesNotOverwrite|FusionBatchRedisMiss|FusionConcurrentBatchBackfill)' -race -count=1
+go test ./tests -run 'Test(RedisVersionKey|RedisConditionalTTL|RedisCollectionElementSet|RedisNestedSet|FusionDelayedSaveRequeues|FusionDispatcherRecoversRedis|FusionConcurrentRedisMiss|FusionBackfillDoesNotOverwrite|FusionBatchRedisMiss|FusionConcurrentBatchBackfill|StorageBackendDocumentContracts|FusionProcedureRollbackPreservesPendingAcrossFlushFailure)' -race -count=1
 ```
 
 未设置对应变量时跳过；显式指定后依赖不可达会失败。仅使用 Redis `tx:test:storage:*`、本轮 `tx:test:fusion-*` 任务键及 Mongo `tx_storage_integration.storage_integration` 中本轮记录，结束时清理本轮数据，不清空共享库。

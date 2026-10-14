@@ -37,9 +37,10 @@ func storageIntegrationSpec() meta.TypeSpec {
 		}},
 		DocumentFactory: func() any {
 			return &struct {
-				RoleId int64          `json:"roleId" bson:"roleId"`
-				Name   string         `json:"name" bson:"name"`
-				Items  map[string]any `json:"items" bson:"items"`
+				RoleId   int64          `json:"roleId" bson:"roleId"`
+				Name     string         `json:"name" bson:"name"`
+				Items    map[string]any `json:"items" bson:"items"`
+				RankInfo map[string]any `json:"rankInfo" bson:"rankInfo"`
 			}{}
 		},
 		Storage: meta.StorageSpec{Mode: meta.StorageModeFusion, DelaySave: meta.Duration{Duration: time.Minute}, DelayDelete: meta.Duration{Duration: time.Hour}},
