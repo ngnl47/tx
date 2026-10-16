@@ -24,7 +24,11 @@ python3 deploy/task-demo/prepare.py ../txgame /tmp/tx-demo-game-assets
 python3 deploy/task-demo/prepare.py ../txgameslg /tmp/tx-demo-slg-assets
 ```
 
-脚本读取各工程现有 `server/assets/debug`，复制资源并替换依赖端口、启用对应 taskQueue 配置，不修改原工程资产。输出目录必须不存在；输入配置不再是默认 `taskQueue: null` 时会拒绝处理。需要重新生成时换一个新目录，旧目录由使用者自行保留或删除。
+脚本读取各工程现有 `server/assets/debug`，复制资源并替换依赖端口、启用对应 taskQueue 配置，不修改原工程资产。保留 `taskQueue` 的 YAML 锚点，使 `runtime.yml` 的别名继续引用新配置；按 `slgworld` 服务声明选择 SLG 任务资源。输出目录必须不存在；输入 taskQueue 不是默认关闭的 `null` 时会拒绝处理。需要重新生成时换一个新目录，旧目录由使用者自行保留或删除。
+
+若配置包含 `gameConfig.directory`，脚本将其按原 `app.yml` 所在目录转换为绝对路径（已有绝对路径保持含义），仍读取原工程导出的整套 JSON，不复制或修改数据。请先完成配置导出；运行 demo 期间保留该目录。该路径使用当前资产的一行路径写法，支持无引号、单引号和 JSON 双引号字符串。发布符号链接不会被解析成固定版本目录。
+
+无需启动依赖即可验证准备脚本：`python3 -B -m unittest discover -s deploy/task-demo -p 'test_*.py'`。
 
 ## 3. 启动实际业务服务
 
