@@ -64,7 +64,7 @@ func BenchmarkDirectActorCall(b *testing.B) {
 	caller := directSender(b, directory)
 	ctx, cancel := context.WithTimeout(b.Context(), time.Minute)
 	defer cancel()
-	target, delivery := actorhost.Target{Instance: "a", Identity: actorhost.Identity{Kind: "world", Key: "51"}}, &actorpb.Delivery{MessageType: "ack", UpSeq: 7, Payload: make([]byte, 1024)}
+	target, delivery := actorhost.Target{Instance: "a", Identity: actorhost.Identity{Kind: "world", Key: "51"}}, &actorpb.Delivery{MessageType: "ack", Payload: make([]byte, 1024)}
 	if _, err := caller.Call(ctx, target, delivery); err != nil {
 		b.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func BenchmarkDirectActorCall(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		result, err := caller.Call(ctx, target, delivery)
-		if err != nil || result.ProcessedUpSeq != 7 {
+		if err != nil || result.MessageType != "ok" {
 			b.Fatalf("%v %v", result, err)
 		}
 	}

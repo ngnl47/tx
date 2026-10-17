@@ -36,7 +36,7 @@ func testBroadcastGRPC(t *testing.T, rolePublish bool) {
 	first := SessionHeader{RoleID: 47, SessionID: 11, ConnectionID: 1}
 	second := SessionHeader{RoleID: 47, SessionID: 12, ConnectionID: 2}
 	for _, header := range []SessionHeader{first, second} {
-		if _, err := mailbox.Init(ctx, InitRequest{Header: header}); err != nil {
+		if err := mailbox.Init(ctx, InitRequest{Header: header}); err != nil {
 			t.Fatal(err)
 		}
 		if err := mailbox.JoinTopics(ctx, TopicRequest{Header: header, Topics: []string{"role:47"}}); err != nil {

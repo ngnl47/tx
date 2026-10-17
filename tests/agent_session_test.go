@@ -35,7 +35,7 @@ func TestAgentSessionAuthenticatesThenDispatchesAcceptedSequence(t *testing.T) {
 		},
 		ConnectionID: 7,
 	}
-	if request.Identity != wantIdentity || request.Seq != 1 || request.CommandID != 10001 || string(request.Payload) != "bon-request" {
+	if request.Identity != wantIdentity || request.CommandID != 10001 || string(request.Payload) != "bon-request" {
 		t.Fatalf("dispatch request = %#v", request)
 	}
 	if key, ok := request.RouteKey.Int64(); !ok || key != 470001 {
@@ -142,8 +142,8 @@ func TestAgentSessionAcquiresOwnerFromTrustedIdentity(t *testing.T) {
 				IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
 					return test.principal, nil
 				}),
-				Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) (txagent.DispatchResult, error) {
-					return txagent.DispatchResult{}, nil
+				Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error {
+					return nil
 				}),
 				Sessions: agentSessionRouterFunc(func(_ context.Context, request msgq.AcquireSessionRequest) (msgq.SessionClient, error) {
 					acquired <- request
@@ -195,9 +195,9 @@ func TestAgentSessionRejectsInvalidResolvedPrincipal(t *testing.T) {
 		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
 			return protocol.SessionPrincipal{ServerID: 1, RoleID: 470001, SessionID: 99}, nil
 		}),
-		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) (txagent.DispatchResult, error) {
+		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error {
 			t.Fatal("invalid identity must not be dispatched")
-			return txagent.DispatchResult{}, nil
+			return nil
 		}),
 		Sessions: agentSessionRouterFunc(func(context.Context, msgq.AcquireSessionRequest) (msgq.SessionClient, error) {
 			return nil, sessionsAcquired
@@ -223,7 +223,7 @@ func TestAgentSessionFetchesDownMsgAndConfirmsAckOnNextUpMsg(t *testing.T) {
 	assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
 	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("first")}
 	_ = receiveDispatch(t, dispatched)
-	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 1, "")
+	assertNoAgentFrame(t, transport.writes)
 
 	if _, err := mailbox.PubSession(context.Background(), 99, []byte("bon-response")); err != nil {
 		t.Fatalf("publish downMsg: %v", err)
@@ -239,7 +239,7 @@ func TestAgentSessionFetchesDownMsgAndConfirmsAckOnNextUpMsg(t *testing.T) {
 
 	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 2, Ack: 1, CommandID: 1, Payload: []byte("second")}
 	_ = receiveDispatch(t, dispatched)
-	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 2, "")
+	assertNoAgentFrame(t, transport.writes)
 	deadline, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	_, err := mailbox.FetchSome(deadline, msgq.FetchSomeRequest{Header: msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}, Max: 1})
@@ -273,10 +273,10 @@ func TestAgentSessionDoesNotAcknowledgeAcceptedUpMsgBeforeDispatcherCompletes(t 
 		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
 			return testSessionPrincipal(), nil
 		}),
-		Dispatcher: txagent.DispatchFunc(func(_ context.Context, request txagent.DispatchRequest) (txagent.DispatchResult, error) {
+		Dispatcher: txagent.DispatchFunc(func(_ context.Context, request txagent.DispatchRequest) error {
 			close(dispatchStarted)
 			<-releaseDispatch
-			return txagent.DispatchResult{AcceptedUpSeq: request.Seq}, nil
+			return nil
 		}),
 		Sessions:     router,
 		ConnectionID: func() (int64, error) { return 7, nil },
@@ -302,54 +302,14 @@ func TestAgentSessionDoesNotAcknowledgeAcceptedUpMsgBeforeDispatcherCompletes(t 
 	assertAgentFrame(t, transport.writes, txagent.FrameDownMsg, 1, 0, "independent-downMsg")
 
 	close(releaseDispatch)
-	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 1, "")
+	assertNoAgentFrame(t, transport.writes)
 	transport.closeReads()
 	if err := <-serveResult; !errors.Is(err, io.EOF) {
 		t.Fatalf("serve error = %v, want EOF", err)
 	}
 }
 
-func TestAgentSessionRejectsMismatchedProcessedSequence(t *testing.T) {
-	store := newMailboxSessionStore()
-	mailbox, err := msgq.NewServer(msgq.ServerOptions{InstanceID: "msgq-local", Store: store, MaxBacklogMessages: 4})
-	if err != nil {
-		t.Fatalf("new mailbox: %v", err)
-	}
-	client, err := msgq.NewLocalSessionClient(mailbox)
-	if err != nil {
-		t.Fatalf("new local client: %v", err)
-	}
-	router, err := msgq.NewFixedSessionClientRouter(client)
-	if err != nil {
-		t.Fatalf("new fixed router: %v", err)
-	}
-	agent, err := txagent.NewServer(txagent.ServerOptions{
-		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
-			return testSessionPrincipal(), nil
-		}),
-		Dispatcher: txagent.DispatchFunc(func(_ context.Context, request txagent.DispatchRequest) (txagent.DispatchResult, error) {
-			if request.Seq != 1 {
-				t.Fatalf("dispatch seq = %d, want 1", request.Seq)
-			}
-			return txagent.DispatchResult{AcceptedUpSeq: request.Seq + 1}, nil
-		}),
-		Sessions: router,
-		ConnectionID: func() (int64, error) {
-			return 7, nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("new agent: %v", err)
-	}
-	transport := newAgentTransport()
-	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
-	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("bon-request")}
-	if err := agent.Serve(context.Background(), transport); !errors.Is(err, txagent.ErrInvalidDispatchResult) {
-		t.Fatalf("serve error = %v, want ErrInvalidDispatchResult", err)
-	}
-}
-
-func TestAgentSessionAcknowledgesUpMsgWithoutDispatchResponse(t *testing.T) {
+func TestAgentSessionDoesNotAcknowledgeUpMsg(t *testing.T) {
 	agent, transport, _, dispatched := newAgentSessionFixture(t, nil)
 	result := make(chan error, 1)
 	go func() { result <- agent.Serve(context.Background(), transport) }()
@@ -358,7 +318,7 @@ func TestAgentSessionAcknowledgesUpMsgWithoutDispatchResponse(t *testing.T) {
 	assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
 	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("bon-request")}
 	_ = receiveDispatch(t, dispatched)
-	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 1, "")
+	assertNoAgentFrame(t, transport.writes)
 
 	transport.closeReads()
 	if err := <-result; !errors.Is(err, io.EOF) {
@@ -464,7 +424,7 @@ func TestAgentSessionRejectsAcknowledgementBeyondWrittenDownMsg(t *testing.T) {
 	}
 
 	restored := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 8}
-	if _, err := mailbox.Init(context.Background(), msgq.InitRequest{Header: restored, Restore: true}); err != nil {
+	if err := mailbox.Init(context.Background(), msgq.InitRequest{Header: restored, Restore: true}); err != nil {
 		t.Fatalf("restore after rejected acknowledgement: %v", err)
 	}
 	message, err := mailbox.Fetch(context.Background(), msgq.FetchRequest{Header: restored})
@@ -482,14 +442,14 @@ func TestAgentSessionDoesNotDispatchDuplicateSequence(t *testing.T) {
 	assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
 	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("first")}
 	_ = receiveDispatch(t, dispatched)
-	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 1, "")
+	assertNoAgentFrame(t, transport.writes)
 	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("duplicate")}
 	select {
 	case request := <-dispatched:
 		t.Fatalf("duplicate dispatched = %#v", request)
 	case <-time.After(20 * time.Millisecond):
 	}
-	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 1, "")
+	assertNoAgentFrame(t, transport.writes)
 
 	transport.closeReads()
 	if err := <-result; !errors.Is(err, io.EOF) {
@@ -505,14 +465,14 @@ func TestAgentSessionDispatchesIncreasingSequenceWithGap(t *testing.T) {
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
 	assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
 	for _, seq := range []int64{1, 5} {
-		transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: seq, CommandID: 1}
-		if request := receiveDispatch(t, dispatched); request.Seq != seq {
-			t.Fatalf("dispatched seq = %d, want %d", request.Seq, seq)
+		transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: seq, CommandID: uint32(seq)}
+		if request := receiveDispatch(t, dispatched); request.CommandID != uint32(seq) {
+			t.Fatalf("dispatched command = %d, want %d", request.CommandID, seq)
 		}
-		assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, seq, "")
+		assertNoAgentFrame(t, transport.writes)
 	}
 	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 3, CommandID: 1}
-	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 5, "")
+	assertNoAgentFrame(t, transport.writes)
 	select {
 	case request := <-dispatched:
 		t.Fatalf("old sequence dispatched = %#v", request)
@@ -524,38 +484,9 @@ func TestAgentSessionDispatchesIncreasingSequenceWithGap(t *testing.T) {
 	}
 }
 
-func TestAgentSessionRestoreAcknowledgesAcceptedUpMsgAndSkipsReplay(t *testing.T) {
-	agent, transport, mailbox, dispatched := newAgentSessionFixture(t, nil)
-	previous := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 6}
-	if _, err := mailbox.Init(context.Background(), msgq.InitRequest{Header: previous}); err != nil {
-		t.Fatalf("init previous session: %v", err)
-	}
-	if _, err := mailbox.Rec(context.Background(), msgq.RecRequest{Header: previous, Seq: 1}); err != nil {
-		t.Fatalf("record previous upMsg: %v", err)
-	}
-
-	result := make(chan error, 1)
-	go func() { result <- agent.Serve(context.Background(), transport) }()
-	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Restore: true, Payload: []byte("token")}
-	assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 1, "")
-
-	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("replay")}
-	select {
-	case request := <-dispatched:
-		t.Fatalf("replayed upMsg dispatched = %#v", request)
-	case <-time.After(20 * time.Millisecond):
-	}
-	assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 1, "")
-
-	transport.closeReads()
-	if err := <-result; !errors.Is(err, io.EOF) {
-		t.Fatalf("serve error = %v, want EOF", err)
-	}
-}
-
-func TestAgentSessionDispatchFailureDoesNotRollbackAcceptedSequence(t *testing.T) {
+func TestAgentSessionReturnsDispatchFailure(t *testing.T) {
 	dispatchErr := errors.New("dispatch failed")
-	agent, transport, mailbox, _ := newAgentSessionFixture(t, dispatchErr)
+	agent, transport, _, _ := newAgentSessionFixture(t, dispatchErr)
 	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
 	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("bon-request")}
 
@@ -563,12 +494,9 @@ func TestAgentSessionDispatchFailureDoesNotRollbackAcceptedSequence(t *testing.T
 	if !errors.Is(err, dispatchErr) {
 		t.Fatalf("serve error = %v, want dispatch failure", err)
 	}
-	if _, err := mailbox.Rec(context.Background(), msgq.RecRequest{Header: msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}, Seq: 2}); err != nil {
-		t.Fatalf("next sequence was not accepted after dispatch failure: %v", err)
-	}
 }
 
-func TestAgentSessionDoesNotAdvanceSequenceWhenAdmissionRejects(t *testing.T) {
+func TestAgentSessionDoesNotDispatchWhenAdmissionRejects(t *testing.T) {
 	store := newMailboxSessionStore()
 	mailbox, err := msgq.NewServer(msgq.ServerOptions{InstanceID: "msgq-local", Store: store, MaxBacklogMessages: 4})
 	if err != nil {
@@ -587,9 +515,9 @@ func TestAgentSessionDoesNotAdvanceSequenceWhenAdmissionRejects(t *testing.T) {
 		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
 			return testSessionPrincipal(), nil
 		}),
-		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) (txagent.DispatchResult, error) {
+		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error {
 			t.Fatal("dispatcher must not run when admission rejects")
-			return txagent.DispatchResult{}, nil
+			return nil
 		}),
 		Admission: lifecycle.AdmissionFunc(func() (func(), error) { return nil, drainErr }),
 		Sessions:  router,
@@ -607,9 +535,6 @@ func TestAgentSessionDoesNotAdvanceSequenceWhenAdmissionRejects(t *testing.T) {
 		t.Fatalf("Serve error = %v, want admission error", err)
 	}
 
-	if _, err := mailbox.Rec(context.Background(), msgq.RecRequest{Header: msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}, Seq: 1}); err != nil {
-		t.Fatalf("rejected frame advanced sequence: %v", err)
-	}
 }
 
 func TestAgentSameRoleSessionsPreserveIdentityAndIsolateDownMessages(t *testing.T) {
@@ -628,9 +553,9 @@ func TestAgentSameRoleSessionsPreserveIdentityAndIsolateDownMessages(t *testing.
 		t.Fatal(err)
 	}
 	dispatched := make(chan txagent.DispatchRequest, 2)
-	dispatcher := txagent.DispatchFunc(func(_ context.Context, request txagent.DispatchRequest) (txagent.DispatchResult, error) {
+	dispatcher := txagent.DispatchFunc(func(_ context.Context, request txagent.DispatchRequest) error {
 		dispatched <- request
-		return txagent.DispatchResult{AcceptedUpSeq: request.Seq}, nil
+		return nil
 	})
 	transports := []*agentTransport{newAgentTransport(), newAgentTransport()}
 	results := []chan error{make(chan error, 1), make(chan error, 1)}
@@ -664,13 +589,13 @@ func TestAgentSameRoleSessionsPreserveIdentityAndIsolateDownMessages(t *testing.
 		}
 		want := testSessionPrincipal()
 		want.SessionID = id.SessionID
-		if id.SessionPrincipal != want || id.ConnectionID != 7+(id.SessionID-99) || request.Seq != 1 || seen[id.SessionID] {
+		if id.SessionPrincipal != want || id.ConnectionID != 7+(id.SessionID-99) || seen[id.SessionID] {
 			t.Fatalf("mixed dispatch identity or sequence: %+v", request)
 		}
 		seen[id.SessionID] = true
 	}
 	for _, transport := range transports {
-		assertAgentFrame(t, transport.writes, txagent.FrameAck, 0, 1, "")
+		assertNoAgentFrame(t, transport.writes)
 	}
 	// 测试只提供不透明业务载荷，精确错误下行不能进入另一会话。
 	if _, err := mailbox.PubSession(ctx, 99, []byte("request-error")); err != nil {
@@ -680,9 +605,9 @@ func TestAgentSameRoleSessionsPreserveIdentityAndIsolateDownMessages(t *testing.
 	if err != nil || broadcast.Delivered != 2 {
 		t.Fatalf("shared publish = %+v, %v", broadcast, err)
 	}
-	assertAgentFrame(t, transports[0].writes, txagent.FrameDownMsg, 1, 1, "request-error")
-	assertAgentFrame(t, transports[0].writes, txagent.FrameDownMsg, 2, 1, "role-update")
-	assertAgentFrame(t, transports[1].writes, txagent.FrameDownMsg, 1, 1, "role-update")
+	assertAgentFrame(t, transports[0].writes, txagent.FrameDownMsg, 1, 0, "request-error")
+	assertAgentFrame(t, transports[0].writes, txagent.FrameDownMsg, 2, 0, "role-update")
+	assertAgentFrame(t, transports[1].writes, txagent.FrameDownMsg, 1, 0, "role-update")
 	for i, transport := range transports {
 		transport.closeReads()
 		select {
@@ -722,9 +647,9 @@ func newAgentSessionFixture(t *testing.T, dispatchErr error) (*txagent.Server, *
 		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
 			return testSessionPrincipal(), nil
 		}),
-		Dispatcher: txagent.DispatchFunc(func(_ context.Context, request txagent.DispatchRequest) (txagent.DispatchResult, error) {
+		Dispatcher: txagent.DispatchFunc(func(_ context.Context, request txagent.DispatchRequest) error {
 			dispatched <- request
-			return txagent.DispatchResult{AcceptedUpSeq: request.Seq}, dispatchErr
+			return dispatchErr
 		}),
 		Sessions:     router,
 		ConnectionID: func() (int64, error) { return nextConnectionID.Add(1), nil },
@@ -758,22 +683,12 @@ func receiveDispatch(t *testing.T, dispatched <-chan txagent.DispatchRequest) tx
 
 func assertAgentFrame(t *testing.T, frames <-chan txagent.Frame, kind txagent.FrameKind, seq, ack int64, payload string) {
 	t.Helper()
-	if kind == txagent.FrameAck {
-		select {
-		case frame := <-frames:
-			t.Fatalf("unexpected server frame while checking removed FrameAck: %#v", frame)
-		case <-time.After(5 * time.Millisecond):
-			return
-		}
-	}
+
 	select {
 	case frame := <-frames:
-		wantAck := ack
-		if kind == txagent.FrameReady || kind == txagent.FrameDownMsg {
-			wantAck = 0
-		}
-		if frame.Kind != kind || frame.Seq != seq || frame.Ack != wantAck || string(frame.Payload) != payload {
-			t.Fatalf("frame = %#v, want kind=%d seq=%d ack=%d payload=%q", frame, kind, seq, wantAck, payload)
+
+		if frame.Kind != kind || frame.Seq != seq || frame.Ack != ack || string(frame.Payload) != payload {
+			t.Fatalf("frame = %#v, want kind=%d seq=%d ack=%d payload=%q", frame, kind, seq, ack, payload)
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("timed out waiting for kind=%d seq=%d ack=%d", kind, seq, ack)
@@ -806,9 +721,9 @@ type recordingAgentSessionClient struct {
 	initRequests chan msgq.InitRequest
 }
 
-func (c *recordingAgentSessionClient) Init(_ context.Context, request msgq.InitRequest) (msgq.InitResult, error) {
+func (c *recordingAgentSessionClient) Init(_ context.Context, request msgq.InitRequest) error {
 	c.initRequests <- request
-	return msgq.InitResult{}, nil
+	return nil
 }
 
 func (*recordingAgentSessionClient) OpenMailboxStream(ctx context.Context, _ msgq.SessionHeader) (msgq.MailboxStreamSession, error) {
@@ -822,9 +737,9 @@ func (s *recordingMailboxStream) Recv() (msgq.FetchResult, error) {
 	<-s.ctx.Done()
 	return msgq.FetchResult{}, s.ctx.Err()
 }
-func (s *recordingMailboxStream) Ack(context.Context, int64, int64) error { return nil }
-func (s *recordingMailboxStream) Renew(context.Context) error             { return nil }
-func (s *recordingMailboxStream) Close() error                            { return nil }
+func (s *recordingMailboxStream) Ack(context.Context, int64) error { return nil }
+func (s *recordingMailboxStream) Renew(context.Context) error      { return nil }
+func (s *recordingMailboxStream) Close() error                     { return nil }
 
 func (*recordingAgentSessionClient) TerminateSession(context.Context, msgq.SessionHeader) error {
 	return nil
@@ -939,9 +854,9 @@ func TestAgentNewLoginReturningToPreviousAgentStartsIndependentCursors(t *testin
 				return principal, nil
 			}),
 			Sessions: router,
-			Dispatcher: txagent.DispatchFunc(func(_ context.Context, request txagent.DispatchRequest) (txagent.DispatchResult, error) {
+			Dispatcher: txagent.DispatchFunc(func(_ context.Context, request txagent.DispatchRequest) error {
 				dispatched <- request
-				return txagent.DispatchResult{AcceptedUpSeq: request.Seq}, nil
+				return nil
 			}),
 		})
 		if err != nil {
@@ -962,7 +877,7 @@ func TestAgentNewLoginReturningToPreviousAgentStartsIndependentCursors(t *testin
 		}
 		transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: seq, CommandID: 10001}
 		request := receiveDispatch(t, dispatched)
-		if request.Identity.SessionID != sessionID || request.Seq != seq {
+		if request.Identity.SessionID != sessionID {
 			t.Fatalf("串用了旧会话: %+v", request)
 		}
 		if _, err := mailbox.PubSession(ctx, sessionID, []byte("new-session")); err != nil {
@@ -975,5 +890,53 @@ func TestAgentNewLoginReturningToPreviousAgentStartsIndependentCursors(t *testin
 		case <-ctx.Done():
 			t.Fatal(ctx.Err())
 		}
+	}
+}
+
+func assertNoAgentFrame(t *testing.T, frames <-chan txagent.Frame) {
+	t.Helper()
+	select {
+	case frame := <-frames:
+		t.Fatalf("不应发送上行确认: %#v", frame)
+	case <-time.After(5 * time.Millisecond):
+	}
+}
+
+func TestAgentRestoreOnlyRestoresDownlinkMailbox(t *testing.T) {
+	agent, transport, mailbox, dispatched := newAgentSessionFixture(t, nil)
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- agent.Serve(t.Context(), transport) }()
+	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
+	assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
+	transport.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 100, CommandID: 1}
+	receiveDispatch(t, dispatched)
+	if _, err := mailbox.PubSession(t.Context(), 99, []byte("pending")); err != nil {
+		t.Fatal(err)
+	}
+	assertAgentFrame(t, transport.writes, txagent.FrameDownMsg, 1, 0, "pending")
+	transport.closeReads()
+	if err := <-firstDone; !errors.Is(err, io.EOF) {
+		t.Fatal(err)
+	}
+
+	restored := newAgentTransport()
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- agent.Serve(t.Context(), restored) }()
+	restored.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Restore: true, Payload: []byte("token")}
+	assertAgentFrame(t, restored.writes, txagent.FrameReady, 0, 0, "")
+	assertAgentFrame(t, restored.writes, txagent.FrameDownMsg, 1, 0, "pending")
+	// 故意发送较小序号验证边界；正常客户端重连继续递增且不重放。
+	restored.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, Ack: 1, CommandID: 9}
+	if got := receiveDispatch(t, dispatched); got.CommandID != 9 {
+		t.Fatalf("新连接没有独立游标: %+v", got)
+	}
+	restored.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, Ack: 1, CommandID: 10}
+	restored.reads <- txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 3, Ack: 1, CommandID: 11}
+	if got := receiveDispatch(t, dispatched); got.CommandID != 11 {
+		t.Fatalf("重复号仍被分派: %+v", got)
+	}
+	restored.closeReads()
+	if err := <-secondDone; !errors.Is(err, io.EOF) {
+		t.Fatal(err)
 	}
 }

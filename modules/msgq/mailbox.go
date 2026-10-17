@@ -69,24 +69,6 @@ type InitRequest struct {
 	Ack     int64
 }
 
-// InitResult 返回当前已接收的上行序号。
-type InitResult struct {
-	UpMsgSeq int64
-}
-
-// RecRequest 确认一条客户端上行消息，并可携带下行确认号。
-type RecRequest struct {
-	Header SessionHeader
-	Seq    int64
-	Ack    int64
-}
-
-// RecResult 返回服务端实际接受的上行序号和确认号。
-type RecResult struct {
-	UpMsgSeq int64
-	Ack      int64
-}
-
 // PubResult 返回下行消息序号，供 Agent 写入协议包。
 type PubResult struct {
 	Seq int64
@@ -193,30 +175,30 @@ func NewServer(options ServerOptions) (*Server, error) {
 }
 
 // Init 建立新会话，或在相同 SessionID 重连时恢复未确认下行消息。
-func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, error) {
+func (s *Server) Init(ctx context.Context, request InitRequest) error {
 	if s == nil {
-		return InitResult{}, ErrServerNil
+		return ErrServerNil
 	}
 	if err := request.Header.validateConnection(); err != nil || request.Ack < 0 || (!request.Restore && request.Ack != 0) {
-		return InitResult{}, ErrInvalidHeader
+		return ErrInvalidHeader
 	}
 	initLock := &s.initLocks[uint64(request.Header.RoleID)%initLockShards]
 	initLock.Lock()
 	defer initLock.Unlock()
 	if s.stopped.Load() {
-		return InitResult{}, ErrSessionOffline
+		return ErrSessionOffline
 	}
 	if request.Restore {
 		previous, found := s.lookup(request.Header.SessionID)
 		if !found {
-			return InitResult{}, ErrSessionOffline
+			return ErrSessionOffline
 		}
 		if previous.roleID != request.Header.RoleID {
-			return InitResult{}, ErrSessionChanged
+			return ErrSessionChanged
 		}
 	}
 	if err := s.ensureRole(ctx, request.Header.RoleID); err != nil {
-		return InitResult{}, err
+		return err
 	}
 
 	var session *mailboxSession
@@ -224,7 +206,7 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 	if request.Restore {
 		current, found := s.lookup(request.Header.SessionID)
 		if !found {
-			return InitResult{}, ErrSessionOffline
+			return ErrSessionOffline
 		}
 		if s.beforeRestoreSessionLock != nil {
 			s.beforeRestoreSessionLock()
@@ -232,15 +214,15 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 		current.mu.Lock()
 		if !current.active {
 			current.mu.Unlock()
-			return InitResult{}, ErrSessionOffline
+			return ErrSessionOffline
 		}
 		if current.roleID != request.Header.RoleID {
 			current.mu.Unlock()
-			return InitResult{}, ErrSessionChanged
+			return ErrSessionChanged
 		}
 		if err := current.downMsgs.validateAck(request.Ack); err != nil {
 			current.mu.Unlock()
-			return InitResult{}, err
+			return err
 		}
 		session = current
 		previousConnectionID = current.connectionID
@@ -248,7 +230,7 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 		var reserved bool
 		session, reserved = s.reserveFresh(request.Header)
 		if !reserved {
-			return InitResult{}, ErrSessionChanged
+			return ErrSessionChanged
 		}
 	}
 	binding := SessionBinding{
@@ -267,22 +249,22 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 		rebound, err := s.store.Rebind(ctx, expected, binding)
 		if err != nil {
 			session.mu.Unlock()
-			return InitResult{}, err
+			return err
 		}
 		if !rebound {
 			s.removeLocked(session)
 			session.mu.Unlock()
-			return InitResult{}, ErrSessionChanged
+			return ErrSessionChanged
 		}
 	} else {
 		created, err := s.store.Create(ctx, binding)
 		if err != nil {
 			s.abortFreshLocked(session)
-			return InitResult{}, err
+			return err
 		}
 		if !created {
 			s.abortFreshLocked(session)
-			return InitResult{}, ErrSessionChanged
+			return ErrSessionChanged
 		}
 		session.active = true
 		s.addRoleLocked(session)
@@ -290,11 +272,11 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 	if !s.roleCurrent(request.Header.RoleID, time.Now()) {
 		s.removeLocked(session)
 		session.mu.Unlock()
-		return InitResult{}, ErrSessionChanged
+		return ErrSessionChanged
 	}
 	if !session.active || session.sessionID != request.Header.SessionID {
 		session.mu.Unlock()
-		return InitResult{}, ErrSessionChanged
+		return ErrSessionChanged
 	}
 	now := time.Now()
 	session.connectionID = request.Header.ConnectionID
@@ -306,10 +288,9 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 		session.downMsgs.resetSent()
 		if err := session.downMsgs.confirm(request.Ack); err != nil {
 			session.mu.Unlock()
-			return InitResult{}, err
+			return err
 		}
 	}
-	upMsgSeq := session.upMsgSeq
 	pending := session.downMsgs.len()
 	session.signal()
 	session.mu.Unlock()
@@ -318,7 +299,6 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 		"sessionID", request.Header.SessionID,
 		"connectionID", request.Header.ConnectionID,
 		"restore", request.Restore,
-		"upMsgSeq", upMsgSeq,
 		"downAck", request.Ack,
 		"pending", pending,
 	}
@@ -326,49 +306,7 @@ func (s *Server) Init(ctx context.Context, request InitRequest) (InitResult, err
 		logArgs = append(logArgs, "previousConnectionID", previousConnectionID)
 	}
 	txlog.DebugContext(ctx, "msgq session initialized", logArgs...)
-	return InitResult{UpMsgSeq: upMsgSeq}, nil
-}
-
-// Rec 接受严格递增的客户端上行序号；旧序号幂等返回当前已接收序号。
-func (s *Server) Rec(ctx context.Context, request RecRequest) (RecResult, error) {
-	if request.Seq <= 0 || request.Ack < 0 {
-		return RecResult{}, ErrUpMsgSequence
-	}
-	session, err := s.touch(ctx, request.Header)
-	if err != nil {
-		return RecResult{}, err
-	}
-	session.mu.Lock()
-	current, err := session.checkConnection(request.Header)
-	if err != nil {
-		session.mu.Unlock()
-		s.logStaleConnection(ctx, request.Header, current, err)
-		return RecResult{}, err
-	}
-	if err := session.downMsgs.validateAck(request.Ack); err != nil {
-		session.mu.Unlock()
-		return RecResult{}, err
-	}
-	if request.Seq > session.upMsgSeq {
-		session.upMsgSeq = request.Seq
-	}
-	if err := session.downMsgs.confirm(request.Ack); err != nil {
-		session.mu.Unlock()
-		return RecResult{}, err
-	}
-	upMsgSeq := session.upMsgSeq
-	pending := session.downMsgs.len()
-	session.mu.Unlock()
-	txlog.DebugContext(ctx, "msgq upMsg accepted",
-		"roleID", request.Header.RoleID,
-		"sessionID", request.Header.SessionID,
-		"connectionID", request.Header.ConnectionID,
-		"seq", request.Seq,
-		"upMsgSeq", upMsgSeq,
-		"downAck", request.Ack,
-		"pending", pending,
-	)
-	return RecResult{UpMsgSeq: upMsgSeq, Ack: request.Ack}, nil
+	return nil
 }
 
 // PubSession 将数据追加到精确会话的未确认下行队列。
@@ -1064,7 +1002,6 @@ type mailboxSession struct {
 	roleID           int64
 	sessionID        int64
 	connectionID     int64
-	upMsgSeq         int64
 	active           bool
 	lastActivity     time.Time
 	nextLeaseRefresh time.Time

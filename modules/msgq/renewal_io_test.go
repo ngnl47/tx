@@ -22,7 +22,7 @@ func TestSlowRenewalKeepsOtherMailboxesUsable(t *testing.T) {
 		{RoleID: 48, SessionID: 13, ConnectionID: 3},
 	}
 	for _, header := range headers {
-		if _, err := server.Init(ctx, InitRequest{Header: header}); err != nil {
+		if err := server.Init(ctx, InitRequest{Header: header}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -74,7 +74,7 @@ func TestTerminationDuringRenewalCannotReactivateMailbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	header := SessionHeader{RoleID: 47, SessionID: 11, ConnectionID: 1}
-	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
+	if err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
@@ -117,7 +117,7 @@ func TestSlowRoleRenewalKeepsDeliveryUsable(t *testing.T) {
 	}
 	ctx := context.Background()
 	for i := int64(1); i <= 2; i++ {
-		if _, err := server.Init(ctx, InitRequest{Header: SessionHeader{RoleID: i, SessionID: i, ConnectionID: i}}); err != nil {
+		if err := server.Init(ctx, InitRequest{Header: SessionHeader{RoleID: i, SessionID: i, ConnectionID: i}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -153,7 +153,7 @@ func TestSlowRoleRenewalKeepsDeliveryUsable(t *testing.T) {
 	for id := int64(1); id <= 2; id++ {
 		initialized := make(chan error, 1)
 		go func() {
-			_, err := server.Init(ctx, InitRequest{Header: SessionHeader{RoleID: id, SessionID: id + 10, ConnectionID: id + 10}})
+			err := server.Init(ctx, InitRequest{Header: SessionHeader{RoleID: id, SessionID: id + 10, ConnectionID: id + 10}})
 			initialized <- err
 		}()
 		if err := waitMailboxResult(t, initialized); err != nil {
@@ -192,7 +192,7 @@ func TestLateRoleRenewalCannotRestoreRetiredOwnership(t *testing.T) {
 			}
 			ctx := context.Background()
 			header := SessionHeader{RoleID: 1, SessionID: 1, ConnectionID: 1}
-			if _, err := server.Init(ctx, InitRequest{Header: header}); err != nil {
+			if err := server.Init(ctx, InitRequest{Header: header}); err != nil {
 				t.Fatal(err)
 			}
 			lease := server.roleLeases[1]
@@ -228,7 +228,7 @@ func TestLateRoleRenewalCannotRestoreRetiredOwnership(t *testing.T) {
 				if err := server.maintainRoles(ctx, time.Now()); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := server.Init(ctx, InitRequest{Header: SessionHeader{RoleID: 1, SessionID: 2, ConnectionID: 2}}); err != nil {
+				if err := server.Init(ctx, InitRequest{Header: SessionHeader{RoleID: 1, SessionID: 2, ConnectionID: 2}}); err != nil {
 					t.Fatal(err)
 				}
 			}

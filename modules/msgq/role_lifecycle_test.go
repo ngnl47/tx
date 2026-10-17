@@ -42,20 +42,20 @@ func TestRoleMailboxRedisOwnershipLifecycle(t *testing.T) {
 	first := SessionHeader{RoleID: 47, SessionID: 11, ConnectionID: 1}
 	second := SessionHeader{RoleID: 47, SessionID: 12, ConnectionID: 2}
 	third := SessionHeader{RoleID: 47, SessionID: 13, ConnectionID: 3}
-	if _, err := a.Init(ctx, InitRequest{Header: first}); err != nil {
+	if err := a.Init(ctx, InitRequest{Header: first}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.PubSession(ctx, first.SessionID, []byte("pending")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := b.Init(ctx, InitRequest{Header: second}); !errors.Is(err, ErrSessionChanged) {
+	if err := b.Init(ctx, InitRequest{Header: second}); !errors.Is(err, ErrSessionChanged) {
 		t.Fatalf("split owner accepted: %v", err)
 	}
-	if _, err := a.Init(ctx, InitRequest{Header: second}); err != nil {
+	if err := a.Init(ctx, InitRequest{Header: second}); err != nil {
 		t.Fatal(err)
 	}
 	first.ConnectionID = 4
-	if _, err := a.Init(ctx, InitRequest{Header: first, Restore: true}); err != nil {
+	if err := a.Init(ctx, InitRequest{Header: first, Restore: true}); err != nil {
 		t.Fatalf("peer login prevented first session restore: %v", err)
 	}
 	if err := a.Touch(ctx, TouchRequest{Header: second}); err != nil {
@@ -119,7 +119,7 @@ func TestRoleMailboxRedisOwnershipLifecycle(t *testing.T) {
 			if message, err := a.Fetch(ctx, FetchRequest{Header: item.header}); err != nil || message.Seq != item.ack || string(message.Payload) != "hot" {
 				t.Fatalf("热邮箱消息 = %+v, %v", message, err)
 			}
-			if _, err := a.Rec(ctx, RecRequest{Header: item.header, Seq: seq, Ack: item.ack}); err != nil {
+			if err := a.Confirm(ctx, ConfirmRequest{Header: item.header, Ack: item.ack}); err != nil {
 				t.Fatal(err)
 			}
 			if err := a.Confirm(ctx, ConfirmRequest{Header: item.header, Ack: item.ack}); err != nil {
@@ -164,10 +164,10 @@ func TestRoleMailboxRedisOwnershipLifecycle(t *testing.T) {
 	if _, found, err := store.FindRole(ctx, 47); err != nil || found {
 		t.Fatalf("empty owner retained: %t, %v", found, err)
 	}
-	if _, err := b.Init(ctx, InitRequest{Header: third}); err != nil {
+	if err := b.Init(ctx, InitRequest{Header: third}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Init(ctx, InitRequest{Header: first, Restore: true}); !errors.Is(err, ErrSessionChanged) && !errors.Is(err, ErrSessionOffline) {
+	if err := a.Init(ctx, InitRequest{Header: first, Restore: true}); !errors.Is(err, ErrSessionChanged) && !errors.Is(err, ErrSessionOffline) {
 		t.Fatalf("old restore = %v", err)
 	}
 	if current, found, err := store.FindRole(ctx, 47); err != nil || !found || current.InstanceID != "msgq-b" || current.Generation == owner.Generation {
@@ -205,7 +205,7 @@ func TestExpiredRoleLeaseRejectsTrafficAndCannotReleaseNewOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	header := SessionHeader{RoleID: 47, SessionID: 11, ConnectionID: 1}
-	if _, err := server.Init(ctx, InitRequest{Header: header}); err != nil {
+	if err := server.Init(ctx, InitRequest{Header: header}); err != nil {
 		t.Fatal(err)
 	}
 	server.mu.Lock()
@@ -248,7 +248,7 @@ func TestRoleLeaseRefreshIsNotPerMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	header := SessionHeader{RoleID: 47, SessionID: 11, ConnectionID: 1}
-	if _, err := server.Init(ctx, InitRequest{Header: header}); err != nil {
+	if err := server.Init(ctx, InitRequest{Header: header}); err != nil {
 		t.Fatal(err)
 	}
 	for range 100 {

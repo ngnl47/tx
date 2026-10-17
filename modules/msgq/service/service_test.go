@@ -41,7 +41,7 @@ func TestServiceStartsWithExplicitDependencies(t *testing.T) {
 		t.Fatalf("SessionClient returned error: %v", err)
 	}
 	header := txmsgq.SessionHeader{RoleID: 1, SessionID: 2, ConnectionID: 3}
-	if _, err := service.mailbox.Init(context.Background(), txmsgq.InitRequest{Header: header}); err != nil {
+	if err := service.mailbox.Init(context.Background(), txmsgq.InitRequest{Header: header}); err != nil {
 		t.Fatalf("Init returned error: %v", err)
 	}
 	if _, err := service.mailbox.PubSession(context.Background(), header.SessionID, []byte("down")); err != nil {

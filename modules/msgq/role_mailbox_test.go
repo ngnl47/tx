@@ -18,7 +18,7 @@ func TestRoleBroadcastKeepsIndependentMailboxesAcrossRestore(t *testing.T) {
 	b := SessionHeader{RoleID: 47, SessionID: 12, ConnectionID: 2}
 	other := SessionHeader{RoleID: 48, SessionID: 13, ConnectionID: 3}
 	for _, header := range []SessionHeader{a, b, other} {
-		if _, err := server.Init(ctx, InitRequest{Header: header}); err != nil {
+		if err := server.Init(ctx, InitRequest{Header: header}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -37,7 +37,7 @@ func TestRoleBroadcastKeepsIndependentMailboxesAcrossRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	b.ConnectionID = 4
-	if _, err := server.Init(ctx, InitRequest{Header: b, Restore: true}); err != nil {
+	if err := server.Init(ctx, InitRequest{Header: b, Restore: true}); err != nil {
 		t.Fatal(err)
 	}
 	message, err := server.Fetch(ctx, FetchRequest{Header: b})
@@ -72,7 +72,7 @@ func TestRoleBroadcastIsolatesOverflowAndRemovesSubscription(t *testing.T) {
 	a := SessionHeader{RoleID: 47, SessionID: 11, ConnectionID: 1}
 	b := SessionHeader{RoleID: 47, SessionID: 12, ConnectionID: 2}
 	for _, header := range []SessionHeader{a, b} {
-		if _, err := server.Init(ctx, InitRequest{Header: header}); err != nil {
+		if err := server.Init(ctx, InitRequest{Header: header}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -109,7 +109,7 @@ func TestRoleBroadcastDoesNotExposeInitializingOrRejectedMailbox(t *testing.T) {
 	}
 	finished := make(chan error, 1)
 	go func() {
-		_, err := server.Init(context.Background(), InitRequest{Header: SessionHeader{RoleID: 47, SessionID: 11, ConnectionID: 1}})
+		err := server.Init(context.Background(), InitRequest{Header: SessionHeader{RoleID: 47, SessionID: 11, ConnectionID: 1}})
 		finished <- err
 	}()
 	waitMailboxSignal(t, store.createEntered)

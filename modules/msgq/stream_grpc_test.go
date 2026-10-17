@@ -39,7 +39,7 @@ func TestMailboxStreamMultiplexesSessionsAndKeepsAckIsolated(t *testing.T) {
 	first := SessionHeader{RoleID: 47, SessionID: 11, ConnectionID: 1}
 	second := SessionHeader{RoleID: 48, SessionID: 12, ConnectionID: 1}
 	for _, header := range []SessionHeader{first, second} {
-		if _, err := mailbox.Init(ctx, InitRequest{Header: header}); err != nil {
+		if err := mailbox.Init(ctx, InitRequest{Header: header}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -74,7 +74,7 @@ func TestMailboxStreamMultiplexesSessionsAndKeepsAckIsolated(t *testing.T) {
 	if len(seen[first.SessionID]) != 2 || seen[first.SessionID][0] != "one" || seen[first.SessionID][1] != "one-more" || len(seen[second.SessionID]) != 1 || seen[second.SessionID][0] != "two" {
 		t.Fatalf("shared stream mixed Sessions: %v", seen)
 	}
-	if err := stream.Send(&msgqpb.MailboxStreamRequest{Header: headerToProto(first), Kind: msgqpb.MailboxStreamRequest_KIND_ACK, Ack: 1, ReceivedSeq: 17}); err != nil {
+	if err := stream.Send(&msgqpb.MailboxStreamRequest{Header: headerToProto(first), Kind: msgqpb.MailboxStreamRequest_KIND_ACK, Ack: 1}); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(time.Second)
@@ -83,9 +83,8 @@ func TestMailboxStreamMultiplexesSessionsAndKeepsAckIsolated(t *testing.T) {
 		if found {
 			session.mu.Lock()
 			confirmed := session.downMsgs.confirmedSeq
-			accepted := session.upMsgSeq
 			session.mu.Unlock()
-			if confirmed == 1 && accepted == 17 {
+			if confirmed == 1 {
 				break
 			}
 		}
@@ -98,15 +97,15 @@ func TestMailboxStreamMultiplexesSessionsAndKeepsAckIsolated(t *testing.T) {
 	oldFirst := first
 	first.ConnectionID = 2
 	second.ConnectionID = 2
-	if restored, err := mailbox.Init(ctx, InitRequest{Header: first, Restore: true, Ack: 1}); err != nil || restored.UpMsgSeq != 17 {
-		t.Fatalf("restored up message cursor = %+v, %v; want 17", restored, err)
+	if err := mailbox.Init(ctx, InitRequest{Header: first, Restore: true, Ack: 1}); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := mailbox.Init(ctx, InitRequest{Header: second, Restore: true, Ack: 0}); err != nil {
+	if err := mailbox.Init(ctx, InitRequest{Header: second, Restore: true, Ack: 0}); err != nil {
 		t.Fatal(err)
 	}
 	// 接管后旧连接不能推进游标、裁剪下行或终止新连接。
-	if _, err := mailbox.Rec(ctx, RecRequest{Header: oldFirst, Seq: 100, Ack: 2}); !errors.Is(err, ErrSessionChanged) {
-		t.Fatalf("旧连接 Rec: %v", err)
+	if err := mailbox.Confirm(ctx, ConfirmRequest{Header: oldFirst, Ack: 2}); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("旧连接 Confirm: %v", err)
 	}
 	if err := mailbox.TerminateSession(ctx, oldFirst); !errors.Is(err, ErrSessionChanged) {
 		t.Fatalf("旧连接 Terminate: %v", err)
@@ -141,11 +140,11 @@ func TestPublishStreamProcessesSessionAndRoleMessagesInOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	header := SessionHeader{RoleID: 47, SessionID: 11, ConnectionID: 1}
-	if _, err := mailbox.Init(ctx, InitRequest{Header: header}); err != nil {
+	if err := mailbox.Init(ctx, InitRequest{Header: header}); err != nil {
 		t.Fatal(err)
 	}
 	peer := SessionHeader{RoleID: 47, SessionID: 12, ConnectionID: 2}
-	if _, err := mailbox.Init(ctx, InitRequest{Header: peer}); err != nil {
+	if err := mailbox.Init(ctx, InitRequest{Header: peer}); err != nil {
 		t.Fatal(err)
 	}
 	binding, found, err := store.FindRole(ctx, header.RoleID)
@@ -211,7 +210,7 @@ func TestPublishStreamRoleRejectionReaddressesOnlyRejectedPayload(t *testing.T) 
 		t.Fatal(err)
 	}
 	first := SessionHeader{RoleID: 47, SessionID: 11, ConnectionID: 1}
-	if _, err := mailbox.Init(ctx, InitRequest{Header: first}); err != nil {
+	if err := mailbox.Init(ctx, InitRequest{Header: first}); err != nil {
 		t.Fatal(err)
 	}
 	oldBinding, found, err := store.FindRole(ctx, first.RoleID)
@@ -272,7 +271,7 @@ func TestPublishStreamRoleRejectionReaddressesOnlyRejectedPayload(t *testing.T) 
 		t.Fatal(err)
 	}
 	second := SessionHeader{RoleID: first.RoleID, SessionID: 12, ConnectionID: 2}
-	if _, err := mailbox.Init(ctx, InitRequest{Header: second}); err != nil {
+	if err := mailbox.Init(ctx, InitRequest{Header: second}); err != nil {
 		t.Fatal(err)
 	}
 	newBinding, found, err := store.FindRole(ctx, second.RoleID)
@@ -320,7 +319,7 @@ func TestPublishStreamHistoricalDisconnectDoesNotBlockClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	header := SessionHeader{RoleID: 47, SessionID: 11, ConnectionID: 1}
-	if _, err := mailbox.Init(ctx, InitRequest{Header: header}); err != nil {
+	if err := mailbox.Init(ctx, InitRequest{Header: header}); err != nil {
 		t.Fatal(err)
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

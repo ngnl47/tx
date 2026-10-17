@@ -18,7 +18,8 @@ message InitRequest {
 }
 
 message InitResponse {
-  int64 received_seq = 1;
+  reserved 1;
+  reserved "received_seq";
 }
 
 message PubSessionRequest {
@@ -80,7 +81,8 @@ message MailboxStreamRequest {
   Kind kind = 2;
   int64 ack = 3;
   int32 max = 4;
-  int64 received_seq = 5;
+  reserved 5;
+  reserved "received_seq";
 }
 
 message MailboxStreamResponse {

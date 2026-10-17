@@ -50,26 +50,20 @@ func (f IdentityResolverFunc) ResolveIdentity(ctx context.Context, request AuthR
 // DispatchRequest 是已通过 Seq 校验的业务 BON 消息。
 type DispatchRequest struct {
 	Identity  Identity
-	Seq       int64
 	CommandID uint32
 	RouteKey  RouteKey
 	Payload   []byte
 }
 
-// DispatchResult 记录 Agent 已完成本地投递或写流的上行序号，不代表远端接收成功。
-type DispatchResult struct {
-	AcceptedUpSeq int64
-}
-
 // Dispatcher 由项目实现业务命令路由；远端投递返回只代表本地写流完成。
 type Dispatcher interface {
-	Dispatch(context.Context, DispatchRequest) (DispatchResult, error)
+	Dispatch(context.Context, DispatchRequest) error
 }
 
 // DispatchFunc 适合以内联函数实现 Dispatcher。
-type DispatchFunc func(context.Context, DispatchRequest) (DispatchResult, error)
+type DispatchFunc func(context.Context, DispatchRequest) error
 
-func (f DispatchFunc) Dispatch(ctx context.Context, request DispatchRequest) (DispatchResult, error) {
+func (f DispatchFunc) Dispatch(ctx context.Context, request DispatchRequest) error {
 	return f(ctx, request)
 }
 

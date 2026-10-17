@@ -282,7 +282,6 @@ type Delivery struct {
 	RouteKeyString  string                 `protobuf:"bytes,7,opt,name=route_key_string,json=routeKeyString,proto3" json:"route_key_string,omitempty"`
 	RequestId       uint64                 `protobuf:"varint,8,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	Identity        *SessionIdentity       `protobuf:"bytes,9,opt,name=identity,proto3" json:"identity,omitempty"`
-	UpSeq           int64                  `protobuf:"varint,10,opt,name=up_seq,json=upSeq,proto3" json:"up_seq,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -380,13 +379,6 @@ func (x *Delivery) GetIdentity() *SessionIdentity {
 	return nil
 }
 
-func (x *Delivery) GetUpSeq() int64 {
-	if x != nil {
-		return x.UpSeq
-	}
-	return 0
-}
-
 // Acceptance 表示目标 Actor 已从邮箱取出确认式投递，但不代表业务处理已经完成。
 type Acceptance struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -442,17 +434,15 @@ func (x *Acceptance) GetRequestId() uint64 {
 
 // Result 是 Actor 完成业务处理后返回的不透明结果。
 type Result struct {
-	state        protoimpl.MessageState `protogen:"open.v1"`
-	RequestId    uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	MessageType  string                 `protobuf:"bytes,2,opt,name=message_type,json=messageType,proto3" json:"message_type,omitempty"`
-	CommandId    uint64                 `protobuf:"varint,3,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
-	Payload      []byte                 `protobuf:"bytes,4,opt,name=payload,proto3" json:"payload,omitempty"`
-	ErrorCode    int32                  `protobuf:"varint,5,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
-	ErrorMessage string                 `protobuf:"bytes,6,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
-	// processed_up_seq 是 Agent 上行专用的处理完成序号，不能与业务结果字段同时出现。
-	ProcessedUpSeq int64 `protobuf:"varint,7,opt,name=processed_up_seq,json=processedUpSeq,proto3" json:"processed_up_seq,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	MessageType   string                 `protobuf:"bytes,2,opt,name=message_type,json=messageType,proto3" json:"message_type,omitempty"`
+	CommandId     uint64                 `protobuf:"varint,3,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	Payload       []byte                 `protobuf:"bytes,4,opt,name=payload,proto3" json:"payload,omitempty"`
+	ErrorCode     int32                  `protobuf:"varint,5,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
+	ErrorMessage  string                 `protobuf:"bytes,6,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Result) Reset() {
@@ -525,13 +515,6 @@ func (x *Result) GetErrorMessage() string {
 		return x.ErrorMessage
 	}
 	return ""
-}
-
-func (x *Result) GetProcessedUpSeq() int64 {
-	if x != nil {
-		return x.ProcessedUpSeq
-	}
-	return 0
 }
 
 // DirectStreamCall 携带单项实体调用及本项剩余等待时间。
@@ -619,7 +602,7 @@ const file_modules_actor_proto_actor_proto_rawDesc = "" +
 	"\rconnection_id\x18\x06 \x01(\x03R\fconnectionId\x128\n" +
 	"\vaccess_mode\x18\a \x01(\x0e2\x17.tx.actor.v1.AccessModeR\n" +
 	"accessMode\x12&\n" +
-	"\x0fcan_create_role\x18\b \x01(\bR\rcanCreateRole\"\x9c\x03\n" +
+	"\x0fcan_create_role\x18\b \x01(\bR\rcanCreateRole\"\x93\x03\n" +
 	"\bDelivery\x12!\n" +
 	"\fmessage_type\x18\x01 \x01(\tR\vmessageType\x12\x1d\n" +
 	"\n" +
@@ -631,15 +614,14 @@ const file_modules_actor_proto_actor_proto_rawDesc = "" +
 	"\x10route_key_string\x18\a \x01(\tR\x0erouteKeyString\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\b \x01(\x04R\trequestId\x128\n" +
-	"\bidentity\x18\t \x01(\v2\x1c.tx.actor.v1.SessionIdentityR\bidentity\x12\x15\n" +
-	"\x06up_seq\x18\n" +
-	" \x01(\x03R\x05upSeq\"J\n" +
+	"\bidentity\x18\t \x01(\v2\x1c.tx.actor.v1.SessionIdentityR\bidentityJ\x04\b\n" +
+	"\x10\vR\x06up_seq\"J\n" +
 	"\n" +
 	"Acceptance\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\x04R\tcommandId\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x02 \x01(\x04R\trequestId\"\xf1\x01\n" +
+	"request_id\x18\x02 \x01(\x04R\trequestId\"\xdf\x01\n" +
 	"\x06Result\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x12!\n" +
@@ -649,8 +631,7 @@ const file_modules_actor_proto_actor_proto_rawDesc = "" +
 	"\apayload\x18\x04 \x01(\fR\apayload\x12\x1d\n" +
 	"\n" +
 	"error_code\x18\x05 \x01(\x05R\terrorCode\x12#\n" +
-	"\rerror_message\x18\x06 \x01(\tR\ferrorMessage\x12(\n" +
-	"\x10processed_up_seq\x18\a \x01(\x03R\x0eprocessedUpSeq\"\x8e\x01\n" +
+	"\rerror_message\x18\x06 \x01(\tR\ferrorMessageJ\x04\b\a\x10\bR\x10processed_up_seq\"\x8e\x01\n" +
 	"\x10DirectStreamCall\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\tR\x03key\x121\n" +

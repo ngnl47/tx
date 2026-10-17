@@ -141,7 +141,7 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 			if !ok || !delivery.WantsResult() || delivery.MessageType != wantDelivery.MessageType ||
 				delivery.CommandID != wantDelivery.CommandID || delivery.RouteKey != wantDelivery.RouteKey ||
 				!bytes.Equal(delivery.Payload, wantDelivery.Payload) || delivery.Identity == nil ||
-				*delivery.Identity != *wantDelivery.Identity || delivery.UpSeq != 0 {
+				*delivery.Identity != *wantDelivery.Identity {
 				return nil, errors.New("持久任务丢失调用上下文或混入客户端上行序号")
 			}
 			switch c.Identity.Key {

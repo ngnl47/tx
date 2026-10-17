@@ -23,10 +23,9 @@ var ErrInvalidResponse = errors.New("actor: invalid response")
 // Result 是 Actor 完成业务处理后返回的不透明结果。普通调用携带消息元数据和
 // Payload；Agent 上行不使用 Actor 业务结果作为确认。
 type Result struct {
-	MessageType    string
-	CommandID      uint64
-	Payload        []byte
-	ProcessedUpSeq int64
+	MessageType string
+	CommandID   uint64
+	Payload     []byte
 }
 
 // CallError 是远端业务返回的显式错误。
@@ -93,8 +92,8 @@ func FromProto(value *actorpb.Result, err error) (Result, error) {
 	if value == nil {
 		return Result{}, ErrInvalidResponse
 	}
-	return Result{MessageType: value.MessageType, CommandID: value.CommandId, Payload: value.Payload, ProcessedUpSeq: value.ProcessedUpSeq}, nil
+	return Result{MessageType: value.MessageType, CommandID: value.CommandId, Payload: value.Payload}, nil
 }
 func ToProto(result Result) *actorpb.Result {
-	return &actorpb.Result{MessageType: result.MessageType, CommandId: result.CommandID, Payload: result.Payload, ProcessedUpSeq: result.ProcessedUpSeq}
+	return &actorpb.Result{MessageType: result.MessageType, CommandId: result.CommandID, Payload: result.Payload}
 }

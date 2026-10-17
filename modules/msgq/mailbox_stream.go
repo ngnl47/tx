@@ -16,7 +16,7 @@ type MailboxStreamSession interface {
 	// Context 随逻辑会话结束取消，Cause 保留终止原因；不影响同流的其他会话。
 	Context() context.Context
 	Recv() (FetchResult, error)
-	Ack(context.Context, int64, int64) error
+	Ack(context.Context, int64) error
 	Renew(context.Context) error
 	Close() error
 }
@@ -233,7 +233,7 @@ func (session *grpcMailboxSession) TryRecv() (FetchResult, bool, error) {
 	}
 }
 
-func (session *grpcMailboxSession) Ack(ctx context.Context, receivedSeq, ack int64) error {
+func (session *grpcMailboxSession) Ack(ctx context.Context, ack int64) error {
 	session.mu.Lock()
 	err := session.err
 	session.mu.Unlock()
@@ -242,7 +242,7 @@ func (session *grpcMailboxSession) Ack(ctx context.Context, receivedSeq, ack int
 	}
 	return session.stream.send(ctx, &msgqpb.MailboxStreamRequest{
 		Header: headerToProto(session.header), Kind: msgqpb.MailboxStreamRequest_KIND_ACK,
-		ReceivedSeq: receivedSeq, Ack: ack,
+		Ack: ack,
 	})
 }
 
@@ -346,11 +346,7 @@ func (session *localMailboxSession) TryRecv() (FetchResult, bool, error) {
 	}
 }
 
-func (session *localMailboxSession) Ack(ctx context.Context, receivedSeq, ack int64) error {
-	if receivedSeq > 0 {
-		_, err := session.mailbox.Rec(ctx, RecRequest{Header: session.header, Seq: receivedSeq, Ack: ack})
-		return err
-	}
+func (session *localMailboxSession) Ack(ctx context.Context, ack int64) error {
 	return session.mailbox.Confirm(ctx, ConfirmRequest{Header: session.header, Ack: ack})
 }
 

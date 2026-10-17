@@ -17,7 +17,7 @@ var (
 
 // SessionClient 是 Agent 访问单个 msgq 实例所需的会话操作。
 type SessionClient interface {
-	Init(context.Context, InitRequest) (InitResult, error)
+	Init(context.Context, InitRequest) error
 	OpenMailboxStream(context.Context, SessionHeader) (MailboxStreamSession, error)
 	TerminateSession(context.Context, SessionHeader) error
 	Close() error
@@ -75,7 +75,7 @@ type localSessionClient struct {
 	mailbox *Server
 }
 
-func (c localSessionClient) Init(ctx context.Context, request InitRequest) (InitResult, error) {
+func (c localSessionClient) Init(ctx context.Context, request InitRequest) error {
 	return c.mailbox.Init(ctx, request)
 }
 

@@ -2025,7 +2025,7 @@ Actor 运行时的状态协调不能自动替代业务最终持久化，刷盘�
 
 以下拓扑描述当前服务分层和通信职责。
 
-架构以两条通信路径组织：基础会话层使用直连 gRPC 承接所有业务服务的高流量上行、邮箱接纳确认和会话下行；实体扩展层使用 Core NATS 承接按实体身份寻址的 RPC，并以 JetStream 可靠任务扩展异常后仍需消费的业务。两者共享 tx 的实体归属、加载准入和本地宿主，不让业务处理传输主题或实例交接细节。
+架构以两条通信路径组织：基础会话层使用直连 gRPC 承接所有业务服务的高流量上行和会话下行；实体扩展层使用 Core NATS 承接按实体身份寻址的 RPC，并以 JetStream 可靠任务扩展异常后仍需消费的业务。两者共享 tx 的实体归属、加载准入和本地宿主，不让业务处理传输主题或实例交接细节。
 
 完整集群与容量验收由 txgame/txclient、txgameslg/txclientslg 的应用入口承担。
 
@@ -2039,8 +2039,8 @@ Login、Agent、MsgQ、Game 是基础组合中的四类逻辑服务，可以同�
 
 1. 客户端通过 HTTP 登录入口完成认证；生产可在入口终止 TLS。Login 返回绑定目标 Agent 的短期票据、SessionID 和公开地址。这里不要求 Login 先通过 RPC 创建 Game Actor。
 2. 客户端与所选 Agent 建立 TCP/WebSocket 长连接；Agent 验票并通过 MsgQ 初始化会话。Login 不进入后续每条业务消息的数据路径。
-3. Agent 按生成命令及路由键解析实体归属，通过 gRPC 直达 Game、SLGWorld、FightRoom 等命令所属服务，不经 NATS，也不要求 Game 中转。Game 接收长流请求时按流顺序把消息放入对应 Actor 邮箱，并在入队后返回仅供 Agent 推进 Rec 状态的接纳确认；不等待业务执行结果，也不向客户端发送上行确认帧。
-4. Game、SLGWorld、FightRoom 等业务服务分别通过 gRPC 直接向 MsgQ 发布下行，不经 NATS，也不要求回到 Game：普通角色响应使用 `PubRole` 扇出到该角色的多个 Session，请求级错误使用 `PubSession` 精确发布。Agent 通过 MsgQ 的 Rec/Ack 接口协调序号，并对远端 MsgQ 每个 Session 建立一条 gRPC 下行读取流，再发送客户端帧；同进程 MsgQ 继续直接读取本地邮箱。
+3. Agent 按生成命令及路由键解析实体归属，通过 gRPC 直达 Game、SLGWorld、FightRoom 等命令所属服务，不经 NATS，也不要求 Game 中转。Game 接收长流请求时按流顺序把消息放入对应 Actor 邮箱，不返回逐项入队确认或业务执行结果，也不向客户端发送上行确认帧。
+4. Game、SLGWorld、FightRoom 等业务服务分别通过 gRPC 直接向 MsgQ 发布下行，不经 NATS，也不要求回到 Game：普通角色响应使用 `PubRole` 扇出到该角色的多个 Session，请求级错误使用 `PubSession` 精确发布。Agent 到每个远端 MsgQ 复用一条双向 `MailboxStream`，多 Session 在流上订阅下行并发送下行 Ack；同进程 MsgQ 直接读取本地邮箱。
 
 服务池之间可以多对多通信，但某个 Session 的当前 Agent 连接和 MsgQ owner、某个 Actor 的当前归属均是明确的。多 Session 向同一 Role 扇入时由目标实体邮箱串行化，不把 Agent 设成全局串行器。相同 Role 的多个会话下行由 MsgQ 会话机制扇出。
 
@@ -2054,7 +2054,7 @@ MsgQ 是客户端会话邮箱，正文保存在实例内存中；它不承担 Je
 
 | 路径 | 完成语义 | 适用职责 |
 | --- | --- | --- |
-| 直连 gRPC 上行 | 按连接顺序等待目标 Actor 邮箱接纳；接纳确认只用于 Agent 内部 Rec 游标，不表示业务完成 | 高频客户端命令，减少 broker 转发流量 |
+| 直连 gRPC 上行 | 按连接顺序提交目标实例的流；仅本地提交成功，不等待远端邮箱或业务回执 | 高频客户端命令，减少 broker 转发流量 |
 | 直连 gRPC 下行 | 业务服务直接发布到 MsgQ，Agent 协调 Fetch/Ack 并发送客户端 | Game、SLGWorld、FightRoom 等共用；不经 NATS 或 Game 中转 |
 | Core NATS Actor RPC | Tell 本地投递；TellAccepted 仅确认到达 NATS；CallFuture/Call 等待远端执行结果 | 正常运行期间的实体交互，不保证持久化或失败后必达 |
 | JetStream 可靠任务 | 发布持久化确认与消费 ACK 分开；业务执行后确认，失败按既定重试/死信策略处理 | 需要利用 MQ 持久化能力跨重启继续消费的任务 |
@@ -2316,36 +2316,49 @@ Bee 或 Ant Context，使用 CModActorDirect 完成直连；稳定分区或业�
 尤其当两个 Session 使用同一账号、同一访问方式时，当前公共身份字段没有额外的“挂机来源”标签；需要这种分类时由项目认证/授权上下文提供，
 不能信任请求正文中自报的管理员或旁路标志。业务不需要维护主、副会话关系。
 
-通用 Actor Dispatcher 在调用 Messenger 前以 `DispatchRequest` 的可信 `SessionIdentity` 和当前上行序号覆盖 Delivery 的
-`Identity` 与 `UpSeq`。项目 Actor resolver 仍只负责目标、消息类型、命令号、路由键和载荷，不能伪造身份或序号。
-Actor protobuf 在跨进程投递时保留完整身份和 `UpSeq`；内部 Actor 调用可以同时省略二者，只出现其中一个的 Delivery 无效。
+通用 Actor Dispatcher 在调用 Messenger 前以 `DispatchRequest` 的可信 `SessionIdentity` 覆盖 Delivery 身份。
+项目 Actor resolver 只负责目标、消息类型、命令号、路由键和载荷，不能伪造身份。
+Actor protobuf 保留完整身份；内部调用也可省略身份。UpSeq 不进入 Delivery、HandlerContext 或 MsgQ。
 
-`Dispatcher` 通过直连 `Enqueue` 将上行提交给目标实例的长流后返回 `AcceptedUpSeq`；该值只表示本地传输提交成功，不是远端 Actor 邮箱接纳或业务执行成功的回执，也不回传客户端。Game/Actor 后续通过 `SendRole` 向角色会话扇出普通响应，请求级错误通过 `SendSession` 精确发布。两者进入本地有界发布队列后返回，不等待 MsgQ 逐项入队确认；新 SessionID 不继承旧会话下行。
+`Dispatcher` 通过直连 `Enqueue` 将上行提交给目标实例的长流后返回 error；nil 只表示本地传输提交成功，不是远端 Actor 邮箱接纳或业务执行成功的回执，也不回传客户端。Game/Actor 后续通过 `SendRole` 向角色会话扇出普通响应，请求级错误通过 `SendSession` 精确发布。两者进入本地有界发布队列后返回，不等待 MsgQ 逐项入队确认；新 SessionID 不继承旧会话下行。
 
 正常交接中旧实例 Draining 与分区晋升之间允许短暂无可用路由。直连 `Enqueue` 只在尚未调用传输且路由返回 `ErrSlotRuntimeUnavailable` 时，在调用方既有 deadline 内每 10ms 重读路由；正式路径读取 Watch 内存缓存，不新增逐消息 etcd 查询。Agent 已有默认 5 秒期限，等待期间保持当前连接的处理顺序。无期限调用不等待；取消、超时及其他错误返回失败。进入传输后的错误不触发寻址重试或业务补发，也不提前晋升归属或跳过旧实例最终写回。
 
 
 Agent 核心不依赖项目生成协议，因此不会自行构造业务错误包，也不负责项目 HTTP 路由、JSON/BON 绑定、自动重试或
 通用 HTTP Router。项目 Game/Actor 适配层负责把 Handler 错误转换为生成的
-`System_Error{RequestSeq, Code, Message}` 并直接发布到发起 Session；这类结果不会终止连接。
+`System_Error{Code, Message}` 并直接发布到发起 Session；这类结果不会终止连接。
 `Code` 使用 `int32` 跨 Actor protobuf 边界传递，`0` 表示没有错误，`CallErrorCodeInternal=-1` 表示未分类内部错误，
 正数空间由项目错误码表分配。`CallErrorCodeDispatch=-2` 标识 Actor 解码、Handler 注册和投递模式等分派契约失败；
 目标 Actor 在解码或分派阶段识别该错误时，Actor 适配层同样生成 `System_Error`，连接继续处理后续请求。握手、Frame、Seq/Ack、
 目标解析和本地传输提交等同步返回的基础设施错误仍沿 Agent 错误返回链关闭连接。远端 Actor 邮箱拒收不提供逐项成功或失败回执，可能表现为该次操作无响应；不能把本地提交成功解释为业务执行成功。
 
-连接上存在两条独立序列：客户端为 `FrameUpMsg` 分配 Seq，服务端为 `FrameDownMsg` 分配 Seq。每条连接按 socket 读写顺序处理帧，Seq 只要求递增，不要求相邻两条相差 1；旧号不会重复分派。帧中的 Ack 只由客户端发送，用于确认已经处理的服务端下行：`FrameUpMsg.Ack` 或 `FrameAck.Ack` 推进 MsgQ 裁剪游标。`FrameReady.Ack` 和 `FrameDownMsg.Ack` 固定为零，服务端不发送上行 `FrameAck`。
+### 会话序号与确认契约
 
-Agent 将上行提交给 Game 长流后推进本地游标，不等待远端邮箱接纳或业务完成。每次上行提交及客户端 Ack 都经共享 `MailboxStream` 异步同步 MsgQ，不等待逐项回执；没有 Agent Rec lease 或定时低频游标同步。Game 长流服务端在接收循环中同步入队，保证同一条 Agent 流上的消息按序进入 Actor 邮箱；邮箱 worker 可以继续独立消费，Agent 不等待业务执行。
+“取消上行确认/重放”和“UpSeq 止于 Agent”是两个独立约束，必须分别核对实现，不能由其中一个推断另一个。
 
-客户端不保存未确认 UpMsg 队列；发送失败或连接中断后的请求结果可能未知，框架不会自动重投。恢复连接复用原 Session，只恢复 MsgQ 中未确认下行。msgq 的新建与恢复语义严格分离：新建总是安装空会话，恢复必须命中同一 SessionID。只有 `Init` 成功后 Agent 才发送 `FrameReady`；客户端在收到它之前保持连接中状态。恢复后新命令继续使用客户端本地递增的 Seq，不回拨也不重投旧命令。`Rec` 对小于等于已记录最大值的旧 Seq 幂等返回；普通响应与 `System_Error` 均由 Game/Actor 直接发布到 Session 邮箱。
+| 标识 | 产生与维护位置 | 用途与生命周期 |
+| --- | --- | --- |
+| UpSeq | 客户端分配；Agent 当前连接维护已接受最大值 | 只过滤连接内旧号，允许跳号；连接结束释放，不传递给业务或 MsgQ |
+| DownSeq | MsgQ 的 Session 邮箱 | 对该邮箱下行排序；同 Session 恢复保留，新 Session 不继承 |
+| 客户端 Ack | 客户端已处理的最大 DownSeq，经 Agent 同步 MsgQ | 仅裁剪已确认下行，不表示上行业务成功 |
+| ProbeID | 示例压测请求正文，由对应响应原样返回 | 独立匹配样本，允许响应乱序；不参与传输排序、去重或邮箱裁剪 |
+
+内部 Actor RPC 的 requestID 和 NATS Call 关联标识仍用于各自调用，不是 UpSeq，也不因取消上行确认而移除。
+
+连接上承载两条生命周期不同的序列：客户端为 `FrameUpMsg` 分配 Seq，MsgQ 为 Session 邮箱中的 `FrameDownMsg` 分配 Seq。每条连接按 socket 读写顺序处理帧，Seq 只要求递增，不要求相邻两条相差 1；旧号不会重复分派。帧中的 Ack 只由客户端发送，用于确认已经处理的服务端下行：`FrameUpMsg.Ack` 或 `FrameAck.Ack` 推进 MsgQ 裁剪游标。`FrameReady.Ack` 和 `FrameDownMsg.Ack` 固定为零，服务端不发送上行 `FrameAck`。
+
+Agent 将上行提交给 Game 长流后推进本地游标，不等待远端邮箱接纳或业务完成。只有客户端下行 Ack 经共享 `MailboxStream` 异步同步 MsgQ，不等待逐项回执；每次上行携带的 Ack 同时用于连接活动维护。上行游标仅属于当前连接，不存在跨连接去重或 Agent Rec lease。Game 长流服务端在接收循环中同步入队，保证同一条 Agent 流上的消息按序进入 Actor 邮箱；邮箱 worker 可以继续独立消费，Agent 不等待业务执行。
+
+客户端不保存未确认 UpMsg 队列；发送失败或连接中断后的请求结果可能未知，框架不会自动重投。恢复连接复用原 Session，只恢复 MsgQ 中未确认下行。msgq 的新建与恢复语义严格分离：新建总是安装空会话，恢复必须命中同一 SessionID。只有 `Init` 成功后 Agent 才发送 `FrameReady`；客户端在收到它之前保持连接中状态。恢复后新命令继续使用客户端本地递增的 Seq，不回拨也不重投旧命令。旧连接结束即释放 Agent 上行游标；同 Session 新连接从空游标开始，仅续接下行邮箱。普通响应与 `System_Error` 均由 Game/Actor 直接发布到 Session 邮箱。
 
 客户端成功处理下行后，优先在下一条上行捎带最大已处理下行 Seq；若持续没有上行，参考客户端每 5 秒检查一次未发送的 Ack 并发送独立 `FrameAck`。MsgQ 据 Ack 裁剪队列；两套示例的单会话 1024 条与 8 MiB 配置上限保持不变，触限按现有溢出处理。定时确认不承诺任何时刻的精确积压量，容量评测在上下行主链路验收后进行。
 
 ### 会话隔离边界
 
-新 Login 分配新 SessionID，Agent 的游标属于该连接处理过程，不按 RoleID 在进程间共享；返回原 Agent 也不会沿用旧 Session 的游标。Restore 则保留 SessionID、MsgQ owner 和未确认下行，通过完整 binding CAS 更新 ConnectionID。MsgQ 拒绝旧连接的 Rec/Ack、读取和终止操作，并唤醒旧订阅使 Agent 断开旧 socket。
+新 Login 分配新 SessionID，Agent 的游标属于该连接处理过程，不按 RoleID 在进程间共享；返回原 Agent 也不会沿用旧 Session 的游标。Restore 则保留 SessionID、MsgQ owner 和未确认下行，通过完整 binding CAS 更新 ConnectionID。MsgQ 拒绝旧连接的 Ack、读取和终止操作，并唤醒旧订阅使 Agent 断开旧 socket。
 
-这不是有到期、续租和跨服务 fencing 的 Agent 租约；它不撤销已提交到 Game 的旧上行，也不承诺两条跨 Agent 连接间的全局顺序。客户端不应同时用两条 socket 提交同 Session 的新命令。正常排水由既有准入与完成屏障管理，不为意外退出增加上行重放。角色归属租约和会话 TTL 继续由 MsgQ/Redis 管理，下行序号仍由 MsgQ 分配。
+这不是有到期、续租和跨服务 fencing 的 Agent 租约；它不撤销已提交到 Game 的旧上行，也不承诺两条跨 Agent 连接间的全局顺序。同一 Actor 的邮箱串行消费不等于不同 Game/World/Fightroom 之间存在全局完成顺序；返回到同一 MsgQ 邮箱的响应按实际入队顺序分配 DownSeq，不按 UpSeq 排列。客户端不应同时用两条 socket 提交同 Session 的新命令。正常排水由既有准入与完成屏障管理，不为意外退出增加上行重放。角色归属租约和会话 TTL 继续由 MsgQ/Redis 管理，下行序号仍由 MsgQ 分配。
 
 ### Actor
 
@@ -2523,7 +2536,7 @@ Actor 生产后端不再启动 ProtoActor，也不保留独立 Gossip 日志级�
 - `modules/agent` 拥有物理连接和逻辑会话生命周期，因此只记录连接建立、会话就绪、正常关闭和异常关闭。它不认识生成
   命令，也不能逐条记录 `UpMsg/DownMsg`，否则项目层再次记录业务结果时会产生重复日志。身份解析成功后的生命周期日志
   同时记录 `roleID`、逻辑 `sessionID` 和物理 `connectionID`；握手前的连接建立日志只能记录当时已经生成的 `connectionID`。
-- `modules/msgq` 拥有 Seq、Ack 与下行积压状态，因此只在 Debug 记录成功提交后的 `Init/Rec/PubSession/Confirm` 状态，不在锁内
+- `modules/msgq` 拥有 Seq、Ack 与下行积压状态，因此只在 Debug 记录成功提交后的 `Init/PubSession/Confirm` 状态，不在锁内
   执行日志输出，不记录载荷内容，也不为无消息的 `Fetch` 长轮询制造日志。恢复日志同时记录前后 `connectionID`；队列
   溢出淘汰和超时清理记录完整的 `roleID/sessionID/connectionID`；旧物理连接被栅栏拒绝时记录请求方与当前
   `sessionID/connectionID`，用于关联同一逻辑会话的多条物理链路。

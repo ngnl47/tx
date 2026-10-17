@@ -46,7 +46,8 @@ message Delivery {
   string route_key_string = 7;
   uint64 request_id = 8;
   SessionIdentity identity = 9;
-  int64 up_seq = 10;
+  reserved 10;
+  reserved "up_seq";
 }
 
 // Acceptance 表示目标 Actor 已从邮箱取出确认式投递，但不代表业务处理已经完成。
@@ -63,8 +64,8 @@ message Result {
   bytes payload = 4;
   int32 error_code = 5;
   string error_message = 6;
-  // processed_up_seq 是 Agent 上行专用的处理完成序号，不能与业务结果字段同时出现。
-  int64 processed_up_seq = 7;
+  reserved 7;
+  reserved "processed_up_seq";
 }
 
 // DirectStreamCall 携带单项实体调用及本项剩余等待时间。

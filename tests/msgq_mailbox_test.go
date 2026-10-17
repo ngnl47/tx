@@ -28,12 +28,9 @@ func TestMsgQServerRestoresUnconfirmedDownMsgMessages(t *testing.T) {
 	defer server.TerminateSession(context.Background(), msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 8})
 
 	first := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-	init, err := server.Init(context.Background(), msgq.InitRequest{Header: first})
+	err = server.Init(context.Background(), msgq.InitRequest{Header: first})
 	if err != nil {
 		t.Fatalf("init: %v", err)
-	}
-	if init.UpMsgSeq != 0 {
-		t.Fatalf("upMsg seq = %d, want 0", init.UpMsgSeq)
 	}
 	if _, err := server.PubSession(context.Background(), first.SessionID, []byte("first")); err != nil {
 		t.Fatalf("publish first: %v", err)
@@ -51,7 +48,7 @@ func TestMsgQServerRestoresUnconfirmedDownMsgMessages(t *testing.T) {
 	}
 
 	secondConn := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 8}
-	if _, err := server.Init(context.Background(), msgq.InitRequest{
+	if err := server.Init(context.Background(), msgq.InitRequest{
 		Header:  secondConn,
 		Restore: true,
 		Ack:     1,
@@ -77,7 +74,7 @@ func TestMsgQServerRestoresUnconfirmedDownMsgMessages(t *testing.T) {
 	}
 }
 
-func TestMsgQServerSerializesUpMsgAndRejectsStaleConnection(t *testing.T) {
+func TestMsgQServerRejectsStaleAcknowledgement(t *testing.T) {
 	server, err := msgq.NewServer(msgq.ServerOptions{
 		InstanceID:         "msgq-1",
 		Store:              newMailboxSessionStore(),
@@ -87,23 +84,15 @@ func TestMsgQServerSerializesUpMsgAndRejectsStaleConnection(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	current := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 8}
-	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: current}); err != nil {
+	if err := server.Init(context.Background(), msgq.InitRequest{Header: current}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	defer server.TerminateSession(context.Background(), current)
 
-	received, err := server.Rec(context.Background(), msgq.RecRequest{Header: current, Seq: 1})
-	if err != nil || received.UpMsgSeq != 1 {
-		t.Fatalf("rec = %#v, %v", received, err)
-	}
-	if received, err := server.Rec(context.Background(), msgq.RecRequest{Header: current, Seq: 3}); err != nil || received.UpMsgSeq != 3 {
-		t.Fatalf("gapped rec = %#v, %v", received, err)
-	}
-	if _, err := server.Rec(context.Background(), msgq.RecRequest{
+	if err := server.Confirm(context.Background(), msgq.ConfirmRequest{
 		Header: msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7},
-		Seq:    4,
 	}); !errors.Is(err, msgq.ErrSessionChanged) {
-		t.Fatalf("stale rec error = %v, want session changed", err)
+		t.Fatalf("stale confirm error = %v, want session changed", err)
 	}
 }
 
@@ -117,7 +106,7 @@ func TestMsgQServerBoundsDownMsgQueue(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	header := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
+	if err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	if _, err := server.PubSession(context.Background(), header.SessionID, []byte("one")); err != nil {
@@ -142,7 +131,7 @@ func TestMsgQServerBoundsDownMsgQueueBytes(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	header := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
+	if err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	if _, err := server.PubSession(context.Background(), header.SessionID, []byte("123")); err != nil {
@@ -162,7 +151,7 @@ func TestMsgQServerRejectsAcknowledgementBeyondSentDownMsg(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	header := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
+	if err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	if _, err := server.PubSession(context.Background(), header.SessionID, []byte("one")); err != nil {
@@ -190,7 +179,7 @@ func TestMsgQServerFetchSomeKeepsUnconfirmedSequence(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	header := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
+	if err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	defer server.TerminateSession(context.Background(), header)
@@ -225,7 +214,7 @@ func TestMsgQServerBroadcastTopicReportsPartialOverflow(t *testing.T) {
 	first := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
 	second := msgq.SessionHeader{RoleID: 470002, SessionID: 100, ConnectionID: 8}
 	for _, header := range []msgq.SessionHeader{first, second} {
-		if _, err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
+		if err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
 			t.Fatalf("init %#v: %v", header, err)
 		}
 		defer server.TerminateSession(context.Background(), header)
@@ -265,10 +254,10 @@ func TestMsgQServerRejectsOldConnectionCloseAfterRestore(t *testing.T) {
 	}
 	oldHeader := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
 	newHeader := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 8}
-	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: oldHeader}); err != nil {
+	if err := server.Init(context.Background(), msgq.InitRequest{Header: oldHeader}); err != nil {
 		t.Fatalf("init old connection: %v", err)
 	}
-	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: newHeader, Restore: true}); err != nil {
+	if err := server.Init(context.Background(), msgq.InitRequest{Header: newHeader, Restore: true}); err != nil {
 		t.Fatalf("restore new connection: %v", err)
 	}
 	if err := server.TerminateSession(context.Background(), oldHeader); !errors.Is(err, msgq.ErrSessionChanged) {
@@ -298,13 +287,13 @@ func TestMsgQServerKeepsSameRoleSessionsIsolated(t *testing.T) {
 	}
 	first := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
 	second := msgq.SessionHeader{RoleID: 470001, SessionID: 100, ConnectionID: 8}
-	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: first}); err != nil {
+	if err := server.Init(context.Background(), msgq.InitRequest{Header: first}); err != nil {
 		t.Fatalf("init first: %v", err)
 	}
 	if _, err := server.PubSession(context.Background(), first.SessionID, []byte("first-only")); err != nil {
 		t.Fatalf("publish first: %v", err)
 	}
-	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: second}); err != nil {
+	if err := server.Init(context.Background(), msgq.InitRequest{Header: second}); err != nil {
 		t.Fatalf("init second: %v", err)
 	}
 	if _, err := server.PubSession(context.Background(), second.SessionID, []byte("second-only")); err != nil {
@@ -350,7 +339,7 @@ func TestMsgQServerInitializesSameRoleSessionsConcurrently(t *testing.T) {
 	for _, header := range headers {
 		go func() {
 			<-start
-			_, err := server.Init(context.Background(), msgq.InitRequest{Header: header})
+			err := server.Init(context.Background(), msgq.InitRequest{Header: header})
 			results <- err
 		}()
 	}
@@ -381,21 +370,15 @@ func TestMsgQServerFreshSessionDoesNotInheritMailboxState(t *testing.T) {
 	}
 	first := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
 	second := msgq.SessionHeader{RoleID: 470001, SessionID: 100, ConnectionID: 8}
-	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: first}); err != nil {
+	if err := server.Init(context.Background(), msgq.InitRequest{Header: first}); err != nil {
 		t.Fatalf("init first: %v", err)
-	}
-	if _, err := server.Rec(context.Background(), msgq.RecRequest{Header: first, Seq: 1}); err != nil {
-		t.Fatalf("rec first: %v", err)
 	}
 	if _, err := server.PubSession(context.Background(), first.SessionID, []byte("old-pending")); err != nil {
 		t.Fatalf("publish first: %v", err)
 	}
-	result, err := server.Init(context.Background(), msgq.InitRequest{Header: second})
+	err = server.Init(context.Background(), msgq.InitRequest{Header: second})
 	if err != nil {
 		t.Fatalf("init second: %v", err)
-	}
-	if result.UpMsgSeq != 0 {
-		t.Fatalf("fresh upMsg seq = %d, want 0", result.UpMsgSeq)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -415,11 +398,11 @@ func TestMsgQServerFreshInitRejectsExistingSessionID(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	current := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: current}); err != nil {
+	if err := server.Init(context.Background(), msgq.InitRequest{Header: current}); err != nil {
 		t.Fatalf("init current: %v", err)
 	}
 	conflict := msgq.SessionHeader{RoleID: 470002, SessionID: current.SessionID, ConnectionID: 8}
-	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: conflict}); !errors.Is(err, msgq.ErrSessionChanged) {
+	if err := server.Init(context.Background(), msgq.InitRequest{Header: conflict}); !errors.Is(err, msgq.ErrSessionChanged) {
 		t.Fatalf("init conflict error = %v, want %v", err, msgq.ErrSessionChanged)
 	}
 	if server.SessionCount() != 1 {
@@ -462,7 +445,7 @@ func TestMsgQServerRedisIntegration(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	header := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-	if _, err := server.Init(ctx, msgq.InitRequest{Header: header}); err != nil {
+	if err := server.Init(ctx, msgq.InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	if _, found, err := bindings.Find(ctx, header.SessionID); err != nil || !found {
@@ -499,7 +482,7 @@ func TestMsgQServerTerminateDeadSessionsRemovesOfflineSessionAndBinding(t *testi
 		t.Fatalf("new server: %v", err)
 	}
 	header := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
+	if err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	removed, err := server.TerminateDeadSessions(context.Background(), time.Now().Add(2*time.Second))
@@ -526,7 +509,7 @@ func TestMsgQServerStartUsesLifecycleWorker(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	header := msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-	if _, err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
+	if err := server.Init(context.Background(), msgq.InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	ctx := lifecycle.NewWaitGroupContext(context.Background())

@@ -49,8 +49,8 @@ func TestServiceStartsWithExplicitDependenciesAndLocalMsgQ(t *testing.T) {
 				AccessMode: protocol.AccessModeNormal,
 			}, nil
 		}),
-		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) (txagent.DispatchResult, error) {
-			return txagent.DispatchResult{}, nil
+		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error {
+			return nil
 		}),
 		LocalMsgQ: fixedLocalMsgQ{client: client},
 	}, Dependencies{
@@ -90,8 +90,8 @@ func TestServiceRequiresRPCRegistrar(t *testing.T) {
 		Identity: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
 			return protocol.SessionPrincipal{}, nil
 		}),
-		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) (txagent.DispatchResult, error) {
-			return txagent.DispatchResult{}, nil
+		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error {
+			return nil
 		}),
 		Sessions: noopSessionRouter{},
 	}, Dependencies{

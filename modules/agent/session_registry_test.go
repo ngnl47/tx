@@ -155,8 +155,8 @@ func TestServeRegistersInitializingSessionBeforeMsgQInitCompletes(t *testing.T) 
 		IdentityResolver: IdentityResolverFunc(func(context.Context, AuthRequest) (protocol.SessionPrincipal, error) {
 			return protocol.SessionPrincipal{AccountID: 47, ServerID: 1, RoleID: 470001, SessionID: 99}, nil
 		}),
-		Dispatcher: DispatchFunc(func(context.Context, DispatchRequest) (DispatchResult, error) {
-			return DispatchResult{}, nil
+		Dispatcher: DispatchFunc(func(context.Context, DispatchRequest) error {
+			return nil
 		}),
 		Sessions:     sessionControlRouter{client: client},
 		ConnectionID: func() (int64, error) { return 8, nil },
@@ -195,8 +195,8 @@ func TestTerminateSessionCompensatesCanceledMsgQInit(t *testing.T) {
 		IdentityResolver: IdentityResolverFunc(func(context.Context, AuthRequest) (protocol.SessionPrincipal, error) {
 			return protocol.SessionPrincipal{AccountID: 47, ServerID: 1, RoleID: 470001, SessionID: 99}, nil
 		}),
-		Dispatcher: DispatchFunc(func(context.Context, DispatchRequest) (DispatchResult, error) {
-			return DispatchResult{}, nil
+		Dispatcher: DispatchFunc(func(context.Context, DispatchRequest) error {
+			return nil
 		}),
 		Sessions:     sessionControlRouter{client: client},
 		ConnectionID: func() (int64, error) { return 8, nil },
@@ -252,16 +252,16 @@ type sessionControlClient struct {
 	terminateOnce    sync.Once
 }
 
-func (client *sessionControlClient) Init(ctx context.Context, _ msgq.InitRequest) (msgq.InitResult, error) {
+func (client *sessionControlClient) Init(ctx context.Context, _ msgq.InitRequest) error {
 	if client.initEntered == nil {
-		return msgq.InitResult{}, errors.New("unexpected Init")
+		return errors.New("unexpected Init")
 	}
 	close(client.initEntered)
 	select {
 	case <-ctx.Done():
-		return msgq.InitResult{}, ctx.Err()
+		return ctx.Err()
 	case <-client.releaseInit:
-		return msgq.InitResult{}, nil
+		return nil
 	}
 }
 

@@ -265,8 +265,8 @@ type sessionClientFake struct {
 	closeCalls int
 }
 
-func (*sessionClientFake) Init(context.Context, msgq.InitRequest) (msgq.InitResult, error) {
-	return msgq.InitResult{}, nil
+func (*sessionClientFake) Init(context.Context, msgq.InitRequest) error {
+	return nil
 }
 
 func (*sessionClientFake) OpenMailboxStream(context.Context, msgq.SessionHeader) (msgq.MailboxStreamSession, error) {

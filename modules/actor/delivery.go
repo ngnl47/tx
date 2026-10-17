@@ -21,7 +21,6 @@ type Delivery struct {
 	RouteKey    txprotocol.RouteKey
 	Payload     []byte
 	Identity    *txprotocol.SessionIdentity
-	UpSeq       int64 // 客户端上行序号；仅传递操作身份的内部调用使用 0。
 
 	mode      actorpb.DeliveryMode
 	requestID uint64
@@ -32,11 +31,7 @@ func (d Delivery) Validate() error {
 	if d.MessageType == "" || d.MessageType != strings.TrimSpace(d.MessageType) {
 		return ErrInvalidDelivery
 	}
-	if d.Identity == nil {
-		if d.UpSeq != 0 {
-			return ErrInvalidDelivery
-		}
-	} else if d.UpSeq < 0 || d.Identity.Validate() != nil {
+	if d.Identity != nil && d.Identity.Validate() != nil {
 		return ErrInvalidDelivery
 	}
 	return validateRouteKey(d.RouteKey)
@@ -69,7 +64,6 @@ func (d Delivery) toProto(mode actorpb.DeliveryMode, requestID uint64) (*actorpb
 		RouteKeyString:  routeKeyString,
 		RequestId:       requestID,
 		Identity:        identity,
-		UpSeq:           d.UpSeq,
 	}, nil
 }
 
@@ -92,7 +86,6 @@ func DeliveryFromProto(message *actorpb.Delivery) (Delivery, error) {
 		RouteKey:    routeKey,
 		Payload:     append([]byte(nil), message.GetPayload()...),
 		Identity:    identity,
-		UpSeq:       message.GetUpSeq(),
 		mode:        message.GetMode(),
 		requestID:   message.GetRequestId(),
 	}

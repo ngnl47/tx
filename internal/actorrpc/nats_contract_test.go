@@ -58,7 +58,7 @@ func echoRuntime() *actorhost.Runtime {
 		return &actorhost.Behavior{Receive: func(_ actorhost.Context, v any) (any, error) {
 			d := v.(*actorpb.Delivery)
 			if d.MessageType == "ack" {
-				return &actorpb.Result{ProcessedUpSeq: d.UpSeq}, nil
+				return &actorpb.Result{MessageType: "ok"}, nil
 			}
 			return &actorpb.Result{MessageType: d.MessageType, CommandId: d.CommandId, Payload: d.Payload}, nil
 		}}, nil
@@ -73,17 +73,17 @@ func TestNATSRoundTripAndAdmission(t *testing.T) {
 	b := peer(t, url, ns, "b", r)
 	defer a.runtime.Drain(ctx)
 	defer r.Drain(ctx)
-	d := &actorpb.Delivery{MessageType: "buff", CommandId: 7, Payload: []byte{0, 1, 255}, UpSeq: 3, Identity: &actorpb.SessionIdentity{AccountId: 9}}
+	d := &actorpb.Delivery{MessageType: "buff", CommandId: 7, Payload: []byte{0, 1, 255}, Identity: &actorpb.SessionIdentity{AccountId: 9}}
 	target := actorhost.Target{Instance: "b", Identity: actorhost.Identity{Kind: "room", Key: "42"}}
 	result, err := a.Call(ctx, target, d)
 	if err != nil || result.CommandId != 7 || string(result.Payload) != string(d.Payload) {
 		t.Fatalf("result=%v err=%v", result, err)
 	}
-	if !proto.Equal(d, &actorpb.Delivery{MessageType: "buff", CommandId: 7, Payload: []byte{0, 1, 255}, UpSeq: 3, Identity: &actorpb.SessionIdentity{AccountId: 9}}) {
+	if !proto.Equal(d, &actorpb.Delivery{MessageType: "buff", CommandId: 7, Payload: []byte{0, 1, 255}, Identity: &actorpb.SessionIdentity{AccountId: 9}}) {
 		t.Fatal("调用修改了输入")
 	}
-	ack, err := a.Call(ctx, target, &actorpb.Delivery{MessageType: "ack", UpSeq: 3, Identity: d.Identity})
-	if err != nil || ack.ProcessedUpSeq != 3 {
+	ack, err := a.Call(ctx, target, &actorpb.Delivery{MessageType: "ack", Identity: d.Identity})
+	if err != nil || ack.MessageType != "ok" {
 		t.Fatalf("ack=%v err=%v", ack, err)
 	}
 	target.Instance = "absent"
@@ -584,8 +584,8 @@ func TestNATSResultContract(t *testing.T) {
 	ctx := actorTestContext(t)
 	ns := nats.NewInbox()
 	invalid := []*actorpb.Result{
-		{ProcessedUpSeq: 1, Payload: []byte("mixed")},
-		{MessageType: "ok", ProcessedUpSeq: -1},
+		{Payload: []byte("missing type")},
+		{MessageType: " "},
 		{ErrorMessage: "missing code"},
 		{MessageType: "\xff"},
 	}

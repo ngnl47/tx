@@ -149,11 +149,11 @@ func TestDirectStreamEnqueuePreservesMailboxOrderAndDrain(t *testing.T) {
 			if !ok {
 				return nil, txactor.ErrInvalidDelivery
 			}
-			entered <- delivery.UpSeq
-			if delivery.UpSeq == 1 {
+			entered <- int64(delivery.CommandID)
+			if int64(delivery.CommandID) == 1 {
 				<-release
 			}
-			if delivery.UpSeq == 3 {
+			if int64(delivery.CommandID) == 3 {
 				<-releaseLast
 			}
 			return nil, nil
@@ -195,7 +195,7 @@ func TestDirectStreamEnqueuePreservesMailboxOrderAndDrain(t *testing.T) {
 	defer sender.Close()
 	transport := &DirectTransport{Sender: sender}
 	for seq := int64(1); seq <= 3; seq++ {
-		delivery, err := (txactor.Delivery{MessageType: "agent.command", Identity: &identity, UpSeq: seq}).ToProto()
+		delivery, err := (txactor.Delivery{MessageType: "agent.command", Identity: &identity, CommandID: uint64(seq)}).ToProto()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -235,7 +235,7 @@ func TestDirectStreamEnqueuePreservesMailboxOrderAndDrain(t *testing.T) {
 		t.Fatalf("排水未等待已接收的单向消息: %v", err)
 	case <-time.After(20 * time.Millisecond):
 	}
-	delivery, err := (txactor.Delivery{MessageType: "agent.command", Identity: &identity, UpSeq: 4}).ToProto()
+	delivery, err := (txactor.Delivery{MessageType: "agent.command", Identity: &identity, CommandID: 4}).ToProto()
 	if err != nil {
 		t.Fatal(err)
 	}

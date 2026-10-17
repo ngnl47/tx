@@ -24,11 +24,8 @@ func TestMailboxLogsStateTransitionsAtDebug(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	header := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
+	if err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
-	}
-	if _, err := server.Rec(context.Background(), RecRequest{Header: header, Seq: 1}); err != nil {
-		t.Fatalf("rec: %v", err)
 	}
 	if _, err := server.PubSession(context.Background(), header.SessionID, []byte("downMsg")); err != nil {
 		t.Fatalf("pub: %v", err)
@@ -44,7 +41,6 @@ func TestMailboxLogsStateTransitionsAtDebug(t *testing.T) {
 	records := decodeJSONLogs(t, output.String())
 	for _, message := range []string{
 		"msgq session initialized",
-		"msgq upMsg accepted",
 		"msgq downMsg published",
 		"msgq downMsg confirmed",
 	} {
@@ -67,7 +63,7 @@ func TestBacklogSnapshotCountsUnconfirmedMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 	header := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
+	if err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
 		t.Fatal(err)
 	}
 	for _, payload := range []string{"abc", "12345"} {
@@ -100,11 +96,11 @@ func TestMailboxRestoreLogCorrelatesPreviousConnection(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	first := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-	if _, err := server.Init(context.Background(), InitRequest{Header: first}); err != nil {
+	if err := server.Init(context.Background(), InitRequest{Header: first}); err != nil {
 		t.Fatalf("init first connection: %v", err)
 	}
 	restored := SessionHeader{RoleID: first.RoleID, SessionID: first.SessionID, ConnectionID: 8}
-	if _, err := server.Init(context.Background(), InitRequest{Header: restored, Restore: true}); err != nil {
+	if err := server.Init(context.Background(), InitRequest{Header: restored, Restore: true}); err != nil {
 		t.Fatalf("restore connection: %v", err)
 	}
 
@@ -130,11 +126,11 @@ func TestMailboxRejectsStaleConnectionWithCurrentIdentityLog(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	stale := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-	if _, err := server.Init(context.Background(), InitRequest{Header: stale}); err != nil {
+	if err := server.Init(context.Background(), InitRequest{Header: stale}); err != nil {
 		t.Fatalf("init first connection: %v", err)
 	}
 	current := SessionHeader{RoleID: stale.RoleID, SessionID: stale.SessionID, ConnectionID: 8}
-	if _, err := server.Init(context.Background(), InitRequest{Header: current, Restore: true}); err != nil {
+	if err := server.Init(context.Background(), InitRequest{Header: current, Restore: true}); err != nil {
 		t.Fatalf("restore connection: %v", err)
 	}
 	if err := server.Touch(context.Background(), TouchRequest{Header: stale}); !errors.Is(err, ErrSessionChanged) {
@@ -165,7 +161,7 @@ func TestDefaultOfflineTimeoutRetainsWeakNetworkRecoveryWindow(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	header := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
+	if err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	base := time.Now()
@@ -192,7 +188,7 @@ func TestMailboxDeadTerminationLogCorrelatesSessionAndConnection(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	header := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
+	if err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	if removed, err := server.TerminateDeadSessions(context.Background(), time.Now().Add(2*time.Second)); err != nil || removed != 1 {
@@ -214,7 +210,7 @@ func TestMailboxOverflowLogCorrelatesSessionAndConnection(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	header := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
+	if err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	if _, err := server.PubSession(context.Background(), header.SessionID, []byte("first")); err != nil {
@@ -237,7 +233,7 @@ func TestBroadcastTopicSharesImmutablePayload(t *testing.T) {
 	first := SessionHeader{RoleID: 1, SessionID: 1, ConnectionID: 1}
 	second := SessionHeader{RoleID: 2, SessionID: 2, ConnectionID: 2}
 	for _, header := range []SessionHeader{first, second} {
-		if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
+		if err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
 			t.Fatalf("init %#v: %v", header, err)
 		}
 		if err := server.JoinTopics(context.Background(), TopicRequest{Header: header, Topics: []string{"guild:1"}}); err != nil {
@@ -303,7 +299,7 @@ func TestSlowSessionWithoutAcknowledgementHitsByteLimit(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	header := SessionHeader{RoleID: 1, SessionID: 1, ConnectionID: 1}
-	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
+	if err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	for _, message := range [][]byte{[]byte("one!"), []byte("two!")} {
@@ -333,7 +329,7 @@ func TestAcknowledgementReleasesDownMsgByteBudget(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	header := SessionHeader{RoleID: 1, SessionID: 1, ConnectionID: 1}
-	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
+	if err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	if _, err := server.PubSession(context.Background(), header.SessionID, []byte("full")); err != nil {
@@ -357,23 +353,17 @@ func TestInitWithoutRestoreAlwaysCreatesFreshSession(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	first := SessionHeader{RoleID: 1, SessionID: 7, ConnectionID: 1}
-	if _, err := server.Init(context.Background(), InitRequest{Header: first}); err != nil {
+	if err := server.Init(context.Background(), InitRequest{Header: first}); err != nil {
 		t.Fatalf("init first: %v", err)
-	}
-	if _, err := server.Rec(context.Background(), RecRequest{Header: first, Seq: 1}); err != nil {
-		t.Fatalf("rec first: %v", err)
 	}
 	if _, err := server.PubSession(context.Background(), first.SessionID, []byte("pending")); err != nil {
 		t.Fatalf("publish first: %v", err)
 	}
 
 	second := SessionHeader{RoleID: 1, SessionID: 8, ConnectionID: 2}
-	result, err := server.Init(context.Background(), InitRequest{Header: second})
+	err = server.Init(context.Background(), InitRequest{Header: second})
 	if err != nil {
 		t.Fatalf("init fresh: %v", err)
-	}
-	if result.UpMsgSeq != 0 {
-		t.Fatalf("fresh upMsg seq = %d, want 0", result.UpMsgSeq)
 	}
 	session, found := server.lookup(second.SessionID)
 	if !found {
@@ -381,7 +371,7 @@ func TestInitWithoutRestoreAlwaysCreatesFreshSession(t *testing.T) {
 	}
 	session.mu.Lock()
 	defer session.mu.Unlock()
-	if session.connectionID != second.ConnectionID || session.upMsgSeq != 0 || session.downMsgs.len() != 0 {
+	if session.connectionID != second.ConnectionID || session.downMsgs.len() != 0 {
 		t.Fatalf("fresh session retained old state: %#v", session)
 	}
 }
@@ -392,7 +382,7 @@ func TestInitRestoreRequiresExistingMatchingSession(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	missing := SessionHeader{RoleID: 1, SessionID: 7, ConnectionID: 1}
-	if _, err := server.Init(context.Background(), InitRequest{Header: missing, Restore: true}); !errors.Is(err, ErrSessionOffline) {
+	if err := server.Init(context.Background(), InitRequest{Header: missing, Restore: true}); !errors.Is(err, ErrSessionOffline) {
 		t.Fatalf("restore missing error = %v, want %v", err, ErrSessionOffline)
 	}
 	if _, found := server.lookup(missing.SessionID); found {
@@ -400,61 +390,12 @@ func TestInitRestoreRequiresExistingMatchingSession(t *testing.T) {
 	}
 
 	current := SessionHeader{RoleID: 1, SessionID: 7, ConnectionID: 2}
-	if _, err := server.Init(context.Background(), InitRequest{Header: current}); err != nil {
+	if err := server.Init(context.Background(), InitRequest{Header: current}); err != nil {
 		t.Fatalf("init current: %v", err)
 	}
 	mismatch := SessionHeader{RoleID: 1, SessionID: 8, ConnectionID: 3}
-	if _, err := server.Init(context.Background(), InitRequest{Header: mismatch, Restore: true}); !errors.Is(err, ErrSessionOffline) {
+	if err := server.Init(context.Background(), InitRequest{Header: mismatch, Restore: true}); !errors.Is(err, ErrSessionOffline) {
 		t.Fatalf("restore mismatched error = %v, want %v", err, ErrSessionOffline)
-	}
-}
-
-func TestRestoreReturnsAcceptedUpSeqBeforeBusinessCompletion(t *testing.T) {
-	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: &testSessionStore{}, MaxBacklogMessages: 4})
-	if err != nil {
-		t.Fatal(err)
-	}
-	first := SessionHeader{RoleID: 1, SessionID: 7, ConnectionID: 1}
-	if _, err := server.Init(context.Background(), InitRequest{Header: first}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := server.Rec(context.Background(), RecRequest{Header: first, Seq: 1}); err != nil {
-		t.Fatal(err)
-	}
-	restored := first
-	restored.ConnectionID = 2
-	result, err := server.Init(context.Background(), InitRequest{Header: restored, Restore: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.UpMsgSeq != 1 {
-		t.Fatalf("restored UpMsgSeq = %d, want accepted seq 1", result.UpMsgSeq)
-	}
-}
-
-func TestRecAcceptsIncreasingSequenceWithGaps(t *testing.T) {
-	server, err := NewServer(ServerOptions{InstanceID: "msgq-1", Store: &testSessionStore{}, MaxBacklogMessages: 4})
-	if err != nil {
-		t.Fatal(err)
-	}
-	header := SessionHeader{RoleID: 1, SessionID: 7, ConnectionID: 1}
-	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
-		t.Fatal(err)
-	}
-	for _, seq := range []int64{1, 5, 3, 5, 9} {
-		result, err := server.Rec(context.Background(), RecRequest{Header: header, Seq: seq})
-		if err != nil {
-			t.Fatalf("Rec(%d): %v", seq, err)
-		}
-		want := int64(5)
-		if seq == 1 {
-			want = 1
-		} else if seq == 9 {
-			want = 9
-		}
-		if result.UpMsgSeq != want {
-			t.Fatalf("Rec(%d) accepted seq = %d, want %d", seq, result.UpMsgSeq, want)
-		}
 	}
 }
 
@@ -469,7 +410,7 @@ func TestSlowSessionExpiresDespiteClientActivity(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	header := SessionHeader{RoleID: 1, SessionID: 1, ConnectionID: 1}
-	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
+	if err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	if _, err := server.PubSession(context.Background(), header.SessionID, []byte("pending")); err != nil {
@@ -505,7 +446,7 @@ func TestMailboxRestoreRejectsOldInflightRefresh(t *testing.T) {
 	}
 	oldHeader := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
 	newHeader := SessionHeader{RoleID: oldHeader.RoleID, SessionID: oldHeader.SessionID, ConnectionID: 8}
-	if _, err := server.Init(context.Background(), InitRequest{Header: oldHeader}); err != nil {
+	if err := server.Init(context.Background(), InitRequest{Header: oldHeader}); err != nil {
 		t.Fatalf("init old connection: %v", err)
 	}
 	touchDone := make(chan error, 1)
@@ -523,7 +464,7 @@ func TestMailboxRestoreRejectsOldInflightRefresh(t *testing.T) {
 		close(restoreAtSessionLock)
 	}
 	go func() {
-		_, err := server.Init(context.Background(), InitRequest{Header: newHeader, Restore: true})
+		err := server.Init(context.Background(), InitRequest{Header: newHeader, Restore: true})
 		restoreDone <- err
 	}()
 	waitMailboxSignal(t, restoreAtSessionLock)
@@ -551,7 +492,7 @@ func TestMailboxSessionActivityCoalescesStoreRefresh(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	header := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
+	if err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	session, found := server.lookup(header.SessionID)
@@ -590,7 +531,7 @@ func TestMailboxRestoreFirstRejectsOldTouchWithoutRemovingNewConnection(t *testi
 	}
 	oldHeader := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
 	newHeader := SessionHeader{RoleID: oldHeader.RoleID, SessionID: oldHeader.SessionID, ConnectionID: 8}
-	if _, err := server.Init(context.Background(), InitRequest{Header: oldHeader}); err != nil {
+	if err := server.Init(context.Background(), InitRequest{Header: oldHeader}); err != nil {
 		t.Fatalf("init old connection: %v", err)
 	}
 	restoreStarted := make(chan struct{})
@@ -599,7 +540,7 @@ func TestMailboxRestoreFirstRejectsOldTouchWithoutRemovingNewConnection(t *testi
 	go func() {
 		close(restoreStarted)
 		<-continueRestore
-		_, err := server.Init(context.Background(), InitRequest{Header: newHeader, Restore: true})
+		err := server.Init(context.Background(), InitRequest{Header: newHeader, Restore: true})
 		restoreDone <- err
 	}()
 	waitMailboxSignal(t, restoreStarted)
@@ -636,7 +577,7 @@ func TestMailboxFreshReservationMakesPubWaitForCreate(t *testing.T) {
 	header := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
 	initDone := make(chan error, 1)
 	go func() {
-		_, err := server.Init(context.Background(), InitRequest{Header: header})
+		err := server.Init(context.Background(), InitRequest{Header: header})
 		initDone <- err
 	}()
 	waitMailboxSignal(t, store.createEntered)
@@ -676,7 +617,7 @@ func TestMailboxFreshRejectsLocalSessionWhenStoreBindingIsMissing(t *testing.T) 
 		t.Fatalf("new server: %v", err)
 	}
 	header := SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: 7}
-	if _, err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
+	if err := server.Init(context.Background(), InitRequest{Header: header}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	if _, err := server.PubSession(context.Background(), header.SessionID, []byte("kept")); err != nil {
@@ -688,7 +629,7 @@ func TestMailboxFreshRejectsLocalSessionWhenStoreBindingIsMissing(t *testing.T) 
 	original, _ := server.lookup(header.SessionID)
 	store.dropBinding()
 	conflict := SessionHeader{RoleID: 470002, SessionID: header.SessionID, ConnectionID: 8}
-	if _, err := server.Init(context.Background(), InitRequest{Header: conflict}); !errors.Is(err, ErrSessionChanged) {
+	if err := server.Init(context.Background(), InitRequest{Header: conflict}); !errors.Is(err, ErrSessionChanged) {
 		t.Fatalf("fresh conflict error = %v, want %v", err, ErrSessionChanged)
 	}
 	current, found := server.lookup(header.SessionID)

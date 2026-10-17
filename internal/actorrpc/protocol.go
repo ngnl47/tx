@@ -37,13 +37,7 @@ func ResultError(result *actorpb.Result) error {
 	if result.ErrorMessage != "" {
 		return errors.New("actortrial: error message without code")
 	}
-	if result.ProcessedUpSeq > 0 {
-		if result.MessageType != "" || result.CommandId != 0 || len(result.Payload) != 0 {
-			return errors.New("actortrial: mixed acknowledgement and result")
-		}
-		return nil
-	}
-	if result.ProcessedUpSeq < 0 || result.MessageType == "" || result.MessageType != strings.TrimSpace(result.MessageType) {
+	if result.MessageType == "" || result.MessageType != strings.TrimSpace(result.MessageType) {
 		return errors.New("actortrial: invalid result")
 	}
 	return nil

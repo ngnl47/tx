@@ -248,7 +248,6 @@ func (x *InitRequest) GetAck() int64 {
 
 type InitResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	ReceivedSeq   int64                  `protobuf:"varint,1,opt,name=received_seq,json=receivedSeq,proto3" json:"received_seq,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -281,13 +280,6 @@ func (x *InitResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use InitResponse.ProtoReflect.Descriptor instead.
 func (*InitResponse) Descriptor() ([]byte, []int) {
 	return file_modules_msgq_proto_msgq_proto_rawDescGZIP(), []int{2}
-}
-
-func (x *InitResponse) GetReceivedSeq() int64 {
-	if x != nil {
-		return x.ReceivedSeq
-	}
-	return 0
 }
 
 type PubSessionRequest struct {
@@ -773,7 +765,6 @@ type MailboxStreamRequest struct {
 	Kind          MailboxStreamRequest_Kind `protobuf:"varint,2,opt,name=kind,proto3,enum=tx.msgq.v1.MailboxStreamRequest_Kind" json:"kind,omitempty"`
 	Ack           int64                     `protobuf:"varint,3,opt,name=ack,proto3" json:"ack,omitempty"`
 	Max           int32                     `protobuf:"varint,4,opt,name=max,proto3" json:"max,omitempty"`
-	ReceivedSeq   int64                     `protobuf:"varint,5,opt,name=received_seq,json=receivedSeq,proto3" json:"received_seq,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -832,13 +823,6 @@ func (x *MailboxStreamRequest) GetAck() int64 {
 func (x *MailboxStreamRequest) GetMax() int32 {
 	if x != nil {
 		return x.Max
-	}
-	return 0
-}
-
-func (x *MailboxStreamRequest) GetReceivedSeq() int64 {
-	if x != nil {
-		return x.ReceivedSeq
 	}
 	return 0
 }
@@ -1106,9 +1090,8 @@ const file_modules_msgq_proto_msgq_proto_rawDesc = "" +
 	"\vInitRequest\x121\n" +
 	"\x06header\x18\x01 \x01(\v2\x19.tx.msgq.v1.SessionHeaderR\x06header\x12\x18\n" +
 	"\arestore\x18\x02 \x01(\bR\arestore\x12\x10\n" +
-	"\x03ack\x18\x03 \x01(\x03R\x03ack\"1\n" +
-	"\fInitResponse\x12!\n" +
-	"\freceived_seq\x18\x01 \x01(\x03R\vreceivedSeq\"L\n" +
+	"\x03ack\x18\x03 \x01(\x03R\x03ack\"\"\n" +
+	"\fInitResponseJ\x04\b\x01\x10\x02R\freceived_seq\"L\n" +
 	"\x11PubSessionRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\x03R\tsessionId\x12\x18\n" +
@@ -1142,13 +1125,12 @@ const file_modules_msgq_proto_msgq_proto_rawDesc = "" +
 	"overflowed\x18\x04 \x01(\x05R\n" +
 	"overflowed\"L\n" +
 	"\x17TerminateSessionRequest\x121\n" +
-	"\x06header\x18\x01 \x01(\v2\x19.tx.msgq.v1.SessionHeaderR\x06header\"\xa6\x02\n" +
+	"\x06header\x18\x01 \x01(\v2\x19.tx.msgq.v1.SessionHeaderR\x06header\"\x97\x02\n" +
 	"\x14MailboxStreamRequest\x121\n" +
 	"\x06header\x18\x01 \x01(\v2\x19.tx.msgq.v1.SessionHeaderR\x06header\x129\n" +
 	"\x04kind\x18\x02 \x01(\x0e2%.tx.msgq.v1.MailboxStreamRequest.KindR\x04kind\x12\x10\n" +
 	"\x03ack\x18\x03 \x01(\x03R\x03ack\x12\x10\n" +
-	"\x03max\x18\x04 \x01(\x05R\x03max\x12!\n" +
-	"\freceived_seq\x18\x05 \x01(\x03R\vreceivedSeq\"Y\n" +
+	"\x03max\x18\x04 \x01(\x05R\x03max\"Y\n" +
 	"\x04Kind\x12\x14\n" +
 	"\x10KIND_UNSPECIFIED\x10\x00\x12\r\n" +
 	"\tKIND_OPEN\x10\x01\x12\x0e\n" +
@@ -1156,7 +1138,7 @@ const file_modules_msgq_proto_msgq_proto_rawDesc = "" +
 	"KIND_CLOSE\x10\x02\x12\f\n" +
 	"\bKIND_ACK\x10\x03\x12\x0e\n" +
 	"\n" +
-	"KIND_RENEW\x10\x04\"\xa4\x01\n" +
+	"KIND_RENEW\x10\x04J\x04\b\x05\x10\x06R\freceived_seq\"\xa4\x01\n" +
 	"\x15MailboxStreamResponse\x121\n" +
 	"\x06header\x18\x01 \x01(\v2\x19.tx.msgq.v1.SessionHeaderR\x06header\x123\n" +
 	"\amessage\x18\x02 \x01(\v2\x19.tx.msgq.v1.FetchResponseR\amessage\x12#\n" +

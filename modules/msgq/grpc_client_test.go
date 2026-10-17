@@ -42,7 +42,7 @@ func TestGRPCConnectionRejectsNilSuccessResponses(t *testing.T) {
 	header := SessionHeader{RoleID: 47, SessionID: 1, ConnectionID: 2}
 	tests := map[string]func() error{
 		"init": func() error {
-			_, err := connection.Init(context.Background(), InitRequest{Header: header})
+			err := connection.Init(context.Background(), InitRequest{Header: header})
 			return err
 		},
 		"pub session": func() error {
@@ -99,7 +99,7 @@ func TestGRPCConnectionConvertsInitAndExactPublish(t *testing.T) {
 	client := &recordingSessionMailboxClient{}
 	connection := &grpcConnection{client: client}
 	header := SessionHeader{RoleID: 47, SessionID: 11, ConnectionID: 13}
-	if _, err := connection.Init(context.Background(), InitRequest{Header: header}); err != nil {
+	if err := connection.Init(context.Background(), InitRequest{Header: header}); err != nil {
 		t.Fatalf("Init returned error: %v", err)
 	}
 	if request := client.initRequest; request.GetHeader().GetSessionId() != 11 {
@@ -153,7 +153,7 @@ type invalidSequenceMailboxClient struct {
 }
 
 func (*invalidSequenceMailboxClient) Init(context.Context, *msgqpb.InitRequest, ...grpc.CallOption) (*msgqpb.InitResponse, error) {
-	return &msgqpb.InitResponse{ReceivedSeq: -1}, nil
+	return nil, nil
 }
 
 func (*invalidSequenceMailboxClient) PubSession(context.Context, *msgqpb.PubSessionRequest, ...grpc.CallOption) (*msgqpb.PubSessionResponse, error) {
@@ -165,7 +165,7 @@ func TestGRPCConnectionRejectsInvalidResponseSequences(t *testing.T) {
 	header := SessionHeader{RoleID: 47, SessionID: 1, ConnectionID: 2}
 	tests := map[string]func() error{
 		"init": func() error {
-			_, err := connection.Init(context.Background(), InitRequest{Header: header})
+			err := connection.Init(context.Background(), InitRequest{Header: header})
 			return err
 		},
 		"pub session": func() error {

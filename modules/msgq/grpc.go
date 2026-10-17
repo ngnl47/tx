@@ -32,11 +32,11 @@ type mailboxService struct {
 }
 
 func (s *mailboxService) Init(ctx context.Context, request *msgqpb.InitRequest) (*msgqpb.InitResponse, error) {
-	result, err := s.mailbox.Init(ctx, InitRequest{Header: headerFromProto(request.GetHeader()), Restore: request.GetRestore(), Ack: request.GetAck()})
+	err := s.mailbox.Init(ctx, InitRequest{Header: headerFromProto(request.GetHeader()), Restore: request.GetRestore(), Ack: request.GetAck()})
 	if err != nil {
 		return nil, mailboxStatusError(err)
 	}
-	return &msgqpb.InitResponse{ReceivedSeq: result.UpMsgSeq}, nil
+	return &msgqpb.InitResponse{}, nil
 }
 
 func (s *mailboxService) PubSession(ctx context.Context, request *msgqpb.PubSessionRequest) (*msgqpb.PubSessionResponse, error) {
@@ -188,12 +188,7 @@ func (s *mailboxService) MailboxStream(stream grpc.BidiStreamingServer[msgqpb.Ma
 					delete(sessions, header.SessionID)
 				}
 			case msgqpb.MailboxStreamRequest_KIND_ACK:
-				var err error
-				if request.GetReceivedSeq() > 0 {
-					_, err = s.mailbox.Rec(ctx, RecRequest{Header: header, Seq: request.GetReceivedSeq(), Ack: request.GetAck()})
-				} else {
-					err = s.mailbox.Confirm(ctx, ConfirmRequest{Header: header, Ack: request.GetAck()})
-				}
+				err := s.mailbox.Confirm(ctx, ConfirmRequest{Header: header, Ack: request.GetAck()})
 				if err != nil && !errors.Is(err, ErrSessionOffline) && !errors.Is(err, ErrSessionChanged) {
 					txlog.ErrorContext(ctx, "mailbox stream acknowledgement failed", "sessionID", header.SessionID, "ack", request.GetAck(), "err", err)
 				}
@@ -331,7 +326,7 @@ func mailboxStatusError(err error) error {
 		return status.Error(codes.DeadlineExceeded, err.Error())
 	}
 	switch {
-	case errors.Is(err, ErrInvalidHeader), errors.Is(err, ErrUpMsgSequence), errors.Is(err, ErrDownMsgAcknowledgement), errors.Is(err, ErrInvalidTopic):
+	case errors.Is(err, ErrInvalidHeader), errors.Is(err, ErrDownMsgAcknowledgement), errors.Is(err, ErrInvalidTopic):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, ErrSessionOffline):
 		return status.Error(codes.NotFound, err.Error())

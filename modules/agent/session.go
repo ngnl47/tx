@@ -106,7 +106,7 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 		transport: transport,
 	}
 	s.activeSessions.beginInitialization(active)
-	initialized, previous, ready, terminateOnInitialization, err := s.initializeSession(sessionCtx, active, msgq.InitRequest{
+	previous, ready, terminateOnInitialization, err := s.initializeSession(sessionCtx, active, msgq.InitRequest{
 		Header:  header,
 		Restore: handshake.Restore,
 		Ack:     handshake.Ack,
@@ -139,7 +139,6 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 		"sessionID", identity.SessionID,
 		"connectionID", connectionID,
 		"restore", handshake.Restore,
-		"upMsgSeq", initialized.UpMsgSeq,
 		"downAck", handshake.Ack,
 	)
 	defer s.activeSessions.unbind(header.SessionID, header.ConnectionID)
@@ -159,8 +158,8 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 	if handshake.Restore {
 		writtenDownSeq.Store(handshake.Ack)
 	}
-	var acceptedUpSeq atomic.Int64
-	acceptedUpSeq.Store(initialized.UpMsgSeq)
+	// 上行游标仅属于当前物理连接，重连只续接 MsgQ 的下行邮箱。
+	var acceptedUpSeq int64
 	writer := sessionFrameWriter{transport: transport}
 	if err := writer.Write(sessionCtx, Frame{Kind: FrameReady}); err != nil {
 		cancel()
@@ -191,7 +190,7 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 			if err := writer.validateAcknowledgement(frame.Ack, confirmedDownSeq, &writtenDownSeq); err != nil {
 				return err
 			}
-			if err := mailboxStream.Ack(sessionCtx, acceptedUpSeq.Load(), frame.Ack); err != nil {
+			if err := mailboxStream.Ack(sessionCtx, frame.Ack); err != nil {
 				return err
 			}
 			confirmedDownSeq = frame.Ack
@@ -209,10 +208,10 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 	}
 }
 
-func (s *Server) initializeSession(ctx context.Context, active *activeSession, request msgq.InitRequest) (msgq.InitResult, *activeSession, bool, bool, error) {
-	result, err := active.client.Init(ctx, request)
+func (s *Server) initializeSession(ctx context.Context, active *activeSession, request msgq.InitRequest) (*activeSession, bool, bool, error) {
+	err := active.client.Init(ctx, request)
 	previous, ready, terminate := s.activeSessions.completeInitialization(active, err == nil)
-	return result, previous, ready, terminate, err
+	return previous, ready, terminate, err
 }
 
 func logInitializationTerminationError(ctx context.Context, session *activeSession, err error) {
@@ -241,7 +240,7 @@ func (s *Server) nextConnectionID() (int64, error) {
 	return connectionID, nil
 }
 
-func (s *Server) dispatchUpMsg(ctx context.Context, mailboxStream msgq.MailboxStreamSession, identity Identity, frame Frame, acceptedUpSeq *atomic.Int64, confirmedDownSeq *int64) error {
+func (s *Server) dispatchUpMsg(ctx context.Context, mailboxStream msgq.MailboxStreamSession, identity Identity, frame Frame, acceptedUpSeq *int64, confirmedDownSeq *int64) error {
 	var done func()
 	if s.admission != nil {
 		var err error
@@ -252,26 +251,22 @@ func (s *Server) dispatchUpMsg(ctx context.Context, mailboxStream msgq.MailboxSt
 		defer done()
 	}
 	*confirmedDownSeq = frame.Ack
-	if frame.Seq <= acceptedUpSeq.Load() {
-		return mailboxStream.Ack(ctx, acceptedUpSeq.Load(), frame.Ack)
+	if frame.Seq <= *acceptedUpSeq {
+		return mailboxStream.Ack(ctx, frame.Ack)
 	}
 	started := time.Now()
-	dispatched, err := s.dispatcher.Dispatch(ctx, DispatchRequest{
+	err := s.dispatcher.Dispatch(ctx, DispatchRequest{
 		Identity:  identity,
-		Seq:       frame.Seq,
 		CommandID: frame.CommandID,
 		RouteKey:  frame.RouteKey,
 		Payload:   cloneBytes(frame.Payload),
 	})
-	txmetrics.RecordAgentUplink(err == nil && dispatched.AcceptedUpSeq == frame.Seq, time.Since(started))
+	txmetrics.RecordAgentUplink(err == nil, time.Since(started))
 	if err != nil {
 		return err
 	}
-	if dispatched.AcceptedUpSeq != frame.Seq {
-		return ErrInvalidDispatchResult
-	}
-	acceptedUpSeq.Store(frame.Seq)
-	return mailboxStream.Ack(ctx, frame.Seq, frame.Ack)
+	*acceptedUpSeq = frame.Seq
+	return mailboxStream.Ack(ctx, frame.Ack)
 }
 
 const immediateDownBatchLimit = 5

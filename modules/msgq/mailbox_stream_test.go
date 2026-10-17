@@ -133,7 +133,7 @@ func TestMailboxControlDeadlineAndLocalClose(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	if err := item.Ack(ctx, 1, 0); !errors.Is(err, context.DeadlineExceeded) {
+	if err := item.Ack(ctx, 0); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Ack 未遵守期限: %v", err)
 	}
 	closed := make(chan error, 1)
@@ -177,7 +177,7 @@ func TestMailboxServerProcessesAckWhileDownstreamBlocked(t *testing.T) {
 		t.Fatal(err)
 	}
 	header := SessionHeader{RoleID: 1, SessionID: 2, ConnectionID: 3}
-	if _, err = mailbox.Init(ctx, InitRequest{Header: header}); err != nil {
+	if err = mailbox.Init(ctx, InitRequest{Header: header}); err != nil {
 		t.Fatal(err)
 	}
 	stream := &blockedMailboxServer{ctx: ctx, requests: make(chan *msgqpb.MailboxStreamRequest, 2), sending: make(chan struct{})}
@@ -230,7 +230,7 @@ func TestMailboxRemoteSlowSessionCanRestoreWithoutLosingUnackedMessages(t *testi
 	first := SessionHeader{RoleID: 1, SessionID: 1, ConnectionID: 1}
 	second := SessionHeader{RoleID: 2, SessionID: 2, ConnectionID: 1}
 	for _, header := range []SessionHeader{first, second} {
-		if _, err := client.Init(ctx, InitRequest{Header: header}); err != nil {
+		if err := client.Init(ctx, InitRequest{Header: header}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -268,7 +268,7 @@ func TestMailboxRemoteSlowSessionCanRestoreWithoutLosingUnackedMessages(t *testi
 		t.Fatal(err)
 	}
 	first.ConnectionID++
-	if _, err := client.Init(ctx, InitRequest{Header: first, Restore: true}); err != nil {
+	if err := client.Init(ctx, InitRequest{Header: first, Restore: true}); err != nil {
 		t.Fatal(err)
 	}
 	restored, err := client.OpenMailboxStream(ctx, first)
@@ -340,7 +340,7 @@ func TestMailboxServerReclaimsExpiredSubscription(t *testing.T) {
 		t.Fatal(err)
 	}
 	header := SessionHeader{RoleID: 1, SessionID: 1, ConnectionID: 1}
-	if _, err = mailbox.Init(ctx, InitRequest{Header: header}); err != nil {
+	if err = mailbox.Init(ctx, InitRequest{Header: header}); err != nil {
 		t.Fatal(err)
 	}
 	client := startMailboxTestGRPC(t, mailbox)

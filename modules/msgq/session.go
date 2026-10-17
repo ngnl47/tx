@@ -27,7 +27,6 @@ var (
 	ErrServerNil                    = errors.New("msgq: server is nil")
 	ErrInvalidServer                = errors.New("msgq: invalid server options")
 	ErrInvalidHeader                = errors.New("msgq: invalid session header")
-	ErrUpMsgSequence                = errors.New("msgq: UpMsg sequence is invalid")
 	ErrDownMsgAcknowledgement       = errors.New("msgq: DownMsg acknowledgement is invalid")
 	ErrDownMsgOverflow              = errors.New("msgq: DownMsg queue is full")
 	ErrInvalidTopic                 = errors.New("msgq: invalid topic")

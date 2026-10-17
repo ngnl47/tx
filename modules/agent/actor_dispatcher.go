@@ -16,7 +16,6 @@ var (
 	ErrActorDispatchResolverNil = errors.New("agent: actor dispatch resolver is nil")
 	ErrActorTargetNil           = errors.New("agent: actor identity is empty")
 	ErrInvalidActorCallTimeout  = errors.New("agent: actor call timeout is invalid")
-	ErrInvalidDispatchResult    = errors.New("agent: invalid dispatch result")
 )
 
 // ActorDispatch 只包含业务身份与信封，物理归属由框架解析。
@@ -60,22 +59,17 @@ func NewActorDispatcher(o ActorDispatcherOptions) (Dispatcher, error) {
 	if o.CallTimeout == 0 {
 		o.CallTimeout = defaultActorCallTimeout
 	}
-	return DispatchFunc(func(ctx context.Context, r DispatchRequest) (DispatchResult, error) {
+	return DispatchFunc(func(ctx context.Context, r DispatchRequest) error {
 		d, err := o.Resolver.ResolveActorDispatch(ctx, r)
 		if err != nil {
-			return DispatchResult{}, err
+			return err
 		}
 		if d.Target.Kind == "" || d.Target.Key == "" {
-			return DispatchResult{}, ErrActorTargetNil
+			return ErrActorTargetNil
 		}
 		d.Delivery.Identity = &r.Identity
-		d.Delivery.UpSeq = r.Seq
 		call, cancel := context.WithTimeout(ctx, o.CallTimeout)
 		defer cancel()
-		err = enqueuer.Enqueue(call, d.Target, d.Delivery)
-		if err != nil {
-			return DispatchResult{}, err
-		}
-		return DispatchResult{AcceptedUpSeq: r.Seq}, nil
+		return enqueuer.Enqueue(call, d.Target, d.Delivery)
 	}), nil
 }

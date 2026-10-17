@@ -191,15 +191,15 @@ func readBroadcastResponse(response *msgqpb.BroadcastResponse, err error) (Broad
 	}, mailboxClientError(err)
 }
 
-func (c *grpcConnection) Init(ctx context.Context, request InitRequest) (InitResult, error) {
+func (c *grpcConnection) Init(ctx context.Context, request InitRequest) error {
 	response, err := c.client.Init(ctx, &msgqpb.InitRequest{Header: headerToProto(request.Header), Restore: request.Restore, Ack: request.Ack})
 	if err != nil {
-		return InitResult{}, mailboxClientError(err)
+		return mailboxClientError(err)
 	}
-	if response == nil || response.GetReceivedSeq() < 0 {
-		return InitResult{}, ErrInvalidMailboxResponse
+	if response == nil {
+		return ErrInvalidMailboxResponse
 	}
-	return InitResult{UpMsgSeq: response.GetReceivedSeq()}, nil
+	return nil
 }
 
 func (c *grpcConnection) TerminateSession(ctx context.Context, header SessionHeader) error {

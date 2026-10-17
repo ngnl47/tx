@@ -94,7 +94,7 @@ func TestDirectActorCallKeepsIdentityErrorsAndCancellation(t *testing.T) {
 			case "panic":
 				panic("injected")
 			}
-			return &actorpb.Result{ProcessedUpSeq: d.UpSeq}, nil
+			return &actorpb.Result{MessageType: "ok"}, nil
 		}}, nil
 	})
 	t.Cleanup(func() {
@@ -110,7 +110,7 @@ func TestDirectActorCallKeepsIdentityErrorsAndCancellation(t *testing.T) {
 	routeMembers(t, directory, map[string]*rpc.Host{"a": host, "old": host})
 	transport := directSender(t, directory)
 	id := actorhost.Identity{Kind: "world", Key: "中文世界/51"}
-	if _, err := transport.Call(ctx, actorhost.Target{Instance: "old", Identity: id}, &actorpb.Delivery{MessageType: "ack", UpSeq: 1}); !errors.Is(err, actorhost.ErrNotOwner) {
+	if _, err := transport.Call(ctx, actorhost.Target{Instance: "old", Identity: id}, &actorpb.Delivery{MessageType: "ack"}); !errors.Is(err, actorhost.ErrNotOwner) {
 		t.Fatalf("旧实例身份未拒绝: %v", err)
 	}
 	if r.Probe(id).State != actorhost.Unloaded {
@@ -125,7 +125,7 @@ func TestDirectActorCallKeepsIdentityErrorsAndCancellation(t *testing.T) {
 	callCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	go func() {
-		_, err := transport.Call(callCtx, actorhost.Target{Instance: "a", Identity: id}, &actorpb.Delivery{MessageType: "block", UpSeq: 9})
+		_, err := transport.Call(callCtx, actorhost.Target{Instance: "a", Identity: id}, &actorpb.Delivery{MessageType: "block"})
 		done <- err
 	}()
 	signal(t, ctx, entered)
