@@ -68,6 +68,7 @@ func NewActorDispatcher(o ActorDispatcherOptions) (Dispatcher, error) {
 			return ErrActorTargetNil
 		}
 		d.Delivery.Identity = &r.Identity
+		d.Delivery.Origin = txactor.OriginClient
 		call, cancel := context.WithTimeout(ctx, o.CallTimeout)
 		defer cancel()
 		return enqueuer.Enqueue(call, d.Target, d.Delivery)

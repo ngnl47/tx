@@ -4333,3 +4333,9 @@ err := publisher.Publish(ctx,
 R3 隔离测试进一步覆盖单节点故障期间的新发布和耗尽恢复、失去多数派时不能成功确认、故障节点重返后的副本追平。该证据来自同机三容器，不替代跨宿主容灾或生产负载验收。
 
 完整集群吞吐、延迟及客户端负载由 txgame/txclient 和 txgameslg/txclientslg 的集群工具验收。tx 保留传输小型基准、任务恢复和存储一致性测试，不维护阶段性任务档位采样入口。
+
+### Actor 投递来源与无响应体完成
+
+`actor.Delivery.Origin` 区分 `OriginInternal`、`OriginClient` 与 `OriginTask`。Agent 和可靠任务消费者在入口设置来源，`MessageType` 仅描述载荷，业务不得用名称猜测来源。任务仍通过 Call 等待业务完成后 ACK；无响应体时返回 `actor.Result{Completed: true}`，有响应体时使用原有 MessageType/CommandID/Payload，二者互斥。
+
+标准 Actor Key 使用 `actor.Int64Key`、`Uint64Key`、`StringKey` 和对应 Parse 方法；现有编码及实体归属不变，自定义 Key 仍可使用。以上协议需要调用方、服务端和生成产物同步更新。

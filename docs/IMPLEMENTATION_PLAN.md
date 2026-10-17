@@ -16,6 +16,17 @@
 
 本地滚动验收覆盖 txgame/txclient；txgameslg/txclientslg 的源码、生成产物和本地单元/构建回归已同步，本次未重跑其真实多进程集群。Agent Rec lease 不是当前待实现事项；MsgQ 会话 TTL 和角色归属租约仍按各自职责存在。
 
+## 投递契约收敛验收
+
+2026-10-17 已完成以下本地验收，本轮变更未提交：
+
+- 来源与完成：`DeliveryOrigin` 统一采用 `OriginInternal`、`OriginClient`、`OriginTask`，区分入口语义而非节点或传输；`Delivery.Origin` 由 Agent/任务入口设置，`Result.Completed` 表达无响应体成功；消息名称不再决定来源和任务确认。两套应用及 txgen 生成接口已同步。
+- 身份编码：标准 Actor Key 编解码由 tx 提供，既有 i:/u:/s: 编码保持不变；自定义 Key 不受限制。
+- 探针：txgame 额外下行使用 `System_ProbeNotify.ProbeID`；SLG 行军完成使用 `World_MarchCompleted` 的结构化字段；两端产物及关联测试已同步。
+- 常规回归：tx、txgen、txgame/server、txgameslg/server 的 `go test ./...` 通过；txclient 115 项、txclientslg 109 项测试及两个客户端构建通过；txbench Handler 测试通过。
+- 并发与真实任务：tx 的 taskqueue、actorrpc、agent 包 race 回归通过；txgame 的 `TestQueuedGeneratedCommandRetriesUntilHandlerCompletes` 在本机 NATS/etcd 上以 race 模式通过，验证业务失败保留/重试、完成后才 ACK，并仅清理本轮随机测试资源。
+- 独立变更复核未发现实质问题。本轮没有重跑真实多进程集群、完整滚动发布或云端容量测试；其他需显式环境变量的数据库集成测试未启用，不算通过。
+
 ## 待开展的部署验收
 
 以下任务需要实际部署参数与专用环境，不自动租赁云实例，也不向生产环境注入故障。

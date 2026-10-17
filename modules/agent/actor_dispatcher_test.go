@@ -21,7 +21,7 @@ func TestActorDispatcherBindsIdentityAndWritesStream(t *testing.T) {
 			return ActorDispatch{Target: actor.Identity{Kind: "role", Key: "i:42"}, Delivery: actor.Delivery{}}, nil
 		}),
 		Caller: actorCallerFunc(func(c context.Context, id actor.Identity, d actor.Delivery) (actor.Result, error) {
-			if _, ok := c.Deadline(); !ok || d.Identity.RoleID != 42 || id.Key != "i:42" {
+			if _, ok := c.Deadline(); !ok || d.Identity.RoleID != 42 || d.Origin != actor.OriginClient || id.Key != "i:42" {
 				t.Fatal("未绑定可信请求与期限")
 			}
 			return actor.Result{}, nil

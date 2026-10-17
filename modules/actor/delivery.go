@@ -13,9 +13,24 @@ var (
 	ErrInvalidDelivery = errors.New("actor: invalid delivery")
 )
 
+// DeliveryOrigin 表示投递入口语义，与业务节点类型、传输协议及实现语言无关。
+// 它不由 MessageType 推断，也不代替身份认证。
+type DeliveryOrigin uint8
+
+const (
+	// OriginInternal 表示普通内部调用，也是零值。
+	OriginInternal DeliveryOrigin = iota
+	// OriginClient 表示客户端命令，由 Agent 设置，业务响应通过下行链路发送。
+	OriginClient
+	// OriginTask 由可靠任务消费者设置，消费确认等待业务完成。
+	OriginTask
+)
+
 // Delivery 是投递给目标 Actor 的内部消息。目标位置由实体身份解析，Payload 保持调用方
 // 编码后的 BON 字节，不在 Actor 运行时中反序列化为业务对象。
 type Delivery struct {
+	// Origin 由 Agent 和可靠任务消费入口覆盖；普通内部调用默认为 OriginInternal。
+	Origin      DeliveryOrigin
 	MessageType string
 	CommandID   uint64
 	RouteKey    txprotocol.RouteKey
@@ -28,6 +43,9 @@ type Delivery struct {
 
 // Validate 校验跨进程投递所需的最小元数据。
 func (d Delivery) Validate() error {
+	if d.Origin > OriginTask {
+		return ErrInvalidDelivery
+	}
 	if d.MessageType == "" || d.MessageType != strings.TrimSpace(d.MessageType) {
 		return ErrInvalidDelivery
 	}
@@ -56,6 +74,7 @@ func (d Delivery) toProto(mode actorpb.DeliveryMode, requestID uint64) (*actorpb
 	}
 	return &actorpb.Delivery{
 		MessageType:     d.MessageType,
+		Origin:          actorpb.DeliveryOrigin(d.Origin),
 		CommandId:       d.CommandID,
 		Payload:         append([]byte(nil), d.Payload...),
 		Mode:            mode,
@@ -72,6 +91,9 @@ func DeliveryFromProto(message *actorpb.Delivery) (Delivery, error) {
 	if message == nil {
 		return Delivery{}, ErrInvalidDelivery
 	}
+	if message.GetOrigin() < actorpb.DeliveryOrigin_DELIVERY_ORIGIN_INTERNAL || message.GetOrigin() > actorpb.DeliveryOrigin_DELIVERY_ORIGIN_TASK {
+		return Delivery{}, ErrInvalidDelivery
+	}
 	routeKey, err := routeKeyFromProto(message.GetRouteKeyKind(), message.GetRouteKeyNumeric(), message.GetRouteKeyString())
 	if err != nil {
 		return Delivery{}, err
@@ -82,6 +104,7 @@ func DeliveryFromProto(message *actorpb.Delivery) (Delivery, error) {
 	}
 	delivery := Delivery{
 		MessageType: message.GetMessageType(),
+		Origin:      DeliveryOrigin(message.GetOrigin()),
 		CommandID:   message.GetCommandId(),
 		RouteKey:    routeKey,
 		Payload:     append([]byte(nil), message.GetPayload()...),

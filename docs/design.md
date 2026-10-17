@@ -2385,9 +2385,27 @@ ServiceSpec.ActorKinds 构成应用目录，Kind 名称应用内唯一；仅选�
 
 ### Actor mailbox
 
-Tell 完成寻址后仅确认本地投递；TellAccepted 确认到达当前连接的 NATS 服务端，不确认持久化或目标收取。CallFuture 返回异步 Future，Call 同步等待相同结果。等待超时不撤销已接受业务，也不自动重投。普通结果必须有 MessageType；Agent 上行通过直连 `CallStream` 单向投递，不等待逐项邮箱确认，业务下行独立走 MsgQ。
+Tell 完成寻址后仅确认本地投递；TellAccepted 确认到达当前连接的 NATS 服务端，不确认持久化或目标收取。CallFuture 返回异步 Future，Call 同步等待相同结果。等待超时不撤销已接受业务，也不自动重投。普通业务结果必须有 MessageType；无响应体的成功处理使用 `Result.Completed=true`，不得同时携带 MessageType、CommandID 或 Payload；Agent 上行通过直连 `CallStream` 单向投递，不等待逐项邮箱确认，业务下行独立走 MsgQ。
 
 有界邮箱将准入与生命周期登记放在同一边界；关闸后拒绝新消息，已接受的初始化、排队和处理继续完成。远端错误经 Result 协议传播，普通 Tell 不增加执行回执。远程 pending 由响应、Context 到期或连接关闭清理，不为每个 Future 常驻等待 goroutine。Agent 先使用归属目录检查 running 状态，不再维护依赖 PID 的第二份短期排水缓存。
+
+投递入口语义由 `DeliveryOrigin` 表达，通过 `Delivery.Origin` 和生成接口 `HandlerContext.Origin()` 读取：
+
+| 路径示例 | 入口语义 | 当前处理方式 |
+| --- | --- | --- |
+| 客户端 → Agent → Guild | `OriginClient` | Agent 设置来源；业务响应经 MsgQ 下行，不返回上行确认 |
+| Game → Guild | `OriginInternal` | 普通服务间 Actor 调用；由 Call/Tell 决定是否等待业务结果 |
+| 可靠任务 → Guild | `OriginTask` | 任务消费者设置来源；当前通过 Call 等待业务完成后才确认消费，失败沿用重试/死信规则 |
+
+这里 Guild 仅是业务扩展节点的示例，不要求 tx 或 txgen 预定义该节点。新增 Game、World、Guild 等服务或 Actor Kind 均复用这三种语义，不扩展枚举。`OriginInternal` 保持零值，其他值分别为 `OriginClient=1`、`OriginTask=2`。
+
+入口语义与语言及传输方式独立：当前可靠任务由 JetStream 消费后调用 Actor，未来其他语言实现可以通过 Kafka 等消息设施承接可靠任务，但仍使用 `OriginTask`；可靠性取决于消费确认、重试和持久化实现，不由 RPC 或 Origin 标记本身保证。该命名不代表当前已提供 Kafka 或 Java 实现。
+
+来源独立于业务 MessageType，不代替认证；`Completed` 只表达该次处理完成，不是客户端上行确认或邮箱入队确认。
+
+标准 Actor Key 使用 `actor.Int64Key`、`Uint64Key`、`StringKey` 与对应 Parse 方法，保持 `i:`、`u:`、`s:` 既有值。Identity.Key 仍允许自定义编码；tx 不推断业务 ID、服务名称或分区规则。
+
+本版新增来源和完成字段，依赖它们的 tx、生成接口及示例服务应使用同一契约版本部署，不提供旧消息名称兼容分支。
 
 Behavior.Receive 接收公开 Delivery，返回 Result/error；Context.Post/After/Deactivate 用于本地串行工作与业务自定义卸载。工厂、OnInitAfter、OnActivateBefore、OnActivateAfter 不附加统一 deadline；回调完成时取消 Context。Receive、卸载和权威查询保留 CallbackTimeout（默认 30 秒），具体加载 I/O 使用自身期限。调用方等待或排水超时不会提前释放尚未完成的加载与容量。
 

@@ -36,6 +36,8 @@ func (p Processor) Process(parent context.Context, msg jetstream.Msg, interval t
 	if err := json.Unmarshal(msg.Data(), &task); err != nil {
 		return err
 	}
+	// 任务来源由消费入口设置，忽略发布者携带的来源和消息名称。
+	task.Delivery.Origin = actor.OriginTask
 	result := make(chan error, 1)
 	go func() {
 		_, err := p.Actor.Call(ctx, task.Identity, task.Delivery)

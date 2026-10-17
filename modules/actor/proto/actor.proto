@@ -17,6 +17,12 @@ enum DeliveryMode {
   DELIVERY_MODE_CALL = 2;
 }
 
+enum DeliveryOrigin {
+  DELIVERY_ORIGIN_INTERNAL = 0;
+  DELIVERY_ORIGIN_CLIENT = 1;
+  DELIVERY_ORIGIN_TASK = 2;
+}
+
 enum AccessMode {
   ACCESS_MODE_NORMAL = 0;
   ACCESS_MODE_BORROW = 1;
@@ -48,6 +54,7 @@ message Delivery {
   SessionIdentity identity = 9;
   reserved 10;
   reserved "up_seq";
+  DeliveryOrigin origin = 11;
 }
 
 // Acceptance 表示目标 Actor 已从邮箱取出确认式投递，但不代表业务处理已经完成。
@@ -66,6 +73,8 @@ message Result {
   string error_message = 6;
   reserved 7;
   reserved "processed_up_seq";
+  // completed 表示业务处理成功完成且没有响应体，与业务结果字段互斥。
+  bool completed = 8;
 }
 
 // DirectStreamCall 携带单项实体调用及本项剩余等待时间。

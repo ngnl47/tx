@@ -37,6 +37,12 @@ func ResultError(result *actorpb.Result) error {
 	if result.ErrorMessage != "" {
 		return errors.New("actortrial: error message without code")
 	}
+	if result.Completed {
+		if result.MessageType != "" || result.CommandId != 0 || len(result.Payload) != 0 {
+			return errors.New("actor: completion result contains business payload")
+		}
+		return nil
+	}
 	if result.MessageType == "" || result.MessageType != strings.TrimSpace(result.MessageType) {
 		return errors.New("actortrial: invalid result")
 	}
