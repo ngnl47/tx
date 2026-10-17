@@ -69,30 +69,6 @@ func BenchmarkCallTransport(b *testing.B) {
 	})
 }
 
-// BenchmarkCallBatchUpperBound 只测单次 gRPC 承载多项载荷的传输上界，不模拟逐项结果、排队或 Actor 邮箱。
-func BenchmarkCallBatchUpperBound(b *testing.B) {
-	for _, items := range []int{1, 10, 20} {
-		b.Run(fmt.Sprintf("Items=%d", items), func(b *testing.B) {
-			delivery := benchmarkDelivery()
-			delivery.Payload = bytes.Repeat(delivery.Payload, items)
-			receiver := benchmarkDeliveryReceiver{expected: delivery}
-			sender := newLoopbackBenchmarkSender(b, receiver)
-			if _, err := sender.Call(b.Context(), delivery); err != nil {
-				b.Fatalf("预热批量载荷调用: %v", err)
-			}
-			b.ReportAllocs()
-			b.ResetTimer()
-			for b.Loop() {
-				result, err := sender.Call(b.Context(), delivery)
-				if err != nil || !bytes.Equal(result.Payload, delivery.Payload) {
-					b.Fatalf("批量载荷结果异常: err=%v", err)
-				}
-			}
-			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*items), "ns/item")
-		})
-	}
-}
-
 func benchmarkCallSerial(b *testing.B, call func(context.Context) (Result, error), expected Result) {
 	b.ReportAllocs()
 	b.ResetTimer()

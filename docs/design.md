@@ -30,7 +30,7 @@
 
 ## 设计目标
 
-正式宿主的交接准备由 `Server.PrepareHandoff` 复用关闭前半段：停止准入、等待已接受工作和业务任务、按组件逆序冲刷，成功后保留通信和租约。最终 Stop 才释放物理资源；两者串行共享已有组件收尾进度。控制面的 StateDrained 仅表示入口排水完成，不能单独作为槽位晋升许可。Actor 运行时替换仍按 [归属接线计划](superpowers/plans/2026-09-13-actor-ownership-integration.md) 分节点推进。
+正式宿主的交接准备由 `Server.PrepareHandoff` 复用关闭前半段：停止准入、等待已接受工作和业务任务、按组件逆序冲刷，成功后保留通信和租约。最终 Stop 才释放物理资源；两者串行共享已有组件收尾进度。控制面的 StateDrained 仅表示入口排水完成，不能单独作为槽位晋升许可。
 
 `tx` 的最高优先级不是“所有路径都最快”，而是以下顺序：
 
@@ -1093,68 +1093,15 @@ Slice：
 
 这样运维直接查询数据库时看到的 key 与业务一致。代价是该次写入放大，但存储边界不是 setter 热循环。
 
-### 物理尺寸与历史对照
+### 物理布局与成本边界
 
-定长路径消除了路径节点分配，但 `Path` 按值传递仍有固定复制成本。任何布局优化必须同时衡量：
+生成 Store 用字段槽和集合 key/index 状态保存变更，同位置重复修改只保留一份状态；边界通过 `VisitChanges` 同步遍历，不构造中间批次。Redis/Mongo/Fusion 与 WriteBackManager 直接消费 `Source`，需要后端文档时才分配字符串路径和 map。
 
-- `PathKey` 与 `Path` 大小。
-- 同步遍历与边界文档构建频率。
-- map key 类型表达完整性。
-- 生成代码改动范围。
-- benchmark 中的真实收益。
+`Path` 按值传递仍有固定复制成本。优化须同时测量路径大小、访问频率、key 类型完整性及文档构建，不为零分配提前引入 unsafe 或自研值联合类型。`Path.FieldNameAt` 允许边界只读取所需字段，完整路径校验在 I/O/文档边界执行。
 
-不要为了“零分配”过早引入自研 value union、`unsafe` 字符串或后端专属二进制值。
+GD 的运行状态按需保存在 sidecar；首次独立根写入可能增加一次分配，不能只用大对象批量场景衡量收益。Store 子路径按实际访问建立，脏索引只遍历发生变化的节点；不同 key 持续增加仍会消耗内存，由写回预算及应用反压控制，setter 不执行隐式 I/O。
 
-2026-08-21 在 x86_64 macOS、Go 1.26.0 上，对 1024 个不同 map key 的生成 Store 基准进行同机前后对比：
-
-| 场景 | 旧常驻 DeltaSet | 生成字段槽/key 状态 | 结果 |
-| --- | ---: | ---: | --- |
-| 记录 1024 个不同 key | 约 37.3-40.2 ms/op，1.57 MB/op | 约 0.43-0.44 ms/op，0.87 MB/op | 耗时约降低 98.8%，分配字节约降低 44% |
-| 成功构建文档并清理 1024 个 key | 约 35.2-37.7 ms/op，1.51 MB/op | 约 0.41-0.44 ms/op，0.80 MB/op | 耗时约降低 98.9%，分配字节约降低 47% |
-| 同一 key 重复修改 | 约 593-664 ns/op | 约 488-522 ns/op | 热路径约快 17%-25% |
-
-这些数字用于证明本次物理模型选择，不是跨机器性能承诺。基准仍保留在 txgen 的 `BenchmarkGeneratedStoreDirtyRuntime`，模板或 runtime 改动后必须复跑。
-
-2026-08-21 使用 Go 1.26.5 比较已删除的 `[]DeltaEntry` 中间批次实验路径与生成式同步遍历/合并，测试对象均为 1024 个不同 map key：
-
-| 场景 | DeltaSet 路径 | 生成式同步遍历/合并 | 结果 |
-| --- | ---: | ---: | --- |
-| 只遍历脏路径 | 约 0.219-0.225 ms/op，693 KB/op，13 allocs/op | 约 0.083-0.087 ms/op，0 B/op，0 allocs/op | 遍历耗时约降低 60%，消除中间切片分配 |
-| 生成 `change.Document` | 约 0.71-0.74 ms/op，1.16 MB/op，3015 allocs/op | 约 0.40-0.44 ms/op，212 KB/op，2996 allocs/op | 省去约 950 KB 中间 Delta/Clone；剩余分配来自最终字符串路径和文档 map |
-| 16 批 x 64 key 帧合并 | 约 0.46-0.52 ms/op，1.16 MB/op，140 allocs/op | 约 0.17-0.18 ms/op，37 KB/op，17 allocs/op | 生成 Store 直接合并变更状态，最后只构建一次文档 |
-
-这组结果决定只保留 `VisitChanges + Merge`。显式中间批次、通用 Compact 及其公开 API 已删除；表格仅记录技术选型依据。
-
-2026-08-22 使用 Go 1.26.5，在 txgame 真实生成 `GDRole.Items` 上继续比较存储边界。对象包含 1024 个不同 map key，每个 key 修改 `Quantity`；两条路径都生成相同 Redis patch 或 Mongo update document：
-
-| 场景 | 先创建 DeltaSet 中间批次 | Store 直接同步遍历 | 结果 |
-| --- | ---: | ---: | --- |
-| Redis document patch | 约 1.47-1.54 ms/op，1.31 MB/op，4713 allocs/op | 约 0.88-0.90 ms/op，359 KB/op，4692 allocs/op | 耗时降低约 40%，分配字节降低约 73% |
-| Mongo update document | 约 13.37-14.55 ms/op，1.28 MB/op，5740 allocs/op | 约 0.98-1.00 ms/op，330 KB/op，5718 allocs/op | 避免中间批次、Clone、通用 Compact 和二次路径扫描，耗时降低约 93%，分配字节降低约 74% |
-
-因此 Redis/Mongo/Fusion adapter 与 `writeback.Manager` 直接消费 `Source`。旧的 `Build*WithDeltas` 与显式批次类型已经删除，`storage.Save` 不得重新引入中间批次层。
-
-2026-08-22 删除显式批次 API 与过渡适配层后，使用 Go 1.26.5 在同一台 x86_64 macOS 设备复测：`VisitChanges1024` 为约 `0.082-0.088 ms/op, 0 B/op, 0 allocs/op`，`BuildDocument1024` 为约 `0.389-0.399 ms/op, 212 KB/op, 2996 allocs/op`，`MergeAndBuildFrameDocument` 为约 `0.167-0.174 ms/op, 37 KB/op, 17 allocs/op`。txgame 的真实生成结构边界中，Redis patch 为约 `0.873-0.928 ms/op, 359 KB/op, 4691 allocs/op`，Mongo update document 为约 `0.988-1.041 ms/op, 330 KB/op, 5717 allocs/op`。这些结果与删除前的同步遍历路径处于同一量级，说明精简公开 API 和运行时中间层没有引入可见性能回退。
-
-同日增加公开 `Path` 合法性防线后，先消除边界、`FullPath` 与生成 resolver 的重复扫描，再以相同 1024 key 场景复测：Redis 为约 `0.920-0.992 ms/op, 359 KB/op, 4691 allocs/op`，Mongo 为约 `0.984-1.029 ms/op, 330 KB/op, 5716 allocs/op`。结果仍处于原有波动区间且分配次数未增加；完整节点校验只在 I/O/文档边界执行一次，生成 resolver 仅保留固定数组深度护栏。
-
-2026-08-23 继续消除存储边界的重复路径构造：`Path.FieldNameAt` 在不创建 `DocumentPath` 的情况下解析单个字段，并保留嵌套类型的 `PathFieldNameResolver` 语义。Redis/Mongo 只用根 Go 字段查询元数据，因此不再为每条变更额外构造完整 Go 路径；JSON/BSON 输出路径仍在对应边界完整解析。相同 1024 key 基准中，Redis 从约 `359 KB/op, 4691 allocs/op` 降至 `292 KB/op, 2743 allocs/op`，Mongo 从约 `330 KB/op, 5716 allocs/op` 降至 `263 KB/op, 3768 allocs/op`，两者每次均减少约 66.5 KB 和 1948 次分配，耗时未出现稳定回退。
-
-同日使用 txgame 真实生成 `GDRole.Items` 把容量成本拆为记录、遍历和最终边界三段。测试先创建 1024 个已有 `GDItem`，再通过子 Store 修改每个 `Quantity`：记录状态约为 `0.340-0.359 ms/op, 290 KB/op, 3126 allocs/op`；对已经记录的状态反复执行 `VisitChanges` 约为 `0.250-0.264 ms/op, 0 B/op, 0 allocs/op`；Redis patch 约为 `0.777-0.846 ms/op, 292 KB/op, 2743 allocs/op`，Mongo update document 约为 `0.848-0.871 ms/op, 263 KB/op, 3768 allocs/op`。这说明首次创建强类型集合子 Store 和最终文档仍是主要分配来源，保留状态的同步遍历不会在每轮 Flush 额外分配。当前不增加按估算字节拒绝或收敛的配置；只有真实服务证明 Store 状态树的常驻内存无法由 `MaxRootChanges`、`MaxPendingRoots` 和进程 Heap 观测解释时，才重新评审 byte 预算。
-
-同日继续把生成 GD 的三个常驻运行时字段收敛为一个懒分配 sidecar。使用 txgame 的真实生成结构与参考工程做 `unsafe.Sizeof` 对比：
-
-| 结构 | sidecar 前 | sidecar 后 | 参考工程 |
-| --- | ---: | ---: | ---: |
-| `GDRole` | 1048 B | 936 B | 936 B |
-| `GDItem` | 56 B | 40 B | 40 B |
-| 根 Store | 448 B | 448 B | 1440 B |
-| Items 集合 Store | 32 B | 32 B | 32 B |
-| Item Store | 56 B | 56 B | 64 B |
-
-`GDRole` 的收益大于单个对象尾部减少的 16 B，是因为它按值包含的多个生成结构也同时缩小，收益会递归累积。sidecar 本身在真正进入 Store/snapshot 模式时按需分配；表格只比较结构体常驻内联尺寸。相同 benchmark 下，1024 个不同 map key 的当前结果约为 `0.44-0.45 ms/op, 0.855 MB/op`，成功构建文档并清理约为 `0.41-0.43 ms/op, 0.788 MB/op`，相对 sidecar 前继续减少约 15-17 KB/op，耗时保持同一量级。
-
-sidecar 不是无条件收益：首次直接修改一个独立 GD 会多一次小对象分配。txgame 的真实 `GDRole` 首次标脏从约 `1600 B/op, 2 allocs/op` 变为 `1496 B/op, 3 allocs/op`，总字节减少且耗时处于同一波动区间；极小的独立 `GDItem` 从约 `128 B/op, 2 allocs/op` 变为 `136 B/op, 3 allocs/op`。集合中的生成对象子字段通过路径子 Store 修改，不会为每个值绑定 sidecar，因此大集合基准仍然净受益。`BenchmarkGeneratedStoreDirtyRuntime/FirstScalarWrite` 用于持续观察首次写入成本；若未来真实业务证明大量微型 GD 都作为独立根对象高频首次写入，再评估专用 fast path，不能以增加所有纯数据对象常驻尺寸为代价提前优化。
+性能回归使用 txgen 的 `BenchmarkGeneratedStoreDirtyRuntime` 与 `BenchmarkGeneratedStoreLeafChanges1024`；当前文档不保留旧物理布局对照或生成源码体积阈值。
 
 ### StoreView 生成状态树
 
@@ -1162,17 +1109,7 @@ StoreView 不使用通用完整 `Path` 集合。txgen 已知每个 GD 类型的�
 
 `Record`、`Contains`、`Capture` 和 `Merge` 都直接访问这些强类型槽位。同位置后写覆盖、父路径吸收和 Clear/Delete 后子写提升在生成状态树内完成；`VisitChanges` 才递归组合定长 `change.Path` 并交给输出边界。整数 map key 从公开 `PathKey` 转回实际 Go key 前必须做无损范围校验，例如 `math.MaxInt64` 不能截断成 `int32(-1)` 后误命中已有状态或业务值。
 
-2026-08-22 在 x86_64 macOS、Go 1.26.5 上，以 16 批、每批 64 个不同 map key 的真实生成 `GDRole` 回测：
-
-| 场景 | 通用完整路径状态 | txgen 生成状态树 | 结果 |
-| --- | ---: | ---: | --- |
-| 先创建 16 份 StoreView、依次 Merge、最后构建文档 | 约 `2.020-2.202 ms/op, 1.866 MB/op, 6794 allocs/op` | 约 `1.34-1.53 ms/op, 0.694 MB/op, 6645 allocs/op` | 分配字节降低约 63%，耗时降低约 24%-39% |
-| 同一所有权区间直接 Capture、最后构建文档 | 约 `1.340-1.377 ms/op, 1.267 MB/op, 5323 allocs/op` | 约 `1.02-1.18 ms/op, 0.537 MB/op, 5309 allocs/op` | 分配字节降低约 58%，耗时降低约 12%-26% |
-| 1024 个已存在 map 元素只捕获叶子 `Quantity` | 无同版历史基线 | 约 `1.65-1.80 ms/op, 0.755 MB/op, 9156 allocs/op` | 持续观察深层叶子复制和最终文档成本 |
-
-分配次数只小幅下降，说明剩余小对象主要来自稀疏值复制和最终 `change.Document` 的字符串路径/map，而不再来自每条变更保存完整 `Path`。基准由 `BenchmarkGeneratedStoreDirtyRuntime/CaptureMergeAndBuildFrameDocument`、`CaptureAndBuildFrameDocument` 和 `CaptureLeafAndBuildFrameDocument` 持续回归。
-
-生成状态树需要保留类型专属热路径，但不意味着每个 Store 都应复制完整基础设施。2026-08-22 将集合状态、字段 undo、加载位图和读取装配下沉到生成包基础层后，txgame 真实 `GDRoleStore.go` 从 `29,434` 行、约 `723 KB` 降至 `21,663` 行、约 `584 KB`；全部 `*Store.go` 加 `type_registry.go` 从 `411,893` 行、约 `10.16 MB` 降至 `303,451` 行、约 `8.22 MB`，总行数减少约 `26.3%`，源码字节减少约 `19.1%`。固定 txgen fixture 的 `GDRoleStore.go` 受 `record/copy/visit` 和嵌套 resolve 静态展开保护，设置了 `4,550` 行和 `119.5 KB` 的体积回归上限。运行时分配次数保持不变，捕获、合并和文档构建仍以 `BenchmarkGeneratedStoreDirtyRuntime` 持续校验。
+集合状态、字段 undo、加载位图和读取装配由生成包基础层复用，类型专属 record/copy/visit 路径保持静态展开。保留捕获、合并和文档构建基准，不以生成源码行数或字节数限制实现。
 
 ## 存储抽象
 
@@ -1285,8 +1222,7 @@ GD 读写和业务原生命令共用连接，但保持数据职责边界；业�
 | 云 Redis / 运维 | 内部节点选择、槽位分布、扩缩容、数据迁移、主从切换、容量与备份策略 |
 
 tx 不再提供 Redis 的区间或取模分片，不接受 URI 数组及 `min/max/shards`。连接 URI 变更只是连接目标变更，
-不代表数据已经迁移；更换独立集群前，由部署方使用云迁移工具完成数据迁移与切换验证。旧的分片部署不能直接
-删除数组后上线，必须先完成迁移。本地示例原本只有一个 endpoint，此次只改配置形态，Key 和数据位置不变。
+不代表数据已经迁移；更换独立集群前，由部署方使用云迁移工具完成数据迁移与切换验证。配置切换不能代替数据迁移，部署前必须核对 Key 与数据位置。
 
 ### 云服务接入要求
 
@@ -1893,28 +1829,9 @@ T2 [PRefreshGuild -> PLoadOwner] --guild:7----> T1
 
 框架不会跨 goroutine 强制回滚另一个正在执行的根事务。当前请求者只让自己的根事务失败，符合 Go 同步调用和局部 undo 的所有权边界。Procedure 如果捕获 `tx.Call` 的死锁错误，根事务仍被标记为必须回滚；业务应立即返回该错误，不应继续外部副作用。
 
-### 基准结论
+### 性能验证
 
-2026-08-26 在 Intel i9-9880H、darwin/amd64、Go 1.26 上对改造前后各运行多轮。无竞争路径保持零分配并有所下降；等待图仅在争用时参与：
-
-| 场景 | 改造前 | 等待图版本 | 分配 |
-|---|---:|---:|---:|
-| 单 Key 串行 | 267.7-286.1 ns/op | 221.0-264.3 ns/op | 0 allocs/op |
-| 四 Key 串行 | 1.049-1.115 us/op | 0.890-1.082 us/op | 0 allocs/op |
-| 离散 Key 并发 | 50.0-70.1 ns/op | 48.0-58.1 ns/op | 0 allocs/op |
-| 同 Key 高争用 | 447.8-455.5 ns/op | 0.898-1.061 us/op | 0 allocs/op |
-
-同 Key 极限争用约为旧实现的 2.0-2.4 倍，代价来自 owner、FIFO 公平唤醒和等待边维护；这条基准只测锁的取得与释放，没有任何业务处理，因此放大了协调成本。争用路径仍严格串行且稳定零分配。无环等待边的纯算法约 56-67 ns/op、零分配；确认两事务环约 182-209 ns/op、216 B/op、3 allocs/op，分配只用于完整诊断链。根 Procedure 约 1.28-1.42 us/op、1160 B/op、9 allocs/op；child 复用根锁约 1.44-1.70 us/op、1192 B/op、10 allocs/op；child 新增一把动态锁约 2.42-2.66 us/op、1481 B/op、14 allocs/op。第一版接受热点冲突路径的显式成本，以换取动态 Procedure 和完整可诊断等待环；后续只有真实服务 profile 证明同 Key 锁协调占主要耗时，才优化 waiter 协调，不能删除完整等待链。
-
-数字属于特定机器和 revision，后续判断应重跑：
-
-```bash
-go test ./modules/txn -run '^$' \
-  -bench '^(BenchmarkLockTableAcquireRelease|BenchmarkWithLocks|BenchmarkProcedureCall|BenchmarkWaitGraph)$' \
-  -benchmem -count=5
-```
-
-不要为了优化注册表而退回“哈希碰撞共用业务锁”的固定 stripe 方案。
+锁基准覆盖无竞争、离散 key 并发、同 key 争用、动态锁和等待环。owner、FIFO 公平唤醒及等待图是当前锁契约的一部分，不能为改善争用数字而移除。只有实际业务 profile 显示瓶颈时才调整分片或索引结构；复测入口为 `modules/txn/lock_benchmark_test.go`。
 
 ## 有状态事务与缓存运行时
 
@@ -2106,11 +2023,11 @@ Actor 运行时的状态协调不能自动替代业务最终持久化，刷盘�
 
 ### 总体拓扑
 
-当前实现的整合收益、业务 API 与高级 SPI 边界见 [NATS 迁移收口说明](audits/2026-09-20-nats-integration-closeout.md)；以下拓扑仍描述完成态，不混入阶段进度。
+以下拓扑描述当前服务分层和通信职责。
 
 架构以两条通信路径组织：基础会话层使用直连 gRPC 承接所有业务服务的高流量上行、邮箱接纳确认和会话下行；实体扩展层使用 Core NATS 承接按实体身份寻址的 RPC，并以 JetStream 可靠任务扩展异常后仍需消费的业务。两者共享 tx 的实体归属、加载准入和本地宿主，不让业务处理传输主题或实例交接细节。
 
-本节描述完成态分层拓扑，不记录建设进度；实现与验收状态单独维护在[归属接线计划](superpowers/plans/2026-09-13-actor-ownership-integration.md)。
+完整集群与容量验收由 txgame/txclient、txgameslg/txclientslg 的应用入口承担。
 
 ![tx 游戏服务集群双通信层拓扑](images/server-topology.png)
 
@@ -2233,11 +2150,6 @@ Runtime 为每轮 Watch 创建独立快照写入入口。观察到任一 Watch �
 地址，避免高频路由为防御性复制切片或地址表而分配内存。命名公开地址只属于低频实例发现元数据，由项目定义名称和用途；
 `ServiceDirectory` 在写入和返回完整实例时复制地址表，不能把可变 map 所有权泄露给调用方。`SlotDirectory` 与
 `ServiceDirectory` 的纯读取路径使用读锁；只有服务轮询游标、快照替换和失效操作使用写锁，避免并发 Agent 请求被互相串行化。
-
-2026-08-27 使用 Go 1.27.0 在 x86_64 macOS 上运行缓存槽位解析基准：单线程
-`BenchmarkSlotRouterCachedResolve` 为 `110.7-115.4 ns/op`；16 路并行
-`BenchmarkSlotRouterCachedResolveParallel` 从互斥读写时的 `175.0-201.1 ns/op` 降至
-`50.3-59.0 ns/op`。两组结果均为 `0 B/op, 0 allocs/op`，且底层持久 Store 的读取次数为 0。
 
 ### rpc
 
@@ -2506,20 +2418,7 @@ Actor；普通心跳命令经过 RoleActor mailbox 即可续期。心跳不读�
 
 钝化不提高消息可靠级别。正在卸载的激活拒绝新准入，清理完成后才可重建；TellAccepted 仅确认 NATS 到达，不能检测业务已卸载或不允许重建。需要业务结果时使用 Call，不自动重试结果未知的请求。
 
-2026-08-29 命名迁移后的 EntityCache
-串行命中在关闭 idle 淘汰时为 `19.37-19.81 ns/op`，启用 idle 淘汰时为 `96.95-100.2 ns/op`；同一预热 key 的
-16 路并行命中为 `49.89-50.33 ns/op`，三者均为 `0 B/op, 0 allocs/op`。该组数据是 Otter 接入前基线；接入后的
-同机 10 次 A/B 中，默认 `idleTimeout=0s` 的串行命中由中位 `20.46 ns/op` 降至 `19.59 ns/op`（`-4.23%`），
-16 路并行命中由 `89.26 ns/op` 降至 `57.60 ns/op`（`-35.47%`）；可选 access expiry 命中由 `107.3 ns/op`
-升至 `175.3 ns/op`（`+63.30%`）。三项继续保持 `0 B/op, 0 allocs/op`，几何均值变化 `+0.30%`。profile 显示
-可选 expiry 的额外开销来自每次访问更新时间和 Otter maintenance 调度；默认关闭该策略，不把该成本施加给容量工作集。
-
-2026-08-25 使用 Go 1.26.5 在 x86_64 macOS 上运行 `BenchmarkPendingCallsRoundTrip`，单次本地
-`add -> resolve -> Await` 约为 `0.78-0.86 us/op, 408 B/op, 6 allocs/op`。该基线包含 Future、完成通知、
-`context.AfterFunc` 和结果只读复制，不包含 Actor Remote 网络 I/O。当前不为这条低于网络开销的边界引入对象池；
-只有实际 profile 证明 pending 生命周期成为瓶颈时，才评审更复杂的复用方案。
-
-ProtoActor 后端及其性能对照已退役；当前实体宿主使用稳定归属、直连上行与 Core NATS Actor RPC。
+EntityCache 的 access expiry 会增加每次访问的更新时间与维护调度成本，默认关闭。是否启用由应用的空闲回收需求决定；不根据单机历史跑分承诺生产容量。
 
 ### control 与滚动发布
 
@@ -2646,7 +2545,7 @@ Actor 生产后端不再启动 ProtoActor，也不保留独立 Gossip 日志级�
 
 ### 必跑验证
 
-Actor 测试按正式实现的职责放置，不再保留 `internal/actortrial` 试验包：
+框架测试按实现职责放置；应用集群验收不替代以下故障与并发边界：
 
 | 位置 | 覆盖边界 |
 | --- | --- |
@@ -2655,7 +2554,7 @@ Actor 测试按正式实现的职责放置，不再保留 `internal/actortrial` 
 | `modules/discovery` | 归属 CAS、交接结果未知及并发交接唯一获胜者 |
 | `internal/framework` | 正式 Server 排水、真实事务写回后的交接、etcd 租约失效关闭 |
 
-旧 Agent 完成 ACK 适配、独立 SlotHost 控制协议及新旧试验传输互通用例已删除；历史审计中的路径和数据仅代表当时版本。测试环境变量暂沿用现有入口，可在本机 NATS、etcd、Redis 上运行：
+测试可通过以下环境变量在专用 NATS、etcd、Redis 上运行；变量名是现有测试入口，不表示还保留试验后端：
 
 ```bash
 TX_ACTORTRIAL_NATS_URL=nats://127.0.0.1:4222 \
@@ -2716,7 +2615,7 @@ go tool pprof /tmp/tx-mem.pprof
 - README 记录公共 API、配置、使用示例和调用方契约。
 - 本文记录模块职责、内部算法、并发模型和技术选型。
 - 实施计划只记录尚未完成的任务和待决策项，不复制稳定契约，也不保存已完成阶段的操作清单。
-- 审计标准记录检查方法，审计报告记录特定 revision 的证据。
+- 审计标准记录检查方法；验收报告只保留现行方案必要的环境、版本、指标与限制，中间过程由 Git 历史追溯。
 - 已淘汰方案不写入 README；如果理解当前设计必须知道取舍，只在本文简要说明原因。
 - 行为变更必须同时检查 README 和本文是否需要更新。
 - 文档、GoDoc、代码注释和模板注释必须复用“限界上下文与固定术语”中的名称；同一个词跨上下文有不同含义时必须补充限定词。

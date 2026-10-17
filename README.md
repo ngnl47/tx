@@ -8,7 +8,7 @@
 
 本文是 `tx` 使用者的主手册，记录当前已经实现并验证的公共能力、配置方式和业务示例。框架维护者需要理解内部数据结构、并发模型、状态机或技术选型时，请阅读 [设计文档](docs/design.md)；当前进度和后续任务见 [实施计划](docs/IMPLEMENTATION_PLAN.md)，架构质量要求见 [审计标准](docs/architecture_audit_standard.md)。
 
-README 回答“怎么使用”，不记录施工步骤、逐轮进度或本机验收流水账。设计文档回答“为什么这样设计”，实施计划回答“接下来做什么”；阶段验收证据保存在 `docs/audits/`。
+README 回答“怎么使用”，不记录施工步骤、逐轮进度或本机验收流水账。设计文档回答“为什么这样设计”，实施计划回答“接下来做什么”；当前方案的容量验收证据保存在 `docs/audits/`，中间过程由 Git 历史追溯。
 
 ## 阅读路径
 
@@ -116,7 +116,7 @@ Service 构造/启动、Setup、CMod Validate/Start 的同步回调边界把该�
 Context 仅在装配回调内取得依赖，不应保存到 Handler 或传入后台 goroutine；绕过框架直接调用 Factory 时，能力错误会直接 panic。
 配置、I/O、业务构造继续返回并处理 error。工厂在返回前创建但尚未交给框架的私有资源，仍须用 defer 在失败时释放；框架无法清理未交接的对象。
 
-接口迁移：`actors, err := runtime.CModActor()` 改为 `actors := runtime.CModActor()`，测试桩同步改成单返回值；
+`runtime.CModActor()` 直接返回已声明的 Actor 能力。
 Ant 常规槽位路由使用 `runtime.CModSlotResolver()`，底层 `SlotReader`、`NewSlotResolver` 和高级 `SlotStore/SlotRouter` 保留。
 知道目标服务时使用 `ResolveServiceSlot(ctx, service, slotID)`，同时检查 owner 在线且承载该服务；不匹配返回 `ErrSlotRuntimeUnavailable`，不自动改派。`ResolveSlot` 保留仅按槽位查询的高级入口。内置目录在本地快照内完成检查，自定义 Directory 无需实现额外接口。
 
@@ -416,8 +416,7 @@ TX_ETCD_ENDPOINT=127.0.0.1:2379 \
 
 仅带 `-tags=txbench` 的验收构建启用存储 I/O 采集；普通构建不安装 Redis 计时钩子或 Mongo 统计回调，`Runtime.IOStats()` 返回空快照。
 验收构建的 `Runtime.IOStats()` 提供累计驱动快照，按固定 Redis/Mongo 操作类别统计调用数、命令数、失败数和耗时，
-不记录 key 或业务数据。开启控制端口后，可通过 `StorageIOService.Snapshot` 或 `txctl storage-io` 读取；统计口径、重试与 Pipeline 边界见
-[热点路径 I/O 检查](docs/audits/2026-09-08-hot-path-io.md)。
+Redis 单次调用计一次 Calls，Pipeline 计一次 Calls 和其中的命令数；Mongo 按驱动完成事件统计，二者不能直接比较。最大耗时是累计值，不能作差当作窗口最大值；这些指标不是业务请求数，也不记录 key 或业务数据。开启控制端口后，可通过 `StorageIOService.Snapshot` 或 `txctl storage-io` 读取；应用侧采样与统计口径见 [集群存储 I/O 说明](../txgame/server/internal/clusterkit/STORAGE_IO.md)。
 
 `modules/msgq` 以 `SessionID` 作为精确邮箱主键，负责
 `SessionID -> (RoleID, SessionID, ConnectionID, InstanceID)` 的短期 binding 与 owner 解析；同时维护
@@ -4335,6 +4334,4 @@ err := publisher.Publish(ctx,
 
 R3 隔离测试进一步覆盖单节点故障期间的新发布和耗尽恢复、失去多数派时不能成功确认、故障节点重返后的副本追平。该证据来自同机三容器，不替代跨宿主容灾或生产负载验收。
 
-独立任务性能入口为 `TestJetStreamTaskBaseline`，只有设置 `TX_TASK_BASELINE=1` 才启用。它复用正式发布与 Actor 消费适配，采集不进入生产路径；准备条件、R1/R3 数据及适用范围见 [任务链路基线](docs/audits/2026-09-20-jetstream-task-baseline.md)。
-
-该入口设置 `TX_TASK_RATE` 后按固定计划到达率运行 5 秒窗口，报告计划到达至完成延迟、发布调度落后、窗口末未完成数及排空时间；见 [固定到达率记录](docs/audits/2026-09-20-jetstream-task-arrival.md)。它保留未能准时发出的任务，不将本地等待隐藏为较低实际到达率。
+完整集群吞吐、延迟及客户端负载由 txgame/txclient 和 txgameslg/txclientslg 的集群工具验收。tx 保留传输小型基准、任务恢复和存储一致性测试，不维护阶段性任务档位采样入口。
