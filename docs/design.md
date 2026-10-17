@@ -2322,6 +2322,9 @@ Actor protobuf 在跨进程投递时保留完整身份和 `UpSeq`；内部 Actor
 
 `Dispatcher` 通过直连 `Enqueue` 将上行提交给目标实例的长流后返回 `AcceptedUpSeq`；该值只表示本地传输提交成功，不是远端 Actor 邮箱接纳或业务执行成功的回执，也不回传客户端。Game/Actor 后续通过 `SendRole` 向角色会话扇出普通响应，请求级错误通过 `SendSession` 精确发布。两者进入本地有界发布队列后返回，不等待 MsgQ 逐项入队确认；新 SessionID 不继承旧会话下行。
 
+正常交接中旧实例 Draining 与分区晋升之间允许短暂无可用路由。直连 `Enqueue` 只在尚未调用传输且路由返回 `ErrSlotRuntimeUnavailable` 时，在调用方既有 deadline 内每 10ms 重读路由；正式路径读取 Watch 内存缓存，不新增逐消息 etcd 查询。Agent 已有默认 5 秒期限，等待期间保持当前连接的处理顺序。无期限调用不等待；取消、超时及其他错误返回失败。进入传输后的错误不触发寻址重试或业务补发，也不提前晋升归属或跳过旧实例最终写回。
+
+
 Agent 核心不依赖项目生成协议，因此不会自行构造业务错误包，也不负责项目 HTTP 路由、JSON/BON 绑定、自动重试或
 通用 HTTP Router。项目 Game/Actor 适配层负责把 Handler 错误转换为生成的
 `System_Error{RequestSeq, Code, Message}` 并直接发布到发起 Session；这类结果不会终止连接。

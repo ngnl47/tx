@@ -1420,7 +1420,7 @@ Key 的编码由项目统一约定，tx 不推断整数或业务分组。两个�
 
 `Tell` 冷寻址由 tx 提供有限查询期限。`TellAccepted`、`CallFuture`、`Call` 使用带 deadline 的 Context；取消等待不撤销业务。失败不自动改派或重投。Core NATS 不保证异常后的必达，JetStream 可靠任务仍属于后续建设。
 
-业务 Receive 接收公开 `actor.Delivery`，Call 返回 `actor.Result` 或 error，不需要手动解码内部 protobuf 或调用 Respond。普通成功结果需有非空 `MessageType`；Agent 上行通过邮箱接纳确认，不等待 Actor 业务结果。业务错误可返回 `actor.NewCallError(code, err)`。远程结果等待表有界，超时、响应和连接关闭都会清理等待项；本地调用受实体邮箱容量限制。
+业务 Receive 接收公开 `actor.Delivery`，Call 返回 `actor.Result` 或 error，不需要手动解码内部 protobuf 或调用 Respond。普通成功结果需有非空 `MessageType`；Agent 上行仅确认本地流提交，不等待远端邮箱接纳或 Actor 业务结果。业务错误可返回 `actor.NewCallError(code, err)`。远程结果等待表有界，超时、响应和连接关闭都会清理等待项；本地调用受实体邮箱容量限制。
 
 ```go
 dispatcher, err := txagent.NewActorDispatcher(txagent.ActorDispatcherOptions{
@@ -1433,6 +1433,8 @@ dispatcher, err := txagent.NewActorDispatcher(txagent.ActorDispatcherOptions{
 ```
 
 Agent 校验可信会话和 Seq/Ack，Resolver 只解析业务身份；tx 统一查找归属并通过共享 gRPC 直达目标，不经 NATS 或 Game 中转。Game、SLGWorld、FightRoom 等业务下行均直接发布到 owner MsgQ，再由 Agent 拉取发送客户端。`msgq` 是会话邮箱，不是 Actor RPC 中继。
+
+`CModActorDirect().Enqueue` 在调用传输之前遇到 `discovery.ErrSlotRuntimeUnavailable` 时，若 Context 有 deadline，会每 10ms 重读路由，等待正常交接的归属更新；Agent 沿用已有默认 5 秒调用期限。同一连接的当前消息等待完成后才处理后续消息。正常路径不创建计时器；无 deadline 的调用仍立即返回路由错误。取消、期限耗尽或其他路由错误正常返回，不改派归属；一旦调用传输，任何发送错误都直接返回，不重投执行结果未知的业务。这不是滚动发布期间所有请求必达的承诺。
 
 关闸后不再接受新业务；已接受的加载、排队、执行和卸载工作继续完成，随后完成后台任务与最终持久化，成功后才释放运行时资源。成员离线不自动删除稳定 assignment；正常滚动发布使用 PrepareHandoff 确认收尾后逐槽 CAS，再停止旧实例。槽位与容量高级 SPI 保留在相应模块，业务不持有宿主关闭权。
 
