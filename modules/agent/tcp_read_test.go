@@ -14,8 +14,8 @@ func TestTCPTransportReadKeepsEarlierPayload(t *testing.T) {
 	defer server.Close()
 	defer client.Close()
 	frames := []Frame{
-		{Kind: FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("first-payload")},
-		{Kind: FrameUpMsg, Seq: 2, CommandID: 1, Payload: []byte("second-payload")},
+		{Kind: FrameUpMsg, Seq: 1, CommandHash: 1, Payload: []byte("first-payload")},
+		{Kind: FrameUpMsg, Seq: 2, CommandHash: 1, Payload: []byte("second-payload")},
 	}
 	writeErr := make(chan error, 1)
 	go func() {
@@ -52,7 +52,7 @@ func TestTCPTransportReadKeepsEarlierPayload(t *testing.T) {
 }
 
 func BenchmarkTCPTransportRead(b *testing.B) {
-	encoded, err := EncodeFrame(Frame{Kind: FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("ping")}, 1024)
+	encoded, err := EncodeFrame(Frame{Kind: FrameUpMsg, Seq: 1, CommandHash: 1, Payload: []byte("ping")}, 1024)
 	if err != nil {
 		b.Fatal(err)
 	}

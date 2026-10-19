@@ -490,7 +490,7 @@ func deliveryToProto(delivery Delivery) (*rpcpb.Delivery, error) {
 	return &rpcpb.Delivery{
 		Route:       route,
 		MessageType: delivery.MessageType,
-		CommandId:   delivery.CommandID,
+		CommandHash: delivery.CommandHash,
 		Payload:     delivery.Payload,
 	}, nil
 }

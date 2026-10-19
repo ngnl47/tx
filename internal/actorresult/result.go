@@ -26,7 +26,7 @@ type Result struct {
 	// Completed 只表示处理成功且无响应体，不是上行或邮箱接纳确认。
 	Completed   bool
 	MessageType string
-	CommandID   uint64
+	CommandHash uint32
 	Payload     []byte
 }
 
@@ -94,8 +94,8 @@ func FromProto(value *actorpb.Result, err error) (Result, error) {
 	if value == nil {
 		return Result{}, ErrInvalidResponse
 	}
-	return Result{Completed: value.Completed, MessageType: value.MessageType, CommandID: value.CommandId, Payload: value.Payload}, nil
+	return Result{Completed: value.Completed, MessageType: value.MessageType, CommandHash: value.CommandHash, Payload: value.Payload}, nil
 }
 func ToProto(result Result) *actorpb.Result {
-	return &actorpb.Result{Completed: result.Completed, MessageType: result.MessageType, CommandId: result.CommandID, Payload: result.Payload}
+	return &actorpb.Result{Completed: result.Completed, MessageType: result.MessageType, CommandHash: result.CommandHash, Payload: result.Payload}
 }

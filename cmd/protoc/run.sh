@@ -21,7 +21,7 @@ usage() {
 
 发布流程可只传入需要导出的包名，从而跳过其他 proto 包。
 环境变量:
-  PROTOC  指定 protoc 可执行文件。
+  PROTOC  指定 protoc 可执行文件，必须报告 libprotoc 36.0（生成头为 v7.36.0）。
   GO_BIN  指定用于定位 protoc 插件和读取模块名的 go 可执行文件。
 EOF
 }
@@ -47,6 +47,14 @@ else
 fi
 if [[ -z "$protoc_bin" || ! -x "$protoc_bin" ]]; then
     printf '找不到 protoc；请设置 PROTOC 或将它加入 PATH。\n' >&2
+    exit 1
+fi
+
+required_protoc_version="libprotoc 36.0"
+protoc_version="$("$protoc_bin" --version)"
+if [[ "$protoc_version" != "$required_protoc_version" ]]; then
+    printf 'protoc 版本不匹配：要求 %s（生成头为 v7.36.0），实际为 %s；请通过 PROTOC 指定正确版本。\n' \
+        "$required_protoc_version" "$protoc_version" >&2
     exit 1
 fi
 

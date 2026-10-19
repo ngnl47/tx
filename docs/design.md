@@ -2174,6 +2174,16 @@ MailboxStream 的每 Session 接收缓冲有界，慢 Session 缓冲溢出时结
 注册 protobuf service，全部注册成功后启动 Host，并把实际 endpoint 发布到服务发现。
 同进程的 msgq 与普通 RPC 因此可以共享 endpoint，但保持不同 protobuf service；任一服务不得自行关闭共享 listener。
 
+### 命令哈希与正文边界
+
+命令标识由 txgen 对命令类型名原样 UTF-8 字节计算 **FNV-1a 32 位哈希**，大小写敏感。请求和响应共用同一个哈希空间；生成前检查所有命令，发现碰撞或保留值 `0` 时失败并报告命令名，由开发者重命名新命令后重新生成。客户端和服务端使用生成常量，不在运行时计算哈希。
+
+开发者维护 cmd 类型及 `@cmdRoute` 注解；txgen 自动生成 Go `CmdDescriptors` / `CmdDescriptorsByHash` 与 TypeScript `CommandSchemas` / `CommandNamesByHash`。生成描述表随前后端代码发布，禁止手改。不再维护编号池、服务号段、退休清单或清池入口。多人分支合并后须重新生成整套协议，以检测合并后的碰撞；检查范围是本次项目输入，不提供跨版本历史碰撞保证。命令重命名会改变哈希，属于协议变更。
+
+`toService`、`actor`、`actorKey` 是描述表内的路由元数据，不参与哈希。Agent 先按帧头哈希查描述表，再选择目标服务和 Actor，不按哈希数值区间路由，也不解析 BON。
+
+Frame v4 的 32 字节固定头以 `uint32 CommandHash` 标识上下行业务命令，控制帧为零。BON 仅编码正文。MsgQ 的通用邮箱仍保存不透明 `[]byte`；应用通过生成的 `EncodeDownMessage` 写入 `[4 字节大端哈希][BON]`，Agent 解包后将哈希放入帧头。内部 RPC 的 Delivery/Result 独立携带 CommandHash，不在正文重复命令名。此版本不兼容旧帧、旧邮箱编码及旧 Actor/RPC protobuf 字段。升级前须让旧版消费完已有持久化任务，结束旧会话，再同步部署集群节点与前后端并建立新会话；不提供新旧协议混跑或旧消息迁移。
+
 ### BON 解码边界
 
 BON 的无符号长度使用 7-bit 变长整数，Go runtime 与 TypeScript 客户端共同锁定同一 wire format。多字节编码必须
@@ -2182,8 +2192,8 @@ BON 的无符号长度使用 7-bit 变长整数，Go runtime 与 TypeScript 客�
 解码器面对客户端输入时先验证物理下界，再分配动态容器：数组每个元素至少需要一个类型字节，文档每个成员至少需要
 两字节字符串键和一字节值类型。声明数量超过剩余载荷可表达的上限时立即失败。容器递归深度固定限制为 64，防止小型
 恶意载荷通过连续单元素容器消耗运行时栈；该限制独立于 Agent 的整帧字节上限。两端必须用相同边界测试同步演进。
-TypeScript reader 使用无原型字典承载动态文档，并只从自有属性读取命令信封和 schema 字段；不能让动态 key 改写
-临时对象原型或用继承属性绕过信封校验。
+TypeScript reader 使用无原型字典承载动态文档，并只从自有属性读取schema 字段；不能让动态 key 改写
+临时对象原型或用继承属性绕过字段校验。
 
 通用 `DeliveryService` 在同一个 gRPC server 中只能注册一次。聚合多个业务服务的进程应由项目提供一个进程级
 Receiver，再按稳定消息元数据分发，不能让每个服务重复注册同名协议。Actor Remote 继续使用专用入口；Agent Session
@@ -2298,7 +2308,7 @@ MsgQ 邮箱并允许恢复；`TerminateSession` 使用登记时保存的完整 S
 非根路径在请求级 admission 通过后才进入项目 `HTTPHandler`；未配置 `HTTPHandler` 返回 `404`，排水或停止后返回 `503`。
 如果未配置 `WebSocketListen`，当前阶段不会创建“纯 HTTP” Agent 服务。
 
-生成的 `CmdDescriptor` 提供静态 CommandID、目标服务、Actor kind 和 route key 类型；项目 resolver 根据认证身份解析 Kind/Key，实例归属由 tx 统一解析。
+生成的 `CmdDescriptor` 提供静态 CommandHash、目标服务、Actor kind 和 route key 类型；项目 resolver 根据认证身份解析 Kind/Key，实例归属由 tx 统一解析。
 
 连接入口可以是真实客户端，也可以由项目扩展为本地驱动或旁路模拟连接。tx 提供基础网络 Agent，同时保持 dispatcher 接口开放。
 
@@ -2317,7 +2327,7 @@ Bee 或 Ant Context，使用 CModActorDirect 完成直连；稳定分区或业�
 不能信任请求正文中自报的管理员或旁路标志。业务不需要维护主、副会话关系。
 
 通用 Actor Dispatcher 在调用 Messenger 前以 `DispatchRequest` 的可信 `SessionIdentity` 覆盖 Delivery 身份。
-项目 Actor resolver 只负责目标、消息类型、命令号、路由键和载荷，不能伪造身份。
+项目 Actor resolver 只负责目标、消息类型、命令哈希、路由键和载荷，不能伪造身份。
 Actor protobuf 保留完整身份；内部调用也可省略身份。UpSeq 不进入 Delivery、HandlerContext 或 MsgQ。
 
 `Dispatcher` 通过直连 `Enqueue` 将上行提交给目标实例的长流后返回 error；nil 只表示本地传输提交成功，不是远端 Actor 邮箱接纳或业务执行成功的回执，也不回传客户端。Game/Actor 后续通过 `SendRole` 向角色会话扇出普通响应，请求级错误通过 `SendSession` 精确发布。两者进入本地有界发布队列后返回，不等待 MsgQ 逐项入队确认；新 SessionID 不继承旧会话下行。
@@ -2385,7 +2395,7 @@ ServiceSpec.ActorKinds 构成应用目录，Kind 名称应用内唯一；仅选�
 
 ### Actor mailbox
 
-Tell 完成寻址后仅确认本地投递；TellAccepted 确认到达当前连接的 NATS 服务端，不确认持久化或目标收取。CallFuture 返回异步 Future，Call 同步等待相同结果。等待超时不撤销已接受业务，也不自动重投。普通业务结果必须有 MessageType；无响应体的成功处理使用 `Result.Completed=true`，不得同时携带 MessageType、CommandID 或 Payload；Agent 上行通过直连 `CallStream` 单向投递，不等待逐项邮箱确认，业务下行独立走 MsgQ。
+Tell 完成寻址后仅确认本地投递；TellAccepted 确认到达当前连接的 NATS 服务端，不确认持久化或目标收取。CallFuture 返回异步 Future，Call 同步等待相同结果。等待超时不撤销已接受业务，也不自动重投。普通业务结果必须有 MessageType；无响应体的成功处理使用 `Result.Completed=true`，不得同时携带 MessageType、CommandHash 或 Payload；Agent 上行通过直连 `CallStream` 单向投递，不等待逐项邮箱确认，业务下行独立走 MsgQ。
 
 有界邮箱将准入与生命周期登记放在同一边界；关闸后拒绝新消息，已接受的初始化、排队和处理继续完成。远端错误经 Result 协议传播，普通 Tell 不增加执行回执。远程 pending 由响应、Context 到期或连接关闭清理，不为每个 Future 常驻等待 goroutine。Agent 先使用归属目录检查 running 状态，不再维护依赖 PID 的第二份短期排水缓存。
 

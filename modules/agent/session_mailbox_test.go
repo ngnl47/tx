@@ -13,7 +13,7 @@ import (
 
 func TestAgentUsesMailboxStreamForAckAndDownlink(t *testing.T) {
 	client := &streamOnlySessionClient{down: make(chan msgq.FetchResult, 1), acks: make(chan int64, 4)}
-	client.down <- msgq.FetchResult{Seq: 1, Payload: []byte("down")}
+	client.down <- msgq.FetchResult{Seq: 1, Payload: testDownPacket("down")}
 	var dispatched atomic.Int64
 	var connectionID atomic.Int64
 	server, err := NewServer(ServerOptions{
@@ -50,7 +50,7 @@ func TestAgentUsesMailboxStreamForAckAndDownlink(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("MailboxStream downlink timeout")
 	}
-	transport.reads <- Frame{Kind: FrameUpMsg, Seq: 5, Ack: 1, CommandID: 1, Payload: []byte("request")}
+	transport.reads <- Frame{Kind: FrameUpMsg, Seq: 5, Ack: 1, CommandHash: 1, Payload: []byte("request")}
 	deadline := time.After(time.Second)
 	for dispatched.Load() == 0 {
 		select {

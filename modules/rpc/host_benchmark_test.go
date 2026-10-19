@@ -199,7 +199,7 @@ func benchmarkDelivery() Delivery {
 	return Delivery{
 		Route:       ServiceRoute("benchmark-rpc"),
 		MessageType: "benchmark.delivery",
-		CommandID:   470001,
+		CommandHash: 470001,
 		Payload:     payload,
 	}
 }
@@ -211,7 +211,7 @@ type benchmarkDeliveryReceiver struct {
 func (receiver benchmarkDeliveryReceiver) Deliver(_ context.Context, delivery Delivery) error {
 	if delivery.Route != receiver.expected.Route ||
 		delivery.MessageType != receiver.expected.MessageType ||
-		delivery.CommandID != receiver.expected.CommandID ||
+		delivery.CommandHash != receiver.expected.CommandHash ||
 		!bytes.Equal(delivery.Payload, receiver.expected.Payload) {
 		return fmt.Errorf("收到的 benchmark Delivery 与预期不一致")
 	}

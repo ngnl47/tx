@@ -240,7 +240,7 @@ func TestPrepareHandoffWithEtcdRetainsLeaseUntilStop(t *testing.T) {
 			return &txactor.Behavior{
 				Receive: func(txactor.Context, any) (any, error) {
 					count++
-					return txactor.Result{MessageType: "count", CommandID: count}, nil
+					return txactor.Result{MessageType: "count", CommandHash: uint32(count)}, nil
 				},
 				OnDeactivateAfter: func(txactor.Context) error { unloaded.Add(1); return nil },
 			}, nil
@@ -312,11 +312,11 @@ func TestPrepareHandoffWithEtcdRetainsLeaseUntilStop(t *testing.T) {
 		}
 		destination := actorhost.Target{Instance: id, Identity: actorhost.Identity{Kind: "role", Key: key}}
 		result, err := remote.Call(ctx, destination, &actorpb.Delivery{MessageType: "counter"})
-		if err != nil || result.CommandId != 1 {
+		if err != nil || result.CommandHash != 1 {
 			t.Fatalf("远端 NATS 激活: %+v %v", result, err)
 		}
 		result, err = direct.Call(ctx, destination, &actorpb.Delivery{MessageType: "counter"})
-		if err != nil || result.CommandId != 2 {
+		if err != nil || result.CommandHash != 2 {
 			t.Fatalf("gRPC 未共用实体状态: %+v %v", result, err)
 		}
 	}
@@ -383,7 +383,7 @@ func TestPrepareHandoffWithEtcdRetainsLeaseUntilStop(t *testing.T) {
 	for _, key := range []string{"1", "2"} {
 		destination := actorhost.Target{Instance: targetID, Identity: actorhost.Identity{Kind: "role", Key: key}}
 		result, err := app.runtime.actorRPC.(*actorrpc.NATSTransport).Call(ctx, destination, &actorpb.Delivery{MessageType: "counter"})
-		if err != nil || result.CommandId != 1 {
+		if err != nil || result.CommandHash != 1 {
 			t.Fatalf("新 owner 懒加载失败: %+v %v", result, err)
 		}
 		destination.Instance = id

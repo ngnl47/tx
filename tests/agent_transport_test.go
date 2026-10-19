@@ -78,12 +78,12 @@ func TestTCPAgentRoundTrip(t *testing.T) {
 	}
 	defer connection.Close()
 	writeTCPAgentFrame(t, connection, txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")})
-	writeTCPAgentFrame(t, connection, txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("bon-request")})
+	writeTCPAgentFrame(t, connection, txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandHash: 1, Payload: []byte("bon-request")})
 	request := receiveDispatch(t, dispatched)
 	if string(request.Payload) != "bon-request" {
 		t.Fatalf("dispatch payload = %q", request.Payload)
 	}
-	if _, err := mailbox.PubSession(context.Background(), 99, []byte("bon-response")); err != nil {
+	if _, err := mailbox.PubSession(context.Background(), 99, testDownPacket("bon-response")); err != nil {
 		t.Fatalf("publish downMsg: %v", err)
 	}
 	assertAgentTransportFrames(t, readTCPAgentFrame(t, connection), readTCPAgentFrame(t, connection))
@@ -105,12 +105,12 @@ func TestWebSocketAgentRoundTrip(t *testing.T) {
 	}
 	defer connection.CloseNow()
 	writeWebSocketAgentFrame(t, ctx, connection, txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")})
-	writeWebSocketAgentFrame(t, ctx, connection, txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandID: 1, Payload: []byte("bon-request")})
+	writeWebSocketAgentFrame(t, ctx, connection, txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandHash: 1, Payload: []byte("bon-request")})
 	request := receiveDispatch(t, dispatched)
 	if string(request.Payload) != "bon-request" {
 		t.Fatalf("dispatch payload = %q", request.Payload)
 	}
-	if _, err := mailbox.PubSession(context.Background(), 99, []byte("bon-response")); err != nil {
+	if _, err := mailbox.PubSession(context.Background(), 99, testDownPacket("bon-response")); err != nil {
 		t.Fatalf("publish downMsg: %v", err)
 	}
 	assertAgentTransportFrames(t, readWebSocketAgentFrame(t, ctx, connection), readWebSocketAgentFrame(t, ctx, connection))

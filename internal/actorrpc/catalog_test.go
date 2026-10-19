@@ -24,7 +24,7 @@ func TestEntityRouterSelectsKindService(t *testing.T) {
 			count := uint64(0)
 			return &actorhost.Behavior{Receive: func(actorhost.Context, any) (any, error) {
 				count++
-				return &actorpb.Result{CommandId: count, MessageType: service}, nil
+				return &actorpb.Result{CommandHash: uint32(count), MessageType: service}, nil
 			}}, nil
 		})
 		local.BindSlots(service, store, nil)
@@ -56,7 +56,7 @@ func TestEntityRouterSelectsKindService(t *testing.T) {
 		id := actorhost.Identity{Kind: kind, Key: "1"}
 		for count := uint64(1); count <= 2; count++ {
 			result, err := messenger.Call(ctx, id, &actorpb.Delivery{})
-			if err != nil || result.MessageType != service || result.CommandId != count {
+			if err != nil || result.MessageType != service || result.CommandHash != uint32(count) {
 				t.Fatalf("Kind %s 路由或状态串用: %+v %v", kind, result, err)
 			}
 		}

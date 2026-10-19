@@ -37,7 +37,7 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []actorh
 		count := uint64(0)
 		return &actorhost.Behavior{Receive: func(actorhost.Context, any) (any, error) {
 			count++
-			return &actorpb.Result{MessageType: "count", CommandId: count}, nil
+			return &actorpb.Result{MessageType: "count", CommandHash: uint32(count)}, nil
 		}}, nil
 	})
 	runtime.BindSlots("a", store, mapping)
@@ -81,7 +81,7 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []actorh
 	}
 	runtime.SetActivationLimits(actorhost.ActivationLimits{})
 	cold := &RoutedCaller{Router: allocator, Transport: directSender(t, directory)}
-	if result, err := cold.Call(ctx, ids[0], &actorpb.Delivery{MessageType: "increment"}); err != nil || result.CommandId != 1 {
+	if result, err := cold.Call(ctx, ids[0], &actorpb.Delivery{MessageType: "increment"}); err != nil || result.CommandHash != 1 {
 		t.Fatalf("首次直连调用: %+v %v", result, err)
 	}
 	assignment, err := store.ResolveSlot(ctx, slot)
@@ -110,7 +110,7 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []actorh
 			if id == ids[0] {
 				want++
 			}
-			if result.CommandId != want {
+			if result.CommandHash != uint32(want) {
 				t.Fatalf("entity state mixed: %+v %+v", id, result)
 			}
 		}
@@ -147,11 +147,11 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []actorh
 		if id == ids[0] {
 			want++
 		}
-		if err != nil || result.CommandId != want {
+		if err != nil || result.CommandHash != uint32(want) {
 			t.Fatalf("四种语义未共用归属或发生重投: %+v %v", result, err)
 		}
 		result, err = current.Call(ctx, id, message)
-		if err != nil || result.CommandId != want+1 {
+		if err != nil || result.CommandHash != uint32(want+1) {
 			t.Fatalf("同步结果: %+v %v", result, err)
 		}
 	}

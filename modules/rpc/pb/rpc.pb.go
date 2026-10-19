@@ -137,7 +137,7 @@ type Delivery struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Route         *Route                 `protobuf:"bytes,1,opt,name=route,proto3" json:"route,omitempty"`
 	MessageType   string                 `protobuf:"bytes,2,opt,name=message_type,json=messageType,proto3" json:"message_type,omitempty"`
-	CommandId     uint64                 `protobuf:"varint,3,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	CommandHash   uint32                 `protobuf:"fixed32,3,opt,name=command_hash,json=commandHash,proto3" json:"command_hash,omitempty"`
 	Payload       []byte                 `protobuf:"bytes,4,opt,name=payload,proto3" json:"payload,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -187,9 +187,9 @@ func (x *Delivery) GetMessageType() string {
 	return ""
 }
 
-func (x *Delivery) GetCommandId() uint64 {
+func (x *Delivery) GetCommandHash() uint32 {
 	if x != nil {
-		return x.CommandId
+		return x.CommandHash
 	}
 	return 0
 }
@@ -204,7 +204,7 @@ func (x *Delivery) GetPayload() []byte {
 type Result struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	MessageType   string                 `protobuf:"bytes,1,opt,name=message_type,json=messageType,proto3" json:"message_type,omitempty"`
-	CommandId     uint64                 `protobuf:"varint,2,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	CommandHash   uint32                 `protobuf:"fixed32,2,opt,name=command_hash,json=commandHash,proto3" json:"command_hash,omitempty"`
 	Payload       []byte                 `protobuf:"bytes,3,opt,name=payload,proto3" json:"payload,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -247,9 +247,9 @@ func (x *Result) GetMessageType() string {
 	return ""
 }
 
-func (x *Result) GetCommandId() uint64 {
+func (x *Result) GetCommandHash() uint32 {
 	if x != nil {
-		return x.CommandId
+		return x.CommandHash
 	}
 	return 0
 }
@@ -461,17 +461,15 @@ const file_modules_rpc_proto_rpc_proto_rawDesc = "" +
 	"\x04kind\x18\x01 \x01(\x0e2\x14.tx.rpc.v1.RouteKindR\x04kind\x12\x18\n" +
 	"\aservice\x18\x02 \x01(\tR\aservice\x12\x1f\n" +
 	"\vinstance_id\x18\x03 \x01(\tR\n" +
-	"instanceId\"\x8e\x01\n" +
+	"instanceId\"\x92\x01\n" +
 	"\bDelivery\x12&\n" +
 	"\x05route\x18\x01 \x01(\v2\x10.tx.rpc.v1.RouteR\x05route\x12!\n" +
-	"\fmessage_type\x18\x02 \x01(\tR\vmessageType\x12\x1d\n" +
-	"\n" +
-	"command_id\x18\x03 \x01(\x04R\tcommandId\x12\x18\n" +
-	"\apayload\x18\x04 \x01(\fR\apayload\"d\n" +
+	"\fmessage_type\x18\x02 \x01(\tR\vmessageType\x12!\n" +
+	"\fcommand_hash\x18\x03 \x01(\aR\vcommandHash\x12\x18\n" +
+	"\apayload\x18\x04 \x01(\fR\apayload\"h\n" +
 	"\x06Result\x12!\n" +
-	"\fmessage_type\x18\x01 \x01(\tR\vmessageType\x12\x1d\n" +
-	"\n" +
-	"command_id\x18\x02 \x01(\x04R\tcommandId\x12\x18\n" +
+	"\fmessage_type\x18\x01 \x01(\tR\vmessageType\x12!\n" +
+	"\fcommand_hash\x18\x02 \x01(\aR\vcommandHash\x12\x18\n" +
 	"\apayload\x18\x03 \x01(\fR\apayload\"H\n" +
 	"\vDeliveryAck\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x1d\n" +

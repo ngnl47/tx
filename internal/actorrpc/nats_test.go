@@ -33,7 +33,7 @@ func TestNATSSharedHostSemantics(t *testing.T) {
 		count := uint64(0)
 		return &actorhost.Behavior{Receive: func(actorhost.Context, any) (any, error) {
 			count++
-			return &actorpb.Result{MessageType: "count", CommandId: count}, nil
+			return &actorpb.Result{MessageType: "count", CommandHash: uint32(count)}, nil
 		}}, nil
 	})
 	runtime.SetActivationLimits(actorhost.ActivationLimits{Actors: 1})
@@ -65,7 +65,7 @@ func TestNATSSharedHostSemantics(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := client.Call(ctx, target, &actorpb.Delivery{MessageType: "increment"})
-	if err != nil || result.CommandId != 2 {
+	if err != nil || result.CommandHash != 2 {
 		t.Fatalf("NATS count: %+v %v", result, err)
 	}
 	other := actorhost.Target{Instance: "server", Identity: actorhost.Identity{Kind: "role", Key: "2"}}
@@ -82,7 +82,7 @@ func TestNATSSharedHostSemantics(t *testing.T) {
 		t.Fatal(err)
 	}
 	var direct actorpb.Result
-	if err := proto.Unmarshal(response.Payload, &direct); err != nil || direct.CommandId != 3 {
+	if err := proto.Unmarshal(response.Payload, &direct); err != nil || direct.CommandHash != 3 {
 		t.Fatalf("direct count: %+v %v", &direct, err)
 	}
 	future, err := client.CallFuture(ctx, target, &actorpb.Delivery{MessageType: "increment"})
@@ -90,7 +90,7 @@ func TestNATSSharedHostSemantics(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err = future.Await(ctx)
-	if err != nil || result.CommandId != 4 {
+	if err != nil || result.CommandHash != 4 {
 		t.Fatalf("future count: %+v %v", result, err)
 	}
 	if err := runtime.Drain(ctx); err != nil {

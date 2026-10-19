@@ -814,7 +814,7 @@ handlers := func(runtime bee.Context) (txagent.IdentityResolver, txagent.Dispatc
 }
 ```
 
-项目 `ActorDispatchResolver` 只根据生成命令元数据选择目标 Actor、消息类型、命令号、路由键和载荷；通用
+项目 `ActorDispatchResolver` 只根据生成命令元数据选择目标 Actor、消息类型、命令哈希、路由键和载荷；通用
 `NewActorDispatcher` 在投递前以 Agent 的可信 `SessionIdentity` 覆盖 Delivery 身份字段。项目
 resolver 和客户端载荷均不能指定 `ConnectionID`，也不能伪造投递给 Actor 的身份。Agent 只负责 Frame、
 身份和 Seq/Ack，不依赖任何项目生成包。授权的各 Session 独立维护邮箱和恢复状态，共享 RoleID 时路由到同一 Actor，并接收角色下行。
@@ -853,7 +853,7 @@ Game 关闭发布流时，开始关闭之前已结束的流只记录历史 error
 UpSeq 仅用于 Agent 当前物理连接的旧号过滤，不存入 MsgQ、不传给业务、不跨连接恢复。每次上行提交及独立客户端 Ack 都经 `MailboxStream` 同步下行确认并保持连接活动；这不是上行确认。MsgQ 的 Redis 会话 TTL 与角色归属租约保持独立，不存在 Agent Rec lease。业务需要响应关联或幂等时须定义独立标识，不能用 UpSeq 或 DownSeq 代替。
 
 重新 Login 创建新 SessionID，旧会话游标不用于新会话。同 Session 的 Restore 使用新 ConnectionID，通过 MsgQ 完整绑定 CAS 接管并唤醒旧订阅；旧连接不能更新、裁剪或终止新连接的邮箱。Agent 收到旧订阅错误后关闭旧 socket。该隔离不撤销已经发往 Game 的上行，也不提供跨 Agent 上行的全局接管屏障；同一角色多 Session 可并存，互踢属于业务策略。
-普通游戏操作接受这个语义；不能重复执行的命令必须由项目定义独立的业务幂等键。Frame 的静态 `CommandID`
+普通游戏操作接受这个语义；不能重复执行的命令必须由项目定义独立的业务幂等键。Frame 的静态 `CommandHash`
 只标识生成的命令类型，不能用作一次业务操作的幂等令牌。
 
 同进程装配显式提供 `LocalMsgQ` 后，它就是唯一会话来源。若本地 msgq 尚未启动或不能创建
@@ -965,7 +965,7 @@ UpMsg 队列；重连复用原 Session，但不自动重投结果未知的旧请
 `FrameReady` 后才返回并进入可发送状态。Go 整数在 TypeScript 侧使用
 `number`，因此业务协议值必须在 `-9,007,199,254,740,991` 到 `9,007,199,254,740,991` 之间；超界编码或解码
 会返回错误，避免悄悄丢失精度。整数还受具体 scalar 的位宽和符号约束；uint32 的上半区使用 BON 已有的
-64 位整数编码，保持 0..4294967295 的数值语义。客户端必须使用生成的 `resolveCommandRoute` 从请求对象取得 Frame 的静态命令号
+64 位整数编码，保持 0..4294967295 的数值语义。客户端必须使用生成的 `resolveCommandRoute` 从请求对象取得 Frame 的命令哈希
 和可选路由键，不能手写这些传输字段：
 
 ```ts
@@ -979,44 +979,43 @@ socket.send(encodeFrame({
   seq: nextUpSeq++,
   ack: lastDownSeq,
   restore: false,
-  commandID: route.commandID,
+  commandHash: route.commandHash,
   routeKey: route.routeKey,
   payload: encodeCommand("Role_RenameReq", request, Schemas),
 }, maxFrameBytes));
 ```
 
-静态命令号是协议身份，不是服务路由编码。项目生成的 `CmdDescriptor` 将稳定 `CommandID` 与当前
-`toService/actor/actorKey` 关联；Agent 按命令号查描述符后使用当前路由元数据，不能仅按数字号段推断目标服务。
-号段只参与新命令首次分配，因此新增命令或把已有命令从 `game` 改为 `room` 都不能改变既有编号。删除命令的
-编号必须作为 retired tombstone 永久保留，避免老客户端请求被解释成后来新增的其他协议。
+命令标识由 txgen 对命令类型名原样 UTF-8 字节计算 **FNV-1a 32 位哈希**，大小写敏感。请求和响应共用同一个哈希空间；生成前检查所有命令，发现碰撞或保留值 `0` 时失败并报告命令名，由开发者重命名新命令后重新生成。客户端和服务端使用生成常量，不在运行时计算哈希。
 
-下行处理通常预先不知道命令名，应使用 `decodeEnvelope(bytes, Schemas)` 从 `{ c, b }` 读取命令并按生成 schema
-解析 body；它会拒绝未知命令、无效信封和尾随字节。已知命令的固定处理点仍可使用 `decodeCommand(name, bytes, Schemas)`
-额外校验命令名。
+开发者维护 cmd 类型及 `@cmdRoute` 注解；txgen 自动生成 Go `CmdDescriptors` / `CmdDescriptorsByHash` 与 TypeScript `CommandSchemas` / `CommandNamesByHash`。生成描述表随前后端代码发布，禁止手改。不再维护编号池、服务号段、退休清单或清池入口。多人分支合并后须重新生成整套协议，以检测合并后的碰撞；检查范围是本次项目输入，不提供跨版本历史碰撞保证。命令重命名会改变哈希，属于协议变更。
+
+`toService`、`actor`、`actorKey` 是描述表内的路由元数据，不参与哈希。Agent 先按帧头哈希查描述表，再选择目标服务和 Actor，不按哈希数值区间路由，也不解析 BON。
+
+下行通过生成的 `EncodeDownMessage` 构造 `[4 字节大端命令哈希][BON 正文]`，MsgQ 只保存不透明字节。Agent 在发送时解开此头，填入 Frame.CommandHash，客户端按生成的 `CommandNamesByHash` 选择正文类型。Go 直接解码 MsgQ 包时使用 `DecodeDownMessage`，内部 RPC 已独立携带哈希时使用 `DecodeBONCommand(hash, body)`。
 
 BON 的字符串、二进制和容器数量使用无符号 7-bit 变长整数；例如长度 `128` 固定编码为 `0x80 0x01`，Go 与
 TypeScript 必须保持完全相同的 wire format。解码器会在创建数组或文档前检查声明数量是否可能由剩余载荷表达，
 并拒绝超过 64 层的容器嵌套。正常的 `GD*`/cmd 结构远低于这个上限；伪造的大数量或超深载荷会返回协议错误，
-不会先按声明数量申请内存或递归到业务 Dispatcher。TypeScript 解码临时文档不继承对象原型，命令信封和 schema
-字段只读取自有属性，因此不能通过 `__proto__` 等输入伪造 `c/b` 或业务字段。
+不会先按声明数量申请内存或递归到业务 Dispatcher。TypeScript 解码临时文档不继承对象原型，schema
+字段只读取自有属性，因此不能通过 `__proto__` 等输入伪造业务字段。
 
-TypeScript 模板还提供与 `modules/agent.Frame` 对应的 `protocol/frame.ts`：WebSocket 使用原始 Frame bytes，
+客户端实现还提供与 `modules/agent.Frame` 对应的 `protocol/frame.ts`：WebSocket 使用原始 Frame bytes，
 TCP 在其外层加 4 字节 big-endian 长度；`TCPFrameDecoder` 能处理半包与粘包。两端都校验 Frame 版本、类型、
-Seq/Ack、静态命令号、路由键、恢复标记和最大长度，不能将非法帧交给业务 Dispatcher。
+Seq/Ack、命令哈希、路由键、恢复标记和最大长度，不能将非法帧交给业务 Dispatcher。
 
 ### Frame 与下行 Ack
 
-Agent Frame 当前版本是 `v3`。Frame 固定使用 32 字节头：第 0 字节是版本，第 1 字节是类型，第 2 字节是握手恢复标记，第 3 字节是路由键类型，
-`Seq` 位于第 4--11 字节，`Ack` 位于第 12--19 字节，静态命令号位于第 20--23 字节，路由键长度位于第 24--27
+Agent Frame 当前版本是 `v4`，拒绝旧版帧；前后端须同步更新，旧 MsgQ 编码载荷不得跨此次升级续接；内部 Actor/RPC protobuf 同步变更，已有持久化任务应先由旧版消费完成。Frame 固定使用 32 字节头：第 0 字节是版本，第 1 字节是类型，第 2 字节是握手恢复标记，第 3 字节是路由键类型，
+`Seq` 位于第 4--11 字节，`Ack` 位于第 12--19 字节，命令哈希位于第 20--23 字节，路由键长度位于第 24--27
 字节，编码载荷长度位于第 28--31 字节，所有整数均为 big-endian。路由键紧随固定头，随后才是编码载荷。
 路由键只支持 `int64`、`uint64` 和 UTF-8 非空 `string`；它只出现在上行 `FrameUpMsg`。
 
-| 类型 | Seq | Ack | 命令号和路由键 | Payload | 用途 |
+| 类型 | Seq | Ack | 命令哈希和路由键 | Payload | 用途 |
 | --- | --- | --- | --- | --- | --- |
 | `FrameHandshake` | `0` | 新连必须为 `0`；重连为已确认下行序号 | 必须为空 | 登录 ticket | 建立或恢复会话 |
 | `FrameReady` | `0` | 固定为 `0` | 必须为空 | 必须为空 | 确认握手已经被服务端接受 |
-| `FrameUpMsg` | 严格递增正数，可跳号 | 最近已处理的 `FrameDownMsg.Seq` | 生成的非零命令号；可选强类型路由键 | BON 业务体 | 上行业务，同时确认下行 |
-| `FrameDownMsg` | msgq 下行序号 | 固定为 `0` | 必须为空 | BON 业务体 | 服务端下行 |
+| `FrameUpMsg` | 严格递增正数，可跳号 | 最近已处理的 `FrameDownMsg.Seq` | 生成的非零命令哈希；可选强类型路由键 | BON 业务体 | 上行业务，同时确认下行 |
+| `FrameDownMsg` | msgq 下行序号 | 固定为 `0` | 非零命令哈希；路由键为空 | BON 业务体 | 服务端下行 |
 | `FrameAck` | `0` | 客户端最近已处理的下行 `Seq` | 必须为空 | 必须为空 | 客户端独立确认下行；服务端不发送此帧 |
 
 客户端收到 `FrameDownMsg` 后应先完成编码载荷的处理，再更新本地 `lastDownSeq`。下一条业务帧直接携带该值，
@@ -1028,7 +1027,7 @@ socket.send(encodeFrame({
   seq: nextUpSeq++,
   ack: lastDownSeq,
   restore: false,
-  commandID: route.commandID,
+  commandHash: route.commandHash,
   routeKey: route.routeKey,
   payload: encodeCommand("Role_RenameReq", request, Schemas),
 }, maxFrameBytes));
@@ -1065,7 +1064,7 @@ delivery := &rpcpb.Delivery{
         InstanceId: "battle-2",
     },
     MessageType: "Role_UpdateNotify",
-    CommandId:   72001,
+    CommandHash:   72001,
     Payload:     encodedBody,
 }
 ```
@@ -1139,13 +1138,13 @@ defer sender.Close()
 err = sender.Send(ctx, rpc.Delivery{
     Route:       rpc.ServiceRoute("battle"),
     MessageType: "Battle_Notify",
-    CommandID:   8001,
+    CommandHash:   8001,
     Payload:     bonBody,
 })
 result, err := sender.Call(ctx, rpc.Delivery{
     Route:       rpc.ServiceRoute("battle"),
     MessageType: "Battle_Query",
-    CommandID:   8002,
+    CommandHash:   8002,
     Payload:     bonBody,
 })
 _ = result
@@ -1159,7 +1158,9 @@ TLS/mTLS 的 yml 装配、证书加载和轮换不属于当前范围；未来引
 
 ### 生成 proto
 
-proto 源与生成脚本由 tx 维护。脚本按包名生成，发布流程可以只编译需要导出的 proto 包：
+proto 源与生成脚本由 tx 维护。脚本按包名生成，发布流程可以只编译需要导出的 proto 包。
+生成入口强制要求 `protoc --version` 输出 `libprotoc 36.0`，对应生成文件头的 `protoc v7.36.0`；
+版本不匹配时，在调用 Go、插件及写入生成文件前失败退出，不能通过 `PROTOC` 绕过检查。
 
 ```bash
 cd /Users/a47/workspace/tx
@@ -1167,10 +1168,8 @@ cd /Users/a47/workspace/tx
 # 查看可生成包。
 ./cmd/protoc/run.sh --list
 
-# 使用当前 PATH 中的 protoc，并在生成前校验 36.0 基线。
+# 使用当前 PATH 中的 protoc，生成入口会自动校验 36.0 基线。
 PROTOC="$(command -v protoc)"
-test -n "$PROTOC"
-test "$("$PROTOC" --version)" = "libprotoc 36.0"
 
 # 仅生成 msgq 会话邮箱契约。
 PROTOC="$PROTOC" \
@@ -1257,7 +1256,7 @@ if err := rpc.RegisterDeliveryService(grpcServer, receiver, nil); err != nil {
 }
 ```
 
-排水采用严格封口：`BeginDrain` 后所有新的 Agent/RPC 入站请求都被拒绝，不支持按命令名或 `CommandID` 配置放行白名单。否则 `WaitDrained` 无法证明未来不会再增加请求计数。充值回调、发奖等必须完成的动作应先写入项目选择的可靠消息队列；目标服务排水时保留消息，恢复后重试消费。可靠队列负责 at-least-once 与业务幂等，`CommandID` 只负责协议身份和路由。
+排水采用严格封口：`BeginDrain` 后所有新的 Agent/RPC 入站请求都被拒绝，不支持按命令名或 `CommandHash` 配置放行白名单。否则 `WaitDrained` 无法证明未来不会再增加请求计数。充值回调、发奖等必须完成的动作应先写入项目选择的可靠消息队列；目标服务排水时保留消息，恢复后重试消费。可靠队列负责 at-least-once 与业务幂等，`CommandHash` 只负责协议身份和路由。
 
 `modules/control` 是独立的运维 gRPC 契约。生命周期面提供 `Status`、`Drain`、`WaitDrained`。项目只需适配 `control.LifecycleController`；控制面不依赖 GD、Store、Procedure、Redis 或 Mongo：
 
@@ -1399,7 +1398,7 @@ Actor 间使用 `CModActor()`，上下行使用直连 gRPC；两条入口进入�
 ```go
 id := txactor.Identity{Kind: "role", Key: "i:470001"}
 result, err := runtime.CModActor().Call(ctx, id, txactor.Delivery{
-    MessageType: "role.rename", CommandID: 470001, Payload: bonBody,
+    MessageType: "role.rename", CommandHash: 470001, Payload: bonBody,
 })
 ```
 
@@ -2024,11 +2023,11 @@ func (l Logger) ErrorContext(ctx context.Context, msg string, args ...any)
 - `json`：面向测试和生产环境，整行都是可直接采集的 JSON 对象。
 
 ```text
-2026-08-28 17:01:34.542 [ERROR] [actorcmd/command_actor.go:306] {"commandID":10006,"message":"dispatch actor command"}
+2026-08-28 17:01:34.542 [ERROR] [actorcmd/command_actor.go:306] {"commandHash":10006,"message":"dispatch actor command"}
 ```
 
 ```json
-{"time":"2026-08-28T17:01:34.542+08:00","level":"ERROR","source":"actorcmd/command_actor.go:306","commandID":10006,"message":"dispatch actor command"}
+{"time":"2026-08-28T17:01:34.542+08:00","level":"ERROR","source":"actorcmd/command_actor.go:306","commandHash":10006,"message":"dispatch actor command"}
 ```
 
 两种格式都严格保持一条事件一行；正文位于 `message`，业务属性保持调用方传入的结构化类型。日志门面会修正
@@ -2049,7 +2048,7 @@ Agent、msgq 和项目业务的消息日志按职责只记录一次：
   它不记录编码载荷，也不记录空轮询。
 - 玩家命令的协议名和本地提交耗时由项目 Agent Dispatcher 记录；无状态模板可使用 Info，有状态高频模板可使用 Debug。
 
-例如一条成功的项目侧访问事件可以包含 `roleID`、`sessionID`、`commandID`、`command`、
+例如一条成功的项目侧访问事件可以包含 `roleID`、`sessionID`、`commandHash`、`command`、
 `status` 和 `durationMs`。业务响应和主动推送均在项目 Game/Actor 发布边界产生；不能为了补日志而让
 Agent 反序列化业务载荷。
 
@@ -4336,6 +4335,6 @@ R3 隔离测试进一步覆盖单节点故障期间的新发布和耗尽恢复�
 
 ### Actor 投递来源与无响应体完成
 
-`actor.Delivery.Origin` 区分 `OriginInternal`、`OriginClient` 与 `OriginTask`。Agent 和可靠任务消费者在入口设置来源，`MessageType` 仅描述载荷，业务不得用名称猜测来源。任务仍通过 Call 等待业务完成后 ACK；无响应体时返回 `actor.Result{Completed: true}`，有响应体时使用原有 MessageType/CommandID/Payload，二者互斥。
+`actor.Delivery.Origin` 区分 `OriginInternal`、`OriginClient` 与 `OriginTask`。Agent 和可靠任务消费者在入口设置来源，`MessageType` 仅描述载荷，业务不得用名称猜测来源。任务仍通过 Call 等待业务完成后 ACK；无响应体时返回 `actor.Result{Completed: true}`，有响应体时使用原有 MessageType/CommandHash/Payload，二者互斥。
 
 标准 Actor Key 使用 `actor.Int64Key`、`Uint64Key`、`StringKey` 和对应 Parse 方法；现有编码及实体归属不变，自定义 Key 仍可使用。以上协议需要调用方、服务端和生成产物同步更新。

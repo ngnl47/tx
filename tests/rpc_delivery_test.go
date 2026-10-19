@@ -82,7 +82,7 @@ func TestRPCDeliveryServicePassesOpaquePayloadToReceiver(t *testing.T) {
 			InstanceId: "battle-2",
 		},
 		MessageType: "Role_UpdateNotify",
-		CommandId:   72001,
+		CommandHash: 72001,
 		Payload:     payload,
 	})
 	if err != nil {
@@ -107,7 +107,7 @@ func TestRPCDeliveryServiceCallPassesDeliveryToCallReceiverAndReturnsResult(t *t
 	var received rpc.Delivery
 	expected := rpc.Result{
 		MessageType: "Login_ServerListResp",
-		CommandID:   10153,
+		CommandHash: 10153,
 		Payload:     []byte{0x83, 0xa5, 's', 'e', 'r', 'v', 'e', 0x91, 0x01},
 	}
 	if err := rpc.RegisterDeliveryService(server, nil, rpc.CallReceiverFunc(func(_ context.Context, delivery rpc.Delivery) (rpc.Result, error) {
@@ -139,7 +139,7 @@ func TestRPCDeliveryServiceCallPassesDeliveryToCallReceiverAndReturnsResult(t *t
 			Service: "login",
 		},
 		MessageType: "Login_ServerListReq",
-		CommandId:   10152,
+		CommandHash: 10152,
 		Payload:     payload,
 	})
 	if err != nil {
@@ -148,7 +148,7 @@ func TestRPCDeliveryServiceCallPassesDeliveryToCallReceiverAndReturnsResult(t *t
 	if received.Route.Kind != rpc.RouteService || received.Route.Service != "login" {
 		t.Fatalf("received route = %#v", received.Route)
 	}
-	if received.MessageType != "Login_ServerListReq" || received.CommandID != 10152 {
+	if received.MessageType != "Login_ServerListReq" || received.CommandHash != 10152 {
 		t.Fatalf("received delivery = %#v", received)
 	}
 	if string(received.Payload) != string(payload) {
@@ -157,8 +157,8 @@ func TestRPCDeliveryServiceCallPassesDeliveryToCallReceiverAndReturnsResult(t *t
 	if result.GetMessageType() != expected.MessageType {
 		t.Fatalf("result message type = %q, want %q", result.GetMessageType(), expected.MessageType)
 	}
-	if result.GetCommandId() != expected.CommandID {
-		t.Fatalf("result command id = %d, want %d", result.GetCommandId(), expected.CommandID)
+	if result.GetCommandHash() != expected.CommandHash {
+		t.Fatalf("result command hash = %d, want %d", result.GetCommandHash(), expected.CommandHash)
 	}
 	if string(result.GetPayload()) != string(expected.Payload) {
 		t.Fatalf("result payload = %x, want %x", result.GetPayload(), expected.Payload)
@@ -394,7 +394,7 @@ func TestRPCAdmissionRejectsNewDeliveryAndDrainsAcceptedReceiver(t *testing.T) {
 	request := &rpcpb.Delivery{
 		Route:       &rpcpb.Route{Kind: rpcpb.RouteKind_ROUTE_KIND_SERVICE, Service: "game"},
 		MessageType: "role.update",
-		CommandId:   72001,
+		CommandHash: 72001,
 	}
 
 	accepted := make(chan error, 1)
@@ -473,7 +473,7 @@ func TestRPCAdmissionRejectsNewCallAndDrainsAcceptedCallReceiver(t *testing.T) {
 	request := &rpcpb.Delivery{
 		Route:       &rpcpb.Route{Kind: rpcpb.RouteKind_ROUTE_KIND_SERVICE, Service: "login"},
 		MessageType: "Login_ServerListReq",
-		CommandId:   10152,
+		CommandHash: 10152,
 	}
 
 	accepted := make(chan error, 1)
@@ -527,7 +527,7 @@ func validRPCDeliveryRequest() *rpcpb.Delivery {
 	return &rpcpb.Delivery{
 		Route:       &rpcpb.Route{Kind: rpcpb.RouteKind_ROUTE_KIND_SERVICE, Service: "login"},
 		MessageType: "Login_ServerListReq",
-		CommandId:   10152,
+		CommandHash: 10152,
 	}
 }
 
@@ -601,7 +601,7 @@ func TestRPCSenderResolvesDirectoryAndDelivers(t *testing.T) {
 	if err := sender.Send(context.Background(), rpc.Delivery{
 		Route:       rpc.ServiceRoute("battle"),
 		MessageType: "Battle_Notify",
-		CommandID:   8001,
+		CommandHash: 8001,
 		Payload:     payload,
 	}); err != nil {
 		t.Fatalf("send delivery: %v", err)
@@ -622,7 +622,7 @@ func TestRPCSenderCallResolvesDirectoryAndReturnsResult(t *testing.T) {
 	var received rpc.Delivery
 	expected := rpc.Result{
 		MessageType: "Login_ServerListResp",
-		CommandID:   10153,
+		CommandHash: 10153,
 		Payload:     []byte{0x91, 0x82, 0xa2, 'i', 'd', 0x01, 0xa4, 'n', 'a', 'm', 'e', 0xa4, 'z', 'o', 'n', 'e'},
 	}
 	if err := rpc.RegisterDeliveryService(server, nil, rpc.CallReceiverFunc(func(_ context.Context, delivery rpc.Delivery) (rpc.Result, error) {
@@ -663,7 +663,7 @@ func TestRPCSenderCallResolvesDirectoryAndReturnsResult(t *testing.T) {
 	result, err := sender.Call(context.Background(), rpc.Delivery{
 		Route:       rpc.ServiceRoute("login"),
 		MessageType: "Login_ServerListReq",
-		CommandID:   10152,
+		CommandHash: 10152,
 		Payload:     payload,
 	})
 	if err != nil {
@@ -672,7 +672,7 @@ func TestRPCSenderCallResolvesDirectoryAndReturnsResult(t *testing.T) {
 	if received.Route.Kind != rpc.RouteService || received.Route.Service != "login" {
 		t.Fatalf("received route = %#v", received.Route)
 	}
-	if received.MessageType != "Login_ServerListReq" || received.CommandID != 10152 {
+	if received.MessageType != "Login_ServerListReq" || received.CommandHash != 10152 {
 		t.Fatalf("received delivery = %#v", received)
 	}
 	if string(received.Payload) != string(payload) {
@@ -681,8 +681,8 @@ func TestRPCSenderCallResolvesDirectoryAndReturnsResult(t *testing.T) {
 	if result.MessageType != expected.MessageType {
 		t.Fatalf("result message type = %q, want %q", result.MessageType, expected.MessageType)
 	}
-	if result.CommandID != expected.CommandID {
-		t.Fatalf("result command id = %d, want %d", result.CommandID, expected.CommandID)
+	if result.CommandHash != expected.CommandHash {
+		t.Fatalf("result command hash = %d, want %d", result.CommandHash, expected.CommandHash)
 	}
 	if string(result.Payload) != string(expected.Payload) {
 		t.Fatalf("result payload = %x, want %x", result.Payload, expected.Payload)

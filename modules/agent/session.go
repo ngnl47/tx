@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	txprotocol "github.com/ngnl47/tx/protocol"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -256,10 +257,10 @@ func (s *Server) dispatchUpMsg(ctx context.Context, mailboxStream msgq.MailboxSt
 	}
 	started := time.Now()
 	err := s.dispatcher.Dispatch(ctx, DispatchRequest{
-		Identity:  identity,
-		CommandID: frame.CommandID,
-		RouteKey:  frame.RouteKey,
-		Payload:   cloneBytes(frame.Payload),
+		Identity:    identity,
+		CommandHash: frame.CommandHash,
+		RouteKey:    frame.RouteKey,
+		Payload:     cloneBytes(frame.Payload),
 	})
 	txmetrics.RecordAgentUplink(err == nil, time.Since(started))
 	if err != nil {
@@ -278,7 +279,10 @@ func (s *Server) writeDownMsgs(ctx context.Context, mailboxStream msgq.MailboxSt
 			return err
 		}
 		var frames [immediateDownBatchLimit]Frame
-		frames[0] = Frame{Kind: FrameDownMsg, Seq: message.Seq, Payload: message.Payload}
+		frames[0], err = downFrame(message)
+		if err != nil {
+			return err
+		}
 		count := 1
 		var receiveErr error
 		if tcp, ok := writer.transport.(*tcpTransport); ok {
@@ -294,7 +298,10 @@ func (s *Server) writeDownMsgs(ctx context.Context, mailboxStream msgq.MailboxSt
 					if !ready {
 						break
 					}
-					frames[count] = Frame{Kind: FrameDownMsg, Seq: next.Seq, Payload: next.Payload}
+					frames[count], err = downFrame(next)
+					if err != nil {
+						return err
+					}
 					count++
 				}
 			}
@@ -381,4 +388,12 @@ func randomConnectionID() (int64, error) {
 			return value, nil
 		}
 	}
+}
+
+func downFrame(message msgq.FetchResult) (Frame, error) {
+	hash, body, err := txprotocol.UnpackCommand(message.Payload)
+	if err != nil {
+		return Frame{}, err
+	}
+	return Frame{Kind: FrameDownMsg, Seq: message.Seq, CommandHash: hash, Payload: body}, nil
 }

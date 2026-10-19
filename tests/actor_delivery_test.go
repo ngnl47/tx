@@ -25,7 +25,7 @@ func TestActorDeliveryRoundTripCopiesPayload(t *testing.T) {
 	}
 	delivery := txactor.Delivery{
 		MessageType: "role.rename",
-		CommandID:   470001,
+		CommandHash: 470001,
 		RouteKey:    txprotocol.Int64RouteKey(470001),
 		Payload:     []byte{1, 2, 3},
 		Identity:    &identity,
@@ -52,7 +52,7 @@ func TestActorDeliveryRoundTripCopiesPayload(t *testing.T) {
 	}
 	decodedMessage.Payload[1] = 8
 	key, ok := decoded.RouteKey.Int64()
-	if decoded.MessageType != "role.rename" || decoded.CommandID != 470001 || !ok || key != 470001 || string(decoded.Payload) != string([]byte{1, 2, 3}) {
+	if decoded.MessageType != "role.rename" || decoded.CommandHash != 470001 || !ok || key != 470001 || string(decoded.Payload) != string([]byte{1, 2, 3}) {
 		t.Fatalf("decoded delivery = %#v", decoded)
 	}
 	if decoded.Identity == nil || *decoded.Identity != identity {

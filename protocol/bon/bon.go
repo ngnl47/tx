@@ -51,48 +51,6 @@ func Unmarshal(payload []byte, target any) error {
 	return DecodeValue(value, target)
 }
 
-// MarshalEnvelope 将协议命令序列化为 {c: command, b: body}。
-func MarshalEnvelope(command string, body any) ([]byte, error) {
-	if command == "" {
-		return nil, fmt.Errorf("bon: command is empty")
-	}
-	writer := newWriter()
-	writer.writeType(typeDocument)
-	writer.writeNatural(2)
-	writer.writeString("c")
-	writer.writeString(command)
-	writer.writeString("b")
-	if err := writer.writeReflect(reflect.ValueOf(body)); err != nil {
-		return nil, err
-	}
-	return writer.result(), nil
-}
-
-// UnmarshalEnvelope 解码完整的协议命令载荷。
-func UnmarshalEnvelope(payload []byte) (command string, body any, err error) {
-	reader := newReader(payload)
-	value, err := reader.readValue()
-	if err != nil {
-		return "", nil, err
-	}
-	if !reader.done() {
-		return "", nil, fmt.Errorf("bon: trailing payload data")
-	}
-	document, ok := value.(map[string]any)
-	if !ok {
-		return "", nil, fmt.Errorf("bon: command envelope must be a document")
-	}
-	command, ok = document["c"].(string)
-	if !ok || command == "" {
-		return "", nil, fmt.Errorf("bon: command envelope has invalid c")
-	}
-	body, ok = document["b"]
-	if !ok {
-		return "", nil, fmt.Errorf("bon: command envelope has no b")
-	}
-	return command, body, nil
-}
-
 // DecodeValue 使用 msgpack tag 将已经解码的 BON 值映射到 target。
 func DecodeValue(value any, target any) error {
 	if target == nil {

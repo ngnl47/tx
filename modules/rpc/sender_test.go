@@ -69,7 +69,7 @@ func TestSenderCallReturnsConnectionResult(t *testing.T) {
 	directory := senderTestDirectory(t)
 	expected := Result{
 		MessageType: "Login_ServerListResp",
-		CommandID:   10153,
+		CommandHash: 10153,
 		Payload:     []byte{0x92, 0xa7, 's', 'e', 'r', 'v', 'e', 'r', 's', 0x91, 0x01},
 	}
 	connection := &senderConnectionFake{results: []Result{expected}}
@@ -85,7 +85,7 @@ func TestSenderCallReturnsConnectionResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call error = %v", err)
 	}
-	if result.MessageType != expected.MessageType || result.CommandID != expected.CommandID || !bytes.Equal(result.Payload, expected.Payload) {
+	if result.MessageType != expected.MessageType || result.CommandHash != expected.CommandHash || !bytes.Equal(result.Payload, expected.Payload) {
 		t.Fatalf("Call result = %#v, want %#v", result, expected)
 	}
 	if connection.callCount != 1 {
@@ -97,8 +97,8 @@ func TestSenderCallReusesEndpointConnection(t *testing.T) {
 	directory := senderTestDirectory(t)
 	connection := &senderConnectionFake{
 		results: []Result{
-			{MessageType: "Login_ServerListResp", CommandID: 1},
-			{MessageType: "Login_ServerListResp", CommandID: 2},
+			{MessageType: "Login_ServerListResp", CommandHash: 1},
+			{MessageType: "Login_ServerListResp", CommandHash: 2},
 		},
 	}
 	dialer := &senderDialerFake{connection: connection}

@@ -24,7 +24,7 @@ const (
 )
 
 const (
-	frameVersion     byte = 3
+	frameVersion     byte = 4
 	frameHeaderBytes      = 32
 	frameRestoreFlag byte = 1
 )
@@ -57,7 +57,7 @@ func StringRouteKey(value string) RouteKey {
 }
 
 // Frame 是与传输协议无关的协议帧。握手帧的 Payload 是 token 字节，业务帧使用 BON 字节，
-// 下行帧则携带后端消息。CommandID 和 RouteKey 只属于上行业务帧。
+// 下行帧则携带后端消息。CommandHash 属于上下行业务帧，RouteKey 只属于上行。
 type Frame struct {
 	// Kind 决定其余头字段的校验规则。
 	Kind FrameKind
@@ -67,8 +67,8 @@ type Frame struct {
 	Ack int64
 	// Restore 只用于握手帧，表示恢复既有逻辑会话。
 	Restore bool
-	// CommandID 是上行业务帧的稳定命令号。
-	CommandID uint32
+	// CommandHash 是由 txgen 生成的稳定命令哈希。
+	CommandHash uint32
 	// RouteKey 是上行业务帧用于直达目标服务或 Actor 的路由键。
 	RouteKey RouteKey
 	// Payload 是握手 token、BON 业务载荷或下行消息正文。
@@ -80,11 +80,11 @@ func (f Frame) validHandshake() bool {
 }
 
 func (f Frame) validUpMsg() bool {
-	return f.Kind == FrameUpMsg && f.Seq > 0 && f.Ack >= 0 && f.CommandID > 0 && f.validRouteKey()
+	return f.Kind == FrameUpMsg && f.Seq > 0 && f.Ack >= 0 && f.CommandHash > 0 && f.validRouteKey()
 }
 
 func (f Frame) validDownMsg() bool {
-	return f.Kind == FrameDownMsg && f.Seq > 0 && f.Ack == 0 && !f.Restore && !f.hasCommandRoute()
+	return f.Kind == FrameDownMsg && f.Seq > 0 && f.Ack == 0 && !f.Restore && f.CommandHash > 0 && f.RouteKey.Kind() == RouteKeyNone
 }
 
 func (f Frame) validAck() bool {
@@ -96,7 +96,7 @@ func (f Frame) validReady() bool {
 }
 
 func (f Frame) hasCommandRoute() bool {
-	return f.CommandID != 0 || f.RouteKey.Kind() != RouteKeyNone
+	return f.CommandHash != 0 || f.RouteKey.Kind() != RouteKeyNone
 }
 
 func (f Frame) validRouteKey() bool {
@@ -178,7 +178,7 @@ func encodeFrameHeader(header []byte, frame Frame, routeKeySize int) {
 	header[3] = byte(frame.RouteKey.Kind())
 	binary.BigEndian.PutUint64(header[4:12], uint64(frame.Seq))
 	binary.BigEndian.PutUint64(header[12:20], uint64(frame.Ack))
-	binary.BigEndian.PutUint32(header[20:24], frame.CommandID)
+	binary.BigEndian.PutUint32(header[20:24], frame.CommandHash)
 	binary.BigEndian.PutUint32(header[24:28], uint32(routeKeySize))
 	binary.BigEndian.PutUint32(header[28:32], uint32(len(frame.Payload)))
 }
@@ -204,13 +204,13 @@ func DecodeFrame(encoded []byte, maxFrameBytes int) (Frame, error) {
 		return Frame{}, err
 	}
 	frame := Frame{
-		Kind:      FrameKind(encoded[1]),
-		Seq:       int64(binary.BigEndian.Uint64(encoded[4:12])),
-		Ack:       int64(binary.BigEndian.Uint64(encoded[12:20])),
-		Restore:   encoded[2]&frameRestoreFlag != 0,
-		CommandID: binary.BigEndian.Uint32(encoded[20:24]),
-		RouteKey:  routeKey,
-		Payload:   cloneBytes(encoded[frameHeaderBytes+routeKeySize:]),
+		Kind:        FrameKind(encoded[1]),
+		Seq:         int64(binary.BigEndian.Uint64(encoded[4:12])),
+		Ack:         int64(binary.BigEndian.Uint64(encoded[12:20])),
+		Restore:     encoded[2]&frameRestoreFlag != 0,
+		CommandHash: binary.BigEndian.Uint32(encoded[20:24]),
+		RouteKey:    routeKey,
+		Payload:     cloneBytes(encoded[frameHeaderBytes+routeKeySize:]),
 	}
 	if (!frame.validHandshake() && !frame.validUpMsg() && !frame.validDownMsg() && !frame.validAck() && !frame.validReady()) || (frame.Restore && frame.Kind != FrameHandshake) {
 		return Frame{}, ErrInvalidFrame

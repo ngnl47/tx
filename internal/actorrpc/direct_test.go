@@ -32,7 +32,7 @@ func TestDirectSharedHostKinds(t *testing.T) {
 				<-slowRelease
 			}
 			count++
-			return &actorpb.Result{MessageType: c.Identity.Kind, CommandId: uint64(count)}, nil
+			return &actorpb.Result{MessageType: c.Identity.Kind, CommandHash: uint32(count)}, nil
 		}}, nil
 	})
 	defer local.Drain(ctx)
@@ -73,7 +73,7 @@ func TestDirectSharedHostKinds(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if result.MessageType != kind || result.CommandId != uint64(round) {
+			if result.MessageType != kind || result.CommandHash != uint32(round) {
 				t.Fatalf("实体状态串扰: %+v", result)
 			}
 		}

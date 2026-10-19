@@ -16,7 +16,7 @@ func TestCompletionResultHasNoBusinessPayload(t *testing.T) {
 	if err != nil || !decoded.Completed {
 		t.Fatalf("完成结果丢失: %+v %v", decoded, err)
 	}
-	for _, invalid := range []*actorpb.Result{{}, {Completed: true, MessageType: "business"}, {Completed: true, Payload: []byte{1}}, {Completed: true, CommandId: 1}} {
+	for _, invalid := range []*actorpb.Result{{}, {Completed: true, MessageType: "business"}, {Completed: true, Payload: []byte{1}}, {Completed: true, CommandHash: 1}} {
 		if err := ResultError(invalid); err == nil {
 			t.Fatalf("接受了歧义结果: %+v", invalid)
 		}

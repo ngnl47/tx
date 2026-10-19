@@ -16,7 +16,7 @@ func TestRPCDeliveryKeepsRouteMetadataAndOpaquePayload(t *testing.T) {
 			InstanceId: "battle-2",
 		},
 		MessageType: "Role_UpdateNotify",
-		CommandId:   72001,
+		CommandHash: 72001,
 		Payload:     payload,
 	}
 
@@ -45,7 +45,7 @@ func TestRPCResultKeepsMetadataAndOpaquePayload(t *testing.T) {
 	payload := []byte{0x83, 0xa4, 'l', 'i', 's', 't', 0x92, 0x01, 0x02}
 	result := &rpcpb.Result{
 		MessageType: "Login_ServerListResp",
-		CommandId:   10153,
+		CommandHash: 10153,
 		Payload:     payload,
 	}
 
@@ -62,8 +62,8 @@ func TestRPCResultKeepsMetadataAndOpaquePayload(t *testing.T) {
 	if received.GetMessageType() != "Login_ServerListResp" {
 		t.Fatalf("message type = %q, want Login_ServerListResp", received.GetMessageType())
 	}
-	if received.GetCommandId() != 10153 {
-		t.Fatalf("command id = %d, want 10153", received.GetCommandId())
+	if received.GetCommandHash() != 10153 {
+		t.Fatalf("command hash = %d, want 10153", received.GetCommandHash())
 	}
 	if !bytes.Equal(received.GetPayload(), payload) {
 		t.Fatalf("payload = %x, want %x", received.GetPayload(), payload)

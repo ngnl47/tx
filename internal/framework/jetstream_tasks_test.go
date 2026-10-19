@@ -125,7 +125,7 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 	finishFramework := sync.OnceFunc(func() { close(frameworkRelease) })
 	// 操作身份是业务输入快照，不要求任务执行时原连接仍在线。
 	wantDelivery := txactor.Delivery{
-		MessageType: "reward", CommandID: 47,
+		MessageType: "reward", CommandHash: 47,
 		RouteKey: txprotocol.StringRouteKey("season.世界.490001"), Payload: []byte{0, 1, 255},
 		Identity: &txprotocol.SessionIdentity{SessionPrincipal: txprotocol.SessionPrincipal{
 			AccountID: 11, BorrowAccountID: 12, ServerID: 13, RoleID: 14, SessionID: 15,
@@ -139,7 +139,7 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 		return &txactor.Behavior{Receive: func(_ txactor.Context, message any) (any, error) {
 			delivery, ok := message.(txactor.Delivery)
 			if !ok || !delivery.WantsResult() || delivery.MessageType != wantDelivery.MessageType ||
-				delivery.CommandID != wantDelivery.CommandID || delivery.RouteKey != wantDelivery.RouteKey ||
+				delivery.CommandHash != wantDelivery.CommandHash || delivery.RouteKey != wantDelivery.RouteKey ||
 				!bytes.Equal(delivery.Payload, wantDelivery.Payload) || delivery.Identity == nil ||
 				*delivery.Identity != *wantDelivery.Identity {
 				return nil, errors.New("持久任务丢失调用上下文或混入客户端上行序号")

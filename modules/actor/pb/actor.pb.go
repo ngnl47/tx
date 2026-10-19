@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v7.36.0
-// source: actor.proto
+// source: modules/actor/proto/actor.proto
 
 package actorpb
 
@@ -57,11 +57,11 @@ func (x RouteKeyKind) String() string {
 }
 
 func (RouteKeyKind) Descriptor() protoreflect.EnumDescriptor {
-	return file_actor_proto_enumTypes[0].Descriptor()
+	return file_modules_actor_proto_actor_proto_enumTypes[0].Descriptor()
 }
 
 func (RouteKeyKind) Type() protoreflect.EnumType {
-	return &file_actor_proto_enumTypes[0]
+	return &file_modules_actor_proto_actor_proto_enumTypes[0]
 }
 
 func (x RouteKeyKind) Number() protoreflect.EnumNumber {
@@ -70,7 +70,7 @@ func (x RouteKeyKind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use RouteKeyKind.Descriptor instead.
 func (RouteKeyKind) EnumDescriptor() ([]byte, []int) {
-	return file_actor_proto_rawDescGZIP(), []int{0}
+	return file_modules_actor_proto_actor_proto_rawDescGZIP(), []int{0}
 }
 
 type DeliveryMode int32
@@ -106,11 +106,11 @@ func (x DeliveryMode) String() string {
 }
 
 func (DeliveryMode) Descriptor() protoreflect.EnumDescriptor {
-	return file_actor_proto_enumTypes[1].Descriptor()
+	return file_modules_actor_proto_actor_proto_enumTypes[1].Descriptor()
 }
 
 func (DeliveryMode) Type() protoreflect.EnumType {
-	return &file_actor_proto_enumTypes[1]
+	return &file_modules_actor_proto_actor_proto_enumTypes[1]
 }
 
 func (x DeliveryMode) Number() protoreflect.EnumNumber {
@@ -119,7 +119,7 @@ func (x DeliveryMode) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use DeliveryMode.Descriptor instead.
 func (DeliveryMode) EnumDescriptor() ([]byte, []int) {
-	return file_actor_proto_rawDescGZIP(), []int{1}
+	return file_modules_actor_proto_actor_proto_rawDescGZIP(), []int{1}
 }
 
 type DeliveryOrigin int32
@@ -155,11 +155,11 @@ func (x DeliveryOrigin) String() string {
 }
 
 func (DeliveryOrigin) Descriptor() protoreflect.EnumDescriptor {
-	return file_actor_proto_enumTypes[2].Descriptor()
+	return file_modules_actor_proto_actor_proto_enumTypes[2].Descriptor()
 }
 
 func (DeliveryOrigin) Type() protoreflect.EnumType {
-	return &file_actor_proto_enumTypes[2]
+	return &file_modules_actor_proto_actor_proto_enumTypes[2]
 }
 
 func (x DeliveryOrigin) Number() protoreflect.EnumNumber {
@@ -168,7 +168,7 @@ func (x DeliveryOrigin) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use DeliveryOrigin.Descriptor instead.
 func (DeliveryOrigin) EnumDescriptor() ([]byte, []int) {
-	return file_actor_proto_rawDescGZIP(), []int{2}
+	return file_modules_actor_proto_actor_proto_rawDescGZIP(), []int{2}
 }
 
 type AccessMode int32
@@ -201,11 +201,11 @@ func (x AccessMode) String() string {
 }
 
 func (AccessMode) Descriptor() protoreflect.EnumDescriptor {
-	return file_actor_proto_enumTypes[3].Descriptor()
+	return file_modules_actor_proto_actor_proto_enumTypes[3].Descriptor()
 }
 
 func (AccessMode) Type() protoreflect.EnumType {
-	return &file_actor_proto_enumTypes[3]
+	return &file_modules_actor_proto_actor_proto_enumTypes[3]
 }
 
 func (x AccessMode) Number() protoreflect.EnumNumber {
@@ -214,7 +214,7 @@ func (x AccessMode) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use AccessMode.Descriptor instead.
 func (AccessMode) EnumDescriptor() ([]byte, []int) {
-	return file_actor_proto_rawDescGZIP(), []int{3}
+	return file_modules_actor_proto_actor_proto_rawDescGZIP(), []int{3}
 }
 
 // SessionIdentity 表示由 Agent 为当前连接构造的可信会话身份。
@@ -234,7 +234,7 @@ type SessionIdentity struct {
 
 func (x *SessionIdentity) Reset() {
 	*x = SessionIdentity{}
-	mi := &file_actor_proto_msgTypes[0]
+	mi := &file_modules_actor_proto_actor_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -246,7 +246,7 @@ func (x *SessionIdentity) String() string {
 func (*SessionIdentity) ProtoMessage() {}
 
 func (x *SessionIdentity) ProtoReflect() protoreflect.Message {
-	mi := &file_actor_proto_msgTypes[0]
+	mi := &file_modules_actor_proto_actor_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -259,7 +259,7 @@ func (x *SessionIdentity) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionIdentity.ProtoReflect.Descriptor instead.
 func (*SessionIdentity) Descriptor() ([]byte, []int) {
-	return file_actor_proto_rawDescGZIP(), []int{0}
+	return file_modules_actor_proto_actor_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *SessionIdentity) GetAccountId() int64 {
@@ -323,7 +323,7 @@ func (x *SessionIdentity) GetCanCreateRole() bool {
 type Delivery struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	MessageType     string                 `protobuf:"bytes,1,opt,name=message_type,json=messageType,proto3" json:"message_type,omitempty"`
-	CommandId       uint64                 `protobuf:"varint,2,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	CommandHash     uint32                 `protobuf:"fixed32,2,opt,name=command_hash,json=commandHash,proto3" json:"command_hash,omitempty"`
 	Payload         []byte                 `protobuf:"bytes,3,opt,name=payload,proto3" json:"payload,omitempty"`
 	Mode            DeliveryMode           `protobuf:"varint,4,opt,name=mode,proto3,enum=tx.actor.v1.DeliveryMode" json:"mode,omitempty"`
 	RouteKeyKind    RouteKeyKind           `protobuf:"varint,5,opt,name=route_key_kind,json=routeKeyKind,proto3,enum=tx.actor.v1.RouteKeyKind" json:"route_key_kind,omitempty"`
@@ -338,7 +338,7 @@ type Delivery struct {
 
 func (x *Delivery) Reset() {
 	*x = Delivery{}
-	mi := &file_actor_proto_msgTypes[1]
+	mi := &file_modules_actor_proto_actor_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -350,7 +350,7 @@ func (x *Delivery) String() string {
 func (*Delivery) ProtoMessage() {}
 
 func (x *Delivery) ProtoReflect() protoreflect.Message {
-	mi := &file_actor_proto_msgTypes[1]
+	mi := &file_modules_actor_proto_actor_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -363,7 +363,7 @@ func (x *Delivery) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Delivery.ProtoReflect.Descriptor instead.
 func (*Delivery) Descriptor() ([]byte, []int) {
-	return file_actor_proto_rawDescGZIP(), []int{1}
+	return file_modules_actor_proto_actor_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *Delivery) GetMessageType() string {
@@ -373,9 +373,9 @@ func (x *Delivery) GetMessageType() string {
 	return ""
 }
 
-func (x *Delivery) GetCommandId() uint64 {
+func (x *Delivery) GetCommandHash() uint32 {
 	if x != nil {
-		return x.CommandId
+		return x.CommandHash
 	}
 	return 0
 }
@@ -439,7 +439,7 @@ func (x *Delivery) GetOrigin() DeliveryOrigin {
 // Acceptance 表示目标 Actor 已从邮箱取出确认式投递，但不代表业务处理已经完成。
 type Acceptance struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	CommandId     uint64                 `protobuf:"varint,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	CommandHash   uint32                 `protobuf:"fixed32,1,opt,name=command_hash,json=commandHash,proto3" json:"command_hash,omitempty"`
 	RequestId     uint64                 `protobuf:"varint,2,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -447,7 +447,7 @@ type Acceptance struct {
 
 func (x *Acceptance) Reset() {
 	*x = Acceptance{}
-	mi := &file_actor_proto_msgTypes[2]
+	mi := &file_modules_actor_proto_actor_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -459,7 +459,7 @@ func (x *Acceptance) String() string {
 func (*Acceptance) ProtoMessage() {}
 
 func (x *Acceptance) ProtoReflect() protoreflect.Message {
-	mi := &file_actor_proto_msgTypes[2]
+	mi := &file_modules_actor_proto_actor_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -472,12 +472,12 @@ func (x *Acceptance) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Acceptance.ProtoReflect.Descriptor instead.
 func (*Acceptance) Descriptor() ([]byte, []int) {
-	return file_actor_proto_rawDescGZIP(), []int{2}
+	return file_modules_actor_proto_actor_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *Acceptance) GetCommandId() uint64 {
+func (x *Acceptance) GetCommandHash() uint32 {
 	if x != nil {
-		return x.CommandId
+		return x.CommandHash
 	}
 	return 0
 }
@@ -494,7 +494,7 @@ type Result struct {
 	state        protoimpl.MessageState `protogen:"open.v1"`
 	RequestId    uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	MessageType  string                 `protobuf:"bytes,2,opt,name=message_type,json=messageType,proto3" json:"message_type,omitempty"`
-	CommandId    uint64                 `protobuf:"varint,3,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	CommandHash  uint32                 `protobuf:"fixed32,3,opt,name=command_hash,json=commandHash,proto3" json:"command_hash,omitempty"`
 	Payload      []byte                 `protobuf:"bytes,4,opt,name=payload,proto3" json:"payload,omitempty"`
 	ErrorCode    int32                  `protobuf:"varint,5,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
 	ErrorMessage string                 `protobuf:"bytes,6,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
@@ -506,7 +506,7 @@ type Result struct {
 
 func (x *Result) Reset() {
 	*x = Result{}
-	mi := &file_actor_proto_msgTypes[3]
+	mi := &file_modules_actor_proto_actor_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -518,7 +518,7 @@ func (x *Result) String() string {
 func (*Result) ProtoMessage() {}
 
 func (x *Result) ProtoReflect() protoreflect.Message {
-	mi := &file_actor_proto_msgTypes[3]
+	mi := &file_modules_actor_proto_actor_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -531,7 +531,7 @@ func (x *Result) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Result.ProtoReflect.Descriptor instead.
 func (*Result) Descriptor() ([]byte, []int) {
-	return file_actor_proto_rawDescGZIP(), []int{3}
+	return file_modules_actor_proto_actor_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *Result) GetRequestId() uint64 {
@@ -548,9 +548,9 @@ func (x *Result) GetMessageType() string {
 	return ""
 }
 
-func (x *Result) GetCommandId() uint64 {
+func (x *Result) GetCommandHash() uint32 {
 	if x != nil {
-		return x.CommandId
+		return x.CommandHash
 	}
 	return 0
 }
@@ -596,7 +596,7 @@ type DirectStreamCall struct {
 
 func (x *DirectStreamCall) Reset() {
 	*x = DirectStreamCall{}
-	mi := &file_actor_proto_msgTypes[4]
+	mi := &file_modules_actor_proto_actor_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -608,7 +608,7 @@ func (x *DirectStreamCall) String() string {
 func (*DirectStreamCall) ProtoMessage() {}
 
 func (x *DirectStreamCall) ProtoReflect() protoreflect.Message {
-	mi := &file_actor_proto_msgTypes[4]
+	mi := &file_modules_actor_proto_actor_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -621,7 +621,7 @@ func (x *DirectStreamCall) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DirectStreamCall.ProtoReflect.Descriptor instead.
 func (*DirectStreamCall) Descriptor() ([]byte, []int) {
-	return file_actor_proto_rawDescGZIP(), []int{4}
+	return file_modules_actor_proto_actor_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *DirectStreamCall) GetKind() string {
@@ -652,11 +652,11 @@ func (x *DirectStreamCall) GetTimeoutNano() int64 {
 	return 0
 }
 
-var File_actor_proto protoreflect.FileDescriptor
+var File_modules_actor_proto_actor_proto protoreflect.FileDescriptor
 
-const file_actor_proto_rawDesc = "" +
+const file_modules_actor_proto_actor_proto_rawDesc = "" +
 	"\n" +
-	"\vactor.proto\x12\vtx.actor.v1\"\xb8\x02\n" +
+	"\x1fmodules/actor/proto/actor.proto\x12\vtx.actor.v1\"\xb8\x02\n" +
 	"\x0fSessionIdentity\x12\x1d\n" +
 	"\n" +
 	"account_id\x18\x01 \x01(\x03R\taccountId\x12*\n" +
@@ -668,11 +668,10 @@ const file_actor_proto_rawDesc = "" +
 	"\rconnection_id\x18\x06 \x01(\x03R\fconnectionId\x128\n" +
 	"\vaccess_mode\x18\a \x01(\x0e2\x17.tx.actor.v1.AccessModeR\n" +
 	"accessMode\x12&\n" +
-	"\x0fcan_create_role\x18\b \x01(\bR\rcanCreateRole\"\xc8\x03\n" +
+	"\x0fcan_create_role\x18\b \x01(\bR\rcanCreateRole\"\xcc\x03\n" +
 	"\bDelivery\x12!\n" +
-	"\fmessage_type\x18\x01 \x01(\tR\vmessageType\x12\x1d\n" +
-	"\n" +
-	"command_id\x18\x02 \x01(\x04R\tcommandId\x12\x18\n" +
+	"\fmessage_type\x18\x01 \x01(\tR\vmessageType\x12!\n" +
+	"\fcommand_hash\x18\x02 \x01(\aR\vcommandHash\x12\x18\n" +
 	"\apayload\x18\x03 \x01(\fR\apayload\x12-\n" +
 	"\x04mode\x18\x04 \x01(\x0e2\x19.tx.actor.v1.DeliveryModeR\x04mode\x12?\n" +
 	"\x0eroute_key_kind\x18\x05 \x01(\x0e2\x19.tx.actor.v1.RouteKeyKindR\frouteKeyKind\x12*\n" +
@@ -682,19 +681,17 @@ const file_actor_proto_rawDesc = "" +
 	"request_id\x18\b \x01(\x04R\trequestId\x128\n" +
 	"\bidentity\x18\t \x01(\v2\x1c.tx.actor.v1.SessionIdentityR\bidentity\x123\n" +
 	"\x06origin\x18\v \x01(\x0e2\x1b.tx.actor.v1.DeliveryOriginR\x06originJ\x04\b\n" +
-	"\x10\vR\x06up_seq\"J\n" +
+	"\x10\vR\x06up_seq\"N\n" +
 	"\n" +
-	"Acceptance\x12\x1d\n" +
+	"Acceptance\x12!\n" +
+	"\fcommand_hash\x18\x01 \x01(\aR\vcommandHash\x12\x1d\n" +
 	"\n" +
-	"command_id\x18\x01 \x01(\x04R\tcommandId\x12\x1d\n" +
-	"\n" +
-	"request_id\x18\x02 \x01(\x04R\trequestId\"\xfd\x01\n" +
+	"request_id\x18\x02 \x01(\x04R\trequestId\"\x81\x02\n" +
 	"\x06Result\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x12!\n" +
-	"\fmessage_type\x18\x02 \x01(\tR\vmessageType\x12\x1d\n" +
-	"\n" +
-	"command_id\x18\x03 \x01(\x04R\tcommandId\x12\x18\n" +
+	"\fmessage_type\x18\x02 \x01(\tR\vmessageType\x12!\n" +
+	"\fcommand_hash\x18\x03 \x01(\aR\vcommandHash\x12\x18\n" +
 	"\apayload\x18\x04 \x01(\fR\apayload\x12\x1d\n" +
 	"\n" +
 	"error_code\x18\x05 \x01(\x05R\terrorCode\x12#\n" +
@@ -724,20 +721,20 @@ const file_actor_proto_rawDesc = "" +
 	"\x12ACCESS_MODE_BORROW\x10\x01B/Z-github.com/ngnl47/tx/modules/actor/pb;actorpbb\x06proto3"
 
 var (
-	file_actor_proto_rawDescOnce sync.Once
-	file_actor_proto_rawDescData []byte
+	file_modules_actor_proto_actor_proto_rawDescOnce sync.Once
+	file_modules_actor_proto_actor_proto_rawDescData []byte
 )
 
-func file_actor_proto_rawDescGZIP() []byte {
-	file_actor_proto_rawDescOnce.Do(func() {
-		file_actor_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_actor_proto_rawDesc), len(file_actor_proto_rawDesc)))
+func file_modules_actor_proto_actor_proto_rawDescGZIP() []byte {
+	file_modules_actor_proto_actor_proto_rawDescOnce.Do(func() {
+		file_modules_actor_proto_actor_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_modules_actor_proto_actor_proto_rawDesc), len(file_modules_actor_proto_actor_proto_rawDesc)))
 	})
-	return file_actor_proto_rawDescData
+	return file_modules_actor_proto_actor_proto_rawDescData
 }
 
-var file_actor_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_actor_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
-var file_actor_proto_goTypes = []any{
+var file_modules_actor_proto_actor_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_modules_actor_proto_actor_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_modules_actor_proto_actor_proto_goTypes = []any{
 	(RouteKeyKind)(0),        // 0: tx.actor.v1.RouteKeyKind
 	(DeliveryMode)(0),        // 1: tx.actor.v1.DeliveryMode
 	(DeliveryOrigin)(0),      // 2: tx.actor.v1.DeliveryOrigin
@@ -748,7 +745,7 @@ var file_actor_proto_goTypes = []any{
 	(*Result)(nil),           // 7: tx.actor.v1.Result
 	(*DirectStreamCall)(nil), // 8: tx.actor.v1.DirectStreamCall
 }
-var file_actor_proto_depIdxs = []int32{
+var file_modules_actor_proto_actor_proto_depIdxs = []int32{
 	3, // 0: tx.actor.v1.SessionIdentity.access_mode:type_name -> tx.actor.v1.AccessMode
 	1, // 1: tx.actor.v1.Delivery.mode:type_name -> tx.actor.v1.DeliveryMode
 	0, // 2: tx.actor.v1.Delivery.route_key_kind:type_name -> tx.actor.v1.RouteKeyKind
@@ -762,27 +759,27 @@ var file_actor_proto_depIdxs = []int32{
 	0, // [0:6] is the sub-list for field type_name
 }
 
-func init() { file_actor_proto_init() }
-func file_actor_proto_init() {
-	if File_actor_proto != nil {
+func init() { file_modules_actor_proto_actor_proto_init() }
+func file_modules_actor_proto_actor_proto_init() {
+	if File_modules_actor_proto_actor_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_actor_proto_rawDesc), len(file_actor_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_modules_actor_proto_actor_proto_rawDesc), len(file_modules_actor_proto_actor_proto_rawDesc)),
 			NumEnums:      4,
 			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
-		GoTypes:           file_actor_proto_goTypes,
-		DependencyIndexes: file_actor_proto_depIdxs,
-		EnumInfos:         file_actor_proto_enumTypes,
-		MessageInfos:      file_actor_proto_msgTypes,
+		GoTypes:           file_modules_actor_proto_actor_proto_goTypes,
+		DependencyIndexes: file_modules_actor_proto_actor_proto_depIdxs,
+		EnumInfos:         file_modules_actor_proto_actor_proto_enumTypes,
+		MessageInfos:      file_modules_actor_proto_actor_proto_msgTypes,
 	}.Build()
-	File_actor_proto = out.File
-	file_actor_proto_goTypes = nil
-	file_actor_proto_depIdxs = nil
+	File_modules_actor_proto_actor_proto = out.File
+	file_modules_actor_proto_actor_proto_goTypes = nil
+	file_modules_actor_proto_actor_proto_depIdxs = nil
 }

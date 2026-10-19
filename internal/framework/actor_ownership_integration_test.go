@@ -196,14 +196,14 @@ func TestActorOwnershipWritebackHandoff(t *testing.T) {
 				close(entered)
 				<-release
 			}
-			if err := executor.Call(c, ownershipProcedure{root, int64(d.CommandID)}); err != nil {
+			if err := executor.Call(c, ownershipProcedure{root, int64(d.CommandHash)}); err != nil {
 				return nil, err
 			}
 			return txactor.Result{MessageType: "value", Payload: []byte(fmt.Sprint(root.value))}, nil
 		}, OnDeactivateBefore: func(txactor.Context) error { notifications.Add(1); return nil }}, nil
 	}, func() error { return manager.Shutdown(context.Background()) })
 	id := txactor.Identity{Kind: "world", Key: "51"}
-	first, err := a.Context().Actor().CallFuture(ctx, id, txactor.Delivery{MessageType: "block", CommandID: 3})
+	first, err := a.Context().Actor().CallFuture(ctx, id, txactor.Delivery{MessageType: "block", CommandHash: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestActorOwnershipWritebackHandoff(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	queued, err := a.Context().Actor().CallFuture(ctx, id, txactor.Delivery{MessageType: "add", CommandID: 4})
+	queued, err := a.Context().Actor().CallFuture(ctx, id, txactor.Delivery{MessageType: "add", CommandHash: 4})
 	if err != nil {
 		t.Fatal(err)
 	}

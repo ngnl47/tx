@@ -21,7 +21,7 @@ func TestSessionFrameWriterDoesNotSendUpMsgAcknowledgements(t *testing.T) {
 	if frame := <-transport.writes; frame.Kind != FrameReady || frame.Ack != 0 {
 		t.Fatalf("ready = %+v, want zero ack", frame)
 	}
-	if err := writer.writeDownMsg(context.Background(), Frame{Kind: FrameDownMsg, Seq: 1, Ack: 77}, &written); err != nil {
+	if err := writer.writeDownMsg(context.Background(), Frame{Kind: FrameDownMsg, CommandHash: 1, Seq: 1, Ack: 77}, &written); err != nil {
 		t.Fatal(err)
 	}
 	if frame := <-transport.writes; frame.Kind != FrameDownMsg || frame.Ack != 0 || written.Load() != 1 {
@@ -37,7 +37,7 @@ func TestWriteDownMsgsBatchesAvailableTCPFramesInOrder(t *testing.T) {
 	defer cancel()
 	stream := &queuedMailboxStream{ctx: ctx, items: make(chan msgq.FetchResult, 5)}
 	for seq := int64(1); seq <= 5; seq++ {
-		stream.items <- msgq.FetchResult{Seq: seq, Payload: []byte{byte(seq)}}
+		stream.items <- msgq.FetchResult{Seq: seq, Payload: testDownPacket(string([]byte{byte(seq)}))}
 	}
 	writer := sessionFrameWriter{transport: &tcpTransport{connection: server, maxFrameBytes: 1024}}
 	var written atomic.Int64
@@ -66,7 +66,7 @@ func TestSessionFrameWriterBatchClearsAck(t *testing.T) {
 	defer client.Close()
 	tcp := &tcpTransport{connection: server, maxFrameBytes: 1024}
 	writer := sessionFrameWriter{transport: tcp}
-	frames := []Frame{{Kind: FrameDownMsg, Seq: 1, Ack: 77}, {Kind: FrameDownMsg, Seq: 2, Ack: 77}}
+	frames := []Frame{{Kind: FrameDownMsg, CommandHash: 1, Seq: 1, Ack: 77}, {Kind: FrameDownMsg, CommandHash: 1, Seq: 2, Ack: 77}}
 	var written atomic.Int64
 	result := make(chan error, 1)
 	go func() {

@@ -27,7 +27,7 @@ var (
 type Delivery struct {
 	Route       Route
 	MessageType string
-	CommandID   uint64
+	CommandHash uint32
 	Payload     []byte
 }
 
@@ -268,7 +268,7 @@ func deliveryFromProto(request *rpcpb.Delivery) (Delivery, error) {
 	delivery := Delivery{
 		Route:       route,
 		MessageType: request.GetMessageType(),
-		CommandID:   request.GetCommandId(),
+		CommandHash: request.GetCommandHash(),
 		Payload:     request.GetPayload(),
 	}
 	if err := delivery.Validate(); err != nil {

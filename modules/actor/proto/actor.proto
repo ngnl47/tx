@@ -44,7 +44,7 @@ message SessionIdentity {
 // Payload 是调用方持有的不透明 BON 字节序列。
 message Delivery {
   string message_type = 1;
-  uint64 command_id = 2;
+  fixed32 command_hash = 2;
   bytes payload = 3;
   DeliveryMode mode = 4;
   RouteKeyKind route_key_kind = 5;
@@ -59,7 +59,7 @@ message Delivery {
 
 // Acceptance 表示目标 Actor 已从邮箱取出确认式投递，但不代表业务处理已经完成。
 message Acceptance {
-  uint64 command_id = 1;
+  fixed32 command_hash = 1;
   uint64 request_id = 2;
 }
 
@@ -67,7 +67,7 @@ message Acceptance {
 message Result {
   uint64 request_id = 1;
   string message_type = 2;
-  uint64 command_id = 3;
+  fixed32 command_hash = 3;
   bytes payload = 4;
   int32 error_code = 5;
   string error_message = 6;

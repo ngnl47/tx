@@ -60,7 +60,7 @@ func echoRuntime() *actorhost.Runtime {
 			if d.MessageType == "ack" {
 				return &actorpb.Result{MessageType: "ok"}, nil
 			}
-			return &actorpb.Result{MessageType: d.MessageType, CommandId: d.CommandId, Payload: d.Payload}, nil
+			return &actorpb.Result{MessageType: d.MessageType, CommandHash: d.CommandHash, Payload: d.Payload}, nil
 		}}, nil
 	})
 }
@@ -73,13 +73,13 @@ func TestNATSRoundTripAndAdmission(t *testing.T) {
 	b := peer(t, url, ns, "b", r)
 	defer a.runtime.Drain(ctx)
 	defer r.Drain(ctx)
-	d := &actorpb.Delivery{MessageType: "buff", CommandId: 7, Payload: []byte{0, 1, 255}, Identity: &actorpb.SessionIdentity{AccountId: 9}}
+	d := &actorpb.Delivery{MessageType: "buff", CommandHash: 7, Payload: []byte{0, 1, 255}, Identity: &actorpb.SessionIdentity{AccountId: 9}}
 	target := actorhost.Target{Instance: "b", Identity: actorhost.Identity{Kind: "room", Key: "42"}}
 	result, err := a.Call(ctx, target, d)
-	if err != nil || result.CommandId != 7 || string(result.Payload) != string(d.Payload) {
+	if err != nil || result.CommandHash != 7 || string(result.Payload) != string(d.Payload) {
 		t.Fatalf("result=%v err=%v", result, err)
 	}
-	if !proto.Equal(d, &actorpb.Delivery{MessageType: "buff", CommandId: 7, Payload: []byte{0, 1, 255}, Identity: &actorpb.SessionIdentity{AccountId: 9}}) {
+	if !proto.Equal(d, &actorpb.Delivery{MessageType: "buff", CommandHash: 7, Payload: []byte{0, 1, 255}, Identity: &actorpb.SessionIdentity{AccountId: 9}}) {
 		t.Fatal("调用修改了输入")
 	}
 	ack, err := a.Call(ctx, target, &actorpb.Delivery{MessageType: "ack", Identity: d.Identity})
@@ -289,7 +289,7 @@ func TestNATSSharedRepliesStayBoundedAndClose(t *testing.T) {
 			started <- struct{}{}
 			<-release
 			d := value.(*actorpb.Delivery)
-			return &actorpb.Result{MessageType: "ok", CommandId: d.CommandId}, nil
+			return &actorpb.Result{MessageType: "ok", CommandHash: d.CommandHash}, nil
 		}}, nil
 	})
 	b := peer(t, url, ns, "b", r)
@@ -299,7 +299,7 @@ func TestNATSSharedRepliesStayBoundedAndClose(t *testing.T) {
 	for i := range 32 {
 		callCtx, cancel := context.WithCancel(ctx)
 		t.Cleanup(cancel)
-		f, err := a.CallFuture(callCtx, actorhost.Target{Instance: "b", Identity: actorhost.Identity{Kind: "room", Key: strconv.Itoa(i)}}, &actorpb.Delivery{CommandId: uint64(i + 1)})
+		f, err := a.CallFuture(callCtx, actorhost.Target{Instance: "b", Identity: actorhost.Identity{Kind: "room", Key: strconv.Itoa(i)}}, &actorpb.Delivery{CommandHash: uint32(i + 1)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -323,7 +323,7 @@ func TestNATSSharedRepliesStayBoundedAndClose(t *testing.T) {
 	unblock()
 	for i, f := range futures[16:] {
 		result, err := f.Await(ctx)
-		if err != nil || result.CommandId != uint64(i+17) {
+		if err != nil || result.CommandHash != uint32(i+17) {
 			t.Fatalf("请求 %d: %v %v", i+17, result, err)
 		}
 	}
@@ -368,7 +368,7 @@ func TestNATSCrossProcess(t *testing.T) {
 						fmt.Println("EXECUTING")
 						<-release
 					}
-					return &actorpb.Result{MessageType: "ok", CommandId: d.CommandId, Payload: d.Payload}, nil
+					return &actorpb.Result{MessageType: "ok", CommandHash: d.CommandHash, Payload: d.Payload}, nil
 				},
 				OnDeactivateBefore: func(c actorhost.Context) error {
 					_, err := p.Call(c, actorhost.Target{Instance: "parent", Identity: actorhost.Identity{Kind: "notice", Key: "1"}}, &actorpb.Delivery{MessageType: "exit"})
@@ -457,8 +457,8 @@ func TestNATSCrossProcess(t *testing.T) {
 	waitLine("READY")
 	target := actorhost.Target{Instance: "child", Identity: actorhost.Identity{Kind: "room", Key: "1"}}
 	payload := []byte{0, 1, 255}
-	result, err := parent.Call(ctx, target, &actorpb.Delivery{MessageType: "echo", CommandId: 99, Payload: payload})
-	if err != nil || result.CommandId != 99 || string(result.Payload) != string(payload) {
+	result, err := parent.Call(ctx, target, &actorpb.Delivery{MessageType: "echo", CommandHash: 99, Payload: payload})
+	if err != nil || result.CommandHash != 99 || string(result.Payload) != string(payload) {
 		t.Fatalf("cross process result=%v err=%v", result, err)
 	}
 	if err = parent.TellAccepted(ctx, target, &actorpb.Delivery{MessageType: "slow"}); err != nil {

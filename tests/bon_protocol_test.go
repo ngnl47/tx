@@ -24,8 +24,7 @@ type bonProtocolRequest struct {
 	Raw    map[string]any   `json:"raw" msgpack:"raw"`
 }
 
-func TestBONEnvelopeDecodesTypedMsgpackTaggedBody(t *testing.T) {
-	const command = "Role_AddItem"
+func TestBONBodyDecodesTypedMsgpackTaggedBody(t *testing.T) {
 	want := bonProtocolRequest{
 		RoleID: 4_700_001,
 		Item:   &bonProtocolItem{ID: 1001, Quantity: 9_007_199_254_740_991, ExpireAt: time.UnixMilli(1_725_000_000_123)},
@@ -35,19 +34,12 @@ func TestBONEnvelopeDecodesTypedMsgpackTaggedBody(t *testing.T) {
 		Raw:    map[string]any{"enabled": true, "rates": []any{int32(3), "normal"}},
 	}
 
-	payload, err := bon.MarshalEnvelope(command, want)
+	payload, err := bon.Marshal(want)
 	if err != nil {
-		t.Fatalf("MarshalEnvelope returned error: %v", err)
-	}
-	actualCommand, body, err := bon.UnmarshalEnvelope(payload)
-	if err != nil {
-		t.Fatalf("UnmarshalEnvelope returned error: %v", err)
-	}
-	if actualCommand != command {
-		t.Fatalf("command = %q, want %q", actualCommand, command)
+		t.Fatalf("Marshal returned error: %v", err)
 	}
 	var got bonProtocolRequest
-	if err := bon.DecodeValue(body, &got); err != nil {
+	if err := bon.Unmarshal(payload, &got); err != nil {
 		t.Fatalf("DecodeValue returned error: %v", err)
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -55,18 +47,14 @@ func TestBONEnvelopeDecodesTypedMsgpackTaggedBody(t *testing.T) {
 	}
 }
 
-func TestBONEnvelopeMatchesClientPrimitiveLayout(t *testing.T) {
-	payload, err := bon.MarshalEnvelope("Ping", struct {
+func TestBONBodyMatchesClientPrimitiveLayout(t *testing.T) {
+	payload, err := bon.Marshal(struct {
 		ID int32 `json:"id" msgpack:"pid"`
 	}{ID: 1})
 	if err != nil {
-		t.Fatalf("MarshalEnvelope returned error: %v", err)
+		t.Fatalf("Marshal returned error: %v", err)
 	}
 	want := []byte{
-		8, 2,
-		5, 1, 99,
-		5, 4, 80, 105, 110, 103,
-		5, 1, 98,
 		8, 1,
 		5, 3, 112, 105, 100,
 		1, 1, 0, 0, 0,
@@ -92,9 +80,10 @@ func TestBONUint32PreservesUpperHalf(t *testing.T) {
 	}
 }
 
-func TestBONRejectsMalformedEnvelope(t *testing.T) {
-	if _, _, err := bon.UnmarshalEnvelope([]byte{8, 1, 5, 1, 99}); err == nil {
-		t.Fatal("UnmarshalEnvelope returned nil error for truncated payload")
+func TestBONRejectsMalformedBody(t *testing.T) {
+	var target any
+	if err := bon.Unmarshal([]byte{8, 1, 5, 1, 99}, &target); err == nil {
+		t.Fatal("Unmarshal returned nil error for truncated payload")
 	}
 }
 

@@ -12,9 +12,9 @@ func TestTCPTransportWriteDownBatchPreservesFrames(t *testing.T) {
 	defer server.Close()
 	defer client.Close()
 	frames := []Frame{
-		{Kind: FrameDownMsg, Seq: 10, Payload: []byte("first")},
-		{Kind: FrameDownMsg, Seq: 11, Payload: []byte("second")},
-		{Kind: FrameDownMsg, Seq: 12, Payload: []byte("third")},
+		{Kind: FrameDownMsg, CommandHash: 1, Seq: 10, Payload: []byte("first")},
+		{Kind: FrameDownMsg, CommandHash: 1, Seq: 11, Payload: []byte("second")},
+		{Kind: FrameDownMsg, CommandHash: 1, Seq: 12, Payload: []byte("third")},
 	}
 	result := make(chan error, 1)
 	go func() {
@@ -35,9 +35,9 @@ func TestTCPTransportWriteDownBatchPreservesFrames(t *testing.T) {
 // BenchmarkTCPDownlinkWrites 测量同一连接连续写出三帧时的传输成本上限。
 func BenchmarkTCPDownlinkWrites(b *testing.B) {
 	frames := []Frame{
-		{Kind: FrameDownMsg, Seq: 1, Payload: make([]byte, 96)},
-		{Kind: FrameDownMsg, Seq: 2, Payload: make([]byte, 96)},
-		{Kind: FrameDownMsg, Seq: 3, Payload: make([]byte, 96)},
+		{Kind: FrameDownMsg, CommandHash: 1, Seq: 1, Payload: make([]byte, 96)},
+		{Kind: FrameDownMsg, CommandHash: 1, Seq: 2, Payload: make([]byte, 96)},
+		{Kind: FrameDownMsg, CommandHash: 1, Seq: 3, Payload: make([]byte, 96)},
 	}
 	for _, variant := range []struct {
 		name  string

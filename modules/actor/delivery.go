@@ -32,7 +32,7 @@ type Delivery struct {
 	// Origin 由 Agent 和可靠任务消费入口覆盖；普通内部调用默认为 OriginInternal。
 	Origin      DeliveryOrigin
 	MessageType string
-	CommandID   uint64
+	CommandHash uint32
 	RouteKey    txprotocol.RouteKey
 	Payload     []byte
 	Identity    *txprotocol.SessionIdentity
@@ -75,7 +75,7 @@ func (d Delivery) toProto(mode actorpb.DeliveryMode, requestID uint64) (*actorpb
 	return &actorpb.Delivery{
 		MessageType:     d.MessageType,
 		Origin:          actorpb.DeliveryOrigin(d.Origin),
-		CommandId:       d.CommandID,
+		CommandHash:     d.CommandHash,
 		Payload:         append([]byte(nil), d.Payload...),
 		Mode:            mode,
 		RouteKeyKind:    routeKeyKind,
@@ -105,7 +105,7 @@ func DeliveryFromProto(message *actorpb.Delivery) (Delivery, error) {
 	delivery := Delivery{
 		MessageType: message.GetMessageType(),
 		Origin:      DeliveryOrigin(message.GetOrigin()),
-		CommandID:   message.GetCommandId(),
+		CommandHash: message.GetCommandHash(),
 		RouteKey:    routeKey,
 		Payload:     append([]byte(nil), message.GetPayload()...),
 		Identity:    identity,

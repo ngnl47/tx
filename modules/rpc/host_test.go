@@ -22,7 +22,7 @@ func TestHostServesRegisteredServicesOnOneEndpoint(t *testing.T) {
 	var called Delivery
 	expectedResult := Result{
 		MessageType: "Login_ServerListResp",
-		CommandID:   10153,
+		CommandHash: 10153,
 		Payload:     []byte("result-body"),
 	}
 	if err := host.Register(func(registrar grpc.ServiceRegistrar) error {
@@ -65,27 +65,27 @@ func TestHostServesRegisteredServicesOnOneEndpoint(t *testing.T) {
 	if _, err := client.Deliver(context.Background(), &rpcpb.Delivery{
 		Route:       &rpcpb.Route{Kind: rpcpb.RouteKind_ROUTE_KIND_SERVICE, Service: "game"},
 		MessageType: "role.sync",
-		CommandId:   47001,
+		CommandHash: 47001,
 		Payload:     []byte("bon-body"),
 	}); err != nil {
 		t.Fatalf("Deliver returned error: %v", err)
 	}
-	if delivered.MessageType != "role.sync" || delivered.CommandID != 47001 || string(delivered.Payload) != "bon-body" {
+	if delivered.MessageType != "role.sync" || delivered.CommandHash != 47001 || string(delivered.Payload) != "bon-body" {
 		t.Fatalf("delivered = %#v", delivered)
 	}
 	result, err := client.Call(context.Background(), &rpcpb.Delivery{
 		Route:       &rpcpb.Route{Kind: rpcpb.RouteKind_ROUTE_KIND_SERVICE, Service: "login"},
 		MessageType: "login.request",
-		CommandId:   10152,
+		CommandHash: 10152,
 		Payload:     []byte("query-body"),
 	})
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	if called.Route.Kind != RouteService || called.Route.Service != "login" || called.MessageType != "login.request" || called.CommandID != 10152 || string(called.Payload) != "query-body" {
+	if called.Route.Kind != RouteService || called.Route.Service != "login" || called.MessageType != "login.request" || called.CommandHash != 10152 || string(called.Payload) != "query-body" {
 		t.Fatalf("called = %#v", called)
 	}
-	if result.GetMessageType() != expectedResult.MessageType || result.GetCommandId() != expectedResult.CommandID || string(result.GetPayload()) != string(expectedResult.Payload) {
+	if result.GetMessageType() != expectedResult.MessageType || result.GetCommandHash() != expectedResult.CommandHash || string(result.GetPayload()) != string(expectedResult.Payload) {
 		t.Fatalf("result = %#v, want %#v", result, expectedResult)
 	}
 }

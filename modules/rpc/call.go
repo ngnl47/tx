@@ -17,7 +17,7 @@ var (
 // Result 表示一次同步 RPC 调用返回的不透明结果。
 type Result struct {
 	MessageType string
-	CommandID   uint64
+	CommandHash uint32
 	Payload     []byte
 }
 
@@ -73,7 +73,7 @@ func resultToProto(result Result) (*rpcpb.Result, error) {
 	}
 	return &rpcpb.Result{
 		MessageType: result.MessageType,
-		CommandId:   result.CommandID,
+		CommandHash: result.CommandHash,
 		Payload:     result.Payload,
 	}, nil
 }
@@ -84,7 +84,7 @@ func resultFromProto(result *rpcpb.Result) (Result, error) {
 	}
 	converted := Result{
 		MessageType: result.GetMessageType(),
-		CommandID:   result.GetCommandId(),
+		CommandHash: result.GetCommandHash(),
 		Payload:     result.GetPayload(),
 	}
 	if err := converted.Validate(); err != nil {

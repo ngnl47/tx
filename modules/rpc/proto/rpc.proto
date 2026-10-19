@@ -22,13 +22,13 @@ message Route {
 message Delivery {
   Route route = 1;
   string message_type = 2;
-  uint64 command_id = 3;
+  fixed32 command_hash = 3;
   bytes payload = 4;
 }
 
 message Result {
   string message_type = 1;
-  uint64 command_id = 2;
+  fixed32 command_hash = 2;
   bytes payload = 3;
 }
 
