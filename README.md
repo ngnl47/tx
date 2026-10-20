@@ -819,7 +819,7 @@ handlers := func(runtime bee.Context) (txagent.IdentityResolver, txagent.Dispatc
 resolver 和客户端载荷均不能指定 `ConnectionID`，也不能伪造投递给 Actor 的身份。Agent 只负责 Frame、
 身份和 Seq/Ack，不依赖任何项目生成包。授权的各 Session 独立维护邮箱和恢复状态，共享 RoleID 时路由到同一 Actor，并接收角色下行。
 
-内部 Actor 调用可携带可信 `Identity`，也可省略；身份本身不决定请求来源或响应路径。Delivery 和生成的 HandlerContext 均不暴露 UpSeq。
+内部 Actor 调用可携带可信 `Identity`，也可省略；身份本身不决定请求来源或响应路径。Delivery 和业务调用上下文 `actor.MessageContext` 均不暴露 UpSeq。
 
 一条连接的处理顺序固定如下：
 
@@ -987,7 +987,7 @@ socket.send(encodeFrame({
 
 命令标识由 txgen 对命令类型名原样 UTF-8 字节计算 **FNV-1a 32 位哈希**，大小写敏感。请求和响应共用同一个哈希空间；生成前检查所有命令，发现碰撞或保留值 `0` 时失败并报告命令名，由开发者重命名新命令后重新生成。客户端和服务端使用生成常量，不在运行时计算哈希。
 
-开发者维护 cmd 类型及 `@cmdRoute` 注解；txgen 自动生成 Go `CmdDescriptors` / `CmdDescriptorsByHash` 与 TypeScript `CommandSchemas` / `CommandNamesByHash`。生成描述表随前后端代码发布，禁止手改。不再维护编号池、服务号段、退休清单或清池入口。多人分支合并后须重新生成整套协议，以检测合并后的碰撞；检查范围是本次项目输入，不提供跨版本历史碰撞保证。命令重命名会改变哈希，属于协议变更。
+开发者在 `gen/cmd` 维护 DTO 和 `@actor` 接口，通过 `@scope`、`@mode` 声明投递范围与调用语义，使用接口默认值或方法上的 `@route`、`@principal` 声明路由与身份要求；txgen 自动生成 Go `CmdDescriptors` / `CmdDescriptorsByHash` 与 TypeScript `CommandSchemas` / `CommandNamesByHash`。生成描述表随前后端代码发布，禁止手改。不再维护编号池、服务号段、退休清单或清池入口。多人分支合并后须重新生成整套协议，以检测合并后的碰撞；检查范围是本次项目输入，不提供跨版本历史碰撞保证。命令重命名会改变哈希，属于协议变更。
 
 `toService`、`actor`、`actorKey` 是描述表内的路由元数据，不参与哈希。Agent 先按帧头哈希查描述表，再选择目标服务和 Actor，不按哈希数值区间路由，也不解析 BON。
 
@@ -1411,7 +1411,7 @@ Key 的编码由项目统一约定，tx 不推断整数或业务分组。两个�
 | CallFuture | 完成寻址后返回 Future，异步等待执行结果 |
 | Call | 同步等待同一 Future 的执行结果 |
 
-`Tell` 冷寻址由 tx 提供有限查询期限。`TellAccepted`、`CallFuture`、`Call` 使用带 deadline 的 Context；取消等待不撤销业务。失败不自动改派或重投。Core NATS 不保证异常后的必达，JetStream 可靠任务仍属于后续建设。
+`Tell` 冷寻址由 tx 提供有限查询期限。`TellAccepted`、`CallFuture`、`Call` 使用带 deadline 的 Context；取消等待不撤销业务。失败不自动改派或重投。Core NATS 不保证异常后的必达；需要持久投递的业务使用已实现的 `CModTaskQueue`，生产故障域与容量仍须独立验收。
 
 上行序号与下行确认的完整边界见 [会话序号与确认契约](docs/design.md#会话序号与确认契约)，当前实现和验收进度见 [实施计划](docs/IMPLEMENTATION_PLAN.md)。
 

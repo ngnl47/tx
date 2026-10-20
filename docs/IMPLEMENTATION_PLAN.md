@@ -10,7 +10,7 @@
 | --- | --- |
 | UpSeq 止于 Agent 当前连接 | 已实现；[连接处理](../modules/agent/session.go) 与 [Agent 回归](../tests/agent_session_test.go) 覆盖旧号过滤、跳号及 `TestAgentRestoreOnlyRestoresDownlinkMailbox` |
 | 上行不确认、不重放 | 已实现；[写帧回归](../modules/agent/session_writer_test.go) 验证服务端不发上行 Ack；[客户端会话测试](../../txclient/tests/client.test.ts) 验证恢复不重放 |
-| 业务与 MsgQ 不接收 UpSeq | 已移除 Delivery、HandlerContext 及 MsgQ 上行游标；生成器与两套应用产物已同步，Go/客户端回归已完成 |
+| 业务与 MsgQ 不接收 UpSeq | Delivery、MessageContext 与 MsgQ 均不接收 UpSeq，MsgQ 上行游标已移除；生成器与两套应用产物已同步，Go/客户端回归已完成 |
 | 压测关联与传输序号分离 | 已实现；[ProbeID 回归](../../txclient/tests/cluster-perf.test.ts) 覆盖乱序响应、单条超时后继续且不重投 |
 | 本地持续流量滚动发布 | 已完成；[验收记录](../../txgame/docs/acceptance/local-rolling-release.md)：50 连接、180 秒、45,000/45,000 完成，四次 Game 更新/回滚及最终排水通过 |
 
@@ -51,3 +51,16 @@
 - 公共契约变化分别核对字段的产生者、持有者、跨进程传递与释放时机，并逐项记录实现和验收证据；不能用“取消确认”代替“字段不再下传”的核验。同步 README、design、两套应用接入和必要生成产物；普通文档整理不要求重跑集群或重生成未变更产物。
 - 有日期的历史设计和压测记录须标明适用版本或已被替代的契约，不作为当前实现依据；原始结果保留，不能改写为新构建已验收。
 - 每轮说明实际执行、依赖跳过与未验证的范围，运行差异检查并进行变更复核；未经要求不提交。
+
+## 统一业务协议与独立完成事件验收
+
+2026-10-19 本轮实现，未提交：
+
+- `actor.MessageContext` 显式携带 Actor、Principal 和本次激活的 State；`MessageTable` 按服务一次构造、只读共享，接收端校验 client/remote/local 范围及 Call/Tell 模式。本地信封不经远程 Delivery 调用。
+- txgen 的统一协议输入为 `gen/cmd`，同一 DTO 和方法可同时声明多个入口。客户端描述、哈希、BON 和 TypeScript 复用现有生成流程，服务端公开端点使用业务 DTO 别名；生成前拒绝类型/端点冲突与路由键类型不匹配。
+- txgameslg 的 World.StartMarch 同时接收客户端与 Role Tell。Role 只校验并转发同一 DTO/可信身份；两条路径都由当前 World 激活的网格、本地完成 Handler 发布最终结果。Handler 不按 Origin 分支，不生成 Accepted，不协调跨节点响应顺序。
+- 移除重复行军 cmd/rpc 源、激活级 Handler/注册表、RPCRegistry 与 ForActor 覆盖表。共享依赖在 Service.Start 构造，GridWorld 和 Post 句柄仍按激活隔离；local 发布失败记录业务身份与错误，不重投。
+- 既有非行军 cmd 和纯内部 GenerateRPC 接口仍保留；本轮没有全量迁移无关协议。txgame 的独立接入进行了本地回归。
+- 本地关闭准入后，尚在执行的网格任务可能无法 Post 最终事件；保留记录错误的既定边界，不把它升级为持久后台任务或同步发布屏障。
+
+验收范围：tx、txgen、txgame/server、txgameslg/server 和 gen 常规 Go 回归，txclientslg 123 项测试与构建，以及 Actor 消息表、统一生成契约、SLG Handler/网格关键路径的 race 检查。真实外部依赖测试未显式启用，跳过不算通过；未运行真实集群、滚动发布或云端吞吐回测。

@@ -2178,7 +2178,7 @@ MailboxStream 的每 Session 接收缓冲有界，慢 Session 缓冲溢出时结
 
 命令标识由 txgen 对命令类型名原样 UTF-8 字节计算 **FNV-1a 32 位哈希**，大小写敏感。请求和响应共用同一个哈希空间；生成前检查所有命令，发现碰撞或保留值 `0` 时失败并报告命令名，由开发者重命名新命令后重新生成。客户端和服务端使用生成常量，不在运行时计算哈希。
 
-开发者维护 cmd 类型及 `@cmdRoute` 注解；txgen 自动生成 Go `CmdDescriptors` / `CmdDescriptorsByHash` 与 TypeScript `CommandSchemas` / `CommandNamesByHash`。生成描述表随前后端代码发布，禁止手改。不再维护编号池、服务号段、退休清单或清池入口。多人分支合并后须重新生成整套协议，以检测合并后的碰撞；检查范围是本次项目输入，不提供跨版本历史碰撞保证。命令重命名会改变哈希，属于协议变更。
+开发者在 `gen/cmd` 维护 DTO 和 `@actor` 接口，通过 `@scope`、`@mode` 声明投递范围与调用语义，使用接口默认值或方法上的 `@route`、`@principal` 声明路由与身份要求；txgen 自动生成 Go `CmdDescriptors` / `CmdDescriptorsByHash` 与 TypeScript `CommandSchemas` / `CommandNamesByHash`。生成描述表随前后端代码发布，禁止手改。不再维护编号池、服务号段、退休清单或清池入口。多人分支合并后须重新生成整套协议，以检测合并后的碰撞；检查范围是本次项目输入，不提供跨版本历史碰撞保证。命令重命名会改变哈希，属于协议变更。
 
 `toService`、`actor`、`actorKey` 是描述表内的路由元数据，不参与哈希。Agent 先按帧头哈希查描述表，再选择目标服务和 Actor，不按哈希数值区间路由，也不解析 BON。
 
@@ -2328,7 +2328,7 @@ Bee 或 Ant Context，使用 CModActorDirect 完成直连；稳定分区或业�
 
 通用 Actor Dispatcher 在调用 Messenger 前以 `DispatchRequest` 的可信 `SessionIdentity` 覆盖 Delivery 身份。
 项目 Actor resolver 只负责目标、消息类型、命令哈希、路由键和载荷，不能伪造身份。
-Actor protobuf 保留完整身份；内部调用也可省略身份。UpSeq 不进入 Delivery、HandlerContext 或 MsgQ。
+Actor protobuf 保留完整身份；内部调用也可省略身份。UpSeq 不进入 Delivery、MessageContext 或 MsgQ。
 
 `Dispatcher` 通过直连 `Enqueue` 将上行提交给目标实例的长流后返回 error；nil 只表示本地传输提交成功，不是远端 Actor 邮箱接纳或业务执行成功的回执，也不回传客户端。Game/Actor 后续通过 `SendRole` 向角色会话扇出普通响应，请求级错误通过 `SendSession` 精确发布。两者进入本地有界发布队列后返回，不等待 MsgQ 逐项入队确认；新 SessionID 不继承旧会话下行。
 
@@ -2399,7 +2399,7 @@ Tell 完成寻址后仅确认本地投递；TellAccepted 确认到达当前连�
 
 有界邮箱将准入与生命周期登记放在同一边界；关闸后拒绝新消息，已接受的初始化、排队和处理继续完成。远端错误经 Result 协议传播，普通 Tell 不增加执行回执。远程 pending 由响应、Context 到期或连接关闭清理，不为每个 Future 常驻等待 goroutine。Agent 先使用归属目录检查 running 状态，不再维护依赖 PID 的第二份短期排水缓存。
 
-投递入口语义由 `DeliveryOrigin` 表达，通过 `Delivery.Origin` 和生成接口 `HandlerContext.Origin()` 读取：
+投递入口语义由 `DeliveryOrigin` 表达，通过 `Delivery.Origin` 和业务调用上下文 `MessageContext.Origin` 读取；响应链路由适配层选择，业务 Handler 无需按来源分支：
 
 | 路径示例 | 入口语义 | 当前处理方式 |
 | --- | --- | --- |
@@ -2670,3 +2670,15 @@ go tool pprof /tmp/tx-mem.pprof
 ## 槽位读取与高级管理 API
 
 业务通过 ant.Context.CModSlots 取得 SlotReader，使用 SlotResolver 解析 running 目标或在 World loader 中校验归属。SlotStore 嵌入 SlotReader 并保留 CreateSlot/PromoteSlot；SlotRouter 保留原有高级读写 API，读取复用 SlotResolver。game 侧高级组件和控制面可由组合根显式注入完整 SlotStore，不转移其连接生命周期。不会把只读上下文作为获取写入能力的入口，也不把 Go 接口收窄当作安全沙箱。
+
+### Handler 返回与独立后台工作
+
+Actor Call 的成功表示 Handler 方法成功返回，不隐含等待该方法提交的全部后台工作。若接口承诺队列接纳，可靠任务消费者也只获得该提交结果；内存队列不因此具有持久执行保证。业务不得把 Accepted 描述为后台操作已经完成。
+
+独立工作需要后续通知时，可通过当前激活的 Context.Post 或跨 Actor Tell 将完成事件交给业务指定的 Actor。Post 不等待消费，当前 Actor 不得 Await 自己投递的事件。它仍受邮箱容量及关闭准入约束，旧激活句柄不能触发新激活；后台队列自行负责错误与排水。
+
+业务可采用单向提交、独立完成事件和唯一最终通知，避免为中间 Accepted 与完成通知建立分布式顺序屏障。框架不按命令名称或业务标记切换同步发布，也不保证不同节点独立通知的到达顺序。需要两阶段通知时由业务定义操作标识与阶段处理；本地回调执行顺序不等于跨进程送达顺序。普通 Call 仍只返回被调用方法的实际结果。
+
+统一业务协议由应用的 `gen/cmd` 声明，txgen 显式读取 client/remote/local 作用域和 Call/Tell 模式，同一业务方法可处理多个入口。tx 的 `MessageTable` 在服务装配时只构造一次，接收端校验作用域和模式；`MessageContext` 显式包含当前 Actor、可信 Principal 与本次激活的 State。不同 Actor 可并发使用共享 Handler，但不能共享可变的激活状态。业务 Handler 不负责选择响应传输。
+
+本地事件使用 `LocalMessage`，不序列化为远程 Delivery。生成的 Post 通过当前激活句柄进入邮箱，沿用 Context.Post 的容量、关闭和过期句柄边界，不引入隐式恢复、异步响应或排序屏障。Actor 运行时不识别行军 DTO、命令名称或业务节点种类。独立的纯内部 RPC 契约仍可使用 GenerateRPC；同一方法需要多入口时使用统一协议，避免两份 DTO 和 Handler 桥接。
