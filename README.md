@@ -1406,10 +1406,12 @@ Key 的编码由项目统一约定，tx 不推断整数或业务分组。两个�
 
 | API | 返回条件 |
 | --- | --- |
-| Tell | 完成寻址并提交本地传输，不等待 NATS 确认 |
-| TellAccepted | 确认到达当前连接的 NATS 服务端，不确认持久化、目标收取或执行 |
+| Tell | 同实例进入本地邮箱；跨实例提交 NATS 客户端，不等待执行 |
+| TellAccepted | 同实例确认邮箱接纳；跨实例确认 NATS 到达，不确认业务执行或持久化 |
 | CallFuture | 完成寻址后返回 Future，异步等待执行结果 |
 | Call | 同步等待同一 Future 的执行结果 |
+
+同实例以目标 Runtime InstanceID 判断，不以 IP 或 OS 进程判断。Call/CallFuture/Tell/TellAccepted 共用既有邮箱准入、容量与排水；本地 Tell 不等待初始化或 Handler，已知准入失败立即返回，后续执行失败记录日志。消息保留独立副本。同一调用方顺序提交到同一实例的 Actor 邮箱保持入队顺序，不承诺多发送方、本地与远程混合或交接前后的全局顺序。可靠任务始终先经 JetStream 持久发布，不因目标本地而省略。
 
 `Tell` 冷寻址由 tx 提供有限查询期限。`TellAccepted`、`CallFuture`、`Call` 使用带 deadline 的 Context；取消等待不撤销业务。失败不自动改派或重投。Core NATS 不保证异常后的必达；需要持久投递的业务使用已实现的 `CModTaskQueue`，生产故障域与容量仍须独立验收。
 

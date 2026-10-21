@@ -12,7 +12,7 @@ import (
 // Agent 上行仍使用绑定 DirectTransport 的 RoutedCaller。
 type NATSMessenger struct{ Router *EntityRouter }
 
-// Tell 解析目标后提交到本地传输，不等待 NATS 确认或远端执行。
+// Tell 解析目标后提交本地邮箱或 NATS 客户端，不等待业务执行。
 func (m *NATSMessenger) Tell(ctx context.Context, id actorhost.Identity, delivery *actorpb.Delivery) error {
 	target, err := m.Router.Resolve(ctx, id)
 	if err != nil {
@@ -21,7 +21,7 @@ func (m *NATSMessenger) Tell(ctx context.Context, id actorhost.Identity, deliver
 	return m.Router.Transport.Tell(ctx, target, delivery)
 }
 
-// TellAccepted 只等待 NATS 到达确认，不等待目标收取、业务执行或持久化。
+// TellAccepted 同实例确认邮箱接纳，跨实例确认 NATS 到达，不等待业务执行或持久化。
 func (m *NATSMessenger) TellAccepted(ctx context.Context, id actorhost.Identity, delivery *actorpb.Delivery) error {
 	target, err := m.Router.Resolve(ctx, id)
 	if err != nil {

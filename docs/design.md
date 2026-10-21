@@ -2056,7 +2056,7 @@ MsgQ 是客户端会话邮箱，正文保存在实例内存中；它不承担 Je
 | --- | --- | --- |
 | 直连 gRPC 上行 | 按连接顺序提交目标实例的流；仅本地提交成功，不等待远端邮箱或业务回执 | 高频客户端命令，减少 broker 转发流量 |
 | 直连 gRPC 下行 | 业务服务直接发布到 MsgQ，Agent 协调 Fetch/Ack 并发送客户端 | Game、SLGWorld、FightRoom 等共用；不经 NATS 或 Game 中转 |
-| Core NATS Actor RPC | Tell 本地投递；TellAccepted 仅确认到达 NATS；CallFuture/Call 等待远端执行结果 | 正常运行期间的实体交互，不保证持久化或失败后必达 |
+| Actor RPC | 同实例本地邮箱、跨实例 Core NATS；TellAccepted 确认本地邮箱或远端 NATS 接纳；CallFuture/Call 等待执行结果 | 正常运行期间的实体交互，不保证持久化或失败后必达 |
 | JetStream 可靠任务 | 发布持久化确认与消费 ACK 分开；业务执行后确认，失败按既定重试/死信策略处理 | 需要利用 MQ 持久化能力跨重启继续消费的任务 |
 
 可靠任务可以复用实体路由和业务分派，但不能简单把普通 RPC 加上持久化开关就宣称可靠完成。既定任务 ACK 不等待 GD 刷盘，也不通过新增完成表或 GD 字段消除执行成功后 ACK 丢失的重复窗口。普通 RPC 的超时也不能证明业务未执行。
@@ -2395,7 +2395,7 @@ ServiceSpec.ActorKinds 构成应用目录，Kind 名称应用内唯一；仅选�
 
 ### Actor mailbox
 
-Tell 完成寻址后仅确认本地投递；TellAccepted 确认到达当前连接的 NATS 服务端，不确认持久化或目标收取。CallFuture 返回异步 Future，Call 同步等待相同结果。等待超时不撤销已接受业务，也不自动重投。普通业务结果必须有 MessageType；无响应体的成功处理使用 `Result.Completed=true`，不得同时携带 MessageType、CommandHash 或 Payload；Agent 上行通过直连 `CallStream` 单向投递，不等待逐项邮箱确认，业务下行独立走 MsgQ。
+Tell 完成寻址后，同 Runtime InstanceID 直接进入本地邮箱，跨实例提交 NATS 客户端；TellAccepted 同实例确认邮箱接纳，跨实例确认到达当前连接的 NATS 服务端，不确认业务执行或持久化。本地路径保留消息副本及邮箱准入、容量和排水检查，不等待初始化或业务执行；准入错误立即返回，异步执行错误记录日志。不承诺多发送方或混合传输的全局顺序。可靠任务仍先持久发布到 JetStream，消费后才按归属调用 Actor。CallFuture 返回异步 Future，Call 同步等待相同结果。等待超时不撤销已接受业务，也不自动重投。普通业务结果必须有 MessageType；无响应体的成功处理使用 `Result.Completed=true`，不得同时携带 MessageType、CommandHash 或 Payload；Agent 上行通过直连 `CallStream` 单向投递，不等待逐项邮箱确认，业务下行独立走 MsgQ。
 
 有界邮箱将准入与生命周期登记放在同一边界；关闸后拒绝新消息，已接受的初始化、排队和处理继续完成。远端错误经 Result 协议传播，普通 Tell 不增加执行回执。远程 pending 由响应、Context 到期或连接关闭清理，不为每个 Future 常驻等待 goroutine。Agent 先使用归属目录检查 running 状态，不再维护依赖 PID 的第二份短期排水缓存。
 
@@ -2460,7 +2460,7 @@ entry 指针和 generation；回调登记后发生的访问、对象替换或重
 Actor Runtime 不依赖 GD、Store、Procedure或 WriteBackManager，也不在超时回调执行存储 I/O。连接断开不直接停止
 Actor；普通心跳命令经过 RoleActor mailbox 即可续期。心跳不读取 GD 时，不延长 EntityCache 中 GD 的空闲时间。
 
-钝化不提高消息可靠级别。正在卸载的激活拒绝新准入，清理完成后才可重建；TellAccepted 仅确认 NATS 到达，不能检测业务已卸载或不允许重建。需要业务结果时使用 Call，不自动重试结果未知的请求。
+钝化不提高消息可靠级别。正在卸载的激活拒绝新准入，清理完成后才可重建；TellAccepted 的本地路径可返回已知准入拒绝，但不等待初始化完成；远端仅确认 NATS 到达，不能检测业务已卸载或不允许重建。需要业务结果时使用 Call，不自动重试结果未知的请求。
 
 EntityCache 的 access expiry 会增加每次访问的更新时间与维护调度成本，默认关闭。是否启用由应用的空闲回收需求决定；不根据单机历史跑分承诺生产容量。
 

@@ -18,7 +18,7 @@ import (
 
 var ErrPendingFull = errors.New("actor rpc: too many pending calls")
 
-// NATSTransport 通过 Core NATS 转发实体 RPC；与直连入口共用同一本地宿主。
+// NATSTransport 同实例投递本地邮箱，跨实例通过 Core NATS 转发实体 RPC；与直连入口共用本地宿主。
 // 连接由框架组合根持有，不对业务暴露原生 NATS 连接。
 type NATSTransport struct {
 	conn                *nats.Conn
@@ -183,12 +183,12 @@ func (p *NATSTransport) closeRequests() {
 	}
 }
 
-// Tell 只投递本地 NATS 客户端，不等待服务端确认。异步投递失败在接收端记录。
+// Tell 同实例进入本地邮箱，跨实例提交 NATS 客户端；不等待业务执行。
 func (p *NATSTransport) Tell(ctx context.Context, target actorhost.Target, delivery *actorpb.Delivery) error {
 	return p.publish(ctx, target, delivery, false)
 }
 
-// TellAccepted 通过 PING/PONG 确认此前输出到达当前 NATS 服务端，不确认持久化或目标处理。
+// TellAccepted 同实例确认邮箱接纳，跨实例确认 NATS 到达；不确认业务执行或持久化。
 func (p *NATSTransport) TellAccepted(ctx context.Context, target actorhost.Target, delivery *actorpb.Delivery) error {
 	return p.publish(ctx, target, delivery, true)
 }
@@ -203,6 +203,18 @@ func (p *NATSTransport) publish(ctx context.Context, target actorhost.Target, de
 	delivery = proto.Clone(delivery).(*actorpb.Delivery)
 	delivery.Mode = actorpb.DeliveryMode_DELIVERY_MODE_TELL
 	delivery.RequestId = 0
+	if target.Instance == p.instance {
+		_, err := p.runtime.SubmitWithReply(target.Identity, delivery, func(value any, err error) {
+			if err == nil && value != nil {
+				result, _ := value.(*actorpb.Result)
+				err = ResultError(result)
+			}
+			if err != nil {
+				slog.Error("actor rpc one-way command failed", "kind", target.Identity.Kind, "key", target.Identity.Key, "err", err)
+			}
+		})
+		return err
+	}
 	msg, err := p.message(target, delivery)
 	if err != nil {
 		return err

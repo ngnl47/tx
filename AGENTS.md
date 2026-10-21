@@ -30,9 +30,9 @@
 
 - NATS 迁移已完成，ProtoActor 后端已退役；当前阶段及验收边界以 `docs/IMPLEMENTATION_PLAN.md` 为准。迁移期 I2 阈值和旧基线仅作为历史证据，不再作为当前准入目标。
 
-- 已确认传输分工方向：Agent 上行通过 gRPC 直达 Game、SLGWorld、FightRoom 等命令所属服务；各业务服务的下行通过 gRPC 直接发布到 MsgQ，再由 Agent 读取并发送客户端。上下行均不得经 NATS 转发，也不要求经 Game 中转。Actor 间 RPC 使用 Core NATS，可靠业务任务使用 JetStream；任务消费后产生的客户端通知仍走上述直连下行。两种传输共用实体路由、加载准入和生命周期，业务只提供类型与路由键。拓扑图描述完成态，建设进度在实施计划中维护。
+- 已确认传输分工方向：Agent 上行通过 gRPC 直达 Game、SLGWorld、FightRoom 等命令所属服务；各业务服务的下行通过 gRPC 直接发布到 MsgQ，再由 Agent 读取并发送客户端。上下行均不得经 NATS 转发，也不要求经 Game 中转。Actor 间 RPC 同 Runtime 实例走本地邮箱，跨实例使用 Core NATS；可靠业务任务始终先使用 JetStream；任务消费后产生的客户端通知仍走上述直连下行。两种传输共用实体路由、加载准入和生命周期，业务只提供类型与路由键。拓扑图描述完成态，建设进度在实施计划中维护。
 - 优先复用现有 Discovery、SlotResolver 和第三方哈希库，不自建成员协议或第二份归属。稳定 assignment 以 SlotStore 为准；哈希不替代正常排水交接。转发跳数、链路字节量和云上计费流量分别评估，单向 Pub/Sub 跑分不能替代上行完成吞吐。
-- 正式 Actor 的 Tell 只确认本地投递；TellAccepted 确认消息到达当前连接的 NATS 服务端，不确认持久化、目标收取或业务执行；CallFuture 返回异步结果句柄，Call 同步等待同一结果协议。Core NATS 不代表持久化；JetStream 已提供可选 CModTaskQueue，工程功能闭环已验证；生产故障域和同步策略按部署验收处理。
+- 正式 Actor 的 Tell 同实例进入本地邮箱、跨实例提交 NATS 客户端，不等待业务执行；TellAccepted 同实例确认邮箱接纳，跨实例确认消息到达当前连接的 NATS 服务端，不确认持久化或业务执行；CallFuture 返回异步结果句柄，Call 同步等待同一结果协议。Core NATS 不代表持久化；JetStream 已提供可选 CModTaskQueue，工程功能闭环已验证；生产故障域和同步策略按部署验收处理。
 - game 与 slgworld 实例池独立伸缩，不绑定一对一关系，也不按固定世界数量限定每个实例。业务负责世界身份、存在性、加载与实例承载数量配置；tx 负责通用归属、数量准入、状态探测和生命周期。
 - 初始化期间的探测由运行时元数据入口处理，不排在业务邮箱后，也不并发读取未就绪 GD。未加载、容量不足、超时或暂时加载失败不能伪装成世界不存在。
 - Actor 工厂及初始化、激活事件不附加统一执行 deadline；具体加载 I/O 使用自身超时，回调结束取消当前 Context。调用方等待或排水超时不撤销已开始的加载，不提前释放容量或交接；不据此移除 Receive 和卸载回调的现有期限。

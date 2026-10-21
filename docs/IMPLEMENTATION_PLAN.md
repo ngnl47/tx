@@ -64,3 +64,11 @@
 - 本地关闭准入后，尚在执行的网格任务可能无法 Post 最终事件；保留记录错误的既定边界，不把它升级为持久后台任务或同步发布屏障。
 
 验收范围：tx、txgen、txgame/server、txgameslg/server 和 gen 常规 Go 回归，txclientslg 123 项测试与构建，以及 Actor 消息表、统一生成契约、SLG Handler/网格关键路径的 race 检查。真实外部依赖测试未显式启用，跳过不算通过；未运行真实集群、滚动发布或云端吞吐回测。
+
+## 同实例 Actor 投递（2026-10-21）
+
+- Call/CallFuture 沿用本地邮箱路径；Tell/TellAccepted 同 Runtime InstanceID 也直接入邮箱，跨实例仍走 Core NATS。保留消息副本、准入、容量、顺序与排水，不新增队列或执行线程。
+- TellAccepted 同实例确认邮箱接纳，跨实例确认 NATS 到达；两者均不确认业务执行或持久化。可靠任务仍先发布 JetStream，消费后才调用 Actor。
+- 本地回归覆盖冷启动不阻塞、Tell 后 Call 顺序、邮箱满、排水关闸、消息副本及异步错误；真实 NATS/etcd 与 JetStream 闭环用于验证跨实例路径和任务完成边界。
+
+验收结果：tx、txgame/server、txgameslg/server 全包本地回归通过；显式启用本机 NATS/etcd 的通信与 JetStream 任务闭环通过，actorrpc、actorhost、taskqueue 的 race 检查通过。其他未启用的外部依赖用例跳过不算通过；本轮未运行云端或吞吐回测。

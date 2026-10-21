@@ -1,8 +1,11 @@
 package actorrpc
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,7 +14,7 @@ import (
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 )
 
-func TestNATSTellAcceptedOnlyConfirmsServer(t *testing.T) {
+func TestNATSTellAcceptedConfirmsSelectedTransport(t *testing.T) {
 	url := natsURL(t)
 	ctx := actorTestContext(t)
 	ns := nats.NewInbox()
@@ -30,11 +33,109 @@ func TestNATSTellAcceptedOnlyConfirmsServer(t *testing.T) {
 	})
 	b := peer(t, url, ns, "b", r)
 	defer func() { close(release); _ = r.Drain(ctx) }()
-	// 目标在本进程也经过 NATS；工厂阻塞不能阻塞服务端确认。
+	// 同实例确认邮箱接纳，不等待工厂初始化或业务执行。
 	if err := b.TellAccepted(ctx, actorhost.Target{Instance: "b", Identity: actorhost.Identity{Kind: "role", Key: "cold"}}, &actorpb.Delivery{MessageType: "reward"}); err != nil {
 		t.Fatal(err)
 	}
 	signal(t, ctx, entered)
+}
+
+func TestLocalTellAdmissionOrderAndDrain(t *testing.T) {
+	for _, accepted := range []bool{false, true} {
+		t.Run(map[bool]string{false: "Tell", true: "TellAccepted"}[accepted], func(t *testing.T) {
+			ctx := actorTestContext(t)
+			release := make(chan struct{})
+			received := make(chan string, 3)
+			r := actorhost.New(3, time.Second, func(actorhost.Context) (*actorhost.Behavior, error) {
+				<-release
+				return &actorhost.Behavior{Receive: func(_ actorhost.Context, value any) (any, error) {
+					d := value.(*actorpb.Delivery)
+					received <- string(d.Payload)
+					return &actorpb.Result{Completed: true}, nil
+				}}, nil
+			})
+			defer func() {
+				close(release)
+				if err := r.Drain(ctx); err != nil {
+					t.Error(err)
+				}
+			}()
+			// 不安装 NATS 连接，证明同实例投递无需发布到消息服务器。
+			p := &NATSTransport{runtime: r, instance: "local"}
+			target := actorhost.Target{Instance: "local", Identity: actorhost.Identity{Kind: "role", Key: "1"}}
+			tell := p.Tell
+			if accepted {
+				tell = p.TellAccepted
+			}
+			d := &actorpb.Delivery{MessageType: "reward", Payload: []byte("1")}
+			if err := tell(ctx, target, d); err != nil {
+				t.Fatal(err)
+			}
+			d.Payload[0] = '2'
+			if err := tell(ctx, target, d); err != nil {
+				t.Fatal(err)
+			}
+			d.Payload[0] = '3'
+			future, err := p.CallFuture(ctx, target, d)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d.Payload[0] = 'X'
+			if err := tell(ctx, target, d); !errors.Is(err, actorhost.ErrMailboxFull) {
+				t.Fatalf("满邮箱: %v", err)
+			}
+			r.BeginDrain()
+			if err := tell(ctx, target, d); !errors.Is(err, actorhost.ErrDraining) {
+				t.Fatalf("排水准入: %v", err)
+			}
+			// 开始排水不能遗失先前接纳的消息。
+			release <- struct{}{}
+			if _, err := future.Await(ctx); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"1", "2", "3"} {
+				if got := <-received; got != want {
+					t.Fatalf("顺序或副本错误: %q，期望 %q", got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestLocalTellReportsAsynchronousFailure(t *testing.T) {
+	ctx := actorTestContext(t)
+	var output bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&output, nil)))
+	defer slog.SetDefault(previous)
+	r := actorhost.New(2, time.Second, func(actorhost.Context) (*actorhost.Behavior, error) {
+		return &actorhost.Behavior{Receive: func(_ actorhost.Context, value any) (any, error) {
+			if value.(*actorpb.Delivery).MessageType == "error" {
+				return nil, errors.New("handler failed")
+			}
+			return &actorpb.Result{ErrorCode: 7, ErrorMessage: "business rejected"}, nil
+		}}, nil
+	})
+	defer func() {
+		if err := r.Drain(ctx); err != nil {
+			t.Error(err)
+		}
+	}()
+	p := &NATSTransport{runtime: r, instance: "local"}
+	target := actorhost.Target{Instance: "local", Identity: actorhost.Identity{Kind: "role", Key: "1"}}
+	for _, name := range []string{"error", "result"} {
+		if err := p.Tell(ctx, target, &actorpb.Delivery{MessageType: name}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"handler failed", "business rejected"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("缺少异步失败日志 %q: %s", want, output.String())
+		}
+	}
 }
 
 func TestLocalCallFutureKeepsCreationCancellation(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 	"github.com/ngnl47/tx/modules/discovery"
 )
 
-// Caller 是两种传输共有的完成结果契约；TellAccepted 的 NATS 确认含义不推广到直连。
+// Caller 是两种传输共有的完成结果契约；TellAccepted 的分路径接纳语义不推广到 Agent 直连。
 type Caller interface {
 	Call(context.Context, actorhost.Target, *actorpb.Delivery) (*actorpb.Result, error)
 }

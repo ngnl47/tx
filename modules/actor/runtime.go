@@ -12,10 +12,12 @@ type Enqueuer interface {
 	Enqueue(context.Context, Identity, Delivery) error
 }
 
-// Messenger 是实体间 Core NATS 调用契约，不开放连接和进程关闭权限。
+// Messenger 同实例使用本地邮箱，跨实例使用 Core NATS；不开放连接和进程关闭权限。
 type Messenger interface {
 	Caller
+	// Tell 提交本地邮箱或远端传输，不等待业务执行；已知准入错误立即返回。
 	Tell(context.Context, Identity, Delivery) error
+	// TellAccepted 同实例确认邮箱接纳，跨实例确认 NATS 到达，不确认业务执行或持久化。
 	TellAccepted(context.Context, Identity, Delivery) error
 	CallFuture(context.Context, Identity, Delivery) (*Future, error)
 }
