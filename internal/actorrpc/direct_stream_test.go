@@ -35,11 +35,11 @@ func TestDirectStreamMultiplexesCallsWithoutBatching(t *testing.T) {
 	started := make(chan struct{}, 1)
 	local := actorhost.New(32, time.Second, func(c txactor.Context) (*txactor.Behavior, error) {
 		return &txactor.Behavior{Receive: func(txactor.Context, any) (any, error) {
-			if c.Identity.Key == "slow" {
+			if c.Identity.ID == "slow" {
 				started <- struct{}{}
 				<-release
 			}
-			return &actorpb.Result{MessageType: c.Identity.Key}, nil
+			return &actorpb.Result{MessageType: c.Identity.ID}, nil
 		}}, nil
 	})
 	defer local.Drain(ctx)
@@ -93,7 +93,7 @@ func TestDirectStreamMultiplexesCallsWithoutBatching(t *testing.T) {
 	}
 	slow := make(chan reply, 1)
 	go func() {
-		result, err := transport.Call(ctx, actorhost.Target{Instance: "game-a", Identity: txactor.Identity{Kind: "role", Key: "slow"}}, &actorpb.Delivery{MessageType: "ping"})
+		result, err := transport.Call(ctx, actorhost.Target{Instance: "game-a", Identity: txactor.Identity{Type: "role", ID: "slow"}}, &actorpb.Delivery{MessageType: "ping"})
 		slow <- reply{result, err}
 	}()
 	select {
@@ -101,12 +101,12 @@ func TestDirectStreamMultiplexesCallsWithoutBatching(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	fast, err := transport.Call(ctx, actorhost.Target{Instance: "game-a", Identity: txactor.Identity{Kind: "role", Key: "fast"}}, &actorpb.Delivery{MessageType: "ping"})
+	fast, err := transport.Call(ctx, actorhost.Target{Instance: "game-a", Identity: txactor.Identity{Type: "role", ID: "fast"}}, &actorpb.Delivery{MessageType: "ping"})
 	if err != nil || fast == nil || fast.MessageType != "fast" {
 		t.Fatalf("快请求被阻塞或结果错配: result=%v err=%v", fast, err)
 	}
 	local.BeginDrain()
-	if _, err := transport.Call(ctx, actorhost.Target{Instance: "game-a", Identity: txactor.Identity{Kind: "role", Key: "fast"}}, &actorpb.Delivery{MessageType: "ping"}); !errors.Is(err, actorhost.ErrDraining) {
+	if _, err := transport.Call(ctx, actorhost.Target{Instance: "game-a", Identity: txactor.Identity{Type: "role", ID: "fast"}}, &actorpb.Delivery{MessageType: "ping"}); !errors.Is(err, actorhost.ErrDraining) {
 		t.Fatalf("排水关闸后仍接受新调用: %v", err)
 	}
 	drained := make(chan error, 1)
@@ -199,7 +199,7 @@ func TestDirectStreamEnqueuePreservesMailboxOrderAndDrain(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := transport.Enqueue(ctx, actorhost.Target{Instance: "game-a", Identity: txactor.Identity{Kind: "role", Key: "i:42"}}, delivery); err != nil {
+		if err := transport.Enqueue(ctx, actorhost.Target{Instance: "game-a", Identity: txactor.Identity{Type: "role", ID: "i:42"}}, delivery); err != nil {
 			t.Fatalf("enqueue %d: %v", seq, err)
 		}
 		if seq == 1 {
@@ -239,10 +239,10 @@ func TestDirectStreamEnqueuePreservesMailboxOrderAndDrain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := transport.Enqueue(ctx, actorhost.Target{Instance: "game-a", Identity: txactor.Identity{Kind: "role", Key: "i:42"}}, delivery); err != nil {
+	if err := transport.Enqueue(ctx, actorhost.Target{Instance: "game-a", Identity: txactor.Identity{Type: "role", ID: "i:42"}}, delivery); err != nil {
 		t.Fatalf("单向流写入应保持无逐项回执: %v", err)
 	}
-	if _, err := transport.Call(ctx, actorhost.Target{Instance: "game-a", Identity: txactor.Identity{Kind: "role", Key: "i:42"}}, delivery); !errors.Is(err, actorhost.ErrDraining) {
+	if _, err := transport.Call(ctx, actorhost.Target{Instance: "game-a", Identity: txactor.Identity{Type: "role", ID: "i:42"}}, delivery); !errors.Is(err, actorhost.ErrDraining) {
 		t.Fatalf("关闸后同步探针未被拒绝: %v", err)
 	}
 	releaseLastOnce.Do(func() { close(releaseLast) })

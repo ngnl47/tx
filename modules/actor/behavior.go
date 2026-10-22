@@ -2,7 +2,7 @@ package actor
 
 import "github.com/ngnl47/tx/internal/actorhost"
 
-// Identity 以 Kind 与 Key 标识实体，不携带物理实例或传输地址。
+// Identity 以 Type 与 ID 标识实体，不携带物理实例或传输地址。
 type Identity = actorhost.Identity
 
 // Behavior 是每次激活独立创建的业务行为，未设置的生命周期事件无需空实现。

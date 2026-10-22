@@ -64,7 +64,7 @@ func TestEntityTransportStartupFailureUnloadsBeforeDependencies(t *testing.T) {
 			}
 			transport = app.runtime.actorRPC.(*actorrpc.NATSTransport)
 			var err error
-			pending, err = client.CallFuture(ctx, actorhost.Target{Instance: "source", Identity: actorhost.Identity{Kind: "role", Key: "1"}}, &actorpb.Delivery{})
+			pending, err = client.CallFuture(ctx, actorhost.Target{Instance: "source", Identity: actorhost.Identity{Type: "role", ID: "1"}}, &actorpb.Delivery{})
 			if err != nil {
 				return err
 			}
@@ -106,7 +106,7 @@ func TestEntityTransportStartupFailureUnloadsBeforeDependencies(t *testing.T) {
 	if !unloaded.Load() || !local.Draining() || !mod.stopped || app.Context() != nil {
 		t.Fatal("启动失败未完成宿主与依赖回收")
 	}
-	if _, err := transport.Probe(ctx, actorhost.Target{Instance: "absent", Identity: actorhost.Identity{Kind: "role", Key: "1"}}); !errors.Is(err, nats.ErrConnectionClosed) {
+	if _, err := transport.Probe(ctx, actorhost.Target{Instance: "absent", Identity: actorhost.Identity{Type: "role", ID: "1"}}); !errors.Is(err, nats.ErrConnectionClosed) {
 		t.Fatalf("启动失败泄漏 NATS: %v", err)
 	}
 }

@@ -210,7 +210,7 @@ func (p *NATSTransport) publish(ctx context.Context, target actorhost.Target, de
 				err = ResultError(result)
 			}
 			if err != nil {
-				slog.Error("actor rpc one-way command failed", "kind", target.Identity.Kind, "key", target.Identity.Key, "err", err)
+				slog.Error("actor rpc one-way command failed", "actorType", target.Identity.Type, "actorID", target.Identity.ID, "err", err)
 			}
 		})
 		return err
@@ -271,7 +271,7 @@ func (p *NATSTransport) receive(msg *nats.Msg) {
 	if err == nil {
 		err = json.Unmarshal(identity, &id)
 	}
-	if err != nil || id.Kind == "" || id.Key == "" {
+	if err != nil || id.Type == "" || id.ID == "" {
 		p.reply(msg, nil, errors.New("actor rpc: invalid identity"))
 		return
 	}

@@ -340,7 +340,7 @@ CMod 固定属于 L3，是带稳定身份、依赖关系和进程生命周期的
 
 保留这两层边界，是为了让 CMod 的内部实现可以调整，而不让业务意外依赖其传递依赖。服务声明不需要复制整张依赖图；同一服务直接使用 Actor 和 Discovery 时，两者同时出现是对真实调用关系的声明。其他服务启用更多能力，也不能扩大当前服务的访问范围。
 
-声明 ActorKinds 会隐式启用 Actor 及其运行依赖，服务自身要调用 Actor 门面仍须显式声明 Actor。所有所选服务共享按 CModID 去重后的进程能力；Registration 列表顺序不能替代拓扑关系。缺失依赖、重复身份和依赖环由装配内核统一报错，不由业务补救。
+声明 ActorTypes 会隐式启用 Actor 及其运行依赖，服务自身要调用 Actor 门面仍须显式声明 Actor。所有所选服务共享按 CModID 去重后的进程能力；Registration 列表顺序不能替代拓扑关系。缺失依赖、重复身份和依赖环由装配内核统一报错，不由业务补救。
 
 门面内部的组件组合保持如下边界：
 
@@ -2050,7 +2050,7 @@ MsgQ 是客户端会话邮箱，正文保存在实例内存中；它不承担 Je
 
 增加 SLGWorld、FightRoom、公会或匹配等服务池时，项目声明实体类型、路由键、业务加载与生命周期策略；tx 维护身份到槽位/实例的解析、容量准入、邮箱及排水，NATS 承担向已选定实例传输消息。订阅不取代 tx 的权威归属，也不把实体随机分配给 Queue Group 中任一消费者。
 
-例如 Role 消耗加速道具后，按 World 的身份调用行军加速；Game 与 SLGWorld 实例池可按各自负载独立扩缩容，不绑定一比一，也不按每实例固定世界数限制扩展。SLGWorld、FightRoom、公会与匹配等是按业务职责扩展服务池的例子。实体扩展不意味着每种业务都必须再建一个服务，基础 Game 也可以承载多个 Kind。
+例如 Role 消耗加速道具后，按 World 的身份调用行军加速；Game 与 SLGWorld 实例池可按各自负载独立扩缩容，不绑定一比一，也不按每实例固定世界数限制扩展。SLGWorld、FightRoom、公会与匹配等是按业务职责扩展服务池的例子。实体扩展不意味着每种业务都必须再建一个服务，基础 Game 也可以承载多个 Type。
 
 | 路径 | 完成语义 | 适用职责 |
 | --- | --- | --- |
@@ -2180,7 +2180,7 @@ MailboxStream 的每 Session 接收缓冲有界，慢 Session 缓冲溢出时结
 
 开发者在 `gen/cmd` 维护 DTO 和 `@actor` 接口，通过 `@scope`、`@mode` 声明投递范围与调用语义，使用接口默认值或方法上的 `@route`、`@principal` 声明路由与身份要求；txgen 自动生成 Go `CmdDescriptors` / `CmdDescriptorsByHash` 与 TypeScript `CommandSchemas` / `CommandNamesByHash`。生成描述表随前后端代码发布，禁止手改。不再维护编号池、服务号段、退休清单或清池入口。多人分支合并后须重新生成整套协议，以检测合并后的碰撞；检查范围是本次项目输入，不提供跨版本历史碰撞保证。命令重命名会改变哈希，属于协议变更。
 
-`toService`、`actor`、`actorKey` 是描述表内的路由元数据，不参与哈希。Agent 先按帧头哈希查描述表，再选择目标服务和 Actor，不按哈希数值区间路由，也不解析 BON。
+`toService`、`actor`、`actorID` 是描述表内的路由元数据，不参与哈希。Agent 先按帧头哈希查描述表，再选择目标服务和 Actor，不按哈希数值区间路由，也不解析 BON。
 
 Frame v4 的 32 字节固定头以 `uint32 CommandHash` 标识上下行业务命令，控制帧为零。BON 仅编码正文。MsgQ 的通用邮箱仍保存不透明 `[]byte`；应用通过生成的 `EncodeDownMessage` 写入 `[4 字节大端哈希][BON]`，Agent 解包后将哈希放入帧头。内部 RPC 的 Delivery/Result 独立携带 CommandHash，不在正文重复命令名。此版本不兼容旧帧、旧邮箱编码及旧 Actor/RPC protobuf 字段。升级前须让旧版消费完已有持久化任务，结束旧会话，再同步部署集群节点与前后端并建立新会话；不提供新旧协议混跑或旧消息迁移。
 
@@ -2308,12 +2308,12 @@ MsgQ 邮箱并允许恢复；`TerminateSession` 使用登记时保存的完整 S
 非根路径在请求级 admission 通过后才进入项目 `HTTPHandler`；未配置 `HTTPHandler` 返回 `404`，排水或停止后返回 `503`。
 如果未配置 `WebSocketListen`，当前阶段不会创建“纯 HTTP” Agent 服务。
 
-生成的 `CmdDescriptor` 提供静态 CommandHash、目标服务、Actor kind 和 route key 类型；项目 resolver 根据认证身份解析 Kind/Key，实例归属由 tx 统一解析。
+生成的 `CmdDescriptor` 提供静态 CommandHash、目标服务、Actor type 和 route key 类型；项目 resolver 根据认证身份解析 Type/ID，实例归属由 tx 统一解析。
 
 连接入口可以是真实客户端，也可以由项目扩展为本地驱动或旁路模拟连接。tx 提供基础网络 Agent，同时保持 dispatcher 接口开放。
 
 项目通过自身 `services/agent.HandlerProvider` 在组合根注入认证与 Actor 路由。Provider 接收当前
-Bee 或 Ant Context，使用 CModActorDirect 完成直连；稳定分区或业务槽位在 Kind 声明，Provider 不组装发现连接或 PID。
+Bee 或 Ant Context，使用 CModActorDirect 完成直连；稳定分区或业务槽位在 Type 声明，Provider 不组装发现连接或 PID。
 
 `IdentityResolver` 只返回 `protocol.SessionPrincipal`，其中包含 `AccountID`、`BorrowAccountID`、`ServerID`、`RoleID`、
 `SessionID`、`AccessMode` 和 `CanCreateRole`。Agent 负责生成正 `ConnectionID`，校验并构造 `protocol.SessionIdentity`；
@@ -2372,11 +2372,11 @@ Agent 将上行提交给 Game 长流后推进本地游标，不等待远端邮�
 
 ### Actor
 
-默认后端由 tx 本地实体宿主、L2 Discovery 归属和 Core NATS 构成。公开 Kind 工厂统一接收 BehaviorFactory，不再区分 Virtual/Fixed 构造入口，不暴露 ProtoActor PID、Props 或 ActorSystem。
+默认后端由 tx 本地实体宿主、L2 Discovery 归属和 Core NATS 构成。公开 Type 工厂统一接收 BehaviorFactory，不再区分 Virtual/Fixed 构造入口，不暴露 ProtoActor PID、Props 或 ActorSystem。
 
 ```text
-Identity(Kind, Key)
-  -> Kind.SlotMapping（默认 v1 1024 分区，或业务稳定映射）
+Identity(Type, ID)
+  -> Type.SlotMapping（默认 v1 1024 分区，或业务稳定映射）
   -> SlotDirectory + ServiceDirectory 缓存
   -> assignment(RuntimeInstanceID, Generation)
        -> Agent: gRPC 共享 Endpoint
@@ -2387,11 +2387,11 @@ Identity(Kind, Key)
 
 NATS 不决定实体归属，也不按实体创建订阅。首次缺少 assignment 时，L2 Ownership 执行容量预检与 CAS；已有归属不随新成员入环变化。懒加载前单独读取权威槽位，不能用 Watch 缓存替代。默认分区只共享 owner，每个实体仍独立加载、串行处理、卸载和预留容量；世界与 seasonWorld 可共享 slgworld 服务池并保留独立业务槽位。
 
-实例通过 `actor.Config.Capacity` 声明全部本地 Kind 共用的数量上限。默认 `activation` 模式统计初始化、运行及清理中的 Actor，清理完成才释放；`assignment` 模式用于独立实体槽位，统计持久归属，卸载或 GD 缓存淘汰不释放名额，同一世界重新加载复用名额。独立 slgworld 实例可配置 Maximum=1，承载任意首个被分配的世界，不绑定 worldId；临时房间可按业务估算配置 Maximum=1000。Initializations 独立限制同时加载数量，不给初始化设置统一超时。
+实例通过 `actor.Config.Capacity` 声明全部本地 Type 共用的数量上限。默认 `activation` 模式统计初始化、运行及清理中的 Actor，清理完成才释放；`assignment` 模式用于独立实体槽位，统计持久归属，卸载或 GD 缓存淘汰不释放名额，同一世界重新加载复用名额。独立 slgworld 实例可配置 Maximum=1，承载任意首个被分配的世界，不绑定 worldId；临时房间可按业务估算配置 Maximum=1000。Initializations 独立限制同时加载数量，不给初始化设置统一超时。
 
 默认 EtcdSlotStore 在创建或晋升归属时原子检查稳定名额，交接前先预检目标容量。有限容量的冷分配读取现有目录快照并执行范围比较与单键 CAS，不维护第二份权威计数表；普通消息路由不扫描目录。该路径成本随目录规模增长，后续按真实规模验证。此数量限制不等于内存保证，不负责自动扩 Pod 或资源采样；GD 缓存释放仍由 cache manager 管理。
 
-ServiceSpec.ActorKinds 构成应用目录，Kind 名称应用内唯一；仅选中服务执行本地工厂。CModActor 依赖 RPC 和 Discovery，绑定共享接收入口与 NATS，服务 ready 后才发布 running。连接和关闭权限在框架内，业务通过 CModActor 或 CModActorDirect 的窄接口使用。
+ServiceSpec.ActorTypes 构成应用目录，Type 名称应用内唯一；仅选中服务执行本地工厂。CModActor 依赖 RPC 和 Discovery，绑定共享接收入口与 NATS，服务 ready 后才发布 running。连接和关闭权限在框架内，业务通过 CModActor 或 CModActorDirect 的窄接口使用。
 
 ### Actor mailbox
 
@@ -2407,13 +2407,13 @@ Tell 完成寻址后，同 Runtime InstanceID 直接进入本地邮箱，跨实�
 | Game → Guild | `OriginInternal` | 普通服务间 Actor 调用；由 Call/Tell 决定是否等待业务结果 |
 | 可靠任务 → Guild | `OriginTask` | 任务消费者设置来源；当前通过 Call 等待业务完成后才确认消费，失败沿用重试/死信规则 |
 
-这里 Guild 仅是业务扩展节点的示例，不要求 tx 或 txgen 预定义该节点。新增 Game、World、Guild 等服务或 Actor Kind 均复用这三种语义，不扩展枚举。`OriginInternal` 保持零值，其他值分别为 `OriginClient=1`、`OriginTask=2`。
+这里 Guild 仅是业务扩展节点的示例，不要求 tx 或 txgen 预定义该节点。新增 Game、World、Guild 等服务或 Actor Type 均复用这三种语义，不扩展枚举。`OriginInternal` 保持零值，其他值分别为 `OriginClient=1`、`OriginTask=2`。
 
 入口语义与语言及传输方式独立：当前可靠任务由 JetStream 消费后调用 Actor，未来其他语言实现可以通过 Kafka 等消息设施承接可靠任务，但仍使用 `OriginTask`；可靠性取决于消费确认、重试和持久化实现，不由 RPC 或 Origin 标记本身保证。该命名不代表当前已提供 Kafka 或 Java 实现。
 
 来源独立于业务 MessageType，不代替认证；`Completed` 只表达该次处理完成，不是客户端上行确认或邮箱入队确认。
 
-标准 Actor Key 使用 `actor.Int64Key`、`Uint64Key`、`StringKey` 与对应 Parse 方法，保持 `i:`、`u:`、`s:` 既有值。Identity.Key 仍允许自定义编码；tx 不推断业务 ID、服务名称或分区规则。
+标准 Actor ID 使用 `actor.Int64ID`、`Uint64ID`、`StringID` 与对应 Parse 方法，保持 `i:`、`u:`、`s:` 既有值。Identity.ID 仍允许自定义编码；tx 不推断业务 ID、服务名称或分区规则。
 
 本版新增来源和完成字段，依赖它们的 tx、生成接口及示例服务应使用同一契约版本部署，不提供旧消息名称兼容分支。
 
@@ -2430,7 +2430,7 @@ Behavior.Receive 接收公开 Delivery，返回 Result/error；Context.Post/Afte
 Actor 空闲钝化和 GD EntityCache 淘汰是两条独立生命周期：
 
 ```text
-Actor Kind 连续无消息
+Actor Type 连续无消息
   -> tx 私有钝化消息
   -> 停止当前实体 Actor
   -> 同一实体宿主在后续消息到达时惰性重建
@@ -2442,7 +2442,7 @@ GD EntityCache 达到容量或 access expiry
   -> 删除 GD 引用
 ```
 
-Kind 显式 `WithIdlePassivation` 优先于运行时策略，宿主在同一激活内维护空闲期限，卸载与消息准入共用锁边界。清理完成后才移除本地实体，下次请求按同一稳定 assignment 懒加载；卸载不修改持久槽位。运行时只消费本地注册 Kind 的策略。
+Type 显式 `WithIdlePassivation` 优先于运行时策略，宿主在同一激活内维护空闲期限，卸载与消息准入共用锁边界。清理完成后才移除本地实体，下次请求按同一稳定 assignment 懒加载；卸载不修改持久槽位。运行时只消费本地注册 Kind 的策略。
 
 有状态模板为 role 和 world bucket 分别创建 EntityCache。`values` map 是业务对象身份的唯一权威，Otter v2.3.0
 只保存指向同一 entry 的 policy token，并使用 adaptive W-TinyLFU 管理准入、热度和按条目数的软容量。默认
@@ -2682,3 +2682,9 @@ Actor Call 的成功表示 Handler 方法成功返回，不隐含等待该方法
 统一业务协议由应用的 `gen/cmd` 声明，txgen 显式读取 client/remote/local 作用域和 Call/Tell 模式，同一业务方法可处理多个入口。tx 的 `MessageTable` 在服务装配时只构造一次，接收端校验作用域和模式；`MessageContext` 显式包含当前 Actor、可信 Principal 与本次激活的 State。不同 Actor 可并发使用共享 Handler，但不能共享可变的激活状态。业务 Handler 不负责选择响应传输。
 
 本地事件使用 `LocalMessage`，不序列化为远程 Delivery。生成的 Post 通过当前激活句柄进入邮箱，沿用 Context.Post 的容量、关闭和过期句柄边界，不引入隐式恢复、异步响应或排序屏障。Actor 运行时不识别行军 DTO、命令名称或业务节点种类。独立的纯内部 RPC 契约仍可使用 GenerateRPC；同一方法需要多入口时使用统一协议，避免两份 DTO 和 Handler 桥接。
+
+### Actor 身份 Type/ID
+
+`actor.Identity{Type string, ID string}` 描述逻辑实体；`actor.Type`、`NewType` 与 `ServiceSpec.ActorTypes` 声明其行为和归属。`Type` 在应用内唯一，`ID` 在该类型内唯一，物理进程仍使用 InstanceID。`Int64ID`、`Uint64ID`、`StringID` 保留 i:/u:/s: 编码；默认分区仍按原 ID 字节 xxhash64 对 1024 取模，持久槽位布局不变。Redis key、RouteKey 和任务类别不属于本次改名。
+
+内部 NATS 与 JetStream 任务载荷中的身份 JSON 同步使用 Type/ID，生成调用方与服务端需要配套更新，不支持新旧身份字段混用。升级前停止旧任务发布并排空旧版本任务（包括等待重试项），不能把未完成任务直接交给新版本；有存量时须另行安排离线迁移，不能仅滚动替换程序。gRPC 目标字段保留原 protobuf 编号。更改实际 Type 值属于新实体类型，不能按 API 改名理解为旧槽位自动迁移。

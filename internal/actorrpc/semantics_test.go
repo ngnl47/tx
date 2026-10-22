@@ -20,7 +20,7 @@ func TestNATSTellAcceptedConfirmsSelectedTransport(t *testing.T) {
 	ns := nats.NewInbox()
 	a := peer(t, url, ns, "a", echoRuntime())
 	// 没有实例订阅也可确认服务端收到；这不是离线任务持久化。
-	if err := a.TellAccepted(ctx, actorhost.Target{Instance: "absent", Identity: actorhost.Identity{Kind: "role", Key: "offline"}}, &actorpb.Delivery{MessageType: "reward"}); err != nil {
+	if err := a.TellAccepted(ctx, actorhost.Target{Instance: "absent", Identity: actorhost.Identity{Type: "role", ID: "offline"}}, &actorpb.Delivery{MessageType: "reward"}); err != nil {
 		t.Fatal(err)
 	}
 	entered, release := make(chan struct{}), make(chan struct{})
@@ -34,7 +34,7 @@ func TestNATSTellAcceptedConfirmsSelectedTransport(t *testing.T) {
 	b := peer(t, url, ns, "b", r)
 	defer func() { close(release); _ = r.Drain(ctx) }()
 	// 同实例确认邮箱接纳，不等待工厂初始化或业务执行。
-	if err := b.TellAccepted(ctx, actorhost.Target{Instance: "b", Identity: actorhost.Identity{Kind: "role", Key: "cold"}}, &actorpb.Delivery{MessageType: "reward"}); err != nil {
+	if err := b.TellAccepted(ctx, actorhost.Target{Instance: "b", Identity: actorhost.Identity{Type: "role", ID: "cold"}}, &actorpb.Delivery{MessageType: "reward"}); err != nil {
 		t.Fatal(err)
 	}
 	signal(t, ctx, entered)
@@ -62,7 +62,7 @@ func TestLocalTellAdmissionOrderAndDrain(t *testing.T) {
 			}()
 			// 不安装 NATS 连接，证明同实例投递无需发布到消息服务器。
 			p := &NATSTransport{runtime: r, instance: "local"}
-			target := actorhost.Target{Instance: "local", Identity: actorhost.Identity{Kind: "role", Key: "1"}}
+			target := actorhost.Target{Instance: "local", Identity: actorhost.Identity{Type: "role", ID: "1"}}
 			tell := p.Tell
 			if accepted {
 				tell = p.TellAccepted
@@ -122,7 +122,7 @@ func TestLocalTellReportsAsynchronousFailure(t *testing.T) {
 		}
 	}()
 	p := &NATSTransport{runtime: r, instance: "local"}
-	target := actorhost.Target{Instance: "local", Identity: actorhost.Identity{Kind: "role", Key: "1"}}
+	target := actorhost.Target{Instance: "local", Identity: actorhost.Identity{Type: "role", ID: "1"}}
 	for _, name := range []string{"error", "result"} {
 		if err := p.Tell(ctx, target, &actorpb.Delivery{MessageType: name}); err != nil {
 			t.Fatal(err)
@@ -149,7 +149,7 @@ func TestLocalCallFutureKeepsCreationCancellation(t *testing.T) {
 	p := &NATSTransport{runtime: r, instance: "local"}
 	creation, cancel := context.WithCancel(ctx)
 	defer cancel()
-	f, err := p.CallFuture(creation, actorhost.Target{Instance: "local", Identity: actorhost.Identity{Kind: "room", Key: "1"}}, &actorpb.Delivery{MessageType: "move"})
+	f, err := p.CallFuture(creation, actorhost.Target{Instance: "local", Identity: actorhost.Identity{Type: "room", ID: "1"}}, &actorpb.Delivery{MessageType: "move"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestNATSFutureAndRuntimeProbe(t *testing.T) {
 	load, execute := make(chan struct{}), make(chan struct{})
 	received := make(chan struct{}, 2)
 	r := actorhost.New(4, time.Second, func(c actorhost.Context) (*actorhost.Behavior, error) {
-		if c.Identity.Key == "missing" {
+		if c.Identity.ID == "missing" {
 			return nil, &actorhost.RemoteError{Code: 404, Message: "world not found"}
 		}
 		<-load
@@ -193,7 +193,7 @@ func TestNATSFutureAndRuntimeProbe(t *testing.T) {
 		_ = r.Drain(ctx)
 		_ = a.runtime.Drain(ctx)
 	}()
-	target := actorhost.Target{Instance: "b", Identity: actorhost.Identity{Kind: "world", Key: "51"}}
+	target := actorhost.Target{Instance: "b", Identity: actorhost.Identity{Type: "world", ID: "51"}}
 	status, err := a.Probe(ctx, target)
 	if err != nil || status.State != actorhost.Unloaded {
 		t.Fatalf("未加载: %+v %v", status, err)
@@ -202,7 +202,7 @@ func TestNATSFutureAndRuntimeProbe(t *testing.T) {
 	if err != nil || status.State != actorhost.Initializing {
 		t.Fatalf("初始化: %+v %v", status, err)
 	}
-	if _, err = a.EnsureActivation(ctx, actorhost.Target{Instance: "b", Identity: actorhost.Identity{Kind: "world", Key: "52"}}); !errors.Is(err, actorhost.ErrCapacity) {
+	if _, err = a.EnsureActivation(ctx, actorhost.Target{Instance: "b", Identity: actorhost.Identity{Type: "world", ID: "52"}}); !errors.Is(err, actorhost.ErrCapacity) {
 		t.Fatal("远端容量错误丢失", err)
 	}
 	var futures []*ResultFuture
@@ -240,7 +240,7 @@ func TestNATSFutureAndRuntimeProbe(t *testing.T) {
 			t.Fatalf("结果或输入隔离: %v %v", result, err)
 		}
 	}
-	missing := actorhost.Target{Instance: "b", Identity: actorhost.Identity{Kind: "world", Key: "missing"}}
+	missing := actorhost.Target{Instance: "b", Identity: actorhost.Identity{Type: "world", ID: "missing"}}
 	if _, err = a.EnsureActivation(ctx, missing); err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +252,7 @@ func TestNATSFutureAndRuntimeProbe(t *testing.T) {
 		t.Fatalf("业务不存在不能混同容量不足: %+v", status)
 	}
 	// Tell 不等待任何回复；目标服务不存在也能交给本地连接发送。
-	if err = a.Tell(context.Background(), actorhost.Target{Instance: "absent", Identity: actorhost.Identity{Kind: "role", Key: "offline"}}, &actorpb.Delivery{MessageType: "reward"}); err != nil {
+	if err = a.Tell(context.Background(), actorhost.Target{Instance: "absent", Identity: actorhost.Identity{Type: "role", ID: "offline"}}, &actorpb.Delivery{MessageType: "reward"}); err != nil {
 		t.Fatal(err)
 	}
 }

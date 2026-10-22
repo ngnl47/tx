@@ -71,7 +71,7 @@ func runMaxDeliverRecovery(t *testing.T, url string, restart func()) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data := []byte(`{"Identity":{"Kind":"room","Key":"expired"},"Delivery":{"MessageType":"buff"}}`)
+	data := []byte(`{"Identity":{"Type":"room","ID":"expired"},"Delivery":{"MessageType":"buff"}}`)
 	published, err := js.Publish(ctx, sourceName, data)
 	if err != nil {
 		t.Fatal(err)

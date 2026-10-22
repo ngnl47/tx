@@ -19,7 +19,7 @@ func TestActivationSharedAndIndependent(t *testing.T) {
 		release := make(chan struct{})
 		r := New(32, time.Second, func(ctx Context) (*Behavior, error) {
 			loads.Add(1)
-			if ctx.Identity.Key == "slow" {
+			if ctx.Identity.ID == "slow" {
 				<-release
 			}
 			value := 0

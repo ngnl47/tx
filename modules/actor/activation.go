@@ -10,7 +10,7 @@ const (
 	CapacityAssignments CapacityScope = "assignment"
 )
 
-// Capacity 配置本实例全部本地 Kind 共用的数量上限，零值不限制。
+// Capacity 配置本实例全部本地 Type 共用的数量上限，零值不限制。
 // assignment 模式要求独立实体槽位；即便 Actor 卸载，归属仍占名额。
 // Initializations 单独限制同时初始化数量，不限制初始化时间。
 type Capacity struct {

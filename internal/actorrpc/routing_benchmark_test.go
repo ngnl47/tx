@@ -38,7 +38,7 @@ func BenchmarkSharedCachedRoute(b *testing.B) {
 		b.Fatal(err)
 	}
 	caller := &RoutedCaller{Router: &EntityRouter{Resolver: resolver, SlotID: worldSlot, Service: func(string) (string, error) { return "world", nil }}, Transport: routeBenchmarkCaller{&actorpb.Result{MessageType: "ok"}}}
-	id, delivery := actorhost.Identity{Kind: "world", Key: "51"}, &actorpb.Delivery{MessageType: "read"}
+	id, delivery := actorhost.Identity{Type: "world", ID: "51"}, &actorpb.Delivery{MessageType: "read"}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -64,7 +64,7 @@ func BenchmarkDirectActorCall(b *testing.B) {
 	caller := directSender(b, directory)
 	ctx, cancel := context.WithTimeout(b.Context(), time.Minute)
 	defer cancel()
-	target, delivery := actorhost.Target{Instance: "a", Identity: actorhost.Identity{Kind: "world", Key: "51"}}, &actorpb.Delivery{MessageType: "ack", Payload: make([]byte, 1024)}
+	target, delivery := actorhost.Target{Instance: "a", Identity: actorhost.Identity{Type: "world", ID: "51"}}, &actorpb.Delivery{MessageType: "ack", Payload: make([]byte, 1024)}
 	if _, err := caller.Call(ctx, target, delivery); err != nil {
 		b.Fatal(err)
 	}

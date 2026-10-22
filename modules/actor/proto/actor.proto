@@ -79,8 +79,8 @@ message Result {
 
 // DirectStreamCall 携带单项实体调用及本项剩余等待时间。
 message DirectStreamCall {
-  string kind = 1;
-  string key = 2;
+  string type = 1;
+  string id = 2;
   Delivery delivery = 3;
   int64 timeout_nano = 4;
 }

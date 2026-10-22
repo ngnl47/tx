@@ -17,7 +17,7 @@ func ValidateRequest(ctx context.Context, target actorhost.Target, deadline bool
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if target.Instance == "" || target.Identity.Kind == "" || target.Identity.Key == "" {
+	if target.Instance == "" || target.Identity.Type == "" || target.Identity.ID == "" {
 		return errors.New("actortrial: invalid request")
 	}
 	return nil

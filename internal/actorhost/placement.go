@@ -11,28 +11,28 @@ import (
 // ErrNotOwner 是可重新解析路由的拒绝，不是业务永久加载拒绝。
 var ErrNotOwner = errors.New("actortrial: not current owner")
 
-// Placement 是虚拟 Kind 的不可变成员快照；固定槽位不使用本类型。
+// Placement 是虚拟 Type 的不可变成员快照；固定槽位不使用本类型。
 // 相同快照给出相同目标，不承诺异步 Watch 期间跨进程唯一激活。
 type Placement struct {
-	local string
-	kinds map[string]*rendezvous.Rendezvous
+	local      string
+	actorTypes map[string]*rendezvous.Rendezvous
 }
 
 func NewPlacement(local string, members map[string][]string) *Placement {
 	if local == "" {
 		panic("actortrial: empty local instance")
 	}
-	p := &Placement{local: local, kinds: make(map[string]*rendezvous.Rendezvous, len(members))}
-	for kind, instances := range members {
+	p := &Placement{local: local, actorTypes: make(map[string]*rendezvous.Rendezvous, len(members))}
+	for actorType, instances := range members {
 		ordered := slices.Clone(instances)
 		slices.Sort(ordered)
-		p.kinds[kind] = rendezvous.New(ordered, xxhash.Sum64String)
+		p.actorTypes[actorType] = rendezvous.New(ordered, xxhash.Sum64String)
 	}
 	return p
 }
 func (p *Placement) Target(id Identity) (Target, error) {
-	if owners := p.kinds[id.Kind]; owners != nil {
-		if instance := owners.Lookup(id.Key); instance != "" {
+	if owners := p.actorTypes[id.Type]; owners != nil {
+		if instance := owners.Lookup(id.ID); instance != "" {
 			return Target{Instance: instance, Identity: id}, nil
 		}
 	}

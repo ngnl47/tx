@@ -12,7 +12,7 @@ import (
 	"github.com/ngnl47/tx/modules/discovery"
 )
 
-// 同一路由入口按 Kind 选择服务池；共享服务的 Kind 保持独立归属和实体状态。
+// 同一路由入口按 Type 选择服务池；共享服务的 Type 保持独立归属和实体状态。
 func TestEntityRouterSelectsKindService(t *testing.T) {
 	url, ctx := natsURL(t), actorTestContext(t)
 	store, ns := actorTestSlots(t), nats.NewInbox()
@@ -53,7 +53,7 @@ func TestEntityRouterSelectsKindService(t *testing.T) {
 	}
 	messenger := &NATSMessenger{Router: router}
 	for kind, service := range services {
-		id := actorhost.Identity{Kind: kind, Key: "1"}
+		id := actorhost.Identity{Type: kind, ID: "1"}
 		for count := uint64(1); count <= 2; count++ {
 			result, err := messenger.Call(ctx, id, &actorpb.Delivery{})
 			if err != nil || result.MessageType != service || result.CommandHash != uint32(count) {
@@ -65,7 +65,7 @@ func TestEntityRouterSelectsKindService(t *testing.T) {
 			t.Fatalf("归属: %+v %v", assignment, err)
 		}
 	}
-	unknown := actorhost.Identity{Kind: "unknown", Key: "1"}
+	unknown := actorhost.Identity{Type: "unknown", ID: "1"}
 	if _, err := router.Resolve(ctx, unknown); err == nil {
 		t.Fatal("未知 Kind 被接受")
 	}
@@ -77,7 +77,7 @@ func TestEntityRouterSelectsKindService(t *testing.T) {
 	}
 	// 已有世界归属仍在线，但不承载目录要求的服务；冷、热路径均应拒绝。
 	services["world"] = "game"
-	world := actorhost.Identity{Kind: "world", Key: "1"}
+	world := actorhost.Identity{Type: "world", ID: "1"}
 	if _, _, err := router.Ensure(ctx, world); !errors.Is(err, discovery.ErrSlotRuntimeUnavailable) {
 		t.Fatalf("冷路径服务池校验: %v", err)
 	}
@@ -85,9 +85,9 @@ func TestEntityRouterSelectsKindService(t *testing.T) {
 		t.Fatalf("缓存路径绕过服务池校验: %v", err)
 	}
 
-	// 即使残留 assignment 可解析，目录移除 Kind 后也不能继续投递。
+	// 即使残留 assignment 可解析，目录移除 Type 后也不能继续投递。
 	delete(services, "world")
-	if _, err := router.Resolve(ctx, actorhost.Identity{Kind: "world", Key: "1"}); err == nil {
+	if _, err := router.Resolve(ctx, actorhost.Identity{Type: "world", ID: "1"}); err == nil {
 		t.Fatal("缓存绕过 Kind 目录")
 	}
 }

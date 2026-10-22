@@ -8,7 +8,7 @@ func TestPartitionSlotV1(t *testing.T) {
 		id   Identity
 		want string
 	}{
-		{Identity{"role", "1"}, "actor-v1.cm9sZQ.p212"},
+		{Identity{Type: "role", ID: "1"}, "actor-v1.cm9sZQ.p212"},
 		{Identity{"role", "01"}, "actor-v1.cm9sZQ.p245"},
 		{Identity{"role", " 1"}, "actor-v1.cm9sZQ.p649"},
 		{Identity{"role", "角色/一"}, "actor-v1.cm9sZQ.p277"},

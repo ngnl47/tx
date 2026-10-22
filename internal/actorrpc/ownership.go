@@ -9,12 +9,12 @@ import (
 )
 
 // EntityRouter 统一绑定缓存寻址、首次分配及激活；归属决策仍由 L2 维护。
-// Service 从应用目录解析 Kind 的服务池；装配时与 SlotID 统一绑定，不由业务逐次选择。
+// Service 从应用目录解析 Type 的服务池；装配时与 SlotID 统一绑定，不由业务逐次选择。
 type EntityRouter struct {
 	Resolver  *discovery.SlotResolver
 	Ownership *discovery.SlotOwnership
 	Transport *NATSTransport
-	Service   func(kind string) (string, error)
+	Service   func(actorType string) (string, error)
 	SlotID    actorhost.SlotMapping
 }
 
@@ -30,10 +30,10 @@ func (a *EntityRouter) Retry(ctx context.Context, id actorhost.Identity) (discov
 }
 
 func (a *EntityRouter) ensure(ctx context.Context, id actorhost.Identity, retry bool) (discovery.SlotAssignment, actorhost.ActivationStatus, error) {
-	if id.Key == "" {
-		return discovery.SlotAssignment{}, actorhost.ActivationStatus{}, errors.New("actor: empty identity key")
+	if id.ID == "" {
+		return discovery.SlotAssignment{}, actorhost.ActivationStatus{}, errors.New("actor: empty actor ID")
 	}
-	service, err := a.Service(id.Kind)
+	service, err := a.Service(id.Type)
 	if err != nil {
 		return discovery.SlotAssignment{}, actorhost.ActivationStatus{}, err
 	}
@@ -63,7 +63,7 @@ func (a *EntityRouter) ensure(ctx context.Context, id actorhost.Identity, retry 
 // Resolve 优先读取 Watch 缓存，仅明确缺少归属时回源并分配。
 // 快照不可用、旧 owner 下线或调用失败均不触发自动改派或业务重投。
 func (a *EntityRouter) Resolve(ctx context.Context, id actorhost.Identity) (actorhost.Target, error) {
-	service, err := a.Service(id.Kind)
+	service, err := a.Service(id.Type)
 	if err != nil {
 		return actorhost.Target{}, err
 	}
@@ -84,10 +84,10 @@ func (a *EntityRouter) Resolve(ctx context.Context, id actorhost.Identity) (acto
 
 // Probe 走只读权威解析，避免 Watch 尚未回显时把刚创建的归属误报为未加载。
 func (a *EntityRouter) Probe(ctx context.Context, id actorhost.Identity) (actorhost.ActivationStatus, error) {
-	if id.Key == "" {
-		return actorhost.ActivationStatus{}, errors.New("actor: empty identity key")
+	if id.ID == "" {
+		return actorhost.ActivationStatus{}, errors.New("actor: empty actor ID")
 	}
-	service, err := a.Service(id.Kind)
+	service, err := a.Service(id.Type)
 	if err != nil {
 		return actorhost.ActivationStatus{}, err
 	}

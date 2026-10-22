@@ -74,7 +74,7 @@ func TestNATSRoundTripAndAdmission(t *testing.T) {
 	defer a.runtime.Drain(ctx)
 	defer r.Drain(ctx)
 	d := &actorpb.Delivery{MessageType: "buff", CommandHash: 7, Payload: []byte{0, 1, 255}, Identity: &actorpb.SessionIdentity{AccountId: 9}}
-	target := actorhost.Target{Instance: "b", Identity: actorhost.Identity{Kind: "room", Key: "42"}}
+	target := actorhost.Target{Instance: "b", Identity: actorhost.Identity{Type: "room", ID: "42"}}
 	result, err := a.Call(ctx, target, d)
 	if err != nil || result.CommandHash != 7 || string(result.Payload) != string(d.Payload) {
 		t.Fatalf("result=%v err=%v", result, err)
@@ -126,7 +126,7 @@ func TestNATSErrorsMatchLocalCalls(t *testing.T) {
 			defer r.Drain(ctx)
 			defer remote.runtime.Drain(ctx)
 			for _, caller := range []*NATSTransport{p, remote} {
-				_, err := caller.Call(ctx, actorhost.Target{Instance: test.name, Identity: actorhost.Identity{Kind: "room", Key: "1"}}, &actorpb.Delivery{MessageType: "test"})
+				_, err := caller.Call(ctx, actorhost.Target{Instance: test.name, Identity: actorhost.Identity{Type: "room", ID: "1"}}, &actorpb.Delivery{MessageType: "test"})
 				if test.want != nil {
 					if !errors.Is(err, test.want) {
 						t.Fatalf("expected %v: %v", test.want, err)
@@ -168,7 +168,7 @@ func TestNATSAcceptanceAndMailbox(t *testing.T) {
 	})
 	b := peer(t, url, ns, "b", r)
 	a := peer(t, url, ns, "a", echoRuntime())
-	target := actorhost.Target{Instance: "b", Identity: actorhost.Identity{Kind: "room", Key: "1"}}
+	target := actorhost.Target{Instance: "b", Identity: actorhost.Identity{Type: "room", ID: "1"}}
 	if err := a.TellAccepted(ctx, target, &actorpb.Delivery{MessageType: "slow"}); err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestNATSAcceptanceAndMailbox(t *testing.T) {
 		t.Fatalf("overflow: %v", err)
 	}
 	// 另一个实体不受这个实体或 NATS 订阅回调阻塞。
-	if _, err := a.Call(ctx, actorhost.Target{Instance: "b", Identity: actorhost.Identity{Kind: "room", Key: "2"}}, &actorpb.Delivery{MessageType: "fast"}); err != nil {
+	if _, err := a.Call(ctx, actorhost.Target{Instance: "b", Identity: actorhost.Identity{Type: "room", ID: "2"}}, &actorpb.Delivery{MessageType: "fast"}); err != nil {
 		t.Fatal(err)
 	}
 	unblock()
@@ -240,7 +240,7 @@ func TestNATSTimeoutAndSendFailureReleaseWaiters(t *testing.T) {
 	})
 	a := peer(t, url, ns, "a", echoRuntime())
 	b := peer(t, url, ns, "b", r)
-	target := actorhost.Target{Instance: "b", Identity: actorhost.Identity{Kind: "room", Key: "1"}}
+	target := actorhost.Target{Instance: "b", Identity: actorhost.Identity{Type: "room", ID: "1"}}
 	callCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel()
 	returned := make(chan error, 1)
@@ -299,7 +299,7 @@ func TestNATSSharedRepliesStayBoundedAndClose(t *testing.T) {
 	for i := range 32 {
 		callCtx, cancel := context.WithCancel(ctx)
 		t.Cleanup(cancel)
-		f, err := a.CallFuture(callCtx, actorhost.Target{Instance: "b", Identity: actorhost.Identity{Kind: "room", Key: strconv.Itoa(i)}}, &actorpb.Delivery{CommandHash: uint32(i + 1)})
+		f, err := a.CallFuture(callCtx, actorhost.Target{Instance: "b", Identity: actorhost.Identity{Type: "room", ID: strconv.Itoa(i)}}, &actorpb.Delivery{CommandHash: uint32(i + 1)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -312,7 +312,7 @@ func TestNATSSharedRepliesStayBoundedAndClose(t *testing.T) {
 	if got := a.conn.NumSubscriptions(); got != 2 {
 		t.Fatalf("32 个等待请求应复用响应订阅，实际订阅=%d", got)
 	}
-	if _, err := a.CallFuture(ctx, actorhost.Target{Instance: "b", Identity: actorhost.Identity{Kind: "room", Key: "overflow"}}, &actorpb.Delivery{}); !errors.Is(err, ErrPendingFull) {
+	if _, err := a.CallFuture(ctx, actorhost.Target{Instance: "b", Identity: actorhost.Identity{Type: "room", ID: "overflow"}}, &actorpb.Delivery{}); !errors.Is(err, ErrPendingFull) {
 		t.Fatalf("等待上限: %v", err)
 	}
 	for _, cancel := range cancels[:16] {
@@ -371,7 +371,7 @@ func TestNATSCrossProcess(t *testing.T) {
 					return &actorpb.Result{MessageType: "ok", CommandHash: d.CommandHash, Payload: d.Payload}, nil
 				},
 				OnDeactivateBefore: func(c actorhost.Context) error {
-					_, err := p.Call(c, actorhost.Target{Instance: "parent", Identity: actorhost.Identity{Kind: "notice", Key: "1"}}, &actorpb.Delivery{MessageType: "exit"})
+					_, err := p.Call(c, actorhost.Target{Instance: "parent", Identity: actorhost.Identity{Type: "notice", ID: "1"}}, &actorpb.Delivery{MessageType: "exit"})
 					return err
 				},
 			}, nil
@@ -455,7 +455,7 @@ func TestNATSCrossProcess(t *testing.T) {
 		}
 	}
 	waitLine("READY")
-	target := actorhost.Target{Instance: "child", Identity: actorhost.Identity{Kind: "room", Key: "1"}}
+	target := actorhost.Target{Instance: "child", Identity: actorhost.Identity{Type: "room", ID: "1"}}
 	payload := []byte{0, 1, 255}
 	result, err := parent.Call(ctx, target, &actorpb.Delivery{MessageType: "echo", CommandHash: 99, Payload: payload})
 	if err != nil || result.CommandHash != 99 || string(result.Payload) != string(payload) {
@@ -467,7 +467,7 @@ func TestNATSCrossProcess(t *testing.T) {
 	waitLine("EXECUTING") // 服务端确认不再意味着子进程已开始执行。
 	fmt.Fprintln(stdin, "drain")
 	eventually(t, ctx, func() bool {
-		_, err := parent.Call(ctx, actorhost.Target{Instance: "child", Identity: actorhost.Identity{Kind: "probe", Key: "1"}}, &actorpb.Delivery{MessageType: "probe"})
+		_, err := parent.Call(ctx, actorhost.Target{Instance: "child", Identity: actorhost.Identity{Type: "probe", ID: "1"}}, &actorpb.Delivery{MessageType: "probe"})
 		return errors.Is(err, actorhost.ErrDraining)
 	})
 	fmt.Fprintln(stdin, "release")
@@ -541,7 +541,7 @@ func TestNATSDisconnectDoesNotReplayRPC(t *testing.T) {
 	callCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer cancel()
 	returned := make(chan error, 1)
-	target := actorhost.Target{Instance: "b", Identity: actorhost.Identity{Kind: "room", Key: "1"}}
+	target := actorhost.Target{Instance: "b", Identity: actorhost.Identity{Type: "room", ID: "1"}}
 	go func() { _, err := a.Call(callCtx, target, &actorpb.Delivery{MessageType: "buff"}); returned <- err }()
 	signal(t, ctx, started)
 	if _, err = a.Call(ctx, target, &actorpb.Delivery{MessageType: "overload"}); !errors.Is(err, ErrPendingFull) {
@@ -599,7 +599,7 @@ func TestNATSResultContract(t *testing.T) {
 			defer r.Drain(ctx)
 			defer caller.runtime.Drain(ctx)
 			for _, from := range []*NATSTransport{p, caller} {
-				_, err := from.Call(ctx, actorhost.Target{Instance: "invalid", Identity: actorhost.Identity{Kind: "room", Key: "1"}}, &actorpb.Delivery{MessageType: "test"})
+				_, err := from.Call(ctx, actorhost.Target{Instance: "invalid", Identity: actorhost.Identity{Type: "room", ID: "1"}}, &actorpb.Delivery{MessageType: "test"})
 				if err == nil || errors.Is(err, context.DeadlineExceeded) {
 					t.Fatalf("非法结果应明确失败: %v", err)
 				}
@@ -630,7 +630,7 @@ func TestNATSSlotResolverAndOwnerHandoff(t *testing.T) {
 	}
 	makeWorld := func(instance string) *NATSTransport {
 		return peer(t, url, ns, instance, actorhost.New(4, time.Second, func(c actorhost.Context) (*actorhost.Behavior, error) {
-			owner, err := resolver.ResolveSlot(c, c.Identity.Key)
+			owner, err := resolver.ResolveSlot(c, c.Identity.ID)
 			if err != nil {
 				return nil, err
 			}
@@ -648,7 +648,7 @@ func TestNATSSlotResolverAndOwnerHandoff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	route := actorhost.Target{Instance: target.Assignment.RuntimeInstanceID, Identity: actorhost.Identity{Kind: "world", Key: "world-1"}}
+	route := actorhost.Target{Instance: target.Assignment.RuntimeInstanceID, Identity: actorhost.Identity{Type: "world", ID: "world-1"}}
 	d := &actorpb.Delivery{MessageType: "scout"}
 	result, err := caller.Call(ctx, route, d)
 	if err != nil || string(result.Payload) != "world-a" {
@@ -739,7 +739,7 @@ func TestNATSPlacementChangeRejectsStaleRoute(t *testing.T) {
 	a := peer(t, url, ns, "a", oldRuntime)
 	b := peer(t, url, ns, "b", newRuntime)
 	caller := peer(t, url, ns, "caller", echoRuntime())
-	id := actorhost.Identity{Kind: "role", Key: "1"}
+	id := actorhost.Identity{Type: "role", ID: "1"}
 	oldTarget := actorhost.Target{Instance: "a", Identity: id}
 	d := &actorpb.Delivery{MessageType: "test"}
 	completed := make(chan error, 1)

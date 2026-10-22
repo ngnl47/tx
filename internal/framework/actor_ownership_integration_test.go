@@ -117,8 +117,8 @@ func ownershipTestConfig(t *testing.T) (Config, *clientv3.Client) {
 func startOwnershipServer(t *testing.T, ctx context.Context, config Config, factory txactor.BehaviorFactory, flush func() error) *Server {
 	t.Helper()
 	mod := &retryFlushCMod{flush: flush}
-	kind := txactor.MustKind("world", factory, txactor.WithSlotMapping(func(id txactor.Identity) string { return "world-" + id.Key }))
-	app, err := New(config, WithCMod(mod), WithService(testService{spec: Spec{Name: "world", ActorKinds: []txactor.Kind{kind}, Requires: []CModID{mod.Spec().ID}}}))
+	kind := txactor.MustType("world", factory, txactor.WithSlotMapping(func(id txactor.Identity) string { return "world-" + id.ID }))
+	app, err := New(config, WithCMod(mod), WithService(testService{spec: Spec{Name: "world", ActorTypes: []txactor.Type{kind}, Requires: []CModID{mod.Spec().ID}}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestActorOwnershipWritebackHandoff(t *testing.T) {
 			return txactor.Result{MessageType: "value", Payload: []byte(fmt.Sprint(root.value))}, nil
 		}, OnDeactivateBefore: func(txactor.Context) error { notifications.Add(1); return nil }}, nil
 	}, func() error { return manager.Shutdown(context.Background()) })
-	id := txactor.Identity{Kind: "world", Key: "51"}
+	id := txactor.Identity{Type: "world", ID: "51"}
 	first, err := a.Context().Actor().CallFuture(ctx, id, txactor.Delivery{MessageType: "block", CommandHash: 3})
 	if err != nil {
 		t.Fatal(err)
@@ -285,7 +285,7 @@ func TestActorOwnershipLeaseLossDoesNotReassign(t *testing.T) {
 		return &txactor.Behavior{Receive: func(txactor.Context, any) (any, error) { return txactor.Result{MessageType: "ok"}, nil }}, nil
 	}
 	a := startOwnershipServer(t, ctx, config, factory, func() error { return nil })
-	id := txactor.Identity{Kind: "world", Key: "51"}
+	id := txactor.Identity{Type: "world", ID: "51"}
 	if _, err := a.Context().Actor().Call(ctx, id, txactor.Delivery{MessageType: "ping"}); err != nil {
 		t.Fatal(err)
 	}

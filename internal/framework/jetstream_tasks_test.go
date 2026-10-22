@@ -132,8 +132,8 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 			AccessMode: txprotocol.AccessModeBorrow, CanCreateRole: true,
 		}, ConnectionID: 16},
 	}
-	kind := txactor.MustKind("role", func(c txactor.Context) (*txactor.Behavior, error) {
-		if c.Identity.Key == "expired" {
+	kind := txactor.MustType("role", func(c txactor.Context) (*txactor.Behavior, error) {
+		if c.Identity.ID == "expired" {
 			return nil, txactor.ErrActivationDenied
 		}
 		return &txactor.Behavior{Receive: func(_ txactor.Context, message any) (any, error) {
@@ -144,7 +144,7 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 				*delivery.Identity != *wantDelivery.Identity {
 				return nil, errors.New("持久任务丢失调用上下文或混入客户端上行序号")
 			}
-			switch c.Identity.Key {
+			switch c.Identity.ID {
 			case "framework-drain":
 				close(frameworkEntered)
 				<-frameworkRelease
@@ -166,7 +166,7 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 		}}, nil
 	})
 	var access txactor.Runtime
-	services := []Service{testService{spec: Spec{Name: "taskworker", Requires: []CModID{CModTaskQueue}}}, testService{spec: Spec{Name: "game", ActorKinds: []txactor.Kind{kind}}}, testService{spec: Spec{Name: "worker", Requires: []CModID{CModActor}}, start: func(c Context) error { access = c.Actor(); return nil }}}
+	services := []Service{testService{spec: Spec{Name: "taskworker", Requires: []CModID{CModTaskQueue}}}, testService{spec: Spec{Name: "game", ActorTypes: []txactor.Type{kind}}}, testService{spec: Spec{Name: "worker", Requires: []CModID{CModActor}}, start: func(c Context) error { access = c.Actor(); return nil }}}
 	start := func(service string) *Server {
 		app := newDiscoveryIdentityTestServer(t, endpoint, prefix, "", services...)
 		app.config.Actor.Runtime = txactor.Config{NATSURL: url, Namespace: owner}
@@ -196,7 +196,7 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 		// 发布请求结束不能撤销已经持久化的任务，后续执行使用消费上下文。
 		request, end := context.WithCancel(ctx)
 		defer end()
-		if err := publisher.Publish(request, txactor.Identity{Kind: "role", Key: key}, wantDelivery); err != nil {
+		if err := publisher.Publish(request, txactor.Identity{Type: "role", ID: key}, wantDelivery); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -542,7 +542,7 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 			t.Fatal(ctx.Err())
 		}
 	}
-	id := txactor.Identity{Kind: "role", Key: "framework-drain"}
+	id := txactor.Identity{Type: "role", ID: "framework-drain"}
 	if err := newServiceContext(app.runtime, nil).TaskQueue().Publish(ctx, id, wantDelivery); err != nil {
 		t.Fatal(err)
 	}

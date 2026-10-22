@@ -64,7 +64,7 @@ func NewActorDispatcher(o ActorDispatcherOptions) (Dispatcher, error) {
 		if err != nil {
 			return err
 		}
-		if d.Target.Kind == "" || d.Target.Key == "" {
+		if d.Target.Type == "" || d.Target.ID == "" {
 			return ErrActorTargetNil
 		}
 		d.Delivery.Identity = &r.Identity

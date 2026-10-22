@@ -21,10 +21,10 @@ func TestPartitionRoutingSharesAssignmentNotEntity(t *testing.T) {
 		ids     []actorhost.Identity
 		slot    string
 	}{
-		{"default", nil, []actorhost.Identity{{Kind: "role", Key: "8"}, {Kind: "role", Key: "26"}}, "actor-v1.cm9sZQ.p100"},
+		{"default", nil, []actorhost.Identity{{Type: "role", ID: "8"}, {Type: "role", ID: "26"}}, "actor-v1.cm9sZQ.p100"},
 		{"zone", func(id actorhost.Identity) string {
-			return map[string]string{"1": "role-zone-10", "2": "role-zone-10"}[id.Key]
-		}, []actorhost.Identity{{Kind: "role", Key: "1"}, {Kind: "role", Key: "2"}}, "role-zone-10"},
+			return map[string]string{"1": "role-zone-10", "2": "role-zone-10"}[id.ID]
+		}, []actorhost.Identity{{Type: "role", ID: "1"}, {Type: "role", ID: "2"}}, "role-zone-10"},
 	} {
 		t.Run(tc.name, func(t *testing.T) { testSharedPartition(t, tc.mapping, tc.ids, tc.slot) })
 	}
@@ -157,7 +157,7 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []actorh
 	}
 
 	if mapping != nil {
-		unknown := actorhost.Identity{Kind: "role", Key: "missing-zone"}
+		unknown := actorhost.Identity{Type: "role", ID: "missing-zone"}
 		if _, _, err := allocator.Ensure(ctx, unknown); err == nil {
 			t.Fatal("missing group fell back to default partition")
 		}

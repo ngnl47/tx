@@ -68,7 +68,7 @@ func actorTestSlots(t *testing.T) discovery.SlotStore {
 	return registry.Slots()
 }
 
-func worldSlot(id actorhost.Identity) string { return "world-" + id.Key }
+func worldSlot(id actorhost.Identity) string { return "world-" + id.ID }
 
 func worldMembers(t *testing.T, directory *discovery.ServiceDirectory, ids ...string) {
 	t.Helper()
@@ -104,7 +104,7 @@ func TestSlotAllocationKeepsOwnerAndRespectsCapacity(t *testing.T) {
 	directory := discovery.NewServiceDirectory()
 	worldMembers(t, directory, "a")
 	allocator := newTestEntityRouter(slotOwnership(t, store, directory), caller, "world", worldSlot)
-	id := actorhost.Identity{Kind: "world", Key: "51"}
+	id := actorhost.Identity{Type: "world", ID: "51"}
 	first, _, err := allocator.Ensure(ctx, id)
 	if err != nil || first.RuntimeInstanceID != "a" {
 		t.Fatalf("首次分配: %+v %v", first, err)
@@ -115,7 +115,7 @@ func TestSlotAllocationKeepsOwnerAndRespectsCapacity(t *testing.T) {
 	worldMembers(t, directory, "a", "b")
 	other := peer(t, url, ns, "caller-2", echoRuntime())
 	secondAllocator := newTestEntityRouter(slotOwnership(t, store, directory), other, "world", worldSlot)
-	secondID := actorhost.Identity{Kind: "world", Key: "52"}
+	secondID := actorhost.Identity{Type: "world", ID: "52"}
 	var group sync.WaitGroup
 	for i := range 24 {
 		group.Go(func() {
@@ -139,7 +139,7 @@ func TestSlotAllocationKeepsOwnerAndRespectsCapacity(t *testing.T) {
 	if got, _, err := allocator.Ensure(ctx, id); err != nil || got != first {
 		t.Fatalf("新成员改变旧归属: %+v %v", got, err)
 	}
-	if _, _, err = allocator.Ensure(ctx, actorhost.Identity{Kind: "world", Key: "53"}); !errors.Is(err, actorhost.ErrCapacity) {
+	if _, _, err = allocator.Ensure(ctx, actorhost.Identity{Type: "world", ID: "53"}); !errors.Is(err, actorhost.ErrCapacity) {
 		t.Fatal("全满未拒绝", err)
 	}
 	if _, err = store.ResolveSlot(ctx, "world-53"); !errors.Is(err, discovery.ErrSlotNotFound) {
@@ -164,7 +164,7 @@ func TestCapacityPreflightDoesNotReserve(t *testing.T) {
 	r := echoRuntime()
 	r.SetActivationLimits(actorhost.ActivationLimits{Actors: 1, Initializations: 1})
 	for i := range 3 {
-		if err := r.CheckActivationCapacity(actorhost.Identity{Kind: "world", Key: fmt.Sprint(i)}); err != nil {
+		if err := r.CheckActivationCapacity(actorhost.Identity{Type: "world", ID: fmt.Sprint(i)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -174,7 +174,7 @@ func TestCapacityPreflightDoesNotReserve(t *testing.T) {
 	if err := r.Drain(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.CheckActivationCapacity(actorhost.Identity{Kind: "world", Key: "51"}); !errors.Is(err, actorhost.ErrDraining) {
+	if err := r.CheckActivationCapacity(actorhost.Identity{Type: "world", ID: "51"}); !errors.Is(err, actorhost.ErrDraining) {
 		t.Fatal(err)
 	}
 }
@@ -224,7 +224,7 @@ func TestSlotCASReplyLossDoesNotReassign(t *testing.T) {
 	directory := discovery.NewServiceDirectory()
 	worldMembers(t, directory, "a")
 	allocator := newTestEntityRouter(slotOwnership(t, store, directory), caller, "world", worldSlot)
-	id := actorhost.Identity{Kind: "world", Key: "51"}
+	id := actorhost.Identity{Type: "world", ID: "51"}
 	store.createLost.Store(true)
 	if _, _, err := allocator.Ensure(ctx, id); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal(err)
@@ -263,7 +263,7 @@ func TestSlotCapacityChangeAfterCASDoesNotFallback(t *testing.T) {
 	worldMembers(t, directory, "a", "b")
 	allocator := newTestEntityRouter(slotOwnership(t, store, directory), caller, "world", worldSlot)
 	store.afterCreate = func() { pressure.Store(true) }
-	id := actorhost.Identity{Kind: "world", Key: "51"}
+	id := actorhost.Identity{Type: "world", ID: "51"}
 	attempted, _, err := allocator.Ensure(ctx, id)
 	if !errors.Is(err, actorhost.ErrCapacity) {
 		t.Fatal(err)
@@ -302,7 +302,7 @@ func TestSlotFirstAssignmentCompetingCandidates(t *testing.T) {
 		}), store)
 	}
 	caller := peer(t, url, ns, "caller", echoRuntime())
-	id := actorhost.Identity{Kind: "world", Key: "51"}
+	id := actorhost.Identity{Type: "world", ID: "51"}
 	directories := []*discovery.ServiceDirectory{discovery.NewServiceDirectory(), discovery.NewServiceDirectory()}
 	worldMembers(t, directories[0], "a")
 	worldMembers(t, directories[1], "b")

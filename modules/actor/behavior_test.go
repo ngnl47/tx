@@ -26,7 +26,7 @@ func TestBehaviorContextLocalControl(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	defer runtime.Drain(ctx)
-	if _, err := runtime.Call(ctx, txactor.Identity{Kind: "room", Key: "1"}, "start"); err != nil {
+	if _, err := runtime.Call(ctx, txactor.Identity{Type: "room", ID: "1"}, "start"); err != nil {
 		t.Fatal(err)
 	}
 	if handle.Err() == nil {

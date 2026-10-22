@@ -31,8 +31,8 @@ type runtime struct {
 	actorSender   *txrpc.Sender
 	entities      *actorhost.Runtime
 	actorRPC      actorTransport
-	actorKinds    []txactor.Kind
-	actorCatalog  map[string]actorKindSpec
+	actorTypes    []txactor.Type
+	actorCatalog  map[string]actorTypeSpec
 	transaction   *txn.Runtime
 	directory     *discovery.ServiceDirectory
 	slots         discovery.SlotStore

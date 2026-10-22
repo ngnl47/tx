@@ -22,9 +22,9 @@ func (server *Server) actorCMod() CMod {
 				return err
 			}
 			if config.Capacity.Scope == txactor.CapacityAssignments && config.Capacity.Maximum > 0 {
-				for _, kind := range server.runtime.actorKinds {
-					if !actorhost.HasIndependentSlots(kind) {
-						return fmt.Errorf("actor: assignment capacity requires independent slots for kind %q", kind.Name())
+				for _, actorType := range server.runtime.actorTypes {
+					if !actorhost.HasIndependentSlots(actorType) {
+						return fmt.Errorf("actor: assignment capacity requires independent slots for actorType %q", actorType.Name())
 					}
 				}
 			}
@@ -42,7 +42,7 @@ func (server *Server) startActor() error {
 		config.Namespace = server.config.AppID
 	}
 	r := server.runtime
-	factory, err := actorhost.KindFactory(r.actorKinds, config.IdlePassivation)
+	factory, err := actorhost.TypeFactory(r.actorTypes, config.IdlePassivation)
 	if err != nil {
 		return err
 	}
@@ -76,7 +76,7 @@ func (server *Server) startActor() error {
 		return b, err
 	})
 	local.SetActivationLimits(actorhost.ActivationLimits{Actors: config.Capacity.Maximum, Initializations: config.Capacity.Initializations})
-	mapping := func(id actorhost.Identity) string { return actorhost.SlotFor(r.actorCatalog[id.Kind].kind, id) }
+	mapping := func(id actorhost.Identity) string { return actorhost.SlotFor(r.actorCatalog[id.Type].actorType, id) }
 	local.BindSlots(r.instanceSnapshot().ID, server.discovery.AuthoritativeSlots(), mapping)
 	if err := server.startEntityTransport(local, config.NATSURL, config.Namespace, config.MaxPendingCalls); err != nil {
 		return err
@@ -93,7 +93,7 @@ func (server *Server) startActor() error {
 		Service: func(name string) (string, error) {
 			spec, ok := r.actorCatalog[name]
 			if !ok {
-				return "", fmt.Errorf("actor: unknown kind %q", name)
+				return "", fmt.Errorf("actor: unknown actorType %q", name)
 			}
 			return spec.service, nil
 		}}

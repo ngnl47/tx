@@ -16,23 +16,23 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// 一个进程的多个实体类型共用同一 DeliveryService 和宿主，不能按 Kind 重复注册服务。
+// 一个进程的多个实体类型共用同一 DeliveryService 和宿主，不能按 Type 重复注册服务。
 func TestDirectSharedHostKinds(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	slowRelease := make(chan struct{}, 1)
 	defer close(slowRelease)
 	local := actorhost.New(128, time.Second, func(c txactor.Context) (*txactor.Behavior, error) {
-		if c.Identity.Kind == "deny" {
+		if c.Identity.Type == "deny" {
 			return nil, actorhost.ErrActivationDenied
 		}
 		count := 0
 		return &txactor.Behavior{Receive: func(_ txactor.Context, _ any) (any, error) {
-			if c.Identity.Kind == "slow" {
+			if c.Identity.Type == "slow" {
 				<-slowRelease
 			}
 			count++
-			return &actorpb.Result{MessageType: c.Identity.Kind, CommandHash: uint32(count)}, nil
+			return &actorpb.Result{MessageType: c.Identity.Type, CommandHash: uint32(count)}, nil
 		}}, nil
 	})
 	defer local.Drain(ctx)
@@ -69,7 +69,7 @@ func TestDirectSharedHostKinds(t *testing.T) {
 	transport := DirectTransport{Sender: sender}
 	for round := 1; round <= 2; round++ {
 		for _, kind := range []string{"role", "world"} {
-			result, err := transport.Call(ctx, actorhost.Target{Instance: "a", Identity: txactor.Identity{Kind: kind, Key: "same-key"}}, &actorpb.Delivery{MessageType: "ping"})
+			result, err := transport.Call(ctx, actorhost.Target{Instance: "a", Identity: txactor.Identity{Type: kind, ID: "same-key"}}, &actorpb.Delivery{MessageType: "ping"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -78,12 +78,12 @@ func TestDirectSharedHostKinds(t *testing.T) {
 			}
 		}
 	}
-	if _, err := transport.Call(ctx, actorhost.Target{Instance: "b", Identity: txactor.Identity{Kind: "role", Key: "stale"}}, &actorpb.Delivery{MessageType: "ping"}); !errors.Is(err, actorhost.ErrNotOwner) {
+	if _, err := transport.Call(ctx, actorhost.Target{Instance: "b", Identity: txactor.Identity{Type: "role", ID: "stale"}}, &actorpb.Delivery{MessageType: "ping"}); !errors.Is(err, actorhost.ErrNotOwner) {
 		t.Fatalf("错误归属未保留分类: %v", err)
 	}
 	local.BeginDrain()
 	for _, kind := range []string{"role", "world"} {
-		_, err := transport.Call(ctx, actorhost.Target{Instance: "a", Identity: txactor.Identity{Kind: kind, Key: "same-key"}}, &actorpb.Delivery{MessageType: "ping"})
+		_, err := transport.Call(ctx, actorhost.Target{Instance: "a", Identity: txactor.Identity{Type: kind, ID: "same-key"}}, &actorpb.Delivery{MessageType: "ping"})
 		if !errors.Is(err, actorhost.ErrDraining) {
 			t.Fatalf("排水未覆盖 %s: %v", kind, err)
 		}

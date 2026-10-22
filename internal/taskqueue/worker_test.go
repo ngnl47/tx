@@ -29,7 +29,7 @@ func (f taskCaller) Call(ctx context.Context, id actor.Identity, d actor.Deliver
 func TestProcessorMarksTaskAndWaitsForCompletion(t *testing.T) {
 	for _, fail := range []bool{false, true} {
 		t.Run(map[bool]string{false: "completed", true: "failed"}[fail], func(t *testing.T) {
-			data, err := json.Marshal(Task{Identity: actor.Identity{Kind: "role", Key: "1"}, Delivery: actor.Delivery{Origin: actor.OriginClient, MessageType: "custom.business"}})
+			data, err := json.Marshal(Task{Identity: actor.Identity{Type: "role", ID: "1"}, Delivery: actor.Delivery{Origin: actor.OriginClient, MessageType: "custom.business"}})
 			if err != nil {
 				t.Fatal(err)
 			}

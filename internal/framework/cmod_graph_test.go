@@ -184,10 +184,10 @@ func TestResolveCModGraphEvaluatesConditionalRequirementsForSelectedServices(t *
 }
 
 func TestResolveCModGraphAddsActorForDeclaredKinds(t *testing.T) {
-	roomKind := txactor.MustKind("room", func(txactor.Context) (*txactor.Behavior, error) {
+	roomKind := txactor.MustType("room", func(txactor.Context) (*txactor.Behavior, error) {
 		return &txactor.Behavior{Receive: func(txactor.Context, any) (any, error) { return nil, nil }}, nil
 	})
-	selected := []Service{cmodServiceFake{spec: Spec{Name: "room", ActorKinds: []txactor.Kind{roomKind}}}}
+	selected := []Service{cmodServiceFake{spec: Spec{Name: "room", ActorTypes: []txactor.Type{roomKind}}}}
 	cmods := []CMod{
 		cmodGraphFake{id: CModActor},
 	}
@@ -199,25 +199,25 @@ func TestResolveCModGraphAddsActorForDeclaredKinds(t *testing.T) {
 	if want := []CModID{CModActor}; !slices.Equal(graph.IDs(), want) {
 		t.Fatalf("CMod order = %v, want %v", graph.IDs(), want)
 	}
-	kinds, err := collectActorKinds(selected)
+	kinds, err := collectActorTypes(selected)
 	if err != nil {
-		t.Fatalf("collect Actor kinds: %v", err)
+		t.Fatalf("collect Actor types: %v", err)
 	}
-	if len(kinds) != 1 || kinds["room"].kind.Name() != "room" {
-		t.Fatalf("Actor kinds = %#v", kinds)
+	if len(kinds) != 1 || kinds["room"].actorType.Name() != "room" {
+		t.Fatalf("Actor types = %#v", kinds)
 	}
 }
 
-func TestCollectActorKindsRejectsDuplicateNames(t *testing.T) {
-	kind := txactor.MustKind("room", func(txactor.Context) (*txactor.Behavior, error) {
+func TestCollectActorTypesRejectsDuplicateNames(t *testing.T) {
+	kind := txactor.MustType("room", func(txactor.Context) (*txactor.Behavior, error) {
 		return &txactor.Behavior{Receive: func(txactor.Context, any) (any, error) { return nil, nil }}, nil
 	})
 	services := []Service{
-		cmodServiceFake{spec: Spec{Name: "room-a", ActorKinds: []txactor.Kind{kind}}},
-		cmodServiceFake{spec: Spec{Name: "room-b", ActorKinds: []txactor.Kind{kind}}},
+		cmodServiceFake{spec: Spec{Name: "room-a", ActorTypes: []txactor.Type{kind}}},
+		cmodServiceFake{spec: Spec{Name: "room-b", ActorTypes: []txactor.Type{kind}}},
 	}
-	if _, err := collectActorKinds(services); err == nil || !strings.Contains(err.Error(), "duplicate Actor kind") {
-		t.Fatalf("collect Actor kinds error = %v", err)
+	if _, err := collectActorTypes(services); err == nil || !strings.Contains(err.Error(), "duplicate Actor type") {
+		t.Fatalf("collect Actor types error = %v", err)
 	}
 }
 

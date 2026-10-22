@@ -50,7 +50,7 @@ func TestNATSSharedHostSemantics(t *testing.T) {
 	}
 	defer client.Close()
 	defer clientRuntime.Drain(ctx)
-	target := actorhost.Target{Instance: "server", Identity: actorhost.Identity{Kind: "role", Key: "1"}}
+	target := actorhost.Target{Instance: "server", Identity: actorhost.Identity{Type: "role", ID: "1"}}
 	if err := client.CheckActivationCapacity(ctx, target); err != nil {
 		t.Fatal(err)
 	}
@@ -68,12 +68,12 @@ func TestNATSSharedHostSemantics(t *testing.T) {
 	if err != nil || result.CommandHash != 2 {
 		t.Fatalf("NATS count: %+v %v", result, err)
 	}
-	other := actorhost.Target{Instance: "server", Identity: actorhost.Identity{Kind: "role", Key: "2"}}
+	other := actorhost.Target{Instance: "server", Identity: actorhost.Identity{Type: "role", ID: "2"}}
 	if err := client.CheckActivationCapacity(ctx, other); !errors.Is(err, actorhost.ErrCapacity) {
 		t.Fatalf("容量不足: %v", err)
 	}
 	// 直连接收入口复用同一宿主，不能创建第二份实体状态。
-	data, err := proto.Marshal(&actorpb.DirectStreamCall{Kind: "role", Key: "1", TimeoutNano: int64(time.Second), Delivery: &actorpb.Delivery{MessageType: "increment", RequestId: 1, Mode: actorpb.DeliveryMode_DELIVERY_MODE_CALL}})
+	data, err := proto.Marshal(&actorpb.DirectStreamCall{Type: "role", Id: "1", TimeoutNano: int64(time.Second), Delivery: &actorpb.Delivery{MessageType: "increment", RequestId: 1, Mode: actorpb.DeliveryMode_DELIVERY_MODE_CALL}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func testNATSPendingCleanup(t *testing.T, mode string) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	target := actorhost.Target{Instance: "server", Identity: actorhost.Identity{Kind: "role", Key: "1"}}
+	target := actorhost.Target{Instance: "server", Identity: actorhost.Identity{Type: "role", ID: "1"}}
 	requestCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	future, err := client.CallFuture(requestCtx, target, &actorpb.Delivery{})
@@ -211,7 +211,7 @@ func TestNATSDeactivateBeforeKeepsOutboundRPC(t *testing.T) {
 						return &actorpb.Result{MessageType: "completed"}, nil
 					},
 					OnDeactivateBefore: func(hook actorhost.Context) error {
-						_, err := source.Call(hook, actorhost.Target{Instance: destination, Identity: actorhost.Identity{Kind: "role", Key: "peer"}}, &actorpb.Delivery{})
+						_, err := source.Call(hook, actorhost.Target{Instance: destination, Identity: actorhost.Identity{Type: "role", ID: "peer"}}, &actorpb.Delivery{})
 						before <- err
 						return err
 					},
@@ -225,7 +225,7 @@ func TestNATSDeactivateBeforeKeepsOutboundRPC(t *testing.T) {
 			defer source.Close()
 			defer runtime.Drain(ctx)
 			defer releaseWork()
-			target := actorhost.Target{Instance: "source", Identity: actorhost.Identity{Kind: "room", Key: "1"}}
+			target := actorhost.Target{Instance: "source", Identity: actorhost.Identity{Type: "room", ID: "1"}}
 			future, err := peer.CallFuture(ctx, target, &actorpb.Delivery{})
 			if err != nil {
 				t.Fatal(err)

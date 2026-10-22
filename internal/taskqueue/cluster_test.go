@@ -132,7 +132,7 @@ func TestRecoveryAfterClusterLeaderLoss(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data := []byte(`{"Identity":{"Kind":"room","Key":"expired"},"Delivery":{"MessageType":"buff"}}`)
+	data := []byte(`{"Identity":{"Type":"room","ID":"expired"},"Delivery":{"MessageType":"buff"}}`)
 	first, err := js.Publish(ctx, "tasks", data)
 	if err != nil {
 		t.Fatal(err)

@@ -53,7 +53,7 @@ func directSubmitPayload(target actorhost.Target, delivery *actorpb.Delivery) ([
 	copy := proto.Clone(delivery).(*actorpb.Delivery)
 	copy.Mode = actorpb.DeliveryMode_DELIVERY_MODE_TELL
 	copy.RequestId = 0
-	return proto.Marshal(&actorpb.DirectStreamCall{Kind: target.Identity.Kind, Key: target.Identity.Key, Delivery: copy})
+	return proto.Marshal(&actorpb.DirectStreamCall{Type: target.Identity.Type, Id: target.Identity.ID, Delivery: copy})
 }
 
 func (d *DirectTransport) Call(ctx context.Context, target actorhost.Target, delivery *actorpb.Delivery) (*actorpb.Result, error) {
@@ -71,7 +71,7 @@ func (d *DirectTransport) Call(ctx context.Context, target actorhost.Target, del
 	copy := proto.Clone(delivery).(*actorpb.Delivery)
 	copy.Mode = actorpb.DeliveryMode_DELIVERY_MODE_CALL
 	copy.RequestId = 1
-	data, err := proto.Marshal(&actorpb.DirectStreamCall{Kind: target.Identity.Kind, Key: target.Identity.Key, Delivery: copy, TimeoutNano: int64(timeout)})
+	data, err := proto.Marshal(&actorpb.DirectStreamCall{Type: target.Identity.Type, Id: target.Identity.ID, Delivery: copy, TimeoutNano: int64(timeout)})
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +110,7 @@ func (r *directReceiver) enqueue(ctx context.Context, payload []byte) error {
 	if err := proto.Unmarshal(payload, &item); err != nil {
 		return err
 	}
-	target := actorhost.Target{Instance: r.instance, Identity: actorhost.Identity{Kind: item.Kind, Key: item.Key}}
+	target := actorhost.Target{Instance: r.instance, Identity: actorhost.Identity{Type: item.Type, ID: item.Id}}
 	if err := ValidateRequest(ctx, target, false); err != nil {
 		return err
 	}
@@ -142,7 +142,7 @@ func (r *directReceiver) CallStream(ctx context.Context, request rpc.Delivery) (
 				err = context.DeadlineExceeded
 			} else {
 				itemCtx, cancel := context.WithTimeout(ctx, time.Duration(item.TimeoutNano))
-				result, err = executeDirectCall(itemCtx, r.runtime, actorhost.Target{Instance: r.instance, Identity: actorhost.Identity{Kind: item.Kind, Key: item.Key}}, item.Delivery)
+				result, err = executeDirectCall(itemCtx, r.runtime, actorhost.Target{Instance: r.instance, Identity: actorhost.Identity{Type: item.Type, ID: item.Id}}, item.Delivery)
 				cancel()
 			}
 		}

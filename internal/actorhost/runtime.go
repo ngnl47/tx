@@ -21,7 +21,7 @@ var (
 )
 
 // Identity 是业务实体身份；物理激活句柄由 Context 隔离。
-type Identity struct{ Kind, Key string }
+type Identity struct{ Type, ID string }
 
 // Behavior 每次激活独立创建；缺省事件不需要空实现。
 type Behavior struct {
@@ -195,7 +195,7 @@ func (r *Runtime) SubmitWithReply(id Identity, message any, done func(any, error
 }
 
 func (r *Runtime) ensureLocked(id Identity) (*activation, error) {
-	if id.Kind == "" || id.Key == "" {
+	if id.Type == "" || id.ID == "" {
 		return nil, errors.New("actortrial: empty actor identity")
 	}
 	if r.draining {

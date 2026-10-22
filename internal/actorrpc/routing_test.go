@@ -109,7 +109,7 @@ func TestDirectActorCallKeepsIdentityErrorsAndCancellation(t *testing.T) {
 	// 旧实例地址已被 a 复用，消息仍必须按启动实例 ID 拒绝。
 	routeMembers(t, directory, map[string]*rpc.Host{"a": host, "old": host})
 	transport := directSender(t, directory)
-	id := actorhost.Identity{Kind: "world", Key: "中文世界/51"}
+	id := actorhost.Identity{Type: "world", ID: "中文世界/51"}
 	if _, err := transport.Call(ctx, actorhost.Target{Instance: "old", Identity: id}, &actorpb.Delivery{MessageType: "ack"}); !errors.Is(err, actorhost.ErrNotOwner) {
 		t.Fatalf("旧实例身份未拒绝: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestDirectActorCallKeepsIdentityErrorsAndCancellation(t *testing.T) {
 		t.Fatal("错误实例触发了激活")
 	}
 	for _, message := range []string{"denied", "invalid", "panic"} {
-		_, err := transport.Call(ctx, actorhost.Target{Instance: "a", Identity: actorhost.Identity{Kind: "world", Key: message}}, &actorpb.Delivery{MessageType: message})
+		_, err := transport.Call(ctx, actorhost.Target{Instance: "a", Identity: actorhost.Identity{Type: "world", ID: message}}, &actorpb.Delivery{MessageType: message})
 		if err == nil || (message == "denied" && !errors.Is(err, actorhost.ErrActivationDenied)) || (message == "panic" && !errors.Is(err, actorhost.ErrPanicked)) {
 			t.Fatalf("%s 错误丢失: %v", message, err)
 		}
@@ -191,7 +191,7 @@ func TestSharedRoutingDecodesBusinessDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := actorhost.Target{Instance: server.instance, Identity: actorhost.Identity{Kind: "world", Key: "51"}}
+	target := actorhost.Target{Instance: server.instance, Identity: actorhost.Identity{Type: "world", ID: "51"}}
 	for name, caller := range map[string]Caller{"direct": directSender(t, directory), "nats-remote": remote, "nats-local": server} {
 		t.Run(name, func(t *testing.T) {
 			result, err := caller.Call(ctx, target, delivery)
@@ -235,7 +235,7 @@ func TestDirectActorOwnershipBeforeNATS(t *testing.T) {
 	directory := discovery.NewServiceDirectory()
 	routeMembers(t, directory, map[string]*rpc.Host{"old": host})
 	caller := directSender(t, directory)
-	_, err := caller.Call(ctx, actorhost.Target{Instance: "old", Identity: actorhost.Identity{Kind: "world", Key: "1"}}, &actorpb.Delivery{MessageType: "move"})
+	_, err := caller.Call(ctx, actorhost.Target{Instance: "old", Identity: actorhost.Identity{Type: "world", ID: "1"}}, &actorpb.Delivery{MessageType: "move"})
 	if !errors.Is(err, actorhost.ErrNotOwner) || loads.Load() != 0 || reader.reads.Load() != 1 {
 		t.Fatalf("wrong owner: err=%v loads=%d reads=%d", err, loads.Load(), reader.reads.Load())
 	}
@@ -251,7 +251,7 @@ func TestDirectActorOwnershipBeforeNATS(t *testing.T) {
 	nextHost := directPeer(t, "new", current)
 	routeMembers(t, directory, map[string]*rpc.Host{"old": host, "new": nextHost})
 	for range 2 {
-		if _, err := caller.Call(ctx, actorhost.Target{Instance: "new", Identity: actorhost.Identity{Kind: "world", Key: "1"}}, &actorpb.Delivery{MessageType: "move"}); err != nil {
+		if _, err := caller.Call(ctx, actorhost.Target{Instance: "new", Identity: actorhost.Identity{Type: "world", ID: "1"}}, &actorpb.Delivery{MessageType: "move"}); err != nil {
 			t.Fatal(err)
 		}
 	}

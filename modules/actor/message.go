@@ -27,14 +27,14 @@ type MessageBinding struct {
 
 // MessageTable 在服务装配时构造，激活期间只读共享。
 type MessageTable struct {
-	kind    string
-	names   map[string]MessageBinding
-	clients map[uint32]MessageBinding
+	actorType string
+	names     map[string]MessageBinding
+	clients   map[uint32]MessageBinding
 }
 
 // NewMessageTable 仅接受生成器已校验的绑定；重复注册是启动错误。
-func NewMessageTable(kind string, bindings []MessageBinding) *MessageTable {
-	table := &MessageTable{kind: kind, names: make(map[string]MessageBinding), clients: make(map[uint32]MessageBinding)}
+func NewMessageTable(actorType string, bindings []MessageBinding) *MessageTable {
+	table := &MessageTable{actorType: actorType, names: make(map[string]MessageBinding), clients: make(map[uint32]MessageBinding)}
 	for _, binding := range bindings {
 		if _, ok := table.names[binding.Name]; ok {
 			panic("actor: duplicate message binding: " + binding.Name)
@@ -108,8 +108,8 @@ func (table *MessageTable) Dispatch(actor Context, state any, message any) (resu
 	if !matched {
 		return result, false, nil
 	}
-	if actor.Identity.Kind != table.kind {
-		return result, true, fmt.Errorf("%w: actor kind does not match message table", ErrInvalidDelivery)
+	if actor.Identity.Type != table.actorType {
+		return result, true, fmt.Errorf("%w: actor actorType does not match message table", ErrInvalidDelivery)
 	}
 	result, err = binding.Invoke(ctx, payload)
 	if err == nil && task && !binding.Call {

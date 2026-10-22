@@ -235,7 +235,7 @@ func TestPrepareHandoffWithEtcdRetainsLeaseUntilStop(t *testing.T) {
 	})
 	var unloaded atomic.Int32
 	newServer := func() *Server {
-		kind := txactor.MustKind("role", func(txactor.Context) (*txactor.Behavior, error) {
+		kind := txactor.MustType("role", func(txactor.Context) (*txactor.Behavior, error) {
 			var count uint64
 			return &txactor.Behavior{
 				Receive: func(txactor.Context, any) (any, error) {
@@ -244,8 +244,8 @@ func TestPrepareHandoffWithEtcdRetainsLeaseUntilStop(t *testing.T) {
 				},
 				OnDeactivateAfter: func(txactor.Context) error { unloaded.Add(1); return nil },
 			}, nil
-		}, txactor.WithSlotMapping(func(id txactor.Identity) string { return "game-" + id.Key }))
-		app := newDiscoveryIdentityTestServer(t, endpoint, prefix, "", testService{spec: Spec{Name: "game", ActorKinds: []txactor.Kind{kind}}})
+		}, txactor.WithSlotMapping(func(id txactor.Identity) string { return "game-" + id.ID }))
+		app := newDiscoveryIdentityTestServer(t, endpoint, prefix, "", testService{spec: Spec{Name: "game", ActorTypes: []txactor.Type{kind}}})
 		app.config.Actor.Runtime = txactor.Config{NATSURL: url, Namespace: owner}
 		return app
 	}
@@ -310,7 +310,7 @@ func TestPrepareHandoffWithEtcdRetainsLeaseUntilStop(t *testing.T) {
 		if err := store.CreateSlot(ctx, discovery.SlotAssignment{SlotID: "game-" + key, RuntimeInstanceID: id, Generation: 1}); err != nil {
 			t.Fatal(err)
 		}
-		destination := actorhost.Target{Instance: id, Identity: actorhost.Identity{Kind: "role", Key: key}}
+		destination := actorhost.Target{Instance: id, Identity: actorhost.Identity{Type: "role", ID: key}}
 		result, err := remote.Call(ctx, destination, &actorpb.Delivery{MessageType: "counter"})
 		if err != nil || result.CommandHash != 1 {
 			t.Fatalf("远端 NATS 激活: %+v %v", result, err)
@@ -361,7 +361,7 @@ func TestPrepareHandoffWithEtcdRetainsLeaseUntilStop(t *testing.T) {
 		if err != nil || len(member.Kvs) != 1 || member.Kvs[0].Lease != before.Kvs[0].Lease {
 			t.Fatalf("部分交接提前释放源租约: %v", err)
 		}
-		destination := actorhost.Target{Instance: id, Identity: actorhost.Identity{Kind: "role", Key: "2"}}
+		destination := actorhost.Target{Instance: id, Identity: actorhost.Identity{Type: "role", ID: "2"}}
 		if _, err := remote.Call(ctx, destination, &actorpb.Delivery{MessageType: "counter"}); !errors.Is(err, actorhost.ErrDraining) {
 			t.Fatalf("失败交接重新开放源: %v", err)
 		}
@@ -381,7 +381,7 @@ func TestPrepareHandoffWithEtcdRetainsLeaseUntilStop(t *testing.T) {
 		t.Fatalf("交接隐式重试或重复卸载: confirmations=%d unloaded=%d", confirmations.Load(), unloaded.Load())
 	}
 	for _, key := range []string{"1", "2"} {
-		destination := actorhost.Target{Instance: targetID, Identity: actorhost.Identity{Kind: "role", Key: key}}
+		destination := actorhost.Target{Instance: targetID, Identity: actorhost.Identity{Type: "role", ID: key}}
 		result, err := app.runtime.actorRPC.(*actorrpc.NATSTransport).Call(ctx, destination, &actorpb.Delivery{MessageType: "counter"})
 		if err != nil || result.CommandHash != 1 {
 			t.Fatalf("新 owner 懒加载失败: %+v %v", result, err)

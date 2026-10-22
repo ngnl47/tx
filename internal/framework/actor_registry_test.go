@@ -15,7 +15,7 @@ func TestActorCatalogIncludesUnselectedServicesWithoutStartingThem(t *testing.T)
 	}
 	app, err := New(Config{AppID: "catalog"}, WithService(
 		testService{spec: Spec{Name: "agent"}},
-		testService{spec: Spec{Name: "slgworld", ActorKinds: []txactor.Kind{txactor.MustKind("world", factory), txactor.MustKind("seasonWorld", factory)}}, start: func(Context) error { t.Error("启动了未选中服务"); return nil }},
+		testService{spec: Spec{Name: "slgworld", ActorTypes: []txactor.Type{txactor.MustType("world", factory), txactor.MustType("seasonWorld", factory)}}, start: func(Context) error { t.Error("启动了未选中服务"); return nil }},
 	))
 	if err != nil {
 		t.Fatal(err)
@@ -24,27 +24,27 @@ func TestActorCatalogIncludesUnselectedServicesWithoutStartingThem(t *testing.T)
 		t.Fatal(err)
 	}
 	defer app.Stop(context.Background())
-	if len(app.runtime.actorKinds) != 0 || app.runtime.hasCMod(CModActor) {
+	if len(app.runtime.actorTypes) != 0 || app.runtime.hasCMod(CModActor) {
 		t.Fatal("远端规格触发了本地 Actor 装配")
 	}
 	for _, name := range []string{"world", "seasonWorld"} {
 		spec, ok := app.runtime.actorCatalog[name]
-		if !ok || spec.service != "slgworld" || spec.kind.Name() != name {
+		if !ok || spec.service != "slgworld" || spec.actorType.Name() != name {
 			t.Fatalf("多对一规格缺失: %q %+v", name, spec)
 		}
 	}
 }
 
 func TestActorCatalogRejectsDuplicateInUnselectedServices(t *testing.T) {
-	kind := txactor.MustKind("world", func(txactor.Context) (*txactor.Behavior, error) {
+	kind := txactor.MustType("world", func(txactor.Context) (*txactor.Behavior, error) {
 		return &txactor.Behavior{Receive: func(txactor.Context, any) (any, error) { return nil, nil }}, nil
 	})
 	_, err := New(Config{AppID: "catalog"}, WithService(
 		testService{spec: Spec{Name: "agent"}},
-		testService{spec: Spec{Name: "slgworld", ActorKinds: []txactor.Kind{kind}}},
-		testService{spec: Spec{Name: "season", ActorKinds: []txactor.Kind{kind}}},
+		testService{spec: Spec{Name: "slgworld", ActorTypes: []txactor.Type{kind}}},
+		testService{spec: Spec{Name: "season", ActorTypes: []txactor.Type{kind}}},
 	))
-	if err == nil || !strings.Contains(err.Error(), "duplicate Actor kind") {
+	if err == nil || !strings.Contains(err.Error(), "duplicate Actor type") {
 		t.Fatalf("未拒绝全局重名: %v", err)
 	}
 }

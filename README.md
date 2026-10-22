@@ -56,7 +56,7 @@ README 回答“怎么使用”，不记录施工步骤、逐轮进度或本机�
 5. Bee/Ant Server 解析所选服务的 CMod 依赖闭包，只创建本进程实际需要的外部连接、共享 Host 和后台任务。
 6. handler 使用 `db.Save(role)` 或项目事务 facade，不直接装配 writer/client。
 
-`RunOptions.Services` 不解析 `*`、`!name` 或命令行语法；这些部署选择由项目负责。完整注册清单保留远端 Actor Kind 目录，本地只启动选定的服务。项目选择同进程 Agent/MsgQ 时显式注入 `agent.Options.LocalMsgQ` 并先启动 MsgQ；框架不再根据实例服务标签猜测部署关系。
+`RunOptions.Services` 不解析 `*`、`!name` 或命令行语法；这些部署选择由项目负责。完整注册清单保留远端 Actor Type 目录，本地只启动选定的服务。项目选择同进程 Agent/MsgQ 时显式注入 `agent.Options.LocalMsgQ` 并先启动 MsgQ；框架不再根据实例服务标签猜测部署关系。
 
 一个简化的项目组合根如下：
 
@@ -240,7 +240,7 @@ Requires: []bee.CModID{bee.CModActor, bee.CModDiscovery}
 
 同样，只使用 `CModFusionStorage()` 的服务不必再列 Redis/Mongo；如果还要通过 `CModRedisStorage()` 取得脚本路由，则必须显式声明 RedisStorage。不能因为同进程另一个服务启用了某项能力，就直接读取它。
 
-`ActorKinds` 会自动将 Actor 纳入启动闭包，但不会自动授予服务 `CModActor()` 的访问能力；服务自身需要发送 Actor 消息时仍须在 `Requires` 中声明 Actor。`CModActorDirect()` 也使用 Actor 的声明，不是另一个 CMod。
+`ActorTypes` 会自动将 Actor 纳入启动闭包，但不会自动授予服务 `CModActor()` 的访问能力；服务自身需要发送 Actor 消息时仍须在 `Requires` 中声明 Actor。`CModActorDirect()` 也使用 Actor 的声明，不是另一个 CMod。
 
 启动时对选中服务的依赖取并集、递归展开并按 CModID 去重；同一进程只启动一份共享能力。列表书写顺序不是启动顺序，框架按依赖拓扑先启动前置能力，再执行服务 Factory/Start。缺失依赖、重复 CModID 或依赖环会报错。正常关闭先收尾服务，再反向排水和关闭 CMod，避免先释放仍被依赖的资源。
 
@@ -398,7 +398,7 @@ msgq, ok := directory.LookupInstance(binding.InstanceID)
 
 `NextInstance` 是健康服务副本的轮转选择；`RunningInstances` 返回稳定排序、与目录内部隔离的健康实例
 快照，供业务实现随机、哈希或负载策略；`LookupInstance` 是已知实例的精确路由。`SessionID -> msgq 实例` 的精确会话
-绑定、`RoleID -> (InstanceID, Generation)` 角色归属、消息 Seq/Ack 和有界下行邮箱属于 `msgq`；Actor 的 `(kind, key)` 经 Kind 映射得到稳定槽位，再由 L2 Discovery 解析归属。
+绑定、`RoleID -> (InstanceID, Generation)` 角色归属、消息 Seq/Ack 和有界下行邮箱属于 `msgq`；Actor 的 `(type, id)` 经 Type 映射得到稳定槽位，再由 L2 Discovery 解析归属。
 
 Actor 与普通 gRPC 共用 Discovery 实例身份，不另建 Actor Provider 租约。
 
@@ -989,7 +989,7 @@ socket.send(encodeFrame({
 
 开发者在 `gen/cmd` 维护 DTO 和 `@actor` 接口，通过 `@scope`、`@mode` 声明投递范围与调用语义，使用接口默认值或方法上的 `@route`、`@principal` 声明路由与身份要求；txgen 自动生成 Go `CmdDescriptors` / `CmdDescriptorsByHash` 与 TypeScript `CommandSchemas` / `CommandNamesByHash`。生成描述表随前后端代码发布，禁止手改。不再维护编号池、服务号段、退休清单或清池入口。多人分支合并后须重新生成整套协议，以检测合并后的碰撞；检查范围是本次项目输入，不提供跨版本历史碰撞保证。命令重命名会改变哈希，属于协议变更。
 
-`toService`、`actor`、`actorKey` 是描述表内的路由元数据，不参与哈希。Agent 先按帧头哈希查描述表，再选择目标服务和 Actor，不按哈希数值区间路由，也不解析 BON。
+`toService`、`actor`、`actorID` 是描述表内的路由元数据，不参与哈希。Agent 先按帧头哈希查描述表，再选择目标服务和 Actor，不按哈希数值区间路由，也不解析 BON。
 
 下行通过生成的 `EncodeDownMessage` 构造 `[4 字节大端命令哈希][BON 正文]`，MsgQ 只保存不透明字节。Agent 在发送时解开此头，填入 Frame.CommandHash，客户端按生成的 `CommandNamesByHash` 选择正文类型。Go 直接解码 MsgQ 包时使用 `DecodeDownMessage`，内部 RPC 已独立携带哈希时使用 `DecodeBONCommand(hash, body)`。
 
@@ -1070,7 +1070,7 @@ delivery := &rpcpb.Delivery{
 ```
 
 新增业务可以使用该包进行明确的服务/实例调用，但不应依赖生成的 `pb` 类型定义客户端 DTO。会话 owner 由
-`msgq.SessionRouter` 解析；Actor 使用 `actor.Identity{Kind, Key}`，通过 `CModActor()` 或 `CModActorDirect()` 调用。
+`msgq.SessionRouter` 解析；Actor 使用 `actor.Identity{Type, ID}`，通过 `CModActor()` 或 `CModActorDirect()` 调用。
 
 服务进程的宿主统一创建 gRPC server 后，先用该服务的 `Ingress` 包装接收器，再注册得到已校验的业务 `Delivery`。
 `Deliver` 和 `Call` 是两个独立入口：前者只返回投递结果，后者返回一个 `MessageType` 非空且首尾无空白的 `Result`。
@@ -1317,13 +1317,13 @@ if err := control.RegisterSlotService(grpcServer, slotController); err != nil {
 
 ## Actor 实体与 msgq
 
-`modules/actor` 提供 BehaviorFactory、Kind、Identity 和四种调用契约。框架统一装配本地实体宿主、Discovery 归属、共享 gRPC 接收入口及 Core NATS；业务只声明类型与路由键，不处理 PID、连接或底层订阅。
+`modules/actor` 提供 BehaviorFactory、Type、Identity 和四种调用契约。框架统一装配本地实体宿主、Discovery 归属、共享 gRPC 接收入口及 Core NATS；业务只声明类型与路由键，不处理 PID、连接或底层订阅。
 
-### Kind 与宿主装配
+### Type 与宿主装配
 
 ```go
-kind := txactor.MustKind("role", func(c txactor.Context) (*txactor.Behavior, error) {
-    role, err := loadRole(c.Context, c.Identity.Key)
+kind := txactor.MustType("role", func(c txactor.Context) (*txactor.Behavior, error) {
+    role, err := loadRole(c.Context, c.Identity.ID)
     if err != nil { return nil, err }
     return &txactor.Behavior{
         Receive: func(c txactor.Context, message any) (any, error) {
@@ -1333,37 +1333,37 @@ kind := txactor.MustKind("role", func(c txactor.Context) (*txactor.Behavior, err
 }, txactor.WithIdlePassivation(5*time.Minute))
 
 registration := bee.ServiceRegistration{
-    Spec: bee.ServiceSpec{Name: "game", ActorKinds: []txactor.Kind{kind}},
+    Spec: bee.ServiceSpec{Name: "game", ActorTypes: []txactor.Type{kind}},
     Factory: newGameService,
 }
 ```
 
-`NewKind` 返回声明错误，`MustKind` 对同一声明错误 panic；二者都不会执行工厂。工厂仅在实体懒加载时运行，业务加载失败通过运行时返回。`NewFixedKind`、`MustFixedKind`、`IsFixed` 和原生 `AdaptKind` 已移除，稳定业务归属使用 `WithSlotMapping`。
+`NewType` 返回声明错误，`MustType` 对同一声明错误 panic；二者都不会执行工厂。工厂仅在实体懒加载时运行，业务加载失败通过运行时返回。`NewFixedKind`、`MustFixedKind`、`IsFixed` 和原生 `AdaptKind` 已移除，稳定业务归属使用 `WithSlotMapping`。
 
-普通 Kind 默认使用 1024 个稳定分区；独立世界、分服或分战区使用 `actor.WithSlotMapping(mapping)`。一个 Kind 对应声明它的服务类型，一个服务可声明多个 Kind；应用全部声明中的 Kind 名称必须唯一。Agent 与 Actor 调用、首次分配和加载前权威校验共用同一映射。显式映射返回空值即失败，不回退默认分区。
+普通 Type 默认使用 1024 个稳定分区；独立世界、分服或分战区使用 `actor.WithSlotMapping(mapping)`。一个 Type 对应声明它的服务类型，一个服务可声明多个 Type；应用全部声明中的 Type 名称必须唯一。Agent 与 Actor 调用、首次分配和加载前权威校验共用同一映射。显式映射返回空值即失败，不回退默认分区。
 
 `CModActor` 自动依赖共享 RPC 和 Discovery。启动顺序为 RPC、Discovery、Actor 入口、业务服务、running；没有独立 Actor 监听端口或第二套成员租约。`actor.Config` 使用 `NATSURL`、`Namespace`（空时用 AppID）、`MailboxCapacity`（默认 1024）、`MaxPendingCalls`（默认 4096）、`CallbackTimeout`（默认 30 秒）和 `IdlePassivation`。
 
 工厂、`OnInitAfter`、`OnActivateBefore`、`OnActivateAfter` 不附加统一执行 deadline；加载 I/O 自行设置期限。`CallbackTimeout` 限制 Receive、卸载回调及权威查询的 Context，不会强制中断忽略 Context 的业务。调用方等待超时不取消已开始的加载，排水超时不提前释放容量或允许交接。回调完成后取消其 Context。
 
-卸载可使用空闲策略，或在生命周期中使用 `Context.After/Post/Deactivate`。本地工作仍进入同一邮箱；不能在实体回调内同步等待自己 Post 的 Future。Kind 显式空闲选项优先于运行时配置，无配置时保持常驻。Actor 卸载不等于 GD 淘汰或已刷盘，仍须遵守 `writeback.Manager.TryRelease` 的检查。
+卸载可使用空闲策略，或在生命周期中使用 `Context.After/Post/Deactivate`。本地工作仍进入同一邮箱；不能在实体回调内同步等待自己 Post 的 Future。Type 显式空闲选项优先于运行时配置，无配置时保持常驻。Actor 卸载不等于 GD 淘汰或已刷盘，仍须遵守 `writeback.Manager.TryRelease` 的检查。
 
 ### 数量配额与状态控制
 
 `CModActor()` 返回 `actor.Runtime`：保留 Messenger 的四种调用，并增加 `Probe`、`EnsureActivation`、`RetryActivation`。只发送消息的业务仍依赖较小的 Messenger / Caller。容量不再按 GD 字节估算，也不绑定 worldId 或要求 Kubernetes。
 
 ```go
-// 独立大世界实例：全部本地 Kind 共用一个稳定归属名额。
+// 独立大世界实例：全部本地 Type 共用一个稳定归属名额。
 config.Actor.Runtime.Capacity = txactor.Capacity{
     Maximum: 1, Scope: txactor.CapacityAssignments, Initializations: 1,
 }
-worldKind := txactor.MustKind("world", newWorldBehavior,
+worldKind := txactor.MustType("world", newWorldBehavior,
     txactor.WithSlotMapping(worldSlots), // 业务保证一实体一槽位。
 )
 
 // 小房间实例可改为：Maximum: 1000, Scope: txactor.CapacityActivations。
 state, err := runtime.CModActor().EnsureActivation(ctx,
-    txactor.Identity{Kind: "world", Key: "i:490001"})
+    txactor.Identity{Type: "world", ID: "i:490001"})
 if err != nil { return err }
 if state.State == txactor.Initializing { /* 提示场景准备中 */ }
 ```
@@ -1375,7 +1375,7 @@ if state.State == txactor.Initializing { /* 提示场景准备中 */ }
 | Scope = assignment | 以现有稳定槽位归属占位；卸载、加载失败、懒重载及 GD 淘汰均不释放归属名额 |
 | Initializations | 单独限制同时初始化数量；0 不限制，不附加初始化执行 deadline |
 
-assignment 配额只能用于显式的一实体一槽位映射，不能把默认 1024 分区当作 1024 个实体。启动前检查本地 Kind 都有显式映射，映射的一对一性质仍由业务保证。world 和 seasonWorld 同实例共用上限，槽位命名必须互不冲突。普通角色和房间使用 activation 配额；已有分区 owner 满载时不自动迁移其中的单个实体。
+assignment 配额只能用于显式的一实体一槽位映射，不能把默认 1024 分区当作 1024 个实体。启动前检查本地 Type 都有显式映射，映射的一对一性质仍由业务保证。world 和 seasonWorld 同实例共用上限，槽位命名必须互不冲突。普通角色和房间使用 activation 配额；已有分区 owner 满载时不自动迁移其中的单个实体。
 
 新世界先找候选、预检、原子写归属，再由本地宿主原子准入初始化。多个候选请求同时争抢最后一个名额时，默认 etcd Store 在同一事务内复核 assignment 数量与写入；明确名额不足可以继续候选选择，写入结果未知不能改派。没有第二张归属或名额表，已有 assignment 直接纳入统计，Actor 卸载不会改变占位。同一世界再次加载仍找原 owner。
 
@@ -1396,13 +1396,13 @@ assignment 配额只能用于显式的一实体一槽位映射，不能把默认
 Actor 间使用 `CModActor()`，上下行使用直连 gRPC；两条入口进入同一实体邮箱。
 
 ```go
-id := txactor.Identity{Kind: "role", Key: "i:470001"}
+id := txactor.Identity{Type: "role", ID: "i:470001"}
 result, err := runtime.CModActor().Call(ctx, id, txactor.Delivery{
     MessageType: "role.rename", CommandHash: 470001, Payload: bonBody,
 })
 ```
 
-Key 的编码由项目统一约定，tx 不推断整数或业务分组。两个示例使用 `i:`、`u:`、`s:` 等明确类型前缀。
+ID 的编码由项目统一约定，tx 不推断整数或业务分组。两个示例使用 `i:`、`u:`、`s:` 等明确类型前缀。
 
 | API | 返回条件 |
 | --- | --- |
@@ -1453,7 +1453,7 @@ Agent 校验可信会话和 Seq/Ack，Resolver 只解析业务身份；tx 统一
 
 ### Actor 路由模式
 
-业务 Identity 经 Kind 稳定映射得到逻辑分区或业务槽位，再由 L2 Discovery 的本地 Watch 缓存查找 owner。仅明确不存在 assignment 时执行容量预检和首次 CAS 分配；已有 owner 下线、排水或请求超时不自动改派。NATS 按实例主题转发，gRPC 按同一 owner 的共享 Endpoint 直达。
+业务 Identity 经 Type 稳定映射得到逻辑分区或业务槽位，再由 L2 Discovery 的本地 Watch 缓存查找 owner。仅明确不存在 assignment 时执行容量预检和首次 CAS 分配；已有 owner 下线、排水或请求超时不自动改派。NATS 按实例主题转发，gRPC 按同一 owner 的共享 Endpoint 直达。
 
 Actor 不代表 GD，也不提供分布式事务；多个 GD 的原子修改继续使用单机 Procedure。完整边界见 [设计文档](docs/design.md#actor)。
 
@@ -1487,7 +1487,7 @@ assignment, created, err := ownership.Ensure(ctx, "slgworld", "world-51", checkC
 prepare 必须确认该启动身份的源实例完成全量排水和必要持久化后才返回 nil。
 使用控制面 gRPC 时，直接传入 `control.NewHandoffClient(connection).PrepareHandoff`；客户端负责协议构造及响应启动身份校验，连接仍由调用方管理。
 晋升成功后由 Actor 宿主执行加载；出错不自动回滚、接管或重投。`CheckSlotOwner` 集中提供加载前权威校验。
-上述能力面向框架和独立控制工具，普通 game 服务仍声明 Kind 和业务加载策略，不组装这些回调。
+上述能力面向框架和独立控制工具，普通 game 服务仍声明 Type 和业务加载策略，不组装这些回调。
 独立后端/测试可用 `NewSlotOwnership` 显式构造；低层 CAS SPI 保留，不等同于已经执行上述交接流程。
 
 业务决定 `SlotID` 的计算规则，L2 不解析 GD、不推断同服/战区归属，也不创建业务 Actor；懒加载由实体宿主执行。解析时通过 `SlotResolver`
@@ -1540,7 +1540,7 @@ Server 会在标记实例 `running` 前完成实例目录和槽位目录的首�
 一致性域立即失败关闭，`ResolveSlot` 返回 `ErrSlotDirectoryUnavailable`，不会用旧归属继续投递，也不会退化为逐消息
 etcd Get。后台重新载入完整快照后自动恢复。
 
-`txgameslg/server/services/agent.NewTicketActorHandlers` 在组合根接收票据校验器和业务 Identity 解析器。Kind 的 `WithSlotMapping` 统一决定稳定归属，Agent 不再创建 SlotResolver 或 PID；`CModActorDirect` 在 tx 内复用只读目录并保留错误链。
+`txgameslg/server/services/agent.NewTicketActorHandlers` 在组合根接收票据校验器和业务 Identity 解析器。Type 的 `WithSlotMapping` 统一决定稳定归属，Agent 不再创建 SlotResolver 或 PID；`CModActorDirect` 在 tx 内复用只读目录并保留错误链。
 
 ### 滚动重启
 
@@ -4305,7 +4305,7 @@ config.TaskQueue = tasks.Config{
 
 // 业务 Handler 中持久投递；payload 是业务协议编码后的内容。
 err := publisher.Publish(ctx,
-    actor.Identity{Kind: "role", Key: "i:10001"},
+    actor.Identity{Type: "role", ID: "i:10001"},
     actor.Delivery{MessageType: "reward", Payload: payload},
 )
 ```
@@ -4339,4 +4339,10 @@ R3 隔离测试进一步覆盖单节点故障期间的新发布和耗尽恢复�
 
 `actor.Delivery.Origin` 区分 `OriginInternal`、`OriginClient` 与 `OriginTask`。Agent 和可靠任务消费者在入口设置来源，`MessageType` 仅描述载荷，业务不得用名称猜测来源。任务仍通过 Call 等待业务完成后 ACK；无响应体时返回 `actor.Result{Completed: true}`，有响应体时使用原有 MessageType/CommandHash/Payload，二者互斥。
 
-标准 Actor Key 使用 `actor.Int64Key`、`Uint64Key`、`StringKey` 和对应 Parse 方法；现有编码及实体归属不变，自定义 Key 仍可使用。以上协议需要调用方、服务端和生成产物同步更新。
+标准 Actor ID 使用 `actor.Int64ID`、`Uint64ID`、`StringID` 和对应 Parse 方法；现有编码及实体归属不变，自定义 ID 仍可使用。以上协议需要调用方、服务端和生成产物同步更新。
+
+### Actor 身份 Type/ID
+
+`actor.Identity{Type string, ID string}` 描述逻辑实体；`actor.Type`、`NewType` 与 `ServiceSpec.ActorTypes` 声明其行为和归属。`Type` 在应用内唯一，`ID` 在该类型内唯一，物理进程仍使用 InstanceID。`Int64ID`、`Uint64ID`、`StringID` 保留 i:/u:/s: 编码；默认分区仍按原 ID 字节 xxhash64 对 1024 取模，持久槽位布局不变。Redis key、RouteKey 和任务类别不属于本次改名。
+
+内部 NATS 与 JetStream 任务载荷中的身份 JSON 同步使用 Type/ID，生成调用方与服务端需要配套更新，不支持新旧身份字段混用。升级前停止旧任务发布并排空旧版本任务（包括等待重试项），不能把未完成任务直接交给新版本；有存量时须另行安排离线迁移，不能仅滚动替换程序。gRPC 目标字段保留原 protobuf 编号。更改实际 Type 值属于新实体类型，不能按 API 改名理解为旧槽位自动迁移。

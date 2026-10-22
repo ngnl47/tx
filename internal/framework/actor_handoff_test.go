@@ -88,7 +88,7 @@ func TestActorHostPrepareHandoffRetainsTransportUntilStop(t *testing.T) {
 	transport := app.runtime.actorRPC.(*actorrpc.NATSTransport)
 	output := &handoffFlushTransport{NATSTransport: transport, stored: &flushes}
 	app.runtime.actorRPC = output
-	target := actorhost.Target{Instance: "source", Identity: actorhost.Identity{Kind: "role", Key: "1"}}
+	target := actorhost.Target{Instance: "source", Identity: actorhost.Identity{Type: "role", ID: "1"}}
 	future, err := client.CallFuture(ctx, target, &actorpb.Delivery{})
 	if err != nil {
 		t.Fatal(err)

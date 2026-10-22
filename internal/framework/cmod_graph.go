@@ -68,7 +68,7 @@ func resolveCModGraph(cmods []CMod, services []Service) (cmodGraph, error) {
 		}
 		spec := service.Spec()
 		required := append([]CModID(nil), spec.Requires...)
-		if len(spec.ActorKinds) > 0 {
+		if len(spec.ActorTypes) > 0 {
 			required = append(required, CModActor)
 		}
 		if provider, ok := service.(CModRequirementsProvider); ok {
@@ -116,31 +116,31 @@ func componentIDs(ids []CModID) []component.ID {
 	return result
 }
 
-// actorKindSpec 保留应用内 Kind 的服务归属和原始声明；不构造业务实例。
-type actorKindSpec struct {
-	service string
-	kind    txactor.Kind
+// actorTypeSpec 保留应用内 Type 的服务归属和原始声明；不构造业务实例。
+type actorTypeSpec struct {
+	service   string
+	actorType txactor.Type
 }
 
-func collectActorKinds(services []Service) (map[string]actorKindSpec, error) {
-	kinds := make(map[string]actorKindSpec)
+func collectActorTypes(services []Service) (map[string]actorTypeSpec, error) {
+	actorTypes := make(map[string]actorTypeSpec)
 	for _, service := range services {
 		if service == nil {
 			return nil, errors.New("framework: registered service is nil")
 		}
 		spec := service.Spec()
-		for _, kind := range spec.ActorKinds {
-			name := kind.Name()
+		for _, actorType := range spec.ActorTypes {
+			name := actorType.Name()
 			if name == "" {
-				return nil, fmt.Errorf("framework: service %q declares invalid Actor kind", spec.Name)
+				return nil, fmt.Errorf("framework: service %q declares invalid Actor type", spec.Name)
 			}
-			if owner, exists := kinds[name]; exists {
-				return nil, fmt.Errorf("framework: duplicate Actor kind %q declared by services %q and %q", name, owner.service, spec.Name)
+			if owner, exists := actorTypes[name]; exists {
+				return nil, fmt.Errorf("framework: duplicate Actor type %q declared by services %q and %q", name, owner.service, spec.Name)
 			}
-			kinds[name] = actorKindSpec{service: spec.Name, kind: kind}
+			actorTypes[name] = actorTypeSpec{service: spec.Name, actorType: actorType}
 		}
 	}
-	return kinds, nil
+	return actorTypes, nil
 }
 
 func uniqueCModIDs(ids []CModID) []CModID {

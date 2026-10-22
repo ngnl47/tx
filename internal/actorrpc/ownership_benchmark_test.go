@@ -47,7 +47,7 @@ func BenchmarkOwnedNATSCall(b *testing.B) {
 	}
 	defer caller.Close()
 	defer caller.runtime.Drain(ctx)
-	target := actorhost.Target{Instance: "world", Identity: actorhost.Identity{Kind: "world", Key: "1"}}
+	target := actorhost.Target{Instance: "world", Identity: actorhost.Identity{Type: "world", ID: "1"}}
 	delivery := &actorpb.Delivery{MessageType: "move", Payload: make([]byte, 128)}
 	if _, err = caller.Call(ctx, target, delivery); err != nil {
 		b.Fatal(err)

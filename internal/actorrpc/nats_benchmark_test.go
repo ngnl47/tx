@@ -30,7 +30,7 @@ func BenchmarkNATSCall(b *testing.B) {
 			}
 			defer a.conn.Close()
 			defer r.Drain(context.Background())
-			target := actorhost.Target{Instance: "a", Identity: actorhost.Identity{Kind: "role", Key: "1"}}
+			target := actorhost.Target{Instance: "a", Identity: actorhost.Identity{Type: "role", ID: "1"}}
 			if remote {
 				rb := echoRuntime()
 				other, err := ConnectNATS(url, ns, "b", rb, 32)

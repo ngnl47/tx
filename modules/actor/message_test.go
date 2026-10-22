@@ -14,7 +14,7 @@ func TestMessageTableSharesBindingsAndIsolatesActivationState(t *testing.T) {
 		return Result{}, nil
 	}}})
 	a, b := 0, 0
-	ctx := Context{Context: context.Background(), Identity: Identity{Kind: "world", Key: "i:1"}}
+	ctx := Context{Context: context.Background(), Identity: Identity{Type: "world", ID: "i:1"}}
 	_, matched, err := table.Dispatch(ctx, &a, Delivery{MessageType: "world.step"})
 	if !matched || !errors.Is(err, ErrInvalidDelivery) {
 		t.Fatalf("remote local-only: %v %v", matched, err)

@@ -8,7 +8,7 @@ import (
 
 type registry struct {
 	byName       map[string]Service
-	actorCatalog map[string]actorKindSpec
+	actorCatalog map[string]actorTypeSpec
 }
 
 func newRegistry(services ...Service) (*registry, error) {
@@ -30,7 +30,7 @@ func newRegistry(services ...Service) (*registry, error) {
 		}
 		result.byName[name] = service
 	}
-	catalog, err := collectActorKinds(services)
+	catalog, err := collectActorTypes(services)
 	if err != nil {
 		return nil, err
 	}

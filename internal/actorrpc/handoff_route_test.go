@@ -65,7 +65,7 @@ func TestEnqueueWaitsForHandoffBeforeFirstSend(t *testing.T) {
 	caller, reader, transport := handoffCaller(t, nil)
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	id := actorhost.Identity{Kind: "role", Key: "i:1"}
+	id := actorhost.Identity{Type: "role", ID: "i:1"}
 	done := make(chan error, 1)
 	go func() { done <- caller.Enqueue(ctx, id, &actorpb.Delivery{}) }()
 	select {
@@ -101,7 +101,7 @@ func TestEnqueueHandoffWaitIsBoundedAndDoesNotRetryTransport(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 		defer cancel()
 		done := make(chan error, 1)
-		go func() { done <- caller.Enqueue(ctx, actorhost.Identity{Kind: "role", Key: "i:1"}, &actorpb.Delivery{}) }()
+		go func() { done <- caller.Enqueue(ctx, actorhost.Identity{Type: "role", ID: "i:1"}, &actorpb.Delivery{}) }()
 		<-reader.read
 		cancel()
 		select {
@@ -118,7 +118,7 @@ func TestEnqueueHandoffWaitIsBoundedAndDoesNotRetryTransport(t *testing.T) {
 	})
 	t.Run("无期限仍立即返回", func(t *testing.T) {
 		caller, _, transport := handoffCaller(t, nil)
-		if err := caller.Enqueue(context.Background(), actorhost.Identity{Kind: "role", Key: "i:1"}, &actorpb.Delivery{}); !errors.Is(err, discovery.ErrSlotRuntimeUnavailable) {
+		if err := caller.Enqueue(context.Background(), actorhost.Identity{Type: "role", ID: "i:1"}, &actorpb.Delivery{}); !errors.Is(err, discovery.ErrSlotRuntimeUnavailable) {
 			t.Fatal(err)
 		}
 		if len(transport.targets) != 0 {
@@ -130,7 +130,7 @@ func TestEnqueueHandoffWaitIsBoundedAndDoesNotRetryTransport(t *testing.T) {
 		reader.assignment.Store(&discovery.SlotAssignment{SlotID: "slot", RuntimeInstanceID: "new", Generation: 2})
 		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 		defer cancel()
-		if err := caller.Enqueue(ctx, actorhost.Identity{Kind: "role", Key: "i:1"}, &actorpb.Delivery{}); !errors.Is(err, discovery.ErrSlotRuntimeUnavailable) {
+		if err := caller.Enqueue(ctx, actorhost.Identity{Type: "role", ID: "i:1"}, &actorpb.Delivery{}); !errors.Is(err, discovery.ErrSlotRuntimeUnavailable) {
 			t.Fatal(err)
 		}
 		if len(transport.targets) != 1 {

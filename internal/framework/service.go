@@ -12,8 +12,8 @@ type Spec struct {
 	Name string
 	// Requires 声明该 L4 服务需要启用的 L3 能力模组。
 	Requires []CModID
-	// ActorKinds 声明该服务可以承载的 Actor 类型；空切片表示不注册 Actor 能力。
-	ActorKinds []txactor.Kind
+	// ActorTypes 声明该服务可以承载的 Actor 类型；空切片表示不注册 Actor 能力。
+	ActorTypes []txactor.Type
 }
 
 // Service 表示一个可独立选择的进程服务。

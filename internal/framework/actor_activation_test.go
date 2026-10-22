@@ -57,21 +57,21 @@ func testFormalActorActivationControl(t *testing.T, scope txactor.CapacityScope)
 	unblock := sync.OnceFunc(func() { close(release) })
 	var loads atomic.Int32
 	var allow atomic.Bool
-	kind := txactor.MustKind("world", func(c txactor.Context) (*txactor.Behavior, error) {
+	kind := txactor.MustType("world", func(c txactor.Context) (*txactor.Behavior, error) {
 		loads.Add(1)
-		if c.Identity.Key == "blocked" {
+		if c.Identity.ID == "blocked" {
 			<-release
 		}
-		if c.Identity.Key == "denied" && !allow.Load() {
+		if c.Identity.ID == "denied" && !allow.Load() {
 			return nil, txactor.ErrActivationDenied
 		}
 		return &txactor.Behavior{Receive: func(c txactor.Context, _ any) (any, error) {
 			c.Deactivate()
 			return txactor.Result{MessageType: "done"}, nil
 		}}, nil
-	}, txactor.WithSlotMapping(func(id txactor.Identity) string { return "world-" + id.Key }))
+	}, txactor.WithSlotMapping(func(id txactor.Identity) string { return "world-" + id.ID }))
 	var access txactor.Runtime
-	registrations := []Service{testService{spec: Spec{Name: "slgworld", ActorKinds: []txactor.Kind{kind}}}, testService{spec: Spec{Name: "game", Requires: []CModID{CModActor}}, start: func(c Context) error { access = c.Actor(); return nil }}}
+	registrations := []Service{testService{spec: Spec{Name: "slgworld", ActorTypes: []txactor.Type{kind}}}, testService{spec: Spec{Name: "game", Requires: []CModID{CModActor}}, start: func(c Context) error { access = c.Actor(); return nil }}}
 	start := func(service string) *Server {
 		app := newDiscoveryIdentityTestServer(t, endpoint, prefix, "", registrations...)
 		app.config.Actor.Runtime = txactor.Config{NATSURL: url, Namespace: owner, Capacity: txactor.Capacity{Maximum: 1, Scope: scope, Initializations: 1}}
@@ -97,7 +97,7 @@ func testFormalActorActivationControl(t *testing.T, scope txactor.CapacityScope)
 		}
 	}
 	wait(func() bool { return len(game.discovery.Directory().RunningInstances("slgworld")) == 1 })
-	id := txactor.Identity{Kind: "world", Key: "blocked"}
+	id := txactor.Identity{Type: "world", ID: "blocked"}
 	state, err := access.Probe(ctx, id)
 	if err != nil || state.State != txactor.Unloaded || loads.Load() != 0 {
 		t.Fatalf("探测触发加载: %+v %v", state, err)
@@ -119,7 +119,7 @@ func testFormalActorActivationControl(t *testing.T, scope txactor.CapacityScope)
 			t.Fatal(err)
 		}
 	}
-	other := txactor.Identity{Kind: "world", Key: "denied"}
+	other := txactor.Identity{Type: "world", ID: "denied"}
 	if _, err = access.EnsureActivation(ctx, other); !errors.Is(err, txactor.ErrCapacity) {
 		t.Fatalf("超预算: %v", err)
 	}
@@ -177,8 +177,8 @@ func testFormalActorActivationControl(t *testing.T, scope txactor.CapacityScope)
 }
 
 func TestAssignmentCapacityRequiresIndependentSlotsBeforeConnecting(t *testing.T) {
-	kind := txactor.MustKind("world", func(txactor.Context) (*txactor.Behavior, error) { t.Fatal("声明阶段不应加载"); return nil, nil })
-	app, err := New(Config{AppID: "budget", Discovery: DiscoveryConfig{Etcd: discovery.EtcdConfig{Endpoints: []string{"127.0.0.1:1"}, Prefix: "/tx/test-budget", LeaseTTL: time.Second, DialTimeout: time.Second}}, Actor: ActorConfig{Runtime: txactor.Config{NATSURL: "nats://127.0.0.1:1", Capacity: txactor.Capacity{Maximum: 1, Scope: txactor.CapacityAssignments}}}}, WithService(testService{spec: Spec{Name: "world", ActorKinds: []txactor.Kind{kind}}}))
+	kind := txactor.MustType("world", func(txactor.Context) (*txactor.Behavior, error) { t.Fatal("声明阶段不应加载"); return nil, nil })
+	app, err := New(Config{AppID: "budget", Discovery: DiscoveryConfig{Etcd: discovery.EtcdConfig{Endpoints: []string{"127.0.0.1:1"}, Prefix: "/tx/test-budget", LeaseTTL: time.Second, DialTimeout: time.Second}}, Actor: ActorConfig{Runtime: txactor.Config{NATSURL: "nats://127.0.0.1:1", Capacity: txactor.Capacity{Maximum: 1, Scope: txactor.CapacityAssignments}}}}, WithService(testService{spec: Spec{Name: "world", ActorTypes: []txactor.Type{kind}}}))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -28,7 +28,7 @@ func TestAfterWaitsForMailboxCapacityUntilDrain(t *testing.T) {
 					}}, nil
 				})
 				defer runtime.Drain(context.Background())
-				id := Identity{Kind: "room", Key: "full"}
+				id := Identity{Type: "room", ID: "full"}
 				if _, err := runtime.Submit(id, "block"); err != nil {
 					t.Fatal(err)
 				}

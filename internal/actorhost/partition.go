@@ -11,7 +11,7 @@ import (
 // 输入为已校验身份，保留原始 Key 字节；布局改变必须经过归属迁移，不能热改。
 // 世界等独立槽位通过组合根提供自定义映射，不使用此函数。
 func PartitionSlot(id Identity) string {
-	return "actor-v1." + base64.RawURLEncoding.EncodeToString([]byte(id.Kind)) + ".p" + strconv.FormatUint(xxhash.Sum64String(id.Key)%1024, 10)
+	return "actor-v1." + base64.RawURLEncoding.EncodeToString([]byte(id.Type)) + ".p" + strconv.FormatUint(xxhash.Sum64String(id.ID)%1024, 10)
 }
 
 // SlotMapping 将身份映射到稳定业务槽位；零值使用普通实体的 1024 分区。

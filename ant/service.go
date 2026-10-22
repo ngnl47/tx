@@ -18,9 +18,9 @@ type ServiceSpec struct {
 	// Requires 声明服务直接使用的 CMod，构造前由框架递归启用依赖并按拓扑启动。
 	// Context 只允许取得显式声明的能力；间接依赖已启动不代表服务可以直接访问。
 	Requires []CModID
-	// ActorKinds 列出由本服务承载的多个 Actor 种类；Kind 名称在应用全部注册中唯一。
+	// ActorTypes 列出由本服务承载的多个 Actor 种类；Type 名称在应用全部注册中唯一。
 	// 未选中服务只提供规格，不启动其工厂。
-	ActorKinds []txactor.Kind
+	ActorTypes []txactor.Type
 }
 
 // ServiceFactory 在依赖 CMod 全部就绪后构造服务实例。
@@ -61,7 +61,7 @@ func (adapter *serviceAdapter) Spec() framework.Spec {
 	return framework.Spec{
 		Name:       adapter.registration.Spec.Name,
 		Requires:   toFrameworkCModIDs(adapter.registration.Spec.Requires),
-		ActorKinds: append([]txactor.Kind(nil), adapter.registration.Spec.ActorKinds...),
+		ActorTypes: append([]txactor.Type(nil), adapter.registration.Spec.ActorTypes...),
 	}
 }
 
