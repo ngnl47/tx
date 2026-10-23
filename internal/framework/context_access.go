@@ -204,3 +204,16 @@ type redisClientsAccess struct{ storage *storageRuntime }
 func (access redisClientsAccess) Client(name string) (redis.Cmdable, error) {
 	return access.storage.RedisClient(name)
 }
+
+func (access modeStorageAccess) ReadDocumentVersion(ctx context.Context, spec meta.TypeSpec, key txstorage.RecordKey) (txstorage.DocumentVersion, error) {
+	if access.mode != meta.StorageModeMongo || access.storage == nil {
+		return txstorage.DocumentVersion{}, fmt.Errorf("framework: Mongo conditional storage is unavailable")
+	}
+	return access.storage.ReadDocumentVersion(ctx, spec, key)
+}
+func (access modeStorageAccess) ReplaceDocumentAtVersion(ctx context.Context, spec meta.TypeSpec, key txstorage.RecordKey, doc map[string]any, version txstorage.DocumentVersion) error {
+	if access.mode != meta.StorageModeMongo || access.storage == nil {
+		return fmt.Errorf("framework: Mongo conditional storage is unavailable")
+	}
+	return access.storage.ReplaceDocumentAtVersion(ctx, spec, key, doc, version)
+}

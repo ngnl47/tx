@@ -285,3 +285,23 @@ func (s *Runtime) recoverBackendHealth(backend txstorage.Backend, observedGenera
 		txlog.Info("storage backend recovered", "backend", backend.String())
 	}
 }
+
+// ReadDocumentVersion 通过 Mongo 健康闸门读取条件更新基线。
+func (s *Runtime) ReadDocumentVersion(ctx context.Context, spec meta.TypeSpec, key txstorage.RecordKey) (txstorage.DocumentVersion, error) {
+	if err := s.requireStorageMode(meta.StorageModeMongo); err != nil {
+		return txstorage.DocumentVersion{}, err
+	}
+	version, err := s.mongo.ReadDocumentVersion(ctx, spec, key)
+	s.observeStorageError(err)
+	return version, err
+}
+
+// ReplaceDocumentAtVersion 使用既有 Mongo 条件写，不在冲突后自动覆盖。
+func (s *Runtime) ReplaceDocumentAtVersion(ctx context.Context, spec meta.TypeSpec, key txstorage.RecordKey, doc map[string]any, version txstorage.DocumentVersion) error {
+	if err := s.requireStorageMode(meta.StorageModeMongo); err != nil {
+		return err
+	}
+	err := s.mongo.ReplaceDocumentAtVersion(ctx, spec, key, doc, version)
+	s.observeStorageError(err)
+	return err
+}

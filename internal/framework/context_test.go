@@ -145,3 +145,15 @@ func TestCModContextBindsTransactionCommitParticipantWithoutExposingBusinessCont
 		t.Fatal("second BindTransactionCommitParticipant returned nil error")
 	}
 }
+
+func TestMongoConditionalReplaceRejectsOtherStorageModes(t *testing.T) {
+	for _, mode := range []meta.StorageMode{meta.StorageModeRedis, meta.StorageModeFusion} {
+		view := modeStorageAccess{mode: mode}
+		if _, err := view.ReadDocumentVersion(context.Background(), meta.TypeSpec{}, txstorage.RecordKey{}); err == nil {
+			t.Fatal("非 Mongo 能力不能读取条件写版本")
+		}
+		if err := view.ReplaceDocumentAtVersion(context.Background(), meta.TypeSpec{}, txstorage.RecordKey{}, nil, txstorage.DocumentVersion{}); err == nil {
+			t.Fatal("非 Mongo 能力不能执行条件写")
+		}
+	}
+}

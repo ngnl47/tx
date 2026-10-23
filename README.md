@@ -4350,3 +4350,9 @@ Login 的 HTTP 协议、渠道认证、选服、建角策略和票据签发由�
 Agent 通过项目 IdentityResolver 验证不透明握手数据；账号、分服、借号与建角资格由项目 Claims 承载，框架不解释。
 `Claims` 在 Go 中使用不可变 string 保存字节，内部 protobuf 使用 bytes，可传递非 UTF-8 数据。认证时编码一次，普通上行不增加业务解码。
 本次 Actor 身份协议不支持新旧版本混跑；部署时协调升级 Agent 与业务服务。项目票据 JSON 和客户端帧未改变。
+
+### Mongo 版本条件替换
+
+Bee/Ant 的 `CModMongoStorage()` 暴露 `ReadDocumentVersion` 和 `ReplaceDocumentAtVersion`。先读取版本，再读取完整文档，最后以原版本条件替换；明确的 `mongo.ErrVersionConflict` 表示需要重新读取并重新判断业务条件，不能直接拿新版本覆盖旧快照。两个方法沿用存储路由与健康准入。
+
+该能力不提供多文档事务，也不定义账号、建角、服务器目录或合服规则；这些规则由项目维护。网络错误不能证明条件写未提交，调用方应从持久化状态恢复，而不是盲目重试业务操作。

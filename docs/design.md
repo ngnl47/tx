@@ -230,7 +230,7 @@ ServiceSpec、CMod 和基础 Context；同名 API 具有相同签名和生命周
 | `Admission()` | Bee/Ant | 登记和封口本服务外部入口 | 进程排水顺序在 Service Host |
 | `Storage()` | Bee/Ant | 仅供项目组合根安装 mode-aware 业务 facade | client、健康状态、worker 和 Close 在存储 Runtime |
 | `CModRedisStorage()` | Bee/Ant | 取得仅允许 Redis TypeSpec 的 reader/writer 和具名命令接口 | 连接池所有权在存储 Runtime |
-| `CModMongoStorage()` | Bee/Ant | 取得仅允许 MongoDB TypeSpec 的 reader/writer、条件回填和原子 CounterStore | 连接池所有权在存储 Runtime |
+| `CModMongoStorage()` | Bee/Ant | 取得仅允许 MongoDB TypeSpec 的 reader/writer、条件回填、版本条件替换和原子 CounterStore | 连接池所有权在存储 Runtime |
 | `CModFusionStorage()` | Bee/Ant | 取得仅允许 Fusion TypeSpec 的 reader/writer | Redis、Mongo 和延迟任务所有权在存储 Runtime |
 | `CModRPC()` | Bee/Ant | 启动前注册 protobuf service | Serve/Stop 在共享 RPC Host |
 | `CModDiscovery()` | Bee/Ant | 查询 running 或指定实例快照 | watch 与 Replace 在 discovery Runtime |

@@ -49,6 +49,7 @@ type RedisStorage interface {
 
 // MongoStorage 只暴露 MongoDB 文档读写。
 type MongoStorage interface {
+	txstorage.VersionedDocumentReplacer
 	txmongo.DocumentFinder
 	Storage
 	// MongoReader 返回带健康闸门的 MongoDB 文档读取器。
@@ -402,4 +403,14 @@ func (view *contextView) CModTaskQueue() tasks.Publisher {
 		panic(framework.CapabilityError{Err: view.unavailable(CModTaskQueue)})
 	}
 	return value
+}
+
+// ReadDocumentVersion 取得 Mongo 条件更新的基线版本。
+func (view mongoStorageView) ReadDocumentVersion(ctx context.Context, spec meta.TypeSpec, key txstorage.RecordKey) (txstorage.DocumentVersion, error) {
+	return view.storage.ReadDocumentVersion(ctx, spec, key)
+}
+
+// ReplaceDocumentAtVersion 只在基线未改变时替换 Mongo 文档。
+func (view mongoStorageView) ReplaceDocumentAtVersion(ctx context.Context, spec meta.TypeSpec, key txstorage.RecordKey, doc map[string]any, version txstorage.DocumentVersion) error {
+	return view.storage.ReplaceDocumentAtVersion(ctx, spec, key, doc, version)
 }

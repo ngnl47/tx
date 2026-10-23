@@ -39,6 +39,7 @@ type Storage interface {
 // ModeStorage 是绑定到单一持久化模式的窄能力视图。
 // Reader 和 ChangeWriter 都拒绝跨模式访问，避免 L4 Service 越过 Requires 声明使用其他存储。
 type ModeStorage interface {
+	txstorage.VersionedDocumentReplacer
 	txmongo.DocumentFinder
 	// Context 返回由进程根生命周期派生的只读上下文。
 	Context() context.Context
