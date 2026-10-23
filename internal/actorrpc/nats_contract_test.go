@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/ngnl47/tx/internal/actorhost"
 	"io"
 	"net"
 	neturl "net/url"
@@ -18,6 +17,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/ngnl47/tx/internal/actorhost"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 	"github.com/ngnl47/tx/modules/discovery"
 	"google.golang.org/protobuf/proto"
@@ -73,13 +73,13 @@ func TestNATSRoundTripAndAdmission(t *testing.T) {
 	b := peer(t, url, ns, "b", r)
 	defer a.runtime.Drain(ctx)
 	defer r.Drain(ctx)
-	d := &actorpb.Delivery{MessageType: "buff", CommandHash: 7, Payload: []byte{0, 1, 255}, Identity: &actorpb.SessionIdentity{AccountId: 9}}
+	d := &actorpb.Delivery{MessageType: "buff", CommandHash: 7, Payload: []byte{0, 1, 255}, Identity: &actorpb.SessionIdentity{RoleId: 9}}
 	target := actorhost.Target{Instance: "b", Identity: actorhost.Identity{Type: "room", ID: "42"}}
 	result, err := a.Call(ctx, target, d)
 	if err != nil || result.CommandHash != 7 || string(result.Payload) != string(d.Payload) {
 		t.Fatalf("result=%v err=%v", result, err)
 	}
-	if !proto.Equal(d, &actorpb.Delivery{MessageType: "buff", CommandHash: 7, Payload: []byte{0, 1, 255}, Identity: &actorpb.SessionIdentity{AccountId: 9}}) {
+	if !proto.Equal(d, &actorpb.Delivery{MessageType: "buff", CommandHash: 7, Payload: []byte{0, 1, 255}, Identity: &actorpb.SessionIdentity{RoleId: 9}}) {
 		t.Fatal("调用修改了输入")
 	}
 	ack, err := a.Call(ctx, target, &actorpb.Delivery{MessageType: "ack", Identity: d.Identity})

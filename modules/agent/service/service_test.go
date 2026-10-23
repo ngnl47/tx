@@ -42,11 +42,8 @@ func TestServiceStartsWithExplicitDependenciesAndLocalMsgQ(t *testing.T) {
 		MaxFrameBytes: 1024,
 		Identity: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
 			return protocol.SessionPrincipal{
-				AccountID:  100,
-				ServerID:   1,
-				RoleID:     1001,
-				SessionID:  1,
-				AccessMode: protocol.AccessModeNormal,
+				RoleID:    1001,
+				SessionID: 1,
 			}, nil
 		}),
 		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error {

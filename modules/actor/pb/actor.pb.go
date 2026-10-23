@@ -7,11 +7,12 @@
 package actorpb
 
 import (
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -171,65 +172,15 @@ func (DeliveryOrigin) EnumDescriptor() ([]byte, []int) {
 	return file_modules_actor_proto_actor_proto_rawDescGZIP(), []int{2}
 }
 
-type AccessMode int32
-
-const (
-	AccessMode_ACCESS_MODE_NORMAL AccessMode = 0
-	AccessMode_ACCESS_MODE_BORROW AccessMode = 1
-)
-
-// Enum value maps for AccessMode.
-var (
-	AccessMode_name = map[int32]string{
-		0: "ACCESS_MODE_NORMAL",
-		1: "ACCESS_MODE_BORROW",
-	}
-	AccessMode_value = map[string]int32{
-		"ACCESS_MODE_NORMAL": 0,
-		"ACCESS_MODE_BORROW": 1,
-	}
-)
-
-func (x AccessMode) Enum() *AccessMode {
-	p := new(AccessMode)
-	*p = x
-	return p
-}
-
-func (x AccessMode) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (AccessMode) Descriptor() protoreflect.EnumDescriptor {
-	return file_modules_actor_proto_actor_proto_enumTypes[3].Descriptor()
-}
-
-func (AccessMode) Type() protoreflect.EnumType {
-	return &file_modules_actor_proto_actor_proto_enumTypes[3]
-}
-
-func (x AccessMode) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use AccessMode.Descriptor instead.
-func (AccessMode) EnumDescriptor() ([]byte, []int) {
-	return file_modules_actor_proto_actor_proto_rawDescGZIP(), []int{3}
-}
-
-// SessionIdentity 表示由 Agent 为当前连接构造的可信会话身份。
+// SessionIdentity 只承载运行时身份和项目认证后的不透明字节。
 type SessionIdentity struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	AccountId       int64                  `protobuf:"varint,1,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
-	BorrowAccountId int64                  `protobuf:"varint,2,opt,name=borrow_account_id,json=borrowAccountId,proto3" json:"borrow_account_id,omitempty"`
-	ServerId        int64                  `protobuf:"varint,3,opt,name=server_id,json=serverId,proto3" json:"server_id,omitempty"`
-	RoleId          int64                  `protobuf:"varint,4,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`
-	SessionId       int64                  `protobuf:"varint,5,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	ConnectionId    int64                  `protobuf:"varint,6,opt,name=connection_id,json=connectionId,proto3" json:"connection_id,omitempty"`
-	AccessMode      AccessMode             `protobuf:"varint,7,opt,name=access_mode,json=accessMode,proto3,enum=tx.actor.v1.AccessMode" json:"access_mode,omitempty"`
-	CanCreateRole   bool                   `protobuf:"varint,8,opt,name=can_create_role,json=canCreateRole,proto3" json:"can_create_role,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RoleId        int64                  `protobuf:"varint,4,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`
+	SessionId     int64                  `protobuf:"varint,5,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	ConnectionId  int64                  `protobuf:"varint,6,opt,name=connection_id,json=connectionId,proto3" json:"connection_id,omitempty"`
+	Claims        []byte                 `protobuf:"bytes,9,opt,name=claims,proto3" json:"claims,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SessionIdentity) Reset() {
@@ -262,27 +213,6 @@ func (*SessionIdentity) Descriptor() ([]byte, []int) {
 	return file_modules_actor_proto_actor_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *SessionIdentity) GetAccountId() int64 {
-	if x != nil {
-		return x.AccountId
-	}
-	return 0
-}
-
-func (x *SessionIdentity) GetBorrowAccountId() int64 {
-	if x != nil {
-		return x.BorrowAccountId
-	}
-	return 0
-}
-
-func (x *SessionIdentity) GetServerId() int64 {
-	if x != nil {
-		return x.ServerId
-	}
-	return 0
-}
-
 func (x *SessionIdentity) GetRoleId() int64 {
 	if x != nil {
 		return x.RoleId
@@ -304,18 +234,11 @@ func (x *SessionIdentity) GetConnectionId() int64 {
 	return 0
 }
 
-func (x *SessionIdentity) GetAccessMode() AccessMode {
+func (x *SessionIdentity) GetClaims() []byte {
 	if x != nil {
-		return x.AccessMode
+		return x.Claims
 	}
-	return AccessMode_ACCESS_MODE_NORMAL
-}
-
-func (x *SessionIdentity) GetCanCreateRole() bool {
-	if x != nil {
-		return x.CanCreateRole
-	}
-	return false
+	return nil
 }
 
 // Delivery 是投递给 Actor 的内部消息，目标路由由 PID 承担。
@@ -656,19 +579,14 @@ var File_modules_actor_proto_actor_proto protoreflect.FileDescriptor
 
 const file_modules_actor_proto_actor_proto_rawDesc = "" +
 	"\n" +
-	"\x1fmodules/actor/proto/actor.proto\x12\vtx.actor.v1\"\xb8\x02\n" +
-	"\x0fSessionIdentity\x12\x1d\n" +
-	"\n" +
-	"account_id\x18\x01 \x01(\x03R\taccountId\x12*\n" +
-	"\x11borrow_account_id\x18\x02 \x01(\x03R\x0fborrowAccountId\x12\x1b\n" +
-	"\tserver_id\x18\x03 \x01(\x03R\bserverId\x12\x17\n" +
+	"\x1fmodules/actor/proto/actor.proto\x12\vtx.actor.v1\"\xec\x01\n" +
+	"\x0fSessionIdentity\x12\x17\n" +
 	"\arole_id\x18\x04 \x01(\x03R\x06roleId\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x05 \x01(\x03R\tsessionId\x12#\n" +
-	"\rconnection_id\x18\x06 \x01(\x03R\fconnectionId\x128\n" +
-	"\vaccess_mode\x18\a \x01(\x0e2\x17.tx.actor.v1.AccessModeR\n" +
-	"accessMode\x12&\n" +
-	"\x0fcan_create_role\x18\b \x01(\bR\rcanCreateRole\"\xcc\x03\n" +
+	"\rconnection_id\x18\x06 \x01(\x03R\fconnectionId\x12\x16\n" +
+	"\x06claims\x18\t \x01(\fR\x06claimsJ\x04\b\x01\x10\x02J\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\a\x10\bJ\x04\b\b\x10\tR\n" +
+	"account_idR\x11borrow_account_idR\tserver_idR\vaccess_modeR\x0fcan_create_role\"\xcc\x03\n" +
 	"\bDelivery\x12!\n" +
 	"\fmessage_type\x18\x01 \x01(\tR\vmessageType\x12!\n" +
 	"\fcommand_hash\x18\x02 \x01(\aR\vcommandHash\x12\x18\n" +
@@ -714,11 +632,7 @@ const file_modules_actor_proto_actor_proto_rawDesc = "" +
 	"\x0eDeliveryOrigin\x12\x1c\n" +
 	"\x18DELIVERY_ORIGIN_INTERNAL\x10\x00\x12\x1a\n" +
 	"\x16DELIVERY_ORIGIN_CLIENT\x10\x01\x12\x18\n" +
-	"\x14DELIVERY_ORIGIN_TASK\x10\x02*<\n" +
-	"\n" +
-	"AccessMode\x12\x16\n" +
-	"\x12ACCESS_MODE_NORMAL\x10\x00\x12\x16\n" +
-	"\x12ACCESS_MODE_BORROW\x10\x01B/Z-github.com/ngnl47/tx/modules/actor/pb;actorpbb\x06proto3"
+	"\x14DELIVERY_ORIGIN_TASK\x10\x02B/Z-github.com/ngnl47/tx/modules/actor/pb;actorpbb\x06proto3"
 
 var (
 	file_modules_actor_proto_actor_proto_rawDescOnce sync.Once
@@ -732,31 +646,29 @@ func file_modules_actor_proto_actor_proto_rawDescGZIP() []byte {
 	return file_modules_actor_proto_actor_proto_rawDescData
 }
 
-var file_modules_actor_proto_actor_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_modules_actor_proto_actor_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
 var file_modules_actor_proto_actor_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_modules_actor_proto_actor_proto_goTypes = []any{
 	(RouteKeyKind)(0),        // 0: tx.actor.v1.RouteKeyKind
 	(DeliveryMode)(0),        // 1: tx.actor.v1.DeliveryMode
 	(DeliveryOrigin)(0),      // 2: tx.actor.v1.DeliveryOrigin
-	(AccessMode)(0),          // 3: tx.actor.v1.AccessMode
-	(*SessionIdentity)(nil),  // 4: tx.actor.v1.SessionIdentity
-	(*Delivery)(nil),         // 5: tx.actor.v1.Delivery
-	(*Acceptance)(nil),       // 6: tx.actor.v1.Acceptance
-	(*Result)(nil),           // 7: tx.actor.v1.Result
-	(*DirectStreamCall)(nil), // 8: tx.actor.v1.DirectStreamCall
+	(*SessionIdentity)(nil),  // 3: tx.actor.v1.SessionIdentity
+	(*Delivery)(nil),         // 4: tx.actor.v1.Delivery
+	(*Acceptance)(nil),       // 5: tx.actor.v1.Acceptance
+	(*Result)(nil),           // 6: tx.actor.v1.Result
+	(*DirectStreamCall)(nil), // 7: tx.actor.v1.DirectStreamCall
 }
 var file_modules_actor_proto_actor_proto_depIdxs = []int32{
-	3, // 0: tx.actor.v1.SessionIdentity.access_mode:type_name -> tx.actor.v1.AccessMode
-	1, // 1: tx.actor.v1.Delivery.mode:type_name -> tx.actor.v1.DeliveryMode
-	0, // 2: tx.actor.v1.Delivery.route_key_kind:type_name -> tx.actor.v1.RouteKeyKind
-	4, // 3: tx.actor.v1.Delivery.identity:type_name -> tx.actor.v1.SessionIdentity
-	2, // 4: tx.actor.v1.Delivery.origin:type_name -> tx.actor.v1.DeliveryOrigin
-	5, // 5: tx.actor.v1.DirectStreamCall.delivery:type_name -> tx.actor.v1.Delivery
-	6, // [6:6] is the sub-list for method output_type
-	6, // [6:6] is the sub-list for method input_type
-	6, // [6:6] is the sub-list for extension type_name
-	6, // [6:6] is the sub-list for extension extendee
-	0, // [0:6] is the sub-list for field type_name
+	1, // 0: tx.actor.v1.Delivery.mode:type_name -> tx.actor.v1.DeliveryMode
+	0, // 1: tx.actor.v1.Delivery.route_key_kind:type_name -> tx.actor.v1.RouteKeyKind
+	3, // 2: tx.actor.v1.Delivery.identity:type_name -> tx.actor.v1.SessionIdentity
+	2, // 3: tx.actor.v1.Delivery.origin:type_name -> tx.actor.v1.DeliveryOrigin
+	4, // 4: tx.actor.v1.DirectStreamCall.delivery:type_name -> tx.actor.v1.Delivery
+	5, // [5:5] is the sub-list for method output_type
+	5, // [5:5] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_modules_actor_proto_actor_proto_init() }
@@ -769,7 +681,7 @@ func file_modules_actor_proto_actor_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_modules_actor_proto_actor_proto_rawDesc), len(file_modules_actor_proto_actor_proto_rawDesc)),
-			NumEnums:      4,
+			NumEnums:      3,
 			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   0,

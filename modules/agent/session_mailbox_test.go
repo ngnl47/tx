@@ -18,7 +18,7 @@ func TestAgentUsesMailboxStreamForAckAndDownlink(t *testing.T) {
 	var connectionID atomic.Int64
 	server, err := NewServer(ServerOptions{
 		IdentityResolver: IdentityResolverFunc(func(context.Context, AuthRequest) (protocol.SessionPrincipal, error) {
-			return protocol.SessionPrincipal{AccountID: 47, ServerID: 1, RoleID: 470001, SessionID: 99}, nil
+			return protocol.SessionPrincipal{RoleID: 470001, SessionID: 99}, nil
 		}),
 		Dispatcher: DispatchFunc(func(_ context.Context, request DispatchRequest) error {
 			dispatched.Add(1)
@@ -132,7 +132,7 @@ func TestMailboxFailureInterruptsBlockedSocketWrite(t *testing.T) {
 	client.down <- msgq.FetchResult{Seq: 1, Payload: []byte("slow socket")}
 	server, err := NewServer(ServerOptions{
 		IdentityResolver: IdentityResolverFunc(func(context.Context, AuthRequest) (protocol.SessionPrincipal, error) {
-			return protocol.SessionPrincipal{AccountID: 47, ServerID: 1, RoleID: 47, SessionID: 99}, nil
+			return protocol.SessionPrincipal{RoleID: 47, SessionID: 99}, nil
 		}),
 		Dispatcher: DispatchFunc(func(context.Context, DispatchRequest) error { return nil }),
 		Sessions:   sessionControlRouter{client: client}, ConnectionID: func() (int64, error) { return 1, nil },
@@ -170,7 +170,7 @@ func (*failedMailboxClient) OpenMailboxStream(context.Context, msgq.SessionHeade
 func TestMailboxOpenFailureUnbindsInitializedSession(t *testing.T) {
 	server, err := NewServer(ServerOptions{
 		IdentityResolver: IdentityResolverFunc(func(context.Context, AuthRequest) (protocol.SessionPrincipal, error) {
-			return protocol.SessionPrincipal{AccountID: 47, ServerID: 1, RoleID: 47, SessionID: 99}, nil
+			return protocol.SessionPrincipal{RoleID: 47, SessionID: 99}, nil
 		}),
 		Dispatcher: DispatchFunc(func(context.Context, DispatchRequest) error { return nil }),
 		Sessions:   sessionControlRouter{client: &failedMailboxClient{}}, ConnectionID: func() (int64, error) { return 1, nil },

@@ -2315,16 +2315,19 @@ MsgQ 邮箱并允许恢复；`TerminateSession` 使用登记时保存的完整 S
 项目通过自身 `services/agent.HandlerProvider` 在组合根注入认证与 Actor 路由。Provider 接收当前
 Bee 或 Ant Context，使用 CModActorDirect 完成直连；稳定分区或业务槽位在 Type 声明，Provider 不组装发现连接或 PID。
 
-`IdentityResolver` 只返回 `protocol.SessionPrincipal`，其中包含 `AccountID`、`BorrowAccountID`、`ServerID`、`RoleID`、
-`SessionID`、`AccessMode` 和 `CanCreateRole`。Agent 负责生成正 `ConnectionID`，校验并构造 `protocol.SessionIdentity`；
-项目 resolver 不能从 ticket 或客户端数据指定 `ConnectionID`。普通模式不携带 `BorrowAccountID`；借用模式必须携带正
-`BorrowAccountID`。这些字段描述当前身份契约，不构成独立的会话生命周期；目标身份的读写权限与建角许可由业务决定，框架不拦截业务协议。各 Session 生命周期独立。
+`IdentityResolver` 返回 `protocol.SessionPrincipal{RoleID, SessionID, Claims}`。`Claims` 用不可变字符串承载项目认证后的字节；
+框架仅检查邮箱编号，生成正 `ConnectionID` 并构造 `SessionIdentity`，不解释账号、服务器、借号或建角资格。
+项目不能从 ticket 或客户端数据指定 `ConnectionID`。各 Session 生命周期独立。
 
-业务 Handler 使用 `ctx.Identity()` 读取可信身份：`AccountID` 是认证操作者；目标账号在 `BorrowAccountID != 0` 时为该值，
-否则为 `AccountID`；`RoleID` 是操作的目标角色，`SessionID` 区分请求来自哪个会话，`ConnectionID` 区分其当前物理连接。
-因此可区分不同账号的授权访问，但不能仅凭 SessionID 或 AccessMode 判断真人、管理员、挂机服务。
-尤其当两个 Session 使用同一账号、同一访问方式时，当前公共身份字段没有额外的“挂机来源”标签；需要这种分类时由项目认证/授权上下文提供，
-不能信任请求正文中自报的管理员或旁路标志。业务不需要维护主、副会话关系。
+登录协议、渠道认证、选服、角色预留流程、Agent 选择、票据签发与恢复资格全部由业务工程维护。
+两套示例在各自 `services/internal/session` 定义强类型 Principal 和票据编码器，Login 与 Agent 共同使用，彼此不依赖子服务包。
+项目验证签名、时效与目标后，在握手时编码一次 Claims；普通转发复用该载荷，不逐消息查库、签票或解码。
+业务 Handler 用 `ctx.Principal` 取得运行时身份，需要账号或权限时再通过项目 `session.Decode` 读取并验证业务身份。
+生成器仅维护角色绑定、投递范围和类型化调用，不解释 Claims，也不定义账号、分服和借号枚举。
+客户端自报的身份字段不可信；内部投递可携带已验证身份，但 Decode 不代替入口认证。
+
+Actor protobuf 将 Claims 作为 bytes 原样传输，旧业务字段编号已保留而不复用；本次不支持新旧内部身份协议混跑，
+Agent 与相关业务服务必须协调升级。客户端握手帧和项目票据 JSON 保持不变。新增业务字段只修改项目身份和校验，不要求修改 tx。
 
 通用 Actor Dispatcher 在调用 Messenger 前以 `DispatchRequest` 的可信 `SessionIdentity` 覆盖 Delivery 身份。
 项目 Actor resolver 只负责目标、消息类型、命令哈希、路由键和载荷，不能伪造身份。

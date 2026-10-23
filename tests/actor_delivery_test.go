@@ -14,12 +14,9 @@ import (
 func TestActorDeliveryRoundTripCopiesPayload(t *testing.T) {
 	identity := txprotocol.SessionIdentity{
 		SessionPrincipal: txprotocol.SessionPrincipal{
-			AccountID:       47,
-			BorrowAccountID: 48,
-			ServerID:        1,
-			RoleID:          470001,
-			SessionID:       99,
-			AccessMode:      txprotocol.AccessModeBorrow,
+			RoleID:    470001,
+			Claims:    string([]byte{0, 255, 1}),
+			SessionID: 99,
 		},
 		ConnectionID: 7,
 	}
@@ -60,14 +57,12 @@ func TestActorDeliveryRoundTripCopiesPayload(t *testing.T) {
 	}
 }
 
-func TestActorDeliveryRoundTripPreservesCanCreateRole(t *testing.T) {
+func TestActorDeliveryRoundTripPreservesOpaqueClaims(t *testing.T) {
 	identity := txprotocol.SessionIdentity{
 		SessionPrincipal: txprotocol.SessionPrincipal{
-			AccountID:     47,
-			ServerID:      1,
-			RoleID:        470001,
-			SessionID:     99,
-			CanCreateRole: true,
+			RoleID:    470001,
+			Claims:    "opaque-project-claims",
+			SessionID: 99,
 		},
 		ConnectionID: 7,
 	}
@@ -95,8 +90,6 @@ func TestActorDeliveryRoundTripPreservesCanCreateRole(t *testing.T) {
 func TestActorDeliveryAllowsOptionalInternalIdentity(t *testing.T) {
 	identity := txprotocol.SessionIdentity{
 		SessionPrincipal: txprotocol.SessionPrincipal{
-			AccountID: 47,
-			ServerID:  1,
 			RoleID:    470001,
 			SessionID: 99,
 		},

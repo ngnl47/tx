@@ -68,10 +68,7 @@ func (d Delivery) toProto(mode actorpb.DeliveryMode, requestID uint64) (*actorpb
 	if err != nil {
 		return nil, err
 	}
-	identity, err := sessionIdentityToProto(d.Identity)
-	if err != nil {
-		return nil, err
-	}
+	identity := sessionIdentityToProto(d.Identity)
 	return &actorpb.Delivery{
 		MessageType:     d.MessageType,
 		Origin:          actorpb.DeliveryOrigin(d.Origin),
@@ -98,10 +95,7 @@ func DeliveryFromProto(message *actorpb.Delivery) (Delivery, error) {
 	if err != nil {
 		return Delivery{}, err
 	}
-	identity, err := sessionIdentityFromProto(message.GetIdentity())
-	if err != nil {
-		return Delivery{}, err
-	}
+	identity := sessionIdentityFromProto(message.GetIdentity())
 	delivery := Delivery{
 		MessageType: message.GetMessageType(),
 		Origin:      DeliveryOrigin(message.GetOrigin()),
@@ -130,67 +124,25 @@ func DeliveryFromProto(message *actorpb.Delivery) (Delivery, error) {
 	return delivery, nil
 }
 
-func sessionIdentityToProto(identity *txprotocol.SessionIdentity) (*actorpb.SessionIdentity, error) {
+func sessionIdentityToProto(identity *txprotocol.SessionIdentity) *actorpb.SessionIdentity {
 	if identity == nil {
-		return nil, nil
-	}
-	accessMode, err := accessModeToProto(identity.AccessMode)
-	if err != nil {
-		return nil, err
+		return nil
 	}
 	return &actorpb.SessionIdentity{
-		AccountId:       identity.AccountID,
-		BorrowAccountId: identity.BorrowAccountID,
-		ServerId:        identity.ServerID,
-		RoleId:          identity.RoleID,
-		SessionId:       identity.SessionID,
-		ConnectionId:    identity.ConnectionID,
-		AccessMode:      accessMode,
-		CanCreateRole:   identity.CanCreateRole,
-	}, nil
+		RoleId:       identity.RoleID,
+		SessionId:    identity.SessionID,
+		ConnectionId: identity.ConnectionID,
+		Claims:       []byte(identity.Claims),
+	}
 }
 
-func sessionIdentityFromProto(message *actorpb.SessionIdentity) (*txprotocol.SessionIdentity, error) {
+func sessionIdentityFromProto(message *actorpb.SessionIdentity) *txprotocol.SessionIdentity {
 	if message == nil {
-		return nil, nil
-	}
-	accessMode, err := accessModeFromProto(message.GetAccessMode())
-	if err != nil {
-		return nil, err
+		return nil
 	}
 	return &txprotocol.SessionIdentity{
-		SessionPrincipal: txprotocol.SessionPrincipal{
-			AccountID:       message.GetAccountId(),
-			BorrowAccountID: message.GetBorrowAccountId(),
-			ServerID:        message.GetServerId(),
-			RoleID:          message.GetRoleId(),
-			SessionID:       message.GetSessionId(),
-			AccessMode:      accessMode,
-			CanCreateRole:   message.GetCanCreateRole(),
-		},
-		ConnectionID: message.GetConnectionId(),
-	}, nil
-}
-
-func accessModeToProto(mode txprotocol.AccessMode) (actorpb.AccessMode, error) {
-	switch mode {
-	case txprotocol.AccessModeNormal:
-		return actorpb.AccessMode_ACCESS_MODE_NORMAL, nil
-	case txprotocol.AccessModeBorrow:
-		return actorpb.AccessMode_ACCESS_MODE_BORROW, nil
-	default:
-		return actorpb.AccessMode_ACCESS_MODE_NORMAL, ErrInvalidDelivery
-	}
-}
-
-func accessModeFromProto(mode actorpb.AccessMode) (txprotocol.AccessMode, error) {
-	switch mode {
-	case actorpb.AccessMode_ACCESS_MODE_NORMAL:
-		return txprotocol.AccessModeNormal, nil
-	case actorpb.AccessMode_ACCESS_MODE_BORROW:
-		return txprotocol.AccessModeBorrow, nil
-	default:
-		return txprotocol.AccessModeNormal, ErrInvalidDelivery
+		SessionPrincipal: txprotocol.SessionPrincipal{RoleID: message.GetRoleId(), SessionID: message.GetSessionId(), Claims: string(message.GetClaims())},
+		ConnectionID:     message.GetConnectionId(),
 	}
 }
 

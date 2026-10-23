@@ -153,7 +153,7 @@ func TestServeRegistersInitializingSessionBeforeMsgQInitCompletes(t *testing.T) 
 	}
 	server, err := NewServer(ServerOptions{
 		IdentityResolver: IdentityResolverFunc(func(context.Context, AuthRequest) (protocol.SessionPrincipal, error) {
-			return protocol.SessionPrincipal{AccountID: 47, ServerID: 1, RoleID: 470001, SessionID: 99}, nil
+			return protocol.SessionPrincipal{RoleID: 470001, SessionID: 99}, nil
 		}),
 		Dispatcher: DispatchFunc(func(context.Context, DispatchRequest) error {
 			return nil
@@ -193,7 +193,7 @@ func TestTerminateSessionCompensatesCanceledMsgQInit(t *testing.T) {
 	}
 	server, err := NewServer(ServerOptions{
 		IdentityResolver: IdentityResolverFunc(func(context.Context, AuthRequest) (protocol.SessionPrincipal, error) {
-			return protocol.SessionPrincipal{AccountID: 47, ServerID: 1, RoleID: 470001, SessionID: 99}, nil
+			return protocol.SessionPrincipal{RoleID: 470001, SessionID: 99}, nil
 		}),
 		Dispatcher: DispatchFunc(func(context.Context, DispatchRequest) error {
 			return nil

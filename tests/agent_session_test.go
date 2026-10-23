@@ -27,11 +27,9 @@ func TestAgentSessionAuthenticatesThenDispatchesAcceptedSequence(t *testing.T) {
 	request := receiveDispatch(t, dispatched)
 	wantIdentity := txagent.Identity{
 		SessionPrincipal: protocol.SessionPrincipal{
-			AccountID:     47,
-			ServerID:      1,
-			RoleID:        470001,
-			SessionID:     99,
-			CanCreateRole: true,
+			RoleID:    470001,
+			SessionID: 99,
+			Claims:    "trusted-project-data",
 		},
 		ConnectionID: 7,
 	}
@@ -121,17 +119,17 @@ func TestAgentSessionAcquiresOwnerFromTrustedIdentity(t *testing.T) {
 	}{
 		"normal": {
 			principal: protocol.SessionPrincipal{
-				AccountID: 47, ServerID: 1, RoleID: 470001, SessionID: 99, AccessMode: protocol.AccessModeNormal, CanCreateRole: true,
+				RoleID: 470001, SessionID: 99,
 			},
 		},
-		"borrow restore": {
+		"restore with project claims": {
 			principal: protocol.SessionPrincipal{
-				AccountID: 47, BorrowAccountID: 48, ServerID: 1, RoleID: 470001, SessionID: 100, AccessMode: protocol.AccessModeBorrow,
+				RoleID: 470001, SessionID: 100, Claims: "trusted-project-data",
 			},
 			restore: true,
 		},
-		"borrow": {
-			principal: protocol.SessionPrincipal{AccountID: 47, BorrowAccountID: 48, ServerID: 1, RoleID: 470001, SessionID: 102, AccessMode: protocol.AccessModeBorrow},
+		"another session": {
+			principal: protocol.SessionPrincipal{RoleID: 470001, SessionID: 102},
 		},
 	}
 	for name, test := range tests {
@@ -193,7 +191,7 @@ func TestAgentSessionRejectsInvalidResolvedPrincipal(t *testing.T) {
 	sessionsAcquired := errors.New("sessions acquired")
 	agent, err := txagent.NewServer(txagent.ServerOptions{
 		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
-			return protocol.SessionPrincipal{ServerID: 1, RoleID: 470001, SessionID: 99}, nil
+			return protocol.SessionPrincipal{RoleID: 0, SessionID: 99}, nil
 		}),
 		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error {
 			t.Fatal("invalid identity must not be dispatched")
@@ -662,11 +660,9 @@ func newAgentSessionFixture(t *testing.T, dispatchErr error) (*txagent.Server, *
 
 func testSessionPrincipal() protocol.SessionPrincipal {
 	return protocol.SessionPrincipal{
-		AccountID:     47,
-		ServerID:      1,
-		RoleID:        470001,
-		SessionID:     99,
-		CanCreateRole: true,
+		RoleID:    470001,
+		SessionID: 99,
+		Claims:    "trusted-project-data",
 	}
 }
 

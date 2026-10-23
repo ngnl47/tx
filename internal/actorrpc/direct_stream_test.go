@@ -141,7 +141,7 @@ func TestDirectStreamEnqueuePreservesMailboxOrderAndDrain(t *testing.T) {
 	defer releaseLastOnce.Do(func() { close(releaseLast) })
 	entered := make(chan int64, 3)
 	identity := txprotocol.SessionIdentity{SessionPrincipal: txprotocol.SessionPrincipal{
-		AccountID: 1, ServerID: 1, RoleID: 42, SessionID: 99, AccessMode: txprotocol.AccessModeNormal,
+		RoleID: 42, SessionID: 99,
 	}, ConnectionID: 7}
 	local := actorhost.New(8, time.Second, func(txactor.Context) (*txactor.Behavior, error) {
 		return &txactor.Behavior{Receive: func(_ txactor.Context, message any) (any, error) {

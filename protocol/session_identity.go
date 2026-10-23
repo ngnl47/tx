@@ -2,41 +2,23 @@ package protocol
 
 import "errors"
 
-// AccessMode 描述会话身份的访问方式。
-type AccessMode uint8
-
-const (
-	// AccessModeNormal 表示账号正常使用自身角色的会话。
-	AccessModeNormal AccessMode = iota
-	// AccessModeBorrow 表示借用目标账号的独立会话。
-	AccessModeBorrow
-)
-
-// SessionPrincipal 表示经过认证的账号和角色主体。
+// SessionPrincipal 是认证适配器交给框架的会话主体。
+// Claims 保存项目编码的可信身份，使用不可变字符串承载字节，连接内复用。
+// 框架不解释 Claims，也不从中决定账号、权限或业务路由。
 type SessionPrincipal struct {
-	AccountID       int64
-	BorrowAccountID int64
-	ServerID        int64
-	RoleID          int64
-	SessionID       int64
-	AccessMode      AccessMode
-	CanCreateRole   bool
+	RoleID    int64
+	SessionID int64
+	Claims    string
 }
 
-// SessionIdentity 表示可信会话携带的主体和访问方式。
+// SessionIdentity 为可信主体附加本次物理连接编号。
 type SessionIdentity struct {
 	SessionPrincipal
 	ConnectionID int64
 }
 
-// Validate 校验会话身份是否满足访问方式的约束。
+// Validate 仅检查邮箱与连接运行所需的编号；业务身份由项目校验。
 func (identity SessionIdentity) Validate() error {
-	if identity.AccountID <= 0 {
-		return errors.New("session identity: account ID must be positive")
-	}
-	if identity.ServerID <= 0 {
-		return errors.New("session identity: server ID must be positive")
-	}
 	if identity.RoleID <= 0 {
 		return errors.New("session identity: role ID must be positive")
 	}
@@ -46,19 +28,5 @@ func (identity SessionIdentity) Validate() error {
 	if identity.ConnectionID <= 0 {
 		return errors.New("session identity: connection ID must be positive")
 	}
-
-	switch identity.AccessMode {
-	case AccessModeNormal:
-		if identity.BorrowAccountID != 0 {
-			return errors.New("session identity: normal mode must not have borrow account ID")
-		}
-	case AccessModeBorrow:
-		if identity.BorrowAccountID <= 0 {
-			return errors.New("session identity: borrow mode requires a borrow account ID")
-		}
-	default:
-		return errors.New("session identity: unknown access mode")
-	}
-
 	return nil
 }

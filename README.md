@@ -425,8 +425,7 @@ Redis 单次调用计一次 Calls，Pipeline 计一次 Calls 和其中的命令�
 这一能力称为“多个 Session 操作同一业务身份”，不定义主、副 Session。Borrow（授权账号操作目标账号角色）和旁路挂机
 （外部服务驱动角色行为，玩家可同时在线观察或操作）只是应用场景，不是两套会话流程。角色请求按 RoleID 汇聚到同一
 Game/Actor；世界请求仍按经业务校验的世界路由键选择 WorldActor。
-业务 Handler 可通过 `ctx.Identity()` 获取可信 AccountID、BorrowAccountID、RoleID、SessionID、ConnectionID 和 AccessMode，
-识别操作者与目标身份。SessionID 区分会话，但不自动表示真人、管理员或挂机服务；这些来源权限由项目认证与授权策略确定。
+业务 Handler 通过 `ctx.Principal` 获取 RoleID、SessionID、ConnectionID 和项目认证的 Claims；账号、借号及权限由项目身份类型解释。SessionID 区分会话，但不自动表示真人、管理员或挂机服务；这些来源权限由项目认证与授权策略确定。
 下行可使用 `PubRole` 共享到角色邮箱，或 `PubSession` 精确投递。两套示例的自动响应适配层默认共享成功业务响应、精确投递请求错误；
 若业务需要其他策略，应在项目适配层明确实现，避免自动响应与手动下行重复发送。
 同一 RoleID 的多个邮箱可以并存，各自维护队列；`Sender.PubRole` 定向投递到角色归属 MsgQ，由其向该角色全部邮箱分发。
@@ -798,11 +797,9 @@ handlers := func(runtime bee.Context) (txagent.IdentityResolver, txagent.Dispatc
     identity := txagent.IdentityResolverFunc(func(ctx context.Context, req txagent.AuthRequest) (txprotocol.SessionPrincipal, error) {
         // 项目在这里校验 token，或解析登录服签发的可信 ticket。
         return txprotocol.SessionPrincipal{
-            AccountID: 470001,
-            ServerID:  1,
             RoleID:    470001,
             SessionID: 99,
-            AccessMode: txprotocol.AccessModeNormal,
+            Claims:    trustedProjectClaims, // 项目认证后编码的不透明字节，不接受客户端自报权限。
         }, nil
     })
     caller := runtime.CModActorDirect()
@@ -824,7 +821,7 @@ resolver 和客户端载荷均不能指定 `ConnectionID`，也不能伪造投�
 一条连接的处理顺序固定如下：
 
 1. 客户端先发送 `FrameHandshake`，其中 `Payload` 交给 `IdentityResolver`，`Restore/Ack` 交给会话恢复。
-2. `IdentityResolver` 返回 `SessionPrincipal`；Agent 验证主体、生成本次物理连接的正 `ConnectionID`，再构造 `SessionIdentity`。
+2. 项目 `IdentityResolver` 验证凭据并返回 `SessionPrincipal{RoleID, SessionID, Claims}`；Agent 只检查通用编号、生成本次物理连接的正 `ConnectionID`，再构造 `SessionIdentity`。
 3. `Restore=false` 的新建连接查询并复用角色归属；无归属时由 running MsgQ 轮转提名并原子确认，竞争失败者使用已确认归属。`Restore=true` 的恢复连接必须按 SessionID 命中原来的 running owner。同进程 msgq 时直接复用本地 `SessionClient`，但仍由邮箱初始化校验角色归属；分进程时按 Redis binding 和服务目录复用 gRPC 连接。
 4. 新建 `Init` 用 `Create NX` 安装空邮箱，SessionID 已存在时失败；恢复 `Init` 用旧完整 binding `Rebind` 到新 ConnectionID，保留相同 SessionID 的下行 Ack 与未确认下行队列。恢复 owner 不可用、邮箱不存在或完整绑定校验失败时明确失败，不能迁移或安装空会话。
 5. `Init` 成功后，Agent 发送 `FrameReady`，其 `Ack` 固定为 `0`。客户端收到它之前只能处于连接中，不能发送业务帧；恢复失败时不会出现“先成功、再被关闭”的假状态。
@@ -4346,3 +4343,10 @@ R3 隔离测试进一步覆盖单节点故障期间的新发布和耗尽恢复�
 `actor.Identity{Type string, ID string}` 描述逻辑实体；`actor.Type`、`NewType` 与 `ServiceSpec.ActorTypes` 声明其行为和归属。`Type` 在应用内唯一，`ID` 在该类型内唯一，物理进程仍使用 InstanceID。`Int64ID`、`Uint64ID`、`StringID` 保留 i:/u:/s: 编码；默认分区仍按原 ID 字节 xxhash64 对 1024 取模，持久槽位布局不变。Redis key、RouteKey 和任务类别不属于本次改名。
 
 内部 NATS 与 JetStream 任务载荷中的身份 JSON 同步使用 Type/ID，生成调用方与服务端需要配套更新，不支持新旧身份字段混用。升级前停止旧任务发布并排空旧版本任务（包括等待重试项），不能把未完成任务直接交给新版本；有存量时须另行安排离线迁移，不能仅滚动替换程序。gRPC 目标字段保留原 protobuf 编号。更改实际 Type 值属于新实体类型，不能按 API 改名理解为旧槽位自动迁移。
+
+### 接入业务边界
+
+Login 的 HTTP 协议、渠道认证、选服、建角策略和票据签发由项目完整维护。tx 不提供固定业务字段的 Login SPI。
+Agent 通过项目 IdentityResolver 验证不透明握手数据；账号、分服、借号与建角资格由项目 Claims 承载，框架不解释。
+`Claims` 在 Go 中使用不可变 string 保存字节，内部 protobuf 使用 bytes，可传递非 UTF-8 数据。认证时编码一次，普通上行不增加业务解码。
+本次 Actor 身份协议不支持新旧版本混跑；部署时协调升级 Agent 与业务服务。项目票据 JSON 和客户端帧未改变。

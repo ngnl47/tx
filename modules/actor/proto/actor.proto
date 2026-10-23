@@ -23,21 +23,14 @@ enum DeliveryOrigin {
   DELIVERY_ORIGIN_TASK = 2;
 }
 
-enum AccessMode {
-  ACCESS_MODE_NORMAL = 0;
-  ACCESS_MODE_BORROW = 1;
-}
-
-// SessionIdentity 表示由 Agent 为当前连接构造的可信会话身份。
+// SessionIdentity 只承载运行时身份和项目认证后的不透明字节。
 message SessionIdentity {
-  int64 account_id = 1;
-  int64 borrow_account_id = 2;
-  int64 server_id = 3;
+  reserved 1, 2, 3, 7, 8;
+  reserved "account_id", "borrow_account_id", "server_id", "access_mode", "can_create_role";
   int64 role_id = 4;
   int64 session_id = 5;
   int64 connection_id = 6;
-  AccessMode access_mode = 7;
-  bool can_create_role = 8;
+  bytes claims = 9;
 }
 
 // Delivery 是投递给 Actor 的内部消息，目标路由由 PID 承担。

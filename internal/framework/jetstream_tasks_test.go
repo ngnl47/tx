@@ -128,8 +128,7 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 		MessageType: "reward", CommandHash: 47,
 		RouteKey: txprotocol.StringRouteKey("season.世界.490001"), Payload: []byte{0, 1, 255},
 		Identity: &txprotocol.SessionIdentity{SessionPrincipal: txprotocol.SessionPrincipal{
-			AccountID: 11, BorrowAccountID: 12, ServerID: 13, RoleID: 14, SessionID: 15,
-			AccessMode: txprotocol.AccessModeBorrow, CanCreateRole: true,
+			RoleID: 14, SessionID: 15, Claims: string([]byte{0, 255, 42}),
 		}, ConnectionID: 16},
 	}
 	kind := txactor.MustType("role", func(c txactor.Context) (*txactor.Behavior, error) {
