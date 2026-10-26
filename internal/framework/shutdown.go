@@ -28,6 +28,9 @@ func (server *Server) Drain(ctx context.Context) error {
 		return nil
 	}
 	host.beginDrain()
+	if runtime != nil && runtime.placement != nil {
+		runtime.placement.ingress.BeginDrain()
+	}
 	if err := server.drainTaskConsumer(ctx); err != nil {
 		return err
 	}
@@ -150,8 +153,8 @@ func (server *Server) shutdown(ctx context.Context, drain bool) error {
 	if runtime != nil && runtime.actorRPC != nil {
 		runtime.actorRPC.Close()
 	}
-	if runtime != nil && runtime.actorSender != nil {
-		errs = append(errs, runtime.actorSender.Close())
+	if runtime != nil && runtime.rpcSender != nil {
+		errs = append(errs, runtime.rpcSender.Close())
 	}
 	for index := len(server.cleanups) - 1; index >= 0; index-- {
 		server.cleanups[index]()
@@ -219,6 +222,15 @@ func (server *Server) finishWork(ctx context.Context, drain bool) error {
 	if host != nil {
 		host.quiesceTasks()
 	}
+	if runtime != nil && runtime.placement != nil {
+		placementCtx, cancel := context.WithTimeout(ctx, effectiveDrainTimeout(server.config.Runtime.Lifecycle.DrainTimeout))
+		err := runtime.placement.close(placementCtx)
+		cancel()
+		if err != nil {
+			return errors.Join(errStopDeferred, err)
+		}
+	}
+
 	if cmodHost != nil {
 		err := cmodHost.drain(ctx)
 		if err != nil && drain && !fatal {

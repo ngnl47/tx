@@ -40,7 +40,7 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []actorh
 			return &actorpb.Result{MessageType: "count", CommandHash: uint32(count)}, nil
 		}}, nil
 	})
-	runtime.BindSlots("a", store, mapping)
+	runtime.BindSlots("a", store, mapping.Resolver())
 	host, err := ConnectNATS(url, ns, "a", runtime, 32)
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +67,7 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []actorh
 	defer caller.Close()
 	defer callerRuntime.Drain(ctx)
 	resolver, _ := watchedRoutes(t, store, directory)
-	allocator := &EntityRouter{Resolver: resolver, Ownership: slotOwnership(t, store, directory), Transport: caller, Service: func(string) (string, error) { return "game", nil }, SlotID: mapping}
+	allocator := &EntityRouter{Resolver: resolver, Ownership: slotOwnership(t, store, directory), Transport: caller, Service: func(string) (string, error) { return "game", nil }, SlotID: mapping.Resolver()}
 	// 拒绝容量时不得先写 assignment 或触发业务加载。
 	runtime.SetActivationLimits(actorhost.ActivationLimits{Admit: func() bool { return false }})
 	if _, _, err := allocator.Ensure(ctx, ids[0]); !errors.Is(err, actorhost.ErrCapacity) {
@@ -128,7 +128,7 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []actorh
 	if err := cache.Replace([]discovery.SlotAssignment{assignment}); err != nil {
 		t.Fatal(err)
 	}
-	hot := &EntityRouter{Resolver: hotResolver, SlotID: mapping, Transport: caller, Service: allocator.Service}
+	hot := &EntityRouter{Resolver: hotResolver, SlotID: mapping.Resolver(), Transport: caller, Service: allocator.Service}
 	current := &NATSMessenger{Router: hot}
 	for _, id := range ids {
 		message := &actorpb.Delivery{MessageType: "increment"}
@@ -171,7 +171,7 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []actorh
 	}
 	// 指向错误实例的加载仍被权威记录拒绝，不能因共享分区而另建实体。
 	wrong := echoRuntime()
-	wrong.BindSlots("b", store, mapping)
+	wrong.BindSlots("b", store, mapping.Resolver())
 	defer wrong.Drain(ctx)
 	if _, err := wrong.Call(ctx, ids[0], &actorpb.Delivery{}); !errors.Is(err, actorhost.ErrNotOwner) {
 		t.Fatalf("wrong owner activated: %v", err)

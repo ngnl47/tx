@@ -360,9 +360,9 @@ func slotOwnership(t testing.TB, store discovery.SlotStore, directory discovery.
 // 只组装正式传输和归属入口，不实现第二套容量或交接协议。
 func slotPeer(t *testing.T, url, ns, name string, r *actorhost.Runtime, store discovery.SlotStore) *NATSTransport {
 	t.Helper()
-	r.BindSlots(name, store, worldSlot)
+	r.BindSlots(name, store, actorhost.SlotMapping(worldSlot).Resolver())
 	return peer(t, url, ns, name, r)
 }
 func newTestEntityRouter(ownership *discovery.SlotOwnership, transport *NATSTransport, service string, mapping actorhost.SlotMapping) *EntityRouter {
-	return &EntityRouter{Ownership: ownership, Transport: transport, Service: func(string) (string, error) { return service, nil }, SlotID: mapping}
+	return &EntityRouter{Ownership: ownership, Transport: transport, Service: func(string) (string, error) { return service, nil }, SlotID: mapping.Resolver()}
 }

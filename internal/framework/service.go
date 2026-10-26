@@ -14,6 +14,8 @@ type Spec struct {
 	Requires []CModID
 	// ActorTypes 声明该服务可以承载的 Actor 类型；空切片表示不注册 Actor 能力。
 	ActorTypes []txactor.Type
+	// Placements 提供本服务的分组策略，仅本地选中服务初始化。
+	Placements []Placement
 }
 
 // Service 表示一个可独立选择的进程服务。
@@ -35,4 +37,10 @@ type Drainer interface {
 type Stopper interface {
 	// Stop 释放服务持有的资源。
 	Stop(context.Context) error
+}
+
+// Placement 的工厂在全部 CMod 就绪后、业务服务启动前执行；不得创建独立后台资源。
+type Placement struct {
+	Name    string
+	Factory func(Context) (txactor.GroupResolver, error)
 }

@@ -1,7 +1,9 @@
 package actorhost
 
 import (
+	"context"
 	"encoding/base64"
+	"fmt"
 	"strconv"
 
 	"github.com/cespare/xxhash/v2"
@@ -25,4 +27,60 @@ func (mapping SlotMapping) Resolve(id Identity) string {
 		return mapping(id)
 	}
 	return PartitionSlot(id)
+}
+
+// SlotResolver 支持首次归属查询；解析错误必须阻断寻址和加载，不能回退分区。
+type SlotResolver func(context.Context, Identity) (string, error)
+
+// Resolve 对默认布局与自定义解析统一执行取消和空结果检查。
+func (resolve SlotResolver) Resolve(ctx context.Context, id Identity) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if resolve == nil {
+		return PartitionSlot(id), nil
+	}
+	slot, err := resolve(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if slot == "" {
+		return "", fmt.Errorf("actor: empty slot for %v", id)
+	}
+	return slot, nil
+}
+
+// Resolver 把纯计算映射接入同一个解析管线。
+func (mapping SlotMapping) Resolver() SlotResolver {
+	if mapping == nil {
+		return nil
+	}
+	return func(_ context.Context, id Identity) (string, error) { return mapping(id), nil }
+}
+
+// GroupResolver 返回稳定业务分组 ID；不选择实例或编码槽位。
+type GroupResolver func(context.Context, Identity) (string, error)
+
+// PlacementSlot 为运维入口提供与运行时一致的分组槽位编码。
+// 服务池和策略隔离命名空间，Actor Type 不参与编码。
+func PlacementSlot(service, policy, group string) string {
+	encode := base64.RawURLEncoding.EncodeToString
+	return "actor-group-v1." + encode([]byte(service)) + "." + encode([]byte(policy)) + "." + encode([]byte(group))
+}
+
+// PlacementName 返回类型引用的服务内放置策略。
+func PlacementName(k Type) string { return k.placement }
+
+// WithPlacement 引用目标服务声明的分组策略，由框架托管查询和缓存。
+func WithPlacement(name string) TypeOption {
+	return typeOption(func(k *Type) error {
+		if name == "" || k.placement != "" || k.slot != nil {
+			return ErrInvalidType
+		}
+		k.placement = name
+		return nil
+	})
 }

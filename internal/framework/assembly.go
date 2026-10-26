@@ -11,8 +11,10 @@ import (
 	txlog "github.com/ngnl47/tx/log"
 	txactor "github.com/ngnl47/tx/modules/actor"
 	"github.com/ngnl47/tx/modules/discovery"
+	"github.com/ngnl47/tx/modules/rpc"
 	"github.com/ngnl47/tx/modules/txn"
 	txstorage "github.com/ngnl47/tx/storage"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func (server *Server) startControl(endpoint string) error {
@@ -68,6 +70,17 @@ func (server *Server) startDiscovery() error {
 	server.runtime.setInstance(discoveryRuntime.Instance())
 	server.runtime.directory = discoveryRuntime.Directory()
 	server.runtime.slots = discoveryRuntime.Slots()
+	if server.runtime.rpc != nil {
+		dialer, err := rpc.NewGRPCDialer(insecure.NewCredentials())
+		if err != nil {
+			return err
+		}
+		sender, err := rpc.NewSender(server.runtime.directory, dialer)
+		if err != nil {
+			return err
+		}
+		server.runtime.rpcSender = sender
+	}
 	if err := server.runtime.lifecycle.Go(func(ctx context.Context) {
 		select {
 		case <-ctx.Done():

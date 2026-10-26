@@ -1105,6 +1105,17 @@ if err != nil {
 `MailboxService` 共享这个 endpoint；Actor Remote 与 control 仍使用专用入口。`DeliveryService` 在同一 server 中只能
 注册一次，聚合多个业务服务时应由项目的进程级 Receiver 再分发，不能重复注册同名 protobuf service。
 
+Bee/Ant 服务使用生成的普通 gRPC 客户端时，声明 `CModRPC` 与 `CModDiscovery`，通过共享入口取得连接视图：
+
+```go
+client := battlepb.NewBattleClient(runtime.CModRPC().Client(rpc.ServiceRoute("battle")))
+reply, err := client.Compute(ctx, request)
+```
+
+该入口与 Actor 直连复用实例连接缓存，由框架统一关闭，业务不再创建 resolver、连接池或调用 `Close`。
+它不经过 Actor 邮箱，也不要求启用 Actor。每次 Unary 调用或新建流时选址；已建立的流不会自动迁移或重放。
+底层独立使用 `Sender` 时，也可用 `sender.Client(route)` 接入生成客户端，此时 Sender 的创建方仍负责关闭。
+
 需要选择目标实例时，使用 `Resolve`。服务路由只返回 `running` 副本；已经知道实例 ID 的实例路由会精确
 解析 `running/draining/stopping` 实例：
 
@@ -1115,8 +1126,7 @@ if err != nil {
 }
 ```
 
-发送端由 `GRPCDialer` 与 `Sender` 组成。Dialer 必须显式传入 TLS 或 `insecure` 凭证；tx 不会默认为
-明文连接。当前部署范围是本地调试或云私网组件服务，项目应显式使用 `insecure`，并通过 VPC、安全组、
+发送端由 `GRPCDialer` 与 `Sender` 组成。Dialer 必须显式传入 TLS 或 `insecure` 凭证；独立使用时不提供默认凭据；Bee/Ant 的共享内部客户端沿用现有私网明文配置。当前部署范围是本地调试或云私网组件服务，项目应显式使用 `insecure`，并通过 VPC、安全组、
 端口白名单和不暴露公网端口保护 RPC endpoint。`Sender.Send` 与 `Sender.Call` 都先校验 `Delivery`，只解析一次
 路由，然后按 endpoint 复用已建立连接；`ServiceRoute` 继续只从当前 `running` 副本里选择目标。服务进程关闭时必须
 调用 `Close`：
@@ -1337,7 +1347,24 @@ registration := bee.ServiceRegistration{
 
 `NewType` 返回声明错误，`MustType` 对同一声明错误 panic；二者都不会执行工厂。工厂仅在实体懒加载时运行，业务加载失败通过运行时返回。`NewFixedKind`、`MustFixedKind`、`IsFixed` 和原生 `AdaptKind` 已移除，稳定业务归属使用 `WithSlotMapping`。
 
-普通 Type 默认使用 1024 个稳定分区；独立世界、分服或分战区使用 `actor.WithSlotMapping(mapping)`。一个 Type 对应声明它的服务类型，一个服务可声明多个 Type；应用全部声明中的 Type 名称必须唯一。Agent 与 Actor 调用、首次分配和加载前权威校验共用同一映射。显式映射返回空值即失败，不回退默认分区。
+普通 Type 默认使用 1024 个稳定分区；独立世界的纯计算规则使用 `actor.WithSlotMapping(mapping)`。需要读取业务数据来共同放置多个 Actor 类型时，在目标服务的 `ServiceSpec.Placements` 声明策略工厂，各 Type 通过 `actor.WithPlacement("server")` 引用。工厂返回 `actor.GroupResolver`，只解释稳定业务分组 ID；tx 负责缓存、进程级查询、本地/远程选择及槽位编码。Agent 或其他调用方无需手动绑定，不获得目标服务的存储依赖。三种规则互斥，错误或空结果不能回退默认分区。
+
+```go
+// Ant/Bee 均支持相同声明；提供方的 CMod 必须在 Requires 中声明。
+Spec: ant.ServiceSpec{
+    Name: "game",
+    Requires: []ant.CModID{ant.CModActor, ant.CModMongoStorage},
+    ActorTypes: []actor.Type{roleType, legionType}, // 均声明 WithPlacement("server")
+    Placements: []ant.Placement{{
+        Name: "server",
+        Factory: func(runtime ant.Context) (actor.GroupResolver, error) {
+            return newBusinessGroups(runtime.CModMongoStorage()).Resolve, nil,
+        },
+    }},
+}
+```
+
+策略工厂仅在本地选中目标服务且 CMod 就绪后执行，先于业务服务启动；只组合读取依赖，不创建独立后台资源。tx 的通用查询接口直接调用解析器，不经过待寻址 Actor 邮箱。Identity→SlotID 缓存上限为 65,536，冷查询合并并限时 3 秒；只缓存成功结果，实际工作纳入进程生命周期。SlotID→实例继续使用现有 Discovery 权威分配与交接。分组槽位包含服务池、策略名和分组 ID，不包含 Actor Type；同服务池的多种 Type 可同槽位，邮箱和状态仍按完整 Identity 隔离。运维工具使用 `actor.PlacementSlot(service, policy, group)`，业务使用生成的 Ref。分组运行期间必须稳定，改变布局要求停服迁移，不自动改派或重投。未声明分组策略的进程不会创建这套缓存或查询服务。
 
 `CModActor` 自动依赖共享 RPC 和 Discovery。启动顺序为 RPC、Discovery、Actor 入口、业务服务、running；没有独立 Actor 监听端口或第二套成员租约。`actor.Config` 使用 `NATSURL`、`Namespace`（空时用 AppID）、`MailboxCapacity`（默认 1024）、`MaxPendingCalls`（默认 4096）、`CallbackTimeout`（默认 30 秒）和 `IdlePassivation`。
 

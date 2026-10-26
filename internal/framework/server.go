@@ -270,6 +270,11 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 			server.cleanups = append(server.cleanups, cleanup)
 		}
 	}
+	if runtime.placement != nil {
+		if err := runtime.placement.initialize(runtime, selected); err != nil {
+			return err
+		}
+	}
 	host := newServiceHost(registry, runtime)
 	server.host = host
 	if err := host.startServices(selected); err != nil {

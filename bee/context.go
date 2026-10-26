@@ -85,7 +85,7 @@ type Context interface {
 	// CModFusionStorage 返回已声明的 Fusion 文档能力。
 	CModFusionStorage() FusionStorage
 	// CModRPC 返回共享 gRPC Host 的服务注册入口。
-	CModRPC() txrpc.Registrar
+	CModRPC() txrpc.Access
 	// CModDiscovery 返回 Watch 维护的只读服务实例目录。
 	CModDiscovery() discovery.Directory
 	// CModSessionID 返回已声明的 SessionID 分配能力。
@@ -105,7 +105,7 @@ type frameworkContext interface {
 	Tasks() lifecycle.Tasks
 	Storage() framework.Storage
 	StorageFor(meta.StorageMode) framework.ModeStorage
-	RPC() txrpc.Registrar
+	RPC() txrpc.Access
 	Directory() discovery.Directory
 	Actor() txactor.Runtime
 	DirectActor() txactor.Caller
@@ -218,7 +218,7 @@ func (view *contextView) CModFusionStorage() FusionStorage {
 	return fusionStorageView{modeStorageView{storage: storage}}
 }
 
-func (view *contextView) CModRPC() txrpc.Registrar {
+func (view *contextView) CModRPC() txrpc.Access {
 	view.require(CModRPC)
 	value := view.kernel.RPC()
 	if value == nil {

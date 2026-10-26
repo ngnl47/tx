@@ -37,7 +37,7 @@ func BenchmarkSharedCachedRoute(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	caller := &RoutedCaller{Router: &EntityRouter{Resolver: resolver, SlotID: worldSlot, Service: func(string) (string, error) { return "world", nil }}, Transport: routeBenchmarkCaller{&actorpb.Result{MessageType: "ok"}}}
+	caller := &RoutedCaller{Router: &EntityRouter{Resolver: resolver, SlotID: actorhost.SlotMapping(worldSlot).Resolver(), Service: func(string) (string, error) { return "world", nil }}, Transport: routeBenchmarkCaller{&actorpb.Result{MessageType: "ok"}}}
 	id, delivery := actorhost.Identity{Type: "world", ID: "51"}, &actorpb.Delivery{MessageType: "read"}
 	b.ReportAllocs()
 	b.ResetTimer()

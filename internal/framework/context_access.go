@@ -22,7 +22,7 @@ var (
 	_ lifecycle.Tasks          = taskAccess{}
 	_ Storage                  = storageAccess{}
 	_ ModeStorage              = modeStorageAccess{}
-	_ txrpc.Registrar          = rpcAccess{}
+	_ txrpc.Access             = rpcAccess{}
 	_ discovery.Directory      = directoryAccess{}
 	_ txactor.Runtime          = actorAccess{}
 	_ txn.Executor             = transactionAccess{}
@@ -149,14 +149,14 @@ func (writer modeChangeWriter) ApplyChangesWithOptions(ctx context.Context, spec
 
 type readOnlyContext struct{ context.Context }
 
-type rpcAccess struct{ host *txrpc.Host }
+type rpcAccess struct{ runtime *runtime }
 
 func (access rpcAccess) Register(register func(grpc.ServiceRegistrar) error) error {
-	return access.host.Register(register)
+	return access.runtime.rpc.Register(register)
 }
 
 func (access rpcAccess) Endpoint() string {
-	return access.host.Endpoint()
+	return access.runtime.rpc.Endpoint()
 }
 
 type directoryAccess struct{ directory *discovery.ServiceDirectory }
@@ -216,4 +216,9 @@ func (access modeStorageAccess) ReplaceDocumentAtVersion(ctx context.Context, sp
 		return fmt.Errorf("framework: Mongo conditional storage is unavailable")
 	}
 	return access.storage.ReplaceDocumentAtVersion(ctx, spec, key, doc, version)
+}
+
+// Client 复用进程级连接，服务不能提前关闭其他消费者正在使用的连接。
+func (access rpcAccess) Client(route txrpc.Route) grpc.ClientConnInterface {
+	return access.runtime.rpcSender.Client(route)
 }

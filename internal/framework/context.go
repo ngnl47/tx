@@ -80,7 +80,7 @@ type Context interface {
 	// StorageFor 返回绑定到单一持久化模式的窄存储能力；未装配时返回 nil。
 	StorageFor(meta.StorageMode) ModeStorage
 	// RPC 返回共享 gRPC Host 的注册入口；未启用时返回 nil。
-	RPC() txrpc.Registrar
+	RPC() txrpc.Access
 	// Directory 返回服务发现维护的只读实例目录；未启用时返回 nil。
 	Directory() discovery.Directory
 	// Actor 返回 Actor 消息投递入口；未启用时返回 nil。
@@ -195,11 +195,11 @@ func (service *serviceContext) StorageFor(mode meta.StorageMode) ModeStorage {
 	return modeStorageAccess{storage: service.runtime.storage, mode: mode}
 }
 
-func (service *serviceContext) RPC() txrpc.Registrar {
+func (service *serviceContext) RPC() txrpc.Access {
 	if service == nil || service.runtime == nil || service.runtime.rpc == nil {
 		return nil
 	}
-	return rpcAccess{host: service.runtime.rpc}
+	return rpcAccess{runtime: service.runtime}
 }
 
 func (service *serviceContext) Directory() discovery.Directory {

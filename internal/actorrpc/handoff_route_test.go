@@ -55,7 +55,7 @@ func handoffCaller(t *testing.T, transportErr error) (*RoutedCaller, *handoffRea
 	}
 	transport := &handoffTransport{targets: make(chan actorhost.Target, 4), err: transportErr}
 	caller := &RoutedCaller{Router: &EntityRouter{Resolver: resolver,
-		SlotID:  func(actorhost.Identity) string { return "slot" },
+		SlotID:  actorhost.SlotMapping(func(actorhost.Identity) string { return "slot" }).Resolver(),
 		Service: func(string) (string, error) { return "game", nil },
 	}, Transport: transport}
 	return caller, reader, transport

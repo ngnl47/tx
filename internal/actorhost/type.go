@@ -1,6 +1,7 @@
 package actorhost
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -11,10 +12,11 @@ var ErrInvalidType = errors.New("actor: invalid type")
 
 // Type 声明实体行为与稳定归属；构造声明不会初始化业务实体。
 type Type struct {
-	name    string
-	factory BehaviorFactory
-	slot    SlotMapping
-	idle    time.Duration
+	name      string
+	factory   BehaviorFactory
+	slot      SlotResolver
+	placement string
+	idle      time.Duration
 }
 
 // Name 返回应用内唯一的实体类型名。
@@ -50,10 +52,10 @@ func MustType(name string, factory BehaviorFactory, options ...TypeOption) Type 
 }
 func WithSlotMapping(mapping SlotMapping) TypeOption {
 	return typeOption(func(k *Type) error {
-		if mapping == nil {
+		if mapping == nil || k.slot != nil || k.placement != "" {
 			return ErrInvalidType
 		}
-		k.slot = mapping
+		k.slot = mapping.Resolver()
 		return nil
 	})
 }
@@ -68,7 +70,12 @@ func WithIdlePassivation(timeout time.Duration) TypeOption {
 }
 
 // SlotFor 供组合根把同一声明绑定到寻址、首次分配和权威加载校验。
-func SlotFor(k Type, id Identity) string { return k.slot.Resolve(id) }
+func SlotFor(ctx context.Context, k Type, id Identity) (string, error) {
+	if k.placement != "" {
+		return "", fmt.Errorf("actor: placement %q requires runtime resolution", k.placement)
+	}
+	return k.slot.Resolve(ctx, id)
+}
 
 // TypeFactory 只装配选中的本地工厂；运行时策略不修改共享的应用规格。
 func TypeFactory(actorTypes []Type, idle map[string]time.Duration) (BehaviorFactory, error) {

@@ -77,3 +77,15 @@ message DirectStreamCall {
   Delivery delivery = 3;
   int64 timeout_nano = 4;
 }
+
+// PlacementQuery 是进程级放置查询，不依赖目标 Actor 激活或邮箱。
+service PlacementQuery {
+  rpc ResolvePlacement(PlacementRequest) returns (PlacementResponse);
+}
+message PlacementRequest {
+  string actor_type = 1;
+  string actor_id = 2;
+}
+message PlacementResponse {
+  string slot_id = 1;
+}

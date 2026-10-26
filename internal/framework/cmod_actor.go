@@ -1,6 +1,7 @@
 package framework
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/ngnl47/tx/internal/actorhost"
@@ -9,8 +10,6 @@ import (
 	txactor "github.com/ngnl47/tx/modules/actor"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 	"github.com/ngnl47/tx/modules/discovery"
-	"github.com/ngnl47/tx/modules/rpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 func (server *Server) actorCMod() CMod {
@@ -42,6 +41,10 @@ func (server *Server) startActor() error {
 		config.Namespace = server.config.AppID
 	}
 	r := server.runtime
+	r.placement, err = newActorPlacement(r)
+	if err != nil {
+		return err
+	}
 	factory, err := actorhost.TypeFactory(r.actorTypes, config.IdlePassivation)
 	if err != nil {
 		return err
@@ -76,7 +79,12 @@ func (server *Server) startActor() error {
 		return b, err
 	})
 	local.SetActivationLimits(actorhost.ActivationLimits{Actors: config.Capacity.Maximum, Initializations: config.Capacity.Initializations})
-	mapping := func(id actorhost.Identity) string { return actorhost.SlotFor(r.actorCatalog[id.Type].actorType, id) }
+	mapping := func(ctx context.Context, id actorhost.Identity) (string, error) {
+		return actorhost.SlotFor(ctx, r.actorCatalog[id.Type].actorType, id)
+	}
+	if r.placement != nil {
+		mapping = r.placement.resolve
+	}
 	local.BindSlots(r.instanceSnapshot().ID, server.discovery.AuthoritativeSlots(), mapping)
 	if err := server.startEntityTransport(local, config.NATSURL, config.Namespace, config.MaxPendingCalls); err != nil {
 		return err
@@ -97,16 +105,7 @@ func (server *Server) startActor() error {
 			}
 			return spec.service, nil
 		}}
-	dialer, err := rpc.NewGRPCDialer(insecure.NewCredentials())
-	if err != nil {
-		return err
-	}
-	sender, err := rpc.NewSender(r.directory, dialer)
-	if err != nil {
-		return err
-	}
-	r.actorSender = sender
 	r.actor = actorAccess{messenger: &actorrpc.NATSMessenger{Router: router}, routeTimeout: config.CallbackTimeout}
-	r.actorDirect = directActorAccess{caller: &actorrpc.RoutedCaller{Router: router, Transport: &actorrpc.DirectTransport{Sender: sender}}}
+	r.actorDirect = directActorAccess{caller: &actorrpc.RoutedCaller{Router: router, Transport: &actorrpc.DirectTransport{Sender: r.rpcSender}}}
 	return nil
 }

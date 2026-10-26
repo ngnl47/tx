@@ -32,7 +32,7 @@ func BenchmarkOwnedNATSCall(b *testing.B) {
 	ns := nats.NewInbox()
 	reader := &countedSlotReader{assignment: discovery.SlotAssignment{SlotID: "world-1", RuntimeInstanceID: "world", Generation: 1}}
 	runtime := echoRuntime()
-	runtime.BindSlots("world", reader, worldSlot)
+	runtime.BindSlots("world", reader, actorhost.SlotMapping(worldSlot).Resolver())
 	host, err := ConnectNATS(url, ns, "world", runtime, 32)
 	if err != nil {
 		b.Fatal(err)

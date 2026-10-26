@@ -28,11 +28,12 @@ type runtime struct {
 	rpc           *txrpc.Host
 	actor         txactor.Runtime
 	actorDirect   txactor.Caller
-	actorSender   *txrpc.Sender
+	rpcSender     *txrpc.Sender
 	entities      *actorhost.Runtime
 	actorRPC      actorTransport
 	actorTypes    []txactor.Type
 	actorCatalog  map[string]actorTypeSpec
+	placement     *actorPlacement
 	transaction   *txn.Runtime
 	directory     *discovery.ServiceDirectory
 	slots         discovery.SlotStore

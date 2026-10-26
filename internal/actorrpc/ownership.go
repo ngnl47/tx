@@ -15,7 +15,7 @@ type EntityRouter struct {
 	Ownership *discovery.SlotOwnership
 	Transport *NATSTransport
 	Service   func(actorType string) (string, error)
-	SlotID    actorhost.SlotMapping
+	SlotID    actorhost.SlotResolver
 }
 
 // Ensure 先无副作用预检、CAS 确立归属，再发起激活；失败不会重投业务或改派。
@@ -37,7 +37,11 @@ func (a *EntityRouter) ensure(ctx context.Context, id actorhost.Identity, retry 
 	if err != nil {
 		return discovery.SlotAssignment{}, actorhost.ActivationStatus{}, err
 	}
-	current, created, err := a.Ownership.Ensure(ctx, service, a.SlotID.Resolve(id), func(ctx context.Context, instance string) (bool, error) {
+	slot, err := a.SlotID.Resolve(ctx, id)
+	if err != nil {
+		return discovery.SlotAssignment{}, actorhost.ActivationStatus{}, err
+	}
+	current, created, err := a.Ownership.Ensure(ctx, service, slot, func(ctx context.Context, instance string) (bool, error) {
 		err := a.Transport.CheckActivationCapacity(ctx, actorhost.Target{Instance: instance, Identity: id})
 		if errors.Is(err, actorhost.ErrCapacity) || errors.Is(err, actorhost.ErrDraining) {
 			return false, nil
@@ -67,7 +71,11 @@ func (a *EntityRouter) Resolve(ctx context.Context, id actorhost.Identity) (acto
 	if err != nil {
 		return actorhost.Target{}, err
 	}
-	current, err := a.Resolver.ResolveServiceSlot(ctx, service, a.SlotID.Resolve(id))
+	slot, err := a.SlotID.Resolve(ctx, id)
+	if err != nil {
+		return actorhost.Target{}, err
+	}
+	current, err := a.Resolver.ResolveServiceSlot(ctx, service, slot)
 	if err == nil {
 		return actorhost.Target{Instance: current.Assignment.RuntimeInstanceID, Identity: id}, nil
 	}
@@ -91,7 +99,11 @@ func (a *EntityRouter) Probe(ctx context.Context, id actorhost.Identity) (actorh
 	if err != nil {
 		return actorhost.ActivationStatus{}, err
 	}
-	target, err := a.Ownership.Resolve(ctx, service, a.SlotID.Resolve(id))
+	slot, err := a.SlotID.Resolve(ctx, id)
+	if err != nil {
+		return actorhost.ActivationStatus{}, err
+	}
+	target, err := a.Ownership.Resolve(ctx, service, slot)
 	if errors.Is(err, discovery.ErrSlotNotFound) {
 		return actorhost.ActivationStatus{State: actorhost.Unloaded}, nil
 	}

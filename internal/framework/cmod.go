@@ -202,7 +202,7 @@ type CModContext interface {
 	Tasks() lifecycle.Tasks
 	Storage() Storage
 	StorageFor(meta.StorageMode) ModeStorage
-	RPC() txrpc.Registrar
+	RPC() txrpc.Access
 	Directory() discovery.Directory
 	Actor() txactor.Runtime
 	DirectActor() txactor.Caller

@@ -21,6 +21,8 @@ type ServiceSpec struct {
 	// ActorTypes 列出由本服务承载的多个 Actor 种类；Type 名称在应用全部注册中唯一。
 	// 未选中服务只提供规格，不启动其工厂。
 	ActorTypes []txactor.Type
+	// Placements 声明本服务提供的命名分组策略，远端只读取声明。
+	Placements []Placement
 }
 
 // ServiceFactory 在依赖 CMod 全部就绪后构造服务实例。
@@ -58,8 +60,21 @@ type serviceAdapter struct {
 }
 
 func (adapter *serviceAdapter) Spec() framework.Spec {
+	placements := make([]framework.Placement, 0, len(adapter.registration.Spec.Placements))
+	for _, declaration := range adapter.registration.Spec.Placements {
+		var factory func(framework.Context) (txactor.GroupResolver, error)
+		if declaration.Factory != nil {
+			factory = func(runtime framework.Context) (resolve txactor.GroupResolver, err error) {
+				defer framework.RecoverCapability(&err)
+				view := newContextView(runtime, "placement "+declaration.Name, adapter.registration.Spec.Requires)
+				return declaration.Factory(view)
+			}
+		}
+		placements = append(placements, framework.Placement{Name: declaration.Name, Factory: factory})
+	}
 	return framework.Spec{
 		Name:       adapter.registration.Spec.Name,
+		Placements: placements,
 		Requires:   toFrameworkCModIDs(adapter.registration.Spec.Requires),
 		ActorTypes: append([]txactor.Type(nil), adapter.registration.Spec.ActorTypes...),
 	}
@@ -113,4 +128,10 @@ func isNil(value any) bool {
 	}
 	kind := reflect.ValueOf(value).Kind()
 	return (kind == reflect.Chan || kind == reflect.Func || kind == reflect.Interface || kind == reflect.Map || kind == reflect.Pointer || kind == reflect.Slice) && reflect.ValueOf(value).IsNil()
+}
+
+// Placement 在依赖就绪后构造只读分组解析器；不承担 Actor 初始化或独立资源管理。
+type Placement struct {
+	Name    string
+	Factory func(Context) (txactor.GroupResolver, error)
 }

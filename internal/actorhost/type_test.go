@@ -24,7 +24,7 @@ func TestTypeFactoryKeepsDeclarationLazyAndMappingStable(t *testing.T) {
 		{world, "world-1", time.Minute},
 	} {
 		id := Identity{Type: test.k.Name(), ID: "1"}
-		if got := SlotFor(test.k, id); got != test.slot {
+		if got, err := SlotFor(t.Context(), test.k, id); err != nil || got != test.slot {
 			t.Fatalf("slot = %q", got)
 		}
 		b, err := create(Context{Identity: id})

@@ -7,12 +7,11 @@
 package actorpb
 
 import (
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
-
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -575,6 +574,102 @@ func (x *DirectStreamCall) GetTimeoutNano() int64 {
 	return 0
 }
 
+type PlacementRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ActorType     string                 `protobuf:"bytes,1,opt,name=actor_type,json=actorType,proto3" json:"actor_type,omitempty"`
+	ActorId       string                 `protobuf:"bytes,2,opt,name=actor_id,json=actorId,proto3" json:"actor_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PlacementRequest) Reset() {
+	*x = PlacementRequest{}
+	mi := &file_modules_actor_proto_actor_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PlacementRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PlacementRequest) ProtoMessage() {}
+
+func (x *PlacementRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_modules_actor_proto_actor_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PlacementRequest.ProtoReflect.Descriptor instead.
+func (*PlacementRequest) Descriptor() ([]byte, []int) {
+	return file_modules_actor_proto_actor_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *PlacementRequest) GetActorType() string {
+	if x != nil {
+		return x.ActorType
+	}
+	return ""
+}
+
+func (x *PlacementRequest) GetActorId() string {
+	if x != nil {
+		return x.ActorId
+	}
+	return ""
+}
+
+type PlacementResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SlotId        string                 `protobuf:"bytes,1,opt,name=slot_id,json=slotId,proto3" json:"slot_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PlacementResponse) Reset() {
+	*x = PlacementResponse{}
+	mi := &file_modules_actor_proto_actor_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PlacementResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PlacementResponse) ProtoMessage() {}
+
+func (x *PlacementResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_modules_actor_proto_actor_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PlacementResponse.ProtoReflect.Descriptor instead.
+func (*PlacementResponse) Descriptor() ([]byte, []int) {
+	return file_modules_actor_proto_actor_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *PlacementResponse) GetSlotId() string {
+	if x != nil {
+		return x.SlotId
+	}
+	return ""
+}
+
 var File_modules_actor_proto_actor_proto protoreflect.FileDescriptor
 
 const file_modules_actor_proto_actor_proto_rawDesc = "" +
@@ -619,7 +714,13 @@ const file_modules_actor_proto_actor_proto_rawDesc = "" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x121\n" +
 	"\bdelivery\x18\x03 \x01(\v2\x15.tx.actor.v1.DeliveryR\bdelivery\x12!\n" +
-	"\ftimeout_nano\x18\x04 \x01(\x03R\vtimeoutNano*c\n" +
+	"\ftimeout_nano\x18\x04 \x01(\x03R\vtimeoutNano\"L\n" +
+	"\x10PlacementRequest\x12\x1d\n" +
+	"\n" +
+	"actor_type\x18\x01 \x01(\tR\tactorType\x12\x19\n" +
+	"\bactor_id\x18\x02 \x01(\tR\aactorId\",\n" +
+	"\x11PlacementResponse\x12\x17\n" +
+	"\aslot_id\x18\x01 \x01(\tR\x06slotId*c\n" +
 	"\fRouteKeyKind\x12\x12\n" +
 	"\x0eROUTE_KEY_NONE\x10\x00\x12\x13\n" +
 	"\x0fROUTE_KEY_INT64\x10\x01\x12\x14\n" +
@@ -632,7 +733,9 @@ const file_modules_actor_proto_actor_proto_rawDesc = "" +
 	"\x0eDeliveryOrigin\x12\x1c\n" +
 	"\x18DELIVERY_ORIGIN_INTERNAL\x10\x00\x12\x1a\n" +
 	"\x16DELIVERY_ORIGIN_CLIENT\x10\x01\x12\x18\n" +
-	"\x14DELIVERY_ORIGIN_TASK\x10\x02B/Z-github.com/ngnl47/tx/modules/actor/pb;actorpbb\x06proto3"
+	"\x14DELIVERY_ORIGIN_TASK\x10\x022c\n" +
+	"\x0ePlacementQuery\x12Q\n" +
+	"\x10ResolvePlacement\x12\x1d.tx.actor.v1.PlacementRequest\x1a\x1e.tx.actor.v1.PlacementResponseB/Z-github.com/ngnl47/tx/modules/actor/pb;actorpbb\x06proto3"
 
 var (
 	file_modules_actor_proto_actor_proto_rawDescOnce sync.Once
@@ -647,16 +750,18 @@ func file_modules_actor_proto_actor_proto_rawDescGZIP() []byte {
 }
 
 var file_modules_actor_proto_actor_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_modules_actor_proto_actor_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_modules_actor_proto_actor_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_modules_actor_proto_actor_proto_goTypes = []any{
-	(RouteKeyKind)(0),        // 0: tx.actor.v1.RouteKeyKind
-	(DeliveryMode)(0),        // 1: tx.actor.v1.DeliveryMode
-	(DeliveryOrigin)(0),      // 2: tx.actor.v1.DeliveryOrigin
-	(*SessionIdentity)(nil),  // 3: tx.actor.v1.SessionIdentity
-	(*Delivery)(nil),         // 4: tx.actor.v1.Delivery
-	(*Acceptance)(nil),       // 5: tx.actor.v1.Acceptance
-	(*Result)(nil),           // 6: tx.actor.v1.Result
-	(*DirectStreamCall)(nil), // 7: tx.actor.v1.DirectStreamCall
+	(RouteKeyKind)(0),         // 0: tx.actor.v1.RouteKeyKind
+	(DeliveryMode)(0),         // 1: tx.actor.v1.DeliveryMode
+	(DeliveryOrigin)(0),       // 2: tx.actor.v1.DeliveryOrigin
+	(*SessionIdentity)(nil),   // 3: tx.actor.v1.SessionIdentity
+	(*Delivery)(nil),          // 4: tx.actor.v1.Delivery
+	(*Acceptance)(nil),        // 5: tx.actor.v1.Acceptance
+	(*Result)(nil),            // 6: tx.actor.v1.Result
+	(*DirectStreamCall)(nil),  // 7: tx.actor.v1.DirectStreamCall
+	(*PlacementRequest)(nil),  // 8: tx.actor.v1.PlacementRequest
+	(*PlacementResponse)(nil), // 9: tx.actor.v1.PlacementResponse
 }
 var file_modules_actor_proto_actor_proto_depIdxs = []int32{
 	1, // 0: tx.actor.v1.Delivery.mode:type_name -> tx.actor.v1.DeliveryMode
@@ -664,8 +769,10 @@ var file_modules_actor_proto_actor_proto_depIdxs = []int32{
 	3, // 2: tx.actor.v1.Delivery.identity:type_name -> tx.actor.v1.SessionIdentity
 	2, // 3: tx.actor.v1.Delivery.origin:type_name -> tx.actor.v1.DeliveryOrigin
 	4, // 4: tx.actor.v1.DirectStreamCall.delivery:type_name -> tx.actor.v1.Delivery
-	5, // [5:5] is the sub-list for method output_type
-	5, // [5:5] is the sub-list for method input_type
+	8, // 5: tx.actor.v1.PlacementQuery.ResolvePlacement:input_type -> tx.actor.v1.PlacementRequest
+	9, // 6: tx.actor.v1.PlacementQuery.ResolvePlacement:output_type -> tx.actor.v1.PlacementResponse
+	6, // [6:7] is the sub-list for method output_type
+	5, // [5:6] is the sub-list for method input_type
 	5, // [5:5] is the sub-list for extension type_name
 	5, // [5:5] is the sub-list for extension extendee
 	0, // [0:5] is the sub-list for field type_name
@@ -682,9 +789,9 @@ func file_modules_actor_proto_actor_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_modules_actor_proto_actor_proto_rawDesc), len(file_modules_actor_proto_actor_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   5,
+			NumMessages:   7,
 			NumExtensions: 0,
-			NumServices:   0,
+			NumServices:   1,
 		},
 		GoTypes:           file_modules_actor_proto_actor_proto_goTypes,
 		DependencyIndexes: file_modules_actor_proto_actor_proto_depIdxs,

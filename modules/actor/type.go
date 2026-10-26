@@ -28,3 +28,14 @@ func WithSlotMapping(mapping SlotMapping) TypeOption { return actorhost.WithSlot
 func WithIdlePassivation(timeout time.Duration) TypeOption {
 	return actorhost.WithIdlePassivation(timeout)
 }
+
+// GroupResolver 只返回业务分组 ID，实例和槽位编码由框架处理。
+type GroupResolver = actorhost.GroupResolver
+
+// WithPlacement 引用服务声明中的命名放置策略，调用方无需绑定。
+func WithPlacement(name string) TypeOption { return actorhost.WithPlacement(name) }
+
+// PlacementSlot 供运维工具构造分组槽位；业务调用使用 Actor Identity。
+func PlacementSlot(service, policy, group string) string {
+	return actorhost.PlacementSlot(service, policy, group)
+}

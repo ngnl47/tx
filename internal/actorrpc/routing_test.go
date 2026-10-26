@@ -225,7 +225,7 @@ func TestDirectActorOwnershipBeforeNATS(t *testing.T) {
 		loads.Add(1)
 		return &actorhost.Behavior{Receive: func(actorhost.Context, any) (any, error) { return &actorpb.Result{MessageType: "ok"}, nil }}, nil
 	})
-	r.BindSlots("old", reader, worldSlot)
+	r.BindSlots("old", reader, actorhost.SlotMapping(worldSlot).Resolver())
 	t.Cleanup(func() {
 		if err := r.Drain(context.Background()); err != nil {
 			t.Error(err)
@@ -242,7 +242,7 @@ func TestDirectActorOwnershipBeforeNATS(t *testing.T) {
 
 	// 正确归属的首次请求完成校验，后续消息复用同一激活。
 	current := echoRuntime()
-	current.BindSlots("new", reader, worldSlot)
+	current.BindSlots("new", reader, actorhost.SlotMapping(worldSlot).Resolver())
 	t.Cleanup(func() {
 		if err := current.Drain(context.Background()); err != nil {
 			t.Error(err)

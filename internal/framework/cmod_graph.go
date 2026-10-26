@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/ngnl47/tx/component"
+	"github.com/ngnl47/tx/internal/actorhost"
 	txactor "github.com/ngnl47/tx/modules/actor"
 )
 
@@ -129,8 +130,18 @@ func collectActorTypes(services []Service) (map[string]actorTypeSpec, error) {
 			return nil, errors.New("framework: registered service is nil")
 		}
 		spec := service.Spec()
+		policies := make(map[string]bool, len(spec.Placements))
+		for _, p := range spec.Placements {
+			if p.Name == "" || p.Factory == nil || policies[p.Name] {
+				return nil, fmt.Errorf("framework: invalid or duplicate placement %q in %q", p.Name, spec.Name)
+			}
+			policies[p.Name] = true
+		}
 		for _, actorType := range spec.ActorTypes {
 			name := actorType.Name()
+			if p := actorhost.PlacementName(actorType); p != "" && !policies[p] {
+				return nil, fmt.Errorf("framework: Actor %q refers to undeclared placement %q", name, p)
+			}
 			if name == "" {
 				return nil, fmt.Errorf("framework: service %q declares invalid Actor type", spec.Name)
 			}

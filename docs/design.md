@@ -232,7 +232,7 @@ ServiceSpec、CMod 和基础 Context；同名 API 具有相同签名和生命周
 | `CModRedisStorage()` | Bee/Ant | 取得仅允许 Redis TypeSpec 的 reader/writer 和具名命令接口 | 连接池所有权在存储 Runtime |
 | `CModMongoStorage()` | Bee/Ant | 取得仅允许 MongoDB TypeSpec 的 reader/writer、条件回填、版本条件替换和原子 CounterStore | 连接池所有权在存储 Runtime |
 | `CModFusionStorage()` | Bee/Ant | 取得仅允许 Fusion TypeSpec 的 reader/writer | Redis、Mongo 和延迟任务所有权在存储 Runtime |
-| `CModRPC()` | Bee/Ant | 启动前注册 protobuf service | Serve/Stop 在共享 RPC Host |
+| `CModRPC()` | Bee/Ant | 注册 protobuf service、取得按服务/实例路由的生成客户端入口 | Host 与客户端连接均由框架管理 |
 | `CModDiscovery()` | Bee/Ant | 查询 running 或指定实例快照 | watch 与 Replace 在 discovery Runtime |
 | `CModSessionID()` | Bee/Ant | 为 Login 分配集群内有效生命周期的 SessionID | workSlot、租约与停止发号在 discovery/session-id Runtime |
 | `CModActor()` | Bee/Ant | 解析 PID、投递和业务调用 | Start/Shutdown/ActorSystem 在 Actor Runtime |
@@ -2065,7 +2065,7 @@ MsgQ 是客户端会话邮箱，正文保存在实例内存中；它不承担 Je
 
 扩展服务不必全部采用 Actor 模型。Battle 负责战斗公式或独立数值计算，与持有战斗状态和生命周期的 FightRoom 分工不同：Game、SLGWorld、FightRoom 可以直接通过 gRPC 调用 Battle，客户端计算请求也可以由 Agent 的命令适配入口转为同类调用。该高频链路不经 Core NATS 或 JetStream，也不要求先创建 Actor。
 
-现有扩展点是 `CModRPC().Register`：服务在启动期向共享 Host 注册自定义 protobuf service，声明 RPC 与所需 Discovery 能力。调用侧可以使用普通 `rpc.Sender.Call` 的 `ServiceRoute` / `InstanceRoute` 与 `CallReceiver` 接入通用信封，也可以使用独立 protobuf service 和对应客户端。后者的连接/选址装配需由服务组合根明确提供，不能将普通 Sender 当作任意生成客户端的自动工厂；同一 Host 上的通用 DeliveryService 仍只能注册一次。
+现有扩展点是 `CModRPC().Register`：服务在启动期向共享 Host 注册自定义 protobuf service，声明 RPC 与所需 Discovery 能力。调用侧可以使用普通 `rpc.Sender.Call` 的 `ServiceRoute` / `InstanceRoute` 与 `CallReceiver` 接入通用信封，也可以使用独立 protobuf service 和对应客户端。独立 protobuf 客户端通过 `GeneratedClient(runtime.CModRPC().Client(rpc.ServiceRoute(service)))` 接入；`Client` 返回标准 `grpc.ClientConnInterface`，复用 Sender 的实例选择与连接缓存，与 Actor 直连共享连接。使用路由客户端时需启用 RPC 与 Discovery，不要求 Actor 或存储；只注册服务时仍可单独启用 RPC。同一 Host 上的通用 DeliveryService 仍只能注册一次。客户端不能关闭共享连接，框架在排水与持久化收尾后统一关闭；每次新调用选址，已建立的流不迁移，不自动重投失败请求。
 
 Battle 的纯计算结果沿同一次 gRPC 返回调用方，不必理解 Session 或承担客户端消息发布。客户端经 Agent 调用时，命令适配负责认证、参数校验及既有下行发布契约，不能把纯计算 Result 冒充邮箱接纳确认。计算服务也可以按业务需要提供独立对外 API，但这不等于可以跳过入口鉴权或直接开放内部 gRPC 端口。此处约定计算服务的扩展方式，不额外实现公式或 Battle 服务。
 
@@ -2379,7 +2379,7 @@ Agent 将上行提交给 Game 长流后推进本地游标，不等待远端邮�
 
 ```text
 Identity(Type, ID)
-  -> Type.SlotMapping（默认 v1 1024 分区，或业务稳定映射）
+  -> Type 槽位解析（默认 v1 1024 分区，或 WithSlotMapping / WithPlacement）
   -> SlotDirectory + ServiceDirectory 缓存
   -> assignment(RuntimeInstanceID, Generation)
        -> Agent: gRPC 共享 Endpoint
@@ -2387,6 +2387,12 @@ Identity(Type, ID)
   -> 同一本地实体宿主 -> 同一实体邮箱 -> Behavior.Receive
 业务下行 -> gRPC -> owner MsgQ -> Agent -> 客户端
 ```
+
+`WithSlotMapping` 保留纯计算映射；需要 I/O 的分组通过 Type 的 `WithPlacement(name)` 引用目标服务 `ServiceSpec.Placements`。Ant/Bee 的策略 Factory 在 CMod 就绪后、服务 Start 前创建 GroupResolver，未选中服务不执行工厂。业务仅返回稳定分组 ID，tx 用服务池、策略名与分组 ID 的无歧义编码形成 `actor-group-v1` 槽位，跨 Type 同组共享归属。纯映射不得占用此保留前缀。
+
+通用 `PlacementQuery` 是进程控制协议：本地直接调用提供方，远端通过现有 RPC Sender 查询目标服务，不能经目标 Actor 邮箱或继续代理。全部寻址及加载校验共用框架管线。Identity→SlotID 使用既有 Otter 有界缓存（65,536 项），同身份冷查询合并，成功才缓存；调用限时 3 秒，取消首个查询使共享查询失败，其他等待者可独立退出。不自动重投业务。查询实际执行由子生命周期托管，关闭存储前取消并等待；等待超时返回可重试的关闭失败并保留资源，外部查询准入随进程排水关闭。缓存不是新的权威表，SlotID→实例继续复用 L2 assignment/Watch/CAS。未使用分组的进程保留原默认寻址，不创建查询缓存。
+
+业务存储结构与服务器目录快照留在应用；分组必须运行期稳定，合服或策略布局修改需要停服更新全部缓存持有者。框架不负责在线数据迁移或跨服务部署亲和。策略工厂不持有独立资源生命周期，也不允许通过它提前启动业务任务。
 
 NATS 不决定实体归属，也不按实体创建订阅。首次缺少 assignment 时，L2 Ownership 执行容量预检与 CAS；已有归属不随新成员入环变化。懒加载前单独读取权威槽位，不能用 Watch 缓存替代。默认分区只共享 owner，每个实体仍独立加载、串行处理、卸载和预留容量；世界与 seasonWorld 可共享 slgworld 服务池并保留独立业务槽位。
 
