@@ -32,6 +32,9 @@ func (s *Server) broadcastRole(ctx context.Context, roleID int64, expected *Role
 	if s == nil {
 		return BroadcastResult{}, ErrServerNil
 	}
+	if err := s.checkStartup(); err != nil {
+		return BroadcastResult{}, err
+	}
 	if roleID <= 0 {
 		return BroadcastResult{}, ErrInvalidHeader
 	}

@@ -274,7 +274,7 @@ func (log *eventLog) values() []string {
 
 type beeServiceRecorder struct{ events *eventLog }
 
-func (service beeServiceRecorder) Start(context.Context) error {
+func (service beeServiceRecorder) Init(context.Context) error {
 	service.events.add("start")
 	return nil
 }
@@ -291,7 +291,7 @@ func (service beeServiceRecorder) Stop(context.Context) error {
 
 type antServiceRecorder struct{ events *eventLog }
 
-func (service antServiceRecorder) Start(context.Context) error {
+func (service antServiceRecorder) Init(context.Context) error {
 	service.events.add("start")
 	return nil
 }

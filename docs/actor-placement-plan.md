@@ -25,3 +25,11 @@
 - tx、txgameslg/server 全量回归通过；txgame/server 兼容回归通过。tx 的 framework/actorplacement/actorhost/ant/bee 与 SLG 归属、目录、建角、装配相关包的 race 回归通过，本地 Mongo/etcd 依赖已启用。
 - 文件完整性检查恢复了被同名新测试覆盖的既有 Actor 放置与退役测试；新增策略测试单独存放，actorhost 普通及 race 回归再次通过。
 - 多进程短测与旧数据未处于严格一致的负载条件，不能据此量化吞吐增减；当前证据支持缓存命中维持百纳秒、零分配开销及完整上下行链路正常。
+
+## 合服前置边界
+
+Actor 放置是通用能力：项目提供分组，tx 负责槽位、查询缓存和稳定 owner。合服规则、目录修改与业务屏障均不进入 tx；项目合服执行示例后置。分组运行期稳定，同槽交接不修改分组，也不自动迁移业务数据。
+
+新增 `TestPlacementGroupHandoffKeepsIdentityCache` 使用真实本地 NATS/etcd，验证三个类型共享一个槽位、本地与跨实例 Call，以及交接后复用 Identity→SlotID 缓存访问新 owner。
+
+2026-10-27 本地验证：新同槽交接测试及既有归属写回/身份丢失测试通过，放置查询、缓存与交接 race 通过。SLG 真实依赖下 Agent→Role→MsgQ 往返及 Legion/ServerActor 调用通过。10,000 身份、P2 缓存命中约 118～120 ns/op（串行）、148 ns/op（并行），全部零分配；未跑新的集群吞吐测试。

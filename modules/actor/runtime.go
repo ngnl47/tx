@@ -22,15 +22,9 @@ type Messenger interface {
 	CallFuture(context.Context, Identity, Delivery) (*Future, error)
 }
 
-// Runtime 是框架提供的实体调用与激活控制入口，不开放宿主关闭或连接权限。
-// 仅需要发送消息的业务依赖 Messenger 或 Caller 即可。
+// Runtime 组合业务消息与低频激活控制，不开放宿主关闭或连接权限。
+// 只发送消息时依赖 Messenger / Caller，只管理激活时依赖 Controller。
 type Runtime interface {
 	Messenger
-	// Probe 只读查询，不分配归属、不加载；Unloaded 不代表业务实体不存在。
-	Probe(context.Context, Identity) (ActivationStatus, error)
-	// EnsureActivation 发起或复用初始化并返回当前状态，不等待初始化完成。
-	// 已缓存的失败通过状态返回，不自动重新执行工厂。
-	EnsureActivation(context.Context, Identity) (ActivationStatus, error)
-	// RetryActivation 显式重试已结束的失败，不替换正在初始化或关闭的激活。
-	RetryActivation(context.Context, Identity) (ActivationStatus, error)
+	Controller
 }

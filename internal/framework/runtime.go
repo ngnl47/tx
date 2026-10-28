@@ -4,6 +4,7 @@ import (
 	"context"
 	"maps"
 	"sync"
+	"sync/atomic"
 
 	"github.com/ngnl47/tx/internal/actorhost"
 	"github.com/ngnl47/tx/lifecycle"
@@ -21,6 +22,9 @@ type actorTransport interface {
 }
 
 type runtime struct {
+	accessClosed  atomic.Bool
+	serviceAccess map[string]*runtimeAccess
+	servicePhases map[string]*servicePhase
 	taskQueue     *taskRuntime
 	config        Config
 	lifecycle     *lifecycle.WaitGroupContext

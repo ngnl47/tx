@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ngnl47/tx/lifecycle"
 	"log/slog"
 	"sync"
 	"time"
@@ -60,10 +61,12 @@ type LocalFuture struct{ future *Future }
 func (f LocalFuture) Await(ctx context.Context) (any, error) { return f.future.Await(ctx) }
 func (f LocalFuture) Done() <-chan struct{}                  { return f.future.Done() }
 
-// Deactivate 由串行业务处理或定时消息触发；关闭后仍处理已经入队的消息。
+// Deactivate 请求关闭本次激活的准入；返回不代表邮箱排空或卸载回调已完成。
+// 当前回调及已入队消息继续执行，再进行清理。不能在当前回调内等待自身卸载完成。
+// 重复请求无额外作用，旧 Context 不会关闭后来重建的激活；不删除持久数据或稳定归属。
 func (c Context) Deactivate() { c.entry.runtime.close(c.entry) }
 
-// After 只投递，不在后台修改业务状态；邮箱暂满时保留待投递消息，关闸后放弃。
+// After 只投递，不在后台修改业务状态；启动未完成或邮箱暂满时保留待投递消息，激活关闭后放弃。
 func (c Context) After(delay time.Duration, message any) {
 	go func() {
 		timer := time.NewTimer(delay)
@@ -74,7 +77,7 @@ func (c Context) After(delay time.Duration, message any) {
 				return
 			case <-timer.C:
 				_, err := c.Post(message)
-				if errors.Is(err, ErrMailboxFull) {
+				if errors.Is(err, ErrMailboxFull) || errors.Is(err, lifecycle.ErrNotReady) {
 					// 只重试尚未入队的本地定时消息，不重投业务 RPC，也不占用 Actor 消费协程。
 					timer.Reset(10 * time.Millisecond)
 					continue
@@ -144,6 +147,8 @@ type activation struct {
 
 // Runtime 只管理本进程实体，不做发现或跨实例归属判定。
 type Runtime struct {
+	contextFor     func(context.Context, Identity) context.Context
+	admission      func(Identity, bool) error
 	mailboxSamples uint64
 	mu             sync.Mutex
 	entries        map[Identity]*activation
@@ -184,6 +189,11 @@ func (r *Runtime) Submit(id Identity, message any) (*Future, error) {
 func (r *Runtime) SubmitWithReply(id Identity, message any, done func(any, error)) (*Future, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.admission != nil {
+		if err := r.admission(id, false); err != nil {
+			return nil, err
+		}
+	}
 	e, err := r.ensureLocked(id)
 	if err != nil {
 		return nil, err
@@ -195,6 +205,11 @@ func (r *Runtime) SubmitWithReply(id Identity, message any, done func(any, error
 }
 
 func (r *Runtime) ensureLocked(id Identity) (*activation, error) {
+	if r.admission != nil {
+		if err := r.admission(id, true); err != nil {
+			return nil, err
+		}
+	}
 	if id.Type == "" || id.ID == "" {
 		return nil, errors.New("actortrial: empty actor identity")
 	}
@@ -216,7 +231,11 @@ func (r *Runtime) ensureLocked(id Identity) (*activation, error) {
 	if err := r.checkCapacityLocked(); err != nil {
 		return nil, err
 	}
-	life, cancel := context.WithCancel(context.Background())
+	parent := context.Background()
+	if r.contextFor != nil {
+		parent = r.contextFor(parent, id)
+	}
+	life, cancel := context.WithCancel(parent)
 	e := &activation{runtime: r, identity: id, queue: make(chan request, r.capacity), life: life, cancel: cancel,
 		initializing: true}
 	r.entries[id] = e
@@ -228,6 +247,12 @@ func (r *Runtime) ensureLocked(id Identity) (*activation, error) {
 func (r *Runtime) submit(e *activation, message any) (*Future, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// 旧激活句柄仍由 enqueue 返回 ErrDeactivated，不因启动检查变成可重试消息。
+	if !e.closed && r.admission != nil {
+		if err := r.admission(e.identity, false); err != nil {
+			return nil, err
+		}
+	}
 	return r.enqueue(e, message, nil)
 }
 func (r *Runtime) enqueue(e *activation, message any, done func(any, error)) (*Future, error) {
@@ -412,3 +437,11 @@ func (r *Runtime) Timeout() time.Duration { return r.timeout }
 
 // Draining 返回本地准入状态，不等待排水完成。
 func (r *Runtime) Draining() bool { r.mu.Lock(); defer r.mu.Unlock(); return r.draining }
+
+// BindContext 在首次接收工作前绑定本地激活的上下文，不使用发送端上下文。
+func (r *Runtime) BindContext(bind func(context.Context, Identity) context.Context) {
+	r.contextFor = bind
+}
+
+// BindAdmission 在接收工作前绑定宿主启动准入；activation 仅用于已有控制面入口。
+func (r *Runtime) BindAdmission(check func(Identity, bool) error) { r.admission = check }

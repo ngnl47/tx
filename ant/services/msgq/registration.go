@@ -60,10 +60,11 @@ func (service *Service) factory(runtime ant.Context) (ant.Service, error) {
 	rpc := runtime.CModRPC()
 	redis := runtime.CModRedisStorage()
 	core, err := msgqservice.New(options, msgqservice.Dependencies{
-		Tasks:    runtime.Tasks(),
-		RPC:      rpc,
-		Instance: runtime.Instance(),
-		Redis:    redis.Clients(),
+		StartupAdmission: runtime.Admission(),
+		Tasks:            runtime.Tasks(),
+		RPC:              rpc,
+		Instance:         runtime.Instance(),
+		Redis:            redis.Clients(),
 	})
 	if err != nil {
 		return nil, err
@@ -90,7 +91,7 @@ type serviceInstance struct {
 	core  *msgqservice.Service
 }
 
-func (instance *serviceInstance) Start(ctx context.Context) error {
+func (instance *serviceInstance) Init(ctx context.Context) error {
 	if err := instance.core.Start(ctx); err != nil {
 		return err
 	}

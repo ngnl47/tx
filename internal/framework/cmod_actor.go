@@ -3,6 +3,7 @@ package framework
 import (
 	"context"
 	"fmt"
+	txruntime "github.com/ngnl47/tx/runtime"
 
 	"github.com/ngnl47/tx/internal/actorhost"
 	"github.com/ngnl47/tx/internal/actorresult"
@@ -77,6 +78,11 @@ func (server *Server) startActor() error {
 			}
 		}
 		return b, err
+	})
+	local.BindAdmission(func(id actorhost.Identity, activation bool) error { return r.actorAdmission(id.Type, activation) })
+	local.BindContext(func(ctx context.Context, id actorhost.Identity) context.Context {
+		owner := r.actorCatalog[id.Type].service
+		return txruntime.Bind(ctx, r.serviceAccess[owner])
 	})
 	local.SetActivationLimits(actorhost.ActivationLimits{Actors: config.Capacity.Maximum, Initializations: config.Capacity.Initializations})
 	mapping := func(ctx context.Context, id actorhost.Identity) (string, error) {

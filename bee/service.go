@@ -38,9 +38,12 @@ type ServiceRegistration struct {
 
 // Service 是由 Bee 托管的 L4 运行单元。
 type Service interface {
-	// Start 在所有声明的 CMod 就绪后启动服务。
-	Start(context.Context) error
+	// Init 在 CMod 就绪后装配资源与 Handler，业务入口尚未开放。
+	Init(context.Context) error
 }
+
+// ServiceStarter 执行通信就绪后的必备启动工作，返回成功后服务进入 Running。
+type ServiceStarter interface{ Start(context.Context) error }
 
 // ServiceDrainer 让服务停止接收新的外部工作。
 type ServiceDrainer interface {
@@ -80,7 +83,7 @@ func (adapter *serviceAdapter) Spec() framework.Spec {
 	}
 }
 
-func (adapter *serviceAdapter) Start(runtime framework.Context) (err error) {
+func (adapter *serviceAdapter) Init(runtime framework.Context) (err error) {
 	defer framework.RecoverCapability(&err)
 	view := newContextView(runtime, "service "+fmt.Sprintf("%q", adapter.registration.Spec.Name), adapter.registration.Spec.Requires)
 	instance, err := adapter.registration.Factory(view)
@@ -95,7 +98,15 @@ func (adapter *serviceAdapter) Start(runtime framework.Context) (err error) {
 	if tasks := runtime.Tasks(); tasks != nil {
 		ctx = tasks
 	}
-	return instance.Start(ctx)
+	return instance.Init(ctx)
+}
+
+func (adapter *serviceAdapter) Start(ctx context.Context) (err error) {
+	defer framework.RecoverCapability(&err)
+	if starter, ok := adapter.instance.(ServiceStarter); ok {
+		return starter.Start(ctx)
+	}
+	return nil
 }
 
 func (adapter *serviceAdapter) Drain(ctx context.Context) error {

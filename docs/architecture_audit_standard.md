@@ -187,7 +187,7 @@ err := queue.Publish(payload)
 
 ### 检查规则
 
-- 常规业务优先使用 `db.Save(role)` 这类 facade，不接触 Writer、backend、Fusion 内部对象或装配细节。
+- 常规业务优先使用 `db.Save(ctx, role)` 这类 facade，不接触 Writer、backend、Fusion 内部对象或装配细节。
 - GD 保持纯数据职责；Store 只在受控标脏、投影或高级存储路径中显式出现。
 - 公共 API 不要求调用方传入框架可静态生成或运行时维护的 loader、record key、mode 等信息。
 - 常见操作不依赖布尔参数组合、过长 options 链或未在类型中表达的成对调用约定。

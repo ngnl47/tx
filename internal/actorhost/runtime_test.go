@@ -95,6 +95,15 @@ func TestDeactivateDrainsAndRejectsOldHandle(t *testing.T) {
 		if _, err := handle.Post("old"); !errors.Is(err, ErrDeactivated) {
 			t.Fatal(err)
 		}
+		old := handle
+		if _, err := r.Call(context.Background(), Identity{"room", "1"}, "new"); err != nil {
+			t.Fatal(err)
+		}
+		old.Deactivate()
+		old.Deactivate()
+		if state := r.Probe(Identity{"room", "1"}); state.State != Ready {
+			t.Fatalf("旧激活重复卸载不能关闭新激活: %+v", state)
+		}
 		r.Drain(context.Background())
 	})
 }
@@ -464,4 +473,37 @@ type initializationSlotReader func(context.Context, string) (discovery.SlotAssig
 
 func (read initializationSlotReader) ResolveSlot(ctx context.Context, slot string) (discovery.SlotAssignment, error) {
 	return read(ctx, slot)
+}
+
+// 同进程调用也必须使用接收方作用域，不能继承发送方的运行时。
+func TestActivationContextBelongsToReceiver(t *testing.T) {
+	type key struct{}
+	receiver := context.WithValue(context.Background(), key{}, "receiver")
+	var stages []string
+	check := func(c Context) error {
+		if c.Value(key{}) != "receiver" {
+			t.Errorf("接收方作用域丢失: %v", c.Value(key{}))
+		}
+		return nil
+	}
+	r := New(8, time.Second, func(c Context) (*Behavior, error) {
+		_ = check(c)
+		stages = append(stages, "factory")
+		return &Behavior{OnInitAfter: check, Receive: func(c Context, _ any) (any, error) {
+			stages = append(stages, "receive")
+			return c.Value(key{}), check(c)
+		}, OnDeactivateBefore: check, OnDeactivateAfter: check}, nil
+	})
+	r.BindContext(func(context.Context, Identity) context.Context { return receiver })
+	caller := context.WithValue(t.Context(), key{}, "sender")
+	got, err := r.Call(caller, Identity{Type: "role", ID: "1"}, nil)
+	if err != nil || got != "receiver" {
+		t.Fatalf("value=%v err=%v", got, err)
+	}
+	if err := r.Drain(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(stages) != 2 {
+		t.Fatal(stages)
+	}
 }

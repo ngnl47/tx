@@ -304,7 +304,7 @@ func (*blockingServiceRecorder) Spec() Spec {
 	return Spec{Name: "fatal-discovery-loss"}
 }
 
-func (*blockingServiceRecorder) Start(Context) error { return nil }
+func (*blockingServiceRecorder) Init(Context) error { return nil }
 
 func (service *blockingServiceRecorder) Drain(context.Context) error {
 	service.drained = true

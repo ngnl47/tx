@@ -23,7 +23,7 @@ README 回答“怎么使用”，不记录施工步骤、逐轮进度或本机�
 - `bee` 提供无状态服务门面，`ant` 提供有状态服务门面；两者共有 Builder、Server、Service 和基础 CMod API 同名同义。项目只读取配置并转换为对应的强类型 `Config`，再注入生成包和业务服务。
 - `GD*` 是业务数据对象，`GD*Store` 是绑定该数据的变更追踪结构，不保存第二份完整数据。
 - Store 不是协议字段。cmd 和业务输入模型不得直接声明生成的 `*Store` 类型。
-- handler 优先使用项目 facade，例如 `db.Save(role)`；直接传入 Store、writer 和 context 属于扩展层用法。
+- handler 优先使用项目 facade，例如 `db.Save(ctx, role)`；沿用当前请求 context，直接传入 Store、writer 属于扩展层用法。
 - 高频大对象修改使用 Store wrapper；低频请求可以使用 `BeginChange/SaveChange`。同一变更周期不要混用两种模式。
 - `Set` 写入零值，`Replace` 整体覆盖复杂值，`Delete` 删除集合元素或存储路径，`Clear` 清空容器。
 - 保存失败时 Store 保留变更状态。业务必须处理返回的 `error`，不能把外部服务异常当成成功。
@@ -32,6 +32,27 @@ README 回答“怎么使用”，不记录施工步骤、逐轮进度或本机�
 - 单机事务只回滚通过 Store 受控 API 发生的修改；事务内子流程使用 `tx.Call` 动态复用或增加直接锁，不能嵌套启动根事务。
 - `msgq` 管理客户端会话和下行邮箱；Actor 负责业务实体投递；普通 gRPC RPC 负责服务或实例调用，三者不是同一个中继层。
 - 需要理解内部变更追踪、锁注册表、Fusion 状态机或分布式拓扑时，阅读 [设计文档](docs/design.md)。
+
+## 子服务初始化与启动
+
+Bee/Ant 的 `Service` 实现 `Init(ctx)`，用于模块、Handler 和资源装配。只有需要通信就绪后执行必备加载的服务才额外实现 `ServiceStarter.Start(ctx)`；无需额外工作的服务不必添加空方法。
+
+```go
+func (s *Service) Init(ctx context.Context) error {
+    if err := s.initModules(ctx); err != nil { return err }
+    s.bindHandlers()
+    return nil
+}
+
+// 可选：复用框架控制面加载项目要求的 Actor，等待业务初始化成功。
+func (s *Service) Start(ctx context.Context) error {
+    return s.loadRequiredActors(ctx)
+}
+```
+
+框架依次执行全部 Init → RPC/控制监听与进程发现 Running → 全部可选 Start → 开放业务准入。启动钩子可以使用 Actor 控制接口，不应同步等待仍未开放的普通业务消息。启动钩子响应调用方取消；长期后台任务使用服务 Context 的 `Tasks()`。
+
+`server.ServiceStatus(name)` 返回 `lifecycle.ServiceStatus`，阶段为 Created、Initializing、Initialized、Starting、Running、Draining、Stopped；停止后仍保留 Failure。进程发现 Running 只表示基础设施就绪；Actor Ready 表示该激活的工厂及初始化成功，它们不等同于子服务 Running。排水超时保留资源和 Draining，不伪装成 Stopped。
 
 ## 定位
 
@@ -51,10 +72,10 @@ README 回答“怎么使用”，不记录施工步骤、逐轮进度或本机�
 
 1. 由生成工程输出 `server/gen/data` 和 `server/gen/cmd`。
 2. 项目读取本地 yml，严格解析后转换为只含 Go 值的 `bee.Config` 或 `ant.Config`；tx 不读取 yml、环境变量或命令行。
-3. 项目注册生成数据绑定、业务 facade 初始化函数和可选服务。
+3. 项目注册生成数据元数据和子服务；业务 facade 从调用上下文取得所属服务能力。
 4. 项目先决定本进程服务及启动顺序，再通过 `bee.RunOptions` 或 `ant.RunOptions` 传入明确名称清单，并提供版本、监听和发布地址；选择 Discovery 的节点由运行时自动取得实例身份。
 5. Bee/Ant Server 解析所选服务的 CMod 依赖闭包，只创建本进程实际需要的外部连接、共享 Host 和后台任务。
-6. handler 使用 `db.Save(role)` 或项目事务 facade，不直接装配 writer/client。
+6. handler 使用 `db.Save(ctx, role)` 或项目事务 facade，不直接装配 writer/client。
 
 `RunOptions.Services` 不解析 `*`、`!name` 或命令行语法；这些部署选择由项目负责。完整注册清单保留远端 Actor Type 目录，本地只启动选定的服务。项目选择同进程 Agent/MsgQ 时显式注入 `agent.Options.LocalMsgQ` 并先启动 MsgQ；框架不再根据实例服务标签猜测部署关系。
 
@@ -63,13 +84,7 @@ README 回答“怎么使用”，不记录施工步骤、逐轮进度或本机�
 ```go
 func NewApplication(config bee.Config, services ...bee.ServiceRegistration) (*bee.Server, error) {
 	return bee.New(config).
-		GeneratedData(data.DefaultTypeRegistry(), func(runtime bee.StorageReaders) {
-			data.RegisterStorageRuntime(runtime)
-		}).
-		Setup(func(runtime bee.Context) (func(), error) {
-			storage := runtime.Storage()
-			return db.Install(storage)
-		}).
+		GeneratedData(data.DefaultTypeRegistry(), nil).
 		Services(services...).
 		Build()
 }
@@ -166,7 +181,7 @@ func RenameRole(ctx context.Context, roleID int64, name string) error {
 	}
 
 	role.SetName(name)
-	if err := db.Save(role); err != nil {
+	if err := db.Save(ctx, role); err != nil {
 		return err
 	}
 	return nil
@@ -174,7 +189,7 @@ func RenameRole(ctx context.Context, roleID int64, name string) error {
 ```
 
 读取走默认 reader，写入走项目侧 facade。这样业务代码能清楚看到哪些操作会落地，避免“修改内存对象后自动保存”的隐式副作用。
-上例使用 `db.Save(role)`，表示保存数据对象当前主 Store 中记录的变更，并在保存成功后清空本轮脏标记。业务 facade 接收数据对象，内部再取 `role.Store()`，避免 handler 直接接触框架 Store。
+上例使用 `db.Save(ctx, role)`，表示保存数据对象当前主 Store 中记录的变更，并在保存成功后清空本轮脏标记。业务 facade 接收数据对象，内部再取 `role.Store()`，避免 handler 直接接触框架 Store。
 这类 facade 可以使用 `storage.StoreProvider[S]` 作为泛型约束，不需要反射或 `any`：
 
 ```go
@@ -286,7 +301,7 @@ if err != nil {
 
 return bee.New(base).
 	ConfigProvider(config.Framework).
-	GeneratedData(data.DefaultTypeRegistry(), data.RegisterStorageRuntime).
+	GeneratedData(data.DefaultTypeRegistry(), nil).
 	Services(gameService, msgqService, agentService).
 	Build()
 ```
@@ -1372,9 +1387,11 @@ Spec: ant.ServiceSpec{
 
 卸载可使用空闲策略，或在生命周期中使用 `Context.After/Post/Deactivate`。本地工作仍进入同一邮箱；不能在实体回调内同步等待自己 Post 的 Future。Type 显式空闲选项优先于运行时配置，无配置时保持常驻。Actor 卸载不等于 GD 淘汰或已刷盘，仍须遵守 `writeback.Manager.TryRelease` 的检查。
 
+Actor Ready 在工厂及上述初始化/激活回调全部成功后才成立，业务必备加载应在这些入口返回前完成；Handler 随后才开始消费邮箱。不新增业务手动置 Ready 或第二套 feature-ready。进程 Running、Actor Ready 与活动开放是不同事实，后者由业务维护。完整边界见 [Actor 初始化与就绪](docs/design.md#actor-初始化与就绪)。
+
 ### 数量配额与状态控制
 
-`CModActor()` 返回 `actor.Runtime`：保留 Messenger 的四种调用，并增加 `Probe`、`EnsureActivation`、`RetryActivation`。只发送消息的业务仍依赖较小的 Messenger / Caller。容量不再按 GD 字节估算，也不绑定 worldId 或要求 Kubernetes。
+`CModActor()` 返回 `actor.Runtime`，由业务调用 `Messenger` 与低频控制 `Controller` 组合。Controller 保留 `Probe`、`EnsureActivation`、`RetryActivation`；只管理启动加载时不必依赖业务发送接口。只发送消息的业务仍依赖 Messenger / Caller。容量不再按 GD 字节估算，也不绑定 worldId 或要求 Kubernetes。
 
 ```go
 // 独立大世界实例：全部本地 Type 共用一个稳定归属名额。
@@ -1411,9 +1428,22 @@ assignment 配额只能用于显式的一实体一槽位映射，不能把默认
 | --- | --- |
 | Probe | 只读权威归属与运行时元数据，不创建 assignment、不触发加载、不进入业务邮箱 |
 | EnsureActivation | 首次分配或复用归属，发起/共享加载并返回状态；不等待初始化完成、不自动重试已缓存失败 |
-| RetryActivation | 显式重试已结束失败；不替换正在加载或关闭的激活，不改变已有归属 |
+| RetryActivation | 清除已结束的失败再确保激活；无失败时等同 EnsureActivation，不替换正在加载或关闭的激活、不重投业务 |
+| actor.WaitReady(ctx, controller, id) | 只读等待 Ready；仅 Initializing 继续轮询，其余非 Ready 状态或查询错误立即结束，不自动激活或重试 |
+| ctx.Deactivate() | 请求关闭当前激活准入；不等待排空或清理，旧句柄不影响新激活，不删除 GD 或稳定归属 |
 
 状态有 Unloaded、Initializing、Ready、Closing、Failed。Unloaded 不证明业务实体不存在；Failed 的 Failure 保留错误码，可用 `errors.Is(..., txactor.ErrActivationDenied)` 分类。失败诊断最多缓存 1024 条、可被淘汰，不是持久存在性登记。控制调用非 nil error 时不得解释状态：容量不足、owner 离线或超时都不是“世界不存在”。控制查询由调用 Context 和 CallbackTimeout 限时，异步初始化仍无统一 deadline。状态快照不保证下一次业务调用一定成功。
+
+启动工作需要等待加载完成时，显式组合控制请求和等待；普通消息路径无需增加 Probe：
+
+```go
+actors := runtime.CModActor()
+id := cmd.WorldIdentity(worldID) // 示例工程生成的类型化身份。
+if _, err := actors.EnsureActivation(ctx, id); err != nil { return err }
+if err := txactor.WaitReady(ctx, actors, id); err != nil { return err }
+```
+
+`WaitReady` 每次探测间隔 20ms，调用方设置总期限；单次查询仍遵循原控制请求期限。取消或超时仅结束等待，不撤销已开始的初始化或清理；新上下文可以重新观察。Ready 是身份当前状态的快照，不是锁定某次激活的句柄，也不保证后续投递成功。不能在目标自身的初始化回调内等待自身 Ready，或在 Handler 内等待自身卸载完成。外部定向卸载及清理完成等待尚未提供；不通过轮询 Unloaded 声称某次激活已经安全清理。
 
 ### 两种调用路径
 
@@ -2160,7 +2190,7 @@ data.GDRoleResolveFieldName(field, change.FieldNameMsgpack) // "roleId"
 例如输出文档里的 `"Items.1001.Quantity"` 或 `"Tags.0"` 只是边界层为了 Redis/Mongo/Provider 生成的可读路径；
 Store 内部保存的是字段编号、map key 或 slice index 组成的结构化路径，不会在热路径上常驻这些拼接字符串。
 
-生成 `GD*` 只内联一个私有运行时状态指针。单纯 `data.NewGDRole()`、完整编解码或只读传递不会创建 Store；首次调用 setter、`Store()` 或 `BeginChange()` 时才按需创建 Store/snapshot sidecar。该细节由生成代码维护，业务仍只使用 `role.SetName(...)`、`db.Save(role)` 等高层 API。
+生成 `GD*` 只内联一个私有运行时状态指针。单纯 `data.NewGDRole()`、完整编解码或只读传递不会创建 Store；首次调用 setter、`Store()` 或 `BeginChange()` 时才按需创建 Store/snapshot sidecar。该细节由生成代码维护，业务仍只使用 `role.SetName(...)`、`db.Save(ctx, role)` 等高层 API。
 
 同步变更遍历、帧内合并、物理尺寸和 benchmark 方法属于维护者设计，见 [生成式变更内核](docs/design.md#生成式变更内核) 与 [性能分级与验证](docs/design.md#性能分级与验证)。
 
@@ -2221,7 +2251,7 @@ msgpackDoc, _ := role.Document(change.FieldNameMsgpack)
 ```
 
 JSON/BSON 命名文档只是高级文档构建结果，不是完整的 Redis patch 或 Mongo update document。正常持久化仍调用
-项目 facade，例如 `db.Save(role)`；Redis adapter 固定选择 JSON 名，Mongo adapter 固定选择 BSON 名，cmd
+项目 facade，例如 `db.Save(ctx, role)`；Redis adapter 固定选择 JSON 名，Mongo adapter 固定选择 BSON 名，cmd
 Provider 固定选择 Msgpack 名。
 
 ### Store 状态树与共享业务对象
@@ -2442,7 +2472,7 @@ err := role.Store().VisitChanges(change.VisitorFunc(
 ))
 ```
 
-普通业务不需要调用 `VisitChanges`；优先使用生成文档、cmd Provider 和项目 `db.Save(role)` facade。
+普通业务不需要调用 `VisitChanges`；优先使用生成文档、cmd Provider 和项目 `db.Save(ctx, role)` facade。
 
 ### 集合递归深度预算
 
@@ -2520,7 +2550,7 @@ if err := role.BeginChange(); err != nil {
 role.Name = "bob"
 role.Items[1001].Quantity = 7
 
-if err := db.SaveChange(role); err != nil {
+if err := db.SaveChange(ctx, role); err != nil {
 	return err
 }
 ```
@@ -2535,7 +2565,7 @@ if err := role.BeginChange(); err != nil {
 }
 role.Dress[0].Expire = 200
 
-if err := db.SaveChange(role); err != nil {
+if err := db.SaveChange(ctx, role); err != nil {
 	return err
 }
 // 输出边界：Set["Dress.0.Expire"] = int64(200)
@@ -2560,8 +2590,8 @@ if err := storage.Save(ctx, fusionDB, role.Store()); err != nil {
 ```
 
 `BeginChange/SaveChange` 和 Store 写入模式在同一个变更周期内互斥；`store.View(...)` 只同步捕获下行/广播
-StoreView，不参与持久化模式。业务项目通常会再包装一层 facade：Store 受控修改路径使用 `db.Save(role)`，快照差分
-路径使用 `db.SaveChange(role)`，避免 handler 直接传入 `ctx`、writer 或 Store，并保证两条路径都经过项目的存储健康闸门。
+StoreView，不参与持久化模式。业务项目通常会再包装一层 facade：Store 受控修改路径使用 `db.Save(ctx, role)`，快照差分
+路径使用 `db.SaveChange(ctx, role)`，沿用 handler 的 `ctx`，避免业务直接装配 writer 或 Store，并保证两条路径都经过项目的存储健康闸门。
 
 如果业务直接修改了字段，需要手动 `Touch*` 补标脏：
 
@@ -2755,7 +2785,7 @@ if errors.As(err, &deadlock) {
 
 ### 有状态落盘调度
 
-`txn.Runtime` 只执行 Procedure、锁、undo、savepoint、死锁检测和提交回调。它不持有 writer、缓存根对象或后台任务，也不向业务暴露脏目标。项目若选择有状态运行模型，应由 CMod 在启动期把一个 `writeback.Runtime` 绑定为 `txn.CommitParticipant`；`writeback.Manager` 是 tx 提供的默认实现。无状态业务继续在请求末尾调用项目封装的 `db.Save(role)`。
+`txn.Runtime` 只执行 Procedure、锁、undo、savepoint、死锁检测和提交回调。它不持有 writer、缓存根对象或后台任务，也不向业务暴露脏目标。项目若选择有状态运行模型，应由 CMod 在启动期把一个 `writeback.Runtime` 绑定为 `txn.CommitParticipant`；`writeback.Manager` 是 tx 提供的默认实现。无状态业务继续在请求末尾调用项目封装的 `db.Save(ctx, role)`。
 
 `writeback.Manager` 只管理提交身份、待刷根对象、代际隔离和延迟刷盘，不是完整的业务对象缓存。对象如何加载、查询、淘汰、分片以及建立业务索引由项目决定。项目需要扩展时应优先包装默认 Manager，复用已经验证的提交和刷盘规则，再在外层增加自己的对象缓存能力。
 
@@ -2967,7 +2997,7 @@ role.Store().AllTouch()
 普通请求链路建议使用项目 facade 自动清理：
 
 ```go
-if err := db.Save(role); err != nil {
+if err := db.Save(ctx, role); err != nil {
 	return err
 }
 ```
@@ -3025,7 +3055,7 @@ role.SetLordInfo(&data.GDLordInfo{Skills: []int32{1, 2}})
 role.ClearChanges()
 
 role.LordInfoStore().ClearSkills()
-if err := db.Save(role); err != nil {
+if err := db.Save(ctx, role); err != nil {
 	return err
 }
 
@@ -3123,7 +3153,7 @@ err := storage.Save(ctx, redisCluster, role.Store())
 
 ```go
 role.SetName("bob")
-if err := db.Save(role); err != nil {
+if err := db.Save(ctx, role); err != nil {
 	return err
 }
 ```
@@ -3873,7 +3903,7 @@ err = storage.Save(ctx, fusionStrategy, role.Store())
 
 ```go
 role.SetName("new-name")
-err := db.Save(role)
+err := db.Save(ctx, role)
 ```
 
 需要写测试时，可以用内存假实现，只实现最小接口：
@@ -3897,7 +3927,7 @@ Fusion 策略的当前保存路径：
 1. 业务变更记录在生成 Store 的字段槽、集合 key/index 和脏子节点索引中。
 2. Redis Lua patch 热数据、递增 `@v`，并把 main/subKey/`@v` 的 TTL 统一刷新为 `dirtyTTL`。
 3. `Strategy` 将 `TypeSpec + RecordKey` 登记到进程内 `DelayTaskDispatcher`；相同根记录只保留最新登记。
-4. Redis 热写与本地登记完成后，`db.Save(role)` 返回 `nil`，Store 清理本轮变更。
+4. Redis 热写与本地登记完成后，`db.Save(ctx, role)` 返回 `nil`，Store 清理本轮变更。
 5. 后台分发器把唯一一条延迟保存任务写入 Redis delayed task backend。
 6. 发布失败时输出结构化 error 日志，并按有上限的指数退避持续重试；成功后移除本地 pending。
 7. 正常关闭时，服务入口和 Actor Delivery 邮箱先完成排空，CModProcedure 的 WriteBack 组件再最终保存内存 Store，Fusion CMod 随后限时发布全部本地 pending，最后才取消根 `WaitGroupContext`。
@@ -3920,13 +3950,13 @@ Scheduler 循环中的 claim、complete、retry 等 backend 错误也会输出�
 
 ```go
 role.SetName("before-worker")
-if err := db.Save(role); err != nil {
+if err := db.Save(ctx, role); err != nil {
 	return err
 }
 
 // worker 已读取 before-worker，正在写 Mongo。
 role.SetName("during-worker")
-if err := db.Save(role); err != nil {
+if err := db.Save(ctx, role); err != nil {
 	return err
 }
 ```
@@ -3945,7 +3975,7 @@ err := queue.Enqueue(ctx, fusion.DelayedSave{
 })
 ```
 
-常规业务仍只调用 `db.Save(role)`；延迟保存任务由框架在 Redis 热写成功后生成。
+常规业务仍只调用 `db.Save(ctx, role)`；延迟保存任务由框架在 Redis 热写成功后生成。
 
 Redis 任务载荷会分别记录定位值的标量类型和十进制文本，claim 后恢复完全相同的 Go 动态类型。例如：
 
@@ -3980,7 +4010,7 @@ Fusion 热写在 Redis 同步写入并完成本地登记后返回，不等待 de
 
 ```go
 role.SetName("new-name")
-if err := db.Save(role); err != nil {
+if err := db.Save(ctx, role); err != nil {
 	// Redis 或 Mongo 暂时不可用：结束当前请求，由业务重试或返回错误码。
 	return err
 }
@@ -3993,7 +4023,7 @@ if err := db.Save(role); err != nil {
 
 ```go
 role.SetName("new-name")
-err := db.Save(role)
+err := db.Save(ctx, role)
 // errors.Is(err, runtime.ErrStorageUnavailable) == true
 // 本次不会继续写 Redis；role.Store() 的变更状态仍保留。
 
@@ -4086,7 +4116,7 @@ err := storage.Save(ctx, fusionStore, role.Store())
 
 ```go
 role.SetName("bob")
-err := db.Save(role)
+err := db.Save(ctx, role)
 // err == nil；Redis 中的新名字已经是本次业务提交结果。
 // 后台会输出 fusion delay task publish failed，并持续重试任务发布。
 ```
@@ -4239,7 +4269,7 @@ Fusion 业务删除必须在数据里定义状态字段：
 
 ```go
 role.SetDeleted(true)
-err := db.Save(role)
+err := db.Save(ctx, role)
 ```
 
 框架不会替业务决定逻辑删除字段，也不会把 `delayDelTime` 解释成 Mongo 删除时间。
@@ -4248,7 +4278,7 @@ err := db.Save(role)
 
 ```go
 role.ItemsStore().Delete(1001)
-err := db.Save(role)
+err := db.Save(ctx, role)
 ```
 
 这会删除 `GDRole.Items[1001]` 并保存根记录，不会删除整条 `GDRole`。
@@ -4276,8 +4306,8 @@ go test ./tests -run 'Test(RedisVersionKey|RedisConditionalTTL|RedisCollectionEl
 
 ### 读取不到数据
 
-- 确认生成包已经调用 `RegisterStorageRuntime` 或对应的 `SetDefault*Reader`。
-- 确认 `@storage.mode` 与实际注册的 reader 匹配；Fusion 类型默认读 Fusion reader，Redis 类型默认读 Redis reader，Mongo 类型默认读 Mongo reader。
+- 确认项目已在启动时绑定 GD 访问入口且启用了对应 CMod；低层显式 ctx 查询须使用有效 Provider。示例应用不使用全局默认 Reader 回退。
+- 确认 `@storage.mode` 与所属服务已装配的 reader 匹配；Fusion 类型默认读 Fusion reader，Redis 类型默认读 Redis reader，Mongo 类型默认读 Mongo reader。
 - 确认 `idField` 和 `routeBy` 使用 Go 字段名，例如 `RoleId`，不是 `roleId`、`_id` 或 msgpack 名。
 - 如果 `routeBy != idField`，确认调用的是带 route 字段参数的 helper，或手动构造了带 `ShardKey` 的 `RecordKey`。
 - Fusion 从 Mongo 回填 Redis 时优先使用正数 `delayDelTime`；未配置或配置为 `-1` 时使用 `dirtyTTL`，不会生成永久 key。
@@ -4375,7 +4405,7 @@ R3 隔离测试进一步覆盖单节点故障期间的新发布和耗尽恢复�
 
 Login 的 HTTP 协议、渠道认证、选服、建角策略和票据签发由项目完整维护。tx 不提供固定业务字段的 Login SPI。
 Agent 通过项目 IdentityResolver 验证不透明握手数据；账号、分服、借号与建角资格由项目 Claims 承载，框架不解释。
-`Claims` 在 Go 中使用不可变 string 保存字节，内部 protobuf 使用 bytes，可传递非 UTF-8 数据。认证时编码一次，普通上行不增加业务解码。
+`Claims` 在 Go 中使用不可变 string 保存字节，内部 protobuf 使用 bytes，可传递非 UTF-8 数据。认证时编码一次，普通上行不增加业务解码。可靠任务的 JSON 信封由 tx 将 `Delivery.Identity.Claims` 编码为标准 Base64，消费时恢复原始字节；业务不需要额外转换，空 Claims 和无身份任务仍受支持。
 本次 Actor 身份协议不支持新旧版本混跑；部署时协调升级 Agent 与业务服务。项目票据 JSON 和客户端帧未改变。
 
 ### Mongo 版本条件替换
@@ -4383,3 +4413,5 @@ Agent 通过项目 IdentityResolver 验证不透明握手数据；账号、分�
 Bee/Ant 的 `CModMongoStorage()` 暴露 `ReadDocumentVersion` 和 `ReplaceDocumentAtVersion`。先读取版本，再读取完整文档，最后以原版本条件替换；明确的 `mongo.ErrVersionConflict` 表示需要重新读取并重新判断业务条件，不能直接拿新版本覆盖旧快照。两个方法沿用存储路由与健康准入。
 
 该能力不提供多文档事务，也不定义账号、建角、服务器目录或合服规则；这些规则由项目维护。网络错误不能证明条件写未提交，调用方应从持久化状态恢复，而不是盲目重试业务操作。
+
+服务上下文的统一 Actor、Reader、Writer、Procedure 和业务 Redis 入口见 [运行时访问](docs/runtime-access.md)。CMod 由服务显式声明，框架不从 GD 注解推导。

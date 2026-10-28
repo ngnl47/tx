@@ -81,6 +81,7 @@ func WithSetup(setup func(Context) (cleanup func(), err error)) Option {
 type Server struct {
 	config Config
 
+	servicePhases  map[string]*servicePhase
 	services       []Service
 	cmods          []CMod
 	configProvider CModConfigProvider
@@ -134,7 +135,7 @@ func (server *Server) Run(ctx context.Context, options RunOptions) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	startErr := server.Start(context.WithoutCancel(ctx), options)
+	startErr := server.Start(ctx, options)
 	if startErr != nil && !errors.Is(startErr, errStopDeferred) {
 		return startErr
 	}
@@ -161,9 +162,12 @@ func (server *Server) Run(ctx context.Context, options RunOptions) error {
 	}
 }
 
-// Start 装配框架资源并启动选中的服务。传入 context 的值会被保留，但取消信号会被刻意分离；
-// Run 负责控制关闭顺序，确保已接受工作排空后再取消全局 WaitGroupContext。
+// Start 装配框架资源并启动选中的服务；启动钩子遵守调用方的取消信号。
+// 托管后台任务另用脱离取消的生命周期，关闭时先排空已接受工作再取消。
 func (server *Server) Start(ctx context.Context, options RunOptions) (err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if server == nil {
 		return errors.New("framework: server is nil")
 	}
@@ -248,6 +252,14 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 		},
 	}
 	server.mu.Lock()
+	runtime.serviceAccess = make(map[string]*runtimeAccess, len(selected))
+	runtime.servicePhases = make(map[string]*servicePhase, len(selected))
+	server.servicePhases = runtime.servicePhases
+	for _, service := range selected {
+		spec := service.Spec()
+		runtime.serviceAccess[spec.Name] = newRuntimeAccess(runtime, spec)
+		runtime.servicePhases[spec.Name] = &servicePhase{}
+	}
 	server.runtime = runtime
 	server.mu.Unlock()
 
@@ -277,7 +289,7 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 	}
 	host := newServiceHost(registry, runtime)
 	server.host = host
-	if err := host.startServices(selected); err != nil {
+	if err := host.initServices(selected); err != nil {
 		return err
 	}
 	if runtime.rpc != nil {
@@ -293,11 +305,16 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 			return fmt.Errorf("framework: mark discovery running: %w", err)
 		}
 	}
-	if err := server.startTaskConsumer(root); err != nil {
+	runtime.setInstanceStatus(discovery.StatusRunning)
+	if err := host.startServices(ctx); err != nil {
 		return err
 	}
 	runtime.enableSessionIDs()
-	runtime.setInstanceStatus(discovery.StatusRunning)
+	host.openServices()
+	// 任务只能在服务开放后领取，避免启动窗口消耗有限投递次数。
+	if err := server.startTaskConsumer(root); err != nil {
+		return err
+	}
 	txlog.Info(
 		"server started successfully",
 		"app", server.config.AppID,
@@ -342,6 +359,9 @@ func (server *Server) Context() Context {
 
 func (server *Server) clearRuntimeLocked() {
 	server.started = false
+	if server.runtime != nil {
+		server.runtime.accessClosed.Store(true)
+	}
 	server.runtime = nil
 	server.host = nil
 	server.cmodHost = nil

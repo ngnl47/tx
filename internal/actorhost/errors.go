@@ -3,6 +3,7 @@ package actorhost
 import (
 	"errors"
 	"fmt"
+	"github.com/ngnl47/tx/lifecycle"
 )
 
 // RemoteError 保留业务错误码；框架拒绝仍可用 errors.Is 分类。
@@ -18,7 +19,7 @@ func (e *RemoteError) Error() string {
 func (e *RemoteError) ErrorCode() int32 { return e.Code }
 func (e *RemoteError) Is(target error) bool {
 	switch target {
-	case ErrActivationDenied, ErrDeactivated, ErrMailboxFull, ErrDraining, ErrPanicked, ErrNotOwner, ErrCapacity:
+	case ErrActivationDenied, ErrDeactivated, ErrMailboxFull, ErrDraining, ErrPanicked, ErrNotOwner, ErrCapacity, lifecycle.ErrNotReady:
 		return e.Kind == target.Error()
 	}
 	return false
@@ -29,7 +30,7 @@ func RemoteErrorFrom(err error) *RemoteError {
 		return &copy
 	}
 	failure := &RemoteError{Code: -1, Message: err.Error()}
-	for _, kind := range []error{ErrActivationDenied, ErrDeactivated, ErrMailboxFull, ErrDraining, ErrPanicked, ErrNotOwner, ErrCapacity} {
+	for _, kind := range []error{ErrActivationDenied, ErrDeactivated, ErrMailboxFull, ErrDraining, ErrPanicked, ErrNotOwner, ErrCapacity, lifecycle.ErrNotReady} {
 		if errors.Is(err, kind) {
 			failure.Kind = kind.Error()
 			if kind != ErrPanicked {

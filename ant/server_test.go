@@ -161,6 +161,6 @@ func (kernel *sessionIDContextKernel) SessionIDs() sessionid.Allocator {
 
 type serviceFunc func(context.Context) error
 
-func (service serviceFunc) Start(ctx context.Context) error {
+func (service serviceFunc) Init(ctx context.Context) error {
 	return service(ctx)
 }

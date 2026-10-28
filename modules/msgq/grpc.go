@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ngnl47/tx/lifecycle"
 	txlog "github.com/ngnl47/tx/log"
 	txmetrics "github.com/ngnl47/tx/metrics"
 	msgqpb "github.com/ngnl47/tx/modules/msgq/pb"
@@ -55,6 +56,9 @@ func (s *mailboxService) PubRole(ctx context.Context, request *msgqpb.PubRoleReq
 }
 
 func (s *mailboxService) MailboxStream(stream grpc.BidiStreamingServer[msgqpb.MailboxStreamRequest, msgqpb.MailboxStreamResponse]) error {
+	if err := s.mailbox.checkStartup(); err != nil {
+		return mailboxStatusError(err)
+	}
 	type incoming struct {
 		request *msgqpb.MailboxStreamRequest
 		err     error
@@ -210,6 +214,9 @@ func (s *mailboxService) MailboxStream(stream grpc.BidiStreamingServer[msgqpb.Ma
 }
 
 func (s *mailboxService) PublishStream(stream grpc.BidiStreamingServer[msgqpb.PublishRequest, msgqpb.PublishRoleRejection]) error {
+	if err := s.mailbox.checkStartup(); err != nil {
+		return mailboxStatusError(err)
+	}
 	for {
 		request, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
@@ -337,7 +344,7 @@ func mailboxStatusError(err error) error {
 		return status.Error(codes.Aborted, err.Error())
 	case errors.Is(err, ErrDownMsgOverflow):
 		return status.Error(codes.ResourceExhausted, err.Error())
-	case errors.Is(err, ErrRouteUnavailable):
+	case errors.Is(err, ErrRouteUnavailable), errors.Is(err, lifecycle.ErrNotReady):
 		return status.Error(codes.Unavailable, err.Error())
 	case errors.Is(err, ErrServerNil), errors.Is(err, ErrSessionStoreNil), errors.Is(err, ErrLifecycleNil):
 		return status.Error(codes.FailedPrecondition, err.Error())

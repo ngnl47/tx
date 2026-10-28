@@ -32,7 +32,7 @@ func TestCapabilityFailureRollsBackStartedService(t *testing.T) {
 
 type capabilityTestService struct{ stopped *bool }
 
-func (*capabilityTestService) Start(context.Context) error  { return nil }
+func (*capabilityTestService) Init(context.Context) error   { return nil }
 func (s *capabilityTestService) Stop(context.Context) error { *s.stopped = true; return nil }
 
 // Setup/CMod 边界只转换能力错误，继续使用既有的逆序清理。
@@ -99,5 +99,5 @@ func TestServiceFactoryBusinessPanicIsNotConverted(t *testing.T) {
 		}
 	}()
 	adapter := serviceAdapter{registration: ServiceRegistration{Spec: ServiceSpec{Name: "game"}, Factory: func(Context) (Service, error) { panic(marker) }}}
-	_ = adapter.Start(nil)
+	_ = adapter.Init(nil)
 }

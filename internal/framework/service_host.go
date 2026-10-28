@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	txruntime "github.com/ngnl47/tx/runtime"
 	"sync"
 
 	"github.com/ngnl47/tx/lifecycle"
@@ -20,8 +21,10 @@ type serviceHost struct {
 
 type startedService struct {
 	service Service
+	access  *runtimeAccess
 	ingress *lifecycle.Ingress
 	tasks   *lifecycle.ChildWaitGroupContext
+	phase   *servicePhase
 }
 
 func newServiceHost(registry *registry, runtime *runtime) *serviceHost {
@@ -33,10 +36,17 @@ func (host *serviceHost) start(names []string) error {
 	if err != nil {
 		return err
 	}
-	return host.startServices(services)
+	if err := host.initServices(services); err != nil {
+		return err
+	}
+	if err := host.startServices(context.Background()); err != nil {
+		return err
+	}
+	host.openServices()
+	return nil
 }
 
-func (host *serviceHost) startServices(services []Service) error {
+func (host *serviceHost) initServices(services []Service) error {
 	if host == nil || host.runtime == nil || host.runtime.lifecycle == nil {
 		return errors.New("framework: runtime lifecycle is not configured")
 	}
@@ -52,20 +62,60 @@ func (host *serviceHost) startServices(services []Service) error {
 				return host.rollbackStart(fmt.Errorf("framework: service %q requires unavailable CMod %q", spec.Name, required))
 			}
 		}
+		phase := host.runtime.servicePhases[spec.Name]
+		if phase == nil {
+			phase = &servicePhase{}
+		}
+		phase.set(lifecycle.ServiceInitializing, nil)
 		ingress := lifecycle.NewIngress(host.runtime.lifecycle)
 		tasks := lifecycle.NewChildWaitGroupContext(host.runtime.lifecycle)
-		current := startedService{service: service, ingress: ingress, tasks: tasks}
-		serviceTasks := taskAccess{Context: tasks, root: tasks.WaitGroupContext}
-		if err := service.Start(newServiceContextWithTasks(host.runtime, ingress, serviceTasks)); err != nil {
-			startErr := fmt.Errorf("framework: start service %q: %w", spec.Name, err)
+		current := startedService{phase: phase, service: service, ingress: ingress, tasks: tasks, access: host.runtime.serviceAccess[spec.Name]}
+		serviceTasks := taskAccess{Context: txruntime.Bind(tasks, host.runtime.serviceAccess[spec.Name]), root: tasks.WaitGroupContext}
+		admission := lifecycle.AdmissionFunc(func() (func(), error) {
+			if phase.snapshot().State != lifecycle.ServiceRunning {
+				return nil, lifecycle.ErrNotReady
+			}
+			return ingress.Enter()
+		})
+		if err := service.Init(newServiceContextWithTasks(host.runtime, admission, serviceTasks)); err != nil {
+			phase.set(lifecycle.ServiceInitializing, err)
+			startErr := fmt.Errorf("framework: initialize service %q: %w", spec.Name, err)
 			if stopErr := rollbackService(context.Background(), current); stopErr != nil {
 				startErr = errors.Join(startErr, stopErr)
 			}
 			return host.rollbackStart(startErr)
 		}
+		phase.set(lifecycle.ServiceInitialized, nil)
 		host.started = append(host.started, current)
 	}
 	return nil
+}
+
+func (host *serviceHost) startServices(ctx context.Context) error {
+	host.mu.Lock()
+	services := append([]startedService(nil), host.started...)
+	host.mu.Unlock()
+	for _, current := range services {
+		current.phase.set(lifecycle.ServiceStarting, nil)
+		var err error
+		if starter, ok := current.service.(Starter); ok {
+			err = starter.Start(serviceCallbackContext(ctx, current))
+		}
+		if err != nil {
+			current.phase.set(lifecycle.ServiceStarting, err)
+			return fmt.Errorf("framework: start service %q: %w", current.service.Spec().Name, err)
+		}
+	}
+	return nil
+}
+
+// openServices 在全部启动钩子成功、会话分配就绪后统一开放业务。
+func (host *serviceHost) openServices() {
+	host.mu.Lock()
+	defer host.mu.Unlock()
+	for _, current := range host.started {
+		current.phase.set(lifecycle.ServiceRunning, nil)
+	}
 }
 
 func (host *serviceHost) rollbackStart(startErr error) error {
@@ -86,6 +136,7 @@ func (host *serviceHost) beginDrain() {
 	host.mu.Lock()
 	defer host.mu.Unlock()
 	for _, service := range host.started {
+		service.phase.set(lifecycle.ServiceDraining, nil)
 		service.ingress.BeginDrain()
 	}
 }
@@ -115,11 +166,13 @@ func (host *serviceHost) drain(ctx context.Context) error {
 
 	var errs []error
 	for index := len(services) - 1; index >= 0; index-- {
+		services[index].phase.set(lifecycle.ServiceDraining, nil)
 		services[index].ingress.BeginDrain()
 	}
 	for index := len(services) - 1; index >= 0; index-- {
 		if drainer, ok := services[index].service.(Drainer); ok {
-			if err := drainer.Drain(ctx); err != nil {
+			if err := drainer.Drain(serviceCallbackContext(ctx, services[index])); err != nil {
+				services[index].phase.set(lifecycle.ServiceDraining, err)
 				errs = append(errs, fmt.Errorf("framework: drain service %q: %w", services[index].service.Spec().Name, err))
 			}
 		}
@@ -139,6 +192,7 @@ func waitServiceIngress(ctx context.Context, services []startedService) error {
 	var errs []error
 	for index := len(services) - 1; index >= 0; index-- {
 		if err := services[index].ingress.WaitContext(ctx); err != nil {
+			services[index].phase.set(lifecycle.ServiceDraining, err)
 			errs = append(errs, fmt.Errorf(
 				"framework: drain service %q with pending %d: %w",
 				services[index].service.Spec().Name,
@@ -200,13 +254,29 @@ func rollbackService(ctx context.Context, current startedService) error {
 	return err
 }
 
-func stopServiceResources(ctx context.Context, current startedService, operation string) error {
+func stopServiceResources(ctx context.Context, current startedService, operation string) (err error) {
+	current.phase.set(lifecycle.ServiceDraining, nil)
+	defer func() {
+		if err == nil {
+			current.phase.set(lifecycle.ServiceStopped, nil)
+		} else {
+			current.phase.set(lifecycle.ServiceDraining, err)
+		}
+	}()
 	stopper, ok := current.service.(Stopper)
 	if !ok {
 		return nil
 	}
-	if err := stopper.Stop(ctx); err != nil {
+	if err := stopper.Stop(serviceCallbackContext(ctx, current)); err != nil {
 		return fmt.Errorf("framework: %s service %q: %w", operation, current.service.Spec().Name, err)
 	}
 	return nil
+}
+
+// 关闭等待使用调用方时限，能力仍来自被关闭服务，避免串用调用方的作用域。
+func serviceCallbackContext(ctx context.Context, current startedService) context.Context {
+	if current.access == nil {
+		return ctx
+	}
+	return txruntime.Bind(ctx, current.access)
 }

@@ -36,7 +36,7 @@ type taskAccess struct {
 }
 
 func (access taskAccess) Go(task func(context.Context)) error {
-	return access.root.Go(task)
+	return access.root.Go(func(context.Context) { task(access.Context) })
 }
 
 type storageAccess struct{ storage *storageRuntime }

@@ -137,22 +137,11 @@ func TestServiceHostRollbackStopsResourcesBeforeWaitingForTasks(t *testing.T) {
 func TestServiceHostDrainWaitsForAcceptedWork(t *testing.T) {
 	root := lifecycle.NewWaitGroupContext(context.Background())
 	runtime := &runtime{lifecycle: root}
-	started := make(chan struct{})
+	var admission lifecycle.Admission
 	release := make(chan struct{})
 	registry, err := newRegistry(testService{
-		spec: Spec{Name: "agent"},
-		start: func(runtime Context) error {
-			done, err := runtime.Admission().Enter()
-			if err != nil {
-				return err
-			}
-			close(started)
-			go func() {
-				<-release
-				done()
-			}()
-			return nil
-		},
+		spec:  Spec{Name: "agent"},
+		start: func(runtime Context) error { admission = runtime.Admission(); return nil },
 	})
 	if err != nil {
 		t.Fatalf("newRegistry returned error: %v", err)
@@ -161,7 +150,11 @@ func TestServiceHostDrainWaitsForAcceptedWork(t *testing.T) {
 	if err := host.start([]string{"agent"}); err != nil {
 		t.Fatalf("start returned error: %v", err)
 	}
-	<-started
+	done, err := admission.Enter()
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { <-release; done() }()
 
 	drained := make(chan error, 1)
 	go func() { drained <- host.drain(context.Background()) }()
@@ -184,13 +177,12 @@ func TestServiceHostDrainWaitsForAcceptedWork(t *testing.T) {
 func TestServiceHostDrainTimeoutReportsServiceAndPendingWork(t *testing.T) {
 	root := lifecycle.NewWaitGroupContext(context.Background())
 	runtime := &runtime{lifecycle: root}
-	var done func()
+	var admission lifecycle.Admission
 	registry, err := newRegistry(testService{
 		spec: Spec{Name: "game"},
 		start: func(runtime Context) error {
-			var enterErr error
-			done, enterErr = runtime.Admission().Enter()
-			return enterErr
+			admission = runtime.Admission()
+			return nil
 		},
 	})
 	if err != nil {
@@ -199,6 +191,10 @@ func TestServiceHostDrainTimeoutReportsServiceAndPendingWork(t *testing.T) {
 	host := newServiceHost(registry, runtime)
 	if err := host.start([]string{"game"}); err != nil {
 		t.Fatalf("start returned error: %v", err)
+	}
+	done, err := admission.Enter()
+	if err != nil {
+		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
 	defer cancel()
@@ -215,14 +211,13 @@ func TestServiceHostDrainTimeoutReportsServiceAndPendingWork(t *testing.T) {
 func TestServiceHostDrainCanWaitAgainAfterTimeout(t *testing.T) {
 	root := lifecycle.NewWaitGroupContext(context.Background())
 	runtime := &runtime{lifecycle: root}
-	var done func()
+	var admission lifecycle.Admission
 	drainCalls := 0
 	registry, err := newRegistry(testService{
 		spec: Spec{Name: "game"},
 		start: func(runtime Context) error {
-			var enterErr error
-			done, enterErr = runtime.Admission().Enter()
-			return enterErr
+			admission = runtime.Admission()
+			return nil
 		},
 		drain: func(context.Context) error {
 			drainCalls++
@@ -235,6 +230,10 @@ func TestServiceHostDrainCanWaitAgainAfterTimeout(t *testing.T) {
 	host := newServiceHost(registry, runtime)
 	if err := host.start([]string{"game"}); err != nil {
 		t.Fatalf("start returned error: %v", err)
+	}
+	done, err := admission.Enter()
+	if err != nil {
+		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
 	err = host.drain(ctx)
@@ -263,11 +262,11 @@ type pointerTestService struct{}
 
 func (*pointerTestService) Spec() Spec { return Spec{Name: "pointer-test"} }
 
-func (*pointerTestService) Start(Context) error { return nil }
+func (*pointerTestService) Init(Context) error { return nil }
 
 func (service testService) Spec() Spec { return service.spec }
 
-func (service testService) Start(runtime Context) error {
+func (service testService) Init(runtime Context) error {
 	if service.start == nil {
 		return nil
 	}

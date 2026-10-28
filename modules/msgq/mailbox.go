@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ngnl47/tx/lifecycle"
 	txlog "github.com/ngnl47/tx/log"
 	txmetrics "github.com/ngnl47/tx/metrics"
 )
@@ -22,6 +23,8 @@ const (
 // Server 在本进程维护客户端会话与未确认下行消息。
 // Redis 保存角色归属租约和精确会话归属，不保存下行编码载荷。
 type Server struct {
+	startupAdmission             lifecycle.Admission
+	startupOpened                atomic.Bool
 	instanceID                   string
 	store                        SessionStore
 	maxBacklogMessages           int
@@ -46,6 +49,8 @@ type Server struct {
 
 // ServerOptions 配置会话邮箱服务。
 type ServerOptions struct {
+	// StartupAdmission 在首次业务请求时检查启动准入；不替代邮箱的排水和停止协议。
+	StartupAdmission   lifecycle.Admission
 	InstanceID         string
 	Store              SessionStore
 	MaxBacklogMessages int
@@ -160,6 +165,7 @@ func NewServer(options ServerOptions) (*Server, error) {
 		leaseRefreshInterval = provider.leaseRefreshInterval()
 	}
 	return &Server{
+		startupAdmission:             options.StartupAdmission,
 		instanceID:                   options.InstanceID,
 		store:                        options.Store,
 		maxBacklogMessages:           options.MaxBacklogMessages,
@@ -178,6 +184,9 @@ func NewServer(options ServerOptions) (*Server, error) {
 func (s *Server) Init(ctx context.Context, request InitRequest) error {
 	if s == nil {
 		return ErrServerNil
+	}
+	if err := s.checkStartup(); err != nil {
+		return err
 	}
 	if err := request.Header.validateConnection(); err != nil || request.Ack < 0 || (!request.Restore && request.Ack != 0) {
 		return ErrInvalidHeader
@@ -324,6 +333,9 @@ func (s *Server) PubSession(ctx context.Context, sessionID int64, payload []byte
 	}()
 	if s == nil {
 		return PubResult{}, ErrServerNil
+	}
+	if err := s.checkStartup(); err != nil {
+		return PubResult{}, err
 	}
 	if sessionID <= 0 {
 		return PubResult{}, ErrInvalidHeader
@@ -552,6 +564,9 @@ func (s *Server) Topics(ctx context.Context, request TopicRequest) (TopicsResult
 func (s *Server) BroadcastTopic(ctx context.Context, request BroadcastTopicRequest) (BroadcastResult, error) {
 	if s == nil {
 		return BroadcastResult{}, ErrServerNil
+	}
+	if err := s.checkStartup(); err != nil {
+		return BroadcastResult{}, err
 	}
 	if !validValue(request.Topic) {
 		return BroadcastResult{}, ErrInvalidTopic
@@ -896,6 +911,9 @@ func (s *Server) topicSnapshot(topic string) []*mailboxSession {
 func (s *Server) touch(ctx context.Context, header SessionHeader) (*mailboxSession, error) {
 	if s == nil {
 		return nil, ErrServerNil
+	}
+	if err := s.checkStartup(); err != nil {
+		return nil, err
 	}
 	if err := header.validateConnection(); err != nil {
 		return nil, err

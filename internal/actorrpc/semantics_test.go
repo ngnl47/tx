@@ -11,6 +11,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/ngnl47/tx/internal/actorhost"
+	txactor "github.com/ngnl47/tx/modules/actor"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 )
 
@@ -223,6 +224,12 @@ func TestNATSFutureAndRuntimeProbe(t *testing.T) {
 		if err != nil || status.State != actorhost.Initializing {
 			t.Fatalf("%+v %v", status, err)
 		}
+		wait, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+		err = txactor.WaitReady(wait, transportController{caller, target.Instance}, target.Identity)
+		cancel()
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("等待就绪必须受调用方期限约束: %v", err)
+		}
 		futures = append(futures, f)
 	}
 	close(load)
@@ -231,6 +238,11 @@ func TestNATSFutureAndRuntimeProbe(t *testing.T) {
 	status, err = a.Probe(ctx, target)
 	if err != nil || status.State != actorhost.Ready {
 		t.Fatalf("忙碌实体探测: %+v %v", status, err)
+	}
+	for _, caller := range []*NATSTransport{a, b} {
+		if err := txactor.WaitReady(ctx, transportController{caller, target.Instance}, target.Identity); err != nil {
+			t.Fatalf("此前等待超时不能撤销加载: %v", err)
+		}
 	}
 	close(execute)
 	releases[1] = true
@@ -255,4 +267,20 @@ func TestNATSFutureAndRuntimeProbe(t *testing.T) {
 	if err = a.Tell(context.Background(), actorhost.Target{Instance: "absent", Identity: actorhost.Identity{Type: "role", ID: "offline"}}, &actorpb.Delivery{MessageType: "reward"}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// 使用同一控制契约验证本地直调及 NATS 跨实例探测。
+type transportController struct {
+	transport *NATSTransport
+	instance  string
+}
+
+func (c transportController) Probe(ctx context.Context, id txactor.Identity) (txactor.ActivationStatus, error) {
+	return c.transport.Probe(ctx, actorhost.Target{Instance: c.instance, Identity: id})
+}
+func (c transportController) EnsureActivation(ctx context.Context, id txactor.Identity) (txactor.ActivationStatus, error) {
+	return c.transport.EnsureActivation(ctx, actorhost.Target{Instance: c.instance, Identity: id})
+}
+func (c transportController) RetryActivation(ctx context.Context, id txactor.Identity) (txactor.ActivationStatus, error) {
+	return c.transport.RetryActivation(ctx, actorhost.Target{Instance: c.instance, Identity: id})
 }

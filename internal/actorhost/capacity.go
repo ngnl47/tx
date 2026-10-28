@@ -68,7 +68,8 @@ func (r *Runtime) EnsureActivation(id Identity) (ActivationStatus, error) {
 	return r.statusLocked(id), err
 }
 
-// RetryActivation 仅清除已结束激活的失败记录；关闭中的旧激活不会被替换。
+// RetryActivation 清除已结束激活的失败记录后确保加载；没有失败时等同 EnsureActivation。
+// 正在初始化或关闭的旧激活不会被替换，也不重投原业务消息。
 func (r *Runtime) RetryActivation(id Identity) (ActivationStatus, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

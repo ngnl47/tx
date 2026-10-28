@@ -73,7 +73,7 @@ func TestServiceDrainCallbackFailureCanBeRetried(t *testing.T) {
 	want := errors.New("drain temporarily unavailable")
 	root := lifecycle.NewWaitGroupContext(context.Background())
 	defer root.Cancel()
-	host := &serviceHost{started: []startedService{{ingress: lifecycle.NewIngress(root), service: testService{
+	host := &serviceHost{started: []startedService{{phase: &servicePhase{}, ingress: lifecycle.NewIngress(root), service: testService{
 		spec: Spec{Name: "game"},
 		drain: func(context.Context) error {
 			calls++

@@ -2,8 +2,10 @@ package msgqservice
 
 import (
 	"context"
+	"errors"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/ngnl47/tx/lifecycle"
@@ -14,6 +16,7 @@ import (
 )
 
 func TestServiceStartsWithExplicitDependencies(t *testing.T) {
+	var ready atomic.Bool
 	root := lifecycle.NewWaitGroupContext(context.Background())
 	defer func() {
 		root.Cancel()
@@ -27,6 +30,12 @@ func TestServiceStartsWithExplicitDependencies(t *testing.T) {
 		Store:              newMemoryStore(),
 		MaxBacklogMessages: 4,
 	}, Dependencies{
+		StartupAdmission: lifecycle.AdmissionFunc(func() (func(), error) {
+			if !ready.Load() {
+				return nil, lifecycle.ErrNotReady
+			}
+			return func() {}, nil
+		}),
 		Tasks:    root,
 		RPC:      host,
 		Instance: discovery.Instance{ID: "msgq-1"},
@@ -41,6 +50,14 @@ func TestServiceStartsWithExplicitDependencies(t *testing.T) {
 		t.Fatalf("SessionClient returned error: %v", err)
 	}
 	header := txmsgq.SessionHeader{RoleID: 1, SessionID: 2, ConnectionID: 3}
+	local, err := service.SessionClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := local.Init(t.Context(), txmsgq.InitRequest{Header: header}); !errors.Is(err, lifecycle.ErrNotReady) {
+		t.Fatalf("装配期间创建了邮箱: %v", err)
+	}
+	ready.Store(true)
 	if err := service.mailbox.Init(context.Background(), txmsgq.InitRequest{Header: header}); err != nil {
 		t.Fatalf("Init returned error: %v", err)
 	}

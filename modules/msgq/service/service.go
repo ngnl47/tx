@@ -21,6 +21,8 @@ import (
 
 // Dependencies 是 msgq 启动所需的最小基础能力集合。
 type Dependencies struct {
+	// StartupAdmission 阻止服务启动完成前建立邮箱或接收业务；不接管邮箱排水。
+	StartupAdmission lifecycle.Admission
 	// Tasks 托管邮箱清理等后台任务。
 	Tasks lifecycle.Tasks
 	// RPC 注册 MailboxService；RPC Host 的监听生命周期仍由外层框架持有。
@@ -85,6 +87,7 @@ func (service *Service) Start(context.Context) error {
 		}
 	}
 	mailbox, err := txmsgq.NewServer(txmsgq.ServerOptions{
+		StartupAdmission:             service.dependencies.StartupAdmission,
 		InstanceID:                   instanceID,
 		Store:                        store,
 		MaxBacklogMessages:           service.options.MaxBacklogMessages,

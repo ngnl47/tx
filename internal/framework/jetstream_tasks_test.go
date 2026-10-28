@@ -216,6 +216,8 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 	go func() { done <- executeTrialTask(ctx, access, msg) }()
 	select {
 	case <-entered:
+	case err := <-done:
+		t.Fatalf("任务在进入业务前结束: %v", err)
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}

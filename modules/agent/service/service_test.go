@@ -58,7 +58,7 @@ func TestServiceStartsWithExplicitDependenciesAndLocalMsgQ(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
 	}
-	if err := service.Start(context.Background()); err != nil {
+	if err := service.Init(context.Background()); err != nil {
 		t.Fatalf("Start returned error: %v", err)
 	}
 	if service.TCPAddress() == "" {

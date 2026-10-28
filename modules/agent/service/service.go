@@ -85,8 +85,8 @@ func New(options Options, dependencies Dependencies) (*Service, error) {
 	return &Service{options: options, dependencies: dependencies}, nil
 }
 
-// Start 解析会话路由并启动 TCP、WebSocket 入口。
-func (service *Service) Start(context.Context) error {
+// Init 解析会话路由并启动 TCP、WebSocket 入口。
+func (service *Service) Init(context.Context) error {
 	if service == nil {
 		return fmt.Errorf("agent service: service is nil")
 	}

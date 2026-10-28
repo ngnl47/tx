@@ -22,9 +22,13 @@ type Spec struct {
 type Service interface {
 	// Spec 返回服务的稳定身份和能力依赖，不得创建资源或启动 goroutine。
 	Spec() Spec
-	// Start 在依赖能力就绪后启动服务。
-	Start(Context) error
+	// Init 在依赖能力就绪后装配模块与 Handler，尚不开放业务入口。
+	Init(Context) error
 }
+
+// Starter 在全部服务初始化、通信入口就绪后执行必备启动工作。
+// 返回成功才开放本服务业务入口；控制面可在此加载并等待 Actor Ready。
+type Starter interface{ Start(context.Context) error }
 
 // Drainer 让服务停止接受新的外部工作。
 type Drainer interface {
@@ -33,7 +37,7 @@ type Drainer interface {
 }
 
 // Stopper 释放服务持有的资源。
-// Stop 必须幂等，并能清理由失败的 Start 留下的部分资源。
+// Stop 必须幂等，并能清理由失败的 Init/Start 留下的部分资源。
 type Stopper interface {
 	// Stop 释放服务持有的资源。
 	Stop(context.Context) error

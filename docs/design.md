@@ -150,7 +150,7 @@ Redis / Mongo / etcd / gRPC / Actor
 
 - 是无状态游戏服务的生产工程组织方式和集成验证模板。
 - 读取 yml、环境变量和命令行参数，构造具体 client 与实例配置。
-- 提供 `db.Save(role)` 之类业务 facade。
+- 提供 `db.Save(ctx, role)` 之类业务 facade。
 - 以 `services/*` 组织 L4 微服务；服务专属 Handler、路由、Actor 和业务模块随所属 Service 放置。
 - `server/internal` 只保存进程级组合根、配置转换和基础设施 facade，不作为业务代码汇总包。
 
@@ -169,7 +169,7 @@ Redis / Mongo / etcd / gRPC / Actor
 
 多进程真实集群是项目层验收，不改变依赖方向：`txgame + txclient` 与 `txgameslg + txclientslg` 是并行能力，允许在本地顺序执行并复用入口端口；Redis 通过不同 logical database 隔离，MongoDB 使用不同 database，etcd 使用不同 prefix。每套验收同时运行两个 MsgQ，使用新会话验证初始分流、单实例故障承接和重启后恢复分流；证据按 `<prefix>:session:v2:{SessionID}` 读取完整 binding，并核对其中的 RoleID、SessionID、ConnectionID 与实例身份。Topic 仍只属于单个 owner MsgQ，跨实例覆盖由业务以 SessionID 为锚点分别发起本地广播。`tx` 不为隔离统一改写业务 key，也不保存项目服务名。
 
-两个模板的业务模块按稳定能力、领域实现和事务编排分层：`modules/*_service.go` 使用包级函数提供 Handler 与 Procedure
+两个模板的业务模块按稳定能力、领域实现和事务编排分层：`modules/<业务>.go` 使用包级函数提供 Handler 与 Procedure
 共用的业务能力，`modules/internal/<domain>` 保存具体领域实现，`services/<name>/internal/procedure/P*.go` 负责编排
 所属 L4 Service 的本机事务。业务能力不持有无状态 Service 实例，不判断当前事务层级，也不负责最终刷盘。
 
@@ -210,7 +210,7 @@ YAML 属于 txgame/txgameslg 的组合根，tx 只接收类型化配置，不读
 
 | 层级 | 面向对象 | 示例 | 约束 |
 | --- | --- | --- | --- |
-| 业务层 | handler 和业务模块 | `db.Save(role)` | 不暴露 writer、Store、RecordKey 和根 context |
+| 业务层 | handler 和业务模块 | `db.Save(ctx, role)` | 不暴露 writer、Store、RecordKey 和根 context |
 | 扩展层 | 项目装配和 adapter | `storage.Save(ctx, writer, role.Store())` | 显式表达存储依赖和生命周期 |
 | 内核层 | 框架维护者和高级扩展 | `VisitChanges`、`txn.WithLocks` | 调用方必须理解所有权和并发契约 |
 
@@ -228,7 +228,7 @@ ServiceSpec、CMod 和基础 Context；同名 API 具有相同签名和生命周
 | --- | --- | --- | --- |
 | `Tasks()` | Bee/Ant | 注册本服务后台任务、读取取消信号 | 每个 Service 独立子生命周期，`Cancel/Wait` 在私有装配内核 |
 | `Admission()` | Bee/Ant | 登记和封口本服务外部入口 | 进程排水顺序在 Service Host |
-| `Storage()` | Bee/Ant | 仅供项目组合根安装 mode-aware 业务 facade | client、健康状态、worker 和 Close 在存储 Runtime |
+| `Storage()` | Bee/Ant | 为装配及低层扩展提供存储能力；普通业务沿用调用 context | client、健康状态、worker 和 Close 在存储 Runtime |
 | `CModRedisStorage()` | Bee/Ant | 取得仅允许 Redis TypeSpec 的 reader/writer 和具名命令接口 | 连接池所有权在存储 Runtime |
 | `CModMongoStorage()` | Bee/Ant | 取得仅允许 MongoDB TypeSpec 的 reader/writer、条件回填、版本条件替换和原子 CounterStore | 连接池所有权在存储 Runtime |
 | `CModFusionStorage()` | Bee/Ant | 取得仅允许 Fusion TypeSpec 的 reader/writer | Redis、Mongo 和延迟任务所有权在存储 Runtime |
@@ -244,8 +244,8 @@ Context 对生命周期、目录替换和刷盘能力返回专用 wrapper，调�
 `Cancel`、`Stop`、`Shutdown`、`Replace` 或 `Flush`。槽位读取另以 SlotReader 声明编译期职责，不承诺类型断言隔离。`Context.Instance()` 返回 ownership-safe 的本地实例快照，
 状态顺序固定为 `starting -> running -> draining -> stopping`。
 
-普通 Handler 不应保存 Bee/Ant Context。项目组合根通过 `Builder.Setup` 把 `Storage()` 包装成 `db.Save(role)` 等业务
-facade；Service 和 CMod Factory 只在构造期间取得自己通过 `Requires` 声明的窄能力。Redis、MongoDB、Fusion 三类
+普通 Handler 不保存 Bee/Ant Context。项目的 `db.Save(ctx, role)` facade 通过 `tx/runtime.Writer(ctx)` 获取当前服务能力；
+生成的 `FindGD*(ctx, ...)` 按存储注解选择当前服务 Reader，不安装进程全局默认运行时。Service 通过 `Requires` 显式声明能力，Init 一次装配宿主资源。Redis、MongoDB、Fusion 三类
 存储 accessor 的 reader 方法集互不重叠，writer 也会在第一次 I/O 前校验 `TypeSpec.Storage.Mode`，不能借进程内其他
 Service 已选择的后端跨越能力边界。业务需要直接使用 Redis 命令时使用 `CModRedisStorage()`；
 槽位创建和晋升由组合根显式注入完整 `SlotStore`，不从只读 `CModSlots()` 断言取得写能力，
@@ -1856,7 +1856,7 @@ WriteBackManager 不绑定固定持久化目标。CModProcedure 启动期向项�
 
 | 服务形态 | L3 CMod | WriteBackManager Writer | 提交成功边界 |
 | --- | --- | --- | --- |
-| 无状态请求服务 | Fusion，不选择 CModProcedure | 无 WriteBackManager；业务调用 `db.Save(role)` | Redis 热写和本地延迟任务登记成功 |
+| 无状态请求服务 | Fusion，不选择 CModProcedure | 无 WriteBackManager；示例业务调用启动绑定的 `db.Save(role)` | Redis 热写和本地延迟任务登记成功 |
 | 有状态逻辑服 | Fusion、CModProcedure | mode-aware Fusion Writer | Procedure 只提交内存；帧 Flush 成功写入 Fusion 后清理 Store |
 | 有状态大世界 | Mongo、CModProcedure | tx Mongo 版本条件增量更新 | Procedure 只提交内存；帧 Flush 直接写 Mongo 成功后清理 Store |
 
@@ -1979,7 +1979,7 @@ composition root：注册生成数据、安装 `db` facade、注入身份解析/
 `runtime.lifecycle.drainTimeout` 属于所有 L4 服务共享的进程生命周期配置，不由某个 CMod 或服务启用。入口等待与 Fusion 本地 pending 排空分别使用这项单阶段上限，零值使用 5 分钟默认值；txgame 模板显式配置该值，便于发布环境审阅。
 
 每个 `ServiceRegistration` 用 `ServiceSpec` 声明稳定名称与框架能力依赖，并在 Factory 中取得受控 Context、构造 Service；
-`Service.Start(context.Context)` 只启动本服务资源。Context 只暴露消费能力，不暴露进程资源所有权；普通业务 Handler 应使用项目 facade。
+`Service.Init(context.Context)` 装配本服务资源与 Handler；可选 `ServiceStarter.Start(context.Context)` 在进程通信就绪后完成必备加载，全部启动工作成功后统一开放业务准入。Context 只暴露消费能力，不暴露进程资源所有权；普通业务 Handler 应使用项目 facade。
 服务启动失败时先清理失败服务自身的部分资源，再按已启动顺序逆序回滚。回滚会先取消 Service Tasks，再调用幂等
 `Stop` 解除 listener 等资源阻塞，最后等待任务退出；正常退出因 Drain 已先封口入口，顺序固定为：
 
@@ -2047,6 +2047,9 @@ Login、Agent、MsgQ、Game 是基础组合中的四类逻辑服务，可以同�
 MsgQ 是客户端会话邮箱，正文保存在实例内存中；它不承担 JetStream 的持久化业务任务职责。**直连上下行是所有业务服务共同遵守的边界**：新增实体服务只需接入相同的上行分派与下行发布能力，不因此增加 broker 跳数。可靠任务触发了客户端通知时，任务消费之后的通知仍走业务服务→MsgQ→Agent 的直连下行链路。
 
 #### 实体扩展层与可靠任务
+
+可靠任务的 JSON 序列化边界位于 `internal/taskqueue.Task`。Claims 的运行期契约仍为承载任意字节的不可变 string，任务持久化时使用标准 Base64，解码后恢复为原始字节；不能直接按 JSON 文本解释。序列化复制身份快照，不改动发布者对象，损坏的 Base64 返回错误。Actor protobuf、业务身份 API 和任务完成/ACK 契约保持不变。
+
 
 增加 SLGWorld、FightRoom、公会或匹配等服务池时，项目声明实体类型、路由键、业务加载与生命周期策略；tx 维护身份到槽位/实例的解析、容量准入、邮箱及排水，NATS 承担向已选定实例传输消息。订阅不取代 tx 的权威归属，也不把实体随机分配给 Queue Group 中任一消费者。
 
@@ -2402,6 +2405,16 @@ NATS 不决定实体归属，也不按实体创建订阅。首次缺少 assignme
 
 ServiceSpec.ActorTypes 构成应用目录，Type 名称应用内唯一；仅选中服务执行本地工厂。CModActor 依赖 RPC 和 Discovery，绑定共享接收入口与 NATS，服务 ready 后才发布 running。连接和关闭权限在框架内，业务通过 CModActor 或 CModActorDirect 的窄接口使用。
 
+### Actor 初始化与就绪
+
+子服务阶段、Actor 控制入口与业务模块复用边界见 [生命周期设计](service-actor-lifecycle.md)。ServiceState、Controller 和 WaitReady 已接入；项目模块已统一为启动绑定的 Access，远端卸载 API 未提供。
+
+Actor 的 Ready 是工厂及初始化、激活回调全部成功后的状态，包含项目在这些入口中等待完成的必备业务初始化；不是仅表示框架分配了邮箱。顺序为归属与数量准入、Initializing、工厂、OnInitAfter、OnActivateBefore、OnActivateAfter、Ready、业务邮箱消费。初始化中已接纳的消息在有界邮箱等待，不提前执行 Handler。
+
+必备内容及“可进入条件”由项目定义；可选预热不阻塞 Ready，但后台工作须有项目自己的错误和收尾管理。活动开启、赛季资格等业务状态不加入框架生命周期；不增加 feature-ready 或手动 MarkReady。EnsureActivation 只发起或复用加载并返回当前状态，项目需要时通过 actor.WaitReady 只读等待；进程 Running 不等于目标 Actor Ready。失败、等待超时和未加载均不能解释为业务实体不存在。
+
+项目可以通过启动参数指定业务 Actor ID，并复用归属控制与激活入口，但不得以业务 ID 替代物理 InstanceID 或绕过已有 owner。Service.Init 完成装配后启动 RPC/控制监听并发布进程 Running，随后执行可选的 Service.Start。该阶段允许控制加载与 Probe，普通消息仍拒绝；全部启动钩子成功后才进入子服务 Running。具体示例及待接入项见 [Actor 生命周期与 World 启动边界](../../txgameslg/docs/actor_lifecycle.md)。
+
 ### Actor mailbox
 
 Tell 完成寻址后，同 Runtime InstanceID 直接进入本地邮箱，跨实例提交 NATS 客户端；TellAccepted 同实例确认邮箱接纳，跨实例确认到达当前连接的 NATS 服务端，不确认业务执行或持久化。本地路径保留消息副本及邮箱准入、容量和排水检查，不等待初始化或业务执行；准入错误立即返回，异步执行错误记录日志。不承诺多发送方或混合传输的全局顺序。可靠任务仍先持久发布到 JetStream，消费后才按归属调用 Actor。CallFuture 返回异步 Future，Call 同步等待相同结果。等待超时不撤销已接受业务，也不自动重投。普通业务结果必须有 MessageType；无响应体的成功处理使用 `Result.Completed=true`，不得同时携带 MessageType、CommandHash 或 Payload；Agent 上行通过直连 `CallStream` 单向投递，不等待逐项邮箱确认，业务下行独立走 MsgQ。
@@ -2697,3 +2710,7 @@ Actor Call 的成功表示 Handler 方法成功返回，不隐含等待该方法
 `actor.Identity{Type string, ID string}` 描述逻辑实体；`actor.Type`、`NewType` 与 `ServiceSpec.ActorTypes` 声明其行为和归属。`Type` 在应用内唯一，`ID` 在该类型内唯一，物理进程仍使用 InstanceID。`Int64ID`、`Uint64ID`、`StringID` 保留 i:/u:/s: 编码；默认分区仍按原 ID 字节 xxhash64 对 1024 取模，持久槽位布局不变。Redis key、RouteKey 和任务类别不属于本次改名。
 
 内部 NATS 与 JetStream 任务载荷中的身份 JSON 同步使用 Type/ID，生成调用方与服务端需要配套更新，不支持新旧身份字段混用。升级前停止旧任务发布并排空旧版本任务（包括等待重试项），不能把未完成任务直接交给新版本；有存量时须另行安排离线迁移，不能仅滚动替换程序。gRPC 目标字段保留原 protobuf 编号。更改实际 Type 值属于新实体类型，不能按 API 改名理解为旧槽位自动迁移。
+
+## 运行时访问边界
+
+基建统一入口与作用域生命周期见 [runtime-access.md](runtime-access.md)。框架显式上下文由接收端服务绑定，跨 RPC 不传播调用方运行时；项目可通过 Setup 的 Context.Runtime() 绑定本进程能力，封装无 ctx 的普通业务入口。排水期间有效，最终关闭后失效。业务模块单例、缓存和事务范围仍归项目。

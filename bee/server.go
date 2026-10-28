@@ -3,6 +3,7 @@ package bee
 import (
 	"context"
 	"errors"
+	"github.com/ngnl47/tx/lifecycle"
 
 	framework "github.com/ngnl47/tx/internal/framework"
 )
@@ -50,4 +51,12 @@ func (server *Server) Stop(ctx context.Context) error {
 		return errors.New("bee: server is nil")
 	}
 	return server.kernel.Stop(ctx)
+}
+
+// ServiceStatus 查询选中服务的阶段；停止后仍保留失败信息。
+func (server *Server) ServiceStatus(name string) (lifecycle.ServiceStatus, bool) {
+	if server == nil || server.kernel == nil {
+		return lifecycle.ServiceStatus{}, false
+	}
+	return server.kernel.ServiceStatus(name)
 }

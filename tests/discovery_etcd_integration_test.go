@@ -460,7 +460,7 @@ func (service *frameworkDiscoveryIdentityService) Spec() framework.Spec {
 	return framework.Spec{Name: service.name, Requires: []framework.CModID{framework.CModDiscovery}}
 }
 
-func (service *frameworkDiscoveryIdentityService) Start(ctx framework.Context) error {
+func (service *frameworkDiscoveryIdentityService) Init(ctx framework.Context) error {
 	service.instanceID = ctx.Instance().ID
 	return nil
 }

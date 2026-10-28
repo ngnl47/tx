@@ -14,6 +14,7 @@ import (
 	"github.com/ngnl47/tx/modules/discovery"
 	txrpc "github.com/ngnl47/tx/modules/rpc"
 	"github.com/ngnl47/tx/modules/txn"
+	txruntime "github.com/ngnl47/tx/runtime"
 	"github.com/ngnl47/tx/sessionid"
 	txstorage "github.com/ngnl47/tx/storage"
 	txmongo "github.com/ngnl47/tx/storage/mongo"
@@ -69,6 +70,8 @@ type FusionStorage interface {
 // 能力直接返回；未声明、不可用或在 Validate 阶段读取时由框架报告装配错误。
 // Service、Setup 和 CMod 构造边界将能力错误转为启动错误，普通业务 panic 不被吞掉。
 type Context interface {
+	// Runtime 返回可在启动装配中绑定的能力；Setup 使用本进程已启用能力，服务保留 Requires 边界。
+	Runtime() txruntime.Provider
 	// AppID 返回当前应用的稳定集群标识。
 	AppID() string
 	// Instance 返回当前进程已注册的实例快照。
@@ -413,4 +416,25 @@ func (view mongoStorageView) ReadDocumentVersion(ctx context.Context, spec meta.
 // ReplaceDocumentAtVersion 只在基线未改变时替换 Mongo 文档。
 func (view mongoStorageView) ReplaceDocumentAtVersion(ctx context.Context, spec meta.TypeSpec, key txstorage.RecordKey, doc map[string]any, version txstorage.DocumentVersion) error {
 	return view.storage.ReplaceDocumentAtVersion(ctx, spec, key, doc, version)
+}
+
+// Runtime 将当前装配边界绑定为稳定能力入口，资源所有权仍归进程。
+func (view *contextView) Runtime() txruntime.Provider {
+	if view == nil || view.kernel == nil || view.validating {
+		panic(framework.CapabilityError{Err: fmt.Errorf("runtime binding is unavailable during validation or without a kernel")})
+	}
+	kernel, ok := view.kernel.(interface {
+		RuntimeAccess(string, []framework.CModID) txruntime.Provider
+	})
+	if !ok {
+		panic(framework.CapabilityError{Err: fmt.Errorf("runtime binding is unavailable")})
+	}
+	var ids []framework.CModID
+	if view.allowed != nil {
+		ids = make([]framework.CModID, 0, len(view.allowed))
+		for id := range view.allowed {
+			ids = append(ids, toFrameworkCModID(id))
+		}
+	}
+	return kernel.RuntimeAccess(view.ownerName(), ids)
 }

@@ -238,8 +238,8 @@ type cmodServiceFake struct {
 	spec Spec
 }
 
-func (fake cmodServiceFake) Spec() Spec     { return fake.spec }
-func (cmodServiceFake) Start(Context) error { return nil }
+func (fake cmodServiceFake) Spec() Spec    { return fake.spec }
+func (cmodServiceFake) Init(Context) error { return nil }
 
 type cmodConditionalServiceFake struct {
 	spec  Spec
@@ -247,8 +247,8 @@ type cmodConditionalServiceFake struct {
 	calls int
 }
 
-func (fake *cmodConditionalServiceFake) Spec() Spec     { return fake.spec }
-func (*cmodConditionalServiceFake) Start(Context) error { return nil }
+func (fake *cmodConditionalServiceFake) Spec() Spec    { return fake.spec }
+func (*cmodConditionalServiceFake) Init(Context) error { return nil }
 
 func (fake *cmodConditionalServiceFake) RequiredCMods(ServiceSelection) ([]CModID, error) {
 	fake.calls++

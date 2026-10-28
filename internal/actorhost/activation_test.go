@@ -78,6 +78,9 @@ func TestActivationProbeAndCapacity(t *testing.T) {
 		if r.Probe(id).State != Initializing || loads.Load() != 1 {
 			t.Fatal("初始化中的探测不能排队或重复加载")
 		}
+		if state, err := r.RetryActivation(id); err != nil || state.State != Initializing || loads.Load() != 1 {
+			t.Fatalf("重试不能替换正在加载的激活: %+v %v", state, err)
+		}
 		if _, err := r.EnsureActivation(other); !errors.Is(err, ErrCapacity) {
 			t.Fatal(err)
 		}
@@ -99,6 +102,9 @@ func TestActivationProbeAndCapacity(t *testing.T) {
 		synctest.Wait()
 		if r.Probe(id).State != Closing || r.ActivationUsage().Actors != 1 {
 			t.Fatal("清理完成前归还了预算")
+		}
+		if state, err := r.RetryActivation(id); err != nil || state.State != Closing || loads.Load() != 1 {
+			t.Fatalf("重试不能绕过清理: %+v %v", state, err)
 		}
 		close(cleanup)
 		synctest.Wait()

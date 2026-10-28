@@ -204,6 +204,9 @@ func (server *Server) finishWork(ctx context.Context, drain bool) error {
 		errs = append(errs, err)
 	}
 	if !ready {
+		if host != nil {
+			host.beginDrain()
+		}
 		if err := server.drainTaskConsumer(ctx); err != nil && !fatal {
 			return errors.Join(errStopDeferred, err)
 		}

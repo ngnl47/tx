@@ -11,6 +11,7 @@ import (
 	"github.com/ngnl47/tx/modules/discovery"
 	txrpc "github.com/ngnl47/tx/modules/rpc"
 	"github.com/ngnl47/tx/modules/txn"
+	txruntime "github.com/ngnl47/tx/runtime"
 	"github.com/ngnl47/tx/sessionid"
 	txstorage "github.com/ngnl47/tx/storage"
 	txmongo "github.com/ngnl47/tx/storage/mongo"
@@ -65,6 +66,8 @@ type Advanced interface {
 // Context 是传递给选中服务的稳定能力视图，并隔离资源所有权。
 // 它可以执行业务工作，但返回的模块契约均不包含进程启动或停止权限。
 type Context interface {
+	// RuntimeAccess 返回启动绑定使用的能力视图；nil 表示进程已启用能力，空切片表示未声明能力。
+	RuntimeAccess(string, []CModID) txruntime.Provider
 	// TaskQueue 返回持久任务发布入口，未启用时为 nil。
 	TaskQueue() tasks.Publisher
 	// AppID 返回当前应用的稳定集群标识。

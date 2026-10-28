@@ -97,13 +97,13 @@ func (builder *Builder) ConfigProvider(provider CModConfigProvider) *Builder {
 	return builder
 }
 
-// GeneratedData 接入 txgen 生成的类型注册表和读取器绑定函数。
+// GeneratedData 登记类型元数据；bind 可为空，普通业务使用服务上下文的 Reader。
 func (builder *Builder) GeneratedData(types fusion.TypeRegistry, bind func(StorageReaders)) *Builder {
 	if builder == nil {
 		return nil
 	}
-	if types == nil || bind == nil {
-		builder.errs = append(builder.errs, errors.New("ant: generated data registry and binding are required"))
+	if types == nil {
+		builder.errs = append(builder.errs, errors.New("ant: generated data registry is required"))
 	} else {
 		builder.types = types
 		builder.bindStorage = bind
@@ -144,7 +144,9 @@ func (builder *Builder) Build() (*Server, error) {
 	}
 	if builder.types != nil {
 		options = append(options, framework.WithGeneratedData(builder.types, func(readers framework.StorageReaders) {
-			builder.bindStorage(adaptStorageReaders(readers))
+			if builder.bindStorage != nil {
+				builder.bindStorage(adaptStorageReaders(readers))
+			}
 		}))
 	}
 	for _, setup := range builder.setups {
