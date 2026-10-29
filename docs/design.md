@@ -30,7 +30,7 @@
 
 ## 设计目标
 
-正式宿主的交接准备由 `Server.PrepareHandoff` 复用关闭前半段：停止准入、等待已接受工作和业务任务、按组件逆序冲刷，成功后保留通信和租约。最终 Stop 才释放物理资源；两者串行共享已有组件收尾进度。控制面的 StateDrained 仅表示入口排水完成，不能单独作为槽位晋升许可。
+正式宿主的交接准备由 `Server.PrepareHandoff` 复用关闭前半段：停止准入、等待已接受工作和业务任务、调用可选 ServiceFlusher.Flush、按组件逆序冲刷，成功后保留通信和租约。最终 Stop 才释放物理资源；两者串行共享已有组件收尾进度。控制面的 StateDrained 仅表示入口排水完成，不能单独作为槽位晋升许可。
 
 `tx` 的最高优先级不是“所有路径都最快”，而是以下顺序：
 
@@ -157,7 +157,7 @@ Redis / Mongo / etcd / gRPC / Actor
 `txgameslg`：
 
 - 是有状态 SLG/MMO 服务的独立生产模板，不依赖 `txgame`。
-- 使用 Actor 作为运行期权威对象的唯一串行命令入口，使用 Procedure 和 WriteBackManager 管理单机事务与分帧保存；对象的实际缓存结构由项目 SPI 决定。
+- 使用 Actor 作为运行期权威对象的唯一串行命令入口，使用 Procedure 和 WriteBackManager 管理单机事务与分帧保存；对象的唯一缓存与使用期由通用 EntityCache 管理，业务决定是否使用 Procedure。
 - `slggame` 通过 Fusion 保存角色、军团等根对象；`slgworld` 通过 带所有权保护的 Mongo 直接写回 保存分区场景数据。
 - 只依赖 `tx`、`txgen` 及自身生成产物；配置、服务组合、业务 SPI 和测试均在本项目闭环。
 
@@ -230,7 +230,7 @@ ServiceSpec、CMod 和基础 Context；同名 API 具有相同签名和生命周
 | `Admission()` | Bee/Ant | 登记和封口本服务外部入口 | 进程排水顺序在 Service Host |
 | `Storage()` | Bee/Ant | 为装配及低层扩展提供存储能力；普通业务沿用调用 context | client、健康状态、worker 和 Close 在存储 Runtime |
 | `CModRedisStorage()` | Bee/Ant | 取得仅允许 Redis TypeSpec 的 reader/writer 和具名命令接口 | 连接池所有权在存储 Runtime |
-| `CModMongoStorage()` | Bee/Ant | 取得仅允许 MongoDB TypeSpec 的 reader/writer、条件回填、版本条件替换和原子 CounterStore | 连接池所有权在存储 Runtime |
+| `CModMongoStorage()` | Bee/Ant | 取得 MongoDB reader/writer、条件回填、版本条件替换、原子 CounterStore 和复用连接的原生 Database | 连接池所有权在存储 Runtime |
 | `CModFusionStorage()` | Bee/Ant | 取得仅允许 Fusion TypeSpec 的 reader/writer | Redis、Mongo 和延迟任务所有权在存储 Runtime |
 | `CModRPC()` | Bee/Ant | 注册 protobuf service、取得按服务/实例路由的生成客户端入口 | Host 与客户端连接均由框架管理 |
 | `CModDiscovery()` | Bee/Ant | 查询 running 或指定实例快照 | watch 与 Replace 在 discovery Runtime |
@@ -1152,11 +1152,11 @@ RecordKey 不等于事务 LockKey：
 - `DocumentReplacer`：完整替换文档。
 - `DocumentBackfiller`：仅在目标不存在时原子回填文档，并显式报告是否插入。
 - `mongo.CounterStore`：按 routeType 和稳定分片键，为调用方指定 collection/key 原子增加 size，返回新上界。
-- `DeleteApplier`：Redis-only、Mongo-only adapter 的整记录删除能力。
+- `DeleteApplier`：Redis、Mongo adapter 及 Fusion 策略的整记录删除能力。
 - `RecordLocker`：记录级互斥。
 - `RecordRevisionReader` / `RevisionDeleteApplier`：版本保护删除。
 
-Redis 与 Mongo adapter 通过组合这些接口表达单后端能力；Fusion 组合读、写、回填和延迟回写能力，但不实现 `DeleteApplier`。公共 API 可以保持 `storage.Save`，而不是暴露 `ApplyInsert/ApplyUpdate/ApplyReplace` 组合给业务。
+Redis 与 Mongo adapter 通过组合这些接口表达单后端能力；Fusion 组合读、写、回填、延迟回写和可恢复删除能力。公共 API 可以保持 `storage.Save`，而不是暴露 `ApplyInsert/ApplyUpdate/ApplyReplace` 组合给业务。
 
 Mongo 条件回填使用单条 `$setOnInsert + upsert`；匹配现有文档时只报告 `inserted=false`，不能改写字段。
 CounterStore 不定义业务 collection、计数键或号段缓存；驱动每次以 majority 写关注执行单条 `findOneAndUpdate`，
@@ -1168,7 +1168,9 @@ SessionID 不消费此原语。
 单字段唯一索引；否则 adapter 在写入前拒绝调用。仅有复合唯一索引不能保证按单个业务主键并发创建时唯一。
 物理 `_id` 自带唯一性，但只用于存储结构完全确定的特殊模型。
 
-Fusion 根记录代表玩家、军团等长期身份数据。Redis 与 Mongo 无法在一次原子事务中共同物理删除；任一侧成功、另一侧失败，都可能导致旧 Mongo 回填 Redis、旧 Redis 延迟回写 Mongo，或调用成功但数据丢失。因此框架在生成期和类型系统中禁止 Fusion 根记录物理删除，业务使用显式状态字段完成逻辑删除。该限制只作用于整条根记录，不影响 `ItemsStore().Delete(key)` 这类集合元素变更。
+Fusion 物理删除复用记录锁：先在 Redis 主文档持久保留删除标记并登记既有延迟任务，再删除 Mongo，最后删除 Redis 标记。正常查询含字段投影及批量读取均识别标记，不回源旧文档；旧更新不能覆盖标记。失败返回错误，已登记任务或再次 Remove 重试；已完成删除的旧任务为空操作，同 ID 重建后旧任务读取当前文档。冷数据回填在同一记录锁内读取 Mongo，不能把锁外旧快照回填成新对象。
+
+这不是 Redis/Mongo 原子事务。沿用 Fusion 的进程内任务登记成功边界：登记到持久任务队列之前进程异常退出仍存在恢复缺口；不增加 WAL 或跨存储事务承诺。业务仍可选择状态字段做逻辑删除。
 
 ### 保存成功边界
 
@@ -1608,44 +1610,22 @@ type Procedure interface {
 `Locks` 只声明当前 Procedure 直接访问的锁，不要求父过程展开全部子过程。一次根调用：
 
 ```text
-根 Procedure.Locks
-      |
-      v
-校验、排序、去重根直接锁集
-      |
-      v
-按顺序获取精确 Key 锁
-      |
-      v
-校验 pending 变更契约
-      |
-      v
-创建 Tx 并绑定 Store undo recorder
-      |
-      v
-Process
-  |
-  +-- tx.Call(child)
-  |       |
-  |       +-- child.Locks：复用已持有锁，获取新的直接锁
-  |       +-- 为 child 建立 savepoint
-  |       +-- child 失败只回滚到 savepoint
-  |
-  +-- 根 error：反向 undo
-  +-- 根 success：丢弃 undo
-             |
-             v
-      解除全部 Store recorder
-             |
-             v
-      反向释放根与动态锁
-             |
-             v
-      AfterRollback / AfterCommit
+根 Procedure.Locks：声明已有根对象
+└─ 校验锁集并预留 WriteBack 容量
+   └─ 获取精确 Key 锁，派生事务 ctx，绑定 Store undo recorder
+      └─ Process
+         ├─ tx.Call(child)：复用/增加锁，建立 savepoint
+         │  └─ child error：undo 并撤销该范围的新对象预留
+         ├─ db.Create：动态锁定新根，预留唯一缓存身份及首次写回容量
+         ├─ 根 error/panic：undo，撤销新对象占位，解除 recorder 和锁
+         └─ 根 success：验证创建身份未变
+            ├─ 持锁登记首次写回、发布缓存对象、提交普通写回预留
+            ├─ 丢弃 undo，解除 recorder，释放全部锁
+            └─ 执行业务 AfterCommit（已经不在事务内）
 ```
 
 AfterCommit 在释放数据锁后执行。它不能回滚已经提交的内存状态；需要可靠投递时应使用项目选择的 outbox 或可靠消息队列。
-Procedure 可能在死锁受害者重试中再次执行，因此对象字段应只保存不可变输入，外部 I/O 和消息投递必须登记到 `AfterCommit`。
+Procedure 可能在死锁受害者重试中再次执行，因此对象字段应只保存不可变输入，不可撤销的外部写入和消息投递必须登记到 `AfterCommit`。
 
 ### LockKey 与 LockTarget
 
@@ -1689,6 +1669,7 @@ Store setter 在绑定 recorder 时先登记反向操作，再修改当前数据
 
 ```go
 type savepoint struct {
+    creations     int
     undos         int
     afterCommit   int
     afterRollback int
@@ -1698,6 +1679,53 @@ type savepoint struct {
 子调用失败时，从 undo 尾部反向执行到 savepoint，并截断该调用注册的回调。根调用失败则回滚到空 savepoint。
 
 事务内必须使用传入锁目标对应的同一个 Store 实例。否则 undo recorder 与实际修改对象不一致，框架会拒绝子 Procedure 的 Store 绑定。动态 Store 在锁获取和 Runtime 容量预留成功后才绑定 recorder；若 child 尚未执行就失败，新锁可以立即释放，不会产生半绑定状态。
+
+### 统一 GD 实体访问
+
+`gen/config.yml` 的 `data.entityCache` 是生成期选项，缺省 false；txgame 为 false，txgameslg 为 true。少数独占根用 `@noEntityCache` 排除。运行期只有共享回收预算，不设置第二个缓存启停开关，也不登记逐 GD 的缓存。根 Store 文件内生成描述与 Snapshot，启用时增加 `entity_access.go`。缓存按描述与完整 `RecordKey` 区分身份；组合子服务共享同一应用的缓存，不同应用运行时独立。
+
+```text
+普通只读操作
+  -> data.SnapshotGD*(ctx, 完整主键...)
+  -> EntityCache 取得使用权 -> 等待同一记录锁
+  -> 深复制当前内存字段 -> 释放锁和使用权 -> 返回独立对象
+
+Procedure.Call(ctx, procedure)
+  -> data.FindGD*(tx.Context(), id)
+  -> 缓存使用权 -> Enlist：记录锁 / 写回预留 / undo
+  -> Store 修改，或 db.Create / db.Remove
+  -> 成功：发布创建或隐藏删除 -> WriteBack 待刷
+  -> 失败：撤销修改、创建占位与删除
+  -> 锁释放、提交/回滚回调结束 -> 释放使用权
+
+WriteBack / 缓存回收
+  -> 同一记录锁 -> 写入存储或检查干净状态
+  -> 失败：保留 pending 与原对象 -> 后续 Flush / 排水重试
+```
+
+共享可变 GD 只能在有效 Procedure 中取得；无事务完整 Find 在加载前返回 `entitycache.ErrProcedureRequired`，失效事务返回 `txn.ErrInactive`。启用缓存的持久根必须显式声明 `@transaction`，生成期缺少声明直接报错；不会为 Handler 隐式开启事务。对象和子对象引用只可在当前事务内使用，不得长期保存在 Actor/后台任务中。缓存内部互斥锁只保护元数据，等待记录锁、复制字段或访问存储时不持有它。取消信号不能提前释放仍在执行事务的使用权。
+
+`SnapshotGD*` 读取缓存中的最新值，包含尚未写回的提交；在有效事务内复用 Find 与现有锁，可读到本事务修改。复制不携带 Store、tracker、事务状态，调用方可自行修改副本但不能用它 Save/Remove 原实体。普通快照每条记录一致，不保证多条快照处于同一时刻。创建中身份仅对所属事务可见；其他读取返回 `ErrCreating`；提交删除后不再返回对象，持久化失败也不重新暴露旧对象。
+
+完整批量 Find、FindObjects 与查询别名复用同一受控单条入口。字段投影、FindObject、显式 Reader 的 Load* 是独立的**存储快照**，看不到未落盘缓存修改，不是共享对象的第二个写入口；投影与 FindObject 在 Procedure 内拒绝。Mongo 原生入口同样不参与缓存与事务。底层存储接口用于适配器和明确独占路径，不得旁路修改正在受管的同一记录。
+
+共享根禁止直接 `db.Save/SaveChange`；Create/Remove 必须在有效 Procedure 中，删除还校验原对象身份。创建允许先给临时对象赋初值，接纳后不得改变记录键和锁身份。失败首次写回保留 pending，结果未知不能自动认领已有记录；删除失败由 WriteBack 的 Flush/排水重试。已移除缓存普通 Save/Remove 的同步协调入口。关闭缓存或被排除的独占 GD 保留直接存取，不增加事务要求。
+
+EntityCache 使用 Otter 选择软容量候选；使用中、创建中、删除未完成、dirty 或 pending 的对象不会为满足容量被强制丢弃。缓存回收与 Actor 卸载独立，持久化收尾归现有 WriteBack 排水。框架不提供跨进程唯一对象、跨记录数据库原子提交或崩溃 WAL 保证。
+
+共享安全并不等于零成本：Snapshot 持有记录锁完成深复制，成本随实体大小增长；受管 Find 与修改包含完整 Procedure 的锁、使用期和写回登记。Go 公开字段仍允许错误保存裸指针，框架不能拦截任意事务外字段访问；应用必须遵守对象不逃逸边界。当前本地测量及验收范围见 [GD 访问验收](entity-access-acceptance.md)。
+
+### 事务内创建与首次写回
+
+`txn.Create(ctx, value)` 是通用事务登记入口，项目 `db.Create` 在活跃 Procedure 内调用它。生成 GD 提供 `LockTarget` 与 `ChangeStore`，不新增生成器 API。`txn.Runtime` 允许空初始锁集用于仅创建事务；低层 `txn.Run` 保留要求显式锁集的契约。创建新根同样参与动态锁与死锁检测，缺少受管 `CreationParticipant` 时拒绝执行。
+
+- 事务负责动态锁、Store undo、savepoint 和新根资源提交/撤销。提交参与者的内存登记在锁释放前完成；业务 `AfterCommit` 仍在释放锁后执行，不能承担缓存发布或待刷登记。
+- tx 的 EntityCache 负责对象可见性，应用首次使用时自动接到 WriteBack，不逐 GD 登记创建适配器。加载中的身份不能同时创建；创建中的身份只向当前事务返回原对象，其他调用明确失败。回滚删除占位；提交发布原指针。
+- WriteBack 在创建被接纳前预留容量。首次写入意图独立于 dirty 标记，因此没有 setter 的初始值也会全量保存；普通事务继续修改该对象时，首次写入意图仍然保留。写入前校验身份未变。
+- 存储层复用 `DocumentBackfiller` 的条件创建：Mongo 仅缺失时插入，Redis 原子检查主文档，Fusion 与回源共用记录锁，检查 Mongo 后条件写 Redis 并登记既有延迟回写。已有记录和结果未知都不能退回 Upsert 覆盖。Fusion 使用脱离调用取消的上下文解锁；已确认插入后的解锁失败只记录告警，不把已知成功降格为未知创建，锁沿用现有 TTL 回收。
+- 后台首次写入失败保留对象及 pending；不得回收，最终排水沿用有限重试与失败返回。首次结果未知后发现已有记录会持续报冲突，第一版不增加创建令牌或自动认领记录，需要运维核验。
+
+仅受控 Store 修改参与撤销。创建成功后不得改变根 ID、分片键或锁身份；提交前验证不通过会回滚。启用生成期 EntityCache 后，完整 Find 复用唯一对象，只有活跃 Procedure ctx 能取得共享对象并自动锁定纳管；普通 ctx 使用 Snapshot，不隐式创建事务。事务 ctx 用于同步调用链，不可保存后异步使用；`db.Create/Save/SaveChange` 拒绝结束后的事务上下文。没有跨记录数据库原子提交、跨进程唯一缓存或进程崩溃 WAL 保证。
 
 ## 事务精确 Key 锁注册表
 
@@ -1849,14 +1877,14 @@ T2 [PRefreshGuild -> PLoadOwner] --guild:7----> T1
 
 默认 Manager 不是完整的业务对象缓存，不定义 `LoadRole`、容量淘汰、Actor 归属、业务分片或二级索引。静态 `Config` 只保存调度和容量参数；writer 与写入闸门通过 `writeback.Dependencies` 在 CModProcedure 启动期注入。项目按下面的边界扩展：
 
-1. 业务对象加载、唯一实例和工作集淘汰属于项目 EntityCache；它独立于 WriteBack Runtime，只通过项目 facade 调用 `TryRelease`。
+1. 业务对象加载、唯一实例和工作集淘汰属于 tx EntityCache；运行时自动连接 WriteBack 的 TryRelease 与创建/删除预留；业务不登记 GD 类型，也不在提交后复制对象回缓存。
 2. 有状态项目使用默认 Manager，按 GD 存储模式选择通用 Writer。特殊生命周期仍可通过 writeback.Runtime SPI 装配。
 
 WriteBackManager 不绑定固定持久化目标。CModProcedure 启动期向项目 Factory 注入窄依赖，项目按已显式选择的服务组合决定 Writer：
 
 | 服务形态 | L3 CMod | WriteBackManager Writer | 提交成功边界 |
 | --- | --- | --- | --- |
-| 无状态请求服务 | Fusion，不选择 CModProcedure | 无 WriteBackManager；示例业务调用启动绑定的 `db.Save(role)` | Redis 热写和本地延迟任务登记成功 |
+| 无状态请求服务 | Fusion，不选择 CModProcedure | 无 WriteBackManager；示例业务调用显式上下文入口 `db.Save(ctx, role)` | Redis 热写和本地延迟任务登记成功 |
 | 有状态逻辑服 | Fusion、CModProcedure | mode-aware Fusion Writer | Procedure 只提交内存；帧 Flush 成功写入 Fusion 后清理 Store |
 | 有状态大世界 | Mongo、CModProcedure | tx Mongo 版本条件增量更新 | Procedure 只提交内存；帧 Flush 直接写 Mongo 成功后清理 Store |
 
@@ -2445,7 +2473,7 @@ Behavior.Receive 接收公开 Delivery，返回 Result/error；Context.Post/Afte
 
 ### Actor 空闲钝化与 EntityCache 淘汰
 
-缓存淘汰属于运行期维护，不是停服清缓存流程。后台任务的 context 经项目释放回调、写回 SPI 传给实体锁等待；
+缓存淘汰属于运行期维护，不是停服清缓存流程。后台任务的 context 经运行时释放回调、写回 SPI 传给实体锁等待；
 取消后结束维护，不再领取新候选，取消失败不会解除写回身份。正在执行的 Procedure 不被抢占，必要的持久化收尾
 仍按 写回 的既有生命周期完成，不等待清理无变更的内存对象。
 
@@ -2457,25 +2485,32 @@ Actor Type 连续无消息
   -> 停止当前实体 Actor
   -> 同一实体宿主在后续消息到达时惰性重建
 
+data.SnapshotGD*(ctx, id)
+└─ 取得使用权 → 记录锁内深复制 → 返回前释放锁与使用权
+
+data.FindGD*(transaction.Context(), id)
+└─ 有效事务中取得唯一对象，保留使用权到提交/回滚及回调结束
+
 GD EntityCache 达到容量或 access expiry
-  -> Otter 删除 policy token 并登记候选
-  -> writeback.Manager.TryRelease 在同一实体锁下检查活跃事务、预留、pending 和 Store 变更
-  -> 释放成功且候选代次未变化
-  -> 删除 GD 引用
+└─ Otter 删除 policy token 并登记候选
+   ├─ 仍有使用者或创建占位：保留对象
+   └─ 标记释放中，阻止同键新使用
+      └─ writeback.Manager.TryRelease 检查实体锁、预留、pending 和 Store 变更
+         ├─ 失败：保留对象，开放后续使用
+         └─ 成功：删除 GD 引用，再唤醒同键等待者
 ```
 
 Type 显式 `WithIdlePassivation` 优先于运行时策略，宿主在同一激活内维护空闲期限，卸载与消息准入共用锁边界。清理完成后才移除本地实体，下次请求按同一稳定 assignment 懒加载；卸载不修改持久槽位。运行时只消费本地注册 Kind 的策略。
 
-有状态模板为 role 和 world bucket 分别创建 EntityCache。`values` map 是业务对象身份的唯一权威，Otter v2.3.0
+有状态模板生成期启用统一 EntityCache，所有根对象共享应用级回收预算。`values` map 是业务对象身份的唯一权威，Otter v2.3.0
 只保存指向同一 entry 的 policy token，并使用 adaptive W-TinyLFU 管理准入、热度和按条目数的软容量。默认
 `idleTimeout=0s`；正值使用 access expiry。统计、Loader、refresh、weight 和 persistence 扩展均未启用。
 
-启用 access expiry，或容量接近上限、Otter 频率 sketch 开始工作后，命中路径在共享读锁边界内推进原子 generation
+启用 access expiry，或容量接近上限、Otter 频率 sketch 开始工作后，命中路径在缓存锁内登记使用权并推进原子 generation
 并记录 policy 热度；在此之前 Otter v2.3.0 本身不会消费读热度，EntityCache 也不承担无效果的 policy 查询和代次更新。
 Otter 原子删除回调不取得 EntityCache 主锁，不调用存储、实体锁或
 WriteBack，只按 key 合并候选并唤醒 worker。每个缓存只有一个 release worker 和一个 timer；worker 在所有缓存锁外调用
-项目 `TryRelease`，暂时不可释放或检查失败时按 `100ms` 起步、倍增到 `5s` 封顶的固定退避重试。释放成功后仍须核对
-entry 指针和 generation；回调登记后发生的访问、对象替换或重新加载都会让旧候选失效。脏对象不会为了满足容量数值被
+WriteBack `TryRelease`；进入释放前在缓存锁内核对 entry、generation 和使用计数，并标记释放中。暂时不可释放或检查失败时按 `100ms` 起步、倍增到 `5s` 封顶的固定退避重试。释放期间同键新 Use 可取消地等待，其他键正常使用；已持事务上下文的调用返回 `ErrReleasing`，不等待可能反向依赖本事务的实体锁。脏对象不会为了满足容量数值被
 强制删除，因此 `values` 暂时超过 `maximumSize` 属于正确状态。生命周期取消时 worker 停止 Otter 后台任务；最终持久化
 仍由 WriteBackManager Drain 完成。
 
@@ -2714,3 +2749,11 @@ Actor Call 的成功表示 Handler 方法成功返回，不隐含等待该方法
 ## 运行时访问边界
 
 基建统一入口与作用域生命周期见 [runtime-access.md](runtime-access.md)。框架显式上下文由接收端服务绑定，跨 RPC 不传播调用方运行时；项目可通过 Setup 的 Context.Runtime() 绑定本进程能力，封装无 ctx 的普通业务入口。排水期间有效，最终关闭后失效。业务模块单例、缓存和事务范围仍归项目。
+
+服务独占数据的最终保存使用 Bee/Ant ServiceFlusher，不以 Actor 卸载日志代替持久化结果。顺序、失败保留与重试契约见 [运行时能力](runtime-access.md#服务持久化收尾)。
+
+## EntityCache 观察与管理边界
+
+观察与管理复用已有实体运行时，不增加 CMod 或第二份实体表。Stats 只取规模；有界 List 不读取业务字段；SnapshotCached 保持使用权并在同一记录锁内深复制，未命中不加载；TryRelease 与自动回收共用屏障，只释放无使用者且持久化安全的对象。冷加载的 policy 发布与可回收状态必须原子衔接，避免回收后重新发布旧 token。
+
+管理引用包含独立运行时标识与驻留代次，不持有 GD；普通热查询不增加管理计数。管理排水关闭新快照/回收并等待实际执行退出，最终关闭拒绝旧句柄；它不阻断已准入业务的存取。元数据弱一致、列表筛选最坏 O(N)，用于低频诊断，不用于全量高频采集。具体调用和错误边界见 [管理 API](entity-cache-management.md)。

@@ -11,6 +11,7 @@ local PATCH_MODE_OPERATIONS = "3"
 local PATCH_MODE_KEEP_EMPTY = "4"
 local PATCH_MODE_TTL_ONLY = "-1"
 local key = KEYS[1]
+if redis.call("get", key) == "@tx:deleted" then return RESULT_NOT_EXISTS end
 local arg_len = #ARGV
 if arg_len <= 2 then
   return "ok"

@@ -2,6 +2,7 @@ package fusion
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/ngnl47/tx/meta"
@@ -96,13 +97,14 @@ func (h *StorageTaskHandler) handleSave(ctx context.Context, spec meta.TypeSpec,
 		return err
 	}
 	var revision string
+	var revisionErr error
 	if convergeTTL {
-		revision, err = h.redisRevisionReader.ReadRecordRevision(ctx, spec, key)
-		if err != nil {
-			return err
-		}
+		revision, revisionErr = h.redisRevisionReader.ReadRecordRevision(ctx, spec, key)
 	}
 	doc, exists, err := h.redisLoader.LoadDocument(ctx, spec, key)
+	if errors.Is(err, storage.ErrDeletionPending) {
+		return finishDeletion(ctx, spec, key, h.mongoReplace, h.redisLoader)
+	}
 	if err != nil {
 		return err
 	}
@@ -110,7 +112,14 @@ func (h *StorageTaskHandler) handleSave(ctx context.Context, spec meta.TypeSpec,
 		return fmt.Errorf("fusion: delayed save redis document loader: %w", err)
 	}
 	if !exists {
+		if !version.Exists {
+			return nil
+		}
 		return fmt.Errorf("fusion: delayed save redis document: %w", storage.ErrNotExists)
+	}
+	// 删除标记和已完成删除没有普通文档版本；仅正常落盘需要有效 revision。
+	if revisionErr != nil {
+		return revisionErr
 	}
 	if err := h.mongoReplace.ReplaceDocumentAtVersion(ctx, spec, key, doc, version); err != nil {
 		return err

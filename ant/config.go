@@ -1,6 +1,7 @@
 package ant
 
 import (
+ "github.com/ngnl47/tx/modules/entitycache"
 	"github.com/ngnl47/tx/modules/tasks"
 	"io"
 	"time"
@@ -51,6 +52,8 @@ type StorageConfig struct {
 
 // RuntimeConfig 描述有状态进程的公共运行参数。
 type RuntimeConfig struct {
+ // EntityCache 配置应用共享的实体回收预算；是否接入由生成代码决定。
+ EntityCache entitycache.Config
 	// Lifecycle 控制进程排水上限。
 	Lifecycle LifecycleConfig
 	// Fusion 描述 Redis 热数据与 MongoDB 冷数据的融合存储策略。
@@ -154,6 +157,7 @@ func (config Config) toFramework() framework.Config {
 			MongoDB: config.Storage.MongoDB,
 		},
 		Runtime: framework.RuntimeConfig{
+ EntityCache: config.Runtime.EntityCache,
 			Lifecycle: framework.LifecycleConfig{DrainTimeout: config.Runtime.Lifecycle.DrainTimeout},
 			Fusion:    config.Runtime.Fusion,
 			DelayTask: framework.DelayTaskConfig{

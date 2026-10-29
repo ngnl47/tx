@@ -8,12 +8,14 @@ import (
 	"github.com/ngnl47/tx/modules/actor"
 	"github.com/ngnl47/tx/modules/txn"
 	"github.com/ngnl47/tx/storage"
+	txmongo "github.com/ngnl47/tx/storage/mongo"
 	"github.com/ngnl47/tx/storage/redis/goredis"
 )
 
 // Provider 由启动装配或服务边界绑定能力；实现校验已启用能力、声明与资源生命周期。
 // 项目可捕获 Provider 建立业务入口；tx 不维护进程全局默认实例。
 type Provider interface {
+	txmongo.DatabaseProvider
 	AppID() string
 	Actor() actor.Runtime
 	Reader(meta.StorageMode) storage.DocumentLoader

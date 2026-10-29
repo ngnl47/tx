@@ -1,0 +1,644 @@
+{
+  "date": "2026-10-29",
+  "note": "pass事件包含子测试；默认外部设施skip不算通过；未运行云测试。",
+  "runs": {
+    "tx-full-final": {
+      "packages_passed": 42,
+      "passed_test_events": 1290,
+      "failures": [],
+      "skipped": [
+        {
+          "package": "github.com/ngnl47/tx/internal/framework",
+          "test": "TestFormalActorActivationControl/activation"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/framework",
+          "test": "TestFormalActorActivationControl/assignment"
+        },
+        {
+          "package": "github.com/ngnl47/tx/etcd",
+          "test": "TestClientCreateCompareAndSwapAndWatch"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/framework",
+          "test": "TestActorHostPrepareHandoffRetainsTransportUntilStop"
+        },
+        {
+          "package": "github.com/ngnl47/tx/etcd",
+          "test": "TestClientProbe"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/framework",
+          "test": "TestActorOwnershipWritebackHandoff"
+        },
+        {
+          "package": "github.com/ngnl47/tx/etcd",
+          "test": "TestClientCompareAndSwapPreservesLease"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestEntityRouterSelectsKindService"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/framework",
+          "test": "TestActorOwnershipLeaseLossDoesNotReassign"
+        },
+        {
+          "package": "github.com/ngnl47/tx/etcd",
+          "test": "TestLeaseStopExpiresKeyWithoutImmediateRevoke"
+        },
+        {
+          "package": "github.com/ngnl47/tx/etcd",
+          "test": "TestLeaseRevokeImmediatelyRemovesCreatedKey"
+        },
+        {
+          "package": "github.com/ngnl47/tx/etcd",
+          "test": "TestLeaseClientCloseReportsLeaseLost"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/taskqueue",
+          "test": "TestRecoveryAfterClusterLeaderLoss"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/taskqueue",
+          "test": "TestMaxDeliverRecovery"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/taskqueue",
+          "test": "TestMaxDeliverRecoveryAfterBrokerRestart"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestNATSRoundTripAndAdmission"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestNATSErrorsMatchLocalCalls"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestNATSAcceptanceAndMailbox"
+        },
+        {
+          "package": "github.com/ngnl47/tx/modules/discovery",
+          "test": "TestEtcdWorkSlotReuseChangesRuntimeIdentity"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestNATSTimeoutAndSendFailureReleaseWaiters"
+        },
+        {
+          "package": "github.com/ngnl47/tx/modules/discovery",
+          "test": "TestEtcdWorkSlotDomainsAreIndependent"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestNATSSharedRepliesStayBoundedAndClose"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestNATSCrossProcess"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestNATSDisconnectDoesNotReplayRPC"
+        },
+        {
+          "package": "github.com/ngnl47/tx/modules/discovery",
+          "test": "TestEtcdWorkSlotExhaustionNeverUsesZero"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestNATSResultContract"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestNATSSlotResolverAndOwnerHandoff"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestNATSPlacementChangeRejectsStaleRoute"
+        },
+        {
+          "package": "github.com/ngnl47/tx/modules/discovery",
+          "test": "TestEtcdRuntimeReportsIdentityLoss"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestNATSSharedHostSemantics"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestNATSPendingCleanup/close"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestNATSPendingCleanup/cancel"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestNATSDeactivateBeforeKeepsOutboundRPC/online"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestNATSDeactivateBeforeKeepsOutboundRPC/absent"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestSlotAllocationKeepsOwnerAndRespectsCapacity"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestSlotCASReplyLossDoesNotReassign"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestSlotCapacityChangeAfterCASDoesNotFallback"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestSlotFirstAssignmentCompetingCandidates"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestPartitionRoutingSharesAssignmentNotEntity/default"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestPartitionRoutingSharesAssignmentNotEntity/zone"
+        },
+        {
+          "package": "github.com/ngnl47/tx/modules/discovery",
+          "test": "TestEtcdSlotCapacityIsAtomicAndFollowsOwnership"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestSharedRoutingDecodesBusinessDelivery"
+        },
+        {
+          "package": "github.com/ngnl47/tx/modules/discovery",
+          "test": "TestEtcdConcurrentHandoffHasOneWinner"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestNATSTellAcceptedConfirmsSelectedTransport"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/framework",
+          "test": "TestDiscoveryAutomaticIdentityWithEtcd"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/framework",
+          "test": "TestDiscoveryAutomaticIdentityIsSharedByServicesWithEtcd"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestNATSFutureAndRuntimeProbe"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/framework",
+          "test": "TestEntityTransportStartupFailureUnloadsBeforeDependencies"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/actorrpc",
+          "test": "TestDifferentTypesShareSlotAndKeepMailboxes"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/framework",
+          "test": "TestPrepareHandoffWithEtcdRetainsLeaseUntilStop"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/framework",
+          "test": "TestJetStreamConsumerProcess"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/framework",
+          "test": "TestJetStreamFormalActorTaskLoop"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/framework",
+          "test": "TestPlacementGroupHandoffKeepsIdentityCache"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/framework",
+          "test": "TestGeneratedRPCClientWithoutActor"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/framework",
+          "test": "TestFormalServiceAccessLifecycle"
+        },
+        {
+          "package": "github.com/ngnl47/tx/internal/framework",
+          "test": "TestFormalActorStartupAdmission"
+        },
+        {
+          "package": "github.com/ngnl47/tx/storage/mongo/mongodriver",
+          "test": "TestCounterReserveMongoIntegration"
+        },
+        {
+          "package": "github.com/ngnl47/tx/modules/msgq",
+          "test": "TestRoleMailboxRedisOwnershipLifecycle"
+        },
+        {
+          "package": "github.com/ngnl47/tx/modules/msgq",
+          "test": "TestRoleStoreRedisAtomicClaimAndGeneration"
+        },
+        {
+          "package": "github.com/ngnl47/tx/storage/mongo/mongodriver",
+          "test": "TestMongoLateWriteAfterClientTimeout"
+        },
+        {
+          "package": "github.com/ngnl47/tx/storage/runtime",
+          "test": "TestRedisClientNativeCommands"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestEtcdRegistryLifecycleIntegration"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestEtcdSlotStorePromotesWithCompareAndSwap"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestEtcdSlotWatchMaintainsCachedDirectoryAndFailsClosed"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestEtcdSlotStoreSurvivesRegistryClose"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestConcurrentRuntimeClaimsUseDifferentWorkSlots"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestFrameworkDiscoveryAutomaticIdentityAssignsDistinctInstanceIDs"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestFrameworkDiscoveryAutomaticIdentityIsSharedAcrossServices"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestEtcdRunningRuntimeCloseKeepsWorkSlotUntilTTL"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestEtcdStartingRuntimeCloseRevokesWorkSlotImmediately"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestMsgQServerRedisIntegration"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestMsgQRedisSessionStoreIntegration"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestMsgQRedisSessionStoreConcurrentRebindIntegration"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestProcedureFirstInsertStorageIntegration"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestRedisVersionKeyFollowsDocumentTTL"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestRedisConditionalTTLConvergencePreservesNewerHotDocument"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestRedisVersionKeyExpiresWithHotDocuments"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestFusionDelayedSaveRequeuesWhenRedisChangesBeforeTTLConverges"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestFusionDelayedSaveRequeuesWriteDuringLease"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestFusionDispatcherRecoversRedisPublicationFailure"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestFusionConcurrentRedisMissBackfillsFromMongoOnce"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestFusionBackfillDoesNotOverwriteExistingHotDocument"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestFusionBatchRedisMissBackfillsFromMongoOnce"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestFusionConcurrentBatchBackfillKeepsNewRedisDocuments"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestRedisCollectionElementSetReplacesExistingDocument"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestRedisNestedSetCreatesMissingObjectAndRejectsScalarParent"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestFusionDeleteRetryDoesNotResurrectRecord"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestStorageBackendDocumentContracts"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestFusionProcedureRollbackPreservesPendingAcrossFlushFailure"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestRedisDelayTaskBackendRequeuesEnqueueDuringLeaseIntegration"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestRedisDelayTaskBackendKeepsMissingPayloadTaskIntegration"
+        },
+        {
+          "package": "github.com/ngnl47/tx/tests",
+          "test": "TestRedisDelayTaskBackendReturnsCrossBucketPartialLeasesIntegration"
+        }
+      ]
+    },
+    "txgen-full": {
+      "packages_passed": 3,
+      "passed_test_events": 567,
+      "failures": [],
+      "skipped": [
+        {
+          "package": "github.com/ngnl47/txgen/tests",
+          "test": "TestLubanExportAndGeneratedGo"
+        }
+      ]
+    },
+    "game-full-final": {
+      "packages_passed": 33,
+      "passed_test_events": 271,
+      "failures": [],
+      "skipped": [
+        {
+          "package": "txgame-server/cmd/internal/deploytest",
+          "test": "TestPackagedActorLifecycle"
+        },
+        {
+          "package": "txgame-server/services/game/modules",
+          "test": "TestSharedProfilesRefreshWithoutChangingRank"
+        },
+        {
+          "package": "txgame-server/services/game/modules",
+          "test": "TestLevelRankGDAndLua"
+        },
+        {
+          "package": "txgame-server/services/game/modules",
+          "test": "TestLevelRankRetainsTopAndOwnRank"
+        },
+        {
+          "package": "txgame-server/services/game/modules",
+          "test": "TestLevelRankScoreBeforeTimeAndStableTie"
+        },
+        {
+          "package": "txgame-server/services/game/modules",
+          "test": "TestLevelRankHandlersSaveAndQuery"
+        },
+        {
+          "package": "txgame-server/services/internal/actorcmd",
+          "test": "TestApplicationActorCallUsesGeneratedCommandHandler"
+        },
+        {
+          "package": "txgame-server/services/internal/actorcmd",
+          "test": "TestApplicationShutdownWaitsForAcceptedActorHandler"
+        },
+        {
+          "package": "txgame-server/services/internal/actorcmd",
+          "test": "TestQueuedGeneratedCommandRetriesUntilHandlerCompletes"
+        },
+        {
+          "package": "txgame-server/services/login",
+          "test": "TestMongoBusinessSegmentsAcrossAllocators"
+        },
+        {
+          "package": "txgame-server/cmd/internal/deploytest",
+          "test": "TestConfigReleaseRollback"
+        },
+        {
+          "package": "txgame-server/cmd/internal/deploytest",
+          "test": "TestSchedProcessRelease"
+        },
+        {
+          "package": "txgame-server/services/internal/rolecreation",
+          "test": "TestMongoReservationConcurrencyAndLostReply"
+        },
+        {
+          "package": "txgame-server/services/game/modules/internal/role",
+          "test": "TestEnterMongoRetryPreservesRoleAndCompletesProjection"
+        },
+        {
+          "package": "txgame-server/services/sched/modules/internal/scheduler",
+          "test": "TestReconcileUpdateAndRetire"
+        },
+        {
+          "package": "txgame-server/services/sched/modules/internal/scheduler",
+          "test": "TestRestartCatchUpAndStableRetry"
+        },
+        {
+          "package": "txgame-server/services/sched/modules/internal/scheduler",
+          "test": "TestCommittedStateSurvivesLostRedisReply"
+        },
+        {
+          "package": "txgame-server/services/sched/modules/internal/scheduler",
+          "test": "TestInFlightUpdateAndCancellationPersist"
+        },
+        {
+          "package": "txgame-server/services/sched/modules/internal/scheduler",
+          "test": "TestCloseWaitsForInFlightExecution"
+        },
+        {
+          "package": "txgame-server/services/sched/modules/internal/scheduler",
+          "test": "TestIdleLoopRecoversUncertainRegistration"
+        },
+        {
+          "package": "txgame-server/services/sched/modules/internal/scheduler",
+          "test": "TestCloseReturnsUnresolvedPersistenceError"
+        },
+        {
+          "package": "txgame-server/services/sched/modules/internal/scheduler",
+          "test": "TestRetryDelayStartsAfterFailure"
+        },
+        {
+          "package": "txgame-server/services/sched/modules/internal/scheduler",
+          "test": "TestListReadsBackUncertainWrite"
+        },
+        {
+          "package": "txgame-server/services/sched/modules/internal/scheduler",
+          "test": "TestIndependentPauseAndCodePolicyRecovery"
+        },
+        {
+          "package": "txgame-server/services/sched/modules/internal/scheduler",
+          "test": "TestDynamicRegistrationAndTypeControl"
+        },
+        {
+          "package": "txgame-server/services/sched/modules/internal/scheduler",
+          "test": "TestRecoveryPolicyChangeKeepsInFlightBatch"
+        },
+        {
+          "package": "txgame-server/services/sched/modules/internal/scheduler",
+          "test": "TestNewInstanceDoesNotInheritHistoricalResume"
+        },
+        {
+          "package": "txgame-server/services/sched/modules/internal/scheduler",
+          "test": "TestCodeReenableDoesNotBackfillEarlierManualResume"
+        },
+        {
+          "package": "txgame-server/services/sched/modules/internal/scheduler",
+          "test": "TestInterruptedPolicyReconcileDoesNotDispatchOldPlan"
+        },
+        {
+          "package": "txgame-server/services/sched/modules/internal/scheduler",
+          "test": "TestCatalogValidationPrecedesPersistence"
+        },
+        {
+          "package": "txgame-server/services/sched/modules/internal/scheduler",
+          "test": "TestRepeatedCancelAfterRestartReturnsEffectivePolicy"
+        },
+        {
+          "package": "txgame-server/services/sched/modules/internal/scheduler",
+          "test": "TestExplicitTargetsSurviveRestartAndRejectLegacy"
+        },
+        {
+          "package": "txgame-server/services/sched/modules/internal/scheduler",
+          "test": "TestRestoreRejectsInvalidTargetBeforeDispatch/false"
+        },
+        {
+          "package": "txgame-server/services/sched/modules/internal/scheduler",
+          "test": "TestRestoreRejectsInvalidTargetBeforeDispatch/true"
+        },
+        {
+          "package": "txgame-server/tests/integration",
+          "test": "TestSchedRegistrationAndRestart"
+        },
+        {
+          "package": "txgame-server/tests/integration",
+          "test": "TestRemoteRoleCallAndQueuedStorageProbeWriteFusion"
+        }
+      ]
+    },
+    "slg-full-final": {
+      "packages_passed": 38,
+      "passed_test_events": 383,
+      "failures": [],
+      "skipped": [
+        {
+          "package": "txgameslg-server/internal/db",
+          "test": "TestNativeWorldBucketMongoIntegration"
+        },
+        {
+          "package": "txgameslg-server/services/login",
+          "test": "TestMongoAccountRepositoryIdentityAndProjection"
+        },
+        {
+          "package": "txgameslg-server/services/login",
+          "test": "TestMongoBusinessSegmentsAcrossAllocators"
+        },
+        {
+          "package": "txgameslg-server/services/slggame/internal/placement",
+          "test": "TestMongoPendingPlacementUsesIndex"
+        },
+        {
+          "package": "txgameslg-server/services/slggame/modules",
+          "test": "TestStatefulLevelRankWithRedis"
+        },
+        {
+          "package": "txgameslg-server/services/slggame/modules/internal/role",
+          "test": "TestCreateRoleMongoRetryPreservesRoleAndCompletesProjection"
+        },
+        {
+          "package": "txgameslg-server/services/slgworld/modules/internal/world",
+          "test": "TestOwnedBucketsMongoRoundTrip"
+        },
+        {
+          "package": "txgameslg-server/services/internal/rolecreation",
+          "test": "TestMongoReservationConcurrencyAndLostReply"
+        },
+        {
+          "package": "txgameslg-server/services/integration",
+          "test": "TestRedisPartialUpdatePreservesSafeIntegers"
+        },
+        {
+          "package": "txgameslg-server/services/integration",
+          "test": "TestSLGGameShutdownFlushesPendingRole"
+        },
+        {
+          "package": "txgameslg-server/services/integration",
+          "test": "TestQueuedWorldMoveAcknowledgesBeforeMongoFlush"
+        }
+      ]
+    },
+    "game-race": {
+      "packages_passed": 8,
+      "passed_test_events": 57,
+      "failures": [],
+      "skipped": [
+        {
+          "package": "txgame-server/services/game/modules/internal/role",
+          "test": "TestEnterMongoRetryPreservesRoleAndCompletesProjection"
+        },
+        {
+          "package": "txgame-server/services/game/modules",
+          "test": "TestSharedProfilesRefreshWithoutChangingRank"
+        },
+        {
+          "package": "txgame-server/services/game/modules",
+          "test": "TestLevelRankGDAndLua"
+        },
+        {
+          "package": "txgame-server/services/game/modules",
+          "test": "TestLevelRankRetainsTopAndOwnRank"
+        },
+        {
+          "package": "txgame-server/services/game/modules",
+          "test": "TestLevelRankScoreBeforeTimeAndStableTie"
+        },
+        {
+          "package": "txgame-server/services/game/modules",
+          "test": "TestLevelRankHandlersSaveAndQuery"
+        }
+      ]
+    },
+    "slg-real-race": {
+      "packages_passed": 14,
+      "passed_test_events": 84,
+      "failures": [],
+      "skipped": [
+        {
+          "package": "txgameslg-server/services/slggame/internal/placement",
+          "test": "TestMongoPendingPlacementUsesIndex"
+        },
+        {
+          "package": "txgameslg-server/services/slggame/modules/internal/role",
+          "test": "TestCreateRoleMongoRetryPreservesRoleAndCompletesProjection"
+        },
+        {
+          "package": "txgameslg-server/services/slggame/modules",
+          "test": "TestStatefulLevelRankWithRedis"
+        }
+      ]
+    }
+  }
+}

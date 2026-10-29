@@ -95,10 +95,10 @@ TX_TASK_NATS_URL=nats://127.0.0.1:14222 \
 TX_TASK_REDIS_URI='redis://127.0.0.1:16379?db=0' \
 TX_TASK_MONGO_URI=mongodb://127.0.0.1:17017/tx_demo_world_tests \
 TX_ETCD_ENDPOINT=127.0.0.1:12379 \
-go test ./tests/integration -run '^TestQueuedWorldMoveAcknowledgesBeforeMongoFlush$' -race -count=1 -v
+go test ./services/integration -run '^TestQueuedWorldMoveAcknowledgesBeforeMongoFlush$' -race -count=1 -v
 ```
 
-断言保留：业务完成前不 ACK、临时错误重投；Fusion Redis 回读与 Mongo 存盘；世界 Procedure ACK 早于最终写回、Stop 后保存最新状态。解码、业务和持久化失败不能当成验收成功。Game 的公共准备逻辑仅在该工程 `internal/testsupport/taskqueue`，SLG 保持独立；两个工程均不依赖对方。
+断言保留：业务完成前不 ACK、临时错误重投；Fusion Redis 回读与 Mongo 存盘；世界网格任务 ACK 早于最终保存、Stop 后保存最新状态。解码、业务和持久化失败不能当成验收成功。Game 的公共准备逻辑仅在该工程 `internal/testsupport/taskqueue`，SLG 保持独立；两个工程均不依赖对方。
 
 ## 6. 日志与清理
 

@@ -48,3 +48,6 @@ type Placement struct {
 	Name    string
 	Factory func(Context) (txactor.GroupResolver, error)
 }
+
+// Flusher 在 Actor 与后台任务排空后完成持久化；失败保留资源，重试应幂等。
+type Flusher interface{ Flush(context.Context) error }

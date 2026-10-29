@@ -1,6 +1,7 @@
 package framework
 
 import (
+ "github.com/ngnl47/tx/modules/entitycache"
 	"fmt"
 	"github.com/ngnl47/tx/modules/tasks"
 	"io"
@@ -55,6 +56,8 @@ type StorageConfig struct {
 
 // RuntimeConfig 描述进程运行期的通用组件参数。
 type RuntimeConfig struct {
+ // EntityCache 配置应用共享的实体回收预算；是否接入由生成代码决定。
+ EntityCache entitycache.Config
 	// Lifecycle 控制进程入口等待和关闭排空时间。
 	Lifecycle LifecycleConfig
 	// Fusion 控制 Redis 热数据和 MongoDB 冷数据的融合存储行为。

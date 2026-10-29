@@ -246,47 +246,6 @@ type integrationCountingBatchDocumentLoader struct {
 	batch  int
 }
 
-// integrationFirstBatchLoadsBarrier 让前两次 Mongo 批量读取在拿到候选文档后暂停，
-// 用于验证回填前的 Redis 二次读取不会让旧 Mongo 候选覆盖新的热数据。
-type integrationFirstBatchLoadsBarrier struct {
-	delegate interface {
-		txstorage.DocumentLoader
-		txstorage.BatchDocumentLoader
-	}
-	ready   chan struct{}
-	release chan struct{}
-
-	mu    sync.Mutex
-	loads int
-}
-
-func (l *integrationFirstBatchLoadsBarrier) LoadDocument(ctx context.Context, spec meta.TypeSpec, key txstorage.RecordKey, fields ...string) (map[string]any, bool, error) {
-	return l.delegate.LoadDocument(ctx, spec, key, fields...)
-}
-
-func (l *integrationFirstBatchLoadsBarrier) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []txstorage.RecordKey, fields ...string) ([]map[string]any, []bool, error) {
-	documents, exists, err := l.delegate.LoadDocuments(ctx, spec, keys, fields...)
-	if err != nil {
-		return nil, nil, err
-	}
-	l.mu.Lock()
-	l.loads++
-	shouldWait := l.loads <= 2
-	if l.loads == 2 {
-		close(l.ready)
-	}
-	l.mu.Unlock()
-	if !shouldWait {
-		return documents, exists, nil
-	}
-	select {
-	case <-l.release:
-		return documents, exists, nil
-	case <-ctx.Done():
-		return nil, nil, ctx.Err()
-	}
-}
-
 func (l *integrationCountingBatchDocumentLoader) LoadDocument(ctx context.Context, spec meta.TypeSpec, key txstorage.RecordKey, fields ...string) (map[string]any, bool, error) {
 	l.mu.Lock()
 	l.single++
@@ -1065,8 +1024,8 @@ func TestFusionBatchRedisMissBackfillsFromMongoOnce(t *testing.T) {
 		}
 		integrationAssertRedisRoleLoad(t, ctx, redisAdapter, keys[i], roleID)
 	}
-	if single, batch := mongoLoader.Counts(); single != 0 || batch != 1 {
-		t.Fatalf("mongo loader calls single/batch = %d/%d, want 0/1", single, batch)
+	if single, batch := mongoLoader.Counts(); single != 2 || batch != 0 {
+		t.Fatalf("mongo loader calls single/batch = %d/%d, want 2/0", single, batch)
 	}
 }
 
@@ -1100,7 +1059,7 @@ func TestFusionConcurrentBatchBackfillKeepsNewRedisDocuments(t *testing.T) {
 			t.Fatalf("seed mongo role %d: %v", roleID, err)
 		}
 	}
-	mongoBarrier := &integrationFirstBatchLoadsBarrier{
+	mongoBarrier := &integrationFirstDocumentLoadBarrier{
 		delegate: mongoAdapter,
 		ready:    make(chan struct{}),
 		release:  make(chan struct{}),
@@ -1128,7 +1087,7 @@ func TestFusionConcurrentBatchBackfillKeepsNewRedisDocuments(t *testing.T) {
 	select {
 	case <-mongoBarrier.ready:
 	case <-ctx.Done():
-		t.Fatalf("concurrent batch Mongo candidates did not reach barrier: %v", ctx.Err())
+		t.Fatalf("cold Mongo read did not reach barrier: %v", ctx.Err())
 	}
 
 	for _, roleID := range roleIDs {
@@ -1243,5 +1202,86 @@ func TestRedisNestedSetCreatesMissingObjectAndRejectsScalarParent(t *testing.T) 
 	mainDoc = integrationRedisJSONDocument(t, ctx, redisClient, key)
 	if integrationRedisInt64(t, mainDoc["rankInfo"]) != 7 {
 		t.Fatalf("redis scalar rankInfo = %#v, want unchanged 7", mainDoc["rankInfo"])
+	}
+}
+
+// 暂时失败的删除复用实际 Mongo 适配器，恢复由既有 Fusion 延迟任务驱动。
+type failingDeleteMongo struct {
+	txstorage.DocumentLoader
+	txstorage.VersionedDocumentReplacer
+	delete txstorage.DeleteApplier
+	fail   bool
+}
+
+func (m *failingDeleteMongo) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key txstorage.RecordKey) error {
+	if m.fail {
+		return errors.New("测试注入 Mongo 删除失败")
+	}
+	return m.delete.ApplyDelete(ctx, spec, key)
+}
+func TestFusionDeleteRetryDoesNotResurrectRecord(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	redisClient := storageIntegrationRedis(t, ctx)
+	mongoDB := storageIntegrationMongo(t, ctx)
+	id := time.Now().UnixMicro()
+	key := txstorage.RecordKey{ID: id}
+	spec := storageIntegrationSpec()
+	t.Cleanup(func() { integrationCleanupStorage(context.Background(), redisClient, mongoDB, id) })
+	hot := mustRedisAdapter(t, txgoredis.NewClient(redisClient))
+	cold := mustMongoAdapter(t, txmongodriver.NewDatabase(mongoDB))
+	store := newStorageIntegrationStore(id)
+	if err := applyStorageIntegrationStore(ctx, cold, spec, key, store, txstorage.ApplyOptions{Upsert: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyStorageIntegrationStore(ctx, hot, spec, key, store, txstorage.ApplyOptions{Upsert: true}); err != nil {
+		t.Fatal(err)
+	}
+	faulty := &failingDeleteMongo{DocumentLoader: cold, VersionedDocumentReplacer: cold, delete: cold, fail: true}
+	queue := &integrationRecordingDelayQueue{}
+	strategy := txfusion.Strategy{RedisApplier: hot, MongoLoader: faulty, DelaySubmitter: integrationImmediateDelaySubmitter{queue: queue}}
+	if err := strategy.ApplyDelete(ctx, spec, key); err == nil {
+		t.Fatal("删除失败被隐藏")
+	}
+	if len(queue.ops) == 0 {
+		t.Fatal("失败删除没有登记恢复任务")
+	}
+	for _, fields := range [][]string{nil, {"Items"}} {
+		if _, found, err := strategy.LoadDocument(ctx, spec, key, fields...); err != nil || found {
+			t.Fatalf("已删除对象被回源: %v %v", found, err)
+		}
+		if _, found, err := strategy.LoadDocuments(ctx, spec, []txstorage.RecordKey{key}, fields...); err != nil || len(found) != 1 || found[0] {
+			t.Fatalf("批量回源删除对象: %v %v", found, err)
+		}
+	}
+	if err := applyStorageIntegrationStore(ctx, hot, spec, key, store, txstorage.ApplyOptions{Upsert: true}); !errors.Is(err, txstorage.ErrNotExists) {
+		t.Fatalf("旧更新绕过删除标记: %v", err)
+	}
+	types := meta.NewRegistry()
+	if err := types.RegisterType(spec); err != nil {
+		t.Fatal(err)
+	}
+	handler := txfusion.NewDelayTaskHandler(types, hot, faulty, hot)
+	item := task.DelayTask{Type: spec.Type.Ref.FullName, ID: id, Action: "save"}
+	faulty.fail = false
+	if err := handler.HandleDelayTask(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	if err := handler.HandleDelayTask(ctx, item); err != nil {
+		t.Fatal("完成后的旧任务未幂等", err)
+	}
+	if _, found, err := cold.LoadDocument(ctx, spec, key); err != nil || found {
+		t.Fatalf("Mongo 未删除: %v %v", found, err)
+	}
+	inserted, err := strategy.BackfillDocumentWithOptions(ctx, spec, key, map[string]any{"roleId": id, "name": "replacement"}, txstorage.ApplyOptions{})
+	if err != nil || !inserted {
+		t.Fatalf("同 ID 无法重建: %v %v", inserted, err)
+	}
+	if err := handler.HandleDelayTask(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	doc, found, err := cold.LoadDocument(ctx, spec, key)
+	if err != nil || !found || doc["name"] != "replacement" {
+		t.Fatalf("旧任务未读取新一代文档: %v %v", doc, err)
 	}
 }

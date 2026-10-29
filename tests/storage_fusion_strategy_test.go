@@ -482,12 +482,6 @@ func TestFusionStrategyValidatesCompleteRuntimeDependencies(t *testing.T) {
 	}
 }
 
-func TestFusionStrategyDoesNotExposePhysicalDelete(t *testing.T) {
-	if _, ok := any(fusion.Strategy{}).(storage.DeleteApplier); ok {
-		t.Fatal("fusion strategy implements storage.DeleteApplier, want physical delete unavailable")
-	}
-}
-
 func TestFusionStrategyRejectsMissingRedisLoader(t *testing.T) {
 	strategy := fusion.Strategy{
 		MongoLoader: &recordingDocumentLoader{doc: map[string]any{"name": "mongo"}, exists: true},
@@ -1127,8 +1121,8 @@ func TestFusionStrategyLoadDocumentsBatchBackfillsFromMongo(t *testing.T) {
 	if !exists[0] || docs[0]["name"] != "cold-1" || !exists[1] || docs[1]["name"] != "cold-2" {
 		t.Fatalf("LoadDocuments = %#v exists=%#v, want batch Mongo fallback rows", docs, exists)
 	}
-	if mongo.manyCalls != 1 || mongo.calls != 0 {
-		t.Fatalf("mongo calls batch/single = %d/%d, want one full batch fallback", mongo.manyCalls, mongo.calls)
+	if mongo.manyCalls != 0 || mongo.calls != 2 {
+		t.Fatalf("mongo calls batch/single = %d/%d, want protected per-record reads", mongo.manyCalls, mongo.calls)
 	}
 	if len(mongo.fields) != 0 {
 		t.Fatalf("mongo batch fallback fields = %#v, want full document load", mongo.fields)
@@ -1234,8 +1228,8 @@ func TestFusionStrategyLoadDocumentsDoubleChecksRedisUnderLockBeforeMongoBackfil
 	if locker.calls != 1 {
 		t.Fatalf("lock calls = %d, want one", locker.calls)
 	}
-	if mongo.calls != 0 || mongo.manyCalls != 1 || backfiller.calls != 0 {
-		t.Fatalf("mongo/backfiller calls = %d/%d/%d, want one candidate batch load and no backfill", mongo.calls, mongo.manyCalls, backfiller.calls)
+	if mongo.calls != 0 || mongo.manyCalls != 0 || backfiller.calls != 0 {
+		t.Fatalf("mongo/backfiller calls = %d/%d/%d, want no cold read after a concurrent hot write", mongo.calls, mongo.manyCalls, backfiller.calls)
 	}
 }
 
@@ -1306,8 +1300,8 @@ func TestFusionStrategyLoadDocumentsUsesSingleRedisLoaderBeforeMongo(t *testing.
 	if redis.calls != 4 {
 		t.Fatalf("redis single calls = %d, want 4 with lock double-check", redis.calls)
 	}
-	if len(mongo.keys) != 1 || mongo.keys[0].ID != int64(1002) {
-		t.Fatalf("mongo fallback keys = %#v, want only missing key", mongo.keys)
+	if mongo.calls != 1 || mongo.key.ID != int64(1002) {
+		t.Fatalf("mongo fallback key = %#v, want only missing key", mongo.key)
 	}
 	if locker.calls != 1 || backfiller.calls != 1 {
 		t.Fatalf("backfill lock/writer calls = %d/%d, want 1/1", locker.calls, backfiller.calls)
@@ -1337,5 +1331,61 @@ func TestFusionStrategyLoadDocumentsUsesRedisApplierWhenLoaderIsUnset(t *testing
 	}
 	if redis.manyCalls != 1 {
 		t.Fatalf("redis batch calls = %d, want 1", redis.manyCalls)
+	}
+}
+
+func TestFusionCreationNeverOverwritesExistingData(t *testing.T) {
+	for _, where := range []string{"missing", "mongo", "redis"} {
+		t.Run(where, func(t *testing.T) {
+			cold := &recordingDocumentLoader{}
+			if where == "mongo" {
+				cold.exists = true
+				cold.doc = map[string]any{"roleId": int64(9)}
+			}
+			hot := &recordingDocumentBackfiller{alreadyExists: where == "redis"}
+			lock := &recordingRecordLock{}
+			submit := &recordingDelaySubmitter{}
+			strategy := fusion.Strategy{RedisApplier: &recordingApplier{}, RedisLoader: &recordingDocumentLoader{}, RedisBackfiller: hot, RedisLocker: &recordingRecordLocker{lock: lock}, MongoLoader: cold, DelaySubmitter: submit}
+			spec := meta.TypeSpec{Type: fusionRoleType(), Storage: meta.StorageSpec{Mode: meta.StorageModeFusion}}
+			inserted, err := strategy.BackfillDocumentWithOptions(t.Context(), spec, storage.RecordKey{ID: int64(9)}, map[string]any{"roleId": int64(9), "name": "created"}, storage.ApplyOptions{})
+			if err != nil || inserted != (where == "missing") {
+				t.Fatalf("inserted=%v err=%v", inserted, err)
+			}
+			if lock.unlocks != 1 {
+				t.Fatal("record lock leaked")
+			}
+			if where == "mongo" && hot.calls != 0 {
+				t.Fatal("cold record overwritten in Redis")
+			}
+			if (len(submit.keys) == 1) != (where == "missing") {
+				t.Fatal("wrong delayed write registration")
+			}
+		})
+	}
+}
+
+type cancellationAwareRecordLock struct{ unlocks int }
+
+func (l *cancellationAwareRecordLock) Unlock(ctx context.Context) error {
+	l.unlocks++
+	return ctx.Err()
+}
+func TestFusionCreationConfirmedInsertSurvivesCallerCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	lock := &cancellationAwareRecordLock{}
+	strategy := fusion.Strategy{RedisApplier: &recordingApplier{}, RedisLoader: &recordingDocumentLoader{}, RedisBackfiller: &recordingDocumentBackfiller{}, RedisLocker: &recordingRecordLocker{lock: lock}, MongoLoader: &recordingDocumentLoader{}, DelaySubmitter: &recordingDelaySubmitter{onSubmit: cancel}}
+	inserted, err := strategy.BackfillDocumentWithOptions(ctx, meta.TypeSpec{Type: fusionRoleType(), Storage: meta.StorageSpec{Mode: meta.StorageModeFusion}}, storage.RecordKey{ID: int64(1)}, map[string]any{"roleId": int64(1)}, storage.ApplyOptions{})
+	if err != nil || !inserted || lock.unlocks != 1 {
+		t.Fatalf("confirmed insert became failed: inserted=%v err=%v unlocks=%d", inserted, err, lock.unlocks)
+	}
+}
+
+func TestFusionCreationConfirmedInsertSurvivesUnlockFailure(t *testing.T) {
+	lock := &recordingRecordLock{unlockErr: errors.New("unlock transport failed")}
+	strategy := fusion.Strategy{RedisApplier: &recordingApplier{}, RedisLoader: &recordingDocumentLoader{}, RedisBackfiller: &recordingDocumentBackfiller{}, RedisLocker: &recordingRecordLocker{lock: lock}, MongoLoader: &recordingDocumentLoader{}, DelaySubmitter: &recordingDelaySubmitter{}}
+	inserted, err := strategy.BackfillDocumentWithOptions(t.Context(), meta.TypeSpec{Type: fusionRoleType(), Storage: meta.StorageSpec{Mode: meta.StorageModeFusion}}, storage.RecordKey{ID: int64(1)}, map[string]any{"roleId": int64(1)}, storage.ApplyOptions{})
+	if err != nil || !inserted || lock.unlocks != 1 {
+		t.Fatalf("cleanup changed confirmed insert: inserted=%v err=%v", inserted, err)
 	}
 }

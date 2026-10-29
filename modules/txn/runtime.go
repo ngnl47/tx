@@ -12,7 +12,7 @@ type CommitParticipant interface {
 	Prepare(context.Context, []LockTarget) (CommitReservation, error)
 }
 
-// CommitReservation 保存一次提交前预留。Commit 在内存事务成功后调用且不得失败；
+// CommitReservation 保存一次提交前预留。Commit 在内存事务成功且仍持锁时调用，不能失败或进行 I/O；
 // Abort 在事务失败或 panic 回滚后调用。
 type CommitReservation interface {
 	Commit([]LockTarget)
@@ -86,6 +86,8 @@ func (runtime *Runtime) Call(ctx context.Context, procedure Procedure) error {
 	}, callHooks{
 		reserveDynamicTargets: managed.reserveAdditional,
 		afterAttemptFailure:   managed.abortCommitReservations,
+		commitLocked:          managed.commitPrepared,
+		allowEmptyLocks:       true,
 	})
 	if err != nil {
 		managed.abortCommitReservations()
@@ -110,8 +112,10 @@ func (procedure *managedProcedure) Locks(ctx context.Context) ([]LockTarget, err
 	if err != nil {
 		return nil, err
 	}
-	if _, err := prepareLocks(targets); err != nil {
-		return nil, err
+	if len(targets) > 0 {
+		if _, err := prepareLocks(targets); err != nil {
+			return nil, err
+		}
 	}
 	if err := procedure.prepareCommit(ctx, targets); err != nil {
 		return nil, err
@@ -123,10 +127,8 @@ func (procedure *managedProcedure) Process(tx *Tx) error {
 	tx.AfterRollback(func(context.Context) {
 		procedure.abortCommitReservations()
 	})
-	tx.AfterCommit(func(context.Context) error {
-		procedure.commitPrepared(tx.dirtyTargets())
-		return nil
-	})
+	tx.creator, _ = procedure.commitParticipant.(CreationParticipant)
+	tx.remover, _ = procedure.commitParticipant.(RemovalParticipant)
 	return procedure.procedure.Process(tx)
 }
 

@@ -40,6 +40,7 @@ type Storage interface {
 // ModeStorage 是绑定到单一持久化模式的窄能力视图。
 // Reader 和 ChangeWriter 都拒绝跨模式访问，避免 L4 Service 越过 Requires 声明使用其他存储。
 type ModeStorage interface {
+	txmongo.DatabaseProvider
 	txstorage.VersionedDocumentReplacer
 	txmongo.DocumentFinder
 	// Context 返回由进程根生命周期派生的只读上下文。
@@ -150,7 +151,11 @@ func (context *cmodContext) BindTransactionCommitParticipant(participant txn.Com
 	if context == nil || context.runtime == nil || context.runtime.transaction == nil {
 		return errors.New("framework: transaction runtime is not configured")
 	}
-	return context.runtime.transaction.BindCommitParticipant(participant)
+	if err := context.runtime.transaction.BindCommitParticipant(participant); err != nil {
+		return err
+	}
+	context.runtime.commitParticipant = participant
+	return nil
 }
 
 func (service *serviceContext) AppID() string {

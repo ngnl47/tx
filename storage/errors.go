@@ -7,6 +7,7 @@ import (
 )
 
 var (
+	ErrDeletionPending    = errors.New("storage: deletion pending")
 	ErrMissingValue       = errors.New("storage: missing value")
 	ErrNotExists          = errors.New("storage: not exists")
 	ErrPathTypeMismatch   = errors.New("storage: document path type mismatch")

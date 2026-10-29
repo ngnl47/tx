@@ -28,6 +28,10 @@ func (server *Server) Drain(ctx context.Context) error {
 		return nil
 	}
 	host.beginDrain()
+	var managementErr error
+	if runtime != nil {
+		managementErr = runtime.stopEntityCacheManagement(ctx, false)
+	}
 	if runtime != nil && runtime.placement != nil {
 		runtime.placement.ingress.BeginDrain()
 	}
@@ -52,7 +56,7 @@ func (server *Server) Drain(ctx context.Context) error {
 	if runtime != nil && runtime.entities != nil {
 		actorErr = runtime.entities.Drain(ctx)
 	}
-	return errors.Join(discoveryErr, hostErr, actorErr)
+	return errors.Join(managementErr, discoveryErr, hostErr, actorErr)
 }
 
 // Stop 具备幂等性，并负责完整的逆序关闭流程。
@@ -143,6 +147,11 @@ func (server *Server) shutdown(ctx context.Context, drain bool) error {
 	controlServer := server.control
 	server.mu.Unlock()
 
+	if runtime != nil {
+		if err := runtime.stopEntityCacheManagement(ctx, true); err != nil {
+			return errors.Join(errStopDeferred, err)
+		}
+	}
 	errs := []error{err}
 	if controlServer != nil {
 		controlServer.stop()
@@ -222,6 +231,11 @@ func (server *Server) finishWork(ctx context.Context, drain bool) error {
 		errs = append(errs, err)
 		drain = true // 后续写回或传输失败同样保留启动资源，复用 Stop 重试。
 	}
+	if runtime != nil {
+		if err := runtime.stopEntityCacheManagement(ctx, false); err != nil {
+			return errors.Join(errStopDeferred, err)
+		}
+	}
 	if host != nil {
 		host.quiesceTasks()
 	}
@@ -234,6 +248,14 @@ func (server *Server) finishWork(ctx context.Context, drain bool) error {
 		}
 	}
 
+	if host != nil {
+		if err := host.flush(ctx); err != nil {
+			if !fatal {
+				return errors.Join(errStopDeferred, err)
+			}
+			errs = append(errs, err)
+		}
+	}
 	if cmodHost != nil {
 		err := cmodHost.drain(ctx)
 		if err != nil && drain && !fatal {

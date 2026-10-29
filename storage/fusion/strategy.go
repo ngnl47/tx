@@ -112,7 +112,11 @@ func (s Strategy) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpe
 
 // LoadDocument 优先从 Redis 读取，未命中时回源 Mongo。
 func (s Strategy) LoadDocument(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, fields ...string) (map[string]any, bool, error) {
-	return s.LoadDocumentWithOptions(ctx, spec, key, LoadOptions{}, fields...)
+	doc, exists, err := s.LoadDocumentWithOptions(ctx, spec, key, LoadOptions{}, fields...)
+	if errors.Is(err, storage.ErrDeletionPending) {
+		return nil, false, nil
+	}
+	return doc, exists, err
 }
 
 func (s Strategy) LoadDocumentWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, options LoadOptions, fields ...string) (map[string]any, bool, error) {
@@ -141,7 +145,19 @@ func (s Strategy) LoadDocumentWithOptions(ctx context.Context, spec meta.TypeSpe
 
 // LoadDocuments 批量读取文档，Redis 缺失的行再批量回源 Mongo。
 func (s Strategy) LoadDocuments(ctx context.Context, spec meta.TypeSpec, keys []storage.RecordKey, fields ...string) ([]map[string]any, []bool, error) {
-	return s.LoadDocumentsWithOptions(ctx, spec, keys, LoadOptions{}, fields...)
+	docs, exists, err := s.LoadDocumentsWithOptions(ctx, spec, keys, LoadOptions{}, fields...)
+	if !errors.Is(err, storage.ErrDeletionPending) {
+		return docs, exists, err
+	}
+	docs = make([]map[string]any, len(keys))
+	exists = make([]bool, len(keys))
+	for i, key := range keys {
+		docs[i], exists[i], err = s.LoadDocument(ctx, spec, key, fields...)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	return docs, exists, nil
 }
 
 func (s Strategy) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSpec, keys []storage.RecordKey, options LoadOptions, fields ...string) ([]map[string]any, []bool, error) {
@@ -267,10 +283,7 @@ func (s Strategy) loadMongoMissingDocuments(ctx context.Context, spec meta.TypeS
 }
 
 func (s Strategy) loadMissingDocumentsWithProtectedBackfill(ctx context.Context, spec meta.TypeSpec, missingIndexes []int, missingKeys []storage.RecordKey, docs []map[string]any, exists []bool, fields ...string) error {
-	mongoBatch, ok := s.MongoLoader.(storage.BatchDocumentLoader)
-	if ok {
-		return s.loadMissingDocumentsWithBatchBackfill(ctx, spec, missingIndexes, missingKeys, docs, exists, mongoBatch, fields...)
-	}
+	// 每条冷记录在同一记录锁内读取 Mongo 并回填，禁止使用锁外的旧批次快照。
 	for pos, idx := range missingIndexes {
 		doc, found, err := s.loadMongoDocumentAndBackfillRedis(ctx, spec, missingKeys[pos], fields...)
 		if err != nil {
@@ -280,73 +293,6 @@ func (s Strategy) loadMissingDocumentsWithProtectedBackfill(ctx context.Context,
 		exists[idx] = found
 	}
 	return nil
-}
-
-func (s Strategy) loadMissingDocumentsWithBatchBackfill(ctx context.Context, spec meta.TypeSpec, missingIndexes []int, missingKeys []storage.RecordKey, docs []map[string]any, exists []bool, mongo storage.BatchDocumentLoader, fields ...string) error {
-	mongoDocs, mongoExists, err := mongo.LoadDocuments(ctx, spec, missingKeys)
-	if err != nil {
-		return err
-	}
-	if err := validateFusionDocumentResults("mongo batch loader", mongoDocs, mongoExists, len(missingKeys)); err != nil {
-		return err
-	}
-	for pos, idx := range missingIndexes {
-		doc, found, err := s.backfillMongoDocumentAfterRedisCheck(ctx, spec, missingKeys[pos], mongoDocs[pos], mongoExists[pos], fields...)
-		if err != nil {
-			return err
-		}
-		docs[idx] = doc
-		exists[idx] = found
-	}
-	return nil
-}
-
-func (s Strategy) backfillMongoDocumentAfterRedisCheck(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, mongoDocument map[string]any, mongoExists bool, fields ...string) (document map[string]any, exists bool, err error) {
-	if err := s.requireRedisBackfillDependencies(); err != nil {
-		return nil, false, err
-	}
-	backfiller := s.redisBackfiller()
-	locker := s.redisLocker()
-	lock, err := locker.LockRecord(ctx, spec, key, storage.LockOptions{TTL: s.loadLockTTL(), Wait: s.loadLockWait()})
-	if err != nil {
-		return nil, false, err
-	}
-	if isNilFusionDependency(lock) {
-		return nil, false, fmt.Errorf("%w: redis backfill received nil record lock", ErrStrategyDependenciesNotConfigured)
-	}
-	defer func() { releaseRecordLock(ctx, lock, &err) }()
-
-	if redisLoader := s.redisLoader(); !isNilFusionDependency(redisLoader) {
-		document, exists, err = loadFusionDocument(ctx, redisLoader, "redis document loader", spec, key, fields...)
-		if err != nil {
-			return nil, false, err
-		}
-		if exists {
-			return document, true, nil
-		}
-	}
-	if err := storage.ValidateDocumentResult(mongoDocument, mongoExists); err != nil {
-		return nil, false, fmt.Errorf("fusion: mongo batch loader: %w", err)
-	}
-	if !mongoExists {
-		return loadFusionDocument(ctx, s.redisLoader(), "redis document loader after mongo miss", spec, key, fields...)
-	}
-	ttl, err := s.redisBackfillTTL(spec)
-	if err != nil {
-		return nil, false, err
-	}
-	options := storage.ApplyOptions{
-		Upsert: true,
-		TTL:    ttl,
-	}
-	inserted, err := backfiller.BackfillDocumentWithOptions(ctx, spec, key, mongoDocument, options)
-	if err != nil {
-		return nil, false, err
-	}
-	if inserted {
-		return projectDocument(spec, mongoDocument, fields), true, nil
-	}
-	return s.loadRedisAfterConcurrentBackfill(ctx, spec, key, fields...)
 }
 
 func (s Strategy) loadMongoDocumentAndBackfillRedis(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, fields ...string) (document map[string]any, exists bool, err error) {

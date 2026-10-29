@@ -4,6 +4,10 @@
 
 ## 当前批次：稳定 Actor 放置与调用
 
+[GD 访问安全与 World 独占运行时](plans-entity-access-safety.md) 第 1～7 批已完成本地回归与微基准，未提交。共享普通读取使用 Snapshot，修改在 Procedure 内 Find；GDUser/GDServer 保留存储权威，World 保留独占路径及 2×2 Monster、50ms 主 tick 和网格保存闭环。[验收报告](entity-access-acceptance.md) 区分完整回归、race、真实依赖、跳过范围及复制开销，不代表云端容量验收。EntityCache 观察与管理 API 已按后续确认范围实现，见 [管理 API](entity-cache-management.md)；本地回归与热路径对照见 [管理验收](entity-cache-management-acceptance.md)；分配次数不变，计时波动和验证边界已记录。
+
+统一 GD 实体访问已实施，实际验收见 [实施记录](plans-entity-access.md)。生成期选择 EntityCache，保留显式 ctx 与现有 Find 入口，创建/删除与 Procedure、WriteBack 协同；不新增普通 Handler 自动互斥或自动事务。
+
 - tx 只提供通用分组放置和稳定槽位归属；业务负责 OriginServerID、MainServerID 等分组规则。合服执行不进入框架。
 - txgame 已撤下合服屏障、在线合服协议/运维入口及等级合榜；保留静态 GDServer 目录和两阶段建角。合服示例后置，不能在运行中直接修改目录来代替完整合服流程。
 - 通用放置已经具备，不再新增另一套寻址：同服务池、同命名策略、同分组的不同 Actor Type 共用当前槽位 owner，邮箱、状态与生命周期独立。SLG 已将 Role、Legion、ServerActor 接入主服组；GlobalGameActor 和 World 保持独立。
@@ -170,3 +174,14 @@ Runtime 组合 Messenger 与 Controller；WaitReady 复用 Probe 做低频只读
 - 本轮 tx、txgen、两组 server 与两组 gen 全量测试通过；tx 启动能力绑定及两组模块/存储/调用入口定向 race 通过。
 - 已显式启用本机 Redis 验证两组榜单；World-only 与 Game/World 组合启动读取榜单均实际通过；txgame Fightroom 同进程与独立子进程调用、通知和排水通过。
 - 独立跨项目只读复核及工程后置检查无待修问题。未运行云压测、完整滚动发布或部署打包；本轮未提交。
+
+
+## Procedure 新根创建
+
+本轮补齐 `db.Create(ctx, value)` 的受管事务路径：动态锁、savepoint 回滚、缓存创建占位、无 setter 的首次条件写入和失败保留。复用既有 Store 元数据，不改生成 API，不改两阶段建角或 World 启动回填。实现与边界见 [单机事务](design.md#事务内创建与首次写回)。本地验收覆盖真实 Redis/Mongo/Fusion 条件创建及两组示例回归；不以此声明分布式数据库事务或宕机恢复能力。
+
+### EntityCache 使用期保护
+
+通用 EntityCache 通过 Use 回调覆盖取得对象、等待 Procedure、执行及提交/回滚回调，Role 等共享实体接入；WorldBucket 已在独占运行时批次退出该路径。缓存回收在无使用者时才调用 WriteBack.TryRelease；释放中禁止同键取得旧对象，事务内冲突明确返回 ErrReleasing，避免持锁循环等待。当前生成完整查询已经统一接入应用共享 EntityCache；对象使用期与 Actor 生命周期保持独立，具体契约和最新验收见统一 GD 实体访问计划。
+
+本地验收：tx、txgameslg/server 全量 Go 回归通过；EntityCache、WriteBack 与 slggame/slgworld 针对性 race 通过；本机真实依赖下 Role 周期写回/停服 Flush 和 World Mongo 写回通过。默认关闭空闲过期的缓存命中基准为约 64～67ns/op、0 B/op、0 allocs/op（Intel i9-9880H、Go 1.26.5），旧裸读取约 19～20ns/op；该结果仅说明使用权保护的本机开销，不代表集群吞吐验收。

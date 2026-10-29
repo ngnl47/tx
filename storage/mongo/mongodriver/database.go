@@ -29,6 +29,9 @@ func NewDatabase(db *mongo.Database) Database {
 	return Database{db: db}
 }
 
+// NativeDatabase 返回共享数据库句柄；连接只能由存储运行时关闭。
+func (d Database) NativeDatabase() *mongo.Database { return d.db }
+
 // EnsureIndexes 通过 MongoDB 的幂等 createIndexes 命令创建缺失索引。
 // 同名定义不一致时由 MongoDB 返回冲突错误，调用方必须让启动失败。
 func (d Database) EnsureIndexes(ctx context.Context, collection string, indexes []txmongo.IndexModel) error {

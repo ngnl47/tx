@@ -360,7 +360,8 @@ func redisSubKeySuffixes(spec meta.TypeSpec) []string {
 
 func redisReadKeys(spec meta.TypeSpec, prefix string, fields []string) []string {
 	keys := []string{}
-	includeMain := len(fields) == 0
+	// Fusion 的主文档还承载删除意图，投影也必须读取。
+	includeMain := len(fields) == 0 || spec.Storage.Mode == meta.StorageModeFusion
 	subKeys := map[string]struct{}{}
 	if len(fields) == 0 {
 		for field, fieldSpec := range spec.Fields {
@@ -409,7 +410,8 @@ func (p redisBatchPlan) step() int {
 }
 
 func redisBatchReadPlan(spec meta.TypeSpec, fields []string) redisBatchPlan {
-	includeMain := len(fields) == 0
+	// Fusion 的主文档还承载删除意图，投影也必须读取。
+	includeMain := len(fields) == 0 || spec.Storage.Mode == meta.StorageModeFusion
 	subKeys := map[string]struct{}{}
 	if len(fields) == 0 {
 		for field, fieldSpec := range spec.Fields {

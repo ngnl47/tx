@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/ngnl47/tx/modules/tasks"
+	mongodriver "go.mongodb.org/mongo-driver/mongo"
 	"slices"
 	"strings"
 
@@ -48,8 +49,9 @@ type RedisStorage interface {
 	Clients() txgoredis.ClientProvider
 }
 
-// MongoStorage 只暴露 MongoDB 文档读写。
+// MongoStorage 提供 MongoDB 文档读写与复用连接的原生数据库入口。
 type MongoStorage interface {
+	txmongo.DatabaseProvider
 	txstorage.VersionedDocumentReplacer
 	txmongo.DocumentFinder
 	Storage
@@ -312,6 +314,10 @@ func (view modeStorageView) ChangeWriter() txstorage.ChangeApplier {
 }
 
 type mongoStorageView struct{ modeStorageView }
+
+func (view mongoStorageView) MongoDatabase(ctx context.Context, route string, key any) (*mongodriver.Database, error) {
+	return view.storage.MongoDatabase(ctx, route, key)
+}
 
 func (view mongoStorageView) FindDocument(ctx context.Context, spec meta.TypeSpec, shardKey any, filter txmongo.Filter, fields ...string) (map[string]any, bool, error) {
 	return view.storage.FindDocument(ctx, spec, shardKey, filter, fields...)

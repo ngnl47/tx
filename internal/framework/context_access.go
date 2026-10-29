@@ -3,6 +3,7 @@ package framework
 import (
 	"context"
 	"fmt"
+	mongodriver "go.mongodb.org/mongo-driver/mongo"
 
 	"github.com/ngnl47/tx/change"
 	"github.com/ngnl47/tx/lifecycle"
@@ -221,4 +222,12 @@ func (access modeStorageAccess) ReplaceDocumentAtVersion(ctx context.Context, sp
 // Client 复用进程级连接，服务不能提前关闭其他消费者正在使用的连接。
 func (access rpcAccess) Client(route txrpc.Route) grpc.ClientConnInterface {
 	return access.runtime.rpcSender.Client(route)
+}
+
+// MongoDatabase 只允许 Mongo 能力视图取得共享原生句柄。
+func (access modeStorageAccess) MongoDatabase(ctx context.Context, route string, key any) (*mongodriver.Database, error) {
+	if access.mode != meta.StorageModeMongo || access.storage == nil {
+		return nil, fmt.Errorf("framework: storage capability %q cannot access Mongo database", access.mode)
+	}
+	return access.storage.MongoDatabase(ctx, route, key)
 }

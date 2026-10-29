@@ -650,6 +650,9 @@ func redisDeleteKeys(spec meta.TypeSpec, prefix string) []string {
 }
 
 func decodeDocument(body string) (map[string]any, error) {
+	if body == "@tx:deleted" {
+		return nil, storage.ErrDeletionPending
+	}
 	decoder := json.NewDecoder(bytes.NewBufferString(body))
 	decoder.UseNumber()
 	var doc map[string]any
@@ -683,4 +686,23 @@ func joinDocumentBodies(parts []string) (map[string]any, error) {
 		}
 	}
 	return body, nil
+}
+
+// MarkDeletion 由 Fusion 在记录锁内调用；保留不带 TTL 的删除标记。
+func (a *Adapter) MarkDeletion(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
+	if err := storage.ValidateRecordKey(spec, key); err != nil {
+		return err
+	}
+	client, err := a.scriptClient()
+	if err != nil {
+		return err
+	}
+	result, err := client.Eval(ctx, markDeletionScript, redisDeleteKeys(spec, redisKeyPrefix(spec, key)))
+	if err != nil {
+		return err
+	}
+	if result != scriptResultOK {
+		return fmt.Errorf("redis: mark deletion: %s", result)
+	}
+	return nil
 }

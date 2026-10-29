@@ -10,6 +10,7 @@ import (
 	txruntime "github.com/ngnl47/tx/runtime"
 	"github.com/ngnl47/tx/storage"
 	"github.com/ngnl47/tx/storage/redis/goredis"
+	mongodriver "go.mongodb.org/mongo-driver/mongo"
 )
 
 type runtimeAccess struct {
@@ -80,4 +81,18 @@ func (c *serviceContext) RuntimeAccess(owner string, ids []CModID) txruntime.Pro
 	}
 	p.requireOpen()
 	return p
+}
+
+func (p *runtimeAccess) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
+	p.require(storageCMod(spec.Storage.Mode))
+	return p.runtime.storage.ChangeWriter().(storage.DeleteApplier).ApplyDelete(ctx, spec, key)
+}
+func (p *runtimeAccess) BackfillDocumentWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, doc map[string]any, options storage.ApplyOptions) (bool, error) {
+	p.require(storageCMod(spec.Storage.Mode))
+	return p.runtime.storage.ChangeWriter().(storage.DocumentBackfiller).BackfillDocumentWithOptions(ctx, spec, key, doc, options)
+}
+
+func (p *runtimeAccess) MongoDatabase(ctx context.Context, route string, key any) (*mongodriver.Database, error) {
+	p.require(CModMongoStorage)
+	return p.runtime.storage.MongoDatabase(ctx, route, key)
 }

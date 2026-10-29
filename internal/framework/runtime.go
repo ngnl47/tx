@@ -10,6 +10,7 @@ import (
 	"github.com/ngnl47/tx/lifecycle"
 	txactor "github.com/ngnl47/tx/modules/actor"
 	"github.com/ngnl47/tx/modules/discovery"
+	"github.com/ngnl47/tx/modules/entitycache"
 	txrpc "github.com/ngnl47/tx/modules/rpc"
 	"github.com/ngnl47/tx/modules/txn"
 	"github.com/ngnl47/tx/sessionid"
@@ -22,30 +23,35 @@ type actorTransport interface {
 }
 
 type runtime struct {
-	accessClosed  atomic.Bool
-	serviceAccess map[string]*runtimeAccess
-	servicePhases map[string]*servicePhase
-	taskQueue     *taskRuntime
-	config        Config
-	lifecycle     *lifecycle.WaitGroupContext
-	storage       *storageRuntime
-	rpc           *txrpc.Host
-	actor         txactor.Runtime
-	actorDirect   txactor.Caller
-	rpcSender     *txrpc.Sender
-	entities      *actorhost.Runtime
-	actorRPC      actorTransport
-	actorTypes    []txactor.Type
-	actorCatalog  map[string]actorTypeSpec
-	placement     *actorPlacement
-	transaction   *txn.Runtime
-	directory     *discovery.ServiceDirectory
-	slots         discovery.SlotStore
-	sessionIDMu   sync.RWMutex
-	sessionIDs    *sessionIDRuntime
-	instanceMu    sync.RWMutex
-	instance      discovery.Instance
-	selectedCMods map[CModID]struct{}
+	accessClosed        atomic.Bool
+	serviceAccess       map[string]*runtimeAccess
+	servicePhases       map[string]*servicePhase
+	taskQueue           *taskRuntime
+	config              Config
+	lifecycle           *lifecycle.WaitGroupContext
+	storage             *storageRuntime
+	rpc                 *txrpc.Host
+	actor               txactor.Runtime
+	actorDirect         txactor.Caller
+	rpcSender           *txrpc.Sender
+	entities            *actorhost.Runtime
+	actorRPC            actorTransport
+	actorTypes          []txactor.Type
+	actorCatalog        map[string]actorTypeSpec
+	placement           *actorPlacement
+	transaction         *txn.Runtime
+	commitParticipant   txn.CommitParticipant
+	entityCacheMu       sync.Mutex
+	entityCache         *entitycache.Runtime
+	entityCacheDraining bool
+	entityCacheClosed   bool
+	directory           *discovery.ServiceDirectory
+	slots               discovery.SlotStore
+	sessionIDMu         sync.RWMutex
+	sessionIDs          *sessionIDRuntime
+	instanceMu          sync.RWMutex
+	instance            discovery.Instance
+	selectedCMods       map[CModID]struct{}
 }
 
 func (runtime *runtime) hasCMod(id CModID) bool {

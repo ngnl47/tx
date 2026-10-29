@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ngnl47/tx/change"
@@ -58,6 +59,7 @@ type Runtime struct {
 	redisClients   []*goredis.Client
 	mongoClients   []*mongodriver.Client
 	redisCloseOnce sync.Once
+	mongoClosed    atomic.Bool
 	mongoCloseOnce sync.Once
 	redisCloseErr  error
 	mongoCloseErr  error
@@ -226,7 +228,10 @@ func (s *Runtime) CloseMongo(ctx context.Context) error {
 	if s == nil {
 		return nil
 	}
-	s.mongoCloseOnce.Do(func() { s.mongoCloseErr = disconnectMongoClients(ctx, s.mongoClients) })
+	s.mongoCloseOnce.Do(func() {
+		s.mongoClosed.Store(true)
+		s.mongoCloseErr = disconnectMongoClients(ctx, s.mongoClients)
+	})
 	return s.mongoCloseErr
 }
 
@@ -531,4 +536,58 @@ func disconnectMongoClients(ctx context.Context, clients []*mongodriver.Client) 
 		}
 	}
 	return firstErr
+}
+
+// BackfillDocumentWithOptions 按 GD 存储模式执行仅缺失时创建，禁止回退为覆盖写入。
+func (writer storageChangeWriter) BackfillDocumentWithOptions(ctx context.Context, spec meta.TypeSpec, key txstorage.RecordKey, document map[string]any, options txstorage.ApplyOptions) (bool, error) {
+	if writer.storage == nil {
+		return false, ErrNotConfigured
+	}
+	if err := writer.storage.requireStorageMode(spec.Storage.Mode); err != nil {
+		return false, err
+	}
+	var selected txstorage.ChangeApplier
+	switch spec.Storage.Mode {
+	case meta.StorageModeMongo:
+		selected = writer.mongo
+	case meta.StorageModeRedis:
+		selected = writer.redis
+	case meta.StorageModeFusion:
+		selected = writer.fusion
+	default:
+		return false, fmt.Errorf("storage runtime: unsupported creation mode %q", spec.Storage.Mode)
+	}
+	backfiller, ok := selected.(txstorage.DocumentBackfiller)
+	if !ok || isNil(backfiller) {
+		return false, fmt.Errorf("storage runtime: conditional creation is not configured for %s", spec.Storage.Mode)
+	}
+	inserted, err := backfiller.BackfillDocumentWithOptions(ctx, spec, key, document, options)
+	writer.storage.observeStorageError(err)
+	return inserted, err
+}
+
+// ApplyDelete 依据生成存储模式完成删除，不让应用自行选择后端。
+func (writer storageChangeWriter) ApplyDelete(ctx context.Context, spec meta.TypeSpec, key txstorage.RecordKey) error {
+	if writer.storage == nil {
+		return ErrNotConfigured
+	}
+	if err := writer.storage.requireStorageMode(spec.Storage.Mode); err != nil {
+		return err
+	}
+	var selected txstorage.ChangeApplier
+	switch spec.Storage.Mode {
+	case meta.StorageModeMongo:
+		selected = writer.mongo
+	case meta.StorageModeRedis:
+		selected = writer.redis
+	case meta.StorageModeFusion:
+		selected = writer.fusion
+	}
+	deleter, ok := selected.(txstorage.DeleteApplier)
+	if !ok {
+		return fmt.Errorf("storage runtime: deletion is not configured for %s", spec.Storage.Mode)
+	}
+	err := deleter.ApplyDelete(ctx, spec, key)
+	writer.storage.observeStorageError(err)
+	return err
 }

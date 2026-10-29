@@ -147,6 +147,8 @@ runtime shutdown 或 discovery 快照写权限。
 `CounterStore`，Fusion 暴露 `FusionReader`；对应 `ChangeWriter` 也只接受相同 `TypeSpec.Storage.Mode`。这些接口不返回底层
 客户端或连接关闭权。即使同一进程中的其他服务启用了更多后端，当前服务也不能越过 `ServiceSpec.Requires` 使用未声明存储。
 
+高级查询使用 `txruntime.MongoCollection(ctx, spec, routeValue)` 返回官方集合，或通过 `CModMongoStorage().MongoDatabase` 取得路由数据库；复用现有连接，不新增查询 DSL。原生操作不自动加入 EntityCache/Procedure，连接与游标边界见 [运行时访问说明](docs/runtime-access.md#mongo-原生查询)。
+
 `MongoStorage.FindDocument(ctx, spec, shardKey, filter, fields...)` 使用显式路由键选择唯一 Mongo 目标，
 再按 `mongo.Filter` 中的 BSON 字段等值条件查询。联合查询使用 `Conditions`，例如平台与平台用户标识；
 查询经过 Mongo 健康准入，返回公共 JSON 字段名文档。该接口不扫描其他分片，也不更改记录主键；
@@ -4237,7 +4239,7 @@ GD 不需要基础设施字段或逐类型绑定；Mongo 不记录世界槽位�
 
 Fusion 策略会把业务写入携带的 `ApplyOptions.TTL` 收敛为 `runtime.cmods.fusionStorage.dirtyTTL`；高级调用方不能用显式 TTL 缩短可靠回写窗口。`dirtyTTL` 默认 30 天，配置期要求它严格大于所有 Fusion 类型的 `delaySaveTime` 和 `delayDelTime`。Mongo 回源并回填 Redis 时，缺少正数 `delayDelTime` 的类型也使用 `dirtyTTL`，避免纯净缓存永久占用内存。
 
-`delayDelTime` 不代表 Mongo 删除延迟，也不会触发 Mongo 删除。Fusion 根记录禁止物理删除；该参数只控制 Redis 热数据生命周期。
+`delayDelTime` 不代表 Mongo 删除延迟，也不会触发 Mongo 删除。该参数只控制 Redis 热数据生命周期；显式物理删除由独立的 Remove 路径执行。
 
 常见配置：
 
@@ -4265,14 +4267,14 @@ Redis 热数据还维护一个生命周期版本键 `<mainKey>@v`，例如 `role
 
 这些 key 共享 `{1001}` 这个 hash tag；当 `routeBy != idField` 时也会共享 routeBy 生成的 hash tag，例如 `arena_record:{470001}:90001`、`arena_record:{470001}:90001@v` 和 `arena_record:{470001}:90001@lock`。
 
-Fusion 业务删除必须在数据里定义状态字段：
+Fusion 可用 `db.Remove(ctx, role)` 执行可恢复物理删除，也可由业务自行定义状态字段进行逻辑删除：
 
 ```go
 role.SetDeleted(true)
 err := db.Save(ctx, role)
 ```
 
-框架不会替业务决定逻辑删除字段，也不会把 `delayDelTime` 解释成 Mongo 删除时间。
+框架不会替业务决定逻辑删除字段，也不会把 `delayDelTime` 解释成 Mongo 删除时间。物理删除使用记录锁、Redis 删除标记与既有延迟任务，失败明确返回并可重试；它不是跨 Redis/Mongo 原子事务。生成期 EntityCache 的访问与删除顺序见 [设计文档](docs/design.md#统一-gd-实体访问)。
 
 集合元素删除仍然属于普通文档变更，例如：
 
@@ -4415,3 +4417,10 @@ Bee/Ant 的 `CModMongoStorage()` 暴露 `ReadDocumentVersion` 和 `ReplaceDocume
 该能力不提供多文档事务，也不定义账号、建角、服务器目录或合服规则；这些规则由项目维护。网络错误不能证明条件写未提交，调用方应从持久化状态恢复，而不是盲目重试业务操作。
 
 服务上下文的统一 Actor、Reader、Writer、Procedure 和业务 Redis 入口见 [运行时访问](docs/runtime-access.md)。CMod 由服务显式声明，框架不从 GD 注解推导。
+
+服务可实现 Bee/Ant `ServiceFlusher.Flush(ctx)`：Actor 和后台任务排空后、CMod 排水前完成独占数据最终保存；失败保留依赖，阻止正常 Stop/PrepareHandoff 成功。成功阶段不重复执行。详见 [服务持久化收尾](docs/runtime-access.md#服务持久化收尾)。
+
+
+### 共享 GD 访问边界
+
+开启生成期 EntityCache 的持久根必须声明 `@transaction`。完整 `data.FindGD*(ctx, ...)` 仅接受有效 Procedure；普通只读使用 `data.SnapshotGD*(ctx, 完整主键...)`，在记录锁内复制当前内存数据。共享对象的创建、删除和修改通过 Procedure/WriteBack 提交，快照不能用来保存或删除原对象。关闭缓存或标记 `@noEntityCache` 的独占类型保留直接存取。详见 [GD 实体访问](docs/runtime-access.md#统一-gd-实体访问)。

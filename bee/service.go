@@ -146,3 +146,14 @@ type Placement struct {
 	Name    string
 	Factory func(Context) (txactor.GroupResolver, error)
 }
+
+// ServiceFlusher 在全部 Actor 与后台任务排空后保存服务拥有的数据。
+// 失败保留资源并沿用 Stop/交接重试；成功后才进入资源释放。
+type ServiceFlusher interface{ Flush(context.Context) error }
+
+func (adapter *serviceAdapter) Flush(ctx context.Context) error {
+	if flusher, ok := adapter.instance.(ServiceFlusher); ok && !isNil(flusher) {
+		return flusher.Flush(ctx)
+	}
+	return nil
+}

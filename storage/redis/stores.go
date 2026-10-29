@@ -157,3 +157,11 @@ func redisStoreName(spec meta.TypeSpec) string {
 	}
 	return spec.Redis.Route.Type
 }
+
+func (c *Stores) MarkDeletion(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey) error {
+	a, err := c.adapterFor(spec, key)
+	if err != nil {
+		return err
+	}
+	return a.MarkDeletion(ctx, spec, key)
+}

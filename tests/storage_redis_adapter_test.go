@@ -1978,3 +1978,19 @@ func hasMGetCall(calls [][]string, want []string) bool {
 	}
 	return false
 }
+
+// Fusion 的投影不能漏读主键上的删除意图，否则会重新回源旧 Mongo 数据。
+func TestRedisFusionProjectionChecksDeletionMarker(t *testing.T) {
+	client := &recordingRedisStringClient{values: map[string]string{"role:{1001}": "@tx:deleted"}, hasResult: true, evalResult: "@tx:deleted"}
+	adapter := mustRedisAdapter(t, client)
+	spec := meta.TypeSpec{Storage: meta.StorageSpec{Mode: meta.StorageModeFusion}, Type: meta.Type{Fields: []meta.Field{{Name: "Items", JSONName: "items"}}}, Redis: &meta.RedisSpec{Key: "role"}, Fields: map[string]meta.FieldSpec{"Items": {Redis: &meta.RedisFieldSpec{SubKey: "items"}}}}
+	key := storage.RecordKey{ID: int64(1001)}
+	_, _, err := adapter.LoadDocument(t.Context(), spec, key, "Items")
+	if !errors.Is(err, storage.ErrDeletionPending) || !slices.Contains(client.evals[0].keys, "role:{1001}") {
+		t.Fatalf("单条投影未检查删除标记: %v %v", err, client.evals)
+	}
+	_, _, err = adapter.LoadDocuments(t.Context(), spec, []storage.RecordKey{key}, "Items")
+	if !errors.Is(err, storage.ErrDeletionPending) {
+		t.Fatalf("批量投影未检查删除标记: %v", err)
+	}
+}

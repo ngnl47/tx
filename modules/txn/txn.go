@@ -118,8 +118,10 @@ type CallOptions struct {
 }
 
 type callHooks struct {
+	allowEmptyLocks       bool
 	reserveDynamicTargets func([]LockTarget) error
 	afterAttemptFailure   func()
+	commitLocked          func([]LockTarget)
 }
 
 const defaultDeadlockRetries = 3
@@ -150,9 +152,14 @@ type Tx struct {
 	options    CallOptions
 	hooks      callHooks
 
+	remover       RemovalParticipant
+	removals      []removal
+	creator       CreationParticipant
+	creations     []creation
 	undos         []change.UndoFunc
 	afterCommit   []func(context.Context) error
 	afterRollback []func(context.Context)
+	finish        []func()
 }
 
 // Context 返回本次事务派生的 context，供事务内的后续框架调用传递。
@@ -231,8 +238,8 @@ func (recorder targetUndoRecorder) RecordUndo(undo change.UndoFunc) {
 
 // Do 在当前事务内建立 savepoint。返回错误时只回滚该调用之后的修改，调用方可自行决定是否继续外层事务。
 func (tx *Tx) Do(fn func(*Tx) error) error {
-	if tx == nil {
-		return errors.New("transaction: nil transaction")
+	if tx == nil || !tx.active {
+		return ErrInactive
 	}
 	if fn == nil {
 		return nil
@@ -290,7 +297,8 @@ func (tx *Tx) Call(procedure Procedure) error {
 				releaseLocks(tx.id, &heldLocks)
 				return err
 			}
-			if tx.hooks.reserveDynamicTargets != nil {
+			_, creating := procedure.(createProcedureCall)
+			if tx.hooks.reserveDynamicTargets != nil && !creating {
 				if err := tx.hooks.reserveDynamicTargets(newLocks); err != nil {
 					releaseLocks(tx.id, &heldLocks)
 					return err
@@ -322,6 +330,8 @@ func (tx *Tx) AfterRollback(fn func(context.Context)) {
 }
 
 type savepoint struct {
+	removals      int
+	creations     int
 	undos         int
 	afterCommit   int
 	afterRollback int
@@ -329,6 +339,8 @@ type savepoint struct {
 
 func (tx *Tx) savepoint() savepoint {
 	return savepoint{
+		creations:     len(tx.creations),
+		removals:      len(tx.removals),
 		undos:         len(tx.undos),
 		afterCommit:   len(tx.afterCommit),
 		afterRollback: len(tx.afterRollback),
@@ -336,10 +348,21 @@ func (tx *Tx) savepoint() savepoint {
 }
 
 func (tx *Tx) rollbackTo(point savepoint, runCallbacks bool) {
+	for i := len(tx.removals) - 1; i >= point.removals; i-- {
+		tx.removals[i].reservation.Abort()
+	}
+	tx.removals = tx.removals[:point.removals]
 	for index := len(tx.undos) - 1; index >= point.undos; index-- {
 		tx.undos[index]()
 	}
 	tx.undos = tx.undos[:point.undos]
+	for i := len(tx.creations) - 1; i >= point.creations; i-- {
+		entry := tx.creations[i]
+		entry.reservation.Abort()
+		delete(tx.dirty, entry.target.Key)
+		entry.target.Store.SetUndoRecorder(nil)
+	}
+	tx.creations = tx.creations[:point.creations]
 	if runCallbacks {
 		for _, fn := range tx.afterRollback[point.afterRollback:] {
 			fn(tx.ctx)
@@ -406,9 +429,12 @@ func run(ctx context.Context, locks []LockTarget, fn func(*Tx) error, options Ca
 	if _, ok := FromContext(ctx); ok {
 		return errors.New("transaction: nested Run is not allowed; use tx.Call")
 	}
-	prepared, err := prepareLocks(locks)
-	if err != nil {
-		return err
+	var prepared []LockTarget
+	if len(locks) > 0 || !hooks.allowEmptyLocks {
+		prepared, err = prepareLocks(locks)
+		if err != nil {
+			return err
+		}
 	}
 	transaction := nextTransactionID()
 	heldLocks, err := acquireLocks(ctx, transaction, prepared, procedurePath)
@@ -434,6 +460,11 @@ func run(ctx context.Context, locks []LockTarget, fn func(*Tx) error, options Ca
 		hooks:     hooks,
 	}
 	tx.ctx = context.WithValue(ctx, contextKey{}, tx)
+	defer func() {
+		for i := len(tx.finish) - 1; i >= 0; i-- {
+			tx.finish[i]()
+		}
+	}()
 	defer func() {
 		tx.active = false
 		if recovered := recover(); recovered != nil {
@@ -462,6 +493,16 @@ func run(ctx context.Context, locks []LockTarget, fn func(*Tx) error, options Ca
 	if err == nil && tx.deadlock != nil {
 		err = tx.deadlock
 	}
+	if err == nil {
+		err = tx.validateCreations()
+		if err == nil {
+			for _, r := range tx.removals {
+				if err = r.reservation.Validate(); err != nil {
+					break
+				}
+			}
+		}
+	}
 	if err != nil {
 		rollbackCallbacks := append([]func(context.Context){}, tx.afterRollback...)
 		tx.rollbackTo(savepoint{}, false)
@@ -480,8 +521,20 @@ func run(ctx context.Context, locks []LockTarget, fn func(*Tx) error, options Ca
 		return err
 	}
 
-	// 成功时不再需要反向操作。提交回调不能占用数据锁，也不能继续修改已解绑 Store。
+	// 内部提交在持锁时完成登记；业务 AfterCommit 在解绑和释放锁后执行。
 	tx.finalizeDirtyTargets()
+	for _, entry := range tx.creations {
+		entry.reservation.Commit()
+	}
+	tx.creations = nil
+	for _, r := range tx.removals {
+		r.reservation.Commit()
+		delete(tx.dirty, r.target.Key)
+	}
+	tx.removals = nil
+	if tx.hooks.commitLocked != nil {
+		tx.hooks.commitLocked(tx.dirtyTargets())
+	}
 	tx.undos = nil
 	for _, lock := range tx.targets {
 		lock.Store.SetUndoRecorder(nil)

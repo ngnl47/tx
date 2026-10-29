@@ -6,6 +6,7 @@ import "embed"
 var luaScripts embed.FS
 
 var (
+	markDeletionScript     = mustReadLuaScript("scripts/mark_deletion.lua")
 	backfillDocumentScript = mustReadLuaScript("scripts/backfill_document.lua")
 	deleteDocumentScript   = mustReadLuaScript("scripts/delete_document.lua")
 	expireDocumentScript   = mustReadLuaScript("scripts/expire_document.lua")

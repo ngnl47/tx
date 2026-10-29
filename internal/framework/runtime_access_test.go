@@ -31,9 +31,18 @@ func TestServiceAccessIsolationAndLifetime(t *testing.T) {
 		f()
 	}
 	assertPanic(func() { txruntime.MongoReader(ca) })
+	assertPanic(func() { _, _ = txruntime.MongoDatabase(ca, "world", 1) })
 	a.accessClosed.Store(true)
 	assertPanic(func() { txruntime.Actor(ca) })
 	assertPanic(func() { txruntime.AppID(ca) })
+	assertPanic(func() { _, _ = txruntime.MongoDatabase(ca, "world", 1) })
+}
+
+func TestNativeMongoModeIsolation(t *testing.T) {
+	access := modeStorageAccess{mode: "redis"}
+	if _, err := access.MongoDatabase(t.Context(), "world", 1); err == nil {
+		t.Fatal("Redis 能力视图泄露 Mongo 原生入口")
+	}
 }
 func TestServiceTasksKeepAccess(t *testing.T) {
 	root := lifecycle.NewWaitGroupContext(context.Background())
@@ -109,4 +118,38 @@ func TestStartupRuntimeBinding(t *testing.T) {
 	r.accessClosed.Store(true)
 	reject(func() { setup.AppID() })
 	reject(func() { declared.Actor() })
+}
+
+func TestEntityCacheSharedAcrossServicesAndIsolatedAcrossApplications(t *testing.T) {
+	newApp := func() *runtime {
+		tasks := lifecycle.NewWaitGroupContext(t.Context())
+		t.Cleanup(func() { tasks.Cancel(); tasks.Wait() })
+		return &runtime{lifecycle: tasks}
+	}
+	a, b := newApp(), newApp()
+	game := newRuntimeAccess(a, Spec{Name: "game"})
+	world := newRuntimeAccess(a, Spec{Name: "world"})
+	other := newRuntimeAccess(b, Spec{Name: "game"})
+	ca, err := game.EntityCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cw, err := world.EntityCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb, err := other.EntityCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ca != cw || ca == cb {
+		t.Fatal("缓存没有遵守应用资源边界")
+	}
+	a.accessClosed.Store(true)
+	defer func() {
+		if recover() == nil {
+			t.Error("关闭应用仍能取得缓存")
+		}
+	}()
+	_, _ = game.EntityCache()
 }

@@ -20,6 +20,7 @@ type serviceHost struct {
 }
 
 type startedService struct {
+	flushed bool
 	service Service
 	access  *runtimeAccess
 	ingress *lifecycle.Ingress
@@ -279,4 +280,25 @@ func serviceCallbackContext(ctx context.Context, current startedService) context
 		return ctx
 	}
 	return txruntime.Bind(ctx, current.access)
+}
+
+// flush 由串行收尾流程调用；成功服务不因其他服务或传输失败再次刷盘。
+func (host *serviceHost) flush(ctx context.Context) error {
+	host.mu.Lock()
+	services := append([]startedService(nil), host.started...)
+	host.mu.Unlock()
+	for i := len(services) - 1; i >= 0; i-- {
+		if services[i].flushed {
+			continue
+		}
+		if flusher, ok := services[i].service.(Flusher); ok {
+			if err := flusher.Flush(serviceCallbackContext(ctx, services[i])); err != nil {
+				return fmt.Errorf("framework: flush service %q: %w", services[i].service.Spec().Name, err)
+			}
+		}
+		host.mu.Lock()
+		host.started[i].flushed = true
+		host.mu.Unlock()
+	}
+	return nil
 }

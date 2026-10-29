@@ -94,11 +94,13 @@ type Manager struct {
 	writeAdmission WriteAdmission
 	config         Config
 
-	mu         sync.Mutex
-	generation uint64
-	entries    map[txn.LockKey]rootEntry
-	pending    map[txn.LockKey]pendingEntry
-	reserved   map[txn.LockKey]int
+	mu               sync.Mutex
+	generation       uint64
+	entries          map[txn.LockKey]rootEntry
+	pending          map[txn.LockKey]pendingEntry
+	reserved         map[txn.LockKey]int
+	creationCaches   map[string]CreationCache
+	creationResolver CreationCache
 
 	heapMu              sync.Mutex
 	lastHeapSampleAt    time.Time
@@ -109,8 +111,11 @@ type Manager struct {
 var _ Runtime = (*Manager)(nil)
 
 type rootEntry struct {
-	target   txn.LockTarget
-	retained bool
+	target    txn.LockTarget
+	retained  bool
+	creating  bool
+	createKey storage.RecordKey
+	removal   RemovalReservation
 }
 
 type pendingEntry struct {
@@ -323,6 +328,9 @@ func (manager *Manager) tryReleaseLocked(target txn.LockTarget) (bool, error) {
 	defer manager.mu.Unlock()
 	entry, exists := manager.entries[target.Key]
 	if !exists {
+		if store, ok := target.Store.(storage.ChangeStore); ok && store.HasChanges() {
+			return false, nil
+		}
 		return true, nil
 	}
 	if !sameStore(entry.target.Store, target.Store) {
@@ -362,13 +370,39 @@ func (manager *Manager) Flush(ctx context.Context) error {
 func (manager *Manager) flushTarget(ctx context.Context, entry pendingEntry) error {
 	return txn.WithLocks(ctx, []txn.LockTarget{entry.target}, func(ctx context.Context) error {
 		store, ok := entry.target.Store.(storage.ChangeStore)
-		if !ok || !store.HasChanges() {
+		manager.mu.Lock()
+		root, present := manager.entries[entry.target.Key]
+		if !present || !sameStore(root.target.Store, entry.target.Store) {
+			manager.mu.Unlock()
+			return nil
+		}
+		creating := root.creating
+		manager.mu.Unlock()
+		if root.removal != nil {
+			return manager.deleteLocked(ctx, entry.target)
+		}
+
+		if !ok || (!creating && !store.HasChanges()) {
 			manager.clearPending(entry)
 			return nil
 		}
-		if err := manager.saveStore(ctx, entry.target, store); err != nil {
+		var err error
+		if creating {
+			if !reflect.DeepEqual(root.createKey, store.RecordKey()) {
+				return errors.New("writeback: pending creation record key changed")
+			}
+			err = manager.insertStore(ctx, store)
+		} else {
+			err = manager.saveStore(ctx, entry.target, store)
+		}
+		if err != nil {
 			return err
 		}
+		manager.mu.Lock()
+		current := manager.entries[entry.target.Key]
+		current.creating = false
+		manager.entries[entry.target.Key] = current
+		manager.mu.Unlock()
 		manager.clearPending(entry)
 		return nil
 	})
