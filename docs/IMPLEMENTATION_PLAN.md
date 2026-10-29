@@ -4,7 +4,9 @@
 
 ## 当前批次：稳定 Actor 放置与调用
 
-[GD 访问安全与 World 独占运行时](plans-entity-access-safety.md) 第 1～7 批已完成本地回归与微基准，未提交。共享普通读取使用 Snapshot，修改在 Procedure 内 Find；GDUser/GDServer 保留存储权威，World 保留独占路径及 2×2 Monster、50ms 主 tick 和网格保存闭环。[验收报告](entity-access-acceptance.md) 区分完整回归、race、真实依赖、跳过范围及复制开销，不代表云端容量验收。EntityCache 观察与管理 API 已按后续确认范围实现，见 [管理 API](entity-cache-management.md)；本地回归与热路径对照见 [管理验收](entity-cache-management-acceptance.md)；分配次数不变，计时波动和验证边界已记录。
+2026-10-29 已完成当前存储版本的 [本地正式包与持续流量滚动验收](local-package-rollout-acceptance.md)：txgame、SLG Role、SLG World 三轮均超过 99.99%，分别核对持久化、排水和 World 重启恢复；验收模板修复与报告尚未提交。本轮不含云端容量或合服执行。
+
+[GD 访问安全与 World 独占运行时](plans-entity-access-safety.md) 第 1～7 批及 EntityCache 管理 API 已提交，完成本地回归与微基准。共享普通读取使用 Snapshot，修改在 Procedure 内 Find；GDUser/GDServer 保留存储权威，World 保留独占路径及 2×2 Monster、50ms 主 tick 和网格保存闭环。[验收报告](entity-access-acceptance.md) 区分完整回归、race、真实依赖、跳过范围及复制开销，不代表云端容量验收。EntityCache 观察与管理 API 已按后续确认范围实现，见 [管理 API](entity-cache-management.md)；本地回归与热路径对照见 [管理验收](entity-cache-management-acceptance.md)；分配次数不变，计时波动和验证边界已记录。
 
 统一 GD 实体访问已实施，实际验收见 [实施记录](plans-entity-access.md)。生成期选择 EntityCache，保留显式 ctx 与现有 Find 入口，创建/删除与 Procedure、WriteBack 协同；不新增普通 Handler 自动互斥或自动事务。
 
