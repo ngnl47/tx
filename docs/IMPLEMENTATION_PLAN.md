@@ -18,8 +18,8 @@
 ## 大验收前的下一项
 
 1. **文档整理已完成（2026-10-30）**：README 导览、按功能设计、API/配置参考、稳定契约与有日期报告分开；已收敛完成的施工步骤并校验跨仓链接、章节锚点和 Markdown 围栏。此项只做文档验证，没有重新生成或运行集群。
-2. **SLG 合服后的 World 寻址联合验收尚未执行。** 复用现有打包/集群入口，验证 OriginServerID → MainServerID → Excel World 绑定 → WorldID，并分别走客户端直达与 Role→World。现有两项独立验收不替代这一联合证据。先保持 World 独占、停服快照与受控 owner，不增加世界数据迁移或赛季玩法。
-3. 完成后以两组应用计划汇总大验收矩阵，分开报告功能、持久化、排水、完成率和性能。遵守专用数据 ownership，不因文档整理自动启动新测试。
+2. **SLG 合服后的 World 联合寻址已完成（2026-10-30）。** [八进程正式包验收](../../txgameslg/docs/acceptance/merge-world-20261030.md)覆盖 OriginServerID → MainServerID → Excel World 绑定 → WorldID。客户端直达与 Role→World 在停服重启后均改向主服的 World，新 owner、CAS generation 和 World 最终保存已核对；12/12 条最终通知属于有限功能证据，不是持续流量或云端容量结论。
+3. **下一项：** 以两组应用计划汇总大验收矩阵，分开报告功能、持久化、排水、完成率和性能。遵守专用数据 ownership，不因文档整理自动启动新测试。
 
 两组应用的具体待办：[txgame](../../txgame/docs/IMPLEMENTATION_PLAN.md)、[txgameslg](../../txgameslg/docs/IMPLEMENTATION_PLAN.md)。生成器没有待完成的已批准新功能，扩展以 [txgen 计划](../../txgen/docs/IMPLEMENTATION_PLAN.md) 为准。
 
