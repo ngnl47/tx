@@ -9,7 +9,7 @@ import (
 
 func TestWaitGraphAddsAndRemovesAcyclicWait(t *testing.T) {
 	var graph waitGraph
-	lock := NewLockKey("role", 1002)
+	lock := NewLockey("role", 0, 1002)
 
 	if err := graph.add(1, 2, lock, "PTrade -> PGrantItem"); err != nil {
 		t.Fatalf("add returned error: %v", err)
@@ -26,8 +26,8 @@ func TestWaitGraphAddsAndRemovesAcyclicWait(t *testing.T) {
 
 func TestWaitGraphRejectsCycleWithCompleteProcedureChain(t *testing.T) {
 	var graph waitGraph
-	roleLock := NewLockKey("role", 1002)
-	guildLock := NewLockKey("guild", 7)
+	roleLock := NewLockey("role", 0, 1002)
+	guildLock := NewLockey("guild", 0, 7)
 
 	if err := graph.add(1, 2, roleLock, "PGuildTrade -> PGrantItem"); err != nil {
 		t.Fatalf("add first edge: %v", err)
@@ -73,13 +73,13 @@ func TestWaitGraphRejectsCycleWithCompleteProcedureChain(t *testing.T) {
 
 func TestWaitGraphDetectsLongCycle(t *testing.T) {
 	var graph waitGraph
-	if err := graph.add(1, 2, NewLockKey("role", 2), "PFirst -> PSecond"); err != nil {
+	if err := graph.add(1, 2, NewLockey("role", 0, 2), "PFirst -> PSecond"); err != nil {
 		t.Fatalf("add 1 -> 2: %v", err)
 	}
-	if err := graph.add(2, 3, NewLockKey("role", 3), "PSecond -> PThird"); err != nil {
+	if err := graph.add(2, 3, NewLockey("role", 0, 3), "PSecond -> PThird"); err != nil {
 		t.Fatalf("add 2 -> 3: %v", err)
 	}
-	err := graph.add(3, 1, NewLockKey("role", 1), "PThird -> PFirst")
+	err := graph.add(3, 1, NewLockey("role", 0, 1), "PThird -> PFirst")
 	var deadlock *DeadlockError
 	if !errors.As(err, &deadlock) {
 		t.Fatalf("add 3 -> 1 error = %v, want DeadlockError", err)

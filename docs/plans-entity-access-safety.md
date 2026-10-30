@@ -244,12 +244,12 @@ Procedure 可能按既有规则重试，事务体不引入 RPC、下行发布等
 
 ## 第 5 批：两组共享实体应用迁移
 
-实施判定：GDUser/GDServer 是条件更新的存储权威，显式排除缓存；GDRole/GDLegion 保留既有事务锁。World 的独占排除不变。并发业务回归发现首次 LockTarget 惰性初始化发生在发布之后，tx 冷加载补齐发布前初始化，避免在应用中添加第二套锁。
+实施判定：GDUser/GDServer 是条件更新的存储权威，显式排除缓存；GDRole/GDLegion 保留既有事务锁。World 的独占排除不变。并发业务回归发现首次 StoreTarget 惰性初始化发生在发布之后，tx 冷加载补齐发布前初始化，避免在应用中添加第二套锁。
 
 
 - [x] 依据有效缓存选择补齐仍受管类型的锁能力，重新生成两组产物；不改已有锁身份，不让已排除类型重新进入缓存。
 - [x] `GetBag`、Legion 资料、排行榜装饰等普通读取使用 Snapshot；需跨对象一致性的读取继续使用 Procedure。
-- [x] `ClaimBag`、改名、等级等共享实体修改改为在 Procedure.Process 内 Find，移除只为预先提供 LockTarget 的裸对象查询。保留显式事务，而非自动包裹 Handler。
+- [x] `ClaimBag`、改名、等级等共享实体修改改为在 Procedure.Process 内 Find，移除只为预先提供 StoreTarget 的裸对象查询。保留显式事务，而非自动包裹 Handler。
 - [x] 核查 Procedure 回调、事件、响应结构和异步队列，结果在锁内复制；不把共享对象或子集合直接留给后续序列化协程。
 - [x] 核对 World 持有的是排除缓存的独占 GD，而非共享缓存引用；缺失记录沿用条件初始化且成功加载后才 Ready，不能以异步写回登记代替持久化成功。
 - [x] 检查 GDUser 建角、GDServer 目录及初始化扫描，保留其原子条件/存储权威语义，明确这些路径不等同于缓存 Snapshot。

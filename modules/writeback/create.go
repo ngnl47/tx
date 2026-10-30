@@ -20,11 +20,6 @@ type CreationCache interface {
 	ReserveCreate(context.Context, any) (txn.CreationReservation, error)
 }
 
-// CreationCacheBinder 在服务启动时按生成的事务锁域绑定唯一缓存。
-type CreationCacheBinder interface {
-	BindCreationCache(string, CreationCache) error
-}
-
 // BindCreationResolver 绑定按生成描述定位实体的统一入口，不再要求应用逐锁域登记。
 func (manager *Manager) BindCreationResolver(cache CreationCache) error {
 	manager.mu.Lock()
@@ -36,25 +31,8 @@ func (manager *Manager) BindCreationResolver(cache CreationCache) error {
 	return nil
 }
 
-// BindCreationCache 绑定根对象锁域的唯一缓存；同一域不能重复绑定。
-func (manager *Manager) BindCreationCache(scope string, cache CreationCache) error {
-	if scope == "" || isNil(cache) {
-		return errors.New("writeback: creation cache and scope are required")
-	}
-	manager.mu.Lock()
-	defer manager.mu.Unlock()
-	if manager.creationCaches == nil {
-		manager.creationCaches = make(map[string]CreationCache)
-	}
-	if manager.creationCaches[scope] != nil {
-		return fmt.Errorf("writeback: creation cache already bound: %s", scope)
-	}
-	manager.creationCaches[scope] = cache
-	return nil
-}
-
 // PrepareCreate 在事务持锁期间预留写回容量并取得唯一缓存占位。
-func (manager *Manager) PrepareCreate(ctx context.Context, target txn.LockTarget, value any) (txn.CreationReservation, error) {
+func (manager *Manager) PrepareCreate(ctx context.Context, target txn.StoreTarget, value any) (txn.CreationReservation, error) {
 	store, ok := target.Store.(storage.ChangeStore)
 	if !ok || !isPersistentTarget(target) {
 		return nil, ErrInvalidTarget
@@ -63,14 +41,11 @@ func (manager *Manager) PrepareCreate(ctx context.Context, target txn.LockTarget
 		return nil, errors.New("writeback: conditional creation writer is not configured")
 	}
 	manager.mu.Lock()
-	cache := manager.creationCaches[target.Key.Scope]
-	if cache == nil {
-		cache = manager.creationResolver
-	}
+	cache := manager.creationResolver
 	entry := manager.entries[target.Key]
 	manager.mu.Unlock()
 	if cache == nil {
-		return nil, fmt.Errorf("writeback: creation cache is not bound: %s", target.Key.Scope)
+		return nil, fmt.Errorf("writeback: creation cache is not bound: %s", target.Key.Type)
 	}
 	if entry.retained {
 		return nil, ErrIdentityConflict
@@ -78,7 +53,7 @@ func (manager *Manager) PrepareCreate(ctx context.Context, target txn.LockTarget
 	if err := storage.ValidateRecordKey(store.TypeSpec(), store.RecordKey()); err != nil {
 		return nil, err
 	}
-	pending, err := manager.Prepare(ctx, []txn.LockTarget{target})
+	pending, err := manager.Prepare(ctx, []txn.StoreTarget{target})
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +76,7 @@ func (manager *Manager) PrepareCreate(ctx context.Context, target txn.LockTarget
 
 type createReservation struct {
 	manager *Manager
-	target  txn.LockTarget
+	target  txn.StoreTarget
 	store   storage.ChangeStore
 	key     storage.RecordKey
 	cache   txn.CreationReservation
@@ -122,7 +97,7 @@ func (r *createReservation) Commit() {
 	entry.createKey = r.key
 	r.manager.entries[r.target.Key] = entry
 	r.manager.mu.Unlock()
-	r.pending.Commit([]txn.LockTarget{r.target})
+	r.pending.Commit([]txn.StoreTarget{r.target})
 	r.cache.Commit()
 }
 func (r *createReservation) Abort() { r.cache.Abort(); r.pending.Abort() }

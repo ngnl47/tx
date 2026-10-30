@@ -81,8 +81,8 @@ func TestRemovalRetiresPolicyAndDeferredEntry(t *testing.T) {
 type runtimeValue struct{ id int64 }
 
 func (v *runtimeValue) SetUndoRecorder(change.UndoRecorder) {}
-func (v *runtimeValue) LockTarget() txn.LockTarget {
-	return txn.NewLockTarget(txn.NewLockKey("runtime-value", v.id), v)
+func (v *runtimeValue) StoreTarget() txn.StoreTarget {
+	return txn.NewStoreTarget(txn.NewLockey("runtime-value", 0, v.id), v)
 }
 
 // 取消只结束等待意愿，不代表仍在执行的 Procedure 已归还对象。
@@ -186,9 +186,9 @@ type lazyLockValue struct {
 	prepared bool
 }
 
-func (v *lazyLockValue) LockTarget() txn.LockTarget {
+func (v *lazyLockValue) StoreTarget() txn.StoreTarget {
 	if !v.prepared {
 		v.prepared = true
 	}
-	return v.runtimeValue.LockTarget()
+	return v.runtimeValue.StoreTarget()
 }

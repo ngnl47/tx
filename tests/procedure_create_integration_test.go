@@ -18,14 +18,14 @@ import (
 
 type persistentNewRoot struct{ *fusionProcedureStore }
 
-func (v *persistentNewRoot) LockTarget() txn.LockTarget {
-	return txn.NewLockTarget(txn.NewLockKey("creation", v.RecordKey().ID), v)
+func (v *persistentNewRoot) StoreTarget() txn.StoreTarget {
+	return txn.NewStoreTarget(txn.NewLockey("creation", 0, v.RecordKey().ID), v)
 }
 
 type insertProcedure struct{ value *persistentNewRoot }
 
-func (p insertProcedure) Locks(context.Context) ([]txn.LockTarget, error) { return nil, nil }
-func (p insertProcedure) Process(tx *txn.Tx) error                        { return txn.Create(tx.Context(), p.value) }
+func (p insertProcedure) Locks(context.Context) (txn.Lockeys, error) { return nil, nil }
+func (p insertProcedure) Process(tx *txn.Tx) error                   { return txn.Create(tx.Context(), p.value) }
 
 // 实际 Redis/Mongo 条件写验证，不依赖业务 GD 或生成器。
 func TestProcedureFirstInsertStorageIntegration(t *testing.T) {
@@ -66,7 +66,7 @@ func TestProcedureFirstInsertStorageIntegration(t *testing.T) {
 				writer, reader = strategy, strategy
 			}
 			manager := writeback.NewManager(writeback.Dependencies{Writer: writer}, writeback.Config{})
-			_ = manager.BindCreationCache("creation", &createCache{})
+			_ = manager.BindCreationResolver(&createCache{})
 			runtime := txn.NewRuntime()
 			_ = runtime.BindCommitParticipant(manager)
 			if err := runtime.Call(ctx, insertProcedure{value}); err != nil {

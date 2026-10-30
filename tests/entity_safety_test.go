@@ -52,8 +52,8 @@ type mapEntity struct {
 func (v *mapEntity) EntityDescriptor() *entitycache.Descriptor { return v.descriptor }
 func (v *mapEntity) Store() *mapEntity                         { return v }
 func (v *mapEntity) RecordKey() storage.RecordKey              { return storage.RecordKey{ID: v.id} }
-func (v *mapEntity) LockTarget() txn.LockTarget {
-	return txn.NewLockTarget(txn.NewLockKey("map-entity", v.id), v)
+func (v *mapEntity) StoreTarget() txn.StoreTarget {
+	return txn.NewStoreTarget(txn.NewLockey("map-entity", 0, v.id), v)
 }
 func (v *mapEntity) ResolveValue(change.Path) (any, bool) { return v.values, true }
 func (v *mapEntity) increment() {
@@ -90,7 +90,7 @@ func TestSharedEntitySnapshotWritebackAndEviction(t *testing.T) {
 	writer := &mapWriter{rows: make(map[int64]map[string]int64)}
 	manager := writeback.NewManager(writeback.Dependencies{Writer: writer}, writeback.Config{})
 	cache, err := entitycache.NewRuntime(entitycache.Config{MaximumSize: 1, IdleTimeout: time.Millisecond}, func(ctx context.Context, value any) (bool, error) {
-		return manager.TryRelease(ctx, value.(*mapEntity).LockTarget())
+		return manager.TryRelease(ctx, value.(*mapEntity).StoreTarget())
 	})
 	if err != nil {
 		t.Fatal(err)

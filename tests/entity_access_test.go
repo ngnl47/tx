@@ -21,8 +21,8 @@ type managedRoot struct {
 
 func (v *managedRoot) EntityDescriptor() *entitycache.Descriptor { return v.descriptor }
 func (v *managedRoot) Store() *runtimeTestStore                  { return &v.runtimeTestStore }
-func (v *managedRoot) LockTarget() txn.LockTarget {
-	return txn.NewLockTarget(txn.NewLockKey("managed", 1001), v.Store())
+func (v *managedRoot) StoreTarget() txn.StoreTarget {
+	return txn.NewStoreTarget(txn.NewLockey("managed", 0, 1001), v.Store())
 }
 
 type managedWriter struct {
@@ -50,14 +50,14 @@ func (p managedProvider) Writer() storage.ChangeApplier { return p.writer }
 
 type entityProcedure func(*txn.Tx) error
 
-func (p entityProcedure) Locks(context.Context) ([]txn.LockTarget, error) { return nil, nil }
-func (p entityProcedure) Process(tx *txn.Tx) error                        { return p(tx) }
+func (p entityProcedure) Locks(context.Context) (txn.Lockeys, error) { return nil, nil }
+func (p entityProcedure) Process(tx *txn.Tx) error                   { return p(tx) }
 
 func TestManagedEntityCreateFindRollbackRemoveAndRecreate(t *testing.T) {
 	writer := &managedWriter{}
 	manager := writeback.NewManager(writeback.Dependencies{Writer: writer}, writeback.Config{})
 	cache, err := entitycache.NewRuntime(entitycache.Config{MaximumSize: 16}, func(ctx context.Context, value any) (bool, error) {
-		return manager.TryRelease(ctx, value.(*managedRoot).LockTarget())
+		return manager.TryRelease(ctx, value.(*managedRoot).StoreTarget())
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -200,7 +200,7 @@ func BenchmarkManagedEntityFind(b *testing.B) {
 	descriptor := &entitycache.Descriptor{Load: func(context.Context, storage.RecordKey) (any, bool, error) { return root, true, nil }, Store: func(v any) storage.ChangeStore { return v.(*managedRoot).Store() }, Clone: func(v any) (any, error) { return &managedRoot{descriptor: v.(*managedRoot).descriptor}, nil }}
 	root.descriptor = descriptor
 	cache, err := entitycache.NewRuntime(entitycache.Config{MaximumSize: 16}, func(ctx context.Context, v any) (bool, error) {
-		return manager.TryRelease(ctx, v.(*managedRoot).LockTarget())
+		return manager.TryRelease(ctx, v.(*managedRoot).StoreTarget())
 	})
 	if err != nil {
 		b.Fatal(err)

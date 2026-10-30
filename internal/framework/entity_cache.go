@@ -21,16 +21,16 @@ func (p *runtimeAccess) EntityCache() (*entitycache.Runtime, error) {
 		return r.entityCache, nil
 	}
 	cache, err := entitycache.NewRuntime(r.config.Runtime.EntityCache, func(ctx context.Context, value any) (bool, error) {
-		if lockable, ok := value.(txn.Lockable); ok {
+		if lockable, ok := value.(txn.StoreProvider); ok {
 			if release, ok := r.commitParticipant.(interface {
-				TryRelease(context.Context, txn.LockTarget) (bool, error)
+				TryRelease(context.Context, txn.StoreTarget) (bool, error)
 			}); ok {
-				return release.TryRelease(ctx, lockable.LockTarget())
+				return release.TryRelease(ctx, lockable.StoreTarget())
 			}
 		}
 		d := value.(entitycache.Described).EntityDescriptor()
 		var clean bool
-		err := txn.WithLocks(ctx, []txn.LockTarget{value.(txn.Lockable).LockTarget()}, func(context.Context) error { clean = !d.Store(value).HasChanges(); return nil })
+		err := txn.WithLocks(ctx, txn.Lockeys{value.(txn.StoreProvider).StoreTarget().Lock}, func(context.Context) error { clean = !d.Store(value).HasChanges(); return nil })
 		return clean, err
 	})
 	if err != nil {

@@ -27,7 +27,7 @@ func NewWriteAdmission(storage *Runtime) WriteAdmission {
 
 // RequireWritable 检查本次事务涉及的全部持久化模式。
 // 混合 Redis/Mongo 目标与 Fusion 目标都要求两个后端同时可写。
-func (admission WriteAdmission) RequireWritable(targets []txn.LockTarget) error {
+func (admission WriteAdmission) RequireWritable(targets []txn.StoreTarget) error {
 	if admission.storage == nil {
 		return ErrNotConfigured
 	}

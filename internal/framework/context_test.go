@@ -16,14 +16,14 @@ import (
 
 type contextCommitParticipant struct{}
 
-func (contextCommitParticipant) Prepare(context.Context, []txn.LockTarget) (txn.CommitReservation, error) {
+func (contextCommitParticipant) Prepare(context.Context, []txn.StoreTarget) (txn.CommitReservation, error) {
 	return contextCommitReservation{}, nil
 }
 
 type contextCommitReservation struct{}
 
-func (contextCommitReservation) Commit([]txn.LockTarget) {}
-func (contextCommitReservation) Abort()                  {}
+func (contextCommitReservation) Commit([]txn.StoreTarget) {}
+func (contextCommitReservation) Abort()                   {}
 
 func TestServiceContextExposesCModsWithoutLifecycleOwnership(t *testing.T) {
 	root := lifecycle.NewWaitGroupContext(context.Background())

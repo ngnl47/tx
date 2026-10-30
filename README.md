@@ -2637,153 +2637,74 @@ task.SetActive(2)
 
 ### 单机事务
 
-为类型声明 `@transaction` 后，生成代码提供稳定 `LockKey()` 与 `LockTarget()`。项目在 txgen 的生成元数据中集中定义锁域顺序，Go 输入只引用域名：
-
-```yaml
-# gen/transaction/lock_orders.yml
-scopes:
-  legion: 10
-  role: 20
-```
+锁身份与 Store 分开管理。项目在数据输入目录集中声明 Go 枚举，`iota` 决定类别优先级，值越大越先获取；同类别的整数键按数值排序。GD 只引用枚举名：
 
 ```go
-// @transaction:`scope:"legion" keyField:"Id"`
-type GDLegion struct {
-	Id int64
-}
+// gen/data/lock.go
+type LockType int
+const (
+    RoleLock LockType = iota + 1
+    LegionLock
+)
 
-// @transaction:`scope:"role" keyField:"RoleId"`
-type GDRole struct {
-	RoleId int64
-}
+// @genData
+// @transaction:`lock:"RoleLock" keyField:"RoleId"`
+type GDRole struct { RoleId int64; Name string }
 ```
 
-txgen 生成时把顺序编译进 `LockTarget.Order`，tx runtime 不读取 YAML。业务传入 GD 数据对象即可，事务只回滚 Store 受控 API 的修改，不处理跨进程锁、Redis/Mongo 分布式事务或裸字段赋值：
+生成的 `data.RoleLock.Key(roleID)` 返回纯 `txn.Lockey`，不要求 GD 已加载。类别名与 Key 组成锁身份，枚举值只影响获取顺序；不存在锁顺序 YAML。未知 lock、重复或负数枚举值会在生成写盘前被拒绝。
 
 ```go
-	err := txn.Run(ctx, txn.Locks(role), func(tx *txn.Tx) error {
-	store := role.Store()
-	store.SetName("alice")
-	item, ok := store.ItemsStore().Get(1001)
-	if ok {
-		item.SetQuantity(item.GetQuantity() + 1)
-	}
-	store.DressStore().Append(&data.GDDressItem{Id: 7, Expire: 100})
-	return nil
-})
+type PRenameRole struct { RoleID int64; Name string }
+func (p *PRenameRole) Locks(context.Context) (txn.Lockeys, error) {
+    return txn.Lockeys{data.RoleLock.Key(p.RoleID)}, nil
+}
+func (p *PRenameRole) Process(tx *txn.Tx) error {
+    role, exists, err := data.FindGDRole(tx.Context(), p.RoleID)
+    if err != nil { return err }
+    if !exists { return errors.New("role not found") }
+    role.Store().SetName(p.Name)
+    return nil
+}
+err := txruntime.Call(ctx, &PRenameRole{RoleID: 1001, Name: "Alice"})
 ```
 
-回调返回错误或 panic 时，字段值、map/slice 结构、子 Store 变更状态都会恢复到进入事务前的状态。未进入 `txn.Run` 的普通 Store 修改不会建立 undo log，也不会复制旧集合。
-
-直接使用 `txn.Run` 或 `txn.Call` 的临时事务要求新锁目标在绑定 recorder 前没有遗留变更。开发、测试或灰度环境可通过项目配置打开运行时检查；根直接锁在业务回调开始前检查，动态锁在 child `Process` 开始前检查，发现事务外修改时会释放本次新锁并返回错误：
+根调用使用 `txruntime.Call(ctx, p)`；`tx.Call(child)` 是同一事务内的子过程。
+需要原事务提交后再执行独立事务时，在 Process 内登记：
 
 ```go
-txn.Configure(txn.Config{
-	Debug: txn.DebugConfig{
-		CheckCleanLockTargets: true,
-	},
-})
-
-role.SetName("outside-transaction")
-err := txn.Run(ctx, txn.Locks(role), process)
-// err: transaction: lock target role:1001 has pending changes before transaction
+return tx.CallAfterCommit(&PRefreshRoleIndex{RoleID: p.RoleID})
 ```
 
-项目应在启动时把自己的 yml 配置转换为这项配置；`tx` 不读取项目文件。生产环境通常保持默认 `false`，避免每个事务入口递归遍历整棵 Store 状态树。开启后应先保存或 `ClearChanges()` 处理事务外已有的 Store 变更，再进入事务；不要把事务外修改混入本次提交边界。
+后续过程按登记顺序同步执行，外层 Call 等待它结束；不重新投递 Actor 邮箱，不自动转成后台工作。子过程回滚或根失败会取消登记；后续失败返回 `*txn.AfterCommitError`，原事务已经提交，不可重投原请求。提交后的 panic 仍向调用边界传播，但不会触发原事务回滚回调。排水和操作期限见 [Procedure 调用与后续工作](docs/procedure-calls.md)。
 
-常驻内存实体由 `writeback.Manager` 管理时，前一轮事务的变更会刻意保留到下一次 Flush，因此根过程必须使用已经绑定 CommitParticipant 的 `runtime.Call`。它会在内部允许同一 Store 的已有变更，普通业务代码不要直接调用 `txn.CallWithOptions` 绕过提交参与者。
-
-锁等待通过调用方的 `context.Context` 统一控制。获取当前直接锁批次时发生超时或取消，框架会释放该批次中尚未交给业务使用的新锁，且不会执行对应回调：
+独立后台事务使用 `txruntime.Submit`，与同步 `CallAfterCommit` 分开：
 
 ```go
-ctx, cancel := context.WithTimeout(rootCtx, 200*time.Millisecond)
-defer cancel()
-
-err := txn.Run(ctx, locks, func(tx *txn.Tx) error {
-    // 只有所有 LockTarget 都已锁定后才会进入这里。
-    return update(tx)
-})
-if errors.Is(err, context.DeadlineExceeded) {
-    // 返回给调用方重试、排队或降级。
-}
+future, err := txruntime.Submit(ctx, &PRefreshRoleIndex{RoleID: roleID})
+if err != nil { return err } // 满额、排水或提交上下文已取消；未开始执行。
+// 可立即返回；需要结果时使用独立的等待上下文。
+err = future.Await(waitCtx)
 ```
 
-每个锁域在项目级注册表中占用唯一 `LockTarget.Order`。多个目标先按 `Order` 获取不同锁域，再在同一锁域内按 `LockKey.Value` 稳定排序。上例先获取军团域，再获取角色域；业务调用仍然只是 `txn.Locks(guild, role)`，不传 order，也不需要知道生成整数。同一逻辑 Key 不得以不同 order 重复声明。
+接纳后重建仅携带服务/缓存能力的上下文并施加独立期限，不继承 Handler 取消、请求缓存使用范围或任意请求 context value。默认最多 64 个执行、8192 个已接纳任务（执行加 FIFO 排队），期限为接纳起 10 秒；排队过期直接完成并释放位置，执行中超时仍等待实际退出。Await 超时不取消任务。同步后续事务仍在本次执行内完成，排水先等所有 Call/Submit 再最终写回。Future 成功表示内存提交和 WriteBack 登记，不等于最终落盘；异步错误会记录日志，panic 通过 `*txn.PanicError` 返回，提交后失败保留 `*txn.AfterCommitError`。不并发复用 Procedure 或携带共享 GD 裸指针；事务内不使用 Submit。详见 [异步 Submit](docs/procedure-submit.md)。
 
-不同 `LockKey` 可以并行执行，相同 Key 在当前进程内严格串行。业务不能把同一个对象编码成不同 `LockKey` 来绕过互斥；例如所有 `GDRole{RoleId: 470001}` 都必须使用生成的同一把角色锁。进程级精确 Key 注册表、所有权等待队列和死锁检测流程见 [事务精确 Key 锁注册表](docs/design.md#事务精确-key-锁注册表)。
-
-根过程在执行前已经知道一批对象时可以使用 `LockSet` 一次收集。Builder 不在收集阶段自行去重或加锁，最终仍交给 `Run` 统一校验：
-
-```go
-locks := txn.NewLockSet().Add(guild)
-for _, member := range members {
-    locks.Add(member)
-}
-
-err := txn.Run(ctx, locks.Build(), func(tx *txn.Tx) error {
-	return updateGuildMembers(tx)
-})
+```text
+Locks：仅声明类型 + ID
+  → 排序、取得 Lockeys → 派生事务 ctx → Process
+      → Find/Create → 复用锁或动态补锁 → 登记 Store 的 undo 与写回预留
+      → tx.Call(child) → 子 savepoint，新增锁持有至根结束
+  → error/panic：逐 Store 回滚、撤销创建/删除预留
+  → success：持锁登记 WriteBack → 释放锁 → AfterCommit
 ```
 
-需要复用一段带锁业务逻辑时，定义 `Procedure` 并按项目约定使用 `P` 前缀。每个 Procedure 的 `Locks` 只声明自己直接访问的对象；子过程通过当前 `tx.Call` 同步执行，已持有锁会复用，新锁会动态获取并一直持有到根事务结束：
+`StoreTarget` 是对象参与事务的描述，不是 Procedure 的锁声明。GDRole 与 GDBag 可以共用 `RoleLock.Key(1001)`，但 Store 的记录身份、undo、脏状态和 WriteBack 分别登记。同一记录加载成两个 Store 仍会被拒绝。生成的 `gd.Lockey()` 用于取得对象的锁，`gd.StoreTarget()` 供框架登记对象。
 
-```go
-type PGuildContribution struct {
-	Guild *data.GDLegion
-	Role  *data.GDRole
-}
+业务已知 ID 时应在 Locks 中预声明。运行中才确定的对象由受管 Find/Create 动态补锁，保留等待图死锁检测；根事务被选为受害者时完整回滚，标准 Call 最多重试三次。取消/超时终止锁等待，不冒充死锁。事务会重新执行，不可回滚外部副作用应放到 AfterCommit。
 
-func (p *PGuildContribution) Locks(context.Context) ([]txn.LockTarget, error) {
-	return txn.Locks(p.Guild), nil
-}
+共享 EntityCache 对象只能在有效 Procedure 内查询修改；普通读取使用 Snapshot。低层 `txn.Run(ctx, []txn.StoreTarget{...}, fn)` 供已拥有独占对象的基础设施或测试使用，先锁定并登记这些 Store。它不绕过唯一缓存准入，不能用于查询共享对象后再加锁。
 
-func (p *PGuildContribution) Process(tx *txn.Tx) error {
-	p.Guild.SetExp(p.Guild.Exp + 10)
-	if err := tx.Call(&PGrantReward{Role: p.Role}); err != nil {
-		return err
-	}
-	return nil
-}
-
-type PGrantReward struct {
-	Role *data.GDRole
-}
-
-func (p *PGrantReward) Locks(context.Context) ([]txn.LockTarget, error) {
-	return txn.Locks(p.Role), nil
-}
-
-func (p *PGrantReward) Process(*txn.Tx) error {
-	p.Role.SetPower(p.Role.Power + 10)
-	return nil
-}
-
-err := runtime.Call(ctx, &PGuildContribution{Guild: guild, Role: role})
-```
-
-上例的根过程先持有军团锁，进入 `PGrantReward` 时再获取角色锁。动态锁让父过程不必展开全部子过程实现，但不同根事务仍可能按相反顺序请求锁。框架会在真正阻塞前维护等待图；若新增等待边形成环，当前请求者成为死锁受害者，完整回滚后由标准 `txn.Call` / `runtime.Call` 最多重试三次。每次重试都会输出包含完整等待链和 Procedure 路径的 warning；重试耗尽时可结构化读取错误：
-
-```go
-err := runtime.Call(ctx, procedure)
-var deadlock *txn.DeadlockError
-if errors.As(err, &deadlock) {
-	for _, step := range deadlock.Cycle {
-		log.Error(
-			"procedure deadlock",
-			"waiter", step.Waiter,
-			"blocker", step.Blocker,
-			"lock", step.Lock.String(),
-			"procedurePath", step.ProcedurePath,
-		)
-	}
-}
-```
-
-`CallWithOptions` 是高级入口，`DeadlockRetries: 0` 表示直接返回第一个死锁受害者错误。锁等待超过调用 context 的 deadline 仍返回 `context.DeadlineExceeded`，不会伪装成死锁。若业务已经知道完整锁集，一次收集仍然更高效；动态锁用于运行时筛选和 Procedure 复用，不是要求把所有锁都拆到最晚获取。
-
-死锁重试会重新执行根 `Process`。Procedure 实例只应保存不可变输入，支付、消息投递和其他外部副作用必须放入 `tx.AfterCommit`；不能在 Process 中先执行不可回滚 I/O，再期待 undo 撤销它。
-
-`txn.Tx` 只表示本次已持锁的运行环境，负责 undo、savepoint、子过程调用和提交/回滚回调；它不是业务数据，也不是 `context.Context`。事务内通过生成的 `GD*` 代理方法或显式 Store 修改数据，两者都会走同一受控 Store 路径并登记 undo。过程成功只表示内存修改已提交，不等价于 Redis 或 Mongo 已写入；`AfterCommit` 在锁释放、undo 解绑后按注册顺序执行，任一回调失败会停止后续回调，但不会回滚内存修改。过程返回错误时，`AfterCommit` 不会执行；可用 `AfterRollback` 做指标记录、临时资源释放等不应持久化的数据清理。
+`CheckCleanLockTargets` 保留现有调试配置名称，检查发生在 Store 登记、修改之前。已绑定 WriteBack 的 Procedure Runtime 允许此前未刷盘的脏状态。事务只回滚 Store 受控修改，不提供裸字段赋值回滚、跨进程锁或存储层 ACID。AfterCommit 在锁释放后执行，失败不撤销已提交内存状态。
 
 ### 有状态落盘调度
 
@@ -2791,7 +2712,7 @@ if errors.As(err, &deadlock) {
 
 `writeback.Manager` 只管理提交身份、待刷根对象、代际隔离和延迟刷盘，不是完整的业务对象缓存。对象如何加载、查询、淘汰、分片以及建立业务索引由项目决定。项目需要扩展时应优先包装默认 Manager，复用已经验证的提交和刷盘规则，再在外层增加自己的对象缓存能力。
 
-`CommitParticipant.Prepare` 在 `Procedure.Process` 前完成身份校验、容量预留和存储健康准入；写入准入只检查本次持久化目标的 `TypeSpec.Storage.Mode`：Redis-only 目标不受 Mongo 状态影响，Mongo-only 目标不依赖 Redis，Fusion 或同一事务内混合 Redis/Mongo 目标要求两端都可用。事务成功后的 `CommitReservation.Commit` 不得失败，只接收提交时仍真实变脏的根对象。回滚、panic 或死锁重试会调用 `Abort`，不会留下虚假的缓存身份。
+`CommitParticipant.Prepare` 在 Store 登记、业务修改前完成身份校验、容量预留和存储健康准入；写入准入只检查本次持久化目标的 `TypeSpec.Storage.Mode`：Redis-only 目标不受 Mongo 状态影响，Mongo-only 目标不依赖 Redis，Fusion 或同一事务内混合 Redis/Mongo 目标要求两端都可用。事务成功后的 `CommitReservation.Commit` 不得失败，只接收提交时仍真实变脏的根对象。回滚、panic 或死锁重试会调用 `Abort`，不会留下虚假的缓存身份。
 
 ```go
 runtime := txn.NewRuntime()
@@ -2817,7 +2738,7 @@ if err := runtime.Call(ctx, &PGuildContribution{Guild: guild, Role: role}); err 
 }
 ```
 
-上面的手工装配属于框架或高级用户入口。普通业务只调用 `runtime.Call`；成功后，Manager 按 `LockKey` 去重登记“待刷根对象”。同一个 `GDRole` 连续修改多次或只修改多个子字段，都只计一个待刷根对象；一个事务修改军团和两个角色则计三个。Manager Flush 时取得与 Procedure 相同的精确 Key 锁，在锁内访问 Store 和 GD 当前值，成功后才清理 Store 状态与 Pending，失败则保留并重试：
+上面的手工装配属于框架或高级用户入口。普通业务只调用 `runtime.Call`；成功后，Manager 按 `StoreKey` 去重登记“待刷根对象”。同一个 `GDRole` 连续修改多次或只修改多个子字段，都只计一个待刷根对象；一个事务修改军团和两个角色则计三个。Manager Flush 时取得与 Procedure 相同的精确 Key 锁，在锁内访问 Store 和 GD 当前值，成功后才清理 Store 状态与 Pending，失败则保留并重试：
 
 ```text
 事务 1：role.SetGold(100)
@@ -2825,7 +2746,7 @@ if err := runtime.Call(ctx, &PGuildContribution{Guild: guild, Role: role}); err 
 Flush：  只写 role.Gold = 120
 ```
 
-Manager 不要求对象必须经特定 `LoadRole` 入口取得。业务自行创建或加载的 GD 只要通过生成的 `LockTarget()` 进入 Procedure，就会在修改前完成身份接纳；同一 Manager 内，相同 `LockKey` 绑定不同 Store 会在进入业务逻辑前返回 `writeback.ErrIdentityConflict`，防止一份实体出现两个内存权威实例。
+Manager 不要求对象必须经特定 `LoadRole` 入口取得。业务自行创建或加载的 GD 只要由受管查询把生成的 `StoreTarget()` 登记到 Procedure，就会在修改前完成身份接纳；同一 Manager 内，相同记录身份绑定不同 Store 会在进入业务逻辑前返回 `writeback.ErrIdentityConflict`，防止一份实体出现两个内存权威实例。
 
 ```go
 role := data.NewGDRole()
@@ -2836,7 +2757,7 @@ if err := runtime.Call(ctx, &PUpdateRole{Role: role}); err != nil {
 }
 ```
 
-Actor、场景或其他所有者卸载根对象前，应在 Procedure 外调用 `Manager.TryRelease(ctx, role.LockTarget())`。该方法取得与 Procedure 相同的实体锁；业务不能在锁外轮询 `Store.HasChanges()` 判断后台 Flush 是否完成。返回 `true, nil` 表示身份已经解除，`false, nil` 表示 Pending、Store 变更或预留仍要求保留；身份冲突等异常通过 error 返回。ctx 可取消实体锁等待，取消失败不会解除身份。项目可以包装为 `writeback.TryRelease(ctx, role)`；业务不需要取得 Manager 指针。
+Actor、场景或其他所有者卸载根对象前，应在 Procedure 外调用 `Manager.TryRelease(ctx, role.StoreTarget())`。该方法取得与 Procedure 相同的实体锁；业务不能在锁外轮询 `Store.HasChanges()` 判断后台 Flush 是否完成。返回 `true, nil` 表示身份已经解除，`false, nil` 表示 Pending、Store 变更或预留仍要求保留；身份冲突等异常通过 error 返回。ctx 可取消实体锁等待，取消失败不会解除身份。项目可以包装为 `writeback.TryRelease(ctx, role)`；业务不需要取得 Manager 指针。
 
 `Manager.Run` 遇到单次写入错误会记录错误并保留目标，下一轮继续重试。`Manager.Shutdown` 在 `ShutdownFlushTimeout` 内立即 Flush 并按 `FlushInterval` 重试；截止时返回错误和剩余待刷数量。该超时只约束内存 Store 到 Redis 的最终刷盘，不等待 Fusion 延迟任务回写 Mongo。
 

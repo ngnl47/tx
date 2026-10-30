@@ -14,9 +14,10 @@ type serviceHost struct {
 	registry *registry
 	runtime  *runtime
 
-	mu           sync.Mutex
-	started      []startedService
-	drainAttempt *drainAttempt
+	mu              sync.Mutex
+	started         []startedService
+	drainAttempt    *drainAttempt
+	rollbackPending bool
 }
 
 type startedService struct {
@@ -81,9 +82,7 @@ func (host *serviceHost) initServices(services []Service) error {
 		if err := service.Init(newServiceContextWithTasks(host.runtime, admission, serviceTasks)); err != nil {
 			phase.set(lifecycle.ServiceInitializing, err)
 			startErr := fmt.Errorf("framework: initialize service %q: %w", spec.Name, err)
-			if stopErr := rollbackService(context.Background(), current); stopErr != nil {
-				startErr = errors.Join(startErr, stopErr)
-			}
+			host.started = append(host.started, current)
 			return host.rollbackStart(startErr)
 		}
 		phase.set(lifecycle.ServiceInitialized, nil)
@@ -120,6 +119,28 @@ func (host *serviceHost) openServices() {
 }
 
 func (host *serviceHost) rollbackStart(startErr error) error {
+	host.rollbackPending = true
+	return errors.Join(startErr, host.rollbackInitialization(context.Background()))
+}
+
+// retryInitializationRollback 保留初始化失败的资源关闭顺序，重试尚未完成的 Procedure 排水。
+func (host *serviceHost) retryInitializationRollback(ctx context.Context) error {
+	host.mu.Lock()
+	defer host.mu.Unlock()
+	if !host.rollbackPending {
+		return nil
+	}
+	return host.rollbackInitialization(ctx)
+}
+
+// 调用方持有 host.mu；已接纳的独立 Procedure 退出前不能关闭服务资源。
+func (host *serviceHost) rollbackInitialization(ctx context.Context) error {
+	drainCtx, cancel := context.WithTimeout(ctx, effectiveDrainTimeout(host.runtime.config.Runtime.Lifecycle.DrainTimeout))
+	err := host.runtime.transaction.Drain(drainCtx)
+	cancel()
+	if err != nil {
+		return errors.Join(errStopDeferred, err)
+	}
 	var errs []error
 	for index := len(host.started) - 1; index >= 0; index-- {
 		if err := rollbackService(context.Background(), host.started[index]); err != nil {
@@ -127,7 +148,8 @@ func (host *serviceHost) rollbackStart(startErr error) error {
 		}
 	}
 	host.started = nil
-	return errors.Join(append([]error{startErr}, errs...)...)
+	host.rollbackPending = false
+	return errors.Join(errs...)
 }
 
 func (host *serviceHost) beginDrain() {

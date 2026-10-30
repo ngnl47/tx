@@ -1,0 +1,886 @@
+{
+  "date": "2026-10-30",
+  "artifactRoot": "/private/tmp/tx-procedure-rollout-20261030",
+  "toolchain": "go1.26.5 darwin/amd64",
+  "serverGOMAXPROCS": 2,
+  "driverGOMAXPROCS": 4,
+  "sourceState": {
+    "tx": {
+      "head": "6bd00f2a651597294ff13b9604e9812a26d4418b",
+      "trackedDiffSHA256": "5354cdd6a2802fbff77b90dad89983f0184a5db323ca8f1e0893e987830bbfa1",
+      "status": [
+        " M README.md",
+        " M docs/IMPLEMENTATION_PLAN.md",
+        " M docs/design.md",
+        " M docs/plans-entity-access-safety.md",
+        " M internal/framework/actor_ownership_integration_test.go",
+        " M internal/framework/assembly.go",
+        " M internal/framework/context_access.go",
+        " M internal/framework/context_test.go",
+        " M internal/framework/entity_cache.go",
+        " M internal/framework/procedure.go",
+        " M internal/framework/procedure_test.go",
+        " M internal/framework/service_host.go",
+        " M internal/framework/shutdown.go",
+        " M modules/entitycache/management.go",
+        " M modules/entitycache/runtime.go",
+        " M modules/entitycache/runtime_test.go",
+        " M modules/entitycache/scope_test.go",
+        " M modules/txn/access.go",
+        " M modules/txn/config.go",
+        " M modules/txn/create.go",
+        " M modules/txn/create_test.go",
+        " M modules/txn/lock_benchmark_test.go",
+        " M modules/txn/lock_table.go",
+        " M modules/txn/lock_test.go",
+        " M modules/txn/procedure_name_test.go",
+        " M modules/txn/remove.go",
+        " M modules/txn/runtime.go",
+        " M modules/txn/txn.go",
+        " M modules/txn/wait_graph.go",
+        " M modules/txn/wait_graph_test.go",
+        " M modules/writeback/create.go",
+        " M modules/writeback/manager.go",
+        " M modules/writeback/remove.go",
+        " M storage/runtime/health.go",
+        " M storage/runtime/health_test.go",
+        " M tests/entity_access_test.go",
+        " M tests/entity_safety_test.go",
+        " M tests/procedure_create_integration_test.go",
+        " M tests/storage_fusion_writeback_integration_test.go",
+        " M tests/transaction_test.go",
+        " M tests/txn_runtime_manager_test.go",
+        " M tests/txn_runtime_test.go",
+        " M tests/writeback_create_test.go",
+        " M tests/writeback_manager_test.go",
+        "?? docs/lockey-first-batch.md",
+        "?? docs/procedure-calls.md",
+        "?? docs/procedure-submit-burst.md",
+        "?? docs/procedure-submit.md",
+        "?? modules/txn/continuation_test.go",
+        "?? modules/txn/lockey.go",
+        "?? modules/txn/lockey_contract_test.go",
+        "?? modules/txn/store_target.go",
+        "?? modules/txn/submit.go",
+        "?? modules/txn/submit_benchmark_test.go",
+        "?? modules/txn/submit_test.go",
+        "?? runtime/procedure.go",
+        "?? tests/procedure_submit_test.go",
+        "?? tests/shared_lock_writeback_test.go"
+      ]
+    },
+    "txgen": {
+      "head": "3a03f4f82dd04d6afdc36f3a4d574295704ad718",
+      "trackedDiffSHA256": "db523ced369093c912a923abdd73f6a7d7b1fdd8fbea061cdabfa6ff22edd5c5",
+      "status": [
+        " M README.md",
+        " M docs/design.md",
+        " M gen/config.go",
+        " M gen/model.go",
+        " M gen/render_data.go",
+        " M gen/scan.go",
+        " M gen/templates/store.go.tmpl",
+        " D gen/transaction_lock_orders.go",
+        " D gen/transaction_lock_orders_test.go",
+        " M gen/validate.go",
+        " M tests/entitycache_test.go",
+        " M tests/generate_cmd_test.go",
+        " M tests/generate_data_test.go",
+        " M tests/input/data/role.go",
+        " D tests/input/transaction/lock_orders.yml",
+        " M tests/numeric_benchmark_test.go",
+        " M tests/output/data/.txgen_data_manifest.json",
+        " M tests/output/data/GDRoleStore.go",
+        " M tests/store_behavior_test.go",
+        "?? gen/transaction_locks.go",
+        "?? gen/transaction_locks_test.go",
+        "?? tests/input/data/lock.go",
+        "?? tests/output/data/LockType.go"
+      ]
+    },
+    "txgame": {
+      "head": "ac87db0b3a860d86f7986bfa14a489e4db2803d2",
+      "trackedDiffSHA256": "8c94c16ab4cbc7db12d5e86b71ffb71100aeaa97772401e09abed853fb28fc3f",
+      "status": [
+        " M README.md",
+        " M server/internal/db/db_test.go",
+        " M server/internal/process/operation_test.go",
+        " M server/services/internal/actorcmd/operation_test.go"
+      ]
+    },
+    "txgameslg": {
+      "head": "c5a296d559b8985f7e86bd920a7967382575346b",
+      "trackedDiffSHA256": "7ecb6643b69e936f34fb1bfd3c12c6b282603852d8e9eb1b9414a3401f23445d",
+      "status": [
+        " M AGENTS.md",
+        " M README.md",
+        " M gen/data/legion.go",
+        " M gen/data/role.go",
+        " M gen/data/world.go",
+        " M gen/main/txgen/main.go",
+        " D gen/transaction/lock_orders.yml",
+        " M server/assets/debug/runtime.yml",
+        " M server/assets/release/runtime.yml",
+        " M server/assets/test/runtime.yml",
+        " M server/gen/data/.txgen_data_manifest.json",
+        " M server/gen/data/GDLegionStore.go",
+        " M server/gen/data/GDRoleStore.go",
+        " M server/gen/data/GDWorldBucketStore.go",
+        " M server/internal/config/framework.go",
+        " M server/internal/config/framework_test.go",
+        " M server/internal/config/model.go",
+        " M server/internal/db/db_test.go",
+        " M server/internal/db/entity_create_test.go",
+        " M server/internal/process/operation_test.go",
+        " M server/internal/writeback/component_test.go",
+        " M server/services/integration/writeback_io_benchmark_test.go",
+        " M server/services/internal/actorcmd/operation_test.go",
+        " M server/services/slggame/handler/role.go",
+        " M server/services/slggame/handler/role_bag_test.go",
+        " M server/services/slggame/handler/role_rank.go",
+        " M server/services/slggame/internal/procedure/level.go",
+        " M server/services/slggame/internal/procedure/p_rename_role.go",
+        " M server/services/slggame/internal/procedure/p_rename_role_test.go",
+        " M server/services/slggame/internal/procedure/role_test.go",
+        " M server/services/slggame/modules/bag_procedure_test.go",
+        " M server/services/slggame/modules/rank_test.go",
+        " M server/services/slggame/modules/role.go",
+        " M server/services/slgworld/direct_writeback_test.go",
+        " M server/tests/entity_access_benchmark_test.go",
+        "?? docs/procedure-submit-acceptance.md",
+        "?? gen/data/lock.go",
+        "?? server/gen/data/LockType.go",
+        "?? server/services/slggame/modules/submit_storage_test.go"
+      ]
+    },
+    "txclient": {
+      "head": "5e271644edc053ef19f89606f491eb444a461b11",
+      "trackedDiffSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "status": []
+    },
+    "txclientslg": {
+      "head": "788b795d41caeece2eedeb1c07e82dc58f09fe86",
+      "trackedDiffSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "status": []
+    }
+  },
+  "checks": {
+    "txgame": {
+      "artifact": "/private/tmp/tx-procedure-rollout-20261030/txgame/txgame-config-release-2486027346/summary.json",
+      "result": {
+        "binarySHA256": "1e68b90885991e82c00dfe7505d81615a3095f1d5520fef137d4d70cb37b4ef6",
+        "binaryUnchanged": true,
+        "bundle": "/private/tmp/tx-procedure-rollout-20261030/txgame/txgame-config-release-2486027346/installed/relocated",
+        "missing-file": "rejected; old service remained usable",
+        "passed": true,
+        "schemaVersion": "616a4047b8cd88bdae108383762b9e40204aaa3262edd1e58fb238d8d6af46cd",
+        "stages": [
+          {
+            "phase": "initial-a",
+            "result": {
+              "accountID": 1,
+              "roleID": 1,
+              "rewardID": 1,
+              "before": {},
+              "after": {
+                "1": 1
+              }
+            }
+          },
+          {
+            "phase": "published-b-before-restart",
+            "result": {
+              "accountID": 1,
+              "roleID": 1,
+              "rewardID": 1,
+              "before": {
+                "1": 1
+              },
+              "after": {
+                "1": 2
+              }
+            }
+          },
+          {
+            "phase": "mixed-old-game-b",
+            "result": {
+              "accountID": 1,
+              "roleID": 1,
+              "rewardID": 1,
+              "before": {
+                "1": 2
+              },
+              "after": {
+                "1": 3
+              }
+            }
+          },
+          {
+            "phase": "all-b",
+            "result": {
+              "accountID": 1,
+              "roleID": 1,
+              "rewardID": 2,
+              "before": {
+                "1": 3
+              },
+              "after": {
+                "1": 3,
+                "2": 1
+              }
+            }
+          },
+          {
+            "phase": "published-a-before-restart",
+            "result": {
+              "accountID": 1,
+              "roleID": 1,
+              "rewardID": 2,
+              "before": {
+                "1": 3,
+                "2": 1
+              },
+              "after": {
+                "1": 3,
+                "2": 2
+              }
+            }
+          },
+          {
+            "phase": "mixed-old-game-b-rollback",
+            "result": {
+              "accountID": 1,
+              "roleID": 1,
+              "rewardID": 2,
+              "before": {
+                "1": 3,
+                "2": 2
+              },
+              "after": {
+                "1": 3,
+                "2": 3
+              }
+            }
+          },
+          {
+            "phase": "all-a",
+            "result": {
+              "accountID": 1,
+              "roleID": 1,
+              "rewardID": 1,
+              "before": {
+                "1": 3,
+                "2": 3
+              },
+              "after": {
+                "1": 4,
+                "2": 3
+              }
+            }
+          },
+          {
+            "phase": "missing-file-old-service",
+            "result": {
+              "accountID": 1,
+              "roleID": 1,
+              "rewardID": 1,
+              "before": {
+                "1": 4,
+                "2": 3
+              },
+              "after": {
+                "1": 5,
+                "2": 3
+              }
+            }
+          },
+          {
+            "phase": "wrong-schema-old-service",
+            "result": {
+              "accountID": 1,
+              "roleID": 1,
+              "rewardID": 1,
+              "before": {
+                "1": 5,
+                "2": 3
+              },
+              "after": {
+                "1": 6,
+                "2": 3
+              }
+            }
+          }
+        ],
+        "traffic": {
+          "schemaVersion": 1,
+          "status": "passed",
+          "workload": "system-ping",
+          "transport": "tcp",
+          "concurrency": 50,
+          "roleBase": 480100,
+          "warmupMilliseconds": 1000,
+          "measureMilliseconds": 180000,
+          "ratePerSession": 5,
+          "maxInFlight": 32,
+          "extraDown": false,
+          "planned": 45000,
+          "notSent": 0,
+          "agentOwners": {
+            "txgame-3827-91901": 50
+          },
+          "attempted": 45000,
+          "completed": 44997,
+          "downCompleted": 44997,
+          "completedAfterDeadline": 0,
+          "downCompletedAfterDeadline": 0,
+          "downThroughputPerSecond": 249.98333333333332,
+          "failed": 3,
+          "throughputPerSecond": 249.98333333333332,
+          "latency": {
+            "p50Milliseconds": 0.7120509999949718,
+            "p95Milliseconds": 1.0912200000020675,
+            "p99Milliseconds": 1.2953269999998156,
+            "maxMilliseconds": 132.79221099999268
+          }
+        },
+        "trafficArtifact": "/private/tmp/tx-procedure-rollout-20261030/txgame/txgame-config-release-2486027346/traffic.json",
+        "trafficPhases": {
+          "after-rollback-game-a": {
+            "attempted": 6501,
+            "completed": 6501,
+            "failed": 0,
+            "completionRate": 1,
+            "p99Milliseconds": 1.2280830000090646,
+            "maxMilliseconds": 1.6557380000012927
+          },
+          "after-rollback-game-b": {
+            "attempted": 14500,
+            "completed": 14500,
+            "failed": 0,
+            "completionRate": 1,
+            "p99Milliseconds": 1.1464520000154153,
+            "maxMilliseconds": 55.67300699997577
+          },
+          "after-update-game-a": {
+            "attempted": 6751,
+            "completed": 6751,
+            "failed": 0,
+            "completionRate": 1,
+            "p99Milliseconds": 1.2411769999962416,
+            "maxMilliseconds": 1.649595999995654
+          },
+          "after-update-game-b": {
+            "attempted": 6750,
+            "completed": 6750,
+            "failed": 0,
+            "completionRate": 1,
+            "p99Milliseconds": 1.2550739999860525,
+            "maxMilliseconds": 1.870679999992717
+          },
+          "baseline": {
+            "attempted": 7251,
+            "completed": 7251,
+            "failed": 0,
+            "completionRate": 1,
+            "p99Milliseconds": 1.2907300000006217,
+            "maxMilliseconds": 2.347228000000541
+          },
+          "rollback-game-a": {
+            "attempted": 1000,
+            "completed": 1000,
+            "failed": 0,
+            "completionRate": 1,
+            "p99Milliseconds": 23.501524999999674,
+            "maxMilliseconds": 132.79221099999268
+          },
+          "rollback-game-b": {
+            "attempted": 749,
+            "completed": 748,
+            "failed": 1,
+            "completionRate": 0.9986648865153538,
+            "p99Milliseconds": 62.484227000008104,
+            "maxMilliseconds": 101.77519699999539
+          },
+          "update-game-a": {
+            "attempted": 749,
+            "completed": 748,
+            "failed": 1,
+            "completionRate": 0.9986648865153538,
+            "p99Milliseconds": 2.612682999999379,
+            "maxMilliseconds": 42.28783599999588
+          },
+          "update-game-b": {
+            "attempted": 749,
+            "completed": 748,
+            "failed": 1,
+            "completionRate": 0.9986648865153538,
+            "p99Milliseconds": 72.06813100000727,
+            "maxMilliseconds": 111.92101600000751
+          }
+        },
+        "trafficRollouts": [
+          {
+            "name": "update-game-a",
+            "startedAt": "2026-10-30T00:44:47.627657+08:00",
+            "readyAt": "2026-10-30T00:44:49.340485+08:00",
+            "ownersBefore": {
+              "txgame-3468-91898": 25,
+              "txgame-3915-91895": 25
+            },
+            "ownersAfter": {
+              "txgame-3468-91898": 50
+            }
+          },
+          {
+            "name": "update-game-b",
+            "startedAt": "2026-10-30T00:45:17.627223+08:00",
+            "readyAt": "2026-10-30T00:45:19.429544+08:00",
+            "ownersBefore": {
+              "txgame-3468-91898": 50
+            },
+            "ownersAfter": {
+              "txgame-481-91984": 50
+            }
+          },
+          {
+            "name": "rollback-game-a",
+            "startedAt": "2026-10-30T00:45:47.627481+08:00",
+            "readyAt": "2026-10-30T00:45:49.932265+08:00",
+            "ownersBefore": {
+              "txgame-481-91984": 50
+            },
+            "ownersAfter": {
+              "txgame-517-92041": 50
+            }
+          },
+          {
+            "name": "rollback-game-b",
+            "startedAt": "2026-10-30T00:46:17.626821+08:00",
+            "readyAt": "2026-10-30T00:46:19.411393+08:00",
+            "ownersBefore": {
+              "txgame-517-92041": 50
+            },
+            "ownersAfter": {
+              "txgame-1276-92098": 50
+            }
+          }
+        ],
+        "versionA": "4383b780d7c974beb3df94207eeab8ef6beb9c31f478ed169d18abd58d0f601a",
+        "versionB": "6c16c3ae63811c834cf43fc68f7cc0cbc5ab4e4b49f0341cb629a10c4c8a552a",
+        "workingDirectory": "/private/tmp/tx-procedure-rollout-20261030/txgame/txgame-config-release-2486027346/foreign-cwd",
+        "wrong-schema": "rejected; old service remained usable"
+      },
+      "exits": {
+        "wrong-schema.exit": "exit status 1",
+        "game-b-update-game-b.exit": "0",
+        "game-b-initial.exit": "0",
+        "login-a-initial.exit": "0",
+        "game-b-rollback-game-b.exit": "0",
+        "game-a-rollback-game-a.exit": "0",
+        "msgq-a-initial.exit": "0",
+        "game-a-initial.exit": "0",
+        "game-a-update-game-a.exit": "0",
+        "missing-file.exit": "exit status 1",
+        "agent-initial.exit": "0"
+      },
+      "verifiedBinarySHA256": "1e68b90885991e82c00dfe7505d81615a3095f1d5520fef137d4d70cb37b4ef6",
+      "completionRate": 0.9999333333333333
+    },
+    "slg-role": {
+      "artifact": "/private/tmp/tx-procedure-rollout-20261030/slg-role/20261030-004757.546497000/release-summary.json",
+      "result": {
+        "status": "passed",
+        "bundle": {
+          "root": "/private/tmp/tx-procedure-rollout-20261030/slg-role/20261030-004757.546497000/installed/program",
+          "binarySHA256": "6782a282da4933ab6a5535a5e72f33109e705bb7b442bb35c18cba018ad89a02",
+          "versionA": "f29c66b3e86b41459cd20ea85c48bf9e1aa723bc9dccdfb2689369c3d58d8a90",
+          "versionB": "34c347fe6c2b5b921683a96f3512c947f8c31abdbe821d63de676b5b62fc092d",
+          "schemaVersion": "a208edfbafd13f2837465cc1fd42fd8864ed7169e898c57616b8baec1939115a"
+        },
+        "stages": [
+          {
+            "revision": "b",
+            "source": "slggame-a",
+            "target": "slggame-b",
+            "startedAt": "2026-10-30T00:48:30.011613+08:00",
+            "finishedAt": "2026-10-30T00:48:36.200541+08:00",
+            "before": {
+              "attempted": 547,
+              "completed": 544,
+              "failed": 0,
+              "timedOut": 0,
+              "finished": false
+            },
+            "after": {
+              "attempted": 3254,
+              "completed": 3250,
+              "failed": 1,
+              "timedOut": 1,
+              "finished": false
+            }
+          },
+          {
+            "revision": "a",
+            "source": "slggame-b",
+            "target": "slggame-a",
+            "startedAt": "2026-10-30T00:48:36.200543+08:00",
+            "finishedAt": "2026-10-30T00:48:42.390262+08:00",
+            "before": {
+              "attempted": 3254,
+              "completed": 3250,
+              "failed": 1,
+              "timedOut": 1,
+              "finished": false
+            },
+            "after": {
+              "attempted": 6562,
+              "completed": 6554,
+              "failed": 5,
+              "timedOut": 5,
+              "finished": false
+            }
+          }
+        ],
+        "handoffs": [
+          {
+            "sourceID": "txgameslg-3884-92188",
+            "targetID": "txgameslg-3507-92201",
+            "assignments": [
+              {
+                "slotId": "actor-group-v1.c2xnZ2FtZQ.c2VydmVy.MTAwMQ",
+                "runtimeInstanceId": "txgameslg-3507-92201",
+                "generation": 2
+              }
+            ]
+          },
+          {
+            "sourceID": "txgameslg-3507-92201",
+            "targetID": "txgameslg-3797-92210",
+            "assignments": [
+              {
+                "slotId": "actor-group-v1.c2xnZ2FtZQ.c2VydmVy.MTAwMQ",
+                "runtimeInstanceId": "txgameslg-3797-92210",
+                "generation": 3
+              }
+            ]
+          }
+        ],
+        "loadedVersions": {
+          "agent-a-1": "f29c66b3e86b41459cd20ea85c48bf9e1aa723bc9dccdfb2689369c3d58d8a90",
+          "login-a-1": "f29c66b3e86b41459cd20ea85c48bf9e1aa723bc9dccdfb2689369c3d58d8a90",
+          "msgq-a-a-1": "f29c66b3e86b41459cd20ea85c48bf9e1aa723bc9dccdfb2689369c3d58d8a90",
+          "msgq-b-a-1": "f29c66b3e86b41459cd20ea85c48bf9e1aa723bc9dccdfb2689369c3d58d8a90",
+          "slggame-a-a-1": "f29c66b3e86b41459cd20ea85c48bf9e1aa723bc9dccdfb2689369c3d58d8a90",
+          "slggame-a-a-2": "f29c66b3e86b41459cd20ea85c48bf9e1aa723bc9dccdfb2689369c3d58d8a90",
+          "slggame-b-b-1": "34c347fe6c2b5b921683a96f3512c947f8c31abdbe821d63de676b5b62fc092d",
+          "slgworld-a-a-1": "f29c66b3e86b41459cd20ea85c48bf9e1aa723bc9dccdfb2689369c3d58d8a90"
+        },
+        "role": {
+          "schemaVersion": 2,
+          "status": "passed",
+          "workload": "role-rename",
+          "transport": "tcp",
+          "concurrency": 4,
+          "roleBase": 480100,
+          "warmupMilliseconds": 2000,
+          "measureMilliseconds": 180000,
+          "attempted": 343782,
+          "completed": 343774,
+          "failed": 8,
+          "timedOut": 8,
+          "throughputPerSecond": 1909.8555555555556,
+          "latency": {
+            "p50Milliseconds": 1.9153320000041276,
+            "p95Milliseconds": 2.508173000001989,
+            "p99Milliseconds": 3.0578009999953792,
+            "maxMilliseconds": 98.2423130000243
+          },
+          "finalRoles": [
+            {
+              "roleID": 480100,
+              "name": "perf-role-480100-87292"
+            },
+            {
+              "roleID": 480101,
+              "name": "perf-role-480101-87309"
+            },
+            {
+              "roleID": 480102,
+              "name": "perf-role-480102-87287"
+            },
+            {
+              "roleID": 480103,
+              "name": "perf-role-480103-87310"
+            }
+          ]
+        },
+        "sessions": [
+          {
+            "phase": "concurrency-4",
+            "roleID": 480100,
+            "sessionID": 437330129952768,
+            "connectionID": 1691857738523217776,
+            "msgqInstanceID": "txgameslg-1984-92185"
+          },
+          {
+            "phase": "concurrency-4",
+            "roleID": 480101,
+            "sessionID": 437330129952769,
+            "connectionID": 8487689658404260468,
+            "msgqInstanceID": "txgameslg-64-92182"
+          },
+          {
+            "phase": "concurrency-4",
+            "roleID": 480102,
+            "sessionID": 437330129952770,
+            "connectionID": 8843093984264636077,
+            "msgqInstanceID": "txgameslg-64-92182"
+          },
+          {
+            "phase": "concurrency-4",
+            "roleID": 480103,
+            "sessionID": 437330129952771,
+            "connectionID": 7686347952049636881,
+            "msgqInstanceID": "txgameslg-1984-92185"
+          }
+        ],
+        "fusionRolesVerified": 4,
+        "mongoRolesVerified": 4
+      },
+      "exits": {
+        "slgworld-a-a-1.exit": "0",
+        "slggame-a-a-2.exit": "0",
+        "msgq-a-a-1.exit": "0",
+        "login-a-1.exit": "0",
+        "slggame-a-a-1.exit": "0",
+        "slggame-b-b-1.exit": "0",
+        "agent-a-1.exit": "0",
+        "msgq-b-a-1.exit": "0"
+      },
+      "verifiedBinarySHA256": "6782a282da4933ab6a5535a5e72f33109e705bb7b442bb35c18cba018ad89a02",
+      "completionRate": 0.999976729439005
+    },
+    "slg-world": {
+      "artifact": "/private/tmp/tx-procedure-rollout-20261030/slg-world/20261030-005203.607544000/release-summary.json",
+      "result": {
+        "status": "passed",
+        "bundle": {
+          "root": "/private/tmp/tx-procedure-rollout-20261030/slg-world/20261030-005203.607544000/installed/program",
+          "binarySHA256": "6782a282da4933ab6a5535a5e72f33109e705bb7b442bb35c18cba018ad89a02",
+          "versionA": "f29c66b3e86b41459cd20ea85c48bf9e1aa723bc9dccdfb2689369c3d58d8a90",
+          "versionB": "34c347fe6c2b5b921683a96f3512c947f8c31abdbe821d63de676b5b62fc092d",
+          "schemaVersion": "a208edfbafd13f2837465cc1fd42fd8864ed7169e898c57616b8baec1939115a"
+        },
+        "stages": [
+          {
+            "revision": "b",
+            "source": "slgworld-a",
+            "target": "slgworld-b",
+            "startedAt": "2026-10-30T00:52:24.044856+08:00",
+            "finishedAt": "2026-10-30T00:52:30.210484+08:00",
+            "before": {
+              "attempted": 1509,
+              "completed": 1506,
+              "failed": 0,
+              "timedOut": 0,
+              "finished": false
+            },
+            "after": {
+              "attempted": 8217,
+              "completed": 8213,
+              "failed": 1,
+              "timedOut": 1,
+              "finished": false
+            }
+          },
+          {
+            "revision": "a",
+            "source": "slgworld-b",
+            "target": "slgworld-a",
+            "startedAt": "2026-10-30T00:52:30.210489+08:00",
+            "finishedAt": "2026-10-30T00:52:36.364615+08:00",
+            "before": {
+              "attempted": 8217,
+              "completed": 8213,
+              "failed": 1,
+              "timedOut": 1,
+              "finished": false
+            },
+            "after": {
+              "attempted": 16366,
+              "completed": 16358,
+              "failed": 5,
+              "timedOut": 5,
+              "finished": false
+            }
+          }
+        ],
+        "handoffs": [
+          {
+            "sourceID": "txgameslg-3359-92254",
+            "targetID": "txgameslg-3570-92266",
+            "assignments": [
+              {
+                "slotId": "slgworld-490001",
+                "runtimeInstanceId": "txgameslg-3570-92266",
+                "generation": 2
+              },
+              {
+                "slotId": "slgworld-490002",
+                "runtimeInstanceId": "txgameslg-3570-92266",
+                "generation": 2
+              }
+            ]
+          },
+          {
+            "sourceID": "txgameslg-3570-92266",
+            "targetID": "txgameslg-3465-92275",
+            "assignments": [
+              {
+                "slotId": "slgworld-490001",
+                "runtimeInstanceId": "txgameslg-3465-92275",
+                "generation": 3
+              },
+              {
+                "slotId": "slgworld-490002",
+                "runtimeInstanceId": "txgameslg-3465-92275",
+                "generation": 3
+              }
+            ]
+          }
+        ],
+        "loadedVersions": {
+          "agent-a-1": "f29c66b3e86b41459cd20ea85c48bf9e1aa723bc9dccdfb2689369c3d58d8a90",
+          "login-a-1": "f29c66b3e86b41459cd20ea85c48bf9e1aa723bc9dccdfb2689369c3d58d8a90",
+          "msgq-a-a-1": "f29c66b3e86b41459cd20ea85c48bf9e1aa723bc9dccdfb2689369c3d58d8a90",
+          "msgq-b-a-1": "f29c66b3e86b41459cd20ea85c48bf9e1aa723bc9dccdfb2689369c3d58d8a90",
+          "slggame-a-a-1": "f29c66b3e86b41459cd20ea85c48bf9e1aa723bc9dccdfb2689369c3d58d8a90",
+          "slgworld-a-a-1": "f29c66b3e86b41459cd20ea85c48bf9e1aa723bc9dccdfb2689369c3d58d8a90",
+          "slgworld-a-a-2": "f29c66b3e86b41459cd20ea85c48bf9e1aa723bc9dccdfb2689369c3d58d8a90",
+          "slgworld-b-b-1": "34c347fe6c2b5b921683a96f3512c947f8c31abdbe821d63de676b5b62fc092d"
+        },
+        "world": {
+          "schemaVersion": 2,
+          "status": "passed",
+          "workload": "world-move-unit",
+          "transport": "tcp",
+          "concurrency": 4,
+          "roleBase": 480100,
+          "warmupMilliseconds": 2000,
+          "measureMilliseconds": 180000,
+          "attempted": 1122651,
+          "completed": 1122643,
+          "failed": 8,
+          "timedOut": 8,
+          "throughputPerSecond": 6236.905555555555,
+          "latency": {
+            "p50Milliseconds": 0.5709869999991497,
+            "p95Milliseconds": 0.8590550000008079,
+            "p99Milliseconds": 1.1728619999994407,
+            "maxMilliseconds": 96.75406700000167
+          },
+          "finalWorldUnits": [
+            {
+              "roleID": 480100,
+              "worldID": 490001,
+              "bucketID": 1,
+              "unitID": 480100,
+              "posX": 284148,
+              "posY": -284148,
+              "sequence": 284148
+            },
+            {
+              "roleID": 480101,
+              "worldID": 490002,
+              "bucketID": 2,
+              "unitID": 480101,
+              "posX": 284138,
+              "posY": -284138,
+              "sequence": 284138
+            },
+            {
+              "roleID": 480102,
+              "worldID": 490001,
+              "bucketID": 3,
+              "unitID": 480102,
+              "posX": 283998,
+              "posY": -283998,
+              "sequence": 283998
+            },
+            {
+              "roleID": 480103,
+              "worldID": 490002,
+              "bucketID": 4,
+              "unitID": 480103,
+              "posX": 283993,
+              "posY": -283993,
+              "sequence": 283993
+            }
+          ]
+        },
+        "sessions": [
+          {
+            "phase": "concurrency-4",
+            "roleID": 480100,
+            "sessionID": 437334071615488,
+            "connectionID": 4964212937311494578,
+            "msgqInstanceID": "txgameslg-3497-92245"
+          },
+          {
+            "phase": "concurrency-4",
+            "roleID": 480101,
+            "sessionID": 437334071615489,
+            "connectionID": 5623451449695850827,
+            "msgqInstanceID": "txgameslg-707-92248"
+          },
+          {
+            "phase": "concurrency-4",
+            "roleID": 480102,
+            "sessionID": 437334071615490,
+            "connectionID": 2486054916840889888,
+            "msgqInstanceID": "txgameslg-707-92248"
+          },
+          {
+            "phase": "concurrency-4",
+            "roleID": 480103,
+            "sessionID": 437334071615491,
+            "connectionID": 4857430374510032508,
+            "msgqInstanceID": "txgameslg-3497-92245"
+          }
+        ],
+        "worldPersistence": {
+          "PersistenceCatchUpMilliseconds": 5,
+          "PersistedBuckets": 4,
+          "DocumentVersionTotal": 17,
+          "MongoWorldUnitsVerified": 4
+        }
+      },
+      "exits": {
+        "slgworld-a-a-1.exit": "0",
+        "slgworld-b-b-1.exit": "0",
+        "msgq-a-a-1.exit": "0",
+        "login-a-1.exit": "0",
+        "slggame-a-a-1.exit": "0",
+        "agent-a-1.exit": "0",
+        "slgworld-a-a-2.exit": "0",
+        "msgq-b-a-1.exit": "0"
+      },
+      "verifiedBinarySHA256": "6782a282da4933ab6a5535a5e72f33109e705bb7b442bb35c18cba018ad89a02",
+      "completionRate": 0.9999928740098214
+    },
+    "worldRecovery": {
+      "log": "/private/tmp/tx-procedure-rollout-20261030/world-recovery.log",
+      "result": "=== RUN   TestOwnedBucketsMongoRoundTrip\n--- PASS: TestOwnedBucketsMongoRoundTrip (0.04s)\n=== RUN   TestFinalSaveFailureRetainsOwnedWorldAndRetry\n--- PASS: TestFinalSaveFailureRetainsOwnedWorldAndRetry (0.00s)\nPASS\nok  \ttxgameslg-server/services/slgworld/modules/internal/world\t0.066s\n",
+      "realMongo": "TestOwnedBucketsMongoRoundTrip",
+      "injectedPersistenceFailure": "TestFinalSaveFailureRetainsOwnedWorldAndRetry"
+    }
+  },
+  "cleanup": {
+    "checkedPIDFiles": 27,
+    "alive": [],
+    "redisDB12Keys": 0,
+    "redisDB13Keys": 0,
+    "etcdE2EPrefixEmpty": true,
+    "isolatedMongoRestoredToStopped": true
+  }
+}

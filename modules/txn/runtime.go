@@ -1,21 +1,24 @@
 package txn
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"sync"
+
+	"github.com/ngnl47/tx/lifecycle"
 )
 
 // CommitParticipant 是 Procedure 与有状态缓存运行时之间的提交边界。
 // Prepare 必须在业务修改前完成全部可失败校验和资源预留。
 type CommitParticipant interface {
-	Prepare(context.Context, []LockTarget) (CommitReservation, error)
+	Prepare(context.Context, []StoreTarget) (CommitReservation, error)
 }
 
 // CommitReservation 保存一次提交前预留。Commit 在内存事务成功且仍持锁时调用，不能失败或进行 I/O；
 // Abort 在事务失败或 panic 回滚后调用。
 type CommitReservation interface {
-	Commit([]LockTarget)
+	Commit([]StoreTarget)
 	Abort()
 }
 
@@ -25,11 +28,16 @@ type Runtime struct {
 	mu                sync.Mutex
 	commitParticipant CommitParticipant
 	started           bool
+	work              *lifecycle.Ingress
+	asyncConfig       AsyncConfig
+	asyncRunning      int
+	asyncQueue        list.List
 }
 
 // Executor 是面向应用的事务契约。提交参与者绑定和生命周期仍由框架负责。
 type Executor interface {
 	Call(context.Context, Procedure) error
+	Submit(context.Context, Procedure) (*Future, error)
 }
 
 var _ Executor = (*Runtime)(nil)
@@ -40,7 +48,7 @@ func NewRuntime() *Runtime {
 	return &Runtime{}
 }
 
-// BindCommitParticipant 绑定 Procedure 的提交参与者。同一 Runtime 只能在首次 Call 前绑定一次。
+// BindCommitParticipant 绑定 Procedure 的提交参与者。同一 Runtime 只能在首次 Call/Submit 前绑定一次。
 // 该入口供框架 CMod 组装使用，普通业务不应直接调用。
 func (runtime *Runtime) BindCommitParticipant(participant CommitParticipant) error {
 	if runtime == nil {
@@ -52,7 +60,7 @@ func (runtime *Runtime) BindCommitParticipant(participant CommitParticipant) err
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
 	if runtime.started {
-		return errors.New("txn runtime: cannot bind commit participant after Call")
+		return errors.New("txn runtime: cannot bind commit participant after Call/Submit")
 	}
 	if runtime.commitParticipant != nil {
 		return errors.New("txn runtime: commit participant is already bound")
@@ -67,6 +75,44 @@ func (runtime *Runtime) Call(ctx context.Context, procedure Procedure) error {
 	if runtime == nil {
 		return errors.New("txn runtime: runtime is nil")
 	}
+	work := runtime.workIngress()
+	if err := work.BeginWork(); err != nil {
+		return err
+	}
+	defer work.EndWork()
+	return runtime.call(ctx, procedure)
+}
+
+// Drain 关闭新根事务准入并等待已接纳 Call/Submit 及其同步后续过程结束；取消只结束等待。
+// 框架应在业务入口和后台任务排空后调用，成功后才可最终写回和关闭资源。
+func (runtime *Runtime) Drain(ctx context.Context) error {
+	if runtime == nil {
+		return nil
+	}
+	work := runtime.workIngress()
+	work.BeginDrain()
+	return work.WaitContext(ctx)
+}
+
+func (runtime *Runtime) workIngress() *lifecycle.Ingress {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.work == nil {
+		runtime.work = lifecycle.NewIngress(nil)
+	}
+	return runtime.work
+}
+
+// call 供已登记的根工作及其同步提交后续过程复用，不重新申请外部准入。
+func (runtime *Runtime) call(ctx context.Context, procedure Procedure) error {
+	return runtime.execute(ctx, procedure, false)
+}
+
+func (runtime *Runtime) callAsync(ctx context.Context, procedure Procedure) error {
+	return runtime.execute(ctx, procedure, true)
+}
+
+func (runtime *Runtime) execute(ctx context.Context, procedure Procedure, async bool) error {
 	if isNil(procedure) {
 		return errors.New("txn runtime: procedure is nil")
 	}
@@ -80,15 +126,21 @@ func (runtime *Runtime) Call(ctx context.Context, procedure Procedure) error {
 		commitParticipant: participant,
 		ctx:               ctx,
 	}
-	err := callWithHooks(ctx, managed, CallOptions{
-		AllowPendingChanges: true,
-		DeadlockRetries:     defaultDeadlockRetries,
-	}, callHooks{
+	hooks := callHooks{
 		reserveDynamicTargets: managed.reserveAdditional,
 		afterAttemptFailure:   managed.abortCommitReservations,
 		commitLocked:          managed.commitPrepared,
 		allowEmptyLocks:       true,
-	})
+		callAfterCommit:       runtime.call,
+		catchCommittedPanic:   async,
+	}
+	if async {
+		hooks.callAfterCommit = runtime.callAsync
+	}
+	err := callWithHooks(ctx, managed, CallOptions{
+		AllowPendingChanges: true,
+		DeadlockRetries:     defaultDeadlockRetries,
+	}, hooks)
 	if err != nil {
 		managed.abortCommitReservations()
 	}
@@ -106,19 +158,16 @@ func (procedure *managedProcedure) transactionProcedureName() string {
 	return procedureName(procedure.procedure)
 }
 
-func (procedure *managedProcedure) Locks(ctx context.Context) ([]LockTarget, error) {
+func (procedure *managedProcedure) Locks(ctx context.Context) (Lockeys, error) {
 	procedure.ctx = ctx
 	targets, err := procedure.procedure.Locks(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if len(targets) > 0 {
-		if _, err := prepareLocks(targets); err != nil {
+		if _, err := prepareLockeys(targets); err != nil {
 			return nil, err
 		}
-	}
-	if err := procedure.prepareCommit(ctx, targets); err != nil {
-		return nil, err
 	}
 	return targets, nil
 }
@@ -132,11 +181,11 @@ func (procedure *managedProcedure) Process(tx *Tx) error {
 	return procedure.procedure.Process(tx)
 }
 
-func (procedure *managedProcedure) reserveAdditional(targets []LockTarget) error {
+func (procedure *managedProcedure) reserveAdditional(targets []StoreTarget) error {
 	return procedure.prepareCommit(procedure.ctx, targets)
 }
 
-func (procedure *managedProcedure) prepareCommit(ctx context.Context, targets []LockTarget) error {
+func (procedure *managedProcedure) prepareCommit(ctx context.Context, targets []StoreTarget) error {
 	if procedure == nil || procedure.commitParticipant == nil {
 		return nil
 	}
@@ -151,7 +200,7 @@ func (procedure *managedProcedure) prepareCommit(ctx context.Context, targets []
 	return nil
 }
 
-func (procedure *managedProcedure) commitPrepared(targets []LockTarget) {
+func (procedure *managedProcedure) commitPrepared(targets []StoreTarget) {
 	if procedure == nil {
 		return
 	}

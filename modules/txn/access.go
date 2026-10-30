@@ -1,20 +1,77 @@
 package txn
 
-import "context"
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
 
-// Enlist 将查询取得的唯一对象加入当前事务，复用现有动态锁和写回预留。
-func (tx *Tx) Enlist(target LockTarget) error {
-	return tx.Call(accessProcedure{target: target})
+// acquire 只取得一致性域锁，不访问或登记 Store。动态补锁沿用等待图死锁检测。
+func (tx *Tx) acquire(locks Lockeys, trace string) error {
+	prepared, err := prepareLockeys(locks)
+	if err != nil {
+		return err
+	}
+	fresh := make(Lockeys, 0, len(prepared))
+	for _, lock := range prepared {
+		if order, ok := tx.locks[lock.identity()]; ok {
+			if order != lock.Order {
+				return fmt.Errorf("transaction: conflicting order for %s", lock)
+			}
+		} else {
+			fresh = append(fresh, lock)
+		}
+	}
+	held, err := acquireLocks(tx.ctx, tx.id, fresh, trace)
+	if err != nil {
+		if errors.Is(err, ErrDeadlock) {
+			tx.deadlock = err
+		}
+		return err
+	}
+	tx.heldLocks.appendSet(&held)
+	for _, lock := range fresh {
+		tx.locks[lock.identity()] = lock.Order
+	}
+	return nil
 }
 
-type accessProcedure struct{ target LockTarget }
-
-func (p accessProcedure) Locks(context.Context) ([]LockTarget, error) {
-	return []LockTarget{p.target}, nil
+// Enlist 将已加载的唯一对象登记到事务，先复用或取得锁，再预留写回和绑定 undo。
+func (tx *Tx) Enlist(target StoreTarget) error { return tx.enlist(target, false) }
+func (tx *Tx) enlist(target StoreTarget, creating bool) error {
+	if tx == nil || !tx.active {
+		return ErrInactive
+	}
+	if tx.deadlock != nil {
+		return tx.deadlock
+	}
+	if isNil(target.Store) || !target.Key.valid() {
+		return fmt.Errorf("transaction: invalid Store target")
+	}
+	if err := tx.acquire(Lockeys{target.Lock}, strings.Join(tx.procedures, " -> ")); err != nil {
+		return err
+	}
+	if existing, ok := tx.stores[target.Key]; ok {
+		if !sameStore(existing, target.Store) {
+			return fmt.Errorf("transaction: record %s binds different Store", target.Key)
+		}
+		return nil
+	}
+	if err := validateCleanStoreTargets([]StoreTarget{target}, tx.options); err != nil {
+		return err
+	}
+	if tx.hooks.reserveDynamicTargets != nil && !creating {
+		if err := tx.hooks.reserveDynamicTargets([]StoreTarget{target}); err != nil {
+			return err
+		}
+	}
+	tx.stores[target.Key] = target.Store
+	tx.targets = append(tx.targets, target)
+	target.Store.SetUndoRecorder(targetUndoRecorder{tx: tx, target: target})
+	return nil
 }
-func (p accessProcedure) Process(*Tx) error { return nil }
 
-// OnFinish 供对象运行时释放使用权；根事务及全部业务回调结束后执行，失败重试每轮独立释放。
+// OnFinish 在根事务及全部业务回调结束后释放使用权；每轮重试独立执行。
 func (tx *Tx) OnFinish(fn func()) {
 	if tx == nil || !tx.active {
 		panic(ErrInactive)

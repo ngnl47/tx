@@ -67,7 +67,7 @@ func TestFusionProcedureRollbackPreservesPendingAcrossFlushFailure(t *testing.T)
 	if err := runtime.BindCommitParticipant(manager); err != nil {
 		t.Fatal(err)
 	}
-	lock := txn.NewLockTarget(txn.NewLockKey("role", roleID), role)
+	lock := txn.NewStoreTarget(txn.NewLockey("role", 0, roleID), role)
 	procedure := fusionRoleProcedure{lock: lock, process: func(*txn.Tx) error {
 		role.SetName("committed-before-rollback")
 		return nil
@@ -145,14 +145,19 @@ func TestFusionProcedureRollbackPreservesPendingAcrossFlushFailure(t *testing.T)
 }
 
 type fusionRoleProcedure struct {
-	lock    txn.LockTarget
+	lock    txn.StoreTarget
 	process func(*txn.Tx) error
 }
 
-func (p fusionRoleProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
-	return []txn.LockTarget{p.lock}, nil
+func (p fusionRoleProcedure) Locks(context.Context) (txn.Lockeys, error) {
+	return txn.Lockeys{p.lock.Lock}, nil
 }
-func (p fusionRoleProcedure) Process(tx *txn.Tx) error { return p.process(tx) }
+func (p fusionRoleProcedure) Process(tx *txn.Tx) error {
+	if err := tx.Enlist(p.lock); err != nil {
+		return err
+	}
+	return p.process(tx)
+}
 
 // 事务夹具只实现存储/撤销 SPI，不依赖生成器或应用 GD。
 type fusionProcedureStore struct {

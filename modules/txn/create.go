@@ -11,7 +11,7 @@ var ErrInactive = errors.New("transaction: inactive transaction context")
 
 // CreationParticipant 由具备唯一缓存和首次写入能力的提交参与者实现。
 type CreationParticipant interface {
-	PrepareCreate(context.Context, LockTarget, any) (CreationReservation, error)
+	PrepareCreate(context.Context, StoreTarget, any) (CreationReservation, error)
 }
 
 // CreationReservation 持有新对象的缓存占位和首次写回预留。
@@ -23,8 +23,8 @@ type CreationReservation interface {
 }
 
 type creation struct {
-	value       Lockable
-	target      LockTarget
+	value       StoreProvider
+	target      StoreTarget
 	reservation CreationReservation
 }
 
@@ -35,9 +35,9 @@ func Create(ctx context.Context, value any) error {
 	if !active {
 		return ErrInactive
 	}
-	lockable, ok := value.(Lockable)
+	lockable, ok := value.(StoreProvider)
 	if !ok || isNil(lockable) {
-		return errors.New("transaction: creation requires a Lockable root")
+		return errors.New("transaction: creation requires a StoreProvider root")
 	}
 	if tx.creator == nil {
 		return errors.New("transaction: creation participant is not bound")
@@ -46,13 +46,13 @@ func Create(ctx context.Context, value any) error {
 }
 
 type createProcedureCall struct {
-	value    Lockable
+	value    StoreProvider
 	original any
 }
 
-func (p createProcedureCall) Locks(context.Context) ([]LockTarget, error) { return Locks(p.value), nil }
+func (p createProcedureCall) Locks(context.Context) (Lockeys, error) { return Locks(p.value), nil }
 func (p createProcedureCall) Process(tx *Tx) error {
-	target := p.value.LockTarget()
+	target := p.value.StoreTarget()
 	for _, entry := range tx.creations {
 		if entry.target.Key == target.Key {
 			return fmt.Errorf("transaction: duplicate creation %s", target.Key)
@@ -65,6 +65,10 @@ func (p createProcedureCall) Process(tx *Tx) error {
 	if isNil(reservation) {
 		return errors.New("transaction: nil creation reservation")
 	}
+	if err := tx.enlist(target, true); err != nil {
+		reservation.Abort()
+		return err
+	}
 	// 子 savepoint 撤销创建后可能复用同一对象，重新接回 Store 的 undo。
 	target.Store.SetUndoRecorder(targetUndoRecorder{tx: tx, target: target})
 	tx.creations = append(tx.creations, creation{value: p.value, target: target, reservation: reservation})
@@ -73,8 +77,8 @@ func (p createProcedureCall) Process(tx *Tx) error {
 
 func (tx *Tx) validateCreations() error {
 	for _, entry := range tx.creations {
-		current := entry.value.LockTarget()
-		if current.Key != entry.target.Key || current.Order != entry.target.Order || !sameStore(current.Store, entry.target.Store) {
+		current := entry.value.StoreTarget()
+		if current.Key != entry.target.Key || current.Lock != entry.target.Lock || !sameStore(current.Store, entry.target.Store) {
 			return fmt.Errorf("transaction: created root identity changed: %s", entry.target.Key)
 		}
 		if err := entry.reservation.Validate(); err != nil {

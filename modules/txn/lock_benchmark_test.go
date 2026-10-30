@@ -10,7 +10,7 @@ import (
 	"github.com/ngnl47/tx/change"
 )
 
-const benchmarkLockTargetCount = 1024
+const benchmarkStoreTargetCount = 1024
 
 var benchmarkHeldLockCount int
 var benchmarkTransactionError error
@@ -21,17 +21,17 @@ func (*benchmarkLockStore) SetUndoRecorder(change.UndoRecorder) {}
 
 func BenchmarkLockTableAcquireRelease(b *testing.B) {
 	ctx := context.Background()
-	single := []LockTarget{{Key: LockKey{Scope: "role", Value: "470001"}}}
-	multiple := []LockTarget{
-		{Key: LockKey{Scope: "guild", Value: "7001"}},
-		{Key: LockKey{Scope: "role", Value: "470001"}},
-		{Key: LockKey{Scope: "role", Value: "470002"}},
-		{Key: LockKey{Scope: "role", Value: "470003"}},
+	single := Lockeys{{Type: "role", Key: "470001"}}
+	multiple := Lockeys{
+		{Type: "guild", Key: "7001"},
+		{Type: "role", Key: "470001"},
+		{Type: "role", Key: "470002"},
+		{Type: "role", Key: "470003"},
 	}
-	disjoint := make([][]LockTarget, benchmarkLockTargetCount)
+	disjoint := make([]Lockeys, benchmarkStoreTargetCount)
 	for index := range disjoint {
-		disjoint[index] = []LockTarget{{
-			Key: LockKey{Scope: "role", Value: fmt.Sprintf("benchmark-%d", index)},
+		disjoint[index] = Lockeys{{
+			Type: "role", Key: fmt.Sprintf("benchmark-%d", index),
 		}}
 	}
 
@@ -111,7 +111,7 @@ func BenchmarkLockTableAcquireRelease(b *testing.B) {
 	})
 
 	b.Run("RawMutexDisjointParallel", func(b *testing.B) {
-		mutexes := make([]sync.Mutex, benchmarkLockTargetCount)
+		mutexes := make([]sync.Mutex, benchmarkStoreTargetCount)
 		var workerID atomic.Uint64
 		b.ReportAllocs()
 		b.RunParallel(func(pb *testing.PB) {
@@ -127,20 +127,17 @@ func BenchmarkLockTableAcquireRelease(b *testing.B) {
 
 func BenchmarkWithLocks(b *testing.B) {
 	ctx := context.Background()
-	single := []LockTarget{NewLockTarget(
-		LockKey{Scope: "role", Value: "470001"},
-		&benchmarkLockStore{},
-	)}
-	multiple := []LockTarget{
-		NewOrderedLockTarget(10, LockKey{Scope: "guild", Value: "7001"}, &benchmarkLockStore{}),
-		NewOrderedLockTarget(20, LockKey{Scope: "role", Value: "470001"}, &benchmarkLockStore{}),
-		NewOrderedLockTarget(20, LockKey{Scope: "role", Value: "470002"}, &benchmarkLockStore{}),
-		NewOrderedLockTarget(20, LockKey{Scope: "role", Value: "470003"}, &benchmarkLockStore{}),
+	single := Lockeys{NewLockey("role", 0, "470001")}
+	multiple := Lockeys{
+		NewLockey("guild", 10, "7001"),
+		NewLockey("role", 20, "470001"),
+		NewLockey("role", 20, "470002"),
+		NewLockey("role", 20, "470003"),
 	}
 
 	for _, benchmarkCase := range []struct {
 		name  string
-		locks []LockTarget
+		locks Lockeys
 	}{
 		{name: "SingleKey", locks: single},
 		{name: "FourKeys", locks: multiple},
@@ -157,11 +154,11 @@ func BenchmarkWithLocks(b *testing.B) {
 }
 
 type benchmarkProcedure struct {
-	locks []LockTarget
+	locks Lockeys
 	child Procedure
 }
 
-func (procedure *benchmarkProcedure) Locks(context.Context) ([]LockTarget, error) {
+func (procedure *benchmarkProcedure) Locks(context.Context) (Lockeys, error) {
 	return procedure.locks, nil
 }
 
@@ -175,28 +172,28 @@ func (procedure *benchmarkProcedure) Process(tx *Tx) error {
 func BenchmarkProcedureCall(b *testing.B) {
 	firstStore := &benchmarkLockStore{}
 	secondStore := &benchmarkLockStore{}
-	first := NewLockTarget(NewLockKey("role", 470001), firstStore)
-	second := NewLockTarget(NewLockKey("role", 470002), secondStore)
+	first := NewStoreTarget(NewLockey("role", 0, 470001), firstStore)
+	second := NewStoreTarget(NewLockey("role", 0, 470002), secondStore)
 	cases := []struct {
 		name      string
 		procedure Procedure
 	}{
 		{
 			name:      "RootOnly",
-			procedure: &benchmarkProcedure{locks: []LockTarget{first}},
+			procedure: &benchmarkProcedure{locks: Lockeys{first.Lock}},
 		},
 		{
 			name: "ChildReusesRootLock",
 			procedure: &benchmarkProcedure{
-				locks: []LockTarget{first},
-				child: &benchmarkProcedure{locks: []LockTarget{first}},
+				locks: Lockeys{first.Lock},
+				child: &benchmarkProcedure{locks: Lockeys{first.Lock}},
 			},
 		},
 		{
 			name: "ChildAcquiresDynamicLock",
 			procedure: &benchmarkProcedure{
-				locks: []LockTarget{first},
-				child: &benchmarkProcedure{locks: []LockTarget{second}},
+				locks: Lockeys{first.Lock},
+				child: &benchmarkProcedure{locks: Lockeys{second.Lock}},
 			},
 		},
 	}
@@ -216,7 +213,7 @@ func BenchmarkProcedureCall(b *testing.B) {
 func BenchmarkWaitGraph(b *testing.B) {
 	b.Run("AcyclicAddRemove", func(b *testing.B) {
 		graph := waitGraph{waitsFor: make(map[TransactionID]waitEdge, 1)}
-		lock := NewLockKey("role", 470001)
+		lock := NewLockey("role", 0, 470001)
 		b.ReportAllocs()
 		for b.Loop() {
 			benchmarkTransactionError = graph.add(1, 2, lock, "PTrade -> PGrant")
@@ -226,8 +223,8 @@ func BenchmarkWaitGraph(b *testing.B) {
 
 	b.Run("DetectTwoTransactionCycle", func(b *testing.B) {
 		graph := waitGraph{waitsFor: make(map[TransactionID]waitEdge, 1)}
-		first := NewLockKey("role", 470001)
-		second := NewLockKey("role", 470002)
+		first := NewLockey("role", 0, 470001)
+		second := NewLockey("role", 0, 470002)
 		if err := graph.add(1, 2, first, "PFirst -> PSecond"); err != nil {
 			b.Fatal(err)
 		}

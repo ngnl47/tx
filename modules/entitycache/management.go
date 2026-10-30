@@ -241,7 +241,7 @@ func (r *Runtime) SnapshotCached(ctx context.Context, ref EntryRef) (any, error)
 	c.mu.Unlock()
 	defer func() { c.mu.Lock(); e.users--; c.mu.Unlock() }()
 	var copy any
-	err = txn.WithLocks(ctx, []txn.LockTarget{e.value.value.(txn.Lockable).LockTarget()}, func(ctx context.Context) error {
+	err = txn.WithLocks(ctx, txn.Lockeys{e.value.value.(txn.StoreProvider).StoreTarget().Lock}, func(ctx context.Context) error {
 		value, found, err := r.visible(ctx, e.value)
 		if err != nil {
 			return err

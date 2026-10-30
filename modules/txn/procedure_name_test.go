@@ -7,7 +7,7 @@ import (
 
 type procedureNameTest struct{}
 
-func (*procedureNameTest) Locks(context.Context) ([]LockTarget, error) {
+func (*procedureNameTest) Locks(context.Context) (Lockeys, error) {
 	return nil, nil
 }
 

@@ -17,7 +17,7 @@ type RemovalCache interface {
 }
 
 // PrepareRemove 复用原对象的写回预留，删除覆盖尚未持久化的创建/修改。
-func (m *Manager) PrepareRemove(ctx context.Context, target txn.LockTarget, value any) (txn.CreationReservation, error) {
+func (m *Manager) PrepareRemove(ctx context.Context, target txn.StoreTarget, value any) (txn.CreationReservation, error) {
 	if _, ok := m.writer.(storage.DeleteApplier); !ok {
 		return nil, errors.New("writeback: deletion writer is not configured")
 	}
@@ -25,7 +25,7 @@ func (m *Manager) PrepareRemove(ctx context.Context, target txn.LockTarget, valu
 	if !ok {
 		return nil, errors.New("writeback: removal cache is not bound")
 	}
-	pending, err := m.Prepare(ctx, []txn.LockTarget{target})
+	pending, err := m.Prepare(ctx, []txn.StoreTarget{target})
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +39,7 @@ func (m *Manager) PrepareRemove(ctx context.Context, target txn.LockTarget, valu
 
 type removeReservation struct {
 	manager *Manager
-	target  txn.LockTarget
+	target  txn.StoreTarget
 	pending txn.CommitReservation
 	cache   RemovalReservation
 }
@@ -47,7 +47,7 @@ type removeReservation struct {
 func (r *removeReservation) Validate() error { return r.cache.Validate() }
 func (r *removeReservation) Abort()          { r.cache.Abort(); r.pending.Abort() }
 func (r *removeReservation) Commit() {
-	r.pending.Commit([]txn.LockTarget{r.target})
+	r.pending.Commit([]txn.StoreTarget{r.target})
 	r.manager.mu.Lock()
 	entry := r.manager.entries[r.target.Key]
 	entry.removal = r.cache
@@ -56,7 +56,7 @@ func (r *removeReservation) Commit() {
 	r.cache.Commit()
 }
 
-func (m *Manager) deleteLocked(ctx context.Context, target txn.LockTarget) error {
+func (m *Manager) deleteLocked(ctx context.Context, target txn.StoreTarget) error {
 	m.mu.Lock()
 	root := m.entries[target.Key]
 	m.mu.Unlock()

@@ -10,8 +10,8 @@ import (
 func TestLockTableReusedEntryKeepsKeysIndependent(t *testing.T) {
 	var table lockTable
 	ctx := context.Background()
-	firstKey := LockKey{Scope: "role", Value: "470001"}
-	secondKey := LockKey{Scope: "role", Value: "470002"}
+	firstKey := Lockey{Type: "role", Key: "470001"}
+	secondKey := Lockey{Type: "role", Key: "470002"}
 
 	first := table.reserve(firstKey)
 	if err := table.acquire(ctx, 1, firstKey, first.entry, "PFirst"); err != nil {
@@ -39,7 +39,7 @@ func TestLockTableReusedEntryKeepsKeysIndependent(t *testing.T) {
 
 func TestLockTableCanceledWaiterLeavesReusableEntry(t *testing.T) {
 	var table lockTable
-	key := LockKey{Scope: "role", Value: "470001"}
+	key := Lockey{Type: "role", Key: "470001"}
 	holder := table.reserve(key)
 	if err := table.acquire(context.Background(), 1, key, holder.entry, "PHolder"); err != nil {
 		t.Fatalf("acquire holder: %v", err)
@@ -71,7 +71,7 @@ func TestLockTableCanceledWaiterLeavesReusableEntry(t *testing.T) {
 
 func TestLockTableTransfersOwnershipToWaitingTransaction(t *testing.T) {
 	var table lockTable
-	key := NewLockKey("role", 470001)
+	key := NewLockey("role", 0, 470001)
 	holder := table.reserve(key)
 	if err := table.acquire(context.Background(), 1, key, holder.entry, "PHolder"); err != nil {
 		t.Fatalf("acquire holder: %v", err)
@@ -106,7 +106,7 @@ func TestLockTableTransfersOwnershipToWaitingTransaction(t *testing.T) {
 
 func TestLockTableReconnectsWaitChainAfterMiddleWaiterCancellation(t *testing.T) {
 	var table lockTable
-	key := NewLockKey("role", 470001)
+	key := NewLockey("role", 0, 470001)
 	holder := table.reserve(key)
 	if err := table.acquire(context.Background(), 1, key, holder.entry, "PHolder"); err != nil {
 		t.Fatalf("acquire holder: %v", err)
@@ -161,8 +161,8 @@ func TestLockTableReconnectsWaitChainAfterMiddleWaiterCancellation(t *testing.T)
 
 func TestLockTableRejectsDeadlockWithLockAndProcedureChain(t *testing.T) {
 	var table lockTable
-	firstKey := NewLockKey("role", 1001)
-	secondKey := NewLockKey("role", 1002)
+	firstKey := NewLockey("role", 0, 1001)
+	secondKey := NewLockey("role", 0, 1002)
 	firstForOne := table.reserve(firstKey)
 	secondForTwo := table.reserve(secondKey)
 	if err := table.acquire(context.Background(), 1, firstKey, firstForOne.entry, "PFirst"); err != nil {
@@ -204,8 +204,8 @@ func TestLockTableRejectsDeadlockWithLockAndProcedureChain(t *testing.T) {
 
 func TestLockTableReassignsQueuedWaitersWhenOwnershipChanges(t *testing.T) {
 	var table lockTable
-	sharedKey := NewLockKey("role", 1001)
-	thirdKey := NewLockKey("role", 1003)
+	sharedKey := NewLockey("role", 0, 1001)
+	thirdKey := NewLockey("role", 0, 1003)
 	sharedForOne := table.reserve(sharedKey)
 	thirdForThree := table.reserve(thirdKey)
 	if err := table.acquire(context.Background(), 1, sharedKey, sharedForOne.entry, "POwner"); err != nil {

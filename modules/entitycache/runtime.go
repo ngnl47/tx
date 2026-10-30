@@ -74,12 +74,12 @@ func NewRuntime(config Config, release func(context.Context, any) (bool, error))
 		if err != nil || !exists {
 			return nil, exists, err
 		}
-		lockable, ok := value.(txn.Lockable)
+		lockable, ok := value.(txn.StoreProvider)
 		if !ok {
 			return nil, false, fmt.Errorf("entity cache: %T is not declared transactional", value)
 		}
 		// 生成 Store 会在首次获取锁目标时惰性初始化；发布后只能读取这个目标。
-		lockable.LockTarget()
+		lockable.StoreTarget()
 		return &entity{id: id, value: value}, true, nil
 	}, Options[*entity]{MaximumSize: config.MaximumSize, IdleTimeout: config.IdleTimeout, TryRelease: func(ctx context.Context, e *entity) (bool, error) {
 		runtime.cache.mu.RLock()
@@ -93,7 +93,7 @@ func NewRuntime(config Config, release func(context.Context, any) (bool, error))
 		}
 		if e.id.descriptor.Store != nil {
 			var clean bool
-			err := txn.WithLocks(ctx, []txn.LockTarget{e.value.(txn.Lockable).LockTarget()}, func(context.Context) error { clean = !e.id.descriptor.Store(e.value).HasChanges(); return nil })
+			err := txn.WithLocks(ctx, txn.Lockeys{e.value.(txn.StoreProvider).StoreTarget().Lock}, func(context.Context) error { clean = !e.id.descriptor.Store(e.value).HasChanges(); return nil })
 			return clean, err
 		}
 		return true, nil
@@ -154,7 +154,7 @@ func (r *Runtime) Find(ctx context.Context, descriptor *Descriptor, key storage.
 	if removedBefore {
 		return nil, false, nil
 	}
-	if err := tx.Enlist(entry.value.(txn.Lockable).LockTarget()); err != nil {
+	if err := tx.Enlist(entry.value.(txn.StoreProvider).StoreTarget()); err != nil {
 		return nil, false, err
 	}
 	return r.visible(ctx, entry)
@@ -214,7 +214,7 @@ func (r *Runtime) Snapshot(ctx context.Context, descriptor *Descriptor, key stor
 	var copy any
 	var found bool
 	_, err := r.cache.Use(ctx, identity{descriptor, key}, func(entry *entity) error {
-		return txn.WithLocks(ctx, []txn.LockTarget{entry.value.(txn.Lockable).LockTarget()}, func(ctx context.Context) error {
+		return txn.WithLocks(ctx, txn.Lockeys{entry.value.(txn.StoreProvider).StoreTarget().Lock}, func(ctx context.Context) error {
 			value, exists, err := r.visible(ctx, entry)
 			if err != nil || !exists {
 				return err

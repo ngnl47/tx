@@ -1137,11 +1137,11 @@ Mongo adapter 通过生成的 `DocumentFactory` 把公共文档还原为 GD，�
 - route/shard key。
 - 生成 TypeSpec 提供的类型和存储元数据。
 
-RecordKey 不等于事务 LockKey：
+RecordKey 不等于事务 Lockey：
 
 - RecordKey 面向记录身份、Redis Hash Tag 和 Mongo 路由。
-- LockKey 面向单机一致性域。
-- 纯内存 GD 可以有 LockKey 而没有存储注解。
+- Lockey 面向单机一致性域。
+- 纯内存 GD 可以有 Lockey 而没有存储注解。
 
 ### 接口按能力拆分
 
@@ -1598,55 +1598,56 @@ GD 不需要基础设施字段或逐类型绑定；Mongo 不记录世界槽位�
 
 无状态分布式游戏服务可以完全不使用该模块。
 
-### Procedure 生命周期
+### Procedure 生命周期与锁身份
+
+锁身份与 Store 分开管理。项目在数据输入目录集中声明 Go 枚举，`iota` 决定类别优先级，值越大越先获取；同类别的整数键按数值排序。GD 只引用枚举名：
 
 ```go
-type Procedure interface {
-    Locks(context.Context) ([]LockTarget, error)
-    Process(*Tx) error
+// gen/data/lock.go
+type LockType int
+const (
+    RoleLock LockType = iota + 1
+    LegionLock
+)
+
+// @genData
+// @transaction:`lock:"RoleLock" keyField:"RoleId"`
+type GDRole struct { RoleId int64; Name string }
+```
+
+生成的 `data.RoleLock.Key(roleID)` 返回纯 `txn.Lockey`，不要求 GD 已加载。类别名与 Key 组成锁身份，枚举值只影响获取顺序；不存在锁顺序 YAML。未知 lock、重复或负数枚举值会在生成写盘前被拒绝。
+
+```go
+type PRenameRole struct { RoleID int64; Name string }
+func (p *PRenameRole) Locks(context.Context) (txn.Lockeys, error) {
+    return txn.Lockeys{data.RoleLock.Key(p.RoleID)}, nil
 }
+func (p *PRenameRole) Process(tx *txn.Tx) error {
+    role, exists, err := data.FindGDRole(tx.Context(), p.RoleID)
+    if err != nil { return err }
+    if !exists { return errors.New("role not found") }
+    role.Store().SetName(p.Name)
+    return nil
+}
+err := txruntime.Call(ctx, &PRenameRole{RoleID: 1001, Name: "Alice"})
 ```
-
-`Locks` 只声明当前 Procedure 直接访问的锁，不要求父过程展开全部子过程。一次根调用：
 
 ```text
-根 Procedure.Locks：声明已有根对象
-└─ 校验锁集并预留 WriteBack 容量
-   └─ 获取精确 Key 锁，派生事务 ctx，绑定 Store undo recorder
-      └─ Process
-         ├─ tx.Call(child)：复用/增加锁，建立 savepoint
-         │  └─ child error：undo 并撤销该范围的新对象预留
-         ├─ db.Create：动态锁定新根，预留唯一缓存身份及首次写回容量
-         ├─ 根 error/panic：undo，撤销新对象占位，解除 recorder 和锁
-         └─ 根 success：验证创建身份未变
-            ├─ 持锁登记首次写回、发布缓存对象、提交普通写回预留
-            ├─ 丢弃 undo，解除 recorder，释放全部锁
-            └─ 执行业务 AfterCommit（已经不在事务内）
+Locks：仅声明类型 + ID
+  → 排序、取得 Lockeys → 派生事务 ctx → Process
+      → Find/Create → 复用锁或动态补锁 → 登记 Store 的 undo 与写回预留
+      → tx.Call(child) → 子 savepoint，新增锁持有至根结束
+  → error/panic：逐 Store 回滚、撤销创建/删除预留
+  → success：持锁登记 WriteBack → 释放锁 → AfterCommit
 ```
 
-AfterCommit 在释放数据锁后执行。它不能回滚已经提交的内存状态；需要可靠投递时应使用项目选择的 outbox 或可靠消息队列。
-Procedure 可能在死锁受害者重试中再次执行，因此对象字段应只保存不可变输入，不可撤销的外部写入和消息投递必须登记到 `AfterCommit`。
+`StoreTarget` 是对象参与事务的描述，不是 Procedure 的锁声明。GDRole 与 GDBag 可以共用 `RoleLock.Key(1001)`，但 Store 的记录身份、undo、脏状态和 WriteBack 分别登记。同一记录加载成两个 Store 仍会被拒绝。生成的 `gd.Lockey()` 用于取得对象的锁，`gd.StoreTarget()` 供框架登记对象。
 
-### LockKey 与 LockTarget
+业务已知 ID 时应在 Locks 中预声明。运行中才确定的对象由受管 Find/Create 动态补锁，保留等待图死锁检测；根事务被选为受害者时完整回滚，标准 Call 最多重试三次。取消/超时终止锁等待，不冒充死锁。事务会重新执行，不可回滚外部副作用应放到 AfterCommit。
 
-`LockKey{Scope, Value}` 是单机一致性身份。`LockTarget` 额外包含：
+共享 EntityCache 对象只能在有效 Procedure 内查询修改；普通读取使用 Snapshot。低层 `txn.Run(ctx, []txn.StoreTarget{...}, fn)` 供已拥有独占对象的基础设施或测试使用，先锁定并登记这些 Store。它不绕过唯一缓存准入，不能用于查询共享对象后再加锁。
 
-- `Order`：锁层级，越小越先获取。
-- `Store`：绑定 undo recorder 的根 Store。
-
-例如军团交易：
-
-```text
-Order 10: guild:7
-Order 20: role:1001
-Order 20: role:1002
-```
-
-每个 `Scope` 在项目级注册表中占用唯一 `Order`。框架对每次 `Locks` 返回的直接锁批次按 `Order -> Value` 全序获取：先按锁域层级获取大锁和小锁，再在同一锁域内按对象键稳定排序。静态顺序会显著减少循环等待，但运行时子过程可能在父过程持锁后才发现新锁，因此等待图仍负责检测无法提前消除的动态环路。相同 Key 使用不同 Order 是定义错误；相同 Key 绑定不同 Store 也是错误。
-
-生成对象的 `Order` 来自项目级事务锁域顺序注册表。txgen 在生成期把 `scope -> order` 编译进 `LockTarget()`；tx runtime 只消费整数和 `LockKey`，不读取项目 YAML，也不维护锁域名称映射。该生成期注册表与下文进程级精确 Key 锁注册表职责不同：前者定义锁域先后，后者负责每个具体对象键的互斥和生命周期。
-
-若业务在根过程前已经知道完整对象集合，仍应使用 `LockSet` 一次获取，以减少等待和重试。若锁目标只能由运行时筛选结果或子 Procedure 决定，则由 `tx.Call(child)` 动态获取；框架通过等待图保证不会真正进入循环等待。
+`CheckCleanLockTargets` 保留现有调试配置名称，检查发生在 Store 登记、修改之前。已绑定 WriteBack 的 Procedure Runtime 允许此前未刷盘的脏状态。事务只回滚 Store 受控修改，不提供裸字段赋值回滚、跨进程锁或存储层 ACID。AfterCommit 在锁释放后执行，失败不撤销已提交内存状态。
 
 ### 子 Procedure 与不可重入
 
@@ -1654,7 +1655,7 @@ Go `sync.Mutex` 不可重入。框架也不通过 goroutine ID 或第三方可�
 
 - 嵌套 `txn.Run` / 根 `txn.Call` 被拒绝。
 - 子逻辑使用 `tx.Call(child)`。
-- child 声明已经持有的 Key 时只校验 Store 身份，不重复获取。
+- child 声明已经持有的 Key 时只校验锁顺序，不重复获取。
 - child 声明新 Key 时按自己的直接锁批次排序并获取。
 - 新锁与根锁一起持有到根事务提交或回滚，符合严格两阶段锁。
 - child 业务失败只回滚自己的 savepoint；死锁受害者错误会把根事务标记为必须回滚。
@@ -1717,7 +1718,7 @@ EntityCache 使用 Otter 选择软容量候选；使用中、创建中、删除�
 
 ### 事务内创建与首次写回
 
-`txn.Create(ctx, value)` 是通用事务登记入口，项目 `db.Create` 在活跃 Procedure 内调用它。生成 GD 提供 `LockTarget` 与 `ChangeStore`，不新增生成器 API。`txn.Runtime` 允许空初始锁集用于仅创建事务；低层 `txn.Run` 保留要求显式锁集的契约。创建新根同样参与动态锁与死锁检测，缺少受管 `CreationParticipant` 时拒绝执行。
+`txn.Create(ctx, value)` 是通用事务登记入口，项目 `db.Create` 在活跃 Procedure 内调用它。生成 GD 提供 `StoreTarget` 与 `ChangeStore`，不新增生成器 API。`txn.Runtime` 允许空初始锁集用于仅创建事务；低层 `txn.Run` 显式接收 StoreTarget 列表。创建新根同样参与动态锁与死锁检测，缺少受管 `CreationParticipant` 时拒绝执行。
 
 - 事务负责动态锁、Store undo、savepoint 和新根资源提交/撤销。提交参与者的内存登记在锁释放前完成；业务 `AfterCommit` 仍在释放锁后执行，不能承担缓存发布或待刷登记。
 - tx 的 EntityCache 负责对象可见性，应用首次使用时自动接到 WriteBack，不逐 GD 登记创建适配器。加载中的身份不能同时创建；创建中的身份只向当前事务返回原对象，其他调用明确失败。回滚删除占位；提交发布原指针。
@@ -1746,7 +1747,7 @@ type lockTable struct {
 
 type lockShard struct {
     mu      sync.Mutex
-    entries map[LockKey]*lockEntry
+    entries map[Lockey]*lockEntry
 }
 ```
 
@@ -1754,7 +1755,7 @@ type lockShard struct {
 
 ### 64 分片的准确含义
 
-64 个 `lockShard.mu` 只保护注册表 map，不是固定业务锁。真正业务锁是每个完整 LockKey 对应的动态 `lockEntry`：
+64 个 `lockShard.mu` 只保护注册表 map，不是固定业务锁。真正业务锁是每个完整 Lockey 对应的动态 `lockEntry`：
 
 ```text
 shard 18
@@ -1802,7 +1803,7 @@ waiter 使用容量一的 `signal` channel 接收所有权转移，同时通过�
 
 reserve 流程：
 
-1. 根据完整 LockKey 哈希选择 shard。
+1. 根据完整 Lockey 哈希选择 shard。
 2. 短暂获取 shard mutex。
 3. 精确查询 `entries[key]`。
 4. 不存在时从 pool 取得或创建 entry。
@@ -1867,13 +1868,13 @@ T2 [PRefreshGuild -> PLoadOwner] --guild:7----> T1
 
 `modules/writeback.Runtime` 是 CModProcedure WriteBack 组件使用的稳定 SPI，组合 `txn.CommitParticipant`、后台生命周期、最终刷盘和实体释放契约。`modules/writeback.Manager` 是 tx 提供的默认实现，项目 WriteBack 组件在启动期创建或注入 Runtime，并由 CModProcedure 把它绑定为 `txn.CommitParticipant`：
 
-1. `Prepare` 在 `Process` 前校验 `LockKey -> Store` 身份、存储准入和容量，并预留根对象。
+1. `Prepare` 在 Store 登记、业务修改前校验 `StoreKey -> Store` 身份、存储准入和容量，并预留根对象。
 2. Procedure 回滚时 `Abort` 释放预留；提交时无失败地登记最终变脏根对象。
-3. 多次事务继续在同一 Store 状态树上累计，Pending 按根 `LockKey` 去重。
+3. 多次事务继续在同一 Store 状态树上累计，Pending 按根 `StoreKey` 去重。
 4. Flush 再次取得相同实体锁，在锁内同步访问 Store 与 GD 当前值；写入成功才清理，失败保留。
 5. 根对象不再由 Actor 或场景持有时，必须在 Procedure 外调用 `TryRelease`。它取得相同实体锁并在锁内确认 Pending、活跃事务、预留和 Store 状态；只有返回 `true, nil` 才解除身份并允许回收。
 
-默认 Manager 不复制 GD，也不把引用 GD 的变更状态交给无锁异步写队列。同一 Manager 内相同 `LockKey` 不允许绑定不同 Store；对象可以由业务自行创建或加载，不要求经过指定加载函数。Store 不是并发安全容器，业务不能在实体锁外轮询 `HasChanges` 观察后台 Flush。
+默认 Manager 不复制 GD，也不把引用 GD 的变更状态交给无锁异步写队列。同一 Manager 内相同记录 `StoreKey` 不允许绑定不同 Store；对象可以由业务自行创建或加载，不要求经过指定加载函数。Store 不是并发安全容器，业务不能在实体锁外轮询 `HasChanges` 观察后台 Flush。
 
 默认 Manager 不是完整的业务对象缓存，不定义 `LoadRole`、容量淘汰、Actor 归属、业务分片或二级索引。静态 `Config` 只保存调度和容量参数；writer 与写入闸门通过 `writeback.Dependencies` 在 CModProcedure 启动期注入。项目按下面的边界扩展：
 
@@ -2590,7 +2591,7 @@ result, err := mailbox.PubSession(ctx, sessionID, payload)
 
 框架错误大致分为：
 
-- 调用契约错误：非法 LockKey、未知 Op、nil document。
+- 调用契约错误：非法 Lockey、未知 Op、nil document。
 - 数据协议错误：损坏 JSON、未知 Lua 返回值、路径类型冲突。
 - 外部 backend 错误：Redis/Mongo/etcd/gRPC 网络或服务错误。
 - 生命周期错误：排水拒绝、context 取消、Flush 超时。
@@ -2757,3 +2758,20 @@ Actor Call 的成功表示 Handler 方法成功返回，不隐含等待该方法
 观察与管理复用已有实体运行时，不增加 CMod 或第二份实体表。Stats 只取规模；有界 List 不读取业务字段；SnapshotCached 保持使用权并在同一记录锁内深复制，未命中不加载；TryRelease 与自动回收共用屏障，只释放无使用者且持久化安全的对象。冷加载的 policy 发布与可回收状态必须原子衔接，避免回收后重新发布旧 token。
 
 管理引用包含独立运行时标识与驻留代次，不持有 GD；普通热查询不增加管理计数。管理排水关闭新快照/回收并等待实际执行退出，最终关闭拒绝旧句柄；它不阻断已准入业务的存取。元数据弱一致、列表筛选最坏 O(N)，用于低频诊断，不用于全量高频采集。具体调用和错误边界见 [管理 API](entity-cache-management.md)。
+
+## Procedure 的调用与收尾
+
+根事务使用 `txruntime.Call(ctx, p)`，子过程 `tx.Call` 共享当前锁与 savepoint。提交后独立过程通过 `tx.CallAfterCommit` 登记，随所在 savepoint 回滚撤销，根提交成功解锁后同步执行，继续使用同一 Runtime 的 WriteBack；完整契约见 [调用与后续工作](procedure-calls.md)。
+
+```text
+原根准入 → Process → 提交/登记写回 → 解锁
+    → 后续根事务（独立锁、提交和回滚）→ 外层 Call 返回
+外部入口/Actor/后台任务排空
+    → Procedure 关闭根准入并等待 → WriteBack 最终刷盘 → 关闭依赖
+```
+
+后续过程属于原已接受工作的收尾，不重新争取 Actor 邮箱准入。排水取消只停止等待，运行中的事务及依赖继续保留；后续过程不清除原操作 deadline。`AfterCommitError` 区分已提交后的失败；原事务不会因此回滚或自动重试。后续动作沿用遇错停止的语义，panic 交给调用边界处理且不触发原事务回滚。异步提交和新的事务调度器尚未提供。
+
+### 独立异步 Procedure
+
+`txruntime.Submit(ctx, p)` 使用当前服务 Procedure Runtime，接纳后独立限时执行；不继承请求 EntityCache 使用范围。执行上限和接纳总数分别限制 Submit，满执行额度进入 FIFO 队列；排队过期不执行业务；Future.Done/Await 表示事务及同步后续过程实际结束。CallAfterCommit 继续同步，不隐式转为后台任务。执行超时是协作取消，不能提前释放资源；排水等待实际结束后再做最终写回。能力、配置与错误边界见 [异步 Submit](procedure-submit.md)。

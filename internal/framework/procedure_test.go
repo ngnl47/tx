@@ -2,17 +2,70 @@ package framework
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/ngnl47/tx/lifecycle"
 	"github.com/ngnl47/tx/modules/discovery"
+	"github.com/ngnl47/tx/modules/txn"
+	txruntime "github.com/ngnl47/tx/runtime"
 )
 
 type stateWriteBackComponentFake struct{}
 
 func (stateWriteBackComponentFake) ComponentSpec() ComponentSpec {
 	return ComponentSpec{Role: "writeback", Name: "test-writeback"}
+}
+
+type lifecycleProcedure func(*txn.Tx) error
+
+func (p lifecycleProcedure) Locks(context.Context) (txn.Lockeys, error) { return nil, nil }
+func (p lifecycleProcedure) Process(tx *txn.Tx) error                   { return p(tx) }
+
+func TestProcedureDrainWaitsBeforeFinalWriteBack(t *testing.T) {
+	events := []string{}
+	mod, err := NewProcedureBuilder().WriteBack(&recordingProcedureWriteBack{events: &events}).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := lifecycle.NewWaitGroupContext(t.Context())
+	t.Cleanup(func() { root.Cancel(); root.Wait() })
+	server := &Server{runtime: &runtime{lifecycle: root, selectedCMods: map[CModID]struct{}{CModProcedure: {}}}}
+	if err := mod.Start(newCModContext(server)); err != nil {
+		t.Fatal(err)
+	}
+	ctx := txruntime.Bind(t.Context(), newRuntimeAccess(server.runtime, Spec{Name: "game", Requires: []CModID{CModProcedure}}))
+	entered, proceed, finished := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() {
+		finished <- txruntime.Call(ctx, lifecycleProcedure(func(tx *txn.Tx) error {
+			close(entered)
+			<-proceed
+			return tx.CallAfterCommit(lifecycleProcedure(func(*txn.Tx) error { return nil }))
+		}))
+	}()
+	<-entered
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	drainErr := mod.(CModDrainer).Drain(canceled)
+	before := append([]string(nil), events...)
+	close(proceed)
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(drainErr, context.Canceled) {
+		t.Fatalf("Drain = %v", drainErr)
+	}
+	if !reflect.DeepEqual(before, []string{"start:writeback"}) {
+		t.Fatalf("写回早于事务结束：%v", before)
+	}
+	if err := mod.(CModDrainer).Drain(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(events, []string{"start:writeback", "drain:writeback"}) {
+		t.Fatalf("events = %v", events)
+	}
 }
 
 func (stateWriteBackComponentFake) Validate(ProcedureContext) error { return nil }
@@ -200,4 +253,141 @@ func equalStrings(left, right []string) bool {
 		}
 	}
 	return true
+}
+
+func TestSubmitDrainWaitsBeforeFinalWriteBack(t *testing.T) {
+	events := []string{}
+	mod, err := NewProcedureBuilder().WriteBack(&recordingProcedureWriteBack{events: &events}).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := lifecycle.NewWaitGroupContext(t.Context())
+	t.Cleanup(func() { root.Cancel(); root.Wait() })
+	server := &Server{runtime: &runtime{lifecycle: root, selectedCMods: map[CModID]struct{}{CModProcedure: {}}}}
+	if err := mod.Start(newCModContext(server)); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.runtime.transaction.ConfigureAsync(txn.AsyncConfig{MaxConcurrent: 1, MaxPending: 2}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := txruntime.Bind(t.Context(), newRuntimeAccess(server.runtime, Spec{Name: "game", Requires: []CModID{CModProcedure}}))
+	entered, proceed := make(chan struct{}), make(chan struct{})
+	future, err := txruntime.Submit(ctx, lifecycleProcedure(func(tx *txn.Tx) error {
+		return tx.CallAfterCommit(lifecycleProcedure(func(*txn.Tx) error {
+			close(entered)
+			<-proceed
+			return nil
+		}))
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	queued, err := txruntime.Submit(ctx, lifecycleProcedure(func(*txn.Tx) error { return nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	drainErr := mod.(CModDrainer).Drain(canceled)
+	before := append([]string(nil), events...)
+	close(proceed)
+	if err := future.Await(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(drainErr, context.Canceled) {
+		t.Fatalf("Drain = %v", drainErr)
+	}
+	if !reflect.DeepEqual(before, []string{"start:writeback"}) {
+		t.Fatalf("写回早于事务结束：%v", before)
+	}
+	if err := queued.Await(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := mod.(CModDrainer).Drain(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(events, []string{"start:writeback", "drain:writeback"}) {
+		t.Fatalf("events = %v", events)
+	}
+}
+
+func TestSubmitInitFailureRetainsResourcesUntilWorkExits(t *testing.T) {
+	root := lifecycle.NewWaitGroupContext(t.Context())
+	defer func() { root.Cancel(); root.Wait() }()
+	executor := txn.NewRuntime()
+	rt := &runtime{lifecycle: root, transaction: executor}
+	rt.config.Runtime.Lifecycle.DrainTimeout = 10 * time.Millisecond
+	entered, finish := make(chan struct{}), make(chan struct{})
+	stopped := false
+	var future *txn.Future
+	registry, err := newRegistry(
+		testService{spec: Spec{Name: "game"}, start: func(Context) error {
+			var err error
+			future, err = executor.Submit(t.Context(), lifecycleProcedure(func(*txn.Tx) error { close(entered); <-finish; return nil }))
+			<-entered
+			return err
+		}, stop: func(context.Context) error { stopped = true; return nil }},
+		testService{spec: Spec{Name: "failure"}, start: func(Context) error { return errors.New("init failed") }},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := newServiceHost(registry, rt)
+	err = host.start([]string{"game", "failure"})
+	if !errors.Is(err, errStopDeferred) || stopped {
+		t.Errorf("init cleanup: err=%v stopped=%v", err, stopped)
+	}
+	close(finish)
+	if err := future.Await(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{runtime: rt, host: host}
+	if err := server.finishWork(t.Context(), false); err != nil {
+		t.Fatal(err)
+	}
+	if !stopped {
+		t.Fatal("任务结束后没有重试初始化回滚")
+	}
+}
+
+func TestSubmitStartupCleanupWithoutActorsRetainsDependencies(t *testing.T) {
+	events := []string{}
+	mod, err := NewProcedureBuilder().WriteBack(&recordingProcedureWriteBack{events: &events}).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := lifecycle.NewWaitGroupContext(t.Context())
+	defer func() { root.Cancel(); root.Wait() }()
+	server := &Server{runtime: &runtime{lifecycle: root}}
+	server.cmodHost = newCModHost(newCModContext(server), cmodGraph{ordered: []CMod{mod}})
+	if err := server.cmodHost.start(); err != nil {
+		t.Fatal(err)
+	}
+	finish := make(chan struct{})
+	future, err := server.runtime.transaction.Submit(t.Context(), lifecycleProcedure(func(*txn.Tx) error { <-finish; return nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	err = server.shutdown(canceled, false)
+	if !errors.Is(err, errStopDeferred) {
+		t.Errorf("cleanup err=%v", err)
+	}
+	for _, event := range events {
+		if event == "stop:writeback" {
+			t.Error("异步任务结束前关闭了写回")
+		}
+	}
+	close(finish)
+	if err := future.Await(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.shutdown(t.Context(), false); err != nil {
+		t.Fatal(err)
+	}
+	if events[len(events)-1] != "stop:writeback" {
+		t.Fatalf("events=%v", events)
+	}
 }

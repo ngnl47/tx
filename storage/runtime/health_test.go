@@ -82,14 +82,15 @@ type admissionStore struct {
 	mode meta.StorageMode
 }
 
+func (*admissionStore) RecordKey() txstorage.RecordKey      { return txstorage.RecordKey{ID: int64(1001)} }
 func (*admissionStore) SetUndoRecorder(change.UndoRecorder) {}
 
 func (store *admissionStore) TypeSpec() meta.TypeSpec {
 	return meta.TypeSpec{Storage: meta.StorageSpec{Mode: store.mode}}
 }
 
-func admissionTarget(scope string, mode meta.StorageMode) txn.LockTarget {
-	return txn.NewLockTarget(txn.NewLockKey(scope, 1001), &admissionStore{mode: mode})
+func admissionTarget(scope string, mode meta.StorageMode) txn.StoreTarget {
+	return txn.NewStoreTarget(txn.NewLockey(scope, 0, 1001), &admissionStore{mode: mode})
 }
 
 func TestStorageWriteAdmissionChecksTargetStorageModes(t *testing.T) {
@@ -97,17 +98,17 @@ func TestStorageWriteAdmissionChecksTargetStorageModes(t *testing.T) {
 	storage.markBackendUnavailable(txstorage.BackendMongo, errors.New("mongo unavailable"))
 	admission := WriteAdmission{storage: storage}
 
-	if err := admission.RequireWritable([]txn.LockTarget{
+	if err := admission.RequireWritable([]txn.StoreTarget{
 		admissionTarget("redis-role", meta.StorageModeRedis),
 	}); err != nil {
 		t.Fatalf("Redis-only target rejected Mongo outage: %v", err)
 	}
-	if err := admission.RequireWritable([]txn.LockTarget{
+	if err := admission.RequireWritable([]txn.StoreTarget{
 		admissionTarget("mongo-world", meta.StorageModeMongo),
 	}); !errors.Is(err, ErrStorageUnavailable) {
 		t.Fatalf("Mongo target error = %v, want ErrStorageUnavailable", err)
 	}
-	if err := admission.RequireWritable([]txn.LockTarget{
+	if err := admission.RequireWritable([]txn.StoreTarget{
 		admissionTarget("fusion-role", meta.StorageModeFusion),
 	}); !errors.Is(err, ErrStorageUnavailable) {
 		t.Fatalf("Fusion target error = %v, want ErrStorageUnavailable", err)
@@ -116,14 +117,14 @@ func TestStorageWriteAdmissionChecksTargetStorageModes(t *testing.T) {
 
 func TestStorageWriteAdmissionDoesNotRequireUnrelatedBackend(t *testing.T) {
 	redisOnly := WriteAdmission{storage: &Runtime{redis: &txredis.Stores{}}}
-	if err := redisOnly.RequireWritable([]txn.LockTarget{
+	if err := redisOnly.RequireWritable([]txn.StoreTarget{
 		admissionTarget("redis-role", meta.StorageModeRedis),
 	}); err != nil {
 		t.Fatalf("Redis-only target required Mongo: %v", err)
 	}
 
 	mongoOnly := WriteAdmission{storage: &Runtime{mongo: &txmongo.Cluster{}}}
-	if err := mongoOnly.RequireWritable([]txn.LockTarget{
+	if err := mongoOnly.RequireWritable([]txn.StoreTarget{
 		admissionTarget("mongo-world", meta.StorageModeMongo),
 	}); err != nil {
 		t.Fatalf("Mongo-only target required Redis: %v", err)
@@ -132,7 +133,7 @@ func TestStorageWriteAdmissionDoesNotRequireUnrelatedBackend(t *testing.T) {
 
 func TestStorageWriteAdmissionRejectsMissingTargetBackend(t *testing.T) {
 	admission := WriteAdmission{storage: &Runtime{}}
-	if err := admission.RequireWritable([]txn.LockTarget{
+	if err := admission.RequireWritable([]txn.StoreTarget{
 		admissionTarget("redis-role", meta.StorageModeRedis),
 	}); !errors.Is(err, ErrStorageUnavailable) {
 		t.Fatalf("missing Redis target error = %v, want ErrStorageUnavailable", err)

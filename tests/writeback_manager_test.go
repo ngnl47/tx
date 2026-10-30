@@ -45,7 +45,7 @@ func TestWriteBackManagerRegistersCommittedRootAndFlushesChanges(t *testing.T) {
 	if err := runtime.BindCommitParticipant(manager); err != nil {
 		t.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
-	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
+	lock := txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), store)
 
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
 		t.Fatalf("Call returned error: %v", err)
@@ -69,8 +69,8 @@ func TestWriteBackManagerRejectsDifferentStoreForRetainedIdentity(t *testing.T) 
 	if err := runtime.BindCommitParticipant(manager); err != nil {
 		t.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
-	key := txn.NewLockKey("role", 1001)
-	firstLock := txn.NewLockTarget(key, first)
+	key := txn.NewLockey("role", 0, 1001)
+	firstLock := txn.NewStoreTarget(key, first)
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: firstLock, store: first}); err != nil {
 		t.Fatalf("first Call returned error: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestWriteBackManagerRejectsDifferentStoreForRetainedIdentity(t *testing.T) 
 	}
 
 	called := false
-	secondLock := txn.NewLockTarget(key, second)
+	secondLock := txn.NewStoreTarget(key, second)
 	err := runtime.Call(context.Background(), observingRuntimeTestProcedure{
 		runtimeTestProcedure: runtimeTestProcedure{lock: secondLock, store: second},
 		called:               &called,
@@ -100,9 +100,9 @@ func TestWriteBackManagerAbortReleasesUncommittedIdentity(t *testing.T) {
 	if err := runtime.BindCommitParticipant(manager); err != nil {
 		t.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
-	key := txn.NewLockKey("role", 1001)
+	key := txn.NewLockey("role", 0, 1001)
 	err := runtime.Call(context.Background(), commitParticipantProcedure{
-		lock:       txn.NewLockTarget(key, first),
+		lock:       txn.NewStoreTarget(key, first),
 		store:      first,
 		processErr: errors.New("rollback"),
 	})
@@ -111,7 +111,7 @@ func TestWriteBackManagerAbortReleasesUncommittedIdentity(t *testing.T) {
 	}
 
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{
-		lock:  txn.NewLockTarget(key, second),
+		lock:  txn.NewStoreTarget(key, second),
 		store: second,
 	}); err != nil {
 		t.Fatalf("second Call after rollback returned error: %v", err)
@@ -125,7 +125,7 @@ func TestWriteBackManagerTryReleaseRequiresCleanRoot(t *testing.T) {
 	if err := runtime.BindCommitParticipant(manager); err != nil {
 		t.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
-	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
+	lock := txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), store)
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestWriteBackManagerTryReleaseRequiresCleanRoot(t *testing.T) {
 		t.Fatalf("TryRelease clean root = (%t, %v), want (true, nil)", released, err)
 	}
 	second := &runtimeTestStore{}
-	secondLock := txn.NewLockTarget(lock.Key, second)
+	secondLock := txn.NewStoreTarget(lock.Lock, second)
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: secondLock, store: second}); err != nil {
 		t.Fatalf("Call with reloaded Store after TryRelease returned error: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestWriteBackManagerTryReleaseWaitsForActiveProcedure(t *testing.T) {
 	if err := runtime.BindCommitParticipant(manager); err != nil {
 		t.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
-	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
+	lock := txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), store)
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
 		t.Fatalf("initial Call returned error: %v", err)
 	}
@@ -215,14 +215,14 @@ func TestWriteBackManagerTryReleaseWaitsForActiveProcedure(t *testing.T) {
 }
 
 type blockingWriteBackProcedure struct {
-	lock    txn.LockTarget
+	lock    txn.StoreTarget
 	store   *runtimeTestStore
 	started chan<- struct{}
 	release <-chan struct{}
 }
 
-func (procedure blockingWriteBackProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
-	return []txn.LockTarget{procedure.lock}, nil
+func (procedure blockingWriteBackProcedure) Locks(context.Context) (txn.Lockeys, error) {
+	return txn.Lockeys{procedure.lock.Lock}, nil
 }
 
 func (procedure blockingWriteBackProcedure) Process(*txn.Tx) error {
@@ -234,14 +234,14 @@ func (procedure blockingWriteBackProcedure) Process(*txn.Tx) error {
 
 func TestWriteBackManagerTryReleaseRejectsInvalidTarget(t *testing.T) {
 	manager := writebackmodule.NewManager(writebackmodule.Dependencies{}, writebackmodule.Config{})
-	if released, err := manager.TryRelease(context.Background(), txn.LockTarget{}); released || !errors.Is(err, writebackmodule.ErrInvalidTarget) {
+	if released, err := manager.TryRelease(context.Background(), txn.StoreTarget{}); released || !errors.Is(err, writebackmodule.ErrInvalidTarget) {
 		t.Fatalf("TryRelease invalid target = (%t, %v), want (false, ErrInvalidTarget)", released, err)
 	}
 }
 
 func TestWriteBackManagerTryReleaseReturnsTrueForUnknownTarget(t *testing.T) {
 	manager := writebackmodule.NewManager(writebackmodule.Dependencies{}, writebackmodule.Config{})
-	target := txn.NewLockTarget(txn.NewLockKey("role", 1001), &runtimeTestStore{})
+	target := txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), &runtimeTestStore{})
 	if released, err := manager.TryRelease(context.Background(), target); err != nil || !released {
 		t.Fatalf("TryRelease unknown target = (%t, %v), want (true, nil)", released, err)
 	}
@@ -249,8 +249,8 @@ func TestWriteBackManagerTryReleaseReturnsTrueForUnknownTarget(t *testing.T) {
 
 func TestWriteBackManagerTryReleaseReturnsFalseForReservedTarget(t *testing.T) {
 	manager := writebackmodule.NewManager(writebackmodule.Dependencies{}, writebackmodule.Config{})
-	target := txn.NewLockTarget(txn.NewLockKey("role", 1001), &runtimeTestStore{})
-	reservation, err := manager.Prepare(context.Background(), []txn.LockTarget{target})
+	target := txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), &runtimeTestStore{})
+	reservation, err := manager.Prepare(context.Background(), []txn.StoreTarget{target})
 	if err != nil {
 		t.Fatalf("Prepare returned error: %v", err)
 	}
@@ -267,15 +267,15 @@ func TestWriteBackManagerTryReleaseRejectsIdentityConflict(t *testing.T) {
 	if err := runtime.BindCommitParticipant(manager); err != nil {
 		t.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
-	key := txn.NewLockKey("role", 1001)
-	firstTarget := txn.NewLockTarget(key, first)
+	key := txn.NewLockey("role", 0, 1001)
+	firstTarget := txn.NewStoreTarget(key, first)
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: firstTarget, store: first}); err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
 	if err := manager.Flush(context.Background()); err != nil {
 		t.Fatalf("Flush returned error: %v", err)
 	}
-	secondTarget := txn.NewLockTarget(key, &runtimeTestStore{})
+	secondTarget := txn.NewStoreTarget(key, &runtimeTestStore{})
 	if released, err := manager.TryRelease(context.Background(), secondTarget); released || !errors.Is(err, writebackmodule.ErrIdentityConflict) {
 		t.Fatalf("TryRelease conflicting target = (%t, %v), want (false, ErrIdentityConflict)", released, err)
 	}
@@ -284,8 +284,8 @@ func TestWriteBackManagerTryReleaseRejectsIdentityConflict(t *testing.T) {
 func TestWriteBackManagerPrepareRejectsTypedNilStore(t *testing.T) {
 	manager := writebackmodule.NewManager(writebackmodule.Dependencies{}, writebackmodule.Config{})
 	var store *runtimeTestStore
-	_, err := manager.Prepare(context.Background(), []txn.LockTarget{
-		txn.NewLockTarget(txn.NewLockKey("role", 1001), store),
+	_, err := manager.Prepare(context.Background(), []txn.StoreTarget{
+		txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), store),
 	})
 	if !errors.Is(err, writebackmodule.ErrInvalidTarget) {
 		t.Fatalf("Prepare typed nil Store error = %v, want ErrInvalidTarget", err)
@@ -300,7 +300,7 @@ func TestWriteBackManagerKeepsFailedFlushPending(t *testing.T) {
 	if err := runtime.BindCommitParticipant(manager); err != nil {
 		t.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
-	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
+	lock := txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), store)
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestWriteBackManagerIgnoresPureMemoryTransactionTarget(t *testing.T) {
 	if err := runtime.BindCommitParticipant(manager); err != nil {
 		t.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
-	lock := txn.NewLockTarget(txn.NewLockKey("memory", 1001), store)
+	lock := txn.NewStoreTarget(txn.NewLockey("memory", 0, 1001), store)
 	if err := runtime.Call(context.Background(), commitParticipantProcedure{
 		lock:  lock,
 		store: &store.runtimeTestStore,
@@ -340,7 +340,7 @@ func BenchmarkTxnRuntimeCommitToWriteBackManager(b *testing.B) {
 		b.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
 	procedure := runtimeTestProcedure{
-		lock:  txn.NewLockTarget(txn.NewLockKey("role", 1001), store),
+		lock:  txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), store),
 		store: store,
 	}
 	ctx := context.Background()
@@ -361,7 +361,7 @@ func BenchmarkTxnRuntimeWithoutCommitParticipant(b *testing.B) {
 	store := &runtimeTestStore{}
 	runtime := txn.NewRuntime()
 	procedure := runtimeTestProcedure{
-		lock:  txn.NewLockTarget(txn.NewLockKey("role", 1001), store),
+		lock:  txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), store),
 		store: store,
 	}
 	ctx := context.Background()

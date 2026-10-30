@@ -48,8 +48,8 @@ type newRoot struct {
 	id string
 }
 
-func (v *newRoot) LockTarget() txn.LockTarget {
-	return txn.NewLockTarget(txn.NewLockKey("new", v.id), v.runtimeTestStore)
+func (v *newRoot) StoreTarget() txn.StoreTarget {
+	return txn.NewStoreTarget(txn.NewLockey("new", 0, v.id), v)
 }
 
 type createRootProcedure struct {
@@ -58,8 +58,8 @@ type createRootProcedure struct {
 	after func(*txn.Tx) error
 }
 
-func (p createRootProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
-	return []txn.LockTarget{txn.NewLockTarget(txn.NewLockKey("parent", 1), p.root)}, nil
+func (p createRootProcedure) Locks(context.Context) (txn.Lockeys, error) {
+	return txn.Lockeys{txn.NewLockey("parent", 0, 1)}, nil
 }
 func (p createRootProcedure) Process(tx *txn.Tx) error {
 	if err := txn.Create(tx.Context(), p.value); err != nil {
@@ -77,7 +77,7 @@ func TestWriteBackCreationWithoutSettersAndFailedInsert(t *testing.T) {
 			writer := &createWriter{exists: existing, err: errors.New("unavailable")}
 			manager := writeback.NewManager(writeback.Dependencies{Writer: writer}, writeback.Config{})
 			cache := &createCache{}
-			if err := manager.BindCreationCache("new", cache); err != nil {
+			if err := manager.BindCreationResolver(cache); err != nil {
 				t.Fatal(err)
 			}
 			runtime := txn.NewRuntime()
@@ -92,7 +92,7 @@ func TestWriteBackCreationWithoutSettersAndFailedInsert(t *testing.T) {
 			if err := manager.Flush(context.Background()); err == nil || manager.Pending() != 1 {
 				t.Fatal("failed insert discarded")
 			}
-			if released, err := manager.TryRelease(context.Background(), value.LockTarget()); err != nil || released {
+			if released, err := manager.TryRelease(context.Background(), value.StoreTarget()); err != nil || released {
 				t.Fatal("pending object released", err)
 			}
 			writer.err = nil
@@ -112,7 +112,7 @@ func TestWriteBackCreationRollback(t *testing.T) {
 	writer := &createWriter{}
 	manager := writeback.NewManager(writeback.Dependencies{Writer: writer}, writeback.Config{})
 	cache := &createCache{}
-	_ = manager.BindCreationCache("new", cache)
+	_ = manager.BindCreationResolver(cache)
 	runtime := txn.NewRuntime()
 	_ = runtime.BindCommitParticipant(manager)
 	failure := errors.New("rollback")
@@ -140,11 +140,11 @@ func (c *rejectingCreateCache) ReserveCreate(ctx context.Context, value any) (tx
 func TestFailedCreationReleasesCapacityEvenWhenCallerContinues(t *testing.T) {
 	manager := writeback.NewManager(writeback.Dependencies{Writer: &createWriter{}}, writeback.Config{MaxPendingRoots: 2})
 	cache := &rejectingCreateCache{fail: true}
-	_ = manager.BindCreationCache("new", cache)
+	_ = manager.BindCreationResolver(cache)
 	runtime := txn.NewRuntime()
 	_ = runtime.BindCommitParticipant(manager)
 	parent := &runtimeTestStore{}
-	p := fusionRoleProcedure{lock: txn.NewLockTarget(txn.NewLockKey("parent", 1), parent), process: func(tx *txn.Tx) error {
+	p := fusionRoleProcedure{lock: txn.NewStoreTarget(txn.NewLockey("parent", 0, 1), parent), process: func(tx *txn.Tx) error {
 		if err := txn.Create(tx.Context(), &newRoot{&runtimeTestStore{}, "failed"}); err == nil {
 			t.Fatal("expected load failure")
 		}
@@ -161,7 +161,7 @@ func TestFailedCreationReleasesCapacityEvenWhenCallerContinues(t *testing.T) {
 func TestCreationPanicReleasesReservations(t *testing.T) {
 	manager := writeback.NewManager(writeback.Dependencies{Writer: &createWriter{}}, writeback.Config{MaxPendingRoots: 2})
 	cache := &rejectingCreateCache{panicOnReserve: true}
-	_ = manager.BindCreationCache("new", cache)
+	_ = manager.BindCreationResolver(cache)
 	runtime := txn.NewRuntime()
 	_ = runtime.BindCommitParticipant(manager)
 	p := createRootProcedure{root: &runtimeTestStore{}, value: &newRoot{&runtimeTestStore{}, "new"}}
@@ -181,3 +181,5 @@ func TestCreationPanicReleasesReservations(t *testing.T) {
 		t.Fatal("new root missing")
 	}
 }
+
+func (v *newRoot) RecordKey() storage.RecordKey { return storage.RecordKey{ID: v.id} }

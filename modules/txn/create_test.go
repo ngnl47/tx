@@ -17,8 +17,8 @@ type creationValue struct {
 	store creationStore
 }
 
-func (v *creationValue) LockTarget() LockTarget {
-	return NewLockTarget(NewLockKey("create", v.id), &v.store)
+func (v *creationValue) StoreTarget() StoreTarget {
+	return NewStoreTarget(NewLockey("create", 0, v.id), &v.store)
 }
 
 type creationReservation struct{ committed, aborted bool }
@@ -29,10 +29,10 @@ func (r *creationReservation) Validate() error { return nil }
 
 type creationParticipant struct{ resources []*creationReservation }
 
-func (p *creationParticipant) Prepare(context.Context, []LockTarget) (CommitReservation, error) {
+func (p *creationParticipant) Prepare(context.Context, []StoreTarget) (CommitReservation, error) {
 	return emptyReservation{}, nil
 }
-func (p *creationParticipant) PrepareCreate(context.Context, LockTarget, any) (CreationReservation, error) {
+func (p *creationParticipant) PrepareCreate(context.Context, StoreTarget, any) (CreationReservation, error) {
 	r := &creationReservation{}
 	p.resources = append(p.resources, r)
 	return r, nil
@@ -40,16 +40,16 @@ func (p *creationParticipant) PrepareCreate(context.Context, LockTarget, any) (C
 
 type emptyReservation struct{}
 
-func (emptyReservation) Commit([]LockTarget) {}
-func (emptyReservation) Abort()              {}
+func (emptyReservation) Commit([]StoreTarget) {}
+func (emptyReservation) Abort()               {}
 
 type createProcedure struct {
 	root creationValue
 	fn   func(*Tx) error
 }
 
-func (p *createProcedure) Locks(context.Context) ([]LockTarget, error) { return Locks(&p.root), nil }
-func (p *createProcedure) Process(tx *Tx) error                        { return p.fn(tx) }
+func (p *createProcedure) Locks(context.Context) (Lockeys, error) { return Locks(&p.root), nil }
+func (p *createProcedure) Process(tx *Tx) error                   { return p.fn(tx) }
 
 func TestCreateSavepointAndExpiredContext(t *testing.T) {
 	participant := &creationParticipant{}
@@ -108,8 +108,8 @@ func TestCreateIdentityChangeRollsBack(t *testing.T) {
 
 type createOnlyProcedure struct{ value *creationValue }
 
-func (p createOnlyProcedure) Locks(context.Context) ([]LockTarget, error) { return nil, nil }
-func (p createOnlyProcedure) Process(tx *Tx) error                        { return Create(tx.Context(), p.value) }
+func (p createOnlyProcedure) Locks(context.Context) (Lockeys, error) { return nil, nil }
+func (p createOnlyProcedure) Process(tx *Tx) error                   { return Create(tx.Context(), p.value) }
 func TestManagedProcedureCanCreateWithoutExistingRoot(t *testing.T) {
 	participant := &creationParticipant{}
 	runtime := NewRuntime()

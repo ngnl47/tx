@@ -184,6 +184,10 @@ func (access transactionAccess) Call(ctx context.Context, procedure txn.Procedur
 	return access.runtime.Call(ctx, procedure)
 }
 
+func (access transactionAccess) Submit(ctx context.Context, procedure txn.Procedure) (*txn.Future, error) {
+	return access.runtime.Submit(ctx, procedure)
+}
+
 type advancedAccess struct{ runtime *runtime }
 
 func (access advancedAccess) Redis() txgoredis.ClientProvider {

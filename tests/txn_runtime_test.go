@@ -16,33 +16,33 @@ type rejectingAdmission struct {
 	err error
 }
 
-func (admission rejectingAdmission) RequireWritable([]txn.LockTarget) error {
+func (admission rejectingAdmission) RequireWritable([]txn.StoreTarget) error {
 	return admission.err
 }
 
 type recordingCommitParticipant struct {
 	prepared bool
-	commits  [][]txn.LockTarget
+	commits  [][]txn.StoreTarget
 	aborts   int
 }
 
-func (sink *recordingCommitParticipant) Prepare(_ context.Context, targets []txn.LockTarget) (txn.CommitReservation, error) {
+func (sink *recordingCommitParticipant) Prepare(_ context.Context, targets []txn.StoreTarget) (txn.CommitReservation, error) {
 	sink.prepared = true
 	return &recordingCommitReservation{
 		sink:    sink,
-		targets: append([]txn.LockTarget(nil), targets...),
+		targets: append([]txn.StoreTarget(nil), targets...),
 	}, nil
 }
 
 type recordingCommitReservation struct {
 	sink    *recordingCommitParticipant
-	targets []txn.LockTarget
+	targets []txn.StoreTarget
 }
 
-func (reservation *recordingCommitReservation) Commit(targets []txn.LockTarget) {
+func (reservation *recordingCommitReservation) Commit(targets []txn.StoreTarget) {
 	reservation.sink.commits = append(
 		reservation.sink.commits,
-		append([]txn.LockTarget(nil), targets...),
+		append([]txn.StoreTarget(nil), targets...),
 	)
 }
 
@@ -51,17 +51,64 @@ func (reservation *recordingCommitReservation) Abort() {
 }
 
 type commitParticipantProcedure struct {
-	lock       txn.LockTarget
+	lock       txn.StoreTarget
 	store      *runtimeTestStore
 	prepared   *bool
 	processErr error
 }
 
-func (procedure commitParticipantProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
-	return []txn.LockTarget{procedure.lock}, nil
+type chainedCommitProcedure struct {
+	commitParticipantProcedure
+	next txn.Procedure
 }
 
-func (procedure commitParticipantProcedure) Process(*txn.Tx) error {
+func (p chainedCommitProcedure) Process(tx *txn.Tx) error {
+	if err := p.commitParticipantProcedure.Process(tx); err != nil {
+		return err
+	}
+	return tx.CallAfterCommit(p.next)
+}
+
+func TestTxnRuntimeContinuationKeepsWriteBackAndIndependentRollback(t *testing.T) {
+	for _, failNext := range []bool{false, true} {
+		parent, child := &runtimeTestStore{id: 10}, &runtimeTestStore{id: 11}
+		key := txn.NewLockey("role", 1, 10)
+		parentTarget, childTarget := txn.NewStoreTarget(key, parent), txn.NewStoreTarget(key, child)
+		sink := &recordingCommitParticipant{}
+		runtime := txn.NewRuntime()
+		if err := runtime.BindCommitParticipant(sink); err != nil {
+			t.Fatal(err)
+		}
+		next := commitParticipantProcedure{lock: childTarget, store: child}
+		if failNext {
+			next.processErr = errors.New("follow-up failed")
+		}
+		err := runtime.Call(t.Context(), chainedCommitProcedure{
+			commitParticipantProcedure: commitParticipantProcedure{lock: parentTarget, store: parent},
+			next:                       next,
+		})
+		if !parent.HasChanges() {
+			t.Fatal("原事务已提交的修改丢失")
+		}
+		if failNext {
+			var committed *txn.AfterCommitError
+			if !errors.As(err, &committed) || child.HasChanges() || sink.aborts != 1 || len(sink.commits) != 1 {
+				t.Fatalf("提交后失败：err=%v childDirty=%v aborts=%d commits=%d", err, child.HasChanges(), sink.aborts, len(sink.commits))
+			}
+		} else if err != nil || len(sink.commits) != 2 || sink.commits[1][0].Key != childTarget.Key {
+			t.Fatalf("后续事务未复用写回：err=%v commits=%v", err, sink.commits)
+		}
+	}
+}
+
+func (procedure commitParticipantProcedure) Locks(context.Context) (txn.Lockeys, error) {
+	return txn.Lockeys{procedure.lock.Lock}, nil
+}
+
+func (procedure commitParticipantProcedure) Process(tx *txn.Tx) error {
+	if err := tx.Enlist(procedure.lock); err != nil {
+		return err
+	}
 	if procedure.prepared != nil && !*procedure.prepared {
 		return errors.New("commit participant was not prepared before process")
 	}
@@ -88,7 +135,7 @@ func TestTxnRuntimeBindsGenericCommitParticipant(t *testing.T) {
 
 func TestTxnRuntimeCommitsFinalDirtyTargetsToBoundSink(t *testing.T) {
 	store := &runtimeTestStore{}
-	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
+	lock := txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), store)
 	sink := &recordingCommitParticipant{}
 	runtime := txn.NewRuntime()
 	if err := runtime.BindCommitParticipant(sink); err != nil {
@@ -113,7 +160,7 @@ func TestTxnRuntimeCommitsFinalDirtyTargetsToBoundSink(t *testing.T) {
 
 func TestTxnRuntimeAbortsCommitReservationAfterRollback(t *testing.T) {
 	store := &runtimeTestStore{}
-	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
+	lock := txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), store)
 	sink := &recordingCommitParticipant{}
 	runtime := txn.NewRuntime()
 	if err := runtime.BindCommitParticipant(sink); err != nil {
@@ -160,7 +207,7 @@ func TestTxnRuntimeRejectsProcedureBeforeMutationWhenAdmissionIsClosed(t *testin
 	if err := runtime.BindCommitParticipant(manager); err != nil {
 		t.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
-	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
+	lock := txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), store)
 	called := false
 
 	err := runtime.Call(context.Background(), observingRuntimeTestProcedure{
@@ -184,7 +231,7 @@ func TestTxnRuntimeAllowsPureMemoryProcedureWhenAdmissionIsClosed(t *testing.T) 
 	if err := runtime.BindCommitParticipant(manager); err != nil {
 		t.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
-	lock := txn.NewLockTarget(txn.NewLockKey("memory", 1001), store)
+	lock := txn.NewStoreTarget(txn.NewLockey("memory", 0, 1001), store)
 	if err := runtime.Call(context.Background(), commitParticipantProcedure{
 		lock:  lock,
 		store: &store.runtimeTestStore,
@@ -208,7 +255,7 @@ func TestWriteBackManagerTreatsTypedNilWriteAdmissionAsAbsent(t *testing.T) {
 		t.Fatalf("BindCommitParticipant returned error: %v", err)
 	}
 	err := runtime.Call(context.Background(), runtimeTestProcedure{
-		lock:  txn.NewLockTarget(txn.NewLockKey("role", 1001), store),
+		lock:  txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), store),
 		store: store,
 	})
 	if err != nil {
@@ -220,6 +267,9 @@ func TestWriteBackManagerTreatsTypedNilWriteAdmissionAsAbsent(t *testing.T) {
 type panickingRuntimeProcedure struct{ runtimeTestProcedure }
 
 func (procedure panickingRuntimeProcedure) Process(tx *txn.Tx) error {
+	if err := tx.Enlist(procedure.lock); err != nil {
+		return err
+	}
 	if err := procedure.runtimeTestProcedure.Process(tx); err != nil {
 		return err
 	}
@@ -231,8 +281,9 @@ func TestTxnRuntimeChildPanicRestoresPendingChangesAndAbortsReservations(t *test
 	parent.SetField(7)
 	child.SetField(8)
 	parentBefore, childBefore := parent.changes.clone(), child.changes.clone()
-	parentLock := txn.NewLockTarget(txn.NewLockKey(t.Name(), "parent"), parent)
-	childLock := txn.NewLockTarget(txn.NewLockKey(t.Name(), "child"), child)
+	parentLock := txn.NewStoreTarget(txn.NewLockey(t.Name(), 0, "parent"), parent)
+	child.id = 1002
+	childLock := txn.NewStoreTarget(txn.NewLockey(t.Name(), 0, "child"), child)
 	sink := &recordingCommitParticipant{}
 	runtime := txn.NewRuntime()
 	if err := runtime.BindCommitParticipant(sink); err != nil {

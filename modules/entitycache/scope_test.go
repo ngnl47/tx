@@ -103,5 +103,5 @@ func TestTransactionFindHoldsUntilCallbacksAndPanicFinish(t *testing.T) {
 
 type scopeProcedure func(*txn.Tx) error
 
-func (p scopeProcedure) Locks(context.Context) ([]txn.LockTarget, error) { return nil, nil }
-func (p scopeProcedure) Process(tx *txn.Tx) error                        { return p(tx) }
+func (p scopeProcedure) Locks(context.Context) (txn.Lockeys, error) { return nil, nil }
+func (p scopeProcedure) Process(tx *txn.Tx) error                   { return p(tx) }

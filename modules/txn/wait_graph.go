@@ -20,7 +20,7 @@ type DeadlockStep struct {
 	// Blocker 是 Waiter 的直接阻塞事务，可能是锁 owner 或 FIFO 前驱。
 	Blocker TransactionID
 	// Lock 是 Waiter 本次请求的精确业务锁键。
-	Lock LockKey
+	Lock Lockey
 	// ProcedurePath 是 Waiter 发起锁请求时的完整 Procedure 调用路径。
 	ProcedurePath string
 }
@@ -61,7 +61,7 @@ func (err *DeadlockError) Is(target error) bool {
 
 type waitEdge struct {
 	blocker       TransactionID
-	lock          LockKey
+	lock          Lockey
 	procedurePath string
 }
 
@@ -72,7 +72,7 @@ type waitGraph struct {
 	waitsFor map[TransactionID]waitEdge
 }
 
-func (graph *waitGraph) add(waiter, blocker TransactionID, lock LockKey, procedurePath string) error {
+func (graph *waitGraph) add(waiter, blocker TransactionID, lock Lockey, procedurePath string) error {
 	newEdge := waitEdge{blocker: blocker, lock: lock, procedurePath: procedurePath}
 	if waiter == blocker {
 		return &DeadlockError{Cycle: []DeadlockStep{deadlockStep(waiter, newEdge)}}

@@ -86,8 +86,9 @@ func (builder *ProcedureBuilder) Build() (CMod, error) {
 }
 
 type procedureCMod struct {
-	writeBack  ProcedureWriteBack
-	components []ComponentSpec
+	writeBack   ProcedureWriteBack
+	components  []ComponentSpec
+	transaction *txn.Runtime
 }
 
 var (
@@ -121,9 +122,11 @@ func (mod *procedureCMod) Start(runtime CModContext) error {
 	if !ok {
 		return errors.New("framework: procedure host is not available")
 	}
-	if err := host.startProcedureTransaction(); err != nil {
+	transaction, err := host.startProcedureTransaction()
+	if err != nil {
 		return err
 	}
+	mod.transaction = transaction
 	if err := mod.writeBack.Start(procedureContext{CModContext: runtime}); err != nil {
 		return fmt.Errorf("framework: start procedure writeback: %w", err)
 	}
@@ -133,6 +136,9 @@ func (mod *procedureCMod) Start(runtime CModContext) error {
 func (mod *procedureCMod) Drain(ctx context.Context) error {
 	if mod == nil || mod.writeBack == nil {
 		return nil
+	}
+	if err := mod.transaction.Drain(ctx); err != nil {
+		return err
 	}
 	return mod.writeBack.Drain(ctx)
 }
@@ -157,14 +163,17 @@ func (runtime procedureContext) WriteAdmission() writebackmodule.WriteAdmission 
 
 type procedureHost interface {
 	CModContext
-	startProcedureTransaction() error
+	startProcedureTransaction() (*txn.Runtime, error)
 }
 
-func (context *cmodContext) startProcedureTransaction() error {
+func (context *cmodContext) startProcedureTransaction() (*txn.Runtime, error) {
 	if context == nil || context.server == nil {
-		return errors.New("framework: procedure server is not configured")
+		return nil, errors.New("framework: procedure server is not configured")
 	}
-	return context.server.startTransaction()
+	if err := context.server.startTransaction(); err != nil {
+		return nil, err
+	}
+	return context.server.runtime.transaction, nil
 }
 
 func cloneComponentSpecs(components []ComponentSpec) []ComponentSpec {

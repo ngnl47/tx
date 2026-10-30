@@ -14,6 +14,8 @@ import (
 )
 
 type runtimeTestStore struct {
+	id         int64
+	typeName   string
 	recorder   change.UndoRecorder
 	changes    recordedChanges
 	visitCalls int
@@ -93,13 +95,17 @@ func (store *runtimeTestStore) SetField(field change.FieldID) {
 
 func (store *runtimeTestStore) TypeSpec() meta.TypeSpec {
 	return meta.TypeSpec{
-		Type:    meta.Type{Ref: meta.TypeRef{FullName: "RuntimeTest"}},
+		Type:    meta.Type{Ref: meta.TypeRef{FullName: store.name()}},
 		Storage: meta.StorageSpec{Mode: meta.StorageModeRedis},
 	}
 }
 
 func (store *runtimeTestStore) RecordKey() storage.RecordKey {
-	return storage.RecordKey{ID: int64(1001)}
+	id := store.id
+	if id == 0 {
+		id = 1001
+	}
+	return storage.RecordKey{ID: id}
 }
 
 func (store *runtimeTestStore) VisitChanges(visitor change.Visitor) error {
@@ -136,21 +142,24 @@ func (store *runtimeTestStore) CollapseChanges() {
 }
 
 type runtimeTestProcedure struct {
-	lock  txn.LockTarget
+	lock  txn.StoreTarget
 	store *runtimeTestStore
 }
 
 type runtimeDynamicChildProcedure struct {
-	lock   txn.LockTarget
+	lock   txn.StoreTarget
 	store  *runtimeTestStore
 	called *bool
 }
 
-func (procedure runtimeDynamicChildProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
-	return []txn.LockTarget{procedure.lock}, nil
+func (procedure runtimeDynamicChildProcedure) Locks(context.Context) (txn.Lockeys, error) {
+	return txn.Lockeys{procedure.lock.Lock}, nil
 }
 
-func (procedure runtimeDynamicChildProcedure) Process(*txn.Tx) error {
+func (procedure runtimeDynamicChildProcedure) Process(tx *txn.Tx) error {
+	if err := tx.Enlist(procedure.lock); err != nil {
+		return err
+	}
 	if procedure.called != nil {
 		*procedure.called = true
 	}
@@ -159,25 +168,31 @@ func (procedure runtimeDynamicChildProcedure) Process(*txn.Tx) error {
 }
 
 type runtimeDynamicParentProcedure struct {
-	lock  txn.LockTarget
+	lock  txn.StoreTarget
 	store *runtimeTestStore
 	child txn.Procedure
 }
 
-func (procedure runtimeDynamicParentProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
-	return []txn.LockTarget{procedure.lock}, nil
+func (procedure runtimeDynamicParentProcedure) Locks(context.Context) (txn.Lockeys, error) {
+	return txn.Lockeys{procedure.lock.Lock}, nil
 }
 
 func (procedure runtimeDynamicParentProcedure) Process(tx *txn.Tx) error {
+	if err := tx.Enlist(procedure.lock); err != nil {
+		return err
+	}
 	procedure.store.Set()
 	return tx.Call(procedure.child)
 }
 
-func (procedure runtimeTestProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
-	return []txn.LockTarget{procedure.lock}, nil
+func (procedure runtimeTestProcedure) Locks(context.Context) (txn.Lockeys, error) {
+	return txn.Lockeys{procedure.lock.Lock}, nil
 }
 
-func (procedure runtimeTestProcedure) Process(*txn.Tx) error {
+func (procedure runtimeTestProcedure) Process(tx *txn.Tx) error {
+	if err := tx.Enlist(procedure.lock); err != nil {
+		return err
+	}
 	procedure.store.Set()
 	return nil
 }
@@ -192,26 +207,35 @@ type multiFieldRuntimeTestProcedure struct {
 }
 
 type runtimeNonCollapsibleProcedure struct {
-	lock   txn.LockTarget
+	lock   txn.StoreTarget
 	called *bool
 }
 
-func (procedure runtimeNonCollapsibleProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
-	return []txn.LockTarget{procedure.lock}, nil
+func (procedure runtimeNonCollapsibleProcedure) Locks(context.Context) (txn.Lockeys, error) {
+	return txn.Lockeys{procedure.lock.Lock}, nil
 }
 
-func (procedure runtimeNonCollapsibleProcedure) Process(*txn.Tx) error {
+func (procedure runtimeNonCollapsibleProcedure) Process(tx *txn.Tx) error {
+	if err := tx.Enlist(procedure.lock); err != nil {
+		return err
+	}
 	*procedure.called = true
 	return nil
 }
 
-func (procedure multiFieldRuntimeTestProcedure) Process(*txn.Tx) error {
+func (procedure multiFieldRuntimeTestProcedure) Process(tx *txn.Tx) error {
+	if err := tx.Enlist(procedure.lock); err != nil {
+		return err
+	}
 	procedure.store.SetField(1)
 	procedure.store.SetField(2)
 	return nil
 }
 
 func (procedure observingRuntimeTestProcedure) Process(tx *txn.Tx) error {
+	if err := tx.Enlist(procedure.lock); err != nil {
+		return err
+	}
 	*procedure.called = true
 	return procedure.runtimeTestProcedure.Process(tx)
 }
@@ -233,7 +257,7 @@ func TestWriteBackManagerDefersTransactionStoreUntilFlush(t *testing.T) {
 		FlushInterval:        time.Millisecond,
 		ShutdownFlushTimeout: time.Second,
 	})
-	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
+	lock := txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), store)
 
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
 		t.Fatalf("Call returned error: %v", err)
@@ -267,7 +291,7 @@ func TestWriteBackManagerBudgetedFlushVisitsOnceWhenWithinBudget(t *testing.T) {
 	store := &runtimeTestStore{}
 	writer := &recordingChangeStoreApplier{}
 	runtime, manager := newWriteBackRuntime(t, writer, writebackmodule.Config{MaxRootChanges: 2})
-	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
+	lock := txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), store)
 
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
 		t.Fatalf("Call returned error: %v", err)
@@ -289,7 +313,7 @@ func TestWriteBackManagerAllowsAccumulatedChangesWhenCleanTargetCheckIsEnabled(t
 
 	store := &runtimeTestStore{}
 	runtime, manager := newWriteBackRuntime(t, &recordingChangeStoreApplier{}, writebackmodule.Config{})
-	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
+	lock := txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), store)
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
 		t.Fatalf("first Call returned error: %v", err)
 	}
@@ -303,7 +327,7 @@ func TestWriteBackManagerAllowsAccumulatedChangesWhenCleanTargetCheckIsEnabled(t
 
 func TestWriteBackManagerAllowsPendingRootWhenCapacityIsFull(t *testing.T) {
 	store := &runtimeTestStore{}
-	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
+	lock := txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), store)
 	runtime, manager := newWriteBackRuntime(t, &recordingChangeStoreApplier{}, writebackmodule.Config{MaxPendingRoots: 1})
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
 		t.Fatalf("first Call returned error: %v", err)
@@ -319,14 +343,15 @@ func TestWriteBackManagerAllowsPendingRootWhenCapacityIsFull(t *testing.T) {
 
 func TestWriteBackManagerRejectsNewRootBeforeProcedureWhenCapacityIsFull(t *testing.T) {
 	first := &runtimeTestStore{}
-	firstLock := txn.NewLockTarget(txn.NewLockKey("role", 1001), first)
+	firstLock := txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), first)
 	runtime, manager := newWriteBackRuntime(t, &recordingChangeStoreApplier{}, writebackmodule.Config{MaxPendingRoots: 1})
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: firstLock, store: first}); err != nil {
 		t.Fatalf("first Call returned error: %v", err)
 	}
 
 	second := &runtimeTestStore{}
-	secondLock := txn.NewLockTarget(txn.NewLockKey("role", 1002), second)
+	second.id = 1002
+	secondLock := txn.NewStoreTarget(txn.NewLockey("role", 0, 1002), second)
 	called := false
 	err := runtime.Call(context.Background(), observingRuntimeTestProcedure{
 		runtimeTestProcedure: runtimeTestProcedure{lock: secondLock, store: second},
@@ -346,8 +371,9 @@ func TestWriteBackManagerRejectsNewRootBeforeProcedureWhenCapacityIsFull(t *test
 func TestWriteBackManagerReservesDynamicChildTargetBeforeChildProcess(t *testing.T) {
 	first := &runtimeTestStore{}
 	second := &runtimeTestStore{}
-	firstLock := txn.NewLockTarget(txn.NewLockKey("role", 1001), first)
-	secondLock := txn.NewLockTarget(txn.NewLockKey("role", 1002), second)
+	firstLock := txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), first)
+	second.id = 1002
+	secondLock := txn.NewStoreTarget(txn.NewLockey("role", 0, 1002), second)
 	childCalled := false
 	runtime, manager := newWriteBackRuntime(t, &recordingChangeStoreApplier{}, writebackmodule.Config{MaxPendingRoots: 1})
 
@@ -370,8 +396,9 @@ func TestWriteBackManagerReservesDynamicChildTargetBeforeChildProcess(t *testing
 func TestWriteBackManagerCommitsDynamicChildTarget(t *testing.T) {
 	first := &runtimeTestStore{}
 	second := &runtimeTestStore{}
-	firstLock := txn.NewLockTarget(txn.NewLockKey("role", 1001), first)
-	secondLock := txn.NewLockTarget(txn.NewLockKey("role", 1002), second)
+	firstLock := txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), first)
+	second.id = 1002
+	secondLock := txn.NewStoreTarget(txn.NewLockey("role", 0, 1002), second)
 	runtime, manager := newWriteBackRuntime(t, &recordingChangeStoreApplier{}, writebackmodule.Config{MaxPendingRoots: 2})
 
 	if err := runtime.Call(context.Background(), runtimeDynamicParentProcedure{
@@ -388,7 +415,7 @@ func TestWriteBackManagerCommitsDynamicChildTarget(t *testing.T) {
 
 func TestWriteBackManagerCollapsesOverBudgetRootChangesBeforeFlush(t *testing.T) {
 	store := &runtimeTestStore{}
-	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
+	lock := txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), store)
 	runtime, manager := newWriteBackRuntime(t, &recordingChangeStoreApplier{}, writebackmodule.Config{
 		MaxRootChanges: 1,
 	})
@@ -414,7 +441,7 @@ func TestWriteBackManagerCollapsesOverBudgetRootChangesBeforeFlush(t *testing.T)
 
 func TestWriteBackManagerRejectsNonCollapsiblePersistentTargetBeforeProcedure(t *testing.T) {
 	store := &runtimeNonCollapsibleStore{}
-	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
+	lock := txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), store)
 	runtime, manager := newWriteBackRuntime(t, &recordingChangeStoreApplier{}, writebackmodule.Config{MaxRootChanges: 1})
 	called := false
 
@@ -438,14 +465,15 @@ func TestWriteBackManagerMemorySoftLimitWarnsButAcceptsNewPendingRoots(t *testin
 	})
 
 	first := &runtimeTestStore{}
-	firstLock := txn.NewLockTarget(txn.NewLockKey("role", 1001), first)
+	firstLock := txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), first)
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: firstLock, store: first}); err != nil {
 		t.Fatalf("first Call returned error: %v", err)
 	}
 	heapBytes = 2
 
 	second := &runtimeTestStore{}
-	secondLock := txn.NewLockTarget(txn.NewLockKey("role", 1002), second)
+	second.id = 1002
+	secondLock := txn.NewStoreTarget(txn.NewLockey("role", 0, 1002), second)
 	called := new(bool)
 	if err := runtime.Call(context.Background(), observingRuntimeTestProcedure{
 		runtimeTestProcedure: runtimeTestProcedure{lock: secondLock, store: second},
@@ -504,13 +532,14 @@ func TestWriteBackManagerFlushHoldsTransactionLockUntilStorageWriteFinishes(t *t
 	store := &runtimeTestStore{}
 	writer := &blockingRuntimeWriter{started: make(chan struct{}), release: make(chan struct{})}
 	runtime, manager := newWriteBackRuntime(t, writer, writebackmodule.Config{})
-	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
+	lock := txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), store)
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
 
 	otherStore := &runtimeTestStore{}
-	other := txn.NewLockTarget(txn.NewLockKey("role", 1002), otherStore)
+	otherStore.id = 1002
+	other := txn.NewStoreTarget(txn.NewLockey("role", 0, 1002), otherStore)
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: other, store: otherStore}); err != nil {
 		t.Fatal(err)
 	}
@@ -528,7 +557,7 @@ func TestWriteBackManagerFlushHoldsTransactionLockUntilStorageWriteFinishes(t *t
 	// 慢写只占用当前根对象锁，不能阻塞其他角色的内存事务。
 	otherCtx, cancelOther := context.WithTimeout(context.Background(), time.Second)
 	defer cancelOther()
-	if err := txn.Run(otherCtx, []txn.LockTarget{other}, func(*txn.Tx) error {
+	if err := txn.Run(otherCtx, []txn.StoreTarget{other}, func(*txn.Tx) error {
 		// 同一批 Flush 尚未刷到第二个根对象，其变更仍完整保留。
 		if !otherStore.HasChanges() {
 			t.Error("queued root was cleared before first storage write finished")
@@ -541,7 +570,7 @@ func TestWriteBackManagerFlushHoldsTransactionLockUntilStorageWriteFinishes(t *t
 	transactionEntered := make(chan struct{})
 	transactionDone := make(chan error, 1)
 	go func() {
-		transactionDone <- txn.Run(context.Background(), []txn.LockTarget{lock}, func(*txn.Tx) error {
+		transactionDone <- txn.Run(context.Background(), []txn.StoreTarget{lock}, func(*txn.Tx) error {
 			close(transactionEntered)
 			return nil
 		})
@@ -574,7 +603,7 @@ func TestWriteBackManagerRunFlushesPendingStoresOnInterval(t *testing.T) {
 	store := &runtimeTestStore{}
 	writer := &scheduledRuntimeWriter{called: make(chan struct{}, 1)}
 	runtime, manager := newWriteBackRuntime(t, writer, writebackmodule.Config{})
-	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
+	lock := txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), store)
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -604,7 +633,7 @@ func TestWriteBackManagerShutdownRetriesUntilPendingStoreIsFlushed(t *testing.T)
 		FlushInterval:        time.Millisecond,
 		ShutdownFlushTimeout: time.Second,
 	})
-	lock := txn.NewLockTarget(txn.NewLockKey("role", 1001), store)
+	lock := txn.NewStoreTarget(txn.NewLockey("role", 0, 1001), store)
 	if err := runtime.Call(context.Background(), runtimeTestProcedure{lock: lock, store: store}); err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -620,4 +649,11 @@ func TestWriteBackManagerShutdownRetriesUntilPendingStoreIsFlushed(t *testing.T)
 	if manager.Pending() != 0 || len(store.changes) != 0 {
 		t.Fatalf("shutdown left pending=%d changes=%#v", manager.Pending(), store.changes)
 	}
+}
+
+func (s *runtimeTestStore) name() string {
+	if s.typeName != "" {
+		return s.typeName
+	}
+	return "RuntimeTest"
 }

@@ -38,7 +38,7 @@ type lockEntry struct {
 
 type lockShard struct {
 	mu      sync.Mutex
-	entries map[LockKey]*lockEntry
+	entries map[Lockey]*lockEntry
 }
 
 type lockTable struct {
@@ -50,7 +50,7 @@ type lockTable struct {
 }
 
 type heldLock struct {
-	key   LockKey
+	key   Lockey
 	entry *lockEntry
 	shard *lockShard
 }
@@ -98,11 +98,11 @@ func (set *heldLockSet) appendSet(other *heldLockSet) {
 	other.count = 0
 }
 
-func acquireLocks(ctx context.Context, transaction TransactionID, locks []LockTarget, procedurePath string) (heldLockSet, error) {
+func acquireLocks(ctx context.Context, transaction TransactionID, locks Lockeys, procedurePath string) (heldLockSet, error) {
 	var heldLocks heldLockSet
 	for _, lock := range locks {
-		held := transactionLocks.reserve(lock.Key)
-		if err := transactionLocks.acquire(ctx, transaction, lock.Key, held.entry, procedurePath); err != nil {
+		held := transactionLocks.reserve(lock.identity())
+		if err := transactionLocks.acquire(ctx, transaction, lock.identity(), held.entry, procedurePath); err != nil {
 			transactionLocks.release(held)
 			releaseLocks(transaction, &heldLocks)
 			return heldLockSet{}, err
@@ -131,7 +131,7 @@ func releaseLocks(transaction TransactionID, locks *heldLockSet) {
 	locks.count = 0
 }
 
-func (table *lockTable) acquire(ctx context.Context, transaction TransactionID, key LockKey, entry *lockEntry, procedurePath string) error {
+func (table *lockTable) acquire(ctx context.Context, transaction TransactionID, key Lockey, entry *lockEntry, procedurePath string) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("transaction: acquire lock %s: %w", key.String(), err)
 	}
@@ -254,12 +254,12 @@ func (entry *lockEntry) remove(waiter *lockWaiter) {
 	waiter.next = nil
 }
 
-func (table *lockTable) reserve(key LockKey) heldLock {
+func (table *lockTable) reserve(key Lockey) heldLock {
 	shard := table.shard(key)
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 	if shard.entries == nil {
-		shard.entries = make(map[LockKey]*lockEntry)
+		shard.entries = make(map[Lockey]*lockEntry)
 	}
 	entry := shard.entries[key]
 	if entry == nil {
@@ -289,7 +289,7 @@ func (table *lockTable) release(held heldLock) {
 	table.entryPool.Put(held.entry)
 }
 
-func (table *lockTable) shard(key LockKey) *lockShard {
+func (table *lockTable) shard(key Lockey) *lockShard {
 	return &table.shards[lockKeyHash(key)&(lockShardCount-1)]
 }
 
@@ -317,16 +317,16 @@ func (table *lockTable) releaseWaiter(waiter *lockWaiter) {
 	table.waiterPool.Put(waiter)
 }
 
-func lockKeyHash(key LockKey) uint64 {
+func lockKeyHash(key Lockey) uint64 {
 	hash := lockKeyHashOffset64
-	for index := 0; index < len(key.Scope); index++ {
-		hash ^= uint64(key.Scope[index])
+	for index := 0; index < len(key.Type); index++ {
+		hash ^= uint64(key.Type[index])
 		hash *= lockKeyHashPrime64
 	}
 	hash ^= uint64(lockKeyHashSeparator)
 	hash *= lockKeyHashPrime64
-	for index := 0; index < len(key.Value); index++ {
-		hash ^= uint64(key.Value[index])
+	for index := 0; index < len(key.Key); index++ {
+		hash ^= uint64(key.Key[index])
 		hash *= lockKeyHashPrime64
 	}
 	return hash

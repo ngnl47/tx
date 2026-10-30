@@ -2,9 +2,19 @@
 
 公共 API 与接入方式见 [README](../README.md)，内部职责与可靠性契约见 [设计文档](design.md)，维护检查见 [审计标准](architecture_audit_standard.md)。完成的施工步骤和废弃方案由 Git 历史追溯。
 
-## 当前批次：稳定 Actor 放置与调用
+## 当前批次：Procedure 调用与后续工作
 
-2026-10-29 已完成当前存储版本的 [本地正式包与持续流量滚动验收](local-package-rollout-acceptance.md)：txgame、SLG Role、SLG World 三轮均超过 99.99%，分别核对持久化、排水和 World 重启恢复；验收模板修复与报告尚未提交。本轮不含云端容量或合服执行。
+[Procedure 调用与后续工作](procedure-calls.md) 已完成；[独立异步 Submit](procedure-submit.md) 已实现并完成本地验收：有界执行并发与 FIFO 排队、接纳起的独立限时上下文与 Future，继续保留 CallAfterCommit 同步语义。排水等待 Call/Submit 实际结束后再最终写回。排队也纳入排水，不增加 Actor 回投或持久化重试，本轮不提交、不跑云压测。
+
+[本地 Submit 突发负载验证](procedure-submit-burst.md) 已完成：执行并发 16/64/256 与总接纳 256/1024/4096，覆盖短 CPU、模拟 I/O 和热点锁，每组重复三次。当前默认按配置决策调整为 64/8192，8192 未纳入此前负载验证；扩大队列不等于增加处理能力，热点锁场景增加并发只会积累更多等锁任务。[真实业务 Submit 验收](../../txgameslg/docs/procedure-submit-acceptance.md) 已完成：64/8192 下冷/热各三轮、每轮 8192 次真实领奖全部完成，核对缓存命中、请求结束后的事务排水与最终 Mongo 写回。[2026-10-30 正式包滚动验收](procedure-rollout-acceptance.md)也已通过：txgame、SLG Role、World 各三分钟均达到 99.99%，存储、正常排水和 World 保存重载通过。正式 Role 使用同步 Call，异步 Submit 证据仍来自前述有限批次与框架测试。下一步归拢未提交变更准备提交，不继续搜索本地合成负载的精细阈值。
+
+## 前置：Procedure 锁与 Store 解耦
+
+2026-10-29 已完成 [锁与对象登记分离第一批](lockey-first-batch.md)，本轮未提交：`Procedure.Locks` 仅声明 `Lockeys`，Store 独立登记撤销与写回；业务用 `LockType` 枚举和 `lock` 注解统一顺序，移除锁顺序 YAML。已知键预加锁，未知键保留动态锁与死锁重试。四个工程全量 Go、定向 race 和实际 Redis/Mongo 存储回归通过；后续另批整理 Procedure 调用及后续工作排水，本轮不扩展。
+
+## Actor 放置与调用基础
+
+2026-10-29 已完成此前存储版本的 [本地正式包与持续流量滚动验收](local-package-rollout-acceptance.md)：txgame、SLG Role、SLG World 三轮均超过 99.99%，分别核对持久化、排水和 World 重启恢复；相关变更已提交。本次锁解耦未重跑该集群验收，不将此前结果作为本批吞吐证据。
 
 [GD 访问安全与 World 独占运行时](plans-entity-access-safety.md) 第 1～7 批及 EntityCache 管理 API 已提交，完成本地回归与微基准。共享普通读取使用 Snapshot，修改在 Procedure 内 Find；GDUser/GDServer 保留存储权威，World 保留独占路径及 2×2 Monster、50ms 主 tick 和网格保存闭环。[验收报告](entity-access-acceptance.md) 区分完整回归、race、真实依赖、跳过范围及复制开销，不代表云端容量验收。EntityCache 观察与管理 API 已按后续确认范围实现，见 [管理 API](entity-cache-management.md)；本地回归与热路径对照见 [管理验收](entity-cache-management-acceptance.md)；分配次数不变，计时波动和验证边界已记录。
 

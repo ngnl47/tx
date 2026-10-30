@@ -19,8 +19,8 @@ import (
 )
 
 var (
-	ErrIdentityConflict          = errors.New("writeback manager: lock key is bound to a different Store")
-	ErrInvalidTarget             = errors.New("writeback manager: invalid lock target")
+	ErrIdentityConflict          = errors.New("writeback manager: record identity is bound to a different Store")
+	ErrInvalidTarget             = errors.New("writeback manager: invalid store target")
 	ErrPendingRootCapacity       = errors.New("writeback manager: pending root capacity reached")
 	ErrChangeCollapseUnsupported = errors.New("writeback manager: persistent Store does not support change collapse")
 )
@@ -28,8 +28,8 @@ var (
 // WriteAdmission 在 Procedure 修改内存对象前检查外部存储是否允许产生新的待刷状态。
 type WriteAdmission interface {
 	// RequireWritable 按本次 Procedure 实际涉及的持久化目标检查写入闸门。
-	// targets 已去除纯内存对象和重复锁键，调用方不得修改切片内容。
-	RequireWritable(targets []txn.LockTarget) error
+	// targets 已去除纯内存对象和重复记录，调用方不得修改切片内容。
+	RequireWritable(targets []txn.StoreTarget) error
 }
 
 // Dependencies 是写回运行时启动时注入的基础能力，不属于静态配置。
@@ -46,7 +46,7 @@ type Runtime interface {
 	txn.CommitParticipant
 	Start(lifecycle.Tasks) error
 	Shutdown(context.Context) error
-	TryRelease(context.Context, txn.LockTarget) (bool, error)
+	TryRelease(context.Context, txn.StoreTarget) (bool, error)
 }
 
 // Config 描述根对象的写回调度与资源边界。
@@ -96,10 +96,9 @@ type Manager struct {
 
 	mu               sync.Mutex
 	generation       uint64
-	entries          map[txn.LockKey]rootEntry
-	pending          map[txn.LockKey]pendingEntry
-	reserved         map[txn.LockKey]int
-	creationCaches   map[string]CreationCache
+	entries          map[txn.StoreKey]rootEntry
+	pending          map[txn.StoreKey]pendingEntry
+	reserved         map[txn.StoreKey]int
 	creationResolver CreationCache
 
 	heapMu              sync.Mutex
@@ -111,7 +110,7 @@ type Manager struct {
 var _ Runtime = (*Manager)(nil)
 
 type rootEntry struct {
-	target    txn.LockTarget
+	target    txn.StoreTarget
 	retained  bool
 	creating  bool
 	createKey storage.RecordKey
@@ -119,7 +118,7 @@ type rootEntry struct {
 }
 
 type pendingEntry struct {
-	target     txn.LockTarget
+	target     txn.StoreTarget
 	generation uint64
 }
 
@@ -135,19 +134,19 @@ func NewManager(dependencies Dependencies, config Config) *Manager {
 		writer:         dependencies.Writer,
 		writeAdmission: dependencies.WriteAdmission,
 		config:         config,
-		entries:        make(map[txn.LockKey]rootEntry),
-		pending:        make(map[txn.LockKey]pendingEntry),
-		reserved:       make(map[txn.LockKey]int),
+		entries:        make(map[txn.StoreKey]rootEntry),
+		pending:        make(map[txn.StoreKey]pendingEntry),
+		reserved:       make(map[txn.StoreKey]int),
 	}
 }
 
 // Prepare 在 Procedure 修改前校验根对象身份并预留待刷容量。
-func (manager *Manager) Prepare(_ context.Context, targets []txn.LockTarget) (txn.CommitReservation, error) {
+func (manager *Manager) Prepare(_ context.Context, targets []txn.StoreTarget) (txn.CommitReservation, error) {
 	if manager == nil {
 		return nil, errors.New("writeback manager: manager is nil")
 	}
 	for _, target := range targets {
-		if target.Key.Scope == "" || target.Key.Value == "" || isNil(target.Store) {
+		if target.Key.Type == "" || target.Key.Key == "" || isNil(target.Store) {
 			return nil, ErrInvalidTarget
 		}
 	}
@@ -176,7 +175,7 @@ func (manager *Manager) Prepare(_ context.Context, targets []txn.LockTarget) (tx
 	if len(persistent) == 1 {
 		result.key = persistent[0].Key
 	} else {
-		result.keys = make([]txn.LockKey, 0, len(persistent))
+		result.keys = make([]txn.StoreKey, 0, len(persistent))
 	}
 	for _, target := range persistent {
 		entry, exists := manager.entries[target.Key]
@@ -197,11 +196,11 @@ func (manager *Manager) Prepare(_ context.Context, targets []txn.LockTarget) (tx
 type reservation struct {
 	once    sync.Once
 	manager *Manager
-	key     txn.LockKey
-	keys    []txn.LockKey
+	key     txn.StoreKey
+	keys    []txn.StoreKey
 }
 
-func (reservation *reservation) Commit(targets []txn.LockTarget) {
+func (reservation *reservation) Commit(targets []txn.StoreTarget) {
 	if reservation == nil || reservation.manager == nil {
 		return
 	}
@@ -219,10 +218,10 @@ func (reservation *reservation) Abort() {
 	})
 }
 
-func (manager *Manager) commit(key txn.LockKey, keys []txn.LockKey, targets []txn.LockTarget) {
+func (manager *Manager) commit(key txn.StoreKey, keys []txn.StoreKey, targets []txn.StoreTarget) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
-	if key.Scope != "" {
+	if key.Type != "" {
 		manager.releaseReservationLocked(key)
 		for _, target := range targets {
 			if target.Key == key && isPersistentTarget(target) {
@@ -233,7 +232,7 @@ func (manager *Manager) commit(key txn.LockKey, keys []txn.LockKey, targets []tx
 		manager.dropProvisionalEntryLocked(key)
 		return
 	}
-	allowed := make(map[txn.LockKey]struct{}, len(keys))
+	allowed := make(map[txn.StoreKey]struct{}, len(keys))
 	for _, key := range keys {
 		allowed[key] = struct{}{}
 		manager.releaseReservationLocked(key)
@@ -247,10 +246,10 @@ func (manager *Manager) commit(key txn.LockKey, keys []txn.LockKey, targets []tx
 	manager.dropProvisionalEntriesLocked(keys)
 }
 
-func (manager *Manager) abort(key txn.LockKey, keys []txn.LockKey) {
+func (manager *Manager) abort(key txn.StoreKey, keys []txn.StoreKey) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
-	if key.Scope != "" {
+	if key.Type != "" {
 		manager.releaseReservationLocked(key)
 		manager.dropProvisionalEntryLocked(key)
 		return
@@ -261,7 +260,7 @@ func (manager *Manager) abort(key txn.LockKey, keys []txn.LockKey) {
 	manager.dropProvisionalEntriesLocked(keys)
 }
 
-func (manager *Manager) markPendingLocked(target txn.LockTarget) {
+func (manager *Manager) markPendingLocked(target txn.StoreTarget) {
 	entry := manager.entries[target.Key]
 	entry.target = target
 	entry.retained = true
@@ -270,7 +269,7 @@ func (manager *Manager) markPendingLocked(target txn.LockTarget) {
 	manager.pending[target.Key] = pendingEntry{target: target, generation: manager.generation}
 }
 
-func (manager *Manager) releaseReservationLocked(key txn.LockKey) {
+func (manager *Manager) releaseReservationLocked(key txn.StoreKey) {
 	if manager.reserved[key] <= 1 {
 		delete(manager.reserved, key)
 		return
@@ -278,13 +277,13 @@ func (manager *Manager) releaseReservationLocked(key txn.LockKey) {
 	manager.reserved[key]--
 }
 
-func (manager *Manager) dropProvisionalEntriesLocked(keys []txn.LockKey) {
+func (manager *Manager) dropProvisionalEntriesLocked(keys []txn.StoreKey) {
 	for _, key := range keys {
 		manager.dropProvisionalEntryLocked(key)
 	}
 }
 
-func (manager *Manager) dropProvisionalEntryLocked(key txn.LockKey) {
+func (manager *Manager) dropProvisionalEntryLocked(key txn.StoreKey) {
 	entry, exists := manager.entries[key]
 	if !exists || entry.retained || manager.reserved[key] > 0 {
 		return
@@ -307,15 +306,15 @@ func (manager *Manager) Pending() int {
 // TryRelease 尝试释放一个已经干净且没有事务预留的写回根对象。
 // 它会取得与 Procedure 相同的实体锁，因此必须在 Procedure 外调用。
 // ctx 取消可以终止实体锁等待；取消失败不会解除对象的写回身份。
-func (manager *Manager) TryRelease(ctx context.Context, target txn.LockTarget) (bool, error) {
+func (manager *Manager) TryRelease(ctx context.Context, target txn.StoreTarget) (bool, error) {
 	if manager == nil {
 		return false, errors.New("writeback manager: manager is nil")
 	}
-	if target.Key.Scope == "" || target.Key.Value == "" || isNil(target.Store) {
+	if target.Key.Type == "" || target.Key.Key == "" || isNil(target.Store) {
 		return false, ErrInvalidTarget
 	}
 	var released bool
-	err := txn.WithLocks(ctx, []txn.LockTarget{target}, func(context.Context) error {
+	err := txn.WithLocks(ctx, txn.Lockeys{target.Lock}, func(context.Context) error {
 		var err error
 		released, err = manager.tryReleaseLocked(target)
 		return err
@@ -323,7 +322,7 @@ func (manager *Manager) TryRelease(ctx context.Context, target txn.LockTarget) (
 	return released, err
 }
 
-func (manager *Manager) tryReleaseLocked(target txn.LockTarget) (bool, error) {
+func (manager *Manager) tryReleaseLocked(target txn.StoreTarget) (bool, error) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	entry, exists := manager.entries[target.Key]
@@ -368,7 +367,7 @@ func (manager *Manager) Flush(ctx context.Context) error {
 }
 
 func (manager *Manager) flushTarget(ctx context.Context, entry pendingEntry) error {
-	return txn.WithLocks(ctx, []txn.LockTarget{entry.target}, func(ctx context.Context) error {
+	return txn.WithLocks(ctx, txn.Lockeys{entry.target.Lock}, func(ctx context.Context) error {
 		store, ok := entry.target.Store.(storage.ChangeStore)
 		manager.mu.Lock()
 		root, present := manager.entries[entry.target.Key]
@@ -416,10 +415,10 @@ func (manager *Manager) snapshotPending() []pendingEntry {
 		entries = append(entries, entry)
 	}
 	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].target.Order != entries[j].target.Order {
-			return entries[i].target.Order < entries[j].target.Order
+		if entries[i].target.Lock.Order != entries[j].target.Lock.Order {
+			return entries[i].target.Lock.Order < entries[j].target.Lock.Order
 		}
-		return entries[i].target.Key.Value < entries[j].target.Key.Value
+		return entries[i].target.Key.Key < entries[j].target.Key.Key
 	})
 	return entries
 }
@@ -505,7 +504,7 @@ func (manager *Manager) Shutdown(ctx context.Context) error {
 	}
 }
 
-func (manager *Manager) validateTargetsLocked(targets []txn.LockTarget) error {
+func (manager *Manager) validateTargetsLocked(targets []txn.StoreTarget) error {
 	for _, target := range targets {
 		if entry, exists := manager.entries[target.Key]; exists && !sameStore(entry.target.Store, target.Store) {
 			return fmt.Errorf("%w: %s", ErrIdentityConflict, target.Key.String())
@@ -519,7 +518,7 @@ func (manager *Manager) validateTargetsLocked(targets []txn.LockTarget) error {
 	return nil
 }
 
-func (manager *Manager) hasCapacityLocked(targets []txn.LockTarget) bool {
+func (manager *Manager) hasCapacityLocked(targets []txn.StoreTarget) bool {
 	if manager.config.MaxPendingRoots <= 0 {
 		return true
 	}
@@ -539,7 +538,7 @@ func (manager *Manager) hasCapacityLocked(targets []txn.LockTarget) bool {
 	return occupied+additional <= manager.config.MaxPendingRoots
 }
 
-func (manager *Manager) hasNewPendingRootLocked(targets []txn.LockTarget) bool {
+func (manager *Manager) hasNewPendingRootLocked(targets []txn.StoreTarget) bool {
 	for _, target := range targets {
 		if _, pending := manager.pending[target.Key]; pending || manager.reserved[target.Key] > 0 {
 			continue
@@ -603,7 +602,7 @@ func (visitor *changeBudgetVisitor) VisitChange(path change.Path, op change.Op) 
 	return visitor.visitor.VisitChange(path, op)
 }
 
-func (manager *Manager) saveStore(ctx context.Context, target txn.LockTarget, store storage.ChangeStore) error {
+func (manager *Manager) saveStore(ctx context.Context, target txn.StoreTarget, store storage.ChangeStore) error {
 	if manager.config.MaxRootChanges <= 0 {
 		return storage.Save(ctx, manager.writer, store)
 	}
@@ -616,11 +615,11 @@ func (manager *Manager) saveStore(ctx context.Context, target txn.LockTarget, st
 		return fmt.Errorf("%w: %s", ErrChangeCollapseUnsupported, target.Key.String())
 	}
 	collapser.CollapseChanges()
-	txlog.Warn("writeback manager root changes collapsed", "scope", target.Key.Scope, "key", target.Key.Value, "budget", manager.config.MaxRootChanges)
+	txlog.Warn("writeback manager root changes collapsed", "recordType", target.Key.Type, "key", target.Key.Key, "budget", manager.config.MaxRootChanges)
 	return storage.Save(ctx, manager.writer, store)
 }
 
-func persistentTargets(targets []txn.LockTarget) []txn.LockTarget {
+func persistentTargets(targets []txn.StoreTarget) []txn.StoreTarget {
 	if len(targets) == 0 {
 		return nil
 	}
@@ -630,8 +629,8 @@ func persistentTargets(targets []txn.LockTarget) []txn.LockTarget {
 		}
 		return nil
 	}
-	result := make([]txn.LockTarget, 0, len(targets))
-	seen := make(map[txn.LockKey]struct{}, len(targets))
+	result := make([]txn.StoreTarget, 0, len(targets))
+	seen := make(map[txn.StoreKey]struct{}, len(targets))
 	for _, target := range targets {
 		if !isPersistentTarget(target) {
 			continue
@@ -645,9 +644,9 @@ func persistentTargets(targets []txn.LockTarget) []txn.LockTarget {
 	return result
 }
 
-func isPersistentTarget(target txn.LockTarget) bool {
+func isPersistentTarget(target txn.StoreTarget) bool {
 	store, ok := target.Store.(storage.ChangeStore)
-	return ok && !isNil(store) && store.TypeSpec().Storage.Mode != "" && target.Key.Scope != "" && target.Key.Value != ""
+	return ok && !isNil(store) && store.TypeSpec().Storage.Mode != "" && target.Key.Type != "" && target.Key.Key != ""
 }
 
 func sameStore(left, right change.UndoBindable) bool {

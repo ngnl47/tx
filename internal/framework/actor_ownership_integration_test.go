@@ -59,10 +59,13 @@ type ownershipProcedure struct {
 	delta int64
 }
 
-func (p ownershipProcedure) Locks(context.Context) ([]txn.LockTarget, error) {
-	return []txn.LockTarget{txn.NewLockTarget(txn.NewLockKey(p.store.key, 51), p.store)}, nil
+func (p ownershipProcedure) Locks(context.Context) (txn.Lockeys, error) {
+	return txn.Lockeys{txn.NewLockey(p.store.key, 0, 51)}, nil
 }
-func (p ownershipProcedure) Process(*txn.Tx) error {
+func (p ownershipProcedure) Process(tx *txn.Tx) error {
+	if err := tx.Enlist(txn.NewStoreTarget(txn.NewLockey(p.store.key, 0, 51), p.store)); err != nil {
+		return err
+	}
 	value, dirty := p.store.value, p.store.dirty
 	p.store.recorder.RecordUndo(func() { p.store.value, p.store.dirty = value, dirty })
 	p.store.value += p.delta

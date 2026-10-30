@@ -214,6 +214,9 @@ func (server *Server) finishWork(ctx context.Context, drain bool) error {
 	}
 	if !ready {
 		if host != nil {
+			if err := host.retryInitializationRollback(ctx); err != nil {
+				return errors.Join(errStopDeferred, err)
+			}
 			host.beginDrain()
 		}
 		if err := server.drainTaskConsumer(ctx); err != nil && !fatal {
@@ -258,7 +261,7 @@ func (server *Server) finishWork(ctx context.Context, drain bool) error {
 	}
 	if cmodHost != nil {
 		err := cmodHost.drain(ctx)
-		if err != nil && drain && !fatal {
+		if err != nil && !fatal {
 			return errors.Join(errStopDeferred, err)
 		}
 		errs = append(errs, err)

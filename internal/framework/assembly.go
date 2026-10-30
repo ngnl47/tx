@@ -121,7 +121,7 @@ func (server *Server) startTransaction() error {
 	config := server.config.Runtime.Transaction
 	txn.Configure(config.Module)
 	server.runtime.transaction = txn.NewRuntime()
-	return nil
+	return server.runtime.transaction.ConfigureAsync(config.Module.Async)
 }
 
 func startStorageHealth(root *lifecycle.WaitGroupContext, store *storageRuntime, config HealthConfig, backend txstorage.Backend) error {
