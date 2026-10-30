@@ -1,0 +1,4 @@
+interface:
+  display_name: "tx 工程约定审查"
+  short_description: "按当前工程契约审查职责、实体访问、事务与生命周期，只报告有证据的问题"
+  default_prompt: "使用 $tx-contract-review 检查指定工程当前未提交变更，引用工程约定并按 P0～P3 输出问题清单，先不修改。"

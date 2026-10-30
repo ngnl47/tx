@@ -4,6 +4,8 @@
 
 # tx
 
+当前工程约定与 AI 接入审查入口见 [工程约定](docs/engineering-conventions.md)；与架构审计标准共同维护职责、GD 访问、Procedure 和生命周期边界。
+
 `tx` 是面向游戏服务端的 Go 运行时基础库，提供类型元数据、字段级变更追踪、Redis/Mongo/Fusion 存储适配、单机事务、生命周期以及可选的分布式服务模块。
 
 本文是 `tx` 使用者的主手册，记录当前已经实现并验证的公共能力、配置方式和业务示例。框架维护者需要理解内部数据结构、并发模型、状态机或技术选型时，请阅读 [设计文档](docs/design.md)；当前进度和后续任务见 [实施计划](docs/IMPLEMENTATION_PLAN.md)，架构质量要求见 [审计标准](docs/architecture_audit_standard.md)。
@@ -433,7 +435,7 @@ TX_ETCD_ENDPOINT=127.0.0.1:2379 \
 
 仅带 `-tags=txbench` 的验收构建启用存储 I/O 采集；普通构建不安装 Redis 计时钩子或 Mongo 统计回调，`Runtime.IOStats()` 返回空快照。
 验收构建的 `Runtime.IOStats()` 提供累计驱动快照，按固定 Redis/Mongo 操作类别统计调用数、命令数、失败数和耗时，
-Redis 单次调用计一次 Calls，Pipeline 计一次 Calls 和其中的命令数；Mongo 按驱动完成事件统计，二者不能直接比较。最大耗时是累计值，不能作差当作窗口最大值；这些指标不是业务请求数，也不记录 key 或业务数据。开启控制端口后，可通过 `StorageIOService.Snapshot` 或 `txctl storage-io` 读取；应用侧采样与统计口径见 [集群存储 I/O 说明](../txgame/server/internal/clusterkit/STORAGE_IO.md)。
+Redis 单次调用计一次 Calls，Pipeline 计一次 Calls 和其中的命令数；Mongo 按驱动完成事件统计，二者不能直接比较。最大耗时是累计值，不能作差当作窗口最大值；这些指标不是业务请求数，也不记录 key 或业务数据。开启控制端口后，可通过 `StorageIOService.Snapshot` 或 `txctl storage-io` 读取；应用侧采样与统计口径见 [集群存储 I/O 说明](../txgame/server/cmd/internal/clusterkit/STORAGE_IO.md)。
 
 `modules/msgq` 以 `SessionID` 作为精确邮箱主键，负责
 `SessionID -> (RoleID, SessionID, ConnectionID, InstanceID)` 的短期 binding 与 owner 解析；同时维护

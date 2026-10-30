@@ -10,7 +10,7 @@ Bee/Ant 的 `Context.Runtime()` 返回可绑定的 `tx/runtime.Provider`。在 S
 
 普通只读使用 `data.SnapshotGD*(ctx, id)`。启用共享缓存时，完整 `data.FindGD*(ctx, id)` 与 `db.Create/Remove` 必须在 Procedure 内执行，修改交由 WriteBack；未启用缓存或显式排除的独占对象使用 Find 与 `db.Save/Create/Remove` 直接存取。所有入口显式传 ctx，不提供 Access、对象式 db.Find 或可选上下文包装。Handler 外的 actorcmd 统一创建十秒操作期限并在同步响应处理后释放，继承消息取消、已有期限与事务关联。Module 沿用 ctx，不重建根范围；纯内存规则不要求 ctx。活跃 Procedure 中 `db.Save/SaveChange` 拒绝直接持久化；`db.Create` 通过唯一缓存占位、事务回滚与 WriteBack 首次写入登记新根对象，未绑定缓存或受管写回则报错。结束后的事务 ctx 不得用于存储写入。 Actor 通信保留 cmd.Actors 的独立操作便捷入口和显式 At(ctx,id)，不创建新连接或改变 Call/Tell。
 
-模块只保存固定资源，不保存当前玩家、请求上下文或事务，不增加逐请求 Service 包装。单例获取和测试清理由项目管理，不能推导出跨进程状态唯一性。
+模块可以保存资源与自己拥有的配置缓存、查询索引，不保存当前玩家、请求上下文或事务，不增加逐请求 Service 包装。单例获取和测试清理由项目管理，不能推导出跨进程状态唯一性。
 
 ## 必须显式保留的执行边界
 
@@ -25,7 +25,7 @@ caller := txruntime.Actor(ctx)
 
 应用在 actorcmd 的 Receive 中派生期限并更新本次 MessageContext，模块内显式沿用 ctx；纯内存规则不需要无用途的 ctx。生成期启用 EntityCache 时，完整 Find 仅在有效 Procedure 内复用唯一对象并纳入记录锁与写回预留；普通读取使用 Snapshot，在相同记录锁内深复制，返回前释放使用权。
 
-生成的低层 Find/Load 与 Actor Client/Ref 接口保留显式 ctx，供特殊操作与独立契约测试使用。默认 Reader 注册仍只用于显式独立工具；正式项目采用启动绑定，不混用请求 Provider 与全局默认 Reader 回退。
+生成的 GD 查询统一显式 ctx；Actor Client/Ref 的显式 ctx 入口供需要继承当前范围的调用与独立契约测试使用。默认 Reader 注册仍只用于显式独立工具；正式项目采用启动绑定，不混用请求 Provider 与全局默认 Reader 回退。
 
 调用取消只结束等待，不能推断远端未执行；普通调用不自动重投。保存完成也不等于 Fusion 已最终落盘，SLG 缓存、Procedure 与 WriteBack 的职责不变。
 
@@ -39,7 +39,8 @@ caller := txruntime.Actor(ctx)
   -> EntityCache 取得使用权 -> 等待同一记录锁
   -> 深复制当前内存字段 -> 释放锁和使用权 -> 返回独立对象
 
-Procedure.Call(ctx, procedure)
+txruntime.Call(ctx, procedure)
+  -> Locks 预声明已知键并排序取得锁 -> Process
   -> data.FindGD*(tx.Context(), id)
   -> 缓存使用权 -> Enlist：记录锁 / 写回预留 / undo
   -> Store 修改，或 db.Create / db.Remove

@@ -1,6 +1,6 @@
 # 统一 GD 实体访问
 
-状态：2026-10-29 共享访问安全与 World 独占运行时第 1～7 批已完成本地验收，未提交。当前契约见下；施工边界见 [安全实施计划](plans-entity-access-safety.md)，实测结果与未验证范围见 [验收报告](entity-access-acceptance.md)。
+状态：2026-10-29 共享访问安全与 World 独占运行时第 1～7 批已完成本地验收。当前契约见下；施工边界见 [安全实施计划](plans-entity-access-safety.md)，实测结果与未验证范围见 [验收报告](entity-access-acceptance.md)。
 
 ## 统一入口与选择
 
