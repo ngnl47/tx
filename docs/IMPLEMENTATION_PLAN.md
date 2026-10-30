@@ -13,7 +13,7 @@
 | 正式包滚动发布 | txgame、SLG Role、独占 World 三分钟窗口均达到 99.99% | [2026-10-30 报告](procedure-rollout-acceptance.md)；Role 是同步 Call，不证明滚动期间大量 Submit 队列 |
 | 应用合服 | GDServerMerge 定时关系；txgame 在线刷新，SLG 停服后冻结新快照 | [txgame](../../txgame/docs/acceptance/timed-merge-20261030.md)、[SLG](../../txgameslg/docs/acceptance/timed-merge-20261030.md)有限多进程通过；保留原服入口，无业务暂停/自动迁移 |
 
-合服属于应用示例，tx 本轮不增加合服能力。验收已核对 Fusion Redis 当前等级及 Mongo 账号投影、合服目录，不将其解释为最新角色数据已经完成 Mongo 延迟回写。
+合服属于应用示例，tx 本轮不增加合服能力。初次合服验收仅核对 Fusion Redis 当前等级及 Mongo 账号投影、合服目录；2026-10-30 补验已等待正常回写并核对最终 Mongo 等级、出生服与重启读取，见下节。
 
 ## 大验收前的下一项
 
@@ -28,7 +28,25 @@
 
 7. **正式包滚动复验（2026-10-30）已完成**：两组工程三轮 180 秒流量分别达到 99.993333%、99.997530%、99.999261%；Role/Room、World 指定启动与重载、持久化回读和 39 条进程退出记录均核对通过。见[本轮报告](lifecycle-rollout-acceptance.md)。旧 A/B 快照过期已在隔离目录按当前生成契约重新导出，未修改运行时代码或验收门槛。
 
-下一项归拢生命周期修复与验收记录，准备提交；不增加自动恢复，不将本地完成率外推为生产容量。
+生命周期修复与验收记录已提交，相关工程已快进合入本地主干；合并前回归通过。
+
+## 合服后最终 Mongo 回写与重启读取：已完成（2026-10-30）
+
+1. 复用两组工程 `cmd/cluster-e2e.sh --server-merge`，保留各工程 GDRole 的正式 Fusion 延迟（txgame 600 秒、txgameslg 1 秒），不增加强制写回或缩短配置。
+2. 保持回写工作进程运行，等待 Mongo 等级与最后一次客户端结果精确相等，并核对 RoleID、OriginServerID 和账号投影。
+3. 正常排水后重启，SLG 复用受控槽位晋升；客户端仅读取、不再次升级，核对等级和原服入口。保留 Redis，重启读取按正常 Fusion 路径执行，不冒充 Mongo-only 冷加载验证。
+4. 最终回读 Redis/Mongo，确认进程退出后仅清理 ownership 匹配的专用数据。失败保留证据。
+
+两组 `--server-merge --timeout 20m` 已通过：
+
+| 工程 | 最终 Redis/Mongo 等级 | OriginServerID | 实际等待 Mongo 追平 | 正常退出 |
+| --- | --- | --- | --- | --- |
+| txgame | 两角色均为 5 | 1、2，不变 | 600.094 秒 | 12/12 |
+| txgameslg | 两角色均为 4 | 1、2，不变 | 2.003 秒 | 24/24 |
+
+正式客户端重启读取一致，宿主精确匹配本轮目标新实例。两组 server 全量本地回归和集群工具定向 race 通过；差异审查发现的新宿主断言缺口已修正并对原始结果独立复核。进程退出、Redis DB12/13、专用 Mongo 库及 etcd 清理分别核对。证据见[txgame 补验](../../txgame/docs/acceptance/timed-merge-20261030.md)、[SLG 补验](../../txgameslg/docs/acceptance/timed-merge-20261030.md)。
+
+本轮不跑云测试、不提交；tx 仅更新计划，不增加框架能力或业务合服协调。当前已批准步骤已完成，后续容量或生产部署验收按下述独立边界安排。
 
 此前“CMod.Start 提交 Submit 后失败”为既有 P0 的判断已撤回：当前内置组件及两组应用没有该实际调用路径，不作为阻塞验收项，不为此增加启动回滚机制。启动错误必须终止本次启动；失败清理只释放已取得资源，不恢复或维持部分服务运行。
 
