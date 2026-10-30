@@ -20,7 +20,7 @@ func TestHostValidatesAllBeforeStartingAnyComponent(t *testing.T) {
 	})
 	host := NewHost(lifecycle.NewWaitGroupContext(context.Background()), graph)
 
-	err := host.Start()
+	err := host.Start(t.Context())
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Start error = %v, want %v", err, wantErr)
 	}
@@ -43,7 +43,7 @@ func TestHostRollsBackFailedStartInReverseOrder(t *testing.T) {
 		&hostTestComponent{id: "procedure", events: &events, startErr: wantErr},
 	})
 
-	err := NewHost(root, graph).Start()
+	err := NewHost(root, graph).Start(t.Context())
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Start error = %v, want %v", err, wantErr)
 	}
@@ -68,7 +68,7 @@ func TestHostStopsOwnedTasksBeforeDependencies(t *testing.T) {
 		&hostTestComponent{id: "failure", events: &[]string{}, startErr: errors.New("failed")},
 	})
 
-	if err := NewHost(root, graph).Start(); err == nil {
+	if err := NewHost(root, graph).Start(t.Context()); err == nil {
 		t.Fatal("Start error = nil, want failure")
 	}
 	if !owner.stopObservedExit {
@@ -89,7 +89,7 @@ func TestHostDrainsAndStopsInReverseOrder(t *testing.T) {
 		&hostTestComponent{id: "procedure", events: &events},
 	})
 	host := NewHost(root, graph)
-	if err := host.Start(); err != nil {
+	if err := host.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	if err := host.Drain(context.Background()); err != nil {
@@ -117,7 +117,7 @@ func TestHostConcurrentStopSharesResult(t *testing.T) {
 	})
 	current := &hostTestComponent{id: "only", events: &[]string{}, stopErr: wantErr}
 	host := NewHost(root, mustResolve(t, []Component{current}))
-	if err := host.Start(); err != nil {
+	if err := host.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
@@ -151,7 +151,7 @@ func TestHostDrainRetriesFailedComponentBeforeItsDependencies(t *testing.T) {
 		&hostTestComponent{id: "procedure", events: &events},
 	}))
 	t.Cleanup(func() { _ = host.Stop(context.Background()) })
-	if err := host.Start(); err != nil {
+	if err := host.Start(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	if err := host.Drain(context.Background()); !errors.Is(err, wantErr) {
@@ -174,7 +174,7 @@ func TestHostRejectsStartAfterStop(t *testing.T) {
 	if err := host.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if err := host.Start(); !errors.Is(err, ErrHostStopped) {
+	if err := host.Start(t.Context()); !errors.Is(err, ErrHostStopped) {
 		t.Fatalf("Start after Stop error = %v, want %v", err, ErrHostStopped)
 	}
 }
@@ -247,4 +247,81 @@ func (component *ownedTaskComponent) Stop(context.Context) error {
 	case <-time.After(time.Second):
 	}
 	return nil
+}
+
+// 第二个关闭调用的期限不能被第一个调用持有的阶段锁吞掉。
+func TestHostConcurrentStopHonorsEachWaiterDeadline(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
+	current := &blockingStopComponent{entered: entered, release: release}
+	host := NewHost(nil, mustResolve(t, []Component{current}))
+	if err := host.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	first := make(chan error, 1)
+	go func() { first <- host.Stop(t.Context()) }()
+	<-entered
+	second := make(chan error, 1)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	go func() { second <- host.Stop(ctx) }()
+	select {
+	case err := <-second:
+		if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrStopDeferred) {
+			t.Fatalf("第二个等待者 = %v", err)
+		}
+	case <-time.After(time.Second):
+		unblock()
+		<-first
+		<-second
+		t.Fatal("并发关闭等待忽略了调用方期限")
+	}
+	unblock()
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Stop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if current.calls != 1 {
+		t.Fatalf("重复关闭资源: %d", current.calls)
+	}
+}
+
+type blockingStopComponent struct {
+	entered chan struct{}
+	release chan struct{}
+	calls   int
+}
+
+func (*blockingStopComponent) Spec() Spec          { return Spec{ID: "blocked"} }
+func (*blockingStopComponent) Start(Context) error { return nil }
+func (c *blockingStopComponent) Stop(context.Context) error {
+	c.calls++
+	close(c.entered)
+	<-c.release
+	return nil
+}
+
+// 已关闭资源的历史 deadline 是最终错误，不能推断为仍有实际工作未结束。
+func TestHostTerminalDeadlineDoesNotBlockDependencyCleanup(t *testing.T) {
+	events := []string{}
+	closed := &hostTestComponent{id: "closed", events: &events, stopErr: context.DeadlineExceeded}
+	host := NewHost(nil, mustResolve(t, []Component{
+		&hostTestComponent{id: "dependency", events: &events}, closed,
+	}))
+	if err := host.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		err := host.Stop(t.Context())
+		if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrStopDeferred) {
+			t.Fatalf("最终关闭错误 = %v", err)
+		}
+	}
+	if !slices.Equal(events, []string{"start:dependency", "start:closed", "stop:closed", "stop:dependency"}) {
+		t.Fatalf("依赖未关闭或重复关闭: %v", events)
+	}
 }

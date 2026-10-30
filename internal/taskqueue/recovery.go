@@ -80,21 +80,17 @@ func (r Recovery) Process(ctx context.Context, msg jetstream.Msg) error {
 	return msg.DoubleAck(ctx)
 }
 
-// StartRecovery 使用独立 durable 续领已持久捕获的通知，不能给通知自身设置耗尽上限。
-func StartRecovery(ctx context.Context, consumer jetstream.Consumer, recovery Recovery, timeout time.Duration) (*Worker, error) {
+// PrepareRecovery 校验恢复策略；通知自身不能设置耗尽上限。
+func PrepareRecovery(consumer jetstream.Consumer, info *jetstream.ConsumerInfo, recovery Recovery, timeout time.Duration) (*PreparedConsumer, error) {
 	if timeout <= 0 {
 		return nil, errors.New("taskqueue: recovery timeout must be positive")
-	}
-	info, err := consumer.Info(ctx)
-	if err != nil {
-		return nil, err
 	}
 	if info.Config.Durable == "" || info.Config.AckPolicy != jetstream.AckExplicitPolicy || info.Config.MaxDeliver > 0 {
 		return nil, errors.New("taskqueue: recovery consumer requires durable explicit ack without max deliver")
 	}
-	return consume(consumer, func(msg jetstream.Msg) error {
+	return &PreparedConsumer{consumer: consumer, process: func(msg jetstream.Msg) error {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		return recovery.Process(ctx, msg)
-	})
+	}}, nil
 }

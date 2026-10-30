@@ -19,7 +19,7 @@ func (server *Server) discoveryCMod() CMod {
 			if server.discovery == nil {
 				return nil
 			}
-			return server.discovery.Close(context.WithoutCancel(ctx))
+			return server.discovery.Close(ctx)
 		},
 	}
 }

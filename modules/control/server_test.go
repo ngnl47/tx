@@ -91,3 +91,42 @@ func (controller *testLifecycleController) WaitDrained(context.Context) error {
 func (controller *testLifecycleController) Status() Status {
 	return Status{State: controller.state}
 }
+
+func TestControlReportsUnexpectedServeFailure(t *testing.T) {
+	root := lifecycle.NewWaitGroupContext(t.Context())
+	defer func() { root.Cancel(); root.Wait() }()
+	failures := make(chan error, 1)
+	server, err := StartServer(root, "127.0.0.1:0", ServerOptions{Lifecycle: &testLifecycleController{}, OnFailure: func(err error) { failures <- err }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop()
+	if err := server.listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-failures:
+		if err == nil {
+			t.Fatal("未传递错误")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("未通知宿主")
+	}
+}
+
+func TestControlNormalStopDoesNotReportFailure(t *testing.T) {
+	root := lifecycle.NewWaitGroupContext(t.Context())
+	failures := make(chan error, 1)
+	server, err := StartServer(root, "127.0.0.1:0", ServerOptions{Lifecycle: &testLifecycleController{}, OnFailure: func(err error) { failures <- err }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Stop()
+	root.Cancel()
+	root.Wait()
+	select {
+	case err := <-failures:
+		t.Fatalf("正常关闭误报: %v", err)
+	default:
+	}
+}

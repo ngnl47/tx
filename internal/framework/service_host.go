@@ -18,15 +18,18 @@ type serviceHost struct {
 	started         []startedService
 	drainAttempt    *drainAttempt
 	rollbackPending bool
+	tasksStopOnce   sync.Once
+	tasksStopped    chan struct{}
 }
 
 type startedService struct {
-	flushed bool
-	service Service
-	access  *runtimeAccess
-	ingress *lifecycle.Ingress
-	tasks   *lifecycle.ChildWaitGroupContext
-	phase   *servicePhase
+	flushed         bool
+	rollbackStopped bool
+	service         Service
+	access          *runtimeAccess
+	ingress         *lifecycle.Ingress
+	tasks           *lifecycle.ChildWaitGroupContext
+	phase           *servicePhase
 }
 
 func newServiceHost(registry *registry, runtime *runtime) *serviceHost {
@@ -38,7 +41,7 @@ func (host *serviceHost) start(names []string) error {
 	if err != nil {
 		return err
 	}
-	if err := host.initServices(services); err != nil {
+	if err := host.initServices(context.Background(), services); err != nil {
 		return err
 	}
 	if err := host.startServices(context.Background()); err != nil {
@@ -48,7 +51,7 @@ func (host *serviceHost) start(names []string) error {
 	return nil
 }
 
-func (host *serviceHost) initServices(services []Service) error {
+func (host *serviceHost) initServices(ctx context.Context, services []Service) error {
 	if host == nil || host.runtime == nil || host.runtime.lifecycle == nil {
 		return errors.New("framework: runtime lifecycle is not configured")
 	}
@@ -58,6 +61,9 @@ func (host *serviceHost) initServices(services []Service) error {
 		return errors.New("framework: services are already started")
 	}
 	for _, service := range services {
+		if err := context.Cause(ctx); err != nil {
+			return host.rollbackStart(err)
+		}
 		spec := service.Spec()
 		for _, required := range spec.Requires {
 			if !host.runtime.hasCMod(required) {
@@ -96,6 +102,9 @@ func (host *serviceHost) startServices(ctx context.Context) error {
 	services := append([]startedService(nil), host.started...)
 	host.mu.Unlock()
 	for _, current := range services {
+		if err := context.Cause(ctx); err != nil {
+			return err
+		}
 		current.phase.set(lifecycle.ServiceStarting, nil)
 		var err error
 		if starter, ok := current.service.(Starter); ok {
@@ -136,20 +145,20 @@ func (host *serviceHost) retryInitializationRollback(ctx context.Context) error 
 // 调用方持有 host.mu；已接纳的独立 Procedure 退出前不能关闭服务资源。
 func (host *serviceHost) rollbackInitialization(ctx context.Context) error {
 	drainCtx, cancel := context.WithTimeout(ctx, effectiveDrainTimeout(host.runtime.config.Runtime.Lifecycle.DrainTimeout))
+	defer cancel()
 	err := host.runtime.transaction.Drain(drainCtx)
-	cancel()
 	if err != nil {
 		return errors.Join(errStopDeferred, err)
 	}
-	var errs []error
-	for index := len(host.started) - 1; index >= 0; index-- {
-		if err := rollbackService(context.Background(), host.started[index]); err != nil {
-			errs = append(errs, err)
+	for len(host.started) > 0 {
+		index := len(host.started) - 1
+		if err := rollbackService(drainCtx, &host.started[index]); err != nil {
+			return errors.Join(errStopDeferred, err)
 		}
+		host.started = host.started[:index]
 	}
-	host.started = nil
 	host.rollbackPending = false
-	return errors.Join(errs...)
+	return nil
 }
 
 func (host *serviceHost) beginDrain() {
@@ -228,15 +237,38 @@ func waitServiceIngress(ctx context.Context, services []startedService) error {
 }
 
 // quiesceTasks 停止业务后台任务，但保留服务资源供最终持久化及失败重试使用。
-func (host *serviceHost) quiesceTasks() {
-	host.mu.Lock()
-	services := append([]startedService(nil), host.started...)
-	host.mu.Unlock()
-	for index := len(services) - 1; index >= 0; index-- {
-		if tasks := services[index].tasks; tasks != nil {
-			tasks.Cancel()
-			tasks.WaitDoneAndWaitGroupWait()
+func (host *serviceHost) quiesceTasks(ctx context.Context) error {
+	host.tasksStopOnce.Do(func() {
+		host.mu.Lock()
+		services := append([]startedService(nil), host.started...)
+		host.mu.Unlock()
+		host.tasksStopped = make(chan struct{})
+		// 先通知全部服务；一个服务收尾不应阻止其他服务收到取消。
+		for _, current := range services {
+			if current.tasks != nil {
+				current.tasks.Cancel()
+			}
 		}
+		// 所有重试复用同一个完成信号，不为每次超时累积等待协程。
+		go func() {
+			for _, current := range services {
+				if current.tasks != nil {
+					current.tasks.Wait()
+				}
+			}
+			close(host.tasksStopped)
+		}()
+	})
+	select {
+	case <-host.tasksStopped:
+		return nil
+	default:
+	}
+	select {
+	case <-host.tasksStopped:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("framework: wait for service background tasks: %w", ctx.Err())
 	}
 }
 
@@ -245,36 +277,38 @@ func (host *serviceHost) stop(ctx context.Context) error {
 		return nil
 	}
 	drainErr := host.drain(ctx)
+	if err := host.quiesceTasks(ctx); err != nil {
+		return errors.Join(errStopDeferred, drainErr, err)
+	}
 	host.mu.Lock()
 	services := append([]startedService(nil), host.started...)
 	host.started = nil
 	host.mu.Unlock()
 	var errs []error
 	for index := len(services) - 1; index >= 0; index-- {
-		if err := stopService(ctx, services[index], "stop"); err != nil {
+		if err := stopServiceResources(ctx, services[index], "stop"); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(append([]error{drainErr}, errs...)...)
 }
 
-func stopService(ctx context.Context, current startedService, operation string) error {
-	if current.tasks != nil {
-		current.tasks.Cancel()
-		current.tasks.WaitDoneAndWaitGroupWait()
-	}
-	return stopServiceResources(ctx, current, operation)
-}
-
-func rollbackService(ctx context.Context, current startedService) error {
+func rollbackService(ctx context.Context, current *startedService) error {
 	if current.tasks != nil {
 		current.tasks.Cancel()
 	}
-	err := stopServiceResources(ctx, current, "rollback")
-	if current.tasks != nil {
-		current.tasks.WaitDoneAndWaitGroupWait()
+	if !current.rollbackStopped {
+		if err := stopServiceResources(ctx, *current, "rollback"); err != nil {
+			return err
+		}
+		current.rollbackStopped = true
 	}
-	return err
+	if err := current.tasks.CancelAndWait(ctx); err != nil {
+		current.phase.set(lifecycle.ServiceDraining, err)
+		return fmt.Errorf("framework: wait for service %q rollback tasks: %w", current.service.Spec().Name, err)
+	}
+	current.phase.set(lifecycle.ServiceStopped, nil)
+	return nil
 }
 
 func stopServiceResources(ctx context.Context, current startedService, operation string) (err error) {

@@ -388,7 +388,15 @@ func TestJetStreamFormalActorTaskLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	publish("drain")
-	consuming, err := taskqueue.Start(ctx, drainingConsumer, taskqueue.Processor{Actor: access, JetStream: js, DeadLetter: deadName, Timeout: 10 * time.Second})
+	drainingInfo, err := drainingConsumer.Info(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := taskqueue.Prepare(drainingConsumer, drainingInfo, taskqueue.Processor{Actor: access, JetStream: js, DeadLetter: deadName, Timeout: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	consuming, err := prepared.Start()
 	if err != nil {
 		t.Fatal(err)
 	}

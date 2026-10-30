@@ -4,9 +4,35 @@ import (
 	"context"
 	"github.com/ngnl47/tx/lifecycle"
 	txactor "github.com/ngnl47/tx/modules/actor"
+	"github.com/ngnl47/tx/modules/txn"
 	txruntime "github.com/ngnl47/tx/runtime"
 	"testing"
 )
+
+func TestProcedureAccessDoesNotExposeOwner(t *testing.T) {
+	r := &runtime{transaction: txn.NewRuntime(), selectedCMods: map[CModID]struct{}{CModProcedure: {}}}
+	ctx := txruntime.Bind(t.Context(), newRuntimeAccess(r, Spec{Name: "game", Requires: []CModID{CModProcedure}}))
+	for _, executor := range []txn.Executor{txruntime.Procedure(ctx), newServiceContext(r, nil).Transaction()} {
+		if _, ok := executor.(interface{ Drain(context.Context) error }); ok {
+			t.Fatal("普通事务执行入口暴露了运行时关闭能力")
+		}
+		calls := 0
+		p := lifecycleProcedure(func(*txn.Tx) error { calls++; return nil })
+		if err := executor.Call(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+		future, err := executor.Submit(ctx, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := future.Await(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if calls != 2 {
+			t.Fatalf("受限视图未执行 Call/Submit: %d", calls)
+		}
+	}
+}
 
 func TestServiceAccessIsolationAndLifetime(t *testing.T) {
 	a := &runtime{config: Config{AppID: "app-a"}, selectedCMods: map[CModID]struct{}{CModActor: {}}}

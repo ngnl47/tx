@@ -38,7 +38,7 @@ func directPeer(t testing.TB, instance string, r *actorhost.Runtime) *rpc.Host {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := host.Start(root); err != nil {
+	if err := host.Start(root, nil); err != nil {
 		t.Fatal(err)
 	}
 	return host

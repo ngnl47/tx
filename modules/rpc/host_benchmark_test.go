@@ -157,7 +157,7 @@ func newLoopbackBenchmarkSender(b *testing.B, receiver benchmarkDeliveryReceiver
 	}); err != nil {
 		b.Fatalf("注册 DeliveryService: %v", err)
 	}
-	if err := host.Start(root); err != nil {
+	if err := host.Start(root, nil); err != nil {
 		b.Fatalf("启动 loopback gRPC Host: %v", err)
 	}
 

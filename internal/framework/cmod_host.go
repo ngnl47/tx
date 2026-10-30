@@ -4,21 +4,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/ngnl47/tx/component"
 	"github.com/ngnl47/tx/lifecycle"
 )
 
 type cmodHost struct {
-	host       *component.Host
-	resolveErr error
+	host           *component.Host
+	resolveErr     error
+	cleanupTimeout time.Duration
 }
 
-func newCModHost(runtime CModContext, graph cmodGraph) *cmodHost {
+func newCModHost(startup context.Context, runtime CModContext, graph cmodGraph) *cmodHost {
 	components := make([]component.Component, 0, len(graph.ordered))
 	roots := make([]component.Root, 0, len(graph.ordered))
 	for _, mod := range graph.ordered {
-		adapter := &cmodLifecycleComponent{mod: mod, runtime: runtime}
+		adapter := &cmodLifecycleComponent{mod: mod, runtime: runtime, startup: startup}
 		components = append(components, adapter)
 		roots = append(roots, component.Root{Source: "server", ID: component.ID(mod.Spec().ID)})
 	}
@@ -26,7 +28,11 @@ func newCModHost(runtime CModContext, graph cmodGraph) *cmodHost {
 	if err != nil {
 		return &cmodHost{resolveErr: fmt.Errorf("framework: prepare CMod host: %w", err)}
 	}
-	return &cmodHost{host: component.NewHost(cmodRootLifecycle(runtime), resolved)}
+	var timeout time.Duration
+	if current, ok := runtime.(*cmodContext); ok && current.runtime != nil {
+		timeout = current.runtime.config.Runtime.Lifecycle.DrainTimeout
+	}
+	return &cmodHost{host: component.NewHost(cmodRootLifecycle(runtime), resolved), cleanupTimeout: effectiveDrainTimeout(timeout)}
 }
 
 func (host *cmodHost) start() error {
@@ -36,7 +42,9 @@ func (host *cmodHost) start() error {
 	if host.resolveErr != nil {
 		return host.resolveErr
 	}
-	return host.host.Start()
+	ctx, cancel := context.WithTimeout(context.Background(), host.cleanupTimeout)
+	defer cancel()
+	return host.host.Start(ctx)
 }
 
 func (host *cmodHost) drain(ctx context.Context) error {
@@ -54,6 +62,7 @@ func (host *cmodHost) stop(ctx context.Context) error {
 }
 
 type cmodLifecycleComponent struct {
+	startup context.Context
 	mod     CMod
 	runtime CModContext
 }
@@ -76,6 +85,9 @@ func (current *cmodLifecycleComponent) Validate(runtime component.Context) error
 }
 
 func (current *cmodLifecycleComponent) Start(runtime component.Context) error {
+	if err := context.Cause(current.startup); err != nil {
+		return err
+	}
 	return current.mod.Start(current.context(runtime.Tasks()))
 }
 

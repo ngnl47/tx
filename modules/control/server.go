@@ -2,10 +2,12 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/ngnl47/tx/lifecycle"
 	txlog "github.com/ngnl47/tx/log"
@@ -19,6 +21,8 @@ type ServerOptions struct {
 	Handoff   HandoffController
 	Slots     SlotController
 	StorageIO StorageIOProvider
+	// OnFailure 报告非预期退出；回调不能等待当前任务结束。
+	OnFailure func(error)
 }
 
 // Server 在独立端口暴露进程控制面。它不承载业务协议，也不注册到服务发现。
@@ -26,6 +30,7 @@ type Server struct {
 	listener net.Listener
 	grpc     *grpc.Server
 	stopOnce sync.Once
+	stopped  atomic.Bool
 }
 
 // StartServer 启动控制面 gRPC 服务。endpoint 为空表示禁用控制面。
@@ -73,8 +78,11 @@ func StartServer(tasks lifecycle.Tasks, endpoint string, options ServerOptions) 
 	if err := tasks.Go(func(ctx context.Context) {
 		stop := context.AfterFunc(ctx, server.Stop)
 		defer stop()
-		if serveErr := grpcServer.Serve(listener); serveErr != nil && ctx.Err() == nil {
+		if serveErr := grpcServer.Serve(listener); serveErr != nil && !errors.Is(serveErr, grpc.ErrServerStopped) && ctx.Err() == nil && !server.stopped.Load() {
 			txlog.Error("control gRPC service stopped unexpectedly", "err", serveErr)
+			if options.OnFailure != nil {
+				options.OnFailure(fmt.Errorf("control: serve: %w", serveErr))
+			}
 		}
 	}); err != nil {
 		server.Stop()
@@ -97,6 +105,7 @@ func (server *Server) Stop() {
 		return
 	}
 	server.stopOnce.Do(func() {
+		server.stopped.Store(true)
 		if server.grpc != nil {
 			server.grpc.Stop()
 		}

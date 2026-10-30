@@ -73,15 +73,17 @@ func (p Processor) Process(parent context.Context, msg jetstream.Msg, interval t
 // Worker 不持有连接关闭权限。消费排水完成后，宿主再关闭 Actor 和连接。
 type Worker struct{ consumption jetstream.ConsumeContext }
 
-// Start 使用 durable 的 AckWait 自动续期，MaxAckPending 由消费资源配置控制。
-// 每个 Worker 同步处理一条任务，SDK 不额外预取批量业务；并发由多个 Worker 承担。
-func Start(ctx context.Context, consumer jetstream.Consumer, processor Processor) (*Worker, error) {
+// PreparedConsumer 保存已校验的消费计划；准备阶段不订阅、不领取消息。
+// 配置来自启动时读取的 ConsumerInfo，运行期配置变更不在本次启动快照内。
+type PreparedConsumer struct {
+	consumer jetstream.Consumer
+	process  func(jetstream.Msg) error
+}
+
+// Prepare 校验普通任务策略并计算续期周期，不重复向 JetStream 查询配置。
+func Prepare(consumer jetstream.Consumer, info *jetstream.ConsumerInfo, processor Processor) (*PreparedConsumer, error) {
 	if processor.Timeout <= 0 {
 		return nil, errors.New("taskqueue: timeout must be positive")
-	}
-	info, err := consumer.Info(ctx)
-	if err != nil {
-		return nil, err
 	}
 	ackWait := info.Config.AckWait
 	if len(info.Config.BackOff) != 0 {
@@ -90,10 +92,16 @@ func Start(ctx context.Context, consumer jetstream.Consumer, processor Processor
 	if info.Config.Durable == "" || info.Config.AckPolicy != jetstream.AckExplicitPolicy || ackWait <= 0 {
 		return nil, errors.New("taskqueue: durable consumer, explicit ack and positive ack wait required")
 	}
-	return consume(consumer, func(msg jetstream.Msg) error {
+	return &PreparedConsumer{consumer: consumer, process: func(msg jetstream.Msg) error {
 		// 启动请求结束不取消已经领取的业务，关闭由 Drain 协调。
 		return processor.Process(context.Background(), msg, max(time.Nanosecond, ackWait/3))
-	})
+	}}, nil
+}
+
+// Start 在业务准入开放后开始领取任务，不再执行静态校验或查询 ConsumerInfo。
+// 每个 Worker 同步处理一条任务，SDK 不额外预取批量业务。
+func (prepared *PreparedConsumer) Start() (*Worker, error) {
+	return consume(prepared.consumer, prepared.process)
 }
 
 func consume(consumer jetstream.Consumer, process func(jetstream.Msg) error) (*Worker, error) {

@@ -44,7 +44,7 @@ func TestRoutedClientSharesSenderConnections(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := host.Start(root); err != nil {
+		if err := host.Start(root, nil); err != nil {
 			t.Fatal(err)
 		}
 		return host

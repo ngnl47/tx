@@ -34,6 +34,7 @@ func (server *Server) startControl(endpoint string) error {
 		Handoff:   server,
 		Slots:     slots,
 		StorageIO: server,
+		OnFailure: server.reportFatal,
 	})
 	if err != nil {
 		return fmt.Errorf("framework: start control endpoint: %w", err)

@@ -8,6 +8,8 @@ Bee/Ant 的 `Context.Runtime()` 返回可绑定的 `tx/runtime.Provider`。在 S
 
 项目在 Setup 把 Provider 绑定到 GD、Redis、Actor 调用等项目入口，清理回调在服务停止之后解除绑定。消息操作上下文在应用 Handler 外从当前消息派生，保留取消和期限；后台任务及加载沿用各自生命周期，不复用已结束请求。正常排水先等待邮箱与模块工作结束，再释放这些资源；超时不代表实际任务已经退出。
 
+`txruntime.Procedure(ctx)` 与 `CModProcedure()` 均返回同一类受限执行视图，只提供 Call/Submit；其动态值不暴露事务运行时的 Drain、配置或提交参与者绑定能力。这些管理操作由框架拥有。
+
 普通只读使用 `data.SnapshotGD*(ctx, id)`。启用共享缓存时，完整 `data.FindGD*(ctx, id)` 与 `db.Create/Remove` 必须在 Procedure 内执行，修改交由 WriteBack；未启用缓存或显式排除的独占对象使用 Find 与 `db.Save/Create/Remove` 直接存取。所有入口显式传 ctx，不提供 Access、对象式 db.Find 或可选上下文包装。Handler 外的 actorcmd 统一创建十秒操作期限并在同步响应处理后释放，继承消息取消、已有期限与事务关联。Module 沿用 ctx，不重建根范围；纯内存规则不要求 ctx。活跃 Procedure 中 `db.Save/SaveChange` 拒绝直接持久化；`db.Create` 通过唯一缓存占位、事务回滚与 WriteBack 首次写入登记新根对象，未绑定缓存或受管写回则报错。结束后的事务 ctx 不得用于存储写入。 Actor 通信保留 cmd.Actors 的独立操作便捷入口和显式 At(ctx,id)，不创建新连接或改变 Call/Tell。
 
 模块可以保存资源与自己拥有的配置缓存、查询索引，不保存当前玩家、请求上下文或事务，不增加逐请求 Service 包装。单例获取和测试清理由项目管理，不能推导出跨进程状态唯一性。
@@ -94,6 +96,8 @@ Bee/Ant 的可选 ServiceFlusher.Flush(ctx) 在全部 Actor 与已登记后台�
 
 Actor 卸载回调的错误会记录，但不能单独保证保存完成；需要阻止正常交接的服务须保留失败对象，在 Flush 内重试并返回错误。正常 Flush 失败沿用 Stop/PrepareHandoff 可重试边界，保留依赖与绑定，不将失败视为完成。致命租约丢失仍按既有强制终止路径处理；内存数据不因此获得宕机恢复保证。
 
+服务后台任务收尾先取消全部服务任务，再等待实际退出。等待期限取调用方剩余期限与 `runtime.lifecycle.drainTimeout` 的较小值；超时不执行后续 Flush 或释放服务依赖，Stop/PrepareHandoff 的重试复用同一个完成信号。重试不会重新开放准入，也不会重复创建等待协程。
+
 ### 本地性能与使用限制
 
 受管 Find 包含记录锁、使用期和事务登记，不能用底层 Cache 的无锁命中数据代替。Snapshot 在锁内深复制，时间与分配随实体大小增长；若一次业务已处于 Procedure，可在当前事务内提取必要响应字段，避免多次整对象复制，但不能将共享 map、slice 或子指针带出事务。独占 World 继续在网格邮箱内读取和保存，不引入第二份共享快照。
@@ -105,3 +109,43 @@ Go 的公开字段无法阻止调用方私自保存裸指针并在事务外修�
 ## EntityCache 管理入口
 
 `txruntime.EntityCache(ctx)` 返回同一应用的缓存运行时。Stats/List 只观察框架元数据；SnapshotCached 只复制当前缓存对象，不回源；TryRelease 复用 WriteBack 安全判定，不刷盘或删除记录。EntryRef 关联驻留代次，旧引用不能操作重新加载的对象。管理快照/回收必须在 Procedure 外调用，并遵守独立的排水/关闭准入；业务查询仍用生成 Find/Snapshot。详见 [管理 API](entity-cache-management.md)。
+
+## CMod 与初始化回滚的关闭边界
+
+```text
+正常 Stop
+  -> 完成排水与持久化 -> Service.Stop（传输入口仍有效）
+  -> 取消根任务 -> 按关闭期限等待实际退出
+  -> 解除绑定、关闭连接 -> 逆序 CMod.Stop -> Stopped
+启动失败
+  -> 部分服务：Stop 唤醒资源等待 -> 限时等待服务任务
+  -> 部分 CMod：限时等待任务 -> Stop 自身资源 -> 逆序关闭依赖
+超时
+  -> 保留尚未关闭的对象和依赖 -> 后续 Stop 继续原阶段
+```
+
+CMod 回滚与最终关闭使用现有 `lifecycle.drainTimeout`，不增加独立配置；直接使用 `component.Host` 时由 `Start(ctx)` 和 `Stop(ctx)` 提供期限。回调必须遵守传入期限，框架不通过遗留 goroutine 模拟回调已完成。开始最终释放后不再重新 Drain、Flush 或交接；已释放阶段不会重复执行。
+
+组件实际工作未退出时，宿主自动保留依赖。自定义 CMod.Stop 若尚未完成，应返回包含 `component.ErrStopDeferred` 的错误；普通关闭错误（包括已完成关闭时返回的 DeadlineExceeded）作为最终结果记录，并继续释放依赖。不能仅按错误文本推断资源是否仍在使用。
+
+Placement 和 CMod 只取得 `lifecycle.Tasks` 受限视图，其 Go 回调同样拿不到 Cancel、Wait 或计数所有权。部分启动失败的组件只执行清理，不再调用要求完整启动的 Drain。
+
+启动阶段的框架错误应终止本次启动，不能开放业务准入或报告启动成功。失败清理用于释放已经取得的资源；有界等待和有限清理重试不代表恢复启动或继续运行部分子服务。运行期正常关闭仍须排空已接纳工作并完成持久化。
+
+一个 Server 运行时只有一份 Procedure CMod，各子服务共享事务运行时。当前实现未发现内置 CMod 或两组应用在 CMod.Start 中提交异步 Procedure；不将这一可构造的扩展场景列为已确认缺陷，也不据此增加专门的回滚机制。
+
+### 启动错误传播与消费准备
+
+```text
+CMod 准备连接、读取 ConsumerInfo、静态校验
+  -> Setup / Service.Init -> RPC 与控制面监听 -> Service.Start
+  -> 检查启动错误 -> 开放业务准入 -> 启动任务消费 -> 提交启动成功
+
+启动期致命错误 / 传输入口非预期退出
+  -> Server 登记错误并取消启动操作 -> 停止后续阶段
+  -> 有界清理已取得资源 -> Start 返回原始错误及清理错误
+```
+
+启动取消与根生命周期分离，保留必要依赖用于失败清理；回调须响应取消，框架不强杀 goroutine。RPC Host 的失败回调由 Server 接收，独立使用 Host 时可传 nil；回调不能同步等待 Host 关闭。控制面同理。正常 Stop、根取消与 gRPC 正常停止不报告故障。
+
+任务 Prepare 不领取消息，Start 不重新读取或校验 ConsumerInfo；静态错误在开放准入前暴露，实际消费仍在业务就绪后开始。Broker 后续变化仍可使启动失败，不自动重建消费者或重启服务。

@@ -15,6 +15,22 @@ type Tasks interface {
 	Go(func(context.Context)) error
 }
 
+// TaskView 只交付任务登记与上下文读取能力，不交付取消、等待和计数所有权。
+// 回调取得同一受限视图，不能通过回调参数重新取得宿主。
+func TaskView(tasks Tasks) Tasks { return taskView{Context: tasks, tasks: tasks} }
+
+type taskView struct {
+	context.Context
+	tasks Tasks
+}
+
+func (view taskView) Go(task func(context.Context)) error {
+	if task == nil {
+		return ErrStopping
+	}
+	return view.tasks.Go(func(context.Context) { task(view) })
+}
+
 // WaitGroupContext 将取消信号与信号发出前已经接受的工作组合起来。
 // 长期运行的任务应调用 Go，而不是直接维护 sync.WaitGroup。
 type WaitGroupContext struct {
@@ -25,6 +41,8 @@ type WaitGroupContext struct {
 	mu       sync.Mutex
 	stopping bool
 	wg       sync.WaitGroup
+	waitOnce sync.Once
+	waitDone chan struct{}
 }
 
 // NewWaitGroupContext 创建生命周期根节点。parent 为 nil 时使用 context.Background。
@@ -34,6 +52,29 @@ func NewWaitGroupContext(parent context.Context) *WaitGroupContext {
 	}
 	ctx, cancel := context.WithCancel(parent)
 	return &WaitGroupContext{Context: ctx, cancel: cancel}
+}
+
+// CancelAndWait 关闭接纳并按期限等待实际退出；超时不清除任务，重试复用完成信号。
+func (c *WaitGroupContext) CancelAndWait(ctx context.Context) error {
+	if c == nil {
+		return nil
+	}
+	c.Cancel()
+	c.waitOnce.Do(func() {
+		c.waitDone = make(chan struct{})
+		go func() { c.Wait(); close(c.waitDone) }()
+	})
+	select {
+	case <-c.waitDone:
+		return nil
+	default:
+	}
+	select {
+	case <-c.waitDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Enter 登记已经在调用方 goroutine 中执行的工作。工作完成后必须调用一次返回函数。

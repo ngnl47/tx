@@ -21,7 +21,7 @@ func (server *Server) PrepareHandoff(ctx context.Context, expectedInstanceID str
 		return err
 	}
 	server.mu.Lock()
-	if !server.started || server.stopping || server.fatalErr != nil {
+	if !server.started || server.stopping || server.finalizing || server.fatalErr != nil {
 		server.mu.Unlock()
 		return control.ErrHandoffUnavailable
 	}

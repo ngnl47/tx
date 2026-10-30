@@ -189,6 +189,7 @@ type CModDrainer interface {
 
 // CModStopper 释放能力模组持有的物理资源。
 // Stop 必须幂等，并能清理由失败的 Start 留下的部分资源。
+// 实际未完成时用 component.ErrStopDeferred 标记保留依赖重试；其他错误作为最终关闭结果。
 type CModStopper interface {
 	Stop(context.Context) error
 }

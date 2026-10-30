@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/ngnl47/tx/component"
 	"github.com/ngnl47/tx/modules/discovery"
 )
 
@@ -19,7 +20,7 @@ func (server *Server) Drain(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	server.mu.Lock()
-	ready := server.started
+	ready := server.started && !server.finalizing
 	runtime := server.runtime
 	discoveryRuntime := server.discovery
 	host := server.host
@@ -135,9 +136,17 @@ func (server *Server) stop(ctx context.Context, drain bool) error {
 }
 
 func (server *Server) shutdown(ctx context.Context, drain bool) error {
-	err := server.finishWork(ctx, drain)
-	if errors.Is(err, errStopDeferred) {
-		return err
+	server.mu.Lock()
+	finalizing := server.finalizing
+	server.mu.Unlock()
+	if !finalizing {
+		err := server.finishWork(ctx, drain)
+		if errors.Is(err, errStopDeferred) {
+			return err
+		}
+		server.mu.Lock()
+		server.finalizing, server.finalizeErr = true, err
+		server.mu.Unlock()
 	}
 	server.mu.Lock()
 	runtime := server.runtime
@@ -145,6 +154,7 @@ func (server *Server) shutdown(ctx context.Context, drain bool) error {
 	cmodHost := server.cmodHost
 	discoveryRuntime := server.discovery
 	controlServer := server.control
+	err := server.finalizeErr
 	server.mu.Unlock()
 
 	if runtime != nil {
@@ -153,38 +163,71 @@ func (server *Server) shutdown(ctx context.Context, drain bool) error {
 		}
 	}
 	errs := []error{err}
-	if controlServer != nil {
-		controlServer.stop()
-	}
-	if host != nil {
-		errs = append(errs, host.stop(ctx))
-	}
-	if runtime != nil && runtime.actorRPC != nil {
-		runtime.actorRPC.Close()
-	}
-	if runtime != nil && runtime.rpcSender != nil {
-		errs = append(errs, runtime.rpcSender.Close())
-	}
-	for index := len(server.cleanups) - 1; index >= 0; index-- {
-		server.cleanups[index]()
-	}
-	if server.bindStorage != nil {
-		server.bindStorage(nil)
-	}
-	if runtime != nil {
-		runtime.setInstanceStatus(discovery.StatusStopping)
-	}
-	if discoveryRuntime != nil {
-		errs = append(errs, discoveryRuntime.MarkStopping(context.WithoutCancel(ctx)))
-	}
-	if runtime != nil && runtime.lifecycle != nil {
-		runtime.lifecycle.Cancel()
-		runtime.lifecycle.WaitDoneAndWaitGroupWait()
+	if !server.releaseDone {
+		if controlServer != nil {
+			controlServer.stop()
+		}
+		// 服务先关闭自身发送器；此时进程级传输入口仍需有效。
+		if host != nil {
+			stopErr := host.stop(ctx)
+			if errors.Is(stopErr, errStopDeferred) {
+				return errors.Join(err, stopErr)
+			}
+			errs = append(errs, stopErr)
+		}
+		server.mu.Lock()
+		server.finalizeErr = errors.Join(errs...)
+		server.mu.Unlock()
+		// 根任务实际退出前保留 CMod 连接和存储；重试不再排水或 Flush。
+		if runtime != nil && runtime.lifecycle != nil {
+			waitCtx, cancel := context.WithTimeout(ctx, effectiveDrainTimeout(server.config.Runtime.Lifecycle.DrainTimeout))
+			waitErr := runtime.lifecycle.CancelAndWait(waitCtx)
+			cancel()
+			if waitErr != nil {
+				return errors.Join(errStopDeferred, errors.Join(errs...), waitErr)
+			}
+		}
+		if runtime != nil && runtime.actorRPC != nil {
+			runtime.actorRPC.Close()
+		}
+		if runtime != nil && runtime.rpcSender != nil {
+			errs = append(errs, runtime.rpcSender.Close())
+		}
+		for index := len(server.cleanups) - 1; index >= 0; index-- {
+			server.cleanups[index]()
+		}
+		server.cleanups = nil
+		if server.bindStorage != nil {
+			server.bindStorage(nil)
+		}
+		if runtime != nil {
+			runtime.setInstanceStatus(discovery.StatusStopping)
+		}
+		if discoveryRuntime != nil {
+			statusCtx, cancel := context.WithTimeout(ctx, effectiveDrainTimeout(server.config.Runtime.Lifecycle.DrainTimeout))
+			errs = append(errs, discoveryRuntime.MarkStopping(statusCtx))
+			cancel()
+		}
+		server.mu.Lock()
+		server.releaseDone = true
+		server.finalizeErr = errors.Join(errs...)
+		server.mu.Unlock()
 	}
 	if cmodHost != nil {
-		errs = append(errs, cmodHost.stop(context.WithoutCancel(ctx)))
+		stopCtx, cancel := context.WithTimeout(ctx, effectiveDrainTimeout(server.config.Runtime.Lifecycle.DrainTimeout))
+		stopErr := cmodHost.stop(stopCtx)
+		cancel()
+		if errors.Is(stopErr, component.ErrStopDeferred) {
+			server.mu.Lock()
+			server.finalizeErr = errors.Join(errs...)
+			server.mu.Unlock()
+			return errors.Join(errStopDeferred, errors.Join(errs...), stopErr)
+		}
+		errs = append(errs, stopErr)
 	} else if discoveryRuntime != nil {
-		errs = append(errs, discoveryRuntime.Close(context.WithoutCancel(ctx)))
+		closeCtx, cancel := context.WithTimeout(ctx, effectiveDrainTimeout(server.config.Runtime.Lifecycle.DrainTimeout))
+		errs = append(errs, discoveryRuntime.Close(closeCtx))
+		cancel()
 	}
 	server.mu.Lock()
 	fatalErr := server.fatalErr
@@ -240,7 +283,12 @@ func (server *Server) finishWork(ctx context.Context, drain bool) error {
 		}
 	}
 	if host != nil {
-		host.quiesceTasks()
+		tasksCtx, cancel := context.WithTimeout(ctx, effectiveDrainTimeout(server.config.Runtime.Lifecycle.DrainTimeout))
+		err := host.quiesceTasks(tasksCtx)
+		cancel()
+		if err != nil {
+			return errors.Join(errStopDeferred, err)
+		}
 	}
 	if runtime != nil && runtime.placement != nil {
 		placementCtx, cancel := context.WithTimeout(ctx, effectiveDrainTimeout(server.config.Runtime.Lifecycle.DrainTimeout))

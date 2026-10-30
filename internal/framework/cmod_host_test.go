@@ -13,7 +13,7 @@ import (
 func TestCModHostValidatesAllBeforeStartingAny(t *testing.T) {
 	wantErr := errors.New("fusion config is invalid")
 	events := []string{}
-	host := newCModHost(nil, cmodGraph{ordered: []CMod{
+	host := newCModHost(context.Background(), nil, cmodGraph{ordered: []CMod{
 		&cmodLifecycleFake{id: "redis", events: &events},
 		&cmodLifecycleFake{id: "fusion", validateErr: wantErr, events: &events},
 	}})
@@ -30,7 +30,7 @@ func TestCModHostValidatesAllBeforeStartingAny(t *testing.T) {
 func TestCModHostRollsBackStartedModulesInReverseOrder(t *testing.T) {
 	wantErr := errors.New("transaction start failed")
 	events := []string{}
-	host := newCModHost(nil, cmodGraph{ordered: []CMod{
+	host := newCModHost(context.Background(), nil, cmodGraph{ordered: []CMod{
 		&cmodLifecycleFake{id: "redis", events: &events},
 		&cmodLifecycleFake{id: "fusion", events: &events},
 		&cmodLifecycleFake{id: "transaction", startErr: wantErr, events: &events},
@@ -48,7 +48,7 @@ func TestCModHostRollsBackStartedModulesInReverseOrder(t *testing.T) {
 
 func TestCModHostDrainsAndStopsInReverseOrder(t *testing.T) {
 	events := []string{}
-	host := newCModHost(nil, cmodGraph{ordered: []CMod{
+	host := newCModHost(context.Background(), nil, cmodGraph{ordered: []CMod{
 		&cmodLifecycleFake{id: "redis", events: &events},
 		&cmodLifecycleFake{id: "fusion", events: &events},
 		&cmodLifecycleFake{id: "transaction", events: &events},
@@ -82,7 +82,7 @@ func TestCModHostStopsOwnedTasksBeforeRollbackDependencies(t *testing.T) {
 	taskStarted := make(chan struct{})
 	taskStopped := make(chan struct{})
 	owner := &ownedTaskCMod{taskStarted: taskStarted, taskStopped: taskStopped}
-	host := newCModHost(newCModContext(server), cmodGraph{ordered: []CMod{
+	host := newCModHost(context.Background(), newCModContext(server), cmodGraph{ordered: []CMod{
 		owner,
 		&cmodLifecycleFake{id: "failure", startErr: errors.New("failed"), events: &[]string{}},
 	}})

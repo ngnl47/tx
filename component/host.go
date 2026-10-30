@@ -12,20 +12,22 @@ import (
 // ErrHostStopped 表示组件宿主已经停止，不能再次启动。
 var ErrHostStopped = errors.New("component: host is stopped")
 
+// ErrStopDeferred 表示工作或资源关闭尚未完成，依赖必须保留并允许重试。
+var ErrStopDeferred = errors.New("component: stop deferred")
+
 // Host 按已经解析的 Graph 管理组件生命周期。
 type Host struct {
 	root    *lifecycle.WaitGroupContext
 	ownRoot bool
 	graph   Graph
 
-	transition sync.Mutex
+	transition chan struct{}
 	started    []startedComponent
 	state      hostState
 
 	startOnce sync.Once
 	startErr  error
 	drained   int
-	stopOnce  sync.Once
 	stopErr   error
 }
 
@@ -49,22 +51,28 @@ func NewHost(root *lifecycle.WaitGroupContext, graph Graph) *Host {
 	if root == nil {
 		root = lifecycle.NewWaitGroupContext(context.Background())
 	}
-	return &Host{root: root, ownRoot: ownRoot, graph: graph}
+	return &Host{root: root, ownRoot: ownRoot, graph: graph, transition: make(chan struct{}, 1)}
 }
 
-// Start 先校验全部组件，再按拓扑顺序启动。启动失败会逆序清理已接触的组件。
-func (host *Host) Start() error {
+// Start 先校验全部组件，再按拓扑顺序启动。ctx 限定失败回滚的等待，后台任务使用独立生命周期。
+func (host *Host) Start(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if host == nil {
 		return errors.New("component: host is nil")
 	}
 	host.startOnce.Do(func() {
-		host.transition.Lock()
-		defer host.transition.Unlock()
+		if err := host.enter(ctx); err != nil {
+			host.startErr = err
+			return
+		}
+		defer host.leave()
 		if host.state == hostStateStopped {
 			host.startErr = ErrHostStopped
 			return
 		}
-		host.startErr = host.start()
+		host.startErr = host.start(ctx)
 		if host.startErr != nil {
 			host.state = hostStateFailed
 			return
@@ -74,7 +82,7 @@ func (host *Host) Start() error {
 	return host.startErr
 }
 
-func (host *Host) start() error {
+func (host *Host) start(ctx context.Context) error {
 	validateContext := runtimeContext{root: host.root, tasks: host.root}
 	for _, entry := range host.graph.ordered {
 		if validator, ok := entry.component.(Validator); ok {
@@ -90,29 +98,13 @@ func (host *Host) start() error {
 			tasks: lifecycle.NewChildWaitGroupContext(host.root),
 		}
 		startContext := runtimeContext{root: host.root, tasks: current.tasks}
+		host.started = append(host.started, current)
 		if err := entry.component.Start(startContext); err != nil {
 			startErr := fmt.Errorf("component: start %q: %w", entry.spec.ID, err)
-			startErr = errors.Join(startErr, stopComponent(context.Background(), current, "rollback"))
-			return host.rollback(startErr)
+			return errors.Join(startErr, host.stop(ctx, "rollback"))
 		}
-		host.started = append(host.started, current)
 	}
 	return nil
-}
-
-func (host *Host) rollback(startErr error) error {
-	errs := []error{startErr}
-	for index := len(host.started) - 1; index >= 0; index-- {
-		if err := stopComponent(context.Background(), host.started[index], "rollback"); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	host.started = nil
-	if host.ownRoot {
-		host.root.Cancel()
-		host.root.WaitDoneAndWaitGroupWait()
-	}
-	return errors.Join(errs...)
 }
 
 // Drain 逆序冲刷组件，失败即停止；重试从失败组件继续，不重复已成功的组件。
@@ -123,8 +115,14 @@ func (host *Host) Drain(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	host.transition.Lock()
-	defer host.transition.Unlock()
+	if err := host.enter(ctx); err != nil {
+		return err
+	}
+	defer host.leave()
+	// 启动失败保留的是待清理的部分资源，不能执行只适用于完整启动的 Drain。
+	if host.state == hostStateFailed || host.state == hostStateStopped {
+		return nil
+	}
 	for host.drained < len(host.started) {
 		index := len(host.started) - 1 - host.drained
 		current := host.started[index]
@@ -138,7 +136,7 @@ func (host *Host) Drain(ctx context.Context) error {
 	return nil
 }
 
-// Stop 逆序取消组件任务并释放资源。并发调用共享第一次结果。
+// Stop 逆序取消组件任务并释放资源。未退出时保留失败组件及其依赖，后续调用可重试。
 func (host *Host) Stop(ctx context.Context) error {
 	if host == nil {
 		return nil
@@ -146,30 +144,48 @@ func (host *Host) Stop(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	host.stopOnce.Do(func() {
-		host.transition.Lock()
-		defer host.transition.Unlock()
-		var errs []error
-		for index := len(host.started) - 1; index >= 0; index-- {
-			if err := stopComponent(ctx, host.started[index], "stop"); err != nil {
-				errs = append(errs, err)
-			}
+	if err := host.enter(ctx); err != nil {
+		return errors.Join(ErrStopDeferred, err)
+	}
+	defer host.leave()
+	if host.state == hostStateStopped {
+		return host.stopErr
+	}
+	return host.stop(ctx, "stop")
+}
+
+func (host *Host) stop(ctx context.Context, operation string) error {
+	for len(host.started) > 0 {
+		index := len(host.started) - 1
+		err := stopComponent(ctx, host.started[index], operation)
+		if errors.Is(err, ErrStopDeferred) {
+			return errors.Join(host.stopErr, err)
 		}
-		host.started = nil
-		host.state = hostStateStopped
-		if host.ownRoot {
-			host.root.Cancel()
-			host.root.WaitDoneAndWaitGroupWait()
+		host.stopErr = errors.Join(host.stopErr, err)
+		host.started = host.started[:index]
+	}
+	if host.ownRoot {
+		if err := host.root.CancelAndWait(ctx); err != nil {
+			return errors.Join(ErrStopDeferred, host.stopErr, err)
 		}
-		host.stopErr = errors.Join(errs...)
-	})
+	}
+	host.state = hostStateStopped
 	return host.stopErr
 }
 
+func (host *Host) enter(ctx context.Context) error {
+	select {
+	case host.transition <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+func (host *Host) leave() { <-host.transition }
+
 func stopComponent(ctx context.Context, current startedComponent, operation string) error {
-	if current.tasks != nil {
-		current.tasks.Cancel()
-		current.tasks.WaitDoneAndWaitGroupWait()
+	if err := current.tasks.CancelAndWait(ctx); err != nil {
+		return errors.Join(ErrStopDeferred, fmt.Errorf("component: wait for %q tasks: %w", current.entry.spec.ID, err))
 	}
 	stopper, ok := current.entry.component.(Stopper)
 	if !ok {

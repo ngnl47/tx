@@ -83,7 +83,8 @@ func (host *Host) Register(register func(grpc.ServiceRegistrar) error) error {
 }
 
 // Start 启动全部已注册协议，并将服务任务登记到 root。
-func (host *Host) Start(root *lifecycle.WaitGroupContext) error {
+// 非预期退出同步通知 onFailure；回调只报告错误，不应在回调内等待本 Host 关闭。
+func (host *Host) Start(root *lifecycle.WaitGroupContext, onFailure func(error)) error {
 	if host == nil {
 		return fmt.Errorf("rpc: host is nil")
 	}
@@ -113,12 +114,16 @@ func (host *Host) Start(root *lifecycle.WaitGroupContext) error {
 		defer stop()
 		err := server.Serve(listener)
 		host.mu.Lock()
-		if err != nil && !errors.Is(err, grpc.ErrServerStopped) && ctx.Err() == nil {
+		if err != nil && !errors.Is(err, grpc.ErrServerStopped) && ctx.Err() == nil && !host.stopped {
 			host.serveErr = fmt.Errorf("rpc: host serve: %w", err)
 			txlog.Error("shared gRPC host stopped unexpectedly", "err", err)
 		}
+		failure := host.serveErr
 		close(done)
 		host.mu.Unlock()
+		if failure != nil && onFailure != nil {
+			onFailure(failure)
+		}
 	}); err != nil {
 		host.mu.Lock()
 		host.started = false

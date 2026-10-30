@@ -65,7 +65,7 @@ func TestSendStreamEnqueuesInOrderWithoutPerItemResponse(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := host.Start(root); err != nil {
+	if err := host.Start(root, nil); err != nil {
 		t.Fatal(err)
 	}
 	directory := discovery.NewServiceDirectory()
@@ -138,7 +138,7 @@ func TestCallStreamCancelsOnlyExpiredItem(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := host.Start(root); err != nil {
+	if err := host.Start(root, nil); err != nil {
 		t.Fatal(err)
 	}
 	directory := discovery.NewServiceDirectory()
@@ -204,7 +204,7 @@ func TestCallStreamHostFailureAndReconnect(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := host.Start(root); err != nil {
+	if err := host.Start(root, nil); err != nil {
 		t.Fatal(err)
 	}
 	endpoint := host.Endpoint()
@@ -275,7 +275,7 @@ func TestCallStreamHostFailureAndReconnect(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := restarted.Start(root); err != nil {
+	if err := restarted.Start(root, nil); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(3 * time.Second)

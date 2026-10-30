@@ -20,9 +20,11 @@ type runtimeContext struct {
 }
 
 func (runtime runtimeContext) Root() context.Context {
-	return runtime.root
+	return contextView{runtime.root}
 }
 
 func (runtime runtimeContext) Tasks() lifecycle.Tasks {
-	return runtime.tasks
+	return lifecycle.TaskView(runtime.tasks)
 }
+
+type contextView struct{ context.Context }

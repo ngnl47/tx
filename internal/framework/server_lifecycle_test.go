@@ -254,8 +254,23 @@ func TestRunRetriesFailedPersistenceBeforeReturning(t *testing.T) {
 				t.Fatal(err)
 			}
 			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			result := make(chan error, 1)
+			go func() { result <- app.Run(ctx, RunOptions{Services: []string{"game"}}) }()
+			// 本用例验正常关闭重试；不能用已经取消的 ctx 跳过启动。
+			deadline := time.NewTimer(time.Second)
+			defer deadline.Stop()
+			for app.Context() == nil {
+				select {
+				case err := <-result:
+					t.Fatalf("未启动即退出: %v", err)
+				case <-deadline.C:
+					t.Fatal("启动未完成")
+				case <-time.After(time.Millisecond):
+				}
+			}
 			cancel()
-			err = app.Run(ctx, RunOptions{Services: []string{"game"}})
+			err = <-result
 			if recoverOn != 0 {
 				if err != nil || attempts != 3 || !mod.stopped {
 					t.Fatalf("Run = %v, attempts=%d, stopped=%v", err, attempts, mod.stopped)

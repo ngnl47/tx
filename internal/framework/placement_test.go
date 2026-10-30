@@ -66,7 +66,7 @@ func TestPlacementLocalRemoteAndProviderReplacement(t *testing.T) {
 	if err := local.initialize(rt, services); err != nil {
 		t.Fatal(err)
 	}
-	if err := rt.rpc.Start(rt.lifecycle); err != nil {
+	if err := rt.rpc.Start(rt.lifecycle, nil); err != nil {
 		t.Fatal(err)
 	}
 	remote, caller, _ := placementFixture(t, func(context.Context, txactor.Identity) (string, error) {
@@ -115,7 +115,7 @@ func TestPlacementLocalRemoteAndProviderReplacement(t *testing.T) {
 	if err := next.initialize(nextRT, nextServices); err != nil {
 		t.Fatal(err)
 	}
-	if err := nextRT.rpc.Start(nextRT.lifecycle); err != nil {
+	if err := nextRT.rpc.Start(nextRT.lifecycle, nil); err != nil {
 		t.Fatal(err)
 	}
 	replace(nextRT.rpc.Endpoint())

@@ -107,7 +107,15 @@ func runMaxDeliverRecovery(t *testing.T, url string, restart func()) {
 		t.Fatalf("转存失败确认了通知: %+v %v", info, err)
 	}
 	dead := create(deadName, deadName, jetstream.LimitsPolicy)
-	worker, err := StartRecovery(ctx, notifications, recovery, time.Second)
+	preparedInfo, err := notifications.Info(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareRecovery(notifications, preparedInfo, recovery, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, err := prepared.Start()
 	if err != nil {
 		t.Fatal(err)
 	}

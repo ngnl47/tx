@@ -72,9 +72,9 @@ type RuntimeConfig struct {
 	Transaction TransactionConfig
 }
 
-// LifecycleConfig 配置进程入口等待和 Fusion 本地登记排空的单阶段上限。
+// LifecycleConfig 配置关闭流程各排水阶段的等待上限。
 type LifecycleConfig struct {
-	// DrainTimeout 是停止阶段等待入口任务和 Fusion 本地登记排空的最长时间；0 使用框架默认值。
+	// DrainTimeout 是关闭流程各排水阶段（含服务后台任务）的等待上限；0 使用框架默认值。
 	DrainTimeout time.Duration
 }
 

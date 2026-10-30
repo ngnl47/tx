@@ -61,7 +61,7 @@ func (p *runtimeAccess) ApplyChangesWithOptions(ctx context.Context, spec meta.T
 }
 func (p *runtimeAccess) Procedure() txn.Executor {
 	p.require(CModProcedure)
-	return p.runtime.transaction
+	return transactionAccess{runtime: p.runtime.transaction}
 }
 func (p *runtimeAccess) RedisClients() goredis.ClientProvider {
 	p.require(CModRedisStorage)

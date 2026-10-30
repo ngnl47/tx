@@ -360,7 +360,7 @@ func TestSubmitStartupCleanupWithoutActorsRetainsDependencies(t *testing.T) {
 	root := lifecycle.NewWaitGroupContext(t.Context())
 	defer func() { root.Cancel(); root.Wait() }()
 	server := &Server{runtime: &runtime{lifecycle: root}}
-	server.cmodHost = newCModHost(newCModContext(server), cmodGraph{ordered: []CMod{mod}})
+	server.cmodHost = newCModHost(context.Background(), newCModContext(server), cmodGraph{ordered: []CMod{mod}})
 	if err := server.cmodHost.start(); err != nil {
 		t.Fatal(err)
 	}

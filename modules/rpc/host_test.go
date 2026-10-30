@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/ngnl47/tx/lifecycle"
 	rpcpb "github.com/ngnl47/tx/modules/rpc/pb"
@@ -42,7 +43,7 @@ func TestHostServesRegisteredServicesOnOneEndpoint(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("register delivery service: %v", err)
 	}
-	if err := host.Start(root); err != nil {
+	if err := host.Start(root, nil); err != nil {
 		t.Fatalf("Start returned error: %v", err)
 	}
 	t.Cleanup(func() {
@@ -96,7 +97,7 @@ func TestHostRejectsRegistrationAfterStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHost returned error: %v", err)
 	}
-	if err := host.Start(root); err != nil {
+	if err := host.Start(root, nil); err != nil {
 		t.Fatalf("Start returned error: %v", err)
 	}
 	t.Cleanup(func() {
@@ -107,5 +108,52 @@ func TestHostRejectsRegistrationAfterStart(t *testing.T) {
 
 	if err := host.Register(func(grpc.ServiceRegistrar) error { return nil }); err == nil {
 		t.Fatal("Register after Start error = nil, want error")
+	}
+}
+
+func TestHostReportsUnexpectedServeFailure(t *testing.T) {
+	root := lifecycle.NewWaitGroupContext(t.Context())
+	defer func() { root.Cancel(); root.Wait() }()
+	host, err := NewHost("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failures := make(chan error, 1)
+	if err := host.Start(root, func(err error) { failures <- err }); err != nil {
+		t.Fatal(err)
+	}
+	// 绕过正常 Stop 关闭 listener，模拟 Serve 的终止性 Accept 错误。
+	if err := host.listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-failures:
+		if err == nil {
+			t.Fatal("未传递错误")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("未通知宿主")
+	}
+	_ = host.Stop(t.Context())
+}
+
+func TestHostNormalStopDoesNotReportFailure(t *testing.T) {
+	root := lifecycle.NewWaitGroupContext(t.Context())
+	defer func() { root.Cancel(); root.Wait() }()
+	host, err := NewHost("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failures := make(chan error, 1)
+	if err := host.Start(root, func(err error) { failures <- err }); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Stop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-failures:
+		t.Fatalf("正常关闭误报: %v", err)
+	default:
 	}
 }

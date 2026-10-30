@@ -15,10 +15,9 @@ type taskRuntime struct {
 	conn             *nats.Conn
 	js               jetstream.JetStream
 	config           tasks.Config
-	consumer         jetstream.Consumer
+	consumer         *taskqueue.PreparedConsumer
 	worker           *taskqueue.Worker
-	recoveryConsumer jetstream.Consumer
-	recovery         taskqueue.Recovery
+	recoveryConsumer *taskqueue.PreparedConsumer
 	recoveryWorker   *taskqueue.Worker
 }
 
@@ -71,7 +70,7 @@ func (server *Server) tasksCMod() CMod {
 			if config.Consumer == "" {
 				return nil
 			}
-			r.consumer, err = stream.Consumer(ctx, config.Consumer)
+			consumer, err := stream.Consumer(ctx, config.Consumer)
 			if err != nil {
 				return err
 			}
@@ -94,7 +93,11 @@ func (server *Server) tasksCMod() CMod {
 			if deadInfo.Config.Storage != jetstream.FileStorage || deadInfo.Config.Retention != jetstream.LimitsPolicy {
 				return errors.New("tasks: file-backed limits retention dead letter stream required")
 			}
-			infoConsumer, err := r.consumer.Info(ctx)
+			infoConsumer, err := consumer.Info(ctx)
+			if err != nil {
+				return err
+			}
+			r.consumer, err = taskqueue.Prepare(consumer, infoConsumer, taskqueue.Processor{Actor: server.runtime.actor, JetStream: r.js, DeadLetter: config.DeadLetter, Timeout: config.Timeout})
 			if err != nil {
 				return err
 			}
@@ -116,12 +119,16 @@ func (server *Server) tasksCMod() CMod {
 			if eventInfo.Config.Storage != jetstream.FileStorage || eventInfo.Config.Retention != jetstream.WorkQueuePolicy || len(eventInfo.Config.Subjects) != 1 || eventInfo.Config.Subjects[0] != eventSubject {
 				return errors.New("tasks: dedicated file work queue for max delivery advisories required")
 			}
-			r.recoveryConsumer, err = events.Consumer(ctx, config.RecoveryConsumer)
+			recoveryConsumer, err := events.Consumer(ctx, config.RecoveryConsumer)
 			if err != nil {
 				return err
 			}
-			r.recovery = taskqueue.Recovery{JetStream: r.js, Source: stream, Consumer: r.consumer, DeadLetter: config.DeadLetter}
-			return nil
+			recoveryInfo, err := recoveryConsumer.Info(ctx)
+			if err != nil {
+				return err
+			}
+			r.recoveryConsumer, err = taskqueue.PrepareRecovery(recoveryConsumer, recoveryInfo, taskqueue.Recovery{JetStream: r.js, Source: stream, Consumer: consumer, DeadLetter: config.DeadLetter}, config.Timeout)
+			return err
 		},
 		stop: func(context.Context) error {
 			if r := server.runtime.taskQueue; r != nil {
@@ -134,18 +141,21 @@ func (server *Server) tasksCMod() CMod {
 
 // 消费必须晚于服务初始化及 RPC 启动，不能在 CMod 启动阶段触发业务加载。
 func (server *Server) startTaskConsumer(ctx context.Context) error {
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
 	r := server.runtime.taskQueue
 	if r == nil || r.consumer == nil {
 		return nil
 	}
 	if r.recoveryConsumer != nil {
-		worker, err := taskqueue.StartRecovery(ctx, r.recoveryConsumer, r.recovery, r.config.Timeout)
+		worker, err := r.recoveryConsumer.Start()
 		r.recoveryWorker = worker
 		if err != nil {
 			return err
 		}
 	}
-	worker, err := taskqueue.Start(ctx, r.consumer, taskqueue.Processor{Actor: server.runtime.actor, JetStream: r.js, DeadLetter: r.config.DeadLetter, Timeout: r.config.Timeout})
+	worker, err := r.consumer.Start()
 	r.worker = worker
 	return err
 }

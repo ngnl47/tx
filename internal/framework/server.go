@@ -94,6 +94,7 @@ type Server struct {
 	started        bool
 	stopping       bool
 	startDone      chan struct{}
+	startCancel    context.CancelCauseFunc
 	runtime        *runtime
 	host           *serviceHost
 	cmodHost       *cmodHost
@@ -105,6 +106,9 @@ type Server struct {
 	stopAttempt    *drainAttempt
 	prepareAttempt *drainAttempt
 	prepared       bool
+	finalizing     bool
+	releaseDone    bool
+	finalizeErr    error
 	fatalOnce      sync.Once
 	fatalErr       error
 }
@@ -176,20 +180,40 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 		server.mu.Unlock()
 		return errors.New("framework: server is already started or stopping")
 	}
+	ctx, cancelStart := context.WithCancelCause(ctx)
+	defer cancelStart(nil)
+	server.startCancel = cancelStart
 	server.starting = true
 	server.startDone = make(chan struct{})
 	server.mu.Unlock()
+	var selected []Service
+	var graph cmodGraph
 	defer func() {
-		var cleanupErr error
-		if err != nil {
-			cleanupErr = server.shutdown(context.Background(), false)
-			err = errors.Join(err, cleanupErr)
-		}
+		// 启动成功与致命错误登记共用同一把锁；已知失败不能提交为 Running。
 		server.mu.Lock()
-		server.starting = false
+		err = errors.Join(err, context.Cause(ctx), server.fatalErr)
 		if err == nil {
 			server.started = true
-		} else if !errors.Is(cleanupErr, errStopDeferred) {
+			txlog.Info("server started successfully",
+				"app", server.config.AppID,
+				"services", strings.Join(selectedServiceNames(selected), ","),
+				"cmods", strings.Join(cmodIDStrings(graph.IDs()), ","),
+				"components", strings.Join(cmodTopology(graph.ordered, newServiceSelection(selected)), ";"),
+				"endpoint", server.runtime.instanceSnapshot().Endpoint,
+			)
+			server.starting = false
+			server.startCancel = nil
+			close(server.startDone)
+			server.mu.Unlock()
+			return
+		}
+		server.mu.Unlock()
+		cleanupErr := server.shutdown(context.Background(), false)
+		err = errors.Join(err, cleanupErr)
+		server.mu.Lock()
+		server.starting = false
+		server.startCancel = nil
+		if !errors.Is(cleanupErr, errStopDeferred) {
 			server.stopping = true
 			server.stopErr = cleanupErr
 			server.clearRuntimeLocked()
@@ -198,11 +222,14 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 		close(server.startDone)
 		server.mu.Unlock()
 	}()
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
 	registry, err := newRegistry(server.services...)
 	if err != nil {
 		return err
 	}
-	selected, err := registry.selectServices(options.Services)
+	selected, err = registry.selectServices(options.Services)
 	if err != nil {
 		return err
 	}
@@ -211,7 +238,7 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 		actorTypes = append(actorTypes, service.Spec().ActorTypes...)
 	}
 	allCMods := append(server.builtInCMods(options), server.cmods...)
-	graph, err := resolveCModGraph(allCMods, selected)
+	graph, err = resolveCModGraph(allCMods, selected)
 	if err != nil {
 		return err
 	}
@@ -263,9 +290,12 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 	server.runtime = runtime
 	server.mu.Unlock()
 
-	cmodHost := newCModHost(newCModContext(server), graph)
+	cmodHost := newCModHost(ctx, newCModContext(server), graph)
 	server.cmodHost = cmodHost
 	if err := cmodHost.start(); err != nil {
+		return err
+	}
+	if err := context.Cause(ctx); err != nil {
 		return err
 	}
 
@@ -274,6 +304,9 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 	}
 	setupContext := newServiceContext(runtime, nil)
 	for _, setup := range server.setups {
+		if err := context.Cause(ctx); err != nil {
+			return err
+		}
 		cleanup, setupErr := setup(setupContext)
 		if setupErr != nil {
 			return fmt.Errorf("framework: setup: %w", setupErr)
@@ -289,11 +322,11 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 	}
 	host := newServiceHost(registry, runtime)
 	server.host = host
-	if err := host.initServices(selected); err != nil {
+	if err := host.initServices(ctx, selected); err != nil {
 		return err
 	}
 	if runtime.rpc != nil {
-		if err := runtime.rpc.Start(root); err != nil {
+		if err := runtime.rpc.Start(root, server.reportFatal); err != nil {
 			return fmt.Errorf("framework: start RPC host: %w", err)
 		}
 	}
@@ -309,20 +342,21 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 	if err := host.startServices(ctx); err != nil {
 		return err
 	}
-	runtime.enableSessionIDs()
-	host.openServices()
+	server.mu.Lock()
+	startupErr := errors.Join(context.Cause(ctx), server.fatalErr)
+	if startupErr == nil {
+		runtime.enableSessionIDs()
+		host.openServices()
+	}
+	server.mu.Unlock()
+	if startupErr != nil {
+		return startupErr
+	}
 	// 任务只能在服务开放后领取，避免启动窗口消耗有限投递次数。
-	if err := server.startTaskConsumer(root); err != nil {
+	if err := server.startTaskConsumer(ctx); err != nil {
 		return err
 	}
-	txlog.Info(
-		"server started successfully",
-		"app", server.config.AppID,
-		"services", strings.Join(selectedServiceNames(selected), ","),
-		"cmods", strings.Join(cmodIDStrings(graph.IDs()), ","),
-		"components", strings.Join(cmodTopology(graph.ordered, newServiceSelection(selected)), ";"),
-		"endpoint", runtime.instanceSnapshot().Endpoint,
-	)
+
 	return nil
 }
 
@@ -333,6 +367,12 @@ func (server *Server) reportFatal(err error) {
 	server.fatalOnce.Do(func() {
 		server.mu.Lock()
 		server.fatalErr = err
+		if server.starting {
+			cancel := server.startCancel
+			server.mu.Unlock()
+			cancel(err)
+			return
+		}
 		server.mu.Unlock()
 		go func() {
 			// 若加入的是租约失效前已经开始的普通关闭，须再执行异常终止，
@@ -351,7 +391,7 @@ func (server *Server) Context() Context {
 	}
 	server.mu.Lock()
 	defer server.mu.Unlock()
-	if !server.started || server.stopping || server.runtime == nil {
+	if !server.started || server.stopping || server.finalizing || server.runtime == nil {
 		return nil
 	}
 	return newServiceContext(server.runtime, nil)

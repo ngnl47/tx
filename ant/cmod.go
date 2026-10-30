@@ -82,7 +82,8 @@ type CModDrainer interface {
 	Drain(context.Context) error
 }
 
-// CModStopper 释放 CMod 持有的物理资源。
+// CModStopper 释放 CMod 持有的物理资源，Stop 必须幂等。
+// 实际未完成时返回包含 component.ErrStopDeferred 的错误以保留依赖重试；其他错误作为最终关闭结果。
 type CModStopper interface {
 	// Stop 幂等释放 CMod 自身持有的物理资源。
 	Stop(context.Context) error

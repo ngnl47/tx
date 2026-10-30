@@ -40,6 +40,8 @@ type Drainer interface {
 }
 
 // Stopper 释放组件持有的物理资源。Stop 必须幂等。
+// 只有实际未完成、需要保留依赖重试时返回包含 ErrStopDeferred 的错误；
+// 其他错误表示关闭已结束但结果有误，宿主记录后继续关闭依赖。
 type Stopper interface {
 	Stop(context.Context) error
 }
