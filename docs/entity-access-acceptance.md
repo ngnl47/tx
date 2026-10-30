@@ -13,7 +13,7 @@
 
 Mac Intel i9-9880H 2.30GHz，32GiB，16 逻辑线程，Darwin 24.6，Go 1.26.5 darwin/amd64。固定 `GOMAXPROCS=4 GOGC=100 GOMEMLIMIT=off`；串行调用，无并发锁竞争。其他本轮测试结束后再测，未固定 CPU 频率/亲和性，桌面后台活动仍可能影响结果。
 
-基准位于 [应用契约基准](../../txgameslg/server/tests/entity_access_benchmark_test.go)，使用真实生成的 GDRole，背包含 0、32、512、4096 个独立 GDItem。先通过 `TestEntityBenchmarkExercisesManagedPaths` 验证缓存只加载一次、事务外 Find 拒绝、Snapshot 子对象隔离、提交后的新值可见且 WriteBack 有 pending。
+基准位于 [应用契约基准](https://github.com/ngnl47/txgameslg/blob/main/server/tests/entity_access_benchmark_test.go)，使用真实生成的 GDRole，背包含 0、32、512、4096 个独立 GDItem。先通过 `TestEntityBenchmarkExercisesManagedPaths` 验证缓存只加载一次、事务外 Find 拒绝、Snapshot 子对象隔离、提交后的新值可见且 WriteBack 有 pending。
 
 | 项目 | 每次计时包含 | 不包含 |
 | --- | --- | --- |
@@ -40,7 +40,7 @@ Mac Intel i9-9880H 2.30GHz，32GiB，16 逻辑线程，Darwin 24.6，Go 1.26.5 d
 | 4096 | Snapshot | 284.208（276.519～298.939） | 246561 | 4122 |
 | 4096 | ModifyProcedure | 7.980（7.918～8.362） | 8443 | 76 |
 
-[保留的原始 benchmark 输出](../../txgameslg/docs/performance/entity-access-20261029.txt)。
+[保留的原始 benchmark 输出](https://github.com/ngnl47/txgameslg/blob/main/docs/performance/entity-access-20261029.txt)。
 
 受管查询约 4.8～5.3µs、单字段提交约 8.0～9.3µs，中位分配约 4KB/8.4KB，不随这组未修改背包的大小明显增加。不能把改单字段结果推广到遍历修改全背包或多根事务。
 

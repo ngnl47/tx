@@ -453,7 +453,7 @@ StateDrained 仅代表相应入口排空，不可替代完整 PrepareHandoff 成
 新增存储后端、公共协议或运行时行为时，更新实际契约、生成器和相应验证，不能仅替换 README 示例。测试职责：tx 保留可靠性和并发边界，txgen 保留生成契约，应用/客户端负责真实集群接入与吞吐。功能通过不等于 race 通过，有限本地请求不等于云端容量。
 
 - 当前任务与验收索引：[IMPLEMENTATION_PLAN](IMPLEMENTATION_PLAN.md)。
-- 应用边界：[txgame 设计](../../txgame/docs/design.md)、[txgameslg 设计](../../txgameslg/docs/design.md)。
+- 应用边界：[txgame 设计](https://github.com/ngnl47/txgame/blob/master/docs/design.md)、[txgameslg 设计](https://github.com/ngnl47/txgameslg/blob/main/docs/design.md)。
 - 开发约束：[工程约定](engineering-conventions.md)；问题分级：[审计标准](architecture_audit_standard.md)。
 - 专项量化：[实体访问](entity-access-acceptance.md)、[缓存管理](entity-cache-management-acceptance.md)、[滚动发布](procedure-rollout-acceptance.md)。
 

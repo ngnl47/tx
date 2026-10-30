@@ -11,7 +11,7 @@
 - 两组应用独立示例，不互相 import。生成错误修改输入或模板，并验证完整生成包，不能手改 server/gen 或客户端生成产物。
 - 不以统一外观为由删除确有语义差异的路径或必要 SPI；不为少传一个 ctx 引入隐式协程变量、可选 ctx 或第二套 GD 查询包装。
 
-依据：[层级与 API](architecture_audit_standard.md#依赖层级基线)、两组 [txgame AGENTS](../../txgame/AGENTS.md) / [txgameslg AGENTS](../../txgameslg/AGENTS.md)。
+依据：[层级与 API](architecture_audit_standard.md#依赖层级基线)、两组 [txgame AGENTS](https://github.com/ngnl47/txgame/blob/master/AGENTS.md) / [txgameslg AGENTS](https://github.com/ngnl47/txgameslg/blob/main/AGENTS.md)。
 
 <a id="ec-02"></a>
 ## EC-02 模块入口与资源归属
@@ -21,7 +21,7 @@
 - CMod 显式声明，启动绑定一次；资源型模块必须能随启动重建和关闭，不用永久 sync.Once 固定旧 Provider。跨子服务模块复用不转移 Sender、订阅或存储连接所有权。
 - Room、World 网格等激活专属对象不改为进程单例。直接调用模块仍须遵守实体访问边界，不能替代 Actor 邮箱或 Procedure。
 
-依据：[启动绑定](runtime-access.md#启动绑定)、[txgame 装配](../../txgame/docs/runtime.md#模块装配与统一访问)、[SLG 装配](../../txgameslg/docs/design.md#业务模块与共享-handler)。
+依据：[启动绑定](runtime-access.md#启动绑定)、[txgame 装配](https://github.com/ngnl47/txgame/blob/master/docs/runtime.md#模块装配与统一访问)、[SLG 装配](https://github.com/ngnl47/txgameslg/blob/main/docs/design.md#业务模块与共享-handler)。
 
 <a id="ec-03"></a>
 ## EC-03 操作上下文

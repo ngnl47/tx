@@ -62,10 +62,10 @@ TX_ACTORTRIAL_NATS_URL=nats://127.0.0.1:4222 TX_ETCD_ENDPOINT=127.0.0.1:2379 \
 
 | 范围 | 证据 | 本轮边界 |
 | --- | --- | --- |
-| 共享 GD、EntityCache、Procedure | [实体访问](entity-access-acceptance.md)、[缓存管理](entity-cache-management-acceptance.md)、[应用 Submit](../../txgameslg/docs/procedure-submit-acceptance.md) | 保留原报告日期；A2 只覆盖其实际触达路径 |
+| 共享 GD、EntityCache、Procedure | [实体访问](entity-access-acceptance.md)、[缓存管理](entity-cache-management-acceptance.md)、[应用 Submit](https://github.com/ngnl47/txgameslg/blob/main/docs/procedure-submit-acceptance.md) | 保留原报告日期；A2 只覆盖其实际触达路径 |
 | Role / Room / World 正式包生命周期 | [正式包验收](local-package-rollout-acceptance.md) | 本轮不重复 Room 60 秒玩法验收 |
 | 持续流量配置发布、回滚 | [发布报告](procedure-rollout-acceptance.md) | 既有三分钟 99.99% 结果不是本轮重跑；大量 Submit 与 Login/Agent/MsgQ 全量滚动仍未覆盖 |
-| 合服及 World 寻址 | [txgame 在线合服](../../txgame/docs/acceptance/timed-merge-20261030.md)、[SLG 停服合服与 World](../../txgameslg/docs/acceptance/merge-world-20261030.md) | 本轮不改合服业务，也不将目录成功视为旧榜/World 数据已迁移 |
+| 合服及 World 寻址 | [txgame 在线合服](https://github.com/ngnl47/txgame/blob/master/docs/acceptance/timed-merge-20261030.md)、[SLG 停服合服与 World](https://github.com/ngnl47/txgameslg/blob/main/docs/acceptance/merge-world-20261030.md) | 本轮不改合服业务，也不将目录成功视为旧榜/World 数据已迁移 |
 | 持久化 | 各应用摘要中的 Redis/Mongo 读回 | 按实际字段和阶段记录；不把响应、任务 ACK 或 Redis 最新值当作 Fusion 最终 Mongo 写回 |
 | 生产容量与故障域 | [历史七机 20/50](audits/2026-09-28-seven-host-2050-acceptance.md) | 不跑云测试；跨宿主容灾、长期稳态、慢客户端积压仍需独立验收 |
 

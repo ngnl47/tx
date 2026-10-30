@@ -11,9 +11,9 @@
 | 你要做什么 | 从哪里开始 |
 | --- | --- |
 | 理解进程、子服务、Actor、GD 之间的关系 | [设计总览](docs/design.md) |
-| 写无状态游戏业务 | [txgame](../txgame/README.md) 与其 [设计](../txgame/docs/design.md) |
-| 写有状态 SLG/MMO 或独占大世界 | [txgameslg](../txgameslg/README.md) 与其 [设计](../txgameslg/docs/design.md) |
-| 定义 GD、命令、配置并生成代码 | [txgen](../txgen/README.md)、[txconfig](../txconfig/README.md) |
+| 写无状态游戏业务 | [txgame](https://github.com/ngnl47/txgame/blob/master/README.md) 与其 [设计](https://github.com/ngnl47/txgame/blob/master/docs/design.md) |
+| 写有状态 SLG/MMO 或独占大世界 | [txgameslg](https://github.com/ngnl47/txgameslg/blob/main/README.md) 与其 [设计](https://github.com/ngnl47/txgameslg/blob/main/docs/design.md) |
+| 定义 GD、命令、配置并生成代码 | [txgen](https://github.com/ngnl47/txgen/blob/main/README.md)、[txconfig](https://github.com/ngnl47/txconfig/blob/main/README.md) |
 | 查公共 API、配置字段与低层示例 | [API 参考](docs/api-reference.md) |
 | 检查实现是否符合团队约定 | [工程约定](docs/engineering-conventions.md)、[审计标准](docs/architecture_audit_standard.md) |
 | 确认已完成能力与下一阶段验收 | [当前计划](docs/IMPLEMENTATION_PLAN.md) |

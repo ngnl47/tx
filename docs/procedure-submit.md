@@ -62,6 +62,6 @@ tx、txgen、txgame/server、txgameslg/server 的 `go test ./...` 均通过。tx
 
 上述队列实现批次未显式启用外部依赖专项测试，默认跳过不计为通过；该批未运行云端或完整滚动集群。[本地短时突发验证](procedure-submit-burst.md) 已完成 27 组各三轮：当前默认按配置决策调整为 64/8192；原负载验证覆盖接纳额度 256/1024/4096，未覆盖 8192 的合成负载对照。结果明确 I/O 突发收益、热点锁限制及扩大队列的延时代价；不将模拟负载结果作为生产最优值或集群吞吐证明。
 
-64/8192 的[真实业务本地验收](../../txgameslg/docs/procedure-submit-acceptance.md)使用 SLG 背包领奖、生成 GD、EntityCache 和真实 Mongo，验证有限批次成功、排水与最终写回；不代表持续过载或集群吞吐验收。
+64/8192 的[真实业务本地验收](https://github.com/ngnl47/txgameslg/blob/main/docs/procedure-submit-acceptance.md)使用 SLG 背包领奖、生成 GD、EntityCache 和真实 Mongo，验证有限批次成功、排水与最终写回；不代表持续过载或集群吞吐验收。
 
 当前整合版本的[本地正式包滚动验收](procedure-rollout-acceptance.md)已通过 txgame、SLG Role 和 World 三轮 99.99% 核验；角色流量仍是同步 Call，不能作为集群滚动期间异步队列排水的证明。

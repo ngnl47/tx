@@ -1,6 +1,6 @@
 # 2026-09-28 异步长流方案：七机万连 20/50 回测
 
-本页保留当时二进制和客户端构建的容量证据，不代表后续 UpSeq 边界与 ProbeID 改动已通过云端回测。当前实现状态见 [实施计划](../IMPLEMENTATION_PLAN.md)，最新本地滚动发布证据见 [本地验收记录](../../../txgame/docs/acceptance/local-rolling-release.md)。原始数值不作追溯改写。
+本页保留当时二进制和客户端构建的容量证据，不代表后续 UpSeq 边界与 ProbeID 改动已通过云端回测。当前实现状态见 [实施计划](../IMPLEMENTATION_PLAN.md)，最新本地滚动发布证据见 [本地验收记录](https://github.com/ngnl47/txgame/blob/master/docs/acceptance/local-rolling-release.md)。原始数值不作追溯改写。
 
 2026-09-28 使用当时直连异步长流链路：Agent→Game `CallStream`、Game→MsgQ `PublishStream`、Agent↔MsgQ `MailboxStream`。服务端部署在四台 8 核 16 GiB 云主机：一台运行 Login×2、Agent×1，另一台运行 Agent×1，Game×2 和 MsgQ×2 各占一台；Agent 为 P8，Game、MsgQ、Login 为 P4。三台独立客户端发生器分别承载 3334/3333/3333 条 TCP 会话，均使用 Node v26.0.0 与相同构建，角色区间合计覆盖 10,000 个角色；建连总速率约 500/s。预热后同时运行 180 秒，每会话计划每秒 20 条上行，`System_Ping` 平均产生 50 条下行。该负载只验证客户端上下行，不代表 Core NATS Actor RPC 或 JetStream 任务吞吐。执行脚本位于 `tx-artifacts/cloud-20260928-publish-ab/run-three-clients.sh`；三轮原始结果分别位于同目录的 `publish-ab-three-clients-20260928/`、`publish-ab-three-clients-repeat1-20260928/`、`publish-ab-three-clients-repeat2-20260928/`。脚本保留当时云实例地址，仅作为复现参数记录。
 

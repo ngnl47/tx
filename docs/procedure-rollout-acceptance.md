@@ -41,7 +41,7 @@ txgame 为每连接 5 次/s 的计划负载，未发送为 0；SLG 为既有闭�
 
 当前默认已是 64 执行并发、8192 总接纳、10s 独立期限；SLG 集群模板未覆盖 Submit 额度，沿用框架默认。**本轮正式 Role 改名仍走同步 `txruntime.Call`；World 仍是独占网格保存，不是 Procedure。** 没有为测试临时改成异步业务，也没有在集群插入后台 Submit 发生器。
 
-因此，本轮证明当前共享框架与应用装配的正式发布路径没有破坏排水和持久化；不声称测到了集群滚动期间排队的 8192 个 Submit。异步队列接纳、期限和排水由框架契约测试覆盖；真实业务 Submit 的请求结束、缓存、事务提交与最终 Mongo 写回，见[有限批次验收](../../txgameslg/docs/procedure-submit-acceptance.md)。这些证据互补，不能互相替代。
+因此，本轮证明当前共享框架与应用装配的正式发布路径没有破坏排水和持久化；不声称测到了集群滚动期间排队的 8192 个 Submit。异步队列接纳、期限和排水由框架契约测试覆盖；真实业务 Submit 的请求结束、缓存、事务提交与最终 Mongo 写回，见[有限批次验收](https://github.com/ngnl47/txgameslg/blob/main/docs/procedure-submit-acceptance.md)。这些证据互补，不能互相替代。
 
 ## 环境与收尾
 

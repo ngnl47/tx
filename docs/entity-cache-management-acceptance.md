@@ -30,7 +30,7 @@ pass 事件包括子测试，不是请求完成率。逐运行的跳过项见 [J
 
 同一 Mac Intel i9-9880H、Go1.26.5 darwin/amd64，GOMAXPROCS=4、GOGC=100、GOMEMLIMIT=off。修改前和最终回归完成后分别执行同一基准，每项1秒、5次，表中为中位数。各轮基准期间不运行本任务其他回归；未固定 CPU 频率或控制桌面后台活动，差异不是统计显著性证明。
 
-原始数据：[改动前](../../txgameslg/docs/performance/entity-management-before-20261029.txt)、[改动后](../../txgameslg/docs/performance/entity-management-after-20261029.txt)。
+原始数据：[改动前](https://github.com/ngnl47/txgameslg/blob/main/docs/performance/entity-management-before-20261029.txt)、[改动后](https://github.com/ngnl47/txgameslg/blob/main/docs/performance/entity-management-after-20261029.txt)。
 
 | 路径 | 前 µs/op | 后 µs/op | 时间差 | B/op 前→后 | allocs/op 前→后 |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -49,7 +49,7 @@ pass 事件包括子测试，不是请求完成率。逐运行的跳过项见 [J
 
 第一轮前几项耗时中位数增加约7%～26%，后几项下降约3%～10%；allocs/op 不变，B/op 的个位数差异来自摊销测量。该波动不能直接解释为代码回退，因此保持代码不变补测一轮。没有在普通 Find/Snapshot 增加管理锁、计数器或时间采样；不能据此宣称管理 API 提升了查询性能。新驻留号仅在冷加载/创建时递增，管理计数只覆盖管理快照/回收。
 
-同代码第二轮仍为每项1秒、5次，[原始数据](../../txgameslg/docs/performance/entity-management-after-repeat-20261029.txt)：
+同代码第二轮仍为每项1秒、5次，[原始数据](https://github.com/ngnl47/txgameslg/blob/main/docs/performance/entity-management-after-repeat-20261029.txt)：
 
 | 路径 | 改动前 µs/op | 改动后复测 µs/op | 时间差 |
 | --- | ---: | ---: | ---: |
