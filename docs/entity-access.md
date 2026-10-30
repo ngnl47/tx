@@ -1,6 +1,6 @@
 # 统一 GD 实体访问
 
-状态：2026-10-29 共享访问安全与 World 独占运行时第 1～7 批已完成本地验收。当前契约见下；施工边界见 [安全实施计划](plans-entity-access-safety.md)，实测结果与未验证范围见 [验收报告](entity-access-acceptance.md)。
+本页维护统一实体访问契约。模块关系见 [设计总览](design.md#共享实体与独占实体)，实测结果与未验证范围见 [验收报告](entity-access-acceptance.md)。
 
 ## 统一入口与选择
 
@@ -61,4 +61,4 @@ Snapshot 观察同一缓存中的最新状态，包括已提交未落盘的变�
 - 原生 Mongo 查询/写入不自动进入 EntityCache 或 Procedure；不能用它绕过共享数据权威。
 - 单实体热查询、完整 Snapshot、Procedure 修改测量的是不同工作量。当前量化结果统一维护在 [验收报告](entity-access-acceptance.md)，不再沿用旧裸访问基准作为现行性能依据。
 
-后续 EntityCache 统计、元数据、仅命中安全快照与尝试回收已实现，见 [管理 API](entity-cache-management.md)。未增加管理页面、全量导出或云端容量验收。
+EntityCache 统计、元数据、仅命中安全快照与尝试回收，见 [管理 API](entity-cache-management.md)。未增加管理页面、全量导出或云端容量验收。

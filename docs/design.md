@@ -1,2777 +1,455 @@
-# tx 设计文档
+# tx 运行时设计
 
-本文面向 `tx` 的维护者、adapter 作者、代码生成器维护者，以及需要扩展底层能力的高级使用者。它解释框架为什么这样拆分、各模块内部如何协作、哪些状态可以共享、哪些边界必须失败，以及性能优化应以什么证据推进。
+`tx` 是游戏后端的基础库。它管理进程能力、Actor、通信、GD 存取和生命周期；游戏如何登录、怎样建角、何时结算、如何合服，由应用工程实现。本文从首次接入者的视角解释当前结构，示例使用方式见 [README](../README.md)，具体参数和低层 API 见 [参考手册](api-reference.md)。
 
-普通业务开发者应先阅读仓库根目录的 [README](../README.md)。README 是公共行为和使用方式的事实来源；本文是内部结构和技术选型的事实来源。当前进度见 [实施计划](IMPLEMENTATION_PLAN.md)，质量要求见 [架构审计标准](architecture_audit_standard.md)，某次审计的数字和证据见 `docs/audits/`。
+阅读时先看“工程边界、整体链路、启动”，再按业务选择“无缓存存储”或“共享实体与事务”。不要把一次发送、内存提交、Redis 热写和 Mongo 落盘理解为同一个成功边界。
 
-本文只维护当前采用的结构、职责、稳定契约及其设计理由，不记录实施顺序或阶段进度，不保留已淘汰方案的使用说明。
-用于解释技术选择的 benchmark 对照可以保留；具体验收日期、临时产物路径和未完成任务分别归入验收报告与实施计划。
+## 工程与运行单位
 
-## 阅读路径
-
-本文按“系统职责 -> 数据内核 -> 存储 -> 单机事务 -> 分布式模块 -> 性能与维护”逐步深入：
-
-1. 初次维护 `tx`：阅读“设计目标”“系统边界”和“依赖方向”。
-2. 修改 GD、Store 或生成契约：阅读“数据对象与 Store”“生成式变更内核”。
-3. 修改 Redis、Mongo 或 Fusion：阅读“存储抽象”和“存储后端”。
-4. 修改 Procedure 或有状态运行时：阅读“单机事务”和“事务精确 Key 锁注册表”。
-5. 修改服务拓扑：阅读“生命周期”和“分布式服务模块”。
-6. 优化热点：最后阅读“性能分级与验证”，不要仅凭结构体外观实施优化。
-
-每个核心章节尽量使用相同顺序：
-
-1. 模块负责什么。
-2. 模块明确不负责什么。
-3. 对外暴露什么契约。
-4. 内部由哪些组件组成。
-5. 一次完整数据流如何运行。
-6. 并发、错误与生命周期如何处理。
-7. 为什么选择当前实现。
-
-## 设计目标
-
-正式宿主的交接准备由 `Server.PrepareHandoff` 复用关闭前半段：停止准入、等待已接受工作和业务任务、调用可选 ServiceFlusher.Flush、按组件逆序冲刷，成功后保留通信和租约。最终 Stop 才释放物理资源；两者串行共享已有组件收尾进度。控制面的 StateDrained 仅表示入口排水完成，不能单独作为槽位晋升许可。
-
-`tx` 的最高优先级不是“所有路径都最快”，而是以下顺序：
-
-1. 不产生脏数据，不把失败伪装成成功。
-2. 业务 API 清晰、简洁、强类型，框架可以代理的细节保持黑盒。
-3. 数据内核与存储、网络、并发调度保持单向依赖。
-4. 高频路径以 benchmark、race、逃逸分析或 profile 为依据优化。
-5. 低频路径优先正确性和可维护性。
-
-由此得到几条贯穿全部模块的规则：
-
-- 未识别状态默认失败，不默认成功。
-- 存储成功前不能清理 Store 变更状态。
-- 外部服务波动返回 `error`，不能让业务进程 panic。
-- 编程契约错误应在生成期或开发期暴露，不能在运行时猜测修复。
-- 纯算法层不感知 Redis、Mongo、gRPC、Actor 或业务项目。
-- 跨 goroutine 共享数据时，必须明确复制或所有权转移规则。
-- 新抽象只有在减少真实重复、稳定职责边界或降低调用复杂度时才引入。
-
-### 命名规则
-
-核心类型和高频状态必须让字段名与类型语义互相印证：
-
-- `Kind` 表示互斥分类，例如 `FieldNameKind`、`KeyKind`；它不表达一次变更动作。
-- `Op` 表示一条变更的操作语义，例如 `OpSet`、`OpReplace`、`OpDelete`、`OpClear`。
-- `ops` 保存 `Op`；`dirty` 只用于布尔脏状态、脏子节点索引或脏通知。
-- 同步原语以职责命名。事务锁条目使用 `owner`、`waiters` 和 `signal` 表达所有权、等待队列与唤醒职责，调用方不感知内部互斥实现。
-- 时间优先使用 `time.Duration` 固化单位；容量和字节配置在名字中写清口径，例如 `MaxBacklogMessages`、`HeapSoftLimitBytes`。
-- JSON、BSON、Msgpack 属于字段命名体系；Redis、Mongo 属于使用这些名称的存储边界，不为存储边界重复生成字段名身份。
-
-公开名称一旦让调用者误解职责，应直接修正并同步生成代码和文档；当前工程不为未发布的中间名称保留兼容别名。
-
-## 系统边界
-
-### Core 的物理边界
-
-Core 是 `tx` 中 L0-L2 公共基础包的架构集合，不对应单独的 `core` Go 包。Go 包按单一职责拆分；维护者和高级使用者
-根据需要直接依赖 `change`、`component`、`storage` 或 `modules/*` 等稳定契约，普通项目则只使用 Bee 或 Ant
-门面。框架不提供大而全的 `core.Server`、`core.Context` 或 `core.Runtime`，避免把数据、存储、网络和事务重新耦合到
-一个万能命名空间。
-
-当前 `tx` 运行时相关包结构如下：
-
-```text
-tx/
-├── bee/                    # 无状态游戏后端的 L3 门面、CMod 和标准 Service Registration
-├── ant/                    # 有状态游戏后端的 L3 门面、CModProcedure 和标准 Service Registration
-├── internal/framework/     # Bee/Ant 共享的私有进程装配内核，业务与外部库不可导入
-├── component/              # 中立组件契约、依赖图和生命周期宿主
-├── change/                 # Store 状态树、StoreView 和变更文档投影
-├── lifecycle/              # WaitGroupContext、任务子生命周期和入口准入契约
-├── meta/                   # 生成类型、字段、存储与索引元数据
-├── protocol/               # 网络帧与 BON 等协议基础能力
-├── storage/                # 通用存储契约、Redis、Mongo、Fusion 和延迟任务实现
-├── etcd/                   # 通用 etcd 客户端、租约、原子键、快照、Watch 与 CAS 适配
-├── modules/
-│   ├── actor/              # Actor Runtime、寻址和消息投递
-│   ├── agent/              # 长连接、帧处理和会话入口组件
-│   ├── writeback/          # 有状态根对象登记与分帧刷盘组件
-│   ├── control/            # 节点状态和逻辑槽位控制面
-│   ├── discovery/          # etcd 服务发现与本地快照
-│   ├── msgq/               # 会话邮箱及其 RPC、Redis、Discovery 适配组件
-│   ├── rpc/                # 共享 gRPC Host 和调用基础能力
-│   └── txn/                # Procedure、锁、undo、savepoint 和死锁检测
-├── anno/                   # 生成注解公共定义
-├── astscan/                # Go AST 扫描辅助能力
-├── cmd/                    # tx 自带维护命令
-├── log/                    # 框架日志契约
-└── util/                   # 面向业务的独立工具组件
-```
-
-其中，`component`、`change`、`lifecycle`、`meta`、`protocol`、`storage` 和 `modules/*` 等共同构成
-Core。`internal/framework` 使用这些包实现进程装配、能力图解析和生命周期编排，但它是私有实现，不是第四个公共门面。
-Bee 与 Ant 只负责把 Core 组件组合为两种运行模型；它们不能互相依赖，也不能被 Core 反向依赖。
-
-调用方按下面的边界选择入口：
-
-```text
-普通无状态项目      -> bee
-普通有状态项目      -> ant
-高级组件或 adapter  -> 按职责直接使用 component / storage / modules/*
-生成代码            -> 只依赖 change / meta / storage 等中立 Core 契约
-```
-
-### 四个工程的职责
-
-```text
-txgen 输入 Go 源文件
-        |
-        v
-txgen 编译期扫描和生成
-        |
-        v
-txgame 或 txgameslg 的 server/gen/data 与 gen/cmd
-        |
-        v
-tx runtime 契约与 adapter
-        |
-        v
-Redis / Mongo / etcd / gRPC / Actor
-```
-
-`tx`：
-
-- 定义元数据、变更追踪、存储抽象、adapter 和可选运行时模块。
-- 不读取业务工程 yml，不扫描业务 Go 源文件，不依赖 `txgen`。
-- 不生成业务 facade，不决定业务对象如何创建或初始化。
-
-`txgen`：
-
-- 扫描 type 注解和 field struct tag。
-- 校验能在编译前确定的冲突。
-- 生成 GD、Store、字段 ID、字段名 resolver、存储定位和 cmd 胶水代码。
-- 只依赖 `tx` 的稳定契约，不能要求 `tx` 反向认识生成器。
-
-`txgame`：
-
-- 是无状态游戏服务的生产工程组织方式和集成验证模板。
-- 读取 yml、环境变量和命令行参数，构造具体 client 与实例配置。
-- 提供 `db.Save(ctx, role)` 之类业务 facade。
-- 以 `services/*` 组织 L4 微服务；服务专属 Handler、路由、Actor 和业务模块随所属 Service 放置。
-- `server/internal` 只保存进程级组合根、配置转换和基础设施 facade，不作为业务代码汇总包。
-
-`txgameslg`：
-
-- 是有状态 SLG/MMO 服务的独立生产模板，不依赖 `txgame`。
-- 使用 Actor 作为运行期权威对象的唯一串行命令入口，使用 Procedure 和 WriteBackManager 管理单机事务与分帧保存；对象的唯一缓存与使用期由通用 EntityCache 管理，业务决定是否使用 Procedure。
-- `slggame` 通过 Fusion 保存角色、军团等根对象；`slgworld` 通过 带所有权保护的 Mongo 直接写回 保存分区场景数据。
-- 只依赖 `tx`、`txgen` 及自身生成产物；配置、服务组合、业务 SPI 和测试均在本项目闭环。
-
-客户端协议工程与服务模板固定一一配对：
-
-- `txgame/gen` 生成 `txgame/server/gen` 和 `txclient/src/gen`；`txclient` 只验证无状态模板。
-- `txgameslg/gen` 生成 `txgameslg/server/gen` 和 `txclientslg/src/gen`；`txclientslg` 只验证有状态模板。
-- 两个客户端独立长期维护，不共享源码目录、符号链接或生成清单。公共 BON、Frame、Session、Seq/Ack 语义变化时分别回归。
-
-多进程真实集群是项目层验收，不改变依赖方向：`txgame + txclient` 与 `txgameslg + txclientslg` 是并行能力，允许在本地顺序执行并复用入口端口；Redis 通过不同 logical database 隔离，MongoDB 使用不同 database，etcd 使用不同 prefix。每套验收同时运行两个 MsgQ，使用新会话验证初始分流、单实例故障承接和重启后恢复分流；证据按 `<prefix>:session:v2:{SessionID}` 读取完整 binding，并核对其中的 RoleID、SessionID、ConnectionID 与实例身份。Topic 仍只属于单个 owner MsgQ，跨实例覆盖由业务以 SessionID 为锚点分别发起本地广播。`tx` 不为隔离统一改写业务 key，也不保存项目服务名。
-
-两个模板的业务模块按稳定能力、领域实现和事务编排分层：`modules/<业务>.go` 使用包级函数提供 Handler 与 Procedure
-共用的业务能力，`modules/internal/<domain>` 保存具体领域实现，`services/<name>/internal/procedure/P*.go` 负责编排
-所属 L4 Service 的本机事务。业务能力不持有无状态 Service 实例，不判断当前事务层级，也不负责最终刷盘。
-
-Procedure 单向依赖并组合 `modules` 的稳定业务能力，`modules` 禁止反向依赖 Procedure。Procedure 放在 Service 的
-`internal` 目录而不是 `modules/internal`：这样所属 Service 的 Handler 可以启动根 Procedure，其他 L4 Service 又不能
-越界调用。Go 的 `internal` 规则同时禁止 Handler 绕过稳定能力直接依赖 `modules/internal` 领域实现。
-
-无状态 Handler 直接调用 `modules` 并显式保存根 GD；有状态 Handler 使用 `txn.Executor.Call` 启动根 Procedure。
-父 Procedure 需要复用另一事务流程时，使用当前 `*txn.Tx.Call` 创建子 savepoint。每个 Procedure 只声明自己直接访问的锁，
-子调用可以在运行时增加锁；错误的嵌套根调用仍会直接返回错误。该依赖方向采用组合式事务能力，但不依赖线程局部状态猜测根调用与子调用。
-
-跨 L4 Service 调用必须经过 Actor/RPC client，并在目标服务内执行自己的 Procedure；即使多个 Service 聚合在同一进程，
-也不扩大单机事务边界。运行模型属于整个 Service，进程启动后不能按请求切换。
-
-### 示例工程的运行配置组织
-
-YAML 属于 txgame/txgameslg 的组合根，tx 只接收类型化配置，不读取文件路径或解释锚点。
-每个 debug/test/release 环境独立维护 `app.yml` 与 `runtime.yml`，允许策略冗余和环境定制，不建立公共默认值继承层。
-`app.yml` 声明部署值并 include 同目录 `runtime.yml`；先展开文件，再解析 YAML 锚点，引用单向流入运行策略。
-
-| runtime 分组 | 归属与作用 |
-| --- | --- |
-| `lifecycle`、`log` | 进程排水与日志，不归属单个 CMod |
-| `storageHealth` | Redis/Mongo 后端共用探针，不是服务发现或玩家心跳 |
-| `cmods.actor` | CModActor：实体邮箱、生命周期与 Core NATS 通信 |
-| `cmods.discovery` | CModDiscovery：etcd 服务注册、成员查询与租约 |
-| `cmods.taskQueue` | CModTaskQueue：预部署 JetStream 资源绑定 |
-| `cmods.fusionStorage` | CModFusionStorage：热数据 TTL、内部延迟任务及调度器 |
-| `cmods.procedure` | CModProcedure：事务与根对象写回，仅有状态示例使用 |
-
-组件内部使用短字段名，由配置层级表达职责；跨文件锚点携带组件/职责前缀和必要单位。
-配置项不承担能力选择职责，实际装配仍取决于服务 Requires 闭包；可靠任务的非空绑定由示例组合根转换为能力声明。
-字段取值、默认值与 YAML 示例分别维护在 [txgame 配置参考](../../txgame/README.md#yaml-配置参考) 和 [txgameslg 配置参考](../../txgameslg/README.md#yaml-配置参考)，此处不重复维护字段表。
-
-### API 分层
-
-同一个能力可能有三层入口：
-
-| 层级 | 面向对象 | 示例 | 约束 |
-| --- | --- | --- | --- |
-| 业务层 | handler 和业务模块 | `db.Save(ctx, role)` | 不暴露 writer、Store、RecordKey 和根 context |
-| 扩展层 | 项目装配和 adapter | `storage.Save(ctx, writer, role.Store())` | 显式表达存储依赖和生命周期 |
-| 内核层 | 框架维护者和高级扩展 | `VisitChanges`、`txn.WithLocks` | 调用方必须理解所有权和并发契约 |
-
-新增 API 时先判断它属于哪一层。不能因为测试方便，把内核对象泄露到业务层；也不能为了隐藏一切，阻断高级使用者实现 adapter 的可能。
-
-### Bee 与 Ant 运行时门面
-
-`bee` 是无状态服务公开门面，`ant` 是有状态服务公开门面。两者共同持有 Builder、Server、ServiceRegistration、
-ServiceSpec、CMod 和基础 Context；同名 API 具有相同签名和生命周期语义。Ant 只增加 CModProcedure、固定逻辑槽位、
-缓存，不改变 Bee 已有调用方式。这个对称契约由 `tests/facade_symmetry_test.go` 在编译期和运行期锁定。
-
-公开 Context 是受控能力视图，不是 Runtime 对象的字段集合：
-
-| Context 能力 | 适用门面 | 服务可做什么 | owner 权限仍在哪里 |
-| --- | --- | --- | --- |
-| `Tasks()` | Bee/Ant | 注册本服务后台任务、读取取消信号 | 每个 Service 独立子生命周期，`Cancel/Wait` 在私有装配内核 |
-| `Admission()` | Bee/Ant | 登记和封口本服务外部入口 | 进程排水顺序在 Service Host |
-| `Storage()` | Bee/Ant | 为装配及低层扩展提供存储能力；普通业务沿用调用 context | client、健康状态、worker 和 Close 在存储 Runtime |
-| `CModRedisStorage()` | Bee/Ant | 取得仅允许 Redis TypeSpec 的 reader/writer 和具名命令接口 | 连接池所有权在存储 Runtime |
-| `CModMongoStorage()` | Bee/Ant | 取得 MongoDB reader/writer、条件回填、版本条件替换、原子 CounterStore 和复用连接的原生 Database | 连接池所有权在存储 Runtime |
-| `CModFusionStorage()` | Bee/Ant | 取得仅允许 Fusion TypeSpec 的 reader/writer | Redis、Mongo 和延迟任务所有权在存储 Runtime |
-| `CModRPC()` | Bee/Ant | 注册 protobuf service、取得按服务/实例路由的生成客户端入口 | Host 与客户端连接均由框架管理 |
-| `CModDiscovery()` | Bee/Ant | 查询 running 或指定实例快照 | watch 与 Replace 在 discovery Runtime |
-| `CModSessionID()` | Bee/Ant | 为 Login 分配集群内有效生命周期的 SessionID | workSlot、租约与停止发号在 discovery/session-id Runtime |
-| `CModActor()` | Bee/Ant | 解析 PID、投递和业务调用 | Start/Shutdown/ActorSystem 在 Actor Runtime |
-| `CModProcedure()` | Ant | 执行根 Procedure | CommitParticipant 和生命周期在 CModProcedure |
-| `CModSlots()` | Ant | 只读 SlotReader 槽位归属 | etcd client、成员 lease 和 watch 在 discovery Runtime |
-| `CModSlotResolver()` | Ant | 解析槽位当前 running 目标 | Watch 和连接生命周期在 discovery Runtime |
-
-Context 对生命周期、目录替换和刷盘能力返回专用 wrapper，调用方不能通过这些视图重新取得
-`Cancel`、`Stop`、`Shutdown`、`Replace` 或 `Flush`。槽位读取另以 SlotReader 声明编译期职责，不承诺类型断言隔离。`Context.Instance()` 返回 ownership-safe 的本地实例快照，
-状态顺序固定为 `starting -> running -> draining -> stopping`。
-
-普通 Handler 不保存 Bee/Ant Context。项目的 `db.Save(ctx, role)` facade 通过 `tx/runtime.Writer(ctx)` 获取当前服务能力；
-生成的 `FindGD*(ctx, ...)` 按存储注解选择当前服务 Reader，不安装进程全局默认运行时。Service 通过 `Requires` 显式声明能力，Init 一次装配宿主资源。Redis、MongoDB、Fusion 三类
-存储 accessor 的 reader 方法集互不重叠，writer 也会在第一次 I/O 前校验 `TypeSpec.Storage.Mode`，不能借进程内其他
-Service 已选择的后端跨越能力边界。业务需要直接使用 Redis 命令时使用 `CModRedisStorage()`；
-槽位创建和晋升由组合根显式注入完整 `SlotStore`，不从只读 `CModSlots()` 断言取得写能力，
-也不通过字符串 service locator 或全局 Runtime 查找能力。
-
-Context 的 `Storage/CMod*` 直接返回能力；声明检查和不可用检查由 tx 维护。公开视图使用内部 CapabilityError 标记能力错误，Service 构造/启动、Setup、CMod Validate/Start 的同步边界仅恢复该标记并返回启动 error，复用既有回滚。普通业务 panic 原样传播，不增加全局 recover 或重试。自定义 CMod Validate 只校验配置，读取运行时能力会立即失败；Start 才读取已就绪前置能力。Context 不用于后台任务或装配回调以外的能力查找；工厂尚未交接的私有资源由其 defer 清理。
-
-Ant 的 CModSlotResolver 在构造期组合已有 SlotReader 与 Directory，业务保存解析器即可。SlotResolver 使用现有 Watch 缓存读取算法，高级 SlotStore/SlotRouter 和只读 SlotReader SPI 保留；不在消息热路径创建解析器。
-
-## 依赖方向
-
-核心依赖保持由上到下单向：
-
-```text
-anno / astscan
-       |
-       v
-      meta
-       |
-       v
-change <------ generated Store
-  |
-  v
-storage contracts
-  |
-  +--------+---------+
-  v        v         v
-redis    mongo     fusion
-
-optional modules:
-lifecycle <- discovery / rpc / msgq / agent / actor / control / writeback manager
-change <- txn runtime <- writeback manager -> storage contracts
-
-process assembly:
-L0-L2 components -> internal/framework private kernel -> bee / ant -> project L4 services
-```
-
-关键约束：
-
-- `change` 不能依赖 `storage`，否则纯变更算法会被具体 I/O 语义污染。
-- `storage` 通用契约不能依赖 Redis 或 Mongo adapter。
-- `modules/actor` 不代表 GD，不依赖 Store、Fusion 或 `txn.Runtime`。
-- `modules/txn` 只依赖 `change`，不持有 writer 或具体 backend。
-- `modules/writeback` 依赖 `txn` 提交 SPI 和通用 `storage` 契约，不依赖 Redis、Mongo 或 Fusion 实现。
-- 项目业务可以组合 Actor、Procedure 和存储 runtime，模块之间不反向耦合。
-- `internal/framework` 可以编排中立组件，但不能成为项目可 import 的公共 API。
-- Bee 与 Ant 不能互相 import；Core 和私有装配内核不能反向 import Bee 或 Ant。
-
-全局 registry、回调和 `any` 也可能形成隐式反向依赖。审查依赖时不能只看 import cycle。
-
-### 模块组合规则
-
-维护时按以下职责层次判断新增代码放置位置：
-
-```text
-change/meta/storage contracts
-  -> storage backend 与 lifecycle/discovery/rpc/msgq/actor/txn 基础模块
-  -> 中立 runtime、adapter 与标准 agent/msgq service 组件
-  -> internal/framework 私有装配内核
-  -> bee / ant 公开门面与各自 CMod
-  -> txgame / txgameslg 配置转换、项目服务和业务 facade
-```
-
-- 基础模块声明最小消费契约。路由器依赖 `discovery.Directory`，不能依赖具体
-  `*ServiceDirectory`；服务注册只依赖 `rpc.Registrar`，不能取得 `*rpc.Host`。
-- 跨能力胶水必须有中立归属。例如 `modules/msgq/msgqredis` 只把
-  `goredis.ClientProvider` 适配成 `msgq.SessionStore`，不启动 msgq，也不拥有 Redis client。
-- 标准服务组件只负责本服务的配置、协议注册和资源启停。`agent` 不导入 msgq 门面；同进程复用通过
-  `LocalMsgQ` 契约，跨进程会话解析通过 `modules/msgq` 与中立 Redis adapter 完成。
-- 私有装配内核可以实例化和编排下层模块，但下层模块不能反向访问其内部 Runtime。
-- 测试 fake 就近放在目标 package 的测试文件或内部测试辅助包，不能为了测试构造任意 Runtime 而扩大生产 API。
-
-### L0-L4 与能力模组
-
-运行时使用下面的固定层级：
-
-| 层级 | 职责 | 示例 |
+| 工程 | 维护什么 | 不维护什么 |
 | --- | --- | --- |
-| L0 | 纯算法、基础结构和稳定契约 | `change`、`meta`、`lifecycle`、storage 契约 |
-| L1 | 外部 backend 与传输 adapter | Redis、Mongo、gRPC、`tx/etcd` adapter |
-| L2 | 可复用运行时组件 | Fusion Strategy、RPC Host、Scheduler、Transaction Runtime、Actor Runtime |
-| L3 | 进程能力门面 | Bee/Ant CMod、受控 Context、由私有内核执行的依赖图和进程生命周期 |
-| L4 | 可由 `--services` 选择的服务 | agent、msgq、game、room、battlefield |
-
-CMod 固定属于 L3，是带稳定身份、依赖关系和进程生命周期的能力门面。L0-L2 的算法、backend、Runtime 和 Scheduler
-只能作为强类型组件被 CMod Builder 组合，不拥有全局 `CModID`。L4 服务只声明直接 `CModID`，Bee/Ant 复用私有内核中的同一个解析器
-得到依赖闭包、稳定拓扑顺序、循环路径和缺失依赖。`Requires` 会选择依赖，`After` 只对已经选中的门面增加顺序边。
-共有内置 CMod 的完整依赖图及接入示例见 [README：CMod 依赖与服务能力声明](../README.md#cmod-依赖与服务能力声明)。这里区分两个边界：
-
-- **运行依赖**：`CModSpec.Requires` 由能力实现方声明，负责自动启用、启动顺序及反向关闭。`After` 不扩展能力选择。
-- **直接使用依赖**：`ServiceSpec.Requires` 由业务 Registration 声明，同时决定该服务可从 Context 取得哪些能力。间接依赖即使已启动，也不自动成为服务可读取的能力；例如 Actor 自动启用 Discovery，但服务自行查询目录仍须声明 Discovery。
-
-保留这两层边界，是为了让 CMod 的内部实现可以调整，而不让业务意外依赖其传递依赖。服务声明不需要复制整张依赖图；同一服务直接使用 Actor 和 Discovery 时，两者同时出现是对真实调用关系的声明。其他服务启用更多能力，也不能扩大当前服务的访问范围。
-
-声明 ActorTypes 会隐式启用 Actor 及其运行依赖，服务自身要调用 Actor 门面仍须显式声明 Actor。所有所选服务共享按 CModID 去重后的进程能力；Registration 列表顺序不能替代拓扑关系。缺失依赖、重复身份和依赖环由装配内核统一报错，不由业务补救。
-
-门面内部的组件组合保持如下边界：
-
-```text
-fusion-storage components: scheduler=delay
-procedure components: transaction=default, writeback=<project>
-```
-
-`procedure` 是项目注册的 L3 CMod。Transaction 与 WriteBack 由它统一校验、启动、排水和停止。`fusion-storage` 统一拥有 Delay Scheduler，服务不再分别选择 producer 与 consumer。
-启动日志保留 CMod 拓扑顺序，同时输出过滤后的组件拓扑，便于核对当前进程实际创建了哪些组件。
-
-Actor CMod 依赖共享 RPC 与 Discovery；业务声明 Kind 后自动纳入依赖闭包，复用同一实例身份、槽位 Watch 和生命周期。NATS 只承担传输，不另建成员表。
-
-组件职责仍保持正交。Transaction 只负责锁、undo、savepoint、死锁检测和提交参与者调度；WriteBack 只登记根 Store 并决定
-何时 Flush；Fusion 与 Mongo 是可选目标 Writer。正交不等于平级暴露：
-CModProcedure 负责把这些组件按明确顺序组合为一个进程能力门面。
-
-典型 L4 组合与调度边界如下：
-
-| 服务形态 | 显式 CMod | 运行期调度 |
-| --- | --- | --- |
-| 无状态请求服务 | RPC、Fusion | Handler 修改 GD 后显式保存；Fusion 内部运行 Delay Scheduler |
-| 有状态逻辑服 | RPC、Fusion、CModProcedure | Procedure 只提交内存；CModProcedure 的 WriteBack 组件分帧写 Fusion |
-| 有状态大世界 | RPC、Mongo、CModProcedure | WriteBack 直接增量写 Mongo，成功后清除脏状态 |
-
-CModProcedure Builder 只组合组件，不隐式选择外部存储 CMod。使用 Mongo Writer 的服务仍须在自身 `Requires` 中显式声明
-Mongo；使用 Fusion Writer 的服务显式声明 Fusion。这样配置关系在 L4 仍然可见，组件生命周期又不会泄漏为一组平级 CMod。
-
-项目组合根负责创建唯一的 CModProcedure 实例：
-
-```go
-writeBack, err := writeback.NewComponent(config.WriteBackManagerConfig)
-if err != nil {
-	return nil, err
-}
-procedure, err := ant.NewCModProcedureBuilder().
-	WriteBack(writeBack).
-	Build()
-if err != nil {
-	return nil, err
-}
-
-return ant.New(config).
-	CMods(procedure).
-	Services(slggame, slgworld).
-	Build()
-```
-
-WriteBack 接收 `CModProcedureWriteBack` SPI。组件只能看到 Tasks、Storage、目标感知 WriteAdmission、Transaction 和提交参与者绑定接口，不能取得 Server 所有权。
-启动时先创建 Transaction，再启动 WriteBack。排水时先完成 WriteBack 的最终 Flush，再停止 Mongo/Fusion 等依赖。
-
-启动固定执行“选择 L4 服务 -> 解析 CMod 闭包 -> 惰性转换闭包配置 -> 校验全部 CMod -> 按拓扑启动”。全部
-校验通过前不能建立连接、监听端口或启动 goroutine。停止时先排水和停止 L4，再反向排水 CMod，取消并等待根
-`WaitGroupContext`，最后反向关闭 CMod 持有的物理资源。
-
-CMod 或 L4 Service 的 `Start` 允许分阶段创建连接、监听器和后台任务，因此实现 `Stop` 时必须保证幂等，并能清理
-部分启动状态。每个 CMod 的 `Tasks()` 指向独立子 `WaitGroupContext`：某个单元的 `Start` 返回错误后，Host 先取消并等待
-该单元登记的后台任务，再调用失败单元的 `Stop`；随后按逆拓扑顺序以相同流程停止此前成功启动的单元。这样 Redis、Mongo
-等依赖不会在使用它们的 worker 仍运行时被提前关闭。启动错误与所有清理错误通过 `errors.Join` 一并返回。
-
-Bee/Ant Server 使用 `starting -> running -> stopping -> stopped` 单向状态机。Context 只传递给启动过程中的 Setup 和
-Factory，不提供可在业务运行期任意查询的全局入口；并发 `Stop` 必须等待 `Start` 完成后再关闭已经创建的全部资源，不能返回成功后留下继续运行的进程。
-正常停止时先执行 CMod Drain，随后取消并等待根及全部子生命周期，最后才调用 CMod Stop 释放物理依赖。
-
-`CModConfigProvider` 只在依赖图和 L4 服务集合确定后运行，接收只读 `AssemblySelection`。它解决同一份 YAML 被
-agent、msgq、game 等不同进程复用时的配置边界：未选择 CModProcedure 时不解析事务时长，未选择 Actor 时不要求 Actor
-host，未选择 Mongo 时不验证或连接 Mongo。
-未知 YAML 字段仍由项目解析器在加载期拒绝。CMod ID 只用于依赖解析和启动日志；业务调用使用构造函数强类型注入或
-Bee/Ant Context 的稳定窄接口，不提供按字符串取 `any` 的 service locator。
-
-`CModContext.HasCMod` 查询本轮已经解析完成的完整选择闭包，不是“此前已经启动”的瞬时状态。因此所有 Validator 都能在
-创建连接之前按组合条件预检项目配置；Start 仍只能使用拓扑中已经位于自己之前的实际运行时能力。
-
-## 元数据与代码生成边界
-
-### 元数据链路
-
-唯一输入链路是：
-
-```text
-Go 注释 / struct tag
-        |
-        v
-anno 解析单条注解
-        |
-        v
-astscan 绑定 package/type/field
-        |
-        v
-meta 规范化和校验
-        |
-        v
-txgen 模板生成
-```
-
-`anno` 不猜注解属于哪个类型；绑定关系必须由 AST 确定。`meta` 表达的是生成器和 runtime 共同理解的稳定语义，例如存储模式、路由字段、字段 ID 和多序列化名称。
-
-`meta.Normalize` 是注解字符串进入强类型元数据的唯一转换边界。duration、bool 和 Mongo 数值参数必须在这里
-严格解析并携带属性名返回错误，不能把非法输入静默转换为 `0` 或 `false`。纯整数 duration 按秒兼容既有输入，
-但使用 `time.ParseDuration` 完成范围检查，避免整数乘法溢出产生错误生命周期。
-
-紧凑注解参数必须保留声明顺序、重复项以及参数和裸 flag 的区别，不能先压入 `map[string]string` 再规范化。
-Mongo 命名复合索引依赖同一个 `index:<name>` 在多个字段上重复出现，单个字段也可以同时声明命名索引和匿名
-索引。例如 `Platform mongodb:"index:p_id"` 与 `PlatformUId mongodb:"index:p_id,index"` 共同声明
-`p_id=(Platform, PlatformUId)`，并为 `PlatformUId` 额外声明一个匿名单字段索引。注解解析层只保存有序参数，
-`meta.Normalize` 负责将其转换成强类型索引元数据。
-
-`meta.Validate` 是存储元数据的唯一共享校验入口。除校验 `idField`、`routeBy` 的 Go 字段身份和类型外，它还
-要求 Redis 的 `routeType/key` 与 Mongo 的 `routeType/collection` 是非空且没有首尾空白的原始文本。这些值
-直接参与路由表、记录 key 和 collection 定位，校验层不能补默认值或静默去空白；txgen 和高级手工元数据调用方
-都必须复用该入口并得到相同的失败语义，避免配置错误延迟到首次外部 I/O。通用 `meta.Registry` 允许保存只供独立模块
-读取的部分元数据，因此不隐式调用完整存储校验；手工构造完整存储规范的高级调用方必须显式调用 `meta.Validate`。
-
-存储模式同时决定允许存在的 type 级 backend 元数据：Redis、Mongo 模式只能携带各自的配置，Fusion 必须同时
-携带两者。不能保留一份运行时不会消费的额外 backend 配置，否则生成器、RecordKey 解析和维护者会面对多套互相
-矛盾的定位信息。字段 JSON/BSON/MessagePack 名称不属于 backend 启用开关，不受这项排他规则影响。
-
-### 字段名体系
-
-字段名本体是：
-
-- Go 字段名。
-- JSON 字段名。
-- BSON 字段名。
-- MessagePack 字段名。
-
-Redis 和 Mongo 是使用这些名称的后端，不是额外的字段名体系：
-
-- Redis JSON 文档使用 JSON 名。
-- Mongo 完整编解码使用 BSON tag。
-- cmd 下行协议使用 MessagePack 名。
-- Store API 和 `LoadFields` 输入使用 Go 字段名。
-
-生成输入采用统一的 ASCII 标识符契约：显式 Alias、JSON、BSON 和 Msgpack 名必须匹配
-`[A-Za-z_][A-Za-z0-9_]*`。普通字段只接受 `omitempty`，匿名嵌入字段只接受 BSON/Msgpack 的 `inline`。
-框架不为特殊静态字段名维护 TypeScript 引号属性、数据库名称转义或多边界兼容分支；txgen 在生成前失败。
-运行期 `map[string]` 的动态 key 不属于这条规则，Mongo 边界仍按既定策略在不安全 key 上降级为整字段写。
-
-部分读取是严格的元数据契约。`storage.ValidateLoadFields` 使用 `TypeSpec.Fields` 校验所有请求字段；
-生成 helper、Redis/Mongo/Fusion adapter 与 cluster 路由都必须在自定义 loader、选路和外部 I/O 前完成校验。
-未知字段统一返回 `storage.ErrUnknownField`，不能把只返回记录键或空字段投影解释为读取成功。空字段列表表示完整读取；
-重复的合法字段不改变语义，可由具体读取器去重。该校验针对输入侧 Go 字段身份，读取结果仍按具体边界使用
-JSON 或 BSON 名称。
-
-生成 resolver 负责 `FieldID -> go/json/bson/msgpack name` 的静态映射。Redis、Mongo、Provider 在各自边界选择对应命名体系，运行时不通过反射重新推导生成期已经知道的关系。
-
-字段编号从 1 开始连续分配，因此生成代码用私有定长表保存 Go 名和 JSON 名，通过 FieldID 直接索引。业务侧需要把 Go 字段名传给 `LoadFields`、`FindOptions` 等接口，所以生成 `GD*Field<Field>` 公开常量；JSON、BSON、MessagePack 名只在序列化和存储边界使用，不额外导出逐字段常量。BSON、MessagePack 仅为与 JSON 不同的字段生成覆盖分支，例如 Mongo `_id` 或协议短名。该布局避免按每个字段展开四套重复 switch，同时保持无反射、零运行时字符串转换和零分配。
-
-生成代码还会基于上述名称表和紧凑字段类型表构建一份包内私有的只读 `TypeSpec`。生成的 Load、Find、Delete、SaveChange 和类型注册路径直接复用该静态元数据，不在每次 I/O 前重新展开字段描述。公开的 `GD*TypeSpec()` 与 `Store.TypeSpec()` 则通过 `meta.CloneTypeSpec` 返回隔离副本，调用方修改字段切片、存储指针、字段配置 map 或 Mongo 索引时不会污染生成包的静态规范。
-
-`CloneTypeSpec` 只负责深拷贝可变成员；`TypeRef` 的去空格和完整名称补齐属于 Registry 注册边界。所有接收私有静态 `TypeSpec` 的 tx 内部 adapter 必须把它视为只读输入，不能修改其中的 map、slice 或指针成员。
-
-Mongo 索引元数据由 `storage/mongoindex` 解析为 driver 无关模型。该包只依赖 `meta`，负责 BSON 路径转换、命名索引合并、
-稳定匿名名称以及 TTL/文本权重语义校验；txgen 在生成前调用它，Mongo runtime 在创建索引前调用同一实现。具体 Mongo
-driver 只负责把已经验证的模型转换为 `mongo.IndexModel`，生成器不会因此依赖 Mongo driver 或文档 codec。
-
-### 生成包基础层
-
-txgen 在每个 data 输出包只生成一份私有基础层，当前与类型注册表一起放在 `type_registry.go`。它不是业务 API，也不改变 `GD*`、`GD*Store` 和 `GD*StoreView` 的公开签名；职责是承接所有类型都会重复、但不需要逐字段静态展开的实现：
-
-- 集合操作状态的复制、恢复和单 key 回滚。
-- 普通字段赋值与 undo 登记。
-- 已加载字段 bitset 的查询、设置和字段名枚举。
-- RecordKey 字段补齐检查，以及单条/批量读取后的 Store 装配流程。
-- StoreView 的叶子状态、路径尾部和低频状态查询辅助逻辑。
-
-具体 `GD*Store.go` 仍保留生成期已知类型的字段 switch、集合 key/index 校验、StoreView `record/copy/visit`、嵌套 `ResolveValue` 和子 Store 路由。这些路径位于 setter、捕获、合并或文档遍历的高频调用链，静态生成能避免反射、`any` 断言和回调分发，并给编译器更多内联机会。顶层 `ResolveValue` 仍先经过单个紧凑字段 switch；只有指针、map 和 slice 的嵌套路径按类型静态展开。维护者不能只为缩短生成文件而把热路径改成动态注册表；也不能把低频固定流程重新复制到每个 Store。生成体积和运行时 benchmark 必须一起作为模板重构门槛。
-
-### FieldID 稳定性
-
-`FieldID` 是运行时变更路径的字段身份，不是网络协议号。它由生成代码为每个结构定义并配套 resolver。维护时必须保证：
-
-- 同一生成版本内唯一。
-- 变更创建方和解析方使用同一份生成代码。
-- 不把 FieldID 直接持久化成长期数据库协议。
-- 跨版本持久化任务保存记录定位，不保存依赖旧 FieldID 的长期变更流。
-
-## 数据对象与 Store
-
-### GD 的职责
-
-`GD*` 是纯业务数据结构：
-
-```go
-type GDRole struct {
-    RoleId int64
-    Name   string
-    Items  map[int32]*GDItem
-}
-```
-
-它可以被 JSON、BSON、MessagePack 编解码，可以直接读取 public field，也可以用于快照差分。GD 不负责：
-
-- 选择 Redis 或 Mongo。
-- 持有数据库 client。
-- 自动提交事务。
-- 在字段中暴露 `*GD*Store`。
-
-生成的便捷 setter 可以代理默认主 Store，但这不改变 GD 的数据职责。
-
-### Store 的职责
-
-`GD*Store` 是可变的变更追踪结构。它绑定一个 GD 数据指针，但不保存第二份完整业务数据：
-
-```text
-GDRole <--------------------- main GDRoleStore
-唯一可变业务数据                可变状态树
-                                   |
-                                   | View(configure) 同步捕获
-                                   v
-	                            GDRoleStoreView
-	                            ├── 稀疏 GDRole 值
-	                            └── txgen 生成的强类型视图状态树
-```
-
-Store 负责：
-
-- 提供强类型 setter 和集合 wrapper。
-- 使用生成期字段槽位和集合 key/index 状态记录变更语义。
-- 为子 Store 组合父路径。
-- 在输出边界读取当前 GD 值。
-- 为事务绑定临时 undo recorder。
-- 同步捕获强类型 StoreView 并构建下行文档。
-
-Store 不负责：
-
-- 保存业务对象的历史完整副本。
-- 自动选择持久化时机。
-- 作为 cmd 或 GD 字段类型发送给客户端。
-
-### Store 状态树
-
-嵌套对象和集合形成 Store 组合树：
-
-```text
-GDRoleStore
-  |
-  +-- ItemsStore(map key=1001)
-          |
-          +-- GDItemStore
-                  |
-                  +-- Quantity
-```
-
-叶子 Store 只保存自己的局部字段状态；集合 Store 保存发生变化的 key/index 及对应子 Store，父级通过 `notifyDirty` 只记录“这个分支需要访问”。调用根 Store 的 `VisitChanges(visitor)` 时，框架才递归访问已标脏分支、追加集合 key/index，并得到：
-
-```text
-Items[1001].Quantity
-```
-
-因此 Store 状态树确实分层保存局部变更状态，但不会在每次修改时遍历整棵树，也不会让根 Store 长期保存一份已经展开的全路径副本。所谓“冒泡”是脏通知：子节点通知父集合对应 key/index 已变更；真正的路径拼接发生在输出边界。根 Store 只递归访问脏子节点索引，使用 `JoinPathLimited` 组合路径。生成 Store 的状态在记录时已经按字段或 key 唯一化，不需要输出后再做第二次压缩。父子关联属于 Store 路径关系，不代表 GD 对象只能有一个父节点。
-
-### 共享指针与按路径追踪
-
-同一个 `*GDItem` 可以放入多个玩家或多个集合。业务数据允许共享引用，变更身份由 Store 路径决定：
-
-```text
-roleA.Items[1] ----+
-                   +----> same *GDItem
-roleB.Items[9] ----+
-```
-
-两个根 Store 会创建各自的子 Store 路径。通过 `roleA.ItemsStore().Get(1)` 得到的 Store 只向 roleA 根记录变化；不能让裸 `item.SetQuantity()` 自动猜测应该写入哪个根或哪个 view。
-
-### 主 Store、selector 与 StoreView
-
-这三个对象的职责刻意分开：
-
-- 主 Store 是唯一可变追踪对象，用于受控修改、持久化、undo 和有状态 Runtime 累计。
-- selector 是 `View` 回调期间存在的临时 `GD*Store`。它复制主 Store 当前的选择状态，只允许 `Touch/UnTouch`；调用 `Set/Clear/Replace` 或集合增删改会立即 panic，暴露框架 API 的编程误用。
-- StoreView 是生成的独立类型，例如 `GDRoleStoreView`。它持有捕获时刻的稀疏 `GDRole`、同源身份和 txgen 为 `GDRole` 生成的私有强类型状态树，不再持有根 GD、主 Store 或 selector。普通字段状态放在定长 `ops` 中，集合 key/index 使用原始 Go key 类型，生成对象子状态按需创建；完整 `change.Path` 只在 `VisitChanges` 输出边界临时组合。
-
-默认捕获主 Store 当前全部变更：
-
-```go
-role.SetName("alice")
-role.SetPower(0)
-
-view, err := role.Store().View(nil)
-if err != nil {
-    return err
-}
-
-// Role 是捕获时刻的稀疏值；HasPower 能区分“选中的零值”和“未选择”。
-fmt.Println(view.Role.Name) // alice
-fmt.Println(view.HasPower()) // true
-```
-
-只选择广播字段时，先清空继承的选择，再 Touch 目标路径：
-
-```go
-view, err := role.Store().View(func(selector *data.GDRoleStore) {
-    selector.AllUnTouch()
-    selector.TouchName()
-    selector.TouchPower()
-})
-if err != nil {
-    return err
-}
-
-body, err := view.Document(change.FieldNameMsgpack)
-```
-
-`TouchPower` 只调整 selector，不修改 `role.Power`，也不污染主 Store。捕获过程只复制所选数据：标量直接赋值，嵌套指针、map、slice 只复制所需分支，整字段 Replace/Clear 才复制整个字段。因此成本与所选路径规模相关，不等于深复制整个根 GD。
-
-StoreView 创建完成后，根 GD 的后续修改、map key 增删、slice 长度变化和指针替换都不会改变已经捕获的值。`view.Role` 对业务可读，但应在捕获后按不可变对象使用。根对象仍处于同一所有权区间时，用 `view.Capture(store, configure)` 直接累计当前批次；后续批次已经创建为独立 StoreView 或进入队列时，再通过 `Merge` 合并。两种方式都不能通过直接修改稀疏 Role 来补内容。
-
-### 输出与帧内合并概览
-
-生成代码提供两类输出入口：
-
-- 主 Store 的 `VisitChanges(visitor)` 同步逐条访问当前规范化路径，不创建中间变更切片。Redis、Mongo、Fusion 与 Runtime 容量检查使用该入口。
-- StoreView 的 `VisitChanges(visitor)` 访问生成的强类型视图状态树；`Document(kind)` 从 StoreView 自身的稀疏 GD 取值，不再读取根对象。
-
-存储边界接受 `Source`，它组合 `VisitChanges` 与 O(1) 的 `HasChanges`。这避免 adapter 为判空先遍历一次、真正写入时再遍历一次，也把“源在状态不变时可重复访问”的契约固定在编译期。
-
-`Source`、`Visitor` 和 `VisitChanges` 只描述同步遍历，不暗示返回新对象、改变字段名或构建文档。真正的输出转换由边界名称表达：`BuildDocument` 构建通用文档，Redis 构建 JSON patch，Mongo 构建 update document。`Path` 是结构化字段路径；输出后的字符串路径使用 `DocumentPath`，两者不会混用。
-
-```go
-if store.HasChanges() {
-	err := store.VisitChanges(change.VisitorFunc(
-		func(path change.Path, op change.Op) error {
-			// 在回调内同步消费 path/op；不要保留可变 Store 引用。
-			return nil
-		},
-	))
-	if err != nil {
-		return err
-	}
-}
-```
-
-字段名体系与使用边界保持正交：
-
-```text
-Store state (FieldID + PathKey + Op)
-├── Document(FieldNameGo/JSON/BSON/Msgpack)  # 高级通用文档构建
-├── cmd Provider                                    # 固定选择 Msgpack
-├── Redis adapter                                   # 固定选择 JSON，并应用 Redis patch 规则
-└── Mongo adapter                                   # 固定选择 BSON，并应用 Mongo update 规则
-```
-
-`Document(FieldNameJSON/BSON)` 只改变通用文档的路径名称，不会执行 Redis subKey 分组、Mongo
-`_id` 保护或 unsafe key 降级。存储调用不能用它绕过 adapter。
-
-Battlefield 一类按帧广播的对象，在同一个实体锁或 Actor 执行段内优先直接累计：
-
-```go
-frame, err := role.Store().View(nil)
-if err != nil {
-    return err
-}
-role.ClearChanges()
-
-// 同一帧内后续逻辑继续修改相同 role。
-item, _ := role.ItemsStore().Get(1001)
-item.SetQuantity(7)
-if err := frame.Capture(role.Store(), nil); err != nil {
-    return err
-}
-role.ClearChanges()
-body, err := frame.Document(change.FieldNameMsgpack)
-```
-
-累计规则由生成的强类型视图状态树与稀疏值复制共同完成：同字段或同 key 的后写覆盖先写，后续父字段 Replace/Clear/Delete 会清除此前子路径，互不相交的字段保留；Clear/Delete 后再出现子路径时，父路径提升为 Replace 并保留后批次捕获的数据。`Capture` 必须使用创建视图的同一个主 Store；即使两个主 Store 绑定同一个 GD 指针，也会返回 `ErrValueMismatch`，避免混淆两个独立追踪边界。`Capture` 会同步读取根 GD，因此只能在根对象所有权边界内调用，且不会替调用方清理源 Store。
-
-如果后续批次已经创建为独立 StoreView，则使用 `frame.Merge(next)`；该路径只访问两份稀疏视图，不读取根 GD，适合批次已经进入帧队列后的合并。`Merge` 不修改 `next`，因此来源视图在合并后仍可读取或用于其他只读输出。
-
-StoreView 已经与根 GD 脱离，可以在实体锁或 Actor 单线程区间内捕获后送入帧队列；发布后仍必须按只读对象使用。若先构建 `change.Document` 再跨协程，文档中的复杂 value 只可能引用 StoreView 的稀疏数据，不会引用根 GD，但同样不得在发布后修改。
-
-### 两种变更模式
-
-Store 受控修改模式：
-
-```go
-role.Store().SetName("alice")
-item, _ := role.Store().ItemsStore().Get(1001)
-item.SetQuantity(7)
-```
-
-- O(1) 更新字段槽位或集合 key/index 状态。
-- 适合大对象、高频修改和有状态服务。
-- 事务必须使用这一模式，undo 只覆盖受控 API。
-
-Snapshot Diff 模式：
-
-```go
-role.BeginChange()
-role.Name = "alice"
-role.Items[1001].Quantity = 7
-err := role.SaveChange(...)
-```
-
-- 允许自然修改 public field。
-- 对整棵根对象创建基线并在结束时比较。
-- 适合低频请求，不适合持续高频大对象循环。
-
-同一变更周期不能混用两种模式。框架无法在裸字段写入时同步维护 Store 的实时变更状态和事务 undo。
-
-## 生成式变更内核
-
-当前内核由“GD 当前值、Store 状态树、同步遍历和输出边界”组成：
-
-```text
-GDRole                                      业务数据唯一事实源
-└── GDRoleStore                             根 Store
-    ├── ops[Name] = OpSet                   顶层字段槽
-    ├── ops[Power] = OpSet
-    └── GDRoleItemsMapStore                 map 集合 Store
-        ├── ops[1001] = OpReplace           集合元素槽
-        └── dirtyChildren[1002]
-            └── GDItemStore
-                └── ops[Quantity] = OpSet   子对象字段槽
-```
-
-Store 不保存第二份业务数据，也不保存每次操作的 value、时间或顺序。`GDRoleStore.Value`、集合 Store 的 `parent` 和子 Store 的 `Value` 都指向当前 GD 数据；Store 只保存“哪些持久化位置需要按什么语义重新读取”。
-
-生成类型名直接携带容器语义：map 字段使用 `<GD><Field>MapStore`，slice 字段使用
-`<GD><Field>SliceStore`。这些集合 Store 只能由所属 GD 或父 Store 的 `<Field>Store()` 创建，
-不支持手工构造或零值使用。
-
-### 限界上下文与固定术语
-
-后续设计、评审和文档使用下表术语。一个词只在对应上下文内表达一种职责：
-
-| 限界上下文 | 固定术语 | 对应 Go 结构或方法 | 精确定义 |
-| --- | --- | --- | --- |
-| 数据上下文 | 根 GD | 生成的 `GD*`，例如 `GDRole` | 一个可持久化聚合的业务数据对象，也是当前值的唯一事实源 |
-| 数据上下文 | 当前值 | `GD*` 的字段 | 输出边界实际读取的最终业务值，不是 Store 中保存的副本 |
-| 追踪上下文 | 主 Store | `GD*Store`、`GD*.Store()` | 绑定根 GD、允许受控修改并可交给持久化入口的 Store |
-| 追踪上下文 | Store 状态树 | `GD*Store`、直接指针子 Store、集合 Store | 按生成类型和持久化路径组织的变更状态；树节点不保存父路径字符串 |
-| 追踪上下文 | Store 变更状态 | 字段槽、集合元素槽、脏子节点索引 | 主 Store 当前保留的规范化操作集合；同一位置只保留最后语义，不保存业务值副本 |
-| 追踪上下文 | 标脏 | `Set*`、`Touch*`、集合 Store 受控 API | 把一个持久化位置写入 Store 变更状态；不等于立即构建文档或执行 I/O |
-| 追踪上下文 | 字段槽 | `GD*Store.ops[fieldID-1]` | 顶层或子对象普通字段的最后变更语义 |
-| 追踪上下文 | 集合元素槽 | `<GD><Field>MapStore.ops[key]`、`<GD><Field>SliceStore.ops[index]` | map key 或 slice index 本身的最后 Replace/Delete 等语义 |
-| 追踪上下文 | 脏子节点索引 | 生成的 map/slice Store `dirtyChildren` | 只标识哪些缓存子 Store 需要遍历，不保存路径或 value |
-| 追踪上下文 | 脏通知 | `dirtyHook`、`notifyDirty`、`markChildDirty` | 把子 Store 加入父级待遍历索引或通知运行时；不是完整变更向根复制 |
-| 加载上下文 | 已加载字段状态 | `loadedFields`、`LoadedFields()` | 描述部分加载结果，与字段是否变更相互独立 |
-| 加载上下文 | 字段投影 | `Load*Fields`、`[]meta.FieldRef` | 指一次存储读取请求选择的字段集合；不是 Store 状态树、StoreView 或变更文档 |
-| 快照差分上下文 | 快照基线 | `BeginChange()` 保存的根 GD 副本 | 只用于直接修改 public 字段后的差分，不是 StoreView，也不是待发送载荷 |
-| 快照差分上下文 | 快照差分 | `BeginChange()`、`SaveChange()` | 比较根 GD 当前值与快照基线并生成变更；与主 Store 受控修改模式互斥 |
-| 遍历上下文 | 变更源 | `change.Source` | 由 `HasChanges` 和 `VisitChanges` 组成的同步只读访问契约 |
-| 遍历上下文 | 结构化路径 | `change.Path`、`PathNode`、`PathKey`、`FieldID` | 使用字段编号和强类型 key/index 表达的当前位置 |
-| 遍历上下文 | 变更位置 | 一条结构化路径对应的位置 | 容量统计和去重使用的逻辑单位；不能写作含义不明的 dirty path |
-| 遍历上下文 | 变更操作 | `change.Op` | 当前结构化路径上的 Set、Replace、Delete 或 Clear 语义 |
-| 遍历上下文 | 同步遍历 | `VisitChanges(change.Visitor)` | 在当前调用栈中从 Store 状态树生成 `Path + Op`；不创建中间变更切片 |
-| 取值上下文 | 值解析 | `change.ValueResolver`、`Store.ResolveValue` | 按结构化路径从当前 GD 读取最终值，并区分业务 nil 与解析失败 |
-| 捕获上下文 | selector | `Store.View(func(*GD*Store))` 的回调参数 | 继承主 Store 当前选择状态的临时 Store；只允许 Touch/UnTouch，不允许修改业务数据，也不会返回给调用方 |
-| 捕获上下文 | StoreView | 生成的 `GD*StoreView` | 持有捕获时刻的稀疏 GD 值、生成的强类型视图状态树和同源身份；不引用根 GD 或主 Store |
-| 捕获上下文 | 稀疏 GD | `StoreView.Role` 等生成字段 | 只复制所选路径的强类型数据；字段为零值时使用 `Has<Field>()` 判断是否被选择 |
-| 捕获上下文 | 同步捕获 | `Store.View(configure)` | 在当前调用栈内完成路径选择、状态规范化和值复制；返回后根 GD 的变化不影响 StoreView |
-| 捕获上下文 | 同源累计 | `StoreView.Capture(store, configure)` | 在同一根对象所有权区间内，把当前 Store 的路径和值直接累计进既有视图；不创建中间 StoreView，也不清理源 Store |
-| 合并上下文 | 帧内合并 | `StoreView.Merge(next)` | 按批次先后合并同一主 Store 捕获的独立 StoreView；`next` 表示后发生批次 |
-| 合并上下文 | 覆盖吸收 | 父级 `OpReplace/OpClear/OpDelete` | 父路径已经完整决定写入语义，子路径不再单独输出 |
-| 防御上下文 | 祖先提升 | 最近安全祖先的 `OpReplace` | 超深路径、Store 合并冲突或后端路径限制下的正确性降级 |
-| 容量上下文 | 容量收敛 | `storage.CollapsibleChangeStore`、`CollapseChanges()` | 单根变更位置超预算后，清理细粒度状态并只 Replace 实际变脏的顶层分支 |
-| 输出上下文 | 变更文档构建 | `Document(kind)`、`change.BuildDocument`、Redis/Mongo document builder | 转换字段名、解析值并形成目标边界需要的变更文档；不能简称为“投影” |
-| 输出上下文 | 编码载荷 | BON/JSON/BSON `[]byte` | 由视图、变更文档或其他独立对象编码而成；发布后按只读载荷使用 |
-| 发布上下文 | 只读发布 | `msgq.PubSession`、`msgq.BroadcastTopic` 等异步所有权交接 | 单播成功后、广播调用开始后，不得修改、追加或复用载荷内存；广播错误也可能部分入队 |
-| 持久化上下文 | 保存成功清理 | `storage.Save`、`Store.ClearChanges()` | 存储成功后递归清理 Store 状态，不修改 GD 数据 |
-| 持久化上下文 | 保存失败保留 | `storage.Save` 的错误路径 | I/O 或边界构建失败时保留全部状态，供后续重试 |
-| Fusion 上下文 | 纯净回源缓存 | Mongo 回源后写入 Redis、尚未承载业务变更的文档 | 可以使用有限 TTL；不是待回写事实 |
-| Fusion 上下文 | 脏热数据 | Fusion 业务写入后、尚未完成 Mongo 可靠回写的 Redis 文档 | main、subKey 和 `@v` 使用 `dirtyTTL` 安全窗口，并由每次热写刷新 |
-| Fusion 上下文 | 延迟保存任务 | `fusion.DelayedSave` | 到期后读取 Redis 当前完整文档并 Replace Mongo，不保存业务对象或变更文档 |
-| Fusion 上下文 | TTL 收敛 | `storage.RevisionTTLApplier` | Mongo 保存成功后，仅在 revision 未变化时把 main、subKey 和 `@v` 的 TTL 统一缩短为 `delayDelTime` |
-| 延迟任务上下文 | 任务租约 | `task.DelayTaskLease`、busy 状态 | worker 在限定时间内取得一次任务处理权；不能简称为 Store 或事务锁 |
-| 延迟任务上下文 | 任务载荷 | Redis task backend 的 `payload` 字段 | 任务定位与执行参数的编码值；不是业务消息载荷，也不保存 GD 或 Store 变更状态 |
-| 延迟任务上下文 | 后续到期时间 | Redis task backend 的 `pending` 字段 | 任务已被租用期间再次入队时保存的新到期时间；不是待刷根对象 |
-| 有状态缓存上下文 | 缓存运行时 | `writeback.Runtime` | CModProcedure WriteBack 组件依赖的提交、生命周期和实体释放 SPI；默认实现是 `writeback.Manager`，不是业务对象缓存的固定形态 |
-| 有状态缓存上下文 | 待刷根对象 | 默认 `writeback.Manager.Pending()` 管理的 root | 已发生受控修改且尚未成功 Flush 的持久化根对象；一个 root 的多条路径只计一个 |
-| 事务上下文 | 撤销记录 | `change.UndoRecorder`、`change.UndoFunc` | 恢复事务前 GD 值和 Store 状态；与帧内合并职责独立 |
-
-“帧内合并”中的“帧”表示一次业务合并窗口，不限定为 20ms；网络上下文中的“协议帧”才表示 Agent `Frame`。Store 状态本身是按位置归一化的集合，遍历顺序不构成业务契约；`Capture` 的调用顺序和 `Merge(next)` 的参数顺序都具有“后批次覆盖前批次”含义。
-
-### 生成 Store 的常驻状态
-
-生成 Store 是持久化和下行变更构建共用的变更内核。txgen 已经知道每个类型的字段数量、字段 ID、集合类型和子对象类型，因此生成代码直接保存规范化状态：
-
-```go
-type GDRoleStore struct {
-    Value *GDRole
-    ops   [10]change.Op
-    // generated child/collection stores...
-}
-
-type GDRoleItemsMapStore struct {
-    parent        *GDRoleStore
-    ops           map[int32]change.Op
-    stores        map[int32]*GDItemStore
-    dirtyChildren map[int32]struct{}
-}
-```
-
-- 普通字段用 `ops[fieldID-1]` 保存最后语义；同一字段重复 `Set` 不追加条目。
-- map/slice 的显式元素操作用 `ops[key/index]` 保存最后语义。
-- 生成对象子字段的变化仍保存在对应子 Store；`dirtyChildren` 只索引真正变脏的子 Store，`stores` 可以缓存已经访问但仍干净的子 Store。
-- 整字段 Replace/Clear 会在同步遍历时覆盖该字段下的 key/子 Store 状态；`UnTouch` 可以撤销显式选择，并重新暴露仍真实存在的子 Store 变更。
-- `View(configure)` 只在回调期间复制这些规范化状态作为 selector；捕获完成后返回 StoreView，不返回复制的主 Store 状态树。
-
-例如连续执行：
-
-```go
-role.ItemsStore().Set(1001, first)
-role.ItemsStore().Set(1001, second)
-role.ItemsStore().Set(1001, final)
-```
-
-常驻状态始终只有 `ops[1001] = OpReplace`。调用 `VisitChanges`、`Document(kind)` 或常规持久化 API 时会同步访问一条 `Items[1001] Replace`，不会创建中间变更切片。
-
-Snapshot Diff 也先构造同一种临时生成 Store 状态，再走统一输出边界。这样两种变更模式共享字段槽、集合状态和子 Store 语义；下行文档与持久化 adapter 都直接同步消费。
-
-### 标脏与路径组织
-
-普通字段 setter 同时修改 GD 当前值和字段槽：
-
-```go
-role.SetName("alice")
-role.SetName("bob")
-```
-
-两次调用只留下 `ops[fieldName-1] = OpSet`。Store 不保存两个字符串，输出边界最终从 `role.Name` 读取 `"bob"`。
-
-复杂集合按“元素操作”和“子对象字段变化”分别记录：
-
-```go
-role.ItemsStore().Set(1001, item)       // ops[1001] = OpReplace
-current, _ := role.ItemsStore().Get(2)
-current.SetQuantity(7)                  // dirtyChildren[2] + 子 Store 的 Quantity 槽
-```
-
-`Set(key, value)` 遵循 Go map 赋值的整体覆盖语义，因此复杂 value 使用 Replace。`Get(key)` 返回绑定当前持久化位置的子 Store；子 Store 发生变化时，`dirtyHook` 只把该 key 加入 `dirtyChildren`，完整路径到 `VisitChanges` 时才按生成类型组装。
-
-Slice 只有索引身份稳定时才能保留 index 级状态。`SetAt` 和元素子 Store 修改可以使用 index；Append、Insert、RemoveAt 或其他长度/顺序变化会把整个 slice 标为 Replace，避免旧 index 指向新元素。
-
-同一个子 GD 指针可以挂载到多个根对象或集合位置。每个位置创建独立子 Store 并独立标脏；框架不会按指针身份自动把一次修改扩散到所有挂载位置。把同一对象 `Set` 到多个集合时，每个 `Set` 会分别记录该位置的 Replace；后续若要求所有位置同步更新，业务必须操作相应 Store 路径或整体 Touch 共同祖先。
-
-### GD 运行时 sidecar
-
-`GD*` 是业务数据载体，不应让 Store 引用、模式和 snapshot 基线永久放大每一个数据对象。生成结构只保留一个私有指针：
-
-```go
-type GDRole struct {
-    // business fields...
-    state *storeState[GDRole, GDRoleStore]
-}
-
-type storeState[V any, S any] struct {
-    store    *S
-    mode     change.Mode
-    snapshot *V
-}
-```
-
-`state` 在首次进入 Store 模式或 snapshot 模式时才分配。只做完整 JSON/BSON/Msgpack 编解码、跨层传递或只读访问的 GD 不承担 sidecar 分配。`Copy()` 和 `ResetStore()` 会清空 `state`；完整 `Load` 替换业务字段时也不会把临时对象的运行时状态复制给调用方。
-
-集合内部按路径创建的子 Store 使用集合自己的 `stores` 绑定，不会把共享的子 GD 强行绑定到某一条父路径。这样同一个 `*GDItem` 可以出现在多个角色或多个集合中，每条路径仍独立记录 Store 变更状态。
-
-### 同步遍历、捕获与帧内合并
-
-主 Store 的 `VisitChanges(visitor)` 在调用栈内遍历规范化状态，按值传递 `Path + Op`。visitor 必须在回调内完成处理，不能把主 Store 或根 GD 指针交给无锁异步队列。Redis、Mongo、Fusion 与事务 Runtime 直接消费这一契约。
-
-`View(configure)` 分成三个同步阶段：
-
-1. 没有 configure 时直接遍历主 Store；有 configure 时，`selectionCopy()` 才复制 `ops`、集合元素槽、脏子节点索引和必要子 Store，形成临时 selector。
-2. 可选 configure 回调用 Touch/UnTouch 调整 selector；任何数据修改 API 都被生成代码拒绝。
-3. 生成 visitor 逐条把捕获时刻的值复制进稀疏 GD，并按字段类型写入 StoreView 自己的定长字段槽、强类型集合槽和按需子状态，不创建中间路径批次。
-
-返回的 StoreView 实现 `change.Source`，但不实现 `storage.ChangeStore`。因此它可以构建下行文档和参与帧内合并，却无法在编译期传给 `storage.Save`。视图状态树只保存字段或集合位置上的 `change.Op`，业务值只存在于生成的稀疏 GD 中，不维护第二套 `any` value 日志。
-
-Battlefield 等按帧广播场景在根对象所有权区间内通过 `StoreView.Capture(store, configure)` 直接累计：生成 visitor 把当前 Store 的本批值复制到既有稀疏 GD，并立即记录进同一棵生成状态树，避免临时 StoreView 的值复制和二次状态登记。若后续批次已经创建为独立视图，则通过 `StoreView.Merge(next)` 从 next 的稀疏 GD 复制值并合并状态；该过程不访问根 GD，也不修改 next。跨对象合并应在业务层分别构建独立视图或编码载荷后再组织消息。
-
-捕获动作必须发生在实体锁、Actor 单线程或其他根 GD 所有权边界内，确保读到一致时刻的路径和值。StoreView 一旦返回便不受根 GD 后续修改影响；它可以进入异步帧队列，但从此必须只读。
-
-### PathNode 与 PathKey
-
-```go
-const MaxPathDepth = 4
-
-type Path struct {
-    Nodes [MaxPathDepth]PathNode
-    Depth uint8
-}
-
-type PathNode struct {
-    Field FieldID
-    Key   PathKey
-}
-
-type PathKey struct {
-    Kind KeyKind
-    Int  int64
-    Uint uint64
-    Str  string
-}
-```
-
-一个节点把字段和进入该字段集合的 key 绑定在一起：
-
-```text
-Role.Items[1001].Quantity
-
-Node 0 = FieldItems + KeyInt(1001)
-Node 1 = FieldQuantity + KeyNone
-Depth  = 2
-```
-
-这比把 `Items` 和 `1001` 分成两个节点更紧凑，也让“整个集合元素”和“元素子字段”天然具有前缀关系。
-
-`Depth == 0` 表示空或无效路径。有效变更路径至少一层。`Path.Valid()` 同时校验深度、字段编号和 key
-类型；所有公开文档/存储边界以及生成的 `ResolveValue`、路径 resolver 都必须先校验，再访问定长数组。
-外部 `Source` 提供 `Depth > MaxPathDepth` 或未知节点时返回 `ErrInvalidPath`，不能因数组切片越界 panic。
-
-### 最大深度
-
-最大深度固定为 4。设计依据不是认为业务永远不会更深，而是控制每次路径传递、拼接和边界转换的固定成本。典型表达能力：
-
-```text
-Depth 1: Role.Name 或 Role.Items
-Depth 2: Role.Items[1001].Quantity
-Depth 3: Role.Items[1001].Buffs[5].Type
-Depth 4: Role.Items[1001].Buffs[5].Attrs["ATK"].Value
-```
-
-路径超过上限时不能 panic，也不能截断后继续把叶子值写到祖先。`JoinPathLimited` 返回最近可表达祖先和 `complete=false`，生成 Store 必须把该祖先提升为整体 Replace，并输出可观测提示。
-
-### Op
-
-当前支持四种严格语义：
-
-| 操作 | 含义 |
+| tx | 通用运行时、存储适配、通信、Actor 放置与生命周期 | 固定游戏规则、账号/合服/赛季业务 |
+| txgen | GD/Store、统一 cmd 与调用器、配置导出代码 | 运行中的数据库、缓存、服务集群 |
+| txconfig | 策划 Excel 与配置组织规则 | 运行时合服状态、部署连接信息 |
+| txgame | Bee 无状态应用、Login/Game/Fightroom/Sched 示例 | tx 私有内部实现 |
+| txgameslg | Ant 有状态应用、共享实体与独占 World 示例 | 跨游戏通用的合服或世界规则 |
+| txclient / txclientslg | 客户端会话、生成协议、应用验收负载 | 服务端归属权威与业务存储 |
+
+应用的 `gen/` 与 `server/` 是独立 Go module；根 `cmd/` 是外部运维入口，命令的 Go 实现位于 `server/cmd/`。框架不读取 YAML、环境变量或命令行，应用将它们转换成强类型配置。
+
+| 名称 | 生命周期与身份 |
 | --- | --- |
-| `OpSet` | 设置当前路径值；用于字段或集合元素局部更新 |
-| `OpReplace` | 用当前完整值覆盖路径，不保留旧对象中未出现字段 |
-| `OpDelete` | 删除 map 元素或存储字段路径 |
-| `OpClear` | 清空容器，但保留字段为空 map/slice |
+| Server / Runtime | 一次应用启动拥有的进程运行时；正常进程运行一个 Bee 或 Ant Server |
+| Service | Login、Agent、Game 等子服务；同进程可组合多个，能力按声明授权 |
+| CMod | 进程内启用一次的能力模组，不是必须独立部署的微服务 |
+| Actor | `Identity{Type, ID}` 定位的业务实体，有自己的邮箱与激活状态 |
+| Slot | 稳定归属单位，映射到物理 InstanceID 和 Generation；可容纳多个 Actor |
+| Session / Connection | 一次登录会话 / 该会话下的一次物理连接 |
+| GD / Store | 业务数据 / 对同一数据的变更追踪视图，不是两份数据 |
 
-`OpClear` 的空值类型必须由 `ValueResolver` 按完整路径解析。例如根字段是 `LordInfo`、实际变更路径是
-`LordInfo.Skills` 时，边界读取 `Skills` 的 `[]int32` 类型并构造同类型空 slice；Redis/Mongo 不得只根据
-`LordInfo` 猜成空对象。无法解析集合类型时写入失败并保留 Store 变更。
+服务 Context 是声明能力的视图，不代表每个子服务各建一个 Runtime。业务 Module 单例由项目管理；它可以保存配置缓存与自己拥有的资源，不因此获得分布式唯一性。
 
-`Set` 和 `Replace` 必须区分。例如旧文档为：
-
-```json
-{"quantity": 1, "quality": 9}
-```
-
-当前 Go 对象只有：
-
-```json
-{"quantity": 3}
-```
-
-Replace 必须得到仅含 `quantity` 的对象，不能残留旧 `quality`。集合 wrapper 的 `Set(key, value)` 遵循 Go map 赋值的整体覆盖语义，因此复杂 value 记录 Replace；修改 value 的子字段才记录细粒度 Set。
-
-未知 Kind 是协议错误。每个输出边界都必须明确拒绝，不能按 Set 或成功处理兜底。
-
-### 延迟取值与异步边界
-
-同步遍历事件不保存 value。输出边界通过生成 Store 的 resolver 读取当前值：
+## 包结构与依赖方向
 
 ```text
-VisitChanges(Path=Items[1001].Quantity, OpSet)
-        |
-        v
-Store.ResolveValue(path)
-        |
-        v
-当前 GD 中的 int64(7)
+应用注册、配置、Handler、业务 Module
+  → bee/ 或 ant/               公共装配门面
+  → runtime/                  当前操作的 Actor、存储、Procedure 能力
+  → modules/                  可复用的通信、实体、事务、生命周期组件
+  → storage/                  存储接口与 Redis/Mongo/Fusion 适配
+  → meta/、change/、protocol/  数据与协议契约
+
+bee/、ant/ → internal/framework/                  共享装配内核
+                     → internal/actorhost/       本地激活与邮箱
+                     → internal/actorplacement/  分组解析与缓存
+                     → internal/actorrpc/        本地/NATS/gRPC 接线
+                     → internal/instanceconn/    共享流生命周期
 ```
 
-这使同一路径在一个周期内修改多次时无需保存多个中间值。生成 Store 的字段槽、集合状态和子 Store 索引已经只保留最终变更语义。
-
-解析结果必须区分：
-
-- `(nil, true)`：路径存在，业务值就是 nil。
-- `(_, false)`：路径无法解析，属于错误。
-
-不能把解析失败写成数据库 null。
-
-`change.Document` 会创建独立的 `Set/Delete` map。若来源是主 Store，`Set` 中的复杂 map、slice 或指针 value 可能仍引用当前根 GD；若来源是 StoreView，它们只引用 StoreView 自己的稀疏数据。术语上必须区分三个阶段：
-
-- 调用 `Document(kind)` 是“边界文档构建”。
-- StoreView 是与根 GD 脱离的“独立视图”；把视图或变更文档编码为 BON/JSON/BSON 字节后，才得到编码载荷。
-- 把编码载荷交给 msgq、网络或其他异步队列后进入“只读发布”阶段，各方都不得原地修改、追加或复用载荷内存。
-
-只有不再引用根 GD 的独立视图或编码载荷才能退出对象锁；交给异步队列时优先使用编码载荷。否则后续 GD 修改可能改变待发送内容。只读发布是所有权契约，不表示 Go 运行时把 StoreView、map、slice 或 `[]byte` 变成不可写内存，也不限制根 GD 和主 Store 继续处理下一批业务变更。
-
-### 确定性合并边界
-
-主 Store 在每次记录时按字段槽或集合位置原地归一化，不提供批次合并 API。跨时刻的帧内累计发生在同类型 StoreView 上：同一根对象所有权区间内使用 `Capture`，已经创建为独立视图的批次使用 `Merge`，二者执行相同的确定性规则：
-
-1. 同一字段槽或集合 key/index 由后者覆盖前者。
-2. 后发生的父字段 Replace/Delete/Clear 清理更早子路径。
-3. 前批次已记录父字段 Clear/Delete、后批次又捕获其子路径时，最终提升为父字段 Replace；`Capture` 从当前根 GD、`Merge` 从两份稀疏数据取得可靠值。
-4. 后批次直接操作集合元素时，该 key/index 的元素状态覆盖此前同位置的子路径。
-5. 后批次修改同一子路径时，`Capture` 复制当前 Store 对应的根值，`Merge` 复制后批次 StoreView 已捕获的值。
-6. 互不相关的位置分别保留。
-7. 超深路径在主 Store 捕获前提升为最近祖先 Replace；不安全后端 key 仍在具体存储边界提升，二者不由 StoreView 猜测。
-8. 两份 StoreView 不是由同一个主 Store 捕获时返回 `change.ErrValueMismatch`，即使主 Store 恰好绑定同一个 GD 指针也不能合并。
-
-它不会猜测：
-
-- “先创建后删除，因此可完全抵消”的数据库状态推断。
-- 依赖当前 map 是否原本存在的业务判断。
-- 跨主 Store、跨 flush 批次的持久化日志重放压缩。
-
-原因是主 Store 和 StoreView 都不持有数据库基线，也不保存创建来源。需要业务上下文的抵消必须由业务层决定；runtime 只维护当前 GD 的可靠写入位置。
-
-同一所有权区间内直接累计并修改接收者状态：
-
-```go
-frame, err := role.Store().View(nil) // 前批次已独立捕获
-if err != nil {
-    return err
-}
-role.ClearChanges()
-
-role.SetPower(100) // 后批次
-if err := frame.Capture(role.Store(), nil); err != nil {
-    return err
-}
-```
-
-`Capture` 返回后，`frame` 同时保留前批次互不冲突的位置和后批次捕获值；随后不再读取 `role`，可以脱离 role 生命周期按只读视图保存，或编码后发布。若后批次已先创建为 `next`，改用 `frame.Merge(next)`，该过程完全不访问根 GD，也不会消费 next。
-
-### 集合规则
-
-Map：
-
-- `Set(key, value)`：复杂 value 整体 Replace。
-- `Delete(key)`：记录元素 Delete。
-- `Get(key)` 返回子 Store：修改子字段记录细粒度路径。
-- 新建元素后修改子字段：生成 Store 必须保证至少整体写入新元素，避免数据库出现残缺对象。
-
-Slice：
-
-- `SetAt(index, value)` 可以表示已存在索引的整体 Replace。
-- 修改元素子字段可以记录 index 路径。
-- Append、Insert、RemoveAt 或任何导致索引漂移的操作提升为整个 slice Replace。
-- StoreView 在捕获时已经复制稳定 index 对应的值；捕获后 slice 长度变化不会改变旧 StoreView。
-
-### 动态 key 的后端降级
-
-`map[string]` key 在内存中可以包含任意普通字符串；runtime 不对业务 key 做私有编码。Mongo update path 中 `.` 是路径分隔符，前导 `$` 等形式也可能改变表达语义。因此 Mongo 边界遇到不能安全表达的 key 时：
-
-1. 不修改 key。
-2. 不生成转义后的数据库字段名。
-3. 回溯到最近安全祖先。
-4. 读取当前完整容器并整体 Replace。
-
-这样运维直接查询数据库时看到的 key 与业务一致。代价是该次写入放大，但存储边界不是 setter 热循环。
-
-### 物理布局与成本边界
-
-生成 Store 用字段槽和集合 key/index 状态保存变更，同位置重复修改只保留一份状态；边界通过 `VisitChanges` 同步遍历，不构造中间批次。Redis/Mongo/Fusion 与 WriteBackManager 直接消费 `Source`，需要后端文档时才分配字符串路径和 map。
-
-`Path` 按值传递仍有固定复制成本。优化须同时测量路径大小、访问频率、key 类型完整性及文档构建，不为零分配提前引入 unsafe 或自研值联合类型。`Path.FieldNameAt` 允许边界只读取所需字段，完整路径校验在 I/O/文档边界执行。
-
-GD 的运行状态按需保存在 sidecar；首次独立根写入可能增加一次分配，不能只用大对象批量场景衡量收益。Store 子路径按实际访问建立，脏索引只遍历发生变化的节点；不同 key 持续增加仍会消耗内存，由写回预算及应用反压控制，setter 不执行隐式 I/O。
-
-性能回归使用 txgen 的 `BenchmarkGeneratedStoreDirtyRuntime` 与 `BenchmarkGeneratedStoreLeafChanges1024`；当前文档不保留旧物理布局对照或生成源码体积阈值。
-
-### StoreView 生成状态树
-
-StoreView 不使用通用完整 `Path` 集合。txgen 已知每个 GD 类型的字段 ID、集合 key/index 类型和生成对象嵌套关系，因此为每个类型生成私有状态树。例如 `GDRole` 的普通字段操作保存在定长 `ops` 中，`Items` 使用 `map[int32]change.Op` 保存元素整体操作，并使用 `map[int32]*viewStateGDItem` 按需保存叶子字段状态。状态树的结构与 Go 类型一致；只有真正发生变更的集合 key 和子对象才分配节点。
-
-`Record`、`Contains`、`Capture` 和 `Merge` 都直接访问这些强类型槽位。同位置后写覆盖、父路径吸收和 Clear/Delete 后子写提升在生成状态树内完成；`VisitChanges` 才递归组合定长 `change.Path` 并交给输出边界。整数 map key 从公开 `PathKey` 转回实际 Go key 前必须做无损范围校验，例如 `math.MaxInt64` 不能截断成 `int32(-1)` 后误命中已有状态或业务值。
-
-集合状态、字段 undo、加载位图和读取装配由生成包基础层复用，类型专属 record/copy/visit 路径保持静态展开。保留捕获、合并和文档构建基准，不以生成源码行数或字节数限制实现。
-
-## 存储抽象
-
-### 统一文档边界
-
-通用存储层使用 JSON 字段名的 `map[string]any` 作为后端之间的公共文档：
-
-```text
-generated Store / TypeSpec
-            |
-            v
-JSON-name Document
-      /           \
-     v             v
-Redis JSON      Mongo BSON adapter
-```
-
-Mongo adapter 通过生成的 `DocumentFactory` 把公共文档还原为 GD，再由 Mongo driver 根据 BSON tag 编解码。这样 `_id`、缩写 BSON 名和 Redis JSON 名不会互相泄漏。
-
-### RecordKey
-
-`RecordKey` 是存储定位身份，通常包含：
-
-- 记录 ID。
-- route/shard key。
-- 生成 TypeSpec 提供的类型和存储元数据。
-
-RecordKey 不等于事务 Lockey：
-
-- RecordKey 面向记录身份、Redis Hash Tag 和 Mongo 路由。
-- Lockey 面向单机一致性域。
-- 纯内存 GD 可以有 Lockey 而没有存储注解。
-
-### 接口按能力拆分
-
-存储接口不按每个业务操作组合成定制类型，而按基础能力拆分：
-
-- `ChangeApplier`：应用当前规范化变更。
-- `DocumentLoader` / `BatchDocumentLoader`：读取公共文档。
-- `DocumentReplacer`：完整替换文档。
-- `DocumentBackfiller`：仅在目标不存在时原子回填文档，并显式报告是否插入。
-- `mongo.CounterStore`：按 routeType 和稳定分片键，为调用方指定 collection/key 原子增加 size，返回新上界。
-- `DeleteApplier`：Redis、Mongo adapter 及 Fusion 策略的整记录删除能力。
-- `RecordLocker`：记录级互斥。
-- `RecordRevisionReader` / `RevisionDeleteApplier`：版本保护删除。
-
-Redis 与 Mongo adapter 通过组合这些接口表达单后端能力；Fusion 组合读、写、回填、延迟回写和可恢复删除能力。公共 API 可以保持 `storage.Save`，而不是暴露 `ApplyInsert/ApplyUpdate/ApplyReplace` 组合给业务。
-
-Mongo 条件回填使用单条 `$setOnInsert + upsert`；匹配现有文档时只报告 `inserted=false`，不能改写字段。
-CounterStore 不定义业务 collection、计数键或号段缓存；驱动每次以 majority 写关注执行单条 `findOneAndUpdate`，
-用 `$inc`、缺失创建和返回新值预留调用方指定的正增量。过滤条件限制旧值在 `[0, MaxInt64-size]`，
-避免 Mongo 将溢出整数提升为浮点数；超界旧文档无法匹配，upsert 的同 `_id` 唯一约束使操作失败，不覆盖原值。
-全局范围由调用方的 Mongo routeType、稳定分片键、collection 和 key 共同决定。本地号段与空洞策略属于项目，
-SessionID 不消费此原语。
-条件回填的过滤字段必须具有唯一性。常规业务模型把 `idField` 保存为语义明确的普通 BSON 字段，并由生成元数据声明
-单字段唯一索引；否则 adapter 在写入前拒绝调用。仅有复合唯一索引不能保证按单个业务主键并发创建时唯一。
-物理 `_id` 自带唯一性，但只用于存储结构完全确定的特殊模型。
-
-Fusion 物理删除复用记录锁：先在 Redis 主文档持久保留删除标记并登记既有延迟任务，再删除 Mongo，最后删除 Redis 标记。正常查询含字段投影及批量读取均识别标记，不回源旧文档；旧更新不能覆盖标记。失败返回错误，已登记任务或再次 Remove 重试；已完成删除的旧任务为空操作，同 ID 重建后旧任务读取当前文档。冷数据回填在同一记录锁内读取 Mongo，不能把锁外旧快照回填成新对象。
-
-这不是 Redis/Mongo 原子事务。沿用 Fusion 的进程内任务登记成功边界：登记到持久任务队列之前进程异常退出仍存在恢复缺口；不增加 WAL 或跨存储事务承诺。业务仍可选择状态字段做逻辑删除。
-
-### 保存成功边界
-
-`storage.Save` 的核心契约：
-
-```text
-Store (Source)
-    |
-    v
-writer.ApplyChangesWithOptions(...)
-    |
-    +-- success -> ClearChanges
-    |
-    +-- error   -> 保留全部变更状态
-```
-
-只要策略整体没有成功，就不能清理 Store。Fusion 的策略成功边界是 Redis patch 成功且根记录已经登记到进程内分发器；登记不执行外部 I/O。延迟任务 backend 发布失败发生在业务调用返回之后，由分发器保留本地 pending、输出结构化 error 日志并持续重试，不能反向把已经成功的 Redis 业务写改成失败。
-
-### 文档返回值严格性
-
-Loader 返回值必须成对成立：
-
-- `exists=true` 时 document 非 nil。
-- `exists=false` 时 document 必须 nil。
-
-Replacer：
-
-- 空 map 是合法空对象。
-- nil map 没有明确写入语义，返回 `ErrNilDocument`。
-
-未知 Lua 返回值、损坏 JSON、无有效变更、字段路径无法解析等都返回错误。不能把“不知道发生了什么”归类为成功。
-
-## Redis 具名存储与云服务边界
-
-Redis 配置采用 `storage/config.RedisConfig`：每个存储名称只对应一个 URI。`role`、`rank`、`msgq`、`fusion` 是用途名称，
-不是节点名或槽位号。多个名称可以指向相同 URI，runtime 只为每个不同 URI 创建一套连接池，并负责探活与关闭。
-`Clients().Client("rank")` 返回共享连接的 go-redis `redis.Cmdable`，不接收 serverID、RoleID 或 SessionID。
-业务命令保留 go-redis 的参数、结果、`redis.Nil` 和 Pipeline 语义。连接由 tx 创建、配置和关闭，业务只借用；
-此接口是生命周期职责约定，不是命令权限沙箱。框架内部的 GD/会话 Lua 适配器继续承接各自的结果与错误转换。
-
-业务身份保留在 Key 中：排行榜以 `{serverID}` 组织同服的 ZSet/Hash；GD 的 `idField` 与 `routeBy` 构造记录 Key
-及 Hash Tag。`RecordKey.ShardKey` 在 Redis 中只用于 Hash Tag，不参与选连接。不同服的榜单仍相互隔离。
-GD 读写和业务原生命令共用连接，但保持数据职责边界；业务命令不自动进入 Fusion 回写流程。
-
-职责划分：
-
-| 层级 | 职责 |
+| 包 | 介绍与维护边界 |
 | --- | --- |
-| tx | 按存储名称取共享连接；执行命令；维护连接生命周期、健康状态和既有 GD 存储语义 |
-| 业务 | Key 命名、Hash Tag 原子边界、Lua 内容、数据模型与业务错误处理 |
-| 云 Redis / 运维 | 内部节点选择、槽位分布、扩缩容、数据迁移、主从切换、容量与备份策略 |
+| `meta/`、`anno/`、`astscan/` | 类型元数据及生成期注解解析；不连接外部存储 |
+| `change/` | FieldID、路径、操作、合并与 Store 输出所需内核 |
+| `protocol/`、`protocol/bon/` | 命令哈希、路由键、不透明身份和 BON 编码 |
+| `storage/` | RecordKey、读写/版本/删除能力及后端适配 |
+| `component/`、`lifecycle/` | 依赖图、准入、后台任务与关闭等待 |
+| `modules/discovery/`、`etcd/` | 服务目录、实例身份、槽位权威与受控交接 |
+| `modules/rpc/` | 共享 gRPC Host、路由和客户端 |
+| `modules/actor/` | 类型、投递、调用结果、激活控制等公共契约 |
+| `modules/agent/` | TCP/WebSocket 接入、认证适配和上行转发 |
+| `modules/msgq/` | 会话绑定、下行内存邮箱、发布与订阅流 |
+| `modules/tasks/`、`internal/taskqueue/` | JetStream 可靠任务的公开契约与消费适配 |
+| `modules/txn/` | Lockey、Procedure、Undo、同步和异步执行 |
+| `modules/entitycache/` | 同一应用的唯一实体对象、使用期、快照与回收 |
+| `modules/writeback/` | 事务提交后脏根登记、周期和最终持久化 |
+| `modules/control/`、`cmd/txctl/` | 状态查询、排水、槽位交接等运维入口 |
+| `metrics/`、`log/`、`util/` | 指标封装、日志与不绑定玩法的基础工具 |
 
-tx 不再提供 Redis 的区间或取模分片，不接受 URI 数组及 `min/max/shards`。连接 URI 变更只是连接目标变更，
-不代表数据已经迁移；更换独立集群前，由部署方使用云迁移工具完成数据迁移与切换验证。配置切换不能代替数据迁移，部署前必须核对 Key 与数据位置。
+`internal/` 由公共门面接线，应用不直接依赖。基础数据包不反向引用 Actor、服务或应用生成包。生成代码依赖 tx，tx 不依赖 txgen 或某个游戏的 GD。
 
-### 云服务接入要求
+## 整体通信链路
 
-1. 提供稳定、兼容普通 Redis 客户端的代理入口。当前 runtime 使用 `go-redis.NewClient`，不接管节点拓扑，
-   不承诺原生 Redis Cluster 节点直连、Sentinel 发现或客户端槽位路由。扩容后代理入口应保持稳定。
-2. 支持框架实际使用的原生命令与 Lua，包括 GET、SET 的 NX/PX 语义、MGET、EVAL、过期与删除，以及所用业务脚本的命令。
-   GD 默认跨记录批量读取使用原生 MGET，代理须负责跨槽分发并按请求顺序聚合结果；这不表示跨槽事务或一致性快照。
-3. 支持同槽 Lua 原子执行。脚本访问的相关 Key 必须使用一致 Hash Tag；不能假设代理会自动拆分跨槽 Lua。
-   选用产品版本后，应以该版本的脚本限制验收 GD、Fusion 延迟任务、MsgQ 绑定与排行榜脚本。
-4. Session 绑定和条件写入依赖及时读取已写入状态，接入主节点读写入口，避免透明读副本造成陈旧读取。
-5. URI 中的鉴权、TLS 和 logical DB 必须符合目标产品能力；本地示例 DB14/DB15 不是云产品要求。
-   原生 Cluster 通常只支持 DB0，带代理产品的多 DB 能力需单独确认。容量、驱逐和持久化策略按数据用途配置。
-6. 扩容或故障切换期间仍可能产生超时与连接错误；tx 返回真实结果，不把代理扩容解释为零错误或盲目重放业务写入。
-
-腾讯云的代理架构提供跨槽 MGET 聚合，但集群 Lua 仍有同槽要求。接入时以具体实例版本为准：
-[命令参考](https://cloud.tencent.com/document/product/239/76287)、
-[标准架构迁移集群架构](https://cloud.tencent.com/document/product/239/109862)、
-[Proxy 与直连差异](https://cloud.tencent.com/document/product/239/122026)。
-
-`LoadOptions.ClusterSafe` 只为高级手动装配客户端提供按 Hash Tag 分组的 MGET；它不是 Cluster 驱动，不能补齐
-NewClient 的节点发现与重定向。默认云代理路径无需启用。
-
-## Mongo 存储路由
-
-`storage.RouteTable` 和 `RouteTableConfig` 保留为 Mongo 静态端点布局：先选 `min/max` 区间，再对 endpoint 数量取模；
-字符串使用稳定 FNV-1a 32 位哈希。路由规则、哈希和端点顺序属于已有数据布局，不能直接修改后宣称完成迁移。
-Mongo 集群内部扩容仍应使用稳定入口；tx 不提供跨独立存储集群的数据搬迁、双读或双写。
-
-Fusion 的 Redis/Mongo 共用 `RecordKey.ID` 与 `RecordKey.ShardKey`，元数据仍要求双方使用相同的 `idField` 与
-`routeBy` 字段。Redis 用于 Key/Hash Tag，Mongo 用于既有记录定位；本轮不改变生成身份、字段类型和文档编码。
-
-## Redis 后端
-
-### 数据模型
-
-Redis 使用 string 保存 JSON 文档：
-
-```text
-mainKey                   根文档
-mainKey:<subKey>          拆分的大字段文档
-mainKey@v                 热数据生命周期版本
-mainKey@lock              回源、回写和删除互斥锁
-```
-
-带 subKey 的类型仍必须存在 main 文档。即使全部业务字段都拆到 subKey，main 至少保存 `{}`，作为热记录存在标记。
-
-### 为什么业务文档不使用 Redis Hash 或 RedisJSON
-
-当前默认选择普通 Redis string JSON：
-
-- 所有 Redis 环境都支持，不依赖模块。
-- Lua 可以原子合并 main/subKey 文档和版本。
-- 与参考生产路径和云 Redis 代理兼容。
-
-代价是 Lua 局部 patch 需要解码和重新编码对应 JSON 文档。RedisJSON/ReJSON 作为未来可选 backend 评估，不改变通用 Store 和变更遍历契约。
-
-### Lua patch
-
-Redis Lua 在对应 main/subKey 文档内应用 set/delete/clear/replace。局部路径缺少父对象时可以创建正确的中间 table；如果已存在父节点类型与路径要求冲突，返回错误，不把异常标量自动替换成容器。
-
-Fusion 热写与普通 Redis 文档写入使用同一套 Lua：patch 文档、递增 revision，并持久化 main/subKey/`@v`。延迟任务登记属于进程内分发器职责，不向业务文档 Lua 增加第二类 key 或容量协议。
-
-严格失败是为了暴露数据来源问题。运行时自动修复异常拓扑可能掩盖旧代码或人工写库造成的数据损坏。
-
-### Cluster 路由
-
-同一记录的 main、subKey、`@v` 和 `@lock` 必须共享 hash tag。云代理或单节点可直接执行 MGET；本地原生 Redis Cluster 在客户端按 slot/hash tag 分组后多次 MGET。
-
-Lua 的 `KEYS[]` 是 Redis 命令显式标记的 key 参数。任意一次 Lua 调用涉及的 key 必须同 slot；云代理不能分析脚本内部任意字符串并替调用方拆分执行。
-
-## Mongo 后端
-
-Mongo 文档主键必然是 `_id`，但业务 `idField`、`routeBy` 和 BSON `_id` 绑定承担不同职责：
-
-- BSON `_id`：Mongo 文档物理主键字段。
-- `idField`：框架生成 RecordKey 和过滤条件所需业务字段。
-- `routeBy`：选择 Mongo endpoint/shard 的路由字段。
-
-常规业务模型将三者分开：业务 ID 保留明确 BSON 字段并建立唯一索引，Mongo 自行维护物理 `_id`；只有物理主键语义
-完全确定的特殊模型才显式复用 `_id`。生成期必须校验 `_id` 绑定唯一，避免 routeBy/idField 与其他 `_id` 字段产生冲突。
-`idField` 在记录创建后不可变：普通 Mongo 增量更新拒绝修改它，upsert 从 `$set` 排除该字段并依靠等值过滤条件写入；
-生成 Store 折叠大量变更时也必须跳过记录身份字段。
-
-局部变更最终转换为 Mongo `$set` / `$unset` 文档。Replace 复杂对象时，边界读取当前完整值并整体写入该路径；不能按子字段 set 后遗留旧 BSON 字段。
-
-Mongo 写入不是 setter 热路径，优先使用官方 driver 的 BSON tag 映射保证正确性；只有 benchmark 证明必要时才为具体字段生成更低层编码。
-
-字段索引注解支持三种组合：`mongodb:"index"` 声明匿名单字段索引；多个字段使用相同的
-`mongodb:"index:<name>"` 声明按字段顺序聚合的命名复合索引；
-`mongodb:"index::<field1>:<order1>:<field2>:<order2>"` 在单个字段上声明显式复合键。
-`order`、`unique`、`weight` 和 `expire/expireAfter` 只修饰它们前面最近声明的索引；一个字段可以
-通过重复 `index` 同时属于多个索引。普通索引键在元数据中用空路径表示“注解所在 Go 字段”，Mongo 边界再通过
-`TypeSpec` 解析为 BSON 名；以 `.` 开头的路径表示当前字段下的相对 BSON 路径，其余显式路径已经是 BSON 路径。
-
-Mongo CMod 在连接和生成类型注册表就绪后，只汇总当前服务 Mongo 路由表覆盖的类型；注册表中属于其他服务且
-没有配置对应 `routeType` 的类型不参与本次初始化。相同非空名称的索引按字段声明顺序合并；匿名索引根据最终
-BSON 键和顺序生成稳定名称。启动逻辑只创建缺失索引，不自动删除数据库已有索引，也不静默修改同名索引。
-已有同名索引与生成规范不一致、同一个命名索引的 TTL 定义互相冲突、索引字段无法解析时，启动必须
-fast-fail。多个实例并发启动复用 MongoDB 的幂等创建语义，不为 Mongo-only 服务额外引入 Redis 分布式锁。
-
-Mongo 批量读取用 BSON 类型与编码值构造内部回序身份，不直接把 `any` ID 放入 Go map。
-因此重复 ID 可以恢复到全部输入位置，`[]byte` 等合法但不可比较的 BSON 主键也不会触发
-`hash of unhashable type` panic；无法编码成 BSON 的定位值必须在查询边界返回错误。
-
-## Fusion 后端
-
-普通 Mongo 更新与 Fusion 延迟落地共用文档级乐观锁原则，但不共用业务数据源：前者在根对象锁内读取 Mongo 版本后生成内存 GD 增量，后者读取 Mongo 版本后加载 Redis 最新完整文档。通用 storage runtime 的 Mongo 非 Upsert 更新要求 `VersionedChangeApplier`；显式 Upsert 走独立原路径。条件失败返回调用方，不自动给旧变更换版本重发。Redis 与 Fusion 热写不经过 Mongo 增量入口。
-
-### 职责
-
-Fusion 是 Redis 热数据与 Mongo 冷数据的组合策略：
-
-- Redis 承担在线热读写。
-- Mongo 承担持久化完整文档。
-- 延迟任务保存记录定位，稍后把 Redis 当前状态回写 Mongo。
-
-Fusion 不是双写事务，也不是业务事件队列。
-
-### 保存状态机
-
-```text
-业务 Store 变更状态
-      |
-      v
-Redis Lua：patch + @v 递增 + 刷新 dirtyTTL
-      |
-      v
-进程内 DelayTaskDispatcher 登记 TypeSpec + RecordKey
-      |
-      v
-当前请求成功并清理 Store 变更状态
-
-后台分发器
-      |
-      +---- 发布成功 -> 移除本地 pending
-      |
-      +---- 发布失败 -> error log + 有上限指数退避重试
-
-到期 worker
-      |
-      v
-claim save task -> 获取记录锁 -> 读取 Mongo 版本 -> 读取 @v 和 Redis 当前完整文档 -> 条件 Replace Mongo
-      |
-      +---- revision 未变化 -> 原子设置 delayDelTime TTL -> complete
-      |
-      +---- revision 已变化 -> 保留 dirtyTTL -> 重新排 save task
-```
-
-延迟任务不保存 GD 快照，也不保存每次变更。十分钟内修改同一角色多次，任务到期只读取一次 Redis 最终状态。
-
-Mongo 版本基线必须在读取 Redis 快照之前取得。条件替换在同一文档写入中匹配 `_tx_version` 并递增，迟到旧请求不能覆盖已推进版本的新文档。文档不存在时使用插入并依赖记录标识唯一索引；已存在但尚无版本时以 0 为基线。更新不允许 upsert 绕过冲突。该元数据仅属于存储层，不包含世界、实例、操作标识，也不要求业务 GD 声明。
-
-超时、条件冲突或确认丢失均沿现有延迟任务重试，从 Mongo 版本读取开始重新执行，再获取 Redis 最新数据。不缓存版本、不保留第二份业务快照，也不在旧快照上修改版本后重发。每次正常后台落地增加一次按记录索引读取 Mongo 元数据的 I/O，Procedure 和 Redis 增量热写不变。此保证要求该记录遵守统一 Fusion 写入路径；绕过框架直接修改 Mongo 不在保护契约内。
-
-### 热写与任务发布
-
-Redis 热文档和 delayed task backend 是两个独立写边界。第一版不引入持久化 outbox 或同槽索引，而是明确划分同步业务提交与后台任务发布：
+复杂拓扑用 Mermaid 表达；下面的箭头不代表全局串行或事务：
 
 ```mermaid
-sequenceDiagram
-    participant B as 业务 Save
-    participant R as Redis 热文档
-    participant D as DelayTaskDispatcher
-    participant Q as delayed task backend
-
-    B->>R: Lua patch + INCR @v + 刷新 dirtyTTL
-    R-->>B: 写入成功
-    B->>D: Submit(TypeSpec, RecordKey)
-    D-->>B: 本地登记完成
-    B-->>B: 返回 nil，清理 Store
-    D->>Q: Enqueue save
-    alt 发布成功
-        D->>D: 删除相同代次 pending
-    else 发布失败
-        D->>D: 输出 error log 并退避重试
-    end
+flowchart LR
+    Client[客户端] -->|登录、选服| Login[应用 Login]
+    Login -->|票据与地址| Client
+    Client <-->|TCP / WebSocket| Agent[Agent]
+    Agent -->|gRPC 上行流| Game[Game / World / Fightroom Actor]
+    Game -->|gRPC 发布流| MsgQ[MsgQ 下行邮箱]
+    MsgQ -->|MailboxStream 下行| Agent
+    Agent -->|同流 Ack 与活动| MsgQ
+    Game <-->|本地邮箱 / Core NATS| Other[其他 Actor]
+    Game -->|持久任务| JS[JetStream]
+    JS -->|消费后调用 Actor| Other
 ```
 
-本地 pending 按根记录身份去重，每次 Submit 生成递增代次。分发器复制当前 pending 后执行外部 I/O；只有发布成功且 map 中仍是同一代次时才删除，避免发布期间的新业务写被旧结果误清。下一轮按同一幂等任务键重发 save；任务 backend 合并重复任务，不产生并发 lease。
+etcd 管实例发现和槽位；Redis 管会话绑定及项目热数据；Mongo 管持久文档。它们都不是每条业务上行必须串行经过的节点。
 
-发布失败日志固定为 `fusion delay task publish failed`，包含 pending 数、重试等待和完整错误链，供外部日志中心告警。退避从一秒开始，倍增到一分钟后持续按封顶间隔重试，并使用随机扰动错开实例压力。业务不配置本地 pending 容量；相同根记录不会膨胀条数，剩余容量由进程内存和运行监控负责。
+## 启动、能力组合与执行上下文
 
-后台发布循环与关闭排空共享一个可被 context 中断的发布闸门，同一时刻只有一个执行者向 delayed task backend 发布快照。正常关闭时，先停止业务入口、等待已受理工作并完成必要的最终保存，Fusion 随后调用 `DelayTaskDispatcher.Drain`；每条任务只有在 backend 确认接收后才从 pending 删除。排空复用 `runtime.lifecycle.drainTimeout`，超时错误包含剩余 pending 数量。正常关闭遇到排水或必要持久化失败时，`Server.Stop` 保留资源并返回错误；`Server.Run` 间隔一秒自主重试三次，仍失败则记录日志并返回错误，由进程入口非零退出，不把未完成持久化视为成功。租约丢失等致命故障走强制终止路径，不适用保留资源等待重试。
+包结构：`bee/`、`ant/` 定义 Builder、Service、Config；`internal/framework/assembly.go`、`cmod_*.go`、`server.go` 负责装配；`runtime/` 暴露执行期能力。
 
-```text
-停止业务入口并等待已受理工作
-        |
-        v
-业务最终保存（使用 Fusion 时）-> 新增本地 pending
-        |
-        v
-Fusion Drain -> Redis delayed task backend 确认接收
-        |
-        v
-取消根 WaitGroupContext -> 停止后台循环 -> 关闭存储连接
-```
+Bee 面向无状态业务装配，Ant 额外提供 Procedure 等有状态能力。应用显式声明 CMod，生成数据的存储注解只选择读写模式，不推导应用应启用的全部能力。
 
-这个方案仍接受一个明确故障窗口：进程在 Redis 热写成功、任务持久化成功之前异常退出，或排空超时后被终止，本地 pending 不可恢复。选择该边界是为了避免每次热写增加持久化索引 I/O、全槽扫描、启动选举和容量闸门。正确性要求转化为两条可运维契约：进程存活时发布失败绝不静默；正常关闭必须先尝试排空；异常退出或排空超时时应排查根因，而不是依赖框架用更复杂的旁路协议掩盖崩溃。
-
-任务载荷使用 JSON 保存定位信息，但 `ID` 与可选 `ShardKey` 不是裸 JSON number。线格式分别记录
-`kind` 和十进制 `value`，claim 时据此恢复 `int/int8/int16/int32/int64/uint/uint8/uint16/uint32/uint64`
-或 `string` 的原始 Go 动态类型。任务幂等键同样包含 `kind`，因此数值相同但 Go 类型不同的记录键不会碰撞。
-例如 `uint32(7)` 不能恢复成 `int64(7)`；`uint64(9223372036854775809)` 在 claim、complete 和 retry
-全链路中也必须保持同一个类型和值，不能舍入或改写为科学计数形式。其他动态类型在 backend I/O 前失败，
-存储根的 `idField/routeBy` 则由 txgen 在生成期限制为 Go 内建 string/整数，runtime 不负责猜测具名类型。
-
-### at-least-once
-
-claim、lease、retry 和进程重启决定任务是 at-least-once。Mongo 回写必须幂等：同一 RecordKey 的当前 Redis 文档重复 Replace，只能得到相同或更新后的终态，不能重复发奖或累计统计。
-
-重试原因写日志，不写入 Redis error hash，避免不可控错误文本占满内存。退避达到最大值后持续按封顶间隔重试，不能因次数耗尽丢弃持久化任务。
-
-### 租约期间的新写入
-
-Redis delayed task backend 在每个 bucket 中维护六类状态，六个 key 使用同一个 hash tag，因此单次 Lua 可以在 Redis Cluster 中原子访问：
-
-| 状态 | 结构 | 职责 |
+| CMod | 强依赖 | 说明 |
 | --- | --- | --- |
-| `due` | ZSet | 等待 claim 的任务与到期时间。 |
-| `payload` | Hash | 每个幂等任务键的最新定位信息。 |
-| `busy` | ZSet | 已发放 lease 的任务与租约到期时间。 |
-| `token` | Hash | 隔离过期 worker 的 lease token。 |
-| `attempts` | Hash | 当前失败周期的处理次数。 |
-| `pending` | ZSet | 任务被租用期间再次入队时的后续到期时间。 |
+| RPC、RedisStorage、MongoStorage | 无 | 连接与资源只创建一次 |
+| Discovery | 无 | RPC 已启用时在其后启动 |
+| SessionID | Discovery | 使用运行身份分配 SessionID |
+| Actor | RPC、Discovery | 本地宿主及远端通信、归属接线 |
+| TaskQueue | Actor | 任务消费复用 Actor 完成语义 |
+| FusionStorage | RedisStorage、MongoStorage | 内部组合热写与延迟任务 |
+| Procedure（Ant） | 无内置存储强依赖 | 事务执行器及提交参与者；存储仍由服务显式选择 |
 
-任务被租用后，worker 可能已经读取 Redis 文档并开始写 Mongo；此时普通 Fusion 热写不会持有 worker 的记录锁。若入队只覆盖任务载荷字段 `payload`，旧 worker 随后的 `Complete` 会删除任务状态，Mongo 将永久停留在旧快照。因此 enqueue 在发现 `busy` 时必须同时更新最新任务载荷和后续到期时间，但不能发放第二份并发任务租约。
-
-```text
-t1  claim(save role:1001)，worker 读取 name=before-worker
-t2  业务写 Redis name=during-worker，并 enqueue 同一任务
-t3  enqueue 更新任务载荷，并把后续到期时间写入 pending
-t4  旧 worker Replace Mongo(before-worker) 后 Complete
-t5  Complete 原子地把 pending 移回 due，并重置 attempts
-t6  新 worker 重新读取 Redis，Replace Mongo(during-worker)
-```
-
-`Complete` 表示旧处理周期成功，后续任务进入新的尝试周期，下一次 `Attempts` 从 1 开始。`Retry` 表示当前存储故障仍未解除，会采用最新任务载荷、清除单独的后续到期时间标记，并沿当前次数和退避时间继续重试。任务租约超时恢复同样清除后续到期时间标记，立即以最新任务载荷恢复当前任务，避免同一新写入被执行两次。
-
-失效旧租约的 `Complete` 不改变当前任务；`Retry` 则返回 `task.ErrLeaseLost`，不能把未安排重试当作成功。Fusion Scheduler 在 handler 失败且 Retry 返回该错误时，按当前时间加退避间隔调用已有 Enqueue，重新登记记录身份而非旧文档快照。若已有新 owner，沿用后续任务标记，不修改其租约；否则恢复待执行任务。下一次执行重新读取 Redis 最新数据。再次 Enqueue 失败会返回聚合错误，不输出“已安排重试”。该恢复仅增加异常分支 Redis 入队，不增加正常保存或 Mongo 写回 I/O；它不保证连续入队失败、旧写后进程退出或最新 Redis 数据已丢失时仍能纠正。
-
-lease 的 Redis score 使用毫秒时间戳，因此显式 `LeaseTimeout` 必须至少为 `1ms` 且使用整毫秒。亚毫秒值或
-带纳秒余数的值若直接截断，可能让新 lease 提前到期并被另一 worker 并发重领；标准 server 在启动校验阶段拒绝，
-底层 backend 也在任何脚本调用前复用同一错误防线。
-
-claim 必须先检查本批所有 `due` member 都存在对应任务载荷字段 `payload`，随后才能批量写入 `busy/token/attempts`。缺少任务载荷属于队列状态损坏：Lua 返回显式错误信封，Go adapter 返回错误，且整批状态保持不变。不能先租出部分正常任务再报错，因为调用方拿不到已经创建的任务租约；也不能删除损坏 member 后继续，否则会把待持久化记录静默丢弃。
-
-Redis backend 会轮询多个 bucket，而不同 hash tag 之间不能组成一次原子操作。因此后续 bucket 失败时，`ClaimDue` 同时返回之前 bucket 已成功解析的 leases 和 error。Scheduler 必须像处理 `io.Reader` 的 `n > 0, err != nil` 一样，先逐条调用 handler 并执行 `Complete/Retry`，再向运行循环报告聚合错误。某一条 lease 的 `Complete/Retry` 失败时也继续处理本批剩余 lease；错误结果附带任务 Type、ID、Action，并使用 `errors.Join` 保留所有原始原因。这样不会为了隐藏部分结果额外执行不可靠的 Redis 回滚，也不会让已领取任务只能等待 lease 超时。
-
-### 读取与并发回填
-
-单条读取：
+`Requires` 递归启用依赖；`After` 只约束已选能力的顺序。间接启用不授予当前服务直接访问权，例如只声明 Fusion 不代表可以自行取得 Redis 命令客户端。完整服务注册表保留远端 Actor 类型，`RunOptions.Services` 只决定本进程启用哪些服务。
 
 ```text
-读 Redis
-  |
-  +-- hit -> 返回
-  |
-  +-- miss
-        |
-        v
-     获取 RecordLock
-        |
-        v
-     二次读 Redis
-        |
-        +-- hit -> 返回较新热数据
-        |
-        +-- miss -> 读 Mongo 全文 -> Lua 仅缺失时回填 -> 返回所需字段
+应用解析配置、选择服务
+  → Builder：生成类型目录 + ServiceRegistration + Setup
+  → 校验配置/依赖图 → 启动选中 CMod 与共享连接
+  → Setup 绑定应用入口 → 服务 Factory / Init：模块与 Handler 装配
+  → RPC/控制监听、进程发现 Running
+  → 可选 Service.Start：必备 Actor 加载与就绪等待
+  → 开放业务准入，子服务 Running
 ```
 
-RecordLock 只串行化同一记录的回源读取，用来合并重复 Mongo I/O。正常玩家请求仍必须按角色稳定路由到同一个
-逻辑 game owner，并由同一 Actor 邮箱串行处理；断线重连也应恢复到同一逻辑槽位。RecordLock 和条件回填都不替代
-这条集群规则，也不提供分布式并发控制。
+进程发现 Running、子服务 Running、Actor Ready 是三种状态。服务 Start 可用控制接口加载必备 Actor，不能等待尚未开放的普通业务入口。
 
-存储层仍应保证回填语义本身正确：adapter 使用一条 Lua 原子检查 main 文档是否存在，并在仍不存在时一起写入
-main、已知 subKey 和 `@v`。如果检查时 main 已经存在，Lua 不修改任何热数据，Fusion 丢弃 Mongo 候选并重新读取
-Redis。Mongo 返回不存在时也要再读 Redis，覆盖恢复工具、高级存储入口或异常双 owner 在回源期间创建热文档的边界。
+Setup 将 `Context.Runtime()` Provider 绑定到项目 `db`、Actor 调用等入口；Handler 不保存装配 Context。Handler 外的应用适配层创建操作范围，业务 GD 查询显式沿用 ctx，Procedure 内使用 `tx.Context()`。取消和期限是执行边界，不是“传了 ctx 就自动进入事务”。
 
 ```text
-t1  Redis miss，取得 RecordLock，锁内复查仍 miss
-t2  开始读取 Mongo，得到候选 name=cold
-t3  另一个受控入口把 Redis 写成 name=hot
-t4  条件回填 Lua 发现 main 已存在，返回 inserted=false
-t5  Fusion 丢弃 cold，重读并返回 Redis 的 hot
+Handler 边界：消息 Context → 有期限的操作 ctx
+  → Module：沿用 ctx → 生成 Find / Snapshot 或远端调用
+  → Procedure：派生事务 ctx → 共享锁与对象登记
+  → 返回响应 → 结束操作范围
 ```
 
-Lua 检查和写入不可拆成 `EXISTS` 加普通 Replace 两次调用，否则热写仍可插入两次 Redis 命令之间。带 subKey 的类型
-始终保留至少为 `{}` 的 main 文档，因此 mainKey 是这条热记录统一的存在标记；所有派生 key 共用同一 hash tag，脚本
-在原生 Redis Cluster 中仍保持同槽原子执行。
+纯计算无需无用途 ctx；后台工作不能保存已结束的请求 ctx。完整用法见 [运行时访问](runtime-access.md)。
 
-RecordLock 以 Redis `PX` 保存租约，运行时只接受至少 `1ms` 的 TTL。Go 的 `time.Duration`
-可以表达纳秒，但 Redis 入口使用毫秒整数；边界必须先拒绝会截断为 `0` 的亚毫秒值，不能依赖 Redis 命令错误兜底。
-释放 RecordLock 属于已取得资源的清理动作，不能继续复用已经超时或取消的请求上下文。Fusion 使用
-`context.WithoutCancel` 保留链路值并隔离请求取消：例如 Mongo 回源返回 `context.Canceled` 时，业务仍收到原错误，
-但 Redis `Unlock` 仍有机会立即删除锁，而不是无谓等待 `PX` 租约自然过期。
+## 服务发现与 Actor 放置
 
-批量读取先批量查询 Redis，再批量取得 Mongo 候选。每条 miss 在自己的 RecordLock 内二次读 Redis；锁内已命中的记录
-直接丢弃旧候选，仍未命中时也必须走同一条件回填 Lua。若 Lua 输给并发热写则重读 Redis，不能因为候选已经批量取得
-就无条件 Replace。这样既保留 Mongo 批量 I/O，也让单条与批量路径共享同一正确性规则。
+包结构：`modules/discovery/{runtime,directory,slot,ownership}.go` 管目录和权威归属；`internal/actorplacement/` 管分组查询缓存；`internal/framework/placement.go` 接线；`internal/actorhost/` 在加载前核验归属。
 
-### 热数据 TTL 与 revision
+实例启动取得新 InstanceID，稳定的业务 Slot 不随重启改名。Watch 更新目录，普通投递读取缓存；权威来源仍为 SlotStore 的 assignment 和 CAS。成员离线不等于可以自动认定旧实例不再执行。
 
-`delayDelTime` 是已确认回写后的热数据目标保留时间，不是 Mongo 删除时间。Mongo 回源产生、尚未承载业务变更的纯净缓存优先使用正数 `delayDelTime`；未配置或为 `-1` 时使用 `dirtyTTL`，不能生成永久 key。Fusion 业务写入后的脏热数据始终使用独立的 `dirtyTTL` 安全窗口。
+Actor 身份使用 `Identity{Type string, ID string}`。Type 在应用内唯一且对应一个服务池，ID 在该 Type 内唯一。生成的 `*At`、`*Identity`、`Ref.Identity()` 统一编码，业务不手工拼接 `i:` 等前缀。
 
-延迟保存和 TTL 收敛必须：
-
-1. 获取记录锁后，先读取 Mongo 版本基线，再读取当前 `@v`。
-2. 读取 Redis 当前热文档，按基线条件回写 Mongo 并递增持久化版本。
-3. Lua 比较读取时 revision。
-4. revision 未变化才把 main/subKey/version 的 TTL 一起设置为 `delayDelTime`。
-5. revision 已变化说明有新写入，保留新写入刷新的 `dirtyTTL` 并重新排保存任务。
-
-第 4 步只在 `delayDelTime > 0` 时执行；零值或 `-1` 表示不缩短，保留 `dirtyTTL` 作为最终兜底。
-
-Fusion 发布侧只有延迟保存一种合法语义，因此 `DelayedSaveQueue.Enqueue` 接收强语义的 `DelayedSave`，不再暴露可填写任意动作的通用操作结构。该接口与业务侧严格有序的 `util.DelayQueue` 无关。持久化 task backend 仍保存 `Action="save"`，因为 worker 需要验证 Redis 中的任务载荷；未知 action 必须在读取任何业务文档前失败，不能默认按保存处理。
-
-`dirtyTTL` 默认 30 天，并在 Fusion CMod 预检阶段对全部生成 TypeSpec 做配置校验：它必须至少为 `1ms`、使用整毫秒，并且严格大于每个 Fusion 类型的 `delaySaveTime` 和 `delayDelTime`。该规则保证正常调度下任务到期和确认后保留窗口都小于安全 TTL；它不是无限期持久化。配置层、TypeSpec、生成 Store 和 runtime 始终传递 `time.Duration`，只有 Redis adapter 在 I/O 边界转换为毫秒整数并调用 `PTTL/PEXPIRE/PSETEX`；txgen、Fusion 与 Redis 复用 `storage.ValidateExpiringTTL`，不能各自截断或取整。Mongo 或 Fusion 延迟任务队列故障时，Scheduler 持续重试并记录错误；若故障超过 `dirtyTTL`，Redis 可以自然淘汰数据。保存任务读取不到对应 Redis 文档时返回 `storage.ErrNotExists` 并保留任务，不能静默视为成功。
-
-### 健康闸门
-
-运行模式的先验条件：
-
-| 模式 | 必须健康的 backend |
-| --- | --- |
-| Redis | Redis |
-| Mongo | Mongo |
-| Fusion | Redis 和 Mongo |
-
-启动时探活并 fast-fail；Fusion 还必须完成 Redis/Mongo、延迟任务 backend、分发器和 Scheduler 的完整装配，任何组件缺失都不能启动业务服务。
-运行期由真实 I/O 错误和后台探针维护 backend generation。每次业务调用不额外 Ping。
-
-Redis 与 Mongo 在启动装配阶段校验各自的 client 与路由配置；Redis 按名称指向单 backend，分片和迁移由部署侧代理负责，不能创建等待首次业务 I/O 才失败的半装配对象。变更写入口把 nil 或 typed-nil `change.Source` 视为调用契约错误；有效 Source 明确返回
-`HasChanges() == false` 时才执行无 I/O no-op。该区分避免“未提供输入”和“输入确实没有变化”被折叠成同一种成功结果。
-
-Fusion 任一端已知不可用时，新业务读写返回 `ErrStorageUnavailable`，避免继续接受无法可靠持久化的状态。已经存在的延迟任务不被删除，worker 仍可继续重试，Mongo 恢复后正常消费。
-
-只有 driver 能确认的网络、后端超时和服务端通信错误才包装为 `BackendError`。这条防线收敛在
-`storage.NewBackendError`：即使 driver 将调用方自己的 `context.Canceled`、`context.DeadlineExceeded`
-传入公共入口，它们也只结束当前请求，不能关闭全局健康闸门；RecordKey、变更流、
-BSON、JSON、Lua 协议等本地语义错误同样不能把全局 backend 标成不可用。
-
-## 有状态 Mongo 直接写回
-
-WriteBackManager 合并内存变更，定时调用 Mongo Writer；成功后清除脏状态，失败保留并在后续 Flush 重试。
-业务响应表示内存事务执行成功，不表示已持久化。异常退出可能丢失最后一次成功写回之后的内存变化；优雅关闭必须等待最终写回。
-
-Mongo 普通更新使用文档级乐观锁：在根对象锁内先读取 `_tx_version`，再生成当前 GD 字段增量，按基线条件更新并原子推进版本，使用 `majority + j:true` 确认。失败保留变更，后续 Flush 重新读取版本与当前变更，不给旧快照换版本重发。
-
-GD 不需要基础设施字段或逐类型绑定；Mongo 不记录世界槽位、实例身份等部署信息。每次后台写回增加一次版本读取，Redis/Fusion 热写不受影响。路由归属与排水负责约束业务执行者，文档版本不能代替集群归属校验。
-
-该机制不提供跨文档事务或跨服务消息必达。可靠业务消息的消费确认与持久化衔接由后续独立设计负责。
-
-## 单机事务
-
-### 职责
-
-`modules/txn` 为有状态单机服务提供：
-
-- 多个 GD 根对象的稳定加锁。
-- Store 受控修改的 undo log。
-- savepoint 和子 Procedure。
-- 提交时最终变脏根对象的包内收集。
-- 在修改前调用可选 `CommitParticipant.Prepare`，并在提交或回滚时完成确认。
-
-它不提供：
-
-- 分布式锁。
-- 跨进程事务。
-- Redis/Mongo ACID。
-- 裸 public field 写入的事务回滚。
-
-无状态分布式游戏服务可以完全不使用该模块。
-
-### Procedure 生命周期与锁身份
-
-锁身份与 Store 分开管理。项目在数据输入目录集中声明 Go 枚举，`iota` 决定类别优先级，值越大越先获取；同类别的整数键按数值排序。GD 只引用枚举名：
-
-```go
-// gen/data/lock.go
-type LockType int
-const (
-    RoleLock LockType = iota + 1
-    LegionLock
-)
-
-// @genData
-// @transaction:`lock:"RoleLock" keyField:"RoleId"`
-type GDRole struct { RoleId int64; Name string }
-```
-
-生成的 `data.RoleLock.Key(roleID)` 返回纯 `txn.Lockey`，不要求 GD 已加载。类别名与 Key 组成锁身份，枚举值只影响获取顺序；不存在锁顺序 YAML。未知 lock、重复或负数枚举值会在生成写盘前被拒绝。
-
-```go
-type PRenameRole struct { RoleID int64; Name string }
-func (p *PRenameRole) Locks(context.Context) (txn.Lockeys, error) {
-    return txn.Lockeys{data.RoleLock.Key(p.RoleID)}, nil
-}
-func (p *PRenameRole) Process(tx *txn.Tx) error {
-    role, exists, err := data.FindGDRole(tx.Context(), p.RoleID)
-    if err != nil { return err }
-    if !exists { return errors.New("role not found") }
-    role.Store().SetName(p.Name)
-    return nil
-}
-err := txruntime.Call(ctx, &PRenameRole{RoleID: 1001, Name: "Alice"})
-```
-
-```text
-Locks：仅声明类型 + ID
-  → 排序、取得 Lockeys → 派生事务 ctx → Process
-      → Find/Create → 复用锁或动态补锁 → 登记 Store 的 undo 与写回预留
-      → tx.Call(child) → 子 savepoint，新增锁持有至根结束
-  → error/panic：逐 Store 回滚、撤销创建/删除预留
-  → success：持锁登记 WriteBack → 释放锁 → AfterCommit
-```
-
-`StoreTarget` 是对象参与事务的描述，不是 Procedure 的锁声明。GDRole 与 GDBag 可以共用 `RoleLock.Key(1001)`，但 Store 的记录身份、undo、脏状态和 WriteBack 分别登记。同一记录加载成两个 Store 仍会被拒绝。生成的 `gd.Lockey()` 用于取得对象的锁，`gd.StoreTarget()` 供框架登记对象。
-
-业务已知 ID 时应在 Locks 中预声明。运行中才确定的对象由受管 Find/Create 动态补锁，保留等待图死锁检测；根事务被选为受害者时完整回滚，标准 Call 最多重试三次。取消/超时终止锁等待，不冒充死锁。事务会重新执行，不可回滚外部副作用应放到 AfterCommit。
-
-共享 EntityCache 对象只能在有效 Procedure 内查询修改；普通读取使用 Snapshot。低层 `txn.Run(ctx, []txn.StoreTarget{...}, fn)` 供已拥有独占对象的基础设施或测试使用，先锁定并登记这些 Store。它不绕过唯一缓存准入，不能用于查询共享对象后再加锁。
-
-`CheckCleanLockTargets` 保留现有调试配置名称，检查发生在 Store 登记、修改之前。已绑定 WriteBack 的 Procedure Runtime 允许此前未刷盘的脏状态。事务只回滚 Store 受控修改，不提供裸字段赋值回滚、跨进程锁或存储层 ACID。AfterCommit 在锁释放后执行，失败不撤销已提交内存状态。
-
-### 子 Procedure 与不可重入
-
-Go `sync.Mutex` 不可重入。框架也不通过 goroutine ID 或第三方可重入锁改变调用模型：
-
-- 嵌套 `txn.Run` / 根 `txn.Call` 被拒绝。
-- 子逻辑使用 `tx.Call(child)`。
-- child 声明已经持有的 Key 时只校验锁顺序，不重复获取。
-- child 声明新 Key 时按自己的直接锁批次排序并获取。
-- 新锁与根锁一起持有到根事务提交或回滚，符合严格两阶段锁。
-- child 业务失败只回滚自己的 savepoint；死锁受害者错误会把根事务标记为必须回滚。
-
-这样可复用 Procedure 不依赖调用方展开实现细节，也不会因为重复声明同一 Key 而等待自己。
-
-### Undo 与 savepoint
-
-Store setter 在绑定 recorder 时先登记反向操作，再修改当前数据和变更状态。undo 闭包只捕获该操作恢复所需的局部旧值和局部变更状态，不复制整个 GD。
-
-`tx.Do` 和 `tx.Call(child)` 进入前记录 savepoint：
-
-```go
-type savepoint struct {
-    creations     int
-    undos         int
-    afterCommit   int
-    afterRollback int
-}
-```
-
-子调用失败时，从 undo 尾部反向执行到 savepoint，并截断该调用注册的回调。根调用失败则回滚到空 savepoint。
-
-事务内必须使用传入锁目标对应的同一个 Store 实例。否则 undo recorder 与实际修改对象不一致，框架会拒绝子 Procedure 的 Store 绑定。动态 Store 在锁获取和 Runtime 容量预留成功后才绑定 recorder；若 child 尚未执行就失败，新锁可以立即释放，不会产生半绑定状态。
-
-### 统一 GD 实体访问
-
-`gen/config.yml` 的 `data.entityCache` 是生成期选项，缺省 false；txgame 为 false，txgameslg 为 true。少数独占根用 `@noEntityCache` 排除。运行期只有共享回收预算，不设置第二个缓存启停开关，也不登记逐 GD 的缓存。根 Store 文件内生成描述与 Snapshot，启用时增加 `entity_access.go`。缓存按描述与完整 `RecordKey` 区分身份；组合子服务共享同一应用的缓存，不同应用运行时独立。
-
-```text
-普通只读操作
-  -> data.SnapshotGD*(ctx, 完整主键...)
-  -> EntityCache 取得使用权 -> 等待同一记录锁
-  -> 深复制当前内存字段 -> 释放锁和使用权 -> 返回独立对象
-
-Procedure.Call(ctx, procedure)
-  -> data.FindGD*(tx.Context(), id)
-  -> 缓存使用权 -> Enlist：记录锁 / 写回预留 / undo
-  -> Store 修改，或 db.Create / db.Remove
-  -> 成功：发布创建或隐藏删除 -> WriteBack 待刷
-  -> 失败：撤销修改、创建占位与删除
-  -> 锁释放、提交/回滚回调结束 -> 释放使用权
-
-WriteBack / 缓存回收
-  -> 同一记录锁 -> 写入存储或检查干净状态
-  -> 失败：保留 pending 与原对象 -> 后续 Flush / 排水重试
-```
-
-共享可变 GD 只能在有效 Procedure 中取得；无事务完整 Find 在加载前返回 `entitycache.ErrProcedureRequired`，失效事务返回 `txn.ErrInactive`。启用缓存的持久根必须显式声明 `@transaction`，生成期缺少声明直接报错；不会为 Handler 隐式开启事务。对象和子对象引用只可在当前事务内使用，不得长期保存在 Actor/后台任务中。缓存内部互斥锁只保护元数据，等待记录锁、复制字段或访问存储时不持有它。取消信号不能提前释放仍在执行事务的使用权。
-
-`SnapshotGD*` 读取缓存中的最新值，包含尚未写回的提交；在有效事务内复用 Find 与现有锁，可读到本事务修改。复制不携带 Store、tracker、事务状态，调用方可自行修改副本但不能用它 Save/Remove 原实体。普通快照每条记录一致，不保证多条快照处于同一时刻。创建中身份仅对所属事务可见；其他读取返回 `ErrCreating`；提交删除后不再返回对象，持久化失败也不重新暴露旧对象。
-
-完整批量 Find、FindObjects 与查询别名复用同一受控单条入口。字段投影、FindObject、显式 Reader 的 Load* 是独立的**存储快照**，看不到未落盘缓存修改，不是共享对象的第二个写入口；投影与 FindObject 在 Procedure 内拒绝。Mongo 原生入口同样不参与缓存与事务。底层存储接口用于适配器和明确独占路径，不得旁路修改正在受管的同一记录。
-
-共享根禁止直接 `db.Save/SaveChange`；Create/Remove 必须在有效 Procedure 中，删除还校验原对象身份。创建允许先给临时对象赋初值，接纳后不得改变记录键和锁身份。失败首次写回保留 pending，结果未知不能自动认领已有记录；删除失败由 WriteBack 的 Flush/排水重试。已移除缓存普通 Save/Remove 的同步协调入口。关闭缓存或被排除的独占 GD 保留直接存取，不增加事务要求。
-
-EntityCache 使用 Otter 选择软容量候选；使用中、创建中、删除未完成、dirty 或 pending 的对象不会为满足容量被强制丢弃。缓存回收与 Actor 卸载独立，持久化收尾归现有 WriteBack 排水。框架不提供跨进程唯一对象、跨记录数据库原子提交或崩溃 WAL 保证。
-
-共享安全并不等于零成本：Snapshot 持有记录锁完成深复制，成本随实体大小增长；受管 Find 与修改包含完整 Procedure 的锁、使用期和写回登记。Go 公开字段仍允许错误保存裸指针，框架不能拦截任意事务外字段访问；应用必须遵守对象不逃逸边界。当前本地测量及验收范围见 [GD 访问验收](entity-access-acceptance.md)。
-
-### 事务内创建与首次写回
-
-`txn.Create(ctx, value)` 是通用事务登记入口，项目 `db.Create` 在活跃 Procedure 内调用它。生成 GD 提供 `StoreTarget` 与 `ChangeStore`，不新增生成器 API。`txn.Runtime` 允许空初始锁集用于仅创建事务；低层 `txn.Run` 显式接收 StoreTarget 列表。创建新根同样参与动态锁与死锁检测，缺少受管 `CreationParticipant` 时拒绝执行。
-
-- 事务负责动态锁、Store undo、savepoint 和新根资源提交/撤销。提交参与者的内存登记在锁释放前完成；业务 `AfterCommit` 仍在释放锁后执行，不能承担缓存发布或待刷登记。
-- tx 的 EntityCache 负责对象可见性，应用首次使用时自动接到 WriteBack，不逐 GD 登记创建适配器。加载中的身份不能同时创建；创建中的身份只向当前事务返回原对象，其他调用明确失败。回滚删除占位；提交发布原指针。
-- WriteBack 在创建被接纳前预留容量。首次写入意图独立于 dirty 标记，因此没有 setter 的初始值也会全量保存；普通事务继续修改该对象时，首次写入意图仍然保留。写入前校验身份未变。
-- 存储层复用 `DocumentBackfiller` 的条件创建：Mongo 仅缺失时插入，Redis 原子检查主文档，Fusion 与回源共用记录锁，检查 Mongo 后条件写 Redis 并登记既有延迟回写。已有记录和结果未知都不能退回 Upsert 覆盖。Fusion 使用脱离调用取消的上下文解锁；已确认插入后的解锁失败只记录告警，不把已知成功降格为未知创建，锁沿用现有 TTL 回收。
-- 后台首次写入失败保留对象及 pending；不得回收，最终排水沿用有限重试与失败返回。首次结果未知后发现已有记录会持续报冲突，第一版不增加创建令牌或自动认领记录，需要运维核验。
-
-仅受控 Store 修改参与撤销。创建成功后不得改变根 ID、分片键或锁身份；提交前验证不通过会回滚。启用生成期 EntityCache 后，完整 Find 复用唯一对象，只有活跃 Procedure ctx 能取得共享对象并自动锁定纳管；普通 ctx 使用 Snapshot，不隐式创建事务。事务 ctx 用于同步调用链，不可保存后异步使用；`db.Create/Save/SaveChange` 拒绝结束后的事务上下文。没有跨记录数据库原子提交、跨进程唯一缓存或进程崩溃 WAL 保证。
-
-## 事务精确 Key 锁注册表
-
-### 进程级全局结构
-
-事务精确 Key 锁注册表是进程级全局对象，不属于单个 Procedure：
-
-```go
-var transactionLocks lockTable
-
-type lockTable struct {
-    shards     [64]lockShard
-    entryPool  sync.Pool
-    waiterPool sync.Pool
-    waitsMu    sync.Mutex
-    waits      waitGraph
-}
-
-type lockShard struct {
-    mu      sync.Mutex
-    entries map[Lockey]*lockEntry
-}
-```
-
-同一进程的所有 `txn.Run`、根 Procedure 和 `txn.WithLocks` 共享它。另一个进程拥有自己的注册表，因此不能提供分布式互斥。
-
-### 64 分片的准确含义
-
-64 个 `lockShard.mu` 只保护注册表 map，不是固定业务锁。真正业务锁是每个完整 Lockey 对应的动态 `lockEntry`：
-
-```text
-shard 18
-  |
-  +-- role:1001 -> entry A -> owner / waiters A
-  +-- role:9009 -> entry B -> owner / waiters B
-```
-
-即使两个 Key 哈希到同一个 shard，它们只在 reserve/release map 的极短临界区内竞争；事务执行期间分别由 entry A 和 entry B 记录所有权，可以并行。
-
-这与固定分段业务锁不同：
-
-```text
-固定分段业务锁：hash(key) -> Mutex，碰撞 Key 共用整段事务锁
-当前精确 Key 注册表：hash(key) -> map shard -> map[key] -> 独立 entry
-```
-
-分片数量只控制注册表元数据竞争和固定 mutex 成本，不限制可同时存在的业务 Key 锁数量。
-
-### 锁所有权与可取消等待队列
-
-```go
-type lockEntry struct {
-    mu      sync.Mutex
-    owner   TransactionID
-    waiters *lockWaiter
-    tail    *lockWaiter
-    refs    int
-}
-```
-
-`owner == 0` 表示空闲。无竞争获取只短暂进入该条目的局部 mutex 并设置 owner，不进入全局等待图；不同 Key 的条目互不阻塞。发生争用时，请求者才创建或复用一个 waiter，登记等待边并进入条目的 FIFO 队列：
-
-```text
-transaction 18 --等待 role:1002--> transaction 23
-                                          |
-                                          +-- lockEntry.owner = 23
-```
-
-waiter 使用容量一的 `signal` channel 接收所有权转移，同时通过调用方 context 响应取消。等待图按 FIFO 前驱关系建边：队首等待当前 owner，后续 waiter 等待自己的前一个 waiter。释放者只需删除队首等待边、转移 owner 并发送 signal；中间 waiter 取消时，也只需把直接后继改接到自己的前驱。这样既不会保留指向已释放事务的陈旧关系，也避免每次授权遍历整条队列形成 O(n²) 成本。取消和授权同时发生时，条目状态决定唯一结果；若 context 已取消但所有权已经转移，请求者会立即释放该锁，不进入 Procedure。
-
-`signal` 只负责唤醒，不代表锁本身；锁的唯一事实来源是 `lockEntry.owner`。因此死锁诊断不需要猜测 channel 中是否还有 token，也不依赖 goroutine ID。
-
-### reserve、refs 与回收
-
-reserve 流程：
-
-1. 根据完整 Lockey 哈希选择 shard。
-2. 短暂获取 shard mutex。
-3. 精确查询 `entries[key]`。
-4. 不存在时从 pool 取得或创建 entry。
-5. `refs++`。
-6. 释放 shard mutex。
-7. 尝试取得 owner；只有发生争用时才进入等待图和队列。
-
-`refs` 统计已经 reserve 的持有者和等待者。它保证仍有人引用 entry 时不会从 map 删除或回收到 pool；owner 和等待队列由 entry mutex 单独保护。
-
-释放所有权后再在对应 shard 下 `refs--`。归零后删除精确 Key 映射，并把 entry 放入 `entryPool`。争用 waiter 也由 `waiterPool` 复用，稳定争用路径不会持续制造 channel 和节点分配。
-
-### 单次事务持锁结构
-
-全局注册表只负责定位锁。单次事务使用 `heldLockSet` 保存已经取得的 entry：
-
-```go
-type heldLockSet struct {
-    inline   [4]heldLock
-    overflow []heldLock
-    count    int
-}
-```
-
-四把以内的常见锁集直接放在值数组中，不分配 held-lock slice；更多锁才使用 overflow。失败或结束时按逆序释放，确保中途超时不会遗留已持有锁。
-
-### 为什么不使用成熟可重入锁
-
-当前需求是 Procedure 直接锁、动态扩锁、context timeout 和子 Procedure 复用，而不是任意嵌套重入。第三方可重入锁通常需要识别 goroutine 或改变调用模型，也不能自动发现多个根事务之间的动态扩锁死锁。禁止嵌套根事务，并让 child 通过同一个 `Tx` 复用 owner 身份，边界更明确。
-
-### 等待图与技术选型
-
-本轮先比较了四类方案：
-
-1. **根过程静态展开完整子树。** 无运行时死锁检测成本，但运行时筛选玩家、条件分支和可复用 Procedure 必然让父过程知道全部子过程实现细节，破坏开闭原则，因此不再作为核心契约。
-2. **Wait-Die / Wound-Wait。** 两者都用事务年龄打破循环；前者让年轻请求者回滚，后者允许老事务使年轻持有者回滚。它们适合高冲突数据库调度，但需要维护年龄和跨执行单元受害者状态，重试率受负载影响，也不能直接给出当前完整 Procedure 等待路径。tx 第一版不采用。
-3. **通用图库。** Gonum、`dominikbraun/graph`、`yourbasic/graph` 能提供 DFS、拓扑和环检测，但它们面向任意多出边图，带来通用节点/邻接结构、遍历器或 visited 集合。事务同步执行时一个根事务同一时刻至多等待一把锁，通用结构超出需求。
-4. **单出边等待图。** 当前采用。`waitsFor[waiter] = edge{blocker, lock, procedurePath}`；新增边前沿 blocker 链做指针追踪。现有图始终保持无环，所以首次回到 waiter 就得到唯一完整等待环。
-
-等待图本身是无锁纯算法；`lockTable.waitsMu` 在争用边界保护它。无竞争锁不访问 `waitsMu`。发现环时，本次新增等待边不会写入图，请求当前边的根事务成为受害者：
-
-```text
-T1 [PGuildTrade -> PGrantItem] --role:1002--> T2
-T2 [PRefreshGuild -> PLoadOwner] --guild:7----> T1
-                                      |
-                                      v
-拒绝 T2 的新等待边，返回 DeadlockError.Cycle
-```
-
-`DeadlockError.Cycle` 的每个 `DeadlockStep` 都包含 `Waiter`、`Blocker`、`Lock` 和 `ProcedurePath`。`Blocker` 可能是当前锁持有者，也可能是 FIFO 队列中必须先推进的前驱事务；它准确表达等待图中的直接依赖，不把排队者误报为锁 owner。正常链路不构造诊断切片；只有确认成环时才分配完整链。错误可通过 `errors.Is(err, txn.ErrDeadlock)` 和 `errors.As(err, *txn.DeadlockError)` 识别。
-
-标准 `txn.Call` 与 `txn.Runtime.Call` 最多自动重试三次死锁受害者。每次重试前完整 undo、解绑 recorder、释放锁和 Runtime 容量预留，并输出带完整等待链的 warning。`CallWithOptions` 供高级调用方设置 `DeadlockRetries`；零表示不重试。锁等待超时仍返回 context deadline/cancel 错误，不混同为死锁。
-
-框架不会跨 goroutine 强制回滚另一个正在执行的根事务。当前请求者只让自己的根事务失败，符合 Go 同步调用和局部 undo 的所有权边界。Procedure 如果捕获 `tx.Call` 的死锁错误，根事务仍被标记为必须回滚；业务应立即返回该错误，不应继续外部副作用。
-
-### 性能验证
-
-锁基准覆盖无竞争、离散 key 并发、同 key 争用、动态锁和等待环。owner、FIFO 公平唤醒及等待图是当前锁契约的一部分，不能为改善争用数字而移除。只有实际业务 profile 显示瓶颈时才调整分片或索引结构；复测入口为 `modules/txn/lock_benchmark_test.go`。
-
-## 有状态事务与缓存运行时
-
-`txn.Runtime` 是 Procedure 执行器，只负责锁、undo、savepoint、死锁检测和提交回调。最终变脏根对象在根事务仍持锁时确定，但不作为公共 API 暴露。Runtime 不持有 GD 缓存、存储 writer、Pending 集合或后台任务。
-
-`modules/writeback.Runtime` 是 CModProcedure WriteBack 组件使用的稳定 SPI，组合 `txn.CommitParticipant`、后台生命周期、最终刷盘和实体释放契约。`modules/writeback.Manager` 是 tx 提供的默认实现，项目 WriteBack 组件在启动期创建或注入 Runtime，并由 CModProcedure 把它绑定为 `txn.CommitParticipant`：
-
-1. `Prepare` 在 Store 登记、业务修改前校验 `StoreKey -> Store` 身份、存储准入和容量，并预留根对象。
-2. Procedure 回滚时 `Abort` 释放预留；提交时无失败地登记最终变脏根对象。
-3. 多次事务继续在同一 Store 状态树上累计，Pending 按根 `StoreKey` 去重。
-4. Flush 再次取得相同实体锁，在锁内同步访问 Store 与 GD 当前值；写入成功才清理，失败保留。
-5. 根对象不再由 Actor 或场景持有时，必须在 Procedure 外调用 `TryRelease`。它取得相同实体锁并在锁内确认 Pending、活跃事务、预留和 Store 状态；只有返回 `true, nil` 才解除身份并允许回收。
-
-默认 Manager 不复制 GD，也不把引用 GD 的变更状态交给无锁异步写队列。同一 Manager 内相同记录 `StoreKey` 不允许绑定不同 Store；对象可以由业务自行创建或加载，不要求经过指定加载函数。Store 不是并发安全容器，业务不能在实体锁外轮询 `HasChanges` 观察后台 Flush。
-
-默认 Manager 不是完整的业务对象缓存，不定义 `LoadRole`、容量淘汰、Actor 归属、业务分片或二级索引。静态 `Config` 只保存调度和容量参数；writer 与写入闸门通过 `writeback.Dependencies` 在 CModProcedure 启动期注入。项目按下面的边界扩展：
-
-1. 业务对象加载、唯一实例和工作集淘汰属于 tx EntityCache；运行时自动连接 WriteBack 的 TryRelease 与创建/删除预留；业务不登记 GD 类型，也不在提交后复制对象回缓存。
-2. 有状态项目使用默认 Manager，按 GD 存储模式选择通用 Writer。特殊生命周期仍可通过 writeback.Runtime SPI 装配。
-
-WriteBackManager 不绑定固定持久化目标。CModProcedure 启动期向项目 Factory 注入窄依赖，项目按已显式选择的服务组合决定 Writer：
-
-| 服务形态 | L3 CMod | WriteBackManager Writer | 提交成功边界 |
-| --- | --- | --- | --- |
-| 无状态请求服务 | Fusion，不选择 CModProcedure | 无 WriteBackManager；示例业务调用显式上下文入口 `db.Save(ctx, role)` | Redis 热写和本地延迟任务登记成功 |
-| 有状态逻辑服 | Fusion、CModProcedure | mode-aware Fusion Writer | Procedure 只提交内存；帧 Flush 成功写入 Fusion 后清理 Store |
-| 有状态大世界 | Mongo、CModProcedure | tx Mongo 版本条件增量更新 | Procedure 只提交内存；帧 Flush 直接写 Mongo 成功后清理 Store |
-
-项目 Factory 只能取得 Writer 与写入准入，不取得私有装配内核、Mongo client 或生命周期所有权。
-CModProcedure 不会自动选择 Fusion 或 Mongo；L4 服务必须显式列出作为目标 Writer 的存储 CMod。
-
-业务负责槽位所有权与对象加载；存储层负责原子写入条件，不持有第二份 GD。
-
-因此依赖方向固定为：
-
-```text
-txn.Runtime -> txn.CommitParticipant <- writeback.Runtime SPI
-                                  ^
-                                  |
-                     writeback.Manager 默认实现
-                                  ^
-                                  |
-                    项目 writeback 可选装饰器
-```
-
-CModProcedure 不持有具体 `*writeback.Manager`，项目 facade 也不能要求调用方取得该指针。完整替换 Runtime 属于高级扩展面；实现必须保持 `Prepare` 先于业务修改、`Commit` 不失败、失败 Flush 不清理变更、同一实体锁内读取 Store 等契约。
-
-`txgameslg` 的 WriteBack 组件会先保留 facade 所有权，再绑定 CommitParticipant 并启动 Runtime；只有 `Runtime.Start` 成功后才开放业务 facade。开始 Drain 时先关闭 facade 准入并等待已经进入的调用完成，再执行 `Runtime.Shutdown`。`Start` 返回错误时组件会在 `ShutdownFlushTimeout` 内调用同一实例的 `Shutdown` 清理部分启动资源；本次 `Server.Start` 随即进入终止回滚，该 Server 实例不可再次启动。
-
-直接写回按“存储 -> Transaction -> WriteBackManager”启动；排水封口并完成已接纳业务后，WriteBackManager 最终 Flush，成功后才停止依赖。
-失败保留 Store 与 pending，按既定有限关闭重试处理。新实例确认槽位归属后加载数据并开放 Actor，不向 Mongo 声明集群所有权；后续写回使用临时读取的文档版本条件。
-缺失记录必须由业务创建；存储层不凭空创建场景数据。
-
-### 容量保护
-
-容量保护分为：
-
-- `MaxRootChanges`：单根变更位置超过预算时，只把实际变脏的顶层分支收敛为 Replace。
-- `MaxPendingRoots`：可选的待刷根对象数量硬限制。
-- `HeapSoftLimitBytes`：进程 Heap 软告警，不拒绝业务。
-
-`MaxRootChanges` 通过 Manager 的 `Source` visitor 装饰器执行。未超预算时，adapter 在构建完整内存文档的同一次遍历中完成计数，随后才执行第一次外部 I/O；超预算时 visitor 返回内部错误，adapter 丢弃尚未写出的临时文档，Manager 先记录当前状态树中实际变脏的顶层分支，再清理细路径并只把这些分支收敛为 Replace。比如 `Items[1].Quantity` 与 `Items[2].Quantity` 超预算后只输出当前完整 `Items`，不会把部分加载对象中未修改的 `Name`、`Power` 零值写入数据库。这个契约要求所有 `storage.ChangeApplier` 都先完整访问变更并处理错误，再进行外部 I/O，不能边遍历边写远端。
-
-HeapAlloc 受整个进程影响，不能作为 Manager 拒绝服务的唯一依据。外部存储不可用时，应由项目健康闸门先拒绝新的持久化业务；已有待刷根对象保留并等待恢复。
-
-## 生命周期
-
-### WaitGroupContext
-
-`lifecycle.WaitGroupContext` 统一提供：
-
-- 根 context 取消信号。
-- 后台 goroutine 注册。
-- 停止新任务后的等待。
-- 子生命周期组织。
-
-优雅关闭不是立即 cancel 一切。正确顺序通常是：
-
-```text
-入口排水，停止接受新请求
-        |
-        v
-等待已受理 handler / Procedure / mailbox 工作完成
-        |
-        v
-停止项目服务并执行缓存管理器最终 Flush
-        |
-        v
-停止共享 RPC，排空 Fusion 本地延迟任务登记
-        |
-        v
-取消后台循环并等待退出
-        |
-        v
-关闭 Actor、服务发现、存储 client 等物理资源
-```
-
-最终 Flush 使用独立限时 context，不能因为运行 context 已取消而立刻失败。超时必须返回错误并输出当前可观测状态，不能无限等待或静默退出。
-
-控制面排水还有一份独立的服务端 `drainTimeout`。`lifecycle.Ingress` 原地维护已受理但未完成的工作计数，并通过
-一次性完成 channel 让等待响应 context；它不为每次等待创建 goroutine。超时错误必须带服务名和 pending 数量，
-`drainCoordinator` 将状态置为 `failed` 并记录错误。运维客户端自己的 RPC timeout 只限制客户端等待，不能替代
-服务端上限。服务端超时只结束控制面的本次等待，不会重新开放入口，也不会把未完成工作从账本移除；后续显式
-`Server.Stop` 仍会使用自己的 context 重新等待 pending 清零。排水失败后不能继续正常滚动发布，避免在仍有已受理
-工作时把失败误判成安全关闭。
-
-Actor 宿主在同一锁边界登记准入与 pending，覆盖加载、邮箱排队、处理和卸载。正常关闭先封闭新入口并等待真实工作返回，随后完成业务后台任务和最终持久化，再释放通信资源。超时保留资源供既定有限重试，不撤销已接受工作。
-
-### 排水与关闭的区别
-
-排水是入口策略：不再接受新的外部工作。关闭是资源生命周期：等待已进入工作，停止循环，Flush 并释放资源。
-
-进入 draining 不应全局禁止所有数据库保存或 msgq 下行，否则已经受理的业务无法完成。Agent 上行和通用 RPC 入站通过 admission gate 封口；内部发送方收到 unavailable 后按自己的业务语义重试、补偿或丢弃。
-
-## 分布式服务模块
-
-### 进程运行时装配
-
-Bee 或 Ant Server 是每个物理进程唯一的公开运行时宿主。项目先把 yml、环境变量和命令行转换为强类型
-`bee.Config/bee.RunOptions` 或 `ant.Config/ant.RunOptions`；此后由对应 Server 按固定顺序装配并管理：
-
-```text
-project config parser
-  -> bee.Config / ant.Config
-  -> bee.New(...).Build() / ant.New(...).Build()
-  -> select services
-  -> Storage + shared RPC Host
-  -> Discovery / Actor / CModProcedure when configured or required
-  -> generated data binding + project facade setup
-  -> health workers + selected services
-  -> RPC Serve + control ready + discovery running
-```
-
-三个 `RunOptions` 都不暴露人工 `InstanceID`。未选择 Discovery 的纯单机进程保留空实例 ID；一旦依赖闭包选择
-`CModDiscovery`，Discovery 必须在任何 Service Factory 运行前完成 `workSlot` 申请，并把
-`<AppID>-<workSlot>-<ModRevision>` 冻结为本次进程身份。`workSlot` 是租约保护的短期资源，不得用于替代稳定
-稳定业务槽位，后者仍由部署控制面维护 assignment 和 generation。
-
-项目不实现自己的 Host 或装配 Runtime。`txgame/server/internal/app` 与 `txgameslg/server/internal/app` 只是
-composition root：注册生成数据、安装 `db` facade、注入身份解析/业务分发回调和声明可选业务服务。项目专属 SPI 与业务
-逻辑随所属 L4 Service 放在 `server/services/<name>`；`bee/services/agent`、`bee/services/msgq` 及其 Ant 对称门面是 tx
-提供的标准服务注册器；项目配置转换会延迟到对应服务真正被当前进程选中时执行，
-未选服务的专属配置不能阻止其他服务启动。
-
-`runtime.lifecycle.drainTimeout` 属于所有 L4 服务共享的进程生命周期配置，不由某个 CMod 或服务启用。入口等待与 Fusion 本地 pending 排空分别使用这项单阶段上限，零值使用 5 分钟默认值；txgame 模板显式配置该值，便于发布环境审阅。
-
-每个 `ServiceRegistration` 用 `ServiceSpec` 声明稳定名称与框架能力依赖，并在 Factory 中取得受控 Context、构造 Service；
-`Service.Init(context.Context)` 装配本服务资源与 Handler；可选 `ServiceStarter.Start(context.Context)` 在进程通信就绪后完成必备加载，全部启动工作成功后统一开放业务准入。Context 只暴露消费能力，不暴露进程资源所有权；普通业务 Handler 应使用项目 facade。
-服务启动失败时先清理失败服务自身的部分资源，再按已启动顺序逆序回滚。回滚会先取消 Service Tasks，再调用幂等
-`Stop` 解除 listener 等资源阻塞，最后等待任务退出；正常退出因 Drain 已先封口入口，顺序固定为：
-
-```text
-service ingress + actor Delivery admission close
-  -> discovery draining
-  -> service accepted-work wait + actor mailbox drain
-  -> 取消并等待各 Service 自有 Tasks
-  -> writeback manager final flush
-  -> shared RPC graceful stop
-  -> fusion delay-task pending drain
-  -> 停止控制面与 Service
-  -> project cleanup and generated storage unbind
-  -> discovery stopping
-  -> root WaitGroupContext cancel and wait
-  -> actor shutdown
-  -> discovery close
-  -> storage close
-```
-
-Drain 期间不会提前取消根 `WaitGroupContext`，也不会关闭 msgq 下行所需的共享 RPC Host。只有服务入口和 Actor
-业务邮箱完成封口并等待已受理工作后，Stop 才取消并等待各 Service 通过 `Tasks()` 登记的后台任务，然后进入
-最终 Flush，成功后才停止项目服务与释放资源。这样 Service 后台任务不能在 CModProcedure 最终刷盘后再次提交内存变更。
-
-正常 Stop 在入口排水或组件 Drain 失败时返回错误，不继续释放资源或注销运行身份，入口也不重新开放。组件 Drain
-按逆依赖顺序执行，失败即暂停；再次调用从失败组件继续，不重复已成功的组件。Run 在首次失败后间隔 1 秒重试三次，
-各轮记录 AppID、尝试次数和具体错误。全部失败后记录数据丢失风险并返回错误，进程入口打印错误并以非零状态退出，
-不再尝试无限关闭；这属于异常退出，不是安全交接成功。直接 Stop 不负责退出进程。启动回滚及运行身份租约丢失的
-异常终止允许带错误释放资源，不套用正常更新时保留资源重试的规则。
-
-该有限重试策略是当前 protoActor 选型下的关闭基线，不是要求未来 Actor 运行时永久沿用的兼容契约。
-若后续决定切换 GoAkt，须先验证其准入封口、已受理工作排空、Actor 停止与重新分配之间的状态协调，
-以及滚动更新和故障条件下的实际保证。只有确认它能从机制上解决对应排水一致性问题，才依据 GoAkt 的
-生命周期方案重新设计关闭策略，并移除被替代的代码、测试和说明；当前不提前实现替代方案。
-Actor 运行时的状态协调不能自动替代业务最终持久化，刷盘失败、异常退出风险和日志留存仍须独立评估。
-
-实例只有在共享 RPC Host 和可选控制面都成功启动、discovery 成功发布 `running` 后，才把本地
-`Context.Instance().Status` 切为 `running`。任一步失败都不会发布 `running`，而会进入启动回滚并转为
-`stopping`；不能让服务在控制面尚不可用时提前进入普通路由。Drain 先封口本地服务与 Actor 入口，再向 discovery 发布 `draining` 并同步本地快照；即使远端
-状态更新失败，本地入口仍会排水且错误会明确返回，调用方不能把结果当成成功。
-
-### 总体拓扑
-
-以下拓扑描述当前服务分层和通信职责。
-
-架构以两条通信路径组织：基础会话层使用直连 gRPC 承接所有业务服务的高流量上行和会话下行；实体扩展层使用 Core NATS 承接按实体身份寻址的 RPC，并以 JetStream 可靠任务扩展异常后仍需消费的业务。两者共享 tx 的实体归属、加载准入和本地宿主，不让业务处理传输主题或实例交接细节。
-
-完整集群与容量验收由 txgame/txclient、txgameslg/txclientslg 的应用入口承担。
-
-![tx 游戏服务集群双通信层拓扑](images/server-topology.png)
-
-[可编辑 SVG](images/server-topology.svg)。图采用分散的服务池布局，基础四类节点统一浅蓝，扩展节点统一浅紫；绿色表示上行、红色表示下行、橙色表示计算 gRPC、紫色表示 NATS；所有上下行相关链路均使用实线，包括集群内部的直连上下行与会话确认；业务服务间计算调用和实体互调使用虚线。上行由 Agent 引出主线后分支指向各目标；Game、SLGWorld、FightRoom 的下行先在图中汇线，再用一个箭头指向 MsgQ。上下行主线相邻布置，汇线仅简化直连关系的画法，不增加中转节点或广播总线。箭头分别表达单向请求或发布，普通 RPC 结果沿同次调用返回；圆点标记有意汇线，其他交叉不连接。框中的多个服务器代表实例集合，不代表固定数量、实例一一配对或消息广播。Core 与 JetStream 是同一 NATS 服务端体系的两种消息能力，图中分框用于区分完成语义，不要求部署两套独立 broker。
-
-#### 基础四类服务与会话数据流
-
-Login、Agent、MsgQ、Game 是基础组合中的四类逻辑服务，可以同进程组合，也可以独立多实例部署；不是 tx 内核硬编码必须启动的四个进程。Login 与 Game 的认证策略、账号角色模型和业务处理由项目侧提供，tx 提供通用服务宿主与通信能力。
-
-1. 客户端通过 HTTP 登录入口完成认证；生产可在入口终止 TLS。Login 返回绑定目标 Agent 的短期票据、SessionID 和公开地址。这里不要求 Login 先通过 RPC 创建 Game Actor。
-2. 客户端与所选 Agent 建立 TCP/WebSocket 长连接；Agent 验票并通过 MsgQ 初始化会话。Login 不进入后续每条业务消息的数据路径。
-3. Agent 按生成命令及路由键解析实体归属，通过 gRPC 直达 Game、SLGWorld、FightRoom 等命令所属服务，不经 NATS，也不要求 Game 中转。Game 接收长流请求时按流顺序把消息放入对应 Actor 邮箱，不返回逐项入队确认或业务执行结果，也不向客户端发送上行确认帧。
-4. Game、SLGWorld、FightRoom 等业务服务分别通过 gRPC 直接向 MsgQ 发布下行，不经 NATS，也不要求回到 Game：普通角色响应使用 `PubRole` 扇出到该角色的多个 Session，请求级错误使用 `PubSession` 精确发布。Agent 到每个远端 MsgQ 复用一条双向 `MailboxStream`，多 Session 在流上订阅下行并发送下行 Ack；同进程 MsgQ 直接读取本地邮箱。
-
-服务池之间可以多对多通信，但某个 Session 的当前 Agent 连接和 MsgQ owner、某个 Actor 的当前归属均是明确的。多 Session 向同一 Role 扇入时由目标实体邮箱串行化，不把 Agent 设成全局串行器。相同 Role 的多个会话下行由 MsgQ 会话机制扇出。
-
-MsgQ 是客户端会话邮箱，正文保存在实例内存中；它不承担 JetStream 的持久化业务任务职责。**直连上下行是所有业务服务共同遵守的边界**：新增实体服务只需接入相同的上行分派与下行发布能力，不因此增加 broker 跳数。可靠任务触发了客户端通知时，任务消费之后的通知仍走业务服务→MsgQ→Agent 的直连下行链路。
-
-#### 实体扩展层与可靠任务
-
-可靠任务的 JSON 序列化边界位于 `internal/taskqueue.Task`。Claims 的运行期契约仍为承载任意字节的不可变 string，任务持久化时使用标准 Base64，解码后恢复为原始字节；不能直接按 JSON 文本解释。序列化复制身份快照，不改动发布者对象，损坏的 Base64 返回错误。Actor protobuf、业务身份 API 和任务完成/ACK 契约保持不变。
-
-
-增加 SLGWorld、FightRoom、公会或匹配等服务池时，项目声明实体类型、路由键、业务加载与生命周期策略；tx 维护身份到槽位/实例的解析、容量准入、邮箱及排水，NATS 承担向已选定实例传输消息。订阅不取代 tx 的权威归属，也不把实体随机分配给 Queue Group 中任一消费者。
-
-例如 Role 消耗加速道具后，按 World 的身份调用行军加速；Game 与 SLGWorld 实例池可按各自负载独立扩缩容，不绑定一比一，也不按每实例固定世界数限制扩展。SLGWorld、FightRoom、公会与匹配等是按业务职责扩展服务池的例子。实体扩展不意味着每种业务都必须再建一个服务，基础 Game 也可以承载多个 Type。
-
-| 路径 | 完成语义 | 适用职责 |
+| 放置方式 | 用途 | 归属规则 |
 | --- | --- | --- |
-| 直连 gRPC 上行 | 按连接顺序提交目标实例的流；仅本地提交成功，不等待远端邮箱或业务回执 | 高频客户端命令，减少 broker 转发流量 |
-| 直连 gRPC 下行 | 业务服务直接发布到 MsgQ，Agent 协调 Fetch/Ack 并发送客户端 | Game、SLGWorld、FightRoom 等共用；不经 NATS 或 Game 中转 |
-| Actor RPC | 同实例本地邮箱、跨实例 Core NATS；TellAccepted 确认本地邮箱或远端 NATS 接纳；CallFuture/Call 等待执行结果 | 正常运行期间的实体交互，不保证持久化或失败后必达 |
-| JetStream 可靠任务 | 发布持久化确认与消费 ACK 分开；业务执行后确认，失败按既定重试/死信策略处理 | 需要利用 MQ 持久化能力跨重启继续消费的任务 |
-
-可靠任务可以复用实体路由和业务分派，但不能简单把普通 RPC 加上持久化开关就宣称可靠完成。既定任务 ACK 不等待 GD 刷盘，也不通过新增完成表或 GD 字段消除执行成功后 ACK 丢失的重复窗口。普通 RPC 的超时也不能证明业务未执行。
-
-#### 高频计算服务也可通过 gRPC 扩展
-
-扩展服务不必全部采用 Actor 模型。Battle 负责战斗公式或独立数值计算，与持有战斗状态和生命周期的 FightRoom 分工不同：Game、SLGWorld、FightRoom 可以直接通过 gRPC 调用 Battle，客户端计算请求也可以由 Agent 的命令适配入口转为同类调用。该高频链路不经 Core NATS 或 JetStream，也不要求先创建 Actor。
-
-现有扩展点是 `CModRPC().Register`：服务在启动期向共享 Host 注册自定义 protobuf service，声明 RPC 与所需 Discovery 能力。调用侧可以使用普通 `rpc.Sender.Call` 的 `ServiceRoute` / `InstanceRoute` 与 `CallReceiver` 接入通用信封，也可以使用独立 protobuf service 和对应客户端。独立 protobuf 客户端通过 `GeneratedClient(runtime.CModRPC().Client(rpc.ServiceRoute(service)))` 接入；`Client` 返回标准 `grpc.ClientConnInterface`，复用 Sender 的实例选择与连接缓存，与 Actor 直连共享连接。使用路由客户端时需启用 RPC 与 Discovery，不要求 Actor 或存储；只注册服务时仍可单独启用 RPC。同一 Host 上的通用 DeliveryService 仍只能注册一次。客户端不能关闭共享连接，框架在排水与持久化收尾后统一关闭；每次新调用选址，已建立的流不迁移，不自动重投失败请求。
-
-Battle 的纯计算结果沿同一次 gRPC 返回调用方，不必理解 Session 或承担客户端消息发布。客户端经 Agent 调用时，命令适配负责认证、参数校验及既有下行发布契约，不能把纯计算 Result 冒充邮箱接纳确认。计算服务也可以按业务需要提供独立对外 API，但这不等于可以跳过入口鉴权或直接开放内部 gRPC 端口。此处约定计算服务的扩展方式，不额外实现公式或 Battle 服务。
-
-Battle 集中处理哪些关键计算、前端保留哪些本地计算属于业务侧取舍，本拓扑不要求前端统一经 Battle 获取所有计算结果，也不展开公式复用与精度策略。
-
-#### 共享控制与存储边界
-
-Discovery L2 复用 etcd 的成员、租约、Watch 与槽位 CAS，提供稳定归属和缓存；它不是每条业务消息必经的中转节点。gRPC 与 NATS 两入口共享本地实体宿主，正常交接先关闭旧方准入、等已接受工作及必要持久化完成，再晋升归属，最终注销和释放旧实例。实体发现与传输解耦，归属权不由 NATS 订阅或 gRPC 连接决定。
-
-GD 的 Redis/Mongo/Fusion 管道与通信路径独立。图中 Redis/Mongo 是按职责使用的共享后端示意，不要求为每个服务实例单独建库；Fusion 是存储模式，不是额外部署的数据库服务。
-
-### discovery
-
-`tx/etcd` 是 L1 外部后端适配层，只拥有通用客户端、租约、原子键、快照、Watch、Delete 和 CAS；它不认识
-`InstanceID`、`workSlot`、SessionID 或逻辑槽位。`modules/discovery` 是 L2 运行时，组合 `tx/etcd` 并拥有运行身份、
-服务目录和逻辑槽位目录的领域语义：
-
-- 用同一进程租约从 `[1, 4095]` 有界抢占 `workSlot`，并以成功创建键的 `ModRevision` 生成
-  `<AppID>-<workSlot>-<ModRevision>`。
-- 注册自动实例 ID、内部业务 RPC 地址、Actor 地址、项目命名公开地址、version、services 和 status。
-- keepalive 失效后自动摘除。
-- `ServiceDirectory` 维护本地快照。
-- 服务路由只选择 running 实例。
-- 精确实例路由可以看到 draining/stopping，用于排空既有绑定。
-- `SlotDirectory` 维护固定逻辑槽位的进程内快照，消息路由不读取 etcd。
-
-集群归属统一由本模块的 L2 组件承担：`SlotResolver` 提供缓存路由，`CheckSlotOwner` 执行加载前权威校验，
-`SlotOwnership` 编排首次分配和正常交接。首次分配先无副作用容量预检，再 CAS 建立归属；交接先复核当前代次、
-预检目标容量，再等待源实例全量排水及持久化成功，最后 CAS 晋升。容量预检和排水通过执行回调接入，组件不依赖 Actor、NATS 或控制面协议。
-
-Actor 保留身份到槽位的绑定、实际加载、容量预留、邮箱和生命周期；framework 执行实例排水与持久化收尾；
-NATS/gRPC 只传递执行请求。回调错误立即结束本次操作，不自动改派或重投；低层 SlotStore/SlotRouter 与控制面 CAS SPI 保留。
-这是一套进程内复用组件，没有新增权威服务进程或租约。
-Discovery Runtime 统一创建归属组件，通过 Ownership 返回已绑定权威存储的能力；Actor 装配不再自行选择存储门面。
-control.NewHandoffClient 将控制协议和响应身份校验封装为已有 HandoffController 契约，可直接绑定到交接执行入口，连接所有权不转移。
-
-`CModSessionID` 依赖 `CModDiscovery`，复用其 `workSlot` 和租约有效性，不创建第二份租约，也不向业务暴露
-`workSlot`。标准服务组合只有需要发号的 Login 显式声明它；Agent、MsgQ、Game、SLGGame 和 SLGWorld 不声明。
-模块和服务在启动回调中可以取得分配器句柄，但只有 Discovery 成功把实例标记为 `running` 后才开放发号；
-启动期分配返回 unavailable。租约丢失或排水后分配器立即停止发号，且不能被启动末尾的启用动作重新打开。
-
-Login 是项目侧无状态 HTTP 服务；通过认证和访问检查后，将 SessionID 与业务身份写入绑定 Agent 实例的短期票据。
-客户端按 Login 返回的公开地址连接 Agent，Agent 验票建立 Session。新建握手仍校验票据所指的运行 `InstanceID` 与有效期；恢复握手验签后沿用票据中的原主体和 SessionID，不要求目标运行 `InstanceID` 相同或票据仍在新建有效期。客户端意外断线时保留原票据、地址与序号，限次恢复；新 Agent 若在原地址重启、使用同一票据验签密钥且原 MsgQ 邮箱仍存在，MsgQ 将原 Session 重绑到新的 ConnectionID 并续接 Seq/Ack 与未确认下行。原邮箱不存在时恢复失败，不能静默改建新 Session；原地址已变化时，当前客户端不能凭旧地址自动发现新 Agent。重新 Login 则取得新票据、新 SessionID 并重新认证授权，Seq/Ack、未确认下行与旧 Session 无关；是否重新从存储读取玩家 GD 由 Role Actor 与缓存生命周期决定，不由 SessionID 保证。
-Login 关闭只停止签发新票据，不拥有或终止 Agent/MsgQ 上已经建立的 Session。业务账号、角色号段与账号角色投影由项目维护。
-
-正常关闭把实例状态推进到 `stopping` 后删除实例键，但只停止租约续租，让 `workSlot` 键按 TTL 自然过期；这样新进程
-不能在旧进程退出的同一窗口立即复用短期槽位。由于 SessionID 在成功进入 `running` 前不会开放，启动尚未完成、
-从未进入 `running` 的失败回滚必然没有发号，可以主动撤销租约。
-持久 `SlotAssignment` 不随实例关闭删除。
-
-实例 ID、endpoint、版本和服务列表在启动时动态构造，不写死在业务 yml。etcd 保存集群控制状态，不保存 GD 或业务地图数据。
-
-固定槽位的数据流分为低频控制面与高频消息面：
-
-```text
-控制面 CreateSlot / PromoteSlot
-            |
-            v
-      EtcdSlotStore CAS
-            |
-            v
-       etcd Watch --------------+
-                                |
-                                v
-Agent ResolveSlot -> CachedSlotStore -> SlotDirectory -> ServiceDirectory
-                                本地内存          本地内存
-```
-
-`EtcdRegistry.Slots()` 是直接访问 etcd 的低级持久 Store；Server 对业务通过 `SlotReader` 暴露组合后的缓存读取能力。缓存门面只把
-创建和迁移委托给持久 Store，读取永远不回源。持久提交与 Watch 可见之间允许存在短暂收敛窗口，发布控制面必须观察目标
-generation 后再放流。
-
-实例目录与槽位目录属于同一个路由一致性域。Server 启动时等待两份首轮快照，再把实例标记为 `running`；任一 Watch
-中断会同时清空实例目录、使槽位目录进入 unavailable，并按固定退避重新获取完整快照。此时路由默认失败，不能使用旧
-assignment，也不能临时恢复成逐消息 etcd Get。该选择以不向错误 owner 投递为最高优先级。
-
-Runtime 为每轮 Watch 创建独立快照写入入口。观察到任一 Watch 返回时，先将本轮标记失效并清空两份目录，再取消和等待
-另一条 Watch；失效轮次的迟到 Replace 不再发布。快照发布与轮次失效由同一把锁串行化，该锁不参与业务路由读取。
-`Runtime.WaitReady` 只接受当前有效轮次的两份快照，不拼接各目录历史上的首次 Ready；这不是跨目录同一 etcd revision 的原子快照承诺。
-
-`SlotResolver` 使用不含 `Services []string` 和 `Endpoints map[string]string` 的 `RouteInstance` 值类型读取内部业务 RPC
-地址，避免高频路由为防御性复制切片或地址表而分配内存。命名公开地址只属于低频实例发现元数据，由项目定义名称和用途；
-`ServiceDirectory` 在写入和返回完整实例时复制地址表，不能把可变 map 所有权泄露给调用方。`SlotDirectory` 与
-`ServiceDirectory` 的纯读取路径使用读锁；只有服务轮询游标、快照替换和失效操作使用写锁，避免并发 Agent 请求被互相串行化。
-
-### rpc
-
-`modules/rpc` 是普通服务/实例 gRPC 投递：
-
-- ServiceRoute：从 running 副本选择目标。
-- InstanceRoute：精确投递给已知实例。
-- `DeliveryService.Deliver` 返回投递结果，`DeliveryService.Call` 返回同步 `Result`。
-- protobuf envelope 的 `payload` 字段承载调用方自己编码的不透明业务载荷。
-
-它不实现 Actor mailbox、会话 Seq/Ack 或业务幂等。发送结果不确定时不能由框架盲目重试；业务必须有独立幂等键。
-`CallReceiver` 与 `Receiver` 分别承载同步和单向入口，并都可以用请求级 admission wrapper 封口。`Sender.Send` 与
-`Sender.Call` 都先校验 `Delivery`、只解析一次路由、按 endpoint 与当前 InstanceID 复用连接；同址实例重启时关闭旧连接，冷路径拨号完成后复核目录身份。`Sender.Call` 不自动重试，也不偷偷补默认
-timeout。客户端只接受 `Accepted=true` 且没有错误码的确认；成功位与错误码同时存在属于矛盾状态，统一按拒绝处理。
-
-普通 RPC Sender、MsgQ 下行发布 Sender 和 Agent 的远端 SessionClientRouter 共用上述连接生命周期。Actor `CallStream`、下行 `PublishStream` 和 Agent→MsgQ `MailboxStream` 在各自实例连接内复用长流；MailboxStream 动态复用多个 Session，初始没有 Session。连接轮换会终止旧流，在途结果未知时不自动重投。三种业务流保留各自的请求关联、错误反馈和取消契约，不用同一套通用消息流协议覆盖。
-
-MailboxStream 的每 Session 接收缓冲有界，慢 Session 缓冲溢出时结束自身读取，不阻塞其他 Session、不代替客户端推进 Ack；未确认下行保留在 MsgQ，按原恢复流程读取。单 Session 的 Context 结束会中断对应 Agent Socket 读写和续期，不等待下一次 Recv；远端读取者退出后按订阅对象清理登记。控制帧处理与下行 Send 分属两个协程，流控不应阻断 Ack/CLOSE。Ack/Renew 遵守调用方 Context；CLOSE 先完成本地取消，再尽力发送远端取消，控制队列满时显式返回错误，远端读取者仍受会话超时约束。PublishStream 关闭最多等待 5 秒，超时取消底层流并返回失败。
-
-`modules/rpc.Host` 实现“每个物理进程一个普通 gRPC Host”：它唯一持有 listener 与 `grpc.Server`，直接接入
-`lifecycle.WaitGroupContext`，并负责注册阶段、Serve 和幂等 Stop。Bee/Ant 的私有装配内核创建 Host，让所选服务在启动期
-注册 protobuf service，全部注册成功后启动 Host，并把实际 endpoint 发布到服务发现。
-同进程的 msgq 与普通 RPC 因此可以共享 endpoint，但保持不同 protobuf service；任一服务不得自行关闭共享 listener。
-
-### 命令哈希与正文边界
-
-命令标识由 txgen 对命令类型名原样 UTF-8 字节计算 **FNV-1a 32 位哈希**，大小写敏感。请求和响应共用同一个哈希空间；生成前检查所有命令，发现碰撞或保留值 `0` 时失败并报告命令名，由开发者重命名新命令后重新生成。客户端和服务端使用生成常量，不在运行时计算哈希。
-
-开发者在 `gen/cmd` 维护 DTO 和 `@actor` 接口，通过 `@scope`、`@mode` 声明投递范围与调用语义，使用接口默认值或方法上的 `@route`、`@principal` 声明路由与身份要求；txgen 自动生成 Go `CmdDescriptors` / `CmdDescriptorsByHash` 与 TypeScript `CommandSchemas` / `CommandNamesByHash`。生成描述表随前后端代码发布，禁止手改。不再维护编号池、服务号段、退休清单或清池入口。多人分支合并后须重新生成整套协议，以检测合并后的碰撞；检查范围是本次项目输入，不提供跨版本历史碰撞保证。命令重命名会改变哈希，属于协议变更。
-
-`toService`、`actor`、`actorID` 是描述表内的路由元数据，不参与哈希。Agent 先按帧头哈希查描述表，再选择目标服务和 Actor，不按哈希数值区间路由，也不解析 BON。
-
-Frame v4 的 32 字节固定头以 `uint32 CommandHash` 标识上下行业务命令，控制帧为零。BON 仅编码正文。MsgQ 的通用邮箱仍保存不透明 `[]byte`；应用通过生成的 `EncodeDownMessage` 写入 `[4 字节大端哈希][BON]`，Agent 解包后将哈希放入帧头。内部 RPC 的 Delivery/Result 独立携带 CommandHash，不在正文重复命令名。此版本不兼容旧帧、旧邮箱编码及旧 Actor/RPC protobuf 字段。升级前须让旧版消费完已有持久化任务，结束旧会话，再同步部署集群节点与前后端并建立新会话；不提供新旧协议混跑或旧消息迁移。
-
-### BON 解码边界
-
-BON 的无符号长度使用 7-bit 变长整数，Go runtime 与 TypeScript 客户端共同锁定同一 wire format。多字节编码必须
-写出移位后的最后 7 位，例如 `128 -> 0x80 0x01`，不能把原始低字节重复写入尾段。
-
-解码器面对客户端输入时先验证物理下界，再分配动态容器：数组每个元素至少需要一个类型字节，文档每个成员至少需要
-两字节字符串键和一字节值类型。声明数量超过剩余载荷可表达的上限时立即失败。容器递归深度固定限制为 64，防止小型
-恶意载荷通过连续单元素容器消耗运行时栈；该限制独立于 Agent 的整帧字节上限。两端必须用相同边界测试同步演进。
-TypeScript reader 使用无原型字典承载动态文档，并只从自有属性读取schema 字段；不能让动态 key 改写
-临时对象原型或用继承属性绕过字段校验。
-
-通用 `DeliveryService` 在同一个 gRPC server 中只能注册一次。聚合多个业务服务的进程应由项目提供一个进程级
-Receiver，再按稳定消息元数据分发，不能让每个服务重复注册同名协议。Actor Remote 继续使用专用入口；Agent Session
-控制协议注册到普通共享 RPC Host，但保持独立 protobuf service，不与业务 Delivery、MsgQ 或 Actor 路由耦合。
-
-### msgq
-
-本地 `roles` 索引由 `RoleID -> mailboxSession 指针集合` 构成，仅用于定位接收邮箱，不增加统一生命周期或共享 Seq/Ack。
-初始化成功时在持有 session 锁的条件下发布索引，恢复不重复加入；所有邮箱删除路径通过 `removeLocked` 同步移除角色索引。
-角色广播在服务锁内取得本地索引快照后释放服务锁，再逐个取得邮箱锁，与 Topic 广播复用 `broadcastSessions`。
-因此不会持有服务锁等待邮箱，也不会将初始化中或已失活邮箱当成有效收件人。新加入者不接收快照取得前的历史消息。
-`BroadcastResult` 统一表达 Topic 和角色分发统计；远程角色归属校验仍属于后续运行入口接入范围。
-
-广播的部分入队结果属于通信契约：本地调用同时返回统计和错误；gRPC 错误使用状态详情承载原有
-`BroadcastResponse`，客户端还原投递统计和错误类型。不能返回普通响应加非空 gRPC error 并期待响应正文被传送。
-健康邮箱的入队不会因其他邮箱溢出而回滚；载荷从广播调用开始按只读共享处理，不以返回成功作为唯一交接条件。
-传输断开或超时可能使统计不可获得，此时结果未知，不能据此全组重发。
-
-#### 角色归属与路由缓存基础
-
-`RoleBinding` 表示 `RoleID -> (InstanceID, Generation)`，不代表邮箱或共享生命周期的 Session 集合。
-Redis 单 key 原子申请使并发候选得到同一个归属；查询和重复申请不续期，只有持有完整归属的 MsgQ 才能条件续期或释放。
-归属 key 有 TTL，以防初始化中断或进程退出后永久残留；释放前必须由运行层排除并发初始化，并确认最后一个可恢复邮箱已终止。
-仅凭 CAS 不能证明满足这个释放条件。Generation 是每次申请的唯一令牌，不是 SessionID，也不是集中式递增计数器。
-
-`RoleRouter` 使用 Otter v2 保存有限数量的归属值；服务发现快照不缓存到归属记录内，以便每次定向寻址检查当前实例状态。
-冷查询使用 singleflight，并在结束合并前完成缓存填充，避免极快并发查询重复回源。
-明确失效与在途加载交接后按完整归属删除；过期通知不能删除后续缓存。热路径不访问 Redis。
-路由缓存只用于寻址，不证明目标仍持有邮箱。`PubRole` RPC 携带 RoleID、InstanceID 和 Generation，
-接收端在同一读锁内检查本地完整归属和有效期并取得邮箱快照；旧请求不能混入换代后的新邮箱。
-缺失、过期或不匹配的归属返回 `ErrSessionChanged`，不在接收热路径查询 Redis，也不转发给其他 MsgQ。
-初始化尚未成功的邮箱不在快照内；初始化失败不会留下订阅。MsgQ 宕机后不恢复旧邮箱内容，归属过期后使用新 Session 干净登录。
-角色投递与 Topic 广播共用 `BroadcastResponse`，只报告入队统计，不把多个邮箱的独立 Seq 合并为一个序号。
-网络超时不触发自动业务重发；消息可能已入队，不能通过重新寻址推断发送失败。
-
-Agent 选址、邮箱初始化和 `Sender.PubRole` 已接入角色归属。Sender 使用有界 RoleRouter 缓存，仅在 `ErrRoleBindingChanged` 明确表示尚未向任何邮箱投递时清理对应版本，重新寻址并重试一次。该标识通过 gRPC ErrorInfo 保留；普通会话错误只清缓存，超时、断连与部分投递不重发。第二次失败原样返回，不重跑业务 Handler。
-跨工程真实验收继续按实施计划推进，不能将缓存基准视为端到端链路验收。
-
-邮箱用角色级初始化锁串行协调初始化和归属维护，不把多个 Session 的 Seq/Ack 合并。初始化第一次接管本地角色时先原子申请、再条件续期，
-本地租期从请求开始时刻计算，避免把网络耗时额外算入有效期。正常入队与会话活动只读本地租期，不访问 Redis 角色索引。
-低频清理循环只枚举本地归属：有邮箱且到达半租期时条件续期；无邮箱时条件释放；超期或明确失去归属时使该角色所有旧邮箱失效。
-续期 I/O 错误不会延长本地有效期；最后邮箱释放与新初始化共用角色锁，避免新邮箱继承被并发删除的绑定。
-角色维护在初始化分片锁内登记在途续期，锁外执行 Redis 条件续期，返回后重新获取锁，核对停止状态、完整归属及在途请求身份；本地租期已失效时不接纳迟到结果。
-同归属重复续期等待同一完成信号，等待者取消不取消原请求。停止或最后邮箱释放可以先于旧续期返回，旧结果不得写回新归属。该锁拆分仅用于维护续期；首次申请和条件释放仍与初始化串行协调，维护循环不并行化。
-
-`modules/msgq` 是客户端会话邮箱，不是所有服务消息的中心总线。它负责：
-
-- `SessionID -> (RoleID, SessionID, ConnectionID, InstanceID)` 精确 binding。
-- `RoleID -> 唯一 MsgQ 归属及版本` 投影。
-- 上行 Seq 单调递增与旧号去重。
-- 下行队列和 Ack。
-- 断线重连时重发未确认下行消息。
-- 本地 Topic 广播。
-
-远端下行流只复用传输，不改变邮箱出队、Seq/Ack 和重连重放的权威边界。每次读取仍校验当前 `ConnectionID`；Agent 断开后取消流，新连接通过 `Restore` 按已有 Ack 重置发送游标。流式发送不额外等待凑批，也不把 MsgQ 内存下行变成持久化消息。
-
-Redis 精确 binding key 为 `<prefix>:session:v2:{SessionID}`，保存完整四元组；角色归属 key 为
-`<prefix>:role:{RoleID}`，保存 InstanceID 和 Generation。二者分别按 SessionID 和 RoleID 选择分片，只保证各自单 key
-条件操作，不承诺跨 key 事务。下行正文只保存在 MsgQ 实例内存；实例崩溃允许丢失未确认下行，客户端重连后由业务状态
-重同步恢复。
-
-`SessionID` 标识一次逻辑登录会话，`ConnectionID` 标识该会话下的一次物理 TCP/WebSocket 连接。弱网恢复必须命中
-同一 `SessionID`，同时分配新的 `ConnectionID` 以拒绝旧连接迟到的 MailboxStream Ack、Topic 管理和 TerminateSession。`Restore=false`
-的新建会话复用 RoleID 的 owner，只有无归属时才在 running MsgQ 间轮转提名并原子确定 owner，然后用 `Create NX` 创建精确 binding；现存 SessionID 会明确冲突。
-`Restore=true` 的恢复会话只按
-SessionID 回到原 running owner，用完整旧 binding 条件 `Rebind` 到新 ConnectionID；失败时不迁移。同 SessionID 恢复
-保留 Seq/Ack 与未确认队列，新 SessionID 的干净登录不继承旧消息。
-
-#### 多个 Session 操作同一业务身份
-
-授权的同一 RoleID 多个 Session 可以并存，并路由到同一 Game/Actor。这是通用多会话能力，不定义主、副 Session 或会话优先级。
-Borrow 和旁路挂机只是应用场景：前者由授权操作者访问目标角色，后者由外部服务运行行为树并发送行动请求，
-玩家自己的 Session 可同时在线观察或操作。世界模拟与权威校验仍在服务端，不因外移行为树决策而取消。
-世界请求按业务认可的路由键定位 WorldActor，不以操作者账号替代目标世界身份。
-各邮箱独立维护 Seq/Ack 与未确认队列，新增、恢复或终止一个 Session 不影响其他 Session。
-`Sender.SendRole` 向该角色全部邮箱异步分发，框架不提供基于会话优先级的登录互斥策略。
-
-`SessionRouter.ResolveMailbox` 有界缓存 SessionID 到 MsgQ InstanceID 的归属，合并冷查询，供 `SendSession` 和显式同步 `PubSession` 使用；不缓存 ConnectionID。
-同一 Session 的 MsgQ 归属不迁移，实例丢失后使用新 Session。缓存命中仍核对本地服务发现，明确邮箱失效时清缓存，传输超时不自动重发。
-`SessionRouter.ResolveSession` 始终读取当前绑定，Topic 操作保留此边界。它与 `ResolveMailbox`、`RoleRouter.Resolve` 都只读解析，不刷新 TTL。只有当前 ConnectionID 通过 owner 侧校验的连接活动
-才更新本地活动时间；业务发布不更新。生产 Redis store 在 `Init`、`Rebind` 或一次成功续期后等待 `TTL / 2`，达到
-阈值的第一条合法活动才续期精确 binding，因此高频心跳、上行、Ack 和下行推送不会产生同频 Redis I/O。
-续期网络等待不持有邮箱队列锁，同邮箱到期活动合并等待；等待者可独立取消。恢复或终止可与在途续期交错，
-续期返回后重新核对活动状态、ConnectionID 与角色归属有效期，旧续期结果不能删除或更新新连接。
-默认离线保留窗口为 `180s`，失活终止检查间隔为 `2s`；周期任务只遍历当前 MsgQ 的本地 Session 表，不扫描 Redis key。
-超过窗口、积压条数或积压字节上限时终止整个 Session，而不是无限保留未确认消息。
-
-公开业务下行使用 `Sender.SendSession(SessionID, payload)` 与 `Sender.SendRole(RoleID, payload)`：复用指向 MsgQ owner 的 `PublishStream`，进入本地有界发布队列后返回，不等待写流或目标邮箱逐项确认。队列满时等待空位，并受调用方 Context 或流关闭约束；入队后的写流失败只记录错误，不自动重投。关闭发布流时按顺序排空已入队消息。只有旧角色归属被 MsgQ 明确拒绝、该条载荷尚未进入任何邮箱时，拒绝帧才回带原载荷，发送端失效旧缓存并重新寻址，单次投递到新归属；重投结果未知或部分成功时停止，不再次重投。需要明确入队结果的调用方仍可显式使用同步 `PubSession`/`PubRole`，不得将它们的结果语义套用于异步发布。`SendRole` 到达归属 MsgQ 后向该角色的全部会话邮箱扇出，各邮箱独立分配下行 Seq。Topic 是单个 MsgQ 的本地 SessionID 索引：`JoinTopics` 和 `BroadcastTopic` 以 SessionID 作为当前连接或实例路由锚点，跨实例覆盖须由业务分别选择各实例上的 Session。
-
-会话控制的 `Init` 仅在得到合法响应后报告成功。`MailboxStream` 承载每个 Session 的下行推送和 Seq/Ack，同一条流可复用多个 Session；旧连接与过期会话的错误只终止对应逻辑会话。异步发布的写流成功不等于目标邮箱入队，失败或断流时结果可能未知，框架不会自动重发业务载荷。
-
-Agent 的会话来源是显式二选一：配置 `LocalMsgQ` 表示同进程复用，未配置时才通过 discovery 解析远端 msgq。
-本地 provider 返回错误时必须让 Agent 启动失败，不能回退远端；否则一次本地装配顺序错误会被误判成跨进程
-部署，并把半装配进程带入运行态。
-
-Agent 在调用 MsgQ `Init` 前把连接登记为初始化中，`Init` 成功后、发送 `FrameReady` 前原子晋升为已激活。注册表以
-`SessionID` 定位，以 `ConnectionID` 比较删除；旧连接退出不能移除已经恢复的新连接。控制请求会同时覆盖初始化中与
-已激活连接：初始化期间收到断开时不发送 Ready；收到终止时，无论 `Init` 成功还是因连接取消返回不确定结果，都会使用
-独立的有界上下文按新 ConnectionID 补偿一次精确终止，仍不发送 Ready。同一 SessionID 的并发终止请求共享一个本地操作，
-终止期间新登记的初始化连接自动加入；调用方取消只结束等待，不取消后台收尾；任一精确终止的非幂等错误都必须返回，
-不能由更早连接的成功结果掩盖。`DisconnectSession` 只关闭物理连接，保留
-MsgQ 邮箱并允许恢复；`TerminateSession` 使用登记时保存的完整 SessionHeader 精确终止 MsgQ 逻辑 Session，再关闭物理连接。
-
-所有独立 Agent 都在共享 RPC Host 上注册同一控制服务。调用方通过 `SessionControlBroadcaster` 读取服务发现内存快照，
-向全部运行中 Agent 并行广播；未持有目标 Session 的实例幂等返回未处理。至少一个实例确认处理即表示命中；全部未命中且
-存在调用错误表示结果不确定。该控制链路不查询 Redis owner，不认识 MsgQ，也不依赖 Kubernetes 或特定负载均衡器。
-
-### Agent
-
-`modules/agent` 终止客户端 TCP/WebSocket 连接，处理 frame、握手身份、Seq/Ack 和路由描述。它不承载具体 game handler，也不要求所有命令先经过 game 中转。
-标准 `agentservice.Service` 在配置 `WebSocketListen` 时复用同一个 `http.Server`：根路径 `/` 固定保留给 WebSocket Upgrade，
-非根路径在请求级 admission 通过后才进入项目 `HTTPHandler`；未配置 `HTTPHandler` 返回 `404`，排水或停止后返回 `503`。
-如果未配置 `WebSocketListen`，当前阶段不会创建“纯 HTTP” Agent 服务。
-
-生成的 `CmdDescriptor` 提供静态 CommandHash、目标服务、Actor type 和 route key 类型；项目 resolver 根据认证身份解析 Type/ID，实例归属由 tx 统一解析。
-
-连接入口可以是真实客户端，也可以由项目扩展为本地驱动或旁路模拟连接。tx 提供基础网络 Agent，同时保持 dispatcher 接口开放。
-
-项目通过自身 `services/agent.HandlerProvider` 在组合根注入认证与 Actor 路由。Provider 接收当前
-Bee 或 Ant Context，使用 CModActorDirect 完成直连；稳定分区或业务槽位在 Type 声明，Provider 不组装发现连接或 PID。
-
-`IdentityResolver` 返回 `protocol.SessionPrincipal{RoleID, SessionID, Claims}`。`Claims` 用不可变字符串承载项目认证后的字节；
-框架仅检查邮箱编号，生成正 `ConnectionID` 并构造 `SessionIdentity`，不解释账号、服务器、借号或建角资格。
-项目不能从 ticket 或客户端数据指定 `ConnectionID`。各 Session 生命周期独立。
-
-登录协议、渠道认证、选服、角色预留流程、Agent 选择、票据签发与恢复资格全部由业务工程维护。
-两套示例在各自 `services/internal/session` 定义强类型 Principal 和票据编码器，Login 与 Agent 共同使用，彼此不依赖子服务包。
-项目验证签名、时效与目标后，在握手时编码一次 Claims；普通转发复用该载荷，不逐消息查库、签票或解码。
-业务 Handler 用 `ctx.Principal` 取得运行时身份，需要账号或权限时再通过项目 `session.Decode` 读取并验证业务身份。
-生成器仅维护角色绑定、投递范围和类型化调用，不解释 Claims，也不定义账号、分服和借号枚举。
-客户端自报的身份字段不可信；内部投递可携带已验证身份，但 Decode 不代替入口认证。
-
-Actor protobuf 将 Claims 作为 bytes 原样传输，旧业务字段编号已保留而不复用；本次不支持新旧内部身份协议混跑，
-Agent 与相关业务服务必须协调升级。客户端握手帧和项目票据 JSON 保持不变。新增业务字段只修改项目身份和校验，不要求修改 tx。
-
-通用 Actor Dispatcher 在调用 Messenger 前以 `DispatchRequest` 的可信 `SessionIdentity` 覆盖 Delivery 身份。
-项目 Actor resolver 只负责目标、消息类型、命令哈希、路由键和载荷，不能伪造身份。
-Actor protobuf 保留完整身份；内部调用也可省略身份。UpSeq 不进入 Delivery、MessageContext 或 MsgQ。
-
-`Dispatcher` 通过直连 `Enqueue` 将上行提交给目标实例的长流后返回 error；nil 只表示本地传输提交成功，不是远端 Actor 邮箱接纳或业务执行成功的回执，也不回传客户端。Game/Actor 后续通过 `SendRole` 向角色会话扇出普通响应，请求级错误通过 `SendSession` 精确发布。两者进入本地有界发布队列后返回，不等待 MsgQ 逐项入队确认；新 SessionID 不继承旧会话下行。
-
-正常交接中旧实例 Draining 与分区晋升之间允许短暂无可用路由。直连 `Enqueue` 只在尚未调用传输且路由返回 `ErrSlotRuntimeUnavailable` 时，在调用方既有 deadline 内每 10ms 重读路由；正式路径读取 Watch 内存缓存，不新增逐消息 etcd 查询。Agent 已有默认 5 秒期限，等待期间保持当前连接的处理顺序。无期限调用不等待；取消、超时及其他错误返回失败。进入传输后的错误不触发寻址重试或业务补发，也不提前晋升归属或跳过旧实例最终写回。
-
-
-Agent 核心不依赖项目生成协议，因此不会自行构造业务错误包，也不负责项目 HTTP 路由、JSON/BON 绑定、自动重试或
-通用 HTTP Router。项目 Game/Actor 适配层负责把 Handler 错误转换为生成的
-`System_Error{Code, Message}` 并直接发布到发起 Session；这类结果不会终止连接。
-`Code` 使用 `int32` 跨 Actor protobuf 边界传递，`0` 表示没有错误，`CallErrorCodeInternal=-1` 表示未分类内部错误，
-正数空间由项目错误码表分配。`CallErrorCodeDispatch=-2` 标识 Actor 解码、Handler 注册和投递模式等分派契约失败；
-目标 Actor 在解码或分派阶段识别该错误时，Actor 适配层同样生成 `System_Error`，连接继续处理后续请求。握手、Frame、Seq/Ack、
-目标解析和本地传输提交等同步返回的基础设施错误仍沿 Agent 错误返回链关闭连接。远端 Actor 邮箱拒收不提供逐项成功或失败回执，可能表现为该次操作无响应；不能把本地提交成功解释为业务执行成功。
-
-### 会话序号与确认契约
-
-“取消上行确认/重放”和“UpSeq 止于 Agent”是两个独立约束，必须分别核对实现，不能由其中一个推断另一个。
-
-| 标识 | 产生与维护位置 | 用途与生命周期 |
-| --- | --- | --- |
-| UpSeq | 客户端分配；Agent 当前连接维护已接受最大值 | 只过滤连接内旧号，允许跳号；连接结束释放，不传递给业务或 MsgQ |
-| DownSeq | MsgQ 的 Session 邮箱 | 对该邮箱下行排序；同 Session 恢复保留，新 Session 不继承 |
-| 客户端 Ack | 客户端已处理的最大 DownSeq，经 Agent 同步 MsgQ | 仅裁剪已确认下行，不表示上行业务成功 |
-| ProbeID | 示例压测请求正文，由对应响应原样返回 | 独立匹配样本，允许响应乱序；不参与传输排序、去重或邮箱裁剪 |
-
-内部 Actor RPC 的 requestID 和 NATS Call 关联标识仍用于各自调用，不是 UpSeq，也不因取消上行确认而移除。
-
-连接上承载两条生命周期不同的序列：客户端为 `FrameUpMsg` 分配 Seq，MsgQ 为 Session 邮箱中的 `FrameDownMsg` 分配 Seq。每条连接按 socket 读写顺序处理帧，Seq 只要求递增，不要求相邻两条相差 1；旧号不会重复分派。帧中的 Ack 只由客户端发送，用于确认已经处理的服务端下行：`FrameUpMsg.Ack` 或 `FrameAck.Ack` 推进 MsgQ 裁剪游标。`FrameReady.Ack` 和 `FrameDownMsg.Ack` 固定为零，服务端不发送上行 `FrameAck`。
-
-Agent 将上行提交给 Game 长流后推进本地游标，不等待远端邮箱接纳或业务完成。只有客户端下行 Ack 经共享 `MailboxStream` 异步同步 MsgQ，不等待逐项回执；每次上行携带的 Ack 同时用于连接活动维护。上行游标仅属于当前连接，不存在跨连接去重或 Agent Rec lease。Game 长流服务端在接收循环中同步入队，保证同一条 Agent 流上的消息按序进入 Actor 邮箱；邮箱 worker 可以继续独立消费，Agent 不等待业务执行。
-
-客户端不保存未确认 UpMsg 队列；发送失败或连接中断后的请求结果可能未知，框架不会自动重投。恢复连接复用原 Session，只恢复 MsgQ 中未确认下行。msgq 的新建与恢复语义严格分离：新建总是安装空会话，恢复必须命中同一 SessionID。只有 `Init` 成功后 Agent 才发送 `FrameReady`；客户端在收到它之前保持连接中状态。恢复后新命令继续使用客户端本地递增的 Seq，不回拨也不重投旧命令。旧连接结束即释放 Agent 上行游标；同 Session 新连接从空游标开始，仅续接下行邮箱。普通响应与 `System_Error` 均由 Game/Actor 直接发布到 Session 邮箱。
-
-客户端成功处理下行后，优先在下一条上行捎带最大已处理下行 Seq；若持续没有上行，参考客户端每 5 秒检查一次未发送的 Ack 并发送独立 `FrameAck`。MsgQ 据 Ack 裁剪队列；两套示例的单会话 1024 条与 8 MiB 配置上限保持不变，触限按现有溢出处理。定时确认不承诺任何时刻的精确积压量，容量评测在上下行主链路验收后进行。
-
-### 会话隔离边界
-
-新 Login 分配新 SessionID，Agent 的游标属于该连接处理过程，不按 RoleID 在进程间共享；返回原 Agent 也不会沿用旧 Session 的游标。Restore 则保留 SessionID、MsgQ owner 和未确认下行，通过完整 binding CAS 更新 ConnectionID。MsgQ 拒绝旧连接的 Ack、读取和终止操作，并唤醒旧订阅使 Agent 断开旧 socket。
-
-这不是有到期、续租和跨服务 fencing 的 Agent 租约；它不撤销已提交到 Game 的旧上行，也不承诺两条跨 Agent 连接间的全局顺序。同一 Actor 的邮箱串行消费不等于不同 Game/World/Fightroom 之间存在全局完成顺序；返回到同一 MsgQ 邮箱的响应按实际入队顺序分配 DownSeq，不按 UpSeq 排列。客户端不应同时用两条 socket 提交同 Session 的新命令。正常排水由既有准入与完成屏障管理，不为意外退出增加上行重放。角色归属租约和会话 TTL 继续由 MsgQ/Redis 管理，下行序号仍由 MsgQ 分配。
-
-### Actor
-
-默认后端由 tx 本地实体宿主、L2 Discovery 归属和 Core NATS 构成。公开 Type 工厂统一接收 BehaviorFactory，不再区分 Virtual/Fixed 构造入口，不暴露 ProtoActor PID、Props 或 ActorSystem。
+| 默认分区 | 普通 Role、Room 等 | ID 经 xxhash64 映射固定 1024 分区；分区共享实例，邮箱独立 |
+| `WithSlotMapping` | 纯计算固定槽，如独立 World | 不做业务 I/O；映射须一致 |
+| `WithPlacement(name)` | 多 Type 按业务组同实例 | 应用解析稳定 GroupID，tx 形成服务池/策略/组槽位 |
 
 ```text
 Identity(Type, ID)
-  -> Type 槽位解析（默认 v1 1024 分区，或 WithSlotMapping / WithPlacement）
-  -> SlotDirectory + ServiceDirectory 缓存
-  -> assignment(RuntimeInstanceID, Generation)
-       -> Agent: gRPC 共享 Endpoint
-       -> Actor 间: NATS 实例主题
-  -> 同一本地实体宿主 -> 同一实体邮箱 -> Behavior.Receive
-业务下行 -> gRPC -> owner MsgQ -> Agent -> 客户端
+  → 类型目录 → 默认映射 / 纯映射 / 命名 Placement
+  → Identity→SlotID 缓存命中：直接继续
+       未命中：本地策略直调 / 进程级 RPC 查询目标服务
+       → 校验并缓存成功结果
+  → SlotID→InstanceID/Generation 目录
+  → 目标实例：加载前权威核验 → 实体邮箱
 ```
 
-`WithSlotMapping` 保留纯计算映射；需要 I/O 的分组通过 Type 的 `WithPlacement(name)` 引用目标服务 `ServiceSpec.Placements`。Ant/Bee 的策略 Factory 在 CMod 就绪后、服务 Start 前创建 GroupResolver，未选中服务不执行工厂。业务仅返回稳定分组 ID，tx 用服务池、策略名与分组 ID 的无歧义编码形成 `actor-group-v1` 槽位，跨 Type 同组共享归属。纯映射不得占用此保留前缀。
+命名策略只在目标服务本地被选中时装配，Agent/World 消费者不构造目标业务存储。冷查询合并，缓存有界，失败不缓存、不回退默认分区。首次归属先做容量预检，再 CAS 创建 assignment；CAS 后结果未知或容量变化不自动改派或重投。
 
-通用 `PlacementQuery` 是进程控制协议：本地直接调用提供方，远端通过现有 RPC Sender 查询目标服务，不能经目标 Actor 邮箱或继续代理。全部寻址及加载校验共用框架管线。Identity→SlotID 使用既有 Otter 有界缓存（65,536 项），同身份冷查询合并，成功才缓存；调用限时 3 秒，取消首个查询使共享查询失败，其他等待者可独立退出。不自动重投业务。查询实际执行由子生命周期托管，关闭存储前取消并等待；等待超时返回可重试的关闭失败并保留资源，外部查询准入随进程排水关闭。缓存不是新的权威表，SlotID→实例继续复用 L2 assignment/Watch/CAS。未使用分组的进程保留原默认寻址，不创建查询缓存。
+SLG 示例由应用把 OriginServerID 解析为 MainServerID，作为 Role、Legion、ServerActor 的分组。合服与赛季规则不进入 tx。分组在运行期稳定；槽位换 owner 可保留 Identity→SlotID 缓存，改变分组则需要应用安排重启等流程。详细契约见 [Actor 放置](actor-placement.md)。
 
-业务存储结构与服务器目录快照留在应用；分组必须运行期稳定，合服或策略布局修改需要停服更新全部缓存持有者。框架不负责在线数据迁移或跨服务部署亲和。策略工厂不持有独立资源生命周期，也不允许通过它提前启动业务任务。
+## Actor 激活、邮箱与控制
 
-NATS 不决定实体归属，也不按实体创建订阅。首次缺少 assignment 时，L2 Ownership 执行容量预检与 CAS；已有归属不随新成员入环变化。懒加载前单独读取权威槽位，不能用 Watch 缓存替代。默认分区只共享 owner，每个实体仍独立加载、串行处理、卸载和预留容量；世界与 seasonWorld 可共享 slgworld 服务池并保留独立业务槽位。
-
-实例通过 `actor.Config.Capacity` 声明全部本地 Type 共用的数量上限。默认 `activation` 模式统计初始化、运行及清理中的 Actor，清理完成才释放；`assignment` 模式用于独立实体槽位，统计持久归属，卸载或 GD 缓存淘汰不释放名额，同一世界重新加载复用名额。独立 slgworld 实例可配置 Maximum=1，承载任意首个被分配的世界，不绑定 worldId；临时房间可按业务估算配置 Maximum=1000。Initializations 独立限制同时加载数量，不给初始化设置统一超时。
-
-默认 EtcdSlotStore 在创建或晋升归属时原子检查稳定名额，交接前先预检目标容量。有限容量的冷分配读取现有目录快照并执行范围比较与单键 CAS，不维护第二份权威计数表；普通消息路由不扫描目录。该路径成本随目录规模增长，后续按真实规模验证。此数量限制不等于内存保证，不负责自动扩 Pod 或资源采样；GD 缓存释放仍由 cache manager 管理。
-
-ServiceSpec.ActorTypes 构成应用目录，Type 名称应用内唯一；仅选中服务执行本地工厂。CModActor 依赖 RPC 和 Discovery，绑定共享接收入口与 NATS，服务 ready 后才发布 running。连接和关闭权限在框架内，业务通过 CModActor 或 CModActorDirect 的窄接口使用。
-
-### Actor 初始化与就绪
-
-子服务阶段、Actor 控制入口与业务模块复用边界见 [生命周期设计](service-actor-lifecycle.md)。ServiceState、Controller 和 WaitReady 已接入；项目模块已统一为启动绑定的 Access，远端卸载 API 未提供。
-
-Actor 的 Ready 是工厂及初始化、激活回调全部成功后的状态，包含项目在这些入口中等待完成的必备业务初始化；不是仅表示框架分配了邮箱。顺序为归属与数量准入、Initializing、工厂、OnInitAfter、OnActivateBefore、OnActivateAfter、Ready、业务邮箱消费。初始化中已接纳的消息在有界邮箱等待，不提前执行 Handler。
-
-必备内容及“可进入条件”由项目定义；可选预热不阻塞 Ready，但后台工作须有项目自己的错误和收尾管理。活动开启、赛季资格等业务状态不加入框架生命周期；不增加 feature-ready 或手动 MarkReady。EnsureActivation 只发起或复用加载并返回当前状态，项目需要时通过 actor.WaitReady 只读等待；进程 Running 不等于目标 Actor Ready。失败、等待超时和未加载均不能解释为业务实体不存在。
-
-项目可以通过启动参数指定业务 Actor ID，并复用归属控制与激活入口，但不得以业务 ID 替代物理 InstanceID 或绕过已有 owner。Service.Init 完成装配后启动 RPC/控制监听并发布进程 Running，随后执行可选的 Service.Start。该阶段允许控制加载与 Probe，普通消息仍拒绝；全部启动钩子成功后才进入子服务 Running。具体示例及待接入项见 [Actor 生命周期与 World 启动边界](../../txgameslg/docs/actor_lifecycle.md)。
-
-### Actor mailbox
-
-Tell 完成寻址后，同 Runtime InstanceID 直接进入本地邮箱，跨实例提交 NATS 客户端；TellAccepted 同实例确认邮箱接纳，跨实例确认到达当前连接的 NATS 服务端，不确认业务执行或持久化。本地路径保留消息副本及邮箱准入、容量和排水检查，不等待初始化或业务执行；准入错误立即返回，异步执行错误记录日志。不承诺多发送方或混合传输的全局顺序。可靠任务仍先持久发布到 JetStream，消费后才按归属调用 Actor。CallFuture 返回异步 Future，Call 同步等待相同结果。等待超时不撤销已接受业务，也不自动重投。普通业务结果必须有 MessageType；无响应体的成功处理使用 `Result.Completed=true`，不得同时携带 MessageType、CommandHash 或 Payload；Agent 上行通过直连 `CallStream` 单向投递，不等待逐项邮箱确认，业务下行独立走 MsgQ。
-
-有界邮箱将准入与生命周期登记放在同一边界；关闸后拒绝新消息，已接受的初始化、排队和处理继续完成。远端错误经 Result 协议传播，普通 Tell 不增加执行回执。远程 pending 由响应、Context 到期或连接关闭清理，不为每个 Future 常驻等待 goroutine。Agent 先使用归属目录检查 running 状态，不再维护依赖 PID 的第二份短期排水缓存。
-
-投递入口语义由 `DeliveryOrigin` 表达，通过 `Delivery.Origin` 和业务调用上下文 `MessageContext.Origin` 读取；响应链路由适配层选择，业务 Handler 无需按来源分支：
-
-| 路径示例 | 入口语义 | 当前处理方式 |
-| --- | --- | --- |
-| 客户端 → Agent → Guild | `OriginClient` | Agent 设置来源；业务响应经 MsgQ 下行，不返回上行确认 |
-| Game → Guild | `OriginInternal` | 普通服务间 Actor 调用；由 Call/Tell 决定是否等待业务结果 |
-| 可靠任务 → Guild | `OriginTask` | 任务消费者设置来源；当前通过 Call 等待业务完成后才确认消费，失败沿用重试/死信规则 |
-
-这里 Guild 仅是业务扩展节点的示例，不要求 tx 或 txgen 预定义该节点。新增 Game、World、Guild 等服务或 Actor Type 均复用这三种语义，不扩展枚举。`OriginInternal` 保持零值，其他值分别为 `OriginClient=1`、`OriginTask=2`。
-
-入口语义与语言及传输方式独立：当前可靠任务由 JetStream 消费后调用 Actor，未来其他语言实现可以通过 Kafka 等消息设施承接可靠任务，但仍使用 `OriginTask`；可靠性取决于消费确认、重试和持久化实现，不由 RPC 或 Origin 标记本身保证。该命名不代表当前已提供 Kafka 或 Java 实现。
-
-来源独立于业务 MessageType，不代替认证；`Completed` 只表达该次处理完成，不是客户端上行确认或邮箱入队确认。
-
-标准 Actor ID 使用 `actor.Int64ID`、`Uint64ID`、`StringID` 与对应 Parse 方法，保持 `i:`、`u:`、`s:` 既有值。Identity.ID 仍允许自定义编码；tx 不推断业务 ID、服务名称或分区规则。
-
-本版新增来源和完成字段，依赖它们的 tx、生成接口及示例服务应使用同一契约版本部署，不提供旧消息名称兼容分支。
-
-Behavior.Receive 接收公开 Delivery，返回 Result/error；Context.Post/After/Deactivate 用于本地串行工作与业务自定义卸载。工厂、OnInitAfter、OnActivateBefore、OnActivateAfter 不附加统一 deadline；回调完成时取消 Context。Receive、卸载和权威查询保留 CallbackTimeout（默认 30 秒），具体加载 I/O 使用自身期限。调用方等待或排水超时不会提前释放尚未完成的加载与容量。
-
-正常交接先关闸、排空及必要持久化，PrepareHandoff 返回带源实例身份的确认，控制面再逐槽 CAS 晋升，最后停止旧实例。Stop 本身不推断替代 owner。故障接管继续由运维处理，不能以成员离线证明旧实例不再执行。
-
-### Actor 空闲钝化与 EntityCache 淘汰
-
-缓存淘汰属于运行期维护，不是停服清缓存流程。后台任务的 context 经运行时释放回调、写回 SPI 传给实体锁等待；
-取消后结束维护，不再领取新候选，取消失败不会解除写回身份。正在执行的 Procedure 不被抢占，必要的持久化收尾
-仍按 写回 的既有生命周期完成，不等待清理无变更的内存对象。
-
-Actor 空闲钝化和 GD EntityCache 淘汰是两条独立生命周期：
+包结构：`modules/actor/` 的类型、MessageContext、控制与调用接口 是公共入口；`internal/actorhost/` 实现激活、容量、顺序邮箱、钝化和失败状态。
 
 ```text
-Actor Type 连续无消息
-  -> tx 私有钝化消息
-  -> 停止当前实体 Actor
-  -> 同一实体宿主在后续消息到达时惰性重建
-
-data.SnapshotGD*(ctx, id)
-└─ 取得使用权 → 记录锁内深复制 → 返回前释放锁与使用权
-
-data.FindGD*(transaction.Context(), id)
-└─ 有效事务中取得唯一对象，保留使用权到提交/回滚及回调结束
-
-GD EntityCache 达到容量或 access expiry
-└─ Otter 删除 policy token 并登记候选
-   ├─ 仍有使用者或创建占位：保留对象
-   └─ 标记释放中，阻止同键新使用
-      └─ writeback.Manager.TryRelease 检查实体锁、预留、pending 和 Store 变更
-         ├─ 失败：保留对象，开放后续使用
-         └─ 成功：删除 GD 引用，再唤醒同键等待者
+普通投递 / EnsureActivation
+  → 归属与容量准入 → 同身份合并首次加载
+  → 工厂与初始化/激活回调
+  → 必备业务加载完成 → Ready → 邮箱顺序消费
+  → 空闲钝化 / ctx.Deactivate / 宿主排水
+  → 拒绝新消息 → 等待已接纳消息 → 卸载与资源清理
+  → 清理完成后释放 activation 名额
 ```
 
-Type 显式 `WithIdlePassivation` 优先于运行时策略，宿主在同一激活内维护空闲期限，卸载与消息准入共用锁边界。清理完成后才移除本地实体，下次请求按同一稳定 assignment 懒加载；卸载不修改持久槽位。运行时只消费本地注册 Kind 的策略。
+同一 Actor 串行，不同 Actor 可并行；多发送方、跨服务及混合传输不承诺全局顺序。共享无状态 Handler 和协议表只绑定一次，每次调用的身份、GD 状态与生命周期由 MessageContext 传入。
 
-有状态模板生成期启用统一 EntityCache，所有根对象共享应用级回收预算。`values` map 是业务对象身份的唯一权威，Otter v2.3.0
-只保存指向同一 entry 的 policy token，并使用 adaptive W-TinyLFU 管理准入、热度和按条目数的软容量。默认
-`idleTimeout=0s`；正值使用 access expiry。统计、Loader、refresh、weight 和 persistence 扩展均未启用。
-
-启用 access expiry，或容量接近上限、Otter 频率 sketch 开始工作后，命中路径在缓存锁内登记使用权并推进原子 generation
-并记录 policy 热度；在此之前 Otter v2.3.0 本身不会消费读热度，EntityCache 也不承担无效果的 policy 查询和代次更新。
-Otter 原子删除回调不取得 EntityCache 主锁，不调用存储、实体锁或
-WriteBack，只按 key 合并候选并唤醒 worker。每个缓存只有一个 release worker 和一个 timer；worker 在所有缓存锁外调用
-WriteBack `TryRelease`；进入释放前在缓存锁内核对 entry、generation 和使用计数，并标记释放中。暂时不可释放或检查失败时按 `100ms` 起步、倍增到 `5s` 封顶的固定退避重试。释放期间同键新 Use 可取消地等待，其他键正常使用；已持事务上下文的调用返回 `ErrReleasing`，不等待可能反向依赖本事务的实体锁。脏对象不会为了满足容量数值被
-强制删除，因此 `values` 暂时超过 `maximumSize` 属于正确状态。生命周期取消时 worker 停止 Otter 后台任务；最终持久化
-仍由 WriteBackManager Drain 完成。
-
-Actor Runtime 不依赖 GD、Store、Procedure或 WriteBackManager，也不在超时回调执行存储 I/O。连接断开不直接停止
-Actor；普通心跳命令经过 RoleActor mailbox 即可续期。心跳不读取 GD 时，不延长 EntityCache 中 GD 的空闲时间。
-
-钝化不提高消息可靠级别。正在卸载的激活拒绝新准入，清理完成后才可重建；TellAccepted 的本地路径可返回已知准入拒绝，但不等待初始化完成；远端仅确认 NATS 到达，不能检测业务已卸载或不允许重建。需要业务结果时使用 Call，不自动重试结果未知的请求。
-
-EntityCache 的 access expiry 会增加每次访问的更新时间与维护调度成本，默认关闭。是否启用由应用的空闲回收需求决定；不根据单机历史跑分承诺生产容量。
-
-### control 与滚动发布
-
-`modules/control` 提供受控运维接口：
-
-- Status。
-- Drain。
-- WaitDrained。
-- PromoteSlot。
-
-运维平台负责滚动节奏和实例替换；tx 不主动操作 Kubernetes。正常发布流程：
-
-```text
-旧实例标记 draining
-       |
-       v
-入口不再分配新工作
-       |
-       v
-Ingress 等待已受理工作
-       |
-       v
-最终 Flush
-       |
-       v
-取消 WaitGroupContext 并等待后台循环退出
-       |
-       v
-旧实例 stopping / 删除实例键并停止续租
-       |
-       v
-新 running 实例以 CAS 提升逻辑槽位 generation
-```
-
-固定槽位不能在排水窗口随机改派。异常宕机和网络分区下的自动安全接管需要独立 fencing 设计，不属于正常优雅发布。
-
-## 跨 goroutine 数据所有权
-
-Go 没有只读 slice。所谓“零拷贝广播”依赖显式所有权转移：
-
-```go
-result, err := mailbox.PubSession(ctx, sessionID, payload)
-```
-
-成功后：
-
-- 调用方不得修改编码载荷。
-- 不得 `append`。
-- 不得归还 buffer pool。
-- 消费方只能读取。
-
-本地 Topic 广播的多个队列条目可以共享同一份只读正文。跨进程 gRPC 在序列化边界自然复制。网络写入采用 header/body 分段写，不在发送 goroutine 给共享编码载荷追加包尾。
-
-如果调用方无法遵守所有权转移，边界必须复制。不能把共享可变引用称为 immutable。
-
-## 可选业务工具
-
-`util` 面向业务层提供可选工具，不属于 Store、Fusion、事务 Runtime 或服务进程装配。当前保留的两个核心组件有各自独立的限界上下文：
-
-- `util.EventBus` 是进程内事件总线。普通异步事件允许多个协程并发执行；只有显式 transactional async 才按订阅者串行。它不保证 Store、Procedure 或跨服务消息的执行顺序。
-- `util.DelayQueue` 是单个业务场景内的严格有序延迟命令队列。同到期任务按加入顺序由单 worker 执行并支持取消。它不是 Fusion 延迟任务队列，也不是可靠消息队列。
-
-文档提到后者时必须写成“场景延迟队列”或完整的 `util.DelayQueue`；Fusion 使用“延迟保存任务”“热数据淘汰任务”和“Fusion 延迟任务队列”，不能统称为 DelayQueue。
-
-## 错误、日志与可观测性
-
-### 错误分类
-
-框架错误大致分为：
-
-- 调用契约错误：非法 Lockey、未知 Op、nil document。
-- 数据协议错误：损坏 JSON、未知 Lua 返回值、路径类型冲突。
-- 外部 backend 错误：Redis/Mongo/etcd/gRPC 网络或服务错误。
-- 生命周期错误：排水拒绝、context 取消、Flush 超时。
-
-只有明确的 backend 通信错误才能改变项目健康状态。错误链必须保留 `errors.Is/As` 可识别性。
-
-### panic 边界
-
-外部服务波动不能 panic。Store 在 view 模式下执行持久化写、事务使用错误 Store 等纯编程违约，可以在开发期快速暴露；公共网络和存储 API 仍优先返回明确 error。
-
-事务 Process panic 时框架会执行 undo、解绑 recorder、释放锁和 rollback hook，然后重新 panic；它不是用于吞掉业务 panic 的恢复边界。项目应在请求最外层设置统一恢复和日志策略。
-
-### 日志
-
-`tx/log` 是基于 `slog` 的最小门面。库输出结构化事件，不持久化错误历史，也不直接调用云日志 API。默认 Handler
-分为两类：本地 `console` 把时间、级别和实际调用位置放在左侧，右侧只保留一个 JSON 事件体；测试和生产 `json`
-让整行成为 JSON Lines。两种格式共享相同的 `message` 和业务属性语义，且一条事件只写一次。容器日志 Agent 或
-LogListener 负责旁路采集、批量上传、重试和留存，外部日志服务异常不会进入游戏请求链路。
-
-日志门面显式构造 `slog.Record` 并记录业务调用点，避免包装函数使 `source` 固定指向 `tx/log/log.go`。Handler 在写出
-前完成整行编码；console writer 串行提交完整行，不能让并发协程的 JSON 内容交错。项目仍可替换默认 slog Handler，
-但不得在业务请求中同步上传远端日志。
-
-Actor 生产后端不再启动 ProtoActor，也不保留独立 Gossip 日志级别；宿主、传输与业务继续遵守现有结构化日志边界。
-
-网络消息日志遵循“最接近完整语义的一层记录一次”：
-
-- `modules/agent` 拥有物理连接和逻辑会话生命周期，因此只记录连接建立、会话就绪、正常关闭和异常关闭。它不认识生成
-  命令，也不能逐条记录 `UpMsg/DownMsg`，否则项目层再次记录业务结果时会产生重复日志。身份解析成功后的生命周期日志
-  同时记录 `roleID`、逻辑 `sessionID` 和物理 `connectionID`；握手前的连接建立日志只能记录当时已经生成的 `connectionID`。
-- `modules/msgq` 拥有 Seq、Ack 与下行积压状态，因此只在 Debug 记录成功提交后的 `Init/PubSession/Confirm` 状态，不在锁内
-  执行日志输出，不记录载荷内容，也不为无消息的 `Fetch` 长轮询制造日志。恢复日志同时记录前后 `connectionID`；队列
-  溢出淘汰和超时清理记录完整的 `roleID/sessionID/connectionID`；旧物理连接被栅栏拒绝时记录请求方与当前
-  `sessionID/connectionID`，用于关联同一逻辑会话的多条物理链路。
-- 项目 Agent Dispatcher 同时拥有会话身份、生成命令描述和最终 Actor 结果，是玩家协议访问日志的唯一业务切面。无状态
-  服务模板使用 Info 便于线上请求排查；高频有状态服务模板使用 Debug，生产环境按需打开。主动推送在项目发布门面记录。
-
-该边界保证 Bee/Ant 门面不写死项目日志级别，也避免 Actor 通用执行器把玩家协议与服务间投递混为一类。
-
-高频错误需要限频，例如 Actor mailbox overflow；持续失败任务需要包含类型、记录键、attempt 和错误链，但不把无限错误字符串写回 Redis。
-
-## 性能分级与验证
-
-### 路径等级
-
-| 等级 | 示例 | 目标 |
-| --- | --- | --- |
-| L0 | 变更路径拼接、frame header 编解码、队列游标 | 零分配或接近零分配 |
-| L1 | Store setter、事务加锁、文档构建、Agent/RPC 转发 | 分配和复制有明确上限 |
-| L2 | 配置解析、服务注册、错误构造、启动装配 | 优先清晰和正确 |
-
-零分配不是所有代码的统一目标。大值类型复制、复杂 pool 生命周期和 `unsafe` 可能比一次受控分配更差。
-
-### 必跑验证
-
-框架测试按实现职责放置；应用集群验收不替代以下故障与并发边界：
-
-| 位置 | 覆盖边界 |
+| 控制入口 | 成功表示什么 |
 | --- | --- |
-| `internal/actorhost` | 邮箱、激活、生命周期及本地调用基准 |
-| `internal/actorrpc` | 正式 NATS/gRPC 传输、跨进程调用、断线不重投、容量竞争与分区路由 |
-| `modules/discovery` | 归属 CAS、交接结果未知及并发交接唯一获胜者 |
-| `internal/framework` | 正式 Server 排水、真实事务写回后的交接、etcd 租约失效关闭 |
+| Probe | 观察当前元数据；不分配、加载或读未就绪业务字段 |
+| EnsureActivation | 发起/共享加载，返回当前状态；不等于 Ready |
+| RetryActivation | 清除已结束失败后再确保加载，不替换正在加载/关闭的激活 |
+| WaitReady | 通过 Probe 等待 Initializing→Ready，不发起加载或重试 |
+| `ctx.Deactivate()` | 请求当前 Actor 卸载；不是删除持久数据或回收全部缓存 |
 
-测试可通过以下环境变量在专用 NATS、etcd、Redis 上运行；变量名是现有测试入口，不表示还保留试验后端：
+工厂与初始化回调不附加统一执行 deadline；具体业务 I/O 自行设置期限。调用者等待取消不撤销已开始的加载。业务决定“可进入”的必备内容，框架在回调成功后统一置 Ready，不增加 feature-ready 或手动 MarkReady。
 
-```bash
-TX_ACTORTRIAL_NATS_URL=nats://127.0.0.1:4222 \
-TX_ACTORTRIAL_ETCD_ENDPOINT=127.0.0.1:2379 \
-TX_ETCD_ENDPOINT=127.0.0.1:2379 \
-TX_ACTORTRIAL_REDIS_ADDR=127.0.0.1:6379 \
-go test ./internal/actorhost ./internal/actorrpc ./internal/framework ./modules/discovery -count=1
-```
+容量分 activation 与 assignment：前者清理完成释放；后者按稳定归属占位，卸载不释放且要求一实体一槽。数量限额不是内存/CPU 硬保证。详细状态与关闭边界见 [Actor 生命周期](service-actor-lifecycle.md)。
 
-未设置依赖地址时，真实依赖用例会跳过，不能将普通 `go test` 成功视为这些场景已验收。
+## RPC 与内部调用
 
-核心变更至少运行：
+包结构：`modules/rpc/` 提供共享 gRPC Host/Sender；`internal/instanceconn/` 管实例流；`internal/actorrpc/` 适配直连与 NATS；`modules/actor/` 提供统一 Messenger。
 
-```bash
-go test ./... -count=1
-go test -race ./... -count=1
-go vet ./...
-```
+`CModRPC().Client(route)` 复用进程连接。生成 Client/Ref 是调用器，不是每个业务模块各建网络连接。`ClientConn` 是连接抽象，不是一条双向流；长流复用底层连接，业务语义由协议定义。
 
-热点优化在同一机器和 Go 版本运行前后 benchmark：
-
-```bash
-go test ./tests -run '^$' -bench '<目标>' -benchmem -count=5
-```
-
-必要时再使用：
-
-```bash
-go test ./... -gcflags='all=-m=2'
-go test ./tests -run '^$' -bench '<目标>' -memprofile /tmp/tx-mem.pprof
-go tool pprof /tmp/tx-mem.pprof
-```
-
-### 性能优化边界
-
-- 不依据另一个机器的绝对 ns/op 判断回归。
-- pool 必须证明减少了稳定分配，且不会扩大对象生命周期。
-- 结构体字段合并要测复制成本和 cache locality。
-- 反射只在真实动态或低频边界使用；生成期可确定的关系应生成强类型代码。
-- 为 benchmark 添加的 API 不能扩大生产导出面。
-
-## 扩展模块的方法
-
-新增 module 或 backend 前回答：
-
-1. 它唯一负责什么？
-2. 哪些职责明确不属于它？
-3. 普通业务是否需要直接看到它？
-4. 是否能用已有基础接口组合，而不是新增定制接口？
-5. 它的失败会不会错误清理 Store 变更状态、丢队列或改变健康状态？
-6. 它是否引入新的跨 goroutine 所有权？
-7. 是否已有成熟库能承担通用部分？
-
-成熟依赖优先用于数据库驱动、网络协议、服务发现和标准编解码。变更追踪、Store、Fusion 和事务锁顺序承载 tx 的一致性语义，只有候选库完整表达这些契约时才替换。
-
-## 文档维护规则
-
-- README 记录公共 API、配置、使用示例和调用方契约。
-- 本文记录模块职责、内部算法、并发模型和技术选型。
-- 实施计划只记录尚未完成的任务和待决策项，不复制稳定契约，也不保存已完成阶段的操作清单。
-- 审计标准记录检查方法；验收报告只保留现行方案必要的环境、版本、指标与限制，中间过程由 Git 历史追溯。
-- 已淘汰方案不写入 README；如果理解当前设计必须知道取舍，只在本文简要说明原因。
-- 行为变更必须同时检查 README 和本文是否需要更新。
-- 文档、GoDoc、代码注释和模板注释必须复用“限界上下文与固定术语”中的名称；同一个词跨上下文有不同含义时必须补充限定词。
-- `快照`只描述快照差分、服务发现快照等真实副本；StoreView 统一称为“视图”。`载荷`只描述编码后或协议传输的数据；StoreView 不是载荷。
-- `投影`只在数据库读取字段投影等已有领域术语中使用。Store 到 `Path + Op` 的过程称“同步遍历”，生成 `change.Document` 的过程称“变更文档构建”。
-- benchmark 数字必须注明日期、机器或链接到审计报告，不能表现成跨环境性能承诺。
-
-## 槽位读取与高级管理 API
-
-业务通过 ant.Context.CModSlots 取得 SlotReader，使用 SlotResolver 解析 running 目标或在 World loader 中校验归属。SlotStore 嵌入 SlotReader 并保留 CreateSlot/PromoteSlot；SlotRouter 保留原有高级读写 API，读取复用 SlotResolver。game 侧高级组件和控制面可由组合根显式注入完整 SlotStore，不转移其连接生命周期。不会把只读上下文作为获取写入能力的入口，也不把 Go 接口收窄当作安全沙箱。
-
-### Handler 返回与独立后台工作
-
-Actor Call 的成功表示 Handler 方法成功返回，不隐含等待该方法提交的全部后台工作。若接口承诺队列接纳，可靠任务消费者也只获得该提交结果；内存队列不因此具有持久执行保证。业务不得把 Accepted 描述为后台操作已经完成。
-
-独立工作需要后续通知时，可通过当前激活的 Context.Post 或跨 Actor Tell 将完成事件交给业务指定的 Actor。Post 不等待消费，当前 Actor 不得 Await 自己投递的事件。它仍受邮箱容量及关闭准入约束，旧激活句柄不能触发新激活；后台队列自行负责错误与排水。
-
-业务可采用单向提交、独立完成事件和唯一最终通知，避免为中间 Accepted 与完成通知建立分布式顺序屏障。框架不按命令名称或业务标记切换同步发布，也不保证不同节点独立通知的到达顺序。需要两阶段通知时由业务定义操作标识与阶段处理；本地回调执行顺序不等于跨进程送达顺序。普通 Call 仍只返回被调用方法的实际结果。
-
-统一业务协议由应用的 `gen/cmd` 声明，txgen 显式读取 client/remote/local 作用域和 Call/Tell 模式，同一业务方法可处理多个入口。tx 的 `MessageTable` 在服务装配时只构造一次，接收端校验作用域和模式；`MessageContext` 显式包含当前 Actor、可信 Principal 与本次激活的 State。不同 Actor 可并发使用共享 Handler，但不能共享可变的激活状态。业务 Handler 不负责选择响应传输。
-
-本地事件使用 `LocalMessage`，不序列化为远程 Delivery。生成的 Post 通过当前激活句柄进入邮箱，沿用 Context.Post 的容量、关闭和过期句柄边界，不引入隐式恢复、异步响应或排序屏障。Actor 运行时不识别行军 DTO、命令名称或业务节点种类。独立的纯内部 RPC 契约仍可使用 GenerateRPC；同一方法需要多入口时使用统一协议，避免两份 DTO 和 Handler 桥接。
-
-### Actor 身份 Type/ID
-
-`actor.Identity{Type string, ID string}` 描述逻辑实体；`actor.Type`、`NewType` 与 `ServiceSpec.ActorTypes` 声明其行为和归属。`Type` 在应用内唯一，`ID` 在该类型内唯一，物理进程仍使用 InstanceID。`Int64ID`、`Uint64ID`、`StringID` 保留 i:/u:/s: 编码；默认分区仍按原 ID 字节 xxhash64 对 1024 取模，持久槽位布局不变。Redis key、RouteKey 和任务类别不属于本次改名。
-
-内部 NATS 与 JetStream 任务载荷中的身份 JSON 同步使用 Type/ID，生成调用方与服务端需要配套更新，不支持新旧身份字段混用。升级前停止旧任务发布并排空旧版本任务（包括等待重试项），不能把未完成任务直接交给新版本；有存量时须另行安排离线迁移，不能仅滚动替换程序。gRPC 目标字段保留原 protobuf 编号。更改实际 Type 值属于新实体类型，不能按 API 改名理解为旧槽位自动迁移。
-
-## 运行时访问边界
-
-基建统一入口与作用域生命周期见 [runtime-access.md](runtime-access.md)。框架显式上下文由接收端服务绑定，跨 RPC 不传播调用方运行时；项目可通过 Setup 的 Context.Runtime() 绑定本进程能力，封装无 ctx 的普通业务入口。排水期间有效，最终关闭后失效。业务模块单例、缓存和事务范围仍归项目。
-
-服务独占数据的最终保存使用 Bee/Ant ServiceFlusher，不以 Actor 卸载日志代替持久化结果。顺序、失败保留与重试契约见 [运行时能力](runtime-access.md#服务持久化收尾)。
-
-## EntityCache 观察与管理边界
-
-观察与管理复用已有实体运行时，不增加 CMod 或第二份实体表。Stats 只取规模；有界 List 不读取业务字段；SnapshotCached 保持使用权并在同一记录锁内深复制，未命中不加载；TryRelease 与自动回收共用屏障，只释放无使用者且持久化安全的对象。冷加载的 policy 发布与可回收状态必须原子衔接，避免回收后重新发布旧 token。
-
-管理引用包含独立运行时标识与驻留代次，不持有 GD；普通热查询不增加管理计数。管理排水关闭新快照/回收并等待实际执行退出，最终关闭拒绝旧句柄；它不阻断已准入业务的存取。元数据弱一致、列表筛选最坏 O(N)，用于低频诊断，不用于全量高频采集。具体调用和错误边界见 [管理 API](entity-cache-management.md)。
-
-## Procedure 的调用与收尾
-
-根事务使用 `txruntime.Call(ctx, p)`，子过程 `tx.Call` 共享当前锁与 savepoint。提交后独立过程通过 `tx.CallAfterCommit` 登记，随所在 savepoint 回滚撤销，根提交成功解锁后同步执行，继续使用同一 Runtime 的 WriteBack；完整契约见 [调用与后续工作](procedure-calls.md)。
+| 入口 | 同 Runtime 实例 | 跨实例 | 等待到哪一步 |
+| --- | --- | --- | --- |
+| Tell | 本地邮箱 | Core NATS 客户端提交 | 不等业务执行 |
+| TellAccepted | 本地邮箱接纳 | 当前连接的 NATS 服务端确认 | 不等持久化或业务完成 |
+| CallFuture | 本地邮箱并返回 Future | NATS 请求结果协议 | Await 等待业务结果 |
+| Call | 同一结果协议 | 同一结果协议 | 同步等待结果 |
+| Agent Enqueue | 本地直连适配或 gRPC | gRPC 上行长流 | 本地传输提交，不等远端邮箱确认 |
 
 ```text
-原根准入 → Process → 提交/登记写回 → 解锁
-    → 后续根事务（独立锁、提交和回滚）→ 外层 Call 返回
-外部入口/Actor/后台任务排空
-    → Procedure 关闭根准入并等待 → WriteBack 最终刷盘 → 关闭依赖
+内部生成方法 → Identity + Delivery → 归属解析
+  ├─ 同实例：本地邮箱
+  └─ 跨实例：Core NATS → 目标本地邮箱
+      → 生成协议分派 → 同一业务 Handler
+      → Call 返回结果 / Tell 结束本次处理
 ```
 
-后续过程属于原已接受工作的收尾，不重新争取 Actor 邮箱准入。排水取消只停止等待，运行中的事务及依赖继续保留；后续过程不清除原操作 deadline。`AfterCommitError` 区分已提交后的失败；原事务不会因此回滚或自动重试。后续动作沿用遇错停止的语义，panic 交给调用边界处理且不触发原事务回滚。异步提交和新的事务调度器尚未提供。
+`DeliveryOrigin` 只有 OriginClient、OriginInternal、OriginTask，不按业务节点类型扩展。来源决定外围响应与确认适配，不要求 Handler 判断“来自 Game 还是 World”。Call 的无响应体成功使用 `Result.Completed`；它不是客户端上行 Ack。
 
-### 独立异步 Procedure
+等待超时不能证明远端未执行；不自动重投。Handler 内同步等待会占用当前 Actor 处理，后台任务应由业务模块独立管理，完成后投递独立事件。框架不保证不同 Actor 产生的 Accepted 与完成通知的全局先后。
 
-`txruntime.Submit(ctx, p)` 使用当前服务 Procedure Runtime，接纳后独立限时执行；不继承请求 EntityCache 使用范围。执行上限和接纳总数分别限制 Submit，满执行额度进入 FIFO 队列；排队过期不执行业务；Future.Done/Await 表示事务及同步后续过程实际结束。CallAfterCommit 继续同步，不隐式转为后台任务。执行超时是协作取消，不能提前释放资源；排水等待实际结束后再做最终写回。能力、配置与错误边界见 [异步 Submit](procedure-submit.md)。
+## 客户端协议与 Agent
+
+包结构：`protocol/` 定义 CommandHash、RouteKey 和不透明 SessionIdentity；`modules/agent/` 实现连接、帧、分派；生成 DTO 和描述表在应用 `server/gen/cmd/`。
+
+命令标识是消息名的固定 32 位哈希，由 txgen 生成完整描述表并检查本次输入碰撞；不使用人工消息号池或服务号段。Agent 读取帧头哈希和路由键定位 Actor，不解析业务 BON；命令名不在 BON 正文重复传输。
+
+```text
+客户端 → 应用 Login：认证、选服、建角预留/选角、签票
+客户端 → Agent：不透明握手信息
+  → 项目 IdentityResolver 校验身份与票据
+  → MsgQ Init / Restore → 成功后 FrameReady
+  → 同 socket 顺序读取上行
+  → 连接内 UpSeq 过滤 → 生成路由描述 → 目标 Actor 长流
+```
+
+Login 业务、Claims 编解码及授权留在应用。框架保留不透明身份字节，不解释账号或合服规则。RoleID、WorldID 等路由身份与帧序号不同；生成注解决定目标 Actor 与身份来源。
+
+| 值 | 权威位置与用途 |
+| --- | --- |
+| UpSeq | 客户端分配，Agent 当前连接过滤旧号；允许跳号，连接结束释放 |
+| DownSeq | MsgQ 邮箱分配，标识该 Session 的下行顺序 |
+| 客户端 Ack | 已处理的最大 DownSeq，交给 MsgQ 裁剪下行 |
+| Call requestID / 压测关联标识 | 仅关联相应请求结果，不能作下行排序或裁剪依据 |
+
+UpSeq 不进入业务 Delivery、MessageContext 或 MsgQ。客户端不保存上行重放队列，服务端不发送上行 FrameAck；FrameReady/DownMsg 的 Ack 固定为零。跨 Game/World 的响应按实际进入 MsgQ 的顺序编号，不保证匹配上行先后。
+
+## MsgQ 下行邮箱与共享流
+
+包结构：`modules/msgq/{mailbox,session,role}.go` 管内存队列和身份；`session_redis.go`、`role_redis.go` 管短期归属；`mailbox_stream.go`、`publish_stream.go`、`sender.go` 管传输。
+
+MsgQ 是下行会话层，不是所有服务 RPC 的中转。Redis 保存 Session binding 和 Role owner，消息正文只驻留当前 MsgQ 内存；不承诺 MsgQ 崩溃后的未确认消息持久恢复。
+
+```text
+Game / World / Fightroom
+  → Sender 的有界发布队列 → gRPC 发布流
+  → owner MsgQ：Role 扇出多个 Session / 精确 Session
+  → 邮箱编号 DownSeq、保留未确认消息
+  → Agent 发起的 MailboxStream 推送下行
+  → Agent 写客户端 → 客户端处理后上传 Ack
+  → 同一 MailboxStream 回传 Ack → MsgQ 裁剪
+```
+
+SendRole/SendSession 是异步提交边界，成功不表示 MsgQ 已入队。MailboxStream 由 Agent 创建，双向复用多个 Session；MsgQ 在有数据时发送，无逐消息 Rec 往返。仅合并已排队消息的优化不增加等待窗口，不把固定凑批量当业务协议要求。
+
+```text
+新 Login：S1/C1 → 新票据 S2/C2 → 空的新邮箱
+弱网恢复：S1/C1 → Restore S1/C2 → 原 owner 未确认下行
+旧连接迟到的 Ack / 管理操作 → ConnectionID 校验拒绝
+owner 或原邮箱已丢失 → 恢复失败 → 业务重新登录/状态重同步
+```
+
+Restore 必须命中原 Session 和 running owner，不跨 MsgQ 自动迁移。恢复只接续下行，不恢复上行游标。角色 owner 租期、会话 TTL 与 Agent 上行游标是不同概念；当前没有 Agent Rec lease。
+
+多个授权 Session 可属于同一 Role，各自维护队列。Topic 广播只在单 MsgQ 内，不是全局 Pub/Sub。队列有条数/字节上限，容量不足必须显式失败，不无限增长或静默覆盖旧消息。示例 1024 条/8 MiB 是项目配置，不是当前构建的容量结论。
+
+## 可靠任务
+
+包结构：`modules/tasks/` 定义 Publisher/Task；`internal/taskqueue/` 适配 JetStream；`internal/framework/cmod_tasks.go` 管消费与关闭时序。
+
+```text
+业务发布 → JetStream 持久确认
+  → durable 消费 → 按 Actor 归属执行 Call（OriginTask）
+  → 业务成功返回 → ACK
+  → 失败 / 未知 → 不伪装成功；按队列策略重投或转死信
+```
+
+同实例任务仍先进入 JetStream，不绕过持久入口。ACK 表示消费业务返回成功，不证明 Fusion 已写 Mongo；业务幂等、补偿与跨记录一致性仍由应用定义。队列不自动创建或修改生产共享流。
+
+有限 MaxDeliver 需要预配置独立通知流与恢复 durable。恢复按“读源任务→持久转死信→删源残留→确认通知”推进，通知流不可写仍可能漏捕获。资源部署、磁盘同步、副本与故障域见 [JetStream 部署](deployment/jetstream-tasks.md)。
+
+## 数据元数据与变更追踪
+
+包结构：`meta/` 定义类型/字段/存储描述；`change/` 定义路径、操作与合并；`storage/changes.go` 消费输出；生成的 GD/Store 属于应用。
+
+```text
+生成输入 GD + 注解 → txgen → GD、Store、TypeSpec
+业务读取 GD / 通过 Store 修改
+  → FieldID 与根相对路径标脏 → Visit / Document 输出变更
+  → Writer 应用变更 → 成功才清除本轮标记
+```
+
+GD 是数据，Store 引用同一数据并保存追踪状态。FieldID 是生成的稳定字段身份；协议名、JSON 名、BSON 名各有用途，不能混作数据库路径。共享子对象可能有多个根路径，StoreView 必须保持根相对追踪。
+
+Set 写入零值，Replace 整体替换复杂值，Delete 删除路径/元素，Clear 清空容器。高频使用 Store setter；低频 BeginChange/SaveChange 采用快照差分。同一变更周期不混用两种追踪方式。事务 Undo 只覆盖受控 Store 修改，不能回滚任意公开字段赋值。
+
+同步 Visit 可读取当前值；跨 goroutine、异步写回与消息发送必须捕获独立值或明确转移所有权。完整内部算法、路径/集合/深度约束见 [数据内核](data-kernel.md)。
+
+## 存储接口与 Redis、Mongo、Fusion
+
+包结构：`storage/` 按能力划分 Reader/Writer、条件创建/替换/删除；`storage/config/` 与路由表选择后端；`storage/redis/`、`storage/mongo/`、`storage/fusion/` 实现策略，`storage/task/` 支撑 Fusion 延迟任务。
+
+生成的 `FindGD*(ctx, ...)` 从类型元数据选 Redis/Mongo/Fusion，普通业务不手选 Reader；显式 Load/Reader 用于基础设施或独占路径。RecordKey 保存完整记录身份，不等同于 Actor ID 或事务 Lockey。
+
+| 路径 | 数据权威与成功边界 |
+| --- | --- |
+| Redis | JSON 文档与原子 patch，具名 backend 由云 Redis/自身集群分片 |
+| Mongo | BSON 文档、索引和条件写；成功为该次驱动写入完成 |
+| Fusion | Redis 热写 + 已登记延迟任务；不等 Mongo 最终回写 |
+| Procedure/WriteBack | 内存提交 + 待写登记；随后才经过所选存储路径 |
+
+Redis 不再做应用手工分片；具名 route 选择一个 backend。Lua 多键须满足槽约束；云代理跨槽能力需要部署验证，不以 Pipeline 自动等价跨槽原子操作。Mongo 的路由键选择明确数据库目标，不隐式跨分片扫描。
+
+```text
+Fusion 保存 → Redis 热写 → 本地延迟发布登记 → 返回
+  → 后台持久发布记录定位任务
+  → 延迟任务取得记录 → 写 Mongo → 确认修订/安排热数据保留
+  → 新写入或失败：保持待处理，按既有策略重试
+```
+
+Fusion 延迟任务是热数据落库机制，不是应用 Sched 定时任务。`delaySaveTime` 为 Mongo 回写延迟，`delayDelTime` 为确认回写后的热数据保留时间，dirtyTTL 为未确认数据保护。保存或清理失败不能先清脏标记；异常退出可能丢失尚未持久发布的本地任务登记，不能宣称跨存储 ACID。
+
+Mongo 原生高级查询返回官方 Database/Collection，复用已连接路由；取得句柄后的游标、错误和关闭由应用管理，不自动纳入 Procedure/EntityCache。不能原生修改正在受管的同一实体。条件版本 API 只保护单文档替换，不能实现多文档事务。详细接口与后端状态见 [存储参考](api-reference.md#redis-存储模型)。
+
+## 共享实体与独占实体
+
+包结构：`modules/entitycache/` 管条目、使用期和管理接口；`runtime/entity.go` 连接执行范围；生成的私有 Descriptor 与 Clone 在应用 data 包，不要求启动时逐 GD 登记。
+
+`data.entityCache` 是生成期选项；缓存启用时持久根须声明事务能力，少数独占根用 `@noEntityCache` 排除。txgame 默认无缓存，txgameslg 启用共享缓存，但 GDWorld/GDWorldBucket 独占排除。
+
+```text
+共享读取 → SnapshotGD(ctx,id)
+  → 使用权 → 同一记录锁 → 深复制 → 释放 → 独立只读结果
+
+共享修改 → 有效 Procedure → FindGD(tx.Context(),id)
+  → 唯一对象 + 使用权 + 锁/Undo/写回预留
+  → Store 修改 → 提交或回滚 → 释放锁与使用权
+
+独占 World → 原生 Mongo 游标 → 唯一网格 GD
+  → 网格邮箱串行修改/保存 → 排水最终保存 → 成功后释放
+```
+
+使用权只防回收，字段并发安全由 Procedure 记录锁保障；不增加另一套业务锁，也不自动给每个 Handler 开事务。无事务取得共享可变对象会失败；普通 Snapshot 包含已提交未写回状态，单记录一致但不保证跨记录同一时刻。
+
+Go 公开字段不能防止非法保存裸指针。共享 GD、子对象、map/slice 不得带出事务继续读写；响应必须复制。独占 World 由应用保证邮箱所有权，不能同时保留另一份可写 EntityCache 对象。
+
+EntityCache 是应用 Runtime 组件，不是独立 CMod，也不是分布式缓存。Otter 选择软容量候选；使用中、创建中或待写对象不为满足容量而丢弃。Actor 卸载不意味着缓存淘汰。
+
+### 观察与管理
+
+包结构：`modules/entitycache/management.go`、`release.go`；调用入口 `txruntime.EntityCache(ctx)`。
+
+| API | 行为 |
+| --- | --- |
+| Stats | 框架条目和回收元数据，不读业务字段或估算内存 |
+| List | 有界类型筛选、返回 EntryRef，不承诺稳定分页 |
+| SnapshotCached | 只命中缓存，在记录锁内深复制，不加载或刷新热度 |
+| TryRelease | 尝试安全回收，不刷盘、不删除记录、不卸载 Actor |
+
+EntryRef 绑定驻留代次，旧引用不能作用于重新加载的对象。管理快照/回收在 Procedure 外执行；排水关闭新管理操作并等待已接纳操作实际结束，不能抢先释放正在复制的对象。详见 [管理 API](entity-cache-management.md)。
+
+## Procedure、Lockey 与 WriteBack
+
+包结构：`modules/txn/` 维护事务、锁表、Undo、提交参与者、异步队列；`modules/writeback/` 接受脏根并持久化；`ant/cmod_procedure.go` 和 `internal/framework/procedure.go` 管装配与关闭。
+
+Lockey 表示一致性域，不依赖 GD 已加载。生成输入集中声明 `LockType` 枚举，GD 使用 `@transaction` 的 lock 注解引用名称；枚举值越大越先获取，同类别整数 ID 数值排序。多个 GD 可共享一个 RoleLock，但对象与写回登记仍独立。
+
+```text
+txruntime.Call(ctx,p)
+  → p.Locks：预声明已知 Lockey → 排序取得锁
+  → p.Process(tx)：FindGD(tx.Context(),id) / db.Create / db.Remove
+      → 未知键动态补锁 → Store 修改 / 子 tx.Call
+  → 成功：登记 WriteBack、发布创建/隐藏删除
+  → 失败：Undo、撤销占位与子过程回调
+  → 解锁 → 同步后续 Procedure → 释放使用权 → Call 返回
+```
+
+动态补锁保留等待图死锁检测，根事务作为受害者时完整回滚；标准 Call 有限重试，因此不可回滚副作用放在提交后处理。嵌套根事务被拒绝，子 Procedure 使用同一 Tx/savepoint。具体锁实现见 [精确锁注册表](lock-registry.md)。
+
+| 调用 | 事务与等待边界 |
+| --- | --- |
+| `txruntime.Call(ctx,p)` | 同步根事务，等待提交后续过程结束 |
+| `tx.Call(child)` | 当前根内子事务/savepoint，锁持有至根结束 |
+| `tx.CallAfterCommit(next)` | 根提交解锁后按登记顺序执行独立根事务，外层仍同步等待 |
+| `txruntime.Submit(ctx,p)` | 独立异步根事务，返回 Future；不是投递 Actor 邮箱 |
+
+Submit 默认 64 个执行、8192 个总接纳，期限从接纳开始计算，包含排队。队列有界、满额立即拒绝；FIFO 出队不保证并发完成顺序。接纳后使用独立操作 ctx，不继承 Handler 结束取消，不携带请求资源；业务把所需身份放入 Procedure 字段。Await 取消只结束等待，不能取消已接受任务。详见 [同步调用](procedure-calls.md) 与 [Submit](procedure-submit.md)。
+
+### 创建、删除与持久化
+
+```text
+db.Create(tx.Context(), 新GD)
+  → 记录锁、唯一缓存占位、WriteBack 容量预留
+  → 本事务可见；其他调用不能取得半创建对象
+  → 回滚撤销占位 / 提交发布原对象并保留首次写入意图
+
+WriteBack
+  → 同一记录锁 → 持久化首次创建/更新/删除
+  → 成功：清待写状态
+  → 失败：保留对象与 pending → Flush / 排水重试
+```
+
+首次写入采用条件创建，不可在结果未知后用 Upsert 覆盖已有记录。删除失败不重新暴露旧对象，需协调在途写回防止旧任务复活数据。共享根不能自行 Save 绕过事务；无缓存或独占类型可直接 Save。
+
+WriteBack 将内存提交落到所选 Writer；Writer 为 Fusion 时还有 Redis→Mongo 延迟阶段，Writer 为 Mongo 时直接写 Mongo。它不是 World 邮箱保存的另一层，也不是进程崩溃 WAL。内存提交不能证明存储完成，跨记录不提供数据库原子提交。
+
+## 排水、正常交接与故障
+
+包结构：`lifecycle/` 管准入及工作计数；`internal/framework/{drain,shutdown,handoff}.go` 编排；`modules/control/` 提供外部请求。
+
+```text
+关闭服务外部准入
+  → 排空已领取的可靠任务（此时 Actor 入口仍可用）
+  → 关闭 Actor 新准入、排空已接受邮箱工作并卸载
+  → 等待服务登记的后台任务
+  → ServiceFlusher.Flush：独占数据最终保存
+  → CMod 排水：Procedure 排队/执行与最终 WriteBack 等
+  → 传输收尾
+      ├─ PrepareHandoff 成功：保留连接/租约 → 控制面逐槽 CAS 晋升
+      └─ Stop：释放依赖与绑定 → Stopped
+```
+
+已接纳但尚未入队、排队中与执行中工作都必须计入。超时仅结束等待，资源保持以便有限重试；重试耗尽返回错误，进程按项目入口非零退出。正常关闭不能把持久化失败记为成功。致命身份丢失是独立强制退出路径，内存状态不因此获得恢复保证。
+
+已接纳工作可以调用下游，但下游已关准入时允许失败；排水不保证整个跨 Actor 链成功。需要可靠重试的工作应采用任务队列与业务幂等，不能为了排水恢复上行重放或自动扩展调用链协议。
+
+StateDrained 仅代表相应入口排空，不可替代完整 PrepareHandoff 成功；控制面不因成员失联自动晋升。部署维护者必须确认旧 owner 已停止写入，不能把网络分区当作旧进程死亡。
+
+## 日志、指标与诊断
+
+包结构：`log/` 统一日志，`metrics/` 包装 Prometheus，`modules/control/` 暴露诊断控制协议，`storage/io_stats.go` 提供验收构建的存储统计。
+
+```text
+框架模块事件 → tx metrics 注册/观测 → HTTP /metrics → Prometheus 抓取
+框架错误/排水失败 → 结构化日志 → 项目日志接收与告警
+诊断控制请求 → 实例状态/槽位/存储 I/O 快照
+```
+
+指标标签用服务、阶段、结果等有界值，不放 RoleID/SessionID 等高基数身份。Prometheus 抓取不等于每条消息远程发送，也不替代 pprof CPU/分配画像。普通构建不启用 `txbench` 存储逐调用计时；专项验收可开启，性能比较必须记录采集条件。
+
+公开错误区分未接纳、执行失败与结果未知；RPC 超时不能解释为业务未执行。恢复 panic 不应吞掉错误，更不能兜住 Go map 并发访问的 runtime fatal；共享数据必须遵守记录锁和快照契约。
+
+## 如何扩展与验收
+
+新增业务节点通常只需要应用 ServiceRegistration、生成 cmd 类型及 Handler/Actor 工厂，复用现有 CMod；不修改 tx 的 Origin 枚举或增加专用连接管理。新增业务模块只依赖项目公开模块入口；模块单例不负责 Actor 投递与分布式锁。
+
+新增存储后端、公共协议或运行时行为时，更新实际契约、生成器和相应验证，不能仅替换 README 示例。测试职责：tx 保留可靠性和并发边界，txgen 保留生成契约，应用/客户端负责真实集群接入与吞吐。功能通过不等于 race 通过，有限本地请求不等于云端容量。
+
+- 当前任务与验收索引：[IMPLEMENTATION_PLAN](IMPLEMENTATION_PLAN.md)。
+- 应用边界：[txgame 设计](../../txgame/docs/design.md)、[txgameslg 设计](../../txgameslg/docs/design.md)。
+- 开发约束：[工程约定](engineering-conventions.md)；问题分级：[审计标准](architecture_audit_standard.md)。
+- 专项量化：[实体访问](entity-access-acceptance.md)、[缓存管理](entity-cache-management-acceptance.md)、[滚动发布](procedure-rollout-acceptance.md)。
+
+设计文档描述现行契约；实施计划只列当前待办；有日期的报告保留当时条件和限制。已完成施工步骤由 Git 历史追溯，不要求读者先读多轮计划才能理解当前系统。

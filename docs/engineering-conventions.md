@@ -21,7 +21,7 @@
 - CMod 显式声明，启动绑定一次；资源型模块必须能随启动重建和关闭，不用永久 sync.Once 固定旧 Provider。跨子服务模块复用不转移 Sender、订阅或存储连接所有权。
 - Room、World 网格等激活专属对象不改为进程单例。直接调用模块仍须遵守实体访问边界，不能替代 Actor 邮箱或 Procedure。
 
-依据：[启动绑定](runtime-access.md#启动绑定)、[txgame 装配](../../txgame/docs/plans/module-scope.md)、[SLG 装配](../../txgameslg/docs/plans/module-scope.md)。
+依据：[启动绑定](runtime-access.md#启动绑定)、[txgame 装配](../../txgame/docs/runtime.md#模块装配与统一访问)、[SLG 装配](../../txgameslg/docs/design.md#业务模块与共享-handler)。
 
 <a id="ec-03"></a>
 ## EC-03 操作上下文
@@ -55,7 +55,7 @@
 - Store 记录身份与锁身份分离，多 GD 可以共锁，但 undo、脏状态和写回各自登记。不得以快照、副本或另一锁身份绕过唯一对象约束。
 - 根事务用 txruntime.Call；当前事务内复用流程用 tx.Call。不要嵌套启动根事务；只对 Store 受控变更承诺回滚，不提供跨进程数据库 ACID。
 
-依据：[锁契约](lockey-first-batch.md)、[事务调用](procedure-calls.md)。
+依据：[锁契约](procedure-locks.md)、[事务调用](procedure-calls.md)。
 
 <a id="ec-06"></a>
 ## EC-06 后续工作与完成语义
@@ -101,7 +101,7 @@
 - Actor 的 Call、Tell、TellAccepted、CallFuture 及可靠任务按各自确认语义检查；同实例本地邮箱、跨实例 Core NATS、JetStream 持久任务不能混为一种保证。发送成功不普遍代表远端业务成功。
 - UpSeq 止于 Agent 当前连接，上行不确认/重放；下行 Ack 用于邮箱裁剪。业务请求关联标识不承担传输排序、去重或全局完成顺序。
 
-依据：[会话与投递设计](design.md)、[Actor 生命周期](service-actor-lifecycle.md)、[通用放置](actor-placement-plan.md)。
+依据：[会话与投递设计](design.md)、[Actor 生命周期](service-actor-lifecycle.md)、[通用放置](actor-placement.md)。
 
 <a id="ec-10"></a>
 ## EC-10 验证证据与文档维护
