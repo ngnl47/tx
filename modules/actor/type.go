@@ -24,7 +24,8 @@ func MustType(name string, factory BehaviorFactory, options ...TypeOption) Type 
 // WithSlotMapping 声明独立世界或稳定分服映射；空结果不会回退到默认分区。
 func WithSlotMapping(mapping SlotMapping) TypeOption { return actorhost.WithSlotMapping(mapping) }
 
-// WithIdlePassivation 设置空闲卸载策略；业务仍可通过 Context 自定义定时或显式卸载。
+// WithIdlePassivation 设置类型的空闲卸载策略，零值显式禁用并覆盖运行时及 Behavior 配置。
+// 未指定时沿用运行时及 Behavior 策略；业务仍可通过 Context 自定义定时或显式卸载。
 func WithIdlePassivation(timeout time.Duration) TypeOption {
 	return actorhost.WithIdlePassivation(timeout)
 }
@@ -39,3 +40,6 @@ func WithPlacement(name string) TypeOption { return actorhost.WithPlacement(name
 func PlacementSlot(service, policy, group string) string {
 	return actorhost.PlacementSlot(service, policy, group)
 }
+
+// WithExplicitAssignment 要求先由部署或控制面登记归属；普通调用及 Ensure/Retry 均不自动选址。
+func WithExplicitAssignment() TypeOption { return actorhost.WithExplicitAssignment() }

@@ -19,7 +19,7 @@
 - 业务模块获取统一为 modules.Role()/Bag()/Rank() 等进程固定入口；模块可以有配置缓存等状态，单例不保证分布式唯一性，也不等于向 Actor 投递消息。
 - Handler 按 Actor 匿名内嵌业务片段、整组绑定一次，不保存当前玩家或请求状态。模块之间经公开薄入口调用，内部实现仅由对应薄入口使用。
 - CMod 显式声明，启动绑定一次；资源型模块必须能随启动重建和关闭，不用永久 sync.Once 固定旧 Provider。跨子服务模块复用不转移 Sender、订阅或存储连接所有权。
-- Room、World 网格等激活专属对象不改为进程单例。直接调用模块仍须遵守实体访问边界，不能替代 Actor 邮箱或 Procedure。
+- World、Room 的创建、加载和销毁由应用模块管理，不强制绑定 Actor 生命周期；模块可以按业务身份持有对象，不能把多个实体合并为单个全局对象。直接调用模块仍须遵守实体访问边界，不能替代 Actor 邮箱或 Procedure。
 
 依据：[启动绑定](runtime-access.md#启动绑定)、[txgame 装配](https://github.com/ngnl47/txgame/blob/master/docs/runtime.md#模块装配与统一访问)、[SLG 装配](https://github.com/ngnl47/txgameslg/blob/main/docs/design.md#业务模块与共享-handler)。
 
@@ -39,7 +39,7 @@
 | --- | --- | --- |
 | 启用 EntityCache 的共享 GD | 普通读取 SnapshotGD*；有效 Procedure 内 FindGD*，经 Store 受控修改 | 事务内 Snapshot 可复用锁读取自己的修改 |
 | 无缓存或显式排除的存储权威记录 | 显式 ctx 的生成查询及应用 db 存取；条件更新等遵守存储契约 | txgame 无缓存；GDUser/GDServer 不是为了满足缓存规则而强制纳入 Procedure |
-| 激活独占 World | 原生 Mongo 单份加载，由网格邮箱串行修改与保存 | GDWorld/GDWorldBucket 的 @noEntityCache、原生游标和直接 db.Save 是有意设计 |
+| 应用模块独占 World | 原生 Mongo 单份加载，由网格邮箱串行修改与保存 | GDWorld/GDWorldBucket 的 @noEntityCache、原生游标和直接 db.Save 是有意设计 |
 
 - 共享对象及其 map、slice、子指针不能带出事务给异步任务、Actor 字段或响应使用；锁内提取值或深复制。框架公开字段不是并发安全沙箱，recover 不能兜住并发 map 致命错误。
 - Snapshot 是独立数据，不能作为原共享实体 Save/Remove 的写入口；需要多记录一致性时不能把多次独立快照当作同一事务。
@@ -73,7 +73,7 @@
 - 共享创建/删除在有效 Procedure 内通过 db.Create/Remove 登记；首次创建初值、可见性、回滚和失败 pending 沿用既有契约。活跃 Procedure 内不调用直接 Save/SaveChange。
 - 内存提交、WriteBack 登记、Redis/Fusion 写入和最终 Mongo 落盘分别判断。失败不得清除待写状态或伪装成功；结果未知不得盲目重投创建。
 - 缓存回收不等于数据库删除或 Actor 卸载。管理 SnapshotCached/TryRelease 在事务外调用，只用有效 Runtime 的 EntryRef，不自行遍历可变 GD 或构造引用。
-- World 由所有者通过邮箱执行周期/最终保存；失败保留对象和依赖，由既有 Flush 重试，不同时纳入共享缓存和 WriteBack。
+- World 由应用模块所有者通过邮箱执行周期保存，服务 Flush 保留必要最终写回；移除 Actor 卸载回调不能省略保存。失败保留对象和依赖，由既有 Flush 重试，不同时纳入共享缓存和 WriteBack。
 
 依据：[GD 写入契约](runtime-access.md#统一-gd-实体访问)、[EntityCache 管理](entity-cache-management.md)、[服务持久化收尾](runtime-access.md#服务持久化收尾)。
 
@@ -97,7 +97,7 @@
 ## EC-09 Actor、传输与路由身份
 
 - tx 管理通用放置查询、缓存和槽位 owner；项目解析业务分组。客户端 RouteKey、Actor Type/ID、SlotID、物理 InstanceID 各有职责，不用业务 ID 替代实例身份。
-- 同槽只保证归属实例，不共享邮箱或状态。业务初始化成功后才 Ready；等待取消不撤销已经开始的加载，不自动重派或重投。
+- 同槽只保证归属实例，不共享邮箱或状态。Ready 只表示 Actor 通信入口初始化完成，仍须等待工厂及全部初始化/激活回调成功；World、Room 的业务可用性由应用判断。等待取消不撤销已经开始的加载，不自动重派或重投。
 - Actor 的 Call、Tell、TellAccepted、CallFuture 及可靠任务按各自确认语义检查；同实例本地邮箱、跨实例 Core NATS、JetStream 持久任务不能混为一种保证。发送成功不普遍代表远端业务成功。
 - UpSeq 止于 Agent 当前连接，上行不确认/重放；下行 Ack 用于邮箱裁剪。业务请求关联标识不承担传输排序、去重或全局完成顺序。
 

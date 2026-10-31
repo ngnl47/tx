@@ -1385,7 +1385,9 @@ Spec: ant.ServiceSpec{
 
 卸载可使用空闲策略，或在生命周期中使用 `Context.After/Post/Deactivate`。本地工作仍进入同一邮箱；不能在实体回调内同步等待自己 Post 的 Future。Type 显式空闲选项优先于运行时配置，无配置时保持常驻。Actor 卸载不等于 GD 淘汰或已刷盘，仍须遵守 `writeback.Manager.TryRelease` 的检查。
 
-Actor Ready 在工厂及上述初始化/激活回调全部成功后才成立，业务必备加载应在这些入口返回前完成；Handler 随后才开始消费邮箱。不新增业务手动置 Ready 或第二套 feature-ready。进程 Running、Actor Ready 与活动开放是不同事实，后者由业务维护。完整边界见 [Actor 初始化与就绪](design.md#actor-激活邮箱与控制)。
+Actor Ready 在工厂及上述初始化/激活回调全部成功后才成立，只表示通信入口初始化完成；应用放入这些入口的加载必须完成，Handler 随后才开始消费邮箱。World、Room 业务对象可由应用模块独立管理，不强制随 Actor 创建或销毁；业务可用性由应用判断。不新增业务手动置 Ready 或第二套 feature-ready。进程 Running、Actor Ready 与活动开放是不同事实。完整边界见 [Actor 初始化与就绪](design.md#actor-激活邮箱与控制)。
+
+`WithIdlePassivation(0)` 显式禁用类型的空闲卸载，覆盖运行时及 Behavior 配置；正值不得小于 1ms，负值无效。未指定选项时，运行时正值配置优先，否则保留工厂返回的 Behavior 策略。显式卸载和服务排水仍然有效。
 
 ### 数量配额与状态控制
 
@@ -4342,3 +4344,15 @@ Bee/Ant 的 `CModMongoStorage()` 暴露 `ReadDocumentVersion` 和 `ReplaceDocume
 ### 共享 GD 访问边界
 
 开启生成期 EntityCache 的持久根必须声明 `@transaction`。完整 `data.FindGD*(ctx, ...)` 仅接受有效 Procedure；普通只读使用 `data.SnapshotGD*(ctx, 完整主键...)`，在记录锁内复制当前内存数据。共享对象的创建、删除和修改通过 Procedure/WriteBack 提交，快照不能用来保存或删除原对象。关闭缓存或标记 `@noEntityCache` 的独占类型保留直接存取。详见 [GD 实体访问](runtime-access.md#统一-gd-实体访问)。
+
+### 显式归属的 Actor 类型
+
+```go
+txactor.NewType("world", factory,
+    txactor.WithSlotMapping(worldSlots),
+    txactor.WithExplicitAssignment(),
+    txactor.WithIdlePassivation(0),
+)
+```
+
+`WithExplicitAssignment` 要求部署或控制面先登记槽位，普通请求及 Ensure/Retry 不自动选址。它与空闲卸载策略独立：已有归属可以重新激活通信 Actor，但不替应用加载业务对象。CreateSlot/PromoteSlot 与 etcd 的 CAS、Watch 流程见 [设计](design.md#显式槽位登记与-etcd-更新)。

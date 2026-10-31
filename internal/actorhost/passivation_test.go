@@ -99,9 +99,17 @@ func TestIdlePassivationKeepsBusyActorAndDrains(t *testing.T) {
 
 func TestIdlePassivationDisabled(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		r := New(4, time.Second, func(Context) (*Behavior, error) {
-			return &Behavior{Receive: func(Context, any) (any, error) { return nil, nil }}, nil
-		})
+		kind, err := NewType("world", func(Context) (*Behavior, error) {
+			return &Behavior{IdlePassivation: time.Second, Receive: func(Context, any) (any, error) { return nil, nil }}, nil
+		}, WithIdlePassivation(0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		factory, err := TypeFactory([]Type{kind}, map[string]time.Duration{"world": time.Second})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := New(4, time.Second, factory)
 		defer r.Drain(context.Background())
 		id := Identity{"world", "51"}
 		if _, err := r.Call(context.Background(), id, nil); err != nil {

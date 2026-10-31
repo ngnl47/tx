@@ -159,6 +159,40 @@ Identity(Type, ID)
 
 SLG 示例由应用把 OriginServerID 解析为 MainServerID，作为 Role、Legion、ServerActor 的分组。合服与赛季规则不进入 tx。分组在运行期稳定；槽位换 owner 可保留 Identity→SlotID 缓存，改变分组则需要应用安排重启等流程。详细契约见 [Actor 放置](actor-placement.md)。
 
+### 显式槽位登记与 etcd 更新
+
+槽位名由应用映射规则确定，框架保存 `SlotAssignment{SlotID, RuntimeInstanceID, Generation}`。登记槽位只建立路由归属，不创建通信 Actor，不加载业务数据。`modules/control` 的 `CreateSlot/PromoteSlot` 使用 `modules/discovery` 的 SlotRouter 与 EtcdSlotStore；不由应用直接覆盖 etcd 键。
+
+实例注册绑定存活租约，assignment 则持久保存在该租约之外。正常退出或租约失效不会删除槽位归属；新进程有新的 InstanceID，不能仅凭相同启动参数或槽位名继承旧身份。Generation 是应用层归属代数，etcd ModRevision 是并发写入比较版本，两者不等同于业务数据版本。
+
+```text
+首次登记
+  应用确定 SlotID 和当前 InstanceID
+    → 目标基础设施已登记 Running（不等于业务已开放）
+    → CreateSlot：Generation=1，原子比较槽位尚不存在后写入
+    → 权威读回 → Watch 更新本地槽位目录
+    → 应用确认本机归属后加载其业务对象
+
+停服后的归属重登记
+  运维确认旧进程已完成必要保存并停止
+    → 新进程启动基础设施，取得新 InstanceID，尚未开放业务
+    → 读取旧 assignment：同一 SlotID、旧 InstanceID、Generation=N
+    → PromoteSlot：新 InstanceID、Generation=N+1
+    → 校验旧记录匹配，以读取时的 etcd ModRevision 做 CAS 写入
+    → 权威读回 owner/generation，等待本地 Watch 可见
+    → 应用加载业务对象、完成启动；运维最后恢复客户端接入
+```
+
+CreateSlot 的槽位已存在、PromoteSlot 的旧值不匹配或 CAS 冲突，都不能解释为更新成功。响应未知时先权威读回核对预期结果，不盲目覆盖或再次递增。多槽位更新逐条执行，不承诺一批槽位原子切换；运维保留待更新列表并逐条核对，不删除全部 assignment 来绕过版本校验。启用 assignment 容量模式时，写入还必须满足既有原子容量检查。
+
+框架校验目标实例状态与记录版本；“旧进程已经停止写入”由部署编排确认，不能以暂时失联、租约消失或只看到邮箱排空替代。停服重登记无需旧进程在线调用 PrepareHandoff；在线交接仍是另一种通用能力，是否采用由应用部署策略决定，tx 不强制应用滚动运行。
+
+### 部署指定宿主的路由边界
+
+类型可声明 `txactor.WithExplicitAssignment()`：普通寻址、EnsureActivation 和 RetryActivation 只使用已登记 assignment；缺失返回 `ErrSlotNotFound`，旧 owner 下线返回不可用，不从服务池自动选择实例。该选项属于共享 Type 契约，Agent、内部调用端与目标宿主使用同一声明；成功登记后仍可按需激活通信 Actor。
+
+`WithSlotMapping` 只决定 SlotID，`WithExplicitAssignment` 决定能否自动分配，两者职责独立。热路径继续读取 Watch 缓存，不增加逐消息 etcd 查询。普通 Role/Room 未设置该选项，保留既有动态首次分配。该策略不解释 WorldID、世界加载、房间创建或赛季规则。
+
 ## Actor 激活、邮箱与控制
 
 包结构：`modules/actor/` 的类型、MessageContext、控制与调用接口 是公共入口；`internal/actorhost/` 实现激活、容量、顺序邮箱、钝化和失败状态。
@@ -167,7 +201,7 @@ SLG 示例由应用把 OriginServerID 解析为 MainServerID，作为 Role、Leg
 普通投递 / EnsureActivation
   → 归属与容量准入 → 同身份合并首次加载
   → 工厂与初始化/激活回调
-  → 必备业务加载完成 → Ready → 邮箱顺序消费
+  → 工厂及初始化/激活回调完成 → Ready → 邮箱顺序消费
   → 空闲钝化 / ctx.Deactivate / 宿主排水
   → 拒绝新消息 → 等待已接纳消息 → 卸载与资源清理
   → 清理完成后释放 activation 名额
@@ -183,7 +217,7 @@ SLG 示例由应用把 OriginServerID 解析为 MainServerID，作为 Role、Leg
 | WaitReady | 通过 Probe 等待 Initializing→Ready，不发起加载或重试 |
 | `ctx.Deactivate()` | 请求当前 Actor 卸载；不是删除持久数据或回收全部缓存 |
 
-工厂与初始化回调不附加统一执行 deadline；具体业务 I/O 自行设置期限。调用者等待取消不撤销已开始的加载。业务决定“可进入”的必备内容，框架在回调成功后统一置 Ready，不增加 feature-ready 或手动 MarkReady。
+工厂与初始化回调不附加统一执行 deadline；具体业务 I/O 自行设置期限。调用者等待取消不撤销已开始的加载。框架在回调成功后统一置 Ready，只表达 Actor 通信入口初始化完成；应用放入回调的加载仍须完成。World、Room 业务对象由应用模块管理，生命周期不强制绑定 Actor，业务自行判断是否可用；不增加 feature-ready 或手动 MarkReady。服务 Flush 仍负责必要持久化，完整边界见 [生命周期契约](service-actor-lifecycle.md)。
 
 容量分 activation 与 assignment：前者清理完成释放；后者按稳定归属占位，卸载不释放且要求一实体一槽。数量限额不是内存/CPU 硬保证。详细状态与关闭边界见 [Actor 生命周期](service-actor-lifecycle.md)。
 

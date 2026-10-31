@@ -21,7 +21,7 @@
 | 进程实例 | Discovery 发布 Starting/Running/Draining，进程管理 RPC、控制入口和连接；Running 不等于所有业务 Actor Ready |
 | 子服务 | Init 装配、可选 Start 完成必要加载、Drain 等待已接纳工作、Stop 释放资源 |
 | Actor | Initializing/Ready/Closing/Failed 表达单次激活状态；控制操作与业务消息投递分开 |
-| 业务模块 | 进程内单例复用能力；激活状态由 Actor 持有，GD 操作使用本次 Handler 或 Procedure 的上下文 |
+| 业务模块 | 进程内单例复用能力；管理 World、Room 等业务对象，生命周期不强制绑定 Actor 激活；GD 操作使用本次 Handler 或 Procedure 的上下文 |
 
 源码核对入口：`internal/framework/server.go`、`internal/framework/service_host.go`、`internal/actorhost/runtime.go`、`modules/actor/runtime.go`；示例见 txgameslg 的 `services/slgworld/{service,bootstrap,registration}.go`。
 
@@ -55,11 +55,13 @@ Created → Initializing → Initialized → Starting → Running
 
 启动中的服务须允许已有生命周期控制路径完成指定 Actor 激活，同时常规客户端、内部业务和任务入口不能以“端口已监听”绕过服务准入。本地直调也应遵循相同规则；不得用一个业务可传入的布尔值放行普通消息。外部 Admission、Actor Submit/Post 共用本地子服务阶段；After 保留尚未入队的定时消息直到服务就绪或激活关闭。任务消费者在服务开放后才开始领取，避免启动窗口消耗投递次数。Starting 可使用控制面激活，Created/Initializing/Initialized 不触发业务工厂；排水仍使用既有入口、邮箱和任务屏障，不新增远程查询或第二套计数。
 
-World 示例：GDWorld 加载完成且目标 Actor Ready 后，才完成指定 World 的服务启动工作。这个一次性启动要求不等于永久驻留；后续空闲卸载仍遵守既有配置。活动开启、玩家进入资格仍由项目判断。
+World 示例：应用模块在服务 Start 中完成指定 World 加载，按需确保其 Actor 通信入口 Ready；业务对象可以由模块长期持有，Actor 工厂不必负责加载。启动必需项由服务定义，活动开启、玩家进入资格仍由项目判断。
 
 ## Actor 生命周期控制
 
-Actor Ready 继续晚于工厂及全部初始化/激活回调成功。业务 Load 只是其中的数据加载步骤，不独立创建 Actor，也不设置框架状态。
+Actor Ready 只表示通信入口初始化完成，仍晚于工厂及全部初始化/激活回调成功。应用放入这些回调的加载必须等待完成；业务模块也可以独立加载和管理 World、Room，不借此设置框架状态。Ready 不保证业务对象存在、已加载或允许进入。
+
+`WithIdlePassivation(0)` 显式禁用该类型的空闲卸载，覆盖运行时配置及工厂返回的 Behavior 原值；正值至少为 1ms。未指定该选项时，运行时的正值配置优先，否则保留 Behavior 策略。禁用空闲卸载不禁止显式卸载或服务排水，也不赋予 Actor 对业务对象的销毁权。
 
 | 操作 | 当前入口 | 保持或补齐的契约 |
 | --- | --- | --- |
@@ -86,7 +88,9 @@ tx 不分类 Rank、Room、Bag，不维护业务模块容器。项目保留 modu
 
 项目启动绑定 GD、Redis 与 Actor 调用资源；模块获取不使用 ctx，GD 查询、修改、事务及远端调用沿用显式操作上下文。无状态 Handler 使用匿名内嵌自动提升方法，不逐个绑定 Access，也不保存请求或 Actor 状态。真正的 Actor 生命周期、事务与排水上下文保留；底层操作有期限但不以取消信号代替实际完成。
 
-模块单例不持有玩家、Room 或 World 激活状态，也不改变缓存、Sender、WriteBack 的关闭责任。进程组合与独立部署都不把本地单例解释成分布式状态权威。启动绑定和显式上下文的分工见 [runtime-access.md](runtime-access.md)。
+模块可以按业务身份持有 World、Room 对象，负责创建、加载、业务关闭和释放；框架 Actor 的激活状态仍由运行时维护。业务关闭不要求同步销毁 Actor，Actor 卸载也不要求销毁业务对象。应用须保证对象的唯一所有者及串行访问，不能以模块直调绕过既有邮箱或事务边界。
+
+服务 Flush 保留其拥有数据的必要写回，失败保留对象和依赖并沿用既有重试；移除 Actor 卸载回调不等于省略最终保存。缓存、Sender、WriteBack 的关闭责任不变。进程组合与独立部署都不把本地单例解释成分布式状态权威。启动绑定和显式上下文的分工见 [runtime-access.md](runtime-access.md)。
 
 ## Room 的默认创建链路与首次选址
 
@@ -94,9 +98,9 @@ tx 不分类 Rank、Room、Bag，不维护业务模块容器。项目保留 modu
 Game：FightroomAt(ctx, roomID).Start(request)
   → tx 解析 Type/ID、服务池和稳定槽位
   → 已有 owner 则沿用；没有 owner 才做首次选址与 CAS
-  → owner 上激活 Actor，工厂创建 Room 业务对象
+  → owner 上激活 Actor，工厂建立通信入口
   → 初始化回调成功，Actor Ready
-  → 邮箱调用 RoomHandler.Start，设置成员并开始战斗
+  → 邮箱调用 RoomHandler.Start，由应用模块创建/取得 Room、设置成员并开始战斗
 ```
 
 At 只构造引用，Start 才发起 Call；调用方不是执行方。组合部署时可以走本地邮箱，仍由 Fightroom Actor 执行。Room 激活就绪与业务开战成功是两个不同阶段，不增加全局中转 Actor 来掩盖这一区别。

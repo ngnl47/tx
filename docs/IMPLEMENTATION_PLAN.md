@@ -6,7 +6,7 @@
 
 | 能力 | 当前方案 | 验收边界 |
 | --- | --- | --- |
-| Actor 放置与生命周期 | 默认分区、命名分组、独立槽位；Ready 晚于业务必备加载；正常交接受控晋升 | [放置](actor-placement-acceptance.md)、[Role/Room](https://github.com/ngnl47/txgame/blob/master/docs/acceptance/actor-package.md)、[World](https://github.com/ngnl47/txgameslg/blob/main/docs/acceptance/world-startup.md)；不承诺运行中单实体热迁移 |
+| Actor 放置与生命周期 | 默认分区、命名分组、独立槽位；Ready 晚于工厂及初始化/激活回调完成，仅表示通信入口就绪；业务对象由应用模块管理；正常交接受控晋升 | [放置](actor-placement-acceptance.md)、[Role/Room](https://github.com/ngnl47/txgame/blob/master/docs/acceptance/actor-package.md)、[World](https://github.com/ngnl47/txgameslg/blob/main/docs/acceptance/world-startup.md)；历史报告不替代本轮验证，不承诺运行中单实体热迁移 |
 | GD 访问 | 无缓存显式存取；共享实体 Find 仅限有效 Procedure，普通 Snapshot；World 独占排除 | [本地回归与微基准](entity-access-acceptance.md)，不是云端容量 |
 | EntityCache 管理 | Stats、List、SnapshotCached、TryRelease | [管理验收](entity-cache-management-acceptance.md)，无管理页面/全量导出 |
 | Procedure | Lockey 与 Store 解耦；Call、子 Call、同步 CallAfterCommit；有界异步 Submit | [锁](procedure-locks.md)、[Submit 真实业务](https://github.com/ngnl47/txgameslg/blob/main/docs/procedure-submit-acceptance.md)；默认 64/8192，合成突发对照未覆盖 8192 档 |
@@ -70,3 +70,10 @@
 ## 文档与验证规则
 
 设计描述现行实现，计划描述未完成工作，报告描述指定日期与构建条件。链接调整不改写历史数据，不把跳过的外部测试算通过；文档审查不能替代运行时测试。轻量差异审查使用 [tx-contract-review](../.agents/skills/tx-contract-review/SKILL.md)，规则只维护于工程约定与审计标准。
+
+## 当前进行中：通信 Actor 与业务对象生命周期分离（2026-10-31）
+
+- 框架已补齐 `WithIdlePassivation(0)` 显式禁用；未指定时保留原配置回退，指定类型策略时优先。ActorHost/公开模块及全库本地测试、Actor 定向 race 已通过。
+- 应用按类型声明 Role 10 秒、Room 70 秒、World 禁用空闲卸载，移除重复 YAML。Room/World 由模块管理业务对象、Tick 和收尾，通信工厂仅绑定协议。
+- 本地验证包含通信 Actor 卸载重激活不丢业务状态、World Tick 与最终保存、Room 通知与排水。Room 多房间慢通知隔离已通过先失败后修复的回归及 race 检查。
+- SLG 显式启动已实施：通用 `WithExplicitAssignment` 由共享类型契约约束普通寻址及 Ensure/Retry，默认 Role/Room 行为不变。应用停服后按 --world-id 和匹配的旧 InstanceID 登记归属并直接加载 World，通信 Actor 不前置激活。框架本地回归及正式包全停全启、SLG 合服双 World 恢复和配置 A→B→A 验证通过，详见 [本轮证据](https://github.com/ngnl47/txgameslg/blob/main/docs/acceptance/world-explicit-startup.md)。不跑云测试、不提交。

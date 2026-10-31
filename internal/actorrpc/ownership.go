@@ -11,11 +11,12 @@ import (
 // EntityRouter 统一绑定缓存寻址、首次分配及激活；归属决策仍由 L2 维护。
 // Service 从应用目录解析 Type 的服务池；装配时与 SlotID 统一绑定，不由业务逐次选择。
 type EntityRouter struct {
-	Resolver  *discovery.SlotResolver
-	Ownership *discovery.SlotOwnership
-	Transport *NATSTransport
-	Service   func(actorType string) (string, error)
-	SlotID    actorhost.SlotResolver
+	Resolver           *discovery.SlotResolver
+	Ownership          *discovery.SlotOwnership
+	Transport          *NATSTransport
+	Service            func(actorType string) (string, error)
+	SlotID             actorhost.SlotResolver
+	ExplicitAssignment func(actorType string) bool
 }
 
 // Ensure 先无副作用预检、CAS 确立归属，再发起激活；失败不会重投业务或改派。
@@ -41,13 +42,21 @@ func (a *EntityRouter) ensure(ctx context.Context, id actorhost.Identity, retry 
 	if err != nil {
 		return discovery.SlotAssignment{}, actorhost.ActivationStatus{}, err
 	}
-	current, created, err := a.Ownership.Ensure(ctx, service, slot, func(ctx context.Context, instance string) (bool, error) {
-		err := a.Transport.CheckActivationCapacity(ctx, actorhost.Target{Instance: instance, Identity: id})
-		if errors.Is(err, actorhost.ErrCapacity) || errors.Is(err, actorhost.ErrDraining) {
-			return false, nil
-		}
-		return err == nil, err
-	})
+	var current discovery.SlotAssignment
+	var created bool
+	if a.ExplicitAssignment != nil && a.ExplicitAssignment(id.Type) {
+		var target discovery.SlotTarget
+		target, err = a.Ownership.Resolve(ctx, service, slot)
+		current = target.Assignment
+	} else {
+		current, created, err = a.Ownership.Ensure(ctx, service, slot, func(ctx context.Context, instance string) (bool, error) {
+			err := a.Transport.CheckActivationCapacity(ctx, actorhost.Target{Instance: instance, Identity: id})
+			if errors.Is(err, actorhost.ErrCapacity) || errors.Is(err, actorhost.ErrDraining) {
+				return false, nil
+			}
+			return err == nil, err
+		})
+	}
 	if errors.Is(err, discovery.ErrSlotCapacityUnavailable) {
 		err = actorhost.ErrCapacity
 	}
@@ -64,7 +73,7 @@ func (a *EntityRouter) ensure(ctx context.Context, id actorhost.Identity, retry 
 	return current, state, err
 }
 
-// Resolve 优先读取 Watch 缓存，仅明确缺少归属时回源并分配。
+// Resolve 优先读取 Watch 缓存，缺失时回源；仅允许自动归属的类型可首次分配。
 // 快照不可用、旧 owner 下线或调用失败均不触发自动改派或业务重投。
 func (a *EntityRouter) Resolve(ctx context.Context, id actorhost.Identity) (actorhost.Target, error) {
 	service, err := a.Service(id.Type)

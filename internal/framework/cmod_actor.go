@@ -104,6 +104,7 @@ func (server *Server) startActor() error {
 		return err
 	}
 	router := &actorrpc.EntityRouter{Resolver: resolver, Ownership: ownership, Transport: r.actorRPC.(*actorrpc.NATSTransport), SlotID: mapping,
+		ExplicitAssignment: func(name string) bool { return r.actorCatalog[name].actorType.RequiresExplicitAssignment() },
 		Service: func(name string) (string, error) {
 			spec, ok := r.actorCatalog[name]
 			if !ok {

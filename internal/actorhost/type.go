@@ -12,11 +12,13 @@ var ErrInvalidType = errors.New("actor: invalid type")
 
 // Type 声明实体行为与稳定归属；构造声明不会初始化业务实体。
 type Type struct {
-	name      string
-	factory   BehaviorFactory
-	slot      SlotResolver
-	placement string
-	idle      time.Duration
+	name               string
+	factory            BehaviorFactory
+	slot               SlotResolver
+	placement          string
+	idle               time.Duration
+	idleConfigured     bool
+	explicitAssignment bool
 }
 
 // Name 返回应用内唯一的实体类型名。
@@ -59,12 +61,22 @@ func WithSlotMapping(mapping SlotMapping) TypeOption {
 		return nil
 	})
 }
+
+// RequiresExplicitAssignment 表示归属只能由部署或控制面登记，消息不触发首次选址。
+func (k Type) RequiresExplicitAssignment() bool { return k.explicitAssignment }
+
+// WithExplicitAssignment 禁止缺失槽位时自动选址，不改变已有归属的激活与路由。
+func WithExplicitAssignment() TypeOption {
+	return typeOption(func(k *Type) error { k.explicitAssignment = true; return nil })
+}
+
 func WithIdlePassivation(timeout time.Duration) TypeOption {
 	return typeOption(func(k *Type) error {
-		if timeout < time.Millisecond {
+		if timeout != 0 && timeout < time.Millisecond {
 			return ErrInvalidType
 		}
 		k.idle = timeout
+		k.idleConfigured = true
 		return nil
 	})
 }
@@ -96,11 +108,9 @@ func TypeFactory(actorTypes []Type, idle map[string]time.Duration) (BehaviorFact
 		}
 		behavior, err := k.factory(c)
 		if behavior != nil {
-			timeout := k.idle
-			if timeout == 0 {
-				timeout = idle[k.name]
-			}
-			if timeout > 0 {
+			if k.idleConfigured {
+				behavior.IdlePassivation = k.idle
+			} else if timeout := idle[k.name]; timeout > 0 {
 				behavior.IdlePassivation = timeout
 			}
 		}

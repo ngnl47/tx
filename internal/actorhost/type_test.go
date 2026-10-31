@@ -36,3 +36,63 @@ func TestTypeFactoryKeepsDeclarationLazyAndMappingStable(t *testing.T) {
 		t.Fatalf("未注册实体不应创建：%d, %v", loaded, err)
 	}
 }
+
+func TestTypeFactoryIdlePassivationPrecedence(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		options []TypeOption
+		runtime time.Duration
+		want    time.Duration
+	}{
+		{"未指定保留行为", nil, 0, time.Minute},
+		{"未指定使用运行时", nil, time.Second, time.Second},
+		{"类型正值优先", []TypeOption{WithIdlePassivation(2 * time.Second)}, time.Second, 2 * time.Second},
+		{"显式禁用覆盖行为", []TypeOption{WithIdlePassivation(0)}, 0, 0},
+		{"显式禁用覆盖运行时", []TypeOption{WithIdlePassivation(0)}, time.Second, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			kind, err := NewType("world", func(Context) (*Behavior, error) {
+				return &Behavior{IdlePassivation: time.Minute}, nil
+			}, test.options...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			idle := map[string]time.Duration{}
+			if test.runtime > 0 {
+				idle[kind.Name()] = test.runtime
+			}
+			factory, err := TypeFactory([]Type{kind}, idle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			behavior, err := factory(Context{Identity: Identity{Type: "world", ID: "1"}})
+			if err != nil || behavior.IdlePassivation != test.want {
+				t.Fatalf("空闲策略 = %+v, %v；期望 %s", behavior, err, test.want)
+			}
+		})
+	}
+}
+
+func TestTypeIdlePassivationValidation(t *testing.T) {
+	for _, timeout := range []time.Duration{-time.Second, time.Nanosecond, time.Millisecond - 1, 0, time.Millisecond} {
+		t.Run(timeout.String(), func(t *testing.T) {
+			_, err := NewType("world", func(Context) (*Behavior, error) { return &Behavior{}, nil }, WithIdlePassivation(timeout))
+			valid := timeout == 0 || timeout == time.Millisecond
+			if valid && err != nil || !valid && !errors.Is(err, ErrInvalidType) {
+				t.Fatalf("空闲策略 %s 的校验错误：%v", timeout, err)
+			}
+		})
+	}
+}
+
+func TestExplicitAssignmentTypeOption(t *testing.T) {
+	factory := func(Context) (*Behavior, error) { return &Behavior{}, nil }
+	ordinary, err := NewType("room", factory)
+	if err != nil || ordinary.RequiresExplicitAssignment() {
+		t.Fatal(err)
+	}
+	declared, err := NewType("world", factory, WithExplicitAssignment())
+	if err != nil || !declared.RequiresExplicitAssignment() {
+		t.Fatal(err)
+	}
+}
