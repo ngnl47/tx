@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"sort"
 	"strings"
 	"sync"
@@ -21,10 +20,12 @@ var (
 )
 
 type EtcdRegistry struct {
-	client *txetcd.Client
-	config EtcdConfig
+	client     *txetcd.Client
+	config     EtcdConfig
+	ownsClient bool
 }
 
+// NewEtcdRegistry 创建并持有 etcd 客户端。
 func NewEtcdRegistry(ctx context.Context, config EtcdConfig) (*EtcdRegistry, error) {
 	config, err := config.Normalize()
 	if err != nil {
@@ -39,9 +40,11 @@ func NewEtcdRegistry(ctx context.Context, config EtcdConfig) (*EtcdRegistry, err
 		_ = client.Close()
 		return nil, err
 	}
+	registry.ownsClient = true
 	return registry, nil
 }
 
+// NewEtcdRegistryWithClient 借用已有客户端，Close 不关闭它。
 func NewEtcdRegistryWithClient(client *txetcd.Client, config EtcdConfig) (*EtcdRegistry, error) {
 	if client == nil {
 		return nil, ErrEtcdClientNil
@@ -54,27 +57,38 @@ func NewEtcdRegistryWithClient(client *txetcd.Client, config EtcdConfig) (*EtcdR
 }
 
 func (r *EtcdRegistry) Close() error {
-	if r == nil || r.client == nil {
+	if r == nil || r.client == nil || !r.ownsClient {
 		return nil
 	}
 	return r.client.Close()
 }
 
-// Register 申请进程 workSlot，并用同一租约注册自动生成 ID 的实例。
+// Register 生成本次运行的 InstanceID，并用独立租约注册实例。
 func (r *EtcdRegistry) Register(ctx context.Context, appID string, descriptor Instance) (*EtcdRegistration, error) {
 	if descriptor.ID != "" {
 		return nil, ErrInvalidInstance
+	}
+	identity, err := newRuntimeIdentity(appID)
+	if err != nil {
+		return nil, err
+	}
+	descriptor.ID = identity.InstanceID
+	if err := r.config.ValidateInstance(descriptor); err != nil {
+		return nil, err
+	}
+	payload, err := json.Marshal(descriptor)
+	if err != nil {
+		return nil, err
 	}
 	lease, err := r.client.Grant(ctx, r.config.LeaseTTL)
 	if err != nil {
 		return nil, err
 	}
-	identity, err := r.claimWorkSlot(ctx, lease, appID, uint16(rand.IntN(WorkSlotCount)+1))
-	if err != nil {
-		return nil, errors.Join(err, lease.Revoke(context.WithoutCancel(ctx)))
+	_, created, err := lease.Create(ctx, r.instanceKey(descriptor.ID), payload)
+	if err == nil && !created {
+		err = fmt.Errorf("discovery: instance %q already registered", descriptor.ID)
 	}
-	descriptor.ID = identity.InstanceID
-	if err := r.config.ValidateInstance(descriptor); err != nil {
+	if err != nil {
 		return nil, errors.Join(err, lease.Revoke(context.WithoutCancel(ctx)))
 	}
 	registration := &EtcdRegistration{
@@ -84,28 +98,8 @@ func (r *EtcdRegistry) Register(ctx context.Context, appID string, descriptor In
 		lease:    lease,
 		done:     make(chan struct{}),
 	}
-	if err := registration.write(ctx); err != nil {
-		return nil, errors.Join(err, lease.Revoke(context.WithoutCancel(ctx)))
-	}
 	go registration.keepAlive()
 	return registration, nil
-}
-
-func (r *EtcdRegistry) claimWorkSlot(ctx context.Context, lease *txetcd.Lease, appID string, start uint16) (RuntimeIdentity, error) {
-	if start == 0 || start > WorkSlotCount {
-		return RuntimeIdentity{}, ErrInvalidRuntimeIdentity
-	}
-	for offset := range WorkSlotCount {
-		slot := uint16((int(start)-1+offset)%WorkSlotCount + 1)
-		created, ok, err := lease.Create(ctx, r.workSlotKey(slot), []byte(appID))
-		if err != nil {
-			return RuntimeIdentity{}, err
-		}
-		if ok {
-			return newRuntimeIdentity(appID, slot, created.ModRevision)
-		}
-	}
-	return RuntimeIdentity{}, ErrWorkSlotExhausted
 }
 
 // Watch 持续用 etcd 快照更新目录，直到 ctx 取消或 etcd 返回错误。
@@ -178,7 +172,6 @@ type EtcdRegistration struct {
 	mu       sync.Mutex
 	identity RuntimeIdentity
 	instance Instance
-	running  bool
 	lease    *txetcd.Lease
 	done     chan struct{}
 	doneOnce sync.Once
@@ -224,9 +217,6 @@ func (r *EtcdRegistration) SetStatus(ctx context.Context, status Status) error {
 	if err := r.write(ctx); err != nil {
 		return err
 	}
-	if status == StatusRunning {
-		r.running = true
-	}
 	return nil
 }
 
@@ -235,14 +225,8 @@ func (r *EtcdRegistration) Close(ctx context.Context) error {
 		r.finish(ErrRegistrationDone)
 		r.mu.Lock()
 		instanceID := r.instance.ID
-		running := r.running
-		hasRuntimeIdentity := r.identity.WorkSlot != 0
 		r.mu.Unlock()
 		deleteErr := r.registry.client.Delete(ctx, r.registry.instanceKey(instanceID))
-		if hasRuntimeIdentity && running {
-			r.closeErr = errors.Join(deleteErr, r.lease.Stop())
-			return
-		}
 		r.closeErr = errors.Join(deleteErr, r.lease.Revoke(ctx))
 	})
 	return r.closeErr
@@ -276,11 +260,6 @@ func (r *EtcdRegistration) write(ctx context.Context) error {
 
 func (r *EtcdRegistry) instanceKey(id string) string {
 	return r.config.Prefix + "/" + id
-}
-
-func (r *EtcdRegistry) workSlotKey(slot uint16) string {
-	root := strings.TrimSuffix(r.config.Prefix, "/instances")
-	return fmt.Sprintf("%s/work-slots/%d", root, slot)
 }
 
 func (r *EtcdRegistry) watchPrefix() string {

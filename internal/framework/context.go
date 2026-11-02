@@ -59,9 +59,10 @@ type ModeStorage interface {
 type Advanced interface {
 	// Redis 返回 Redis 具名命令接口；普通 GD 读写不应使用该入口。
 	Redis() txgoredis.ClientProvider
-	// Slots 返回有状态服务逻辑槽位门面。读取只访问 Watch 内存目录，创建和迁移
-	// 仍通过 etcd CAS 持久化；业务消息热路径不会执行 etcd Get。
-	Slots() discovery.SlotStore
+	// Slots 返回 Watch 维护的只读槽位目录，热路径不执行 etcd Get。
+	Slots() discovery.SlotReader
+	// LocalAssignments 仅向本次运行实例认领槽位，不开放任意归属写入。
+	LocalAssignments() discovery.LocalAssignments
 }
 
 // Context 是传递给选中服务的稳定能力视图，并隔离资源所有权。

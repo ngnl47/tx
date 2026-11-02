@@ -6,14 +6,12 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/ngnl47/tx/modules/discovery"
 	"github.com/ngnl47/tx/sessionid"
 )
 
 var ErrSessionIDUnavailable = errors.New("framework: SessionID allocator is unavailable")
 
 type sessionIDIdentity interface {
-	Identity() discovery.RuntimeIdentity
 	Done() <-chan struct{}
 	Err() error
 }
@@ -29,18 +27,7 @@ type sessionIDRuntime struct {
 	closed       atomic.Bool
 }
 
-func newSessionIDRuntime(identity sessionIDIdentity) (*sessionIDRuntime, error) {
-	if identity == nil {
-		return nil, ErrSessionIDUnavailable
-	}
-	allocator, err := sessionid.New(identity.Identity().WorkSlot)
-	if err != nil {
-		return nil, errors.Join(ErrSessionIDUnavailable, err)
-	}
-	return newSessionIDRuntimeWithAllocator(allocator, identity), nil
-}
-
-func newSessionIDRuntimeWithAllocator(next sessionid.Allocator, identity sessionIDIdentity) *sessionIDRuntime {
+func newSessionIDRuntime(next sessionid.Allocator, identity sessionIDIdentity) *sessionIDRuntime {
 	availability, cancel := context.WithCancelCause(context.Background())
 	runtime := &sessionIDRuntime{
 		next:         next,
@@ -60,6 +47,12 @@ func newSessionIDRuntimeWithAllocator(next sessionid.Allocator, identity session
 
 // AllocateSessionID 仅在当前 Discovery 运行身份仍有效时分配 SessionID。
 func (runtime *sessionIDRuntime) AllocateSessionID(ctx context.Context) (int64, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	if runtime == nil {
 		return 0, ErrSessionIDUnavailable
 	}
@@ -98,7 +91,7 @@ func (runtime *sessionIDRuntime) AllocateSessionID(ctx context.Context) (int64, 
 	}
 	allocationCtx := availability
 	release := func() {}
-	if ctx != nil && ctx.Done() != nil {
+	if ctx.Done() != nil {
 		var cancel context.CancelCauseFunc
 		allocationCtx, cancel = context.WithCancelCause(availability)
 		stop := context.AfterFunc(ctx, func() { cancel(context.Cause(ctx)) })
@@ -123,6 +116,9 @@ func (runtime *sessionIDRuntime) AllocateSessionID(ctx context.Context) (int64, 
 		return 0, cause
 	}
 	if err != nil {
+		return 0, err
+	}
+	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
 	select {

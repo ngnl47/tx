@@ -36,6 +36,7 @@
 - tx 负责通用寻址、连接、准入、邮箱、事务与资源收尾，不从消息名称推断业务权限。
 - 同一进程可以组合多个 Service，共享启用的 CMod 和连接；每个 Actor 的邮箱与状态仍独立。
 - Actor 不等于 GD 缓存条目，卸载 Actor 不等于删除数据库或回收全部实体缓存。
+- 指定宿主的应用使用 Ant `CModLocalAssignments().Claim` 认领本实例槽位，再加载业务对象；tx 处理 CAS、成员与容量校验及本地目录合并，应用无需自连控制面。规则见 [显式槽位登记](docs/design.md#显式槽位登记与-etcd-更新)。
 
 ## 包结构
 
@@ -43,6 +44,7 @@
 bee/、ant/          应用启动门面与能力声明
 runtime/            操作范围中的 Actor、存储、Procedure 访问
 modules/            Actor、Agent、MsgQ、Discovery、事务、缓存等组件
+etcd/、sessionid/   etcd 通用原语与独立 SessionID 分配器
 storage/            Redis / Mongo / Fusion 及文档能力
 meta/、change/      GD 元数据与字段级变更内核
 protocol/           命令哈希、路由键、身份与 BON
@@ -79,7 +81,11 @@ return app.Run(ctx, bee.RunOptions{
 })
 ```
 
-`InstanceEndpoint` 发布内部 RPC 地址；`InstanceEndpoints` 可另外发布具名的客户端 TCP/WebSocket 等地址。InstanceID 由运行身份产生，不用 RoleID、ServerID 或 WorldID 替代。
+`InstanceEndpoint` 发布内部 RPC 地址；`InstanceEndpoints` 可另外发布具名的客户端 TCP/WebSocket 等地址。每次启动生成新的 `AppID-UUID` 形式 InstanceID，同进程子服务共用，业务按不透明身份使用，不用 RoleID、ServerID 或 WorldID 替代。
+
+Login 通过 `CModSessionID().AllocateSessionID(ctx)` 为每个新 Session 独立写入 etcd，以成功响应的 revision 作为编号，保持 `0 < id <= 2^53-1`。断线恢复沿用原编号；发号不编码 InstanceID，也不申请 work slot。成员租约和 Actor 逻辑槽位继续分别管理存活与归属。派生发号键、取消/空号、首次切换与恢复要求见 [运行身份与发号](docs/design.md#运行身份与-sessionid)。
+
+部署 etcd 时配置自动历史压缩并监控容量；这属于依赖服务的运维要求，Login/Game 不承担历史清理。配置示例、Watch 恢复和碎片整理边界见 [etcd 使用与维护](docs/api-reference.md#etcd-使用与维护)。
 
 `Requires` 自动展开依赖，但不会扩大当前服务的直接访问权；`After` 不自动启用能力。配置错误在启动前失败，启动/关闭失败保留明确错误。详见 [能力组合](docs/design.md#启动能力组合与执行上下文)。
 
@@ -117,5 +123,7 @@ go test -race ./modules/txn ./modules/entitycache ./modules/writeback
 外部依赖专项按相应测试的环境变量显式启用；默认跳过不算通过。tx 保留框架可靠性、并发和存储契约测试，txgen 保留生成校验，真实部署、客户端流量及滚动发布由应用入口验收。文档修改不要求重跑集群。
 
 [实施计划](docs/IMPLEMENTATION_PLAN.md)区分当前本地证据、待做联合验收和生产部署待办。历史云端 20/50 结果只证明当时构建与负载条件，不证明当前版本或长期稳态容量。
+
+当前主线为 [Actor 寻址、归属与生命周期收敛](docs/actor-routing-lifecycle-plan.md)：已接入条件路由修正、正常关闭释放，并依据本地测量将槽位 Watch 改为增量更新；首次加载和断流恢复仍使用完整快照。不包含业务重投或异常自动接管；控制面成本下降不等于业务吞吐已经提升。
 
 设计与 README 维护现行方案；专题文档维护详细契约；有日期的报告保留原始条件。已完成施工步骤由 Git 历史追溯，不保留互相矛盾的多轮使用说明。

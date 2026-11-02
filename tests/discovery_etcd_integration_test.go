@@ -2,16 +2,82 @@ package tests
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/ngnl47/tx/internal/framework"
+	"github.com/ngnl47/tx/lifecycle"
 	"github.com/ngnl47/tx/modules/discovery"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
+
+func TestEtcdRouteRefreshRepairsWithoutWatchEcho(t *testing.T) {
+	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("set TX_ETCD_ENDPOINT to run the etcd integration test")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/tx/tests/route-refresh-%d/instances", time.Now().UnixNano())
+	r, err := discovery.NewEtcdRegistry(ctx, discovery.EtcdConfig{Endpoints: []string{endpoint}, Prefix: prefix, LeaseTTL: 5 * time.Second, DialTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	cleanup, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup.Close()
+	defer func() {
+		_, err := cleanup.Delete(context.Background(), prefix[:len(prefix)-len("instances")], clientv3.WithPrefix())
+		if err != nil {
+			t.Error(err)
+		}
+	}()
+	putSlotTestMembers(t, ctx, endpoint, prefix, "old", "new")
+	old := discovery.SlotAssignment{SlotID: "slot", RuntimeInstanceID: "old", Generation: 1}
+	next := discovery.SlotAssignment{SlotID: "slot", RuntimeInstanceID: "new", Generation: 2}
+	if err := r.Slots().CreateSlot(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	_, oldRevision, err := r.Slots().ResolveSlotAtRevision(ctx, "slot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := discovery.NewSlotDirectory()
+	_ = d.ReplaceSnapshot([]discovery.SlotAssignment{old}, oldRevision)
+	cached, _ := discovery.NewCachedSlotStore(r.Slots(), d)
+	members := discovery.NewServiceDirectory()
+	_ = members.Replace([]discovery.Instance{
+		{ID: "old", Services: []string{"game"}, Endpoint: "old:1", Status: discovery.StatusRunning},
+		{ID: "new", Services: []string{"game"}, Endpoint: "new:1", Status: discovery.StatusRunning},
+	})
+	resolver, _ := discovery.NewSlotResolver(cached, members)
+	tasks := lifecycle.NewWaitGroupContext(ctx)
+	defer func() { tasks.Cancel(); tasks.Wait() }()
+	resolver.BindRefresh(lifecycle.TaskView(tasks))
+	if err := r.Slots().PromoteSlot(ctx, old, next); err != nil {
+		t.Fatal(err)
+	}
+	resolver.Invalidate(old)
+	got, err := resolver.ResolveServiceSlot(ctx, "game", "slot")
+	if err != nil || got.Assignment != next {
+		t.Fatalf("未回源修正: %+v %v", got, err)
+	}
+	_ = d.ReplaceSnapshot([]discovery.SlotAssignment{old}, oldRevision)
+	resolver.Invalidate(old)
+	got, err = resolver.ResolveServiceSlot(ctx, "game", "slot")
+	if err != nil || got.Assignment != next {
+		t.Fatalf("旧反馈覆盖新路由: %+v %v", got, err)
+	}
+}
 
 func TestEtcdRegistryLifecycleIntegration(t *testing.T) {
 	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
@@ -100,9 +166,10 @@ func TestEtcdSlotStorePromotesWithCompareAndSwap(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	prefix := fmt.Sprintf("/tx/tests/slots-%d", time.Now().UnixNano())
 	registry, err := discovery.NewEtcdRegistry(ctx, discovery.EtcdConfig{
 		Endpoints:   []string{endpoint},
-		Prefix:      fmt.Sprintf("/tx/tests/slots-%d", time.Now().UnixNano()),
+		Prefix:      prefix,
 		LeaseTTL:    5 * time.Second,
 		DialTimeout: time.Second,
 	})
@@ -111,6 +178,7 @@ func TestEtcdSlotStorePromotesWithCompareAndSwap(t *testing.T) {
 	}
 	defer registry.Close()
 
+	putSlotTestMembers(t, ctx, endpoint, prefix, "pod-uid-a", "pod-uid-b")
 	slots := registry.Slots()
 	current := discovery.SlotAssignment{
 		SlotID:            "game-slot-1",
@@ -168,6 +236,7 @@ func TestEtcdSlotWatchMaintainsCachedDirectoryAndFailsClosed(t *testing.T) {
 	}
 	defer registry.Close()
 
+	putSlotTestMembers(t, ctx, endpoint, prefix, "pod-uid-a", "pod-uid-b")
 	slots := registry.Slots()
 	current := discovery.SlotAssignment{
 		SlotID:            "game-slot-1",
@@ -194,7 +263,7 @@ func TestEtcdSlotWatchMaintainsCachedDirectoryAndFailsClosed(t *testing.T) {
 		RuntimeInstanceID: "pod-uid-b",
 		Generation:        43,
 	}
-	if err := cached.PromoteSlot(ctx, current, next); err != nil {
+	if err := slots.PromoteSlot(ctx, current, next); err != nil {
 		t.Fatalf("PromoteSlot() error = %v", err)
 	}
 	waitSlotAssignment(t, ctx, cached, next)
@@ -234,6 +303,7 @@ func TestEtcdSlotStoreSurvivesRegistryClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create first etcd registry: %v", err)
 	}
+	putSlotTestMembers(t, ctx, endpoint, config.Prefix, "pod-uid-a")
 	assignment := discovery.SlotAssignment{
 		SlotID:            "game-slot-1",
 		RuntimeInstanceID: "pod-uid-a",
@@ -261,7 +331,7 @@ func TestEtcdSlotStoreSurvivesRegistryClose(t *testing.T) {
 	}
 }
 
-func TestConcurrentRuntimeClaimsUseDifferentWorkSlots(t *testing.T) {
+func TestConcurrentRuntimesUseDifferentInstanceIDs(t *testing.T) {
 	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
 	if endpoint == "" {
 		t.Skip("set TX_ETCD_ENDPOINT to run the etcd integration test")
@@ -293,9 +363,6 @@ func TestConcurrentRuntimeClaimsUseDifferentWorkSlots(t *testing.T) {
 		_ = first.runtime.Close(context.Background())
 		_ = second.runtime.Close(context.Background())
 	})
-	if first.runtime.Identity().WorkSlot == second.runtime.Identity().WorkSlot {
-		t.Fatalf("workSlot duplicated: %d", first.runtime.Identity().WorkSlot)
-	}
 	if first.runtime.Instance().ID == second.runtime.Instance().ID {
 		t.Fatalf("InstanceID duplicated: %q", first.runtime.Instance().ID)
 	}
@@ -353,72 +420,64 @@ func TestFrameworkDiscoveryAutomaticIdentityIsSharedAcrossServices(t *testing.T)
 
 func assertGeneratedInstanceIDShape(t *testing.T, value, appID string) {
 	t.Helper()
-	var workSlot uint16
-	var modRevision int64
-	matched, err := fmt.Sscanf(value, appID+"-%d-%d", &workSlot, &modRevision)
-	if err != nil || matched != 2 || workSlot == 0 || workSlot > discovery.WorkSlotCount || modRevision <= 0 ||
-		value != fmt.Sprintf("%s-%d-%d", appID, workSlot, modRevision) {
-		t.Fatalf("InstanceID = %q, want %s-<workSlot>-<ModRevision>", value, appID)
+	prefix := appID + "-"
+	if !strings.HasPrefix(value, prefix) {
+		t.Fatalf("InstanceID = %q, want AppID prefix %q", value, prefix)
+	}
+	if _, err := uuid.Parse(strings.TrimPrefix(value, prefix)); err != nil {
+		t.Fatalf("InstanceID = %q, want AppID + UUID: %v", value, err)
 	}
 }
 
-func TestEtcdRunningRuntimeCloseKeepsWorkSlotUntilTTL(t *testing.T) {
+func TestEtcdRuntimeCloseRevokesMemberLeaseImmediately(t *testing.T) {
 	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
 	if endpoint == "" {
 		t.Skip("set TX_ETCD_ENDPOINT to run the etcd integration test")
 	}
-	prefix := uniqueDiscoveryPrefix(t, "runtime-close")
-	const leaseTTL = 2 * time.Second
-	runtime := newIntegrationRuntime(t, "txgame", prefix, leaseTTL)
-	if err := runtime.MarkRunning(t.Context()); err != nil {
-		t.Fatalf("MarkRunning: %v", err)
-	}
-	identity := runtime.Identity()
-	instance := runtime.Instance()
-	client, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: time.Second})
-	if err != nil {
-		t.Fatalf("create etcd assertion client: %v", err)
-	}
-	defer client.Close()
-	if err := runtime.Close(t.Context()); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	instanceKey := prefix + "/instances/" + instance.ID
-	workSlotKey := fmt.Sprintf("%s/work-slots/%d", prefix, identity.WorkSlot)
-	if response, err := client.Get(t.Context(), instanceKey); err != nil || len(response.Kvs) != 0 {
-		t.Fatalf("instance key after Close: count=%d err=%v", len(response.Kvs), err)
-	}
-	if response, err := client.Get(t.Context(), workSlotKey); err != nil || len(response.Kvs) != 1 {
-		t.Fatalf("workSlot key immediately after Close: count=%d err=%v", len(response.Kvs), err)
-	}
-	waitWorkSlotReleased(t, client, workSlotKey, 2*leaseTTL)
-	if err := runtime.Err(); !errors.Is(err, discovery.ErrRuntimeClosed) {
-		t.Fatalf("Runtime.Err = %v, want ErrRuntimeClosed", err)
-	}
-}
-
-func TestEtcdStartingRuntimeCloseRevokesWorkSlotImmediately(t *testing.T) {
-	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
-	if endpoint == "" {
-		t.Skip("set TX_ETCD_ENDPOINT to run the etcd integration test")
-	}
-	prefix := uniqueDiscoveryPrefix(t, "runtime-start-failure")
-	runtime := newIntegrationRuntime(t, "txgame", prefix, 5*time.Second)
-	workSlotKey := fmt.Sprintf("%s/work-slots/%d", prefix, runtime.Identity().WorkSlot)
-	client, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: time.Second})
-	if err != nil {
-		t.Fatalf("create etcd assertion client: %v", err)
-	}
-	defer client.Close()
-	if err := runtime.Close(t.Context()); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	response, err := client.Get(t.Context(), workSlotKey)
-	if err != nil {
-		t.Fatalf("read workSlot after Close: %v", err)
-	}
-	if len(response.Kvs) != 0 {
-		t.Fatal("starting Runtime retained workSlot after Close")
+	for _, running := range []bool{false, true} {
+		t.Run(fmt.Sprintf("running-%t", running), func(t *testing.T) {
+			prefix := uniqueDiscoveryPrefix(t, "runtime-close")
+			runtime := newIntegrationRuntime(t, "txgame", prefix, 5*time.Second)
+			if running {
+				if err := runtime.MarkRunning(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			client, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			key := prefix + "/instances/" + runtime.Instance().ID
+			member, err := client.Get(t.Context(), key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(member.Kvs) != 1 || member.Kvs[0].Lease == 0 {
+				t.Fatalf("成员未绑定租约: %v", member.Kvs)
+			}
+			leaseID := clientv3.LeaseID(member.Kvs[0].Lease)
+			if err := runtime.Close(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			remaining, err := client.Get(t.Context(), prefix+"/", clientv3.WithPrefix())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(remaining.Kvs) != 0 {
+				t.Fatalf("Close 后残留成员或 work slot: %v", remaining.Kvs)
+			}
+			lease, err := client.TimeToLive(t.Context(), leaseID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if lease.TTL != -1 {
+				t.Fatalf("Close 后租约仍存在: TTL=%d", lease.TTL)
+			}
+			if err := runtime.Err(); !errors.Is(err, discovery.ErrRuntimeClosed) {
+				t.Fatalf("Runtime.Err = %v", err)
+			}
+		})
 	}
 }
 
@@ -485,25 +544,6 @@ func newFrameworkDiscoveryServer(t *testing.T, endpoint, prefix, instanceEndpoin
 	return server
 }
 
-func waitWorkSlotReleased(t *testing.T, client *clientv3.Client, key string, timeout time.Duration) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), timeout)
-	defer cancel()
-	ticker := time.NewTicker(20 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		response, err := client.Get(ctx, key)
-		if err == nil && len(response.Kvs) == 0 {
-			return
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatalf("wait workSlot %q release: %v", key, ctx.Err())
-		case <-ticker.C:
-		}
-	}
-}
-
 func waitDirectory(t *testing.T, ctx context.Context, directory *discovery.ServiceDirectory, condition func() bool) {
 	t.Helper()
 	ticker := time.NewTicker(10 * time.Millisecond)
@@ -520,7 +560,7 @@ func waitDirectory(t *testing.T, ctx context.Context, directory *discovery.Servi
 	}
 }
 
-func waitSlotAssignment(t *testing.T, ctx context.Context, store discovery.SlotStore, want discovery.SlotAssignment) {
+func waitSlotAssignment(t *testing.T, ctx context.Context, store discovery.SlotReader, want discovery.SlotAssignment) {
 	t.Helper()
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
@@ -537,7 +577,7 @@ func waitSlotAssignment(t *testing.T, ctx context.Context, store discovery.SlotS
 	}
 }
 
-func waitSlotMissing(t *testing.T, ctx context.Context, store discovery.SlotStore, slotID string) {
+func waitSlotMissing(t *testing.T, ctx context.Context, store discovery.SlotReader, slotID string) {
 	t.Helper()
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
@@ -550,6 +590,37 @@ func waitSlotMissing(t *testing.T, ctx context.Context, store discovery.SlotStor
 		case <-ctx.Done():
 			t.Fatalf("wait slot %q deletion: %v", slotID, ctx.Err())
 		case <-ticker.C:
+		}
+	}
+}
+
+// 持久槽位测试也登记权威成员，避免把仅存在于内存的假成员当作可分配宿主。
+func putSlotTestMembers(t *testing.T, ctx context.Context, endpoint, prefix string, ids ...string) {
+	t.Helper()
+	client, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix = strings.TrimSuffix(prefix, "/instances") + "/instances/"
+	t.Cleanup(func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		for _, id := range ids {
+			if _, err := client.Delete(cleanup, prefix+id); err != nil {
+				t.Error(err)
+			}
+		}
+		if err := client.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	for _, id := range ids {
+		payload, err := json.Marshal(discovery.Instance{ID: id, Services: []string{"game"}, Endpoint: id + ":1", Status: discovery.StatusRunning})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.Put(ctx, prefix+id, string(payload)); err != nil {
+			t.Fatal(err)
 		}
 	}
 }

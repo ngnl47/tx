@@ -507,13 +507,17 @@ func (x *Result) GetCompleted() bool {
 
 // DirectStreamCall 携带单项实体调用及本项剩余等待时间。
 type DirectStreamCall struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
-	Id            string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
-	Delivery      *Delivery              `protobuf:"bytes,3,opt,name=delivery,proto3" json:"delivery,omitempty"`
-	TimeoutNano   int64                  `protobuf:"varint,4,opt,name=timeout_nano,json=timeoutNano,proto3" json:"timeout_nano,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Type        string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	Id          string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
+	Delivery    *Delivery              `protobuf:"bytes,3,opt,name=delivery,proto3" json:"delivery,omitempty"`
+	TimeoutNano int64                  `protobuf:"varint,4,opt,name=timeout_nano,json=timeoutNano,proto3" json:"timeout_nano,omitempty"`
+	// 以下字段仅供框架异常反馈，不进入业务 Delivery。
+	SlotId         string `protobuf:"bytes,5,opt,name=slot_id,json=slotId,proto3" json:"slot_id,omitempty"`
+	Generation     uint64 `protobuf:"varint,6,opt,name=generation,proto3" json:"generation,omitempty"`
+	SourceInstance string `protobuf:"bytes,7,opt,name=source_instance,json=sourceInstance,proto3" json:"source_instance,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *DirectStreamCall) Reset() {
@@ -572,6 +576,27 @@ func (x *DirectStreamCall) GetTimeoutNano() int64 {
 		return x.TimeoutNano
 	}
 	return 0
+}
+
+func (x *DirectStreamCall) GetSlotId() string {
+	if x != nil {
+		return x.SlotId
+	}
+	return ""
+}
+
+func (x *DirectStreamCall) GetGeneration() uint64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
+func (x *DirectStreamCall) GetSourceInstance() string {
+	if x != nil {
+		return x.SourceInstance
+	}
+	return ""
 }
 
 type PlacementRequest struct {
@@ -709,12 +734,17 @@ const file_modules_actor_proto_actor_proto_rawDesc = "" +
 	"\n" +
 	"error_code\x18\x05 \x01(\x05R\terrorCode\x12#\n" +
 	"\rerror_message\x18\x06 \x01(\tR\ferrorMessage\x12\x1c\n" +
-	"\tcompleted\x18\b \x01(\bR\tcompletedJ\x04\b\a\x10\bR\x10processed_up_seq\"\x8c\x01\n" +
+	"\tcompleted\x18\b \x01(\bR\tcompletedJ\x04\b\a\x10\bR\x10processed_up_seq\"\xee\x01\n" +
 	"\x10DirectStreamCall\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x121\n" +
 	"\bdelivery\x18\x03 \x01(\v2\x15.tx.actor.v1.DeliveryR\bdelivery\x12!\n" +
-	"\ftimeout_nano\x18\x04 \x01(\x03R\vtimeoutNano\"L\n" +
+	"\ftimeout_nano\x18\x04 \x01(\x03R\vtimeoutNano\x12\x17\n" +
+	"\aslot_id\x18\x05 \x01(\tR\x06slotId\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x06 \x01(\x04R\n" +
+	"generation\x12'\n" +
+	"\x0fsource_instance\x18\a \x01(\tR\x0esourceInstance\"L\n" +
 	"\x10PlacementRequest\x12\x1d\n" +
 	"\n" +
 	"actor_type\x18\x01 \x01(\tR\tactorType\x12\x19\n" +

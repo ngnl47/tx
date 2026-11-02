@@ -3,6 +3,8 @@ package framework
 import (
 	"context"
 	"errors"
+
+	"github.com/ngnl47/tx/sessionid"
 )
 
 func (server *Server) sessionIDCMod() CMod {
@@ -12,11 +14,11 @@ func (server *Server) sessionIDCMod() CMod {
 			if server == nil || server.discovery == nil || server.runtime == nil {
 				return ErrSessionIDUnavailable
 			}
-			runtime, err := newSessionIDRuntime(server.discovery)
+			allocator, err := sessionid.NewEtcdAllocator(server.discovery.client, server.discovery.sessionIDKey)
 			if err != nil {
 				return errors.Join(ErrSessionIDUnavailable, err)
 			}
-			server.runtime.setSessionIDs(runtime)
+			server.runtime.setSessionIDs(newSessionIDRuntime(allocator, server.discovery))
 			return nil
 		},
 		drain: func(context.Context) error {

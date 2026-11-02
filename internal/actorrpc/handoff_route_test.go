@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ngnl47/tx/internal/actorhost"
+	"github.com/ngnl47/tx/lifecycle"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 	"github.com/ngnl47/tx/modules/discovery"
 )
@@ -53,6 +54,9 @@ func handoffCaller(t *testing.T, transportErr error) (*RoutedCaller, *handoffRea
 	if err != nil {
 		t.Fatal(err)
 	}
+	tasks := lifecycle.NewWaitGroupContext(t.Context())
+	t.Cleanup(func() { tasks.Cancel(); tasks.Wait() })
+	resolver.BindRefresh(lifecycle.TaskView(tasks))
 	transport := &handoffTransport{targets: make(chan actorhost.Target, 4), err: transportErr}
 	caller := &RoutedCaller{Router: &EntityRouter{Resolver: resolver,
 		SlotID:  actorhost.SlotMapping(func(actorhost.Identity) string { return "slot" }).Resolver(),

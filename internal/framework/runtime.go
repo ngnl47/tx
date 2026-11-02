@@ -46,7 +46,8 @@ type runtime struct {
 	entityCacheDraining bool
 	entityCacheClosed   bool
 	directory           *discovery.ServiceDirectory
-	slots               discovery.SlotStore
+	slots               discovery.SlotReader
+	localAssignments    discovery.LocalAssignments
 	sessionIDMu         sync.RWMutex
 	sessionIDs          *sessionIDRuntime
 	instanceMu          sync.RWMutex

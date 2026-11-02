@@ -31,6 +31,9 @@ func (server *Server) Drain(ctx context.Context) error {
 	host.beginDrain()
 	var managementErr error
 	if runtime != nil {
+		// 发号可能等待外部 I/O，先取消才能让已接纳的 Login 请求退出。
+		// 仅关闭新 Session 发号，不取消其他已接纳业务的执行上下文。
+		runtime.closeSessionIDs()
 		managementErr = runtime.stopEntityCacheManagement(ctx, false)
 	}
 	if runtime != nil && runtime.placement != nil {
@@ -164,9 +167,6 @@ func (server *Server) shutdown(ctx context.Context, drain bool) error {
 	}
 	errs := []error{err}
 	if !server.releaseDone {
-		if controlServer != nil {
-			controlServer.stop()
-		}
 		// 服务先关闭自身发送器；此时进程级传输入口仍需有效。
 		if host != nil {
 			stopErr := host.stop(ctx)
@@ -177,7 +177,25 @@ func (server *Server) shutdown(ctx context.Context, drain bool) error {
 		}
 		server.mu.Lock()
 		server.finalizeErr = errors.Join(errs...)
+		// 正常收尾成功才能释放；启动回滚、致命退出及显式交接不进入此分支。
+		canRelease := !server.slotsReleased && drain && server.started && server.fatalErr == nil && !server.prepared && server.finalizeErr == nil
 		server.mu.Unlock()
+		if canRelease && discoveryRuntime != nil {
+			if releaser, ok := discoveryRuntime.AuthoritativeSlots().(discovery.SlotReleaser); ok {
+				releaseCtx, cancel := context.WithTimeout(ctx, effectiveDrainTimeout(server.config.Runtime.Lifecycle.DrainTimeout))
+				releaseErr := releaser.ReleaseSlots(releaseCtx, runtime.instanceSnapshot().ID)
+				cancel()
+				if releaseErr != nil {
+					return errors.Join(errStopDeferred, releaseErr)
+				}
+				server.mu.Lock()
+				server.slotsReleased = true
+				server.mu.Unlock()
+			}
+		}
+		if controlServer != nil {
+			controlServer.stop()
+		}
 		// 根任务实际退出前保留 CMod 连接和存储；重试不再排水或 Flush。
 		if runtime != nil && runtime.lifecycle != nil {
 			waitCtx, cancel := context.WithTimeout(ctx, effectiveDrainTimeout(server.config.Runtime.Lifecycle.DrainTimeout))

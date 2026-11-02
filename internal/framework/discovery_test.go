@@ -48,8 +48,6 @@ func TestDiscoveryAutomaticIdentityWithEtcd(t *testing.T) {
 	t.Cleanup(func() { _ = second.Stop(context.Background()) })
 	firstID := first.Context().Instance().ID
 	secondID := second.Context().Instance().ID
-	assertGeneratedInstanceIDShape(t, firstID, "txgame")
-	assertGeneratedInstanceIDShape(t, secondID, "txgame")
 	if firstID == "" || secondID == "" || firstID == secondID {
 		t.Fatalf("automatic InstanceID values = %q, %q", firstID, secondID)
 	}
@@ -81,21 +79,8 @@ func TestDiscoveryAutomaticIdentityIsSharedByServicesWithEtcd(t *testing.T) {
 		t.Fatalf("start server: %v", err)
 	}
 	t.Cleanup(func() { _ = server.Stop(context.Background()) })
-	assertGeneratedInstanceIDShape(t, firstID, "txgame")
-	assertGeneratedInstanceIDShape(t, secondID, "txgame")
 	if firstID == "" || secondID == "" || firstID != secondID {
 		t.Fatalf("service InstanceID values = %q, %q", firstID, secondID)
-	}
-}
-
-func assertGeneratedInstanceIDShape(t *testing.T, value, appID string) {
-	t.Helper()
-	var workSlot uint16
-	var modRevision int64
-	matched, err := fmt.Sscanf(value, appID+"-%d-%d", &workSlot, &modRevision)
-	if err != nil || matched != 2 || workSlot == 0 || workSlot > discovery.WorkSlotCount || modRevision <= 0 ||
-		value != fmt.Sprintf("%s-%d-%d", appID, workSlot, modRevision) {
-		t.Fatalf("InstanceID = %q, want %s-<workSlot>-<ModRevision>", value, appID)
 	}
 }
 

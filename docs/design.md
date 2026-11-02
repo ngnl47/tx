@@ -4,6 +4,8 @@
 
 阅读时先看“工程边界、整体链路、启动”，再按业务选择“无缓存存储”或“共享实体与事务”。不要把一次发送、内存提交、Redis 热写和 Mongo 落盘理解为同一个成功边界。
 
+Actor 寻址与正常关闭归属的目标见 [专项实施计划](actor-routing-lifecycle-plan.md)，其中包含目标架构、生命周期流程及分批验收。[条件路由修正](actor-placement.md)和正常 Stop 后的条件释放已接入；失联或收尾失败不触发自动改派。
+
 ## 工程与运行单位
 
 | 工程 | 维护什么 | 不维护什么 |
@@ -53,7 +55,9 @@ bee/、ant/ → internal/framework/                  共享装配内核
 | `protocol/`、`protocol/bon/` | 命令哈希、路由键、不透明身份和 BON 编码 |
 | `storage/` | RecordKey、读写/版本/删除能力及后端适配 |
 | `component/`、`lifecycle/` | 依赖图、准入、后台任务与关闭等待 |
-| `modules/discovery/`、`etcd/` | 服务目录、实例身份、槽位权威与受控交接 |
+| `etcd/` | 客户端、租约、写入 revision、快照、Watch 与 CAS 通用原语 |
+| `sessionid/` | 每次独立写入取得 SessionID，借用写入器、不管理连接或成员租约 |
+| `modules/discovery/` | 服务目录、实例身份、槽位权威与受控交接 |
 | `modules/rpc/` | 共享 gRPC Host、路由和客户端 |
 | `modules/actor/` | 类型、投递、调用结果、激活控制等公共契约 |
 | `modules/agent/` | TCP/WebSocket 接入、认证适配和上行转发 |
@@ -85,7 +89,7 @@ flowchart LR
     JS -->|消费后调用 Actor| Other
 ```
 
-etcd 管实例发现和槽位；Redis 管会话绑定及项目热数据；Mongo 管持久文档。它们都不是每条业务上行必须串行经过的节点。
+etcd 管实例发现、槽位和新 Session 发号；Redis 管会话绑定及项目热数据；Mongo 管持久文档。普通上下行及同 Session 恢复不增加发号写入，它们都不是每条业务上行必须串行经过的节点。
 
 ## 启动、能力组合与执行上下文
 
@@ -97,7 +101,7 @@ Bee 面向无状态业务装配，Ant 额外提供 Procedure 等有状态能力�
 | --- | --- | --- |
 | RPC、RedisStorage、MongoStorage | 无 | 连接与资源只创建一次 |
 | Discovery | 无 | RPC 已启用时在其后启动 |
-| SessionID | Discovery | 使用运行身份分配 SessionID |
+| SessionID | Discovery | 借用共享 etcd 连接发号，由框架核对准入与身份有效性 |
 | Actor | RPC、Discovery | 本地宿主及远端通信、归属接线 |
 | TaskQueue | Actor | 任务消费复用 Actor 完成语义 |
 | FusionStorage | RedisStorage、MongoStorage | 内部组合热写与延迟任务 |
@@ -135,7 +139,36 @@ Handler 边界：消息 Context → 有期限的操作 ctx
 
 包结构：`modules/discovery/{runtime,directory,slot,ownership}.go` 管目录和权威归属；`internal/actorplacement/` 管分组查询缓存；`internal/framework/placement.go` 接线；`internal/actorhost/` 在加载前核验归属。
 
-实例启动取得新 InstanceID，稳定的业务 Slot 不随重启改名。Watch 更新目录，普通投递读取缓存；权威来源仍为 SlotStore 的 assignment 和 CAS。成员离线不等于可以自动认定旧实例不再执行。
+### 运行身份与 SessionID
+
+每次启动生成 `AppID-UUID` 形式的 InstanceID，同进程组合子服务共用，业务按不透明身份使用。Discovery 为成员登记保留独立租约；不再分配 work slot。新 Session 由 Login 调用原有 `CModSessionID().AllocateSessionID(ctx)`，每次独立 Put 并使用成功响应的 etcd revision；编号不编码 InstanceID、时间或逻辑槽位。
+
+SessionID 保持 `0 < id <= 2^53-1`，可由 JavaScript 安全整数表示；它不是连续业务序号，也不保证并发响应按编号顺序到达。取消、错误、范围越界或返回前身份失效均不返回成功编号，允许已写入但未返回的编号形成空号；不预取、不自动重试或降级发号。单次写入失败不代表 Discovery 已失去租约。同 Session 断线恢复沿用原编号和既有 Seq/Ack 契约。
+
+框架持有进程级 etcd 客户端，Discovery 通过 `NewRuntimeWithClient` 借用，发号器通过最小 `RevisionWriter` 借用。先停止借用者再关闭连接；独立使用 `discovery.NewRuntime` 时仍由该 Runtime 创建并关闭自己的客户端。
+
+将规范化的 Discovery `Prefix` 去掉 `/instances` 后记为 `R`，同一环境全部 Login 覆盖固定短值到 `R + "-session-ids/issuer"`，不为每个 Session 建键、不挂成员租约。例如 `/txgame/local/instances` 派生 `/txgame/local-session-ids/issuer`；该键位于 `/txgame/local/` 的成员/槽位 Watch 与容量 CAS 域之外，发号不会触发目录刷新或使槽位比较失效。
+
+```text
+进程启动 → AppID-UUID → 成员租约注册 → 服务启动钩子成功 → 开放 Login 发号
+新 Session → 核对准入与身份 → 独立 Put → 检查 revision、取消和身份 → 返回编号
+正常关闭 → 关闭准入并取消在途发号 → 完成排水与必要写回 → 条件释放 Actor 槽位
+         → 注销成员并 Revoke → 关闭共享 etcd 连接
+```
+
+首次从旧拼号算法切换须统一停止旧 Login 发号、结束旧会话并使旧票据失效后重新登录，不承诺两种算法混部互斥。此后同一算法下重启不重置 revision。保留有效 Session 的 etcd 快照恢复或集群重建必须保证 revision 高于此前发号上界；无法证明时先使旧会话/票据失效。删除发号键不会重置集群 revision，也不能充当恢复安全证明。ACL 和备份要求见 [API 参考](api-reference.md#服务发现)。MVCC 历史由 etcd 运维策略管理，tx 负责目录 Watch 的失效与快照恢复，业务不参与清理；配置与维护边界见 [etcd 使用与维护](api-reference.md#etcd-使用与维护)。
+
+### Actor 归属与目录
+
+稳定的业务 Slot 不随实例重启改名。Watch 更新目录，普通投递读取缓存；权威来源仍为 SlotStore 的 assignment 和 CAS。成员离线不等于可以自动认定旧实例不再执行。
+
+槽位目录首次加载和 Watch 重连时发布完整快照，正常 Watch 每批只更新变化项；整批解码校验成功后，在同一锁内更新并发出一次通知。主动查询和 Watch 共用版本保护，旧事件不能覆盖更新归属；Watch 中断后目录不可用，必须由新一轮完整快照恢复。服务成员目录和冷分配容量快照保持原有实现，测量范围与证据见 [目录更新验收](actor-placement-acceptance.md#2026-11-02-目录更新测量与增量发布)。
+
+```text
+启动 / 重连 → 完整槽位快照 → 可查询
+正常变化批次 → 校验 → 原子更新变化项 → 通知缓存使用者
+Watch 中断 → 拒绝旧轮次发布 + 目录不可用 → 重连重建
+```
 
 Actor 身份使用 `Identity{Type string, ID string}`。Type 在应用内唯一且对应一个服务池，ID 在该 Type 内唯一。生成的 `*At`、`*Identity`、`Ref.Identity()` 统一编码，业务不手工拼接 `i:` 等前缀。
 
@@ -161,35 +194,54 @@ SLG 示例由应用把 OriginServerID 解析为 MainServerID，作为 Role、Leg
 
 ### 显式槽位登记与 etcd 更新
 
-槽位名由应用映射规则确定，框架保存 `SlotAssignment{SlotID, RuntimeInstanceID, Generation}`。登记槽位只建立路由归属，不创建通信 Actor，不加载业务数据。`modules/control` 的 `CreateSlot/PromoteSlot` 使用 `modules/discovery` 的 SlotRouter 与 EtcdSlotStore；不由应用直接覆盖 etcd 键。
+槽位名由应用映射规则确定，框架保存 `SlotAssignment{SlotID, RuntimeInstanceID, Generation}`。登记槽位只建立路由归属，不创建通信 Actor，不加载业务数据。Ant 应用通过 `CModLocalAssignments().Claim(ctx, slotID, previousOwner)` 认领本实例槽位，不传目标 InstanceID 或 generation，不自连控制面。`modules/control` 的 `CreateSlot/PromoteSlot` 保留给外部管理工具；不由应用直接覆盖 etcd 键。
 
-实例注册绑定存活租约，assignment 则持久保存在该租约之外。正常退出或租约失效不会删除槽位归属；新进程有新的 InstanceID，不能仅凭相同启动参数或槽位名继承旧身份。Generation 是应用层归属代数，etcd ModRevision 是并发写入比较版本，两者不等同于业务数据版本。
+包结构：`modules/discovery/local_assignments.go` 将认领绑定到当前运行身份，复用权威 SlotStore 的 CAS 与已有版本缓存合并。Runtime 的持久槽位依赖要求 `VersionedSlotReader`，保证成功后的回读具有 revision，不使用无版本回退。`Runtime.Slots()`、`CModSlots()` 和 `Advanced.Slots()` 只读本地目录；完整持久 SPI 由组合根通过 `AuthoritativeSlots()` 取得，不从缓存门面转换出写权限。
+
+实例注册绑定存活租约，assignment 则持久保存在该租约之外。正常 Stop 成功收尾后将本实例归属改为空 owner 并递增代次；租约失效不释放，任何路径都不删除记录重置代次。新进程有新的 InstanceID，不能仅凭相同启动参数或槽位名继承旧身份。Generation 是应用层归属代数，etcd ModRevision 是并发写入比较版本，两者不等同于业务数据版本。
 
 ```text
 首次登记
-  应用确定 SlotID 和当前 InstanceID
+  应用确定 SlotID → CModLocalAssignments.Claim
     → 目标基础设施已登记 Running（不等于业务已开放）
     → CreateSlot：Generation=1，原子比较槽位尚不存在后写入
-    → 权威读回 → Watch 更新本地槽位目录
+    → 权威带 revision 读回 → 合并本地槽位目录
     → 应用确认本机归属后加载其业务对象
 
-停服后的归属重登记
-  运维确认旧进程已完成必要保存并停止
-    → 新进程启动基础设施，取得新 InstanceID，尚未开放业务
-    → 读取旧 assignment：同一 SlotID、旧 InstanceID、Generation=N
-    → PromoteSlot：新 InstanceID、Generation=N+1
-    → 校验旧记录匹配，以读取时的 etcd ModRevision 做 CAS 写入
-    → 权威读回 owner/generation，等待本地 Watch 可见
-    → 应用加载业务对象、完成启动；运维最后恢复客户端接入
+正常停服与重新分配
+  旧实例关闭准入并标记 Draining
+    → 已接纳工作、业务收尾、WriteBack 和传输输出完成
+    → Service.Stop 排空模块自有队列并关闭服务资源
+    → ReleaseSlots：逐槽 CAS，A/gN → 空 owner/g(N+1)
+    → 关闭连接、注销实例身份
+  普通服务池下一次寻址
+    → 读到空闲记录 → 容量预检 → CAS 认领为 B/g(N+2)
+    → 新宿主按需激活通信 Actor
+  指定宿主（如示例 World）
+    → 新进程按启动参数调用 Claim 认领空闲记录
+    → 权威回读并合并本地目录 → 业务加载 → 开放准入
+
+显式交接（保留的高级流程）
+  PrepareHandoff：完成收尾但保留 A/gN
+    → 控制面 PromoteSlot：CAS 为 B/g(N+1)
+    → 旧实例 Stop，不再对交接槽位执行自动释放
 ```
 
-CreateSlot 的槽位已存在、PromoteSlot 的旧值不匹配或 CAS 冲突，都不能解释为更新成功。响应未知时先权威读回核对预期结果，不盲目覆盖或再次递增。多槽位更新逐条执行，不承诺一批槽位原子切换；运维保留待更新列表并逐条核对，不删除全部 assignment 来绕过版本校验。启用 assignment 容量模式时，写入还必须满足既有原子容量检查。
+Claim 对缺失槽位创建 generation 1，对正常释放记录递增认领，已属本实例时幂等返回；仍属于其他实例时，要求 `previousOwner` 精确匹配且运维已确认旧进程停止写入。写入成功后权威回读并按 revision 合并缓存，不等待 Watch，也不在应用轮询；目录不可用仍失败关闭。未知写入结果直接返回错误，不自动重试或再次递增，由运维核对持久记录。
+
+CreateSlot 的槽位已存在、PromoteSlot 的旧值不匹配或 CAS 冲突，都不能解释为更新成功。多槽位更新逐条执行，不承诺一批槽位原子切换；运维保留待更新列表并逐条核对，不删除全部 assignment 来绕过版本校验。
 
 框架校验目标实例状态与记录版本；“旧进程已经停止写入”由部署编排确认，不能以暂时失联、租约消失或只看到邮箱排空替代。停服重登记无需旧进程在线调用 PrepareHandoff；在线交接仍是另一种通用能力，是否采用由应用部署策略决定，tx 不强制应用滚动运行。
 
+释放点位于所有 Service.Stop 成功之后、进程发现连接关闭之前，以覆盖服务自有后台队列。此后基础设施连接关闭若失败，不回滚已经安全释放的槽位。
+
+正常释放由 `modules/discovery/slot_release.go` 的 `SlotReleaser` 承接，默认 etcd 实现逐槽核对完整 owner/generation 后 CAS。部分释放成功后可重试剩余记录；迟到释放不覆盖新 owner。释放失败保留发现连接，沿用 Server.Stop 有限重试；启动回滚、致命身份丢失和 PrepareHandoff 不走此分支。组合进程在全部服务已接纳工作及写回结束后才释放，不能由单个子服务提前调用。自定义 SlotStore 若不实现该可选 SPI，仍需显式管理归属。
+
+EtcdSlotStore 在创建和晋升时把目标成员状态与容量快照纳入同一原子检查：只接纳 Starting/Running 成员，支持本实例启动期认领，预检后进入 Draining 的目标不能取得新槽位。普通 SlotRouter 的管理入口额外要求目录中的目标为 Running。存储校验不依赖 SlotRouter 对具体存储类型的断言；直接使用持久 SPI 也不能绕过。自定义 SlotStore 负责实现等价写入契约。空 owner 不计入实例 assignment 配额，Watch 原样保留空闲记录。Generation 不提供 Mongo/Redis 写入隔离，也不是故障接管证明。
+
 ### 部署指定宿主的路由边界
 
-类型可声明 `txactor.WithExplicitAssignment()`：普通寻址、EnsureActivation 和 RetryActivation 只使用已登记 assignment；缺失返回 `ErrSlotNotFound`，旧 owner 下线返回不可用，不从服务池自动选择实例。该选项属于共享 Type 契约，Agent、内部调用端与目标宿主使用同一声明；成功登记后仍可按需激活通信 Actor。
+类型可声明 `txactor.WithExplicitAssignment()`：普通寻址、EnsureActivation 和 RetryActivation 只使用已登记 assignment；缺失返回 `ErrSlotNotFound`，空闲返回 `ErrSlotReleased`，旧 owner 下线返回不可用，不从服务池自动选择实例。该选项属于共享 Type 契约，Agent、内部调用端与目标宿主使用同一声明；成功登记后仍可按需激活通信 Actor。
 
 `WithSlotMapping` 只决定 SlotID，`WithExplicitAssignment` 决定能否自动分配，两者职责独立。热路径继续读取 Watch 缓存，不增加逐消息 etcd 查询。普通 Role/Room 未设置该选项，保留既有动态首次分配。该策略不解释 WorldID、世界加载、房间创建或赛季规则。
 
@@ -211,7 +263,7 @@ CreateSlot 的槽位已存在、PromoteSlot 的旧值不匹配或 CAS 冲突，�
 
 | 控制入口 | 成功表示什么 |
 | --- | --- |
-| Probe | 观察当前元数据；不分配、加载或读未就绪业务字段 |
+| Probe | 观察当前元数据；槽位缺失或正常释放返回 Unloaded，归属不可用仍返回错误；不分配、加载或读未就绪业务字段 |
 | EnsureActivation | 发起/共享加载，返回当前状态；不等于 Ready |
 | RetryActivation | 清除已结束失败后再确保加载，不替换正在加载/关闭的激活 |
 | WaitReady | 通过 Probe 等待 Initializing→Ready，不发起加载或重试 |
@@ -455,7 +507,7 @@ WriteBack 将内存提交落到所选 Writer；Writer 为 Fusion 时还有 Redis
   → CMod 排水：Procedure 排队/执行与最终 WriteBack 等
   → 传输收尾
       ├─ PrepareHandoff 成功：保留连接/租约 → 控制面逐槽 CAS 晋升
-      └─ Stop：服务 Stop → 根任务限时退出 → 释放依赖与绑定 → CMod Stop → Stopped
+      └─ Stop：服务 Stop → 条件释放本实例槽位 → 根任务限时退出 → 释放依赖与绑定 → CMod Stop → Stopped
 ```
 
 已接纳但尚未入队、排队中与执行中工作都必须计入。超时仅结束等待，资源保持以便有限重试；重试耗尽返回错误，进程按项目入口非零退出。正常关闭不能把持久化失败记为成功。致命身份丢失是独立强制退出路径，内存状态不因此获得恢复保证。

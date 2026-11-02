@@ -17,10 +17,13 @@ func TestSlotAssignmentValidatesStableSlotAndRuntimeGeneration(t *testing.T) {
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
+	free := discovery.SlotAssignment{SlotID: valid.SlotID, Generation: valid.Generation + 1}
+	if err := free.Validate(); err != nil || !free.Released() {
+		t.Fatalf("释放记录必须保留有效代次: %+v %v", free, err)
+	}
 
 	for _, assignment := range []discovery.SlotAssignment{
 		{RuntimeInstanceID: valid.RuntimeInstanceID, Generation: valid.Generation},
-		{SlotID: valid.SlotID, Generation: valid.Generation},
 		{SlotID: valid.SlotID, RuntimeInstanceID: valid.RuntimeInstanceID},
 		{SlotID: "slot/invalid", RuntimeInstanceID: valid.RuntimeInstanceID, Generation: valid.Generation},
 	} {
@@ -103,7 +106,7 @@ func TestCachedSlotStoreResolveDoesNotReadBackingStore(t *testing.T) {
 	next := assignment
 	next.RuntimeInstanceID = "pod-uid-b"
 	next.Generation++
-	if err := store.PromoteSlot(context.Background(), assignment, next); err != nil {
+	if err := backing.PromoteSlot(context.Background(), assignment, next); err != nil {
 		t.Fatal(err)
 	}
 	// 持久写入成功不代表本地 Watch 已发布新快照，也不能触发热路径回源。
@@ -266,8 +269,8 @@ func TestSlotPromotionRequiresNextGenerationAndDistinctRuntime(t *testing.T) {
 	}
 }
 
-func BenchmarkSlotRouterCachedResolve(b *testing.B) {
-	router, backing, slotID := newBenchmarkSlotRouter(b)
+func BenchmarkSlotResolverCachedResolve(b *testing.B) {
+	router, backing, slotID := newBenchmarkSlotResolver(b)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
@@ -281,8 +284,8 @@ func BenchmarkSlotRouterCachedResolve(b *testing.B) {
 	}
 }
 
-func BenchmarkSlotRouterCachedResolveParallel(b *testing.B) {
-	router, backing, slotID := newBenchmarkSlotRouter(b)
+func BenchmarkSlotResolverCachedResolveParallel(b *testing.B) {
+	router, backing, slotID := newBenchmarkSlotResolver(b)
 	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -299,7 +302,7 @@ func BenchmarkSlotRouterCachedResolveParallel(b *testing.B) {
 	}
 }
 
-func newBenchmarkSlotRouter(b *testing.B) (*discovery.SlotRouter, *slotStoreFake, string) {
+func newBenchmarkSlotResolver(b *testing.B) (*discovery.SlotResolver, *slotStoreFake, string) {
 	b.Helper()
 	assignment := discovery.SlotAssignment{
 		SlotID:            "game-slot-1",
@@ -324,14 +327,14 @@ func newBenchmarkSlotRouter(b *testing.B) (*discovery.SlotRouter, *slotStoreFake
 	}}); err != nil {
 		b.Fatalf("Replace instances: %v", err)
 	}
-	router, err := discovery.NewSlotRouter(store, instances)
+	router, err := discovery.NewSlotResolver(store, instances)
 	if err != nil {
-		b.Fatalf("NewSlotRouter: %v", err)
+		b.Fatalf("NewSlotResolver: %v", err)
 	}
 	return router, backing, assignment.SlotID
 }
 
-func TestSlotRouterCachedResolveDoesNotAllocate(t *testing.T) {
+func TestSlotResolverCachedResolveDoesNotAllocate(t *testing.T) {
 	assignment := discovery.SlotAssignment{
 		SlotID:            "game-slot-1",
 		RuntimeInstanceID: "pod-uid-a",
@@ -355,9 +358,9 @@ func TestSlotRouterCachedResolveDoesNotAllocate(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("Replace instances: %v", err)
 	}
-	router, err := discovery.NewSlotRouter(store, instances)
+	router, err := discovery.NewSlotResolver(store, instances)
 	if err != nil {
-		t.Fatalf("NewSlotRouter: %v", err)
+		t.Fatalf("NewSlotResolver: %v", err)
 	}
 
 	allocations := testing.AllocsPerRun(1000, func() {

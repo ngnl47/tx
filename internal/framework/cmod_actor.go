@@ -8,6 +8,7 @@ import (
 	"github.com/ngnl47/tx/internal/actorhost"
 	"github.com/ngnl47/tx/internal/actorresult"
 	"github.com/ngnl47/tx/internal/actorrpc"
+	"github.com/ngnl47/tx/lifecycle"
 	txactor "github.com/ngnl47/tx/modules/actor"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 	"github.com/ngnl47/tx/modules/discovery"
@@ -99,11 +100,13 @@ func (server *Server) startActor() error {
 	if err != nil {
 		return err
 	}
+	resolver.BindRefresh(lifecycle.TaskView(r.lifecycle))
 	ownership, err := discovery.NewSlotOwnership(server.discovery.AuthoritativeSlots(), r.directory)
 	if err != nil {
 		return err
 	}
-	router := &actorrpc.EntityRouter{Resolver: resolver, Ownership: ownership, Transport: r.actorRPC.(*actorrpc.NATSTransport), SlotID: mapping,
+	transport := r.actorRPC.(*actorrpc.NATSTransport)
+	router := &actorrpc.EntityRouter{Resolver: resolver, Ownership: ownership, Control: transport, SlotID: mapping,
 		ExplicitAssignment: func(name string) bool { return r.actorCatalog[name].actorType.RequiresExplicitAssignment() },
 		Service: func(name string) (string, error) {
 			spec, ok := r.actorCatalog[name]
@@ -112,7 +115,13 @@ func (server *Server) startActor() error {
 			}
 			return spec.service, nil
 		}}
-	r.actor = actorAccess{messenger: &actorrpc.NATSMessenger{Router: router}, routeTimeout: config.CallbackTimeout}
-	r.actorDirect = directActorAccess{caller: &actorrpc.RoutedCaller{Router: router, Transport: &actorrpc.DirectTransport{Sender: r.rpcSender}}}
+	transport.BindRouteInvalidator(resolver.Invalidate)
+	r.actor = actorAccess{messenger: &actorrpc.NATSMessenger{Router: router, Transport: transport}, routeTimeout: config.CallbackTimeout}
+	r.actorDirect = directActorAccess{caller: &actorrpc.RoutedCaller{
+		Router: router,
+		Transport: &actorrpc.DirectTransport{
+			Sender: r.rpcSender, SourceInstance: r.instanceSnapshot().ID, InvalidateRoute: resolver.Invalidate,
+		},
+	}}
 	return nil
 }

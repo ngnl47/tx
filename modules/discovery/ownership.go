@@ -42,11 +42,13 @@ func NewSlotOwnership(store SlotStore, directory Directory) (*SlotOwnership, err
 	return &SlotOwnership{store: store, directory: directory, router: router}, nil
 }
 
-// Ensure 保留已有归属，仅未分配时预检候选并通过 CAS 创建。created 表示本次成功创建。
+// Ensure 保留仍有 owner 的归属；缺失或已正常释放时预检候选并通过 CAS 分配。
+// created 表示本次成功创建或重新分配，空闲记录沿用并递增原代次。
 // check 必须无加载副作用：false 表示容量不足或已关闸，可继续预检其他候选；错误表示结果未知，立即停止。
 func (a *SlotOwnership) Ensure(ctx context.Context, service, slotID string, check func(context.Context, string) (bool, error)) (current SlotAssignment, created bool, err error) {
 	current, err = a.store.ResolveSlot(ctx, slotID)
-	if errors.Is(err, ErrSlotNotFound) {
+	if errors.Is(err, ErrSlotNotFound) || (err == nil && current.Released()) {
+		previous := current
 		candidates := a.directory.RunningInstances(service)
 		if len(candidates) == 0 {
 			return current, false, ErrSlotRuntimeUnavailable
@@ -64,7 +66,12 @@ func (a *SlotOwnership) Ensure(ctx context.Context, service, slotID string, chec
 				continue
 			}
 			current = SlotAssignment{SlotID: slotID, RuntimeInstanceID: candidate, Generation: 1}
-			err = a.router.CreateSlot(ctx, current)
+			if previous.Generation == 0 {
+				err = a.router.CreateSlot(ctx, current)
+			} else {
+				current.Generation = previous.Generation + 1
+				err = a.router.PromoteSlot(ctx, previous, current)
+			}
 			if errors.Is(err, ErrSlotCapacityUnavailable) {
 				continue
 			}

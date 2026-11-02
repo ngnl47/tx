@@ -2,6 +2,7 @@ package actorrpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -17,7 +18,7 @@ import (
 	"github.com/ngnl47/tx/modules/discovery"
 )
 
-func actorTestSlots(t *testing.T) discovery.SlotStore {
+func actorTestSlots(t *testing.T, members ...discovery.Instance) discovery.SlotStore {
 	t.Helper()
 	endpoint := os.Getenv("TX_ACTORTRIAL_ETCD_ENDPOINT")
 	if endpoint == "" {
@@ -65,6 +66,16 @@ func actorTestSlots(t *testing.T) discovery.SlotStore {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 正式分配会复核权威成员；测试成员同时登记到 etcd，不能只放本地目录。
+	for _, member := range members {
+		payload, err := json.Marshal(member)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := client.Put(ctx, prefix+"/instances/"+member.ID, payload, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return registry.Slots()
 }
 
@@ -83,7 +94,10 @@ func worldMembers(t *testing.T, directory *discovery.ServiceDirectory, ids ...st
 
 func TestSlotAllocationKeepsOwnerAndRespectsCapacity(t *testing.T) {
 	url, ctx := natsURL(t), actorTestContext(t)
-	store, ns := actorTestSlots(t), nats.NewInbox()
+	store, ns := actorTestSlots(t,
+		discovery.Instance{ID: "a", Services: []string{"world"}, Endpoint: "unused-a", Status: discovery.StatusRunning},
+		discovery.Instance{ID: "b", Services: []string{"world"}, Endpoint: "unused-b", Status: discovery.StatusRunning},
+	), nats.NewInbox()
 	var loads atomic.Int32
 	makeRuntime := func() *actorhost.Runtime {
 		r := actorhost.New(32, time.Second, func(actorhost.Context) (*actorhost.Behavior, error) {
@@ -209,7 +223,10 @@ func (s *uncertainSlotStore) CreateSlot(ctx context.Context, a discovery.SlotAss
 
 func TestSlotCASReplyLossDoesNotReassign(t *testing.T) {
 	url, ctx := natsURL(t), actorTestContext(t)
-	store := &uncertainSlotStore{SlotStore: actorTestSlots(t)}
+	store := &uncertainSlotStore{SlotStore: actorTestSlots(t,
+		discovery.Instance{ID: "a", Services: []string{"world"}, Endpoint: "unused-a", Status: discovery.StatusRunning},
+		discovery.Instance{ID: "b", Services: []string{"world"}, Endpoint: "unused-b", Status: discovery.StatusRunning},
+	)}
 	ns := nats.NewInbox()
 	var loads atomic.Int32
 	makeRuntime := func() *actorhost.Runtime {
@@ -246,7 +263,10 @@ func TestSlotCASReplyLossDoesNotReassign(t *testing.T) {
 
 func TestSlotCapacityChangeAfterCASDoesNotFallback(t *testing.T) {
 	url, ctx := natsURL(t), actorTestContext(t)
-	store := &uncertainSlotStore{SlotStore: actorTestSlots(t)}
+	store := &uncertainSlotStore{SlotStore: actorTestSlots(t,
+		discovery.Instance{ID: "a", Services: []string{"world"}, Endpoint: "unused-a", Status: discovery.StatusRunning},
+		discovery.Instance{ID: "b", Services: []string{"world"}, Endpoint: "unused-b", Status: discovery.StatusRunning},
+	)}
 	ns := nats.NewInbox()
 	var pressure atomic.Bool
 	var loads atomic.Int32
@@ -280,7 +300,10 @@ func TestSlotCapacityChangeAfterCASDoesNotFallback(t *testing.T) {
 
 func TestSlotFirstAssignmentCompetingCandidates(t *testing.T) {
 	url, ctx := natsURL(t), actorTestContext(t)
-	store := &uncertainSlotStore{SlotStore: actorTestSlots(t)}
+	store := &uncertainSlotStore{SlotStore: actorTestSlots(t,
+		discovery.Instance{ID: "a", Services: []string{"world"}, Endpoint: "unused-a", Status: discovery.StatusRunning},
+		discovery.Instance{ID: "b", Services: []string{"world"}, Endpoint: "unused-b", Status: discovery.StatusRunning},
+	)}
 	entered, release := make(chan struct{}, 2), make(chan struct{})
 	var releaseOnce sync.Once
 	defer releaseOnce.Do(func() { close(release) })
@@ -364,5 +387,5 @@ func slotPeer(t *testing.T, url, ns, name string, r *actorhost.Runtime, store di
 	return peer(t, url, ns, name, r)
 }
 func newTestEntityRouter(ownership *discovery.SlotOwnership, transport *NATSTransport, service string, mapping actorhost.SlotMapping) *EntityRouter {
-	return &EntityRouter{Ownership: ownership, Transport: transport, Service: func(string) (string, error) { return service, nil }, SlotID: mapping.Resolver()}
+	return &EntityRouter{Ownership: ownership, Control: transport, Service: func(string) (string, error) { return service, nil }, SlotID: mapping.Resolver()}
 }

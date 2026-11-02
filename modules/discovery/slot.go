@@ -10,17 +10,20 @@ import (
 var (
 	ErrInvalidSlotAssignment    = errors.New("discovery: invalid slot assignment")
 	ErrInvalidSlotPromotion     = errors.New("discovery: invalid slot promotion")
+	ErrSlotReleased             = errors.New("discovery: slot is released")
 	ErrSlotNotFound             = errors.New("discovery: slot assignment not found")
 	ErrSlotConflict             = errors.New("discovery: slot assignment conflict")
 	ErrSlotStoreNil             = errors.New("discovery: slot store is nil")
 	ErrSlotDirectoryNil         = errors.New("discovery: slot directory is nil")
 	ErrSlotDirectoryUnavailable = errors.New("discovery: slot directory is unavailable")
 	ErrSlotRuntimeUnavailable   = errors.New("discovery: slot runtime is unavailable")
+	ErrSlotRouteStale           = errors.New("discovery: cached slot route is stale")
 )
 
 // SlotAssignment 将稳定逻辑槽位绑定到一个特定运行实例 generation。SlotID 是业务
 // 归属键，例如 game-slot-1；RuntimeInstanceID 必须是每次进程启动唯一的实例 ID，
-// 不能复用或重复编码部署名称与逻辑槽位名称。
+// 不能复用或重复编码部署名称与逻辑槽位名称。空 RuntimeInstanceID 表示正常释放，
+// 仍保留非零 Generation；普通解析返回 ErrSlotReleased，不把它当可调用目标。
 type SlotAssignment struct {
 	SlotID            string `json:"slotId"`
 	RuntimeInstanceID string `json:"runtimeInstanceId"`
@@ -28,7 +31,7 @@ type SlotAssignment struct {
 }
 
 func (a SlotAssignment) Validate() error {
-	if strings.TrimSpace(a.SlotID) == "" || strings.TrimSpace(a.RuntimeInstanceID) == "" ||
+	if strings.TrimSpace(a.SlotID) == "" ||
 		a.SlotID != strings.TrimSpace(a.SlotID) || a.RuntimeInstanceID != strings.TrimSpace(a.RuntimeInstanceID) ||
 		strings.Contains(a.SlotID, "/") || strings.Contains(a.RuntimeInstanceID, "/") || a.Generation == 0 {
 		return ErrInvalidSlotAssignment
@@ -36,10 +39,13 @@ func (a SlotAssignment) Validate() error {
 	return nil
 }
 
+// Released 表示正常收尾后无 owner 的持久记录；Generation 仍保留。
+func (a SlotAssignment) Released() bool { return a.RuntimeInstanceID == "" }
+
 // ValidateSlotPromotion 只验证与存储无关的交接规则。实际 Compare-And-Swap 由持久化
 // SlotStore 保证，调用方仍须先确认 next runtime 已完成启动和依赖预检。
 func ValidateSlotPromotion(current, next SlotAssignment) error {
-	if current.Validate() != nil || next.Validate() != nil || current.SlotID != next.SlotID ||
+	if current.Validate() != nil || next.Validate() != nil || current.SlotID != next.SlotID || next.Released() || current.Generation == ^uint64(0) ||
 		next.RuntimeInstanceID == current.RuntimeInstanceID || next.Generation != current.Generation+1 {
 		return ErrInvalidSlotPromotion
 	}
@@ -51,8 +57,14 @@ type SlotReader interface {
 	ResolveSlot(context.Context, string) (SlotAssignment, error)
 }
 
-// SlotStore 保存稳定逻辑槽位的当前归属。它不负责启动实例、不观察 Actor，也不替
-// 业务决定 SlotID；Promote 必须使用当前完整 assignment 执行 Compare-And-Swap。
+// VersionedSlotReader 返回线性读所在的权威快照版本，供主动查询与 Watch 合并。
+// 版本必须与 ReplaceSnapshot 使用同一序列；不是某个键最后修改时的版本。
+type VersionedSlotReader interface {
+	ResolveSlotAtRevision(context.Context, string) (SlotAssignment, int64, error)
+}
+
+// SlotStore 保存稳定逻辑槽位的当前归属。写入必须原子复核目标成员及容量，
+// Promote 必须比较当前完整 assignment；它不启动实例、不观察 Actor、不决定业务 SlotID。
 type SlotStore interface {
 	SlotReader
 	CreateSlot(ctx context.Context, assignment SlotAssignment) error
@@ -69,6 +81,7 @@ type SlotTarget struct {
 // SlotResolver 将 Watch assignment 和当前服务成员视图组合为可调用目标。它只接受
 // running 实例，draining/stopping/丢失实例一律返回明确错误，避免静默改派。
 type SlotResolver struct {
+	refresh        *slotRefresh
 	store          SlotReader
 	directory      Directory
 	routeDirectory RouteDirectory
@@ -98,7 +111,14 @@ func (r *SlotResolver) ResolveServiceSlot(ctx context.Context, service, slotID s
 	if service == "" {
 		return SlotTarget{}, ErrSlotRuntimeUnavailable
 	}
-	return r.resolveSlot(ctx, service, slotID)
+	target, err := r.resolveSlot(ctx, service, slotID)
+	if err == nil || r.refresh == nil || (!errors.Is(err, ErrSlotNotFound) && !errors.Is(err, ErrSlotRouteStale) && !errors.Is(err, ErrSlotRuntimeUnavailable)) {
+		return target, err
+	}
+	if _, bounded := ctx.Deadline(); !bounded && errors.Is(err, ErrSlotRuntimeUnavailable) {
+		return target, err
+	}
+	return r.refresh.resolve(ctx, service, slotID)
 }
 
 func (r *SlotResolver) resolveSlot(ctx context.Context, service, slotID string) (SlotTarget, error) {
@@ -112,9 +132,12 @@ func (r *SlotResolver) resolveSlot(ctx context.Context, service, slotID string) 
 	if err != nil {
 		return SlotTarget{}, err
 	}
+	if assignment.Released() {
+		return SlotTarget{Assignment: assignment}, ErrSlotReleased
+	}
 	instance, ok := r.lookupRouteInstance(service, assignment.RuntimeInstanceID)
 	if !ok || instance.Status != StatusRunning {
-		return SlotTarget{}, ErrSlotRuntimeUnavailable
+		return SlotTarget{Assignment: assignment}, ErrSlotRuntimeUnavailable
 	}
 	return SlotTarget{Assignment: assignment, Instance: instance}, nil
 }
@@ -167,7 +190,7 @@ func (r *SlotRouter) CreateSlot(ctx context.Context, assignment SlotAssignment) 
 	if r.resolver.directory == nil {
 		return ErrSlotDirectoryNil
 	}
-	if err := assignment.Validate(); err != nil || assignment.Generation != 1 {
+	if err := assignment.Validate(); err != nil || assignment.Generation != 1 || assignment.Released() {
 		return ErrInvalidSlotAssignment
 	}
 	instance, ok := r.resolver.directory.LookupInstance(assignment.RuntimeInstanceID)

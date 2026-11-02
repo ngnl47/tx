@@ -104,6 +104,8 @@ type Context interface {
 	CModActorDirect() txactor.Caller
 	// CModSlots 返回 Discovery CMod 管理的只读槽位归属，不提供创建或晋升。
 	CModSlots() discovery.SlotReader
+	// CModLocalAssignments 认领本次运行实例的槽位，复用 Discovery 的权威存储与缓存。
+	CModLocalAssignments() discovery.LocalAssignments
 	// CModSlotResolver 返回使用本进程 Watch 缓存的只读槽位解析器。
 	CModSlotResolver() *discovery.SlotResolver
 	// CModProcedure 返回 Ant 管理的单机 Procedure 执行器。
@@ -275,6 +277,16 @@ func (view *contextView) CModSlots() discovery.SlotReader {
 		panic(framework.CapabilityError{Err: view.unavailable(CModDiscovery)})
 	}
 	return advanced.Slots()
+}
+
+// CModLocalAssignments 不允许调用方指定任意目标实例或 generation。
+func (view *contextView) CModLocalAssignments() discovery.LocalAssignments {
+	view.require(CModDiscovery)
+	advanced := view.kernel.Advanced()
+	if advanced == nil || advanced.LocalAssignments() == nil {
+		panic(framework.CapabilityError{Err: view.unavailable(CModDiscovery)})
+	}
+	return advanced.LocalAssignments()
 }
 
 // CModSlotResolver 组合已声明的槽位与成员读取能力，不取得控制面写权限。

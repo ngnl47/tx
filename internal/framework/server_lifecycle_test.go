@@ -12,12 +12,12 @@ import (
 func TestFatalDiscoveryLossDrainsAndStopsServer(t *testing.T) {
 	service := newBlockingServiceRecorder()
 	server := newStartedServerForFatalTest(t, service)
-	server.reportFatal(errors.New("workSlot ownership lost"))
+	server.reportFatal(errors.New("discovery identity lost"))
 	waitClosed(t, server.stopDone)
 	if !service.drained || !service.stopped {
 		t.Fatalf("lifecycle = %#v", service)
 	}
-	if server.stopErr == nil || !strings.Contains(server.stopErr.Error(), "workSlot ownership lost") {
+	if server.stopErr == nil || !strings.Contains(server.stopErr.Error(), "discovery identity lost") {
 		t.Fatalf("stop error = %v", server.stopErr)
 	}
 }
@@ -46,7 +46,7 @@ func TestFatalDiscoveryLossDuringDeferredStopStillTerminates(t *testing.T) {
 	stopped := make(chan error, 1)
 	go func() { stopped <- app.Stop(context.Background()) }()
 	<-entered
-	want := errors.New("workSlot ownership lost")
+	want := errors.New("discovery identity lost")
 	app.reportFatal(want)
 	close(release)
 	<-stopped

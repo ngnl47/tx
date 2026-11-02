@@ -42,16 +42,24 @@
 - Actor 工厂及初始化、激活事件不附加统一执行 deadline；具体加载 I/O 使用自身超时，回调结束取消当前 Context。调用方等待或排水超时不撤销已开始的加载，不提前释放容量或交接；不据此移除 Receive 和卸载回调的现有期限。
 - 正式容量通过实例 `actor.Config.Capacity` 声明数量上限，多个本地 Type 共用。activation 模式含初始化、运行及清理中的 Actor，清理结束释放；assignment 模式按稳定归属占位，卸载和重载不释放，默认 etcd 在创建/晋升时原子复核名额。后者要求一实体一槽位映射，不能把默认 1024 分区当实体数量，业务可指定启动加载的 Actor ID，但不能用它替代物理 InstanceID 或绕过稳定归属。
 - 不再按 GD 字节估算 Actor 预算，也不自建全节点实时评分。GD 缓存与 Actor 独立，世界直接 Mongo 写回；不以 Actor 卸载推断缓存释放。数量上限不是内存/CPU 硬保证，自动扩 Pod 与世界注销控制流程另行实施。
-- `CModActor` 的 Probe 只读权威归属和运行时元数据；EnsureActivation 发起或共享加载，RetryActivation 清除已结束失败再确保加载，无失败时等同 EnsureActivation，不替换正在初始化或关闭的激活。WaitReady 只读等待，不自动激活或重试；取消仅结束等待。未加载不表示业务不存在，控制错误不解释成业务状态；普通消息继续使用归属缓存。
+- `CModActor` 的 Probe 只读权威归属和运行时元数据；缺失或正常释放的槽位返回 Unloaded，目录/owner 不可用仍返回错误。EnsureActivation 发起或共享加载，RetryActivation 清除已结束失败再确保加载，无失败时等同 EnsureActivation，不替换正在初始化或关闭的激活。WaitReady 只读等待，不自动激活或重试；取消仅结束等待。未加载不表示业务不存在，控制错误不解释成业务状态；普通消息继续使用归属缓存。
 - 同一身份的并发首次请求共享激活；数量检查与登记必须有原子边界，清理完成前不能归还激活名额或提前重建。稳定归属名额独立于激活，不能因 Actor 卸载归还。
 - 新成员就绪不立即重算已激活实体归属；正常交接须等待旧方关闸、排空及必要持久化成功。NATS 的订阅、Flush 或 Queue Group 不能替代这项确认。
 - Type 可用 WithExplicitAssignment 禁止自动首次分配；普通消息和 Ensure/Retry 均只使用已有归属。未设置时，首次选址先做无副作用容量预检，再以现有 SlotStore CAS 建立归属，最后才允许业务加载和原子容量预留。预检不是预留；CAS 后容量变化或响应未知只返回错误并保留归属，不自动改派或重投业务。
 - 当前受控滚动交接先排空源实例全部实体，再逐槽晋升；成功收尾可复用，连接保留至交接结束。普通实体使用稳定逻辑分区，不按玩家或房间逐个增加持久归属记录；运行中单实体热迁移另行评估。
 
+- 普通 Stop 仅在全部服务排水与必要写回成功后条件释放本进程仍拥有的槽位；空 owner 保留递增 Generation，后续分配继续 CAS。启动失败、致命身份丢失和收尾失败不释放，不凭失联自动接管。显式 PrepareHandoff 保留旧归属供 Promote，之后 Stop 也不释放；Actor 空闲卸载不改变 assignment。
+
 ## 集群归属基座
+
+- 运行身份与发号独立：InstanceID 每次启动生成 `AppID-UUID`，业务不得解析；同进程组合子服务共用身份。成员仍注册在租约下，正常关闭和启动回滚注销成员并 Revoke，不保留 work slot 分配或延迟释放。
+- 只有 Login 声明 `CModSessionID`；每个新 Session 独立 Put，以成功响应 revision 发号，保持 `0 < id <= 2^53-1`。取消、错误或身份失效返回错误并允许空号，不增加号段、预取、重试或本地降级；单次发号失败不等于成员租约丢失。
+- 框架拥有共享 etcd 客户端，Discovery 与发号器借用。规范化 Discovery 根 `R = TrimSuffix(Prefix, "/instances")` 的发号键为 `R + "-session-ids/issuer"`，不挂成员租约，位于成员/槽位 Watch 与容量 CAS 域之外；Actor `/slots`、Generation、排水及条件释放规则不变。
+- 由旧算法首次切换须统一停止旧 Login 发号并使旧会话/票据失效；保留有效会话的 etcd 恢复须保证 revision 高于此前发号上界，不能直接恢复旧快照继续发号。运维要求以 [现行 API](docs/api-reference.md#服务发现) 为准。
 
 - 集群归属属于 L2，集中在 `modules/discovery`：成员目录、归属缓存、首次分配、加载前权威校验及正常交接编排。复用现有 etcd、SlotStore 和 CAS，不建立第二套权威节点、成员协议或归属表。
 - `SlotOwnership` 负责归属决策和交接顺序；容量预检、Actor 加载、邮箱处理及源实例排水/持久化由各自运行时执行。NATS/gRPC 适配器只绑定执行入口，不维护另一份分配或交接规则。
+- 槽位缓存入口只读，完整持久 SPI 经 `AuthoritativeSlots` 取得；EtcdSlotStore 自身原子复核 Starting/Running 成员与容量，不能靠 Router 的具体类型断言补齐正确性。Ant 的 `CModLocalAssignments().Claim` 只认领本实例，复用 CAS 与版本缓存合并；应用不自连控制面或轮询 Watch。其他旧 owner 必须显式匹配且经运维确认停止写入，未知写入结果直接失败。
 - Kind/组合根声明身份到槽位及服务池的映射；普通消息继续走 SlotResolver 缓存，低层 SlotReader、SlotStore、SlotRouter/CAS 高级 SPI 保留。不能为统一入口在每条消息上增加权威查询。
 - 当前边界后续若出现不合适的实际证据，先提出调整及取舍，决策后再迭代，不暗中改变职责。
 

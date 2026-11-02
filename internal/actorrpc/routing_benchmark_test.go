@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ngnl47/tx/internal/actorhost"
+	"github.com/ngnl47/tx/lifecycle"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
 	"github.com/ngnl47/tx/modules/discovery"
 	"github.com/ngnl47/tx/modules/rpc"
@@ -37,6 +38,9 @@ func BenchmarkSharedCachedRoute(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
+	tasks := lifecycle.NewWaitGroupContext(b.Context())
+	b.Cleanup(func() { tasks.Cancel(); tasks.Wait() })
+	resolver.BindRefresh(lifecycle.TaskView(tasks))
 	caller := &RoutedCaller{Router: &EntityRouter{Resolver: resolver, SlotID: actorhost.SlotMapping(worldSlot).Resolver(), Service: func(string) (string, error) { return "world", nil }}, Transport: routeBenchmarkCaller{&actorpb.Result{MessageType: "ok"}}}
 	id, delivery := actorhost.Identity{Type: "world", ID: "51"}, &actorpb.Delivery{MessageType: "read"}
 	b.ReportAllocs()

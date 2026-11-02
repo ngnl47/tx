@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	txetcd "github.com/ngnl47/tx/etcd"
 	txlog "github.com/ngnl47/tx/log"
 )
 
@@ -49,23 +50,36 @@ type runtimeRegistration interface {
 
 type runtimeSlotStore interface {
 	SlotStore
+	VersionedSlotReader
 	Watch(context.Context, *SlotDirectory) error
 }
 
-// NewRuntime 申请运行身份、注册最终实例并创建只读缓存目录。
+// NewRuntime 创建并持有 etcd 客户端，注册运行身份并创建只读缓存目录。
 func NewRuntime(ctx context.Context, config EtcdConfig, appID string, descriptor Instance) (*Runtime, error) {
 	registry, err := NewEtcdRegistry(ctx, config)
 	if err != nil {
 		return nil, err
 	}
+	return newRuntimeWithRegistry(ctx, registry, appID, descriptor)
+}
+
+// NewRuntimeWithClient 借用已有客户端；关闭运行时只撤销本实例租约，不关闭客户端。
+func NewRuntimeWithClient(ctx context.Context, client *txetcd.Client, config EtcdConfig, appID string, descriptor Instance) (*Runtime, error) {
+	registry, err := NewEtcdRegistryWithClient(client, config)
+	if err != nil {
+		return nil, err
+	}
+	return newRuntimeWithRegistry(ctx, registry, appID, descriptor)
+}
+
+func newRuntimeWithRegistry(ctx context.Context, registry *EtcdRegistry, appID string, descriptor Instance) (*Runtime, error) {
 	registration, err := registry.Register(ctx, appID, descriptor)
 	if err != nil {
 		return nil, errors.Join(err, registry.Close())
 	}
 	runtime, err := newRuntime(registry, registration, registry.Slots())
 	if err != nil {
-		_ = registration.Close(context.WithoutCancel(ctx))
-		return nil, errors.Join(err, registry.Close())
+		return nil, errors.Join(err, registration.Close(context.WithoutCancel(ctx)), registry.Close())
 	}
 	return runtime, nil
 }
@@ -140,8 +154,8 @@ func (runtime *Runtime) Directory() *ServiceDirectory {
 	return runtime.directory
 }
 
-// Slots 返回稳定逻辑槽位的缓存门面。读取只访问 Watch 目录，写入委托持久 SlotStore。
-func (runtime *Runtime) Slots() SlotStore {
+// Slots 返回稳定逻辑槽位的只读缓存。写入必须使用权威存储或本实例认领能力。
+func (runtime *Runtime) Slots() SlotReader {
 	if runtime == nil {
 		return nil
 	}
@@ -215,8 +229,11 @@ func (runtime *Runtime) watchOnce(ctx context.Context) error {
 	services.publish = func(values []Instance) error {
 		return publish(func() error { return runtime.directory.Replace(values) }, &servicesReady)
 	}
-	slots.publish = func(values []SlotAssignment) error {
-		return publish(func() error { return runtime.slotDirectory.Replace(values) }, &slotsReady)
+	slots.publish = func(values []SlotAssignment, revision int64) error {
+		return publish(func() error { return runtime.slotDirectory.ReplaceSnapshot(values, revision) }, &slotsReady)
+	}
+	slots.publishChanges = func(changes []slotChange, revision int64) error {
+		return publish(func() error { return runtime.slotDirectory.applyChanges(changes, revision) }, &slotsReady)
 	}
 	results := make(chan error, 2)
 	go func() { results <- runtime.registry.Watch(watchCtx, services) }()
@@ -280,7 +297,7 @@ func (runtime *Runtime) setStatus(ctx context.Context, status Status) error {
 	return runtime.registration.SetStatus(ctx, status)
 }
 
-// Close 撤销实例租约并关闭 etcd 客户端。并发调用共享第一次结果。
+// Close 撤销实例租约并关闭自建的 etcd 客户端；借用客户端由调用方关闭。并发调用共享第一次结果。
 func (runtime *Runtime) Close(ctx context.Context) error {
 	if runtime == nil {
 		return nil

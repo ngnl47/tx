@@ -3,6 +3,7 @@ package framework
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -89,11 +90,11 @@ func TestServerStartupFailureNeverEnablesSessionIDs(t *testing.T) {
 func newSessionIDGateServer(t *testing.T, start func(Context) error) *Server {
 	t.Helper()
 	identity := newSessionIDIdentityFake()
-	next, err := sessionid.New(identity.Identity().WorkSlot)
+	next, err := sessionid.NewEtcdAllocator(&sessionIDRevisionFake{}, "test-issuer")
 	if err != nil {
-		t.Fatalf("new SessionID allocator: %v", err)
+		t.Fatal(err)
 	}
-	allocator := newSessionIDRuntimeWithAllocator(next, identity)
+	allocator := newSessionIDRuntime(next, identity)
 	var server *Server
 	mod := &builtInCMod{
 		spec: CModSpec{ID: "test-session-id-gate"},
@@ -127,11 +128,11 @@ func newSessionIDGateServer(t *testing.T, start func(Context) error) *Server {
 
 func TestSessionIDRuntimeAllocatesOnlyWhileIdentityIsValid(t *testing.T) {
 	identity := newSessionIDIdentityFake()
-	allocator, err := sessionid.New(17)
+	allocator, err := sessionid.NewEtcdAllocator(&sessionIDRevisionFake{}, "test-issuer")
 	if err != nil {
-		t.Fatalf("new allocator: %v", err)
+		t.Fatal(err)
 	}
-	runtime := newSessionIDRuntimeWithAllocator(allocator, identity)
+	runtime := newSessionIDRuntime(allocator, identity)
 	runtime.enable()
 
 	value, err := runtime.AllocateSessionID(context.Background())
@@ -157,11 +158,12 @@ func TestSessionIDRuntimeAllocatesOnlyWhileIdentityIsValid(t *testing.T) {
 func TestSessionIDRuntimeCannotReenableAfterInvalidation(t *testing.T) {
 	t.Run("Drain", func(t *testing.T) {
 		identity := newSessionIDIdentityFake()
-		next, err := sessionid.New(identity.Identity().WorkSlot)
+		next, err := sessionid.NewEtcdAllocator(&sessionIDRevisionFake{}, "test-issuer")
+
 		if err != nil {
-			t.Fatalf("new allocator: %v", err)
+			t.Fatal(err)
 		}
-		runtime := newSessionIDRuntimeWithAllocator(next, identity)
+		runtime := newSessionIDRuntime(next, identity)
 		runtime.enable()
 		runtime.close()
 		runtime.enable()
@@ -172,11 +174,12 @@ func TestSessionIDRuntimeCannotReenableAfterInvalidation(t *testing.T) {
 
 	t.Run("identity loss", func(t *testing.T) {
 		identity := newSessionIDIdentityFake()
-		next, err := sessionid.New(identity.Identity().WorkSlot)
+		next, err := sessionid.NewEtcdAllocator(&sessionIDRevisionFake{}, "test-issuer")
+
 		if err != nil {
-			t.Fatalf("new allocator: %v", err)
+			t.Fatal(err)
 		}
-		runtime := newSessionIDRuntimeWithAllocator(next, identity)
+		runtime := newSessionIDRuntime(next, identity)
 		runtime.enable()
 		identity.finish(discovery.ErrRuntimeIdentityLost)
 		select {
@@ -194,11 +197,11 @@ func TestSessionIDRuntimeCannotReenableAfterInvalidation(t *testing.T) {
 
 func TestSessionIDCModDrainStopsFurtherAllocation(t *testing.T) {
 	identity := newSessionIDIdentityFake()
-	allocator, err := sessionid.New(17)
+	allocator, err := sessionid.NewEtcdAllocator(&sessionIDRevisionFake{}, "test-issuer")
 	if err != nil {
-		t.Fatalf("new allocator: %v", err)
+		t.Fatal(err)
 	}
-	server := &Server{runtime: &runtime{sessionIDs: newSessionIDRuntimeWithAllocator(allocator, identity)}}
+	server := &Server{runtime: &runtime{sessionIDs: newSessionIDRuntime(allocator, identity)}}
 	server.runtime.sessionIDs.enable()
 	drainer, ok := server.sessionIDCMod().(CModDrainer)
 	if !ok {
@@ -215,7 +218,7 @@ func TestSessionIDCModDrainStopsFurtherAllocation(t *testing.T) {
 
 func TestSessionIDCModDrainPreservesObservedIdentityLoss(t *testing.T) {
 	identity := newSessionIDIdentityBlockingFirstErr()
-	runtime := newSessionIDRuntimeWithAllocator(newBlockingSessionIDAllocator(), identity)
+	runtime := newSessionIDRuntime(newBlockingSessionIDAllocator(), identity)
 	runtime.enable()
 	t.Cleanup(identity.release)
 	close(identity.done)
@@ -236,7 +239,7 @@ func TestSessionIDCModDrainPreservesObservedIdentityLoss(t *testing.T) {
 func TestSessionIDRuntimeIdentityLossStopsWaitingAllocation(t *testing.T) {
 	identity := newSessionIDIdentityFake()
 	next := newBlockingSessionIDAllocator()
-	runtime := newSessionIDRuntimeWithAllocator(next, identity)
+	runtime := newSessionIDRuntime(next, identity)
 	runtime.enable()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -261,7 +264,7 @@ func TestSessionIDRuntimeIdentityLossStopsWaitingAllocation(t *testing.T) {
 func TestSessionIDCModDrainStopsWaitingAllocation(t *testing.T) {
 	identity := newSessionIDIdentityFake()
 	next := newBlockingSessionIDAllocator()
-	allocator := newSessionIDRuntimeWithAllocator(next, identity)
+	allocator := newSessionIDRuntime(next, identity)
 	allocator.enable()
 	server := &Server{runtime: &runtime{sessionIDs: allocator}}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -287,10 +290,55 @@ func TestSessionIDCModDrainStopsWaitingAllocation(t *testing.T) {
 	}
 }
 
+func TestServerStopCancelsAdmittedSessionIDAllocation(t *testing.T) {
+	var serviceContext Context
+	server := newSessionIDGateServer(t, func(current Context) error {
+		serviceContext = current
+		return nil
+	})
+	if err := server.Start(t.Context(), RunOptions{Services: []string{"login"}}); err != nil {
+		t.Fatal(err)
+	}
+	allocator := server.runtime.sessionIDs
+	t.Cleanup(func() {
+		allocator.close()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := server.Stop(ctx); err != nil {
+			t.Errorf("Stop cleanup: %v", err)
+		}
+	})
+	// 模拟成员租约健康，但一个已接纳 HTTP 请求的 etcd 写入尚未返回。
+	next := newBlockingSessionIDAllocator()
+	allocator.mu.Lock()
+	allocator.next = next
+	allocator.mu.Unlock()
+	leave, err := serviceContext.Admission().Enter()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		defer leave()
+		_, err := serviceContext.SessionIDs().AllocateSessionID(context.Background())
+		result <- err
+	}()
+	next.waitUntilStarted(t)
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if err := server.Stop(ctx); err != nil {
+		t.Fatalf("Stop 等待请求退出前没有取消发号: %v", err)
+	}
+	if err := <-result; !errors.Is(err, ErrSessionIDUnavailable) {
+		t.Fatalf("排水后的发号结果 = %v", err)
+	}
+}
+
 func TestSessionIDRuntimeWaitingAllocationHonorsCallerContext(t *testing.T) {
 	identity := newSessionIDIdentityFake()
 	next := newBlockingSessionIDAllocator()
-	runtime := newSessionIDRuntimeWithAllocator(next, identity)
+	runtime := newSessionIDRuntime(next, identity)
 	runtime.enable()
 	t.Cleanup(runtime.close)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -315,7 +363,7 @@ func TestSessionIDRuntimeWaitingAllocationHonorsCallerContext(t *testing.T) {
 func TestSessionIDRuntimeRejectsIDWhenIdentityIsLostDuringAllocation(t *testing.T) {
 	identity := newSessionIDIdentityBlockingFirstErr()
 	next := &identityLosingSessionIDAllocator{identity: identity}
-	runtime := newSessionIDRuntimeWithAllocator(next, identity)
+	runtime := newSessionIDRuntime(next, identity)
 	runtime.enable()
 
 	value, err := runtime.AllocateSessionID(context.Background())
@@ -326,61 +374,57 @@ func TestSessionIDRuntimeRejectsIDWhenIdentityIsLostDuringAllocation(t *testing.
 	}
 }
 
+func TestSessionIDRuntimeRejectsCallerCancellationAtAllocationBoundary(t *testing.T) {
+	for _, before := range []bool{true, false} {
+		t.Run(fmt.Sprintf("before=%t", before), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var calls int
+			next := sessionIDAllocatorFunc(func(context.Context) (int64, error) {
+				calls++
+				cancel()
+				return 41, nil
+			})
+			identity := newSessionIDIdentityFake()
+			runtime := newSessionIDRuntime(next, identity)
+			runtime.enable()
+			t.Cleanup(runtime.close)
+			if before {
+				cancel()
+			}
+			id, err := runtime.AllocateSessionID(ctx)
+			if id != 0 || !errors.Is(err, context.Canceled) {
+				t.Fatalf("取消后仍返回编号: %d, %v", id, err)
+			}
+			if before && calls != 0 {
+				t.Fatalf("已取消请求调用分配器 %d 次", calls)
+			}
+		})
+
+	}
+}
+
+type sessionIDAllocatorFunc func(context.Context) (int64, error)
+
+func (f sessionIDAllocatorFunc) AllocateSessionID(ctx context.Context) (int64, error) { return f(ctx) }
+
 func TestRuntimeSessionIDsSnapshotPreservesNil(t *testing.T) {
 	if got := (&runtime{}).sessionIDsSnapshot(); got != nil {
 		t.Fatalf("SessionIDs snapshot = %#v, want nil", got)
 	}
 }
 
-func BenchmarkSessionIDRuntime(b *testing.B) {
-	b.Run("generator", func(b *testing.B) {
-		allocator, err := sessionid.New(17)
-		if err != nil {
-			b.Fatalf("new allocator: %v", err)
-		}
-		ctx := context.Background()
-		b.ResetTimer()
-		for range b.N {
-			if _, err := allocator.AllocateSessionID(ctx); err != nil {
-				b.Fatalf("AllocateSessionID: %v", err)
-			}
-		}
-	})
-	b.Run("lease-bound-runtime", func(b *testing.B) {
-		identity := newSessionIDIdentityFake()
-		allocator, err := sessionid.New(17)
-		if err != nil {
-			b.Fatalf("new allocator: %v", err)
-		}
-		runtime := newSessionIDRuntimeWithAllocator(allocator, identity)
-		runtime.enable()
-		ctx := context.Background()
-		b.ResetTimer()
-		for range b.N {
-			if _, err := runtime.AllocateSessionID(ctx); err != nil {
-				b.Fatalf("AllocateSessionID: %v", err)
-			}
-		}
-		b.StopTimer()
-		runtime.close()
-	})
-}
-
 type sessionIDIdentityFake struct {
-	mu       sync.RWMutex
-	identity discovery.RuntimeIdentity
-	done     chan struct{}
-	err      error
+	mu   sync.RWMutex
+	done chan struct{}
+	err  error
 }
 
 func newSessionIDIdentityFake() *sessionIDIdentityFake {
 	return &sessionIDIdentityFake{
-		identity: discovery.RuntimeIdentity{InstanceID: "txgame-17-291", WorkSlot: 17, ModRevision: 291},
-		done:     make(chan struct{}),
+		done: make(chan struct{}),
 	}
 }
-
-func (fake *sessionIDIdentityFake) Identity() discovery.RuntimeIdentity { return fake.identity }
 
 func (fake *sessionIDIdentityFake) Done() <-chan struct{} { return fake.done }
 
@@ -403,7 +447,6 @@ type blockingSessionIDAllocator struct {
 }
 
 type sessionIDIdentityBlockingFirstErr struct {
-	identity   discovery.RuntimeIdentity
 	done       chan struct{}
 	errStarted chan struct{}
 	releaseErr chan struct{}
@@ -413,15 +456,10 @@ type sessionIDIdentityBlockingFirstErr struct {
 
 func newSessionIDIdentityBlockingFirstErr() *sessionIDIdentityBlockingFirstErr {
 	return &sessionIDIdentityBlockingFirstErr{
-		identity:   discovery.RuntimeIdentity{InstanceID: "txgame-17-291", WorkSlot: 17, ModRevision: 291},
 		done:       make(chan struct{}),
 		errStarted: make(chan struct{}),
 		releaseErr: make(chan struct{}),
 	}
-}
-
-func (identity *sessionIDIdentityBlockingFirstErr) Identity() discovery.RuntimeIdentity {
-	return identity.identity
 }
 
 func (identity *sessionIDIdentityBlockingFirstErr) Done() <-chan struct{} { return identity.done }
@@ -465,4 +503,11 @@ func (allocator *blockingSessionIDAllocator) waitUntilStarted(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("SessionID allocation did not start")
 	}
+}
+
+// sessionIDRevisionFake 仅为准入测试提供独立编号，不模拟 etcd 持久化。
+type sessionIDRevisionFake struct{ revision atomic.Int64 }
+
+func (f *sessionIDRevisionFake) PutRevision(context.Context, string, []byte, int64) (int64, error) {
+	return f.revision.Add(1), nil
 }

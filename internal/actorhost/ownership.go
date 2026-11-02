@@ -19,8 +19,7 @@ func (r *Runtime) BindSlots(instance string, store discovery.SlotReader, slotID 
 	if len(r.entries) != 0 || r.draining {
 		panic("actortrial: bind slot ownership before use")
 	}
-	factory := r.factory
-	r.factory = func(c Context) (*Behavior, error) {
+	r.checkOwner = func(c Context) error {
 		// 权威查询单独限时，不能把其 deadline 带入后续业务初始化。
 		query, cancel := context.WithTimeout(c.Context, r.timeout)
 		slot, err := slotID.Resolve(query, c.Identity)
@@ -29,11 +28,11 @@ func (r *Runtime) BindSlots(instance string, store discovery.SlotReader, slotID 
 		}
 		cancel()
 		if errors.Is(err, discovery.ErrSlotNotOwner) {
-			return nil, ErrNotOwner
+			return &RouteRejection{Err: ErrNotOwner}
 		}
 		if err != nil {
-			return nil, err
+			return err
 		}
-		return factory(c)
+		return nil
 	}
 }

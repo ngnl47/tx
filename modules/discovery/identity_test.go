@@ -2,61 +2,39 @@ package discovery
 
 import (
 	"errors"
+	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
-func TestRuntimeIdentityFormatsInstanceID(t *testing.T) {
-	identity, err := newRuntimeIdentity("txgame", 17, 291)
+func TestRuntimeIdentityUsesUUID(t *testing.T) {
+	first, err := newRuntimeIdentity("txgame")
 	if err != nil {
-		t.Fatalf("newRuntimeIdentity: %v", err)
+		t.Fatal(err)
 	}
-	want := RuntimeIdentity{
-		InstanceID:  "txgame-17-291",
-		WorkSlot:    17,
-		ModRevision: 291,
+	second, err := newRuntimeIdentity("txgame")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if identity != want {
-		t.Fatalf("identity = %#v, want %#v", identity, want)
+	for _, identity := range []RuntimeIdentity{first, second} {
+		if !strings.HasPrefix(identity.InstanceID, "txgame-") {
+			t.Fatalf("InstanceID = %q", identity.InstanceID)
+		}
+		id, err := uuid.Parse(strings.TrimPrefix(identity.InstanceID, "txgame-"))
+		if err != nil || id.Version() != 4 {
+			t.Fatalf("InstanceID %q 缺少随机 UUID: %v", identity.InstanceID, err)
+		}
 	}
-}
-
-func TestRuntimeIdentityRejectsUnassignedWorkSlot(t *testing.T) {
-	_, err := newRuntimeIdentity("txgame", 0, 291)
-	if !errors.Is(err, ErrInvalidRuntimeIdentity) {
-		t.Fatalf("newRuntimeIdentity error = %v, want ErrInvalidRuntimeIdentity", err)
-	}
-}
-
-func TestRuntimeIdentityRejectsWorkSlotOutsideBitRange(t *testing.T) {
-	_, err := newRuntimeIdentity("txgame", 4096, 291)
-	if !errors.Is(err, ErrInvalidRuntimeIdentity) {
-		t.Fatalf("newRuntimeIdentity error = %v, want ErrInvalidRuntimeIdentity", err)
+	if first == second {
+		t.Fatalf("重复身份: %v", first)
 	}
 }
 
-func TestRuntimeIdentityRejectsMissingAppID(t *testing.T) {
-	_, err := newRuntimeIdentity("", 17, 291)
-	if !errors.Is(err, ErrInvalidRuntimeIdentity) {
-		t.Fatalf("newRuntimeIdentity error = %v, want ErrInvalidRuntimeIdentity", err)
-	}
-}
-
-func TestRuntimeIdentityRejectsMissingRevision(t *testing.T) {
-	_, err := newRuntimeIdentity("txgame", 17, 0)
-	if !errors.Is(err, ErrInvalidRuntimeIdentity) {
-		t.Fatalf("newRuntimeIdentity error = %v, want ErrInvalidRuntimeIdentity", err)
-	}
-}
-
-func TestWorkSlotAttemptsWrapWithinBoundedRange(t *testing.T) {
-	got := workSlotAttempts(4094)
-	if len(got) != WorkSlotCount {
-		t.Fatalf("attempt count = %d, want %d", len(got), WorkSlotCount)
-	}
-	if got[0] != 4094 || got[1] != 4095 || got[2] != 1 {
-		t.Fatalf("first attempts = %v, want [4094 4095 1]", got[:3])
-	}
-	if got[len(got)-1] != 4093 {
-		t.Fatalf("last attempt = %d, want 4093", got[len(got)-1])
+func TestRuntimeIdentityRejectsInvalidAppID(t *testing.T) {
+	for _, appID := range []string{"", " txgame", "txgame "} {
+		if _, err := newRuntimeIdentity(appID); !errors.Is(err, ErrInvalidRuntimeIdentity) {
+			t.Fatalf("newRuntimeIdentity(%q) error = %v, want ErrInvalidRuntimeIdentity", appID, err)
+		}
 	}
 }

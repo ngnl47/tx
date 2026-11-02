@@ -45,7 +45,7 @@ type slotContextAdvanced struct {
 	slots discovery.SlotStore
 }
 
-func (a slotContextAdvanced) Slots() discovery.SlotStore { return a.slots }
+func (a slotContextAdvanced) Slots() discovery.SlotReader { return a.slots }
 
 type slotContextStore struct {
 	discovery.SlotStore

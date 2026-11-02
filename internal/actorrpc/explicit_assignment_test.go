@@ -14,6 +14,23 @@ type explicitSlots struct {
 	assignment *discovery.SlotAssignment
 }
 
+func TestProbeReleasedSlotIsUnloaded(t *testing.T) {
+	directory := discovery.NewServiceDirectory()
+	store := &explicitSlots{assignment: &discovery.SlotAssignment{SlotID: "world-1", Generation: 2}}
+	ownership, err := discovery.NewSlotOwnership(store, directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := &EntityRouter{Ownership: ownership,
+		Service: func(string) (string, error) { return "world", nil },
+		SlotID:  actorhost.SlotMapping(worldSlot).Resolver()}
+	// 没有 Control 和写入实现：Probe 不应激活 Actor 或重新分配槽位。
+	got, err := router.Probe(t.Context(), actorhost.Identity{Type: "world", ID: "1"})
+	if err != nil || got.State != actorhost.Unloaded {
+		t.Fatalf("释放后的探测: %+v %v", got, err)
+	}
+}
+
 func (s *explicitSlots) ResolveSlot(context.Context, string) (discovery.SlotAssignment, error) {
 	if s.assignment == nil {
 		return discovery.SlotAssignment{}, discovery.ErrSlotNotFound

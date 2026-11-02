@@ -77,6 +77,9 @@ func TestRuntimeWatchRejectsLateSnapshotAndRequiresCurrentPair(t *testing.T) {
 		close(slotReady)
 		<-ctx.Done()
 		_ = d.Replace(nil) // 取消后到达的旧轮次快照不得重新发布。
+		if err := d.applyChanges([]slotChange{{assignment: SlotAssignment{"world-1", "late", 1}, revision: 20}}, 20); !errors.Is(err, context.Canceled) {
+			t.Errorf("旧 Watch 轮次的增量未拒绝: %v", err)
+		}
 		close(canceled)
 		<-release
 		return ctx.Err()
@@ -161,9 +164,7 @@ func (s *watchSlots) Watch(ctx context.Context, d *SlotDirectory) error { return
 func TestRuntimeExposesImmutableIdentityAndInstance(t *testing.T) {
 	registration := newRuntimeRegistrationFake()
 	registration.identity = RuntimeIdentity{
-		InstanceID:  "txgame-17-291",
-		WorkSlot:    17,
-		ModRevision: 291,
+		InstanceID: "txgame-identity",
 	}
 	registration.instance = Instance{
 		ID:        registration.identity.InstanceID,
@@ -373,6 +374,11 @@ func (store *runtimeSlotStoreFake) ResolveSlot(_ context.Context, slotID string)
 		return SlotAssignment{}, ErrSlotNotFound
 	}
 	return assignment, nil
+}
+
+func (store *runtimeSlotStoreFake) ResolveSlotAtRevision(ctx context.Context, slotID string) (SlotAssignment, int64, error) {
+	value, err := store.ResolveSlot(ctx, slotID)
+	return value, 1, err
 }
 
 func (store *runtimeSlotStoreFake) CreateSlot(_ context.Context, assignment SlotAssignment) error {

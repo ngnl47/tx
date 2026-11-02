@@ -15,11 +15,15 @@ import (
 // 同一路由入口按 Type 选择服务池；共享服务的 Type 保持独立归属和实体状态。
 func TestEntityRouterSelectsKindService(t *testing.T) {
 	url, ctx := natsURL(t), actorTestContext(t)
-	store, ns := actorTestSlots(t), nats.NewInbox()
+	members := []discovery.Instance{
+		{ID: "game", Services: []string{"game"}, Endpoint: "127.0.0.1:1", Status: discovery.StatusRunning},
+		{ID: "slgworld", Services: []string{"slgworld"}, Endpoint: "127.0.0.1:1", Status: discovery.StatusRunning},
+	}
+	store, ns := actorTestSlots(t, members...), nats.NewInbox()
 	directory := discovery.NewServiceDirectory()
-	var members []discovery.Instance
 	var caller *NATSTransport
-	for _, service := range []string{"game", "slgworld"} {
+	for _, member := range members {
+		service := member.ID
 		local := actorhost.New(8, time.Second, func(actorhost.Context) (*actorhost.Behavior, error) {
 			count := uint64(0)
 			return &actorhost.Behavior{Receive: func(actorhost.Context, any) (any, error) {
@@ -35,14 +39,13 @@ func TestEntityRouterSelectsKindService(t *testing.T) {
 		defer transport.Close()
 		defer local.Drain(ctx)
 		caller = transport
-		members = append(members, discovery.Instance{ID: service, Services: []string{service}, Endpoint: "127.0.0.1:1", Status: discovery.StatusRunning})
 	}
 	if err := directory.Replace(members); err != nil {
 		t.Fatal(err)
 	}
 	resolver, _ := watchedRoutes(t, store, directory)
 	services := map[string]string{"role": "game", "world": "slgworld", "seasonWorld": "slgworld"}
-	router := &EntityRouter{Resolver: resolver, Ownership: slotOwnership(t, store, directory), Transport: caller,
+	router := &EntityRouter{Resolver: resolver, Ownership: slotOwnership(t, store, directory), Control: caller,
 		Service: func(kind string) (string, error) {
 			service, ok := services[kind]
 			if !ok {
@@ -51,7 +54,7 @@ func TestEntityRouterSelectsKindService(t *testing.T) {
 			return service, nil
 		},
 	}
-	messenger := &NATSMessenger{Router: router}
+	messenger := &NATSMessenger{Router: router, Transport: caller}
 	for kind, service := range services {
 		id := actorhost.Identity{Type: kind, ID: "1"}
 		for count := uint64(1); count <= 2; count++ {

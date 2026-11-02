@@ -13,7 +13,7 @@ import (
 type EntityRouter struct {
 	Resolver           *discovery.SlotResolver
 	Ownership          *discovery.SlotOwnership
-	Transport          *NATSTransport
+	Control            ActivationControl
 	Service            func(actorType string) (string, error)
 	SlotID             actorhost.SlotResolver
 	ExplicitAssignment func(actorType string) bool
@@ -50,7 +50,7 @@ func (a *EntityRouter) ensure(ctx context.Context, id actorhost.Identity, retry 
 		current = target.Assignment
 	} else {
 		current, created, err = a.Ownership.Ensure(ctx, service, slot, func(ctx context.Context, instance string) (bool, error) {
-			err := a.Transport.CheckActivationCapacity(ctx, actorhost.Target{Instance: instance, Identity: id})
+			err := a.Control.CheckActivationCapacity(ctx, actorhost.Target{Instance: instance, Identity: id})
 			if errors.Is(err, actorhost.ErrCapacity) || errors.Is(err, actorhost.ErrDraining) {
 				return false, nil
 			}
@@ -66,9 +66,9 @@ func (a *EntityRouter) ensure(ctx context.Context, id actorhost.Identity, retry 
 	target := actorhost.Target{Instance: current.RuntimeInstanceID, Identity: id}
 	var state actorhost.ActivationStatus
 	if created || retry {
-		state, err = a.Transport.RetryActivation(ctx, target)
+		state, err = a.Control.RetryActivation(ctx, target)
 	} else {
-		state, err = a.Transport.EnsureActivation(ctx, target)
+		state, err = a.Control.EnsureActivation(ctx, target)
 	}
 	return current, state, err
 }
@@ -86,9 +86,9 @@ func (a *EntityRouter) Resolve(ctx context.Context, id actorhost.Identity) (acto
 	}
 	current, err := a.Resolver.ResolveServiceSlot(ctx, service, slot)
 	if err == nil {
-		return actorhost.Target{Instance: current.Assignment.RuntimeInstanceID, Identity: id}, nil
+		return routeTarget(id, current.Assignment), nil
 	}
-	if !errors.Is(err, discovery.ErrSlotNotFound) {
+	if !errors.Is(err, discovery.ErrSlotNotFound) && !errors.Is(err, discovery.ErrSlotReleased) {
 		return actorhost.Target{}, err
 	}
 	assignment, _, err := a.Ensure(ctx, id)
@@ -96,7 +96,7 @@ func (a *EntityRouter) Resolve(ctx context.Context, id actorhost.Identity) (acto
 		return actorhost.Target{}, err
 	}
 	// 不等待 Watch 回显，也不向只读缓存手写归属；本次复用权威结果。
-	return actorhost.Target{Instance: assignment.RuntimeInstanceID, Identity: id}, nil
+	return routeTarget(id, assignment), nil
 }
 
 // Probe 走只读权威解析，避免 Watch 尚未回显时把刚创建的归属误报为未加载。
@@ -113,11 +113,23 @@ func (a *EntityRouter) Probe(ctx context.Context, id actorhost.Identity) (actorh
 		return actorhost.ActivationStatus{}, err
 	}
 	target, err := a.Ownership.Resolve(ctx, service, slot)
-	if errors.Is(err, discovery.ErrSlotNotFound) {
+	if errors.Is(err, discovery.ErrSlotNotFound) || errors.Is(err, discovery.ErrSlotReleased) {
 		return actorhost.ActivationStatus{State: actorhost.Unloaded}, nil
 	}
 	if err != nil {
 		return actorhost.ActivationStatus{}, err
 	}
-	return a.Transport.Probe(ctx, actorhost.Target{Instance: target.Assignment.RuntimeInstanceID, Identity: id})
+	return a.Control.Probe(ctx, actorhost.Target{Instance: target.Assignment.RuntimeInstanceID, Identity: id})
+}
+
+// ActivationControl 只声明路由冷路径需要的控制能力，不依赖具体传输连接。
+type ActivationControl interface {
+	CheckActivationCapacity(context.Context, actorhost.Target) error
+	EnsureActivation(context.Context, actorhost.Target) (actorhost.ActivationStatus, error)
+	RetryActivation(context.Context, actorhost.Target) (actorhost.ActivationStatus, error)
+	Probe(context.Context, actorhost.Target) (actorhost.ActivationStatus, error)
+}
+
+func routeTarget(id actorhost.Identity, a discovery.SlotAssignment) actorhost.Target {
+	return actorhost.Target{Identity: id, Instance: a.RuntimeInstanceID, SlotID: a.SlotID, Generation: a.Generation}
 }

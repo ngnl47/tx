@@ -147,13 +147,13 @@ type activation struct {
 
 // Runtime 只管理本进程实体，不做发现或跨实例归属判定。
 type Runtime struct {
+	checkOwner     func(Context) error
 	contextFor     func(context.Context, Identity) context.Context
 	admission      func(Identity, bool) error
 	mailboxSamples uint64
 	mu             sync.Mutex
 	entries        map[Identity]*activation
 	draining       bool
-	placement      *Placement
 	workers        sync.WaitGroup
 	capacity       int
 	timeout        time.Duration
@@ -191,12 +191,12 @@ func (r *Runtime) SubmitWithReply(id Identity, message any, done func(any, error
 	defer r.mu.Unlock()
 	if r.admission != nil {
 		if err := r.admission(id, false); err != nil {
-			return nil, err
+			return nil, admissionError(err)
 		}
 	}
 	e, err := r.ensureLocked(id)
 	if err != nil {
-		return nil, err
+		return nil, admissionError(err)
 	}
 	if e == nil {
 		return nil, r.failures[id]
@@ -215,12 +215,6 @@ func (r *Runtime) ensureLocked(id Identity) (*activation, error) {
 	}
 	if r.draining {
 		return nil, ErrDraining
-	}
-	if r.placement != nil {
-		target, err := r.placement.Target(id)
-		if err != nil || target.Instance != r.placement.local {
-			return nil, ErrNotOwner
-		}
 	}
 	if e := r.entries[id]; e != nil {
 		return e, nil
@@ -350,11 +344,14 @@ func (e *activation) run() {
 		}
 		e.runtime.mu.Unlock()
 	}()
-	err := e.invoke(0, func(ctx Context) error {
-		var err error
-		behavior, err = e.runtime.factory(ctx)
-		return err
-	})
+	err := e.invoke(0, e.runtime.checkOwner)
+	if err == nil {
+		err = executionResult(e.invoke(0, func(ctx Context) error {
+			var err error
+			behavior, err = e.runtime.factory(ctx)
+			return err
+		}))
+	}
 	if err == nil {
 		if behavior == nil || behavior.Receive == nil {
 			err = errors.New("actortrial: factory returned no receiver")
@@ -362,7 +359,7 @@ func (e *activation) run() {
 			err = errors.New("actortrial: negative idle passivation")
 		} else {
 			for _, hook := range []func(Context) error{behavior.OnInitAfter, behavior.OnActivateBefore, behavior.OnActivateAfter} {
-				if err = e.invoke(0, hook); err != nil {
+				if err = executionResult(e.invoke(0, hook)); err != nil {
 					break
 				}
 			}
@@ -407,7 +404,7 @@ func (e *activation) run() {
 			txmetrics.RecordActorMailboxWait(time.Since(sampled.queuedAt))
 			message = sampled.value
 		}
-		err := e.invoke(e.runtime.timeout, func(ctx Context) error { var err error; value, err = behavior.Receive(ctx, message); return err })
+		err := executionResult(e.invoke(e.runtime.timeout, func(ctx Context) error { var err error; value, err = behavior.Receive(ctx, message); return err }))
 		if timer != nil {
 			timer.Reset(behavior.IdlePassivation)
 		}

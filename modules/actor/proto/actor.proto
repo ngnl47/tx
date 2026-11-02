@@ -76,6 +76,10 @@ message DirectStreamCall {
   string id = 2;
   Delivery delivery = 3;
   int64 timeout_nano = 4;
+  // 以下字段仅供框架异常反馈，不进入业务 Delivery。
+  string slot_id = 5;
+  uint64 generation = 6;
+  string source_instance = 7;
 }
 
 // PlacementQuery 是进程级放置查询，不依赖目标 Actor 激活或邮箱。

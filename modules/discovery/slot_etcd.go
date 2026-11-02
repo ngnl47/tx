@@ -10,7 +10,7 @@ import (
 )
 
 // EtcdSlotStore 将逻辑槽位映射持久化在实例 lease 之外。运行实例消失不会删除
-// assignment，发布控制面必须通过 PromoteSlot 明确交接到新的 generation。
+// assignment；正常收尾可条件释放，显式交接通过 PromoteSlot 推进 generation。
 type EtcdSlotStore struct {
 	registry *EtcdRegistry
 }
@@ -24,18 +24,25 @@ func (r *EtcdRegistry) Slots() *EtcdSlotStore {
 }
 
 func (s *EtcdSlotStore) ResolveSlot(ctx context.Context, slotID string) (SlotAssignment, error) {
+	value, _, err := s.ResolveSlotAtRevision(ctx, slotID)
+	return value, err
+}
+
+// ResolveSlotAtRevision 复用现有客户端，以读快照版本参与缓存合并。
+func (s *EtcdSlotStore) ResolveSlotAtRevision(ctx context.Context, slotID string) (SlotAssignment, int64, error) {
 	key, err := s.slotKey(slotID)
 	if err != nil {
-		return SlotAssignment{}, err
+		return SlotAssignment{}, 0, err
 	}
-	value, ok, err := s.registry.client.Get(ctx, key)
+	value, ok, revision, err := s.registry.client.GetAtRevision(ctx, key)
 	if err != nil {
-		return SlotAssignment{}, err
+		return SlotAssignment{}, 0, err
 	}
 	if !ok {
-		return SlotAssignment{}, ErrSlotNotFound
+		return SlotAssignment{}, 0, ErrSlotNotFound
 	}
-	return decodeSlotAssignment(key, value.Value)
+	assignment, err := decodeSlotAssignment(key, value.Value)
+	return assignment, revision, err
 }
 
 // Watch 先载入完整槽位快照，再持续把 etcd 变更写入本地目录。方法退出前会使
@@ -52,20 +59,21 @@ func (s *EtcdSlotStore) Watch(ctx context.Context, directory *SlotDirectory) err
 	if err != nil {
 		return err
 	}
-	current := make(map[string]SlotAssignment, len(snapshot.Values))
+	assignments := make([]SlotAssignment, 0, len(snapshot.Values))
 	for _, item := range snapshot.Values {
 		assignment, decodeErr := decodeSlotAssignment(item.Key, item.Value)
 		if decodeErr != nil {
 			return decodeErr
 		}
-		current[assignment.SlotID] = assignment
+		assignments = append(assignments, assignment)
 	}
-	if err := replaceSlotDirectory(directory, current); err != nil {
+	if err := directory.ReplaceSnapshot(assignments, snapshot.Revision); err != nil {
 		return err
 	}
 	defer directory.Invalidate()
 
-	watch := s.registry.client.WatchPrefix(ctx, prefix, snapshot.Revision+1)
+	revision := snapshot.Revision
+	watch := s.registry.client.WatchPrefix(ctx, prefix, revision+1)
 	for {
 		select {
 		case <-ctx.Done():
@@ -83,25 +91,29 @@ func (s *EtcdSlotStore) Watch(ctx context.Context, directory *SlotDirectory) err
 				}
 				return mapEtcdWatchError(response.Err)
 			}
+			changes := make([]slotChange, 0, len(response.Events))
 			for _, event := range response.Events {
+				if event.Value.ModRevision > revision {
+					revision = event.Value.ModRevision
+				}
 				switch event.Type {
 				case txetcd.EventPut:
 					assignment, decodeErr := decodeSlotAssignment(event.Value.Key, event.Value.Value)
 					if decodeErr != nil {
 						return decodeErr
 					}
-					current[assignment.SlotID] = assignment
+					changes = append(changes, slotChange{assignment: assignment, revision: event.Value.ModRevision})
 				case txetcd.EventDelete:
 					slotID := strings.TrimPrefix(event.Value.Key, prefix)
 					if !validSlotID(slotID) {
 						return ErrInvalidSlotAssignment
 					}
-					delete(current, slotID)
+					changes = append(changes, slotChange{assignment: SlotAssignment{SlotID: slotID}, revision: event.Value.ModRevision, deleted: true})
 				default:
 					return ErrEtcdWatchClosed
 				}
 			}
-			if err := replaceSlotDirectory(directory, current); err != nil {
+			if err := directory.applyChanges(changes, revision); err != nil {
 				return err
 			}
 		}
@@ -111,6 +123,9 @@ func (s *EtcdSlotStore) Watch(ctx context.Context, directory *SlotDirectory) err
 func (s *EtcdSlotStore) CreateSlot(ctx context.Context, assignment SlotAssignment) error {
 	if err := assignment.Validate(); err != nil {
 		return err
+	}
+	if assignment.Released() {
+		return ErrInvalidSlotAssignment
 	}
 	key, err := s.slotKey(assignment.SlotID)
 	if err != nil {
@@ -196,46 +211,35 @@ func validSlotID(slotID string) bool {
 	return strings.TrimSpace(slotID) != "" && slotID == strings.TrimSpace(slotID) && !strings.Contains(slotID, "/")
 }
 
-func replaceSlotDirectory(directory *SlotDirectory, current map[string]SlotAssignment) error {
-	assignments := make([]SlotAssignment, 0, len(current))
-	for _, assignment := range current {
-		assignments = append(assignments, assignment)
-	}
-	return directory.Replace(assignments)
-}
-
 // CheckSlotCapacity 供交接前预检；最终写入仍须原子复核，预检不占位。
 func (s *EtcdSlotStore) CheckSlotCapacity(ctx context.Context, next SlotAssignment) error {
-	_, _, err := s.capacitySnapshot(ctx, next)
+	_, err := s.capacitySnapshot(ctx, next)
 	return err
 }
 
-// writeAssignment 只使用现有实例规格与 assignment；无配额时保持单键 CAS。
+// writeAssignment 在同一 CAS 中复核成员状态、归属和容量；包装存储不能绕过校验。
 func (s *EtcdSlotStore) writeAssignment(ctx context.Context, key string, expected int64, next SlotAssignment, payload []byte) (bool, error) {
 	root := strings.TrimSuffix(s.registry.config.Prefix, "/instances") + "/"
 	for {
-		snapshot, limited, err := s.capacitySnapshot(ctx, next)
+		snapshot, err := s.capacitySnapshot(ctx, next)
 		if err != nil {
 			return false, err
 		}
-		if !limited {
-			if expected == 0 {
-				_, ok, err := s.registry.client.Create(ctx, key, payload, 0)
-				return ok, err
-			}
-			return s.registry.client.CompareAndSwap(ctx, key, expected, payload)
-		}
 		var actual int64
+		var member txetcd.KeyValue
+		memberKey := s.registry.instanceKey(next.RuntimeInstanceID)
 		for _, v := range snapshot.Values {
 			if v.Key == key {
 				actual = v.ModRevision
-				break
+			}
+			if v.Key == memberKey {
+				member = v
 			}
 		}
 		if actual != expected {
 			return false, ErrSlotConflict
 		}
-		ok, err := s.registry.client.CompareAndSwapWithinSnapshot(ctx, root, snapshot.Revision, key, expected, payload)
+		ok, err := s.registry.client.CompareAndSwapWithinSnapshot(ctx, root, snapshot.Revision, key, expected, payload, member)
 		if err != nil || ok {
 			return ok, err
 		}
@@ -243,35 +247,35 @@ func (s *EtcdSlotStore) writeAssignment(ctx context.Context, key string, expecte
 	}
 }
 
-func (s *EtcdSlotStore) capacitySnapshot(ctx context.Context, next SlotAssignment) (txetcd.Snapshot, bool, error) {
+func (s *EtcdSlotStore) capacitySnapshot(ctx context.Context, next SlotAssignment) (txetcd.Snapshot, error) {
 	memberKey := s.registry.instanceKey(next.RuntimeInstanceID)
 	member, exists, err := s.registry.client.Get(ctx, memberKey)
 	if err != nil {
-		return txetcd.Snapshot{}, false, err
+		return txetcd.Snapshot{}, err
 	}
 	var instance Instance
 	if exists {
 		instance, err = s.registry.decodeInstance(member)
 		if err != nil {
-			return txetcd.Snapshot{}, false, err
+			return txetcd.Snapshot{}, err
 		}
 	}
-	if instance.MaxSlotAssignments == 0 {
-		return txetcd.Snapshot{}, false, nil
+	if !exists || (instance.Status != StatusRunning && instance.Status != StatusStarting) {
+		return txetcd.Snapshot{}, ErrSlotRuntimeUnavailable
 	}
 	prefix, _ := s.slotPrefix()
 	root := strings.TrimSuffix(s.registry.config.Prefix, "/instances") + "/"
-	// ponytail: 有限归属的冷分配扫描现有快照；规模需要时再引入事务索引，不增加第二份权威表。
+	// 冷分配扫描现有快照，复核成员与容量；热路径不进入这里，不增加第二份权威表。
 	snapshot, err := s.registry.client.Snapshot(ctx, root)
 	if err != nil {
-		return snapshot, true, err
+		return snapshot, err
 	}
 	used := 0
 	memberFound := false
 	for _, v := range snapshot.Values {
 		if v.Key == memberKey {
 			if !bytes.Equal(v.Value, member.Value) {
-				return snapshot, true, ErrSlotRuntimeUnavailable
+				return snapshot, ErrSlotRuntimeUnavailable
 			}
 			memberFound = true
 		}
@@ -280,17 +284,17 @@ func (s *EtcdSlotStore) capacitySnapshot(ctx context.Context, next SlotAssignmen
 		}
 		assignment, err := decodeSlotAssignment(v.Key, v.Value)
 		if err != nil {
-			return snapshot, true, err
+			return snapshot, err
 		}
 		if assignment.SlotID != next.SlotID && assignment.RuntimeInstanceID == next.RuntimeInstanceID {
 			used++
 		}
 	}
 	if !memberFound {
-		return snapshot, true, ErrSlotRuntimeUnavailable
+		return snapshot, ErrSlotRuntimeUnavailable
 	}
-	if used >= instance.MaxSlotAssignments {
-		return snapshot, true, ErrSlotCapacityUnavailable
+	if instance.MaxSlotAssignments > 0 && used >= instance.MaxSlotAssignments {
+		return snapshot, ErrSlotCapacityUnavailable
 	}
-	return snapshot, true, nil
+	return snapshot, nil
 }

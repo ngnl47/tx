@@ -11,6 +11,40 @@ import (
 	"time"
 )
 
+// 包装存储不应改变写入契约；本地成员缓存落后时仍由权威存储拒绝排水目标。
+func TestEtcdSlotWritesValidateMemberThroughWrapper(t *testing.T) {
+	registry, _, _ := newIdentityIntegrationRegistry(t, "slot-member-wrapper", time.Second)
+	ctx := t.Context()
+	putReleaseMember(t, registry, "a", StatusRunning)
+	putReleaseMember(t, registry, "b", StatusRunning)
+	store := registry.Slots()
+	current := SlotAssignment{SlotID: "existing", RuntimeInstanceID: "a", Generation: 1}
+	if err := store.CreateSlot(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	directory := NewServiceDirectory()
+	if err := directory.Replace([]Instance{{ID: "b", Endpoint: "b:1", Services: []string{"world"}, Status: StatusRunning}}); err != nil {
+		t.Fatal(err)
+	}
+	wrapped := struct{ SlotStore }{store}
+	router, err := NewSlotRouter(wrapped, directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	putReleaseMember(t, registry, "b", StatusDraining)
+	next := SlotAssignment{SlotID: "new", RuntimeInstanceID: "b", Generation: 1}
+	if err := router.CreateSlot(ctx, next); !errors.Is(err, ErrSlotRuntimeUnavailable) {
+		t.Fatalf("排水目标创建: %v", err)
+	}
+	next.SlotID, next.Generation = current.SlotID, 2
+	if err := router.PromoteSlot(ctx, current, next); !errors.Is(err, ErrSlotRuntimeUnavailable) {
+		t.Fatalf("排水目标晋升: %v", err)
+	}
+	if got, err := store.ResolveSlot(ctx, current.SlotID); err != nil || got != current {
+		t.Fatalf("旧归属被改写: %+v %v", got, err)
+	}
+}
+
 // 并发不同世界竞争同一实例时，归属写入本身必须守住名额；晋升也不能绕过。
 func TestEtcdSlotCapacityIsAtomicAndFollowsOwnership(t *testing.T) {
 	registry, _, _ := newIdentityIntegrationRegistry(t, "slot-capacity", time.Second)
@@ -79,6 +113,9 @@ func TestEtcdSlotCapacityIsAtomicAndFollowsOwnership(t *testing.T) {
 // 同一代归属并发交接到不同目标时，真实 etcd CAS 只允许一个结果生效。
 func TestEtcdConcurrentHandoffHasOneWinner(t *testing.T) {
 	registry, _, _ := newIdentityIntegrationRegistry(t, "handoff-competition", time.Second)
+	for _, id := range []string{"a", "b", "c"} {
+		putReleaseMember(t, registry, id, StatusRunning)
+	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	store := registry.Slots()

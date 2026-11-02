@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -8,107 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
-
-func TestEtcdWorkSlotReuseChangesRuntimeIdentity(t *testing.T) {
-	registry, raw, root := newIdentityIntegrationRegistry(t, "reuse", time.Second)
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-
-	firstLease, err := registry.client.Grant(ctx, time.Second)
-	if err != nil {
-		t.Fatalf("grant first lease: %v", err)
-	}
-	first, err := registry.claimWorkSlot(ctx, firstLease, "txgame", 17)
-	if err != nil {
-		t.Fatalf("claim first workSlot: %v", err)
-	}
-	if first.WorkSlot != 17 {
-		t.Fatalf("first workSlot = %d, want 17", first.WorkSlot)
-	}
-	if err := firstLease.Stop(); err != nil {
-		t.Fatalf("stop first lease: %v", err)
-	}
-	waitEtcdKeyMissing(t, ctx, raw, fmt.Sprintf("%s/work-slots/17", root))
-
-	secondLease, err := registry.client.Grant(ctx, time.Second)
-	if err != nil {
-		t.Fatalf("grant second lease: %v", err)
-	}
-	t.Cleanup(func() { _ = secondLease.Revoke(context.Background()) })
-	second, err := registry.claimWorkSlot(ctx, secondLease, "txgame", 17)
-	if err != nil {
-		t.Fatalf("claim second workSlot: %v", err)
-	}
-	if second.WorkSlot != 17 {
-		t.Fatalf("second workSlot = %d, want 17", second.WorkSlot)
-	}
-	if second.ModRevision == first.ModRevision || second.InstanceID == first.InstanceID {
-		t.Fatalf("reused identity did not change: first=%#v second=%#v", first, second)
-	}
-}
-
-func TestEtcdWorkSlotDomainsAreIndependent(t *testing.T) {
-	firstRegistry, _, _ := newIdentityIntegrationRegistry(t, "domain-a", 2*time.Second)
-	secondRegistry, _, _ := newIdentityIntegrationRegistry(t, "domain-b", 2*time.Second)
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-
-	firstLease, err := firstRegistry.client.Grant(ctx, 2*time.Second)
-	if err != nil {
-		t.Fatalf("grant first lease: %v", err)
-	}
-	t.Cleanup(func() { _ = firstLease.Revoke(context.Background()) })
-	secondLease, err := secondRegistry.client.Grant(ctx, 2*time.Second)
-	if err != nil {
-		t.Fatalf("grant second lease: %v", err)
-	}
-	t.Cleanup(func() { _ = secondLease.Revoke(context.Background()) })
-	first, err := firstRegistry.claimWorkSlot(ctx, firstLease, "txgame", 17)
-	if err != nil {
-		t.Fatalf("claim first domain: %v", err)
-	}
-	second, err := secondRegistry.claimWorkSlot(ctx, secondLease, "txgame", 17)
-	if err != nil {
-		t.Fatalf("claim second domain: %v", err)
-	}
-	if first.WorkSlot != 17 || second.WorkSlot != 17 {
-		t.Fatalf("independent workSlots = %d and %d, want both 17", first.WorkSlot, second.WorkSlot)
-	}
-}
-
-func TestEtcdWorkSlotExhaustionNeverUsesZero(t *testing.T) {
-	registry, raw, root := newIdentityIntegrationRegistry(t, "exhausted", 2*time.Second)
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	for first := 1; first <= WorkSlotCount; first += 100 {
-		last := min(first+99, WorkSlotCount)
-		operations := make([]clientv3.Op, 0, last-first+1)
-		for slot := first; slot <= last; slot++ {
-			operations = append(operations, clientv3.OpPut(fmt.Sprintf("%s/work-slots/%d", root, slot), "occupied"))
-		}
-		if _, err := raw.Txn(ctx).Then(operations...).Commit(); err != nil {
-			t.Fatalf("occupy workSlots %d-%d: %v", first, last, err)
-		}
-	}
-
-	lease, err := registry.client.Grant(ctx, 2*time.Second)
-	if err != nil {
-		t.Fatalf("grant claimant lease: %v", err)
-	}
-	t.Cleanup(func() { _ = lease.Revoke(context.Background()) })
-	if _, err := registry.claimWorkSlot(ctx, lease, "txgame", 1); !errors.Is(err, ErrWorkSlotExhausted) {
-		t.Fatalf("claimWorkSlot error = %v, want ErrWorkSlotExhausted", err)
-	}
-	response, err := raw.Get(ctx, root+"/work-slots/0")
-	if err != nil {
-		t.Fatalf("read reserved workSlot: %v", err)
-	}
-	if len(response.Kvs) != 0 {
-		t.Fatal("reserved workSlot 0 was created")
-	}
-}
 
 func TestEtcdRuntimeReportsIdentityLoss(t *testing.T) {
 	registry, raw, _ := newIdentityIntegrationRegistry(t, "identity-loss", 2*time.Second)
@@ -171,19 +74,117 @@ func newIdentityIntegrationRegistry(t *testing.T, suffix string, ttl time.Durati
 	return registry, raw, root
 }
 
-func waitEtcdKeyMissing(t *testing.T, ctx context.Context, client *clientv3.Client, key string) {
-	t.Helper()
-	ticker := time.NewTicker(20 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		response, err := client.Get(ctx, key)
-		if err == nil && len(response.Kvs) == 0 {
-			return
+func TestEtcdRegistryBorrowedClientRemainsUsableAfterClose(t *testing.T) {
+	owner, _, _ := newIdentityIntegrationRegistry(t, "borrowed-client", 2*time.Second)
+	borrowed, err := NewEtcdRegistryWithClient(owner.client, owner.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := borrowed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if err := owner.client.Probe(ctx); err != nil {
+		t.Fatalf("借用的客户端被关闭: %v", err)
+	}
+}
+
+func TestEtcdRegistrationDoesNotOverwriteExistingInstance(t *testing.T) {
+	registry, _, _ := newIdentityIntegrationRegistry(t, "collision", 2*time.Second)
+	uuid.SetRand(bytes.NewReader(make([]byte, 32)))
+	defer uuid.SetRand(nil)
+	descriptor := Instance{Services: []string{"login"}, Endpoint: "127.0.0.1:9000", Status: StatusStarting}
+	first, err := registry.Register(t.Context(), "txgame", descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close(context.Background())
+	key := registry.instanceKey(first.Identity().InstanceID)
+	before, found, err := registry.client.Get(t.Context(), key)
+	if err != nil || !found {
+		t.Fatalf("read first: %v %v", found, err)
+	}
+	second, err := registry.Register(t.Context(), "txgame", descriptor)
+	if second != nil {
+		defer second.Close(context.Background())
+	}
+	if err == nil {
+		t.Fatal("相同 InstanceID 注册未拒绝")
+	}
+	after, found, err := registry.client.Get(t.Context(), key)
+	if err != nil || !found || !bytes.Equal(after.Value, before.Value) || after.LeaseID != before.LeaseID || after.ModRevision != before.ModRevision {
+		t.Fatalf("已有成员被修改: before=%+v after=%+v found=%v err=%v", before, after, found, err)
+	}
+}
+
+func TestEtcdRuntimeRestartChangesIdentityWithoutWorkSlots(t *testing.T) {
+	owner, raw, root := newIdentityIntegrationRegistry(t, "restart", 2*time.Second)
+	var previous string
+	for range 2 {
+		runtime, err := NewRuntimeWithClient(t.Context(), owner.client, owner.config, "txgame", Instance{
+			Services: []string{"login"}, Endpoint: "127.0.0.1:9000", Status: StatusStarting,
+		})
+		if err != nil {
+			t.Fatal(err)
 		}
-		select {
-		case <-ctx.Done():
-			t.Fatalf("wait etcd key %q deletion: %v", key, ctx.Err())
-		case <-ticker.C:
+		id := runtime.Identity().InstanceID
+		if id == previous {
+			t.Fatalf("重启复用了 InstanceID: %q", id)
 		}
+		previous = id
+		snapshot, err := raw.Get(t.Context(), root+"/", clientv3.WithPrefix())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(snapshot.Kvs) != 1 || string(snapshot.Kvs[0].Key) != owner.instanceKey(id) {
+			t.Fatalf("启动应只登记成员，不应创建 work slot: %v", snapshot.Kvs)
+		}
+		if err := runtime.Close(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if err := owner.client.Probe(t.Context()); err != nil {
+			t.Fatalf("Runtime.Close 关闭了借用客户端: %v", err)
+		}
+	}
+}
+
+func TestEtcdRuntimeInitializationFailureKeepsBorrowedClient(t *testing.T) {
+	owner, raw, root := newIdentityIntegrationRegistry(t, "init-failure", 2*time.Second)
+	runtime, err := NewRuntimeWithClient(t.Context(), owner.client, owner.config, "txgame", Instance{Status: StatusStarting})
+	if !errors.Is(err, ErrInvalidInstance) || runtime != nil {
+		t.Fatalf("NewRuntimeWithClient = %v, %v", runtime, err)
+	}
+	if err := owner.client.Probe(t.Context()); err != nil {
+		t.Fatalf("启动失败关闭了借用客户端: %v", err)
+	}
+	snapshot, err := raw.Get(t.Context(), root+"/", clientv3.WithPrefix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Kvs) != 0 {
+		t.Fatalf("启动失败残留注册记录: %v", snapshot.Kvs)
+	}
+}
+
+func TestEtcdRuntimeCloseClosesOwnedClient(t *testing.T) {
+	owner, _, _ := newIdentityIntegrationRegistry(t, "owned-client", 2*time.Second)
+	runtime, err := NewRuntime(t.Context(), owner.config, "txgame", Instance{
+		Services: []string{"login"}, Endpoint: "127.0.0.1:9000", Status: StatusStarting,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := runtime.registry.(*EtcdRegistry).client
+	if err := client.Probe(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	if err := client.Probe(ctx); err == nil {
+		t.Fatal("Runtime.Close 未关闭自建客户端")
 	}
 }

@@ -2,6 +2,8 @@
 
 本页维护子服务、Actor 和业务模块的生命周期契约。模块采用进程内单例；GD 生成接口显式接收执行上下文，不再提供 Access 或可选 ctx 包装。
 
+下一阶段架构与流程图见 [Actor 寻址、归属与生命周期收敛计划](actor-routing-lifecycle-plan.md)。该计划保留本页通信 Actor 与业务对象解耦的边界；正常进程关闭在排水和必要持久化成功后条件释放槽位；这不是 Actor 空闲卸载的副作用。
+
 ## 目标与工程边界
 
 让子服务启动阶段、Actor 激活状态及业务模块资源归属各自清晰；保留 Room 直接寻址、按需激活的默认调用方式。合服目录及其生效方式由应用工程管理。
@@ -22,6 +24,8 @@
 | 子服务 | Init 装配、可选 Start 完成必要加载、Drain 等待已接纳工作、Stop 释放资源 |
 | Actor | Initializing/Ready/Closing/Failed 表达单次激活状态；控制操作与业务消息投递分开 |
 | 业务模块 | 进程内单例复用能力；管理 World、Room 等业务对象，生命周期不强制绑定 Actor 激活；GD 操作使用本次 Handler 或 Procedure 的上下文 |
+
+每次进程启动生成新的 `AppID-UUID` 形式 InstanceID，组合子服务共用，成员登记继续绑定租约。SessionID 由 Login 通过独立 etcd Put 的 revision 分配；它不编码运行身份，也不参与 Actor 槽位归属。正常关闭先完成排水、必要写回和逻辑槽位条件释放，再注销成员并 Revoke，最后关闭共享连接；租约失效仍不等于旧 owner 已停止写入。
 
 源码核对入口：`internal/framework/server.go`、`internal/framework/service_host.go`、`internal/actorhost/runtime.go`、`modules/actor/runtime.go`；示例见 txgameslg 的 `services/slgworld/{service,bootstrap,registration}.go`。
 
@@ -49,13 +53,15 @@ Created → Initializing → Initialized → Starting → Running
 
 ### 基础设施可用与业务准入
 
-全部 Service.Init 完成后，框架启动 RPC/控制监听并发布进程 Discovery Running，再逐个执行 Service.Start。启动钩子只等待控制面加载，不同步调用仍未开放的普通业务入口。
+全部 Service.Init 完成后，框架启动 RPC 与已配置的控制监听并发布进程 Discovery Running，再逐个执行 Service.Start。启动钩子使用已装配能力完成必要工作，不同步调用仍未开放的普通业务入口。
 
 当前顺序为：初始化所选服务 → 通信基础设施可用 → 执行各服务必要启动工作 → 服务 Running。进程发现状态和子服务状态是不同事实；不能把子服务状态机械复制为进程状态。
 
+`CModSessionID` 在 Discovery Running、全部 Service.Start 成功且启动错误检查通过后才开放。Server.Drain 关闭服务准入时同步取消在途发号，然后等待已接纳请求退出；不等待最终 CMod 排水才取消，以免外部写入阻塞反向卡住请求排水。调用方取消或身份失效时同样不返回成功编号；已提交写入允许形成空号，不补发或自动重试。发号器借用框架持有的 etcd 客户端，不改变服务、Actor 和业务对象的收尾顺序；连接所有权与恢复要求见 [运行身份与发号](design.md#运行身份与-sessionid)。
+
 启动中的服务须允许已有生命周期控制路径完成指定 Actor 激活，同时常规客户端、内部业务和任务入口不能以“端口已监听”绕过服务准入。本地直调也应遵循相同规则；不得用一个业务可传入的布尔值放行普通消息。外部 Admission、Actor Submit/Post 共用本地子服务阶段；After 保留尚未入队的定时消息直到服务就绪或激活关闭。任务消费者在服务开放后才开始领取，避免启动窗口消耗投递次数。Starting 可使用控制面激活，Created/Initializing/Initialized 不触发业务工厂；排水仍使用既有入口、邮箱和任务屏障，不新增远程查询或第二套计数。
 
-World 示例：应用模块在服务 Start 中完成指定 World 加载，按需确保其 Actor 通信入口 Ready；业务对象可以由模块长期持有，Actor 工厂不必负责加载。启动必需项由服务定义，活动开启、玩家进入资格仍由项目判断。
+World 示例：应用在服务 Start 中通过 `CModLocalAssignments().Claim` 认领指定槽位，再由模块加载业务 World；认领只绑定当前实例，框架处理 CAS 与本地目录合并，不需要控制端口或应用 Watch 轮询。启动不前置激活通信 Actor，首条消息仍可按需激活；业务对象由模块长期持有，Actor 工厂不负责加载。启动必需项由服务定义，活动开启、玩家进入资格仍由项目判断。
 
 ## Actor 生命周期控制
 
@@ -65,7 +71,7 @@ Actor Ready 只表示通信入口初始化完成，仍晚于工厂及全部初�
 
 | 操作 | 当前入口 | 保持或补齐的契约 |
 | --- | --- | --- |
-| 查询状态 | Probe | 无副作用，不分配归属、不激活、不读取未就绪 GD |
+| 查询状态 | Probe | 无副作用；缺失或已释放槽位返回 Unloaded，不可用仍返回错误；不分配归属、不激活、不读取未就绪 GD |
 | 确保激活 | EnsureActivation | 已存在则复用；并发首次请求共享初始化；返回当前状态，不承诺已经 Ready |
 | 等待就绪 | actor.WaitReady(ctx, controller, id) | 只读轮询 Probe；仅 Initializing 等待，Ready 成功，其余状态或查询错误终止；不自动激活或重试 |
 | 重试失败 | RetryActivation | 清除已结束的失败再确保加载；无失败时等同 EnsureActivation，不替换正在加载或关闭的激活、不重投原业务请求 |
@@ -118,3 +124,13 @@ GlobalRoomActor 只在匹配、组队、配额等业务编排有实际需求时�
 - 正式包的 Role、Room、World 生命周期与存储验证见 [本地验收记录](local-package-rollout-acceptance.md)；历史报告仅证明指定版本、拓扑和场景。
 - 外部卸载及针对某次激活的完成等待尚未提供；有实际需求时再定义代次和资源边界，不通过删除 GD 或缓存条目模拟。
 - 按 Room 独立选择实例、自动 Actor 热迁移和云端容量均不是上述生命周期契约已经验证的能力。当前待办统一维护在 [实施计划](IMPLEMENTATION_PLAN.md)。
+
+## 正常关闭后的槽位释放
+
+```text
+关闭准入并发布 Draining → 已接纳工作结束 → 必要写回与输出完成
+  → Service.Stop（模块自有队列退出、服务资源清理）
+  → 条件释放本实例仍拥有的槽位 → 关闭框架连接、注销身份
+```
+
+普通池后续请求可认领空闲槽位；指定宿主类型仍需应用启动时显式认领。释放记录保留 Generation，不删除后从 1 重建；启动回滚、致命身份丢失及业务收尾失败保留旧归属。PrepareHandoff 保留原 owner/generation，供显式 Promote 比较。阶段之后的基础设施关闭错误不回滚已经完成的释放，细节见 [etcd 更新](design.md#显式槽位登记与-etcd-更新)。

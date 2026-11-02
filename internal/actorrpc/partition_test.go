@@ -32,7 +32,6 @@ func TestPartitionRoutingSharesAssignmentNotEntity(t *testing.T) {
 
 func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []actorhost.Identity, slot string) {
 	url, ctx := natsURL(t), actorTestContext(t)
-	store, ns := actorTestSlots(t), nats.NewInbox()
 	runtime := actorhost.New(8, time.Second, func(actorhost.Context) (*actorhost.Behavior, error) {
 		count := uint64(0)
 		return &actorhost.Behavior{Receive: func(actorhost.Context, any) (any, error) {
@@ -40,6 +39,9 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []actorh
 			return &actorpb.Result{MessageType: "count", CommandHash: uint32(count)}, nil
 		}}, nil
 	})
+	direct := directPeer(t, "a", runtime)
+	a := discovery.Instance{ID: "a", Services: []string{"game"}, Endpoint: direct.Endpoint(), Status: discovery.StatusRunning}
+	store, ns := actorTestSlots(t, a), nats.NewInbox()
 	runtime.BindSlots("a", store, mapping.Resolver())
 	host, err := ConnectNATS(url, ns, "a", runtime, 32)
 	if err != nil {
@@ -53,9 +55,7 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []actorh
 		}
 		host.Close()
 	})
-	direct := directPeer(t, "a", runtime)
 	directory := discovery.NewServiceDirectory()
-	a := discovery.Instance{ID: "a", Services: []string{"game"}, Endpoint: direct.Endpoint(), Status: discovery.StatusRunning}
 	if err := directory.Replace([]discovery.Instance{a}); err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []actorh
 	defer caller.Close()
 	defer callerRuntime.Drain(ctx)
 	resolver, _ := watchedRoutes(t, store, directory)
-	allocator := &EntityRouter{Resolver: resolver, Ownership: slotOwnership(t, store, directory), Transport: caller, Service: func(string) (string, error) { return "game", nil }, SlotID: mapping.Resolver()}
+	allocator := &EntityRouter{Resolver: resolver, Ownership: slotOwnership(t, store, directory), Control: caller, Service: func(string) (string, error) { return "game", nil }, SlotID: mapping.Resolver()}
 	// 拒绝容量时不得先写 assignment 或触发业务加载。
 	runtime.SetActivationLimits(actorhost.ActivationLimits{Admit: func() bool { return false }})
 	if _, _, err := allocator.Ensure(ctx, ids[0]); !errors.Is(err, actorhost.ErrCapacity) {
@@ -128,8 +128,8 @@ func testSharedPartition(t *testing.T, mapping txactor.SlotMapping, ids []actorh
 	if err := cache.Replace([]discovery.SlotAssignment{assignment}); err != nil {
 		t.Fatal(err)
 	}
-	hot := &EntityRouter{Resolver: hotResolver, SlotID: mapping.Resolver(), Transport: caller, Service: allocator.Service}
-	current := &NATSMessenger{Router: hot}
+	hot := &EntityRouter{Resolver: hotResolver, SlotID: mapping.Resolver(), Control: caller, Service: allocator.Service}
+	current := &NATSMessenger{Router: hot, Transport: caller}
 	for _, id := range ids {
 		message := &actorpb.Delivery{MessageType: "increment"}
 		if err := current.Tell(ctx, id, message); err != nil {

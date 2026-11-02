@@ -108,6 +108,7 @@ type Server struct {
 	prepared       bool
 	finalizing     bool
 	releaseDone    bool
+	slotsReleased  bool
 	finalizeErr    error
 	fatalOnce      sync.Once
 	fatalErr       error

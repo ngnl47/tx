@@ -8,11 +8,13 @@ import (
 	"log/slog"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/ngnl47/tx/internal/actorhost"
 	actorpb "github.com/ngnl47/tx/modules/actor/pb"
+	"github.com/ngnl47/tx/modules/discovery"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -21,6 +23,7 @@ var ErrPendingFull = errors.New("actor rpc: too many pending calls")
 // NATSTransport 同实例投递本地邮箱，跨实例通过 Core NATS 转发实体 RPC；与直连入口共用本地宿主。
 // 连接由框架组合根持有，不对业务暴露原生 NATS 连接。
 type NATSTransport struct {
+	routeInvalidator    atomic.Pointer[routeInvalidator]
 	conn                *nats.Conn
 	runtime             *actorhost.Runtime
 	namespace, instance string
@@ -32,8 +35,9 @@ type NATSTransport struct {
 }
 
 type pendingCall struct {
-	future *actorhost.Future
-	stop   func() bool
+	future   *actorhost.Future
+	stop     func() bool
+	observed discovery.SlotAssignment
 }
 
 func ConnectNATS(url, namespace, instance string, runtime *actorhost.Runtime, maxPending int) (*NATSTransport, error) {
@@ -112,8 +116,15 @@ func (p *NATSTransport) CallFuture(ctx context.Context, target actorhost.Target,
 	// 复用现有业务信封的非零 Call 标记；响应关联由 actorhost.Future/inbox 或 gRPC 请求承担。
 	delivery.RequestId = 1
 	if target.Instance == p.instance {
-		f, err := p.runtime.Submit(target.Identity, delivery)
+		f, err := p.runtime.SubmitWithReply(target.Identity, delivery, func(_ any, err error) {
+			if actorhost.IsRouteRejection(err) {
+				p.InvalidateRoute(target.Assignment())
+			}
+		})
 		if err != nil {
+			if actorhost.IsRouteRejection(err) {
+				p.InvalidateRoute(target.Assignment())
+			}
 			return nil, err
 		}
 		return &ResultFuture{f, ctx}, nil
@@ -139,7 +150,7 @@ func (p *NATSTransport) requestFuture(ctx context.Context, msg *nats.Msg) (*Resu
 	reply := p.inbox + strconv.FormatUint(p.nextRequest, 10)
 	f := actorhost.NewFuture(nil)
 	// 取消回调与响应、发送失败共用删除边界；成功后停止回调，不为每个请求保留等待 goroutine。
-	p.pending[reply] = &pendingCall{future: f, stop: context.AfterFunc(ctx, func() { p.finishRequest(reply, nil, ctx.Err()) })}
+	p.pending[reply] = &pendingCall{observed: observedRoute(msg), future: f, stop: context.AfterFunc(ctx, func() { p.finishRequest(reply, nil, ctx.Err()) })}
 	p.mu.Unlock()
 	msg.Reply = reply
 	if err := p.conn.PublishMsg(msg); err != nil {
@@ -166,9 +177,12 @@ func (p *NATSTransport) finishRequest(reply string, response *nats.Msg, err erro
 		} else {
 			err = proto.Unmarshal(response.Data, &result)
 			if err == nil && result.ErrorCode != 0 {
-				err = &actorhost.RemoteError{Code: result.ErrorCode, Message: result.ErrorMessage, Kind: response.Header.Get("Actor-Error")}
+				err = &actorhost.RemoteError{Code: result.ErrorCode, Message: result.ErrorMessage, Kind: response.Header.Get("Actor-Error"), RouteRejected: response.Header.Get("Actor-Route-Rejected") == "1"}
 			}
 		}
+	}
+	if actorhost.IsRouteRejection(err) || errors.Is(err, nats.ErrNoResponders) || errors.Is(err, nats.ErrConnectionClosed) || errors.Is(err, nats.ErrDisconnected) {
+		p.InvalidateRoute(call.observed)
 	}
 	call.future.Complete(&result, err)
 }
@@ -179,6 +193,7 @@ func (p *NATSTransport) closeRequests() {
 	for reply, call := range p.pending {
 		delete(p.pending, reply)
 		call.stop()
+		p.InvalidateRoute(call.observed)
 		call.future.Complete(nil, nats.ErrConnectionClosed)
 	}
 }
@@ -209,10 +224,16 @@ func (p *NATSTransport) publish(ctx context.Context, target actorhost.Target, de
 				result, _ := value.(*actorpb.Result)
 				err = ResultError(result)
 			}
+			if actorhost.IsRouteRejection(err) {
+				p.InvalidateRoute(target.Assignment())
+			}
 			if err != nil {
 				slog.Error("actor rpc one-way command failed", "actorType", target.Identity.Type, "actorID", target.Identity.ID, "err", err)
 			}
 		})
+		if actorhost.IsRouteRejection(err) {
+			p.InvalidateRoute(target.Assignment())
+		}
 		return err
 	}
 	msg, err := p.message(target, delivery)
@@ -221,6 +242,9 @@ func (p *NATSTransport) publish(ctx context.Context, target actorhost.Target, de
 	}
 	reconnects := p.conn.Stats().Reconnects
 	if err = p.conn.PublishMsg(msg); err != nil || !confirmed {
+		if err != nil {
+			p.InvalidateRoute(target.Assignment())
+		}
 		return err
 	}
 	if err = p.conn.FlushWithContext(ctx); err != nil {
@@ -240,11 +264,18 @@ func (p *NATSTransport) message(target actorhost.Target, delivery *actorpb.Deliv
 	identity, _ := json.Marshal(target.Identity)
 	msg := &nats.Msg{Subject: p.subject(target.Instance), Data: data, Header: nats.Header{}}
 	msg.Header.Set("Actor-Identity", base64.RawURLEncoding.EncodeToString(identity))
+	if target.Generation != 0 {
+		msg.Header.Set("Actor-Slot", target.SlotID)
+		msg.Header.Set("Actor-Owner", target.Instance)
+		msg.Header.Set("Actor-Generation", strconv.FormatUint(target.Generation, 10))
+		msg.Header.Set("Actor-Source", p.instance)
+	}
 	return msg, nil
 }
 
 func (p *NATSTransport) reply(msg *nats.Msg, result *actorpb.Result, err error) {
 	if msg.Reply == "" {
+		p.RejectRoute(msg.Header.Get("Actor-Source"), observedRoute(msg), err)
 		if err != nil {
 			slog.Error("actor rpc one-way command failed", "subject", msg.Subject, "err", err)
 		}
@@ -254,6 +285,9 @@ func (p *NATSTransport) reply(msg *nats.Msg, result *actorpb.Result, err error) 
 	if err != nil {
 		failure := actorhost.RemoteErrorFrom(err)
 		response.Header.Set("Actor-Error", failure.Kind)
+		if failure.RouteRejected {
+			response.Header.Set("Actor-Route-Rejected", "1")
+		}
 		result = &actorpb.Result{ErrorCode: failure.Code, ErrorMessage: failure.Message}
 	}
 	data, encodeErr := proto.Marshal(result)
@@ -266,6 +300,10 @@ func (p *NATSTransport) reply(msg *nats.Msg, result *actorpb.Result, err error) 
 	}
 }
 func (p *NATSTransport) receive(msg *nats.Msg) {
+	if msg.Header.Get("Actor-Route-Failure") == "1" {
+		p.receiveRouteFailure(msg)
+		return
+	}
 	var id actorhost.Identity
 	identity, err := base64.RawURLEncoding.DecodeString(msg.Header.Get("Actor-Identity"))
 	if err == nil {

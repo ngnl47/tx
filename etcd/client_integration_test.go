@@ -9,8 +9,54 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
+
+func TestClientPutRevisionReturnsWriteRevision(t *testing.T) {
+	client := integrationClientFromEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	key := "/tx/tests/etcd/put-revision/" + uuid.NewString()
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		if err := client.Delete(cleanupCtx, key); err != nil {
+			t.Errorf("delete test key: %v", err)
+		}
+		if _, found, err := client.Get(cleanupCtx, key); err != nil || found {
+			t.Errorf("test key after cleanup: found=%t, error=%v", found, err)
+		}
+	})
+	lease, err := client.Grant(ctx, 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		if err := lease.Revoke(cleanupCtx); err != nil {
+			t.Errorf("revoke test lease: %v", err)
+		}
+	})
+	var previous int64
+	for range 2 {
+		revision, err := client.PutRevision(ctx, key, []byte("same value"), lease.ID())
+		if err != nil || revision <= previous {
+			t.Fatalf("PutRevision = %d, %v, want revision > %d", revision, err, previous)
+		}
+		stored, found, err := client.Get(ctx, key)
+		if err != nil || !found || stored.ModRevision != revision || stored.LeaseID != lease.ID() {
+			t.Fatalf("stored value = %#v, %t, %v, want revision %d and lease %d", stored, found, err, revision, lease.ID())
+		}
+		previous = revision
+	}
+	canceledCtx, cancelCanceled := context.WithCancel(ctx)
+	cancelCanceled()
+	if revision, err := client.PutRevision(canceledCtx, key, []byte("canceled"), 0); revision != 0 || !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled PutRevision = %d, %v, want 0, context.Canceled", revision, err)
+	}
+}
 
 func TestClientCreateCompareAndSwapAndWatch(t *testing.T) {
 	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
@@ -313,5 +359,31 @@ func waitWatchResponse(t *testing.T, responses <-chan WatchResponse) WatchRespon
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for watch response")
 		return WatchResponse{}
+	}
+}
+
+func TestSnapshotCASRejectsDeletedRequiredMember(t *testing.T) {
+	endpoint := os.Getenv("TX_ETCD_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("设置 TX_ETCD_ENDPOINT 运行真实 etcd 测试")
+	}
+	client := newIntegrationClient(t, endpoint)
+	prefix := uniqueIntegrationKey(t, "member-guard") + "/"
+	t.Cleanup(func() { _, _ = client.raw.Delete(context.Background(), prefix, clientv3.WithPrefix()) })
+	ctx := t.Context()
+	member, ok, err := client.Create(ctx, prefix+"member", []byte("running"), 0)
+	if err != nil || !ok {
+		t.Fatal(err)
+	}
+	snapshot, err := client.Snapshot(ctx, prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Delete(ctx, member.Key); err != nil {
+		t.Fatal(err)
+	}
+	ok, err = client.CompareAndSwapWithinSnapshot(ctx, prefix, snapshot.Revision, prefix+"slot", 0, []byte("assigned"), member)
+	if err != nil || ok {
+		t.Fatalf("成员已删除仍写入归属: %t %v", ok, err)
 	}
 }

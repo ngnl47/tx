@@ -5,6 +5,7 @@ import (
 
 	"github.com/ngnl47/tx/internal/actorhost"
 	"github.com/ngnl47/tx/internal/actorrpc"
+	"github.com/ngnl47/tx/modules/discovery"
 	"github.com/ngnl47/tx/modules/rpc"
 	"google.golang.org/grpc"
 )
@@ -20,6 +21,9 @@ func (server *Server) startEntityTransport(local *actorhost.Runtime, url, namesp
 	// 先注册尚未监听的共享 gRPC，失败时不创建 NATS 连接。
 	if err := runtime.rpc.Register(func(registrar grpc.ServiceRegistrar) error {
 		receiver := actorrpc.NewDirectReceiver(instance, local)
+		receiver.RejectRoute = func(source string, observed discovery.SlotAssignment, err error) {
+			runtime.actorRPC.(*actorrpc.NATSTransport).RejectRoute(source, observed, err)
+		}
 		return rpc.RegisterDeliveryService(registrar, receiver, receiver)
 	}); err != nil {
 		return err

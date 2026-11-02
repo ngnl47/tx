@@ -105,14 +105,20 @@ func (c *Client) Probe(ctx context.Context) error {
 
 // Get 读取一个键及其修订版本。
 func (c *Client) Get(ctx context.Context, key string) (KeyValue, bool, error) {
+	value, found, _, err := c.GetAtRevision(ctx, key)
+	return value, found, err
+}
+
+// GetAtRevision 同时返回本次线性读的快照版本，区别于键最后一次修改的版本。
+func (c *Client) GetAtRevision(ctx context.Context, key string) (KeyValue, bool, int64, error) {
 	response, err := c.raw.Get(ctx, key)
 	if err != nil {
-		return KeyValue{}, false, err
+		return KeyValue{}, false, 0, err
 	}
 	if len(response.Kvs) == 0 {
-		return KeyValue{}, false, nil
+		return KeyValue{}, false, response.Header.Revision, nil
 	}
-	return copyKeyValue(response.Kvs[0]), true, nil
+	return copyKeyValue(response.Kvs[0]), true, response.Header.Revision, nil
 }
 
 // Snapshot 在同一修订版本读取指定前缀下的全部键值。
@@ -168,8 +174,17 @@ func (c *Client) WatchPrefix(ctx context.Context, prefix string, revision int64)
 
 // Put 写入一个键，并可选择把它绑定到已有租约。
 func (c *Client) Put(ctx context.Context, key string, value []byte, leaseID int64) error {
-	_, err := c.raw.Put(ctx, key, string(value), putOptions(leaseID)...)
+	_, err := c.PutRevision(ctx, key, value, leaseID)
 	return err
+}
+
+// PutRevision 写入一个键，并返回此次成功写入的修订版本。
+func (c *Client) PutRevision(ctx context.Context, key string, value []byte, leaseID int64) (int64, error) {
+	response, err := c.raw.Put(ctx, key, string(value), putOptions(leaseID)...)
+	if err != nil {
+		return 0, err
+	}
+	return response.Header.Revision, nil
 }
 
 // Delete 删除一个键。
@@ -245,13 +260,17 @@ func sendWatchError(ctx context.Context, responses chan<- WatchResponse, err err
 }
 
 // CompareAndSwapWithinSnapshot 写入无租约键，同时确认前缀内现存键没有快照之后的写入。
-// 删除不使检查失败；调用方仅可将它用于删除不会导致超额的计数准入。
+// 前缀比较不检测删除；required 中的键按各自非零 ModRevision 比较，同时防止更新和删除。
 // expectedRevision 为零表示创建，非零表示更新已有键。
-func (c *Client) CompareAndSwapWithinSnapshot(ctx context.Context, prefix string, revision int64, key string, expectedRevision int64, value []byte) (bool, error) {
-	response, err := c.raw.Txn(ctx).If(
+func (c *Client) CompareAndSwapWithinSnapshot(ctx context.Context, prefix string, revision int64, key string, expectedRevision int64, value []byte, required ...KeyValue) (bool, error) {
+	compares := []clientv3.Cmp{
 		clientv3.Compare(clientv3.ModRevision(prefix), "<", revision+1).WithPrefix(),
 		clientv3.Compare(clientv3.ModRevision(key), "=", expectedRevision),
-	).Then(clientv3.OpPut(key, string(value))).Commit()
+	}
+	for _, item := range required {
+		compares = append(compares, clientv3.Compare(clientv3.ModRevision(item.Key), "=", item.ModRevision))
+	}
+	response, err := c.raw.Txn(ctx).If(compares...).Then(clientv3.OpPut(key, string(value))).Commit()
 	if err != nil {
 		return false, err
 	}

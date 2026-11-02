@@ -115,14 +115,11 @@ func TestServiceContextRejectsUndeclaredCMod(t *testing.T) {
 }
 
 func TestServiceContextRequiresExplicitSessionIDCMod(t *testing.T) {
-	allocator, err := sessionid.New(17)
-	if err != nil {
-		t.Fatalf("new SessionID allocator: %v", err)
-	}
+	allocator := sessionIDAllocatorFake{}
 	kernel := &sessionIDContextKernel{allocator: allocator}
 	view := newContextView(kernel, "service \"login\"", []CModID{CModDiscovery})
 
-	err = func() (err error) {
+	err := func() (err error) {
 		defer framework.RecoverCapability(&err)
 		view.CModSessionID()
 		return nil
@@ -138,10 +135,7 @@ func TestServiceContextRequiresExplicitSessionIDCMod(t *testing.T) {
 }
 
 func TestServiceContextExposesDeclaredSessionIDCMod(t *testing.T) {
-	allocator, err := sessionid.New(17)
-	if err != nil {
-		t.Fatalf("new SessionID allocator: %v", err)
-	}
+	allocator := sessionIDAllocatorFake{}
 	view := newContextView(&sessionIDContextKernel{allocator: allocator}, "service \"login\"", []CModID{CModSessionID})
 
 	got := view.CModSessionID()
@@ -163,4 +157,11 @@ type serviceFunc func(context.Context) error
 
 func (service serviceFunc) Init(ctx context.Context) error {
 	return service(ctx)
+}
+
+// sessionIDAllocatorFake 仅用于能力声明与转发测试。
+type sessionIDAllocatorFake struct{}
+
+func (sessionIDAllocatorFake) AllocateSessionID(context.Context) (int64, error) {
+	return 17, nil
 }

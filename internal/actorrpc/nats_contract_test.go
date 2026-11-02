@@ -718,10 +718,14 @@ func (s *actorTestSlotReader) ResolveSlot(_ context.Context, id string) (discove
 	return *assignment, nil
 }
 
-func TestNATSPlacementChangeRejectsStaleRoute(t *testing.T) {
+func TestNATSOwnerDrainRejectsStaleRouteAndCompletesAcceptedWork(t *testing.T) {
 	url := natsURL(t)
 	ctx := actorTestContext(t)
 	ns := nats.NewInbox()
+	reader := &actorTestSlotReader{}
+	id := actorhost.Identity{Type: "role", ID: "1"}
+	first := discovery.SlotAssignment{SlotID: actorhost.PartitionSlot(id), RuntimeInstanceID: "a", Generation: 1}
+	reader.current.Store(&first)
 	started := make(chan struct{})
 	release := make(chan struct{})
 	unblock := sync.OnceFunc(func() { close(release) })
@@ -733,32 +737,22 @@ func TestNATSPlacementChangeRejectsStaleRoute(t *testing.T) {
 			return &actorpb.Result{MessageType: "old.done"}, nil
 		}}, nil
 	})
-	oldRuntime.SetPlacement(actorhost.NewPlacement("a", map[string][]string{"role": {"a"}}))
+	oldRuntime.BindSlots("a", reader, nil)
 	newRuntime := echoRuntime()
-	newRuntime.SetPlacement(actorhost.NewPlacement("b", map[string][]string{"role": {"a"}}))
+	newRuntime.BindSlots("b", reader, nil)
 	a := peer(t, url, ns, "a", oldRuntime)
 	b := peer(t, url, ns, "b", newRuntime)
 	caller := peer(t, url, ns, "caller", echoRuntime())
-	id := actorhost.Identity{Type: "role", ID: "1"}
-	oldTarget := actorhost.Target{Instance: "a", Identity: id}
+	oldTarget := actorhost.Target{Instance: "a", Identity: id, SlotID: first.SlotID, Generation: first.Generation}
 	d := &actorpb.Delivery{MessageType: "test"}
 	completed := make(chan error, 1)
 	go func() { _, err := caller.Call(ctx, oldTarget, d); completed <- err }()
 	signal(t, ctx, started)
-	next := actorhost.NewPlacement("a", map[string][]string{"role": {"b"}})
-	oldRuntime.SetPlacement(next)
-	newRuntime.SetPlacement(actorhost.NewPlacement("b", map[string][]string{"role": {"b"}}))
-	if _, err := caller.Call(ctx, oldTarget, d); !errors.Is(err, actorhost.ErrNotOwner) || errors.Is(err, actorhost.ErrActivationDenied) {
+	oldRuntime.BeginDrain()
+	if _, err := caller.Call(ctx, oldTarget, d); !errors.Is(err, actorhost.ErrDraining) || !actorhost.IsRouteRejection(err) || errors.Is(err, actorhost.ErrActivationDenied) {
 		t.Fatalf("旧路由应重新解析而非业务死信: %v", err)
 	}
-	target, err := next.Target(id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = caller.Call(ctx, target, d); err != nil {
-		t.Fatal(err)
-	}
-	// 单机关闸不是跨进程交接屏障：新 owner 可响应时，旧请求仍未退出。
+	// 关闸拒绝新请求，但已接纳请求仍须完成，之后才允许更新归属。
 	select {
 	case <-completed:
 		t.Fatal("旧请求应仍在阻塞")
@@ -766,20 +760,29 @@ func TestNATSPlacementChangeRejectsStaleRoute(t *testing.T) {
 	}
 	unblock()
 	select {
-	case err = <-completed:
+	case err := <-completed:
 		if err != nil {
 			t.Fatal(err)
 		}
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	if err = a.runtime.Drain(ctx); err != nil {
+	if err := a.runtime.Drain(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err = b.runtime.Drain(ctx); err != nil {
+	next := discovery.SlotAssignment{SlotID: first.SlotID, RuntimeInstanceID: "b", Generation: 2}
+	if err := discovery.ValidateSlotPromotion(first, next); err != nil {
 		t.Fatal(err)
 	}
-	if err = caller.runtime.Drain(ctx); err != nil {
+	reader.current.Store(&next)
+	target := actorhost.Target{Instance: next.RuntimeInstanceID, Identity: id, SlotID: next.SlotID, Generation: next.Generation}
+	if _, err := caller.Call(ctx, target, d); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.runtime.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := caller.runtime.Drain(ctx); err != nil {
 		t.Fatal(err)
 	}
 }

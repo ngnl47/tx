@@ -197,11 +197,18 @@ func (access advancedAccess) Redis() txgoredis.ClientProvider {
 	return redisClientsAccess{storage: access.runtime.storage}
 }
 
-func (access advancedAccess) Slots() discovery.SlotStore {
+func (access advancedAccess) Slots() discovery.SlotReader {
 	if access.runtime == nil {
 		return nil
 	}
 	return access.runtime.slots
+}
+
+func (access advancedAccess) LocalAssignments() discovery.LocalAssignments {
+	if access.runtime == nil {
+		return nil
+	}
+	return access.runtime.localAssignments
 }
 
 type redisClientsAccess struct{ storage *storageRuntime }

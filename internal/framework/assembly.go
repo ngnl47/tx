@@ -22,8 +22,8 @@ func (server *Server) startControl(endpoint string) error {
 		return nil
 	}
 	var slots *slotPromoter
-	if server.runtime.slots != nil && server.runtime.directory != nil {
-		promoter, err := newSlotPromoter(server.runtime.slots, server.runtime.directory)
+	if server.discovery != nil && server.runtime.directory != nil {
+		promoter, err := newSlotPromoter(server.discovery.AuthoritativeSlots(), server.runtime.directory)
 		if err != nil {
 			return fmt.Errorf("framework: initialize slot control: %w", err)
 		}
@@ -71,6 +71,7 @@ func (server *Server) startDiscovery() error {
 	server.runtime.setInstance(discoveryRuntime.Instance())
 	server.runtime.directory = discoveryRuntime.Directory()
 	server.runtime.slots = discoveryRuntime.Slots()
+	server.runtime.localAssignments = discoveryRuntime.LocalAssignments()
 	if server.runtime.rpc != nil {
 		dialer, err := rpc.NewGRPCDialer(insecure.NewCredentials())
 		if err != nil {
