@@ -208,7 +208,7 @@ type CModContext interface {
 	RPC() txrpc.Access
 	Directory() discovery.Directory
 	Actor() txactor.Runtime
-	DirectActor() txactor.Caller
+	DirectActor() txactor.Teller
 	Transaction() txn.Executor
 	SessionIDs() sessionid.Allocator
 	BindTransactionCommitParticipant(txn.CommitParticipant) error

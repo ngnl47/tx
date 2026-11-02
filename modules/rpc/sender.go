@@ -24,12 +24,12 @@ var (
 	ErrSenderClosed            = errors.New("rpc: sender is closed")
 	ErrDeliveryRejected        = errors.New("rpc: delivery rejected")
 	ErrStreamCallUnsupported   = errors.New("rpc: stream call is unsupported by connection")
-	ErrStreamSendUnsupported   = errors.New("rpc: stream send is unsupported by connection")
+	ErrStreamTellUnsupported   = errors.New("rpc: stream tell is unsupported by connection")
 )
 
-// Connection 通过已经解析的 endpoint 发送消息。
+// Connection 通过已经解析的 endpoint 发送消息；TellAccepted 等待接收端回执，Call 等待结果。
 type Connection interface {
-	Deliver(context.Context, Delivery) error
+	TellAccepted(context.Context, Delivery) error
 	Call(context.Context, Delivery) (Result, error)
 	Close() error
 }
@@ -39,9 +39,9 @@ type StreamCallConnection interface {
 	CallStream(context.Context, Delivery) (Result, error)
 }
 
-// StreamSendConnection 将消息写入长流，不等待远端逐项响应。
-type StreamSendConnection interface {
-	SendStream(context.Context, Delivery) error
+// StreamTellConnection 将消息写入长流，不等待远端接纳回执或业务结果。
+type StreamTellConnection interface {
+	TellStream(context.Context, Delivery) error
 }
 
 // Dialer 建立到指定服务实例的连接。
@@ -91,7 +91,7 @@ type grpcConnection struct {
 	closed     bool
 }
 
-func (c *grpcConnection) Deliver(ctx context.Context, delivery Delivery) error {
+func (c *grpcConnection) TellAccepted(ctx context.Context, delivery Delivery) error {
 	request, err := deliveryToProto(delivery)
 	if err != nil {
 		return err
@@ -159,7 +159,7 @@ func (c *grpcConnection) CallStream(ctx context.Context, delivery Delivery) (Res
 	return c.streamRequest(ctx, delivery)
 }
 
-func (c *grpcConnection) SendStream(ctx context.Context, delivery Delivery) error {
+func (c *grpcConnection) TellStream(ctx context.Context, delivery Delivery) error {
 	request, err := deliveryToProto(delivery)
 	if err != nil {
 		return err
@@ -376,8 +376,8 @@ func NewSender(directory discovery.Directory, dialer Dialer) (*Sender, error) {
 	}, nil
 }
 
-// Send 解析消息路由并将消息发送到选中的 endpoint。
-func (s *Sender) Send(ctx context.Context, delivery Delivery) error {
+// TellAccepted 等待目标实例 Receiver 返回接收回执，不承诺持久化或后续业务完成。
+func (s *Sender) TellAccepted(ctx context.Context, delivery Delivery) error {
 	if s == nil {
 		return ErrSenderClosed
 	}
@@ -392,7 +392,7 @@ func (s *Sender) Send(ctx context.Context, delivery Delivery) error {
 	if err != nil {
 		return err
 	}
-	return connection.Deliver(ctx, delivery)
+	return connection.TellAccepted(ctx, delivery)
 }
 
 // Call 解析消息路由并将消息发送到选中的 endpoint，等待远端返回同步结果。
@@ -437,8 +437,8 @@ func (s *Sender) CallStream(ctx context.Context, delivery Delivery) (Result, err
 	return stream.CallStream(ctx, delivery)
 }
 
-// SendStream 将消息写入目标实例的 CallStream，不等待远端逐项响应。
-func (s *Sender) SendStream(ctx context.Context, delivery Delivery) error {
+// TellStream 将消息写入目标实例的 CallStream，不等待远端接纳回执或业务结果。
+func (s *Sender) TellStream(ctx context.Context, delivery Delivery) error {
 	if s == nil {
 		return ErrSenderClosed
 	}
@@ -453,11 +453,11 @@ func (s *Sender) SendStream(ctx context.Context, delivery Delivery) error {
 	if err != nil {
 		return err
 	}
-	stream, ok := connection.(StreamSendConnection)
+	stream, ok := connection.(StreamTellConnection)
 	if !ok {
-		return ErrStreamSendUnsupported
+		return ErrStreamTellUnsupported
 	}
-	return stream.SendStream(ctx, delivery)
+	return stream.TellStream(ctx, delivery)
 }
 
 // Close 关闭全部缓存的实例连接。

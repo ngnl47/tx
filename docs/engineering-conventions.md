@@ -17,8 +17,11 @@
 ## EC-02 模块入口与资源归属
 
 - 业务模块获取统一为 modules.Role()/Bag()/Rank() 等进程固定入口；模块可以有配置缓存等状态，单例不保证分布式唯一性，也不等于向 Actor 投递消息。
-- Handler 按 Actor 匿名内嵌业务片段、整组绑定一次，不保存当前玩家或请求状态。模块之间经公开薄入口调用，内部实现仅由对应薄入口使用。
+- Handler 按 Actor 匿名内嵌业务片段、整组绑定一次，不保存当前玩家或请求状态；Handler 通过模块公开入口使用业务能力。
+- 独立业务模块通过公开薄入口协作，同进程子服务可以显式复用这些入口。同一业务聚合内部的组件可以经明确接口或导出方法单向组合，方法和规则保留在所属实体或组件中；不得绕过状态访问、并发与生命周期边界，不以 internal 包之间存在 import 本身判定违规。
 - CMod 显式声明，启动绑定一次；资源型模块必须能随启动重建和关闭，不用永久 sync.Once 固定旧 Provider。跨子服务模块复用不转移 Sender、订阅或存储连接所有权。
+- Bee/Ant 各自门面和 L4 注册适配的独立实现遵循[审计标准的复用边界](architecture_audit_standard.md#剃刀原则与复用边界)，不因当前代码相同要求合并；这不改变底层资源的唯一所有者。
+- 常规框架能力通过受限接口隔离资源管理权；明确开放的原生高级句柄遵循其调用约定。Mongo 官方句柄可取得共享 Client，但调用方不得关闭它；不为隐藏驱动管理方法重新包装整套查询接口。
 - World、Room 的创建、加载和销毁由应用模块管理，不强制绑定 Actor 生命周期；模块可以按业务身份持有对象，不能把多个实体合并为单个全局对象。直接调用模块仍须遵守实体访问边界，不能替代 Actor 邮箱或 Procedure。
 
 依据：[启动绑定](runtime-access.md#启动绑定)、[txgame 装配](https://github.com/ngnl47/txgame/blob/master/docs/runtime.md#模块装配与统一访问)、[SLG 装配](https://github.com/ngnl47/txgameslg/blob/main/docs/design.md#业务模块与共享-handler)。
@@ -100,6 +103,7 @@
 - tx 管理通用放置查询、缓存和槽位 owner；项目解析业务分组。客户端 RouteKey、Actor Type/ID、SlotID、物理 InstanceID 各有职责，不用业务 ID 替代实例身份。
 - 同槽只保证归属实例，不共享邮箱或状态。Ready 只表示 Actor 通信入口初始化完成，仍须等待工厂及全部初始化/激活回调成功；World、Room 的业务可用性由应用判断。等待取消不撤销已经开始的加载，不自动重派或重投。
 - Actor 的 Call、Tell、TellAccepted、CallFuture 及可靠任务按各自确认语义检查；同实例本地邮箱、跨实例 Core NATS、JetStream 持久任务不能混为一种保证。发送成功不普遍代表远端业务成功。
+- RPC 发送能力及其封装沿用 Call、CallFuture、Tell、TellAccepted 关键词；传输细节可用 CallStream / TellStream 表达，不另造 Enqueue 一类业务调用名。生成的业务方法保留业务名称，通过 GoDoc 标明模式及等待边界。接收分派、邮箱操作、Procedure Submit、事件及可靠任务发布按各自职责命名，不冒充 RPC 语义。
 - UpSeq 止于 Agent 当前连接，上行不确认/重放；下行 Ack 用于邮箱裁剪。业务请求关联标识不承担传输排序、去重或全局完成顺序。
 
 依据：[会话与投递设计](design.md)、[Actor 生命周期](service-actor-lifecycle.md)、[通用放置](actor-placement.md)。

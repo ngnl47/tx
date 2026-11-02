@@ -33,7 +33,7 @@ type runtime struct {
 	storage             *storageRuntime
 	rpc                 *txrpc.Host
 	actor               txactor.Runtime
-	actorDirect         txactor.Caller
+	actorDirect         txactor.Teller
 	rpcSender           *txrpc.Sender
 	entities            *actorhost.Runtime
 	actorRPC            actorTransport

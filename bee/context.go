@@ -91,8 +91,8 @@ type Context interface {
 	CModActor() txactor.Runtime
 	// CModTaskQueue 返回持久任务发布入口。
 	CModTaskQueue() tasks.Publisher
-	// CModActorDirect 返回共享归属下的 gRPC 实体调用入口，供 Agent 等直连适配使用。
-	CModActorDirect() txactor.Caller
+	// CModActorDirect 返回共享归属下的 gRPC 实体投递入口，供 Agent 等直连适配使用。
+	CModActorDirect() txactor.Teller
 }
 
 type frameworkContext interface {
@@ -106,7 +106,7 @@ type frameworkContext interface {
 	RPC() txrpc.Access
 	Directory() discovery.Directory
 	Actor() txactor.Runtime
-	DirectActor() txactor.Caller
+	DirectActor() txactor.Teller
 	SessionIDs() sessionid.Allocator
 	HasCMod(framework.CModID) bool
 	Advanced() framework.Advanced
@@ -352,7 +352,7 @@ func (view *contextView) ownerName() string {
 	return view.owner
 }
 
-func (view *contextView) CModActorDirect() txactor.Caller {
+func (view *contextView) CModActorDirect() txactor.Teller {
 	view.require(CModActor)
 	value := view.kernel.DirectActor()
 	if value == nil {

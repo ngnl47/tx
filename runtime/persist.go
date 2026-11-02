@@ -35,6 +35,11 @@ func Create[S storage.ChangeStore](ctx context.Context, value storage.StoreProvi
 		if !active {
 			return txn.ErrInactive
 		}
+		if _, shared := value.(entitycache.Described); shared {
+			if _, err := EntityCache(ctx); err != nil {
+				return err
+			}
+		}
 		return txn.Create(ctx, value)
 	}
 	if _, shared := value.(entitycache.Described); shared {

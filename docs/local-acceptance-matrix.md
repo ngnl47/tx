@@ -2,6 +2,45 @@
 
 本页以现行契约组织验收，不重复维护测试实现。框架异常边界在 tx 定向测试中构造，两组应用使用已有真实集群入口验证接入；不向业务 Handler 增加故障开关。历史报告只证明对应构建，本轮结果单独记录。
 
+## 2026-11-02 RPC 调用命名统一
+
+延续上一批工作区，统一发送侧命名：Agent 使用 `actor.Teller.Tell`；低层 gRPC 使用 `TellStream` 和等待接收回执的 `TellAccepted`。`Messenger` 嵌入同一个 Teller，不新增业务调用模式。传输、线协议、路由、流控、排水、错误及重投边界保持不变；接收侧 Deliver/SubmitStream、普通邮箱和 Procedure 不机械改名。两组应用和文档同步；txgen 模板及生成 GoDoc 已满足调用模式说明，无需重新生成。
+
+增强现有 `TestTellStreamReturnsBeforeAdmissionWithoutPerItemResponse`：服务端暂不接纳首条消息，发送端三条单向投递仍能返回；解除阻塞后核对三条顺序和零逐项回执。`TestDirectStreamTellPreservesMailboxOrderAndDrain` 继续覆盖邮箱有序及已接纳工作的排水。
+
+| 验证 | 结果 | 本地日志 |
+| --- | --- | --- |
+| tx `go test ./...` | 通过 | `/private/tmp/tx-tell-naming-full-local-20261102.log` |
+| txgame/server `go test ./...` | 通过 | `/private/tmp/txgame-tell-naming-full-local-20261102.log` |
+| txgameslg/server `go test ./...` | 通过 | `/private/tmp/txgameslg-tell-naming-full-local-20261102.log` |
+| tx `go test -race ./modules/agent ./internal/actorrpc ./internal/framework ./modules/rpc ./bee ./ant` | 通过 | `/private/tmp/tx-tell-naming-race-20261102.log` |
+| tx `go vet ./...` | 通过 | `/private/tmp/tx-tell-naming-vet-20261102.log` |
+
+初次默认沙箱运行因禁止 loopback 监听失败，放行本地监听后按原入口重新执行通过；不能将首轮失败计为通过。未显式启用外部依赖集成测试，未跑云压测或整轮集群。三仓差异检查及独立契约 review 无待修项；本轮未提交。
+
+## 2026-11-02 能力契约与懒装配收敛
+
+基线为 tx `6e57e4e`、txgame `569f7e2`、txgameslg `cf72bd1`，保留本轮之前已有的模块组合与 Mongo 原生句柄文档修改。Bee/Ant 门面政策及 L4 注册适配允许独立实现，不抽取公共政策层；其底层连接和运行时仍由既有装配内核统一管理。
+
+本批修复标准宿主首次共享 Create 未初始化 EntityCache/WriteBack 关联的缺口，Agent 公开直连接入改为单向投递能力（现名 `actor.Teller`），并复用 Discovery 已装配的 SlotOwnership。`DispatchTimeout` 只覆盖目标解析后的投递，默认期限仍为 5 秒；正常 Actor Call 和底层同步直连协议不变。低层 RoutedCaller 的可选传输能力检查保留，不为 Agent 接口收敛强制所有同步调用器实现 Tell。
+
+先复现再修复：新增 `TestRuntimeFirstCreateInitializesEntityCache` 通过正式 Ant 宿主取得 Provider，没有预先查询缓存或手动绑定 resolver；修改前提交、回滚两支都报 `writeback: creation cache is not bound: RuntimeTest`，修改后首次创建、提交可见性、回滚无残留及写回均通过。Agent 复用既有分发测试，移除测试桩 Call 后旧接口因缺少 Call 编译失败，改为最小单向投递接口后通过，不新增协议或测试专用生产入口。
+
+环境为 macOS/amd64、Go 1.27.0，使用 `GOTOOLCHAIN=local`、`GOCACHE=/private/tmp/tx-codex-go-build`：
+
+| 验证 | 结果 / 日志 |
+| --- | --- |
+| tx `go test ./...` | 通过；`/private/tmp/tx-capability-full-unrestricted-20261102.log` |
+| txgame/server `go test ./...` | 通过；`/private/tmp/txgame-capability-full-unrestricted-20261102.log` |
+| txgameslg/server `go test ./...` | 通过；`/private/tmp/txgameslg-capability-full-unrestricted-20261102.log` |
+| tx `go vet ./...` | 通过；`/private/tmp/tx-capability-vet-20261102.log` |
+| Agent、framework、actorrpc、discovery、Bee、Ant `go test -race -count=1` | 通过；`/private/tmp/tx-capability-race-20261102.log` |
+| 首次 Create 与既有创建/查询/回滚/删除/重建用例 `-race -count=1` | 通过；`/private/tmp/tx-capability-create-race-20261102.log` |
+
+首次全量运行因沙箱禁止本地 TCP/HTTP 监听失败，原始日志为上述三个全量日志去掉 `-unrestricted` 的版本；允许本地临时测试端口后重新运行通过，不修改测试规避监听。本轮未显式启用真实 Redis/Mongo/etcd/NATS 依赖，相关可选用例沿现有规则跳过；没有重新跑正式包集群、云压测或吞吐基准，不外推性能结论。生成器与客户端无变更，不重新生成协议。
+
+独立 ponytail-review/契约审查未发现本轮代码阻塞项，发现 API 文档继续描述旧的逐请求 10ms 轮询；已改为引用现行同服务池/槽位共享刷新契约。三仓 `git diff --check` 通过，本轮新增/修改行中的本地文档链接路径已核对。全部修改未提交。
+
 ## 2026-11-02 vet 告警收敛
 
 在上一批 Reader/元数据变更之上完成，仍未提交。先执行 `go vet ./...`，复现 5 条告警：MsgQ 发布时整值复制 protobuf 内部状态，Sender 夹具三个值接收器复制互斥锁，槽位夹具使用未具名字段。

@@ -8,14 +8,13 @@ import (
 	txactor "github.com/ngnl47/tx/modules/actor"
 )
 
-const defaultActorCallTimeout = 5 * time.Second
+const defaultActorDispatchTimeout = 5 * time.Second
 
 var (
-	ErrActorCallerNil           = errors.New("agent: actor caller is nil")
-	ErrActorEnqueuerNil         = errors.New("agent: actor enqueuer is unavailable")
-	ErrActorDispatchResolverNil = errors.New("agent: actor dispatch resolver is nil")
-	ErrActorTargetNil           = errors.New("agent: actor identity is empty")
-	ErrInvalidActorCallTimeout  = errors.New("agent: actor call timeout is invalid")
+	ErrActorTellerNil              = errors.New("agent: actor teller is nil")
+	ErrActorDispatchResolverNil    = errors.New("agent: actor dispatch resolver is nil")
+	ErrActorTargetNil              = errors.New("agent: actor identity is empty")
+	ErrInvalidActorDispatchTimeout = errors.New("agent: actor dispatch timeout is invalid")
 )
 
 // ActorDispatch 只包含业务身份与信封，物理归属由框架解析。
@@ -34,30 +33,29 @@ func (f ActorDispatchResolverFunc) ResolveActorDispatch(ctx context.Context, r D
 	return f(ctx, r)
 }
 
-// ActorDispatcherOptions 的 Caller 应使用 CModActorDirect 提供的 gRPC 入队视图。
+// ActorDispatcherOptions 的 Teller 应使用 CModActorDirect 提供的 gRPC 投递视图。
 type ActorDispatcherOptions struct {
-	Caller      txactor.Caller
-	Resolver    ActorDispatchResolver
-	CallTimeout time.Duration
+	// Teller 必须提供；投递成功只表示本地入队或远端写流，不表示远端邮箱接纳或业务完成。
+	Teller txactor.Teller
+	// Resolver 必须提供，用于解析业务身份和投递信封。
+	Resolver ActorDispatchResolver
+	// DispatchTimeout 仅限制身份解析后的投递；负数非法，零值使用默认 5 秒。
+	DispatchTimeout time.Duration
 }
 
 // NewActorDispatcher 将上行写入目标实例的流，不等待远端邮箱确认；业务下行由目标服务发布到 MsgQ。
 func NewActorDispatcher(o ActorDispatcherOptions) (Dispatcher, error) {
-	if o.Caller == nil {
-		return nil, ErrActorCallerNil
+	if o.Teller == nil {
+		return nil, ErrActorTellerNil
 	}
 	if o.Resolver == nil {
 		return nil, ErrActorDispatchResolverNil
 	}
-	enqueuer, ok := o.Caller.(txactor.Enqueuer)
-	if !ok {
-		return nil, ErrActorEnqueuerNil
+	if o.DispatchTimeout < 0 {
+		return nil, ErrInvalidActorDispatchTimeout
 	}
-	if o.CallTimeout < 0 {
-		return nil, ErrInvalidActorCallTimeout
-	}
-	if o.CallTimeout == 0 {
-		o.CallTimeout = defaultActorCallTimeout
+	if o.DispatchTimeout == 0 {
+		o.DispatchTimeout = defaultActorDispatchTimeout
 	}
 	return DispatchFunc(func(ctx context.Context, r DispatchRequest) error {
 		d, err := o.Resolver.ResolveActorDispatch(ctx, r)
@@ -69,8 +67,8 @@ func NewActorDispatcher(o ActorDispatcherOptions) (Dispatcher, error) {
 		}
 		d.Delivery.Identity = &r.Identity
 		d.Delivery.Origin = txactor.OriginClient
-		call, cancel := context.WithTimeout(ctx, o.CallTimeout)
+		dispatch, cancel := context.WithTimeout(ctx, o.DispatchTimeout)
 		defer cancel()
-		return enqueuer.Enqueue(call, d.Target, d.Delivery)
+		return o.Teller.Tell(dispatch, d.Target, d.Delivery)
 	}), nil
 }

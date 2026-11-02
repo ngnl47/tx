@@ -46,7 +46,7 @@ func (d *DirectTransport) invalidate(target actorhost.Target) {
 	}
 }
 
-func (d *DirectTransport) Enqueue(ctx context.Context, target actorhost.Target, delivery *actorpb.Delivery) error {
+func (d *DirectTransport) Tell(ctx context.Context, target actorhost.Target, delivery *actorpb.Delivery) error {
 	if err := ValidateRequest(ctx, target, false); err != nil {
 		return err
 	}
@@ -54,7 +54,7 @@ func (d *DirectTransport) Enqueue(ctx context.Context, target actorhost.Target, 
 	if err != nil {
 		return err
 	}
-	err = d.Sender.SendStream(ctx, rpc.Delivery{Route: rpc.InstanceRoute(target.Instance), MessageType: "actor.streamsubmit", Payload: data})
+	err = d.Sender.TellStream(ctx, rpc.Delivery{Route: rpc.InstanceRoute(target.Instance), MessageType: "actor.streamsubmit", Payload: data})
 	if err != nil && ctx.Err() == nil {
 		d.invalidate(target)
 	}

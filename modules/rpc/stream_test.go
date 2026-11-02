@@ -16,6 +16,8 @@ import (
 )
 
 type streamSubmitReceiver struct {
+	entered  chan struct{}
+	release  chan struct{}
 	mu       sync.Mutex
 	messages []string
 }
@@ -28,7 +30,15 @@ func (r *streamSubmitReceiver) CallStream(context.Context, Delivery) (Result, er
 	return Result{}, errors.New("不应调用 CallStream")
 }
 
-func (r *streamSubmitReceiver) SubmitStream(_ context.Context, delivery Delivery) error {
+func (r *streamSubmitReceiver) SubmitStream(ctx context.Context, delivery Delivery) error {
+	if delivery.MessageType == "one" {
+		close(r.entered)
+		select {
+		case <-r.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	r.mu.Lock()
 	r.messages = append(r.messages, delivery.MessageType)
 	r.mu.Unlock()
@@ -46,8 +56,8 @@ func (s *countStreamSends) SendMsg(message any) error {
 }
 
 // 无回执流项在发送端不等待服务端逐项响应，服务端仍按读取顺序入队。
-func TestSendStreamEnqueuesInOrderWithoutPerItemResponse(t *testing.T) {
-	receiver := &streamSubmitReceiver{}
+func TestTellStreamReturnsBeforeAdmissionWithoutPerItemResponse(t *testing.T) {
+	receiver := &streamSubmitReceiver{entered: make(chan struct{}), release: make(chan struct{}, 1)}
 	var sends atomic.Int32
 	host, err := NewHost("127.0.0.1:0", grpc.StreamInterceptor(func(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo, next grpc.StreamHandler) error {
 		if info.FullMethod == rpcpb.DeliveryService_CallStream_FullMethodName {
@@ -81,11 +91,39 @@ func TestSendStreamEnqueuesInOrderWithoutPerItemResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sender.Close()
-	for _, messageType := range []string{"one", "two", "three"} {
-		if err := sender.SendStream(context.Background(), Delivery{Route: InstanceRoute("game-a"), MessageType: messageType}); err != nil {
-			t.Fatalf("send %q: %v", messageType, err)
+	defer close(receiver.release)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	sent := make(chan error, 1)
+	go func() {
+		for _, messageType := range []string{"one", "two", "three"} {
+			if err := sender.TellStream(ctx, Delivery{Route: InstanceRoute("game-a"), MessageType: messageType}); err != nil {
+				sent <- err
+				return
+			}
 		}
+		sent <- nil
+	}()
+	select {
+	case <-receiver.entered:
+	case <-ctx.Done():
+		t.Fatal("首条消息未抵达接收端")
 	}
+	select {
+	case err := <-sent:
+		if err != nil {
+			t.Fatalf("TellStream: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("TellStream 等待了远端接纳")
+	}
+	receiver.mu.Lock()
+	admitted := len(receiver.messages)
+	receiver.mu.Unlock()
+	if admitted != 0 {
+		t.Fatalf("解除阻塞前已有 %d 条消息被接纳", admitted)
+	}
+	receiver.release <- struct{}{}
 	deadline := time.Now().Add(time.Second)
 	for {
 		receiver.mu.Lock()

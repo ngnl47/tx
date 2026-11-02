@@ -92,8 +92,8 @@ type Context interface {
 	CModActor() txactor.Runtime
 	// CModTaskQueue 返回持久任务发布入口。
 	CModTaskQueue() tasks.Publisher
-	// CModActorDirect 返回共享归属下的 gRPC 实体调用入口，供 Agent 等直连适配使用。
-	CModActorDirect() txactor.Caller
+	// CModActorDirect 返回共享归属下的 gRPC 实体投递入口，供 Agent 等直连适配使用。
+	CModActorDirect() txactor.Teller
 	// CModSlots 返回 Discovery CMod 管理的只读槽位归属，不提供创建或晋升。
 	CModSlots() discovery.SlotReader
 	// CModLocalAssignments 认领本次运行实例的槽位，复用 Discovery 的权威存储与缓存。
@@ -115,7 +115,7 @@ type frameworkContext interface {
 	RPC() txrpc.Access
 	Directory() discovery.Directory
 	Actor() txactor.Runtime
-	DirectActor() txactor.Caller
+	DirectActor() txactor.Teller
 	SessionIDs() sessionid.Allocator
 	Transaction() txn.Executor
 	HasCMod(framework.CModID) bool
@@ -401,7 +401,7 @@ func (view *contextView) ownerName() string {
 	return view.owner
 }
 
-func (view *contextView) CModActorDirect() txactor.Caller {
+func (view *contextView) CModActorDirect() txactor.Teller {
 	view.require(CModActor)
 	value := view.kernel.DirectActor()
 	if value == nil {

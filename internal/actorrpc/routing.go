@@ -13,8 +13,9 @@ type Caller interface {
 	Call(context.Context, actorhost.Target, *actorpb.Delivery) (*actorpb.Result, error)
 }
 
-type Enqueuer interface {
-	Enqueue(context.Context, actorhost.Target, *actorpb.Delivery) error
+// Teller 是单向投递契约，不等待远端接纳或业务结果。
+type Teller interface {
+	Tell(context.Context, actorhost.Target, *actorpb.Delivery) error
 }
 
 // RoutedCaller 为同一实体路由绑定指定传输；上行装配直连，实体间 RPC 装配 NATS。
@@ -32,7 +33,7 @@ func (c *RoutedCaller) Call(ctx context.Context, id actorhost.Identity, delivery
 	return c.Transport.Call(ctx, target, delivery)
 }
 
-func (c *RoutedCaller) Enqueue(ctx context.Context, id actorhost.Identity, delivery *actorpb.Delivery) error {
+func (c *RoutedCaller) Tell(ctx context.Context, id actorhost.Identity, delivery *actorpb.Delivery) error {
 	target, err := c.Router.Resolve(ctx, id)
 	if err != nil {
 		return err
@@ -40,9 +41,9 @@ func (c *RoutedCaller) Enqueue(ctx context.Context, id actorhost.Identity, deliv
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	enqueuer, ok := c.Transport.(Enqueuer)
+	teller, ok := c.Transport.(Teller)
 	if !ok {
-		return errors.New("actor: direct transport does not support mailbox enqueue")
+		return errors.New("actor: direct transport does not support Tell")
 	}
-	return enqueuer.Enqueue(ctx, target, delivery)
+	return teller.Tell(ctx, target, delivery)
 }

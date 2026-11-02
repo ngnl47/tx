@@ -34,7 +34,7 @@ type handoffTransport struct {
 func (s *handoffTransport) Call(context.Context, actorhost.Target, *actorpb.Delivery) (*actorpb.Result, error) {
 	return nil, errors.New("测试不应走同步 Call")
 }
-func (s *handoffTransport) Enqueue(_ context.Context, target actorhost.Target, _ *actorpb.Delivery) error {
+func (s *handoffTransport) Tell(_ context.Context, target actorhost.Target, _ *actorpb.Delivery) error {
 	s.targets <- target
 	return s.err
 }
@@ -65,13 +65,13 @@ func handoffCaller(t *testing.T, transportErr error) (*RoutedCaller, *handoffRea
 	return caller, reader, transport
 }
 
-func TestEnqueueWaitsForHandoffBeforeFirstSend(t *testing.T) {
+func TestTellWaitsForHandoffBeforeFirstSend(t *testing.T) {
 	caller, reader, transport := handoffCaller(t, nil)
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	id := actorhost.Identity{Type: "role", ID: "i:1"}
 	done := make(chan error, 1)
-	go func() { done <- caller.Enqueue(ctx, id, &actorpb.Delivery{}) }()
+	go func() { done <- caller.Tell(ctx, id, &actorpb.Delivery{}) }()
 	select {
 	case <-reader.read:
 	case <-ctx.Done():
@@ -99,13 +99,13 @@ func TestEnqueueWaitsForHandoffBeforeFirstSend(t *testing.T) {
 	}
 }
 
-func TestEnqueueHandoffWaitIsBoundedAndDoesNotRetryTransport(t *testing.T) {
+func TestTellHandoffWaitIsBoundedAndDoesNotRetryTransport(t *testing.T) {
 	t.Run("取消等待不发送", func(t *testing.T) {
 		caller, reader, transport := handoffCaller(t, nil)
 		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 		defer cancel()
 		done := make(chan error, 1)
-		go func() { done <- caller.Enqueue(ctx, actorhost.Identity{Type: "role", ID: "i:1"}, &actorpb.Delivery{}) }()
+		go func() { done <- caller.Tell(ctx, actorhost.Identity{Type: "role", ID: "i:1"}, &actorpb.Delivery{}) }()
 		<-reader.read
 		cancel()
 		select {
@@ -122,7 +122,7 @@ func TestEnqueueHandoffWaitIsBoundedAndDoesNotRetryTransport(t *testing.T) {
 	})
 	t.Run("无期限仍立即返回", func(t *testing.T) {
 		caller, _, transport := handoffCaller(t, nil)
-		if err := caller.Enqueue(context.Background(), actorhost.Identity{Type: "role", ID: "i:1"}, &actorpb.Delivery{}); !errors.Is(err, discovery.ErrSlotRuntimeUnavailable) {
+		if err := caller.Tell(context.Background(), actorhost.Identity{Type: "role", ID: "i:1"}, &actorpb.Delivery{}); !errors.Is(err, discovery.ErrSlotRuntimeUnavailable) {
 			t.Fatal(err)
 		}
 		if len(transport.targets) != 0 {
@@ -134,7 +134,7 @@ func TestEnqueueHandoffWaitIsBoundedAndDoesNotRetryTransport(t *testing.T) {
 		reader.assignment.Store(&discovery.SlotAssignment{SlotID: "slot", RuntimeInstanceID: "new", Generation: 2})
 		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 		defer cancel()
-		if err := caller.Enqueue(ctx, actorhost.Identity{Type: "role", ID: "i:1"}, &actorpb.Delivery{}); !errors.Is(err, discovery.ErrSlotRuntimeUnavailable) {
+		if err := caller.Tell(ctx, actorhost.Identity{Type: "role", ID: "i:1"}, &actorpb.Delivery{}); !errors.Is(err, discovery.ErrSlotRuntimeUnavailable) {
 			t.Fatal(err)
 		}
 		if len(transport.targets) != 1 {

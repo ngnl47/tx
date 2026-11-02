@@ -154,6 +154,8 @@ tx/
 
 Bee 面向无状态业务装配，Ant 额外提供 Procedure 等有状态能力。应用显式声明 CMod，生成数据的存储注解只选择读写模式，不推导应用应启用的全部能力。
 
+Bee/Ant 各自的能力门面属于 L3，`bee/services/`、`ant/services/` 注册适配属于 L4。这些面向应用的政策与适配允许独立实现，以隔离后续差异化变更；共有公开 API 仍保持同名同义。独立实现不扩展为重复创建底层连接或运行时，资源所有权仍归共享装配内核。
+
 `GeneratedData(data.DefaultTypeRegistry())` 只登记类型元数据，供 Mongo 索引和 Fusion 变更解码等能力使用；通用接口是 `meta.TypeRegistry`。它不绑定 Reader，不启用存储 CMod，也不在关闭时清理生成包全局变量。默认 `Find/Snapshot` 从显式 ctx 的 Provider 取得存储能力；独立工具需要自选资源时使用显式 `Load*(ctx, reader, ...)`。
 
 | CMod | 强依赖 | 说明 |
@@ -372,7 +374,10 @@ tx/
 | TellAccepted | 本地邮箱接纳 | 当前连接的 NATS 服务端确认 | 不等持久化或业务完成 |
 | CallFuture | 本地邮箱并返回 Future | NATS 请求结果协议 | Await 等待业务结果 |
 | Call | 同一结果协议 | 同一结果协议 | 同步等待结果 |
-| Agent Enqueue | 本地直连适配或 gRPC | gRPC 上行长流 | 本地传输提交，不等远端邮箱确认 |
+
+Agent 使用 `CModActorDirect().Tell`，属于上述 Tell 语义的 gRPC 直连实现，不是第五种业务调用。`actor.Teller` 是 `Messenger` 中 Tell 的最小接口；写流成功不表示远端邮箱接纳，发送锁和流控仍可能等待。业务服务之间的普通 Tell 保持本地邮箱 / Core NATS 路径。
+
+低层 gRPC 发送入口使用 `TellStream` 表示长流单向写入，`TellAccepted` 表示等待接收端 `Receiver.Deliver` 返回接纳回执；`Call` / `CallStream` 等待业务结果。接纳回执确认哪一层由接收适配明确，不能据此推断持久化或业务成功。原生 gRPC 线协议、接收侧分派和邮箱操作保留技术命名，不机械套用四种发送模式。
 
 ```text
 内部生成方法 → Identity + Delivery → 归属解析

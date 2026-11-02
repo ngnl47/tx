@@ -101,10 +101,7 @@ func (server *Server) startActor() error {
 		return err
 	}
 	resolver.BindRefresh(lifecycle.TaskView(r.lifecycle))
-	ownership, err := discovery.NewSlotOwnership(server.discovery.AuthoritativeSlots(), r.directory)
-	if err != nil {
-		return err
-	}
+	ownership := server.discovery.Ownership()
 	transport := r.actorRPC.(*actorrpc.NATSTransport)
 	router := &actorrpc.EntityRouter{Resolver: resolver, Ownership: ownership, Control: transport, SlotID: mapping,
 		ExplicitAssignment: func(name string) bool { return r.actorCatalog[name].actorType.RequiresExplicitAssignment() },

@@ -21,12 +21,12 @@ func (*contradictoryDeliveryClient) Deliver(context.Context, *rpcpb.Delivery, ..
 
 func TestGRPCConnectionRejectsContradictoryDeliveryAck(t *testing.T) {
 	connection := &grpcConnection{client: &contradictoryDeliveryClient{}}
-	err := connection.Deliver(context.Background(), Delivery{
+	err := connection.TellAccepted(context.Background(), Delivery{
 		Route:       ServiceRoute("game"),
 		MessageType: "role.save",
 	})
 	if !errors.Is(err, ErrDeliveryRejected) {
-		t.Fatalf("Deliver error = %v, want %v", err, ErrDeliveryRejected)
+		t.Fatalf("TellAccepted error = %v, want %v", err, ErrDeliveryRejected)
 	}
 }
 
@@ -174,7 +174,7 @@ type senderConnectionFake struct {
 	callCount int
 }
 
-func (*senderConnectionFake) Deliver(context.Context, Delivery) error {
+func (*senderConnectionFake) TellAccepted(context.Context, Delivery) error {
 	return nil
 }
 

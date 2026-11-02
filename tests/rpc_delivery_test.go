@@ -557,7 +557,7 @@ func newRPCDeliveryServiceClient(t *testing.T, receiver rpc.Receiver, callReceiv
 	return rpcpb.NewDeliveryServiceClient(conn)
 }
 
-func TestRPCSenderResolvesDirectoryAndDelivers(t *testing.T) {
+func TestRPCSenderTellAcceptedResolvesDirectoryAndReceivesAck(t *testing.T) {
 	listener := bufconn.Listen(1024 * 1024)
 	server := grpc.NewServer()
 	defer server.Stop()
@@ -598,7 +598,7 @@ func TestRPCSenderResolvesDirectoryAndDelivers(t *testing.T) {
 	defer sender.Close()
 
 	payload := []byte{0x81, 0xa2, 'h', 'p', 0x19, 0x63}
-	if err := sender.Send(context.Background(), rpc.Delivery{
+	if err := sender.TellAccepted(context.Background(), rpc.Delivery{
 		Route:       rpc.ServiceRoute("battle"),
 		MessageType: "Battle_Notify",
 		CommandHash: 8001,
@@ -708,7 +708,7 @@ func TestRPCSenderReusesEndpointConnection(t *testing.T) {
 	}
 
 	for range 2 {
-		if err := sender.Send(context.Background(), rpc.Delivery{
+		if err := sender.TellAccepted(context.Background(), rpc.Delivery{
 			Route:       rpc.ServiceRoute("battle"),
 			MessageType: "Battle_Notify",
 		}); err != nil {
@@ -745,7 +745,7 @@ type recordingConnection struct {
 	closeCalls int
 }
 
-func (c *recordingConnection) Deliver(_ context.Context, delivery rpc.Delivery) error {
+func (c *recordingConnection) TellAccepted(_ context.Context, delivery rpc.Delivery) error {
 	c.deliveries = append(c.deliveries, delivery)
 	return nil
 }

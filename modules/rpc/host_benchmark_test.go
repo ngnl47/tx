@@ -31,7 +31,7 @@ func BenchmarkDeliveryTransport(b *testing.B) {
 		sender := newLoopbackBenchmarkSender(b, receiver)
 		benchmarkContext, cancel := context.WithTimeout(b.Context(), 30*time.Second)
 		b.Cleanup(cancel)
-		if err := sender.Send(benchmarkContext, delivery); err != nil {
+		if err := sender.TellAccepted(benchmarkContext, delivery); err != nil {
 			b.Fatalf("预热 loopback gRPC 发送: %v", err)
 		}
 
@@ -125,7 +125,7 @@ func benchmarkSenderDeliverySerial(b *testing.B, sender *Sender, ctx context.Con
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		if err := sender.Send(ctx, delivery); err != nil {
+		if err := sender.TellAccepted(ctx, delivery); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -137,7 +137,7 @@ func benchmarkSenderDeliveryParallel(b *testing.B, sender *Sender, ctx context.C
 	b.ResetTimer()
 	b.RunParallel(func(parallel *testing.PB) {
 		for parallel.Next() {
-			if err := sender.Send(ctx, delivery); err != nil {
+			if err := sender.TellAccepted(ctx, delivery); err != nil {
 				b.Error(err)
 				return
 			}

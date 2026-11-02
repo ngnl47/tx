@@ -7,9 +7,9 @@ import (
 	"github.com/ngnl47/tx/modules/actor"
 )
 
-type actorCallerFunc func(context.Context, actor.Identity, actor.Delivery) (actor.Result, error)
+type actorTellerFunc func(context.Context, actor.Identity, actor.Delivery) error
 
-func (f actorCallerFunc) Call(c context.Context, id actor.Identity, d actor.Delivery) (actor.Result, error) {
+func (f actorTellerFunc) Tell(c context.Context, id actor.Identity, d actor.Delivery) error {
 	return f(c, id, d)
 }
 
@@ -20,11 +20,11 @@ func TestActorDispatcherBindsIdentityAndWritesStream(t *testing.T) {
 		Resolver: ActorDispatchResolverFunc(func(context.Context, DispatchRequest) (ActorDispatch, error) {
 			return ActorDispatch{Target: actor.Identity{Type: "role", ID: "i:42"}, Delivery: actor.Delivery{}}, nil
 		}),
-		Caller: actorCallerFunc(func(c context.Context, id actor.Identity, d actor.Delivery) (actor.Result, error) {
+		Teller: actorTellerFunc(func(c context.Context, id actor.Identity, d actor.Delivery) error {
 			if _, ok := c.Deadline(); !ok || d.Identity.RoleID != 42 || d.Origin != actor.OriginClient || id.ID != "i:42" {
 				t.Fatal("未绑定可信请求与期限")
 			}
-			return actor.Result{}, nil
+			return nil
 		}),
 	})
 	if err != nil {
@@ -34,9 +34,4 @@ func TestActorDispatcherBindsIdentityAndWritesStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-}
-
-func (f actorCallerFunc) Enqueue(c context.Context, id actor.Identity, d actor.Delivery) error {
-	_, err := f(c, id, d)
-	return err
 }

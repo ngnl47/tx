@@ -50,24 +50,15 @@ func (a actorAccess) Call(ctx context.Context, id txactor.Identity, d txactor.De
 	return f.Await(ctx)
 }
 
-// directActorAccess 仅供直连调用，不能通过这个视图切换到 NATS。
+// directActorAccess 仅供 Agent 直连投递，不能通过这个视图切换到 NATS。
 type directActorAccess struct{ caller *actorrpc.RoutedCaller }
 
-func (a directActorAccess) Call(ctx context.Context, id txactor.Identity, d txactor.Delivery) (txactor.Result, error) {
-	msg, err := d.ToProto()
-	if err != nil {
-		return txactor.Result{}, err
-	}
-	result, err := a.caller.Call(ctx, id, msg)
-	return actorresult.FromProto(result, err)
-}
-
-func (a directActorAccess) Enqueue(ctx context.Context, id txactor.Identity, d txactor.Delivery) error {
+func (a directActorAccess) Tell(ctx context.Context, id txactor.Identity, d txactor.Delivery) error {
 	msg, err := d.ToProto()
 	if err != nil {
 		return err
 	}
-	return a.caller.Enqueue(ctx, id, msg)
+	return a.caller.Tell(ctx, id, msg)
 }
 
 // 激活控制是低频请求，使用有限查询期限；不传递给异步业务初始化。

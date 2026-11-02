@@ -12,7 +12,7 @@ Bee/Ant 的 `Context.Runtime()` 返回可绑定的 `tx/runtime.Provider`。在 S
 
 同样，Redis 命令借用值不携带连接 Close 或配置方法，gRPC 协议注册回调只取得注册视图，不能通过类型断言取回共享服务器的 Stop/GracefulStop。原生命令、返回类型和生成协议登记方式不变。Mongo 高级查询的官方句柄仍遵守下文明确的调用方约定。
 
-普通只读使用 `data.SnapshotGD*(ctx, id)`。启用共享缓存时，完整 `data.FindGD*(ctx, id)` 与 `db.Create/Remove` 必须在 Procedure 内执行，修改交由 WriteBack；未启用缓存或显式排除的独占对象使用 Find 与 `db.Save/Create/Remove` 直接存取。所有入口显式传 ctx，不提供 Access、对象式 db.Find 或可选上下文包装。Handler 外的 actorcmd 统一创建十秒操作期限并在同步响应处理后释放，继承消息取消、已有期限与事务关联。Module 沿用 ctx，不重建根范围；纯内存规则不要求 ctx。活跃 Procedure 中 `db.Save/SaveChange` 拒绝直接持久化；`db.Create` 通过唯一缓存占位、事务回滚与 WriteBack 首次写入登记新根对象，未绑定缓存或受管写回则报错。结束后的事务 ctx 不得用于存储写入。 Actor 通信保留 cmd.Actors 的独立操作便捷入口和显式 At(ctx,id)，不创建新连接或改变 Call/Tell。
+普通只读使用 `data.SnapshotGD*(ctx, id)`。启用共享缓存时，完整 `data.FindGD*(ctx, id)` 与 `db.Create/Remove` 必须在 Procedure 内执行，修改交由 WriteBack；未启用缓存或显式排除的独占对象使用 Find 与 `db.Save/Create/Remove` 直接存取。所有入口显式传 ctx，不提供 Access、对象式 db.Find 或可选上下文包装。Handler 外的 actorcmd 统一创建十秒操作期限并在同步响应处理后释放，继承消息取消、已有期限与事务关联。Module 沿用 ctx，不重建根范围；纯内存规则不要求 ctx。活跃 Procedure 中 `db.Save/SaveChange` 拒绝直接持久化；`db.Create` 通过唯一缓存占位、事务回滚与 WriteBack 首次写入登记新根对象。标准宿主的首次共享 Create 与查询复用同一 EntityCache 懒初始化入口，不要求业务先查询或预热；缺少 Provider 或受管写回仍报错，低层 txn/writeback SPI 仍由组合者显式装配。结束后的事务 ctx 不得用于存储写入。 Actor 通信保留 cmd.Actors 的独立操作便捷入口和显式 At(ctx,id)，不创建新连接或改变 Call/Tell。
 
 模块可以保存资源与自己拥有的配置缓存、查询索引，不保存当前玩家、请求上下文或事务，不增加逐请求 Service 包装。单例获取和测试清理由项目管理，不能推导出跨进程状态唯一性。
 
@@ -81,7 +81,9 @@ EntityCache 使用 Otter 选择软容量候选；使用中、创建中、删除�
   -> 官方 Find / options / Cursor.Decode
 ```
 
-高级查询直接使用官方 BSON、排序、投影、聚合与游标 API。取得句柄后，操作和错误由官方驱动处理，不再经过 tx 健康闸门，也不自动加入 Procedure、EntityCache 或 WriteBack。Mongo 原生读取看不到尚未落盘的缓存修改；原生写入不刷新缓存，不能用于旁路修改正在受管的同一实体。连接由宿主统一关闭，业务不得调用共享 `Client.Disconnect`。
+高级查询直接使用官方 BSON、排序、投影、聚合与游标 API。取得句柄后，操作和错误由官方驱动处理，不再经过 tx 健康闸门，也不自动加入 Procedure、EntityCache 或 WriteBack。Mongo 原生读取看不到尚未落盘的缓存修改；原生写入不刷新缓存，不能用于旁路修改正在受管的同一实体。
+
+这里的薄封装只负责资源定位、能力检查和集合选择，不代理 Mongo 查询命令。官方句柄可以取得共享 Client；连接仍由宿主统一关闭，业务不得调用 `Client.Disconnect`。这是原生高级入口的调用约定，不是类型系统对管理方法的完全隔离，不为隐藏这些方法增加另一套查询接口。
 
 GD 原生解码使用 BSON 标签，必须为每条文档创建新对象，再按需取得 `Store()`；不要复用已跟踪修改的 GD 作为 Decode 目标。该路径不附加生成 Load 的字段加载标记，也不初始化缺失 map；投影结果宜使用专用查询结构，不得当作完整 GD 保存。`uint64` map 键可以使用完整无符号范围，BSON 数值本身仍受官方驱动与 BSON int64 范围约束。
 

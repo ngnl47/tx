@@ -130,7 +130,7 @@ func TestDirectStreamMultiplexesCallsWithoutBatching(t *testing.T) {
 }
 
 // 单向流按接收顺序入邮箱；排水等待已接收工作，关闸后不再执行新消息。
-func TestDirectStreamEnqueuePreservesMailboxOrderAndDrain(t *testing.T) {
+func TestDirectStreamTellPreservesMailboxOrderAndDrain(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	release := make(chan struct{})
@@ -199,8 +199,8 @@ func TestDirectStreamEnqueuePreservesMailboxOrderAndDrain(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := transport.Enqueue(ctx, actorhost.Target{Instance: "game-a", Identity: txactor.Identity{Type: "role", ID: "i:42"}}, delivery); err != nil {
-			t.Fatalf("enqueue %d: %v", seq, err)
+		if err := transport.Tell(ctx, actorhost.Target{Instance: "game-a", Identity: txactor.Identity{Type: "role", ID: "i:42"}}, delivery); err != nil {
+			t.Fatalf("tell %d: %v", seq, err)
 		}
 		if seq == 1 {
 			select {
@@ -239,7 +239,7 @@ func TestDirectStreamEnqueuePreservesMailboxOrderAndDrain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := transport.Enqueue(ctx, actorhost.Target{Instance: "game-a", Identity: txactor.Identity{Type: "role", ID: "i:42"}}, delivery); err != nil {
+	if err := transport.Tell(ctx, actorhost.Target{Instance: "game-a", Identity: txactor.Identity{Type: "role", ID: "i:42"}}, delivery); err != nil {
 		t.Fatalf("单向流写入应保持无逐项回执: %v", err)
 	}
 	if _, err := transport.Call(ctx, actorhost.Target{Instance: "game-a", Identity: txactor.Identity{Type: "role", ID: "i:42"}}, delivery); !errors.Is(err, actorhost.ErrDraining) {

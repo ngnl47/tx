@@ -59,7 +59,7 @@ func TestOneWayRouteFeedbackDoesNotReplay(t *testing.T) {
 					sender := directSender(t, members)
 					sender.SourceInstance = "source"
 					sender.InvalidateRoute = source.InvalidateRoute
-					if err := sender.Enqueue(ctx, target, &actorpb.Delivery{MessageType: "read"}); err != nil {
+					if err := sender.Tell(ctx, target, &actorpb.Delivery{MessageType: "read"}); err != nil {
 						t.Fatal(err)
 					}
 				} else if err := source.Tell(ctx, target, &actorpb.Delivery{MessageType: "read"}); err != nil {

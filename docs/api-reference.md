@@ -886,9 +886,9 @@ handlers := func(runtime bee.Context) (txagent.IdentityResolver, txagent.Dispatc
             Claims:    trustedProjectClaims, // 项目认证后编码的不透明字节，不接受客户端自报权限。
         }, nil
     })
-    caller := runtime.CModActorDirect()
+    teller := runtime.CModActorDirect()
     dispatcher, err := txagent.NewActorDispatcher(txagent.ActorDispatcherOptions{
-        Caller: caller,
+        Teller: teller,
         Resolver:  projectActorResolver,
     })
     return identity, dispatcher, err
@@ -1211,7 +1211,7 @@ if err != nil {
 ```
 
 发送端由 `GRPCDialer` 与 `Sender` 组成。Dialer 必须显式传入 TLS 或 `insecure` 凭证；独立使用时不提供默认凭据；Bee/Ant 的共享内部客户端沿用现有私网明文配置。当前部署范围是本地调试或云私网组件服务，项目应显式使用 `insecure`，并通过 VPC、安全组、
-端口白名单和不暴露公网端口保护 RPC endpoint。`Sender.Send` 与 `Sender.Call` 都先校验 `Delivery`，只解析一次
+端口白名单和不暴露公网端口保护 RPC endpoint。`Sender.TellAccepted` 与 `Sender.Call` 都先校验 `Delivery`，只解析一次
 路由，然后按 endpoint 复用已建立连接；`ServiceRoute` 继续只从当前 `running` 副本里选择目标。服务进程关闭时必须
 调用 `Close`：
 
@@ -1226,7 +1226,7 @@ if err != nil {
 }
 defer sender.Close()
 
-err = sender.Send(ctx, rpc.Delivery{
+err = sender.TellAccepted(ctx, rpc.Delivery{
     Route:       rpc.ServiceRoute("battle"),
     MessageType: "Battle_Notify",
     CommandHash:   8001,
@@ -1242,7 +1242,9 @@ _ = result
 ```
 
 TLS/mTLS 的 yml 装配、证书加载和轮换不属于当前范围；未来引入时不改变 `Sender`、`Delivery` 或 `Result` 的业务调用。
-`Sender.Send` 会返回路由不可用、建连、传输或 Receiver 拒绝等错误，不会自动重试或静默丢弃消息；`Sender.Call`
+`Sender.TellStream` 只将消息写入共享长流，不等待远端逐项响应；`Sender.TellAccepted` 则等待远端 `Receiver.Deliver` 返回接纳回执。这两种入口均不是业务成功或持久化保证，不应互换等待边界。
+
+`Sender.TellAccepted` 会返回路由不可用、建连、传输或 Receiver 拒绝等错误，不会自动重试或静默丢弃消息；`Sender.Call`
 同样只发起一次远端调用，不设置隐藏默认 timeout，超时后是否已经产生业务副作用由上层按幂等语义自行判断。gRPC
 确认只有在 `Accepted=true` 且 `ErrorCode` 为空时才算成功；例如 `{Accepted: true, ErrorCode: "queue-full"}`
 属于矛盾响应，会返回 `rpc.ErrDeliveryRejected`，不能用成功位掩盖错误状态。本阶段只补齐通用同步 RPC 与 Agent 入口能力。
@@ -1545,7 +1547,7 @@ ID 的编码由项目统一约定，tx 不推断整数或业务分组。两个�
 
 ```go
 dispatcher, err := txagent.NewActorDispatcher(txagent.ActorDispatcherOptions{
-    Caller: runtime.CModActorDirect(),
+    Teller: runtime.CModActorDirect(),
     Resolver: txagent.ActorDispatchResolverFunc(func(ctx context.Context, request txagent.DispatchRequest) (txagent.ActorDispatch, error) {
         id, err := resolveProjectActor(ctx, request)
         return txagent.ActorDispatch{Target: id, Delivery: buildDelivery(request)}, err
@@ -1555,7 +1557,9 @@ dispatcher, err := txagent.NewActorDispatcher(txagent.ActorDispatcherOptions{
 
 Agent 校验可信会话和 Seq/Ack，Resolver 只解析业务身份；tx 统一查找归属并通过共享 gRPC 直达目标，不经 NATS 或 Game 中转。Game、SLGWorld、FightRoom 等业务下行均直接发布到 owner MsgQ，再由 Agent 拉取发送客户端。`msgq` 是会话邮箱，不是 Actor RPC 中继。
 
-`CModActorDirect().Enqueue` 在调用传输之前遇到 `discovery.ErrSlotRuntimeUnavailable` 时，若 Context 有 deadline，会每 10ms 重读路由，等待正常交接的归属更新；Agent 沿用已有默认 5 秒调用期限。同一连接的当前消息等待完成后才处理后续消息。正常路径不创建计时器；无 deadline 的调用仍立即返回路由错误。取消、期限耗尽或其他路由错误正常返回，不改派归属；一旦调用传输，任何发送错误都直接返回，不重投执行结果未知的业务。这不是滚动发布期间所有请求必达的承诺。
+`CModActorDirect()` 返回 `actor.Teller`，Agent 分发直接依赖该单向投递能力，不要求实现同步 Call，也不通过类型断言补齐接口。`ActorDispatcherOptions.DispatchTimeout` 控制目标解析后的 Tell 投递期限，零值使用默认 5 秒；目标解析沿用调用方 ctx。正常 Actor Call 及底层同步直连协议保持独立。
+
+`CModActorDirect().Tell` 在调用传输前复用 Discovery 的同服务池/槽位共享刷新，等待者可以独立取消，不为每条消息创建轮询任务。正常缓存命中不回源；无 deadline 且归属宿主不可用的调用仍立即失败。共享查询的独立期限、权威回源间隔及目录通知规则见[放置缓存与生命周期](actor-placement.md#缓存失败与生命周期)。同一连接的当前消息等待完成后才处理后续消息；刷新失败正常返回，不凭失联自动改派。一旦调用传输，任何发送错误都直接返回，不重投执行结果未知的业务。这不是滚动发布期间所有请求必达的承诺。
 
 关闸后不再接受新业务；已接受的加载、排队、执行和卸载工作继续完成，随后完成后台任务与最终持久化，成功后才释放运行时资源。成员离线不自动删除稳定 assignment；正常滚动发布使用 PrepareHandoff 确认收尾后逐槽 CAS，再停止旧实例。槽位与容量高级 SPI 保留在相应模块，业务不持有宿主关闭权。
 
@@ -3953,7 +3957,7 @@ Fusion 延迟发布入口只接受 `DelayedSave`，调用方不再填写恒为 `
 高级装配或测试替身只需要描述保存目标和到期时间：
 
 ```go
-err := queue.Enqueue(ctx, fusion.DelayedSave{
+err := queue.Tell(ctx, fusion.DelayedSave{
 	Type:     spec.Type.Ref,
 	Key:      key,
 	RunAfter: spec.Storage.DelaySave.Duration,
