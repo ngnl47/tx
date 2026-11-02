@@ -1,6 +1,15 @@
 # Procedure 精确锁注册表
 
-包结构：`modules/txn/lockey.go` 定义逻辑锁，`lock_table.go` 管理精确条目、取得释放和等待关系。公共声明与调用见 [Lockey](procedure-locks.md) 和 [Procedure](procedure-calls.md)。本篇只说明实现，不把注册表分片数量当业务并发上限。
+```text
+tx/
+└── modules/
+    └── txn/                   # [L2] Procedure 与事务锁运行时
+        ├── lockey.go          # 逻辑锁身份与排序
+        ├── lock_table.go      # 精确条目、取得/释放及等待队列
+        └── wait_graph.go      # 等待关系与死锁检测
+```
+
+公共声明与调用见 [Lockey](procedure-locks.md) 和 [Procedure](procedure-calls.md)。本篇只说明实现，不把注册表分片数量当业务并发上限。
 
 ## 事务精确 Key 锁注册表
 

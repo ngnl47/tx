@@ -27,7 +27,25 @@
 
 每次进程启动生成新的 `AppID-UUID` 形式 InstanceID，组合子服务共用，成员登记继续绑定租约。SessionID 由 Login 通过独立 etcd Put 的 revision 分配；它不编码运行身份，也不参与 Actor 槽位归属。正常关闭先完成排水、必要写回和逻辑槽位条件释放，再注销成员并 Revoke，最后关闭共享连接；租约失效仍不等于旧 owner 已停止写入。
 
-源码核对入口：`internal/framework/server.go`、`internal/framework/service_host.go`、`internal/actorhost/runtime.go`、`modules/actor/runtime.go`；示例见 txgameslg 的 `services/slgworld/{service,bootstrap,registration}.go`。
+源码核对入口：
+
+```text
+tx/
+├── internal/
+│   ├── framework/
+│   │   ├── server.go        # 进程启动、关闭与共享资源编排
+│   │   └── service_host.go  # 子服务阶段、准入与生命周期回调
+│   └── actorhost/
+│       └── runtime.go       # 本地 Actor 激活、邮箱与生命周期实现
+└── modules/actor/
+    └── runtime.go           # 公共消息调用与激活控制接口
+
+txgameslg/
+└── server/services/slgworld/
+    ├── service.go           # 服务装配、World 启动与最终保存
+    ├── bootstrap.go         # 认领指定槽位并加载业务 World
+    └── registration.go      # 声明服务依赖、Actor 类型与工厂
+```
 
 ## 子服务生命周期
 

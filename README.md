@@ -41,17 +41,23 @@
 ## 包结构
 
 ```text
-bee/、ant/          应用启动门面与能力声明
-runtime/            操作范围中的 Actor、存储、Procedure 访问
-modules/            Actor、Agent、MsgQ、Discovery、事务、缓存等组件
-etcd/、sessionid/   etcd 通用原语与独立 SessionID 分配器
-storage/            Redis / Mongo / Fusion 及文档能力
-meta/、change/      GD 元数据与字段级变更内核
-protocol/           命令哈希、路由键、身份与 BON
-component/、lifecycle/  依赖拓扑、准入与生命周期
-log/、metrics/      日志和 Prometheus 封装
-internal/           门面共用的装配、宿主和传输实现
-cmd/                运维工具与固定版本协议生成入口
+tx/
+├── bee/            # 无状态应用启动门面与能力声明
+├── ant/            # 有状态应用启动门面与能力声明
+├── runtime/        # 操作范围中的 Actor、存储、Procedure 访问
+├── modules/        # Actor、Agent、MsgQ、Discovery、事务、缓存等组件
+├── etcd/           # etcd 通用原语
+├── sessionid/      # 独立 SessionID 分配器
+├── storage/        # Redis / Mongo / Fusion 及文档能力
+├── meta/           # GD 元数据
+├── change/         # 字段级变更内核
+├── protocol/       # 命令哈希、路由键、身份与 BON
+├── component/      # 组件依赖拓扑
+├── lifecycle/      # 准入与生命周期
+├── log/            # 日志封装
+├── metrics/        # Prometheus 封装
+├── internal/       # 门面共用的装配、宿主和传输实现
+└── cmd/            # 运维工具与固定版本协议生成入口
 ```
 
 各模块的源码位置、输入输出、状态和流程见 [设计文档](docs/design.md#包结构与依赖方向)。应用不直接 import tx 的 internal 包。

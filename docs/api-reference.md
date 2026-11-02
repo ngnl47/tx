@@ -257,7 +257,23 @@ Requires: []bee.CModID{bee.CModActor, bee.CModDiscovery}
 
 启动时对选中服务的依赖取并集、递归展开并按 CModID 去重；同一进程只启动一份共享能力。列表书写顺序不是启动顺序，框架按依赖拓扑先启动前置能力，再执行服务 Factory/Start。缺失依赖、重复 CModID 或依赖环会报错。正常关闭先收尾服务，再反向排水和关闭 CMod，避免先释放仍被依赖的资源。
 
-依赖定义位于 `internal/framework/cmod_*.go`；`cmod_graph.go` 调用 `component.Resolve` 解析拓扑，`bee/context.go` 和 Ant 门面检查直接能力声明。修改内置关系时应同步本图与 `internal/framework/cmod_builtin_test.go` 中的依赖契约。
+源码入口如下，上图表达依赖关系，下树标明实现所属包：
+
+```text
+tx/
+├── internal/framework/
+│   ├── cmod_*.go             # 内置 CMod 定义、依赖声明与装配实现
+│   ├── cmod_graph.go         # 汇总服务选择并调用 component.Resolve
+│   └── cmod_builtin_test.go  # 内置 CMod 依赖契约测试
+├── component/
+│   └── graph.go              # 依赖闭包选择与拓扑排序
+├── bee/
+│   └── context.go            # Bee 门面检查直接能力声明
+└── ant/
+    └── context.go            # Ant 门面检查直接能力声明
+```
+
+修改内置关系时应同步本图与 `tx/internal/framework/cmod_builtin_test.go` 中的依赖契约。
 
 ### 服务组合示例
 

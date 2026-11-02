@@ -8,14 +8,20 @@ Actor 寻址与正常关闭归属的目标见 [专项实施计划](actor-routing
 
 ## 工程与运行单位
 
-| 工程 | 维护什么 | 不维护什么 |
-| --- | --- | --- |
-| tx | 通用运行时、存储适配、通信、Actor 放置与生命周期 | 固定游戏规则、账号/合服/赛季业务 |
-| txgen | GD/Store、统一 cmd 与调用器、配置导出代码 | 运行中的数据库、缓存、服务集群 |
-| txconfig | 策划 Excel 与配置组织规则 | 运行时合服状态、部署连接信息 |
-| txgame | Bee 无状态应用、Login/Game/Fightroom/Sched 示例 | tx 私有内部实现 |
-| txgameslg | Ant 有状态应用、共享实体与独占 World 示例 | 跨游戏通用的合服或世界规则 |
-| txclient / txclientslg | 客户端会话、生成协议、应用验收负载 | 服务端归属权威与业务存储 |
+以下工程在工作区中同级放置；树表示目录归属，不表示互相 import：
+
+```text
+workspace/
+├── tx/             # 通用运行时、存储、通信、Actor 放置与生命周期；不实现玩法
+├── txgen/          # GD/Store、cmd/调用器及配置生成；不承接运行中的存储和集群
+├── txconfig/       # 策划 Excel 与组织规则；不保存运行时合服状态或部署连接信息
+├── txgame/         # Bee 无状态应用，维护 Login/Game/Fightroom/Sched 业务及装配
+├── txclient/       # txgame 配套客户端：会话、生成协议、业务展示与验收负载
+├── txgameslg/      # Ant 有状态应用，维护共享实体、独占 World 及项目部署策略
+└── txclientslg/    # txgameslg 配套客户端；不引用另一组客户端的生成产物
+```
+
+两组应用不互相 import，也不访问 tx 私有实现；业务身份、合服、赛季和世界规则留在各自应用。客户端不维护服务端归属权威或业务存储。
 
 应用的 `gen/` 与 `server/` 是独立 Go module；根 `cmd/` 是外部运维入口，命令的 Go 实现位于 `server/cmd/`。框架不读取 YAML、环境变量或命令行，应用将它们转换成强类型配置。
 
@@ -35,13 +41,14 @@ Actor 寻址与正常关闭归属的目标见 [专项实施计划](actor-routing
 
 L0～L4 按职责划分，不对应五个目录。尤其 `storage/` 同时包含契约、后端适配和运行时，`modules/` 同时包含通用组件与标准服务；`internal/` 仅表示 Go 可见性。
 
-| 层级 | 职责 | 当前代表位置 |
-| --- | --- | --- |
-| L0 | 不拥有外部资源的数据、协议与纯计算契约 | `meta/`（含 `TypeRegistry`）、`change/`、`protocol/`、`storage/` 根包 |
-| L1 | 后端驱动和传输适配 | `etcd/`、`storage/redis/`、`storage/mongo/`、`storage/task/redis/` |
-| L2 | 可复用运行时及其接线，不规定项目服务如何组合 | `storage/runtime/`、`storage/fusion/`、Discovery、Actor、RPC、Tasks、Procedure、EntityCache、WriteBack，以及 `modules/agent/`、`modules/msgq/` 的通信与会话组件；`internal/actorhost/`、`internal/actorplacement/`、`internal/actorrpc/`、`internal/instanceconn/` |
-| L3 | 进程组合、CMod 依赖与资源所有权，以及执行期能力视图 | `bee/`、`ant/`、`internal/framework/`、`runtime.Provider` |
-| L4 | 基于通用能力实现的标准服务与接入适配 | `modules/agent/service/`、`modules/msgq/service/`，`bee/services/`、`ant/services/` 下注册适配；应用中的自定义服务 |
+```text
+职责分层（不是实际目录）
+├── L0  数据、协议与纯计算契约，不拥有外部资源
+├── L1  后端驱动和传输适配
+├── L2  可复用运行时及其接线，不规定项目服务如何组合
+├── L3  进程组合、CMod 依赖、资源所有权与执行期能力视图
+└── L4  标准服务及接入适配；应用自定义服务也位于这一使用层
+```
 
 `component/`、`lifecycle/`、`metrics/`、`log/` 是多层复用的横向机制。使用生命周期计数或指标并不获得进程资源的关闭权限；所有权仍由 L3 装配维护。项目配置、Handler 和业务 Module 位于应用工程，不进入 tx 的层级实现。
 
@@ -57,26 +64,58 @@ L1 适配 → L0 契约
 
 高层可以直接使用所需的低层公共契约，不为层级形式增加转发包装。同级组件允许按职责单向组合，例如 EntityCache 使用事务锁和写回安全判定；禁止循环依赖和反向取得宿主生命周期权限。公共包可以暴露私有内核的稳定类型，不能据此要求把全部 `internal/` 归到同一层。
 
-| 包 | 介绍与维护边界 |
-| --- | --- |
-| `meta/`、`anno/`、`astscan/` | 类型元数据及生成期注解解析；不连接外部存储 |
-| `change/` | FieldID、路径、操作、合并与 Store 输出所需内核 |
-| `protocol/`、`protocol/bon/` | 命令哈希、路由键、不透明身份和 BON 编码 |
-| `storage/` | RecordKey、读写/版本/删除能力及后端适配 |
-| `component/`、`lifecycle/` | 依赖图、准入、后台任务与关闭等待 |
-| `etcd/` | 客户端、租约、写入 revision、快照、Watch 与 CAS 通用原语 |
-| `sessionid/` | 每次独立写入取得 SessionID，借用写入器、不管理连接或成员租约 |
-| `modules/discovery/` | 服务目录、实例身份、槽位权威与受控交接 |
-| `modules/rpc/` | 共享 gRPC Host、路由和客户端 |
-| `modules/actor/` | 类型、投递、调用结果、激活控制等公共契约 |
-| `modules/agent/` | TCP/WebSocket 接入、认证适配和上行转发 |
-| `modules/msgq/` | 会话绑定、下行内存邮箱、发布与订阅流 |
-| `modules/tasks/`、`internal/taskqueue/` | JetStream 可靠任务的公开契约与消费适配 |
-| `modules/txn/` | Lockey、Procedure、Undo、同步和异步执行 |
-| `modules/entitycache/` | 同一应用的唯一实体对象、使用期、快照与回收 |
-| `modules/writeback/` | 事务提交后脏根登记、周期和最终持久化 |
-| `modules/control/`、`cmd/txctl/` | 状态查询、排水、槽位交接等运维入口 |
-| `metrics/`、`log/`、`util/` | 指标封装、日志与不绑定玩法的基础工具 |
+实际包结构如下，只展开职责边界与主要入口，不穷举文件：
+
+```text
+tx/
+├── meta/                 # [L0] 类型/字段/存储描述及 TypeRegistry
+├── anno/                 # 生成期注解契约，不连接外部存储
+├── astscan/              # Go 源码扫描与注解解析
+├── change/               # [L0] FieldID、路径、操作和 Store 变更合并
+├── protocol/             # [L0] CommandHash、RouteKey、不透明 Session 身份
+│   └── bon/              # BON 编解码
+├── storage/              # 根包 [L0]：RecordKey、读写/版本/删除契约
+│   ├── config/           # 存储配置结构与校验，不读取项目 YAML
+│   ├── redis/            # [L1] Redis 后端适配
+│   ├── mongo/            # [L1] Mongo 后端适配
+│   ├── task/             # Fusion 延迟落盘任务契约
+│   │   └── redis/        # [L1] 延迟任务 Redis 实现
+│   ├── runtime/          # [L2] 共享存储能力装配
+│   └── fusion/           # [L2] Redis 热写与延迟 Mongo 回写
+├── etcd/                 # [L1] 客户端、租约、revision、快照、Watch 和 CAS
+├── sessionid/            # 独立写入发号；借用写入器，不拥有连接或成员租约
+├── modules/              # 通用组件；service 子包另承接标准服务
+│   ├── discovery/        # [L2] 成员目录、槽位权威、归属缓存与正常交接
+│   ├── rpc/              # [L2] 共享 gRPC Host、路由及客户端
+│   ├── actor/            # [L2] Type、投递/调用、激活控制等公共入口
+│   ├── agent/            # [L2] TCP/WebSocket、认证适配和上行转发
+│   │   └── service/      # [L4] 标准 Agent 服务
+│   ├── msgq/             # [L2] 会话绑定、下行邮箱、发布与订阅流
+│   │   └── service/      # [L4] 标准 MsgQ 服务
+│   ├── tasks/            # [L2] 可靠任务公开契约
+│   ├── txn/              # [L2] Lockey、Procedure、Undo、同步/异步执行
+│   ├── entitycache/      # [L2] 唯一实体对象、使用期、快照与回收
+│   ├── writeback/        # [L2] 脏根登记、周期写回与最终持久化
+│   └── control/          # 状态查询、排水和槽位交接协议
+├── bee/                  # [L3] 无状态应用的 Builder、Server、CMod 声明
+│   └── services/         # [L4] Agent/MsgQ 注册适配
+├── ant/                  # [L3] 有状态应用装配，增加 Procedure 等能力
+│   └── services/         # [L4] Agent/MsgQ 注册适配
+├── runtime/              # [L3] Provider 与执行期能力，不持有第二套连接
+├── internal/             # 私有实现；不是单独一个层级
+│   ├── framework/        # [L3] CMod 依赖、进程装配、资源所有权与关闭编排
+│   ├── actorhost/        # [L2] 激活、顺序邮箱、容量、钝化与失败状态
+│   ├── actorplacement/   # [L2] 分组查询、本地/远端装配与缓存
+│   ├── actorrpc/         # [L2] Actor 直连与 NATS 适配
+│   ├── instanceconn/     # [L2] 实例连接和共享流
+│   └── taskqueue/        # [L2] JetStream 消费与完成语义适配
+├── component/            # 横向机制：依赖图与组件生命周期
+├── lifecycle/            # 横向机制：准入、工作计数与关闭等待
+├── metrics/              # 横向机制：Prometheus 指标封装
+├── log/                  # 横向机制：统一日志
+├── util/                 # 不绑定玩法的基础工具
+└── cmd/txctl/            # 控制面命令工具，不进入业务热路径
+```
 
 `internal/` 由公共门面接线，应用不直接依赖。基础数据包不反向引用 Actor、服务或应用生成包。生成代码依赖 tx，tx 不依赖 txgen 或某个游戏的 GD。
 
@@ -102,7 +141,16 @@ etcd 管实例发现、槽位和新 Session 发号；Redis 管会话绑定及项
 
 ## 启动、能力组合与执行上下文
 
-包结构：`bee/`、`ant/` 定义 Builder、Service、Config；`internal/framework/assembly.go`、`cmod_*.go`、`server.go` 负责装配；`runtime/` 暴露执行期能力。
+```text
+tx/
+├── bee/                    # [L3] Bee 的 Builder、Service、Config
+├── ant/                    # [L3] Ant 的 Builder、Service、Config
+├── internal/framework/     # [L3] 共享装配实现
+│   ├── assembly.go         # 连接发现、存储、事务等运行时
+│   ├── cmod_*.go           # CMod 依赖与能力装配
+│   └── server.go           # Server 启动与运行控制
+└── runtime/                # [L3] 执行期能力视图
+```
 
 Bee 面向无状态业务装配，Ant 额外提供 Procedure 等有状态能力。应用显式声明 CMod，生成数据的存储注解只选择读写模式，不推导应用应启用的全部能力。
 
@@ -152,7 +200,19 @@ Handler 边界：消息 Context → 有期限的操作 ctx
 
 ## 服务发现与 Actor 放置
 
-包结构：`modules/discovery/{runtime,directory,slot,ownership}.go` 管目录和权威归属；`internal/actorplacement/` 管分组查询缓存；`internal/framework/placement.go` 接线；`internal/actorhost/` 在加载前核验归属。
+```text
+tx/
+├── modules/discovery/      # [L2] 服务目录与槽位归属
+│   ├── runtime.go          # 成员租约、目录与槽位运行时
+│   ├── directory.go        # 服务实例目录
+│   ├── slot.go             # 槽位契约、路由与权威存储接口
+│   └── ownership.go        # 首次分配、加载前归属校验与正常交接
+└── internal/
+    ├── actorplacement/    # [L2] 分组查询与缓存
+    ├── framework/
+    │   └── placement.go   # [L3] 放置能力接线
+    └── actorhost/         # [L2] 在加载前执行归属核验
+```
 
 ### 运行身份与 SessionID
 
@@ -211,7 +271,7 @@ SLG 示例由应用把 OriginServerID 解析为 MainServerID，作为 Role、Leg
 
 槽位名由应用映射规则确定，框架保存 `SlotAssignment{SlotID, RuntimeInstanceID, Generation}`。登记槽位只建立路由归属，不创建通信 Actor，不加载业务数据。Ant 应用通过 `CModLocalAssignments().Claim(ctx, slotID, previousOwner)` 认领本实例槽位，不传目标 InstanceID 或 generation，不自连控制面。`modules/control` 的 `CreateSlot/PromoteSlot` 保留给外部管理工具；不由应用直接覆盖 etcd 键。
 
-包结构：`modules/discovery/local_assignments.go` 将认领绑定到当前运行身份，复用权威 SlotStore 的 CAS 与已有版本缓存合并。Runtime 的持久槽位依赖要求 `VersionedSlotReader`，保证成功后的回读具有 revision，不使用无版本回退。`Runtime.Slots()`、`CModSlots()` 和 `Advanced.Slots()` 只读本地目录；完整持久 SPI 由组合根通过 `AuthoritativeSlots()` 取得，不从缓存门面转换出写权限。
+`tx/modules/discovery/local_assignments.go` 将认领绑定到当前运行身份，复用权威 SlotStore 的 CAS 与已有版本缓存合并。Runtime 的持久槽位依赖要求 `VersionedSlotReader`，保证成功后的回读具有 revision，不使用无版本回退。`Runtime.Slots()`、`CModSlots()` 和 `Advanced.Slots()` 只读本地目录；完整持久 SPI 由组合根通过 `AuthoritativeSlots()` 取得，不从缓存门面转换出写权限。
 
 实例注册绑定存活租约，assignment 则持久保存在该租约之外。正常 Stop 成功收尾后将本实例归属改为空 owner 并递增代次；租约失效不释放，任何路径都不删除记录重置代次。新进程有新的 InstanceID，不能仅凭相同启动参数或槽位名继承旧身份。Generation 是应用层归属代数，etcd ModRevision 是并发写入比较版本，两者不等同于业务数据版本。
 
@@ -262,7 +322,11 @@ EtcdSlotStore 在创建和晋升时把目标成员状态与容量快照纳入同
 
 ## Actor 激活、邮箱与控制
 
-包结构：`modules/actor/` 的类型、MessageContext、控制与调用接口 是公共入口；`internal/actorhost/` 实现激活、容量、顺序邮箱、钝化和失败状态。
+```text
+tx/
+├── modules/actor/          # [L2] 类型、MessageContext、控制与调用的公共入口
+└── internal/actorhost/     # [L2] 激活、容量、顺序邮箱、钝化与失败状态
+```
 
 ```text
 普通投递 / EnsureActivation
@@ -290,7 +354,15 @@ EtcdSlotStore 在创建和晋升时把目标成员状态与容量快照纳入同
 
 ## RPC 与内部调用
 
-包结构：`modules/rpc/` 提供共享 gRPC Host/Sender；`internal/instanceconn/` 管实例流；`internal/actorrpc/` 适配直连与 NATS；`modules/actor/` 提供统一 Messenger。
+```text
+tx/
+├── modules/
+│   ├── rpc/                # [L2] 共享 gRPC Host / Sender
+│   └── actor/              # [L2] 统一 Messenger
+└── internal/
+    ├── instanceconn/       # [L2] 实例连接与共享流
+    └── actorrpc/           # [L2] Actor 直连与 NATS 适配
+```
 
 `CModRPC().Client(route)` 复用进程连接。生成 Client/Ref 是调用器，不是每个业务模块各建网络连接。`ClientConn` 是连接抽象，不是一条双向流；长流复用底层连接，业务语义由协议定义。
 
@@ -316,7 +388,16 @@ EtcdSlotStore 在创建和晋升时把目标成员状态与容量快照纳入同
 
 ## 客户端协议与 Agent
 
-包结构：`protocol/` 定义 CommandHash、RouteKey 和不透明 SessionIdentity；`modules/agent/` 实现连接、帧、分派；生成 DTO 和描述表在应用 `server/gen/cmd/`。
+```text
+workspace/
+├── tx/
+│   ├── protocol/           # [L0] CommandHash、RouteKey、不透明 SessionIdentity
+│   └── modules/agent/      # [L2] 连接、帧与分派
+├── txgame/
+│   └── server/gen/cmd/     # txgame 的生成 DTO 与描述表
+└── txgameslg/
+    └── server/gen/cmd/     # txgameslg 的生成 DTO 与描述表
+```
 
 命令标识是消息名的固定 32 位哈希，由 txgen 生成完整描述表并检查本次输入碰撞；不使用人工消息号池或服务号段。Agent 读取帧头哈希和路由键定位 Actor，不解析业务 BON；命令名不在 BON 正文重复传输。
 
@@ -342,7 +423,18 @@ UpSeq 不进入业务 Delivery、MessageContext 或 MsgQ。客户端不保存上
 
 ## MsgQ 下行邮箱与共享流
 
-包结构：`modules/msgq/{mailbox,session,role}.go` 管内存队列和身份；`session_redis.go`、`role_redis.go` 管短期归属；`mailbox_stream.go`、`publish_stream.go`、`sender.go` 管传输。
+```text
+tx/
+└── modules/msgq/           # [L2] 下行邮箱与会话组件
+    ├── mailbox.go         # 内存队列
+    ├── session.go         # Session 绑定与路由
+    ├── role.go            # Role 归属契约与路由
+    ├── session_redis.go   # Session 短期归属
+    ├── role_redis.go      # Role 短期归属
+    ├── mailbox_stream.go  # Agent 与 MsgQ 的下行共享流
+    ├── publish_stream.go  # 业务服务向 MsgQ 的发布流
+    └── sender.go          # 下行发送入口
+```
 
 MsgQ 是下行会话层，不是所有服务 RPC 的中转。Redis 保存 Session binding 和 Role owner，消息正文只驻留当前 MsgQ 内存；不承诺 MsgQ 崩溃后的未确认消息持久恢复。
 
@@ -371,7 +463,14 @@ Restore 必须命中原 Session 和 running owner，不跨 MsgQ 自动迁移。�
 
 ## 可靠任务
 
-包结构：`modules/tasks/` 定义 Publisher/Task；`internal/taskqueue/` 适配 JetStream；`internal/framework/cmod_tasks.go` 管消费与关闭时序。
+```text
+tx/
+├── modules/tasks/         # [L2] Publisher / Task 公共契约
+└── internal/
+    ├── taskqueue/         # [L2] JetStream 适配
+    └── framework/
+        └── cmod_tasks.go  # [L3] 任务消费与关闭时序
+```
 
 ```text
 业务发布 → JetStream 持久确认
@@ -386,7 +485,18 @@ Restore 必须命中原 Session 和 running owner，不跨 MsgQ 自动迁移。�
 
 ## 数据元数据与变更追踪
 
-包结构：`meta/` 定义类型/字段/存储描述；`change/` 定义路径、操作与合并；`storage/changes.go` 消费输出；生成的 GD/Store 属于应用。
+```text
+workspace/
+├── tx/
+│   ├── meta/              # [L0] 类型、字段与存储描述
+│   ├── change/            # [L0] 路径、操作与变更合并
+│   └── storage/
+│       └── changes.go     # 消费变更输出的公共写入入口
+├── txgame/
+│   └── server/gen/data/   # txgame 的生成 GD / Store
+└── txgameslg/
+    └── server/gen/data/   # txgameslg 的生成 GD / Store
+```
 
 ```text
 生成输入 GD + 注解 → txgen → GD、Store、TypeSpec
@@ -403,7 +513,16 @@ Set 写入零值，Replace 整体替换复杂值，Delete 删除路径/元素，
 
 ## 存储接口与 Redis、Mongo、Fusion
 
-包结构：`storage/` 按能力划分 Reader/Writer、条件创建/替换/删除；`storage/config/` 与路由表选择后端；`storage/redis/`、`storage/mongo/`、`storage/fusion/` 实现策略，`storage/task/` 支撑 Fusion 延迟任务。
+```text
+tx/
+└── storage/               # 根包 [L0]：Reader / Writer、条件创建/替换/删除契约
+    ├── config/            # 后端配置
+    ├── route_table.go     # 按路由选择后端
+    ├── redis/             # [L1] Redis 存储适配
+    ├── mongo/             # [L1] Mongo 存储适配
+    ├── fusion/            # [L2] Redis 热写与延迟 Mongo 回写
+    └── task/              # Fusion 延迟任务支持
+```
 
 生成的 `FindGD*(ctx, ...)` 从类型元数据选 Redis/Mongo/Fusion，普通业务不手选 Reader；显式 Load/Reader 用于基础设施或独占路径。RecordKey 保存完整记录身份，不等同于 Actor ID 或事务 Lockey。
 
@@ -429,7 +548,17 @@ Mongo 原生高级查询返回官方 Database/Collection，复用已连接路由
 
 ## 共享实体与独占实体
 
-包结构：`modules/entitycache/` 管条目、使用期和管理接口；`runtime/entity.go` 连接执行范围；生成的私有 Descriptor 与 Clone 在应用 data 包，不要求启动时逐 GD 登记。
+```text
+workspace/
+├── tx/
+│   ├── modules/entitycache/  # [L2] 条目、使用期与管理接口
+│   └── runtime/
+│       └── entity.go         # [L3] 连接执行范围
+└── txgameslg/
+    └── server/gen/data/      # 启用共享缓存后生成的私有 Descriptor 与 Clone
+```
+
+私有 Descriptor 与 Clone 属于应用生成包，不要求启动时逐 GD 登记。
 
 `data.entityCache` 是生成期选项；缓存启用时持久根须声明事务能力，少数独占根用 `@noEntityCache` 排除。txgame 默认无缓存，txgameslg 启用共享缓存，但 GDWorld/GDWorldBucket 独占排除。
 
@@ -453,7 +582,14 @@ EntityCache 是应用 Runtime 组件，不是独立 CMod，也不是分布式缓
 
 ### 观察与管理
 
-包结构：`modules/entitycache/management.go`、`release.go`；调用入口 `txruntime.EntityCache(ctx)`。
+```text
+tx/
+└── modules/entitycache/    # [L2] 缓存管理与安全回收
+    ├── management.go      # 管理接口与操作准入
+    └── release.go         # 回收与延迟重试
+```
+
+调用入口是 `txruntime.EntityCache(ctx)`。
 
 | API | 行为 |
 | --- | --- |
@@ -466,7 +602,16 @@ EntryRef 绑定驻留代次，旧引用不能作用于重新加载的对象。�
 
 ## Procedure、Lockey 与 WriteBack
 
-包结构：`modules/txn/` 维护事务、锁表、Undo、提交参与者、异步队列；`modules/writeback/` 接受脏根并持久化；`ant/cmod_procedure.go` 和 `internal/framework/procedure.go` 管装配与关闭。
+```text
+tx/
+├── modules/
+│   ├── txn/                # [L2] 事务、锁表、Undo、提交参与者与异步队列
+│   └── writeback/          # [L2] 脏根登记与持久化
+├── ant/
+│   └── cmod_procedure.go   # [L3] Procedure 能力声明与装配门面
+└── internal/framework/
+    └── procedure.go        # [L3] Procedure 装配与关闭
+```
 
 Lockey 表示一致性域，不依赖 GD 已加载。生成输入集中声明 `LockType` 枚举，GD 使用 `@transaction` 的 lock 注解引用名称；枚举值越大越先获取，同类别整数 ID 数值排序。多个 GD 可共享一个 RoleLock，但对象与写回登记仍独立。
 
@@ -511,7 +656,15 @@ WriteBack 将内存提交落到所选 Writer；Writer 为 Fusion 时还有 Redis
 
 ## 排水、正常交接与故障
 
-包结构：`lifecycle/` 管准入及工作计数；`internal/framework/{drain,shutdown,handoff}.go` 编排；`modules/control/` 提供外部请求。
+```text
+tx/
+├── lifecycle/             # 横向机制：准入与工作计数
+├── internal/framework/    # [L3] 关闭与交接编排
+│   ├── drain.go           # 排水协调
+│   ├── shutdown.go        # 关闭收尾
+│   └── handoff.go         # 正常交接准备
+└── modules/control/       # 外部控制请求协议
+```
 
 ```text
 关闭服务外部准入
@@ -535,7 +688,14 @@ StateDrained 仅代表相应入口排空，不可替代完整 PrepareHandoff 成
 
 ## 日志、指标与诊断
 
-包结构：`log/` 统一日志，`metrics/` 包装 Prometheus，`modules/control/` 暴露诊断控制协议，`storage/io_stats.go` 提供验收构建的存储统计。
+```text
+tx/
+├── log/                   # 横向机制：统一日志
+├── metrics/               # 横向机制：Prometheus 封装
+├── modules/control/       # 诊断控制协议
+└── storage/
+    └── io_stats.go        # 存储 I/O 统计结构，供验收构建使用
+```
 
 ```text
 框架模块事件 → tx metrics 注册/观测 → HTTP /metrics → Prometheus 抓取

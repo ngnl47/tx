@@ -1,6 +1,17 @@
 # 通用 Actor 放置
 
-包结构：`modules/actor` 提供 Type/Placement 契约，`internal/actorplacement` 管查询缓存，`internal/framework/placement.go` 负责自动装配，`modules/discovery` 保存稳定 assignment 并执行受控交接。目标服务提供分组策略，调用方不手动绑定目标业务依赖。
+```text
+tx/
+├── modules/
+│   ├── actor/                 # [L2] Type/Placement 公共契约
+│   └── discovery/             # [L2] 稳定 assignment 与受控交接
+└── internal/
+    ├── actorplacement/        # [L2] 分组查询与缓存
+    └── framework/
+        └── placement.go       # [L3] 自动装配本地/远端查询能力
+```
+
+目标服务提供分组策略，调用方不手动绑定目标业务依赖。
 
 本页描述现行能力。路由缓存修正和正常 Stop 后条件释放已接入；实现与验收进度见 [专项实施计划](actor-routing-lifecycle-plan.md)。实例失联、启动失败及收尾失败不等于已释放。
 

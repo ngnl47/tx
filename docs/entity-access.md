@@ -43,15 +43,41 @@ Snapshot 观察同一缓存中的最新状态，包括已提交未落盘的变�
 
 ## 职责与生成位置
 
-| 层 | 职责 |
-| --- | --- |
-| tx/modules/entitycache | 唯一对象、合并加载、使用期、共享访问准入与安全快照 |
-| tx/modules/txn、modules/writeback | 记录锁、Undo、创建/删除提交回滚、失败保留与最终写回 |
-| tx/runtime、storage | 操作范围绑定、存储选择、原生 Mongo 入口及存储适配 |
-| txgen | 根据输入生成类型化 Find/Snapshot、私有描述和深复制；校验受管根能力 |
-| 应用工程 | 显式组件装配、Procedure 业务边界、独立响应、World 独占执行与保存策略 |
+```text
+tx/
+├── modules/
+│   ├── entitycache/        # 唯一对象、合并加载、使用期、共享访问准入与安全快照
+│   ├── txn/                # Procedure、记录锁、Undo 与创建/删除的提交回滚
+│   └── writeback/          # 提交后待写登记、失败保留与最终写回
+├── runtime/                # 操作范围绑定、存储选择与原生 Mongo 入口
+└── storage/                # 存储契约及 Redis / Mongo / Fusion 适配
 
-产物继续放在 `server/gen/data`。原有 `GD*Store.go` 承载 Store/查询及私有实体描述，`entity_access.go` 提供包级接入辅助；复用现有类型描述和 Reader 选择，不公开逐 GD Cache/Descriptor 或手工登记清单。
+txgen/
+└── gen/
+    ├── render_data.go      # 校验受管根能力，按缓存选择规划生成文件
+    └── templates/          # 生成类型化 Find/Snapshot、私有描述与深复制
+
+txgame/
+├── gen/config.yml          # data.entityCache: false
+└── server/
+    ├── gen/data/
+    │   └── GD*Store.go     # Store 与直接存储查询
+    ├── internal/app/       # 显式组件装配
+    └── services/           # 业务修改、显式保存与独立响应
+
+txgameslg/
+├── gen/config.yml          # data.entityCache: true
+└── server/
+    ├── gen/data/
+    │   ├── GD*Store.go     # Store/查询；受管根另含私有实体描述
+    │   └── entity_access.go# 包级缓存接入辅助
+    ├── internal/app/       # 显式组件装配
+    └── services/
+        ├── slggame/        # Procedure 业务边界与独立响应
+        └── slgworld/       # World 独占执行与保存策略
+```
+
+两组应用的产物分别位于 `txgame/server/gen/data/` 与 `txgameslg/server/gen/data/`。只有启用 `data.entityCache` 且存在未被 `@noEntityCache` 排除的持久根时，才生成包级缓存接入辅助文件。当前产物为 `txgameslg/server/gen/data/entity_access.go`，txgame 未生成此文件。生成接口复用现有类型描述和 Reader 选择，不公开逐 GD Cache/Descriptor 或手工登记清单。
 
 ## 安全与性能边界
 

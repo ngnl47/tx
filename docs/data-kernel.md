@@ -2,7 +2,20 @@
 
 入口与模块关系见 [设计总览](design.md#数据元数据与变更追踪)，实际调用见 [API 参考](api-reference.md#变更追踪与同步遍历)。本篇说明生成器和运行时共同遵守的内部契约。共享对象的锁、快照与事务边界另见 [实体访问](runtime-access.md)。
 
-包结构：`meta/` 保存类型契约，`change/` 保存路径与操作，`anno/`、`astscan/` 提供生成期解析基础；生成的 GD/Store 属于应用 `server/gen/data/`，不写入 tx。
+```text
+workspace/
+├── tx/
+│   ├── meta/                 # [L0] 类型、字段与存储契约
+│   ├── change/               # [L0] 变更路径与操作
+│   ├── anno/                 # 生成期注解解析
+│   └── astscan/              # Go AST 扫描与注解归属
+├── txgame/
+│   └── server/gen/data/      # 无状态应用的 GD/Store 生成产物
+└── txgameslg/
+    └── server/gen/data/      # 有状态应用的 GD/Store 生成产物
+```
+
+生成的 GD/Store 留在各自应用，不写入 tx。
 
 ## 元数据与代码生成边界
 
