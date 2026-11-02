@@ -7,6 +7,7 @@ import (
 	"github.com/ngnl47/tx/lifecycle"
 	"github.com/ngnl47/tx/meta"
 	"github.com/ngnl47/tx/modules/entitycache"
+	"github.com/ngnl47/tx/modules/writeback"
 	txruntime "github.com/ngnl47/tx/runtime"
 )
 
@@ -34,6 +35,12 @@ func TestEntityCacheAccessDoesNotExposeOwner(t *testing.T) {
 		}
 		if _, ok := value.(interface{ CloseManagement(context.Context) error }); ok {
 			t.Error("业务缓存入口暴露了 CloseManagement")
+		}
+		if _, ok := value.(writeback.CreationCache); ok {
+			t.Error("业务缓存入口暴露了创建预留，允许绕过事务与写回登记")
+		}
+		if _, ok := value.(writeback.RemovalCache); ok {
+			t.Error("业务缓存入口暴露了删除预留，允许绕过事务与写回登记")
 		}
 	}
 }

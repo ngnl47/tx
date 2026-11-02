@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/ngnl47/tx/lifecycle"
 	"github.com/ngnl47/tx/modules/entitycache"
 	"github.com/ngnl47/tx/modules/txn"
 	"github.com/ngnl47/tx/modules/writeback"
@@ -24,6 +25,11 @@ func TestSubmitDetachesRequestScopeAndKeepsRuntime(t *testing.T) {
 	executor := txn.NewRuntime()
 	cache, err := entitycache.NewRuntime(entitycache.Config{}, nil)
 	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := lifecycle.NewWaitGroupContext(t.Context())
+	t.Cleanup(func() { tasks.Cancel(); tasks.Wait() })
+	if err := cache.Start(tasks); err != nil {
 		t.Fatal(err)
 	}
 	descriptor := &entitycache.Descriptor{Store: func(v any) storage.ChangeStore { return v.(*managedRoot).Store() }}

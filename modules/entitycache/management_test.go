@@ -22,7 +22,7 @@ func managementFixture(t *testing.T, release func(context.Context, any) (bool, e
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { r.cache.policy.StopAllGoroutines() })
+	startCacheForTest(t, r)
 	loads := 0
 	d := &Descriptor{TypeName: "Observed", Load: func(_ context.Context, key storage.RecordKey) (any, bool, error) {
 		loads++
@@ -250,7 +250,7 @@ func TestManagementTransitionalEntries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.cache.policy.StopAllGoroutines()
+	startCacheForTest(t, r)
 	entered, leave := make(chan struct{}), make(chan struct{})
 	d := &Descriptor{TypeName: "Observed", Load: func(context.Context, storage.RecordKey) (any, bool, error) {
 		close(entered)

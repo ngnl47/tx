@@ -126,11 +126,11 @@ func (server *Server) startTransaction() error {
 	return server.runtime.transaction.ConfigureAsync(config.Module.Async)
 }
 
-func startStorageHealth(root *lifecycle.WaitGroupContext, store *storageRuntime, config HealthConfig, backend txstorage.Backend) error {
-	if root == nil || store == nil {
+func startStorageHealth(tasks lifecycle.Tasks, store *storageRuntime, config HealthConfig, backend txstorage.Backend) error {
+	if tasks == nil || store == nil {
 		return errors.New("framework: storage health dependencies are not configured")
 	}
-	return root.Go(func(ctx context.Context) {
+	return tasks.Go(func(ctx context.Context) {
 		ticker := time.NewTicker(config.Interval)
 		defer ticker.Stop()
 		for {

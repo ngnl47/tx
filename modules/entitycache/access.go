@@ -3,8 +3,6 @@ package entitycache
 import (
 	"context"
 
-	"github.com/ngnl47/tx/modules/txn"
-	"github.com/ngnl47/tx/modules/writeback"
 	"github.com/ngnl47/tx/storage"
 )
 
@@ -20,14 +18,6 @@ func (a *Access) Find(ctx context.Context, descriptor *Descriptor, key storage.R
 
 func (a *Access) Snapshot(ctx context.Context, descriptor *Descriptor, key storage.RecordKey) (any, bool, error) {
 	return a.runtime.Snapshot(ctx, descriptor, key)
-}
-
-func (a *Access) ReserveCreate(ctx context.Context, value any) (txn.CreationReservation, error) {
-	return a.runtime.ReserveCreate(ctx, value)
-}
-
-func (a *Access) ReserveRemove(ctx context.Context, value any) (writeback.RemovalReservation, error) {
-	return a.runtime.ReserveRemove(ctx, value)
 }
 
 func (a *Access) Stats(ctx context.Context) (Stats, error) { return a.runtime.Stats(ctx) }

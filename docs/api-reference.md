@@ -1561,6 +1561,8 @@ Agent 校验可信会话和 Seq/Ack，Resolver 只解析业务身份；tx 统一
 
 `CModActorDirect().Tell` 在调用传输前复用 Discovery 的同服务池/槽位共享刷新，等待者可以独立取消，不为每条消息创建轮询任务。正常缓存命中不回源；无 deadline 且归属宿主不可用的调用仍立即失败。共享查询的独立期限、权威回源间隔及目录通知规则见[放置缓存与生命周期](actor-placement.md#缓存失败与生命周期)。同一连接的当前消息等待完成后才处理后续消息；刷新失败正常返回，不凭失联自动改派。一旦调用传输，任何发送错误都直接返回，不重投执行结果未知的业务。这不是滚动发布期间所有请求必达的承诺。
 
+gRPC 共享流的首次开流、发送权等待与实际 `Send` 均受操作期限约束。等待发送权时取消不影响当前发送者；实际 `Send` 因流控阻塞时，取消该共享流解除阻塞，等待发送退出后返回错误，不增加接收确认或自动重投。共享流内其他未完成项也可能失败；后续新请求可重新开流。同步 `CallStream` 在已写流、等待结果阶段超时，仍只发送对应项的取消控制消息，不主动关闭整条健康流。
+
 关闸后不再接受新业务；已接受的加载、排队、执行和卸载工作继续完成，随后完成后台任务与最终持久化，成功后才释放运行时资源。成员离线不自动删除稳定 assignment；正常滚动发布使用 PrepareHandoff 确认收尾后逐槽 CAS，再停止旧实例。槽位与容量高级 SPI 保留在相应模块，业务不持有宿主关闭权。
 
 #### 角色归属基础 API
@@ -3888,7 +3890,7 @@ role, exists, err := data.LoadGDRole(ctx, fusionStrategy, data.GDRoleRecordKey(4
 err = storage.Save(ctx, fusionStrategy, role.Store())
 ```
 
-业务侧应使用项目 facade，不传 adapter、context、Store 或变更流：
+业务侧使用项目 db 入口，显式传递操作 Context，不选择 adapter、Store 或变更流：
 
 ```go
 role.SetName("new-name")
@@ -3919,12 +3921,12 @@ Fusion 策略的当前保存路径：
 4. Redis 热写与本地登记完成后，`db.Save(ctx, role)` 返回 `nil`，Store 清理本轮变更。
 5. 后台分发器把唯一一条延迟保存任务写入 Redis delayed task backend。
 6. 发布失败时输出结构化 error 日志，并按有上限的指数退避持续重试；成功后移除本地 pending。
-7. 正常关闭时，服务入口和 Actor Delivery 邮箱先完成排空，CModProcedure 的 WriteBack 组件再最终保存内存 Store，Fusion CMod 随后限时发布全部本地 pending，最后才取消根 `WaitGroupContext`。
+7. 正常关闭时，服务入口和 Actor Delivery 邮箱先完成排空，CModProcedure 的 WriteBack 组件再最终保存内存 Store，Fusion CMod 随后限时发布全部本地 pending。完成后取消并等待所属 CMod 的后台工作退出，再关闭 Redis/Mongo；进程根取消不能替代组件自己的退出屏障。
 8. Scheduler 到期 claim 任务，StorageTaskHandler 获取记录锁后先读取 Mongo 文档版本，再读取 Redis 当前热文档，按该版本条件替换 Mongo，并原子递增版本；冲突或失败沿现有任务重试重新执行。
 9. Mongo 保存成功后，handler 仅在 `@v` 未变化时原子地把所有热数据键的 TTL 收敛为 `delayDelTime`；版本变化则重新排一条保存任务。
 10. 任务成功后通过 Lua complete 删除该任务在 Redis 队列中的状态。
 
-本地 pending 只保存根记录的 `TypeSpec + RecordKey`，不保存 GD、Store、变更文档或业务对象快照；同一角色连续保存一万次，在发布受阻期间仍只占一条根记录登记。它不设置需要业务估算的容量阈值。分发器由 `WaitGroupContext` 管理后台循环，但正常关闭不会直接依赖根取消来结束它：Fusion CMod 会先调用 `Drain`，只有 Redis 延迟任务队列确认接收后才删除 pending。排空达到 `runtime.lifecycle.drainTimeout` 后返回包含剩余 pending 数量的错误，`Server.Stop` 继续执行后续关闭并把错误返回给调用方，不会把超时伪装成成功。
+本地 pending 只保存根记录的 `TypeSpec + RecordKey`，不保存 GD、Store、变更文档或业务对象快照；同一角色连续保存一万次，在发布受阻期间仍只占一条根记录登记。它不设置需要业务估算的容量阈值。分发器与调度器登记到 Fusion CMod 的 Tasks；正常关闭先调用 `Drain`，只有 Redis 延迟任务队列确认接收后才删除 pending。排空达到 `runtime.lifecycle.drainTimeout` 后返回包含剩余 pending 数量的错误，`Server.Stop` 保留运行时及依赖供有限重试，不继续关闭存储，也不把超时伪装成成功。启动失败回滚同样先等待已启动的后台工作实际退出。
 
 Redis 热写与持久化任务发布不是分布式事务。当前设计优先保证业务调用语义明确：Redis 热写失败返回错误；Redis 已成功后，任务 backend 的短时故障由后台日志和重试处理，不让调用方因模糊错误重放业务。正常关闭会补发本地 pending；若进程恰好在热写成功、任务持久化前异常崩溃，或排空超时后仍被运维终止，本地 pending 仍会丢失。框架不为这个低概率窗口增加同槽索引、全槽扫描和额外 Redis I/O。外部日志系统应对 `fusion delay task publish failed` 和关闭返回错误告警，运维人员据此检查和修复集群状态。
 

@@ -21,6 +21,8 @@ tx/
 
 Type 使用 `WithPlacement(name)` 引用服务的 `ServiceSpec.Placements`。策略工厂在目标服务被选中且 CMod 就绪后执行；只启用消费者时不会构造目标数据库能力。应用解析业务身份并返回稳定 GroupID；tx 将服务池、策略名和分组 ID 编为槽位。同服务池跨 Type 同组共用实例归属，邮箱与状态仍独立。
 
+工厂取得的 `Tasks` 和 `Admission` 仅允许登记工作，不暴露取消、等待或关闭共享准入的权限；Placement 宿主持有任务与闸门，统一负责停止接纳和等待已接纳查询实际结束。
+
 ```text
 Identity → 本地 Identity→SlotID 缓存
   → 冷查询：同实例策略直调 / 共享 RPC 查询目标服务

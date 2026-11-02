@@ -17,7 +17,7 @@ func TestRuntimeSeparatesTypesAndRecordRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.cache.policy.StopAllGoroutines()
+	startCacheForTest(t, r)
 	loads := 0
 	d := &Descriptor{Load: func(context.Context, storage.RecordKey) (any, bool, error) {
 		loads++
@@ -39,7 +39,7 @@ func TestRuntimeSeparatesTypesAndRecordRoutes(t *testing.T) {
 			t.Fatalf("cache identity: loads=%d", loads)
 		}
 		r2, _ := NewRuntime(Config{MaximumSize: 16}, nil)
-		defer r2.cache.policy.StopAllGoroutines()
+		startCacheForTest(t, r2)
 		f, _, _ := r2.Find(ctx, d, storage.RecordKey{ID: int64(1), ShardKey: int64(1)})
 		if a == f {
 			t.Fatal("独立运行时错误共享对象")
@@ -61,7 +61,7 @@ func TestRemovalRetiresPolicyAndDeferredEntry(t *testing.T) {
 	d := &Descriptor{Load: func(context.Context, storage.RecordKey) (any, bool, error) { return &runtimeValue{id: 1}, true, nil }}
 	ctx, end := Begin(t.Context())
 	defer end()
-	if _, err = r.cache.Use(ctx, identity{d, storage.RecordKey{ID: int64(1)}}, func(*entity) error { return nil }); err != nil {
+	if _, err = r.cache.loadMissing(ctx, identity{d, storage.RecordKey{ID: int64(1)}}); err != nil {
 		t.Fatal(err)
 	}
 	id := identity{d, storage.RecordKey{ID: int64(1)}}
@@ -88,7 +88,7 @@ func (v *runtimeValue) StoreTarget() txn.StoreTarget {
 // 取消只结束等待意愿，不代表仍在执行的 Procedure 已归还对象。
 func TestRuntimeProcedureRetainsAfterCancellation(t *testing.T) {
 	r, _ := NewRuntime(Config{MaximumSize: 16}, nil)
-	defer r.cache.policy.StopAllGoroutines()
+	startCacheForTest(t, r)
 	d := &Descriptor{Load: func(context.Context, storage.RecordKey) (any, bool, error) { return &runtimeValue{id: 1}, true, nil }}
 	parent, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -126,8 +126,8 @@ func TestRuntimeProcedureRetainsAfterCancellation(t *testing.T) {
 func TestSnapshotCopyFailureReleasesUsage(t *testing.T) {
 	for _, panicCopy := range []bool{false, true} {
 		r, _ := NewRuntime(Config{MaximumSize: 16}, nil)
+		startCacheForTest(t, r)
 		func() {
-			defer r.cache.policy.StopAllGoroutines()
 			failure := errors.New("copy failed")
 			d := &Descriptor{Load: func(context.Context, storage.RecordKey) (any, bool, error) { return &runtimeValue{id: 1}, true, nil }, Clone: func(any) (any, error) {
 				if panicCopy {
@@ -166,7 +166,7 @@ func TestRuntimePreparesLockBeforePublishing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.cache.policy.StopAllGoroutines()
+	startCacheForTest(t, r)
 	d := &Descriptor{Load: func(context.Context, storage.RecordKey) (any, bool, error) {
 		return &lazyLockValue{runtimeValue: runtimeValue{id: 1}}, true, nil
 	}}

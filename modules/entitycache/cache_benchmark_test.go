@@ -60,12 +60,10 @@ func benchmarkCache(b *testing.B, idleTimeout time.Duration) *Cache[int64, *cach
 	if err != nil {
 		b.Fatalf("NewCache returned error: %v", err)
 	}
+	startCacheForTest(b, cache)
 	if exists, err := cache.Use(context.Background(), 47, func(*cachedValue) error { return nil }); err != nil || !exists {
 		b.Fatalf("prewarm Load returned exists=%v error=%v", exists, err)
 	}
-	b.Cleanup(func() {
-		cache.policy.StopAllGoroutines()
-	})
 	return cache
 }
 

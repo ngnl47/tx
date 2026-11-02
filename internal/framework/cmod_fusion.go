@@ -26,21 +26,21 @@ func (server *Server) fusionCMod() CMod {
 			}
 			return server.config.Runtime.Fusion.Validate(server.types)
 		},
-		start: func(CModContext) error {
+		start: func(c CModContext) error {
 			store := server.runtime.storage
 			if store == nil {
 				return errors.New("storage runtime is not configured")
 			}
-			if err := store.StartFusion(server.runtime.lifecycle, server.config.Runtime.storageOptions(), server.types); err != nil {
+			if err := store.StartFusion(c.Tasks(), server.config.Runtime.storageOptions(), server.types); err != nil {
 				return err
 			}
-			if err := store.StartDelayTaskDispatcher(server.runtime.lifecycle); err != nil {
+			if err := store.StartDelayTaskDispatcher(c.Tasks()); err != nil {
 				return err
 			}
 			if err := store.PrepareDelayScheduler(server.config.Runtime.storageOptions()); err != nil {
 				return err
 			}
-			return store.StartDelayScheduler(server.runtime.lifecycle)
+			return store.StartDelayScheduler(c.Tasks())
 		},
 		drain: func(ctx context.Context) error {
 			if server.runtime == nil || server.runtime.storage == nil {

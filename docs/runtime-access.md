@@ -69,6 +69,16 @@ WriteBack / 缓存回收
 
 EntityCache 使用 Otter 选择软容量候选；使用中、创建中、删除未完成、dirty 或 pending 的对象不会为满足容量被强制丢弃。缓存回收与 Actor 卸载独立，持久化收尾归现有 WriteBack 排水。框架不提供跨进程唯一对象、跨记录数据库原子提交或崩溃 WAL 保证。
 
+同键冷加载由宿主的 `Tasks` 合并托管，使用独立十秒 I/O 期限；任一调用者取消只结束自己的等待，不取消其他查询。加载上下文保留存储能力，屏蔽原 Procedure、实体使用期与请求取消；Loader 只读取存储，不加入调用者事务。超时后仍保留在途登记与加载占位，直到 Loader 实际退出，宿主才能关闭依赖；发现加载上下文已取消时丢弃迟到结果。创建预留中的存在性检查仍同步使用当前事务上下文，不走共享冷加载。
+
+```text
+调用 A / B -> 同键未命中 -> 共享一次宿主加载 -> 发布缓存对象
+调用 A 取消 -> A 结束等待                    -> B 取得使用权继续操作
+宿主关闭 / I/O 超时 -> 通知加载取消 -> 等待 Loader 实际退出 -> 清理占位与任务
+```
+
+正式宿主在发布缓存能力前完成 `Runtime.Start(tasks)`。独立装配者也须先 Start 再查询，并在释放存储资源前取消和等待所属 Tasks；缓存命中不增加后台任务或上下文包装。
+
 ## Mongo 原生查询
 
 `txruntime.MongoDatabase(ctx, route, routeValue)` 返回官方 `*mongo.Database`；`txruntime.MongoCollection(ctx, spec, routeValue)` 进一步从 GD 元数据选择集合。两者复用 CModMongoStorage 的连接与路由，不创建第二个客户端。Bee/Ant 的 `CModMongoStorage()` 同样提供 `MongoDatabase`，低层 `txmongo.Collection` 可按类型选择集合。

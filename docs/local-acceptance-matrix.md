@@ -2,6 +2,81 @@
 
 本页以现行契约组织验收，不重复维护测试实现。框架异常边界在 tx 定向测试中构造，两组应用使用已有真实集群入口验证接入；不向业务 Handler 增加故障开关。历史报告只证明对应构建，本轮结果单独记录。
 
+## 2026-11-02 剩余三项 P1 边界
+
+本批只修改 tx，保留此前 EntityCache 与 DelayQueue 等未提交工作。txgen、生成协议与两组应用业务实现不需要迁移。环境为 macOS/amd64、Go 1.27.0，构建缓存为 `/private/tmp/tx-delayqueue-go-cache`；没有启动云压测或整轮真实集群。
+
+先复现的三个入口与修复：
+
+- **内建 CMod 启动回滚**：真实 Fusion scheduler 领取既有任务后阻塞，后续 CMod 启动失败；旧接线未等 worker 就关闭存储。改用所属 CMod Tasks 后，超时保留连接，worker 实际退出后显式重试清理成功。测试使用官方 Redis/Mongo 客户端及真实 CMod、Host、Fusion 调用链，只以本地协议 fixture 替换数据库 I/O，不等同于真实数据库最终写回验收。红测为 `/private/tmp/tx-cmod-storage-red.log`，定向十轮及五轮 race 为 `tx-cmod-storage-repeat.log`、`tx-cmod-storage-race.log`。
+- **共享流操作取消**：旧实现不能中断发送锁等待、实际 Send 或首次开流；红测 `/private/tmp/tx-rpc-cancel-red-20261102.log`。修复覆盖 Tell/Call、健康流的等待取消、完成后迟到取消、并发开流等待与 Close；bufconn 使用真实 HTTP/2 小窗口、不消费服务端流，证实流控阻塞能按期限解除。发送后等待 Call 结果的逐项取消、Tell 无回执、原有顺序与断流不重投用例继续保留。
+- **Procedure 根回滚**：正式 Runtime.Call 普通错误曾在持锁且 active 时执行回调。修复后，错误和 panic 均在根清理后回调；子 savepoint 仍即时持锁回调。另补子回调 panic 不重复执行，及根回调 panic 不二次解绑后续事务记录器的异常边界。证据为 `/private/tmp/tx-rollback-red.log`、`tx-rollback-callback-red.log` 及本批后置审查补验日志。
+
+已完成的基础回归：
+
+| 验证 | 结果 / 本地日志 |
+| --- | --- |
+| tx `go test ./...` | 通过；`/private/tmp/tx-remaining-p1-final-all-20261102.log` |
+| txgame/server `go test ./...` | 通过；`/private/tmp/txgame-remaining-p1-final-all-20261102.log` |
+| txgameslg/server `go test ./...` | 通过；`/private/tmp/txgameslg-remaining-p1-final-all-20261102.log` |
+| rpc、actorrpc、agent、framework、txn、tests 六包 race | 通过；`/private/tmp/tx-remaining-p1-race-20261102.log` |
+| 新增流取消用例十轮 race | 通过；`/private/tmp/tx-rpc-cancel-race-20261102.log` |
+| 最终 RPC 整包三轮 race | 通过；`/private/tmp/tx-rpc-final-race-20261102.log` |
+| 根回调 panic 补验 | txn 整包及相关 tests race 通过；`/private/tmp/tx-rollback-reentry-package-race.log`、`tx-rollback-reentry-tests-race.log` |
+| tx `go vet ./...` | 通过；`/private/tmp/tx-remaining-p1-final-vet-20261102.log` |
+
+测试需回环端口的部分在授权的本机测试环境执行；外部依赖测试沿用原有显式启用条件，默认跳过不计为实际依赖验收。后置审查发现的根回调 panic 在旧实现下稳定导致后续事务修改不回滚（测试值为 2），修复后恢复为 0，保留原 panic 与 OnFinish；红测 `/private/tmp/tx-rollback-reentry-red.log`。补齐后独立 ponytail-review 复核无剩余必修项，`git diff --check` 通过。
+
+发送热路径对照使用 `GOMAXPROCS=4`、128 字节载荷、`-benchmem -benchtime=1s -count=3`；基线为 HEAD 原 Sender，实现差异之外输入一致：
+
+| 路径 | 修改前 ns/op | 最终 ns/op | 分配 |
+| --- | --- | --- | --- |
+| 无阻塞传输替身，仅观察 Sender | 183.6～186.5 | 423.4～435.8 | 均为 240 B/op、3 allocs/op |
+| 真实 gRPC bufconn 发送/接收 | 1260～1385 | 1482～1601 | 均为 19 allocs/op；1322～1338 B/op |
+
+日志为 `/private/tmp/tx-rpc-send-before-matched-20261102.log`、`tx-rpc-send-final-20261102.log`。每条共享流复用一个取消监视协程，正常逐消息发送不增加 goroutine 或取消回调分配；多出的可取消串行准入与状态核对有实测时间成本。此对照验证保护成本，不能当成真实网络、端到端吞吐或生产容量结论。未扩大到其他 MsgQ 专用流的统一重构。
+
+## 2026-11-02 业务本地 DelayQueue
+
+仅修改 tx 的 `util.DelayQueue`、对应测试与文档，保留工作区此前的其他未提交变更。按用户确认保留业务工具职责，不接入 CMod 或持久化；环境为 macOS/amd64、Go 1.27.0，构建缓存为 `/private/tmp/tx-delayqueue-go-cache`。
+
+- 修复前：100ms 周期、20ms 回调在前 60ms 执行了 3 次；11,000 个同时到期任务中，首个回调新增任务触发持锁投递与加锁登记互等，三秒测试超时并给出对应阻塞栈。
+- 修复后：按到期时间串行执行、相同期限顺序、回调完成后间隔续排、原 TaskID 取消、自取消、积压时回调新增、同批次待执行任务取消、并发 Stop 等待和停止后拒绝任务均通过。
+- `go test -race ./util -count=20 -timeout=60s` 通过，日志 `/private/tmp/tx-delayqueue-race-20261102.log`。首次 race 发现测试读取时间记录与后续回调写入缺少同步，改用 channel 传递观测值后重跑通过，不将首次结果记为通过。
+- `go test ./...` 通过，日志 `/private/tmp/tx-delayqueue-all-local-20261102.log`。首次沙箱执行被本机端口监听权限阻止，原日志 `/private/tmp/tx-delayqueue-all-20261102.log`；允许本机测试监听后重跑通过。
+- `go vet ./util` 与 `git diff --check` 通过；独立差异 review 无待修项。
+
+不测实时调度精度或生产容量，不运行云压测和真实集群。Stop 等待回调实际结束，不强制中断，不能从本队列回调内同步调用；终态队列不支持重启。使用边界见[设计文档](design.md#业务本地有序调度)。
+
+## 2026-11-02 能力收窄与共享冷加载取消
+
+基线为 tx `241f460`、txgame `4ba3b64`、txgameslg `8753304`。生产修改仅在 tx；txgame 修正 AGENTS 中将业务对象归属通信 Actor 激活的旧描述。txgen、两组生成产物和客户端无变化。环境为 macOS/amd64、Go 1.27.0，使用 `GOTOOLCHAIN=local` 与 `/private/tmp/tx-codex-go-build`。
+
+两处权限用例先证实旧行为：缓存业务视图可断言为创建/删除预留 SPI，Placement 的准入视图可断言为共享闸门管理接口。修复后仅所有者保留这些能力；正式创建/删除、宿主排水及已接纳工作计数继续通过。
+
+冷加载先复现两个失败：首请求取消使仍有效的等待者收到 `context canceled`；后加入的请求取消后仍阻塞等待 Loader。原始失败见 `/private/tmp/tx-entity-cancel-repro-20261102.log`。修复后同键由宿主共享一次独立期限加载，每个调用者只取消自身等待；测试覆盖 Provider 能力值保留、事务/使用期屏蔽、关闭超时后继续等待、加载期限到达后保留占位直至实际退出，以及 Loader panic 不残留占位。创建查重不改为共享后台任务。
+
+| 验证 | 结果 / 本地日志 |
+| --- | --- |
+| 权限收窄及创建/删除回归 | 通过；`/private/tmp/tx-permission-storage-20261102.log`、`tx-permission-race-20261102.log` |
+| tx `go test ./...` | 通过；`/private/tmp/tx-entity-cancel-all-20261102.log` |
+| txgame/server、txgameslg/server `go test ./...` | 通过；`/private/tmp/txgame-entity-cancel-all-20261102.log`、`txgameslg-entity-cancel-all-20261102.log` |
+| `go test -race ./internal/framework ./modules/entitycache ./modules/txn ./tests` | 通过；`/private/tmp/tx-entity-boundaries-race-20261102.log` |
+| EntityCache 全包 `-race -count=5` | 通过；`/private/tmp/tx-entity-cancel-race-fixed-20261102.log` |
+| tx `go vet ./...` | 通过；`/private/tmp/tx-entity-boundaries-vet-20261102.log` |
+
+新增超时用例首次 race 暴露了测试计数变量的读写竞争：超时本身不与 Loader 完成建立同步。计数改用原子操作后，重新执行上述五轮 race、关键包 race 和全量回归通过；保留原失败日志 `/private/tmp/tx-entity-cancel-race-20261102.log`，不将其计为通过。
+
+相同机器、参数 `-run '^$' -bench 'BenchmarkCache(Hit|ParallelHit)$' -count=3` 的热路径对照：
+
+| 模式 | 修改前 ns/op | 修改后 ns/op | 分配（前后） |
+| --- | --- | --- | --- |
+| 禁用空闲过期的命中 | 71.16～72.50 | 60.21～62.82 | 0 B/op、0 allocs/op |
+| 启用空闲过期的命中 | 234.0～235.1 | 217.9～223.2 | 0 B/op、0 allocs/op |
+| 并发命中 | 176.4～191.8 | 167.2～173.9 | 0 B/op、0 allocs/op |
+
+日志为 `/private/tmp/tx-entity-cancel-before-bench-20261102.log`、`tx-entity-cancel-after-bench-20261102.log`。热命中没有新增任务或上下文包装；短时观测未见回退，不据此宣称集群吞吐提升。独立差异 review 无待修项。未显式启用可选外部设施集成场景，未跑真实多进程集群或云压测；本轮不提交。
+
 ## 2026-11-02 RPC 调用命名统一
 
 延续上一批工作区，统一发送侧命名：Agent 使用 `actor.Teller.Tell`；低层 gRPC 使用 `TellStream` 和等待接收回执的 `TellAccepted`。`Messenger` 嵌入同一个 Teller，不新增业务调用模式。传输、线协议、路由、流控、排水、错误及重投边界保持不变；接收侧 Deliver/SubmitStream、普通邮箱和 Procedure 不机械改名。两组应用和文档同步；txgen 模板及生成 GoDoc 已满足调用模式说明，无需重新生成。

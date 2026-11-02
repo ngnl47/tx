@@ -15,15 +15,15 @@ func (server *Server) mongoCMod() CMod {
 			}
 			return server.config.Runtime.Health.validate()
 		},
-		start: func(CModContext) error {
+		start: func(c CModContext) error {
 			store := server.runtime.ensureStorage()
-			if err := store.StartMongo(server.runtime.lifecycle, server.config.Storage.MongoDB); err != nil {
+			if err := store.StartMongo(c.Tasks(), server.config.Storage.MongoDB); err != nil {
 				return err
 			}
-			if err := store.InitializeMongoIndexes(server.runtime.lifecycle, server.config.Storage.MongoDB, server.types); err != nil {
+			if err := store.InitializeMongoIndexes(c.Tasks(), server.config.Storage.MongoDB, server.types); err != nil {
 				return err
 			}
-			return startStorageHealth(server.runtime.lifecycle, store, server.config.Runtime.Health, txstorage.BackendMongo)
+			return startStorageHealth(c.Tasks(), store, server.config.Runtime.Health, txstorage.BackendMongo)
 		},
 		stop: func(ctx context.Context) error {
 			if server.runtime == nil || server.runtime.storage == nil {

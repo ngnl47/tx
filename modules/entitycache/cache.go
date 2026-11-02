@@ -11,13 +11,12 @@ import (
 	"github.com/maypok86/otter/v2"
 	"github.com/ngnl47/tx/lifecycle"
 	"github.com/ngnl47/tx/modules/txn"
-	"golang.org/x/sync/singleflight"
 )
 
 // ErrReleasing 表示事务内访问遇到正在回收的对象，必须结束当前调用，不能持锁等待回收。
 var ErrReleasing = errors.New("entity cache: cannot wait for release inside a transaction")
 
-// KeyString 将强类型业务键转换为 singleflight 使用的稳定键。
+// KeyString 将强类型业务键转换为诊断日志使用的稳定键。
 type KeyString[K comparable] func(K) string
 
 // Loader 从项目选择的存储边界加载一个业务对象。
@@ -36,7 +35,9 @@ type Cache[K comparable, V any] struct {
 	keyString KeyString[K]
 	loader    Loader[K, V]
 	options   Options[V]
-	loads     singleflight.Group
+	loadMu    sync.Mutex
+	loads     map[K]*cacheLoad
+	tasks     lifecycle.Tasks
 
 	mu              sync.RWMutex
 	values          map[K]*cacheEntry[V]
@@ -91,6 +92,7 @@ func NewCache[K comparable, V any](
 		keyString:           keyString,
 		loader:              loader,
 		options:             options,
+		loads:               make(map[K]*cacheLoad),
 		values:              make(map[K]*cacheEntry[V]),
 		policyReadThreshold: max(1, options.MaximumSize/2),
 		deferred:            make(map[K]deferredEntry[K, V]),
@@ -112,15 +114,9 @@ func NewCache[K comparable, V any](
 	return cache, nil
 }
 
-// Start 将缓存维护任务登记到服务生命周期。
+// Start 在首次使用前绑定宿主，冷加载与维护任务都由宿主等待实际退出。
 func (cache *Cache[K, V]) Start(tasks lifecycle.Tasks) error {
-	if cache == nil || cache.policy == nil {
-		return nil
-	}
-	if tasks == nil {
-		return errors.New("entity cache: lifecycle tasks are nil")
-	}
-	return tasks.Go(cache.runReleaseWorker)
+	return cache.start(tasks, nil)
 }
 
 // Use 在回调期间保留唯一对象，覆盖加载后等待事务锁、事务执行和提交回调。
@@ -149,13 +145,11 @@ func (cache *Cache[K, V]) acquireLoaded(ctx context.Context, key K) (*cacheEntry
 		if entry != nil {
 			return entry, true, nil
 		}
-		loaded, err, _ := cache.loads.Do(cache.keyString(key), func() (any, error) {
-			return cache.loadMissing(ctx, key)
-		})
+		loaded, err := cache.load(ctx, key)
 		if err != nil {
 			return nil, false, err
 		}
-		if !loaded.(bool) {
+		if !loaded {
 			return nil, false, nil
 		}
 	}
@@ -229,6 +223,9 @@ func (cache *Cache[K, V]) loadMissing(ctx context.Context, key K) (bool, error) 
 		}
 	}()
 	value, exists, err := cache.loader(ctx, key)
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
 	if err != nil || !exists {
 		return exists, err
 	}

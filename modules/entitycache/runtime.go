@@ -117,13 +117,7 @@ func NewRuntime(config Config, release func(context.Context, any) (bool, error))
 }
 
 func (r *Runtime) Start(tasks lifecycle.Tasks) error {
-	if tasks == nil {
-		return errors.New("entity cache: lifecycle tasks are nil")
-	}
-	return tasks.Go(func(ctx context.Context) {
-		defer r.CloseManagement(context.Background())
-		r.cache.runReleaseWorker(ctx)
-	})
+	return r.cache.start(tasks, func() { _ = r.CloseManagement(context.Background()) })
 }
 
 // ReserveCreate 按生成描述自动找到对应缓存，不维护业务类型清单。

@@ -214,10 +214,37 @@ func TestPlacementAndCModTasksHideOwnership(t *testing.T) {
 		root := lifecycle.NewWaitGroupContext(t.Context())
 		defer func() { root.Cancel(); root.Wait() }()
 		p := &actorPlacement{tasks: lifecycle.NewChildWaitGroupContext(root), ingress: lifecycle.NewIngress(root), providers: make(map[placementKey]txactor.GroupResolver)}
+		var admission lifecycle.Admission
 		err := p.initialize(&runtime{lifecycle: root}, []Service{testService{spec: Spec{Name: "game", Placements: []Placement{{Name: "server", Factory: func(c Context) (txactor.GroupResolver, error) {
+			admission = c.Admission()
+			if _, ok := admission.(interface{ BeginDrain() }); ok {
+				t.Error("Placement 准入视图暴露 BeginDrain")
+			}
+			if _, ok := admission.(interface{ BeginWork() error }); ok {
+				t.Error("Placement 准入视图暴露 BeginWork")
+			}
+			if _, ok := admission.(interface{ EndWork() }); ok {
+				t.Error("Placement 准入视图暴露 EndWork")
+			}
 			return func(context.Context, txactor.Identity) (string, error) { return "1001", nil }, checkTasks(c.Tasks())
 		}}}}}})
 		if err != nil {
+			t.Fatal(err)
+		}
+		done, err := admission.Enter()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer done()
+		p.ingress.BeginDrain()
+		if _, err := admission.Enter(); !errors.Is(err, lifecycle.ErrDraining) {
+			t.Fatalf("宿主排水后仍可接纳: %v", err)
+		}
+		if p.ingress.Pending() != 1 {
+			t.Fatal("排水未保留已接纳工作")
+		}
+		done()
+		if err := p.ingress.WaitContext(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 	})

@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/ngnl47/tx/lifecycle"
 )
 
 type cachedValue struct {
@@ -290,10 +292,17 @@ func newTestCache(
 	if err != nil {
 		t.Fatalf("NewCache returned error: %v", err)
 	}
-	t.Cleanup(func() {
-		cache.policy.StopAllGoroutines()
-	})
+	startCacheForTest(t, cache)
 	return cache
+}
+
+func startCacheForTest(t testing.TB, cache interface{ Start(lifecycle.Tasks) error }) {
+	t.Helper()
+	tasks := lifecycle.NewWaitGroupContext(t.Context())
+	t.Cleanup(func() { tasks.Cancel(); tasks.Wait() })
+	if err := cache.Start(tasks); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func assertKeyNotRetained(t *testing.T, cache *Cache[int64, *cachedValue], key int64) {

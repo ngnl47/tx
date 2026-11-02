@@ -69,7 +69,7 @@ func newActorPlacement(r *runtime) (*actorPlacement, error) {
 }
 
 func (p *actorPlacement) initialize(r *runtime, services []Service) error {
-	ctx := newServiceContextWithTasks(r, p.ingress, lifecycle.TaskView(p.tasks))
+	ctx := newServiceContextWithTasks(r, lifecycle.AdmissionFunc(p.ingress.Enter), lifecycle.TaskView(p.tasks))
 	for _, service := range services {
 		spec := service.Spec()
 		for _, declaration := range spec.Placements {

@@ -19,12 +19,12 @@ func (server *Server) redisCMod() CMod {
 			}
 			return server.config.Runtime.Health.validate()
 		},
-		start: func(CModContext) error {
+		start: func(c CModContext) error {
 			store := server.runtime.ensureStorage()
-			if err := store.StartRedis(server.runtime.lifecycle, server.config.Storage.Redis); err != nil {
+			if err := store.StartRedis(c.Tasks(), server.config.Storage.Redis); err != nil {
 				return err
 			}
-			return startStorageHealth(server.runtime.lifecycle, store, server.config.Runtime.Health, txstorage.BackendRedis)
+			return startStorageHealth(c.Tasks(), store, server.config.Runtime.Health, txstorage.BackendRedis)
 		},
 		stop: func(context.Context) error {
 			if server.runtime == nil || server.runtime.storage == nil {

@@ -219,8 +219,9 @@ func TestUseWaitsForReleaseAndHonorsCancellation(t *testing.T) {
 			<-resume
 			return true, nil
 		})
-		defer cache.policy.StopAllGoroutines()
 		entry := loadReleaseTestEntry(t, cache, 47)
+		tasks := startReleaseTestCache(t, cache)
+		defer stopReleaseTestCache(tasks, cache)
 		candidate := deferredEntry[int64, *cachedValue]{key: 47, entry: entry, generation: entry.generation.Load()}
 		go func() { defer close(released); cache.tryRelease(t.Context(), candidate) }()
 		<-started
@@ -326,11 +327,7 @@ func TestCacheKeepsBusinessValuesBeyondMaximumSizeWhenReleaseDeferred(t *testing
 	cache := newReleaseTestCache(t, 1, func(context.Context, *cachedValue) (bool, error) { return false, nil })
 	want := make(map[int64]*cachedValue, valueCount)
 	for key := int64(0); key < valueCount; key++ {
-		value, exists, err := cache.loadForTest(context.Background(), key)
-		if err != nil || !exists {
-			t.Fatalf("Load(%d) returned exists=%v error=%v", key, exists, err)
-		}
-		want[key] = value
+		want[key] = loadReleaseTestEntry(t, cache, key).value
 	}
 	cache.policy.CleanUp()
 
@@ -513,7 +510,8 @@ func loadReleaseTestEntry(
 	key int64,
 ) *cacheEntry[*cachedValue] {
 	t.Helper()
-	if _, exists, err := cache.loadForTest(context.Background(), key); err != nil || !exists {
+	// 只预置回收用例的数据，不提前启动由各用例显式控制的维护任务。
+	if exists, err := cache.loadMissing(context.Background(), key); err != nil || !exists {
 		t.Fatalf("Load(%d) returned exists=%v error=%v", key, exists, err)
 	}
 	cache.mu.RLock()

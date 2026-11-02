@@ -133,6 +133,12 @@ func FromContext(ctx context.Context) (*Tx, bool) {
 	return tx, ok && tx != nil && tx.active
 }
 
+// WithoutTransaction 供独立框架工作屏蔽原事务关联，保留其他上下文值。
+// 它不转移锁或对象使用权，不得用来绕过业务 GD 的事务要求。
+func WithoutTransaction(ctx context.Context) context.Context {
+	return context.WithValue(ctx, contextKey{}, (*Tx)(nil))
+}
+
 // RecordUndo 实现 change.UndoRecorder。生成 Store 只会在绑定到 Tx 后调用它。
 func (tx *Tx) RecordUndo(undo change.UndoFunc) {
 	if tx == nil || undo == nil {
@@ -225,7 +231,7 @@ func (tx *Tx) Call(procedure Procedure) error {
 	if err := tx.acquire(locks, tx.procedureTrace(procedure)); err != nil {
 		return err
 	}
-	return tx.call(procedure)
+	return tx.Do(func(tx *Tx) error { return tx.call(procedure) })
 }
 
 // AfterCommit 注册根事务成功后的动作。动作在锁释放后执行，失败不会回滚已提交的内存修改。
@@ -261,7 +267,9 @@ type AfterCommitError struct{ Err error }
 func (err *AfterCommitError) Error() string { return "transaction: after commit: " + err.Err.Error() }
 func (err *AfterCommitError) Unwrap() error { return err.Err }
 
-// AfterRollback 注册回滚动作。动作在锁释放后执行。
+// AfterRollback 注册当前范围的回滚动作。根回滚在 Store 解绑、解锁且事务失效后，传入原操作上下文执行。
+// Do 或 Call 的子 savepoint 返回错误时，动作立即执行，传入当前事务上下文，根事务仍有效并持有全部锁。
+// 子过程 panic 继续向根传播，由根回滚统一执行尚未撤销的动作。
 func (tx *Tx) AfterRollback(fn func(context.Context)) {
 	if tx != nil && fn != nil {
 		tx.afterRollback = append(tx.afterRollback, fn)
@@ -309,13 +317,16 @@ func (tx *Tx) rollbackTo(point savepoint, runCallbacks bool) {
 		}
 	}
 	tx.creations = tx.creations[:point.creations]
+	var callbacks []func(context.Context)
 	if runCallbacks {
-		for _, fn := range tx.afterRollback[point.afterRollback:] {
-			fn(tx.ctx)
-		}
+		callbacks = append(callbacks, tx.afterRollback[point.afterRollback:]...)
 	}
+	// 先撤销登记，避免子回滚回调 panic 后由根回滚再次执行同一批动作。
 	tx.afterCommit = tx.afterCommit[:point.afterCommit]
 	tx.afterRollback = tx.afterRollback[:point.afterRollback]
+	for _, fn := range callbacks {
+		fn(tx.ctx)
+	}
 }
 
 func (tx *Tx) call(procedure Procedure) error {
@@ -323,7 +334,7 @@ func (tx *Tx) call(procedure Procedure) error {
 	defer func() {
 		tx.procedures = tx.procedures[:len(tx.procedures)-1]
 	}()
-	return tx.Do(procedure.Process)
+	return procedure.Process(tx)
 }
 
 func (tx *Tx) procedureTrace(next Procedure) string {
@@ -417,6 +428,7 @@ func run(ctx context.Context, locks Lockeys, fn func(*Tx) error, options CallOpt
 	}
 	tx.ctx = context.WithValue(ctx, contextKey{}, tx)
 	committed := false
+	rolledBack := false
 	defer func() {
 		// 一个释放回调异常不应阻断其他实体使用权释放。
 		var failure any
@@ -446,6 +458,10 @@ func run(ctx context.Context, locks Lockeys, fn func(*Tx) error, options CallOpt
 					err = &AfterCommitError{Err: newPanicError(recovered)}
 					return
 				}
+				panic(recovered)
+			}
+			// 回滚回调可能让新事务取得同一 Store，已完成的根回滚不能再次解绑。
+			if rolledBack {
 				panic(recovered)
 			}
 			rollbackCallbacks := append([]func(context.Context){}, tx.afterRollback...)
@@ -489,6 +505,7 @@ func run(ctx context.Context, locks Lockeys, fn func(*Tx) error, options CallOpt
 		}
 		releaseLocks(transaction, &tx.heldLocks)
 		tx.active = false
+		rolledBack = true
 		for _, callback := range rollbackCallbacks {
 			callback(ctx)
 		}

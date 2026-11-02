@@ -88,7 +88,16 @@ type grpcConnection struct {
 	client     rpcpb.DeliveryServiceClient
 	streamMu   sync.Mutex
 	stream     *callStream
+	opening    *streamOpening
 	closed     bool
+}
+
+// 开流在连接锁外进行；并发调用者只等待同一次开流，各自可以取消等待。
+type streamOpening struct {
+	done   chan struct{}
+	cancel context.CancelFunc
+	stream *callStream
+	err    error
 }
 
 func (c *grpcConnection) TellAccepted(ctx context.Context, delivery Delivery) error {
@@ -129,6 +138,9 @@ func (c *grpcConnection) Close() error {
 	c.closed = true
 	stream := c.stream
 	c.stream = nil
+	if c.opening != nil {
+		c.opening.cancel()
+	}
 	c.streamMu.Unlock()
 	if stream != nil {
 		stream.fail(ErrSenderClosed)
@@ -146,8 +158,11 @@ type callStream struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	cancelQueue chan uint64
-	sendMu      sync.Mutex
+	sendGate    chan struct{}
 	mu          sync.Mutex
+	sending     context.Context
+	sendVersion uint64
+	sendChanged chan struct{}
 	pending     map[uint64]chan streamCallReply
 	nextID      uint64
 	sendSamples atomic.Uint64
@@ -164,7 +179,7 @@ func (c *grpcConnection) TellStream(ctx context.Context, delivery Delivery) erro
 	if err != nil {
 		return err
 	}
-	stream, err := c.getCallStream()
+	stream, err := c.getCallStream(ctx)
 	if err != nil {
 		return err
 	}
@@ -173,12 +188,14 @@ func (c *grpcConnection) TellStream(ctx context.Context, delivery Delivery) erro
 	if sample {
 		lockStarted = time.Now()
 	}
-	stream.sendMu.Lock()
+	if err := stream.lockSend(ctx); err != nil {
+		return err
+	}
 	var lockWait time.Duration
 	var sendDuration time.Duration
 	var recorded bool
 	defer func() {
-		stream.sendMu.Unlock()
+		<-stream.sendGate
 		if recorded {
 			txmetrics.RecordRPCStreamSend(lockWait, sendDuration)
 		}
@@ -201,16 +218,12 @@ func (c *grpcConnection) TellStream(ctx context.Context, delivery Delivery) erro
 	if sample {
 		sendStarted = time.Now()
 	}
-	err = stream.client.Send(&rpcpb.StreamCallRequest{Id: id, Delivery: request, OneWay: true})
+	err = stream.send(ctx, &rpcpb.StreamCallRequest{Id: id, Delivery: request, OneWay: true})
 	if sample {
 		sendDuration = time.Since(sendStarted)
 		recorded = true
 	}
-	if err != nil {
-		stream.fail(err)
-		return err
-	}
-	return nil
+	return err
 }
 
 func (c *grpcConnection) streamRequest(ctx context.Context, delivery Delivery) (Result, error) {
@@ -218,7 +231,7 @@ func (c *grpcConnection) streamRequest(ctx context.Context, delivery Delivery) (
 	if err != nil {
 		return Result{}, err
 	}
-	stream, err := c.getCallStream()
+	stream, err := c.getCallStream(ctx)
 	if err != nil {
 		return Result{}, err
 	}
@@ -237,20 +250,12 @@ func (c *grpcConnection) streamRequest(ctx context.Context, delivery Delivery) (
 		delete(stream.pending, id)
 		stream.mu.Unlock()
 	}()
-	select {
-	case <-ctx.Done():
-		return Result{}, ctx.Err()
-	default:
+	if err := stream.lockSend(ctx); err != nil {
+		return Result{}, err
 	}
-	stream.sendMu.Lock()
-	if err = ctx.Err(); err == nil {
-		err = stream.client.Send(&rpcpb.StreamCallRequest{Id: id, Delivery: request})
-	}
-	stream.sendMu.Unlock()
+	err = stream.send(ctx, &rpcpb.StreamCallRequest{Id: id, Delivery: request})
+	<-stream.sendGate
 	if err != nil {
-		if ctx.Err() == nil {
-			stream.fail(err)
-		}
 		return Result{}, err
 	}
 	select {
@@ -266,22 +271,63 @@ func (c *grpcConnection) streamRequest(ctx context.Context, delivery Delivery) (
 	}
 }
 
-func (c *grpcConnection) getCallStream() (*callStream, error) {
+func (c *grpcConnection) getCallStream(ctx context.Context) (*callStream, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	c.streamMu.Lock()
 	if c.closed {
 		c.streamMu.Unlock()
 		return nil, ErrSenderClosed
 	}
-	stream := c.stream
-	if stream == nil {
-		streamCtx, cancel := context.WithCancel(context.Background())
-		client, openErr := c.client.CallStream(streamCtx)
-		if openErr != nil {
-			cancel()
+	if stream := c.stream; stream != nil {
+		stream.mu.Lock()
+		closed := stream.closed || stream.ctx.Err() != nil
+		stream.mu.Unlock()
+		if !closed {
 			c.streamMu.Unlock()
-			return nil, openErr
+			return stream, nil
 		}
-		stream = &callStream{client: client, ctx: streamCtx, cancel: cancel, cancelQueue: make(chan uint64, 1024), pending: make(map[uint64]chan streamCallReply)}
+	}
+	// 取消已生效时不等待接收循环回调摘除；旧 onClose 按指针比较，不影响新流。
+	c.stream = nil
+	if opening := c.opening; opening != nil {
+		c.streamMu.Unlock()
+		select {
+		case <-opening.done:
+			return opening.stream, opening.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	streamCtx, cancel := context.WithCancel(context.Background())
+	opening := &streamOpening{done: make(chan struct{}), cancel: cancel}
+	c.opening = opening
+	c.streamMu.Unlock()
+
+	stop := context.AfterFunc(ctx, cancel)
+	client, err := c.client.CallStream(streamCtx)
+	if !stop() {
+		err = ctx.Err()
+	}
+	c.streamMu.Lock()
+	c.opening = nil
+	if c.closed {
+		err = ErrSenderClosed
+	}
+	if err != nil {
+		cancel()
+		opening.err = err
+	} else {
+		stream := &callStream{
+			client:      client,
+			ctx:         streamCtx,
+			cancel:      cancel,
+			cancelQueue: make(chan uint64, 1024),
+			sendGate:    make(chan struct{}, 1),
+			sendChanged: make(chan struct{}, 1),
+			pending:     make(map[uint64]chan streamCallReply),
+		}
 		stream.onClose = func(current *callStream) {
 			c.streamMu.Lock()
 			if c.stream == current {
@@ -290,20 +336,102 @@ func (c *grpcConnection) getCallStream() (*callStream, error) {
 			c.streamMu.Unlock()
 		}
 		c.stream = stream
+		opening.stream = stream
 		go stream.receive()
 		go stream.sendCancels()
+		go stream.watchSend()
 	}
+	close(opening.done)
 	c.streamMu.Unlock()
-	return stream, nil
+	return opening.stream, opening.err
+}
+
+// 等待发送权的取消只退出当前等待，不中断正在发送的其他请求。
+func (stream *callStream) lockSend(ctx context.Context) error {
+	select {
+	case stream.sendGate <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			<-stream.sendGate
+			return err
+		}
+		if stream.ctx.Err() == nil {
+			return nil
+		}
+		<-stream.sendGate
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-stream.ctx.Done():
+	}
+	return status.Error(codes.Unavailable, "rpc stream closed")
+}
+
+// 调用者持有发送权。gRPC 的 Send 没有逐项 Context；阻塞时只能取消整条流，
+// 并等待 Send 实际返回。取消与完成交错时先使旧流失效，不让取消误伤后续新请求。
+func (stream *callStream) send(ctx context.Context, request *rpcpb.StreamCallRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	stream.mu.Lock()
+	stream.sending = ctx
+	stream.sendVersion++
+	stream.mu.Unlock()
+	select {
+	case stream.sendChanged <- struct{}{}:
+	default:
+	}
+	err := stream.client.Send(request)
+	stream.mu.Lock()
+	stream.sending = nil
+	canceled := ctx.Err() != nil && stream.ctx.Err() != nil
+	stream.mu.Unlock()
+	if canceled {
+		stream.fail(ctx.Err())
+		return ctx.Err()
+	}
+	if err != nil {
+		stream.fail(err)
+	}
+	return err
+}
+
+// 每条共享流复用一个取消监视，避免在高频发送中逐项分配 AfterFunc 或 goroutine。
+// 版本和当前发送者在同一锁内复核，已结束发送的迟到取消不能关闭后续请求的流。
+func (stream *callStream) watchSend() {
+	for {
+		stream.mu.Lock()
+		ctx, version := stream.sending, stream.sendVersion
+		stream.mu.Unlock()
+		var done <-chan struct{}
+		if ctx != nil {
+			done = ctx.Done()
+		}
+		select {
+		case <-stream.ctx.Done():
+			return
+		case <-stream.sendChanged:
+		case <-done:
+			stream.mu.Lock()
+			current := stream.sending != nil && stream.sendVersion == version
+			if current {
+				stream.cancel()
+			}
+			stream.mu.Unlock()
+			if current {
+				return
+			}
+		}
+	}
 }
 
 func (stream *callStream) sendCancels() {
 	for {
 		select {
 		case id := <-stream.cancelQueue:
-			stream.sendMu.Lock()
+			if err := stream.lockSend(stream.ctx); err != nil {
+				return
+			}
 			err := stream.client.Send(&rpcpb.StreamCallRequest{Id: id, Cancel: true})
-			stream.sendMu.Unlock()
+			<-stream.sendGate
 			if err != nil {
 				stream.fail(err)
 				return

@@ -1,6 +1,6 @@
 # EntityCache 观察与管理
 
-管理入口直接复用 `txruntime.EntityCache(ctx)` 返回的缓存能力视图。组合子服务共用该应用的实体身份，不建立另一份缓存，也不新增 CMod、管理页面或逐 GD 登记。此视图不暴露 Start、DrainManagement、CloseManagement，生命周期由框架宿主持有；独立装配 Runtime 的调用方仍管理自己创建的实例。
+管理入口直接复用 `txruntime.EntityCache(ctx)` 返回的缓存能力视图。组合子服务共用该应用的实体身份，不建立另一份缓存，也不新增 CMod、管理页面或逐 GD 登记。此视图不暴露 Start、DrainManagement、CloseManagement 或创建/删除预留；生命周期由框架宿主持有，预留只供 WriteBack 与 Procedure 协作，业务创建/删除仍走 `db.Create/Remove`。独立装配 Runtime 的调用方须先 Start，并在释放依赖前等待所属 Tasks 实际退出。
 
 ## 调用示例
 
