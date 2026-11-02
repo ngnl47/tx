@@ -6,6 +6,12 @@ import (
 	"sync"
 )
 
+// TypeRegistry 提供只读的类型元数据查询，供持久化装配与生成代码共同使用。
+type TypeRegistry interface {
+	Lookup(TypeRef) (TypeSpec, bool)
+	TypeSpecs() []TypeSpec
+}
+
 // Registry 在初始化阶段保存类型元数据，并在 Freeze 后变为不可变。
 type Registry struct {
 	mu     sync.RWMutex

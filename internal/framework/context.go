@@ -18,7 +18,7 @@ import (
 	txgoredis "github.com/ngnl47/tx/storage/redis/goredis"
 )
 
-// StorageReaders 是生成 data 包使用的读取契约。
+// StorageReaders 汇集各存储模式带健康闸门的读取能力。
 type StorageReaders interface {
 	// RedisReader 返回带健康闸门的 Redis 文档读取器；未装配时返回 nil。
 	RedisReader() txstorage.DocumentLoader

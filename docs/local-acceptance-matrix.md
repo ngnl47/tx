@@ -2,6 +2,49 @@
 
 本页以现行契约组织验收，不重复维护测试实现。框架异常边界在 tx 定向测试中构造，两组应用使用已有真实集群入口验证接入；不向业务 Handler 增加故障开关。历史报告只证明对应构建，本轮结果单独记录。
 
+## 2026-11-02 vet 告警收敛
+
+在上一批 Reader/元数据变更之上完成，仍未提交。先执行 `go vet ./...`，复现 5 条告警：MsgQ 发布时整值复制 protobuf 内部状态，Sender 夹具三个值接收器复制互斥锁，槽位夹具使用未具名字段。
+
+生产路径只调整 `grpcPublishStream.send` 的消息复制：为本进程构造的请求新建 protobuf 消息，显式复制寻址字段和独立 Payload，不复制内部状态。私有入口不转发外部解码后的未知字段；公共 SendRole/SendSession、协议、队列准入、投递结果及关闭语义不变。没有增加深复制通用层或公共选项。既有准入测试补充寻址字段及提交后修改的隔离断言。
+
+验证环境为 macOS/amd64、Go 1.27.0，`GOTOOLCHAIN=local`、`GOCACHE=/private/tmp/tx-codex-go-build`：
+
+| 验证 | 结果 / 日志 |
+| --- | --- |
+| 全量 `go vet ./...` | 修改前退出 1、修改后退出 0；`/private/tmp/tx-vet-before-20261102.log`、`tx-vet-after-20261102.log` |
+| tx `go test ./...` | 通过；`/private/tmp/tx-vet-full-20261102.log` |
+| `go test -race ./modules/msgq -count=1` | 通过；`/private/tmp/tx-vet-msgq-race-20261102.log` |
+| Sender 夹具定向普通及 race | 通过；`/private/tmp/tx-vet-fixture-msgq-test.log`、`tx-vet-fixture-msgq-race.log` |
+| `TestStopReleasesOnlyAfterServiceBackgroundQueueExits` | 显式连接本机 etcd/NATS，普通与 race 均通过且未跳过；`/private/tmp/tx-vet-fixture-slot-test.log`、`tx-vet-fixture-slot-race.log` |
+
+新增的 `BenchmarkPublishStreamLocalAdmission` 只测 128 字节载荷的本地入队/取出与复制，不包含网络。相同机器和参数 `-benchtime=500ms -count=3 -benchmem`：修改前 264.4～272.7 ns/op，修改后 274.9～283.8 ns/op，均为 256 B/op、2 allocs/op。日志为 `/private/tmp/tx-vet-publish-before.log`、`tx-vet-publish-after.log`；这是短时微基准观测，不宣称集群吞吐改善或统计意义上的性能等价。
+
+本轮四个代码/测试文件的独立差异 review 无待修项，`git diff --check` 通过。本批不修改生成器、应用接口或客户端产物；未重复两组应用全量回归、正式包集群和云压测。普通 tx 全量测试仍按既有规则跳过未配置的可选依赖；明确启用的外部依赖验证只有上述本机槽位测试。
+
+## 2026-11-02 Reader 与元数据装配收敛
+
+基线为 tx `b5bf39d`、txgen `9123dc7`、txgame `6124559`、txgameslg `5ac1a0e`，叠加本轮未提交变更。环境为 macOS/amd64、Go 1.27.0，统一使用 `GOTOOLCHAIN=local` 和 `/private/tmp/tx-codex-go-build` 构建缓存。
+
+| 契约 | 本轮验证 |
+| --- | --- |
+| 默认查询唯一资源来源 | 缺 Provider 的单条/批量 Find 返回错误；不同 ctx 的 Provider 分别读取自己的后端，没有全局 Reader 回退 |
+| 缓存准入一致 | 修复前热 Find/Snapshot、SnapshotCached、TryRelease 可绕过缺 Provider；修复后现有 CheckAccess 返回错误，冷/热、事务快照、创建、管理路径均不额外加载、复制、回收或泄漏使用权 |
+| 显式存储读取 | Load 直接使用显式 Reader；本机 Redis/Mongo 验证生成 Role 的 Fusion 热写、读取、延迟落库、卸载热数据后回源，无跳过 |
+| 元数据与资源分离 | GeneratedData 仅登记 meta.TypeRegistry；Fusion 不再要求 Reader 绑定，仍校验缺失元数据和持久化参数 |
+| SLG 事务接入 | 创建夹具改用测试 Provider，保留唯一缓存；提交、回滚、失败写回/排水、并发创建和子事务回滚后重建通过 race |
+| 生成与应用 | 两组正式 gen/run.sh 再生成；完整生成包与 server/gen 测试通过；txclient、txclientslg 工作区无变化 |
+
+实际验证命令与本机日志：
+
+- tx：`go test ./...`，`/private/tmp/tx-reader-full-final.log`；新增元数据/缓存准入关键测试 `-race`，`/private/tmp/tx-reader-race.log`。
+- txgen：`go run .` 后 `go test ./... -count=1`，`/private/tmp/txgen-reader-full.log`；包括完整 `tests/output` 与临时 EntityCache 开/关生成包。修复前缺 Provider 失败证据为 `/private/tmp/txgen-reader-red.log`。
+- txgame、txgameslg：`GO_BIN=go bash gen/run.sh generate`，各自 `server/` 和 `gen/` 下 `go test ./...`。日志为 `/private/tmp/<工程>-reader-generate.log`、`/private/tmp/<工程>-server-reader-full.log`、`/private/tmp/<工程>-gen-reader-full.log`。
+- txgame/server：显式指定本地 debug 配置，`go test ./tests/integration -run '^TestGeneratedRoleFusionRoundTrip$' -count=1 -v`，`/private/tmp/txgame-reader-fusion.log`。只写入并清理测试独有记录，不清理数据库。
+- txgameslg/server：`go test -race ./internal/db -run '^(TestProcedureCreateGeneratedRootCommitRollbackAndDrain|TestConcurrentCreateUsesOneCachedRoot|TestCreateAfterChildRollbackRestoresUndoBinding)$' -count=1 -v`，`/private/tmp/txgameslg-reader-create-race.log`。日志中的 offline 是写回失败注入，不是遗漏的测试失败。
+
+四仓 `git diff --check` 与独立差异 review 通过；本轮只修正职责链和资源选择，没有新增配置、包装查询入口或 CMod。普通全量测试保留既有可选依赖跳过，不能视为所有外部集成场景都执行；本轮明确启用的真实存储验证仅上述 Fusion 往返。未运行云测试、正式包多进程集群或吞吐压测，不将此前能力检查微基准作为本轮性能对比。
+
 ## 2026-11-02 模块边界修复回归
 
 基线为 tx `9870690`，本批变更未提交。环境为 macOS/amd64、Go 1.27.0；只跑本地包级回归，不运行云测试或正式包多进程集群，不额外启用可选外部依赖场景。

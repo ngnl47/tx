@@ -121,7 +121,7 @@ func (l *contextRecordingRecordLock) Unlock(ctx context.Context) error {
 	return l.unlockContextErr
 }
 
-func newRecordingDelayTaskHandler(types fusion.TypeRegistry, redis storage.DocumentLoader, mongo storage.VersionedDocumentReplacer, locker storage.RecordLocker) *fusion.StorageTaskHandler {
+func newRecordingDelayTaskHandler(types meta.TypeRegistry, redis storage.DocumentLoader, mongo storage.VersionedDocumentReplacer, locker storage.RecordLocker) *fusion.StorageTaskHandler {
 	return fusion.NewDelayTaskHandlerWithOptions(types, redis, mongo, fusion.DelayTaskHandlerOptions{
 		RedisRevisionReader: &recordingRevisionReader{revision: "1"},
 		RedisRevisionTTL:    &recordingRevisionTTLApplier{applied: true},

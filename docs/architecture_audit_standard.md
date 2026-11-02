@@ -26,21 +26,19 @@
 
 ## 依赖层级基线
 
-依赖层级使用设计文档的 L0-L4；它与后文性能路径 H0/H1/H2 无关。架构审计按以下方向判断职责是否倒置：
+依赖层级使用[设计文档的 L0～L4 职责映射](design.md#包结构与依赖方向)；它与后文性能路径 H0/H1/H2 无关。箭头表示依赖方向，不表示启动顺序：
 
 ```text
-L0 纯算法与通用契约
-  -> L1 backend / transport adapter
-  -> L2 可复用运行时组件
-  -> L3 Bee/Ant 进程门面与 CMod 依赖图
-  -> L4 可选服务
-  -> txgame 项目组合根与业务 facade
+项目组合根 → L3 Bee/Ant 与 CMod 装配 → L2 可复用运行时
+L4 服务 → L3 声明/执行契约、所需 L2 能力
+L2 运行时 → 所需 L1 后端/传输适配、L0 契约
+L1 适配 → L0 纯计算与通用契约
 ```
 
 - 高层只能通过下层公开契约组合能力，不能读取下层实现字段或接管其生命周期。
 - 契约优先由能力所有者声明。例如 RPC 注册契约属于 `modules/rpc`，只读实例目录属于
   `modules/discovery`，后台任务契约属于 `lifecycle`。
-- 两个同级实现需要复用逻辑时，先把稳定契约或中立 adapter 下沉；禁止一个
+- 同级组件可以通过公开契约单向组合，不为消除同级 import 增加包装或搬包。需要共享的契约放在能力所有者或已有中立包；禁止一个
   `services/<name>` 直接导入另一个 `services/<name>` 的实现。
 - Bee/Ant `Server` 是进程资源的公开宿主，资源所有权由私有装配内核执行。Redis/Mongo client、gRPC Host、
   Actor Runtime、Procedure Runtime、discovery 快照和根 `WaitGroupContext` 的 Start/Stop/Shutdown/Replace/Flush
@@ -49,8 +47,9 @@ L0 纯算法与通用契约
   生命周期实现。
 - CMod 固定属于 L3，是带稳定身份、依赖关系和进程生命周期的 Bee/Ant 能力门面。L4 服务只能声明直接 CMod 依赖；Redis/Mongo、RPC Host、Scheduler、
   Transaction Runtime 等资源由 L3 依赖图按闭包唯一装配。未进入闭包的配置不得被语义校验，也不得创建外部资源。
-- Bee 与 Ant 的共有公开 API 必须同名同义；Ant 只能增加 `CModProcedure`、逻辑槽位等有状态能力。Core 和私有装配内核不得反向依赖 Bee/Ant，Bee 与 Ant 不得互相导入。
+- Bee 与 Ant 的共有公开 API 必须同名同义；Ant 只能增加 `CModProcedure`、逻辑槽位等有状态能力。通用运行时和私有装配内核不得反向依赖 Bee/Ant，Bee 与 Ant 不得互相导入。
 - 包名或目录深度不是层级证据；实际判断依据是依赖方向、接口所有权和资源生命周期。
+- 生成类型注册只传 `meta.TypeRegistry`，不绑定默认 Reader。默认查询使用显式 ctx 的 Provider，独立存储读取使用显式 Load；不增加生成包全局资源或启动/关闭回调来维持第二套查询来源。
 
 ## 审计严重级别
 

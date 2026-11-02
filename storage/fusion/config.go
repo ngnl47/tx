@@ -36,7 +36,7 @@ func (config Config) validateDirtyTTL() (time.Duration, error) {
 }
 
 // Validate 在 Fusion 创建外部资源前校验脏热数据 TTL 与所有持久化类型的时间窗口。
-func (config Config) Validate(types TypeRegistry) error {
+func (config Config) Validate(types meta.TypeRegistry) error {
 	dirtyTTL, err := config.validateDirtyTTL()
 	if err != nil {
 		return err

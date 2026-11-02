@@ -81,7 +81,7 @@ func (s *Service) Start(ctx context.Context) error {
 ```go
 func NewApplication(config bee.Config, services ...bee.ServiceRegistration) (*bee.Server, error) {
 	return bee.New(config).
-		GeneratedData(data.DefaultTypeRegistry(), nil).
+		GeneratedData(data.DefaultTypeRegistry()).
 		Services(services...).
 		Build()
 }
@@ -299,7 +299,7 @@ if err != nil {
 
 return bee.New(base).
 	ConfigProvider(config.Framework).
-	GeneratedData(data.DefaultTypeRegistry(), nil).
+	GeneratedData(data.DefaultTypeRegistry()).
 	Services(gameService, msgqService, agentService).
 	Build()
 ```
@@ -4275,7 +4275,7 @@ go test ./tests -run 'Test(RedisVersionKey|RedisConditionalTTL|RedisCollectionEl
 
 ### 读取不到数据
 
-- 确认项目已在启动时绑定 GD 访问入口且启用了对应 CMod；低层显式 ctx 查询须使用有效 Provider。示例应用不使用全局默认 Reader 回退。
+- 确认项目已在启动时绑定执行期 Provider 且启用了对应 CMod；默认 Find/Snapshot 必须使用有效 Provider，不提供全局 Reader 回退。独立工具的显式 Load 可以直接传入 Reader，不参与共享缓存。
 - 确认 `@storage.mode` 与所属服务已装配的 reader 匹配；Fusion 类型默认读 Fusion reader，Redis 类型默认读 Redis reader，Mongo 类型默认读 Mongo reader。
 - 确认 `idField` 和 `routeBy` 使用 Go 字段名，例如 `RoleId`，不是 `roleId`、`_id` 或 msgpack 名。
 - 如果 `routeBy != idField`，确认调用的是带 route 字段参数的 helper，或手动构造了带 `ShardKey` 的 `RecordKey`。

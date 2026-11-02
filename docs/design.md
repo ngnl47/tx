@@ -33,20 +33,29 @@ Actor 寻址与正常关闭归属的目标见 [专项实施计划](actor-routing
 
 ## 包结构与依赖方向
 
-```text
-应用注册、配置、Handler、业务 Module
-  → bee/ 或 ant/               公共装配门面
-  → runtime/                  当前操作的 Actor、存储、Procedure 能力
-  → modules/                  可复用的通信、实体、事务、生命周期组件
-  → storage/                  存储接口与 Redis/Mongo/Fusion 适配
-  → meta/、change/、protocol/  数据与协议契约
+L0～L4 按职责划分，不对应五个目录。尤其 `storage/` 同时包含契约、后端适配和运行时，`modules/` 同时包含通用组件与标准服务；`internal/` 仅表示 Go 可见性。
 
-bee/、ant/ → internal/framework/                  共享装配内核
-                     → internal/actorhost/       本地激活与邮箱
-                     → internal/actorplacement/  分组解析与缓存
-                     → internal/actorrpc/        本地/NATS/gRPC 接线
-                     → internal/instanceconn/    共享流生命周期
+| 层级 | 职责 | 当前代表位置 |
+| --- | --- | --- |
+| L0 | 不拥有外部资源的数据、协议与纯计算契约 | `meta/`（含 `TypeRegistry`）、`change/`、`protocol/`、`storage/` 根包 |
+| L1 | 后端驱动和传输适配 | `etcd/`、`storage/redis/`、`storage/mongo/`、`storage/task/redis/` |
+| L2 | 可复用运行时及其接线，不规定项目服务如何组合 | `storage/runtime/`、`storage/fusion/`、Discovery、Actor、RPC、Tasks、Procedure、EntityCache、WriteBack，以及 `modules/agent/`、`modules/msgq/` 的通信与会话组件；`internal/actorhost/`、`internal/actorplacement/`、`internal/actorrpc/`、`internal/instanceconn/` |
+| L3 | 进程组合、CMod 依赖与资源所有权，以及执行期能力视图 | `bee/`、`ant/`、`internal/framework/`、`runtime.Provider` |
+| L4 | 基于通用能力实现的标准服务与接入适配 | `modules/agent/service/`、`modules/msgq/service/`，`bee/services/`、`ant/services/` 下注册适配；应用中的自定义服务 |
+
+`component/`、`lifecycle/`、`metrics/`、`log/` 是多层复用的横向机制。使用生命周期计数或指标并不获得进程资源的关闭权限；所有权仍由 L3 装配维护。项目配置、Handler 和业务 Module 位于应用工程，不进入 tx 的层级实现。
+
+下面箭头统一表示“依赖方 → 被依赖能力”，不是必须逐层穿过的调用流水线：
+
+```text
+应用组合根 → Bee/Ant → internal/framework → L2 运行时 → 所需 L1 适配 / L0 契约
+应用业务与生成代码 → runtime.Provider → 已绑定的 L2 公开能力
+L4 服务实现 → 所需 L2 公开能力 / L0 契约
+L4 注册适配 → Bee/Ant 的 Service / CMod 声明契约
+L1 适配 → L0 契约
 ```
+
+高层可以直接使用所需的低层公共契约，不为层级形式增加转发包装。同级组件允许按职责单向组合，例如 EntityCache 使用事务锁和写回安全判定；禁止循环依赖和反向取得宿主生命周期权限。公共包可以暴露私有内核的稳定类型，不能据此要求把全部 `internal/` 归到同一层。
 
 | 包 | 介绍与维护边界 |
 | --- | --- |
@@ -96,6 +105,8 @@ etcd 管实例发现、槽位和新 Session 发号；Redis 管会话绑定及项
 包结构：`bee/`、`ant/` 定义 Builder、Service、Config；`internal/framework/assembly.go`、`cmod_*.go`、`server.go` 负责装配；`runtime/` 暴露执行期能力。
 
 Bee 面向无状态业务装配，Ant 额外提供 Procedure 等有状态能力。应用显式声明 CMod，生成数据的存储注解只选择读写模式，不推导应用应启用的全部能力。
+
+`GeneratedData(data.DefaultTypeRegistry())` 只登记类型元数据，供 Mongo 索引和 Fusion 变更解码等能力使用；通用接口是 `meta.TypeRegistry`。它不绑定 Reader，不启用存储 CMod，也不在关闭时清理生成包全局变量。默认 `Find/Snapshot` 从显式 ctx 的 Provider 取得存储能力；独立工具需要自选资源时使用显式 `Load*(ctx, reader, ...)`。
 
 | CMod | 强依赖 | 说明 |
 | --- | --- | --- |

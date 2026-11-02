@@ -5,8 +5,7 @@ import (
 	"fmt"
 
 	framework "github.com/ngnl47/tx/internal/framework"
-	txstorage "github.com/ngnl47/tx/storage"
-	"github.com/ngnl47/tx/storage/fusion"
+	"github.com/ngnl47/tx/meta"
 )
 
 // AssemblySelection 是依赖图解析后的 CMod 与 L4 服务只读集合。
@@ -53,8 +52,7 @@ type Builder struct {
 	cmods          []CMod
 	services       []ServiceRegistration
 	configProvider CModConfigProvider
-	types          fusion.TypeRegistry
-	bindStorage    func(StorageReaders)
+	types          meta.TypeRegistry
 	setups         []func(Context) (func(), error)
 	errs           []error
 }
@@ -97,8 +95,8 @@ func (builder *Builder) ConfigProvider(provider CModConfigProvider) *Builder {
 	return builder
 }
 
-// GeneratedData 登记类型元数据；bind 可为空，普通业务使用服务上下文的 Reader。
-func (builder *Builder) GeneratedData(types fusion.TypeRegistry, bind func(StorageReaders)) *Builder {
+// GeneratedData 登记生成数据的类型元数据。
+func (builder *Builder) GeneratedData(types meta.TypeRegistry) *Builder {
 	if builder == nil {
 		return nil
 	}
@@ -106,7 +104,6 @@ func (builder *Builder) GeneratedData(types fusion.TypeRegistry, bind func(Stora
 		builder.errs = append(builder.errs, errors.New("ant: generated data registry is required"))
 	} else {
 		builder.types = types
-		builder.bindStorage = bind
 	}
 	return builder
 }
@@ -143,11 +140,7 @@ func (builder *Builder) Build() (*Server, error) {
 		}))
 	}
 	if builder.types != nil {
-		options = append(options, framework.WithGeneratedData(builder.types, func(readers framework.StorageReaders) {
-			if builder.bindStorage != nil {
-				builder.bindStorage(adaptStorageReaders(readers))
-			}
-		}))
+		options = append(options, framework.WithGeneratedData(builder.types))
 	}
 	for _, setup := range builder.setups {
 		current := setup
@@ -179,27 +172,4 @@ func (builder *Builder) Build() (*Server, error) {
 		return nil, fmt.Errorf("ant: build server: %w", err)
 	}
 	return &Server{kernel: kernel}, nil
-}
-
-type storageReadersAdapter struct {
-	kernel framework.StorageReaders
-}
-
-func adaptStorageReaders(readers framework.StorageReaders) StorageReaders {
-	if readers == nil {
-		return nil
-	}
-	return storageReadersAdapter{kernel: readers}
-}
-
-func (adapter storageReadersAdapter) RedisReader() txstorage.DocumentLoader {
-	return adapter.kernel.RedisReader()
-}
-
-func (adapter storageReadersAdapter) MongoReader() txstorage.DocumentLoader {
-	return adapter.kernel.MongoReader()
-}
-
-func (adapter storageReadersAdapter) FusionReader() txstorage.DocumentLoader {
-	return adapter.kernel.FusionReader()
 }

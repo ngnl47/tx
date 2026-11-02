@@ -237,11 +237,11 @@ func (store *senderStoreFake) FindRole(ctx context.Context, roleID int64) (RoleB
 	return store.roleTestStore.FindRole(ctx, roleID)
 }
 
-func (senderStoreFake) Create(context.Context, SessionBinding) (bool, error) {
+func (*senderStoreFake) Create(context.Context, SessionBinding) (bool, error) {
 	return false, errors.New("unexpected Create")
 }
 
-func (senderStoreFake) Rebind(context.Context, SessionBinding, SessionBinding) (bool, error) {
+func (*senderStoreFake) Rebind(context.Context, SessionBinding, SessionBinding) (bool, error) {
 	return false, errors.New("unexpected Rebind")
 }
 
@@ -258,7 +258,7 @@ func (*senderStoreFake) Refresh(context.Context, SessionBinding) (bool, error) {
 	return false, errors.New("unexpected Refresh")
 }
 
-func (senderStoreFake) Unbind(context.Context, SessionBinding) (bool, error) {
+func (*senderStoreFake) Unbind(context.Context, SessionBinding) (bool, error) {
 	return false, errors.New("unexpected Unbind")
 }
 

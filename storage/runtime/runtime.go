@@ -106,7 +106,7 @@ func (s *Runtime) StartMongo(ctx context.Context, cfg storageconfig.RouteTableCo
 }
 
 // InitializeMongoIndexes 按生成类型注册表创建缺失索引。
-func (s *Runtime) InitializeMongoIndexes(ctx context.Context, cfg storageconfig.RouteTableConfig, types txfusion.TypeRegistry) error {
+func (s *Runtime) InitializeMongoIndexes(ctx context.Context, cfg storageconfig.RouteTableConfig, types meta.TypeRegistry) error {
 	if s == nil {
 		return ErrNotConfigured
 	}
@@ -149,7 +149,7 @@ func (s *Runtime) InitializeMongoIndexes(ctx context.Context, cfg storageconfig.
 }
 
 // StartFusion 组装 Redis 热数据、Mongo 冷数据和延迟任务队列。
-func (s *Runtime) StartFusion(ctx context.Context, opts Config, types txfusion.TypeRegistry) error {
+func (s *Runtime) StartFusion(ctx context.Context, opts Config, types meta.TypeRegistry) error {
 	if s == nil {
 		return ErrNotConfigured
 	}

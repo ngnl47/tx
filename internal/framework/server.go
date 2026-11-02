@@ -10,9 +10,9 @@ import (
 	"time"
 
 	txlog "github.com/ngnl47/tx/log"
+	"github.com/ngnl47/tx/meta"
 	txactor "github.com/ngnl47/tx/modules/actor"
 	"github.com/ngnl47/tx/modules/discovery"
-	"github.com/ngnl47/tx/storage/fusion"
 )
 
 type Option func(*Server) error
@@ -49,18 +49,13 @@ func WithCModConfigProvider(provider CModConfigProvider) Option {
 	}
 }
 
-// WithGeneratedData 将生成的类型注册表和默认 reader 接入框架。
-// bind 通常使用 data.RegisterStorageRuntime。
-func WithGeneratedData(types fusion.TypeRegistry, bind func(StorageReaders)) Option {
+// WithGeneratedData 将生成的类型元数据接入框架。
+func WithGeneratedData(types meta.TypeRegistry) Option {
 	return func(server *Server) error {
 		if types == nil {
 			return errors.New("framework: generated type registry is nil")
 		}
-		if bind == nil {
-			return errors.New("framework: generated storage binding is nil")
-		}
 		server.types = types
-		server.bindStorage = bind
 		return nil
 	}
 }
@@ -85,8 +80,7 @@ type Server struct {
 	services       []Service
 	cmods          []CMod
 	configProvider CModConfigProvider
-	types          fusion.TypeRegistry
-	bindStorage    func(StorageReaders)
+	types          meta.TypeRegistry
 	setups         []func(Context) (func(), error)
 
 	mu             sync.Mutex
@@ -301,9 +295,6 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 		return err
 	}
 
-	if server.bindStorage != nil {
-		server.bindStorage(runtime.storage)
-	}
 	setupContext := newServiceContext(runtime, nil)
 	for _, setup := range server.setups {
 		if err := context.Cause(ctx); err != nil {

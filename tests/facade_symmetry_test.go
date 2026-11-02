@@ -13,6 +13,7 @@ import (
 
 	"github.com/ngnl47/tx/ant"
 	"github.com/ngnl47/tx/bee"
+	"github.com/ngnl47/tx/meta"
 	txstorage "github.com/ngnl47/tx/storage"
 	txmongo "github.com/ngnl47/tx/storage/mongo"
 )
@@ -170,13 +171,13 @@ func TestBeeAndAntBuildersExposeTheSameCommonChain(t *testing.T) {
 		CMods().
 		Services().
 		ConfigProvider(func(bee.AssemblySelection) (bee.Config, error) { return bee.Config{}, nil }).
-		GeneratedData(nil, nil).
+		GeneratedData(nil).
 		Setup(func(bee.Context) (func(), error) { return nil, nil })
 	antBuilder := ant.New(ant.Config{}).
 		CMods().
 		Services().
 		ConfigProvider(func(ant.AssemblySelection) (ant.Config, error) { return ant.Config{}, nil }).
-		GeneratedData(nil, nil).
+		GeneratedData(nil).
 		Setup(func(ant.Context) (func(), error) { return nil, nil })
 
 	if beeBuilder == nil || antBuilder == nil {
@@ -208,7 +209,7 @@ func TestBeeAndAntServersExposeTheSameLifecycle(t *testing.T) {
 func TestBeeAndAntRunTheSameServiceLifecycle(t *testing.T) {
 	beeEvents := &eventLog{}
 	antEvents := &eventLog{}
-	beeServer, err := bee.New(bee.Config{AppID: "facade-test"}).Services(bee.ServiceRegistration{
+	beeServer, err := bee.New(bee.Config{AppID: "facade-test"}).GeneratedData(meta.NewRegistry()).Services(bee.ServiceRegistration{
 		Spec: bee.ServiceSpec{Name: "game"},
 		Factory: func(bee.Context) (bee.Service, error) {
 			beeEvents.add("factory")
@@ -218,7 +219,7 @@ func TestBeeAndAntRunTheSameServiceLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build Bee: %v", err)
 	}
-	antServer, err := ant.New(ant.Config{AppID: "facade-test"}).Services(ant.ServiceRegistration{
+	antServer, err := ant.New(ant.Config{AppID: "facade-test"}).GeneratedData(meta.NewRegistry()).Services(ant.ServiceRegistration{
 		Spec: ant.ServiceSpec{Name: "game"},
 		Factory: func(ant.Context) (ant.Service, error) {
 			antEvents.add("factory")

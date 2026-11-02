@@ -222,7 +222,9 @@ func (r *Runtime) SnapshotCached(ctx context.Context, ref EntryRef) (any, error)
 	if err = r.validateRef(ref); err != nil {
 		return nil, err
 	}
-	ref.id.descriptor.checkAccess(ctx)
+	if err := ref.id.descriptor.checkAccess(ctx); err != nil {
+		return nil, err
+	}
 	c := r.cache
 	c.mu.Lock()
 	e := c.values[ref.id]
@@ -266,7 +268,9 @@ func (r *Runtime) TryRelease(ctx context.Context, ref EntryRef) (ReleaseResult, 
 	if err = r.validateRef(ref); err != nil {
 		return Retained, err
 	}
-	ref.id.descriptor.checkAccess(ctx)
+	if err := ref.id.descriptor.checkAccess(ctx); err != nil {
+		return Retained, err
+	}
 	c := r.cache
 	c.mu.Lock()
 	e := c.values[ref.id]

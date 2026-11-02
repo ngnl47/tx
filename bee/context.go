@@ -21,16 +21,6 @@ import (
 	txgoredis "github.com/ngnl47/tx/storage/redis/goredis"
 )
 
-// StorageReaders 是生成 data 包使用的读取契约。
-type StorageReaders interface {
-	// RedisReader 返回带健康闸门的 Redis 文档读取器。
-	RedisReader() txstorage.DocumentLoader
-	// MongoReader 返回带健康闸门的 MongoDB 文档读取器。
-	MongoReader() txstorage.DocumentLoader
-	// FusionReader 返回同时依赖 Redis 和 MongoDB 的 Fusion 读取器。
-	FusionReader() txstorage.DocumentLoader
-}
-
 // Storage 是 Bee 管理的持久化能力，不暴露连接和关闭所有权。
 type Storage interface {
 	// Context 返回由进程根生命周期派生的只读上下文。

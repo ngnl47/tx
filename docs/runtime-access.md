@@ -29,7 +29,7 @@ caller := txruntime.Actor(ctx)
 
 应用在 actorcmd 的 Receive 中派生期限并更新本次 MessageContext，模块内显式沿用 ctx；纯内存规则不需要无用途的 ctx。生成期启用 EntityCache 时，完整 Find 仅在有效 Procedure 内复用唯一对象并纳入记录锁与写回预留；普通读取使用 Snapshot，在相同记录锁内深复制，返回前释放使用权。
 
-生成的 GD 查询统一显式 ctx；Actor Client/Ref 的显式 ctx 入口供需要继承当前范围的调用与独立契约测试使用。默认 Reader 注册仍只用于显式独立工具；正式项目采用启动绑定，不混用请求 Provider 与全局默认 Reader 回退。
+生成的 GD 查询统一显式 ctx。默认 Find/Snapshot 只使用当前 Provider，缺少 Provider 时返回错误，不存在生成包全局 Reader 或注册回退。独立工具和底层存储测试可以使用 `Load*(ctx, reader, ...)` 明确选择资源；它读取存储快照，不替代共享缓存查询。`txruntime.RedisReader/MongoReader/FusionReader(ctx)` 保留按模式取得已声明资源的入口。Actor Client/Ref 的显式 ctx 入口继续用于继承当前范围的调用与独立契约测试。
 
 调用取消只结束等待，不能推断远端未执行；普通调用不自动重投。保存完成也不等于 Fusion 已最终落盘，SLG 缓存、Procedure 与 WriteBack 的职责不变。
 
@@ -59,7 +59,7 @@ WriteBack / 缓存回收
 
 共享可变 GD 只能在有效 Procedure 中取得；无事务完整 Find 在加载前返回 `entitycache.ErrProcedureRequired`，失效事务返回 `txn.ErrInactive`。启用缓存的持久根必须显式声明 `@transaction`，生成期缺少声明直接报错；不会为 Handler 隐式开启事务。对象和子对象引用只可在当前事务内使用，不得长期保存在 Actor/后台任务中。缓存内部互斥锁只保护元数据，等待记录锁、复制字段或访问存储时不持有它。取消信号不能提前释放仍在执行事务的使用权。
 
-生成描述通过当前 Provider 的 `RequireStorage(mode)` 统一检查存储能力。此断言不创建 Reader 或执行 I/O；冷加载、热命中、管理字段快照及事务创建/删除都不能借用其他服务的存储声明。没有 Provider 的独立工具仍按显式资源绑定使用，不回退到其他服务。创建/删除预留中途失败或权限断言异常时，尚未交给事务的写回预留必须释放。
+生成描述通过当前 Provider 的 `RequireStorage(mode)` 统一检查存储能力。此断言不创建 Reader 或执行 I/O；冷加载、热命中、管理字段快照及事务创建/删除都不能借用其他服务的存储声明。描述的 `CheckAccess` 将缺少 Provider 的错误传回调用方；已绑定 Provider 但服务未声明能力仍按配置错误尽早失败。独立工具不绑定 Provider 时只使用显式 Load，不回退到其他服务。创建/删除预留中途失败或权限断言异常时，尚未交给事务的写回预留必须释放。
 
 `SnapshotGD*` 读取缓存中的最新值，包含尚未写回的提交；在有效事务内复用 Find 与现有锁，可读到本事务修改。复制不携带 Store、tracker、事务状态，调用方可自行修改副本但不能用它 Save/Remove 原实体。普通快照每条记录一致，不保证多条快照处于同一时刻。创建中身份仅对所属事务可见；其他读取返回 `ErrCreating`；提交删除后不再返回对象，持久化失败也不重新暴露旧对象。
 

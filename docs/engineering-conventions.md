@@ -44,6 +44,7 @@
 - 共享对象及其 map、slice、子指针不能带出事务给异步任务、Actor 字段或响应使用；锁内提取值或深复制。框架公开字段不是并发安全沙箱，recover 不能兜住并发 map 致命错误。
 - Snapshot 是独立数据，不能作为原共享实体 Save/Remove 的写入口；需要多记录一致性时不能把多次独立快照当作同一事务。
 - 原生 Mongo/Redis 及显式 Reader 的存储读取不等于缓存最新值，也不得旁路修改受管的同一记录。核对生成注解和启动配置，不能仅凭 Find/Save 名称判断。
+- 默认生成查询只从显式 ctx 的 Provider 取得能力，冷热缓存均检查当前服务声明；不得恢复生成包全局 Reader 回退。独立存储读取使用显式 Load，类型元数据登记不承担资源绑定。
 
 依据：[统一 GD 实体访问](runtime-access.md#统一-gd-实体访问)、[Mongo 原生查询](runtime-access.md#mongo-原生查询)。
 

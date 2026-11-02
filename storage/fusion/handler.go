@@ -10,13 +10,8 @@ import (
 	"github.com/ngnl47/tx/storage/task"
 )
 
-type TypeRegistry interface {
-	Lookup(meta.TypeRef) (meta.TypeSpec, bool)
-	TypeSpecs() []meta.TypeSpec
-}
-
 type StorageTaskHandler struct {
-	types               TypeRegistry
+	types               meta.TypeRegistry
 	redisLoader         storage.DocumentLoader
 	mongoReplace        storage.VersionedDocumentReplacer
 	redisRevisionReader storage.RecordRevisionReader
@@ -32,7 +27,7 @@ type DelayTaskHandlerOptions struct {
 	DelayedSaveQueue    DelayedSaveQueue
 }
 
-func NewDelayTaskHandler(types TypeRegistry, redisLoader storage.DocumentLoader, mongoReplace storage.VersionedDocumentReplacer, redisLocker storage.RecordLocker) *StorageTaskHandler {
+func NewDelayTaskHandler(types meta.TypeRegistry, redisLoader storage.DocumentLoader, mongoReplace storage.VersionedDocumentReplacer, redisLocker storage.RecordLocker) *StorageTaskHandler {
 	revisionReader, _ := redisLoader.(storage.RecordRevisionReader)
 	revisionTTL, _ := redisLoader.(storage.RevisionTTLApplier)
 	return NewDelayTaskHandlerWithOptions(types, redisLoader, mongoReplace, DelayTaskHandlerOptions{
@@ -42,7 +37,7 @@ func NewDelayTaskHandler(types TypeRegistry, redisLoader storage.DocumentLoader,
 	})
 }
 
-func NewDelayTaskHandlerWithOptions(types TypeRegistry, redisLoader storage.DocumentLoader, mongoReplace storage.VersionedDocumentReplacer, options DelayTaskHandlerOptions) *StorageTaskHandler {
+func NewDelayTaskHandlerWithOptions(types meta.TypeRegistry, redisLoader storage.DocumentLoader, mongoReplace storage.VersionedDocumentReplacer, options DelayTaskHandlerOptions) *StorageTaskHandler {
 	return &StorageTaskHandler{
 		types:               types,
 		redisLoader:         redisLoader,

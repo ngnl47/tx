@@ -72,13 +72,6 @@ func TestRunOptionsPublishClonedInstanceEndpoints(t *testing.T) {
 	}
 }
 
-func TestStorageReadersAdapterPreservesNilOnUnbind(t *testing.T) {
-	var readers framework.StorageReaders
-	if adapted := adaptStorageReaders(readers); adapted != nil {
-		t.Fatalf("adapted nil readers = %#v", adapted)
-	}
-}
-
 func TestSetupContextStorageReportsUnavailableKernel(t *testing.T) {
 	err := func() (err error) {
 		defer framework.RecoverCapability(&err)

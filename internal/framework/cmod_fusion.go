@@ -15,8 +15,8 @@ func (server *Server) fusionCMod() CMod {
 			},
 		},
 		validate: func(CModContext) error {
-			if server.types == nil || server.bindStorage == nil {
-				return errors.New("generated data binding is required")
+			if server.types == nil {
+				return errors.New("generated type registry is required")
 			}
 			if err := server.config.Runtime.DelayTask.validate(); err != nil {
 				return err

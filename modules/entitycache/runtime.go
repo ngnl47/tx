@@ -15,18 +15,19 @@ import (
 type Descriptor struct {
 	// TypeName 是生成类型名，仅用于管理元数据，不参与缓存身份。
 	TypeName string
-	// CheckAccess 在使用缓存前检查当前上下文的存储能力，不加载存储。
-	CheckAccess func(context.Context)
+	// CheckAccess 在使用缓存前检查当前上下文的存储能力，失败时不加载或返回缓存对象。
+	CheckAccess func(context.Context) error
 	Load        func(context.Context, storage.RecordKey) (any, bool, error)
 	Store       func(any) storage.ChangeStore
 	// Clone 只复制业务字段，不共享子对象，也不复制 Store、追踪器或事务状态。
 	Clone func(any) (any, error)
 }
 
-func (d *Descriptor) checkAccess(ctx context.Context) {
+func (d *Descriptor) checkAccess(ctx context.Context) error {
 	if d.CheckAccess != nil {
-		d.CheckAccess(ctx)
+		return d.CheckAccess(ctx)
 	}
+	return nil
 }
 
 // Described 由启用缓存的生成根实现，创建和删除与查询复用同一描述。
@@ -135,7 +136,9 @@ func (r *Runtime) ReserveCreate(ctx context.Context, value any) (txn.CreationRes
 		return nil, fmt.Errorf("entity cache: %T has no generated descriptor", value)
 	}
 	d := described.EntityDescriptor()
-	d.checkAccess(ctx)
+	if err := d.checkAccess(ctx); err != nil {
+		return nil, err
+	}
 	key := d.Store(value).RecordKey()
 	if err := storage.ValidateRecordKey(d.Store(value).TypeSpec(), key); err != nil {
 		return nil, err
@@ -155,7 +158,9 @@ func (r *Runtime) Find(ctx context.Context, descriptor *Descriptor, key storage.
 	if err != nil {
 		return nil, false, err
 	}
-	descriptor.checkAccess(ctx)
+	if err := descriptor.checkAccess(ctx); err != nil {
+		return nil, false, err
+	}
 	entry, exists, err := r.cache.Find(ctx, identity{descriptor: descriptor, record: key})
 	if err != nil || !exists {
 		return nil, exists, err
@@ -225,7 +230,9 @@ func (r *Runtime) Snapshot(ctx context.Context, descriptor *Descriptor, key stor
 	}
 	var copy any
 	var found bool
-	descriptor.checkAccess(ctx)
+	if err := descriptor.checkAccess(ctx); err != nil {
+		return nil, false, err
+	}
 	_, err := r.cache.Use(ctx, identity{descriptor, key}, func(entry *entity) error {
 		return txn.WithLocks(ctx, txn.Lockeys{entry.value.(txn.StoreProvider).StoreTarget().Lock}, func(ctx context.Context) error {
 			value, exists, err := r.visible(ctx, entry)

@@ -68,7 +68,7 @@ cmd/                运维工具与固定版本协议生成入口
 
 ```go
 app, err := bee.New(config).
-    GeneratedData(data.DefaultTypeRegistry(), nil).
+    GeneratedData(data.DefaultTypeRegistry()).
     Services(services...).
     Build()
 if err != nil { return err }

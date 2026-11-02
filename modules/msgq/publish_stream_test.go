@@ -13,9 +13,13 @@ func TestPublishStreamSendReturnsAfterLocalAdmission(t *testing.T) {
 	publisher := &grpcPublishStream{items: make(chan grpcPublishItem, 1), done: make(chan struct{})}
 	defer close(publisher.done)
 	payload := []byte("before")
+	request := &msgqpb.PublishRequest{
+		Kind: msgqpb.PublishRequest_KIND_ROLE, SessionId: 47, RoleId: 1001,
+		InstanceId: "msgq-a", Generation: "generation-1", Payload: payload,
+	}
 	result := make(chan error, 1)
 	go func() {
-		result <- publisher.send(context.Background(), &msgqpb.PublishRequest{Payload: payload})
+		result <- publisher.send(context.Background(), request)
 	}()
 	select {
 	case err := <-result:
@@ -26,8 +30,31 @@ func TestPublishStreamSendReturnsAfterLocalAdmission(t *testing.T) {
 		t.Fatal("本地队列已接收，下行发布仍等待写协程")
 	}
 	copy(payload, "after!")
-	if got := string((<-publisher.items).request.GetPayload()); got != "before" {
+	request.InstanceId = "msgq-b"
+	queued := (<-publisher.items).request
+	if got := string(queued.GetPayload()); got != "before" {
 		t.Fatalf("入队载荷 = %q，调用方修改不应影响待发送消息", got)
+	}
+	if queued.GetKind() != msgqpb.PublishRequest_KIND_ROLE ||
+		queued.GetSessionId() != 47 || queued.GetRoleId() != 1001 ||
+		queued.GetInstanceId() != "msgq-a" || queued.GetGeneration() != "generation-1" {
+		t.Fatalf("入队消息未保留提交时的寻址字段: %v", queued)
+	}
+}
+
+// 只测本地准入与载荷隔离，不把 gRPC 网络开销混入复制成本。
+func BenchmarkPublishStreamLocalAdmission(b *testing.B) {
+	publisher := &grpcPublishStream{items: make(chan grpcPublishItem, 1), done: make(chan struct{})}
+	request := &msgqpb.PublishRequest{
+		Kind: msgqpb.PublishRequest_KIND_ROLE, RoleId: 1001,
+		InstanceId: "msgq-a", Generation: "generation-1", Payload: make([]byte, 128),
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := publisher.send(b.Context(), request); err != nil {
+			b.Fatal(err)
+		}
+		<-publisher.items
 	}
 }
 

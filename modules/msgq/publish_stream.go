@@ -57,9 +57,16 @@ func (publisher *grpcPublishStream) send(ctx context.Context, request *msgqpb.Pu
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	queued := *request
-	queued.Payload = bytes.Clone(request.Payload)
-	item := grpcPublishItem{request: &queued}
+	// 本进程构造的发布消息只复制协议字段，不复制 protobuf 的内部状态。
+	queued := &msgqpb.PublishRequest{
+		Kind:       request.Kind,
+		SessionId:  request.SessionId,
+		RoleId:     request.RoleId,
+		InstanceId: request.InstanceId,
+		Generation: request.Generation,
+		Payload:    bytes.Clone(request.Payload),
+	}
+	item := grpcPublishItem{request: queued}
 	if publisher.samples.Add(1)&63 == 0 {
 		item.queuedAt = time.Now()
 	}

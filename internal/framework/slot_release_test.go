@@ -210,7 +210,7 @@ func TestStopReleasesOnlyAfterServiceBackgroundQueueExits(t *testing.T) {
 	app, err := New(config, WithService(testService{
 		spec: Spec{Name: "game", Requires: []CModID{CModDiscovery}},
 		start: func(c Context) error {
-			current = discovery.SlotAssignment{"slot", c.Instance().ID, 1}
+			current = discovery.SlotAssignment{SlotID: "slot", RuntimeInstanceID: c.Instance().ID, Generation: 1}
 			return registry.Slots().CreateSlot(ctx, current)
 		},
 		stop: func(context.Context) error {

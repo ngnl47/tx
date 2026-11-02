@@ -215,9 +215,6 @@ func (server *Server) shutdown(ctx context.Context, drain bool) error {
 			server.cleanups[index]()
 		}
 		server.cleanups = nil
-		if server.bindStorage != nil {
-			server.bindStorage(nil)
-		}
 		if runtime != nil {
 			runtime.setInstanceStatus(discovery.StatusStopping)
 		}
