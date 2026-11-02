@@ -78,6 +78,8 @@ type Context interface {
 	Instance() discovery.Instance
 	// Tasks 返回当前 owner 独立的后台任务入口；框架会在释放 owner 前取消并等待这些任务。
 	Tasks() lifecycle.Tasks
+	// ReportFatal 将不可恢复的服务错误交给 Server 统一终止流程。
+	ReportFatal(error)
 	// Admission 返回当前进程的外部工作准入状态。
 	Admission() lifecycle.Admission
 	// Storage 返回框架管理的存储能力；服务未声明存储依赖时可能为 nil。
@@ -262,4 +264,10 @@ func (service *serviceContext) TaskQueue() tasks.Publisher {
 		return nil
 	}
 	return service.runtime.taskQueue
+}
+
+func (service *serviceContext) ReportFatal(err error) {
+	if service != nil && service.runtime != nil && service.runtime.reportFatal != nil {
+		service.runtime.reportFatal(err)
+	}
 }

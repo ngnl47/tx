@@ -18,6 +18,8 @@ type Provider interface {
 	txmongo.DatabaseProvider
 	AppID() string
 	Actor() actor.Runtime
+	// RequireStorage 只校验存储模式的服务声明和生命周期，不创建 Reader 或发起 I/O。
+	RequireStorage(meta.StorageMode)
 	Reader(meta.StorageMode) storage.DocumentLoader
 	MongoBackfiller() storage.DocumentBackfiller
 	Writer() storage.ChangeApplier

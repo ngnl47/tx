@@ -22,6 +22,7 @@ type Server struct {
 	identityResolver IdentityResolver
 	dispatcher       Dispatcher
 	admission        lifecycle.Admission
+	connections      lifecycle.Admission
 	sessions         SessionClientRouter
 	connectionID     ConnectionIDGenerator
 	activeSessions   *sessionRegistry
@@ -45,6 +46,7 @@ func NewServer(options ServerOptions) (*Server, error) {
 		identityResolver: options.IdentityResolver,
 		dispatcher:       options.Dispatcher,
 		admission:        options.Admission,
+		connections:      options.Connections,
 		sessions:         options.Sessions,
 		connectionID:     options.ConnectionID,
 		activeSessions:   newSessionRegistry(),
@@ -396,4 +398,11 @@ func downFrame(message msgq.FetchResult) (Frame, error) {
 		return Frame{}, err
 	}
 	return Frame{Kind: FrameDownMsg, Seq: message.Seq, CommandHash: hash, Payload: body}, nil
+}
+
+func (s *Server) beginConnection() (func(), error) {
+	if s.connections == nil {
+		return func() {}, nil
+	}
+	return s.connections.Enter()
 }

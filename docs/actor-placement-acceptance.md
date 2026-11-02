@@ -150,7 +150,24 @@ go test ./...
 
 上述检查通过。最终 tx 全量日志 `/tmp/tx-release-final-go.log`，六核心包 race 见 `/tmp/tx-release-race.log` 前六项，公开槽位 race 见 `/tmp/tx-release-public-race.log`，审查修复后三包 race 见 `/tmp/tx-release-review-green.log`；两组应用见 `/tmp/txgame-release-go.log`、`/tmp/txgameslg-release-go.log`。未设置其他可选后端验收变量的包级测试按原条件跳过，真实应用路径由下列独立集群覆盖。
 
-**未通过项：** 扩大执行整个 `./tests -race` 时，`TestSessionClientRouterConcurrentFreshSessionsShareRoleOwner` 暴露既有 `tests/msgq_client_test.go:260` 的 `sessionClientDialerFake.instances` 并发 append；该测试同时假设并发建连只拨号一次。本轮未修改 MsgQ 路径或该夹具，失败完整保留在 `/tmp/tx-release-race.log`，不将定向通过表述为全套 race 通过。
+**当时未通过项：** 扩大执行整个 `./tests -race` 时，`TestSessionClientRouterConcurrentFreshSessionsShareRoleOwner` 暴露既有 `tests/msgq_client_test.go:260` 的 `sessionClientDialerFake.instances` 并发 append；该测试同时假设并发建连只拨号一次。当时未修改 MsgQ 路径或该夹具，失败完整保留在 `/tmp/tx-release-race.log`，不将当时定向通过表述为全套 race 通过。后续修复与验证见下节。
+
+### 2026-11-02 MsgQ 并发夹具补验
+
+本次先以十轮定向 race 复现，再仅修改 `tests/msgq_client_test.go`。夹具为并发记录加锁、每次拨号创建独立客户端、以原子计数观察关闭，并用屏障固定并发冷拨号窗口。断言改为所有会话最终复用同一 owner 的同一客户端，未采用的候选关闭一次，保留的客户端在 Router 关闭后关闭一次。生产连接缓存与路由实现未改动。
+
+以下本地检查通过，使用 Go 1.27.0、`GOTOOLCHAIN=local`：
+
+```sh
+go test -race ./tests -run '^TestSessionClientRouterConcurrentFreshSessionsShareRoleOwner$' -count=10 -timeout=60s
+go test -race ./internal/instanceconn ./modules/msgq/... -count=1 -timeout=120s
+go test -race ./tests -count=1
+go test ./...
+```
+
+失败复现日志：`/private/tmp/tx-msgq-race-before-20261102.log`。通过日志分别为 `/private/tmp/tx-msgq-race-after-20261102.log`、`/private/tmp/tx-msgq-packages-race-unrestricted-20261102.log`、`/private/tmp/tx-msgq-tests-race-local-20261102.log`、`/private/tmp/tx-msgq-full-local-20261102.log`。首次沙箱执行中本机监听受限，允许本机监听后重跑通过；未新开 etcd/NATS/Mongo 等外部依赖验收，不把本次结果描述为全仓 race 或真实集群复验。
+
+额外 `go vet ./...` 仍报告既有 MsgQ protobuf 消息值复制、夹具含锁值接收器及槽位测试无字段名字面量，见 `/private/tmp/tx-msgq-vet-20261102.log`；本次保留这些告警，不扩大生产代码修复范围。
 
 ### 正式包多进程验证
 

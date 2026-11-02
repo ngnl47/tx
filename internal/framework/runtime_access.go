@@ -50,8 +50,11 @@ func storageCMod(mode meta.StorageMode) CModID {
 	}
 	panic(CapabilityError{Err: fmt.Errorf("unsupported storage mode %q", mode)})
 }
-func (p *runtimeAccess) Reader(mode meta.StorageMode) storage.DocumentLoader {
+func (p *runtimeAccess) RequireStorage(mode meta.StorageMode) {
 	p.require(storageCMod(mode))
+}
+func (p *runtimeAccess) Reader(mode meta.StorageMode) storage.DocumentLoader {
+	p.RequireStorage(mode)
 	return modeStorageAccess{storage: p.runtime.storage, mode: mode}.Reader()
 }
 func (p *runtimeAccess) Writer() storage.ChangeApplier { return p }

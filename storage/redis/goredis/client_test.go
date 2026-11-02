@@ -38,6 +38,29 @@ func (hook testRedisHook) ProcessPipelineHook(next redis.ProcessPipelineHook) re
 	return next
 }
 
+func TestCommandsBorrowClientWithoutLifecycle(t *testing.T) {
+	raw := redis.NewClient(&redis.Options{Addr: "unused"})
+	t.Cleanup(func() { _ = raw.Close() })
+	raw.AddHook(testRedisHook{process: func(command redis.Cmder) error {
+		command.(*redis.StringCmd).SetVal("玩家")
+		return nil
+	}})
+	client := NewClient(raw)
+	commands := client.Commands()
+	if _, ok := commands.(interface{ Close() error }); ok {
+		t.Fatal("命令入口暴露共享连接 Close")
+	}
+	if _, ok := commands.(interface{ AddHook(redis.Hook) }); ok {
+		t.Fatal("命令入口暴露共享连接配置")
+	}
+	if commands != client.Commands() {
+		t.Fatal("重复借用未保留同一命令视图")
+	}
+	if value, err := commands.Get(t.Context(), "role:1001").Result(); err != nil || value != "玩家" {
+		t.Fatalf("原生命令转发: %q, %v", value, err)
+	}
+}
+
 func TestClientClassifiesDriverErrorsButNotResultDecoding(t *testing.T) {
 	transportErr := &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
 	raw := redis.NewClient(&redis.Options{Addr: "unused"})

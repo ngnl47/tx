@@ -15,10 +15,18 @@ import (
 type Descriptor struct {
 	// TypeName 是生成类型名，仅用于管理元数据，不参与缓存身份。
 	TypeName string
-	Load     func(context.Context, storage.RecordKey) (any, bool, error)
-	Store    func(any) storage.ChangeStore
+	// CheckAccess 在使用缓存前检查当前上下文的存储能力，不加载存储。
+	CheckAccess func(context.Context)
+	Load        func(context.Context, storage.RecordKey) (any, bool, error)
+	Store       func(any) storage.ChangeStore
 	// Clone 只复制业务字段，不共享子对象，也不复制 Store、追踪器或事务状态。
 	Clone func(any) (any, error)
+}
+
+func (d *Descriptor) checkAccess(ctx context.Context) {
+	if d.CheckAccess != nil {
+		d.CheckAccess(ctx)
+	}
 }
 
 // Described 由启用缓存的生成根实现，创建和删除与查询复用同一描述。
@@ -46,6 +54,7 @@ type entity struct {
 type Runtime struct {
 	cache      *Cache[identity, *entity]
 	management *managementGate
+	access     Access
 }
 
 type runtimeKey struct{}
@@ -67,6 +76,7 @@ func NewRuntime(config Config, release func(context.Context, any) (bool, error))
 		config.MaximumSize = 10000
 	}
 	runtime := &Runtime{management: new(managementGate)}
+	runtime.access.runtime = runtime
 	cache, err := NewCache(func(id identity) string {
 		return fmt.Sprintf("%p/%T:%v/%T:%v", id.descriptor, id.record.ID, id.record.ID, id.record.ShardKey, id.record.ShardKey)
 	}, func(ctx context.Context, id identity) (*entity, bool, error) {
@@ -125,6 +135,7 @@ func (r *Runtime) ReserveCreate(ctx context.Context, value any) (txn.CreationRes
 		return nil, fmt.Errorf("entity cache: %T has no generated descriptor", value)
 	}
 	d := described.EntityDescriptor()
+	d.checkAccess(ctx)
 	key := d.Store(value).RecordKey()
 	if err := storage.ValidateRecordKey(d.Store(value).TypeSpec(), key); err != nil {
 		return nil, err
@@ -144,6 +155,7 @@ func (r *Runtime) Find(ctx context.Context, descriptor *Descriptor, key storage.
 	if err != nil {
 		return nil, false, err
 	}
+	descriptor.checkAccess(ctx)
 	entry, exists, err := r.cache.Find(ctx, identity{descriptor: descriptor, record: key})
 	if err != nil || !exists {
 		return nil, exists, err
@@ -213,6 +225,7 @@ func (r *Runtime) Snapshot(ctx context.Context, descriptor *Descriptor, key stor
 	}
 	var copy any
 	var found bool
+	descriptor.checkAccess(ctx)
 	_, err := r.cache.Use(ctx, identity{descriptor, key}, func(entry *entity) error {
 		return txn.WithLocks(ctx, txn.Lockeys{entry.value.(txn.StoreProvider).StoreTarget().Lock}, func(ctx context.Context) error {
 			value, exists, err := r.visible(ctx, entry)

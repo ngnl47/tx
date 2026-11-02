@@ -9,7 +9,7 @@ import (
 )
 
 // EntityCache 按首次生成查询创建，多个子服务 Provider 共用当前应用的对象身份。
-func (p *runtimeAccess) EntityCache() (*entitycache.Runtime, error) {
+func (p *runtimeAccess) EntityCache() (*entitycache.Access, error) {
 	p.requireOpen()
 	r := p.runtime
 	r.entityCacheMu.Lock()
@@ -18,7 +18,7 @@ func (p *runtimeAccess) EntityCache() (*entitycache.Runtime, error) {
 		return nil, entitycache.ErrManagementClosed
 	}
 	if r.entityCache != nil {
-		return r.entityCache, nil
+		return r.entityCache.Access(), nil
 	}
 	cache, err := entitycache.NewRuntime(r.config.Runtime.EntityCache, func(ctx context.Context, value any) (bool, error) {
 		if lockable, ok := value.(txn.StoreProvider); ok {
@@ -50,7 +50,7 @@ func (p *runtimeAccess) EntityCache() (*entitycache.Runtime, error) {
 		_ = cache.DrainManagement(context.Background())
 	}
 	r.entityCache = cache
-	return cache, nil
+	return cache.Access(), nil
 }
 
 // stopEntityCacheManagement 与惰性创建共用状态锁；停止管理不撤销排水中的业务能力。

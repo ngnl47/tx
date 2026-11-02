@@ -27,6 +27,9 @@ type Registrar interface {
 
 var _ Registrar = (*Host)(nil)
 
+// serviceRegistrar 只借出协议登记能力，不暴露共享服务器的关闭入口。
+type serviceRegistrar struct{ grpc.ServiceRegistrar }
+
 // Host 持有同一进程内各服务共享的普通 gRPC listener。
 // 各服务在 Start 前注册协议，Host 负责对外服务和关闭。
 type Host struct {
@@ -79,7 +82,7 @@ func (host *Host) Register(register func(grpc.ServiceRegistrar) error) error {
 	}
 	server := host.server
 	host.mu.Unlock()
-	return register(server)
+	return register(serviceRegistrar{server})
 }
 
 // Start 启动全部已注册协议，并将服务任务登记到 root。

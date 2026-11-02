@@ -201,6 +201,8 @@ type CModContext interface {
 	AppID() string
 	Instance() discovery.Instance
 	Tasks() lifecycle.Tasks
+	// ReportFatal 将不可恢复的错误交给 Server 统一终止流程。
+	ReportFatal(error)
 	Storage() Storage
 	StorageFor(meta.StorageMode) ModeStorage
 	RPC() txrpc.Access

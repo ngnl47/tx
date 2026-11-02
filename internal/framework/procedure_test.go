@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -23,6 +24,35 @@ type lifecycleProcedure func(*txn.Tx) error
 
 func (p lifecycleProcedure) Locks(context.Context) (txn.Lockeys, error) { return nil, nil }
 func (p lifecycleProcedure) Process(tx *txn.Tx) error                   { return p(tx) }
+
+func TestProcedureOrdersOnlySelectedStorage(t *testing.T) {
+	mod, err := NewProcedureBuilder().WriteBack(stateWriteBackComponentFake{}).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, storage := range []CModID{"", CModRedisStorage, CModMongoStorage, CModFusionStorage} {
+		t.Run(string(storage), func(t *testing.T) {
+			requires := []CModID{CModProcedure}
+			want := []CModID{CModProcedure}
+			if storage != "" {
+				requires = append(requires, storage)
+				want = []CModID{storage, CModProcedure}
+			}
+			graph, err := resolveCModGraph([]CMod{
+				mod,
+				cmodGraphFake{id: CModRedisStorage},
+				cmodGraphFake{id: CModMongoStorage},
+				cmodGraphFake{id: CModFusionStorage},
+			}, []Service{cmodServiceFake{spec: Spec{Name: "game", Requires: requires}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(graph.IDs(), want) {
+				t.Fatalf("启动顺序 = %v，期望 %v", graph.IDs(), want)
+			}
+		})
+	}
+}
 
 func TestProcedureDrainWaitsBeforeFinalWriteBack(t *testing.T) {
 	events := []string{}

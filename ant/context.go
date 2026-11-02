@@ -80,6 +80,8 @@ type Context interface {
 	Instance() discovery.Instance
 	// Tasks 返回当前 owner 的后台任务入口。
 	Tasks() lifecycle.Tasks
+	// ReportFatal 报告不可恢复的服务错误，关闭决策仍由框架负责。
+	ReportFatal(error)
 	// Admission 返回进程外部工作准入状态。
 	Admission() lifecycle.Admission
 	// Storage 返回当前 owner 已声明的最强文档存储能力。
@@ -113,6 +115,7 @@ type Context interface {
 }
 
 type frameworkContext interface {
+	ReportFatal(error)
 	TaskQueue() tasks.Publisher
 	AppID() string
 	Instance() discovery.Instance
@@ -455,4 +458,10 @@ func (view *contextView) Runtime() txruntime.Provider {
 		}
 	}
 	return kernel.RuntimeAccess(view.ownerName(), ids)
+}
+
+func (view *contextView) ReportFatal(err error) {
+	if view != nil && view.kernel != nil {
+		view.kernel.ReportFatal(err)
+	}
 }

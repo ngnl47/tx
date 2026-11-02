@@ -29,8 +29,10 @@ type LocalMsgQ interface {
 
 // Dependencies 是 Agent 入口启动所需的最小基础能力集合。
 type Dependencies struct {
-	// Tasks 托管 TCP 与 WebSocket 监听任务。
+	// Tasks 托管监听器及完整连接的实际执行期。
 	Tasks lifecycle.Tasks
+	// ReportFatal 将入口非预期退出交给宿主统一处理；独立使用时可留空。
+	ReportFatal func(error)
 	// Admission 在排水开始后拒绝新的外部业务帧与项目普通 HTTP 请求。
 	Admission lifecycle.Admission
 	// RPC 将 Agent 控制服务注册到进程共享的内部 gRPC Host。
@@ -65,6 +67,7 @@ type Service struct {
 	dependencies Dependencies
 
 	mu                sync.RWMutex
+	tasks             *lifecycle.WaitGroupContext
 	runtime           *txagent.Server
 	tcp               *txagent.TCPServer
 	websocket         *http.Server
@@ -86,7 +89,7 @@ func New(options Options, dependencies Dependencies) (*Service, error) {
 }
 
 // Init 解析会话路由并启动 TCP、WebSocket 入口。
-func (service *Service) Init(context.Context) error {
+func (service *Service) Init(ctx context.Context) (initErr error) {
 	if service == nil {
 		return fmt.Errorf("agent service: service is nil")
 	}
@@ -94,65 +97,81 @@ func (service *Service) Init(context.Context) error {
 	if err != nil {
 		return err
 	}
+	work := lifecycle.NewWaitGroupContext(service.dependencies.Tasks)
+	service.mu.Lock()
+	service.tasks = work
+	service.sessionCloser = closer
+	service.mu.Unlock()
+	defer func() {
+		if initErr != nil {
+			initErr = errors.Join(initErr, service.Stop(ctx))
+		}
+	}()
+	if err := service.dependencies.Tasks.Go(func(context.Context) {
+		work.WaitDone()
+		// 启动失败可能先取消任务再调用 Stop；关闭监听以唤醒 Serve。
+		_ = service.Drain(context.Background())
+		// 父取消也要先关闭登记边界，再等待实际退出，避免新连接与 Wait 交错。
+		_ = work.CancelAndWait(context.Background())
+	}); err != nil {
+		return err
+	}
 	agentRuntime, err := txagent.NewServer(txagent.ServerOptions{
 		IdentityResolver: service.options.Identity,
 		Dispatcher:       service.options.Dispatcher,
 		Admission:        service.dependencies.Admission,
+		Connections:      lifecycle.AdmissionFunc(work.Enter),
 		Sessions:         sessions,
 	})
 	if err != nil {
-		_ = closer.Close()
 		return fmt.Errorf("agent service: create session runtime: %w", err)
 	}
 	if err := service.dependencies.RPC.Register(func(registrar grpc.ServiceRegistrar) error {
 		return txagent.RegisterControlService(registrar, agentRuntime)
 	}); err != nil {
-		_ = closer.Close()
 		return fmt.Errorf("agent service: register control RPC: %w", err)
 	}
 	var tcp *txagent.TCPServer
 	if service.options.TCPListen != "" {
 		tcp, err = txagent.ListenTCP(service.options.TCPListen, agentRuntime, service.options.MaxFrameBytes)
 		if err != nil {
-			_ = closer.Close()
 			return fmt.Errorf("agent service: listen TCP %s: %w", service.options.TCPListen, err)
 		}
 	}
-	websocket, listener, err := service.startWebSocket(agentRuntime, tcp)
+	service.mu.Lock()
+	service.runtime, service.tcp = agentRuntime, tcp
+	service.mu.Unlock()
+	websocket, listener, err := service.startWebSocket(agentRuntime)
 	if err != nil {
-		_ = closer.Close()
 		return err
 	}
-	if tcp != nil {
-		if err := service.dependencies.Tasks.Go(func(ctx context.Context) {
-			if serveErr := tcp.Serve(ctx); serveErr != nil && ctx.Err() == nil {
-				txlog.ErrorContext(ctx, "agent TCP service stopped unexpectedly", "err", serveErr)
-			}
-		}); err != nil {
-			if websocket != nil {
-				_ = websocket.Close()
-			}
-			_ = tcp.Close()
-			_ = closer.Close()
-			return err
-		}
-	}
 	service.mu.Lock()
-	service.runtime = agentRuntime
-	service.tcp = tcp
 	service.websocket = websocket
 	service.websocketListener = listener
 	if websocket != nil {
 		service.websocketAddr = websocket.Addr
 	}
-	service.sessionCloser = closer
 	service.draining = false
 	service.mu.Unlock()
+	if websocket != nil {
+		if err := lifecycle.TaskView(work).Go(func(ctx context.Context) {
+			service.reportServeExit(ctx, "WebSocket", websocket.Serve(listener))
+		}); err != nil {
+			return err
+		}
+	}
+	if tcp != nil {
+		if err := lifecycle.TaskView(work).Go(func(ctx context.Context) {
+			service.reportServeExit(ctx, "TCP", tcp.Serve(ctx))
+		}); err != nil {
+			return err
+		}
+	}
 	txlog.Info("agent service initialized", "tcp", service.TCPAddress(), "webSocket", service.WebSocketAddress())
 	return nil
 }
 
-func (service *Service) startWebSocket(agentRuntime *txagent.Server, tcp *txagent.TCPServer) (*http.Server, net.Listener, error) {
+func (service *Service) startWebSocket(agentRuntime *txagent.Server) (*http.Server, net.Listener, error) {
 	if service.options.WebSocketListen == "" {
 		return nil, nil, nil
 	}
@@ -160,37 +179,35 @@ func (service *Service) startWebSocket(agentRuntime *txagent.Server, tcp *txagen
 		AllowedOrigins: service.options.WebSocketOrigins,
 	})
 	if err != nil {
-		if tcp != nil {
-			_ = tcp.Close()
-		}
 		return nil, nil, fmt.Errorf("agent service: create WebSocket handler: %w", err)
 	}
 	listener, err := net.Listen("tcp", service.options.WebSocketListen)
 	if err != nil {
-		if tcp != nil {
-			_ = tcp.Close()
-		}
 		return nil, nil, fmt.Errorf("agent service: listen WebSocket %s: %w", service.options.WebSocketListen, err)
 	}
 	httpServer := &http.Server{
 		Addr:    listener.Addr().String(),
 		Handler: service.composeHTTPHandler(websocketHandler),
 		BaseContext: func(net.Listener) context.Context {
-			return service.dependencies.Tasks
+			return lifecycle.TaskView(service.tasks)
 		},
 	}
-	if err := service.dependencies.Tasks.Go(func(ctx context.Context) {
-		if serveErr := httpServer.Serve(listener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) && ctx.Err() == nil && !service.isDraining() {
-			txlog.ErrorContext(ctx, "agent WebSocket service stopped unexpectedly", "err", serveErr)
-		}
-	}); err != nil {
-		_ = httpServer.Close()
-		if tcp != nil {
-			_ = tcp.Close()
-		}
-		return nil, nil, err
-	}
 	return httpServer, listener, nil
+}
+
+func (service *Service) reportServeExit(ctx context.Context, transport string, err error) {
+	if ctx.Err() != nil || service.isDraining() {
+		return
+	}
+	if err == nil {
+		err = errors.New("listener exited")
+	}
+	err = fmt.Errorf("agent %s service stopped unexpectedly: %w", transport, err)
+	if service.dependencies.ReportFatal != nil {
+		service.dependencies.ReportFatal(err)
+	} else {
+		txlog.ErrorContext(ctx, "agent service stopped unexpectedly", "err", err)
+	}
 }
 
 // composeHTTPHandler 复用同一个 HTTP Server 承载根路径 WebSocket 和项目普通 HTTP Handler。
@@ -236,19 +253,17 @@ func (service *Service) Drain(ctx context.Context) error {
 }
 
 // Stop 释放监听器与会话路由资源。该方法可以重复调用。
-func (service *Service) Stop(context.Context) error {
+func (service *Service) Stop(ctx context.Context) error {
 	if service == nil {
 		return nil
 	}
 	service.mu.Lock()
-	tcp, websocket, listener, closer := service.tcp, service.websocket, service.websocketListener, service.sessionCloser
-	service.tcp = nil
-	service.runtime = nil
-	service.websocket = nil
-	service.websocketListener = nil
-	service.websocketAddr = ""
-	service.sessionCloser = nil
+	service.draining = true
+	tasks, tcp, websocket, listener := service.tasks, service.tcp, service.websocket, service.websocketListener
 	service.mu.Unlock()
+	if tasks != nil {
+		tasks.Cancel()
+	}
 	var errs []error
 	if tcp != nil {
 		errs = append(errs, tcp.Close())
@@ -261,6 +276,20 @@ func (service *Service) Stop(context.Context) error {
 			errs = append(errs, err)
 		}
 	}
+	if tasks != nil {
+		if err := tasks.CancelAndWait(ctx); err != nil {
+			return errors.Join(append(errs, err)...)
+		}
+	}
+	service.mu.Lock()
+	closer := service.sessionCloser
+	service.tcp = nil
+	service.runtime = nil
+	service.websocket = nil
+	service.websocketListener = nil
+	service.websocketAddr = ""
+	service.sessionCloser = nil
+	service.mu.Unlock()
 	if closer != nil {
 		errs = append(errs, closer.Close())
 	}

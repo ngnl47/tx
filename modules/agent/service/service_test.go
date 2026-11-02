@@ -2,10 +2,14 @@ package agentservice
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
+	"github.com/coder/websocket"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -97,6 +101,52 @@ func TestServiceRequiresRPCRegistrar(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("New returned nil error without RPC registrar")
+	}
+}
+
+func TestServiceReportsUnexpectedListenerExit(t *testing.T) {
+	for _, transport := range []string{"tcp", "websocket"} {
+		t.Run(transport, func(t *testing.T) {
+			root := lifecycle.NewWaitGroupContext(context.Background())
+			reported := make(chan error, 1)
+			options := Options{
+				MaxFrameBytes: 1024,
+				Identity: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
+					return protocol.SessionPrincipal{}, nil
+				}),
+				Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error { return nil }),
+				Sessions:   noopSessionRouter{},
+			}
+			if transport == "tcp" {
+				options.TCPListen = "127.0.0.1:0"
+			} else {
+				options.WebSocketListen = "127.0.0.1:0"
+			}
+			service, err := New(options, Dependencies{
+				Tasks: root, Admission: lifecycle.NewIngress(root), RPC: newTestRPCRegistrar(),
+				ReportFatal: func(err error) { reported <- err },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = service.Stop(context.Background()); root.Cancel(); root.Wait() })
+			if err := service.Init(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if transport == "tcp" {
+				_ = service.tcp.Close()
+			} else {
+				_ = service.websocketListener.Close()
+			}
+			select {
+			case err := <-reported:
+				if err == nil {
+					t.Fatal("listener failure was reported as nil")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("listener exit was not reported to host")
+			}
+		})
 	}
 }
 
@@ -378,4 +428,239 @@ func (store *memorySessionStore) Unbind(_ context.Context, binding txmsgq.Sessio
 	}
 	delete(store.bindings, binding.SessionID)
 	return true, nil
+}
+
+func TestServiceStopWaitsForConnectionSetupAndRetainsRouter(t *testing.T) {
+	for _, transport := range []string{"tcp", "websocket"} {
+		for _, stage := range []string{"identity", "acquire", "init"} {
+			t.Run(transport+"/"+stage, func(t *testing.T) {
+				root := lifecycle.NewWaitGroupContext(context.Background())
+				entered, release, canceled := make(chan struct{}), make(chan struct{}), make(chan struct{})
+				var releaseOnce sync.Once
+				unblock := func() { releaseOnce.Do(func() { close(release) }) }
+				block := func(ctx context.Context) error {
+					close(entered)
+					<-ctx.Done()
+					close(canceled)
+					<-release
+					return ctx.Err()
+				}
+				router := &setupSessionRouter{client: &setupSessionClient{}}
+				identity := txagent.IdentityResolverFunc(func(ctx context.Context, _ txagent.AuthRequest) (protocol.SessionPrincipal, error) {
+					if stage == "identity" {
+						return protocol.SessionPrincipal{}, block(ctx)
+					}
+					return protocol.SessionPrincipal{RoleID: 1, SessionID: 2}, nil
+				})
+				if stage == "acquire" {
+					router.acquire = block
+				}
+				if stage == "init" {
+					router.client.init = block
+				}
+				options := Options{MaxFrameBytes: 1024, Identity: identity, Sessions: router,
+					Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error { return nil })}
+				if transport == "tcp" {
+					options.TCPListen = "127.0.0.1:0"
+				} else {
+					options.WebSocketListen = "127.0.0.1:0"
+				}
+				service, err := New(options, Dependencies{Tasks: root, Admission: lifecycle.NewIngress(root), RPC: newTestRPCRegistrar()})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { unblock(); _ = service.Stop(context.Background()); root.Cancel(); root.Wait() })
+				if err := service.Init(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				sendServiceHandshake(t, service, transport)
+				select {
+				case <-entered:
+				case <-time.After(time.Second):
+					t.Fatal("connection setup did not enter callback")
+				}
+				if err := service.Drain(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				root.Cancel()
+				select {
+				case <-canceled:
+				case <-time.After(time.Second):
+					t.Fatal("setup callback did not observe cancellation")
+				}
+				waitCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+				defer cancel()
+				if err := root.CancelAndWait(waitCtx); !errors.Is(err, context.DeadlineExceeded) {
+					t.Errorf("host wait = %v, want deadline while callback is still executing", err)
+				}
+				stopCtx, stopCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+				defer stopCancel()
+				if err := service.Stop(stopCtx); !errors.Is(err, context.DeadlineExceeded) {
+					t.Errorf("Stop = %v, want deadline while callback is still executing", err)
+				}
+				if router.closed.Load() {
+					t.Error("session router closed before setup callback exited")
+				}
+				unblock()
+				if err := root.CancelAndWait(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				if err := service.Stop(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				if !router.closed.Load() {
+					t.Fatal("Stop retry did not close session router")
+				}
+			})
+		}
+	}
+}
+
+func sendServiceHandshake(t *testing.T, service *Service, transport string) func(txagent.Frame) {
+	t.Helper()
+	var send func([]byte)
+	if transport == "tcp" {
+		connection, err := net.Dial("tcp", service.TCPAddress())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = connection.Close() })
+		send = func(frame []byte) {
+			packet := make([]byte, 4+len(frame))
+			binary.BigEndian.PutUint32(packet[:4], uint32(len(frame)))
+			copy(packet[4:], frame)
+			if _, err := connection.Write(packet); err != nil {
+				t.Fatal(err)
+			}
+		}
+	} else {
+		connection, _, err := websocket.Dial(context.Background(), "ws://"+service.WebSocketAddress()+"/", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = connection.CloseNow() })
+		send = func(frame []byte) {
+			if err := connection.Write(context.Background(), websocket.MessageBinary, frame); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	write := func(frame txagent.Frame) {
+		encoded, err := txagent.EncodeFrame(frame, 1024)
+		if err != nil {
+			t.Fatal(err)
+		}
+		send(encoded)
+	}
+	write(txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")})
+	return write
+}
+
+type setupSessionClient struct {
+	txmsgq.SessionClient
+	init func(context.Context) error
+}
+
+func (client *setupSessionClient) Init(ctx context.Context, _ txmsgq.InitRequest) error {
+	if client.init != nil {
+		return client.init(ctx)
+	}
+	return errors.New("unexpected session initialization")
+}
+
+type setupSessionRouter struct {
+	client  *setupSessionClient
+	acquire func(context.Context) error
+	closed  atomic.Bool
+}
+
+func (router *setupSessionRouter) Acquire(ctx context.Context, _ txmsgq.AcquireSessionRequest) (txmsgq.SessionClient, error) {
+	if router.acquire != nil {
+		return nil, router.acquire(ctx)
+	}
+	return router.client, nil
+}
+
+func (router *setupSessionRouter) Close() error { router.closed.Store(true); return nil }
+
+func TestServiceDrainPreservesAcceptedBusinessUntilCompletion(t *testing.T) {
+	for _, transport := range []string{"tcp", "websocket"} {
+		t.Run(transport, func(t *testing.T) {
+			root := lifecycle.NewWaitGroupContext(context.Background())
+			ingress := lifecycle.NewIngress(root)
+			entered, release := make(chan context.Context, 1), make(chan struct{})
+			var releaseOnce sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(release) }) }
+			mailbox, err := txmsgq.NewServer(txmsgq.ServerOptions{
+				InstanceID: "drain-test", Store: newMemorySessionStore(), MaxBacklogMessages: 8,
+				OfflineTimeout: time.Minute, TerminateDeadSessionInterval: time.Second,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			client, err := txmsgq.NewLocalSessionClient(mailbox)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := mailbox.Start(root); err != nil {
+				t.Fatal(err)
+			}
+			options := Options{MaxFrameBytes: 1024, LocalMsgQ: fixedLocalMsgQ{client: client},
+				Identity: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
+					return protocol.SessionPrincipal{RoleID: 1, SessionID: 2}, nil
+				}),
+				Dispatcher: txagent.DispatchFunc(func(ctx context.Context, _ txagent.DispatchRequest) error {
+					entered <- ctx
+					<-release
+					return nil
+				}),
+			}
+			if transport == "tcp" {
+				options.TCPListen = "127.0.0.1:0"
+			} else {
+				options.WebSocketListen = "127.0.0.1:0"
+			}
+			reported := make(chan error, 1)
+			service, err := New(options, Dependencies{Tasks: root, Admission: ingress, RPC: newTestRPCRegistrar(), ReportFatal: func(err error) { reported <- err }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { unblock(); _ = service.Stop(context.Background()); root.Cancel(); root.Wait() })
+			if err := service.Init(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			send := sendServiceHandshake(t, service, transport)
+			send(txagent.Frame{Kind: txagent.FrameUpMsg, Seq: 1, CommandHash: 1})
+			var businessCtx context.Context
+			select {
+			case businessCtx = <-entered:
+			case <-time.After(time.Second):
+				t.Fatal("business callback did not start")
+			}
+			ingress.BeginDrain()
+			if err := service.Drain(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if err := businessCtx.Err(); err != nil {
+				t.Fatalf("Drain canceled accepted business: %v", err)
+			}
+			waitCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+			defer cancel()
+			if err := ingress.WaitContext(waitCtx); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("Drain wait = %v", err)
+			}
+			unblock()
+			if err := ingress.WaitContext(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if err := service.Stop(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-reported:
+				t.Fatalf("normal shutdown reported fatal: %v", err)
+			default:
+			}
+		})
+	}
 }

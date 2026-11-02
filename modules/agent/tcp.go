@@ -52,7 +52,13 @@ func (s *TCPServer) Serve(ctx context.Context) error {
 			}
 			return err
 		}
+		done, err := s.agent.beginConnection()
+		if err != nil {
+			_ = connection.Close()
+			continue
+		}
 		go func() {
+			defer done()
 			serveConnection(ctx, "tcp", connection.RemoteAddr().String(), s.agent, &tcpTransport{connection: connection, maxFrameBytes: s.maxFrameBytes})
 		}()
 	}

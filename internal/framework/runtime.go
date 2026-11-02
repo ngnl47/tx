@@ -23,6 +23,7 @@ type actorTransport interface {
 }
 
 type runtime struct {
+	reportFatal         func(error)
 	accessClosed        atomic.Bool
 	serviceAccess       map[string]*runtimeAccess
 	servicePhases       map[string]*servicePhase

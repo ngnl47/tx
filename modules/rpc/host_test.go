@@ -13,6 +13,27 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
+func TestHostRegistrationDoesNotExposeServerLifecycle(t *testing.T) {
+	server := grpc.NewServer()
+	t.Cleanup(server.Stop)
+	host := &Host{server: server}
+	if err := host.Register(func(registrar grpc.ServiceRegistrar) error {
+		if _, ok := registrar.(interface{ Stop() }); ok {
+			t.Fatal("协议注册入口暴露共享服务器 Stop")
+		}
+		if _, ok := registrar.(interface{ GracefulStop() }); ok {
+			t.Fatal("协议注册入口暴露共享服务器 GracefulStop")
+		}
+		healthpb.RegisterHealthServer(registrar, health.NewServer())
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := server.GetServiceInfo()["grpc.health.v1.Health"]; !ok {
+		t.Fatal("受限注册入口未注册协议")
+	}
+}
+
 func TestHostServesRegisteredServicesOnOneEndpoint(t *testing.T) {
 	root := lifecycle.NewWaitGroupContext(context.Background())
 	host, err := NewHost("127.0.0.1:0")

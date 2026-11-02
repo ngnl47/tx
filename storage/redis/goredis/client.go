@@ -27,7 +27,10 @@ func NewClient(client redis.Cmdable) Client {
 }
 
 // Commands 返回共享客户端的原生命令接口，不转移连接生命周期。
-func (c Client) Commands() redis.Cmdable { return c.client }
+func (c Client) Commands() redis.Cmdable { return commands{c.client} }
+
+// commands 隐藏底层连接的关闭和配置入口，保留原生命令及返回类型。
+type commands struct{ redis.Cmdable }
 
 func (c Client) Get(ctx context.Context, key string) (string, bool, error) {
 	if c.client == nil {

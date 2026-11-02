@@ -35,6 +35,12 @@ func NewWebSocketHandler(agent *Server, maxFrameBytes int, options WebSocketOpti
 	}
 	acceptOptions := &websocket.AcceptOptions{OriginPatterns: slices.Clone(options.AllowedOrigins)}
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		done, err := agent.beginConnection()
+		if err != nil {
+			http.Error(writer, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+			return
+		}
+		defer done()
 		connection, err := websocket.Accept(writer, request, acceptOptions)
 		if err != nil {
 			return

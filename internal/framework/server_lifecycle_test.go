@@ -2,11 +2,21 @@ package framework
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	txagent "github.com/ngnl47/tx/modules/agent"
+	agentservice "github.com/ngnl47/tx/modules/agent/service"
+	txmsgq "github.com/ngnl47/tx/modules/msgq"
+	"github.com/ngnl47/tx/protocol"
+	"google.golang.org/grpc"
 )
 
 func TestFatalDiscoveryLossDrainsAndStopsServer(t *testing.T) {
@@ -21,6 +31,159 @@ func TestFatalDiscoveryLossDrainsAndStopsServer(t *testing.T) {
 		t.Fatalf("stop error = %v", server.stopErr)
 	}
 }
+
+func TestServiceFatalReportDuringInitializationFailsStart(t *testing.T) {
+	want := errors.New("agent listener failed")
+	app, err := New(Config{AppID: "service-fatal-start"}, WithService(testService{
+		spec: Spec{Name: "agent"},
+		start: func(ctx Context) error {
+			reporter, ok := ctx.(interface{ ReportFatal(error) })
+			if !ok {
+				t.Error("service context has no fatal error reporting capability")
+				return nil
+			}
+			reporter.ReportFatal(want)
+			return nil
+		},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = app.Stop(context.Background()) })
+	if err := app.Start(context.Background(), RunOptions{Services: []string{"agent"}}); !errors.Is(err, want) {
+		t.Fatalf("Start = %v, want listener failure", err)
+	}
+	if app.Context() != nil {
+		t.Fatal("failed startup exposed a running context")
+	}
+}
+
+func TestServiceFatalReportStopsRunningServer(t *testing.T) {
+	want := errors.New("agent listener failed while running")
+	var report func(error)
+	stopped := false
+	app, err := New(Config{AppID: "service-fatal-running"}, WithService(testService{
+		spec:  Spec{Name: "agent"},
+		start: func(ctx Context) error { report = ctx.ReportFatal; return nil },
+		stop:  func(context.Context) error { stopped = true; return nil },
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Start(context.Background(), RunOptions{Services: []string{"agent"}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = app.Stop(context.Background()) })
+	report(want)
+	waitClosed(t, app.stopDone)
+	if !stopped || !errors.Is(app.stopErr, want) {
+		t.Fatalf("stopped = %v, Stop = %v", stopped, app.stopErr)
+	}
+}
+
+func TestAgentStartupRollbackRetainsRouterUntilConnectionExits(t *testing.T) {
+	for _, failurePhase := range []string{"init", "start"} {
+		t.Run(failurePhase, func(t *testing.T) {
+			entered, canceled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var releaseOnce sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(release) }) }
+			router := &rollbackAgentRouter{}
+			var agent *agentservice.Service
+			first := testService{
+				spec: Spec{Name: "agent"},
+				start: func(ctx Context) error {
+					var err error
+					agent, err = agentservice.New(agentservice.Options{
+						TCPListen: "127.0.0.1:0", MaxFrameBytes: 1024, Sessions: router,
+						Identity: txagent.IdentityResolverFunc(func(ctx context.Context, _ txagent.AuthRequest) (protocol.SessionPrincipal, error) {
+							close(entered)
+							<-ctx.Done()
+							close(canceled)
+							<-release
+							return protocol.SessionPrincipal{}, ctx.Err()
+						}),
+						Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error { return nil }),
+					}, agentservice.Dependencies{Tasks: ctx.Tasks(), Admission: ctx.Admission(), ReportFatal: ctx.ReportFatal, RPC: rollbackAgentRPC{grpc.NewServer()}})
+					if err != nil {
+						return err
+					}
+					return agent.Init(ctx.Tasks())
+				},
+				drain: func(ctx context.Context) error { return agent.Drain(ctx) },
+				stop:  func(ctx context.Context) error { return agent.Stop(ctx) },
+			}
+			want := errors.New("later service initialization failed")
+			later := testService{spec: Spec{Name: "later"}, start: func(Context) error {
+				connection, err := net.Dial("tcp", agent.TCPAddress())
+				if err != nil {
+					return err
+				}
+				t.Cleanup(func() { _ = connection.Close() })
+				frame, err := txagent.EncodeFrame(txagent.Frame{Kind: txagent.FrameHandshake}, 1024)
+				if err != nil {
+					return err
+				}
+				packet := make([]byte, 4+len(frame))
+				binary.BigEndian.PutUint32(packet[:4], uint32(len(frame)))
+				copy(packet[4:], frame)
+				if _, err := connection.Write(packet); err != nil {
+					return err
+				}
+				select {
+				case <-entered:
+				case <-time.After(time.Second):
+					return errors.New("agent did not enter identity callback")
+				}
+				return want
+			}}
+			var failing Service = later
+			if failurePhase == "start" {
+				failing = phasedService{testService: testService{spec: later.spec}, initHook: func(Context) error { return nil }, startHook: func(context.Context) error { return later.start(nil) }}
+			}
+			app, err := New(Config{AppID: "agent-startup-rollback", Runtime: RuntimeConfig{Lifecycle: LifecycleConfig{DrainTimeout: 20 * time.Millisecond}}}, WithService(first, failing))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { unblock(); _ = app.Stop(context.Background()) })
+			err = app.Start(context.Background(), RunOptions{Services: []string{"agent", "later"}})
+			if !errors.Is(err, want) || !errors.Is(err, errStopDeferred) {
+				t.Fatalf("Start = %v", err)
+			}
+			select {
+			case <-canceled:
+			default:
+				t.Fatal("rollback did not cancel connection setup")
+			}
+			if router.closed.Load() || app.runtime == nil {
+				t.Fatal("rollback released resources while connection callback was running")
+			}
+			if app.Context() != nil {
+				t.Fatal("failed startup exposed a running context")
+			}
+			unblock()
+			if err := app.Stop(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if !router.closed.Load() {
+				t.Fatal("Stop retry did not release router")
+			}
+		})
+	}
+}
+
+type rollbackAgentRouter struct{ closed atomic.Bool }
+
+func (*rollbackAgentRouter) Acquire(context.Context, txmsgq.AcquireSessionRequest) (txmsgq.SessionClient, error) {
+	return nil, errors.New("unexpected acquire")
+}
+func (router *rollbackAgentRouter) Close() error { router.closed.Store(true); return nil }
+
+type rollbackAgentRPC struct{ server *grpc.Server }
+
+func (rpc rollbackAgentRPC) Register(register func(grpc.ServiceRegistrar) error) error {
+	return register(rpc.server)
+}
+func (rollbackAgentRPC) Endpoint() string { return "127.0.0.1:0" }
 
 func TestFatalDiscoveryLossDuringDeferredStopStillTerminates(t *testing.T) {
 	entered := make(chan struct{})

@@ -29,11 +29,17 @@ func (m *Manager) PrepareRemove(ctx context.Context, target txn.StoreTarget, val
 	if err != nil {
 		return nil, err
 	}
+	success := false
+	defer func() {
+		if !success {
+			pending.Abort()
+		}
+	}()
 	r, err := cache.ReserveRemove(ctx, value)
 	if err != nil {
-		pending.Abort()
 		return nil, err
 	}
+	success = true
 	return &removeReservation{m, target, pending, r}, nil
 }
 

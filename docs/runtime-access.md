@@ -10,6 +10,8 @@ Bee/Ant 的 `Context.Runtime()` 返回可绑定的 `tx/runtime.Provider`。在 S
 
 `txruntime.Procedure(ctx)` 与 `CModProcedure()` 均返回同一类受限执行视图，只提供 Call/Submit；其动态值不暴露事务运行时的 Drain、配置或提交参与者绑定能力。这些管理操作由框架拥有。
 
+同样，Redis 命令借用值不携带连接 Close 或配置方法，gRPC 协议注册回调只取得注册视图，不能通过类型断言取回共享服务器的 Stop/GracefulStop。原生命令、返回类型和生成协议登记方式不变。Mongo 高级查询的官方句柄仍遵守下文明确的调用方约定。
+
 普通只读使用 `data.SnapshotGD*(ctx, id)`。启用共享缓存时，完整 `data.FindGD*(ctx, id)` 与 `db.Create/Remove` 必须在 Procedure 内执行，修改交由 WriteBack；未启用缓存或显式排除的独占对象使用 Find 与 `db.Save/Create/Remove` 直接存取。所有入口显式传 ctx，不提供 Access、对象式 db.Find 或可选上下文包装。Handler 外的 actorcmd 统一创建十秒操作期限并在同步响应处理后释放，继承消息取消、已有期限与事务关联。Module 沿用 ctx，不重建根范围；纯内存规则不要求 ctx。活跃 Procedure 中 `db.Save/SaveChange` 拒绝直接持久化；`db.Create` 通过唯一缓存占位、事务回滚与 WriteBack 首次写入登记新根对象，未绑定缓存或受管写回则报错。结束后的事务 ctx 不得用于存储写入。 Actor 通信保留 cmd.Actors 的独立操作便捷入口和显式 At(ctx,id)，不创建新连接或改变 Call/Tell。
 
 模块可以保存资源与自己拥有的配置缓存、查询索引，不保存当前玩家、请求上下文或事务，不增加逐请求 Service 包装。单例获取和测试清理由项目管理，不能推导出跨进程状态唯一性。
@@ -56,6 +58,8 @@ WriteBack / 缓存回收
 ```
 
 共享可变 GD 只能在有效 Procedure 中取得；无事务完整 Find 在加载前返回 `entitycache.ErrProcedureRequired`，失效事务返回 `txn.ErrInactive`。启用缓存的持久根必须显式声明 `@transaction`，生成期缺少声明直接报错；不会为 Handler 隐式开启事务。对象和子对象引用只可在当前事务内使用，不得长期保存在 Actor/后台任务中。缓存内部互斥锁只保护元数据，等待记录锁、复制字段或访问存储时不持有它。取消信号不能提前释放仍在执行事务的使用权。
+
+生成描述通过当前 Provider 的 `RequireStorage(mode)` 统一检查存储能力。此断言不创建 Reader 或执行 I/O；冷加载、热命中、管理字段快照及事务创建/删除都不能借用其他服务的存储声明。没有 Provider 的独立工具仍按显式资源绑定使用，不回退到其他服务。创建/删除预留中途失败或权限断言异常时，尚未交给事务的写回预留必须释放。
 
 `SnapshotGD*` 读取缓存中的最新值，包含尚未写回的提交；在有效事务内复用 Find 与现有锁，可读到本事务修改。复制不携带 Store、tracker、事务状态，调用方可自行修改副本但不能用它 Save/Remove 原实体。普通快照每条记录一致，不保证多条快照处于同一时刻。创建中身份仅对所属事务可见；其他读取返回 `ErrCreating`；提交删除后不再返回对象，持久化失败也不重新暴露旧对象。
 
@@ -108,7 +112,7 @@ Go 的公开字段无法阻止调用方私自保存裸指针并在事务外修�
 
 ## EntityCache 管理入口
 
-`txruntime.EntityCache(ctx)` 返回同一应用的缓存运行时。Stats/List 只观察框架元数据；SnapshotCached 只复制当前缓存对象，不回源；TryRelease 复用 WriteBack 安全判定，不刷盘或删除记录。EntryRef 关联驻留代次，旧引用不能操作重新加载的对象。管理快照/回收必须在 Procedure 外调用，并遵守独立的排水/关闭准入；业务查询仍用生成 Find/Snapshot。详见 [管理 API](entity-cache-management.md)。
+`txruntime.EntityCache(ctx)` 返回同一应用缓存的能力视图，不暴露 Start、DrainManagement 或 CloseManagement；宿主持有原 Runtime 并负责生命周期。Stats/List 只观察框架元数据；SnapshotCached 只复制当前缓存对象，不回源；TryRelease 复用 WriteBack 安全判定，不刷盘或删除记录。EntryRef 关联驻留代次，旧引用不能操作重新加载的对象。管理快照/回收必须在 Procedure 外调用，并遵守独立的排水/关闭准入；业务查询仍用生成 Find/Snapshot。详见 [管理 API](entity-cache-management.md)。
 
 ## CMod 与初始化回滚的关闭边界
 
@@ -147,5 +151,7 @@ CMod 准备连接、读取 ConsumerInfo、静态校验
 ```
 
 启动取消与根生命周期分离，保留必要依赖用于失败清理；回调须响应取消，框架不强杀 goroutine。RPC Host 的失败回调由 Server 接收，独立使用 Host 时可传 nil；回调不能同步等待 Host 关闭。控制面同理。正常 Stop、根取消与 gRPC 正常停止不报告故障。
+
+Agent 通过 `Context.ReportFatal(error)` 报告 TCP/WebSocket 入口非预期退出；启动期报告阻止成功收尾，运行期报告交给 Server 的统一终止流程，不自动重启监听。TCP 与升级后的 WebSocket 连接共用组件级工作登记，覆盖握手、邮箱初始化和会话清理。登记与关闭并发互斥，父任务等待这些连接实际退出；仅收到取消不能提前关闭会话路由器。完整连接的等待独立于逐上行消息的业务 Admission，闲置长连接不会阻止先排空已接纳业务。
 
 任务 Prepare 不领取消息，Start 不重新读取或校验 ConsumerInfo；静态错误在开放准入前暴露，实际消费仍在业务就绪后开始。Broker 后续变化仍可使启动失败，不自动重建消费者或重启服务。

@@ -134,6 +134,7 @@ Ant 常规槽位路由使用 `runtime.CModSlotResolver()`，指定宿主使用 `
 
 常规服务通过 `Tasks/Admission/CModRedisStorage/CModMongoStorage/CModFusionStorage/CModRPC/CModDiscovery/CModSessionID/CModActor`
 等最小契约取得已经声明的能力；项目组合根才使用通用 `Storage()` 安装 `db.Save` facade。
+`Context.ReportFatal(error)` 只报告不可恢复的服务错误，由 Server 决定终止和清理；不能在报告回调内同步等待服务关闭，也不会自动恢复。Agent 已用于 TCP/WebSocket 监听异常传播。
 Ant 在同一基础 API 上增加 `CModProcedure/CModSlots/CModLocalAssignments`。`CModSlots` 只读，`CModLocalAssignments` 仅允许认领当前实例，不能指定任意目标或 generation。这些能力视图都不授予连接关闭、runtime shutdown 或 discovery 快照写权限。
 
 `CModSessionID` 保留对 Discovery 的依赖，由框架核对发号准入与运行身份有效性，并借用进程共享 etcd 客户端。

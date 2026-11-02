@@ -101,7 +101,7 @@ var (
 func (mod *procedureCMod) Spec() CModSpec {
 	return CModSpec{
 		ID:         CModProcedure,
-		After:      []CModID{CModMongoStorage, CModFusionStorage},
+		After:      []CModID{CModRedisStorage, CModMongoStorage, CModFusionStorage},
 		Components: cloneComponentSpecs(mod.components),
 	}
 }

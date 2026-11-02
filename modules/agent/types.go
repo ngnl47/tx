@@ -87,6 +87,8 @@ type ServerOptions struct {
 	IdentityResolver IdentityResolver
 	Dispatcher       Dispatcher
 	Admission        lifecycle.Admission
-	Sessions         SessionClientRouter
-	ConnectionID     ConnectionIDGenerator
+	// Connections 登记完整连接的实际执行期，独立于逐帧业务准入。
+	Connections  lifecycle.Admission
+	Sessions     SessionClientRouter
+	ConnectionID ConnectionIDGenerator
 }

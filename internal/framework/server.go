@@ -266,6 +266,7 @@ func (server *Server) Start(ctx context.Context, options RunOptions) (err error)
 
 	root := lifecycleRoot(ctx)
 	runtime := &runtime{
+		reportFatal:   server.reportFatal,
 		config:        server.config,
 		lifecycle:     root,
 		selectedCMods: newCModSelection(graph.IDs()...).ids,

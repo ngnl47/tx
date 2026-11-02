@@ -2,6 +2,37 @@
 
 本页以现行契约组织验收，不重复维护测试实现。框架异常边界在 tx 定向测试中构造，两组应用使用已有真实集群入口验证接入；不向业务 Handler 增加故障开关。历史报告只证明对应构建，本轮结果单独记录。
 
+## 2026-11-02 模块边界修复回归
+
+基线为 tx `9870690`，本批变更未提交。环境为 macOS/amd64、Go 1.27.0；只跑本地包级回归，不运行云测试或正式包多进程集群，不额外启用可选外部依赖场景。
+
+| 边界 | 实际覆盖 |
+| --- | --- |
+| Agent 监听异常 | TCP/WebSocket 非预期退出上报 Server；正常 Drain/Stop 不误报；启动中上报失败终止启动 |
+| Agent 连接退出 | TCP/WebSocket 的身份校验、Acquire、Init 阻塞时，Stop 超时保留 router；实际退出后才能关闭依赖；父取消和后续服务 Start 失败会关闭监听器并等待连接 |
+| 业务排水 | 已接纳的消息继续执行；空闲连接不计入业务消息排水，但其连接工作必须在资源释放前退出 |
+| 共享资源 | EntityCache 访问视图、Redis Cmdable 和 gRPC ServiceRegistrar 均不暴露底层共享资源的关闭方法；原操作与协议注册仍可使用 |
+| 缓存声明 | 冷热 Snapshot/Find、事务创建/删除和管理快照/回收检查当前 Provider；删除预留遇到授权 panic 也会 Abort；检查不构建 Reader 或发起存储 I/O |
+| 启动顺序 | Procedure 在已选 Redis/Mongo/Fusion 后启动；弱依赖不启用未选存储 |
+
+修复前已分别复现监听异常未传播、连接未退出便关闭依赖、权限检查随缓存冷热变化、删除预留泄漏及 Redis 启动顺序缺失。红灯证据位于 `/private/tmp/tx-agent-*-red.log`、`/private/tmp/entitycache-*-red.log`、`/private/tmp/tx-boundary-views-red-20261102.log`。最终结果：
+
+| 入口 | 结果与日志 |
+| --- | --- |
+| tx `go test ./...` | 通过；`/private/tmp/tx-boundary-full-20261102.log` |
+| txgen `go test ./...` | 通过；`/private/tmp/txgen-entitycache-all-green.log`，包括生成包编译与权限契约 |
+| 两组应用 `bash gen/run.sh generate` | 通过；`/private/tmp/txgame-boundary-generate-20261102.log`、`/private/tmp/txgameslg-boundary-generate-20261102.log` |
+| txgame/txgameslg 的 server 与 gen `go test ./...` | 均通过；`/private/tmp/txgame-boundary-full-20261102.log`、`/private/tmp/txgameslg-boundary-full-20261102.log`、`/private/tmp/txgame-gen-boundary-20261102.log`、`/private/tmp/txgameslg-gen-boundary-20261102.log` |
+| tx 相关包 `go test -race -count=1` | Agent 全子包、EntityCache、WriteBack、RPC、Redis 适配、framework、tests 通过；`/private/tmp/tx-boundary-race-20261102.log` |
+| Agent 最终异常分支 `-race -count=3` | 通过；`/private/tmp/tx-agent-final-race.log` |
+| 独立差异 review | 未发现新的必修项；没有把未运行的真实集群或云端场景算作通过 |
+
+缓存能力检查三次微基准为 61.06/80.55/70.09 ns/op，0 B/op、0 allocs/op。已有受管实体基准中，Snapshot 从 1.601～1.688 µs/op 到 1.586～1.903 µs/op，仍为 449 B/op、14 allocs/op；Procedure 从 4.278～4.454 µs/op 到 4.193～4.386 µs/op，仍为 2722 B/op、36 allocs/op。记录见 `/private/tmp/entitycache-capability-benchmark.log`、`/private/tmp/entitycache-benchmark-before.log`、`/private/tmp/entitycache-benchmark-after.log`。同机存在构建噪声，这些数据仅支持没有新增分配，不宣称集群吞吐提高或 P99 改善。
+
+API 调整：自定义 `txruntime.Provider` 实现需补 `RequireStorage(mode)`；自定义缓存 Provider 返回 `*entitycache.Access`。标准应用装配自动对接，已重新生成两组工程；业务 Find/Snapshot 和缓存管理调用方式不变。txgame 未启用 EntityCache，生成结果无差异；txgameslg 的缓存描述增加访问检查；两组客户端无变更。
+
+额外 `go vet ./...` 仍有 5 条既有告警：MsgQ protobuf 消息值复制、测试含锁值接收器和槽位测试无字段名结构字面量，见 `/private/tmp/tx-boundary-vet-20261102.log`。没有将普通回归通过写成 vet 通过，也没有扩大本批修复范围。
+
 ## 验收分层
 
 ```text

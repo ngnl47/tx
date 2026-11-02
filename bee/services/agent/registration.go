@@ -41,11 +41,12 @@ func Registration(name string, provider OptionsProvider) (bee.ServiceRegistratio
 			redis := runtime.CModRedisStorage()
 			directory := runtime.CModDiscovery()
 			return agentservice.New(options, agentservice.Dependencies{
-				Tasks:     runtime.Tasks(),
-				Admission: runtime.Admission(),
-				RPC:       rpc,
-				Directory: directory,
-				Redis:     redis.Clients(),
+				Tasks:       runtime.Tasks(),
+				ReportFatal: runtime.ReportFatal,
+				Admission:   runtime.Admission(),
+				RPC:         rpc,
+				Directory:   directory,
+				Redis:       redis.Clients(),
 			})
 		},
 	}, nil

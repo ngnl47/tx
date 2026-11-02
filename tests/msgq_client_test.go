@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/ngnl47/tx/modules/discovery"
@@ -19,7 +20,7 @@ func TestSessionClientRouterRestoreUsesExactSessionOwner(t *testing.T) {
 		InstanceID:   "msgq-b",
 	}, found: true}
 	directory := sessionClientDirectory(t)
-	dialer := &sessionClientDialerFake{client: &sessionClientFake{}}
+	dialer := &sessionClientDialerFake{}
 	router, err := msgq.NewSessionClientRouter("project-mailbox", directory, store, dialer)
 	if err != nil {
 		t.Fatalf("new client router: %v", err)
@@ -47,8 +48,7 @@ func TestSessionClientRouterReusesEndpointClientAndClosesIt(t *testing.T) {
 		ConnectionID: 7,
 		InstanceID:   "msgq-b",
 	}, found: true}
-	client := &sessionClientFake{}
-	dialer := &sessionClientDialerFake{client: client}
+	dialer := &sessionClientDialerFake{}
 	router, err := msgq.NewSessionClientRouter("project-mailbox", sessionClientDirectory(t), store, dialer)
 	if err != nil {
 		t.Fatalf("new client router: %v", err)
@@ -67,14 +67,14 @@ func TestSessionClientRouterReusesEndpointClientAndClosesIt(t *testing.T) {
 	if err := router.Close(); err != nil {
 		t.Fatalf("close client router: %v", err)
 	}
-	if client.closeCalls != 1 {
-		t.Fatalf("client close calls = %d, want 1", client.closeCalls)
+	if calls := dialer.clients[0].closeCalls.Load(); calls != 1 {
+		t.Fatalf("client close calls = %d, want 1", calls)
 	}
 }
 
 func TestSessionClientRouterFreshReusesRoleOwnerWithoutSessionLookup(t *testing.T) {
 	directory := sessionClientDirectory(t)
-	dialer := &sessionClientDialerFake{client: &sessionClientFake{}}
+	dialer := &sessionClientDialerFake{}
 	store := &sessionStoreFake{findErr: errors.New("fresh acquire must not query store")}
 	router, err := msgq.NewSessionClientRouter("project-mailbox", directory, store, dialer)
 	if err != nil {
@@ -96,30 +96,58 @@ func TestSessionClientRouterFreshReusesRoleOwnerWithoutSessionLookup(t *testing.
 }
 
 func TestSessionClientRouterConcurrentFreshSessionsShareRoleOwner(t *testing.T) {
+	const sessions = 32
 	store := &sessionStoreFake{}
-	dialer := &sessionClientDialerFake{client: &sessionClientFake{}}
+	var dialing sync.WaitGroup
+	dialing.Add(sessions)
+	dialer := &sessionClientDialerFake{dialBarrier: &dialing}
 	router, err := msgq.NewSessionClientRouter("project-mailbox", sessionClientDirectory(t), store, dialer)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer router.Close()
+	clients := make([]msgq.SessionClient, sessions)
+	errs := make([]error, sessions)
 	var group sync.WaitGroup
-	for index := range 32 {
+	for index := range sessions {
 		group.Go(func() {
-			if _, err := router.Acquire(context.Background(), msgq.AcquireSessionRequest{RoleID: 47, SessionID: int64(index + 1)}); err != nil {
-				t.Error(err)
-			}
+			clients[index], errs[index] = router.Acquire(context.Background(), msgq.AcquireSessionRequest{RoleID: 47, SessionID: int64(index + 1)})
 		})
 	}
 	group.Wait()
 	owner, found, err := store.FindRole(context.Background(), 47)
-	if err != nil || !found || len(dialer.instances) != 1 || dialer.instances[0].ID != owner.InstanceID {
-		t.Fatalf("split role routing: owner=%+v, dialed=%+v, err=%v", owner, dialer.instances, err)
+	if err != nil || !found {
+		t.Fatalf("role owner = %+v, found=%v, err=%v", owner, found, err)
+	}
+	for index, client := range clients {
+		if errs[index] != nil || client == nil || client != clients[0] {
+			t.Fatalf("session %d client = %p, err=%v, want shared %p", index+1, client, errs[index], clients[0])
+		}
+	}
+	for index, instance := range dialer.instances {
+		if instance.ID != owner.InstanceID {
+			t.Fatalf("dial %d instance = %q, want role owner %q", index, instance.ID, owner.InstanceID)
+		}
+		wantClosed := int32(1)
+		if dialer.clients[index] == clients[0] {
+			wantClosed = 0
+		}
+		if calls := dialer.clients[index].closeCalls.Load(); calls != wantClosed {
+			t.Fatalf("dial %d close calls = %d, want %d", index, calls, wantClosed)
+		}
+	}
+	if err := router.Close(); err != nil {
+		t.Fatalf("close client router: %v", err)
+	}
+	for index, client := range dialer.clients {
+		if calls := client.closeCalls.Load(); calls != 1 {
+			t.Fatalf("dial %d final close calls = %d, want 1", index, calls)
+		}
 	}
 }
 
 func TestSessionClientRouterRestoreDoesNotFallbackToAnotherInstance(t *testing.T) {
-	dialer := &sessionClientDialerFake{client: &sessionClientFake{}}
+	dialer := &sessionClientDialerFake{}
 	store := &sessionStoreFake{}
 	router, err := msgq.NewSessionClientRouter("project-mailbox", sessionClientDirectory(t), store, dialer)
 	if err != nil {
@@ -182,7 +210,7 @@ func TestSessionClientRouterRestoreRejectsInvalidBindingOrOwner(t *testing.T) {
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			store := &sessionStoreFake{binding: test.binding, found: true}
-			dialer := &sessionClientDialerFake{client: &sessionClientFake{}}
+			dialer := &sessionClientDialerFake{}
 			directory := sessionClientDirectory(t)
 			if test.instances != nil {
 				directory = newSessionClientDirectory(t, test.instances)
@@ -223,8 +251,8 @@ func TestFixedSessionClientRouterAlwaysReturnsSharedLocalClient(t *testing.T) {
 	if err := router.Close(); err != nil {
 		t.Fatalf("close fixed session client router: %v", err)
 	}
-	if client.closeCalls != 0 {
-		t.Fatalf("fixed router closed shared client %d times, want 0", client.closeCalls)
+	if calls := client.closeCalls.Load(); calls != 0 {
+		t.Fatalf("fixed router closed shared client %d times, want 0", calls)
 	}
 	for _, request := range []msgq.AcquireSessionRequest{{SessionID: 99}, {RoleID: 470001}} {
 		if _, err := router.Acquire(context.Background(), request); !errors.Is(err, msgq.ErrInvalidSession) {
@@ -252,17 +280,28 @@ func newSessionClientDirectory(t *testing.T, instances []discovery.Instance) *di
 }
 
 type sessionClientDialerFake struct {
-	instances []discovery.Instance
-	client    msgq.SessionClient
+	mu          sync.Mutex
+	instances   []discovery.Instance
+	clients     []*sessionClientFake
+	dialBarrier *sync.WaitGroup
 }
 
 func (d *sessionClientDialerFake) DialSession(_ context.Context, instance discovery.Instance) (msgq.SessionClient, error) {
+	client := &sessionClientFake{}
+	d.mu.Lock()
 	d.instances = append(d.instances, instance)
-	return d.client, nil
+	d.clients = append(d.clients, client)
+	d.mu.Unlock()
+	if d.dialBarrier != nil {
+		// 等全部冷拨号进入后再返回，固定连接缓存竞争而不依赖调度时序。
+		d.dialBarrier.Done()
+		d.dialBarrier.Wait()
+	}
+	return client, nil
 }
 
 type sessionClientFake struct {
-	closeCalls int
+	closeCalls atomic.Int32
 }
 
 func (*sessionClientFake) Init(context.Context, msgq.InitRequest) error {
@@ -278,6 +317,6 @@ func (*sessionClientFake) TerminateSession(context.Context, msgq.SessionHeader) 
 }
 
 func (c *sessionClientFake) Close() error {
-	c.closeCalls++
+	c.closeCalls.Add(1)
 	return nil
 }

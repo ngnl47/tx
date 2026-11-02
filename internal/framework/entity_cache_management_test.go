@@ -12,7 +12,7 @@ import (
 func TestEntityCacheManagementFollowsServerLifecycle(t *testing.T) {
 	for _, lazy := range []bool{false, true} {
 		t.Run(map[bool]string{false: "existing", true: "lazy"}[lazy], func(t *testing.T) {
-			var cached *entitycache.Runtime
+			var cached *entitycache.Access
 			app, err := New(Config{AppID: "cache-management"}, WithService(testService{spec: Spec{Name: "game"}}))
 			if err != nil {
 				t.Fatal(err)
