@@ -43,6 +43,16 @@ func (cache *Cache[K, V]) start(tasks lifecycle.Tasks, onStop func()) error {
 }
 
 // load 仅在未命中时登记工作；全部等待者退出也不提前移除在途加载。
+//
+//	按键查找在途加载
+//	  ├─ 已有 → 共享同一任务与完成信号
+//	  └─ 没有 → 建立独立期限的上下文 → 登记宿主任务
+//	             ├─ 登记失败 → 撤销在途记录并返回错误
+//	             └─ loadMissing → 完成、失败或 panic → 移除在途记录、通知等待者
+//	等待者 → 请求取消 / 共享 I/O 到期时可先返回；任务完成后读取共享结果
+//
+// 加载上下文借用存储能力，不携带请求事务或实体使用期。请求取消只结束本次等待；
+// I/O 到期也不证明 loader 已退出，在途记录和宿主工作登记保留到任务实际结束。
 func (cache *Cache[K, V]) load(ctx context.Context, key K) (bool, error) {
 	cache.loadMu.Lock()
 	call := cache.loads[key]

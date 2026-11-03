@@ -324,6 +324,20 @@ func (e *activation) invoke(timeout time.Duration, fn func(Context) error) (err 
 	}()
 	return fn(Context{ctx, e.identity, e})
 }
+
+// run 推进一次激活的完整生命周期，清理结束后才释放本地身份与容量名额。
+//
+//	权威归属校验 → 工厂 → OnInitAfter → OnActivateBefore → OnActivateAfter
+//	  ├─ 失败 → 关闭准入、失败完成在队消息 → 清理
+//	  └─ 成功 → 标记 Ready → 串行 Receive、完成当前 Future
+//	                         ├─ 普通错误 → 继续处理邮箱
+//	                         ├─ panic → 关闭准入、失败完成剩余消息 → 异常清理
+//	                         └─ 正常关闸或空闲到期 → 排空已接纳消息 → 正常卸载
+//	清理：正常卸载先 OnDeactivateBefore；有行为对象均执行 OnDeactivateAfter
+//	  → 取消激活上下文 → 移除身份、按需记录失败 → 结束 worker 登记
+//
+// 工厂与初始化回调没有统一 deadline；调用方等待或 Drain 超时只结束等待，
+// 不撤销已开始的初始化，也不提前释放仍在清理的激活名额。
 func (e *activation) run() {
 	defer e.runtime.workers.Done()
 	var behavior *Behavior

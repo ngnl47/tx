@@ -73,6 +73,19 @@ type sessionTrace struct {
 	sessionID int64
 }
 
+// serve 编排一条物理连接的验票、接入、收发和收尾。
+//
+//	读取首帧 → 验票并建立连接身份
+//	├─ 携票 Logout：终止逻辑会话 → LoggedOut，不新建邮箱
+//	└─ 登录/重连：定位 MsgQ → 登记初始化中的连接 → 等待接入确认
+//	             └─ Ready → 并行下行发送与串行上行读取
+//	已登记接入的收尾：取消并等待下行工作 → 解绑本地连接
+//	                 └─ 已取得邮箱：关闭传输 → 确认远端解除接入
+//	所有返回路径：必要时尽力通知 SessionEnded → 确保传输关闭
+//
+// Ready 必须晚于 MsgQ 接纳；初始化期间的终止由 openSession 协调补偿。
+// 普通断线只结束接入，逻辑退出由 Logout 显式触发；取消不能替代关闭确认。
+// 传输可能已因断线或撤销关闭，SessionEnded 不承诺送达。
 func (s *Server) serve(ctx context.Context, transport Transport, connectionID int64, trace *sessionTrace) (serveErr error) {
 	defer func() { _ = transport.Close() }()
 	defer func() {

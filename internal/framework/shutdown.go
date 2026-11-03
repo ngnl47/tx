@@ -64,6 +64,17 @@ func (server *Server) Drain(ctx context.Context) error {
 }
 
 // Stop 具备幂等性，并负责完整的逆序关闭流程。
+//
+//	等待启动 / 交接准备结束；并发 Stop 共享同一轮结果
+//	  → finishWork：排水、任务退出、必要写回与传输确认
+//	  → 停止服务资源 → 正常收尾成功时条件释放本实例槽位
+//	  → 停止控制入口 → 取消根任务并等待实际退出
+//	  → 关闭发送器、逆序执行 Setup 清理 → 成员标记 Stopping
+//	  → 逆依赖停止 CMod → 清除运行时
+//
+// 正常排水、写回失败或任务尚未退出时保留所需资源，后续 Stop 从未完成阶段重试。
+// ctx 取消不证明任务已经退出；致命身份丢失沿用独立异常收尾路径。
+// 启动回滚、致命退出及显式交接不释放槽位，不能把这些路径解释为正常交接成功。
 func (server *Server) Stop(ctx context.Context) error {
 	return server.stop(ctx, true)
 }
@@ -254,6 +265,17 @@ func (server *Server) shutdown(ctx context.Context, drain bool) error {
 
 // finishWork 由交接准备与最终关闭串行复用；成功的组件阶段由 component.Host 记住。
 // 这里停止业务任务、冲刷状态并确认传输输出；租约、存储绑定及连接留给 shutdown 释放。
+//
+//	正常运行收尾：
+//	  Drain：关服务准入 → 排空任务消费回调 → 关 Actor 准入并排空已接纳工作
+//	    → 确认 EntityCache 管理操作退出 → 取消并等待服务后台任务
+//	    → 关闭实体放置运行时 → 服务 Flush
+//	    → CMod 排水（Procedure 先排空事务，再最终写回）
+//	    → Actor RPC Flush 确认传输输出
+//
+// 启动回滚另补服务初始化清理和已接纳 Actor 排水；已准备交接成功时直接复用结果。
+// 普通收尾失败保留依赖，已成功的写回不因后续传输确认失败重复执行。
+// 致命退出可累计部分收尾错误后继续；传输 Flush 不承诺远端业务执行成功。
 func (server *Server) finishWork(ctx context.Context, drain bool) error {
 	server.mu.Lock()
 	host, cmodHost, runtime := server.host, server.cmodHost, server.runtime

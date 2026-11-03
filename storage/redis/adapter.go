@@ -414,6 +414,16 @@ func (a *Adapter) LoadDocuments(ctx context.Context, spec meta.TypeSpec, records
 }
 
 // LoadDocumentsWithOptions 按指定选项批量读取并合并 Redis string JSON 文档。
+//
+//	校验字段和记录键 → 取得驱动能力
+//	  ├─ 无 BatchClient → 逐记录执行 Lua 读取并解码
+//	  └─ 有 BatchClient → 按字段规划主文档与 subKey
+//	                      ├─ ClusterSafe → 按 hash tag 分组，再分批 MGET
+//	                      └─ 否则 → 按记录分批 MGET
+//	     MGET 结果 → 核对数量 → 按原记录索引合并文档 → 返回 docs 与 exists
+//
+// 任一 I/O、数量或解码错误均返回整批错误，不交付部分结果；ctx 传给驱动执行，
+// 分批读取不提供跨批次的一致性快照。
 func (a *Adapter) LoadDocumentsWithOptions(ctx context.Context, spec meta.TypeSpec, records []storage.RecordKey, options LoadOptions, fields ...string) ([]map[string]any, []bool, error) {
 	docs := make([]map[string]any, len(records))
 	exists := make([]bool, len(records))

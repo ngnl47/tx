@@ -397,6 +397,18 @@ func Run(ctx context.Context, targets []StoreTarget, fn func(*Tx) error) error {
 	}, CallOptions{}, callHooks{}, "txn.Run"))
 }
 
+// run 执行一次根事务尝试，统一持锁提交、失败回滚和解锁后的收尾。
+//
+//	校验根调用与锁集 → 排序取得锁 → 建立 Tx → 执行 fn
+//	  ├─ 执行或创建/删除校验失败
+//	  │    → Undo、撤销创建/删除预留 → 解绑 Store、解锁、事务失效 → 回滚回调
+//	  └─ 校验通过
+//	       → 持锁提交创建/删除及脏根登记 → 清 Undo、解绑 Store、解锁、事务失效
+//	       → 按顺序执行 AfterCommit（含同步后续 Procedure）
+//	两条路径 → 逆序执行 finish，释放实体使用权 → 返回
+//
+// 提交前 panic 先完成根回滚再继续传播；提交后失败不能撤销已提交状态。
+// ctx 取消不强制中断 fn；死锁受害者的有限重试由外层 callWithHooks 决定。
 func run(ctx context.Context, locks Lockeys, fn func(*Tx) error, options CallOptions, hooks callHooks, procedurePath string) (err error) {
 	if ctx == nil {
 		ctx = context.Background()

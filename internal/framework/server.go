@@ -167,6 +167,16 @@ func (server *Server) Run(ctx context.Context, options RunOptions) error {
 
 // Start 装配框架资源并启动选中的服务；启动钩子遵守调用方的取消信号。
 // 托管后台任务另用脱离取消的生命周期，关闭时先排空已接受工作再取消。
+//
+//	选定服务与 CMod 依赖闭包 → 解析配置 → 创建运行时与能力视图
+//	  → 按依赖启动 CMod → 执行 Setup → 初始化实体放置
+//	  → 服务 Init → 启动 RPC / 控制入口 → 成员标记 Running
+//	  → 全部服务 Start 成功 → 开放会话发号与服务准入
+//	  → 启动任务消费 → 复核取消 / 致命错误 → 提交启动成功
+//	任一阶段失败 → shutdown 回滚；未收尾完成则保留资源供 Stop 重试
+//
+// 成员 Running 早于服务准入开放，不表示服务启动钩子或 Actor 加载已经完成。
+// 启动成功与致命错误登记共用状态锁；任务消费只能晚于服务开放。
 func (server *Server) Start(ctx context.Context, options RunOptions) (err error) {
 	if ctx == nil {
 		ctx = context.Background()

@@ -500,12 +500,14 @@ tx/modules/
     ├── admission.go         # [L2] 角色准入、票据水位、撤销和精确终止
     ├── admission_client.go  # [L2] 查询既有 owner，逻辑终止不分配新 owner
     ├── mailbox_stream.go   # [L2] 共享流客户端、接入/关闭完成等待
-    ├── mailbox_stream_server.go # [L2] 接入、Revoke/Detached 与完成回执
+    ├── mailbox_stream_server.go # [L2] 每流私有收发与接入编排、Revoke/Detached 和完成回执
     ├── role_lifecycle.go    # [L2] 替换期间保留归属，正常关闭后条件释放
     └── session_redis.go     # [L2] 单角色准入 CAS，独立于 Role→MsgQ 归属
 ```
 
 `serve` 只编排验票、接入与运行阶段；`activeSession` 持有当前物理连接的资源。接入失败也交给同一收尾入口，初始化期间收到终止请求时先完成既有补偿。运行结束先等待下行写协程实际退出，再注销本地连接、关闭接入并等待 MsgQ 解除绑定确认；普通断线保留逻辑邮箱。主动退出单独等待邮箱终止与在途写结束，再发送 `LoggedOut`，其确认期限不受下行协程结束时取消连接上下文的影响。
+
+`MailboxStream` 为每条共享流创建一个私有 `mailboxStreamServer`，集中持有流上下文、收发队列和接入表，不拥有逻辑邮箱。单一发送协程写流，接收协程交给主循环分派；OPEN 先登记再异步接纳，解除接入在独立工作中等待，避免阻塞顶号所需的 DETACHED。流退出取消本流工作，底层接收随 gRPC 方法返回结束；取消不替代远端解除接入确认。关键入口的 GoDoc 保留简短流程总览，帮助定位这些并发和完成边界。
 
 ### 顶号与独占借号时序
 
