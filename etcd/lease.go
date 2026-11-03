@@ -21,9 +21,11 @@ type Lease struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 
-	mu       sync.Mutex
+	mu      sync.Mutex
+	doneErr error
+
+	// 完成通知与撤销请求各自只执行一次。
 	doneOnce sync.Once
-	doneErr  error
 
 	revokeOnce sync.Once
 	revokeErr  error

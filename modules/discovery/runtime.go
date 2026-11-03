@@ -23,15 +23,20 @@ type Runtime struct {
 	ownership       *SlotOwnership
 	identity        RuntimeIdentity
 	instance        Instance
-	watchMu         sync.Mutex
-	watchReady      bool
-	watchChanged    chan struct{}
-	done            chan struct{}
-	doneOnce        sync.Once
-	errMu           sync.Mutex
-	err             error
-	closeOnce       sync.Once
-	closeErr        error
+
+	// Watch 就绪通知与最终错误分别同步。
+	watchMu      sync.Mutex
+	watchReady   bool
+	watchChanged chan struct{}
+
+	done     chan struct{}
+	doneOnce sync.Once
+
+	errMu sync.Mutex
+	err   error
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 type runtimeRegistry interface {

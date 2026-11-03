@@ -22,10 +22,11 @@ type hostDrainer interface {
 // 它刻意不持有生命周期取消、最终存储刷盘或 Procedure 准入权限。
 type drainCoordinator struct {
 	host    hostDrainer
+	timeout time.Duration
+
 	mu      sync.Mutex
 	status  control.Status
 	attempt *drainAttempt
-	timeout time.Duration
 }
 
 type drainAttempt struct {

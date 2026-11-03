@@ -194,16 +194,20 @@ func TestEtcdRuntimeRecoversAfterCompaction(t *testing.T) {
 type compactionClientGate struct {
 	clientv3.KV
 	clientv3.Watcher
-	target      string
+	target string
+
 	first       sync.Once
 	firstWatch  chan int64
 	resumeWatch chan struct{}
 	compacted   chan clientv3.WatchResponse
 	watches     chan string
 	snapshots   chan string
-	mu          sync.Mutex
-	reads       map[string]int
-	rebuild     map[string]chan struct{}
+
+	mu    sync.Mutex
+	reads map[string]int
+
+	// 各键的重建屏障在测试启动前固定，通道等待不依赖 mu。
+	rebuild map[string]chan struct{}
 }
 
 func (g *compactionClientGate) Get(ctx context.Context, key string, opts ...clientv3.OpOption) (*clientv3.GetResponse, error) {

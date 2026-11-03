@@ -656,10 +656,14 @@ func TestMailboxFreshRejectsLocalSessionWhenStoreBindingIsMissing(t *testing.T) 
 
 type stagedSessionStore struct {
 	roleTestStore
-	mu              sync.Mutex
-	binding         SessionBinding
-	found           bool
-	createCalls     int
+
+	// mu 保护会话绑定和创建计数；角色归属使用 roleMu。
+	mu          sync.Mutex
+	binding     SessionBinding
+	found       bool
+	createCalls int
+
+	// 阶段屏障由通道与 Once 协调，不由 mu 保护。
 	createEntered   chan struct{}
 	continueCreate  chan struct{}
 	refreshEntered  chan struct{}
@@ -670,7 +674,8 @@ type stagedSessionStore struct {
 
 type leaseCountingSessionStore struct {
 	*stagedSessionStore
-	interval     time.Duration
+	interval time.Duration
+
 	refreshCalls int
 }
 

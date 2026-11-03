@@ -22,14 +22,18 @@ type MailboxStreamSession interface {
 }
 
 type grpcMailboxStream struct {
-	ctx            context.Context
-	cancel         context.CancelFunc
-	client         grpc.BidiStreamingClient[msgqpb.MailboxStreamRequest, msgqpb.MailboxStreamResponse]
-	requests       chan *msgqpb.MailboxStreamRequest
-	done           chan struct{}
-	mu             sync.Mutex
-	sessions       map[int64]*grpcMailboxSession
-	once           sync.Once
+	ctx      context.Context
+	cancel   context.CancelFunc
+	client   grpc.BidiStreamingClient[msgqpb.MailboxStreamRequest, msgqpb.MailboxStreamResponse]
+	requests chan *msgqpb.MailboxStreamRequest
+
+	mu       sync.Mutex
+	sessions map[int64]*grpcMailboxSession
+
+	once sync.Once
+	done chan struct{}
+
+	// 仅由 readLoop 更新，不与会话目录共用锁。
 	receiveSamples uint64
 }
 
@@ -51,10 +55,12 @@ type grpcMailboxSession struct {
 	stream *grpcMailboxStream
 	header SessionHeader
 	items  chan mailboxResponse
-	done   chan struct{}
-	once   sync.Once
-	mu     sync.Mutex
-	err    error
+
+	once sync.Once
+	done chan struct{}
+
+	mu  sync.Mutex
+	err error
 }
 
 func newGRPCMailboxStream(streamCtx context.Context, cancel context.CancelFunc, client msgqpb.MailboxServiceClient) (*grpcMailboxStream, error) {
@@ -361,7 +367,8 @@ type localMailboxSession struct {
 	ctx     context.Context
 	cancel  context.CancelCauseFunc
 	items   chan FetchResult
-	once    sync.Once
+
+	once sync.Once
 }
 
 func newLocalMailboxSession(ctx context.Context, mailbox *Server, header SessionHeader) MailboxStreamSession {

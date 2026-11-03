@@ -65,8 +65,9 @@ func validateWebSocketOptions(options WebSocketOptions) error {
 type webSocketTransport struct {
 	connection    *websocket.Conn
 	maxFrameBytes int
-	closeOnce     sync.Once
-	closeErr      error
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func (t *webSocketTransport) Read(ctx context.Context) (Frame, error) {

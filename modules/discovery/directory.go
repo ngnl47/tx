@@ -69,10 +69,12 @@ func (s Status) Valid() bool {
 
 type ServiceDirectory struct {
 	// publish 仅用于 Runtime 单轮 Watch 的写入入口，不参与路由读取。
-	publish   func([]Instance) error
-	mu        sync.RWMutex
-	ready     chan struct{}
+	publish func([]Instance) error
+
 	readyOnce sync.Once
+	ready     chan struct{}
+
+	mu        sync.RWMutex
 	changed   chan struct{}
 	available bool
 	byID      map[string]Instance

@@ -27,13 +27,14 @@ type retirementDirectory interface {
 
 // Cache 按 endpoint 复用当前实例连接；同址重启或有效目录确认退役后关闭旧连接。
 type Cache[T interface{ Close() error }] struct {
-	directory   discovery.Directory
+	directory discovery.Directory
+	stop      chan struct{}
+	done      chan struct{}
+
 	mu          sync.Mutex
 	connections map[string]entry[T]
 	closed      bool
 	closeDone   chan struct{}
-	stop        chan struct{}
-	done        chan struct{}
 }
 
 func New[T interface{ Close() error }](directory discovery.Directory) *Cache[T] {

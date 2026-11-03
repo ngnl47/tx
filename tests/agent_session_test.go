@@ -748,8 +748,9 @@ func (d agentSessionDialer) DialSession(context.Context, discovery.Instance) (ms
 }
 
 type agentTransport struct {
-	reads     chan txagent.Frame
-	writes    chan txagent.Frame
+	reads  chan txagent.Frame
+	writes chan txagent.Frame
+
 	readDone  chan struct{}
 	closeOnce sync.Once
 }

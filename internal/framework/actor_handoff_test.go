@@ -189,7 +189,8 @@ var errHandoffFlush = errors.New("传输确认暂时失败")
 // 注入 Flush 失败，真实 NATS 连接及后续恢复保持不变。
 type handoffFlushTransport struct {
 	*actorrpc.NATSTransport
-	stored   *atomic.Int32
+	stored *atomic.Int32
+
 	attempts int
 }
 

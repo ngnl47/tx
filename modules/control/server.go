@@ -29,8 +29,10 @@ type ServerOptions struct {
 type Server struct {
 	listener net.Listener
 	grpc     *grpc.Server
+
 	stopOnce sync.Once
-	stopped  atomic.Bool
+
+	stopped atomic.Bool
 }
 
 // StartServer 启动控制面 gRPC 服务。endpoint 为空表示禁用控制面。

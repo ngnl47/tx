@@ -164,8 +164,10 @@ func TestSlowRoleRenewalKeepsDeliveryUsable(t *testing.T) {
 
 type blockedRoleRenewalStore struct {
 	testSessionStore
-	block            atomic.Bool
-	calls            atomic.Int32
+
+	block atomic.Bool
+	calls atomic.Int32
+
 	entered, release chan struct{}
 }
 

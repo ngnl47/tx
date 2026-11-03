@@ -24,7 +24,6 @@ const (
 // Redis 保存角色归属租约和精确会话归属，不保存下行编码载荷。
 type Server struct {
 	startupAdmission             lifecycle.Admission
-	startupOpened                atomic.Bool
 	instanceID                   string
 	store                        SessionStore
 	maxBacklogMessages           int
@@ -32,11 +31,15 @@ type Server struct {
 	offlineTimeout               time.Duration
 	terminateDeadSessionInterval time.Duration
 	leaseRefreshInterval         time.Duration
-	terminatingDeadSessions      atomic.Bool
-	stopped                      atomic.Bool
-	initLocks                    [initLockShards]sync.Mutex
 	// beforeRestoreSessionLock 仅供包内测试观察 Restore 即将等待会话锁的阶段。
 	beforeRestoreSessionLock func()
+
+	startupOpened           atomic.Bool
+	terminatingDeadSessions atomic.Bool
+	stopped                 atomic.Bool
+
+	// 初始化锁按角色分片，串行化同角色创建/恢复；目录和邮箱另有各自的锁。
+	initLocks [initLockShards]sync.Mutex
 
 	mu         sync.RWMutex
 	sessions   map[int64]*mailboxSession
@@ -1017,17 +1020,18 @@ func (s *Server) logStaleConnection(ctx context.Context, requested, current Sess
 }
 
 type mailboxSession struct {
-	roleID           int64
-	sessionID        int64
+	roleID    int64
+	sessionID int64
+	notify    chan struct{}
+
+	mu               sync.Mutex
 	connectionID     int64
 	active           bool
 	lastActivity     time.Time
 	nextLeaseRefresh time.Time
-	renewal          chan struct{} // 由 mu 保护；关闭后唤醒等待续期的活动。
-	notify           chan struct{}
+	renewal          chan struct{} // 关闭后唤醒等待续期的活动。
 	downMsgs         downMsgQueue
 	topics           map[string]struct{}
-	mu               sync.Mutex
 }
 
 func newMailboxSession(header SessionHeader) *mailboxSession {

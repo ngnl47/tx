@@ -63,14 +63,18 @@ func TestSlotCacheRejectedReadCannotOverwriteNewWatch(t *testing.T) {
 
 type refreshStore struct {
 	SlotStore
-	reads   atomic.Int32
+
+	reads atomic.Int32
+
 	started chan struct{}
 	release chan struct{}
-	value   SlotAssignment
+
+	value SlotAssignment
 }
 
 type unavailableSlots struct {
 	SlotStore
+
 	reads atomic.Int32
 }
 

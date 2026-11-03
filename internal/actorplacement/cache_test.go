@@ -172,6 +172,7 @@ func TestQueryDeadlineDoesNotForgetBlockedWork(t *testing.T) {
 
 type warningCounter struct {
 	slog.Handler
+
 	warnings atomic.Int32
 }
 

@@ -530,6 +530,8 @@ func TestMsgQServerStartUsesLifecycleWorker(t *testing.T) {
 
 type mailboxSessionStore struct {
 	roleTestStore
+
+	// mu 只保护会话绑定；角色归属由内嵌存储的 roleMu 保护。
 	mu       sync.Mutex
 	bindings map[int64]msgq.SessionBinding
 }

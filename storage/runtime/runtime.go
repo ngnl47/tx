@@ -44,7 +44,7 @@ type Config struct {
 }
 
 type Runtime struct {
-	io              ioStats
+	// 由对应 CMod 在启动阶段装配，关闭阶段按依赖顺序释放。
 	ctx             context.Context
 	redis           *txredis.Stores
 	mongo           *txmongo.Cluster
@@ -53,16 +53,21 @@ type Runtime struct {
 	delayHandler    txfusion.DelayTaskHandler
 	delayWorker     *txfusion.Scheduler
 	delayDispatcher *txfusion.DelayTaskDispatcher
+	redisByName     map[string]txgoredis.Client
+	mongoIndexers   map[string]txmongo.IndexManager
+	redisClients    []*goredis.Client
+	mongoClients    []*mongodriver.Client
 
-	redisByName    map[string]txgoredis.Client
-	mongoIndexers  map[string]txmongo.IndexManager
-	redisClients   []*goredis.Client
-	mongoClients   []*mongodriver.Client
+	io ioStats
+
 	redisCloseOnce sync.Once
-	mongoClosed    atomic.Bool
-	mongoCloseOnce sync.Once
 	redisCloseErr  error
+
+	mongoCloseOnce sync.Once
 	mongoCloseErr  error
+
+	mongoClosed atomic.Bool
+
 	healthMu       sync.RWMutex
 	redisHealthErr error
 	mongoHealthErr error

@@ -277,14 +277,19 @@ func (registry *runtimeRegistryFake) Close() error {
 }
 
 type runtimeRegistrationFake struct {
-	statuses     []Status
-	closeCalls   int
-	identity     RuntimeIdentity
-	instance     Instance
-	done         chan struct{}
-	doneOnce     sync.Once
-	err          error
-	mu           sync.Mutex
+	statuses   []Status
+	closeCalls int
+
+	identity RuntimeIdentity
+	instance Instance
+
+	mu   sync.Mutex
+	done chan struct{}
+	err  error
+
+	// 只执行一次完成发布；done 的取值与 err 仍由 mu 保护。
+	doneOnce sync.Once
+
 	errEntered   chan struct{}
 	errGate      chan struct{}
 	closeEntered chan struct{}

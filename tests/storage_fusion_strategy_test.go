@@ -14,14 +14,18 @@ import (
 )
 
 type recordingQueue struct {
-	ops  []fusion.DelayedSave
-	err  error
+	ops []fusion.DelayedSave
+
+	err error
+
+	// errs 按调用顺序消费，保留尚未返回的错误脚本。
 	errs []error
 }
 
 type recordingDelaySubmitter struct {
-	specs    []meta.TypeSpec
-	keys     []storage.RecordKey
+	specs []meta.TypeSpec
+	keys  []storage.RecordKey
+
 	onSubmit func()
 }
 
@@ -49,7 +53,8 @@ type recordingApplier struct {
 	key        storage.RecordKey
 	changes    recordedChanges
 	options    storage.ApplyOptions
-	err        error
+
+	err error
 }
 
 func (a *recordingApplier) ApplyChangesWithOptions(_ context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, _ change.FieldNameResolver, _ change.ValueResolver, options storage.ApplyOptions) error {
@@ -66,24 +71,28 @@ func (a *recordingApplier) ApplyChangesWithOptions(_ context.Context, spec meta.
 }
 
 type recordingDocumentLoader struct {
-	doc        map[string]any
-	exists     bool
+	doc    map[string]any
+	exists bool
+
+	// 单条加载会依次消费返回脚本，批量加载只读取。
 	docs       []map[string]any
 	existsMany []bool
-	calls      int
-	manyCalls  int
-	spec       meta.TypeSpec
-	key        storage.RecordKey
-	keys       []storage.RecordKey
-	fields     []string
+
+	calls     int
+	manyCalls int
+	spec      meta.TypeSpec
+	key       storage.RecordKey
+	keys      []storage.RecordKey
+	fields    []string
 }
 
 type recordingDocumentBackfiller struct {
-	calls         int
-	spec          meta.TypeSpec
-	key           storage.RecordKey
-	doc           map[string]any
-	options       storage.ApplyOptions
+	calls   int
+	spec    meta.TypeSpec
+	key     storage.RecordKey
+	doc     map[string]any
+	options storage.ApplyOptions
+
 	alreadyExists bool
 	err           error
 }
@@ -93,18 +102,21 @@ type recordingRecordLocker struct {
 	spec    meta.TypeSpec
 	key     storage.RecordKey
 	options storage.LockOptions
+
 	lock    storage.RecordLock
 	err     error
 	nilLock bool
 }
 
 type recordingRecordLock struct {
-	unlocks   int
+	unlocks int
+
 	unlockErr error
 }
 
 type recordingSingleDocumentLoader struct {
-	docs   map[any]map[string]any
+	docs map[any]map[string]any
+
 	calls  int
 	keys   []storage.RecordKey
 	fields []string

@@ -86,10 +86,11 @@ func (d *GRPCDialer) Dial(_ context.Context, instance discovery.Instance) (Conne
 type grpcConnection struct {
 	connection *grpc.ClientConn
 	client     rpcpb.DeliveryServiceClient
-	streamMu   sync.Mutex
-	stream     *callStream
-	opening    *streamOpening
-	closed     bool
+
+	streamMu sync.Mutex
+	stream   *callStream
+	opening  *streamOpening
+	closed   bool
 }
 
 // 开流在连接锁外进行；并发调用者只等待同一次开流，各自可以取消等待。
@@ -158,16 +159,20 @@ type callStream struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	cancelQueue chan uint64
-	sendGate    chan struct{}
+	onClose     func(*callStream)
+
+	// sendGate 串行化底层 Send；mu 保护发送状态和响应关联表。
+	sendGate chan struct{}
+
 	mu          sync.Mutex
 	sending     context.Context
 	sendVersion uint64
 	sendChanged chan struct{}
 	pending     map[uint64]chan streamCallReply
 	nextID      uint64
-	sendSamples atomic.Uint64
 	closed      bool
-	onClose     func(*callStream)
+
+	sendSamples atomic.Uint64
 }
 
 func (c *grpcConnection) CallStream(ctx context.Context, delivery Delivery) (Result, error) {

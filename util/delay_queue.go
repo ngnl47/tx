@@ -22,15 +22,16 @@ var ErrDelayQueueStopped = errors.New("delay queue: stopped")
 // DelayQueue 是业务拥有的本地有序定时器，不接入 CMod 或持久化任务系统。
 // 回调按到期时间串行执行，同一到期时间按添加顺序执行；慢回调会推迟后续任务。
 type DelayQueue struct {
-	mu           sync.Mutex
-	tasks        *taskHeap     // 自定义排序的小顶堆
 	tickInterval time.Duration // tick 间隔
 	stop         chan struct{}
 	done         chan struct{}
-	seq          int64
-	started      bool
-	stopped      bool
-	taskIndex    map[TaskID]*delayedTask // 包括已派发但尚未完成的周期任务
+
+	mu        sync.Mutex
+	tasks     *taskHeap // 自定义排序的小顶堆
+	seq       int64
+	started   bool
+	stopped   bool
+	taskIndex map[TaskID]*delayedTask // 包括已派发但尚未完成的周期任务
 }
 
 // delayedTask 延迟任务

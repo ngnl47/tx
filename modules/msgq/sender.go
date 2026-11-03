@@ -86,8 +86,10 @@ func (d *GRPCDialer) dial(instance discovery.Instance) (*grpcConnection, error) 
 }
 
 type grpcConnection struct {
-	connection       *grpc.ClientConn
-	client           msgqpb.MailboxServiceClient
+	connection *grpc.ClientConn
+	client     msgqpb.MailboxServiceClient
+	rejectRole func(context.Context, RoleBinding, []byte)
+
 	streamMu         sync.Mutex
 	closed           bool
 	closedCh         chan struct{}
@@ -95,7 +97,6 @@ type grpcConnection struct {
 	mailboxOpening   *mailboxStreamOpening
 	publisher        *grpcPublishStream
 	publisherOpening *publishStreamOpening
-	rejectRole       func(context.Context, RoleBinding, []byte)
 }
 
 // OnRoleRejection 在连接开始发布前设置明确未入邮箱的角色消息回调。

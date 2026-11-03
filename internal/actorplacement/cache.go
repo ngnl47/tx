@@ -14,11 +14,12 @@ import (
 // Cache 只保存不可变寻址结果，不承担业务实体的安全卸载。
 // 等待者可独立取消；每次冷加载由 Tasks 托管，关停会等待实际查询收尾。
 type Cache struct {
+	tasks   lifecycle.Tasks
+	resolve txactor.SlotResolver
+
 	mu          sync.Mutex
 	values      *otter.Cache[txactor.Identity, string]
 	pending     map[txactor.Identity]*slotLoad
-	tasks       lifecycle.Tasks
-	resolve     txactor.SlotResolver
 	lastWarning time.Time
 }
 type slotLoad struct {

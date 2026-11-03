@@ -30,7 +30,8 @@ func (f ValueResolverFunc) ResolveValue(path Path) (any, bool) {
 // DocumentBuilder 把同步访问到的变更直接写入后端无关文档。
 // 生成 Store 保证输入已按自身脏状态收敛，因此这里直接构建输出文档。
 type DocumentBuilder struct {
-	doc      Document
+	doc Document
+
 	resolver FieldNameResolver
 	kind     FieldNameKind
 	values   ValueResolver

@@ -16,8 +16,9 @@ import (
 )
 
 type streamSubmitReceiver struct {
-	entered  chan struct{}
-	release  chan struct{}
+	entered chan struct{}
+	release chan struct{}
+
 	mu       sync.Mutex
 	messages []string
 }
@@ -211,7 +212,8 @@ func TestCallStreamCancelsOnlyExpiredItem(t *testing.T) {
 
 type interruptedStreamReceiver struct {
 	entered chan struct{}
-	calls   atomic.Int32
+
+	calls atomic.Int32
 }
 
 func (r *interruptedStreamReceiver) Call(context.Context, Delivery) (Result, error) {

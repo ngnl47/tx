@@ -38,8 +38,9 @@ type Backend struct {
 	bucketCount  int
 	leaseTimeout time.Duration
 	optionsErr   error
-	seq          atomic.Uint64
-	claimCursor  atomic.Uint64
+
+	seq         atomic.Uint64
+	claimCursor atomic.Uint64
 }
 
 func NewBackend(client ScriptClient, options Options) *Backend {

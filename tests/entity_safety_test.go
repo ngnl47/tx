@@ -67,8 +67,10 @@ func (v *mapEntity) increment() {
 }
 
 type mapWriter struct {
-	mu     sync.Mutex
-	rows   map[int64]map[string]int64
+	mu   sync.Mutex
+	rows map[int64]map[string]int64
+
+	// 故障开关与调用计数独立使用原子操作。
 	failed atomic.Bool
 	calls  atomic.Int64
 }

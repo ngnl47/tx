@@ -14,15 +14,18 @@ import (
 )
 
 type recordingMongoUpdater struct {
-	collection    string
-	filter        txmongo.Filter
-	update        map[string]any
-	replace       map[string]any
-	deleted       bool
-	fields        []string
-	doc           map[string]any
-	exists        bool
-	upsert        bool
+	collection string
+	filter     txmongo.Filter
+	update     map[string]any
+	replace    map[string]any
+	deleted    bool
+	fields     []string
+
+	doc    map[string]any
+	exists bool
+
+	upsert bool
+
 	updateErr     error
 	updateResult  *txmongo.UpdateResult
 	replaceResult *txmongo.ReplaceResult
@@ -31,8 +34,9 @@ type recordingMongoUpdater struct {
 	manyCollection string
 	manyFilter     txmongo.ValuesFilter
 	manyFields     []string
-	manyDocs       []map[string]any
-	manyExists     []bool
+
+	manyDocs   []map[string]any
+	manyExists []bool
 
 	sequenceCollection string
 	sequenceNames      []string
@@ -41,6 +45,7 @@ type recordingMongoUpdater struct {
 
 type recordingMongoRouter struct {
 	calls []recordingMongoRouteCall
+
 	names map[any]string
 }
 

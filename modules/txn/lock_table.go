@@ -33,7 +33,9 @@ type lockEntry struct {
 	owner   TransactionID
 	waiters *lockWaiter
 	tail    *lockWaiter
-	refs    int
+
+	// 引用数由所属 lockShard.mu 保护，不由条目锁保护。
+	refs int
 }
 
 type lockShard struct {
@@ -45,8 +47,10 @@ type lockTable struct {
 	shards     [lockShardCount]lockShard
 	entryPool  sync.Pool
 	waiterPool sync.Pool
-	waitsMu    sync.Mutex
-	waits      waitGraph
+
+	// 等待图独立加锁，不与分片目录或单条锁的保护范围混用。
+	waitsMu sync.Mutex
+	waits   waitGraph
 }
 
 type heldLock struct {

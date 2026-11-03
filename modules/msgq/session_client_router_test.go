@@ -20,7 +20,9 @@ func (dialer *rotatingSessionDialer) DialSession(_ context.Context, _ discovery.
 
 type rotatingSessionClient struct {
 	SessionClient
-	closed       atomic.Bool
+
+	closed atomic.Bool
+
 	closeStarted chan struct{}
 	closeFinish  chan struct{}
 }

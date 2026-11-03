@@ -377,6 +377,8 @@ func (noopSessionRouter) Close() error { return nil }
 
 type memorySessionStore struct {
 	roleTestStore
+
+	// mu 只保护会话绑定；角色归属由内嵌存储的 roleMu 保护。
 	mu       sync.Mutex
 	bindings map[int64]txmsgq.SessionBinding
 }
@@ -572,7 +574,8 @@ func (client *setupSessionClient) Init(ctx context.Context, _ txmsgq.InitRequest
 type setupSessionRouter struct {
 	client  *setupSessionClient
 	acquire func(context.Context) error
-	closed  atomic.Bool
+
+	closed atomic.Bool
 }
 
 func (router *setupSessionRouter) Acquire(ctx context.Context, _ txmsgq.AcquireSessionRequest) (txmsgq.SessionClient, error) {

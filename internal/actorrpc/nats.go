@@ -23,15 +23,17 @@ var ErrPendingFull = errors.New("actor rpc: too many pending calls")
 // NATSTransport 同实例投递本地邮箱，跨实例通过 Core NATS 转发实体 RPC；与直连入口共用本地宿主。
 // 连接由框架组合根持有，不对业务暴露原生 NATS 连接。
 type NATSTransport struct {
-	routeInvalidator    atomic.Pointer[routeInvalidator]
 	conn                *nats.Conn
 	runtime             *actorhost.Runtime
 	namespace, instance string
 	inbox               string
-	mu                  sync.Mutex
-	nextRequest         uint64
 	maxPending          int
-	pending             map[string]*pendingCall
+
+	mu          sync.Mutex
+	nextRequest uint64
+	pending     map[string]*pendingCall
+
+	routeInvalidator atomic.Pointer[routeInvalidator]
 }
 
 type pendingCall struct {

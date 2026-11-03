@@ -10,15 +10,17 @@ import (
 type SlotDirectory struct {
 	publish        func([]SlotAssignment, int64) error // Runtime 单轮 Watch 写入入口。
 	publishChanges func([]slotChange, int64) error
-	mu             sync.RWMutex
-	ready          chan struct{}
-	readyOnce      sync.Once
-	available      bool
-	assignments    map[string]SlotAssignment
-	revisions      map[string]int64
-	invalid        map[string]bool
-	revision       int64
-	changed        chan struct{}
+
+	readyOnce sync.Once
+	ready     chan struct{}
+
+	mu          sync.RWMutex
+	available   bool
+	assignments map[string]SlotAssignment
+	revisions   map[string]int64
+	invalid     map[string]bool
+	revision    int64
+	changed     chan struct{}
 }
 
 // slotChange 仅由已解码并校验的 Watch 事件构造；空 owner 是释放，不能当作删除。

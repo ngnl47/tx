@@ -190,7 +190,8 @@ func TestCacheRetirementRequiresValidSnapshotAndAbsentMember(t *testing.T) {
 type blockingCloseConnection struct {
 	started chan struct{}
 	finish  chan struct{}
-	calls   atomic.Int64
+
+	calls atomic.Int64
 }
 
 func (c *blockingCloseConnection) Close() error {

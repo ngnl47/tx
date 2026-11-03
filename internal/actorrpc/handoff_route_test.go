@@ -15,7 +15,8 @@ import (
 
 type handoffReader struct {
 	assignment atomic.Pointer[discovery.SlotAssignment]
-	read       chan struct{}
+
+	read chan struct{}
 }
 
 func (r *handoffReader) ResolveSlot(context.Context, string) (discovery.SlotAssignment, error) {

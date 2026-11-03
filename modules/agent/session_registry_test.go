@@ -242,14 +242,17 @@ func testActiveSession(connectionID int64, client msgq.SessionClient) *activeSes
 }
 
 type sessionControlClient struct {
+	initEntered chan struct{}
+	releaseInit chan struct{}
+
+	// mu 保护终止调用记录及其返回脚本。
 	mu               sync.Mutex
-	initEntered      chan struct{}
-	releaseInit      chan struct{}
 	terminateEntered chan struct{}
 	releaseTerminate chan struct{}
 	terminateErr     error
 	terminateCalls   int
-	terminateOnce    sync.Once
+
+	terminateOnce sync.Once
 }
 
 func (client *sessionControlClient) Init(ctx context.Context, _ msgq.InitRequest) error {
@@ -304,8 +307,9 @@ func (*sessionControlTransport) Write(context.Context, Frame) error {
 func (*sessionControlTransport) Close() error { return nil }
 
 type initializingSessionTransport struct {
-	reads     chan Frame
-	writes    chan Frame
+	reads  chan Frame
+	writes chan Frame
+
 	closed    chan struct{}
 	closeOnce sync.Once
 }

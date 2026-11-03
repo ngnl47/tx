@@ -15,8 +15,9 @@ type TCPServer struct {
 	listener      net.Listener
 	agent         *Server
 	maxFrameBytes int
-	closeOnce     sync.Once
-	closeErr      error
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // ListenTCP 创建尚未开始接受连接的 TCP Agent Server。
@@ -76,9 +77,12 @@ func (s *TCPServer) Close() error {
 type tcpTransport struct {
 	connection    net.Conn
 	maxFrameBytes int
-	readBuffer    [256]byte
-	closeOnce     sync.Once
-	closeErr      error
+
+	// 单个会话读取循环复用，不与写入及关闭共享。
+	readBuffer [256]byte
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func (t *tcpTransport) Read(ctx context.Context) (Frame, error) {

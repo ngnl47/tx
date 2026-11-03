@@ -147,20 +147,24 @@ type activation struct {
 
 // Runtime 只管理本进程实体，不做发现或跨实例归属判定。
 type Runtime struct {
-	checkOwner     func(Context) error
-	contextFor     func(context.Context, Identity) context.Context
-	admission      func(Identity, bool) error
-	mailboxSamples uint64
+	checkOwner func(Context) error
+	contextFor func(context.Context, Identity) context.Context
+	admission  func(Identity, bool) error
+	capacity   int
+	timeout    time.Duration
+	factory    BehaviorFactory
+
+	// mu 保护激活目录、准入状态及邮箱采样计数。
 	mu             sync.Mutex
 	entries        map[Identity]*activation
 	draining       bool
-	workers        sync.WaitGroup
-	capacity       int
-	timeout        time.Duration
-	factory        BehaviorFactory
 	limits         ActivationLimits
 	initializing   int
 	failures       map[Identity]*RemoteError
+	mailboxSamples uint64
+
+	// 新增 worker 在 mu 内登记，实际退出由 worker 自行报告。
+	workers sync.WaitGroup
 }
 
 // New 的工厂先做业务加载准入再构造对象；返回对象后由运行时负责清理。

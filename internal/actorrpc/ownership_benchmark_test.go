@@ -15,7 +15,8 @@ import (
 
 type countedSlotReader struct {
 	assignment discovery.SlotAssignment
-	reads      atomic.Int64
+
+	reads atomic.Int64
 }
 
 func (s *countedSlotReader) ResolveSlot(context.Context, string) (discovery.SlotAssignment, error) {

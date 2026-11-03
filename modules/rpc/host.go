@@ -33,11 +33,13 @@ type serviceRegistrar struct{ grpc.ServiceRegistrar }
 // Host 持有同一进程内各服务共享的普通 gRPC listener。
 // 各服务在 Start 前注册协议，Host 负责对外服务和关闭。
 type Host struct {
-	registrationMu sync.Mutex
-	mu             sync.Mutex
-	listener       net.Listener
-	server         *grpc.Server
+	listener net.Listener
+	server   *grpc.Server
 
+	// registrationMu 串行化协议登记与启停；状态读写另由 mu 保护。
+	registrationMu sync.Mutex
+
+	mu        sync.Mutex
 	started   bool
 	stopped   bool
 	serveDone chan struct{}

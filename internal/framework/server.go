@@ -83,6 +83,7 @@ type Server struct {
 	types          meta.TypeRegistry
 	setups         []func(Context) (func(), error)
 
+	// mu 协调启动、关闭和交接尝试，禁止生命周期阶段并行执行。
 	mu             sync.Mutex
 	starting       bool
 	started        bool
@@ -94,18 +95,21 @@ type Server struct {
 	cmodHost       *cmodHost
 	discovery      *discoveryRuntime
 	control        *controlServer
-	cleanups       []func()
 	stopDone       chan struct{}
 	stopErr        error
 	stopAttempt    *drainAttempt
 	prepareAttempt *drainAttempt
 	prepared       bool
 	finalizing     bool
-	releaseDone    bool
 	slotsReleased  bool
 	finalizeErr    error
-	fatalOnce      sync.Once
 	fatalErr       error
+
+	// 由上述生命周期阶段串行维护，不在执行清理回调时持有 mu。
+	cleanups    []func()
+	releaseDone bool
+
+	fatalOnce sync.Once
 }
 
 func New(config Config, options ...Option) (*Server, error) {

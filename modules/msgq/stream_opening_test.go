@@ -17,12 +17,16 @@ import (
 // 控制 NewStream 的返回时机，覆盖传输阻塞和取消后迟到的成功结果。
 type openingMailboxClient struct {
 	msgqpb.MailboxServiceClient
-	entered      chan context.Context
-	release      chan struct{}
-	releaseOnce  sync.Once
+
+	entered     chan context.Context
+	release     chan struct{}
+	releaseOnce sync.Once
+
 	ignoreCancel bool
-	calls        atomic.Int64
-	recvDone     chan struct{}
+
+	calls atomic.Int64
+
+	recvDone chan struct{}
 }
 
 func (c *openingMailboxClient) wait(ctx context.Context) error {
@@ -56,7 +60,8 @@ func (c *openingMailboxClient) PublishStream(ctx context.Context, _ ...grpc.Call
 
 type openingClientStream[Request, Response any] struct {
 	grpc.ClientStream
-	ctx      context.Context
+	ctx context.Context
+
 	closed   chan struct{}
 	recvDone chan struct{}
 }

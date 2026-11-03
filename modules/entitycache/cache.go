@@ -32,38 +32,47 @@ type Options[V any] struct {
 // Cache 合并同一业务键的并发冷加载，并在进程内复用同一个对象实例。
 // values 拥有业务对象身份，policy 只保存同一 cacheEntry 指针作为淘汰策略 token。
 type Cache[K comparable, V any] struct {
-	keyString KeyString[K]
-	loader    Loader[K, V]
-	options   Options[V]
-	loadMu    sync.Mutex
-	loads     map[K]*cacheLoad
-	tasks     lifecycle.Tasks
+	keyString           KeyString[K]
+	loader              Loader[K, V]
+	options             Options[V]
+	policy              *otter.Cache[K, *cacheEntry[V]]
+	policyReadThreshold int
+	wake                chan struct{}
 
+	// 冷加载合并及其宿主绑定。
+	loadMu sync.Mutex
+	loads  map[K]*cacheLoad
+	tasks  lifecycle.Tasks
+
+	// 唯一条目目录与使用期；不替代业务对象的 Procedure 锁。
 	mu              sync.RWMutex
 	values          map[K]*cacheEntry[V]
 	nextIncarnation uint64
-	policy          *otter.Cache[K, *cacheEntry[V]]
+
 	// policyReads 在 Otter 的频率 sketch 开始工作，或启用 access expiry 后开放读路径。
 	// 固定 v2.3.0 会在容量达到一半时惰性初始化 sketch；此前的读取不会进入淘汰策略。
-	policyReads         atomic.Bool
-	policyReadThreshold int
+	policyReads atomic.Bool
 
+	// 待回收候选与原子计数分别供维护循环及热路径使用。
 	deferredMu sync.Mutex
 	deferred   map[K]deferredEntry[K, V]
-	deferredN  atomic.Int64
-	wake       chan struct{}
+
+	deferredN atomic.Int64
 }
 
 type cacheEntry[V any] struct {
 	incarnation uint64
 	value       V
-	owner       *txn.Tx
-	creating    bool
-	loading     bool
-	users       int
-	releasing   chan struct{}
-	generation  atomic.Uint64
-	retired     atomic.Bool
+
+	// 生命周期状态由所属 Cache.mu 保护，value 的业务修改遵守实体锁契约。
+	owner     *txn.Tx
+	creating  bool
+	loading   bool
+	users     int
+	releasing chan struct{}
+
+	generation atomic.Uint64
+	retired    atomic.Bool
 }
 
 // NewCache 创建实体对象缓存。

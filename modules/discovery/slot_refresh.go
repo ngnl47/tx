@@ -21,10 +21,11 @@ type slotRefreshCall struct {
 	err    error
 }
 type slotRefresh struct {
-	mu       sync.Mutex
-	pending  map[slotRefreshKey]*slotRefreshCall
 	tasks    lifecycle.Tasks
 	resolver *SlotResolver
+
+	mu      sync.Mutex
+	pending map[slotRefreshKey]*slotRefreshCall
 }
 
 // BindRefresh 在开放调用前绑定进程任务视图；查询取消和等待所有权仍属于宿主。

@@ -332,7 +332,8 @@ func (s *Server) writeDownMsgs(ctx context.Context, mailboxStream msgq.MailboxSt
 // sessionFrameWriter 在同一发送锁内采样确认号并写帧，避免并发组帧导致确认号回退。
 type sessionFrameWriter struct {
 	transport Transport
-	mu        sync.Mutex
+
+	mu sync.Mutex
 }
 
 func (w *sessionFrameWriter) Write(ctx context.Context, frame Frame) error {

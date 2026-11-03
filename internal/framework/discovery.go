@@ -15,8 +15,9 @@ type discoveryRuntime struct {
 	*discovery.Runtime
 	client       *txetcd.Client
 	sessionIDKey string
-	closeOnce    sync.Once
-	closeErr     error
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func newDiscovery(ctx context.Context, config discovery.EtcdConfig, appID string, descriptor discovery.Instance) (*discoveryRuntime, error) {

@@ -15,8 +15,10 @@ import (
 // 用可控的传输阻塞检验调用者期限，不通过等待远端回执模拟 Send。
 type blockedStreamClient struct {
 	rpcpb.DeliveryServiceClient
-	mu          sync.Mutex
-	streams     []*blockedClientStream
+
+	mu      sync.Mutex
+	streams []*blockedClientStream
+
 	entered     chan struct{}
 	openRelease chan struct{}
 	blockOpen   bool
@@ -48,7 +50,9 @@ func (c *blockedStreamClient) stop() {
 
 type blockedClientStream struct {
 	grpc.ClientStream
-	ctx         context.Context
+	ctx context.Context
+
+	// once 发布 entered，releaseOnce 发布 release，各自独立执行一次。
 	entered     chan struct{}
 	release     chan struct{}
 	releaseOnce sync.Once

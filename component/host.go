@@ -21,14 +21,15 @@ type Host struct {
 	ownRoot bool
 	graph   Graph
 
+	// transition 串行化生命周期转换及其进度记录。
 	transition chan struct{}
 	started    []startedComponent
 	state      hostState
+	drained    int
+	stopErr    error
 
 	startOnce sync.Once
 	startErr  error
-	drained   int
-	stopErr   error
 }
 
 type hostState uint8

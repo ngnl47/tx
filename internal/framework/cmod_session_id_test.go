@@ -415,9 +415,10 @@ func TestRuntimeSessionIDsSnapshotPreservesNil(t *testing.T) {
 }
 
 type sessionIDIdentityFake struct {
-	mu   sync.RWMutex
 	done chan struct{}
-	err  error
+
+	mu  sync.RWMutex
+	err error
 }
 
 func newSessionIDIdentityFake() *sessionIDIdentityFake {
@@ -447,10 +448,13 @@ type blockingSessionIDAllocator struct {
 }
 
 type sessionIDIdentityBlockingFirstErr struct {
-	done       chan struct{}
+	done chan struct{}
+
 	errStarted chan struct{}
 	releaseErr chan struct{}
-	errCalls   atomic.Int32
+
+	errCalls atomic.Int32
+
 	releaseOne sync.Once
 }
 

@@ -19,19 +19,22 @@ type serviceHost struct {
 	started         []startedService
 	drainAttempt    *drainAttempt
 	rollbackPending bool
-	tasksStopOnce   sync.Once
-	tasksStopped    chan struct{}
 	stopErr         error
+
+	// 后台任务的停止通知独立于生命周期状态锁，只发布一次。
+	tasksStopOnce sync.Once
+	tasksStopped  chan struct{}
 }
 
 type startedService struct {
 	flushed         bool
 	rollbackStopped bool
-	service         Service
-	access          *runtimeAccess
-	ingress         *lifecycle.Ingress
-	tasks           *lifecycle.ChildWaitGroupContext
-	phase           *servicePhase
+
+	service Service
+	access  *runtimeAccess
+	ingress *lifecycle.Ingress
+	tasks   *lifecycle.ChildWaitGroupContext
+	phase   *servicePhase
 }
 
 func newServiceHost(registry *registry, runtime *runtime) *serviceHost {

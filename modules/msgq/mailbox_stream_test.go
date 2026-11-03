@@ -319,7 +319,9 @@ func TestMailboxOpenAndFailureHaveOneLifecycleBoundary(t *testing.T) {
 
 type expiringFetchStore struct {
 	testSessionStore
-	calls        atomic.Int64
+
+	calls atomic.Int64
+
 	fetchContext chan context.Context
 }
 

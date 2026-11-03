@@ -17,7 +17,8 @@ type recordingChangeStoreApplier struct {
 	changes    recordedChanges
 	options    storage.ApplyOptions
 	hasOptions bool
-	err        error
+
+	err error
 }
 
 func (a *recordingChangeStoreApplier) ApplyChangesWithOptions(_ context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, _ change.FieldNameResolver, _ change.ValueResolver, options storage.ApplyOptions) error {
@@ -34,10 +35,13 @@ func (a *recordingChangeStoreApplier) ApplyChangesWithOptions(_ context.Context,
 }
 
 type testChangeStore struct {
-	spec       meta.TypeSpec
-	key        storage.RecordKey
-	changes    recordedChanges
-	defaults   storage.ApplyOptions
+	spec meta.TypeSpec
+	key  storage.RecordKey
+
+	changes recordedChanges
+
+	defaults storage.ApplyOptions
+
 	allTouched int
 	cleared    int
 }

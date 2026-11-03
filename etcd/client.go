@@ -51,8 +51,9 @@ type WatchResponse struct {
 
 // Client 提供 tx 基础设施使用的 etcd 键值原语。
 type Client struct {
-	raw       *clientv3.Client
-	closeRaw  bool
+	raw      *clientv3.Client
+	closeRaw bool
+
 	closeOnce sync.Once
 	closeErr  error
 }

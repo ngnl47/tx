@@ -23,18 +23,22 @@ type grpcPublishItem struct {
 }
 
 type grpcPublishStream struct {
-	ctx             context.Context
-	cancel          context.CancelFunc
-	client          grpc.BidiStreamingClient[msgqpb.PublishRequest, msgqpb.PublishRoleRejection]
-	reject          func(context.Context, RoleBinding, []byte)
-	items           chan grpcPublishItem
-	done            chan struct{}
+	ctx    context.Context
+	cancel context.CancelFunc
+	client grpc.BidiStreamingClient[msgqpb.PublishRequest, msgqpb.PublishRoleRejection]
+	reject func(context.Context, RoleBinding, []byte)
+	items  chan grpcPublishItem
+
 	closeMu         sync.Mutex
 	closed          bool
 	historicalClose bool
-	once            sync.Once
-	closeErr        error
-	samples         atomic.Uint64
+
+	// finish 写入最终错误并关闭 done，读取错误前须等待 done。
+	once     sync.Once
+	closeErr error
+	done     chan struct{}
+
+	samples atomic.Uint64
 }
 
 type publishStreamOpening struct {

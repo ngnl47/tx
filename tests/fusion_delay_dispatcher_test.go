@@ -21,16 +21,19 @@ type retryingDelayQueue struct {
 	failures   int
 	attempts   int
 	operations []fusion.DelayedSave
-	succeeded  chan struct{}
+
+	succeeded chan struct{}
 }
 
 type blockingDelayQueue struct {
 	mu         sync.Mutex
-	once       sync.Once
 	attempts   int
 	operations []fusion.DelayedSave
-	started    chan struct{}
-	release    chan struct{}
+
+	// once 只发布开始通知，屏障等待不占用 mu。
+	once    sync.Once
+	started chan struct{}
+	release chan struct{}
 }
 
 func (q *blockingDelayQueue) Enqueue(ctx context.Context, operation fusion.DelayedSave) error {

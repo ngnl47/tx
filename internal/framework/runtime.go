@@ -23,37 +23,44 @@ type actorTransport interface {
 }
 
 type runtime struct {
-	reportFatal         func(error)
-	accessClosed        atomic.Bool
-	serviceAccess       map[string]*runtimeAccess
-	servicePhases       map[string]*servicePhase
-	taskQueue           *taskRuntime
-	config              Config
-	lifecycle           *lifecycle.WaitGroupContext
-	storage             *storageRuntime
-	rpc                 *txrpc.Host
-	actor               txactor.Runtime
-	actorDirect         txactor.Teller
-	rpcSender           *txrpc.Sender
-	entities            *actorhost.Runtime
-	actorRPC            actorTransport
-	actorTypes          []txactor.Type
-	actorCatalog        map[string]actorTypeSpec
-	placement           *actorPlacement
-	transaction         *txn.Runtime
-	commitParticipant   txn.CommitParticipant
+	// 启动装配与服务能力绑定，运行期不重新配置。
+	reportFatal       func(error)
+	serviceAccess     map[string]*runtimeAccess
+	servicePhases     map[string]*servicePhase
+	selectedCMods     map[CModID]struct{}
+	config            Config
+	lifecycle         *lifecycle.WaitGroupContext
+	storage           *storageRuntime
+	taskQueue         *taskRuntime
+	transaction       *txn.Runtime
+	commitParticipant txn.CommitParticipant
+
+	rpc              *txrpc.Host
+	actor            txactor.Runtime
+	actorDirect      txactor.Teller
+	rpcSender        *txrpc.Sender
+	entities         *actorhost.Runtime
+	actorRPC         actorTransport
+	actorTypes       []txactor.Type
+	actorCatalog     map[string]actorTypeSpec
+	placement        *actorPlacement
+	directory        *discovery.ServiceDirectory
+	slots            discovery.SlotReader
+	localAssignments discovery.LocalAssignments
+
+	accessClosed atomic.Bool
+
+	// 三组状态分别协调缓存关闭、发号器绑定及实例快照。
 	entityCacheMu       sync.Mutex
 	entityCache         *entitycache.Runtime
 	entityCacheDraining bool
 	entityCacheClosed   bool
-	directory           *discovery.ServiceDirectory
-	slots               discovery.SlotReader
-	localAssignments    discovery.LocalAssignments
-	sessionIDMu         sync.RWMutex
-	sessionIDs          *sessionIDRuntime
-	instanceMu          sync.RWMutex
-	instance            discovery.Instance
-	selectedCMods       map[CModID]struct{}
+
+	sessionIDMu sync.RWMutex
+	sessionIDs  *sessionIDRuntime
+
+	instanceMu sync.RWMutex
+	instance   discovery.Instance
 }
 
 func (runtime *runtime) hasCMod(id CModID) bool {

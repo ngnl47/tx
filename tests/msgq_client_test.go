@@ -280,9 +280,10 @@ func newSessionClientDirectory(t *testing.T, instances []discovery.Instance) *di
 }
 
 type sessionClientDialerFake struct {
-	mu          sync.Mutex
-	instances   []discovery.Instance
-	clients     []*sessionClientFake
+	mu        sync.Mutex
+	instances []discovery.Instance
+	clients   []*sessionClientFake
+
 	dialBarrier *sync.WaitGroup
 }
 

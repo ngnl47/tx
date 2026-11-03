@@ -438,14 +438,16 @@ func TestTransactionCallSharesLockAcrossStores(t *testing.T) {
 }
 
 type transactionDeadlockFirstProcedure struct {
-	lock      txn.StoreTarget
-	store     *transactionTestStore
-	child     txn.Procedure
+	lock  txn.StoreTarget
+	store *transactionTestStore
+	child txn.Procedure
+
 	ready     chan struct{}
 	peerReady chan struct{}
 	once      sync.Once
-	attempts  atomic.Int32
-	commits   atomic.Int32
+
+	attempts atomic.Int32
+	commits  atomic.Int32
 }
 
 func (procedure *transactionDeadlockFirstProcedure) Locks(context.Context) (txn.Lockeys, error) {
@@ -468,14 +470,16 @@ func (procedure *transactionDeadlockFirstProcedure) Process(tx *txn.Tx) error {
 }
 
 type transactionDeadlockSecondProcedure struct {
-	lock      txn.StoreTarget
-	store     *transactionTestStore
-	child     txn.Procedure
+	lock  txn.StoreTarget
+	store *transactionTestStore
+	child txn.Procedure
+
 	ready     chan struct{}
 	peerReady chan struct{}
 	once      sync.Once
-	attempts  atomic.Int32
-	commits   atomic.Int32
+
+	attempts atomic.Int32
+	commits  atomic.Int32
 }
 
 func (procedure *transactionDeadlockSecondProcedure) Locks(context.Context) (txn.Lockeys, error) {

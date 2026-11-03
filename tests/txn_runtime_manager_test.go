@@ -14,8 +14,9 @@ import (
 )
 
 type runtimeTestStore struct {
-	id         int64
-	typeName   string
+	id       int64
+	typeName string
+
 	recorder   change.UndoRecorder
 	changes    recordedChanges
 	visitCalls int

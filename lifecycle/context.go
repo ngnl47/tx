@@ -40,7 +40,10 @@ type WaitGroupContext struct {
 
 	mu       sync.Mutex
 	stopping bool
-	wg       sync.WaitGroup
+
+	// mu 串行化工作登记与关闸；任务完成及等待使用各自同步机制。
+	wg sync.WaitGroup
+
 	waitOnce sync.Once
 	waitDone chan struct{}
 }

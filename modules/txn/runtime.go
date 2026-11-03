@@ -148,8 +148,9 @@ func (runtime *Runtime) execute(ctx context.Context, procedure Procedure, async 
 }
 
 type managedProcedure struct {
-	procedure          Procedure
-	commitParticipant  CommitParticipant
+	procedure         Procedure
+	commitParticipant CommitParticipant
+
 	ctx                context.Context
 	commitReservations []CommitReservation
 }

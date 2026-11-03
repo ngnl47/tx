@@ -17,16 +17,22 @@ import (
 )
 
 type recordingRedisStringClient struct {
-	values      map[string]string
-	evals       []redisEvalCall
-	mgets       [][]string
+	values map[string]string
+
+	evals []redisEvalCall
+	mgets [][]string
+
+	// MGet 返回脚本，其中批次会随调用消费。
 	mgetValues  []string
 	mgetBatches [][]string
+
 	evalResult  string
 	evalResults []string
-	evalIndex   int
-	hasResult   bool
-	evalErr     error
+
+	evalIndex int
+
+	hasResult bool
+	evalErr   error
 }
 
 type redisEvalCall struct {
@@ -37,13 +43,15 @@ type redisEvalCall struct {
 
 type recordingRedisEvalOnlyClient struct {
 	results []string
-	evals   []redisEvalCall
+
+	evals []redisEvalCall
 }
 
 type recordingRedisBatchClient struct {
 	results []string
 	err     error
-	calls   [][]txredis.ScriptCall
+
+	calls [][]txredis.ScriptCall
 }
 
 func (c *recordingRedisBatchClient) Eval(_ context.Context, _ string, _ []string, _ ...any) (string, error) {

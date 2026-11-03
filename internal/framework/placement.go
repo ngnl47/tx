@@ -23,15 +23,19 @@ type placementKey struct{ service, policy string }
 // Identity→SlotID 是有界静态缓存，SlotID→实例仍由 Discovery 权威归属维护。
 type actorPlacement struct {
 	actorpb.UnimplementedPlacementQueryServer
-	ready     atomic.Bool
-	closeOnce sync.Once
-	closed    chan struct{}
+
+	// 装配期构建；ready 发布后仅查询，不再修改绑定表。
 	catalog   map[string]actorTypeSpec
 	providers map[placementKey]txactor.GroupResolver
 	clients   map[string]actorpb.PlacementQueryClient
 	cache     *actorplacement.Cache
 	tasks     *lifecycle.ChildWaitGroupContext
 	ingress   *lifecycle.Ingress
+
+	ready atomic.Bool
+
+	closeOnce sync.Once
+	closed    chan struct{}
 }
 
 func newActorPlacement(r *runtime) (*actorPlacement, error) {

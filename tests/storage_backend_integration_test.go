@@ -149,9 +149,10 @@ type integrationRedisMutatingDocumentReplacer struct {
 
 type integrationBlockingDocumentReplacer struct {
 	delegate txstorage.VersionedDocumentReplacer
-	entered  chan struct{}
-	release  chan struct{}
-	once     sync.Once
+
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
 }
 
 func (r *integrationBlockingDocumentReplacer) ReadDocumentVersion(ctx context.Context, spec meta.TypeSpec, key txstorage.RecordKey) (txstorage.DocumentVersion, error) {
@@ -170,8 +171,9 @@ func (r *integrationBlockingDocumentReplacer) ReplaceDocumentAtVersion(ctx conte
 
 type integrationFirstLoadsBarrier struct {
 	delegate txstorage.DocumentLoader
-	ready    chan struct{}
-	release  chan struct{}
+
+	ready   chan struct{}
+	release chan struct{}
 
 	mu    sync.Mutex
 	loads int
@@ -209,9 +211,10 @@ type integrationCountingDocumentLoader struct {
 
 type integrationFirstDocumentLoadBarrier struct {
 	delegate txstorage.DocumentLoader
-	ready    chan struct{}
-	release  chan struct{}
-	once     sync.Once
+
+	ready   chan struct{}
+	release chan struct{}
+	once    sync.Once
 }
 
 func (l *integrationFirstDocumentLoadBarrier) LoadDocument(ctx context.Context, spec meta.TypeSpec, key txstorage.RecordKey, fields ...string) (map[string]any, bool, error) {

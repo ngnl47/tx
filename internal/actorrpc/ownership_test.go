@@ -196,10 +196,13 @@ func TestCapacityPreflightDoesNotReserve(t *testing.T) {
 // 故障仅影响控制调用方看到的结果，etcd 操作确实已经执行。
 type uncertainSlotStore struct {
 	discovery.SlotStore
-	createLost   atomic.Bool
+
+	createLost atomic.Bool
+
 	afterCreate  func()
 	beforeCreate func(context.Context) error
-	creates      atomic.Int32
+
+	creates atomic.Int32
 }
 
 func (s *uncertainSlotStore) CreateSlot(ctx context.Context, a discovery.SlotAssignment) error {

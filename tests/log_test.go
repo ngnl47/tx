@@ -99,8 +99,9 @@ func TestLogNamedLoggerUsesCurrentDefaultLogger(t *testing.T) {
 type recordingSlogHandler struct {
 	mu      sync.Mutex
 	records []slog.Record
-	attrs   []slog.Attr
-	sink    *recordingSlogHandler
+
+	attrs []slog.Attr
+	sink  *recordingSlogHandler
 }
 
 func (h *recordingSlogHandler) Enabled(context.Context, slog.Level) bool {

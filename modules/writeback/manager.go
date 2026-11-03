@@ -94,6 +94,7 @@ type Manager struct {
 	writeAdmission WriteAdmission
 	config         Config
 
+	// 根对象登记、待写回与创建预留共享一把锁。
 	mu               sync.Mutex
 	generation       uint64
 	entries          map[txn.StoreKey]rootEntry
@@ -101,6 +102,7 @@ type Manager struct {
 	reserved         map[txn.StoreKey]int
 	creationResolver CreationCache
 
+	// 堆采样与告警状态独立于写回目录。
 	heapMu              sync.Mutex
 	lastHeapSampleAt    time.Time
 	lastHeapBytes       uint64
@@ -194,7 +196,8 @@ func (manager *Manager) Prepare(_ context.Context, targets []txn.StoreTarget) (t
 }
 
 type reservation struct {
-	once    sync.Once
+	once sync.Once
+
 	manager *Manager
 	key     txn.StoreKey
 	keys    []txn.StoreKey
@@ -590,7 +593,8 @@ func (store changeBudgetStore) VisitChanges(visitor change.Visitor) error {
 }
 
 type changeBudgetVisitor struct {
-	visitor   change.Visitor
+	visitor change.Visitor
+
 	remaining int
 }
 

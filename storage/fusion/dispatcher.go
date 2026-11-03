@@ -51,8 +51,10 @@ type DelayTaskDispatcher struct {
 	mu      sync.Mutex
 	nextSeq uint64
 	pending map[string]pendingDelayedWrite
-	wake    chan struct{}
 
+	wake chan struct{}
+
+	// 串行发布使用独立门闩，外部 I/O 不持有 pending 的互斥锁。
 	publishGate chan struct{}
 }
 

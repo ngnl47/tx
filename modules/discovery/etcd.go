@@ -168,14 +168,16 @@ func (r *EtcdRegistry) Watch(ctx context.Context, directory *ServiceDirectory) e
 
 type EtcdRegistration struct {
 	registry *EtcdRegistry
+	lease    *txetcd.Lease
 
 	mu       sync.Mutex
 	identity RuntimeIdentity
 	instance Instance
-	lease    *txetcd.Lease
-	done     chan struct{}
-	doneOnce sync.Once
 	doneErr  error
+
+	doneOnce sync.Once
+	done     chan struct{}
+
 	close    sync.Once
 	closeErr error
 }

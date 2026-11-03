@@ -93,8 +93,9 @@ func (err *deadlockVictimError) Unwrap() error {
 
 // Tx 是一次正在执行的单机事务。
 type Tx struct {
-	id         TransactionID
-	ctx        context.Context
+	id  TransactionID
+	ctx context.Context
+
 	active     bool
 	locks      map[Lockey]int
 	stores     map[StoreKey]change.UndoBindable
@@ -103,13 +104,16 @@ type Tx struct {
 	dirty      map[StoreKey]struct{}
 	procedures []string
 	deadlock   error
-	options    CallOptions
-	hooks      callHooks
 
-	remover       RemovalParticipant
-	removals      []removal
-	creator       CreationParticipant
-	creations     []creation
+	options CallOptions
+	hooks   callHooks
+
+	remover  RemovalParticipant
+	removals []removal
+
+	creator   CreationParticipant
+	creations []creation
+
 	undos         []change.UndoFunc
 	afterCommit   []func(context.Context) error
 	afterRollback []func(context.Context)

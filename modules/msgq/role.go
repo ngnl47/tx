@@ -51,7 +51,9 @@ type RoleRouter struct {
 	directory   discovery.Directory
 	cache       *otter.Cache[int64, RoleBinding]
 	loader      RoleLoader
-	loads       singleflight.Group
+
+	loads singleflight.Group
+
 	// 冷加载与失效串行交接，防止已失效的在途读取重新填入缓存。
 	loading sync.RWMutex
 }

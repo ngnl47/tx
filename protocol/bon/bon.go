@@ -332,7 +332,8 @@ func (writer *writer) writeNatural(value int) {
 func (writer *writer) writeByte(value byte) { writer.bytes = append(writer.bytes, value) }
 
 type reader struct {
-	bytes   []byte
+	bytes []byte
+
 	pos     int
 	strings []string
 }

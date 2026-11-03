@@ -35,9 +35,10 @@ type Bus interface {
 
 // EventBus 保存事件处理器和回调。
 type EventBus struct {
-	handlers map[string][]*eventHandler
 	mu       sync.RWMutex
-	wg       sync.WaitGroup
+	handlers map[string][]*eventHandler
+
+	wg sync.WaitGroup
 }
 
 type eventHandler struct {
@@ -45,8 +46,10 @@ type eventHandler struct {
 	flagOnce      bool
 	async         bool
 	transactional bool
-	once          sync.Once // SubscribeOnce(Async)：用户回调最多执行一次。
-	sync.Mutex              // transactional async：串行化该订阅的回调。
+
+	once sync.Once // SubscribeOnce(Async)：用户回调最多执行一次。
+
+	sync.Mutex // transactional async：串行化该订阅的回调。
 }
 
 // NewEventBus 创建一个不含任何处理器的新 EventBus。

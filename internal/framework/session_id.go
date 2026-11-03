@@ -23,8 +23,9 @@ type sessionIDRuntime struct {
 	availability context.Context
 	cancel       context.CancelCauseFunc
 	cause        error
-	enabled      atomic.Bool
-	closed       atomic.Bool
+
+	enabled atomic.Bool
+	closed  atomic.Bool
 }
 
 func newSessionIDRuntime(next sessionid.Allocator, identity sessionIDIdentity) *sessionIDRuntime {

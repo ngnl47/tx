@@ -199,7 +199,8 @@ type hostTestComponent struct {
 	startErr    error
 	drainErr    error
 	stopErr     error
-	stopCalls   int
+
+	stopCalls int
 }
 
 func (component *hostTestComponent) Spec() Spec {
@@ -227,7 +228,8 @@ func (component *hostTestComponent) Stop(context.Context) error {
 }
 
 type ownedTaskComponent struct {
-	exited           chan struct{}
+	exited chan struct{}
+
 	stopObservedExit bool
 }
 
@@ -293,7 +295,8 @@ func TestHostConcurrentStopHonorsEachWaiterDeadline(t *testing.T) {
 type blockingStopComponent struct {
 	entered chan struct{}
 	release chan struct{}
-	calls   int
+
+	calls int
 }
 
 func (*blockingStopComponent) Spec() Spec          { return Spec{ID: "blocked"} }
