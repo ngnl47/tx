@@ -757,14 +757,14 @@ binding、释放本地邮箱和 Topic 关系，最后一个邮箱退出后由维
 
 ### msgq gRPC 传输
 
-标准 MsgQ 服务正常停止时调用 `Server.Stop(ctx)`：阻止后续初始化，使本地邮箱及未确认队列失效，
-再按 `RoleID/InstanceID/Generation` 条件释放本地持有的角色归属。只遍历本地记录，不扫描 Redis。
+标准 MsgQ 服务正常停止时调用 `Server.Stop(ctx)`：先阻止新建与恢复，经既有 MailboxStream 撤销有效接入并等待精确关闭确认，再使本地邮箱及未确认队列失效，
+按 `RoleID/InstanceID/Generation` 条件释放本地持有的角色归属。流断开不代表撤销完成；未确认时返回错误并保留必要状态，不提前释放 owner。只遍历本地记录，不扫描 Redis。
 因此新 Session 可以重新申请归属，旧 Session 不能在新实例恢复。进程强制终止或 Redis 释放失败时，
 归属仍由原 TTL 兜底；服务发现暂时缺失不会触发抢占。
 角色缓存命中已不可用实例时，`RoleRouter` 在发送前至多重新读取一次权威归属；若新归属已建立即可直接寻址。
 该操作不分配归属，也不重试已发送的业务消息；稳定热路径仍不访问 Redis。
 
-`modules/msgq` 提供独立的 protobuf/gRPC `MailboxService`，不复用通用的 `modules/rpc`。Agent 用 `Init` 建立或恢复会话，与每个 MsgQ 实例复用一条承载多 Session 的 `MailboxStream`；下行 Ack 沿该流发送，MsgQ 沿流推送下行。业务下行使用 `PublishStream`，Topic 和 `TerminateSession` 是独立控制操作；显式等待发布结果的 `PubSession`/`PubRole` 仍保留独立语义，不在高频业务链路使用。所有 `payload` 均为已编码 BON 字节。
+`modules/msgq` 提供独立的 protobuf/gRPC `MailboxService`，不复用通用的 `modules/rpc`。Agent 通过 `OpenMailboxStream(ctx, InitRequest, onRevoke)` 建立或恢复会话；它把 Init 与可撤销端点绑定合为一次接入，等远端 OPENED 后才返回。每个 Agent 与每个 MsgQ 实例复用一条承载多 Session 的 `MailboxStream`；Ack、Renew 沿流单向发送，MsgQ 沿流推送下行。业务下行使用 `PublishStream`，Topic 和 `TerminateSession` 是独立控制操作；显式等待发布结果的 `PubSession`/`PubRole` 仍保留独立语义，不在高频业务链路使用。所有 `payload` 均为已编码 BON 字节。
 
 ```go
 grpcServer := grpc.NewServer()
@@ -810,7 +810,7 @@ if err := rpcHost.Start(rootWaitGroupContext); err != nil {
 defer rpcHost.Stop(context.Background())
 ```
 
-`MailboxStream` 保留每个 Session 独立的下行确认、未确认下行和恢复状态。`Init` 仅确认初始化完成，不返回上行序号；流内旧连接、队列满或失效会话会收到对应错误。业务下行经 `PublishStream` 写入本地 gRPC 流，发送成功不代表 MsgQ 已入队；旧角色归属拒绝由流异步反馈，仅在 MsgQ 明确证明该载荷尚未进入任何邮箱时，发送方清理缓存并重新寻址、单次投递；结果未知或部分成功不重投。
+`MailboxStream` 保留每个 Session 独立的下行确认、未确认下行和恢复状态。低层 `Init` 不返回上行序号；正式 Agent 接入必须使用 `OpenMailboxStream` 等待初始化和撤销端点绑定完成，不能把 OPEN 放入本地发送队列当成远端已接纳。流内旧连接、队列满或失效会话会收到对应错误。业务下行经 `PublishStream` 写入本地 gRPC 流，发送成功不代表 MsgQ 已入队；旧角色归属拒绝由流异步反馈，仅在 MsgQ 明确证明该载荷尚未进入任何邮箱时，发送方清理缓存并重新寻址、单次投递；结果未知或部分成功不重投。
 
 `rpc.Host` 直接接入全局 `lifecycle.WaitGroupContext`。应用服务关闭时由项目宿主统一调用 `Stop`，未确认下行仍遵循
 msgq 的内存语义。
@@ -873,17 +873,20 @@ WebSocket 只接受 binary message。两种传输共用同一套 `Frame`、身�
 
 Agent 不实现账号、JWT、游客登录或角色选择。项目必须在启动组合根提供 `HandlerProvider`：它接收当前
 Bee 或 Ant Context，组合身份解析器和项目 Actor 路由策略。这样项目不需要全局注册表，也不会在多测试、多 Server
-进程组合时共享可变状态。握手中的不透明数据由项目解析为 `protocol.SessionPrincipal`；Agent 校验主体后自行生成正
-`ConnectionID`，构造不可变的 `protocol.SessionIdentity`：
+进程组合时共享可变状态。握手中的不透明数据由项目解析为 `agent.AuthResult`，包含 `protocol.SessionPrincipal` 和可选的可信 `SessionAdmission`；Agent 校验主体后自行生成正
+`ConnectionID`，构造不可变的 `protocol.SessionIdentity`。Admission 不进入业务消息头：
 
 ```go
 handlers := func(runtime bee.Context) (txagent.IdentityResolver, txagent.Dispatcher, error) {
-    identity := txagent.IdentityResolverFunc(func(ctx context.Context, req txagent.AuthRequest) (txprotocol.SessionPrincipal, error) {
-        // 项目在这里校验 token，或解析登录服签发的可信 ticket。
-        return txprotocol.SessionPrincipal{
-            RoleID:    470001,
-            SessionID: 99,
-            Claims:    trustedProjectClaims, // 项目认证后编码的不透明字节，不接受客户端自报权限。
+    identity := txagent.IdentityResolverFunc(func(ctx context.Context, req txagent.AuthRequest) (txagent.AuthResult, error) {
+        // 以下值均来自项目已验签的 ticket；不接受客户端自报的 force 或票据顺序。
+        return txagent.AuthResult{
+            SessionPrincipal: txprotocol.SessionPrincipal{
+                RoleID: 470001, SessionID: 99, Claims: trustedProjectClaims,
+            },
+            Admission: &msgq.SessionAdmission{
+                Policy: authorizedPolicy, TicketOrder: ticketOrder, ExpiresAt: ticketExpiresAt,
+            },
         }, nil
     })
     teller := runtime.CModActorDirect()
@@ -898,21 +901,25 @@ handlers := func(runtime bee.Context) (txagent.IdentityResolver, txagent.Dispatc
 项目 `ActorDispatchResolver` 只根据生成命令元数据选择目标 Actor、消息类型、命令哈希、路由键和载荷；通用
 `NewActorDispatcher` 在投递前以 Agent 的可信 `SessionIdentity` 覆盖 Delivery 身份字段。项目
 resolver 和客户端载荷均不能指定 `ConnectionID`，也不能伪造投递给 Actor 的身份。Agent 只负责 Frame、
-身份和 Seq/Ack，不依赖任何项目生成包。授权的各 Session 独立维护邮箱和恢复状态，共享 RoleID 时路由到同一 Actor，并接收角色下行。
+身份和 Seq/Ack，不依赖任何项目生成包。低层多 Session 模式独立维护邮箱和恢复状态，共享 RoleID 时路由到同一 Actor，并接收角色下行；txgame/txgameslg 则明确选择独占准入，同角色只有当前许可可接入。
 
 内部 Actor 调用可携带可信 `Identity`，也可省略；身份本身不决定请求来源或响应路径。Delivery 和业务调用上下文 `actor.MessageContext` 均不暴露 UpSeq。
+
+`SessionClientRouter.Acquire` 返回借用的 `SessionClient`，只提供会话操作，不包含连接关闭权。拨号器返回的 `SessionConnection` 由路由器缓存并统一关闭；单个玩家连接结束只关闭自己的 `MailboxStreamSession`。同进程客户端借用本地邮箱，不负责关闭 MsgQ 服务。
 
 一条连接的处理顺序固定如下：
 
 1. 客户端先发送 `FrameHandshake`，其中 `Payload` 交给 `IdentityResolver`，`Restore/Ack` 交给会话恢复。
-2. 项目 `IdentityResolver` 验证凭据并返回 `SessionPrincipal{RoleID, SessionID, Claims}`；Agent 只检查通用编号、生成本次物理连接的正 `ConnectionID`，再构造 `SessionIdentity`。
+2. 项目 `IdentityResolver` 验证凭据并返回 `AuthResult{SessionPrincipal, Admission}`；Agent 只检查通用编号、生成本次物理连接的正 `ConnectionID`，再构造 `SessionIdentity`。
 3. `Restore=false` 的新建连接查询并复用角色归属；无归属时由 running MsgQ 轮转提名并原子确认，竞争失败者使用已确认归属。`Restore=true` 的恢复连接必须按 SessionID 命中原来的 running owner。同进程 msgq 时直接复用本地 `SessionClient`，但仍由邮箱初始化校验角色归属；分进程时按 Redis binding 和服务目录复用 gRPC 连接。
-4. 新建 `Init` 用 `Create NX` 安装空邮箱，SessionID 已存在时失败；恢复 `Init` 用旧完整 binding `Rebind` 到新 ConnectionID，保留相同 SessionID 的下行 Ack 与未确认下行队列。恢复 owner 不可用、邮箱不存在或完整绑定校验失败时明确失败，不能迁移或安装空会话。
-5. `Init` 成功后，Agent 发送 `FrameReady`，其 `Ack` 固定为 `0`。客户端收到它之前只能处于连接中，不能发送业务帧；恢复失败时不会出现“先成功、再被关闭”的假状态。
+4. 验票结果带 `Admission` 时，MsgQ 按角色串行执行低频接入，校验签名策略、首次接入期限和 TicketOrder。签票本身不创建许可；替换旧会话必须经旧 MailboxStream 的 Revoke/Detached 确认，之后才能建立新邮箱。恢复仅验证现有 SID 并绑定新 CID，不重新执行替换。Init 保留新建 `Create NX` 与恢复完整 binding `Rebind` 的边界；原 owner、邮箱或绑定不可用时失败，不跨 MsgQ 补建空会话。
+5. `OpenMailboxStream` 确认远端初始化及撤销端点绑定完成后，Agent 才发送 `FrameReady`，其 `Ack` 固定为 `0`。客户端收到它之前只能处于连接中，不能发送业务帧；恢复失败时不会出现“先成功、再被关闭”的假状态。
 6. 客户端按 socket 写入顺序发送递增的 UpMsg 序号；允许跳号，不维护未确认上行重放队列。Agent 仅在当前物理连接中忽略小于等于已接受最大值的序号；连接结束即释放该游标。
-7. Agent 按连接读取顺序将上行写入目标实例的 `CallStream`，不等待远端邮箱接纳或业务完成。提交成功后更新本地上行游标，并通过 `MailboxStream` 异步发送客户端的下行 Ack；不等待 MsgQ 逐项回执。
+7. Agent 按连接读取顺序通过 Actor `Tell` 将上行写入目标实例的 gRPC `TellStream`，不等待远端邮箱接纳或业务完成。提交成功后更新本地上行游标，并通过 `MailboxStream` 异步发送客户端的下行 Ack；不等待 MsgQ 逐项回执。
 8. Agent 从共享 `MailboxStream` 接收下行，写出 `FrameDownMsg`；客户端在上行或独立 `FrameAck` 携带 Ack，Agent 经同一双向流同步给 MsgQ 裁剪邮箱。
-9. Game/Actor 处理上行后，直接通过 MsgQ Sender 调用 `SendRole` 共享普通业务响应，调用 `SendSession` 精确投递 `System_Error`。这些是独立下行消息，不作为上行 RPC 返回值；Actor 业务处理失败不会产生客户端上行 ACK。
+9. Game/Actor 处理上行后，直接通过 MsgQ Sender 调用 `SendRole` 向当前角色会话发布普通业务响应，调用 `SendSession` 精确投递 `System_Error`。这些是独立下行消息，不作为上行 RPC 返回值；Actor 业务处理失败不会产生客户端上行 ACK。
+
+`FrameReady` 确认的是步骤 5 的会话接入，不承诺角色业务初始化已完成，也不是 Actor 生命周期状态。`connect` 返回后，应用仍需发送自己的建角/进入角色请求，并处理通过步骤 7～9 返回的业务响应；框架不内置这些命令。当前两组客户端的初始化顺序见[会话设计](design.md#客户端协议与-agent)。`reconnect` 只恢复原邮箱和未确认下行，不自动重发上述初始化请求；收到业务响应前，不能仅凭 Ready 或 `send` 成功判定业务登录完成。
 
 客户端只维护递增的 UpSeq 与已处理的 DownSeq。上行发送失败或连接中断时不自动重放，结果可能未知；恢复原 Session 只恢复 MsgQ 中未确认的下行，不恢复上行命令。客户端后续新命令继续使用更大的 UpSeq。Agent 不接收远端邮箱逐项接纳确认，也不向客户端发送上行确认帧。
 
@@ -933,7 +940,7 @@ Game 关闭发布流时，开始关闭之前已结束的流只记录历史 error
 
 UpSeq 仅用于 Agent 当前物理连接的旧号过滤，不存入 MsgQ、不传给业务、不跨连接恢复。每次上行提交及独立客户端 Ack 都经 `MailboxStream` 同步下行确认并保持连接活动；这不是上行确认。MsgQ 的 Redis 会话 TTL 与角色归属租约保持独立，不存在 Agent Rec lease。业务需要响应关联或幂等时须定义独立标识，不能用 UpSeq 或 DownSeq 代替。
 
-重新 Login 创建新 SessionID，旧会话游标不用于新会话。同 Session 的 Restore 使用新 ConnectionID，通过 MsgQ 完整绑定 CAS 接管并唤醒旧订阅；旧连接不能更新、裁剪或终止新连接的邮箱。Agent 收到旧订阅错误后关闭旧 socket。该隔离不撤销已经发往 Game 的上行，也不提供跨 Agent 上行的全局接管屏障；同一角色多 Session 可并存，互踢属于业务策略。
+重新 Login 只签发新 SessionID 的票据，接入时才决定是否替换旧会话；旧游标不用于新会话。同 Session Restore 使用新 ConnectionID，沿原 owner 完成接入替换和完整 binding 校验；旧连接不能更新、裁剪或终止新连接的邮箱。独占接入等待旧 Agent 关闭准入的精确确认，不等待已经投递给 Game 的业务执行结束。低层多 Session 能力仍可独立使用，两组示例通过可信 Admission 选择独占策略。
 普通游戏操作接受这个语义；不能重复执行的命令必须由项目定义独立的业务幂等键。Frame 的静态 `CommandHash`
 只标识生成的命令类型，不能用作一次业务操作的幂等令牌。
 
@@ -956,7 +963,7 @@ if err != nil {
 `http/https` Origin 写入 `webSocketOrigins`，不允许通配符；空列表沿用 WebSocket 同源校验。服务选择只由
 `--services` 决定，YAML 不使用 `enabled` 作为第二个启动开关：
 
-Agent 与每个 MsgQ 实例复用一条 `MailboxStream` 双向流承载多个 Session。下行由 MsgQ 推送，Agent 沿该流同步 Seq/Ack；同进程部署走本地邮箱。断线恢复沿用原 SessionID 和下行 Ack。
+Agent 与每个 MsgQ 实例复用一条 `MailboxStream` 双向流承载多个 Session。下行由 MsgQ 推送，Agent 沿该流单向上报下行 Ack；UpSeq 不进入 MsgQ。同进程部署走本地邮箱并保持相同控制完成语义。断线恢复沿用原 SessionID 和下行 Ack。
 
 ```yaml
 services:
@@ -994,18 +1001,34 @@ go run ./cmd/server --services=game,msgq,agent
 go run ./cmd/server --services=agent
 ```
 
-Agent 停止时先关闭 TCP/WebSocket listener，停止接收新连接；WebSocket 主动断开，TCP Session 随服务根
-`WaitGroupContext` 取消退出。普通断线不会主动调用 `TerminateSession`，会话由 `OfflineTimeout` 和重连 `Init` 管理。
+Agent 停止时先关闭 TCP/WebSocket listener，停止接收新连接，再关闭本地上行准入和物理连接；每个接入沿 MailboxStream 解除绑定并确认。普通断线不终止逻辑 Session，邮箱继续受 `OfflineTimeout` 和 Restore 管理。借用的 SessionClient 不拥有共享连接关闭权，单会话关闭不能关闭其他玩家的流。
 
-Agent 在调用 MsgQ `Init` 前登记初始化中的 `SessionID + ConnectionID`，成功后、发送 `FrameReady` 前原子晋升为已激活连接。
-控制请求会同时覆盖这两个状态；初始化期间收到终止时，无论 `Init` 成功还是因连接取消返回不确定结果，连接都不会收到
-Ready，并会使用独立有界上下文按新 `ConnectionID` 补偿一次精确终止。同一 `SessionID` 的并发终止请求共享一个本地操作，
-终止期间新登记的初始化连接自动加入；调用方取消只结束等待，不会取消后台收尾；任一精确终止的非幂等错误都会返回，
-不能被更早连接的成功结果掩盖。基础控制分为两层：
-`DisconnectSession` 只关闭物理连接并保留逻辑 Session，允许相同 `SessionID` 恢复；`TerminateSession` 先终止 MsgQ
-逻辑 Session，再关闭物理连接，原 `SessionID` 不能恢复。每个 Agent 都把专用控制服务注册到进程共享 gRPC Host。
-`NewSessionControlBroadcaster(serviceName, directory, dialer)` 显式接收 Agent 的注册服务名，并从服务发现内存快照取得该服务全部运行中实例并行广播，只有本地持有目标 Session 的实例处理；
-该流程不查询 Session owner、不访问 MsgQ 路由，也不依赖 Kubernetes。
+### 独占准入与流内接管
+
+Login 只签票，不调用 MsgQ，不预留会话，也不执行 HTTP 退出或 Agent 控制广播。应用验票器返回 `SessionAdmission{Policy, TicketOrder, ExpiresAt}`；框架不解释 GM 权限。当前应用复用本次 etcd 发号值作为 TicketOrder，SessionID 的通用契约仍只表示身份。非强制拒绝不改变已接纳水位；较新票据接纳后，较早票据不能首次接入或抢回。恢复不能借替换策略重新建立已失效的 SID。
+
+接入和替换的参与方、等待点及消息方向见[签票、接入与业务初始化时序](design.md#签票接入与业务初始化时序)与[顶号与独占借号时序](design.md#顶号与独占借号时序)。`OpenMailboxStream` 返回成功前必须收到 OPENED；需要撤销旧接入时，owner MsgQ 必须先收到精确 DETACHED。
+
+`onRevoke` 只关闭本地上行准入和 socket，不重新向 MsgQ 发起终止。MsgQ 等到匹配 SID/CID 的 Detached 才继续；撤销回执不能使用已取消的玩家 ctx。共享流接收循环负责分派控制响应，不在其中等待另一端回执，也不持有初始化分片锁等待网络。一个角色的接入控制等待不阻塞同流其他角色的 Ack 或下行。
+
+Agent 本地 `DisconnectSession` 保留逻辑邮箱；本地 `TerminateSession` 终止当前持有的逻辑会话并关闭接入。它们仍是本地管理能力，不用于跨 Agent 顶号。跨 Agent 替换只由角色 owner MsgQ 通过既有流协调。
+
+`SessionControlClient` 仅暴露 `TerminateLogicalSession` 和只读 `InspectSession`，不授予共享连接关闭权。两个 Session Router 都提供这项能力；离线退出只查询既有角色归属，不为管理请求创建 owner 或邮箱：
+
+```go
+// RoleID/SID 来自已验签的票据，不能直接信任客户端上报的编号。
+err := mailboxRouter.TerminateLogicalSession(ctx, roleID, sessionID)
+record, err := mailboxRouter.InspectSession(ctx, roleID)
+// record 是许可元数据，不是玩家在线列表；SessionID 为零时仍可保留 TicketOrder。
+```
+
+在线主动退出发送空 `FrameLogout`，Agent 关闭上行准入后调用本会话的 `MailboxStreamSession.Terminate(ctx)`；确认精确 SID 终止后才发送 `FrameLoggedOut`。离线退出在新连接第一帧携票发送 `FrameLogout`，`AuthRequest.Logout` 告知项目只验票执行退出；它不发业务握手、不创建会话、不返回 Ready。普通物理断线使用 `MailboxStreamSession.Close()` 解除接入并等待完成，保留原邮箱；操作不成功或流断开都不能当作完成确认。
+
+准入记录使用 `{RoleID}` 单键 CAS，独立于 `{SessionID}` 邮箱键；不要求跨槽事务。旧退出与迟到清理按精确 SID/CID 匹配，不影响新会话；逻辑终止不能删除 TicketOrder 水位。结果未知不自动重新投递接入或业务。替换期间保留角色 owner，正常 MsgQ Stop 经撤销和关闭确认后才释放它，不因流中断直接改派。
+
+项目验票器可返回 `agent.ErrSessionEnded` 标记永久失效。Agent 对它及 MsgQ 明确的准入失效/邮箱不存在发送 `FrameSessionEnded`；依赖暂时不可用保持普通断流。客户端收到终止后清票并停止自动恢复，重新 Login 必须显式发起。退出只以 `FrameLoggedOut` 为确认，未确认时客户端停止恢复并提示结果未知，不把本地写流成功当作服务端结束。
+
+MailboxStream 只增加低频接入、撤销、解除接入和退出完成控制；Ack、Renew、下行数据仍保持原有单向发送语义，不封装通用 Call/Tell/Future 四接口，不在逐消息链路增加成功回执。升级需统一 Login 签票字段、Agent/MsgQ 专用流与客户端控制帧；不承诺混合版本会话恢复。
 
 ### TypeScript 客户端协议
 
@@ -1095,6 +1118,9 @@ Agent Frame 当前版本是 `v4`，拒绝旧版帧；前后端须同步更新，
 | --- | --- | --- | --- | --- | --- |
 | `FrameHandshake` | `0` | 新连必须为 `0`；重连为已确认下行序号 | 必须为空 | 登录 ticket | 建立或恢复会话 |
 | `FrameReady` | `0` | 固定为 `0` | 必须为空 | 必须为空 | 确认握手已经被服务端接受 |
+| `FrameSessionEnded` | `0` | 固定为 `0` | 必须为空 | 必须为空 | 当前票据不能再接入；停止自动恢复 |
+| `FrameLogout` | `0` | 固定为 `0` | 必须为空 | 当前连接为空；独立未握手连接携 ticket | 精确终止原会话，不创建新会话 |
+| `FrameLoggedOut` | `0` | 固定为 `0` | 必须为空 | 必须为空 | 服务端确认退出完成 |
 | `FrameUpMsg` | 严格递增正数，可跳号 | 最近已处理的 `FrameDownMsg.Seq` | 生成的非零命令哈希；可选强类型路由键 | BON 业务体 | 上行业务，同时确认下行 |
 | `FrameDownMsg` | msgq 下行序号 | 固定为 `0` | 非零命令哈希；路由键为空 | BON 业务体 | 服务端下行 |
 | `FrameAck` | `0` | 客户端最近已处理的下行 `Seq` | 必须为空 | 必须为空 | 客户端独立确认下行；服务端不发送此帧 |

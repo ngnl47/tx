@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -11,6 +12,12 @@ import (
 	"github.com/ngnl47/tx/modules/discovery"
 	"github.com/ngnl47/tx/modules/msgq"
 )
+
+func TestSessionClientDoesNotExposeConnectionClose(t *testing.T) {
+	if _, exposed := reflect.TypeFor[msgq.SessionClient]().MethodByName("Close"); exposed {
+		t.Fatal("借用的 SessionClient 不应暴露连接关闭权")
+	}
+}
 
 func TestSessionClientRouterRestoreUsesExactSessionOwner(t *testing.T) {
 	store := &sessionStoreFake{binding: msgq.SessionBinding{
@@ -287,7 +294,7 @@ type sessionClientDialerFake struct {
 	dialBarrier *sync.WaitGroup
 }
 
-func (d *sessionClientDialerFake) DialSession(_ context.Context, instance discovery.Instance) (msgq.SessionClient, error) {
+func (d *sessionClientDialerFake) DialSession(_ context.Context, instance discovery.Instance) (msgq.SessionConnection, error) {
 	client := &sessionClientFake{}
 	d.mu.Lock()
 	d.instances = append(d.instances, instance)
@@ -305,11 +312,7 @@ type sessionClientFake struct {
 	closeCalls atomic.Int32
 }
 
-func (*sessionClientFake) Init(context.Context, msgq.InitRequest) error {
-	return nil
-}
-
-func (*sessionClientFake) OpenMailboxStream(context.Context, msgq.SessionHeader) (msgq.MailboxStreamSession, error) {
+func (*sessionClientFake) OpenMailboxStream(context.Context, msgq.InitRequest, func()) (msgq.MailboxStreamSession, error) {
 	return nil, errors.New("unexpected MailboxStream")
 }
 

@@ -15,6 +15,13 @@ message InitRequest {
   SessionHeader header = 1;
   bool restore = 2;
   int64 ack = 3;
+  SessionAdmission admission = 4;
+}
+
+message SessionAdmission {
+  bool replace_existing = 1;
+  int64 ticket_order = 2;
+  int64 expires_at_unix_milli = 3;
 }
 
 message InitResponse {
@@ -76,6 +83,8 @@ message MailboxStreamRequest {
     KIND_CLOSE = 2;
     KIND_ACK = 3;
     KIND_RENEW = 4;
+    KIND_DETACHED = 5;
+    KIND_TERMINATE = 6;
   }
   SessionHeader header = 1;
   Kind kind = 2;
@@ -83,12 +92,22 @@ message MailboxStreamRequest {
   int32 max = 4;
   reserved 5;
   reserved "received_seq";
+  InitRequest init = 6;
 }
 
 message MailboxStreamResponse {
+  enum Kind {
+    KIND_DATA = 0;
+    KIND_OPENED = 1;
+    KIND_CLOSED = 2;
+    KIND_REVOKE = 3;
+    KIND_TERMINATED = 4;
+  }
   SessionHeader header = 1;
   FetchResponse message = 2;
   string error_message = 3;
+  Kind kind = 4;
+  int32 error_code = 5;
 }
 
 message PublishRequest {
@@ -113,10 +132,25 @@ message PublishRoleRejection {
   bytes payload = 4;
 }
 
+message LogicalSessionRequest {
+  int64 role_id = 1;
+  int64 session_id = 2;
+}
+message InspectSessionRequest { int64 role_id = 1; }
+message AdmissionRecord {
+ int64 session_id = 1;
+ int64 ticket_order = 2;
+ bool ready = 3;
+ SessionHeader header = 4;
+ bool attached = 5;
+ int64 expires_at_unix_milli = 6;
+}
 message Empty {}
 
 // MailboxService 是 msgq 专用传输服务，Payload 字节保持为 BON 数据。
 service MailboxService {
+  rpc InspectSession(InspectSessionRequest) returns (AdmissionRecord);
+  rpc TerminateLogicalSession(LogicalSessionRequest) returns (Empty);
   rpc Init(InitRequest) returns (InitResponse);
   rpc PubSession(PubSessionRequest) returns (PubSessionResponse);
   rpc PubRole(PubRoleRequest) returns (BroadcastResponse);

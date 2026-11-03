@@ -17,8 +17,8 @@ func TestAgentUsesMailboxStreamForAckAndDownlink(t *testing.T) {
 	var dispatched atomic.Int64
 	var connectionID atomic.Int64
 	server, err := NewServer(ServerOptions{
-		IdentityResolver: IdentityResolverFunc(func(context.Context, AuthRequest) (protocol.SessionPrincipal, error) {
-			return protocol.SessionPrincipal{RoleID: 470001, SessionID: 99}, nil
+		IdentityResolver: IdentityResolverFunc(func(context.Context, AuthRequest) (AuthResult, error) {
+			return AuthResult{SessionPrincipal: protocol.SessionPrincipal{RoleID: 470001, SessionID: 99}}, nil
 		}),
 		Dispatcher: DispatchFunc(func(_ context.Context, request DispatchRequest) error {
 			dispatched.Add(1)
@@ -82,11 +82,7 @@ type streamOnlySessionClient struct {
 	acks chan int64
 }
 
-func (client *streamOnlySessionClient) Init(context.Context, msgq.InitRequest) error {
-	return nil
-}
-
-func (client *streamOnlySessionClient) OpenMailboxStream(ctx context.Context, _ msgq.SessionHeader) (msgq.MailboxStreamSession, error) {
+func (client *streamOnlySessionClient) OpenMailboxStream(ctx context.Context, _ msgq.InitRequest, _ func()) (msgq.MailboxStreamSession, error) {
 	sessionCtx, cancel := context.WithCancelCause(ctx)
 	client.fail = cancel
 	return &streamOnlyMailboxSession{client: client, ctx: sessionCtx}, nil
@@ -131,8 +127,8 @@ func TestMailboxFailureInterruptsBlockedSocketWrite(t *testing.T) {
 	client := &streamOnlySessionClient{down: make(chan msgq.FetchResult, 1), acks: make(chan int64, 4)}
 	client.down <- msgq.FetchResult{Seq: 1, Payload: []byte("slow socket")}
 	server, err := NewServer(ServerOptions{
-		IdentityResolver: IdentityResolverFunc(func(context.Context, AuthRequest) (protocol.SessionPrincipal, error) {
-			return protocol.SessionPrincipal{RoleID: 47, SessionID: 99}, nil
+		IdentityResolver: IdentityResolverFunc(func(context.Context, AuthRequest) (AuthResult, error) {
+			return AuthResult{SessionPrincipal: protocol.SessionPrincipal{RoleID: 47, SessionID: 99}}, nil
 		}),
 		Dispatcher: DispatchFunc(func(context.Context, DispatchRequest) error { return nil }),
 		Sessions:   sessionControlRouter{client: client}, ConnectionID: func() (int64, error) { return 1, nil },
@@ -164,13 +160,13 @@ func (stream *streamOnlyMailboxSession) Context() context.Context { return strea
 
 type failedMailboxClient struct{ sessionControlClient }
 
-func (*failedMailboxClient) OpenMailboxStream(context.Context, msgq.SessionHeader) (msgq.MailboxStreamSession, error) {
+func (*failedMailboxClient) OpenMailboxStream(context.Context, msgq.InitRequest, func()) (msgq.MailboxStreamSession, error) {
 	return nil, msgq.ErrRouteUnavailable
 }
 func TestMailboxOpenFailureUnbindsInitializedSession(t *testing.T) {
 	server, err := NewServer(ServerOptions{
-		IdentityResolver: IdentityResolverFunc(func(context.Context, AuthRequest) (protocol.SessionPrincipal, error) {
-			return protocol.SessionPrincipal{RoleID: 47, SessionID: 99}, nil
+		IdentityResolver: IdentityResolverFunc(func(context.Context, AuthRequest) (AuthResult, error) {
+			return AuthResult{SessionPrincipal: protocol.SessionPrincipal{RoleID: 47, SessionID: 99}}, nil
 		}),
 		Dispatcher: DispatchFunc(func(context.Context, DispatchRequest) error { return nil }),
 		Sessions:   sessionControlRouter{client: &failedMailboxClient{}}, ConnectionID: func() (int64, error) { return 1, nil },
@@ -190,6 +186,5 @@ func TestMailboxOpenFailureUnbindsInitializedSession(t *testing.T) {
 		t.Fatalf("开流失败遗留 %d 个活动会话", remaining)
 	}
 }
-func (*failedMailboxClient) Init(context.Context, msgq.InitRequest) error {
-	return nil
-}
+
+func (*streamOnlyMailboxSession) Terminate(context.Context) error { return nil }

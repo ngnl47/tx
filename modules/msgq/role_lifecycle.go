@@ -22,9 +22,12 @@ type roleRenewal struct {
 	err  error
 }
 
-// Stop 拒绝新初始化，使本地邮箱失效并按完整版本释放角色归属。
-// 仅处理本地持有的角色，不扫描 Redis；存储失败由租期兜底。
+// Stop 拒绝新初始化，确认已有 Agent 关闭后使邮箱失效并条件释放归属。
+// 关闭或持久化失败保留资源，调用方可在独立期限内重试；不扫描 Redis。
 func (s *Server) Stop(ctx context.Context) error {
+	if err := s.stopAttachments(ctx); err != nil {
+		return err
+	}
 	for i := range s.initLocks {
 		s.initLocks[i].Lock()
 	}
@@ -42,9 +45,10 @@ func (s *Server) Stop(ctx context.Context) error {
 	s.mu.RUnlock()
 	var errs []error
 	for _, lease := range leases {
-		s.retireRole(lease)
 		if _, err := s.store.ReleaseRole(ctx, lease.binding); err != nil {
 			errs = append(errs, err)
+		} else {
+			s.retireRole(lease)
 		}
 	}
 	return errors.Join(errs...)
@@ -133,7 +137,7 @@ func (s *Server) maintainRole(ctx context.Context, roleID int64, now time.Time) 
 	if !found {
 		return nil
 	}
-	if count == 0 || !now.Before(lease.expires) {
+	if (count == 0 && !s.admissionBusy(roleID)) || !now.Before(lease.expires) {
 		s.retireRole(lease)
 		_, err := s.store.ReleaseRole(ctx, lease.binding)
 		return err

@@ -5,12 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sync/atomic"
-	"time"
 
 	"github.com/ngnl47/tx/lifecycle"
 	txlog "github.com/ngnl47/tx/log"
-	txmetrics "github.com/ngnl47/tx/metrics"
 	msgqpb "github.com/ngnl47/tx/modules/msgq/pb"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
@@ -33,7 +30,7 @@ type mailboxService struct {
 }
 
 func (s *mailboxService) Init(ctx context.Context, request *msgqpb.InitRequest) (*msgqpb.InitResponse, error) {
-	err := s.mailbox.Init(ctx, InitRequest{Header: headerFromProto(request.GetHeader()), Restore: request.GetRestore(), Ack: request.GetAck()})
+	err := s.mailbox.Init(ctx, initFromProto(request))
 	if err != nil {
 		return nil, mailboxStatusError(err)
 	}
@@ -53,164 +50,6 @@ func (s *mailboxService) PubRole(ctx context.Context, request *msgqpb.PubRoleReq
 		RoleID: request.GetRoleId(), InstanceID: request.GetInstanceId(), Generation: request.GetGeneration(),
 	}, request.GetPayload())
 	return broadcastResponse(result, err)
-}
-
-func (s *mailboxService) MailboxStream(stream grpc.BidiStreamingServer[msgqpb.MailboxStreamRequest, msgqpb.MailboxStreamResponse]) error {
-	if err := s.mailbox.checkStartup(); err != nil {
-		return mailboxStatusError(err)
-	}
-	type incoming struct {
-		request *msgqpb.MailboxStreamRequest
-		err     error
-	}
-	type activeStreamSession struct {
-		header SessionHeader
-		cancel context.CancelFunc
-	}
-	type downlink struct {
-		response *msgqpb.MailboxStreamResponse
-		queuedAt time.Time
-	}
-	ctx, cancel := context.WithCancel(stream.Context())
-	defer cancel()
-	requests := make(chan incoming, 1)
-	downlinks := make(chan downlink, 128)
-	var sendSamples atomic.Uint64
-	// 一条流只由一个协程写出；流控等待不占用会话控制循环。
-	sendResult := make(chan error, 1)
-	go func() {
-		for {
-			select {
-			case item := <-downlinks:
-				var started time.Time
-				if !item.queuedAt.IsZero() {
-					started = time.Now()
-				}
-				err := stream.Send(item.response)
-				if !started.IsZero() {
-					txmetrics.RecordMailboxSend(started.Sub(item.queuedAt), time.Since(started))
-				}
-				if err != nil {
-					sendResult <- err
-					return
-				}
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	go func() {
-		defer close(requests)
-		for {
-			request, err := stream.Recv()
-			select {
-			case requests <- incoming{request: request, err: err}:
-			case <-ctx.Done():
-				return
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-	sessions := make(map[int64]*activeStreamSession)
-	finished := make(chan *activeStreamSession, 128)
-	defer func() {
-		for _, session := range sessions {
-			session.cancel()
-		}
-	}()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case item, ok := <-requests:
-			if !ok || errors.Is(item.err, io.EOF) {
-				return nil
-			}
-			if item.err != nil {
-				return item.err
-			}
-			request := item.request
-			header := headerFromProto(request.GetHeader())
-			switch request.GetKind() {
-			case msgqpb.MailboxStreamRequest_KIND_OPEN:
-				if request.GetHeader() == nil || request.GetMax() < 0 {
-					return status.Error(codes.InvalidArgument, "invalid mailbox stream open")
-				}
-				if err := s.mailbox.Touch(ctx, TouchRequest{Header: header}); err != nil {
-					select {
-					case downlinks <- downlink{response: &msgqpb.MailboxStreamResponse{Header: request.GetHeader(), ErrorMessage: mailboxStatusError(err).Error()}}:
-					default:
-						return status.Error(codes.ResourceExhausted, "mailbox stream response queue full")
-					}
-					continue
-				}
-				if previous, found := sessions[header.SessionID]; found {
-					previous.cancel()
-				}
-				sessionCtx, stop := context.WithCancel(ctx)
-				active := &activeStreamSession{header: header, cancel: stop}
-				sessions[header.SessionID] = active
-				max := int(request.GetMax())
-				go func() {
-					defer func() {
-						stop()
-						select {
-						case finished <- active:
-						case <-ctx.Done():
-						}
-					}()
-					for {
-						batch, err := s.mailbox.FetchSome(sessionCtx, FetchSomeRequest{Header: header, Max: max})
-						if err != nil {
-							if !errors.Is(err, context.Canceled) {
-								select {
-								case downlinks <- downlink{response: &msgqpb.MailboxStreamResponse{Header: headerToProto(header), ErrorMessage: mailboxStatusError(err).Error()}}:
-								case <-sessionCtx.Done():
-								}
-							}
-							return
-						}
-						for _, message := range batch.Messages {
-							item := downlink{response: &msgqpb.MailboxStreamResponse{Header: headerToProto(header), Message: fetchResultToProto(message)}}
-							if sendSamples.Add(1)&63 == 0 {
-								item.queuedAt = time.Now()
-							}
-							select {
-							case downlinks <- item:
-							case <-sessionCtx.Done():
-								return
-							}
-						}
-					}
-				}()
-			case msgqpb.MailboxStreamRequest_KIND_CLOSE:
-				if active, found := sessions[header.SessionID]; found && active.header == header {
-					active.cancel()
-					delete(sessions, header.SessionID)
-				}
-			case msgqpb.MailboxStreamRequest_KIND_ACK:
-				err := s.mailbox.Confirm(ctx, ConfirmRequest{Header: header, Ack: request.GetAck()})
-				if err != nil && !errors.Is(err, ErrSessionOffline) && !errors.Is(err, ErrSessionChanged) {
-					txlog.ErrorContext(ctx, "mailbox stream acknowledgement failed", "sessionID", header.SessionID, "ack", request.GetAck(), "err", err)
-				}
-			case msgqpb.MailboxStreamRequest_KIND_RENEW:
-				if err := s.mailbox.Touch(ctx, TouchRequest{Header: header}); err != nil && !errors.Is(err, ErrSessionOffline) && !errors.Is(err, ErrSessionChanged) {
-					txlog.ErrorContext(ctx, "mailbox stream lease renewal failed", "sessionID", header.SessionID, "err", err)
-				}
-			default:
-				return status.Error(codes.InvalidArgument, "unknown mailbox stream operation")
-			}
-		case ended := <-finished:
-			if sessions[ended.header.SessionID] == ended {
-				delete(sessions, ended.header.SessionID)
-			}
-		case err := <-sendResult:
-			return err
-		}
-	}
 }
 
 func (s *mailboxService) PublishStream(stream grpc.BidiStreamingServer[msgqpb.PublishRequest, msgqpb.PublishRoleRejection]) error {
@@ -333,8 +172,12 @@ func mailboxStatusError(err error) error {
 		return status.Error(codes.DeadlineExceeded, err.Error())
 	}
 	switch {
-	case errors.Is(err, ErrInvalidHeader), errors.Is(err, ErrDownMsgAcknowledgement), errors.Is(err, ErrInvalidTopic):
+	case errors.Is(err, ErrInvalidSession), errors.Is(err, ErrInvalidHeader), errors.Is(err, ErrDownMsgAcknowledgement), errors.Is(err, ErrInvalidTopic):
 		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, ErrSessionOccupied):
+		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.Is(err, ErrSessionAdmission):
+		return status.Error(codes.PermissionDenied, err.Error())
 	case errors.Is(err, ErrSessionOffline):
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, ErrRoleBindingChanged):
@@ -367,6 +210,10 @@ func mailboxClientError(err error) error {
 		return context.DeadlineExceeded
 	case codes.InvalidArgument:
 		return fmt.Errorf("%w: %v", ErrInvalidHeader, err)
+	case codes.AlreadyExists:
+		return fmt.Errorf("%w: %v", ErrSessionOccupied, err)
+	case codes.PermissionDenied:
+		return fmt.Errorf("%w: %v", ErrSessionAdmission, err)
 	case codes.NotFound:
 		return fmt.Errorf("%w: %v", ErrSessionOffline, err)
 	case codes.Aborted:

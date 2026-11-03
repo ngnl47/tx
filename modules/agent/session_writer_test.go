@@ -109,3 +109,5 @@ func (stream *queuedMailboxStream) TryRecv() (msgq.FetchResult, bool, error) {
 func (*queuedMailboxStream) Ack(context.Context, int64) error { return nil }
 func (*queuedMailboxStream) Renew(context.Context) error      { return nil }
 func (*queuedMailboxStream) Close() error                     { return nil }
+
+func (*queuedMailboxStream) Terminate(context.Context) error { return nil }

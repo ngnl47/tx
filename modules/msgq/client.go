@@ -15,11 +15,15 @@ var (
 	ErrSessionClientRouterClosed = errors.New("msgq: session client router is closed")
 )
 
-// SessionClient 是 Agent 访问单个 msgq 实例所需的会话操作。
+// SessionClient 是 Agent 借用的会话操作，不转移共享连接的关闭权。
 type SessionClient interface {
-	Init(context.Context, InitRequest) error
-	OpenMailboxStream(context.Context, SessionHeader) (MailboxStreamSession, error)
+	OpenMailboxStream(context.Context, InitRequest, func()) (MailboxStreamSession, error)
 	TerminateSession(context.Context, SessionHeader) error
+}
+
+// SessionConnection 是拨号器交给 SessionClientRouter 管理的连接，由路由器统一关闭。
+type SessionConnection interface {
+	SessionClient
 	Close() error
 }
 
@@ -32,7 +36,7 @@ type AcquireSessionRequest struct {
 
 // SessionClientDialer 建立到一个指定 msgq 实例的会话客户端。
 type SessionClientDialer interface {
-	DialSession(context.Context, discovery.Instance) (SessionClient, error)
+	DialSession(context.Context, discovery.Instance) (SessionConnection, error)
 }
 
 // FixedSessionClientRouter 将同进程的共享 SessionClient 适配为 Agent 会话路由器。
@@ -75,22 +79,13 @@ type localSessionClient struct {
 	mailbox *Server
 }
 
-func (c localSessionClient) Init(ctx context.Context, request InitRequest) error {
-	return c.mailbox.Init(ctx, request)
-}
-
 func (c localSessionClient) TerminateSession(ctx context.Context, header SessionHeader) error {
 	return c.mailbox.TerminateSession(ctx, header)
 }
 
-func (c localSessionClient) OpenMailboxStream(ctx context.Context, header SessionHeader) (MailboxStreamSession, error) {
-	if err := c.mailbox.Touch(ctx, TouchRequest{Header: header}); err != nil {
-		return nil, err
-	}
-	return newLocalMailboxSession(ctx, c.mailbox, header), nil
+func (c localSessionClient) OpenMailboxStream(ctx context.Context, request InitRequest, onRevoke func()) (MailboxStreamSession, error) {
+	return openLocalMailboxSession(ctx, c.mailbox, request, onRevoke)
 }
-
-func (localSessionClient) Close() error { return nil }
 
 // SessionClientRouter 为认证后的 Agent 选择可用 msgq 实例。
 type SessionClientRouter struct {
@@ -99,7 +94,7 @@ type SessionClientRouter struct {
 	store       SessionStore
 	dialer      SessionClientDialer
 
-	connections *instanceconn.Cache[SessionClient]
+	connections *instanceconn.Cache[SessionConnection]
 }
 
 // NewSessionClientRouter 创建基于既有 owner 和服务目录的会话客户端路由器。
@@ -116,7 +111,7 @@ func NewSessionClientRouter(serviceName string, directory discovery.Directory, s
 	if dialer == nil {
 		return nil, ErrSessionClientDialerNil
 	}
-	return &SessionClientRouter{serviceName: serviceName, directory: directory, store: store, dialer: dialer, connections: instanceconn.New[SessionClient](directory)}, nil
+	return &SessionClientRouter{serviceName: serviceName, directory: directory, store: store, dialer: dialer, connections: instanceconn.New[SessionConnection](directory)}, nil
 }
 
 // Acquire 为新会话复用角色归属；首次归属由运行中实例轮转提名并原子确认。恢复仍直达旧邮箱。
@@ -191,4 +186,11 @@ func (r *SessionClientRouter) connection(ctx context.Context, instance discovery
 		return nil, ErrRouteUnavailable
 	}
 	return client, err
+}
+
+func (c localSessionClient) TerminateLogicalSession(ctx context.Context, roleID, sessionID int64) error {
+	return c.mailbox.TerminateLogicalSession(ctx, roleID, sessionID)
+}
+func (c localSessionClient) InspectSession(ctx context.Context, roleID int64) (AdmissionRecord, error) {
+	return c.mailbox.InspectSession(ctx, roleID)
 }

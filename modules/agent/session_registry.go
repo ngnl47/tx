@@ -18,33 +18,6 @@ type SessionControlResult struct {
 	Handled      bool
 }
 
-type activeSession struct {
-	identity           Identity
-	header             msgq.SessionHeader
-	client             msgq.SessionClient
-	cancel             context.CancelFunc
-	transport          Transport
-	initializationDone chan struct{}
-	initialized        bool
-	suppressReady      bool
-	terminateRequested bool
-	terminationDone    chan struct{}
-	terminationErr     error
-}
-
-func (session *activeSession) disconnect() {
-	if session == nil {
-		return
-	}
-	session.cancel()
-	_ = session.transport.Close()
-}
-
-func (session *activeSession) completeTermination(err error) {
-	session.terminationErr = err
-	close(session.terminationDone)
-}
-
 type sessionTerminationOperation struct {
 	sessionID int64
 	pending   map[int64]*activeSession

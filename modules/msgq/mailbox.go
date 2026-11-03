@@ -38,6 +38,12 @@ type Server struct {
 	terminatingDeadSessions atomic.Bool
 	stopped                 atomic.Bool
 
+	// 流接入控制独立于邮箱初始化锁，等待远端关闭不占用分片锁。
+	admissionMu    sync.Mutex
+	admissions     map[int64]*roleAdmission
+	admissionUsers int
+	admissionIdle  chan struct{}
+
 	// 初始化锁按角色分片，串行化同角色创建/恢复；目录和邮箱另有各自的锁。
 	initLocks [initLockShards]sync.Mutex
 
@@ -72,9 +78,11 @@ type SessionHeader struct {
 
 // InitRequest 建立或恢复会话。Restore 会重置发送游标并确认已有 Ack。
 type InitRequest struct {
-	Header  SessionHeader
-	Restore bool
-	Ack     int64
+	// Admission 在流接入时声明独占策略；低层 Init 不接受该字段。
+	Admission *SessionAdmission
+	Header    SessionHeader
+	Restore   bool
+	Ack       int64
 }
 
 // PubResult 返回下行消息序号，供 Agent 写入协议包。
@@ -185,6 +193,13 @@ func NewServer(options ServerOptions) (*Server, error) {
 
 // Init 建立新会话，或在相同 SessionID 重连时恢复未确认下行消息。
 func (s *Server) Init(ctx context.Context, request InitRequest) error {
+	if request.Admission != nil {
+		return ErrSessionAdmission
+	}
+	return s.initMailbox(ctx, request)
+}
+
+func (s *Server) initMailbox(ctx context.Context, request InitRequest) error {
 	if s == nil {
 		return ErrServerNil
 	}
@@ -200,6 +215,9 @@ func (s *Server) Init(ctx context.Context, request InitRequest) error {
 	if s.stopped.Load() {
 		return ErrSessionOffline
 	}
+	if err := s.ensureRole(ctx, request.Header.RoleID); err != nil {
+		return err
+	}
 	if request.Restore {
 		previous, found := s.lookup(request.Header.SessionID)
 		if !found {
@@ -208,9 +226,6 @@ func (s *Server) Init(ctx context.Context, request InitRequest) error {
 		if previous.roleID != request.Header.RoleID {
 			return ErrSessionChanged
 		}
-	}
-	if err := s.ensureRole(ctx, request.Header.RoleID); err != nil {
-		return err
 	}
 
 	var session *mailboxSession

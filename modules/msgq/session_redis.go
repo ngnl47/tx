@@ -2,6 +2,7 @@ package msgq
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"strconv"
@@ -251,4 +252,63 @@ func conditionalResult(result string) (bool, error) {
 	default:
 		return false, ErrSessionStoreResponse
 	}
+}
+
+//go:embed scripts/compare_admission.lua
+var compareAdmissionScript string
+
+// LoadAdmission 读取角色许可；不通过 TTL 删除尚未确认的关闭证据。
+func (s *RedisSessionStore) LoadAdmission(ctx context.Context, roleID int64) (AdmissionRecord, error) {
+	if roleID <= 0 {
+		return AdmissionRecord{}, ErrInvalidSession
+	}
+	client, err := s.client()
+	if err != nil {
+		return AdmissionRecord{}, err
+	}
+	value, found, err := client.Get(ctx, s.admissionKey(roleID))
+	if err != nil || !found {
+		return AdmissionRecord{}, err
+	}
+	var record AdmissionRecord
+	if err := json.Unmarshal([]byte(value), &record); err != nil {
+		return AdmissionRecord{}, ErrSessionStoreResponse
+	}
+	return record, nil
+}
+
+// CompareAdmission 只修改单个角色键，不要求角色与 Session 键位于同一 Redis 槽。
+func (s *RedisSessionStore) CompareAdmission(ctx context.Context, roleID int64, expected, replacement AdmissionRecord) (bool, error) {
+	if roleID <= 0 {
+		return false, ErrInvalidSession
+	}
+	client, err := s.client()
+	if err != nil {
+		return false, err
+	}
+	old, err := encodeAdmission(expected)
+	if err != nil {
+		return false, err
+	}
+	next, err := encodeAdmission(replacement)
+	if err != nil {
+		return false, err
+	}
+	result, err := client.Eval(ctx, compareAdmissionScript, []string{s.admissionKey(roleID)}, old, next)
+	if err != nil {
+		return false, err
+	}
+	return conditionalResult(result)
+}
+
+func (s *RedisSessionStore) admissionKey(roleID int64) string {
+	return s.prefix + ":admission:v1:{" + strconv.FormatInt(roleID, 10) + "}"
+}
+
+func encodeAdmission(record AdmissionRecord) (string, error) {
+	if record == (AdmissionRecord{}) {
+		return "", nil
+	}
+	encoded, err := json.Marshal(record)
+	return string(encoded), err
 }

@@ -2,6 +2,36 @@
 
 本页只维护当前待办和证据索引。首次接入读 [README](../README.md)，模块职责读 [设计文档](design.md)，检查业务用法读 [工程约定](engineering-conventions.md)。已完成施工步骤由 Git 历史追溯，不重复列为待实现能力。
 
+## 已完成：Agent 单连接生命周期封装（2026-11-04）
+
+`serve` 收敛为验票、离线退出分支、远端接入与连接运行的编排入口。沿用 `activeSession` 持有单连接的上下文、邮箱流、写入器及完成信号；`session_connection.go` 集中 Ready、收发、主动退出和统一收尾，`session_registry.go` 保留本地初始化登记及精确连接控制。合并初始化终止补偿的重复分支，不新增公共 API 或通用状态机。
+
+保持原有接入与关闭契约：Ready 等待远端接入，初始化期间可终止；普通断线等待解除绑定确认并保留邮箱；Logout 等待逻辑终止与在途下行写完。补充普通断线等待远端 Close、传播关闭错误且不调用 Terminate 的回归，原实现基线及整理后的回归均通过。
+
+Agent/MsgQ 与框架契约测试、关键会话路径 race、两组应用 Agent/MsgQ 启动装配回归及 Agent vet 通过；独立 ponytail-review 无待修项。具体范围见[本轮验收](local-acceptance-matrix.md#2026-11-04-agent-单连接生命周期封装)。本轮仅整理 tx 私有实现和文档，不改协议、生成产物或示例业务，不跑真实集群或云测试，不作性能收益结论，不提交。下一步可汇总现有未提交变更，不自动扩大重构范围。
+
+## 已完成：独占接入与 MailboxStream 协调（2026-11-03）
+
+当前实施以[独占接入计划](exclusive-session-plan.md)为准：Login 恢复独立认证、授权与签票；签票不占位，Agent 验票后才取得角色 owner MsgQ。顶号由 owner 经旧 MailboxStream 的 Revoke/Detached 协调，远端 Init 与撤销绑定完成后才返回 Ready。在线、离线退出均由 Agent 验票并精确终止，不经过 Login，也不在 Agent 间广播。
+
+两组应用仍统一选择独占策略，非强制占用拒绝、本人新登录及经授权的强制借号允许替换。TicketOrder 与策略随票据签名，接纳后淘汰较早票据；逻辑退出保留水位。Ack、Renew、下行数据不增加逐项成功回执，不扩展通用四语义 API。
+
+后续文档核对已补齐 Ready 后的业务初始化链路：接入完成与角色业务登录完成分开，txgame 与 txgameslg 分别按其现有协议说明建角/进入角色及下行响应；重连不自动重发初始化请求。各工程 README 和登录设计同步维护，修正 Login 会话控制的旧口径；此项仅核对代码与文档、路径和差异，不新增运行行为或重复运行集群验收。
+
+已完成框架与两组应用全包回归、两客户端测试/build、关键 race、真实 Redis CAS、有限跨 Agent/MsgQ 验收及独立差异 review。补修后两组正式包生命周期各 10 阶段、12 次正常停止通过，接入与关闭确认、owner 释放和失败保留重试均已覆盖。证据填写在[验收矩阵](local-acceptance-matrix.md#2026-11-03-独占接入与-mailboxstream-协调)。本轮结果见[流内协调验收](exclusive-session-acceptance-20261103.md)，旧预留模型日志不作为当前通过证据。本轮不提交、不跑云测试。
+
+## 已完成：SessionClient 权限与创建文档收敛（2026-11-03）
+
+`SessionClientRouter.Acquire` 返回的 `SessionClient` 仅含会话操作；拨号器和连接缓存使用 `SessionConnection` 持有关闭权，路由器继续统一关闭连接。本地客户端移除无操作 Close，不改会话、连接复用或排水逻辑。txgen 写入参考统一为业务 `db.Create` 委托 `txruntime.Create`，`storage.Create` 保留为高级独立存储入口。
+
+接口回归先复现旧 SessionClient 暴露 Close，修改后通过。针对性验证：
+
+- tx：Agent、MsgQ、连接缓存及会话回归通过；Bee/Ant Agent/MsgQ 注册适配参与编译。
+- `go test -race ./modules/msgq ./internal/instanceconn ./tests -run 'Test(SessionClient|FixedSessionClient|Cache|GRPCSharedStreamClose)' -count=1` 通过。
+- txgame、txgameslg：各自 `go test ./services/agent/... ./services/msgq/... ./internal/app -count=1` 通过。
+
+首次含网络测试受沙箱本机端口监听限制，允许本机临时端口后复跑通过。独立 ponytail-review 无待修项，差异检查通过。不启动真实集群或外部依赖专项，不跑云测试；生成产物和示例代码未修改，本轮不提交。
+
 ## 已完成：手写 Go 结构体组织整理（2026-11-03）
 
 依据[结构体字段组织约定](architecture_audit_standard.md#结构体字段组织)，已整理 tx、txgen、txgame、txgameslg 的手写 Go 结构体。固定依赖、可变状态、原子操作、一次性关闭及单协程状态按实际职责分组；锁紧邻受保护字段，必要位置补充中文说明。简单数据结构保留原布局，生成产物和第三方代码未修改。
@@ -12,15 +42,14 @@ tx、txgen 与两组 server/gen 共六个 module 的完整本地测试，以及 
 
 ## 已完成：L0～L4 审查后续收敛（2026-11-03）
 
-本轮按已确认的五项问题修复，保留前轮验收工具变更，不提交：
+本轮模块边界收敛保留以下现行结果，前轮验收工具变更独立维护：
 
 1. MsgQ MailboxStream/PublishStream 在锁外共享建流；请求各自取消等待，连接所有者可以取消建流并回收迟到结果。
 2. 为 Service Flush、CMod Drain 与 Service Stop 补齐配置期限，正常关闭和初始化回滚均区分尚未完成与已结束但失败；同步 Agent、Room、World、Sched 的返回契约，不以超时替代实际退出。
 3. 统一实例连接缓存的退役回收；只依据有效成员目录，不在消息热路径扫描，不因 Watch 暂时失联误关连接。
-4. Agent 控制广播显式接受项目服务名，保持注册与查询契约一致。
-5. 框架统一直接持久化的 Procedure 拒绝错误；两组应用的 db.Save 只转发，保留 SaveChange 必要保护。
+4. 框架统一直接持久化的 Procedure 拒绝错误；两组应用的 db.Save 只转发，保留 SaveChange 必要保护。
 
-五项已完成。后置审查补齐初始化回滚的最终错误保留及状态；全量回归进一步发现 Agent 未完成关闭缺少标记，同步检查实际服务适配后修复。槽位刷新测试的真实计时假设改用虚拟时间，不修改生产查询周期。tx 与两组 server 完整本地回归、关键取消与关闭路径 race、tx vet 均通过，最终差异复核无待修项；证据见[本轮验收](local-acceptance-matrix.md#2026-11-03-模块边界后续修复)。未运行真实集群或云压测，未单独启用外部存储专项，也不把引用回收外推为已量化性能收益。本轮未提交，原有验收工具变更保留。
+这些收敛已完成。后置审查补齐初始化回滚的最终错误保留及状态；全量回归进一步发现 Agent 未完成关闭缺少标记，同步检查实际服务适配后修复。槽位刷新测试的真实计时假设改用虚拟时间，不修改生产查询周期。tx 与两组 server 完整本地回归、关键取消与关闭路径 race、tx vet 均通过，最终差异复核无待修项；证据见[本轮验收](local-acceptance-matrix.md#2026-11-03-模块边界后续修复)。未运行真实集群或云压测，未单独启用外部存储专项，也不把引用回收外推为已量化性能收益。本轮未提交，原有验收工具变更保留。
 
 ## 已完成：验收客户端失败退出清理（2026-11-03）
 

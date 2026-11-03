@@ -19,16 +19,18 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	MailboxService_Init_FullMethodName             = "/tx.msgq.v1.MailboxService/Init"
-	MailboxService_PubSession_FullMethodName       = "/tx.msgq.v1.MailboxService/PubSession"
-	MailboxService_PubRole_FullMethodName          = "/tx.msgq.v1.MailboxService/PubRole"
-	MailboxService_MailboxStream_FullMethodName    = "/tx.msgq.v1.MailboxService/MailboxStream"
-	MailboxService_PublishStream_FullMethodName    = "/tx.msgq.v1.MailboxService/PublishStream"
-	MailboxService_JoinTopics_FullMethodName       = "/tx.msgq.v1.MailboxService/JoinTopics"
-	MailboxService_LeaveTopics_FullMethodName      = "/tx.msgq.v1.MailboxService/LeaveTopics"
-	MailboxService_Topics_FullMethodName           = "/tx.msgq.v1.MailboxService/Topics"
-	MailboxService_BroadcastTopic_FullMethodName   = "/tx.msgq.v1.MailboxService/BroadcastTopic"
-	MailboxService_TerminateSession_FullMethodName = "/tx.msgq.v1.MailboxService/TerminateSession"
+	MailboxService_InspectSession_FullMethodName          = "/tx.msgq.v1.MailboxService/InspectSession"
+	MailboxService_TerminateLogicalSession_FullMethodName = "/tx.msgq.v1.MailboxService/TerminateLogicalSession"
+	MailboxService_Init_FullMethodName                    = "/tx.msgq.v1.MailboxService/Init"
+	MailboxService_PubSession_FullMethodName              = "/tx.msgq.v1.MailboxService/PubSession"
+	MailboxService_PubRole_FullMethodName                 = "/tx.msgq.v1.MailboxService/PubRole"
+	MailboxService_MailboxStream_FullMethodName           = "/tx.msgq.v1.MailboxService/MailboxStream"
+	MailboxService_PublishStream_FullMethodName           = "/tx.msgq.v1.MailboxService/PublishStream"
+	MailboxService_JoinTopics_FullMethodName              = "/tx.msgq.v1.MailboxService/JoinTopics"
+	MailboxService_LeaveTopics_FullMethodName             = "/tx.msgq.v1.MailboxService/LeaveTopics"
+	MailboxService_Topics_FullMethodName                  = "/tx.msgq.v1.MailboxService/Topics"
+	MailboxService_BroadcastTopic_FullMethodName          = "/tx.msgq.v1.MailboxService/BroadcastTopic"
+	MailboxService_TerminateSession_FullMethodName        = "/tx.msgq.v1.MailboxService/TerminateSession"
 )
 
 // MailboxServiceClient is the client API for MailboxService service.
@@ -37,6 +39,8 @@ const (
 //
 // MailboxService 是 msgq 专用传输服务，Payload 字节保持为 BON 数据。
 type MailboxServiceClient interface {
+	InspectSession(ctx context.Context, in *InspectSessionRequest, opts ...grpc.CallOption) (*AdmissionRecord, error)
+	TerminateLogicalSession(ctx context.Context, in *LogicalSessionRequest, opts ...grpc.CallOption) (*Empty, error)
 	Init(ctx context.Context, in *InitRequest, opts ...grpc.CallOption) (*InitResponse, error)
 	PubSession(ctx context.Context, in *PubSessionRequest, opts ...grpc.CallOption) (*PubSessionResponse, error)
 	PubRole(ctx context.Context, in *PubRoleRequest, opts ...grpc.CallOption) (*BroadcastResponse, error)
@@ -55,6 +59,26 @@ type mailboxServiceClient struct {
 
 func NewMailboxServiceClient(cc grpc.ClientConnInterface) MailboxServiceClient {
 	return &mailboxServiceClient{cc}
+}
+
+func (c *mailboxServiceClient) InspectSession(ctx context.Context, in *InspectSessionRequest, opts ...grpc.CallOption) (*AdmissionRecord, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AdmissionRecord)
+	err := c.cc.Invoke(ctx, MailboxService_InspectSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *mailboxServiceClient) TerminateLogicalSession(ctx context.Context, in *LogicalSessionRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, MailboxService_TerminateLogicalSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *mailboxServiceClient) Init(ctx context.Context, in *InitRequest, opts ...grpc.CallOption) (*InitResponse, error) {
@@ -169,6 +193,8 @@ func (c *mailboxServiceClient) TerminateSession(ctx context.Context, in *Termina
 //
 // MailboxService 是 msgq 专用传输服务，Payload 字节保持为 BON 数据。
 type MailboxServiceServer interface {
+	InspectSession(context.Context, *InspectSessionRequest) (*AdmissionRecord, error)
+	TerminateLogicalSession(context.Context, *LogicalSessionRequest) (*Empty, error)
 	Init(context.Context, *InitRequest) (*InitResponse, error)
 	PubSession(context.Context, *PubSessionRequest) (*PubSessionResponse, error)
 	PubRole(context.Context, *PubRoleRequest) (*BroadcastResponse, error)
@@ -189,6 +215,12 @@ type MailboxServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedMailboxServiceServer struct{}
 
+func (UnimplementedMailboxServiceServer) InspectSession(context.Context, *InspectSessionRequest) (*AdmissionRecord, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method InspectSession not implemented")
+}
+func (UnimplementedMailboxServiceServer) TerminateLogicalSession(context.Context, *LogicalSessionRequest) (*Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method TerminateLogicalSession not implemented")
+}
 func (UnimplementedMailboxServiceServer) Init(context.Context, *InitRequest) (*InitResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Init not implemented")
 }
@@ -238,6 +270,42 @@ func RegisterMailboxServiceServer(s grpc.ServiceRegistrar, srv MailboxServiceSer
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&MailboxService_ServiceDesc, srv)
+}
+
+func _MailboxService_InspectSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InspectSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MailboxServiceServer).InspectSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MailboxService_InspectSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MailboxServiceServer).InspectSession(ctx, req.(*InspectSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _MailboxService_TerminateLogicalSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LogicalSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MailboxServiceServer).TerminateLogicalSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MailboxService_TerminateLogicalSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MailboxServiceServer).TerminateLogicalSession(ctx, req.(*LogicalSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _MailboxService_Init_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -405,6 +473,14 @@ var MailboxService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "tx.msgq.v1.MailboxService",
 	HandlerType: (*MailboxServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "InspectSession",
+			Handler:    _MailboxService_InspectSession_Handler,
+		},
+		{
+			MethodName: "TerminateLogicalSession",
+			Handler:    _MailboxService_TerminateLogicalSession_Handler,
+		},
 		{
 			MethodName: "Init",
 			Handler:    _MailboxService_Init_Handler,

@@ -2,6 +2,37 @@
 
 本页以现行契约组织验收，不重复维护测试实现。框架异常边界在 tx 定向测试中构造，两组应用使用已有真实集群入口验证接入；不向业务 Handler 增加故障开关。历史报告只证明对应构建，本轮结果单独记录。
 
+## 2026-11-04 Agent 单连接生命周期封装
+
+范围仅为 `modules/agent` 私有会话封装；工作区此前独占接入改动及其验收独立保留。
+
+| 验证项 | 结果与边界 |
+| --- | --- |
+| 整理前行为基线 | Ready 远端接入等待、初始化期间终止及补偿、断线恢复、在线/离线退出等定向测试通过 |
+| 补充关闭确认回归 | `TestAgentDisconnectWaitsForMailboxCloseConfirmation` 在整理前后均通过；普通断线等待 Close 回执，保留关闭错误，不执行 Terminate |
+| 框架本地回归 | `go test ./modules/agent/... ./modules/msgq/... ./tests -count=1` 通过 |
+| 并发边界 | 上述包的会话接入、Ready、初始化控制、Mailbox、Agent/TCP/WebSocket 等定向 `-race` 通过 |
+| 应用接线 | txgame、txgameslg 各自 `go test ./services/agent/... ./services/msgq/... ./internal/app -count=1` 通过 |
+| 静态及差异检查 | `go vet ./modules/agent/...`、gofmt 与 `git diff --check` 通过；独立 ponytail-review 对照本轮前快照核对收尾顺序与并发所有权，无待修项 |
+
+初次执行受到沙箱 Go 缓存和本机端口权限限制；允许对应本地能力后复跑通过。未启动真实多进程集群，未单独启用 Redis 等外部设施集成项，不跑云测试或吞吐基准，不将本轮组织调整解释为性能优化。本轮不提交。
+
+## 2026-11-03 独占接入与 MailboxStream 协调
+
+以下是现行方案的验收边界；[本轮报告](exclusive-session-acceptance-20261103.md)记录新模型实测，最终收尾验证已通过。实施状态见[计划](exclusive-session-plan.md)。
+
+| 边界 | 必须核验的行为 | 状态 |
+| --- | --- | --- |
+| 签票职责 | MsgQ 不可用不影响签票；签票不占位、不踢旧连接；借号授权和准入策略随票据签名 | 通过，证据见本轮报告 |
+| 票据与接入 | 同角色并发接入、非强制拒绝不改水位、较早未使用票据被淘汰、旧 fresh/restore 拒绝；真实 Redis CAS | 通过，证据见本轮报告 |
+| 流内协调 | Revoke → 旧 Agent 关闭准入/socket → Detached → 新 Init/OPENED → Ready；迟到结果不放行失效候选 | 通过，证据见本轮报告 |
+| 共享流隔离 | 角色控制等待不阻塞其他角色 Ack/下行；不持初始化分片锁等待网络，回执不被玩家 ctx 取消 | 通过，证据见本轮报告 |
+| 退出与关闭 | 在线/离线 Logout 精确终止，LoggedOut 只表示确认完成；普通断线保留恢复；MsgQ Stop 确认关闭后条件释放 owner | 通过，证据见本轮报告 |
+| 客户端与应用 | 两组测试/build；Login HTTP 成功与 Agent Ready 分开；终止清票、不自动 Login、退出失败提示未确认 | 通过，证据见本轮报告 |
+| 有限多进程 | 角色复用唯一 MsgQ owner，无 Agent 间顶号控制；同进程/远端保持相同准入完成语义 | 通过，证据见本轮报告 |
+
+不增加生产 GM 认证后门，不将 SPI 授权回归和本人顶号验收合称为生产 GM 端到端验证；不做云压测或吞吐推断。本轮未提交。
+
 ## 2026-11-03 手写结构体组织整理
 
 本轮只调整 tx、txgen 和两组应用手写 Go 结构体的职责分组、锁邻接和必要组注释。依据[字段组织约定](architecture_audit_standard.md#结构体字段组织)读取实际使用关系；例如事务锁条目的引用数由外层分片锁保护，EntityCache 的冷加载、唯一对象目录和回收目录分别同步，World 分区内容由网格邮箱独占。没有修改这些同步机制。

@@ -49,8 +49,14 @@ func TestMailboxStreamMultiplexesSessionsAndKeepsAckIsolated(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, header := range []SessionHeader{first, second} {
-		if err := stream.Send(&msgqpb.MailboxStreamRequest{Header: headerToProto(header), Kind: msgqpb.MailboxStreamRequest_KIND_OPEN, Max: 1}); err != nil {
+		if err := stream.Send(&msgqpb.MailboxStreamRequest{Header: headerToProto(header), Kind: msgqpb.MailboxStreamRequest_KIND_OPEN, Max: 1, Init: initToProto(InitRequest{Header: header, Restore: true})}); err != nil {
 			t.Fatal(err)
+		}
+	}
+	for range 2 {
+		response, err := stream.Recv()
+		if err != nil || response.GetKind() != msgqpb.MailboxStreamResponse_KIND_OPENED || response.GetErrorMessage() != "" {
+			t.Fatalf("open: %+v %v", response, err)
 		}
 	}
 	if _, err := mailbox.PubSession(ctx, first.SessionID, []byte("one")); err != nil {

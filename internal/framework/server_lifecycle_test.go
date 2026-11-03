@@ -95,12 +95,12 @@ func TestAgentStartupRollbackRetainsRouterUntilConnectionExits(t *testing.T) {
 					var err error
 					agent, err = agentservice.New(agentservice.Options{
 						TCPListen: "127.0.0.1:0", MaxFrameBytes: 1024, Sessions: router,
-						Identity: txagent.IdentityResolverFunc(func(ctx context.Context, _ txagent.AuthRequest) (protocol.SessionPrincipal, error) {
+						Identity: txagent.IdentityResolverFunc(func(ctx context.Context, _ txagent.AuthRequest) (txagent.AuthResult, error) {
 							close(entered)
 							<-ctx.Done()
 							close(canceled)
 							<-release
-							return protocol.SessionPrincipal{}, ctx.Err()
+							return txagent.AuthResult{SessionPrincipal: protocol.SessionPrincipal{}}, ctx.Err()
 						}),
 						Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error { return nil }),
 					}, agentservice.Dependencies{Tasks: ctx.Tasks(), Admission: ctx.Admission(), ReportFatal: ctx.ReportFatal, RPC: rollbackAgentRPC{grpc.NewServer()}})
@@ -554,4 +554,8 @@ func (mod *blockingStartCMod) Stop(context.Context) error {
 		close(mod.stopped)
 	}
 	return nil
+}
+
+func (*rollbackAgentRouter) TerminateLogicalSession(context.Context, int64, int64) error {
+	return errors.New("unexpected terminate")
 }

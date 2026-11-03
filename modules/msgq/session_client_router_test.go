@@ -13,7 +13,7 @@ import (
 
 type rotatingSessionDialer struct{ calls atomic.Int64 }
 
-func (dialer *rotatingSessionDialer) DialSession(_ context.Context, _ discovery.Instance) (SessionClient, error) {
+func (dialer *rotatingSessionDialer) DialSession(_ context.Context, _ discovery.Instance) (SessionConnection, error) {
 	dialer.calls.Add(1)
 	return &rotatingSessionClient{}, nil
 }
@@ -40,7 +40,7 @@ func TestSessionClientRouterRotatesClientWhenInstanceChangesAtSameEndpoint(t *te
 	synctest.Test(t, func(t *testing.T) {
 		dialer := &rotatingSessionDialer{}
 		directory := discovery.NewServiceDirectory()
-		router := &SessionClientRouter{dialer: dialer, connections: instanceconn.New[SessionClient](directory)}
+		router := &SessionClientRouter{dialer: dialer, connections: instanceconn.New[SessionConnection](directory)}
 		defer router.Close()
 		first := discovery.Instance{ID: "msgq-old", Endpoint: "127.0.0.1:19220", Services: []string{"msgq"}, Status: discovery.StatusRunning}
 		second := discovery.Instance{ID: "msgq-new", Endpoint: first.Endpoint}

@@ -101,10 +101,7 @@ func newOpeningConnection(t *testing.T, ignoreCancel bool) (*grpcConnection, *op
 
 func openTestStream(ctx context.Context, c *grpcConnection, mode string, id int64) error {
 	if mode == "mailbox" {
-		session, err := c.OpenMailboxStream(ctx, SessionHeader{RoleID: id, SessionID: id, ConnectionID: id})
-		if err == nil {
-			_ = session.Close()
-		}
+		_, err := c.getMailboxStream(ctx)
 		return err
 	}
 	return c.SendSession(ctx, id, []byte("down"))

@@ -22,6 +22,8 @@ var (
 	ErrInvalidFrame           = errors.New("agent: invalid frame")
 	ErrInvalidAcknowledgement = errors.New("agent: invalid DownMsg acknowledgement")
 	ErrFrameTooLarge          = errors.New("agent: frame is too large")
+	// ErrSessionEnded 由身份解析器表示票据已永久失效，客户端应停止自动恢复。
+	ErrSessionEnded = errors.New("agent: session has ended")
 )
 
 // Identity 是 Agent 为当前连接构造的可信会话身份。
@@ -32,18 +34,26 @@ type AuthRequest struct {
 	Token   []byte
 	Restore bool
 	Ack     int64
+	// Logout 只验证并结束原会话，不建立新的邮箱或物理业务接入。
+	Logout bool
+}
+
+// AuthResult 由项目验票返回可信身份和准入授权；Admission 不进入业务消息头。
+type AuthResult struct {
+	protocol.SessionPrincipal
+	Admission *msgq.SessionAdmission
 }
 
 // IdentityResolver 将项目不透明握手数据解析为已认证的会话主体。
 // 它可以校验 token，也可以消费上游已认证的可信凭据。
 type IdentityResolver interface {
-	ResolveIdentity(context.Context, AuthRequest) (protocol.SessionPrincipal, error)
+	ResolveIdentity(context.Context, AuthRequest) (AuthResult, error)
 }
 
 // IdentityResolverFunc 适合以内联函数实现 IdentityResolver。
-type IdentityResolverFunc func(context.Context, AuthRequest) (protocol.SessionPrincipal, error)
+type IdentityResolverFunc func(context.Context, AuthRequest) (AuthResult, error)
 
-func (f IdentityResolverFunc) ResolveIdentity(ctx context.Context, request AuthRequest) (protocol.SessionPrincipal, error) {
+func (f IdentityResolverFunc) ResolveIdentity(ctx context.Context, request AuthRequest) (AuthResult, error) {
 	return f(ctx, request)
 }
 
@@ -77,6 +87,8 @@ type Transport interface {
 // SessionClientRouter 为认证后的角色选择当前可用 msgq 会话客户端。
 type SessionClientRouter interface {
 	Acquire(context.Context, msgq.AcquireSessionRequest) (msgq.SessionClient, error)
+	// TerminateLogicalSession 只定位已有归属，不为退出创建新会话。
+	TerminateLogicalSession(context.Context, int64, int64) error
 }
 
 // ConnectionIDGenerator 生成区分重连的正连接编号。

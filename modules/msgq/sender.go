@@ -62,8 +62,8 @@ func (d *GRPCDialer) Dial(_ context.Context, instance discovery.Instance) (Conne
 	return d.dial(instance)
 }
 
-// DialSession 打开到实例 endpoint 的会话 gRPC 客户端。
-func (d *GRPCDialer) DialSession(_ context.Context, instance discovery.Instance) (SessionClient, error) {
+// DialSession 打开到实例 endpoint 的会话 gRPC 连接，调用方负责关闭。
+func (d *GRPCDialer) DialSession(_ context.Context, instance discovery.Instance) (SessionConnection, error) {
 	return d.dial(instance)
 }
 
@@ -104,12 +104,12 @@ func (c *grpcConnection) OnRoleRejection(reject func(context.Context, RoleBindin
 	c.rejectRole = reject
 }
 
-func (c *grpcConnection) OpenMailboxStream(ctx context.Context, header SessionHeader) (MailboxStreamSession, error) {
+func (c *grpcConnection) OpenMailboxStream(ctx context.Context, request InitRequest, onRevoke func()) (MailboxStreamSession, error) {
 	stream, err := c.getMailboxStream(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return stream.open(ctx, header)
+	return stream.open(ctx, request, onRevoke)
 }
 
 func (c *grpcConnection) PubSession(ctx context.Context, sessionID int64, payload []byte) (PubResult, error) {
@@ -181,7 +181,7 @@ func readBroadcastResponse(response *msgqpb.BroadcastResponse, err error) (Broad
 }
 
 func (c *grpcConnection) Init(ctx context.Context, request InitRequest) error {
-	response, err := c.client.Init(ctx, &msgqpb.InitRequest{Header: headerToProto(request.Header), Restore: request.Restore, Ack: request.Ack})
+	response, err := c.client.Init(ctx, initToProto(request))
 	if err != nil {
 		return mailboxClientError(err)
 	}

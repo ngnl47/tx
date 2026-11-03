@@ -9,9 +9,12 @@ import (
 	txmetrics "github.com/ngnl47/tx/metrics"
 	msgqpb "github.com/ngnl47/tx/modules/msgq/pb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
-// MailboxStreamSession 是共享 MailboxStream 上的一条逻辑会话。
+// MailboxStreamSession 是共享 MailboxStream 上的一条已确认接入。
+// 普通下行与 Ack/Renew 保持单向传输，接入、解除接入和逻辑退出单独确认。
 type MailboxStreamSession interface {
 	// Context 随逻辑会话结束取消，Cause 保留终止原因；不影响同流的其他会话。
 	Context() context.Context
@@ -19,6 +22,8 @@ type MailboxStreamSession interface {
 	Ack(context.Context, int64) error
 	Renew(context.Context) error
 	Close() error
+	// Terminate 确认当前逻辑会话退出；调用前须停止本地上行准入。
+	Terminate(context.Context) error
 }
 
 type grpcMailboxStream struct {
@@ -26,6 +31,7 @@ type grpcMailboxStream struct {
 	cancel   context.CancelFunc
 	client   grpc.BidiStreamingClient[msgqpb.MailboxStreamRequest, msgqpb.MailboxStreamResponse]
 	requests chan *msgqpb.MailboxStreamRequest
+	reopen   func(context.Context) (*grpcMailboxStream, error)
 
 	mu       sync.Mutex
 	sessions map[int64]*grpcMailboxSession
@@ -50,14 +56,26 @@ type mailboxResponse struct {
 }
 
 type grpcMailboxSession struct {
-	ctx    context.Context
-	cancel context.CancelCauseFunc
-	stream *grpcMailboxStream
-	header SessionHeader
-	items  chan mailboxResponse
+	ctx      context.Context
+	cancel   context.CancelCauseFunc
+	stream   *grpcMailboxStream
+	header   SessionHeader
+	onRevoke func()
 
-	once sync.Once
-	done chan struct{}
+	// 接入与关闭确认独立于下行队列；错误结束后仍可重试精确控制。
+	opened     chan error
+	closed     chan error
+	terminated chan error
+	items      chan mailboxResponse
+
+	controlMu     sync.Mutex
+	controlStream *grpcMailboxStream
+	detached      bool
+
+	// 回调和本地结束各执行一次，不持有目录锁调用外部逻辑。
+	revokeOnce sync.Once
+	once       sync.Once
+	done       chan struct{}
 
 	mu  sync.Mutex
 	err error
@@ -134,15 +152,20 @@ func (c *grpcConnection) openMailboxStream(ctx context.Context, opening *mailbox
 		}
 	}
 	if err == nil {
+		stream.reopen = c.getMailboxStream
 		c.mailbox = stream
 	}
 	opening.stream, opening.err = stream, err
 	close(opening.done)
 }
 
-func (stream *grpcMailboxStream) open(ctx context.Context, header SessionHeader) (MailboxStreamSession, error) {
+func (stream *grpcMailboxStream) open(ctx context.Context, request InitRequest, onRevoke func()) (MailboxStreamSession, error) {
+	if a := request.Admission; a != nil && a.Policy != RejectExisting && a.Policy != ReplaceExisting {
+		return nil, ErrInvalidSession
+	}
+	header := request.Header
 	sessionCtx, cancel := context.WithCancelCause(ctx)
-	session := &grpcMailboxSession{ctx: sessionCtx, cancel: cancel, stream: stream, header: header, items: make(chan mailboxResponse, 64), done: make(chan struct{})}
+	session := &grpcMailboxSession{ctx: sessionCtx, cancel: cancel, stream: stream, header: header, onRevoke: onRevoke, items: make(chan mailboxResponse, 64), done: make(chan struct{}), opened: make(chan error, 1), closed: make(chan error, 1), terminated: make(chan error, 1)}
 	stream.mu.Lock()
 	if err := stream.ctx.Err(); err != nil {
 		stream.mu.Unlock()
@@ -156,14 +179,20 @@ func (stream *grpcMailboxStream) open(ctx context.Context, header SessionHeader)
 	}
 	stream.sessions[header.SessionID] = session
 	stream.mu.Unlock()
-	if err := stream.send(ctx, &msgqpb.MailboxStreamRequest{Header: headerToProto(header), Kind: msgqpb.MailboxStreamRequest_KIND_OPEN, Max: 1}); err != nil {
-		stream.mu.Lock()
-		if stream.sessions[header.SessionID] == session {
-			delete(stream.sessions, header.SessionID)
+	err := stream.send(ctx, &msgqpb.MailboxStreamRequest{Header: headerToProto(header), Kind: msgqpb.MailboxStreamRequest_KIND_OPEN, Max: 1, Init: initToProto(request)})
+	if err == nil {
+		select {
+		case err = <-session.opened:
+		case <-ctx.Done():
+			err = ctx.Err()
+		case <-stream.done:
+			err = ErrRouteUnavailable
 		}
-		stream.mu.Unlock()
-		cancel(err)
-		return nil, err
+	}
+	if err != nil {
+		// Open 返回成功前调用方尚未开放上行，直接撤销候选，不抢先关闭用于返回错误的 socket。
+		session.finish(err)
+		return nil, errors.Join(err, session.Close())
 	}
 	return session, nil
 }
@@ -213,8 +242,41 @@ func (stream *grpcMailboxStream) readLoop() {
 		if session == nil || session.header != header {
 			continue
 		}
-		if message := response.GetErrorMessage(); message != "" {
-			session.finish(errors.New(message))
+		var responseErr error
+		if response.GetErrorMessage() != "" {
+			responseErr = mailboxClientError(status.Error(codes.Code(response.GetErrorCode()), response.GetErrorMessage()))
+		}
+		switch response.GetKind() {
+		case msgqpb.MailboxStreamResponse_KIND_OPENED:
+			select {
+			case session.opened <- responseErr:
+			default:
+			}
+			continue
+		case msgqpb.MailboxStreamResponse_KIND_CLOSED:
+			select {
+			case session.closed <- responseErr:
+			default:
+			}
+			continue
+		case msgqpb.MailboxStreamResponse_KIND_TERMINATED:
+			select {
+			case session.terminated <- responseErr:
+			default:
+			}
+			continue
+		case msgqpb.MailboxStreamResponse_KIND_REVOKE:
+			go func() {
+				session.closeIngress()
+				session.finish(ErrSessionChanged)
+				controlCtx, cancel := context.WithTimeout(context.Background(), mailboxControlTimeout)
+				defer cancel()
+				_ = stream.send(controlCtx, &msgqpb.MailboxStreamRequest{Header: headerToProto(header), Kind: msgqpb.MailboxStreamRequest_KIND_DETACHED})
+			}()
+			continue
+		}
+		if responseErr != nil {
+			session.finish(responseErr)
 			continue
 		}
 		if response.GetMessage() == nil || response.GetMessage().GetSeq() <= 0 {
@@ -329,25 +391,90 @@ func (session *grpcMailboxSession) Renew(ctx context.Context) error {
 	return session.stream.send(ctx, &msgqpb.MailboxStreamRequest{Header: headerToProto(session.header), Kind: msgqpb.MailboxStreamRequest_KIND_RENEW})
 }
 
-// Close 总是先释放本地会话；远端控制队列拥堵时由会话超时回收，不阻塞调用方。
+const mailboxControlTimeout = 5 * time.Second
+
+func (session *grpcMailboxSession) closeIngress() {
+	session.revokeOnce.Do(func() {
+		if session.onRevoke != nil {
+			session.onRevoke()
+		}
+	})
+}
+
+// Close 等待 MsgQ 记录本连接已关闭；失败保留精确接入以便重试。
+// 调用方必须先停止上行；流断开不能伪装为关闭确认。
 func (session *grpcMailboxSession) Close() error {
-	session.stream.mu.Lock()
-	current := session.stream.sessions[session.header.SessionID] == session
-	if current {
-		delete(session.stream.sessions, session.header.SessionID)
-	}
-	session.stream.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), mailboxControlTimeout)
+	defer cancel()
+	session.controlMu.Lock()
+	defer session.controlMu.Unlock()
 	session.finish(context.Canceled)
-	if !current {
+	if session.detached {
 		return nil
+	}
+	if err := session.control(ctx, msgqpb.MailboxStreamRequest_KIND_CLOSE, session.closed); err != nil {
+		return err
+	}
+	session.detached = true
+	session.remove()
+	return nil
+}
+
+func (session *grpcMailboxSession) Terminate(ctx context.Context) error {
+	session.controlMu.Lock()
+	defer session.controlMu.Unlock()
+	if err := session.control(ctx, msgqpb.MailboxStreamRequest_KIND_TERMINATE, session.terminated); err != nil {
+		return err
+	}
+	session.detached = true
+	session.finish(context.Canceled)
+	session.remove()
+	return nil
+}
+
+func (session *grpcMailboxSession) control(ctx context.Context, kind msgqpb.MailboxStreamRequest_Kind, result <-chan error) error {
+	stream := session.stream
+	select {
+	case <-stream.done:
+		if stream.reopen == nil {
+			return ErrRouteUnavailable
+		}
+		var err error
+		stream, err = stream.reopen(ctx)
+		if err != nil {
+			return err
+		}
+	default:
+	}
+	stream.mu.Lock()
+	if current := stream.sessions[session.header.SessionID]; current != nil && current != session {
+		stream.mu.Unlock()
+		return ErrSessionChanged
+	}
+	stream.sessions[session.header.SessionID] = session
+	stream.mu.Unlock()
+	session.controlStream = stream
+	if err := stream.send(ctx, &msgqpb.MailboxStreamRequest{Header: headerToProto(session.header), Kind: kind}); err != nil {
+		return err
 	}
 	select {
-	case session.stream.requests <- &msgqpb.MailboxStreamRequest{Header: headerToProto(session.header), Kind: msgqpb.MailboxStreamRequest_KIND_CLOSE}:
-		return nil
-	case <-session.stream.done:
-		return nil
-	default:
-		return ErrMailboxBackpressure
+	case err := <-result:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-stream.done:
+		return ErrRouteUnavailable
+	}
+}
+func (session *grpcMailboxSession) remove() {
+	for _, stream := range []*grpcMailboxStream{session.stream, session.controlStream} {
+		if stream != nil {
+			stream.mu.Lock()
+			if stream.sessions[session.header.SessionID] == session {
+				delete(stream.sessions, session.header.SessionID)
+			}
+			stream.mu.Unlock()
+		}
 	}
 }
 
@@ -367,28 +494,6 @@ type localMailboxSession struct {
 	ctx     context.Context
 	cancel  context.CancelCauseFunc
 	items   chan FetchResult
-
-	once sync.Once
-}
-
-func newLocalMailboxSession(ctx context.Context, mailbox *Server, header SessionHeader) MailboxStreamSession {
-	sessionCtx, cancel := context.WithCancelCause(ctx)
-	session := &localMailboxSession{mailbox: mailbox, header: header, ctx: sessionCtx, cancel: cancel, items: make(chan FetchResult, 1)}
-	go func() {
-		for {
-			batch, err := mailbox.FetchSome(sessionCtx, FetchSomeRequest{Header: header, Max: 1})
-			if err != nil {
-				cancel(err)
-				return
-			}
-			select {
-			case session.items <- batch.Messages[0]:
-			case <-sessionCtx.Done():
-				return
-			}
-		}
-	}()
-	return session
 }
 
 func (session *localMailboxSession) Context() context.Context { return session.ctx }
@@ -429,6 +534,63 @@ func (session *localMailboxSession) Renew(ctx context.Context) error {
 }
 
 func (session *localMailboxSession) Close() error {
-	session.once.Do(func() { session.cancel(context.Canceled) })
-	return nil
+	session.cancel(context.Canceled)
+	ctx, cancel := context.WithTimeout(context.Background(), mailboxControlTimeout)
+	defer cancel()
+	return session.mailbox.detachAttachment(ctx, session.header)
+}
+func (session *localMailboxSession) Terminate(ctx context.Context) error {
+	session.cancel(context.Canceled)
+	if err := session.mailbox.detachAttachment(ctx, session.header); err != nil {
+		return err
+	}
+	return session.mailbox.terminateAttachedSession(ctx, session.header)
+}
+
+func openLocalMailboxSession(ctx context.Context, mailbox *Server, request InitRequest, onRevoke func()) (MailboxStreamSession, error) {
+	// 先登记可撤销接入，初始化成功后才启动下行读取。
+	sessionCtx, cancel := context.WithCancelCause(ctx)
+	session := &localMailboxSession{mailbox: mailbox, header: request.Header, ctx: sessionCtx, cancel: cancel, items: make(chan FetchResult, 1)}
+	attachment := &mailboxAttachment{header: request.Header, restore: request.Restore, detached: make(chan struct{})}
+	var revokeOnce sync.Once
+	closure := make(chan struct{})
+	attachment.revoke = func(opCtx context.Context) error {
+		revokeOnce.Do(func() {
+			go func() {
+				if onRevoke != nil {
+					onRevoke()
+				}
+				session.cancel(ErrSessionChanged)
+				close(closure)
+			}()
+		})
+		select {
+		case <-closure:
+			return mailbox.detachAttachment(opCtx, request.Header)
+		case <-opCtx.Done():
+			return opCtx.Err()
+		}
+	}
+	if err := mailbox.openAttachment(ctx, request, attachment); err != nil {
+		cancel(err)
+		controlCtx, stop := context.WithTimeout(context.Background(), mailboxControlTimeout)
+		defer stop()
+		return nil, errors.Join(err, mailbox.detachFailedAttachment(controlCtx, attachment))
+	}
+	go session.fetchLoop()
+	return session, nil
+}
+func (session *localMailboxSession) fetchLoop() {
+	for {
+		batch, err := session.mailbox.FetchSome(session.ctx, FetchSomeRequest{Header: session.header, Max: 1})
+		if err != nil {
+			session.cancel(err)
+			return
+		}
+		select {
+		case session.items <- batch.Messages[0]:
+		case <-session.ctx.Done():
+			return
+		}
+	}
 }

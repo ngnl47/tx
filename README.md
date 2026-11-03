@@ -24,6 +24,8 @@
 
 ```text
 客户端 → 应用 Login：认证、选服、签发票据
+客户端携票 → Agent → owner MsgQ：接入确认 → Agent 返回 FrameReady
+客户端收到 Ready → 应用建角/进入角色协议 → 业务响应后继续初始化
 客户端 → Agent → gRPC 上行 → 目标业务 Actor
 业务 Actor → gRPC 发布 → MsgQ 下行邮箱 → Agent → 客户端
 
@@ -33,6 +35,7 @@
 ```
 
 - Login 业务流程、业务身份、排行榜、定时结算、合服和 World 归属规则在应用侧。
+- `FrameReady` 只表示会话接入完成，不表示角色业务登录完成；重连仅恢复邮箱下行，不自动重投业务请求。登录、借号、顶号与退出流程见[会话设计](docs/design.md#客户端协议与-agent)，当前实现和验收见[独占接入计划](docs/exclusive-session-plan.md)。
 - tx 负责通用寻址、连接、准入、邮箱、事务与资源收尾，不从消息名称推断业务权限。
 - 同一进程可以组合多个 Service，共享启用的 CMod 和连接；每个 Actor 的邮箱与状态仍独立。
 - Actor 不等于 GD 缓存条目，卸载 Actor 不等于删除数据库或回收全部实体缓存。

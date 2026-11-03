@@ -3,11 +3,13 @@ package msgqservice
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/ngnl47/tx/component"
 	"github.com/ngnl47/tx/lifecycle"
 	txlog "github.com/ngnl47/tx/log"
 	txmetrics "github.com/ngnl47/tx/metrics"
@@ -125,23 +127,31 @@ func (service *Service) Start(context.Context) error {
 	return nil
 }
 
-// Stop 停止邮箱并释放本地角色归属；后台任务由 Tasks 生命周期等待退出。
+// Stop 确认接入关闭并释放归属；未完成时保留邮箱和依赖，供宿主重试。
 func (service *Service) Stop(ctx context.Context) error {
 	if service == nil {
 		return nil
 	}
-	service.mu.Lock()
-	service.client = nil
+	service.mu.RLock()
 	mailbox := service.mailbox
-	service.mailbox = nil
-	removeMetrics := service.removeMetrics
-	service.removeMetrics = nil
+	service.mu.RUnlock()
+	if mailbox == nil {
+		return nil
+	}
+	if err := mailbox.Stop(ctx); err != nil {
+		return errors.Join(component.ErrStopDeferred, err)
+	}
+	service.mu.Lock()
+	var removeMetrics func()
+	if service.mailbox == mailbox {
+		service.client = nil
+		service.mailbox = nil
+		removeMetrics = service.removeMetrics
+		service.removeMetrics = nil
+	}
 	service.mu.Unlock()
 	if removeMetrics != nil {
 		removeMetrics()
-	}
-	if mailbox != nil {
-		return mailbox.Stop(ctx)
 	}
 	return nil
 }

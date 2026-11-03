@@ -21,6 +21,12 @@ const (
 	FrameAck
 	// FrameReady 表示服务端已经接受握手。
 	FrameReady
+	// FrameSessionEnded 表示当前票据不能再建立或恢复会话，客户端必须显式重新登录。
+	FrameSessionEnded
+	// FrameLogout 请求结束当前会话；首次控制连接的 Payload 携带票据。
+	FrameLogout
+	// FrameLoggedOut 表示精确会话已结束，不表示仅断开 Socket。
+	FrameLoggedOut
 )
 
 const (
@@ -95,6 +101,18 @@ func (f Frame) validReady() bool {
 	return f.Kind == FrameReady && f.Seq == 0 && f.Ack == 0 && !f.Restore && len(f.Payload) == 0 && !f.hasCommandRoute()
 }
 
+func (f Frame) validSessionEnded() bool {
+	return f.Kind == FrameSessionEnded && f.Seq == 0 && f.Ack == 0 && !f.Restore && len(f.Payload) == 0 && !f.hasCommandRoute()
+}
+
+func (f Frame) validLogout() bool {
+	return f.Kind == FrameLogout && f.Seq == 0 && f.Ack == 0 && !f.Restore && !f.hasCommandRoute()
+}
+
+func (f Frame) validLoggedOut() bool {
+	return f.Kind == FrameLoggedOut && f.Seq == 0 && f.Ack == 0 && !f.Restore && len(f.Payload) == 0 && !f.hasCommandRoute()
+}
+
 func (f Frame) hasCommandRoute() bool {
 	return f.CommandHash != 0 || f.RouteKey.Kind() != RouteKeyNone
 }
@@ -130,7 +148,7 @@ func EncodeFrame(frame Frame, maxFrameBytes int) ([]byte, error) {
 }
 
 func prepareFrame(frame Frame, maxFrameBytes int) (encodedFrame, error) {
-	if maxFrameBytes < frameHeaderBytes || (!frame.validHandshake() && !frame.validUpMsg() && !frame.validDownMsg() && !frame.validAck() && !frame.validReady()) {
+	if maxFrameBytes < frameHeaderBytes || (!frame.validHandshake() && !frame.validUpMsg() && !frame.validDownMsg() && !frame.validAck() && !frame.validReady() && !frame.validSessionEnded() && !frame.validLogout() && !frame.validLoggedOut()) {
 		return encodedFrame{}, ErrInvalidFrame
 	}
 	routeKey, err := encodeRouteKey(frame.RouteKey)
@@ -212,7 +230,7 @@ func DecodeFrame(encoded []byte, maxFrameBytes int) (Frame, error) {
 		RouteKey:    routeKey,
 		Payload:     cloneBytes(encoded[frameHeaderBytes+routeKeySize:]),
 	}
-	if (!frame.validHandshake() && !frame.validUpMsg() && !frame.validDownMsg() && !frame.validAck() && !frame.validReady()) || (frame.Restore && frame.Kind != FrameHandshake) {
+	if (!frame.validHandshake() && !frame.validUpMsg() && !frame.validDownMsg() && !frame.validAck() && !frame.validReady() && !frame.validSessionEnded() && !frame.validLogout() && !frame.validLoggedOut()) || (frame.Restore && frame.Kind != FrameHandshake) {
 		return Frame{}, ErrInvalidFrame
 	}
 	return frame, nil

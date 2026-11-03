@@ -45,11 +45,11 @@ func TestServiceStartsWithExplicitDependenciesAndLocalMsgQ(t *testing.T) {
 	service, err := New(Options{
 		TCPListen:     "127.0.0.1:0",
 		MaxFrameBytes: 1024,
-		Identity: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
-			return protocol.SessionPrincipal{
+		Identity: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (txagent.AuthResult, error) {
+			return txagent.AuthResult{SessionPrincipal: protocol.SessionPrincipal{
 				RoleID:    1001,
 				SessionID: 1,
-			}, nil
+			}}, nil
 		}),
 		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error {
 			return nil
@@ -89,8 +89,8 @@ func TestServiceRequiresRPCRegistrar(t *testing.T) {
 	_, err := New(Options{
 		TCPListen:     "127.0.0.1:0",
 		MaxFrameBytes: 1024,
-		Identity: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
-			return protocol.SessionPrincipal{}, nil
+		Identity: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (txagent.AuthResult, error) {
+			return txagent.AuthResult{SessionPrincipal: protocol.SessionPrincipal{}}, nil
 		}),
 		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error {
 			return nil
@@ -112,8 +112,8 @@ func TestServiceReportsUnexpectedListenerExit(t *testing.T) {
 			reported := make(chan error, 1)
 			options := Options{
 				MaxFrameBytes: 1024,
-				Identity: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
-					return protocol.SessionPrincipal{}, nil
+				Identity: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (txagent.AuthResult, error) {
+					return txagent.AuthResult{SessionPrincipal: protocol.SessionPrincipal{}}, nil
 				}),
 				Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error { return nil }),
 				Sessions:   noopSessionRouter{},
@@ -449,11 +449,11 @@ func TestServiceStopWaitsForConnectionSetupAndRetainsRouter(t *testing.T) {
 					return ctx.Err()
 				}
 				router := &setupSessionRouter{client: &setupSessionClient{}}
-				identity := txagent.IdentityResolverFunc(func(ctx context.Context, _ txagent.AuthRequest) (protocol.SessionPrincipal, error) {
+				identity := txagent.IdentityResolverFunc(func(ctx context.Context, _ txagent.AuthRequest) (txagent.AuthResult, error) {
 					if stage == "identity" {
-						return protocol.SessionPrincipal{}, block(ctx)
+						return txagent.AuthResult{SessionPrincipal: protocol.SessionPrincipal{}}, block(ctx)
 					}
-					return protocol.SessionPrincipal{RoleID: 1, SessionID: 2}, nil
+					return txagent.AuthResult{SessionPrincipal: protocol.SessionPrincipal{RoleID: 1, SessionID: 2}}, nil
 				})
 				if stage == "acquire" {
 					router.acquire = block
@@ -564,11 +564,11 @@ type setupSessionClient struct {
 	init func(context.Context) error
 }
 
-func (client *setupSessionClient) Init(ctx context.Context, _ txmsgq.InitRequest) error {
+func (client *setupSessionClient) OpenMailboxStream(ctx context.Context, _ txmsgq.InitRequest, _ func()) (txmsgq.MailboxStreamSession, error) {
 	if client.init != nil {
-		return client.init(ctx)
+		return nil, client.init(ctx)
 	}
-	return errors.New("unexpected session initialization")
+	return nil, errors.New("unexpected session initialization")
 }
 
 type setupSessionRouter struct {
@@ -610,8 +610,8 @@ func TestServiceDrainPreservesAcceptedBusinessUntilCompletion(t *testing.T) {
 				t.Fatal(err)
 			}
 			options := Options{MaxFrameBytes: 1024, LocalMsgQ: fixedLocalMsgQ{client: client},
-				Identity: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
-					return protocol.SessionPrincipal{RoleID: 1, SessionID: 2}, nil
+				Identity: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (txagent.AuthResult, error) {
+					return txagent.AuthResult{SessionPrincipal: protocol.SessionPrincipal{RoleID: 1, SessionID: 2}}, nil
 				}),
 				Dispatcher: txagent.DispatchFunc(func(ctx context.Context, _ txagent.DispatchRequest) error {
 					entered <- ctx
@@ -667,4 +667,11 @@ func TestServiceDrainPreservesAcceptedBusinessUntilCompletion(t *testing.T) {
 			}
 		})
 	}
+}
+
+func (noopSessionRouter) TerminateLogicalSession(context.Context, int64, int64) error {
+	return errors.New("unexpected terminate")
+}
+func (*setupSessionRouter) TerminateLogicalSession(context.Context, int64, int64) error {
+	return errors.New("unexpected terminate")
 }

@@ -152,8 +152,8 @@ func TestServeRegistersInitializingSessionBeforeMsgQInitCompletes(t *testing.T) 
 		releaseInit: make(chan struct{}),
 	}
 	server, err := NewServer(ServerOptions{
-		IdentityResolver: IdentityResolverFunc(func(context.Context, AuthRequest) (protocol.SessionPrincipal, error) {
-			return protocol.SessionPrincipal{RoleID: 470001, SessionID: 99}, nil
+		IdentityResolver: IdentityResolverFunc(func(context.Context, AuthRequest) (AuthResult, error) {
+			return AuthResult{SessionPrincipal: protocol.SessionPrincipal{RoleID: 470001, SessionID: 99}}, nil
 		}),
 		Dispatcher: DispatchFunc(func(context.Context, DispatchRequest) error {
 			return nil
@@ -192,8 +192,8 @@ func TestTerminateSessionCompensatesCanceledMsgQInit(t *testing.T) {
 		releaseInit: make(chan struct{}),
 	}
 	server, err := NewServer(ServerOptions{
-		IdentityResolver: IdentityResolverFunc(func(context.Context, AuthRequest) (protocol.SessionPrincipal, error) {
-			return protocol.SessionPrincipal{RoleID: 470001, SessionID: 99}, nil
+		IdentityResolver: IdentityResolverFunc(func(context.Context, AuthRequest) (AuthResult, error) {
+			return AuthResult{SessionPrincipal: protocol.SessionPrincipal{RoleID: 470001, SessionID: 99}}, nil
 		}),
 		Dispatcher: DispatchFunc(func(context.Context, DispatchRequest) error {
 			return nil
@@ -255,21 +255,17 @@ type sessionControlClient struct {
 	terminateOnce sync.Once
 }
 
-func (client *sessionControlClient) Init(ctx context.Context, _ msgq.InitRequest) error {
+func (client *sessionControlClient) OpenMailboxStream(ctx context.Context, _ msgq.InitRequest, _ func()) (msgq.MailboxStreamSession, error) {
 	if client.initEntered == nil {
-		return errors.New("unexpected Init")
+		return nil, errors.New("unexpected admission")
 	}
 	close(client.initEntered)
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return nil, ctx.Err()
 	case <-client.releaseInit:
-		return nil
+		return nil, errors.New("unexpected admitted fixture")
 	}
-}
-
-func (*sessionControlClient) OpenMailboxStream(context.Context, msgq.SessionHeader) (msgq.MailboxStreamSession, error) {
-	return nil, errors.New("unexpected MailboxStream")
 }
 
 func (client *sessionControlClient) TerminateSession(context.Context, msgq.SessionHeader) error {
@@ -285,8 +281,6 @@ func (client *sessionControlClient) TerminateSession(context.Context, msgq.Sessi
 	}
 	return err
 }
-
-func (*sessionControlClient) Close() error { return nil }
 
 type sessionControlRouter struct{ client msgq.SessionClient }
 
@@ -349,4 +343,8 @@ func (transport *initializingSessionTransport) Write(ctx context.Context, frame 
 func (transport *initializingSessionTransport) Close() error {
 	transport.closeOnce.Do(func() { close(transport.closed) })
 	return nil
+}
+
+func (router sessionControlRouter) TerminateLogicalSession(ctx context.Context, roleID, sessionID int64) error {
+	return router.client.TerminateSession(ctx, msgq.SessionHeader{RoleID: roleID, SessionID: sessionID})
 }

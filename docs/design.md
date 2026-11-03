@@ -435,16 +435,167 @@ workspace/
 
 命令标识是消息名的固定 32 位哈希，由 txgen 生成完整描述表并检查本次输入碰撞；不使用人工消息号池或服务号段。Agent 读取帧头哈希和路由键定位 Actor，不解析业务 BON；命令名不在 BON 正文重复传输。
 
-```text
-客户端 → 应用 Login：认证、选服、建角预留/选角、签票
-客户端 → Agent：不透明握手信息
-  → 项目 IdentityResolver 校验身份与票据
-  → MsgQ Init / Restore → 成功后 FrameReady
-  → 同 socket 顺序读取上行
-  → 连接内 UpSeq 过滤 → 生成路由描述 → 目标 Actor 长流
+### 签票、接入与业务初始化时序
+
+下图横向为参与方，时间从上向下推进。虚线箭头是操作结果，开口箭头是异步投递；`OPENED` 必须被等待，业务 Tell 的完成不等于业务响应到达。
+
+```mermaid
+sequenceDiagram
+    participant C as 客户端
+    participant L as 应用 Login
+    participant A as Agent
+    participant Q as owner MsgQ
+    participant G as 目标 Role Actor
+    C->>L: 认证、选服、选角或借号请求
+    activate L
+    L->>L: 授权、选择 Agent、分配 SID、签票
+    L-->>C: Ticket、Agent 地址、建角资格
+    deactivate L
+    Note over L,Q: 签票不选择 MsgQ、不占位、不终止旧会话
+    C->>A: Handshake(ticket)
+    activate A
+    A->>A: 验票、取得可信身份与准入策略
+    A->>A: 查询角色 owner；无归属才提名并原子认领
+    A->>Q: OPEN(InitRequest, Admission)
+    activate Q
+    Q->>Q: 校验准入；需要替换时先确认旧接入关闭
+    Q->>Q: 初始化邮箱并绑定可撤销接入
+    Q-->>A: OPENED
+    deactivate Q
+    A-->>C: FrameReady
+    deactivate A
+    Note over C,G: 接入已完成；此时尚未证明角色业务初始化完成
+    C-)A: 应用建角或进入角色请求
+    A-)G: 按可信身份及描述表 Tell 投递
+    Note right of A: 不等待远端逐条接纳或执行回执
+    activate G
+    G->>G: Handler 调用模块，按业务规则建角或读取角色
+    G-)Q: 响应发布器 SendRole，发布独立下行
+    deactivate G
+    Q-)A: MailboxStream 推送 DownMsg
+    A-)C: 业务响应
+    C->>C: 处理响应；按需发起后续初始化查询
+    C-)A: 下行 Ack
+    A-)Q: 同步 Ack，裁剪已确认下行
 ```
 
-Login 业务、Claims 编解码及授权留在应用。框架保留不透明身份字节，不解释账号或合服规则。RoleID、WorldID 等路由身份与帧序号不同；生成注解决定目标 Actor 与身份来源。
+
+Login 业务、Claims 编解码及授权留在应用。Login 不选择 MsgQ、不预占会话、不查询在线状态，也不承接退出管理。框架保留不透明身份字节，不解释账号或合服规则。RoleID、WorldID 等路由身份与帧序号不同；生成注解决定目标 Actor 与身份来源。
+
+`FrameReady` 只确认本次 Agent 接入及 MsgQ 邮箱绑定完成，不代表角色已创建、角色数据已加载或业务登录完成，也不等同于 Actor 生命周期的 Ready。此后客户端才发送应用定义的进入角色或建角协议，沿上图的正常上下行链路继续。
+
+框架不识别登录业务命令，也不自动补发初始化请求。当前 txgame 客户端在 Ready 后发送 `Role_Enter`，收到 `Role_EnterResp` 后发送 `Bag_Get`；txgameslg 客户端仅在 Login 返回 `canCreateRole=true` 时发送并等待 `Create_Role`，已有角色跳过建角，不存在自动 `Role_Enter` 步骤。具体调用与包位置分别见 [txgame 登录流程](https://github.com/ngnl47/txgame/blob/master/docs/login_authorization.md)和 [txgameslg 登录流程](https://github.com/ngnl47/txgameslg/blob/main/docs/login_authorization.md)。`send` 返回不等于业务响应已到达，业务初始化失败也不回滚已完成的会话接入。
+
+两组示例采用独占登录。非强制借号选择 `RejectExisting`；本人重新登录或经过应用授权的强制借号选择 `ReplaceExisting`，策略随票据签名。操作者账号仍在应用 Claims 中，不冒充目标角色的账号。框架不识别 GM，也不按协议划分双端广播。
+
+```text
+tx/modules/
+├── agent/
+│   ├── types.go              # [L2] AuthResult：可信主体和 SessionAdmission
+│   ├── session.go            # [L2] 连接入口编排、验票与远端接入、上下行分发和帧写入
+│   ├── session_connection.go # [L2] 单连接资源、Ready 与收发循环、主动退出及统一收尾
+│   ├── session_registry.go   # [L2] 本地初始化/活动连接登记、精确断开与终止协调
+│   └── frame.go              # [L2] Ready、SessionEnded、Logout/LoggedOut
+└── msgq/
+    ├── admission.go         # [L2] 角色准入、票据水位、撤销和精确终止
+    ├── admission_client.go  # [L2] 查询既有 owner，逻辑终止不分配新 owner
+    ├── mailbox_stream.go   # [L2] 共享流客户端、接入/关闭完成等待
+    ├── mailbox_stream_server.go # [L2] 接入、Revoke/Detached 与完成回执
+    ├── role_lifecycle.go    # [L2] 替换期间保留归属，正常关闭后条件释放
+    └── session_redis.go     # [L2] 单角色准入 CAS，独立于 Role→MsgQ 归属
+```
+
+`serve` 只编排验票、接入与运行阶段；`activeSession` 持有当前物理连接的资源。接入失败也交给同一收尾入口，初始化期间收到终止请求时先完成既有补偿。运行结束先等待下行写协程实际退出，再注销本地连接、关闭接入并等待 MsgQ 解除绑定确认；普通断线保留逻辑邮箱。主动退出单独等待邮箱终止与在途写结束，再发送 `LoggedOut`，其确认期限不受下行协程结束时取消连接上下文的影响。
+
+### 顶号与独占借号时序
+
+```mermaid
+sequenceDiagram
+    participant N as 新客户端
+    participant A as 新 Agent
+    participant Q as 角色 owner MsgQ
+    participant O as 旧 Agent
+    participant C as 旧客户端
+    N->>A: 携新票据握手
+    A->>Q: OPEN(S2, TicketOrder, Policy)
+    alt 非强制且已有有效会话
+        Q-->>A: 拒绝占用，不推进票据水位
+        A-->>N: 握手失败，不返回 Ready
+        Note over Q,C: 旧会话保持有效，包括断线保留的恢复邮箱
+    else 允许替换且新票据通过校验
+        Q->>Q: 更新准入水位，禁止旧 SID 恢复
+        opt 旧接入仍绑定
+            Q->>O: 经原 MailboxStream 发送 REVOKE(S1,C1)
+            O->>O: 关闭旧连接上行准入
+            O-xC: 关闭旧 socket
+            O-->>Q: DETACHED(S1,C1)
+        end
+        Note over A,Q: 需要撤销时，未收到精确确认不能放行新接入
+        Q->>Q: 结束旧邮箱，建立并绑定 S2
+        Q-->>A: OPENED(S2)
+        A-->>N: Ready
+        Note over N,A: 随后执行上图的应用业务初始化
+    end
+```
+
+
+角色 owner MsgQ 是唯一协调点。复用旧 MailboxStream 定向撤销，不查询全部 Agent、不在 Agent 间广播，也不为顶号迁移 MsgQ。撤销只证明旧接入已关闭，不撤回已经投递到 Actor 的业务，不等待业务执行结束，不销毁 World/Room。
+
+签票不占位。较新票据被接纳后，较早票据不能首次接入或抢回；非强制拒绝不推进水位、不改变旧会话。`TicketOrder` 是应用签入票据的独立顺序字段，两组应用复用本次 etcd 发号值；通用 SessionID 仍是不透明身份。首次接入受 `ExpiresAt` 限制，恢复受当前许可和原邮箱约束。逻辑退出清除当前 SID，但保留已接纳水位，不能随邮箱删除让旧票复活。
+
+### 断线与恢复时序
+
+```mermaid
+sequenceDiagram
+    participant C as 客户端
+    participant A as Agent
+    participant Q as 原 owner MsgQ
+    C-xA: 物理连接断开
+    A->>A: 关闭该连接的本地上行准入
+    A->>Q: CLOSE(SID,旧 CID)
+    Q-->>A: CLOSED，解除接入完成
+    Note right of Q: 保留有效逻辑会话与未确认下行
+    C->>A: Handshake(ticket, Restore=true, Ack)
+    A->>Q: OPEN(原 SID, 新 CID)
+    Q->>Q: 校验现有许可和邮箱，绑定新 CID
+    Q-->>A: OPENED
+    A-->>C: Ready
+    Q-)A: 继续推送未确认下行
+    A-)C: DownMsg
+    Note over C,Q: 不执行新登录替换、不自动重投旧上行或初始化请求
+```
+
+### 主动退出时序
+
+```mermaid
+sequenceDiagram
+    participant C as 客户端
+    participant A as Agent
+    participant Q as 角色 owner MsgQ
+    alt 当前连接在线
+        C->>A: Logout（空正文）
+        A->>A: 关闭该连接上行准入
+        A->>Q: MailboxStream TERMINATE（当前 SID）
+        Q->>Q: 精确终止会话与邮箱
+        Q-->>A: TERMINATED
+    else 客户端已断线
+        C->>A: 新物理连接，首帧 Logout(ticket)
+        A->>A: 验票；只查既有 owner，不执行 Acquire
+        A->>Q: TerminateLogicalSession(RoleID, SID)
+        Q->>Q: 终止指定 SID，必要时确认旧接入关闭
+        Q-->>A: 终止完成
+    end
+    Note over C,Q: 仅成功路径继续；超时或错误不是终止确认
+    A-->>C: LoggedOut
+    A-xC: 关闭物理连接
+```
+
+
+恢复后的 Ready 只表示原会话重新绑定连接，之后继续接收邮箱内未确认下行；两组客户端不会因重连再次自动发起建角或进入角色请求。业务需要重新拉取状态时由应用显式发起，不能把结果未知的旧上行当作恢复任务重投。强制借号或本人顶号建立的是新 SID，Ready 后沿各自应用的新登录初始化流程执行。
+
+离线退出不创建业务连接、邮箱或角色归属。`LoggedOut` 只能在终止确认完成后发送；通信失败不是退出完成。普通断线和临时依赖不可用不等于永久失效。控制确认不阻塞共享流接收循环，不持有初始化分片锁等待网络；关闭回执使用共享流生命周期，不能随已取消的玩家 ctx 被丢弃。
+
+正常 MsgQ 关闭先封住 Init/Restore，撤销有效接入并等待精确关闭确认，之后按完整 owner 身份条件释放角色归属，并清理成功释放项的邮箱；释放失败项保留供重试。流断开不替代关闭确认；未确认返回错误并保留必要状态，沿现有有界关闭规则处理，不增加自动故障接管。低层 MsgQ 多 Session 能力独立保留，示例通过验票后的 `AuthResult.Admission` 选用独占策略。
 
 | 值 | 权威位置与用途 |
 | --- | --- |
@@ -465,7 +616,7 @@ tx/
     ├── role.go            # Role 归属契约与路由
     ├── session_redis.go   # Session 短期归属
     ├── role_redis.go      # Role 短期归属
-    ├── mailbox_stream.go  # Agent 与 MsgQ 的下行共享流
+    ├── mailbox_stream.go  # Agent 与 MsgQ 的接入控制及下行共享流
     ├── publish_stream.go  # 业务服务向 MsgQ 的发布流
     └── sender.go          # 下行发送入口
 ```
@@ -482,12 +633,12 @@ Game / World / Fightroom
   → 同一 MailboxStream 回传 Ack → MsgQ 裁剪
 ```
 
-SendRole/SendSession 是异步提交边界，成功不表示 MsgQ 已入队。MailboxStream 由 Agent 创建，双向复用多个 Session；MsgQ 在有数据时发送，无逐消息 Rec 往返。仅合并已排队消息的优化不增加等待窗口，不把固定凑批量当业务协议要求。
+SendRole/SendSession 是异步提交边界，成功不表示 MsgQ 已入队。MailboxStream 由 Agent 创建，双向复用多个 Session；仅低频接入、撤销、解除接入和退出等待专用完成回执，Ack、Renew 与下行推送保持单向热路径，不扩展通用 Call/Tell/Future API。MsgQ 在有数据时发送，无逐消息 Rec 往返。仅合并已排队消息的优化不增加等待窗口，不把固定凑批量当业务协议要求。
 
 MailboxStream 与 PublishStream 的首次建立及断流重建都属于连接所有者：锁外只建立一次，并发请求共享结果，各自的 ctx 只取消等待，不取消其他会话共用的流。关闭连接会取消建流并拒绝新请求；迟到结果直接清理，不重新装入已关闭连接。已接纳的发布队列仍沿用既有排水与失败语义，不增加逐条回执或自动重投。
 
 ```text
-新 Login：S1/C1 → 新票据 S2/C2 → 空的新邮箱
+新 Login：签发 S2 票据，不影响 S1/C1 → S2 接入 Agent 完成替换 → S2/C2 空邮箱
 弱网恢复：S1/C1 → Restore S1/C2 → 原 owner 未确认下行
 旧连接迟到的 Ack / 管理操作 → ConnectionID 校验拒绝
 owner 或原邮箱已丢失 → 恢复失败 → 业务重新登录/状态重同步

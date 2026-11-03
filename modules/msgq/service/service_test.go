@@ -7,7 +7,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/ngnl47/tx/component"
 	"github.com/ngnl47/tx/lifecycle"
 	txmetrics "github.com/ngnl47/tx/metrics"
 	"github.com/ngnl47/tx/modules/discovery"
@@ -54,7 +56,7 @@ func TestServiceStartsWithExplicitDependencies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := local.Init(t.Context(), txmsgq.InitRequest{Header: header}); !errors.Is(err, lifecycle.ErrNotReady) {
+	if _, err := local.OpenMailboxStream(t.Context(), txmsgq.InitRequest{Header: header}, nil); !errors.Is(err, lifecycle.ErrNotReady) {
 		t.Fatalf("装配期间创建了邮箱: %v", err)
 	}
 	ready.Store(true)
@@ -122,4 +124,43 @@ func (store *memoryStore) Unbind(_ context.Context, binding txmsgq.SessionBindin
 	}
 	delete(store.bindings, binding.SessionID)
 	return true, nil
+}
+
+func TestServiceStopRetainsMailboxAndMetricsUntilClosureConfirmed(t *testing.T) {
+	store := newMemoryStore()
+	mailbox, err := txmsgq.NewServer(txmsgq.ServerOptions{InstanceID: "msgq-1", Store: store, MaxBacklogMessages: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, _ := txmsgq.NewLocalSessionClient(mailbox)
+	removed := 0
+	service := &Service{mailbox: mailbox, client: client, removeMetrics: func() { removed++ }}
+	allow, entered := make(chan struct{}), make(chan struct{})
+	_, err = client.OpenMailboxStream(t.Context(), txmsgq.InitRequest{Header: txmsgq.SessionHeader{RoleID: 1, SessionID: 2, ConnectionID: 3}}, func() { close(entered); <-allow })
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	err = service.Stop(ctx)
+	if !errors.Is(err, component.ErrStopDeferred) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("stop must retain dependencies: %v", err)
+	}
+	<-entered
+	if service.mailbox != mailbox || removed != 0 {
+		t.Fatal("incomplete stop discarded mailbox or metrics")
+	}
+	if _, found, err := store.FindRole(t.Context(), 1); err != nil || !found {
+		t.Fatalf("owner prematurely released: %v %v", found, err)
+	}
+	close(allow)
+	if err = service.Stop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if service.mailbox != nil || removed != 1 {
+		t.Fatal("successful stop retained mailbox or repeated metrics cleanup")
+	}
+	if err = service.Stop(t.Context()); err != nil || removed != 1 {
+		t.Fatalf("repeated stop: %d %v", removed, err)
+	}
 }

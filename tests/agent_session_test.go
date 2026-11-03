@@ -11,7 +11,6 @@ import (
 
 	"github.com/ngnl47/tx/lifecycle"
 	txagent "github.com/ngnl47/tx/modules/agent"
-	"github.com/ngnl47/tx/modules/discovery"
 	"github.com/ngnl47/tx/modules/msgq"
 	"github.com/ngnl47/tx/protocol"
 )
@@ -107,8 +106,11 @@ func TestAgentTerminateSessionRemovesLogicalSession(t *testing.T) {
 	}
 	select {
 	case frame := <-restoredTransport.writes:
-		t.Fatalf("terminated Session unexpectedly restored with frame %#v", frame)
+		if frame.Kind != txagent.FrameSessionEnded {
+			t.Fatalf("terminated Session received frame %#v, want SessionEnded", frame)
+		}
 	default:
+		t.Fatal("terminated Session did not report permanent rejection")
 	}
 }
 
@@ -137,8 +139,8 @@ func TestAgentSessionAcquiresOwnerFromTrustedIdentity(t *testing.T) {
 			client := &recordingAgentSessionClient{initRequests: make(chan msgq.InitRequest, 1)}
 			acquired := make(chan msgq.AcquireSessionRequest, 1)
 			agent, err := txagent.NewServer(txagent.ServerOptions{
-				IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
-					return test.principal, nil
+				IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (txagent.AuthResult, error) {
+					return txagent.AuthResult{SessionPrincipal: test.principal}, nil
 				}),
 				Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error {
 					return nil
@@ -190,8 +192,8 @@ func TestAgentSessionRejectsUpMsgFrameBeforeHandshake(t *testing.T) {
 func TestAgentSessionRejectsInvalidResolvedPrincipal(t *testing.T) {
 	sessionsAcquired := errors.New("sessions acquired")
 	agent, err := txagent.NewServer(txagent.ServerOptions{
-		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
-			return protocol.SessionPrincipal{RoleID: 0, SessionID: 99}, nil
+		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (txagent.AuthResult, error) {
+			return txagent.AuthResult{SessionPrincipal: protocol.SessionPrincipal{RoleID: 0, SessionID: 99}}, nil
 		}),
 		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error {
 			t.Fatal("invalid identity must not be dispatched")
@@ -268,8 +270,8 @@ func TestAgentSessionDoesNotAcknowledgeAcceptedUpMsgBeforeDispatcherCompletes(t 
 	dispatchStarted := make(chan struct{})
 	releaseDispatch := make(chan struct{})
 	agent, err := txagent.NewServer(txagent.ServerOptions{
-		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
-			return testSessionPrincipal(), nil
+		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (txagent.AuthResult, error) {
+			return testAgentAuth(), nil
 		}),
 		Dispatcher: txagent.DispatchFunc(func(_ context.Context, request txagent.DispatchRequest) error {
 			close(dispatchStarted)
@@ -510,8 +512,8 @@ func TestAgentSessionDoesNotDispatchWhenAdmissionRejects(t *testing.T) {
 	}
 	drainErr := errors.New("agent is draining")
 	agent, err := txagent.NewServer(txagent.ServerOptions{
-		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
-			return testSessionPrincipal(), nil
+		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (txagent.AuthResult, error) {
+			return testAgentAuth(), nil
 		}),
 		Dispatcher: txagent.DispatchFunc(func(context.Context, txagent.DispatchRequest) error {
 			t.Fatal("dispatcher must not run when admission rejects")
@@ -558,11 +560,11 @@ func TestAgentSameRoleSessionsPreserveIdentityAndIsolateDownMessages(t *testing.
 	transports := []*agentTransport{newAgentTransport(), newAgentTransport()}
 	results := []chan error{make(chan error, 1), make(chan error, 1)}
 	for i, transport := range transports {
-		principal := testSessionPrincipal()
+		principal := testAgentAuth()
 		principal.SessionID += int64(i)
 		connectionID := int64(7 + i)
 		agent, err := txagent.NewServer(txagent.ServerOptions{
-			IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) { return principal, nil }),
+			IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (txagent.AuthResult, error) { return principal, nil }),
 			Dispatcher:       dispatcher, Sessions: router,
 			ConnectionID: func() (int64, error) { return connectionID, nil },
 		})
@@ -585,9 +587,9 @@ func TestAgentSameRoleSessionsPreserveIdentityAndIsolateDownMessages(t *testing.
 		if id.SessionID != 99 && id.SessionID != 100 {
 			t.Fatalf("unexpected identity: %+v", id)
 		}
-		want := testSessionPrincipal()
+		want := testAgentAuth()
 		want.SessionID = id.SessionID
-		if id.SessionPrincipal != want || id.ConnectionID != 7+(id.SessionID-99) || seen[id.SessionID] {
+		if id.SessionPrincipal != want.SessionPrincipal || id.ConnectionID != 7+(id.SessionID-99) || seen[id.SessionID] {
 			t.Fatalf("mixed dispatch identity or sequence: %+v", request)
 		}
 		seen[id.SessionID] = true
@@ -630,11 +632,7 @@ func newAgentSessionFixture(t *testing.T, dispatchErr error) (*txagent.Server, *
 	if err != nil {
 		t.Fatalf("new local client: %v", err)
 	}
-	directory := discovery.NewServiceDirectory()
-	if err := directory.Replace([]discovery.Instance{{ID: "msgq-local", Services: []string{"msgq"}, Endpoint: "local", Status: discovery.StatusRunning}}); err != nil {
-		t.Fatalf("replace directory: %v", err)
-	}
-	router, err := msgq.NewSessionClientRouter("msgq", directory, store, agentSessionDialer{client: client})
+	router, err := msgq.NewFixedSessionClientRouter(client)
 	if err != nil {
 		t.Fatalf("new session client router: %v", err)
 	}
@@ -642,8 +640,8 @@ func newAgentSessionFixture(t *testing.T, dispatchErr error) (*txagent.Server, *
 	var nextConnectionID atomic.Int64
 	nextConnectionID.Store(6)
 	agent, err := txagent.NewServer(txagent.ServerOptions{
-		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (protocol.SessionPrincipal, error) {
-			return testSessionPrincipal(), nil
+		IdentityResolver: txagent.IdentityResolverFunc(func(context.Context, txagent.AuthRequest) (txagent.AuthResult, error) {
+			return testAgentAuth(), nil
 		}),
 		Dispatcher: txagent.DispatchFunc(func(_ context.Context, request txagent.DispatchRequest) error {
 			dispatched <- request
@@ -658,12 +656,12 @@ func newAgentSessionFixture(t *testing.T, dispatchErr error) (*txagent.Server, *
 	return agent, newAgentTransport(), mailbox, dispatched
 }
 
-func testSessionPrincipal() protocol.SessionPrincipal {
-	return protocol.SessionPrincipal{
+func testAgentAuth() txagent.AuthResult {
+	return txagent.AuthResult{SessionPrincipal: protocol.SessionPrincipal{
 		RoleID:    470001,
 		SessionID: 99,
 		Claims:    "trusted-project-data",
-	}
+	}}
 }
 
 func receiveDispatch(t *testing.T, dispatched <-chan txagent.DispatchRequest) txagent.DispatchRequest {
@@ -703,10 +701,6 @@ func waitForMailboxSession(t *testing.T, mailbox *msgq.Server) {
 	}
 }
 
-type agentSessionDialer struct {
-	client msgq.SessionClient
-}
-
 type agentSessionRouterFunc func(context.Context, msgq.AcquireSessionRequest) (msgq.SessionClient, error)
 
 func (f agentSessionRouterFunc) Acquire(ctx context.Context, request msgq.AcquireSessionRequest) (msgq.SessionClient, error) {
@@ -717,12 +711,8 @@ type recordingAgentSessionClient struct {
 	initRequests chan msgq.InitRequest
 }
 
-func (c *recordingAgentSessionClient) Init(_ context.Context, request msgq.InitRequest) error {
+func (c *recordingAgentSessionClient) OpenMailboxStream(ctx context.Context, request msgq.InitRequest, _ func()) (msgq.MailboxStreamSession, error) {
 	c.initRequests <- request
-	return nil
-}
-
-func (*recordingAgentSessionClient) OpenMailboxStream(ctx context.Context, _ msgq.SessionHeader) (msgq.MailboxStreamSession, error) {
 	return &recordingMailboxStream{ctx: ctx}, nil
 }
 
@@ -739,12 +729,6 @@ func (s *recordingMailboxStream) Close() error                     { return nil 
 
 func (*recordingAgentSessionClient) TerminateSession(context.Context, msgq.SessionHeader) error {
 	return nil
-}
-
-func (*recordingAgentSessionClient) Close() error { return nil }
-
-func (d agentSessionDialer) DialSession(context.Context, discovery.Instance) (msgq.SessionClient, error) {
-	return d.client, nil
 }
 
 type agentTransport struct {
@@ -845,8 +829,8 @@ func TestAgentNewLoginReturningToPreviousAgentStartsIndependentCursors(t *testin
 	agents := make([]*txagent.Server, 2)
 	for i := range agents {
 		agents[i], err = txagent.NewServer(txagent.ServerOptions{
-			IdentityResolver: txagent.IdentityResolverFunc(func(_ context.Context, request txagent.AuthRequest) (protocol.SessionPrincipal, error) {
-				principal := testSessionPrincipal()
+			IdentityResolver: txagent.IdentityResolverFunc(func(_ context.Context, request txagent.AuthRequest) (txagent.AuthResult, error) {
+				principal := testAgentAuth()
 				principal.SessionID = int64(request.Token[0])
 				return principal, nil
 			}),
@@ -936,4 +920,106 @@ func TestAgentRestoreOnlyRestoresDownlinkMailbox(t *testing.T) {
 	if err := <-secondDone; !errors.Is(err, io.EOF) {
 		t.Fatal(err)
 	}
+}
+
+func (f agentSessionRouterFunc) TerminateLogicalSession(context.Context, int64, int64) error {
+	return errors.New("unexpected logical termination")
+}
+func (*recordingMailboxStream) Terminate(context.Context) error { return nil }
+
+func TestAgentLogoutConfirmsBeforeClosingSocket(t *testing.T) {
+	agent, transport, mailbox, _ := newAgentSessionFixture(t, nil)
+	strict := &logoutTransport{agentTransport: transport}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- agent.Serve(ctx, strict) }()
+	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
+	assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
+	transport.reads <- txagent.Frame{Kind: txagent.FrameLogout}
+	select {
+	case frame := <-transport.writes:
+		if frame.Kind != txagent.FrameLoggedOut || mailbox.SessionCount() != 0 {
+			t.Fatalf("退出确认=%+v，剩余邮箱=%d", frame, mailbox.SessionCount())
+		}
+	case <-ctx.Done():
+		t.Fatal("邮箱结束后未向仍有效的 Socket 返回退出确认")
+	}
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+}
+
+type logoutTransport struct{ *agentTransport }
+
+func (transport *logoutTransport) Write(ctx context.Context, frame txagent.Frame) error {
+	if frame.Kind == txagent.FrameLoggedOut {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		select {
+		case <-transport.readDone:
+			return io.EOF
+		default:
+		}
+	}
+	return transport.agentTransport.Write(ctx, frame)
+}
+
+func TestAgentLogoutWaitsForInProgressDownlink(t *testing.T) {
+	agent, transport, mailbox, _ := newAgentSessionFixture(t, nil)
+	blocked := &logoutDownlinkTransport{logoutTransport: logoutTransport{agentTransport: transport}, started: make(chan struct{}), release: make(chan struct{})}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- agent.Serve(ctx, blocked) }()
+	transport.reads <- txagent.Frame{Kind: txagent.FrameHandshake, Payload: []byte("token")}
+	assertAgentFrame(t, transport.writes, txagent.FrameReady, 0, 0, "")
+	if _, err := mailbox.PubSession(ctx, 99, testDownPacket("pending")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-blocked.started:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	transport.reads <- txagent.Frame{Kind: txagent.FrameLogout}
+	for mailbox.SessionCount() != 0 {
+		select {
+		case <-time.After(time.Millisecond):
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	select {
+	case <-transport.readDone:
+		t.Fatal("主动退出提前取消在途写入，导致 Socket 已关闭")
+	default:
+	}
+	close(blocked.release)
+	assertAgentFrame(t, transport.writes, txagent.FrameDownMsg, 1, 0, "pending")
+	assertAgentFrame(t, transport.writes, txagent.FrameLoggedOut, 0, 0, "")
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+type logoutDownlinkTransport struct {
+	logoutTransport
+	started chan struct{}
+	release chan struct{}
+}
+
+func (transport *logoutDownlinkTransport) Write(ctx context.Context, frame txagent.Frame) error {
+	if frame.Kind == txagent.FrameDownMsg {
+		close(transport.started)
+		select {
+		case <-transport.release:
+		case <-ctx.Done():
+			// WebSocket 的写入取消会关闭连接，不能用会话取消来跳过这次已开始的写入。
+			_ = transport.Close()
+			return ctx.Err()
+		}
+	}
+	return transport.logoutTransport.Write(ctx, frame)
 }

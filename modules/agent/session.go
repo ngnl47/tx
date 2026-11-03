@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
-	txprotocol "github.com/ngnl47/tx/protocol"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -15,6 +14,7 @@ import (
 	txlog "github.com/ngnl47/tx/log"
 	txmetrics "github.com/ngnl47/tx/metrics"
 	"github.com/ngnl47/tx/modules/msgq"
+	txprotocol "github.com/ngnl47/tx/protocol"
 )
 
 // Server 运行一条玩家连接对应的逻辑会话。
@@ -75,19 +75,20 @@ type sessionTrace struct {
 
 func (s *Server) serve(ctx context.Context, transport Transport, connectionID int64, trace *sessionTrace) (serveErr error) {
 	defer func() { _ = transport.Close() }()
+	defer func() {
+		if errors.Is(serveErr, ErrSessionEnded) || errors.Is(serveErr, msgq.ErrSessionAdmission) || errors.Is(serveErr, msgq.ErrSessionOffline) {
+			// 通知只是尽力发送；真正的失效由 MsgQ 许可保证，断流后下一次握手仍会拒绝。
+			notice, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_ = transport.Write(notice, Frame{Kind: FrameSessionEnded})
+		}
+	}()
 
-	handshake, err := transport.Read(ctx)
+	handshake, auth, err := s.authenticate(ctx, transport)
 	if err != nil {
 		return err
 	}
-	if !handshake.validHandshake() {
-		return ErrHandshakeRequired
-	}
-	principal, err := s.identityResolver.ResolveIdentity(ctx, AuthRequest{Token: cloneBytes(handshake.Payload), Restore: handshake.Restore, Ack: handshake.Ack})
-	if err != nil {
-		return err
-	}
-	identity := Identity{SessionPrincipal: principal, ConnectionID: connectionID}
+	identity := Identity{SessionPrincipal: auth.SessionPrincipal, ConnectionID: connectionID}
 	if err := identity.Validate(); err != nil {
 		return ErrInvalidIdentity
 	}
@@ -95,126 +96,86 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 		trace.roleID = identity.RoleID
 		trace.sessionID = identity.SessionID
 	}
-	client, err := s.sessions.Acquire(ctx, msgq.AcquireSessionRequest{RoleID: identity.RoleID, SessionID: identity.SessionID, Restore: handshake.Restore})
+	if handshake.Kind == FrameLogout {
+		if err := s.sessions.TerminateLogicalSession(ctx, identity.RoleID, identity.SessionID); err != nil {
+			return err
+		}
+		return transport.Write(ctx, Frame{Kind: FrameLoggedOut})
+	}
+	active, err := s.openSession(ctx, transport, identity, handshake, auth)
+	if active != nil {
+		defer func() { serveErr = active.close(s.activeSessions, serveErr) }()
+	}
 	if err != nil {
 		return err
 	}
-	header := msgq.SessionHeader{RoleID: identity.RoleID, SessionID: identity.SessionID, ConnectionID: connectionID}
+	return active.run(ctx, s, handshake)
+}
+
+func (s *Server) authenticate(ctx context.Context, transport Transport) (Frame, AuthResult, error) {
+	handshake, err := transport.Read(ctx)
+	if err != nil {
+		return Frame{}, AuthResult{}, err
+	}
+	if !handshake.validHandshake() && !(handshake.validLogout() && len(handshake.Payload) > 0) {
+		return Frame{}, AuthResult{}, ErrHandshakeRequired
+	}
+	auth, err := s.identityResolver.ResolveIdentity(ctx, AuthRequest{
+		Token: cloneBytes(handshake.Payload), Restore: handshake.Restore,
+		Ack: handshake.Ack, Logout: handshake.Kind == FrameLogout,
+	})
+	return handshake, auth, err
+}
+
+// openSession 先登记初始化中的连接，再等待 MsgQ 接入确认。
+// 返回的连接即使接入失败也由调用方关闭，统一完成初始化补偿后的资源收尾。
+func (s *Server) openSession(ctx context.Context, transport Transport, identity Identity, handshake Frame, auth AuthResult) (*activeSession, error) {
+	client, err := s.sessions.Acquire(ctx, msgq.AcquireSessionRequest{RoleID: identity.RoleID, SessionID: identity.SessionID, Restore: handshake.Restore})
+	if err != nil {
+		return nil, err
+	}
+	header := msgq.SessionHeader{RoleID: identity.RoleID, SessionID: identity.SessionID, ConnectionID: identity.ConnectionID}
 	sessionCtx, cancel := context.WithCancel(ctx)
 	active := &activeSession{
 		identity:  identity,
 		header:    header,
 		client:    client,
+		ctx:       sessionCtx,
 		cancel:    cancel,
 		transport: transport,
+		writer:    sessionFrameWriter{transport: transport},
 	}
 	s.activeSessions.beginInitialization(active)
-	previous, ready, terminateOnInitialization, err := s.initializeSession(sessionCtx, active, msgq.InitRequest{
-		Header:  header,
-		Restore: handshake.Restore,
-		Ack:     handshake.Ack,
-	})
-	if err != nil {
-		if terminateOnInitialization {
-			terminateErr := terminateActiveSession(active)
-			active.completeTermination(terminateErr)
-			logInitializationTerminationError(ctx, active, terminateErr)
-			cancel()
-			return errors.Join(err, terminateErr)
-		}
-		cancel()
-		return err
-	}
-
+	active.mailbox, err = client.OpenMailboxStream(sessionCtx, msgq.InitRequest{
+		Header: header, Restore: handshake.Restore, Ack: handshake.Ack, Admission: auth.Admission,
+	}, active.disconnect)
+	previous, ready, terminateOnInitialization := s.activeSessions.completeInitialization(active, err == nil)
 	if terminateOnInitialization {
 		terminateErr := terminateActiveSession(active)
 		active.completeTermination(terminateErr)
 		logInitializationTerminationError(ctx, active, terminateErr)
-		cancel()
-		return errors.Join(context.Canceled, terminateErr)
+		if err == nil {
+			err = context.Canceled
+		}
+		return active, errors.Join(err, terminateErr)
+	}
+	if err != nil {
+		return active, err
 	}
 	if !ready {
-		cancel()
-		return context.Canceled
+		return active, context.Canceled
 	}
 	txlog.InfoContext(ctx, "agent session established",
 		"roleID", identity.RoleID,
 		"sessionID", identity.SessionID,
-		"connectionID", connectionID,
+		"connectionID", identity.ConnectionID,
 		"restore", handshake.Restore,
 		"downAck", handshake.Ack,
 	)
-	defer s.activeSessions.unbind(header.SessionID, header.ConnectionID)
 	if previous != nil {
 		previous.disconnect()
 	}
-	mailboxStream, err := client.OpenMailboxStream(sessionCtx, header)
-	if err != nil {
-		cancel()
-		return err
-	}
-	// 邮箱失败必须能中断正在写 Socket 的协程，不能等下一次 Recv 才感知。
-	stopMailbox := context.AfterFunc(mailboxStream.Context(), active.disconnect)
-	defer stopMailbox()
-	defer func() { serveErr = errors.Join(serveErr, mailboxStream.Close()) }()
-	var writtenDownSeq atomic.Int64
-	if handshake.Restore {
-		writtenDownSeq.Store(handshake.Ack)
-	}
-	// 上行游标仅属于当前物理连接，重连只续接 MsgQ 的下行邮箱。
-	var acceptedUpSeq int64
-	writer := sessionFrameWriter{transport: transport}
-	if err := writer.Write(sessionCtx, Frame{Kind: FrameReady}); err != nil {
-		cancel()
-		return err
-	}
-	writerResult := make(chan error, 1)
-	go func() {
-		writerResult <- s.writeDownMsgs(sessionCtx, mailboxStream, &writer, &writtenDownSeq)
-		cancel()
-	}()
-	defer func() {
-		cancel()
-		writerErr := <-writerResult
-		if cause := context.Cause(mailboxStream.Context()); cause != nil && !errors.Is(cause, context.Canceled) {
-			serveErr = errors.Join(serveErr, cause)
-		}
-		if serveErr == nil && writerErr != nil && writerErr != context.Canceled {
-			serveErr = writerErr
-		}
-	}()
-	confirmedDownSeq := handshake.Ack
-	for {
-		frame, err := transport.Read(sessionCtx)
-		if err != nil {
-			return err
-		}
-		if frame.validAck() {
-			if err := writer.validateAcknowledgement(frame.Ack, confirmedDownSeq, &writtenDownSeq); err != nil {
-				return err
-			}
-			if err := mailboxStream.Ack(sessionCtx, frame.Ack); err != nil {
-				return err
-			}
-			confirmedDownSeq = frame.Ack
-			continue
-		}
-		if !frame.validUpMsg() {
-			return ErrInvalidFrame
-		}
-		if err := writer.validateAcknowledgement(frame.Ack, confirmedDownSeq, &writtenDownSeq); err != nil {
-			return err
-		}
-		if err := s.dispatchUpMsg(sessionCtx, mailboxStream, identity, frame, &acceptedUpSeq, &confirmedDownSeq); err != nil {
-			return err
-		}
-	}
-}
-
-func (s *Server) initializeSession(ctx context.Context, active *activeSession, request msgq.InitRequest) (*activeSession, bool, bool, error) {
-	err := active.client.Init(ctx, request)
-	previous, ready, terminate := s.activeSessions.completeInitialization(active, err == nil)
-	return previous, ready, terminate, err
+	return active, nil
 }
 
 func logInitializationTerminationError(ctx context.Context, session *activeSession, err error) {

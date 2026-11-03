@@ -53,7 +53,7 @@ func TestMailboxSessionCancellationUnblocksRecv(t *testing.T) {
 	defer s.fail(context.Canceled)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	session, err := s.open(ctx, SessionHeader{RoleID: 1, SessionID: 1, ConnectionID: 1})
+	session, err := openTestMailboxSession(s, ctx, SessionHeader{RoleID: 1, SessionID: 1, ConnectionID: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,6 +67,7 @@ func TestMailboxSessionCancellationUnblocksRecv(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 		t.Error("取消会话后 Recv 仍阻塞")
 	}
+	session.(*grpcMailboxSession).closed <- nil
 	session.Close()
 	if !returned {
 		<-done
@@ -77,8 +78,8 @@ func TestMailboxSlowSessionDoesNotBlockOtherSession(t *testing.T) {
 	defer s.fail(context.Canceled)
 	fake := &mailboxReadClient{ctx: s.ctx, responses: make(chan *msgqpb.MailboxStreamResponse, 100)}
 	s.client = fake
-	a, _ := s.open(context.Background(), SessionHeader{RoleID: 1, SessionID: 1, ConnectionID: 1})
-	b, _ := s.open(context.Background(), SessionHeader{RoleID: 2, SessionID: 2, ConnectionID: 2})
+	a, _ := openTestMailboxSession(s, context.Background(), SessionHeader{RoleID: 1, SessionID: 1, ConnectionID: 1})
+	b, _ := openTestMailboxSession(s, context.Background(), SessionHeader{RoleID: 2, SessionID: 2, ConnectionID: 2})
 	for i := 0; i < 65; i++ {
 		fake.responses <- &msgqpb.MailboxStreamResponse{Header: headerToProto(a.(*grpcMailboxSession).header), Message: &msgqpb.FetchResponse{Seq: int64(i + 1)}}
 	}
@@ -99,6 +100,7 @@ func TestMailboxSlowSessionDoesNotBlockOtherSession(t *testing.T) {
 	if err := a.Renew(context.Background()); !errors.Is(err, ErrMailboxBackpressure) {
 		t.Fatalf("失败会话仍可续期: %v", err)
 	}
+	a.(*grpcMailboxSession).closed <- nil
 	a.Close()
 	if !returned {
 		select {
@@ -112,7 +114,7 @@ func TestMailboxClosedStreamRejectsOpen(t *testing.T) {
 	s := testMailboxStream()
 	s.fail(errors.New("closed"))
 	for i := int64(1); i <= 100; i++ {
-		session, err := s.open(context.Background(), SessionHeader{RoleID: i, SessionID: i, ConnectionID: i})
+		session, err := s.open(context.Background(), InitRequest{Header: SessionHeader{RoleID: i, SessionID: i, ConnectionID: i}}, nil)
 		if err == nil {
 			t.Errorf("已关闭的流仍接纳了会话 %d", i)
 			session.(*grpcMailboxSession).finish(context.Canceled)
@@ -124,7 +126,7 @@ func TestMailboxClosedStreamRejectsOpen(t *testing.T) {
 func TestMailboxControlDeadlineAndLocalClose(t *testing.T) {
 	s := testMailboxStream()
 	defer s.fail(context.Canceled)
-	item, err := s.open(context.Background(), SessionHeader{RoleID: 1, SessionID: 1, ConnectionID: 1})
+	item, err := openTestMailboxSession(s, context.Background(), SessionHeader{RoleID: 1, SessionID: 1, ConnectionID: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,8 +142,8 @@ func TestMailboxControlDeadlineAndLocalClose(t *testing.T) {
 	go func() { closed <- item.Close() }()
 	select {
 	case <-closed:
-	case <-time.After(time.Second):
-		t.Fatal("本地 Close 被满控制队列阻塞")
+	case <-time.After(6 * time.Second):
+		t.Fatal("Close 未遵守有界等待期限")
 	}
 	if _, err := item.Recv(); !errors.Is(err, context.Canceled) {
 		t.Fatalf("关闭后仍返回消息: %v", err)
@@ -183,7 +185,7 @@ func TestMailboxServerProcessesAckWhileDownstreamBlocked(t *testing.T) {
 	stream := &blockedMailboxServer{ctx: ctx, requests: make(chan *msgqpb.MailboxStreamRequest, 2), sending: make(chan struct{})}
 	done := make(chan error, 1)
 	go func() { done <- (&mailboxService{mailbox: mailbox}).MailboxStream(stream) }()
-	stream.requests <- &msgqpb.MailboxStreamRequest{Kind: msgqpb.MailboxStreamRequest_KIND_OPEN, Header: headerToProto(header), Max: 1}
+	stream.requests <- &msgqpb.MailboxStreamRequest{Kind: msgqpb.MailboxStreamRequest_KIND_OPEN, Header: headerToProto(header), Max: 1, Init: initToProto(InitRequest{Header: header, Restore: true})}
 	if _, err = mailbox.PubSession(ctx, header.SessionID, []byte("down")); err != nil {
 		t.Fatal(err)
 	}
@@ -234,13 +236,13 @@ func TestMailboxRemoteSlowSessionCanRestoreWithoutLosingUnackedMessages(t *testi
 			t.Fatal(err)
 		}
 	}
-	a, err := client.OpenMailboxStream(ctx, first)
+	a, err := client.OpenMailboxStream(ctx, InitRequest{Header: first, Restore: true}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	bctx, bcancel := context.WithCancel(ctx)
 	defer bcancel()
-	b, err := client.OpenMailboxStream(bctx, second)
+	b, err := client.OpenMailboxStream(bctx, InitRequest{Header: second, Restore: true}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +273,7 @@ func TestMailboxRemoteSlowSessionCanRestoreWithoutLosingUnackedMessages(t *testi
 	if err := client.Init(ctx, InitRequest{Header: first, Restore: true}); err != nil {
 		t.Fatal(err)
 	}
-	restored, err := client.OpenMailboxStream(ctx, first)
+	restored, err := client.OpenMailboxStream(ctx, InitRequest{Header: first, Restore: true}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +303,7 @@ func TestMailboxOpenAndFailureHaveOneLifecycleBoundary(t *testing.T) {
 		finished := make(chan struct{})
 		go func() { <-ready; stream.fail(context.Canceled); close(finished) }()
 		close(ready)
-		session, err := stream.open(context.Background(), SessionHeader{RoleID: 1, SessionID: 1, ConnectionID: 1})
+		session, err := stream.open(context.Background(), InitRequest{Header: SessionHeader{RoleID: 1, SessionID: 1, ConnectionID: 1}}, nil)
 		<-finished
 		if err == nil {
 			if _, err = session.Recv(); err == nil {
@@ -350,7 +352,7 @@ func TestMailboxServerReclaimsExpiredSubscription(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = stream.Send(&msgqpb.MailboxStreamRequest{Kind: msgqpb.MailboxStreamRequest_KIND_OPEN, Header: headerToProto(header), Max: 1}); err != nil {
+	if err = stream.Send(&msgqpb.MailboxStreamRequest{Kind: msgqpb.MailboxStreamRequest_KIND_OPEN, Header: headerToProto(header), Max: 1, Init: initToProto(InitRequest{Header: header, Restore: true})}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -363,4 +365,20 @@ func TestMailboxServerReclaimsExpiredSubscription(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("未触发过期读取")
 	}
+}
+
+func openTestMailboxSession(stream *grpcMailboxStream, ctx context.Context, header SessionHeader) (MailboxStreamSession, error) {
+	go func() {
+		select {
+		case <-stream.requests:
+			stream.mu.Lock()
+			session := stream.sessions[header.SessionID]
+			stream.mu.Unlock()
+			if session != nil {
+				session.opened <- nil
+			}
+		case <-stream.done:
+		}
+	}()
+	return stream.open(ctx, InitRequest{Header: header}, nil)
 }

@@ -35,8 +35,8 @@ func TestMailboxStartupAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	checks := map[string]func() error{
-		"local init":     func() error { return local.Init(ctx, InitRequest{Header: header}) },
-		"local stream":   func() error { _, err := local.OpenMailboxStream(ctx, header); return err },
+		"local init":     func() error { return s.Init(ctx, InitRequest{Header: header}) },
+		"local stream":   func() error { _, err := local.OpenMailboxStream(ctx, InitRequest{Header: header}, nil); return err },
 		"publish":        func() error { _, err := s.PubSession(ctx, 2, []byte("down")); return err },
 		"role broadcast": func() error { _, err := s.BroadcastRole(ctx, 1, []byte("down")); return err },
 		"topic broadcast": func() error {
@@ -76,7 +76,7 @@ func TestMailboxStartupAdmission(t *testing.T) {
 		t.Fatalf("启动前不应抢占角色归属: %v/%v", found, err)
 	}
 	ready.Store(true)
-	if err := local.Init(ctx, InitRequest{Header: header}); err != nil {
+	if err := s.Init(ctx, InitRequest{Header: header}); err != nil {
 		t.Fatal(err)
 	}
 	// 开放后保持现有邮箱收尾语义；启动检查不能在排水时切断已有下行。
@@ -91,7 +91,7 @@ func TestMailboxStartupAdmission(t *testing.T) {
 	if err := s.Stop(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := local.Init(ctx, InitRequest{Header: header}); !errors.Is(err, ErrSessionOffline) {
+	if err := s.Init(ctx, InitRequest{Header: header}); !errors.Is(err, ErrSessionOffline) {
 		t.Fatalf("停止后重建会话: %v", err)
 	}
 }
