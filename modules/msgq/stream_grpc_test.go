@@ -166,7 +166,9 @@ func TestPublishStreamProcessesSessionAndRoleMessagesInOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = transport.Close() })
-	publisher, err := newGRPCPublishStream(msgqpb.NewMailboxServiceClient(transport), nil)
+	streamCtx, streamCancel := context.WithCancel(context.Background())
+	defer streamCancel()
+	publisher, err := newGRPCPublishStream(streamCtx, streamCancel, msgqpb.NewMailboxServiceClient(transport), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

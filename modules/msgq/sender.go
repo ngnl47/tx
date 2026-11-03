@@ -86,13 +86,16 @@ func (d *GRPCDialer) dial(instance discovery.Instance) (*grpcConnection, error) 
 }
 
 type grpcConnection struct {
-	connection  *grpc.ClientConn
-	client      msgqpb.MailboxServiceClient
-	mailboxMu   sync.Mutex
-	mailbox     *grpcMailboxStream
-	publisherMu sync.Mutex
-	publisher   *grpcPublishStream
-	rejectRole  func(context.Context, RoleBinding, []byte)
+	connection       *grpc.ClientConn
+	client           msgqpb.MailboxServiceClient
+	streamMu         sync.Mutex
+	closed           bool
+	closedCh         chan struct{}
+	mailbox          *grpcMailboxStream
+	mailboxOpening   *mailboxStreamOpening
+	publisher        *grpcPublishStream
+	publisherOpening *publishStreamOpening
+	rejectRole       func(context.Context, RoleBinding, []byte)
 }
 
 // OnRoleRejection 在连接开始发布前设置明确未入邮箱的角色消息回调。
@@ -101,25 +104,10 @@ func (c *grpcConnection) OnRoleRejection(reject func(context.Context, RoleBindin
 }
 
 func (c *grpcConnection) OpenMailboxStream(ctx context.Context, header SessionHeader) (MailboxStreamSession, error) {
-	c.mailboxMu.Lock()
-	stream := c.mailbox
-	if stream != nil {
-		select {
-		case <-stream.done:
-			stream = nil
-		default:
-		}
+	stream, err := c.getMailboxStream(ctx)
+	if err != nil {
+		return nil, err
 	}
-	if stream == nil {
-		var err error
-		stream, err = newGRPCMailboxStream(c.client)
-		if err != nil {
-			c.mailboxMu.Unlock()
-			return nil, err
-		}
-		c.mailbox = stream
-	}
-	c.mailboxMu.Unlock()
 	return stream.open(ctx, header)
 }
 
@@ -214,10 +202,20 @@ func (c *grpcConnection) TerminateSession(ctx context.Context, header SessionHea
 }
 
 func (c *grpcConnection) Close() error {
-	c.mailboxMu.Lock()
+	c.streamMu.Lock()
+	if !c.closed && c.closedCh != nil {
+		close(c.closedCh)
+	}
+	c.closed = true
 	mailbox := c.mailbox
 	c.mailbox = nil
-	c.mailboxMu.Unlock()
+	if c.mailboxOpening != nil {
+		c.mailboxOpening.cancel()
+	}
+	if c.publisherOpening != nil {
+		c.publisherOpening.cancel()
+	}
+	c.streamMu.Unlock()
 	if mailbox != nil {
 		mailbox.fail(ErrSenderClosed)
 	}

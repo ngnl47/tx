@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	txruntime "github.com/ngnl47/tx/runtime"
 	"sync"
 
+	"github.com/ngnl47/tx/component"
 	"github.com/ngnl47/tx/lifecycle"
+	txruntime "github.com/ngnl47/tx/runtime"
 )
 
 type serviceHost struct {
@@ -20,6 +21,7 @@ type serviceHost struct {
 	rollbackPending bool
 	tasksStopOnce   sync.Once
 	tasksStopped    chan struct{}
+	stopErr         error
 }
 
 type startedService struct {
@@ -129,7 +131,8 @@ func (host *serviceHost) openServices() {
 
 func (host *serviceHost) rollbackStart(startErr error) error {
 	host.rollbackPending = true
-	return errors.Join(startErr, host.rollbackInitialization(context.Background()))
+	err := host.rollbackInitialization(context.Background())
+	return errors.Join(startErr, host.stopErr, err)
 }
 
 // retryInitializationRollback 保留初始化失败的资源关闭顺序，重试尚未完成的 Procedure 排水。
@@ -139,7 +142,11 @@ func (host *serviceHost) retryInitializationRollback(ctx context.Context) error 
 	if !host.rollbackPending {
 		return nil
 	}
-	return host.rollbackInitialization(ctx)
+	if err := host.rollbackInitialization(ctx); err != nil {
+		return errors.Join(host.stopErr, err)
+	}
+	// 已结束的错误由 stop 统一返回，不再把最终错误当成回滚未完成。
+	return nil
 }
 
 // 调用方持有 host.mu；已接纳的独立 Procedure 退出前不能关闭服务资源。
@@ -152,7 +159,7 @@ func (host *serviceHost) rollbackInitialization(ctx context.Context) error {
 	}
 	for len(host.started) > 0 {
 		index := len(host.started) - 1
-		if err := rollbackService(drainCtx, &host.started[index]); err != nil {
+		if err := host.rollbackService(drainCtx, &host.started[index]); err != nil {
 			return errors.Join(errStopDeferred, err)
 		}
 		host.started = host.started[:index]
@@ -280,27 +287,40 @@ func (host *serviceHost) stop(ctx context.Context) error {
 	if err := host.quiesceTasks(ctx); err != nil {
 		return errors.Join(errStopDeferred, drainErr, err)
 	}
-	host.mu.Lock()
-	services := append([]startedService(nil), host.started...)
-	host.started = nil
-	host.mu.Unlock()
-	var errs []error
-	for index := len(services) - 1; index >= 0; index-- {
-		if err := stopServiceResources(ctx, services[index], "stop"); err != nil {
-			errs = append(errs, err)
+	for {
+		host.mu.Lock()
+		index := len(host.started) - 1
+		if index < 0 {
+			err := host.stopErr
+			host.mu.Unlock()
+			return errors.Join(drainErr, err)
 		}
+		current := host.started[index]
+		host.mu.Unlock()
+		err := stopServiceResources(ctx, current, "stop")
+		host.mu.Lock()
+		if errors.Is(err, component.ErrStopDeferred) {
+			previousErr := host.stopErr
+			host.mu.Unlock()
+			return errors.Join(errStopDeferred, drainErr, previousErr, err)
+		}
+		// 只有明确未结束的关闭保留服务；最终错误也必须跨后续重试保留。
+		host.stopErr = errors.Join(host.stopErr, err)
+		host.started = host.started[:index]
+		host.mu.Unlock()
 	}
-	return errors.Join(append([]error{drainErr}, errs...)...)
 }
 
-func rollbackService(ctx context.Context, current *startedService) error {
+func (host *serviceHost) rollbackService(ctx context.Context, current *startedService) error {
 	if current.tasks != nil {
 		current.tasks.Cancel()
 	}
 	if !current.rollbackStopped {
-		if err := stopServiceResources(ctx, *current, "rollback"); err != nil {
+		err := stopServiceResources(ctx, *current, "rollback")
+		if errors.Is(err, component.ErrStopDeferred) {
 			return err
 		}
+		host.stopErr = errors.Join(host.stopErr, err)
 		current.rollbackStopped = true
 	}
 	if err := current.tasks.CancelAndWait(ctx); err != nil {
@@ -314,10 +334,10 @@ func rollbackService(ctx context.Context, current *startedService) error {
 func stopServiceResources(ctx context.Context, current startedService, operation string) (err error) {
 	current.phase.set(lifecycle.ServiceDraining, nil)
 	defer func() {
-		if err == nil {
-			current.phase.set(lifecycle.ServiceStopped, nil)
-		} else {
+		if errors.Is(err, component.ErrStopDeferred) {
 			current.phase.set(lifecycle.ServiceDraining, err)
+		} else {
+			current.phase.set(lifecycle.ServiceStopped, err)
 		}
 	}()
 	stopper, ok := current.service.(Stopper)

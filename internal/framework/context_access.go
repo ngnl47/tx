@@ -178,6 +178,14 @@ func (access directoryAccess) LookupRouteInstance(id string) (discovery.RouteIns
 	return access.directory.LookupRouteInstance(id)
 }
 
+func (access directoryAccess) Changes() <-chan struct{} {
+	return access.directory.Changes()
+}
+
+func (access directoryAccess) IsRetired(id, endpoint string) bool {
+	return access.directory.IsRetired(id, endpoint)
+}
+
 type transactionAccess struct{ runtime *txn.Runtime }
 
 func (access transactionAccess) Call(ctx context.Context, procedure txn.Procedure) error {

@@ -37,8 +37,14 @@ type grpcPublishStream struct {
 	samples         atomic.Uint64
 }
 
-func newGRPCPublishStream(client msgqpb.MailboxServiceClient, reject func(context.Context, RoleBinding, []byte)) (*grpcPublishStream, error) {
-	ctx, cancel := context.WithCancel(context.Background())
+type publishStreamOpening struct {
+	done   chan struct{}
+	cancel context.CancelFunc
+	stream *grpcPublishStream
+	err    error
+}
+
+func newGRPCPublishStream(ctx context.Context, cancel context.CancelFunc, client msgqpb.MailboxServiceClient, reject func(context.Context, RoleBinding, []byte)) (*grpcPublishStream, error) {
 	stream, err := client.PublishStream(ctx)
 	if err != nil {
 		cancel()
@@ -221,27 +227,68 @@ func (publisher *grpcPublishStream) finish(err error) {
 	})
 }
 
-func (c *grpcConnection) publish() (*grpcPublishStream, error) {
-	c.publisherMu.Lock()
-	defer c.publisherMu.Unlock()
+func (c *grpcConnection) publish(ctx context.Context) (*grpcPublishStream, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	c.streamMu.Lock()
+	if c.closed {
+		c.streamMu.Unlock()
+		return nil, ErrSenderClosed
+	}
 	if c.publisher != nil {
 		select {
 		case <-c.publisher.done:
 			c.publisher = nil
 		default:
-			return c.publisher, nil
+			stream := c.publisher
+			c.streamMu.Unlock()
+			return stream, nil
 		}
 	}
-	stream, err := newGRPCPublishStream(c.client, c.rejectRole)
-	if err != nil {
-		return nil, err
+	if c.closedCh == nil {
+		c.closedCh = make(chan struct{})
 	}
-	c.publisher = stream
-	return stream, nil
+	closed := c.closedCh
+	opening := c.publisherOpening
+	if opening == nil {
+		streamCtx, cancel := context.WithCancel(context.Background())
+		opening = &publishStreamOpening{done: make(chan struct{}), cancel: cancel}
+		c.publisherOpening = opening
+		go c.openPublisher(streamCtx, opening)
+	}
+	c.streamMu.Unlock()
+	select {
+	case <-opening.done:
+		return opening.stream, opening.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-closed:
+		return nil, ErrSenderClosed
+	}
+}
+
+func (c *grpcConnection) openPublisher(ctx context.Context, opening *publishStreamOpening) {
+	stream, err := newGRPCPublishStream(ctx, opening.cancel, c.client, c.rejectRole)
+	c.streamMu.Lock()
+	defer c.streamMu.Unlock()
+	c.publisherOpening = nil
+	if c.closed {
+		err = ErrSenderClosed
+		if stream != nil {
+			stream.finish(err)
+			stream = nil
+		}
+	}
+	if err == nil {
+		c.publisher = stream
+	}
+	opening.stream, opening.err = stream, err
+	close(opening.done)
 }
 
 func (c *grpcConnection) SendSession(ctx context.Context, sessionID int64, payload []byte) error {
-	stream, err := c.publish()
+	stream, err := c.publish(ctx)
 	if err != nil {
 		return err
 	}
@@ -249,7 +296,7 @@ func (c *grpcConnection) SendSession(ctx context.Context, sessionID int64, paylo
 }
 
 func (c *grpcConnection) SendRole(ctx context.Context, binding RoleBinding, payload []byte) error {
-	stream, err := c.publish()
+	stream, err := c.publish(ctx)
 	if err != nil {
 		return err
 	}
@@ -260,10 +307,10 @@ func (c *grpcConnection) SendRole(ctx context.Context, binding RoleBinding, payl
 }
 
 func (c *grpcConnection) closePublisher() error {
-	c.publisherMu.Lock()
+	c.streamMu.Lock()
 	publisher := c.publisher
 	c.publisher = nil
-	c.publisherMu.Unlock()
+	c.streamMu.Unlock()
 	if publisher == nil {
 		return nil
 	}

@@ -33,6 +33,13 @@ type grpcMailboxStream struct {
 	receiveSamples uint64
 }
 
+type mailboxStreamOpening struct {
+	done   chan struct{}
+	cancel context.CancelFunc
+	stream *grpcMailboxStream
+	err    error
+}
+
 type mailboxResponse struct {
 	response *msgqpb.MailboxStreamResponse
 	queuedAt time.Time
@@ -50,8 +57,7 @@ type grpcMailboxSession struct {
 	err    error
 }
 
-func newGRPCMailboxStream(client msgqpb.MailboxServiceClient) (*grpcMailboxStream, error) {
-	streamCtx, cancel := context.WithCancel(context.Background())
+func newGRPCMailboxStream(streamCtx context.Context, cancel context.CancelFunc, client msgqpb.MailboxServiceClient) (*grpcMailboxStream, error) {
 	clientStream, err := client.MailboxStream(streamCtx)
 	if err != nil {
 		cancel()
@@ -65,6 +71,67 @@ func newGRPCMailboxStream(client msgqpb.MailboxServiceClient) (*grpcMailboxStrea
 	go stream.writeLoop()
 	go stream.readLoop()
 	return stream, nil
+}
+
+func (c *grpcConnection) getMailboxStream(ctx context.Context) (*grpcMailboxStream, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	c.streamMu.Lock()
+	if c.closed {
+		c.streamMu.Unlock()
+		return nil, ErrSenderClosed
+	}
+	if c.mailbox != nil {
+		select {
+		case <-c.mailbox.done:
+			c.mailbox = nil
+		default:
+			stream := c.mailbox
+			c.streamMu.Unlock()
+			return stream, nil
+		}
+	}
+	if c.closedCh == nil {
+		c.closedCh = make(chan struct{})
+	}
+	closed := c.closedCh
+	opening := c.mailboxOpening
+	if opening == nil {
+		streamCtx, cancel := context.WithCancel(context.Background())
+		opening = &mailboxStreamOpening{done: make(chan struct{}), cancel: cancel}
+		c.mailboxOpening = opening
+		go c.openMailboxStream(streamCtx, opening)
+	}
+	c.streamMu.Unlock()
+	// 建流属于连接生命周期，任一调用取消都只结束自己的等待。
+	select {
+	case <-opening.done:
+		return opening.stream, opening.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-closed:
+		return nil, ErrSenderClosed
+	}
+}
+
+func (c *grpcConnection) openMailboxStream(ctx context.Context, opening *mailboxStreamOpening) {
+	stream, err := newGRPCMailboxStream(ctx, opening.cancel, c.client)
+	c.streamMu.Lock()
+	defer c.streamMu.Unlock()
+	c.mailboxOpening = nil
+	if c.closed {
+		err = ErrSenderClosed
+		if stream != nil {
+			stream.fail(err)
+			stream = nil
+		}
+	}
+	if err == nil {
+		c.mailbox = stream
+	}
+	opening.stream, opening.err = stream, err
+	close(opening.done)
 }
 
 func (stream *grpcMailboxStream) open(ctx context.Context, header SessionHeader) (MailboxStreamSession, error) {

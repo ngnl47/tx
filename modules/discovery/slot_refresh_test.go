@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/ngnl47/tx/lifecycle"
@@ -79,27 +80,29 @@ func (s *unavailableSlots) ResolveSlotAtRevision(_ context.Context, slot string)
 }
 
 func TestSlotRefreshDoesNotPollOnOtherQueriesPublication(t *testing.T) {
-	d := NewSlotDirectory()
-	_ = d.ReplaceSnapshot([]SlotAssignment{{"a", "old", 1}, {"b", "old", 1}}, 10)
-	s := &unavailableSlots{}
-	cached, _ := NewCachedSlotStore(s, d)
-	members := NewServiceDirectory()
-	_ = members.Replace([]Instance{{ID: "old", Services: []string{"game"}, Endpoint: "old:1", Status: StatusDraining}})
-	r, _ := NewSlotResolver(cached, members)
-	tasks := lifecycle.NewWaitGroupContext(t.Context())
-	defer func() { tasks.Cancel(); tasks.Wait() }()
-	r.BindRefresh(lifecycle.TaskView(tasks))
-	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Millisecond)
-	defer cancel()
-	done := make(chan struct{}, 2)
-	for _, slot := range []string{"a", "b"} {
-		go func() { _, _ = r.ResolveServiceSlot(ctx, "game", slot); done <- struct{}{} }()
-	}
-	<-done
-	<-done
-	if got := s.reads.Load(); got != 2 {
-		t.Fatalf("两个槽位相互唤醒造成重复权威查询: %d", got)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		d := NewSlotDirectory()
+		_ = d.ReplaceSnapshot([]SlotAssignment{{"a", "old", 1}, {"b", "old", 1}}, 10)
+		s := &unavailableSlots{}
+		cached, _ := NewCachedSlotStore(s, d)
+		members := NewServiceDirectory()
+		_ = members.Replace([]Instance{{ID: "old", Services: []string{"game"}, Endpoint: "old:1", Status: StatusDraining}})
+		r, _ := NewSlotResolver(cached, members)
+		tasks := lifecycle.NewWaitGroupContext(t.Context())
+		defer func() { tasks.Cancel(); tasks.Wait() }()
+		r.BindRefresh(lifecycle.TaskView(tasks))
+		ctx, cancel := context.WithTimeout(t.Context(), 60*time.Millisecond)
+		defer cancel()
+		done := make(chan struct{}, 2)
+		for _, slot := range []string{"a", "b"} {
+			go func() { _, _ = r.ResolveServiceSlot(ctx, "game", slot); done <- struct{}{} }()
+		}
+		<-done
+		<-done
+		if got := s.reads.Load(); got != 2 {
+			t.Fatalf("两个槽位相互唤醒造成重复权威查询: %d", got)
+		}
+	})
 }
 
 type slowRefreshStore struct{ *refreshStore }

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/ngnl47/tx/component"
 	"github.com/ngnl47/tx/lifecycle"
 	txlog "github.com/ngnl47/tx/log"
 	txagent "github.com/ngnl47/tx/modules/agent"
@@ -252,7 +253,7 @@ func (service *Service) Drain(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// Stop 释放监听器与会话路由资源。该方法可以重复调用。
+// Stop 释放监听器与会话路由资源；任务尚未退出时返回 ErrStopDeferred，允许宿主保留依赖后重试。
 func (service *Service) Stop(ctx context.Context) error {
 	if service == nil {
 		return nil
@@ -278,7 +279,7 @@ func (service *Service) Stop(ctx context.Context) error {
 	}
 	if tasks != nil {
 		if err := tasks.CancelAndWait(ctx); err != nil {
-			return errors.Join(append(errs, err)...)
+			return errors.Join(component.ErrStopDeferred, errors.Join(errs...), err)
 		}
 	}
 	service.mu.Lock()

@@ -73,6 +73,8 @@ type ServiceDirectory struct {
 	mu        sync.RWMutex
 	ready     chan struct{}
 	readyOnce sync.Once
+	changed   chan struct{}
+	available bool
 	byID      map[string]Instance
 	byService map[string][]Instance
 	next      map[string]uint64
@@ -96,6 +98,7 @@ var _ Directory = (*ServiceDirectory)(nil)
 func NewServiceDirectory() *ServiceDirectory {
 	return &ServiceDirectory{
 		ready:     make(chan struct{}),
+		changed:   make(chan struct{}),
 		byID:      make(map[string]Instance),
 		byService: make(map[string][]Instance),
 		next:      make(map[string]uint64),
@@ -141,11 +144,13 @@ func (d *ServiceDirectory) Replace(instances []Instance) error {
 	d.mu.Lock()
 	d.byID = byID
 	d.byService = byService
+	d.available = true
 	for service := range d.next {
 		if _, exists := byService[service]; !exists {
 			delete(d.next, service)
 		}
 	}
+	d.notifyLocked()
 	d.mu.Unlock()
 	d.readyOnce.Do(func() { close(d.ready) })
 	return nil
@@ -160,7 +165,29 @@ func (d *ServiceDirectory) Invalidate() {
 	d.byID = make(map[string]Instance)
 	d.byService = make(map[string][]Instance)
 	d.next = make(map[string]uint64)
+	d.available = false
+	d.notifyLocked()
 	d.mu.Unlock()
+}
+
+// Changes 返回当前快照变化的通知；调用方应先取得通知，再检查目录，避免漏掉更新。
+func (d *ServiceDirectory) Changes() <-chan struct{} {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.changed
+}
+
+// IsRetired 仅在有效快照确认身份缺席或地址变化时返回 true；排水和 Watch 失联均不代表退役。
+func (d *ServiceDirectory) IsRetired(id, endpoint string) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	instance, found := d.byID[id]
+	return d.available && (!found || instance.Endpoint != endpoint)
+}
+
+func (d *ServiceDirectory) notifyLocked() {
+	close(d.changed)
+	d.changed = make(chan struct{})
 }
 
 // NextInstance 按轮转策略返回下一个 running 状态的服务实例。

@@ -2,6 +2,40 @@
 
 本页以现行契约组织验收，不重复维护测试实现。框架异常边界在 tx 定向测试中构造，两组应用使用已有真实集群入口验证接入；不向业务 Handler 增加故障开关。历史报告只证明对应构建，本轮结果单独记录。
 
+## 2026-11-03 模块边界后续修复
+
+本轮修改 tx 和两组 server 的实际接入，保留此前验收工具工作区变更，不提交。环境为 macOS/amd64、Go 1.27.0，构建缓存使用 `/private/tmp/tx-go-cache`。
+
+| 边界 | 验证结果 |
+| --- | --- |
+| MsgQ 共享建流 | Mailbox/Publish 并发请求只建一条流；各调用独立取消等待，Close 取消共享建流，迟到结果清理且不复用 |
+| 收尾期限 | 无调用方期限时，Service Flush、CMod Drain、Service Stop 仍使用配置期限；未完成阶段保留依赖供重试，已完成阶段不重复 |
+| 初始化失败回滚 | 最终错误跨重试保留，已结束的 Stop 不重复；任务未退出、其他服务未完成时继续保留依赖；最终失败状态为 Stopped 并保留 Failure |
+| 实例退役 | 有效目录确认实例消失或换址后回收；状态变化与 Watch 失联不误关连接；慢 Close 不阻塞 Watch，缓存 Close 等待观察任务退出；通过正式只读目录视图验证接线 |
+| Agent 控制广播 | 使用项目注册名称选择全部 Running 实例，不固定为 agent |
+| GD 直接保存 | 框架统一返回 `txruntime.ErrProcedureWrite`；结束后的事务仍为 `txn.ErrInactive`，两组 db.Save 不重复守卫，SaveChange 保留必要检查 |
+| 应用 Stop 接入 | Agent 连接、Room 通知、World 加载/保存、Sched 在途任务及管理 HTTP 未完成时明确 deferred；已退出的调度记账错误保持最终结果 |
+
+tx `go test ./...`、txgame/server 与 txgameslg/server `go test ./...` 最终均通过，日志为 `/private/tmp/{tx,txgame,txgameslg}-boundary-complete-full-20261103.log`；tx `go vet ./...` 通过，日志 `tx-boundary-complete-vet-20261103.log`。实例缓存、Discovery、MsgQ、Agent 控制、保存契约定向三轮 race，框架关闭与回滚三轮 race，真实 TCP/WS Agent 回滚三轮 race，以及两组 db、Room/Sched、World 目标 race 均通过。三仓 `git diff --check` 通过；后置审查发现的回滚问题已修复并只读复核。
+
+首次全量验证发现槽位刷新测试依赖 60ms/100ms 的真实调度间隔，机器繁忙时把正常重查误判为相互唤醒；改用 `testing/synctest` 后十轮 race 通过，生产轮询不变。后续完整回归发现内建 Agent 的未完成关闭仍返回普通 DeadlineExceeded，已补齐 deferred 标记后重跑通过。旧回滚实现通过 Go overlay 复现 Stop 被重复调用，日志 `tx-service-rollback-red-20261103.log`；关闭已结束仍显示 Draining 的失败记录为 `tx-service-phase-red-20261103.log`，两者修复后的定向证据为 `tx-boundary-framework-race-20261103.log`。
+
+本轮未运行正式包真实集群、云压测或单独启用外部数据库专项；依赖环境缺失的既有用例按原条件跳过，不计为实际存储验收。取消表示取消等待或发出协作信号，不证明无视 ctx 的传输替身已退出；迟到结果另行清理。未测云端吞吐，不宣称热路径性能改善。
+
+## 2026-11-03 普通正式包会话服务生命周期
+
+两组新增 `--session-lifecycle`，复用程序包、进程控制和真实客户端，均不带 `txbench`。完整范围、包摘要与证据见[验收报告](session-service-lifecycle-acceptance-20261103.md)。
+
+| 场景 | 结果 | 边界 |
+| --- | --- | --- |
+| Login 逐台替换 | 两组存活及替换节点签票、原 TCP/WS 连接保持；探针各 11 个 SessionID 无重复 | 有限请求，不推算持续签票容量 |
+| Agent 在线停止与恢复 | 两种传输恢复原 Session，ConnectionID 换新、MsgQ owner 保持，离线通知接续；新登录进入替换实例 | 不重投结果未知的上行 |
+| MsgQ 正常停止与新登录 | 旧角色租约释放、原 Session 明确恢复拒绝；同 Role 新 Session、新 owner/generation；存活会话不变 | 旧 Session Redis 记录可留至 TTL，不迁移邮箱 |
+| SLG 业务归属 | 10 阶段实际核对 Game 分组与 World 槽位，owner/generation 不变 | 不改变有状态业务的停服发布策略 |
+| 收尾 | 最终 24 个服务进程全部退出 0，专用 Redis/Mongo/etcd 与匹配进程无残留 | 正常关闭；未模拟宕机或写回失败 |
+
+Go 定向回归、客户端 118/129 项测试与构建通过。修复了验收工具的终阶段退出、延迟日志观察竞态并重新运行两组；无框架运行时代码修改。本轮不跑云测试、不提交，不将有限步骤全部通过等同于 99.99% 可用率证明。
+
 ## 2026-11-03 当前构建正式包验收
 
 tx `84f095e`、txgame `3261fb8`、txgameslg `8753304`，复用正式打包和现有客户端入口，三组顺序运行。无运行时代码修改，不跑云测试、不提交。完整指标、原始路径和限制见[本轮报告](runtime-boundary-rollout-20261103.md)，机器结果见[验收记录](validation/runtime-boundary-rollout-20261103.json)。

@@ -1,0 +1,428 @@
+{
+  "date": "2026-11-03",
+  "artifactRoot": "/Users/a47/workspace/tx-artifacts/session-service-acceptance-20261103",
+  "scope": "ordinary-package local finite lifecycle acceptance; no cloud/performance claim",
+  "applications": {
+    "txgame": {
+      "summary": "txgame-final/20261103-012945.632918000/session-lifecycle-summary.json",
+      "diagnostics": false,
+      "binarySHA256": "5f7a6b8003c299990a9802a0a68fcaf749995c5d8019a14d758a53b199687821",
+      "packageDataVersion": "60cdd211c47425a82c6d5b5386be5325be1bde055d45452d35960889114d06a9",
+      "stages": [
+        {
+          "name": "initial",
+          "elapsedMs": 154,
+          "status": "passed",
+          "assertions": {
+            "session_ids_unique": true,
+            "role_account_stable": true,
+            "both_transports_connected": true
+          }
+        },
+        {
+          "name": "login-a-stopped",
+          "elapsedMs": 56,
+          "status": "passed",
+          "assertions": {
+            "existing_connections_kept": true,
+            "session_ids_unique": true,
+            "role_account_stable": true,
+            "fresh_login_connected": true
+          }
+        },
+        {
+          "name": "login-a-restarted",
+          "elapsedMs": 45,
+          "status": "passed",
+          "assertions": {
+            "existing_connections_kept": true,
+            "session_ids_unique": true,
+            "role_account_stable": true,
+            "fresh_login_connected": true
+          }
+        },
+        {
+          "name": "login-b-stopped",
+          "elapsedMs": 43,
+          "status": "passed",
+          "assertions": {
+            "existing_connections_kept": true,
+            "session_ids_unique": true,
+            "role_account_stable": true,
+            "fresh_login_connected": true
+          }
+        },
+        {
+          "name": "login-b-restarted",
+          "elapsedMs": 43,
+          "status": "passed",
+          "assertions": {
+            "existing_connections_kept": true,
+            "session_ids_unique": true,
+            "role_account_stable": true,
+            "fresh_login_connected": true
+          }
+        },
+        {
+          "name": "agent-stopped",
+          "elapsedMs": 32,
+          "status": "passed",
+          "assertions": {
+            "online_connections_closed_by_server": true,
+            "session_ids_unique": true,
+            "role_account_stable": true,
+            "offline_notifications_published": true
+          }
+        },
+        {
+          "name": "agent-restarted",
+          "elapsedMs": 86,
+          "status": "passed",
+          "assertions": {
+            "restore_did_not_resend_upstream": true,
+            "offline_downstream_continued": true,
+            "new_upstream_seq_continued": true,
+            "session_ids_unique": true,
+            "role_account_stable": true,
+            "fresh_login_connected": true
+          }
+        },
+        {
+          "name": "msgq-stopped",
+          "elapsedMs": 33,
+          "status": "passed",
+          "assertions": {
+            "surviving_owner_session_continued": true,
+            "missing_mailbox_restore_rejected": true,
+            "session_ids_unique": true,
+            "role_account_stable": true,
+            "same_role_new_session": true,
+            "new_session_sequence_clean": true,
+            "new_session_first_downstream": true
+          }
+        },
+        {
+          "name": "msgq-restarted",
+          "elapsedMs": 58,
+          "status": "passed",
+          "assertions": {
+            "current_sessions_continued": true,
+            "session_ids_unique": true,
+            "role_account_stable": true,
+            "fresh_login_connected": true
+          }
+        },
+        {
+          "name": "finish",
+          "elapsedMs": 1,
+          "status": "passed",
+          "assertions": {
+            "clients_closed": true
+          }
+        }
+      ],
+      "sessionAllocations": 11,
+      "uniqueSessionAllocations": true,
+      "sessionIDsBeforeAgentRestart": [
+        744869,
+        744871
+      ],
+      "sameSessionNewConnectionSameMsgQ": true,
+      "exits": {
+        "agent-b.exit": "0",
+        "agent-r2.exit": "0",
+        "agent.exit": "0",
+        "game-a.exit": "0",
+        "game-b.exit": "0",
+        "login-a-r2.exit": "0",
+        "login-a.exit": "0",
+        "login-b-r2.exit": "0",
+        "login-b.exit": "0",
+        "msgq-a-r2.exit": "0",
+        "msgq-a.exit": "0",
+        "msgq-b.exit": "0"
+      },
+      "roleBefore": {
+        "roleId": 470501,
+        "instanceId": "txgame-7e2d477b-8c47-4d8f-aa10-163b8142dfe7",
+        "generation": "f3c22028-4a40-4e8f-bdfa-acda5d739979"
+      },
+      "roleAfter": {
+        "roleId": 470501,
+        "instanceId": "txgame-8653fd54-88f2-4a69-907d-207e8e60acd4",
+        "generation": "47b5cb51-e1bf-448c-b37c-f583dc50bbd7"
+      },
+      "restoreRejection": {
+        "durationMs": 0,
+        "err": "msgq: session instance is unavailable",
+        "message": "agent connection closed unexpectedly",
+        "remote": "127.0.0.1:62221",
+        "roleID": 470501,
+        "sessionID": 744869,
+        "transport": "tcp"
+      },
+      "warnings": [
+        {
+          "file": "agent-r2.log",
+          "message": "agent connection closed unexpectedly",
+          "error": "msgq: session instance is unavailable"
+        },
+        {
+          "file": "game-a.log",
+          "message": "closing previously failed downlink publish stream",
+          "error": "msgq: session instance is unavailable: rpc error: code = Unavailable desc = error reading from server: EOF"
+        },
+        {
+          "file": "game-b.log",
+          "message": "closing previously failed downlink publish stream",
+          "error": "msgq: session instance is unavailable: rpc error: code = Unavailable desc = error reading from server: EOF"
+        }
+      ]
+    },
+    "txgameslg": {
+      "summary": "txgameslg-final/20261103-013153.421146000/session-lifecycle-summary.json",
+      "diagnostics": false,
+      "binarySHA256": "e3d94f80c067ec20af6614bdd95f5f73d862c1e2826357cb58a76d7d38f46ce9",
+      "packageDataVersion": "60cdd211c47425a82c6d5b5386be5325be1bde055d45452d35960889114d06a9",
+      "stages": [
+        {
+          "name": "initial",
+          "elapsedMs": 151,
+          "status": "passed",
+          "assertions": {
+            "session_ids_unique": true,
+            "role_account_stable": true,
+            "both_transports_connected": true
+          }
+        },
+        {
+          "name": "login-a-stopped",
+          "elapsedMs": 47,
+          "status": "passed",
+          "assertions": {
+            "existing_connections_kept": true,
+            "session_ids_unique": true,
+            "role_account_stable": true,
+            "fresh_login_connected": true
+          }
+        },
+        {
+          "name": "login-a-restarted",
+          "elapsedMs": 47,
+          "status": "passed",
+          "assertions": {
+            "existing_connections_kept": true,
+            "session_ids_unique": true,
+            "role_account_stable": true,
+            "fresh_login_connected": true
+          }
+        },
+        {
+          "name": "login-b-stopped",
+          "elapsedMs": 44,
+          "status": "passed",
+          "assertions": {
+            "existing_connections_kept": true,
+            "session_ids_unique": true,
+            "role_account_stable": true,
+            "fresh_login_connected": true
+          }
+        },
+        {
+          "name": "login-b-restarted",
+          "elapsedMs": 48,
+          "status": "passed",
+          "assertions": {
+            "existing_connections_kept": true,
+            "session_ids_unique": true,
+            "role_account_stable": true,
+            "fresh_login_connected": true
+          }
+        },
+        {
+          "name": "agent-stopped",
+          "elapsedMs": 32,
+          "status": "passed",
+          "assertions": {
+            "online_connections_closed_by_server": true,
+            "session_ids_unique": true,
+            "role_account_stable": true,
+            "offline_notifications_published": true
+          }
+        },
+        {
+          "name": "agent-restarted",
+          "elapsedMs": 79,
+          "status": "passed",
+          "assertions": {
+            "restore_did_not_resend_upstream": true,
+            "offline_downstream_continued": true,
+            "new_upstream_seq_continued": true,
+            "session_ids_unique": true,
+            "role_account_stable": true,
+            "fresh_login_connected": true
+          }
+        },
+        {
+          "name": "msgq-stopped",
+          "elapsedMs": 33,
+          "status": "passed",
+          "assertions": {
+            "surviving_owner_session_continued": true,
+            "missing_mailbox_restore_rejected": true,
+            "session_ids_unique": true,
+            "role_account_stable": true,
+            "same_role_new_session": true,
+            "new_session_sequence_clean": true,
+            "new_session_first_downstream": true
+          }
+        },
+        {
+          "name": "msgq-restarted",
+          "elapsedMs": 42,
+          "status": "passed",
+          "assertions": {
+            "current_sessions_continued": true,
+            "session_ids_unique": true,
+            "role_account_stable": true,
+            "fresh_login_connected": true
+          }
+        },
+        {
+          "name": "finish",
+          "elapsedMs": 1,
+          "status": "passed",
+          "assertions": {
+            "clients_closed": true
+          }
+        }
+      ],
+      "sessionAllocations": 11,
+      "uniqueSessionAllocations": true,
+      "sessionIDsBeforeAgentRestart": [
+        744972,
+        744974
+      ],
+      "sameSessionNewConnectionSameMsgQ": true,
+      "exits": {
+        "agent-b-r2.exit": "0",
+        "agent-b.exit": "0",
+        "agent.exit": "0",
+        "login-b-r2.exit": "0",
+        "login-b.exit": "0",
+        "login-r2.exit": "0",
+        "login.exit": "0",
+        "msgq-a-r2.exit": "0",
+        "msgq-a.exit": "0",
+        "msgq-b.exit": "0",
+        "slggame-a.exit": "0",
+        "slgworld-a.exit": "0"
+      },
+      "roleBefore": {
+        "roleId": 480501,
+        "instanceId": "txgameslg-49a95da1-ff50-402d-8d95-27425587fe53",
+        "generation": "2dbd0f2d-0760-4769-be71-fbddd98adc15"
+      },
+      "roleAfter": {
+        "roleId": 480501,
+        "instanceId": "txgameslg-8f62cbc5-89d9-4f94-9bfe-c8aff2f49977",
+        "generation": "2b48d20b-eaa6-43be-bfe6-41ba32110dab"
+      },
+      "restoreRejection": {
+        "durationMs": 0,
+        "err": "msgq: session instance is unavailable",
+        "message": "agent connection closed unexpectedly",
+        "remote": "127.0.0.1:62407",
+        "roleID": 480501,
+        "sessionID": 744972,
+        "transport": "tcp"
+      },
+      "warnings": [
+        {
+          "file": "agent-b-r2.log",
+          "message": "agent connection closed unexpectedly",
+          "error": "msgq: session instance is unavailable"
+        },
+        {
+          "file": "slggame-a.log",
+          "message": "closing previously failed downlink publish stream",
+          "error": "msgq: session instance is unavailable: rpc error: code = Unavailable desc = error reading from server: EOF"
+        }
+      ],
+      "stableAssignments": [
+        {
+          "slotId": "actor-group-v1.c2xnZ2FtZQ.c2VydmVy.MTAwMQ",
+          "runtimeInstanceId": "txgameslg-08654a3d-77c2-4981-9a90-6fa33689abe6",
+          "generation": 1
+        },
+        {
+          "slotId": "slgworld-1",
+          "runtimeInstanceId": "txgameslg-6d6658d4-e8d6-4b24-a650-7050ce02563d",
+          "generation": 1
+        }
+      ]
+    }
+  },
+  "cleanup": {
+    "checkedAt": "2026-11-02T17:34:16.096414+00:00",
+    "redisDB12": 0,
+    "redisDB13": 0,
+    "mongoCollections": {
+      "txgame_cluster_e2e": [],
+      "txgameslg_cluster_e2e": []
+    },
+    "etcdPrefixesEmpty": [
+      "/tx/e2e/txgame/",
+      "/tx/e2e/txgameslg/"
+    ],
+    "remainingServicesOrClients": 0
+  },
+  "validation": {
+    "txgame": "go test ./cmd/cluster-e2e ./cmd/internal/clustere2e ./cmd/internal/clusterkit -count=1",
+    "txgameslg": "go test ./cmd/cluster-e2e ./cmd/internal/clustere2e ./cmd/internal/clusterkit ./cmd/internal/ops -count=1",
+    "txclient": {
+      "tests": 118,
+      "failed": 0,
+      "build": "passed"
+    },
+    "txclientslg": {
+      "tests": 129,
+      "failed": 0,
+      "build": "passed"
+    },
+    "cloud": false,
+    "runtimeChanges": false
+  },
+  "toolCleanupFollowup": {
+    "date": "2026-11-03",
+    "scope": "local tool subprocess cleanup; previous cluster run not repeated",
+    "logs": "client-cleanup/",
+    "reproduced": [
+      "Terminate returned before Node cleanup in both applications",
+      "SLG npm exited after cancellation while its Node worker remained alive"
+    ],
+    "changes": [
+      "direct Node launch",
+      "private cancellation with 2s WaitDelay and 5s termination wait",
+      "separate exit notification preserving Done result",
+      "cleanup errors joined at callers"
+    ],
+    "validation": {
+      "txgame": "go test ./cmd/... -count=1; go vet ./cmd/...",
+      "txgameRace": "go test -race ./cmd/internal/clusterkit -run TestClient(Terminate|Cancellation) -count=3",
+      "txgameslg": "six affected command packages; three affected tool packages vet",
+      "txgameslgRace": "new subprocess cases count=3; strengthened exit-code case count=1",
+      "txclient": {
+        "tests": 119,
+        "failed": 0,
+        "skipped": 0,
+        "build": "passed",
+        "productionChanges": false
+      },
+      "clusterRerun": false,
+      "cloud": false,
+      "runtimeChanges": false
+    },
+    "remainingFixtureProcesses": 0
+  }
+}

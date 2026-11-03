@@ -8,12 +8,15 @@ import (
 	"github.com/ngnl47/tx/storage"
 )
 
+// ErrProcedureWrite 防止直接持久化绕过 Procedure 回滚和 WriteBack。
+var ErrProcedureWrite = errors.New("runtime: direct persistence inside Procedure is forbidden")
+
 func checkWriteContext(ctx context.Context) error {
 	if tx, active := txn.FromContext(ctx); tx != nil {
 		if !active {
 			return txn.ErrInactive
 		}
-		return errors.New("runtime: direct persistence inside Procedure is forbidden")
+		return ErrProcedureWrite
 	}
 	return nil
 }

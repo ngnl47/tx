@@ -140,9 +140,9 @@ Go 的公开字段无法阻止调用方私自保存裸指针并在事务外修�
   -> 保留尚未关闭的对象和依赖 -> 后续 Stop 继续原阶段
 ```
 
-CMod 回滚与最终关闭使用现有 `lifecycle.drainTimeout`，不增加独立配置；直接使用 `component.Host` 时由 `Start(ctx)` 和 `Stop(ctx)` 提供期限。回调必须遵守传入期限，框架不通过遗留 goroutine 模拟回调已完成。开始最终释放后不再重新 Drain、Flush 或交接；已释放阶段不会重复执行。
+CMod 回滚与最终关闭、Service Flush、CMod Drain 和 Service Stop 均使用现有 `lifecycle.drainTimeout`，每阶段取配置期限与调用方剩余期限的较小值，不增加独立配置；直接使用 `component.Host` 时由 `Start(ctx)` 和 `Stop(ctx)` 提供期限。回调必须遵守传入期限，框架不通过遗留 goroutine 模拟回调已完成。开始最终释放后不再重新 Drain、Flush 或交接；已释放阶段不会重复执行。
 
-组件实际工作未退出时，宿主自动保留依赖。自定义 CMod.Stop 若尚未完成，应返回包含 `component.ErrStopDeferred` 的错误；普通关闭错误（包括已完成关闭时返回的 DeadlineExceeded）作为最终结果记录，并继续释放依赖。不能仅按错误文本推断资源是否仍在使用。
+组件实际工作未退出时，宿主自动保留依赖。自定义 CMod.Stop 或 Service.Stop 若尚未完成，应返回包含 `component.ErrStopDeferred` 的错误；宿主保留该对象及其依赖，重试从未结束阶段继续。普通关闭错误（包括已完成关闭时返回的 DeadlineExceeded）作为最终结果记录，并继续释放依赖。这个区分同样适用于初始化失败回滚；此前已关闭对象的最终错误跨重试保留，不能仅按错误文本推断资源是否仍在使用。
 
 Placement 和 CMod 只取得 `lifecycle.Tasks` 受限视图，其 Go 回调同样拿不到 Cancel、Wait 或计数所有权。部分启动失败的组件只执行清理，不再调用要求完整启动的 Drain。
 

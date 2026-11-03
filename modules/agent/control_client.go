@@ -12,13 +12,12 @@ import (
 )
 
 var (
-	ErrSessionControlDirectoryNil = errors.New("agent: session control directory is nil")
-	ErrSessionControlDialerNil    = errors.New("agent: session control dialer is nil")
-	ErrSessionControlClientNil    = errors.New("agent: session control client is nil")
-	ErrSessionControlResponse     = errors.New("agent: invalid session control response")
+	ErrSessionControlServiceNameRequired = errors.New("agent: session control service name is required")
+	ErrSessionControlDirectoryNil        = errors.New("agent: session control directory is nil")
+	ErrSessionControlDialerNil           = errors.New("agent: session control dialer is nil")
+	ErrSessionControlClientNil           = errors.New("agent: session control client is nil")
+	ErrSessionControlResponse            = errors.New("agent: invalid session control response")
 )
-
-const agentServiceName = "agent"
 
 // SessionControlClient 控制一个指定 Agent 实例中的本地 Session。
 type SessionControlClient interface {
@@ -136,19 +135,23 @@ func (result SessionControlBroadcastResult) Uncertain() bool {
 
 // SessionControlBroadcaster 向服务发现中的全部运行中 Agent 并行发送 Session 控制请求。
 type SessionControlBroadcaster struct {
-	directory discovery.Directory
-	dialer    SessionControlDialer
+	serviceName string
+	directory   discovery.Directory
+	dialer      SessionControlDialer
 }
 
-// NewSessionControlBroadcaster 创建不访问 Redis 的 Agent 控制广播器。
-func NewSessionControlBroadcaster(directory discovery.Directory, dialer SessionControlDialer) (*SessionControlBroadcaster, error) {
+// NewSessionControlBroadcaster 创建不访问 Redis 的控制广播器，serviceName 必须与 Agent 注册名称一致。
+func NewSessionControlBroadcaster(serviceName string, directory discovery.Directory, dialer SessionControlDialer) (*SessionControlBroadcaster, error) {
+	if serviceName == "" {
+		return nil, ErrSessionControlServiceNameRequired
+	}
 	if directory == nil {
 		return nil, ErrSessionControlDirectoryNil
 	}
 	if dialer == nil {
 		return nil, ErrSessionControlDialerNil
 	}
-	return &SessionControlBroadcaster{directory: directory, dialer: dialer}, nil
+	return &SessionControlBroadcaster{serviceName: serviceName, directory: directory, dialer: dialer}, nil
 }
 
 // DisconnectSession 向全部运行中 Agent 广播物理断连请求。
@@ -168,7 +171,7 @@ func (broadcaster *SessionControlBroadcaster) TerminateSession(ctx context.Conte
 type sessionControlCall func(context.Context, SessionControlClient, int64, string) (SessionControlResult, error)
 
 func (broadcaster *SessionControlBroadcaster) broadcast(ctx context.Context, sessionID int64, reason string, call sessionControlCall) SessionControlBroadcastResult {
-	instances := broadcaster.directory.RunningInstances(agentServiceName)
+	instances := broadcaster.directory.RunningInstances(broadcaster.serviceName)
 	result := SessionControlBroadcastResult{Instances: make([]SessionControlInstanceResult, len(instances))}
 	var wait sync.WaitGroup
 	wait.Add(len(instances))

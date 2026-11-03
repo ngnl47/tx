@@ -169,7 +169,9 @@ func (server *Server) shutdown(ctx context.Context, drain bool) error {
 	if !server.releaseDone {
 		// 服务先关闭自身发送器；此时进程级传输入口仍需有效。
 		if host != nil {
-			stopErr := host.stop(ctx)
+			stopCtx, cancel := context.WithTimeout(ctx, effectiveDrainTimeout(server.config.Runtime.Lifecycle.DrainTimeout))
+			stopErr := host.stop(stopCtx)
+			cancel()
 			if errors.Is(stopErr, errStopDeferred) {
 				return errors.Join(err, stopErr)
 			}
@@ -315,7 +317,10 @@ func (server *Server) finishWork(ctx context.Context, drain bool) error {
 	}
 
 	if host != nil {
-		if err := host.flush(ctx); err != nil {
+		flushCtx, cancel := context.WithTimeout(ctx, effectiveDrainTimeout(server.config.Runtime.Lifecycle.DrainTimeout))
+		err := host.flush(flushCtx)
+		cancel()
+		if err != nil {
 			if !fatal {
 				return errors.Join(errStopDeferred, err)
 			}
@@ -323,7 +328,9 @@ func (server *Server) finishWork(ctx context.Context, drain bool) error {
 		}
 	}
 	if cmodHost != nil {
-		err := cmodHost.drain(ctx)
+		drainCtx, cancel := context.WithTimeout(ctx, effectiveDrainTimeout(server.config.Runtime.Lifecycle.DrainTimeout))
+		err := cmodHost.drain(drainCtx)
+		cancel()
 		if err != nil && !fatal {
 			return errors.Join(errStopDeferred, err)
 		}

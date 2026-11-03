@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sync"
 
+	txlog "github.com/ngnl47/tx/log"
 	"github.com/ngnl47/tx/modules/discovery"
 )
 
@@ -19,16 +20,60 @@ type entry[T interface{ Close() error }] struct {
 	connection T
 }
 
-// Cache 按 endpoint 复用当前实例连接；同址重启时关闭旧实例连接。
+type retirementDirectory interface {
+	Changes() <-chan struct{}
+	IsRetired(id, endpoint string) bool
+}
+
+// Cache 按 endpoint 复用当前实例连接；同址重启或有效目录确认退役后关闭旧连接。
 type Cache[T interface{ Close() error }] struct {
 	directory   discovery.Directory
 	mu          sync.Mutex
 	connections map[string]entry[T]
 	closed      bool
+	closeDone   chan struct{}
+	stop        chan struct{}
+	done        chan struct{}
 }
 
 func New[T interface{ Close() error }](directory discovery.Directory) *Cache[T] {
-	return &Cache[T]{directory: directory, connections: make(map[string]entry[T])}
+	c := &Cache[T]{directory: directory, connections: make(map[string]entry[T])}
+	if updates, ok := directory.(retirementDirectory); ok {
+		c.stop, c.done = make(chan struct{}), make(chan struct{})
+		go c.retire(updates)
+	}
+	return c
+}
+
+// retire 在独立任务中合并目录更新，网络收尾不阻塞发现 Watch，也不进入消息热路径。
+func (c *Cache[T]) retire(directory retirementDirectory) {
+	defer close(c.done)
+	for {
+		changed := directory.Changes()
+		c.mu.Lock()
+		if c.closed {
+			c.mu.Unlock()
+			return
+		}
+		var retired []entry[T]
+		for endpoint, connection := range c.connections {
+			if directory.IsRetired(connection.instanceID, endpoint) {
+				delete(c.connections, endpoint)
+				retired = append(retired, connection)
+			}
+		}
+		c.mu.Unlock()
+		for _, connection := range retired {
+			if err := connection.connection.Close(); err != nil {
+				txlog.Error("retired instance connection close failed", "instance_id", connection.instanceID, "err", err)
+			}
+		}
+		select {
+		case <-changed:
+		case <-c.stop:
+			return
+		}
+	}
 }
 
 // Get 只在拨号后的冷路径复核身份，不为每条热路径消息增加目录查询。
@@ -79,15 +124,24 @@ func (c *Cache[T]) Close() error {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
+		<-c.closeDone
 		return nil
 	}
 	c.closed = true
+	c.closeDone = make(chan struct{})
+	defer close(c.closeDone)
+	if c.stop != nil {
+		close(c.stop)
+	}
 	connections := c.connections
 	c.connections = nil
 	c.mu.Unlock()
 	var errs []error
 	for _, connection := range connections {
 		errs = append(errs, connection.connection.Close())
+	}
+	if c.done != nil {
+		<-c.done
 	}
 	return errors.Join(errs...)
 }

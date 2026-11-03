@@ -1004,7 +1004,7 @@ Ready，并会使用独立有界上下文按新 `ConnectionID` 补偿一次精�
 不能被更早连接的成功结果掩盖。基础控制分为两层：
 `DisconnectSession` 只关闭物理连接并保留逻辑 Session，允许相同 `SessionID` 恢复；`TerminateSession` 先终止 MsgQ
 逻辑 Session，再关闭物理连接，原 `SessionID` 不能恢复。每个 Agent 都把专用控制服务注册到进程共享 gRPC Host。
-`SessionControlBroadcaster` 从服务发现内存快照取得全部运行中 Agent 并行广播，只有本地持有目标 Session 的实例处理；
+`NewSessionControlBroadcaster(serviceName, directory, dialer)` 显式接收 Agent 的注册服务名，并从服务发现内存快照取得该服务全部运行中实例并行广播，只有本地持有目标 Session 的实例处理；
 该流程不查询 Session owner、不访问 MsgQ 路由，也不依赖 Kubernetes。
 
 ### TypeScript 客户端协议
@@ -2777,6 +2777,8 @@ Locks：仅声明类型 + ID
 ### 有状态落盘调度
 
 `txn.Runtime` 只执行 Procedure、锁、undo、savepoint、死锁检测和提交回调。它不持有 writer、缓存根对象或后台任务，也不向业务暴露脏目标。项目若选择有状态运行模型，应由 CMod 在启动期把一个 `writeback.Runtime` 绑定为 `txn.CommitParticipant`；`writeback.Manager` 是 tx 提供的默认实现。无状态业务继续在请求末尾调用项目封装的 `db.Save(ctx, role)`。
+
+`txruntime.Save` 在活跃 Procedure 内返回稳定错误 `txruntime.ErrProcedureWrite`，结束后的事务上下文返回 `txn.ErrInactive`。项目 `db.Save` 直接转交该入口；独立的快照 `db.SaveChange` 仍须保留事务与共享实体检查，并复用同一个事务拒绝错误。
 
 `writeback.Manager` 只管理提交身份、待刷根对象、代际隔离和延迟刷盘，不是完整的业务对象缓存。对象如何加载、查询、淘汰、分片以及建立业务索引由项目决定。项目需要扩展时应优先包装默认 Manager，复用已经验证的提交和刷盘规则，再在外层增加自己的对象缓存能力。
 

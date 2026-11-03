@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ngnl47/tx/component"
 	"github.com/ngnl47/tx/lifecycle"
 	txagent "github.com/ngnl47/tx/modules/agent"
 	agentpb "github.com/ngnl47/tx/modules/agent/pb"
@@ -495,7 +496,7 @@ func TestServiceStopWaitsForConnectionSetupAndRetainsRouter(t *testing.T) {
 				}
 				stopCtx, stopCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 				defer stopCancel()
-				if err := service.Stop(stopCtx); !errors.Is(err, context.DeadlineExceeded) {
+				if err := service.Stop(stopCtx); !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, component.ErrStopDeferred) {
 					t.Errorf("Stop = %v, want deadline while callback is still executing", err)
 				}
 				if router.closed.Load() {

@@ -8,19 +8,29 @@ import (
 	"github.com/ngnl47/tx/modules/discovery"
 )
 
-func TestSessionControlBroadcasterCallsEveryRunningAgent(t *testing.T) {
+func TestSessionControlBroadcasterRequiresServiceName(t *testing.T) {
+	_, err := NewSessionControlBroadcaster("", discovery.NewServiceDirectory(), &sessionControlDialerFake{})
+	if !errors.Is(err, ErrSessionControlServiceNameRequired) {
+		t.Fatalf("空服务名返回 %v，期望 %v", err, ErrSessionControlServiceNameRequired)
+	}
+}
+
+func TestSessionControlBroadcasterCallsEveryRunningInstanceOfService(t *testing.T) {
 	directory := discovery.NewServiceDirectory()
 	if err := directory.Replace([]discovery.Instance{
-		{ID: "agent-a", Services: []string{"agent"}, Endpoint: "agent-a:9000", Status: discovery.StatusRunning},
-		{ID: "agent-b", Services: []string{"agent"}, Endpoint: "agent-b:9000", Status: discovery.StatusRunning},
+		{ID: "agent-a", Services: []string{"gateway"}, Endpoint: "agent-a:9000", Status: discovery.StatusRunning},
+		{ID: "agent-b", Services: []string{"gateway"}, Endpoint: "agent-b:9000", Status: discovery.StatusRunning},
+		{ID: "agent-c", Services: []string{"agent"}, Endpoint: "agent-c:9000", Status: discovery.StatusRunning},
+		{ID: "agent-d", Services: []string{"gateway"}, Endpoint: "agent-d:9000", Status: discovery.StatusStarting},
 	}); err != nil {
 		t.Fatalf("replace directory: %v", err)
 	}
 	dialer := &sessionControlDialerFake{clients: map[string]*sessionControlClientFake{
 		"agent-a": {disconnectResult: SessionControlResult{SessionID: 99}},
 		"agent-b": {disconnectResult: SessionControlResult{SessionID: 99, ConnectionID: 8, Handled: true}},
+		"agent-c": {disconnectResult: SessionControlResult{SessionID: 99}},
 	}}
-	broadcaster, err := NewSessionControlBroadcaster(directory, dialer)
+	broadcaster, err := NewSessionControlBroadcaster("gateway", directory, dialer)
 	if err != nil {
 		t.Fatalf("new broadcaster: %v", err)
 	}
@@ -49,7 +59,7 @@ func TestSessionControlBroadcastIsUncertainWhenNoAgentHandlesAndOneFails(t *test
 		t.Fatalf("replace directory: %v", err)
 	}
 	dialErr := errors.New("agent-b unavailable")
-	broadcaster, err := NewSessionControlBroadcaster(directory, &sessionControlDialerFake{
+	broadcaster, err := NewSessionControlBroadcaster("agent", directory, &sessionControlDialerFake{
 		clients: map[string]*sessionControlClientFake{"agent-a": {terminateResult: SessionControlResult{SessionID: 99}}},
 		errors:  map[string]error{"agent-b": dialErr},
 	})

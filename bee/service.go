@@ -52,6 +52,7 @@ type ServiceDrainer interface {
 }
 
 // ServiceStopper 释放服务持有的资源。
+// 尚未完成时返回包含 component.ErrStopDeferred 的错误以保留依赖重试；其他错误作为最终结果。
 type ServiceStopper interface {
 	// Stop 幂等释放服务自身持有的资源。
 	Stop(context.Context) error

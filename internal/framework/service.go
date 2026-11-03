@@ -38,6 +38,7 @@ type Drainer interface {
 
 // Stopper 释放服务持有的资源。
 // Stop 必须幂等，并能清理由失败的 Init/Start 留下的部分资源。
+// 尚未完成时返回包含 component.ErrStopDeferred 的错误；其他错误表示已结束但失败。
 type Stopper interface {
 	// Stop 释放服务持有的资源。
 	Stop(context.Context) error
