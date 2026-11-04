@@ -1197,7 +1197,7 @@ tx
 
 两组示例首次票据绑定所选 AgentInstanceID，因此 Agent 对外端点须定向到该实例；不能把一个随机分发到多个 Agent 的公共入口直接当作所有实例的登记地址。每台宿主机一个 Agent 是部署选择，不是 tx 限制；同宿主多进程使用独立端口，独立 Pod 网络也可使用不同 IP 的相同端口。普通 NodePort Service 仍可能转发到其他节点，不能仅凭访问某个 NodeIP 就认定到达该节点的 Agent。
 
-Agent 重建后继续使用原地址，需要部署平台保留并重新绑定该地址；tx 不完成 EIP 迁移，也不从旧票据推断替代地址。恢复已有 Session 是否允许跨 AgentInstanceID，由应用验票 SPI 决定；MsgQ 核验原会话与接入资格。首次接入、同 Session 恢复和新 Login 不应混为同一操作，具体规则见两组应用部署章节。
+两组应用已选择逐个 Agent 原地址先停后启、原 Session 恢复；这一部署顺序属于应用契约，不要求 tx 实现 Pod 调度或会话自动迁移。Agent 重建后继续使用原地址，需要部署平台保留并重新绑定该地址；tx 不完成 EIP 迁移，也不从旧票据推断替代地址。恢复已有 Session 是否允许跨 AgentInstanceID，由应用验票 SPI 决定；MsgQ 核验原会话与接入资格。首次接入、同 Session 恢复和新 Login 不应混为同一操作，具体规则见两组应用部署章节。
 
 ### Redis 代理与集群能力
 

@@ -1,0 +1,1456 @@
+{
+  "scope": "本地普通正式包；六个180秒窗口；schema v2；不重投；不跑云测试",
+  "source": {
+    "tx": {
+      "head": "a5252480421bda4d3d9d2d0cb2198266d81ea6f8",
+      "status": " M docs/IMPLEMENTATION_PLAN.md\n M docs/design.md\n M docs/session-rollout-acceptance-plan.md\n"
+    },
+    "txgame": {
+      "head": "cf54ba97e6e668ff0d4cebf3ae782c3f1f4efe55",
+      "status": " M README.md\n M docs/IMPLEMENTATION_PLAN.md\n M docs/design.md\n M docs/login_authorization.md\n M server/cmd/internal/clustere2e/session_rollout.go\n M server/cmd/internal/clustere2e/session_rollout_model.go\n M server/cmd/internal/clustere2e/session_rollout_test.go\n"
+    },
+    "txgameslg": {
+      "head": "498ec09b7793377a64c24e339a81c1cb5982e0ff",
+      "status": " M README.md\n M docs/IMPLEMENTATION_PLAN.md\n M docs/design.md\n M docs/login_authorization.md\n M server/cmd/internal/clustere2e/session_rollout.go\n M server/cmd/internal/clustere2e/session_rollout_model.go\n M server/cmd/internal/clustere2e/session_rollout_test.go\n"
+    },
+    "txclient": {
+      "head": "b96d00bbb2638c44c20c14409e03907c297fc2bd",
+      "status": " M README.md\n M src/cli/session-rollout-meter.ts\n M src/cli/session-rollout.ts\n M tests/session-rollout-meter.test.ts\n M tests/session-rollout.test.ts\n"
+    },
+    "txclientslg": {
+      "head": "44c3caef8f0fb10d2bd9c89cf487877572f4268e",
+      "status": " M README.md\n M src/cli/session-rollout-meter.ts\n M src/cli/session-rollout.ts\n M tests/session-rollout-meter.test.ts\n M tests/session-rollout.test.ts\n"
+    }
+  },
+  "runs": [
+    {
+      "project": "txgame",
+      "runID": "20261104-211906.650701000",
+      "windows": [
+        {
+          "stage": "login",
+          "schemaVersion": 2,
+          "status": "passed",
+          "completion": "passed",
+          "normalCompletion": "passed",
+          "recovery": "passed",
+          "cleanup": "passed",
+          "total": {
+            "planned": 36000,
+            "attempted": 36000,
+            "completed": 36000,
+            "failed": 0,
+            "notSent": 0,
+            "outcomeUnknown": 0,
+            "timedOut": 0,
+            "late": 0,
+            "duplicate": 0,
+            "unmatched": 0,
+            "completedAfterWindow": 0,
+            "completionRate": 1,
+            "status": "passed",
+            "errors": {}
+          },
+          "groups": {
+            "affected": {
+              "planned": 18000,
+              "attempted": 18000,
+              "completed": 18000,
+              "failed": 0,
+              "notSent": 0,
+              "outcomeUnknown": 0,
+              "timedOut": 0,
+              "late": 0,
+              "duplicate": 0,
+              "unmatched": 0,
+              "completedAfterWindow": 0,
+              "completionRate": 1,
+              "status": "passed",
+              "errors": {}
+            },
+            "control": {
+              "planned": 18000,
+              "attempted": 18000,
+              "completed": 18000,
+              "failed": 0,
+              "notSent": 0,
+              "outcomeUnknown": 0,
+              "timedOut": 0,
+              "late": 0,
+              "duplicate": 0,
+              "unmatched": 0,
+              "completedAfterWindow": 0,
+              "completionRate": 1,
+              "status": "passed",
+              "errors": {}
+            }
+          },
+          "normal": {
+            "total": {
+              "planned": 36000,
+              "attempted": 36000,
+              "completed": 36000,
+              "failed": 0,
+              "notSent": 0,
+              "outcomeUnknown": 0,
+              "completionRate": 1,
+              "status": "passed"
+            },
+            "groups": {
+              "affected": {
+                "planned": 18000,
+                "attempted": 18000,
+                "completed": 18000,
+                "failed": 0,
+                "notSent": 0,
+                "outcomeUnknown": 0,
+                "completionRate": 1,
+                "status": "passed"
+              },
+              "control": {
+                "planned": 18000,
+                "attempted": 18000,
+                "completed": 18000,
+                "failed": 0,
+                "notSent": 0,
+                "outcomeUnknown": 0,
+                "completionRate": 1,
+                "status": "passed"
+              }
+            }
+          },
+          "publication": {
+            "total": {
+              "planned": 0,
+              "attempted": 0,
+              "completed": 0,
+              "failed": 0,
+              "notSent": 0,
+              "outcomeUnknown": 0,
+              "completionRate": 0,
+              "status": "not-measured"
+            },
+            "groups": {
+              "affected": {
+                "planned": 0,
+                "attempted": 0,
+                "completed": 0,
+                "failed": 0,
+                "notSent": 0,
+                "outcomeUnknown": 0,
+                "completionRate": 0,
+                "status": "not-measured"
+              },
+              "control": {
+                "planned": 0,
+                "attempted": 0,
+                "completed": 0,
+                "failed": 0,
+                "notSent": 0,
+                "outcomeUnknown": 0,
+                "completionRate": 0,
+                "status": "not-measured"
+              }
+            },
+            "startedMs": 30010.551985000002,
+            "finishedMs": 31225.031746000004,
+            "sessions": []
+          },
+          "interruptionMs": {
+            "count": 0,
+            "min": null,
+            "max": null,
+            "mean": null
+          },
+          "partitionVerified": true,
+          "lossSeconds": []
+        },
+        {
+          "stage": "agent",
+          "schemaVersion": 2,
+          "status": "passed",
+          "completion": "failed",
+          "normalCompletion": "passed",
+          "recovery": "passed",
+          "cleanup": "passed",
+          "total": {
+            "planned": 36000,
+            "attempted": 35881,
+            "completed": 35881,
+            "failed": 0,
+            "notSent": 119,
+            "outcomeUnknown": 0,
+            "timedOut": 0,
+            "late": 0,
+            "duplicate": 0,
+            "unmatched": 0,
+            "completedAfterWindow": 0,
+            "completionRate": 0.9966944444444444,
+            "status": "failed",
+            "errors": {}
+          },
+          "groups": {
+            "affected": {
+              "planned": 18000,
+              "attempted": 17881,
+              "completed": 17881,
+              "failed": 0,
+              "notSent": 119,
+              "outcomeUnknown": 0,
+              "timedOut": 0,
+              "late": 0,
+              "duplicate": 0,
+              "unmatched": 0,
+              "completedAfterWindow": 0,
+              "completionRate": 0.9933888888888889,
+              "status": "failed",
+              "errors": {}
+            },
+            "control": {
+              "planned": 18000,
+              "attempted": 18000,
+              "completed": 18000,
+              "failed": 0,
+              "notSent": 0,
+              "outcomeUnknown": 0,
+              "timedOut": 0,
+              "late": 0,
+              "duplicate": 0,
+              "unmatched": 0,
+              "completedAfterWindow": 0,
+              "completionRate": 1,
+              "status": "passed",
+              "errors": {}
+            }
+          },
+          "normal": {
+            "total": {
+              "planned": 35880,
+              "attempted": 35880,
+              "completed": 35880,
+              "failed": 0,
+              "notSent": 0,
+              "outcomeUnknown": 0,
+              "completionRate": 1,
+              "status": "passed"
+            },
+            "groups": {
+              "affected": {
+                "planned": 17880,
+                "attempted": 17880,
+                "completed": 17880,
+                "failed": 0,
+                "notSent": 0,
+                "outcomeUnknown": 0,
+                "completionRate": 1,
+                "status": "passed"
+              },
+              "control": {
+                "planned": 18000,
+                "attempted": 18000,
+                "completed": 18000,
+                "failed": 0,
+                "notSent": 0,
+                "outcomeUnknown": 0,
+                "completionRate": 1,
+                "status": "passed"
+              }
+            }
+          },
+          "publication": {
+            "total": {
+              "planned": 120,
+              "attempted": 1,
+              "completed": 1,
+              "failed": 0,
+              "notSent": 119,
+              "outcomeUnknown": 0,
+              "completionRate": 0.008333333333333333,
+              "status": "failed"
+            },
+            "groups": {
+              "affected": {
+                "planned": 120,
+                "attempted": 1,
+                "completed": 1,
+                "failed": 0,
+                "notSent": 119,
+                "outcomeUnknown": 0,
+                "completionRate": 0.008333333333333333,
+                "status": "failed"
+              },
+              "control": {
+                "planned": 0,
+                "attempted": 0,
+                "completed": 0,
+                "failed": 0,
+                "notSent": 0,
+                "outcomeUnknown": 0,
+                "completionRate": 0,
+                "status": "not-measured"
+              }
+            },
+            "startedMs": 30006.149429999998,
+            "finishedMs": 31241.651259,
+            "sessions": [
+              {
+                "roleID": 490601,
+                "disconnectedMs": 30023.381577,
+                "resumedMs": 31201.81181,
+                "interruptionMs": 1178.4302329999991
+              },
+              {
+                "roleID": 490602,
+                "disconnectedMs": 30023.057773,
+                "resumedMs": 31204.225806,
+                "interruptionMs": 1181.168032999998
+              },
+              {
+                "roleID": 490603,
+                "disconnectedMs": 30023.114512,
+                "resumedMs": 31201.654964,
+                "interruptionMs": 1178.540452000001
+              },
+              {
+                "roleID": 490604,
+                "disconnectedMs": 30023.230588,
+                "resumedMs": 31205.407496,
+                "interruptionMs": 1182.1769080000013
+              },
+              {
+                "roleID": 490605,
+                "disconnectedMs": 30023.044282,
+                "resumedMs": 31204.944377,
+                "interruptionMs": 1181.9000950000009
+              },
+              {
+                "roleID": 490606,
+                "disconnectedMs": 30023.025172999998,
+                "resumedMs": 31204.577706,
+                "interruptionMs": 1181.5525330000019
+              },
+              {
+                "roleID": 490607,
+                "disconnectedMs": 30021.120886,
+                "resumedMs": 31205.328633999998,
+                "interruptionMs": 1184.207747999997
+              },
+              {
+                "roleID": 490608,
+                "disconnectedMs": 30023.797719,
+                "resumedMs": 31205.36618,
+                "interruptionMs": 1181.5684610000026
+              },
+              {
+                "roleID": 490609,
+                "disconnectedMs": 30023.300949,
+                "resumedMs": 31201.741556,
+                "interruptionMs": 1178.4406070000005
+              },
+              {
+                "roleID": 490610,
+                "disconnectedMs": 30023.738181,
+                "resumedMs": 31204.394447,
+                "interruptionMs": 1180.6562659999981
+              },
+              {
+                "roleID": 490611,
+                "disconnectedMs": 30023.57409,
+                "resumedMs": 31201.899389,
+                "interruptionMs": 1178.325299
+              },
+              {
+                "roleID": 490612,
+                "disconnectedMs": 30021.77481,
+                "resumedMs": 31204.985088999998,
+                "interruptionMs": 1183.210278999999
+              },
+              {
+                "roleID": 490613,
+                "disconnectedMs": 30023.283306,
+                "resumedMs": 31204.263875,
+                "interruptionMs": 1180.9805689999994
+              },
+              {
+                "roleID": 490614,
+                "disconnectedMs": 30023.72563,
+                "resumedMs": 31204.520836,
+                "interruptionMs": 1180.7952059999989
+              },
+              {
+                "roleID": 490615,
+                "disconnectedMs": 30023.673883,
+                "resumedMs": 31205.649987,
+                "interruptionMs": 1181.9761040000012
+              },
+              {
+                "roleID": 490616,
+                "disconnectedMs": 30023.342085,
+                "resumedMs": 31204.46851,
+                "interruptionMs": 1181.1264249999986
+              },
+              {
+                "roleID": 490617,
+                "disconnectedMs": 30023.624467999998,
+                "resumedMs": 31205.194128,
+                "interruptionMs": 1181.569660000001
+              },
+              {
+                "roleID": 490618,
+                "disconnectedMs": 30023.182779,
+                "resumedMs": 31200.422481999998,
+                "interruptionMs": 1177.2397029999993
+              },
+              {
+                "roleID": 490619,
+                "disconnectedMs": 30023.492817,
+                "resumedMs": 31205.582816,
+                "interruptionMs": 1182.0899989999998
+              },
+              {
+                "roleID": 490620,
+                "disconnectedMs": 30023.416779,
+                "resumedMs": 31205.744714,
+                "interruptionMs": 1182.3279350000012
+              }
+            ]
+          },
+          "interruptionMs": {
+            "count": 20,
+            "min": 1177.2397029999993,
+            "max": 1184.207747999997,
+            "mean": 1180.91412575
+          },
+          "partitionVerified": true,
+          "lossSeconds": [
+            {
+              "second": 30,
+              "planned": 200,
+              "attempted": 120,
+              "completed": 120,
+              "failed": 0,
+              "notSent": 80
+            },
+            {
+              "second": 31,
+              "planned": 200,
+              "attempted": 161,
+              "completed": 161,
+              "failed": 0,
+              "notSent": 39
+            }
+          ]
+        },
+        {
+          "stage": "msgq",
+          "schemaVersion": 2,
+          "status": "passed",
+          "completion": "passed",
+          "normalCompletion": "passed",
+          "recovery": "passed",
+          "cleanup": "passed",
+          "total": {
+            "planned": 36000,
+            "attempted": 36000,
+            "completed": 36000,
+            "failed": 0,
+            "notSent": 0,
+            "outcomeUnknown": 0,
+            "timedOut": 0,
+            "late": 0,
+            "duplicate": 0,
+            "unmatched": 0,
+            "completedAfterWindow": 0,
+            "completionRate": 1,
+            "status": "passed",
+            "errors": {}
+          },
+          "groups": {
+            "control": {
+              "planned": 18000,
+              "attempted": 18000,
+              "completed": 18000,
+              "failed": 0,
+              "notSent": 0,
+              "outcomeUnknown": 0,
+              "timedOut": 0,
+              "late": 0,
+              "duplicate": 0,
+              "unmatched": 0,
+              "completedAfterWindow": 0,
+              "completionRate": 1,
+              "status": "passed",
+              "errors": {}
+            },
+            "affected": {
+              "planned": 18000,
+              "attempted": 18000,
+              "completed": 18000,
+              "failed": 0,
+              "notSent": 0,
+              "outcomeUnknown": 0,
+              "timedOut": 0,
+              "late": 0,
+              "duplicate": 0,
+              "unmatched": 0,
+              "completedAfterWindow": 0,
+              "completionRate": 1,
+              "status": "passed",
+              "errors": {}
+            }
+          },
+          "normal": {
+            "total": {
+              "planned": 36000,
+              "attempted": 36000,
+              "completed": 36000,
+              "failed": 0,
+              "notSent": 0,
+              "outcomeUnknown": 0,
+              "completionRate": 1,
+              "status": "passed"
+            },
+            "groups": {
+              "control": {
+                "planned": 18000,
+                "attempted": 18000,
+                "completed": 18000,
+                "failed": 0,
+                "notSent": 0,
+                "outcomeUnknown": 0,
+                "completionRate": 1,
+                "status": "passed"
+              },
+              "affected": {
+                "planned": 18000,
+                "attempted": 18000,
+                "completed": 18000,
+                "failed": 0,
+                "notSent": 0,
+                "outcomeUnknown": 0,
+                "completionRate": 1,
+                "status": "passed"
+              }
+            }
+          },
+          "publication": {
+            "total": {
+              "planned": 0,
+              "attempted": 0,
+              "completed": 0,
+              "failed": 0,
+              "notSent": 0,
+              "outcomeUnknown": 0,
+              "completionRate": 0,
+              "status": "not-measured"
+            },
+            "groups": {
+              "control": {
+                "planned": 0,
+                "attempted": 0,
+                "completed": 0,
+                "failed": 0,
+                "notSent": 0,
+                "outcomeUnknown": 0,
+                "completionRate": 0,
+                "status": "not-measured"
+              },
+              "affected": {
+                "planned": 0,
+                "attempted": 0,
+                "completed": 0,
+                "failed": 0,
+                "notSent": 0,
+                "outcomeUnknown": 0,
+                "completionRate": 0,
+                "status": "not-measured"
+              }
+            },
+            "startedMs": 30006.872529,
+            "finishedMs": 30138.437390000003,
+            "sessions": [
+              {
+                "roleID": 490702,
+                "disconnectedMs": 30024.327359000003,
+                "resumedMs": 30120.125381,
+                "interruptionMs": 95.79802199999904
+              },
+              {
+                "roleID": 490704,
+                "disconnectedMs": 30023.139225000003,
+                "resumedMs": 30131.05957,
+                "interruptionMs": 107.92034499999863
+              },
+              {
+                "roleID": 490706,
+                "disconnectedMs": 30019.740367000002,
+                "resumedMs": 30119.69443,
+                "interruptionMs": 99.9540629999974
+              },
+              {
+                "roleID": 490708,
+                "disconnectedMs": 30022.587005,
+                "resumedMs": 30131.384969000002,
+                "interruptionMs": 108.79796400000123
+              },
+              {
+                "roleID": 490710,
+                "disconnectedMs": 30023.749723,
+                "resumedMs": 30120.274998,
+                "interruptionMs": 96.52527499999997
+              },
+              {
+                "roleID": 490712,
+                "disconnectedMs": 30023.572471,
+                "resumedMs": 30131.461091,
+                "interruptionMs": 107.88862000000154
+              },
+              {
+                "roleID": 490714,
+                "disconnectedMs": 30023.514991,
+                "resumedMs": 30119.845431,
+                "interruptionMs": 96.33044000000154
+              },
+              {
+                "roleID": 490716,
+                "disconnectedMs": 30023.807301,
+                "resumedMs": 30132.223214,
+                "interruptionMs": 108.41591300000073
+              },
+              {
+                "roleID": 490718,
+                "disconnectedMs": 30023.307472,
+                "resumedMs": 30119.184591,
+                "interruptionMs": 95.87711900000068
+              },
+              {
+                "roleID": 490720,
+                "disconnectedMs": 30024.233466,
+                "resumedMs": 30133.235126,
+                "interruptionMs": 109.00165999999808
+              },
+              {
+                "roleID": 490722,
+                "disconnectedMs": 30023.065716,
+                "resumedMs": 30120.321511000002,
+                "interruptionMs": 97.25579500000094
+              },
+              {
+                "roleID": 490724,
+                "disconnectedMs": 30023.931461,
+                "resumedMs": 30134.168233,
+                "interruptionMs": 110.2367720000002
+              },
+              {
+                "roleID": 490726,
+                "disconnectedMs": 30023.081378000003,
+                "resumedMs": 30128.105843,
+                "interruptionMs": 105.0244649999986
+              },
+              {
+                "roleID": 490728,
+                "disconnectedMs": 30024.061852000003,
+                "resumedMs": 30132.375848,
+                "interruptionMs": 108.31399599999713
+              },
+              {
+                "roleID": 490730,
+                "disconnectedMs": 30023.621384000002,
+                "resumedMs": 30128.015788,
+                "interruptionMs": 104.39440399999876
+              },
+              {
+                "roleID": 490732,
+                "disconnectedMs": 30023.682224,
+                "resumedMs": 30137.693042000003,
+                "interruptionMs": 114.01081800000247
+              },
+              {
+                "roleID": 490734,
+                "disconnectedMs": 30023.322616,
+                "resumedMs": 30128.242562,
+                "interruptionMs": 104.91994599999816
+              },
+              {
+                "roleID": 490736,
+                "disconnectedMs": 30023.396438,
+                "resumedMs": 30138.317981,
+                "interruptionMs": 114.92154300000038
+              },
+              {
+                "roleID": 490738,
+                "disconnectedMs": 30023.193646,
+                "resumedMs": 30127.700295000002,
+                "interruptionMs": 104.50664900000265
+              },
+              {
+                "roleID": 490740,
+                "disconnectedMs": 30023.23663,
+                "resumedMs": 30136.998887,
+                "interruptionMs": 113.76225700000214
+              }
+            ]
+          },
+          "interruptionMs": {
+            "count": 20,
+            "min": 95.79802199999904,
+            "max": 114.92154300000038,
+            "mean": 105.19280330000001
+          },
+          "partitionVerified": true,
+          "lossSeconds": []
+        }
+      ],
+      "processExits": 11,
+      "allExitsZero": true,
+      "status": "passed",
+      "binarySHA256": "5356b0aa0a61005f354b84aed695c933bd1cea52eb9ffb1f83ae3c876e4c27ac"
+    },
+    {
+      "project": "txgameslg",
+      "runID": "20261104-212942.316840000",
+      "windows": [
+        {
+          "stage": "login",
+          "schemaVersion": 2,
+          "status": "passed",
+          "completion": "passed",
+          "normalCompletion": "passed",
+          "recovery": "passed",
+          "cleanup": "passed",
+          "total": {
+            "planned": 36000,
+            "attempted": 36000,
+            "completed": 36000,
+            "failed": 0,
+            "notSent": 0,
+            "outcomeUnknown": 0,
+            "timedOut": 0,
+            "late": 0,
+            "duplicate": 0,
+            "unmatched": 0,
+            "completedAfterWindow": 0,
+            "completionRate": 1,
+            "status": "passed",
+            "errors": {}
+          },
+          "groups": {
+            "affected": {
+              "planned": 18000,
+              "attempted": 18000,
+              "completed": 18000,
+              "failed": 0,
+              "notSent": 0,
+              "outcomeUnknown": 0,
+              "timedOut": 0,
+              "late": 0,
+              "duplicate": 0,
+              "unmatched": 0,
+              "completedAfterWindow": 0,
+              "completionRate": 1,
+              "status": "passed",
+              "errors": {}
+            },
+            "control": {
+              "planned": 18000,
+              "attempted": 18000,
+              "completed": 18000,
+              "failed": 0,
+              "notSent": 0,
+              "outcomeUnknown": 0,
+              "timedOut": 0,
+              "late": 0,
+              "duplicate": 0,
+              "unmatched": 0,
+              "completedAfterWindow": 0,
+              "completionRate": 1,
+              "status": "passed",
+              "errors": {}
+            }
+          },
+          "normal": {
+            "total": {
+              "planned": 36000,
+              "attempted": 36000,
+              "completed": 36000,
+              "failed": 0,
+              "notSent": 0,
+              "outcomeUnknown": 0,
+              "completionRate": 1,
+              "status": "passed"
+            },
+            "groups": {
+              "affected": {
+                "planned": 18000,
+                "attempted": 18000,
+                "completed": 18000,
+                "failed": 0,
+                "notSent": 0,
+                "outcomeUnknown": 0,
+                "completionRate": 1,
+                "status": "passed"
+              },
+              "control": {
+                "planned": 18000,
+                "attempted": 18000,
+                "completed": 18000,
+                "failed": 0,
+                "notSent": 0,
+                "outcomeUnknown": 0,
+                "completionRate": 1,
+                "status": "passed"
+              }
+            }
+          },
+          "publication": {
+            "total": {
+              "planned": 0,
+              "attempted": 0,
+              "completed": 0,
+              "failed": 0,
+              "notSent": 0,
+              "outcomeUnknown": 0,
+              "completionRate": 0,
+              "status": "not-measured"
+            },
+            "groups": {
+              "affected": {
+                "planned": 0,
+                "attempted": 0,
+                "completed": 0,
+                "failed": 0,
+                "notSent": 0,
+                "outcomeUnknown": 0,
+                "completionRate": 0,
+                "status": "not-measured"
+              },
+              "control": {
+                "planned": 0,
+                "attempted": 0,
+                "completed": 0,
+                "failed": 0,
+                "notSent": 0,
+                "outcomeUnknown": 0,
+                "completionRate": 0,
+                "status": "not-measured"
+              }
+            },
+            "startedMs": 30015.522291,
+            "finishedMs": 31225.544845,
+            "sessions": []
+          },
+          "interruptionMs": {
+            "count": 0,
+            "min": null,
+            "max": null,
+            "mean": null
+          },
+          "partitionVerified": true,
+          "lossSeconds": []
+        },
+        {
+          "stage": "agent",
+          "schemaVersion": 2,
+          "status": "passed",
+          "completion": "failed",
+          "normalCompletion": "passed",
+          "recovery": "passed",
+          "cleanup": "passed",
+          "total": {
+            "planned": 36000,
+            "attempted": 35880,
+            "completed": 35880,
+            "failed": 0,
+            "notSent": 120,
+            "outcomeUnknown": 0,
+            "timedOut": 0,
+            "late": 0,
+            "duplicate": 0,
+            "unmatched": 0,
+            "completedAfterWindow": 0,
+            "completionRate": 0.9966666666666667,
+            "status": "failed",
+            "errors": {}
+          },
+          "groups": {
+            "affected": {
+              "planned": 18000,
+              "attempted": 17880,
+              "completed": 17880,
+              "failed": 0,
+              "notSent": 120,
+              "outcomeUnknown": 0,
+              "timedOut": 0,
+              "late": 0,
+              "duplicate": 0,
+              "unmatched": 0,
+              "completedAfterWindow": 0,
+              "completionRate": 0.9933333333333333,
+              "status": "failed",
+              "errors": {}
+            },
+            "control": {
+              "planned": 18000,
+              "attempted": 18000,
+              "completed": 18000,
+              "failed": 0,
+              "notSent": 0,
+              "outcomeUnknown": 0,
+              "timedOut": 0,
+              "late": 0,
+              "duplicate": 0,
+              "unmatched": 0,
+              "completedAfterWindow": 0,
+              "completionRate": 1,
+              "status": "passed",
+              "errors": {}
+            }
+          },
+          "normal": {
+            "total": {
+              "planned": 35870,
+              "attempted": 35870,
+              "completed": 35870,
+              "failed": 0,
+              "notSent": 0,
+              "outcomeUnknown": 0,
+              "completionRate": 1,
+              "status": "passed"
+            },
+            "groups": {
+              "affected": {
+                "planned": 17870,
+                "attempted": 17870,
+                "completed": 17870,
+                "failed": 0,
+                "notSent": 0,
+                "outcomeUnknown": 0,
+                "completionRate": 1,
+                "status": "passed"
+              },
+              "control": {
+                "planned": 18000,
+                "attempted": 18000,
+                "completed": 18000,
+                "failed": 0,
+                "notSent": 0,
+                "outcomeUnknown": 0,
+                "completionRate": 1,
+                "status": "passed"
+              }
+            }
+          },
+          "publication": {
+            "total": {
+              "planned": 130,
+              "attempted": 10,
+              "completed": 10,
+              "failed": 0,
+              "notSent": 120,
+              "outcomeUnknown": 0,
+              "completionRate": 0.07692307692307693,
+              "status": "failed"
+            },
+            "groups": {
+              "affected": {
+                "planned": 130,
+                "attempted": 10,
+                "completed": 10,
+                "failed": 0,
+                "notSent": 120,
+                "outcomeUnknown": 0,
+                "completionRate": 0.07692307692307693,
+                "status": "failed"
+              },
+              "control": {
+                "planned": 0,
+                "attempted": 0,
+                "completed": 0,
+                "failed": 0,
+                "notSent": 0,
+                "outcomeUnknown": 0,
+                "completionRate": 0,
+                "status": "not-measured"
+              }
+            },
+            "startedMs": 30013.126457,
+            "finishedMs": 31245.533965,
+            "sessions": [
+              {
+                "roleID": 490601,
+                "disconnectedMs": 30029.408982,
+                "resumedMs": 31209.682394,
+                "interruptionMs": 1180.2734119999986
+              },
+              {
+                "roleID": 490602,
+                "disconnectedMs": 30033.569595,
+                "resumedMs": 31213.371666,
+                "interruptionMs": 1179.8020709999983
+              },
+              {
+                "roleID": 490603,
+                "disconnectedMs": 30033.628643,
+                "resumedMs": 31216.26854,
+                "interruptionMs": 1182.639897000001
+              },
+              {
+                "roleID": 490604,
+                "disconnectedMs": 30032.521628,
+                "resumedMs": 31211.564866,
+                "interruptionMs": 1179.043238000002
+              },
+              {
+                "roleID": 490605,
+                "disconnectedMs": 30033.557975,
+                "resumedMs": 31212.781642,
+                "interruptionMs": 1179.223667000002
+              },
+              {
+                "roleID": 490606,
+                "disconnectedMs": 30033.546587,
+                "resumedMs": 31215.592811,
+                "interruptionMs": 1182.046223999998
+              },
+              {
+                "roleID": 490607,
+                "disconnectedMs": 30033.489174,
+                "resumedMs": 31214.492663,
+                "interruptionMs": 1181.0034890000024
+              },
+              {
+                "roleID": 490608,
+                "disconnectedMs": 30033.275707,
+                "resumedMs": 31215.201,
+                "interruptionMs": 1181.9252930000002
+              },
+              {
+                "roleID": 490609,
+                "disconnectedMs": 30031.574309,
+                "resumedMs": 31215.503849,
+                "interruptionMs": 1183.929540000001
+              },
+              {
+                "roleID": 490610,
+                "disconnectedMs": 30031.550369,
+                "resumedMs": 31214.309679,
+                "interruptionMs": 1182.7593100000013
+              },
+              {
+                "roleID": 490611,
+                "disconnectedMs": 30033.032833,
+                "resumedMs": 31211.653528,
+                "interruptionMs": 1178.6206949999978
+              },
+              {
+                "roleID": 490612,
+                "disconnectedMs": 30032.946258,
+                "resumedMs": 31217.651409,
+                "interruptionMs": 1184.7051509999983
+              },
+              {
+                "roleID": 490613,
+                "disconnectedMs": 30031.516128,
+                "resumedMs": 31216.519782,
+                "interruptionMs": 1185.003654
+              },
+              {
+                "roleID": 490614,
+                "disconnectedMs": 30032.873647,
+                "resumedMs": 31209.82295,
+                "interruptionMs": 1176.9493030000012
+              },
+              {
+                "roleID": 490615,
+                "disconnectedMs": 30033.411222,
+                "resumedMs": 31216.379684,
+                "interruptionMs": 1182.9684620000007
+              },
+              {
+                "roleID": 490616,
+                "disconnectedMs": 30033.344335,
+                "resumedMs": 31216.601726,
+                "interruptionMs": 1183.2573909999992
+              },
+              {
+                "roleID": 490617,
+                "disconnectedMs": 30031.624778,
+                "resumedMs": 31214.22739,
+                "interruptionMs": 1182.6026119999988
+              },
+              {
+                "roleID": 490618,
+                "disconnectedMs": 30031.596847,
+                "resumedMs": 31214.388931,
+                "interruptionMs": 1182.7920840000006
+              },
+              {
+                "roleID": 490619,
+                "disconnectedMs": 30033.208029,
+                "resumedMs": 31213.61784,
+                "interruptionMs": 1180.4098109999977
+              },
+              {
+                "roleID": 490620,
+                "disconnectedMs": 30033.123807,
+                "resumedMs": 31216.460598,
+                "interruptionMs": 1183.3367910000015
+              }
+            ]
+          },
+          "interruptionMs": {
+            "count": 20,
+            "min": 1176.9493030000012,
+            "max": 1185.003654,
+            "mean": 1181.66460475
+          },
+          "partitionVerified": true,
+          "lossSeconds": [
+            {
+              "second": 30,
+              "planned": 200,
+              "attempted": 120,
+              "completed": 120,
+              "failed": 0,
+              "notSent": 80
+            },
+            {
+              "second": 31,
+              "planned": 200,
+              "attempted": 160,
+              "completed": 160,
+              "failed": 0,
+              "notSent": 40
+            }
+          ]
+        },
+        {
+          "stage": "msgq",
+          "schemaVersion": 2,
+          "status": "passed",
+          "completion": "passed",
+          "normalCompletion": "passed",
+          "recovery": "passed",
+          "cleanup": "passed",
+          "total": {
+            "planned": 36000,
+            "attempted": 36000,
+            "completed": 36000,
+            "failed": 0,
+            "notSent": 0,
+            "outcomeUnknown": 0,
+            "timedOut": 0,
+            "late": 0,
+            "duplicate": 0,
+            "unmatched": 0,
+            "completedAfterWindow": 0,
+            "completionRate": 1,
+            "status": "passed",
+            "errors": {}
+          },
+          "groups": {
+            "affected": {
+              "planned": 18000,
+              "attempted": 18000,
+              "completed": 18000,
+              "failed": 0,
+              "notSent": 0,
+              "outcomeUnknown": 0,
+              "timedOut": 0,
+              "late": 0,
+              "duplicate": 0,
+              "unmatched": 0,
+              "completedAfterWindow": 0,
+              "completionRate": 1,
+              "status": "passed",
+              "errors": {}
+            },
+            "control": {
+              "planned": 18000,
+              "attempted": 18000,
+              "completed": 18000,
+              "failed": 0,
+              "notSent": 0,
+              "outcomeUnknown": 0,
+              "timedOut": 0,
+              "late": 0,
+              "duplicate": 0,
+              "unmatched": 0,
+              "completedAfterWindow": 0,
+              "completionRate": 1,
+              "status": "passed",
+              "errors": {}
+            }
+          },
+          "normal": {
+            "total": {
+              "planned": 36000,
+              "attempted": 36000,
+              "completed": 36000,
+              "failed": 0,
+              "notSent": 0,
+              "outcomeUnknown": 0,
+              "completionRate": 1,
+              "status": "passed"
+            },
+            "groups": {
+              "affected": {
+                "planned": 18000,
+                "attempted": 18000,
+                "completed": 18000,
+                "failed": 0,
+                "notSent": 0,
+                "outcomeUnknown": 0,
+                "completionRate": 1,
+                "status": "passed"
+              },
+              "control": {
+                "planned": 18000,
+                "attempted": 18000,
+                "completed": 18000,
+                "failed": 0,
+                "notSent": 0,
+                "outcomeUnknown": 0,
+                "completionRate": 1,
+                "status": "passed"
+              }
+            }
+          },
+          "publication": {
+            "total": {
+              "planned": 0,
+              "attempted": 0,
+              "completed": 0,
+              "failed": 0,
+              "notSent": 0,
+              "outcomeUnknown": 0,
+              "completionRate": 0,
+              "status": "not-measured"
+            },
+            "groups": {
+              "affected": {
+                "planned": 0,
+                "attempted": 0,
+                "completed": 0,
+                "failed": 0,
+                "notSent": 0,
+                "outcomeUnknown": 0,
+                "completionRate": 0,
+                "status": "not-measured"
+              },
+              "control": {
+                "planned": 0,
+                "attempted": 0,
+                "completed": 0,
+                "failed": 0,
+                "notSent": 0,
+                "outcomeUnknown": 0,
+                "completionRate": 0,
+                "status": "not-measured"
+              }
+            },
+            "startedMs": 30010.555136,
+            "finishedMs": 30124.498538,
+            "sessions": [
+              {
+                "roleID": 490701,
+                "disconnectedMs": 30019.891495,
+                "resumedMs": 30104.492407,
+                "interruptionMs": 84.6009120000017
+              },
+              {
+                "roleID": 490703,
+                "disconnectedMs": 30024.978164,
+                "resumedMs": 30112.423473,
+                "interruptionMs": 87.44530899999882
+              },
+              {
+                "roleID": 490705,
+                "disconnectedMs": 30024.206933,
+                "resumedMs": 30109.978795,
+                "interruptionMs": 85.77186199999778
+              },
+              {
+                "roleID": 490707,
+                "disconnectedMs": 30024.807445000002,
+                "resumedMs": 30110.234484,
+                "interruptionMs": 85.42703899999833
+              },
+              {
+                "roleID": 490709,
+                "disconnectedMs": 30024.912471,
+                "resumedMs": 30111.109102000002,
+                "interruptionMs": 86.19663100000253
+              },
+              {
+                "roleID": 490711,
+                "disconnectedMs": 30025.172695,
+                "resumedMs": 30123.94814,
+                "interruptionMs": 98.77544499999931
+              },
+              {
+                "roleID": 490713,
+                "disconnectedMs": 30024.2329,
+                "resumedMs": 30109.90626,
+                "interruptionMs": 85.67336000000068
+              },
+              {
+                "roleID": 490715,
+                "disconnectedMs": 30025.362136,
+                "resumedMs": 30120.355699,
+                "interruptionMs": 94.993563
+              },
+              {
+                "roleID": 490717,
+                "disconnectedMs": 30025.775505,
+                "resumedMs": 30109.820852,
+                "interruptionMs": 84.04534699999931
+              },
+              {
+                "roleID": 490719,
+                "disconnectedMs": 30024.327466,
+                "resumedMs": 30123.448657,
+                "interruptionMs": 99.121191000002
+              },
+              {
+                "roleID": 490721,
+                "disconnectedMs": 30024.732797,
+                "resumedMs": 30120.414897,
+                "interruptionMs": 95.68209999999817
+              },
+              {
+                "roleID": 490723,
+                "disconnectedMs": 30024.636165,
+                "resumedMs": 30124.366212,
+                "interruptionMs": 99.73004700000092
+              },
+              {
+                "roleID": 490725,
+                "disconnectedMs": 30025.290275,
+                "resumedMs": 30123.511948,
+                "interruptionMs": 98.22167300000001
+              },
+              {
+                "roleID": 490727,
+                "disconnectedMs": 30024.476361,
+                "resumedMs": 30123.022742,
+                "interruptionMs": 98.54638100000011
+              },
+              {
+                "roleID": 490729,
+                "disconnectedMs": 30025.070008,
+                "resumedMs": 30117.418553,
+                "interruptionMs": 92.34854500000074
+              },
+              {
+                "roleID": 490731,
+                "disconnectedMs": 30025.495161,
+                "resumedMs": 30118.888107,
+                "interruptionMs": 93.39294599999994
+              },
+              {
+                "roleID": 490733,
+                "disconnectedMs": 30025.265507,
+                "resumedMs": 30118.470437,
+                "interruptionMs": 93.20492999999988
+              },
+              {
+                "roleID": 490735,
+                "disconnectedMs": 30023.630892,
+                "resumedMs": 30123.564624,
+                "interruptionMs": 99.93373199999769
+              },
+              {
+                "roleID": 490737,
+                "disconnectedMs": 30025.050706,
+                "resumedMs": 30119.385322000002,
+                "interruptionMs": 94.3346160000001
+              },
+              {
+                "roleID": 490739,
+                "disconnectedMs": 30025.669105,
+                "resumedMs": 30120.469599,
+                "interruptionMs": 94.80049399999916
+              }
+            ]
+          },
+          "interruptionMs": {
+            "count": 20,
+            "min": 84.04534699999931,
+            "max": 99.93373199999769,
+            "mean": 92.61230614999985
+          },
+          "partitionVerified": true,
+          "lossSeconds": []
+        }
+      ],
+      "processExits": 11,
+      "allExitsZero": true,
+      "status": "passed",
+      "binarySHA256": "bb3a13d537435bf9cfa3b59996327861147bbd811bfbe2617732dc72b8343fa7",
+      "persistence": {
+        "status": "passed",
+        "roles": 120,
+        "allOriginServerID1001": true,
+        "world": {
+          "WorldID": 1,
+          "BucketID": 7,
+          "UnitID": 1001,
+          "PosX": 31,
+          "PosY": 32,
+          "DocumentVersion": 2
+        }
+      }
+    }
+  ],
+  "postflight": {
+    "txgame": {
+      "redis": {
+        "code": 0,
+        "stdout": "0",
+        "stderr": ""
+      },
+      "mongo": {
+        "code": 0,
+        "stdout": "[]",
+        "stderr": ""
+      },
+      "etcd": {
+        "code": 0,
+        "stdout": "{\"header\":{\"cluster_id\":14841639068965178418,\"member_id\":10276657743932975437,\"revision\":756120,\"raft_term\":10}}",
+        "stderr": ""
+      },
+      "issuer": {
+        "code": 0,
+        "stdout": "{\"header\":{\"cluster_id\":14841639068965178418,\"member_id\":10276657743932975437,\"revision\":756120,\"raft_term\":10}}",
+        "stderr": ""
+      }
+    },
+    "txgameslg": {
+      "redis": {
+        "code": 0,
+        "stdout": "0",
+        "stderr": ""
+      },
+      "mongo": {
+        "code": 0,
+        "stdout": "[]",
+        "stderr": ""
+      },
+      "etcd": {
+        "code": 0,
+        "stdout": "{\"header\":{\"cluster_id\":14841639068965178418,\"member_id\":10276657743932975437,\"revision\":756120,\"raft_term\":10}}",
+        "stderr": ""
+      },
+      "issuer": {
+        "code": 0,
+        "stdout": "{\"header\":{\"cluster_id\":14841639068965178418,\"member_id\":10276657743932975437,\"revision\":756120,\"raft_term\":10}}",
+        "stderr": ""
+      }
+    },
+    "residualProcesses": {
+      "code": 0,
+      "matches": []
+    }
+  }
+}
