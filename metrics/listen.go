@@ -16,7 +16,7 @@ type Listener struct {
 	stop   context.CancelFunc
 }
 
-// Listen 在指定地址启动独立采集入口；调用方负责关闭。
+// Listen 在指定地址启动独立采集入口；ctx 取消会关闭监听，调用方也可显式调用 Close。
 func Listen(ctx context.Context, address string) (*Listener, error) {
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
@@ -39,7 +39,7 @@ func Listen(ctx context.Context, address string) (*Listener, error) {
 	return result, nil
 }
 
-// Close 停止采集入口。
+// Close 关闭 HTTP 服务及连接，不等待已开始的采集回调退出。
 func (listener *Listener) Close() error {
 	listener.stop()
 	return listener.server.Close()

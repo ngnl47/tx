@@ -1,4 +1,6 @@
 // Package metrics 提供进程级消息链路指标；标签只使用固定的阶段和结果。
+// 各模块通过 Record 系列函数观测，Handler 暴露独立注册表，Listen 可选地启动专用采集端口。
+// 邮箱统计通过 RegisterMailboxSnapshot 按采集读取，不接管被观察资源的生命周期。
 package metrics
 
 import (
@@ -134,7 +136,10 @@ func init() {
 // Handler 返回独立注册表的 Prometheus 采集入口。
 func Handler() http.Handler { return promhttp.HandlerFor(registry, promhttp.HandlerOpts{}) }
 
-// RegisterMailboxSnapshot 仅在 MsgQ 服务运行期间提供邮箱快照。
+// RegisterMailboxSnapshot 登记进程级邮箱统计来源，新登记会替换旧来源，不自动聚合多个来源。
+// read 应支持并发调用，快速、只读且不改变邮箱状态；各指标独立读取，不保证同一时刻的组合快照。
+// 返回函数只在当前来源仍是本次登记时解除它，不会移除后续登记的来源。
+// 解除登记不等待已开始的采集回调退出，不能把它当作被观察资源的关闭屏障。
 func RegisterMailboxSnapshot(read func() (sessions, messages, bytes int)) func() {
 	source := &snapshotSource{read: read}
 	mailboxSnapshot.Store(source)

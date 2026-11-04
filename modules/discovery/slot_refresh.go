@@ -28,7 +28,9 @@ type slotRefresh struct {
 	pending map[slotRefreshKey]*slotRefreshCall
 }
 
-// BindRefresh 在开放调用前绑定进程任务视图；查询取消和等待所有权仍属于宿主。
+// BindRefresh 在开放调用前绑定共享刷新所需的进程任务视图，不可与解析并发重新绑定。
+// 同服务同槽位复用一次限时查询，由宿主追踪其退出；单次 ResolveServiceSlot 的 ctx
+// 仅控制该调用方等待，查询自身受独立期限及宿主取消信号约束。
 func (r *SlotResolver) BindRefresh(tasks lifecycle.Tasks) {
 	r.refresh = &slotRefresh{pending: make(map[slotRefreshKey]*slotRefreshCall), tasks: tasks, resolver: r}
 }

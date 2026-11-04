@@ -9,12 +9,14 @@ import (
 //
 // Set 对应字段设置、整体替换或容器清空；Delete 对应字段删除。Mongo
 // 适配器会把 Delete 转成 `$unset`，Redis 适配器会把 Delete 转成 JSON 字段移除。
+// 文档不自动深复制 Set 中的值；它是同步构建结果，不等同于可跨 goroutine 使用的独立快照。
 type Document struct {
 	Set    map[string]any
 	Delete map[string]struct{}
 }
 
-// ValueResolver 按结构化 Path 从当前对象读取最终值。
+// ValueResolver 按结构化 Path 从当前对象读取最终值，调用在构建文档期间同步发生。
+// 返回的 map、slice 或指针可以引用原对象；调用方负责保护读取及后续同步消费期间的数据。
 type ValueResolver interface {
 	ResolveValue(Path) (any, bool)
 }
@@ -50,7 +52,9 @@ func NewDocumentBuilder(resolver FieldNameResolver, kind FieldNameKind, values V
 	}
 }
 
-// BuildDocument 按指定字段命名体系把规范化脏状态构建为变更文档。
+// BuildDocument 按指定字段命名体系同步构建变更文档，不清除源的脏标记。
+// 输出保留 ValueResolver 返回值的引用；异步消费前须捕获独立值或明确转移所有权，
+// 不能仅因本方法返回就释放对共享可变数据的保护。
 func BuildDocument(source Source, resolver FieldNameResolver, kind FieldNameKind, values ValueResolver) (Document, error) {
 	if err := ValidateSource(source); err != nil {
 		return Document{}, err
@@ -106,7 +110,8 @@ func (b *DocumentBuilder) VisitChange(path Path, op Op) error {
 	return nil
 }
 
-// Document 返回已同步构建的文档。调用方在继续 VisitChange 前不应修改其 map。
+// Document 返回当前文档视图，与构建器共享顶层 map，也不深复制字段值。
+// 继续 VisitChange 会改变该视图；调用方不应并发修改或把它直接作为独立快照。
 func (b *DocumentBuilder) Document() Document {
 	if b == nil {
 		return Document{}

@@ -1,4 +1,5 @@
 // Package tasks 提供可靠 Actor 任务的持久投递契约，消费与确认由框架负责。
+// 发布入口与 Actor 的普通 Call/Tell 分离；业务幂等和补偿由应用定义，部署侧预建 JetStream 资源。
 package tasks
 
 import (
@@ -9,6 +10,9 @@ import (
 
 // Publisher 确认任务已持久发布，不等待目标 Actor 执行。
 type Publisher interface {
+	// Publish 返回 nil 表示收到 JetStream 持久发布确认，不表示 Actor 已接纳或业务已执行。
+	// 发出请求后超时或连接错误可能留下未知结果，不能据此认定未发布并盲目重投。
+	// 本入口不自动按业务身份去重，消费重投和业务侧重新发布都须由业务幂等承接。
 	Publish(context.Context, actor.Identity, actor.Delivery) error
 }
 

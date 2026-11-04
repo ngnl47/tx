@@ -1,4 +1,8 @@
-// Package discovery 提供服务实例发现基础能力。
+// Package discovery 管理服务成员目录与 Actor 逻辑槽位归属，两者不等同于业务对象生命周期。
+//
+// Runtime 维护成员注册及 Watch 视图；SlotResolver 读取可调用目标，SlotOwnership 负责
+// 首次分配和正常交接，LocalAssignments 只管理本实例认领。调用方不因缓存失效自行改派，
+// 归属变化仍通过权威存储的条件写入完成；业务对象的加载和持久化由宿主与应用负责。
 package discovery
 
 import (

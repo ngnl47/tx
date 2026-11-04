@@ -102,11 +102,16 @@ func NewSlotResolver(store SlotReader, directory Directory) (*SlotResolver, erro
 	return router, nil
 }
 
+// ResolveSlot 读取当前归属并校验成员处于 Running；不触发 BindRefresh 配置的共享刷新。
+// 它不限定服务类型，需要核对目标服务时使用 ResolveServiceSlot。
 func (r *SlotResolver) ResolveSlot(ctx context.Context, slotID string) (SlotTarget, error) {
 	return r.resolveSlot(ctx, "", slotID)
 }
 
-// ResolveServiceSlot 同时校验目标实例承载指定服务；不因服务不匹配改派归属。
+// ResolveServiceSlot 解析归属并校验目标实例承载指定服务；不因服务不匹配改派归属。
+// 绑定 BindRefresh 后，归属缺失、缓存过期或成员暂不可用时可加入同服务同槽位的共享限时查询。
+// 成员暂不可用且 ctx 没有期限时直接返回错误；已释放槽位与目录不可用也不进入刷新。
+// ctx 取消只结束当前调用的等待，不取消其他调用方共用的查询；本方法不重投业务消息。
 func (r *SlotResolver) ResolveServiceSlot(ctx context.Context, service, slotID string) (SlotTarget, error) {
 	if service == "" {
 		return SlotTarget{}, ErrSlotRuntimeUnavailable

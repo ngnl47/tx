@@ -1,4 +1,7 @@
-// Package lifecycle 提供支持取消的上下文，并在优雅关闭期间等待已接受的工作执行完毕。
+// Package lifecycle 提供工作准入、取消信号与完成等待，不决定业务持久化或槽位交接。
+//
+// 宿主拥有 WaitGroupContext 的取消和等待权限，模块通过 Tasks / TaskView 登记后台工作。
+// Ingress 独立控制入口排水：先关闭新准入，再等待已接受的工作；取消信号不等于任务退出。
 package lifecycle
 
 import (
@@ -12,6 +15,7 @@ var ErrStopping = errors.New("lifecycle: context is stopping")
 // Tasks 是面向服务的生命周期契约。模块可以登记自己负责的后台任务，但无权取消或等待进程根上下文。
 type Tasks interface {
 	context.Context
+	// Go 登记并启动后台工作；返回错误表示未启动，成功后由宿主追踪至回调退出。
 	Go(func(context.Context)) error
 }
 
@@ -90,8 +94,9 @@ func (c *WaitGroupContext) Enter() (func(), error) {
 	return func() { once.Do(c.EndWork) }, nil
 }
 
-// BeginWork 登记一项已被框架队列接受的工作。它与 EndWork 成对使用，供邮箱等
-// 高频基础组件避免为每项工作创建完成闭包；普通调用方应优先使用 Enter 或 Go。
+// BeginWork 在入队或执行前登记已接纳工作，使尚未入队的工作也参与关闭等待。
+// 成功后每条退出路径（包括入队失败）必须且只能调用一次 EndWork。
+// 本方法供高频基础组件避免创建完成闭包；普通调用方应优先使用 Enter 或 Go。
 func (c *WaitGroupContext) BeginWork() error {
 	if c == nil {
 		return ErrStopping

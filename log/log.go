@@ -1,3 +1,5 @@
+// Package log 提供基于 slog 的进程日志入口及命名记录器，不创建或关闭日志输出资源。
+// 应用通过 SetDefault 选择输出；未设置时使用 slog.Default，字段和过滤策略由其 Handler 决定。
 package log
 
 import (
@@ -13,12 +15,15 @@ var (
 	defaultLogger *slog.Logger
 )
 
+// SetDefault 替换进程默认记录器，传 nil 时恢复使用 slog.Default。
+// 它不关闭旧输出资源；已有 Logger 也会在下一次记录时读取新的默认记录器。
 func SetDefault(logger *slog.Logger) {
 	defaultMu.Lock()
 	defaultLogger = logger
 	defaultMu.Unlock()
 }
 
+// Default 返回当前默认记录器；未设置时回退 slog.Default。
 func Default() *slog.Logger {
 	defaultMu.RLock()
 	logger := defaultLogger
@@ -61,10 +66,12 @@ func ErrorContext(ctx context.Context, msg string, args ...any) {
 	write(ctx, Default(), "", slog.LevelError, msg, args...)
 }
 
+// Logger 只保存日志分类名，不持有独立输出资源。
 type Logger struct {
 	name string
 }
 
+// NewLogger 创建附带 logger 分类字段的轻量记录器，共用进程默认输出。
 func NewLogger(name string) Logger {
 	return Logger{name: name}
 }

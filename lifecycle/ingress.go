@@ -41,8 +41,9 @@ func (g *Ingress) Enter() (func(), error) {
 	return func() { once.Do(g.EndWork) }, nil
 }
 
-// BeginWork 登记一项已进入入口队列的工作。它与 EndWork 成对使用，供高频
-// 框架队列避免为每项工作创建完成闭包；普通 Receiver 应使用 Enter。
+// BeginWork 在入队或执行前检查准入并登记工作，与 BeginDrain 串行化。
+// 成功后每条退出路径（包括入队失败）必须且只能调用一次 EndWork。
+// 本方法供高频框架队列避免创建完成闭包；普通 Receiver 应使用 Enter。
 func (g *Ingress) BeginWork() error {
 	if g == nil || g.work == nil {
 		return ErrStopping
@@ -68,7 +69,7 @@ func (g *Ingress) EndWork() {
 	g.finish()
 }
 
-// BeginDrain 停止接受新请求。该操作具备幂等性。
+// BeginDrain 停止接受新请求，不取消已接纳工作；可重复调用。
 func (g *Ingress) BeginDrain() {
 	if g == nil {
 		return
@@ -101,7 +102,8 @@ func (g *Ingress) Wait() error {
 	return g.WaitContext(context.Background())
 }
 
-// WaitContext 等待排水前已经接受的工作完成，并允许调用方设置排水上限。
+// WaitContext 等待排水前已经接受的工作完成；须先调用 BeginDrain，否则返回 ErrDrainNotStarted。
+// ctx 取消只结束本次等待，不取消工作或清除计数，后续可再次等待。
 func (g *Ingress) WaitContext(ctx context.Context) error {
 	if g == nil || g.work == nil {
 		return ErrStopping

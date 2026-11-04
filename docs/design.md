@@ -166,13 +166,31 @@ etcd 管实例发现、槽位和新 Session 发号；Redis 管会话绑定及项
 
 ```text
 tx/
-├── bee/                    # [L3] Bee 的 Builder、Service、Config
-├── ant/                    # [L3] Ant 的 Builder、Service、Config
-├── internal/framework/     # [L3] 共享装配实现
-│   ├── assembly.go         # 连接发现、存储、事务等运行时
-│   ├── cmod_*.go           # CMod 依赖与能力装配
-│   └── server.go           # Server 启动与运行控制
-└── runtime/                # [L3] 执行期能力视图
+├── bee/                          # [L3] Bee 应用门面，独立维护能力政策
+│   ├── builder.go                # Builder：配置、服务与元数据登记
+│   ├── context.go                # Context：服务声明允许的能力视图
+│   ├── service.go                # Service / ServiceRegistration：服务接入契约
+│   └── server.go
+│       └── Server
+│           ├── Start             # 启动选中服务；失败回滚
+│           ├── Run               # 等待退出或致命错误，有限重试关闭
+│           └── Drain / Stop      # 入口排水 / 完整收尾
+├── ant/                          # [L3] Ant 应用门面，与 Bee 隔离差异化变更
+│   ├── builder.go                # Builder：有状态服务装配入口
+│   ├── context.go                # Context：服务声明允许的能力视图
+│   ├── service.go                # Service / ServiceRegistration：服务接入契约
+│   └── server.go
+│       └── Server                # Start / Run / Drain / Stop：同名同义的生命周期入口
+├── component/                    # 横向机制：通用组件依赖图及生命周期
+│   └── host.go
+│       └── Host                  # 按依赖启动，逆序排水和关闭
+├── internal/framework/           # [L3] 共享资源与装配实现
+│   ├── assembly.go               # 连接发现、存储、事务等运行时
+│   ├── cmod_*.go                 # CMod 依赖与能力装配
+│   └── server.go
+│       └── Server.Start / Run    # 启动阶段、失败回滚与退出编排
+└── runtime/                      # [L3] 执行期能力视图
+    └── access.go                 # Provider：从操作上下文访问已绑定能力
 ```
 
 Bee 面向无状态业务装配，Ant 额外提供 Procedure 等有状态能力。应用显式声明 CMod，生成数据的存储注解只选择读写模式，不推导应用应启用的全部能力。
@@ -208,6 +226,8 @@ Procedure 对 Redis、Mongo、Fusion 都声明弱顺序依赖，保证已选存�
   → 启动可靠任务消费 → 再确认无启动错误，Start 成功
 ```
 
+`Start` 负责启动并返回，`Run` 进一步等待调用方取消或框架致命错误引发的生命周期取消，再调用 `Stop`；收尾未完成时最多追加三次重试。直接使用 `Start` 的调用方需要自行安排 `Stop`，包括启动失败但回滚尚未完成的情况。
+
 启动阶段的致命错误会取消启动操作并阻止成功收尾；RPC/控制面 Serve 非预期退出交给 Server 处理。失败只清理已取得资源，不恢复部分服务。准备消费者不领取任务，消费保持在业务就绪之后。
 
 Agent 的 TCP/WebSocket 监听异常同样通过 `Context.ReportFatal` 报告宿主，不只记录日志后保持 Running。服务只取得报告能力，不能直接取消或关闭共享运行时。完整玩家连接另有组件级生命周期登记：排水先关闭监听和业务准入，已接纳业务结束后取消连接并等待实际退出，最后才释放会话路由器；连接等待超时保留依赖供重试。
@@ -229,16 +249,30 @@ Handler 边界：消息 Context → 有期限的操作 ctx
 
 ```text
 tx/
-├── modules/discovery/      # [L2] 服务目录与槽位归属
-│   ├── runtime.go          # 成员租约、目录与槽位运行时
-│   ├── directory.go        # 服务实例目录
-│   ├── slot.go             # 槽位契约、路由与权威存储接口
-│   └── ownership.go        # 首次分配、加载前归属校验与正常交接
+├── modules/discovery/                    # [L2] 成员目录与稳定逻辑槽位归属
+│   ├── runtime.go
+│   │   └── Runtime
+│   │       ├── Watch / WaitReady          # 维护成员、槽位视图 / 等待初始快照
+│   │       ├── Slots / AuthoritativeSlots # 只读归属 / 权威存储 SPI
+│   │       └── Close                      # 注销成员并释放自身拥有的资源
+│   ├── directory.go                       # ServiceDirectory：服务成员查询
+│   ├── slot.go
+│   │   ├── SlotReader / SlotStore         # 只读归属 / 创建与晋升的持久 SPI
+│   │   └── SlotResolver
+│   │       ├── ResolveSlot                # 读取归属并校验成员，不触发共享刷新
+│   │       └── ResolveServiceSlot         # 附加服务校验，可加入限时刷新
+│   ├── slot_refresh.go                    # BindRefresh / Invalidate：共享查询与旧归属失效
+│   ├── slot_directory.go                  # 槽位快照、版本合并与缓存读取
+│   ├── ownership.go
+│   │   └── SlotOwnership
+│   │       ├── Ensure                     # 首次分配与既有归属复核
+│   │       └── Handoff                    # 预检、源端收尾与条件晋升
+│   ├── local_assignments.go               # LocalAssignments.Claim：只认领本实例
+│   └── slot_release.go                    # 正常收尾后条件释放，保留 Generation
 └── internal/
-    ├── actorplacement/    # [L2] 分组查询与缓存
-    ├── framework/
-    │   └── placement.go   # [L3] 放置能力接线
-    └── actorhost/         # [L2] 在加载前执行归属核验
+    ├── actorplacement/                    # [L2] 业务分组查询与缓存
+    ├── framework/placement.go             # [L3] 放置能力接线
+    └── actorhost/                         # [L2] Actor 加载前执行归属核验
 ```
 
 ### 运行身份与 SessionID
@@ -263,6 +297,8 @@ SessionID 保持 `0 < id <= 2^53-1`，可由 JavaScript 安全整数表示；它
 ### Actor 归属与目录
 
 稳定的业务 Slot 不随实例重启改名。Watch 更新目录，普通投递读取缓存；权威来源仍为 SlotStore 的 assignment 和 CAS。成员离线不等于可以自动认定旧实例不再执行。
+
+`SlotResolver.ResolveSlot` 只读取归属并校验成员。`ResolveServiceSlot` 还核对服务类型；启动时绑定 `BindRefresh` 后，归属缺失、缓存过期或成员暂不可用可进入按服务/槽位合并的限时查询。成员不可用且调用方未设期限时直接报错，已释放槽位和目录不可用也不进入刷新。单个调用方取消只结束自己的等待，共享查询由宿主和独立期限管理；刷新不改派、不重投业务消息。
 
 槽位目录首次加载和 Watch 重连时发布完整快照，正常 Watch 每批只更新变化项；整批解码校验成功后，在同一锁内更新并发出一次通知。主动查询和 Watch 共用版本保护，旧事件不能覆盖更新归属；Watch 中断后目录不可用，必须由新一轮完整快照恢复。服务成员目录和冷分配容量快照保持原有实现，测量范围与证据见 [目录更新验收](actor-placement-acceptance.md#2026-11-02-目录更新测量与增量发布)。
 
@@ -732,11 +768,21 @@ Restore 必须命中原 Session 和 running owner，不跨 MsgQ 自动迁移。�
 
 ```text
 tx/
-├── modules/tasks/         # [L2] Publisher / Task 公共契约
+├── modules/tasks/                         # [L2] 应用可见的可靠任务契约
+│   └── tasks.go
+│       ├── Publisher.Publish              # 等待持久发布确认，不等待业务完成
+│       └── Config                         # 绑定预建的流、durable 与恢复资源
 └── internal/
-    ├── taskqueue/         # [L2] JetStream 适配
-    └── framework/
-        └── cmod_tasks.go  # [L3] 任务消费与关闭时序
+    ├── taskqueue/                         # [L2] JetStream 消费适配
+    │   ├── worker.go
+    │   │   ├── Task                       # 内部任务信封：Actor 身份与消息
+    │   │   ├── Prepare                    # 静态校验，不领取任务
+    │   │   ├── PreparedConsumer.Start     # 业务准入开放后开始领取任务
+    │   │   ├── Processor.Process          # Actor Call、续期、成功 ACK 或永久拒绝转死信
+    │   │   └── Worker.Drain               # 停止领取并等待回调，不代表全部业务成功
+    │   └── recovery.go
+    │       └── Recovery.Process           # 耗尽通知：转死信、删源残留、确认通知
+    └── framework/cmod_tasks.go            # [L3] 发布连接、消费启停与 Actor 关闭顺序
 ```
 
 ```text
@@ -745,6 +791,8 @@ tx/
   → 业务成功返回 → ACK
   → 失败 / 未知 → 不伪装成功；按队列策略重投或转死信
 ```
+
+发布超时或连接错误可能发生在持久写入之后，不能据此推断任务未发布。`Publisher` 不自动按业务身份去重；业务主动重发和消费重投都需要幂等约束。
 
 同实例任务仍先进入 JetStream，不绕过持久入口。ACK 表示消费业务返回成功，不证明 Fusion 已写 Mongo；业务幂等、补偿与跨记录一致性仍由应用定义。队列不自动创建或修改生产共享流。
 
@@ -755,14 +803,23 @@ tx/
 ```text
 workspace/
 ├── tx/
-│   ├── meta/              # [L0] 类型、字段与存储描述
-│   ├── change/            # [L0] 路径、操作与变更合并
-│   └── storage/
-│       └── changes.go     # 消费变更输出的公共写入入口
-├── txgame/
-│   └── server/gen/data/   # txgame 的生成 GD / Store
-└── txgameslg/
-    └── server/gen/data/   # txgameslg 的生成 GD / Store
+│   ├── meta/                             # [L0] 类型、字段与存储描述
+│   │   ├── types.go                      # TypeSpec / TypeRef：生成元数据契约
+│   │   └── registry.go
+│   │       ├── TypeRegistry              # 框架与生成代码使用的只读接口
+│   │       └── Registry
+│   │           ├── RegisterType / Freeze # 复制登记 / 关闭登记入口
+│   │           └── Lookup / TypeSpecs    # 返回独立的描述副本
+│   ├── change/                           # [L0] 变更路径、同步访问与文档构建
+│   │   ├── path.go                       # Path：根相对结构化路径
+│   │   ├── source.go                     # Source / Visitor：同步枚举变更
+│   │   ├── codec.go
+│   │   │   ├── BuildDocument             # 读取最终值并构建后端无关文档
+│   │   │   └── DocumentBuilder.Document  # 返回共享 map 的视图，不是深复制快照
+│   │   └── undo.go                       # 受控修改的撤销契约
+│   └── storage/changes.go                # 消费变更输出的公共写入入口
+├── txgame/server/gen/data/                # txgame 的生成 GD / Store
+└── txgameslg/server/gen/data/             # txgameslg 的生成 GD / Store
 ```
 
 ```text
@@ -772,11 +829,13 @@ workspace/
   → Writer 应用变更 → 成功才清除本轮标记
 ```
 
+`meta.Registry` 登记时复制描述，`Lookup` 和 `TypeSpecs` 返回独立副本；`Freeze` 只关闭登记，不影响查询。只读 `TypeRegistry` 的使用者仍应把元数据视为描述，而不是运行时业务状态。
+
 GD 是数据，Store 引用同一数据并保存追踪状态。FieldID 是生成的稳定字段身份；协议名、JSON 名、BSON 名各有用途，不能混作数据库路径。共享子对象可能有多个根路径，StoreView 必须保持根相对追踪。
 
 Set 写入零值，Replace 整体替换复杂值，Delete 删除路径/元素，Clear 清空容器。高频使用 Store setter；低频 BeginChange/SaveChange 采用快照差分。同一变更周期不混用两种追踪方式。事务 Undo 只覆盖受控 Store 修改，不能回滚任意公开字段赋值。
 
-同步 Visit 可读取当前值；跨 goroutine、异步写回与消息发送必须捕获独立值或明确转移所有权。完整内部算法、路径/集合/深度约束见 [数据内核](data-kernel.md)。
+同步 Visit 可读取当前值。`BuildDocument` 不深复制 `ValueResolver` 返回的字段值；`DocumentBuilder.Document` 连顶层 map 也与构建器共享，不能作为独立快照使用。跨 goroutine、异步写回与消息发送必须捕获独立值或明确转移所有权。完整内部算法、路径/集合/深度约束见 [数据内核](data-kernel.md)。
 
 ## 存储接口与 Redis、Mongo、Fusion
 
@@ -1028,12 +1087,28 @@ WriteBack 将内存提交落到所选 Writer；Writer 为 Fusion 时还有 Redis
 
 ```text
 tx/
-├── lifecycle/             # 横向机制：准入与工作计数
-├── internal/framework/    # [L3] 关闭与交接编排
-│   ├── drain.go           # 排水协调
-│   ├── shutdown.go        # 关闭收尾
-│   └── handoff.go         # 正常交接准备
-└── modules/control/       # 外部控制请求协议
+├── lifecycle/                         # 横向机制：准入、取消与实际完成计数
+│   ├── admission.go                   # Admission：接纳与完成回调
+│   ├── ingress.go
+│   │   └── Ingress
+│   │       ├── Enter / BeginWork      # 入队前接纳并登记
+│   │       ├── BeginDrain             # 关闭新准入，不取消已接纳工作
+│   │       └── WaitContext            # 有期限等待，超时后可再次等待
+│   ├── context.go
+│   │   ├── Tasks / TaskView           # 模块只登记后台工作，不拥有取消和等待权
+│   │   └── WaitGroupContext           # 宿主的任务计数、取消与实际退出等待
+│   └── service.go                     # ServiceStatus：子服务阶段与失败信息
+├── internal/framework/                # [L3] 关闭与交接编排
+│   ├── drain.go                       # drainCoordinator：控制面排水请求与状态
+│   ├── shutdown.go
+│   │   └── Server
+│   │       ├── Drain                  # 服务、可靠任务与 Actor 入口排水
+│   │       ├── finishWork             # 后台退出、最终写回与传输收尾
+│   │       └── Stop                   # 完整关闭，未完成阶段保留资源供重试
+│   └── handoff.go                     # PrepareHandoff：收尾后保留资源供归属晋升
+└── modules/control/
+    ├── lifecycle.go                   # 排水请求与状态查询契约
+    └── handoff.go                     # HandoffController：交接准备契约
 ```
 
 ```text
@@ -1060,11 +1135,19 @@ StateDrained 仅代表相应入口排空，不可替代完整 PrepareHandoff 成
 
 ```text
 tx/
-├── log/                   # 横向机制：统一日志
-├── metrics/               # 横向机制：Prometheus 封装
-├── modules/control/       # 诊断控制协议
-└── storage/
-    └── io_stats.go        # 存储 I/O 统计结构，供验收构建使用
+├── log/                              # 横向机制：统一结构化日志
+│   └── log.go                        # SetDefault / NewLogger：进程日志入口与命名记录器
+├── metrics/                          # 横向机制：进程级 Prometheus 注册表
+│   ├── metrics.go
+│   │   ├── Handler                   # 暴露采集入口
+│   │   ├── RegisterMailboxSnapshot   # 登记邮箱统计回调；解除登记不是关闭屏障
+│   │   └── Record*                   # 记录链路阶段、耗时与结果，使用有界标签
+│   └── listen.go                     # Listen / Listener.Close：显式 HTTP 监听与关闭
+├── modules/control/                  # 诊断控制协议
+│   ├── lifecycle.go                  # 排水状态及等待
+│   ├── slot.go                       # 槽位归属和容量查询
+│   └── storage_io.go                 # 存储 I/O 诊断请求与返回
+└── storage/io_stats.go               # 存储 I/O 统计结构，供验收构建使用
 ```
 
 ```text
@@ -1072,6 +1155,8 @@ tx/
 框架错误/排水失败 → 结构化日志 → 项目日志接收与告警
 诊断控制请求 → 实例状态/槽位/存储 I/O 快照
 ```
+
+`RegisterMailboxSnapshot` 维护一个进程级来源，后登记替换前登记，不自动聚合。各指标独立读取，回调需支持并发、保持只读且快速；组合指标不承诺同一时刻快照。返回的解除函数只移除自己的登记，不等待已开始的采集结束，资源关闭不能依赖它证明回调已经退出。
 
 指标标签用服务、阶段、结果等有界值，不放 RoleID/SessionID 等高基数身份。Prometheus 抓取不等于每条消息远程发送，也不替代 pprof CPU/分配画像。普通构建不启用 `txbench` 存储逐调用计时；专项验收可开启，性能比较必须记录采集条件。
 
