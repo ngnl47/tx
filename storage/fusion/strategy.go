@@ -1,3 +1,11 @@
+// Package fusion 组合 Redis 热数据、Mongo 冷数据与延迟任务，不承担应用定时业务。
+//
+// Strategy 提供热写、回源和条件创建；DelayTaskDispatcher 合并本地待发布记录，
+// 经 DelayedSaveQueue 持久发布后，由 Scheduler 调用 StorageTaskHandler 完成回写与修订检查。
+// 保存成功、延迟任务发布完成、Mongo 回写完成是三个不同边界。
+// 删除使用独立的同步完成路径，失败保留删除意图供延迟任务处理，不承诺跨后端原子性。
+//
+// 宿主提供连接、元数据和生命周期；本包不拥有借用连接的关闭权。
 package fusion
 
 import (
@@ -77,8 +85,9 @@ func (s Strategy) Validate() error {
 	return nil
 }
 
-// ApplyChangesWithOptions 应用一次规范化变更。Fusion 会用 dirtyTTL 保护
-// Redis 脏热文档，直到延迟任务完成 Mongo 回写和版本保护的 TTL 收敛。
+// ApplyChangesWithOptions 应用规范化变更；有变更时，成功仅表示 Redis 热写和本地延迟登记完成。
+// 不等待延迟任务持久发布或 Mongo 回写；无变更时不执行 I/O。
+// dirtyTTL 保护尚未回写的热文档，后续任务完成 Mongo 回写与版本保护的 TTL 收敛。
 func (s Strategy) ApplyChangesWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, source change.Source, resolver change.FieldNameResolver, values change.ValueResolver, options storage.ApplyOptions) error {
 	if err := change.ValidateSource(source); err != nil {
 		return err

@@ -53,12 +53,15 @@ type StoreProvider[S ChangeStore] interface {
 	Store() S
 }
 
-// Create 全字段创建一条记录。创建语义强制 Upsert=true，成功后清理 Store 变更。
+// Create 将全部字段标记为变更并强制 Upsert=true，成功后清理 Store 变更。
+// 已有记录可能被更新，不提供“存在则拒绝”的保证；条件创建使用 DocumentBackfiller。
+// 不建立 Procedure 或记录锁，调用方须保证对象访问权；完成边界遵循 ChangeApplier。
 func Create(ctx context.Context, applier ChangeApplier, store ChangeStore) error {
 	return CreateWithOptions(ctx, applier, store, ApplyOptions{})
 }
 
-// CreateWithOptions 全字段创建一条记录，并允许框架调用方覆盖 TTL 等写入选项。
+// CreateWithOptions 沿用 Create 的全字段 Upsert 语义，允许覆盖 TTL 等选项。
+// 写入失败不清除已标记变更，但错误不证明后端未写入。
 func CreateWithOptions(ctx context.Context, applier ChangeApplier, store ChangeStore, options ApplyOptions) error {
 	if isNilChangeApplier(applier) {
 		return ErrNilChangeApplier
@@ -80,12 +83,14 @@ func CreateWithOptions(ctx context.Context, applier ChangeApplier, store ChangeS
 	return nil
 }
 
-// Save 保存 Store 当前记录的规范化变更。保存语义强制 Upsert=false，成功后清理 Store 变更。
+// Save 强制 Upsert=false，保存当前规范化变更并在成功后清除变更标记；无变更时不执行 I/O。
+// 不建立 Procedure 或记录锁，调用方须保证对象访问权；完成边界遵循 ChangeApplier。
 func Save(ctx context.Context, applier ChangeApplier, store ChangeStore) error {
 	return SaveWithOptions(ctx, applier, store, ApplyOptions{})
 }
 
-// SaveWithOptions 保存 Store 当前记录的规范化变更，并允许框架调用方覆盖 TTL 等写入选项。
+// SaveWithOptions 沿用 Save 的更新语义，允许覆盖 TTL 等选项。
+// 写入失败不清除变更；这不代表后端没有发生写入，也不构成可无条件重试的保证。
 func SaveWithOptions(ctx context.Context, applier ChangeApplier, store ChangeStore, options ApplyOptions) error {
 	if isNilChangeApplier(applier) {
 		return ErrNilChangeApplier

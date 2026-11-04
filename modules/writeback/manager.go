@@ -1,4 +1,12 @@
-// Package writeback 提供有状态服务的根对象身份与延迟写回管理。
+// Package writeback 提供 Procedure 提交后的根对象登记与延迟写回管理。
+//
+// Manager 实现 txn.CommitParticipant：修改前预留，内存提交时登记待写根，
+// Flush 在同一记录锁内将创建、变更或删除交给存储 Writer。失败保留待写状态。
+// 它引用唯一 GD 的 Store，不负责对象加载、业务索引或 EntityCache 的淘汰策略。
+//
+// 宿主通过 Runtime SPI 启动后台任务，在 Procedure 排空后调用 Shutdown，
+// 然后等待所属任务退出并关闭存储依赖。Shutdown 只刷空待写集合，不关闭资源。
+// 完成边界取决于 Writer；Fusion 写成功不等于 Mongo 最终回写完成。
 package writeback
 
 import (
@@ -40,12 +48,17 @@ type Dependencies struct {
 	WriteAdmission WriteAdmission
 }
 
-// Runtime 是 CModProcedure WriteBack 组件依赖的稳定 SPI。
-// 项目可以包装默认 Manager 扩展对象加载、淘汰和业务索引，也可以为高级场景提供完整实现。
+// Runtime 是 CModProcedure 的写回 SPI；负责预留、待写登记及刷写，不承接业务对象生命周期。
+// 宿主持有它及所借用的存储依赖；应用业务仍通过 Procedure 提交，不直接管理此运行时。
 type Runtime interface {
 	txn.CommitParticipant
+	// Start 将后台刷写工作登记到宿主 Tasks；任务取消与退出等待由宿主负责。
 	Start(lifecycle.Tasks) error
+	// Shutdown 在新事务准入关闭且已接纳事务结束后刷空待写集合。
+	// 失败保留待写对象和依赖供再次调用；不停止后台任务或关闭存储连接。
 	Shutdown(context.Context) error
+	// TryRelease 在 Procedure 外检查写回身份能否安全释放；不刷盘、不删存储记录。
+	// true 表示该写回身份已不存在或可以释放，不代表缓存对象已经回收。
 	TryRelease(context.Context, txn.StoreTarget) (bool, error)
 }
 
@@ -142,7 +155,7 @@ func NewManager(dependencies Dependencies, config Config) *Manager {
 	}
 }
 
-// Prepare 在 Procedure 修改前校验根对象身份并预留待刷容量。
+// Prepare 在对应对象修改前校验身份并预留待刷容量；同一根事务可分批调用。
 func (manager *Manager) Prepare(_ context.Context, targets []txn.StoreTarget) (txn.CommitReservation, error) {
 	if manager == nil {
 		return nil, errors.New("writeback manager: manager is nil")
@@ -351,7 +364,9 @@ func (manager *Manager) tryReleaseLocked(target txn.StoreTarget) (bool, error) {
 	return true, nil
 }
 
-// Flush 依次保存当前待刷根对象。失败对象保留，供后续重试。
+// Flush 取得本次 pending 快照，逐根在记录锁内交给 Writer，汇总错误并保留失败对象。
+// 并发新提交可能仍留在 pending，成功不表示集合已经刷空；最终收尾使用 Shutdown。
+// 成功只达到所选 Writer 的完成边界，Fusion 路径仍需异步完成 Mongo 回写。
 func (manager *Manager) Flush(ctx context.Context) error {
 	if manager == nil {
 		return errors.New("writeback manager: manager is nil")
@@ -435,7 +450,8 @@ func (manager *Manager) clearPending(entry pendingEntry) {
 	}
 }
 
-// Run 按固定间隔持续 Flush，直到 ctx 取消。
+// Run 按固定间隔持续 Flush；单次失败记录日志并留待下一轮，不清除失败对象。
+// ctx 取消结束循环，但不会自动最终刷空；正在执行的存储调用须实际返回后才能退出。
 func (manager *Manager) Run(ctx context.Context, interval time.Duration) error {
 	if manager == nil {
 		return errors.New("writeback manager: manager is nil")
@@ -460,7 +476,8 @@ func (manager *Manager) Run(ctx context.Context, interval time.Duration) error {
 	}
 }
 
-// Start 将后台刷盘循环登记到服务生命周期。
+// Start 校验配置并将后台刷盘循环登记到宿主 Tasks；成功只表示任务登记成功。
+// 宿主负责取消并等待任务实际退出，本方法不取得存储连接的关闭权。
 func (manager *Manager) Start(ctx lifecycle.Tasks) error {
 	if manager == nil {
 		return errors.New("writeback manager: manager is nil")
@@ -478,7 +495,10 @@ func (manager *Manager) Start(ctx lifecycle.Tasks) error {
 	})
 }
 
-// Shutdown 在超时范围内反复 Flush，直到待刷集合为空。
+// Shutdown 在调用期限与 ShutdownFlushTimeout 中较早的期限内反复 Flush，直到 pending 为空。
+// 调用前须由宿主关闭新事务准入并等待已接纳事务；本方法不关闭准入、后台任务或连接。
+// 失败保留 pending 与对象，可再次调用；ctx 取消是协作信号，不强制中断底层 I/O。
+// 成功只表示待写集合已交给 Writer，不代表 Fusion 延迟任务已经完成 Mongo 回写。
 func (manager *Manager) Shutdown(ctx context.Context) error {
 	if manager == nil {
 		return errors.New("writeback manager: manager is nil")

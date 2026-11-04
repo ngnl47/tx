@@ -1,3 +1,12 @@
+// Package runtime 为宿主装配共享 Redis、Mongo、Fusion 存储能力及后台工作。
+//
+// Runtime 的 StartRedis/StartMongo/StartFusion 建立连接与策略，Reader 提供读取，
+// ChangeWriter 按类型元数据选择写入模式并检查健康状态。它不同于应用入口 github.com/ngnl47/tx/runtime。
+// 连接归宿主所有；借用 Reader、Writer 或原生句柄不会取得关闭权。
+//
+// Fusion 的本地发布器和延迟消费器通过宿主 Tasks 启动。关闭前先排空业务及 WriteBack，
+// 再发布完本地待发任务、停止并等待后台工作，最后关闭存储连接。
+// 发布完成不代表 Mongo 延迟回写完成，不能据此承诺跨后端同步持久化。
 package runtime
 
 import (

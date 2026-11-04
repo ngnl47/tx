@@ -22,15 +22,17 @@ var ErrAsyncFull = errors.New("transaction: async admission limit reached")
 var ErrSubmitInTransaction = errors.New("transaction: Submit cannot use a transaction context")
 
 // Future 的完成包含事务、同步提交后续过程及清理；等待取消不取消执行。
-// 不保存全局结果表，调用方释放 Future 后即可回收。
+// 不保存全局结果表；任务完成且调用方不再持有 Future 后，其结果即可回收。
 type Future struct {
 	done chan struct{}
 	err  error
 }
 
+// Done 在任务执行及清理结束，或排队到期被移除时关闭；关闭不表示成功，结果由 Await 读取。
 func (f *Future) Done() <-chan struct{} { return f.done }
 
 // Await 可以重复或并发等待；任务已完成时优先返回执行结果。
+// ctx 取消只结束本次等待，不取消任务；AfterCommitError 表示原事务已提交，不能据此重投。
 func (f *Future) Await(ctx context.Context) error {
 	select {
 	case <-f.done:

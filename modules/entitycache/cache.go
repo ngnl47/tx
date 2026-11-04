@@ -1,4 +1,13 @@
-// Package entitycache 提供进程内的实体对象缓存。
+// Package entitycache 提供进程内的唯一实体缓存、使用期保护与安全观察回收。
+//
+// Cache 负责同键冷加载、对象驻留和使用期，不替代业务字段的事务锁。
+// Runtime 将生成器提供的 Descriptor 与 Procedure、创建/删除预留及管理入口连接起来；
+// 宿主负责 Start 与生命周期收尾，业务取得不含生命周期权限的 Access。
+//
+// 启用本缓存的生成 FindGD* 在有效 Procedure 内返回共享可变对象，SnapshotGD* 返回独立深复制；
+// 普通业务不需逐 GD 登记缓存。管理使用 Access 的 Stats/List/SnapshotCached/TryRelease，
+// 不旁路读写可变对象，也不以回收表示刷盘、删除记录或卸载 Actor。
+// 本包不是分布式缓存；持久化由 WriteBack 等存储路径负责。
 package entitycache
 
 import (

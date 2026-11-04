@@ -9,16 +9,21 @@ import (
 	"github.com/ngnl47/tx/lifecycle"
 )
 
-// CommitParticipant 是 Procedure 与有状态缓存运行时之间的提交边界。
-// Prepare 必须在业务修改前完成全部可失败校验和资源预留。
+// CommitParticipant 连接 Procedure 与写回运行时，由宿主装配，不由业务过程绑定。
+// 对象经 Tx.Enlist 首次登记时，在取得其锁后、允许修改该对象前调用 Prepare。
+// 一次根事务可以多次预留；后加入对象的预留不表示前面对象尚未修改。
 type CommitParticipant interface {
+	// Prepare 校验本批对象并预留提交所需资源，成功返回非空预留。
+	// 返回错误前须清理本次未交出的资源；创建、删除另由对应参与者处理。
 	Prepare(context.Context, []StoreTarget) (CommitReservation, error)
 }
 
-// CommitReservation 保存一次提交前预留。Commit 在内存事务成功且仍持锁时调用，不能失败或进行 I/O；
-// Abort 在事务失败或 panic 回滚后调用。
+// CommitReservation 保存一批对象的预留，由 Runtime 在根提交或失败时收尾。
 type CommitReservation interface {
+	// Commit 在根提交仍持锁时接收本轮待写目标，只处理本预留负责的对象，
+	// 并释放未产生修改的预留。只能进行不可失败的内存登记，不能执行 I/O。
 	Commit([]StoreTarget)
+	// Abort 在事务失败清理时撤销本预留尚未提交的资源，不进行持久化。
 	Abort()
 }
 
@@ -36,7 +41,11 @@ type Runtime struct {
 
 // Executor 是面向应用的事务契约。提交参与者绑定和生命周期仍由框架负责。
 type Executor interface {
+	// Call 同步执行根事务、提交后动作和使用权清理；成功不代表最终落盘。
+	// 返回 AfterCommitError 时原事务已经提交，不能据此重投；嵌套过程使用 Tx.Call。
 	Call(context.Context, Procedure) error
+	// Submit 接纳独立异步根事务，不投递 Actor 邮箱；成功仅表示接纳，结果由 Future 获取。
+	// 总接纳额度满时返回 ErrAsyncFull；接纳后不继承调用取消，期限包含排队。
 	Submit(context.Context, Procedure) (*Future, error)
 }
 
@@ -69,8 +78,10 @@ func (runtime *Runtime) BindCommitParticipant(participant CommitParticipant) err
 	return nil
 }
 
-// Call 执行一个单机 Procedure。成功只表示内存事务已经提交；是否登记延迟刷盘
-// 由框架绑定的 CommitParticipant 决定。
+// Call 同步执行根事务、提交后动作及使用权清理，纳入 Runtime 的排水计数。
+// 成功不表示最终落盘；是否登记延迟写回由宿主绑定的 CommitParticipant 决定。
+// AfterCommitError 表示原事务已提交但后续动作失败，不能据此重投原事务。
+// 死锁受害者有限重试；ctx 取消不强制终止业务函数，返回前仍需完成收尾。
 func (runtime *Runtime) Call(ctx context.Context, procedure Procedure) error {
 	if runtime == nil {
 		return errors.New("txn runtime: runtime is nil")

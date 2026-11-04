@@ -10,7 +10,8 @@ import (
 )
 
 // BackfillDocumentWithOptions 创建尚未存在的 Fusion 根记录。
-// 与回源共用记录锁，检查冷数据后以 Redis 条件写防止覆盖；成功登记既有延迟写回。
+// 与回源共用记录锁，检查冷数据后以 Redis 条件写防止覆盖；inserted=true 时已登记本地延迟写回。
+// 不等待延迟任务持久发布或 Mongo 回写；inserted=false 表示已有记录，不进行覆盖。
 func (s Strategy) BackfillDocumentWithOptions(ctx context.Context, spec meta.TypeSpec, key storage.RecordKey, document map[string]any, options storage.ApplyOptions) (inserted bool, err error) {
 	if document == nil {
 		return false, storage.ErrNilDocument

@@ -26,7 +26,8 @@ func (s *Runtime) StartDelayTaskDispatcher(ctx lifecycle.Tasks) error {
 	return s.delayDispatcher.Start(ctx)
 }
 
-// DrainDelayTaskDispatcher 等待已接受的本地延迟任务登记完成。
+// DrainDelayTaskDispatcher 将本地待发登记发布到延迟任务队列，不等待 Mongo 回写。
+// 宿主须先停止产生新登记；超时保留未确认的 pending，可再次等待，不停止后台工作。
 func (s *Runtime) DrainDelayTaskDispatcher(ctx context.Context) error {
 	if s == nil {
 		return ErrNotConfigured

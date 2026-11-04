@@ -782,13 +782,36 @@ Set 写入零值，Replace 整体替换复杂值，Delete 删除路径/元素，
 
 ```text
 tx/
-└── storage/               # 根包 [L0]：Reader / Writer、条件创建/替换/删除契约
-    ├── config/            # 后端配置
-    ├── route_table.go     # 按路由选择后端
-    ├── redis/             # [L1] Redis 存储适配
-    ├── mongo/             # [L1] Mongo 存储适配
-    ├── fusion/            # [L2] Redis 热写与延迟 Mongo 回写
-    └── task/              # Fusion 延迟任务支持
+├── runtime/                            # [L3] 应用使用当前服务已声明的能力
+│   ├── access.go                       # Reader / Writer：取得能力，不创建连接
+│   ├── persist.go                      # Create / Save / Remove：按事务及对象所有权分流
+│   └── mongo.go                        # 原生句柄入口，调用者管理操作和游标
+└── storage/                            # 根包 [L0]：后端无关契约
+    ├── adapter.go                      # RecordKey：记录身份与存储路由键
+    ├── changes.go
+    │   ├── DocumentLoader / ChangeApplier # 文档读取与规范化变更应用
+    │   ├── Create / Save               # 显式 Writer，全字段 Upsert / 增量更新
+    │   └── DocumentBackfiller           # 仅记录不存在时写入
+    ├── version.go                      # 版本基线与条件文档替换
+    ├── config/                         # 后端配置，不读取应用 YAML
+    ├── route_table.go                  # 按路由键选择存储目标
+    ├── redis/                          # [L1] Redis JSON 文档、Lua patch 与条件写
+    ├── mongo/                          # [L1] Mongo BSON 文档、版本写与原生句柄
+    ├── runtime/                        # [L2] 共享存储资源装配，区别于顶层 runtime/
+    │   ├── runtime.go
+    │   │   └── Runtime
+    │   │       ├── StartRedis / StartMongo / StartFusion # 建立连接与组合策略
+    │   │       ├── ChangeWriter         # 按元数据选后端并检查健康状态
+    │   │       └── CloseRedis / CloseMongo # 由宿主在依赖工作退出后关闭连接
+    │   └── workers.go                  # 启动 Fusion 后台工作、排空本地待发布登记
+    ├── fusion/                         # [L2] 热写与异步 Mongo 回写
+    │   ├── strategy.go                 # Strategy：热写、读取与回源
+    │   ├── create.go / delete.go        # 条件创建与同步删除路径
+    │   ├── dispatcher.go               # DelayTaskDispatcher：本地合并、持久发布与发布排水
+    │   ├── queue.go                    # TaskQueue：记录身份转换为延迟任务
+    │   ├── scheduler.go                # Scheduler：领取任务、消费与重试
+    │   └── handler.go                  # StorageTaskHandler：回写、删除意图及修订校验
+    └── task/                           # 延迟任务契约及 Redis 实现，不是业务 Sched
 ```
 
 生成的 `FindGD*(ctx, ...)` 从类型元数据选 Redis/Mongo/Fusion，普通业务不手选 Reader；显式 Load/Reader 用于基础设施或独占路径。RecordKey 保存完整记录身份，不等同于 Actor ID 或事务 Lockey。
@@ -797,8 +820,20 @@ tx/
 | --- | --- |
 | Redis | JSON 文档与原子 patch，具名 backend 由云 Redis/自身集群分片 |
 | Mongo | BSON 文档、索引和条件写；成功为该次驱动写入完成 |
-| Fusion | Redis 热写 + 已登记延迟任务；不等 Mongo 最终回写 |
+| Fusion 保存 | Redis 热写 + 本地延迟发布登记；不等任务持久发布或 Mongo 回写 |
 | Procedure/WriteBack | 内存提交 + 待写登记；随后才经过所选存储路径 |
+
+应用 `txruntime.Create/Save/Remove` 与底层 `storage.Create/Save` 不是两套可互换的业务入口：前者按执行上下文和共享对象约束选择路径，后者只操作显式传入的 Store/Writer，不建立 Procedure、缓存或记录锁。
+
+```text
+应用 GD 写入口
+  ├─ 有效 Procedure：Create / Remove → 预留 → 根提交 → WriteBack
+  │    └─ Save 被拒绝；共享修改经 Store 跟踪后由事务提交
+  └─ 事务外非共享对象：Create / Save / Remove → Writer → 对应存储路径
+       └─ 成功清 Store 变更；错误保留本地标记，但不证明后端完全未执行
+```
+
+事务外的直接 `Create` 是全字段 Upsert，已有记录可能被更新；需要“存在则拒绝”时使用条件创建能力。Procedure 经 WriteBack 的首次写入使用条件创建，两者不能混用。Fusion 删除采用同步完成路径；失败时保留删除意图并由既有延迟任务处理，不套用保存接口的成功边界。
 
 Redis 不再做应用手工分片；具名 route 选择一个 backend。Lua 多键须满足槽约束；云代理跨槽能力需要部署验证，不以 Pipeline 自动等价跨槽原子操作。Mongo 的路由键选择明确数据库目标，不隐式跨分片扫描。
 
@@ -809,6 +844,8 @@ Fusion 保存 → Redis 热写 → 本地延迟发布登记 → 返回
   → 新写入或失败：保持待处理，按既有策略重试
 ```
 
+`DrainDelayTaskDispatcher` / `DelayTaskDispatcher.Drain` 只确认本地待发任务已经发布到延迟队列，不等待消费者将全部记录写入 Mongo；调用前由宿主排空产生新登记的业务和 WriteBack。发布失败保留未确认 pending，可再次等待，不能将等待超时当作后台工作已经退出。
+
 Fusion 延迟任务是热数据落库机制，不是应用 Sched 定时任务。`delaySaveTime` 为 Mongo 回写延迟，`delayDelTime` 为确认回写后的热数据保留时间，dirtyTTL 为未确认数据保护。保存或清理失败不能先清脏标记；异常退出可能丢失尚未持久发布的本地任务登记，不能宣称跨存储 ACID。
 
 Mongo 原生高级查询返回官方 Database/Collection，复用已连接路由；取得句柄后的游标、错误和关闭由应用管理，不自动纳入 Procedure/EntityCache。不能原生修改正在受管的同一实体。条件版本 API 只保护单文档替换，不能实现多文档事务。详细接口与后端状态见 [存储参考](api-reference.md#redis-存储模型)。
@@ -818,11 +855,24 @@ Mongo 原生高级查询返回官方 Database/Collection，复用已连接路由
 ```text
 workspace/
 ├── tx/
-│   ├── modules/entitycache/  # [L2] 条目、使用期与管理接口
+│   ├── modules/entitycache/             # [L2] 唯一实体、共享加载与使用期
+│   │   ├── cache.go
+│   │   │   └── Cache.Use               # 使用期间防回收，不替代记录锁
+│   │   ├── scope.go
+│   │   │   └── Cache.Find              # 将使用权绑定到操作范围或事务
+│   │   ├── runtime.go
+│   │   │   ├── Descriptor              # 生成根的能力检查、加载、Store 与深复制
+│   │   │   └── Runtime
+│   │   │       ├── Start               # 绑定宿主 Tasks，启动维护并接入关闭
+│   │   │       ├── Find                # 有效 Procedure 中登记对象、锁及写回预留
+│   │   │       └── Snapshot            # 加载或命中后，在记录锁内深复制
+│   │   ├── load.go                     # 同键共享加载、查询独立取消
+│   │   ├── create.go                   # 创建占位、提交发布与回滚撤销
+│   │   └── remove.go                   # 删除预留、可见性与持久化完成释放
 │   └── runtime/
-│       └── entity.go         # [L3] 连接执行范围
+│       └── entity.go                   # [L3] EntityCache：取得受限 Access
 └── txgameslg/
-    └── server/gen/data/      # 启用共享缓存后生成的私有 Descriptor 与 Clone
+    └── server/gen/data/                 # 生成查询与私有 Descriptor、Clone；不手改
 ```
 
 私有 Descriptor 与 Clone 属于应用生成包，不要求启动时逐 GD 登记。
@@ -853,12 +903,18 @@ EntityCache 是应用 Runtime 组件，不是独立 CMod，也不是分布式缓
 
 ```text
 tx/
-└── modules/entitycache/    # [L2] 唯一实体、共享加载与安全回收
-    ├── cache.go           # 对象身份与使用期
-    ├── load.go            # 同键共享加载、独立取消与宿主任务
-    ├── access.go          # 业务能力视图，不提供生命周期或写回预留
-    ├── management.go      # 管理接口与操作准入
-    └── release.go         # 回收与延迟重试
+└── modules/entitycache/                 # [L2] 观察与回收边界
+    ├── access.go
+    │   └── Access                      # 业务视图，不提供生命周期或写回预留
+    │       ├── Find / Snapshot          # 生成查询的受管对象/独立快照入口
+    │       ├── Stats / List             # 规模与有界元数据，不读取业务字段
+    │       └── SnapshotCached / TryRelease # 只操作指定驻留代次，不加载存储
+    ├── management.go
+    │   ├── EntryRef                    # 引用驻留代次，不持有对象使用权
+    │   └── Runtime
+    │       ├── DrainManagement         # 关闭快照/回收准入并等待，保留元数据观察
+    │       └── CloseManagement         # 关闭全部管理入口并等待实际退出
+    └── release.go                      # 自动回收候选、安全检查与延迟重试
 ```
 
 调用入口是 `txruntime.EntityCache(ctx)`。
@@ -876,13 +932,40 @@ EntryRef 绑定驻留代次，旧引用不能作用于重新加载的对象。�
 
 ```text
 tx/
+├── runtime/
+│   └── procedure.go                    # [L3] 应用 Call/Submit，连接服务执行能力
 ├── modules/
-│   ├── txn/                # [L2] 事务、锁表、Undo、提交参与者与异步队列
-│   └── writeback/          # [L2] 脏根登记与持久化
+│   ├── txn/                            # [L2] 本机事务与已接纳工作
+│   │   ├── runtime.go
+│   │   │   ├── Executor                # 应用只取得 Call/Submit
+│   │   │   ├── Runtime.Call / Drain    # 根工作登记、执行与关闭等待
+│   │   │   └── CommitParticipant       # 分批预留、持锁提交、失败撤销的 SPI
+│   │   ├── txn.go
+│   │   │   ├── Procedure               # Locks 预声明、Process 业务执行
+│   │   │   ├── Tx.Call / Do            # 同一根事务的子过程与 savepoint
+│   │   │   ├── Tx.CallAfterCommit      # 根解锁后同步执行独立后续过程
+│   │   │   └── run                     # 提交/回滚、解锁、回调与使用权清理
+│   │   ├── access.go
+│   │   │   └── Tx.Enlist / OnFinish    # 对象登记与根工作结束时释放使用权
+│   │   ├── submit.go
+│   │   │   ├── Runtime.Submit          # 独立期限、有界排队与执行额度
+│   │   │   └── Future.Await / Done     # 观察实际完成，不撤销已接纳任务
+│   │   ├── lockey.go / lock_table.go / wait_graph.go # 锁身份、持有与死锁检测
+│   │   └── create.go / remove.go       # 创建/删除预留及提交、回滚协作
+│   └── writeback/                      # [L2] 持有写回预留、脏根与持久化状态
+│       ├── manager.go
+│       │   ├── Runtime                 # 宿主持有的写回 SPI，不管理业务对象生命周期
+│       │   └── Manager
+│       │       ├── Prepare             # 对象身份校验与待写容量预留
+│       │       ├── Start / Run         # 宿主 Tasks 驱动周期刷写
+│       │       ├── Flush               # 刷写本次 pending 快照，保留失败项
+│       │       ├── Shutdown            # 最终刷空，不关闭准入、任务或连接
+│       │       └── TryRelease          # 干净且无预留时释放写回身份，不替代缓存回收
+│       └── create.go / remove.go       # 首次条件创建、删除及缓存预留协作
 ├── ant/
-│   └── cmod_procedure.go   # [L3] Procedure 能力声明与装配门面
+│   └── cmod_procedure.go               # [L3] Procedure 能力声明与装配门面
 └── internal/framework/
-    └── procedure.go        # [L3] Procedure 装配与关闭
+    └── procedure.go                    # [L3] Runtime 装配、绑定参与者与关闭
 ```
 
 Lockey 表示一致性域，不依赖 GD 已加载。生成输入集中声明 `LockType` 枚举，GD 使用 `@transaction` 的 lock 注解引用名称；枚举值越大越先获取，同类别整数 ID 数值排序。多个 GD 可共享一个 RoleLock，但对象与写回登记仍独立。
@@ -896,6 +979,8 @@ txruntime.Call(ctx,p)
   → 失败：Undo、撤销占位与子过程回调
   → 解锁 → 同步后续 Procedure → 释放使用权 → Call 返回
 ```
+
+生成查询经 `Tx.Enlist` 登记对象时，先取得对应锁，再通过 `CommitParticipant.Prepare` 预留该对象的写回资源，然后才允许受控修改。同一根事务可以多次预留；不是在业务开始前一次性预留全部对象。根提交时，各预留只处理自身负责的待写对象并释放其余额度；创建、删除使用各自的预留和提交前校验。SPI 见 [提交参与者](../modules/txn/runtime.go)、[创建预留](../modules/txn/create.go)与[删除预留](../modules/txn/remove.go)。
 
 动态补锁保留等待图死锁检测，根事务作为受害者时完整回滚；标准 Call 有限重试，因此不可回滚副作用放在提交后处理。嵌套根事务被拒绝，子 Procedure 使用同一 Tx/savepoint。具体锁实现见 [精确锁注册表](lock-registry.md)。
 
@@ -925,6 +1010,19 @@ WriteBack
 首次写入采用条件创建，不可在结果未知后用 Upsert 覆盖已有记录。删除失败不重新暴露旧对象，需协调在途写回防止旧任务复活数据。共享根不能自行 Save 绕过事务；无缓存或独占类型可直接 Save。
 
 WriteBack 将内存提交落到所选 Writer；Writer 为 Fusion 时还有 Redis→Mongo 延迟阶段，Writer 为 Mongo 时直接写 Mongo。它不是 World 邮箱保存的另一层，也不是进程崩溃 WAL。内存提交不能证明存储完成，跨记录不提供数据库原子提交。
+
+写回关闭由宿主按依赖关系编排，不由 `Manager.Shutdown` 包办：
+
+```text
+业务入口关闭、已接纳业务与独占数据收尾
+  → Procedure.Drain：关闭新根准入，等待已接纳事务及后续工作
+  → WriteBack.Shutdown：反复 Flush，直到 pending 为空
+  → 使用 Fusion 时：DrainDelayTaskDispatcher 发布完本地待发登记
+  → 宿主停止并等待所属后台任务实际退出
+  → 关闭存储连接
+```
+
+单次 `Flush` 成功不保证并发新增的 pending 已刷空；`Shutdown` 成功也只达到所选 Writer 的完成边界。失败保留待写对象及依赖，沿用宿主有限重试；取消或超时不强制终止底层 I/O，不能提前释放资源。完整关闭阶段见下节，接口见 [WriteBack Runtime/Manager](../modules/writeback/manager.go)与 [Fusion 后台入口](../storage/runtime/workers.go)。
 
 ## 排水、正常交接与故障
 

@@ -11,8 +11,8 @@ import (
 
 const delayedSaveAction = "save"
 
-// DelayedSave 是 Fusion 模式写入 MongoDB 前的延迟保存任务。
-// Fusion 不支持物理删除，因此该结构不再暴露多动作状态。
+// DelayedSave 按记录身份登记 Fusion 延迟工作，不保存业务文档快照。
+// 消费时按当前文档与删除意图决定保存或删除，不另行编码删除动作。
 type DelayedSave struct {
 	Type     meta.TypeRef
 	Key      storage.RecordKey

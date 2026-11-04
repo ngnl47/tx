@@ -10,15 +10,19 @@ import (
 var ErrInactive = errors.New("transaction: inactive transaction context")
 
 // CreationParticipant 由具备唯一缓存和首次写入能力的提交参与者实现。
+// PrepareCreate 在对应记录锁内预留新对象身份和首次写回；成功不表示已提交或落盘。
+// 返回错误前须清理本次未交出的预留，不能遗留半创建对象。
 type CreationParticipant interface {
 	PrepareCreate(context.Context, StoreTarget, any) (CreationReservation, error)
 }
 
-// CreationReservation 持有新对象的缓存占位和首次写回预留。
-// Validate 在持锁提交前检查身份；Commit 只执行不可失败的内存登记，不能进行 I/O。
+// CreationReservation 持有创建或删除的身份及写回预留，不承担最终持久化。
 type CreationReservation interface {
+	// Validate 在根提交前、仍持锁时检查身份与预留有效性；失败转入回滚。
 	Validate() error
+	// Commit 在持锁阶段发布创建或确认删除，只做不可失败的内存登记，不能执行 I/O。
 	Commit()
+	// Abort 在所属 savepoint 或根事务回滚时撤销预留，不保留待提交的创建或删除。
 	Abort()
 }
 

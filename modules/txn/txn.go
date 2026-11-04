@@ -1,6 +1,14 @@
 // Package txn 提供可选的单机内存事务。
 //
 // 它只协调当前进程内、由生成 Store 受控的修改；不提供分布式锁或持久化层 ACID。
+//
+// 应用通过 runtime 包的 Call/Submit 进入服务持有的 Executor；宿主拥有 Runtime，
+// 负责绑定 CommitParticipant 和关闭准入、等待排水。包级 Call/Run 是独立内存事务原语，
+// 不自动取得服务的缓存、WriteBack 或排水登记，不能替代应用入口。
+//
+// Procedure 用 Locks 声明已知一致性域，Process 内通过 Tx.Call 复用事务和 savepoint；
+// Tx.Enlist 登记受控对象，Tx.CallAfterCommit 在根解锁后同步执行独立后续过程。
+// 内存提交、后续动作完成与持久化是不同边界；提交后错误使用 AfterCommitError 表达。
 package txn
 
 import (

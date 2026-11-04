@@ -5,7 +5,9 @@ import (
 	"errors"
 )
 
-// RemovalParticipant 预留删除；提交仅登记内存状态，持久化由写回运行时负责。
+// RemovalParticipant 在对应记录锁内预留删除，复用 CreationReservation 的校验与收尾契约。
+// PrepareRemove 成功仅登记待提交删除；回滚撤销预留，提交确认内存删除，最终持久化由写回运行时负责。
+// 返回错误前须清理本次未交出的预留。
 type RemovalParticipant interface {
 	PrepareRemove(context.Context, StoreTarget, any) (CreationReservation, error)
 }
