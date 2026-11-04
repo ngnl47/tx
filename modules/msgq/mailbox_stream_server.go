@@ -308,6 +308,11 @@ func (connection *mailboxStreamServer) close() {
 
 func (s *Server) terminateAttachedSession(ctx context.Context, header SessionHeader) error {
 	if store, ok := s.store.(AdmissionStore); ok {
+		finish, err := s.beginAdmission(ctx, header.RoleID)
+		if err != nil {
+			return err
+		}
+		defer finish()
 		record, err := store.LoadAdmission(ctx, header.RoleID)
 		if err != nil {
 			return err
@@ -316,7 +321,7 @@ func (s *Server) terminateAttachedSession(ctx context.Context, header SessionHea
 			if record.Header != header {
 				return ErrSessionChanged
 			}
-			return s.TerminateLogicalSession(ctx, header.RoleID, header.SessionID)
+			return s.terminateLogicalSession(ctx, header.RoleID, header.SessionID)
 		}
 	}
 	return s.TerminateSession(ctx, header)

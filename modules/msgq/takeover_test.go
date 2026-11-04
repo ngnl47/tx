@@ -262,7 +262,88 @@ func TestMailboxOldConnectionCannotTerminateRestoredSession(t *testing.T) {
 			if err = current.Renew(t.Context()); err != nil {
 				t.Fatal(err)
 			}
+			if remote {
+				stream := client.(*grpcConnection).mailbox
+				stream.mu.Lock()
+				remaining := len(stream.sessions)
+				stream.mu.Unlock()
+				if remaining != 1 {
+					t.Fatalf("旧退出请求遗留流接入: %d", remaining)
+				}
+			}
 		})
+	}
+}
+
+// 旧物理连接已经关闭但其流接入尚未收尾时，恢复应交给 MsgQ 仲裁。
+func TestMailboxRemoteRestoreBeforeOldClose(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	mailbox := admissionServer(t)
+	client := startMailboxTestGRPC(t, mailbox)
+	entered, allow := make(chan struct{}), make(chan struct{})
+	defer func() {
+		select {
+		case <-allow:
+		default:
+			close(allow)
+		}
+	}()
+	request := takeoverRequest(11, 1)
+	old, err := client.OpenMailboxStream(ctx, request, func() { close(entered); <-allow })
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Restore = true
+	request.Header.ConnectionID = 2
+	type result struct {
+		session MailboxStreamSession
+		err     error
+	}
+	opened := make(chan result, 1)
+	go func() {
+		session, err := client.OpenMailboxStream(ctx, request, func() {})
+		opened <- result{session, err}
+	}()
+	select {
+	case <-entered:
+	case got := <-opened:
+		t.Fatalf("恢复未经过旧入口关闭协调: %v", got.err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	select {
+	case got := <-opened:
+		t.Fatalf("旧入口未关闭就完成恢复: %v", got.err)
+	default:
+	}
+	close(allow)
+	var current MailboxStreamSession
+	select {
+	case got := <-opened:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		current = got.session
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	defer current.Close()
+	if err = old.Terminate(ctx); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("旧连接终止影响新接入: %v", err)
+	}
+	if err = old.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = mailbox.PubSession(ctx, 11, []byte("restored")); err != nil {
+		t.Fatal(err)
+	}
+	message, err := current.Recv()
+	if err != nil || string(message.Payload) != "restored" {
+		t.Fatalf("旧接入收尾破坏新接入下行: %+v %v", message, err)
+	}
+	if err = current.Terminate(ctx); err != nil {
+		t.Fatal(err)
 	}
 }
 

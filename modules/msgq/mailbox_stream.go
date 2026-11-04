@@ -41,8 +41,9 @@ type grpcMailboxStream struct {
 	requests chan *msgqpb.MailboxStreamRequest
 	reopen   func(context.Context) (*grpcMailboxStream, error)
 
+	// 按完整接入身份分派；同一 Session 重连时，旧连接仍可能等待关闭回执。
 	mu       sync.Mutex
-	sessions map[int64]*grpcMailboxSession
+	sessions map[SessionHeader]*grpcMailboxSession
 
 	once sync.Once
 	done chan struct{}
@@ -98,7 +99,7 @@ func newGRPCMailboxStream(streamCtx context.Context, cancel context.CancelFunc, 
 	stream := &grpcMailboxStream{
 		ctx: streamCtx, cancel: cancel, client: clientStream,
 		requests: make(chan *msgqpb.MailboxStreamRequest, 256), done: make(chan struct{}),
-		sessions: make(map[int64]*grpcMailboxSession),
+		sessions: make(map[SessionHeader]*grpcMailboxSession),
 	}
 	go stream.writeLoop()
 	go stream.readLoop()
@@ -180,12 +181,12 @@ func (stream *grpcMailboxStream) open(ctx context.Context, request InitRequest, 
 		cancel(err)
 		return nil, err
 	}
-	if _, exists := stream.sessions[header.SessionID]; exists {
+	if _, exists := stream.sessions[header]; exists {
 		stream.mu.Unlock()
 		cancel(ErrSessionChanged)
 		return nil, ErrSessionChanged
 	}
-	stream.sessions[header.SessionID] = session
+	stream.sessions[header] = session
 	stream.mu.Unlock()
 	err := stream.send(ctx, &msgqpb.MailboxStreamRequest{Header: headerToProto(header), Kind: msgqpb.MailboxStreamRequest_KIND_OPEN, Max: 1, Init: initToProto(request)})
 	if err == nil {
@@ -245,9 +246,9 @@ func (stream *grpcMailboxStream) readLoop() {
 		}
 		header := headerFromProto(response.GetHeader())
 		stream.mu.Lock()
-		session := stream.sessions[header.SessionID]
+		session := stream.sessions[header]
 		stream.mu.Unlock()
-		if session == nil || session.header != header {
+		if session == nil {
 			continue
 		}
 		var responseErr error
@@ -314,7 +315,7 @@ func (stream *grpcMailboxStream) fail(err error) {
 		stream.cancel()
 		close(stream.done)
 		sessions := stream.sessions
-		stream.sessions = make(map[int64]*grpcMailboxSession)
+		stream.sessions = make(map[SessionHeader]*grpcMailboxSession)
 		stream.mu.Unlock()
 		for _, session := range sessions {
 			session.finish(err)
@@ -455,13 +456,17 @@ func (session *grpcMailboxSession) control(ctx context.Context, kind msgqpb.Mail
 	default:
 	}
 	stream.mu.Lock()
-	if current := stream.sessions[session.header.SessionID]; current != nil && current != session {
+	if current := stream.sessions[session.header]; current != nil && current != session {
 		stream.mu.Unlock()
 		return ErrSessionChanged
 	}
-	stream.sessions[session.header.SessionID] = session
+	stream.sessions[session.header] = session
 	stream.mu.Unlock()
 	session.controlStream = stream
+	// 已解除的旧句柄仍可发送精确控制，但不能因拒绝结果重新常驻流目录。
+	if session.detached {
+		defer session.remove()
+	}
 	if err := stream.send(ctx, &msgqpb.MailboxStreamRequest{Header: headerToProto(session.header), Kind: kind}); err != nil {
 		return err
 	}
@@ -478,8 +483,8 @@ func (session *grpcMailboxSession) remove() {
 	for _, stream := range []*grpcMailboxStream{session.stream, session.controlStream} {
 		if stream != nil {
 			stream.mu.Lock()
-			if stream.sessions[session.header.SessionID] == session {
-				delete(stream.sessions, session.header.SessionID)
+			if stream.sessions[session.header] == session {
+				delete(stream.sessions, session.header)
 			}
 			stream.mu.Unlock()
 		}

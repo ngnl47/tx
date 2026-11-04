@@ -72,7 +72,7 @@ func (registry *sessionRegistry) completeInitialization(session *activeSession, 
 		}
 	}
 	session.initialized = initialized
-	ready = initialized && !session.suppressReady
+	ready = initialized && !session.suppressReady && session.ctx.Err() == nil
 	if ready {
 		previous = registry.sessions[session.header.SessionID]
 		registry.sessions[session.header.SessionID] = session

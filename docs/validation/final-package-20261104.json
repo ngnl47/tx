@@ -1,0 +1,282 @@
+{
+  "date": "2026-11-04",
+  "status": "failed-session-reconnect",
+  "runtimeChanged": false,
+  "cloudTests": false,
+  "committed": false,
+  "versions": {
+    "tx": {
+      "head": "8f9ae0bf965b6af09727b15944a39f034bca95ba",
+      "status": ""
+    },
+    "txgen": {
+      "head": "e245df6ad0ccfbfa94a57f58b99485aa21197467",
+      "status": ""
+    },
+    "txgame": {
+      "head": "488629a1ca9c4687b497ca0eecc43c29d8b0eb17",
+      "status": ""
+    },
+    "txgameslg": {
+      "head": "66c49744d88e64db59b3620b50100e5be4de303d",
+      "status": ""
+    },
+    "txclient": {
+      "head": "08180917dd2edecdfd984de483bd13bea8166b31",
+      "status": ""
+    },
+    "txclientslg": {
+      "head": "e5590c7a3fce6a056be50578c1e5658b31b96d20",
+      "status": ""
+    },
+    "txconfig": {
+      "head": "6592808750bac6f05d433ef5eb4b29cb6f6bccbb",
+      "status": ""
+    }
+  },
+  "sessionLifecycle": {
+    "txgame": {
+      "status": "passed",
+      "stages": 10,
+      "diagnostics": false,
+      "source": "txgame-session/20261104-115016.366011000/session-lifecycle-summary.json"
+    },
+    "txgameslg": {
+      "status": "passed",
+      "stages": 10,
+      "diagnostics": false,
+      "source": "txgameslg-session/20261104-115603.515277000/session-lifecycle-summary.json"
+    }
+  },
+  "supplementalDiagnosticSuites": {
+    "txgame": [
+      {
+        "source": "txgame-exclusive/20261104-115506.357804000/summary.json",
+        "status": "passed",
+        "diagnostics": true,
+        "events": [
+          {
+            "event": "exclusive_role",
+            "roleID": 470101,
+            "sessionIDs": [
+              749000,
+              749009
+            ],
+            "agentInstanceIDs": [
+              "txgame-dab09af7-c53a-41dc-8408-5b1d6f19224d",
+              "txgame-496a970e-c13c-4546-bcc9-8abf4930b82e"
+            ],
+            "states": [
+              {
+                "nextUpSeq": 17,
+                "lastDownSeq": 19
+              },
+              {
+                "nextUpSeq": 3,
+                "lastDownSeq": 2
+              }
+            ],
+            "signedWithoutTakeover": true,
+            "oldRestoreRejected": true,
+            "oldFreshRejected": true,
+            "restored": true,
+            "logoutRejected": true
+          }
+        ],
+        "expectedCrashes": []
+      }
+    ],
+    "txgameslg": [
+      {
+        "source": "txgameslg-exclusive/20261104-115655.601418000/summary.json",
+        "status": "failed",
+        "diagnostics": true,
+        "events": [],
+        "expectedCrashes": null
+      },
+      {
+        "source": "txgameslg-exclusive-repeat/20261104-122158.682377000/summary.json",
+        "status": "failed",
+        "diagnostics": true,
+        "events": [],
+        "expectedCrashes": null
+      }
+    ]
+  },
+  "traffic": [
+    {
+      "scenario": "txgame",
+      "durationMilliseconds": 180000,
+      "denominator": 45000,
+      "attempted": 45000,
+      "completed": 44997,
+      "failed": 3,
+      "notSent": 0,
+      "completionRate": 0.9999333333333333,
+      "p99Milliseconds": 1.3231979999982286,
+      "source": "txgame-config-release-2283166783/summary.json"
+    },
+    {
+      "scenario": "slg-role-0-a",
+      "durationMilliseconds": 180000,
+      "denominator": 275705,
+      "attempted": 275705,
+      "completed": 275705,
+      "failed": 0,
+      "notSent": 0,
+      "completionRate": 1.0,
+      "p99Milliseconds": 4.451674999989336,
+      "source": "slg-role/20261104-120156.240668000/release-summary.json"
+    },
+    {
+      "scenario": "slg-role-1-b",
+      "durationMilliseconds": 180000,
+      "denominator": 316662,
+      "attempted": 316662,
+      "completed": 316662,
+      "failed": 0,
+      "notSent": 0,
+      "completionRate": 1.0,
+      "p99Milliseconds": 3.5363219999999274,
+      "source": "slg-role/20261104-120156.240668000/release-summary.json"
+    },
+    {
+      "scenario": "slg-role-2-a",
+      "durationMilliseconds": 180000,
+      "denominator": 317913,
+      "attempted": 317913,
+      "completed": 317913,
+      "failed": 0,
+      "notSent": 0,
+      "completionRate": 1.0,
+      "p99Milliseconds": 3.556234999996377,
+      "source": "slg-role/20261104-120156.240668000/release-summary.json"
+    },
+    {
+      "scenario": "slg-world-0-a",
+      "durationMilliseconds": 180000,
+      "denominator": 918521,
+      "attempted": 918521,
+      "completed": 918521,
+      "failed": 0,
+      "notSent": 0,
+      "completionRate": 1.0,
+      "p99Milliseconds": 1.4711219999953755,
+      "source": "slg-world/20261104-121157.704892000/release-summary.json"
+    },
+    {
+      "scenario": "slg-world-1-b",
+      "durationMilliseconds": 180000,
+      "denominator": 889888,
+      "attempted": 889888,
+      "completed": 889888,
+      "failed": 0,
+      "notSent": 0,
+      "completionRate": 1.0,
+      "p99Milliseconds": 1.5247080000117421,
+      "source": "slg-world/20261104-121157.704892000/release-summary.json"
+    },
+    {
+      "scenario": "slg-world-2-a",
+      "durationMilliseconds": 180000,
+      "denominator": 895985,
+      "attempted": 895985,
+      "completed": 895985,
+      "failed": 0,
+      "notSent": 0,
+      "completionRate": 1.0,
+      "p99Milliseconds": 1.5125700000062352,
+      "source": "slg-world/20261104-121157.704892000/release-summary.json"
+    }
+  ],
+  "ordinaryPackages": [
+    {
+      "path": "slg-world/20261104-121157.704892000/installed/program/package.json",
+      "sha256": "f7c4dbc593d326b4fc392696b3b2ff309c57a78c4b8f66b0a66dc62ca35018ce",
+      "hashMatches": true,
+      "hasTxbench": false
+    },
+    {
+      "path": "txgameslg-session/20261104-115603.515277000/installed/program/package.json",
+      "sha256": "f7c4dbc593d326b4fc392696b3b2ff309c57a78c4b8f66b0a66dc62ca35018ce",
+      "hashMatches": true,
+      "hasTxbench": false
+    },
+    {
+      "path": "slg-role/20261104-120156.240668000/installed/program/package.json",
+      "sha256": "f7c4dbc593d326b4fc392696b3b2ff309c57a78c4b8f66b0a66dc62ca35018ce",
+      "hashMatches": true,
+      "hasTxbench": false
+    },
+    {
+      "path": "txgame-session/20261104-115016.366011000/installed/relocated/package.json",
+      "sha256": "896249e28cf755360066da8b12c0310aadcfee5cd8caa845b20cba38be9bbff2",
+      "hashMatches": true,
+      "hasTxbench": false
+    },
+    {
+      "path": "txgame-config-release-2283166783/installed/relocated/package.json",
+      "sha256": "896249e28cf755360066da8b12c0310aadcfee5cd8caa845b20cba38be9bbff2",
+      "hashMatches": true,
+      "hasTxbench": false
+    }
+  ],
+  "persistence": {
+    "slgRoleFusionVerifiedPerRound": 4,
+    "slgRoleMongoVerifiedPerRound": 4,
+    "slgWorld": {
+      "PersistenceCatchUpMilliseconds": 3,
+      "PersistedBuckets": 4,
+      "DocumentVersionTotal": 21,
+      "MongoWorldUnitsVerified": 4
+    },
+    "txgameFinalMongoVerified": false
+  },
+  "exitRecords": {
+    "total": 100,
+    "zero": 98,
+    "expectedBadConfig": [
+      {
+        "path": "txgame-config-release-2283166783/processes/wrong-schema.exit",
+        "code": "exit status 1"
+      },
+      {
+        "path": "txgame-config-release-2283166783/processes/missing-file.exit",
+        "code": "exit status 1"
+      }
+    ],
+    "missing": []
+  },
+  "postflight": {
+    "checkedAt": "2026-11-04T12:22:52.041611+08:00",
+    "matchingProcesses": [],
+    "redisSizes": {
+      "12": 0,
+      "13": 11
+    },
+    "mongoCollectionCounts": {
+      "txgame_cluster_e2e": {},
+      "txgameslg_cluster_e2e": {
+        "world_buckets": 5,
+        "users": 206,
+        "server_merges": 0,
+        "worlds": 1,
+        "roles": 8,
+        "login_id_sequences": 2,
+        "servers": 1,
+        "_tx_cluster_e2e_owner": 1
+      }
+    },
+    "etcdKeys": {
+      "txgame": [],
+      "txgameslg": [
+        "/tx/e2e/txgameslg/discovery-session-ids/issuer",
+        "/tx/e2e/txgameslg/discovery/slots/actor-group-v1.c2xnZ2FtZQ.c2VydmVy.MTAwMQ",
+        "/tx/e2e/txgameslg/discovery/slots/slgworld-490001",
+        "/tx/e2e/txgameslg/owner"
+      ]
+    },
+    "slgFailureDataIntentionallyRetained": true
+  },
+  "artifactRoot": "/Users/a47/workspace/tx-artifacts/final-package-20261104"
+}

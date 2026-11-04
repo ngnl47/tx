@@ -11,6 +11,27 @@ import (
 	"github.com/ngnl47/tx/protocol"
 )
 
+func TestCanceledInitializationCannotReplaceRestoredSession(t *testing.T) {
+	registry := newSessionRegistry()
+	old := testActiveSession(7, nil)
+	current := testActiveSession(8, nil)
+	defer old.cancel()
+	defer current.cancel()
+	registry.beginInitialization(old)
+	registry.beginInitialization(current)
+	old.disconnect()
+	if previous, ready, _ := registry.completeInitialization(current, true); previous != nil || !ready {
+		t.Fatalf("恢复连接未正常发布: previous=%p, ready=%t", previous, ready)
+	}
+	previous, ready, terminate := registry.completeInitialization(old, true)
+	if previous != nil || ready || terminate {
+		t.Fatalf("已撤销的初始化仍影响新连接: previous=%p, ready=%t, terminate=%t", previous, ready, terminate)
+	}
+	if registry.sessions[current.header.SessionID] != current {
+		t.Fatal("迟到的初始化覆盖了恢复连接")
+	}
+}
+
 func TestTerminateSessionFollowsConcurrentReplacementConnection(t *testing.T) {
 	oldClient := &sessionControlClient{terminateErr: msgq.ErrSessionChanged}
 	newClient := &sessionControlClient{}
@@ -233,10 +254,12 @@ func TestTerminateSessionCompensatesCanceledMsgQInit(t *testing.T) {
 }
 
 func testActiveSession(connectionID int64, client msgq.SessionClient) *activeSession {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &activeSession{
 		header:    msgq.SessionHeader{RoleID: 470001, SessionID: 99, ConnectionID: connectionID},
 		client:    client,
-		cancel:    func() {},
+		ctx:       ctx,
+		cancel:    cancel,
 		transport: &sessionControlTransport{},
 	}
 }

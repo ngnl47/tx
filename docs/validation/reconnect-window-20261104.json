@@ -1,0 +1,244 @@
+{
+  "date": "2026-11-04",
+  "status": "passed",
+  "runtimeChanged": true,
+  "cloudTests": false,
+  "trafficRerun": false,
+  "committed": false,
+  "artifactRoot": "/Users/a47/workspace/tx-artifacts/reconnect-fix-20261104",
+  "baseVersions": {
+    "tx": "8f9ae0bf965b6af09727b15944a39f034bca95ba",
+    "txgen": "e245df6ad0ccfbfa94a57f58b99485aa21197467",
+    "txgame": "488629a1ca9c4687b497ca0eecc43c29d8b0eb17",
+    "txgameslg": "66c49744d88e64db59b3620b50100e5be4de303d",
+    "txclient": "08180917dd2edecdfd984de483bd13bea8166b31",
+    "txclientslg": "e5590c7a3fce6a056be50578c1e5658b31b96d20",
+    "txconfig": "6592808750bac6f05d433ef5eb4b29cb6f6bccbb"
+  },
+  "runtimeSourceSHA256": {
+    "modules/agent/session_registry.go": "8eb7d1d8f3cf4acfe4107b0f74b2571e46032ff25cac2a37c08d2d93b396bff8",
+    "modules/msgq/admission.go": "19790f093280eb4c68ce2f09e55ff4dc40ded6c94f8d92de8d4cd8cd07c36d6f",
+    "modules/msgq/mailbox_stream.go": "271b8dd284b681333dd42f976aaf2836903c16d74fa4ecd7780d7c99643f2d6c",
+    "modules/msgq/mailbox_stream_server.go": "1bc91fe4699de147eb6166a01388b00ddb2d8bde3952f311b6d6de47ce32720f"
+  },
+  "harnessSourceSHA256": {
+    "txgame/server/cmd/internal/clustere2e/suite.go": "8734f145a84cc8325f7df0d804719cd36722308ec98861a09c05dc9d05d85fc2",
+    "txgameslg/server/cmd/internal/clustere2e/suite.go": "487a815a743bb5c04a4eea7337e34d219f16f3be4163b93be1b4930632c28a27",
+    "txclient/src/cli/cluster-e2e.ts": "d9d18e1c9ee1b6d7b25d0b8dd01d561fc281263e894814edb4c9705fb4c39dae",
+    "txclient/src/cli/cluster-perf.ts": "4608693f76388dbaa7070d58c64cfe6cf5267db9f89fb8b87eb81fd3cedb6bfa",
+    "txclientslg/src/cli/cluster-e2e.ts": "f97f76dc1a64ecf4d00cbee2b05d315ff8aa5b512cf6deb1e6e00adbb4e3c293"
+  },
+  "regression": {
+    "txFull": "passed",
+    "finalSessionRace": "passed",
+    "applicationWiring": "passed",
+    "applicationHarness": "passed",
+    "txclientTests": {
+      "passed": 134,
+      "failed": 0,
+      "build": "passed"
+    },
+    "txclientslgTests": {
+      "passed": 144,
+      "failed": 0,
+      "build": "passed"
+    }
+  },
+  "ordinarySessionLifecycle": [
+    {
+      "scenario": "txgame-session",
+      "status": "passed",
+      "stages": 10,
+      "exits": {
+        "login-a-r2.exit": "0",
+        "msgq-b.exit": "0",
+        "agent.exit": "0",
+        "agent-b.exit": "0",
+        "login-a.exit": "0",
+        "agent-r2.exit": "0",
+        "game-b.exit": "0",
+        "login-b-r2.exit": "0",
+        "game-a.exit": "0",
+        "login-b.exit": "0",
+        "msgq-a.exit": "0",
+        "msgq-b-r2.exit": "0"
+      },
+      "diagnostics": false,
+      "summary": "txgame-session/20261104-124137.025136000/session-lifecycle-summary.json",
+      "packages": [
+        {
+          "path": "txgame-session/20261104-124137.025136000/installed/relocated/server",
+          "sha256": "58029ba010fd23aaba5b10b82b3e5db97fd997d1aa83620a5aac66b54f007662",
+          "hasTxbench": false
+        }
+      ]
+    },
+    {
+      "scenario": "txgameslg-session",
+      "status": "passed",
+      "stages": 10,
+      "exits": {
+        "msgq-b.exit": "0",
+        "slgworld-a.exit": "0",
+        "agent.exit": "0",
+        "agent-b.exit": "0",
+        "slggame-a.exit": "0",
+        "agent-r2.exit": "0",
+        "login-b-r2.exit": "0",
+        "login.exit": "0",
+        "login-b.exit": "0",
+        "login-r2.exit": "0",
+        "msgq-a.exit": "0",
+        "msgq-b-r2.exit": "0"
+      },
+      "diagnostics": false,
+      "summary": "txgameslg-session/20261104-124234.855648000/session-lifecycle-summary.json",
+      "packages": [
+        {
+          "path": "txgameslg-session/20261104-124234.855648000/installed/program/server",
+          "sha256": "c9e4cdcdec8b9b9f145bace1736169dd4ef306f9c5eab4e800f31a3ab1abe99e",
+          "hasTxbench": false
+        }
+      ]
+    }
+  ],
+  "diagnosticSuites": [
+    {
+      "scenario": "txgame-exclusive",
+      "status": "passed",
+      "diagnostics": true,
+      "source": "txgame-exclusive/20261104-124658.464849000/summary.json",
+      "events": [
+        {
+          "event": "exclusive_role",
+          "roleID": 470101,
+          "sessionIDs": [
+            751360,
+            751369
+          ],
+          "agentInstanceIDs": [
+            "txgame-4ed3088b-116c-4c2f-a848-d7567f5b63ab",
+            "txgame-0e66a8b2-6c90-4e69-81ff-5af607f34c48"
+          ],
+          "states": [
+            {
+              "nextUpSeq": 17,
+              "lastDownSeq": 19
+            },
+            {
+              "nextUpSeq": 3,
+              "lastDownSeq": 2
+            }
+          ],
+          "signedWithoutTakeover": true,
+          "oldRestoreRejected": true,
+          "oldFreshRejected": true,
+          "restored": true,
+          "logoutRejected": true
+        }
+      ],
+      "expectedCrashes": [],
+      "exitRecords": {
+        "login-a-r2.exit": "0",
+        "msgq-b.exit": "0",
+        "agent.exit": "0",
+        "agent-b.exit": "0",
+        "login-a.exit": "0",
+        "game-b.exit": "0",
+        "login-b-r2.exit": "0",
+        "game-a-r2.exit": "0",
+        "agent-b-r2.exit": "0",
+        "game-a.exit": "0",
+        "msgq-a-r2.exit": "0",
+        "login-b.exit": "0",
+        "msgq-a.exit": "0"
+      },
+      "missingExits": [],
+      "unexpectedExits": {},
+      "worldWritebackVerified": null
+    },
+    {
+      "scenario": "txgameslg-exclusive-gated",
+      "status": "passed",
+      "diagnostics": true,
+      "source": "txgameslg-exclusive-gated/20261104-124545.963916000/summary.json",
+      "events": [
+        {
+          "event": "exclusive_role_world",
+          "roleID": 480001,
+          "worldID": 490001,
+          "sessionIDs": [
+            751193,
+            751196
+          ],
+          "agentInstanceIDs": [
+            "txgameslg-bf7c0e37-03ba-4eba-a1be-4f40acaa6ccc",
+            "txgameslg-86a83205-dda1-4535-9023-f339495f7f7a"
+          ],
+          "states": [
+            {
+              "nextUpSeq": 16,
+              "lastDownSeq": 16
+            },
+            {
+              "nextUpSeq": 4,
+              "lastDownSeq": 3
+            }
+          ],
+          "signedWithoutTakeover": true,
+          "oldRestoreRejected": true,
+          "oldFreshRejected": true,
+          "restored": true,
+          "logoutRejected": true
+        }
+      ],
+      "expectedCrashes": [
+        "slgworld-a",
+        "msgq-a"
+      ],
+      "exitRecords": {
+        "msgq-b.exit": "0",
+        "slgworld-a.exit": "signal: killed",
+        "agent.exit": "0",
+        "agent-b.exit": "0",
+        "slggame-a.exit": "0",
+        "login-b-r2.exit": "0",
+        "slggame-b.exit": "0",
+        "msgq-a-r2.exit": "0",
+        "login.exit": "0",
+        "login-b.exit": "0",
+        "login-r2.exit": "0",
+        "slgworld-b.exit": "0",
+        "msgq-a.exit": "signal: killed",
+        "slgworld-a-r2.exit": "0",
+        "slgworld-c.exit": "0"
+      },
+      "missingExits": [],
+      "unexpectedExits": {},
+      "worldWritebackVerified": true
+    }
+  ],
+  "intermediateHarnessFailure": {
+    "source": "txgameslg-exclusive-final/20261104-123655.601878000/summary.json",
+    "status": "failed",
+    "error": "cluster e2e: wait generation-1 session evidence: context canceled\nstorage I/O agent: rpc error: code = Canceled desc = context canceled",
+    "classification": "初始会话在采集前已被顶号删除；主动取消无效等待，客户端会话步骤已通过"
+  },
+  "postflight": {
+    "checkedAt": "2026-11-04T12:47:57.951301+08:00",
+    "redisSizes": {
+      "12": 0,
+      "13": 0
+    },
+    "mongoCollections": {
+      "txgame_cluster_e2e": [],
+      "txgameslg_cluster_e2e": []
+    },
+    "etcdKeys": {
+      "txgame": [],
+      "txgameslg": []
+    },
+    "matchingProcesses": []
+  },
+  "review": "运行时及验收工具两轮限定独立审查无待修项"
+}

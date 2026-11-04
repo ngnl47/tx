@@ -337,6 +337,11 @@ func (s *Server) TerminateLogicalSession(ctx context.Context, roleID, sessionID 
 		return err
 	}
 	defer finish()
+	return s.terminateLogicalSession(ctx, roleID, sessionID)
+}
+
+// terminateLogicalSession 调用方须持有角色准入，确保接入校验与终止之间不会切换连接。
+func (s *Server) terminateLogicalSession(ctx context.Context, roleID, sessionID int64) error {
 	old, err := s.loadAdmission(ctx, roleID)
 	if err != nil {
 		return err

@@ -27,7 +27,7 @@ func (c *mailboxReadClient) Recv() (*msgqpb.MailboxStreamResponse, error) {
 }
 func testMailboxStream() *grpcMailboxStream {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &grpcMailboxStream{ctx: ctx, cancel: cancel, requests: make(chan *msgqpb.MailboxStreamRequest, 256), done: make(chan struct{}), sessions: make(map[int64]*grpcMailboxSession)}
+	return &grpcMailboxStream{ctx: ctx, cancel: cancel, requests: make(chan *msgqpb.MailboxStreamRequest, 256), done: make(chan struct{}), sessions: make(map[SessionHeader]*grpcMailboxSession)}
 }
 
 func TestMailboxSessionTryRecvOnlyTakesQueuedMessage(t *testing.T) {
@@ -372,7 +372,7 @@ func openTestMailboxSession(stream *grpcMailboxStream, ctx context.Context, head
 		select {
 		case <-stream.requests:
 			stream.mu.Lock()
-			session := stream.sessions[header.SessionID]
+			session := stream.sessions[header]
 			stream.mu.Unlock()
 			if session != nil {
 				session.opened <- nil
