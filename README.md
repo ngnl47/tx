@@ -22,17 +22,48 @@
 
 ## 最小系统模型
 
-```text
-客户端 → 应用 Login：认证、选服、签发票据
-客户端携票 → Agent → owner MsgQ：接入确认 → Agent 返回 FrameReady
-客户端收到 Ready → 应用建角/进入角色协议 → 业务响应后继续初始化
-客户端 → Agent → gRPC 上行 → 目标业务 Actor
-业务 Actor → gRPC 发布 → MsgQ 下行邮箱 → Agent → 客户端
+下面展示一次成功登录及后续消息往返。横向是参与方，时间从上向下推进；虚线表示接入结果，开口箭头表示异步消息，不代表远端已经执行完成。
 
-内部 Actor 调用：同实例本地邮箱 / 跨实例 Core NATS
-可靠任务：JetStream 持久发布 → 消费后调用 Actor
-存储：生成 GD/Store → Redis / Mongo / Fusion
+```mermaid
+sequenceDiagram
+    participant C as 客户端
+    participant L as 应用 Login
+    participant A as Agent
+    participant Q as owner MsgQ
+    participant G as 业务服务中的 Actor
+
+    rect rgb(240, 245, 250)
+        Note over C,G: 1. 登录签票与会话接入
+        C->>L: 认证、选服、选角
+        L-->>C: 票据与 Agent 地址
+        C->>A: 携票连接
+        A->>A: 验票并定位角色 owner MsgQ
+        A->>Q: 创建或恢复会话邮箱
+        Q-->>A: 接入确认
+        A-->>C: FrameReady
+    end
+
+    Note over C,G: Ready 只表示接入完成；首次登录仍需应用建角或进入角色
+
+    rect rgb(245, 250, 240)
+        Note over C,G: 2. 业务请求与独立下行响应
+        C-)A: 上行业务请求
+        A-)G: gRPC 投递到目标 Actor 邮箱
+        G->>G: Handler 执行业务
+        G-)Q: gRPC 发布下行消息
+        Q-)A: MailboxStream 推送下行
+        A-)C: 业务响应或通知
+        C-)A: 处理完成后确认下行 Ack
+        A-)Q: 转交 Ack，裁剪已确认消息
+    end
 ```
+
+业务服务还可以使用以下能力，它们不属于每次客户端请求都必须经过的步骤：
+
+- **内部 Actor 调用**：同实例直接投递本地邮箱，跨实例使用 Core NATS。
+- **可靠任务**：经 JetStream 持久发布，由消费者调用 Actor。
+- **数据存取**：通过生成的 GD/Store 使用 Redis、Mongo 或 Fusion 路径。
+
 
 - Login 业务流程、业务身份、排行榜、定时结算、合服和 World 归属规则在应用侧。
 - `FrameReady` 只表示会话接入完成，不表示角色业务登录完成；重连仅恢复邮箱下行，不自动重投业务请求。登录、借号、顶号与退出流程见[会话设计](docs/design.md#客户端协议与-agent)，当前实现和验收见[独占接入验收](docs/exclusive-session-acceptance-20261103.md)。
