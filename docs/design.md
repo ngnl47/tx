@@ -351,8 +351,26 @@ EtcdSlotStore 在创建和晋升时把目标成员状态与容量快照纳入同
 
 ```text
 tx/
-├── modules/actor/          # [L2] 类型、MessageContext、控制与调用的公共入口
-└── internal/actorhost/     # [L2] 激活、容量、顺序邮箱、钝化与失败状态
+├── modules/actor/                    # [L2] 应用借用的 Actor 契约
+│   ├── config.go                    # 包级说明及运行时配置
+│   ├── identity.go                  # Identity：Type / ID 身份
+│   ├── type.go
+│   │   ├── NewType / MustType       # 声明行为工厂
+│   │   └── With*                    # 放置、显式归属与空闲卸载选项
+│   ├── behavior.go                  # Behavior、Context 与本地投递契约
+│   ├── message.go                   # MessageContext 与协议分派
+│   ├── runtime.go
+│   │   ├── Caller / Teller          # 结果调用 / 单向投递的最小能力
+│   │   ├── Messenger               # 统一 Call、CallFuture、Tell、TellAccepted
+│   │   └── Runtime                 # 组合消息投递和 Controller，不暴露宿主关闭权
+│   ├── control.go
+│   │   ├── Controller              # Probe / EnsureActivation / RetryActivation
+│   │   └── WaitReady               # 只读等待，不发起加载
+│   ├── activation.go               # 激活状态及元数据
+│   └── future.go                   # Result / Future：业务结果与等待
+└── internal/
+    ├── actorhost/                   # [L2] 激活、容量、顺序邮箱与卸载的实现
+    └── actorresult/result.go        # 公共结果别名的实现；Await 不暴露结果完成权
 ```
 
 ```text
@@ -383,13 +401,34 @@ tx/
 
 ```text
 tx/
-├── modules/
-│   ├── rpc/                # [L2] 共享 gRPC Host / Sender
-│   └── actor/              # [L2] 统一 Messenger
+├── modules/rpc/                      # [L2] 普通 gRPC 传输，不处理 Actor 放置和邮箱
+│   ├── client.go
+│   │   ├── Access                   # 应用借用注册和路由客户端能力，包级说明
+│   │   └── Sender.Client            # 适配生成的原生 gRPC 客户端
+│   ├── route.go                     # ServiceRoute / InstanceRoute / Resolve
+│   ├── sender.go
+│   │   ├── Sender                   # TellAccepted / Call / CallStream / TellStream
+│   │   ├── Dialer / Connection      # 连接建立与管理 SPI
+│   │   └── Stream*Connection        # 长流调用与单向发送 SPI
+│   ├── delivery.go
+│   │   ├── Receiver                # 返回接收回执，不隐含业务已完成
+│   │   ├── StreamCallReceiver       # 独立请求并发执行并返回结果
+│   │   ├── StreamSubmitReceiver     # 同一流按读取顺序提交接收队列
+│   │   ├── NewAdmissionReceiver     # 登记至接收回调返回
+│   │   └── RegisterDeliveryService  # 绑定接收 SPI 到共享 Host
+│   ├── call.go                      # CallReceiver、Result 及同步调用准入包装
+│   └── host.go
+│       ├── Registrar               # 服务借用协议注册权
+│       └── Host                    # 装配层拥有监听、启动与关闭
 └── internal/
-    ├── instanceconn/       # [L2] 实例连接缓存与退役回收
-    └── actorrpc/           # [L2] Actor 直连与 NATS 适配
+    ├── instanceconn/                # [L2] 实例连接缓存与退役回收
+    └── actorrpc/                    # [L2] Actor 直连与 NATS 适配
 ```
+
+按 Actor 身份调用读 [Messenger](../modules/actor/runtime.go)，激活控制读
+[Controller / WaitReady](../modules/actor/control.go)。普通 gRPC 注册与调用读
+[Access](../modules/rpc/client.go)，接收适配的并发与完成边界读
+[接收 SPI](../modules/rpc/delivery.go)和[CallReceiver](../modules/rpc/call.go)；应用不直接导入 internal 实现。
 
 `CModRPC().Client(route)` 复用进程连接。生成 Client/Ref 是调用器，不是每个业务模块各建网络连接。`ClientConn` 是连接抽象，不是一条双向流；长流复用底层连接，业务语义由协议定义。
 
@@ -406,7 +445,7 @@ Agent 使用 `CModActorDirect().Tell`，属于上述 Tell 语义的 gRPC 直连�
 
 低层 gRPC 发送入口使用 `TellStream` 表示长流单向写入，`TellAccepted` 表示等待接收端 `Receiver.Deliver` 返回接纳回执；`Call` / `CallStream` 等待业务结果。接纳回执确认哪一层由接收适配明确，不能据此推断持久化或业务成功。原生 gRPC 线协议、接收侧分派和邮箱操作保留技术命名，不机械套用四种发送模式。
 
-共享流的开流与发送等待遵循操作 Context：尚未取得发送权时取消只退出本次等待；已进入 gRPC `Send` 而被流控阻塞时，取消整条共享流并等待 Send 实际返回。同流其他未完成调用可能失败，结果未知、不自动重投；后续新请求重新开流。每条流复用一个取消监视，不逐消息启动 goroutine 或注册取消回调。`CallStream` 已发送、仅等待业务结果时，继续发送按请求编号的取消控制项，不因此关闭健康共享流；取消不证明业务已停止。
+共享流的开流与发送等待遵循操作 Context：尚未取得发送权时取消只退出本次等待；已进入 gRPC `Send` 而被流控阻塞时，取消整条共享流并等待 Send 实际返回。同流其他未完成调用可能失败，结果未知、不自动重投；后续新请求重新开流。每条流复用一个取消监视，不逐消息启动 goroutine 或注册取消回调。`CallStream` 已发送、仅等待业务结果时，通常发送按请求编号的取消控制项；控制队列满或发送失败仍可能使共享流失效。取消不证明业务已停止。
 
 ```text
 内部生成方法 → Identity + Delivery → 归属解析
@@ -415,6 +454,10 @@ Agent 使用 `CModActorDirect().Tell`，属于上述 Tell 语义的 gRPC 直连�
       → 生成协议分派 → 同一业务 Handler
       → Call 返回结果 / Tell 结束本次处理
 ```
+
+`CallFuture` 返回前仍要完成寻址与提交；句柄不代表业务成功。创建时的 Context 继续约束结果等待生命周期，`Await(ctx)` 仅增加本次等待的取消或期限，不能延长创建时的期限；取消等待不撤销已接纳业务。详细契约见 [Future](../modules/actor/future.go)。
+
+接收准入包装只登记到 `next.Deliver` / `next.Call` 返回。如果实现入队或启动后台工作后返回，后续工作由接收队列或目标宿主管理排水，不由包装器自动追踪。长流的单向提交在读取循环内顺序调用，独立结果调用可并发；具体 SPI 不能被统一理解为串行业务执行。
 
 `DeliveryOrigin` 只有 OriginClient、OriginInternal、OriginTask，不按业务节点类型扩展。来源决定外围响应与确认适配，不要求 Handler 判断“来自 Game 还是 World”。Call 的无响应体成功使用 `Result.Completed`；它不是客户端上行 Ack。
 
@@ -489,21 +532,56 @@ Login 业务、Claims 编解码及授权留在应用。Login 不选择 MsgQ、�
 两组示例采用独占登录。非强制借号选择 `RejectExisting`；本人重新登录或经过应用授权的强制借号选择 `ReplaceExisting`，策略随票据签名。操作者账号仍在应用 Claims 中，不冒充目标角色的账号。框架不识别 GM，也不按协议划分双端广播。
 
 ```text
-tx/modules/
+tx/modules/                         # 以下为 L2 接入与邮箱协作的关键职责导航
 ├── agent/
-│   ├── types.go              # [L2] AuthResult：可信主体和 SessionAdmission
-│   ├── session.go            # [L2] 连接入口编排、验票与远端接入、上下行分发和帧写入
-│   ├── session_connection.go # [L2] 单连接资源、Ready 与收发循环、主动退出及统一收尾
-│   ├── session_registry.go   # [L2] 本地初始化/活动连接登记、精确断开与终止协调
-│   └── frame.go              # [L2] Ready、SessionEnded、Logout/LoggedOut
+│   ├── types.go                    # 项目接入 SPI 与装配选项，包级 GoDoc
+│   │   ├── IdentityResolver        # 验票与可信身份
+│   │   ├── Dispatcher              # 顺序投递当前连接的上行
+│   │   └── Transport               # 帧读写与物理连接关闭
+│   ├── session.go
+│   │   └── Server
+│   │       ├── Serve / serve       # 单连接入口、流程编排和统一收尾
+│   │       ├── authenticate        # 首帧检查与验票
+│   │       └── openSession         # 定位 MsgQ、登记连接、等待接纳
+│   ├── session_connection.go
+│   │   └── activeSession           # 单条物理连接的资源
+│   │       ├── run                 # Ready、并行下行和串行上行
+│   │       ├── readFrames          # Ack、上行分发与在线 Logout
+│   │       ├── logout              # 逻辑终止、等待在途写、回复 LoggedOut
+│   │       ├── close               # 等待下行、解绑、确认远端解除接入
+│   │       └── disconnect          # 关闭本地准入与传输
+│   └── session_registry.go         # 初始化/活动连接登记与并发终止协调
 └── msgq/
-    ├── admission.go         # [L2] 角色准入、票据水位、撤销和精确终止
-    ├── admission_client.go  # [L2] 查询既有 owner，逻辑终止不分配新 owner
-    ├── mailbox_stream.go   # [L2] 共享流客户端、接入/关闭完成等待
-    ├── mailbox_stream_server.go # [L2] 每流私有收发与接入编排、Revoke/Detached 和完成回执
-    ├── role_lifecycle.go    # [L2] 替换期间保留归属，正常关闭后条件释放
-    └── session_redis.go     # [L2] 单角色准入 CAS，独立于 Role→MsgQ 归属
+    ├── mailbox.go                  # Server：内存邮箱、序号和裁剪
+    ├── session.go                  # 包级 GoDoc、会话归属存储契约
+    ├── client.go
+    │   ├── SessionClientRouter     # Acquire 定位 owner 并复用连接；Close 管理连接
+    │   ├── SessionClient           # Agent 借用的会话操作，不暴露连接关闭权
+    │   └── SessionConnection       # 路由器拥有的共享连接
+    ├── mailbox_stream.go
+    │   ├── MailboxStreamSession    # 已接纳的单会话句柄：读、确认、续期、关闭与终止
+    │   └── grpcMailboxStream       # 多 Session 复用流；分派数据及控制回执
+    ├── mailbox_stream_server.go
+    │   ├── MailboxStream           # gRPC 服务入口，创建每流私有对象
+    │   └── mailboxStreamServer
+    │       ├── run                 # 请求分派
+    │       ├── readLoop/writeLoop  # 唯一流接收/发送
+    │       ├── openSession         # 先登记，再启动接入工作
+    │       ├── runSession          # 接纳、撤销协调、OPENED
+    │       ├── forwardDown         # 读取邮箱并提交发送
+    │       ├── closeSession        # 解除接入，按需终止逻辑会话
+    │       └── close               # 取消本流工作
+    ├── admission.go                # 角色准入、票据水位和撤销协调
+    ├── admission_client.go         # 角色级查询/退出，不为离线退出分配新 owner
+    ├── role_lifecycle.go           # 替换期间保留归属，正常关闭后条件释放
+    └── session_redis.go            # 准入 CAS 与角色、会话归属存储
 ```
+
+先读职责导航定位入口，再查方法 GoDoc 的调用契约：Agent 项目扩展见
+[types.go](../modules/agent/types.go)，会话借用与连接所有权见
+[client.go](../modules/msgq/client.go)，单会话操作的等待与失败边界见
+[MailboxStreamSession](../modules/msgq/mailbox_stream.go)。导航不穷举辅助方法，也不重复维护参数和错误清单。
+
 
 `serve` 只编排验票、接入与运行阶段；`activeSession` 持有当前物理连接的资源。接入失败也交给同一收尾入口，初始化期间收到终止请求时先完成既有补偿。运行结束先等待下行写协程实际退出，再注销本地连接、关闭接入并等待 MsgQ 解除绑定确认；普通断线保留逻辑邮箱。主动退出单独等待邮箱终止与在途写结束，再发送 `LoggedOut`，其确认期限不受下行协程结束时取消连接上下文的影响。
 

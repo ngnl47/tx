@@ -1,4 +1,9 @@
-// Package msgq 提供客户端会话邮箱的路由与状态基础能力。
+// Package msgq 提供会话下行邮箱、角色归属与接入协调。
+//
+// Server 持有内存邮箱；SessionClientRouter 定位 owner 并管理共享连接，
+// Agent 借用 SessionClient，通过 OpenMailboxStream 取得已确认的 MailboxStreamSession。
+// 接入、关闭和逻辑终止有各自的确认边界；下行及 Ack/Renew 复用共享流。
+// 普通连接关闭保留邮箱供恢复；Redis 保存归属与准入记录，不保存下行编码载荷。
 package msgq
 
 import (

@@ -35,11 +35,14 @@ type Connection interface {
 }
 
 // StreamCallConnection 在目标连接上复用一条双向流完成独立调用。
+// 内置 gRPC 实现的分阶段取消与同流影响见 Sender.CallStream；
+// 自定义连接实现应明确自己的取消边界，不把取消解释为业务未执行。
 type StreamCallConnection interface {
 	CallStream(context.Context, Delivery) (Result, error)
 }
 
 // StreamTellConnection 将消息写入长流，不等待远端接纳回执或业务结果。
+// 内置 gRPC 实现的发送等待与取消边界见 Sender.TellStream。
 type StreamTellConnection interface {
 	TellStream(context.Context, Delivery) error
 }
@@ -547,7 +550,11 @@ func (s *Sender) Call(ctx context.Context, delivery Delivery) (Result, error) {
 	return connection.Call(ctx, delivery)
 }
 
-// CallStream 在目标实例的长流上发送单项调用，不在断流后重投结果未知的请求。
+// CallStream 在目标实例的长流上发送单项调用，等待该项业务结果，不自动重投。
+// 内置 gRPC 实现中：等待开流或发送权时取消只结束本次等待；发送已进入阻塞的
+// gRPC Send 时，取消可关闭共享流并等待 Send 返回，同流其他未完成调用可能失败。
+// 已发送、仅等待结果时通过请求编号提交取消控制；控制队列满或传输失败仍可使流失效。
+// 取消或超时不证明远端业务已停止或未执行。
 func (s *Sender) CallStream(ctx context.Context, delivery Delivery) (Result, error) {
 	if s == nil {
 		return Result{}, ErrSenderClosed
@@ -571,6 +578,9 @@ func (s *Sender) CallStream(ctx context.Context, delivery Delivery) (Result, err
 }
 
 // TellStream 将消息写入目标实例的 CallStream，不等待远端接纳回执或业务结果。
+// 内置 gRPC 实现仍可能等待开流、发送权或流控；等待发送权时取消只结束本次等待，
+// 已进入阻塞 Send 时取消可关闭整条共享流并等待 Send 返回，影响同流其他未完成调用。
+// 发送失败不证明远端未收到，不自动重投。
 func (s *Sender) TellStream(ctx context.Context, delivery Delivery) error {
 	if s == nil {
 		return ErrSenderClosed

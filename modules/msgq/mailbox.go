@@ -59,13 +59,19 @@ type Server struct {
 // ServerOptions 配置会话邮箱服务。
 type ServerOptions struct {
 	// StartupAdmission 在首次业务请求时检查启动准入；不替代邮箱的排水和停止协议。
-	StartupAdmission   lifecycle.Admission
-	InstanceID         string
-	Store              SessionStore
+	// nil 不附加启动准入检查。
+	StartupAdmission lifecycle.Admission
+	// InstanceID 是宿主提供的非空运行身份，用于归属记录。
+	InstanceID string
+	// Store 是必填的共享归属存储，服务借用，不拥有其底层连接。
+	Store SessionStore
+	// MaxBacklogMessages 为单会话未确认下行条数上限，必须为正。
 	MaxBacklogMessages int
 	// MaxBacklogBytes 限制每个会话中尚未确认编码载荷的总字节数。零值使用安全默认值。
-	MaxBacklogBytes              int
-	OfflineTimeout               time.Duration
+	MaxBacklogBytes int
+	// OfflineTimeout 为会话无活动或未确认下行积压的过期期限；零值使用默认值，不接受负值。
+	OfflineTimeout time.Duration
+	// TerminateDeadSessionInterval 为过期会话清理间隔；零值使用默认值，不接受负值。
 	TerminateDeadSessionInterval time.Duration
 }
 

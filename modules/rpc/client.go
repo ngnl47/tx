@@ -1,3 +1,9 @@
+// Package rpc 提供进程共享的 gRPC 服务注册、实例寻址和连接复用。
+//
+// 应用借用 Access，通过 Registrar 登记协议、Client(Route) 接入生成的 gRPC 客户端。
+// Host 与 Sender 的创建及关闭由装配层管理；底层 Dialer 返回的 Connection 由 Sender 管理。
+// 定向消息使用 Sender，接收适配实现 Receiver、CallReceiver 及按需的长流 SPI。
+// Route 指向服务或实例，不处理 Actor 身份、放置或邮箱；Actor 业务调用使用 actor 包。
 package rpc
 
 import (

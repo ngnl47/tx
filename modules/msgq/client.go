@@ -17,13 +17,22 @@ var (
 
 // SessionClient 是 Agent 借用的会话操作，不转移共享连接的关闭权。
 type SessionClient interface {
+	// OpenMailboxStream 等待 MsgQ 接纳后返回；远端实现等待 OPENED，不只确认本地发送。
+	// ctx 同时约束接入等待与返回句柄的使用期。接入失败包含有限的解除接入补偿，
+	// 超时不证明远端未执行；错误不能当作已接纳，也不自动重投业务。
+	// onRevoke 在撤销时先关闭调用方上行准入及传输，返回后才能确认旧接入已关闭；
+	// 不应在回调中等待同一会话的 Close/Terminate，调用方仍负责最终收尾。
 	OpenMailboxStream(context.Context, InitRequest, func()) (MailboxStreamSession, error)
+	// TerminateSession 是按完整连接身份终止邮箱的低层入口，旧连接不能终止新接入。
+	// 活动流退出使用 MailboxStreamSession.Terminate；角色级退出使用路由器的
+	// TerminateLogicalSession，以协调活动接入和准入记录。
 	TerminateSession(context.Context, SessionHeader) error
 }
 
 // SessionConnection 是拨号器交给 SessionClientRouter 管理的连接，由路由器统一关闭。
 type SessionConnection interface {
 	SessionClient
+	// Close 关闭此共享连接及其流；不等同于各逻辑会话已正常退出。
 	Close() error
 }
 
@@ -36,6 +45,7 @@ type AcquireSessionRequest struct {
 
 // SessionClientDialer 建立到一个指定 msgq 实例的会话客户端。
 type SessionClientDialer interface {
+	// DialSession 返回由路由器拥有的连接；失败返回错误，不提供可用会话。
 	DialSession(context.Context, discovery.Instance) (SessionConnection, error)
 }
 
@@ -115,6 +125,8 @@ func NewSessionClientRouter(serviceName string, directory discovery.Directory, s
 }
 
 // Acquire 为新会话复用角色归属；首次归属由运行中实例轮转提名并原子确认。恢复仍直达旧邮箱。
+// 可并发借用，连接由路由器复用和关闭；成功只完成定位/连接，邮箱接纳仍须 OpenMailboxStream。
+// 恢复找不到旧会话时返回 ErrSessionOffline，不改派到其他实例新建邮箱。
 func (r *SessionClientRouter) Acquire(ctx context.Context, request AcquireSessionRequest) (SessionClient, error) {
 	if r == nil || r.directory == nil {
 		return nil, ErrDirectoryNil

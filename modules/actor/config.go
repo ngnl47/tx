@@ -1,4 +1,10 @@
 // Package actor 提供实体行为与调用契约；连接、发现和生命周期由框架统一装配。
+//
+// Type 声明行为、放置与空闲卸载策略；Messenger 按 Identity 投递业务，
+// Controller 和 WaitReady 提供独立的激活控制与观察。Runtime 组合这些借用能力，
+// 不转移宿主关闭权。普通调用同实例进入本地邮箱，跨实例使用 Core NATS；
+// 原生 gRPC 服务注册与实例调用使用 rpc 包，不经过 Actor 邮箱。
+// Actor Ready 表示通信入口完成初始化，不保证独立业务对象存在或可用。
 package actor
 
 import (

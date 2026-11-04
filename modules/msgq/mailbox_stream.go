@@ -16,13 +16,21 @@ import (
 // MailboxStreamSession 是共享 MailboxStream 上的一条已确认接入。
 // 普通下行与 Ack/Renew 保持单向传输，接入、解除接入和逻辑退出单独确认。
 type MailboxStreamSession interface {
-	// Context 随逻辑会话结束取消，Cause 保留终止原因；不影响同流的其他会话。
+	// Context 表示本次接入的使用期，Cause 保留取消原因；普通关闭、撤销、断流或
+	// 下行消费失败均可取消，不表示逻辑邮箱已销毁。共享流失败会影响其全部接入。
 	Context() context.Context
+	// Recv 等待一条下行或接入结束；由单一消费方按顺序读取，不代表客户端已收到。
 	Recv() (FetchResult, error)
+	// Ack 上报客户端累计确认的下行序号。远端成功只表示提交本地流队列，
+	// 不等待 MsgQ 裁剪回执；同进程实现直接执行裁剪。
 	Ack(context.Context, int64) error
+	// Renew 续期。远端成功不等待处理回执，同进程实现直接执行。
 	Renew(context.Context) error
+	// Close 解除本次连接绑定并保留逻辑邮箱；调用前须停止本地上行。
+	// 使用独立有限期限等待解除接入确认，失败可保留句柄重试；不关闭共享连接。
 	Close() error
-	// Terminate 确认当前逻辑会话退出；调用前须停止本地上行准入。
+	// Terminate 等待当前逻辑会话退出，成功后不再用于重连；调用前须停止本地上行。
+	// ctx 取消或超时不证明远端未执行，不得作为退出成功。
 	Terminate(context.Context) error
 }
 

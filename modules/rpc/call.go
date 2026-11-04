@@ -29,7 +29,8 @@ func (r Result) Validate() error {
 	return nil
 }
 
-// CallReceiver 处理一条已经校验的同步内部消息。
+// CallReceiver 处理一条已经校验的同步内部消息，返回时提供业务结果。
+// 不同请求可并发调用，Context 取消不强制终止业务；实现应遵循自身的执行与收尾边界。
 type CallReceiver interface {
 	Call(context.Context, Delivery) (Result, error)
 }
@@ -47,7 +48,9 @@ type admissionCallReceiver struct {
 }
 
 // NewAdmissionCallReceiver 为业务 CallReceiver 增加严格的服务入口控制。
-// 排水开始后，新调用不再进入 next；已经接受的工作会持续登记到完成回调执行为止。
+// 排水开始后，新调用不再进入 next；登记从准入成功持续到 next.Call 返回。
+// 如果 next 自行启动后台工作后返回，该工作不再受这层登记保护；
+// 实现方须将其纳入接收队列或目标宿主的生命周期。
 func NewAdmissionCallReceiver(next CallReceiver, admission lifecycle.Admission) (CallReceiver, error) {
 	if next == nil {
 		return nil, ErrCallReceiverNil

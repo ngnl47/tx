@@ -41,7 +41,9 @@ func (d Delivery) Validate() error {
 	return nil
 }
 
-// Receiver 处理一条已经校验的内部消息。
+// Receiver 处理一条已经校验的内部消息，不自动串行化不同请求。
+// Deliver 返回值用于低层 TellAccepted 的回执；实现须明确返回时是否仅完成入队，
+// 不得将入队成功描述为持久化或业务完成。入队后工作的排水由接收队列或目标宿主负责。
 type Receiver interface {
 	Deliver(context.Context, Delivery) error
 }
@@ -53,13 +55,16 @@ func (f ReceiverFunc) Deliver(ctx context.Context, delivery Delivery) error {
 	return f(ctx, delivery)
 }
 
-// StreamCallReceiver 处理长流上的独立调用；每项仍按自己的结果完成。
+// StreamCallReceiver 处理长流上的独立调用；返回时产生该项业务结果。
+// 同一流内的不同请求也可并发执行，不保证按读取顺序进入业务邮箱。
+// 每项 Context 随对应取消控制或流结束取消；取消不强制终止实现中的工作。
 type StreamCallReceiver interface {
 	CallStream(context.Context, Delivery) (Result, error)
 }
 
 // StreamSubmitReceiver 只在消息进入本地接收队列后返回，不等待业务执行。
-// 服务端在读取循环中同步调用它，以保持同一条流的入队顺序。
+// 服务端在读取循环中同步调用它，以保持同一条流的入队顺序；多条流之间可并发。
+// 入队错误记入服务端日志，不向发送方提供逐项回执；已接纳工作的排水由目标宿主负责。
 type StreamSubmitReceiver interface {
 	SubmitStream(context.Context, Delivery) error
 }
@@ -70,7 +75,9 @@ type admissionReceiver struct {
 }
 
 // NewAdmissionReceiver 为业务 Receiver 增加严格的服务入口控制。
-// 排水开始后，新消息不再进入 next；已经接受的工作会持续登记到完成回调执行为止。
+// 排水开始后，新调用不再进入 next；登记从准入成功持续到 next.Deliver 返回。
+// 如果 next 自行启动后台工作后返回，该工作不再受这层登记保护；
+// 实现方须将其纳入接收队列或目标宿主的生命周期。
 func NewAdmissionReceiver(next Receiver, admission lifecycle.Admission) (Receiver, error) {
 	if next == nil {
 		return nil, ErrReceiverNil
@@ -90,7 +97,10 @@ func (r *admissionReceiver) Deliver(ctx context.Context, delivery Delivery) erro
 	return r.next.Deliver(ctx, delivery)
 }
 
-// RegisterDeliveryService 将生成的 gRPC 服务注册到 registrar。
+// RegisterDeliveryService 将生成的 gRPC 服务注册到 registrar，须在 Host.Start 前调用。
+// receiver 与 callReceiver 至少提供一个；缺失的单向或同步入口返回 Unimplemented。
+// 长流要求 callReceiver 同时实现 StreamCallReceiver，长流单向投递还要求它实现
+// StreamSubmitReceiver；不满足时在对应请求到达后返回 Unimplemented。
 func RegisterDeliveryService(registrar grpc.ServiceRegistrar, receiver Receiver, callReceiver CallReceiver) error {
 	if registrar == nil || (receiver == nil && callReceiver == nil) {
 		return ErrReceiverNil

@@ -79,6 +79,10 @@ type resultWaiter interface {
 type Future struct{ pending resultWaiter }
 
 func WrapFuture(f resultWaiter) *Future { return &Future{pending: f} }
+
+// Await 等待业务结果；ctx 取消只结束本次等待，不撤销已接纳的业务。
+// CallFuture 创建时的 Context 仍约束调用等待生命周期，本次等待不能延长其期限。
+// 错误可能表示拒绝、业务失败或结果未知，不能仅据超时自动重投。
 func (f *Future) Await(ctx context.Context) (Result, error) {
 	value, err := f.pending.Await(ctx)
 	return FromProto(value, err)

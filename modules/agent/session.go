@@ -17,7 +17,7 @@ import (
 	txprotocol "github.com/ngnl47/tx/protocol"
 )
 
-// Server 运行一条玩家连接对应的逻辑会话。
+// Server 复用接入依赖，为每条玩家连接分别运行会话流程。
 type Server struct {
 	identityResolver IdentityResolver
 	dispatcher       Dispatcher
@@ -54,6 +54,10 @@ func NewServer(options ServerOptions) (*Server, error) {
 }
 
 // Serve 完成一条连接的身份解析、上行 Seq 校验、业务分发与下行发送。
+// 可在同一 Server 上为不同 Transport 并发调用；连接编号生成成功后接管传输并在返回前关闭。
+// Ready 晚于 MsgQ 接纳，不表示角色业务初始化完成。普通断线解除接入并保留逻辑邮箱，
+// Logout 才显式终止会话；返回时保留运行或远端关闭错误，不自动重投上行。
+// ctx 控制本连接运行；取消不等于远端关闭已确认，收尾仍需等待下行退出与解除绑定。
 func (s *Server) Serve(ctx context.Context, transport Transport) error {
 	if s == nil {
 		return ErrServerNil
