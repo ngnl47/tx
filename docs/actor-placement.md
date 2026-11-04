@@ -13,7 +13,7 @@ tx/
 
 目标服务提供分组策略，调用方不手动绑定目标业务依赖。
 
-本页描述现行能力。路由缓存修正和正常 Stop 后条件释放已接入；实现与验收进度见 [专项实施计划](actor-routing-lifecycle-plan.md)。实例失联、启动失败及收尾失败不等于已释放。
+本页描述现行能力。路由缓存修正和正常 Stop 后条件释放已接入；实测与验证边界见 [验收记录](actor-placement-acceptance.md)。实例失联、启动失败及收尾失败不等于已释放。
 
 归属中的 InstanceID 是本次启动生成的 `AppID-UUID` 不透明身份；Actor 逻辑槽位、owner 和 Generation 保持独立。SessionID 使用单次 etcd 写入 revision，不占用或释放逻辑槽位。发号键从规范化 Discovery 根 `R` 派生为 `R + "-session-ids/issuer"`，位于成员/槽位 Watch 和容量 CAS 域之外，不触发放置目录刷新；成员租约注销也不自动删除持久 assignment。
 

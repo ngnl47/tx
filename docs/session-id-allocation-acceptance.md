@@ -1,6 +1,6 @@
 # SessionID 独立发号本地验收（2026-11-02）
 
-本轮完成 [实施计划](session-id-allocation-plan.md)：新 Session 使用独立 etcd Put 的成功响应 revision，InstanceID 使用 `AppID-UUID`，删除 work slot 与旧时间拼号器。Actor 逻辑槽位、容量、排水、条件释放和显式交接保持原契约。业务继续调用 `CModSessionID().AllocateSessionID(ctx)`，两组客户端和 txgen 无需修改。
+本轮完成 SessionID 独立发号与运行身份收敛：新 Session 使用独立 etcd Put 的成功响应 revision，InstanceID 使用 `AppID-UUID`，删除 work slot 与旧时间拼号器。Actor 逻辑槽位、容量、排水、条件释放和显式交接保持原契约。业务继续调用 `CModSessionID().AllocateSessionID(ctx)`，两组客户端和 txgen 无需修改。
 
 ## 责任和生命周期
 

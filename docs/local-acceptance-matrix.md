@@ -67,7 +67,7 @@
 
 ## 2026-11-03 独占接入与 MailboxStream 协调
 
-以下是现行方案的验收边界；[本轮报告](exclusive-session-acceptance-20261103.md)记录新模型实测，最终收尾验证已通过。实施状态见[计划](exclusive-session-plan.md)。
+以下是现行方案的验收边界；[本轮报告](exclusive-session-acceptance-20261103.md)记录新模型实测，最终收尾验证已通过。现行契约见[会话设计](design.md#客户端协议与-agent)。
 
 | 边界 | 必须核验的行为 | 状态 |
 | --- | --- | --- |

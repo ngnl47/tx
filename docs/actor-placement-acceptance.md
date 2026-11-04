@@ -49,6 +49,17 @@ go test ./internal/framework -run '^$' -bench '^BenchmarkActorPlacementHit$' \
 
 本批基于 tx `6dedf9a`，分支 `feature/actor-route-refresh`；只修改 tx，保留既有文档改动，不提交。两组应用只运行接入回归。
 
+### 固定参考与采用边界
+
+| 参考 | 固定版本 | 借鉴内容 | 不引入内容 |
+| --- | --- | --- | --- |
+| Orleans | v10.4.2，`876ffe0338e41bc6339e85ee5696dbee6cf9a4c4` | 旧地址条件失效、错误反馈、共享冷查询、放置与目录分离 | Grain 与业务对象强绑定、转发与业务重放、完整成员协议 |
+| Akka | v2.10.24，`8619c97e0680beb54db179fca4774bb1c0d36d4d` | 接收准入与实际停止之间的边界、旧激活结束后才能重建 | 全集群交接确认、中心协调器、交接缓冲与重放 |
+
+源码位于同级 `orleans`、`akka` 仓库。核对入口：Orleans 的 `GrainDirectory/LruGrainDirectoryCache.cs`、`CachedGrainLocator.cs`、`Messaging/MessageCenter.cs`；Akka 的 `ShardCoordinator.scala`、`ShardRegion.scala`。Akka 交接包含为避免乱序丢弃缓冲的分支，不引用“绝对无损交接”作为设计依据。
+
+采用机制后按 tx 契约独立实现，不默认允许复制第三方源码。若确有复制需要，另行核对对应许可证。该阶段没有重新运行第三方测试或性能实验。
+
 ### 已实现与验证边界
 
 - 发送保留观察到的 SlotID/InstanceID/Generation，失败只使同一份旧归属失效；迟到拒绝不撤销新地址。正常命中仍不回源，未知投递结果不自动重发。

@@ -1,6 +1,6 @@
 # 接入服务持续流量滚动发布验收
 
-本轮按[验收计划](session-rollout-acceptance-plan.md)运行两组本地普通正式包。每组依次替换一个 Login、Agent、MsgQ，每窗 180 秒、40 连接、每连接 5 次/秒，TCP 与 WebSocket 各半。生产运行时、协议和自动恢复策略未修改，不跑云测试、不提交。
+本轮运行两组本地普通正式包。每组依次替换一个 Login、Agent、MsgQ，每窗 180 秒、40 连接、每连接 5 次/秒，TCP 与 WebSocket 各半。生产运行时、协议和自动恢复策略未修改，不跑云测试、不提交。
 
 后续定位补充：旧客户端也会把 Ready 前普通关闭转换成 `HandshakeRejectedError`，因此本报告中 TCP 的恢复通过只是当时工具判定，不能作为明确应用拒绝的证据。后续修复改为明确结果帧，并对 TCP/WebSocket 一起补验；见[接入拒绝修复与补验](session-rejection-acceptance-20261104.md)。本页原始计数和失败记录保留。
 

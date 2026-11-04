@@ -4,7 +4,7 @@
 
 阅读时先看“工程边界、整体链路、启动”，再按业务选择“无缓存存储”或“共享实体与事务”；部署接入统一看 [部署要求与基础设施边界](#部署要求与基础设施边界)。不要把一次发送、内存提交、Redis 热写和 Mongo 落盘理解为同一个成功边界。
 
-Actor 寻址与正常关闭归属的目标见 [专项实施计划](actor-routing-lifecycle-plan.md)，其中包含目标架构、生命周期流程及分批验收。[条件路由修正](actor-placement.md)和正常 Stop 后的条件释放已接入；失联或收尾失败不触发自动改派。
+Actor 寻址与正常关闭归属见 [Actor 放置](actor-placement.md)，通信 Actor 与业务对象边界见 [生命周期](service-actor-lifecycle.md)。[条件路由修正](actor-placement.md)和正常 Stop 后的条件释放已接入；失联或收尾失败不触发自动改派。
 
 ## 工程与运行单位
 

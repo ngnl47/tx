@@ -1,6 +1,6 @@
 # 独占接入与 MailboxStream 协调验收
 
-日期：2026-11-03。范围：tx、txgame、txgameslg、txclient、txclientslg。本轮不提交、不跑云测试。当前边界见[实施计划](exclusive-session-plan.md)，接口见[Agent API](api-reference.md#agent-玩家接入)。
+日期：2026-11-03。范围：tx、txgame、txgameslg、txclient、txclientslg。本轮不提交、不跑云测试。当前边界见[会话设计](design.md#客户端协议与-agent)，接口见[Agent API](api-reference.md#agent-玩家接入)。
 
 ## 职责与时序
 

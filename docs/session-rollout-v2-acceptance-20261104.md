@@ -66,6 +66,6 @@ tx-artifacts/session-rollout-v2-20261104/
     └── verification-notes.md          # 统计闭合和恢复边界复核
 ```
 
-机器摘要见 [验收数据](validation/session-rollout-v2-20261104.json)，当前口径见 [验收计划](session-rollout-acceptance-plan.md#3-正常运行发布中断与完整分母)。历史 schema v1 报告和机器记录保持不变。
+机器摘要见 [验收数据](validation/session-rollout-v2-20261104.json)，当前口径见 [验收指南](session-rollout.md#3-正常运行发布中断与完整分母)。历史 schema v1 报告和机器记录保持不变。
 
 本轮仅新增验收记录并更新计划索引，没有发现需要修改实现的新问题。下一步可审阅并提交现有统计与文档变更；无需为本轮通过而扩大功能或继续调节发布窗口。
