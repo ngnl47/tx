@@ -2,7 +2,7 @@
 
 `tx` 是游戏后端的基础库。它管理进程能力、Actor、通信、GD 存取和生命周期；游戏如何登录、怎样建角、何时结算、如何合服，由应用工程实现。本文从首次接入者的视角解释当前结构，示例使用方式见 [README](../README.md)，具体参数和低层 API 见 [参考手册](api-reference.md)。
 
-阅读时先看“工程边界、整体链路、启动”，再按业务选择“无缓存存储”或“共享实体与事务”。不要把一次发送、内存提交、Redis 热写和 Mongo 落盘理解为同一个成功边界。
+阅读时先看“工程边界、整体链路、启动”，再按业务选择“无缓存存储”或“共享实体与事务”；部署接入统一看 [部署要求与基础设施边界](#部署要求与基础设施边界)。不要把一次发送、内存提交、Redis 热写和 Mongo 落盘理解为同一个成功边界。
 
 Actor 寻址与正常关闭归属的目标见 [专项实施计划](actor-routing-lifecycle-plan.md)，其中包含目标架构、生命周期流程及分批验收。[条件路由修正](actor-placement.md)和正常 Stop 后的条件释放已接入；失联或收尾失败不触发自动改派。
 
@@ -532,31 +532,40 @@ sequenceDiagram
     deactivate L
     Note over L,Q: 签票不选择 MsgQ、不占位、不终止旧会话
     C->>A: Handshake(ticket)
-    activate A
     A->>A: 验票、取得可信身份与准入策略
-    A->>A: 查询角色 owner；无归属才提名并原子认领
-    A->>Q: OPEN(InitRequest, Admission)
-    activate Q
-    Q->>Q: 校验准入；需要替换时先确认旧接入关闭
-    Q->>Q: 初始化邮箱并绑定可撤销接入
-    Q-->>A: OPENED
-    deactivate Q
-    A-->>C: FrameReady
-    deactivate A
-    Note over C,G: 接入已完成；此时尚未证明角色业务初始化完成
-    C-)A: 应用建角或进入角色请求
-    A-)G: 按可信身份及描述表 Tell 投递
-    Note right of A: 不等待远端逐条接纳或执行回执
-    activate G
-    G->>G: Handler 调用模块，按业务规则建角或读取角色
-    G-)Q: 响应发布器 SendRole，发布独立下行
-    deactivate G
-    Q-)A: MailboxStream 推送 DownMsg
-    A-)C: 业务响应
-    C->>C: 处理响应；按需发起后续初始化查询
-    C-)A: 下行 Ack
-    A-)Q: 同步 Ack，裁剪已确认下行
+    opt 验票通过且定位到角色 owner
+        A->>Q: OPEN(InitRequest, Admission)
+        Q->>Q: 校验准入；成功时协调旧接入关闭并绑定新接入
+        Q-->>A: OPENED：接纳结果
+    end
+    alt 接纳成功
+        A-->>C: FrameReady
+        Note over C,G: 接入已完成；此时尚未证明角色业务初始化完成
+        C-)A: 应用建角或进入角色请求
+        A-)G: 按可信身份及描述表 Tell 投递
+        Note right of A: 不等待远端逐条接纳或执行回执
+        activate G
+        G->>G: Handler 调用模块，按业务规则建角或读取角色
+        G-)Q: 响应发布器 SendRole，发布独立下行
+        deactivate G
+        Q-)A: MailboxStream 推送 DownMsg
+        A-)C: 业务响应
+        C->>C: 处理响应；按需发起后续初始化查询
+        C-)A: 下行 Ack
+        A-)Q: 同步 Ack，裁剪已确认下行
+    else 本次接入未获接纳
+        A-->>C: HandshakeRejected
+        Note over C,A: 仅拒绝本次尝试，不宣称票据永久失效
+    else 明确永久失效
+        A-->>C: SessionEnded
+        C->>C: 放弃旧票据恢复，需显式重新登录
+    end
+    Note over C,A: 三种结果互斥；未收到结果便断线时，接入结果未知
 ```
+
+这里的握手结果帧是 Agent 通过 TCP/WebSocket 返回的 tx 控制帧，不是 Login 的 HTTP 响应，也不是逐条业务消息的确认。
+
+对同一次握手，`Ready`、`HandshakeRejected`、`SessionEnded` 是三个互斥的接入结果，不会依次发送；只有 `Ready` 分支继续业务初始化。`HandshakeRejected` 仅拒绝本次接入，不据此判定票据永久失效；`SessionEnded` 明确当前票据永久失效，应停止用旧票据恢复，由应用显式发起重新登录。未收到明确结果帧便断线或发生网络错误，只能判为接入结果未知，不自动重投。这里的互斥仅针对同一次握手结果：连接就绪后仍可能因顶号、会话终止等原因收到 `SessionEnded`。
 
 
 Login 业务、Claims 编解码及授权留在应用。Login 不选择 MsgQ、不预占会话、不查询在线状态，也不承接退出管理。框架保留不透明身份字节，不解释账号或合服规则。RoleID、WorldID 等路由身份与帧序号不同；生成注解决定目标 Actor 与身份来源。
@@ -620,6 +629,8 @@ tx/modules/                         # 以下为 L2 接入与邮箱协作的关�
 
 
 `serve` 只编排验票、接入与运行阶段；`activeSession` 持有当前物理连接的资源。接入失败也交给同一收尾入口，初始化期间收到终止请求时先完成既有补偿。运行结束先等待下行写协程实际退出，再注销本地连接、关闭接入并等待 MsgQ 解除绑定确认；普通断线保留逻辑邮箱。主动退出单独等待邮箱终止与在途写结束，再发送 `LoggedOut`，其确认期限不受下行协程结束时取消连接上下文的影响。
+
+同一次握手的接入结果互斥：`Ready` 确认已接受；`HandshakeRejected`（Frame v4 类型 9）仅拒绝本次尝试；`SessionEnded` 表示当前票据永久失效。拒绝控制帧不携带内部错误文本。取消初始化、网络错误或 Ready 前关闭若没有明确结果帧，只能判为结果未知；客户端不把它们转换成应用拒绝，也不自动重投请求。类型 9 需要前后端同步更新；不承诺旧客户端识别新控制帧。
 
 `MailboxStream` 为每条共享流创建一个私有 `mailboxStreamServer`，集中持有流上下文、收发队列和接入表，不拥有逻辑邮箱。单一发送协程写流，接收协程交给主循环分派；OPEN 先登记再异步接纳，解除接入在独立工作中等待，避免阻塞顶号所需的 DETACHED。流退出取消本流工作，底层接收随 gRPC 方法返回结束；取消不替代远端解除接入确认。关键入口的 GoDoc 保留简短流程总览，帮助定位这些并发和完成边界。
 
@@ -896,7 +907,7 @@ tx/
 
 事务外的直接 `Create` 是全字段 Upsert，已有记录可能被更新；需要“存在则拒绝”时使用条件创建能力。Procedure 经 WriteBack 的首次写入使用条件创建，两者不能混用。Fusion 删除采用同步完成路径；失败时保留删除意图并由既有延迟任务处理，不套用保存接口的成功边界。
 
-Redis 不再做应用手工分片；具名 route 选择一个 backend。Lua 多键须满足槽约束；云代理跨槽能力需要部署验证，不以 Pipeline 自动等价跨槽原子操作。Mongo 的路由键选择明确数据库目标，不隐式跨分片扫描。
+Redis 不再做应用手工分片；具名 route 选择一个 backend。[部署要求](#redis-代理与集群能力)集中说明跨槽 MGET、同槽 Lua 和主节点读写要求；云代理能力需要部署验证，不以 Pipeline 自动等价跨槽原子操作。Mongo 的路由键选择明确数据库目标，不隐式跨分片扫描。
 
 ```text
 Fusion 保存 → Redis 热写 → 本地延迟发布登记 → 返回
@@ -1163,6 +1174,54 @@ tx/
 指标标签用服务、阶段、结果等有界值，不放 RoleID/SessionID 等高基数身份。Prometheus 抓取不等于每条消息远程发送，也不替代 pprof CPU/分配画像。普通构建不启用 `txbench` 存储逐调用计时；专项验收可开启，性能比较必须记录采集条件。
 
 公开错误区分未接纳、执行失败与结果未知；RPC 超时不能解释为业务未执行。恢复 panic 不应吞掉错误，更不能兜住 Go map 并发访问的 runtime fatal；共享数据必须遵守记录锁和快照契约。
+
+## 部署要求与基础设施边界
+
+本节集中维护通用部署要求；应用负责选择 Pod 拓扑、公开地址、配置与发布策略。腾讯云 TKE 的 Agent 独立入口示例见 [txgame 部署章节](https://github.com/ngnl47/txgame/blob/master/docs/design.md#部署要求)和 [txgameslg 部署章节](https://github.com/ngnl47/txgameslg/blob/main/docs/design.md#部署要求)。部署方案不等于已经完成云端验收。
+
+### 实例身份、地址与网络
+
+```text
+部署平台
+├── 对外接入地址       # 客户端可达；应用登记，Login 返回所选 Agent 的地址
+├── 内部通信地址       # 节点间可达；gRPC 直连与 Core NATS/JetStream 按既定路径使用
+└── 进程启停与资源     # 调度、网络绑定、终止宽限期；不代替框架排水
+
+tx
+├── InstanceID        # 每次启动重新生成；同进程子服务共用，不绑定 Pod 名或 IP
+├── Discovery         # 租约下登记实例及端点，不分配公网地址
+└── Actor assignment  # 逻辑槽位、owner 与 Generation；不是 Agent 对外地址分配器
+```
+
+不再存在运行身份 work slot。固定 IP、端口或 Pod 名不会使替换进程沿用旧 InstanceID；Actor 逻辑槽位仍保留。监听地址与登记地址要分开：`0.0.0.0` 是监听通配地址，不能作为客户端或其他节点的目标地址。
+
+两组示例首次票据绑定所选 AgentInstanceID，因此 Agent 对外端点须定向到该实例；不能把一个随机分发到多个 Agent 的公共入口直接当作所有实例的登记地址。每台宿主机一个 Agent 是部署选择，不是 tx 限制；同宿主多进程使用独立端口，独立 Pod 网络也可使用不同 IP 的相同端口。普通 NodePort Service 仍可能转发到其他节点，不能仅凭访问某个 NodeIP 就认定到达该节点的 Agent。
+
+Agent 重建后继续使用原地址，需要部署平台保留并重新绑定该地址；tx 不完成 EIP 迁移，也不从旧票据推断替代地址。恢复已有 Session 是否允许跨 AgentInstanceID，由应用验票 SPI 决定；MsgQ 核验原会话与接入资格。首次接入、同 Session 恢复和新 Login 不应混为同一操作，具体规则见两组应用部署章节。
+
+### Redis 代理与集群能力
+
+每个具名 Redis 存储选择一个 backend，框架使用普通 `go-redis.Client` 连接单端点；本地可用单节点，生产集群使用兼容该访问方式的代理。tx 不负责应用分片、扩容搬迁或原生 Redis Cluster 的节点发现，不能把任意分片节点地址当作代理地址。
+
+- **跨槽原生 MGET**：批量 GD 读取及排行榜共享资料可能涉及不同 Hash Tag。代理须完成跨槽分发，并按输入 Key 顺序返回结果；单机测试不能证明此能力。
+- **同槽 Lua**：脚本涉及的多个 Key 必须按当前 Key/Hash Tag 规则落在同槽。支持跨槽 MGET 不等于支持跨槽 Lua，也不提供跨槽事务。
+- **主节点读写**：当前读取路径依赖主节点可见性，不默认接入可能返回旧值的只读副本端点。
+- **扩容与恢复**：由 Redis 服务及运维负责分片迁移、持久化和故障恢复。修改 URI 不会迁移数据；Pipeline 只组织命令发送，不能补齐跨槽路由或原子性。
+
+选用腾讯云或其他云 Redis 时，需要核对实际产品版本、代理模式和上述命令支持，不以“Redis Cluster”名称推断兼容。生产配置的 DB 编号也须符合所选产品能力；本地验收使用的隔离 DB 编号不是云产品支持承诺。连接配置、底层装配与 Hash Tag 示例见 [Redis 具名存储](api-reference.md#redis-具名存储)。
+
+### etcd、持久化与关闭
+
+- **etcd**：存储成员租约、Actor 归属，并以写入 revision 发 SessionID。ACL 须覆盖目录及独立的精确发号键；备份恢复须保持发号安全边界。运维配置自动 compaction、容量告警和按需 defrag；业务不清理 MVCC 历史。配置与恢复规则统一见 [etcd 使用与维护](api-reference.md#etcd-使用与维护)。
+- **NATS / JetStream**：内部远程 Actor RPC 使用 Core NATS；启用可靠任务才需要相应 JetStream 资源与持久化配置。Core NATS 发送完成、任务 ACK 和最终存储落盘不是同一保证。
+- **Mongo / Fusion**：Mongo 按应用路由和索引要求部署；Fusion 成功热写 Redis 并登记延迟任务，不等于已回写 Mongo。关停所有消费者前，若发布验收要求最终 Mongo 一致，必须独立等待并回读；Redis 队列与 Mongo 均属于持久化边界。
+- **容器关闭**：部署终止流程应让程序执行正常关闸、排水、必要写回和退出，并留足终止宽限期。强杀不属于正常关闭成功证据；收尾失败不能当作槽位安全释放。宽限期按应用关闭期限与实测收尾耗时设置，不在 tx 中固定 K8s 参数。
+
+具体停服、滚动发布、World 固定承载策略由应用维护。应用 YAML、外部 JSON 快照与密钥由部署侧提供；存储与控制端口不作为玩家接入地址暴露。
+
+### 验证范围
+
+本地验收证明代码路径与已记录场景，不证明 TKE 的 EIP 重绑定、云 Redis 跨槽代理、终止宽限期或生产容量。本轮只整理文档，不部署云资源、不运行云验收；未来云部署需分别验证网络定向、存储命令兼容和正常退出，不能用单机成功代替。
 
 ## 如何扩展与验收
 

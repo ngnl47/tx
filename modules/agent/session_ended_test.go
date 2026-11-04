@@ -47,15 +47,17 @@ func TestHandshakeReportsTerminalAdmissionSeparatelyFromTransientFailure(t *test
 				t.Fatalf("serve = %v", err)
 			}
 			terminal := errors.Is(failure, ErrSessionEnded) || errors.Is(failure, msgq.ErrSessionAdmission) || errors.Is(failure, msgq.ErrSessionOffline)
+			want := FrameHandshakeRejected
+			if terminal {
+				want = FrameSessionEnded
+			}
 			select {
 			case frame := <-transport.writes:
-				if !terminal || frame.Kind != FrameSessionEnded {
-					t.Fatalf("unexpected frame %+v", frame)
+				if frame.Kind != want {
+					t.Fatalf("frame = %+v, want kind %v", frame, want)
 				}
 			default:
-				if terminal {
-					t.Fatal("missing SessionEnded")
-				}
+				t.Fatalf("missing result frame %v", want)
 			}
 			if !errors.Is(failure, ErrSessionEnded) && !client.exclusive {
 				t.Fatal("exclusive admission option missing")

@@ -85,23 +85,31 @@ type sessionTrace struct {
 //	             └─ Ready → 并行下行发送与串行上行读取
 //	已登记接入的收尾：取消并等待下行工作 → 解绑本地连接
 //	                 └─ 已取得邮箱：关闭传输 → 确认远端解除接入
-//	所有返回路径：必要时尽力通知 SessionEnded → 确保传输关闭
+//	所有返回路径：必要时尽力通知接入拒绝或 SessionEnded → 确保传输关闭
 //
 // Ready 必须晚于 MsgQ 接纳；初始化期间的终止由 openSession 协调补偿。
 // 普通断线只结束接入，逻辑退出由 Logout 显式触发；取消不能替代关闭确认。
 // 传输可能已因断线或撤销关闭，SessionEnded 不承诺送达。
 func (s *Server) serve(ctx context.Context, transport Transport, connectionID int64, trace *sessionTrace) (serveErr error) {
 	defer func() { _ = transport.Close() }()
+	pendingHandshake := false
 	defer func() {
+		var result FrameKind
 		if errors.Is(serveErr, ErrSessionEnded) || errors.Is(serveErr, msgq.ErrSessionAdmission) || errors.Is(serveErr, msgq.ErrSessionOffline) {
-			// 通知只是尽力发送；真正的失效由 MsgQ 许可保证，断流后下一次握手仍会拒绝。
+			result = FrameSessionEnded
+		} else if pendingHandshake && serveErr != nil && !errors.Is(serveErr, context.Canceled) {
+			result = FrameHandshakeRejected
+		}
+		if result != 0 {
+			// 明确结果尽力发送；未收到结果的客户端只能判为接入结果未知。
 			notice, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
-			_ = transport.Write(notice, Frame{Kind: FrameSessionEnded})
+			_ = transport.Write(notice, Frame{Kind: result})
 		}
 	}()
 
 	handshake, auth, err := s.authenticate(ctx, transport)
+	pendingHandshake = handshake.validHandshake()
 	if err != nil {
 		return err
 	}
@@ -126,6 +134,7 @@ func (s *Server) serve(ctx context.Context, transport Transport, connectionID in
 	if err != nil {
 		return err
 	}
+	pendingHandshake = false
 	return active.run(ctx, s, handshake)
 }
 

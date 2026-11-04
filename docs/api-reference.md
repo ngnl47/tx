@@ -1026,7 +1026,7 @@ record, err := mailboxRouter.InspectSession(ctx, roleID)
 
 准入记录使用 `{RoleID}` 单键 CAS，独立于 `{SessionID}` 邮箱键；不要求跨槽事务。旧退出与迟到清理按精确 SID/CID 匹配，不影响新会话；逻辑终止不能删除 TicketOrder 水位。结果未知不自动重新投递接入或业务。替换期间保留角色 owner，正常 MsgQ Stop 经撤销和关闭确认后才释放它，不因流中断直接改派。
 
-项目验票器可返回 `agent.ErrSessionEnded` 标记永久失效。Agent 对它及 MsgQ 明确的准入失效/邮箱不存在发送 `FrameSessionEnded`；依赖暂时不可用保持普通断流。客户端收到终止后清票并停止自动恢复，重新 Login 必须显式发起。退出只以 `FrameLoggedOut` 为确认，未确认时客户端停止恢复并提示结果未知，不把本地写流成功当作服务端结束。
+项目验票器可返回 `agent.ErrSessionEnded` 标记永久失效。Agent 对它及 MsgQ 明确的准入失效/邮箱不存在发送 `FrameSessionEnded`。有效握手因路由不可用、占用等原因未获接纳时，尽力发送 `FrameHandshakeRejected`，仅拒绝本次接入，不宣称票据永久失效；初始化取消或未收到结果帧的断线仍属结果未知。客户端收到终止后清票并停止自动恢复，重新 Login 必须显式发起。退出只以 `FrameLoggedOut` 为确认，未确认时客户端停止恢复并提示结果未知，不把本地写流成功当作服务端结束。
 
 MailboxStream 只增加低频接入、撤销、解除接入和退出完成控制；Ack、Renew、下行数据仍保持原有单向发送语义，不封装通用 Call/Tell/Future 四接口，不在逐消息链路增加成功回执。升级需统一 Login 签票字段、Agent/MsgQ 专用流与客户端控制帧；不承诺混合版本会话恢复。
 
@@ -1118,6 +1118,7 @@ Agent Frame 当前版本是 `v4`，拒绝旧版帧；前后端须同步更新，
 | --- | --- | --- | --- | --- | --- |
 | `FrameHandshake` | `0` | 新连必须为 `0`；重连为已确认下行序号 | 必须为空 | 登录 ticket | 建立或恢复会话 |
 | `FrameReady` | `0` | 固定为 `0` | 必须为空 | 必须为空 | 确认握手已经被服务端接受 |
+| `FrameHandshakeRejected` | `0` | 固定为 `0` | 必须为空 | 必须为空 | 本次接入未被接受，不宣称票据永久失效 |
 | `FrameSessionEnded` | `0` | 固定为 `0` | 必须为空 | 必须为空 | 当前票据不能再接入；停止自动恢复 |
 | `FrameLogout` | `0` | 固定为 `0` | 必须为空 | 当前连接为空；独立未握手连接携 ticket | 精确终止原会话，不创建新会话 |
 | `FrameLoggedOut` | `0` | 固定为 `0` | 必须为空 | 必须为空 | 服务端确认退出完成 |
@@ -3553,7 +3554,7 @@ stores, err := txredis.NewStores(map[string]txredis.LuaClient{
 
 云代理必须支持原生跨槽 `MGET` 及同槽 Lua。Lua 操作的 Key 必须有明确的同槽边界，代理不会拆分任意脚本。
 `LoadOptions.ClusterSafe` 仅是高级手动装配客户端的按 Hash Tag 拆分读取选项，不会让普通 `NewClient` 获得 Cluster
-节点发现或 MOVED/ASK 重定向能力。完整云服务要求见 [设计文档](design.md#存储接口与-redismongofusion)。
+节点发现或 MOVED/ASK 重定向能力。完整云服务要求见 [部署要求](design.md#redis-代理与集群能力)。
 
 ### routeBy、idField 和 hash tag
 
